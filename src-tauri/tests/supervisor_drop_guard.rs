@@ -140,8 +140,8 @@ async fn wait_for_rows(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
-async fn a_handle_dropped_without_stop_still_takes_the_group_with_it()
--> Result<(), Box<dyn Error>> {
+async fn a_handle_dropped_without_stop_still_takes_the_group_with_it() -> Result<(), Box<dyn Error>>
+{
     let dir = tempfile::tempdir()?;
     let marker = unique_marker("drop-guard");
     let grandchild = write_script(dir.path(), "grandchild.sh", GRANDCHILD)?;
