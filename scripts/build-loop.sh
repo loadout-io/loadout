@@ -86,6 +86,14 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 [ -f "$LOG" ] || printf 'task\tstatus\tseconds\tcost_usd\tat\n' > "$LOG"
 
+# Zapisz WLASNY pid. scripts/loop.sh znajduje po nim cale drzewo biegu przez `pgrep -P`,
+# zamiast zgadywac po tresci linii polecen -- co przegralo trzy razy 2026-08-15 (osierocony
+# agent, przypieta kopia pod inna nazwa, obserwator dopasowujacy sam siebie).
+mkdir -p runs
+echo $$ > runs/.build-loop.pid
+trap 'rm -f "$ROOT/runs/.build-loop.pid"' EXIT
+
+
 started_all=$(date +%s)
 planned=(); skipped=()
 for t in "${TASKS[@]}"; do

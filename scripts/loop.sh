@@ -1,77 +1,115 @@
 #!/usr/bin/env bash
 # loop.sh — jedyne miejsce, które wie, JAK znaleźć i zatrzymać bieg.
 #
-#   ./scripts/loop.sh status     # co biegnie i gdzie stoi
-#   ./scripts/loop.sh stop       # zatrzymaj czysto, razem z agentem
+#   ./scripts/loop.sh status     # co biegnie, przy którym zadaniu, w jakiej fazie
+#   ./scripts/loop.sh stop       # zatrzymaj czysto, całe drzewo razem z agentem
 #   ./scripts/loop.sh wait       # blokuj, dopóki pętla biegnie (do skryptów)
 #
-# Powód istnienia: od czasu przypięcia (`exec bash "$snap"`) skrypty harnessu biegną pod
-# nazwą `/var/folders/…/ship-task.F1KPavKuWS`, a nie `./ship-task.sh`. Każde `pgrep -f
-# 'ship-task.sh'` i `pkill -f 'scripts/build-loop.sh'` napisane wcześniej CICHO nie trafia.
-# Zmierzone 2026-08-15: obserwator zameldował „build-loop wyszedł", kiedy pętla spokojnie
-# pisała kontrakt T-04. Fałszywe „skończone" jest gorsze niż brak monitoringu.
+# ── dlaczego PID, a nie nazwa procesu ─────────────────────────────────────────────────────
 #
-# Druga rzecz, którą to miejsce pamięta za wszystkich: zabicie samego basha ZOSTAWIA AGENTA.
-# `pkill -f ship-task.sh` ubija rodzica, a `claude -p …` biegnie dalej jako sierota i pisze
-# do worktree, którego nikt nie odbierze. Zmierzone tego samego wieczoru na T-04.
+# Bo rozpoznawanie procesów po treści linii poleceń jest zgadywaniem, i przegrało trzy razy
+# jednego wieczoru (2026-08-15):
+#
+#   1. `pkill -f 'ship-task.sh'` ubił rodzica i ZOSTAWIŁ agenta. `claude -p` biegł dalej jako
+#      sierota i pisał do worktree, którego nikt już nie odbierze.
+#   2. Po przypięciu (`exec bash "$snap"`) skrypty biegną jako `/var/folders/…/ship-task.F1KP…`,
+#      więc `pgrep -f 'scripts/build-loop.sh'` przestał trafiać. Obserwator zameldował
+#      „build-loop wyszedł", kiedy pętla spokojnie pisała kontrakt.
+#   3. Poprawiony wzorzec `[b]uild-loop` dopasował SAM SIEBIE — powłoka obserwatora miała
+#      w linii poleceń `runs/build-loop.log`. `wait` nie wyszedłby nigdy.
+#
+# Wszystkie trzy to ten sam błąd w trzech przebraniach, więc naprawa też jest jedna:
+# **pętla zapisuje swój PID, a resztę drzewa znajdujemy przez `pgrep -P`.** Nie ma tekstu
+# do dopasowania, więc nie ma czego pomylić.
 set -uo pipefail
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# Wzorce dopasowują OBIE formy: przypiętą kopię w $TMPDIR i wywołanie wprost z repo.
-# `[b]uild-loop` nie łapie samego pgrepa.
-PAT_LOOP='[b]uild-loop'
-PAT_SHIP='[s]hip-task'
-# Agent harnessu, NIE interaktywne sesje użytkownika. Rozróżnia je `-p`: sesja człowieka
-# biegnie bez niego. Zawężenie do stream-json jest drugim zabezpieczeniem.
-PAT_AGENT='[c]laude -p --output-format stream-json'
+PIDFILE="runs/.build-loop.pid"
 
-pids() { pgrep -f "$1" 2>/dev/null; }
+# Wzorce zostają WYŁĄCZNIE jako awaryjne: dla biegu wystartowanego przed tą zmianą i dla
+# ship-task.sh odpalonego ręcznie, bez pętli. Nawias w pierwszej literze nie łapie pgrepa.
+FALLBACK=('[b]uild-loop\.(sh|[A-Za-z0-9]{6,})' '[s]hip-task\.(sh|[A-Za-z0-9]{6,})')
+
+loop_pid() {                    # wypisuje PID żyjącej pętli albo nic
+  local p
+  [ -f "$PIDFILE" ] || return 1
+  p="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null || { rm -f "$PIDFILE"; return 1; }   # plik po trupie
+  printf '%s' "$p"
+}
+
+descendants() {                 # $1 = pid → wszystkie potomki, najgłębsze najpierw
+  local pid="$1" kid
+  for kid in $(pgrep -P "$pid" 2>/dev/null); do
+    descendants "$kid"
+    printf '%s\n' "$kid"
+  done
+}
+
+# Cały bieg jako lista PID-ów: pętla + jej drzewo. Kiedy pliku PID nie ma, spadamy na wzorce.
+run_pids() {
+  local root
+  if root="$(loop_pid)"; then
+    printf '%s\n' "$root"
+    descendants "$root"
+    return
+  fi
+  local pat
+  for pat in "${FALLBACK[@]}"; do
+    pgrep -f "$pat" 2>/dev/null
+  done | sort -u
+}
+
+show() { ps -p "$1" -o command= 2>/dev/null | cut -c1-100; }
 
 status() {
-  local l s a
-  l="$(pids "$PAT_LOOP")"; s="$(pids "$PAT_SHIP")"; a="$(pids "$PAT_AGENT")"
-  printf 'build-loop : %s\n' "${l:-—}"
-  printf 'ship-task  : %s\n' "${s:-—}"
-  printf 'agent      : %s\n' "${a:-—}"
-  if [ -f runs/build-loop.tsv ]; then
-    printf '\nostatnie wiersze:\n'
-    tail -5 runs/build-loop.tsv | sed 's/^/  /'
+  local all p root
+  all="$(run_pids)"
+  if [ -z "$all" ]; then
+    echo "nic nie biegnie"
+  else
+    root="$(loop_pid || true)"
+    [ -n "$root" ] && echo "pętla: $root (z $PIDFILE)" || echo "pętla: rozpoznana po wzorcu (bieg sprzed pliku PID)"
+    for p in $all; do printf '  %-7s %s\n' "$p" "$(show "$p")"; done
   fi
-  # Który task i w jakiej fazie — z ship.log najświeżej dotkniętego katalogu biegu.
+  if [ -f runs/build-loop.tsv ]; then
+    printf '\nostatnie wiersze:\n'; tail -5 runs/build-loop.tsv | sed 's/^/  /'
+  fi
   local newest
   newest="$(ls -td runs/*/ 2>/dev/null | head -1 || true)"
   if [ -n "$newest" ] && [ -f "$newest/ship.log" ]; then
     printf '\n%s:\n' "${newest%/}"
     grep -E '^== ' "$newest/ship.log" | tail -3 | sed 's/^/  /'
   fi
-  [ -n "$l$s$a" ]     # kod wyjścia: 0 = coś biegnie, 1 = cisza
+  [ -n "$all" ]                 # 0 = coś biegnie, 1 = cisza
 }
 
 stop() {
-  local had=0
-  # Kolejność ma znaczenie: najpierw rodzic, żeby nie wystartował następnego zadania,
-  # potem agent, żeby nie został sierotą.
-  for pat in "$PAT_LOOP" "$PAT_SHIP" "$PAT_AGENT"; do
-    if [ -n "$(pids "$pat")" ]; then had=1; pkill -f "$pat" 2>/dev/null; fi
-    sleep 1
-  done
-  sleep 2
-  # Kto nie ustąpił po TERM, dostaje KILL. Bez tego „zatrzymane" bywa nieprawdą.
-  for pat in "$PAT_LOOP" "$PAT_SHIP" "$PAT_AGENT"; do
-    [ -n "$(pids "$pat")" ] && pkill -9 -f "$pat" 2>/dev/null
-  done
+  local all p left
+  # Zbieramy drzewo PRZED zabiciem czegokolwiek. Po zabiciu rodzica potomkowie tracą
+  # rodzicielstwo i `pgrep -P` już ich nie znajdzie — to jest dokładnie ta droga, którą
+  # agent zostawał sierotą.
+  all="$(run_pids)"
+  [ -n "$all" ] || { echo "nic nie biegło"; return 0; }
+
+  # Rodzic pierwszy, żeby nie zdążył wystartować następnego zadania.
+  for p in $all; do kill -TERM "$p" 2>/dev/null; done
+  sleep 3
+  for p in $all; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null; done
   sleep 1
-  if [ -n "$(pids "$PAT_LOOP")$(pids "$PAT_SHIP")$(pids "$PAT_AGENT")" ]; then
-    echo "nie wszystko ustąpiło:" >&2; status >&2; return 1
-  fi
-  [ "$had" = 1 ] && echo "zatrzymane" || echo "nic nie biegło"
-  return 0
+  rm -f "$PIDFILE"
+
+  left=""
+  for p in $all; do kill -0 "$p" 2>/dev/null && left="$left $p"; done
+  if [ -n "$left" ]; then echo "nie ustąpiły:$left" >&2; return 1; fi
+  echo "zatrzymane ($(printf '%s' "$all" | wc -w | tr -d ' ') procesów)"
 }
 
 wait_out() {
-  while [ -n "$(pids "$PAT_LOOP")" ]; do sleep 20; done
-  echo "build-loop wyszedł $(date +%H:%M:%S)"
+  while [ -n "$(run_pids)" ]; do sleep 20; done
+  echo "pętla wyszła $(date +%H:%M:%S)"
 }
 
 case "${1:-status}" in
