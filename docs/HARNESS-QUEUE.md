@@ -27,42 +27,19 @@ Q-1 … Q-4 naniesione w `4f9a558`. Poprawka muteksu cargo w `689e432`.
 
 ---
 
-## Q-5 — nikt nie montuje sekcji w aplikacji (DECYZJA CZŁOWIEKA)
+## Q-5 — ROZSTRZYGNIĘTE: nikt nie montował sekcji
 
-**Klasa:** nie zatrzyma pętli, i właśnie dlatego jest groźna. Wszystko zaświeci na zielono,
-a okno pokaże pięć pustych ekranów.
+Decyzja Jakuba 2026-08-15: **nowe zadanie T-25**, wariant A (konwencja zamiast rejestru).
 
-`src/App.tsx` (T-01, wylądowany) renderuje `<EmptyState>` dla każdej sekcji. `src/ui/sections.tsx`
-wylicza pięć sekcji z etykietą i zdaniem pustego ekranu — i **nie ma pola na komponent**.
-Nagłówek tego pliku mówi:
+`src/App.tsx` szuka `src/sections/<id>/index.tsx`. Każde zadanie sekcji tworzy własny `index.tsx`
+w poddrzewie, które już posiada — zero plików dzielonych. `src/ui/sections.tsx` zostaje bez zmian
+i **nie** dostaje pola `component`: to by zrobiło z niego drugi wspólny kręgosłup obok `lib.rs`,
+z tą samą klasą kolizji, a front — inaczej niż Rust — niczego takiego nie wymaga.
 
-> „Ten plik jest znanym przekazaniem własności: T-08, T-09, T-11, T-13, T-14, T-17 i T-19
-> dopisują tu po jednej linii, mimo że go nie posiadają."
-
-Przekazanie bez mechanizmu. Żadne z tych siedmiu zadań nie ma `src/ui` ani `App.tsx` w OWNS
-(ma je wyłącznie T-01), a `checks/quick-scope.sh` odrzuci zapis poza blokiem. Nie ma też
-„jednej linii" do dopisania, bo rejestr nie zna pojęcia komponentu. Kryteria tych zadań to
-testy komponentowe wołane wprost na plikach, więc **przechodzą bez montażu** — bramka nigdy
-o tym nie powie.
-
-Dwa wyjścia, i to jest wybór projektowy, nie porządkowy:
-
-**A. Konwencja zamiast rejestru.** `App.tsx` szuka `src/sections/<id>/index.tsx`. Każde zadanie
-sekcji tworzy własny `index.tsx` **wewnątrz swojego poddrzewa**, które już posiada — zero plików
-dzielonych, zero wpisów do OWNS. Koszt: jednorazowa zmiana `App.tsx` i jego testu, których nikt
-dziś nie posiada.
-
-**B. Rejestr dostaje pole `component`.** Siedem zadań dopisuje po jednym wierszu do
-`src/ui/sections.tsx`, tak jak dopisują `pub mod x;` do `lib.rs`. Koszt: `src/ui/sections.tsx`
-ląduje w OWNS siedmiu zadań i staje się drugim wspólnym kręgosłupem, z tą samą klasą konfliktów.
-
-Rekomendacja: **A.** Kręgosłup rustowy jest wspólny, bo Rust tego wymaga; front nie wymaga,
-więc dokładanie sobie drugiego wspólnego pliku jest kosztem bez powodu. A to znosi całą klasę
-zamiast ją powielać.
-
-Czego brakuje do decyzji: kto wykonuje zmianę `App.tsx`. Nie orchestrator — to kod produktu,
-nie harness (`.claude/commands/build.md` §5a). Naturalne miejsca: nowe zadanie **T-25**, albo
-doklejenie do T-08 (pierwsze zadanie sekcji w kolejności).
+T-25 stoi w kolejce **przed T-08**, bo T-08 jest pierwszym zadaniem sekcji. Dowód end-to-end nie
+został w T-25 (nie ma tam czego montować, a atrapa zostałaby w repo na zawsze — niezmiennik 17):
+poszedł do T-08 jako AC-8, wraz z `src/sections/run/index.tsx` w jego OWNS. Przekazanie ma
+mechanizm, nie tylko zdanie — to była cała wada, którą Q-5 opisywało.
 
 ---
 

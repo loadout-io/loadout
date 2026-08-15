@@ -48,7 +48,7 @@ LOG="$ROOT/runs/build-loop.tsv"
 # (T1 ryzyko 8). Wracają osobnym przebiegiem `--only`.
 TASKS=(
   S-1 S-2
-  T-01 T-02 T-03 T-04 T-05 T-06 T-07 T-08 T-09
+  T-01 T-02 T-03 T-04 T-05 T-06 T-07 T-25 T-08 T-09
   T-11 T-12 T-13 T-14 T-15
   T-16 T-17 T-18 T-19
   T-20 T-21 T-24 T-22 T-23
