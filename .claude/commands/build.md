@@ -179,6 +179,29 @@ Pięć rzeczy, których przy takiej naprawie pilnujesz:
 
 Granica jest jedna i prosta: **naprawiasz to, co uniemożliwia ocenę. Nigdy tego, co ocenia.**
 
+## 5b. Jak znaleźć i zatrzymać bieg
+
+**Nigdy nie szukaj procesów harnessu po nazwie pliku.** Od czasu przypięcia skrypty biegną
+jako `/var/folders/…/ship-task.F1KPavKuWS`, więc `pgrep -f 'ship-task.sh'` i
+`pkill -f 'scripts/build-loop.sh'` cicho nie trafiają. Zmierzone 2026-08-15: obserwator
+zameldował „build-loop wyszedł", kiedy pętla spokojnie pisała kontrakt. Fałszywe
+„skończone" jest gorsze niż brak monitoringu.
+
+Drugi błąd tej samej rodziny: zabicie basha **zostawia agenta**. `claude -p …` biegnie dalej
+jako sierota i pisze do worktree, którego nikt nie odbierze.
+
+Jedno miejsce wie oba te fakty:
+
+```
+./scripts/loop.sh status    # co biegnie, przy którym zadaniu, w jakiej fazie
+./scripts/loop.sh stop      # zatrzymaj czysto, razem z agentem, z weryfikacją
+./scripts/loop.sh wait      # blokuj, dopóki pętla biegnie
+```
+
+Kiedy chcesz zatrzymać pętlę między zadaniami, a nie w środku: poczekaj, aż
+`runs/build-loop.tsv` dostanie wiersz `green` dla bieżącego zadania — dopiero wtedy
+`integrate.sh` już się udał i zabicie niczego nie urywa w połowie.
+
 ## 6. Co raportujesz człowiekowi
 
 Po każdym zadaniu, jedną linią: `ID · zielone/czerwone · czas · koszt`.
