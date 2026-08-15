@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use super::step::StepReport;
 use super::StepId;
+use super::step::StepReport;
 
 /// Jak długo trwa [`Behaviour::Hang`]. Rzędy wielkości ponad każdy limit czasu w testach:
 /// krok, który to przesiedział do końca, znaczy, że anulowanie nigdy nie doszło.
@@ -202,17 +202,53 @@ impl FakeDriver {
     /// Jeden krok. Bierze `self` przez wartość, żeby zwrócony future był `'static` i dało się
     /// go wpuścić do `JoinSet` bez pożyczek.
     pub async fn run(self, step: StepId, cancel: CancellationToken) -> StepReport {
-        // SZKIELET (2026-08-15) — świadomie zła odpowiedź: nie zapisuje do rejestratora ANI
-        // JEDNEGO znacznika i nie patrzy na zachowanie. Dzięki temu każde kryterium mierzące
-        // czas, szczyt równoczesności, kolejność albo dotarcie anulowania pada na pustym
-        // rejestratorze, czyli na braku zachowania, a nie na braku pliku. `Failed` zamiast
-        // `Succeeded`, bo krok, który nigdy nie biegł, nie ma jak zameldować powodzenia.
-        //
-        // Implementacja: `mark(Enter)`, potem `select!` z `biased;` — najpierw
-        // `cancel.cancelled()` (wtedy `mark(CancelSeen)` i `Cancelled`), potem sen zależny od
-        // zachowania — i `mark(Exit)` na KAŻDEJ ścieżce wyjścia. Guard zamka nie ma prawa
-        // dożyć do żadnego `await` (niezmiennik 8).
-        let _ = (self.recorder, self.behaviours, step, cancel);
-        StepReport::Failed
+        // Wejście znaczy „krok jest w środku", a nie „krok został wysłany". Planista woła to
+        // domknięcie dopiero PO wzięciu permitu (niezmiennik 11), więc ten znacznik mierzy
+        // równoczesność prawdziwą, a nie szerokość wysyłki.
+        self.recorder.mark(step, Mark::Enter);
+
+        // Krok, którego test nie opisał, nie jest awarią planisty — wektor zachowań krótszy
+        // niż graf jest pomyłką w teście i widać ją po stanach końcowych.
+        let behaviour = self.behaviours.get(step).copied().unwrap_or(Behaviour::Succeed);
+
+        let report = match behaviour {
+            Behaviour::Succeed => StepReport::Succeeded,
+            Behaviour::Fail => StepReport::Failed,
+            Behaviour::Busy(duration) => self.sleep_or_cancel(step, duration, &cancel).await,
+            // Krok, który przesiedział całe HANG, znaczy, że anulowanie nigdy nie doszło.
+            // Kryterium, które na to czeka, pada wcześniej na własnym limicie cierpliwości.
+            Behaviour::Hang => self.sleep_or_cancel(step, HANG, &cancel).await,
+        };
+
+        // Wyjście na KAŻDEJ ścieżce, także anulowanej: okno kroku bez końca jest oknem,
+        // którego nie da się z niczym porównać, więc `Recorder::span` zwracałby wtedy `None`.
+        self.recorder.mark(step, Mark::Exit);
+        report
+    }
+
+    /// Śpi podany czas albo zwija się, kiedy przyjdzie anulowanie — cokolwiek stanie się
+    /// pierwsze.
+    async fn sleep_or_cancel(
+        &self,
+        step: StepId,
+        duration: Duration,
+        cancel: &CancellationToken,
+    ) -> StepReport {
+        tokio::select! {
+            // 2026-08-15 — `biased;` [T7 §2.3]. Bez niego `select!` wybiera gałąź losowo, więc
+            // krok kończący się w tym samym obrocie co Stop wygrywa remis mniej więcej połowę
+            // razy i anulowanie staje się wyścigiem pod obciążeniem. Z `biased;` anulowanie
+            // wygrywa zawsze. Kto to zdejmie „porządkując", dostanie test czerwony raz na kilka
+            // przebiegów i uzna go za migoczący.
+            biased;
+            () = cancel.cancelled() => {
+                // Jedyny ślad odróżniający token, który wszedł DO ŚRODKA kroku, od zdjęcia
+                // zadania z zewnątrz (`JoinSet::abort_all`) — po tym drugim w T-03 zostaje
+                // żywa grupa procesów paląca limit u dostawcy [T7 §3.1].
+                self.recorder.mark(step, Mark::CancelSeen);
+                StepReport::Cancelled
+            }
+            () = tokio::time::sleep(duration) => StepReport::Succeeded,
+        }
     }
 }

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use loadout_lib::engine::dag::Dag;
 use loadout_lib::engine::fake::{Behaviour, FakeDriver, Recorder};
-use loadout_lib::engine::scheduler::{execute, Outcome};
+use loadout_lib::engine::scheduler::{Outcome, execute};
 use loadout_lib::engine::step::StepState;
 use tokio_util::sync::CancellationToken;
 

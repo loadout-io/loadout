@@ -105,10 +105,21 @@ proptest! {
 
         for step in 0..n {
             let count = observed.run_count[step];
+            // Argumenty nazwane WPROST, choć w komunikacie wyglądają na przechwycone w miejscu.
+            // `prop_assert_eq!` skleja swój format przez `concat!`, a `format_args!` nie
+            // przechwytuje zmiennych, kiedy łańcuch formatu powstał z rozwinięcia makra —
+            // bez tej listy plik się NIE KOMPILUJE (`error: there is no argument named 'step'`),
+            // a test, który się nie kompiluje, niczego nie uruchomił (AGENTS.md §2a p. 5).
+            // Sąsiednie `prop_assert!` przechwytują w miejscu i tego nie potrzebują: tamto makro
+            // podaje literał formatu wprost, bez `concat!`.
             prop_assert_eq!(
                 count, 1,
                 "step {step} has to run exactly once; it ran {count} times on a graph of {n} \
-                 nodes with edges {edges:?}"
+                 nodes with edges {edges:?}",
+                step = step,
+                count = count,
+                n = n,
+                edges = edges
             );
         }
 

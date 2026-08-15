@@ -24,7 +24,7 @@ use loadout_lib::engine::step::StepEvent::{
 use loadout_lib::engine::step::StepState::{
     Cancelled, Failed, Pending, Ready, Running, Skipped, Succeeded,
 };
-use loadout_lib::engine::step::{next, StepEvent, StepState};
+use loadout_lib::engine::step::{StepEvent, StepState, next};
 
 /// Każde przejście, które tabela dopuszcza.
 const LEGAL: [(StepState, StepEvent, StepState); 11] = [

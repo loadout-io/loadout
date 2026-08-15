@@ -14,12 +14,15 @@
 //! recenzentem jest tu zwykłym krokiem i niczym więcej (decyzja D7).
 
 use std::future::Future;
+use std::sync::Arc;
 
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::dag::Dag;
-use super::step::{StepReport, StepState};
 use super::StepId;
+use super::dag::Dag;
+use super::step::{StepEvent, StepReport, StepState, next};
 
 /// Wynik całego biegu.
 ///
@@ -56,18 +59,147 @@ where
     F: Fn(StepId, CancellationToken) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = StepReport> + Send + 'static,
 {
-    // SZKIELET (2026-08-15) — świadomie zła odpowiedź: nie woła `run_step` ani razu i zostawia
-    // każdy węzeł w stanie, w którym go zastał. `Pending` jest tu wybrane dlatego, że jest
-    // NIELEGALNYM stanem końcowym: AC-6 asertuje wprost, że w zwróconym wektorze nie ma
-    // `Pending`, `Ready` ani `Running`, więc na tym stubie nie da się przejść nawet przypadkiem.
-    //
-    // Implementacja [T7 §2.3]: kopia stopni wejściowych, zbiór gotowych, `JoinSet`,
-    // `Arc<Semaphore>` z `limit.max(1)`, `select!` z `biased;` (anulowanie ma wygrywać remis
-    // z krokiem kończącym się w tym samym obrocie) i przejście po stożku w dół z POWODEM:
-    // pod `Failed` idzie `Skipped`, pod `Cancelled` idzie `Cancelled`.
-    let _ = (limit, cancel, run_step);
+    let children = dag.children();
+    // Kopia stopni wejściowych, nigdy sam graf: ten sam `Dag` ma dać się uruchomić drugi raz,
+    // a AC-6 robi dokładnie to, żeby przyłapać stan przeciekający między biegami.
+    let mut remaining = dag.in_degree();
+    let mut states = vec![StepState::Pending; dag.len()];
+    let mut ready: Vec<StepId> = (0..dag.len()).filter(|&id| remaining[id] == 0).collect();
+
+    // `limit.max(1)`: semafor bez ani jednego permitu nie przepuściłby nikogo, pętla skończyłaby
+    // się przy `inflight == 0` w pierwszym obrocie i bieg zameldowałby koniec, w którym nic nie
+    // biegło. Zero jest pomyłką wołającego, nie prośbą o zatrzymanie — od tego jest token.
+    let semaphore = Arc::new(Semaphore::new(limit.max(1)));
+    let mut running: JoinSet<(StepId, StepReport)> = JoinSet::new();
+    let mut inflight = 0usize;
+
+    loop {
+        // 1. Wyślij wszystko, co gotowe. Wysyłka nie czeka na permit — od czekania jest zadanie.
+        while let Some(id) = ready.pop() {
+            if cancel.is_cancelled() {
+                // Krok, który po Stopie nigdy nie wystartował, jest `cancelled`, nie `skipped`
+                // [T7 §9.3]: nikt wyżej nie padł, użytkownik zatrzymał bieg.
+                states[id] = StepState::Cancelled;
+                mark_cone(children, &mut states, id, StepEvent::UpstreamCancelled);
+            } else {
+                states[id] = StepState::Ready;
+                let semaphore = Arc::clone(&semaphore);
+                let run_step = run_step.clone();
+                let cancel = cancel.clone();
+                running.spawn(async move {
+                    // 2026-08-15 — permit bierzemy TUTAJ, wewnątrz zadania [T7 §2.3], nigdy
+                    // w pętli wysyłki. Wersja z permitem w pętli przechodzi każdy test na górne
+                    // ograniczenie (`peak <= limit`), a po cichu kasuje różnicę między „czeka
+                    // w kolejce" a „działa" — i to jest dokładnie defekt poprzedniego prototypu, gdzie
+                    // `max_parallel` było wyłącznie szerokością wysyłki (niezmiennik 11).
+                    let Ok(_permit) = semaphore.acquire_owned().await else {
+                        // Semafor zamyka się dopiero razem z biegiem i nikt go tu nie zamyka.
+                        // Gdyby jednak: krok nie ruszył, a bieg się kończy — to jest anulowanie,
+                        // nie awaria kroku.
+                        return (id, StepReport::Cancelled);
+                    };
+                    // Token idzie DO ŚRODKA kroku. Zdjęcie zadania z zewnątrz też wróciłoby
+                    // szybko i też wyglądało na anulowane, ale w T-03 zostawia żywą grupę
+                    // procesów palącą limit u dostawcy [T7 §3.1].
+                    (id, run_step(id, cancel).await)
+                });
+                inflight += 1;
+            }
+        }
+
+        if inflight == 0 {
+            break;
+        }
+
+        // 2. Czekaj na pierwszy krok, który wróci. Nie ma tu `select!` z anulowaniem i to jest
+        // decyzja: po Stopie czekamy, aż kroki zwiną się SAME, bo tylko one wiedzą, co mają po
+        // sobie posprzątać. Wyścig z nimi to `abort_all` pod inną nazwą.
+        let Some(joined) = running.join_next().await else {
+            break;
+        };
+        inflight -= 1;
+
+        let Ok((id, report)) = joined else {
+            // Zadanie padło paniką, więc nie wróciło ze swoim numerem i nie da się go stąd
+            // nazwać. Zostaje `Ready`, a zamiatanie za pętlą zamknie je razem ze stożkiem —
+            // bieg nie ma prawa wrócić z krokiem bez rozstrzygnięcia.
+            continue;
+        };
+
+        match report {
+            StepReport::Succeeded => {
+                states[id] = StepState::Succeeded;
+                for &child in &children[id] {
+                    remaining[child] -= 1;
+                    // Warunek na `Pending` jest tym, co daje „dokładnie raz": węzeł zamknięty
+                    // wcześniej przez stożek nie wraca do zbioru gotowych.
+                    if remaining[child] == 0 && states[child] == StepState::Pending {
+                        ready.push(child);
+                    }
+                }
+            }
+            StepReport::Failed => {
+                states[id] = StepState::Failed;
+                mark_cone(children, &mut states, id, StepEvent::UpstreamFailed);
+            }
+            StepReport::Cancelled => {
+                states[id] = StepState::Cancelled;
+                mark_cone(children, &mut states, id, StepEvent::UpstreamCancelled);
+            }
+        }
+    }
+
+    settle_leftovers(children, &mut states, cancel.is_cancelled());
+
     Outcome {
-        states: vec![StepState::Pending; dag.len()],
-        cancelled: false,
+        states,
+        cancelled: cancel.is_cancelled(),
+    }
+}
+
+/// Schodzi stożkiem w dół od `from` i wpisuje POWÓD, dla którego te kroki się nie odbędą.
+///
+/// Reguła: **wygrywa powód, który wystąpił pierwszy; status terminalny nigdy nie jest
+/// przepisywany.** Nie ma jej tutaj jako `if` — niesie ją tabela przejść, bo z każdego stanu
+/// końcowego [`next`] zwraca `None`. To samo `None` jest strażnikiem odwiedzin: węzeł zmienia
+/// stan najwyżej raz, więc stos ma koniec także na diamencie.
+///
+/// Bez rozróżnienia na powód wszystko poniżej anulowanego kroku meldowałoby `Skipped` i UI
+/// tłumaczyłoby świadomy Stop jako cudzą awarię — defekt z [T7 §2.4], znaleziony testem.
+fn mark_cone(children: &[Vec<StepId>], states: &mut [StepState], from: StepId, event: StepEvent) {
+    let mut stack: Vec<StepId> = children[from].clone();
+    while let Some(id) = stack.pop() {
+        if let Some(reason) = next(states[id], event) {
+            states[id] = reason;
+            stack.extend_from_slice(&children[id]);
+        }
+    }
+}
+
+/// Zamyka kroki, których pętla nie zamknęła. Po powrocie z [`execute`] nie ma prawa zostać
+/// `Pending`, `Ready` ani `Running`: krok, który po końcu biegu dalej czyta się jako działający,
+/// to wiersz kręcący się w UI w nieskończoność.
+///
+/// W zdrowym biegu ta funkcja nic nie robi. Dochodzi do głosu, kiedy zadanie kroku padło paniką
+/// i nie wróciło ze swoim numerem — wtedy krok kończy jako `Failed`, a jego stożek jako
+/// `Skipped`, tak samo jak przy zwykłym niepowodzeniu.
+fn settle_leftovers(children: &[Vec<StepId>], states: &mut [StepState], cancelled: bool) {
+    let stalled: Vec<StepId> = (0..states.len())
+        .filter(|&id| matches!(states[id], StepState::Ready | StepState::Running))
+        .collect();
+    for id in stalled {
+        states[id] = StepState::Failed;
+        mark_cone(children, states, id, StepEvent::UpstreamFailed);
+    }
+
+    // Co zostało w `Pending`, nigdy nie doczekało się rodziców.
+    for state in &mut *states {
+        if *state == StepState::Pending {
+            *state = if cancelled {
+                StepState::Cancelled
+            } else {
+                StepState::Skipped
+            };
+        }
     }
 }

@@ -80,21 +80,54 @@ impl Dag {
     /// Odmawia cyklu i krawędzi do nieistniejącego węzła. Pętla własna `(i, i)` jest cyklem
     /// długości jeden i wychodzi tym samym wariantem.
     pub fn new(n: usize, edges: &[(StepId, StepId)]) -> Result<Self, DagError> {
-        // SZKIELET (2026-08-15) — świadomie zła odpowiedź: przyjmuje KAŻDE wejście, także cykl
-        // i krawędź w próżnię, i nie zapamiętuje ani jednej krawędzi. Dzięki temu AC-4 pada na
-        // braku `Err` oraz na stopniach wejściowych, czyli na ZACHOWANIU, a nie na tym, że plik
-        // się nie ładuje (AGENTS.md §2a p. 5).
-        //
-        // Implementacja: najpierw zakres każdego końca każdej krawędzi (`UnknownNode`), potem
-        // Kahn po kopii stopni wejściowych i porównanie liczby przetworzonych węzłów z `n`.
-        // Kahn jest tu wybrany nie dla szybkości, tylko dlatego, że przypadek
-        // `[(0,1),(1,2),(2,1)]` — cykl przy istniejącym korzeniu — przechodzi każde tańsze
-        // sprawdzenie w rodzaju „czy istnieje węzeł o stopniu 0".
-        let _ = edges;
-        Ok(Self {
-            deps: vec![Vec::new(); n],
-            children: vec![Vec::new(); n],
-        })
+        let mut deps: Vec<Vec<StepId>> = vec![Vec::new(); n];
+        let mut children: Vec<Vec<StepId>> = vec![Vec::new(); n];
+
+        // Zakres PRZED wszystkim innym. Krawędź w próżnię zaindeksowałaby wektor poza końcem,
+        // a to jest panika — czyli koniec całego biegu agentów zamiast odmowy zapisu jednego
+        // workflow (AGENTS.md §4: żadnej paniki w silniku).
+        for &(parent, child) in edges {
+            if parent >= n {
+                return Err(DagError::UnknownNode {
+                    edge: (parent, child),
+                    node: parent,
+                });
+            }
+            if child >= n {
+                return Err(DagError::UnknownNode {
+                    edge: (parent, child),
+                    node: child,
+                });
+            }
+            deps[child].push(parent);
+            children[parent].push(child);
+        }
+
+        // Kahn na KOPII stopni wejściowych. Wybrany nie dla szybkości, tylko dlatego, że
+        // `[(0,1),(1,2),(2,1)]` — cykl pod istniejącym korzeniem — przechodzi każde tańsze
+        // sprawdzenie w rodzaju „czy istnieje węzeł o stopniu 0": węzeł 0 taki jest. Przewraca
+        // to dopiero liczenie węzłów, które udało się zdjąć.
+        let mut remaining: Vec<usize> = deps.iter().map(Vec::len).collect();
+        let mut queue: Vec<StepId> = (0..n).filter(|&id| remaining[id] == 0).collect();
+        let mut settled = vec![false; n];
+        while let Some(id) = queue.pop() {
+            settled[id] = true;
+            for &child in &children[id] {
+                remaining[child] -= 1;
+                if remaining[child] == 0 {
+                    queue.push(child);
+                }
+            }
+        }
+
+        // Co zostało, leży na cyklu albo pod nim. Pętla własna `(i, i)` wychodzi tędy sama:
+        // jest cyklem długości jeden i nigdy nie schodzi do stopnia 0.
+        let stuck: Vec<StepId> = (0..n).filter(|&id| !settled[id]).collect();
+        if !stuck.is_empty() {
+            return Err(DagError::Cycle { nodes: stuck });
+        }
+
+        Ok(Self { deps, children })
     }
 
     /// Liczba węzłów.
