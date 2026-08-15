@@ -19,6 +19,17 @@ use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
+// 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
+//
+// Stala tu para linii `#[path = "engine/supervisor.rs"] pub mod supervisor;`, bo `engine/mod.rs`
+// nie mialo wtedy `pub mod supervisor;` — a jeden wiersz poza blokiem OWNS to pytanie do
+// czlowieka (AGENTS.md §7), nie cichy dopisek. Czlowiek odpowiedzial commitem 687712a: linia
+// stoi w `engine/mod.rs`, wiec jedyny poprawny adres modulu to `engine::supervisor`.
+//
+// Zostawienie obu naraz zbudowaloby ten sam plik dwa razy, jako dwa rozne moduly. To nie jest
+// blad kompilacji — to dwa niezalezne typy `GroupProof`, ktorych kompilator nie zamieni jeden
+// w drugi, wiec `stop()` z jednego modulu nie da sie porownac z dowodem z drugiego.
+
 /// Nazwa pliku dziennika wewnątrz katalogu podanego do [`install_logging`].
 const LOG_FILE: &str = "loadout.log";
 
