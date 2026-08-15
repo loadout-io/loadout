@@ -107,7 +107,7 @@ fn transport_flags_stand_next_to_the_values_that_were_verified() -> Result<(), B
 }
 
 #[test]
-fn a_fresh_run_pins_the_session_and_a_resumed_one_names_it() -> Result<(), Box<dyn Error>> {
+fn a_fresh_run_pins_the_session_and_a_resumed_one_names_it() {
     let fresh = spec(None);
     let command = ClaudeDriver::new().command(&fresh);
     let args: Vec<&OsStr> = command.as_std().get_args().collect();
@@ -144,12 +144,10 @@ fn a_fresh_run_pins_the_session_and_a_resumed_one_names_it() -> Result<(), Box<d
          not the session being continued, and passing both makes which one wins a coin flip. \
          argv was {args:?}"
     );
-
-    Ok(())
 }
 
 #[test]
-fn the_prompt_and_the_three_forbidden_flags_never_reach_argv() -> Result<(), Box<dyn Error>> {
+fn the_prompt_and_the_three_forbidden_flags_never_reach_argv() {
     let fresh = spec(None);
     let command = ClaudeDriver::new().command(&fresh);
     let args: Vec<&OsStr> = command.as_std().get_args().collect();
@@ -187,6 +185,4 @@ fn the_prompt_and_the_three_forbidden_flags_never_reach_argv() -> Result<(), Box
         "same spike, same answer: a ceiling nobody has verified is a ceiling nobody can trust. \
          argv was {args:?}"
     );
-
-    Ok(())
 }

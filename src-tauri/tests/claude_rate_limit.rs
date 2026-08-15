@@ -105,7 +105,7 @@ fn the_nested_shape_is_read_field_by_field() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn the_flat_shape_never_answers_with_a_default() -> Result<(), Box<dyn Error>> {
+fn the_flat_shape_never_answers_with_a_default() {
     let limits = limits_from(FLAT_SHAPE);
 
     // Świadomie szeroki kontrakt: ta linia może nie dać nic albo policzyć się jako
@@ -121,8 +121,6 @@ fn the_flat_shape_never_answers_with_a_default() -> Result<(), Box<dyn Error>> {
          zeroes is a decoder that would have answered the real line with zeroes too, and the \
          run would never pause. It produced {defaulted:?}"
     );
-
-    Ok(())
 }
 
 #[test]
