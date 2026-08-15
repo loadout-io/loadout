@@ -40,9 +40,29 @@ printenv > "$1"
 exit 0
 "#;
 
-/// Dziecko czyta stdin do EOF i zapisuje, co dostało.
+/// Dziecko czyta stdin do EOF i zapisuje, co dostało — a wcześniej melduje, **czym** jest jego
+/// deskryptor 0.
+///
+/// 2026-08-15 — samo „EOF przyszedł od razu i plik jest pusty" nie odróżnia `Stdio::null()` od
+/// zregresowanego `Stdio::inherit()`: bramka odpala sprawdzenia bez `stdin=`, więc dziecko
+/// dziedziczy stdin `gate.py`, a ten poza terminalem bywa już na EOF-ie. Zmierzone na zasadzonym
+/// naruszeniu (`Null` → `inherit`): przy pustym zwykłym pliku na stdinie asercje niżej są
+/// **zielone**, bo `cat` kończy natychmiast i nie pisze ani bajtu. Dlatego pytamy o tożsamość:
+/// `-ef` porównuje urządzenie i i-węzeł, więc zwykły plik, potok i terminal wypadają tak samo —
+/// to nie jest `/dev/null`.
+///
+/// Czego ta asercja nie złapie i nie ma jak: `std` uniksowy podmienia zamknięte deskryptory 0/1/2
+/// na `/dev/null` przy starcie procesu, więc odziedziczony-bo-zamknięty stdin **jest**
+/// `/dev/null` — nierozróżnialny, bo zachowanie ma wtedy identyczne.
 const STDIN_SCRIPT: &str = r#"#!/bin/sh
 # $1 = plik, do którego ma trafić to, co przyszło na stdin
+# $2 = plik, do którego ma trafić tożsamość deskryptora 0
+if [ /dev/fd/0 -ef /dev/null ]; then
+  echo "fd0-is-dev-null" > "$2"
+else
+  echo "fd0-is-something-else" > "$2"
+  ls -lL /dev/fd/0 >> "$2" 2>&1
+fi
 cat > "$1"
 exit 0
 "#;
@@ -133,10 +153,11 @@ async fn the_environment_is_scrubbed(dir: &Path, secret: &str) -> Result<(), Box
 /// Część druga: stdin zamknięte natychmiast, a nie „za trzy sekundy".
 async fn stdin_closes_at_once(dir: &Path) -> Result<(), Box<dyn Error>> {
     let received = dir.join("what-came-in-on-stdin.txt");
+    let fd_zero_is = dir.join("what-fd-zero-is.txt");
     let script = write_script(dir, "cat.sh", STDIN_SCRIPT)?;
 
     let mut command = Command::new(&script);
-    command.arg(&received);
+    command.arg(&received).arg(&fd_zero_is);
 
     // Sekunda to cały budżet: bez `/dev/null` claude czeka ~3 s i wypisuje
     // `Warning: no stdin data received in 3s…` [T1 §4.6]; przy czterech agentach to dwanaście
@@ -156,6 +177,15 @@ async fn stdin_closes_at_once(dir: &Path) -> Result<(), Box<dyn Error>> {
         "StdinPlan::Null still delivered {} byte(s) to the child; an empty plan that writes \
          anything is a plan that can write a secret",
         piped.len()
+    );
+
+    let identity = fs::read_to_string(&fd_zero_is)?;
+    assert!(
+        identity.starts_with("fd0-is-dev-null"),
+        "the child's fd 0 is not /dev/null, so StdinPlan::Null handed it something else and the \
+         EOF above proves nothing: the gate spawns checks without `stdin=`, so an inherited \
+         stdin that already sits at EOF passes every assertion above. The child reported: \
+         {identity}"
     );
 
     Ok(())
