@@ -12,7 +12,7 @@
 //!
 //! Siedem nazw z drutu to te same siedem wartości, które niesie `CHECK` w kolumnie
 //! `steps.status` [T7 §5.4]. Rozjazd między tym enumem a schematem bazy skończyłby się
-//! wierszem, którego SQLite nie przyjmie, w trakcie biegu — dlatego sprawdzane są **obie**
+//! wierszem, którego `SQLite` nie przyjmie, w trakcie biegu — dlatego sprawdzane są **obie**
 //! strony, zapis i odczyt.
 
 use std::error::Error;
