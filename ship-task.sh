@@ -241,7 +241,7 @@ esac
 # prośba w promptcie, czyli dokładnie to, czego ten plik ma nie robić. Dwa wywołania
 # kosztują jedno uruchomienie modelu i zamieniają prośbę w bramkę.
 if [ "$CONTRACT_READY" = 0 ]; then
-  say "contract — $AGENT writes the acceptance specs, and nothing else"
+  say "contract — $AGENT writes the acceptance specs and the skeleton that makes them fail"
   write_with "$RUNDIR/contract.jsonl" 80 <<PROMPT || note "the contract phase exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory.
 
@@ -268,6 +268,15 @@ A spec that fails with "module not found", "command not found", "no test files f
 "N skipped (N)" proves nothing, and \`./verify.sh before\` refuses it by name. If a
 criterion cannot be given such a spec, say so in your final message and leave it out —
 that is a finding for a human, not a file to invent.
+
+If you need scratch space outside your own files — a throwaway project, a probe directory —
+use `.loadout/scratch/` inside this worktree. Paths outside the worktree are refused by the
+sandbox unpredictably: measured on S-1, `mkdir /tmp/s1-only-two` was blocked in one phase and
+`/tmp/s1-run` succeeded in another. Inside the worktree it always works.
+
+One shell command per Bash call. Never chain with `;` or `&&`: Claude Code splits a compound
+command and asks approval for each part, and in an unattended run there is nobody to give it —
+every chained command is a lost turn. Measured: 7 lost turns in one phase.
 
 Never edit TASK.md, verify.sh, harness/, checks/ or tasks/. Commit what you write with
 one conventional-commit subject, e.g. "test(<scope>): acceptance specs for $ID".

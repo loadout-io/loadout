@@ -42,3 +42,7 @@ node_modules
 .env
 .env.local
 /.claude/settings.local.json
+
+# Przestrzeń robocza sond i szkiców. Katalog wersjonowany, zawartość nie.
+/.loadout/scratch/*
+!/.loadout/scratch/.gitkeep

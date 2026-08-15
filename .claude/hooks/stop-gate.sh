@@ -68,10 +68,24 @@ if [ "$n" -ge "$BLOCK_CAP" ]; then
   exit 0
 fi
 
+# Gdzie wolno naprawiać — z bloku OWNS zadania, nie ze statycznej listy (F2, zmierzone na S-1).
+# Ten tekst mówił „Fix it under src/, src-tauri/ or tests/" każdemu zadaniu. S-1 posiada trzy
+# pliki pod docs/research/topics/ i agent sam to zacytował jako sprzeczność: hak wysyłał go
+# do naprawiania czegoś w drzewie, którego nie posiada. Instrukcja niewykonalna kosztuje tury
+# tak samo jak zakaz — 37 tur i $2,02 na jednym biegu.
+where="src/, src-tauri/ or tests/"
+if [ -f TASK.md ]; then
+  owns="$(sed -n '/<!--[[:space:]]*OWNS/,/-->/p' TASK.md | sed '1d;$d' \
+          | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | paste -sd', ' -)"
+  [ -n "$owns" ] && where="$owns"
+fi
+
 { echo "The gate is RED (exit $rc) — you may not finish yet (attempt $n of $BLOCK_CAP)."
   printf '%s\n' "$out" | tail -40
   echo
-  echo "Fix it under src/, src-tauri/ or tests/. Never touch TASK.md, verify.sh, harness/,"
-  echo "checks/ or tasks/ — and never weaken an assertion to make a check pass."
+  echo "Fix it inside this task's own paths: $where"
+  echo "Never touch TASK.md, verify.sh, harness/, checks/ or tasks/ — and never weaken an"
+  echo "assertion to make a check pass. If the criterion itself is wrong, say so and stop:"
+  echo "that is a finding for a human (AGENTS.md §7), not a file to edit."
 } >&2
 exit 2
