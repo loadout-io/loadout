@@ -94,6 +94,37 @@ akapitem w `docs/research/topics/`, nie kodem produkcyjnym.
 
 ---
 
+## 6a. Zobowiązanie: przejazd cross-vendor po odblokowaniu Codeksa
+
+*Zapisane 2026-08-15, kiedy zapadła decyzja o budowie w pętli bez Codeksa.*
+
+Konto Codex jest bez kredytów **do 2026-08-20** (`docs/research/topics/T1-agent-drivers.md`
+ryzyko 8). Do tego czasu harness jedzie na parze **claude + claude**: inny model recenzenta,
+rola recenzenta, sandbox read-only i schemat bez „zatwierdzam". To działa, ale jest **słabszym
+trybem** i skrypt sam to wypisuje.
+
+Dlaczego to nie jest formalność: według `docs/research/projects/06-spreadsheet-harness.md`
+**każdy realny defekt w pierwszej wersji repo źródłowego znalazł recenzent innego vendora
+na ZIELONEJ bramce.** Nie bramka. Nie recenzent tego samego vendora. Cross-vendor, na kodzie,
+który przeszedł już wszystkie testy.
+
+Więc po 20 sierpnia, zanim cokolwiek zostanie uznane za skończone:
+
+1. `S-3` — pierwszy prawdziwy strumień z Codeksa do `docs/research/fixtures/codex-stream.jsonl`.
+2. `T-10` — `CodexDriver` na tym złotym pliku.
+3. **Przejazd `review.sh --reviewer codex` po każdej gałęzi, która wylądowała w trybie
+   same-vendor.** Nie po diffie zbiorczym — po zadaniach, pojedynczo, bo recenzent czyta
+   `TASK.md` razem z kryteriami i pyta o to jedno: *czy implementacja spełnia KRYTERIUM,
+   czy tylko ASERCJĘ napisaną pod nie?*
+
+Definicja zrobienia: każde zadanie zbudowane przed 20 sierpnia ma w `runs/<ID>/` plik
+`review-codex.json`, a wszystkie uwagi są albo naprawione, albo odrzucone z pisemnym powodem.
+
+**Dlaczego to nie jest plik w `tasks/`.** Bramka parsuje z zadania `## AC-n` i `check:`
+uruchamiające jeden plik testowy. Przejazd recenzencki nie ma takiego kształtu — wciśnięcie go
+w ten format oznaczałoby wymyślenie kryteriów, których jedynym czytelnikiem jest licznik,
+czyli niezmiennik 21. Zobowiązanie mieszka tutaj i jest sprawdzalne oczami.
+
 ## 7. Linia cięcia
 
 | Zdolność | Kiedy | Powód |
