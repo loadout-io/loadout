@@ -167,6 +167,22 @@ note "$WT"
 if [ -f "$WT/TASK.md" ]; then
   if ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ); then
     note "$WT already has a certified contract — resuming from the implementation phase"
+  # Trzeci stan, którego ta bramka wcześniej nie znała: faza kontraktu WYSTARTOWAŁA I ZGINĘŁA.
+  # Zostaje wtedy gałąź z jednym commitem — tym z TASK.md — i ani jednej specyfikacji.
+  # Nie ma czego chronić, więc odmowa była wyłącznie kosztem: kazała człowiekowi ręcznie
+  # skasować worktree, żeby odtworzyć stan, który skrypt umie odtworzyć sam.
+  #
+  # Rozróżnienie jest mechaniczne i nie zgaduje: liczymy commity gałęzi NAD trunkiem.
+  # Jeden znaczy „jest tylko kontrakt, nikt tu jeszcze nic nie napisał". Cokolwiek powyżej
+  # to praca, której nie wolno wyrzucić bez decyzji człowieka — i tam odmowa zostaje.
+  # Nieśledzone pliki też się liczą: agent bywa ubity między zapisem a commitem.
+  #
+  # `$TRUNK..HEAD`, nie samo `HEAD`: `rev-list --count HEAD` liczy CAŁĄ historię razem
+  # z trunkiem, więc zawsze byłoby to kilkadziesiąt i ta gałąź nigdy by nie wystrzeliła.
+  elif [ "$(git -C "$WT" rev-list --count "${LOADOUT_TRUNK:-main}..HEAD" 2>/dev/null || echo 99)" = "1" ] \
+    && [ -z "$(git -C "$WT" status --porcelain -uall 2>/dev/null)" ]; then
+    note "$WT has the contract commit and nothing else — the contract phase never finished"
+    note "redoing the contract phase in place; there is no work here to lose"
   else
     echo >&2
     echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
