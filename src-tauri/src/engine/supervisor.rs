@@ -462,10 +462,10 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
 
     // Potok odbieramy od razu: uchwyt, który go w sobie trzyma, jest uchwytem, z którego T-05
     // nie przeczyta ani linii — a EOF na tym potoku ma osobne kryterium.
-    let stdout = child.inner_mut().stdout.take();
+    let stdout = child.stdout().take();
 
     if let Some(text) = prompt {
-        if let Some(mut pipe) = child.inner_mut().stdin.take() {
+        if let Some(mut pipe) = child.stdin().take() {
             // Zapis w osobnym zadaniu, nie tutaj: bufor potoku ma ~64 KB, a prompt bywa
             // większy — zapis synchroniczny stanąłby na pełnym buforze, czekając na dziecko,
             // które czeka na resztę promptu. Zamknięcie deskryptora po zapisie jest tym EOF-em,
