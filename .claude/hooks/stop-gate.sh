@@ -39,7 +39,16 @@ fi
 
 [ -f verify.sh ] || { echo "stop-gate: no verify.sh here — nothing to gate." >&2; exit 0; }
 
-out="$(bash verify.sh full 2>&1)"; rc=$?
+# `quick`, nie `full`. Zmierzone na pierwszym przejeździe T-01 (2026-08-15): hak odpalał pełną
+# bramkę na KAŻDYM końcu tury, także w fazie kontraktu — a ta z definicji produkuje padające
+# testy, więc pełna bramka nie miała prawa przejść. Hak blokował, model „naprawiał", hak
+# blokował znowu. Trzy razy, aż do BLOCK_CAP, przy suficie 600 s na każdy przebieg.
+# To był harness blokujący sam siebie.
+#
+# `quick` to higiena granicy tury i ma sens na każdym etapie: format, zakres plików, typy,
+# słownictwo, tokeny, granice modułów. ~20 s. Pełna bramka należy do granic ETAPÓW
+# w ship-task.sh, gdzie już jest wołana i gdzie jej czerwień coś znaczy.
+out="$(bash verify.sh quick 2>&1)"; rc=$?
 
 if [ "$rc" -eq 0 ]; then echo 0 > "$STATE"; exit 0; fi
 

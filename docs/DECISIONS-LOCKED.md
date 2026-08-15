@@ -180,6 +180,69 @@ do skopiowania. To podnosi rangę D3: dwóch vendorów w v1 to warunek istnienia
 
 ---
 
+## D7 — W aplikacji harness jest lekki domyślnie; długość definiuje workflow
+
+*Zapisane 2026-08-15.*
+
+Harness, którym **budujemy** Loadouta, jest ciężki: warstwy `before`/`quick`/`full`, reguła dowodu,
+`NOT_A_REAL_RED`, obowiązkowa druga opinia, jedna runda poprawek, strażnicy. To jest właściwe dla
+projektu, w którym agenci pracują godzinami bez nadzoru.
+
+**Aplikacja nie może tego narzucać.** Ktoś, kto chce poprawić literówkę, nie będzie dowodził
+czerwieni przed napisaniem kodu ani czekał na recenzenta innego vendora. To by było absurdalne
+i nikt by z tego nie skorzystał drugi raz.
+
+### Reguła
+
+**Domyślnie: nic.** Workflow z jednym krokiem odpala agenta i pokazuje wynik. Bez bramki, bez
+recenzji, bez rund naprawczych.
+
+**Ceremonia jest elementem grafu, nie ustawieniem globalnym.** Każdy kawałek naszego ciężkiego
+harnessu ma w aplikacji odpowiednik, który dokładasz świadomie:
+
+| Mechanizm harnessu | W aplikacji |
+|---|---|
+| bramka (`verify.sh`) | krok typu „sprawdź" — uruchamia twoje checki |
+| druga opinia | krok z agentem-recenzentem |
+| zatwierdzenie człowieka | kafelek punktu kontrolnego |
+| runda naprawcza | ustawienie kroku „jeśli próba się nie uda" |
+| kopia plików per krok | przełącznik w modalu kroku |
+| dowód czerwieni przed pracą | krok „sprawdź" **przed** krokiem piszącym |
+
+Nic z tego nie jest domyślnie włączone. **Długość i głębokość ceremonii to konfiguracja workflow.**
+
+### Konsekwencja dla silnika, która jest niezmiennikiem
+
+**Żaden etap nie może być zaszyty w Ruście.** W `scheduler.rs` nie ma prawa istnieć
+`if review_enabled`. Kolejność mieszka **wyłącznie w grafie** — silnik wykonuje graf i nie wie,
+że coś takiego jak „recenzja" istnieje jako pojęcie. Krok z agentem-recenzentem jest dla silnika
+zwykłym krokiem.
+
+To jest jedyny sposób, żeby D7 była prawdziwa, a nie deklarowana: jeśli którykolwiek etap jest
+w kodzie, to on jest domyślny i nie da się go wyłączyć konfiguracją.
+
+### Pozorna sprzeczność z `ship-task.sh`, i jej rozwiązanie
+
+`ship-task.sh` istnieje właśnie dlatego, że graf jest **w kodzie**: model, który dostaje sekwencję
+w promptcie, pomija etap, kiedy uzna go za zbędny. Czy D7 tego nie łamie?
+
+Nie — ochrona się przenosi, nie znika:
+
+- **W harnessie** graf jest zamrożony w kodzie, bo to **agent** nie może pominąć etapu.
+- **W aplikacji** graf zamraża **człowiek** w edytorze, a silnik pilnuje, żeby żaden agent nie
+  zmienił go w trakcie biegu.
+
+W obu przypadkach obowiązuje to samo: **bieg idzie po grafie, który zatwierdził człowiek, i nic
+w trakcie tego nie przestawia.** Zmienia się tylko to, kto graf ustala.
+
+### Co musi przetrwać nawet przy zerowej ceremonii
+
+Rozdział trzech autorytetów. Przy workflow z jednym krokiem nie ma żadnych sprawdzeń — więc UI
+mówi **„no checks configured"**, uczciwie, i nie pokazuje zieleni. Brak ceremonii znaczy „nikt tego
+nie sprawdził", nigdy „sprawdzone i dobrze".
+
+---
+
 ## Reguły nazewnictwa (z wymagań użytkownika)
 
 Cała aplikacja mówi **prostym językiem, bez żargonu technicznego**. Nazwy przycisków: `Utwórz`, `Edytuj`, `Uruchom`.

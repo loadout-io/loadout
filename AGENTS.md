@@ -53,6 +53,25 @@ Trzy rzeczy, które w tej pętli są nienegocjowalne:
 
 ---
 
+## 2a. Kontrakt kryterium — wszystko, co musisz o nim wiedzieć
+
+Nie czytaj `harness/gate.py`, żeby się tego dowiedzieć. Całość jest tutaj.
+
+1. **Jedno kryterium, jedna linia `check:`, dokładnie jeden plik testu wskazany ścieżką.**
+   Nigdy filtr po nazwie (`-t`, `--grep`, `--test-name`): filtr, który nic nie dopasował,
+   raportuje sukces i tak vitest dwa razy pokonał warstwę `before` w repo źródłowym.
+2. **Ścieżka testu jest globalnie unikalna** we wszystkich plikach zadań. To jest jedyny powód,
+   dla którego równoległe zadania są bezpieczne.
+3. **Numeracja `## AC-n` biegnie 1..n bez luk.**
+4. **Zielone wymaga licznika przejść w wyjściu.** Exit 0 bez „N passed" / „Ran N tests" jest
+   czerwone — kod testowany biegnie w tym samym procesie, którego kod wyjścia czytasz.
+   `expect: none` to jedyna, recenzowalna furtka.
+5. **W warstwie `before` kryterium musi paść dlatego, że BRAKUJE ZACHOWANIA** — nie dlatego, że
+   sprawdzenie nie ruszyło. „Brak modułu", „nie znaleziono plików testowych", „nie da się wczytać
+   manifestu" i ~30 innych podpisów nie liczą się jako czerwone.
+   **W Ruście oznacza to: najpierw sygnatura z `todo!()`**, żeby test się skompilował i padł
+   w czasie wykonania. Test, który się nie kompiluje, niczego nie uruchomił.
+
 ## 3. Reguły wiążące
 
 Numerowane, bo pliki zadań je cytują („niezmiennik 6").
@@ -127,6 +146,18 @@ Numerowane, bo pliki zadań je cytują („niezmiennik 6").
 26. **Nie uruchamiaj dwóch ciężkich `cargo`/`rustc` naraz na tym Macu.** Kilka równoległych linków
     przypina kompresor pamięci macOS i zamraża maszynę przy zerowym swapie.
 
+### Silnik
+
+*Numeracja jest dopisywalna. Nigdy nie przenumerowuj — zadania cytują reguły po numerze,
+a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
+
+27. **Żaden etap biegu nie jest zaszyty w Ruście.** W `scheduler.rs` nie ma prawa istnieć
+    `if review_enabled` ani żaden inny warunek nazywający etap. Kolejność mieszka **wyłącznie
+    w grafie**; silnik wykonuje graf i nie zna pojęcia „recenzja" — krok z agentem-recenzentem
+    jest dla niego zwykłym krokiem. To jedyny sposób, żeby decyzja D7 była prawdziwa, a nie
+    deklarowana: etap zaszyty w kodzie **jest** domyślny i nie da się go wyłączyć konfiguracją.
+    Sprawdzane gerpem w bramce razem z niezmiennikiem 1.
+
 ---
 
 ## 4. Zakazane → zamiast tego
@@ -147,6 +178,8 @@ Numerowane, bo pliki zadań je cytują („niezmiennik 6").
 | Enum z drutu jako tekst w UI | zdanie po angielsku z tabeli tłumaczeń |
 | „Sprawdzenie", które sprawdza samo siebie | uczciwy stan „no checks configured" |
 | Recenzent, który blokuje | uwaga bez mocy sprawczej; decyduje bramka |
+| Komenda złożona: `a; b; c` w jednym Bashu | **jedna komenda na wywołanie.** Claude Code rozbija złożone i pyta o zgodę na każdy człon; w biegu bez człowieka nie ma kto jej dać, więc to jest stracona tura. Zmierzone: 13 odmów w jednej fazie |
+| Czytanie `harness/gate.py`, żeby poznać kontrakt kryterium | kontrakt jest w §2a tego pliku, w pięciu zdaniach. 34 KB Pythona to nie jest specyfikacja |
 
 ---
 
