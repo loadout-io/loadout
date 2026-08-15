@@ -128,15 +128,29 @@ WT="$(bash ./worktree.sh "$BRANCH" | tail -1)" || {
 [ -d "$WT" ] || { echo "worktree.sh printed '$WT', which is not a directory" >&2; exit 2; }
 note "$WT"
 
-# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Dla niego to zaleta; dla
-# tego biegu to koniec: przestrzeń z poprzedniego podejścia ma już implementację, więc
-# „before" byłoby zielone i nikt by się nie dowiedział, że kryterium niczego nie sprawdza.
+# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
+# przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
+# dowiedział, że kryterium niczego nie sprawdza.
+#
+# Odpowiada na to ZACHOWANIE, nie obecność pliku (niezmiennik 20 zastosowany do samego
+# harnessu). Wcześniej stało tu `if [ -f "$WT/TASK.md" ]` i to odmawiało także wtedy, gdy
+# kontrakt był gotowy, a implementacji nie było — czyli w jedynym przypadku, w którym
+# wznowienie jest i bezpieczne, i oszczędza pół godziny. Zmierzone na T-02: kontrakt
+# certyfikowany, siedem kryteriów uczciwie czerwonych, a skrypt kazał wyrzucić całą pracę.
+#
+# `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
+# z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
 if [ -f "$WT/TASK.md" ]; then
-  echo >&2
-  echo "$WT already carries a TASK.md, so ship-task.sh has run for $BRANCH before." >&2
-  echo "A second run there cannot prove the criteria red. Finish or discard it first:" >&2
-  echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
-  exit 2
+  if ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ); then
+    note "$WT already has a certified contract — resuming from the implementation phase"
+  else
+    echo >&2
+    echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
+    echo "Either the implementation is already there, or the contract never certified." >&2
+    echo "A second run cannot prove the criteria red. Finish or discard it first:" >&2
+    echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
+    exit 2
+  fi
 fi
 
 # Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
@@ -149,8 +163,15 @@ GIT_COMMON="$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
 
 cp "$TASK_FILE" "$WT/TASK.md"
 git -C "$WT" add TASK.md
-git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
-note "TASK.md committed as the branch's first commit"
+# Przy wznowieniu kontrakt jest juz zacommitowany i identyczny — `git commit` bez zmian
+# konczy sie jedynka i pod `set -e` wywraca caly bieg. Pusty commit tez nie: historia
+# galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
+if git -C "$WT" diff --cached --quiet; then
+  note "TASK.md unchanged — the contract commit is already the branch's first"
+else
+  git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
+  note "TASK.md committed as the branch's first commit"
+fi
 
 # ------------------------------------------------------------ narzędzia biegu --
 gate() {                       # gate <tier>  → kod bramki
