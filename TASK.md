@@ -203,6 +203,7 @@ Rozróżnia: `ESRCH` po samym porzuceniu uchwytu, bez jednego wywołania `stop()
 - **Prawdziwe PTY** — D4, v1.1.
 
 <!-- OWNS
+src-tauri/src/engine/mod.rs
 src-tauri/src/lib.rs
 src-tauri/src/engine/supervisor.rs
 src-tauri/tests/supervisor_group_death.rs
