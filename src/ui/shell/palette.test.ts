@@ -69,7 +69,8 @@ describe('the palette is closed in the style sheet this app actually loads', () 
     expect(
       imports.length,
       'src/main.tsx has to bring in exactly one style sheet. Two, and the second one can quietly ' +
-        'be the whole default palette; it brings in: ' + JSON.stringify(imports),
+        'be the whole default palette; it brings in: ' +
+        JSON.stringify(imports),
     ).toBe(1);
     expect(
       (imports[0] ?? '').replace(/^@\//, './'),

@@ -38,7 +38,8 @@ describe('one section of five is on screen and the other four are not in the tre
     expect(
       SECTIONS.length,
       'SECTIONS has to hold exactly five entries — the five top-level places this app has. It ' +
-        'holds ' + String(SECTIONS.length),
+        'holds ' +
+        String(SECTIONS.length),
     ).toBe(EXPECTED.length);
     expect(
       SECTIONS.map((entry) => entry.id),

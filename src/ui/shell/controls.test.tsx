@@ -55,7 +55,9 @@ describe('the only controls are the five section switches, and each one really s
         expect(
           occurrences(markup, 'data-section-switch="' + other + '"'),
           'each of the five controls has to carry data-section-switch with a different one of ' +
-            'the five names; ' + other + ' is missing or doubled',
+            'the five names; ' +
+            other +
+            ' is missing or doubled',
         ).toBe(1);
       }
     });
@@ -72,14 +74,19 @@ describe('the only controls are the five section switches, and each one really s
         words.length,
         'the invitation on an empty screen has to fit in ' +
           String(MOST_WORDS) +
-          ' words; ' + id + ' says: ' + JSON.stringify(sentence),
+          ' words; ' +
+          id +
+          ' says: ' +
+          JSON.stringify(sentence),
       ).toBeLessThanOrEqual(MOST_WORDS);
       expect(
         occurrences(sentence, '.'),
         'one sentence, so at most ' +
           String(MOST_STOPS) +
           ' full stop. An empty screen is an invitation, not a paragraph of policy; ' +
-          id + ' says: ' + JSON.stringify(sentence),
+          id +
+          ' says: ' +
+          JSON.stringify(sentence),
       ).toBeLessThanOrEqual(MOST_STOPS);
     });
   }

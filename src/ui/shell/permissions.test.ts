@@ -130,7 +130,8 @@ describe('the reach of the webview is closed and points at a window that exists'
       granted,
       'core:default drags in core:image, core:menu, core:path, core:resources, core:tray and ' +
         'core:webview, none of which this app calls. T8 §3.2 is blunt about it: enumerate the ' +
-        'handful you use. The directory grants: ' + shown(granted),
+        'handful you use. The directory grants: ' +
+        shown(granted),
     ).not.toContain('core:default');
   });
 
@@ -158,7 +159,8 @@ describe('the reach of the webview is closed and points at a window that exists'
       outside,
       'every permission has to come from the list in T8 §3.2. Anything else is a new hole in ' +
         'the webview, and a new hole is a decision a person makes, not a line a commit adds. ' +
-        'The list is: ' + ALLOWED.join(', '),
+        'The list is: ' +
+        ALLOWED.join(', '),
     ).toEqual([]);
   });
 
@@ -166,7 +168,8 @@ describe('the reach of the webview is closed and points at a window that exists'
     expect(
       typeof windowLabel === 'string' && windowLabel.length > 0,
       'tauri.conf.json has to name the window before any permissions file can match it; it ' +
-        'says: ' + shown(windowLabel),
+        'says: ' +
+        shown(windowLabel),
     ).toBe(true);
     for (const file of capabilities) {
       const targets = at(file.body, 'windows');
@@ -175,7 +178,8 @@ describe('the reach of the webview is closed and points at a window that exists'
         'src-tauri/capabilities/' +
           file.name +
           ' has to carry a windows field. Tauri matches it on the window LABEL, not the shown ' +
-          'name; it says: ' + shown(targets),
+          'name; it says: ' +
+          shown(targets),
       ).toBeInstanceOf(Array);
       expect(
         Array.isArray(targets) ? targets : [],
@@ -183,7 +187,10 @@ describe('the reach of the webview is closed and points at a window that exists'
           file.name +
           ' names a window that does not exist, so it grants nothing and every call from the ' +
           'webview is refused — which T-07 will read as a broken call, three tasks from here. ' +
-          'The window is called ' + shown(windowLabel) + ' and the file says: ' + shown(targets),
+          'The window is called ' +
+          shown(windowLabel) +
+          ' and the file says: ' +
+          shown(targets),
       ).toContain(windowLabel);
     }
   });
@@ -193,7 +200,8 @@ describe('the reach of the webview is closed and points at a window that exists'
     expect(
       typeof csp === 'string' && csp.trim().length > 0,
       'app.security.csp has to be a real rule. null means anything the page asks for is fetched, ' +
-        'and this app is meant to work with the network unplugged; it says: ' + shown(csp),
+        'and this app is meant to work with the network unplugged; it says: ' +
+        shown(csp),
     ).toBe(true);
     expect(
       typeof csp === 'string' ? csp : '',

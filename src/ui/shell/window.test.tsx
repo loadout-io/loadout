@@ -71,7 +71,8 @@ describe('the window opens with clean chrome and the dev address is the one we s
       Array.isArray(windows) ? windows.length : -1,
       'app.windows in tauri.conf.json has to hold exactly one entry, because everything else ' +
         'here — the permissions file, the drag area, the lights — points at that one window; ' +
-        'the file says: ' + shown(windows),
+        'the file says: ' +
+        shown(windows),
     ).toBe(1);
   });
 
@@ -80,7 +81,8 @@ describe('the window opens with clean chrome and the dev address is the one we s
       at(only, 'label'),
       'the window label has to be main, and it has to match the windows field of every file in ' +
         'src-tauri/capabilities/ — permissions naming a window that does not exist refuse every ' +
-        'call from the webview; the file says: ' + shown(at(only, 'label')),
+        'call from the webview; the file says: ' +
+        shown(at(only, 'label')),
     ).toBe('main');
   });
 
@@ -88,13 +90,15 @@ describe('the window opens with clean chrome and the dev address is the one we s
     expect(
       at(only, 'titleBarStyle'),
       'titleBarStyle has to be Overlay so our own bar owns the top of the window; the file ' +
-        'says: ' + shown(at(only, 'titleBarStyle')),
+        'says: ' +
+        shown(at(only, 'titleBarStyle')),
     ).toBe('Overlay');
     expect(
       at(only, 'hiddenTitle'),
       'hiddenTitle has to be true. Overlay alone still draws the system title, and it draws it ' +
         'ON TOP of our content — this is the half of the recipe that looks fine in a screenshot ' +
-        'until there is text under it; the file says: ' + shown(at(only, 'hiddenTitle')),
+        'until there is text under it; the file says: ' +
+        shown(at(only, 'hiddenTitle')),
     ).toBe(true);
   });
 
@@ -105,7 +109,8 @@ describe('the window opens with clean chrome and the dev address is the one we s
       typeof x === 'number' && Number.isFinite(x),
       'trafficLightPosition.x has to be a number — the left inset of the bar is computed from ' +
         'it, so a missing value silently becomes a bar with no room for the lights; the file ' +
-        'says: ' + shown(x),
+        'says: ' +
+        shown(x),
     ).toBe(true);
     expect(
       typeof y === 'number' && Number.isFinite(y),
@@ -139,7 +144,8 @@ describe('the window opens with clean chrome and the dev address is the one we s
         'Tauri starter says 1420 and ours says ' +
         shown(declared) +
         '; take the starter value and npm run app opens a blank window with no error anywhere. ' +
-        'devUrl says: ' + shown(devUrl),
+        'devUrl says: ' +
+        shown(devUrl),
     ).toBe(declared);
   });
 
