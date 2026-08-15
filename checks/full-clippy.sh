@@ -29,7 +29,7 @@ cargo clippy --version >/dev/null 2>&1 \
   || { echo "clippy is missing: rustup component add clippy" >&2; exit 2; }
 
 # Niezmiennik 26: full-test.sh i to sprawdzenie biegną w tej samej fali bramki.
-cargo_serialize || exit 1
+cargo_serialize || exit 2   # 2, nie 1: nic sie nie wykonalo, wiec to nie jest twierdzenie o kodzie (Q-3)
 
 if ! out="$(cargo clippy --all-targets -- -D warnings 2>&1)"; then
   echo "clippy --all-targets found something it will not let through" >&2

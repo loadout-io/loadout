@@ -20,6 +20,20 @@
 #    ponowne uruchomienie po naprawie kontynuuje zamiast zaczynać od zera.
 set -euo pipefail
 
+# Bash czyta ten plik PRZYROSTOWO, po offsetach bajtowych. Edycja w trakcie biegu przesuwa
+# wszystko za kursorem i proces wykonuje smieci -- skladniowo poprawne, semantycznie losowe.
+# Zdarzylo sie trzy razy 2026-08-15, za kazdym razem po moim wlasnym ostrzezeniu, i za
+# kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
+# Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
+# ROOT liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
+if [ -z "${LOADOUT_PINNED:-}" ]; then
+  LOADOUT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t "$(basename "$0")")"
+  cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
+  export LOADOUT_PINNED=1 LOADOUT_ROOT
+  exec bash "$LOADOUT_SNAP" "$@"
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$PWD"
 LOG="$ROOT/runs/build-loop.tsv"

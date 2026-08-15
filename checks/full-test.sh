@@ -30,7 +30,7 @@ rs="$(find src-tauri/src -name '*.rs' 2>/dev/null | head -1 || true)"
 if [ -n "$rs" ]; then
   command -v cargo >/dev/null 2>&1 || { echo "cargo is not on PATH" >&2; exit 2; }
   has_tests="$(grep -rlE '^\s*#\[(tokio::)?test\]' src-tauri/src 2>/dev/null | head -1 || true)"
-  cargo_serialize || exit 1
+  cargo_serialize || exit 2   # 2, nie 1: nic sie nie wykonalo, wiec to nie jest twierdzenie o kodzie (Q-3)
   rc=0
   out="$(cargo test --lib 2>&1)" || rc=$?
   cargo_release

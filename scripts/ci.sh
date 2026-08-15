@@ -279,6 +279,7 @@ guards_lane() {
     return 0
   fi
   prompt_backticks
+  cargo_lock_exit_code
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -300,6 +301,34 @@ prompt_backticks() {
     return 1
   fi
   echo "prompts: no unescaped backticks"
+}
+
+# ── przeterminowany muteks cargo to 2, nigdy 1 ────────────────────────────────
+# Zmierzone 2026-08-15: `cargo_serialize || exit 1` sprawiał, że sprawdzenie, które NIC nie
+# uruchomiło, meldowało „twój kod jest zepsuty". gate.py zna na poziomie sprawdzenia tylko
+# dwie kategorie — 2 to `misconfigured`, wszystko inne niezerowe to `failed` — więc jedyną
+# poprawną odpowiedzią jest 2. Fałszywa czerwień uzbraja się dopiero przy zadaniach
+# równoległych, czyli tam, gdzie nikt jej nie będzie szukał.
+#
+# Nie jest to strażnik w harness/guards.sh: tamten framework daje jedną funkcję na sprawdzenie
+# i sadzi naruszenie W KODZIE. Tutaj naruszeniem jest STAN MASZYNY (zajęty muteks), więc
+# asercja mieszka tam, gdzie już mieszka prompt_backticks — obok, nie w środku.
+cargo_lock_exit_code() {
+  local lock rc
+  lock="${TMPDIR:-/tmp}/loadout-cargo.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "cargo lock: zajęty przez coś innego — pomijam asercję zamiast zgadywać" >&2
+    return 0
+  fi
+  rc=0
+  LOADOUT_CARGO_LOCK_WAIT=2 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
+  rmdir "$lock" 2>/dev/null || true
+  if [ "$rc" != 2 ]; then
+    echo "quick-clippy wyszedł $rc na zajętym muteksie, a ma wyjść 2" >&2
+    echo "detail: nic się nie wykonało, więc to nie jest twierdzenie o kodzie (Q-3)." >&2
+    return 1
+  fi
+  echo "cargo lock: przeterminowany muteks daje 2, nie 1"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────

@@ -20,6 +20,20 @@
 # · 3 przerwane / limit czasu. Nigdy nie mieszamy 1 z 2.
 set -euo pipefail
 
+# Bash czyta ten plik PRZYROSTOWO, po offsetach bajtowych. Edycja w trakcie biegu przesuwa
+# wszystko za kursorem i proces wykonuje smieci -- skladniowo poprawne, semantycznie losowe.
+# Zdarzylo sie trzy razy 2026-08-15, za kazdym razem po moim wlasnym ostrzezeniu, i za
+# kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
+# Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
+# ROOT liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
+if [ -z "${LOADOUT_PINNED:-}" ]; then
+  LOADOUT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t "$(basename "$0")")"
+  cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
+  export LOADOUT_PINNED=1 LOADOUT_ROOT
+  exec bash "$LOADOUT_SNAP" "$@"
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT"
 
@@ -295,10 +309,6 @@ use \`.loadout/scratch/\` inside this worktree. Paths outside the worktree are r
 sandbox unpredictably: measured on S-1, \`mkdir /tmp/s1-only-two\` was blocked in one phase and
 \`/tmp/s1-run\` succeeded in another. Inside the worktree it always works.
 
-Before you finish, run the formatter: npm run fmt for the frontend and cargo fmt for Rust.
-quick-fmt is part of the gate, and a formatting diff is the cheapest possible way to turn an
-otherwise green task red. Measured on T-01: seventeen checks, one failure, prettier.
-
 One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
 command and asks approval for each part, and in an unattended run there is nobody to give it —
 every chained command is a lost turn. Measured: 7 lost turns in one phase.
@@ -407,6 +417,25 @@ if grep -q '^second opinion -- ' "$REVIEW_OUT" 2>/dev/null; then CONCERNS=1; fi
 
 if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
   if [ -f "$WT/repair.sh" ]; then
+    # Podciągnij harness z trunka PRZED rundą naprawczą. Gałąź wycięta godziny temu biegnie
+    # ze sprawdzeniami sprzed poprawek, które orchestrator nanosił w międzyczasie — i trzy
+    # z pierwszych czterech zatrzymań pętli (2026-08-15) to były właśnie fałszywe alarmy
+    # z nieaktualnej kopii checks/. Żadne nie było defektem zadania, każde kończyło się tym
+    # samym ręcznym rebase i ponowną bramką.
+    #
+    # Merge, nie rebase: nie przepisujemy historii gałęzi, która zaraz ląduje. Tylko gdy
+    # czysto — konfliktu nie zgadujemy, tylko go zgłaszamy. Moment jest bezpieczny, bo żaden
+    # agent już nie pracuje: recenzent skończył, naprawiacz jeszcze nie wystartował.
+    # PRZED naprawą, nie po niej: naprawiacz odpowiada na to, co powiedziała bramka, więc
+    # jest tym, który najbardziej potrzebuje jej aktualnej wersji. Pracując przeciwko
+    # nieaktualnej kopii może trafić w stare sprawdzenie i przewrócić się na nowym.
+    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
+      note "harness refreshed from the trunk before the final gate"
+    else
+      git -C "$WT" merge --abort >/dev/null 2>&1 || true
+      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
+    fi
+
     # repair.sh nie bierze id zadania: czyta TASK.md, runs/last.json i runs/review.json
     # z katalogu, w którym stoi. Dlatego uruchamiamy go W WORKTREE — z korzenia naprawiałby
     # trunk przeciwko paragonowi z innej gałęzi.
@@ -417,21 +446,6 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
     if [ "$RP" = 2 ]; then
       echo "repair.sh reports OUR misconfiguration." >&2
       exit 2
-    fi
-    # Podciągnij harness z trunka PRZED ostatnią bramką. Gałąź wycięta godziny temu biegnie
-    # ze sprawdzeniami sprzed poprawek, które orchestrator nanosił w międzyczasie — i trzy
-    # z pierwszych czterech zatrzymań pętli (2026-08-15) to były właśnie fałszywe alarmy
-    # z nieaktualnej kopii checks/. Żadne nie było defektem zadania, każde kończyło się tym
-    # samym ręcznym rebase i ponowną bramką.
-    #
-    # Merge, nie rebase: nie przepisujemy historii gałęzi, która zaraz ląduje. Tylko gdy
-    # czysto — konfliktu nie zgadujemy, tylko go zgłaszamy. Moment jest bezpieczny, bo żaden
-    # agent już nie pracuje, a bramka biegnie zaraz potem.
-    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
-      note "harness refreshed from the trunk before the final gate"
-    else
-      git -C "$WT" merge --abort >/dev/null 2>&1 || true
-      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
     fi
 
     say "gate, after the repair round"

@@ -30,7 +30,7 @@ command -v cargo >/dev/null 2>&1 || { echo "cargo is not on PATH" >&2; exit 2; }
 cargo clippy --version >/dev/null 2>&1 \
   || { echo "clippy is missing: rustup component add clippy" >&2; exit 2; }
 
-cargo_serialize || exit 1
+cargo_serialize || exit 2   # 2, nie 1: nic sie nie wykonalo, wiec to nie jest twierdzenie o kodzie (Q-3)
 
 if ! out="$(cargo clippy --lib -- -D warnings 2>&1)"; then
   echo "clippy found something it will not let through" >&2
