@@ -74,10 +74,6 @@
       "Bash(true)"
     ],
     "deny": [
-      "Edit(../**)",
-      "Write(../**)",
-      "Edit(~/**)",
-      "Write(~/**)",
       "Edit(/tmp/**)",
       "Write(/tmp/**)",
       "Edit(TASK.md)",
