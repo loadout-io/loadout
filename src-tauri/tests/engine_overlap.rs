@@ -50,9 +50,12 @@ async fn two_independent_steps(
     let recorder = Arc::new(Recorder::new());
     let driver = FakeDriver::new(Arc::clone(&recorder), vec![Behaviour::Busy(STEP); 2]);
 
-    let outcome = execute(&dag, limit, CancellationToken::new(), move |step, cancel| {
-        driver.clone().run(step, cancel)
-    })
+    let outcome = execute(
+        &dag,
+        limit,
+        CancellationToken::new(),
+        move |step, cancel| driver.clone().run(step, cancel),
+    )
     .await;
 
     let first = recorder
@@ -71,7 +74,9 @@ async fn two_ready_steps_share_a_window_when_two_may_run_at_once() -> Result<(),
     // Przecięcie dwóch przedziałów: od późniejszego startu do wcześniejszego końca.
     // `saturating_duration_since` daje zero, kiedy przecięcie jest puste — czyli dokładnie
     // wtedy, kiedy kroki biegły jeden po drugim.
-    let shared = end_a.min(end_b).saturating_duration_since(start_a.max(start_b));
+    let shared = end_a
+        .min(end_b)
+        .saturating_duration_since(start_a.max(start_b));
 
     assert!(
         shared >= MIN_OVERLAP,

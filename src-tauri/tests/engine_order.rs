@@ -80,9 +80,12 @@ fn run_and_observe(
     let recorder = Arc::new(Recorder::new());
     let driver = FakeDriver::new(Arc::clone(&recorder), vec![Behaviour::Succeed; n]);
     let outcome = runtime.block_on(async {
-        execute(&dag, limit, CancellationToken::new(), move |step, cancel| {
-            driver.clone().run(step, cancel)
-        })
+        execute(
+            &dag,
+            limit,
+            CancellationToken::new(),
+            move |step, cancel| driver.clone().run(step, cancel),
+        )
         .await
     });
 

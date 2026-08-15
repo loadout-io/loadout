@@ -79,9 +79,12 @@ fn peak_of(n: usize, edges: &[(usize, usize)], limit: usize) -> Result<usize, Te
     let recorder = Arc::new(Recorder::new());
     let driver = FakeDriver::new(Arc::clone(&recorder), vec![Behaviour::Succeed; n]);
     runtime.block_on(async {
-        execute(&dag, limit, CancellationToken::new(), move |step, cancel| {
-            driver.clone().run(step, cancel)
-        })
+        execute(
+            &dag,
+            limit,
+            CancellationToken::new(),
+            move |step, cancel| driver.clone().run(step, cancel),
+        )
         .await
     });
 
@@ -110,9 +113,12 @@ async fn eight_ready_steps_reach_the_limit_exactly() -> Result<(), Box<dyn Error
     let recorder = Arc::new(Recorder::new());
     let driver = FakeDriver::new(Arc::clone(&recorder), vec![Behaviour::Busy(BUSY); READY]);
 
-    let outcome = execute(&dag, LIMIT, CancellationToken::new(), move |step, cancel| {
-        driver.clone().run(step, cancel)
-    })
+    let outcome = execute(
+        &dag,
+        LIMIT,
+        CancellationToken::new(),
+        move |step, cancel| driver.clone().run(step, cancel),
+    )
     .await;
 
     assert_eq!(
@@ -123,7 +129,10 @@ async fn eight_ready_steps_reach_the_limit_exactly() -> Result<(), Box<dyn Error
          one-worker scheduler this criterion exists to reject"
     );
     assert!(
-        outcome.states.iter().all(|state| *state == StepState::Succeeded),
+        outcome
+            .states
+            .iter()
+            .all(|state| *state == StepState::Succeeded),
         "all {READY} steps have to finish; they ended as {:?}",
         outcome.states
     );

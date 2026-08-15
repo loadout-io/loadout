@@ -209,7 +209,11 @@ impl FakeDriver {
 
         // Krok, którego test nie opisał, nie jest awarią planisty — wektor zachowań krótszy
         // niż graf jest pomyłką w teście i widać ją po stanach końcowych.
-        let behaviour = self.behaviours.get(step).copied().unwrap_or(Behaviour::Succeed);
+        let behaviour = self
+            .behaviours
+            .get(step)
+            .copied()
+            .unwrap_or(Behaviour::Succeed);
 
         let report = match behaviour {
             Behaviour::Succeed => StepReport::Succeeded,
