@@ -1,0 +1,22 @@
+<!doctype html>
+<!--
+  Jeden <div id="root"> i ani jednego zasobu z sieci. CSP w tauri.conf.json to
+  `default-src 'self'`, a aplikacja ma działać z wyciągniętą wtyczką sieciową — każdy
+  <link> do fontu albo CDN-u jest tu albo zablokowany, albo psuje pracę offline.
+  Krój bierzemy z fallbacku w theme.css (ui-sans-serif, system-ui), dopóki Inter nie
+  wjedzie do repo jako plik (T8, świadomie poza zakresem T-01).
+
+  Tytuł okna jest tu STAŁY. Która sekcja jest otwarta, mówi wyłącznie `aria-current`
+  na przełączniku — jeden fakt, jedno miejsce (niezmiennik 13).
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loadout</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

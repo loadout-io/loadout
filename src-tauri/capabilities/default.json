@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Loadout main window. core:default is intentionally NOT granted (T8 §3.2, 2026-08-15): it hands over core:image, core:menu, core:path, core:resources, core:tray and core:webview, none of which this app calls, and a permission nobody calls is a hole nobody notices. Neither shell nor fs is granted either (T8 §3.3): one flaw in the markdown this app renders in Memory would turn a shell permission into arbitrary code on the machine. Rust runs the agents; the webview asks by name. The windows field below is matched on the window LABEL from tauri.conf.json, not on the shown name.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:default",
+    "core:app:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "dialog:allow-open",
+    "store:default",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}
