@@ -1,0 +1,11 @@
+/* Loadout — arkusz, który ładuje aplikacja.
+ *
+ * Tu wchodzi `@import "./theme.css"` i układ powłoki. NIE wchodzi drugi `@import "tailwindcss"`:
+ * ten jeden import przywraca całą domyślną paletę, `bg-slate-800` znów się kompiluje, a nic nie
+ * wygląda źle, bo nasze wartości nadal działają — zamknięcie palety umiera wtedy po cichu
+ * i dziedziczy to dwadzieścia kolejnych zadań UI.
+ *
+ * SZKIELET (faza kontraktowa T-01): plik jest celowo pusty. Gdyby stał tu teraz `@import
+ * "./theme.css"`, kryterium palety byłoby zielone, zanim ktokolwiek napisał powłokę — a zielone
+ * „before" znaczy, że kryterium nic nie sprawdza (AGENTS.md §2).
+ */

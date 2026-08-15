@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Loadout main window. No shell, no fs, no arbitrary path access in the webview. core:default is intentionally NOT granted.",
+  "windows": [],
+  "permissions": []
+}
