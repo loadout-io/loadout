@@ -4,8 +4,45 @@
  * ten jeden import przywraca całą domyślną paletę, `bg-slate-800` znów się kompiluje, a nic nie
  * wygląda źle, bo nasze wartości nadal działają — zamknięcie palety umiera wtedy po cichu
  * i dziedziczy to dwadzieścia kolejnych zadań UI.
- *
- * SZKIELET (faza kontraktowa T-01): plik jest celowo pusty. Gdyby stał tu teraz `@import
- * "./theme.css"`, kryterium palety byłoby zielone, zanim ktokolwiek napisał powłokę — a zielone
- * „before" znaczy, że kryterium nic nie sprawdza (AGENTS.md §2).
  */
+
+@import "./theme.css";
+
+/* Domknięcie drabinki typograficznej. 2026-08-15.
+ *
+ * `theme.css` zamyka cztery przestrzenie nazw (`--color-*`, `--font-*`, `--radius-*`,
+ * `--shadow-*`), ale NIE `--text-*` — a to jest ta jedna, w której Tailwind trzyma własną
+ * drabinkę rozmiarów. Bez tych linii `text-3xl` kompiluje się dalej, czyli paleta jest
+ * zamknięta wszędzie poza rozmiarem czcionki, gdzie ucieczka jest najłatwiejsza i najmniej
+ * widoczna: 30 px tekstu wygląda po prostu jak decyzja projektowa.
+ *
+ * Kasujemy trzynaście NAZW Tailwinda zamiast całej przestrzeni (`--text-*: initial`), bo
+ * `--text-*: initial` skasowałoby też nasze osiem szczebli i trzeba by je tutaj przepisać —
+ * a drabinka z DESIGN §4 ma mieć jedno źródło, `theme.css`, nie dwa. Właściwa naprawa to jedna
+ * linia `--text-*: initial` NAD naszymi szczeblami w `theme.css`; ten plik nie należy do T-01,
+ * więc dopóki człowiek jej nie dopisze, zamknięcie stoi tutaj. */
+@theme {
+  --text-xs: initial;
+  --text-sm: initial;
+  --text-base: initial;
+  --text-lg: initial;
+  --text-xl: initial;
+  --text-2xl: initial;
+  --text-3xl: initial;
+  --text-4xl: initial;
+  --text-5xl: initial;
+  --text-6xl: initial;
+  --text-7xl: initial;
+  --text-8xl: initial;
+  --text-9xl: initial;
+}
+
+/* Układ powłoki. Okno jest wysokie na tyle, na ile jest wysokie — i tylko tyle. Przewijają się
+ * panele w środku, nigdy strona (to samo zdanie stoi za `overflow: hidden` w `theme.css`). */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+}
