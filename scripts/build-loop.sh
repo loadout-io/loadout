@@ -20,7 +20,26 @@
 #    ponowne uruchomienie po naprawie kontynuuje zamiast zaczynać od zera.
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Bash czyta ten plik PRZYROSTOWO, po offsetach bajtowych. Edycja w trakcie biegu przesuwa
+# wszystko za kursorem i proces wykonuje smieci -- skladniowo poprawne, semantycznie losowe.
+# Zdarzylo sie trzy razy 2026-08-15, za kazdym razem po moim wlasnym ostrzezeniu, i za
+# kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
+# Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
+# Katalog skryptu liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
+# Sentinel WŁASNY dla tego skryptu — patrz ten sam komentarz w ship-task.sh. Wspólna nazwa
+# wyciekała do dziecka i wyłączała mu przypięcie.
+if [ -z "${LOADOUT_PINNED_BUILD_LOOP:-}" ]; then
+  LOADOUT_SELF_BUILD_LOOP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t build-loop)"
+  cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
+  export LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP
+  exec bash "$LOADOUT_SNAP" "$@"
+fi
+
+SELF_DIR="${LOADOUT_SELF_BUILD_LOOP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+unset LOADOUT_PINNED_BUILD_LOOP LOADOUT_SELF_BUILD_LOOP
+
+cd "$SELF_DIR/.."
 ROOT="$PWD"
 LOG="$ROOT/runs/build-loop.tsv"
 
@@ -29,7 +48,7 @@ LOG="$ROOT/runs/build-loop.tsv"
 # (T1 ryzyko 8). Wracają osobnym przebiegiem `--only`.
 TASKS=(
   S-1 S-2
-  T-01 T-02 T-03 T-04 T-05 T-06 T-07 T-08 T-09
+  T-01 T-02 T-03 T-04 T-05 T-06 T-07 T-25 T-08 T-09
   T-11 T-12 T-13 T-14 T-15
   T-16 T-17 T-18 T-19
   T-20 T-21 T-24 T-22 T-23
@@ -66,6 +85,39 @@ landed() {
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 [ -f "$LOG" ] || printf 'task\tstatus\tseconds\tcost_usd\tat\n' > "$LOG"
+
+# Zapisz WLASNY pid. scripts/loop.sh znajduje po nim cale drzewo biegu przez `pgrep -P`,
+# zamiast zgadywac po tresci linii polecen -- co przegralo trzy razy 2026-08-15 (osierocony
+# agent, przypieta kopia pod inna nazwa, obserwator dopasowujacy sam siebie).
+#
+# Trzy warunki, kazdy z konkretnego bledu, nie z ostroznosci:
+#
+# 1. --dry-run NIE PISZE. Pierwsza wersja pisala zawsze, a `scripts/ci.sh` wola
+#    `build-loop.sh --dry-run` w asercji pinned_scripts_find_the_repo. Dry-run wpisywal
+#    swoj pid, po czym trap EXIT kasowal plik -- czyli moje wlasne sprawdzenie niszczylo
+#    stan biegnacej petli. Zmierzone 2026-08-15: plik znikal po kazdym ci.sh, a `loop.sh`
+#    cicho schodzil na rozpoznawanie po wzorcu.
+# 2. DWIE PETLE NARAZ SA ODMAWIANE. Obie landuja galezie do tego samego trunka; wykrycie
+#    tego po fakcie znaczy rozplatywanie dwoch merge'ow.
+# 3. TRAP KASUJE TYLKO SWOJ PLIK. Bez tego trap konczacego sie starego procesu zabiera
+#    plik nowszej petli i znowu nie wiadomo, co biegnie.
+PIDFILE="$ROOT/runs/.build-loop.pid"
+release_pidfile() {
+  if [ "$(cat "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then rm -f "$PIDFILE"; fi
+  return 0   # trap EXIT z niezerowym statusem potrafi nadpisac kod wyjscia w bashu 3.2
+}
+if [ "$DRY" -eq 0 ]; then
+  mkdir -p "$ROOT/runs"
+  other="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null; then
+    echo "pętla już biegnie (pid $other) — dwie naraz landowałyby do tego samego trunka" >&2
+    echo "detail: ./scripts/loop.sh status" >&2
+    exit 2
+  fi
+  echo $$ > "$PIDFILE"
+  trap release_pidfile EXIT
+fi
+
 
 started_all=$(date +%s)
 planned=(); skipped=()

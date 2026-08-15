@@ -17,7 +17,7 @@ Przeczytaj w tej kolejności. To nie jest lista lektur — to jest kontekst, bez
 | Plik | Co z niego wynosisz |
 |---|---|
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich.** Jeśli zadanie im przeczy — to defekt zadania |
-| `AGENTS.md` | karta pracy: 27 numerowanych niezmienników i kontrakt kryterium w §2a |
+| `AGENTS.md` | karta pracy: 28 numerowanych niezmienników i kontrakt kryterium w §2a |
 | `docs/ARCHITECTURE.md` | kształt systemu, maszyna stanów kroku, sufit gęstości, dziewięć rozstrzygniętych pytań |
 | `docs/PLAN.md` | fazy, kolejność zależności, linia cięcia, pięć najbardziej ryzykownych założeń |
 | `harness/README.md` | graf wywołań harnessu i **znaczenie kodów wyjścia** — to jest twoje główne narzędzie diagnostyczne |
@@ -178,6 +178,29 @@ Pięć rzeczy, których przy takiej naprawie pilnujesz:
    Zdjęcie asercji, żeby zadanie przeszło — nie, i to jest moment na zatrzymanie się i zapytanie.
 
 Granica jest jedna i prosta: **naprawiasz to, co uniemożliwia ocenę. Nigdy tego, co ocenia.**
+
+## 5b. Jak znaleźć i zatrzymać bieg
+
+**Nigdy nie szukaj procesów harnessu po nazwie pliku.** Od czasu przypięcia skrypty biegną
+jako `/var/folders/…/ship-task.F1KPavKuWS`, więc `pgrep -f 'ship-task.sh'` i
+`pkill -f 'scripts/build-loop.sh'` cicho nie trafiają. Zmierzone 2026-08-15: obserwator
+zameldował „build-loop wyszedł", kiedy pętla spokojnie pisała kontrakt. Fałszywe
+„skończone" jest gorsze niż brak monitoringu.
+
+Drugi błąd tej samej rodziny: zabicie basha **zostawia agenta**. `claude -p …` biegnie dalej
+jako sierota i pisze do worktree, którego nikt nie odbierze.
+
+Jedno miejsce wie oba te fakty:
+
+```
+./scripts/loop.sh status    # co biegnie, przy którym zadaniu, w jakiej fazie
+./scripts/loop.sh stop      # zatrzymaj czysto, razem z agentem, z weryfikacją
+./scripts/loop.sh wait      # blokuj, dopóki pętla biegnie
+```
+
+Kiedy chcesz zatrzymać pętlę między zadaniami, a nie w środku: poczekaj, aż
+`runs/build-loop.tsv` dostanie wiersz `green` dla bieżącego zadania — dopiero wtedy
+`integrate.sh` już się udał i zabicie niczego nie urywa w połowie.
 
 ## 6. Co raportujesz człowiekowi
 

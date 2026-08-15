@@ -20,7 +20,31 @@
 # · 3 przerwane / limit czasu. Nigdy nie mieszamy 1 z 2.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Bash czyta ten plik PRZYROSTOWO, po offsetach bajtowych. Edycja w trakcie biegu przesuwa
+# wszystko za kursorem i proces wykonuje smieci -- skladniowo poprawne, semantycznie losowe.
+# Zdarzylo sie trzy razy 2026-08-15, za kazdym razem po moim wlasnym ostrzezeniu, i za
+# kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
+# Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
+# ROOT liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
+# Nazwa sentinela jest WŁASNA dla tego skryptu, nie wspólna. Wspólna („LOADOUT_PINNED")
+# wyciekała przez środowisko: build-loop.sh odpala ship-task.sh, więc dziecko widziało
+# cudzy sentinel, pomijało własne przypięcie i brało katalog rodzica za korzeń repo —
+# czyli obrona przed edycją w trakcie biegu wyłączała się dokładnie w pętli, gdzie jest
+# najpotrzebniejsza. Osobne nazwy czynią ten wyciek niemożliwym, a nie tylko posprzątanym.
+if [ -z "${LOADOUT_PINNED_SHIP_TASK:-}" ]; then
+  LOADOUT_SELF_SHIP_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t ship-task)"
+  cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
+  export LOADOUT_PINNED_SHIP_TASK=1 LOADOUT_SELF_SHIP_TASK
+  exec bash "$LOADOUT_SNAP" "$@"
+fi
+
+# W kopii ${BASH_SOURCE[0]} wskazuje na plik w $TMPDIR, więc katalog repo trzeba WZIĄĆ
+# z góry, nie policzyć od nowa. Fallback jest na wypadek, gdyby mktemp odmówił.
+SELF_DIR="${LOADOUT_SELF_SHIP_TASK:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+unset LOADOUT_PINNED_SHIP_TASK LOADOUT_SELF_SHIP_TASK   # higiena; poprawność daje sama nazwa
+
+ROOT="$SELF_DIR"
 cd "$ROOT"
 
 # Przerwanie to 3, nie 130. Orkiestrator czyta kod wyjścia i „przerwane" musi dać się
@@ -143,6 +167,22 @@ note "$WT"
 if [ -f "$WT/TASK.md" ]; then
   if ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ); then
     note "$WT already has a certified contract — resuming from the implementation phase"
+  # Trzeci stan, którego ta bramka wcześniej nie znała: faza kontraktu WYSTARTOWAŁA I ZGINĘŁA.
+  # Zostaje wtedy gałąź z jednym commitem — tym z TASK.md — i ani jednej specyfikacji.
+  # Nie ma czego chronić, więc odmowa była wyłącznie kosztem: kazała człowiekowi ręcznie
+  # skasować worktree, żeby odtworzyć stan, który skrypt umie odtworzyć sam.
+  #
+  # Rozróżnienie jest mechaniczne i nie zgaduje: liczymy commity gałęzi NAD trunkiem.
+  # Jeden znaczy „jest tylko kontrakt, nikt tu jeszcze nic nie napisał". Cokolwiek powyżej
+  # to praca, której nie wolno wyrzucić bez decyzji człowieka — i tam odmowa zostaje.
+  # Nieśledzone pliki też się liczą: agent bywa ubity między zapisem a commitem.
+  #
+  # `$TRUNK..HEAD`, nie samo `HEAD`: `rev-list --count HEAD` liczy CAŁĄ historię razem
+  # z trunkiem, więc zawsze byłoby to kilkadziesiąt i ta gałąź nigdy by nie wystrzeliła.
+  elif [ "$(git -C "$WT" rev-list --count "${LOADOUT_TRUNK:-main}..HEAD" 2>/dev/null || echo 99)" = "1" ] \
+    && [ -z "$(git -C "$WT" status --porcelain -uall 2>/dev/null)" ]; then
+    note "$WT has the contract commit and nothing else — the contract phase never finished"
+    note "redoing the contract phase in place; there is no work here to lose"
   else
     echo >&2
     echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
@@ -295,10 +335,6 @@ use \`.loadout/scratch/\` inside this worktree. Paths outside the worktree are r
 sandbox unpredictably: measured on S-1, \`mkdir /tmp/s1-only-two\` was blocked in one phase and
 \`/tmp/s1-run\` succeeded in another. Inside the worktree it always works.
 
-Before you finish, run the formatter: npm run fmt for the frontend and cargo fmt for Rust.
-quick-fmt is part of the gate, and a formatting diff is the cheapest possible way to turn an
-otherwise green task red. Measured on T-01: seventeen checks, one failure, prettier.
-
 One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
 command and asks approval for each part, and in an unattended run there is nobody to give it —
 every chained command is a lost turn. Measured: 7 lost turns in one phase.
@@ -407,6 +443,25 @@ if grep -q '^second opinion -- ' "$REVIEW_OUT" 2>/dev/null; then CONCERNS=1; fi
 
 if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
   if [ -f "$WT/repair.sh" ]; then
+    # Podciągnij harness z trunka PRZED rundą naprawczą. Gałąź wycięta godziny temu biegnie
+    # ze sprawdzeniami sprzed poprawek, które orchestrator nanosił w międzyczasie — i trzy
+    # z pierwszych czterech zatrzymań pętli (2026-08-15) to były właśnie fałszywe alarmy
+    # z nieaktualnej kopii checks/. Żadne nie było defektem zadania, każde kończyło się tym
+    # samym ręcznym rebase i ponowną bramką.
+    #
+    # Merge, nie rebase: nie przepisujemy historii gałęzi, która zaraz ląduje. Tylko gdy
+    # czysto — konfliktu nie zgadujemy, tylko go zgłaszamy. Moment jest bezpieczny, bo żaden
+    # agent już nie pracuje: recenzent skończył, naprawiacz jeszcze nie wystartował.
+    # PRZED naprawą, nie po niej: naprawiacz odpowiada na to, co powiedziała bramka, więc
+    # jest tym, który najbardziej potrzebuje jej aktualnej wersji. Pracując przeciwko
+    # nieaktualnej kopii może trafić w stare sprawdzenie i przewrócić się na nowym.
+    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
+      note "harness refreshed from the trunk before the final gate"
+    else
+      git -C "$WT" merge --abort >/dev/null 2>&1 || true
+      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
+    fi
+
     # repair.sh nie bierze id zadania: czyta TASK.md, runs/last.json i runs/review.json
     # z katalogu, w którym stoi. Dlatego uruchamiamy go W WORKTREE — z korzenia naprawiałby
     # trunk przeciwko paragonowi z innej gałęzi.
@@ -417,21 +472,6 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
     if [ "$RP" = 2 ]; then
       echo "repair.sh reports OUR misconfiguration." >&2
       exit 2
-    fi
-    # Podciągnij harness z trunka PRZED ostatnią bramką. Gałąź wycięta godziny temu biegnie
-    # ze sprawdzeniami sprzed poprawek, które orchestrator nanosił w międzyczasie — i trzy
-    # z pierwszych czterech zatrzymań pętli (2026-08-15) to były właśnie fałszywe alarmy
-    # z nieaktualnej kopii checks/. Żadne nie było defektem zadania, każde kończyło się tym
-    # samym ręcznym rebase i ponowną bramką.
-    #
-    # Merge, nie rebase: nie przepisujemy historii gałęzi, która zaraz ląduje. Tylko gdy
-    # czysto — konfliktu nie zgadujemy, tylko go zgłaszamy. Moment jest bezpieczny, bo żaden
-    # agent już nie pracuje, a bramka biegnie zaraz potem.
-    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
-      note "harness refreshed from the trunk before the final gate"
-    else
-      git -C "$WT" merge --abort >/dev/null 2>&1 || true
-      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
     fi
 
     say "gate, after the repair round"

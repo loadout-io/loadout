@@ -163,6 +163,20 @@ rust_lane() {
 
   # Jedyny krok, który dowodzi, że to się LINKUJE. clippy kompiluje, ale nie linkuje.
   step "cargo build" cargo build "${locked[@]+"${locked[@]}"}"
+
+  # ODDAJ ZAMEK TUTAJ, nie przy wyjściu z procesu. cargo_serialize wiesza `trap … EXIT`
+  # na TEJ powłoce, więc bez tego wiersza ci.sh trzyma muteks do samego końca — a potem
+  # pas guards odpala `bash checks/quick-clippy.sh`, które czeka 300 s na zamek trzymany
+  # przez własnego rodzica i wychodzi kodem 2. Samozakleszczenie z konstrukcji.
+  #
+  # Zmierzone 2026-08-15: dokładnie jeden strażnik pudłował („RED WITH THE VIOLATION GONE"),
+  # a reszta przechodziła — bo po ~600 s czekania zamek przekraczał próg 15 minut i zostawał
+  # USUNIĘTY JAKO MARTWY, mimo że jego właściciel żył. Czyli objaw maskował się sam, płacąc
+  # za to złamaniem niezmiennika 26 dokładnie wtedy, gdy maszyna była najbardziej obciążona.
+  # Jeśli któryś krok padł przez `die`, do tego wiersza nie dojdziemy — i dobrze:
+  # trap EXIT nadal zwolni zamek przy wyjściu procesu. To jest zwolnienie WCZEŚNIEJSZE,
+  # nie jedyne.
+  declare -F cargo_release >/dev/null && cargo_release
 }
 
 ensure_cargo_deny() {
@@ -279,6 +293,10 @@ guards_lane() {
     return 0
   fi
   prompt_backticks
+  pinned_scripts_find_the_repo
+  task_spine_declarations
+  cargo_lock_exit_code
+  cargo_lock_reclaims_dead_owner
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -300,6 +318,116 @@ prompt_backticks() {
     return 1
   fi
   echo "prompts: no unescaped backticks"
+}
+
+# ── przeterminowany muteks cargo to 2, nigdy 1 ────────────────────────────────
+# Zmierzone 2026-08-15: `cargo_serialize || exit 1` sprawiał, że sprawdzenie, które NIC nie
+# uruchomiło, meldowało „twój kod jest zepsuty". gate.py zna na poziomie sprawdzenia tylko
+# dwie kategorie — 2 to `misconfigured`, wszystko inne niezerowe to `failed` — więc jedyną
+# poprawną odpowiedzią jest 2. Fałszywa czerwień uzbraja się dopiero przy zadaniach
+# równoległych, czyli tam, gdzie nikt jej nie będzie szukał.
+#
+# Nie jest to strażnik w harness/guards.sh: tamten framework daje jedną funkcję na sprawdzenie
+# i sadzi naruszenie W KODZIE. Tutaj naruszeniem jest STAN MASZYNY (zajęty muteks), więc
+# asercja mieszka tam, gdzie już mieszka prompt_backticks — obok, nie w środku.
+cargo_lock_exit_code() {
+  local sandbox rc
+  # WŁASNY katalog tymczasowy, nie współdzielony. Pierwsza wersja zajmowała prawdziwy zamek
+  # i pomijała się, gdy był zajęty — a wewnątrz ci.sh był zajęty ZAWSZE, więc asercja nie
+  # wykonała się ani razu i meldowała to jednym wierszem, który wyglądał jak sukces.
+  # Asercja, która się pomija, nie jest asercją.
+  sandbox="$(mktemp -d)" || { echo "nie mogę zrobić katalogu na zamek" >&2; return 1; }
+  mkdir "$sandbox/loadout-cargo.lock"
+  # Właściciel musi ŻYĆ, inaczej nowa reguła odzyskania skasuje zamek i zmierzymy
+  # zupełnie inną ścieżkę niż tę, o którą pytamy. $$ to ci.sh, czyli na pewno żywy.
+  echo "$$" > "$sandbox/loadout-cargo.lock/pid"
+
+  rc=0
+  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=2 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
+  rm -rf "$sandbox"
+
+  if [ "$rc" != 2 ]; then
+    echo "quick-clippy wyszedł $rc na zajętym muteksie, a ma wyjść 2" >&2
+    echo "detail: nic się nie wykonało, więc to nie jest twierdzenie o kodzie (Q-3)." >&2
+    return 1
+  fi
+  echo "cargo lock: zajęty muteks daje 2, nie 1"
+}
+
+# ── zadanie tworzace modul Rusta musi miec w OWNS plik z jego deklaracja ──────
+# Cialo w harness/task-spine.py (niezmiennik 23: jedna polityka, jedno miejsce).
+# Ta klasa zatrzymala petle cztery razy 2026-08-15 -- za kazdym razem z innym objawem,
+# wiec za kazdym razem diagnozowalem ja od zera. Bez `pub mod x;` w rodzicu modul nie
+# wchodzi do skrzyni, test integracyjny sie nie kompiluje, a bramka odrzuca to jako
+# falszywa czerwien (NOT_A_REAL_RED). Zadania agent nie moze wtedy wykonac ani obejsc.
+task_spine_declarations() {
+  python3 harness/task-spine.py || return 1
+}
+
+# ── przypięte skrypty muszą nadal znajdować korzeń repo ───────────────────────
+# Regresja z 2026-08-15, wprowadzona przez samą poprawkę przeciw edycji w trakcie biegu:
+# po `exec bash "$snap"` ${BASH_SOURCE[0]} wskazuje plik w $TMPDIR, więc każde
+# `dirname "${BASH_SOURCE[0]}"` liczyło korzeń repo jako /var/folders/… i oba skrypty
+# padały natychmiast. `bash -n` tego nie widzi — składnia jest bez zarzutu.
+#
+# Drugi, gorszy wariant tej samej wady: LOADOUT_PINNED jest wyeksportowany, więc
+# ship-task.sh odpalony przez build-loop.sh dziedziczyłby cudzy sentinel, pomijał własne
+# przypięcie i brał katalog scripts/ za korzeń. Poprawka wyłączałaby się dokładnie tam,
+# gdzie pętla jej najbardziej potrzebuje. Stąd `unset` w obu skryptach i drugi wiersz niżej.
+pinned_scripts_find_the_repo() {
+  local out
+  # ship-task.sh z nieistniejącym zadaniem ma dojść do listowania tasks/ — czyli musi
+  # najpierw poprawnie ustalić korzeń. To najtańsze wywołanie, które tego dowodzi.
+  out="$(bash ship-task.sh __ci_probe__ 2>&1 || true)"
+  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
+    echo "ship-task.sh nie znajduje korzenia repo po przypięciu:" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  out="$(bash scripts/build-loop.sh --dry-run 2>&1 || true)"
+  if printf '%s' "$out" | grep -q 'run me from the repo root'; then
+    echo "build-loop.sh nie znajduje korzenia repo po przypięciu" >&2
+    return 1
+  fi
+
+  # Sentinel build-loopa NIE MOŻE wyłączyć przypięcia ship-taskowi. To druga wada, nie ta
+  # sama: przy wspólnej nazwie dziecko dziedziczyło sentinel rodzica i brało jego katalog
+  # za korzeń repo. Podrzucamy tu dokładnie taką parę zmiennych i wymagamy, żeby nic się
+  # nie zmieniło — bo nazwy są rozłączne.
+  out="$(env LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP=/tmp \
+             bash ship-task.sh __ci_probe__ 2>&1 || true)"
+  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
+    echo "cudzy sentinel wyłączył przypięcie ship-task.sh:" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  echo "pinned scripts: oba znajdują korzeń repo, cudzy sentinel ich nie rusza"
+}
+
+# ── zamek po martwym właścicielu ma być odzyskany, nie odczekany ──────────────
+# Druga połowa tej samej reguły. Bez niej „daje 2" byłoby prawdą także wtedy, gdyby zamek
+# nigdy nie dał się odzyskać — czyli pierwsze zabite cargo blokowałoby maszynę na 5 minut
+# przy każdym kolejnym sprawdzeniu.
+cargo_lock_reclaims_dead_owner() {
+  local sandbox rc dead
+  sandbox="$(mktemp -d)" || return 1
+  mkdir "$sandbox/loadout-cargo.lock"
+  # PID, który na pewno nie żyje: odpal cokolwiek i poczekaj, aż skończy.
+  ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null || true
+  echo "$dead" > "$sandbox/loadout-cargo.lock/pid"
+
+  rc=0
+  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=5 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
+  rm -rf "$sandbox"
+
+  if [ "$rc" != 0 ]; then
+    echo "quick-clippy wyszedł $rc na zamku po MARTWYM właścicielu, a ma przejść" >&2
+    echo "detail: zamek po trupie ma być odzyskany od razu, nie odczekany do sufitu." >&2
+    return 1
+  fi
+  echo "cargo lock: zamek po martwym właścicielu odzyskany"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
