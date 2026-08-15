@@ -27,13 +27,26 @@
 pub type StepId = usize;
 
 pub mod dag;
+pub mod drivers;
 pub mod scheduler;
 pub mod step;
 
-// 2026-08-15 — `drivers/mod.rs` należy do T-04 (`trait AgentDriver` + `ClaudeDriver`).
-// Do jego wylądowania katalog `drivers/` nie ma własnego modułu, a jedynym jego mieszkańcem
-// jest deterministyczny dubler kroku, więc jest podpięty po ścieżce. Kiedy T-04 doda
-// `pub mod drivers;`, ta deklaracja znika, a dubler wraca pod `drivers::fake`.
+// 2026-08-15 (T-04) — `#[path]` na dublera ZOSTAJE, choć `pub mod drivers;` jest już wyżej.
+//
+// Zapowiedź brzmiała „kiedy T-04 doda `pub mod drivers;`, ta deklaracja znika, a dubler wraca
+// pod `drivers::fake`". Tej przeprowadzki nie da się zrobić w granicach T-04 i nie jest ona
+// darmowa: adres `drivers::fake` wymaga dopisania `pub mod fake;` w `drivers/mod.rs`,
+// poprawienia `super::StepId` i `super::step::StepReport` w samym `fake.rs`, a potem zmiany
+// pięciu plików w `src-tauri/tests/`, które importują `loadout_lib::engine::fake` — a `fake.rs`
+// ani żaden z tych pięciu testów nie leży w bloku OWNS tego zadania (AGENTS.md §7).
+//
+// Zostawienie `#[path]` niczego nie psuje, bo `drivers/mod.rs` **nie** deklaruje `fake`:
+// plik ma dokładnie jedną deklarację, więc kompiluje się raz i jako jeden moduł. To ta sama
+// pułapka, którą opisuje `lib.rs` przy `supervisor` — dwie deklaracje tego samego pliku dają
+// dwa niezależne typy, których kompilator nie zamieni jeden w drugi. Tu jej nie ma.
+//
+// Przeniesienie jest zadaniem na jeden commit dla człowieka albo dla zadania, które i tak
+// dotyka tamtych pięciu testów. Do tego czasu adres dublera to `engine::fake`.
 #[path = "drivers/fake.rs"]
 pub mod fake;
 pub mod supervisor;
@@ -43,9 +56,8 @@ pub mod supervisor;
 // (AGENTS.md §7). Ta lista istnieje po to, żeby to pytanie dało się zadać w dziesięć sekund
 // zamiast czytać cały plan:
 //
-//     pub mod drivers;      — T-04 (zastępuje `#[path]` na `fake` powyżej)
 //     pub mod stream;       — T-05 (NDJSON → zdarzenie)
 //     pub mod line;         — T-05 (zdarzenie → linia; tu mieszka kuracja)
 //
-// Ten plik ma dokładnie ten sam problem u siebie: `pub mod engine;` w korzeniu skrzyni
-// należy do T-01 i bez niego nic z tego katalogu nie istnieje dla testów integracyjnych.
+// `pub mod drivers;` z tej listy zszedł: człowiek odpowiedział na to pytanie, wpisując
+// `src-tauri/src/engine/mod.rs` wprost do bloku OWNS zadania T-04.
