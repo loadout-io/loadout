@@ -241,6 +241,21 @@ pub fn _guard(c: &rusqlite::Connection) {
 EOF
 }
 
+guard_quick_permissions() {
+  # Nie da się tego zasadzić przez plant_append: doklejenie czegokolwiek do JSON-a robi
+  # z niego śmieć, a wtedy check woła exit 2 („nasza konfiguracja"), nie exit 1 („czerwone").
+  # Guard musi wywołać CZERWONE, więc podmieniamy treść na poprawny JSON ze złą regułą —
+  # dokładnie tą, która 2026-08-15 kosztowała 55 tur i $6,98.
+  python3 - <<'PY'
+import json
+p = '.claude/settings.json'
+cfg = json.load(open(p))
+cfg['permissions']['deny'].insert(0, 'Write(~/**)')
+json.dump(cfg, open(p, 'w'), indent=2)
+PY
+  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} .claude/settings.json )
+}
+
 guard_quick_tokens() {
   # Obie połowy checks/quick-tokens.sh. Połowa 2 (literał w komponencie) jest tą,
   # która dziś jeszcze nic nie ogląda — src/ nie ma ani jednego .tsx — więc plant
