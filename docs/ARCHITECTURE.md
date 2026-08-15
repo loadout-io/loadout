@@ -258,6 +258,62 @@ w tym samym menu. Folder bez repozytorium git jest dozwolony, ale wtedy **mówim
 że kopia plików per krok jest niedostępna i kroki będą pracować w tym samym katalogu —
 bo izolacja kroków stoi na `git worktree`.
 
+## 6b. Edytor workflow: warstwa orkiestracji, nie powtórka vendora
+
+Decyzja i uzasadnienie: `docs/DECISIONS-LOCKED.md` §D6. Tutaj jest to, co z niej wynika dla modelu danych.
+
+### Pięć zadań i jak każde jest wyrażone
+
+| Zadanie | W modelu danych | W UI |
+|---|---|---|
+| Kolejność i zależności | krawędzie grafu, jedno znaczenie: „po" | strzałka |
+| Który model pracuje | `model` w definicji agenta, nadpisywalny w węźle | pole w modalu kroku |
+| Kilku agentów naraz | `copies: n` na węźle | `×3` na kafelku |
+| **Synteza wyników** | krok z **wieloma krawędziami wchodzącymi** czyta wiele plików przekazań | `czyta: 4 przekazania` na kafelku |
+| Kontekst i analiza u orchestratora | orchestrator dostaje w prompcie indeks przekazań, nie ich treść | panel „co ten agent dostał" |
+
+**Synteza nie jest nowym typem węzła.** To zwykły krok, do którego wchodzą trzy strzałki zamiast
+jednej. Model przekazań (§8) już to obsługuje — front-matter każdego pliku ma `from` i `to`, więc
+„zsyntetyzuj wyniki czterech researcherów" to krok, którego `reads` wskazuje na cztery pliki.
+Jedyne, co dochodzi, to **widoczność tego faktu na kafelku** — bo krok czytający cztery wejścia
+zachowuje się inaczej niż czytający jedno i użytkownik musi to widzieć bez otwierania modalu.
+
+**Orchestrator dostaje indeks, nie treść.** Wrzucenie czterech pełnych raportów do promptu
+orchestratora to najprostsza droga do przepełnienia kontekstu i do rachunku, którego nikt się nie
+spodziewał. Dostaje `INDEX.md` przekazań — tytuł, autor, rozmiar, `est_tokens` — i czyta pełny plik
+wtedy, kiedy zdecyduje. To ta sama dyscyplina, co progresywne ujawnianie w umiejętnościach.
+
+### Przelotka na opcje vendora
+
+Loadout **nie modeluje** funkcji vendorów. Modeluje agenta i przepuszcza resztę:
+
+```rust
+pub struct AgentDef {
+    // ...pola, które Loadout rozumie i tłumaczy na oba vendory...
+    pub vendor_options: BTreeMap<String, BTreeMap<String, String>>,  // "claude" -> {flaga: wartość}
+}
+```
+
+`BTreeMap`, nie `serde_json::Value`: chcemy deterministycznej kolejności przy serializacji, żeby
+zapis workflow nie produkował fałszywych różnic w gicie.
+
+Dwie reguły walidacji — obie **przy zapisie**, nie w trakcie biegu (należą do `T-12`):
+
+1. **Kolizja z flagą, którą ustawiamy sami, to odmowa zapisu** z nazwaniem flagi.
+   Lista zarezerwowanych jest jedna, w jednym miejscu, obok budowniczego komendy:
+   `--session-id`, `--output-format`, `--input-format`, `--verbose`, `--permission-mode`,
+   `--strict-mcp-config`, `--setting-sources`, `-C`, `-s`, `--json`.
+   Cicha wygrana którejkolwiek strony jest gorsza niż odmowa.
+2. **Przelotka nie podnosi dialu bezpieczeństwa.** Pole „co agent może zrobić z plikami" jest
+   tłumaczone przez nas na flagi vendora. Przelotka, która próbuje ustawić `bypassPermissions`
+   albo `danger-full-access`, jest odrzucana — dial jest jedyną drogą.
+
+### Co z tego wynika dla planu
+
+Liczba rodzajów kafelka zostaje **dwa** niezależnie od tego, ile funkcji dowiozą vendorzy. Nowa
+funkcja Claude'a to nowe pole w kreatorze agenta albo wpis w przelotce — nigdy nowy typ węzła.
+To jest jedyna reguła, która utrzyma płótno czytelne przez rok.
+
 ## 7. Sufit gęstości
 
 Liczby ustalone **przed** pierwszym ekranem. Mierzone skryptem, nie okiem. Baseline może tylko maleć.

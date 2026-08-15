@@ -65,7 +65,7 @@ akapitem w `docs/research/topics/`, nie kodem produkcyjnym.
 |---|---|---|---|
 | **T-11** | Definicje agentów: 9 pól widocznych, 3 pod „More settings", zapis na dysk | T-01 | Pole wchodzi tylko, jeśli zauważyłbyś jego brak w pierwszej godzinie [T4 §3] |
 | **T-12** | Format pliku workflow + walidacja w Ruście (cykle, nakładające się ścieżki, osierocone kroki) | T-02 | Walidacja przy **zapisie**, nie w trakcie biegu |
-| **T-13** | Płótno drag&drop (`@xyflow/react`), modal kroku, **znacznik nadpisań** | T-12, T-11, S-1 | Dwa rodzaje kafelka. Trzeci wymaga prawdziwej skargi |
+| **T-13** | Płótno drag&drop (`@xyflow/react`), modal kroku, **znacznik nadpisań** | T-12, T-11, S-1 | Dwa rodzaje kafelka **niezależnie od tego, ile funkcji dowiozą vendorzy** (D6). Trzeci wymaga prawdziwej skargi |
 | **T-14** | Lista workflow: utwórz / duplikuj / usuń | T-12 | |
 | **T-15** | Uruchom workflow z płótna | T-13, T-08 | Domyka pętlę: buduję → uruchamiam → widzę |
 | **T-24** | Workspace'y i karty: kilka folderów naraz, bez utraty sesji | T-08, T-21 | Dodane 2026-08-15. Wymusza **globalny** semafor: trzy karty × trzech agentów = zamrożony laptop. Model w `ARCHITECTURE.md` §6a |

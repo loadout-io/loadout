@@ -120,6 +120,66 @@ To jest docelowa gęstość informacji. Jeśli widok robi się gęstszy niż to 
 
 ---
 
+## D6 — Czym jest edytor workflow, a czym nie jest
+
+*Zapisane 2026-08-15 na wyraźne polecenie użytkownika: „to jest ultra ważne".*
+
+**Edytor workflow robi pięć rzeczy i tylko te pięć:**
+
+1. **Kolejność i zależności** — kto po kim, co równolegle.
+2. **Kontrola, który model pracuje** na danym kroku.
+3. **Odpalenie kilku agentów naraz.**
+4. **Synteza ich wyników** w jeden — krok, który czyta wiele przekazań i produkuje jedno.
+5. **Dzielenie kontekstu i analiza z poziomu orchestratora** — orchestrator widzi, co wyprodukowali
+   pozostali, i może na tym pracować.
+
+**Czym nie jest: powtórką funkcji vendorów.** Nie konkurujemy z `--agents` Claude'a, jego skillami,
+subagentami ani z czymkolwiek, co Anthropic albo OpenAI dowiozą w przyszłym miesiącu.
+
+### Reguła wynikowa
+
+**Wszystko, co vendor wprowadzi, konfigurujemy per agent — nigdy jako nowy typ węzła.**
+
+Nowa flaga u Claude'a to nowe pole w definicji agenta. Nowy tryb u Codeksa to nowe pole w definicji
+agenta. Liczba rodzajów kafelka na płótnie zostaje **dwa** (krok i punkt kontrolny) niezależnie od
+tego, ile funkcji dołożą vendorzy.
+
+### Konsekwencja projektowa, bez której ta reguła jest pustym hasłem
+
+Definicja agenta i nadpisanie w węźle muszą mieć **przelotkę na opcje vendora** — surowe pole, które
+leci prosto do argv albo do konfiguracji, bez pośrednictwa naszego modelu danych:
+
+```jsonc
+{
+  "runsWith": "claude",
+  "model": "opus",
+  "vendorOptions": {                    // przelotka — Loadout nie interpretuje zawartości
+    "claude": { "--jakas-nowa-flaga": "wartosc" },
+    "codex":  { "model_reasoning_summary": "detailed" }
+  }
+}
+```
+
+Bez tego każda nowa flaga vendora wymaga **wydania Loadouta**. Z tym — wymaga wpisania jednej linii
+w formularzu agenta, tego samego dnia, w którym vendor ją ogłosi.
+
+Dwa ograniczenia, żeby przelotka nie stała się dziurą:
+
+- **Kolizja jest odmową, nie nadpisaniem.** Jeśli przelotka podaje flagę, którą Loadout ustawia sam
+  (`--session-id`, `--output-format`, `--permission-mode`, `-C`, `-s`), zapis workflow jest odrzucany
+  z nazwaniem flagi. Cicha wygrana jednej ze stron to najgorszy możliwy wynik.
+- **Przelotka nie omija dialu bezpieczeństwa.** Pole „co agent może zrobić z plikami" jest tłumaczone
+  przez nas na flagi vendora; przelotka nie może go podnieść.
+
+### Dlaczego to jest fosa, a nie wygoda
+
+Vendorowy runner grafów orkiestruje **własnych** agentów. Edytor Loadouta orkiestruje **przez
+vendorów**, z wyborem modelu na krok i syntezą wyników. Żaden vendor tego nie zbuduje, bo nie ma
+w tym interesu. Trwałość edytora bierze się z pozycji cross-vendor — nie z płótna, które jest łatwe
+do skopiowania. To podnosi rangę D3: dwóch vendorów w v1 to warunek istnienia przewagi, nie komfort.
+
+---
+
 ## Reguły nazewnictwa (z wymagań użytkownika)
 
 Cała aplikacja mówi **prostym językiem, bez żargonu technicznego**. Nazwy przycisków: `Utwórz`, `Edytuj`, `Uruchom`.
