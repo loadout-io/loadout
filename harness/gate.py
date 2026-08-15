@@ -534,7 +534,24 @@ def run(tier, jobs, only=None):
     # „higiena OK", a nie „nie wiem, kim jesteś". Odmowa w `quick` zamykała jedyną szybką pętlę,
     # jaką ma człowiek pracujący poza zadaniem — a jej zielone nigdy nie twierdziło, że praca
     # jest skończona, więc nie ma tu czego udawać.
-    NEEDS_CRITERIA = ("before", "full")
+    # ...i nie dotyczy TRUNKA. Na gałęzi brak kryteriów znaczy „kontrakt jest pusty" i jest
+    # defektem. Na trunku znaczy „nie ma tu zadania", co jest stanem poprawnym i docelowym:
+    # integrate.sh kasuje TASK.md przy lądowaniu, bo to artefakt gałęzi. Kryteria wylądowanego
+    # zadania są już udowodnione — udowodniła je bramka gałęzi, zanim cokolwiek zmergowano.
+    # Zadaniem bramki trunka jest „czy scalona całość dalej się buduje i przechodzi sprawdzenia
+    # projektowe", nie „czy to zadanie zrobiło, co obiecało".
+    # Zmierzone: pierwsze lądowanie S-2 skończyło się exit 2 na tym strażniku, dwie minuty po
+    # tym, jak sam dodałem kasowanie TASK.md. Ta sama para poprawek widziana z dwóch stron.
+    on_trunk = False
+    try:
+        on_trunk = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT,
+            capture_output=True, text=True, check=False,
+        ).stdout.strip() == os.environ.get("LOADOUT_TRUNK", "main")
+    except Exception:
+        pass
+
+    NEEDS_CRITERIA = () if on_trunk else ("before", "full")
     if not only and not any(c[1] == "acceptance" for c in checks):
         why = ("there is no TASK.md here" if not os.path.isfile(TASK_PATH)
                else "TASK.md declares no acceptance criteria")
