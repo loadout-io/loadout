@@ -36,6 +36,8 @@
 //! stylów. Wiersz, którego tu nie ma, nie pojawi się nigdzie; wiersz, który tu jest, pojawi
 //! się zawsze.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use super::drivers::{AgentEvent, FinishReason, Outcome};
@@ -981,7 +983,12 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
     let plural = if turns == 1 { "turn" } else { "turns" };
     let mut text = format!("{head} · {turns} {plural} · {}", took_text(duration_ms));
     if let Some(cost) = outcome.cost_usd {
-        text.push_str(&format!(" · ${cost:.2}"));
+        // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
+        // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
+        // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
+        // zwrócić tylko sam formatter — więc wynik idzie do `let _`, a nie do `unwrap()`,
+        // który w tym drzewie jest `deny`.
+        let _ = write!(text, " · ${cost:.2}");
     }
 
     Line::Done {

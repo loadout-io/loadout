@@ -84,6 +84,14 @@ async fn the_event_after_the_broken_line_still_becomes_a_row() -> anyhow::Result
          first line it did not understand — the step then sits in 'running' until the run ends, \
          and it reads like the agent hung. The history was {history:?}"
     );
+    // Sam rodzaj nie wystarcza: pusty wiersz `note` też jest rodzaju `Note`, a wtedy proza
+    // sprzed uszkodzonych linii przepadła, choć kształt historii wygląda poprawnie.
+    assert_eq!(
+        history[0].text(),
+        PROSE,
+        "the row before the three unreadable lines carries the prose the agent wrote, not just \
+         the shape of a note. The history was {history:?}"
+    );
 
     Ok(())
 }
