@@ -163,6 +163,20 @@ rust_lane() {
 
   # Jedyny krok, który dowodzi, że to się LINKUJE. clippy kompiluje, ale nie linkuje.
   step "cargo build" cargo build "${locked[@]+"${locked[@]}"}"
+
+  # ODDAJ ZAMEK TUTAJ, nie przy wyjściu z procesu. cargo_serialize wiesza `trap … EXIT`
+  # na TEJ powłoce, więc bez tego wiersza ci.sh trzyma muteks do samego końca — a potem
+  # pas guards odpala `bash checks/quick-clippy.sh`, które czeka 300 s na zamek trzymany
+  # przez własnego rodzica i wychodzi kodem 2. Samozakleszczenie z konstrukcji.
+  #
+  # Zmierzone 2026-08-15: dokładnie jeden strażnik pudłował („RED WITH THE VIOLATION GONE"),
+  # a reszta przechodziła — bo po ~600 s czekania zamek przekraczał próg 15 minut i zostawał
+  # USUNIĘTY JAKO MARTWY, mimo że jego właściciel żył. Czyli objaw maskował się sam, płacąc
+  # za to złamaniem niezmiennika 26 dokładnie wtedy, gdy maszyna była najbardziej obciążona.
+  # Jeśli któryś krok padł przez `die`, do tego wiersza nie dojdziemy — i dobrze:
+  # trap EXIT nadal zwolni zamek przy wyjściu procesu. To jest zwolnienie WCZEŚNIEJSZE,
+  # nie jedyne.
+  declare -F cargo_release >/dev/null && cargo_release
 }
 
 ensure_cargo_deny() {
@@ -280,6 +294,7 @@ guards_lane() {
   fi
   prompt_backticks
   cargo_lock_exit_code
+  cargo_lock_reclaims_dead_owner
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -314,21 +329,51 @@ prompt_backticks() {
 # i sadzi naruszenie W KODZIE. Tutaj naruszeniem jest STAN MASZYNY (zajęty muteks), więc
 # asercja mieszka tam, gdzie już mieszka prompt_backticks — obok, nie w środku.
 cargo_lock_exit_code() {
-  local lock rc
-  lock="${TMPDIR:-/tmp}/loadout-cargo.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    echo "cargo lock: zajęty przez coś innego — pomijam asercję zamiast zgadywać" >&2
-    return 0
-  fi
+  local sandbox rc
+  # WŁASNY katalog tymczasowy, nie współdzielony. Pierwsza wersja zajmowała prawdziwy zamek
+  # i pomijała się, gdy był zajęty — a wewnątrz ci.sh był zajęty ZAWSZE, więc asercja nie
+  # wykonała się ani razu i meldowała to jednym wierszem, który wyglądał jak sukces.
+  # Asercja, która się pomija, nie jest asercją.
+  sandbox="$(mktemp -d)" || { echo "nie mogę zrobić katalogu na zamek" >&2; return 1; }
+  mkdir "$sandbox/loadout-cargo.lock"
+  # Właściciel musi ŻYĆ, inaczej nowa reguła odzyskania skasuje zamek i zmierzymy
+  # zupełnie inną ścieżkę niż tę, o którą pytamy. $$ to ci.sh, czyli na pewno żywy.
+  echo "$$" > "$sandbox/loadout-cargo.lock/pid"
+
   rc=0
-  LOADOUT_CARGO_LOCK_WAIT=2 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
-  rmdir "$lock" 2>/dev/null || true
+  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=2 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
+  rm -rf "$sandbox"
+
   if [ "$rc" != 2 ]; then
     echo "quick-clippy wyszedł $rc na zajętym muteksie, a ma wyjść 2" >&2
     echo "detail: nic się nie wykonało, więc to nie jest twierdzenie o kodzie (Q-3)." >&2
     return 1
   fi
-  echo "cargo lock: przeterminowany muteks daje 2, nie 1"
+  echo "cargo lock: zajęty muteks daje 2, nie 1"
+}
+
+# ── zamek po martwym właścicielu ma być odzyskany, nie odczekany ──────────────
+# Druga połowa tej samej reguły. Bez niej „daje 2" byłoby prawdą także wtedy, gdyby zamek
+# nigdy nie dał się odzyskać — czyli pierwsze zabite cargo blokowałoby maszynę na 5 minut
+# przy każdym kolejnym sprawdzeniu.
+cargo_lock_reclaims_dead_owner() {
+  local sandbox rc dead
+  sandbox="$(mktemp -d)" || return 1
+  mkdir "$sandbox/loadout-cargo.lock"
+  # PID, który na pewno nie żyje: odpal cokolwiek i poczekaj, aż skończy.
+  ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null || true
+  echo "$dead" > "$sandbox/loadout-cargo.lock/pid"
+
+  rc=0
+  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=5 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
+  rm -rf "$sandbox"
+
+  if [ "$rc" != 0 ]; then
+    echo "quick-clippy wyszedł $rc na zamku po MARTWYM właścicielu, a ma przejść" >&2
+    echo "detail: zamek po trupie ma być odzyskany od razu, nie odczekany do sufitu." >&2
+    return 1
+  fi
+  echo "cargo lock: zamek po martwym właścicielu odzyskany"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
