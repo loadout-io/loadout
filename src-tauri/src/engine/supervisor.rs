@@ -464,17 +464,17 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
     // nie przeczyta ani linii — a EOF na tym potoku ma osobne kryterium.
     let stdout = child.stdout().take();
 
-    if let Some(text) = prompt {
-        if let Some(mut pipe) = child.stdin().take() {
-            // Zapis w osobnym zadaniu, nie tutaj: bufor potoku ma ~64 KB, a prompt bywa
-            // większy — zapis synchroniczny stanąłby na pełnym buforze, czekając na dziecko,
-            // które czeka na resztę promptu. Zamknięcie deskryptora po zapisie jest tym EOF-em,
-            // którego agent i tak wypatruje.
-            let _writer = tokio::spawn(async move {
-                let _ = pipe.write_all(text.as_bytes()).await;
-                let _ = pipe.shutdown().await;
-            });
-        }
+    if let Some(text) = prompt
+        && let Some(mut pipe) = child.stdin().take()
+    {
+        // Zapis w osobnym zadaniu, nie tutaj: bufor potoku ma ~64 KB, a prompt bywa
+        // większy — zapis synchroniczny stanąłby na pełnym buforze, czekając na dziecko,
+        // które czeka na resztę promptu. Zamknięcie deskryptora po zapisie jest tym EOF-em,
+        // którego agent i tak wypatruje.
+        let _writer = tokio::spawn(async move {
+            let _ = pipe.write_all(text.as_bytes()).await;
+            let _ = pipe.shutdown().await;
+        });
     }
 
     Ok(Supervised {
