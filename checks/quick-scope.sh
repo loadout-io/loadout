@@ -72,15 +72,34 @@ if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')" = "$TRUNK" ]; t
   exit 0
 fi
 
+# Baza to PUNKT ODGAŁĘZIENIA od trunka, nie commit kontraktowy. Ta sama klasa, którą opisuje
+# akapit wyżej, ma bowiem drugie wejście, otwarte 2026-08-15 przez podciąganie trunka przed
+# rundą naprawczą: kiedy main jest wmergowany W GAŁĄŹ, `kontrakt..HEAD` znowu obejmuje cudze
+# commity — tym razem nie dlatego, że stoimy na trunku, tylko dlatego, że trunk stoi w nas.
+# Zmierzone na T-04: siedemnaście plików harnessu i zadań oskarżonych o „zapis poza zakresem",
+# z których żadnego nie tknął ani pisarz, ani naprawiacz.
+#
+# `merge-base` odpowiada na właściwe pytanie — **co ta gałąź dopisała** — i odpowiada tak samo
+# przed merge'em (baza = punkt cięcia) i po nim (baza = wierzchołek trunka, bo trunk jest już
+# przodkiem). Commit kontraktowy zostaje jako zapasowa baza dla gałęzi bez trunka; samo TASK.md
+# ma niżej własną regułę, więc pojawienie się go w diffie niczego nie psuje.
+TRUNK_REF=""
+for cand in "$TRUNK" "refs/heads/$TRUNK" "origin/$TRUNK"; do
+  git rev-parse --verify -q "$cand^{commit}" >/dev/null 2>&1 && { TRUNK_REF="$cand"; break; }
+done
+
 base=""
-if [ -f TASK.md ]; then
+[ -n "$TRUNK_REF" ] && base="$(git merge-base HEAD "$TRUNK_REF" 2>/dev/null || true)"
+basis_kind="the branch point off $TRUNK"
+if [ -z "$base" ] && [ -f TASK.md ]; then
   base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | head -1 || true)"
+  basis_kind="the contract commit (no $TRUNK to branch from)"
 fi
 committed=""
-basis="uncommitted work only (no contract commit found)"
+basis="uncommitted work only (no baseline found)"
 if [ -n "$base" ] && git rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1; then
   committed="$(git diff --name-only --no-renames "$base"..HEAD 2>/dev/null || true)"
-  basis="everything since the contract commit ${base:0:8}"
+  basis="everything this branch added since $basis_kind ${base:0:8}"
 fi
 
 changed="$( { git -c core.excludesFile=/dev/null status --porcelain=v1 -uall --ignored=matching \
