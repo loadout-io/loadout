@@ -89,9 +89,34 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 # Zapisz WLASNY pid. scripts/loop.sh znajduje po nim cale drzewo biegu przez `pgrep -P`,
 # zamiast zgadywac po tresci linii polecen -- co przegralo trzy razy 2026-08-15 (osierocony
 # agent, przypieta kopia pod inna nazwa, obserwator dopasowujacy sam siebie).
-mkdir -p runs
-echo $$ > runs/.build-loop.pid
-trap 'rm -f "$ROOT/runs/.build-loop.pid"' EXIT
+#
+# Trzy warunki, kazdy z konkretnego bledu, nie z ostroznosci:
+#
+# 1. --dry-run NIE PISZE. Pierwsza wersja pisala zawsze, a `scripts/ci.sh` wola
+#    `build-loop.sh --dry-run` w asercji pinned_scripts_find_the_repo. Dry-run wpisywal
+#    swoj pid, po czym trap EXIT kasowal plik -- czyli moje wlasne sprawdzenie niszczylo
+#    stan biegnacej petli. Zmierzone 2026-08-15: plik znikal po kazdym ci.sh, a `loop.sh`
+#    cicho schodzil na rozpoznawanie po wzorcu.
+# 2. DWIE PETLE NARAZ SA ODMAWIANE. Obie landuja galezie do tego samego trunka; wykrycie
+#    tego po fakcie znaczy rozplatywanie dwoch merge'ow.
+# 3. TRAP KASUJE TYLKO SWOJ PLIK. Bez tego trap konczacego sie starego procesu zabiera
+#    plik nowszej petli i znowu nie wiadomo, co biegnie.
+PIDFILE="$ROOT/runs/.build-loop.pid"
+release_pidfile() {
+  if [ "$(cat "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then rm -f "$PIDFILE"; fi
+  return 0   # trap EXIT z niezerowym statusem potrafi nadpisac kod wyjscia w bashu 3.2
+}
+if [ "$DRY" -eq 0 ]; then
+  mkdir -p "$ROOT/runs"
+  other="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null; then
+    echo "pętla już biegnie (pid $other) — dwie naraz landowałyby do tego samego trunka" >&2
+    echo "detail: ./scripts/loop.sh status" >&2
+    exit 2
+  fi
+  echo $$ > "$PIDFILE"
+  trap release_pidfile EXIT
+fi
 
 
 started_all=$(date +%s)
