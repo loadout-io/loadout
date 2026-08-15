@@ -44,12 +44,12 @@ done
 "#;
 
 /// Wnuk: nic nie robi poza tym, że **jest widoczny w `ps`** pod swoim znacznikiem.
-const GRANDCHILD: &str = r#"#!/bin/sh
+const GRANDCHILD: &str = r"#!/bin/sh
 # $1 = znacznik; ma zostać w argv, więc pętla, nie pojedyncze `sleep`
 while :; do
   sleep 0.2
 done
-"#;
+";
 
 /// Jeden wiersz `ps -eo pid,ppid,pgid,args`.
 #[derive(Debug)]
@@ -117,12 +117,16 @@ async fn ps_scan(marker: &str) -> Result<Vec<PsRow>, Box<dyn Error>> {
         if fields.len() < 4 {
             continue;
         }
-        let (Ok(ppid), Ok(pgid)) = (fields[1].parse::<i32>(), fields[2].parse::<i32>()) else {
+        // `parent`/`group` zamiast `ppid`/`pgid`: dwie nazwy różniące się jedną literą w środku
+        // to dokładnie ten rodzaj pary, w której podmiana jednej na drugą przechodzi przez
+        // recenzję niezauważona — a tutaj jedna odpowiada na „czy osierocony", druga na „czy
+        // w naszej grupie". Pola struktury zostają, bo tam czyta je nazwa typu.
+        let (Ok(parent), Ok(group)) = (fields[1].parse::<i32>(), fields[2].parse::<i32>()) else {
             continue;
         };
         rows.push(PsRow {
-            ppid,
-            pgid,
+            ppid: parent,
+            pgid: group,
             args: fields[3..].join(" "),
         });
     }

@@ -39,18 +39,18 @@ done
 "#;
 
 /// Wnuk: widoczny w `ps` pod znacznikiem, dopóki żyje.
-const GRANDCHILD: &str = r#"#!/bin/sh
+const GRANDCHILD: &str = r"#!/bin/sh
 # $1 = znacznik
 while :; do
   sleep 0.2
 done
-"#;
+";
 
 /// Krótki proces do części drugiej: żyje na tyle długo, żeby `stop()` zastało go żywym.
-const SHORT: &str = r#"#!/bin/sh
+const SHORT: &str = r"#!/bin/sh
 sleep 0.1
 exit 0
-"#;
+";
 
 /// Znacznik unikalny dla tego biegu.
 fn unique_marker(tag: &str) -> String {

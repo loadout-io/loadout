@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use loadout_lib::engine::supervisor::{self, RunOutcome, StdinPlan};
+use loadout_lib::engine::supervisor::{self, RunOutcome};
 use tokio::process::Command;
 
 /// Limit podany do `run_with_deadline`. Krótki, bo mierzymy ścieżkę, nie cierpliwość.
@@ -39,11 +39,11 @@ exit 0
 "#;
 
 /// Wnuk: też śpi 30 s i też trzyma znacznik w `argv`.
-const GRANDCHILD: &str = r#"#!/bin/sh
+const GRANDCHILD: &str = r"#!/bin/sh
 # $1 = znacznik
 sleep 30
 exit 0
-"#;
+";
 
 /// Znacznik unikalny dla tego biegu — inaczej skan `ps` widziałby resztki poprzedniego.
 fn unique_marker(tag: &str) -> String {
