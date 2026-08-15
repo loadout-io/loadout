@@ -14,7 +14,7 @@
 //! recenzentem jest tu zwykłym krokiem i niczym więcej (decyzja D7).
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -63,7 +63,16 @@ where
     // Kopia stopni wejściowych, nigdy sam graf: ten sam `Dag` ma dać się uruchomić drugi raz,
     // a AC-6 robi dokładnie to, żeby przyłapać stan przeciekający między biegami.
     let mut remaining = dag.in_degree();
-    let mut states = vec![StepState::Pending; dag.len()];
+    // 2026-08-15 — wektor stanów jest współdzielony, bo `Running` wpisuje ZADANIE, nie pętla:
+    // dopiero ono wie, kiedy permit naprawdę jest w ręku (niezmiennik 11). Zamek jest
+    // `std::sync::Mutex`, a każde jego wzięcie mieści się w jednym bloku bez `await`
+    // (niezmiennik 8, `clippy::await_holding_lock` = deny).
+    //
+    // Wyścigu tu nie ma i nie jest to przypadek: pętla wpisuje stan terminalny kroku dopiero
+    // po jego `join_next`, czyli po zakończeniu zadania, a stożek nie sięga kroku wysłanego —
+    // jego rodzice są `Succeeded`, z którego [`next`] nie ma wyjścia. Zamek jest tu po to,
+    // żeby dzielić wektor, nie żeby ratować kolejność.
+    let states = Arc::new(Mutex::new(vec![StepState::Pending; dag.len()]));
     let mut ready: Vec<StepId> = (0..dag.len()).filter(|&id| remaining[id] == 0).collect();
 
     // `limit.max(1)`: semafor bez ani jednego permitu nie przepuściłby nikogo, pętla skończyłaby
@@ -79,13 +88,17 @@ where
             if cancel.is_cancelled() {
                 // Krok, który po Stopie nigdy nie wystartował, jest `cancelled`, nie `skipped`
                 // [T7 §9.3]: nikt wyżej nie padł, użytkownik zatrzymał bieg.
-                states[id] = StepState::Cancelled;
-                mark_cone(children, &mut states, id, StepEvent::UpstreamCancelled);
+                let mut guard = lock(&states);
+                guard[id] = StepState::Cancelled;
+                mark_cone(children, &mut guard, id, StepEvent::UpstreamCancelled);
             } else {
-                states[id] = StepState::Ready;
+                // `Ready` znaczy „w kolejce, jeszcze bez permitu". Wysyłka kończy się tutaj;
+                // `Running` dopisuje sobie samo zadanie, kiedy permit jest już w ręku.
+                lock(&states)[id] = StepState::Ready;
                 let semaphore = Arc::clone(&semaphore);
                 let run_step = run_step.clone();
                 let cancel = cancel.clone();
+                let states = Arc::clone(&states);
                 running.spawn(async move {
                     // 2026-08-15 — permit bierzemy TUTAJ, wewnątrz zadania [T7 §2.3], nigdy
                     // w pętli wysyłki. Wersja z permitem w pętli przechodzi każdy test na górne
@@ -98,6 +111,24 @@ where
                         // nie awaria kroku.
                         return (id, StepReport::Cancelled);
                     };
+                    {
+                        // 2026-08-15 — `(Ready, PermitAcquired) → Running` z tabeli
+                        // `docs/ARCHITECTURE.md` §5, wpisane DOKŁADNIE tutaj: permit jest
+                        // wzięty, więc krok naprawdę działa. Wpis w pętli wysyłki (przed
+                        // permitem) pokazywałby zakolejkowany krok jako działający i kasował
+                        // rozróżnienie, którego pilnuje niezmiennik 11 — czyli meldowałby
+                        // dokładnie tę nieprawdę, przez którą poprzedni prototyp „miał" równoległość.
+                        //
+                        // Przez tabelę, nie przypisaniem wprost: krok, który zdążył już zejść
+                        // (np. stożek po anulowaniu), zwraca stąd `None` i zostaje na swoim
+                        // stanie terminalnym.
+                        let mut guard = lock(&states);
+                        if let Some(state) = next(guard[id], StepEvent::PermitAcquired) {
+                            guard[id] = state;
+                        }
+                        // Guard ginie razem z tym blokiem, PRZED jedynym `await` w tym
+                        // zadaniu (niezmiennik 8).
+                    }
                     // Token idzie DO ŚRODKA kroku. Zdjęcie zadania z zewnątrz też wróciłoby
                     // szybko i też wyglądało na anulowane, ale w T-03 zostawia żywą grupę
                     // procesów palącą limit u dostawcy [T7 §3.1].
@@ -126,35 +157,49 @@ where
             continue;
         };
 
+        let mut guard = lock(&states);
         match report {
             StepReport::Succeeded => {
-                states[id] = StepState::Succeeded;
+                guard[id] = StepState::Succeeded;
                 for &child in &children[id] {
                     remaining[child] -= 1;
                     // Warunek na `Pending` jest tym, co daje „dokładnie raz": węzeł zamknięty
                     // wcześniej przez stożek nie wraca do zbioru gotowych.
-                    if remaining[child] == 0 && states[child] == StepState::Pending {
+                    if remaining[child] == 0 && guard[child] == StepState::Pending {
                         ready.push(child);
                     }
                 }
             }
             StepReport::Failed => {
-                states[id] = StepState::Failed;
-                mark_cone(children, &mut states, id, StepEvent::UpstreamFailed);
+                guard[id] = StepState::Failed;
+                mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
             }
             StepReport::Cancelled => {
-                states[id] = StepState::Cancelled;
-                mark_cone(children, &mut states, id, StepEvent::UpstreamCancelled);
+                guard[id] = StepState::Cancelled;
+                mark_cone(children, &mut guard, id, StepEvent::UpstreamCancelled);
             }
         }
     }
 
-    settle_leftovers(children, &mut states, cancel.is_cancelled());
+    let cancelled = cancel.is_cancelled();
+    // Pętla wyszła przy `inflight == 0`, więc żadne zadanie już nie żyje i nikt poza tym
+    // wątkiem nie sięga po wektor.
+    let mut guard = lock(&states);
+    settle_leftovers(children, &mut guard, cancelled);
 
     Outcome {
-        states,
-        cancelled: cancel.is_cancelled(),
+        states: std::mem::take(&mut *guard),
+        cancelled,
     }
+}
+
+/// Zamek na wspólnym wektorze stanów.
+///
+/// Zatrute zamki odplatamy, zamiast panikować: `panic!` w silniku zabiera cały bieg
+/// (AGENTS.md §4), a wektor stanów po panice jednego kroku jest dalej poprawny — krok,
+/// który nie wrócił, i tak domknie [`settle_leftovers`].
+fn lock(states: &Mutex<Vec<StepState>>) -> MutexGuard<'_, Vec<StepState>> {
+    states.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Schodzi stożkiem w dół od `from` i wpisuje POWÓD, dla którego te kroki się nie odbędą.
