@@ -247,6 +247,7 @@ zwracające `None` i odrzucenie `"paused"`.
   potrzebny dopiero, kiedy edytor będzie musiał go narysować [T7 §9.4].
 
 <!-- OWNS
+src-tauri/src/lib.rs
 src-tauri/src/engine/mod.rs
 src-tauri/src/engine/dag.rs
 src-tauri/src/engine/scheduler.rs
