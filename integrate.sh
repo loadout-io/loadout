@@ -117,6 +117,22 @@ for branch in "$@"; do
     fi
   fi
 
+  # TASK.md jest artefaktem GAŁĘZI i nie ma prawa przeżyć lądowania. Zmierzone przy pierwszym
+  # udanym landowaniu (2026-08-15): S-1 commitował TASK.md jako pierwszy commit gałęzi, merge
+  # wciągnął go na main, i od tej chwili KAŻDY nowy worktree rodził się z cudzym kontraktem
+  # w środku — a ship-task.sh słusznie odmawia startu, kiedy widzi TASK.md w świeżej
+  # przestrzeni ("a second run there cannot prove the criteria red"). Pętla stanęła na
+  # następnym zadaniu, dwie sekundy po starcie, z kodem 2.
+  #
+  # Trwałym źródłem kontraktu jest tasks/<ID>.md, które i tak leży w repo. Kasujemy więc kopię
+  # i doszywamy to do commita lądowania, żeby trunk nigdy nie miał tego pliku ani przez chwilę
+  # — także dla bramki, która biegnie zaraz niżej.
+  if git ls-files --error-unmatch TASK.md >/dev/null 2>&1; then
+    git rm -q TASK.md
+    git commit -q --amend --no-edit
+    echo "  (TASK.md removed from trunk -- it is a branch artifact; tasks/ holds the contract)"
+  fi
+
   rc=0; gate || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo >&2
