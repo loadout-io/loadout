@@ -11,14 +11,12 @@
 //! ([`Policy`]) i **jedną** tabelę tłumaczenia na flagi, w adapterze. Cicha wersja złamania
 //! nie wygląda jak nowy trait — wygląda jak `if agent == "claude" { … }` w miejscu wywołania.
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-15)
+//! # Stan tego pliku: KOMPLETNY (2026-08-15)
 //!
-//! Typy są pełne, bo to one są kontraktem, o który opierają się kryteria. Ciała w `claude.rs`
-//! są **jawnie niezaimplementowane** i tak oznaczone — to jest wymagany kształt fazy, w której
-//! powstają kryteria: test ma się skompilować i paść **w czasie wykonania, na braku
-//! ZACHOWANIA** (`AGENTS.md` §2a p. 5). `unimplemented!`, nie `todo!`: `clippy::todo` stoi
-//! w `Cargo.toml` na `deny`, a `checks/quick-clippy.sh` woła `cargo clippy --lib -- -D warnings`
-//! **w każdej turze**, więc `todo!()` nie przeżyłby nawet fazy, w której jest potrzebny.
+//! Typy są tu w całości, bo to one są kontraktem, o który opierają się kryteria — a ten plik
+//! ma być jedynym, który `CodexDriver` z T-10 przeczyta i **nie będzie musiał zmienić**.
+//! Jedyna dziura w implementacji siedzi w `claude.rs`, w kolejnej turze tej samej sesji,
+//! i jest opisana tam, przy [`AgentDriver::start`].
 
 use std::path::PathBuf;
 use std::time::Duration;

@@ -89,6 +89,16 @@ exit 0
 
 /// Atrapa B: ogłasza pustą listę zdolności, zapisuje stdin i **nigdy nie odpowiada**.
 /// Nie kończy się sama — zdjąć ją ma eskalacja.
+///
+/// 2026-08-15 — `exec 3<&0` i `read <&3` **nie są ozdobą**. POSIX: „standardowe wejście listy
+/// asynchronicznej, przed jawnymi przekierowaniami, jest przypisane do pliku o właściwościach
+/// `/dev/null`, chyba że włączone jest sterowanie zadaniami" — a w skrypcie odpalonym przez
+/// bramkę sterowania zadaniami nie ma. Zmierzone na tej maszynie: z gołym `done &` plik
+/// `stdin.log` nie powstawał **nigdy**, więc asercja o kopercie promptu nie mogła przejść przy
+/// żadnej implementacji sterownika — a asercja, której nie da się spełnić, mierzy tyle samo co
+/// asercja, którą spełnia wszystko. Kopia deskryptora zostaje w tle celowo: dzięki niej grupa
+/// ma **wnuka** (podpowłoka + `sleep`), czyli dokładnie to, co przeżyło pomiar
+/// `total=2 orphaned=2` z T7 §3.1 i co dowód z `ESRCH` ma tu wykluczyć.
 const SILENT: &str = r#"#!/bin/sh
 here="$(dirname "$0")"
 
@@ -102,7 +112,9 @@ done
 
 printf '{"type":"system","subtype":"init","session_id":"%s","capabilities":[]}\n' "$session"
 
-while IFS= read -r line; do
+exec 3<&0
+
+while IFS= read -r line <&3; do
   printf '%s\n' "$line" >> "$here/stdin.log"
 done &
 
