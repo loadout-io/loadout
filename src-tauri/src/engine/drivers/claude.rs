@@ -42,6 +42,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -51,6 +52,8 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
+use uuid::Uuid;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome, Policy, Probe, RunSpec,
@@ -115,6 +118,20 @@ const CEILING_PREFIX: &str = "error_max";
 
 /// `terminal_reason` tury zdjętej przerwaniem.
 const CANCELLED: &str = "cancelled";
+
+/// Zdolność, pod którą — i **tylko** pod którą — wolno wysłać przerwanie w paśmie.
+///
+/// Feature-detekcja idzie po tej liście z `system/init`, nigdy po numerze wersji [T1 §4.1,
+/// §4.6]. Sam protokół `control_request` jest nieudokumentowany i zweryfikowany wyłącznie
+/// eksperymentem, więc jedyną uczciwą przesłanką jest to, co CLI o sobie ogłosiło.
+const INTERRUPT_CAPABILITY: &str = "interrupt_receipt_v1";
+
+/// Ile czekamy, aż sesja poproszona o przerwanie skończy się **sama** [T1 §8.5, stopień 1].
+///
+/// Po tym oknie schodzimy na stopień drugi. Wysłanie przerwania tam, gdzie CLI go nie obsługuje,
+/// kosztowałoby dokładnie te pięć sekund czekania na odpowiedź, która nie przyjdzie — dlatego
+/// stopnia pierwszego w ogóle nie zaczynamy bez [`INTERRUPT_CAPABILITY`].
+const INTERRUPT_WINDOW: Duration = Duration::from_secs(5);
 
 /// Ile znaków wolno mieć jednolinijkowemu podsumowaniu, zanim zostanie przycięte. Pełne wyjście
 /// i tak zostaje za kliknięciem — to jest linia w wierszu, nie dokument.
@@ -880,6 +897,38 @@ fn user_envelope(text: &str) -> serde_json::Result<String> {
     })
 }
 
+/// Prośba sterująca — ta sama droga co koperta użytkownika, inny kształt [T1 §4.6, ran]:
+/// `{"type":"control_request","request_id":"req_…","request":{"subtype":"interrupt"}}`
+///
+/// Protokół jest **nieudokumentowany** i zweryfikowany wyłącznie eksperymentem, dlatego jedzie
+/// tylko pod ogłoszoną zdolnością [`INTERRUPT_CAPABILITY`].
+#[derive(Debug, Serialize)]
+struct ControlRequest<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    /// Wraca w `control_response` i po nim, a nie po kolejności, poznaje się odpowiedź na
+    /// **tę** prośbę.
+    request_id: &'a str,
+    request: ControlBody,
+}
+
+/// Treść prośby sterującej. Dziś jeden podtyp; lista jest niepubliczna [T1 §11].
+#[derive(Debug, Serialize)]
+struct ControlBody {
+    subtype: &'static str,
+}
+
+/// Buduje przerwanie w paśmie — jedna linia, tak jak koperta tury.
+fn interrupt_request(request_id: &str) -> serde_json::Result<String> {
+    serde_json::to_string(&ControlRequest {
+        kind: "control_request",
+        request_id,
+        request: ControlBody {
+            subtype: "interrupt",
+        },
+    })
+}
+
 // ── Pętla czytająca ───────────────────────────────────────────────────────────────────────
 
 /// Czyta stdout linia po linii i sypie zdarzeniami, aż do końca strumienia.
@@ -892,6 +941,7 @@ fn user_envelope(text: &str) -> serde_json::Result<String> {
 /// jest tylko to, co bez procesu nie ma sensu.
 async fn pump(
     stdout: ChildStdout,
+    capabilities: Arc<OnceLock<Vec<String>>>,
     events: mpsc::Sender<AgentEvent>,
     outcomes: mpsc::Sender<Outcome>,
 ) {
@@ -902,6 +952,18 @@ async fn pump(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 for event in decoder.push(&line) {
+                    // Zapis PRZED wysyłką i tylko tutaj: kto zobaczył `Started`, ten ma prawo
+                    // zakładać, że eskalacja anulowania wie już, o co pytać. Odwrotna kolejność
+                    // jest wyścigiem, który przechodzi na tej maszynie i przewraca się na
+                    // wolniejszej. `set` na drugim `init` przepada celowo — zdolności ogłasza
+                    // ten proces, a on jest jeden na sesję.
+                    if let AgentEvent::Started {
+                        capabilities: announced,
+                        ..
+                    } = &event
+                    {
+                        let _ = capabilities.set(announced.clone());
+                    }
                     emit(event, &events, &outcomes).await;
                 }
             }
@@ -959,9 +1021,58 @@ pub struct ClaudeHandle {
     /// i przerwanie w paśmie; `None` dopiero po [`AgentHandle::close`], bo porzucenie tego
     /// potoku **jest** końcem sesji [T1 §2].
     stdin: Option<ChildStdin>,
+    /// Zdolności protokołu ogłoszone w `system/init`, wpisane tu przez pętlę czytającą.
+    ///
+    /// Dzielone, bo ogłasza je strumień, a czyta eskalacja anulowania — i to jest jej **jedyny**
+    /// odbiorca (niezmiennik 21). `OnceLock`, bo ta lista przychodzi raz i nigdy się nie zmienia,
+    /// a zamek trzymany przez `await` byłby złamaniem niezmiennika 8 w miejscu, w którym nic by
+    /// za to nie dał. Puste, dopóki `init` nie przyszedł — anulowanie przed startem sesji nie ma
+    /// czego feature-detektować i schodzi wprost na sygnały.
+    capabilities: Arc<OnceLock<Vec<String>>>,
     /// Wyniki tur, w kolejności, w jakiej padły. Osobno od kanału zdarzeń, bo `wait()` musi je
     /// dostać także wtedy, gdy nikt nie czyta ekranu.
     outcomes: mpsc::Receiver<Outcome>,
+}
+
+impl ClaudeHandle {
+    /// Czy to CLI samo powiedziało, że rozumie przerwanie w paśmie.
+    ///
+    /// Po **liście z `init`**, nigdy po numerze wersji [T1 §4.1]. `false`, dopóki `init` nie
+    /// przyszedł: anulowanie wcześniej nie ma czego pytać, a pytanie wysłane w ciemno kosztuje
+    /// pełne okno czekania na odpowiedź, której nie będzie.
+    fn announces_interrupt(&self) -> bool {
+        self.capabilities
+            .get()
+            .is_some_and(|announced| announced.iter().any(|name| name == INTERRUPT_CAPABILITY))
+    }
+
+    /// Wysyła jedno przerwanie w paśmie. `false`, kiedy nie było czym albo zapis się nie udał —
+    /// wołający schodzi wtedy na sygnały, zamiast czekać na odpowiedź, która nie wyjechała.
+    ///
+    /// Dokładnie **jedna** prośba na anulowanie: powtórzone pytanie, kiedy odpowiedź jest już
+    /// w drodze, jest nieodróżnialne od dwóch anulowań i tak samo wygląda w dzienniku CLI.
+    async fn ask_to_stop(&mut self) -> bool {
+        let Ok(request) = interrupt_request(&format!("req_{}", Uuid::now_v7().simple())) else {
+            return false;
+        };
+        let Some(pipe) = self.stdin.as_mut() else {
+            return false;
+        };
+
+        // Znak nowej linii jest częścią protokołu, tak samo jak w kopercie tury: CLI czyta stdin
+        // linia po linii i bez niego prośba nigdy się nie kończy.
+        if pipe.write_all(request.as_bytes()).await.is_err()
+            || pipe.write_all(b"\n").await.is_err()
+            || pipe.flush().await.is_err()
+        {
+            tracing::debug!(
+                session = %self.session.id,
+                "the interrupt could not be written; falling through to signals"
+            );
+            return false;
+        }
+        true
+    }
 }
 
 #[async_trait]
@@ -1030,19 +1141,20 @@ impl AgentHandle for ClaudeHandle {
     /// wyjścia, nie sygnałem. To jest jedyny obserwowalny ślad różnicy między wznawialną
     /// sesją a zabitą.
     ///
-    /// # Stopnia pierwszego tu nie ma i to jest to samo zgłoszenie (2026-08-15)
-    ///
-    /// `control_request` jedzie **na stdin**, a stdin tej sesji jest zamknięty od pierwszej
-    /// koperty — powód stoi przy [`AgentHandle::send`]. Zdolność `interrupt_receipt_v1`
-    /// przychodzi z `init` i jest już dekodowana ([`AgentEvent::Started`]), więc feature-detekcja
-    /// ma z czego działać; brakuje wyłącznie kanału, którym pytanie miałoby wyjść.
-    ///
-    /// Czego tu **nie zrobiono zamiast tego**: nie wysyłamy przerwania „na ślepo" i nie
-    /// prowadzimy dziewiątką. Pierwsze byłoby pięcioma sekundami czekania na odpowiedź, która
-    /// nie przyjdzie, tam gdzie CLI tego nie obsługuje; drugie kosztowałoby wznawialność sesji,
-    /// dosypanie transkryptu i hooki `SessionEnd` [T1 §4.6]. Zostają stopnie dwa i trzy, w całości
-    /// z T-03: SIGTERM na grupę, okno łaski, SIGKILL i pętla dowodowa aż do `ESRCH`.
+    /// Stopnie dwa i trzy są w całości z T-03 i wołane są **zawsze**, także po udanym
+    /// przerwaniu: `stop()` na grupie, po której nic nie zostało, kosztuje jedno pytanie do
+    /// jądra i oddaje ten sam dowód, którego wymaga niezmiennik 6. Skrót „przerwanie się udało,
+    /// więc nie pytamy" byłby dokładnie tym `Ok(())`, przed którym stoi `GroupProof`.
     async fn cancel(&mut self) -> GroupProof {
+        // Stopień pierwszy — TYLKO pod ogłoszoną zdolnością. Bez tego warunku ta sama linia
+        // wisi pięć sekund tam, gdzie CLI o `control_request` nigdy nie słyszało.
+        if self.announces_interrupt() && self.ask_to_stop().await {
+            // Odpowiedzią jest wyjście sesji: `control_response` przychodzi tuż przed `result`,
+            // a proces wychodzi sam. Upłynięcie okna nie jest błędem, tylko zejściem na
+            // stopień drugi.
+            let _timed_out = timeout(INTERRUPT_WINDOW, self.process.wait()).await;
+        }
+
         self.process.stop(DEFAULT_GRACE).await
     }
 
@@ -1159,11 +1271,14 @@ impl AgentDriver for ClaudeDriver {
             .ok_or_else(|| anyhow!("the agent started without an output stream to read"))?;
 
         let (finished, outcomes) = mpsc::channel(TURNS_IN_FLIGHT);
+        // Zdolności ogłasza `init`, czyli strumień — a potrzebuje ich uchwyt, w eskalacji
+        // anulowania. Dlatego jedno pudełko, wypełniane przez pętlę czytającą.
+        let capabilities = Arc::new(OnceLock::new());
         // Pętla czytająca żyje własnym zadaniem: uchwyt ma zostać responsywny na `cancel()`
         // także wtedy, gdy nikt nie woła `wait()`. Startuje PRZED odebraniem stdinu, bo
         // odebranie stdinu czeka na koniec pierwszego zapisu — a agent, który zaczyna mówić
         // w trakcie, ma mieć kto czytać.
-        let _reader = tokio::spawn(pump(stdout, tx, finished));
+        let _reader = tokio::spawn(pump(stdout, Arc::clone(&capabilities), tx, finished));
 
         // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
         // i nie ma czym wysłać przerwania.
@@ -1175,6 +1290,7 @@ impl AgentDriver for ClaudeDriver {
             session,
             process,
             stdin: Some(stdin),
+            capabilities,
             outcomes,
         }))
     }
