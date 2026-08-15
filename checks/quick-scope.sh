@@ -60,6 +60,18 @@ fi
 # Ta sama definicja, której używa już review.sh. Fail-safe: gdy bazy nie ma (człowiek pracuje
 # poza worktree zadania), zostajemy przy samym `status` i mówimy to wprost — cicho zawężony
 # zakres jest gorszy niż jawnie węższy.
+# Zakres jest własnością GAŁĘZI, nie drzewa. Na trunku pytanie „czy to zadanie pisało poza
+# swoim pasem" jest już odpowiedziane — odpowiedziała na nie bramka gałęzi, zanim cokolwiek
+# zostało zmergowane. Zmierzone przy pierwszym uruchomieniu integrate.sh (2026-08-15): po
+# merge'u task-S-1 `kontrakt..HEAD` obejmował także commity harnessu, które wylądowały na main
+# PO commicie kontraktowym, więc blok OWNS jednego zadania oskarżał cudzą pracę. Czerwone
+# było fałszywe, a integrate.sh słusznie zatrzymał landowanie na fałszywym czerwonym.
+TRUNK="${LOADOUT_TRUNK:-main}"
+if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')" = "$TRUNK" ]; then
+  echo "scope: on $TRUNK — scope is a branch property, and the branch gate already enforced it"
+  exit 0
+fi
+
 base=""
 if [ -f TASK.md ]; then
   base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | tail -1 || true)"

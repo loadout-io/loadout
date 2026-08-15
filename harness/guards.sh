@@ -132,6 +132,10 @@ crate_root() {   # wypisuje korzeń crate'a Rusta albo zwraca 1
 # raportuje "nie strzelił" o checku, który nie miał czego zobaczyć.
 
 guard_quick_scope() {
+  # quick-scope pomija się na trunku (zakres jest własnością gałęzi), a guards biegnie
+  # właśnie na trunku. Podstawiamy nazwę, której żadna gałąź nie nosi, żeby sprawdzenie
+  # oceniało plant zamiast wychodzić zerem na samej nazwie gałęzi.
+  export LOADOUT_TRUNK=__guard_never_a_branch__
   # Dwie drogi zapisu poza dozwolone drzewa. Druga jest ta ciekawsza: plik
   # przemycony przez wpis w .gitignore. Check ma czytać status z
   # `-c core.excludesFile=/dev/null --ignored=matching`, więc ma to zobaczyć.
