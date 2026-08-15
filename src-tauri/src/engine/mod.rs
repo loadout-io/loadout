@@ -43,7 +43,6 @@ pub mod supervisor;
 // (AGENTS.md §7). Ta lista istnieje po to, żeby to pytanie dało się zadać w dziesięć sekund
 // zamiast czytać cały plan:
 //
-//     pub mod supervisor;   — T-03 (grupy procesów, SIGTERM→SIGKILL, limit czasu kroku)
 //     pub mod drivers;      — T-04 (zastępuje `#[path]` na `fake` powyżej)
 //     pub mod stream;       — T-05 (NDJSON → zdarzenie)
 //     pub mod line;         — T-05 (zdarzenie → linia; tu mieszka kuracja)

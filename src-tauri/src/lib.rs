@@ -19,28 +19,16 @@ use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
-// 2026-08-15 — DEKLARACJA TYMCZASOWA, i to jest jej jedyne uzasadnienie.
+// 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
 //
-// Docelowy adres tego modulu to `engine::supervisor`, a jedyna poprawna deklaracja to
-// `pub mod supervisor;` w `src-tauri/src/engine/mod.rs`. Tej linii tam NIE MA: stoi wylacznie
-// w komentarzu, na liscie wierszy, ktore doloza kolejne zadania (`engine/mod.rs:45`), mimo ze
-// `tasks/T-03.md` twierdzi, ze T-02 juz ja wpisal. Tamten plik nie nalezy do bloku OWNS tego
-// zadania, a jeden wiersz poza nim to pytanie do czlowieka (AGENTS.md §7), nie cichy dopisek.
-// Wiec T-03 go nie dopisuje — wciaga ten sam PLIK z korzenia skrzyni, ktory posiada.
+// Stala tu para linii `#[path = "engine/supervisor.rs"] pub mod supervisor;`, bo `engine/mod.rs`
+// nie mialo wtedy `pub mod supervisor;` — a jeden wiersz poza blokiem OWNS to pytanie do
+// czlowieka (AGENTS.md §7), nie cichy dopisek. Czlowiek odpowiedzial commitem 687712a: linia
+// stoi w `engine/mod.rs`, wiec jedyny poprawny adres modulu to `engine::supervisor`.
 //
-// Co to zmienia, a czego nie: plik zostaje pod `src-tauri/src/engine/supervisor.rs` i to jest
-// istotne, nie kosmetyczne. `checks/quick-boundary.sh` zwalnia z zakazu `#[cfg(unix)]` /
-// `#[cfg(windows)]` dokladnie te SCIEZKE, i po tej samej sciezce sprawdza, ze `engine/` nie zna
-// slowa "tauri". Obie granice trzymaja sie tak samo mocno jak wczoraj. Zmienia sie wylacznie
-// miejsce w drzewie modulow.
-//
-// KIEDY TO ZNIKA: w chwili, w ktorej `engine/mod.rs` dostanie `pub mod supervisor;`. Wtedy te
-// dwie linie sie kasuje, a szesc testow `src-tauri/tests/supervisor_*.rs` przestawia import
-// z `loadout_lib::supervisor` na `loadout_lib::engine::supervisor`. Zostawienie obu naraz
-// zbuduje ten sam plik dwa razy, jako dwa rozne moduly, i to nie jest blad kompilacji —
-// to dwa niezalezne typy `GroupProof`, ktorych kompilator nie zamieni jeden w drugi.
-#[path = "engine/supervisor.rs"]
-pub mod supervisor;
+// Zostawienie obu naraz zbudowaloby ten sam plik dwa razy, jako dwa rozne moduly. To nie jest
+// blad kompilacji — to dwa niezalezne typy `GroupProof`, ktorych kompilator nie zamieni jeden
+// w drugi, wiec `stop()` z jednego modulu nie da sie porownac z dowodem z drugiego.
 
 /// Nazwa pliku dziennika wewnątrz katalogu podanego do [`install_logging`].
 const LOG_FILE: &str = "loadout.log";

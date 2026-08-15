@@ -19,9 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-// Adres tymczasowy. Docelowo `loadout_lib::engine::supervisor` — powód, dla którego dziś stoi
-// on w korzeniu skrzyni, i warunek przestawienia stoją przy deklaracji w `src-tauri/src/lib.rs`.
-use loadout_lib::supervisor::{self, RunOutcome, StdinPlan};
+use loadout_lib::engine::supervisor::{self, RunOutcome, StdinPlan};
 use tokio::process::Command;
 
 /// Limit podany do `run_with_deadline`. Krótki, bo mierzymy ścieżkę, nie cierpliwość.

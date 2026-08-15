@@ -20,9 +20,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-// Adres tymczasowy. Docelowo `loadout_lib::engine::supervisor` — powód, dla którego dziś stoi
-// on w korzeniu skrzyni, i warunek przestawienia stoją przy deklaracji w `src-tauri/src/lib.rs`.
-use loadout_lib::supervisor::{self, GroupProof, StdinPlan};
+use loadout_lib::engine::supervisor::{self, GroupProof, StdinPlan};
 use tokio::process::Command;
 
 /// Okno łaski w tym teście. Musi być wyraźnie dłuższe niż czas reakcji grzecznego skryptu
