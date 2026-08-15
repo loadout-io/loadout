@@ -17,7 +17,7 @@ Przeczytaj w tej kolejności. To nie jest lista lektur — to jest kontekst, bez
 | Plik | Co z niego wynosisz |
 |---|---|
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich.** Jeśli zadanie im przeczy — to defekt zadania |
-| `AGENTS.md` | karta pracy: 27 numerowanych niezmienników i kontrakt kryterium w §2a |
+| `AGENTS.md` | karta pracy: 28 numerowanych niezmienników i kontrakt kryterium w §2a |
 | `docs/ARCHITECTURE.md` | kształt systemu, maszyna stanów kroku, sufit gęstości, dziewięć rozstrzygniętych pytań |
 | `docs/PLAN.md` | fazy, kolejność zależności, linia cięcia, pięć najbardziej ryzykownych założeń |
 | `harness/README.md` | graf wywołań harnessu i **znaczenie kodów wyjścia** — to jest twoje główne narzędzie diagnostyczne |
