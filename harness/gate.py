@@ -60,6 +60,25 @@ CHECK_TIMEOUT_OVERRIDE = {
     "full-test": 600.0,      # cargo test --lib linkuje, potem jeszcze vitest
 }
 
+# Kryteria akceptacji są per zadanie, więc tabela wyżej nie umie ich nazwać. A budżet warstwy
+# `before` to 20 s — mniej, niż trwa ZIMNY build cargo. Zmierzone na kontrakcie T-01:
+# `cargo test --test shell_logging` wywalił się na 20 s, retry zmieścił się w 10,3 s. Retry
+# uratował, ale na zimniejszym cache by nie uratował, a wtedy kryterium wyglądałoby na
+# niedowiedzione z powodu, który nie ma nic wspólnego z kodem.
+#
+# Regułą jest KSZTAŁT KOMENDY, nie nazwa: kryterium wołające cargo dostaje budżet cargo, bo
+# kompilacja nie jest tym, co mierzymy. Kryteria vitest zostają przy 20 s i mają zostać —
+# tam wolne znaczy naprawdę wolne.
+CARGO_BUDGET = 420.0
+
+
+def budget_for(check_id, argv, default):
+    if check_id in CHECK_TIMEOUT_OVERRIDE:
+        return CHECK_TIMEOUT_OVERRIDE[check_id]
+    if any("cargo" in str(a) for a in argv):
+        return max(default, CARGO_BUDGET)
+    return default
+
 # Ile wyjścia padającego kroku widzi wołający. NA KROK, nie na bieg: globalny ogon
 # regularnie nie zawiera ani jednej asercji, więc naprawa naprawia coś, czego nie widziała.
 TAIL = 1200
@@ -546,7 +565,7 @@ def run(tier, jobs, only=None):
         width = max(1, jobs if wave == "project" else min(jobs, ACCEPTANCE_JOBS))
         with concurrent.futures.ThreadPoolExecutor(max_workers=width) as pool:
             results.extend(pool.map(
-                lambda c: run_one(c, CHECK_TIMEOUT_OVERRIDE.get(c[0], per_check)), batch))
+                lambda c: run_one(c, budget_for(c[0], c[2], per_check)), batch))
 
     failed, misconfigured = [], []
     for r in results:
@@ -580,9 +599,15 @@ def run(tier, jobs, only=None):
     # jest martwe (quick-clippy dostaje 420 s, po czym poziom przewraca się na 45 s i każdy
     # pierwszy zimny build kończy się kodem 3), a z płaskim doliczeniem całego nadpisania
     # sufit `quick` urósłby do 445 s także wtedy, gdy clippy nie miało czego kompilować.
-    granted = sum(min(max(0.0, r["seconds"] - per_check),
-                      CHECK_TIMEOUT_OVERRIDE[r["id"]] - per_check)
-                  for r in results if r["id"] in CHECK_TIMEOUT_OVERRIDE)
+    # Liczone przez `budget_for`, nie przez samą tabelę — inaczej kryterium wołające cargo
+    # dostaje 420 s na sprawdzenie i wywraca się na 60-sekundowym suficie warstwy `before`,
+    # czyli nadpisanie budżetu jest martwe dokładnie tam, gdzie powstało.
+    by_id = {c[0]: c[2] for c in checks}
+    granted = 0.0
+    for r in results:
+        b = budget_for(r["id"], by_id.get(r["id"], []), per_check)
+        if b > per_check:
+            granted += min(max(0.0, r["seconds"] - per_check), b - per_check)
     ceiling = CEILING[tier] + max(0.0, granted)
     print("─" * 63)
     print("  %d checks, %d failed, %.2fs (ceiling %.0fs%s)"

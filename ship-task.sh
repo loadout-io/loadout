@@ -245,9 +245,23 @@ if [ "$CONTRACT_READY" = 0 ]; then
   write_with "$RUNDIR/contract.jsonl" 80 <<PROMPT || note "the contract phase exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory.
 
-Write ONLY the files named by the \`check:\` lines under the \`## AC-n\` headings — the
-acceptance specs. Write NO implementation: no production code, no stubs that make a
-criterion pass, no edits outside the files those checks name.
+Write the files named by the \`check:\` lines under the \`## AC-n\` headings — the acceptance
+specs — plus the SMALLEST SKELETON that lets each spec run and fail at runtime.
+
+Two kinds of stub, and the difference is the whole point:
+
+  FORBIDDEN — a stub that makes a criterion PASS. Returning the expected value, asserting
+  something weaker, hard-coding the answer. That is the failure this phase exists to prevent.
+
+  REQUIRED — the skeleton that lets the spec COMPILE and then FAIL. Function signatures with
+  \`todo!()\` bodies, the module declarations that reach them, and in Rust the crate root
+  itself. A test under \`src-tauri/tests/\` links against the library crate: without
+  \`src-tauri/src/lib.rs\` cargo cannot even load the manifest, and the criterion proves
+  nothing. \`todo!()\` is transient — the implementation phase replaces it, and
+  \`clippy::todo = deny\` in Cargo.toml makes sure none survives to the full gate.
+
+Every file you create must be inside this task's \`<!-- OWNS -->\` block. If a skeleton would
+need a path you do not own, stop and say so — that is a finding for a human (AGENTS.md §7).
 
 Each spec must fail because the BEHAVIOUR is missing, not because the file cannot load.
 A spec that fails with "module not found", "command not found", "no test files found" or
