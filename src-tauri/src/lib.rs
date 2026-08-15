@@ -16,6 +16,9 @@ use tauri::Manager;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
+/// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
+pub mod engine;
+
 /// Nazwa pliku dziennika wewnątrz katalogu podanego do [`install_logging`].
 const LOG_FILE: &str = "loadout.log";
 
