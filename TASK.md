@@ -1,0 +1,162 @@
+# S-1 — Czy sesja Claude może dostać podzbiór umiejętności?
+
+To jest **spike**, nie zadanie budowlane. Wynikiem jest **odpowiedź zapisana w jednym pliku**, nie kod,
+który zostaje w repo. Modal kroku obiecuje przełącznik „All skills / Only these" [T3 §7.1], a jedyna
+flaga, jaka istnieje, to `--disable-slash-commands`, której własny tekst pomocy brzmi dosłownie
+„Disable all skills" [T3 fact-check] — czyli wszystko albo nic. Trudność nie polega na odpaleniu CLI;
+polega na tym, że **prawie każdy sposób sprawdzenia daje fałszywe „tak"**: odpalasz `claude` z flagą
+izolacji w pustym katalogu, `system/init` melduje dwie umiejętności, wpisujesz „podzbiór działa" —
+a naprawdę zobaczyłeś katalog, w którym i tak były tylko dwie, albo flagę, która wyzerowała wszystko
+i te dwie przyszły skądinąd. Ta pomyłka kosztuje UI: T-13 zbuduje listę z checkboxami, która
+w rzeczywistym biegu nie zmienia nic, a agent i tak dostanie komplet umiejętności użytkownika —
+czyli kontrolkę bez handlera (niezmiennik 16) przebraną za funkcję.
+
+**Dlatego kontrola jest obowiązkowa:** ten sam katalog, ta sama minuta, ten sam prompt, raz bez
+mechanizmu i raz z mechanizmem, dwie liczby zapisane obok siebie. Podzbiór to `0 < treatment < control`.
+Wszystko inne to „wszystko" albo „nic".
+
+**Read first:** `docs/research/topics/T3-workflow-editor.md` §7.2 i §11.1 (stąd bierze się to pytanie
+i to on definiuje, co się dzieje z modalem, kiedy odpowiedź jest zła), `docs/research/topics/T1-agent-drivers.md`
+§3.1, §3.3 i §4.1 (pełny wykaz flag `claude` 2.1.233, pułapka kontekstu i **lista kluczy `system/init`,
+w której jest pole `skills` — to jest jedyna obserwabla tego spike'u**), `docs/ARCHITECTURE.md` §9
+(jeden kanoniczny folder → dwa katalogi → sześciu vendorów; jeśli odpowiedzią jest „generowany katalog",
+to jest właśnie ten mechanizm i buduje go T-18).
+
+## Kto to robi
+
+- **Agent:** `spike` — musi mieć prawo uruchomić `claude` w powłoce i zapisać dwa pliki.
+- **Druga opinia:** Codex (cross-vendor, D3). Recenzent ma zaatakować jedno: *czy kontrola i próba
+  różniły się TYLKO mechanizmem?* Niedostępny recenzent to `exit 0` z notatką, nigdy czerwone.
+- **Artefakty biegu:** `runs/S-1/` — surowe `*.jsonl` z sond zostają tam, nie w `$TMPDIR`.
+
+## Co to zadanie posiada
+
+- `docs/research/topics/S1-skill-subsetting.md` — odpowiedź: proza dla człowieka plus jeden blok
+  ` ```answer `, który czyta maszyna.
+- `docs/research/topics/S1-skill-subsetting.test.ts`, `docs/research/topics/S1-init-shape.test.ts` —
+  testy kryteriów. Leżą obok odpowiedzi, bo odpowiedź jest jedynym artefaktem tego zadania
+  (niezmiennik 21: nie piszemy artefaktu, którego nikt nie czyta — ten czyta test, a potem
+  cytuje go T-13 i T-18).
+
+Nie dotykasz niczego innego. Katalogi robocze sond trzymaj poza repo (`/tmp/s1-*`).
+
+**Jak zaczerwienić `before` uczciwie.** Bramka odrzuca ~24 rodzaje czerwieni, które nic nie
+uruchomiły, i `ENOENT` / `No such file or directory` są na tej liście (`AGENTS.md` §2a,
+`NOT_A_REAL_RED`). Test **nie może** paść na czytaniu nieistniejącego pliku: czytaj przez
+`existsSync(p) ? readFileSync(p, 'utf8') : ''` i przewracaj się na **asercji o treści**.
+W komunikatach asercji nie używaj zwrotów „not found", „No such file" ani „no tests" —
+bramka przeczyta je jako fałszywą czerwień.
+
+## Niezmienniki
+
+- **9 — prompt i sekrety wyłącznie przez stdin.** Sondy wolno uruchamiać z promptem w argv, bo to
+  `echo hello`-klasy tekst, ale **żadna sonda nie może przekazać tokenu, klucza ani ścieżki do
+  keychaina w linii poleceń zapisanej potem w dokumencie**. Cicho łamie się to przez skopiowanie
+  całej linii z historii powłoki razem z `ANTHROPIC_API_KEY=...` na początku.
+- **20 — test sprawdza zachowanie, nie obecność stringa.** Test tego zadania nie sprawdza, że
+  w dokumencie „jest napisane verdict". Sprawdza **spójność liczb**: że próba jest właściwym
+  podzbiorem kontroli i że werdykt zgadza się z konsekwencją dla UI. Cicho łamie się to przez
+  dopisanie asercji `expect(text).toContain('verdict')` — przechodzi na dokumencie, w którym
+  obie liczby są równe.
+- **21 — nie piszemy artefaktu, którego żaden skrypt nie czyta.** Blok ` ```answer ` ma dokładnie
+  te klucze, których szuka test. Klucz dopisany „na wszelki wypadek" to klucz, którego nikt nigdy
+  nie przeczyta.
+- **24 — komentuj dlaczego, zwłaszcza incydent.** Dokument zapisuje **wersję CLI** (`claude --version`)
+  i **datę**. Bez tego odpowiedź jest bezużyteczna za trzy tygodnie: T1 §10 ryzyko 2 mówi wprost, że
+  flagi bywają nieudokumentowane i zmieniają się między wydaniami.
+
+## Jak to zmierzyć
+
+Sekwencja, którą wykonujesz i **wklejasz do dokumentu wraz z wyjściem**. Wersje z T1: `claude` 2.1.233.
+
+```bash
+claude --version                              # do bloku answer, pole `cli:`
+
+# Dwie atrapy umiejętności, poza repo. Format: katalog + SKILL.md z front-matterem
+# `name` + `description` (docs/ARCHITECTURE.md §9, T5 §0).
+mkdir -p /tmp/s1-only-two/{alpha,beta}
+printf -- '---\nname: alpha\ndescription: probe skill alpha\n---\n\nSay ALPHA.\n' > /tmp/s1-only-two/alpha/SKILL.md
+printf -- '---\nname: beta\ndescription: probe skill beta\n---\n\nSay BETA.\n'   > /tmp/s1-only-two/beta/SKILL.md
+mkdir -p /tmp/s1-run && cd /tmp/s1-run
+
+# ── KONTROLA: ile umiejętności widzi sesja BEZ żadnego mechanizmu ─────────────────────
+claude -p "Reply with exactly: OK" --output-format stream-json --verbose \
+        --model haiku --strict-mcp-config < /dev/null > control.jsonl
+head -1 control.jsonl | python3 -c \
+  'import json,sys; d=json.load(sys.stdin); s=d.get("skills") or []; print(len(s), s[:3])'
+```
+
+`--strict-mcp-config` zostaje w **obu** biegach, bo bez niego `init` ciągnie 73 narzędzia MCP
+i 9 serwerów [T1 fact-check 4] i sonda trwa minutę. `--setting-sources ""` **nie wchodzi do kontroli** —
+to jest kandydat na mechanizm, nie tło.
+
+Kandydaci na mechanizm, każdy uruchomiony tą samą komendą co kontrola, plus jedna flaga:
+
+| # | Mechanizm | Czego się spodziewamy | Co znaczy wynik |
+|---|---|---|---|
+| M1 | `--setting-sources ""` | `skills` = 0 | to jest „nic", nie podzbiór |
+| M2 | `--disable-slash-commands` | `skills` = 0 | jw. — potwierdza tekst pomocy |
+| M3 | `--plugin-dir /tmp/s1-only-two` | `skills` = 2 | **podzbiór działa flagą** |
+| M4 | `--setting-sources "project"` w katalogu z `.claude/skills/{alpha,beta}` | `skills` = 2 | **podzbiór działa przez katalog** — to buduje T-18 |
+| M5 | `--settings '<json>'` | ? | tylko jeśli M3 i M4 padły |
+
+Dla mechanizmu, który zadziałał, zapisz **surową linijkę `system/init`** (ucięte do pola `skills`) —
+T-18 i T-13 będą parsować ten kształt i muszą wiedzieć, czy to lista stringów, czy obiektów.
+
+Dwie rzeczy, które trzeba rozstrzygnąć obok liczby:
+
+1. **Czy mechanizm jest per sesja?** Jeśli jedyne, co działa, wymaga zmiany `~/.claude/skills`,
+   to nie jest podzbiór dla kroku — to jest globalna zmiana stanu maszyny użytkownika i **odpowiedź
+   brzmi `not-possible`**, choćby liczba wyszła.
+2. **Czy generowany katalog wymaga `.claude-plugin/plugin.json`?** Jeśli tak — zapisz minimalną,
+   działającą zawartość tego pliku. To jest dokładnie to, co T-18 ma wygenerować.
+
+## Kryteria akceptacji
+
+## AC-1 Odpowiedź jest zapisana i jednoznaczna: podzbiór to zmierzona liczba mniejsza od kontroli, a nie zdanie
+check: npx --no-install vitest run docs/research/topics/S1-skill-subsetting.test.ts
+
+Test czyta `docs/research/topics/S1-skill-subsetting.md`, wycina blok ` ```answer ` i sprawdza:
+`verdict` ∈ {`flag`, `generated-dir`, `not-possible`}; `cli` pasuje do `claude \d+\.\d+\.\d+`;
+`control-command` i `treatment-command` obie zaczynają się od `claude ` i **różnią się od siebie**;
+`control-skills` i `treatment-skills` są liczbami całkowitymi; przy werdykcie innym niż
+`not-possible` zachodzi `0 < treatment-skills < control-skills`; `ui-consequence` ∈
+{`only-these`, `all-or-none`} i jest równe `all-or-none` **wtedy i tylko wtedy**, gdy
+`verdict == not-possible`.
+
+*Słaba asercja:* `expect(md).toContain("verdict:")`. Przechodzi na dokumencie, w którym
+`control-skills: 2` i `treatment-skills: 2` (czyli w katalogu i tak były dwie umiejętności),
+i przechodzi na dokumencie, który mówi `verdict: flag` razem z `ui-consequence: all-or-none` —
+dwa zdania, które nie mogą być prawdziwe naraz. Rozróżnia je porównanie **liczb** (`treatment < control`)
+i asercja równoważności werdyktu z konsekwencją dla UI.
+
+## AC-2 Odpowiedź niesie dowód, że ktoś to naprawdę uruchomił, a nie przeczytał `--help`
+check: npx --no-install vitest run docs/research/topics/S1-init-shape.test.ts
+
+Test czyta ten sam plik i sprawdza pole `init-skills-raw`: musi to być **poprawny JSON**, który
+parsuje się do tablicy, i jego długość musi być równa `treatment-skills`. Dodatkowo `date` jest
+w formacie `YYYY-MM-DD`, a jeśli `verdict == generated-dir`, obecne jest niepuste pole `layout`
+opisujące strukturę katalogu (a w nim ciąg `SKILL.md`).
+
+*Słaba asercja:* sprawdzenie, że `init-skills-raw` jest niepuste. Przechodzi na wpisanym z palca
+`["alpha","beta"]`, którego nikt nie skopiował z wyjścia — a to jest dokładnie ten sposób, w jaki
+T1 §6.2 musiał oznaczyć schemat Codeksa jako **[docs]/[3p]**, i przez który T-18 sparsuje kształt,
+którego nie ma. Rozróżnia je **zgodność długości tablicy z niezależnie zapisaną liczbą
+`treatment-skills`**: żeby to podrobić, trzeba skłamać dwa razy spójnie.
+
+## Świadomie poza zakresem
+
+- **Implementacja podzbioru.** Silnik rozmieszczania to T-18, UI to T-13. Ten spike kończy się
+  akapitem, dwoma liczbami i jednym plikiem testu.
+- **Codex.** Codex nie ma pojęcia umiejętności [T3 §7.2], więc modal ma ten wiersz **ukrywać**,
+  a nie wyszarzać. To już wiadomo i nie wymaga sondy.
+- **Wybór, który mechanizm zbudujemy, jeśli działają dwa.** Zapisz oba z liczbami; decyzję podejmuje
+  T-18 na podstawie kosztu, nie ten dokument.
+- **Sprawdzenie, czy model naprawdę *użyje* podzbioru.** Obserwablą jest `skills` w `system/init`.
+  Pytanie „czy model wywoła alfę zamiast bety" to inne pytanie i nie blokuje UI.
+
+<!-- OWNS
+docs/research/topics/S1-skill-subsetting.md
+docs/research/topics/S1-skill-subsetting.test.ts
+docs/research/topics/S1-init-shape.test.ts
+-->
