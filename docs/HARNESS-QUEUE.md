@@ -53,6 +53,43 @@ otherwise green task red. Measured on T-01: seventeen checks, one failure, prett
 
 ---
 
+## Q-3 — przeterminowany muteks cargo to kod 2, nigdy 1
+
+**Klasa:** fałszywa czerwień. Uzbraja się dokładnie wtedy, gdy zaczniemy puszczać zadania
+równolegle przez Workflow, czyli w następnej fazie planu.
+
+`checks/quick-clippy.sh:33`, `checks/full-clippy.sh:32`, `checks/full-test.sh:33` mają dziś:
+
+```bash
+cargo_serialize || exit 1
+```
+
+Kiedy `cargo_serialize` nie doczeka się muteksu w 300 s, sprawdzenie **nie uruchomiło niczego**
+— a mimo to melduje **1**, czyli „twój kod jest zepsuty". `gate.py` sam nazywa to błędem
+w komentarzu, który ta linia łamie: *„2 wygrywa z 1 i z 3: skoro jedno sprawdzenie nie umiało
+się wykonać, werdykt poziomu nie jest twierdzeniem o kodzie"*. Na poziomie sprawdzenia
+`gate.py` zna tylko dwie kategorie — `2` to `misconfigured`, wszystko inne niezerowe to
+`failed` — więc jedyną poprawną odpowiedzią jest **2**.
+
+Zamiana we wszystkich trzech plikach:
+
+```bash
+cargo_serialize || exit 2
+```
+
+Zmierzone 2026-08-15 22:00: `scripts/ci.sh` odpalony w trakcie T-03 czekał na muteks pełne
+300 s, po czym strażnik `quick-clippy` napisał „RED WITH THE VIOLATION GONE (exit 1) — the
+guard proves nothing". Strażnik zadziałał, sprawdzenie nie.
+
+Przy nanoszeniu dopisać strażnika: zająć `$TMPDIR/loadout-cargo.lock` przez `mkdir`, odpalić
+sprawdzenie z `LOADOUT_CARGO_LOCK_WAIT=2` i wymagać **2**, nie 1.
+
+Uboczny wniosek, którego NIE naprawiamy teraz: dopóki muteks jest zajęty, `scripts/ci.sh`
+nie da się wykonać do końca. To nie jest defekt — to ten sam niezmiennik 26 robiący swoje.
+Odpalać `ci.sh` przy postoju pętli albo w tle.
+
+---
+
 ## Czego świadomie NIE mechanizujemy
 
 **„Jedna komenda na wywołanie Bash".** Kusi, żeby zrobić z tego hak `PreToolUse`, ale hak
