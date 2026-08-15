@@ -137,6 +137,40 @@ zrobić.** To jest najcenniejsza rzecz, jaką możesz zgłosić (AGENTS.md §7).
 
 ---
 
+## 5a. Harness nadal ma defekty — naprawiasz je na bieżąco
+
+To nie jest sprzeczne z §5. Rozróżnienie jest ostre i warto je rozumieć, a nie tylko stosować:
+
+| Kto | Wolno mu tknąć harness? | Dlaczego |
+|---|---|---|
+| **Agent zadania** (pisarz, recenzent) | **nie** | jest **sądzony** przez tę bramkę. Agent, który może edytować sędziego, może sprawić, żeby sędzia go przepuścił. Na tym stoi cała wiarygodność systemu |
+| **Ty, orchestrator** | **tak, i to twoja robota** | nie masz stawki w żadnym pojedynczym zadaniu. Nie jesteś oceniany przez bramkę — ty ją prowadzisz |
+
+To jest ta sama separacja, na której stoi sam produkt: **co agent powiedział / co wykazały sprawdzenia
+/ co zatwierdził człowiek.** Ty jesteś po stronie sprawdzeń.
+
+Więc kiedy zadanie kończy się kodem **2**, albo kiedy agent w swojej ostatniej wiadomości pisze,
+że instrukcja jest niewykonalna — **nie czekasz na człowieka. Naprawiasz i jedziesz dalej.**
+Pierwszego dnia harness miał ich pięć jednego po drugim: zakazy uprawnień blokujące całe repo,
+hak Stop odpalający pełną bramkę co turę, sprzeczny prompt fazy kontraktu, budżet krótszy od
+zimnego builda cargo, komunikat wysyłający agenta do katalogu, którego nie posiada. **Każdy z nich
+zatrzymałby pętlę na godziny, a żaden nie wymagał decyzji człowieka** — wymagał tylko zauważenia,
+że winna jest konfiguracja, nie model.
+
+Cztery rzeczy, których przy takiej naprawie pilnujesz:
+
+1. **Osobny commit, nigdy w commicie zadania.** Naprawa harnessu i praca zadania mieszają dwie
+   różne odpowiedzialności; w jednym diffie nikt już nie odróżni, co czemu służyło.
+2. **W komunikacie commita zapisz INCYDENT, nie tylko zmianę.** „Budżet 20 s jest krótszy niż
+   zimny build cargo; zmierzone: AC-5 wywalił się na limicie, retry zmieścił się w 10,3 s" jest
+   warte dziesięć razy więcej niż „podniesiono limit".
+3. **Nowe sprawdzenie ma strażnika.** `harness/guards.sh` sadzi naruszenie i wymaga czerwonego.
+   Sprawdzenie bez strażnika to sprawdzenie, o którym nie wiesz, czy w ogóle strzela.
+4. **Naprawa, która rozluźnia bramkę, to nie naprawa.** Podniesienie limitu czasu — tak.
+   Zdjęcie asercji, żeby zadanie przeszło — nie, i to jest moment na zatrzymanie się i zapytanie.
+
+Granica jest jedna i prosta: **naprawiasz to, co uniemożliwia ocenę. Nigdy tego, co ocenia.**
+
 ## 6. Co raportujesz człowiekowi
 
 Po każdym zadaniu, jedną linią: `ID · zielone/czerwone · czas · koszt`.
@@ -155,10 +189,34 @@ Po trzech zadaniach podaj prognozę całości z realnych liczb w `runs/build-loo
 
 ## 7. Stan na teraz
 
+**`S-1` przeszedł całą ścieżkę do zielonego** — pierwszy raz: kontrakt → before → budowa → bramka →
+druga opinia → naprawa → zielono. 27 minut. Na prawdziwej, zmierzonej pracy: sondy `claude`
+zapisały surowe `system/init`, a odpowiedź stoi w `docs/research/topics/S1-skill-subsetting.md`.
+
+Trzy mechanizmy dowiodły, że nie są ozdobą:
+
+- **recenzent znalazł słabą asercję na czerwonej bramce**, w trybie same-vendor: test asertował
+  `treatment !== control` jako stringi, więc dokument mógł zapisać różnicę kosmetyczną, podczas
+  gdy żaden bieg nie użył badanego mechanizmu
+- **runda naprawcza zrobiła to, czego faza budowy nie zdołała** — utworzyła katalog, wygenerowała
+  plugin, odpaliła kontrolę i próbę
+- **bramka nie puściła niczego**, dopóki kryteria naprawdę nie przechodziły
+
+Odpowiedź `S-1`, która **zmienia `T-13`**: podzbiór umiejętności jest możliwy, ale wymaga dwóch
+flag (`--plugin-dir <wygenerowany katalog>` **plus** `--setting-sources ""`), a 16 wbudowanych
+skilli CLI przeżywa mimo wszystko. Uczciwy tekst w UI brzmi **„tylko te, plus wbudowane skille
+CLI"**. Jeśli `T-13` wyrenderuje to jako gwarancję absolutną, kłamie o 16.
+
+Harness: **11 sprawdzeń, 9 strażników strzela, 0 pudłuje.**
+
 Zbudowane: nic. `src/` ma wyłącznie `theme.css`, `src-tauri/src/` jest puste.
-Harness stoi i jest sprawdzony: **11 sprawdzeń, 9 strażników strzela, 0 pudłuje.**
 
-Zaczynasz od `S-1` i `S-2` — dwa spike'i po dwa kryteria, produkują dokument, nie kod. To najtańszy
-test end-to-end harnessu przed wydaniem pieniędzy na `T-01`.
+### Czego nadal nikt nie uruchomił
 
-Jeśli `S-1` albo `S-2` skończy się kodem **2**, harness jest nadal zepsuty i **nie ruszasz dalej**.
+- **`integrate.sh` — landowanie.** Zero przebiegów, a bez niego `T-02` nie zobaczy `lib.rs` od
+  `T-01`. Jeśli to jest zepsute, pętla staje na drugim zadaniu.
+- **Żadnego zadania rustowego end-to-end.** `S-1` pisał markdown i testy TS; ani jednego `cargo`.
+- **`build-loop.sh` i wachlarz przez Workflow.**
+
+Więc zaczynasz od wylandowania `S-1` (`./integrate.sh task-S-1`) — darmowy test jedynego
+nietkniętego etapu — a potem `T-01`, bo on pierwszy dotyka Rusta.
