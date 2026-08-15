@@ -47,12 +47,12 @@ tego zadania; nie pisz JSON-a ręcznie, bo ręczny zawsze dryfuje w stronę opty
   dekoder linii Claude → `AgentEvent`, eskalacja anulowania.
 - Siedem plików testowych wymienionych w `check:` (blok OWNS na końcu).
 
-**Czego NIE posiadasz, a czego potrzebujesz.** Jednego wiersza `pub mod drivers;` w
-`src-tauri/src/engine/mod.rs`, który należy do T-02 (T-02 zostawia tam komentarz z listą takich
-wierszy). To jest **pierwsza rzecz do zrobienia i jest poza twoim blokiem OWNS**: AGENTS.md §7,
-zapytaj człowieka, zanim napiszesz choćby szkielet — bez tego wiersza żaden twój test się nie
-skompiluje, a bramka odrzuci `unresolved import` jako fałszywą czerwień, więc `./verify.sh before`
-nie powie ci niczego prawdziwego.
+**Czego potrzebujesz, zanim napiszesz szkielet.** Jednego wiersza `pub mod drivers;` w
+`src-tauri/src/engine/mod.rs`, który poza tym należy do T-02 (T-02 zostawia tam komentarz z listą
+takich wierszy). To jest **pierwsza rzecz do zrobienia**: ten plik masz w OWNS **wyłącznie** po to,
+żebyś dopisał `pub mod drivers;`, jeśli tego wiersza jeszcze tam nie ma — żadnej innej zmiany w tym
+pliku. Bez tego wiersza żaden twój test się nie skompiluje, a bramka odrzuci `unresolved import`
+jako fałszywą czerwień, więc `./verify.sh before` nie powie ci niczego prawdziwego.
 
 **Granica wobec T-05.** `claude.rs` posiada **wire enum Claude i mapowanie linia → `AgentEvent`**.
 `stream.rs` (T-05) posiada pętlę czytającą, tee surowego logu na dysk i kurację `AgentEvent` → `Line`.
@@ -62,6 +62,24 @@ a jeśli go dotknie, trait nie jest abstrakcją i to jest sygnał, nie porażka 
 **Wszystko, czego dotyka test integracyjny, musi być `pub`.** Pliki w `src-tauri/tests/` to osobne
 skrzynie; `pub(crate)` jest z nich niewidoczny, a „naprawa" przez przeniesienie testu do `#[cfg(test)]`
 w module złamałaby regułę „jedno kryterium, jedna ścieżka pliku" z `AGENTS.md` §2a.
+
+**Kanał stdin w nadzorcy — wąski mandat na cudzy plik.** `src-tauri/src/engine/supervisor.rs`
+należy do T-03 i masz go w OWNS **wyłącznie** po to, żeby dołożyć drugą turę kanał na stdin:
+wariant `StdinPlan::Keep` (deskryptor zostaje otwarty zamiast zamknąć się po jednym zapisie)
+i akcesor `Supervised::stdin()`. Nic poza tymi dwoma rzeczami — reszta pliku jest cudza.
+
+To nie jest wygoda, tylko warunek wykonalności AC-6 i AC-7, zmierzony 2026-08-15: dzisiejszy
+`StdinPlan` ma tylko `Null` i `Write(String)`, `Supervised` nie ma odpowiednika `stdout` po
+stronie wejścia, a `child` jest prywatne dla modułu. Bez tych dwóch dodatków
+`ClaudeHandle::send` zawsze zwraca `Err` („a follow-up turn of 26 bytes has nowhere to go"),
+a `cancel` nie ma czym wysłać `control_request`.
+
+Trzy obejścia, których **nie wolno** użyć, każde wymienione po nazwie, bo każde przechodzi
+naiwną asercję: (1) odpalenie procesu wprost w `claude.rs`, żeby dostać surowy stdin — omija
+nadzorcę i przywraca osierocone wnuki, łamiąc niezmiennik 3; (2) świeży proces na turę przez
+`--resume`, udający jedną sesję — to jest dokładnie `wariant awaryjny B`, przed którym stoi ten
+projekt; (3) `control_request` wysyłany bezwarunkowo, bez sprawdzenia `interrupt_receipt_v1` —
+przechodzi test i wiesza pięć sekund tam, gdzie CLI tego nie wspiera.
 
 ## Niezmienniki
 
@@ -262,6 +280,7 @@ src-tauri/src/engine/mod.rs
 src-tauri/src/lib.rs
 src-tauri/src/engine/drivers/mod.rs
 src-tauri/src/engine/drivers/claude.rs
+src-tauri/src/engine/supervisor.rs
 src-tauri/tests/claude_argv_transport.rs
 src-tauri/tests/claude_argv_policy.rs
 src-tauri/tests/claude_unknown_events.rs
