@@ -1,0 +1,256 @@
+# T-21 — Limity dostawcy, pauza biegu i suwak „ile naraz"
+
+Prawdziwy strumień z `claude` niesie takie zdarzenie **w normalnym, udanym biegu**
+(`docs/research/fixtures/claude-stream.jsonl`, zweryfikowane `[T7 §7.2, V]`):
+
+```json
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1786800600,
+ "rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"out_of_credits"}}
+```
+
+Tu są dwa pola ze słowem „rejected" obok pola, które mówi `allowed`. Cicha awaria tego zadania to
+przeczytanie **`overageStatus`** zamiast **`status`**: każdy bieg pauzuje się natychmiast po
+pierwszym zdarzeniu limitu, wszystkie testy przechodzą (bo „pauza po limicie" faktycznie działa),
+a produkt nie uruchamia się nigdy. Druga cicha awaria jest bliźniacza wobec `max_parallel` z
+poprzedniego prototypu: suwak, który zmienia liczbę, ale nie zmienia **nakładania się w czasie** — cztery pasy
+w rozłącznych oknach po pół sekundy, każdy test zielony, bo wszyscy agenci rzeczywiście skończyli
+(`docs/handoff.md:144-165`, niezmiennik 11). Trzecia: `resetsAt` jest w **sekundach** Uniksa;
+potraktowany jak milisekundy daje wznowienie natychmiast albo za trzysta tysięcy sekund, i w obu
+przypadkach wygląda to na „coś z zegarem". Do tego dochodzi uczciwość opisu: jeden proces `claude`
+to zmierzone **583 MB RSS** `[T7 §7.1, V]`, więc na 16 GB mieszczą się realnie 3–4 agenty.
+Domyślna wartość to **3**, a UI nie ma prawa sugerować, że dziesięciu badaczy naraz to dobry
+pomysł `[T7 ryzyko 3]`.
+
+**Read first:**
+`docs/research/topics/T7-orchestration-engine.md` §7.1 (rozstrzyga wartość domyślną 3, sufit 8,
+wzór podpowiedzi `clamp(total_gb/4, 1, 8)` i to, że suwak działa w trakcie biegu przez
+`add_permits` / `forget_permits`), §7.2 (rozstrzyga, że reagujemy na `status != "allowed"`, że to
+**pauza, nie porażka**, i że `resetsAt` jest uniksowe w sekundach), §8.1 (rozstrzyga, że
+`start_paused` wymusza runtime jednowątkowy, więc test na prawdziwe nakładanie się musi być
+`multi_thread` z krótkimi realnymi uśpieniami).
+`docs/ARCHITECTURE.md` §5 (rozstrzyga, że `paused` jest stanem **biegu**, nigdy kroku, i że limit
+dostawcy zostawia krok w `running`) oraz §3 (granica: `engine/` nie zna Tauri).
+`docs/design/DESIGN.md` §3 (`--attend` znaczy „czeka na ciebie" — pasek pauzy używa tego tokenu,
+nie `--fail`), §6 `chip` i `field`, §8 (język: czasownik w trybie rozkazującym, zero żargonu).
+`AGENTS.md` §3 (niezmienniki 1, 11, 13, 14, 16).
+
+## Kto to robi
+
+- **Agent:** `rust-core` (większość pliku to Rust; warstwa React to dwa małe komponenty) —
+  pisarz: Claude Code
+- **Druga opinia:** Codex (nigdy ten sam vendor co pisarz, decyzja D3)
+- **Artefakty biegu:** `runs/T-21/` — transkrypt, plik wyników, plan poprawki. Nigdy `$TMPDIR`.
+
+## Co to zadanie posiada
+
+- `src-tauri/src/engine/limits.rs` — limiter współbieżności i brama limitu dostawcy. Jedno
+  ograniczenie w poprzek pliku: **nie ma tu ani jednego typu z Tauri i ani jednego typu z
+  `stream.rs`.** Sygnał limitu wchodzi jako surowy `&serde_json::Value` obiektu
+  `rate_limit_info`, więc wybór właściwego pola jest testowalny bez procesu i bez okna.
+- `src/sections/run/limits/**` — kontrolka `How many agents at once?` i pasek pauzy biegu.
+  Ograniczenie: obie rzeczy są **czystymi funkcjami stanu na markup**; nie trzymają własnego
+  stanu i nie znają `invoke()`.
+- Pliki testowe, wyłączna wyrocznia tego zadania: `src-tauri/tests/limits_dial_raises.rs`,
+  `src-tauri/tests/limits_dial_lowers.rs`, `src-tauri/tests/limits_pause_is_run_level.rs`,
+  `src-tauri/tests/limits_resume_at_reset.rs`, `src-tauri/tests/limits_rate_limit_status.rs`,
+  `src-tauri/tests/limits_suggested_at_once.rs`.
+
+**Dwa warunki wstępne.** `src-tauri/src/engine/mod.rs` masz w OWNS **wyłącznie** po to, żebyś
+dopisał `pub mod limits;`, jeśli tego wiersza jeszcze tam nie ma. Żadnej innej zmiany w tym
+pliku — reszta należy do T-02. A w `devDependencies` nie ma
+`jsdom` ani `@testing-library/react`; testy komponentów robimy przez
+`renderToStaticMarkup` z `react-dom/server`, bo dopisanie zależności to zmiana `package.json`,
+czyli moment na zatrzymanie się i zapytanie człowieka (AGENTS.md §7).
+
+## Niezmienniki
+
+- **1 — `engine/` nie importuje `tauri::*`.** `limits.rs` leży w `engine/`, a kusi, żeby wysłać
+  pasek pauzy prosto do UI. Cicho łamie się to przez `use crate::ipc::…` — słowa „tauri" nie ma
+  w pliku, `checks/quick-boundary.sh` w dzisiejszej postaci tego nie widzi, a silnik przestaje
+  się dać przetestować bez okna. Limiter zwraca zdarzenia jako własny typ; kto je zamieni na
+  `Line`, decyduje T-05/T-07.
+- **11 — „ile naraz" musi znaczyć naraz.** To jest jedyny niezmiennik, którego to zadanie jest
+  bezpośrednią realizacją. Łamie się cicho przez limiter, który poprawnie liczy pozwolenia, ale
+  jest odpytywany przez jednego workera — liczba rośnie, nakładanie się nie. Dlatego AC-1 mierzy
+  **zaobserwowane przedziały czasu**, nie `available_permits()`.
+- **13 — jeden fakt, jedno miejsce.** „Bieg czeka na odnowienie limitu" to jeden fakt. Jeden
+  pasek na bieg, nie jeden na krok i nie dodatkowo kropka przy każdym agencie. poprzedni prototyp pokazywał
+  stan połączenia w sześciu miejscach.
+- **14 — zero żargonu w tekście widocznym dla użytkownika.** Zakazane tutaj konkretnie:
+  `rate limit`, `semaphore`, `permits`, `worker pool`, `concurrency`, `max_parallel`, `throttle`,
+  `epoch`. Tabela wiążąca: `00-SYNTHESIS.md` §2.2 (`max_parallel` → **how many at once**).
+  Egzekwuje `checks/quick-vocabulary.sh`, którego baseline wynosi 0 — pierwsze trafienie przewraca
+  bramkę.
+- **16 — kontrolka bez handlera nie wchodzi do repo.** Suwak, który renderuje się ładnie i nie
+  woła niczego, jest gorszy niż jego brak, bo obiecuje sterowanie. Jeśli komenda IPC do zmiany
+  limitu w trakcie biegu jeszcze nie istnieje (T-07/T-15), kontrolka przyjmuje `onChange` jako
+  wymagany prop — brak handlera jest wtedy błędem typów, nie martwym przyciskiem.
+
+## Kryteria akceptacji
+
+**Jak zaczerwienić to poprawnie.** Bramka odrzuca `error[E0432]`, `unresolved import` i
+`No test files found` jako fałszywą czerwień. Postaw najpierw `limits.rs` z prawdziwymi
+sygnaturami zwracającymi trywialnie złe wartości (limiter o stałym limicie 1, brama zawsze
+`Open`), a komponenty jako funkcje zwracające pusty `<div/>`. Wtedy `./verify.sh before` pada na
+asercjach. `todo!()` jest zakazany polityką lintów repo.
+
+## AC-1 Podniesienie suwaka w trakcie biegu naprawdę zwiększa nakładanie się w czasie
+check: cargo test --test limits_dial_raises
+
+Runtime `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]` — `start_paused` narzuca
+runtime jednowątkowy i nie udowodni współbieżności `[T7 §8.1, V]`. Sześć zadań, każde trzyma
+pozwolenie przez `sleep(60ms)` i zapisuje własny przedział `(start, koniec)` z `Instant::now()`.
+Limit startowy 1; po zwolnieniu pierwszego zadania `limiter.set_at_once(3)`. Asercje:
+maksymalna liczba przedziałów przecinających się w jednym punkcie wynosi dokładnie **3**,
+i istnieje para przedziałów, dla której `a.start < b.start < a.end` — czyli para, która naprawdę
+biegła w tym samym oknie, a nie po sobie.
+
+*Słaba asercja:* `assert_eq!(limiter.available_permits(), 3)` albo `assert_eq!(limiter.at_once(),
+3)`. Przechodzi limiter z trzema pozwoleniami, o które nikt nigdy nie prosi więcej niż raz —
+dokładnie defekt poprzedniego prototypu. Asercja rozstrzygająca: maksymalne pokrycie liczone z zapisanych
+przedziałów **i** asercja o ściśle nakładającej się parze; oba są fałszywe dla wysyłki
+sekwencyjnej.
+
+## AC-2 Obniżenie suwaka nic nie zabija i wchodzi w życie dopiero przy zwalnianiu
+check: cargo test --test limits_dial_lowers
+
+Limit 4, cztery zadania trzymają pozwolenia. `limiter.set_at_once(2)`, po czym startuje piąte
+zadanie. Asercje: żadne z czterech trwających zadań nie zostało anulowane ani nie dostało błędu
+(każde kończy się swoim `Outcome::Done`); piąte zadanie **nie** dostaje pozwolenia po zwolnieniu
+pierwszego ani drugiego, a dostaje po **trzecim**; `limiter.at_once()` zwraca 2 (co ma
+obowiązywać), a `limiter.running_now()` zwraca 4 (co faktycznie biegnie) — dwie różne liczby,
+bo UI, który po obniżeniu suwaka natychmiast pokazuje „2 at once", kłamie o tym, co dzieje się
+na maszynie.
+
+*Słaba asercja:* `assert_eq!(limiter.at_once(), 2)` zaraz po wywołaniu settera. To jest asercja
+o setterze, nie o limiterze — przechodzi zapis do pola. Asercja rozstrzygająca: piąte zadanie
+musi być udowodnione jako **wciąż czekające** po dwóch zwolnieniach (`tokio::time::timeout`
+na jego starcie kończy się `Err`) i jako wystartowane po trzecim.
+
+## AC-3 Limit dostawcy pauzuje **bieg**; żaden krok nie zmienia stanu
+check: cargo test --test limits_pause_is_run_level
+
+Stan wejściowy: bieg `running`, trzy kroki — dwa `running`, jeden `ready`. Wchodzi zdarzenie
+limitu ze `status` innym niż `"allowed"`. Asercje: `run.status == "paused"`; wektor statusów
+kroków jest **identyczny** przed i po (`assert_eq!(before, after)`); kolejna prośba o pozwolenie
+zostaje odrzucona wartością `Dispatch::Refused(Paused)` — wartością, nie błędem (niezmiennik 7);
+oba trwające kroki dobiegają do `succeeded`, bo pauza wstrzymuje **wysyłkę**, a nie egzekucję
+`[T7 §9.3]`. Ani jeden krok nie dostaje statusu `paused` — takiego stanu w maszynie kroku nie ma.
+
+*Słaba asercja:* `assert_eq!(run.status, "paused")`. Przechodzi implementacja, która przy okazji
+ustawia `paused` na każdym trwającym kroku albo oznacza je `failed` — a to jest właśnie ten
+wariant, który `[T7 §7.2]` nazywa błędem („a pause, not a failure; do not mark steps failed").
+Asercja rozstrzygająca: porównanie całych wektorów statusów kroków przed i po **oraz** asercja,
+że oba trwające kroki kończą się `succeeded` już po wejściu pauzy.
+
+## AC-4 Wznowienie następuje o `resetsAt`, a `resetsAt` jest w sekundach
+check: cargo test --test limits_resume_at_reset
+
+Dwie warstwy. Czysta: `duration_until_reset(resets_at_unix = 1786800600, now_unix = 1786800300)`
+== `Duration::from_secs(300)`; ta sama para potraktowana jak milisekundy dałaby 300 000 s, więc
+test pilnuje jednostki wprost. Zegarowa, `#[tokio::test(start_paused = true)]` (wymaga cechy
+`test-util`, której `features = ["full"]` **nie** zawiera, `[T7 §8.1, V]`): po pauzie
+`advance(299 s)` → bieg wciąż `paused` i wysyłka wciąż odmawia; `advance(1 s)` → bieg `running`
+i pierwsza prośba o pozwolenie zostaje spełniona. Przejście z pauzy do biegu nie zmienia statusu
+żadnego kroku i nie zwiększa `attempt`.
+
+*Słaba asercja:* `advance(Duration::from_secs(3600))` i sprawdzenie, że bieg wznowiony. Przechodzi
+dla każdej złej jednostki i dla implementacji, która wznawia natychmiast. Asercja rozstrzygająca:
+dwustronna — czerwona na 299 s, zielona na 300 s, w jednym teście.
+
+## AC-5 `status` to jedyne pole, które decyduje o pauzie
+check: cargo test --test limits_rate_limit_status
+
+Cztery wejścia, wszystkie jako `serde_json::Value`. (a) **Dosłowna linia z
+`docs/research/fixtures/claude-stream.jsonl`** — ma `"status":"allowed"` i jednocześnie
+`"overageStatus":"rejected"` oraz `"overageDisabledReason":"out_of_credits"`; wynik musi być
+`Gate::Open`. (b) `{"status":"rejected","resetsAt":1786800600}` → `Gate::PausedUntil(1786800600)`.
+(c) `{"status":"soft_limited","resetsAt":1786800600}` — wartość, której dziś nie ma; wynik
+`Gate::PausedUntil` (fail-closed: reguła brzmi „`status != allowed` → przestań wysyłać", nie
+„`status == rejected`"). (d) `{}` bez pola `status` → `Gate::Open` i wpis do logu debug, bez
+paniki (niezmiennik 5: nieznana linia jest porzucana, nie wywala biegu).
+
+*Słaba asercja:* test wyłącznie na (b). Przechodzi implementacja czytająca `overageStatus`,
+czytająca `overageDisabledReason`, a nawet taka, która pauzuje na samą **obecność** klucza
+`rate_limit_info` — a to zatrzymałoby każdy bieg, bo to zdarzenie stanowi 1,3% normalnego
+strumienia `[T7 §4.3, V]`. Asercja rozstrzygająca: przypadek (a) z prawdziwego pliku fikstury,
+gdzie każde błędne pole daje odpowiedź przeciwną do wymaganej.
+
+## AC-6 Podpowiedź zależy od pamięci, a suwak nie przyjmuje wartości spoza 1–8
+check: cargo test --test limits_suggested_at_once
+
+`DEFAULT_AT_ONCE == 3` i `MAX_AT_ONCE == 8` `[T7 §7.1]`. `suggested_at_once(gb)` realizuje
+`clamp(gb / 4, 1, 8)`: `2 → 1`, `8 → 2`, `16 → 4`, `64 → 8` (obcięte z 16). `set_at_once(0)`
+ustawia 1, `set_at_once(99)` ustawia 8 — obcięcie po stronie limitera, nie tylko w kontrolce,
+bo wartość wraca też z pliku biegu (`runs.concurrency`) i z zapisanego workflow.
+
+*Słaba asercja:* `assert_eq!(DEFAULT_AT_ONCE, 3)`. Przechodzi implementacja, która zwraca 3 dla
+wszystkiego — łącznie z laptopem 8 GB, gdzie 3 agenty to 1,7 GB samego RSS przy 583 MB na agenta.
+Asercja rozstrzygająca: cztery punkty wzoru **plus** dwa punkty obcięcia settera; wartość stała
+przewraca się na pierwszym z nich.
+
+## AC-7 Kontrolka „ile naraz" jest ograniczona, a ostrzeżenie o pamięci jest wyliczane
+check: npx --no-install vitest run src/sections/run/limits/at-once.test.tsx
+
+`renderToStaticMarkup` (bez jsdom, patrz warunki wstępne). Asercje: przy braku zapisanej wartości
+renderuje się `3`; kontrolka ma `min="1"` i `max="8"` — nie jest to pole liczbowe bez sufitu;
+przy `value <= suggested` w markupie jest **zero** elementów z `data-at-once-warning`, przy
+`value > suggested` dokładnie **jeden** (niezmiennik 13); tekst ostrzeżenia dla `value = 5`
+i dla `value = 8` **różni się**, bo niesie liczbę wyliczoną z 583 MB na agenta
+(`5 → "about 2.9 GB"`, `8 → "about 4.7 GB"`). Etykieta brzmi `How many agents at once?`,
+tekst pomocniczy `More agents finish sooner but use more memory.` `[T7 §7.1]`.
+
+*Słaba asercja:* sprawdzenie, że w markupie występuje słowo `GB`. Przechodzi zdanie wpisane na
+sztywno, czyli dokładnie ta wersja UI, która przy ośmiu agentach dalej mówi „about 0.6 GB".
+Asercja rozstrzygająca: dwa różne `value` muszą dać dwa różne teksty ostrzeżenia, a `value`
+poniżej podpowiedzi musi dać zero elementów ostrzeżenia — implementacja ze stałym zdaniem pada na
+obu naraz.
+
+## AC-8 Pasek pauzy pokazuje godzinę lokalną, jeden raz na bieg
+check: npx --no-install vitest run src/sections/run/limits/paused-banner.test.tsx
+
+`resetsAt = 1786800600` (dosłownie z fikstury). Przy strefie `Europe/Warsaw` renderuje się
+`Waiting for your Claude usage to reset at 3:30 PM.`; przy `UTC` ta sama wartość daje `1:30 PM` —
+dwie różne strefy, dwa różne teksty. W markupie nie występuje ciąg `1786800600` ani `T13:30`
+(ani epoki, ani ISO). Przy stanie biegu z trzema trwającymi krokami jest dokładnie **jeden**
+element `data-paused-banner` (niezmiennik 13). Przy `Gate::Open` nie ma go wcale — nie „pusty
+pasek", tylko brak elementu. Strefa wchodzi jako prop z wartością domyślną, żeby test mógł ją
+przypiąć bez ustawiania `TZ` procesu.
+
+*Słaba asercja:* `expect(markup).toContain('3:30 PM')`. Przechodzi tekst wpisany na sztywno.
+Asercja rozstrzygająca: dwie strefy dające dwa różne wyniki **oraz** asercja, że surowa liczba
+`1786800600` nie pojawia się w markupie — razem wykluczają i stałą, i wyświetlenie epoki.
+
+## Świadomie poza zakresem
+
+- **Zasięg semafora. Limiter, który tu powstaje, jest JEDEN NA APLIKACJĘ, nie jeden na bieg.**
+  Trzy karty po trzech agentach to dziewięciu agentów po ~583 MB — zamrożony laptop, nie szybsza
+  praca (`docs/ARCHITECTURE.md` §6a). Tutaj budujesz suwak i limiter; **dowód, że dwa biegi w dwóch
+  workspace'ach dzielą tę samą pulę, należy do T-24 AC-2.** Nie twórz drugiego semafora „na razie
+  per bieg, potem się scali" — po scaleniu nikt nie sprawdzi, czy stary zniknął.
+- **Odczyt pamięci maszyny.** Wzór `clamp(total_gb/4, 1, 8)` dostaje `gb` jako argument. Kto to
+  zmierzy, wymaga `sysinfo`, czyli zmiany `Cargo.toml` — to jest zatrzymanie się i pytanie do
+  człowieka (AGENTS.md §7), nie cichy dopisek.
+- **Parsowanie NDJSON i mapowanie zdarzeń na `Line`.** `stream.rs` należy do T-05. `limits.rs`
+  dostaje surowy obiekt `rate_limit_info` i nic poza tym.
+- **Podłączenie suwaka do biegu przez IPC i zapis do `runs.concurrency`.** T-07, T-15, T-06.
+  Tutaj powstaje kontrolka z wymaganym `onChange` i limiter z `set_at_once`; sklejenie ich to
+  tamte zadania.
+- **Rozstrzelenie pierwszych startów o ~1 s („ramp, don't slam", `[T7 §7.2]`).** To należy do
+  planisty (T-02), bo dotyczy wysyłki, nie limitu. Odnotowane, żeby nie wyglądało na zapomniane.
+- **Ponowienie kroku z odczekaniem wykładniczym po błędzie transportu.** `[T7 §7.2]` punkt 3;
+  osobna decyzja, poza v1 tego zadania — tutaj obsługujemy wyłącznie sygnał limitu dostawcy.
+- **Trzeci stan biegu między `paused` a `running`.** Nie ma. Lista stanów biegu jest zamknięta
+  w `[T7 §5.4]` i w ARCHITECTURE §5.
+
+<!-- OWNS
+src-tauri/src/engine/mod.rs
+src-tauri/src/engine/limits.rs
+src/sections/run/limits
+src-tauri/tests/limits_dial_raises.rs
+src-tauri/tests/limits_dial_lowers.rs
+src-tauri/tests/limits_pause_is_run_level.rs
+src-tauri/tests/limits_resume_at_reset.rs
+src-tauri/tests/limits_rate_limit_status.rs
+src-tauri/tests/limits_suggested_at_once.rs
+-->
