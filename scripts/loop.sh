@@ -52,8 +52,19 @@ descendants() {                 # $1 = pid → wszystkie potomki, najgłębsze n
 run_pids() {
   local root
   if root="$(loop_pid)"; then
-    printf '%s\n' "$root"
-    descendants "$root"
+    # Drzewo petli ORAZ wzorce: przy wachlarzu `ship-task.sh` biegnie obok petli, nie pod nia,
+    # wiec sam pgrep -P go nie znajdzie. Bez tej sumy `status` pokazywalby polowe pracy,
+    # a `stop` zatrzymywalby polowe -- czyli znowu monitoring, ktory klamie.
+    {
+      printf '%s\n' "$root"
+      descendants "$root"
+      local pat p
+      for pat in "${FALLBACK[@]}"; do
+        for p in $(pgrep -f "$pat" 2>/dev/null); do
+          printf '%s\n' "$p"; descendants "$p"
+        done
+      done
+    } | sort -u
     return
   fi
   # Tryb awaryjny tez musi zejsc po drzewie. Bez tego widzi wylacznie skrypty i NIE widzi
