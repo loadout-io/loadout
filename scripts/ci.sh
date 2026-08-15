@@ -294,6 +294,7 @@ guards_lane() {
   fi
   prompt_backticks
   pinned_scripts_find_the_repo
+  task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
   echo "── guards (the check of checks) ──"
@@ -351,6 +352,16 @@ cargo_lock_exit_code() {
     return 1
   fi
   echo "cargo lock: zajęty muteks daje 2, nie 1"
+}
+
+# ── zadanie tworzace modul Rusta musi miec w OWNS plik z jego deklaracja ──────
+# Cialo w harness/task-spine.py (niezmiennik 23: jedna polityka, jedno miejsce).
+# Ta klasa zatrzymala petle cztery razy 2026-08-15 -- za kazdym razem z innym objawem,
+# wiec za kazdym razem diagnozowalem ja od zera. Bez `pub mod x;` w rodzicu modul nie
+# wchodzi do skrzyni, test integracyjny sie nie kompiluje, a bramka odrzuca to jako
+# falszywa czerwien (NOT_A_REAL_RED). Zadania agent nie moze wtedy wykonac ani obejsc.
+task_spine_declarations() {
+  python3 harness/task-spine.py || return 1
 }
 
 # ── przypięte skrypty muszą nadal znajdować korzeń repo ───────────────────────
