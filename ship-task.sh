@@ -455,7 +455,22 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
     # PRZED naprawą, nie po niej: naprawiacz odpowiada na to, co powiedziała bramka, więc
     # jest tym, który najbardziej potrzebuje jej aktualnej wersji. Pracując przeciwko
     # nieaktualnej kopii może trafić w stare sprawdzenie i przewrócić się na nowym.
+    # HARNESS, nie KONTRAKT. To rozróżnienie kosztowało jeden bieg (T-04, 2026-08-15, 82 minuty
+    # i 36 dolarów). Merge zaciągnął `tasks/T-04.md` poprawiony w międzyczasie na trunku, podczas
+    # gdy `TASK.md` gałęzi jest zamrożony przy commicie kontraktowym — i N-08 słusznie zatrzymał
+    # bramkę kodem 2 na rozjeździe, którego nie zrobił ani pisarz, ani naprawiacz.
+    #
+    # Zamrożenie kontraktu nie jest formalnością: bieg nie może zmieniać warunków własnego
+    # zaliczenia. Ulepszony plik zadania obowiązuje NASTĘPNY bieg, nie ten. Więc po merge'u
+    # przywracamy `tasks/` do wersji gałęzi — trunk daje nam sprawdzenia, nie nową umowę.
+    before_merge="$(git -C "$WT" rev-parse HEAD)"
     if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
+      if ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
+        git -C "$WT" checkout -q "$before_merge" -- tasks/
+        git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
+          || true
+        note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
+      fi
       note "harness refreshed from the trunk before the final gate"
     else
       git -C "$WT" merge --abort >/dev/null 2>&1 || true
