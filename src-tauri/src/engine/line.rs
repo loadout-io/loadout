@@ -25,17 +25,20 @@
 //! `command_execution.aggregated_output`) [T2 §9.3], więc drugi vendor wypełnia [`Seen`],
 //! a nie przepisuje kuracji.
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
+//! # Co ten plik rozstrzyga, a czego nie
 //!
-//! Ciała zwracają **świadomie złą wartość** i są tak oznaczone komentarzem `SZKIELET`. To jest
-//! wymagany kształt fazy, w której powstają kryteria: test ma się skompilować i paść **w czasie
-//! wykonania, na braku ZACHOWANIA** — test, który się nie kompiluje, niczego nie uruchomił
-//! (`AGENTS.md` §2a p. 5). `todo!()` tu nie stoi, bo `todo` jest `deny`
-//! w `[workspace.lints.clippy]`; pusty zwrot pada tak samo, a bramka go przepuszcza.
+//! Rozstrzyga: **czy wiersz w ogóle istnieje** (`system/init` i `thinking` nie istnieją),
+//! **co mówi** (jedno zdanie po angielsku, bez żargonu — niezmiennik 14) i **czy jest
+//! zwinięty** (reguły 1–3). Nie rozstrzyga: jak wiersz wygląda, jaką ma wysokość i o której
+//! lokalnej godzinie wraca limit — to jest formatowanie i mieszka w widoku (T-08).
+//!
+//! Granica biegnie dokładnie tędy, bo tylko tak „czysty widok" nie da się zepsuć arkuszem
+//! stylów. Wiersz, którego tu nie ma, nie pojawi się nigdzie; wiersz, który tu jest, pojawi
+//! się zawsze.
 
 use serde::Serialize;
 
-use super::drivers::AgentEvent;
+use super::drivers::{AgentEvent, FinishReason, Outcome};
 
 /// Rodzaj wiersza. Czternaście i ani jednego więcej [T2 §7.2].
 ///
@@ -83,7 +86,21 @@ pub enum LineKind {
 /// Warianty, których strumień nie produkuje ([`Line::Run`], [`Line::Step`], [`Line::Handoff`],
 /// [`Line::Memory`]), są tu dlatego, że enum ma być kompletny wobec [T2 §7.2] — konstruuje je
 /// planista (T-02) i pamięć (T-16).
+///
+/// # Kształt na drucie: `{"kind":"read","agent":"builder","detailId":1,…}`
+///
+/// `rename_all_fields` jest tu **jedyną** rzeczą, która stoi między nami a błędem z meetnotes:
+/// bez niego `detail_id`, `duration_ms`, `cost_usd` i `resets_at` jadą na front pod nazwami,
+/// których on nie zna, widok wywraca się na `undefined`, a pierwsze sześć poprawek idzie
+/// w złą warstwę, bo objaw jest w widoku, a przyczyna w derive [00-SYNTHESIS §3].
+/// Wariant jest **wewnętrznym** znacznikiem `kind`, żeby front dostał płaski obiekt zamiast
+/// `{"Read":{…}}` — jeden rodzaj, jedno pole, żadnego rozpakowywania po stronie widoku.
 #[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Line {
     /// `▶ Fix the login bug · Research → Plan → Build`
     Run {
@@ -323,11 +340,29 @@ impl Line {
     /// warstwy wyżej (niezmiennik 15).
     #[must_use]
     pub fn expanded(&self) -> bool {
-        // SZKIELET (2026-08-16): tabela reguły 2 i wyjątek reguły 3 są całą treścią AC-4 (c)
-        // i (b), więc tutaj ich nie ma. Odpowiedź `true` pada wyłącznie dla rodzaju, który
-        // NIGDY nie wchodzi do historii, więc każdy wiersz historii jest tu zwinięty — łącznie
-        // z prozą, pytaniem, błędem i strukturą, czyli dokładnie tymi, na których AC-4 pada.
-        matches!(self.kind(), LineKind::Thinking)
+        match self {
+            // Reguła 3 stoi PRZED tabelą reguły 2 i tylko dlatego działa: `ran` jest mechaniką,
+            // więc reguła 2 zwija go zawsze. Porażka jest jedynym miejscem, w którym ściana
+            // tekstu jest pożądana — a człowiek, który musi kliknąć, żeby dowiedzieć się,
+            // dlaczego build się wywalił, nie kliknie.
+            Self::Ran { ok, .. } => !ok,
+            // Reguła 2: proza, pytania, błędy i struktura są widoczne; mechanika nie jest.
+            // `thinking` jest po tej stronie, bo stały slot na dole ekranu jest widoczny —
+            // ale to jedyny rodzaj, którego kurator nigdy nie dokłada do historii (reguła 5),
+            // więc ta odpowiedź nie dotyczy żadnego wiersza, który ktokolwiek przewinie.
+            Self::Read { .. } | Self::Search { .. } | Self::Edit { .. } | Self::Memory { .. } => {
+                false
+            }
+            Self::Run { .. }
+            | Self::Step { .. }
+            | Self::Agent { .. }
+            | Self::Thinking { .. }
+            | Self::Note { .. }
+            | Self::Asked { .. }
+            | Self::Handoff { .. }
+            | Self::Problem { .. }
+            | Self::Done { .. } => true,
+        }
     }
 
     /// Początek wyjścia, przycięty do 2 KB [T2 §6.3, obrona 2]. Pusty tam, gdzie nie ma wyjścia.
@@ -438,11 +473,77 @@ pub struct Seen<'a> {
 /// [`Curator::flush`] — woła je koniec strumienia i tik pompy z T-07.
 #[derive(Debug, Default)]
 pub struct Curator {
-    /// Wiersze grupy, która jeszcze może urosnąć.
-    open: Vec<Line>,
+    /// Grupa sklejania, która jeszcze może urosnąć. Najwyżej jedna: reguła 4 skleja wiersze
+    /// **sąsiednie**, a sąsiadem jest dokładnie ten ostatni.
+    open: Option<Group>,
+    /// Komendy, które czekają na swój wynik, w kolejności startu.
+    ///
+    /// Wiersz `ran` nie może powstać na starcie: dopiero wynik mówi, czy się udało i co
+    /// wypisał, a bez tego reguła 3 nie ma czego rozwinąć. Wektor, nie pojedyncze pole, bo
+    /// model wysyła kilka bloków `tool_use` w jednej wiadomości i wtedy dwie komendy biegną
+    /// naraz — przy jednym polu druga nadpisywałaby pierwszą i jeden wiersz znikałby cicho.
+    pending: Vec<Pending>,
     /// Stały slot na dole ekranu.
     status: Option<Status>,
+    /// Skąd biorą się `detail_id`. Rośnie monotonicznie w obrębie jednego biegu.
+    minted: u64,
 }
+
+/// Grupa sklejania: sąsiednie czynności tego samego rodzaju, tego samego agenta, w oknie 2 s.
+#[derive(Debug)]
+struct Group {
+    /// Czyja jest — klucz grupy zawiera agenta, więc dwa agenty czytające w tej samej
+    /// sekundzie to dwa wiersze, nie jeden.
+    agent: String,
+    /// Rodzaj wiersza, który z niej powstanie. Tylko [`LineKind::Read`], [`LineKind::Search`]
+    /// i [`LineKind::Edit`] — reszta niesie treść, której nie da się zsumować w licznik.
+    kind: LineKind,
+    /// Chwila **pierwszego** wiersza grupy. Okno biegnie od niej i to jest cała reguła 4:
+    /// liczone od ostatniego, okno nigdy się nie zamyka, a agent czytający plik na sekundę
+    /// przez pięć minut daje jeden puchnący wiersz `Read 300 files`.
+    first_at_ms: u64,
+    /// Ile czynności się skleiło.
+    count: u32,
+    /// Czego dotyczyły, w kolejności.
+    targets: Vec<String>,
+    /// Identyfikatory wywołań, których wyniki jeszcze do tej grupy należą.
+    ids: Vec<String>,
+    /// Ile trafień zgłosiły wyniki (tylko [`LineKind::Search`]).
+    matches: u32,
+    /// Czy jakikolwiek wynik już doszedł — bez tego „0 matches" znaczyłoby „nie wiemy".
+    answered: bool,
+    /// Klucz do treści, której wiersz nie niesie.
+    detail_id: Option<u64>,
+}
+
+/// Komenda, która ruszyła i czeka na swój wynik.
+#[derive(Debug)]
+struct Pending {
+    /// Identyfikator wywołania — po nim wynik trafia do swojego wiersza.
+    id: String,
+    /// Kto ją uruchomił.
+    agent: String,
+    /// Co uruchomił; z tego powstaje tekst wiersza.
+    subject: String,
+}
+
+/// Ile milisekund grupa przyjmuje kolejne czynności, licząc od pierwszej (reguła 4).
+const WINDOW_MS: u64 = 2_000;
+
+/// Sufit podglądu wyjścia na granicy z widokiem [T2 §6.3, obrona 2]. 200 KB wyniku narzędzia
+/// ma kosztować 2 KB w wiadomości do frontu; reszta zostaje na dysku i za kliknięciem.
+const PREVIEW_LIMIT: usize = 2_048;
+
+/// Ile ostatnich linii wyjścia pokazuje wiersz, który się nie udał (reguła 3).
+const TAIL_LINES: usize = 20;
+
+/// Sufit tekstu, który przepisujemy z drutu do wiersza. Ta sama obrona co [`PREVIEW_LIMIT`],
+/// o rząd wielkości niżej: komenda bywa heredokiem na pięć tysięcy znaków, a wiersz ma być
+/// wierszem (reguła 1).
+const SUBJECT_LIMIT: usize = 120;
+
+/// Stan limitu, przy którym vendor mówi „wszystko w porządku" [T1 korekta 3].
+const ALLOWED: &str = "allowed";
 
 impl Curator {
     /// Świeży kurator, przed pierwszym zdarzeniem.
@@ -456,25 +557,76 @@ impl Curator {
     /// Pusty wektor jest **normalną odpowiedzią**: tak wygląda myślenie, `init`, hak sesji
     /// i każde zdarzenie, które tylko dokłada się do otwartej grupy.
     pub fn observe(&mut self, seen: Seen<'_>) -> Vec<Line> {
-        // SZKIELET (2026-08-16): tabela zdarzenie→wiersz (`ARCHITECTURE.md` §6) i pięć reguł
-        // zwijania są całą treścią AC-1..AC-4, więc tutaj ich nie ma. Zdarzenie jest czytane
-        // i porzucane, historia zostaje pusta — każda asercja o DŁUGOŚCI historii pada wtedy
-        // na braku zachowania, a nie na braku typu.
-        tracing::debug!(
-            agent = seen.agent,
-            at_ms = seen.at_ms,
-            "SZKIELET: an event reached the curator and was dropped"
-        );
-        self.open.clear();
-        Vec::new()
+        match seen.event {
+            // Reguła 5. Myślenie MUSI dojść — inaczej dół ekranu jest martwy, kiedy agent
+            // pracuje — i nie ma prawa wejść do historii, bo wirtualizowana lista mierzy
+            // każdy wiersz, także pusty.
+            AgentEvent::Thinking => {
+                self.status = Some(Status::Thinking);
+                Vec::new()
+            }
+            // ZDARZENIA WIDZIANE I ŚWIADOMIE NIEBĘDĄCE WIERSZEM. Stoją w jednej gałęzi, bo
+            // „co nie ma prawa dołożyć wiersza" jest tu listą, którą się czyta — z szesnastu
+            // zdarzeń prawdziwego biegu trzynaście nie zostawia śladu i to jest cała teza
+            // produktu, nie przeoczenie. Każde ma własny powód:
+            //
+            // - `Started` (`system/init`) to 9 929 bajtów i 42% strumienia [T7 §4.3]. Widać po
+            //   nim dokładnie jedno: kropka agenta robi się aktywna (`ARCHITECTURE` §6).
+            // - `FileEdit` przychodzi od sterownika Claude **razem** z `ToolEnd` tego samego
+            //   wywołania, a wiersz `edit` powstał już na `ToolStart` (to on niesie pełną
+            //   ścieżkę). Drugi wiersz z tego samego faktu podwaja KAŻDĄ zmianę pliku
+            //   w widoku. Czytelnika ten wariant ma w T-06, w indeksie zmienionych plików.
+            AgentEvent::Started { .. } | AgentEvent::FileEdit { .. } => Vec::new(),
+            AgentEvent::Said { text } => {
+                let line = Line::Note {
+                    agent: seen.agent.to_owned(),
+                    text: one_line(text),
+                };
+                self.close_then(line)
+            }
+            AgentEvent::ToolStart { id, label } => self.tool_start(seen, id, label),
+            AgentEvent::ToolEnd { id, ok, summary } => self.tool_end(seen, id, *ok, summary),
+            AgentEvent::RateLimit {
+                status, resets_at, ..
+            } => self.rate_limit(seen, status, *resets_at),
+            AgentEvent::Notice { text } => {
+                let line = Line::Problem {
+                    agent: seen.agent.to_owned(),
+                    text: one_line(text),
+                    resets_at: None,
+                };
+                self.close_then(line)
+            }
+            AgentEvent::Finished(outcome) => {
+                let line = done_line(seen.agent, outcome);
+                self.close_then(line)
+            }
+        }
     }
 
     /// Zamyka otwartą grupę sklejania i oddaje jej wiersz.
     ///
     /// Bez tego ostatnia grupa biegu nie wyszłaby nigdy, a użytkownik zobaczyłby o jeden
     /// wiersz mniej niż się wydarzyło — najgorszy możliwy rodzaj zgubienia, bo cichy.
+    ///
+    /// Domyka też komendy, których wynik nigdy nie przyszedł. Strumień urwany w połowie
+    /// komendy to komenda, która **się nie udała** z punktu widzenia człowieka: proces wyszedł
+    /// i nie powiedział, co zrobił [T1 §8.5]. Wiersz, który o tym mówi, jest gorszy od wiersza
+    /// prawdziwego i lepszy od braku wiersza, bo brak wiersza jest niewidoczny.
     pub fn flush(&mut self) -> Vec<Line> {
-        std::mem::take(&mut self.open)
+        let mut out: Vec<Line> = std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|pending| Line::Ran {
+                agent: pending.agent,
+                text: ran_text(&pending.subject, false),
+                ok: false,
+                preview: String::new(),
+                detail: Vec::new(),
+                detail_id: None,
+            })
+            .collect();
+        out.extend(self.close_group());
+        out
     }
 
     /// Co stoi w slocie na dole ekranu. `None` znaczy „nic się teraz nie dzieje".
@@ -482,4 +634,380 @@ impl Curator {
     pub fn status(&self) -> Option<Status> {
         self.status
     }
+
+    /// Czynność ruszyła: albo dokłada się do grupy, albo otwiera własny wiersz.
+    fn tool_start(&mut self, seen: Seen<'_>, id: &str, label: &str) -> Vec<Line> {
+        // Bez faktów o narzędziu nie da się wybrać wariantu wiersza: samo `ToolStart` niesie
+        // etykietę i `id`, a etykieta nie mówi, czy to było czytanie, czy komenda [T1 §8.2].
+        // Wiersz zgadnięty z etykiety byłby wierszem zmyślonym, więc go nie ma.
+        let Some(Tool::Started { action, target }) = seen.tool else {
+            tracing::debug!(id, label, "a tool started without the facts a row needs");
+            return Vec::new();
+        };
+
+        match action {
+            Action::Read | Action::Search | Action::Edit => {
+                self.coalesce(seen, kind_of(*action), id, target)
+            }
+            Action::Ran => {
+                let closed = self.close_group();
+                self.status = None;
+                self.pending.push(Pending {
+                    id: id.to_owned(),
+                    agent: seen.agent.to_owned(),
+                    subject: clamp(&one_line(target), SUBJECT_LIMIT),
+                });
+                closed
+            }
+            Action::Asked => {
+                let line = Line::Asked {
+                    agent: seen.agent.to_owned(),
+                    text: one_line(target),
+                    // Warianty odpowiedzi siedzą w `tool_use.input.options`, a szew
+                    // `Tool::Started` niesie jedną wartość. Front rysuje przyciski z tego,
+                    // co dostanie; pusta lista znaczy „odpowiedz własnymi słowami", nie
+                    // „pytanie bez treści".
+                    options: Vec::new(),
+                };
+                self.close_then(line)
+            }
+            Action::Agent => {
+                let line = Line::Agent {
+                    agent: seen.agent.to_owned(),
+                    text: one_line(target),
+                };
+                self.close_then(line)
+            }
+        }
+    }
+
+    /// Wynik czynności. **Nigdy nie tworzy własnego wiersza** [T2 §9.3] — domyka ten, który
+    /// już stoi, albo dokłada do niego fakty.
+    fn tool_end(&mut self, seen: Seen<'_>, id: &str, ok: bool, summary: &str) -> Vec<Line> {
+        let output = match seen.tool {
+            Some(Tool::Ended { output }) => output.as_str(),
+            // Wynik bez pełnego wyjścia zdarza się u vendora, który go nie przysyła. Zostaje
+            // jednolinijkowe podsumowanie ze zdarzenia — mniej, niż chcemy, ale nie kłamstwo.
+            _ => summary,
+        };
+
+        if let Some(index) = self.pending.iter().position(|pending| pending.id == id) {
+            let pending = self.pending.remove(index);
+            self.status = None;
+            return vec![Line::Ran {
+                agent: pending.agent,
+                text: ran_text(&pending.subject, ok),
+                ok,
+                preview: clamp(output, PREVIEW_LIMIT),
+                // Reguła 3: ostatnie dwadzieścia linii i tylko przy porażce. Pierwsze
+                // dwadzieścia linii wyjścia builda to zawsze banner, nigdy przyczyna.
+                detail: if ok { Vec::new() } else { tail(output) },
+                detail_id: (!output.is_empty()).then(|| self.mint()),
+            }];
+        }
+
+        // Wynik czytania, szukania albo zmiany: wiersz grupy już istnieje i ma rosnąć dalej,
+        // bo prawdziwy strumień przeplata `tool_use` z `tool_result` — grupa zamknięta na
+        // pierwszym wyniku nigdy nie doczekałaby się drugiego pliku i `Read 3 files` nie
+        // powstałoby ani razu.
+        let mine = self
+            .open
+            .as_ref()
+            .is_some_and(|group| group.ids.iter().any(|open| open == id));
+        if mine {
+            // Klucz bijemy PRZED pożyczeniem grupy i tylko dla szukania: wiersze `read`
+            // i `edit` niosą całą swoją treść w `paths`, więc klucz do treści, której nie ma,
+            // byłby kluczem do niczego (niezmiennik 21).
+            let searched = self.open.as_ref().is_some_and(|group| {
+                group.kind == LineKind::Search && group.detail_id.is_none() && !output.is_empty()
+            });
+            let minted = searched.then(|| self.mint());
+            let matches = count_matches(output);
+
+            if let Some(group) = self.open.as_mut() {
+                group.answered = true;
+                if group.kind == LineKind::Search {
+                    group.matches += matches;
+                    group.detail_id = group.detail_id.or(minted);
+                }
+            }
+            return Vec::new();
+        }
+
+        tracing::debug!(
+            id,
+            ok,
+            "a tool result arrived for a row that is already closed"
+        );
+        Vec::new()
+    }
+
+    /// Reguła 4 w całości: dołóż do grupy albo zamknij ją i otwórz następną.
+    fn coalesce(&mut self, seen: Seen<'_>, kind: LineKind, id: &str, target: &str) -> Vec<Line> {
+        let fits = self.open.as_ref().is_some_and(|group| {
+            group.kind == kind
+                && group.agent == seen.agent
+                // Okno od PIERWSZEGO wiersza grupy, nie od ostatniego (przypadek b z AC-3).
+                && seen.at_ms.saturating_sub(group.first_at_ms) < WINDOW_MS
+        });
+
+        let closed = if fits { Vec::new() } else { self.close_group() };
+        let group = self.open.get_or_insert_with(|| Group {
+            agent: seen.agent.to_owned(),
+            kind,
+            first_at_ms: seen.at_ms,
+            count: 0,
+            targets: Vec::new(),
+            ids: Vec::new(),
+            matches: 0,
+            answered: false,
+            detail_id: None,
+        });
+        group.count += 1;
+        group.targets.push(target.to_owned());
+        group.ids.push(id.to_owned());
+        self.status = None;
+        closed
+    }
+
+    /// `rate_limit_event` → wiersz albo cisza.
+    ///
+    /// `allowed` znaczy „vendor mówi, że wszystko gra". Wiersz na to jest bannerem, który
+    /// krzyczy w każdym biegu — a po drugim takim nikt nie czyta już żadnego.
+    ///
+    /// Pola `pause_run` tu **nie ma** i to jest celowe: czyta je T-21 i nikt poza nim
+    /// (niezmiennik 21). O tym, czy wiersz istnieje, rozstrzyga `status`.
+    fn rate_limit(&mut self, seen: Seen<'_>, status: &str, resets_at: i64) -> Vec<Line> {
+        if status == ALLOWED {
+            return Vec::new();
+        }
+        let line = Line::Problem {
+            agent: seen.agent.to_owned(),
+            // Godziny tu nie ma, i to nie jest niedopatrzenie: `resets_at` jedzie obok,
+            // a lokalną godzinę renderuje widok [T7 §7.2]. Zdanie z godziną wpisaną w tekst
+            // pokazywałoby czas maszyny, która akurat parsowała strumień.
+            text: "Hit the usage limit — waiting for it to reset".to_owned(),
+            resets_at: Some(resets_at),
+        };
+        self.close_then(line)
+    }
+
+    /// Domyka otwartą grupę i dokłada za nią gotowy wiersz — w kolejności, w jakiej się zdarzyły.
+    fn close_then(&mut self, line: Line) -> Vec<Line> {
+        let mut out = self.close_group();
+        out.push(line);
+        // Prawdziwy wiersz wylądował, więc slot na dole gaśnie: kółko kręcące się po tym, jak
+        // agent już się odezwał, mówi, że bieg pracuje, kiedy on nie pracuje.
+        self.status = None;
+        out
+    }
+
+    /// Zamyka grupę, jeśli jakaś jest otwarta.
+    fn close_group(&mut self) -> Vec<Line> {
+        self.open.take().map(Group::into_line).into_iter().collect()
+    }
+
+    /// Kolejny klucz do treści, która została poza wierszem.
+    fn mint(&mut self) -> u64 {
+        self.minted += 1;
+        self.minted
+    }
+}
+
+impl Group {
+    /// Zamknięta grupa → jeden wiersz historii.
+    fn into_line(self) -> Line {
+        let count = self.count;
+        match self.kind {
+            LineKind::Search => Line::Search {
+                agent: self.agent,
+                text: search_text(&self.targets, count, self.matches, self.answered),
+                // Licznik wiersza `search` to **trafienia**, nie wywołania: tak stoi w polu
+                // i tak czyta to człowiek. Ile razy szukaliśmy, mówi tekst.
+                count: self.matches,
+                // Których plików dotyczyły, nie wiemy: rozbiór wyjścia grepa po stronie
+                // kuratora byłby zgadywaniem formatu vendora w miejscu, które ma być wobec
+                // vendorów neutralne. Pełne wyjście stoi za `detail_id`.
+                paths: Vec::new(),
+                detail_id: self.detail_id,
+            },
+            LineKind::Edit => Line::Edit {
+                agent: self.agent,
+                text: edit_text(&self.targets, count),
+                count,
+                paths: self.targets,
+                // 2026-08-16 — ZERA SĄ UCZCIWE. `+N −M` da się policzyć wyłącznie z
+                // `old_string`/`new_string`, a szew `Tool::Started` niesie akcję i ścieżkę.
+                // Liczba zgadnięta z rozmiaru pliku byłaby liczbą zmyśloną; prawdziwą różnicę
+                // pokazuje panel zmian (T-08), który czyta dysk, nie ten strumień.
+                added: 0,
+                removed: 0,
+                detail_id: self.detail_id,
+            },
+            // Read jest domyślną gałęzią, bo grupę otwiera wyłącznie `kind_of`, a ono zna
+            // dokładnie te trzy rodzaje.
+            _ => Line::Read {
+                agent: self.agent,
+                text: read_text(&self.targets, count),
+                count,
+                paths: self.targets,
+                // Rozwinięcie wiersza `read` pokazuje ŚCIEŻKI, a te jadą w `paths`. Klucz do
+                // treści, której nie ma, byłby kluczem do niczego (niezmiennik 21).
+                detail_id: None,
+            },
+        }
+    }
+}
+
+/// Rodzina czynności → rodzaj wiersza. Tylko dla tych trzech, które się sklejają.
+fn kind_of(action: Action) -> LineKind {
+    match action {
+        Action::Search => LineKind::Search,
+        Action::Edit => LineKind::Edit,
+        _ => LineKind::Read,
+    }
+}
+
+/// Tekst do jednej linii (reguła 1).
+///
+/// Proza agenta bywa akapitem; wiersz o nieprzewidywalnej wysokości psuje wirtualizowaną listę,
+/// która mierzy każdy z nich. Zdania **sklejamy**, nie ucinamy: pierwsza linia akapitu to nie
+/// jest jego treść, a `Line` jest jedyną rzeczą, którą dostaje widok.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Przycina do `limit` bajtów, nie rozcinając znaku.
+fn clamp(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// Ostatnie [`TAIL_LINES`] linii wyjścia.
+fn tail(output: &str) -> Vec<String> {
+    let body = output.strip_suffix('\n').unwrap_or(output);
+    let lines: Vec<&str> = body.split('\n').collect();
+    let from = lines.len().saturating_sub(TAIL_LINES);
+    lines[from..]
+        .iter()
+        .map(|line| line.trim_end_matches('\r').to_owned())
+        .collect()
+}
+
+/// Ile trafień zgłosiło wyjście szukania: niepuste linie.
+fn count_matches(output: &str) -> u32 {
+    let found = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    u32::try_from(found).unwrap_or(u32::MAX)
+}
+
+/// `Read sample.txt` / `Read 3 files`.
+///
+/// Przy jednym pliku widać nazwę, bo to jest informacja; przy wielu — licznik, bo lista nazw
+/// w wierszu jest tym samym, co brak wiersza. Pełne ścieżki niesie `paths` i pokazuje je
+/// rozwinięcie (pełne za kliknięciem, skrót w widoku — ta sama reguła co przy SHA-256).
+fn read_text(targets: &[String], count: u32) -> String {
+    match targets {
+        [only] => format!("Read {}", file_name(only)),
+        _ => format!("Read {count} files"),
+    }
+}
+
+/// `Edited src/auth.rs` / `Edited 3 files`.
+fn edit_text(targets: &[String], count: u32) -> String {
+    match targets {
+        [only] => format!("Edited {}", file_name(only)),
+        _ => format!("Edited {count} files"),
+    }
+}
+
+/// `Searched for "auth token" — 12 matches`.
+fn search_text(targets: &[String], count: u32, matches: u32, answered: bool) -> String {
+    let head = match targets {
+        [only] => format!("Searched for \"{}\"", clamp(&one_line(only), SUBJECT_LIMIT)),
+        _ => format!("Searched {count} times"),
+    };
+    if !answered {
+        return head;
+    }
+    let plural = if matches == 1 { "match" } else { "matches" };
+    format!("{head} — {matches} {plural}")
+}
+
+/// `Ran npm test — ok` / `Ran npm test — didn't work`.
+///
+/// Podmiotem jest **komenda**, nie etykieta, którą model pisze sobie sam w `description`:
+/// tamta jest frazą czasownikową („Running the tests"), a ten wiersz ma kształt
+/// `Ran <co> — <jak poszło>` [T2 §7.2 poz. 8] i potrzebuje rzeczownika. Komenda jest przy tym
+/// jedyną wartością w tym wierszu, której nikt nie wymyślił.
+fn ran_text(subject: &str, ok: bool) -> String {
+    let outcome = if ok { "ok" } else { "didn't work" };
+    format!("Ran {subject} — {outcome}")
+}
+
+/// Nazwa pliku ze ścieżki; cała ścieżka, kiedy nazwy nie da się wyjąć.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+}
+
+/// Linia zamykająca turę: `Done · 2 turns · 6.2s · $0.15`.
+///
+/// Liczby w zdaniu są zaokrąglone **do wyświetlenia**, a pola obok niosą wartości surowe —
+/// na tym polega różnica między formatowaniem a utratą. `cost_usd` przepisany co do bitu,
+/// bo `Line` jest jedyną rzeczą, którą dostaje widok: `$0,15` nie da się zamienić z powrotem
+/// w `0.14836290000000002`, a suma biegu byłaby wtedy krzywa na zawsze i bez śladu.
+fn done_line(agent: &str, outcome: &Outcome) -> Line {
+    let duration_ms = u64::try_from(outcome.took.as_millis()).unwrap_or(u64::MAX);
+    let head = match (&outcome.reason, outcome.ok) {
+        // Anulowanie jest wartością, nie błędem (niezmiennik 7). Krok, który ktoś zatrzymał
+        // celowo, nie ma prawa czytać się jak krok, który się zepsuł.
+        (FinishReason::Cancelled, _) => "Stopped",
+        (_, true) => "Done",
+        (_, false) => "Didn't work",
+    };
+
+    let turns = outcome.turns;
+    let plural = if turns == 1 { "turn" } else { "turns" };
+    let mut text = format!("{head} · {turns} {plural} · {}", took_text(duration_ms));
+    if let Some(cost) = outcome.cost_usd {
+        text.push_str(&format!(" · ${cost:.2}"));
+    }
+
+    Line::Done {
+        agent: agent.to_owned(),
+        text,
+        turns,
+        duration_ms,
+        cost_usd: outcome.cost_usd,
+    }
+}
+
+/// `6.2s` do minuty, `4m 12s` powyżej.
+///
+/// Liczone na liczbach całkowitych, bo `ms as f64` jest rzutowaniem stratnym, a pełna bramka
+/// woła clippy z `-D warnings` — i słusznie: to jedyne miejsce w tym pliku, w którym ktoś
+/// mógłby przypadkiem zamienić przepisaną liczbę na przeliczoną.
+fn took_text(ms: u64) -> String {
+    if ms < 60_000 {
+        let mut whole = ms / 1_000;
+        let mut tenths = (ms % 1_000 + 50) / 100;
+        if tenths == 10 {
+            whole += 1;
+            tenths = 0;
+        }
+        return format!("{whole}.{tenths}s");
+    }
+    let seconds = ms / 1_000;
+    format!("{}m {}s", seconds / 60, seconds % 60)
 }
