@@ -274,6 +274,10 @@ use \`.loadout/scratch/\` inside this worktree. Paths outside the worktree are r
 sandbox unpredictably: measured on S-1, \`mkdir /tmp/s1-only-two\` was blocked in one phase and
 \`/tmp/s1-run\` succeeded in another. Inside the worktree it always works.
 
+Before you finish, run the formatter: npm run fmt for the frontend and cargo fmt for Rust.
+quick-fmt is part of the gate, and a formatting diff is the cheapest possible way to turn an
+otherwise green task red. Measured on T-01: seventeen checks, one failure, prettier.
+
 One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
 command and asks approval for each part, and in an unattended run there is nobody to give it —
 every chained command is a lost turn. Measured: 7 lost turns in one phase.
