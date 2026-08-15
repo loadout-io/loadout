@@ -56,10 +56,19 @@ run_pids() {
     descendants "$root"
     return
   fi
-  local pat
-  for pat in "${FALLBACK[@]}"; do
-    pgrep -f "$pat" 2>/dev/null
-  done | sort -u
+  # Tryb awaryjny tez musi zejsc po drzewie. Bez tego widzi wylacznie skrypty i NIE widzi
+  # agenta -- czyli `stop` zostawialby sierote, ten sam blad, przeciw ktoremu ten plik powstal.
+  # Zlapane 2026-08-15, kiedy plik PID zniknal w trakcie biegu i status przelaczyl sie na wzorce:
+  # agent 26814 po prostu wypadl z listy, cicho.
+  local pat p
+  {
+    for pat in "${FALLBACK[@]}"; do
+      for p in $(pgrep -f "$pat" 2>/dev/null); do
+        printf '%s\n' "$p"
+        descendants "$p"
+      done
+    done
+  } | sort -u
 }
 
 show() { ps -p "$1" -o command= 2>/dev/null | cut -c1-100; }
