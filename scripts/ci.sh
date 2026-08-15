@@ -293,6 +293,7 @@ guards_lane() {
     return 0
   fi
   prompt_backticks
+  pinned_scripts_find_the_repo
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
   echo "── guards (the check of checks) ──"
@@ -350,6 +351,48 @@ cargo_lock_exit_code() {
     return 1
   fi
   echo "cargo lock: zajęty muteks daje 2, nie 1"
+}
+
+# ── przypięte skrypty muszą nadal znajdować korzeń repo ───────────────────────
+# Regresja z 2026-08-15, wprowadzona przez samą poprawkę przeciw edycji w trakcie biegu:
+# po `exec bash "$snap"` ${BASH_SOURCE[0]} wskazuje plik w $TMPDIR, więc każde
+# `dirname "${BASH_SOURCE[0]}"` liczyło korzeń repo jako /var/folders/… i oba skrypty
+# padały natychmiast. `bash -n` tego nie widzi — składnia jest bez zarzutu.
+#
+# Drugi, gorszy wariant tej samej wady: LOADOUT_PINNED jest wyeksportowany, więc
+# ship-task.sh odpalony przez build-loop.sh dziedziczyłby cudzy sentinel, pomijał własne
+# przypięcie i brał katalog scripts/ za korzeń. Poprawka wyłączałaby się dokładnie tam,
+# gdzie pętla jej najbardziej potrzebuje. Stąd `unset` w obu skryptach i drugi wiersz niżej.
+pinned_scripts_find_the_repo() {
+  local out
+  # ship-task.sh z nieistniejącym zadaniem ma dojść do listowania tasks/ — czyli musi
+  # najpierw poprawnie ustalić korzeń. To najtańsze wywołanie, które tego dowodzi.
+  out="$(bash ship-task.sh __ci_probe__ 2>&1 || true)"
+  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
+    echo "ship-task.sh nie znajduje korzenia repo po przypięciu:" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  out="$(bash scripts/build-loop.sh --dry-run 2>&1 || true)"
+  if printf '%s' "$out" | grep -q 'run me from the repo root'; then
+    echo "build-loop.sh nie znajduje korzenia repo po przypięciu" >&2
+    return 1
+  fi
+
+  # Sentinel build-loopa NIE MOŻE wyłączyć przypięcia ship-taskowi. To druga wada, nie ta
+  # sama: przy wspólnej nazwie dziecko dziedziczyło sentinel rodzica i brało jego katalog
+  # za korzeń repo. Podrzucamy tu dokładnie taką parę zmiennych i wymagamy, żeby nic się
+  # nie zmieniło — bo nazwy są rozłączne.
+  out="$(env LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP=/tmp \
+             bash ship-task.sh __ci_probe__ 2>&1 || true)"
+  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
+    echo "cudzy sentinel wyłączył przypięcie ship-task.sh:" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  echo "pinned scripts: oba znajdują korzeń repo, cudzy sentinel ich nie rusza"
 }
 
 # ── zamek po martwym właścicielu ma być odzyskany, nie odczekany ──────────────

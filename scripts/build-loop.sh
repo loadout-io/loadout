@@ -25,16 +25,21 @@ set -euo pipefail
 # Zdarzylo sie trzy razy 2026-08-15, za kazdym razem po moim wlasnym ostrzezeniu, i za
 # kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
 # Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
-# ROOT liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
-if [ -z "${LOADOUT_PINNED:-}" ]; then
-  LOADOUT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  LOADOUT_SNAP="$(mktemp -t "$(basename "$0")")"
+# Katalog skryptu liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
+# Sentinel WŁASNY dla tego skryptu — patrz ten sam komentarz w ship-task.sh. Wspólna nazwa
+# wyciekała do dziecka i wyłączała mu przypięcie.
+if [ -z "${LOADOUT_PINNED_BUILD_LOOP:-}" ]; then
+  LOADOUT_SELF_BUILD_LOOP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t build-loop)"
   cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
-  export LOADOUT_PINNED=1 LOADOUT_ROOT
+  export LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP
   exec bash "$LOADOUT_SNAP" "$@"
 fi
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+SELF_DIR="${LOADOUT_SELF_BUILD_LOOP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+unset LOADOUT_PINNED_BUILD_LOOP LOADOUT_SELF_BUILD_LOOP
+
+cd "$SELF_DIR/.."
 ROOT="$PWD"
 LOG="$ROOT/runs/build-loop.tsv"
 

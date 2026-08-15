@@ -26,15 +26,25 @@ set -euo pipefail
 # kazdym razem kosztowalo diagnostyke "czy ten bieg jeszcze jest wazny".
 # Kopia jest niezmienna, wiec orchestrator moze naprawiac harness, kiedy petla chodzi.
 # ROOT liczony PRZED exec: w kopii $0 wskazuje na mktemp, a nie na repo.
-if [ -z "${LOADOUT_PINNED:-}" ]; then
-  LOADOUT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  LOADOUT_SNAP="$(mktemp -t "$(basename "$0")")"
+# Nazwa sentinela jest WŁASNA dla tego skryptu, nie wspólna. Wspólna („LOADOUT_PINNED")
+# wyciekała przez środowisko: build-loop.sh odpala ship-task.sh, więc dziecko widziało
+# cudzy sentinel, pomijało własne przypięcie i brało katalog rodzica za korzeń repo —
+# czyli obrona przed edycją w trakcie biegu wyłączała się dokładnie w pętli, gdzie jest
+# najpotrzebniejsza. Osobne nazwy czynią ten wyciek niemożliwym, a nie tylko posprzątanym.
+if [ -z "${LOADOUT_PINNED_SHIP_TASK:-}" ]; then
+  LOADOUT_SELF_SHIP_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  LOADOUT_SNAP="$(mktemp -t ship-task)"
   cat "${BASH_SOURCE[0]}" > "$LOADOUT_SNAP"
-  export LOADOUT_PINNED=1 LOADOUT_ROOT
+  export LOADOUT_PINNED_SHIP_TASK=1 LOADOUT_SELF_SHIP_TASK
   exec bash "$LOADOUT_SNAP" "$@"
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# W kopii ${BASH_SOURCE[0]} wskazuje na plik w $TMPDIR, więc katalog repo trzeba WZIĄĆ
+# z góry, nie policzyć od nowa. Fallback jest na wypadek, gdyby mktemp odmówił.
+SELF_DIR="${LOADOUT_SELF_SHIP_TASK:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+unset LOADOUT_PINNED_SHIP_TASK LOADOUT_SELF_SHIP_TASK   # higiena; poprawność daje sama nazwa
+
+ROOT="$SELF_DIR"
 cd "$ROOT"
 
 # Przerwanie to 3, nie 130. Orkiestrator czyta kod wyjścia i „przerwane" musi dać się
