@@ -28,8 +28,10 @@ pub type StepId = usize;
 
 pub mod dag;
 pub mod drivers;
+pub mod line;
 pub mod scheduler;
 pub mod step;
+pub mod stream;
 
 // 2026-08-15 (T-04) — `#[path]` na dublera ZOSTAJE, choć `pub mod drivers;` jest już wyżej.
 //
@@ -56,8 +58,10 @@ pub mod supervisor;
 // (AGENTS.md §7). Ta lista istnieje po to, żeby to pytanie dało się zadać w dziesięć sekund
 // zamiast czytać cały plan:
 //
-//     pub mod stream;       — T-05 (NDJSON → zdarzenie)
-//     pub mod line;         — T-05 (zdarzenie → linia; tu mieszka kuracja)
+//     (pusta — na każdy wiersz, który tu stał, człowiek już odpowiedział)
 //
 // `pub mod drivers;` z tej listy zszedł: człowiek odpowiedział na to pytanie, wpisując
-// `src-tauri/src/engine/mod.rs` wprost do bloku OWNS zadania T-04.
+// `src-tauri/src/engine/mod.rs` wprost do bloku OWNS zadania T-04. `pub mod line;`
+// i `pub mod stream;` zeszły stąd 2026-08-16 tą samą drogą — ten sam plik stoi w bloku
+// OWNS zadania T-05. Lista zostaje pusta, a nie skasowana: następne zadanie, które będzie
+// potrzebowało wiersza w tym pliku, ma zobaczyć, gdzie się o niego pyta.
