@@ -157,8 +157,16 @@ zimnego builda cargo, komunikat wysyłający agenta do katalogu, którego nie po
 zatrzymałby pętlę na godziny, a żaden nie wymagał decyzji człowieka** — wymagał tylko zauważenia,
 że winna jest konfiguracja, nie model.
 
-Cztery rzeczy, których przy takiej naprawie pilnujesz:
+Pięć rzeczy, których przy takiej naprawie pilnujesz:
 
+0. **Najpierw skrypt albo hak, dopiero potem prompt** (niezmiennik 28). Zanim dopiszesz zdanie
+   do promptu, przejdź kolejność: **(a)** hak, który po cichu naprawia stan; **(b)** sprawdzenie
+   w `checks/`, które świeci na czerwono; **(c)** uprawnienie, które czyni rzecz niemożliwą.
+   Prompt dopiero, gdy wszystkie trzy odpadną — i wtedy zapisz **dlaczego** odpadły
+   w `docs/HARNESS-QUEUE.md`. Prompt jest miękki, rośnie w nieskończoność i płacisz za niego
+   w każdym biegu; skrypt kosztuje raz. Kiedy mechanizujesz coś, co wcześniej było promptem,
+   **usuń tamten akapit w tym samym commicie** — dwa źródła prawdy o jednej rzeczy to gorzej
+   niż jedno złe.
 1. **Osobny commit, nigdy w commicie zadania.** Naprawa harnessu i praca zadania mieszają dwie
    różne odpowiedzialności; w jednym diffie nikt już nie odróżni, co czemu służyło.
 2. **W komunikacie commita zapisz INCYDENT, nie tylko zmianę.** „Budżet 20 s jest krótszy niż

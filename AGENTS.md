@@ -158,6 +158,29 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
     deklarowana: etap zaszyty w kodzie **jest** domyślny i nie da się go wyłączyć konfiguracją.
     Sprawdzane gerpem w bramce razem z niezmiennikiem 1.
 
+28. **Najpierw skrypt albo hak, dopiero potem prompt.** Kiedy jakieś zachowanie ma się
+    powtarzać albo przestać się powtarzać, kolejność prób jest ustalona i nie wolno jej
+    odwracać: **(1)** czy da się to wymusić hakiem, który po cichu naprawia stan
+    (`PostToolUse` formatujący zapisany plik); **(2)** czy da się to wykryć sprawdzeniem
+    w `checks/`, które świeci na czerwono; **(3)** czy da się to uczynić niemożliwym przez
+    uprawnienia w `.claude/settings.json`. Dopiero kiedy wszystkie trzy odpadną — prompt.
+
+    Powód jest mierzalny, nie estetyczny. Prompt jest **miękki**: bieg może go zignorować
+    i nikt się o tym nie dowie, bo nie ma kto sprawdzić. Rośnie monotonicznie, bo każdy
+    incydent dokłada akapit, a nikt nigdy żadnego nie usuwa. I kosztuje tokeny w **każdym**
+    biegu, na zawsze. Skrypt jest twardy, deterministyczny, kosztuje raz i sam siebie testuje.
+    Zmierzone 2026-08-15: „pamiętaj uruchomić formatter" w promcie kontraktu bieg wykonywał
+    niekonsekwentnie i kosztowało to całą rundę naprawczą za przecinek; hak `PostToolUse`
+    skasował tę klasę czerwieni w całości i zwolnił cztery wiersze promptu. Ta sama historia
+    z backtickami w heredocach: ostrzeżenie w promcie wracało, `prompt_backticks`
+    w `scripts/ci.sh` nie wróciło ani razu.
+
+    Kiedy prompt **jest** właściwym narzędziem: gdy chodzi o zachowanie, a nie o stan, który
+    da się wykryć i naprawić. „Jedna komenda na wywołanie Bash" zostaje promptem, bo hak
+    odmawiający kosztuje dokładnie tę samą turę, którą kosztuje odmowa uprawnień — zysku
+    zero, a dochodzi ryzyko fałszywej odmowy. Wybór promptu ma być **udokumentowany**
+    (`docs/HARNESS-QUEUE.md`, sekcja „czego świadomie nie mechanizujemy”), nie domyślny.
+
 ---
 
 ## 4. Zakazane → zamiast tego
