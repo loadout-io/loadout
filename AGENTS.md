@@ -72,6 +72,15 @@ Nie czytaj `harness/gate.py`, żeby się tego dowiedzieć. Całość jest tutaj.
    **W Ruście oznacza to: najpierw sygnatura z `todo!()`**, żeby test się skompilował i padł
    w czasie wykonania. Test, który się nie kompiluje, niczego nie uruchomił.
 
+   **W TypeScripcie to samo, tylko pułapka jest inna.** `vitest` przewraca się już na
+   **zbieraniu** plików: brakujący `src/state/skills.ts` daje „Failed to load … Cannot find
+   module", a to jest podpis z `NOT_A_REAL_RED`, nie czerwień. Więc zanim odpalisz
+   `./verify.sh before`, każdy moduł i komponent, który test importuje, **musi istnieć jako
+   pusty szkielet**: funkcja rzucająca `throw new Error("not implemented")`, hook zwracający
+   akcje, które jeszcze nic nie robią, komponent renderujący pusty fragment. Import ma się
+   rozwiązać, a test paść **na asercji**. To jest dokładny odpowiednik `todo!()` i obowiązuje
+   tak samo — kryterium frontendowe bez szkieletu spala rundę identycznie jak rustowe.
+
 ## 3. Reguły wiążące
 
 Numerowane, bo pliki zadań je cytują („niezmiennik 6").

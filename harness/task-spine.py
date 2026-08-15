@@ -129,6 +129,39 @@ def prose_contradictions():
     return bad
 
 
+def unowned_test_files():
+    """Plik testu wskazany przez `check:` musi byc w OWNS -- inaczej kontrakt nie moze go napisac.
+
+    To ta sama rodzina co brak deklaracji modulu, tylko o krok wczesniej: faza kontraktu probuje
+    utworzyc plik specyfikacji, quick-scope.sh odrzuca zapis poza blokiem OWNS, i petla staje
+    przed pierwszym `./verify.sh before` -- zanim ktokolwiek zobaczy jedno kryterium.
+    Zmierzone 2026-08-15 na T-24: trzy kryteria wolaja `cargo test --test workspace_*`,
+    a zadnego z tych plikow nie ma w OWNS.
+    """
+    bad = []
+    for f in sorted((ROOT / "tasks").glob("[ST]-*.md")):
+        s = f.read_text()
+        owns = owns_of(f)
+        for line in s.splitlines():
+            if not line.strip().startswith("check:"):
+                continue
+            # `cargo test --test <nazwa>` -> src-tauri/tests/<nazwa>.rs (konwencja cargo,
+            # nie nasza: integracyjny target o tej nazwie MUSI tam lezec).
+            m = re.search(r"--test\s+(\S+)", line)
+            want = f"src-tauri/tests/{m.group(1)}.rs" if m else None
+            if want is None:
+                # vitest i inne: sciezka stoi w linii wprost
+                m2 = re.search(r"(\S+\.(?:ts|tsx|rs))(?:\s|$)", line)
+                want = m2.group(1) if m2 else None
+            if want is None:
+                continue
+            # Wpis w OWNS moze byc katalogiem ("src-tauri/tests" albo "src/sections/run").
+            if any(want == o or want.startswith(o.rstrip("/") + "/") for o in owns):
+                continue
+            bad.append((f.stem, want, line.strip()))
+    return bad
+
+
 def main():
     problems = []
     # Modul jest "zalatwiony", gdy juz stoi w repo albo gdy zadeklaruje go WCZESNIEJSZE zadanie.
@@ -176,8 +209,20 @@ def main():
         print("detail: `pub mod x;` -- zadnej innej zmiany'.")
         return 1
 
+    unowned = unowned_test_files()
+    if unowned:
+        print("plik testu z linii check: jest poza blokiem OWNS:")
+        for task, want, line in unowned:
+            print(f"  {task}: {want}")
+            print(f"      {line}")
+        print()
+        print("detail: faza kontraktu nie ma prawa go utworzyc -- quick-scope.sh odrzuci zapis,")
+        print("detail: a petla stanie przed pierwszym `./verify.sh before`.")
+        return 1
+
     print(f"task spine: {len(task_order())} zadan, kazdy modul Rusta ma gdzie sie zadeklarowac,")
-    print("            i zadna proza nie zabrania tego, na co pozwala jego blok OWNS")
+    print("            zadna proza nie zabrania tego, na co pozwala blok OWNS,")
+    print("            a kazdy plik testu z check: jest w OWNS swojego zadania")
     return 0
 
 
