@@ -36,6 +36,7 @@ pub mod step;
 // `pub mod drivers;`, ta deklaracja znika, a dubler wraca pod `drivers::fake`.
 #[path = "drivers/fake.rs"]
 pub mod fake;
+pub mod supervisor;
 
 // 2026-08-15 — WIERSZE, KTÓRE DOŁOŻĄ KOLEJNE ZADANIA. Każdy z nich jest jednym wierszem
 // poza blokiem OWNS tamtego zadania, więc każdy jest osobnym pytaniem do człowieka
