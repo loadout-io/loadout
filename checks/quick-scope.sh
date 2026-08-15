@@ -115,8 +115,16 @@ while IFS= read -r p; do
   [ -z "$p" ] && continue
   n=$((n + 1))
 
-  # Kontrakt zadania jest tylko do czytania. Zmiana TASK.md to zmiana warunków zaliczenia.
+  # Kontrakt jest tylko do czytania — ale "zmieniony" znaczy "rozni sie od tasks/<ID>.md",
+  # nie "rozni sie od commita kontraktowego". Orchestrator moze zaktualizowac plik zadania
+  # w trakcie biegu (T-02: dopisanie lib.rs do OWNS, o ktore agent poprosil zgodnie z par.7)
+  # i wtedy TASK.md ma sie z nim ZGADZAC, a nie z wersja sprzed poprawki.
+  # Rozjazd w druga strone lapie harness/gate.py (N-08) i konczy kodem 2, nie 1.
   if [ "$p" = "TASK.md" ]; then
+    stem="$(sed -n '1s/^#[[:space:]]*\([ST]-[0-9]*\).*/\1/p' TASK.md 2>/dev/null || true)"
+    if [ -n "$stem" ] && [ -f "tasks/$stem.md" ] && cmp -s "tasks/$stem.md" TASK.md; then
+      continue
+    fi
     violations+="  $p — the task contract was modified; OWNS and the criteria are read-only"$'\n'
     continue
   fi
