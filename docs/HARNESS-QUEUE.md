@@ -90,6 +90,42 @@ Odpalać `ci.sh` przy postoju pętli albo w tle.
 
 ---
 
+## Q-4 — podciągnięcie trunka ma być PRZED naprawą, nie po niej
+
+**Klasa:** poprawka `01deb45` zrobiona w połowie. Sama znalazła swoją drugą połowę.
+
+Dzisiejsza kolejność w `ship-task.sh`:
+
+```
+bramka → druga opinia → repair.sh → merge main → bramka
+```
+
+Czyli agent naprawiający pracuje przeciwko **nieaktualnej kopii harnessu**, a dopiero po nim
+podciągamy trunk i sądzimy go nową bramką. To jest dokładnie ta klasa fałszywych zatrzymań,
+którą `01deb45` miał skasować — trzy z pierwszych czterech postojów pętli 2026-08-15.
+Naprawa może trafić w stare sprawdzenie i przewrócić się na nowym, i nikt nie zrozumie dlaczego.
+
+Agent naprawiający jest przy tym tym, który **najbardziej** potrzebuje aktualnej bramki:
+jego jedynym zadaniem jest odpowiedzieć na to, co bramka powiedziała.
+
+Docelowo:
+
+```
+bramka → druga opinia → merge main → repair.sh → bramka
+```
+
+Powód, dla którego merge stoi tam, gdzie stoi, jest w komentarzu: *„Moment jest bezpieczny,
+bo żaden agent już nie pracuje"*. Po drugiej opinii jest równie bezpieczny — recenzent
+skończył, naprawiacz jeszcze nie wystartował. Warunek jest spełniony w obu miejscach,
+więc nic nie stoi na przeszkodzie.
+
+Efekt uboczny, dla którego warto to zrobić od razu: hak formatujący (`d586ad9`) trafi do
+worktree **przed** rundą naprawczą, więc naprawiacz przestanie móc wywrócić zadanie
+przecinkiem. Zmierzone na T-03: `quick-fmt` czerwony na pliku testowym, w gałęzi wyciętej
+przed hakiem.
+
+---
+
 ## Czego świadomie NIE mechanizujemy
 
 **„Jedna komenda na wywołanie Bash".** Kusi, żeby zrobić z tego hak `PreToolUse`, ale hak
