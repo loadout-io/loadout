@@ -103,10 +103,21 @@ Workflow: parallel([
 ])
 ```
 
-**Trzy naraz, nie więcej.** Jeden agent to ~583 MB; na 16 GB czwarty zaczyna wypychać maszynę
-w swap i wszystko zwalnia. `checks/_cargo-serialize.sh` i tak trzyma mutex na jednym ciężkim
-cargo, więc zadania rustowe ustawią się w kolejkę — równoległość opłaca się głównie między
-rustem a frontendem.
+**Sześć naraz.** Liczba jest zmierzona na tej maszynie, nie przepisana z raportu: 64 GB RAM,
+16 rdzeni, agent zajmuje **385 MB** (nie 583 z T7 §7.1, które zakładało 16 GB i inny build).
+Sześciu agentów to ~2,3 GB — pomijalne. Wąskim gardłem NIE są agenci, tylko
+`checks/_cargo-serialize.sh`: mutex przepuszcza jeden ciężki cargo naraz (niezmiennik 26),
+więc zadania rustowe ustawiają się w kolejkę niezależnie od tego, ilu agentów myśli równolegle.
+
+**Przy wachlarzu podnieś sufit czekania na mutex:** `LOADOUT_CARGO_LOCK_WAIT=2400`. Domyślne
+300 s jest dobre dla biegu szeregowego, gdzie pięciominutowe czekanie znaczy „coś wisi". Przy
+sześciu zadaniach kolejkowanie jest **oczekiwane**, a nie objawem — bez podniesienia sufitu
+ostatni w kolejce dostaje `exit 2` i fałszywą czerwień. To jest jawne odwrócenie decyzji
+zapisanej w `docs/HARNESS-QUEUE.md`; tamto rozumowanie dotyczyło biegu szeregowego i przy
+wachlarzu przestaje obowiązywać.
+
+**Landowanie zawsze pojedynczo i poza wachlarzem.** Agenci wołają wyłącznie `ship-task.sh`,
+który NIE landuje. `integrate.sh` uruchamiasz sam, po jednej gałęzi, kiedy fala się skończy.
 
 **Landowanie zawsze pojedynczo.** `integrate.sh` merguje jedną gałąź i przepuszcza pełną bramkę
 po **każdej**. Nigdy nie landuj równolegle: drugi merge na czerwonym trunku zamienia jeden defekt
