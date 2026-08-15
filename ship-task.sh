@@ -418,6 +418,22 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
       echo "repair.sh reports OUR misconfiguration." >&2
       exit 2
     fi
+    # Podciągnij harness z trunka PRZED ostatnią bramką. Gałąź wycięta godziny temu biegnie
+    # ze sprawdzeniami sprzed poprawek, które orchestrator nanosił w międzyczasie — i trzy
+    # z pierwszych czterech zatrzymań pętli (2026-08-15) to były właśnie fałszywe alarmy
+    # z nieaktualnej kopii checks/. Żadne nie było defektem zadania, każde kończyło się tym
+    # samym ręcznym rebase i ponowną bramką.
+    #
+    # Merge, nie rebase: nie przepisujemy historii gałęzi, która zaraz ląduje. Tylko gdy
+    # czysto — konfliktu nie zgadujemy, tylko go zgłaszamy. Moment jest bezpieczny, bo żaden
+    # agent już nie pracuje, a bramka biegnie zaraz potem.
+    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
+      note "harness refreshed from the trunk before the final gate"
+    else
+      git -C "$WT" merge --abort >/dev/null 2>&1 || true
+      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
+    fi
+
     say "gate, after the repair round"
     GATE=0; gate full || GATE=$?
     note "gate: $GATE"
