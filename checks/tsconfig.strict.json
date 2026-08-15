@@ -39,7 +39,7 @@
     "skipLibCheck": true,
     "noEmit": true,
 
-    "types": ["vite/client"],
+    "types": ["vite/client", "node"],
 
     // BEZ baseUrl: pod TypeScriptem 6 (przypiętym w package.json i egzekwowanym niżej)
     // `baseUrl` to twardy `error TS5101`. Bramka typów nie skompilowałaby ANI JEDNEJ linii,

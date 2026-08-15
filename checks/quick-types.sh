@@ -48,13 +48,16 @@ fi
 out=""; rc=0
 out="$("$TSC" --noEmit -p checks/tsconfig.strict.json 2>&1)" || rc=$?
 
-# tsc rozróżnia dwie rzeczy i my musimy je przepuścić dalej rozróżnione (N-01):
-#   rc 1 = kod się nie typuje        -> czerwone, wina kodu
-#   rc 2 = KONFIGURACJA jest zepsuta -> exit 2, wina NASZA
-# Wcześniej oba lądowały jako 1. Skutek: błąd w naszym tsconfigu omijał wszystkie trzy
-# wyjścia awaryjne wpięte w exit 2 (gate.py, stop-gate.sh, ship-task.sh) i lądował jako
-# runda naprawcza, której pisarz nie ma jak wygrać — checks/ jest dla niego zabronione.
-if [ "$rc" -eq 2 ] || printf '%s\n' "$out" | grep -qE 'error TS(5[0-9]{3}|18003)'; then
+# Rozroznienie konfiguracja vs kod (N-01). Bez niego blad w NASZYM tsconfigu omijal wszystkie
+# trzy wyjscia awaryjne wpiete w exit 2 i ladowal jako runda naprawcza, ktorej pisarz nie ma
+# jak wygrac — checks/ jest dla niego zabronione.
+# NIE po kodzie wyjscia: tsc konczy dwojka takze dla zwyklych bledow typow. Zmierzone na
+# T-01 (2026-08-15): TS7006 "implicitly has an any type" — realny defekt kodu — zostal
+# zaklasyfikowany jako nasza zla konfiguracja i zatrzymal petle zamiast trafic do rundy
+# naprawczej, ktora by go naprawila. 52 minuty i 22 dolary na blednym rozroznieniu.
+# Dyskryminatorem jest KOD BLEDU: TS5xxx i TS6xxx to konfiguracja i CLI, TS18003 to brak
+# wejscia. Wszystko inne (TS2xxx, TS7xxx) to kod, czyli exit 1.
+if printf '%s\n' "$out" | grep -qE 'error TS(5[0-9]{3}|6[0-9]{3}|18003)'; then
   echo "our TypeScript configuration is broken — this is not your code" >&2
   printf '%s\n' "$out" | head -20 >&2
   echo "detail: checks/tsconfig.strict.json, owned by the harness, not by any task" >&2
