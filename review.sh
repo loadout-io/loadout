@@ -99,7 +99,7 @@ rm -f "$OUT" "$RAW" "$LOG"
 # Baza diffu: commit, który wniósł TASK.md — pierwszy commit gałęzi, czyli kontrakt.
 BASE=""; FROM_WHAT=""
 if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
-  BASE="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | tail -1 || true)"
+  BASE="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | head -1 || true)"
   FROM_WHAT="the commit that added TASK.md, i.e. the contract"
   if [ -z "$BASE" ]; then
     BASE="$(git merge-base HEAD main 2>/dev/null || true)"; FROM_WHAT="where this branch left main"

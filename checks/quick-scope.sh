@@ -28,7 +28,7 @@ cd "$ROOT"
 # ukośnika, bo to nie jest katalog. Wzorzec wymagający `target/` go nie łapał i KAŻDY bieg
 # w worktree zaczynał się od „a file was written outside this task's scope: target".
 # To samo dotyczy sklonowanego node_modules i każdej innej generowanej ścieżki-liścia.
-GENERATED='^(target|src-tauri/target|src-tauri/gen|node_modules|dist|\.vite|runs|test-results|playwright-report|\.playwright|\.loadout/runs|\.git|\.idea|\.vscode|coverage)(/|$)|^\.loadout/loadout\.db|(\.tsbuildinfo|\.DS_Store|\.log|\.jsonl)$|^\.port$'
+GENERATED='^(target|src-tauri/target|src-tauri/gen|node_modules|dist|\.vite|runs|test-results|playwright-report|\.playwright|\.loadout/scratch|\.loadout/runs|\.git|\.idea|\.vscode|coverage)(/|$)|^\.loadout/loadout\.db|(\.tsbuildinfo|\.DS_Store|\.log|\.jsonl)$|^\.port$'
 
 # ── Co wolno dotknąć, kiedy zadanie nie deklaruje własności (bieg ręczny, bez TASK.md). ────
 ALLOWED='^(src/|src-tauri/src/|src-tauri/capabilities/|src-tauri/icons/|src-tauri/tauri\.conf\.json$|docs/|\.loadout/)|^(README\.md|TASK\.md)$'
@@ -74,7 +74,7 @@ fi
 
 base=""
 if [ -f TASK.md ]; then
-  base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | tail -1 || true)"
+  base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | head -1 || true)"
 fi
 committed=""
 basis="uncommitted work only (no contract commit found)"
