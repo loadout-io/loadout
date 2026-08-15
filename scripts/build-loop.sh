@@ -54,7 +54,14 @@ done
 [ -f ship-task.sh ] || { echo "run me from the repo root" >&2; exit 2; }
 [ -n "$(git status --porcelain)" ] && { echo "the tree is dirty — commit first, the loop lands branches into it" >&2; exit 2; }
 
-landed() { git merge-base --is-ancestor "refs/heads/task-$1" HEAD 2>/dev/null; }
+# Wyladowane = galaz jest przodkiem HEAD ALBO log mowi, ze przeszlo. Sama ancestralnosc
+# nie wystarcza: integrate.sh landuje, a operator kasuje galaz — i przy nastepnym restarcie
+# petla planowala zadanie, ktore juz stoi w trunku. Zmierzone przy wznowieniu po S-2.
+landed() {
+  git merge-base --is-ancestor "refs/heads/task-$1" HEAD 2>/dev/null && return 0
+  [ -f "$LOG" ] && grep -qE "^$1"$'\t'"green" "$LOG" && return 0
+  return 1
+}
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
