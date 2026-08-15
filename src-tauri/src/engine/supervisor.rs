@@ -65,7 +65,8 @@ use std::time::{Duration, Instant};
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use tokio::io::AsyncWriteExt;
-use tokio::process::{ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
 /// Jedyne nazwy zmiennych środowiskowych, które przechodzą do dziecka. Wszystko poza tą listą
@@ -187,6 +188,20 @@ pub enum StdinPlan {
     /// Jeden zapis na stdin, potem zamknięcie deskryptora — czyli EOF, którego dziecko i tak
     /// czeka. Tędy idzie prompt i tędy idą sekrety.
     Write(String),
+    /// Ten sam pierwszy zapis, ale deskryptor **zostaje otwarty** i wraca do wołającego przez
+    /// [`Supervised::stdin`]. Kanał na drugą turę i na przerwanie w paśmie.
+    ///
+    /// 2026-08-15 — bez tego wariantu jeden proces obsługuje dokładnie jedną turę: koperta
+    /// kolejnej tury nie ma dokąd pojechać, a `control_request`/`interrupt` — który jedzie tą
+    /// samą drogą — nie ma czym wyjść, więc anulowanie prowadzi sygnałem i traci wznawialność
+    /// sesji [T1 §4.6]. Alternatywą byłby świeży proces na turę z `--resume`, czyli zimny start
+    /// i odbudowa cache'u przy **każdej** turze [T1 §8.1]; to jest ten koszt, którego cały ten
+    /// kształt ma uniknąć.
+    ///
+    /// EOF jest tu **osobnym czasownikiem**: dziecko dostaje go dopiero wtedy, gdy wołający
+    /// porzuci potok oddany mu przez [`Supervised::stdin`]. To jest różnica między „koniec tury"
+    /// a „koniec sesji".
+    Keep(String),
 }
 
 /// Jak skończył się bieg z limitem czasu.
@@ -223,6 +238,13 @@ pub struct Supervised {
     /// Odebrany strumień wyjścia, czekający na tego, kto go czyta (T-05). Oddawany raz.
     stdout: Option<ChildStdout>,
 
+    /// Potok wejściowy wracający z zadania, które wykonało pierwszy zapis z
+    /// [`StdinPlan::Keep`]. `None` dla planów, które ten deskryptor zamykają.
+    ///
+    /// Kanałem, a nie gołym uchwytem, bo pierwszy zapis biegnie **w zadaniu** (powód przy
+    /// [`spawn`]), a potok jest jeden: dopóki tamten zapis trwa, nie ma czego oddać.
+    stdin: Option<oneshot::Receiver<ChildStdin>>,
+
     /// Status lidera, jeśli to my go zebraliśmy. Bez niego nie da się odróżnić czystego wyjścia
     /// po SIGTERM od sygnału 9 po eskalacji, czyli nie widać, czy łaska w ogóle działa.
     status: Option<ExitStatus>,
@@ -256,6 +278,20 @@ impl Supervised {
     /// się go raz, temu, kto go czyta (T-05).
     pub fn stdout(&mut self) -> Option<ChildStdout> {
         self.stdout.take()
+    }
+
+    /// Odbiera potok wejściowy — ten sam, przez który poszedł pierwszy zapis. `None` przy
+    /// każdym planie poza [`StdinPlan::Keep`] i przy drugim wywołaniu: potok jest jeden
+    /// i oddaje się go raz, dokładnie jak strumień wyjścia.
+    ///
+    /// Czeka, aż pierwszy zapis dojdzie do końca, i to nie jest kwestia gustu: druga koperta
+    /// wysłana w środek pierwszej przeplotłaby się z nią w tym samym potoku, a CLI czyta stdin
+    /// **linia po linii** — rozjechana linia to cała tura zgubiona po drugiej stronie.
+    ///
+    /// Zamknięcie deskryptora należy do tego, kto go stąd wziął: porzucenie zwróconej wartości
+    /// jest tym EOF-em, po którym `claude` wychodzi sam [T1 §2].
+    pub async fn stdin(&mut self) -> Option<ChildStdin> {
+        self.stdin.take()?.await.ok()
     }
 
     /// Czeka na naturalne wyjście lidera i **zbiera** go, żeby nie został zombie.
@@ -435,7 +471,8 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
     // natychmiast — bez tego `claude` czeka ~3 s na każdym kroku [T1 §4.6].
     let (plan, prompt) = match stdin {
         StdinPlan::Null => (Stdio::null(), None),
-        StdinPlan::Write(text) => (Stdio::piped(), Some(text)),
+        StdinPlan::Write(text) => (Stdio::piped(), Some((text, false))),
+        StdinPlan::Keep(text) => (Stdio::piped(), Some((text, true))),
     };
     command.stdin(plan);
     command.stdout(Stdio::piped());
@@ -464,17 +501,34 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
     // nie przeczyta ani linii — a EOF na tym potoku ma osobne kryterium.
     let stdout = child.stdout().take();
 
-    if let Some(text) = prompt
+    let mut kept = None;
+    if let Some((text, keep)) = prompt
         && let Some(mut pipe) = child.stdin().take()
     {
         // Zapis w osobnym zadaniu, nie tutaj: bufor potoku ma ~64 KB, a prompt bywa
         // większy — zapis synchroniczny stanąłby na pełnym buforze, czekając na dziecko,
-        // które czeka na resztę promptu. Zamknięcie deskryptora po zapisie jest tym EOF-em,
-        // którego agent i tak wypatruje.
-        let _writer = tokio::spawn(async move {
-            let _ = pipe.write_all(text.as_bytes()).await;
-            let _ = pipe.shutdown().await;
-        });
+        // które czeka na resztę promptu. Ta funkcja nie jest asynchroniczna, więc nie ma tu
+        // nawet czego czekać.
+        if keep {
+            // Potok WRACA do uchwytu zamiast zniknąć razem z zadaniem: to jest cała różnica
+            // między jedną turą na proces a sesją, która przyjmuje kolejne koperty. EOF wyśle
+            // dopiero ten, kto go stąd weźmie i porzuci.
+            let (give, take) = oneshot::channel();
+            let _writer = tokio::spawn(async move {
+                let _ = pipe.write_all(text.as_bytes()).await;
+                let _ = pipe.flush().await;
+                // Odbiorca mógł już zniknąć — wtedy potok ginie razem z tą wartością i dziecko
+                // dostaje EOF, czyli dokładnie to samo, co przy planie zamykającym.
+                let _ = give.send(pipe);
+            });
+            kept = Some(take);
+        } else {
+            // Zamknięcie deskryptora po zapisie jest tym EOF-em, którego agent i tak wypatruje.
+            let _writer = tokio::spawn(async move {
+                let _ = pipe.write_all(text.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            });
+        }
     }
 
     Ok(Supervised {
@@ -484,6 +538,7 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
         group: GroupId { pid, pgid: pid },
         child,
         stdout,
+        stdin: kept,
         status: None,
         proved_dead: false,
     })

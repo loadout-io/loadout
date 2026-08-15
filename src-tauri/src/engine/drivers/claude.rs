@@ -31,14 +31,14 @@
 //! surowego `agent-<id>.jsonl` na dysk i kuracja `AgentEvent` → `Line` należą do T-05. Ten
 //! podział jest jedynym, przy którym `CodexDriver` (T-10) powstaje bez dotykania `stream.rs`.
 //!
-//! # Stan tego pliku: JEDNA TURA NA SESJĘ (2026-08-15)
+//! # Kanał stdinu żyje tak długo jak sesja (2026-08-16)
 //!
-//! Argv, dekoder i anulowanie są kompletne. **Druga tura tym samym procesem nie działa**, i to
-//! nie jest niedokończona robota, tylko zgłoszenie: koperta kolejnej tury potrzebuje stdinu,
-//! który przeżyje pierwszy zapis, a jedyny start procesu w tym repo
-//! (`engine::supervisor::spawn`) zamyka go po jednym `StdinPlan::Write`. Brakujący wariant
-//! i akcesor leżą w `supervisor.rs`, czyli poza blokiem OWNS tego zadania — `AGENTS.md` §7.
-//! Powód rozpisany jest przy [`AgentDriver::start`] i [`AgentHandle::send`].
+//! Proces startuje z `StdinPlan::Keep`, więc deskryptor wejściowy **nie zamyka się po pierwszej
+//! kopercie** — wraca tutaj z `Supervised::stdin()` i zostaje polem uchwytu. Tym jednym kanałem
+//! idą trzy rzeczy i wszystkie trzy są kryterium: koperta pierwszej tury, koperta każdej
+//! następnej ([`AgentHandle::send`]) i `control_request`/`interrupt` pierwszego stopnia
+//! eskalacji ([`AgentHandle::cancel`]). EOF jest osobnym czasownikiem
+//! ([`AgentHandle::close`]) i znaczy „koniec sesji", nigdy „koniec tury".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,8 +48,8 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 
 use super::{
@@ -955,6 +955,10 @@ pub struct ClaudeHandle {
     /// jego polem, a nie kopią tutaj: dwie kopie tego samego faktu rozjeżdżają się dokładnie
     /// w chwili, w której zaczyna on być ciekawy.
     process: Supervised,
+    /// Wejście sesji, otwarte tak długo jak ona. Tędy jedzie koperta każdej kolejnej tury
+    /// i przerwanie w paśmie; `None` dopiero po [`AgentHandle::close`], bo porzucenie tego
+    /// potoku **jest** końcem sesji [T1 §2].
+    stdin: Option<ChildStdin>,
     /// Wyniki tur, w kolejności, w jakiej padły. Osobno od kanału zdarzeń, bo `wait()` musi je
     /// dostać także wtedy, gdy nikt nie czyta ekranu.
     outcomes: mpsc::Receiver<Outcome>,
@@ -978,33 +982,27 @@ impl AgentHandle for ClaudeHandle {
     /// Koperta, jedna linia JSON [T1 §4.6]:
     /// `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}`
     ///
-    /// # Ta metoda nie ma ciała i to jest ZGŁOSZENIE, nie niedopatrzenie (2026-08-15)
+    /// Znak nowej linii jest częścią protokołu, nie formatowaniem: CLI czyta stdin **linia po
+    /// linii** i bez niego czeka na resztę koperty w nieskończoność. Serializujemy zamiast
+    /// sklejać stringi — prompt z cudzysłowem rozjechałby linię i tura zginęłaby po drugiej
+    /// stronie.
     ///
-    /// Druga tura wymaga uchwytu do stdinu procesu, który żyje dłużej niż jeden zapis. Cały
-    /// start procesu w tym repo idzie przez `engine::supervisor::spawn`, a ono zna dwa plany
-    /// stdinu: `Null` (`/dev/null`) i `Write(String)` — jeden zapis, po którym zadanie
-    /// piszące **porzuca potok**, czyli zamyka deskryptor i daje dziecku EOF. Trzeciego planu
-    /// („pisz i zostaw otwarte") nie ma, a `Supervised` nie wystawia potoku wejściowego żadną
-    /// metodą; pole `child` jest prywatne dla modułu `supervisor`, więc `impl` w tym pliku go
-    /// nie widzi.
-    ///
-    /// Ominięcie tego bez dotknięcia `supervisor.rs` znaczyłoby wystartować proces samemu —
-    /// czyli własną grupę procesów i własną eskalację sygnałów w tym pliku, co łamie
-    /// niezmiennik 3 dokładnie tak, jak opisuje go `supervisor.rs`: „`libc::SIGTERM`
-    /// zaimportowany »na chwilę« w pliku wywołującym łamie niezmiennik 3 po cichu, bo w diffie
-    /// wygląda jak zwykły `use`".
-    ///
-    /// `src-tauri/src/engine/supervisor.rs` **nie leży w bloku OWNS tego zadania**, więc to
-    /// jest pytanie do człowieka (`AGENTS.md` §7), nie cichy dopisek. Brakuje jednego wariantu
-    /// i jednego akcesora; szczegóły w komentarzu przy [`AgentDriver::start`].
+    /// `flush()` po zapisie, bo tura, która utknęła w buforze, wygląda dokładnie tak samo jak
+    /// agent, który nie odpowiada.
     async fn send(&mut self, text: String) -> anyhow::Result<()> {
-        Err(anyhow!(
-            "a follow-up turn of {} bytes has nowhere to go: session {} was started with a stdin \
-             that closes after the first envelope, and keeping it open needs a plan this file is \
-             not allowed to add to the supervisor",
-            text.len(),
-            self.session.id
-        ))
+        let envelope = user_envelope(&text)?;
+        let pipe = self.stdin.as_mut().ok_or_else(|| {
+            anyhow!(
+                "a follow-up turn of {} bytes has nowhere to go: session {} was already closed, \
+                 and closing the input is how a session ends",
+                text.len(),
+                self.session.id
+            )
+        })?;
+        pipe.write_all(envelope.as_bytes()).await?;
+        pipe.write_all(b"\n").await?;
+        pipe.flush().await?;
+        Ok(())
     }
 
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
@@ -1051,10 +1049,13 @@ impl AgentHandle for ClaudeHandle {
     /// Koniec **sesji**, nie tury: dziecko dostaje EOF i wychodzi samo.
     ///
     /// Bez tego czasownika każdy skończony krok zostawiałby żywy proces — `claude` z otwartym
-    /// stdinem czeka w nieskończoność [T1 §2]. Tu zostało z tego samo czekanie: stdin zamknął
-    /// się już przy starcie (powód przy [`AgentHandle::send`]), więc nie ma czego domykać,
-    /// a proces i tak wychodzi sam.
+    /// stdinem czeka w nieskończoność [T1 §2].
     async fn close(&mut self) -> anyhow::Result<Option<i32>> {
+        // Porzucenie potoku JEST tym zamknięciem: dziecko dostaje EOF i wychodzi 0. Musi paść
+        // przed czekaniem, bo inaczej czekamy na proces, któremu sami nie powiedzieliśmy, że to
+        // koniec — i jest to zawieszenie nie do odróżnienia od agenta, który myśli.
+        drop(self.stdin.take());
+
         // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
         // różnica, którą mierzy dowód z `cancel()`.
         Ok(self.process.wait().await?.code())
@@ -1118,26 +1119,17 @@ impl AgentDriver for ClaudeDriver {
     /// startem, `pid` i `pgid` są znane **zanim** cokolwiek zostanie przeczytane ze stdout
     /// [T7 §6.2]. Prompt wchodzi pierwszą kopertą na stdin — nigdy w argv (niezmiennik 9).
     ///
-    /// # Stdin zamyka się po tej kopercie — to jest ZGŁOSZENIE (2026-08-15)
+    /// # Stdin zostaje otwarty i to jest cała różnica (2026-08-16)
     ///
-    /// Docelowo stdin **zostaje otwarty**, a zamknięcie go jest osobnym czasownikiem
-    /// ([`AgentHandle::close`]), bo znaczy „koniec sesji", a nie „koniec tury". To jest cała
-    /// różnica między jednym procesem na sesję a wariantem awaryjnym B z T1 §8.1 (nowy proces
-    /// na turę z `--resume`), który płaci zimny start i odbudowę cache'u przy **każdej** turze.
+    /// `StdinPlan::Keep`, a nie `Write`: deskryptor przeżywa pierwszą kopertę i wraca tu jako
+    /// pole uchwytu. Zamknięcie go jest osobnym czasownikiem ([`AgentHandle::close`]), bo znaczy
+    /// „koniec sesji", a nie „koniec tury" — i to jest ta jedna rzecz, którą różni się jeden
+    /// proces na sesję od wariantu awaryjnego B z T1 §8.1 (nowy proces na turę z `--resume`),
+    /// płacącego zimny start i odbudowę cache'u przy **każdej** turze.
     ///
-    /// `engine::supervisor::spawn` — jedyna droga do procesu we własnej grupie w tym repo —
-    /// zna dwa plany stdinu: `Null` i `Write(String)`. Ten drugi pisze raz i **porzuca potok**,
-    /// czyli zamyka deskryptor. Trzeciego planu nie ma, a `Supervised` nie oddaje potoku
-    /// wejściowego żadną metodą. Do domknięcia AC-6 i AC-7 brakuje w `supervisor.rs` jednego
-    /// wariantu (`StdinPlan::Keep`, albo `Write` bez zamknięcia) i jednego akcesora
-    /// (`Supervised::stdin() -> Option<ChildStdin>`) — razem kilkanaście wierszy w pliku, który
-    /// **nie leży w bloku OWNS tego zadania**. `AGENTS.md` §7: to jest pytanie do człowieka,
-    /// a nie cichy dopisek do cudzego pliku, i nie jest to też powód, żeby wystartować proces
-    /// obok supervisora i wnieść stałe sygnałów do tego pliku (niezmiennik 3).
-    ///
-    /// Do tego czasu sesja obsługuje **jedną** turę: prompt wchodzi kopertą, zdarzenia płyną,
-    /// wynik pada, anulowanie przechodzi pełną eskalacją z T-03. Druga tura zwraca błąd, który
-    /// mówi dokładnie to samo co ten akapit ([`AgentHandle::send`]).
+    /// Proces startuje przez `engine::supervisor::spawn` i tylko przez nie: własna grupa
+    /// procesów, `env_clear()` i cała eskalacja zabijania mieszkają tam (niezmienniki 3 i 23).
+    /// Ten plik nie zna ani jednej stałej sygnału i nie startuje niczego obok nadzorcy.
     async fn start(
         &self,
         spec: RunSpec,
@@ -1157,8 +1149,9 @@ impl AgentDriver for ClaudeDriver {
         let mut process = supervisor::spawn(
             self.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
-            // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty.
-            StdinPlan::Write(format!("{envelope}\n")),
+            // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
+            // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
+            StdinPlan::Keep(format!("{envelope}\n")),
         )?;
 
         let stdout = process
@@ -1167,12 +1160,21 @@ impl AgentDriver for ClaudeDriver {
 
         let (finished, outcomes) = mpsc::channel(TURNS_IN_FLIGHT);
         // Pętla czytająca żyje własnym zadaniem: uchwyt ma zostać responsywny na `cancel()`
-        // także wtedy, gdy nikt nie woła `wait()`.
+        // także wtedy, gdy nikt nie woła `wait()`. Startuje PRZED odebraniem stdinu, bo
+        // odebranie stdinu czeka na koniec pierwszego zapisu — a agent, który zaczyna mówić
+        // w trakcie, ma mieć kto czytać.
         let _reader = tokio::spawn(pump(stdout, tx, finished));
+
+        // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
+        // i nie ma czym wysłać przerwania.
+        let stdin = process.stdin().await.ok_or_else(|| {
+            anyhow!("the agent started without an input channel for the turns that follow")
+        })?;
 
         Ok(Box::new(ClaudeHandle {
             session,
             process,
+            stdin: Some(stdin),
             outcomes,
         }))
     }
