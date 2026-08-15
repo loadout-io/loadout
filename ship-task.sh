@@ -270,11 +270,11 @@ criterion cannot be given such a spec, say so in your final message and leave it
 that is a finding for a human, not a file to invent.
 
 If you need scratch space outside your own files — a throwaway project, a probe directory —
-use `.loadout/scratch/` inside this worktree. Paths outside the worktree are refused by the
-sandbox unpredictably: measured on S-1, `mkdir /tmp/s1-only-two` was blocked in one phase and
-`/tmp/s1-run` succeeded in another. Inside the worktree it always works.
+use \`.loadout/scratch/\` inside this worktree. Paths outside the worktree are refused by the
+sandbox unpredictably: measured on S-1, \`mkdir /tmp/s1-only-two\` was blocked in one phase and
+\`/tmp/s1-run\` succeeded in another. Inside the worktree it always works.
 
-One shell command per Bash call. Never chain with `;` or `&&`: Claude Code splits a compound
+One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
 command and asks approval for each part, and in an unattended run there is nobody to give it —
 every chained command is a lost turn. Measured: 7 lost turns in one phase.
 

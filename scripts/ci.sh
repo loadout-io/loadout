@@ -278,8 +278,28 @@ guards_lane() {
     echo "guards: the diff does not touch harness/, checks/ or verify.sh — skipped by path"
     return 0
   fi
+  prompt_backticks
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
+}
+
+
+# ── prompty pisarza nie mogą zawierać nieescapowanych backticków ──────────────
+# Zmierzone 2026-08-15: wstawka do promptu w ship-task.sh niosła `;` i `&&` w backtickach.
+# Heredoc <<PROMPT jest NIECYTOWANY (celowo — podstawiamy $ID i $AGENT), więc bash wykonał
+# je jako komendy, prompt dojechał do modelu zniekształcony, a `bash -n` nic nie zgłosił:
+# składniowo to poprawne podstawienie komendy, tylko robi coś zupełnie innego.
+prompt_backticks() {
+  local bad
+  bad="$(awk '/<<PROMPT/,/^PROMPT$/' ship-task.sh repair.sh review.sh 2>/dev/null \
+         | grep -n '[^\\]`' || true)"
+  if [ -n "$bad" ]; then
+    echo "unescaped backtick inside a writer prompt heredoc -- bash will RUN it:" >&2
+    printf '%s\n' "$bad" | head -10 | sed 's/^/  /' >&2
+    echo "escape them as \\\` — the heredoc is unquoted on purpose." >&2
+    return 1
+  fi
+  echo "prompts: no unescaped backticks"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
