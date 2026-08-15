@@ -1,0 +1,35 @@
+# Prettier — format frontendu. Plik jest w YAML-u (prettier czyta .prettierrc jako
+# JSON ALBO YAML) wyłącznie po to, żeby dało się dopisać powód przy każdej opcji.
+#
+# Sprawdza to `npm run fmt:check` — glob mieszka w package.json, nie tutaj,
+# żeby edytor i bramka formatowały dokładnie ten sam zbiór plików.
+
+# 100, nie domyślne 80. Powód jest mierzalny: przy 80 prettier łamie istniejące
+# jednolinijkowce w vite.config.ts i w tokenach theme.css na dwie–trzy linie,
+# a wąska kolumna w gęstym narzędziu pracy nie kupuje czytelności, tylko diff.
+printWidth: 100
+
+# Kod TS/TSX pisze się tu apostrofami (vite.config.ts już tak wygląda).
+singleQuote: true
+
+semi: true
+tabWidth: 2
+useTabs: false
+
+# Przecinek na końcu = jednolinijkowy diff przy dopisaniu pola.
+trailingComma: all
+
+arrowParens: always
+bracketSpacing: true
+
+# LF wszędzie. Repo jest macOS-owe, ale CI biegnie na Linuksie i różnica
+# w znaku końca linii potrafi zrobić „cały plik zmieniony" na pustym commicie.
+endOfLine: lf
+
+overrides:
+  # CSS zostaje przy cudzysłowach. Tak jest napisane src/styles/theme.css
+  # (`@import "tailwindcss"`, nazwy krojów) i tak wygląda cała dokumentacja
+  # Tailwinda, z której te linie się przepisuje.
+  - files: '*.css'
+    options:
+      singleQuote: false

@@ -1,0 +1,276 @@
+# T-01 — Powłoka aplikacji: okno Tauri, pięć sekcji, tokeny, bez routera
+
+To zadanie robi miejsce, w którym pojawi się wszystko inne, i dlatego jego błędy są niewidoczne
+przez wiele tygodni. Cztery z nich są ciche z tego samego powodu — **działają w przeglądarce**.
+Plik uprawnień, który wygląda na zamknięty, ale wskazuje etykietę okna, której nie ma, odmawia
+**każdego** wywołania z webviewa — a `npm run dev` nie ma czego odmówić, więc wykryje to dopiero T-07,
+trzy zadania później, i przeczyta jak błąd IPC. `global.css`, który importuje `tailwindcss` zamiast
+`theme.css`, przywraca całą domyślną paletę: `bg-slate-800` znów się kompiluje, a nic nie wygląda źle,
+bo nasze tokeny nadal działają — zamknięcie palety umarło po cichu i dziedziczy to dwadzieścia
+kolejnych zadań UI. Pięć sekcji zamontowanych naraz i cztery ukryte CSS-em przechodzi każdy test
+pytający „czy sekcja Agents się renderuje", i jest dokładnie tym „always-mounted route stack",
+który w poprzednim prototypie dał 142 elementy niosące tekst przy suficie 60 [raport 03 §4.1]. A `tracing`,
+które klonuje uchwyt pliku na linijkę, plus hak paniki, który **zastępuje** poprzedni zamiast go
+wywołać — to jest ten dzień, w którym aplikacja umiera w release, LaunchServices wyrzuciło stderr,
+i w logu nie ma nic [T8 §9, incydent Murmura z `dup(2)` na linijkę].
+
+Nic z tego nie zostanie znalezione okiem. Dlatego pięć z sześciu kryteriów porównuje **dwa pliki
+naraz** albo **kompiluje to, co aplikacja naprawdę ładuje**, zamiast szukać stringów.
+
+**Read first:** `docs/research/topics/T8-desktop-shell.md` — §3.2 (dokładna lista uprawnień, którą
+tu przepisujesz, i zdanie „never grant `core:default`"), §3.3 (dlaczego `shell` i `fs` są zakazane),
+§6.2 (brak routera: `type Section` w store, nie URL), §6.4 (blok `@theme` i `--color-*: initial`
+jako **mechanizm egzekwowania**), §9 (przepis na tee `tracing` + hak paniki, z incydentem),
+§11 (przepis na czyste chrome: `titleBarStyle: "Overlay"` + `hiddenTitle` + pozycja świateł).
+`docs/design/DESIGN.md` — §3–§6 (cztery powierzchnie, drabinka, `radius 2px`, definicje komponentów,
+które tu powstają) i §9 (**1100 px to najwęższe wspierane okno** — stąd `minWidth`).
+`docs/ARCHITECTURE.md` — §3 (`lib.rs` jest jedynym plikiem Rusta, który w tym zadaniu wolno, żeby
+znał Tauri) i §7 (**sufit gęstości: 96 px chrome, 8 oznaczonych regionów, 1 metafora nawigacji** —
+liczby ustalone przed tym ekranem, nie po nim). `docs/DECISIONS-LOCKED.md` D1 i D5 (ciemny terminal,
+jeden akcent, UI po angielsku). `src/styles/theme.css` (nazwy tokenów, których wolno użyć —
+**tego pliku NIE dotykasz**, nie należy do żadnego zadania i `checks/quick-tokens.sh` trzyma go
+w lustrze wobec DESIGN.md).
+
+## Kto to robi
+
+- **Agent:** `desktop-shell` — jedno zadanie dotyka i Rusta, i Reacta, bo granica między nimi
+  (`tauri.conf.json` ↔ `vite.config.ts` ↔ plik uprawnień ↔ etykieta okna) jest tym, co tu jest trudne.
+- **Druga opinia:** Codex (cross-vendor, D3 — nigdy ten sam vendor, który pisał). Recenzent ma
+  zaatakować jedno pytanie: *czy któreś kryterium przechodzi na implementacji, która renderuje
+  wszystkie pięć sekcji naraz albo ładuje pełną paletę Tailwinda?* Recenzent niedostępny
+  (Codex bez kredytów do 2026-08-20, D3) to `exit 0` z notatką, nigdy czerwone.
+- **Artefakty biegu:** `runs/T-01/` — transkrypt, `gate-final.json`, plan poprawek. Nigdy `$TMPDIR`.
+
+## Co to zadanie posiada
+
+- `index.html` — jeden `<div id="root">`, zero zasobów z sieci (CSP `default-src 'self'`).
+- `src/main.tsx` — montaż, import **wyłącznie** `./styles/global.css`, podpięcie store'a sekcji.
+- `src/App.tsx` — `App({ section })`: chrome plus dokładnie jedna sekcja.
+- `src/styles/global.css` — `@import "./theme.css"` plus układ powłoki. **Nie** importuje
+  `tailwindcss` drugi raz.
+- `src/ui/**` — powłoka (`src/ui/shell/`), rejestr sekcji (`src/ui/sections.tsx`) i prymitywy
+  z DESIGN §6 (`src/ui/primitives/`). **Tu też mieszka stan sekcji** (`src/ui/shell/section-store.ts`),
+  a nie w `src/state/ui.ts` — ta ścieżka nie należy do żadnego zadania.
+- `src-tauri/src/main.rs` — cztery linie, woła `loadout_lib::run()`.
+- `src-tauri/src/lib.rs` — tee `tracing`, hak paniki, `Builder`, wtyczki. **Jedyny plik Rusta,
+  jaki wolno ci utworzyć poza `main.rs`** — logowanie jest modułem *wewnątrz* `lib.rs`, bo
+  `src-tauri/src/logging.rs` nie należy do tego zadania.
+- `src-tauri/tauri.conf.json`, `src-tauri/capabilities/**`, `src-tauri/build.rs`.
+- `src-tauri/tests/shell_logging.rs` — test integracyjny AC-5 (`cargo test --lib` go **nie**
+  uruchamia; uruchamia go samo kryterium).
+- `src-tauri/icons/**` — **tylko** jeśli `npm run app` odmówi startu bez ikon; wtedy
+  `npx tauri icon` z byle jakim kwadratem. Nie dłubiesz w ikonach.
+
+Wszystko poza tą listą — łącznie z `package.json`, `vite.config.ts`, `tsconfig.json`,
+`src-tauri/Cargo.toml` i `src/styles/theme.css` — jest **do czytania**. Jeśli któregoś naprawdę
+brakuje, zatrzymaj się i zapytaj człowieka (AGENTS.md §7).
+
+## Niezmienniki
+
+- **1 — `engine/` nie importuje `tauri::*`.** Tutaj czyta się to odwrotnie: **nie zakładaj
+  `src-tauri/src/engine/`** i nie wkładaj do `lib.rs` niczego, co silnik będzie potem musiał
+  zaimportować. Cicho łamie się to przez „tymczasowy" helper w `lib.rs`, po który sięgnie T-02 —
+  wtedy `engine/` zależy od pliku, który zna Tauri, a `checks/quick-boundary.sh` zobaczy to dopiero
+  po przeniesieniu.
+- **3 — kod platformowy tylko w `engine/supervisor.rs`.** Przepis na czyste chrome jest
+  macOS-owy, ale to **dane w `tauri.conf.json`**, nie `#[cfg(target_os = "macos")]` w `lib.rs`.
+  Cicho łamie się to przez owinięcie ustawienia świateł w `cfg` — `checks/quick-boundary.sh`
+  przewraca się natychmiast i słusznie.
+- **13 — jeden fakt, jedno miejsce.** Która sekcja jest otwarta, jest powiedziane **raz**:
+  przez `aria-current` na przełączniku. Nie w tytule okna, nie w nagłówku sekcji, nie w chlebku.
+  poprzedni prototyp pokazywał stan połączenia w sześciu miejscach [03 §4.4].
+- **14 — zero żargonu w tekście widocznym.** Pięć etykiet to `Run`, `Workflows`, `Agents`,
+  `Skills`, `Memory` (D5). Uwaga: `checks/quick-vocabulary.sh` skanuje **każdy literał ze spacją
+  w `src/**/*.ts(x)`, także w plikach testowych** — patrz „Pułapki bramki" niżej.
+- **16 — kontrolka bez handlera nie wchodzi do repo.** W T-01 nie ma jeszcze czego tworzyć, więc
+  puste sekcje **nie mają przycisków**. Cicho łamie się to przez „Create", które wygląda dobrze
+  na zrzucie ekranu i nic nie robi — poprzedni prototyp ma trzy takie przyciski [03 §7.3].
+- **17 — UI nie rysuje relacji, których nie ma w danych.** Bez paska loadoutu, bez szyny agentów,
+  bez paska postępu: nie ma biegu, więc nie ma czego pokazywać. Atrapy w powłoce zostaną w niej
+  na zawsze.
+- **18 — sufit gęstości jest mierzony, nie oceniany okiem.** Chrome nad pierwszą treścią: **jeden
+  pasek**, `TITLEBAR_HEIGHT = 48` px, poniżej sufitu 96 (ARCHITECTURE §7). Jedna metafora nawigacji.
+  Cicho łamie się to przez dołożenie drugiego paska „bo tam pasuje" — i wtedy sufit ustala się
+  po fakcie, czyli tam, gdzie akurat jesteśmy [03 §4.1].
+- **24 — komentuj DLACZEGO, zwłaszcza incydent.** Cztery linie w tym zadaniu wymagają datowanego
+  powodu: `Arc<File>` zamiast `try_clone()` per linia, łańcuchowanie poprzedniego haka paniki,
+  odstęp na światła, i brak `core:default`.
+
+## Pułapki bramki, które kosztują rundę
+
+Cztery mechanizmy tego repo są ostrzejsze, niż wyglądają. Każdy z nich potrafi zabrać rundę poprawek.
+
+1. **`before` musi być czerwony z właściwego powodu.** `harness/gate.py` odrzuca ~24 rodzaje
+   czerwieni, które nic nie uruchomiły — w tym `ENOENT`, `No such file or directory`,
+   `cannot find module`, `error[E0432]`, `unresolved import`, `Tests N skipped (N)`. Kolejność,
+   która działa: **najpierw szkielet, który się kompiluje i renderuje pustkę** (`lib.rs` z funkcją
+   zwracającą `Ok`, `App` renderujący jeden pusty div, plik uprawnień z pustą listą), **potem testy**,
+   potem `./verify.sh before` → czerwone na **asercjach**, potem implementacja. Pliki czytaj przez
+   `existsSync(p) ? readFileSync(p, 'utf8') : ''` (TS) i `fs::read_to_string(p).unwrap_or_default()`
+   (Rust) — nigdy tak, żeby test padł na otwarciu pliku. W komunikatach asercji nie pisz
+   „not found" ani „No such file".
+2. **`checks/quick-vocabulary.sh` czyta twoje testy.** Skanuje literały ze spacją w `src/**/*.ts(x)`,
+   a baseline wynosi **0** — pierwsze trafienie w historii repo jest twoje. Słowa, które same się
+   proszą do nazw testów i są zakazane: `token`, `process`, `session`, `node`, `gate`, `artifact`,
+   `snapshot`, `verdict`, `probe`, `integration`, `attempt`, `claim`, `rail`, `spawn`, `stdout`,
+   `configuration`, `submit`, `initialize`, `diff`. Pisz „colour value" zamiast „token", „element"
+   zamiast „node", „check" zamiast „gate". Pliki w `docs/` nie są skanowane; `src/` jest.
+3. **`checks/full-clippy.sh` lintuje testy.** `cargo clippy --all-targets -- -D warnings` plus
+   `[workspace.lints]` znaczy, że w `src-tauri/tests/shell_logging.rs` **nie wolno** użyć `panic!`
+   (deny), `.unwrap()` (deny) ani `.expect()` (warn + `-D warnings` = błąd). Test niech zwraca
+   `Result<(), Box<dyn std::error::Error>>` i używa `?`; panikę na potrzeby haka wywołaj
+   `unreachable!("…")`, bo `clippy::panic` łapie tylko makro `panic!`.
+4. **Globalny subskrybent `tracing` ustawia się raz na proces.** Dlatego AC-5 to **jedna** funkcja
+   `#[test]` z trzema fazami, a nie trzy funkcje — druga próba instalacji zwróci błąd i test
+   przewróci się z powodu, który nie ma nic wspólnego z kodem.
+
+## Kryteria akceptacji
+
+## AC-1 Okno otwiera się z czystym chrome, a dev URL wskazuje serwer, który naprawdę stawiamy
+check: npx --no-install vitest run src/ui/shell/window.test.tsx
+
+Test czyta `src-tauri/tauri.conf.json` i `vite.config.ts` i renderuje pasek tytułu przez
+`renderToStaticMarkup`. `app.windows` ma **dokładnie jedno** okno; `label` = `"main"`;
+`titleBarStyle` = `"Overlay"`; `hiddenTitle` = `true`; `trafficLightPosition` ma liczbowe `x` i `y`;
+`minWidth` ≥ **1100** (DESIGN §9 — najwęższe wspierane okno); port z `build.devUrl` jest równy
+stałej portu z `vite.config.ts` (dziś **5273**). W markupie: dokładnie jedno wystąpienie
+`data-tauri-drag-region`, dokładnie jedno `data-chrome`, `TITLEBAR_HEIGHT` ≤ **96**
+(ARCHITECTURE §7) i lewy odstęp paska ≥ `trafficLightPosition.x + 68` — trzy światła zajmują
+~52 px, plus `--s-4` odstępu — a ta sama wartość musi pojawić się w wyrenderowanym `padding-left`.
+
+*Słaba asercja:* `expect(conf.app.windows[0].titleBarStyle).toBe("Overlay")`. Przechodzi bez
+`hiddenTitle` (tytuł rysuje się **na** treści), przechodzi z `devUrl` na porcie 1420 z przykładu
+Tauri (`npm run app` daje białe okno i nikt nie wie dlaczego, bo Vite chodzi na 5273) i przechodzi,
+gdy przełącznik sekcji leży pod światłami. Rozróżniają je trzy asercje wiążące **dwa pliki albo
+dwie wartości naraz**: `hiddenTitle === true`, port z `devUrl` == port z `vite.config.ts`,
+odstęp ≥ `x + 68`.
+
+## AC-2 Zasięg webviewa jest zamknięty: bez `core:default`, bez `shell`, bez `fs`, i uprawnienia trafiają w istniejące okno
+check: npx --no-install vitest run src/ui/shell/permissions.test.ts
+
+Test wczytuje **wszystkie** pliki `*.json` z `src-tauri/capabilities/` (nie sam `default.json`),
+plus `tauri.conf.json` i `src-tauri/Cargo.toml`. Katalog ma ≥ 1 plik, a suma uprawnień jest niepusta
+(inaczej kryterium przechodziłoby na pustym katalogu). W tej sumie: nie ma `core:default`, nie ma
+nic z prefiksem `shell:` ani `fs:`, i **każde** uprawnienie należy do listy z T8 §3.2 —
+`core:event:default`, `core:app:default`, `core:window:allow-start-dragging`,
+`core:window:allow-close`, `core:window:allow-set-focus`, `dialog:allow-open`, `store:default`,
+`opener:allow-reveal-item-in-dir`. Każdy plik ma pole `windows`, które zawiera etykietę okna
+z `tauri.conf.json`. `app.security.csp` jest niepustym stringiem zawierającym `default-src 'self'`.
+`src-tauri/Cargo.toml` nie ma zależności `tauri-plugin-shell` ani `tauri-plugin-fs`.
+
+*Słaba asercja:* `expect(def.permissions).not.toContain("core:default")` na jednym pliku.
+Przechodzi, gdy drugi plik w `capabilities/` przyznaje `core:default` (Tauri włącza **wszystkie**
+pliki z tego katalogu, o ile `tauri.conf.json` nie wymienia ich po nazwie), przechodzi przy
+`"windows": ["Loadout"]` przy oknie o etykiecie `main` — czyli przy uprawnieniach, które nie
+dotyczą niczego i wywalą **każde** wywołanie z webviewa w T-07 — i przechodzi przy `csp: null`.
+Rozróżniają je: suma po **całym katalogu**, przynależność do zamkniętej listy oraz porównanie
+`windows` z etykietą z drugiego pliku.
+
+## AC-3 Widać dokładnie jedną sekcję z pięciu, a pozostałych czterech nie ma w drzewie
+check: npx --no-install vitest run src/ui/shell/sections.test.tsx
+
+`SECTIONS` ma dokładnie pięć wpisów, w kolejności `run`, `workflows`, `agents`, `skills`, `memory`,
+z etykietami `Run`, `Workflows`, `Agents`, `Skills`, `Memory` (D5, ARCHITECTURE §3). Dla każdego
+z pięciu: `renderToStaticMarkup(<App section={id} />)` zawiera `data-section="<id>"` **dokładnie raz**
+i **zero razy** którykolwiek z pozostałych czterech identyfikatorów. W żadnym z pięciu markupów nie
+ma atrybutu `hidden` ani `display:none`. Dokładnie jeden element niesie `aria-current="true"`
+(nie `"page"` — nie ma stron, nie ma URL-i, nie ma routera; T8 §6.2).
+
+*Słaba asercja:* `expect(html).toContain('data-section="agents"')`. Przechodzi na implementacji,
+która montuje wszystkie pięć sekcji i chowa cztery CSS-em — czyli na dokładnie tym „always-mounted
+route stack", przez który poprzedni prototyp renderował 142 elementy niosące tekst przy suficie 60.
+Rozróżnia je **zliczanie wystąpień czterech pozostałych identyfikatorów do zera** plus zakaz
+`hidden`/`display:none`.
+
+## AC-4 Paleta jest zamknięta: klasa spoza naszej listy nie kompiluje się w CSS, który aplikacja naprawdę ładuje
+check: npx --no-install vitest run src/ui/shell/palette.test.ts
+
+Test kompiluje **`src/styles/global.css`** (to, co importuje `main.tsx`, nie `theme.css` z ręki)
+przez Tailwind v4 na zamkniętej liście kandydatów i sprawdza wynikowy CSS. Powstają reguły dla
+`.bg-panel`, `.text-title`, `.rounded-sq`, `.font-mono`. **Nie powstaje żadna reguła** dla
+`bg-slate-800`, `text-3xl`, `rounded-lg`, `shadow-lg`, `font-sans`, a w całym wyniku nie ma ciągu
+`slate`. Mechanizm: `compile()` z pakietu `tailwindcss` z własnym `loadStylesheet` rozwiązującym
+`@import "tailwindcss"` do `node_modules/tailwindcss/index.css`; jeśli to zawiedzie — `build()`
+z API Vite na tymczasowym wejściu. Budżet: sprawdzenie ma się zmieścić w 20 s (`CHECK_TIMEOUT`).
+
+*Słaba asercja:* `expect(themeCss).toContain("--color-*: initial")`. Przechodzi na repo, w którym
+`global.css` nigdy nie importuje `theme.css` — aplikacja ładuje pełną domyślną paletę Tailwinda,
+`bg-slate-800` znów działa, i nic nie wygląda źle, bo nasze tokeny też są na miejscu. Rozróżnia je
+**kompilacja tego pliku CSS, który importuje `main.tsx`**, i asercja, że klasa spoza listy nie
+produkuje reguły — T8 §6.4 nazywa to „the enforcement mechanism", nie dokumentacją.
+
+## AC-5 Dziennik przeżywa panikę i nie zjada deskryptorów: jeden uchwyt pliku, hak, który woła poprzedni
+check: cargo test -p loadout --test shell_logging
+
+Jedna funkcja `#[test]`, trzy fazy (globalny subskrybent `tracing` ustawia się raz na proces).
+Faza 1: `install_logging(tmp)` zwraca ścieżkę, trzy zdarzenia dają trzy linie w tym pliku.
+Faza 2: osiem wątków po 200 zdarzeń → **1600 kompletnych linii**, każda parsuje się osobno,
+żadna nie jest urwana ani przeplatana, a liczba wpisów w `/dev/fd` zmierzona tą samą metodą przed
+i po jest **identyczna** (`Arc<File>` + `MakeWriterExt::and`, nigdy `try_clone()` na linijkę —
+w Murmurze to był `dup(2)` na linijkę i panika z wyczerpania deskryptorów **wewnątrz samego
+logowania**, T8 §9). Faza 3: instalujesz własny hak-wartownik ustawiający `AtomicBool`, potem
+`install_panic_hook()`, potem `catch_unwind(|| unreachable!("s3ntinel-boom"))` — plik zawiera
+`s3ntinel-boom` **i** wartownik został wywołany.
+
+*Słaba asercja:* „plik istnieje i jest niepusty". Przechodzi na haku, który **zastępuje** poprzedni
+(pierwsza panika w produkcji nadal nie zostawi śladu, bo tokio połyka paniki na granicy zadania,
+a domyślny hak pisze na stderr, którego LaunchServices wyrzuca) i przechodzi na pisarzu klonującym
+uchwyt na każdą linijkę. Rozróżniają je: **flaga wartownika po panice** (dowód łańcuchowania)
+i **stała liczba deskryptorów przy 1600 liniach z ośmiu wątków**.
+
+## AC-6 Nie ma martwych przycisków: jedyne kontrolki to pięć przełączników sekcji i każdy naprawdę przełącza
+check: npx --no-install vitest run src/ui/shell/controls.test.tsx
+
+Dla każdej z pięciu sekcji markup zawiera **dokładnie pięć** znaczników `<button` — czyli sam
+przełącznik; żadna pusta sekcja nie dokłada własnego przycisku (w T-01 nie ma jeszcze czego
+tworzyć, więc „Create" byłby kontrolką bez handlera, niezmiennik 16). Każdy przycisk niesie
+`data-section-switch` z innym z pięciu identyfikatorów. Każda sekcja renderuje dokładnie jeden
+element `data-empty`, a jego zdanie ma **≤ 12 słów i najwyżej jedną kropkę** (pusty ekran to
+zaproszenie, nie akapit polityki — DESIGN §6, raport 03 „prose-as-empty-state"). Handler jest
+prawdziwy: `useSectionStore.getState().go("agents")` zmienia `section` na `"agents"`, a stan
+początkowy to `"run"`.
+
+*Słaba asercja:* „każda sekcja renderuje przycisk". Przechodzi na powłoce z pięcioma przyciskami
+`Create`, które nic nie robią — to jest dosłownie stan poprzedniego prototypu (`Export receipt`, `Copy`,
+`Review decision →` bez `onClick`) i wygląda na zrzucie ekranu lepiej niż wersja poprawna.
+Rozróżniają je: **dokładna liczba pięciu przycisków w każdej sekcji** oraz asercja na store,
+że przełączenie faktycznie zmienia wartość.
+
+## Świadomie poza zakresem
+
+- **Jakakolwiek komenda `#[tauri::command]` i `ipc.rs`** — T-07. Powłoka nie woła Rusta poza tym,
+  co robi sam `Builder`. Konsekwencja: `core:event:default` w pliku uprawnień jest przygotowaniem
+  pod T-07, a nie czymś, co T-01 wywołuje.
+- **Podpięcie prawdziwych sekcji.** T-01 montuje pięć zastępników z `src/ui/`. `src/sections/**`
+  należy do T-08, T-09, T-11, T-13, T-14, T-17 i T-19 — a każde z tych zadań będzie musiało dopisać
+  jedną linię w `src/ui/sections.tsx`, którego **nie posiada**. To jest znane przekazanie własności
+  i decyzję o nim podejmuje człowiek (AGENTS.md §7), a nie pierwsze zadanie, które się o nie potknie.
+- **Pasek loadoutu, szyna agentów, widok pracy** — DESIGN §2 i §6, ale należą do T-08 i T-09.
+  Bez biegu nie ma czego rysować (niezmiennik 17).
+- **Podpisywanie, notaryzacja, `entitlements.plist`, `Info.plist`, updater.** T8 §7–§8: MVP jest
+  budowane lokalnie i niepodpisane; klucze i pliki uprawnień systemowych wchodzą przy pierwszej
+  instalacji u drugiej osoby. Jedna rzecz jest tu nieodwracalna i **robisz ją teraz**: `identifier`
+  w `tauri.conf.json` jest ostateczny, bo jego zmiana po pierwszej instalacji rozjeżdża preferencje
+  i aktualizacje.
+- **Font Inter jako plik.** CSP `default-src 'self'` i praca offline wykluczają pobieranie z sieci,
+  a `.woff2` w repo to osobna decyzja. Do tego czasu działa fallback z `theme.css`
+  (`ui-sans-serif, system-ui`) i drabinka DESIGN §4 się nie zmienia.
+- **`Cmd+O` („Pokaż wszystkie szczegóły")** — globalny skrót z ARCHITECTURE §6 dotyczy widoku pracy,
+  więc wchodzi z T-08.
+- **Sprawdzacz gęstości nad całym repo** — `scripts/density-audit.mjs` i `checks/quick-density.sh`
+  to T-22. T-01 pilnuje wyłącznie własnego ekranu, wewnątrz własnych testów.
+
+<!-- OWNS
+index.html
+src/main.tsx
+src/App.tsx
+src/styles/global.css
+src/ui
+src-tauri/src/main.rs
+src-tauri/src/lib.rs
+src-tauri/tauri.conf.json
+src-tauri/capabilities
+src-tauri/build.rs
+src-tauri/tests/shell_logging.rs
+src-tauri/icons
+-->

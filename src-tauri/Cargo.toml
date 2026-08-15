@@ -1,0 +1,65 @@
+[package]
+name = "loadout"
+version = "0.1.0"
+description = "Build and run graphs of coding agents"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# main.rs ma 4 linie i woła loadout_lib::run().
+# Dzięki temu `cargo test --lib` jest CAŁĄ powierzchnią testową.
+name = "loadout_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-store = "2.4.4"
+tauri-plugin-single-instance = "2.4.3"
+tauri-plugin-window-state = "2.4.1"
+# ŚWIADOMIE BRAK: tauri-plugin-shell, tauri-plugin-fs.
+# Webview nie odpala procesów ani nie czyta dysku. Robi to Rust, przez nasze komendy.
+
+tokio = { version = "1.53", features = [
+  "rt-multi-thread",
+  "macros",
+  "process",
+  "io-util",
+  "sync",
+  "time",
+  "fs",
+] }
+tokio-util = { version = "0.7.19", features = ["rt"] } # CancellationToken
+
+# Grupy procesów: na uniksie ProcessGroup::leader(), na Windows JobObject —
+# w TYM SAMYM miejscu wywołania. Dlatego port na Windows to gałąź cfg, nie przepisanie.
+process-wrap = { version = "9.1.0", features = ["tokio1"] }
+
+rusqlite = { version = "0.40.2", features = ["bundled"] } # -> SQLite 3.53.2
+rusqlite_migration = "2.6.0"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+anyhow = "1"
+uuid = { version = "1.24.1", features = ["v7", "serde"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2" # tylko po stałe sygnałów
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["full", "test-util"] }
+proptest = "1.11.0"
+tempfile = "3"

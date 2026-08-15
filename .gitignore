@@ -1,0 +1,44 @@
+# Rust
+/target
+/src-tauri/target
+/src-tauri/gen
+
+# Node
+node_modules
+/dist
+.vite
+
+# Loadout: dane biegów w repo pod testy.
+# Sam katalog jest wersjonowany (harness na nim polega), zawartość nie.
+/.loadout/runs/*
+!/.loadout/runs/.gitkeep
+/.loadout/loadout.db
+/.loadout/loadout.db-wal
+/.loadout/loadout.db-shm
+
+# Wyniki bramki. runs/last.json jest paragonem jednego uruchomienia,
+# a nie stanem repo — commitowanie go zamienia dowód w szum.
+/runs/*
+!/runs/.gitkeep
+
+# Transkrypty agentów: bywają duże i mogą zawierać treść z prywatnych repo.
+*.jsonl
+!docs/research/**/*.jsonl
+
+# Benchmark IPC zostaje w repo — T8 ryzyko 2 każe go powtórzyć przy majorze Tauri,
+# a liczby bez kodu, który je wyprodukował, to anegdota. Ale wygenerowane schematy
+# tauri-build (~300 KB) odtwarza `cargo build`, więc ich nie trzymamy.
+/docs/research/topics/artifacts/ipcbench-src/gen/
+
+# Playwright
+/test-results
+/playwright-report
+/.playwright
+
+# macOS
+.DS_Store
+
+# Lokalne nadpisania — nigdy w repo.
+.env
+.env.local
+/.claude/settings.local.json

@@ -1,0 +1,59 @@
+// Strict tsconfig dla bramki. Mieszka w checks/, NIE w korzeniu — i celowo niczego nie
+// dziedziczy przez `extends`.
+//
+// Powód: ../tsconfig.json należy do biegu. Bieg, który nie umie przejść typów, ma pod ręką
+// najtańszą naprawę na świecie — wyłączyć `strict` w pliku, który sam edytuje. Ten plik leży
+// w katalogu, którego zadanie nie ma w bloku OWNS (checks/quick-scope.sh tego pilnuje),
+// więc jest jedyną wersją "surowo", jaka liczy się dla bramki.
+//
+// Konsekwencja, którą trzeba znać: to jest DRUGA kopia opcji kompilatora obok ../tsconfig.json.
+// Nie rozjeżdżają się cicho — ta jest mocniejsza z definicji (dokłada noImplicitAny
+// i noImplicitReturns), więc dryf w korzeniu daje czerwoną bramkę, nie zielony fałsz.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    "strict": true,
+    // Jawnie, mimo że `strict` je włącza: ta lista jest kontraktem, nie skrótem.
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    // Połowa "żadnego any", której żadna reguła lintu nie widzi: any WYWNIOSKOWANY.
+    // Parametr bez adnotacji i zwrot z nietypowanego importu wyłączają sprawdzanie
+    // wszystkiego, co jest niżej, i nikt tego słowa nigdzie nie napisał.
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    // skipLibCheck: cudze .d.ts to nie jest nasz dług. Bez tego bramka pada na @types/react.
+    "skipLibCheck": true,
+    "noEmit": true,
+
+    "types": ["vite/client"],
+
+    // baseUrl jest względny wobec TEGO pliku, więc ".." to korzeń repo.
+    "baseUrl": "..",
+    "paths": { "@/*": ["src/*"] }
+  },
+
+  // Tylko frontend. src-tauri to Rust, docs/ to markdown, a target/ i dist/ to wyjście builda.
+  "include": ["../src/**/*.ts", "../src/**/*.tsx"],
+  "exclude": [
+    "../node_modules",
+    "../dist",
+    "../target",
+    "../src-tauri",
+    "../docs",
+    "../runs"
+  ]
+}

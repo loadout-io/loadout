@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["src-tauri"]
+# Dodatkowe biny (probe CLI, bench) dołożymy jako osobnych członków.
+# default-members pilnuje, żeby wewnętrzna pętla ich nie kompilowała.
+default-members = ["src-tauri"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+
+# Polityka lintów mieszka TUTAJ, nie w stringu w skrypcie CI.
+# Powód: IDE czyta workspace.lints, nie czyta scripts/ci.sh.
+# meetnotes ma politykę tylko w CI i to jest tam nazwane błędem (raport 04, §11-Don't).
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# Kategorie
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Rzeczy, które naprawdę psują agentowy runtime
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+# Blokada w kodzie asynchronicznym to zawieszona aplikacja, nie wolniejsza.
+await_holding_lock = "deny"
+
+# Świadome wyłączenia: pedantic wymusza je w kodzie, który jest czytelniejszy bez nich.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Skopiowane z meetnotes wraz z incydentem, który za tym stoi:
+# bez tego link inkrementalny zżerał 15-20 GB RAM i zamrażał maszynę.
+# Cięcie: ~30-40% czasu inkrementalnego. (raport 04, §1.1)
+# Dotyczy WYŁĄCZNIE zależności — nasz kod zachowuje symbole debugowe.
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true

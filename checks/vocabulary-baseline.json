@@ -1,0 +1,5 @@
+{
+  "_comment": "Transitional debt only. This number must never grow. Entries leave by rewriting the copy, never by moving to the allowlist without a reason. Starts at 0 because Loadout has no user-visible text yet — the cheapest moment to start is before the first screen exists (ARCHITECTURE.md §2, question 8).",
+  "count": 0,
+  "files": {}
+}

@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "PERMANENT exemptions, one per file+term pair. Every entry states WHY, and the reason",
+    "must survive a hostile read — 'it is hard to change' is not a reason. This file is not",
+    "where debt goes; that is checks/vocabulary-baseline.json, which may only shrink.",
+    "",
+    "The bar: a term is exempt only when the user is BETTER OFF seeing it. Two things clear",
+    "it. A product name the user typed themselves ('Claude Code', 'Codex'). And a hidden",
+    "search synonym that is never rendered, so someone who learned the old vocabulary can",
+    "still find the control that hides it.",
+    "",
+    "Shape of an entry:",
+    "  { \"file\": \"src/features/x/X.tsx\", \"term\": \"<the regex, verbatim from BANNED>\",",
+    "    \"reason\": \"one sentence that says why the reader is better off\" }"
+  ],
+  "entries": []
+}

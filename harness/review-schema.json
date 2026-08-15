@@ -1,0 +1,26 @@
+{
+  "$comment": "Recenzent nie ma czego zatwierdzić: nie ma tu wariantu 'pass'. verdict to najwyżej 'concern' albo 'none' (decyzja D3). maxItems 6 wymusza ranking zamiast listy życzeń. additionalProperties:false, bo codex --output-schema odrzuca luźne obiekty, a my odrzucamy dosypane pola po cichu.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["concern", "none"] },
+    "findings": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "claim", "why_it_matters", "what_i_could_not_verify"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "claim": { "type": "string" },
+          "why_it_matters": { "type": "string" },
+          "what_i_could_not_verify": { "type": "string" }
+        }
+      }
+    }
+  }
+}

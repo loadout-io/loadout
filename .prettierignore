@@ -1,0 +1,30 @@
+# Czego prettier NIE dotyka.
+#
+# Reguła: formatujemy to, co piszemy ręcznie w src/. Wszystko poniżej jest
+# generowane, cudze albo łamane ręcznie z powodu, którego narzędzie nie zna.
+
+node_modules
+dist
+target
+src-tauri/gen
+src-tauri/target
+
+# Dane biegów i paragony bramki. Przeformatowany JSON paragonu to zmiana
+# artefaktu dowodowego przez narzędzie do stylu.
+.loadout
+runs
+
+package-lock.json
+
+# Bramka jest wyrocznią, a nie kodem, który się „przy okazji poprawia".
+# Nieuważne `prettier --write .` w cudzym edytorze ma ją omijać tak samo,
+# jak omija ją bieg agenta.
+checks
+harness
+
+# Dokumentacja jest łamana ręcznie na ~100 kolumn, a tabele w niej są wyrównane
+# ręcznie, bo tak się je czyta w terminalu. Prettier przelałby jedno i drugie
+# i wyprodukował diff bez treści. Dotyczy też makiety .dc.html w docs/design/ —
+# to eksport z narzędzia projektowego, nie nasz kod.
+docs
+*.md

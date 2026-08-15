@@ -1,0 +1,162 @@
+name: CI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cienka obudowa na `scripts/ci.sh`. Ten plik NIE WYMIENIA ANI JEDNEGO
+# sprawdzenia — gdyby wymieniał, byłaby druga lista, a dwie listy się rozjeżdżają
+# (meetnotes: ci.sh i ci.yml miały własne kopie i przestały się zgadzać).
+# Żeby zmienić, co CI egzekwuje, edytuj scripts/ci.sh. Tutaj zmienia się tylko to,
+# NA CZYM to biegnie: maszyna, cache, kolejność zadań.
+#
+# Dwa pasy = dwie maszyny, więc czas to max(pasów), nie suma. `bash scripts/ci.sh`
+# lokalnie dalej robi `full`, czyli dokładnie sumę tych dwóch pasów.
+#
+# Wersje akcji przypięte po SHA (tag da się przesunąć na inny kod). Wyłącznie
+# akcje z organizacji `actions/` — zero akcji trzecich stron w bramce.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+# Bramka tylko czyta repo. Żadnych uprawnień do zapisu.
+permissions:
+  contents: read
+
+# Nowy push na tę samą gałąź kasuje poprzedni bieg.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Czyta to scripts/ci.sh: włącza --locked (cicha zmiana wersji zależności na
+  # wspólnym runnerze nie jest „zielone") i tryb narzędzi preinstalowanych.
+  LOADOUT_CI: '1'
+
+jobs:
+  # ── Pas rustowy. macOS jest OBOWIĄZKOWY: Tauri linkuje się tu z WebKitem
+  #    systemowym, a to jest platforma, na którą ten produkt się wydaje. ──
+  rust:
+    name: rust lane (ci.sh rust)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # ci.sh ma wtedy WYMAGAĆ cargo-deny zamiast instalować je samo w środku pomiaru.
+      LOADOUT_CI_TOOLS_PREINSTALLED: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain (rust-toolchain.toml → 1.96 + rustfmt + clippy)
+        run: rustup show
+
+      - name: Cache cargo registry, git db and target/
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Cargo.lock jeszcze nie istnieje; hashFiles zwraca wtedy pusty string,
+          # a klucz dalej jest poprawny i zaczyna działać sam, kiedy lock wejdzie.
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Tool cache epoch (rotates weekly)
+        id: epoch
+        # Przywrócony cache potrafi trzymać binarkę sprzed miesięcy, a stare
+        # cargo-deny nie parsuje nowszych wpisów RUSTSEC (meetnotes 2026-07-12:
+        # CVSS 4.0 wywróciło niezwiązane PR-y). Tydzień to górna granica na to,
+        # jak stare może być narzędzie łańcucha dostaw w tej bramce.
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Własny katalog, nie ~/.cargo/bin: tam mieszkają shimy rustupa i cache
+          # przywracany na wierzch potrafiłby je przykryć.
+          path: ~/.loadout-tools
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ steps.epoch.outputs.week }}
+
+      - name: Install cargo-deny if the weekly cache missed
+        # Świadomie BEZ warunku „czy jest już jakiś Rust". Taki warunek byłby drugą
+        # kopią predykatu z ci.sh, czyli dokładnie tym rozjazdem, któremu ten plik
+        # ma zapobiegać. Kiedy pasa nie ma czego sprawdzać, ci.sh i tak go pominie.
+        run: |
+          echo "$HOME/.loadout-tools/bin" >> "$GITHUB_PATH"
+          if command -v cargo-deny >/dev/null 2>&1 || [ -x "$HOME/.loadout-tools/bin/cargo-deny" ]; then
+            echo "cargo-deny restored from the weekly cache"
+          else
+            cargo install --root "$HOME/.loadout-tools" --locked cargo-deny
+          fi
+
+      - name: Run the rust lane
+        run: bash scripts/ci.sh rust
+
+  # ── Pas webowy. Ubuntu świadomie: tsc, prettier, vitest i vite build nie zależą
+  #    od platformy. Wszystko, co macOS-owe (WKWebView, podpis, Tauri), jest po
+  #    stronie pasa rustowego i realnego Maca — CI tego nie udaje. ──
+  web:
+    name: web lane (ci.sh web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          # `cache: npm` NIE jest tu użyte celowo: wymaga istniejącego lockfile'a
+          # i wywraca cały bieg, kiedy go nie ma. Cache poniżej degraduje się cicho.
+
+      - name: Cache the npm download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Install JS dependencies
+        # package-lock.json wejdzie z pierwszym zadaniem frontendowym. Do tego czasu
+        # `npm ci` nie ma czego przeczytać, a warto, żeby pas był zielony wcześniej.
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::no package-lock.json yet — falling back to npm install"
+            npm install
+          fi
+
+      - name: Run the web lane
+        run: bash scripts/ci.sh web
+
+  # ── JEDNO agregujące sprawdzenie wymagane przez regułę gałęzi. Nazwa jest
+  #    kontraktem z ustawieniami repo — nie zmieniaj jej bez zmiany reguły.
+  #    Sprawdzenie, którego tu nie ma w `needs`, jest dekoracyjne: może być
+  #    czerwone przy zielonym przycisku merge. ──
+  gate:
+    name: gate (scripts/ci.sh full)
+    needs: [rust, web]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both lanes green
+        run: |
+          echo "rust lane: ${{ needs.rust.result }}"
+          echo "web  lane: ${{ needs.web.result }}"
+          # `skipped` nigdy nie czyta się jako spełnione: pas pominięty przez
+          # anulowanie albo przez błąd zależności to brak dowodu, nie dowód.
+          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.web.result }}" != "success" ]; then
+            echo "::error::a ci.sh lane is not green — the full gate is RED"
+            exit 1
+          fi
+          echo "both lanes green — scripts/ci.sh full is satisfied"

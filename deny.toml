@@ -1,0 +1,93 @@
+# cargo-deny — bramka łańcucha dostaw. Jest tu od pierwszego dnia świadomie:
+# polityka licencyjna dopisana po fakcie to polityka pisana pod to, co już weszło.
+#
+#   cargo deny check          # advisories + licenses + bans + sources
+#
+# Woła to `scripts/ci.sh` (pas rustowy), przed `cargo build`. Schemat: cargo-deny 0.18+.
+
+[graph]
+# Tylko platformy, na które to się wydaje. Reszta grafu (windows-*, linux gtk)
+# nie linkuje się u nas nigdy, a wciągnięta do audytu produkuje szum,
+# od którego uczy się ignorować wynik.
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    # x86_64 zostaje na liście, bo uniwersalna binarka jest kwestią jednego flagi
+    # w releasie, a nie zmiany architektury. Kosztuje zero, dopóki nic się nie różni.
+    { triple = "x86_64-apple-darwin" },
+]
+# Audytujemy to, co kompilujemy. `all-features = true` zgłaszałoby zależności
+# feature'ów, których nigdy nie włączamy.
+all-features = false
+# Nasz własny crate (`loadout`, publish = false) nie jest zależnością od nikogo.
+exclude-unpublished = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# "workspace" = przewracamy się na nieutrzymywanych zależnościach BEZPOŚREDNICH.
+# Tranzytywne zgłaszamy, ale nie blokują — nie mamy jak ich naprawić, a czerwona
+# bramka, której nie da się zazielenić, uczy obchodzenia bramki.
+unmaintained = "workspace"
+
+# Pusta lista znaczy „zero wyjątków" i taka ma zostać.
+#
+# KAŻDY wpis dopisany niżej musi mieć w komentarzu bezpośrednio nad sobą DWIE rzeczy:
+#   1. UZASADNIENIE — dlaczego ta podatność nas nie dotyczy (ścieżka wywołania,
+#      czy dane wejściowe są nasze czy z zewnątrz, klasa podatności);
+#   2. WARUNEK USUNIĘCIA — konkretne zdarzenie, po którym ten wpis znika
+#      („kiedy plist zależy od quick-xml >= 0.41"), nigdy „kiedy będzie czas".
+# Wpis bez warunku usunięcia jest permanentny, a permanentny wyjątek to nie wyjątek,
+# tylko cicha zmiana polityki.
+ignore = []
+
+[licenses]
+version = 2
+# Licencje permisywne, zgodne z zamkniętą aplikacją desktopową.
+# Copyleft (GPL / LGPL / AGPL) NIE JEST na tej liście świadomie: zależność
+# copyleftowa ma przewrócić bramkę i wymusić decyzję człowieka, a nie wejść cicho.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",      # unicode-ident i spółka
+    "Unicode-DFS-2016",
+    "CC0-1.0",          # zrzeczenie się praw, nie copyleft
+    "Unlicense",        # to samo, inny tekst (rusqlite/libsqlite3-sys w niektórych wersjach)
+    "BSL-1.0",          # Boost — permisywna, bez wymogu atrybucji w binarce
+    # MPL-2.0 jest copyleftem NA POZIOMIE PLIKU. Jest dozwolona, bo obowiązek
+    # dotyczy tylko zmodyfikowanych plików samej zależności, a my zależności nie
+    # forkujemy. Gdyby kiedyś trzeba było jakąś sforkować — wypada z tej listy.
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+# Crate'y ścieżkowe z tego workspace'u są nasze i nie mają pola `license`.
+private = { ignore = true }
+
+[bans]
+# "warn", nie "deny": drzewo Tauri realnie trzyma dwie wersje kilku crate'ów
+# przejściowych i nie mamy tego jak rozstrzygnąć. Wpis widać w logu bramki.
+multiple-versions = "warn"
+# Wildcard w wersji („*") wciąga dowolne nowe wydanie bez żadnego audytu.
+wildcards = "deny"
+# Zależności ścieżkowe wewnątrz workspace'u wildcarda używać mogą — to nasz kod.
+allow-wildcard-paths = true
+
+# UZASADNIENIE: nie wysyłamy ruchu sieciowego z Rusta i nie szyfrujemy niczego
+# at-rest — rusqlite jest `bundled` (czysty SQLite, bez SQLCipher). OpenSSL w
+# grafie znaczyłoby, że coś po cichu dołożyło stos TLS albo kryptografię, i to
+# jest decyzja człowieka, nie skutek uboczny `cargo add`.
+# WARUNEK USUNIĘCIA: kiedy świadomie wybierzemy stos TLS. Jeśli padnie na rustls,
+# ten wpis zostaje na zawsze; jeśli na natywny — znika razem z tym komentarzem.
+[[bans.deny]]
+crate = "openssl-sys"
+
+[sources]
+# Wyłącznie crates.io. Zależność z gita albo z nieznanego rejestru to kod, którego
+# nikt nie recenzował i który może się zmienić pod tym samym adresem.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,48 @@
+{
+  "name": "loadout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "app:build": "tauri build",
+    "typecheck": "tsc --noEmit -p checks/tsconfig.strict.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "fmt": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
+    "fmt:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\""
+  },
+  "dependencies": {
+    "@base-ui/react": "1.7.0",
+    "@tanstack/react-virtual": "3.14.9",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.2",
+    "@tauri-apps/plugin-opener": "2.5.4",
+    "@tauri-apps/plugin-store": "2.4.4",
+    "@xyflow/react": "12.11.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "6.0.5",
+    "prettier": "^3.4.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "8.2.1",
+    "vitest": "^3.0.0"
+  },
+  "comment:typescript": "Pinowane DOKŁADNIE. `npm install typescript` daje TypeScript 7, który jest `latest`, ale nie da się go zlintować (raport T8, ryzyko 5). checks/quick-types.sh sprawdza zainstalowaną wersję i przewraca się przy niezgodności.",
+  "comment:xyflow": "Pinowane dokładnie: mocki testowe React Flow są nieudokumentowane i psują się między wersjami (T3 §2.3). Bump = ponowne uruchomienie harnessu gestów w Playwright.",
+  "comment:missing": "Brak @xterm/xterm — PTY jest odłożone (decyzja D4). Brak biblioteki UI poza Base UI — komponenty stylujemy sami na naszych tokenach."
+}
