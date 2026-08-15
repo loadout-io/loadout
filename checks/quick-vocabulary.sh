@@ -204,6 +204,20 @@ allowed = {"%s::%s" % (e["file"], e["term"]) for e in allow.get("entries", [])}
 live = [h for h in hits if "%s::%s" % (h["file"], h["term"]) not in allowed]
 
 if "--update-baseline" in args:
+    # Zapadka (N-10, audyt 2026-08-15, zmierzone). `.claude/settings.json` przyznaje
+    # `Bash(bash checks/:*)`, co czyta się jako „niech pisarz uruchamia sprawdzenia" — i łapie
+    # także TĘ komendę, jedyną w checks/, która ZAPISUJE. Zmierzone: 3 trafienia na czerwono,
+    # `--update-baseline`, `baseline written: 3 hits`, rc 0. Plik, którego `_comment` mówi
+    # „ta liczba nigdy nie może rosnąć", urósł z wnętrza biegu, a N-06 ukrywał potem diff.
+    # Baseline wolno tylko OPUSZCZAĆ.
+    prev = int(base.get("count", 0))
+    if len(live) > prev:
+        print("refusing to raise the baseline: %d -> %d" % (prev, len(live)), file=sys.stderr)
+        print("This file records debt that may only shrink. Rewrite the copy, or add an entry",
+              file=sys.stderr)
+        print("to the allowlist with a written reason — those are the only two ways out.",
+              file=sys.stderr)
+        sys.exit(1)
     files = {}
     for h in live:
         files[h["file"]] = files.get(h["file"], 0) + 1

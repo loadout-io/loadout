@@ -41,9 +41,11 @@
 
     "types": ["vite/client"],
 
-    // baseUrl jest względny wobec TEGO pliku, więc ".." to korzeń repo.
-    "baseUrl": "..",
-    "paths": { "@/*": ["src/*"] }
+    // BEZ baseUrl: pod TypeScriptem 6 (przypiętym w package.json i egzekwowanym niżej)
+    // `baseUrl` to twardy `error TS5101`. Bramka typów nie skompilowałaby ANI JEDNEJ linii,
+    // a defekt był niewidoczny tylko dlatego, że src/ nie miało jeszcze żadnego .ts (N-01).
+    // Bez baseUrl `paths` są względne wobec TEGO pliku, więc "../src/*" to korzeń repo.
+    "paths": { "@/*": ["../src/*"] }
   },
 
   // Tylko frontend. src-tauri to Rust, docs/ to markdown, a target/ i dist/ to wyjście builda.

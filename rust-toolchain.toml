@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.96"
+channel = "1.96.0"   # trzy człony: dwuczłonowy kanał rustup rozwija do najnowszej łatki, czyli kompilator zmienia się bez diffu (N-11)
 components = ["rustfmt", "clippy"]
 targets = ["aarch64-apple-darwin"]
 profile = "minimal"

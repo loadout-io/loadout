@@ -251,6 +251,37 @@ report_gate_only_checks() {
   printf '\n· not invoked by CI (the gate runs these): %s\n' "${rest[*]}"
 }
 
+# ── sprawdzenie sprawdzeń ─────────────────────────────────────────────────────
+#
+# N-12 (audyt 2026-08-15): harness/guards.sh nie był wołany przez NIC. Występował
+# w harness/README.md, w docs/, w tasks/T-22.md i w samym sobie — ale nie w verify.sh,
+# nie w gate.py, nie w ship-task.sh, nie tutaj i nie w haku Stop. Sprawdzenie sprawdzeń
+# było komendą, którą człowiek musiał pamiętać. 00-SYNTHESIS §4.1 przewidywał je „przy pięciu
+# sprawdzeniach, obowiązkowo przy dziesięciu" — mamy jedenaście.
+#
+# Uruchamiamy je TUTAJ, a nie jako checks/full-guards.sh w bramce, z dwóch powodów: guards
+# odpala każde sprawdzenie dwa razy (to podwoiłoby najdroższą warstwę), i odmawia na brudnym
+# drzewie kodem 2 — co bramka słusznie eskaluje na MISCONFIGURED dla całej warstwy. Drzewo CI
+# jest zawsze czyste, czyli dokładnie to, czego guards wymaga.
+#
+# Bramkowane ścieżką, nigdy oceną: „czy ten diff dotyka harnessu" to test ścieżki
+# (spreadsheet/checks/fast-selftest.sh:5), a nie decyzja do podjęcia.
+guards_lane() {
+  local base="${LOADOUT_CI_BASE:-origin/main}"
+  local touched=""
+  if git rev-parse --verify -q "$base" >/dev/null 2>&1; then
+    touched="$(git diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(harness/|checks/|verify\.sh$)' || true)"
+  else
+    touched="baza nieznana — uruchamiam"
+  fi
+  if [ -z "$touched" ]; then
+    echo "guards: the diff does not touch harness/, checks/ or verify.sh — skipped by path"
+    return 0
+  fi
+  echo "── guards (the check of checks) ──"
+  bash harness/guards.sh
+}
+
 # ── dyspozytor ────────────────────────────────────────────────────────────────
 
 # Pasy są sekwencyjne LOKALNIE świadomie (niezmiennik 26: dwa ciężkie cargo/rustc naraz
@@ -263,6 +294,7 @@ full)
   rust_lane
   web_lane
   report_gate_only_checks
+  guards_lane
   ;;
 esac
 

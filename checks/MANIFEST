@@ -1,0 +1,23 @@
+# Lista sprawdzeń, których bramka MA się spodziewać. Rozjazd w którąkolwiek stronę to exit 2.
+#
+# Pin nie na regułach, tylko na DOMACH (N-13, audyt 2026-08-15). gate.py odkrywa sprawdzenia
+# po nazwie pliku: plik, który zgubił prefiks warstwy, dostaje notkę — ale plik SKASOWANY nie
+# produkował nic. Zmierzone: usunięcie checks/quick-permissions.sh dało „7 checks, 0 failed"
+# i exit 0. Zniknęło sprawdzenie napisane po incydencie za $6,98, a bramka tego nie zauważyła,
+# bo iterowała po plikach, które istnieją.
+#
+# Ten plik mieszka w checks/, czyli tam, gdzie bieg nie pisze — a po N-06 jest to znowu prawda.
+# Dodanie sprawdzenia wymaga dopisania linijki tutaj. To jest cała ceremonia.
+
+quick-boundary
+quick-clippy
+quick-fmt
+quick-permissions
+quick-scope
+quick-suppressions
+quick-tokens
+quick-types
+quick-vocabulary
+
+full-clippy
+full-test

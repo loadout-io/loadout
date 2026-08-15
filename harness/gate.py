@@ -224,6 +224,10 @@ def contract_problems(criteria):
 
 # ---------------------------------------------------------------- odkrywanie
 
+class ContractError(Exception):
+    """Nasza konfiguracja jest zepsuta (exit 2), nie kod (exit 1). Nigdy tego nie mieszamy."""
+
+
 def discover(tier):
     """-> ([(id, kind, argv, expect)], [pominięte pliki]). Najpierw projektowe, potem AC."""
     want = TIER_RANK[tier]
@@ -245,6 +249,26 @@ def discover(tier):
                 # chmod +x nie jest cichym pominięciem sprawdzenia.
                 found.append((name[:-3], "project",
                               ["bash", os.path.join("checks", name)], ""))
+    # N-13: pin nie na regułach, tylko na DOMACH. Plik, który zgubił prefiks warstwy, dostaje
+    # notkę wyżej; plik SKASOWANY nie produkował nic. Zmierzone: usunięcie
+    # checks/quick-permissions.sh dało „7 checks, 0 failed" i exit 0 — zniknęło sprawdzenie
+    # napisane po incydencie za $6,98, a bramka tego nie zauważyła. MANIFEST mieszka w checks/,
+    # czyli tam, gdzie bieg nie pisze (co po N-06 jest znowu prawdą).
+    man = os.path.join(cdir, "MANIFEST")
+    if os.path.isfile(man):
+        expected = {l.strip() for l in open(man, encoding="utf-8")
+                    if l.strip() and not l.startswith("#")}
+        actual = {i for i, k, _a, _e in found if k == "project"} | {
+            n[:-3] for n in os.listdir(cdir)
+            if n.endswith(".sh") and not n.startswith(("_", "."))}
+        missing, extra = sorted(expected - actual), sorted(actual - expected)
+        if missing or extra:
+            raise ContractError(
+                "checks/MANIFEST and checks/ disagree" +
+                ("".join("\n  missing: " + m for m in missing)) +
+                ("".join("\n  unlisted: " + e for e in extra)) +
+                "\nA deleted check is silent otherwise. Add it to MANIFEST or restore the file.")
+
     for c in read_task(TASK_PATH):
         if c["check"]:
             found.append((c["id"], "acceptance", ["bash", "-c", c["check"]], c["expect"]))
@@ -424,6 +448,28 @@ def run(tier, jobs, only=None):
         sys.stderr.write("bash is not on PATH; every check is run as `bash <path>`\n")
         return 2
 
+    # N-08 (audyt 2026-08-15, odtworzone). ship-task.sh kopiuje kontrakt i commituje go, po czym
+    # nikt już na niego nie patrzy, a gate.py parsuje TASK.md z dysku przy każdym uruchomieniu.
+    # Dopisanie `## AC-7 free win / check: true / expect: none` dało kryterium, które bramka
+    # przyjęła z WYŁĄCZONĄ regułą dowodu — a quick-scope po commicie meldował 0 zmian.
+    # Exit 2, nie 1: zepsuł się nasz kontrakt, nie kod.
+    if os.path.isfile(TASK_PATH):
+        stem = ""
+        for line in open(TASK_PATH, encoding="utf-8"):
+            m = re.match(r"^#\s+([ST]-\d+)\b", line.strip())
+            if m:
+                stem = m.group(1)
+                break
+        origin = os.path.join(ROOT, "tasks", stem + ".md") if stem else ""
+        if origin and os.path.isfile(origin):
+            if open(origin, "rb").read() != open(TASK_PATH, "rb").read():
+                sys.stderr.write(
+                    "TASK.md no longer matches tasks/%s.md\n" % stem +
+                    "The contract is frozen at the branch's first commit. A criterion added or\n"
+                    "relaxed here changes the terms of passing, and nothing downstream would see it.\n"
+                    "  diff tasks/%s.md TASK.md\n" % stem)
+                return 2
+
     criteria = read_task(TASK_PATH)
     if criteria:
         problems = contract_problems(criteria)
@@ -434,7 +480,11 @@ def run(tier, jobs, only=None):
             sys.stderr.write("\nThis is a contract defect, not a failing check. Fix TASK.md.\n")
             return 2
 
-    checks, ignored = discover(tier)
+    try:
+        checks, ignored = discover(tier)
+    except ContractError as exc:
+        sys.stderr.write("%s\n" % exc)
+        return 2
     if only:
         # Bramka per-podzadanie: wszystkie kryteria po każdym podzadaniu zrobiły ze "szybkiej"
         # bramki 33 sekundy.

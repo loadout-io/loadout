@@ -31,12 +31,12 @@ cd "$ROOT"
 GENERATED='^(target|src-tauri/target|src-tauri/gen|node_modules|dist|\.vite|runs|test-results|playwright-report|\.playwright|\.loadout/runs|\.git|\.idea|\.vscode|coverage)(/|$)|^\.loadout/loadout\.db|(\.tsbuildinfo|\.DS_Store|\.log|\.jsonl)$|^\.port$'
 
 # ── Co wolno dotknąć, kiedy zadanie nie deklaruje własności (bieg ręczny, bez TASK.md). ────
-ALLOWED='^(src/|src-tauri/src/|src-tauri/capabilities/|src-tauri/icons/|src-tauri/tauri\.conf\.json$|docs/|tasks/|\.loadout/)|^(README\.md|TASK\.md)$'
+ALLOWED='^(src/|src-tauri/src/|src-tauri/capabilities/|src-tauri/icons/|src-tauri/tauri\.conf\.json$|docs/|\.loadout/)|^(README\.md|TASK\.md)$'
 
 # ── Czego nie wolno NIGDY, chyba że człowiek wpisał to wprost do bloku OWNS. ───────────────
 # AGENTS.md §7: dotknięcie harnessu, sprawdzeń, verify.sh albo zablokowanych decyzji to
 # moment na zatrzymanie się i zapytanie człowieka — nie na cichy commit.
-DENIED='^(harness/|checks/|scripts/|verify\.sh$|worktree\.sh$|review\.sh$|repair\.sh$|integrate\.sh$|ship-task\.sh$|AGENTS\.md$|docs/DECISIONS-LOCKED\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|tsconfig\.json$|vite\.config\.ts$|rust-toolchain\.toml$|\.gitignore$|\.claude/)'
+DENIED='^(harness/|checks/|tasks/|scripts/|verify\.sh$|worktree\.sh$|review\.sh$|repair\.sh$|integrate\.sh$|ship-task\.sh$|AGENTS\.md$|docs/DECISIONS-LOCKED\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|tsconfig\.json$|vite\.config\.ts$|rust-toolchain\.toml$|\.gitignore$|\.claude/)'
 
 # Repo bez ani jednego commita: nie ma bazy, wobec której "poza zakresem" cokolwiek znaczy —
 # `status` melduje wtedy CAŁE drzewo. Warunek jest mechaniczny i sam się kasuje: ship-task.sh
@@ -47,9 +47,34 @@ if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
   exit 0
 fi
 
-changed="$(git -c core.excludesFile=/dev/null status --porcelain=v1 -uall --ignored=matching \
-           | cut -c4- | sed 's/.* -> //' \
-           | grep -vE "$GENERATED" || true)"
+# ── Baza porównania: commit kontraktowy, NIE tylko HEAD ────────────────────────────────────
+# N-06 (audyt 2026-08-15, odtworzone end-to-end przez czterech niezależnych audytorów).
+# `git status` porównuje z HEAD, a ship-task.sh woła commit_leftovers BEZPOŚREDNIO PRZED
+# obiema bramkami — więc to sprawdzenie, jedyna obrona niezależna od narzędzia, którym zrobiono
+# zapis, w każdym prawdziwym biegu drukowało "0 changed paths, all inside this task's OWNS block"
+# dokładnie w tej chwili, w której miało coś zobaczyć. Odtworzenie: wypatroszona gate.py,
+# skasowany checks/quick-permissions.sh, dopisane fałszywe `## AC-7` do TASK.md, unwrap_used
+# przestawiony na "allow" — CZERWONO przed commitem, rc 0 po nim.
+#
+# Baza to commit, który DODAŁ TASK.md, czyli pierwszy commit gałęzi robiony przez ship-task.sh.
+# Ta sama definicja, której używa już review.sh. Fail-safe: gdy bazy nie ma (człowiek pracuje
+# poza worktree zadania), zostajemy przy samym `status` i mówimy to wprost — cicho zawężony
+# zakres jest gorszy niż jawnie węższy.
+base=""
+if [ -f TASK.md ]; then
+  base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | tail -1 || true)"
+fi
+committed=""
+basis="uncommitted work only (no contract commit found)"
+if [ -n "$base" ] && git rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1; then
+  committed="$(git diff --name-only --no-renames "$base"..HEAD 2>/dev/null || true)"
+  basis="everything since the contract commit ${base:0:8}"
+fi
+
+changed="$( { git -c core.excludesFile=/dev/null status --porcelain=v1 -uall --ignored=matching \
+                | cut -c4- | sed 's/.* -> //'
+              printf '%s\n' "$committed"
+            } | grep -v '^[[:space:]]*$' | sort -u | grep -vE "$GENERATED" || true)"
 
 # ── Blok OWNS. Jedno źródło własności; prozy pod "## What this task owns" nie czytamy. ─────
 owns=()
@@ -104,10 +129,11 @@ done <<< "$changed"
 if [ -n "$violations" ]; then
   echo "a file was written outside this task's scope" >&2
   printf '%s' "$violations" >&2
+  echo "detail: compared against $basis" >&2
   echo "detail: scope is $scope; generated paths are excluded by this file, not by .gitignore" >&2
   exit 1
 fi
 
 s="s"
 if [ "$n" -eq 1 ]; then s=""; fi
-echo "scope: $n changed path$s, all inside $scope"
+echo "scope: $n changed path$s, all inside $scope · basis: $basis"

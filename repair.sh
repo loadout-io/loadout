@@ -195,7 +195,7 @@ PLAN_RAW="runs/repair-plan.raw"; PLAN="runs/repair-plan.txt"; PLAN_LOG="runs/rep
 rm -f "$PLAN_RAW" "$PLAN" "$PLAN_LOG"
 spawn_planner() {
   if [ "$REVIEWER" = codex ]; then
-    exec codex exec --json --skip-git-repo-check -C "$ROOT" -s read-only \
+    exec codex exec --json --skip-git-repo-check -C "$ROOT" -s read-only --ignore-user-config \
       -m "$PLANNER_MODEL" -o "$PLAN" >"$PLAN_LOG" 2>&1
   fi
   exec claude -p --output-format stream-json --verbose \
@@ -252,11 +252,14 @@ spawn_writer() {
       "${CODEX_WRITABLE[@]+"${CODEX_WRITABLE[@]}"}" -m "$WRITER_MODEL" \
       -o "$EXEC_MSG" >"$EXEC_RAW" 2>&1
   fi
-  # --setting-sources "" nie wczytuje .claude/settings.json, więc uprawnienia muszą przyjść
-  # z flag. Bash jest szeroki celowo: wąski bash kosztuje tury, a broni i tak checks/quick-scope.sh,
-  # które widzi zapis niezależnie od tego, jakie narzędzie go zrobiło.
+  # --setting-sources project, NIE "" (N-02, audyt 2026-08-15). Tu stało "", z uzasadnieniem,
+  # że broni checks/quick-scope.sh — a N-06 pokazał, że to sprawdzenie było ślepe po commicie.
+  # Efekt: runda uruchamiana PO tym, jak recenzent powiedział, że coś jest nie tak, była rundą
+  # z najmniejszą liczbą zabezpieczeń: bez Write(harness/**), bez Write(TASK.md), bez haka Stop.
+  # Najmniej ograniczony pisarz i najbardziej ślepe sprawdzenie, w tym samym miejscu.
+  # ship-task.sh:181 opisuje ten sam błąd i go nie popełnia; ten plik go popełniał.
   exec claude -p --output-format stream-json --verbose \
-    --strict-mcp-config --setting-sources "" \
+    --strict-mcp-config --setting-sources project \
     --model "$WRITER_MODEL" --permission-mode acceptEdits \
     --allowedTools "Read,Grep,Glob,Edit,Write,Bash" \
     --max-turns "${LOADOUT_EXEC_MAX_TURNS:-120}" >"$EXEC_RAW" 2>"$EXEC_LOG"

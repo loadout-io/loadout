@@ -241,6 +241,16 @@ pub fn _guard(c: &rusqlite::Connection) {
 EOF
 }
 
+guard_quick_suppressions() {
+  # Jedna linia wewnątrz OWNS wyłącza bramkę typów. Plant musi być w src/, bo tam check patrzy,
+  # i musi być w PLIKU NOWYM — modyfikacja istniejącego .ts nie istnieje, bo src/ ma dziś
+  # wyłącznie theme.css.
+  plant_new src/_guard_suppression.ts <<'EOF'
+// @ts-nocheck
+export const guardValue: number = "not a number";
+EOF
+}
+
 guard_quick_permissions() {
   # Nie da się tego zasadzić przez plant_append: doklejenie czegokolwiek do JSON-a robi
   # z niego śmieć, a wtedy check woła exit 2 („nasza konfiguracja"), nie exit 1 („czerwone").

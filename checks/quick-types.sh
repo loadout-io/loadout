@@ -45,7 +45,23 @@ if [ -z "$ts" ]; then
   exit 0
 fi
 
-if ! out="$("$TSC" --noEmit -p checks/tsconfig.strict.json 2>&1)"; then
+out=""; rc=0
+out="$("$TSC" --noEmit -p checks/tsconfig.strict.json 2>&1)" || rc=$?
+
+# tsc rozróżnia dwie rzeczy i my musimy je przepuścić dalej rozróżnione (N-01):
+#   rc 1 = kod się nie typuje        -> czerwone, wina kodu
+#   rc 2 = KONFIGURACJA jest zepsuta -> exit 2, wina NASZA
+# Wcześniej oba lądowały jako 1. Skutek: błąd w naszym tsconfigu omijał wszystkie trzy
+# wyjścia awaryjne wpięte w exit 2 (gate.py, stop-gate.sh, ship-task.sh) i lądował jako
+# runda naprawcza, której pisarz nie ma jak wygrać — checks/ jest dla niego zabronione.
+if [ "$rc" -eq 2 ] || printf '%s\n' "$out" | grep -qE 'error TS(5[0-9]{3}|18003)'; then
+  echo "our TypeScript configuration is broken — this is not your code" >&2
+  printf '%s\n' "$out" | head -20 >&2
+  echo "detail: checks/tsconfig.strict.json, owned by the harness, not by any task" >&2
+  exit 2
+fi
+
+if [ "$rc" -ne 0 ]; then
   echo "the frontend does not typecheck under the strict config" >&2
   printf '%s\n' "$out" | head -30 >&2
   echo "detail: config is checks/tsconfig.strict.json, which no task owns" >&2

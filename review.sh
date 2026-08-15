@@ -204,7 +204,7 @@ $UNTRACKED
 spawn_reviewer() {
   if [ "$REVIEWER" = codex ]; then
     # -o zapisuje ostatnią wiadomość (nasz JSON); strumień zdarzeń idzie do logu.
-    exec codex exec --json --skip-git-repo-check -C "$ROOT" -s read-only \
+    exec codex exec --json --skip-git-repo-check -C "$ROOT" -s read-only --ignore-user-config \
       -m "$MODEL" --output-schema "$SCHEMA" -o "$RAW" >"$LOG" 2>&1
   fi
   # --strict-mcp-config --setting-sources "" tną koszt kontekstu ~6x (T1 §3.3) i nie psują
