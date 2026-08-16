@@ -131,6 +131,24 @@ impl Writer {
             .map_err(|_| StoreError::WriterGone)?;
         answer.await.map_err(|_| StoreError::WriterGone)?
     }
+
+    /// Mówi zadaniu, żeby dopisało to, co już stoi w kanale, i skończyło.
+    ///
+    /// Zlecenie idzie **kanałem**, a nie osobnym sygnałem, bo kanał jest FIFO: wszystko wysłane
+    /// wcześniej zostaje obsłużone, zanim to dojdzie. Sygnał obok kanału ścigałby się
+    /// z wysłanymi wsadami i „zapisane" znowu znaczyłoby „wysłane".
+    ///
+    /// 2026-08-16 — DLACZEGO TO ISTNIEJE, skoro zginięcie ostatniego klonu też kończy pętlę:
+    /// bo wołający tego warunku nie kontroluje. Kto trzyma własny klon [`Writer`] (a trzyma go
+    /// każdy, kto cokolwiek zapisuje) i woła `Store::close`, ten czekałby na zadanie, które nie
+    /// ma prawa się skończyć — kanał wciąż ma nadawcę. To nie jest błąd, tylko zawis, czyli
+    /// najgorszy kształt tej awarii: bez komunikatu i bez kodu wyjścia.
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        self.jobs
+            .send(Job::Close)
+            .await
+            .map_err(|_| StoreError::WriterGone)
+    }
 }
 
 /// Otwiera bazę do zapisu, ustawia pragmy, migruje i startuje zadanie pisarza.
@@ -170,6 +188,9 @@ async fn serve(conn: Connection, mut inbox: mpsc::Receiver<Job>) {
             Job::Pragmas(reply) => {
                 let _ = reply.send(read_pragmas(&conn));
             }
+            // Kanał jest FIFO, więc w tym miejscu wszystko, co ktokolwiek wysłał przed
+            // zamknięciem, jest już zapisane. Dlatego wolno wyjść bez dopytywania.
+            Job::Close => break,
         }
     }
 }
