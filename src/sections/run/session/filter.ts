@@ -13,6 +13,7 @@
  */
 import type { Who } from '../../../state/run';
 import type { FeedView, HistoryRow } from '../feed/model';
+import { authorityOf } from '../rail/say';
 
 /**
  * Wiersz strumienia plus jedno słowo o tym, kto to powiedział.
@@ -31,6 +32,21 @@ export interface TranscriptLine extends HistoryRow {
  * Linia pod-agenta trafia do widoku dziecka i jednym wierszem echa do strumienia głównego
  * [T2 §9.3]; do widoku dziecka nie trafia dwa razy, a do widoku rodzica nie trafia wcale.
  */
-export function sessionFeed(_view: FeedView, _agent: string): readonly TranscriptLine[] {
-  throw new Error('not implemented');
+export function sessionFeed(view: FeedView, agent: string): readonly TranscriptLine[] {
+  const mine: TranscriptLine[] = [];
+  for (const row of view.history) {
+    if (row.agent !== agent) continue;
+    /* Rozłożenie wiersza, nie zbudowanie go od nowa: `id`, `count`, `ids`, `expanded`
+     * i `label` przechodzą TAKIE, jakie stoją w strumieniu głównym. Derywacja licząca od
+     * nowa umie mieć rację co do każdego wiersza z osobna i mimo to postawić granice grup
+     * gdzie indziej — wtedy widok agenta mówi „Read 3 files", strumień „Read 6 files",
+     * i nic na ekranie nie mówi, które z nich jest prawdą.
+     *
+     * `expanded` jest tu przypadkiem granicznym, na którym widać to najostrzej: rozwinięcie
+     * postawił CZŁOWIEK i nie ma go w niczym, z czego dałoby się wiersz policzyć jeszcze raz. */
+    mine.push({ ...row, who: authorityOf(row.kind) });
+  }
+  /* Świeży obiekt na wiersz, bo `who` jest polem wiersza, a wiersz historii jest niezmienny.
+   * Reactowi to nie szkodzi: klucz jest `id`, a ten przychodzi ze strumienia niezmieniony. */
+  return mine;
 }
