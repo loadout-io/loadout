@@ -108,7 +108,12 @@ export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdg
 /** Plik → płótno. Druga połowa mappera i jedyne miejsce, w którym powstają identyfikatory
  * krawędzi: `from->to` jest funkcją samej strzałki, więc dwa razy narysowana ta sama strzałka
  * to jedna krawędź, a nie dwie różne o tym samym znaczeniu. */
-export function toCanvas(file: WorkflowFile): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+export function toCanvas(file: WorkflowFile): {
+  /* `type` jest tu WYMAGANY, choć w `CanvasNode` jest opcjonalny: ten mapper zawsze wie, który
+   * z dwóch komponentów rysuje kafelek, a płótno nie ma sensownego zachowania dla „nie wiem". */
+  nodes: Array<CanvasNode & { type: Step['kind'] }>;
+  edges: CanvasEdge[];
+} {
   return {
     nodes: file.steps.map((step) => ({
       id: step.id,

@@ -12,7 +12,7 @@
  * z jednym argumentem, bo w React Flow ta funkcja jest domknięciem nad żywym grafem. Tutaj graf
  * przychodzi jawnie — płótno robi `isValidConnection={(c) => isValidConnection(c, file)}`.
  */
-import type { AgentStep, Point, WorkflowFile } from '../../../state/workflows';
+import type { Point, Step, WorkflowFile } from '../../../state/workflows';
 import { snap } from './map';
 
 /** Tyle z `Connection` z `@xyflow/react`, ile ta warstwa czyta. Portów nie mamy (T3 §3.1). */
@@ -99,7 +99,7 @@ export function onConnectEnd(
    * każdym udanym połączeniu. */
   if (connection.isValid || connection.fromNode === null) return file;
 
-  const step = freshStep(freshId(file), snap(event.at));
+  const step = freshStep('agent', freshId(file), snap(event.at));
   return {
     ...file,
     /* Dopisujemy na KOŃCU: kolejność w `steps` jest kolejnością wstawiania i nigdy nie jest
@@ -116,7 +116,7 @@ export function onConnectEnd(
  * Wyprowadzony z dokumentu, nie z zegara ani z losowości: ta funkcja jest czysta, a dwa takie
  * same gesty mają dać plik, który da się porównać gitem. Pętla kończy się zawsze — kandydatów
  * jest o jeden więcej niż zajętych identyfikatorów. */
-function freshId(file: WorkflowFile): string {
+export function freshId(file: WorkflowFile): string {
   const taken = new Set(file.steps.map((step) => step.id));
   for (let n = file.steps.length + 1; ; n += 1) {
     const candidate = `s_${String(n)}`;
@@ -124,14 +124,20 @@ function freshId(file: WorkflowFile): string {
   }
 }
 
-/** Świeży krok rodzaju `agent` — rodzaj `checkpoint` powstaje wyłącznie z przycisku.
+/** Świeży krok jednego z dwóch rodzajów — i jedyne miejsce, w którym powstaje nowy krok.
+ *
+ * Upuszczenie strzałki i oba przyciski płótna wołają TĘ funkcję. Druga lista wartości
+ * domyślnych, wpisana przy przycisku, rozjechałaby się z tą przy pierwszym polu dopisanym do
+ * schematu — i rozjechałaby się po cichu, bo krok z brakującym polem wygląda jak każdy inny.
  *
  * `agent: ''` znaczy „jeszcze nie wybrano" i jest widoczne od razu: walidator (T-12) zgłasza
- * to jako problem, a panel kroku otwiera się na liście agentów. Zgadywanie pierwszego agenta
- * z biblioteki byłoby decyzją podjętą za użytkownika w miejscu, w którym on jej nie widzi. */
-function freshStep(id: string, at: Point): AgentStep {
+ * to jako problem. Zgadywanie pierwszego agenta z biblioteki byłoby decyzją podjętą za
+ * użytkownika w miejscu, w którym on jej nie widzi. */
+export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
+  if (kind === 'checkpoint') return { kind, id, name: 'Ask me first', at };
+
   return {
-    kind: 'agent',
+    kind,
     id,
     name: 'New step',
     agent: '',
