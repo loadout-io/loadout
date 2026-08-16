@@ -292,7 +292,9 @@ pub fn emit(skill: &Skill) -> (String, Vec<&'static str>) {
         .get("argument-hint")
         .filter(|hint| !hint.trim().is_empty())
     {
-        preamble.push_str(&format!("Arguments: {hint}\n"));
+        preamble.push_str("Arguments: ");
+        preamble.push_str(hint);
+        preamble.push('\n');
     }
     // Tylko `fork`. Inna wartość `context` znaczy coś, czego nie umiemy przetłumaczyć, a
     // zdanie postawione „na wszelki wypadek" kłamie o tym, jak umiejętność pobiegnie.
@@ -342,13 +344,20 @@ fn spec_line(skill: &Skill, field: &str) -> Option<String> {
             .compatibility
             .as_ref()
             .map(|value| format!("compatibility: {}\n", scalar(value))),
+        // `BTreeMap`, więc pary wychodzą posortowane po kluczu — ta sama mapa daje ten sam
+        // plik, niezależnie od kolejności, w jakiej klucze przyszły z importu.
         "metadata" => (!skill.metadata.is_empty()).then(|| {
-            let pairs: String = skill
+            skill
                 .metadata
                 .iter()
-                .map(|(key, value)| format!("  {key}: {}\n", scalar(value)))
-                .collect();
-            format!("metadata:\n{pairs}")
+                .fold("metadata:\n".to_owned(), |mut block, (key, value)| {
+                    block.push_str("  ");
+                    block.push_str(key);
+                    block.push_str(": ");
+                    block.push_str(&scalar(value));
+                    block.push('\n');
+                    block
+                })
         }),
         "allowed-tools" => skill
             .allowed_tools
@@ -506,7 +515,7 @@ fn stays_inside(relative: &Path) -> bool {
         && relative.is_relative()
         && !relative
             .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
+            .any(|part| matches!(part, Component::ParentDir))
 }
 
 /// Wykonuje plan: `SKILL.md` z [`emit`] do obu katalogów, pliki dołączone przez `fs::copy`,
@@ -565,7 +574,53 @@ pub fn apply(plan: &InstallPlan, skill: &Skill) -> Result<()> {
 /// a źródło jest jedno (niezmiennik 4). Katalog, którego nie ma w sidecarze, jest cudzy
 /// i nie jest kasowany.
 pub fn remove(name: &str, scope: Scope, roots: &Roots) -> Result<Removed> {
-    todo!("T-18 AC-6: zdjęcie obu kopii {name} dla {scope:?} {roots:?}")
+    if scope == Scope::Project && roots.project.is_none() {
+        return Err(Error::NoProjectRoot);
+    }
+
+    let sidecar = sidecar_path(&roots.data);
+    let ours = recorded(&sidecar);
+
+    // DWA PRZEBIEGI, i to jest cała treść tej funkcji. Najpierw decyzja o OBU katalogach,
+    // dopiero potem pierwsze skasowanie: pół usunięcia zostawia stan, którego nikt nie umie
+    // opisać, a cudza umiejętność skasowana „przy okazji" jest nie do odzyskania.
+    let mut mine = Vec::new();
+    for root in destinations(scope, &roots.home, roots.project.as_deref()) {
+        let dir = root.join(name);
+        // Katalogu nie ma — nie ma czego bronić i nie ma czego kasować. `symlink_metadata`,
+        // bo dowiązanie w tym miejscu też jest czymś, co tam stoi.
+        if fs::symlink_metadata(&dir).is_err() {
+            continue;
+        }
+        if ours.contains(&dir) {
+            mine.push(dir);
+        } else {
+            // Kolizja nazw jest normalna, nie wyjątkowa: `pdf` to oczywista nazwa i ktoś mógł
+            // napisać swoją ręcznie. Sidecar jest jedyną rzeczą, która mówi, która z dwóch
+            // jest nasza — a kiedy mówi „nie nasza", nie kasujemy NICZEGO, także drugiej kopii.
+            return Ok(Removed::Skipped {
+                path: dir,
+                why: "Loadout did not write this folder, so removing it would take somebody \
+                      else's skill"
+                    .to_owned(),
+            });
+        }
+    }
+
+    for dir in &mine {
+        fs::remove_dir_all(dir)?;
+    }
+
+    // Kanoniczna kopia w danych aplikacji ZOSTAJE (niezmiennik 4): katalogi vendorów są
+    // wyjściem builda, a źródło jest jedno. Usunięcie, które kasuje źródło, zamienia
+    // „odinstaluj z Codeksa" w „skasuj umiejętność".
+    if !mine.is_empty() {
+        let mut left = ours;
+        left.retain(|path| !mine.contains(path));
+        write_sidecar(&sidecar, &left)?;
+    }
+
+    Ok(Removed::Done { paths: mine })
 }
 
 // ── Sidecar ────────────────────────────────────────────────────────────────────────────────
