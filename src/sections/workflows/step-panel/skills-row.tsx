@@ -30,6 +30,94 @@ export interface SkillsRowProps {
   onChoose: (choice: SkillChoice) => void;
 }
 
-export function SkillsRow(_props: SkillsRowProps): ReactElement | null {
-  throw new Error('not implemented');
+const ROW = 'flex flex-col gap-1';
+const LABEL = 'text-label text-muted';
+const CHOICE = 'flex items-baseline gap-2 text-body text-ink';
+const NOTE = 'text-label text-muted';
+
+export function SkillsRow({
+  mode,
+  runsWith,
+  available,
+  value,
+  onChoose,
+}: SkillsRowProps): ReactElement | null {
+  /* Codex nie ma pojęcia umiejętności [T3 §7.2, T4 fakt-check O4], więc wiersza NIE MA.
+   * Wyszarzony dalej obiecuje, że kiedyś zadziała, a nikt nie przyjdzie go włączyć. */
+  if (runsWith === 'codex') return null;
+
+  const picked = new Set(Array.isArray(value) ? value : []);
+
+  /* Zaznaczenie pola wyboru przepisuje CAŁĄ listę w kolejności `available`, a nie dokłada
+   * do końca. Kolejność klikania nie jest decyzją użytkownika, a zapisana do pliku wyglądałaby
+   * jak zmiana przy każdym otwarciu tego wiersza [T3 §8.2]. */
+  const toggle = (skill: string) => {
+    onChoose({
+      only: available.filter((one) => (one === skill ? !picked.has(one) : picked.has(one))),
+    });
+  };
+
+  return (
+    <div className={ROW}>
+      <span className={LABEL}>Skills</span>
+
+      <label className={CHOICE}>
+        <input
+          type="radio"
+          name="step-skills"
+          checked={value === 'all'}
+          onChange={() => {
+            onChoose('all');
+          }}
+        />
+        All skills
+      </label>
+
+      {mode === 'subset' ? (
+        <>
+          <label className={CHOICE}>
+            <input
+              type="radio"
+              name="step-skills"
+              checked={Array.isArray(value)}
+              onChange={() => {
+                onChoose({ only: [...picked] });
+              }}
+            />
+            Only these
+          </label>
+
+          {available.map((skill) => (
+            <label key={skill} className={`${CHOICE} pl-4`}>
+              <input
+                type="checkbox"
+                checked={picked.has(skill)}
+                onChange={() => {
+                  toggle(skill);
+                }}
+              />
+              {skill}
+            </label>
+          ))}
+
+          {/* Zmierzone w S-1: szesnastu umiejętności wbudowanych w Claude Code nie da się zdjąć
+              niczym poza flagą, która kasuje wszystkie do zera. Lista wyżej rządzi dokładnie
+              tymi, które da się zabrać — i tyle wolno obiecać. */}
+          <span className={NOTE}>Claude Code always keeps the ones it brings with it.</span>
+        </>
+      ) : (
+        <label className={CHOICE}>
+          <input
+            type="radio"
+            name="step-skills"
+            checked={Array.isArray(value)}
+            onChange={() => {
+              onChoose('none');
+            }}
+          />
+          No skills
+        </label>
+      )}
+    </div>
+  );
 }
