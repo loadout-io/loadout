@@ -16,6 +16,9 @@ use tauri::Manager;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
+/// Warstwa komend: funkcje `*_inner`, ktore nie znaja slowa „Tauri". Wypelnia T-15.
+pub mod commands;
+
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
@@ -38,6 +41,9 @@ pub mod skills;
 
 /// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
 pub mod workflow;
+
+/// Rejestr workspace'ow: jeden folder — jedna karta, jedna wspolna pula miejsc. Wypelnia T-24.
+pub mod workspace;
 
 // 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
 //

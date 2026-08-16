@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 18:05
+# Stan budowy — 2026-08-16, 19:50
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,17 +8,23 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **19 z 27** (T-26 dopisane dzisiaj) |
+| wylądowane | **24 z 27** (T-26 dopisane dzisiaj) |
 | kosztowało | **$352** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) · średnia **$21** |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (19):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-06 T-11 T-12 T-13 T-14 T-16 T-17 T-18 T-19 T-20 T-21 T-25`
+**Wylądowane (24):** wszystko poza `T-15 T-22 T-23` oraz `S-3 T-10` (Codex).
 
-**W locie (2):** `T-07` (bramka) i `T-26` (nowe zadanie, patrz niżej).
-Pisarz i recenzent `claude`; Codex bez kredytów do 2026-08-20.
+**W locie (2):** `T-15` (implementacja) i `T-22` (runda naprawcza).
+**Zostaje po nich `T-23`** — czeka na T-15 i jest ostatnim zadaniem planu.
+
+**Aplikacja renderuje wszystkie pięć sekcji.** Sprawdzone Playwrightem po wylądowaniu T-08 i T-26:
+każda zakładka montuje własny ekran z nagłówkiem, zaproszeniem i jedną akcją; zdania z rejestru
+(`sectionEntry(id).empty`) zniknęły ze wszystkich pięciu. Paska loadoutu nie widać, bo **nie ma
+biegu** — ozdoba bez danych nie wchodzi (niezmiennik 17). Zobaczy go dopiero `T-15`, który łączy
+płótno z silnikiem.
 
 **Zostało 6 poza falą:** `T-08` (czeka na T-07), `T-09 T-15 T-22 T-24` (czekają na T-08),
 `T-23` (na T-15). Ścieżka krytyczna to `T-07 → T-08 → T-15 → T-23`, czyli cztery zadania
