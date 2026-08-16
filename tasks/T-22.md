@@ -249,9 +249,27 @@ przechodzi też skrypt, który nie zapisuje nigdy.
   ekranu jako baseline, żadnego axe. Pomysł „widoczność różnicowa" z `paint-audit.mjs` jest
   zanotowany jako notatka na później `[06 §10]`, nie jako kod teraz.
 
+**Dopisane 2026-08-16 przez orchestratora (poszerzenie UPRAWNIEN, nie kryteriow).**
+`checks/_quick-density.sh` to ten sam plik pod nazwa, ktorej `harness/gate.py` NIE ODKRYWA --
+konwencja `_cargo-serialize.sh`. Powod wynika z projektu samego sprawdzacza: sedzia dostaje
+ZRZUT, a kolektor biegnie w przegladarce i kryterium akceptacji miec nie moze (napisane w tym
+pliku i w naglowku checku). Dopoki zrzutu nie ma, kazde wywolanie konczy sie kodem 2, a
+projektowe sprawdzenie z dwojka przewraca CALY poziom -- czyli wpuszczenie go do odkrywania
+unieruchamia bramke na kazdym biegu.
+
+Wolno tu wylacznie: trzymac ten plik pod jedna z dwoch nazw i przestawiac stala `CHECK`
+w dwoch specyfikacjach, ktore go wolaja. Nie wolno: zamieniac "nie dalo sie" na exit 0,
+produkowac zrzutu z siedmioma metrykami "niezmierzone, powod: kolektor nie biegl" (sedzia by
+to przepuscil, i byla by to zielen kupiona za zdanie) ani kasowac sprawdzacza -- sedzia,
+zapadka i parser sufitu sa przetestowane siedmioma kryteriami i dzialaja.
+
+Wlaczenie z powrotem to jeden ruch: zdejmij podkreslenie i dopisz `quick-density` do
+`checks/MANIFEST`. Kolektor: T-27.
+
 <!-- OWNS
 checks/quick-boundary.sh
 checks/quick-density.sh
+checks/_quick-density.sh
 checks/full-test.sh
 checks/full-clippy.sh
 checks/density-baseline.json
