@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub mod ingest;
 pub mod place;
 
 /// Dwie nazwy katalogów, które pokrywają wszystkich sześciu vendorów z MVP [T5 §3.1].
