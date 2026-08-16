@@ -15,14 +15,11 @@
 //! (`docs/ARCHITECTURE.md` §6a). Klon [`Limiter`] dzieli tę samą pulę i to jest cały mechanizm;
 //! dowód, że dwa biegi w dwóch workspace'ach naprawdę ją dzielą, należy do T-24 AC-2.
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
-//!
-//! Ciała zwracają **świadomie złą wartość** i każde jest tak oznaczone komentarzem `SZKIELET`.
-//! To jest wymagany kształt fazy, w której powstają kryteria: test ma się skompilować i paść
-//! **w czasie wykonania, na braku ZACHOWANIA** (`AGENTS.md` §2a p. 5). `todo!()` jest tu
-//! zakazany polityką lintów repo (`clippy::todo = deny`), więc rolę „jeszcze nie napisane"
-//! grają wartości dobrane tak, żeby żadnego kryterium nie dało się na nich przejść:
-//! stały limit 1 i brama zawsze otwarta.
+//! **Dwie liczby, nie jedna** (2026-08-16). [`Limiter::at_once`] mówi, ile ma biec, a
+//! [`Limiter::running_now`], ile biegnie. Po obniżeniu suwaka różnią się i tak ma być: ekran
+//! pokazujący nową wartość jako fakt kłamie o tym, co w tej chwili zajmuje pamięć maszyny.
+//! Zejście do nowej wartości dzieje się wyłącznie przy zwalnianiu miejsc — obniżenie suwaka
+//! nie dotyka niczego, co już działa.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,6 +44,23 @@ pub const MAX_AT_ONCE: usize = 8;
 /// a od zatrzymywania biegu jest Stop, nie suwak.
 const MIN_AT_ONCE: usize = 1;
 
+/// Ile gigabajtów maszyny przypada w podpowiedzi na jednego agenta.
+///
+/// Cztery przy zmierzonych 583 MB szczytowego RSS `[T7 §7.1, V]`, a nie „583 MB, więc zmieści
+/// się ich tyle, ile razy wejdą": pozostała pamięć nie jest wolna. Bierze ją system, ta
+/// aplikacja, przeglądarka i skoki, których szczyt nie widzi. Dzielnik jest częścią wzoru
+/// z raportu, nie zaokrągleniem w wygodną stronę.
+const GB_PER_AGENT: u64 = 4;
+
+/// Przycięcie do `1..=8`, w jednym miejscu dla wszystkich wejść.
+///
+/// Ta sama liczba przychodzi z suwaka, z pliku biegu (`runs.concurrency`) i z zapisanego
+/// workflow — a dwa z tych trzech wejść nigdy nie widziały żadnej kontrolki. Przycięcie
+/// wyłącznie w komponencie znaczy „przycięte, dopóki nikt nie wznowi biegu".
+fn clamp_at_once(at_once: usize) -> usize {
+    at_once.clamp(MIN_AT_ONCE, MAX_AT_ONCE)
+}
+
 /// Podpowiedź przy pierwszym uruchomieniu: `clamp(total_gb / 4, 1, 8)` `[T7 §7.1]`.
 ///
 /// Pamięć maszyny wchodzi **argumentem**. Kto ją zmierzy, potrzebuje `sysinfo`, czyli zmiany
@@ -54,10 +68,12 @@ const MIN_AT_ONCE: usize = 1;
 /// nie cichy dopisek.
 #[must_use]
 pub fn suggested_at_once(total_gb: u64) -> usize {
-    let _ = total_gb;
-    // SZKIELET — wartość stała. Implementacja, która zwraca to samo dla każdej maszyny,
-    // proponuje trzech agentów także na laptopie z 8 GB, gdzie sam ich RSS to 1,7 GB.
-    MIN_AT_ONCE
+    // Dzielenie całkowite w dół, a potem podłoga: 2 GB wychodzą na zero agentów, a zero nie
+    // jest odpowiedzią na pytanie „ilu naraz" — od zatrzymywania biegu jest Stop.
+    // `try_from` zamiast `as`: tam, gdzie `u64` nie mieści się w `usize`, odpowiedzią jest
+    // sufit, nie obcięte bity.
+    let by_memory = usize::try_from(total_gb / GB_PER_AGENT).unwrap_or(MAX_AT_ONCE);
+    clamp_at_once(by_memory)
 }
 
 /// Ile jeszcze czekać na odnowienie limitu.
@@ -70,10 +86,14 @@ pub fn suggested_at_once(total_gb: u64) -> usize {
 /// a odejmowanie w drugą stronę byłoby paniką w silniku (`AGENTS.md` §4).
 #[must_use]
 pub fn duration_until_reset(resets_at_unix: i64, now_unix: i64) -> Duration {
-    let _ = (resets_at_unix, now_unix);
-    // SZKIELET — zero znaczy „wznów natychmiast", czyli dokładnie ten wynik, który daje
-    // najczęstsza pomyłka jednostki.
-    Duration::ZERO
+    // Obie liczby są w sekundach, więc różnica też jest w sekundach i `from_secs` jest jedynym
+    // konstruktorem, który tu pasuje. `from_millis` na tej samej parze daje 300 ms zamiast
+    // pięciu minut — bieg wznawia się natychmiast i przepala resztę okna na odmowach.
+    let seconds_left = resets_at_unix.saturating_sub(now_unix);
+    // Limit, który już wrócił, to zero, nie liczba ujemna: `Duration` nie ma znaku, więc
+    // odejmowanie w drugą stronę byłoby paniką — a panika w agentowym runtime zabiera
+    // cały bieg (`AGENTS.md` §4).
+    Duration::from_secs(u64::try_from(seconds_left).unwrap_or(0))
 }
 
 /// Odpowiedź bramy na jedno zdarzenie limitu dostawcy.
@@ -103,9 +123,37 @@ pub enum Gate {
 /// prawa wywalić biegu.
 #[must_use]
 pub fn read_gate(info: &Value) -> Gate {
-    let _ = info;
-    // SZKIELET — brama zawsze otwarta i nic nie trafia do dziennika.
-    Gate::Open
+    let Some(status) = info.get("status").and_then(Value::as_str) else {
+        tracing::debug!(
+            shape = %info,
+            "provider limit line has no status field; dropping the line and sending on"
+        );
+        return Gate::Open;
+    };
+
+    // Jedno porównanie i jedno pole. Nie ma tu `overageStatus`, nie ma
+    // `overageDisabledReason` i nie ma sprawdzenia, czy obiekt w ogóle przyszedł: linia
+    // z UDANEGO biegu niesie wszystkie trzy i mówi „allowed", a te zdarzenia to 1,3%
+    // normalnego strumienia `[T7 §4.3, V]`.
+    if status == "allowed" {
+        return Gate::Open;
+    }
+
+    let Some(resets_at) = info.get("resetsAt").and_then(Value::as_i64) else {
+        // Odmowa bez chwili powrotu jest kształtem, którego nie znamy: pauza bez końca to
+        // bieg, który wisi, dopóki człowiek go nie zatrzyma, a to jest gorsze niż wysłanie
+        // kroku, który znowu dostanie odmowę. Idzie do dziennika i zostaje porzucona
+        // (niezmiennik 5). Gdyby ten kształt kiedykolwiek pojawił się na drucie, to jest
+        // ta jedna linia do zmiany — i dopiero wtedy wiadomo, na co ją zmienić.
+        tracing::debug!(
+            status,
+            shape = %info,
+            "provider limit line refuses without saying when it comes back; dropping the line"
+        );
+        return Gate::Open;
+    };
+
+    Gate::PausedUntil(resets_at)
 }
 
 /// Stan **biegu**.
@@ -194,16 +242,78 @@ struct Pool {
     /// jest cała prawda o tym stanie: UI, który natychmiast pokazuje nową wartość jako fakt,
     /// kłamie o tym, co dzieje się na maszynie.
     running: AtomicUsize,
+    /// Ile miejsc jeszcze trzeba połknąć, żeby obniżony suwak wszedł w życie.
+    ///
+    /// Obniżenie suwaka w chwili, w której wszystkie miejsca są zajęte, nie ma czego zabrać
+    /// z puli — a zabranie tego, co już biegnie, byłoby anulowaniem agenta, o które nikt nie
+    /// prosił. Więc różnica zostaje tutaj jako dług i spłaca ją pierwsze zwolnienie: slot
+    /// wraca, ale nie do puli, tylko na spłatę.
+    owed: AtomicUsize,
 }
 
 impl Pool {
+    /// Suwak poszedł w górę: brakujące miejsca wchodzą do puli natychmiast.
+    fn hand_out(&self, more: usize) {
+        // Najpierw umorzenie długu z wcześniejszego obniżenia. Bez tego droga 4 → 2 → 4
+        // zostawia pulę o dwa miejsca uboższą, niż pokazuje suwak, i to na stałe: dołożone
+        // permity poszłyby przy zwalnianiu na spłatę długu, którego podniesienie już umorzyło.
+        let forgiven = self.forgive(more);
+        self.slots.add_permits(more - forgiven);
+    }
+
+    /// Suwak poszedł w dół. Nic nie ginie: schodzą miejsca, które akurat leżą wolne,
+    /// a reszta zostaje długiem do spłacenia przy zwalnianiu.
+    fn take_back(&self, fewer: usize) {
+        let mut taken = 0;
+        while taken < fewer {
+            let Ok(free) = self.slots.try_acquire() else {
+                // Nie ma już wolnych miejsc: cała reszta różnicy siedzi w rękach zadań,
+                // które biegną, a tych nie ruszamy.
+                break;
+            };
+            // `forget`, nie upuszczenie: upuszczony permit wraca do puli, a ten ma zniknąć.
+            free.forget();
+            taken += 1;
+        }
+        self.owed.fetch_add(fewer - taken, Ordering::SeqCst);
+    }
+
+    /// Umarza do `most` miejsc długu i mówi, ile umorzyła.
+    ///
+    /// Pętla CAS, a nie „odczytaj, odejmij, zapisz": dwa zadania kończące się w tej samej
+    /// chwili czytałyby ten sam dług i spłaciły go dwa razy, po czym pula na zawsze byłaby
+    /// o jedno miejsce mniejsza, niż mówi suwak.
+    fn forgive(&self, most: usize) -> usize {
+        let mut owed = self.owed.load(Ordering::SeqCst);
+        loop {
+            let paid = most.min(owed);
+            if paid == 0 {
+                return 0;
+            }
+            match self.owed.compare_exchange_weak(
+                owed,
+                owed - paid,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return paid,
+                Err(seen) => owed = seen,
+            }
+        }
+    }
+
     /// Slot wraca do puli. Tu, i tylko tu, obniżenie suwaka wchodzi w życie.
     fn give_back(&self) {
+        // Najpierw licznik biegnących, dopiero potem miejsce. W odwrotnej kolejności następne
+        // zadanie zdąży wystartować, zanim to policzy swoje wyjście, i `running_now()` pokaże
+        // wtedy o jeden za dużo — akurat w chwili, w której ktoś patrzy, ile biegnie.
         self.running.fetch_sub(1, Ordering::SeqCst);
-        // SZKIELET — zwrot bezwarunkowy. Wersja docelowa oddaje permit dopiero wtedy, kiedy po
-        // tym zwolnieniu naprawdę biegnie mniej, niż mówi suwak; do tego czasu slot znika po
-        // cichu. Obniżenie NIGDY nie zabija tego, co już biegnie.
-        self.slots.add_permits(1);
+        if self.forgive(1) == 0 {
+            self.slots.add_permits(1);
+        }
+        // Kiedy dług był niezerowy, miejsce znika po cichu i nikt go nie dostaje. To jest cała
+        // różnica między „od teraz dwa naraz" a „zabij dwa biegnące": obniżenie suwaka nie
+        // dotyka niczego, co już działa.
     }
 }
 
@@ -223,13 +333,13 @@ impl Limiter {
     /// przechodzi przez żaden suwak.
     #[must_use]
     pub fn new(at_once: usize) -> Self {
-        let _ = at_once;
-        // SZKIELET — stały limit 1 i żadnego przycinania.
+        let at_once = clamp_at_once(at_once);
         Self {
             pool: Arc::new(Pool {
-                slots: Semaphore::new(MIN_AT_ONCE),
-                at_once: AtomicUsize::new(MIN_AT_ONCE),
+                slots: Semaphore::new(at_once),
+                at_once: AtomicUsize::new(at_once),
                 running: AtomicUsize::new(0),
+                owed: AtomicUsize::new(0),
             }),
         }
     }
@@ -251,12 +361,17 @@ impl Limiter {
     /// W górę: nowe miejsca są do wzięcia od razu. W dół: nic nie ginie, a nadmiar schodzi
     /// dopiero przy zwalnianiu (`[T7 §7.1]`).
     pub fn set_at_once(&self, at_once: usize) {
-        let _ = at_once;
-        // SZKIELET — suwak zapisuje stałą zamiast tego, o co poproszono, i nie dokłada ani
-        // nie zabiera ani jednego miejsca. Limiter, który poprawnie liczy miejsca, ale nikt
-        // nigdy nie prosi o więcej niż jedno, to defekt poprzedniego prototypu: liczba rośnie, nakładanie
-        // się w czasie nie (niezmiennik 11).
-        self.pool.at_once.store(MIN_AT_ONCE, Ordering::SeqCst);
+        let wanted = clamp_at_once(at_once);
+        let previous = self.pool.at_once.swap(wanted, Ordering::SeqCst);
+        // Dwie różnice, z których co najwyżej jedna jest niezerowa, a obie operacje na zerze
+        // są niczym. Zapisane bez `if`, bo `if w > p … else if w < p` to ten sam kod plus
+        // trzecie ramię, którego nikt nigdy nie przeczyta.
+        //
+        // Sam zapis liczby to jest właśnie defekt poprzedniego prototypu: `max_parallel` był tam tylko
+        // szerokością wysyłki, a nakładania się w czasie nie było wcale (niezmiennik 11).
+        // Miejsce, w którym ten suwak przestaje być liczbą, jest o dwie linie niżej.
+        self.pool.hand_out(wanted.saturating_sub(previous));
+        self.pool.take_back(previous.saturating_sub(wanted));
     }
 
     /// Bierze miejsce z puli, czekając, aż będzie wolne.
@@ -351,18 +466,37 @@ impl Run {
     /// plik ma dać się przetestować bez zegara maszyny — tak samo, jak daje się przetestować
     /// bez okna.
     pub fn saw_rate_limit(&mut self, info: &Value, now_unix: i64) -> Gate {
-        let _ = now_unix;
-        // SZKIELET — decyzja idzie z [`read_gate`] (dziś zawsze otwarta), a bieg zaraz o niej
-        // zapomina: pauza nie zostaje nigdzie zapisana, więc wysyłka nie ustaje ani na chwilę.
-        self.paused_until = None;
-        read_gate(info)
+        let gate = read_gate(info);
+        if let Gate::PausedUntil(resets_at) = gate {
+            let deadline = Instant::now() + duration_until_reset(resets_at, now_unix);
+            // Dalsza z dwóch chwil, nigdy bliższa. Kroki, które biegną, strumieniują dalej
+            // (pauza wstrzymuje wysyłkę, nie egzekucję), więc druga linia limitu potrafi
+            // wejść zaraz po pierwszej i być od niej starsza. Skrócenie pauzy taką linią
+            // wygląda potem jak „wznowiło się samo, o minutę za wcześnie", a szuka się tego
+            // w zegarze, nie tutaj.
+            self.paused_until = Some(self.paused_until.map_or(deadline, |set| set.max(deadline)));
+        }
+        // Zdarzenie ze statusem `allowed` NIE kończy trwającej pauzy i to jest decyzja, nie
+        // przeoczenie: wznowienie ma jeden wyzwalacz, `resetsAt` `[T7 §7.2]`. Te zdarzenia to
+        // 1,3% normalnego strumienia, a w pauzie strumieniują wciąż dwa czy trzy kroki —
+        // pierwsze z nich skasowałoby pauzę milisekundy po jej wejściu.
+        //
+        // Żaden krok nie zmienia tu stanu i żaden nie dostaje podbitego podejścia. To nie jest
+        // przeoczenie w drugą stronę: `[T7 §7.2]` nazywa wprost błędem wersję, która oznacza
+        // kroki jako `failed` („a pause, not a failure"), a na ekranie wygląda ona jak bieg,
+        // który się wywrócił na limicie, zamiast takiego, który na niego czeka.
+        gate
     }
 
     /// Prośba o miejsce dla jednego kroku. Jedyne wejście do puli.
     ///
     /// W pauzie odmawia **od razu i wartością**; poza pauzą czeka na wolne miejsce.
     pub async fn dispatch(&self) -> Dispatch {
-        // SZKIELET — nikt tu nie pyta o pauzę, więc wysyłka nie zatrzymuje się nigdy.
+        if self.status() == RunStatus::Paused {
+            // Odmowa przed `await`, nie po nim: czekanie na miejsce w biegu, który i tak nic
+            // nie wyśle, zajmowałoby slot potrzebny komuś, kto może biec.
+            return Dispatch::Refused(Refusal::Paused);
+        }
         Dispatch::Granted(self.limiter.take_slot().await)
     }
 }

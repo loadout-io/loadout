@@ -13,7 +13,9 @@
  * zwykłej, zanim trafi na ekran — inaczej to samo zdanie w kodzie i w markupie różni się
  * znakiem, którego nie widać.
  *
- * STAN TEGO PLIKU: SZKIELET (2026-08-16) — patrz nagłówek `at-once.tsx`.
+ * NA EKRAN NIE TRAFIA ANI LICZBA Z DRUTU, ANI JEJ ZAPIS MASZYNOWY. „resets at 1786800600"
+ * i „2026-08-16T13:30:00Z" są gorsze niż brak paska, bo wyglądają na odpowiedź: pierwsze
+ * nie znaczy nic, drugie znaczy godzinę w cudzej strefie.
  */
 import type { ReactElement } from 'react';
 
@@ -42,9 +44,52 @@ export interface PausedBannerProps {
   zone?: string;
 }
 
-export function PausedBanner(props: PausedBannerProps): ReactElement | null {
-  // SZKIELET — pusty element zamiast paska i zamiast braku paska naraz: przy czekającym biegu
-  // nie ma tu zdania, a przy wysyłającym jest element, którego ma nie być.
-  void props;
-  return <div />;
+/** Sekundy uniksowe z drutu, milisekundy w `Date` — jedyne miejsce, w którym ta zamiana żyje. */
+const MS_PER_SECOND = 1000;
+
+/* Dwie spacje nierozdzielające, zapisane numerem, a nie znakiem: w źródle różnica między nimi
+ * a zwykłą spacją jest niewidoczna dla oka i dla recenzji. */
+const NARROW_NO_BREAK_SPACE = String.fromCharCode(0x202f);
+const NO_BREAK_SPACE = String.fromCharCode(0x00a0);
+
+/** Strefa maszyny, kiedy nikt nie podał własnej. */
+function machineZone(): string {
+  return new Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/** Ta sama chwila, czytana zegarem czytelnika. */
+function localHour(unixSeconds: number, zone: string): string {
+  const shown = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(unixSeconds * MS_PER_SECOND));
+  return shown.replaceAll(NARROW_NO_BREAK_SPACE, ' ').replaceAll(NO_BREAK_SPACE, ' ');
+}
+
+/** Całe zdanie paska, składane w jednym miejscu. */
+function waitingSentence(unixSeconds: number, zone: string): string {
+  return `Waiting for your Claude usage to reset at ${localHour(unixSeconds, zone)}.`;
+}
+
+export function PausedBanner({
+  run,
+  zone = machineZone(),
+}: PausedBannerProps): ReactElement | null {
+  // Bieg, który wysyła, nie ma paska — nie pustego paska. Pusty trzyma swoje miejsce na ekranie
+  // i uczy ludzi przestać czytać tę część okna.
+  if (run.waitingUntil === null) {
+    return null;
+  }
+
+  // `--attend` znaczy „czeka na ciebie" (DESIGN §3). Nie `--fail`: nic się nie zepsuło, bieg
+  // czeka — a pasek w kolorze błędu zamienia poprawną pauzę w wywrócony bieg.
+  return (
+    <p
+      data-paused-banner=""
+      className="rounded-sq border border-attend-edge bg-attend-wash px-3 py-2 text-attend"
+    >
+      {waitingSentence(run.waitingUntil, zone)}
+    </p>
+  );
 }
