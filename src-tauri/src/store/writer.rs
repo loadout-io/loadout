@@ -22,13 +22,6 @@
 //! w całości (transakcja), błąd wraca do wołającego, a zadanie bierze następne zlecenie.
 //! Implementacja, która ratuje atomowość, kończąc zadanie, przechodzi połowę AC-6 i zmusza
 //! użytkownika do restartu aplikacji po jednym złym zdarzeniu.
-//!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
-//!
-//! Pętla zadania **odbiera zlecenia i odpowiada `Ok`, nie dotykając połączenia**. To jest
-//! świadomie zła wartość: baza zostaje pusta, więc AC-2, AC-4, AC-5 i AC-6 padają na porównaniu
-//! stanu, a nie na braku celu testowego. Żadnego z nich nie da się na tym szkielecie przejść —
-//! AC-5 porównuje zbiór 4000 treści, a AC-6 wymaga błędu, którego szkielet nigdy nie oddaje.
 
 use std::path::Path;
 

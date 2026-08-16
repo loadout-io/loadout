@@ -14,13 +14,6 @@
 //! czytasz to nieaktualne. Jedyne pytanie, na które ta funkcja odpowiada, brzmi „czy w bazie
 //! stoi to, co ma stać", i odpowiada na nie, wykonując zdania, które same sprawdzają, czy mają
 //! co robić.
-//!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
-//!
-//! Pętla jest już ta docelowa, ale [`schema::STATEMENTS`] jest pusta, więc wykonuje się
-//! zero zdań i **żadna tabela nie powstaje**. To jest świadomie zła wartość: AC-1 pada wtedy
-//! na kontroli przeciw pustej asercji („zrzut `sqlite_master` po migracji jest pusty"), a nie
-//! na braku celu testowego, i tak ma być w tej fazie (`AGENTS.md` §2a p. 5).
 
 use rusqlite::Connection;
 

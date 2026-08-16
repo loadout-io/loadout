@@ -26,15 +26,6 @@
 //!   nigdy nie widziało tego kodu: migracji, skryptowi naprawczemu, przyszłemu daemonowi,
 //!   `sqlite3` z terminala. Odmowa napisana w Ruście przechodzi wszystkie nasze testy i nie
 //!   chroni przed niczym, bo testowała nasze API.
-//!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
-//!
-//! Ciała funkcji zwracają **świadomie złą wartość** i każde jest tak oznaczone komentarzem
-//! `SZKIELET`. To jest wymagany kształt fazy, w której powstają kryteria: test ma się
-//! skompilować i paść **w czasie wykonania, na braku ZACHOWANIA** — test, który się nie
-//! kompiluje, niczego nie uruchomił (`AGENTS.md` §2a p. 5). `todo!()` tu nie stoi, bo `todo`
-//! jest `deny` w `[workspace.lints.clippy]`. Każdy stub jest dobrany tak, żeby **żadnego**
-//! kryterium nie dało się na nim przejść, i jest to rozpisane przy każdym ciele z osobna.
 
 use std::path::{Path, PathBuf};
 
