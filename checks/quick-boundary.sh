@@ -36,18 +36,28 @@ problems=""
 # Pliki testowe wyłączone ze WSZYSTKICH trzech reguł: test wolno mieć własne połączenie
 # i własny cfg, bo nie jest częścią wysyłanego artefaktu. Wyłączenie jest po ŚCIEŻCE,
 # nigdy po treści — "czy to jest test" nie może być oceną.
-not_test() { case "$1" in */tests/*|*/test/*|*_test.rs|*_tests.rs|*/fake.rs) return 1 ;; esac; return 0; }
+#
+# 2026-08-16: `*/fake.rs` stało w tej liście i było jedynym wpisem, który nie mówił o teście.
+# `engine/drivers/fake.rs` jest sterownikiem KOMPILOWANYM DO BINARKI, więc wyłączony z trzech
+# reguł naraz był dziurą wielkości pliku: `use tauri::AppHandle;` w nim przechodziło bez słowa.
+# Kryterium wpisu na tę listę: cargo nie wkłada tej ścieżki do wysyłanego artefaktu.
+not_test() { case "$1" in */tests/*|*/test/*|*_test.rs|*_tests.rs) return 1 ;; esac; return 0; }
 
 # Komentarze liniowe zdejmujemy, żeby zdanie "engine/ nie importuje tauri::*" w nagłówku
 # pliku nie wywracało własnej reguły. Blokowych /* */ nie tykamy — w Ruście prawie ich nie ma.
 uncommented() { sed 's://.*::' "$1"; }
 
 # ── 1. engine/ vs tauri ────────────────────────────────────────────────────────────────────
+#
+# Nie samo słowo "tauri". `crate::ipc` jest jedynym modułem, który zna Tauri (ARCHITECTURE §3),
+# więc `use crate::ipc::Line;` w engine/ jest zależnością od okna, w której słowa "tauri" nie
+# ma ani razu — dokładnie ta granica, przechodzona bez podpisu. Wzorzec jest ŚCIEŻKĄ MODUŁU,
+# nie literałem z fikstury: każdy nowy import z ipc łapie się sam.
 if [ -d "$ENGINE" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     not_test "$f" || continue
-    hit="$(uncommented "$f" | grep -niE 'tauri' | head -3 || true)"
+    hit="$(uncommented "$f" | grep -niE 'tauri|crate::ipc' | head -3 || true)"
     if [ -n "$hit" ]; then
       problems+="  $f mentions tauri (invariant 1 — engine/ must build and test without a window)"$'\n'
       problems+="$(printf '%s\n' "$hit" | sed 's/^/      /')"$'\n'
@@ -56,13 +66,24 @@ if [ -d "$ENGINE" ]; then
 fi
 
 # ── 2. kod platformowy tylko w supervisor.rs ───────────────────────────────────────────────
+#
+# Cztery kształty, nie jeden. `#[cfg(windows)]` jest tym, który każdy pamięta, i dlatego
+# jedynym, który to sprawdzenie widziało do 2026-08-16. Pozostałe trzy przechodziły:
+#
+#   cfg!(unix)          forma MAKRA — ta sama decyzja platformowa, tylko w wyrażeniu
+#   libc::…             `libc` stoi w src-tauri/Cargo.toml pod [target.'cfg(unix)'.dependencies],
+#                       więc każde jego użycie JEST gałęzią uniksową, tylko niepodpisaną
+#   std::os::unix::…    to samo od strony biblioteki standardowej (i ::windows:: symetrycznie)
+#
+# Wzorce są TOKENAMI JĘZYKA, nie literałami z fikstury: `libc::SIGKILL` i `libc::ESRCH` łapią
+# się same, choć w żadnym teście nie występują.
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ "$f" = "$SUPERVISOR" ] && continue
   not_test "$f" || continue
-  hit="$(uncommented "$f" | grep -nE '#\[cfg\((any\(|not\()?(windows|unix|target_os|target_family)' | head -3 || true)"
+  hit="$(uncommented "$f" | grep -nE '(#\[cfg\(|cfg!\()(any\(|not\()?(windows|unix|target_os|target_family)|libc::|std::os::(unix|windows)::' | head -3 || true)"
   if [ -n "$hit" ]; then
-    problems+="  $f carries platform cfg (invariant 3 — only $SUPERVISOR may)"$'\n'
+    problems+="  $f carries platform-specific code (invariant 3 — only $SUPERVISOR may)"$'\n'
     problems+="$(printf '%s\n' "$hit" | sed 's/^/      /')"$'\n'
   fi
 done < <(find src-tauri/src -name '*.rs' 2>/dev/null || true)
