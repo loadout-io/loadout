@@ -36,6 +36,20 @@ powstala.
 - `src/sections/run/io.ts`, `src/sections/workflows/io.ts` — **waski mandat**: wywolanie Start
   i Stop. Reszta cial nalezy do T-27.
 - Cztery pliki testow wymienione przy `check:`.
+- `src-tauri/tests/runcmd_end_to_end.rs`, `src-tauri/tests/runcmd_snapshot.rs`,
+  `src-tauri/tests/runcmd_checkpoint.rs` — **najwezszy mozliwy mandat**: dopasowac WYWOLANIE
+  `run_workflow_inner` do nowego typu trzeciego argumentu. Ani jednej asercji nie wolno tu
+  usunac, oslabic ani przenumerowac; jesli dopasowanie wymaga czegos wiecej niz zmiany
+  konstrukcji kanalu przy wywolaniu, to znaczy, ze zmiana w `run.rs` jest za szeroka —
+  zwez `run.rs`, a nie test.
+
+  **Dlaczego to jest w OWNS (§5c).** Zmierzone 2026-08-17 na galezi `task-T-30`:
+  `cargo check --all-targets` daje `error[E0308]` w tych trzech plikach, w czterech
+  wywolaniach (`runcmd_end_to_end.rs:326`, `runcmd_snapshot.rs:275`, `runcmd_checkpoint.rs:145`
+  i `:207`) — wszystkie podaja `mpsc::Sender<Vec<Line>>` tam, gdzie stoi juz `LineSink`.
+  Bez tych plikow zadanie jest NIEWYKONALNE: `full-clippy` i `full-test` nie kompiluja sie
+  nigdy, wiec zadne kryterium nie ma jak zaswiecic na zielono. Petla `quick` pisarza tego nie
+  widziala, bo `--all-targets` sadzi takze `tests/`, a `quick-clippy` chodzi po `--lib`.
 
 ## Niezmienniki
 
@@ -105,6 +119,9 @@ src-tauri/src/ipc.rs
 src-tauri/commands.golden.txt
 src/sections/run/io.ts
 src/sections/workflows/io.ts
+src-tauri/tests/runcmd_end_to_end.rs
+src-tauri/tests/runcmd_snapshot.rs
+src-tauri/tests/runcmd_checkpoint.rs
 src-tauri/tests/run_reaches_the_pump.rs
 src-tauri/tests/run_commands_registered.rs
 src-tauri/tests/run_stop_waits_for_proof.rs
