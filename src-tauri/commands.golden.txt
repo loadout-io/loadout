@@ -14,6 +14,7 @@
 # (pierwszy argument `invoke`). Kolejność alfabetyczna, żeby dopisanie nazwy było jednym
 # wierszem diffu, a nie przesunięciem całego pliku.
 check_workflow
+continue_run
 delete_agent
 delete_workflow
 install_skill
@@ -23,6 +24,8 @@ load_workflow
 new_id
 put_note_to_use
 review_skill
+run_workflow
 save_agent
 save_workflow
+stop_run
 stop_using_note
