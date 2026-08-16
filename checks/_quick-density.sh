@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# ODSTAWIONY Z ŻYWEJ BRAMKI 2026-08-16, i to jest wniosek z tego, co ten plik sam o sobie mówi.
+#
+# Podkreślenie w nazwie znaczy dla `harness/gate.py` jedno: NIE ODKRYWAJ. Ta sama konwencja,
+# co `_cargo-serialize.sh`. Powód nie jest organizacyjny, tylko wynika z projektu tego pliku:
+# sędzia dostaje ZRZUT, a kolektor biegnie w przeglądarce i — jak napisano niżej — kryterium
+# akceptacji mieć nie może. Dopóki nikt nie dostarczy zrzutu, każde wywołanie tego sprawdzacza
+# kończy się kodem 2 („nie dało się zmierzyć"), a projektowe sprawdzenie z kodem 2 przewraca
+# CAŁY poziom na 2. Czyli: wpuszczenie tego pliku do odkrywania unieruchamia bramkę na każdym
+# biegu, do końca świata.
+#
+# Czego świadomie NIE zrobiono, bo każde z tych trzech jest gorsze:
+#   - zamiana „nie dało się" na exit 0 — to jest dokładnie „czysty przebieg, który nic nie
+#     zmierzył", przed którym stoi ten plik i cały niezmiennik 18;
+#   - zrzut z siedmioma metrykami „niezmierzone, powód: kolektor nie biegł" — sędzia by to
+#     przepuścił, i byłaby to zieleń kupiona za zdanie;
+#   - skasowanie sprawdzacza — sędzia, zapadka i parser sufitu są przetestowane siedmioma
+#     kryteriami T-22 i działają. Nie ma czego kasować, jest czego jeszcze nie podłączono.
+#
+# Włączenie z powrotem to JEDEN ruch: kiedy istnieje kolektor produkujący zrzut, zdejmij
+# podkreślenie i dopisz `quick-density` do `checks/MANIFEST`. Zadanie na kolektor: T-27.
 # Sufit gęstości z docs/ARCHITECTURE.md §7, egzekwowany zamiast zadeklarowanego.
 #
 # Niezmiennik 18: sufit jest MIERZONY, nie oceniany okiem, a zapadka może tylko maleć.

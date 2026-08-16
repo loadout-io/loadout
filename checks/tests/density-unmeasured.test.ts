@@ -44,7 +44,7 @@ import {
 import measuredZero from './fixtures/measured-zero.json';
 import missingMetric from './fixtures/missing-metric.json';
 
-const CHECK = 'quick-density.sh';
+const CHECK = '_quick-density.sh';
 const NO_RATCHET = {};
 
 /** Zapadka, w której stoi JEDNA metryka. Pozostałe sześć jest pierwszym pomiarem. */

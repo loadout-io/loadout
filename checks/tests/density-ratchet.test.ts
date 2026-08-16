@@ -35,7 +35,7 @@ import {
   sandbox,
 } from './_support';
 
-const CHECK = 'quick-density.sh';
+const CHECK = '_quick-density.sh';
 const BASELINE_PATH = 'checks/density-baseline.json';
 
 /** Zapadka z JEDNĄ metryką: chrome stoi na 80, przy suficie tej metryki równym 96. */
