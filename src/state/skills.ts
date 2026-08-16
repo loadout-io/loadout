@@ -14,11 +14,13 @@
  * albo `specta` — T4 §7.2), rozjazd łapią kryteria po stronie Rusta: tam te same pola są
  * zamrożone testem.
  *
- * Ciała akcji są jeszcze puste i mają paść w czasie wykonania. To jest ten sam szkielet, co
- * `todo!()` w Ruście (AGENTS.md §2a): import ma się rozwiązać, a kryterium paść na BRAKU
- * ZACHOWANIA, nie na braku modułu.
+ * Nazw komend nie zna ten plik: zna je `sections/skills/io.ts` i to jest JEDYNA krawędź, przez
+ * którą cokolwiek jedzie do Rusta (niezmiennik 23). Zdanie „zero wywołań IPC" ma sens tylko
+ * wtedy, kiedy jest jedna droga do policzenia — przy dwóch licznik pilnuje jednej, a instalacja
+ * jedzie drugą.
  */
 import { create } from 'zustand';
+import { install, readLink } from '../sections/skills/io';
 
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
 export type Weight = 'warn' | 'block';
@@ -91,23 +93,83 @@ export interface SkillsState {
   add: () => Promise<void>;
 }
 
-export const useSkills = create<SkillsState>()(() => ({
+/** Znaleziska, które zatrzymują instalację i których człowiek jeszcze nie otworzył. */
+function unread(item: Import, acknowledged: readonly string[]): Finding[] {
+  return item.reviewed.findings.filter(
+    (finding) => finding.weight === 'block' && !acknowledged.includes(finding.id),
+  );
+}
+
+/* Zdanie, nie słowo. Odmowa w ciszy wygląda dokładnie jak zepsuty przycisk, a człowiek, który
+ * nie wie, czego się od niego chce, klika drugi raz i zgłasza błąd. Nazwa reguły nie ma tu
+ * prawa paść (niezmiennik 14): mówi, jak nazywa się sprawdzenie, a nie na czym polega ryzyko. */
+function held(count: number): string {
+  return count === 1
+    ? 'One line in this skill has to be read before it can be added.'
+    : String(count) + ' lines in this skill have to be read before it can be added.';
+}
+
+/** Zdanie od Rusta, kiedy jakieś jest — jego odmowy są już napisane po ludzku. */
+function why(error: unknown, fallback: string): string {
+  const said = error instanceof Error ? error.message.trim() : '';
+  return said.length > 0 ? said : fallback;
+}
+
+export const useSkills = create<SkillsState>()((set, get) => ({
   pending: null,
   acknowledged: [],
   message: null,
   installed: [],
 
-  review: () => {
-    throw new Error('not implemented: read the link and hold what came back for a person to see');
+  review: async (url: string) => {
+    try {
+      /* Przeczytane znaleziska NIE przenoszą się na następny import. Ta sama karta z tym samym
+       * identyfikatorem znaleziska jest innym plikiem z innej strony. */
+      set({ pending: await readLink(url), acknowledged: [], message: null });
+    } catch (error) {
+      set({
+        pending: null,
+        acknowledged: [],
+        message: why(error, 'Loadout could not read that link.'),
+      });
+    }
   },
 
-  acknowledge: () => {
-    throw new Error('not implemented: write down that this one finding was read');
+  acknowledge: (findingId: string) => {
+    const { acknowledged } = get();
+    if (acknowledged.includes(findingId)) return;
+    set({ acknowledged: [...acknowledged, findingId] });
   },
 
-  add: () => {
-    throw new Error(
-      'not implemented: refuse while a blocking finding is unread, otherwise hand it over once',
-    );
+  add: async () => {
+    const { pending, acknowledged, installed } = get();
+    if (pending === null) return;
+
+    /* Warunek stoi na WYWOŁANIU, nie na widoku. Wyłączony przycisk jest sugestią: zostaje
+     * klawiatura, skrót i druga ścieżka w interfejsie — a ta funkcja jest jedynym miejscem,
+     * przez które umiejętność z sieci może trafić na dysk. */
+    const waiting = unread(pending, acknowledged);
+    if (waiting.length > 0) {
+      set({ message: held(waiting.length) });
+      return;
+    }
+
+    try {
+      /* Jedzie CAŁY przegląd, ten sam obiekt, który przyszedł z Rusta. Ciało złożone tu jeszcze
+       * raz byłoby tekstem, którego nikt nie przeskanował. */
+      await install(pending);
+    } catch (error) {
+      set({ message: why(error, 'Loadout could not add that skill.') });
+      return;
+    }
+
+    set({
+      pending: null,
+      acknowledged: [],
+      message: null,
+      /* Znacznik przeżywa instalację. Zastępuje podpisy i weryfikację pochodzenia, których w v1
+       * nie ma, więc znacznik gasnący po sukcesie nie znaczy nic. */
+      installed: [...installed, { name: pending.name, fromTheInternet: pending.fromTheInternet }],
+    });
   },
 }));
