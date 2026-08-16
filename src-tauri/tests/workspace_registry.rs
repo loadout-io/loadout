@@ -156,7 +156,7 @@ async fn a_second_opening_hands_back_the_store_that_is_already_working() -> anyh
     // o to, co się stanie z magazynem, który już pracuje, kiedy ktoś otworzy ten sam folder.
     let working = registry
         .store(&first)
-        .ok_or_else(|| anyhow!("the registry opened {} and then had no store for it", first))?;
+        .ok_or_else(|| anyhow!("the registry opened {first} and then had no store for it"))?;
 
     let again = registry.open(&meetnotes)?;
     let handed_back = registry
