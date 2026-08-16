@@ -193,4 +193,33 @@ describe('two different names never land in one file', () => {
         'whatever order it likes',
     ).toEqual(['apple', 'Banana']);
   });
+
+  /* Dopisane w fazie implementacji (2026-08-16), nie osłabia niczego powyżej. Ta sama cicha
+   * porażka, co w całej reszcie tego pliku — dwie nazwy, jeden plik — tylko wywołana szybkim
+   * palcem zamiast wielkością liter. „Przeczytaj katalog, wybierz wolną nazwę, zapisz" ma
+   * w środku dwa `await`, a przez to okno wchodzi drugie kliknięcie. */
+  it('keeps two creations fired at once in two files, not in a race for one', async () => {
+    const io = disk([]);
+    const store = createWorkflowListStore(io);
+    await store.getState().load();
+
+    // Dwa kliknięcia `＋ Create` w tej samej sekundzie: drugie nie czeka na pierwsze.
+    await Promise.all([store.getState().create('Ship it'), store.getState().create('Ship it')]);
+
+    expect(
+      new Set(io.writes).size,
+      'both creations read the folder before either of them wrote to it, so both find the ' +
+        'same free name and the second write lands on the first',
+    ).toBe(2);
+    expect(io.files.size, 'and both are on disk afterwards').toBe(2);
+    expect(
+      store
+        .getState()
+        .workflows.map((listed) => listed.path)
+        .sort(),
+      'and the list holds both files. A creation that rebuilds the list out of the folder it ' +
+        'read BEFORE the other one wrote drops the other one off the screen, and the row comes ' +
+        'back only after a reload — which is the same lie as the lost file, told by the list',
+    ).toEqual([...io.files.keys()].sort());
+  });
 });

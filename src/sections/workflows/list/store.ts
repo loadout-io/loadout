@@ -196,69 +196,96 @@ export function newWorkflowName(entries: readonly WorkflowEntry[]): string {
 }
 
 export function createWorkflowListStore(io: WorkflowListIo) {
+  /* Kolejka na operacje, które czytają katalog i coś w nim zostawiają.
+   *
+   * DLACZEGO (zmierzone 2026-08-16, `create.test.ts`: „keeps two creations fired at once…").
+   * „Przeczytaj katalog, wybierz wolną nazwę, zapisz" ma w środku dwa `await`, a przez to okno
+   * wchodzi drugie kliknięcie `＋ Create`: oba wywołania widzą ten sam katalog, wybierają tę
+   * samą wolną nazwę i drugi zapis ląduje na pierwszym. To ta sama cicha porażka, co
+   * `Ship a feature` przy `Ship a Feature` — dwie nazwy, jeden plik — tylko wywołana szybkim
+   * palcem zamiast wielkością liter. Drugi jej wariant jest w samej liście: wywołanie, które
+   * przebudowuje ekran z katalogu odczytanego ZANIM to drugie zapisało, gubi cudzy wiersz.
+   *
+   * Czym to NIE jest: zamkiem na katalog. Drugie okno aplikacji i Finder dalej mogą zapisać
+   * pod tą samą nazwą w tej samej milisekundzie, a na to jest jedna odpowiedź i mieszka po
+   * stronie Rusta — zapis, który odmawia, kiedy plik już istnieje. Tutaj domykamy dokładnie
+   * to, co ten magazyn może domknąć sam: wyścig z samym sobą. */
+  let queue: Promise<unknown> = Promise.resolve();
+
+  function inTurn<T>(operation: () => Promise<T>): Promise<T> {
+    const turn = queue.then(operation);
+    /* Odrzucenie wraca do tego, kto wołał, ale NIE zatrzymuje kolejki — bez tego jeden nieudany
+     * zapis unieruchamiałby ekran do końca sesji. `queue` przez to nigdy nie jest odrzucone. */
+    queue = turn.catch(() => undefined);
+    return turn;
+  }
+
   return create<WorkflowListState>()((set, get) => ({
     workflows: [],
     pendingDeleteId: null,
 
-    load: async () => {
-      set({ workflows: sortedByName(await io.list()) });
-    },
+    load: () =>
+      inTurn(async () => {
+        set({ workflows: sortedByName(await io.list()) });
+      }),
 
-    create: async (name) => {
-      /* Katalog czytamy TERAZ, tuż przed wyborem nazwy pliku, zamiast ufać temu, co ekran
-       * pokazuje. Lista w głowie ekranu jest z chwili, w której ktoś ją wczytał; plik mógł
-       * w międzyczasie powstać w drugim oknie albo w Finderze, a wolna nazwa wybrana wobec
-       * nieaktualnego spisu to dokładnie ten cichy zapis na cudzym pliku, przed którym stoi
-       * całe to sprawdzanie unikalności. */
-      const onDisk = await io.list();
-      const path = freeFileName(name, onDisk);
-      const workflow: WorkflowFile = {
-        format: 1,
-        id: await io.newId(),
-        /* Dokładnie to, co wpisał człowiek — nazwa pliku jest z niej wyprowadzona raz,
-         * a sama nazwa nigdy nie jest spłaszczana pod nazwę pliku. */
-        name,
-        steps: [],
-        links: [],
-      };
+    create: (name) =>
+      inTurn(async () => {
+        /* Katalog czytamy TERAZ, tuż przed wyborem nazwy pliku, zamiast ufać temu, co ekran
+         * pokazuje. Lista w głowie ekranu jest z chwili, w której ktoś ją wczytał; plik mógł
+         * w międzyczasie powstać w drugim oknie albo w Finderze, a wolna nazwa wybrana wobec
+         * nieaktualnego spisu to dokładnie ten cichy zapis na cudzym pliku, przed którym stoi
+         * całe to sprawdzanie unikalności. */
+        const onDisk = await io.list();
+        const path = freeFileName(name, onDisk);
+        const workflow: WorkflowFile = {
+          format: 1,
+          id: await io.newId(),
+          /* Dokładnie to, co wpisał człowiek — nazwa pliku jest z niej wyprowadzona raz,
+           * a sama nazwa nigdy nie jest spłaszczana pod nazwę pliku. */
+          name,
+          steps: [],
+          links: [],
+        };
 
-      await io.write(path, workflow);
-      set({ workflows: sortedByName([...onDisk, { path, workflow }]) });
-    },
+        await io.write(path, workflow);
+        set({ workflows: sortedByName([...onDisk, { path, workflow }]) });
+      }),
 
-    duplicate: async (id) => {
-      /* Ten sam odczyt katalogu i z tego samego powodu, co w `create`: duplikat jest nowym
-       * plikiem, więc też musi trafić na wolną nazwę. */
-      const onDisk = await io.list();
-      const source = onDisk.find((entry) => entry.workflow.id === id);
-      if (source === undefined) {
-        /* Plik zniknął spod ekranu — usunięty w drugim oknie albo w Finderze. Duplikowanie
-         * wiersza, którego nie ma na dysku, wskrzesiłoby workflow, który ktoś przed chwilą
-         * usunął; ekran ma się zamiast tego zgodzić z katalogiem (niezmiennik 4). */
-        set({ workflows: sortedByName(onDisk) });
-        return;
-      }
+    duplicate: (id) =>
+      inTurn(async () => {
+        /* Ten sam odczyt katalogu i z tego samego powodu, co w `create`: duplikat jest nowym
+         * plikiem, więc też musi trafić na wolną nazwę. */
+        const onDisk = await io.list();
+        const source = onDisk.find((entry) => entry.workflow.id === id);
+        if (source === undefined) {
+          /* Plik zniknął spod ekranu — usunięty w drugim oknie albo w Finderze. Duplikowanie
+           * wiersza, którego nie ma na dysku, wskrzesiłoby workflow, który ktoś przed chwilą
+           * usunął; ekran ma się zamiast tego zgodzić z katalogiem (niezmiennik 4). */
+          set({ workflows: sortedByName(onDisk) });
+          return;
+        }
 
-      const name = `${source.workflow.name} (copy)`;
-      const copy: WorkflowFile = {
-        /* `structuredClone`, nie `{ ...wf }`. Rozłożenie obiektu kopiuje ODWOŁANIA do tablic
-         * `steps` i `links`, więc pierwsza edycja duplikatu po cichu przepisuje oryginał,
-         * na którym użytkownik pracuje od miesiąca — i widać to dopiero po biegu, który zrobił
-         * co innego, niż mówi ekran. */
-        ...structuredClone(source.workflow),
-        /* Własne `id`: dwie pozycje z jednym `id` to jeden workflow wypisany dwa razy,
-         * a wygrywa ta, którą zapisano później. `id` oryginału zostaje nietknięte [T3 §3.1]. */
-        id: await io.newId(),
-        name,
-      };
-      /* Identyfikatory kroków zostają takie, jakie były. Są lokalne dla pliku, a `links`
-       * wskazują na nie po tych identyfikatorach — świeżo wybite `id` kroków bez przepisania
-       * strzałek dałyby kopię podłączoną do niczego. */
+        const name = `${source.workflow.name} (copy)`;
+        const copy: WorkflowFile = {
+          /* `structuredClone`, nie `{ ...wf }`. Rozłożenie obiektu kopiuje ODWOŁANIA do tablic
+           * `steps` i `links`, więc pierwsza edycja duplikatu po cichu przepisuje oryginał,
+           * na którym użytkownik pracuje od miesiąca — i widać to dopiero po biegu, który zrobił
+           * co innego, niż mówi ekran. */
+          ...structuredClone(source.workflow),
+          /* Własne `id`: dwie pozycje z jednym `id` to jeden workflow wypisany dwa razy,
+           * a wygrywa ta, którą zapisano później. `id` oryginału zostaje nietknięte [T3 §3.1]. */
+          id: await io.newId(),
+          name,
+        };
+        /* Identyfikatory kroków zostają takie, jakie były. Są lokalne dla pliku, a `links`
+         * wskazują na nie po tych identyfikatorach — świeżo wybite `id` kroków bez przepisania
+         * strzałek dałyby kopię podłączoną do niczego. */
 
-      const path = freeFileName(name, onDisk);
-      await io.write(path, copy);
-      set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]) });
-    },
+        const path = freeFileName(name, onDisk);
+        await io.write(path, copy);
+        set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]) });
+      }),
 
     requestDelete: (id) => {
       /* Pytanie i nic poza pytaniem. Usunięcie pliku PRZED jego pokazaniem robi z pytania
@@ -271,30 +298,34 @@ export function createWorkflowListStore(io: WorkflowListIo) {
       set({ pendingDeleteId: null });
     },
 
-    confirmDelete: async () => {
-      const id = get().pendingDeleteId;
-      if (id === null) {
-        return;
-      }
+    /* W tej samej kolejce, co tworzenie: usunięcie w trakcie trwającego zapisu skończyłoby się
+     * tym, że `create` przebudowuje listę z katalogu odczytanego przed usunięciem i wiersz
+     * wraca na ekran, choć pliku już nie ma. */
+    confirmDelete: () =>
+      inTurn(async () => {
+        const id = get().pendingDeleteId;
+        if (id === null) {
+          return;
+        }
 
-      /* Ścieżkę bierzemy z listy, a nie ze świeżego odczytu katalogu — inaczej niż w `create`
-       * i `duplicate`. Tam katalog rozstrzygał, która nazwa jest WOLNA, więc musiał być
-       * aktualny. Tu pytanie brzmi „na który wiersz wskazał człowiek", a na to odpowiada
-       * ekran, na którym ten wiersz stał. */
-      const target = get().workflows.find((entry) => entry.workflow.id === id);
-      if (target === undefined) {
-        set({ pendingDeleteId: null });
-        return;
-      }
+        /* Ścieżkę bierzemy z listy, a nie ze świeżego odczytu katalogu — inaczej niż w `create`
+         * i `duplicate`. Tam katalog rozstrzygał, która nazwa jest WOLNA, więc musiał być
+         * aktualny. Tu pytanie brzmi „na który wiersz wskazał człowiek", a na to odpowiada
+         * ekran, na którym ten wiersz stał. */
+        const target = get().workflows.find((entry) => entry.workflow.id === id);
+        if (target === undefined) {
+          set({ pendingDeleteId: null });
+          return;
+        }
 
-      /* Najpierw plik, potem lista. Skreślenie pozycji z listy bez usunięcia pliku daje stan,
-       * który wraca po restarcie (niezmiennik 4); a kiedy `io.remove` się nie uda, pozycja ma
-       * zostać na ekranie, bo plik został na dysku. */
-      await io.remove(target.path);
-      set({
-        workflows: get().workflows.filter((entry) => entry.workflow.id !== id),
-        pendingDeleteId: null,
-      });
-    },
+        /* Najpierw plik, potem lista. Skreślenie pozycji z listy bez usunięcia pliku daje stan,
+         * który wraca po restarcie (niezmiennik 4); a kiedy `io.remove` się nie uda, pozycja ma
+         * zostać na ekranie, bo plik został na dysku. */
+        await io.remove(target.path);
+        set({
+          workflows: get().workflows.filter((entry) => entry.workflow.id !== id),
+          pendingDeleteId: null,
+        });
+      }),
   }));
 }
