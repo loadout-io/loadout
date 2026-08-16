@@ -1,0 +1,245 @@
+# T-13 — Płótno: dwa rodzaje kafelka, przeciąganie, znacznik nadpisań
+
+To jest ekran, na którym cała teza produktu albo się broni, albo nie. Trudność nie jest w rysowaniu
+kafelków — `@xyflow/react` robi to za nas — tylko w tym, że płótno jest **widokiem na plik**, a nie
+plikiem. Cicha porażka numer jeden: do zapisu przecieka stan kosmetyczny. Zaznaczasz kafelek, plik
+się brudzi, autosave zapisuje, git pokazuje diff, w którym nie ma żadnej twojej decyzji — a po roku
+nikt nie umie odczytać historii workflow, bo każde spojrzenie na ekran zostawiło w niej wiersz
+(`NodeBase` niesie `selected`, `dragging` i `measured`, a `toObject()` dokłada `viewport` — T3 §3.3).
+Cicha porażka numer dwa jest ta, przed którą użytkownik ostrzegł wprost: edytujesz krok, a zmienia
+się **agent**, więc pięć innych workflow po cichu zaczyna działać inaczej. Obie mają tę własność, że
+wszystko wygląda dobrze i wszystkie testy przechodzą, bo testy pytają „czy krok ma teraz thinking:
+deep?", a nigdy „czy agent jest dokładnie taki, jak był?".
+
+**Read first:** `docs/research/topics/T3-workflow-editor.md` (§2.3 — mock `ResizeObserver` z oficjalnej
+dokumentacji React Flow jest **nieaktualny dla 12.11.3** i wywala niezłapany `TypeError`, a testy
+raportują wtedy zieleń, co jest gorsze niż porażka; §3.3 mapper w 15 liniach i lista pól kosmetycznych;
+§5.1 dziewięć linii `isValidConnection`; §5.3 jak pokazywać uwagi; §7.1 modal kroku; §10 ryzyko 1 i 7),
+`docs/research/topics/T4-agent-registry.md` §4.5 (wygląd nadpisań: kropka przy wierszu, `Agent uses: …`
+szarym, `Reset`, `Use agent's settings`; słownik to *changed / reset / the agent's settings* i nigdy
+*override / patch / merge / inherit*), `docs/mockup/index.html` linie 495–570 (wiążący układ płótna
+i panelu kroku), `docs/research/topics/S1-skill-subsetting.md` (**produkuje go spike S-1 — na dzień pisania tego
+zadania pliku jeszcze NIE MA; rozstrzyga, którą wersję kontrolki Skills budujesz** — jeśli plik nie
+istnieje albo spike wypadł źle, budujesz obie i ustawiasz stałą na `all-or-none`), `docs/design/DESIGN.md` §6 `node-card` (280 px, `--raised`, obrys `--line-strong`,
+zaznaczony `--accent`).
+
+## Kto to robi
+
+- **Agent:** `react-ui`
+- **Druga opinia:** Codex — kod pisze Claude Code (D3). Recenzent nie zatwierdza i nie blokuje.
+- **Artefakty biegu:** `runs/T-13/`
+
+**Czym testujemy, i dlaczego nie DOM-em.** W repo **nie ma** `jsdom` ani `@testing-library/react`,
+a `package.json` i `vite.config.ts` są na liście `DENIED` w `checks/quick-scope.sh` — to samo
+ograniczenie mają T-08 i T-09, i nie wolno ci go obejść. `vitest` biegnie w domyślnym środowisku
+`node`. Dwie techniki wystarczają na wszystkie siedem kryteriów: (1) **czyste funkcje** —
+`onConnectEnd`, `isValidConnection`, `snap`, `toFile`, akcje magazynu — wołane wprost, z asercją na
+dokumencie; (2) `renderToStaticMarkup` z `react-dom/server` na statyczny HTML, kiedy pytanie brzmi
+„co widzi użytkownik" (kolejność etykiet, `disabled`, obecność wiersza). Konsekwencja projektowa,
+nie obejście: komponenty panelu są **sterowane** — wartości i stan rozwinięcia przychodzą propsami,
+a każde kliknięcie ma odpowiadającą mu czystą funkcję, którą test woła bez zdarzenia.
+
+## Co to zadanie posiada
+
+- `src/sections/workflows/canvas/**` — płótno, kafelki `agent` i `checkpoint`, mapper `toCanvas` /
+  `toFile`, `snap`, `isValidConnection`, `onConnectEnd`, pasek nad przyciskiem Run.
+- `src/sections/workflows/step-panel/**` — panel kroku po prawej (mockup 536–570), wiersz Skills,
+  `capabilities.ts` ze stałą `SKILL_SUBSETTING`.
+- `src/state/workflows.ts` — **otwarty** dokument: `WorkflowFile` w pamięci, historia cofnij/ponów,
+  uwagi z walidatora, autosave. Eksportuje `createWorkflowStore(io: WorkflowIo)` i nie importuje
+  `@/ipc`; wiązanie z prawdziwym IPC robi jeden plik seam w `src/sections/workflows/canvas/io.ts`.
+  Lista **plików** workflow to inny magazyn i należy do T-14.
+- Pliki testowe wymienione przy `check:`.
+
+Trzy rozstrzygnięcia, żeby implementacja nie zgadywała:
+
+1. **Dwa rodzaje kafelka. Tylko dwa.** `nodeTypes` ma dokładnie klucze `agent` i `checkpoint`, a na
+   płótnie stoją dokładnie dwa przyciski tworzące: `＋ Add step` i `＋ Add a checkpoint`
+   (`docs/mockup/index.html:528-529`). Trzeci rodzaj wymaga prawdziwej skargi użytkownika, nie hipotezy
+   [T3 §10 ryzyko 6].
+2. **Krok trzyma tylko RÓŻNICĘ wobec agenta.** Panel jest wypełniony wartościami **efektywnymi**
+   (`resolve()` z T-11), a różnicę liczymy dopiero przy zapisie (`capture()`). Formularz nigdy nie
+   pisze do pliku agenta — to jest AC-4 i jest to wprost zapisane w mockupie: *„Inherited from the
+   agent. Changing it here does not change the agent."* (`docs/mockup/index.html:545`).
+3. **Przełącznik „Let it split into helpers" z mockupu (linia 565) NIE powstaje.** Żadne pole schematu
+   go nie niesie, a T3 §7.3 i T4 §3.3 zgodnie wykluczają głębokość delegacji z v1. Kontrolka bez pola
+   pod spodem to anty-wzorzec „UI zbudowane na polu, którego nie ma" (00-SYNTHESIS §6) i niezmiennik 16.
+
+## Niezmienniki
+
+- **16 — kontrolka bez handlera nie wchodzi do repo.** Tu łamie się przez przepisanie mockupu jeden do
+  jednego: trzeci przełącznik wygląda dokładnie jak dwa działające.
+- **17 — UI nie rysuje relacji, których nie ma w danych.** Stopka kafelka (`after Research`,
+  `runs before ▸`) jest **wyliczana z `links`**. Wpisana na sztywno w komponent wygląda identycznie do
+  chwili, w której ktoś przesunie strzałkę.
+- **13 — jeden fakt, jedno miejsce.** Liczba nadpisań („2 changed") istnieje w **jednym** miejscu jako
+  wartość i jest renderowana z `changed.length`. Osobny licznik w stanie kroku rozjedzie się z patchem.
+- **18 — sufit gęstości mierzony, nie oceniany okiem.** Kafelek to najwyżej cztery linie tekstu
+  (DESIGN §6), panel kroku to jedna kolumna kontrolek — nie zakładki.
+- **20 — test sprawdza zachowanie, nie obecność stringa.** `expect(html).toContain('2 changed')`
+  przechodzi na napisie wpisanym na stałe. Asercja ma być na wartości zapisanej w dokumencie.
+- **21 — nie pisz artefaktu, którego żaden skrypt nie czyta.** Dlatego w tym zadaniu **nie** powstaje
+  plik Playwrighta: repo nie ma `playwright.config.ts`, a spec, którego nic nie uruchamia, czyta się
+  dokładnie tak samo, jak spec, który przechodzi.
+
+## Kryteria akceptacji
+
+**Czego nie da się tu sprawdzić i co z tego wynika.** Gest przeciągania — `pointerdown` na uchwycie,
+ruch, `pointerup` nad pustym płótnem — nie jest odtwarzalny bez przeglądarki; nie jest odtwarzalny
+nawet w jsdom, którego zresztą w repo nie ma, i React Flow oficjalnie kieruje w tym miejscu do
+Playwrighta [T3 §2.3, ryzyko 7]. Dotyczy to **gestowej połowy AC-1 i AC-3**. Kryteria są więc napisane
+na funkcjach, które ten gest woła (`onConnectEnd(event, connectionState)`, `onNodeDragStop`, `tidyUp`)
+— wywołujemy je bezpośrednio z syntetycznym stanem połączenia. Playwrightowego sprawdzenia **nie
+robimy checkiem bramki**: brak binarki przeglądarki jest w `harness/gate.py` na liście `NOT_A_REAL_RED`,
+więc w tierze `before` czytałby się jak siedem zaliczonych kryteriów (dokładnie ten wypadek zdarzył się
+w repo źródłowym). Ręczna procedura na czas oddania: przeciągnij z dolnego uchwytu `Plan` na puste
+płótno, upuść — ma powstać podłączony kafelek; przeciągnij go i puść — pozycja ma skoczyć do siatki.
+Harness gestów to pierwsza rzecz po tym zadaniu.
+
+Bramka odrzuca czerwień z braku modułu, więc zacznij od plików testowych **i** od modułów, które
+eksportują stub rzucający `new Error('not implemented')` — wtedy `before` pada w czasie wykonania.
+
+## AC-1 Upuszczenie połączenia na pustym płótnie tworzy podłączony krok, a upuszczenie na kafelku nie tworzy nic
+check: npx --no-install vitest run src/sections/workflows/canvas/connect-end.test.ts
+
+`onConnectEnd` wołane ze stanem `{ isValid: false, fromNode: { id: 's_plan' } }` i punktem upuszczenia
+`(241.4, 95.2)`: w dokumencie przybywa **dokładnie jeden** krok rodzaju `agent`, z `at == {x:240,y:96}`,
+oraz **dokładnie jedno** połączenie `{ from: 's_plan', to: <nowe id> }` [T3 §9, „MVP ships" punkt 2].
+Nowe `id` nie koliduje z żadnym istniejącym. Drugie wywołanie ze stanem `{ isValid: true }` (upuszczenie
+nad istniejącym kafelkiem) **nie dodaje żadnego kroku** — połączenie w tym wypadku robi już `onConnect`.
+Stopka nowego kafelka, wyliczona z `links`, mówi `after Plan`, a stopka `s_plan` mówi `runs before ▸`
+(`docs/mockup/index.html:506,512`).
+
+*Słaba asercja:* `expect(steps).toHaveLength(2)`. Przechodzi dla implementacji, która tworzy kafelek
+i **nie** tworzy strzałki — czyli dla tej, w której gest „utwórz i połącz jednym ruchem" jest
+połową gestu — oraz dla tej, która tworzy kafelek-widmo przy **każdym** udanym połączeniu.
+Dyskryminuje: asercja na konkretnej krotce w `links` plus przypadek `isValid: true` z zerem nowych kroków.
+
+## AC-2 Strzałka domykająca cykl po prostu nie ląduje, bez żadnego komunikatu
+check: npx --no-install vitest run src/sections/workflows/canvas/valid-connection.test.ts
+
+Graf `a→b→c`. `isValidConnection({ source: 'c', target: 'a' })` daje `false`; `{ source: 'a', target: 'a' }`
+daje `false`; `{ source: 'a', target: 'c' }` daje `true` (to romb, nie cykl). Po odmowie liczba połączeń
+w dokumencie jest niezmieniona, a w DOM **nie ma** żadnego komunikatu, toasta ani wiersza błędu:
+cykl jest **uniemożliwiony, nie zgłoszony** — użytkownik niczego złego nie zrobił [T3 §5.1].
+
+*Słaba asercja:* pojedyncze `expect(isValidConnection(cAtoA)).toBe(false)`. Przechodzi dla `() => false`,
+czyli dla płótna, na którym nie da się narysować żadnej strzałki. Dyskryminuje: przypadek `a→c`
+zwracający `true` **oraz** asercja o braku komunikatu (`container.textContent` bez zmian).
+
+## AC-3 Pozycja przyciąga się do 24 px na każdej drodze zapisu, także po „Tidy up"
+check: npx --no-install vitest run src/sections/workflows/canvas/snap.test.ts
+
+Wartości: `241.4 → 240`, `95.2 → 96`, `12 → 24`, `11.9 → 0`. Sprawdzamy je **na dokumencie po akcji**,
+nie na funkcji `snap` w izolacji: po `onNodeDragStop` z pozycją `(241.4, 95.2)` krok ma `at == {x:240,y:96}`;
+po `tidyUp()` (dagre, `rankdir: 'TB'`) **każda** pozycja w dokumencie spełnia `x % 24 === 0 && y % 24 === 0`
+i jest liczbą całkowitą. To drugie jest tu istotą: dagre zwraca zmiennoprzecinkowe środki węzłów,
+a snapowanie tylko w handlerze przeciągania daje plik, który po każdym „Tidy up" ma inne dziesiąte
+miejsce po przecinku i diff bez treści [T3 §8.2].
+
+*Słaba asercja:* `expect(snap({x:241.4,y:95.2})).toEqual({x:240,y:96})`. Funkcja jest poprawna, a mimo
+to plik churnuje, bo `tidyUp` zapisuje pozycje z pominięciem mappera. Dyskryminuje: pętla po **wszystkich**
+krokach po `tidyUp()` z asercją `Number.isInteger(at.x) && at.x % 24 === 0`.
+
+## AC-4 Edycja kroku zmienia krok i **nie** zmienia agenta
+check: npx --no-install vitest run src/sections/workflows/step-panel/overrides.test.tsx
+
+Agent `Forge` ma `thinking: 'balanced'`, `giveUpAfterMinutes: 20`. Krok jest bez nadpisań, więc panel
+dostaje wartość efektywną `Balanced` i zero kropek. Wołamy czystą akcję panelu
+`applyPanelEdit(step, agent, { thinking: 'deep' })` i sprawdzamy trzy rzeczy naraz:
+`steps[0].overrides` ma zbiór kluczy **dokładnie** `{thinking}` z wartością `'deep'`; obiekt agenta
+w magazynie agentów jest **głęboko równy** migawce zrobionej przed edycją; atrapa `io.saveAgent`
+została wywołana **zero razy**. `resetRow('thinking')` zostawia `overrides == {}`. Potem
+`renderToStaticMarkup` panelu w stanie po edycji: jest w nim `Agent uses: Balanced`, jest chip
+`1 changed`, lista etykiet w kolejności to `Name`, `Who does this`, `What to do`, `How many at once`,
+`Can it change files`, `Give up after`, `Write results to`, a napisu `Let it split into helpers`
+**nie ma** [T4 §4.5].
+
+*Słaba asercja:* `expect(step.overrides.thinking).toBe('deep')`. Przechodzi dla implementacji, która
+przy okazji zapisuje też plik agenta — czyli dokładnie dla tej, przed którą użytkownik ostrzegł.
+Dyskryminuje: `expect(agentsAfter).toEqual(agentsSnapshotBefore)` na głębokiej kopii sprzed edycji
+**oraz** `expect(io.saveAgent).not.toHaveBeenCalled()`.
+
+## AC-5 Kontrolka Skills obiecuje dokładnie tyle, ile potrafi CLI
+check: npx --no-install vitest run src/sections/workflows/step-panel/skills-row.test.tsx
+
+Tryb przychodzi z jednej stałej `SKILL_SUBSETTING` w `capabilities.ts`, ale komponent bierze go
+**propsem**, więc test sprawdza oba warianty niezależnie od tego, jak wypadł spike S-1 — jego wynik
+zmienia jedną linię i zero testów. Tryb `'subset'`: w HTML są `All skills` i `Only these` plus lista
+pól wyboru, a `chooseSkills(step, { only: ['code-review'] })` daje `steps[0].skills == ['code-review']`.
+Tryb `'all-or-none'`: w HTML są dokładnie `All skills` i `No skills`, napisu `Only these` **nie ma**
+(nie jest wyszarzony — nie istnieje), a dwie dostępne opcje zapisują odpowiednio `'all'` i `[]`.
+Trzeci przypadek, wspólny dla obu trybów: przy agencie z `runsWith: 'codex'` cały wiersz Skills jest
+nieobecny — Codex nie ma umiejętności [T3 §7.2, T4 fakt-check O4].
+
+*Słaba asercja:* `expect(html).toContain('All skills')`. Przechodzi w obu trybach i przechodzi też dla
+martwego `Only these`, które niczego nie zapisuje — czyli dla UI obiecującego funkcję, której
+`--disable-slash-commands` nie umie dowieźć (jest wszystko-albo-nic, T3 §7.2). Dyskryminuje:
+asercja negatywna na `Only these` w trybie `all-or-none` **oraz** asercja na wartości zapisanej
+w dokumencie po każdej dostępnej opcji.
+
+## AC-6 Problem blokuje Run i mówi dlaczego; ostrzeżenie nie blokuje
+check: npx --no-install vitest run src/sections/workflows/canvas/problems.test.tsx
+
+Uwagi przychodzą z walidatora Rusta (T-12) i są w teście podawane wprost. Przypadek A: jeden `Problem`
+(`These steps point back at each other in a circle. Work would never finish.`) i jeden `Warning` —
+statyczny HTML paska nad przyciskiem zawiera `2 things to fix`, przycisk `Run` niesie `disabled`,
+a jego `title` jest **tym samym zdaniem** co pierwszy problem (nigdy `Fix the errors first`).
+Przypadek B: sam `Warning` — pasek mówi `1 thing to fix` (liczba pojedyncza), a `Run` **nie ma**
+`disabled`. Przypadek C, czysta funkcja: `focusNote(note, { fitView, openPanel })` woła `fitView`
+dokładnie z `{ nodes: [{ id: 's2' }], duration: 400, maxZoom: 1.2 }` i `openPanel('s2')` [T3 §5.3].
+
+*Słaba asercja:* `expect(html).toContain('2 things to fix')`. Przechodzi dla napisu policzonego
+z `notes.length` przy zawsze wyłączonym `Run` — a wtedy ostrzeżenie o niepodłączonym kroku blokuje
+uruchomienie i użytkownik nie wie dlaczego. Dyskryminuje: przypadek B z **aktywnym** `Run`
+i porównanie `title` z `notes[0].message`, a nie z literałem wpisanym w teście.
+
+## AC-7 Zaznaczenie, najechanie i przesunięcie widoku nie zmieniają zapisywanego pliku
+check: npx --no-install vitest run src/sections/workflows/canvas/to-file.test.ts
+
+`toFile(prev, nodes, edges)` na dokumencie z jednym krokiem: wynik zawiera nazwę kroku i jego `at`,
+a **nie zawiera** — na żadnej głębokości, sprawdzone rekurencyjnym obchodem po kluczach — pól
+`selected`, `dragging`, `measured`, `position` ani `viewport` (T3 §3.3: te trzy pierwsze są w `NodeBase`
+w `@xyflow/system@0.0.80`, `viewport` dokłada `toObject()`). Drugi przypadek: `JSON.stringify(toFile(...))`
+przed zaznaczeniem kafelka i po zaznaczeniu daje **identyczny** napis. Trzeci: zmiana nazwy kroku ten
+napis zmienia — inaczej kryterium spełniałaby funkcja zwracająca stałą.
+
+*Słaba asercja:* `expect(out.viewport).toBeUndefined()`. Przechodzi, kiedy `selected` siedzi w
+`nodes[i].data` i wjeżdża do pliku razem z krokiem, bo `data` **jest** krokiem [T3 §3.3]. Dyskryminuje:
+rekurencyjny obchód po całym wyniku szukający czterech nazw kluczy plus porównanie napisów
+przed/po zaznaczeniu.
+
+## AC-8 Krok czytający wiele wejść mówi o tym na kafelku
+
+check: npx --no-install vitest run src/sections/workflows/canvas/fan-in.test.tsx
+
+Synteza wyników jest jednym z pięciu zadań edytora (`DECISIONS-LOCKED.md` §D6), a wyraża się
+liczbą krawędzi wchodzących — więc musi być widoczna bez otwierania modalu. Kafelek bez krawędzi
+wchodzących pokazuje `first step`. Z jedną: `after <nazwa>`. Z trzema: `reads 3 handoffs` —
+liczbę, nie listę. Liczba zmienia się po dodaniu i po usunięciu krawędzi.
+
+*Słaba asercja:* sprawdzenie samego przypadku z trzema wejściami przechodzi w implementacji, która
+zawsze pisze `reads N handoffs`, także dla jednego i dla zera — a wtedy pierwszy krok każdego
+workflow kłamie. Rozróżnia: wszystkie trzy przypadki w jednym teście, plus przejście 3 → 2 po
+usunięciu krawędzi.
+
+## Świadomie poza zakresem
+
+- **Gest przeciągania w automacie.** Wymaga Playwrighta i `playwright.config.ts`, którego to zadanie
+  nie posiada. Pierwsza rzecz po tym zadaniu; do tego czasu procedura ręczna wyżej.
+- **Cofnij/ponów.** ~40 linii i stos 50 migawek `WorkflowFile` na *zatwierdzonych* zmianach [T3 §9] —
+  ale PLAN §7 stawia to w v1.1 i nic nie blokuje. Magazyn ma zostawić na to miejsce, nie implementować.
+- **Lista workflow, tworzenie, duplikowanie, usuwanie** — T-14.
+- **Uruchomienie z płótna** — T-15. Tutaj `Run` tylko blokuje się albo nie.
+- **Kopiowanie kroków między workflow, minimapa, kontener grupujący, dane na strzałkach, warunki,
+  pętle** — wszystkie odrzucone w T3 §6.2 i §9 z podanym powodem.
+- **Ukrycie atrybucji React Flow.** Licencja MIT na to pozwala, autorzy proszą, żeby nie robić tego bez
+  subskrypcji (169 $/mies.). Zostaje widoczna [T3 §2.4].
+- **Formularz „What to hand over"** (`handover: {fields}`) — pole zostaje w schemacie z domyślnym
+  `notes`, edytor pól jest odłożony.
+
+<!-- OWNS
+src/sections/workflows/canvas
+src/sections/workflows/step-panel
+src/state/workflows.ts
+-->
