@@ -21,6 +21,10 @@ import { GRID } from '../../../state/workflows';
 export interface CanvasNode {
   id: string;
   position: Point;
+  /** Który komponent rysuje ten kafelek: `nodeTypes` ma dokładnie klucze `agent`
+   * i `checkpoint` (TASK.md, rozstrzygnięcie 1). Opcjonalny, bo mapper w drugą stronę
+   * go nie czyta — rodzaj kroku niesie `data.kind`. */
+  type?: Step['kind'];
   /** Krok JEST danymi kafelka [T3 §3.3] — i dlatego `selected` w `data` wjechałoby do pliku. */
   data: Step;
   selected?: boolean;
@@ -58,12 +62,66 @@ export function snap(point: Point): Point {
  *
  * Pozycję przyciągamy TUTAJ, a nie w handlerze przeciągania: handler jest jedną z kilku dróg
  * zapisu, a mapper jest wszystkimi. */
-export function toFile(
-  _prev: WorkflowFile,
-  _nodes: CanvasNode[],
-  _edges: CanvasEdge[],
-): WorkflowFile {
-  throw new Error('not implemented');
+/* Pola, które należą do PŁÓTNA i nie mają prawa dojechać do pliku. Trzy pierwsze siedzą
+ * w `NodeBase` w `@xyflow/system@0.0.80`, `viewport` dokłada `toObject()`, a `position` jest
+ * nazwą, której plik nie zna — pozycja nazywa się w nim `at` [T3 §3.3]. */
+const CANVAS_ONLY = ['selected', 'dragging', 'measured', 'position', 'viewport'] as const;
+
+/** Sam krok, bez tego, co płótno wie o sobie, postawiony na siatce.
+ *
+ * Kasowanie po nazwach klucza, a nie przepisywanie znanych pól: plik może nieść klucz, którego
+ * TA wersja nie zna (Rust trzyma go w `extra`, T3 §3.2), a przepisywanie po liście skasowałoby
+ * po cichu pracę nowszego builda. Znamy pola, których nie chcemy; nie znamy wszystkich, które
+ * chcemy. Typ mówi, że tych pięciu tu nie ma — obiekt przychodzi z React Flow i bywa inaczej,
+ * i dokładnie o tym jest to kryterium. */
+function onlyTheStep<S extends Step>(data: S, at: Point): S {
+  const step = { ...data, at };
+  /* `Reflect.deleteProperty`, nie `delete` — `delete` na polu, którego typ nie deklaruje,
+   * wymaga rzutowania kroku na mapę, a rzutowanie unii na `Record<string, unknown>` odrzuca
+   * kompilator. Ta forma pyta o to samo bez ani jednego `as`. */
+  for (const key of CANVAS_ONLY) Reflect.deleteProperty(step, key);
+  return step;
+}
+
+/** Kafelki w kolejności, w jakiej stoją w PLIKU; świeże na końcu, w kolejności płótna.
+ *
+ * React Flow domyślnie podnosi zaznaczony kafelek na koniec tablicy (`elevateNodesOnSelect`),
+ * żeby rysował się nad sąsiadami. Bez tej funkcji samo kliknięcie przestawiałoby `steps`
+ * i autosave zapisywałby przetasowany plik — czyli dokładnie tę zmianę bez decyzji, przed którą
+ * stoi to kryterium, tylko o jedno pole wyżej [T3 §8.2 reguła 2]. */
+function inFileOrder(prev: WorkflowFile, nodes: CanvasNode[]): CanvasNode[] {
+  const rank = new Map(prev.steps.map((step, at) => [step.id, at]));
+  /* `MAX_SAFE_INTEGER`, nie `Infinity`: różnica dwóch nieskończoności to `NaN`, a komparator
+   * zwracający `NaN` sortuje w sposób zależny od implementacji. */
+  const rankOf = (node: CanvasNode) => rank.get(node.id) ?? Number.MAX_SAFE_INTEGER;
+  return [...nodes].sort((one, other) => rankOf(one) - rankOf(other));
+}
+
+export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowFile {
+  return {
+    ...prev,
+    steps: inFileOrder(prev, nodes).map((node) => onlyTheStep(node.data, snap(node.position))),
+    links: edges.map((edge) => ({ from: edge.source, to: edge.target })),
+  };
+}
+
+/** Plik → płótno. Druga połowa mappera i jedyne miejsce, w którym powstają identyfikatory
+ * krawędzi: `from->to` jest funkcją samej strzałki, więc dwa razy narysowana ta sama strzałka
+ * to jedna krawędź, a nie dwie różne o tym samym znaczeniu. */
+export function toCanvas(file: WorkflowFile): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+  return {
+    nodes: file.steps.map((step) => ({
+      id: step.id,
+      type: step.kind,
+      position: step.at,
+      data: step,
+    })),
+    edges: file.links.map((link) => ({
+      id: `${link.from}->${link.to}`,
+      source: link.from,
+      target: link.to,
+    })),
+  };
 }
 
 /** Ten sam krok, postawiony gdzie indziej.
