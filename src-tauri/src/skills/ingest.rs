@@ -30,12 +30,18 @@
 //! `danger-full-access`) — każdy limit jest sprawdzany jeszcze raz u siebie, po fakcie, na tym,
 //! co faktycznie przyszło: [`follow_policy`], [`read_capped`], [`total_within`].
 
-use std::io::Read;
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use super::Skill;
 use super::place::Discovery;
+use super::{BundledFile, Skill, SkillDoc, place};
+
+/// Nazwa pliku, od którego zaczyna się każda umiejętność [T5 §2.2].
+const SKILL_FILE: &str = "SKILL.md";
 
 // ── Rdzeń reguł: pięć id, dwie wagi ────────────────────────────────────────────────────────
 //
@@ -166,7 +172,368 @@ pub struct Reviewed {
 /// rozpoznać.
 #[must_use]
 pub fn review(raw: &str) -> Reviewed {
-    todo!("normalizuj, potem skanuj to, co znormalizowane, i zwróć oba wyniki razem: {raw:?}")
+    // KROK 1 i 2 — normalizacja. Najpierw komentarze, potem znaki niewidzialne: komentarz
+    // rozbity zero-width joinerem (`<!\u{200b}--`) nie jest komentarzem dla przeglądarki,
+    // ale jest nim dla oka, więc kolejność odwrotna zostawiałaby tę parę bez znaleziska.
+    let (uncommented, comments) = strip_comments(raw);
+    let (body, invisible) = strip_invisible(&uncommented);
+
+    // KROK 3 — skan. Biegnie po `body`, czyli po tym, co za chwilę pójdzie na dysk. Skan na
+    // `raw` z zapisem `body` jest cichą porażką numer jeden i cały ten porządek istnieje po to,
+    // żeby nie dało się jej napisać przez pomyłkę.
+    let mut findings = hidden_text(raw, &body, comments, invisible);
+    findings.extend(instruction_rules(raw, &body));
+
+    // Po linii, potem po regule: karta czyta się wtedy z góry na dół tak, jak plik.
+    findings.sort_by(|left, right| {
+        (left.line.unwrap_or(0), left.rule.as_str())
+            .cmp(&(right.line.unwrap_or(0), right.rule.as_str()))
+    });
+
+    let verdict = verdict_of(&findings);
+    Reviewed {
+        body,
+        findings,
+        verdict,
+    }
+}
+
+/// Zero znalezisk to [`Verdict::Clean`], jeden [`Weight::Block`] to [`Verdict::Blocked`],
+/// wszystko pomiędzy to [`Verdict::Concerns`].
+///
+/// Jedna funkcja, bo werdykt liczy się dwa razy: raz nad rdzeniem, drugi raz po dołożeniu
+/// znalezisk skanera. Dwie kopie tej reguły to dwa różne znaczenia słowa „czysto" — jedno
+/// w rdzeniu i jedno w adapterze.
+fn verdict_of(findings: &[Finding]) -> Verdict {
+    if findings
+        .iter()
+        .any(|finding| finding.weight == Weight::Block)
+    {
+        Verdict::Blocked
+    } else if findings.is_empty() {
+        Verdict::Clean
+    } else {
+        Verdict::Concerns
+    }
+}
+
+// ── Normalizacja ───────────────────────────────────────────────────────────────────────────
+//
+// Obie funkcje niżej trzymają JEDEN niezmiennik, na którym stoi cała numeracja linii:
+// **normalizacja nigdy nie usuwa znaku nowej linii.** Dzięki temu linia numer N w tekście
+// surowym, w tekście zapisanym i w znalezisku jest tą samą linią, a człowiek czytający kartę
+// może otworzyć plik i zobaczyć to samo miejsce. Komentarz rozpięty na trzech liniach zostawia
+// po sobie trzy puste linie i to jest cena, którą płacimy świadomie.
+
+/// Znak, którego człowiek nie zobaczy: zero-width i sterujące bidi.
+///
+/// DLACZEGO lista, a nie `char::is_control`: `\n` i `\t` też są sterujące, a są treścią pliku.
+/// Ta piętnastka to znaki, których jedynym zastosowaniem w umiejętności jest sprawienie, żeby
+/// tekst renderował się inaczej, niż się parsuje.
+fn is_invisible(character: char) -> bool {
+    matches!(character,
+        '\u{200b}'..='\u{200d}' | '\u{feff}' | '\u{2060}'
+        | '\u{202a}'..='\u{202e}'
+        | '\u{2066}'..='\u{2069}')
+}
+
+/// Co zostało zdjęte i z której linii.
+struct Taken {
+    line: usize,
+    /// Tekst, który człowiek ma zobaczyć w znalezisku, bo w ciele już go nie ma.
+    recovered: String,
+}
+
+/// Zdejmuje komentarze HTML, zostawiając ich znaki nowej linii.
+///
+/// Komentarz bez zamknięcia połyka resztę pliku — i to jest kształt ataku, nie literówka:
+/// `<!--` w połowie dokumentu ukrywa przed człowiekiem wszystko, co po nim, a model dostaje
+/// całość. Dlatego brak `-->` znaczy „komentarz do końca tekstu", a nie „to nie był komentarz".
+fn strip_comments(text: &str) -> (String, Vec<Taken>) {
+    let mut out = String::with_capacity(text.len());
+    let mut taken = Vec::new();
+    let mut rest = text;
+    let mut line = 1usize;
+
+    while let Some(at) = rest.find("<!--") {
+        let (before, from) = rest.split_at(at);
+        out.push_str(before);
+        line += before.matches('\n').count();
+
+        let after_open = &from["<!--".len()..];
+        let (inner, tail) = match after_open.find("-->") {
+            Some(end) => (&after_open[..end], &after_open[end + "-->".len()..]),
+            None => (after_open, ""),
+        };
+
+        taken.push(Taken {
+            line,
+            recovered: inner.trim().to_owned(),
+        });
+        let breaks = inner.matches('\n').count();
+        for _ in 0..breaks {
+            out.push('\n');
+        }
+        line += breaks;
+        rest = tail;
+    }
+
+    out.push_str(rest);
+    (out, taken)
+}
+
+/// Zdejmuje znaki niewidzialne, zostawiając linie na swoich miejscach.
+///
+/// `split_inclusive` zamiast `lines`, bo `lines` gubi informację o tym, czy plik kończył się
+/// znakiem nowej linii — a ciało różniące się od wejścia jednym bajtem na końcu nie jest
+/// „bajt w bajt" i przewraca AC-2 w miejscu, w którym nikt nie szuka.
+fn strip_invisible(text: &str) -> (String, Vec<Taken>) {
+    let mut out = String::with_capacity(text.len());
+    let mut taken = Vec::new();
+
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        if line.chars().any(is_invisible) {
+            let cleaned: String = line.chars().filter(|c| !is_invisible(*c)).collect();
+            taken.push(Taken {
+                line: index + 1,
+                recovered: cleaned.trim().to_owned(),
+            });
+            out.push_str(&cleaned);
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    (out, taken)
+}
+
+/// Linia tak, jak ma ją zacytować karta: z tekstu SUROWEGO, ale bez znaków niewidzialnych.
+///
+/// DLACZEGO z surowego: przy komentarzu zapisana linia jest już pusta, a cytat z pustej linii
+/// nie mówi człowiekowi nic. DLACZEGO bez niewidzialnych: cytat jedzie na ekran, a sterujący
+/// bidi wpuszczony do karty przestawia na niej tekst, którego atak nawet nie dotyczył.
+fn quote_from(raw: &str, line: usize) -> String {
+    raw.split_inclusive('\n')
+        .nth(line.saturating_sub(1))
+        .map(|text| {
+            text.chars()
+                .filter(|c| !is_invisible(*c))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .unwrap_or_default()
+}
+
+// ── R1: to, czego nie widać ────────────────────────────────────────────────────────────────
+
+/// Znaleziska [`HIDDEN_TEXT`]: zdjęte komentarze, zdjęte znaki niewidzialne i homoglify.
+///
+/// Jedno znalezisko na linię, choćby powodów było trzy. Dwa wiersze na karcie mówiące o jednej
+/// linii uczą przewijać, a przewijana karta jest kartą nieprzeczytaną.
+fn hidden_text(raw: &str, body: &str, comments: Vec<Taken>, invisible: Vec<Taken>) -> Vec<Finding> {
+    let mut per_line: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for item in comments.into_iter().chain(invisible) {
+        per_line.entry(item.line).or_default().push(item.recovered);
+    }
+    // Homoglif niczego nie zdejmuje z ciała (zdjęcie przepisałoby cudze słowo), więc szuka się
+    // go w tekście ZAPISANYM i wraca jako numer znaku, nie jako tekst.
+    for (index, line) in body.split_inclusive('\n').enumerate() {
+        if let Some(said) = mixed_scripts(line) {
+            per_line.entry(index + 1).or_default().push(said);
+        }
+    }
+
+    per_line
+        .into_iter()
+        .map(|(line, said)| Finding {
+            rule: HIDDEN_TEXT.to_owned(),
+            weight: Weight::Block,
+            line: Some(line),
+            quoted: quote_from(raw, line),
+            recovered: Some(said.join(" ")),
+            source: Source::Rules,
+        })
+        .collect()
+}
+
+/// Słowo pisane dwoma alfabetami naraz — `аdmin` z cyrylicznym `а` czyta się jak `admin`
+/// i jest innym napisem.
+///
+/// Zwraca zdanie z numerem znaku, bo bez numeru komunikat brzmi „coś tu jest nie tak z literą,
+/// która wygląda dobrze" i nie da się na jego podstawie niczego zrobić.
+fn mixed_scripts(line: &str) -> Option<String> {
+    for word in line.split(|c: char| !c.is_alphabetic()) {
+        let latin = word.chars().any(|c| c.is_ascii_alphabetic());
+        let other = word
+            .chars()
+            .find(|c| matches!(c, '\u{0370}'..='\u{03ff}' | '\u{0400}'..='\u{04ff}'));
+        if let (true, Some(character)) = (latin, other) {
+            return Some(format!(
+                "{word}: {character} is U+{:04X}",
+                u32::from(character)
+            ));
+        }
+    }
+    None
+}
+
+// ── R2–R5: kształt linii, nie worek słów ───────────────────────────────────────────────────
+//
+// Cztery reguły w jednym przejściu po zapisanym ciele. Jedna funkcja, bo to jest JEDNA
+// polityka (niezmiennik 23): dołożenie piątej reguły ma być dopisaniem gałęzi tutaj, a nie
+// nowym miejscem, w którym „też się coś sprawdza".
+//
+// Każda z nich pyta o KSZTAŁT: trzy człony naraz w jednej linii, polecenie wysyłające RAZEM
+// ze źródłem sekretu, znacznik tury na początku linii. Reguła zapalająca się na jednym słowie
+// (`instructions`, `curl`) daje trzy fałszywe alarmy, po których człowiek klika „Add" bez
+// czytania — i wtedy mechanizm przeglądu przestaje istnieć, choć kod dalej stoi w repo.
+
+/// Znaleziska reguł R2–R5 dla całego ciała.
+fn instruction_rules(raw: &str, body: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut fenced = false;
+    // Front-matter zaczyna się WYŁĄCZNIE w pierwszej linii pliku. `---` w środku dokumentu
+    // jest poziomą kreską i pole `hooks:` pod nią nie jedzie do żadnego vendora.
+    let mut in_front_matter = body.starts_with("---\n") || body.starts_with("---\r\n");
+
+    for (index, line) in body.lines().enumerate() {
+        let number = index + 1;
+        let trimmed = line.trim_start();
+
+        if index > 0 && in_front_matter && trimmed.trim_end() == "---" {
+            in_front_matter = false;
+            continue;
+        }
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+
+        // Cztery spacje wcięcia to blok kodu w każdym dialekcie Markdowna, a `>` to cytat.
+        let quoting = fenced || line.starts_with("    ") || trimmed.starts_with('>');
+        let mut hit = |rule: &str, weight: Weight| {
+            findings.push(Finding {
+                rule: rule.to_owned(),
+                weight,
+                line: Some(number),
+                quoted: quote_from(raw, number),
+                recovered: None,
+                source: Source::Rules,
+            });
+        };
+
+        if says_ignore_the_rules(line) {
+            // Waga, nie odmowa. Ta sama linia w prozie jest treścią ataku, a w bloku kodu jest
+            // cytatem z ataku — i skaner, który nie umie ich rozróżnić, blokuje umiejętność
+            // o obronie przed wstrzyknięciem.
+            hit(
+                INSTRUCTION_OVERRIDE,
+                if quoting { Weight::Warn } else { Weight::Block },
+            );
+        }
+        if sends_a_secret_out(line) {
+            hit(EXFILTRATION, Weight::Block);
+        }
+        if wears_a_turn_marker(trimmed) {
+            hit(ROLE_MANIPULATION, Weight::Block);
+        }
+        if in_front_matter && asks_for_more(trimmed) {
+            hit(ESCALATION, Weight::Warn);
+        }
+    }
+
+    findings
+}
+
+/// Wyrazy linii, małymi literami — tylko litery i cyfry, reszta jest granicą.
+///
+/// DLACZEGO wyrazy, a nie `contains`: `all` siedzi w `install`, `allowed` i `actually`, więc
+/// reguła oparta na zawieraniu zapala się na zdaniu „install the allowed tools" i po trzech
+/// takich alarmach nikt już karty nie czyta.
+fn words(line: &str) -> Vec<String> {
+    line.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// R2. Trzy człony naraz: „przestań słuchać" + „tego, co było" + „instrukcji".
+///
+/// Każdy z osobna jest zwykłą angielszczyzną (`Follow these instructions in order.`,
+/// `Ignore files under node_modules/.`) i dopiero komplet w JEDNEJ linii jest tym zdaniem,
+/// które model potrafi wykonać.
+fn says_ignore_the_rules(line: &str) -> bool {
+    let words = words(line);
+    // Przedrostki, bo odmiana jest częścią tej samej próby: `ignoring`, `disregarded`.
+    let stop = ["ignor", "disregard", "forget", "forgot", "overrid"];
+    let past = ["previous", "prior", "above", "all", "earlier", "preceding"];
+    let orders = [
+        "instruction",
+        "instructions",
+        "rule",
+        "rules",
+        "prompt",
+        "prompts",
+    ];
+
+    words
+        .iter()
+        .any(|word| stop.iter().any(|stem| word.starts_with(stem)))
+        && words.iter().any(|word| past.contains(&word.as_str()))
+        && words.iter().any(|word| orders.contains(&word.as_str()))
+}
+
+/// R3. Polecenie wysyłające RAZEM ze źródłem sekretu.
+///
+/// Oba człony naraz, bo dokumentacja API jest zbudowana z `curl -X POST` i reguła zapalająca
+/// się na samym poleceniu jest bezwartościowa po pierwszym imporcie.
+fn sends_a_secret_out(line: &str) -> bool {
+    let words = words(line);
+    let sends = ["curl", "wget", "nc", "ncat", "scp", "sftp", "rsync"]
+        .iter()
+        .any(|command| words.iter().any(|word| word == command))
+        || line.contains("git push");
+
+    let secret = [
+        ".env",
+        "~/.ssh",
+        "id_rsa",
+        "id_ed25519",
+        "credentials",
+        "$(cat",
+    ]
+    .iter()
+    .any(|source| line.contains(source))
+        || words
+            .iter()
+            .any(|word| word.ends_with("_api_key") || word.ends_with("_secret"));
+
+    sends && secret
+}
+
+/// R4. Próba przejęcia ramki rozmowy.
+///
+/// Znacznik tury liczy się na POCZĄTKU linii: `system:` w środku zdania („the system: a note")
+/// jest interpunkcją, a na początku linii jest udawaniem, że rozmowa właśnie zmieniła mówcę.
+fn wears_a_turn_marker(trimmed: &str) -> bool {
+    let lower = trimmed.to_lowercase();
+    lower.contains("<system>")
+        || lower.contains("</system>")
+        || lower.contains("<|im_start|>")
+        || ["system:", "assistant:", "human:", "user:"]
+            .iter()
+            .any(|marker| lower.starts_with(marker))
+        || lower.contains("you are now")
+}
+
+/// R5. Front-matter proszący o własne narzędzia albo o własny hak.
+fn asks_for_more(trimmed: &str) -> bool {
+    let key = trimmed
+        .split_once(':')
+        .map(|(key, _)| key.trim().to_lowercase())
+        .unwrap_or_default();
+    key == "allowed-tools" || key == "hooks"
 }
 
 // ── Adapter głębokiego skanu ───────────────────────────────────────────────────────────────
