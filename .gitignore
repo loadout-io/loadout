@@ -46,3 +46,10 @@ node_modules
 # Przestrzeń robocza sond i szkiców. Katalog wersjonowany, zawartość nie.
 /.loadout/scratch/*
 !/.loadout/scratch/.gitkeep
+
+# Katalogi IDE. checks/quick-scope.sh ma je na liscie GENERATED od poczatku, ale
+# `git status` nie -- i ta rozbieznosc zatrzymala caly nocny bieg 2026-08-16: WebStorm
+# zapisal .idea/ o 03:13, integrate.sh odmowil landowania na brudnym drzewie, a sterownik
+# falowy kręcil sie 444 razy przez osiem godzin. Jedna definicja "czystego drzewa", nie dwie.
+.idea/
+.vscode/
