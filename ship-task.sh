@@ -136,6 +136,50 @@ note() {
   printf '   %s\n' "$*" >> "$LOG"
 }
 
+# Podciagnij ORACLE z trunka do galezi. Galaz niesie WLASNA kopie harness/, checks/
+# i verify.sh -- bo `worktree.sh` wycina caly katalog roboczy -- wiec bieg wznowiony
+# godziny po wycieciu jest sadzony przez bramke sprzed poprawek, ktore w miedzyczasie
+# naniosl orchestrator.
+#
+# Zmierzone dwa razy, z tego raz dzisiaj. 2026-08-15: trzy z pierwszych czterech zatrzyman
+# petli byly falszywymi alarmami z nieaktualnej kopii checks/. 2026-08-16: T-06 wznowiony
+# po poprawce sufitu w gate.py dostal exit 3 od WLASNEJ, starej kopii bramki, przez co
+# routing wznowienia zobaczyl "3" zamiast "1", odmowil i zakonczyl bieg kodem 2 -- czyli
+# poprawka, ktora powstala dokladnie dla tego biegu, byla dla niego nieosiagalna.
+#
+# Merge, nie rebase: nie przepisujemy historii galezi, ktora zaraz laduje. Tylko gdy
+# czysto -- konfliktu nie zgadujemy, tylko go zglaszamy i jedziemy na kopii galezi.
+#
+# $1 = 1 znaczy "kontrakt jest juz ZAMROZONY, przywroc tasks/ po merge'u" (N-08). Bieg nie
+# moze zmieniac warunkow wlasnego zaliczenia -- ulepszony plik zadania obowiazuje NASTEPNY
+# bieg. Na poczatku biegu jest odwrotnie: tam wlasnie chcemy biezacego kontraktu, wiec 0.
+refresh_harness_from_trunk() {   # refresh_harness_from_trunk <zamrozony-kontrakt:0|1> <etykieta>
+  local frozen="$1" label="$2" before_merge blocked
+  before_merge="$(git -C "$WT" rev-parse HEAD)"
+  if git -C "$WT" merge --no-edit -q "${LOADOUT_TRUNK:-main}" >/dev/null 2>&1; then
+    if [ "$frozen" = 1 ] && ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
+      git -C "$WT" checkout -q "$before_merge" -- tasks/
+      git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
+        || true
+      note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
+    fi
+    if [ "$before_merge" = "$(git -C "$WT" rev-parse HEAD)" ]; then
+      note "harness is already current with the trunk ($label)"
+    else
+      note "harness refreshed from the trunk $label"
+    fi
+  else
+    # NAZWIJ, co blokuje. "Nie udalo sie" bez podania pliku to dokladnie ten rodzaj
+    # nadzoru, za ktory to repo skasowalo wave.sh: 444 razy "drzewo brudne" bez powiedzenia,
+    # CO jest brudne. Zmierzone tego samego dnia na T-06: komunikat bez nazwy pliku kazal mi
+    # diagnozowac merge recznie, a odpowiedz -- konflikt w lib.rs -- jest z gory znana.
+    blocked="$(git -C "$WT" diff --name-only --diff-filter=U 2>/dev/null | paste -sd" " -)"
+    git -C "$WT" merge --abort >/dev/null 2>&1 || true
+    note "could not merge the trunk cleanly — judging against the branch's own harness copy"
+    note "conflicting: ${blocked:-<git refused before touching a file>}"
+  fi
+}
+
 say "task $ID — $AGENT writes, $REVIEWER gives the second opinion"
 note "claude: $LOADOUT_CLAUDE_MODEL (effort $LOADOUT_CLAUDE_EFFORT) · codex: $LOADOUT_CODEX_MODEL (effort $LOADOUT_CODEX_EFFORT)"
 note "transcripts: $RUNDIR"
@@ -152,46 +196,14 @@ WT="$(bash ./worktree.sh "$BRANCH" | tail -1)" || {
 [ -d "$WT" ] || { echo "worktree.sh printed '$WT', which is not a directory" >&2; exit 2; }
 note "$WT"
 
-# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
-# przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
-# dowiedział, że kryterium niczego nie sprawdza.
-#
-# Odpowiada na to ZACHOWANIE, nie obecność pliku (niezmiennik 20 zastosowany do samego
-# harnessu). Wcześniej stało tu `if [ -f "$WT/TASK.md" ]` i to odmawiało także wtedy, gdy
-# kontrakt był gotowy, a implementacji nie było — czyli w jedynym przypadku, w którym
-# wznowienie jest i bezpieczne, i oszczędza pół godziny. Zmierzone na T-02: kontrakt
-# certyfikowany, siedem kryteriów uczciwie czerwonych, a skrypt kazał wyrzucić całą pracę.
-#
-# `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
-# z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
-if [ -f "$WT/TASK.md" ]; then
-  if ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ); then
-    note "$WT already has a certified contract — resuming from the implementation phase"
-  # Trzeci stan, którego ta bramka wcześniej nie znała: faza kontraktu WYSTARTOWAŁA I ZGINĘŁA.
-  # Zostaje wtedy gałąź z jednym commitem — tym z TASK.md — i ani jednej specyfikacji.
-  # Nie ma czego chronić, więc odmowa była wyłącznie kosztem: kazała człowiekowi ręcznie
-  # skasować worktree, żeby odtworzyć stan, który skrypt umie odtworzyć sam.
-  #
-  # Rozróżnienie jest mechaniczne i nie zgaduje: liczymy commity gałęzi NAD trunkiem.
-  # Jeden znaczy „jest tylko kontrakt, nikt tu jeszcze nic nie napisał". Cokolwiek powyżej
-  # to praca, której nie wolno wyrzucić bez decyzji człowieka — i tam odmowa zostaje.
-  # Nieśledzone pliki też się liczą: agent bywa ubity między zapisem a commitem.
-  #
-  # `$TRUNK..HEAD`, nie samo `HEAD`: `rev-list --count HEAD` liczy CAŁĄ historię razem
-  # z trunkiem, więc zawsze byłoby to kilkadziesiąt i ta gałąź nigdy by nie wystrzeliła.
-  elif [ "$(git -C "$WT" rev-list --count "${LOADOUT_TRUNK:-main}..HEAD" 2>/dev/null || echo 99)" = "1" ] \
-    && [ -z "$(git -C "$WT" status --porcelain -uall 2>/dev/null)" ]; then
-    note "$WT has the contract commit and nothing else — the contract phase never finished"
-    note "redoing the contract phase in place; there is no work here to lose"
-  else
-    echo >&2
-    echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
-    echo "Either the implementation is already there, or the contract never certified." >&2
-    echo "A second run cannot prove the criteria red. Finish or discard it first:" >&2
-    echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
-    exit 2
-  fi
-fi
+# Czy ta przestrzen juz cos niosla? Pytamy TERAZ, bo za chwile skopiujemy tam kontrakt
+# i `-f TASK.md` przestanie odrozniac swieza przestrzen od wznawianej.
+RESUMED=0
+[ -f "$WT/TASK.md" ] && RESUMED=1
+
+# ORACLE z trunka PRZED czymkolwiek, co sadzi. Bez tego wznowiony bieg jest sadzony
+# przez bramke sprzed poprawek, ktore powstaly wlasnie dla niego.
+refresh_harness_from_trunk 0 "before this workspace is judged"
 
 # Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
 # katalogiem, który przepuszcza `-C` w piaskownicy codeksa. Zmierzone w repo źródłowym:
@@ -213,6 +225,92 @@ else
   note "TASK.md committed as the branch's first commit"
 fi
 
+# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
+# przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
+# dowiedział, że kryterium niczego nie sprawdza.
+#
+# Odpowiada na to ZACHOWANIE, nie obecność pliku (niezmiennik 20 zastosowany do samego
+# harnessu). Wcześniej stało tu `if [ -f "$WT/TASK.md" ]` i to odmawiało także wtedy, gdy
+# kontrakt był gotowy, a implementacji nie było — czyli w jedynym przypadku, w którym
+# wznowienie jest i bezpieczne, i oszczędza pół godziny. Zmierzone na T-02: kontrakt
+# certyfikowany, siedem kryteriów uczciwie czerwonych, a skrypt kazał wyrzucić całą pracę.
+#
+# `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
+# z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
+# Czy ktores kryterium PRZESZLO, zanim powstala implementacja? To jedyny stan, w ktorym
+# drugi bieg nie ma jak dowiesc czerwieni -- wiec jedyny, w ktorym odmowa jest tansza niz
+# wznowienie. Czytamy paragon, bo to on niesie werdykt POZIOMU: `before` odwraca kryteria,
+# wiec samo `ok: false` nie mowi, czy kryterium przeszlo, czy nie ruszylo. Nazwa powodu mowi.
+# Exit 0 znaczy "tak, takie kryterium jest".
+contract_has_a_passing_criterion() {
+  python3 - "$WT/runs/last.json" <<'RECEIPT'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)                      # brak paragonu to brak dowodu, a nie dowod
+if receipt.get("tier") != "before":
+    sys.exit(1)
+for c in receipt.get("checks", []):
+    reason = c.get("reason") or ""
+    if (c.get("kind") == "acceptance" and not c.get("ok")
+            and ("PASSES before implementation" in reason
+                 or "exit 0 but no evidence" in reason)):
+        sys.stderr.write("   %s passes before implementation -- it certifies nothing\n" % c["id"])
+        sys.exit(0)
+sys.exit(1)
+RECEIPT
+}
+
+# Trzy flagi wznowienia. Ustawione JAWNIE, bo `set -u` zamienia niezainicjowana zmienna
+# w blad dopiero w tej galezi, ktora akurat nie biegla w testach.
+PRE_RESUME=0          # kod wyjscia `before` ze sprawdzenia wznowienia
+PRE_RESUME_RAN=0      # czy to sprawdzenie w ogole sie odbylo
+RESUME_WITH_SPECS=0   # czy zastalismy napisane specyfikacje, ktore nie certyfikuja
+if [ "$RESUMED" = 1 ]; then
+  ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
+  PRE_RESUME_RAN=1
+  if [ "$PRE_RESUME" = 0 ]; then
+    note "$WT already has a certified contract -- resuming from the implementation phase"
+  # Trzeci stan, ktorego ta bramka wczesniej nie znala: kontrakt JEST, ale nie certyfikuje.
+  # Faza kontraktu zginela w polowie, albo napisala szkielet, na ktorym jedno kryterium wisi
+  # zamiast padac. Nie ma tam czego chronic, a odmowa byla wylacznie kosztem: kazala
+  # czlowiekowi recznie skasowac worktree, zeby odtworzyc stan, ktory skrypt umie odtworzyc sam.
+  #
+  # Rozroznienie jest mechaniczne i NIE ZGADUJE, ale pyta o zachowanie, nie o ksztalt
+  # historii (niezmiennik 20). Wczesniej stalo tu "policz commity nad trunkiem; jeden znaczy
+  # sam kontrakt" -- proxy, ktore mylilo sie w obie strony. Zmierzone na T-06 (2026-08-16):
+  # faza kontraktu napisala siedem specyfikacji i szkielet, `commit_leftovers` domknal je
+  # DRUGIM commitem, wiec licznik pokazal 2 i skrypt kazal wyrzucic cala prace. Nie bylo tam
+  # ani jednej linii implementacji -- tylko kontrakt, ktorego jedno kryterium wisialo.
+  #
+  # Pytamy wiec paragon, a nie log. `before` odwraca kryteria, wiec exit 1 znaczy dokladnie
+  # "ktores kryterium NIE jest czerwone z wlasciwego powodu" -- czyli defekt kontraktu, czyli
+  # dokladnie ten stan, ktory faza kontraktu i jej runda naprawcza umieja naprawic.
+  #
+  # Jedyny stan, w ktorym odmowa dalej ma sens, to kryterium, ktore PRZECHODZI przed
+  # implementacja: albo implementacja juz tu jest (i drugi bieg nie ma jak dowiesc czerwieni),
+  # albo asercja jest za slaba (i to jest znalezisko dla czlowieka, AGENTS.md par. 7).
+  # Oba rozpoznaje paragon po nazwie powodu, wiec nie trzeba ich zgadywac z historii gita.
+  elif [ "$PRE_RESUME" = 1 ] && ! contract_has_a_passing_criterion; then
+    note "$WT carries a contract that does not certify -- no criterion passes, so there is"
+    note "no implementation here to lose -- the specs stay, the contract repair round"
+    note "gets them from here"
+    # Specyfikacje sa napisane i bramka wlasnie je OSADZILA. Przepisywanie ich od zera
+    # kosztowaloby drugie pelne wywolanie pisarza i drugi przebieg `before` -- za wiedze,
+    # ktora juz lezy w paragonie. Idziemy prosto do rundy naprawczej.
+    RESUME_WITH_SPECS=1
+  else
+    echo >&2
+    echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
+    echo "Either the implementation is already there, or the contract never certified." >&2
+    echo "A second run cannot prove the criteria red. Finish or discard it first:" >&2
+    echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
+    exit 2
+  fi
+fi
+
+
 # ------------------------------------------------------------ narzędzia biegu --
 gate() {                       # gate <tier>  → kod bramki
   local rc=0
@@ -231,6 +329,87 @@ commit_leftovers() {           # commit_leftovers <etykieta>
     git -C "$WT" commit -q -m "chore(run): uncommitted work from the $1 phase"
   fi
 }
+
+# Odcisk asercji w specyfikacjach: sciezka -> ile linii niesie asercje.
+#
+# Grube narzedzie i ma takie byc. Nie mierzy jakosci asercji, tylko odpowiada na jedno
+# pytanie, na ktore inaczej nie odpowiada nikt: czy faza, ktora wlasnie biegla, ZABRALA
+# specyfikacji asercje. Liczba moze rosnac dowolnie; spadek na dowolnym pliku zatrzymuje bieg.
+# Formatowanie jest bez znaczenia, bo liczymy linie niosace asercje, nie znaki.
+assertion_fingerprint() {
+  python3 - "$WT" <<'FINGERPRINT'
+import os, re, sys
+
+root = sys.argv[1]
+carries = re.compile(r"\bassert\w*!|\bassert\b|\bexpect\(|\.toBe|\.toThrow|\.toEqual|\bdebug_assert")
+skip = {".git", "node_modules", "target", "dist", ".loadout", "refs"}
+
+for base, dirs, files in os.walk(root):
+    dirs[:] = [d for d in dirs if d not in skip]
+    for name in files:
+        if not name.endswith((".rs", ".ts", ".tsx", ".js", ".jsx")):
+            continue
+        rel = os.path.relpath(os.path.join(base, name), root)
+        # Specyfikacja poznaje sie po miejscu albo po nazwie -- tak samo, jak poznaje ja
+        # `check:` w TASK.md. Kod produkcyjny nas tu nie interesuje: tam asercji ubywa
+        # legalnie, bo `todo!()` znika razem ze szkieletem.
+        if "tests/" not in rel.replace(os.sep, "/") and ".test." not in name and ".spec." not in name:
+            continue
+        try:
+            body = open(os.path.join(base, name), encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        n = sum(1 for line in body.split("\n") if carries.search(line))
+        if n:
+            print("%s\t%d" % (rel, n))
+FINGERPRINT
+}
+
+# Ktory plik specyfikacji STRACIL asercje miedzy dwoma odciskami. Cisza znaczy "zaden".
+# Przyrost jest legalny i niewidoczny tutaj z premedytacja: specyfikacja moze zyskiwac
+# asercje dowolnie, nie moze zadnej zgubic.
+assertions_lost() {             # assertions_lost <przed.tsv> <po.tsv>
+  python3 - "$1" "$2" <<'COMPARE'
+import sys
+
+def load(path):
+    out = {}
+    for line in open(path, encoding="utf-8"):
+        if "\t" in line:
+            name, count = line.rstrip("\n").split("\t")
+            out[name] = int(count)
+    return out
+
+was, now = load(sys.argv[1]), load(sys.argv[2])
+for name in sorted(was):
+    # Plik SKASOWANY liczy sie jako strata wszystkich swoich asercji, a nie jako brak
+    # wpisu -- inaczej najprostsza droga na skroty (usun specyfikacje) byla niewidoczna.
+    if now.get(name, 0) < was[name]:
+        print("  %s: %d assertion lines -> %d" % (name, was[name], now.get(name, 0)))
+COMPARE
+}
+
+# Porownaj biezacy odcisk z BAZA i zatrzymaj bieg, jesli czegokolwiek ubylo.
+#
+# Baza jest zawsze stanem, ktory bramka juz OSADZILA -- nie stanem poprzedniej fazy.
+# Roznica jest istotna: przy porownywaniu z poprzednia faza dwa male ubytki po sobie
+# przechodza, bo kazdy z osobna jest maly.
+assertions_must_not_shrink() {  # assertions_must_not_shrink <baza.tsv> <etykieta>
+  local lost
+  assertion_fingerprint > "$RUNDIR/assertions-now.tsv"
+  lost="$(assertions_lost "$1" "$RUNDIR/assertions-now.tsv")"
+  [ -n "$lost" ] || return 0
+  echo >&2
+  echo "the $2 phase REMOVED assertions from specs:" >&2
+  printf '%s\n' "$lost" >&2
+  echo >&2
+  echo "A spec may gain assertions; it may never lose one. This is the one way a green" >&2
+  echo "gate can be a lie: the criterion still runs, still reports passing, and no longer" >&2
+  echo "asks the question it was written to ask. Nothing downstream would catch it." >&2
+  echo "workspace kept for inspection: $WT" >&2
+  exit 1
+}
+
 
 # Prompt idzie STDIN-em, nigdy w argv (niezmiennik 9): argv widzi każdy `ps`, a prompt
 # niesie treść zadania i bywa, że ścieżki. Oba CLI to obsługują — claude -p czyta prompt
@@ -281,7 +460,20 @@ write_with() {                 # write_with <transkrypt> <max-turns>  < prompt
 # zadanie bez kontraktu. Kod 2 („no acceptance criteria" / „no checks discovered") znaczy,
 # że nie ma czego pilnować, i to jest nasz błąd, nie modelu: stajemy tutaj.
 say "before (pre-flight)"
-PRE=0; gate before || PRE=$?
+# Przy wznowieniu ten sam poziom przebiegl chwile temu, na TYM SAMYM drzewie i TYM SAMYM
+# kontrakcie -- powtorzenie go nie jest ostroznoscia, tylko podwojna cena. Zmierzone na
+# T-06 (2026-08-16): warstwa `before` kosztowala tam 840 s, bo jedno kryterium wisialo do
+# konca budzetu razy dwa; potrojenie tego (wznowienie + pre-flight + `before` po zbednym
+# przepisaniu kontraktu) to 42 minuty czekania na wiedze, ktora byla znana po pierwszych
+# czternastu. Ponowne uzycie jest bezpieczne, bo sprawdzenie wznowienia biegnie PO kopii
+# kontraktu i po odswiezeniu oracle'a -- to ten sam kontrakt, to samo drzewo, ta sama bramka.
+PRE=0
+if [ "$PRE_RESUME_RAN" = 1 ]; then
+  PRE="$PRE_RESUME"
+  note "reusing the before run from the resume check (same tree, same contract): exit $PRE"
+else
+  gate before || PRE=$?
+fi
 CONTRACT_READY=0
 case "$PRE" in
   0) CONTRACT_READY=1
@@ -302,6 +494,10 @@ esac
 # prośba w promptcie, czyli dokładnie to, czego ten plik ma nie robić. Dwa wywołania
 # kosztują jedno uruchomienie modelu i zamieniają prośbę w bramkę.
 if [ "$CONTRACT_READY" = 0 ]; then
+ if [ "$RESUME_WITH_SPECS" = 1 ]; then
+  note "the specs are already written and already judged -- skipping the contract phase"
+  RED="$PRE"
+ else
   say "contract — $AGENT writes the acceptance specs and the skeleton that makes them fail"
   write_with "$RUNDIR/contract.jsonl" 80 <<PROMPT || note "the contract phase exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory.
@@ -350,12 +546,107 @@ PROMPT
   # niż jej brak, bo zostawia zielone, któremu ktoś uwierzy.
   say "before (enforced)"
   RED=0; gate before || RED=$?
+ fi
+
+  # ---------------------------------------------- 3a. naprawa kontraktu x1 --
+  # DOKLADNIE JEDNA runda, i wylacznie na jedynce. Dwojka ("bramka zle skonfigurowana")
+  # i trojka ("sufit") nie sa dla modelu -- ich naprawa nalezy do orchestratora.
+  #
+  # DLACZEGO ten etap w ogole istnieje. Strona implementacyjna ma jedna runde naprawcza
+  # od poczatku; strona kontraktowa nie miala ZADNEJ, i to nie byla niczyja decyzja, tylko
+  # sposob, w jaki to uroslo. Skutek zmierzony na T-06 (2026-08-16): faza kontraktu napisala
+  # siedem poprawnych specyfikacji i szkielet, w ktorym JEDNA funkcja sie zakleszcza, przez
+  # co AC-2 wisialo zamiast padac. Caly bieg poszedl do kosza, worktree trzeba bylo skasowac
+  # recznie, a diagnoza kosztowala noc -- za defekt, ktory bramka NAZWALA po imieniu
+  # ("did not FINISH") w paragonie, i ktory da sie naprawic jednym wywolaniem modelu.
+  #
+  # Ta runda dostaje powody Z PARAGONU, nie z domyslu. Bramka rozroznia trzy ksztalty
+  # falszywej czerwieni i kazdy ma inna naprawe; model, ktory zna nazwe swojego ksztaltu,
+  # nie zgaduje.
+  if [ "$RED" = 1 ]; then
+    say "contract repair -- one round, then stop"
+    WHY="$(python3 - "$WT/runs/last.json" <<'REASONS'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for c in receipt.get("checks", []):
+    if not c.get("ok"):
+        print("  %s -- %s" % (c["id"], (c.get("reason") or "").replace("\n", " ")[:300]))
+REASONS
+)"
+    printf '%s\n' "$WHY"
+
+    # Odcisk asercji PRZED runda. Ta faza dostaje instrukcje "spraw, zeby kryterium padalo
+    # INACZEJ", a najtansza droga do tego jest asertowac mniej -- i jest to jedyna faza,
+    # w ktorej "asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji, a nie jawnym oszustwem.
+    # Dlatego dostaje obrone mechaniczna, a nie zdanie w promptcie (niezmiennik 28).
+    assertion_fingerprint > "$RUNDIR/assertions-before.tsv"
+
+    write_with "$RUNDIR/contract-repair.jsonl" 80 <<PROMPT || note "the contract repair exited nonzero; the gate decides what that was worth"
+The acceptance specs in this worktree do not work as an oracle yet. Every criterion must
+FAIL when \`./verify.sh before\` runs, and each failure has to be a MISSING BEHAVIOUR that
+shows up at runtime. These did not qualify:
+
+$WHY
+
+Read runs/last.json for the full output behind each line.
+
+Three shapes of false red, and the only repair each one allows:
+
+  "did not FINISH -- it hung or could not start". The spec, or the skeleton it calls,
+  BLOCKS. A skeleton must fail fast. The usual cause is a wait that nothing will ever
+  satisfy: a channel whose receiver never sees its last sender dropped, a lock nobody
+  releases, a task awaited while a live handle to it is still in scope. Fix the SKELETON
+  so the call returns. Never delete the wait from the spec -- a caller that deadlocks is
+  a defect of the design under test, and the spec is right to sit on it.
+
+  "PASSES before implementation" / "exit 0 but no evidence of execution". The criterion is
+  green with no implementation, so it measures nothing. If the skeleton returns the value
+  the spec expects, make it return a deliberately wrong one. If instead the ASSERTION is
+  too weak to tell the difference, stop and say so -- a weak assertion is a finding for
+  a human (AGENTS.md section 7), never something to patch quietly.
+
+  "did not RUN (...)". The check never executed at all: a missing module, a missing test
+  target, a spec that does not compile. Add the smallest skeleton that makes it load and
+  run, and nothing more.
+
+Rules that do not bend:
+
+- Never delete or weaken an assertion. A spec may GAIN assertions; it may never lose one.
+  Making a criterion fail faster by asserting less is the exact failure this stage exists
+  to prevent, and it is worse than the hang, because nothing downstream would ever notice.
+  This is checked mechanically after you finish, per spec file.
+- Never implement the behaviour under test. Every criterion must still be RED when you are
+  done -- red because the behaviour is missing, at runtime.
+- Never edit TASK.md, verify.sh, harness/, checks/ or tasks/. They are the oracle.
+- Stay inside this task's \`<!-- OWNS -->\` block.
+- If a criterion cannot be made to fail fast without implementing it, say so in your final
+  message and change nothing. That is a finding, and it is worth more than a guess.
+
+One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
+command and asks approval for each part, and in an unattended run there is nobody to give it.
+
+Commit what you change with one conventional-commit subject, e.g.
+"fix(test): make the $ID skeleton fail fast instead of hanging".
+PROMPT
+    commit_leftovers "contract repair"
+
+    assertions_must_not_shrink "$RUNDIR/assertions-before.tsv" "contract repair"
+
+    say "before (enforced, after the contract repair)"
+    RED=0; gate before || RED=$?
+  fi
+
   if [ "$RED" -ne 0 ]; then
     echo >&2
     case "$RED" in
       1) echo "the criteria are NOT red for the right reason. Either a criterion already" >&2
          echo "passes (it checks nothing), or its check failed without running at all." >&2
-         echo "Read the reasons above; both are contract bugs, not implementation bugs." >&2 ;;
+         echo "Read the reasons above; both are contract bugs, not implementation bugs." >&2
+         echo "One repair round already ran against exactly these reasons and did not" >&2
+         echo "settle them, so this is a human's call now (AGENTS.md section 7)." >&2 ;;
       2) echo "the gate is misconfigured (exit 2). That is ours to fix, not the model's." >&2 ;;
       3) echo "the before tier hit its ceiling (exit 3). A check that cannot finish cannot" >&2
          echo "certify anything." >&2 ;;
@@ -368,6 +659,12 @@ PROMPT
 fi
 
 # --------------------------------------------------------------- 4. pisarz --
+# Odcisk kontraktu W CHWILI, W KTOREJ BRAMKA GO OSADZILA. Od tego miejsca zadna faza nie
+# ma prawa zabrac specyfikacji asercji -- ani pisarz, ani runda naprawcza. To jedyny sposob,
+# w jaki zielona bramka moze klamac bez sladu: kryterium dalej biegnie, dalej melduje
+# "1 passed" i po prostu przestaje pytac o to, po co je napisano.
+assertion_fingerprint > "$RUNDIR/assertions-certified.tsv"
+
 say "implementing with $AGENT"
 write_with "$RUNDIR/build.jsonl" 250 <<PROMPT || note "the writer exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory. The acceptance specs already exist and are
@@ -392,6 +689,7 @@ Write under src/, src-tauri/, engine/ and tests/. Commit subjects are
 "<type>(<scope>): <what changed>".
 PROMPT
 commit_leftovers implementation
+assertions_must_not_shrink "$RUNDIR/assertions-certified.tsv" "implementation"
 
 # ---------------------------------------------------------------- 5. bramka --
 say "gate"
@@ -463,19 +761,7 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
     # Zamrożenie kontraktu nie jest formalnością: bieg nie może zmieniać warunków własnego
     # zaliczenia. Ulepszony plik zadania obowiązuje NASTĘPNY bieg, nie ten. Więc po merge'u
     # przywracamy `tasks/` do wersji gałęzi — trunk daje nam sprawdzenia, nie nową umowę.
-    before_merge="$(git -C "$WT" rev-parse HEAD)"
-    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
-      if ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
-        git -C "$WT" checkout -q "$before_merge" -- tasks/
-        git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
-          || true
-        note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
-      fi
-      note "harness refreshed from the trunk before the final gate"
-    else
-      git -C "$WT" merge --abort >/dev/null 2>&1 || true
-      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
-    fi
+    refresh_harness_from_trunk 1 "before the repair round"
 
     # repair.sh nie bierze id zadania: czyta TASK.md, runs/last.json i runs/review.json
     # z katalogu, w którym stoi. Dlatego uruchamiamy go W WORKTREE — z korzenia naprawiałby
@@ -489,6 +775,7 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
       exit 2
     fi
 
+    assertions_must_not_shrink "$RUNDIR/assertions-certified.tsv" "repair"
     say "gate, after the repair round"
     GATE=0; gate full || GATE=$?
     note "gate: $GATE"

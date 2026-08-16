@@ -21,6 +21,14 @@ pub mod engine;
 
 /// Magazyn: schemat `SQLite`, jeden pisarz, migracje. Wypelnia T-06.
 pub mod store;
+/// Biblioteka uzytkownika: agenci, umiejetnosci, pamiec. Wypelnia T-11 i dalej.
+pub mod library;
+
+/// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
+pub mod memory;
+
+/// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
+pub mod workflow;
 
 // 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
 //

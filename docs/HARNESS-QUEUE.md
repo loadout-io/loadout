@@ -54,7 +54,16 @@ zachowanie, a nie stan, który da się wykryć i naprawić.
 zapisu — jedynym, kto może go odpiąć, jest orchestrator. Sprawdzenie pilnowałoby wyłącznie
 mnie, a `checks/MANIFEST` kazałby dopisać wpis. Ceremonia większa niż ryzyko.
 
-**Sufit czekania na muteks cargo (300 s).** Kusi, żeby go podnieść pod zadania równoległe,
-ale po `689e432` zamek po martwym właścicielu jest odzyskiwany natychmiast, więc 300 s dotyczy
-już wyłącznie **żywego** cargo. Jeśli żywe cargo trzyma zamek pięć minut, to nie jest sytuacja
-do przeczekania — to sygnał, że fala jest za szeroka. Podniesienie limitu ukryłoby ten sygnał.
+**Sufit czekania na muteks cargo (300 s) — decyzja ODWRÓCONA 2026-08-16.**
+
+Pierwotnie: „jeśli żywe cargo trzyma zamek pięć minut, to nie jest sytuacja do przeczekania,
+tylko sygnał, że fala jest za szeroka; podniesienie limitu ukryłoby ten sygnał".
+
+To rozumowanie było poprawne **dla biegu szeregowego** i przestaje obowiązywać przy wachlarzu.
+Przy sześciu zadaniach naraz kolejkowanie na muteksie jest **projektowanym zachowaniem**
+(niezmiennik 26 przepuszcza jeden ciężki cargo), a nie objawem czegokolwiek. Sufit 300 s
+zamieniłby wtedy normalną kolejkę w `exit 2` i fałszywą czerwień u ostatniego w kolejce.
+
+Nie zmieniamy domyślnej wartości — zmieniamy ją **tam, gdzie zmienia się założenie**:
+wachlarz eksportuje `LOADOUT_CARGO_LOCK_WAIT=2400`, bieg szeregowy zostaje przy 300 s.
+Jedno założenie, jedno miejsce, obie wartości uzasadnione.
