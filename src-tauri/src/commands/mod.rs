@@ -7,6 +7,12 @@
 //! `generate_handler!` należą do T-07. Powód jest testowy, nie estetyczny: `State<'_, AppState>`
 //! nie da się zbudować w teście jednostkowym, a `&RunDeps` da się [04 §2.1].
 //!
+//! 2026-08-16 — zdanie wyżej mówiło „należą do T-07". T-07 wylądował z ośmioma zielonymi
+//! kryteriami o pompie i **bez ani jednej skorupy**, bo żadne kryterium nie sięgało szwu:
+//! `Failed to launch` jest na liście `NOT_A_REAL_RED`, więc nic, co wymaga żywego Tauri, nie
+//! może być kryterium. Adresatem jest T-27 i tam ten dług jest spłacany razem z dowodem, który
+//! nie potrzebuje okna: `src-tauri/commands.golden.txt` czytany z obu stron granicy.
+//!
 //! # Co gdzie mieszka
 //!
 //! Ten plik to **typy i uchwyty**: [`RunDeps`], [`RunRequest`], [`RunReport`], [`RunError`]
@@ -28,7 +34,13 @@ use crate::store::{Store, StoreError};
 use crate::workflow::check::Note;
 use crate::workflow::file::LoadError;
 
+/// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
+pub mod agents;
+/// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
+pub mod mint;
 pub mod run;
+/// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
+pub mod workflows;
 
 /// Skąd bieg bierze sterownik dla vendora, którym biegnie agent kroku.
 ///
