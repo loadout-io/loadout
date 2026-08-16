@@ -112,18 +112,25 @@ Dla **każdego** publicznego konstruktora, jaki moduł wystawia (`Store::open(pa
 pisarza, `Store::reader()`), zapytaj o pragmy i sprawdź: `busy_timeout` = 5000, `foreign_keys` = 1,
 `synchronous` = 1 (NORMAL), a na bazie plikowej `journal_mode` = `wal`. Uwaga, o którą się tu
 potyka: `journal_mode` jest własnością **bazy** i trwa w pliku, a `busy_timeout`, `foreign_keys` i
-`synchronous` są własnością **połączenia** i wracają do wartości domyślnych przy każdym nowym —
-`foreign_keys` domyślnie jest **wyłączone**, więc czytelnik, który go nie ustawi, po cichu nie widzi
-kaskad. Kontrola przeciw pustej asercji **nie jest symetryczna**, bo świat taki nie jest, i to jest blizna
-(zmierzone 2026-08-16, rusqlite 0.40.2). Gołe `Connection::open(path)` raportuje `foreign_keys` = 0
-i to działa wprost — ale `busy_timeout` **nie** wraca do zera: rusqlite ustawia pięciosekundowy
-timeout sam, przy otwarciu. Czyli dokładnie tyle, ile wymagamy wyżej, więc asercja `busy_timeout`
-= 5000 na naszych konstruktorach przechodziłaby także wtedy, gdyby `apply_pragmas` tej pragmy nigdy
-nie tknęło. Ta jedna pragma dostaje więc kontrolę **dwustopniową**, na gołym połączeniu:
-(a) ustaw `PRAGMA busy_timeout = 0` i wymagaj, żeby odczyt oddał 0 — to dowodzi, że czytnik czyta
-połączenie, a nie pamięta wartość; (b) na tym samym połączeniu wywołaj `apply_pragmas` i wymagaj
-5000 — to jest jedyna asercja w tym pliku, która odróżnia „ustawiliśmy" od „rusqlite ustawił za nas".
-Bez (a) krok (b) nie dowodzi niczego.
+`synchronous` są własnością **połączenia** i wracają do wartości domyślnych przy każdym nowym.
+
+Kontrola przeciw pustej asercji **nie porównuje się z domyślnymi wartościami stosu**, i to jest
+blizna. Zmierzone 2026-08-16 na rusqlite 0.40.2 z `features = ["bundled"]` (SQLite 3.53.2): gołe
+`Connection::open(path)` melduje `busy_timeout` = **5000**, bo rusqlite ustawia je samo przy
+otwarciu, oraz `foreign_keys` = **1**, bo bundlowany SQLite jest kompilowany z włączonymi kluczami
+obcymi. Obie te wartości są dokładnie tymi, których wymagamy wyżej — więc asercje na naszych
+konstruktorach przechodziłyby także wtedy, gdyby `apply_pragmas` tych dwóch pragm nigdy nie tknęło.
+Pusta asercja schowana w kryterium napisanym po to, żeby puste asercje łapać. (Wcześniejsza wersja
+tego akapitu twierdziła, że `foreign_keys` jest domyślnie wyłączone — to prawda o waniliowym
+SQLite, nieprawda o tym builzie, i dokładnie tak wygląda założenie, którego nikt nie sprawdził.)
+
+Wartości domyślne są więc **nieużyteczne jako punkt odniesienia** — mogą być jakiekolwiek i mogą się
+zmienić przy najbliższym `cargo update`. Kontrola dowodzi zamiast tego dwóch rzeczy o **każdej**
+pragmie połączenia z osobna, na gołym połączeniu: (a) ustaw jawnie wartość, której **nie**
+akceptujemy (`busy_timeout` = 0, `foreign_keys` = 0, `synchronous` = 2) i wymagaj, żeby odczyt ją
+zobaczył — to dowodzi, że czytnik czyta połączenie, a nie pamięta wartości; (b) na **tym samym**
+połączeniu wywołaj `apply_pragmas` i wymagaj kompletu docelowego. Bez (a) krok (b) nie dowodzi
+niczego, bo dobra wartość mogła tam stać od początku.
 
 *Słaba asercja:* sprawdzenie pragm tylko na połączeniu zwróconym przez `open()`. Przechodzi, gdy
 `reader()` omija helper i idzie prosto do `Connection::open_with_flags` — czyli w dokładnie tym
