@@ -23,6 +23,16 @@
 //! (niezmiennik 20). Za to, że jest jedna i wspólna, odpowiada AC-2, i tam import jest
 //! całą treścią kryterium.
 
+// 2026-08-16 — `panic!` w teście JEST jego wynikiem, a `[workspace.lints]` ma `panic = "deny"`
+// dla całego drzewa. `checks/full-clippy.sh` biegnie `--all-targets -- -D warnings`, więc bez
+// tej linii gałąź `unwrap_or_else(|| panic!(…))` niżej zatrzymuje się w BRAMCE, a nie tutaj —
+// i zatrzymuje ją na kształcie komunikatu, nie na zachowaniu, które to kryterium sądzi.
+//
+// Ani jedna asercja przez to nie znika: `panic!` w `unwrap_or_else` cytuje CAŁY raport odmów,
+// czyli mówi, czego w nim zabrakło. `expect()` na jego miejscu wypisałby samo „None".
+// Ta sama linia i ten sam powód stoją w `tests/skills_ingest_scanner.rs`.
+#![allow(clippy::panic)]
+
 use std::collections::BTreeMap;
 
 use loadout_lib::library::agents::{
