@@ -10,14 +10,18 @@
  * Kształt jest lustrem `AgentsIo` z `src/state/agents.ts` i tak ma zostać: funkcja dopisana
  * tutaj bez pozycji tam jest funkcją, której magazyn nie umie zawołać.
  *
- * Ciała są jeszcze puste. Szkielet ma się WCZYTAĆ i paść w czasie wykonania — moduł, którego
- * nie ma, daje „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a).
+ * 2026-08-16 — ciała wypełnia T-27. Nazwy komend są dosłownie te z `src-tauri/commands.golden.txt`
+ * i muszą takie zostać: ten sam plik czyta po drugiej stronie granicy `ipc_commands_registered.rs`,
+ * więc nazwa sklejona tutaj ze zmiennej albo przepisana z pamięci rozjeżdża się w ciszy —
+ * `invoke` na nieistniejącą komendę odmawia dopiero pod palcem użytkownika.
  */
+import { invoke } from '@tauri-apps/api/core';
+
 import type { Agent } from '../../state/agents';
 
 /** Wszyscy zapisani agenci, po jednym na plik w bibliotece. */
 export function list(): Promise<Agent[]> {
-  throw new Error('not implemented: read the saved agents');
+  return invoke<Agent[]>('list_agents');
 }
 
 /**
@@ -27,15 +31,15 @@ export function list(): Promise<Agent[]> {
  * sortowalne po czasie [T4 §5.1]. Mennica stoi tam, gdzie v7 już jest.
  */
 export function newId(): Promise<string> {
-  throw new Error('not implemented: mint a fresh id');
+  return invoke<string>('new_id');
 }
 
 /** Zapisuje definicję agenta. Duplikat to nowy PLIK, nie wiersz żyjący na ekranie. */
 export function save(agent: Agent): Promise<void> {
-  throw new Error('not implemented: write ' + agent.name + ' out to the library');
+  return invoke<void>('save_agent', { agent });
 }
 
 /** Usuwa agenta po identyfikatorze — stabilnym przez zmianę nazwy, w odróżnieniu od pliku. */
 export function remove(id: string): Promise<void> {
-  throw new Error('not implemented: drop the agent ' + id);
+  return invoke<void>('delete_agent', { id });
 }

@@ -7,12 +7,11 @@
  * wywołać cokolwiek — dwie drogi do Rusta znaczą, że licznik pilnuje jednej z nich, a promocja
  * jedzie drugą i nikt tego nie zauważy.
  *
- * Kiedy wyląduje `src/ipc/**` (T-07), te dwa ciała stają się jednolinijkowymi przelotkami
- * przez tamten moduł. Krawędź zostaje tutaj: sekcja ma wiedzieć, CO woła, a nie jak to jedzie.
- *
- * Ciała są jeszcze puste. Szkielet ma się WCZYTAĆ i paść w czasie wykonania — moduł, którego
- * nie ma, daje „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a).
+ * 2026-08-16 — ciała wypełnia T-27, dwiema nazwami z `src-tauri/commands.golden.txt`. Krawędź
+ * zostaje tutaj: sekcja ma wiedzieć, CO woła, a nie jak to jedzie.
  */
+import { invoke } from '@tauri-apps/api/core';
+
 import type { Note } from '../../state/memory';
 
 /**
@@ -23,10 +22,10 @@ import type { Note } from '../../state/memory';
  * pełny", „nie ma uzasadnienia") przyjeżdża jako odrzucenie obietnicy.
  */
 export function putToUse(args: { id: string }): Promise<Note> {
-  throw new Error('not implemented: put ' + args.id + ' to use');
+  return invoke<Note>('put_note_to_use', args);
 }
 
 /** „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu. */
 export function stopUsing(args: { id: string }): Promise<Note> {
-  throw new Error('not implemented: stop using ' + args.id);
+  return invoke<Note>('stop_using_note', args);
 }

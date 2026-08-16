@@ -12,35 +12,38 @@
  * Te dwa opisy stoją dziś obok siebie i mają zostać zredukowane do jednego; powód i decyzja są
  * zapisane w nagłówku `list/store.ts` i należą do człowieka, nie do tego pliku.
  *
- * Ciała są jeszcze puste. Szkielet ma się WCZYTAĆ i paść w czasie wykonania — moduł, którego
- * nie ma, daje „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a).
+ * 2026-08-16 — ciała wypełnia T-27. `path` jedzie jako `fileName`, bo to jest SAMA NAZWA pliku,
+ * nie ścieżka: katalog rozwiązuje Rust [T3 §8.3]. Front, który dokleiłby katalog sam, byłby
+ * drugim miejscem, w którym mieszka odpowiedź na pytanie „gdzie to leży".
  */
+import { invoke } from '@tauri-apps/api/core';
+
 import type { Note, WorkflowFile } from '../../state/workflows';
 import type { WorkflowEntry } from './list/store';
 
 /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
 export function list(): Promise<WorkflowEntry[]> {
-  throw new Error('not implemented: read the saved workflows');
+  return invoke<WorkflowEntry[]>('list_workflows');
 }
 
 /** uuid v7, wybite po stronie Rusta — ta sama mennica, co w sekcji Agenci. */
 export function newId(): Promise<string> {
-  throw new Error('not implemented: mint a fresh id');
+  return invoke<string>('new_id');
 }
 
 /** Wczytuje jeden plik workflow po jego nazwie w katalogu. */
 export function load(path: string): Promise<WorkflowFile> {
-  throw new Error('not implemented: read the workflow kept in ' + path);
+  return invoke<WorkflowFile>('load_workflow', { fileName: path });
 }
 
 /** Zapisuje plik. Odmowa przy problemie żyje po stronie Rusta (`workflow::file::save`). */
 export function write(path: string, workflow: WorkflowFile): Promise<void> {
-  throw new Error('not implemented: write ' + workflow.name + ' into ' + path);
+  return invoke<void>('save_workflow', { fileName: path, workflow });
 }
 
 /** Usuwa plik workflow z katalogu. */
 export function remove(path: string): Promise<void> {
-  throw new Error('not implemented: drop the file ' + path);
+  return invoke<void>('delete_workflow', { fileName: path });
 }
 
 /**
@@ -49,5 +52,5 @@ export function remove(path: string): Promise<void> {
  * nieaktualne (niezmiennik 13).
  */
 export function check(workflow: WorkflowFile): Promise<Note[]> {
-  throw new Error('not implemented: ask Rust what is wrong with ' + workflow.name);
+  return invoke<Note[]>('check_workflow', { workflow });
 }
