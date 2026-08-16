@@ -1,0 +1,92 @@
+[
+  {
+    "kind": "run",
+    "agent": "lead",
+    "text": "Fix the login bug · Research → Plan → Build"
+  },
+  {
+    "kind": "step",
+    "agent": "lead",
+    "text": "── Planning"
+  },
+  {
+    "kind": "agent",
+    "agent": "researcher-2",
+    "text": "Researcher 2 joined"
+  },
+  {
+    "kind": "thinking",
+    "agent": "builder"
+  },
+  {
+    "kind": "read",
+    "agent": "builder",
+    "text": "Read 3 files",
+    "count": 3,
+    "paths": ["src/auth.rs", "src/login.rs", "src/routes.rs"],
+    "detailId": null
+  },
+  {
+    "kind": "search",
+    "agent": "builder",
+    "text": "Searched for \"login\" — 12 matches",
+    "count": 12,
+    "paths": [],
+    "detailId": 4
+  },
+  {
+    "kind": "edit",
+    "agent": "builder",
+    "text": "Edited src/auth.rs",
+    "count": 1,
+    "paths": ["src/auth.rs"],
+    "added": 12,
+    "removed": 4,
+    "detailId": 5
+  },
+  {
+    "kind": "ran",
+    "agent": "builder",
+    "text": "Ran npm test — didn't work",
+    "ok": false,
+    "preview": "FAIL src/auth.test.ts",
+    "detail": ["FAIL src/auth.test.ts", "1 failed, 41 passed"],
+    "detailId": 6
+  },
+  {
+    "kind": "note",
+    "agent": "researcher-2",
+    "text": "The bug is in the cookie name, not in the check."
+  },
+  {
+    "kind": "asked",
+    "agent": "lead",
+    "text": "Which database should this use?",
+    "options": ["SQLite", "Postgres"]
+  },
+  {
+    "kind": "handoff",
+    "agent": "lead",
+    "text": "Planner → Implementer"
+  },
+  {
+    "kind": "memory",
+    "agent": "lead",
+    "text": "Saved a note — api-conventions.md",
+    "path": "notes/api-conventions.md"
+  },
+  {
+    "kind": "problem",
+    "agent": "builder",
+    "text": "Hit the usage limit — waiting for it to reset",
+    "resetsAt": 1767225600
+  },
+  {
+    "kind": "done",
+    "agent": "builder",
+    "text": "Done · 2 turns · 6.2s · $0.15",
+    "turns": 2,
+    "durationMs": 6200,
+    "costUsd": 0.15
+  }
+]
