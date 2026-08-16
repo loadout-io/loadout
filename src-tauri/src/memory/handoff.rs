@@ -16,9 +16,14 @@
 //! - ścieżki ani treści w argv — ciało jedzie do następnego kroku przez stdin (niezmiennik 9).
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::Result;
+use uuid::Uuid;
+
+use super::{Error, FrontMatter, Result, est_tokens, slugify};
 
 /// Twardy limit ciała **po normalizacji**, w bajtach [T6 §10.2, §4 „Context bloat"].
 ///
@@ -41,6 +46,19 @@ pub enum Section {
     Open,
 }
 
+/// Kolejność jest kontraktem, więc mieszka w jednej tablicy, a nie w trzech pętlach.
+const SECTIONS: [Section; 3] = [Section::Answer, Section::Evidence, Section::Open];
+
+impl Section {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Answer => "Answer",
+            Self::Evidence => "Evidence",
+            Self::Open => "Open",
+        }
+    }
+}
+
 /// Zamknięty zbiór siedmiu wartości plus wariant „coś nowego albo cudzego".
 ///
 /// [`Kind::Other`] jest niezmiennikiem 5 zapisanym w typie: starszy albo nowszy Loadout,
@@ -58,11 +76,62 @@ pub enum Kind {
     Other(String),
 }
 
+impl Kind {
+    /// Nazwa w pliku i **trzeci człon nazwy pliku**, więc bez `_`: podkreślenie jest
+    /// separatorem pól w `<NN>__<from>__<kind>.md` i pojedyncze `patch_summary` czytałoby się
+    /// jako granicę pola przy ręcznym oglądaniu katalogu.
+    fn name(&self) -> &str {
+        match self {
+            Self::Brief => "brief",
+            Self::Findings => "findings",
+            Self::Plan => "plan",
+            Self::PatchSummary => "patch-summary",
+            Self::Question => "question",
+            Self::Answer => "answer",
+            Self::Review => "review",
+            Self::Other(raw) => raw.as_str(),
+        }
+    }
+
+    /// Nieznana wartość jest **niesiona**, nie odrzucana (niezmiennik 5).
+    fn parse(raw: &str) -> Self {
+        match raw {
+            "brief" => Self::Brief,
+            "findings" => Self::Findings,
+            "plan" => Self::Plan,
+            "patch-summary" => Self::PatchSummary,
+            "question" => Self::Question,
+            "answer" => Self::Answer,
+            "review" => Self::Review,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+}
+
 /// Przekazania są niezmienne. Korekta to nowy plik, nie edycja starego [T6 §9].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Current,
     Superseded,
+}
+
+impl Status {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// Wszystko, co nie mówi wprost „zastąpione", jest bieżące. Ten kierunek domyślności jest
+    /// wybrany: plik po ręcznej edycji ma zostać w obiegu, a nie zniknąć z listy po cichu.
+    fn parse(raw: &str) -> Self {
+        if raw.trim() == Self::Superseded.name() {
+            Self::Superseded
+        } else {
+            Self::Current
+        }
+    }
 }
 
 /// Co podaje wołający. Siedem pól — reszta front-mattera jest wyliczana przez Loadout
@@ -109,6 +178,23 @@ pub struct Meta {
     pub extra: BTreeMap<String, String>,
 }
 
+/// Trzynaście nazw kontraktu, w kolejności zapisu. Wszystko poza tą listą jest `extra`.
+const FIELDS: [&str; 13] = [
+    "id",
+    "run",
+    "step",
+    "from",
+    "to",
+    "kind",
+    "title",
+    "status",
+    "supersedes",
+    "reads",
+    "created",
+    "bytes",
+    "est_tokens",
+];
+
 /// Przekazanie odczytane z dysku.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handoff {
@@ -127,8 +213,9 @@ impl Handoff {
     /// Cudzy plik (starszy Loadout, ręczna edycja, ucięty zapis) ma prawo tu trafić i nie jest
     /// błędem — ale przeliczenie `bytes` po cichu z zawartości zabrałoby jedyny sygnał, że coś
     /// się rozjechało.
+    #[must_use]
     pub fn bytes_mismatch(&self) -> bool {
-        todo!("T-16: meta.bytes != actual_bytes")
+        self.meta.bytes != self.actual_bytes
     }
 }
 
@@ -151,21 +238,62 @@ pub struct Written {
 /// `agent_body` jest **danymi niezaufanymi**. Jedyne, co się z nim dzieje, to normalizacja
 /// nowych linii, uzupełnienie brakujących nagłówków sekcji i ewentualne cięcie na granicy
 /// sekcji. Nic z niego nie wpływa na ani jedno pole front-mattera.
-pub fn write_handoff(_run_dir: &Path, _draft: MetaDraft, _agent_body: &str) -> Result<Written> {
-    todo!("T-16: zapis przekazania")
+pub fn write_handoff(run_dir: &Path, draft: MetaDraft, agent_body: &str) -> Result<Written> {
+    write_inner(run_dir, draft, agent_body, None)
 }
 
 /// Odczytuje jeden plik przekazania. Nieznany klucz i nieznany `kind` nie są błędem.
-pub fn read_handoff(_path: &Path) -> Result<Handoff> {
-    todo!("T-16: odczyt przekazania")
+pub fn read_handoff(path: &Path) -> Result<Handoff> {
+    let text = fs::read_to_string(path)?;
+    let (front, body_at) = FrontMatter::split(&text).map_err(|error| match error {
+        // Parser dostał sam tekst, więc nie miał czym wypełnić ścieżki. Tu wiemy.
+        Error::NoFrontMatter { .. } => Error::NoFrontMatter {
+            path: path.to_owned(),
+        },
+        other => other,
+    })?;
+
+    let body = text[body_at..].to_owned();
+    Ok(Handoff {
+        path: path.to_owned(),
+        meta: meta_from(&front),
+        actual_bytes: body.len(),
+        body,
+    })
 }
 
 /// Czyta `run_dir/handoffs/` bez bazy i bez zaufania do tego, kto te pliki pisał.
 ///
 /// Kolejność wynikowa jest kolejnością nazw plików, bo prefiks `NN` jest numerem kroku —
 /// to jedyne uporządkowanie, które przeżywa skasowanie `loadout.db` (niezmiennik 4).
-pub fn scan_run_dir(_run_dir: &Path) -> Result<Vec<Handoff>> {
-    todo!("T-16: skan katalogu biegu")
+pub fn scan_run_dir(run_dir: &Path) -> Result<Vec<Handoff>> {
+    let dir = run_dir.join("handoffs");
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        // Bieg, w którym jeszcze nikt niczego nie przekazał, ma zero przekazań, a nie błąd.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+
+    // Płasko, nie rekurencyjnie: `attachments/` trzyma pliki `.md`, które przekazaniami nie
+    // są, a spacer po drzewie zwróciłby je jako kolejne rekordy i nikt by nie zauważył.
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    paths.sort();
+
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        match read_handoff(&path) {
+            Ok(handoff) => out.push(handoff),
+            // Niezmiennik 5: jeden nieczytelny plik nie zabiera ze sobą całej listy. Ślad
+            // zostaje w dzienniku, bo cicha strata rekordu jest gorsza niż głośna.
+            Err(error) => tracing::warn!("{} is not a readable handoff: {error}", path.display()),
+        }
+    }
+    Ok(out)
 }
 
 /// Korekta: **nowy** plik z `supersedes: <old_id>`, a w starym zmienia się jedna linia.
@@ -173,11 +301,499 @@ pub fn scan_run_dir(_run_dir: &Path) -> Result<Vec<Handoff>> {
 /// Nadpisanie starego pliku w miejscu zabiera bieg historii i nikt tego nie zauważy, bo plik
 /// dalej wygląda poprawnie [T6 §9]. Druga korekta tego samego `id` jest odmawiana
 /// ([`super::Error::AlreadySuperseded`]) i nie zostawia po sobie ani jednego zapisu.
-pub fn supersede(
-    _run_dir: &Path,
-    _old_id: &str,
-    _draft: MetaDraft,
-    _body: &str,
+pub fn supersede(run_dir: &Path, old_id: &str, draft: MetaDraft, body: &str) -> Result<Written> {
+    // Obie odmowy padają PRZED pierwszym zapisem. Wywołanie, które przewraca się w połowie,
+    // zostawia bieg w stanie, którego nie produkuje żadna poprawna ścieżka kodu.
+    let old = scan_run_dir(run_dir)?
+        .into_iter()
+        .find(|handoff| handoff.meta.id == old_id)
+        .ok_or_else(|| Error::NoSuchHandoff {
+            id: old_id.to_owned(),
+        })?;
+
+    if old.meta.status == Status::Superseded {
+        return Err(Error::AlreadySuperseded {
+            id: old_id.to_owned(),
+        });
+    }
+
+    let written = write_inner(run_dir, draft, body, Some(old_id))?;
+    flip_status(&old.path)?;
+    Ok(written)
+}
+
+// ── zapis ─────────────────────────────────────────────────────────────────────────────────
+
+fn write_inner(
+    run_dir: &Path,
+    draft: MetaDraft,
+    agent_body: &str,
+    supersedes: Option<&str>,
 ) -> Result<Written> {
-    todo!("T-16: korekta przekazania")
+    let dir = run_dir.join("handoffs");
+    fs::create_dir_all(&dir)?;
+
+    let stem = format!(
+        "{:02}__{}__{}",
+        draft.step,
+        slugify(&draft.from),
+        slugify(draft.kind.name())
+    );
+    let (path, mut file) = claim(&dir, &stem)?;
+
+    // Nazwa attachmentu jest nazwą przekazania, do którego należy — para daje się rozpoznać
+    // bez otwierania żadnego z dwóch plików.
+    let name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(stem.as_str());
+    let attachment_name = format!("{name}__full.md");
+    let pointer = format!("Moved to attachments/{attachment_name}");
+
+    let normalized = normalize(agent_body);
+    let (shaped, repaired) = reshape(&normalized);
+    let (body, truncated) = cap(&shaped, &pointer);
+
+    let attachment = if truncated {
+        // Niezmiennik 21: plik powstaje TYLKO wtedy, gdy w ciele stoi wskaźnik, który do
+        // niego prowadzi. Trzyma **oryginał** agenta, nie to, co zostało po cięciu — inaczej
+        // zgubionego zdania nie ma nigdzie [T6 §11.2].
+        let attachments = run_dir.join("attachments");
+        fs::create_dir_all(&attachments)?;
+        let at = attachments.join(&attachment_name);
+        fs::write(&at, normalized.as_bytes())?;
+        Some(at)
+    } else {
+        None
+    };
+
+    let mut out = front_matter(draft, supersedes, body.len()).render();
+    out.push('\n');
+    out.push_str(&body);
+    file.write_all(out.as_bytes())?;
+
+    Ok(Written {
+        path,
+        attachment,
+        repaired,
+        truncated,
+    })
+}
+
+/// Zajmuje ścieżkę w `handoffs/` i oddaje otwarty plik.
+///
+/// `create_new`, nie „sprawdź i zapisz": sprawdzenie i zapis to dwa wywołania, a między nimi
+/// mieści się drugi krok biegu piszący tę samą nazwę. Kolizja idzie licznikiem `-2`, `-3`, …
+/// — sufiks zaszyty na sztywno przechodzi drugi zapis i **nadpisuje** przy trzecim.
+fn claim(dir: &Path, stem: &str) -> Result<(PathBuf, fs::File)> {
+    let root = fs::canonicalize(dir)?;
+    let mut nth = 1usize;
+    loop {
+        let name = if nth == 1 {
+            format!("{stem}.md")
+        } else {
+            format!("{stem}-{nth}.md")
+        };
+        let path = dir.join(&name);
+
+        // AC-6: pytanie brzmi „gdzie ten plik naprawdę leży", a odpowiada na nie wyłącznie
+        // system plików. `starts_with` porównuje tekst, więc przechodzi na ścieżce z `..`
+        // w środku i na dowiązaniu. `slugify` nie przepuszcza `/` ani `.`, ale obrona,
+        // której nikt nie sprawdza, jest obroną, o której nie wiadomo, że przestała działać.
+        let parent = path.parent().map(fs::canonicalize).transpose()?;
+        if parent.as_ref() != Some(&root) {
+            return Err(Error::Io(std::io::Error::other(format!(
+                "{} would land outside {}",
+                path.display(),
+                root.display()
+            ))));
+        }
+
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => nth += 1,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Trzynaście pól, wszystkie od Loadouta. Ciało nie jest tu ani parsowane, ani czytane.
+///
+/// Bierze `draft` na własność i rozbiera go na pola: siedem wartości od wołającego kończy
+/// bieg tutaj, w pliku, i nie ma powodu, żeby po zapisie istniały dalej.
+fn front_matter(draft: MetaDraft, supersedes: Option<&str>, bytes: usize) -> FrontMatter {
+    let MetaDraft {
+        run,
+        step,
+        from,
+        to,
+        kind,
+        title,
+        reads,
+    } = draft;
+
+    let mut front = FrontMatter::default();
+    front.set("id", &mint_id());
+    front.set("run", &field(&run));
+    front.set("step", &step.to_string());
+    front.set("from", &field(&from));
+    front.set_list("to", &items(&to));
+    front.set("kind", &field(kind.name()));
+    front.set("title", &field(&title));
+    front.set("status", Status::Current.name());
+    front.set("supersedes", supersedes.unwrap_or("null"));
+    front.set_list("reads", &items(&reads));
+    front.set("created", &now_utc());
+    front.set("bytes", &bytes.to_string());
+    front.set("est_tokens", &est_tokens(bytes).to_string());
+    front
+}
+
+/// 2026-08-16: wartość z nową linią dopisałaby **drugi klucz** do płaskiego formatu, więc
+/// `title: "x\nstatus: superseded"` od wołającego robiłby dokładnie to, przed czym AC-1 broni
+/// ciała. Normalizuj, potem waliduj: nowa linia staje się spacją, zanim cokolwiek trafi do
+/// pliku.
+fn field(raw: &str) -> String {
+    raw.replace(['\n', '\r'], " ")
+}
+
+/// To samo dla elementów listy, plus znaki, które zamknęłyby albo rozbiły `[a, b]`.
+fn items(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.replace(['\n', '\r', ',', '[', ']'], " "))
+        .collect()
+}
+
+/// `h_` plus 26 znaków Crockford base32 z `UUIDv7` — ten sam kształt, co identyfikatory
+/// w istniejących plikach biegu, i ten sam porządek co czas zapisu.
+fn mint_id() -> String {
+    const ALPHABET: [u8; 32] = *b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let bits = u128::from_be_bytes(*Uuid::now_v7().as_bytes());
+    let mut out = String::from("h_");
+    for shift in (0..26u32).rev() {
+        let index = usize::try_from((bits >> (shift * 5)) & 0x1f).unwrap_or(0);
+        out.push(char::from(ALPHABET[index]));
+    }
+    out
+}
+
+/// Chwila zapisu w ISO 8601 UTC.
+///
+/// Liczona ręcznie z `SystemTime`, bo `chrono`/`time` nie są zależnościami tego repo,
+/// a `src-tauri/Cargo.toml` nie należy do T-16 (AGENTS.md §7). Algorytm dni→data jest
+/// standardowy (proleptyczny kalendarz gregoriański, era 400-letnia).
+fn now_utc() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
+
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Jedna linia `status:` w starym pliku, reszta bajt w bajt.
+///
+/// Przepisujemy tekst, nie renderujemy front-mattera od nowa: renderowanie przestawiłoby
+/// wartości, których korekta nie dotyczy, i stary plik przestałby być plikiem, który
+/// naprawdę powstał [T6 §9].
+fn flip_status(path: &Path) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let (_, body_at) = FrontMatter::split(&text).map_err(|error| match error {
+        Error::NoFrontMatter { .. } => Error::NoFrontMatter {
+            path: path.to_owned(),
+        },
+        other => other,
+    })?;
+
+    let mut out = String::with_capacity(text.len());
+    let mut done = false;
+    for line in text[..body_at].split_inclusive('\n') {
+        if !done && line.trim_end().starts_with("status:") {
+            out.push_str("status: ");
+            out.push_str(Status::Superseded.name());
+            out.push('\n');
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out.push_str(&text[body_at..]);
+
+    fs::write(path, out)?;
+    Ok(())
+}
+
+// ── kształt ciała ─────────────────────────────────────────────────────────────────────────
+
+/// Nowe linie do `\n` i jedna na końcu. To jedyne, co dzieje się z tekstem agenta, zanim
+/// zajmą się nim sekcje — i to jest cała lista.
+fn normalize(body: &str) -> String {
+    let mut out = body.replace("\r\n", "\n").replace('\r', "\n");
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Offset wiersza, który jest **dokładnie** nagłówkiem `## <name>`.
+///
+/// Po wierszach, nie po podłańcuchu: `## Answer` zacytowane w środku zdania nie jest
+/// nagłówkiem i przesunięcie sekcji na taki cytat pocięłoby treść w losowym miejscu.
+fn heading_at(body: &str, name: &str) -> Option<usize> {
+    let head = format!("## {name}");
+    let mut at = 0;
+    while at < body.len() {
+        let end = body[at..].find('\n').map_or(body.len(), |i| at + i + 1);
+        if body[at..end].trim_end() == head {
+            return Some(at);
+        }
+        at = end;
+    }
+    None
+}
+
+/// Ciało w umówionym kształcie plus lista sekcji, których agent nie napisał.
+///
+/// Komplet trzech nagłówków we właściwej kolejności przechodzi **nietknięty**. To nie jest
+/// optymalizacja: AC-1 wymaga, żeby sfałszowany blok został tam, gdzie agent go postawił,
+/// a przepisywanie ciała, którego nie trzeba naprawiać, jest jedynym sposobem, żeby go
+/// zgubić po drodze.
+fn reshape(body: &str) -> (String, Vec<Section>) {
+    let found: Vec<Option<usize>> = SECTIONS
+        .iter()
+        .map(|section| heading_at(body, section.name()))
+        .collect();
+
+    if let [Some(answer), Some(evidence), Some(open)] = found[..]
+        && answer < evidence
+        && evidence < open
+    {
+        return (body.to_owned(), Vec::new());
+    }
+
+    let mut marks: Vec<usize> = found.iter().flatten().copied().collect();
+    marks.sort_unstable();
+    let first = marks.first().copied().unwrap_or(body.len());
+
+    let content_of = |start: usize| -> &str {
+        let after = body[start..]
+            .find('\n')
+            .map_or(body.len(), |i| start + i + 1);
+        let end = marks
+            .iter()
+            .copied()
+            .find(|mark| *mark > start)
+            .unwrap_or(body.len());
+        &body[after..end]
+    };
+
+    let mut out = String::with_capacity(body.len() + 64);
+    let mut repaired = Vec::new();
+    for (index, (section, at)) in SECTIONS.iter().zip(found.iter()).enumerate() {
+        if at.is_none() {
+            repaired.push(*section);
+        }
+        let own = at.map_or("", |start| content_of(start));
+        // Proza bez nagłówka JEST odpowiedzią — to jedyna sekcja, do której może należeć,
+        // i najczęstsza rzecz, jaką przyśle model [T6 §11.1].
+        let content = if index == 0 {
+            format!("{}{own}", &body[..first])
+        } else {
+            own.to_owned()
+        };
+        push_section(
+            &mut out,
+            section.name(),
+            &content,
+            index + 1 == SECTIONS.len(),
+        );
+    }
+
+    (out, repaired)
+}
+
+/// Nagłówek, treść i **jeden** pusty wiersz przed następnym nagłówkiem.
+fn push_section(out: &mut String, name: &str, content: &str, last: bool) {
+    out.push_str("## ");
+    out.push_str(name);
+    out.push('\n');
+    out.push_str(content);
+
+    if last {
+        if !content.is_empty() && !content.ends_with('\n') {
+            out.push('\n');
+        }
+        return;
+    }
+    if content.is_empty() {
+        out.push('\n');
+    } else if content.ends_with("\n\n") {
+        // Pusty wiersz już tam stoi — drugi rozjechałby ciało, które nic nie zawiniło.
+    } else if content.ends_with('\n') {
+        out.push('\n');
+    } else {
+        out.push_str("\n\n");
+    }
+}
+
+/// Preambuła i treść trzech sekcji ciała, które przeszło przez [`reshape`].
+fn split_sections(body: &str) -> Option<(&str, Vec<&str>)> {
+    let mut at = Vec::with_capacity(SECTIONS.len());
+    for section in SECTIONS {
+        at.push(heading_at(body, section.name())?);
+    }
+
+    let mut contents = Vec::with_capacity(at.len());
+    for (index, start) in at.iter().enumerate() {
+        let after = body[*start..]
+            .find('\n')
+            .map_or(body.len(), |i| start + i + 1);
+        let end = at.get(index + 1).copied().unwrap_or(body.len());
+        contents.push(&body[after..end]);
+    }
+    Some((&body[..at[0]], contents))
+}
+
+/// Cięcie do [`BODY_CAP`] po granicy sekcji; wewnątrz sekcji — po granicy wiersza.
+///
+/// 2026-08-16, [T6 §11.2]: jednostką cięcia jest **sekcja**, bo ciało ucięte w połowie zdania
+/// na 8192 bajcie przechodzi każdy test na „≤ 8 KB" i gubi dokładnie to jedno zdanie, dla
+/// którego przekazanie powstało. Sekcja, która się nie mieści, zostaje nagłówkiem i jednym
+/// wierszem wskaźnika — nagłówek zostaje, bo sekcja skasowana razem z nim nie zostawia
+/// następnemu agentowi żadnego znaku, że cokolwiek tam było.
+///
+/// Wewnątrz sekcji tniemy tylko wtedy, gdy nie zachowała się jeszcze żadna treść — inaczej
+/// pierwsza sekcja zjadałaby cały budżet. Taka sekcja dostaje **jedną trzecią** limitu, czyli
+/// swój udział z trzech: bez tego jedna rozdęta sekcja z góry skazuje dwie pozostałe na sam
+/// wskaźnik, nawet gdy miały po dwa wiersze i zmieściłyby się bez trudu.
+fn cap(body: &str, pointer: &str) -> (String, bool) {
+    if body.len() <= BODY_CAP {
+        return (body.to_owned(), false);
+    }
+    let Some((preamble, contents)) = split_sections(body) else {
+        return (body.to_owned(), false);
+    };
+
+    let heads: Vec<String> = SECTIONS
+        .iter()
+        .map(|section| format!("## {}\n", section.name()))
+        .collect();
+    let line = pointer.len() + 1;
+    let costs: Vec<usize> = heads.iter().map(|head| head.len() + line).collect();
+
+    let mut out = String::from(preamble);
+    let mut truncated = false;
+    let mut kept = false;
+
+    for (index, (head, content)) in heads.iter().zip(contents.iter()).enumerate() {
+        let rest: usize = costs.iter().skip(index + 1).sum();
+        if out.len() + head.len() + content.len() + rest <= BODY_CAP {
+            out.push_str(head);
+            out.push_str(content);
+            kept = kept || !content.trim().is_empty();
+            continue;
+        }
+
+        truncated = true;
+        out.push_str(head);
+        if !kept {
+            let room = BODY_CAP.saturating_sub(out.len() + line + rest);
+            let budget = room.min(BODY_CAP / SECTIONS.len());
+            out.push_str(&content[..last_line_boundary(content, budget)]);
+        }
+        // Bez pustego wiersza po wskaźniku: wskaźnik jest ostatnim wierszem sekcji i ma
+        // stać zaraz za ostatnim zachowanym, żeby było widać, gdzie tekst się urwał.
+        out.push_str(pointer);
+        out.push('\n');
+        for head in heads.iter().skip(index + 1) {
+            out.push_str(head);
+            out.push_str(pointer);
+            out.push('\n');
+        }
+        break;
+    }
+
+    (out, truncated)
+}
+
+/// Największy offset `<= budget`, który leży zaraz za nową linią. Zero, gdy takiego nie ma.
+fn last_line_boundary(content: &str, budget: usize) -> usize {
+    let mut cut = 0;
+    for (at, byte) in content.bytes().enumerate() {
+        if at >= budget {
+            break;
+        }
+        if byte == b'\n' {
+            cut = at + 1;
+        }
+    }
+    cut
+}
+
+// ── odczyt ────────────────────────────────────────────────────────────────────────────────
+
+/// Trzynaście pól z pliku, reszta do `extra`. Żadna wartość nie jest tu przeliczana —
+/// `bytes`, które kłamie, ma zostać kłamstwem, bo to jedyny ślad po uciętym zapisie.
+fn meta_from(front: &FrontMatter) -> Meta {
+    let text = |key: &str| front.get(key).unwrap_or_default().to_owned();
+    let number = |key: &str| {
+        front
+            .get(key)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+
+    let extra = front
+        .keys()
+        .iter()
+        .filter(|key| !FIELDS.contains(*key))
+        .map(|key| {
+            (
+                (*key).to_owned(),
+                front.get(key).unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+
+    Meta {
+        id: text("id"),
+        run: text("run"),
+        step: front
+            .get("step")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+        from: text("from"),
+        to: front.list("to").unwrap_or_default(),
+        kind: Kind::parse(front.get("kind").unwrap_or_default()),
+        title: text("title"),
+        status: Status::parse(front.get("status").unwrap_or_default()),
+        // Brak klucza i jawne `null` znaczą to samo: nic. Cokolwiek innego i skan wymyśla
+        // łańcuch korekt, którego nikt nigdy nie zapisał.
+        supersedes: front
+            .get("supersedes")
+            .filter(|value| !value.is_empty() && *value != "null")
+            .map(ToOwned::to_owned),
+        reads: front.list("reads").unwrap_or_default(),
+        created: text("created"),
+        bytes: number("bytes"),
+        est_tokens: number("est_tokens"),
+        extra,
+    }
 }
