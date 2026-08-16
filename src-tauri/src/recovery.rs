@@ -293,8 +293,8 @@ mod reason {
     pub const NO_BOOT_TIME: &str = "This run does not say when the machine it started on was last booted, so there is no \
          way to tell whether its group number still belongs to it.";
     /// `pgid = 0`, czyli w `killpg` własna grupa wołającego.
-    pub const PGID_IS_ZERO: &str = "The group number written down for this step is 0, which every kill means as \
-         'whoever is asking' - using it would stop Loadout itself during startup.";
+    pub const PGID_IS_ZERO: &str = "The group number written down for this step is 0, which always means 'whoever \
+         is asking', so using it would stop Loadout itself during startup.";
     /// Wiersz bez `pgid`: spawn nie doszedł do zapisu.
     pub const PGID_MISSING: &str = "No group number was ever written down for this step, so there is nothing that \
          could be cleaned up after it.";
@@ -443,7 +443,7 @@ enum RowVerdict {
 ///
 /// Kolejność sprawdzeń jest treścią, nie stylem: wiersz dostaje powód **pierwszej** rzeczy,
 /// której o nim nie wiemy, a strażnik czasu startu stoi przed wszystkim, co dotyczy `pgid`.
-fn read(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static str> {
+fn read_row(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static str> {
     let Some(state) = step_state(&row.step_status) else {
         return Err(reason::UNKNOWN_STEP);
     };
@@ -556,7 +556,7 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
             });
         }
 
-        match read(row, machine) {
+        match read_row(row, machine) {
             Ok(RowVerdict::Settled) => {}
             Ok(RowVerdict::CutOff {
                 reap,
