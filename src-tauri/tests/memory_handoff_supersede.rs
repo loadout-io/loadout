@@ -50,6 +50,9 @@ Wrong the first time: the tenant is resolved BEFORE the guard, so it is a 401.
 - Unclear whether the mobile client relies on the 401.
 ";
 
+/// `id`, którego w tym katalogu biegu nie ma i nie będzie.
+const MISSING_ID: &str = "h_does_not_exist";
+
 const BODY_SECOND_CORRECTION: &str = "\
 ## Answer
 A third opinion nobody asked for.
@@ -231,6 +234,35 @@ fn only_the_correction_is_current_and_the_old_file_is_still_there() {
         Some(&new.path),
         "the one current handoff is the correction, not the original at {}",
         old.path.display()
+    );
+}
+
+/// `AlreadySuperseded` i `NoSuchHandoff` to dwie różne odmowy i tylko jedna z nich jest
+/// wyżej sprawdzona. Wołający, który dostanie „już poprawione" na `id`, którego w tym biegu
+/// nigdy nie było, pójdzie szukać nieistniejącego pliku zamiast poprawić literówkę.
+#[test]
+fn correcting_an_id_this_run_never_had_is_refused_by_name() {
+    let run_dir = tempfile::tempdir().unwrap();
+    let (_, before) = first(run_dir.path());
+    assert_ne!(
+        before.meta.id, MISSING_ID,
+        "the fixture id collided with the one this test asks for"
+    );
+
+    let snapshot = tree(run_dir.path());
+    let refused = handoff::supersede(run_dir.path(), MISSING_ID, draft(), BODY_CORRECTION);
+
+    assert!(
+        matches!(&refused, Err(Error::NoSuchHandoff { id }) if id == MISSING_ID),
+        "correcting an id this run does not hold is its own refusal, and it names the id. \
+         `is_err()` alone passes on `AlreadySuperseded`, which sends the caller looking for a \
+         file that was never written. It returned {refused:?}"
+    );
+
+    let changed = differences(&snapshot, &tree(run_dir.path()));
+    assert!(
+        changed.is_empty(),
+        "the refused correction still touched the disk. These paths differ: {changed:?}"
     );
 }
 
