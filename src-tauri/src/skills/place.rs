@@ -408,8 +408,8 @@ fn scalar(value: &str) -> String {
 /// „utwórzmy, żeby sprawdzić uprawnienia". Dwa powody: użytkownik ma zobaczyć listę zmian,
 /// zanim je zatwierdzi, a odmowa w połowie zostawia katalog, którego nikt nie posprząta.
 pub fn plan(skill: &Skill, scope: Scope, roots: &Roots) -> Result<InstallPlan> {
-    // Odmowa jest PIERWSZĄ rzeczą, jaka się tu dzieje. Nie „utwórzmy katalog, żeby sprawdzić
-    // uprawnienia": katalog utworzony przed odmową zostaje na dysku i nikt go nie posprząta.
+    // Odmowa jest PIERWSZĄ rzeczą, jaka się tu dzieje — przed odczytem sidecara i przed
+    // policzeniem czegokolwiek, co dotyka dysku.
     let mut messages = validate_strict(&skill.name, &as_doc(skill))
         .err()
         .unwrap_or_default();
@@ -450,7 +450,7 @@ pub fn plan(skill: &Skill, scope: Scope, roots: &Roots) -> Result<InstallPlan> {
     // kolizja, a nie po cichu przejrzany na wylot do tego, na co wskazuje.
     let conflicts = writes
         .iter()
-        .filter(|dir| std::fs::symlink_metadata(dir).is_ok())
+        .filter(|dir| fs::symlink_metadata(dir).is_ok())
         .map(|dir| {
             if ours.contains(dir) {
                 Conflict::Update { path: dir.clone() }
