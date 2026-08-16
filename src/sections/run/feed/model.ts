@@ -158,6 +158,17 @@ const FOLDED: Partial<Record<Kind, (count: number) => string>> = {
 /** Rodzaje, których etykieta liczy od jednego, a nie dopiero od dwóch. */
 const COUNTS_FROM_ONE: ReadonlySet<Kind> = new Set<Kind>(['read']);
 
+/**
+ * Co robi w strefie TERAZ agent, który właśnie o coś zapytał.
+ *
+ * Nie treść pytania: pytanie ma JEDNO żywe miejsce — blok przyklejony z przyciskami — a wiersz
+ * w strefie TERAZ odpowiada na inne pytanie („co robi ten agent"), więc powtórzenie tam tego
+ * samego zdania daje dwa żywe regiony na jeden fakt, przy limicie 1 (niezmiennik 13). Zdanie
+ * mówi też, gdzie ta decyzja czeka, zamiast zostawiać agenta w ostatniej czynności sprzed
+ * pytania — a to jest ta wersja, która wygląda, jakby dalej pracował.
+ */
+const WAITING_ON_YOU = 'Waiting for your answer';
+
 /** Rejestr jest stały na czas życia modułu — czytamy go raz, nie przy każdej linii. */
 const REGISTRY = kinds();
 
@@ -328,7 +339,7 @@ export function createFeed(scroller: Scroller): Feed {
       /* Prawdziwa linia gasi slot [T2 §7.2 wiersz 4] — dowolna, nie tylko od tego agenta:
        * slot jest jeden, więc pytanie „czyj jest" ma dokładnie jedną odpowiedź. */
       thinking = null;
-      doing.set(line.agent, sentence(line));
+      doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
 
       const rows = (next ??= [...history]);
       const group = groups.get(line.agent);
