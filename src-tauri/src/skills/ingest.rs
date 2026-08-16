@@ -663,6 +663,15 @@ pub enum FetchError {
     #[error("this file is not text Loadout can read")]
     NotText,
 
+    /// Host jest z listy, a adres nie wskazuje na umiejętność: link do zgłoszenia, do
+    /// pojedynczego `reference.md`, do strony ustawień repozytorium.
+    ///
+    /// Osobna odmowa, bo [`HostNotAllowed`](Self::HostNotAllowed) w tym miejscu byłoby
+    /// nieprawdą o hoście, a człowiek poprawiałby wtedy nie to, co trzeba. Dowolna strona
+    /// docs jest świadomie poza v1 [T5 §5.3]: gdyby kiedyś weszła, to jest jej miejsce.
+    #[error("Loadout could not tell which skill this link points at")]
+    NotASkillLink,
+
     #[error("{0}")]
     Io(#[from] std::io::Error),
 }
@@ -673,7 +682,76 @@ pub enum FetchError {
 /// testowalna bez sieci, a bramka, która wymaga internetu, jest bramką czerwieniejącą od
 /// cudzych awarii.
 pub fn resolve_url(url: &str) -> Result<Target, FetchError> {
-    todo!("porównaj CAŁY host z ALLOWED_HOSTS, potem rozpoznaj kształt ścieżki: {url}")
+    let host = host_of(url)?;
+    let path = path_of(url);
+    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+
+    if host == "gist.github.com" || host == "gist.githubusercontent.com" {
+        return Ok(Target::Gist);
+    }
+    // `.../SKILL.md` bierzemy wprost [T5 §5.1]. To jest też jedyny kształt, jaki umiemy
+    // rozpoznać na `raw.githubusercontent.com`: tam nie ma nic poza ścieżką do pliku.
+    if segments.last().is_some_and(|last| *last == SKILL_FILE) {
+        return Ok(Target::RawFile);
+    }
+
+    if host == "github.com" {
+        return match segments.as_slice() {
+            // `github.com/{owner}/{repo}` — korzeń repozytorium [T5 §5.1]. `HEAD` zamiast
+            // zgadywanej nazwy gałęzi: GitHub rozwiązuje go do gałęzi domyślnej, a wpisany
+            // na sztywno `main` przestaje działać przy pierwszym repo z gałęzią `master`.
+            [owner, repo] => Ok(Target::Folder {
+                owner: (*owner).to_owned(),
+                repo: (*repo).to_owned(),
+                git_ref: "HEAD".to_owned(),
+                path: String::new(),
+            }),
+            [owner, repo, "tree", git_ref, rest @ ..] => Ok(Target::Folder {
+                owner: (*owner).to_owned(),
+                repo: (*repo).to_owned(),
+                git_ref: (*git_ref).to_owned(),
+                path: rest.join("/"),
+            }),
+            _ => Err(FetchError::NotASkillLink),
+        };
+    }
+
+    Err(FetchError::NotASkillLink)
+}
+
+/// Host adresu, w całości i małymi literami — albo odmowa.
+///
+/// Trzy rzeczy, które odcinamy, i każda z nich jest osobnym sposobem na to, żeby porównanie
+/// z listą wypadło inaczej niż połączenie: `user@` przed hostem (przeglądarka i `curl` łączą
+/// się z tym PO małpie), port po dwukropku i wszystko od pierwszego `/`, `?` albo `#`.
+fn host_of(url: &str) -> Result<String, FetchError> {
+    let after_scheme = match url.get(..8) {
+        Some(head) if head.eq_ignore_ascii_case("https://") => &url[8..],
+        _ => return Err(FetchError::NotHttps),
+    };
+
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+
+    // Równość CAŁEGO hosta. `contains("github.com")` przepuszcza `github.com.evil.tld`
+    // (nasza nazwa jako prefiks cudzej domeny) i `evil.tld/x?u=github.com/o/r` (nasza nazwa
+    // w parametrze) — czyli dokładnie te dwa adresy, po których poznaje się tę pomyłkę.
+    if ALLOWED_HOSTS.contains(&host.as_str()) {
+        Ok(host)
+    } else {
+        Err(FetchError::HostNotAllowed)
+    }
+}
+
+/// Ścieżka adresu, bez zapytania i bez kotwicy.
+fn path_of(url: &str) -> &str {
+    let after_scheme = url.get(8..).unwrap_or_default();
+    let from_slash = after_scheme.find('/').map_or("", |at| &after_scheme[at..]);
+    from_slash.split(['?', '#']).next().unwrap_or(from_slash)
 }
 
 /// Czy łańcuch odwiedzonych adresów wolno było przejść do końca.
@@ -683,7 +761,15 @@ pub fn resolve_url(url: &str) -> Result<Target, FetchError> {
 /// treść z niedozwolonego, a `--max-redirs` w argv curla jest deklaracją narzędzia, nie naszym
 /// dowodem (niezmiennik 20).
 pub fn follow_policy(chain: &[&str]) -> Result<(), FetchError> {
-    todo!("każde ogniwo na liście hostów, najwyżej {MAX_REDIRECTS} przeskoki: {chain:?}")
+    for (hop, url) in chain.iter().enumerate() {
+        // Sprawdzenie w kolejności, w jakiej działy się przeskoki: host najpierw, bo o tym
+        // dowiadujemy się, dochodząc do ogniwa, a liczba dopiero po nim.
+        host_of(url)?;
+        if hop > MAX_REDIRECTS {
+            return Err(FetchError::TooManyRedirects);
+        }
+    }
+    Ok(())
 }
 
 /// Czyta najwyżej `limit` bajtów i odmawia, kiedy źródło ma ich więcej.
@@ -730,7 +816,54 @@ pub fn total_within(sizes: &[u64], limit: u64) -> Result<u64, FetchError> {
 /// tym, co faktycznie przyszło.
 #[must_use]
 pub fn build_fetch_command(url: &str) -> Command {
-    todo!("zbuduj `curl` z limitami i adresem {url}")
+    let mut command = Command::new("curl");
+    command
+        .arg("--proto")
+        .arg("=https")
+        .arg("--max-redirs")
+        .arg(MAX_REDIRECTS.to_string())
+        .arg("--max-filesize")
+        .arg(FILE_CAP.to_string())
+        .arg("--max-time")
+        .arg(FETCH_TIMEOUT_SECONDS.to_string())
+        .arg("--location")
+        .arg("--fail")
+        .arg("--silent")
+        .arg("--show-error")
+        // Adres NIE stoi w argv (niezmiennik 9). `curl` czyta go ze stdinu w składni swojego
+        // pliku konfiguracyjnego, bo link do umiejętności potrafi nieść token w zapytaniu,
+        // a argv widzi w `ps` każdy proces na tej maszynie i każdy log, który je zapisuje.
+        .arg("--config")
+        .arg("-");
+
+    // `env_clear` plus jawna lista (niezmiennik 9). PATH przepuszczamy, bo bez niego nie da
+    // się znaleźć samego `curl`-a; `http_proxy`, `CURL_CA_BUNDLE` i reszta środowiska nie ma
+    // prawa zmieniać tego, skąd i po czym przyjdzie treść, którą wykona agent.
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    match config_on_stdin(url) {
+        Ok(reader) => command.stdin(reader),
+        // Bez rury nie ma adresu, a `curl` bez adresu kończy się błędem i nie pobiera niczego.
+        // Zapasowe wpisanie URL-a do argv byłoby cichym cofnięciem całej ostrożności wyżej.
+        Err(_) => command.stdin(Stdio::null()),
+    };
+    command
+}
+
+/// Jedna linia konfiguracji `curl`-a — adres — w rurze gotowej do podstawienia pod stdin.
+///
+/// Rura, a nie plik tymczasowy: plik z adresem przeżyłby bieg i dałby się przeczytać
+/// (niezmiennik 9 zakazuje obu). Adres ma kilkadziesiąt bajtów, więc zapis mieści się w buforze
+/// rury i `write_all` nie ma na co czekać — dziecko jeszcze nie istnieje.
+fn config_on_stdin(url: &str) -> std::io::Result<std::io::PipeReader> {
+    let (reader, mut writer) = std::io::pipe()?;
+    let quoted = url.replace('\\', "\\\\").replace('"', "\\\"");
+    writer.write_all(format!("url = \"{quoted}\"\n").as_bytes())?;
+    Ok(reader)
 }
 
 // ── Import z katalogu ──────────────────────────────────────────────────────────────────────
