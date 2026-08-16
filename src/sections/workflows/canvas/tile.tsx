@@ -1,7 +1,5 @@
 /* Kafelek na płótnie. Dwa rodzaje, cztery linie tekstu, stopka WYLICZANA ze strzałek.
  *
- * SZKIELET — ciało rzuca `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * Niezmiennik 17 mieszka w kształcie propsów. Stopka (`first step` / `after Plan` /
  * `reads 3 handoffs` po lewej, `runs before ▸` po prawej) nie jest napisem podanym z zewnątrz
  * ani wpisanym na sztywno w komponent — jest liczona z `links`. Wpisana na sztywno wygląda

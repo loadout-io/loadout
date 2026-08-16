@@ -1,7 +1,5 @@
 /* Rysowanie strzałek: co wolno połączyć i co się dzieje po upuszczeniu na pustym płótnie.
  *
- * SZKIELET — ciała rzucają `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * Wszystkie trzy funkcje są CZYSTE i biorą dokument ostatnim argumentem. Powód jest testowy
  * i architektoniczny naraz: gest — `pointerdown` na uchwycie, ruch, `pointerup` — nie jest
  * odtwarzalny bez przeglądarki [T3 §2.3, ryzyko 7], więc kryteria wołają dokładnie te funkcje,

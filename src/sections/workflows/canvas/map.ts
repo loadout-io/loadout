@@ -1,7 +1,5 @@
 /* Mapper płótno → plik. Piętnaście linii, które decydują, czy historia workflow da się czytać.
  *
- * SZKIELET — ciała rzucają `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * `rfInstance.toObject()` jest kuszące i błędne: `NodeBase` w `@xyflow/system@0.0.80` niesie
  * `selected`, `dragging` i `measured`, a `toObject()` dokłada `viewport` [T3 §3.3]. Zapisanie
  * tego na dysk znaczy, że każde najechanie myszą i każde przesunięcie widoku brudzi plik —

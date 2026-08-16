@@ -1,9 +1,5 @@
 /* Otwarty dokument workflow: `WorkflowFile` w pamięci plus akcje, które go zmieniają.
  *
- * SZKIELET. Każda akcja rzuca `not implemented` — to jest odpowiednik `todo!()` z Rusta
- * (AGENTS.md §2a). Warstwa `before` ma paść na braku ZACHOWANIA, więc moduł musi się wczytać
- * i wystawić prawdziwe sygnatury; implementacja podmienia ciała, nie nagłówki.
- *
  * Ten plik NIE importuje `@/ipc`. Nazwy komend zna jedno miejsce w sekcji —
  * `src/sections/workflows/canvas/io.ts` — i to ono wstrzykuje tu `WorkflowIo` (niezmiennik 23),
  * dokładnie tak jak `AgentsIo` w `src/state/agents.ts`. Test wstrzykuje atrapę zamiast mockować

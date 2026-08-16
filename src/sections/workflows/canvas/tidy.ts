@@ -1,7 +1,5 @@
 /* „Tidy up" — jeden przycisk, który układa kafelki z góry na dół.
  *
- * SZKIELET — ciało rzuca `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * Dlaczego to nie jest kosmetyka: układ zwraca ZMIENNOPRZECINKOWE środki węzłów, więc płótno,
  * które przycina pozycje tylko w handlerze przeciągania, po każdym „Tidy up" zapisuje plik
  * z innym dziesiątym miejscem po przecinku — diff bez treści, przy każdym kliknięciu [T3 §8.2].

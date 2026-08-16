@@ -1,7 +1,5 @@
 /* Wiersz Skills — obiecuje dokładnie tyle, ile potrafi CLI.
  *
- * SZKIELET — ciało rzuca `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * Tryb przychodzi PROPSEM, choć w aplikacji jest jedną stałą (`SKILL_SUBSETTING`
  * w `capabilities.ts`). To nie jest nadmiarowość: dzięki temu wynik spike'u S-1 zmienia jedną
  * linię i zero testów, a oba warianty da się sprawdzić w jednym biegu.

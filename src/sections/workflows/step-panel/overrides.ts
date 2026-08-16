@@ -1,7 +1,5 @@
 /* Dziedziczenie, nie kopia: krok trzyma tylko RÓŻNICĘ wobec agenta.
  *
- * SZKIELET — ciała rzucają `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * To jest ta cicha porażka, przed którą użytkownik ostrzegł wprost: edytujesz krok, a zmienia się
  * AGENT, więc pięć innych workflow po cichu zaczyna działać inaczej. Wygląda dobrze i wszystkie
  * testy przechodzą, bo testy pytają „czy krok ma teraz thinking: deep?", a nigdy „czy agent jest

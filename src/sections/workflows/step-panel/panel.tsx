@@ -1,7 +1,5 @@
 /* Panel kroku po prawej — siedem wierszy z makiety (`docs/mockup/index.html:599-618`).
  *
- * SZKIELET — ciało rzuca `not implemented` (AGENTS.md §2a, odpowiednik `todo!()`).
- *
  * Siedem etykiet, w tej kolejności, i ani jednej ósmej:
  *   Name · Who does this · What to do · How many at once · Can it change files ·
  *   Give up after · Write results to
