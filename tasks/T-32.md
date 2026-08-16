@@ -1,0 +1,70 @@
+# T-32 — Wynik kroku wchodzi do promptu nastepnego, jako INDEKS a nie tresc
+
+`docs/DECISIONS-LOCKED.md` D6 wymienia piec rzeczy, ktore robi edytor workflow. Punkty 4 i 5 to
+**synteza wynikow** i **dzielenie kontekstu z poziomu orchestratora** — czyli rdzen tezy produktu,
+i jedyna rzecz, ktorej zaden vendor nie zbuduje, bo nie ma w tym interesu.
+
+Zmierzone na wyladowanym trunku (przeglad zewnetrzny 2026-08-16): **zaden krok biegu nie produkuje
+ani nie czyta przekazan.** `memory::handoff::write_handoff` jest wolane wylacznie z testow, prompt
+kroku to doslownie `step.instructions`, a `extra_dirs` jest zawsze puste. T-16 dal FORMAT pliku
+przekazania i ma na niego kryteria; nikt nie podlaczyl go do biegu, bo szew „wynik kroku →
+przekazanie → prompt nastepnego" nie jest w OWNS zadnego zadania.
+
+**Read first:**
+`docs/DECISIONS-LOCKED.md` D6 (punkty 4 i 5) · `docs/ARCHITECTURE.md` §8 „Kontrakt przekazania" ·
+`src-tauri/src/memory/handoff.rs` (T-16 — format i sanityzacja wstrzykniec) ·
+`AGENTS.md` niezmienniki 4, 13, 23.
+
+## Kto to robi
+
+- **Agent:** `rust-core`
+- **Druga opinia:** inny vendor niz pisarz (D3).
+
+## Co to zadanie posiada
+
+- `src-tauri/src/commands/run.rs` — **waski mandat**: zapis przekazania po kroku i zlozenie
+  promptu nastepnego. Planisty i eskalacji zabijania nie ruszamy.
+- Trzy pliki testow wymienione przy `check:`.
+
+## Kryteria akceptacji
+
+## AC-1 Po kroku powstaje plik przekazania, z front-matterem od Loadouta
+check: cargo test --test handoff_written_after_step
+
+Pusc dwukrokowy bieg na `FakeDriver`. Asercje: w `handoffs/` katalogu biegu lezy plik po pierwszym
+kroku; jego front-matter napisal **Loadout**, nie agent (autor, krok, znacznik czasu); tresc jest
+tym, co agent oddal, **po sanityzacji** z T-16.
+
+*Slaba asercja:* sprawdzenie, ze plik istnieje. Przechodzi na pustym pliku. Dyskryminuje: pola
+front-mattera i obecnosc tresci agenta.
+
+## AC-2 Prompt drugiego kroku niesie ODNOSNIK do przekazania, nie jego tresc
+check: cargo test --test handoff_reaches_next_prompt
+
+Ten sam bieg. Asercje: prompt drugiego kroku zawiera **sciezke** przekazania pierwszego; **nie**
+zawiera jego pelnej tresci; a instrukcja kroku dalej w nim jest. Roznica jest cala teza D6 punkt 5:
+orchestrator dostaje **indeks**, a nie sklejone transkrypty — inaczej kazdy krok placi tokenami za
+wszystko, co bylo przed nim, i przy czwartym kroku prompt jest wiekszy niz praca.
+
+*Slaba asercja:* sprawdzenie, ze prompt sie zmienil wzgledem `step.instructions`. Przechodzi na
+implementacji, ktora wkleja caly transkrypt. Dyskryminuje: **brak** pelnej tresci przy obecnym
+odnosniku.
+
+## AC-3 Krok z wieloma poprzednikami dostaje indeks wszystkich, w kolejnosci
+check: cargo test --test handoff_index_for_fan_in
+
+Graf, w ktorym trzeci krok zalezy od dwoch poprzednich. Asercje: jego prompt wymienia **oba**
+przekazania; w kolejnosci deterministycznej (nie zaleznej od tego, ktory krok skonczyl pierwszy);
+kazde raz. To jest punkt 4 z D6 — synteza wynikow — sprowadzony do jednego pytania: czy krok
+syntezujacy w ogole widzi, co ma zsyntetyzowac.
+
+*Slaba asercja:* sprawdzenie, ze prompt wymienia „jakies" przekazanie. Przechodzi, gdy drugie ginie
+przy wyscigu — czyli dokladnie wtedy, kiedy synteza jest niepelna i nikt tego nie widzi.
+Dyskryminuje: **oba** i **kolejnosc**.
+
+<!-- OWNS
+src-tauri/src/commands/run.rs
+src-tauri/tests/handoff_written_after_step.rs
+src-tauri/tests/handoff_reaches_next_prompt.rs
+src-tauri/tests/handoff_index_for_fan_in.rs
+-->

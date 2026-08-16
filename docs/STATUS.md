@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 19:50
+# Stan budowy — 2026-08-17, 01:30
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,14 +8,38 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **24 z 27** (T-26 dopisane dzisiaj) |
+| wylądowane | **29** — cały pierwotny plan (26) + T-26, T-27, T-34 |
 | kosztowało | **$352** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) · średnia **$21** |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (24):** wszystko poza `T-15 T-22 T-23` oraz `S-3 T-10` (Codex).
+**Wylądowane (29):** cały pierwotny plan plus `T-26` (montowanie sekcji), `T-27` (spięcie
+front↔Rust) i `T-34` (tee transkryptu). Poza planem zostają `S-3` i `T-10` — Codex.
+
+## Siedem szwów — stan po przeglądzie zewnętrznym 2026-08-16
+
+Przegląd znalazł jeden systemowy wzorzec powtórzony siedem razy: **moduł wylądował i przeszedł
+swoje kryteria, ale szew między modułami nie ma właściciela.** Każdy szew dostał zadanie:
+
+| | szew | stan |
+|---|---|---|
+| `T-27` | komendy Tauri + adaptery `io.ts` | **wylądowane** |
+| `T-34` | tee surowego strumienia → `logs/` | **wylądowane** — niezmiennik 4 przestał być fałszywy |
+| `T-36` | filtr eskalacji na przelotce (D6) | biegnie, trzecie podejście |
+| `T-30` | most `Vec<Line>` → pompa, komendy biegu, Start | biegnie |
+| `T-31` | limit globalny na żywej ścieżce | napisane, czeka na T-30 |
+| `T-32` | przekazanie → prompt następnego kroku | napisane, czeka na T-30 |
+| `T-33` | fresh-copy to prawdziwa kopia, nie pusty katalog | napisane, czeka na T-30 |
+| `T-35` | limit czasu kroku + wpięcie recovery + boot time | napisane, czeka na T-30 |
+| `T-28` | szkielet chodzący (`PLAN.md` §1) | przepisane, czeka na T-30 |
+| `T-29` | klikanie po prawdziwej aplikacji | napisane, czeka na T-30 |
+
+**`T-36` odsłonił rzecz gorszą, niż mówił przegląd.** `FORBIDDEN_ESCALATIONS` liczy dwie pozycje
+i **nie zawiera `--dangerously-skip-permissions`** — więc ta flaga przechodzi także przez przelotkę
+kroku workflow, która uchodziła za zabezpieczoną. D6 („przelotka nie omija diala") jest dziś
+łamane z obu stron, nie z jednej.
 
 **W locie (2):** `T-15` (implementacja) i `T-22` (runda naprawcza).
 **Zostaje po nich `T-23`** — czeka na T-15 i jest ostatnim zadaniem planu.
