@@ -1,0 +1,28 @@
+{
+  "widths": [
+    {
+      "width": 1100,
+      "metrics": {
+        "labelledRegions": 9,
+        "chromePixels": 97,
+        "textElements": 61,
+        "liveRegionsPerFact": 2,
+        "agentCardLines": 5,
+        "animatedRegions": 3,
+        "navigationAxes": 3
+      }
+    },
+    {
+      "width": 1512,
+      "metrics": {
+        "labelledRegions": 9,
+        "chromePixels": 97,
+        "textElements": 61,
+        "liveRegionsPerFact": 2,
+        "agentCardLines": 5,
+        "animatedRegions": 3,
+        "navigationAxes": 3
+      }
+    }
+  ]
+}

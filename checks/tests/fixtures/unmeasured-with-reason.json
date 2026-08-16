@@ -1,0 +1,29 @@
+{
+  "widths": [
+    {
+      "width": 1100,
+      "metrics": {
+        "labelledRegions": 6,
+        "chromePixels": 80,
+        "textElements": 40,
+        "liveRegionsPerFact": 1,
+        "agentCardLines": 3,
+        "animatedRegions": 1
+      }
+    },
+    {
+      "width": 1512,
+      "metrics": {
+        "labelledRegions": 6,
+        "chromePixels": 80,
+        "textElements": 40,
+        "liveRegionsPerFact": 1,
+        "agentCardLines": 3,
+        "animatedRegions": 1
+      }
+    }
+  ],
+  "notMeasured": {
+    "navigationAxes": "a navigation axis is a human judgement, not a DOM query"
+  }
+}
