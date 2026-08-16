@@ -594,8 +594,24 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
 /// `killpg` razem z eskalacją `SIGTERM` → łaska → `SIGKILL` mieszka w `engine/supervisor.rs`
 /// (niezmiennik 3, niezmiennik 6). Każda grupa dostaje **dokładnie jedno** wywołanie — eskalacja
 /// jest w środku domykacza, nie tutaj, i [`ReapOutcome::Foreign`] nie ma jej prawa dostać.
-// SZKIELET FAZY KONTRAKTU: pusty raport. Patrz notka przy `decide`.
 #[must_use]
-pub fn apply(_plan: &RecoveryPlan, _reap: &mut dyn FnMut(i32) -> ReapOutcome) -> RecoveryReport {
-    RecoveryReport::default()
+pub fn apply(plan: &RecoveryPlan, reap: &mut dyn FnMut(i32) -> ReapOutcome) -> RecoveryReport {
+    let mut report = RecoveryReport::default();
+
+    for &pgid in &plan.reap {
+        // Trzy odpowiedzi, trzy listy, i tylko jedna z nich jest dowodem. Cichy błąd, którego
+        // ten `match` nie dopuszcza: `_ => report.reaped.push(pgid)`, czyli potraktowanie
+        // każdego niezerowego wyniku `kill` jako „już nie żyje" i zameldowanie posprzątanego
+        // biegu, którego nikt nie sprzątnął (niezmiennik 6).
+        match reap(pgid) {
+            ReapOutcome::ProvenDead => report.reaped.push(pgid),
+            ReapOutcome::StillAlive => report.unproven.push(pgid),
+            // Bez `continue`, bez drugiego wywołania: eskalacja do `SIGKILL` na cudzej grupie
+            // trafiłaby dokładnie w ten niewinny proces, przed którym broni strażnik czasu
+            // startu. Jedno wywołanie na grupę jest tu własnością pętli, nie zaleceniem.
+            ReapOutcome::Foreign => report.foreign.push(pgid),
+        }
+    }
+
+    report
 }
