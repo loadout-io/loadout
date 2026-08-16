@@ -208,17 +208,20 @@ fn flush(channel: &Channel<Vec<Line>>, buffer: &mut Vec<Line>, stats: &mut PumpS
 /// jest kompletny — i dlatego pompa musi się kończyć sama, a nie być zabijana z zewnątrz.
 #[must_use]
 pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle<PumpStats> {
-    // Zegar rusza TUTAJ, przy wywołaniu — nie przy pierwszym odpytaniu zadania. Różnica jest
-    // widoczna dokładnie tam, gdzie boli: zadanie zostaje odpytane dopiero wtedy, kiedy
-    // planista odda mu sterowanie, a to bywa całe okno później niż chwila, w której producent
-    // oddał pierwszą linię. Okno sklejania liczone od pierwszego odpytania jest więc oknem
-    // o nieznanej długości, a `interval` postawiony wewnątrz zadania to milczący sposób,
-    // żeby je takim uczynić.
+    // Zegar rusza TUTAJ, przy wywołaniu — nie przy pierwszym odpytaniu zadania. Zadanie zostaje
+    // odpytane dopiero wtedy, kiedy planista odda mu sterowanie, a to bywa całe okno później
+    // niż chwila, w której producent oddał pierwszą linię: okno sklejania liczone od pierwszego
+    // odpytania ma nieznaną długość, a `interval` postawiony wewnątrz zadania to milczący
+    // sposób, żeby je takim uczynić.
+    // ZMIERZONE 2026-08-16 przez przeniesienie tych dwóch wierszy do środka `spawn`: pompa
+    // dowiaduje się o martwym kanale okno za późno i kończy się dopiero na tyknięciu, którego
+    // nikt nie zamówił (`ipc_pump_lifecycle.rs:185`).
     //
     // `interval_at(now + FLUSH)`, a nie `interval(FLUSH)`: `interval` tyka po raz pierwszy
     // NATYCHMIAST. Ten pierwszy tyk przypada na moment, w którym bufor jest pusty albo dopiero
-    // się zapełnia — czyli albo idzie w próżnię, albo rozcina pierwszą paczkę na kawałki
-    // wysyłane po jednej linii. Pierwsze okno ma być pełne, jak każde następne.
+    // się zapełnia — czyli albo idzie w próżnię, albo rozcina pierwszą paczkę na kawałki.
+    // ZMIERZONE 2026-08-16 przez podmianę na `interval(FLUSH)`: trzy linie wolnego producenta
+    // wychodzą w chwili t=0, zamiast poczekać na okno (`ipc_pump_timer.rs:117`).
     let mut ticks = interval_at(Instant::now() + FLUSH, FLUSH);
     // `Delay`, nie `Burst`: po dłuższej ciszy `Burst` nadrabia zaległe tyknięcia jedno po
     // drugim, żeby wrócić na siatkę. Każde z nich zastaje pusty bufor, więc kosztuje tylko
@@ -239,11 +242,17 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 
         loop {
             tokio::select! {
-                // `biased`, i to nie jest kosmetyka. Losowa kolejność gałęzi znaczy, że przy
-                // gotowym tyknięciu i pełnej kolejce pompa raz zabiera linie, a raz wysyła to,
-                // co zdążyła zebrać — czyli ta sama paczka wychodzi w kawałkach albo nie
-                // wychodzi wcale, zależnie od losowania. Kolejność jest więc ustalona:
-                // NAJPIERW zabierz wszystko, co już stoi w kolejce, POTEM patrz na zegar.
+                // Kolejność gałęzi ustalona, nie losowana: NAJPIERW zabierz wszystko, co już
+                // stoi w kolejce, POTEM patrz na zegar. Bez tego tyknięcie, które wygra
+                // losowanie przy niepustej kolejce, wydaje wiadomość na to, co pompa zdążyła
+                // zebrać, a reszta czeka całe następne okno — ta sama sekwencja linii daje
+                // wtedy różny podział na paczki w kolejnych biegach.
+                //
+                // ZMIERZONE 2026-08-16: tego NIE łapie żadne z ośmiu kryteriów. Pompa bez
+                // `biased` przechodzi wszystkie osiem, także w powtórzeniach. Zostaje tu za
+                // determinizm podziału na paczki — to on czyni pomiar „25 wysyłek" [T8 ryzyko
+                // 3] powtarzalnym — ale niczym nie jest poświadczony i przy zmianie tej linii
+                // trzeba sprawdzić ręcznie, co się dzieje z długościami paczek.
                 biased;
                 line = rx.recv() => {
                     let Some(line) = line else {
