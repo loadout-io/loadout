@@ -66,10 +66,22 @@ export function toFile(
   throw new Error('not implemented');
 }
 
+/** Ten sam krok, postawiony gdzie indziej.
+ *
+ * Generyk, a nie `Step`: rozłożenie unii przez `{ ...step }` daje typ, który nie jest już ani
+ * jednym, ani drugim wariantem, i kompilator słusznie odmawia przypisania go z powrotem. */
+function movedTo<S extends Step>(step: S, at: Point): S {
+  return { ...step, at };
+}
+
 /** Koniec przeciągnięcia kafelka: pozycja ląduje na siatce, w dokumencie, nie tylko na ekranie. */
 export function onNodeDragStop(
-  _node: { id: string; position: Point },
-  _file: WorkflowFile,
+  node: { id: string; position: Point },
+  file: WorkflowFile,
 ): WorkflowFile {
-  throw new Error('not implemented');
+  const at = snap(node.position);
+  return {
+    ...file,
+    steps: file.steps.map((step) => (step.id === node.id ? movedTo(step, at) : step)),
+  };
 }
