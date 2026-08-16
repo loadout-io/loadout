@@ -110,7 +110,8 @@ async fn every_public_constructor_hands_out_the_same_four_pragmas() -> anyhow::R
     // `journal_mode` zostaje przy starej kontroli i to jest poprawne: nalezy do BAZY, trwa
     // w pliku, i dlatego jako jedyna z czterech MA sie tu zgadzac z nasza.
     assert_eq!(
-        read_pragmas(&bare)?.journal_mode, "wal",
+        read_pragmas(&bare)?.journal_mode,
+        "wal",
         "a bare connection to the same file reports journal_mode = {:?}. This one SHOULD match \
          ours: the journal mode belongs to the DATABASE and survives in the file, which is \
          exactly why it is the one pragma nobody forgets and the other three are the ones \
