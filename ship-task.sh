@@ -313,6 +313,30 @@ for base, dirs, files in os.walk(root):
 FINGERPRINT
 }
 
+# Ktory plik specyfikacji STRACIL asercje miedzy dwoma odciskami. Cisza znaczy "zaden".
+# Przyrost jest legalny i niewidoczny tutaj z premedytacja: specyfikacja moze zyskiwac
+# asercje dowolnie, nie moze zadnej zgubic.
+assertions_lost() {             # assertions_lost <przed.tsv> <po.tsv>
+  python3 - "$1" "$2" <<'COMPARE'
+import sys
+
+def load(path):
+    out = {}
+    for line in open(path, encoding="utf-8"):
+        if "\t" in line:
+            name, count = line.rstrip("\n").split("\t")
+            out[name] = int(count)
+    return out
+
+was, now = load(sys.argv[1]), load(sys.argv[2])
+for name in sorted(was):
+    # Plik SKASOWANY liczy sie jako strata wszystkich swoich asercji, a nie jako brak
+    # wpisu -- inaczej najprostsza droga na skroty (usun specyfikacje) byla niewidoczna.
+    if now.get(name, 0) < was[name]:
+        print("  %s: %d assertion lines -> %d" % (name, was[name], now.get(name, 0)))
+COMPARE
+}
+
 
 # Prompt idzie STDIN-em, nigdy w argv (niezmiennik 9): argv widzi każdy `ps`, a prompt
 # niesie treść zadania i bywa, że ścieżki. Oba CLI to obsługują — claude -p czyta prompt
@@ -537,21 +561,7 @@ PROMPT
     commit_leftovers "contract repair"
 
     assertion_fingerprint > "$RUNDIR/assertions-after.tsv"
-    LOST="$(python3 - "$RUNDIR/assertions-before.tsv" "$RUNDIR/assertions-after.tsv" <<'COMPARE'
-import sys
-def load(path):
-    out = {}
-    for line in open(path, encoding="utf-8"):
-        if "\t" in line:
-            name, count = line.rstrip("\n").split("\t")
-            out[name] = int(count)
-    return out
-was, now = load(sys.argv[1]), load(sys.argv[2])
-for name in sorted(was):
-    if now.get(name, 0) < was[name]:
-        print("  %s: %d assertion lines -> %d" % (name, was[name], now.get(name, 0)))
-COMPARE
-)"
+    LOST="$(assertions_lost "$RUNDIR/assertions-before.tsv" "$RUNDIR/assertions-after.tsv")"
     if [ -n "$LOST" ]; then
       echo >&2
       echo "the contract repair round REMOVED assertions from specs:" >&2

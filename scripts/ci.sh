@@ -298,6 +298,7 @@ guards_lane() {
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
   hung_check_reads_as_red_not_as_a_slow_gate
+  spec_assertions_may_grow_never_shrink
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -469,6 +470,86 @@ if 200.0 <= g.ceiling_for("before", slow, {}, per):
     sys.exit("sufit przestal lapac bramke wolna bez powodu -- poprawka zjadla go w calosci")
 PY
   echo "gate: zawieszone kryterium czyta się jako RED, wolna bramka nadal jako 3"
+}
+
+# ── specyfikacji wolno zyskiwać asercje, nigdy żadnej zgubić ──────────────────
+# Obrona rundy naprawczej kontraktu (ship-task.sh, etap 3a). Ta faza dostaje instrukcję
+# „spraw, żeby kryterium padało INACZEJ", a najtańsza droga do tego jest asertować mniej —
+# i jest to jedyna faza, w której „asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji,
+# a nie jawnym oszustwem. Dlatego dostała obronę mechaniczną, a nie zdanie w promptcie
+# (niezmiennik 28). Obrona bez strażnika jest obroną, o której nikt nie wie, czy strzela.
+#
+# Strażnik wycina OBIE funkcje z ship-task.sh i uruchamia je naprawdę. Kopia asercji
+# wklejona tutaj testowałaby kopię, nie mechanizm (niezmiennik 20).
+spec_assertions_may_grow_never_shrink() {
+  local sandbox fns wt src
+  sandbox="$(mktemp -d)" || return 1
+  fns="$sandbox/fns.sh"
+  wt="$sandbox/wt"
+
+  python3 - ship-task.sh "$fns" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+import io, sys
+
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+out = []
+for want in ("assertion_fingerprint()", "assertions_lost()"):
+    head = [k for k, l in enumerate(lines) if l.startswith(want)]
+    if len(head) != 1:
+        sys.exit("%s wystepuje %d razy w ship-task.sh" % (want, len(head)))
+    i = head[0]
+    j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+    out.extend(lines[i:j + 1])
+if len(out) < 20:
+    sys.exit("wyciety kod jest podejrzanie krotki -- ksztalt pliku sie zmienil")
+io.open(sys.argv[2], "w", encoding="utf-8").write("\n".join(out) + "\n")
+EXTRACT
+
+  src="source '$fns'"
+  mkdir -p "$wt/src-tauri/tests" "$wt/src-tauri/src"
+  # Trzy linie z asercją i jedna bez — plus PRODUKCYJNY plik, którego odcisk ma nie widzieć:
+  # tam asercji ubywa legalnie, bo szkielet znika razem z implementacją.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\n' \
+    > "$wt/src-tauri/tests/spec_one.rs"
+  printf 'assert!(internal);\nassert!(other);\n' > "$wt/src-tauri/src/thing.rs"
+
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/a.tsv"
+  if [ "$(cat "$sandbox/a.tsv")" != "$(printf 'src-tauri/tests/spec_one.rs\t3')" ]; then
+    echo "odcisk asercji nie mierzy tego, co ma mierzyć:" >&2
+    sed 's/^/  /' "$sandbox/a.tsv" >&2
+    echo "  oczekiwano dokładnie: src-tauri/tests/spec_one.rs<TAB>3" >&2
+    echo "  (plik produkcyjny z dwiema asercjami NIE ma się tu pojawić)" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (a) ubyło jednej asercji → strata musi być nazwana z pliku i obiema liczbami
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\n' > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/b.tsv"
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/b.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 2'; then
+    echo "specyfikacja straciła asercję, a porównanie tego nie zgłosiło" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (b) przybyło → cisza. Bez tego strażnik przechodziłby także wtedy, gdyby porównanie
+  #     krzyczało zawsze, czyli gdyby nie mierzyło niczego.
+  printf 'assert_eq!(a, b);\nassert!(x);\nassert_ne!(c, d);\nassert!(more);\nassert!(yet);\n' \
+    > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/c.tsv"
+  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/c.tsv'")" ]; then
+    echo "specyfikacja ZYSKAŁA asercje, a porównanie zgłosiło stratę" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (c) skasowany plik to strata wszystkich jego asercji, a nie brak wpisu. Bez tego
+  #     najprostsza droga na skróty — usuń specyfikację — byłaby niewidoczna.
+  rm "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/d.tsv"
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/d.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 0'; then
+    echo "skasowana specyfikacja nie liczy się jako strata asercji" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  rm -rf "$sandbox"
+  echo "specs: asercji może przybyć, ubyć nie może — odcisk widzi ubytek i skasowanie"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
