@@ -73,14 +73,22 @@ enum Job {
     /// do którego nikt z zewnątrz nie ma referencji, więc bez tego zlecenia AC-3 sprawdzałoby
     /// wszystkie konstruktory oprócz tego jednego, który pisze.
     Pragmas(oneshot::Sender<Result<Pragmas>>),
+    /// Przestań przyjmować nowe zlecenia, dopisz to, co już stoi w kanale, i skończ.
+    ///
+    /// Idzie **kanałem**, a nie osobnym sygnałem, i to jest cała jego wartość: kanał jest
+    /// FIFO, więc wszystko wysłane wcześniej zostaje obsłużone, zanim to zlecenie dojdzie.
+    /// Zamknięcie sygnałem obok kanału ścigałoby się z wysłanymi wsadami i „zapisane" znowu
+    /// znaczyłoby „wysłane".
+    Close,
 }
 
 /// Uchwyt do jedynego zadania piszącego.
 ///
 /// Klonowalny i **ma być** klonowany: osiem równoległych producentów trzyma osiem klonów
 /// i wszystkie prowadzą do jednego połączenia. Kiedy ginie ostatni klon, kanał się zamyka
-/// i zadanie kończy pracę — dlatego „zaczekaj na pisarza" znaczy „upuść wszystkie uchwyty,
-/// potem czekaj", a nie „śpij chwilę".
+/// i zadanie kończy pracę — ale to jest droga zapasowa, nie sposób zamykania. Zamyka
+/// [`Writer::shutdown`], bo „zginął ostatni klon" jest warunkiem, którego wołający nie
+/// kontroluje (2026-08-16: patrz komentarz przy tej metodzie).
 #[derive(Debug, Clone)]
 pub struct Writer {
     /// Kanał do zadania.
