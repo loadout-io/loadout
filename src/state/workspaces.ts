@@ -21,12 +21,8 @@
  * potrzebuje prawdziwego kanału anulowania, a ten mieszka w `src/ipc/`, poza blokiem OWNS tego
  * zadania (`AGENTS.md` §7). Singleton zbudowany tutaj z atrapą byłby kontrolką bez handlera
  * przebraną za stan (niezmiennik 16): `×` działałby, a agent by żył.
- *
- * # Stan tego pliku: SZKIELET (2026-08-16)
- *
- * Fabryka rzuca. To jest wymagany kształt fazy, w której powstają kryteria: import ma się
- * rozwiązać, a test paść na ZACHOWANIU, nie na wczytywaniu modułu (`AGENTS.md` §2a p. 5).
  */
+import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 
 /** Jedna karta paska: folder i to, co się w nim właśnie dzieje. */
@@ -109,18 +105,99 @@ export interface WorkspacesState {
 export type WorkspacesStore = UseBoundStore<StoreApi<WorkspacesState>>;
 
 /**
+ * Karty i to, co jest na wierzchu, po zdjęciu jednej karty.
+ *
+ * Widok schodzi na sąsiada wyłącznie wtedy, gdy zniknęła karta, na którą człowiek patrzył.
+ * Zamknięcie karty w tle nie ma prawa przestawić widoku: to jest ten rodzaj samowoli, po
+ * którym `×` klika się z duszą na ramieniu, bo nie wiadomo, gdzie się po nim wyląduje.
+ */
+function withoutTab(
+  state: WorkspacesState,
+  id: string,
+): Pick<WorkspacesState, 'tabs' | 'activeId'> {
+  const tabs = state.tabs.filter((tab) => tab.id !== id);
+  if (state.activeId !== id) return { tabs, activeId: state.activeId };
+
+  /* Sąsiad z prawej, a po ostatniej karcie ten z lewej — czyli miejsce, w którym stała
+   * zamknięta karta. Skok na początek paska gubi kontekst tym mocniej, im więcej kart jest
+   * otwartych, a otwiera się je właśnie po to, żeby ich było kilka. */
+  const closed = state.tabs.findIndex((tab) => tab.id === id);
+  const next = tabs[Math.min(closed, tabs.length - 1)];
+  return { tabs, activeId: next === undefined ? null : next.id };
+}
+
+/**
  * Nowy magazyn kart nad podanym kanałem anulowania.
  *
- * SZKIELET (2026-08-16): kształt stanu jest już prawdziwy — trzy pola i pięć akcji — więc test
- * się kompiluje i pada na zachowaniu. Brakuje: dokładania kart bez duplikatów, pytania
- * o zamknięcie zależnego od `agents` i jedynej rzeczy, o którą naprawdę chodzi w kryterium 6 —
- * `await cancel(id)` PRZED zdjęciem karty.
- *
- * Podkreślenie w nazwie parametru jest tymczasowe i znika razem z tym ciałem: pod
- * `noUnusedParameters` z `checks/tsconfig.strict.json` argument, którego szkielet jeszcze nie
- * woła, jest błędem typów, a błąd typów w warstwie `before` przewraca bramkę na czymś, co nie
- * jest kryterium.
+ * `cancel` wchodzi argumentem, a nie importem, i to jest cała konstrukcja kryterium 6: mierzy
+ * ono KOLEJNOŚĆ — karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności nie
+ * da się zmierzyć na funkcji, której test nie może zatrzymać w połowie.
  */
-export function createWorkspacesStore(_cancel: CancelRun): WorkspacesStore {
-  throw new Error('the tab store cannot open, switch or close a tab yet');
+export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
+  /* Które zamknięcie jest w toku. Poza stanem widoku, bo widok nie ma o czym z tym rozmawiać:
+   * to jest wyłącznie zapadka przed drugim sygnałem stopu dla tego samego biegu. Dwa sygnały
+   * to dwie eskalacje ścigające się o tego samego agenta (niezmiennik 6), a klawisz Enter
+   * przytrzymany na potwierdzeniu wysyła je tyle razy, ile zdąży. */
+  let closing: string | null = null;
+
+  return create<WorkspacesState>()((set, get) => ({
+    tabs: [],
+    activeId: null,
+    pendingClose: null,
+
+    open: (tab) => {
+      const { tabs } = get();
+      /* Jeden folder = jedna karta (§6a reguła 1). Folder, który już ma kartę, przełącza na
+       * nią — dwa biegi w jednym katalogu kolidowałyby na plikach, a kopia per krok chroni
+       * kroki między sobą, nigdy biegi między sobą. */
+      const already = tabs.some((open) => open.id === tab.id);
+      set({ tabs: already ? tabs : [...tabs, tab], activeId: tab.id });
+    },
+
+    activate: (id) => {
+      /* Wyłącznie zmiana widoku (§6a reguła 2). Nic się tu nie pauzuje, nie odłącza i nie
+       * ginie: pompa linii wisi na karcie po stronie Rusta, nie na tym polu. */
+      if (!get().tabs.some((tab) => tab.id === id)) return;
+      set({ activeId: id });
+    },
+
+    requestClose: (id) => {
+      const tab = get().tabs.find((open) => open.id === id);
+      if (tab === undefined) return;
+
+      /* Nie ma o co pytać, kiedy nic nie chodzi. Potwierdzenie przy KAŻDYM zamknięciu uczy
+       * klikać „tak" bez czytania, a wtedy nie chroni już przed niczym — także przed tym
+       * jednym zamknięciem, przy którym pracowało trzech agentów. */
+      if (tab.agents === 0) {
+        set(withoutTab(get(), id));
+        return;
+      }
+      set({ pendingClose: { id: tab.id, name: tab.name, agents: tab.agents } });
+    },
+
+    dismissClose: () => {
+      set({ pendingClose: null });
+    },
+
+    confirmClose: async () => {
+      const { pendingClose } = get();
+      if (pendingClose === null || closing !== null) return;
+
+      closing = pendingClose.id;
+      try {
+        /* NAJPIERW anulowanie, do końca. Wersja, która zdejmuje kartę od razu i anuluje w tle,
+         * wygląda na ekranie identycznie i zostawia osieroconego agenta palącego limit
+         * u dostawcy — to jest błąd finansowy, nie higieniczny (niezmiennik 6). Pytanie zostaje
+         * na ekranie przez cały ten czas, bo bieg wciąż się zwija i nie ma o czym milczeć. */
+        await cancel(pendingClose.id);
+      } finally {
+        closing = null;
+      }
+
+      /* Stan czytany PONOWNIE, już po anulowaniu: minęła cała runda zwijania biegu i karty
+       * mogły się w tym czasie zmienić. Zapisanie tu migawki sprzed `await` cofałoby wszystko,
+       * co zdarzyło się w międzyczasie. */
+      set({ ...withoutTab(get(), pendingClose.id), pendingClose: null });
+    },
+  }));
 }

@@ -18,9 +18,9 @@
  * Oba handlery są WYMAGANE (niezmiennik 16). Okno dialogowe z martwym „Cancel" jest gorsze niż
  * jego brak: obiecuje wyjście, którego nie ma.
  *
- * # Stan tego pliku: SZKIELET (2026-08-16)
- *
- * Pusty fragment — pytania nie ma, więc nie ma w nim też żadnej liczby.
+ * ZDANIE JEST SKŁADANE Z LICZBY, KTÓRA PRZYSZŁA, a liczba pojedyncza ma własne brzmienie:
+ * „1 agents are working" czyta się jak usterka i podważa całą resztę zdania dokładnie w chwili,
+ * w której człowiek ma mu zaufać.
  */
 import type { ReactElement } from 'react';
 import type { PendingClose } from '../../../state/workspaces';
@@ -34,6 +34,43 @@ export interface CloseConfirmProps {
   readonly onDismiss: () => void;
 }
 
-export function CloseConfirm(_props: CloseConfirmProps): ReactElement {
-  return <></>;
+/** Ile pracy stoi po drugiej stronie tego kliknięcia — zdanie, nie liczba obok słowa. */
+function question(pending: PendingClose): string {
+  const working =
+    pending.agents === 1 ? '1 agent is working' : String(pending.agents) + ' agents are working';
+  return working + ' in ' + pending.name + '. Closing this tab stops that work.';
+}
+
+export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProps): ReactElement {
+  return (
+    <div
+      role="dialog"
+      aria-label={'Close ' + pending.name}
+      className="flex flex-col gap-3 rounded-sq border border-line bg-panel p-4"
+    >
+      <p data-close-confirm className="text-body text-ink">
+        {question(pending)}
+      </p>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="h-control rounded-sq border border-line px-3 text-ui text-body"
+        >
+          Keep it open
+        </button>
+        {/* Accent jest jedynym kolorem interaktywnym w całej aplikacji (DESIGN §3), także tam,
+         * gdzie przycisk kończy czyjąś pracę: to jest przycisk podstawowy tego pytania, a nie
+         * piąty sens dołożony do koloru ostrzeżenia. */}
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="h-control rounded-sq bg-accent px-3 text-ui text-bg"
+        >
+          Stop and close
+        </button>
+      </div>
+    </div>
+  );
 }
