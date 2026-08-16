@@ -20,7 +20,11 @@
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej
 // linii zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `panic!` dochodzi do tej listy z tego samego powodu (`[workspace.lints]` ma `panic = "deny"`
+// dla całego drzewa): gałąź `other => panic!(…)` cytuje to, co WRÓCIŁO, a asercja, która nie
+// mówi, co dostała zamiast oczekiwanego kształtu, każe uruchamiać test drugi raz pod debugerem.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::Cursor;
 

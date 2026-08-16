@@ -20,7 +20,11 @@
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej
 // linii zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `panic!` jest tu z tego samego powodu i dochodzi do tej listy, bo `[workspace.lints]` mówi
+// `panic = "deny"` dla całego drzewa: `unwrap_or_else(|| panic!(…))` niesie nazwę przypadku,
+// której `unwrap()` w tym miejscu nie miałby, a nazwa przypadku jest połową tej asercji.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use loadout_lib::skills::ingest::{
     self, EXFILTRATION, Finding, HIDDEN_TEXT, INSTRUCTION_OVERRIDE, ROLE_MANIPULATION, Reviewed,

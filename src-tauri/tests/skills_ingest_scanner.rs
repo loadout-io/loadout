@@ -20,7 +20,21 @@
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej
 // linii zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `panic!` dochodzi z tego samego powodu (`[workspace.lints]` ma `panic = "deny"` dla całego
+// drzewa): gałąź `other => panic!(…)` cytuje to, co WRÓCIŁO ze skanera, a bez tego cytatu
+// „nie ten wariant" nie mówi który.
+//
+// `match_wildcard_for_single_variants` jest konsekwencją tamtej gałęzi, nie osobną decyzją:
+// [`DeepScan`] ma dokładnie dwa warianty — pobiegł i nie pobiegł — więc `other` pokrywa jeden.
+// Wypisanie go po nazwie nic by tu nie zmieniło, a trzeci wariant dorobiony po to, żeby lint
+// zamilkł, byłby stanem, którego adapter nie umie osiągnąć.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::match_wildcard_for_single_variants
+)]
 
 use std::fs;
 // `PermissionsExt` to jedyny sposób nadać atrapie bit wykonywalności. Wolno go tu użyć:
