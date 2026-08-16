@@ -24,6 +24,7 @@
  * nowy dokument wchodzi do stanu.
  */
 import { create } from 'zustand';
+import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
 import type { Agent } from './agents';
 
 /** Waga uwagi z walidatora Rusta. `Problem` blokuje Run, `Warning` nie blokuje niczego. */
@@ -154,6 +155,8 @@ export interface WorkflowState {
   commit: (next: WorkflowFile) => void;
   /** Odświeża uwagi. Wołane po zapisie i przed Run. */
   recheck: () => Promise<void>;
+  /** Zapisuje otwarty dokument i odświeża uwagi. Odrzucenie jest widoczne dla wołającego. */
+  saveNow: () => Promise<void>;
   /** Zmiana wiersza panelu, wyrażona wartościami EFEKTYWNYMI. Różnicę liczy `applyPanelEdit`. */
   editStep: (stepId: string, agent: Agent, edit: Overrides) => void;
   /** `Reset` przy jednym wierszu: kasuje jeden klucz patcha i tylko jeden. */
@@ -165,29 +168,78 @@ export interface WorkflowState {
  *
  * Drugi argument jest wymagany, bo „otwarty dokument" bez dokumentu to stan, którego ten ekran
  * nie ma — listę plików workflow i ich otwieranie posiada T-14. */
-export function createWorkflowStore(_io: WorkflowIo, open: WorkflowFile) {
-  return create<WorkflowState>()(() => ({
+/** Dokument z podmienionym JEDNYM krokiem rodzaju `agent`.
+ *
+ * Kroki, których to nie dotyczy, zostają tymi samymi obiektami — nie kopiami — więc porównanie
+ * referencji w Reakcie dalej mówi prawdę o tym, co się zmieniło. Punkt kontrolny nie ma
+ * nadpisań ani umiejętności i przechodzi tędy nietknięty. */
+function withAgentStep(
+  file: WorkflowFile,
+  stepId: string,
+  edit: (step: AgentStep) => AgentStep,
+): WorkflowFile {
+  return {
+    ...file,
+    steps: file.steps.map((step) =>
+      step.id === stepId && step.kind === 'agent' ? edit(step) : step,
+    ),
+  };
+}
+
+export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
+  return create<WorkflowState>()((set, get) => ({
     document: open,
     notes: [],
 
-    commit: () => {
-      throw new Error('not implemented');
+    /* Jedno miejsce, w którym dokument się zmienia. Stos cofnij/ponów (PLAN §7, v1.1) wchodzi
+     * TUTAJ i nigdzie indziej — dopisany przy każdej akcji z osobna byłby pięcioma stosami,
+     * z których cztery zapominałyby o piątej akcji. */
+    commit: (next: WorkflowFile) => {
+      set({ document: next });
     },
 
-    recheck: () => {
-      throw new Error('not implemented');
+    recheck: async () => {
+      /* Uwagi liczy Rust (T-12). Gdyby liczył je też front, mielibyśmy dwa zdania o tym samym
+       * defekcie i jedno z nich zawsze byłoby nieaktualne (niezmiennik 13). */
+      set({ notes: await io.check(get().document) });
     },
 
-    editStep: () => {
-      throw new Error('not implemented');
+    /* Zapis i odświeżenie uwag jednym ruchem, bo to jest jedna decyzja użytkownika: „zapisz to,
+     * co widzę". Funkcja jest `async` i NIE łyka błędu — kto ją woła, ten pokazuje, że zapis
+     * nie wyszedł. Autosave, który po cichu nie zapisał, jest gorszy niż jego brak: plik jest
+     * prawdą, a użytkownik ma wtedy dwie różne prawdy i nie wie o żadnej. */
+    saveNow: async () => {
+      await io.save(get().document);
+      await get().recheck();
     },
 
-    resetRow: () => {
-      throw new Error('not implemented');
+    editStep: (stepId: string, agent: Agent, edit: Overrides) => {
+      get().commit(
+        withAgentStep(get().document, stepId, (step) => applyPanelEdit(step, agent, edit)),
+      );
     },
 
-    chooseSkills: () => {
-      throw new Error('not implemented');
+    resetRow: (stepId: string, field: OverridableField) => {
+      get().commit(withAgentStep(get().document, stepId, (step) => withoutOverride(step, field)));
+    },
+
+    chooseSkills: (stepId: string, choice: SkillChoice) => {
+      get().commit(
+        withAgentStep(get().document, stepId, (step) => ({
+          ...step,
+          skills: chosenSkills(choice),
+        })),
+      );
     },
   }));
+}
+
+/** Co kontrolka Skills zapisuje w kroku.
+ *
+ * `'none'` to PUSTA LISTA, nie brak klucza: „bez umiejętności" jest decyzją użytkownika i ma
+ * przeżyć zapis, a brak klucza znaczyłby „weź domyślne", czyli wszystkie. */
+function chosenSkills(choice: SkillChoice): Skills {
+  if (choice === 'all') return 'all';
+  if (choice === 'none') return [];
+  return choice.only;
 }
