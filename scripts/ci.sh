@@ -302,6 +302,7 @@ guards_lane() {
   branch_is_judged_by_the_trunks_oracle
   spine_merges_keep_both_declarations
   contract_freeze_touches_only_its_own_task
+  one_clippy_at_the_full_tier
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -781,6 +782,44 @@ EXTRACT
 
   rm -rf "$sandbox"
   echo "kontrakt: zamrożony jest własny plik zadania, cudze idą za trunkiem"
+}
+
+# ── w `full` biegnie JEDNO clippy, nie dwa bijące się o muteks ────────────────
+# Zmierzone 2026-08-16 przy lądowaniu T-27, na PUSTEJ maszynie: `verify.sh full` odkrywał
+# `quick-clippy` i `full-clippy`, oba brały muteks cargo (niezmiennik 26), drugie czekało 300 s
+# i oddawało 2 — więc trunk świecił „MISCONFIGURED" przez własną kolejkę bramki, a nie przez kod.
+# Podnoszenie sufitu czekania nie pomaga: przy 2400 s to `full-test` ginął na swoim budżecie.
+# Jedyna naprawa bez wady jest taka, że zbędne sprawdzenie się nie odpala.
+#
+# Strażnik pilnuje OBU stron: że w `full` schodzi z drogi, i że poza `full` biegnie normalnie.
+# Sama pierwsza połowa przechodziłaby na checku, który nie robi już nic nigdzie.
+one_clippy_at_the_full_tier() {
+  local out sandbox
+  out="$(LOADOUT_TIER=full bash checks/quick-clippy.sh 2>&1)"
+  if ! printf '%s' "$out" | grep -q 'superseded'; then
+    echo "quick-clippy nie schodzi z drogi w tierze full — dwa clippy będą się biły o muteks" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  # Druga połowa: poza `full` ma biec normalnie. Piaskownica BEZ zrodel Rusta, zeby nie
+  # odpalac prawdziwego clippy — check ma wtedy wlasna, nazwana galaz „nie ma czego lintowac".
+  sandbox="$(mktemp -d)" || return 1
+  mkdir -p "$sandbox/checks" "$sandbox/src-tauri/src"
+  cp checks/quick-clippy.sh checks/_cargo-serialize.sh "$sandbox/checks/"
+  out="$(cd "$sandbox" && LOADOUT_TIER=before bash checks/quick-clippy.sh 2>&1)"
+  rm -rf "$sandbox"
+  if printf '%s' "$out" | grep -q 'superseded'; then
+    echo "quick-clippy schodzi z drogi także POZA tierem full — czyli nie sprawdza już nic" >&2
+    return 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'nothing to lint'; then
+    echo "quick-clippy poza tierem full nie doszedł do swojej właściwej gałęzi:" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  echo "clippy: jedno w tierze full, normalne poza nim"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────

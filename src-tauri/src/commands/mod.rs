@@ -7,6 +7,12 @@
 //! `generate_handler!` należą do T-07. Powód jest testowy, nie estetyczny: `State<'_, AppState>`
 //! nie da się zbudować w teście jednostkowym, a `&RunDeps` da się [04 §2.1].
 //!
+//! 2026-08-16 — zdanie wyżej mówiło „należą do T-07". T-07 wylądował z ośmioma zielonymi
+//! kryteriami o pompie i **bez ani jednej skorupy**, bo żadne kryterium nie sięgało szwu:
+//! `Failed to launch` jest na liście `NOT_A_REAL_RED`, więc nic, co wymaga żywego Tauri, nie
+//! może być kryterium. Adresatem jest T-27 i tam ten dług jest spłacany razem z dowodem, który
+//! nie potrzebuje okna: `src-tauri/commands.golden.txt` czytany z obu stron granicy.
+//!
 //! # Co gdzie mieszka
 //!
 //! Ten plik to **typy i uchwyty**: [`RunDeps`], [`RunRequest`], [`RunReport`], [`RunError`]
@@ -28,7 +34,52 @@ use crate::store::{Store, StoreError};
 use crate::workflow::check::Note;
 use crate::workflow::file::LoadError;
 
+/// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
+pub mod agents;
+/// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.
+pub mod memory;
+/// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
+pub mod mint;
 pub mod run;
+/// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
+pub mod skills;
+/// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
+pub mod workflows;
+
+/// Chwila **teraz** w ISO 8601 UTC — to, co `memory::notes::Actor::You` nazywa `at`.
+///
+/// Zegar stoi tutaj, w warstwie komend, bo `memory::notes` go świadomie nie ma: `at` opisuje
+/// chwilę, w której **człowiek** kliknął, a moduł, który sam czyta zegar, nie da się przetestować
+/// bez czekania. Okno też go nie podaje — front, który stempluje czas zapisu, stempluje czas
+/// SWOJEGO zegara, a plik ma nieść jeden.
+///
+/// 2026-08-16 — algorytm dni→data (proleptyczny kalendarz gregoriański, era 400-letnia) stoi
+/// w tym drzewie trzeci raz, obok `memory::handoff::now_utc` i `commands::run::stamp`. To nie
+/// jest przeoczenie: tamta pierwsza jest **prywatna** w pliku, który nie należy do tego zadania,
+/// a `chrono`/`time` odpadają, bo `src-tauri/Cargo.toml` też nie jest nasz (AGENTS.md §7). Trzy
+/// kopie jednego rachunku to jest rzecz do zgłoszenia człowiekowi, nie do rozstrzygnięcia po
+/// cichu w cudzym pliku.
+#[must_use]
+pub fn now_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
+
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
 
 /// Skąd bieg bierze sterownik dla vendora, którym biegnie agent kroku.
 ///

@@ -98,6 +98,25 @@ z lądowania konflikt na kręgosłupie, i to wystarczy. Każdy **inny** konflikt
 znaczy, że dwa zadania naprawdę sięgnęły po te same wiersze — a to jest pytanie do człowieka,
 nie sytuacja do zautomatyzowania. `integrate.sh` ma się wtedy zatrzymać i wypisać pliki.
 
+**Sufit czekania na muteks NIGDY powyżej budżetu sprawdzenia — zmierzone 2026-08-16, boleśnie.**
+
+Podnosiłem `LOADOUT_CARGO_LOCK_WAIT=2400` przy każdym biegu fali, żeby kolejkowanie nie dawało
+fałszywej czerwieni. Przy lądowaniu `T-27` to się odwróciło: `full-test` ma budżet **600 s**
+(`CHECK_TIMEOUT_OVERRIDE`), a sufit czekania **2400 s** — więc check czekał na zamek, został
+zabity na własnym budżecie, ponowiony, znowu czekał, znowu zabity, i zameldował „it is waiting
+for something that is not going to arrive". Ono właśnie miało przyjść. Trunk zaświecił się na
+czerwono **przed** merge'em i nic nie wylądowało.
+
+Przy domyślnym sufcie 300 s ten sam stan daje **exit 2** („zajęty muteks — nie umiem sprawdzić"),
+czyli odpowiedź prawdziwą, którą `integrate.sh` umie przeczytać. Reguła:
+
+> **`LOADOUT_CARGO_LOCK_WAIT` musi być wyraźnie mniejszy niż najmniejszy budżet sprawdzenia
+> cargo (dziś 420 s dla `quick-clippy`).** Powyżej tej granicy kolejkowanie przestaje być
+> kolejkowaniem i staje się zwisem — a zwis czyta się jak wina kodu.
+
+Praktycznie: podnoś go do 240 s przy szerokiej fali, nigdy ponad. Albo — prościej i pewniej —
+**landuj na cichej maszynie**: `integrate.sh` i tak wymaga wyłączności na trunku.
+
 **Sufit czekania na muteks cargo (300 s) — decyzja ODWRÓCONA 2026-08-16.**
 
 Pierwotnie: „jeśli żywe cargo trzyma zamek pięć minut, to nie jest sytuacja do przeczekania,

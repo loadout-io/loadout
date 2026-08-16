@@ -1,6 +1,6 @@
 //! Jeden odczyt, dwa ujścia: surowe bajty na dysk, zdarzenia do kuratora [T7 §4.2].
 //!
-//! Kolejność w [`pump`] jest częścią kontraktu, nie stylem: **najpierw tee, potem parsowanie**
+//! Kolejność w [`Recorder`] jest częścią kontraktu, nie stylem: **najpierw tee, potem parsowanie**
 //! (`docs/ARCHITECTURE.md` §4). Plik `logs/agent-<id>.jsonl` jest źródłem prawdy — to on
 //! pozwala skasować `loadout.db` bez straty (`ARCHITECTURE.md` §2 pyt. 2) i to jego użytkownik
 //! wysyła jako dowód. W chwili, w której przestaje być bajtowo tym, co wypluło dziecko,
@@ -18,6 +18,16 @@
 //! Linia niesparsowalna jest w tee tak samo jak każda inna, bo tee dzieje się przed
 //! dekodowaniem. Sama pętla nigdy nie kończy biegu na nieznanym zdarzeniu (niezmiennik 5):
 //! ścieżka dysku nie gubi nigdy, ścieżka widoku wolno gubić [T7 §4.1].
+//!
+//! # Dwie pętle, jeden transkrypt (T-34, 2026-08-16)
+//!
+//! [`pump`] nie jest jedynym czytelnikiem strumienia i nie mógł nim zostać: sterownik żywej
+//! sesji czyta stdout procesu, który sam wystartował, i po drodze wypuszcza jeszcze
+//! [`AgentEvent`] do uchwytu — bo to na nim stoi `wait()`, eskalacja anulowania i feature-
+//! detekcja przerwania. Dlatego trzy zdania wyżej mieszkają w [`Recorder`], a nie w ciele tej
+//! pętli, i obie drogi wołają **ten sam** typ. Wersja z drugim `File::create` w sterowniku
+//! wygląda niewinnie i jest dokładnie tym rozjazdem, o którym nikt nie pamięta: bajtowa
+//! identyczność łamie się wtedy w jednej z dwóch pętli, a plik czyta się tak samo.
 //!
 //! # Szew wobec vendora
 //!
@@ -84,6 +94,105 @@ pub enum Decoded {
 /// i ma zostać **policzone**, a nie po cichu połknięte.
 const KNOWN_TYPES: [&str; 5] = ["system", "assistant", "user", "rate_limit_event", "result"];
 
+/// Transkrypt jednego kroku: dysk i ekran, w tej kolejności.
+///
+/// Istnieje jako typ, a nie jako trzy linijki w [`pump`], odkąd pętli czytających jest dwie:
+/// [`pump`] czyta gotowy strumień, a `ClaudeDriver::start` (T-34) czyta stdout żywego procesu
+/// i po drodze wypuszcza jeszcze zdarzenia do uchwytu sesji. Reguła „najpierw tee, potem
+/// parsowanie" przepisana w dwóch pętlach rozjeżdża się po cichu, a rozjazd widać dopiero po
+/// pierwszym skasowaniu `loadout.db` — czyli wtedy, kiedy tych linii nie ma już nigdzie.
+///
+/// Kolejność wywołań jest kontraktem tego typu: [`Recorder::raw`] na **każdą** przeczytaną
+/// linię, zanim ktokolwiek spróbuje ją zrozumieć, i dopiero potem [`Recorder::curate`] na to,
+/// co z niej wyszło.
+#[derive(Debug)]
+pub struct Recorder {
+    /// `logs/agent-<krok>.jsonl` — ten plik, który użytkownik wysyła jako dowód i który
+    /// pozwala skasować indeks.
+    ///
+    /// Bez `BufWriter`, świadomie: ścieżka dysku nie gubi nigdy [T7 §4.1], a bufor
+    /// w przestrzeni użytkownika gubi dokładnie ogon — czyli te linie, dla których człowiek
+    /// otwiera ten plik.
+    file: tokio::fs::File,
+    /// Maszyna pięciu reguł zwijania. Kuracja mieszka wyłącznie w niej (niezmiennik 15);
+    /// ten typ podaje jej zdarzenia i przekazuje dalej to, co się domknęło.
+    curator: Curator,
+    /// Czyj to strumień. Wchodzi w każdy wiersz i w klucz grupy sklejania, więc dwa agenty
+    /// czytające pliki w tej samej sekundzie to dwa wiersze, nie jeden.
+    agent: String,
+    /// Wiersze na ekran. Zamknięty odbiornik nie ma prawa zatrzymać zapisu na dysk.
+    lines: mpsc::Sender<Line>,
+    /// Chwila, od której liczy się `at_ms` każdego wiersza.
+    ///
+    /// Zegar czytamy w [`Recorder::curate`] i **tylko** tam. Kurator dostaje czas argumentem,
+    /// bo kurator z własnym zegarem nie da się przetestować bez `sleep`, a test ze `sleep`
+    /// mierzy planistę systemu operacyjnego, nie okno sklejania.
+    started: Instant,
+}
+
+impl Recorder {
+    /// Otwiera plik transkryptu i bierze kanał, którym pójdą wiersze.
+    ///
+    /// Katalogu **nie zakłada**: układ `<repo>/.loadout/runs/<ts>__<id>/{run.json,logs/}`
+    /// należy do warstwy, która zakłada bieg (`docs/ARCHITECTURE.md` §8), a sterownik ma tam
+    /// dopisać plik, a nie wymyślać sobie własne miejsce. Błąd wraca do wołającego, bo krok
+    /// poproszony o transkrypt nie ma prawa udawać, że go zrobił.
+    pub async fn create(
+        path: &Path,
+        agent: String,
+        lines: mpsc::Sender<Line>,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            file: tokio::fs::File::create(path).await?,
+            curator: Curator::new(),
+            agent,
+            lines,
+            started: Instant::now(),
+        })
+    }
+
+    /// Kładzie na dysk **bajty**, dokładnie te i w tej kolejności, w jakiej wyszły z procesu.
+    ///
+    /// Wołane przed jakąkolwiek próbą zrozumienia linii — także dla tej, której nikt nie
+    /// zrozumie, bo to właśnie ona jest potrzebna w zgłoszeniu błędu (niezmiennik 5).
+    /// Bufor jedzie tu bez tknięcia `serde_json`: runda w obie strony zamienia
+    /// `0.14836290000000002` na `0.148362`, rozwija escape `<` i zmienia kolejność kluczy,
+    /// a każda z tych trzech zmian jest niewidoczna w porównaniu napisów po `trim()`.
+    pub async fn raw(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.file.write_all(bytes).await
+    }
+
+    /// Podaje kuratorowi jedno zdarzenie razem z faktami, których ono samo nie niesie,
+    /// i wypuszcza wiersze, które przez nie się domknęły.
+    ///
+    /// `tool` jest tu całą różnicą między „agent coś zrobił" a „agent przeczytał `src/csv.rs`":
+    /// bez niego kurator nie ma z czego wybrać wariantu wiersza i żadna czynność nie zostawia
+    /// śladu (`docs/ARCHITECTURE.md` §6).
+    pub async fn curate(&mut self, event: &AgentEvent, tool: Option<&Tool>) {
+        let at_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let seen = Seen {
+            agent: &self.agent,
+            at_ms,
+            event,
+            tool,
+        };
+        for line in self.curator.observe(seen) {
+            send(&self.lines, line).await;
+        }
+    }
+
+    /// Domyka transkrypt: ostatnia grupa sklejania na ekran, reszta bufora na dysk.
+    ///
+    /// Bez tego ostatnia grupa biegu nie wyszłaby nigdy, a użytkownik zobaczyłby o wiersz
+    /// mniej, niż się wydarzyło — najgorszy rodzaj zgubienia, bo cichy.
+    pub async fn close(mut self) -> std::io::Result<()> {
+        for line in self.curator.flush() {
+            send(&self.lines, line).await;
+        }
+        self.file.flush().await
+    }
+}
+
 /// Czyta NDJSON linia po linii, kopiuje **bajty** do `tee` przed parsowaniem i wysyła gotowe
 /// wiersze na `lines`.
 ///
@@ -101,18 +210,9 @@ pub async fn pump<R>(
 where
     R: AsyncBufRead + Unpin + Send,
 {
-    // Bez `BufWriter`, świadomie: ścieżka dysku nie gubi nigdy [T7 §4.1], a bufor w przestrzeni
-    // użytkownika gubi dokładnie ogon — czyli te linie, dla których człowiek otwiera ten plik.
-    let mut tee_file = tokio::fs::File::create(tee).await?;
-
+    let mut recorder = Recorder::create(tee, agent.to_owned(), lines).await?;
     let mut claude = ClaudeDecoder::new();
-    let mut curator = Curator::new();
     let mut stats = Stats::default();
-
-    // Zegar czytamy TUTAJ i tylko tutaj. Kurator dostaje czas argumentem, bo kurator z własnym
-    // zegarem nie da się przetestować bez `sleep`, a test ze `sleep` mierzy planistę systemu
-    // operacyjnego, nie okno sklejania.
-    let started = Instant::now();
     let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
 
     loop {
@@ -124,10 +224,9 @@ where
         }
         // TEE PRZED PARSOWANIEM. Linia, której nikt nie zrozumie, jest w pliku tak samo jak
         // każda inna — a to właśnie ona jest potrzebna w zgłoszeniu błędu.
-        tee_file.write_all(&buffer).await?;
+        recorder.raw(&buffer).await?;
         stats.lines += 1;
 
-        let at_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let Ok(text) = std::str::from_utf8(&buffer) else {
             // Bajty nie-UTF-8 są w tee i tam zostają czytelne dla człowieka; dla dekodera to
             // linia nie do przeczytania, więc ma być policzona.
@@ -146,27 +245,13 @@ where
             Decoded::Unrecognised => stats.unrecognised += 1,
             Decoded::Events(events) => {
                 for decoded in events {
-                    let seen = Seen {
-                        agent,
-                        at_ms,
-                        event: &decoded.event,
-                        tool: decoded.tool.as_ref(),
-                    };
-                    for line in curator.observe(seen) {
-                        send(&lines, line).await;
-                    }
+                    recorder.curate(&decoded.event, decoded.tool.as_ref()).await;
                 }
             }
         }
     }
 
-    // Ostatnia grupa biegu wyszłaby inaczej nigdy, a użytkownik zobaczyłby o wiersz mniej,
-    // niż się wydarzyło.
-    for line in curator.flush() {
-        send(&lines, line).await;
-    }
-    tee_file.flush().await?;
-
+    recorder.close().await?;
     Ok(stats)
 }
 

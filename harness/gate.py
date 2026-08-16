@@ -593,6 +593,16 @@ def run(tier, jobs, only=None):
             "note: %s. Running project checks only —\n"
             "this tier reports hygiene, never that a task is done.\n" % why)
 
+    # Sprawdzenie ma prawo wiedziec, na ktorym poziomie biegnie -- i tylko po to, zeby moc
+    # powiedziec "jestem tu zbedne". `full-clippy` z `--all-targets` ZAWIERA `--lib`, wiec
+    # w `full` oba clippy robia te sama prace i jeszcze bija sie o muteks cargo (niezmiennik 26).
+    # Zmierzone 2026-08-16 przy ladowaniu T-27: drugie clippy czekalo 300 s i oddalo 2, przez co
+    # trunk zaswiecil sie "MISCONFIGURED" na pustej maszynie. Sam `checks/quick-clippy.sh` pisze
+    # w naglowku, ze pelna forma "biegnie raz, w bramce" -- implementacja tego nie odzwierciedlala.
+    #
+    # Decyzja mieszka w SPRAWDZENIU, nie tutaj (niezmiennik 23): to ono wie, co robi i co je
+    # zastepuje. Bramka podaje fakt, nie polityke.
+    os.environ["LOADOUT_TIER"] = tier
     per_check = CHECK_TIMEOUT[tier]
     t0 = time.time()
     head = "── verify %s " % tier
