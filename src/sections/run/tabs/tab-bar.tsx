@@ -20,13 +20,17 @@
  * (niezmiennik 11), więc „ile zajętych" jest faktem o limiterze, a nie o pasku — magazyn kart,
  * który by je trzymał, byłby ich drugim domem.
  *
- * # Stan tego pliku: SZKIELET (2026-08-16)
- *
- * Pusty fragment: zdania nie ma, więc kryterium 5 pada na jego obecności, a przechodzi tę
- * połowę, która pyta o jego zniknięcie. Tak ma wyglądać ta warstwa.
+ * ZDANIE JEST SKŁADANE Z LICZB, KTÓRE PRZYSZŁY. Napis wpisany na sztywno czyta się tak samo
+ * przy dwóch zajętych miejscach i przy trzech, więc kłamie od pierwszego przesunięcia suwaka
+ * — i najgłośniej wtedy, gdy miejsce właśnie się zwolniło. Element znika w całości, kiedy
+ * nikt nie czeka: zdanie, które zostaje na pasku po końcu czekania, uczy ludzi nie czytać paska.
  */
 import type { ReactElement } from 'react';
 import type { WorkspaceTab } from '../../../state/workspaces';
+import { Tab } from './tab';
+
+/** Wysokość paska kart: 34 z 96 px budżetu chrome (ARCHITECTURE §7). */
+export const TAB_BAR_HEIGHT = 34;
 
 export interface TabBarProps {
   /** Karty w kolejności, w jakiej mają stać. */
@@ -52,6 +56,59 @@ export interface TabBarProps {
   readonly onOpenFolder: () => void;
 }
 
-export function TabBar(_props: TabBarProps): ReactElement {
-  return <></>;
+/**
+ * Zdanie o czekaniu: gdzie stoi agent i ile miejsc jest zajętych z ilu.
+ *
+ * Sufit stoi obok licznika, bo „2 in use" nigdy nie zdradza, ile miejsc jest w ogóle —
+ * a to jest dokładnie ta liczba, którą człowiek zaraz podniesie albo obniży (ARCHITECTURE §6a).
+ */
+function waitingSentence(busy: number, atOnce: number, folder: string): string {
+  return (
+    busy + ' of ' + atOnce + ' slots in use — an agent in ' + folder + ' is waiting for a free one.'
+  );
+}
+
+export function TabBar({
+  tabs,
+  activeId,
+  busy,
+  atOnce,
+  waitingIn,
+  onSelect,
+  onClose,
+  onOpenFolder,
+}: TabBarProps): ReactElement {
+  return (
+    <div
+      data-tab-bar
+      className="flex shrink-0 items-center gap-1 border-b border-line bg-panel px-2"
+      style={{ height: TAB_BAR_HEIGHT }}
+    >
+      {tabs.map((workspace) => (
+        <Tab
+          key={workspace.id}
+          workspace={workspace}
+          active={workspace.id === activeId}
+          onSelect={onSelect}
+          onClose={onClose}
+        />
+      ))}
+
+      <button
+        type="button"
+        onClick={onOpenFolder}
+        aria-label={'Open a folder'}
+        className="h-7 shrink-0 rounded-sq px-2 text-muted"
+      >
+        ＋
+      </button>
+
+      {/* Nikt nie czeka — nie ma elementu, nie ma pustego miejsca po nim. */}
+      {waitingIn === null ? null : (
+        <p data-slots-waiting className="ml-auto truncate text-muted">
+          {waitingSentence(busy, atOnce, waitingIn)}
+        </p>
+      )}
+    </div>
+  );
 }
