@@ -1,0 +1,234 @@
+# T-18 — Umiejętności: silnik rozmieszczania (jeden folder → 2 katalogi → 6 vendorów)
+
+Najważniejsze odkrycie researchu kasuje tu większość roboty: **kompilatora nie ma.** Format Agent
+Skills skonwergował, wszystkie sześć narzędzi czyta ten sam `SKILL.md`, różni je wyłącznie katalog,
+do którego zaglądają [T5 §0]. Zostaje ~300 linii Rusta, które kopiują folder w dwa miejsca — i cała
+trudność przenosi się do jednego pytania: **skąd wiemy, że vendor to naprawdę widzi.** Cicha
+porażka tego zadania to zielony ptaszek „Installed for 6 tools" postawiony na podstawie tego, że
+`fs::write` zwróciło `Ok`. Plik leży, ścieżka jest o jeden poziom obok tej, w którą vendor zagląda,
+i użytkownik dowiaduje się o tym dopiero wtedy, gdy agent nie wie o umiejętności — czyli nigdy,
+bo tego się nie da odróżnić od „model nie uznał, że warto jej użyć". Druga cicha porażka:
+`SKILL.md` z polem `hooks:` albo `argument-hint:` w środku. Claude to zje, a każda ścieżka
+spec-strict odmówi z `Unexpected fields in frontmatter: …` — więc „działa u mnie" i nie działa
+u pięciu pozostałych.
+
+**Read first:**
+`docs/research/topics/T5-skill-portability.md` §0 i §3.1 (dwie nazwy katalogów pokrywają sześciu
+vendorów — to jest cały backend), §2.3 i §6.2 (sześć pól i **dosłowne** komunikaty walidatora
+referencyjnego), §4.2 + fact-check §3 (pełna lista **czternastu** pól spoza specyfikacji, które
+emiter musi zdjąć), §4.5 (kopiujemy, nie symlinkujemy — i dlaczego), §6.3 (trzy poziomy dowodu:
+Valid / Installed / Discovered), fact-check „Worth adding" (`synced` to zarezerwowana nazwa
+folderu),
+`docs/research/fixtures/claude-stream.jsonl` linia 7 (prawdziwe zdarzenie `system`/`init` z tej
+maszyny: klucze `tools`, `mcp_servers`, `slash_commands`, `cwd`, `model` — **bez** klucza `skills`
+w CLI v2.1.233; `notatki` i `spotkanie` to realne umiejętności z `~/.claude/skills`, widoczne
+w `slash_commands`),
+`docs/PLAN.md` §2 spike S-1 (czy sesja może dostać podzbiór umiejętności — jeśli S-1 doda klucz
+`skills`, ta implementacja ma go **preferować**, nie przepisywać),
+`AGENTS.md` §3 (niezmienniki 3, 4, 20, 21, 23, 24).
+
+## Kto to robi
+
+- **Agent:** `rust-core` (Codex)
+- **Druga opinia:** `./review.sh claude` — nigdy ten sam vendor, co pisał
+- **Artefakty biegu:** `runs/T-18/` (zapis, plik wyników, plan) — nigdy `$TMPDIR`
+
+## Co to zadanie posiada
+
+- `src-tauri/src/skills/place.rs` — walidacja, emiter `SpecStrict`, plan instalacji, kopiowanie,
+  usuwanie, werdykt „czy vendor to widzi"
+- `src-tauri/src/skills/mod.rs` — typ `Skill` (sześć pól specyfikacji + ciało + pliki),
+  `Scope`, **jedna** tablica katalogów docelowych
+- `src-tauri/tests/skills_place_destinations.rs`, `…_emit.rs`, `…_validate.rs`, `…_plan.rs`,
+  `…_discovery.rs`, `…_remove.rs` — pliki testów kryteriów, globalnie unikalne
+
+Czego **nie** posiadasz: `src-tauri/src/skills/ingest.rs` i `src/sections/skills/**` (T-19),
+`src-tauri/Cargo.toml` (nowa zależność to AGENTS.md §7), `src-tauri/src/engine/drivers/**`
+(T-04, T-10).
+
+`src-tauri/src/lib.rs` masz w OWNS **wyłącznie** po to, żebyś dopisał `pub mod skills;`,
+jeśli tego wiersza jeszcze tam nie ma. Żadnej innej zmiany w tym pliku.
+
+Nazwy katalogów i lista vendorów istnieją **w jednym miejscu** w `mod.rs`. Niezmiennik 23: polityka
+w rdzeniu, adaptery po pięć linii. Rozsypanie `".claude/skills"` po trzech funkcjach jest tym,
+jak przy zmianie ścieżki u vendora jedna z nich zostaje stara.
+
+## Niezmienniki
+
+- **3 — kod platformowy tylko w `engine/supervisor.rs`.** W `place.rs` nie ma `#[cfg(unix)]`:
+  kopiujemy `fs::copy` (zachowuje uprawnienia), obecność dowiązania sprawdzamy
+  `fs::symlink_metadata`. *Jak się łamie po cichu:* `std::os::unix::fs::symlink` „bo na macOS
+  działa" — `checks/quick-boundary.sh` to wywraca, a Windows przestaje być gałęzią `cfg`.
+  W plikach `src-tauri/tests/*.rs` `MetadataExt` wolno użyć: sprawdzenie wyłącza testy po ścieżce.
+- **4 — pliki są prawdą.** Kanoniczna umiejętność w danych aplikacji jest źródłem; oba katalogi
+  vendorów to **wyjście builda**, które wolno w całości odtworzyć. *Jak się łamie po cichu:*
+  użytkownik edytuje `.claude/skills/x/SKILL.md`, my czytamy stamtąd przy następnym „Update"
+  i kanoniczna kopia przestaje być kanoniczna.
+- **20 — test sprawdza zachowanie, nie obecność stringa.** *Jak się łamie po cichu:*
+  `assert!(doc.contains("description:"))` przechodzi na komentarzu i na polu o pustej wartości.
+  Asertuj **zbiór i kolejność kluczy** wyemitowanego front-mattera oraz to, co się dzieje
+  z plikiem na dysku.
+- **21 — nie pisz artefaktu, którego nikt nie czyta.** Żadnych plików `.loadout-marker` obok
+  `SKILL.md`, jeśli nic ich nie czyta; przynależność do Loadouta trzymamy w sidecarze aplikacji
+  [T5 §4.1]. *Jak się łamie po cichu:* znacznik zapisany „na przyszłość", którego nigdy nie
+  sprawdzamy przy usuwaniu — i kasujemy cudzą umiejętność.
+- **23 — polityka w jednym rdzeniu.** Jedna tablica katalogów, jedna funkcja walidacji, jeden
+  emiter. *Jak się łamie po cichu:* osobna gałąź „dla Codeksa", w której ktoś przepisuje regułę
+  strippingu i zapomina o `hooks`.
+- **24 — komentuj DLACZEGO.** Przy liście czternastu pól i przy „kopiujemy, nie symlinkujemy"
+  ma stać powód z T5 (teammates, Windows, pięciu niezweryfikowanych vendorów), nie samo „tak jest".
+
+## Kryteria akceptacji
+
+Najpierw sygnatury z `todo!()`, potem pliki testów, potem `./verify.sh before` — test, który się
+nie kompiluje, nie jest czerwony (`AGENTS.md` §2a, `NOT_A_REAL_RED`). Rozgrzej build:
+`cargo test --no-run --test skills_place_destinations`; limit sprawdzenia w `before` to 20 s.
+W każdym pliku testu `#![allow(clippy::unwrap_used, clippy::expect_used)]` z powodem —
+`checks/full-clippy.sh` biegnie `--all-targets -- -D warnings`.
+Wszystkie kryteria działają na `tempfile::TempDir` jako korzeń „domu" i „repo" — żaden test nie
+dotyka prawdziwego `~/.claude/skills`.
+
+Kształt, który te kryteria zakładają:
+
+```rust
+pub enum Scope { Global, Project }
+pub struct InstallPlan { pub writes: Vec<PathBuf>, pub conflicts: Vec<Conflict> }
+pub enum Discovery { Seen, NotSeen { looked_in: Vec<PathBuf> }, Unknown(&'static str) }
+
+pub fn destinations(scope: Scope, home: &Path, project: Option<&Path>) -> [PathBuf; 2];
+pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>>;
+pub fn emit(skill: &Skill) -> (String, Vec<&'static str>);   // (SKILL.md, zdjęte pola)
+pub fn plan(skill: &Skill, scope: Scope, ..) -> Result<InstallPlan>;
+pub fn apply(plan: &InstallPlan, skill: &Skill) -> Result<()>;
+pub fn remove(name: &str, scope: Scope, ..) -> Result<Removed>;
+pub fn discovery_from_init(name: &str, init_line: &str, wrote: &[PathBuf]) -> Discovery;
+```
+
+## AC-1 Umiejętność ląduje jako dwie niezależne kopie, nie jako dowiązanie
+check: cargo test --test skills_place_destinations
+
+Zakres `Global` → `<home>/.claude/skills/<name>/SKILL.md` i `<home>/.agents/skills/<name>/SKILL.md`.
+Zakres `Project` → te same dwie nazwy pod korzeniem repo [T5 §3.1].
+Bajty `SKILL.md` w obu miejscach są identyczne z tym, co zwrócił `emit`. Dołączone
+`scripts/run.sh` i `references/api.md` trafiają w tym samym układzie względnym.
+Dla każdej z czterech ścieżek: `fs::symlink_metadata(p).file_type().is_symlink() == false`,
+a numery i-węzłów obu kopii `SKILL.md` **różnią się** (to wyklucza też twarde dowiązanie).
+Kanoniczna kopia w danych aplikacji istnieje dalej i jest nietknięta.
+
+*Słaba asercja:* `assert!(p.exists())` przechodzi na dowiązaniu symbolicznym, bo `exists()` podąża
+za linkiem — a symlink w projekcie scommitowanym przez zespół rozpada się u każdego innego
+[T5 §4.5]. Rozróżniają: `symlink_metadata` i porównanie i-węzłów.
+
+## AC-2 Emiter zdejmuje wszystkie czternaście pól spoza specyfikacji i mówi, co zdjął
+check: cargo test --test skills_place_emit
+
+Wejście ma komplet: `when_to_use`, `argument-hint`, `arguments`, `disable-model-invocation`,
+`user-invocable`, `disallowed-tools`, `model`, `effort`, `context`, `agent`, `background`, `hooks`,
+`paths`, `shell` — plus wszystkie sześć pól specyfikacji [T5 fact-check §3].
+Wyemitowany front-matter ma klucze **dokładnie** `["name","description","license","compatibility",
+"metadata","allowed-tools"]`, w tej kolejności (stabilna kolejność = czytelny `git diff`), wartość
+`description` bez zmian. Zwrócona lista zdjętych pól ma 14 pozycji.
+Nic nie ginie bez śladu: `argument-hint` wraca w ciele jako linia `Arguments: …`, a `context: fork`
+jako `Run this as an isolated task.` przed pierwszym akapitem [T5 §4.2].
+Umiejętność bez pól opcjonalnych emituje front-matter z dwoma kluczami, nie z sześcioma pustymi.
+
+*Słaba asercja:* `assert!(!doc.contains("argument-hint"))` przechodzi na emiterze, który wypluł
+pusty plik, i na takim, który zgubił też `description`. Rozróżniają: równość **listy kluczy razem
+z kolejnością**, obecność treści zdjętych pól w ciele i długość listy zdjętych pól.
+
+## AC-3 Niepoprawna umiejętność nie dotyka dysku, a komunikat brzmi jak u walidatora referencyjnego
+check: cargo test --test skills_place_validate
+
+Cztery przypadki blokujące, z komunikatami dosłownie jak w T5 §6.2 / fact-check:
+`Missing required field in frontmatter: description`,
+`Directory name 'name-mismatch' must match skill name 'totally-different'`,
+`Skill name 'Upper-Name' must be lowercase`,
+`Unexpected fields in frontmatter: argument-hint, context, disable-model-invocation. Only ['allowed-tools', 'compatibility', 'description', 'license', 'metadata', 'name'] are allowed.`
+Plus reguły z tego samego źródła: `name` > 64 znaków, `description` > 1024, `compatibility` > 500,
+`name` zawierające `anthropic` lub `claude`, oraz nazwa folderu `synced` (w dowolnej wielkości
+liter — Claude Code taką pomija).
+Po każdej odmowie **żaden z dwóch katalogów docelowych nie istnieje** — odmowa jest przed pierwszym
+zapisem, nie w połowie.
+
+*Słaba asercja:* `assert!(validate(..).is_err())` przechodzi na walidacji, która najpierw kopiuje,
+a potem sprawdza, i na jednym wspólnym komunikacie „invalid skill" dla ośmiu różnych przyczyn.
+Rozróżniają: równość tekstu komunikatu dla czterech przypadków i asercja, że katalogi docelowe
+nie powstały.
+
+## AC-4 Plan pokazuje wszystko, co zostanie zapisane, i sam nie zapisuje nic
+check: cargo test --test skills_place_plan
+
+`plan()` zwraca dwie ścieżki zapisu i listę kolizji. Rekurencyjny listing obu drzew docelowych
+(ścieżki + rozmiary + `mtime`) jest **identyczny przed i po** wywołaniu `plan()`.
+Kolizje rozróżniane po sidecarze: `.claude/skills/<name>/` napisany wcześniej przez Loadout →
+`Conflict::Update`; katalog o tej samej nazwie, którego Loadout nie pisał →
+`Conflict::Foreign { first_line }` z zacytowanym pierwszym wierszem cudzego `SKILL.md`.
+Dopiero `apply(plan)` tworzy pliki i tworzy dokładnie te ścieżki, które plan wymienił — ani jednej
+więcej (ponowny listing, różnica zbiorów).
+
+*Słaba asercja:* `assert_eq!(plan.writes.len(), 2)` przechodzi na implementacji, która przy okazji
+tworzy katalogi „żeby sprawdzić uprawnienia", i na takiej, która pisze trzeci plik nieujęty
+w planie. Rozróżniają: porównanie listingu przed/po `plan()` i różnica zbiorów po `apply()`.
+
+## AC-5 „Claude to widzi" jest odczytem ze zdarzenia init, nie domysłem
+check: cargo test --test skills_place_discovery
+
+`discovery_from_init(name, init_line, wrote)` czyta linię NDJSON `type: "system", subtype: "init"`.
+Reguła: jeśli zdarzenie ma tablicę `skills`, liczy się **wyłącznie** ona; jeśli nie ma, liczy się
+`slash_commands` (tak umiejętność `notatki` z `~/.claude/skills` objawia się w CLI v2.1.233 —
+`docs/research/fixtures/claude-stream.jsonl` linia 7); jeśli nie ma żadnej z nich → `Unknown`.
+Pięć wejść: (a) `skills` z nazwą → `Seen`; (b) brak `skills`, nazwa w `slash_commands` → `Seen`;
+(c) nazwa występuje **tylko** w `cwd` (`/home/u/review-pull-requests/x`) i w `mcp_servers[].name`,
+a w obu tablicach jej nie ma → `NotSeen`, a `looked_in` wymienia obie ścieżki, w które pisaliśmy;
+(d) zdarzenie bez obu kluczy → `Unknown` (nigdy `Seen`, nigdy błąd — niezmiennik 5);
+(e) `claude` nieobecny w PATH → `Unknown("not installed")`, nigdy czerwone [T5 §6.3].
+Linie init test wpisuje literalnie w pliku testu.
+
+*Słaba asercja:* `init_line.contains(name)` przechodzi na (a), (b) i **kłamie** na (c) — to jest
+dokładnie ten fałszywy zielony ptaszek, o który chodzi w tym zadaniu. Rozróżnia przypadek (c);
+przypadek (d) rozróżnia implementację, która „brak klucza" tłumaczy na „nie widzi" i wywołuje
+fałszywy alarm przy pierwszej zmianie kształtu zdarzenia.
+
+## AC-6 Usunięcie zabiera obie kopie i nic poza nimi
+check: cargo test --test skills_place_remove
+
+Stan wyjściowy: nasza umiejętność `pdf` w obu katalogach, obok niej cudza `other-skill/`
+w tych samych katalogach, oraz — w drugim scenariuszu — katalog `pdf/`, którego Loadout **nie**
+pisał (brak wpisu w sidecarze).
+`remove("pdf", ..)` w scenariuszu pierwszym: oba katalogi `pdf/` znikają, `other-skill/`
+w obu miejscach istnieje z niezmienionymi bajtami, kanoniczna kopia w danych aplikacji zostaje
+(usuwamy wyjście builda, nie źródło).
+W scenariuszu drugim cudzy `pdf/` **nie jest kasowany**: `Removed::Skipped { path, why }`,
+bajty katalogu nietknięte.
+
+*Słaba asercja:* `assert!(!dir.exists())` przechodzi na implementacji, która kasuje cały
+`.claude/skills/` albo cudzą umiejętność o tej samej nazwie. Rozróżniają: obecność `other-skill/`
+z tymi samymi bajtami i scenariusz drugi.
+
+## Świadomie poza zakresem
+
+- **Wciąganie z URL, skan bezpieczeństwa, karta przeglądu** — T-19. To zadanie dostaje `Skill`
+  już zwalidowany co do źródła.
+- **Tryb `ClaudeExtended`, symlinki, `[[skills.config]]` Codeksa, Windsurf/Cline/Factory/Copilot**
+  — świadomie odłożone [T5 §11]. Ścieżek niezweryfikowanych w oficjalnej dokumentacji nie wysyłamy.
+- **Uruchamianie prawdziwego CLI w bramce.** AC-5 jest offline, na nagranych liniach init;
+  odpalenie `claude -p "List your available skills, names only."` żyje w aplikacji jako Tier 3
+  [T5 §6.3] i nigdy nie jest kryterium — brak CLI nie może być czerwony.
+- **Ewaluacje zachowania umiejętności** (`evals/evals.json`, plugin `skill-creator`)
+  [T5 fact-check §1] — poza v1.
+- **Formularz „Create" i przełącznik zakresu w UI** — T-19 (`src/sections/skills/**`).
+- **Podzbiór umiejętności dla sesji** — zależy od spike'u S-1; modal kroku należy do T-13.
+- **Częściowe:** `allowed-tools` emitujemy, kiedy przyszło z importu, ale nie ma go w UI —
+  pole jest oznaczone jako eksperymentalne i wsparcie jest nierówne [T5 ryzyka].
+
+<!-- OWNS
+src-tauri/src/lib.rs
+src-tauri/src/skills/place.rs
+src-tauri/src/skills/mod.rs
+src-tauri/tests/skills_place_destinations.rs
+src-tauri/tests/skills_place_emit.rs
+src-tauri/tests/skills_place_validate.rs
+src-tauri/tests/skills_place_plan.rs
+src-tauri/tests/skills_place_discovery.rs
+src-tauri/tests/skills_place_remove.rs
+-->
