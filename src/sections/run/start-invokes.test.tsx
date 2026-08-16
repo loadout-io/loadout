@@ -80,25 +80,6 @@ function press(): { going: Promise<void> | null; refusal: string } {
   }
 }
 
-/**
- * Każda wartość prosta w środku, na dowolnym poziomie zagnieżdżenia.
- *
- * Porównujemy WARTOŚCI, a nie klucze: krawędź wolno napisać jako `{ workflow }` albo
- * `{ fileName }`, bo Tauri i tak przepisuje nazwy argumentów przy przejściu. Czego nie wolno,
- * to zgubić samą wartość — i tylko o to pyta ta funkcja. Ta sama reguła, co
- * w `src/sections/commands-wired.test.ts`.
- */
-function insides(value: unknown, into: unknown[]): unknown[] {
-  if (Array.isArray(value)) {
-    for (const item of value as unknown[]) insides(item, into);
-  } else if (typeof value === 'object' && value !== null) {
-    for (const item of Object.values(value as Record<string, unknown>)) insides(item, into);
-  } else if (value !== undefined && value !== null) {
-    into.push(value);
-  }
-  return into;
-}
-
 /** Odmowa, której ten szkielet nie ma prawa oddać, kiedy zadanie jest skończone. */
 function notRefused(refusal: string, which: string): void {
   expect(
@@ -155,18 +136,29 @@ describe('Start in the app calls the run command for the open workflow', () => {
       throw new Error('Start never reached Rust at all');
     }
 
-    const carried = insides(sent.at(1), []);
-    const lost = insides([OPEN, AT_ONCE], []).filter((value) => !carried.includes(value));
+    /* 2026-08-17 — POD KLUCZAMI, NIE GDZIEKOLWIEK W ŚRODKU. Wcześniejsza wersja tej asercji
+     * zbierała wszystkie wartości proste z obiektu argumentów i pytała tylko, czy `OPEN`
+     * i `AT_ONCE` gdzieś w nim są, uzasadniając to zdaniem „Tauri i tak przepisuje nazwy
+     * argumentów". To zdanie było nieprawdziwe: Tauri dopasowuje argumenty PO NAZWIE, a jedyne,
+     * co przepisuje, to camelCase okna na snake_case Rusta (`fileName` → `file_name`).
+     * Wywołanie `{ wrongKey: OPEN, other: AT_ONCE }` przechodziło tamtą asercję i wywracało
+     * się na żywym `run_workflow` — dokładnie ta klasa zieleni, dla której to kryterium
+     * istnieje. Nazwy poniżej są nazwami parametrów `run_workflow` z `src-tauri/src/ipc.rs`. */
+    const args = sent.at(1);
+    const carried =
+      typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
+
     expect(
-      lost,
-      'Start called the right command and left some of what it was given behind: ' +
-        JSON.stringify(lost) +
-        '. A call that reaches Rust without the open workflow starts an empty run, and one ' +
-        'without the limit hands the scheduler a number nobody chose — that is invariant 11 ' +
-        'broken quietly: the field is read, logged and never passed on, and the semaphore ' +
-        'gets 1. It carried ' +
-        JSON.stringify(carried),
-    ).toEqual([]);
+      { fileName: carried['fileName'], howManyAtOnce: carried['howManyAtOnce'] },
+      'Start called the right command and did not hand it the two answers it was given, under ' +
+        'the names `run_workflow` takes them by. A call that reaches Rust without the open ' +
+        'workflow starts an empty run, and one without the limit hands the scheduler a number ' +
+        'nobody chose — that is invariant 11 broken quietly: the field is read, logged and ' +
+        'never passed on, and the semaphore gets 1. A value sitting under some other key is ' +
+        'the same thing: Tauri matches arguments by name, so `run_workflow` never sees it. ' +
+        'It was called with ' +
+        JSON.stringify(args),
+    ).toEqual({ fileName: OPEN, howManyAtOnce: AT_ONCE });
 
     release();
     await Promise.allSettled([first.going]);
