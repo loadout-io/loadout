@@ -170,14 +170,33 @@ function sortedByName(entries: readonly WorkflowEntry[]): WorkflowEntry[] {
   return [...entries].sort((a, b) => byName.compare(a.workflow.name, b.workflow.name));
 }
 
-/* Faza kontraktu: sygnatura stoi, zachowania jeszcze nie ma. Kasowane wraz z kryterium,
- * które je zastępuje. */
-function notImplemented(): never {
-  throw new Error('not implemented');
+/** Nazwa, którą dostaje świeżo utworzony workflow. */
+const NEW_WORKFLOW_NAME = 'New workflow';
+
+/**
+ * Nazwa dla workflow, który właśnie powstaje: `New workflow`, potem `New workflow 2`.
+ *
+ * Ekran nie pyta o nazwę — makieta prowadzi z `＋ Create` prosto na puste płótno
+ * (`docs/mockup/index.html:651-652`), a nazwa jest edytowalna tam [T-13]. Numer jest
+ * uprzejmością, nie niezmiennikiem: dwa workflow wolno nazwać tak samo, bo tożsamością jest
+ * `id`, a nie nazwa (i nie nazwa pliku). Bez numeru trzy kliknięcia dają trzy wiersze,
+ * których nie da się od siebie odróżnić.
+ */
+export function newWorkflowName(entries: readonly WorkflowEntry[]): string {
+  const taken = new Set(entries.map((entry) => entry.workflow.name));
+  if (!taken.has(NEW_WORKFLOW_NAME)) {
+    return NEW_WORKFLOW_NAME;
+  }
+
+  let ordinal = 2;
+  while (taken.has(`${NEW_WORKFLOW_NAME} ${ordinal}`)) {
+    ordinal += 1;
+  }
+  return `${NEW_WORKFLOW_NAME} ${ordinal}`;
 }
 
 export function createWorkflowListStore(io: WorkflowListIo) {
-  return create<WorkflowListState>()((set) => ({
+  return create<WorkflowListState>()((set, get) => ({
     workflows: [],
     pendingDeleteId: null,
 
@@ -241,8 +260,41 @@ export function createWorkflowListStore(io: WorkflowListIo) {
       set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]) });
     },
 
-    requestDelete: notImplemented,
-    cancelDelete: notImplemented,
-    confirmDelete: notImplemented,
+    requestDelete: (id) => {
+      /* Pytanie i nic poza pytaniem. Usunięcie pliku PRZED jego pokazaniem robi z pytania
+       * ozdobę, a z `Cancel` kłamstwo — i przechodzi każde sprawdzenie, które pyta tylko o to,
+       * czy słowo `Delete` jest na ekranie (niezmiennik 20). */
+      set({ pendingDeleteId: id });
+    },
+
+    cancelDelete: () => {
+      set({ pendingDeleteId: null });
+    },
+
+    confirmDelete: async () => {
+      const id = get().pendingDeleteId;
+      if (id === null) {
+        return;
+      }
+
+      /* Ścieżkę bierzemy z listy, a nie ze świeżego odczytu katalogu — inaczej niż w `create`
+       * i `duplicate`. Tam katalog rozstrzygał, która nazwa jest WOLNA, więc musiał być
+       * aktualny. Tu pytanie brzmi „na który wiersz wskazał człowiek", a na to odpowiada
+       * ekran, na którym ten wiersz stał. */
+      const target = get().workflows.find((entry) => entry.workflow.id === id);
+      if (target === undefined) {
+        set({ pendingDeleteId: null });
+        return;
+      }
+
+      /* Najpierw plik, potem lista. Skreślenie pozycji z listy bez usunięcia pliku daje stan,
+       * który wraca po restarcie (niezmiennik 4); a kiedy `io.remove` się nie uda, pozycja ma
+       * zostać na ekranie, bo plik został na dysku. */
+      await io.remove(target.path);
+      set({
+        workflows: get().workflows.filter((entry) => entry.workflow.id !== id),
+        pendingDeleteId: null,
+      });
+    },
   }));
 }
