@@ -136,6 +136,44 @@ note() {
   printf '   %s\n' "$*" >> "$LOG"
 }
 
+# Podciagnij ORACLE z trunka do galezi. Galaz niesie WLASNA kopie harness/, checks/
+# i verify.sh -- bo `worktree.sh` wycina caly katalog roboczy -- wiec bieg wznowiony
+# godziny po wycieciu jest sadzony przez bramke sprzed poprawek, ktore w miedzyczasie
+# naniosl orchestrator.
+#
+# Zmierzone dwa razy, z tego raz dzisiaj. 2026-08-15: trzy z pierwszych czterech zatrzyman
+# petli byly falszywymi alarmami z nieaktualnej kopii checks/. 2026-08-16: T-06 wznowiony
+# po poprawce sufitu w gate.py dostal exit 3 od WLASNEJ, starej kopii bramki, przez co
+# routing wznowienia zobaczyl "3" zamiast "1", odmowil i zakonczyl bieg kodem 2 -- czyli
+# poprawka, ktora powstala dokladnie dla tego biegu, byla dla niego nieosiagalna.
+#
+# Merge, nie rebase: nie przepisujemy historii galezi, ktora zaraz laduje. Tylko gdy
+# czysto -- konfliktu nie zgadujemy, tylko go zglaszamy i jedziemy na kopii galezi.
+#
+# $1 = 1 znaczy "kontrakt jest juz ZAMROZONY, przywroc tasks/ po merge'u" (N-08). Bieg nie
+# moze zmieniac warunkow wlasnego zaliczenia -- ulepszony plik zadania obowiazuje NASTEPNY
+# bieg. Na poczatku biegu jest odwrotnie: tam wlasnie chcemy biezacego kontraktu, wiec 0.
+refresh_harness_from_trunk() {   # refresh_harness_from_trunk <zamrozony-kontrakt:0|1> <etykieta>
+  local frozen="$1" label="$2" before_merge
+  before_merge="$(git -C "$WT" rev-parse HEAD)"
+  if git -C "$WT" merge --no-edit -q "${LOADOUT_TRUNK:-main}" >/dev/null 2>&1; then
+    if [ "$frozen" = 1 ] && ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
+      git -C "$WT" checkout -q "$before_merge" -- tasks/
+      git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
+        || true
+      note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
+    fi
+    if [ "$before_merge" = "$(git -C "$WT" rev-parse HEAD)" ]; then
+      note "harness is already current with the trunk ($label)"
+    else
+      note "harness refreshed from the trunk $label"
+    fi
+  else
+    git -C "$WT" merge --abort >/dev/null 2>&1 || true
+    note "could not merge the trunk cleanly — judging against the branch's own harness copy"
+  fi
+}
+
 say "task $ID — $AGENT writes, $REVIEWER gives the second opinion"
 note "claude: $LOADOUT_CLAUDE_MODEL (effort $LOADOUT_CLAUDE_EFFORT) · codex: $LOADOUT_CODEX_MODEL (effort $LOADOUT_CODEX_EFFORT)"
 note "transcripts: $RUNDIR"
@@ -151,6 +189,35 @@ WT="$(bash ./worktree.sh "$BRANCH" | tail -1)" || {
   echo "could not cut a workspace for $BRANCH" >&2; exit 2; }
 [ -d "$WT" ] || { echo "worktree.sh printed '$WT', which is not a directory" >&2; exit 2; }
 note "$WT"
+
+# Czy ta przestrzen juz cos niosla? Pytamy TERAZ, bo za chwile skopiujemy tam kontrakt
+# i `-f TASK.md` przestanie odrozniac swieza przestrzen od wznawianej.
+RESUMED=0
+[ -f "$WT/TASK.md" ] && RESUMED=1
+
+# ORACLE z trunka PRZED czymkolwiek, co sadzi. Bez tego wznowiony bieg jest sadzony
+# przez bramke sprzed poprawek, ktore powstaly wlasnie dla niego.
+refresh_harness_from_trunk 0 "before this workspace is judged"
+
+# Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
+# katalogiem, który przepuszcza `-C` w piaskownicy codeksa. Zmierzone w repo źródłowym:
+# każdy `git commit` w biegu codeksa umierał na
+#     fatal: Unable to create '<root>/.git/worktrees/<n>/index.lock': Operation not permitted
+# — model napisał sześć specyfikacji, nie zacommitował ani jednej i stanął. Odmowa
+# środowiska nie do odróżnienia od poddania się modelu, jeśli nie czyta się logu.
+GIT_COMMON="$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+
+cp "$TASK_FILE" "$WT/TASK.md"
+git -C "$WT" add TASK.md
+# Przy wznowieniu kontrakt jest juz zacommitowany i identyczny — `git commit` bez zmian
+# konczy sie jedynka i pod `set -e` wywraca caly bieg. Pusty commit tez nie: historia
+# galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
+if git -C "$WT" diff --cached --quiet; then
+  note "TASK.md unchanged — the contract commit is already the branch's first"
+else
+  git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
+  note "TASK.md committed as the branch's first commit"
+fi
 
 # worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
 # przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
@@ -194,8 +261,7 @@ RECEIPT
 PRE_RESUME=0          # kod wyjscia `before` ze sprawdzenia wznowienia
 PRE_RESUME_RAN=0      # czy to sprawdzenie w ogole sie odbylo
 RESUME_WITH_SPECS=0   # czy zastalismy napisane specyfikacje, ktore nie certyfikuja
-TASK_UNCHANGED=0      # czy kopia kontraktu nic nie zmienila
-if [ -f "$WT/TASK.md" ]; then
+if [ "$RESUMED" = 1 ]; then
   ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
   PRE_RESUME_RAN=1
   if [ "$PRE_RESUME" = 0 ]; then
@@ -238,26 +304,6 @@ if [ -f "$WT/TASK.md" ]; then
   fi
 fi
 
-# Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
-# katalogiem, który przepuszcza `-C` w piaskownicy codeksa. Zmierzone w repo źródłowym:
-# każdy `git commit` w biegu codeksa umierał na
-#     fatal: Unable to create '<root>/.git/worktrees/<n>/index.lock': Operation not permitted
-# — model napisał sześć specyfikacji, nie zacommitował ani jednej i stanął. Odmowa
-# środowiska nie do odróżnienia od poddania się modelu, jeśli nie czyta się logu.
-GIT_COMMON="$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
-
-cp "$TASK_FILE" "$WT/TASK.md"
-git -C "$WT" add TASK.md
-# Przy wznowieniu kontrakt jest juz zacommitowany i identyczny — `git commit` bez zmian
-# konczy sie jedynka i pod `set -e` wywraca caly bieg. Pusty commit tez nie: historia
-# galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
-if git -C "$WT" diff --cached --quiet; then
-  note "TASK.md unchanged — the contract commit is already the branch's first"
-  TASK_UNCHANGED=1
-else
-  git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
-  note "TASK.md committed as the branch's first commit"
-fi
 
 # ------------------------------------------------------------ narzędzia biegu --
 gate() {                       # gate <tier>  → kod bramki
@@ -413,10 +459,10 @@ say "before (pre-flight)"
 # T-06 (2026-08-16): warstwa `before` kosztowala tam 840 s, bo jedno kryterium wisialo do
 # konca budzetu razy dwa; potrojenie tego (wznowienie + pre-flight + `before` po zbednym
 # przepisaniu kontraktu) to 42 minuty czekania na wiedze, ktora byla znana po pierwszych
-# czternastu. Warunek jest wezszy niz "wznawiamy": kontrakt na dysku musi byc BAJT W BAJT
-# tym, ktory tamten bieg osadzil, inaczej wynik jest o czyms innym.
+# czternastu. Ponowne uzycie jest bezpieczne, bo sprawdzenie wznowienia biegnie PO kopii
+# kontraktu i po odswiezeniu oracle'a -- to ten sam kontrakt, to samo drzewo, ta sama bramka.
 PRE=0
-if [ "$PRE_RESUME_RAN" = 1 ] && [ "$TASK_UNCHANGED" = 1 ]; then
+if [ "$PRE_RESUME_RAN" = 1 ]; then
   PRE="$PRE_RESUME"
   note "reusing the before run from the resume check (same tree, same contract): exit $PRE"
 else
@@ -709,19 +755,7 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
     # Zamrożenie kontraktu nie jest formalnością: bieg nie może zmieniać warunków własnego
     # zaliczenia. Ulepszony plik zadania obowiązuje NASTĘPNY bieg, nie ten. Więc po merge'u
     # przywracamy `tasks/` do wersji gałęzi — trunk daje nam sprawdzenia, nie nową umowę.
-    before_merge="$(git -C "$WT" rev-parse HEAD)"
-    if git -C "$WT" merge --no-edit -q main >/dev/null 2>&1; then
-      if ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
-        git -C "$WT" checkout -q "$before_merge" -- tasks/
-        git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
-          || true
-        note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
-      fi
-      note "harness refreshed from the trunk before the final gate"
-    else
-      git -C "$WT" merge --abort >/dev/null 2>&1 || true
-      note "could not merge the trunk cleanly — gating against the branch's own harness copy"
-    fi
+    refresh_harness_from_trunk 1 "before the repair round"
 
     # repair.sh nie bierze id zadania: czyta TASK.md, runs/last.json i runs/review.json
     # z katalogu, w którym stoi. Dlatego uruchamiamy go W WORKTREE — z korzenia naprawiałby
