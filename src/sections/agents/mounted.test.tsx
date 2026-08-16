@@ -16,6 +16,14 @@
  * samych nazw nie mówi tego, co człowiek przyszedł tu przeczytać. Nazwy z drutu
  * (`claude-code`, `codex`) na ekranie nie istnieją (niezmiennik 14), więc porównujemy
  * z brzmieniami z `agent-form.tsx`.
+ *
+ * KONTRAKT NA MARKUP. Każda karta agenta niesie `data-agent` z jego identyfikatorem, a kawałek
+ * markupu karty to wszystko od tego znacznika do znacznika następnej karty — ta sama technika,
+ * co `zone()` w `src/sections/memory/mounted.test.tsx`. Pytanie o vendora zadajemy KARCIE, nie
+ * dokumentowi, bo „gdzieś w dokumencie jest Claude Code i gdzieś jest Codex" przechodzi także
+ * na ekranie, który przypisał etykiety na odwrót albo obie doczepił do jednego agenta —
+ * a to jest dokładnie ta pomyłka, przed którą ta asercja ma bronić. Dlatego każda karta
+ * dostaje też swoją nazwę: bez tego kawałek nie jest z niczym związany.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -30,6 +38,14 @@ const NO_AGENTS_YET = 'No agents yet.';
 
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
+}
+
+/** Kawałek markupu od znacznika tej karty do znacznika następnej. */
+function card(markup: string, id: string): string {
+  const start = markup.indexOf('data-agent="' + id + '"');
+  if (start < 0) return '';
+  const next = markup.slice(start + 1).search(/data-agent="/);
+  return next < 0 ? markup.slice(start) : markup.slice(start, start + 1 + next);
 }
 
 function agent(id: string, name: string, runsWith: Vendor, model: string): Agent {
@@ -120,6 +136,35 @@ describe('the agents section mounts for real and keeps inviting when it is empty
         'falls over here',
     ).toContain('Claude Code');
     expect(markup, 'and the other agent names the other vendor').toContain('Codex');
+
+    /* Ta sama para etykiet, tym razem zadana KAŻDEJ KARCIE OSOBNO. Dwie asercje wyżej mówią
+     * tylko, że oba brzmienia są gdzieś w dokumencie — a to przechodzi również wtedy, gdy ekran
+     * zamienił je miejscami albo doczepił obie do jednego agenta. */
+    const orion = card(markup, 'a-1');
+    const needle = card(markup, 'a-2');
+
+    expect(
+      orion,
+      'the card carrying data-agent="a-1" is the one the store seeded as Orion; without this ' +
+        'the slice below is not tied to any particular agent',
+    ).toContain('Orion');
+    expect(
+      orion,
+      'and Orion runs on Claude Code, so that label belongs INSIDE that card — not merely ' +
+        'somewhere in the document',
+    ).toContain('Claude Code');
+    expect(
+      orion,
+      'the other vendor has no business in that card. A screen that swapped the two labels keeps ' +
+        'both of them in the document and passes every assertion above',
+    ).not.toContain('Codex');
+    expect(needle, 'and the second card is the one the store seeded as Needle').toContain('Needle');
+    expect(needle, 'Needle runs on the other vendor, inside its own card').toContain('Codex');
+    expect(
+      needle,
+      'and Claude Code has no business there — this is the half that fails on a swap',
+    ).not.toContain('Claude Code');
+
     expect(
       occurrences(markup, 'data-create'),
       'the same single way to add an agent as at zero — not one more because the list is no ' +
