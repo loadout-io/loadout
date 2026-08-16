@@ -178,3 +178,14 @@ export function createRunStore(): RunStore {
     },
   }));
 }
+
+/**
+ * Magazyn TEGO okna — jeden, na cały czas życia aplikacji.
+ *
+ * Stoi obok fabryki, a nie zamiast niej, i każde z tych dwóch odpowiada na inne pytanie.
+ * Fabryka jest dla testów: dwa przypadki w jednym pliku muszą mieć osobny stan, inaczej
+ * drugi czyta linie pierwszego. Ten singleton jest dla okna: bieg nie kończy się, kiedy
+ * człowiek wejdzie do Agentów, więc magazyn zbudowany wewnątrz ekranu sekcji gubiłby całe
+ * okno linii przy każdym przełączeniu i wracał do biegu pusty.
+ */
+export const useRun: RunStore = createRunStore();

@@ -112,6 +112,14 @@ export interface Feed {
    * w wiersz wypchnięty z okna nie ma prawa przewrócić widoku.
    */
   toggle(rowId: number): void;
+  /**
+   * Powiadomienie o zmianie widoku; oddaje funkcję, która je odwołuje.
+   *
+   * Dokładnie tyle, ile bierze `useSyncExternalStore`, i ani pola więcej. Model jest żywy
+   * dłużej niż ekran — bieg nie zatrzymuje się, kiedy człowiek wejdzie do Agentów — więc to
+   * ekran subskrybuje model, nie model trzyma ekran.
+   */
+  subscribe(listener: () => void): () => void;
 }
 
 /** Ile linii wyjścia widać, kiedy niepowodzenie rozwinie się samo [T2 §7.3 reguła 3]. */
@@ -287,6 +295,15 @@ export function createFeed(scroller: Scroller): Feed {
 
   let current: FeedView = snapshot();
 
+  /** Kto czeka na wieść o zmianie. Pusty zbiór na serwerze i w każdym teście modelu. */
+  const listeners = new Set<() => void>();
+
+  /** Nowa migawka i jedno powiadomienie. Nigdy jedno bez drugiego. */
+  function publish(): void {
+    current = snapshot();
+    for (const listener of listeners) listener();
+  }
+
   function appendLines(batch: readonly Incoming[]): readonly HistoryRow[] {
     /* Kopia historii powstaje dopiero wtedy, kiedy naprawdę coś do niej wchodzi. Paczka
      * bez ani jednej linii historii ma zostawić tę samą tablicę. */
@@ -360,7 +377,7 @@ export function createFeed(scroller: Scroller): Feed {
       history = next;
     }
 
-    if (changed) current = snapshot();
+    if (changed) publish();
 
     const entered: HistoryRow[] = [];
     for (const index of [...touched].sort((a, b) => a - b)) {
@@ -381,7 +398,7 @@ export function createFeed(scroller: Scroller): Feed {
     waiting = waiting.filter((question) => question.id !== questionId);
     /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [00-SYNTHESIS §2.2]. */
     answers = [...answers, { questionId, option, who: 'you' }];
-    current = snapshot();
+    publish();
   }
 
   function toggle(rowId: number): void {
@@ -391,7 +408,14 @@ export function createFeed(scroller: Scroller): Feed {
     const rows = [...history];
     rows[index] = { ...row, expanded: !row.expanded };
     history = rows;
-    current = snapshot();
+    publish();
+  }
+
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   return {
@@ -402,5 +426,6 @@ export function createFeed(scroller: Scroller): Feed {
     jumpToNewest,
     answer,
     toggle,
+    subscribe,
   };
 }
