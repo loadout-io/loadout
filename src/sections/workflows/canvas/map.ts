@@ -14,6 +14,7 @@
  * przechodzą dalej.
  */
 import type { Point, Step, WorkflowFile } from '../../../state/workflows';
+import { GRID } from '../../../state/workflows';
 
 /** Tyle z `Node`, ile mapper widzi. Cztery ostatnie pola są tu wyłącznie po to, żeby test mógł
  * je podać i sprawdzić, że w pliku ich nie ma. */
@@ -33,11 +34,24 @@ export interface CanvasEdge {
   target: string;
 }
 
+/** Najbliższa całkowita wielokrotność `GRID` na jednej osi.
+ *
+ * `Math.round` rozstrzyga połowę skoku W GÓRĘ i to jest decyzja, nie przypadek: `12 → 24`,
+ * `11.9 → 0`. Musi zapaść raz, tutaj, bo obie drogi zapisu (przeciągnięcie i mapper) wołają
+ * tę samą funkcję — dwie różne zaokrąglałyby o jedną linię siatki w różne strony.
+ *
+ * `+ 0` na końcu nie jest ozdobą: `Math.round(-0.4)` daje `-0`, a `-0` przeżywa mnożenie
+ * i porównuje się z `0` inaczej niż `0` (`Object.is`), więc pozycja tuż nad lewą krawędzią
+ * potrafiłaby zerwać porównanie dokumentów, którego cały ten plik broni. `-0 + 0` to `0`. */
+function toGrid(value: number): number {
+  return Math.round(value / GRID) * GRID + 0;
+}
+
 /** Najbliższa całkowita wielokrotność `GRID`.
  *
  * `240.00000001` brudzi diff przy każdym najechaniu myszą, `240` nie brudzi go nigdy. */
-export function snap(_point: Point): Point {
-  throw new Error('not implemented');
+export function snap(point: Point): Point {
+  return { x: toGrid(point.x), y: toGrid(point.y) };
 }
 
 /** Płótno → plik. `prev` niesie wszystko, czego płótno nie dotyka (`format`, `id`, `name`).

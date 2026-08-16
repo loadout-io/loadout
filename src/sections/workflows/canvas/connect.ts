@@ -12,7 +12,8 @@
  * z jednym argumentem, bo w React Flow ta funkcja jest domknięciem nad żywym grafem. Tutaj graf
  * przychodzi jawnie — płótno robi `isValidConnection={(c) => isValidConnection(c, file)}`.
  */
-import type { Point, WorkflowFile } from '../../../state/workflows';
+import type { AgentStep, Point, WorkflowFile } from '../../../state/workflows';
+import { snap } from './map';
 
 /** Tyle z `Connection` z `@xyflow/react`, ile ta warstwa czyta. Portów nie mamy (T3 §3.1). */
 export interface Connection {
@@ -60,9 +61,57 @@ export function onConnect(_connection: Connection, _file: WorkflowFile): Workflo
  * Identyfikator nowego kroku wyprowadzamy z dokumentu, a nie z zegara ani z losowości: funkcja
  * ma być czysta, a plik ma się dać porównać gitem po dwóch takich samych gestach. */
 export function onConnectEnd(
-  _event: DropEvent,
-  _connection: ConnectionEnd,
-  _file: WorkflowFile,
+  event: DropEvent,
+  connection: ConnectionEnd,
+  file: WorkflowFile,
 ): WorkflowFile {
-  throw new Error('not implemented');
+  /* Upuszczenie nad istniejącym kafelkiem albo strzałka znikąd: nie powstaje NIC. Strzałkę
+   * rysuje w tym wypadku `onConnect`, a krok dorobiony tutaj byłby kafelkiem-widmem przy
+   * każdym udanym połączeniu. */
+  if (connection.isValid || connection.fromNode === null) return file;
+
+  const step = freshStep(freshId(file), snap(event.at));
+  return {
+    ...file,
+    /* Dopisujemy na KOŃCU: kolejność w `steps` jest kolejnością wstawiania i nigdy nie jest
+     * sortowana [T3 §8.2 reguła 2]. Wstawienie w środek przepisuje ogon pliku w gicie. */
+    steps: [...file.steps, step],
+    /* To jest cały gest: utwórz I połącz. Bez tej linii użytkownik za każdym razem domyka
+     * strzałkę ręcznie, a gest jest połową gestu [T3 §9, „MVP ships" punkt 2]. */
+    links: [...file.links, { from: connection.fromNode.id, to: step.id }],
+  };
+}
+
+/** Identyfikator, którego w tym dokumencie jeszcze nie ma.
+ *
+ * Wyprowadzony z dokumentu, nie z zegara ani z losowości: ta funkcja jest czysta, a dwa takie
+ * same gesty mają dać plik, który da się porównać gitem. Pętla kończy się zawsze — kandydatów
+ * jest o jeden więcej niż zajętych identyfikatorów. */
+function freshId(file: WorkflowFile): string {
+  const taken = new Set(file.steps.map((step) => step.id));
+  for (let n = file.steps.length + 1; ; n += 1) {
+    const candidate = `s_${String(n)}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** Świeży krok rodzaju `agent` — rodzaj `checkpoint` powstaje wyłącznie z przycisku.
+ *
+ * `agent: ''` znaczy „jeszcze nie wybrano" i jest widoczne od razu: walidator (T-12) zgłasza
+ * to jako problem, a panel kroku otwiera się na liście agentów. Zgadywanie pierwszego agenta
+ * z biblioteki byłoby decyzją podjętą za użytkownika w miejscu, w którym on jej nie widzi. */
+function freshStep(id: string, at: Point): AgentStep {
+  return {
+    kind: 'agent',
+    id,
+    name: 'New step',
+    agent: '',
+    overrides: {},
+    copies: 1,
+    instructions: '',
+    skills: 'all',
+    folder: { use: 'project' },
+    handover: 'notes',
+    at,
+  };
 }
