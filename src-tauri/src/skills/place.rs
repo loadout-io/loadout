@@ -19,7 +19,24 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Result, Roots, Scope, Skill, SkillDoc};
+use super::{NON_SPEC_FIELDS, Result, Roots, SPEC_FIELDS, Scope, Skill, SkillDoc};
+
+/// Nazwa pliku umiejętności. Jedna u wszystkich sześciu vendorów [T5 §2.2] — zmienna, żeby
+/// „ten sam plik pod dwiema ścieżkami" znaczyło dosłownie to samo w zapisie i w odczycie
+/// pierwszego wiersza cudzego katalogu.
+const SKILL_FILE: &str = "SKILL.md";
+
+/// Zdanie, którym `context: fork` wraca do ciała [T5 §4.2].
+///
+/// `context` jest polem Claude Code i żaden z pozostałych pięciu vendorów go nie zna, więc
+/// jedyne, co z niego zostaje przenośne, to instrukcja napisana wprost do modelu.
+const FORK_SENTENCE: &str = "Run this as an isolated task.";
+
+/// Tablica pól ma sześć pozycji i [`spec_line`] ma sześć gałęzi. Siódme pole dopisane do
+/// [`SPEC_FIELDS`] bez gałęzi tutaj nie jest błędem kompilacji — po cichu **nie jedzie do
+/// pliku**, a `SKILL.md` bez pola wygląda jak `SKILL.md`, w którym autor go nie podał.
+/// Ta linia zamienia tę ciszę w błąd kompilacji.
+const _: () = assert!(SPEC_FIELDS.len() == 6);
 
 /// Co instalacja zapisze — pokazywane człowiekowi, zanim cokolwiek się wydarzy.
 #[derive(Debug, Clone)]
@@ -123,7 +140,121 @@ pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>
 /// po to, żeby UI mogło powiedzieć, co dokładnie zniknęło.
 #[must_use]
 pub fn emit(skill: &Skill) -> (String, Vec<&'static str>) {
-    todo!("T-18 AC-2: front-matter w kolejności SPEC_FIELDS dla {skill:?}")
+    // Kolejność bierze się z SPEC_FIELDS, a nie z kolejności gałęzi w `spec_line`. Dzięki
+    // temu przestawienie pól w tablicy przestawia plik, zamiast rozjechać się z nim.
+    let front: String = SPEC_FIELDS
+        .into_iter()
+        .filter_map(|field| spec_line(skill, field))
+        .collect();
+
+    // Zdjęte nie znaczy skasowane. Te dwa pola mają przenośny odpowiednik w prozie i wracają
+    // PRZED pierwszym akapitem: agent, który przeczyta instrukcję wcześniej niż to, jak go
+    // wywołano, wykona ją z niepełną wiedzą [T5 §4.2].
+    let mut preamble = String::new();
+    if let Some(hint) = skill
+        .extras
+        .get("argument-hint")
+        .filter(|hint| !hint.trim().is_empty())
+    {
+        preamble.push_str(&format!("Arguments: {hint}\n"));
+    }
+    // Tylko `fork`. Inna wartość `context` znaczy coś, czego nie umiemy przetłumaczyć, a
+    // zdanie postawione „na wszelki wypadek" kłamie o tym, jak umiejętność pobiegnie.
+    if skill
+        .extras
+        .get("context")
+        .is_some_and(|context| context.trim() == "fork")
+    {
+        preamble.push_str(FORK_SENTENCE);
+        preamble.push('\n');
+    }
+    if !preamble.is_empty() && !skill.body.is_empty() {
+        preamble.push('\n');
+    }
+
+    // Zwracamy `&'static str` z tablicy, nie klucze z mapy: lista zdjętych pól ma nazywać
+    // czternaście pól, o których wiemy, dlaczego spadły. Pole spoza tej czternastki (import
+    // z jutrzejszej wersji vendora) też nie trafia do front-mattera — ale nie umiemy o nim
+    // powiedzieć nic ponad „nie ma go w specyfikacji", więc go nie nazywamy.
+    let stripped: Vec<&'static str> = NON_SPEC_FIELDS
+        .into_iter()
+        .filter(|field| skill.extras.contains_key(*field))
+        .collect();
+
+    (
+        format!("---\n{front}---\n{preamble}{}", skill.body),
+        stripped,
+    )
+}
+
+/// Jeden wiersz (albo blok) front-mattera dla nazwanego pola specyfikacji — albo `None`,
+/// kiedy pola nie ma.
+///
+/// `None` nie jest tym samym, co pusta wartość: `license:` bez niczego za dwukropkiem jest
+/// wartością, o którą następny czytelnik musi zapytać, a `metadata:` bez par jest mapą pustą,
+/// nie mapą nieobecną.
+fn spec_line(skill: &Skill, field: &str) -> Option<String> {
+    match field {
+        "name" => (!skill.name.is_empty()).then(|| format!("name: {}\n", scalar(&skill.name))),
+        "description" => (!skill.description.is_empty())
+            .then(|| format!("description: {}\n", scalar(&skill.description))),
+        "license" => skill
+            .license
+            .as_ref()
+            .map(|value| format!("license: {}\n", scalar(value))),
+        "compatibility" => skill
+            .compatibility
+            .as_ref()
+            .map(|value| format!("compatibility: {}\n", scalar(value))),
+        "metadata" => (!skill.metadata.is_empty()).then(|| {
+            let pairs: String = skill
+                .metadata
+                .iter()
+                .map(|(key, value)| format!("  {key}: {}\n", scalar(value)))
+                .collect();
+            format!("metadata:\n{pairs}")
+        }),
+        "allowed-tools" => skill
+            .allowed_tools
+            .as_ref()
+            .map(|value| format!("allowed-tools: {}\n", scalar(value))),
+        // Nieosiągalne, dopóki stoi `const _: () = assert!(SPEC_FIELDS.len() == 6)` u góry
+        // pliku: siódma nazwa w tablicy nie skompiluje się, zamiast po cichu tu wpaść.
+        _ => None,
+    }
+}
+
+/// Wartość YAML-a: gołym tekstem, kiedy to bezpieczne, w cudzysłowie, kiedy nie.
+///
+/// DLACZEGO nie zawsze w cudzysłowie: `SKILL.md` w zakresie projektu ląduje w repo zespołu
+/// i człowiek go czyta. DLACZEGO nie zawsze gołym: `description` przychodzi z importu
+/// z sieci, a wartość zaczynająca się od `[`, zawierająca `: ` albo wyglądająca jak `true`
+/// zmienia typ pola — i pięciu vendorów odmawia wtedy czegoś, czego autor nigdy nie napisał.
+fn scalar(value: &str) -> String {
+    const INDICATORS: [char; 15] = [
+        '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '%',
+    ];
+
+    let plain = !value.is_empty()
+        && value.trim() == value
+        && !value.starts_with(INDICATORS)
+        && !value.starts_with(['\'', '"', '@', '`'])
+        && !value.contains(": ")
+        && !value.contains(" #")
+        && !value.ends_with(':')
+        && !value.chars().any(char::is_control)
+        // Gołe `true`, `null` i `42` wczytują się jako wartość innego typu niż tekst.
+        && value.parse::<f64>().is_err()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~"
+        );
+
+    if plain {
+        value.to_owned()
+    } else {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 /// Co się wydarzy, jeszcze zanim cokolwiek się wydarzy.
