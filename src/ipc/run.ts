@@ -7,11 +7,8 @@
  *
  * Sink jest WSTRZYKIWANY, żeby ten plik nie musiał znać magazynu stanu: pierścień 2000 linii
  * na agenta i wirtualizacja to T-08, nie to zadanie.
- *
- * STAN TEGO PLIKU: SZKIELET (2026-08-16). Ciało `wireChannel` rzuca, więc kryterium pada na
- * ZACHOWANIU, w czasie wykonania (`AGENTS.md` §2a p. 5).
  */
-import type { Line } from './types';
+import { parseLine, type Line } from './types';
 
 /**
  * Minimalny kształt kanału, którego to opakowanie dotyka — dokładnie jedno pole, do zapisu.
@@ -34,8 +31,23 @@ export type LineSink = (lines: Line[]) => void;
  * wywrócony `onmessage` zabiera cały widok, nie jedną linię.
  */
 export function wireChannel(channel: LineChannel, sink: LineSink): void {
-  // SZKIELET (2026-08-16). Świadomie brak zachowania: nic nie jest wpinane, więc paczka nie
-  // dociera nigdzie. Stub, który by wpinał `sink` wprost, przechodziłby kryterium przy
-  // paczkach zbudowanych z poprawnych wierszy — czyli dokładnie przy tych, którymi ono mierzy.
-  throw new Error(`not implemented: wireChannel got ${typeof channel} and ${typeof sink}`);
+  channel.onmessage = (batch) => {
+    // Pętla po paczce, a NIE `batch.forEach(l => sink([l]))`. Ta druga postać oddaje w całości
+    // to, za co zapłaciliśmy pompą po stronie Rusta: paczka 500 wierszy staje się 500
+    // aktualizacjami stanu, czyli 500 renderami, po tym jak Rust wysłał jedną wiadomość.
+    // Filtrowanie idzie tutaj, bo `flatMap` z `?? []` alokowałby tablicę na każdy wiersz.
+    const lines: Line[] = [];
+    for (const value of batch) {
+      const line = parseLine(value);
+      if (line !== null) {
+        lines.push(line);
+      }
+    }
+
+    // Jedno wywołanie na paczkę — także wtedy, gdy z paczki nie przeżył ani jeden wiersz.
+    // Liczba dotknięć frontu ma zależeć od liczby WIADOMOŚCI, nie od tego, ile z nich lustro
+    // akurat zrozumiało; warunek „wołaj tylko, gdy coś zostało" wprowadza drugą regułę tam,
+    // gdzie ma być jedna.
+    sink(lines);
+  };
 }
