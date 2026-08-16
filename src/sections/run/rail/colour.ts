@@ -21,14 +21,23 @@
  */
 import type { AgentStatus } from './card';
 
-/** Pięć przygaszonych kolorów tożsamości. Szósty agent zawija się na pierwszy. */
-export const IDENTITY: readonly string[] = [
+/**
+ * Pięć przygaszonych kolorów tożsamości. Szósty agent zawija się na pierwszy.
+ *
+ * `as const`, bo tylko krotka daje `PALETTE[0]` typ pewny zamiast `string | undefined`
+ * (`noUncheckedIndexedAccess`), a bez tego zawijanie niżej musiałoby mieć gałąź awaryjną
+ * z literałem przepisanym obok tej listy — czyli drugie miejsce, w którym stoi nazwa koloru.
+ */
+const PALETTE = [
   '--color-id-1',
   '--color-id-2',
   '--color-id-3',
   '--color-id-4',
   '--color-id-5',
-];
+] as const;
+
+/** Ta sama paleta jako zwykła lista — do sprawdzenia „czy ta nazwa jest tożsamością". */
+export const IDENTITY: readonly string[] = PALETTE;
 
 /**
  * Cztery nasycone kolory stanu — cały słownik semantyczny aplikacji [DESIGN §3].
@@ -44,6 +53,48 @@ export const STATUS: readonly string[] = [
 ];
 
 /**
+ * Stan → nazwa tokenu. `Record`, nie `switch` z gałęzią domyślną, i to jest cała totalność:
+ * siódmy stan dopisany do `AgentStatus` przestaje TU się kompilować, zamiast po cichu wpaść
+ * do gałęzi „reszta" i dostać kolor, którego nikt mu nie przydzielił.
+ *
+ * Trzy stany wychodzą na `--color-muted` i żaden z nich nie jest tam z lenistwa:
+ *   `done`     rzecz skończona jest cicha — zielony znaczy „dzieje się teraz" [DESIGN §3],
+ *   `stopped`  agent, którego krok odwołano, też się już nie dzieje,
+ *   `waiting`  czeka na innego agenta, nie na CIEBIE. `--color-attend` odpowiada na jedno
+ *              pytanie — „co czeka na moją decyzję" — a agent czekający na kolegę nie jest
+ *              odpowiedzią na nie. Pomarańczowy przy każdym bezczynnym agencie to dokładnie
+ *              ten sposób, w jaki kolor przestaje cokolwiek znaczyć.
+ */
+const OF_STATUS: Readonly<Record<AgentStatus, string>> = {
+  working: '--color-accent',
+  waiting: '--color-muted',
+  'needs you': '--color-attend',
+  failed: '--color-fail',
+  done: '--color-muted',
+  stopped: '--color-muted',
+};
+
+/**
+ * Odcisk nazwy agenta — FNV-1a, 32 bity.
+ *
+ * Z NAZWY, nie z pozycji w liście, i na tym stoi całe kryterium stabilności: przydział
+ * liczony z indeksu wygląda poprawnie na pierwszym zrzucie ekranu i przemalowuje połowę
+ * listy w chwili, w której pod-agent wejdzie do biegu w środku. Ta funkcja nie wie, że
+ * lista istnieje, więc nie ma jak od niej zależeć.
+ *
+ * `Math.imul`, bo zwykłe `*` na 32-bitowych liczbach przekracza zakres, w którym `number`
+ * trzyma liczby całkowite dokładnie, i odcisk przestaje być odciskiem po kilku znakach.
+ */
+function fingerprint(agent: string): number {
+  let hash = 2_166_136_261;
+  for (let at = 0; at !== agent.length; at += 1) {
+    hash ^= agent.charCodeAt(at);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+/**
  * Kolor tożsamości tego agenta — nazwa tokenu.
  *
  * Przydział musi być STABILNY: ten sam agent dostaje ten sam kolor niezależnie od tego,
@@ -51,11 +102,16 @@ export const STATUS: readonly string[] = [
  * w tablicy wygląda poprawnie na pierwszym zrzucie ekranu i przemalowuje połowę listy
  * w chwili, w której pod-agent wejdzie do biegu w środku.
  */
-export function identityToken(_agent: string): string {
-  throw new Error('not implemented');
+export function identityToken(agent: string): string {
+  const slot = fingerprint(agent) % PALETTE.length;
+  /* `?? PALETTE[0]` jest nieosiągalne — `slot` jest resztą z dzielenia przez długość tej
+   * samej krotki — i stoi tu tylko dlatego, że `noUncheckedIndexedAccess` nie umie tego
+   * udowodnić. Ważne jest, DOKĄD prowadzi: z powrotem do palety tożsamości. Gałąź awaryjna
+   * sięgająca po cokolwiek spoza niej byłaby tym samym błędem, co złe zawijanie. */
+  return PALETTE[slot] ?? PALETTE[0];
 }
 
 /** Kolor stanu — nazwa tokenu. Totalny na sześciu stanach, obraz ma cztery elementy. */
-export function statusToken(_status: AgentStatus): string {
-  throw new Error('not implemented');
+export function statusToken(status: AgentStatus): string {
+  return OF_STATUS[status];
 }

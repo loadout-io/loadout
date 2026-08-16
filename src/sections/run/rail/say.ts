@@ -9,8 +9,8 @@
  * Stąd `who` obok tekstu, zawsze, a nie „gdy się przyda". Zdanie bez podpisu autorytetu
  * czyta się jak fakt niezależnie od tego, czym jest.
  */
-import type { FeedLine } from '../../../state/run';
 import type { Who } from '../../../state/run';
+import type { Kind } from '../feed/kinds';
 import type { Say } from './card';
 
 /**
@@ -27,11 +27,117 @@ const AUTHORITY: Readonly<Record<Who, true>> = { agent: true, loadout: true, you
 export const AUTHORITIES: readonly Who[] = Object.keys(AUTHORITY) as Who[];
 
 /**
- * Zdanie kafelka dla agenta, który nadał te linie.
+ * Kto napisał zdanie, które niesie wiersz tego rodzaju.
  *
- * Wejściem są linie z drutu, nie wiersze historii: `ran` niesie `ok` tylko przed sklejeniem,
- * a bez `ok` nie da się odróżnić „agent coś powiedział" od „sprawdzenia coś powiedziały".
+ * Rozstrzyga RODZAJ, nie kolejność i nie treść. Implementacja biorąca „to, co przyszło
+ * ostatnie" i podpisująca to agentem myli się dokładnie tam, gdzie to boli: `3 of 40 failed`
+ * policzyły sprawdzenia, a nie agent, więc podane jako cytat agenta jest `agent said`
+ * w rubryce `happened` [00-SYNTHESIS §2.2].
+ *
+ * Dwa rodzaje należą do agenta i oba są jego własnymi słowami: proza (`note`) i pytanie,
+ * które zadał (`asked`). Całą resztę — od `Read 6 files` po `Finished in 4m 12s` — pisze
+ * mapper po stronie Rusta, czyli Loadout, choćby opisywała cudzą pracę.
+ *
+ * `Record<Kind, Who>`, nie `switch` z gałęzią domyślną: piętnasty rodzaj dopisany po stronie
+ * Rusta przestaje TU się kompilować, zamiast po cichu dostać cudzy podpis.
  */
-export function sayFor(_lines: readonly FeedLine[]): Say {
-  throw new Error('not implemented');
+const AUTHOR: Readonly<Record<Kind, Who>> = {
+  run: 'loadout',
+  step: 'loadout',
+  agent: 'loadout',
+  note: 'agent',
+  asked: 'agent',
+  handoff: 'loadout',
+  problem: 'loadout',
+  done: 'loadout',
+  read: 'loadout',
+  search: 'loadout',
+  edit: 'loadout',
+  ran: 'loadout',
+  memory: 'loadout',
+  thinking: 'loadout',
+};
+
+/** Kto powiedział to, co niesie wiersz tego rodzaju. */
+export function authorityOf(kind: Kind): Who {
+  return AUTHOR[kind];
+}
+
+/**
+ * Jedna rzecz, którą agent nadał: rodzaj i zdanie, jakie ta rzecz niesie.
+ *
+ * Celowo NIE jest to ani `FeedLine`, ani `HistoryRow`. Zdanie kafelka powstaje w dwóch
+ * miejscach — lista kafelków ma pod ręką wiersze historii (`roster.ts`), a scena testowa
+ * linie z drutu — i gdyby polityka „kto mówi" umiała czytać tylko jeden z tych dwóch
+ * kształtów, drugie miejsce musiałoby ją przepisać u siebie. Tak właśnie po cichu umarło
+ * skanowanie sekretów w meetnotes: polityka przepisana w adapterze (niezmiennik 23).
+ *
+ * `text` jest opcjonalne, bo dokładnie jeden rodzaj go nie ma: `thinking` nie niesie zdania
+ * [T2 §7.2 wiersz 4].
+ */
+export interface Utterance {
+  readonly kind: Kind;
+  readonly text?: string;
+}
+
+/**
+ * Co robi agent, który o coś zapytał — zdanie Loadouta, nie treść pytania.
+ *
+ * Pytanie ma JEDNO żywe miejsce: przyklejony blok z przyciskami. Powtórzone na kafelku daje
+ * dwa regiony na jeden fakt, przy limicie 1 (niezmiennik 13), a kafelek i tak nie ma miejsca
+ * na trzy warianty odpowiedzi. To samo zdanie stoi w strefie TERAZ [feed/model.ts,
+ * `WAITING_ON_YOU`] i z tego samego powodu.
+ */
+const WAITING_ON_YOU = 'Waiting for your answer';
+
+/**
+ * Co robi agent, po którym nie ma jeszcze ani jednego zdania.
+ *
+ * Jedyny stan, w którym linie są, a zdania nie ma: same `thinking`. Pusty kafelek czyta się
+ * jak zepsuty agent, a wymyślone zdanie jest gorsze od pustego, więc zostaje to jedno słowo,
+ * którym Loadout nazywa ten stan wszędzie indziej [T2 §7.3 reguła 5].
+ */
+const THINKING = 'Thinking…';
+
+/**
+ * Jedna linia, zawsze.
+ *
+ * Ciągi białych znaków — łącznie ze znakiem nowej linii w środku zdania — schodzą do jednej
+ * spacji, wynik jest przycięty z obu stron. Kafelek ma sufit czterech linii [ARCHITECTURE §7]
+ * i notatka złamana przez agenta w połowie zdania przewraca go, nie dokładając ani jednego
+ * pola, na które patrzy kryterium.
+ *
+ * Czego tu NIE MA: obcięcia do stałej liczby znaków. Skracaniem zajmuje się arkusz stylów
+ * (`text-overflow: ellipsis`, makieta linia 185), bo wtedy pełne zdanie wraca, kiedy okno
+ * się poszerzy. Obcięte w kodzie nie wraca nigdy, a kafelek jest jedynym miejscem, w którym
+ * to zdanie widać.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Zdanie kafelka dla agenta, który nadał te rzeczy — i podpis pod nim.
+ *
+ * Wygrywa NAJNOWSZE zdanie, nie najnowsza notatka. Agent pisze prozą, potem padają
+ * sprawdzenia — i to sprawdzenia są tym, co stało się ostatnie, więc kafelek mówi o nich,
+ * podpisany Loadoutem. Notatka dalej należy do agenta; przestała tylko być najświeższa.
+ */
+export function sayFor(said: readonly Utterance[]): Say {
+  /* Przód, nie tył: pętla od końca wymaga indeksowania, a `noUncheckedIndexedAccess` robi
+   * z każdego takiego odczytu gałąź „a jeśli nie ma", której nie da się wykonać. Rodzaj
+   * i zdanie osobno, żeby nie trzeba było tej samej gałęzi dopisywać po pętli. */
+  let kind: Kind | null = null;
+  let text = '';
+  for (const utterance of said) {
+    if (utterance.text === undefined) continue;
+    kind = utterance.kind;
+    text = utterance.text;
+  }
+
+  if (kind === null) return { text: THINKING, who: 'loadout' };
+  /* Podpis idzie za ZDANIEM, nie za linią: skoro kafelek nie cytuje pytania, tylko mówi,
+   * na co ono czeka, to zdanie jest Loadouta i tak ma być podpisane. */
+  if (kind === 'asked') return { text: WAITING_ON_YOU, who: 'loadout' };
+  return { text: oneLine(text), who: authorityOf(kind) };
 }

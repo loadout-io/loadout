@@ -15,8 +15,10 @@
  * reguła, przez którą w referencyjnym redesign poprzedniego prototypu agent Forge miał dokładnie ten hex,
  * który na sąsiednim kafelku znaczył „czeka na twoją decyzję".
  */
-import type { FeedLine } from '../../../state/run';
 import type { Who } from '../../../state/run';
+import { identityToken } from './colour';
+import type { Utterance } from './say';
+import { sayFor } from './say';
 
 /**
  * Sześć stanów, w jakich lista agentów pokazuje agenta.
@@ -54,9 +56,12 @@ export interface RailCard {
 /**
  * Agent tak, jak widzi go lista agentów: fakty z definicji plus to, co sam nadał.
  *
- * `lines` to linie z drutu, nie wiersze historii, i to jest różnica z powodem: `say` musi
- * odróżnić prozę agenta od podsumowania sprawdzeń, a `ran` niesie `ok` wyłącznie przed
- * sklejeniem. Wiersz historii tę informację już zgubił.
+ * `lines` to `Utterance`, czyli para (rodzaj, zdanie) — najmniejszy kształt, jaki wystarcza
+ * zdaniu kafelka. Linia z drutu (`FeedLine`) jest nim bez żadnej przeróbki, a wiersz historii
+ * daje się do niego sprowadzić jednym mapowaniem [roster.ts]. To nie jest ubożenie typu, tylko
+ * jedyny sposób, żeby polityka „kto to powiedział" istniała RAZ: kafelki w prawdziwym biegu
+ * powstają z wierszy historii, a `railCard` musi dawać tę samą odpowiedź w obu wywołaniach
+ * (niezmiennik 23).
  */
 export interface AgentInRun {
   readonly id: string;
@@ -64,10 +69,24 @@ export interface AgentInRun {
   readonly role: string;
   readonly status: AgentStatus;
   /** Wszystko, co ten agent nadał, w kolejności napłynięcia. */
-  readonly lines: readonly FeedLine[];
+  readonly lines: readonly Utterance[];
 }
 
-/** Kafelek tego agenta. */
-export function railCard(_agent: AgentInRun): RailCard {
-  throw new Error('not implemented');
+/**
+ * Kafelek tego agenta.
+ *
+ * Sześć pól i ani jednego więcej — funkcja jest krótka i taka ma zostać. Każdy licznik,
+ * który kusi, żeby go tu dopisać („12 files · 2m 04s"), jest piątą linią kafelka: wygląda
+ * dobrze przy jednym agencie i rozjeżdża listę przy czterech [ARCHITECTURE §7].
+ */
+export function railCard(agent: AgentInRun): RailCard {
+  return {
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    say: sayFor(agent.lines),
+    /* Z `id`, nie z `name`: podpis w strumieniu jest tym, co się nie zmienia. */
+    square: identityToken(agent.id),
+    status: agent.status,
+  };
 }
