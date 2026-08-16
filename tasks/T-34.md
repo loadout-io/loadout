@@ -1,0 +1,97 @@
+# T-34 — Transkrypt na dysku: dzis niezmiennik 4 jest FALSZYWY
+
+`AGENTS.md` niezmiennik 4 mowi: **pliki sa prawda, `SQLite` jest indeksem** — `loadout.db` musi dac
+sie skasowac bez utraty czegokolwiek. Dla transkryptow to zdanie jest dzis **nieprawda**, i to nie
+z powodu bledu w magazynie: `store::rebuild_from` dziala i ma na to kryterium (T-06 AC-4), tylko
+odbudowuje z pliku, ktorego **nikt nie pisze**.
+
+Zmierzone na wyladowanym trunku (przeglad zewnetrzny 2026-08-16): produkcyjna petla sterownika
+**nie tee'uje**, `logs/agent-<id>.jsonl` nie powstaje po zadnym biegu. Skasuj `loadout.db` po
+prawdziwym biegu i tracisz zdarzenia bezpowrotnie — czyli dokladnie to, przed czym stoi caly
+podsystem magazynu.
+
+Druga polowa tej samej luki: zywa sciezka podaje `tool: None`, wiec kurowane wiersze `Read`,
+`Edited`, `Ran` — **sedno** `docs/ARCHITECTURE.md` §6 i cala wartosc produktu wedlug D4 — nie
+powstaja w prawdziwym biegu. Powstaja wylacznie w testach, ktore podaja `tool` recznie.
+
+**Read first:**
+`AGENTS.md` niezmienniki 4, 21 · `docs/ARCHITECTURE.md` §6 (kuracja: zdarzenie → linia) i §8
+(uklad plikow: `<repo>/.loadout/runs/<ts>__<id>/{run.json,logs/,handoffs/}`) ·
+`src-tauri/src/store/rebuild.rs` (T-06 — czyta `logs/agent-<id>.jsonl`; ten format jest kontraktem,
+nie propozycja) · `src-tauri/src/engine/stream.rs` (T-05, kuracja).
+
+## Kto to robi
+
+- **Agent:** `rust-core`
+- **Druga opinia:** inny vendor niz pisarz (D3).
+- **Artefakty biegu:** `runs/T-34/`
+
+## Co to zadanie posiada
+
+- `src-tauri/src/engine/drivers/claude.rs` — **waski mandat**: podpiac tee w petli czytajacej
+  stdout i przekazac rodzaj narzedzia dalej. Zadnej zmiany w polityce argv, w `env_clear()`
+  ani w eskalacji zabijania.
+- `src-tauri/src/engine/stream.rs` — **waski mandat**: przyjac `tool` na zywej sciezce.
+  Regul zwijania i tabeli rodzajow linii nie ruszamy — maja swoje kryteria w T-05 i T-08.
+- Trzy pliki testow wymienione przy `check:`.
+
+## Niezmienniki
+
+- **4 — pliki sa prawda.** To zadanie istnieje wylacznie po to, zeby to zdanie stalo sie prawdziwe
+  dla transkryptow.
+- **21 — nie pisz artefaktu, ktorego zaden skrypt nie czyta.** Odwrotnie tez: nie czytaj artefaktu,
+  ktorego nikt nie pisze. `rebuild.rs` czyta go od T-06 i do dzis nie dostal ani jednego.
+- **5 — nigdy nie wywalaj biegu na nieznanym zdarzeniu.** Tee zapisuje **surowa linie**, takze te,
+  ktorej parser nie rozumie. Plik ma przezyc vendora, ktory jutro doda typ zdarzenia.
+
+## Kryteria akceptacji
+
+## AC-1 Kazda surowa linia agenta ladu je w pliku, takze ta, ktorej nie rozumiemy
+check: cargo test --test stream_raw_tee_live
+
+Pusc krok przez sterownik na atrapie procesu emitujacej **piec** linii NDJSON, z ktorych jedna ma
+nieznany `type`. Asercje: `logs/agent-<id>.jsonl` istnieje pod katalogiem biegu z §8; ma **piec**
+wierszy; kazdy jest **bajt w bajt** tym, co wyszlo z procesu, w tej samej kolejnosci; nieznana
+linia jest w pliku tak samo jak reszta.
+
+*Slaba asercja:* sprawdzenie, ze plik istnieje i nie jest pusty. Przechodzi na implementacji, ktora
+zapisuje wylacznie linie zrozumiane — a wtedy plik klamie tym mocniej, im nowszy jest vendor.
+Dyskryminuje: **rownosc bajtowa** i obecnosc linii nieznanej.
+
+## AC-2 Po skasowaniu bazy bieg odtwarza sie z plikow, co do zdarzenia
+check: cargo test --test stream_tee_survives_db_delete
+
+Pusc krok jak wyzej, zapisz zdarzenia do magazynu, **skasuj plik bazy**, wywolaj
+`Store::rebuild_from` na katalogu biegu i porownaj: te same zdarzenia, w tej samej kolejnosci `seq`,
+z ta sama trescia. To jest niezmiennik 4 zamkniety w jednym tescie — polowe ma T-06 (odbudowa),
+druga polowa jest tutaj (zrodlo, z ktorego odbudowuje).
+
+*Slaba asercja:* porownanie licznika zdarzen. Przechodzi, gdy odbudowa gubi tresc i zostawia puste
+wiersze. Dyskryminuje: porownanie **tresci** kazdego zdarzenia, nie liczby.
+
+## AC-3 Zywy bieg produkuje wiersze kurowane, a nie same surowe
+check: cargo test --test stream_live_curation
+
+Ta sama atrapa procesu emituje zdarzenia narzedzi: odczyt pliku, edycja pliku, uruchomienie komendy.
+Asercje: linie, ktore wychodza do UI, niosa **rodzaj narzedzia**, a nie `None`; wiersz odczytu czyta
+sie inaczej niz wiersz edycji; komenda niesie swoj kod wyjscia.
+
+Kontrola przeciw pustej asercji: ta sama atrapa z `tool: None` daje wiersz ogolny — czyli dzisiejszy
+stan — i test ma to **odroznic**, a nie przepuscic.
+
+*Slaba asercja:* sprawdzenie, ze cokolwiek wyszlo. Przechodzi dzis, na `tool: None`, bo linie
+powstaja — tylko wszystkie sa takie same. Dyskryminuje: **roznica** miedzy trzema rodzajami.
+
+## Swiadomie poza zakresem
+
+- **Reguly zwijania i czternascie rodzajow linii** — T-05 i T-08, wyladowane.
+- **Odbudowa magazynu** — T-06 AC-4, wyladowana. Tutaj powstaje jej zrodlo.
+- **Pompa IPC** — T-07. Tee siedzi przed nia, nie w niej.
+
+<!-- OWNS
+src-tauri/src/engine/drivers/claude.rs
+src-tauri/src/engine/stream.rs
+src-tauri/tests/stream_raw_tee_live.rs
+src-tauri/tests/stream_tee_survives_db_delete.rs
+src-tauri/tests/stream_live_curation.rs
+-->
