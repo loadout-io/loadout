@@ -709,6 +709,55 @@ pub fn capability(field: Field, vendor: Vendor) -> Option<Capability> {
         .map(|(_, _, answer)| *answer)
 }
 
+/// Wpis przelotki, który nie dojechał do argv, i powód, dla którego nie dojechał.
+///
+/// Dwa pola, bo użytkownik potrzebuje dwóch rzeczy naraz: **który wiersz skasować** (`flag`)
+/// i **dlaczego** (`escalation`). Odmowa bez nazwy uczy go, że przelotka nie działa — zamiast
+/// tego, że została zablokowana; po stronie kroku workflow tę samą pomyłkę naprawia zdanie
+/// z `workflow::check`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    /// Klucz z `vendorOptions`, znak w znak taki, jak stoi w pliku agenta.
+    pub flag: String,
+    /// Podniesienie, przez które ten wpis odpadł. Słowo wzięte z JEDNEJ listy polityki
+    /// (`workflow::check::FORBIDDEN_ESCALATIONS`), nigdy z drugiej kopii — druga kopia listy
+    /// to sposób, w jaki w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23).
+    pub escalation: String,
+}
+
+/// Co przelotka oddaje vendorowi — i co jej po drodze odebrano.
+///
+/// Jedna wartość, dwie odpowiedzi, bo pytanie jest jedno: „co z tego pojedzie do argv".
+/// Rozbicie na dwie funkcje dałoby dwa przebiegi tej samej pętli po tej samej mapie i dwa
+/// miejsca, w których filtr może się rozjechać sam ze sobą.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Passthrough {
+    /// Argumenty w kolejności `klucz, wartość, klucz, wartość` — to, co dostaje vendor.
+    pub args: Vec<String>,
+    /// Odrzucone wpisy, po jednym na wpis. Puste, kiedy przelotka niczego nie podnosiła.
+    pub refused: Vec<Refusal>,
+}
+
+/// Jak [`vendor_args`], tylko mówi też, **czego nie przepuściła**.
+///
+/// `DECISIONS-LOCKED.md` §D6 stawia na przelotce dwa ograniczenia; drugie brzmi dosłownie
+/// „przelotka nie omija diala bezpieczeństwa". Filtr stoi tutaj, **zanim** ktokolwiek podepnie
+/// tę funkcję do biegu: podpięcie będzie jednolinijkowe i nikt przy nim nie przeczyta D6.
+///
+/// Lista podniesień jest ta sama, którą przy zapisie workflow czyta `workflow::check` — jedna
+/// lista, jedno miejsce (niezmiennik 23). Druga kopia rozjechałaby się w dniu, w którym ktoś
+/// dopisze flagę tylko do jednej z nich, i dokładnie tak powstała ta dziura.
+#[must_use]
+pub fn vendor_args_filtered(agent: &Agent, vendor: &str) -> Passthrough {
+    // SZKIELET (faza kontraktu). Sygnatura istnieje po to, żeby kryterium akceptacji się
+    // skompilowało i padło w CZASIE WYKONANIA, a nie na „unresolved import" — czerwień, która
+    // niczego nie uruchomiła, nie jest czerwienią (AGENTS.md §2a p. 5). Ciało pisze faza
+    // implementacji, a `clippy::todo = deny` w Cargo.toml pilnuje, żeby ten wiersz nie dojechał
+    // do pełnej bramki.
+    let _ = (agent, vendor);
+    todo!("odsiej wpisy podnoszące dial bezpieczeństwa i nazwij każdy odrzucony")
+}
+
 /// Tłumaczy przelotkę [`VendorOptions`] na dodatkowe argumenty **jednego** vendora.
 ///
 /// Czysta funkcja i nic więcej. Komendę buduje sterownik — `claude.rs` (T-04) i `codex.rs`
