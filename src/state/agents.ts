@@ -1,8 +1,5 @@
 /* Magazyn sekcji Agents.
  *
- * SZKIELET. `duplicate` i `delete` rzucają, żeby kryterium 7 padło na braku zachowania,
- * a nie na braku modułu (AGENTS.md §2a p. 5).
- *
  * Ten plik NIE importuje `@/ipc`. Nazwy komend zna jedno miejsce w sekcji —
  * `src/sections/agents/io.ts` — i to ono wstrzykuje tu `AgentsIo` (niezmiennik 23: polityka
  * w jednym rdzeniu, adaptery po pięć linii). Test wstrzykuje atrapę zamiast mockować
@@ -67,19 +64,37 @@ export interface AgentsState {
 }
 
 export function createAgentsStore(io: AgentsIo) {
-  return create<AgentsState>()((set) => ({
+  return create<AgentsState>()((set, get) => ({
     agents: [],
 
     load: async () => {
       set({ agents: await io.list() });
     },
 
-    duplicate: async () => {
-      throw new Error('duplicating an agent is not written yet');
+    duplicate: async (id: string) => {
+      const original = get().agents.find((agent) => agent.id === id);
+      if (original === undefined) return;
+
+      /* `structuredClone`, nie `{ ...original }`. Płytka kopia współdzieli `skills`,
+       * `connections` i `vendorOptions` z oryginałem, więc pierwsza edycja kopii po cichu
+       * przepisuje agenta, którego użytkownik nie tknął — i dowiaduje się o tym po biegu,
+       * nie po ekranie. Kopiowanie przez wyliczenie pól ma tę samą wadę o dzień później:
+       * pierwsze dopisane pole-lista jest znowu współdzielone i nikt tego nie zauważa. */
+      const copy: Agent = {
+        ...structuredClone(original),
+        id: await io.newId(),
+        name: `${original.name} (copy)`,
+      };
+
+      set({ agents: [...get().agents, copy] });
+      /* Duplikat to nowy PLIK. Kopia, która żyje tylko na ekranie, znika przy następnym
+       * uruchomieniu — a agent, który zniknął, wygląda jak awaria zapisu (T4 §5.3). */
+      await io.save(copy);
     },
 
-    delete: async () => {
-      throw new Error('deleting an agent is not written yet');
+    delete: async (id: string) => {
+      set({ agents: get().agents.filter((agent) => agent.id !== id) });
+      await io.remove(id);
     },
   }));
 }

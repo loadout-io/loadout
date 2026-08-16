@@ -1,15 +1,6 @@
 //! Definicja agenta: kształt na drucie, dwuwarstwowe dziedziczenie, plik na dysku
 //! i przelotka na opcje vendora.
 //!
-//! **To jest szkielet.** Ciała funkcji są `todo!()`, żeby kryteria akceptacji dało się
-//! uruchomić i żeby padły na BRAKU ZACHOWANIA, a nie na braku modułu (`AGENTS.md` §2a p. 5).
-//! `clippy::todo = "deny"` w `Cargo.toml` pilnuje, żeby ani jeden z nich nie dożył pełnej
-//! bramki.
-//!
-//! Parametry mają na razie podkreślenie, bo puste ciało ich nie używa, a `-D warnings`
-//! w bramce podnosi `unused_variables` do błędu. Implementacja zdejmuje podkreślenie tym
-//! samym ruchem, którym kasuje `todo!()` — jedno i drugie znika razem.
-//!
 //! Trzy reguły trzymają ten plik w kupie i żadna nie jest kosmetyczna:
 //!
 //! 1. **Każde pole [`Agent`] jest wymagane** — ani jednego `Option<T>`. Szablon jest zawsze
@@ -21,13 +12,31 @@
 //!    który się nie wczyta [T4 §4.3, reguła 1]. Dlatego „brak limitu" to
 //!    `giveUpAfterMinutes: 0`, „brak umiejętności" to `[]`, a „wszystkie narzędzia" to
 //!    wariant [`Tools::Everything`]. Kodujemy brak wartością, nigdy pustką.
+//!
+//! Dwie rzeczy, które T4 bierze z zewnątrz, a ten plik robi sam — obie z tego samego powodu:
+//! `Cargo.toml` nie należy do T-11 (`checks/quick-scope.sh`, lista `DENIED`), więc dołożenie
+//! zależności byłoby pytaniem do człowieka (`AGENTS.md` §7), a nie decyzją do podjęcia w biegu.
+//!
+//! - **Złożenie RFC 7396** (`merge` niżej) zamiast `json_patch::merge` z §7.1. Dwanaście
+//!   linii, ten sam algorytm; `resolve` niżej jest kopią §7.1 co do znaku.
+//! - **Front-matter** (`front_matter`, `scalar`) zamiast `serde_yaml`. Czytamy i piszemy
+//!   podzbiór, który sami produkujemy: `nazwa: wartość` po jednej w wierszu, a struktury
+//!   (`tools`, `vendorOptions`) w stylu przepływowym, czyli w JSON-ie — ten jest legalnym
+//!   YAML-em 1.2 i wraca z `serde_json` bajt w bajt takim, jakim poszedł. Czego ten podzbiór
+//!   NIE zna: bloków wcięciowych, kotwic, wielolinijkowych `|` i `>`. Ręcznie dopisany blok
+//!   wcięciowy jest więc odmową z nazwą pliku, a nie cichym zgubieniem ustawienia.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use uuid::Uuid;
+
+/// Wersja formatu, w którym zapisujemy agenta. Jedna liczba i na razie jedna wartość —
+/// migracja „na przyszłość" jest w `AGENTS.md` na liście zakazanych, a przy `schema < CURRENT`
+/// wchodzi wtedy, kiedy naprawdę powstanie druga wersja [T4 §5.2].
+pub const SCHEMA: u8 = 1;
 
 /// Program, który uruchamia agenta.
 ///
@@ -159,7 +168,28 @@ impl Agent {
     /// serializować, i żeby „jak wygląda zapisany agent" miało jedną odpowiedź w repo.
     #[must_use]
     pub fn example() -> Self {
-        todo!("Agent::example: kryterium 1 zamraża piętnaście kluczy tego obiektu")
+        Self {
+            schema: SCHEMA,
+            // `from_u128`, nie `parse_str`: identyfikator z §5.1 jest tu stałą, a stała nie ma
+            // prawa zwracać `Result`, którego wołający musiałby obsłużyć w kodzie ekranu.
+            id: Uuid::from_u128(0x0198_97b4_8f3a_7c21_9d44_0b6a_1e2c_5f77),
+            name: "Forge".to_string(),
+            summary: "Writes code".to_string(),
+            color: Color::Clay,
+            instructions: "Write the smallest change that makes the checks pass.".to_string(),
+            runs_with: Vendor::ClaudeCode,
+            model: "opus".to_string(),
+            thinking: Thinking::Balanced,
+            file_access: FileAccess::WorkFreely,
+            give_up_after_minutes: 20,
+            tools: Tools::Everything,
+            skills: Vec::new(),
+            connections: Vec::new(),
+            write_results_to: "handoffs/build.md".to_string(),
+            // Pusta i taka ma zostać: niepusta przelotka dokłada szesnasty klucz, a piętnaście
+            // jest tu liczbą, nie zaokrągleniem (kryterium 1).
+            vendor_options: VendorOptions::new(),
+        }
     }
 }
 
@@ -223,16 +253,90 @@ pub enum AgentError {
 /// Cała algebra dziedziczenia to te kilkanaście linii: złożenie RFC 7396 i policzenie
 /// kluczy patcha. Wariant „pełna kopia agenta na kroku" (T4 §4.1 A) byłby prostszy
 /// i **fałszywy**: edycja szablonu nigdy nie dotarłaby do workflow.
-pub fn resolve(_base: &Agent, _overrides: &Overrides) -> Result<Resolved, serde_json::Error> {
-    todo!("resolve: złożenie RFC 7396 plus posortowane nazwy nadpisanych pól")
+pub fn resolve(base: &Agent, overrides: &Overrides) -> Result<Resolved, serde_json::Error> {
+    let patch = serde_json::to_value(overrides)?;
+    let mut doc = serde_json::to_value(base)?;
+    merge(&mut doc, &patch);
+
+    // Nazwy kluczy patcha, nie różnica dwóch pełnych obiektów. To jest ta jedna linia,
+    // dla której znacznik „N changed" jest darmowy [T4 §4.2].
+    let mut changed: Vec<String> = Vec::new();
+    if let Some(fields) = patch.as_object() {
+        changed.extend(fields.keys().cloned());
+    }
+    changed.sort();
+
+    Ok(Resolved {
+        agent: serde_json::from_value(doc)?,
+        changed,
+    })
 }
+
+/// Złożenie RFC 7396: klucz z patcha wygrywa, `null` **kasuje**, obiekty schodzą w głąb.
+///
+/// Dwanaście linii zamiast zależności `json-patch` — `Cargo.toml` nie należy do tego zadania.
+/// Gałąź kasująca zostaje mimo reguły 3 z nagłówka: reguła mówi, czego sami nie produkujemy,
+/// a ta funkcja dostaje też patche z zewnątrz. Bez tej gałęzi byłaby to inna algebra niż ta,
+/// którą nazywa dokumentacja, i rozjazd wyszedłby na pierwszym zaimportowanym pliku.
+fn merge(target: &mut Value, patch: &Value) {
+    let Value::Object(fields) = patch else {
+        // `clone_from`, nie `*target = patch.clone()`: to samo znaczenie, a clippy odmawia
+        // drugiej formy (`assigning_clones`), bo ta pierwsza umie użyć pamięci, która już jest.
+        target.clone_from(patch);
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(Map::new());
+    }
+    let Some(into) = target.as_object_mut() else {
+        return;
+    };
+    for (key, value) in fields {
+        if value.is_null() {
+            into.remove(key);
+        } else {
+            merge(into.entry(key.as_str()).or_insert(Value::Null), value);
+        }
+    }
+}
+
+/// Dziewięć pól, które krok może zmienić [T4 §7.1].
+///
+/// Czego tu nie ma: `id` i `name` (tożsamość agenta, nie kroku) oraz `runsWith` — krok, który
+/// przestawia vendora, unieważnia połowę reszty, `tools` na czele [T4 §6.4]. Ta lista jest
+/// filtrem wykonywanym na **wyprodukowanym patchu**, a nie komentarzem obok pętli: sama
+/// długość niczego nie pilnuje, bo `retain`, którego nikt nie zawołał, też ma dziewięć pozycji.
+const OVERRIDABLE: [&str; 9] = [
+    "instructions",
+    "model",
+    "thinking",
+    "fileAccess",
+    "giveUpAfterMinutes",
+    "tools",
+    "skills",
+    "connections",
+    "writeResultsTo",
+];
 
 /// Formularz pokazuje wartości efektywne; przy zapisie zostaje z nich **sama różnica**.
 ///
 /// Pola, których krok nie może ruszyć (`id`, `name`, `runsWith`), nie mają prawa wypłynąć
 /// do patcha, choćby się różniły.
-pub fn capture(_base: &Agent, _edited: &Agent) -> Result<Overrides, serde_json::Error> {
-    todo!("capture: różnica ograniczona do pól, które krok może zmienić")
+pub fn capture(base: &Agent, edited: &Agent) -> Result<Overrides, serde_json::Error> {
+    let before = serde_json::to_value(base)?;
+    let after = serde_json::to_value(edited)?;
+
+    let mut patch = Map::new();
+    if let (Value::Object(before), Value::Object(after)) = (&before, &after) {
+        for (key, value) in after {
+            if before.get(key) != Some(value) {
+                patch.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    patch.retain(|key, _| OVERRIDABLE.contains(&key.as_str()));
+
+    serde_json::from_value(Value::Object(patch))
 }
 
 /// Odmawia `null`-a na surowym JSON-ie, zanim stanie się on [`Overrides`] albo [`Agent`].
@@ -240,24 +344,369 @@ pub fn capture(_base: &Agent, _edited: &Agent) -> Result<Overrides, serde_json::
 /// Woła się to na tym, co przyszło z zewnątrz — z formularza, z pliku workflow, z importu.
 /// Po tym sprawdzeniu złożenie merge patchem jest funkcją totalną, a jedyna słynna
 /// pułapka RFC 7396 znika [T4 §4.3].
-pub fn validate_no_nulls(_raw: &Value) -> Result<(), AgentError> {
-    todo!("validate_no_nulls: komunikat ma nazwać pole, na którym stanęła pustka")
+pub fn validate_no_nulls(raw: &Value) -> Result<(), AgentError> {
+    look_for_a_null(raw, "")
+}
+
+/// Ścieżka do pustki, nie sam fakt pustki: „coś jest puste" nie da się otworzyć i poprawić.
+fn look_for_a_null(value: &Value, path: &str) -> Result<(), AgentError> {
+    match value {
+        Value::Null => Err(AgentError::EmptySetting {
+            field: if path.is_empty() {
+                "This setting".to_string()
+            } else {
+                path.to_string()
+            },
+        }),
+        Value::Object(fields) => {
+            for (key, child) in fields {
+                let below = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                look_for_a_null(child, &below)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                look_for_a_null(child, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Czyta `agents/<slug>.md`: front-matter YAML + treść jako instrukcje.
 ///
 /// Treść jest instrukcjami i **tylko** treść nimi jest. Klucz `instructions` we
 /// front-matterze dawałby dwa źródła prawdy dla najdłuższego pola definicji [T4 §5.1].
-pub fn read_agent_file(_path: &Path) -> Result<Agent, AgentError> {
-    todo!("read_agent_file: front-matter -> JSON -> Agent, treść -> instructions")
+pub fn read_agent_file(path: &Path) -> Result<Agent, AgentError> {
+    let text = std::fs::read_to_string(path).map_err(|error| refused(path, &error.to_string()))?;
+
+    let (front, body) = front_and_body(&text).ok_or_else(|| {
+        refused(
+            path,
+            "an agent file is three dashes, then its settings, then three dashes, then what \
+             the agent should do",
+        )
+    })?;
+
+    let mut fields = front_matter(front).map_err(|detail| refused(path, &detail))?;
+
+    // Dwa źródła prawdy dla najdłuższego pola definicji rozjeżdżają się przy pierwszej ręcznej
+    // edycji i nikt tego nie zauważa, bo oba wyglądają poprawnie [T4 §5.1]. Odmawiamy.
+    if fields.contains_key("instructions") {
+        return Err(refused(
+            path,
+            "what the agent should do belongs under the second row of dashes, not in a line \
+             of its own up top. Two places to write it is two answers",
+        ));
+    }
+    fields.insert("instructions".to_string(), Value::String(body.to_string()));
+
+    serde_json::from_value(Value::Object(fields)).map_err(|error| refused(path, &error.to_string()))
+}
+
+/// Odmowa, która nazywa plik.
+///
+/// T4 §10: „pokaż nazwę pliku i «Open in editor», nie połykaj". Zmierzone w §9, i to jest cały
+/// powód, dla którego walidacja jest nasza: `claude --agents '{"broken":{"model":"sonnet"}}'
+/// -p "hi"` kończy się **kodem 0, bez słowa na stderr**, więc zepsuta definicja wygląda
+/// dokładnie tak samo jak zła instrukcja w promptcie i kosztuje godziny.
+fn refused(path: &Path, detail: &str) -> AgentError {
+    AgentError::Unreadable {
+        file: path.display().to_string(),
+        detail: detail.to_string(),
+    }
+}
+
+/// Front-matter i treść. Pierwsze `---` otwiera, pierwsze samotne `---` zamyka, **cała** reszta
+/// jest treścią — znak w znak, bez obcinania białych znaków na końcu. Pusta linia w środku to
+/// akapit, który napisał człowiek, a pusta linia na końcu to dowód, że nikt nic nie obciął.
+fn front_and_body(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n")?;
+    Some((&rest[..end], &rest[end + "\n---\n".len()..]))
+}
+
+/// Front-matter na mapę JSON-a. Merge patch i `serde` pracują na JSON-ie, więc konwersja jest
+/// jedna i jest tutaj [T4 §5.1].
+///
+/// Wiersz, którego ten podzbiór nie rozumie, jest błędem z treścią wiersza — nie ciszą.
+/// Dopisany ręcznie blok wcięciowy wyląduje tu jako klucz, którego definicja agenta nie zna,
+/// i wróci jako odmowa z nazwą pliku.
+fn front_matter(text: &str) -> Result<Map<String, Value>, String> {
+    let mut fields = Map::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, raw)) = line.split_once(':') else {
+            return Err(format!("this line is not a setting: {line}"));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!(
+                "this line has a value but no setting to put it in: {line}"
+            ));
+        }
+        fields.insert(name.to_string(), scalar(raw.trim()));
+    }
+    Ok(fields)
+}
+
+/// Jedna wartość front-mattera.
+///
+/// Skalary po YAML-owemu (liczba, `true`, `false`, pustka), struktury w stylu przepływowym —
+/// czyli w JSON-ie, bo ten jest legalnym YAML-em 1.2 i wraca z `serde_json` bajt w bajt takim,
+/// jakim poszedł.
+fn scalar(text: &str) -> Value {
+    if text.is_empty() || text == "null" || text == "~" {
+        return Value::Null;
+    }
+    if text == "true" {
+        return Value::Bool(true);
+    }
+    if text == "false" {
+        return Value::Bool(false);
+    }
+    if text.starts_with(['{', '[', '"']) {
+        if let Ok(value) = serde_json::from_str::<Value>(text) {
+            return value;
+        }
+        if let Some(items) = flow_list(text) {
+            return Value::Array(items);
+        }
+        return Value::String(text.to_string());
+    }
+    if let Ok(number) = text.parse::<u64>() {
+        return Value::Number(number.into());
+    }
+    if let Ok(number) = text.parse::<i64>() {
+        return Value::Number(number.into());
+    }
+    if let Ok(number) = text.parse::<f64>() {
+        // `from_f64` odmawia NaN-owi i nieskończoności, więc `model: nan` zostaje napisem —
+        // i dobrze, bo to jest nazwa modelu, a nie liczba.
+        if let Some(number) = serde_json::Number::from_f64(number) {
+            return Value::Number(number);
+        }
+    }
+    Value::String(text.to_string())
+}
+
+/// `[rust-tauri, pdf]` — lista przepływowa bez cudzysłowów. JSON tego nie przyjmie, a ręcznie
+/// dopisana lista umiejętności wygląda właśnie tak, więc czytamy oba zapisy.
+fn flow_list(text: &str) -> Option<Vec<Value>> {
+    let inner = text.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(inner.split(',').map(|item| scalar(item.trim())).collect())
 }
 
 /// Zapisuje agenta do `dir/<slug>.md` i zwraca ścieżkę, pod którą wylądował.
 ///
 /// Slug wyprowadzamy z nazwy tutaj, w jednym miejscu, żeby wołający nie musiał znać
 /// reguły — a przy okazji żeby była JEDNA reguła.
-pub fn write_agent_file(_dir: &Path, _agent: &Agent) -> Result<PathBuf, AgentError> {
-    todo!("write_agent_file: deterministyczny front-matter, treść pod nim")
+pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError> {
+    let path = dir.join(format!("{}.md", slug(agent)));
+
+    let wire = serde_json::to_value(agent).map_err(|error| refused(&path, &error.to_string()))?;
+    let Value::Object(mut fields) = wire else {
+        return Err(refused(&path, "an agent has to be a list of settings"));
+    };
+
+    let instructions = fields.remove("instructions");
+    let body = instructions.as_ref().and_then(Value::as_str).unwrap_or("");
+
+    let mut text = String::from("---\n");
+    for name in FRONT_MATTER {
+        if let Some(value) = fields.remove(name) {
+            text.push_str(&setting(name, &value));
+        }
+    }
+    // Cokolwiek zostało po tej pętli — czyli pole dopisane do `Agent` i niedopisane do listy
+    // wyżej — ląduje na końcu, posortowane. Ma się zapisać brzydko, a nie zniknąć: cicha
+    // utrata ustawienia jest awarią, kolejność wierszy nie jest.
+    for (name, value) in &fields {
+        text.push_str(&setting(name, value));
+    }
+    text.push_str("---\n");
+    text.push_str(body);
+
+    std::fs::create_dir_all(dir).map_err(|error| refused(&path, &error.to_string()))?;
+    std::fs::write(&path, text).map_err(|error| refused(&path, &error.to_string()))?;
+    Ok(path)
+}
+
+/// Kolejność wierszy front-mattera — ta z T4 §5.1, wypisana, a nie wzięta z kolejności pól
+/// struktury. Zapis ma być deterministyczny co do bajtu, żeby `git diff` na katalogu agentów
+/// odpowiadał na pytanie „czy ktoś tego agenta ruszał", a nie na pytanie „czy zapisał go dwa
+/// razy" (`DECISIONS-LOCKED.md` §D6).
+const FRONT_MATTER: [&str; 15] = [
+    "schema",
+    "id",
+    "name",
+    "summary",
+    "color",
+    "runsWith",
+    "model",
+    "thinking",
+    "fileAccess",
+    "giveUpAfterMinutes",
+    "writeResultsTo",
+    "tools",
+    "skills",
+    "connections",
+    "vendorOptions",
+];
+
+/// Jeden wiersz front-mattera, zakończony znakiem końca linii.
+fn setting(name: &str, value: &Value) -> String {
+    match value {
+        Value::String(text) => format!("{name}: {}\n", quoted_when_needed(text)),
+        // Liczby, wartości logiczne i struktury zapisuje `serde_json`: styl przepływowy JSON-a
+        // jest legalnym YAML-em, a mapa `BTreeMap` daje ten sam porządek kluczy przy każdym
+        // zapisie.
+        other => format!("{name}: {other}\n"),
+    }
+}
+
+/// Napis w postaci, w jakiej wróci z odczytu bez zmiany.
+///
+/// Cudzysłów dokładamy dokładnie wtedy, kiedy goła postać przeczytałaby się jako coś innego:
+/// pusty napis, liczba, `true`, wiersz z dwukropkiem albo z kratką. Sprawdzamy to wołając
+/// własny czytnik — reguła i jej dowód są wtedy jedną rzeczą, a nie dwiema, które mogą się
+/// rozjechać.
+fn quoted_when_needed(text: &str) -> String {
+    if plain_reads_back(text) {
+        text.to_string()
+    } else {
+        Value::String(text.to_string()).to_string()
+    }
+}
+
+fn plain_reads_back(text: &str) -> bool {
+    if text.is_empty() || text.trim() != text {
+        return false;
+    }
+    if text.contains(['\n', '\r', '\t', '#', '"', '\'', '\\'])
+        || text.contains(": ")
+        || text.ends_with(':')
+    {
+        return false;
+    }
+    if text.starts_with([
+        '-', '?', ':', ',', '[', ']', '{', '}', '&', '*', '!', '|', '>', '%', '@', '`',
+    ]) {
+        return false;
+    }
+    scalar(text) == Value::String(text.to_string())
+}
+
+/// Nazwa pliku z nazwy agenta. Jedna reguła, w jednym miejscu — żeby wołający nie musiał jej
+/// znać, a przy okazji żeby była jedna.
+fn slug(agent: &Agent) -> String {
+    let mut out = String::new();
+    for character in agent.name.chars() {
+        if character.is_ascii_alphanumeric() {
+            out.push(character.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        // Nazwa, z której nie zostaje ani jeden znak nadający się na nazwę pliku (same znaki
+        // spoza ASCII, sama interpunkcja). Identyfikator jest wtedy jedyną rzeczą, która na
+        // pewno jest unikalna — dwa pliki `.md` o tej samej nazwie nadpisałyby się nawzajem.
+        return agent.id.to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Pole definicji agenta, które w ogóle dociera do vendora.
+///
+/// Nazwy na drucie są dokładnie tymi, które zna `CapabilityField` w
+/// `src/sections/agents/capabilities.ts` — dopóki nie ma generatora (`ts-rs` albo `specta`,
+/// T4 §7.2), obie kopie stoją obok siebie i muszą to mówić wprost.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Field {
+    Instructions,
+    Model,
+    Thinking,
+    FileAccess,
+    GiveUpAfterMinutes,
+    Tools,
+    Skills,
+    Connections,
+}
+
+/// Co druga aplikacja robi z tym polem. Trzy stany, bo dwa kłamią [T4 §6.1]: „jest" i „nie ma"
+/// nie mają gdzie zapisać ustawienia, które istnieje, ale jest przybliżeniem — a takich jest
+/// najwięcej.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Capability {
+    Native,
+    Approximate,
+    Unavailable,
+}
+
+/// Macierz z T4 §6.3, zweryfikowana 2026-08-15 przez `--help` obu aplikacji.
+///
+/// **Dane, nie kod** [T4 §6.1]. Szesnaście wierszy stoi tutaj po to, żeby `if vendor == Codex`
+/// nie stało nigdzie indziej: polityka przepisana per adapter jest tym, w jaki sposób
+/// w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23).
+///
+/// Pole odpowiada **najsłabszym** ze swoich tłumaczeń. Stąd `fileAccess` przybliżone u obu:
+/// u Claude'a `look-only` to tryb planowania, u Codeksa `ask-first` i `work-freely` to ta sama
+/// piaskownica. „Native" znaczyłoby wtedy „część działa dokładnie", a to jest zdanie, którego
+/// nie chcemy mówić o dialu bezpieczeństwa.
+const CAPABILITIES: [(Field, Vendor, Capability); 16] = [
+    (Field::Instructions, Vendor::ClaudeCode, Capability::Native),
+    (Field::Instructions, Vendor::Codex, Capability::Native),
+    (Field::Model, Vendor::ClaudeCode, Capability::Native),
+    (Field::Model, Vendor::Codex, Capability::Native),
+    (Field::Thinking, Vendor::ClaudeCode, Capability::Native),
+    (Field::Thinking, Vendor::Codex, Capability::Native),
+    (
+        Field::FileAccess,
+        Vendor::ClaudeCode,
+        Capability::Approximate,
+    ),
+    (Field::FileAccess, Vendor::Codex, Capability::Approximate),
+    (
+        Field::GiveUpAfterMinutes,
+        Vendor::ClaudeCode,
+        Capability::Native,
+    ),
+    (Field::GiveUpAfterMinutes, Vendor::Codex, Capability::Native),
+    (Field::Tools, Vendor::ClaudeCode, Capability::Native),
+    (Field::Tools, Vendor::Codex, Capability::Unavailable),
+    (Field::Skills, Vendor::ClaudeCode, Capability::Native),
+    (Field::Skills, Vendor::Codex, Capability::Approximate),
+    (Field::Connections, Vendor::ClaudeCode, Capability::Native),
+    (Field::Connections, Vendor::Codex, Capability::Native),
+];
+
+/// Co ta aplikacja robi z tym polem — albo `None`, kiedy tabela nie ma na to odpowiedzi.
+///
+/// `Option`, a nie wartość domyślna: para bez wiersza to kontrolka, której formularz nie umie
+/// narysować, i sterownik, który nie wie, czy ma co tłumaczyć. Domyślne „unavailable" byłoby
+/// odpowiedzią wyglądającą na sprawdzoną.
+#[must_use]
+pub fn capability(field: Field, vendor: Vendor) -> Option<Capability> {
+    CAPABILITIES
+        .iter()
+        .find(|(row_field, row_vendor, _)| *row_field == field && *row_vendor == vendor)
+        .map(|(_, _, answer)| *answer)
 }
 
 /// Tłumaczy przelotkę [`VendorOptions`] na dodatkowe argumenty **jednego** vendora.
@@ -267,6 +716,18 @@ pub fn write_agent_file(_dir: &Path, _agent: &Agent) -> Result<PathBuf, AgentErr
 /// (niezmiennik 23). Nazwy vendora, której nie znamy, nie tykamy: przelotka ma przetrwać
 /// vendora, którego jeszcze nie wspieramy (`DECISIONS-LOCKED.md` §D6).
 #[must_use]
-pub fn vendor_args(_agent: &Agent, _vendor: &str) -> Vec<String> {
-    todo!("vendor_args: para klucz-wartość obok siebie, tylko dla tego vendora")
+pub fn vendor_args(agent: &Agent, vendor: &str) -> Vec<String> {
+    let Some(options) = agent.vendor_options.get(vendor) else {
+        return Vec::new();
+    };
+
+    let mut args = Vec::with_capacity(options.len() * 2);
+    for (flag, value) in options {
+        // Klucz i wartość obok siebie, w tej kolejności i po jednym razie. Flaga wklejona bez
+        // wartości to albo błąd składni przy starcie, albo — gorzej — flaga, która znaczy
+        // wtedy co innego.
+        args.push(flag.clone());
+        args.push(value.clone());
+    }
+    args
 }
