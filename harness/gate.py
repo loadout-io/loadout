@@ -42,6 +42,9 @@ TIER_RANK = {"before": 0, "quick": 1, "full": 2}
 # przewraca się pod własnym nazwiskiem zamiast rozpłynąć się w zewnętrznym timeoucie.
 CEILING = {"before": 60.0, "quick": 45.0, "full": 600.0}
 
+# Ten sam katalog, co muteks cargo -- zeby oba zamki dalo sie znalezc jednym ls.
+TMPDIR = os.environ.get("TMPDIR") or "/tmp"
+
 # NA SPRAWDZENIE, nie na poziom: bez tego jedno sprawdzenie dziedziczy cały budżet poziomu
 # (w repo źródłowym siedem czekających lokatorów zrobiło z 2 s trzy i pół minuty).
 CHECK_TIMEOUT = {"before": 20.0, "quick": 20.0, "full": 90.0}
@@ -70,6 +73,127 @@ CHECK_TIMEOUT_OVERRIDE = {
 # kompilacja nie jest tym, co mierzymy. Kryteria vitest zostają przy 20 s i mają zostać —
 # tam wolne znaczy naprawdę wolne.
 CARGO_BUDGET = 420.0
+
+
+class HeavyTierLock(object):
+    """Jedna bramka `full` na maszynie naraz -- i czekanie na to LEZY POZA zegarem sprawdzen.
+
+    Lane szeregowy wyzej usuwa kolizje WEWNATRZ fali. Miedzy falami muteks cargo dalej jest
+    wspolny dla maszyny, wiec dwie bramki `full` obok siebie odtwarzaja incydent T-36 co do
+    joty: przegrany przesiaduje cudze 512 s na wlasnym zegarze i oddaje 2.
+
+    Naprawa nie moze polegac na dluzszym czekaniu W sprawdzeniu -- wtedy czekanie i tak zjada
+    budzet, ktory jest twierdzeniem o KODZIE. Wiec czekamy tutaj, zanim ruszy jakikolwiek
+    zegar. Bramka, ktora stoi w kolejce, nie klamie o niczyim kodzie; po prostu jeszcze nie
+    zaczela.
+
+    To NIE jest ten sam fakt, co muteks w checks/_cargo-serialize.sh (niezmiennik 13): tamten
+    chroni pojedyncze `cargo` przed drugim `cargo` i obowiazuje takze petle `quick` agenta,
+    ten obowiazuje CALA bramke `full` i tylko ja. Rozne ziarno, rozne zamki, rozne nazwy.
+    """
+
+    def __init__(self, tier, patience=None):
+        # Cierpliwosc z ENV takze po to, zeby straznik mogl ja skrocic i sprawdzic
+        # zachowanie na granicy, nie tylko szczesliwa sciezke.
+        if patience is None:
+            patience = float(os.environ.get("LOADOUT_GATE_LOCK_PATIENCE", 2400.0))
+        self.path = os.path.join(TMPDIR, "loadout-gate-full.lock")
+        self.tier = tier
+        self.patience = patience
+        self.held = False
+
+    def __enter__(self):
+        if self.tier != "full":
+            return self
+        waited = 0.0
+        while True:
+            try:
+                os.mkdir(self.path)
+                break
+            except OSError:
+                # Pytamy o ZYCIE wlasciciela, nie o wiek zamka: bramka bywa zabijana razem
+                # z grupa procesow, wiec trap na wyjsciu bywa nieosiagalny i zamek zostaje
+                # po trupie. To ta sama lekcja, co w checks/_cargo-serialize.sh.
+                owner = ""
+                try:
+                    with open(os.path.join(self.path, "pid"), encoding="utf-8") as fh:
+                        owner = fh.read().strip()
+                except OSError:
+                    pass
+                if owner and not _alive(int(owner) if owner.isdigit() else -1):
+                    print("  note the other full gate (pid %s) is gone -- taking the lock"
+                          % owner)
+                    _rm_lock(self.path)
+                    continue
+                if waited >= self.patience:
+                    # Cierpliwosc konczy sie GLOSNO. Cicha rezygnacja czyta sie identycznie
+                    # jak bramka, ktora po prostu zadzialala -- czyli jest ta sama awaria,
+                    # przed ktora stoi checks/MANIFEST.
+                    print("  note waited %.0fs for the other full gate and gave up -- "
+                          "running anyway, expect cargo mutex contention" % waited)
+                    return self
+                if waited == 0.0:
+                    print("  note another full gate holds the machine (pid %s) -- waiting "
+                          "OUTSIDE the checks' clocks" % (owner or "unknown"))
+                time.sleep(2.0)
+                waited += 2.0
+        with open(os.path.join(self.path, "pid"), "w", encoding="utf-8") as fh:
+            fh.write(str(os.getpid()))
+        self.held = True
+        if waited:
+            print("  note waited %.0fs for the other full gate; no check paid for it" % waited)
+        return self
+
+    def __exit__(self, *exc):
+        if self.held:
+            _rm_lock(self.path)
+        return False
+
+
+def _alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _rm_lock(path):
+    try:
+        os.remove(os.path.join(path, "pid"))
+    except OSError:
+        pass
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def takes_the_cargo_mutex(argv):
+    """Czy to sprawdzenie stanie w kolejce po muteks cargo (niezmiennik 26)?
+
+    Pytamy o to PLIK SPRAWDZENIA, a nie druga liste tutaj. Lista w oracle'u rozjechalaby sie
+    przy pierwszym nowym sprawdzeniu z `cargo`, a plik rozjechac sie nie moze -- to ten sam
+    powod, dla ktorego polityka lintow siedzi w Cargo.toml, a nie w checks/ (niezmiennik 13).
+    """
+    for a in argv:
+        p = str(a)
+        if not p.endswith(".sh"):
+            continue
+        full = p if os.path.isabs(p) else os.path.join(ROOT, p)
+        try:
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                if "cargo_serialize" in fh.read():
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def budget_for(check_id, argv, default):
@@ -604,9 +728,11 @@ def run(tier, jobs, only=None):
     # zastepuje. Bramka podaje fakt, nie polityke.
     os.environ["LOADOUT_TIER"] = tier
     per_check = CHECK_TIMEOUT[tier]
-    t0 = time.time()
     head = "── verify %s " % tier
     print(head + "─" * max(3, 63 - len(head)))
+    gate_lock = HeavyTierLock(tier)
+    gate_lock.__enter__()
+    t0 = time.time()
     for name in ignored:
         print("  note checks/%s has no <tier>- prefix, so it is NOT a check" % name)
 
@@ -619,9 +745,41 @@ def run(tier, jobs, only=None):
         if not batch:
             continue
         width = max(1, jobs if wave == "project" else min(jobs, ACCEPTANCE_JOBS))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=width) as pool:
-            results.extend(pool.map(
-                lambda c: run_one(c, budget_for(c[0], c[2], per_check)), batch))
+
+        # LANE SZEREGOWY dla sprawdzen, ktore biora muteks cargo (niezmiennik 26).
+        #
+        # Zmierzone 2026-08-17 na T-36: `full-test` trzymal muteks 512 s, a `full-clippy`,
+        # puszczony w tej samej fali, PRZESPAL na nim 242,88 s -- na WLASNYM zegarze -- po czym
+        # oddal 2 i cala bramka zaswiecila sie "MISCONFIGURED". Kod byl w porzadku, oba kryteria
+        # przeszly; bramka po prostu nie osadzila go przez wlasna kolejke.
+        #
+        # Sufit czekania nie da sie tego naprawic i to jest sedno: zeby `full-clippy` doczekal,
+        # cap musialby byc >=512 s, a zeby zmiescil sie we WLASNYM budzecie (600 s) razem z
+        # zimnym buildem -- <=360 s. Te dwa warunki sa sprzeczne, wiec kazda wartosc capa jest
+        # zla. Zmienna do ruszenia nie jest wiec cap, tylko ROWNOLEGLOSC, ktora go wymusza.
+        #
+        # Puszczone szeregowo czekanie znika calkiem: nikt nie spi w kolejce, bo kolejki nie ma.
+        # To jest takze SZYBSZE od poprzedniego zachowania -- tamte 242,88 s byly czystym snem.
+        # Muteks zostaje jako siatka MIEDZY procesami (petla `quick` agenta obok bramki); tutaj
+        # przestaje byc potrzebny, bo bramka juz nie tworzy kolizji, ktora on lagodzil.
+        serial_ids = {c[0] for c in batch if takes_the_cargo_mutex(c[2])}
+        heavy = [c for c in batch if c[0] in serial_ids]
+        light = [c for c in batch if c[0] not in serial_ids]
+
+        def one(c, pc=per_check):
+            return run_one(c, budget_for(c[0], c[2], pc))
+
+        done = {}
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=width + (1 if heavy else 0)) as pool:
+            futs = [(c[0], pool.submit(one, c)) for c in light]
+            lane = pool.submit(lambda items: [one(c) for c in items], heavy) if heavy else None
+            for cid, fut in futs:
+                done[cid] = fut.result()
+            if lane is not None:
+                for r in lane.result():
+                    done[r["id"]] = r
+        results.extend(done[c[0]] for c in batch)
 
     failed, misconfigured = [], []
     for r in results:
@@ -648,6 +806,7 @@ def run(tier, jobs, only=None):
                 print("       | %s" % line[:150])
 
     total = time.time() - t0
+    gate_lock.__exit__(None, None, None)
     record(tier, results, failed, total)
 
     # Sufit poziomu wybacza WYŁĄCZNIE ten czas, który oracle sam przyznał ponad normę, i

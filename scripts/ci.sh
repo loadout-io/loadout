@@ -303,6 +303,8 @@ guards_lane() {
   spine_merges_keep_both_declarations
   contract_freeze_touches_only_its_own_task
   one_clippy_at_the_full_tier
+  queueing_never_lands_in_the_waiters_budget
+  two_full_gates_never_overlap
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -820,6 +822,166 @@ one_clippy_at_the_full_tier() {
   fi
 
   echo "clippy: jedno w tierze full, normalne poza nim"
+}
+
+# ── czekanie na muteks nie ma prawa ladowac w budzecie czekajacego ────────────
+# Zmierzone 2026-08-17 na T-36: `full-test` trzymal muteks cargo 512 s, a `full-clippy`,
+# puszczony przez bramke w tej samej fali, PRZESPAL na nim 242,88 s na WLASNYM zegarze,
+# oddal 2 i cala bramka zaswiecila sie "MISCONFIGURED". Kod byl poprawny, oba kryteria
+# przeszly -- bramka nie osadzila go przez wlasna kolejke.
+#
+# Sufitem czekania tego nie da sie naprawic: zeby full-clippy doczekal, cap musi byc >=512 s,
+# a zeby zmiescil sie we wlasnym budzecie (600 s) razem z zimnym buildem -- <=360 s. Warunki
+# sprzeczne, wiec zmienna do ruszenia jest ROWNOLEGLOSC, a nie cap.
+#
+# Ten straznik pyta o BUDZET, nie o nakladanie sie. Pierwsza wersja pytala o nakladanie
+# i przechodzila TAKZE przed poprawka -- bo nakladania i tak zawsze bronil sam muteks.
+queueing_never_lands_in_the_waiters_budget() {
+  local t work=3
+  t="$(mktemp -d)"
+  mkdir -p "$t/harness" "$t/checks"
+  # Podmiana bramki istnieje po to, zeby dalo sie POKAZAC, ze ten straznik ma zeby (sadzimy
+  # nim bramke sprzed poprawki i musi zaswiecic). Mowi o tym glosno: straznik sadzacy po cichu
+  # nie ten plik, o ktory go pytano, czyta sie identycznie jak straznik, ktory przeszedl.
+  if [ -n "${LOADOUT_GUARD_GATE:-}" ]; then
+    echo "UWAGA: straznik sadzi $LOADOUT_GUARD_GATE, a nie harness/gate.py" >&2
+  fi
+  cp "${LOADOUT_GUARD_GATE:-harness/gate.py}" "$t/harness/gate.py"
+  cp checks/_cargo-serialize.sh "$t/checks/_cargo-serialize.sh"
+
+  local n
+  for n in heavya heavyb lighta lightb; do
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'set -euo pipefail'
+      echo 'cd "$(dirname "${BASH_SOURCE[0]}")/.."'
+      case "$n" in heavy*)
+        echo '. checks/_cargo-serialize.sh'
+        echo 'cargo_serialize || exit 2' ;;
+      esac
+      echo "printf '%s IN %s\n' \"\$(date +%s.%N)\" 'quick-$n' >> \"\$LANE_LOG\""
+      echo "sleep $work"
+      echo "printf '%s OUT %s\n' \"\$(date +%s.%N)\" 'quick-$n' >> \"\$LANE_LOG\""
+      echo "echo '$n done'"
+    } > "$t/checks/quick-$n.sh"
+  done
+  printf 'quick-heavya\nquick-heavyb\nquick-lighta\nquick-lightb\n' > "$t/checks/MANIFEST"
+
+  # TMPDIR wlasny: zamek straznika nie ma prawa dotknac zamka prawdziwego biegu obok.
+  LANE_LOG="$t/lane.log" ; : > "$LANE_LOG" ; export LANE_LOG
+  ( cd "$t" && TMPDIR="$t" python3 harness/gate.py quick --jobs 4 ) >"$t/out.txt" 2>&1 || true
+
+  python3 - "$t/out.txt" "$t/lane.log" "$work" <<'PY'
+import sys, re, collections
+measured, span = {}, collections.defaultdict(dict)
+for line in open(sys.argv[1]):
+    m = re.match(r"\s+(ok|FAIL|MISC)\s+(\S+)\s+([0-9.]+)s", line)
+    if m:
+        measured[m.group(2)] = float(m.group(3))
+for line in open(sys.argv[2]):
+    t, ev, name = line.split()
+    span[name]["in" if ev == "IN" else "out"] = float(t)
+work = float(sys.argv[3])
+
+need = ["quick-heavya", "quick-heavyb", "quick-lighta", "quick-lightb"]
+missing = [n for n in need if n not in measured or len(span[n]) < 2]
+if missing:
+    sys.exit("straznik nic nie zmierzyl dla: %s -- bramka nie odkryla sprawdzen sondy"
+             % ", ".join(missing))
+
+for n in ("quick-heavya", "quick-heavyb"):
+    queued = measured[n] - work
+    if queued > 1.2:
+        sys.exit("%s przesiedzialo %.2fs cudzego czasu na WLASNYM zegarze -- dokladnie tak "
+                 "full-clippy oddal 2 przy T-36, majac poprawny kod" % (n, queued))
+
+# Kontrola negatywna. Bez niej asercja wyzej przechodzi takze wtedy, gdy poprawka zabila
+# rownoleglosc CALEJ bramki: nikt nigdy nie czeka, bo nikt nigdy nie biegnie obok.
+A, B = span["quick-lighta"], span["quick-lightb"]
+if min(A["out"], B["out"]) - max(A["in"], B["in"]) <= 0:
+    sys.exit("lekkie sprawdzenia tez sie nie nakladaja -- bramka jest szeregowa CALA, wiec "
+             "asercja wyzej nie dowodzi niczego o lane szeregowym")
+PY
+  local rc=$?
+  if [ "$rc" != 0 ]; then
+    # Straznik, ktory mowi tylko "czerwone", jest tym monitoringiem, ktory to repo skasowalo.
+    echo "kolejka po muteks cargo lezy w budzecie czekajacego sprawdzenia" >&2
+    echo "--- co zobaczyla bramka sondy ---" >&2
+    sed -n '1,20p' "$t/out.txt" >&2 || true
+    rm -rf "$t"
+    return 1
+  fi
+  rm -rf "$t"
+  echo "gate: czekanie na muteks poza budzetem, rownoleglosc reszty zyje"
+}
+
+# ── dwie bramki `full` naraz nie istnieja, a czekanie na to nic nie kosztuje ──
+# Lane szeregowy w gate.py usuwa kolizje WEWNATRZ fali. Muteks cargo jest jednak wspolny dla
+# CALEJ maszyny, wiec dwie bramki `full` obok siebie odtwarzaja incydent T-36 co do joty:
+# przegrany przesiaduje cudze 512 s na wlasnym zegarze i oddaje 2.
+#
+# Naprawa nie moze polegac na dluzszym czekaniu W sprawdzeniu -- wtedy czekanie i tak zjada
+# budzet, ktory jest twierdzeniem o KODZIE. Bramka czeka wiec przed pierwszym zegarem.
+# Straznik sprawdza OBIE polowy: ze czekala, i ze nikt za to nie zaplacil.
+two_full_gates_never_overlap() {
+  local t work=2 hold=6
+  t="$(mktemp -d)"
+  mkdir -p "$t/harness" "$t/checks" "$t/tests"
+  cp "${LOADOUT_GUARD_GATE:-harness/gate.py}" "$t/harness/gate.py"
+
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nsleep %s\necho "slow done"\n' "$work" \
+    > "$t/checks/full-slow.sh"
+  printf 'full-slow\n' > "$t/checks/MANIFEST"
+  printf '#!/usr/bin/env bash\necho "test result: ok. 1 passed; 0 failed"\n' \
+    > "$t/tests/probe.spec.js"
+  # Bramka `full` odmawia biegu bez kontraktu, wiec sonda go ma. Przedmiotem pomiaru jest
+  # sprawdzenie projektowe `full-slow`, nie to kryterium.
+  {
+    echo '# sonda zamka bramki'
+    echo
+    echo '## AC-1 kryterium, ktore tylko musi istniec'
+    echo 'check: bash tests/probe.spec.js'
+    echo 'expect: (\d+) passed'
+  } > "$t/TASK.md"
+
+  # Cudza bramka trzyma zamek i ZYJE przez $hold sekund.
+  mkdir -p "$t/loadout-gate-full.lock"
+  ( sleep "$hold" ) & local holder=$!
+  echo "$holder" > "$t/loadout-gate-full.lock/pid"
+
+  local start end
+  start=$(python3 -c 'import time; print(time.time())')
+  ( cd "$t" && TMPDIR="$t" python3 harness/gate.py full --jobs 4 ) > "$t/out.txt" 2>&1 || true
+  end=$(python3 -c 'import time; print(time.time())')
+  wait "$holder" 2>/dev/null || true
+
+  python3 - "$t/out.txt" "$start" "$end" "$work" "$hold" <<'PY'
+import sys, re
+out = open(sys.argv[1]).read()
+wall = float(sys.argv[3]) - float(sys.argv[2])
+work, hold = float(sys.argv[4]), float(sys.argv[5])
+m = re.search(r"\s+(ok|FAIL|MISC)\s+full-slow\s+([0-9.]+)s", out)
+if not m:
+    sys.exit("straznik nic nie zmierzyl -- bramka nie odkryla sprawdzenia sondy")
+measured = float(m.group(2))
+if wall < hold:
+    sys.exit("bramka NIE czekala na cudzy zamek (%.1fs < %.0fs) -- dwie bramki full bieglyby "
+             "naraz i muteks cargo znowu by kogos zaglodzil" % (wall, hold))
+if measured > work + 1.2:
+    sys.exit("czekanie weszlo w BUDZET sprawdzenia (%.2fs przy %.0fs pracy) -- dokladnie to, "
+             "czemu ten zamek ma zapobiegac" % (measured, work))
+if "waiting OUTSIDE" not in out:
+    sys.exit("bramka czekala po cichu -- cicha kolejka czyta sie jak wolna maszyna")
+PY
+  local rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "zamek poziomu full nie chroni maszyny przed druga bramka" >&2
+    sed -n '1,20p' "$t/out.txt" >&2 || true
+    rm -rf "$t"
+    return 1
+  fi
+  rm -rf "$t"
+  echo "gate: jedna bramka full na maszyne, a kolejka poza zegarem sprawdzen"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
