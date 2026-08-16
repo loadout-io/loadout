@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 16:45
+# Stan budowy — 2026-08-16, 18:05
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,16 +8,16 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **17 z 26** |
+| wylądowane | **19 z 27** (T-26 dopisane dzisiaj) |
 | kosztowało | **$352** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) · średnia **$21** |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (17):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-06 T-11 T-12 T-13 T-14 T-16 T-18 T-19 T-21 T-25`
+**Wylądowane (19):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-06 T-11 T-12 T-13 T-14 T-16 T-17 T-18 T-19 T-20 T-21 T-25`
 
-**W locie (3):** `T-07` `T-17` `T-20` — wszystkie odblokowane wylądowaniem T-06.
+**W locie (2):** `T-07` (bramka) i `T-26` (nowe zadanie, patrz niżej).
 Pisarz i recenzent `claude`; Codex bez kredytów do 2026-08-20.
 
 **Zostało 6 poza falą:** `T-08` (czeka na T-07), `T-09 T-15 T-22 T-24` (czekają na T-08),
@@ -80,6 +80,39 @@ zapisane, a zamknięcie nie zależy od tego, kto jeszcze trzyma uchwyt.
 SQLite ma klucze obce włączone. Obie domyślne równe wymaganym, więc obie asercje były puste.
 Kryterium poprawione decyzją człowieka: kontrola nie porównuje się już z domyślnymi wartościami
 stosu, tylko wymusza wartość **nieakceptowalną** i dopiero potem woła `apply_pragmas`.
+
+
+## T-26 — dopisane 2026-08-16 po URUCHOMIENIU aplikacji
+
+`npm run dev` pokazywał pięć zakładek i pięć pustych ekranów, mimo że komponenty czterech sekcji
+były wylądowane i zielone. Nikt nie napisał `src/sections/<id>/index.tsx`, bo **żadne kryterium
+o to nie prosiło** — a `src/sections/workflows/` nie miał nawet właściciela w żadnym bloku OWNS,
+więc napisanie tam pliku byłoby zapisem poza zakresem.
+
+Zapis, który to spowodował, stoi w `tasks/T-08.md` przy AC-8: „pozostałe sekcje dostają to za
+darmo". Nie dostały. Szósty przypadek wzorca z sekcji wyżej — tym razem znaleziony **wyłącznie**
+przez uruchomienie produktu, bo żaden automat nie ogląda okna.
+
+Pisząc kontrakt złapałem w nim własny defekt, zanim wydałem na niego bieg: kryteria wymagały
+„dwóch agentów w magazynie" dowodzonych przez prawdziwe odkrywanie, a w całym drzewie Rusta jest
+**zero** `#[tauri::command]` i nie ma `src/ipc.ts` — dane nie mają dziś skąd przyjść. Każde
+kryterium ma teraz dwie połowy: **(a) montaż** bez wstrzykiwania czegokolwiek i **(b) treść**
+na ekranie renderowanym wprost, z magazynem zasianym atrapą `Io`.
+
+## Dwie kolejne naprawy harnessu, 2026-08-16 wieczorem
+
+**Zamrożenie kontraktu cofało CUDZE pliki zadań.** `refresh_harness_from_trunk` zamrażał całe
+`tasks/`, więc podciągnięcie trunka rewertowało na gałęzi pliki zmienione w międzyczasie. Objaw:
+fałszywa czerwień `quick-scope` na T-20 (poprzedni bieg zapisał ją nawet jako „commit człowieka").
+**Groźniejsze:** lądowanie wniosłoby ten revert na trunk i po cichu skasowało cudzą pracę —
+a bramka po takim lądowaniu jest **zielona**, bo cofnięte kryterium nie psuje testów, tylko je
+osłabia. Zamrożenie dotyczy teraz wyłącznie `tasks/$ID.md`; strażnik
+`contract_freeze_touches_only_its_own_task` sprawdza wszystkie trzy strony naraz.
+
+**Biegi są odpalane odczepione.** Dwa razy tego dnia menedżer zadań ubił WSZYSTKIE biegi naraz
+na granicy tury (człowiek potwierdził, że to nie on). `scratchpad/detach.py`: podwójny fork +
+`os.setsid`, kod wyjścia do `runs/<ID>/wave.rc`. Czekacz na ten plik może ginąć dowolnie —
+praca o nim nie wie. macOS nie ma `setsid(1)`, stąd Python.
 
 ## Co naprawiono w harnessie 2026-08-16 (każdy ze strażnikiem albo z kontrolą negatywną)
 

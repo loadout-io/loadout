@@ -19,6 +19,9 @@ use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
+/// Granica z oknem: pompa sklejajaca i kanal do webviewa. Wypelnia T-07.
+pub mod ipc;
+
 /// Biblioteka uzytkownika: agenci, umiejetnosci, pamiec. Wypelnia T-11 i dalej.
 pub mod library;
 /// Magazyn: schemat `SQLite`, jeden pisarz, migracje. Wypelnia T-06.
