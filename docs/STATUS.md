@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 12:40
+# Stan budowy — 2026-08-16, 13:15
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,20 +8,26 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **12 z 26** |
-| kosztowało | **$271** |
+| wylądowane | **14 z 26** |
+| kosztowało | **$317** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (12):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-11 T-12 T-16 T-21 T-25`
+**Wylądowane (14):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-11 T-12 T-14 T-16 T-18 T-21 T-25`
 
-**W locie (4), od 2026-08-16 ~12:30:** `T-06 T-13 T-14 T-18` — każde przez `ship-task.sh`
-w swoim worktree, pisarz i recenzent `claude` (Codex bez kredytów do 2026-08-20).
-`T-06` wznowione ze swojego worktree i idzie prosto w rundę naprawczą kontraktu.
+**W locie (3):** `T-06` (runda naprawcza kontraktu), `T-13`, `T-19`. Pisarz i recenzent
+`claude` — Codex bez kredytów do 2026-08-20.
 
-**Czekają na cudze zadania (10):** `T-07 T-08 T-09 T-15 T-17 T-19 T-20 T-22 T-23 T-24`.
+**Uwaga recenzenta, której bramka nie widzi.** Zarówno T-14, jak i T-18 dostały uwagę tej samej
+klasy: kryterium sprawdza **obecność** kontrolki albo ścieżki, a nie jej **zachowanie**.
+W T-14 nagłówkowy `＋ Create` ma handler, ale każdy test używa `renderToStaticMarkup`, który
+nigdy nie odpala `onClick`. W T-18 uzasadnienie AC-6 opisuje scenariusz, którego żaden test nie
+przechodzi. Obie przeszły bramkę i obie wylądowały zgodnie z kontraktem (jedna runda naprawcza,
+potem decyduje bramka) — ale to jest lista dla przeglądu cross-vendor po 2026-08-20.
+
+**Czekają na cudze zadania (8):** `T-07 T-08 T-09 T-15 T-17 T-20 T-22 T-23 T-24`.
 Uwaga: `T-07`, `T-17` i `T-20` czekają **wyłącznie na T-06** — jego wylądowanie otwiera trzy
 zadania naraz i dlatego poszło pierwsze.
 
@@ -49,9 +55,9 @@ nadawcy dostają `WriterGone`. To jest ta sama decyzja, którą i tak musiałaby
 Bramka **nazwała to poprawnie** w paragonie („did not FINISH — it hung or could not start"),
 a mimo to wyszła kodem 3 zamiast 1. Powód i naprawa: niżej, w „Co naprawiono w harnessie".
 
-## Co naprawiono w harnessie 2026-08-16 (cztery commity, każdy ze strażnikiem albo dowodem)
+## Co naprawiono w harnessie 2026-08-16 (każdy ze strażnikiem albo z kontrolą negatywną)
 
-Wszystkie cztery wyszły z jednego incydentu — T-06 — i każdy z nich zatrzymałby pętlę znowu.
+Wszystkie wyszły z jednego incydentu — T-06 — i każdy z nich zatrzymałby pętlę znowu.
 
 **`063c7e0` — sufit poziomu liczy retry, który bramka sama przyznaje.** `run_one` po timeoucie
 pyta drugi raz (zamierzone), więc oracle autoryzuje do `2*b`. Sufit liczył `b`, poziom miał
@@ -108,14 +114,26 @@ tamtego komunikatu commita: przez jedną noc trzy razy poprawiałem monitoring p
 i i tak nie złapał jedynej awarii, która się wydarzyła. **Monitoring, który nie diagnozuje, jest
 gorszy niż jego brak**, bo wygląda jak nadzór.
 
-## Kolizje kręgosłupa — to jest normalne, nie awaria
+## Kolizje kręgosłupa — już rozwiązane regułą, nie ręką
 
 `src-tauri/src/lib.rs` zbiera `pub mod` od **każdego** zadania tworzącego moduł, więc przy
-lądowaniu dwóch takich zadań konflikt jest **pewny**. Zdarzyło się dwa razy przy T-11 i T-12.
-Rozwiązanie jest zawsze to samo: **zachowaj obie deklaracje**. Nie wybieraj strony.
+dwóch takich zadaniach konflikt jest **pewny**. Zdarzył się przy T-11 i T-12, a potem zablokował
+odświeżanie harnessu na T-06.
 
-To samo dotyczy `engine/mod.rs`, `memory/mod.rs`, `skills/mod.rs`, `drivers/mod.rs`.
-`harness/task-spine.py` pilnuje, żeby każde zadanie miało gdzie dopisać swój wiersz.
+**Od 2026-08-16 nie musisz go rozwiązywać ręcznie.** `.gitattributes` niesie
+`src-tauri/src/lib.rs merge=union`, czyli zapisaną wprost regułę „zachowaj obie deklaracje,
+nigdy nie wybieraj strony". Obowiązuje tak samo przy `integrate.sh` i przy odświeżaniu harnessu
+na gałęzi. Zweryfikowane na T-06: po merge'u stoi pięć deklaracji — `engine`, `store` z gałęzi,
+`library`, `memory`, `workflow` z trunka. Nic nie zginęło, nic się nie zdublowało.
+
+Jeden haczyk, który kosztował fałszywy start: **reguła musi być w gałęzi**, żeby zadziałała
+przy merge'u. Gałąź wycięta przed jej wprowadzeniem potrzebuje jednorazowego wpuszczenia pliku
+(`cp .gitattributes` + commit). Wszystkie gałęzie wycinane od teraz dostają go z trunka.
+
+`engine/mod.rs`, `memory/mod.rs`, `skills/mod.rs` i `drivers/mod.rs` **celowo** zostały poza
+regułą: mimo nazwy niosą prawdziwy kod, więc union mógłby skleić tam dwie wersje funkcji
+zamiast dwóch deklaracji. Uzasadnienie w `docs/HARNESS-QUEUE.md`.
+`harness/task-spine.py` dalej pilnuje, żeby każde zadanie miało gdzie dopisać swój wiersz.
 
 ## Rzecz, która nie zatrzyma bramki i dlatego jest groźna
 
