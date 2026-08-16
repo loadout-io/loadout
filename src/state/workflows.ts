@@ -1,0 +1,276 @@
+/* Otwarty dokument workflow: `WorkflowFile` w pamięci plus akcje, które go zmieniają.
+ *
+ * Ten plik NIE importuje `@/ipc`. Nazwy komend zna jedno miejsce w sekcji —
+ * `src/sections/workflows/canvas/io.ts` — i to ono wstrzykuje tu `WorkflowIo` (niezmiennik 23),
+ * dokładnie tak jak `AgentsIo` w `src/state/agents.ts`. Test wstrzykuje atrapę zamiast mockować
+ * transport, którego magazyn i tak nie widzi.
+ *
+ * Dlaczego `saveAgent` siedzi w `WorkflowIo`, choć to sekcja workflow: panel kroku ma w liście
+ * „Who does this" pozycję `＋ Create a new agent…` (`docs/mockup/index.html:603`), więc ta sekcja
+ * NAPRAWDĘ umie zapisać plik agenta. To jest jedyny powód, dla którego zdanie „edycja kroku nie
+ * dotyka agenta" da się w ogóle udowodnić: `expect(io.saveAgent).not.toHaveBeenCalled()` na
+ * funkcji, której w interfejsie nie ma, nie dowodzi niczego.
+ *
+ * Typy niżej są lustrem `src-tauri/src/workflow/mod.rs` — tak samo jak typy w
+ * `src/state/agents.ts` są lustrem `src-tauri/src/library/agents.rs`. Dopóki nie ma generatora
+ * (`ts-rs` albo `specta`, T3 §3.2), obie kopie stoją obok siebie i rozjazd łapie recenzja.
+ *
+ * Czego tu świadomie NIE MA: cofnij/ponów. PLAN §7 stawia je w v1.1, a TASK.md mówi „magazyn ma
+ * zostawić na to miejsce, nie implementować" — tym miejscem jest `commit`, jedyna droga, którą
+ * nowy dokument wchodzi do stanu.
+ */
+import { create } from 'zustand';
+import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
+import type { Agent } from './agents';
+
+/** Waga uwagi z walidatora Rusta. `Problem` blokuje Run, `Warning` nie blokuje niczego. */
+export type Level = 'problem' | 'warning';
+
+/** Jedna uwaga o jednym defekcie — lustro `workflow::check::Note`.
+ *
+ * `message` idzie WPROST na ekran: to jest gotowe angielskie zdanie, nie klucz i nie kod. */
+export interface Note {
+  level: Level;
+  /** Krok, na którym ląduje kropka. `null`, kiedy uwaga dotyczy całego pliku. */
+  stepId: string | null;
+  message: string;
+}
+
+/** Pozycja kafelka. Zapisywana zawsze jako całkowita wielokrotność [`GRID`]. */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** Skok siatki w pikselach [T3 §8.2 reguła 1]. Ta sama liczba co `workflow::GRID`. */
+export const GRID = 24;
+
+/** Strzałka. Bez portów, bez danych, bez warunku — znaczy „po" (T3 §3.1). */
+export interface Link {
+  from: string;
+  to: string;
+}
+
+export type Folder = { use: 'project' } | { use: 'fresh-copy' } | { use: 'pick'; path: string };
+
+/** `'all'` albo lista nazw. Lustro `workflow::Skills`. */
+export type Skills = 'all' | string[];
+
+/** Co kontrolka Skills umie zapisać. `'none'` istnieje tylko w trybie `all-or-none`. */
+export type SkillChoice = 'all' | 'none' | { only: string[] };
+
+export interface HandoverField {
+  name: string;
+  describe: string;
+  required?: boolean;
+}
+
+export type Handover = 'notes' | { fields: HandoverField[] };
+
+/** Dziewięć pól, które krok może zmienić wobec agenta — lustro `OVERRIDABLE` z T-11.
+ *
+ * Czego tu nie ma: `id`, `name` i `runsWith`. Krok, który przestawia vendora, unieważnia
+ * połowę reszty [T4 §6.4]. */
+export type OverridableField =
+  | 'instructions'
+  | 'model'
+  | 'thinking'
+  | 'fileAccess'
+  | 'giveUpAfterMinutes'
+  | 'tools'
+  | 'skills'
+  | 'connections'
+  | 'writeResultsTo';
+
+/** Patch RFC 7396 nad definicją agenta: brak klucza znaczy „weź z agenta" [T4 §5.1].
+ *
+ * `{}` dla kroku nietkniętego — i to `{}` niesie informację, więc nie znika przy zapisie. */
+export type Overrides = Partial<Pick<Agent, OverridableField>>;
+
+/** Krok, który uruchamia agenta.
+ *
+ * Vendora ani modelu tu nie ma: krok nazywa AGENTA, a vendor, model i narzędzia mieszkają
+ * w jego definicji (T3 §3.1). Zmiana modelu dzieje się raz, nie w sześciu kafelkach. */
+export interface AgentStep {
+  kind: 'agent';
+  id: string;
+  name: string;
+  /** Id zapisanego agenta (`src/state/agents.ts`). */
+  agent: string;
+  overrides: Overrides;
+  /** Przelotka na opcje vendora. Loadout nie interpretuje jej zawartości. */
+  vendorOptions?: Record<string, Record<string, string>>;
+  /** Ile identycznych kopii naraz, 1–8 [T3 §4.4]. */
+  copies: number;
+  /** Prompt kroku, zwykły tekst. To NIE jest `Overrides.instructions`, które dotyczy agenta. */
+  instructions: string;
+  skills: Skills;
+  folder: Folder;
+  handover: Handover;
+  at: Point;
+}
+
+/** Krok, który zatrzymuje bieg i pyta człowieka [T3 §6.1 punkt 5]. */
+export interface CheckpointStep {
+  kind: 'checkpoint';
+  id: string;
+  name: string;
+  question?: string;
+  at: Point;
+}
+
+/** Dwa rodzaje kafelka. To jest cała lista i ma taka zostać (D6, TASK.md rozstrzygnięcie 1). */
+export type Step = AgentStep | CheckpointStep;
+
+export interface WorkflowFile {
+  format: 1;
+  id: string;
+  name: string;
+  description?: string;
+  /** Kolejność WSTAWIANIA, nigdy przesortowana [T3 §8.2 reguła 2]. */
+  steps: Step[];
+  links: Link[];
+}
+
+/** Wszystko, co magazyn robi poza swoją głową. Jedna atrapa w teście zastępuje całość. */
+export interface WorkflowIo {
+  /** Zapis pliku workflow. Odmowa przy problemie żyje po stronie Rusta (`workflow::file::save`). */
+  save(file: WorkflowFile): Promise<void>;
+  /** Uwagi z walidatora Rusta (T-12). Frontend ich nie liczy i nie tłumaczy. */
+  check(file: WorkflowFile): Promise<Note[]>;
+  /** Zapis pliku AGENTA — patrz nagłówek pliku. Edycja kroku nie ma prawa tego zawołać. */
+  saveAgent(agent: Agent): Promise<void>;
+}
+
+export interface WorkflowState {
+  /** Otwarty dokument. Magazyn bez dokumentu nie ma sensu, więc nie ma tu `null`. */
+  document: WorkflowFile;
+  /** Ostatnie uwagi z Rusta. Frontend ich nie wymyśla. */
+  notes: Note[];
+  /** Jedyna droga, którą nowy dokument wchodzi do stanu — i miejsce na stos cofnij/ponów. */
+  commit: (next: WorkflowFile) => void;
+  /** Odświeża uwagi. Wołane po zapisie i przed Run. */
+  recheck: () => Promise<void>;
+  /** Zapisuje otwarty dokument i odświeża uwagi. Odrzucenie jest widoczne dla wołającego. */
+  saveNow: () => Promise<void>;
+  /** Zmiana wiersza panelu, wyrażona wartościami EFEKTYWNYMI. Różnicę liczy `applyPanelEdit`. */
+  editStep: (stepId: string, agent: Agent, edit: Overrides) => void;
+  /** `Reset` przy jednym wierszu: kasuje jeden klucz patcha i tylko jeden. */
+  resetRow: (stepId: string, field: OverridableField) => void;
+  chooseSkills: (stepId: string, choice: SkillChoice) => void;
+}
+
+/** Ile ciszy po ostatniej zmianie czekamy z autosave'em [T3 §9, „MVP ships" punkt 6].
+ *
+ * Zapis na każdą zmianę osobno to jeden plik na literę wpisaną w nazwie kroku i jedno
+ * przejście walidatora Rusta na każdy z nich. Zapis dopiero przy zamknięciu ekranu to plik,
+ * który nie odzwierciedla ekranu przez cały czas pracy. 400 ms jest krótsze niż przerwa,
+ * po której człowiek patrzy na wynik, i dłuższe niż przerwa między dwoma znakami. */
+const AUTOSAVE_MS = 400;
+
+/** Magazyn otwartego dokumentu.
+ *
+ * Drugi argument jest wymagany, bo „otwarty dokument" bez dokumentu to stan, którego ten ekran
+ * nie ma — listę plików workflow i ich otwieranie posiada T-14. */
+/** Dokument z podmienionym JEDNYM krokiem rodzaju `agent`.
+ *
+ * Kroki, których to nie dotyczy, zostają tymi samymi obiektami — nie kopiami — więc porównanie
+ * referencji w Reakcie dalej mówi prawdę o tym, co się zmieniło. Punkt kontrolny nie ma
+ * nadpisań ani umiejętności i przechodzi tędy nietknięty. */
+function withAgentStep(
+  file: WorkflowFile,
+  stepId: string,
+  edit: (step: AgentStep) => AgentStep,
+): WorkflowFile {
+  return {
+    ...file,
+    steps: file.steps.map((step) =>
+      step.id === stepId && step.kind === 'agent' ? edit(step) : step,
+    ),
+  };
+}
+
+export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
+  /* Odliczanie autosave'u, w DOMKNIĘCIU, a nie w stanie magazynu.
+   *
+   * Uchwyt timera nie jest faktem o dokumencie: w stanie zustanda przerysowywałby płótno na
+   * każde tyknięcie księgowania debounce'u, wjechałby do każdej migawki stosu cofnij/ponów
+   * (PLAN §7, v1.1) i do każdego porównania „czy to, co widzę, to to, co zapisano".
+   * Zapisywalny stan tego ekranu to `document` i nic poza nim (niezmiennik 13). */
+  let autosave: ReturnType<typeof setTimeout> | null = null;
+
+  return create<WorkflowState>()((set, get) => ({
+    document: open,
+    notes: [],
+
+    /* Jedno miejsce, w którym dokument się zmienia. Stos cofnij/ponów (PLAN §7, v1.1) wchodzi
+     * TUTAJ i nigdzie indziej — dopisany przy każdej akcji z osobna byłby pięcioma stosami,
+     * z których cztery zapominałyby o piątej akcji. Z tego samego powodu autosave wisi tutaj,
+     * a nie przy `editStep`, `resetRow` i `chooseSkills` z osobna: akcja dopisana jutro bez
+     * własnej linijki zapisu daje zmianę, która żyje wyłącznie na ekranie. */
+    commit: (next: WorkflowFile) => {
+      set({ document: next });
+
+      /* Debounce, nie throttle: przeciągnięcie kafelka albo wpisywanie nazwy to seria commitów,
+       * a zapisać chcemy stan, na którym ta seria się zatrzymała. Skasowanie poprzedniego
+       * odliczania jest tym, co robi z dziesięciu zapisów jeden. */
+      if (autosave !== null) {
+        clearTimeout(autosave);
+      }
+      autosave = setTimeout(() => {
+        autosave = null;
+        /* Świadomie BEZ `.catch`. Powód stoi trzy akapity niżej przy `saveNow` i jest istotą
+         * tego zapisu: autosave, który po cichu nie zapisał, jest gorszy niż jego brak.
+         * `.catch(() => {})` daje ekran twierdzący, że wszystko jest na dysku, kiedy nie jest;
+         * `.catch(console.error)` daje to samo, tylko z wierszem w konsoli, której nikt nie
+         * ogląda. Odrzucenie zostaje więc odrzuceniem i wychodzi na wierzch — w teście wywala
+         * bieg, w aplikacji trafia do globalnej obsługi błędów okna. */
+        void get().saveNow();
+      }, AUTOSAVE_MS);
+    },
+
+    recheck: async () => {
+      /* Uwagi liczy Rust (T-12). Gdyby liczył je też front, mielibyśmy dwa zdania o tym samym
+       * defekcie i jedno z nich zawsze byłoby nieaktualne (niezmiennik 13). */
+      set({ notes: await io.check(get().document) });
+    },
+
+    /* Zapis i odświeżenie uwag jednym ruchem, bo to jest jedna decyzja użytkownika: „zapisz to,
+     * co widzę". Funkcja jest `async` i NIE łyka błędu — kto ją woła, ten pokazuje, że zapis
+     * nie wyszedł. Autosave, który po cichu nie zapisał, jest gorszy niż jego brak: plik jest
+     * prawdą, a użytkownik ma wtedy dwie różne prawdy i nie wie o żadnej. */
+    saveNow: async () => {
+      await io.save(get().document);
+      await get().recheck();
+    },
+
+    editStep: (stepId: string, agent: Agent, edit: Overrides) => {
+      get().commit(
+        withAgentStep(get().document, stepId, (step) => applyPanelEdit(step, agent, edit)),
+      );
+    },
+
+    resetRow: (stepId: string, field: OverridableField) => {
+      get().commit(withAgentStep(get().document, stepId, (step) => withoutOverride(step, field)));
+    },
+
+    chooseSkills: (stepId: string, choice: SkillChoice) => {
+      get().commit(
+        withAgentStep(get().document, stepId, (step) => ({
+          ...step,
+          skills: chosenSkills(choice),
+        })),
+      );
+    },
+  }));
+}
+
+/** Co kontrolka Skills zapisuje w kroku.
+ *
+ * `'none'` to PUSTA LISTA, nie brak klucza: „bez umiejętności" jest decyzją użytkownika i ma
+ * przeżyć zapis, a brak klucza znaczyłby „weź domyślne", czyli wszystkie. */
+function chosenSkills(choice: SkillChoice): Skills {
+  if (choice === 'all') return 'all';
+  if (choice === 'none') return [];
+  return choice.only;
+}
