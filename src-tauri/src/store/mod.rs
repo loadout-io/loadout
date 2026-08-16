@@ -56,6 +56,15 @@ pub use writer::Writer;
 /// zapisać" — a naprawdę znaczył on „ktoś inny pisał przez trzy milisekundy".
 pub const BUSY_TIMEOUT_MS: i64 = 5_000;
 
+/// `PRAGMA journal_mode` — jedyna z czwórki, która jest własnością **bazy**, a nie połączenia.
+///
+/// Zmierzone [T7 §5.3]: zapomniany WAL kosztuje **25×** (2 698 wierszy/s wobec 662 238).
+const JOURNAL_MODE_WAL: &str = "wal";
+
+/// `PRAGMA synchronous` = 1. Nazwana stała, bo `1` w wywołaniu nie mówi, że chodzi o `NORMAL`,
+/// a sąsiednie `0` i `2` znaczą `OFF` i `FULL`.
+const SYNCHRONOUS_NORMAL: i64 = 1;
+
 /// Wszystko, czym ten moduł umie odmówić.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -303,11 +312,18 @@ impl Store {
     /// Bez czekania „zapisane" znaczy tylko „wysłane", a to jest różnica, którą widać dopiero
     /// wtedy, gdy ktoś zamyka aplikację w trakcie biegu.
     pub async fn close(self) -> Result<()> {
-        drop(self.writer);
+        // Rozbiór na części, bo `writer` musi wysłać zlecenie zamknięcia ZANIM oddamy sterowanie
+        // na `task.await`. Samo `drop(writer)` nie wystarcza i nie jest to detal: wołający, który
+        // trzyma własny klon [`Writer`] — a trzyma go każdy, kto cokolwiek zapisał — zostawia
+        // w kanale żywego nadawcę, więc pętla pisarza nie ma prawa się skończyć i `await` niżej
+        // wisi bez końca.
+        let Self { writer, task, .. } = self;
+        writer.shutdown().await?;
+        drop(writer);
         // Zadanie pisarza nie panikuje ani nie jest anulowane, więc `JoinError` znaczy tu
         // wyłącznie „coś jest bardzo nie tak"; zgłaszamy to jako martwego pisarza, bo dla
         // wołającego skutek jest dokładnie ten.
-        self.task.await.map_err(|_| StoreError::WriterGone)?;
+        task.await.map_err(|_| StoreError::WriterGone)?;
         Ok(())
     }
 }
@@ -318,13 +334,31 @@ impl Store {
 ///
 /// `journal_mode` jest własnością bazy i wystarczy raz, ale wołamy go tak samo z każdego
 /// połączenia: taniej niż zapamiętać, które połączenie było pierwsze.
-pub fn apply_pragmas(_conn: &Connection) -> Result<()> {
-    // SZKIELET (2026-08-16): komplet pragm jest całą treścią AC-3, więc tutaj go nie ma.
-    // Połączenie wychodzi stąd nietknięte — `busy_timeout` zostaje zerem, klucze obce
-    // wyłączone, dziennik w trybie `delete`. Żadnej z tych czterech wartości nie da się na tym
-    // szkielecie zobaczyć jako poprawnej. Podkreślenie w nazwie znika razem ze szkieletem —
-    // sygnatura jest już ta docelowa.
-    tracing::debug!("SZKIELET: no pragma was set on this connection");
+pub fn apply_pragmas(conn: &Connection) -> Result<()> {
+    // `journal_mode` jako jedyny z czwórki jest własnością BAZY i zapisuje się do pliku, więc
+    // jako jedyny wymaga prawa zapisu. Pytamy najpierw, zamiast ustawiać na ślepo, i to nie jest
+    // ostrożność na wyrost: połączenie z `Store::reader` jest otwarte tylko do odczytu, a
+    // `PRAGMA journal_mode = WAL` na bazie, która NIE jest jeszcze w WAL, odmawia mu słowami
+    // „attempt to write a readonly database". Baza już przestawiona przez pisarza odpowiada
+    // „wal" bez zapisu, więc pominięcie zdania nie zmienia niczego poza tym, że czytelnik
+    // pierwszej w życiu bazy dostaje pragmy zamiast błędu otwarcia projektu.
+    let journal: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !journal.eq_ignore_ascii_case(JOURNAL_MODE_WAL) {
+        conn.pragma_update(None, "journal_mode", JOURNAL_MODE_WAL)?;
+    }
+
+    // Zmierzone [T7 §5.3]: WAL bez `synchronous = NORMAL` to dalej tylko połowa rzeczy.
+    // Razem dają 662 238 wierszy/s przy wsadzie 100; sam dziennik rollback daje 2 698.
+    conn.pragma_update(None, "synchronous", SYNCHRONOUS_NORMAL)?;
+
+    // Klucze obce są własnością POŁĄCZENIA i wracają do domyślnej wartości przy każdym nowym.
+    // Połączenie, które to pominie, przestaje widzieć kaskady — po cichu i bez śladu.
+    conn.pragma_update(None, "foreign_keys", 1_i64)?;
+
+    // Na końcu i na KAŻDYM połączeniu, także czytającym [00-SYNTHESIS §3]. Zapomniany na
+    // czytelniku objawia się jako losowe „Save failed" raz na dwa dni, a w meetnotes zajęło to
+    // dwóch pisarzy w tle, zanim ktokolwiek zrozumiał, co widzi.
+    conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
     Ok(())
 }
 
@@ -334,12 +368,14 @@ pub fn apply_pragmas(_conn: &Connection) -> Result<()> {
 /// To, że ta funkcja przyjmuje `&Connection`, a nie `&Store`, jest częścią kontraktu AC-3:
 /// kontrola przeciw pustej asercji polega na wskazaniu jej na połączenie, o którym wiadomo,
 /// że pragm nie ma. Gdyby czytała tylko z naszego typu, nie byłoby czym zmierzyć zera.
-pub fn read_pragmas(_conn: &Connection) -> Result<Pragmas> {
-    // SZKIELET (2026-08-16): odczyt jest jedną linią na pragmę i powstanie razem z zapisem —
-    // rozdzielenie ich dałoby fazę, w której AC-3 pada na czytaniu, a nie na ustawianiu.
-    // Zwracamy same zera i pusty `journal_mode`: żadna z czterech asercji AC-3 nie przechodzi,
-    // a kontrola na gołym połączeniu (`busy_timeout` = 0, `foreign_keys` = 0) przechodzi
-    // przypadkiem i dlatego stoi w teście **po** asercjach pozytywnych.
-    tracing::debug!("SZKIELET: no pragma was read back from this connection");
-    Ok(Pragmas::default())
+pub fn read_pragmas(conn: &Connection) -> Result<Pragmas> {
+    // Odczyt idzie prosto do `PRAGMA`, bez ani jednej wartości zapamiętanej po drodze. To jest
+    // cała jego wartość: funkcja, która oddawałaby to, co [`apply_pragmas`] miało ustawić,
+    // zgadzałaby się sama ze sobą także na połączeniu, którego nikt nigdy nie tknął.
+    Ok(Pragmas {
+        busy_timeout: conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?,
+        foreign_keys: conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?,
+        synchronous: conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?,
+        journal_mode: conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?,
+    })
 }
