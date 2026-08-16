@@ -35,12 +35,17 @@
 //! 13). Pompa licząca porzucone, kanał liczący niedostarczone i front liczący brakujące
 //! numery to trzy liczby, które prawie się zgadzają i żadna nie jest prawdą.
 //!
-//! # Dwie drogi wyjścia z bufora, obie obowiązkowe
+//! Paczka wychodzi więc **z zegara** ([`FLUSH`]) albo **z licznika** ([`BATCH_CAP`]) — co
+//! przyjdzie pierwsze, i obie drogi są obowiązkowe.
 //!
-//! Paczka wychodzi **z zegara** ([`FLUSH`]) albo **z licznika** ([`BATCH_CAP`]) — co przyjdzie
-//! pierwsze. Pompa wyłącznie zegarowa oddaje przy `find /usr/share` 121 000 linii jednym
-//! `evaluate_script`; pompa wyłącznie licznikowa milczy przez minuty u agenta produkującego
-//! ~7 zdarzeń na sekundę i wygląda to jak agent, który się zawiesił.
+//! # Pompa kończy się sama, na dwa sposoby i tylko na te dwa
+//!
+//! Kiedy producent zniknął, ostatnia — niepełna — paczka wychodzi **przed** końcem zadania;
+//! pętla, która na tym wyjściu po prostu wychodzi, gubi końcówkę każdego biegu, w tym wiersz
+//! `done` z kosztem. Kiedy kanał odmówił, pompa kończy się w tym samym tyknięciu: pompa, która
+//! przełknie odmowę i tyka dalej, jest zadaniem w tle, którego nikt nie widzi i nikt nie
+//! zatrzyma. Trzeciego wyjścia nie ma i nie ma go z powodu, który widać w [`PumpStats`] —
+//! bilans jest kompletny dopiero w chwili końca, więc pompy nie wolno zabijać z zewnątrz.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -291,8 +296,12 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
             }
         }
 
-        // Dopiero teraz, bo dopiero teraz jest kompletny: kolejka oddała `None`, czyli ostatni
-        // producent zniknął i żaden inkrement już nie dojdzie.
+        // Pętla ma dwa wyjścia i tylko w jednym ta liczba jest ostateczna. Kiedy kolejka oddała
+        // `None`, ostatni producent zniknął i żaden inkrement już nie dojdzie. Kiedy wyszliśmy
+        // na odmowie kanału, producent biegnie dalej — i to jest w porządku: od tej chwili
+        // każda jego linia przepada z definicji, bo okna nie ma, a nie z braku miejsca
+        // w kolejce. Bilans opisuje więc bieg POMPY, i tak jest czytany po drugiej stronie
+        // `JoinHandle`.
         stats.dropped = dropped.load(Ordering::Acquire);
         stats
     })
