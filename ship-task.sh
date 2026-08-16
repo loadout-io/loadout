@@ -337,6 +337,27 @@ for name in sorted(was):
 COMPARE
 }
 
+# Porownaj biezacy odcisk z BAZA i zatrzymaj bieg, jesli czegokolwiek ubylo.
+#
+# Baza jest zawsze stanem, ktory bramka juz OSADZILA -- nie stanem poprzedniej fazy.
+# Roznica jest istotna: przy porownywaniu z poprzednia faza dwa male ubytki po sobie
+# przechodza, bo kazdy z osobna jest maly.
+assertions_must_not_shrink() {  # assertions_must_not_shrink <baza.tsv> <etykieta>
+  local lost
+  assertion_fingerprint > "$RUNDIR/assertions-now.tsv"
+  lost="$(assertions_lost "$1" "$RUNDIR/assertions-now.tsv")"
+  [ -n "$lost" ] || return 0
+  echo >&2
+  echo "the $2 phase REMOVED assertions from specs:" >&2
+  printf '%s\n' "$lost" >&2
+  echo >&2
+  echo "A spec may gain assertions; it may never lose one. This is the one way a green" >&2
+  echo "gate can be a lie: the criterion still runs, still reports passing, and no longer" >&2
+  echo "asks the question it was written to ask. Nothing downstream would catch it." >&2
+  echo "workspace kept for inspection: $WT" >&2
+  exit 1
+}
+
 
 # Prompt idzie STDIN-em, nigdy w argv (niezmiennik 9): argv widzi każdy `ps`, a prompt
 # niesie treść zadania i bywa, że ścieżki. Oba CLI to obsługują — claude -p czyta prompt
@@ -560,18 +581,7 @@ Commit what you change with one conventional-commit subject, e.g.
 PROMPT
     commit_leftovers "contract repair"
 
-    assertion_fingerprint > "$RUNDIR/assertions-after.tsv"
-    LOST="$(assertions_lost "$RUNDIR/assertions-before.tsv" "$RUNDIR/assertions-after.tsv")"
-    if [ -n "$LOST" ]; then
-      echo >&2
-      echo "the contract repair round REMOVED assertions from specs:" >&2
-      printf '%s\n' "$LOST" >&2
-      echo >&2
-      echo "A spec may gain assertions; it may never lose one. A criterion made to fail" >&2
-      echo "faster by asserting less is the one outcome nothing downstream would catch." >&2
-      echo "workspace kept for inspection: $WT" >&2
-      exit 1
-    fi
+    assertions_must_not_shrink "$RUNDIR/assertions-before.tsv" "contract repair"
 
     say "before (enforced, after the contract repair)"
     RED=0; gate before || RED=$?
@@ -582,7 +592,9 @@ PROMPT
     case "$RED" in
       1) echo "the criteria are NOT red for the right reason. Either a criterion already" >&2
          echo "passes (it checks nothing), or its check failed without running at all." >&2
-         echo "Read the reasons above; both are contract bugs, not implementation bugs." >&2 ;;
+         echo "Read the reasons above; both are contract bugs, not implementation bugs." >&2
+         echo "One repair round already ran against exactly these reasons and did not" >&2
+         echo "settle them, so this is a human's call now (AGENTS.md section 7)." >&2 ;;
       2) echo "the gate is misconfigured (exit 2). That is ours to fix, not the model's." >&2 ;;
       3) echo "the before tier hit its ceiling (exit 3). A check that cannot finish cannot" >&2
          echo "certify anything." >&2 ;;
@@ -595,6 +607,12 @@ PROMPT
 fi
 
 # --------------------------------------------------------------- 4. pisarz --
+# Odcisk kontraktu W CHWILI, W KTOREJ BRAMKA GO OSADZILA. Od tego miejsca zadna faza nie
+# ma prawa zabrac specyfikacji asercji -- ani pisarz, ani runda naprawcza. To jedyny sposob,
+# w jaki zielona bramka moze klamac bez sladu: kryterium dalej biegnie, dalej melduje
+# "1 passed" i po prostu przestaje pytac o to, po co je napisano.
+assertion_fingerprint > "$RUNDIR/assertions-certified.tsv"
+
 say "implementing with $AGENT"
 write_with "$RUNDIR/build.jsonl" 250 <<PROMPT || note "the writer exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory. The acceptance specs already exist and are
@@ -619,6 +637,7 @@ Write under src/, src-tauri/, engine/ and tests/. Commit subjects are
 "<type>(<scope>): <what changed>".
 PROMPT
 commit_leftovers implementation
+assertions_must_not_shrink "$RUNDIR/assertions-certified.tsv" "implementation"
 
 # ---------------------------------------------------------------- 5. bramka --
 say "gate"
@@ -716,6 +735,7 @@ if [ "$GATE" -ne 0 ] || [ "$CONCERNS" = 1 ]; then
       exit 2
     fi
 
+    assertions_must_not_shrink "$RUNDIR/assertions-certified.tsv" "repair"
     say "gate, after the repair round"
     GATE=0; gate full || GATE=$?
     note "gate: $GATE"
