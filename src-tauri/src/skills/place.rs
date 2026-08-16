@@ -661,5 +661,43 @@ fn first_line(dir: &Path) -> String {
 /// brak vendora nie może być czerwony [T5 §6.3].
 #[must_use]
 pub fn discovery_from_init(name: &str, init_line: &str, wrote: &[PathBuf]) -> Discovery {
-    todo!("T-18 AC-5: skills, potem slash_commands, dla {name} w {init_line} ({wrote:?})")
+    if init_line.trim().is_empty() {
+        return Discovery::Unknown("not installed");
+    }
+
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(init_line) else {
+        return Discovery::Unknown("the answer was not readable");
+    };
+
+    // Kolejność JEST regułą. `skills` jest listą autorytatywną; kiedy istnieje, zejście na
+    // `slash_commands` zamieniłoby ją w sugestię i umiejętność, której CLI przestało wczytywać,
+    // dalej raportowałaby się jako widziana.
+    //
+    // Nie sprawdzamy `type`/`subtype`: linię wybiera wołający, a vendor, który przemianuje
+    // podtyp, kazałby nam odpowiadać „nie wiem" na zdarzenie, które niesie komplet odpowiedzi.
+    for key in ["skills", "slash_commands"] {
+        let Some(listed) = event.get(key).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        return if listed
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|entry| entry == name)
+        {
+            Discovery::Seen
+        } else {
+            // Porównanie z ELEMENTAMI tablicy, nigdy `init_line.contains(name)`. Nazwa
+            // umiejętności potrafi wystąpić w `cwd` i w nazwie serwera narzędzi, nie będąc
+            // w żadnej z dwóch tablic — a wtedy szukanie po całej linii mówi „widzi" i to
+            // jest dokładnie ten fałszywy zielony ptaszek, przed którym stoi to zadanie.
+            Discovery::NotSeen {
+                looked_in: wrote.to_vec(),
+            }
+        };
+    }
+
+    // Brak obu kluczy to brak odpowiedzi, nie odpowiedź odmowna. Vendorzy zmieniają kształt
+    // zdarzeń co tydzień i po cichu (niezmiennik 5); „nie ma klucza" przetłumaczone na „nie
+    // widzi" daje fałszywy alarm przy pierwszej takiej zmianie.
+    Discovery::Unknown("the answer did not list skills")
 }
