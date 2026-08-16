@@ -185,132 +185,6 @@ note "claude: $LOADOUT_CLAUDE_MODEL (effort $LOADOUT_CLAUDE_EFFORT) · codex: $L
 note "transcripts: $RUNDIR"
 [ "$REVIEW_AVAILABLE" = 1 ] || note "note: '$REVIEWER' is not installed — the review stage will be skipped, not failed"
 
-# ------------------------------------------------------------ 1. przestrzeń --
-BRANCH="task-$ID"
-say "workspace"
-# Ścieżki NIE zgadujemy. worktree.sh sam decyduje o nazwie katalogu (m.in. zamienia ją na
-# małe litery) i echo tej ścieżki jest całym jego interfejsem — druga kopia tej reguły tutaj
-# rozjeżdżała się z pierwszą przy każdej zmianie nazewnictwa.
-WT="$(bash ./worktree.sh "$BRANCH" | tail -1)" || {
-  echo "could not cut a workspace for $BRANCH" >&2; exit 2; }
-[ -d "$WT" ] || { echo "worktree.sh printed '$WT', which is not a directory" >&2; exit 2; }
-note "$WT"
-
-# Czy ta przestrzen juz cos niosla? Pytamy TERAZ, bo za chwile skopiujemy tam kontrakt
-# i `-f TASK.md` przestanie odrozniac swieza przestrzen od wznawianej.
-RESUMED=0
-[ -f "$WT/TASK.md" ] && RESUMED=1
-
-# ORACLE z trunka PRZED czymkolwiek, co sadzi. Bez tego wznowiony bieg jest sadzony
-# przez bramke sprzed poprawek, ktore powstaly wlasnie dla niego.
-refresh_harness_from_trunk 0 "before this workspace is judged"
-
-# Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
-# katalogiem, który przepuszcza `-C` w piaskownicy codeksa. Zmierzone w repo źródłowym:
-# każdy `git commit` w biegu codeksa umierał na
-#     fatal: Unable to create '<root>/.git/worktrees/<n>/index.lock': Operation not permitted
-# — model napisał sześć specyfikacji, nie zacommitował ani jednej i stanął. Odmowa
-# środowiska nie do odróżnienia od poddania się modelu, jeśli nie czyta się logu.
-GIT_COMMON="$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
-
-cp "$TASK_FILE" "$WT/TASK.md"
-git -C "$WT" add TASK.md
-# Przy wznowieniu kontrakt jest juz zacommitowany i identyczny — `git commit` bez zmian
-# konczy sie jedynka i pod `set -e` wywraca caly bieg. Pusty commit tez nie: historia
-# galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
-if git -C "$WT" diff --cached --quiet; then
-  note "TASK.md unchanged — the contract commit is already the branch's first"
-else
-  git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
-  note "TASK.md committed as the branch's first commit"
-fi
-
-# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
-# przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
-# dowiedział, że kryterium niczego nie sprawdza.
-#
-# Odpowiada na to ZACHOWANIE, nie obecność pliku (niezmiennik 20 zastosowany do samego
-# harnessu). Wcześniej stało tu `if [ -f "$WT/TASK.md" ]` i to odmawiało także wtedy, gdy
-# kontrakt był gotowy, a implementacji nie było — czyli w jedynym przypadku, w którym
-# wznowienie jest i bezpieczne, i oszczędza pół godziny. Zmierzone na T-02: kontrakt
-# certyfikowany, siedem kryteriów uczciwie czerwonych, a skrypt kazał wyrzucić całą pracę.
-#
-# `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
-# z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
-# Czy ktores kryterium PRZESZLO, zanim powstala implementacja? To jedyny stan, w ktorym
-# drugi bieg nie ma jak dowiesc czerwieni -- wiec jedyny, w ktorym odmowa jest tansza niz
-# wznowienie. Czytamy paragon, bo to on niesie werdykt POZIOMU: `before` odwraca kryteria,
-# wiec samo `ok: false` nie mowi, czy kryterium przeszlo, czy nie ruszylo. Nazwa powodu mowi.
-# Exit 0 znaczy "tak, takie kryterium jest".
-contract_has_a_passing_criterion() {
-  python3 - "$WT/runs/last.json" <<'RECEIPT'
-import json, sys
-try:
-    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception:
-    sys.exit(1)                      # brak paragonu to brak dowodu, a nie dowod
-if receipt.get("tier") != "before":
-    sys.exit(1)
-for c in receipt.get("checks", []):
-    reason = c.get("reason") or ""
-    if (c.get("kind") == "acceptance" and not c.get("ok")
-            and ("PASSES before implementation" in reason
-                 or "exit 0 but no evidence" in reason)):
-        sys.stderr.write("   %s passes before implementation -- it certifies nothing\n" % c["id"])
-        sys.exit(0)
-sys.exit(1)
-RECEIPT
-}
-
-# Trzy flagi wznowienia. Ustawione JAWNIE, bo `set -u` zamienia niezainicjowana zmienna
-# w blad dopiero w tej galezi, ktora akurat nie biegla w testach.
-PRE_RESUME=0          # kod wyjscia `before` ze sprawdzenia wznowienia
-PRE_RESUME_RAN=0      # czy to sprawdzenie w ogole sie odbylo
-RESUME_WITH_SPECS=0   # czy zastalismy napisane specyfikacje, ktore nie certyfikuja
-if [ "$RESUMED" = 1 ]; then
-  ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
-  PRE_RESUME_RAN=1
-  if [ "$PRE_RESUME" = 0 ]; then
-    note "$WT already has a certified contract -- resuming from the implementation phase"
-  # Trzeci stan, ktorego ta bramka wczesniej nie znala: kontrakt JEST, ale nie certyfikuje.
-  # Faza kontraktu zginela w polowie, albo napisala szkielet, na ktorym jedno kryterium wisi
-  # zamiast padac. Nie ma tam czego chronic, a odmowa byla wylacznie kosztem: kazala
-  # czlowiekowi recznie skasowac worktree, zeby odtworzyc stan, ktory skrypt umie odtworzyc sam.
-  #
-  # Rozroznienie jest mechaniczne i NIE ZGADUJE, ale pyta o zachowanie, nie o ksztalt
-  # historii (niezmiennik 20). Wczesniej stalo tu "policz commity nad trunkiem; jeden znaczy
-  # sam kontrakt" -- proxy, ktore mylilo sie w obie strony. Zmierzone na T-06 (2026-08-16):
-  # faza kontraktu napisala siedem specyfikacji i szkielet, `commit_leftovers` domknal je
-  # DRUGIM commitem, wiec licznik pokazal 2 i skrypt kazal wyrzucic cala prace. Nie bylo tam
-  # ani jednej linii implementacji -- tylko kontrakt, ktorego jedno kryterium wisialo.
-  #
-  # Pytamy wiec paragon, a nie log. `before` odwraca kryteria, wiec exit 1 znaczy dokladnie
-  # "ktores kryterium NIE jest czerwone z wlasciwego powodu" -- czyli defekt kontraktu, czyli
-  # dokladnie ten stan, ktory faza kontraktu i jej runda naprawcza umieja naprawic.
-  #
-  # Jedyny stan, w ktorym odmowa dalej ma sens, to kryterium, ktore PRZECHODZI przed
-  # implementacja: albo implementacja juz tu jest (i drugi bieg nie ma jak dowiesc czerwieni),
-  # albo asercja jest za slaba (i to jest znalezisko dla czlowieka, AGENTS.md par. 7).
-  # Oba rozpoznaje paragon po nazwie powodu, wiec nie trzeba ich zgadywac z historii gita.
-  elif [ "$PRE_RESUME" = 1 ] && ! contract_has_a_passing_criterion; then
-    note "$WT carries a contract that does not certify -- no criterion passes, so there is"
-    note "no implementation here to lose -- the specs stay, the contract repair round"
-    note "gets them from here"
-    # Specyfikacje sa napisane i bramka wlasnie je OSADZILA. Przepisywanie ich od zera
-    # kosztowaloby drugie pelne wywolanie pisarza i drugi przebieg `before` -- za wiedze,
-    # ktora juz lezy w paragonie. Idziemy prosto do rundy naprawczej.
-    RESUME_WITH_SPECS=1
-  else
-    echo >&2
-    echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
-    echo "Either the implementation is already there, or the contract never certified." >&2
-    echo "A second run cannot prove the criteria red. Finish or discard it first:" >&2
-    echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
-    exit 2
-  fi
-fi
-
-
 # ------------------------------------------------------------ narzędzia biegu --
 gate() {                       # gate <tier>  → kod bramki
   local rc=0
@@ -455,6 +329,186 @@ write_with() {                 # write_with <transkrypt> <max-turns>  < prompt
   return "$rc"
 }
 
+# ------------------------------------------------------------ 1. przestrzeń --
+BRANCH="task-$ID"
+say "workspace"
+# Ścieżki NIE zgadujemy. worktree.sh sam decyduje o nazwie katalogu (m.in. zamienia ją na
+# małe litery) i echo tej ścieżki jest całym jego interfejsem — druga kopia tej reguły tutaj
+# rozjeżdżała się z pierwszą przy każdej zmianie nazewnictwa.
+WT="$(bash ./worktree.sh "$BRANCH" | tail -1)" || {
+  echo "could not cut a workspace for $BRANCH" >&2; exit 2; }
+[ -d "$WT" ] || { echo "worktree.sh printed '$WT', which is not a directory" >&2; exit 2; }
+note "$WT"
+
+# Czy ta przestrzen juz cos niosla? Pytamy TERAZ, bo za chwile skopiujemy tam kontrakt
+# i `-f TASK.md` przestanie odrozniac swieza przestrzen od wznawianej.
+RESUMED=0
+[ -f "$WT/TASK.md" ] && RESUMED=1
+
+# ORACLE z trunka PRZED czymkolwiek, co sadzi. Bez tego wznowiony bieg jest sadzony
+# przez bramke sprzed poprawek, ktore powstaly wlasnie dla niego.
+# Bieg zabity w polowie zostawia prace niezacommitowana. Domykamy ja GLOSNO i PIERWSZA,
+# przed odswiezeniem oracle'a: `git merge` odmawia na brudnym drzewie, wiec bez tego
+# odswiezenie po kazdym przerwanym biegu cicho degraduje sie do starej kopii bramki.
+# Zmierzone 2026-08-16: trzy biegi zabite naraz, jeden z nich w polowie naprawy
+# szkieletu -- praca byla dobra i nie mial jej kto zobaczyc.
+[ "$RESUMED" = 1 ] && commit_leftovers "interrupted"
+
+refresh_harness_from_trunk 0 "before this workspace is judged"
+
+# Podpięty worktree trzyma metadane gita w GŁÓWNYM .git/worktrees/<nazwa>, czyli POZA
+# katalogiem, który przepuszcza `-C` w piaskownicy codeksa. Zmierzone w repo źródłowym:
+# każdy `git commit` w biegu codeksa umierał na
+#     fatal: Unable to create '<root>/.git/worktrees/<n>/index.lock': Operation not permitted
+# — model napisał sześć specyfikacji, nie zacommitował ani jednej i stanął. Odmowa
+# środowiska nie do odróżnienia od poddania się modelu, jeśli nie czyta się logu.
+GIT_COMMON="$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+
+cp "$TASK_FILE" "$WT/TASK.md"
+git -C "$WT" add TASK.md
+# Przy wznowieniu kontrakt jest juz zacommitowany i identyczny — `git commit` bez zmian
+# konczy sie jedynka i pod `set -e` wywraca caly bieg. Pusty commit tez nie: historia
+# galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
+if git -C "$WT" diff --cached --quiet; then
+  note "TASK.md unchanged — the contract commit is already the branch's first"
+else
+  git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
+  note "TASK.md committed as the branch's first commit"
+fi
+
+# worktree.sh świadomie PONOWNIE UŻYWA istniejącej przestrzeni. Pytanie brzmi, czy ta
+# przestrzeń ma już IMPLEMENTACJĘ — bo wtedy „before" byłoby zielone i nikt by się nie
+# dowiedział, że kryterium niczego nie sprawdza.
+#
+# Odpowiada na to ZACHOWANIE, nie obecność pliku (niezmiennik 20 zastosowany do samego
+# harnessu). Wcześniej stało tu `if [ -f "$WT/TASK.md" ]` i to odmawiało także wtedy, gdy
+# kontrakt był gotowy, a implementacji nie było — czyli w jedynym przypadku, w którym
+# wznowienie jest i bezpieczne, i oszczędza pół godziny. Zmierzone na T-02: kontrakt
+# certyfikowany, siedem kryteriów uczciwie czerwonych, a skrypt kazał wyrzucić całą pracę.
+#
+# `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
+# z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
+# Czy ktores kryterium PRZESZLO, zanim powstala implementacja? To jedyny stan, w ktorym
+# drugi bieg nie ma jak dowiesc czerwieni -- wiec jedyny, w ktorym odmowa jest tansza niz
+# wznowienie. Czytamy paragon, bo to on niesie werdykt POZIOMU: `before` odwraca kryteria,
+# wiec samo `ok: false` nie mowi, czy kryterium przeszlo, czy nie ruszylo. Nazwa powodu mowi.
+# Exit 0 znaczy "tak, takie kryterium jest".
+# Czy faza kontraktu napisala CHOC JEDNA specyfikacje? Kryterium, ktorego plik nie istnieje,
+# bramka melduje jako "did not RUN". Jesli tak wygladaja WSZYSTKIE, to nie ma czego naprawiac
+# -- trzeba napisac kontrakt od zera, a nie posylac naprawiacza do pliku, ktorego nie ma.
+# Zmierzone na T-19 (2026-08-16): bieg zabity w fazie kontraktu, osiem razy
+# "did not RUN (error: no test target)". Exit 0 znaczy "nie ma ani jednej specyfikacji".
+contract_has_no_specs_at_all() {
+  python3 - "$WT/runs/last.json" <<'RECEIPT'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+if receipt.get("tier") != "before":
+    sys.exit(1)
+acceptance = [c for c in receipt.get("checks", []) if c.get("kind") == "acceptance"]
+if not acceptance:
+    sys.exit(1)
+sys.exit(0 if all("did not RUN" in (c.get("reason") or "") for c in acceptance) else 1)
+RECEIPT
+}
+
+
+
+contract_has_a_passing_criterion() {
+  python3 - "$WT/runs/last.json" <<'RECEIPT'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)                      # brak paragonu to brak dowodu, a nie dowod
+if receipt.get("tier") != "before":
+    sys.exit(1)
+for c in receipt.get("checks", []):
+    reason = c.get("reason") or ""
+    if (c.get("kind") == "acceptance" and not c.get("ok")
+            and ("PASSES before implementation" in reason
+                 or "exit 0 but no evidence" in reason)):
+        sys.stderr.write("   %s passes before implementation -- it certifies nothing\n" % c["id"])
+        sys.exit(0)
+sys.exit(1)
+RECEIPT
+}
+
+# Trzy flagi wznowienia. Ustawione JAWNIE, bo `set -u` zamienia niezainicjowana zmienna
+# w blad dopiero w tej galezi, ktora akurat nie biegla w testach.
+PRE_RESUME=0          # kod wyjscia `before` ze sprawdzenia wznowienia
+PRE_RESUME_RAN=0      # czy to sprawdzenie w ogole sie odbylo
+RESUME_WITH_SPECS=0   # czy zastalismy napisane specyfikacje, ktore nie certyfikuja
+RESUME_CERTIFIED=0    # czy kontrakt byl juz certyfikowany, a kryteria przechodza
+if [ "$RESUMED" = 1 ]; then
+  ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
+  PRE_RESUME_RAN=1
+  # Cztery stany, w jakich zastaje sie istniejaca przestrzen. Rozroznia je PARAGON, nie
+  # ksztalt historii gita (niezmiennik 20 zastosowany do harnessu): wczesniej stalo tu
+  # "policz commity nad trunkiem", proxy, ktore mylilo sie w obie strony. Zmierzone na T-06
+  # (2026-08-16): `commit_leftovers` domknal prace fazy kontraktu DRUGIM commitem, licznik
+  # pokazal 2, i skrypt kazal wyrzucic prace, w ktorej nie bylo ani jednej linii implementacji.
+  #
+  # Wszystkie cztery zdarzyly sie tego samego dnia, na trzech galeziach naraz, kiedy trzy biegi
+  # zostaly zabite w trzech roznych fazach. To nie sa przypadki teoretyczne.
+  if [ "$PRE_RESUME" = 0 ]; then
+    # (1) Kontrakt certyfikowany, implementacji nie ma. Stan, z ktorego wolno wystartowac.
+    note "$WT already has a certified contract -- resuming from the implementation phase"
+
+  elif [ "$PRE_RESUME" = 1 ] && contract_has_no_specs_at_all; then
+    # (2) Faza kontraktu zginela, zanim napisala cokolwiek: kazde kryterium melduje
+    # "did not RUN". Naprawiacz nie ma czego naprawic -- posylanie go do pliku, ktory nie
+    # istnieje, spalilo by cale wywolanie modelu. Kontrakt powstaje od zera.
+    note "$WT has a contract but not one spec -- the contract phase never got that far"
+    note "writing the specs from scratch; there is nothing here to repair"
+
+  elif [ "$PRE_RESUME" = 1 ] && ! contract_has_a_passing_criterion; then
+    # (3) Specyfikacje SA, ale nie certyfikuja: cos wisi, cos sie nie kompiluje, cos nie
+    # ruszylo. Zadne kryterium nie przechodzi, wiec nie ma tu implementacji do stracenia.
+    # Przepisywanie specyfikacji od zera kosztowaloby drugie pelne wywolanie pisarza za
+    # wiedze, ktora juz lezy w paragonie -- idziemy prosto do rundy naprawczej.
+    note "$WT carries a contract that does not certify -- no criterion passes, so there is"
+    note "no implementation here to lose; the contract repair round takes it from here"
+    RESUME_WITH_SPECS=1
+
+  elif [ "$PRE_RESUME" = 1 ] \
+    && [ -f "$RUNDIR/assertions-certified.tsv" ] \
+    && assertion_fingerprint > "$RUNDIR/assertions-now.tsv" \
+    && [ -z "$(assertions_lost "$RUNDIR/assertions-certified.tsv" "$RUNDIR/assertions-now.tsv")" ]; then
+    # (4) Kryteria PRZECHODZA -- i to jest jedyny stan, w ktorym wznowienie bywa oszustwem,
+    # bo kryterium przechodzace przed implementacja nie sprawdza niczego. Rozstrzyga to
+    # odcisk asercji z chwili, w ktorej bramka udowodnila te specyfikacje CZERWONYMI:
+    # jesli niosa dzis tyle samo asercji, co wtedy, to przechodza dlatego, ze dziala KOD.
+    # Nikt ich nie rozluznil, bo rozluznienie widac jako ubytek.
+    #
+    # Bez tego bieg zabity PO implementacji byl nie do wznowienia i cala jego praca szla do
+    # kosza. Zmierzone na T-13 (2026-08-16): osiem kryteriow przechodzilo, osiem plikow
+    # specyfikacji bajt w bajt takich, jakie certyfikowala bramka, i skrypt kazal to wyrzucic.
+    note "every criterion passes and the specs still carry every assertion they had when the"
+    note "gate proved them RED -- that is a working implementation, not a weakened contract"
+    RESUME_CERTIFIED=1
+
+  else
+    echo >&2
+    echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
+    if [ "$PRE_RESUME" = 1 ]; then
+      echo "A criterion PASSES with no proof that it was ever red -- either the implementation" >&2
+      echo "is already here without a certified contract, or an assertion was weakened." >&2
+      echo "Both are a human's call (AGENTS.md section 7), and neither is safe to resume:" >&2
+      echo "a second run cannot prove these criteria red." >&2
+    else
+      echo "The before tier exited $PRE_RESUME, which is ours to read, not the model's." >&2
+    fi
+    echo "Finish or discard it first:" >&2
+    echo "  git worktree remove '$WT' && git branch -D '$BRANCH'" >&2
+    exit 2
+  fi
+fi
+
+
+
 # ------------------------------------------------- 2. bramka „before", część 1 --
 # Odpalona ZANIM cokolwiek kosztuje pieniądze — bo to jedyny moment, w którym wyłapie
 # zadanie bez kontraktu. Kod 2 („no acceptance criteria" / „no checks discovered") znaczy,
@@ -468,7 +522,13 @@ say "before (pre-flight)"
 # czternastu. Ponowne uzycie jest bezpieczne, bo sprawdzenie wznowienia biegnie PO kopii
 # kontraktu i po odswiezeniu oracle'a -- to ten sam kontrakt, to samo drzewo, ta sama bramka.
 PRE=0
-if [ "$PRE_RESUME_RAN" = 1 ]; then
+# Kontrakt certyfikowany w POPRZEDNIM biegu jest certyfikowany -- dowodem jest odcisk asercji
+# z tamtej chwili, sprawdzony wyzej. Bez tego bieg zabity po implementacji nie mial jak wrocic:
+# jego kryteria przechodza, wiec `before` nigdy juz nie odda zera.
+if [ "$RESUME_CERTIFIED" = 1 ]; then
+  PRE=0
+  note "the contract was certified on an earlier run of this branch -- taking it as certified"
+elif [ "$PRE_RESUME_RAN" = 1 ]; then
   PRE="$PRE_RESUME"
   note "reusing the before run from the resume check (same tree, same contract): exit $PRE"
 else

@@ -12,7 +12,7 @@ Co jeszcze jest wrażliwe na moment:
 | Co | Dlaczego nie w trakcie |
 |---|---|
 | `checks/*.sh` | zmieniają bramkę pod zadaniem, które jest przez nią właśnie sądzone |
-| `harness/gate.py` | to samo, plus `integrate.sh` sądzi trunk przed merge'em |
+| `harness/gate.py` | to samo, plus `integrate.sh` sądzi trunk przed merge'em. A jeśli **musisz** (orchestrator naprawiający bramkę w trakcie fali): zapisuj przez `tmp` + `os.replace`. `verify.sh` robi `exec python3 harness/gate.py` przy **każdym** wywołaniu, więc zapis częściowy daje bramce śmieci zamiast oracle'a. Zwykły zapis Pythona gubi też bit wykonywalności — `chmod 755` po |
 | cokolwiek, gdy biegną strażnicy | `harness/guards.sh` przerywa się kodem 2 na brudnym drzewie, meldując „restore failed" — czyli twoja edycja wygląda jak wada strażnika |
 | `tasks/*.md` | plik zadania jest bajt w bajt porównywany z `TASK.md` gałęzi (N-08) |
 
@@ -53,6 +53,27 @@ zachowanie, a nie stan, który da się wykryć i naprawić.
 **Asercja, że hak formatujący jest podpięty.** `.claude/**` jest dla biegu zabronione do
 zapisu — jedynym, kto może go odpiąć, jest orchestrator. Sprawdzenie pilnowałoby wyłącznie
 mnie, a `checks/MANIFEST` kazałby dopisać wpis. Ceremonia większa niż ryzyko.
+
+**Prompt rundy naprawczej kontraktu — zostaje promptem, ale nie sam.** Instrukcja „napraw
+szkielet tak, żeby kryterium padało od razu" jest zachowaniem, nie stanem: nie da się jej
+wykryć hakiem ani sprawdzeniem, bo dopóki model nie napisze poprawki, nie ma czego oglądać.
+Więc prompt — ale **jedyna droga na skróty, jaką ta instrukcja otwiera, dostała mechanizm**:
+„spraw, żeby padało INACZEJ" da się przeczytać jako „asertuj mniej", i to
+`assertion_fingerprint` łapie po stronie stanu, a nie prośby. To jest wzorzec, o który
+chodzi w niezmienniku 28: prompt opisuje intencję, mechanizm pilnuje jedynego wyjścia awaryjnego.
+
+**Union merge poza `src-tauri/src/lib.rs` — świadomie NIE.** `engine/mod.rs` (68 wierszy)
+i `memory/mod.rs` (212) mimo nazwy niosą prawdziwy kod, więc `merge=union` mógłby skleić tam
+dwie wersje funkcji zamiast dwóch deklaracji. `src/App.tsx` tak samo, a dodatkowo po T-25
+przestał być punktem dopisywania (sekcje montują się przez konwencję
+`src/sections/<id>/index.tsx`). Kiedy któryś zacznie **realnie** konfliktować — zmierz i wtedy
+dopisz. Nie wcześniej: to ta sama pokusa, co 583 MB na agenta przepisane z raportu zamiast
+zmierzone na tej maszynie.
+
+**Automatyczne rozwiązywanie konfliktów w `integrate.sh` — NIE.** Reguła union zdejmuje
+z lądowania konflikt na kręgosłupie, i to wystarczy. Każdy **inny** konflikt przy lądowaniu
+znaczy, że dwa zadania naprawdę sięgnęły po te same wiersze — a to jest pytanie do człowieka,
+nie sytuacja do zautomatyzowania. `integrate.sh` ma się wtedy zatrzymać i wypisać pliki.
 
 **Sufit czekania na muteks cargo (300 s) — decyzja ODWRÓCONA 2026-08-16.**
 
