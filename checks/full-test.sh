@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# Obie suity. Tylko w pełnej bramce — `cargo test --lib` linkuje, a linkowanie w pętli
+# Obie suity. Tylko w pełnej bramce — `cargo test` linkuje, a linkowanie w pętli
 # wewnętrznej to minuty, nie sekundy.
+#
+# `--tests`, NIGDY `--lib`. Do 2026-08-16 stało tu `cargo test --lib`, a `--lib` nie kompiluje
+# `src-tauri/tests/*.rs` ANI RAZU. Każde kryterium akceptacji w tym repo ma postać
+# `cargo test --test <cel>` i mieszka właśnie tam: pełna bramka nie odpalała celów, na których
+# stoi cała wyrocznia projektu. Test integracyjny mógł być czerwony od tygodnia, a
+# `./verify.sh full` mówił "zielono".
+#
+# Dlaczego `--tests`, a nie gołe `cargo test`: gołe dokłada doctesty, które przy zerze
+# przykładów drukują własne `test result: ok. 0 passed` — czyli linię nie do odróżnienia od
+# celu, który nic nie uruchomił. `--tests` bierze lib, biny i KAŻDY cel z tests/, bez doctestów.
 #
 # NIEZMIENNIK 19: kod wyjścia nie jest dowodem. Kod testowany biegnie w tym samym procesie,
 # którego kod wyjścia czytasz — `os._exit(0)` na poziomie modułu zazielenia całą suitę,
@@ -32,7 +42,7 @@ if [ -n "$rs" ]; then
   has_tests="$(grep -rlE '^\s*#\[(tokio::)?test\]' src-tauri/src 2>/dev/null | head -1 || true)"
   cargo_serialize || exit 2   # 2, nie 1: nic sie nie wykonalo, wiec to nie jest twierdzenie o kodzie (Q-3)
   rc=0
-  out="$(cargo test --lib 2>&1)" || rc=$?
+  out="$(cargo test --tests 2>&1)" || rc=$?
   cargo_release
   # `cargo test` drukuje jedną linię "test result:" na cel testowy. Sumujemy wszystkie.
   passed="$(printf '%s\n' "$out" | grep -oE 'test result: ok\. [0-9]+ passed' \
@@ -41,6 +51,33 @@ if [ -n "$rs" ]; then
     echo "the Rust suite failed" >&2
     printf '%s\n' "$out" | grep -vE '^\s*(Compiling|Downloading|Updating|Fresh|Blocking)' \
       | tail -40 >&2
+    exit 1
+  fi
+  # NIEZMIENNIK 19 od strony POJEDYNCZEGO CELU. Suma kłamie przez uśrednienie: cel, który
+  # zameldował zero przejść, znika pod jedynką z lib-a i całość czyta się jak sukces.
+  # Cel PARUJEMY z jego linią `Running <ścieżka>` — to cargo mówi, co uruchomił, więc reguła
+  # nie zna żadnego układu katalogów poza tym, który cargo sam wypisał. Bin bez testów
+  # jednostkowych (nasz main.rs ma cztery linie) jest normalny i celowo tu nie wchodzi:
+  # sądzimy wyłącznie cele z tests/, bo plik położony tam istnieje po to, żeby coś dowieść.
+  #
+  # Warunkiem jest PUSTKA, nie zero przejść: `0 passed` RAZEM z `0 ignored` i `0 filtered out`.
+  # `#[ignore]` jest zadeklarowanym odroczeniem, widocznym w pliku i wołanym przez własne
+  # kryterium (`-- --include-ignored`) — pięć celów supervisora i drivera claude wygląda tak
+  # z premedytacją, bo odpalają prawdziwe procesy. Zero bez ani jednego pominięcia jest czym
+  # innym: to cel, który nie deklaruje niczego, albo filtr, który nic nie dopasował.
+  empty="$(printf '%s\n' "$out" | awk '
+      /^[[:space:]]+Running / { target = ($2 == "unittests") ? $3 : $2; next }
+      /^test result:/ {
+        if (target ~ /^tests\// && $0 ~ /ok\. 0 passed;/ && $0 ~ /; 0 ignored;/ \
+            && $0 ~ /; 0 filtered out;/) print target
+        target = ""
+      }' | head -5)"
+  if [ -n "$empty" ]; then
+    echo "an integration test target ran and reported no passing tests" >&2
+    printf '%s\n' "$empty" | sed 's/^/  /' >&2
+    echo "detail: the target compiled and exited 0 having executed, ignored and filtered" >&2
+    echo "detail: nothing at all — it declares no #[test], or a cfg removed them all." >&2
+    echo "detail: Exit 0 is not evidence (invariant 19)." >&2
     exit 1
   fi
   if [ -n "$has_tests" ] && [ "${passed:-0}" -eq 0 ]; then
