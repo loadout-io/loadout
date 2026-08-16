@@ -179,8 +179,8 @@ fn four_files_and_no_database_give_exactly_the_two_notes_a_person_approved() {
         vec![
             "notes/always-take-the-fast-path.md".to_owned(),
             "notes/retry-the-flaky-suite.md".to_owned(),
-            format!("notes/{NEWER}.md"),
             "notes/tenant-before-guard.md".to_owned(),
+            format!("notes/{NEWER}.md"),
         ],
         "reading the notes wrote something. A scan that leaves an index, a cache or a temporary \
          file behind has a second place where the status can live — and the second place is the \
