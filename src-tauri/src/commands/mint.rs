@@ -12,7 +12,12 @@
 use uuid::Uuid;
 
 /// Świeży identyfikator uuid v7.
+///
+/// Zegar jest tu i tylko tu: `now_v7` czyta czas systemowy, więc wołający dostaje wartość,
+/// której nie da się podać z zewnątrz. To jest właściwa strona granicy — front, który wybija
+/// identyfikatory sam, wybija je v4 i traci porządek, a `at` podawany argumentem (jak
+/// w `memory::notes::Actor`) opisuje **czynność człowieka**, nie moment powstania nazwy.
 #[must_use]
 pub fn new_id_inner() -> Uuid {
-    todo!("hand out a fresh v7 id, the kind that sorts by the time it was made")
+    Uuid::now_v7()
 }
