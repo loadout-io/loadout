@@ -189,9 +189,15 @@ sys.exit(1)
 RECEIPT
 }
 
-PRE_RESUME=0
+# Trzy flagi wznowienia. Ustawione JAWNIE, bo `set -u` zamienia niezainicjowana zmienna
+# w blad dopiero w tej galezi, ktora akurat nie biegla w testach.
+PRE_RESUME=0          # kod wyjscia `before` ze sprawdzenia wznowienia
+PRE_RESUME_RAN=0      # czy to sprawdzenie w ogole sie odbylo
+RESUME_WITH_SPECS=0   # czy zastalismy napisane specyfikacje, ktore nie certyfikuja
+TASK_UNCHANGED=0      # czy kopia kontraktu nic nie zmienila
 if [ -f "$WT/TASK.md" ]; then
   ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
+  PRE_RESUME_RAN=1
   if [ "$PRE_RESUME" = 0 ]; then
     note "$WT already has a certified contract -- resuming from the implementation phase"
   # Trzeci stan, ktorego ta bramka wczesniej nie znala: kontrakt JEST, ale nie certyfikuje.
@@ -216,7 +222,12 @@ if [ -f "$WT/TASK.md" ]; then
   # Oba rozpoznaje paragon po nazwie powodu, wiec nie trzeba ich zgadywac z historii gita.
   elif [ "$PRE_RESUME" = 1 ] && ! contract_has_a_passing_criterion; then
     note "$WT carries a contract that does not certify -- no criterion passes, so there is"
-    note "no implementation here to lose; redoing the contract phase in place"
+    note "no implementation here to lose -- the specs stay, the contract repair round"
+    note "gets them from here"
+    # Specyfikacje sa napisane i bramka wlasnie je OSADZILA. Przepisywanie ich od zera
+    # kosztowaloby drugie pelne wywolanie pisarza i drugi przebieg `before` -- za wiedze,
+    # ktora juz lezy w paragonie. Idziemy prosto do rundy naprawczej.
+    RESUME_WITH_SPECS=1
   else
     echo >&2
     echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
@@ -242,6 +253,7 @@ git -C "$WT" add TASK.md
 # galezi ma miec dokladnie jeden commit kontraktowy, bo to on jest baza zakresu.
 if git -C "$WT" diff --cached --quiet; then
   note "TASK.md unchanged — the contract commit is already the branch's first"
+  TASK_UNCHANGED=1
 else
   git -C "$WT" commit -q -m "docs(task): $ID — the contract this branch is judged against"
   note "TASK.md committed as the branch's first commit"
@@ -351,7 +363,20 @@ write_with() {                 # write_with <transkrypt> <max-turns>  < prompt
 # zadanie bez kontraktu. Kod 2 („no acceptance criteria" / „no checks discovered") znaczy,
 # że nie ma czego pilnować, i to jest nasz błąd, nie modelu: stajemy tutaj.
 say "before (pre-flight)"
-PRE=0; gate before || PRE=$?
+# Przy wznowieniu ten sam poziom przebiegl chwile temu, na TYM SAMYM drzewie i TYM SAMYM
+# kontrakcie -- powtorzenie go nie jest ostroznoscia, tylko podwojna cena. Zmierzone na
+# T-06 (2026-08-16): warstwa `before` kosztowala tam 840 s, bo jedno kryterium wisialo do
+# konca budzetu razy dwa; potrojenie tego (wznowienie + pre-flight + `before` po zbednym
+# przepisaniu kontraktu) to 42 minuty czekania na wiedze, ktora byla znana po pierwszych
+# czternastu. Warunek jest wezszy niz "wznawiamy": kontrakt na dysku musi byc BAJT W BAJT
+# tym, ktory tamten bieg osadzil, inaczej wynik jest o czyms innym.
+PRE=0
+if [ "$PRE_RESUME_RAN" = 1 ] && [ "$TASK_UNCHANGED" = 1 ]; then
+  PRE="$PRE_RESUME"
+  note "reusing the before run from the resume check (same tree, same contract): exit $PRE"
+else
+  gate before || PRE=$?
+fi
 CONTRACT_READY=0
 case "$PRE" in
   0) CONTRACT_READY=1
@@ -372,6 +397,10 @@ esac
 # prośba w promptcie, czyli dokładnie to, czego ten plik ma nie robić. Dwa wywołania
 # kosztują jedno uruchomienie modelu i zamieniają prośbę w bramkę.
 if [ "$CONTRACT_READY" = 0 ]; then
+ if [ "$RESUME_WITH_SPECS" = 1 ]; then
+  note "the specs are already written and already judged -- skipping the contract phase"
+  RED="$PRE"
+ else
   say "contract — $AGENT writes the acceptance specs and the skeleton that makes them fail"
   write_with "$RUNDIR/contract.jsonl" 80 <<PROMPT || note "the contract phase exited nonzero; the gate decides what that was worth"
 Read AGENTS.md and TASK.md in this directory.
@@ -420,6 +449,7 @@ PROMPT
   # niż jej brak, bo zostawia zielone, któremu ktoś uwierzy.
   say "before (enforced)"
   RED=0; gate before || RED=$?
+ fi
 
   # ---------------------------------------------- 3a. naprawa kontraktu x1 --
   # DOKLADNIE JEDNA runda, i wylacznie na jedynce. Dwojka ("bramka zle skonfigurowana")
