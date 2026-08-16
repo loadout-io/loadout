@@ -214,6 +214,29 @@ fn the_same_step_twice_never_overwrites_the_first_file() {
         after.len()
     );
 
+    // Trzeci zapis tej samej trójki. Sufiks zaszyty na sztywno (`jeśli zajęte, spróbuj -2`)
+    // przechodzi drugi zapis i **nadpisuje** przy trzecim, czyli dokładnie tam, gdzie test
+    // kończący się na dwóch plikach już nie patrzy.
+    let second_before = std::fs::read(&second.path).unwrap();
+    let third = handoff::write_handoff(run_dir.path(), draft("orchestrator", 7), BODY)
+        .expect("write_handoff refused the third write instead of giving it its own name");
+
+    assert_eq!(
+        third
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
+        format!("{first_stem}-3.md"),
+        "the third collision counts on to `-3`. Landing on `-2` again overwrites the retry \
+         that was already written and read"
+    );
+    assert!(
+        std::fs::read(&first.path).unwrap() == before
+            && std::fs::read(&second.path).unwrap() == second_before,
+        "the third write changed a file that was already on disk"
+    );
+
     let landed = std::fs::canonicalize(second.path.parent().unwrap_or(run_dir.path())).unwrap();
     let expected = std::fs::canonicalize(run_dir.path().join("handoffs")).unwrap();
     assert_eq!(
