@@ -241,6 +241,11 @@ async fn the_whole_run(
 /// Zwraca [`Outcome::Cancelled`] jako wartość, nigdy `Err` (niezmiennik 7). `Ok(())` zaraz po
 /// wysłaniu sygnału byłoby tym samym błędem, przed którym broni `GroupProof`: wołający
 /// przeczytałby „nie żyje" tam, gdzie napisano „wysłałem SIGTERM" (niezmiennik 6).
+///
+/// **Warunek dla wołającego (T-07):** ten `RunControl` ma należeć do biegu, który ruszył albo
+/// już zszedł. Dowód zapala [`run_workflow_inner`] na każdej swojej drodze wyjścia, więc bieg
+/// zakończony i bieg odrzucony wracają stąd natychmiast — ale uchwyt biegu, którego nikt nigdy
+/// nie uruchomił, nie ma czego dowieść i czekanie na niego nie ma końca.
 pub async fn stop_run_inner(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
     deps.control.stop();
     // Czekamy na bieg, a nie na siebie. Kroki schodzą po swoich grupach procesów same — tylko
@@ -860,6 +865,11 @@ impl Live {
             resume: None,
         };
 
+        // Start **nie** ściga się z anulowaniem i to jest wybór, nie przeoczenie: żeby zejść po
+        // grupie procesów, trzeba mieć uchwyt, a uchwyt wydaje dopiero `start`. Zdjęcie tego
+        // `await` w połowie zostawiłoby proces, który właśnie wstał, bez nikogo, kto by o nim
+        // wiedział — czyli dokładnie ten osierocony `claude` palący limit w tle, przed którym
+        // stoją niezmienniki 6 i 10. Token widzi więc dopiero tura, i widzi go od środka.
         let report = match job.driver.start(spec, events).await {
             Ok(handle) => {
                 drop(ours);
