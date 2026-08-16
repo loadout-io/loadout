@@ -7,12 +7,12 @@
 //! `generate_handler!` należą do T-07. Powód jest testowy, nie estetyczny: `State<'_, AppState>`
 //! nie da się zbudować w teście jednostkowym, a `&RunDeps` da się [04 §2.1].
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
+//! # Co gdzie mieszka
 //!
-//! Typy są tu w całości, bo to one są kontraktem, o który opierają się kryteria. Ciała funkcji
-//! biegu siedzą w [`run`] i są `todo!()`: test ma się **skompilować** i paść w czasie wykonania,
-//! na braku zachowania, a nie na braku modułu (`AGENTS.md` §2a p. 5). `clippy::todo = deny`
-//! w `Cargo.toml` pilnuje, żeby żaden z nich nie dożył pełnej bramki.
+//! Ten plik to **typy i uchwyty**: [`RunDeps`], [`RunRequest`], [`RunReport`], [`RunError`]
+//! i [`RunControl`] — czyli wszystko, czym woła się bieg i czym sięga się do niego w trakcie.
+//! Same trzy funkcje biegu (`run_workflow_inner`, `stop_run_inner`, `continue_run_inner`)
+//! siedzą w [`run`], razem z całym zapisem `run.json`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -100,6 +100,13 @@ struct Signals {
     /// kontrolnymi przeszedłby przez drugi bez pytania, gdyby zgoda była flagą, która raz
     /// zapalona zostaje zapalona. Pytanie, które nie pyta, jest gorsze od jego braku.
     go_on: watch::Sender<u64>,
+    /// Czy bieg **stoi** na punkcie kontrolnym.
+    ///
+    /// Tu jest właściciel tego faktu; `"status": "paused"` w `run.json` jest jego trwałym
+    /// lustrem, bo stan, który nie dociera na dysk, nie przeżywa awarii aplikacji
+    /// (niezmiennik 4). `paused` jest stanem **biegu** i nigdy stanem kroku
+    /// (`docs/ARCHITECTURE.md` §5).
+    paused: watch::Sender<bool>,
     /// Zapalane, kiedy bieg naprawdę zszedł — po ostatnim kroku, nie po wysłaniu Stopu.
     /// Bez tego `stop_run_inner` mówiłby „zatrzymane" w chwili, w której wysłał sygnał
     /// (niezmiennik 6: dopóki nie ma dowodu, traktujemy jako żywe).
@@ -115,6 +122,7 @@ impl RunControl {
             inner: Arc::new(Signals {
                 cancel: CancellationToken::new(),
                 go_on: watch::Sender::new(0),
+                paused: watch::Sender::new(false),
                 settled: CancellationToken::new(),
             }),
         }
@@ -138,27 +146,67 @@ impl RunControl {
         self.inner.go_on.send_modify(|times| *times += 1);
     }
 
+    /// Zakłada nasłuch na „dalej" i oddaje go wołającemu, **zanim** bieg ogłosi, że stoi.
+    ///
+    /// 2026-08-16 — to nie jest wariant [`RunControl::wait_for_go_on`] dla wygody, tylko jedyny
+    /// kształt, w którym punkt kontrolny nie ma wyścigu. Pauza staje się widoczna przez
+    /// `run.json` na dysku, a Continue przychodzi z zewnątrz w reakcji na to, co widać —
+    /// więc kolejność „zapisz pauzę, potem zacznij słuchać" ma okno, w którym odpowiedź
+    /// człowieka trafia do nikogo. Licznik podbity w tym oknie nie budzi nikogo, bo świeża
+    /// subskrypcja `watch` liczy dopiero **następną** zmianę, i bieg stoi już do końca świata.
+    ///
+    /// Kolejność, która działa, jest odwrotna i egzekwuje ją typ: `GoOn` istnieje **przed**
+    /// zapisem pauzy, bo bez tej wartości nie ma na czym czekać.
+    #[must_use]
+    pub fn listen_for_go_on(&self) -> GoOn {
+        let mut told = self.inner.go_on.subscribe();
+        // Liczba zapamiętana TERAZ jest tym, co odróżnia zgodę na **ten** punkt kontrolny
+        // od zgody sprzed dziesięciu minut.
+        let before = *told.borrow_and_update();
+        GoOn {
+            told,
+            before,
+            cancel: self.inner.cancel.clone(),
+        }
+    }
+
     /// Czeka, aż ktoś powie „dalej" **albo** zatrzyma bieg. Wraca `true`, kiedy padło „dalej".
     ///
-    /// Liczba zapamiętana przed czekaniem jest tym, co odróżnia zgodę na **ten** punkt kontrolny
-    /// od zgody sprzed dziesięciu minut.
+    /// Nasłuch zaczyna się dopiero tutaj, więc ta droga jest dobra tam, gdzie nikt nie zdąży
+    /// odpowiedzieć wcześniej, niż zaczniemy słuchać. Punkt kontrolny bierze
+    /// [`RunControl::listen_for_go_on`] i powód stoi przy nim.
     pub async fn wait_for_go_on(&self) -> bool {
-        let mut told = self.inner.go_on.subscribe();
-        let before = *told.borrow_and_update();
+        self.listen_for_go_on().wait().await
+    }
+
+    /// Bieg stanął na punkcie kontrolnym i czeka na człowieka.
+    pub fn pause(&self) {
+        self.inner.paused.send_replace(true);
+    }
+
+    /// Bieg rusza dalej: pytanie ma odpowiedź albo przestało mieć znaczenie.
+    pub fn resume(&self) {
+        self.inner.paused.send_replace(false);
+    }
+
+    /// Czeka, aż bieg przestanie stać na punkcie kontrolnym.
+    ///
+    /// Wraca **od razu**, kiedy bieg nie stoi, i wraca też wtedy, gdy bieg zszedł — bo inaczej
+    /// Continue naciśnięte w biegu bez pytania wisiałoby do końca świata, a przycisk, który
+    /// zawiesza okno, jest gorszy od przycisku, który nic nie robi.
+    pub async fn wait_until_moving(&self) {
+        let mut paused = self.inner.paused.subscribe();
         loop {
-            if self.inner.cancel.is_cancelled() {
-                return false;
-            }
-            if *told.borrow_and_update() > before {
-                return true;
+            if !*paused.borrow_and_update() || self.inner.settled.is_cancelled() {
+                return;
             }
             tokio::select! {
                 biased;
-                () = self.inner.cancel.cancelled() => return false,
-                changed = told.changed() => {
+                () = self.inner.settled.cancelled() => return,
+                changed = paused.changed() => {
                     if changed.is_err() {
                         // Nadawca zginął razem z biegiem; nie ma na co czekać.
-                        return false;
+                        return;
                     }
                 }
             }
@@ -179,6 +227,45 @@ impl RunControl {
 impl Default for RunControl {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Założony nasłuch na „dalej" — wartość, którą punkt kontrolny trzyma w ręku, zanim ogłosi
+/// pauzę. Powód, dla którego to jest osobny typ, stoi przy [`RunControl::listen_for_go_on`].
+#[derive(Debug)]
+pub struct GoOn {
+    /// Licznik zgód, obserwowany od chwili założenia nasłuchu.
+    told: watch::Receiver<u64>,
+    /// Ile razy padło „dalej", zanim ten punkt kontrolny zaczął słuchać.
+    before: u64,
+    /// Ten sam token, którym Stop kończy bieg: pytanie bez odpowiedzi musi dać się zamknąć.
+    cancel: CancellationToken,
+}
+
+impl GoOn {
+    /// Czeka, aż ktoś powie „dalej" **albo** zatrzyma bieg. Wraca `true`, kiedy padło „dalej".
+    ///
+    /// Bierze `self` przez wartość, bo nasłuch odpowiada na **jedno** pytanie: nasłuch użyty
+    /// drugi raz odpowiadałby na drugie pytanie zgodą wydaną na pierwsze.
+    pub async fn wait(mut self) -> bool {
+        loop {
+            if self.cancel.is_cancelled() {
+                return false;
+            }
+            if *self.told.borrow_and_update() > self.before {
+                return true;
+            }
+            tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => return false,
+                changed = self.told.changed() => {
+                    if changed.is_err() {
+                        // Nadawca zginął razem z biegiem; nie ma na co czekać.
+                        return false;
+                    }
+                }
+            }
+        }
     }
 }
 
