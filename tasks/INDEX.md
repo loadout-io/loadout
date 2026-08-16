@@ -34,7 +34,6 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
 | **T-21** | 4 | Limity dostawcy, pauza biegu i suwak „ile naraz" | T-02 | 8 | 8 |
 | **T-22** | 4 | Sprawdzacze w bramce: granice modułów, gęstość, testy,… | T-08 | 7 | 7 |
 | **T-23** | 4 | Harness Loadouta wyrażony jako workflow Loadouta | T-15, T-13 | 8 | 6 |
-| **T-26** | 3 | Cztery sekcje dostają ekran: koniec z kartami, które nic… | T-11, T-13, T-14, T-17, T-19, T-25 | 8 | 4 |
 
 ## Jak to czytać
 
@@ -51,9 +50,3 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
   ścieżka testu jest globalnie unikalna (egzekwuje `harness/gate.py`, `contract_problems`).
 - Bramka fazy 1 (`docs/PLAN.md` §3): dwa prawdziwe procesy `claude` **nakładają się w czasie**.
   Dopóki to nie jest udowodnione testem, faza 2 nie zaczyna się.
-
-**T-26 dopisane 2026-08-16, po uruchomieniu aplikacji.** Powłoka i komponenty czterech sekcji były
-wylądowane i zielone, a `npm run dev` pokazywał cztery puste ekrany z pięciu: nikt nie napisał
-`src/sections/<id>/index.tsx`, bo żadne kryterium o to nie prosiło. `tasks/T-08.md` zakładało, że
-pozostałe sekcje dostaną to „za darmo" — nie dostały, a `src/sections/workflows/` nie ma nawet
-właściciela w żadnym bloku OWNS.
