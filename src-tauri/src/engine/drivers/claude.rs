@@ -31,6 +31,22 @@
 //! surowego `agent-<id>.jsonl` na dysk i kuracja `AgentEvent` → `Line` należą do T-05. Ten
 //! podział jest jedynym, przy którym `CodexDriver` (T-10) powstaje bez dotykania `stream.rs`.
 //!
+//! # Transkrypt kroku: tee i rodzaj narzędzia (T-34, 2026-08-16)
+//!
+//! Podział wyżej mówi, **czyj jest kod**, a nie kto go woła — i przez to na wyładowanym trunku
+//! nie wołał go nikt. Pętla czytająca czyta stdout i nie zapisuje ani bajtu, a `store::rebuild`
+//! czyta `logs/agent-<id>.jsonl`, którego nikt nie pisze: po prawdziwym biegu skasowanie
+//! `loadout.db` zabiera wtedy **wszystkie** zdarzenia, czyli dokładnie to, przed czym stoi
+//! niezmiennik 4. Druga połowa tej samej luki jest w kuracji: żywa droga podaje `tool: None`,
+//! więc wiersze `Read`, `Edited` i `Ran` powstają wyłącznie w testach, które podają `tool`
+//! ręcznie.
+//!
+//! [`Transcript`] jest tą jedną wartością, której brakowało: katalog biegu z
+//! `docs/ARCHITECTURE.md` §8, krok, którego to strumień, i kanał wierszy. Nie stoi w
+//! [`RunSpec`], choć **tam jest jego miejsce** — `drivers/mod.rs` nie leży w bloku OWNS T-34,
+//! a jeden wiersz poza tym blokiem jest pytaniem do człowieka, nie cichym dopiskiem
+//! (`AGENTS.md` §7).
+//!
 //! # Kanał stdinu żyje tak długo jak sesja (2026-08-16)
 //!
 //! Proces startuje z `StdinPlan::Keep`, więc deskryptor wejściowy **nie zamyka się po pierwszej
@@ -59,6 +75,7 @@ use super::{
     AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome, Policy, Probe, RunSpec,
     SessionRef, Tokens,
 };
+use crate::engine::line::Line;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
@@ -172,6 +189,31 @@ const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static str>
     }
 }
 
+/// Dokąd idzie transkrypt kroku i kto dostaje jego wiersze.
+///
+/// Trzy fakty, których sterownik nie ma skąd wziąć sam, i ani jednego więcej: [`RunSpec`] nie
+/// niesie żadnego z nich, a katalog biegu zna wyłącznie warstwa nad silnikiem.
+///
+/// **Ścieżkę pliku składa sterownik, nigdy wołający.** `logs/agent-<krok>.jsonl` to ta sama
+/// nazwa, którą składa `store::rebuild` (T-06) — dwa miejsca składające ją osobno rozjadą się
+/// po cichu, a wtedy plik powstaje, odbudowa go nie znajduje i nikt się o tym nie dowiaduje aż
+/// do pierwszego skasowania `loadout.db`. Dlatego tu stoi katalog biegu i identyfikator kroku,
+/// a nie gotowa ścieżka: kryterium ma czego pilnować, a wołający nie ma czego pomylić.
+#[derive(Debug, Clone)]
+pub struct Transcript {
+    /// Katalog biegu z `docs/ARCHITECTURE.md` §8: `<repo>/.loadout/runs/<ts>__<id>/`.
+    pub run_dir: PathBuf,
+    /// Krok, którego to strumień — jego `id` z `run.json`, bo po nim nazywa się plik i po nim
+    /// odbudowa wie, do którego kroku należą zdarzenia.
+    pub step: String,
+    /// Nazwa agenta, która wchodzi w każdy wiersz. Wchodzi też w klucz grupy sklejania, więc
+    /// dwa agenty czytające pliki w tej samej sekundzie to dwa wiersze, nie jeden.
+    pub agent: String,
+    /// Wiersze na ekran. Ścieżka dysku nie gubi nigdy, ścieżka widoku wolno gubić [T7 §4.1] —
+    /// zamknięty odbiornik nie ma prawa zatrzymać zapisu.
+    pub lines: mpsc::Sender<Line>,
+}
+
 /// Sterownik `claude`.
 ///
 /// Ścieżka do binarki jest **polem**, nie stałą, i to jest jedyny szew, przez który kryteria
@@ -182,6 +224,10 @@ const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static str>
 pub struct ClaudeDriver {
     /// Co uruchamiamy.
     binary: PathBuf,
+    /// Dokąd zapisać surowy strumień i komu oddać wiersze. `None` znaczy „tego biegu nikt nie
+    /// zapisuje": sonda wersji nie ma katalogu biegu, a kryteria samego sterownika (T-04) pytają
+    /// o zdarzenia, nie o transkrypt.
+    transcript: Option<Transcript>,
 }
 
 impl Default for ClaudeDriver {
@@ -196,6 +242,7 @@ impl ClaudeDriver {
     pub fn new() -> Self {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
+            transcript: None,
         }
     }
 
@@ -203,7 +250,27 @@ impl ClaudeDriver {
     /// proces — i dla użytkownika, który trzyma CLI poza `PATH`.
     #[must_use]
     pub fn with_binary(binary: PathBuf) -> Self {
-        Self { binary }
+        Self {
+            binary,
+            transcript: None,
+        }
+    }
+
+    /// Sterownik, który **zapisuje** surowy strumień kroku i oddaje jego wiersze.
+    ///
+    /// Bez tego bieg nie tee'uje w ogóle: zmierzone na wyładowanym trunku 2026-08-16 —
+    /// `logs/agent-<id>.jsonl` nie powstaje po żadnym biegu, więc `store::rebuild` czyta plik,
+    /// którego nikt nie pisze (niezmiennik 21 czytany od drugiej strony), a skasowanie
+    /// `loadout.db` kosztuje wszystkie zdarzenia (niezmiennik 4).
+    ///
+    /// Wartość, nie mutacja, i to nie jest kwestia gustu: transkrypt jest **per krok**, a
+    /// sterownik bywa jeden na vendora, więc jedyny bezpieczny kształt to tani klon z własnym
+    /// ujściem. Nadpisanie pola we współdzielonym sterowniku przepięłoby transkrypt biegu,
+    /// który akurat trwa, i wyglądałoby to jak zgubione linie, a nie jak wyścig.
+    #[must_use]
+    pub fn with_transcript(mut self, transcript: Transcript) -> Self {
+        self.transcript = Some(transcript);
+        self
     }
 
     /// Buduje komendę jednej tury. **Promptu w niej nie ma i nigdy nie będzie**
@@ -1247,6 +1314,28 @@ impl AgentDriver for ClaudeDriver {
         spec: RunSpec,
         tx: mpsc::Sender<AgentEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        // ── SZKIELET (T-34, 2026-08-16) ───────────────────────────────────────────────────
+        //
+        // Sygnatura jest, zachowania nie ma, i tak ma być w fazie, w której powstają kryteria:
+        // test ma się skompilować i paść w CZASIE WYKONANIA, na braku zachowania (`AGENTS.md`
+        // §2a p. 5). `todo!()` jest przejściowe — `clippy::todo = deny` w korzeniowym
+        // Cargo.toml pilnuje, żeby żaden nie dojechał do pełnej bramki.
+        //
+        // Odmowa stoi TUTAJ, przed pierwszym procesem, bo sterownik poproszony o transkrypt
+        // nie ma prawa udawać, że go zrobił. Cicha wersja tej porażki jest dokładnie tym, co
+        // zmierzył przegląd zewnętrzny: bieg wygląda normalnie, plik nie powstaje, a
+        // dowiadujesz się o tym dopiero po skasowaniu `loadout.db` — czyli wtedy, kiedy tych
+        // zdarzeń nie ma już nigdzie.
+        //
+        // Co tu wejdzie: tee surowych bajtów do `<run_dir>/logs/agent-<step>.jsonl` PRZED
+        // parsowaniem (`ARCHITECTURE` §4) i kuracja z rodzajem narzędzia na `transcript.lines`.
+        if self.transcript.is_some() {
+            todo!(
+                "T-34: pętla czytająca stdout ma tee'ować surowe bajty do \
+                 <katalog biegu>/logs/agent-<krok>.jsonl i podawać kuracji rodzaj narzędzia"
+            );
+        }
+
         // Sesję nadajemy PRZED startem procesu: dopiero to znosi wyścig o to, pod jakim numerem
         // zapisać krok, i dopiero to czyni odzyskiwanie po awarii możliwym [T7 §6.2].
         let session = SessionRef {
