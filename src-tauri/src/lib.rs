@@ -16,6 +16,9 @@ use tauri::Manager;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
+/// Warstwa komend: funkcje `*_inner`, ktore nie znaja slowa „Tauri". Wypelnia T-15.
+pub mod commands;
+
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
