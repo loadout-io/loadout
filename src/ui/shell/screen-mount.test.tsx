@@ -38,11 +38,15 @@ function occurrences(haystack: string, needle: string): number {
  * jest dziś najtańszy sposób schowania czterech zamontowanych ekranów: jedno słowo w klasie,
  * reguła w arkuszu.
  *
- * Stąd granica z obu stron zamiast wyliczanki końcówek: przed słowem początek, biała spacja
- * albo cudzysłów, za słowem koniec, biała spacja, cudzysłów, `>` albo `=`. `aria-hidden`
- * i `data-hidden` zostają na zewnątrz — przed `hidden` stoi tam myślnik, a to już inne słowo.
+ * Stąd granica z obu stron zamiast wyliczanki końcówek: `hidden` ma nie być otoczone znakiem
+ * słowa ani myślnikiem, cokolwiek stoi obok. `aria-hidden` i `data-hidden` zostają na zewnątrz
+ * — przed słowem stoi tam myślnik, a to już inna nazwa, nie ten atrybut.
+ *
+ * Bez cudzysłowów w samym wzorcu, i to nie jest kosmetyka: `checks/quick-vocabulary.sh` paruje
+ * apostrofy w pliku, żeby wyłuskać literały, a nieparzysty apostrof we wnętrzu wyrażenia
+ * przesuwa mu parowanie na resztę pliku i sypie trafieniami w losowych miejscach.
  */
-const HIDDEN_TOKEN = /(?:^|[\s"'])hidden(?:$|[\s"'>=])/;
+const HIDDEN_TOKEN = /(?<![\w-])hidden(?![\w-])/;
 
 /** Ekran, który da się policzyć: jeden element, jeden znacznik, żadnej treści. */
 function screenFor(id: Id): () => ReactElement {
