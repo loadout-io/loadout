@@ -36,6 +36,8 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
 | **T-23** | 4 | Harness Loadouta wyrażony jako workflow Loadouta | T-15, T-13 | 8 | 6 |
 | **T-26** | 3 | Cztery sekcje dostają ekran: koniec z kartami, które nic… | T-11, T-13, T-14, T-17, T-19, T-25 | 8 | 4 |
 | **T-27** | 1 | Front i Rust naprawdę rozmawiają: koniec z aplikacją, która… | T-07, T-11, T-12, T-17, T-19 | 12 | 4 |
+| **T-28** | 1 | Szkielet chodzący: dwa PRAWDZIWE procesy claude naraz | T-03, T-04 | 3 | 2 |
+| **T-29** | 1 | Kliknięcie w prawdziwej aplikacji, nie w teście komponentu | T-26, T-27 | 4 | 3 |
 
 ## Jak to czytać
 
@@ -52,6 +54,17 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
   ścieżka testu jest globalnie unikalna (egzekwuje `harness/gate.py`, `contract_problems`).
 - Bramka fazy 1 (`docs/PLAN.md` §3): dwa prawdziwe procesy `claude` **nakładają się w czasie**.
   Dopóki to nie jest udowodnione testem, faza 2 nie zaczyna się.
+
+**T-28 dopisane 2026-08-16.** `docs/PLAN.md` §1 stawia warunek — „dwa PRAWDZIWE procesy `claude`
+jednocześnie" — i dodaje, że dopóki go nie ma, nie budujemy faz 2–4. Nigdy nie został udowodniony;
+fazy 2–4 powstały mimo to, a nakładanie się dowodzi `engine_overlap.rs` na **atrapie**. Przyczyna:
+§1 jest **bramką fazy**, a bramka fazy nie jest zadaniem — harness uruchamia tylko `tasks/*.md`,
+więc akapitu nie miał kto sprawdzić (niezmiennik 28).
+
+**T-29 dopisane 2026-08-16.** Sześć razy tego dnia jedynym, kto zauważył niedziałający produkt,
+był człowiek przed ekranem. T-29 daje ten dowód bramce: Playwright klika po prawdziwym froncie.
+Granica zapisana w kontrakcie: `tauri-driver` nie obsługuje macOS, więc **nic** w tym repo nie
+klika po prawdziwym oknie Tauri — drugą stronę granicy dowodzi T-27.
 
 **T-27 dopisane 2026-08-16, po uruchomieniu aplikacji RUSTA.** Okno wstaje i nie umie zrobić nic:
 zero `#[tauri::command]`, zero `generate_handler!`, brak `.invoke_handler`, a adaptery `io.ts` to
