@@ -299,6 +299,7 @@ guards_lane() {
   cargo_lock_reclaims_dead_owner
   hung_check_reads_as_red_not_as_a_slow_gate
   spec_assertions_may_grow_never_shrink
+  branch_is_judged_by_the_trunks_oracle
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -550,6 +551,106 @@ EXTRACT
 
   rm -rf "$sandbox"
   echo "specs: asercji może przybyć, ubyć nie może — odcisk widzi ubytek i skasowanie"
+}
+
+# ── gałąź ma być sądzona przez ORACLE Z TRUNKA, nie przez własną starą kopię ──
+# Zmierzone dwa razy. 2026-08-15: trzy z pierwszych czterech zatrzymań pętli były fałszywymi
+# alarmami z nieaktualnej kopii `checks/` na gałęzi. 2026-08-16: poprawka sufitu w gate.py,
+# napisana dokładnie dla biegu T-06, była dla niego **nieosiągalna** — `worktree.sh` wycina
+# cały katalog roboczy, więc gałąź niesie własne `harness/`, i ta stara kopia oddała exit 3
+# tam, gdzie nowa oddaje 1. Routing wznowienia zobaczył 3, odmówił, bieg skończył się dwójką.
+#
+# Strażnik pyta o dwie rzeczy, bo defekt miał dwie połowy: funkcja musi działać, i musi być
+# wołana ZANIM cokolwiek osądzi. Druga połowa jest asercją o kolejności w pliku — i tak ma
+# być: `ship-task.sh` JEST grafem biegu, więc kolejność etapów to jego zachowanie, nie jego
+# formatowanie.
+branch_is_judged_by_the_trunks_oracle() {
+  local sandbox g wt wt2
+  sandbox="$(mktemp -d)" || return 1
+  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
+
+  # ── połowa pierwsza: czy funkcja podciąga oracle ──
+  mkdir -p "$sandbox/repo/harness" "$sandbox/repo/tasks"
+  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
+  echo "old oracle" > "$sandbox/repo/harness/gate.py"
+  echo "contract v1" > "$sandbox/repo/tasks/T-99.md"
+  $g add -A && $g commit -q -m "trunk v1"
+  $g branch task-T-99
+  # trunk idzie do przodu: NOWY oracle i NOWY plik zadania
+  echo "new oracle" > "$sandbox/repo/harness/gate.py"
+  echo "contract v2" > "$sandbox/repo/tasks/T-99.md"
+  $g add -A && $g commit -q -m "trunk v2"
+  wt="$sandbox/wt"
+  $g worktree add -q "$wt" task-T-99
+
+  python3 - ship-task.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+import io, sys
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
+if len(head) != 1:
+    sys.exit("refresh_harness_from_trunk() wystepuje %d razy" % len(head))
+i = head[0]
+j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+io.open(sys.argv[2], "w", encoding="utf-8").write(
+    "note() { printf '   %s\\n' \"$*\"; }\n" + "\n".join(lines[i:j + 1]) + "\n")
+EXTRACT
+
+  # $1 = 0: bieg dopiero się zaczyna, więc chcemy BIEŻĄCEGO kontraktu razem z oracle'em
+  WT="$wt" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 0 'w tescie'" >/dev/null
+  if [ "$(cat "$wt/harness/gate.py")" != "new oracle" ]; then
+    echo "gałąź po odświeżeniu NADAL sądzi się starą bramką" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if [ "$(cat "$wt/tasks/T-99.md")" != "contract v2" ]; then
+    echo "odświeżenie na starcie biegu ma przynieść także bieżący kontrakt" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # $1 = 1: kontrakt ZAMROŻONY (N-08). Bieg nie może zmieniać warunków własnego zaliczenia,
+  # więc `tasks/` ma wrócić do wersji gałęzi, a oracle ma mimo to zostać nowy.
+  #
+  # DRUGI worktree, nie recykling pierwszego. Pierwsza wersja tego strażnika kasowała
+  # i odtwarzała tamten — `worktree remove` odmawiał, `worktree add` mówił „already exists",
+  # a asercja mierzyła stan, którego nikt nie zaplanował. Trafiła dobrze przypadkiem, co jest
+  # gorsze niż porażka: przechodziłaby też wtedy, gdyby zamrażanie w ogóle nie działało.
+  wt2="$sandbox/wt-frozen"
+  $g branch task-T-99f main~1
+  $g worktree add -q "$wt2" task-T-99f
+  WT="$wt2" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
+  if [ "$(cat "$wt2/harness/gate.py")" != "new oracle" ]; then
+    echo "zamrożony kontrakt zablokował odświeżenie ORACLE'a, a miał zamrozić tylko tasks/" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if [ "$(cat "$wt2/tasks/T-99.md")" != "contract v1" ]; then
+    echo "kontrakt NIE został zamrożony: bieg zmienił warunki własnego zaliczenia (N-08)" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  rm -rf "$sandbox"
+
+  # ── połowa druga: czy odświeżenie wyprzedza pierwszy osąd ──
+  python3 - ship-task.sh <<'ORDER' || return 1
+import io, sys
+
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+
+def first(pred, what):
+    for k, l in enumerate(lines):
+        if pred(l):
+            return k
+    sys.exit("nie znalazlem %s w ship-task.sh" % what)
+
+refresh = first(lambda l: l.strip().startswith("refresh_harness_from_trunk 0"),
+                "wywolania refresh_harness_from_trunk 0")
+judges = first(lambda l: ("verify.sh before" in l or l.strip().startswith("gate before")
+                          or "gate before ||" in l) and not l.lstrip().startswith("#"),
+               "pierwszego etapu, ktory sadzi")
+if judges < refresh:
+    sys.exit("pierwszy osad (linia %d) wyprzedza odswiezenie oracle'a (linia %d): galaz "
+             "bylaby sadzona przez wlasna, stara kopie bramki -- dokladnie to zatrzymalo "
+             "T-06 2026-08-16" % (judges + 1, refresh + 1))
+ORDER
+
+  echo "oracle: gałąź sądzi się bramką z trunka, i to zanim cokolwiek osądzi"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
