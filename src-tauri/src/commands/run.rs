@@ -120,6 +120,7 @@ use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
+use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::workflow::check::{Level, check};
 use crate::workflow::file::load;
@@ -160,26 +161,49 @@ const EVENT_QUEUE: usize = 256;
 /// Ile znaków przepisujemy z ostatniej wypowiedzi agenta do jednolinijkowego podsumowania kroku.
 const SUMMARY_LIMIT: usize = 240;
 
-/// Uruchamia workflow z pliku i wypuszcza jego linie na `lines`.
+/// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
 /// Odmowa przed pierwszym utworzonym katalogiem; szczegóły w nagłówku modułu.
 ///
-/// `lines` jest zwykłym `tokio::sync::mpsc` i to jest granica zadania: sklejacz 16 ms / 2000
-/// linii i adaptacja na `Channel` należą do T-07 (`docs/ARCHITECTURE.md` §4). Tutaj paczka
-/// wychodzi wtedy, kiedy powstanie.
+/// `lines` jest [`LineSink`] z T-07, a nie `mpsc::Sender<Vec<Line>>`, i to jest cała zmiana
+/// tego zadania. Sklejanie mieszka **po stronie pompy**, bo tam je zmierzono (16 ms / 2000
+/// linii, [T8 §5.3]), a `LineSink::send` nigdy nie blokuje producenta: na pełnej kolejce linia
+/// jest porzucana i **policzona**. Kanał, który każe czekać pętli czytającej stdout agenta,
+/// kasuje dokładnie tę własność, dla której ta pompa powstała.
+///
+/// # Ta funkcja jest dziś szkieletem (faza kontraktu, 2026-08-17)
+///
+/// `todo!()` stoi tu zgodnie z `AGENTS.md` §2a: sygnatura ma pozwolić kryteriom się
+/// **skompilować** i paść w czasie wykonania. Ciało z T-15 — [`the_whole_run`] i cała reszta
+/// tego pliku — zostaje nietknięte i czeka na fazę implementacji, w której wraca wywołanie:
+///
+/// ```text
+/// let report = the_whole_run(deps, request, lines).await;
+/// deps.control.settle();
+/// report
+/// ```
+///
+/// z [`LineSink`] przewleczonym przez `the_whole_run` → `Live::lines` → `forward` →
+/// `send_batch`, gdzie paczka rozsypuje się na pojedyncze `sink.send(line)`.
+///
+/// Konsekwencja, którą trzeba znać, żeby nie wziąć jej za awarię: dopóki tu stoi `todo!()`,
+/// wszystko poniżej jest nieosiągalne i kompilator melduje to jako `dead_code`. To są
+/// ostrzeżenia, nie błędy — cele `cargo test --test …` z kryteriów budują się i biegną. Pełne
+/// clippy jest w tej fazie czerwone i tak ma być: `clippy::todo = "deny"` w `Cargo.toml` jest
+/// gwarancją, że ani jeden `todo!()` nie przeżyje do bramki.
+///
+/// **`deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia**, także po odmowie: to na to
+/// zdanie czeka [`stop_run_inner`], żeby móc wrócić z dowodem (niezmiennik 6). Settle wpisany
+/// tylko na szczęśliwej ścieżce zawiesza Stop przy każdym biegu, który padł, i wygląda to jak
+/// zawieszony agent, nie jak brakująca linijka.
 pub async fn run_workflow_inner(
     deps: &RunDeps<'_>,
     request: &RunRequest,
-    lines: mpsc::Sender<Vec<Line>>,
+    lines: LineSink,
 ) -> Result<RunReport, RunError> {
-    let report = the_whole_run(deps, request, lines).await;
-    // Dowód schodzi TUTAJ, na każdej drodze wyjścia, także po odmowie. Po powrocie z tej funkcji
-    // nic po tym biegu nie żyje — a `stop_run_inner` czeka na to zdanie, żeby móc wrócić
-    // (niezmiennik 6). Settle wpisany tylko na szczęśliwej ścieżce zawiesza Stop przy każdym
-    // biegu, który padł, i wygląda to jak zawieszony agent, nie jak brakująca linijka.
-    deps.control.settle();
-    report
+    let _ = (deps, request, lines);
+    todo!("hand every line of the run to the pump seam, one line at a time")
 }
 
 /// Bieg od wczytania pliku do zamknięcia księgi. Wydzielony z [`run_workflow_inner`], żeby
