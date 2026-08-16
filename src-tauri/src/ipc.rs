@@ -35,23 +35,20 @@
 //! 13). Pompa licząca porzucone, kanał liczący niedostarczone i front liczący brakujące
 //! numery to trzy liczby, które prawie się zgadzają i żadna nie jest prawdą.
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
+//! # Dwie drogi wyjścia z bufora, obie obowiązkowe
 //!
-//! Ciała funkcji zwracają **świadomie złą wartość** i są tak oznaczone. To jest wymagany
-//! kształt fazy, w której powstają kryteria: test ma się skompilować i paść **w czasie
-//! wykonania, na braku ZACHOWANIA** (`AGENTS.md` §2a p. 5). `todo!()` tu nie stoi, bo
-//! `clippy::todo` jest w tym drzewie `deny`, a `checks/full-clippy.sh` woła clippy
-//! z `-D warnings` — czerwień bramki zamiast czerwieni kryterium niczego by nie poświadczyła.
-//! Przy każdym ciele stoi osobno, dlaczego na tym stubie nie da się przejść żadnego
-//! kryterium.
+//! Paczka wychodzi **z zegara** ([`FLUSH`]) albo **z licznika** ([`BATCH_CAP`]) — co przyjdzie
+//! pierwsze. Pompa wyłącznie zegarowa oddaje przy `find /usr/share` 121 000 linii jednym
+//! `evaluate_script`; pompa wyłącznie licznikowa milczy przez minuty u agenta produkującego
+//! ~7 zdarzeń na sekundę i wygląda to jak agent, który się zawiesił.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tauri::ipc::Channel;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
 
 use crate::engine::line::Line;
 
@@ -149,14 +146,55 @@ impl LineSink {
     /// że okno nie nadąża).
     #[must_use]
     pub fn send(&self, line: Line) -> Sent {
-        // SZKIELET (2026-08-16). Świadomie zła wartość: linia jest porzucana, ale meldowana
-        // jako przyjęta i NIE jest liczona. Żadnego kryterium nie da się na tym przejść —
-        // AC-1..AC-2 i AC-4..AC-6 nie zobaczą ani jednej paczki, a AC-3 dostanie
-        // `dropped == 0` i bilans `0 != 200_000`. Stub, który by liczył porzucone, zamknąłby
-        // bilans AC-3 zerem po stronie `delivered` i to byłby stub PRZECHODZĄCY kryterium.
-        let _ = (&self.tx, &self.dropped, line);
+        if self.tx.try_send(line).is_err() {
+            // Kolejka pełna i pompa martwa to z punktu widzenia producenta ta sama
+            // odpowiedź: linia nie pojedzie. Rozróżnianie ich tutaj dałoby drugą liczbę
+            // opisującą to samo zdarzenie (niezmiennik 13), a agent i tak nie ma z tą
+            // różnicą co zrobić — biegnie dalej i płaci dalej.
+            //
+            // `Release` po tej stronie, `Acquire` po stronie pompy: bilans oddawany przez
+            // `JoinHandle` ma widzieć KAŻDY inkrement, także ten zrobiony chwilę przed
+            // zamknięciem kolejki.
+            self.dropped.fetch_add(1, Ordering::Release);
+            return Sent::Dropped;
+        }
         Sent::Queued
     }
+}
+
+/// Wypycha bufor **jedną** wiadomością i mówi, czy odbiorca jeszcze tam jest.
+///
+/// Pusty bufor nie wysyła nic. Pusta paczka to `evaluate_script` bez treści — koszt
+/// sześćdziesiąt razy na sekundę przez cały bieg, a na ekranie nic. Dlatego cisza jest tu
+/// mierzona osobnym kryterium: pół sekundy bez linii ma nie wyprodukować ani jednej
+/// wiadomości.
+///
+/// Synchroniczne, bo `Channel::send` jest synchroniczne. Między wzięciem bufora a wysyłką nie
+/// ma więc ani jednego `await` — niezmiennik 8 stoi tu z konstrukcji funkcji, a nie z uwagi
+/// w komentarzu.
+fn flush(channel: &Channel<Vec<Line>>, buffer: &mut Vec<Line>, stats: &mut PumpStats) -> bool {
+    if buffer.is_empty() {
+        return true;
+    }
+
+    // `mem::take` zostawia w miejscu pusty `Vec`, więc następna paczka zbiera się od zera,
+    // a ta, która odjechała, nie jest kopiowana [T8 §5.4].
+    let batch = std::mem::take(buffer);
+    // Nigdy więcej niż `BATCH_CAP`, bo bufor jest opróżniany dokładnie na tej granicy —
+    // konwersja nie ma jak stracić bitu.
+    let carried = batch.len() as u64;
+
+    if channel.send(batch).is_err() {
+        // Okno zniknęło. Wysyłka zakończona błędem nie jest dostawą, więc `delivered` tej
+        // paczki nie liczy — a pompa kończy się w tym samym tyknięciu, w którym się o tym
+        // dowiedziała. Pompa, która przełknie odmowę i tyka dalej, jest zadaniem w tle,
+        // którego nikt nie widzi i nikt nie zatrzyma; wraca do kanału raz na okno, do końca
+        // biegu, i za każdym razem dostaje ten sam błąd.
+        return false;
+    }
+
+    stats.delivered += carried;
+    true
 }
 
 /// Startuje pompę: linie z `source` wychodzą `channel`em jako paczki, najwyżej raz na
@@ -170,17 +208,63 @@ impl LineSink {
 /// jest kompletny — i dlatego pompa musi się kończyć sama, a nie być zabijana z zewnątrz.
 #[must_use]
 pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle<PumpStats> {
+    // Zegar rusza TUTAJ, przy wywołaniu — nie przy pierwszym odpytaniu zadania. Różnica jest
+    // widoczna dokładnie tam, gdzie boli: zadanie zostaje odpytane dopiero wtedy, kiedy
+    // planista odda mu sterowanie, a to bywa całe okno później niż chwila, w której producent
+    // oddał pierwszą linię. Okno sklejania liczone od pierwszego odpytania jest więc oknem
+    // o nieznanej długości, a `interval` postawiony wewnątrz zadania to milczący sposób,
+    // żeby je takim uczynić.
+    //
+    // `interval_at(now + FLUSH)`, a nie `interval(FLUSH)`: `interval` tyka po raz pierwszy
+    // NATYCHMIAST. Ten pierwszy tyk przypada na moment, w którym bufor jest pusty albo dopiero
+    // się zapełnia — czyli albo idzie w próżnię, albo rozcina pierwszą paczkę na kawałki
+    // wysyłane po jednej linii. Pierwsze okno ma być pełne, jak każde następne.
+    let mut ticks = interval_at(Instant::now() + FLUSH, FLUSH);
+    // `Delay`, nie `Burst`: po dłuższej ciszy `Burst` nadrabia zaległe tyknięcia jedno po
+    // drugim, żeby wrócić na siatkę. Każde z nich zastaje pusty bufor, więc kosztuje tylko
+    // przebiegi pętli — ale jest ich tyle, ile trwała cisza, a cisza u prawdziwego agenta
+    // trwa minutami [T8 §5.4].
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    // Kolejka i licznik rozdzielają się dopiero tutaj: do tej pory jechały razem, żeby nie dało
+    // się zawołać pompy z cudzym licznikiem (niezmiennik 13).
+    let LineSource { mut rx, dropped } = source;
+
     tokio::spawn(async move {
-        // SZKIELET (2026-08-16). Świadomie zła wartość: zadanie kończy się natychmiast,
-        // nie wysyłając ani jednej paczki, i oddaje pusty bilans. Kryterium przechodzące
-        // na tym stubie nie istnieje — każde z sześciu rustowych mierzy albo moment
-        // wysyłki, albo bilans, a tutaj nie ma ani jednej wysyłki i bilans jest zerem.
-        //
-        // Rozbiór na pola, a nie `let _ = source`: pole, którego nikt nie czyta, jest
-        // `dead_code`, a to jest `-D warnings` w bramce — czerwień lintu zamiast czerwieni
-        // kryterium.
-        let LineSource { rx, dropped } = source;
-        let _ = (rx, dropped, channel);
-        PumpStats::default()
+        // Zwykły `Vec` w zadaniu, nigdy `Mutex<Vec<Line>>` (niezmiennik 8). Pojemność od razu
+        // na całą paczkę: bufor rośnie do sufitu w każdym bursta, a realokacja w środku okna
+        // sklejania jest kopiowaniem tego, co i tak zaraz odjedzie.
+        let mut buffer: Vec<Line> = Vec::with_capacity(BATCH_CAP);
+        let mut stats = PumpStats::default();
+
+        loop {
+            tokio::select! {
+                // `biased`, i to nie jest kosmetyka. Losowa kolejność gałęzi znaczy, że przy
+                // gotowym tyknięciu i pełnej kolejce pompa raz zabiera linie, a raz wysyła to,
+                // co zdążyła zebrać — czyli ta sama paczka wychodzi w kawałkach albo nie
+                // wychodzi wcale, zależnie od losowania. Kolejność jest więc ustalona:
+                // NAJPIERW zabierz wszystko, co już stoi w kolejce, POTEM patrz na zegar.
+                biased;
+                line = rx.recv() => match line {
+                    Some(line) => {
+                        buffer.push(line);
+                        // Mierzone w środku pompy, bo z zewnątrz bufor, który zdążył się
+                        // opróżnić, wygląda dokładnie tak samo jak ograniczony.
+                        stats.max_buffered = stats.max_buffered.max(buffer.len());
+                    }
+                    None => break,
+                },
+                _ = ticks.tick() => {
+                    if !flush(&channel, &mut buffer, &mut stats) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Dopiero teraz, bo dopiero teraz jest kompletny: kolejka oddała `None`, czyli ostatni
+        // producent zniknął i żaden inkrement już nie dojdzie.
+        stats.dropped = dropped.load(Ordering::Acquire);
+        stats
     })
 }
