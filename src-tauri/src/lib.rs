@@ -25,6 +25,9 @@ pub mod library;
 /// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
 pub mod memory;
 
+/// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
+pub mod workflow;
+
 // 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
 //
 // Stala tu para linii `#[path = "engine/supervisor.rs"] pub mod supervisor;`, bo `engine/mod.rs`
