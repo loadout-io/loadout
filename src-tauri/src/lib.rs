@@ -25,6 +25,9 @@ pub mod library;
 /// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
 pub mod memory;
 
+/// Umiejetnosci: jeden folder, dwa katalogi, szesciu vendorow. Wypelnia T-18 i T-19.
+pub mod skills;
+
 /// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
 pub mod workflow;
 
