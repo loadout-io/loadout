@@ -17,12 +17,9 @@
  * Nazw komend nie zna ten plik: zna je `sections/memory/io.ts` i to jest JEDYNA krawędź,
  * przez którą cokolwiek jedzie do Rusta (niezmiennik 23). Zdanie „ani jednego wywołania
  * więcej" ma sens tylko wtedy, kiedy jest jedna droga do policzenia.
- *
- * Ciała akcji są jeszcze puste. Szkielet ma się WCZYTAĆ i paść w czasie wykonania — moduł,
- * którego nie ma, daje „Cannot find module", czyli czerwień, której bramka nie liczy
- * (AGENTS.md §2a).
  */
 import { create } from 'zustand';
+import { putToUse, stopUsing as stopUsingOnDisk } from '../sections/memory/io';
 
 /** Dwa stany i ani jeden trzeci [ARCHITECTURE §2 pyt. 5]. Słowo jest to samo, co w pliku. */
 export type NoteStatus = 'suggested' | 'in-use';
@@ -86,20 +83,82 @@ export interface MemoryState {
   cancel: () => void;
 }
 
-export const useMemory = create<MemoryState>()(() => ({
+/* Zdania odmowy na wypadek, gdyby Rust nie przysłał własnego. Odmowa w ciszy wygląda dokładnie
+ * jak zepsuty przycisk, a człowiek, który nie wie, czego się od niego chce, klika drugi raz. */
+const COULD_NOT_USE = 'Loadout could not put that note to use.';
+const COULD_NOT_STOP = 'Loadout could not stop using that note.';
+
+/**
+ * Czy ta odmowa jest „zakres jest pełny".
+ *
+ * Po KSZTAŁCIE, nie po klasie błędu: przez krawędź IPC jedzie zwykły obiekt, więc `instanceof`
+ * odpowiedziałby „nie" na każdą odmowę z Rusta i wymuszony wybór nigdy by się nie otworzył.
+ * Pytamy o dwa pola, których zwykły błąd nie ma, i nie sprawdzamy typu każdego elementu listy:
+ * nieznany kształt ma się zdegradować do zwykłej odmowy, a nie wywalić sekcji (niezmiennik 5).
+ */
+function isMemoryFull(refusal: unknown): refusal is MemoryFull {
+  if (typeof refusal !== 'object' || refusal === null) return false;
+  const maybe = refusal as { overBy?: unknown; retire?: unknown };
+  return typeof maybe.overBy === 'number' && Array.isArray(maybe.retire);
+}
+
+/** Zdanie od Rusta, kiedy jakieś jest — jego odmowy są już napisane po ludzku. */
+function why(refusal: unknown, fallback: string): string {
+  const said = refusal instanceof Error ? refusal.message.trim() : '';
+  return said.length > 0 ? said : fallback;
+}
+
+/**
+ * Notatka odczytana z pliku po zapisie zastępuje tę, którą sekcja trzymała.
+ *
+ * Podmiana CAŁEGO obiektu, nie samego `status`: wraz ze statusem zmienia się `modified`, a przy
+ * drugim zgłoszeniu także `occurrences`. Przepisanie jednego pola zostawiłoby wiersz, który
+ * o jednej rzeczy mówi prawdę z dysku, a o reszcie to, co pamiętał sprzed zapisu.
+ */
+function replace(notes: Note[], fresh: Note): Note[] {
+  return notes.map((one) => (one.id === fresh.id ? fresh : one));
+}
+
+export const useMemory = create<MemoryState>()((set, get) => ({
   notes: [],
   message: null,
   choice: null,
 
-  use: async (_id: string) => {
-    /* T-17: komenda, odpowiedź, dopiero potem stan. */
+  use: async (id: string) => {
+    try {
+      /* Komenda, odpowiedź, DOPIERO POTEM stan. Wiersz przestawiony przed odpowiedzią pokazuje
+       * „In use" dla notatki, której plik dalej mówi `suggested` — czyli kłamie dokładnie o tym
+       * jednym, o czym ta sekcja mówi: co wejdzie do promptu następnego agenta. */
+      const fresh = await putToUse({ id });
+      set({ notes: replace(get().notes, fresh), message: null, choice: null });
+    } catch (refusal) {
+      if (isMemoryFull(refusal)) {
+        /* Lista do wymuszonego wyboru przychodzi Z ODMOWY i tylko stamtąd. Złożona tutaj
+         * z tego, co sekcja akurat trzyma, byłaby drugą odpowiedzią na pytanie „co odstawić",
+         * liczoną bez połowy plików i bez `last_used_at` (niezmiennik 13). */
+        set({ choice: { id, overBy: refusal.overBy, retire: refusal.retire }, message: null });
+        return;
+      }
+      /* Zwykła odmowa NIE otwiera okna: pytanie „które notatki odstawić" postawione komuś,
+       * kto właśnie usłyszał „ta notatka nie ma uzasadnienia", każe naprawiać nie to, co jest
+       * zepsute. Jedna odmowa, jedno miejsce, w którym o niej piszemy. */
+      set({ message: why(refusal, COULD_NOT_USE), choice: null });
+    }
   },
 
-  stopUsing: async (_id: string) => {
-    /* T-17: to samo w drugą stronę. */
+  stopUsing: async (id: string) => {
+    try {
+      const fresh = await stopUsingOnDisk({ id });
+      set({ notes: replace(get().notes, fresh), message: null, choice: null });
+    } catch (refusal) {
+      set({ message: why(refusal, COULD_NOT_STOP), choice: null });
+    }
   },
 
   cancel: () => {
-    /* T-17: zamknij okno, nie ruszaj statusów. */
+    /* Zamknięcie okna nie jest zgodą na nic: żaden status się nie rusza i nic nie jedzie do
+     * Rusta. Magazyn, który „przy okazji" odstawia pierwszą pozycję z listy, jest tym samym
+     * cichym przycięciem, przed którym stoi cały ten podsystem [T6 §5.3]. */
+    set({ choice: null });
   },
 }));
