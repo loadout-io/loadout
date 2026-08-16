@@ -17,11 +17,20 @@
 //!   plik poza `writer.rs` otwiera połączenie **wyłącznie** z `SQLITE_OPEN_READ_ONLY`.
 //! - **Pragmy ustawia jedno miejsce** — [`apply_pragmas`] (niezmiennik 23). `busy_timeout`,
 //!   `foreign_keys` i `synchronous` są własnością **połączenia** i wracają do wartości
-//!   domyślnych przy każdym nowym; `foreign_keys` domyślnie jest **wyłączone**, więc czytelnik,
-//!   który ominie ten helper, po cichu przestaje widzieć kaskady. `busy_timeout` zapomniany na
-//!   połączeniu czytającym objawia się jako losowe „Save failed" raz na dwa dni i w meetnotes
-//!   zajęło to dwóch pisarzy w tle, zanim ktoś zrozumiał, co się dzieje
-//!   [00-SYNTHESIS §3, „SQLite"].
+//!   domyślnych przy każdym nowym, więc czytelnik, który ominie ten helper, po cichu przestaje
+//!   widzieć kaskady. `busy_timeout` zapomniany na połączeniu czytającym objawia się jako losowe
+//!   „Save failed" raz na dwa dni i w meetnotes zajęło to dwóch pisarzy w tle, zanim ktoś
+//!   zrozumiał, co się dzieje [00-SYNTHESIS §3, „SQLite"].
+//!
+//!   Czym te wartości domyślne **są**, nie wolno się tu podpierać w żadną stronę, i to jest
+//!   blizna, nie ostrożność. Zmierzone 2026-08-16 na rusqlite 0.40.2 z `features = ["bundled"]`
+//!   (SQLite 3.53.2): gołe `Connection::open` melduje `foreign_keys` = **1** (ten build idzie
+//!   z `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, podręcznikowy SQLite ma 0) i `busy_timeout` = **5000**
+//!   (ustawia je samo rusqlite). Obie są dokładnie tymi, których wymagamy — więc asercja na
+//!   naszym konstruktorze przechodzi także wtedy, gdy ten helper nigdy ich nie tknął, a asercja
+//!   na gołym połączeniu (`= 0`) pada, choć kod jest dobry. Oba te błędy ta gałąź już popełniła.
+//!   Dlatego helper ustawia całą trójkę **jawnie**, a AC-3 dowodzi jej dwustopniowo: najpierw
+//!   przestaw na wartość, której nie akceptujemy, potem zawołaj helper.
 //! - **„Append-only" egzekwuje `SQLite`, nie Rust.** Wyzwalacz odmawia także połączeniu, które
 //!   nigdy nie widziało tego kodu: migracji, skryptowi naprawczemu, przyszłemu daemonowi,
 //!   `sqlite3` z terminala. Odmowa napisana w Ruście przechodzi wszystkie nasze testy i nie
