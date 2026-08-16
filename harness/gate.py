@@ -462,6 +462,35 @@ def verdict(tier, r):
 
 # ---------------------------------------------------------------- poziom
 
+def ceiling_for(tier, results, argv_by_id, per_check):
+    """Sufit poziomu: norma + czas, ktory oracle SAM przyznal ponad nia.
+
+    Sufit wybacza WYLACZNIE ten czas, ktory sprawdzenie naprawde zjadlo w granicach
+    budzetu przyznanego mu przez `budget_for` -- z jednym dopiskiem, ktory kosztowal caly
+    bieg. `run_one` po timeoucie pyta DRUGI raz (zamierzone: timeout mowi "nie skonczylo",
+    nie mowi dlaczego), wiec oracle autoryzuje do 2*b, nie do b.
+
+    Bez tego dopisku poziom przewracal sie na 3 ("GATE TOO SLOW") za czas, ktory sam wydal,
+    i PRZYKRYWAL jedyna wiadomosc, po ktorej dalo sie cos zrobic. Zmierzone na T-06
+    (2026-08-16): AC-2 zawislo na zakleszczeniu kanalu tokio, zjadlo 420 s + 420 s retry,
+    bramka zapisala je uczciwie jako `failed` z powodem "did not FINISH" -- po czym zwrocila
+    3 zamiast 1. Kod 3 znaczy "przerwane albo maszyna" i kieruje orchestratora do szukania
+    osieroconych procesow. Kosztowalo to noc na hipotezie o zamku SQLite.
+
+    To NIE rozluznia bramki. `granted` dalej liczy wylacznie czas NAPRAWDE zjedzony, wiec
+    poziom wolny bez powodu -- czterdziesci sprawdzen po piec sekund, zadne nie dotkniete
+    timeoutem -- nadal przewraca sie na 3. Zmienia sie tylko to, ze czerwien przestaje
+    chowac sie za sufitem, ktory sama wypelnila.
+    """
+    granted = 0.0
+    for r in results:
+        b = budget_for(r["id"], argv_by_id.get(r["id"], []), per_check)
+        authorised = 2.0 * b if (r.get("retried") or r.get("rc") == 124) else b
+        if authorised > per_check:
+            granted += min(max(0.0, r["seconds"] - per_check), authorised - per_check)
+    return CEILING[tier] + max(0.0, granted)
+
+
 def run(tier, jobs, only=None):
     if not shutil.which("bash"):
         sys.stderr.write("bash is not on PATH; every check is run as `bash <path>`\n")
@@ -619,13 +648,8 @@ def run(tier, jobs, only=None):
     # Liczone przez `budget_for`, nie przez samą tabelę — inaczej kryterium wołające cargo
     # dostaje 420 s na sprawdzenie i wywraca się na 60-sekundowym suficie warstwy `before`,
     # czyli nadpisanie budżetu jest martwe dokładnie tam, gdzie powstało.
-    by_id = {c[0]: c[2] for c in checks}
-    granted = 0.0
-    for r in results:
-        b = budget_for(r["id"], by_id.get(r["id"], []), per_check)
-        if b > per_check:
-            granted += min(max(0.0, r["seconds"] - per_check), b - per_check)
-    ceiling = CEILING[tier] + max(0.0, granted)
+    ceiling = ceiling_for(tier, results, {c[0]: c[2] for c in checks}, per_check)
+    granted = ceiling - CEILING[tier]
     print("─" * 63)
     print("  %d checks, %d failed, %.2fs (ceiling %.0fs%s)"
           % (len(results), len(failed), total, ceiling,

@@ -297,6 +297,10 @@ guards_lane() {
   task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
+  hung_check_reads_as_red_not_as_a_slow_gate
+  spec_assertions_may_grow_never_shrink
+  branch_is_judged_by_the_trunks_oracle
+  spine_merges_keep_both_declarations
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -428,6 +432,286 @@ cargo_lock_reclaims_dead_owner() {
     return 1
   fi
   echo "cargo lock: zamek po martwym właścicielu odzyskany"
+}
+
+# ── zawieszone kryterium ma się czytać jako CZERWONE, nie jako wolna bramka ───
+# Zmierzone na T-06 (2026-08-16). AC-2 zawisło na zakleszczeniu kanału tokio, zjadło swój
+# budżet 420 s, `run_one` spytał drugi raz — to jest zamierzone, bo timeout mówi „nie
+# skończyło", nie mówi dlaczego — więc razem 840 s. Bramka zapisała je uczciwie jako
+# `failed` z powodem „did not FINISH", po czym zwróciła **3**, bo sufit poziomu liczył
+# JEDEN budżet zamiast dwóch, które sam przyznał. Kod 3 znaczy „przerwane albo maszyna"
+# i wysyła orchestratora po osierocone procesy; prawdą był defekt kontraktu, leżący
+# w paragonie. Kosztowało to bieg i noc na hipotezie o zamku SQLite.
+#
+# Strażnik stoi tutaj, a nie w harness/guards.sh: tamten framework sadzi naruszenie w pliku
+# checks/*.sh, a to naruszenie mieszka w arytmetyce oracle'a. Odtworzenie go end-to-end
+# wymagałoby biegu 840 s, więc pytamy funkcję wprost — jej własnymi liczbami z paragonu.
+hung_check_reads_as_red_not_as_a_slow_gate() {
+  python3 - <<'PY' || return 1
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("gate", "harness/gate.py")
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+per = g.CHECK_TIMEOUT["before"]
+
+# Paragon T-06 co do liczby: szesc kryteriow czerwonych w ~1 s, AC-2 wisialo 420 + 420.
+argv = {"AC-%d" % i: ["cargo", "test", "--test", "store_x%d" % i] for i in range(1, 8)}
+hung = [{"id": "AC-%d" % i, "seconds": s, "retried": "", "rc": rc} for i, s, rc in
+        [(1, 11.26, 101), (2, 840.39, 124), (3, 1.10, 101), (4, 1.02, 101),
+         (5, 1.11, 101), (6, 1.00, 101), (7, 0.95, 101)]]
+if 840.40 > g.ceiling_for("before", hung, argv, per):
+    sys.exit("zawieszone kryterium przewraca poziom na 3 -- czerwien chowa sie za sufitem, "
+             "ktory sama wypelnila, a orchestrator dostaje diagnoze 'maszyna' zamiast 'kontrakt'")
+
+# Kontrola przeciw pustej asercji. Bez niej ta asercja przechodzilaby takze wtedy, gdyby
+# poprawka po prostu skasowala sufit: poziom wolny BEZ ani jednego sprawdzenia dotknietego
+# timeoutem musi NADAL wychodzic trojka.
+slow = [{"id": "P-%d" % i, "seconds": 5.0, "retried": "", "rc": 0} for i in range(40)]
+if 200.0 <= g.ceiling_for("before", slow, {}, per):
+    sys.exit("sufit przestal lapac bramke wolna bez powodu -- poprawka zjadla go w calosci")
+PY
+  echo "gate: zawieszone kryterium czyta się jako RED, wolna bramka nadal jako 3"
+}
+
+# ── specyfikacji wolno zyskiwać asercje, nigdy żadnej zgubić ──────────────────
+# Obrona rundy naprawczej kontraktu (ship-task.sh, etap 3a). Ta faza dostaje instrukcję
+# „spraw, żeby kryterium padało INACZEJ", a najtańsza droga do tego jest asertować mniej —
+# i jest to jedyna faza, w której „asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji,
+# a nie jawnym oszustwem. Dlatego dostała obronę mechaniczną, a nie zdanie w promptcie
+# (niezmiennik 28). Obrona bez strażnika jest obroną, o której nikt nie wie, czy strzela.
+#
+# Strażnik wycina OBIE funkcje z ship-task.sh i uruchamia je naprawdę. Kopia asercji
+# wklejona tutaj testowałaby kopię, nie mechanizm (niezmiennik 20).
+spec_assertions_may_grow_never_shrink() {
+  local sandbox fns wt src
+  sandbox="$(mktemp -d)" || return 1
+  fns="$sandbox/fns.sh"
+  wt="$sandbox/wt"
+
+  python3 - ship-task.sh "$fns" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+import io, sys
+
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+out = []
+for want in ("assertion_fingerprint()", "assertions_lost()"):
+    head = [k for k, l in enumerate(lines) if l.startswith(want)]
+    if len(head) != 1:
+        sys.exit("%s wystepuje %d razy w ship-task.sh" % (want, len(head)))
+    i = head[0]
+    j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+    out.extend(lines[i:j + 1])
+if len(out) < 20:
+    sys.exit("wyciety kod jest podejrzanie krotki -- ksztalt pliku sie zmienil")
+io.open(sys.argv[2], "w", encoding="utf-8").write("\n".join(out) + "\n")
+EXTRACT
+
+  src="source '$fns'"
+  mkdir -p "$wt/src-tauri/tests" "$wt/src-tauri/src"
+  # Trzy linie z asercją i jedna bez — plus PRODUKCYJNY plik, którego odcisk ma nie widzieć:
+  # tam asercji ubywa legalnie, bo szkielet znika razem z implementacją.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\n' \
+    > "$wt/src-tauri/tests/spec_one.rs"
+  printf 'assert!(internal);\nassert!(other);\n' > "$wt/src-tauri/src/thing.rs"
+
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/a.tsv"
+  if [ "$(cat "$sandbox/a.tsv")" != "$(printf 'src-tauri/tests/spec_one.rs\t3')" ]; then
+    echo "odcisk asercji nie mierzy tego, co ma mierzyć:" >&2
+    sed 's/^/  /' "$sandbox/a.tsv" >&2
+    echo "  oczekiwano dokładnie: src-tauri/tests/spec_one.rs<TAB>3" >&2
+    echo "  (plik produkcyjny z dwiema asercjami NIE ma się tu pojawić)" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (a) ubyło jednej asercji → strata musi być nazwana z pliku i obiema liczbami
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\n' > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/b.tsv"
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/b.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 2'; then
+    echo "specyfikacja straciła asercję, a porównanie tego nie zgłosiło" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (b) przybyło → cisza. Bez tego strażnik przechodziłby także wtedy, gdyby porównanie
+  #     krzyczało zawsze, czyli gdyby nie mierzyło niczego.
+  printf 'assert_eq!(a, b);\nassert!(x);\nassert_ne!(c, d);\nassert!(more);\nassert!(yet);\n' \
+    > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/c.tsv"
+  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/c.tsv'")" ]; then
+    echo "specyfikacja ZYSKAŁA asercje, a porównanie zgłosiło stratę" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (c) skasowany plik to strata wszystkich jego asercji, a nie brak wpisu. Bez tego
+  #     najprostsza droga na skróty — usuń specyfikację — byłaby niewidoczna.
+  rm "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/d.tsv"
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/d.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 0'; then
+    echo "skasowana specyfikacja nie liczy się jako strata asercji" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  rm -rf "$sandbox"
+  echo "specs: asercji może przybyć, ubyć nie może — odcisk widzi ubytek i skasowanie"
+}
+
+# ── gałąź ma być sądzona przez ORACLE Z TRUNKA, nie przez własną starą kopię ──
+# Zmierzone dwa razy. 2026-08-15: trzy z pierwszych czterech zatrzymań pętli były fałszywymi
+# alarmami z nieaktualnej kopii `checks/` na gałęzi. 2026-08-16: poprawka sufitu w gate.py,
+# napisana dokładnie dla biegu T-06, była dla niego **nieosiągalna** — `worktree.sh` wycina
+# cały katalog roboczy, więc gałąź niesie własne `harness/`, i ta stara kopia oddała exit 3
+# tam, gdzie nowa oddaje 1. Routing wznowienia zobaczył 3, odmówił, bieg skończył się dwójką.
+#
+# Strażnik pyta o dwie rzeczy, bo defekt miał dwie połowy: funkcja musi działać, i musi być
+# wołana ZANIM cokolwiek osądzi. Druga połowa jest asercją o kolejności w pliku — i tak ma
+# być: `ship-task.sh` JEST grafem biegu, więc kolejność etapów to jego zachowanie, nie jego
+# formatowanie.
+branch_is_judged_by_the_trunks_oracle() {
+  local sandbox g wt wt2
+  sandbox="$(mktemp -d)" || return 1
+  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
+
+  # ── połowa pierwsza: czy funkcja podciąga oracle ──
+  mkdir -p "$sandbox/repo/harness" "$sandbox/repo/tasks"
+  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
+  echo "old oracle" > "$sandbox/repo/harness/gate.py"
+  echo "contract v1" > "$sandbox/repo/tasks/T-99.md"
+  $g add -A && $g commit -q -m "trunk v1"
+  $g branch task-T-99
+  # trunk idzie do przodu: NOWY oracle i NOWY plik zadania
+  echo "new oracle" > "$sandbox/repo/harness/gate.py"
+  echo "contract v2" > "$sandbox/repo/tasks/T-99.md"
+  $g add -A && $g commit -q -m "trunk v2"
+  wt="$sandbox/wt"
+  $g worktree add -q "$wt" task-T-99
+
+  python3 - ship-task.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+import io, sys
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
+if len(head) != 1:
+    sys.exit("refresh_harness_from_trunk() wystepuje %d razy" % len(head))
+i = head[0]
+j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+io.open(sys.argv[2], "w", encoding="utf-8").write(
+    "note() { printf '   %s\\n' \"$*\"; }\n" + "\n".join(lines[i:j + 1]) + "\n")
+EXTRACT
+
+  # $1 = 0: bieg dopiero się zaczyna, więc chcemy BIEŻĄCEGO kontraktu razem z oracle'em
+  WT="$wt" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 0 'w tescie'" >/dev/null
+  if [ "$(cat "$wt/harness/gate.py")" != "new oracle" ]; then
+    echo "gałąź po odświeżeniu NADAL sądzi się starą bramką" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if [ "$(cat "$wt/tasks/T-99.md")" != "contract v2" ]; then
+    echo "odświeżenie na starcie biegu ma przynieść także bieżący kontrakt" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # $1 = 1: kontrakt ZAMROŻONY (N-08). Bieg nie może zmieniać warunków własnego zaliczenia,
+  # więc `tasks/` ma wrócić do wersji gałęzi, a oracle ma mimo to zostać nowy.
+  #
+  # DRUGI worktree, nie recykling pierwszego. Pierwsza wersja tego strażnika kasowała
+  # i odtwarzała tamten — `worktree remove` odmawiał, `worktree add` mówił „already exists",
+  # a asercja mierzyła stan, którego nikt nie zaplanował. Trafiła dobrze przypadkiem, co jest
+  # gorsze niż porażka: przechodziłaby też wtedy, gdyby zamrażanie w ogóle nie działało.
+  wt2="$sandbox/wt-frozen"
+  $g branch task-T-99f main~1
+  $g worktree add -q "$wt2" task-T-99f
+  WT="$wt2" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
+  if [ "$(cat "$wt2/harness/gate.py")" != "new oracle" ]; then
+    echo "zamrożony kontrakt zablokował odświeżenie ORACLE'a, a miał zamrozić tylko tasks/" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if [ "$(cat "$wt2/tasks/T-99.md")" != "contract v1" ]; then
+    echo "kontrakt NIE został zamrożony: bieg zmienił warunki własnego zaliczenia (N-08)" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  rm -rf "$sandbox"
+
+  # ── połowa druga: czy odświeżenie wyprzedza pierwszy osąd ──
+  python3 - ship-task.sh <<'ORDER' || return 1
+import io, sys
+
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+
+def first(pred, what):
+    for k, l in enumerate(lines):
+        if pred(l):
+            return k
+    sys.exit("nie znalazlem %s w ship-task.sh" % what)
+
+refresh = first(lambda l: l.strip().startswith("refresh_harness_from_trunk 0"),
+                "wywolania refresh_harness_from_trunk 0")
+judges = first(lambda l: ("verify.sh before" in l or l.strip().startswith("gate before")
+                          or "gate before ||" in l) and not l.lstrip().startswith("#"),
+               "pierwszego etapu, ktory sadzi")
+if judges < refresh:
+    sys.exit("pierwszy osad (linia %d) wyprzedza odswiezenie oracle'a (linia %d): galaz "
+             "bylaby sadzona przez wlasna, stara kopie bramki -- dokladnie to zatrzymalo "
+             "T-06 2026-08-16" % (judges + 1, refresh + 1))
+ORDER
+
+  echo "oracle: gałąź sądzi się bramką z trunka, i to zanim cokolwiek osądzi"
+}
+
+# ── konflikt na kręgosłupie rozwiązuje się ZACHOWANIEM OBU DEKLARACJI ─────────
+# `src-tauri/src/lib.rs` zbiera po jednym `pub mod` od każdego zadania tworzącego moduł, więc
+# przy dwóch gałęziach naraz konflikt jest PEWNY — zdarzył się przy T-11 i T-12, a potem
+# zablokował odświeżanie harnessu na T-06, przez co gałąź sądziła się własną, starą bramką.
+# `.gitattributes` zapisuje jedyne poprawne rozwiązanie jako regułę (`merge=union`), zamiast
+# kazać je powtarzać ręcznie i ryzykować, że ktoś kiedyś „wybierze stronę".
+#
+# Kontrola przeciw pustej asercji jest tu obowiązkowa: bez niej ten strażnik przechodziłby
+# także wtedy, gdyby git scalał te wiersze sam z siebie, i nie mierzyłby reguły.
+spine_merges_keep_both_declarations() {
+  local sandbox g rule
+  sandbox="$(mktemp -d)" || return 1
+  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
+  rule="$(grep -v '^[[:space:]]*#' .gitattributes | grep 'src-tauri/src/lib.rs' || true)"
+  if [ -z "$rule" ]; then
+    echo ".gitattributes nie ma już reguły dla src-tauri/src/lib.rs" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  mkdir -p "$sandbox/repo/src-tauri/src"
+  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
+  printf 'pub mod engine;\n' > "$sandbox/repo/src-tauri/src/lib.rs"
+  printf '%s\n' "$rule" > "$sandbox/repo/.gitattributes"
+  $g add -A && $g commit -q -m "spine v0"
+  $g branch task-alpha
+  # trunk dopisuje swoją deklarację…
+  printf 'pub mod engine;\npub mod beta;\n' > "$sandbox/repo/src-tauri/src/lib.rs"
+  $g add -A && $g commit -q -m "trunk adds beta"
+  # …a gałąź swoją, w tym samym miejscu
+  $g worktree add -q "$sandbox/wt" task-alpha
+  printf 'pub mod engine;\npub mod alpha;\n' > "$sandbox/wt/src-tauri/src/lib.rs"
+  $g -C "$sandbox/wt" add -A
+  $g -C "$sandbox/wt" commit -q -m "branch adds alpha"
+
+  if ! $g -C "$sandbox/wt" merge --no-edit -q main >/dev/null 2>&1; then
+    echo "merge kręgosłupa nadal konfliktuje mimo reguły union w .gitattributes" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if ! grep -q 'pub mod alpha;' "$sandbox/wt/src-tauri/src/lib.rs" \
+     || ! grep -q 'pub mod beta;' "$sandbox/wt/src-tauri/src/lib.rs"; then
+    echo "merge kręgosłupa zgubił deklarację — wolno tylko ZACHOWAĆ OBIE:" >&2
+    sed 's/^/  /' "$sandbox/wt/src-tauri/src/lib.rs" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # Kontrola przeciw pustej asercji: bez reguły ten sam merge MUSI konfliktować.
+  $g -C "$sandbox/wt" reset -q --hard HEAD~1
+  rm "$sandbox/wt/.gitattributes"
+  $g -C "$sandbox/wt" add -A
+  $g -C "$sandbox/wt" commit -q -m "drop the rule"
+  if $g -C "$sandbox/wt" merge --no-edit -q main >/dev/null 2>&1; then
+    echo "bez reguły union ten merge też przeszedł — strażnik nie mierzy reguły, tylko szczęście" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  $g -C "$sandbox/wt" merge --abort >/dev/null 2>&1 || true
+
+  rm -rf "$sandbox"
+  echo "spine: konflikt w lib.rs rozwiązuje się zachowaniem obu deklaracji"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
