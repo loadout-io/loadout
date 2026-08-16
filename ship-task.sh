@@ -154,7 +154,7 @@ note() {
 # moze zmieniac warunkow wlasnego zaliczenia -- ulepszony plik zadania obowiazuje NASTEPNY
 # bieg. Na poczatku biegu jest odwrotnie: tam wlasnie chcemy biezacego kontraktu, wiec 0.
 refresh_harness_from_trunk() {   # refresh_harness_from_trunk <zamrozony-kontrakt:0|1> <etykieta>
-  local frozen="$1" label="$2" before_merge
+  local frozen="$1" label="$2" before_merge blocked
   before_merge="$(git -C "$WT" rev-parse HEAD)"
   if git -C "$WT" merge --no-edit -q "${LOADOUT_TRUNK:-main}" >/dev/null 2>&1; then
     if [ "$frozen" = 1 ] && ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
@@ -169,8 +169,14 @@ refresh_harness_from_trunk() {   # refresh_harness_from_trunk <zamrozony-kontrak
       note "harness refreshed from the trunk $label"
     fi
   else
+    # NAZWIJ, co blokuje. "Nie udalo sie" bez podania pliku to dokladnie ten rodzaj
+    # nadzoru, za ktory to repo skasowalo wave.sh: 444 razy "drzewo brudne" bez powiedzenia,
+    # CO jest brudne. Zmierzone tego samego dnia na T-06: komunikat bez nazwy pliku kazal mi
+    # diagnozowac merge recznie, a odpowiedz -- konflikt w lib.rs -- jest z gory znana.
+    blocked="$(git -C "$WT" diff --name-only --diff-filter=U 2>/dev/null | paste -sd" " -)"
     git -C "$WT" merge --abort >/dev/null 2>&1 || true
     note "could not merge the trunk cleanly — judging against the branch's own harness copy"
+    note "conflicting: ${blocked:-<git refused before touching a file>}"
   fi
 }
 

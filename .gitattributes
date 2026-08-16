@@ -1,0 +1,23 @@
+# Kręgosłup modułów: konflikt jest PEWNY, a rozwiązanie zawsze to samo.
+#
+# `src-tauri/src/lib.rs` zbiera po jednym wierszu `pub mod` od KAŻDEGO zadania tworzącego
+# moduł — Rust nie wpuści modułu do skrzyni bez deklaracji w rodzicu. Więc kiedy dwa zadania
+# biegną równolegle, ich gałęzie dopisują sąsiadujące wiersze w tym samym miejscu i git melduje
+# konflikt. Zdarzyło się to przy T-11 i T-12, potem znowu przy odświeżaniu harnessu na T-06.
+#
+# Rozwiązaniem za każdym razem jest **zachowaj obie deklaracje** — nigdy „wybierz stronę".
+# Dokładnie to robi wbudowany sterownik `union`, więc zapisujemy to jako regułę, zamiast
+# powtarzać ręcznie i ryzykować, że ktoś kiedyś wybierze stronę (niezmiennik 28: mechanizm,
+# nie zdanie w dokumentacji).
+#
+# Dlaczego to bezpieczne akurat dla tego pliku: zadania mają go w OWNS **wyłącznie** po to,
+# żeby dopisać swój wiersz („Żadnej innej zmiany w tym pliku"), a `harness/task-spine.py`
+# tego pilnuje. Tryb porażki, gdyby ktoś jednak ruszył ciało pliku, jest **głośny i
+# natychmiastowy**: union nigdy nie gubi wiersza, umie tylko zdublować — a zdublowana
+# deklaracja albo zdublowany kod to błąd kompilacji, który złapie najbliższa bramka.
+# Kierunek pomyłki „za dużo" jest jedynym akceptowalnym; „za mało" byłoby ciche.
+#
+# NIE rozciągamy tego na `engine/mod.rs`, `memory/mod.rs` ani resztę: mimo nazwy niosą
+# prawdziwy kod (68 i 212 wierszy), więc union mógłby tam skleić dwie wersje funkcji.
+# Kiedy któryś z nich zacznie realnie konfliktować — zmierz, wtedy dopisz, nie wcześniej.
+src-tauri/src/lib.rs merge=union

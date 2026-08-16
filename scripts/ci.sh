@@ -300,6 +300,7 @@ guards_lane() {
   hung_check_reads_as_red_not_as_a_slow_gate
   spec_assertions_may_grow_never_shrink
   branch_is_judged_by_the_trunks_oracle
+  spine_merges_keep_both_declarations
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -651,6 +652,66 @@ if judges < refresh:
 ORDER
 
   echo "oracle: gałąź sądzi się bramką z trunka, i to zanim cokolwiek osądzi"
+}
+
+# ── konflikt na kręgosłupie rozwiązuje się ZACHOWANIEM OBU DEKLARACJI ─────────
+# `src-tauri/src/lib.rs` zbiera po jednym `pub mod` od każdego zadania tworzącego moduł, więc
+# przy dwóch gałęziach naraz konflikt jest PEWNY — zdarzył się przy T-11 i T-12, a potem
+# zablokował odświeżanie harnessu na T-06, przez co gałąź sądziła się własną, starą bramką.
+# `.gitattributes` zapisuje jedyne poprawne rozwiązanie jako regułę (`merge=union`), zamiast
+# kazać je powtarzać ręcznie i ryzykować, że ktoś kiedyś „wybierze stronę".
+#
+# Kontrola przeciw pustej asercji jest tu obowiązkowa: bez niej ten strażnik przechodziłby
+# także wtedy, gdyby git scalał te wiersze sam z siebie, i nie mierzyłby reguły.
+spine_merges_keep_both_declarations() {
+  local sandbox g rule
+  sandbox="$(mktemp -d)" || return 1
+  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
+  rule="$(grep -v '^[[:space:]]*#' .gitattributes | grep 'src-tauri/src/lib.rs' || true)"
+  if [ -z "$rule" ]; then
+    echo ".gitattributes nie ma już reguły dla src-tauri/src/lib.rs" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  mkdir -p "$sandbox/repo/src-tauri/src"
+  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
+  printf 'pub mod engine;\n' > "$sandbox/repo/src-tauri/src/lib.rs"
+  printf '%s\n' "$rule" > "$sandbox/repo/.gitattributes"
+  $g add -A && $g commit -q -m "spine v0"
+  $g branch task-alpha
+  # trunk dopisuje swoją deklarację…
+  printf 'pub mod engine;\npub mod beta;\n' > "$sandbox/repo/src-tauri/src/lib.rs"
+  $g add -A && $g commit -q -m "trunk adds beta"
+  # …a gałąź swoją, w tym samym miejscu
+  $g worktree add -q "$sandbox/wt" task-alpha
+  printf 'pub mod engine;\npub mod alpha;\n' > "$sandbox/wt/src-tauri/src/lib.rs"
+  $g -C "$sandbox/wt" add -A
+  $g -C "$sandbox/wt" commit -q -m "branch adds alpha"
+
+  if ! $g -C "$sandbox/wt" merge --no-edit -q main >/dev/null 2>&1; then
+    echo "merge kręgosłupa nadal konfliktuje mimo reguły union w .gitattributes" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  if ! grep -q 'pub mod alpha;' "$sandbox/wt/src-tauri/src/lib.rs" \
+     || ! grep -q 'pub mod beta;' "$sandbox/wt/src-tauri/src/lib.rs"; then
+    echo "merge kręgosłupa zgubił deklarację — wolno tylko ZACHOWAĆ OBIE:" >&2
+    sed 's/^/  /' "$sandbox/wt/src-tauri/src/lib.rs" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # Kontrola przeciw pustej asercji: bez reguły ten sam merge MUSI konfliktować.
+  $g -C "$sandbox/wt" reset -q --hard HEAD~1
+  rm "$sandbox/wt/.gitattributes"
+  $g -C "$sandbox/wt" add -A
+  $g -C "$sandbox/wt" commit -q -m "drop the rule"
+  if $g -C "$sandbox/wt" merge --no-edit -q main >/dev/null 2>&1; then
+    echo "bez reguły union ten merge też przeszedł — strażnik nie mierzy reguły, tylko szczęście" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  $g -C "$sandbox/wt" merge --abort >/dev/null 2>&1 || true
+
+  rm -rf "$sandbox"
+  echo "spine: konflikt w lib.rs rozwiązuje się zachowaniem obu deklaracji"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
