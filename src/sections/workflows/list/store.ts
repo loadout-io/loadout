@@ -95,27 +95,118 @@ export interface WorkflowListState extends WorkflowListActions {
   load: () => Promise<void>;
 }
 
-/* Faza kontraktu: sygnatury stoją, zachowania jeszcze nie ma. To jest odpowiednik `todo!()`
- * z Rusta i istnieje po to, żeby import się rozwiązał, a kryterium padło NA ASERCJI, a nie
- * przy wczytywaniu modułu — „Cannot find module" jest na liście `NOT_A_REAL_RED` i nie
- * dowodzi niczego (AGENTS.md §2a). Faza implementacji kasuje każde z tych wywołań. */
+/* ── Nazwa pliku ───────────────────────────────────────────────────────────────────────────
+ *
+ * Powstaje z nazwy workflow RAZ, przy tworzeniu, i potem żyje osobno. Cała pułapka tego
+ * ekranu mieszka w tych trzydziestu liniach: `Ship a feature` i `Ship a Feature` dają ten sam
+ * slug, a zapis pliku po prostu nadpisuje. Drugi zapis kończy się wtedy sukcesem, lista
+ * pokazuje dwie pozycje, na dysku jest jedna — i użytkownik traci workflow, którego nigdy nie
+ * usuwał, a dowiaduje się o tym dopiero po restarcie.
+ */
+
+/**
+ * Kiedy z nazwy nie zostaje ani jeden znak, który da się zapisać w nazwie pliku.
+ * `"???"` daje pusty slug, a samo `.json` to plik ukryty w Uniksie i nazwa, której nie da się
+ * ani pokazać, ani powiązać z workflow.
+ */
+const FALLBACK_SLUG = 'workflow';
+
+/**
+ * Sufit długości sluga. Nazwa workflow jest zdaniem po ludzku, a nie identyfikatorem — wklejony
+ * akapit daje nazwę pliku dłuższą niż 255 bajtów, czyli ENAMETOOLONG przy zapisie: błąd na
+ * dysku zamiast brzydkiej nazwy na ekranie. Sześćdziesiąt znaków mieści każde sensowne zdanie
+ * i zostawia miejsce na `-2.json`.
+ */
+const MAX_SLUG = 60;
+
+/** `Ship a Feature` → `ship-a-feature`. Wielkość liter ginie i to jest cały problem. */
+function slugOf(name: string): string {
+  /* NFD plus skasowanie znaków łączących: `Wdrożenie` daje `wdrozenie`, nie `wdro-enie`.
+   * Nazwę wpisuje człowiek, więc bywa w dowolnym języku; nazwa pliku ma zostać w ASCII, bo
+   * jedzie przez FFI, przez `git`, przez archiwum i przez cudzy system plików. */
+  const ascii = name.normalize('NFD').replace(/\p{M}+/gu, '');
+  const hyphenated = ascii
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .slice(0, MAX_SLUG);
+  /* Obcięcie do sufitu potrafi skończyć się na łączniku, więc przycinamy PO nim. */
+  const trimmed = hyphenated.replace(/^-+|-+$/g, '');
+  return trimmed === '' ? FALLBACK_SLUG : trimmed;
+}
+
+/**
+ * Pierwsza wolna nazwa pliku dla tej nazwy workflow, szukana wobec TEGO, CO LEŻY W KATALOGU.
+ *
+ * Sufiks jest liczbą od 2, więc drugi `Ship a feature` ląduje obok pierwszego jako
+ * `ship-a-feature-2.json`, a nie na nim.
+ */
+function freeFileName(name: string, taken: readonly WorkflowEntry[]): string {
+  /* Porównanie po małych literach, bo APFS jest domyślnie NIEwrażliwy na wielkość liter:
+   * `Ship-A-Feature.json` i `ship-a-feature.json` to na tym dysku jeden plik. Slug jest już
+   * mały, więc wystarczy sprowadzić do małych to, co przyszło z katalogu. */
+  const used = new Set(taken.map((entry) => entry.path.toLowerCase()));
+  const base = slugOf(name);
+
+  let candidate = `${base}.json`;
+  let ordinal = 1;
+  while (used.has(candidate)) {
+    ordinal += 1;
+    candidate = `${base}-${ordinal}.json`;
+  }
+  return candidate;
+}
+
+/**
+ * `apple` stoi przed `Banana`.
+ *
+ * Domyślne `Array.sort()` porównuje kody znaków, a wielkie litery mają niższe — daje
+ * `['Banana', 'apple']`, czyli listę, która czyta się jak nieposortowana. `sensitivity: 'accent'`
+ * znaczy: wielkość liter nie ma znaczenia, znaki diakrytyczne mają (`resume` ≠ `résumé`).
+ */
+const byName = new Intl.Collator(undefined, { sensitivity: 'accent' });
+
+/** Sortowanie należy do LISTY, nie do ścieżki tworzenia. Katalog wydaje pliki w swojej kolejności. */
+function sortedByName(entries: readonly WorkflowEntry[]): WorkflowEntry[] {
+  return [...entries].sort((a, b) => byName.compare(a.workflow.name, b.workflow.name));
+}
+
+/* Faza kontraktu: sygnatura stoi, zachowania jeszcze nie ma. Kasowane wraz z kryterium,
+ * które je zastępuje. */
 function notImplemented(): never {
   throw new Error('not implemented');
 }
 
 export function createWorkflowListStore(io: WorkflowListIo) {
-  /* `io` jest kontraktem tej funkcji i wraca w fazie implementacji. `void` zamiast nazwania
-   * go `_io`: podkreślenie przemianowałoby publiczny parametr, a `noUnusedParameters` daje
-   * TS6133, które checks/quick-types.sh klasyfikuje jako NASZĄ złą konfigurację (exit 2),
-   * czyli czerwień trafiającą nie tam, gdzie trzeba. */
-  void io;
-
-  return create<WorkflowListState>()(() => ({
+  return create<WorkflowListState>()((set) => ({
     workflows: [],
     pendingDeleteId: null,
 
-    load: notImplemented,
-    create: notImplemented,
+    load: async () => {
+      set({ workflows: sortedByName(await io.list()) });
+    },
+
+    create: async (name) => {
+      /* Katalog czytamy TERAZ, tuż przed wyborem nazwy pliku, zamiast ufać temu, co ekran
+       * pokazuje. Lista w głowie ekranu jest z chwili, w której ktoś ją wczytał; plik mógł
+       * w międzyczasie powstać w drugim oknie albo w Finderze, a wolna nazwa wybrana wobec
+       * nieaktualnego spisu to dokładnie ten cichy zapis na cudzym pliku, przed którym stoi
+       * całe to sprawdzanie unikalności. */
+      const onDisk = await io.list();
+      const path = freeFileName(name, onDisk);
+      const workflow: WorkflowFile = {
+        format: 1,
+        id: await io.newId(),
+        /* Dokładnie to, co wpisał człowiek — nazwa pliku jest z niej wyprowadzona raz,
+         * a sama nazwa nigdy nie jest spłaszczana pod nazwę pliku. */
+        name,
+        steps: [],
+        links: [],
+      };
+
+      await io.write(path, workflow);
+      set({ workflows: sortedByName([...onDisk, { path, workflow }]) });
+    },
+
     duplicate: notImplemented,
     requestDelete: notImplemented,
     cancelDelete: notImplemented,
