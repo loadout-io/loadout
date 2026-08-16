@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 13:45
+# Stan budowy — 2026-08-16, 18:05
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,55 +8,111 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **15 z 26** |
-| kosztowało | **$317** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) |
+| wylądowane | **19 z 27** (T-26 dopisane dzisiaj) |
+| kosztowało | **$352** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) · średnia **$21** |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (15):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-11 T-12 T-13 T-14 T-16 T-18 T-21 T-25`
+**Wylądowane (19):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-06 T-11 T-12 T-13 T-14 T-16 T-17 T-18 T-19 T-20 T-21 T-25`
 
-**W locie (2):** `T-06` (implementacja — **kontrakt certyfikowany, zwis AC-2 zniknął**),
-`T-19` (faza kontraktu). Pisarz i recenzent `claude` — Codex bez kredytów do 2026-08-20.
+**W locie (2):** `T-07` (bramka) i `T-26` (nowe zadanie, patrz niżej).
+Pisarz i recenzent `claude`; Codex bez kredytów do 2026-08-20.
 
-Szerokość fali to teraz **dwa**, i nie jest to wybór: wszystko poza T-19 przechodzi przez
-T-06 → T-07 → T-08. Wylądowanie T-06 otwiera od razu trzy zadania (`T-07 T-17 T-20`).
+**Zostało 6 poza falą:** `T-08` (czeka na T-07), `T-09 T-15 T-22 T-24` (czekają na T-08),
+`T-23` (na T-15). Ścieżka krytyczna to `T-07 → T-08 → T-15 → T-23`, czyli cztery zadania
+szeregowo — reszta zrównolegli się wokół nich.
 
-**Uwaga recenzenta, której bramka nie widzi.** Zarówno T-14, jak i T-18 dostały uwagę tej samej
-klasy: kryterium sprawdza **obecność** kontrolki albo ścieżki, a nie jej **zachowanie**.
-W T-14 nagłówkowy `＋ Create` ma handler, ale każdy test używa `renderToStaticMarkup`, który
-nigdy nie odpala `onClick`. W T-18 uzasadnienie AC-6 opisuje scenariusz, którego żaden test nie
-przechodzi. Obie przeszły bramkę i obie wylądowały zgodnie z kontraktem (jedna runda naprawcza,
-potem decyduje bramka) — ale to jest lista dla przeglądu cross-vendor po 2026-08-20.
+## Wzorzec, którego bramka strukturalnie nie widzi — cztery przypadki jednego dnia
 
-**Czekają na cudze zadania (8):** `T-07 T-08 T-09 T-15 T-17 T-20 T-22 T-23 T-24`.
-Uwaga: `T-07`, `T-17` i `T-20` czekają **wyłącznie na T-06** — jego wylądowanie otwiera trzy
-zadania naraz i dlatego poszło pierwsze.
+To jest najcenniejsza rzecz, jaka wyszła 2026-08-16, i jedyna, której **nie da się zmechanizować
+istniejącymi środkami**. Za każdym razem kryterium sprawdza coś **węższego** niż niezmiennik,
+którego broni — i przechodzi na implementacji, która niezmiennika nie spełnia.
+
+| gdzie | kryterium sprawdza | niezmiennik mówi |
+|---|---|---|
+| T-14 | że przycisk `＋ Create` **istnieje** i ma `data-create` | kontrolka ma **działać** — każdy test używa `renderToStaticMarkup`, który nigdy nie odpala `onClick` |
+| T-18 | ścieżki rozmieszczania osobno | uzasadnienie AC-6 opisuje scenariusz, którego **żaden test nie przechodzi** |
+| T-06 AC-3 | że pragmy **mają wartość** 5000 / 1 | że to **nasz kod** je ustawia — a stos ustawia obie sam, więc asercja przechodziła na helperze, który nie robi nic |
+| T-06 AC-5 | że połączenie z `Store::reader()` **nie umie pisać** | niezmiennik 2: **żadnego** drugiego pisarza — a `Store::open(path)` wołane dwa razy na tej samej ścieżce tworzy drugie zapisujące połączenie i drugie zadanie pisarza, i nic tego nie zabrania |
+
+Dwa pierwsze przeszły bramkę i wylądowały zgodnie z kontraktem. Trzeci **złapaliśmy przypadkiem** —
+kontrola negatywna okazała się fałszywa w sposób wykrywalny; gdyby rusqlite dawał domyślnie 5001
+zamiast 5000, siedziałoby to w repo jako zielone. Czwarty znalazł recenzent na **zielonej bramce**
+i on jest najgroźniejszy, bo dotyczy niezmiennika architektonicznego, a scenariusz jest realny:
+`T-24` otwiera kilka workspace'ów naraz, więc dwie karty na tym samym folderze to dwa `Store::open`
+na tym samym pliku.
+
+**Do zrobienia z tym trzy rzeczy, w tej kolejności:**
+
+1. ~~`T-06 AC-5` / niezmiennik 2~~ — **rozstrzygnięte 2026-08-16.** Decyzja człowieka: `Store::open`
+   **nie** dostaje własnej obrony; gwarancja mieszka w rejestrze workspace'ów, bo `ARCHITECTURE.md`
+   §6a reguła 1 już to rozstrzygnęła („otwarcie folderu, który ma kartę, przełącza na nią").
+   Konsekwencja: skoro gwarancja jest tam, to tam musi być udowodniona — `T-24 AC-3` dostał drugą
+   połowę. Sprawdzał, że rejestr ma jedną pozycję i że `WorkspaceId` się zgadza; **nie** sprawdzał,
+   że nie powstał drugi magazyn. A `WorkspaceId` jest wyliczany ze ścieżki, więc zgadza się zawsze —
+   także w implementacji z dwoma zapisującymi połączeniami. Piąty przypadek tego samego wzorca,
+   znaleziony przez zastosowanie go do samego siebie.
+2. Przegląd cross-vendor po 2026-08-20 (`docs/PLAN.md` §6a) — **z tym wzorcem jako pytaniem
+   przewodnim**, a nie ogólnym „przejrzyjmy wszystko". Pytanie brzmi: *czy to kryterium sprawdza
+   niezmiennik, czy tylko jego najłatwiejszy objaw?*
+3. Rozważyć, czy da się z tego zrobić sprawdzenie. Na dziś **nie umiem** — „kryterium jest węższe
+   niż jego uzasadnienie" to sąd o sensie, nie o stanie, więc niezmiennik 28 nie ma tu czego chwycić.
+   Zapisane w `docs/HARNESS-QUEUE.md` jako świadomie niezmechanizowane.
 
 **Zablokowane brakiem kredytów Codeksa (2):** `S-3 T-10`. Kredyty wracają **2026-08-20**.
 Wtedy też `docs/PLAN.md` §6a każe zrobić przegląd cross-vendor wszystkiego, co powstało
 w trybie same-vendor — a to jest całość.
 
-## T-06 — zdiagnozowane 2026-08-16, hipoteza o SQLite była błędna
+## T-06 — zamknięte 2026-08-16, po trzech fałszywych startach
 
-**To nie był zamek SQLite. To zakleszczenie kanału tokio, i nie ma go nawet blisko bazy.**
+Wylądowało. Warto pamiętać dwie rzeczy, bo obie były zaskoczeniem:
 
-`store_append_only.rs` robi to, co zrobiłby każdy wołający: bierze uchwyt pisarza
-(`let writer = store.writer()`), pisze trzy zdarzenia, po czym woła `store.close().await`.
-`Store::close(self)` upuszcza **swój** klon nadawcy i czeka na zadanie pisarza — a to zadanie
-kończy się dopiero, kiedy `inbox.recv()` zwróci `None`, czyli po upadku **ostatniego** nadawcy.
-Zmienna `writer` żyje do końca funkcji testowej. Kanał nigdy się nie zamyka, `recv()` wisi,
-`close()` wisi, kryterium zjada dwa budżety po 420 s.
+**Zwis AC-2 nie miał nic wspólnego z SQLite.** Poprzednia hipoteza („magazyn trzyma zamek zapisu")
+była błędna. To było zakleszczenie kanału tokio: test trzymał żywy klon `Writer`, a `Store::close()`
+czekał na zadanie pisarza, które kończy się dopiero po upadku **ostatniego** nadawcy. Naprawa:
+`Job::Close` idący **kanałem** — FIFO domyka wcześniejsze wsady, więc „zapisane" dalej znaczy
+zapisane, a zamknięcie nie zależy od tego, kto jeszcze trzyma uchwyt.
 
-Czyli: **defekt produktu, nie testu.** API, w którym `close()` zawiesza się na zawsze, kiedy
-wołający trzyma uchwyt, jest dokładnie tą klasą cichej awarii, przed którą stoi to repo. Test
-ma rację i nie wolno go rozluźniać; naprawa należy do `store/`: zamknięcie ma być jawnym
-zleceniem (`Job::Close`), po którym pętla kończy pracę niezależnie od żywych klonów, a spóźnieni
-nadawcy dostają `WriterGone`. To jest ta sama decyzja, którą i tak musiałaby podjąć implementacja.
+**AC-3 miało dwa fałszywe założenia o świecie**, oba tej samej klasy: `busy_timeout` = 0 i
+`foreign_keys` = 0 na gołym połączeniu. Nieprawda — rusqlite ustawia timeout sam, a bundlowany
+SQLite ma klucze obce włączone. Obie domyślne równe wymaganym, więc obie asercje były puste.
+Kryterium poprawione decyzją człowieka: kontrola nie porównuje się już z domyślnymi wartościami
+stosu, tylko wymusza wartość **nieakceptowalną** i dopiero potem woła `apply_pragmas`.
 
-Bramka **nazwała to poprawnie** w paragonie („did not FINISH — it hung or could not start"),
-a mimo to wyszła kodem 3 zamiast 1. Powód i naprawa: niżej, w „Co naprawiono w harnessie".
+
+## T-26 — dopisane 2026-08-16 po URUCHOMIENIU aplikacji
+
+`npm run dev` pokazywał pięć zakładek i pięć pustych ekranów, mimo że komponenty czterech sekcji
+były wylądowane i zielone. Nikt nie napisał `src/sections/<id>/index.tsx`, bo **żadne kryterium
+o to nie prosiło** — a `src/sections/workflows/` nie miał nawet właściciela w żadnym bloku OWNS,
+więc napisanie tam pliku byłoby zapisem poza zakresem.
+
+Zapis, który to spowodował, stoi w `tasks/T-08.md` przy AC-8: „pozostałe sekcje dostają to za
+darmo". Nie dostały. Szósty przypadek wzorca z sekcji wyżej — tym razem znaleziony **wyłącznie**
+przez uruchomienie produktu, bo żaden automat nie ogląda okna.
+
+Pisząc kontrakt złapałem w nim własny defekt, zanim wydałem na niego bieg: kryteria wymagały
+„dwóch agentów w magazynie" dowodzonych przez prawdziwe odkrywanie, a w całym drzewie Rusta jest
+**zero** `#[tauri::command]` i nie ma `src/ipc.ts` — dane nie mają dziś skąd przyjść. Każde
+kryterium ma teraz dwie połowy: **(a) montaż** bez wstrzykiwania czegokolwiek i **(b) treść**
+na ekranie renderowanym wprost, z magazynem zasianym atrapą `Io`.
+
+## Dwie kolejne naprawy harnessu, 2026-08-16 wieczorem
+
+**Zamrożenie kontraktu cofało CUDZE pliki zadań.** `refresh_harness_from_trunk` zamrażał całe
+`tasks/`, więc podciągnięcie trunka rewertowało na gałęzi pliki zmienione w międzyczasie. Objaw:
+fałszywa czerwień `quick-scope` na T-20 (poprzedni bieg zapisał ją nawet jako „commit człowieka").
+**Groźniejsze:** lądowanie wniosłoby ten revert na trunk i po cichu skasowało cudzą pracę —
+a bramka po takim lądowaniu jest **zielona**, bo cofnięte kryterium nie psuje testów, tylko je
+osłabia. Zamrożenie dotyczy teraz wyłącznie `tasks/$ID.md`; strażnik
+`contract_freeze_touches_only_its_own_task` sprawdza wszystkie trzy strony naraz.
+
+**Biegi są odpalane odczepione.** Dwa razy tego dnia menedżer zadań ubił WSZYSTKIE biegi naraz
+na granicy tury (człowiek potwierdził, że to nie on). `scratchpad/detach.py`: podwójny fork +
+`os.setsid`, kod wyjścia do `runs/<ID>/wave.rc`. Czekacz na ten plik może ginąć dowolnie —
+praca o nim nie wie. macOS nie ma `setsid(1)`, stąd Python.
 
 ## Co naprawiono w harnessie 2026-08-16 (każdy ze strażnikiem albo z kontrolą negatywną)
 

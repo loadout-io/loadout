@@ -62,6 +62,29 @@ Więc prompt — ale **jedyna droga na skróty, jaką ta instrukcja otwiera, dos
 `assertion_fingerprint` łapie po stronie stanu, a nie prośby. To jest wzorzec, o który
 chodzi w niezmienniku 28: prompt opisuje intencję, mechanizm pilnuje jedynego wyjścia awaryjnego.
 
+**„Kryterium węższe niż niezmiennik, którego broni" — NIE UMIEM tego zmechanizować.**
+Wzorzec opisany w `docs/STATUS.md`, cztery przypadki 2026-08-16. Przeszedłem kolejność
+z niezmiennika 28 i wszystkie trzy odpadły, więc zapisuję **dlaczego**, a nie tylko „zostaje
+promptem":
+
+- **hak** naprawiający stan po cichu — nie ma czego naprawić, plik jest składniowo poprawny
+  i test przechodzi; wada jest w tym, o co pyta, a nie w tym, jak wygląda;
+- **sprawdzenie w `checks/`** — musiałoby porównać *uzasadnienie kryterium* z *tym, co asercja
+  faktycznie wykonuje*. To jest sąd o sensie, nie o stanie. Sprawdzenie przybliżone (np. „każdy
+  `data-*` wspomniany w prozie ma mieć test klikający") dałoby fałszywe alarmy na kryteriach,
+  które są w porządku, a i tak nie złapałoby przypadku AC-3, gdzie asercja była **dosłownie
+  zgodna** z prozą i obie były nieprawdą o świecie;
+- **uprawnienia** — nie ma czego zabronić.
+
+Zostaje więc **recenzja innego vendora**, i to nie jest porażka mechanizacji, tylko dokładnie
+ten mechanizm, który research wskazał: wszystkie realne defekty na **zielonej** bramce w repo
+źródłowym znalazł recenzent innego vendora. Dziś to potwierdzone czwarty raz — uwagę
+o `Store::open` na tej samej ścieżce zgłosił recenzent, a nie żadne sprawdzenie.
+
+Jedna rzecz, którą **da się** zrobić i jest tania: przy pisaniu kryterium pytać wprost
+„czy ta asercja sprawdza niezmiennik, czy jego najłatwiejszy objaw?". To wchodzi do prozy
+zadania, nie do harnessu.
+
 **Union merge poza `src-tauri/src/lib.rs` — świadomie NIE.** `engine/mod.rs` (68 wierszy)
 i `memory/mod.rs` (212) mimo nazwy niosą prawdziwy kod, więc `merge=union` mógłby skleić tam
 dwie wersje funkcji zamiast dwóch deklaracji. `src/App.tsx` tak samo, a dodatkowo po T-25

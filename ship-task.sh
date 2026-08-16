@@ -157,11 +157,24 @@ refresh_harness_from_trunk() {   # refresh_harness_from_trunk <zamrozony-kontrak
   local frozen="$1" label="$2" before_merge blocked
   before_merge="$(git -C "$WT" rev-parse HEAD)"
   if git -C "$WT" merge --no-edit -q "${LOADOUT_TRUNK:-main}" >/dev/null 2>&1; then
-    if [ "$frozen" = 1 ] && ! git -C "$WT" diff --quiet "$before_merge" -- tasks/; then
-      git -C "$WT" checkout -q "$before_merge" -- tasks/
-      git -C "$WT" commit -q -m "chore(contract): keep the frozen contract across the trunk refresh" -- tasks/ \
+    # WYLACZNIE wlasny plik zadania, nigdy cale `tasks/`. Zamrozenie ma chronic przed jedna
+    # rzecza -- biegiem, ktory zmienia warunki WLASNEGO zaliczenia (N-08) -- a to jest pytanie
+    # o `tasks/$ID.md` i o nic wiecej. Cudze pliki zadan sa dla tego biegu obojetne i maja
+    # isc za trunkiem.
+    #
+    # Szersza wersja miala dwie wady i obie sie zmaterializowaly 2026-08-16 na T-20:
+    #   1. `quick-scope` slusznie zapalal sie na galezi, ktora rozni sie od trunka w plikach
+    #      spoza swojego OWNS -- czerwien nie do odroznienia od winy pisarza, ktory tego nie
+    #      napisal. Kosztowalo bieg i runde naprawcza szukajaca winy u siebie.
+    #   2. Grozniejsza: ten commit REWERTOWAL cudze zmiany. Gdyby galaz wyladowala, merge
+    #      wniosl by revert na trunk i po cichu skasowal prace zrobiona w miedzyczasie --
+    #      w tym wypadku wzmocnione kryterium T-24 i wiersz T-26 w INDEX.md. Cicha utrata
+    #      cudzej pracy jest najgorszym trybem, jaki ten harness moze miec.
+    if [ "$frozen" = 1 ] && ! git -C "$WT" diff --quiet "$before_merge" -- "tasks/$ID.md"; then
+      git -C "$WT" checkout -q "$before_merge" -- "tasks/$ID.md"
+      git -C "$WT" commit -q -m "chore(contract): keep $ID's frozen contract across the trunk refresh" -- "tasks/$ID.md" \
         || true
-      note "trunk brought a newer tasks/ — restored the frozen contract (N-08)"
+      note "trunk brought a newer tasks/$ID.md — restored this run's frozen contract (N-08)"
     fi
     if [ "$before_merge" = "$(git -C "$WT" rev-parse HEAD)" ]; then
       note "harness is already current with the trunk ($label)"
