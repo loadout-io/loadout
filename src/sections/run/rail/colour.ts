@@ -22,10 +22,16 @@
 import type { AgentStatus } from './card';
 
 /**
- * Pięć przygaszonych kolorów tożsamości. Szósty agent zawija się na pierwszy.
+ * Pięć przygaszonych kolorów tożsamości — i pięć znaczy pięć.
+ *
+ * Przy szóstym agencie kolory zaczynają się powtarzać i tak ma być: kwadrat nie jest
+ * identyfikatorem, tylko pomocą dla oka. Nazwa stoi obok niego na tym samym kafelku, więc
+ * dwaj agenci w tym samym kolorze są nadal rozróżnialni; szósty przygaszony kolor byłby
+ * nieodróżnialny od sąsiednich, a szósty NASYCONY jest tym błędem, przez który cała ta
+ * reguła powstała.
  *
  * `as const`, bo tylko krotka daje `PALETTE[0]` typ pewny zamiast `string | undefined`
- * (`noUncheckedIndexedAccess`), a bez tego zawijanie niżej musiałoby mieć gałąź awaryjną
+ * (`noUncheckedIndexedAccess`), a bez tego wybór niżej musiałby mieć gałąź awaryjną
  * z literałem przepisanym obok tej listy — czyli drugie miejsce, w którym stoi nazwa koloru.
  */
 const PALETTE = [
@@ -75,15 +81,10 @@ const OF_STATUS: Readonly<Record<AgentStatus, string>> = {
 };
 
 /**
- * Odcisk nazwy agenta — FNV-1a, 32 bity.
+ * Odcisk podpisu agenta — FNV-1a, 32 bity.
  *
- * Z NAZWY, nie z pozycji w liście, i na tym stoi całe kryterium stabilności: przydział
- * liczony z indeksu wygląda poprawnie na pierwszym zrzucie ekranu i przemalowuje połowę
- * listy w chwili, w której pod-agent wejdzie do biegu w środku. Ta funkcja nie wie, że
- * lista istnieje, więc nie ma jak od niej zależeć.
- *
- * `Math.imul`, bo zwykłe `*` na 32-bitowych liczbach przekracza zakres, w którym `number`
- * trzyma liczby całkowite dokładnie, i odcisk przestaje być odciskiem po kilku znakach.
+ * `Math.imul`, bo zwykłe `*` wychodzi poza zakres, w którym `number` trzyma liczby całkowite
+ * dokładnie, i po kilku znakach odcisk przestaje być odciskiem.
  */
 function fingerprint(agent: string): number {
   let hash = 2_166_136_261;
@@ -101,6 +102,9 @@ function fingerprint(agent: string): number {
  * w jakiej kolejności podano listę i czy ktoś do niej dołączył. Przydział liczony z pozycji
  * w tablicy wygląda poprawnie na pierwszym zrzucie ekranu i przemalowuje połowę listy
  * w chwili, w której pod-agent wejdzie do biegu w środku.
+ *
+ * Stąd odcisk podpisu zamiast licznika: ta funkcja nie wie, że lista agentów istnieje, więc
+ * nie ma jak od niej zależeć — ani od jej kolejności, ani od jej długości.
  */
 export function identityToken(agent: string): string {
   const slot = fingerprint(agent) % PALETTE.length;
