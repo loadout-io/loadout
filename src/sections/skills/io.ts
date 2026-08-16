@@ -7,9 +7,12 @@
  * wywołać cokolwiek — dwie drogi do Rusta znaczą, że licznik pilnuje jednej z nich, a instalacja
  * jedzie drugą i nikt tego nie zauważy.
  *
- * Ciała są jeszcze puste. Szkielet ma się WCZYTAĆ i paść w czasie wykonania — moduł, którego
- * nie ma, daje „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a).
+ * 2026-08-16 — ciała wypełnia T-27, dwiema nazwami z `src-tauri/commands.golden.txt`. Adapter
+ * i nic poza adapterem: cała polityka adresu, limity, skan i zapis mieszkają po stronie Rusta
+ * (`skills::ingest`, `skills::place`), więc tu nie ma czego przepisać (niezmiennik 23).
  */
+import { invoke } from '@tauri-apps/api/core';
+
 import type { Import } from '../../state/skills';
 
 /**
@@ -20,7 +23,7 @@ import type { Import } from '../../state/skills';
  * nie ma po co przechodzić przez warstwę, która ją renderuje.
  */
 export function readLink(url: string): Promise<Import> {
-  throw new Error('not implemented: read the skill behind ' + url);
+  return invoke<Import>('review_skill', { url });
 }
 
 /**
@@ -30,5 +33,5 @@ export function readLink(url: string): Promise<Import> {
  * przeskanowany, a nie tekst złożony jeszcze raz po drodze.
  */
 export function install(item: Import): Promise<void> {
-  throw new Error('not implemented: write ' + item.name + ' out to the folders that hold skills');
+  return invoke<void>('install_skill', { item });
 }

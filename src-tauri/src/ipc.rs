@@ -50,12 +50,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Invoke};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
 
+use crate::commands;
 use crate::engine::line::Line;
+use crate::library::agents::Agent;
+use crate::workflow::WorkflowFile;
+use crate::workflow::check::Note;
 
 /// Okno sklejania. 16 ms to jedna klatka przy 60 Hz: dłużej widać jako opóźnienie, krócej
 /// nie kupuje już nic, bo koszt siedzi w liczbie wiadomości [T8 §5.3].
@@ -316,4 +320,151 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
         stats.dropped += dropped.load(Ordering::Acquire);
         stats
     })
+}
+
+// ── SKORUPY KOMEND ─────────────────────────────────────────────────────────────────────────
+//
+// Każda z nich robi dwie rzeczy i ani jednej więcej: rozpakowuje to, co komenda ma dostać
+// (katalog biblioteki, chwilę zegara), i woła funkcję `*_inner` z `commands/`. Logika napisana
+// TUTAJ jest logiką, której nie da się przetestować bez Tauri — czyli dokładnie tym długiem,
+// który to zadanie spłaca (niezmiennik 23).
+//
+// Nazwa komendy to nazwa funkcji, znak w znak z `src-tauri/commands.golden.txt`. Ten sam plik
+// czytają OBA testy rejestracji: `ipc_commands_registered.rs` po tej stronie granicy
+// i `src/sections/commands-wired.test.ts` po stronie okna.
+//
+// 2026-08-16 — WSZYSTKIE SĄ SYNCHRONICZNE i to jest wybór, nie przeoczenie. Tauri wykonuje
+// komendę bez `async` na wątku głównym, więc `review_skill` zamraża okno na czas pobrania
+// (do 20 s, `ingest::FETCH_TIMEOUT_SECONDS`). Lekarstwem jest `async fn` + `spawn_blocking`,
+// czyli cztery wiersze logiki w skorupie — a mandat tego pliku brzmi „skorupy dwuliniowe",
+// i jest to mandat, który broni jedynej rzeczy, jakiej to zadanie dowodzi. Zgłoszone
+// człowiekowi zamiast rozstrzygnięte tutaj (AGENTS.md §7).
+
+/// Wszyscy zapisani agenci.
+#[tauri::command]
+pub fn list_agents() -> Result<Vec<Agent>, String> {
+    commands::agents::list_agents_inner(&crate::loadout_dir()).map_err(|error| error.to_string())
+}
+
+/// Świeży uuid v7 — jedna mennica dla wszystkich sekcji.
+#[must_use]
+#[tauri::command]
+pub fn new_id() -> String {
+    commands::mint::new_id_inner().to_string()
+}
+
+/// Zapisuje definicję agenta.
+#[tauri::command]
+pub fn save_agent(agent: Agent) -> Result<(), String> {
+    commands::agents::save_agent_inner(&crate::loadout_dir(), agent)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Usuwa agenta po identyfikatorze, razem z jego plikiem.
+#[tauri::command]
+pub fn delete_agent(id: &str) -> Result<(), String> {
+    commands::agents::delete_agent_inner(&crate::loadout_dir(), id)
+        .map_err(|error| error.to_string())
+}
+
+/// Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą.
+#[tauri::command]
+pub fn list_workflows() -> Result<Vec<commands::workflows::WorkflowEntry>, String> {
+    commands::workflows::list_workflows_inner(&crate::loadout_dir())
+        .map_err(|error| error.to_string())
+}
+
+/// Wczytuje jeden plik workflow po jego nazwie w katalogu.
+#[tauri::command]
+pub fn load_workflow(file_name: &str) -> Result<WorkflowFile, String> {
+    commands::workflows::load_workflow_inner(&crate::loadout_dir(), file_name)
+        .map_err(|error| error.to_string())
+}
+
+/// Zapisuje plik workflow. Odmowa walidatora przyjeżdża jego własnym zdaniem.
+#[tauri::command]
+pub fn save_workflow(file_name: &str, workflow: WorkflowFile) -> Result<(), String> {
+    commands::workflows::save_workflow_inner(&crate::loadout_dir(), file_name, workflow)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Usuwa plik workflow z katalogu.
+#[tauri::command]
+pub fn delete_workflow(file_name: &str) -> Result<(), String> {
+    commands::workflows::delete_workflow_inner(&crate::loadout_dir(), file_name)
+        .map_err(|error| error.to_string())
+}
+
+/// Uwagi walidatora o tym workflow — te same, które padają przy zapisie i przed Startem.
+#[must_use]
+#[tauri::command]
+pub fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
+    commands::workflows::check_workflow_inner(workflow)
+}
+
+/// Adres → pobrana i przejrzana umiejętność.
+#[tauri::command]
+pub fn review_skill(url: &str) -> Result<commands::skills::ImportWire, String> {
+    commands::skills::review_skill_inner(&crate::loadout_dir(), url)
+        .map_err(|error| error.to_string())
+}
+
+/// Zapisuje przejrzaną umiejętność w katalogach vendorów.
+#[tauri::command]
+pub fn install_skill(item: commands::skills::ImportWire) -> Result<(), String> {
+    // Rozbiór, a nie `item.name`: z całego przeglądu Rust bierze WYŁĄCZNIE nazwę, bo bajty do
+    // zapisania czyta z kopii kanonicznej — z tych samych, które przeskanował i pokazał
+    // człowiekowi. Ten jeden wiersz mówi to wprost i nie da się go przeczytać inaczej.
+    let commands::skills::ImportWire { name, .. } = item;
+    commands::skills::install_skill_inner(&crate::loadout_dir(), &name)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// „Use this": od tej chwili notatka wchodzi do promptu.
+#[tauri::command]
+pub fn put_note_to_use(
+    id: &str,
+) -> Result<commands::memory::NoteWire, commands::memory::NoteRefusal> {
+    let root = commands::memory::notes_root(&crate::loadout_dir());
+    commands::memory::put_note_to_use_inner(&root, id, &commands::now_utc())
+}
+
+/// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
+#[tauri::command]
+pub fn stop_using_note(
+    id: &str,
+) -> Result<commands::memory::NoteWire, commands::memory::NoteRefusal> {
+    let root = commands::memory::notes_root(&crate::loadout_dir());
+    commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
+}
+
+/// Jedyna lista komend, którą dostaje okno.
+///
+/// Jedna, bo builder pamięta **ostatnią**, którą mu podano: druga podmieniłaby pierwszą po
+/// cichu i połowa komend zniknęłaby zza zielonego kryterium. Zbiór nazw tutaj równa się co do
+/// sztuki zbiorowi z `src-tauri/commands.golden.txt` i pilnuje tego
+/// `src-tauri/tests/ipc_commands_registered.rs` — zawieranie w jedną stronę nie odróżniłoby
+/// komendy, o której front nie wie, od komendy, na którą `invoke` nigdy nie trafia.
+///
+/// Funkcja, a nie makro wołane w `lib.rs`: słowo „tauri" ma prawo paść wyłącznie w tym pliku
+/// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
+pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        check_workflow,
+        delete_agent,
+        delete_workflow,
+        install_skill,
+        list_agents,
+        list_workflows,
+        load_workflow,
+        new_id,
+        put_note_to_use,
+        review_skill,
+        save_agent,
+        save_workflow,
+        stop_using_note
+    ]
 }

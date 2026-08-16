@@ -160,6 +160,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(ipc::command_handler())
         .run(tauri::generate_context!());
 
     if let Err(error) = outcome {
