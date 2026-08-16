@@ -17,6 +17,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
+
+# W `full` to sprawdzenie jest ZBĘDNE i szkodliwe — nagłówek wyżej mówi to od początku
+# („pełna forma mieszka w checks/full-clippy.sh i biegnie raz, w bramce"), tylko bramka
+# odkrywała oba i uruchamiała je w tej samej fali.
+#
+# `--all-targets` zawiera `--lib`, więc oba clippy przemielają to samo drzewo — a ponieważ
+# obydwa biorą muteks cargo (niezmiennik 26), jeszcze się o niego biją. Zmierzone 2026-08-16
+# przy lądowaniu T-27, na PUSTEJ maszynie: drugie clippy czekało 300 s, oddało 2, i trunk
+# zaświecił się „MISCONFIGURED" — czyli bramka nie osądziła kodu przez własną kolejkę.
+#
+# Wyjście zeru z powiedzeniem, DLACZEGO. Ciche pominięcie czyta się identycznie jak zdane
+# sprawdzenie i to jest dokładnie ta awaria, przed którą stoi checks/MANIFEST.
+if [ "${LOADOUT_TIER:-}" = "full" ]; then
+  echo "clippy: superseded by checks/full-clippy.sh at this tier — --all-targets includes --lib"
+  exit 0
+fi
+
 # shellcheck source=checks/_cargo-serialize.sh
 . checks/_cargo-serialize.sh
 
