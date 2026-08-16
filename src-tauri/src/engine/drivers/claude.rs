@@ -61,7 +61,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,6 +76,7 @@ use super::{
     SessionRef, Tokens,
 };
 use crate::engine::line::Line;
+use crate::engine::stream::Recorder;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
@@ -87,6 +88,14 @@ pub const VENDOR: &str = "claude";
 /// się przez `PATH` — a `PATH` jest jedną z sześciu zmiennych, które supervisor przepuszcza
 /// przez `env_clear()` [T-03, `PASSTHROUGH`].
 const DEFAULT_BINARY: &str = "claude";
+
+/// Podkatalog biegu, w którym leżą surowe strumienie agentów (`docs/ARCHITECTURE.md` §8).
+///
+/// Ta nazwa i format `agent-<krok>.jsonl` obok niej są **kontraktem z `store::rebuild`**
+/// (T-06), a nie wyborem tego pliku: odbudowa składa dokładnie tę ścieżkę i czyta ją po
+/// nazwie. Rozjazd nie wygląda jak błąd — plik powstaje, odbudowa go nie znajduje i nikt się
+/// o tym nie dowiaduje aż do pierwszego skasowania `loadout.db`.
+const LOGS_DIR: &str = "logs";
 
 /// Wiersz transportu: cztery flagi, które decydują, **czym** jest to wywołanie.
 ///
@@ -212,6 +221,29 @@ pub struct Transcript {
     /// Wiersze na ekran. Ścieżka dysku nie gubi nigdy, ścieżka widoku wolno gubić [T7 §4.1] —
     /// zamknięty odbiornik nie ma prawa zatrzymać zapisu.
     pub lines: mpsc::Sender<Line>,
+}
+
+impl Transcript {
+    /// Otwiera plik kroku i oddaje ujście, którym pojedzie strumień.
+    ///
+    /// Katalogu `logs/` **nie zakłada**: powstaje on razem z katalogiem biegu, w warstwie,
+    /// która zna układ z `docs/ARCHITECTURE.md` §8. Sterownik ma tam dopisać plik, a nie
+    /// wymyślać sobie własne miejsce — wymyślone byłoby miejscem, w którym odbudowa nie
+    /// szuka, a to wygląda dokładnie tak samo jak brak zapisu.
+    async fn open(&self) -> anyhow::Result<Recorder> {
+        let path = self
+            .run_dir
+            .join(LOGS_DIR)
+            .join(format!("agent-{}.jsonl", self.step));
+        Recorder::create(&path, self.agent.clone(), self.lines.clone())
+            .await
+            .with_context(|| {
+                format!(
+                    "the step could not open its transcript at {}",
+                    path.display()
+                )
+            })
+    }
 }
 
 /// Sterownik `claude`.
@@ -998,47 +1030,70 @@ fn interrupt_request(request_id: &str) -> serde_json::Result<String> {
 
 // ── Pętla czytająca ───────────────────────────────────────────────────────────────────────
 
-/// Czyta stdout linia po linii i sypie zdarzeniami, aż do końca strumienia.
+/// Czyta stdout linia po linii, kładzie **bajty** w transkrypcie kroku i sypie zdarzeniami,
+/// aż do końca strumienia.
 ///
 /// **Nie ma tu `?` i to nie jest przeoczenie** (niezmiennik 5): jedyny sposób, żeby nieznana
 /// linia zabiła bieg, to zwrócić z tej pętli błąd. Dekoder oddaje pusty wektor, a pętla leci
-/// dalej.
+/// dalej. Ta sama zasada obowiązuje zapis: dysk, który odmówił jednej linii, jest wart
+/// wiersza w dzienniku, a nie urwanego biegu.
 ///
-/// Tee surowego `agent-<id>.jsonl` na dysk i kuracja zdarzenie → linia należą do T-05; tutaj
-/// jest tylko to, co bez procesu nie ma sensu.
+/// `transcript` na `None` znaczy „tego biegu nikt nie zapisuje" — sonda wersji i kryteria
+/// samego sterownika pytają o zdarzenia, nie o plik.
 async fn pump(
     stdout: ChildStdout,
     capabilities: Arc<OnceLock<Vec<String>>>,
     events: mpsc::Sender<AgentEvent>,
     outcomes: mpsc::Sender<Outcome>,
+    mut transcript: Option<Recorder>,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    let mut reader = BufReader::new(stdout);
     let mut decoder = ClaudeDecoder::new();
+    let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
 
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                for event in decoder.push(&line) {
-                    // Zapis PRZED wysyłką i tylko tutaj: kto zobaczył `Started`, ten ma prawo
-                    // zakładać, że eskalacja anulowania wie już, o co pytać. Odwrotna kolejność
-                    // jest wyścigiem, który przechodzi na tej maszynie i przewraca się na
-                    // wolniejszej. `set` na drugim `init` przepada celowo — zdolności ogłasza
-                    // ten proces, a on jest jeden na sesję.
-                    if let AgentEvent::Started {
-                        capabilities: announced,
-                        ..
-                    } = &event
-                    {
-                        let _ = capabilities.set(announced.clone());
-                    }
-                    emit(event, &events, &outcomes).await;
-                }
-            }
-            Ok(None) => break,
+        buffer.clear();
+        // `read_until`, nie `lines()`. `lines()` zjada `\r`, gubi to, czy linia w ogóle miała
+        // znak końca, i przewraca się na bajtach nie-UTF-8 — a każda z tych trzech rzeczy
+        // czyni bajtową identyczność transkryptu nie do spełnienia (`ARCHITECTURE` §4).
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) => break,
+            Ok(_) => {}
             Err(error) => {
                 tracing::debug!(%error, "the agent output stream broke off");
                 break;
             }
+        }
+
+        // TEE PRZED PARSOWANIEM. Linia, której nikt nie zrozumie, jest w pliku tak samo jak
+        // każda inna — a to właśnie ona jest potrzebna w zgłoszeniu błędu, i to ona przybywa
+        // u vendora co tydzień, po cichu.
+        if let Some(recorder) = transcript.as_mut()
+            && let Err(error) = recorder.raw(&buffer).await
+        {
+            tracing::warn!(%error, "the step transcript would not take a line of the stream");
+        }
+
+        let Ok(text) = std::str::from_utf8(&buffer) else {
+            // Bajty nie-UTF-8 są już w transkrypcie i tam zostają; dla dekodera to linia nie do
+            // przeczytania, a nie powód, żeby przestać czytać strumień.
+            continue;
+        };
+
+        for event in decoder.push(text) {
+            // Zapis PRZED wysyłką i tylko tutaj: kto zobaczył `Started`, ten ma prawo
+            // zakładać, że eskalacja anulowania wie już, o co pytać. Odwrotna kolejność
+            // jest wyścigiem, który przechodzi na tej maszynie i przewraca się na
+            // wolniejszej. `set` na drugim `init` przepada celowo — zdolności ogłasza
+            // ten proces, a on jest jeden na sesję.
+            if let AgentEvent::Started {
+                capabilities: announced,
+                ..
+            } = &event
+            {
+                let _ = capabilities.set(announced.clone());
+            }
+            emit(event, &events, &outcomes).await;
         }
     }
 
@@ -1047,6 +1102,12 @@ async fn pump(
     // krok wisi w `running` do końca biegu [T1 §8.5].
     if let Some(event) = decoder.end_of_stream(None) {
         emit(event, &events, &outcomes).await;
+    }
+
+    if let Some(recorder) = transcript.take()
+        && let Err(error) = recorder.close().await
+    {
+        tracing::warn!(%error, "the step transcript would not close cleanly");
     }
 
     // Oba nadajniki giną RAZEM Z TĄ PĘTLĄ i to jest ich druga robota: zamknięty kanał wyników
@@ -1314,27 +1375,16 @@ impl AgentDriver for ClaudeDriver {
         spec: RunSpec,
         tx: mpsc::Sender<AgentEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        // ── SZKIELET (T-34, 2026-08-16) ───────────────────────────────────────────────────
-        //
-        // Sygnatura jest, zachowania nie ma, i tak ma być w fazie, w której powstają kryteria:
-        // test ma się skompilować i paść w CZASIE WYKONANIA, na braku zachowania (`AGENTS.md`
-        // §2a p. 5). `todo!()` jest przejściowe — `clippy::todo = deny` w korzeniowym
-        // Cargo.toml pilnuje, żeby żaden nie dojechał do pełnej bramki.
-        //
-        // Odmowa stoi TUTAJ, przed pierwszym procesem, bo sterownik poproszony o transkrypt
-        // nie ma prawa udawać, że go zrobił. Cicha wersja tej porażki jest dokładnie tym, co
-        // zmierzył przegląd zewnętrzny: bieg wygląda normalnie, plik nie powstaje, a
-        // dowiadujesz się o tym dopiero po skasowaniu `loadout.db` — czyli wtedy, kiedy tych
-        // zdarzeń nie ma już nigdzie.
-        //
-        // Co tu wejdzie: tee surowych bajtów do `<run_dir>/logs/agent-<step>.jsonl` PRZED
-        // parsowaniem (`ARCHITECTURE` §4) i kuracja z rodzajem narzędzia na `transcript.lines`.
-        if self.transcript.is_some() {
-            todo!(
-                "T-34: pętla czytająca stdout ma tee'ować surowe bajty do \
-                 <katalog biegu>/logs/agent-<krok>.jsonl i podawać kuracji rodzaj narzędzia"
-            );
-        }
+        // Plik transkryptu powstaje TUTAJ, przed pierwszym procesem, i błąd jego otwarcia
+        // przewraca start kroku (T-34, 2026-08-16). Sterownik poproszony o transkrypt nie ma
+        // prawa udawać, że go zrobił: cicha wersja tej porażki jest dokładnie tym, co zmierzył
+        // przegląd zewnętrzny — bieg wygląda normalnie, plik nie powstaje, a dowiadujesz się
+        // o tym dopiero po skasowaniu `loadout.db`, czyli wtedy, kiedy tych zdarzeń nie ma
+        // już nigdzie.
+        let transcript = match &self.transcript {
+            Some(transcript) => Some(transcript.open().await?),
+            None => None,
+        };
 
         // Sesję nadajemy PRZED startem procesu: dopiero to znosi wyścig o to, pod jakim numerem
         // zapisać krok, i dopiero to czyni odzyskiwanie po awarii możliwym [T7 §6.2].
@@ -1367,7 +1417,13 @@ impl AgentDriver for ClaudeDriver {
         // także wtedy, gdy nikt nie woła `wait()`. Startuje PRZED odebraniem stdinu, bo
         // odebranie stdinu czeka na koniec pierwszego zapisu — a agent, który zaczyna mówić
         // w trakcie, ma mieć kto czytać.
-        let _reader = tokio::spawn(pump(stdout, Arc::clone(&capabilities), tx, finished));
+        let _reader = tokio::spawn(pump(
+            stdout,
+            Arc::clone(&capabilities),
+            tx,
+            finished,
+            transcript,
+        ));
 
         // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
         // i nie ma czym wysłać przerwania.
