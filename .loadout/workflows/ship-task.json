@@ -1,0 +1,100 @@
+{
+  "format": 1,
+  "id": "wf_ship_task",
+  "name": "Ship a task",
+  "description": "The loop this repo runs on, drawn as a workflow. Two of its five steps stop and ask a person, because Loadout has no step that runs a command it owns and says itself whether it passed. See docs/harness-as-workflow.md.",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_implement",
+      "name": "Write the code",
+      "agent": "01990000-0000-7000-8000-000000002301",
+      "overrides": {},
+      "copies": 1,
+      "instructions": "Read TASK.md. Prove the checks fail first, then make them pass one at a time and commit each one. The files the checks live in are the oracle: if something can only pass by editing one of them, say so instead of doing it.",
+      "skills": "all",
+      "folder": {
+        "use": "fresh-copy"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "kind": "checkpoint",
+      "id": "s_gate",
+      "name": "Run the checks",
+      "question": "Run ./verify.sh full in the workspace. Did every check pass?",
+      "at": {
+        "x": 240,
+        "y": 0
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_review",
+      "name": "Second opinion",
+      "agent": "01990000-0000-7000-8000-000000002302",
+      "overrides": {},
+      "copies": 1,
+      "instructions": "Read the branch. One question: does the change satisfy what TASK.md asks for, or only what the test written for it happens to assert? Raise concerns and stop there. You cannot approve and you cannot block.",
+      "skills": "all",
+      "folder": {
+        "use": "project"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 480,
+        "y": 0
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_fix",
+      "name": "One fix round",
+      "agent": "01990000-0000-7000-8000-000000002301",
+      "overrides": {},
+      "copies": 1,
+      "instructions": "Carry out the plan the second opinion left. One round, then stop. Whatever is still failing after it goes to a person, not around again.",
+      "skills": "all",
+      "folder": {
+        "use": "project"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 720,
+        "y": 0
+      }
+    },
+    {
+      "kind": "checkpoint",
+      "id": "s_land",
+      "name": "Land the branch",
+      "question": "Merge this branch, then run the checks again on the result. Did everything pass?",
+      "at": {
+        "x": 960,
+        "y": 0
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": "s_implement",
+      "to": "s_gate"
+    },
+    {
+      "from": "s_gate",
+      "to": "s_review"
+    },
+    {
+      "from": "s_review",
+      "to": "s_fix"
+    },
+    {
+      "from": "s_fix",
+      "to": "s_land"
+    }
+  ]
+}
