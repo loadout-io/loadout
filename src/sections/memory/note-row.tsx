@@ -53,8 +53,14 @@ const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label 
  * i wykonywana wielokrotnie nie ma być najgłośniejszą rzeczą w wierszu. */
 const ACT = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
 
-/** „Length 137" — słowo, którym o tym mówimy [DESIGN §8]; nazwa z drutu tu nie dojeżdża. */
-function lengthLabel(length: number): string {
+/**
+ * „Length 137" — słowo, którym o tym mówimy [DESIGN §8]; nazwa z drutu tu nie dojeżdża.
+ *
+ * Eksportowane, bo okno wymuszonego wyboru pisze tę samą liczbę i musi ją pisać tak samo:
+ * dwie etykiety tej samej rzeczy rozjeżdżają się przy pierwszej zmianie brzmienia, a człowiek
+ * porównuje właśnie te dwie liczby, kiedy wybiera, co odstawić (niezmiennik 23).
+ */
+export function lengthLabel(length: number): string {
   return 'Length ' + String(length);
 }
 
