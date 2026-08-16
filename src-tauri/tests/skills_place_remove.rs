@@ -20,7 +20,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use loadout_lib::skills::place::{self, Removed};
+use loadout_lib::skills::place::{self, InstallPlan, Removed};
 use loadout_lib::skills::{BundledFile, Roots, Scope, Skill};
 
 const NAME: &str = "pdf";
@@ -242,4 +242,78 @@ fn a_directory_loadout_never_wrote_is_left_where_it_is() {
             dir.display()
         );
     }
+}
+
+/// Stan mieszany: `pdf` po stronie Claude'a jest nasz (jest w sidecarze), a `pdf` po stronie
+/// `.agents` napisał ktoś inny.
+///
+/// DLACZEGO to jest osobny przypadek, skoro dwa poprzednie testy już opisują „nasze" i „cudze":
+/// tamte są symetryczne — obie kopie są tej samej strony — i **obie przechodzą** na
+/// implementacji, która kasuje w locie, zaraz po uznaniu katalogu za nasz. Kolejność
+/// `DESTINATION_DIRS` jest stała i nasza strona jest w niej pierwsza, więc taka implementacja
+/// zdąży zdjąć naszą kopię, zanim dojdzie do cudzej i odmówi — a odmówi **tym samym**
+/// `Removed::Skipped`, co implementacja poprawna. Sam wariant wyniku niczego tu nie rozróżnia;
+/// rozróżnia dopiero katalog, który po odmowie dalej stoi z tymi samymi bajtami.
+///
+/// Odmowa jest wtedy całkowita z tego samego powodu, dla którego jest w ogóle: pół usunięcia
+/// zostawia jedną kopię umiejętności i żadnego zdania o tym, która to.
+#[test]
+fn one_foreign_copy_stops_the_removal_before_the_first_delete() {
+    let world = world();
+    seed_neighbour(&world.roots.home);
+    let [claude, agents] = skill_dirs(&world.roots.home);
+
+    // Instalujemy TYLKO jedną stronę: pełny plan służy tu wyłącznie za źródło ścieżki
+    // sidecara, a `apply` wykonuje plan węższy. Inaczej sidecar zapisałby obie kopie jako
+    // nasze i stan mieszany nie powstałby wcale.
+    let full = place::plan(&world.skill, Scope::Global, &world.roots)
+        .expect("plan refused a skill with a valid name and description");
+    let half = InstallPlan {
+        writes: Vec::from([claude.clone()]),
+        conflicts: Vec::new(),
+        sidecar: full.sidecar.clone(),
+    };
+    place::apply(&half, &world.skill).expect("apply could not carry out its own plan");
+
+    // Druga strona jest cudza: Loadout jej nie pisał, więc nie ma jej w sidecarze.
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(agents.join("SKILL.md"), FOREIGN_MD).unwrap();
+
+    let ours_before = files(&claude);
+    let theirs_before = files(&agents);
+    assert!(
+        !ours_before.is_empty(),
+        "{} was empty before remove() ran, so comparing its bytes afterwards would compare \
+         nothing with nothing",
+        claude.display()
+    );
+
+    let outcome = place::remove(NAME, Scope::Global, &world.roots)
+        .expect("remove reported an error where it should have reported a refusal");
+
+    assert!(
+        matches!(outcome, Removed::Skipped { .. }),
+        "one of the two `{NAME}` directories belongs to somebody else and remove() said \
+         {outcome:?}"
+    );
+
+    assert!(
+        fs::symlink_metadata(&claude).is_ok(),
+        "{} is gone. remove() refused — and deleted our copy on the way to the refusal, which \
+         is the same outcome value and a different disk. Deciding about BOTH directories before \
+         the first delete is what makes the refusal whole",
+        claude.display()
+    );
+    assert_eq!(
+        files(&claude),
+        ours_before,
+        "{} changed during a removal that ended in a refusal",
+        claude.display()
+    );
+    assert_eq!(
+        files(&agents),
+        theirs_before,
+        "{} belongs to somebody else and its bytes changed",
+        agents.display()
+    );
 }
