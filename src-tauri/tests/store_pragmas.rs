@@ -18,15 +18,17 @@
 //! Czego to kryterium **nie** widzi i trzeba to wiedzieć: konstruktora dodanego jutro, który
 //! znowu ominie helper. To zostaje ludzkim osądem i recenzją, i tak ma zostać.
 //!
-//! Kontrola przeciw pustej asercji stoi na końcu i jest wyjątkowo dosłowna: gołe
-//! `Connection::open(path)` do **tej samej** bazy melduje `journal_mode` = `wal`, bo to
-//! własność pliku, a jednocześnie `busy_timeout` = 0 i `foreign_keys` = 0, bo to własność
-//! połączenia. Jeśli ta kontrola przestanie być czerwona w drugą stronę — to znaczy jeśli gołe
-//! połączenie zacznie meldować nasze wartości — asercje wyżej nie mierzą niczego.
+//! Kontrola przeciw pustej asercji stoi na końcu i **nie jest symetryczna**, bo świat taki nie
+//! jest. Gołe `Connection::open(path)` do tej samej bazy melduje `journal_mode` = `wal` (własność
+//! pliku) i `foreign_keys` = 0 (własność połączenia, domyślnie wyłączone) — te dwie kontrole
+//! działają wprost. Ale `busy_timeout` **nie** wraca do zera: rusqlite 0.40.2 ustawia
+//! pięciosekundowy timeout sam, przy otwarciu, czyli dokładnie tyle, ile wymagamy. Zmierzone
+//! 2026-08-16, po tym, jak `assert_eq!(untouched.busy_timeout, 0)` padło na bramce. Ta pragma
+//! dostaje więc kontrolę DWUSTOPNIOWĄ, opisaną przy niej samej.
 
 use rusqlite::Connection;
 
-use loadout_lib::store::{Pragmas, Store, read_pragmas};
+use loadout_lib::store::{Pragmas, Store, apply_pragmas, read_pragmas};
 
 /// Ile milisekund połączenie ma czekać, zanim odda `SQLITE_BUSY` [T7 §5.4].
 const BUSY_TIMEOUT: i64 = 5_000;
@@ -90,13 +92,6 @@ async fn every_public_constructor_hands_out_the_same_four_pragmas() -> anyhow::R
     let bare = Connection::open(&db)?;
     let untouched = read_pragmas(&bare)?;
     assert_eq!(
-        untouched.busy_timeout, 0,
-        "a bare Connection::open() reports busy_timeout = {}, not 0. Either SQLite changed its \
-         default or read_pragmas() is not reading the connection it was handed — and in both \
-         cases the assertions above stopped measuring anything",
-        untouched.busy_timeout
-    );
-    assert_eq!(
         untouched.foreign_keys, 0,
         "a bare Connection::open() reports foreign_keys = {}, not 0. This control is the whole \
          reason the checks above mean something: foreign keys are OFF by default and have to be \
@@ -110,6 +105,37 @@ async fn every_public_constructor_hands_out_the_same_four_pragmas() -> anyhow::R
          exactly why it is the one pragma nobody forgets and the other three are the ones \
          everybody does",
         untouched.journal_mode
+    );
+
+    // ── busy_timeout: kontrola DWUSTOPNIOWA ────────────────────────────────────────────────
+    // Stało tu `assert_eq!(untouched.busy_timeout, 0)` i było **nieprawdą o świecie**: rusqlite
+    // 0.40.2 ustawia pięciosekundowy timeout SAM, przy otwarciu połączenia. Gołe połączenie
+    // melduje więc dokładnie te 5000, których wymagamy wyżej — czyli `assert_complete` przechodzi
+    // dla tej pragmy także wtedy, gdyby `apply_pragmas` nigdy jej nie tknęło. Pusta asercja
+    // schowana w kryterium napisanym po to, żeby puste asercje łapać (zmierzone 2026-08-16,
+    // decyzja człowieka: wzmocnić kontrolę, nie usuwać jej).
+    //
+    // (a) czytnik czyta POŁĄCZENIE, a nie pamięta wartości. Bez tego kroku (b) nie dowodzi nic.
+    bare.pragma_update(None, "busy_timeout", 0)?;
+    let zeroed = read_pragmas(&bare)?;
+    assert_eq!(
+        zeroed.busy_timeout, 0,
+        "read_pragmas() reports busy_timeout = {} on a connection where it was just set to 0, so \
+         it is not reading the connection it was handed. Every busy_timeout assertion in this \
+         file would then be a statement about a remembered value, not about a connection",
+        zeroed.busy_timeout
+    );
+
+    // (b) to NASZ kod ustawia 5000. Na TYM SAMYM połączeniu, startując od zera, więc wynik nie
+    // może pochodzić z domyślnej wartości rusqlite.
+    apply_pragmas(&bare)?;
+    let helped = read_pragmas(&bare)?;
+    assert_eq!(
+        helped.busy_timeout, BUSY_TIMEOUT,
+        "apply_pragmas() left busy_timeout = {} on a connection where it had been zeroed. This is \
+         the only assertion in this file that can tell 'we set it' apart from 'rusqlite set it \
+         for us', because rusqlite's own default is exactly {BUSY_TIMEOUT}",
+        helped.busy_timeout
     );
 
     store.close().await?;
