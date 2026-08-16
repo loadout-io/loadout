@@ -251,6 +251,18 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
                         // Mierzone w środku pompy, bo z zewnątrz bufor, który zdążył się
                         // opróżnić, wygląda dokładnie tak samo jak ograniczony.
                         stats.max_buffered = stats.max_buffered.max(buffer.len());
+
+                        // Druga droga wyjścia, i to ona jako jedyna trzyma sufit pamięci:
+                        // przy 121 000 linii na sekundę [T2 §6.1] czekanie na tyknięcie
+                        // znaczy 1 900 linii w buforze na każdą milisekundę zwłoki okna.
+                        // Sufit jest liczbą z pomiaru: przy 2000 najgorsza przerwa klatki
+                        // wynosi 0-1 ms, przy 200 i przy 1000 sięga 13-25 ms
+                        // (`T8-ipcbench-results.txt`).
+                        if buffer.len() >= BATCH_CAP
+                            && !flush(&channel, &mut buffer, &mut stats)
+                        {
+                            break;
+                        }
                     }
                     None => break,
                 },
