@@ -193,6 +193,14 @@ async fn a_channel_that_refuses_ends_the_pump_and_the_producer_gets_a_refusal() 
         "nothing was delivered, because nothing arrived: a send that returned an error is \
          not a delivery"
     );
+    assert_eq!(
+        stats.delivered + stats.dropped,
+        5,
+        "and the balance still closes over all five lines the producer handed the pump \
+         (invariant 13). `delivered == 0` alone says nothing about WHERE they went: a pump \
+         that drops the refused batch out of both numbers looks identical here, and lines \
+         that vanish from the balance are the ones nobody notices"
+    );
 
     let before = Instant::now();
     let after_death = sink.send(line(6));

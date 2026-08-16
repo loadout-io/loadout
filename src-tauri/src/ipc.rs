@@ -195,6 +195,13 @@ fn flush(channel: &Channel<Vec<Line>>, buffer: &mut Vec<Line>, stats: &mut PumpS
         // dowiedziała. Pompa, która przełknie odmowę i tyka dalej, jest zadaniem w tle,
         // którego nikt nie widzi i nikt nie zatrzyma; wraca do kanału raz na okno, do końca
         // biegu, i za każdym razem dostaje ten sam błąd.
+        //
+        // Ale te linie producent oddał pompie, a kanał ich nie przyjął: skoro nie są dostawą,
+        // są stratą i muszą być POLICZONE. Bez tego wiersza `delivered + dropped` nie domyka
+        // się wobec tego, co producent oddał (niezmiennik 13, doc `PumpStats`) — paczka
+        // z ostatniego tyknięcia znika z obu liczb naraz, czyli dokładnie tak, jak znika
+        // linia, której nikt nie zauważy.
+        stats.dropped += carried;
         return false;
     }
 
@@ -302,7 +309,11 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
         // każda jego linia przepada z definicji, bo okna nie ma, a nie z braku miejsca
         // w kolejce. Bilans opisuje więc bieg POMPY, i tak jest czytany po drugiej stronie
         // `JoinHandle`.
-        stats.dropped = dropped.load(Ordering::Acquire);
+        // `+=`, nie `=`: na wyjściu przez odmowę kanału `flush` zdążył już dopisać do tej
+        // liczby paczkę, której okno nie przyjęło. Przypisanie kasowałoby ją po cichu, a bilans
+        // wyglądałby na policzony — obie drogi straty schodzą się w JEDNEJ liczbie, oddawanej
+        // JEDNĄ drogą (niezmiennik 13), więc muszą się sumować, nie nadpisywać.
+        stats.dropped += dropped.load(Ordering::Acquire);
         stats
     })
 }
