@@ -95,6 +95,13 @@ export function RunBar({ notes, onRun, onFocusNote }: RunBarProps): ReactElement
 /** Przesuwa płótno na krok, którego dotyczy uwaga, i otwiera jego panel.
  *
  * Uwaga bez `stepId` dotyczy całego pliku i nie ma w co celować — wtedy nie dzieje się nic. */
-export function focusNote(_note: Note, _focus: NoteFocus): void {
-  throw new Error('not implemented');
+export function focusNote(note: Note, focus: NoteFocus): void {
+  /* Uwaga o całym pliku („There are no steps yet.") nie ma w co celować. Przesunięcie płótna
+   * gdziekolwiek byłoby wtedy ruchem bez powodu, a otwarty panel — panelem cudzego kroku. */
+  if (note.stepId === null) return;
+
+  /* 400 ms i sufit powiększenia 1.2 są z T3 §5.3, oba zmierzone na `FitViewOptions`: bez sufitu
+   * pojedynczy kafelek rozjeżdża się na cały ekran i użytkownik traci z oczu resztę grafu. */
+  focus.fitView({ nodes: [{ id: note.stepId }], duration: 400, maxZoom: 1.2 });
+  focus.openPanel(note.stepId);
 }
