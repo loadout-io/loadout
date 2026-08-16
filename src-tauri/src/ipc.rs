@@ -245,26 +245,34 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
                 // wychodzi wcale, zależnie od losowania. Kolejność jest więc ustalona:
                 // NAJPIERW zabierz wszystko, co już stoi w kolejce, POTEM patrz na zegar.
                 biased;
-                line = rx.recv() => match line {
-                    Some(line) => {
-                        buffer.push(line);
-                        // Mierzone w środku pompy, bo z zewnątrz bufor, który zdążył się
-                        // opróżnić, wygląda dokładnie tak samo jak ograniczony.
-                        stats.max_buffered = stats.max_buffered.max(buffer.len());
+                line = rx.recv() => {
+                    let Some(line) = line else {
+                        // Kolejka oddała `None`, czyli ostatni producent zniknął — a w buforze
+                        // została niepełna paczka. Wychodzi TERAZ, bez czekania na tyknięcie,
+                        // i dopiero potem kończy się zadanie. Pętla, która na `None` po prostu
+                        // wychodzi, gubi końcówkę KAŻDEGO biegu — w tym wiersz `done`
+                        // z kosztem, czyli dokładnie tę jedną linię, na którą użytkownik
+                        // czeka. Gubi ją po cichu, bo bieg wygląda na skończony.
+                        //
+                        // Odpowiedź kanału jest tu bez znaczenia: to i tak ostatnia paczka,
+                        // a zaraz za nią stoi wyjście z pętli.
+                        flush(&channel, &mut buffer, &mut stats);
+                        break;
+                    };
 
-                        // Druga droga wyjścia, i to ona jako jedyna trzyma sufit pamięci:
-                        // przy 121 000 linii na sekundę [T2 §6.1] czekanie na tyknięcie
-                        // znaczy 1 900 linii w buforze na każdą milisekundę zwłoki okna.
-                        // Sufit jest liczbą z pomiaru: przy 2000 najgorsza przerwa klatki
-                        // wynosi 0-1 ms, przy 200 i przy 1000 sięga 13-25 ms
-                        // (`T8-ipcbench-results.txt`).
-                        if buffer.len() >= BATCH_CAP
-                            && !flush(&channel, &mut buffer, &mut stats)
-                        {
-                            break;
-                        }
+                    buffer.push(line);
+                    // Mierzone w środku pompy, bo z zewnątrz bufor, który zdążył się
+                    // opróżnić, wygląda dokładnie tak samo jak ograniczony.
+                    stats.max_buffered = stats.max_buffered.max(buffer.len());
+
+                    // Druga droga wyjścia, i to ona jako jedyna trzyma sufit pamięci: przy
+                    // 121 000 linii na sekundę [T2 §6.1] czekanie na tyknięcie znaczy 1 900
+                    // linii w buforze na każdą milisekundę zwłoki okna. Sufit jest liczbą
+                    // z pomiaru: przy 2000 najgorsza przerwa klatki wynosi 0-1 ms, przy 200
+                    // i przy 1000 sięga 13-25 ms (`T8-ipcbench-results.txt`).
+                    if buffer.len() >= BATCH_CAP && !flush(&channel, &mut buffer, &mut stats) {
+                        break;
                     }
-                    None => break,
                 },
                 _ = ticks.tick() => {
                     if !flush(&channel, &mut buffer, &mut stats) {
