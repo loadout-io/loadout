@@ -160,18 +160,91 @@ export function readCeiling(path) {
 }
 
 /**
+ * GORSZA z dwóch szerokości okna, albo `undefined`, kiedy żadna nie podała liczby.
+ *
+ * Wszystkie siedem metryk brzmi „co najwyżej N", więc gorsza znaczy większa. Bierzemy
+ * gorszą, a nie lepszą ani średnią, bo pomiar przy 1512 px, który chowa się za pomiarem
+ * przy 1100 px, meldowałby „pass" na ekranie, którego nikt nie widział takim, jakim
+ * został zmierzony.
+ *
+ * Zero jest tu wartością, nie brakiem: `typeof m === 'number'` odróżnia zmierzone zero
+ * od klucza, którego kolektor w ogóle nie zapisał. Na tym rozróżnieniu stoi całe AC-6.
+ */
+function worst(widths, key) {
+  let value;
+  for (const at of widths) {
+    const measured = at?.metrics?.[key];
+    if (typeof measured !== 'number' || Number.isNaN(measured)) continue;
+    if (value === undefined || measured > value) value = measured;
+  }
+  return value;
+}
+
+/**
  * Werdykt nad zrzutem. Czysta funkcja: te same trzy argumenty dają ten sam wynik.
+ *
+ * Cztery stany świata, bo są to cztery różne rzeczy do zrobienia przez człowieka:
+ *
+ *   `pass`        zmierzone, pod sufitem, pod zapadką
+ *   `over`        powyżej sufitu z ARCHITECTURE §7 — „to nie wejdzie do produktu"
+ *   `regressed`   pod sufitem, ale powyżej ostatniego pomiaru — „cofnąłeś się"
+ *   `unmeasured`  metryki, której nikt nie zmierzył i nikt nie powiedział dlaczego
+ *
+ * Sufit i zapadka to DWIE RÓŻNE ODMOWY (niezmiennik 18) i zlanie ich w jedno zdanie
+ * kasuje całą wartość zapadki: człowiek szuka wtedy regionu, którego nie ma za dużo.
+ * Metryka niezmierzona Z POWODEM nie blokuje — powód ma zostać wypisany przy każdym
+ * biegu, ale „osie nawigacji" są osądem człowieka i nigdy nie będą liczbą (AC-6).
  *
  * @param {{widths: Array<{width: number, metrics: Record<string, number>}>,
  *          notMeasured?: Record<string, string>}} snapshot
  * @param {Array<{key: string, label: string, limit: number}>} ceiling
  * @param {Record<string, number>} baseline zapadka: ostatnio zmierzona wartość per metryka
  * @returns {{verdict: string, over: Array<{metric: string, measured: number, limit: number}>,
- *            notMeasured: string[]}}
+ *            regressed: Array<{metric: string, measured: number, baseline: number}>,
+ *            notMeasured: string[], unexplained: string[], reasons: Record<string, string>}}
  */
 export function judge(snapshot, ceiling, baseline) {
-  void snapshot;
-  void ceiling;
-  void baseline;
-  throw new Error('judge is not implemented yet: no snapshot has ever been weighed');
+  const widths = Array.isArray(snapshot?.widths) ? snapshot.widths : [];
+  const stated = snapshot?.notMeasured ?? {};
+
+  const over = [];
+  const regressed = [];
+  const notMeasured = [];
+  const unexplained = [];
+  const reasons = {};
+
+  for (const entry of ceiling) {
+    const measured = worst(widths, entry.key);
+
+    if (measured === undefined) {
+      notMeasured.push(entry.key);
+      const reason = stated[entry.key];
+      // Powód liczy się tylko wtedy, gdy jest zdaniem. Pusty string to milczenie zapisane
+      // tak, żeby wyglądało jak odpowiedź — czyli dokładnie ta awaria, tylko o warstwę wyżej.
+      if (typeof reason === 'string' && reason.trim() !== '') {
+        reasons[entry.key] = reason;
+      } else {
+        unexplained.push(entry.key);
+      }
+      continue;
+    }
+
+    if (measured > entry.limit) {
+      over.push({ metric: entry.key, measured, limit: entry.limit });
+    }
+
+    // Metryka nieobecna w zapadce jest pierwszym pomiarem, a pierwszy pomiar zawsze wolno
+    // przyjąć — inaczej nowej metryki nie dałoby się włączyć bez ręcznej edycji pliku.
+    const seen = baseline?.[entry.key];
+    if (typeof seen === 'number' && measured > seen) {
+      regressed.push({ metric: entry.key, measured, baseline: seen });
+    }
+  }
+
+  let verdict = 'pass';
+  if (over.length > 0) verdict = 'over';
+  else if (regressed.length > 0) verdict = 'regressed';
+  else if (unexplained.length > 0) verdict = 'unmeasured';
+
+  return { verdict, over, regressed, notMeasured, unexplained, reasons };
 }
