@@ -297,6 +297,7 @@ guards_lane() {
   task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
+  hung_check_reads_as_red_not_as_a_slow_gate
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -428,6 +429,46 @@ cargo_lock_reclaims_dead_owner() {
     return 1
   fi
   echo "cargo lock: zamek po martwym właścicielu odzyskany"
+}
+
+# ── zawieszone kryterium ma się czytać jako CZERWONE, nie jako wolna bramka ───
+# Zmierzone na T-06 (2026-08-16). AC-2 zawisło na zakleszczeniu kanału tokio, zjadło swój
+# budżet 420 s, `run_one` spytał drugi raz — to jest zamierzone, bo timeout mówi „nie
+# skończyło", nie mówi dlaczego — więc razem 840 s. Bramka zapisała je uczciwie jako
+# `failed` z powodem „did not FINISH", po czym zwróciła **3**, bo sufit poziomu liczył
+# JEDEN budżet zamiast dwóch, które sam przyznał. Kod 3 znaczy „przerwane albo maszyna"
+# i wysyła orchestratora po osierocone procesy; prawdą był defekt kontraktu, leżący
+# w paragonie. Kosztowało to bieg i noc na hipotezie o zamku SQLite.
+#
+# Strażnik stoi tutaj, a nie w harness/guards.sh: tamten framework sadzi naruszenie w pliku
+# checks/*.sh, a to naruszenie mieszka w arytmetyce oracle'a. Odtworzenie go end-to-end
+# wymagałoby biegu 840 s, więc pytamy funkcję wprost — jej własnymi liczbami z paragonu.
+hung_check_reads_as_red_not_as_a_slow_gate() {
+  python3 - <<'PY' || return 1
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("gate", "harness/gate.py")
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+per = g.CHECK_TIMEOUT["before"]
+
+# Paragon T-06 co do liczby: szesc kryteriow czerwonych w ~1 s, AC-2 wisialo 420 + 420.
+argv = {"AC-%d" % i: ["cargo", "test", "--test", "store_x%d" % i] for i in range(1, 8)}
+hung = [{"id": "AC-%d" % i, "seconds": s, "retried": "", "rc": rc} for i, s, rc in
+        [(1, 11.26, 101), (2, 840.39, 124), (3, 1.10, 101), (4, 1.02, 101),
+         (5, 1.11, 101), (6, 1.00, 101), (7, 0.95, 101)]]
+if 840.40 > g.ceiling_for("before", hung, argv, per):
+    sys.exit("zawieszone kryterium przewraca poziom na 3 -- czerwien chowa sie za sufitem, "
+             "ktory sama wypelnila, a orchestrator dostaje diagnoze 'maszyna' zamiast 'kontrakt'")
+
+# Kontrola przeciw pustej asercji. Bez niej ta asercja przechodzilaby takze wtedy, gdyby
+# poprawka po prostu skasowala sufit: poziom wolny BEZ ani jednego sprawdzenia dotknietego
+# timeoutem musi NADAL wychodzic trojka.
+slow = [{"id": "P-%d" % i, "seconds": 5.0, "retried": "", "rc": 0} for i in range(40)]
+if 200.0 <= g.ceiling_for("before", slow, {}, per):
+    sys.exit("sufit przestal lapac bramke wolna bez powodu -- poprawka zjadla go w calosci")
+PY
+  echo "gate: zawieszone kryterium czyta się jako RED, wolna bramka nadal jako 3"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
