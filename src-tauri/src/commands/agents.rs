@@ -12,6 +12,7 @@
 //! pliku, dopisana tutaj „bo wygodniej", byłaby drugim miejscem, w którym mieszka odpowiedź na
 //! pytanie „gdzie leży ten agent" (niezmiennik 23).
 
+use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 
 use crate::library::agents::{Agent, AgentError, read_agent_file, write_agent_file};
@@ -90,10 +91,17 @@ pub fn list_agents_inner(home: &Path) -> Result<Vec<Agent>, AgentError> {
 /// Ścieżka wraca, bo bez niej wołający nie ma jak sprawdzić, że plik naprawdę powstał — a
 /// „komenda zwróciła `Ok`" to jest dokładnie ta asercja, którą przechodzi implementacja
 /// pisząca do `/dev/null`.
-pub fn save_agent_inner(home: &Path, agent: &Agent) -> Result<PathBuf, AgentError> {
+///
+/// `impl Borrow<Agent>` zamiast `&Agent`, i to jest ustępstwo na rzecz jedynego wołającego,
+/// który nie ma wyboru: skorupa `#[tauri::command]` dostaje agenta **wartością**, bo `serde`
+/// musi go gdzieś zbudować, a struktury z polami `String` nie da się pożyczyć z bufora żądania.
+/// Skorupa, która tę wartość tylko pożycza dalej, jest funkcją biorącą przez wartość i nie
+/// konsumującą — czyli ostrzeżeniem clippy, którego w tym repo nie wolno wyciszyć. Wołający
+/// z `&agent` w ręku nie zauważa różnicy.
+pub fn save_agent_inner(home: &Path, agent: impl Borrow<Agent>) -> Result<PathBuf, AgentError> {
     // Cała droga bajtów — nazwa pliku, kolejność wierszy front-mattera, `create_dir_all` —
     // jest w `write_agent_file` (T-11). Tutaj składa się wyłącznie katalog.
-    write_agent_file(&home.join(AGENTS_DIR), agent)
+    write_agent_file(&home.join(AGENTS_DIR), agent.borrow())
 }
 
 /// Usuwa agenta o tym identyfikatorze razem z jego plikiem.

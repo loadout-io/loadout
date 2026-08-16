@@ -12,6 +12,7 @@
 //! narysuje wtedy zielono plik, który Rust odrzuci przy Starcie, i człowiek dowie się o tym
 //! dopiero od biegu, który nie ruszył.
 
+use std::borrow::Borrow;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -63,10 +64,15 @@ fn in_library(home: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
 /// `file_name` to **sama nazwa pliku** (`ship-a-feature.json`), nigdy pełna ścieżka: katalog
 /// rozwiązuje ta warstwa, po stronie Rusta. Front, który dokleja katalog sam, jest drugim
 /// miejscem, w którym mieszka odpowiedź na pytanie „gdzie to leży" [T3 §8.3].
+///
+/// `impl Borrow<WorkflowFile>` zamiast `&WorkflowFile` — powód jest ten sam, co przy
+/// `agents::save_agent_inner`: skorupa `#[tauri::command]` dostaje plik **wartością** (serde
+/// musi go gdzieś zbudować) i nie ma go komu oddać. Wołający z pożyczką w ręku nie zauważa
+/// różnicy.
 pub fn save_workflow_inner(
     home: &Path,
     file_name: &str,
-    workflow: &WorkflowFile,
+    workflow: impl Borrow<WorkflowFile>,
 ) -> Result<PathBuf, SaveError> {
     let path = in_library(home, file_name).map_err(SaveError::Unwritable)?;
     // Katalog powstaje tutaj, bo `file::save` (T-12) pisze plik i nie zakłada katalogów —
@@ -78,7 +84,7 @@ pub fn save_workflow_inner(
 
     // Odmowa walidatora, kolejność „sprawdź, potem dotknij dysku" i deterministyczny tekst
     // mieszkają w `file::save`. Ta funkcja nie powtarza ani jednej z tych decyzji.
-    crate::workflow::file::save(workflow, &path)?;
+    crate::workflow::file::save(workflow.borrow(), &path)?;
     Ok(path)
 }
 
@@ -141,10 +147,12 @@ pub fn delete_workflow_inner(home: &Path, file_name: &str) -> Result<(), io::Err
 }
 
 /// Uwagi walidatora o tym workflow — **te same**, które padają przy zapisie i przed Startem.
+///
+/// `impl Borrow<WorkflowFile>` z tego samego powodu, co przy [`save_workflow_inner`].
 #[must_use]
-pub fn check_workflow_inner(workflow: &WorkflowFile) -> Vec<Note> {
+pub fn check_workflow_inner(workflow: impl Borrow<WorkflowFile>) -> Vec<Note> {
     // Przelotka i nic więcej. Drugi walidator, dopisany tutaj „bo front potrzebuje jeszcze
     // jednej uwagi", byłby drugim miejscem, w którym mieszka odpowiedź na pytanie „co jest nie
     // tak z tym plikiem", i jedno z dwóch zawsze byłoby nieaktualne (niezmiennik 13).
-    crate::workflow::check::check(workflow)
+    crate::workflow::check::check(workflow.borrow())
 }
