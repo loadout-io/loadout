@@ -24,7 +24,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CEILING_FIXTURE, FIXTURES, copyCheck, mustExist, plant, runCheck, sandbox } from './_support';
+import {
+  CEILING_FIXTURE,
+  FIXTURES,
+  copyCheck,
+  copyScript,
+  mustExist,
+  plant,
+  runCheck,
+  sandbox,
+} from './_support';
 
 const CHECK = 'quick-density.sh';
 const BASELINE_PATH = 'checks/density-baseline.json';
@@ -50,6 +59,9 @@ function tree(): string {
   if (dir === '') {
     const built = sandbox('density-ratchet');
     copyCheck(built, CHECK);
+    // Sędzia, którego to sprawdzenie woła — kopiowany razem z nim, tak jak
+    // `checks/_cargo-serialize.sh` w kryteriach wołających cargo.
+    copyScript(built, 'density-audit.mjs');
     const doc = mustExist('docs/ARCHITECTURE.md', 'the only source of the seven density numbers');
     plant(built, 'docs/ARCHITECTURE.md', readFileSync(doc, 'utf8'));
     plant(built, 'src/main.tsx', 'export const nothing = 0;\n');

@@ -31,7 +31,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { judge } from '../../scripts/density-audit.mjs';
-import { CEILING_FIXTURE, FIXTURES, copyCheck, mustExist, plant, runCheck, sandbox } from './_support';
+import {
+  CEILING_FIXTURE,
+  FIXTURES,
+  copyCheck,
+  copyScript,
+  mustExist,
+  plant,
+  runCheck,
+  sandbox,
+} from './_support';
 import measuredZero from './fixtures/measured-zero.json';
 import missingMetric from './fixtures/missing-metric.json';
 
@@ -78,6 +87,9 @@ describe('quick-density.sh answers with four different exit codes', () => {
     if (dir === '') {
       const built = sandbox('density-exits');
       copyCheck(built, CHECK);
+      // Sprawdzenie woła sędziego z scripts/, więc kopiujemy go razem z nim — dokładnie
+      // tak, jak kryteria wołające cargo kopiują `checks/_cargo-serialize.sh`.
+      copyScript(built, 'density-audit.mjs');
       plant(built, 'checks/density-baseline.json', BASELINE);
       // Sufit ma być PARSOWANY z dokumentu także przez skrypt, a kopia w piaskownicy jest
       // jedynym egzemplarzem, jaki kopia sprawdzenia widzi (ROOT liczy się z BASH_SOURCE).
@@ -93,18 +105,33 @@ describe('quick-density.sh answers with four different exit codes', () => {
     const run = runCheck(tree(), CHECK, [], withSnapshot('measured-zero.json'));
 
     expect(run.code, run.out).toBe(0);
+    // NIEZMIENNIK 19: kod wyjścia to nie dowód. Zero bez powiedzenia, CO zmierzono i ILE
+    // tego było, jest nie do odróżnienia od `exit 0` postawionego w pierwszej linii skryptu.
+    expect(run.out, run.out).toMatch(/measured 7 of 7 metrics/);
+    // Zmierzone zero jest wartością i ma być widoczne jako wartość, nie jako brak wpisu.
+    expect(run.out).toMatch(/agentCardLines 0\/4/);
   });
 
   it('exits 1 for a snapshot with a metric above the ceiling', () => {
     const run = runCheck(tree(), CHECK, [], withSnapshot('one-over.json'));
 
     expect(run.code, run.out).toBe(1);
+    // "Za gęsto" bez nazwy metryki i bez liczby nie daje się naprawić — to ta sama odmowa,
+    // co "an architecture boundary was crossed" bez ścieżki pliku.
+    expect(run.out).toMatch(/over the ceiling/i);
+    expect(run.out).toMatch(/labelledRegions measured 9, ceiling 8/);
   });
 
   it('exits 1 when a metric is unmeasured and the collector gave no reason', () => {
     const run = runCheck(tree(), CHECK, [], withSnapshot('missing-metric.json'));
 
     expect(run.code, run.out).toBe(1);
+    expect(run.out).toContain('agentCardLines');
+    expect(run.out).toMatch(/no reason/i);
+    // TA asercja odróżnia jedynkę od jedynki. Obie odmowy mają ten sam kod wyjścia, więc
+    // bez niej skrypt mówiący zawsze "za gęsto" przechodzi oba przypadki — a człowiek szuka
+    // wtedy regionu, którego nie ma za dużo, zamiast metryki, której nikt nie policzył.
+    expect(run.out).not.toMatch(/over the ceiling/i);
   });
 
   it('exits 0 and prints the reason when the collector said what it could not measure', () => {
@@ -123,6 +150,13 @@ describe('quick-density.sh answers with four different exit codes', () => {
     const run = runCheck(tree(), CHECK);
 
     expect(run.code, run.out).toBe(2);
+    expect(run.out).toMatch(/could not measure/i);
+    // Komunikat musi nazwać rzecz, KTÓRA ISTNIEJE i której nie zmierzono. Bez tego "2"
+    // czyta się jak awaria środowiska, a jest twierdzeniem o tym drzewie.
+    expect(run.out).toContain('src/main.tsx');
+    // I ta asercja rozstrzyga między dwoma wyjściami, których nie odróżnia sam komunikat:
+    // "nie dało się" nie ma prawa użyć zdania, którym mówi się "nie ma czego".
+    expect(run.out).not.toMatch(/nothing to measure/i);
   });
 
   it('exits 0 and names the missing path when there is nothing to measure at all', () => {
@@ -131,6 +165,7 @@ describe('quick-density.sh answers with four different exit codes', () => {
     tree();
     const empty = sandbox('density-empty');
     copyCheck(empty, CHECK);
+    copyScript(empty, 'density-audit.mjs');
     plant(empty, 'checks/density-baseline.json', BASELINE);
     const doc = mustExist('docs/ARCHITECTURE.md', 'the only source of the seven density numbers');
     plant(empty, 'docs/ARCHITECTURE.md', readFileSync(doc, 'utf8'));
@@ -139,5 +174,9 @@ describe('quick-density.sh answers with four different exit codes', () => {
 
     expect(run.code, run.out).toBe(0);
     expect(run.out).toContain('src/main.tsx');
+    expect(run.out).toMatch(/nothing to measure/i);
+    // Zieleń bez licznika jest czerwona (niezmiennik 19), także zieleń pominięcia: skrypt
+    // ma powiedzieć, że policzył ZERO metryk, a nie milczeć i wyjść zerem.
+    expect(run.out).toMatch(/0 metrics measured/);
   });
 });

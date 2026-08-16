@@ -201,6 +201,7 @@ function worst(widths, key) {
  * @param {Record<string, number>} baseline zapadka: ostatnio zmierzona wartość per metryka
  * @returns {{verdict: string, over: Array<{metric: string, measured: number, limit: number}>,
  *            regressed: Array<{metric: string, measured: number, baseline: number}>,
+ *            measured: Record<string, number>,
  *            notMeasured: string[], unexplained: string[], reasons: Record<string, string>}}
  */
 export function judge(snapshot, ceiling, baseline) {
@@ -209,14 +210,19 @@ export function judge(snapshot, ceiling, baseline) {
 
   const over = [];
   const regressed = [];
+  // Liczby, które sędzia i tak policzył. Bez nich wołający musiałby powtórzyć `worst()` u
+  // siebie, żeby powiedzieć "chromePixels 80/96" albo zapisać zapadkę — a druga kopia tego
+  // wyliczenia to dokładnie ten rozjazd, przed którym stoi całe to zadanie. Klucze tej mapy
+  // są dopełnieniem `notMeasured`: metryka jest albo tu, albo tam, nigdy w obu i nigdy w żadnym.
+  const measured = {};
   const notMeasured = [];
   const unexplained = [];
   const reasons = {};
 
   for (const entry of ceiling) {
-    const measured = worst(widths, entry.key);
+    const value = worst(widths, entry.key);
 
-    if (measured === undefined) {
+    if (value === undefined) {
       notMeasured.push(entry.key);
       const reason = stated[entry.key];
       // Powód liczy się tylko wtedy, gdy jest zdaniem. Pusty string to milczenie zapisane
@@ -229,15 +235,17 @@ export function judge(snapshot, ceiling, baseline) {
       continue;
     }
 
-    if (measured > entry.limit) {
-      over.push({ metric: entry.key, measured, limit: entry.limit });
+    measured[entry.key] = value;
+
+    if (value > entry.limit) {
+      over.push({ metric: entry.key, measured: value, limit: entry.limit });
     }
 
     // Metryka nieobecna w zapadce jest pierwszym pomiarem, a pierwszy pomiar zawsze wolno
     // przyjąć — inaczej nowej metryki nie dałoby się włączyć bez ręcznej edycji pliku.
     const seen = baseline?.[entry.key];
-    if (typeof seen === 'number' && measured > seen) {
-      regressed.push({ metric: entry.key, measured, baseline: seen });
+    if (typeof seen === 'number' && value > seen) {
+      regressed.push({ metric: entry.key, measured: value, baseline: seen });
     }
   }
 
@@ -246,5 +254,5 @@ export function judge(snapshot, ceiling, baseline) {
   else if (regressed.length > 0) verdict = 'regressed';
   else if (unexplained.length > 0) verdict = 'unmeasured';
 
-  return { verdict, over, regressed, notMeasured, unexplained, reasons };
+  return { verdict, over, regressed, measured, notMeasured, unexplained, reasons };
 }

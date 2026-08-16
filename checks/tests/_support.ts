@@ -101,6 +101,23 @@ export function copyCheck(dir: string, name: string): void {
   copyFileSync(source, join(dir, 'checks', name));
 }
 
+/**
+ * Kopiuje moduł z `scripts/` do `<piaskownica>/scripts/`.
+ *
+ * Ta sama zasada, co `copyCheck(dir, '_cargo-serialize.sh')` w kryteriach wołających cargo,
+ * i ten sam powód: skopiowane sprawdzenie liczy ROOT z BASH_SOURCE, więc szuka SWOICH
+ * zależności pod piaskownicą. Bez tej linii `checks/quick-density.sh` nie miałby w drzewie
+ * testu sędziego, którego woła — a jedyną alternatywą byłoby wpisanie drugiej kopii sędziego
+ * do samego sprawdzenia. Dwie kopie parsera sufitu to dokładnie ta awaria, przed którą stoi
+ * niezmiennik 18: po pierwszej edycji jednej z nich bramka pilnuje liczby, której nikt
+ * już nie deklaruje.
+ */
+export function copyScript(dir: string, name: string): void {
+  const source = mustExist(join('scripts', name), `the module the check under test calls (${name})`);
+  mkdirSync(join(dir, 'scripts'), { recursive: true });
+  copyFileSync(source, join(dir, 'scripts', name));
+}
+
 export interface Run {
   /** Kod wyjścia. -1 znaczy "zabity sygnałem", nigdy "przeszło". */
   code: number;
