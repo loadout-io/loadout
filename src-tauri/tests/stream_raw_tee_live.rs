@@ -151,8 +151,16 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Ile linii niesie ten ciąg bajtów. Liczone po `\n`, więc `\r` nie ma tu głosu.
+///
+/// `fold`, a nie `filter(…).count()`, i to nie jest kwestia gustu: to drugie jest dla clippy
+/// „naiwnym liczeniem bajtów" i pod `-D warnings` **wywraca pełną bramkę**, która chodzi
+/// z `--all-targets`. Jedyna podpowiedź, jaką lint daje, to nowa zależność (`bytecount`) za
+/// policzenie znaków końca linii w pięciolinijkowej fiksturze — czyli lekarstwo droższe od
+/// choroby. Liczone jest dokładnie to samo, co przedtem: bajty `\n`, bez żadnego innego.
 fn newlines(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|byte| **byte == b'\n').count()
+    bytes
+        .iter()
+        .fold(0, |count, byte| count + usize::from(*byte == b'\n'))
 }
 
 /// Kawałek bajtów wokół podanego przesunięcia, czytelnie i krótko.
