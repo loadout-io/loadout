@@ -68,6 +68,27 @@ const THING_PASSES = [
   '',
 ].join('\n');
 
+/**
+ * Ten sam cel z DWOMA przechodzącymi testami — łącznie trzy z całego drzewa.
+ *
+ * Powód, dla którego to jest osobna fikstura, a nie podmiana poprzedniej: przy jednym teście
+ * na cel poprawna odpowiedź (2) jest równa LICZBIE CELÓW, więc implementacja licząca cele
+ * zamiast przejść przechodzi przypadek B i niczego to nie wykrywa. Trzy jest liczbą, której
+ * nie da się wziąć znikąd poza sumą po celach.
+ */
+const THING_TWICE = [
+  '#[test]',
+  'fn the_integration_target_runs() {',
+  '    assert_eq!(2 + 2, 4);',
+  '}',
+  '',
+  '#[test]',
+  'fn the_integration_target_runs_twice() {',
+  '    assert_eq!(3 + 3, 6);',
+  '}',
+  '',
+].join('\n');
+
 const THING_FAILS = [
   '#[test]',
   'fn the_integration_target_runs() {',
@@ -126,6 +147,23 @@ describe('full-test.sh runs the integration targets, not only --lib', () => {
       // TA asercja jest całym kryterium. Jedno przejście znaczy, że policzono wyłącznie
       // `--lib`, a `src-tauri/tests/thing.rs` nigdy się nie skompilował.
       expect(reported(run.out), run.out).toBe(2);
+      expect(existsSync(lockPath(dir)), 'the cargo lock outlived the check').toBe(false);
+    },
+    SLOW,
+  );
+
+  it(
+    'case B2: three passing tests are reported as three, so the counter is not the target count',
+    () => {
+      plant(dir, THING, THING_TWICE);
+
+      const run = runCheck(dir, CHECK);
+
+      expect(run.code, run.out).toBe(0);
+      // Przypadek B sam w sobie da się przejść licząc CELE (dwa cele, dwa przejścia).
+      // Tutaj cele są wciąż dwa, a przejścia trzy — obie liczby się rozjeżdżają i tylko
+      // suma po celach daje poprawną odpowiedź.
+      expect(reported(run.out), run.out).toBe(3);
       expect(existsSync(lockPath(dir)), 'the cargo lock outlived the check').toBe(false);
     },
     SLOW,
