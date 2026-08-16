@@ -46,9 +46,14 @@ na tym samym pliku.
 
 **Do zrobienia z tym trzy rzeczy, w tej kolejności:**
 
-1. `T-06 AC-5` / niezmiennik 2 — rozstrzygnąć, czy `Store::open` ma odmawiać drugiego otwarcia tej
-   samej ścieżki (rejestr po ścieżce), czy to jest świadomie na barkach wołającego. **Decyzja
-   człowieka**, bo to zmiana kontraktu, a nie implementacji. Blokuje sensowność `T-24`.
+1. ~~`T-06 AC-5` / niezmiennik 2~~ — **rozstrzygnięte 2026-08-16.** Decyzja człowieka: `Store::open`
+   **nie** dostaje własnej obrony; gwarancja mieszka w rejestrze workspace'ów, bo `ARCHITECTURE.md`
+   §6a reguła 1 już to rozstrzygnęła („otwarcie folderu, który ma kartę, przełącza na nią").
+   Konsekwencja: skoro gwarancja jest tam, to tam musi być udowodniona — `T-24 AC-3` dostał drugą
+   połowę. Sprawdzał, że rejestr ma jedną pozycję i że `WorkspaceId` się zgadza; **nie** sprawdzał,
+   że nie powstał drugi magazyn. A `WorkspaceId` jest wyliczany ze ścieżki, więc zgadza się zawsze —
+   także w implementacji z dwoma zapisującymi połączeniami. Piąty przypadek tego samego wzorca,
+   znaleziony przez zastosowanie go do samego siebie.
 2. Przegląd cross-vendor po 2026-08-20 (`docs/PLAN.md` §6a) — **z tym wzorcem jako pytaniem
    przewodnim**, a nie ogólnym „przejrzyjmy wszystko". Pytanie brzmi: *czy to kryterium sprawdza
    niezmiennik, czy tylko jego najłatwiejszy objaw?*
