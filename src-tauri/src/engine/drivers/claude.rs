@@ -27,25 +27,33 @@
 //!
 //! # Co ten plik posiada, a czego nie
 //!
-//! Tu mieszka wire enum Claude i mapowanie **linia → [`AgentEvent`]**. Pętla czytająca, tee
-//! surowego `agent-<id>.jsonl` na dysk i kuracja `AgentEvent` → `Line` należą do T-05. Ten
+//! Tu mieszka wire enum Claude i mapowanie **linia → [`AgentEvent`]**. Zapis surowego
+//! `agent-<id>.jsonl` i kuracja `AgentEvent` → `Line` należą do T-05 i stoją w `stream.rs`;
+//! tutaj jest pętla, która czyta stdout **żywego** procesu i jedno i drugie **woła**. Ten
 //! podział jest jedynym, przy którym `CodexDriver` (T-10) powstaje bez dotykania `stream.rs`.
 //!
 //! # Transkrypt kroku: tee i rodzaj narzędzia (T-34, 2026-08-16)
 //!
 //! Podział wyżej mówi, **czyj jest kod**, a nie kto go woła — i przez to na wyładowanym trunku
-//! nie wołał go nikt. Pętla czytająca czyta stdout i nie zapisuje ani bajtu, a `store::rebuild`
-//! czyta `logs/agent-<id>.jsonl`, którego nikt nie pisze: po prawdziwym biegu skasowanie
-//! `loadout.db` zabiera wtedy **wszystkie** zdarzenia, czyli dokładnie to, przed czym stoi
-//! niezmiennik 4. Druga połowa tej samej luki jest w kuracji: żywa droga podaje `tool: None`,
-//! więc wiersze `Read`, `Edited` i `Ran` powstają wyłącznie w testach, które podają `tool`
-//! ręcznie.
+//! nie wołał go nikt. Pętla czytająca czytała stdout i nie zapisywała ani bajtu, a
+//! `store::rebuild` czyta `logs/agent-<id>.jsonl` od T-06: po prawdziwym biegu skasowanie
+//! `loadout.db` zabierało wtedy **wszystkie** zdarzenia, czyli dokładnie to, przed czym stoi
+//! niezmiennik 4. Druga połowa tej samej luki siedziała w kuracji: żywa droga podawała
+//! `tool: None`, więc wiersze `Read`, `Edited` i `Ran` powstawały wyłącznie w testach, które
+//! podają `tool` ręcznie.
 //!
-//! [`Transcript`] jest tą jedną wartością, której brakowało: katalog biegu z
-//! `docs/ARCHITECTURE.md` §8, krok, którego to strumień, i kanał wierszy. Nie stoi w
-//! [`RunSpec`], choć **tam jest jego miejsce** — `drivers/mod.rs` nie leży w bloku OWNS T-34,
-//! a jeden wiersz poza tym blokiem jest pytaniem do człowieka, nie cichym dopiskiem
-//! (`AGENTS.md` §7).
+//! Obie połowy domyka [`Transcript`] — katalog biegu z `docs/ARCHITECTURE.md` §8, krok,
+//! którego to strumień, i kanał wierszy. Z nim [`pump`] pisze każdą przeczytaną linię przez
+//! [`stream::Recorder`] **przed** parsowaniem i podaje kuratorowi fakty o narzędziu, które
+//! [`stream::decode`] wyjmuje z tej samej linii drutu; bez niego zachowuje się dokładnie tak
+//! jak przedtem, bo sonda wersji nie ma katalogu biegu.
+//!
+//! **Wołającego produkcyjnego ta wartość wciąż nie ma i to jest pytanie do człowieka, nie
+//! przeoczenie.** Jej miejsce jest w [`RunSpec`] — wtedy dostaje ją każdy sterownik, także
+//! `CodexDriver` — ale `drivers/mod.rs` i `commands/run.rs` nie leżą w bloku OWNS T-34,
+//! a jeden wiersz poza tym blokiem jest pytaniem, nie cichym dopiskiem (`AGENTS.md` §7).
+//! Dopóki `commands::run` nie zawoła [`ClaudeDriver::with_transcript`], mechanizm jest
+//! kompletny i nieużywany.
 //!
 //! # Kanał stdinu żyje tak długo jak sesja (2026-08-16)
 //!
@@ -76,7 +84,7 @@ use super::{
     SessionRef, Tokens,
 };
 use crate::engine::line::Line;
-use crate::engine::stream::Recorder;
+use crate::engine::stream::{self, Recorder};
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
@@ -1080,7 +1088,25 @@ async fn pump(
             continue;
         };
 
-        for event in decoder.push(text) {
+        let text = text.trim();
+        if text.is_empty() {
+            // Pusta linia nie jest uszkodzeniem: NDJSON kończy się nią przy każdym normalnym
+            // wyjściu.
+            continue;
+        }
+
+        // Zdarzenia i fakty o narzędziu z JEDNEJ linii i JEDNYM wywołaniem. `stream::decode`
+        // pyta dekoder o zdarzenia neutralne wobec vendora i z tej samej linii dokłada
+        // [`Tool`] — rodzinę czynności, pełną ścieżkę i pełne wyjście, czyli to wszystko,
+        // co `AgentEvent` świadomie gubi [T1 §8.2]. Druga tabela nazw narzędzi tutaj byłaby
+        // drugą implementacją tej samej polityki (niezmiennik 23), a parowanie zdarzenia
+        // z faktem po czymkolwiek innym niż wspólna linia rozjeżdża się na pierwszym
+        // strumieniu, w którym jedna wiadomość niesie dwa bloki.
+        let stream::Decoded::Events(from_line) = stream::decode(&mut decoder, text) else {
+            continue;
+        };
+
+        for stream::DecodedEvent { event, tool } in from_line {
             // Zapis PRZED wysyłką i tylko tutaj: kto zobaczył `Started`, ten ma prawo
             // zakładać, że eskalacja anulowania wie już, o co pytać. Odwrotna kolejność
             // jest wyścigiem, który przechodzi na tej maszynie i przewraca się na
@@ -1093,6 +1119,9 @@ async fn pump(
             {
                 let _ = capabilities.set(announced.clone());
             }
+            if let Some(recorder) = transcript.as_mut() {
+                recorder.curate(&event, tool.as_ref()).await;
+            }
             emit(event, &events, &outcomes).await;
         }
     }
@@ -1101,6 +1130,11 @@ async fn pump(
     // wołającym, a strumień skończył się przed nim. Zdarzenie końca musi paść mimo to, inaczej
     // krok wisi w `running` do końca biegu [T1 §8.5].
     if let Some(event) = decoder.end_of_stream(None) {
+        // Bez narzędzia i to nie jest brak: koniec strumienia jest faktem o turze, nie
+        // o czynności. Wiersz z niego powstaje w kuratorze tak samo jak z linii `result`.
+        if let Some(recorder) = transcript.as_mut() {
+            recorder.curate(&event, None).await;
+        }
         emit(event, &events, &outcomes).await;
     }
 
