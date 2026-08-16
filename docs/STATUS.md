@@ -80,6 +80,19 @@ naprawa, naprawa kontraktu — porównuje się z tą bazą. Spadek zatrzymuje bi
 Skasowany plik liczy się jako strata wszystkich asercji, bo inaczej najprostsze obejście było
 niewidoczne.
 
+**Odświeżenie oracle'a, i dlaczego trzeba było go naprawiać dwa razy.** Poprawka sufitu była dla
+T-06 **nieosiągalna**: `worktree.sh` wycina cały katalog roboczy, więc gałąź niesie **własną**
+kopię `harness/`, i ta stara kopia oddała 3 tam, gdzie nowa oddaje 1. `ship-task.sh` znał tę
+klasę — podciągał trunk, ale dopiero **przed rundą naprawczą**, czyli po dwóch osądach.
+Podniesione na start biegu (`refresh_harness_from_trunk`, strażnik pyta i o działanie,
+i o kolejność). Druga próba padła znowu, bo ten merge **konfliktuje na `lib.rs`** — czyli
+istniejące odświeżenie przed rundą naprawczą też cicho nie działało. Naprawione regułą
+`merge=union` w `.gitattributes`: to zapis tego, co i tak robi się ręcznie za każdym razem,
+i przy okazji zdejmuje ten konflikt z **każdego drugiego lądowania** w `integrate.sh`.
+
+Trzy fałszywe starty T-06 nauczyły jednej rzeczy o samym harnessie: **naprawa bramki nie działa
+wstecz na gałęzie już wycięte**, dopóki nie ma czym jej tam wpuścić.
+
 ## Co poszło nie tak przez noc — żeby nie powtórzyć
 
 Sterownik falowy wylądował T-25 i T-16 o 03:03, a potem **stał osiem godzin**. WebStorm zapisał
