@@ -292,6 +292,18 @@ mod reason {
     /// Wiersz sprzed wprowadzenia kolumny z czasem startu systemu.
     pub const NO_BOOT_TIME: &str = "This run does not say when the machine it started on was last booted, so there is no \
          way to tell whether its group number still belongs to it.";
+    /// `pgid = 0`, czyli w `killpg` własna grupa wołającego.
+    pub const PGID_IS_ZERO: &str = "The group number written down for this step is 0, which every kill means as \
+         'whoever is asking' - using it would stop Loadout itself during startup.";
+    /// Wiersz bez `pgid`: spawn nie doszedł do zapisu.
+    pub const PGID_MISSING: &str = "No group number was ever written down for this step, so there is nothing that \
+         could be cleaned up after it.";
+    /// `pgid` ujemny. Znak jest selektorem w `kill`, nie częścią numeru.
+    pub const PGID_NEGATIVE: &str = "The group number written down for this step is negative, and a negative number \
+         is not a group.";
+    /// `pgid` równy własnej grupie Loadouta.
+    pub const PGID_IS_OURS: &str = "The group number written down for this step is the one Loadout itself runs in, \
+         so using it would stop Loadout during startup.";
     /// Krok przerwany w locie, któremu nikt nie zapisał sesji.
     pub const NO_SESSION: &str = "This step was cut off in flight, but nothing was written down that its agent could \
          be picked up from.";
@@ -377,6 +389,39 @@ fn fresh_session() -> String {
     Uuid::now_v7().to_string()
 }
 
+/// `pgid`, którego zabicie jest bezpieczne. `Err` niesie zdanie do
+/// [`RecoveryPlan::unreadable`].
+///
+/// Cztery odmowy, każda z własnym powodem, bo wiersz odrzucony po cichu i wiersz, którego filtr
+/// w ogóle nie zobaczył, dają identyczne [`RecoveryPlan::reap`] i różnią się dopiero na tej
+/// liście.
+///
+/// Sprawdzenie biegnie **niezależnie** od strażnika czasu startu, choć po restarcie maszyny
+/// i tak nikogo nie zabijemy. Powód stoi wprost w AC-1: pytania nie mają prawa zależeć od tego,
+/// czy maszyna się zrestartowała. Gdyby ten filtr stał za strażnikiem, wiersz z `pgid = 0`
+/// dostawałby pytanie po restarcie i nie dostawał bez restartu — jedna awaria, dwie różne listy.
+fn usable_pgid(pgid: Option<i32>, own_pgid: i32) -> Result<i32, &'static str> {
+    // `None` nie znaczy „zero" i nie znaczy „nieważne": spawn nie doszedł do zapisu.
+    let Some(pgid) = pgid else {
+        return Err(reason::PGID_MISSING);
+    };
+    // `0` w `killpg` znaczy „moja własna grupa". Wiersz z tą wartością to Loadout zabijający
+    // sam siebie w pętli startowej — awaria, która wygląda jak crash odzyskiwania.
+    if pgid == 0 {
+        return Err(reason::PGID_IS_ZERO);
+    }
+    // Znak jest selektorem w `kill` („grupa, nie proces"), nie częścią numeru: `-9` w kolumnie
+    // to nie jest grupa 9, tylko wiersz, którego nie umiemy przeczytać.
+    if pgid < 0 {
+        return Err(reason::PGID_NEGATIVE);
+    }
+    // To samo co `0`, tylko napisane wprost.
+    if pgid == own_pgid {
+        return Err(reason::PGID_IS_OURS);
+    }
+    Ok(pgid)
+}
+
 /// Co jeden wiersz znaczy dla planu.
 #[derive(Debug)]
 enum RowVerdict {
@@ -423,6 +468,7 @@ fn read(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static str
         return Err(reason::NO_BOOT_TIME);
     };
     let same_machine_since = recorded_boot == machine.boot_id;
+    let pgid = usable_pgid(row.pgid, machine.own_pgid)?;
 
     // Sesja jest przydzielana PRZED spawnem [T7 §6.2, V], więc krok, który biegł, ma ją mieć.
     // Kiedy jej nie ma, istnieje proces, którego sesji nie umiemy nazwać: opcja „podejmij tam,
@@ -447,7 +493,7 @@ fn read(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static str
     };
 
     Ok(RowVerdict::CutOff {
-        reap: if same_machine_since { row.pgid } else { None },
+        reap: same_machine_since.then_some(pgid),
         session_id: session_id.to_owned(),
         next_attempt,
     })
