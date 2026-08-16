@@ -164,25 +164,59 @@ note "$WT"
 #
 # `before` == 0 znaczy dokładnie „specyfikacje są, implementacji nie ma" — czyli stan,
 # z którego wolno wystartować. Cokolwiek innego to odmowa jak dotąd.
+# Czy ktores kryterium PRZESZLO, zanim powstala implementacja? To jedyny stan, w ktorym
+# drugi bieg nie ma jak dowiesc czerwieni -- wiec jedyny, w ktorym odmowa jest tansza niz
+# wznowienie. Czytamy paragon, bo to on niesie werdykt POZIOMU: `before` odwraca kryteria,
+# wiec samo `ok: false` nie mowi, czy kryterium przeszlo, czy nie ruszylo. Nazwa powodu mowi.
+# Exit 0 znaczy "tak, takie kryterium jest".
+contract_has_a_passing_criterion() {
+  python3 - "$WT/runs/last.json" <<'RECEIPT'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)                      # brak paragonu to brak dowodu, a nie dowod
+if receipt.get("tier") != "before":
+    sys.exit(1)
+for c in receipt.get("checks", []):
+    reason = c.get("reason") or ""
+    if (c.get("kind") == "acceptance" and not c.get("ok")
+            and ("PASSES before implementation" in reason
+                 or "exit 0 but no evidence" in reason)):
+        sys.stderr.write("   %s passes before implementation -- it certifies nothing\n" % c["id"])
+        sys.exit(0)
+sys.exit(1)
+RECEIPT
+}
+
+PRE_RESUME=0
 if [ -f "$WT/TASK.md" ]; then
-  if ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ); then
-    note "$WT already has a certified contract — resuming from the implementation phase"
-  # Trzeci stan, którego ta bramka wcześniej nie znała: faza kontraktu WYSTARTOWAŁA I ZGINĘŁA.
-  # Zostaje wtedy gałąź z jednym commitem — tym z TASK.md — i ani jednej specyfikacji.
-  # Nie ma czego chronić, więc odmowa była wyłącznie kosztem: kazała człowiekowi ręcznie
-  # skasować worktree, żeby odtworzyć stan, który skrypt umie odtworzyć sam.
+  ( cd "$WT" && bash ./verify.sh before >/dev/null 2>&1 ) || PRE_RESUME=$?
+  if [ "$PRE_RESUME" = 0 ]; then
+    note "$WT already has a certified contract -- resuming from the implementation phase"
+  # Trzeci stan, ktorego ta bramka wczesniej nie znala: kontrakt JEST, ale nie certyfikuje.
+  # Faza kontraktu zginela w polowie, albo napisala szkielet, na ktorym jedno kryterium wisi
+  # zamiast padac. Nie ma tam czego chronic, a odmowa byla wylacznie kosztem: kazala
+  # czlowiekowi recznie skasowac worktree, zeby odtworzyc stan, ktory skrypt umie odtworzyc sam.
   #
-  # Rozróżnienie jest mechaniczne i nie zgaduje: liczymy commity gałęzi NAD trunkiem.
-  # Jeden znaczy „jest tylko kontrakt, nikt tu jeszcze nic nie napisał". Cokolwiek powyżej
-  # to praca, której nie wolno wyrzucić bez decyzji człowieka — i tam odmowa zostaje.
-  # Nieśledzone pliki też się liczą: agent bywa ubity między zapisem a commitem.
+  # Rozroznienie jest mechaniczne i NIE ZGADUJE, ale pyta o zachowanie, nie o ksztalt
+  # historii (niezmiennik 20). Wczesniej stalo tu "policz commity nad trunkiem; jeden znaczy
+  # sam kontrakt" -- proxy, ktore mylilo sie w obie strony. Zmierzone na T-06 (2026-08-16):
+  # faza kontraktu napisala siedem specyfikacji i szkielet, `commit_leftovers` domknal je
+  # DRUGIM commitem, wiec licznik pokazal 2 i skrypt kazal wyrzucic cala prace. Nie bylo tam
+  # ani jednej linii implementacji -- tylko kontrakt, ktorego jedno kryterium wisialo.
   #
-  # `$TRUNK..HEAD`, nie samo `HEAD`: `rev-list --count HEAD` liczy CAŁĄ historię razem
-  # z trunkiem, więc zawsze byłoby to kilkadziesiąt i ta gałąź nigdy by nie wystrzeliła.
-  elif [ "$(git -C "$WT" rev-list --count "${LOADOUT_TRUNK:-main}..HEAD" 2>/dev/null || echo 99)" = "1" ] \
-    && [ -z "$(git -C "$WT" status --porcelain -uall 2>/dev/null)" ]; then
-    note "$WT has the contract commit and nothing else — the contract phase never finished"
-    note "redoing the contract phase in place; there is no work here to lose"
+  # Pytamy wiec paragon, a nie log. `before` odwraca kryteria, wiec exit 1 znaczy dokladnie
+  # "ktores kryterium NIE jest czerwone z wlasciwego powodu" -- czyli defekt kontraktu, czyli
+  # dokladnie ten stan, ktory faza kontraktu i jej runda naprawcza umieja naprawic.
+  #
+  # Jedyny stan, w ktorym odmowa dalej ma sens, to kryterium, ktore PRZECHODZI przed
+  # implementacja: albo implementacja juz tu jest (i drugi bieg nie ma jak dowiesc czerwieni),
+  # albo asercja jest za slaba (i to jest znalezisko dla czlowieka, AGENTS.md par. 7).
+  # Oba rozpoznaje paragon po nazwie powodu, wiec nie trzeba ich zgadywac z historii gita.
+  elif [ "$PRE_RESUME" = 1 ] && ! contract_has_a_passing_criterion; then
+    note "$WT carries a contract that does not certify -- no criterion passes, so there is"
+    note "no implementation here to lose; redoing the contract phase in place"
   else
     echo >&2
     echo "$WT already carries a TASK.md and its criteria are not provably red." >&2
@@ -231,6 +265,42 @@ commit_leftovers() {           # commit_leftovers <etykieta>
     git -C "$WT" commit -q -m "chore(run): uncommitted work from the $1 phase"
   fi
 }
+
+# Odcisk asercji w specyfikacjach: sciezka -> ile linii niesie asercje.
+#
+# Grube narzedzie i ma takie byc. Nie mierzy jakosci asercji, tylko odpowiada na jedno
+# pytanie, na ktore inaczej nie odpowiada nikt: czy faza, ktora wlasnie biegla, ZABRALA
+# specyfikacji asercje. Liczba moze rosnac dowolnie; spadek na dowolnym pliku zatrzymuje bieg.
+# Formatowanie jest bez znaczenia, bo liczymy linie niosace asercje, nie znaki.
+assertion_fingerprint() {
+  python3 - "$WT" <<'FINGERPRINT'
+import os, re, sys
+
+root = sys.argv[1]
+carries = re.compile(r"\bassert\w*!|\bassert\b|\bexpect\(|\.toBe|\.toThrow|\.toEqual|\bdebug_assert")
+skip = {".git", "node_modules", "target", "dist", ".loadout", "refs"}
+
+for base, dirs, files in os.walk(root):
+    dirs[:] = [d for d in dirs if d not in skip]
+    for name in files:
+        if not name.endswith((".rs", ".ts", ".tsx", ".js", ".jsx")):
+            continue
+        rel = os.path.relpath(os.path.join(base, name), root)
+        # Specyfikacja poznaje sie po miejscu albo po nazwie -- tak samo, jak poznaje ja
+        # `check:` w TASK.md. Kod produkcyjny nas tu nie interesuje: tam asercji ubywa
+        # legalnie, bo `todo!()` znika razem ze szkieletem.
+        if "tests/" not in rel.replace(os.sep, "/") and ".test." not in name and ".spec." not in name:
+            continue
+        try:
+            body = open(os.path.join(base, name), encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        n = sum(1 for line in body.split("\n") if carries.search(line))
+        if n:
+            print("%s\t%d" % (rel, n))
+FINGERPRINT
+}
+
 
 # Prompt idzie STDIN-em, nigdy w argv (niezmiennik 9): argv widzi każdy `ps`, a prompt
 # niesie treść zadania i bywa, że ścieżki. Oba CLI to obsługują — claude -p czyta prompt
@@ -350,6 +420,123 @@ PROMPT
   # niż jej brak, bo zostawia zielone, któremu ktoś uwierzy.
   say "before (enforced)"
   RED=0; gate before || RED=$?
+
+  # ---------------------------------------------- 3a. naprawa kontraktu x1 --
+  # DOKLADNIE JEDNA runda, i wylacznie na jedynce. Dwojka ("bramka zle skonfigurowana")
+  # i trojka ("sufit") nie sa dla modelu -- ich naprawa nalezy do orchestratora.
+  #
+  # DLACZEGO ten etap w ogole istnieje. Strona implementacyjna ma jedna runde naprawcza
+  # od poczatku; strona kontraktowa nie miala ZADNEJ, i to nie byla niczyja decyzja, tylko
+  # sposob, w jaki to uroslo. Skutek zmierzony na T-06 (2026-08-16): faza kontraktu napisala
+  # siedem poprawnych specyfikacji i szkielet, w ktorym JEDNA funkcja sie zakleszcza, przez
+  # co AC-2 wisialo zamiast padac. Caly bieg poszedl do kosza, worktree trzeba bylo skasowac
+  # recznie, a diagnoza kosztowala noc -- za defekt, ktory bramka NAZWALA po imieniu
+  # ("did not FINISH") w paragonie, i ktory da sie naprawic jednym wywolaniem modelu.
+  #
+  # Ta runda dostaje powody Z PARAGONU, nie z domyslu. Bramka rozroznia trzy ksztalty
+  # falszywej czerwieni i kazdy ma inna naprawe; model, ktory zna nazwe swojego ksztaltu,
+  # nie zgaduje.
+  if [ "$RED" = 1 ]; then
+    say "contract repair -- one round, then stop"
+    WHY="$(python3 - "$WT/runs/last.json" <<'REASONS'
+import json, sys
+try:
+    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for c in receipt.get("checks", []):
+    if not c.get("ok"):
+        print("  %s -- %s" % (c["id"], (c.get("reason") or "").replace("\n", " ")[:300]))
+REASONS
+)"
+    printf '%s\n' "$WHY"
+
+    # Odcisk asercji PRZED runda. Ta faza dostaje instrukcje "spraw, zeby kryterium padalo
+    # INACZEJ", a najtansza droga do tego jest asertowac mniej -- i jest to jedyna faza,
+    # w ktorej "asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji, a nie jawnym oszustwem.
+    # Dlatego dostaje obrone mechaniczna, a nie zdanie w promptcie (niezmiennik 28).
+    assertion_fingerprint > "$RUNDIR/assertions-before.tsv"
+
+    write_with "$RUNDIR/contract-repair.jsonl" 80 <<PROMPT || note "the contract repair exited nonzero; the gate decides what that was worth"
+The acceptance specs in this worktree do not work as an oracle yet. Every criterion must
+FAIL when \`./verify.sh before\` runs, and each failure has to be a MISSING BEHAVIOUR that
+shows up at runtime. These did not qualify:
+
+$WHY
+
+Read runs/last.json for the full output behind each line.
+
+Three shapes of false red, and the only repair each one allows:
+
+  "did not FINISH -- it hung or could not start". The spec, or the skeleton it calls,
+  BLOCKS. A skeleton must fail fast. The usual cause is a wait that nothing will ever
+  satisfy: a channel whose receiver never sees its last sender dropped, a lock nobody
+  releases, a task awaited while a live handle to it is still in scope. Fix the SKELETON
+  so the call returns. Never delete the wait from the spec -- a caller that deadlocks is
+  a defect of the design under test, and the spec is right to sit on it.
+
+  "PASSES before implementation" / "exit 0 but no evidence of execution". The criterion is
+  green with no implementation, so it measures nothing. If the skeleton returns the value
+  the spec expects, make it return a deliberately wrong one. If instead the ASSERTION is
+  too weak to tell the difference, stop and say so -- a weak assertion is a finding for
+  a human (AGENTS.md section 7), never something to patch quietly.
+
+  "did not RUN (...)". The check never executed at all: a missing module, a missing test
+  target, a spec that does not compile. Add the smallest skeleton that makes it load and
+  run, and nothing more.
+
+Rules that do not bend:
+
+- Never delete or weaken an assertion. A spec may GAIN assertions; it may never lose one.
+  Making a criterion fail faster by asserting less is the exact failure this stage exists
+  to prevent, and it is worse than the hang, because nothing downstream would ever notice.
+  This is checked mechanically after you finish, per spec file.
+- Never implement the behaviour under test. Every criterion must still be RED when you are
+  done -- red because the behaviour is missing, at runtime.
+- Never edit TASK.md, verify.sh, harness/, checks/ or tasks/. They are the oracle.
+- Stay inside this task's \`<!-- OWNS -->\` block.
+- If a criterion cannot be made to fail fast without implementing it, say so in your final
+  message and change nothing. That is a finding, and it is worth more than a guess.
+
+One shell command per Bash call. Never chain with \`;\` or \`&&\`: Claude Code splits a compound
+command and asks approval for each part, and in an unattended run there is nobody to give it.
+
+Commit what you change with one conventional-commit subject, e.g.
+"fix(test): make the $ID skeleton fail fast instead of hanging".
+PROMPT
+    commit_leftovers "contract repair"
+
+    assertion_fingerprint > "$RUNDIR/assertions-after.tsv"
+    LOST="$(python3 - "$RUNDIR/assertions-before.tsv" "$RUNDIR/assertions-after.tsv" <<'COMPARE'
+import sys
+def load(path):
+    out = {}
+    for line in open(path, encoding="utf-8"):
+        if "\t" in line:
+            name, count = line.rstrip("\n").split("\t")
+            out[name] = int(count)
+    return out
+was, now = load(sys.argv[1]), load(sys.argv[2])
+for name in sorted(was):
+    if now.get(name, 0) < was[name]:
+        print("  %s: %d assertion lines -> %d" % (name, was[name], now.get(name, 0)))
+COMPARE
+)"
+    if [ -n "$LOST" ]; then
+      echo >&2
+      echo "the contract repair round REMOVED assertions from specs:" >&2
+      printf '%s\n' "$LOST" >&2
+      echo >&2
+      echo "A spec may gain assertions; it may never lose one. A criterion made to fail" >&2
+      echo "faster by asserting less is the one outcome nothing downstream would catch." >&2
+      echo "workspace kept for inspection: $WT" >&2
+      exit 1
+    fi
+
+    say "before (enforced, after the contract repair)"
+    RED=0; gate before || RED=$?
+  fi
+
   if [ "$RED" -ne 0 ]; then
     echo >&2
     case "$RED" in
