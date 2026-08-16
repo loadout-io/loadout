@@ -114,8 +114,16 @@ pisarza, `Store::reader()`), zapytaj o pragmy i sprawdź: `busy_timeout` = 5000,
 potyka: `journal_mode` jest własnością **bazy** i trwa w pliku, a `busy_timeout`, `foreign_keys` i
 `synchronous` są własnością **połączenia** i wracają do wartości domyślnych przy każdym nowym —
 `foreign_keys` domyślnie jest **wyłączone**, więc czytelnik, który go nie ustawi, po cichu nie widzi
-kaskad. Kontrola przeciw pustej asercji: gołe `Connection::open(path)` otwarte w teście raportuje
-`busy_timeout` = 0 i `foreign_keys` = 0 — jeśli ta kontrola nie jest czerwona, asercja nic nie mierzy.
+kaskad. Kontrola przeciw pustej asercji **nie jest symetryczna**, bo świat taki nie jest, i to jest blizna
+(zmierzone 2026-08-16, rusqlite 0.40.2). Gołe `Connection::open(path)` raportuje `foreign_keys` = 0
+i to działa wprost — ale `busy_timeout` **nie** wraca do zera: rusqlite ustawia pięciosekundowy
+timeout sam, przy otwarciu. Czyli dokładnie tyle, ile wymagamy wyżej, więc asercja `busy_timeout`
+= 5000 na naszych konstruktorach przechodziłaby także wtedy, gdyby `apply_pragmas` tej pragmy nigdy
+nie tknęło. Ta jedna pragma dostaje więc kontrolę **dwustopniową**, na gołym połączeniu:
+(a) ustaw `PRAGMA busy_timeout = 0` i wymagaj, żeby odczyt oddał 0 — to dowodzi, że czytnik czyta
+połączenie, a nie pamięta wartość; (b) na tym samym połączeniu wywołaj `apply_pragmas` i wymagaj
+5000 — to jest jedyna asercja w tym pliku, która odróżnia „ustawiliśmy" od „rusqlite ustawił za nas".
+Bez (a) krok (b) nie dowodzi niczego.
 
 *Słaba asercja:* sprawdzenie pragm tylko na połączeniu zwróconym przez `open()`. Przechodzi, gdy
 `reader()` omija helper i idzie prosto do `Connection::open_with_flags` — czyli w dokładnie tym
