@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 pub mod handoff;
+pub mod notes;
 
 /// Błędy pamięci — wspólne dla przekazań i notatek.
 #[derive(Debug, thiserror::Error)]
