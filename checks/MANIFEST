@@ -18,6 +18,7 @@ quick-suppressions
 quick-tokens
 quick-types
 quick-vocabulary
+quick-wired
 
 full-clippy
 full-test
