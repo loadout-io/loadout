@@ -29,8 +29,13 @@ const RESETS_AT: i64 = 1_786_800_600;
 /// Kiedy bieg zobaczył zdarzenie: pięć minut wcześniej.
 const NOW: i64 = 1_786_800_300;
 
-/// Ile dzieli te dwie chwile — w sekundach, bo w sekundach są obie.
-const WAIT: Duration = Duration::from_secs(300);
+/// Ile dzieli te dwie chwile: pięć minut, bo w sekundach są obie liczby z drutu.
+///
+/// Zapisane jako minuty, nie jako `from_secs(300)`, bo `clippy::duration_suboptimal_units`
+/// nie przepuszcza tej drugiej formy, a bramka lintuje testy z `-D warnings` (2026-08-16).
+/// Wartość jest ta sama co do nanosekundy, więc asercja niżej dalej pada dla implementacji,
+/// która przeczyta `resetsAt` jako milisekundy — jednostki pilnuje porównanie, nie zapis.
+const WAIT: Duration = Duration::from_mins(5);
 
 /// O ile przesuwamy zegar za pierwszym razem: sekunda za mało.
 const NEARLY: Duration = Duration::from_secs(299);

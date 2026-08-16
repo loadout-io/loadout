@@ -120,7 +120,7 @@ fn any_status_other_than_allowed_stops_dispatch() {
 }
 
 #[test]
-fn a_shape_without_status_is_written_down_and_dropped() -> Result<(), Box<dyn Error>> {
+fn a_shape_without_status_is_written_down_and_dropped() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&notes);
     let subscriber = tracing_subscriber::fmt()
@@ -152,6 +152,4 @@ fn a_shape_without_status_is_written_down_and_dropped() -> Result<(), Box<dyn Er
         "and the note has to name the field that was missing, otherwise it is a line that says \
          something happened. It said: {written:?}"
     );
-
-    Ok(())
 }
