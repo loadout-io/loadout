@@ -17,8 +17,8 @@
 //! ani własnego `pgid` po raz drugi, więc nie ma jak porównać wartości samej ze sobą — patrz
 //! datowana notka przy [`Machine::boot_id`].
 //!
-//! Jedyne, po co ten plik sięga poza swoje dwa argumenty, to **świeży identyfikator sesji**
-//! dla opcji „zacznij od nowa" ([`fresh_session`]). Jest to nazwane tutaj, bo inaczej byłoby
+//! 2026-08-16 — jedyne, po co ten plik sięga poza swoje dwa argumenty, to **świeży identyfikator
+//! sesji** dla opcji „zacznij od nowa" ([`fresh_session`]). Jest to nazwane tutaj, bo inaczej byłoby
 //! ciche: `Uuid::now_v7()` czyta zegar, a nie stan procesów, więc nie dotyka granicy, której
 //! pilnuje niezmiennik 3 — `checks/quick-boundary.sh` szuka `#[cfg(unix)]`, a tutaj nie ma ani
 //! jednej gałęzi platformowej. Zamiany na wartość wyliczoną z wiersza nie ma: identyfikator
@@ -354,7 +354,7 @@ impl RunState {
 
     /// Czy awaria aplikacji zastała ten bieg w locie.
     ///
-    /// `Interrupted` jest tu po stronie „nie", i to jest cała druga połowa AC-3: odzyskiwanie
+    /// 2026-08-16 — `Interrupted` jest tu po stronie „nie", i to jest cała druga połowa AC-3: odzyskiwanie
     /// biegnie przy KAŻDYM starcie, więc zobaczy także wiersze, które samo poprawiło godzinę
     /// wcześniej. Bieg, który już nosi ten status, jest zamknięty — dopisanie go drugi raz
     /// zamieniłoby jedną awarię w kolejkę identycznych zapisów.
@@ -396,8 +396,8 @@ fn fresh_session() -> String {
 /// w ogóle nie zobaczył, dają identyczne [`RecoveryPlan::reap`] i różnią się dopiero na tej
 /// liście.
 ///
-/// Sprawdzenie biegnie **niezależnie** od strażnika czasu startu, choć po restarcie maszyny
-/// i tak nikogo nie zabijemy. Powód stoi wprost w AC-1: pytania nie mają prawa zależeć od tego,
+/// 2026-08-16 — sprawdzenie biegnie **niezależnie** od strażnika czasu startu, choć po restarcie
+/// maszyny i tak nikogo nie zabijemy. Powód stoi wprost w AC-1: pytania nie mają prawa zależeć od tego,
 /// czy maszyna się zrestartowała. Gdyby ten filtr stał za strażnikiem, wiersz z `pgid = 0`
 /// dostawałby pytanie po restarcie i nie dostawał bez restartu — jedna awaria, dwie różne listy.
 fn usable_pgid(pgid: Option<i32>, own_pgid: i32) -> Result<i32, &'static str> {
