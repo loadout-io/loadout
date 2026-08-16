@@ -692,8 +692,15 @@ pub fn follow_policy(chain: &[&str]) -> Result<(), FetchError> {
 /// pliku dokładnie na limicie od pliku uciętego w połowie. Sprawdzenie u siebie, po fakcie,
 /// zamiast zaufania `--max-filesize`.
 pub fn read_capped(source: impl Read, limit: u64) -> Result<Vec<u8>, FetchError> {
-    let _ = source;
-    todo!("czytaj do limitu {limit} i odmów przy pierwszym bajcie ponad")
+    let mut bytes = Vec::new();
+    source
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(FetchError::FileTooBig { limit });
+    }
+    Ok(bytes)
 }
 
 /// Suma rozmiarów wszystkich plików umiejętności wobec limitu całości.
@@ -701,7 +708,17 @@ pub fn read_capped(source: impl Read, limit: u64) -> Result<Vec<u8>, FetchError>
 /// Osobno od [`read_capped`], bo to jest inny atak: pięć plików mieszczących się w limicie
 /// pojedynczym, których suma zapycha dysk.
 pub fn total_within(sizes: &[u64], limit: u64) -> Result<u64, FetchError> {
-    todo!("zsumuj {} rozmiarów i porównaj z {limit}", sizes.len())
+    // `checked_add`, nie `+`: suma rozmiarów przychodzi z sieci, a przepełnienie u64 zawija się
+    // do liczby MNIEJSZEJ od limitu, czyli zamienia odmowę w zgodę.
+    let total = sizes
+        .iter()
+        .try_fold(0u64, |sum, size| sum.checked_add(*size))
+        .ok_or(FetchError::TotalTooBig { limit })?;
+
+    if total > limit {
+        return Err(FetchError::TotalTooBig { limit });
+    }
+    Ok(total)
 }
 
 /// Komenda pobrania — JEDNO miejsce, w którym powstaje wywołanie `curl`.
@@ -741,7 +758,165 @@ pub struct Import {
 /// wykonywalności zostaje — zdejmowanie go zamieniłoby cudzą działającą umiejętność
 /// w zepsutą — a to, że nikt tego pliku nie odpala, jest własnością KODU, nie uprawnień.
 pub fn from_folder(dir: &Path) -> Result<Import, FetchError> {
-    todo!("wczytaj SKILL.md i pliki obok niego z {}", dir.display())
+    // Limit pojedynczego pliku sprawdzony u siebie, na bajtach, które faktycznie przyszły —
+    // `--max-filesize` w argv curla jest deklaracją narzędzia (niezmiennik 20).
+    let raw = read_capped(fs::File::open(dir.join(SKILL_FILE))?, FILE_CAP)?;
+    let raw = String::from_utf8(raw).map_err(|_| FetchError::NotText)?;
+
+    let files = bundled_files(dir)?;
+    let mut sizes = vec![u64::try_from(raw.len()).unwrap_or(u64::MAX)];
+    for file in &files {
+        sizes.push(fs::symlink_metadata(&file.source)?.len());
+    }
+    total_within(&sizes, TOTAL_CAP)?;
+
+    // Potok w jednej kolejności: znormalizuj i przeskanuj CAŁY plik, dopiero potem rozbij na
+    // pola. Parsowanie przed skanem znaczyłoby, że skan ogląda ciało, a front-matter
+    // z `hooks:` przejeżdża bokiem.
+    let reviewed = review(&raw);
+    let skill = skill_from(parse_doc(&reviewed.body), files);
+    let scripts = skill
+        .files
+        .iter()
+        .filter(|file| file.relative.starts_with("scripts"))
+        .count();
+
+    Ok(Import {
+        skill,
+        reviewed,
+        scripts,
+    })
+}
+
+/// Wszystko obok `SKILL.md`, rekurencyjnie, ścieżkami względnymi.
+///
+/// Dowiązania są pomijane, a nie kopiowane: `fs::copy` idzie po dowiązaniu do końca, więc
+/// `references/keys -> ~/.ssh` w cudzej umiejętności zaciągnąłby zawartość katalogu, którego
+/// nikt nie pobierał. Katalog docelowy ma zawierać to, co przyszło z sieci, i nic spoza niego.
+fn bundled_files(dir: &Path) -> Result<Vec<BundledFile>, FetchError> {
+    let mut found = Vec::new();
+    walk_into(dir, Path::new(""), &mut found)?;
+    // Kolejność z systemu plików nie jest ustalona; plan instalacji czyta człowiek.
+    found.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(found)
+}
+
+fn walk_into(dir: &Path, prefix: &Path, found: &mut Vec<BundledFile>) -> Result<(), FetchError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let source = entry.path();
+        let relative = prefix.join(entry.file_name());
+        let kind = fs::symlink_metadata(&source)?;
+
+        if kind.is_dir() {
+            walk_into(&source, &relative, found)?;
+        } else if kind.is_file() && relative != Path::new(SKILL_FILE) {
+            if kind.len() > FILE_CAP {
+                return Err(FetchError::FileTooBig { limit: FILE_CAP });
+            }
+            found.push(BundledFile { relative, source });
+        }
+    }
+    Ok(())
+}
+
+/// `SKILL.md` → front-matter i ciało, permisywnie (niezmiennik 5).
+///
+/// Nieznany klucz nie jest błędem: ląduje w [`Skill::extras`], a emiter T-18 decyduje, czy ma
+/// przenośny odpowiednik. Front-matter bez zamknięcia nie jest front-matterem — `---` w
+/// pierwszej linii pliku, który nigdy się nie domyka, to pozioma kreska, a nie nagłówek.
+fn parse_doc(text: &str) -> SkillDoc {
+    let whole = || SkillDoc {
+        fields: Vec::new(),
+        body: text.to_owned(),
+    };
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return whole();
+    };
+
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut consumed = 0usize;
+    let mut closed = false;
+
+    for line in rest.split_inclusive('\n') {
+        consumed += line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        if content.trim_end() == "---" {
+            closed = true;
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            // Wcięcie to ciąg dalszy poprzedniego klucza (`metadata:` i jego pary). Surowy
+            // tekst wystarczy: rozbiera go [`nested`], a emiter i tak pisze mapę po swojemu.
+            if let Some((_, value)) = fields.last_mut() {
+                value.push('\n');
+                value.push_str(content);
+            }
+        } else if let Some((key, value)) = content.split_once(':') {
+            fields.push((key.trim().to_owned(), unquote(value.trim())));
+        }
+    }
+
+    if closed {
+        SkillDoc {
+            fields,
+            body: rest[consumed..].to_owned(),
+        }
+    } else {
+        whole()
+    }
+}
+
+/// Wartość YAML-a bez cudzysłowu, jeśli w cudzysłowie przyszła.
+///
+/// Lustro `place::scalar`, które cytuje przy zapisie. Bez tego `description: "a: b"` wraca
+/// z cudzysłowami w środku pola i po drugim „Update" umiejętność ma tytuł w trzech warstwach
+/// znaków cytowania.
+fn unquote(value: &str) -> String {
+    for quote in ['"', '\''] {
+        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return value[1..value.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+        }
+    }
+    value.to_owned()
+}
+
+/// Dokument → umiejętność kanoniczna.
+fn skill_from(doc: SkillDoc, files: Vec<BundledFile>) -> Skill {
+    let mut skill = Skill {
+        body: doc.body,
+        files,
+        ..Skill::default()
+    };
+    for (key, value) in doc.fields {
+        match key.as_str() {
+            "name" => skill.name = value,
+            "description" => skill.description = value,
+            "license" => skill.license = Some(value),
+            "compatibility" => skill.compatibility = Some(value),
+            "allowed-tools" => skill.allowed_tools = Some(value),
+            "metadata" => skill.metadata = nested(&value),
+            // Wszystko inne — łącznie z `hooks` — zostaje jako fakt o imporcie. Zdejmuje je
+            // emiter T-18 i to on mówi, co dokładnie zniknęło.
+            _ => {
+                skill.extras.insert(key, value);
+            }
+        }
+    }
+    skill
+}
+
+/// Pary spod wciętego klucza (`metadata:`), płasko.
+fn nested(raw: &str) -> BTreeMap<String, String> {
+    raw.lines()
+        .filter_map(|line| line.trim().split_once(':'))
+        .map(|(key, value)| (key.trim().to_owned(), unquote(value.trim())))
+        .collect()
 }
 
 // ── Samotest po instalacji ─────────────────────────────────────────────────────────────────
