@@ -26,8 +26,25 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+/* `screens={{}}` — powłoka BEZ ekranów sekcji, i to jest podmiot tego kryterium.
+ *
+ * 2026-08-16: bez tego argumentu test renderował powłokę RAZEM z ekranami innych zadań i sądził
+ * ich zawartość, choć jest o czym innym. Zderzenie było nieuniknione i przyszło z T-26: pusty
+ * ekran sekcji ma **zapraszać** (makieta, DESIGN §6), więc niesie przycisk dodawania — a wtedy
+ * przycisków jest sześć, nie pięć, i „nie ma martwego szóstego" zaczyna oznaczać „żadna sekcja
+ * nie ma prawa mieć własnej akcji". Dwa kryteria z dwóch zadań zaczęły sobie przeczyć.
+ *
+ * Rozstrzygnięcie nie jest kompromisem: komentarz na górze tego pliku mówi, że kryterium pilnuje
+ * PRZEŁĄCZNIKA — „sam przełącznik, i ani jednego więcej". Zdanie „w T-01 nie ma jeszcze czego
+ * tworzyć" było prawdą o momencie, nie o powłoce, a zostało zapisane jako asercja wieczna.
+ * Pusta mapa przywraca kryterium jego własny podmiot; ani jedna asercja nie znika i nie słabnie.
+ * Ten sam zabieg stosuje już `screen-fallback.test.tsx`.
+ *
+ * Czego to kryterium po tej zmianie NIE sprawdza: martwych przycisków w ekranach sekcji. Nigdy
+ * nie sprawdzało — niezmiennik 16 obowiązuje każde zadanie z osobna i tam ma swoje kryteria.
+ */
 function markupFor(id: (typeof EXPECTED)[number]): string {
-  return renderToStaticMarkup(<App section={id} />);
+  return renderToStaticMarkup(<App section={id} screens={{}} />);
 }
 
 /** Treść jedynego elementu z `data-empty`, bez znaczników i bez nadmiarowych odstępów. */
