@@ -16,6 +16,7 @@ Przeczytaj w tej kolejności. To nie jest lista lektur — to jest kontekst, bez
 
 | Plik | Co z niego wynosisz |
 |---|---|
+| `docs/STATUS.md` | **czytaj to pierwsze.** Co stoi w trunku, co jest odstawione i dlaczego, co poszło źle ostatnio. Jedyny plik, który mówi o STANIE, a nie o zamiarze |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich.** Jeśli zadanie im przeczy — to defekt zadania |
 | `AGENTS.md` | karta pracy: 28 numerowanych niezmienników i kontrakt kryterium w §2a |
 | `docs/ARCHITECTURE.md` | kształt systemu, maszyna stanów kroku, sufit gęstości, dziewięć rozstrzygniętych pytań |
@@ -203,28 +204,66 @@ Pięć rzeczy, których przy takiej naprawie pilnujesz:
 
 Granica jest jedna i prosta: **naprawiasz to, co uniemożliwia ocenę. Nigdy tego, co ocenia.**
 
-## 5b. Jak znaleźć i zatrzymać bieg
+## 5b. Nie buduj warstwy monitoringu
 
-**Nigdy nie szukaj procesów harnessu po nazwie pliku.** Od czasu przypięcia skrypty biegną
-jako `/var/folders/…/ship-task.F1KPavKuWS`, więc `pgrep -f 'ship-task.sh'` i
-`pkill -f 'scripts/build-loop.sh'` cicho nie trafiają. Zmierzone 2026-08-15: obserwator
-zameldował „build-loop wyszedł", kiedy pętla spokojnie pisała kontrakt. Fałszywe
-„skończone" jest gorsze niż brak monitoringu.
+Były dwa skrypty — `scripts/loop.sh` i `scripts/wave.sh` — i **oba zostały skasowane**
+(`3946181`). Przeczytaj tamten komunikat commita, zanim odruchowo napiszesz trzeci.
 
-Drugi błąd tej samej rodziny: zabicie basha **zostawia agenta**. `claude -p …` biegnie dalej
-jako sierota i pisze do worktree, którego nikt nie odbierze.
+Skrócona wersja: przez jedną noc trzy razy poprawiałem `loop.sh` po tym, jak **skłamał** — raz
+zostawił osieroconego agenta po `pkill`, raz nie widział przypiętej kopii pod nazwą z `mktemp`,
+raz jego wzorzec złapał samego obserwatora, przez co „czekaj na koniec" nie skończyłby się nigdy.
+A `wave.sh`, napisany po tych trzech poprawkach, **zatrzymał cały nocny bieg**: WebStorm zapisał
+`.idea/`, `integrate.sh` słusznie odmówił lądowania na brudnym drzewie, a sterownik odkładał land
+„na następną rundkę" **444 razy przez osiem godzin, nie wypisując ani razu, co jest brudne**.
 
-Jedno miejsce wie oba te fakty:
+**Monitoring, który nie diagnozuje, jest gorszy niż jego brak** — bo wygląda jak nadzór.
+
+Zamiast warstwy: pytaj system wprost, w chwili, w której potrzebujesz odpowiedzi.
 
 ```
-./scripts/loop.sh status    # co biegnie, przy którym zadaniu, w jakiej fazie
-./scripts/loop.sh stop      # zatrzymaj czysto, razem z agentem, z weryfikacją
-./scripts/loop.sh wait      # blokuj, dopóki pętla biegnie
+ps -eo pid,command | grep '[s]hip-task'        # co biegnie (nazwa to mktemp, nie ship-task.sh)
+ps -eo pid,command | grep '[c]laude -p'        # agenci; sam bash to za mało, dziecko przezyje
+git worktree list                              # gdzie stoi praca
+git log --oneline --grep='land task-'          # co naprawde wyladowalo
+git status --porcelain -uall                   # czy da sie w ogole landowac
 ```
 
-Kiedy chcesz zatrzymać pętlę między zadaniami, a nie w środku: poczekaj, aż
-`runs/build-loop.tsv` dostanie wiersz `green` dla bieżącego zadania — dopiero wtedy
-`integrate.sh` już się udał i zabicie niczego nie urywa w połowie.
+Dwie pułapki, obie kosztowały bieg:
+
+- **Zabicie basha zostawia agenta.** `claude -p` przeżywa śmierć rodzica i pisze do worktree,
+  którego nikt nie odbierze. Kończ zawsze parę: skrypt **i** jego `claude`.
+- **Przypięte skrypty biegną jako `/var/folders/…/ship-task.F1KP…`**, nie `./ship-task.sh`
+  (`exec bash "$snap"`, żeby edycja w trakcie biegu nie psuła procesu). Każdy wzorzec pisany
+  na starą nazwę cicho nie trafia.
+
+---
+
+## 5c. Wolno ci poszerzyć kontrakt — ale tylko z dowodem
+
+Człowiek dał na to mandat 2026-08-16, z jednym twardym warunkiem.
+
+Bywa, że kryterium jest **poprawne, a niewykonalne**, bo potrzebuje API z pliku spoza bloku OWNS
+zadania. Zdarzyło się na `T-04`: `AC-6` i `AC-7` wymagały `StdinPlan::Keep` i `Supervised::stdin()`
+w `supervisor.rs`, którego T-04 nie posiadał. Agent naprawczy zdiagnozował to poprawnie, odmówił
+trzech obejść (wymieniając je po nazwie) i się zatrzymał — po 82 minutach i $36.
+
+Wolno ci wtedy **poszerzyć uprawnienia**, nigdy kryteria:
+
+1. Dopisz brakującą ścieżkę do bloku `<!-- OWNS -->` zadania.
+2. Dopisz **wąski mandat** prozą: dokładnie co wolno w tym pliku zrobić, i zdanie, że reszta
+   jest cudza. Wymień też obejścia, które przechodzą naiwną asercję — następny bieg zaczyna
+   wtedy mądrzejszy.
+3. **Udowodnij mechanicznie, że nie ruszyłeś kryteriów.** Porównaj linie `## AC-`, `check:`
+   i `expect:` w starym `TASK.md` gałęzi i nowym `tasks/<ID>.md`. Muszą być **identyczne**.
+   Jeśli którakolwiek się różni — cofnij się i zapytaj człowieka.
+4. Przemroź kontrakt na gałęzi (`cp tasks/<ID>.md TASK.md`, commit) i **zapisz w komunikacie
+   wynik porównania z punktu 3**, nie samą deklarację, że sprawdziłeś.
+
+Czego ten mandat **nie** obejmuje: przeformułowania kryterium, które uważasz za błędne. Kryterium
+to jedyna rzecz stojąca między agentem a udawaniem, że zrobił. Jeśli jest złe — to jest znalezisko
+dla człowieka.
+
+---
 
 ## 6. Co raportujesz człowiekowi
 
@@ -238,40 +277,57 @@ Zatrzymujesz się i piszesz dłużej, kiedy:
 - koszt jednego zadania przekroczył **$25** — to sygnał, że coś się zapętla, nie że zadanie jest trudne,
 - zadanie potrzebuje pliku spoza swojego bloku `<!-- OWNS -->`.
 
-Po trzech zadaniach podaj prognozę całości z realnych liczb w `runs/build-loop.tsv`, nie z przeczucia.
+Po trzech zadaniach podaj prognozę całości z **realnych liczb** — `runs/build-loop.tsv` i koszty
+z transkryptów w `runs/<ID>/*.jsonl` — nie z przeczucia. I aktualizuj `docs/STATUS.md` po każdym
+lądowaniu: to jedyny plik, z którego następna sesja dowie się, gdzie jesteś.
 
 ---
 
-## 7. Stan na teraz
+## 7. Od czego zaczynasz
 
-**`S-1` przeszedł całą ścieżkę do zielonego** — pierwszy raz: kontrakt → before → budowa → bramka →
-druga opinia → naprawa → zielono. 27 minut. Na prawdziwej, zmierzonej pracy: sondy `claude`
-zapisały surowe `system/init`, a odpowiedź stoi w `docs/research/topics/S1-skill-subsetting.md`.
+Liczby i pełny obraz są w `docs/STATUS.md` — tutaj tylko kolejność ruchów.
 
-Trzy mechanizmy dowiodły, że nie są ozdobą:
+**Najpierw `T-06`.** Jest jedynym odstawionym na czerwonym i **blokuje trzy zadania naraz**
+(`T-07`, `T-17`, `T-20`), więc jest najwyżej punktowaną robotą, jaka została. Padł kodem 3
+w warstwie `before`: sześć kryteriów zeszło w sekundę, a `AC-2` zjadło 840 s i zgłosiło
+„did not FINISH". `AC-2` celowo otwiera **drugie, zapisujące** połączenie SQLite prosto na plik
+bazy, z pominięciem naszego API — i to połączenie zawisło.
 
-- **recenzent znalazł słabą asercję na czerwonej bramce**, w trybie same-vendor: test asertował
-  `treatment !== control` jako stringi, więc dokument mógł zapisać różnicę kosmetyczną, podczas
-  gdy żaden bieg nie użył badanego mechanizmu
-- **runda naprawcza zrobiła to, czego faza budowy nie zdołała** — utworzyła katalog, wygenerowała
-  plugin, odpaliła kontrolę i próbę
-- **bramka nie puściła niczego**, dopóki kryteria naprawdę nie przechodziły
+Zacznij od przeczytania `../loadout-task-T-06/src-tauri/tests/store_append_only.rs` i tego, co
+faza kontraktu wpisała do `src-tauri/src/store/`. Pytanie, na które odpowiadasz najpierw: **czy
+w warstwie `before` szkielet w ogóle otwiera połączenie?** Przy `todo!()` powinien panikować
+natychmiast, nie wisieć — jeśli wisi, faza kontraktu napisała za dużo. Jeśli natomiast wisi
+prawdziwa implementacja, to **defekt produktu, nie testu**: magazyn trzyma zamek, którego nie
+oddaje, więc `sqlite3 loadout.db` z terminala zawiesi się tak samo, a kryterium zrobiło
+dokładnie to, po co je napisano.
 
-Odpowiedź `S-1`, która **zmienia `T-13`**: podzbiór umiejętności jest możliwy, ale wymaga dwóch
-flag (`--plugin-dir <wygenerowany katalog>` **plus** `--setting-sources ""`), a 16 wbudowanych
-skilli CLI przeżywa mimo wszystko. Uczciwy tekst w UI brzmi **„tylko te, plus wbudowane skille
-CLI"**. Jeśli `T-13` wyrenderuje to jako gwarancję absolutną, kłamie o 16.
+**Potem trzy gotowe od ręki:** `T-13`, `T-14`, `T-18`. Mają wszystkie zależności w trunku i są
+od siebie niezależne — puść je razem.
 
-Harness: **11 sprawdzeń, 9 strażników strzela, 0 pudłuje.**
+**`T-08` ma priorytet nad resztą frontu.** `T-25` dał mechanizm montowania sekcji, ale żadna
+sekcja nie ma jeszcze `index.tsx`, więc `npm run dev` pokazuje pięć pustych ekranów. `T-08`
+niesie `AC-8` — jedyne kryterium w całym projekcie, które renderuje `<App>` bez wstrzykiwania
+i sprawdza, że zdania pustego ekranu **nie ma**. Dopóki nie wyląduje, aplikacja jest zielona
+i pusta, a bramka nigdy o tym nie powie.
 
-Zbudowane: nic. `src/` ma wyłącznie `theme.css`, `src-tauri/src/` jest puste.
+**Po 2026-08-20:** wracają kredyty Codeksa. Wtedy `S-3` i `T-10`, a przede wszystkim przegląd
+cross-vendor wszystkiego, co powstało w trybie same-vendor (`docs/PLAN.md` §6a) — czyli całości.
+To nie jest formalność: jedyne realne defekty na **zielonej** bramce znalazł dotąd recenzent
+innego vendora.
 
-### Czego nadal nikt nie uruchomił
+### Trzy rzeczy, które już wiadomo, i nie trzeba ich odkrywać drugi raz
 
-- **`integrate.sh` — landowanie.** Zero przebiegów, a bez niego `T-02` nie zobaczy `lib.rs` od
-  `T-01`. Jeśli to jest zepsute, pętla staje na drugim zadaniu.
-- **Żadnego zadania rustowego end-to-end.** `S-1` pisał markdown i testy TS; ani jednego `cargo`.
-- **`build-loop.sh` i wachlarz przez Workflow.**
+**Konflikt w `lib.rs` przy lądowaniu jest pewny, nie jest awarią.** Ten plik zbiera `pub mod` od
+każdego zadania tworzącego moduł. Przy T-11 i T-12 wystąpił dwa razy. Rozwiązanie jest zawsze to
+samo: **zachowaj obie deklaracje**, nie wybieraj strony. To samo dotyczy `engine/mod.rs`,
+`memory/mod.rs`, `skills/mod.rs`, `drivers/mod.rs`.
 
-Więc zaczynasz od wylandowania `S-1` (`./integrate.sh task-S-1`) — darmowy test jedynego
-nietkniętego etapu — a potem `T-01`, bo on pierwszy dotyka Rusta.
+**`TASK.md` nie ma prawa przeżyć lądowania.** `integrate.sh` kasuje go i doszywa do commita —
+ale jeśli rozwiązujesz konflikt **ręcznie** i sam robisz `git commit`, ten krok się nie wykona.
+Trunk z cudzym kontraktem sprawia, że każdy nowy worktree rodzi się z `TASK.md` w środku,
+a `ship-task.sh` słusznie odmawia wtedy startu. Sprawdź po każdym ręcznym merge'u.
+
+**Sprzęt nie jest limitem.** Zmierzone przy sześciu agentach: Apple M4 Max, 64 GB, load 2,6 na
+szesnastu rdzeniach, 2,5 GB pamięci, **zero** czekania na muteksie cargo. Agent czeka na
+odpowiedź modelu, nie na procesor. Limitem jest szerokość fali zależności — odpalaj wszystko,
+co ma spełnione zależności, i przeliczaj zbiór po każdym lądowaniu.
