@@ -72,8 +72,21 @@ Dyskryminuje: **jedna** lista jako zrodlo obu polowek asercji.
 - **Pierwsze ograniczenie D6** (kolizja z flagami, ktore Loadout ustawia sam) — ma juz kryterium
   w T-11.
 
+**Poszerzenie UPRAWNIEN, nie kryteriow (par. 5c, orchestrator 2026-08-17).** Dwa biegi T-36
+zatrzymaly sie na tym samym: agent napisal filtr poprawnie, ale `FORBIDDEN_ESCALATIONS` w
+`workflow/check.rs` liczy DWIE pozycje -- `bypassPermissions` i `danger-full-access` -- i **nie
+ma tam `--dangerously-skip-permissions`**, czyli glownej flagi eskalacyjnej Claude Code. Wiec
+dziura jest szersza, niz mowil przeglad: nie chodzi o brakujacy filtr po stronie agenta, tylko
+o niekompletna liste, ktora przepuszcza te flage TAKZE w przelotce kroku workflow.
+
+Agent nie mogl tego zamknac, bo tego pliku nie posiada, i slusznie sie zatrzymal.
+
+Wolno tu wylacznie: **dopisac pozycje do `FORBIDDEN_ESCALATIONS`**. Reguly walidacji workflow,
+tresci uwag i progu `MOST_COPIES` nie dotykamy -- maja swoje kryteria w T-12.
+
 <!-- OWNS
 src-tauri/src/library/agents.rs
+src-tauri/src/workflow/check.rs
 src-tauri/tests/agents_vendor_args_filtered.rs
 src-tauri/tests/agents_vendor_args_one_policy.rs
 -->
