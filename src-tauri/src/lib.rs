@@ -21,6 +21,8 @@ pub mod engine;
 
 /// Biblioteka uzytkownika: agenci, umiejetnosci, pamiec. Wypelnia T-11 i dalej.
 pub mod library;
+/// Magazyn: schemat `SQLite`, jeden pisarz, migracje. Wypelnia T-06.
+pub mod store;
 
 /// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
 pub mod memory;
