@@ -24,45 +24,60 @@
 //!   zakleszczenie, nie „czasem wolniej" [T7 ryzyko 7]. Po `WorkspaceId` tego nie widać:
 //!   identyfikator jest wyliczany ze ścieżki, więc zgadza się także wtedy.
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-16)
+//! # Gdzie leży magazyn karty
 //!
-//! Rejestr **niczego nie zapamiętuje**. [`Registry::open`] kanonikalizuje ścieżkę i sprawdza,
-//! czy to w ogóle folder — to jest czysta połowa, którą widać w sygnaturze — po czym oddaje
-//! identyfikator i **nie zakłada karty**. Wszystko, co pyta o stan rejestru, mówi więc prawdę:
-//! [`Registry::tabs`] jest pusty, [`Registry::store`] nie zna żadnego folderu, a
-//! [`Registry::set_active`], [`Registry::slots`] i [`Registry::attach_run`] odmawiają przez
-//! [`WorkspaceError::NoSuchWorkspace`] — bo takiej karty naprawdę nie ma.
-//!
-//! To jest wymagany kształt fazy, w której powstają kryteria: test ma się skompilować i paść
-//! **w czasie wykonania, na braku ZACHOWANIA** (`AGENTS.md` §2a p. 5). Żadnego kryterium nie
-//! da się na tym przejść — każde z trzech pyta rejestr o kartę, którą przed chwilą otworzyło.
-//!
-//! Ciała nie są `todo!()` i nie mogą nim być: `clippy::todo` jest w `Cargo.toml` na `deny`,
-//! a `checks/quick-clippy.sh` biegnie z `-D warnings` w KAŻDEJ warstwie bramki, także w tej.
-//! Ten sam wybór — świadomie niekompletne ciało zamiast makra paniki — zapisał T-02
-//! w nagłówku `engine/mod.rs`.
+//! W folderze workspace'a, pod `<folder>/.loadout/loadout.db` (`docs/ARCHITECTURE.md` §8).
+//! Jeden folder ma jeden indeks i jednego pisarza; kasowanie tego pliku kosztuje indeks
+//! i nic poza nim (niezmiennik 4). Rejestr zakłada `.loadout/` przy pierwszym otwarciu,
+//! bo bez katalogu magazyn nie ma gdzie stanąć.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::engine::limits::Limiter;
-use crate::store::{Store, StoreError};
+use crate::store::{NewEvent, Store, StoreError};
 
 /// Ile folderów pamięta menu wyboru. Lista ostatnio używanych jest **krótka z rozmysłem**:
 /// menu, które trzeba przewijać, przestaje być skrótem (`docs/ARCHITECTURE.md` §6a).
 pub const RECENT_CAP: usize = 10;
 
-/// Karta w rejestrze: identyfikator i magazyn tego folderu.
+/// Katalog projektowy Loadouta wewnątrz folderu workspace'a (`docs/ARCHITECTURE.md` §8).
+const PROJECT_DIR: &str = ".loadout";
+
+/// Indeks tego folderu. **Wolno go skasować** — jest indeksem, nie prawdą (niezmiennik 4).
+const INDEX_FILE: &str = "loadout.db";
+
+/// Ile linii mieści się w kanale karty, zanim bieg zaczeka na pompę.
 ///
-/// Krotka, a nie struktura, i to jest wybór na czas szkieletu: struktura, której nikt jeszcze
-/// nie konstruuje, jest dla `rustc` martwym typem, a jedyne wyjście z tego — atrybut wyciszający
-/// ten lint nad definicją — przewraca `checks/quick-suppressions.sh`, i słusznie: to jest ta
-/// jedna linia, która wyłącza bramkę od środka i w diffie wygląda jak zwykły kod. Struktura
-/// wraca razem z pierwszą kartą, którą rejestr naprawdę założy.
-type OpenTab = (WorkspaceId, Arc<Store>);
+/// Kanał **ograniczony**, nigdy `unbounded_channel`: nieograniczony zamienia wolniejszą pompę
+/// w rosnącą stertę i awaria przychodzi jako pamięć zamiast jako czekanie — czyli najpóźniej
+/// jak się da i bez śladu, kto ją spowodował.
+const LINES_IN_FLIGHT: usize = 256;
+
+/// Ile linii idzie do magazynu w jednej transakcji.
+///
+/// Zmierzone [T7 §5.3]: wsad stu wierszy to 662 238 wierszy/s wobec 67 144 przy jednym wierszu
+/// na transakcję. Pompa bierze tyle, ile akurat stoi w kanale, więc przy wolnym strumieniu
+/// wsad ma jeden wiersz i nic na to nie czeka — ta stała jest sufitem, nie progiem.
+const LINES_PER_BATCH: usize = 100;
+
+/// Karta w rejestrze: identyfikator folderu i magazyn tego folderu.
+#[derive(Debug)]
+struct OpenTab {
+    /// Kanoniczna ścieżka folderu — ta sama wartość, którą dostał wołający [`Registry::open`].
+    id: WorkspaceId,
+
+    /// Magazyn **tego** folderu.
+    ///
+    /// `Arc`, bo tożsamość tego obiektu jest całą treścią niezmiennika 2 w tym module: drugie
+    /// otwarcie folderu oddaje ten sam `Arc`, a nie równoważny magazyn — dwa `Store` nad jednym
+    /// plikiem to dwa zapisujące połączenia, czyli zakleszczenie [T7 ryzyko 7].
+    store: Arc<Store>,
+}
 
 /// Identyfikator workspace'a: **kanoniczna ścieżka folderu**, i nic więcej.
 ///
@@ -112,6 +127,18 @@ pub enum WorkspaceError {
     #[error("{} could not be read: {source}", .path.display())]
     Unreadable {
         /// Ścieżka, o którą prosił wołający.
+        path: PathBuf,
+        /// To, czym odmówił system plików.
+        source: std::io::Error,
+    },
+
+    /// Folder istnieje i da się go przeczytać, ale nie da się w nim założyć `.loadout/`, czyli
+    /// katalogu, w którym mieszka indeks tego workspace'a (`docs/ARCHITECTURE.md` §8). Dysk
+    /// zamontowany tylko do odczytu, cudzy katalog, pełny wolumen — wszystkie kończą tutaj.
+    // `.path.display()`, nie `{path}`: `PathBuf` nie implementuje `Display` i nigdy nie będzie.
+    #[error("{} could not be set up for work: {source}", .path.display())]
+    NotWritable {
+        /// Katalog, którego nie dało się założyć.
         path: PathBuf,
         /// To, czym odmówił system plików.
         source: std::io::Error,
@@ -302,19 +329,40 @@ impl Registry {
                 path: folder.to_path_buf(),
             });
         }
+        let id = WorkspaceId(canonical);
 
-        // SZKIELET (2026-08-16). Tu kończy się czysta połowa i zaczyna brakujące zachowanie:
-        // karta NIE trafia do `open`, magazyn folderu NIE powstaje, a lista ostatnich zostaje
-        // pusta. Identyfikator jest prawdziwy — jest wyliczany ze ścieżki i niczego o rejestrze
-        // nie twierdzi — więc żadne kryterium nie da się na tym przejść: wszystkie trzy pytają
-        // rejestr o kartę, którą przed chwilą otworzyły.
-        Ok(WorkspaceId(canonical))
+        {
+            // Sprawdzenie i założenie karty pod JEDNYM zamkiem, w jednym bloku. Rozdzielone
+            // na „zajrzyj, zwolnij, otwórz magazyn, wstaw" przepuszczają dwa wątki otwierające
+            // ten sam folder w tej samej chwili — obydwa nie znajdują karty i obydwa wołają
+            // `Store::open`. Skutkiem są dwa ZAPISUJĄCE połączenia do jednego pliku, czyli
+            // dokładnie to, przed czym stoi niezmiennik 2, tylko trudniejsze do zobaczenia,
+            // bo zdarza się raz na sto uruchomień.
+            //
+            // Ten zamek nie przechodzi przez `await` (niezmiennik 8): `Store::open` jest
+            // funkcją synchroniczną — startuje zadanie pisarza, ale na nic nie czeka.
+            let mut open = lock(&self.open);
+            if !open.iter().any(|tab| tab.id == id) {
+                let store = open_store(id.as_path())?;
+                open.push(OpenTab {
+                    id: id.clone(),
+                    store,
+                });
+            }
+        }
+
+        // Otwarcie folderu, który już ma kartę, PRZEŁĄCZA na nią (§6a reguła 1) — a otwarcie
+        // jest użyciem, więc folder idzie na górę listy ostatnich także wtedy, gdy jego karta
+        // stała na pasku od rana.
+        self.remember(&id);
+        self.set_active(&id)?;
+        Ok(id)
     }
 
     /// Karty na pasku, w kolejności otwarcia.
     #[must_use]
     pub fn tabs(&self) -> Vec<WorkspaceId> {
-        lock(&self.open).iter().map(|(id, _)| id.clone()).collect()
+        lock(&self.open).iter().map(|tab| tab.id.clone()).collect()
     }
 
     /// Ostatnio używane foldery, najnowszy pierwszy, najwyżej [`RECENT_CAP`].
@@ -333,8 +381,8 @@ impl Registry {
     pub fn store(&self, id: &WorkspaceId) -> Option<Arc<Store>> {
         lock(&self.open)
             .iter()
-            .find(|(open, _)| open == id)
-            .map(|(_, store)| Arc::clone(store))
+            .find(|tab| tab.id == *id)
+            .map(|tab| Arc::clone(&tab.store))
     }
 
     /// Karta na wierzchu.
@@ -349,8 +397,9 @@ impl Registry {
     /// a ich linie idą tą samą pompą co przedtem. Implementacja, która przy okazji odpina
     /// odbiornik strumienia, przechodzi każdy test pisany na karcie aktywnej.
     pub fn set_active(&self, id: &WorkspaceId) -> Result<()> {
-        // SZKIELET (2026-08-16): rejestr nie zna żadnej karty, więc odmowa jest tu zdaniem
-        // prawdziwym. Brakuje wpisania `id` do `self.active` — i niczego więcej.
+        // Jedno pole i ani jednej linii więcej. To nie jest oszczędność, tylko cała treść
+        // §6a reguły 2: przełączenie, które przy okazji czegokolwiek dotyka — odbiornika,
+        // pauzy, pompy — jest przełączeniem, które gubi linie w karcie w tle.
         self.known(id)?;
         *lock(&self.active) = Some(id.clone());
         Ok(())
@@ -374,24 +423,114 @@ impl Registry {
     /// Pompa jest zadaniem karty i żyje tak długo, jak długo żyje [`RunSink`] — nie tak długo,
     /// jak długo karta jest widoczna. Ta jedna różnica jest całym AC-1.
     pub fn attach_run(&self, id: &WorkspaceId, run_id: &str) -> Result<RunSink> {
-        self.known(id)?;
-        // SZKIELET (2026-08-16): karty nie ma, więc ta linia jest nieosiągalna — a kiedy karta
-        // będzie, brakuje tu zadania pompy: pętli czytającej kanał DO KOŃCA i wsadowego
-        // `append_events` przez `Store::writer` tej karty (niezmiennik 2 — nigdy własne
-        // połączenie zapisujące).
-        tracing::debug!(tab = %id, run = run_id, "this tab has no line pump yet");
-        Err(WorkspaceError::PumpGone)
+        // Magazyn TEJ karty, wzięty raz i oddany pompie na własność. Pompa, która pytałaby
+        // rejestr o magazyn przy każdym wsadzie, pisałaby do magazynu karty AKTYWNEJ w chwili
+        // zapisu — a to jest ta sama awaria co odpięty odbiornik, tylko widać ją jako dwa
+        // transkrypty sklejone w jednym pliku.
+        let store = self
+            .store(id)
+            .ok_or_else(|| WorkspaceError::NoSuchWorkspace(id.clone()))?;
+
+        // `try_current`, nie `tokio::spawn`: to drugie panikuje poza runtime'em, a panika
+        // w agentowym runtime zabiera cały bieg (`AGENTS.md` §4). Wołający dostaje ten sam
+        // błąd, który dostałby od magazynu.
+        let handle = Handle::try_current().map_err(|_| StoreError::NoRuntime)?;
+        let (lines, inbox) = mpsc::channel(LINES_IN_FLIGHT);
+
+        // Pompa wisi na KARCIE, nie na widoku, i to jest całe AC-1. Zadanie żyje tak długo,
+        // jak długo żyje [`RunSink`] biegu — przełączenie karty nie ma do niego dostępu,
+        // więc nie ma czego odpiąć i nie ma gdzie zgubić stu linii.
+        let pump = handle.spawn(pump(store, run_id.to_owned(), inbox));
+        Ok(RunSink {
+            lines,
+            pump,
+            accepted: 0,
+        })
     }
 
     /// Odmawia, kiedy takiej karty nie ma. Jedno miejsce, żeby komunikat brzmiał tak samo
     /// niezależnie od tego, kto pytał.
     fn known(&self, id: &WorkspaceId) -> Result<()> {
-        if lock(&self.open).iter().any(|(open, _)| open == id) {
+        if lock(&self.open).iter().any(|tab| tab.id == *id) {
             Ok(())
         } else {
             Err(WorkspaceError::NoSuchWorkspace(id.clone()))
         }
     }
+
+    /// Kładzie folder na górze listy ostatnio używanych i przycina ją do [`RECENT_CAP`].
+    ///
+    /// Kolejność jest po **użyciu**, nie po pierwszym otwarciu: lista układana wstawianiem
+    /// czyta się tak samo przez pierwszych dziesięć otwarć i potem nigdy się nie zmienia,
+    /// czyli jest menu, którego górna pozycja jest folderem sprzed tygodnia.
+    fn remember(&self, id: &WorkspaceId) {
+        let mut recent = lock(&self.recent);
+        recent.retain(|seen| seen != id);
+        recent.insert(0, id.clone());
+        recent.truncate(RECENT_CAP);
+    }
+}
+
+/// Otwiera magazyn folderu — `<folder>/.loadout/loadout.db` (`docs/ARCHITECTURE.md` §8).
+///
+/// Woła się to **wyłącznie** z [`Registry::open`], spod zamka na liście kart, i tylko dla
+/// folderu, który karty jeszcze nie ma. Drugie wywołanie dla tego samego folderu byłoby drugim
+/// zapisującym połączeniem do tego samego pliku (niezmiennik 2).
+fn open_store(folder: &Path) -> Result<Arc<Store>> {
+    let project = folder.join(PROJECT_DIR);
+    std::fs::create_dir_all(&project).map_err(|source| WorkspaceError::NotWritable {
+        path: project.clone(),
+        source,
+    })?;
+    Ok(Arc::new(Store::open(&project.join(INDEX_FILE))?))
+}
+
+/// Pompa jednej karty: czyta kanał **do końca** i dopisuje linie do magazynu tego folderu.
+///
+/// Oddaje, ile linii naprawdę weszło do magazynu. Ta liczba, porównana z tym, ile linii karta
+/// przyjęła, jest jedynym miejscem, w którym „nic nie zginęło" jest zdaniem sprawdzalnym —
+/// bez niej bieg z dziurą w transkrypcie melduje `Succeeded` i wygląda dokładnie jak zdrowy.
+///
+/// Zapis idzie przez [`Store::writer`] tej karty, nigdy przez własne połączenie (niezmiennik 2).
+async fn pump(store: Arc<Store>, run_id: String, mut lines: mpsc::Receiver<RunLine>) -> u64 {
+    let writer = store.writer();
+    let mut taken: Vec<RunLine> = Vec::with_capacity(LINES_PER_BATCH);
+    let mut written: u64 = 0;
+
+    // `recv_many`, nie `recv` w pętli: wsad wielkości tego, co akurat stoi w kanale, jest
+    // o rząd wielkości tańszy od wiersza na transakcję [T7 §5.3] i nie kosztuje ani milisekundy
+    // czekania — przy jednej linii w kanale wsad ma jedną linię. Zero znaczy kanał zamknięty
+    // i opróżniony, czyli koniec biegu; dopiero wtedy ta pętla ma prawo się skończyć.
+    while lines.recv_many(&mut taken, LINES_PER_BATCH).await > 0 {
+        let batch: Vec<NewEvent> = taken
+            .drain(..)
+            .map(|line| NewEvent {
+                run_id: run_id.clone(),
+                // Karta nie zna kroków — zna bieg. Krok dokłada ten, kto go uruchomił (T-07).
+                step_id: None,
+                ts: line.ts,
+                kind: line.kind,
+                level: line.level,
+                body: Some(line.body),
+            })
+            .collect();
+        let rows = batch.len();
+
+        match writer.append_events(batch).await {
+            // `try_from`, nie `as`: obcięte bity policzyłyby zapis, którego nie było, i wtedy
+            // liczba wpisanych linii przestaje być dowodem czegokolwiek.
+            Ok(()) => written += u64::try_from(rows).unwrap_or(0),
+            // Wsad wraca w CAŁOŚCI (transakcja), więc `written` po prostu nie rośnie i bieg
+            // kończy się jako [`RunOutcome::Interrupted`]. Pętla leci dalej: jeden odrzucony
+            // wsad nie ma prawa zabrać reszty transkryptu, a wołający i tak się dowie.
+            Err(error) => tracing::error!(
+                run = run_id,
+                rows,
+                "a batch of this run's lines did not reach the store: {error}"
+            ),
+        }
+    }
+    written
 }
 
 /// Zamek na stanie rejestru.
