@@ -27,6 +27,9 @@ pub mod store;
 /// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
 pub mod memory;
 
+/// Odzyskiwanie po awarii: wykryj, sprzatnij po `pgid`, zapytaj. Wypelnia T-20.
+pub mod recovery;
+
 /// Umiejetnosci: jeden folder, dwa katalogi, szesciu vendorow. Wypelnia T-18 i T-19.
 pub mod skills;
 
