@@ -301,6 +301,7 @@ guards_lane() {
   spec_assertions_may_grow_never_shrink
   branch_is_judged_by_the_trunks_oracle
   spine_merges_keep_both_declarations
+  contract_freeze_touches_only_its_own_task
   echo "── guards (the check of checks) ──"
   bash harness/guards.sh
 }
@@ -712,6 +713,74 @@ spine_merges_keep_both_declarations() {
 
   rm -rf "$sandbox"
   echo "spine: konflikt w lib.rs rozwiązuje się zachowaniem obu deklaracji"
+}
+
+# ── zamrożenie kontraktu nie ma prawa cofać CUDZYCH plików zadań ──────────────
+# Zmierzone na T-20 (2026-08-16). `refresh_harness_from_trunk` zamrażał całe `tasks/`, więc
+# podciągnięcie trunka przed rundą naprawczą **rewertowało** na gałęzi pliki zadań zmienione
+# w międzyczasie. Dwa skutki: `quick-scope` świecił na plikach spoza OWNS (czerwień nie do
+# odróżnienia od winy pisarza — poprzedni bieg zapisał ją nawet jako „commit człowieka"),
+# a lądowanie wniosłoby revert na trunk i **po cichu** skasowało cudzą pracę. Bramka po takim
+# lądowaniu jest zielona, bo cofnięte kryterium nie psuje testów — ono je osłabia.
+#
+# N-08 chroni przed jedną rzeczą: biegiem, który zmienia warunki WŁASNEGO zaliczenia. To jest
+# pytanie o `tasks/$ID.md` i o nic więcej; potwierdza to `gate.py`, który porównuje TASK.md
+# wyłącznie z plikiem o tym samym identyfikatorze.
+contract_freeze_touches_only_its_own_task() {
+  local sandbox g wt
+  sandbox="$(mktemp -d)" || return 1
+  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
+
+  mkdir -p "$sandbox/repo/tasks" "$sandbox/repo/harness"
+  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
+  echo "kontrakt T-99, wersja zamrozona" > "$sandbox/repo/tasks/T-99.md"
+  echo "kontrakt T-88, wersja stara"     > "$sandbox/repo/tasks/T-88.md"
+  echo "oracle stary"                    > "$sandbox/repo/harness/gate.py"
+  $g add -A && $g commit -q -m "v1"
+  $g branch task-T-99
+  # Trunk idzie do przodu we WSZYSTKICH trzech plikach naraz.
+  echo "kontrakt T-99, wersja ULEPSZONA" > "$sandbox/repo/tasks/T-99.md"
+  echo "kontrakt T-88, wersja NOWA"      > "$sandbox/repo/tasks/T-88.md"
+  echo "oracle nowy"                     > "$sandbox/repo/harness/gate.py"
+  $g add -A && $g commit -q -m "v2"
+  wt="$sandbox/wt"
+  $g worktree add -q "$wt" task-T-99
+
+  python3 - ship-task.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+import io, sys
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
+if len(head) != 1:
+    sys.exit("refresh_harness_from_trunk() wystepuje %d razy" % len(head))
+i = head[0]
+j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+io.open(sys.argv[2], "w", encoding="utf-8").write(
+    "note() { :; }\n" + "\n".join(lines[i:j + 1]) + "\n")
+EXTRACT
+
+  WT="$wt" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
+
+  # (1) oracle MA sie odswiezyc -- po to cale odswiezenie istnieje
+  if [ "$(cat "$wt/harness/gate.py")" != "oracle nowy" ]; then
+    echo "zamrożenie kontraktu zablokowało odświeżenie oracle'a" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  # (2) WŁASNY kontrakt ma zostać zamrożony -- bieg nie zmienia warunków swojego zaliczenia
+  if [ "$(cat "$wt/tasks/T-99.md")" != "kontrakt T-99, wersja zamrozona" ]; then
+    echo "własny kontrakt biegu NIE został zamrożony (N-08)" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+  # (3) CUDZY plik zadania ma iść za trunkiem. To jest ta asercja, której brakowało.
+  if [ "$(cat "$wt/tasks/T-88.md")" != "kontrakt T-88, wersja NOWA" ]; then
+    echo "zamrożenie COFNĘŁO cudzy plik zadania do wersji sprzed trunka:" >&2
+    echo "  tasks/T-88.md = $(cat "$wt/tasks/T-88.md")" >&2
+    echo "  oczekiwano wersji z trunka. Wylądowanie takiej gałęzi kasuje cudzą pracę po cichu," >&2
+    echo "  a bramka po tym lądowaniu jest ZIELONA, bo cofnięte kryterium nie psuje testów." >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  rm -rf "$sandbox"
+  echo "kontrakt: zamrożony jest własny plik zadania, cudze idą za trunkiem"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
