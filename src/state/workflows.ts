@@ -160,6 +160,14 @@ export interface WorkflowState {
   chooseSkills: (stepId: string, choice: SkillChoice) => void;
 }
 
+/** Ile ciszy po ostatniej zmianie czekamy z autosave'em [T3 §9, „MVP ships" punkt 6].
+ *
+ * Zapis na każdą zmianę osobno to jeden plik na literę wpisaną w nazwie kroku i jedno
+ * przejście walidatora Rusta na każdy z nich. Zapis dopiero przy zamknięciu ekranu to plik,
+ * który nie odzwierciedla ekranu przez cały czas pracy. 400 ms jest krótsze niż przerwa,
+ * po której człowiek patrzy na wynik, i dłuższe niż przerwa między dwoma znakami. */
+const AUTOSAVE_MS = 400;
+
 /** Magazyn otwartego dokumentu.
  *
  * Drugi argument jest wymagany, bo „otwarty dokument" bez dokumentu to stan, którego ten ekran
@@ -183,15 +191,42 @@ function withAgentStep(
 }
 
 export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
+  /* Odliczanie autosave'u, w DOMKNIĘCIU, a nie w stanie magazynu.
+   *
+   * Uchwyt timera nie jest faktem o dokumencie: w stanie zustanda przerysowywałby płótno na
+   * każde tyknięcie księgowania debounce'u, wjechałby do każdej migawki stosu cofnij/ponów
+   * (PLAN §7, v1.1) i do każdego porównania „czy to, co widzę, to to, co zapisano".
+   * Zapisywalny stan tego ekranu to `document` i nic poza nim (niezmiennik 13). */
+  let autosave: ReturnType<typeof setTimeout> | null = null;
+
   return create<WorkflowState>()((set, get) => ({
     document: open,
     notes: [],
 
     /* Jedno miejsce, w którym dokument się zmienia. Stos cofnij/ponów (PLAN §7, v1.1) wchodzi
      * TUTAJ i nigdzie indziej — dopisany przy każdej akcji z osobna byłby pięcioma stosami,
-     * z których cztery zapominałyby o piątej akcji. */
+     * z których cztery zapominałyby o piątej akcji. Z tego samego powodu autosave wisi tutaj,
+     * a nie przy `editStep`, `resetRow` i `chooseSkills` z osobna: akcja dopisana jutro bez
+     * własnej linijki zapisu daje zmianę, która żyje wyłącznie na ekranie. */
     commit: (next: WorkflowFile) => {
       set({ document: next });
+
+      /* Debounce, nie throttle: przeciągnięcie kafelka albo wpisywanie nazwy to seria commitów,
+       * a zapisać chcemy stan, na którym ta seria się zatrzymała. Skasowanie poprzedniego
+       * odliczania jest tym, co robi z dziesięciu zapisów jeden. */
+      if (autosave !== null) {
+        clearTimeout(autosave);
+      }
+      autosave = setTimeout(() => {
+        autosave = null;
+        /* Świadomie BEZ `.catch`. Powód stoi trzy akapity niżej przy `saveNow` i jest istotą
+         * tego zapisu: autosave, który po cichu nie zapisał, jest gorszy niż jego brak.
+         * `.catch(() => {})` daje ekran twierdzący, że wszystko jest na dysku, kiedy nie jest;
+         * `.catch(console.error)` daje to samo, tylko z wierszem w konsoli, której nikt nie
+         * ogląda. Odrzucenie zostaje więc odrzuceniem i wychodzi na wierzch — w teście wywala
+         * bieg, w aplikacji trafia do globalnej obsługi błędów okna. */
+        void get().saveNow();
+      }, AUTOSAVE_MS);
     },
 
     recheck: async () => {
