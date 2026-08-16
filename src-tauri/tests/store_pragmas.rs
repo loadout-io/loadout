@@ -87,55 +87,83 @@ async fn every_public_constructor_hands_out_the_same_four_pragmas() -> anyhow::R
     );
 
     // ── Kontrola przeciw pustej asercji ────────────────────────────────────────────────────
-    // Gołe połączenie do TEJ SAMEJ bazy. Jeśli ono raportuje to samo, co dwa wyżej, to znaczy,
-    // że nic z tego nie jest naszą zasługą i asercje wyżej nie mierzą niczego.
+    // Zamysl oryginalny: gole `Connection::open` pokazuje DOMYSLNE wartosci, wiec jesli melduje
+    // to samo, co nasze konstruktory, to nic z tego nie jest nasza zasluga.
+    //
+    // Na TYM stosie ten zamysl nie dziala, i to jest blizna. Zmierzone 2026-08-16 na rusqlite
+    // 0.40.2 z `features = ["bundled"]` (SQLite 3.53.2): gole polaczenie melduje
+    // `busy_timeout` = 5000, bo rusqlite ustawia je samo przy otwarciu, oraz `foreign_keys` = 1,
+    // bo bundlowany SQLite jest kompilowany z wlaczonymi kluczami obcymi. Obie te wartosci sa
+    // DOKLADNIE tymi, ktorych wymagamy wyzej -- wiec `assert_complete` przechodzilby dla nich
+    // takze wtedy, gdyby `apply_pragmas` nigdy ich nie tknelo. Pusta asercja schowana w kryterium
+    // napisanym po to, zeby puste asercje lapac.
+    //
+    // Kontrola nie porownuje sie wiec z domyslnymi wartosciami stosu -- one moga byc jakiekolwiek
+    // i moga sie zmienic przy nastepnym `cargo update`. Dowodzi DWOCH rzeczy o kazdej pragmie
+    // POLACZENIA z osobna:
+    //   (a) czytnik czyta POLACZENIE, a nie pamieta wartosci: ustaw jawnie wartosc, ktorej NIE
+    //       akceptujemy, i wymagaj, zeby odczyt ja zobaczyl;
+    //   (b) to NASZ kod ustawia wlasciwa: zawolaj `apply_pragmas` na TYM SAMYM polaczeniu.
+    // Bez (a) krok (b) nie dowodzi niczego, bo dobra wartosc mogla tam byc od poczatku.
     let bare = Connection::open(&db)?;
-    let untouched = read_pragmas(&bare)?;
+
+    // `journal_mode` zostaje przy starej kontroli i to jest poprawne: nalezy do BAZY, trwa
+    // w pliku, i dlatego jako jedyna z czterech MA sie tu zgadzac z nasza.
     assert_eq!(
-        untouched.foreign_keys, 0,
-        "a bare Connection::open() reports foreign_keys = {}, not 0. This control is the whole \
-         reason the checks above mean something: foreign keys are OFF by default and have to be \
-         switched on per connection, every time",
-        untouched.foreign_keys
-    );
-    assert_eq!(
-        untouched.journal_mode, "wal",
+        read_pragmas(&bare)?.journal_mode, "wal",
         "a bare connection to the same file reports journal_mode = {:?}. This one SHOULD match \
          ours: the journal mode belongs to the DATABASE and survives in the file, which is \
          exactly why it is the one pragma nobody forgets and the other three are the ones \
          everybody does",
-        untouched.journal_mode
+        read_pragmas(&bare)?.journal_mode
     );
 
-    // ── busy_timeout: kontrola DWUSTOPNIOWA ────────────────────────────────────────────────
-    // Stało tu `assert_eq!(untouched.busy_timeout, 0)` i było **nieprawdą o świecie**: rusqlite
-    // 0.40.2 ustawia pięciosekundowy timeout SAM, przy otwarciu połączenia. Gołe połączenie
-    // melduje więc dokładnie te 5000, których wymagamy wyżej — czyli `assert_complete` przechodzi
-    // dla tej pragmy także wtedy, gdyby `apply_pragmas` nigdy jej nie tknęło. Pusta asercja
-    // schowana w kryterium napisanym po to, żeby puste asercje łapać (zmierzone 2026-08-16,
-    // decyzja człowieka: wzmocnić kontrolę, nie usuwać jej).
-    //
-    // (a) czytnik czyta POŁĄCZENIE, a nie pamięta wartości. Bez tego kroku (b) nie dowodzi nic.
+    // (a) trzy pragmy polaczenia, kazda przestawiona na wartosc, ktorej nie akceptujemy.
     bare.pragma_update(None, "busy_timeout", 0)?;
-    let zeroed = read_pragmas(&bare)?;
+    bare.pragma_update(None, "foreign_keys", 0)?;
+    bare.pragma_update(None, "synchronous", 2)?;
+    let wrong = read_pragmas(&bare)?;
     assert_eq!(
-        zeroed.busy_timeout, 0,
-        "read_pragmas() reports busy_timeout = {} on a connection where it was just set to 0, so \
-         it is not reading the connection it was handed. Every busy_timeout assertion in this \
-         file would then be a statement about a remembered value, not about a connection",
-        zeroed.busy_timeout
+        wrong.busy_timeout, 0,
+        "read_pragmas() reports busy_timeout = {} on a connection where it was just set to 0. \
+         It is not reading the connection it was handed, so every busy_timeout assertion in \
+         this file is a statement about a remembered value, not about a connection",
+        wrong.busy_timeout
+    );
+    assert_eq!(
+        wrong.foreign_keys, 0,
+        "read_pragmas() reports foreign_keys = {} on a connection where it was just set to 0 \
+         -- same problem, same consequence",
+        wrong.foreign_keys
+    );
+    assert_eq!(
+        wrong.synchronous, 2,
+        "read_pragmas() reports synchronous = {} on a connection where it was just set to 2",
+        wrong.synchronous
     );
 
-    // (b) to NASZ kod ustawia 5000. Na TYM SAMYM połączeniu, startując od zera, więc wynik nie
-    // może pochodzić z domyślnej wartości rusqlite.
+    // (b) i dopiero TERAZ nasz helper, na tym samym polaczeniu, startujac od zlych wartosci.
     apply_pragmas(&bare)?;
     let helped = read_pragmas(&bare)?;
     assert_eq!(
         helped.busy_timeout, BUSY_TIMEOUT,
-        "apply_pragmas() left busy_timeout = {} on a connection where it had been zeroed. This is \
-         the only assertion in this file that can tell 'we set it' apart from 'rusqlite set it \
-         for us', because rusqlite's own default is exactly {BUSY_TIMEOUT}",
+        "apply_pragmas() left busy_timeout = {} on a connection where it had been zeroed. This \
+         is the only assertion in this file that tells 'we set it' apart from 'the stack set it \
+         for us' -- rusqlite's own default is exactly {BUSY_TIMEOUT}",
         helped.busy_timeout
+    );
+    assert_eq!(
+        helped.foreign_keys, 1,
+        "apply_pragmas() left foreign_keys = {} on a connection where it had been switched off. \
+         The bundled SQLite defaults this ON, so this step is the only thing standing between \
+         a helper that sets it and a helper that does nothing at all",
+        helped.foreign_keys
+    );
+    assert_eq!(
+        helped.synchronous, SYNCHRONOUS_NORMAL,
+        "apply_pragmas() left synchronous = {} instead of {SYNCHRONOUS_NORMAL} (NORMAL) on a \
+         connection where it had been set to FULL",
+        helped.synchronous
     );
 
     store.close().await?;
