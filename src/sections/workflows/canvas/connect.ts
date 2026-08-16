@@ -42,14 +42,43 @@ export interface DropEvent {
  * Cykl jest UNIEMOŻLIWIONY, nie zgłoszony: strzałka po prostu nie ląduje, uchwyt szarzeje
  * i nie ma żadnego komunikatu, bo użytkownik nie zrobił nic złego [T3 §5.1]. Reszta pytań
  * („czy to da się uruchomić?") należy do Rusta i wraca jako `Note[]`. */
-export function isValidConnection(_connection: Connection, _file: WorkflowFile): boolean {
-  throw new Error('not implemented');
+export function isValidConnection(connection: Connection, file: WorkflowFile): boolean {
+  const { source, target } = connection;
+
+  /* Krok nie czeka na siebie samego, a strzałka do kroku, którego w pliku nie ma, nie ma
+   * gdzie wylądować. */
+  if (source === target) return false;
+  if (!file.steps.some((step) => step.id === target)) return false;
+
+  /* Ta sama strzałka drugi raz. Płótno nadaje krawędzi identyfikator `from->to`, więc duplikat
+   * to dwie krawędzie pod jednym identyfikatorem — React Flow rysuje wtedy jedną i gubi drugą,
+   * a plik niesie obie. „Już jest" wygląda dla użytkownika tak samo jak „narysowano". */
+  if (file.links.some((link) => link.from === source && link.to === target)) return false;
+
+  /* Czy z celu da się DOJŚĆ do źródła? Jeśli tak, ta strzałka domknęłaby koło — czyli pracę,
+   * która nigdy się nie kończy. Obchód w przód, `seen` przeciwko kołu, które już jest w pliku
+   * (plik bywa poprawiony ręcznie, a wtedy obchód bez `seen` nie wraca) [T3 §5.1]. */
+  const seen = new Set<string>();
+  const ahead = [target];
+  for (let next = ahead.pop(); next !== undefined; next = ahead.pop()) {
+    if (next === source) return false;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    for (const link of file.links) {
+      if (link.from === next) ahead.push(link.to);
+    }
+  }
+  return true;
 }
 
 /** Dokłada strzałkę, jeżeli [`isValidConnection`] ją przepuszcza; inaczej oddaje dokument
  * bez zmiany. Odmowa jest cicha — tu nie powstaje żadna uwaga. */
-export function onConnect(_connection: Connection, _file: WorkflowFile): WorkflowFile {
-  throw new Error('not implemented');
+export function onConnect(connection: Connection, file: WorkflowFile): WorkflowFile {
+  if (!isValidConnection(connection, file)) return file;
+  return {
+    ...file,
+    links: [...file.links, { from: connection.source, to: connection.target }],
+  };
 }
 
 /** Upuszczenie końca strzałki.
