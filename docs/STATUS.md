@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-16, 13:15
+# Stan budowy — 2026-08-16, 13:45
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,17 +8,20 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **14 z 26** |
+| wylądowane | **15 z 26** |
 | kosztowało | **$317** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) |
 | trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
 | produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
 
 ## Gdzie co jest
 
-**Wylądowane (14):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-11 T-12 T-14 T-16 T-18 T-21 T-25`
+**Wylądowane (15):** `S-1 S-2 T-01 T-02 T-03 T-04 T-05 T-11 T-12 T-13 T-14 T-16 T-18 T-21 T-25`
 
-**W locie (3):** `T-06` (runda naprawcza kontraktu), `T-13`, `T-19`. Pisarz i recenzent
-`claude` — Codex bez kredytów do 2026-08-20.
+**W locie (2):** `T-06` (implementacja — **kontrakt certyfikowany, zwis AC-2 zniknął**),
+`T-19` (faza kontraktu). Pisarz i recenzent `claude` — Codex bez kredytów do 2026-08-20.
+
+Szerokość fali to teraz **dwa**, i nie jest to wybór: wszystko poza T-19 przechodzi przez
+T-06 → T-07 → T-08. Wylądowanie T-06 otwiera od razu trzy zadania (`T-07 T-17 T-20`).
 
 **Uwaga recenzenta, której bramka nie widzi.** Zarówno T-14, jak i T-18 dostały uwagę tej samej
 klasy: kryterium sprawdza **obecność** kontrolki albo ścieżki, a nie jej **zachowanie**.
