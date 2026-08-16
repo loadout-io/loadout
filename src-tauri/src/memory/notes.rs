@@ -28,12 +28,53 @@
 //!   bajtową, a AC-4 pyta dokładnie o to;
 //! - `#[cfg(…)]` — ścieżki składamy `PathBuf`em (niezmiennik 3).
 //!
-//! Ciała są jeszcze `todo!()`. Szkielet ma się **skompilować** i paść w czasie wykonania:
-//! test, który się nie kompiluje, niczego nie uruchomił (`AGENTS.md` §2a). `clippy::todo`
-//! stoi w `Cargo.toml` na `deny`, więc żaden z nich nie przeżyje do pełnej bramki.
+//! Format pliku jest płaski i czytany wspólnym czytnikiem z [`super::FrontMatter`] — jeden
+//! parser na oba rodzaje pamięci, bo dwa rozjeżdżają się w tydzień (niezmiennik 23):
+//!
+//! ```text
+//! ---
+//! scope: this-project
+//! kind: fact
+//! title: The tenant is resolved before the guard
+//! rule: An unresolved tenant surfaces as 401, not 400.
+//! because: run 7f3a step 2 reproduced it
+//! status: suggested
+//! occurrences: 1
+//! modified: 2026-08-15T10:31:02Z
+//! last_used_at: null
+//! ---
+//!
+//! How to apply: read the middleware before blaming the guard.
+//! ```
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+
+use super::FrontMatter;
+
+/// Katalog notatek wewnątrz korzenia. Jedna nazwa, w jednym miejscu.
+const NOTES_DIR: &str = "notes";
+
+/// Nagłówek bloku — te same trzy słowa, które człowiek widzi w sekcji Pamięć
+/// [`00-SYNTHESIS` §2.2]. Prompt i ekran mówią o tym samym zbiorze tym samym zdaniem,
+/// więc pytanie „co model o tym wie" ma jedną odpowiedź, nie dwie.
+const HEADING: &str = "What you know";
+
+/// Klucze, które ta wersja rozumie. Wszystko poza nimi jedzie do [`Note::extra`] i wraca
+/// na dysk nietknięte — plik od nowszego Loadouta nie ma prawa stracić pola przy zapisie,
+/// którego to pole nie dotyczyło (niezmiennik 5).
+const KNOWN: [&str; 9] = [
+    "scope",
+    "kind",
+    "title",
+    "rule",
+    "because",
+    "status",
+    "occurrences",
+    "modified",
+    "last_used_at",
+];
 
 /// Dwa stany i ani jeden trzeci [ARCHITECTURE §2 pyt. 5].
 ///
@@ -306,7 +347,38 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Jeden nieczytelny plik nie zabiera ze sobą całej listy (niezmiennik 5): ślad zostaje
 /// w dzienniku, bo cicha strata notatki jest gorsza niż głośna.
 pub fn scan_notes(root: &Path) -> Result<Vec<Note>> {
-    todo!("T-17 AC-5: notatki z {root:?}/notes, nieznany klucz i nieznany kind niesione dalej")
+    let dir = root.join(NOTES_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        // Korzeń, w którym nikt jeszcze niczego nie zapisał, ma zero notatek, a nie błąd.
+        // Pusta sekcja Pamięć w nowym projekcie jest prawdą; czerwony pasek nie jest.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+
+    // Płasko, nie rekurencyjnie, i wyłącznie `.md`: katalog notatek bywa też miejscem, w którym
+    // ktoś trzyma załącznik albo `.DS_Store`, a spacer po drzewie zwróciłby je jako notatki.
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    // Sortujemy ścieżki, a nie wynik: kolejność, w jakiej system plików oddaje wpisy, nie jest
+    // niczyją obietnicą, a AC-4 pyta wprost o równość bajtową dwóch skanów tego samego drzewa.
+    paths.sort();
+
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        match read_note(&path) {
+            Ok(note) => out.push(note),
+            // Niezmiennik 5: jeden nieczytelny plik nie zabiera ze sobą całej listy. Ślad
+            // zostaje w dzienniku, bo cicha strata notatki jest gorsza niż głośna — a dziennik
+            // jest jedynym miejscem, w którym wolno go zostawić: skan jest ODCZYTEM i plik
+            // odłożony obok notatek byłby drugim miejscem, w którym mieszka status.
+            Err(error) => tracing::warn!("{} is not a readable note: {error}", path.display()),
+        }
+    }
+    Ok(out)
 }
 
 /// **Jedyne wyjście do promptu.** Bierze notatki, oddaje blok „What you know".
@@ -320,10 +392,47 @@ pub fn scan_notes(root: &Path) -> Result<Vec<Note>> {
 /// zdania — model nie ma jak poznać, że czegoś nie doczytał.
 #[must_use]
 pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
-    todo!(
-        "T-17 AC-1: wyłącznie InUse z zakresu {budget:?}, z {} notatek",
-        notes.len()
-    )
+    // Porządek jest identyfikatorem rosnąco, ustalony TUTAJ, a nie odziedziczony po wołającym.
+    // AC-4 pyta o równość bajtową bloku sprzed i po odmowie promocji, a wołający podaje raz
+    // wynik skanu, raz listę złożoną w pamięci — dwa różne porządki na tych samych faktach
+    // dają dwa różne prompty i różnicy nie widać nigdzie poza rachunkiem za długość.
+    let mut live: Vec<&Note> = notes
+        .iter()
+        .filter(|note| note.scope == budget.scope && note.status == Status::InUse)
+        .collect();
+    live.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut block = Block {
+        text: String::new(),
+        used: Vec::new(),
+        dropped: Vec::new(),
+    };
+
+    let mut spent = 0;
+    let mut lines = String::new();
+    for note in live {
+        // Notatka, która się nie mieści, wychodzi CAŁA. Pół zdania w prompcie jest gorsze niż
+        // brak zdania: model nie ma jak poznać, że czegoś nie doczytał, więc czyta ucięte
+        // zdanie jako całe. Mniejsza notatka za nią wchodzi dalej — zakres, który stanął na
+        // jednej długiej regule, milczałby o wszystkim, co po niej.
+        if spent + note.est_tokens > budget.cap {
+            block.dropped.push(note.id.clone());
+            continue;
+        }
+        spent += note.est_tokens;
+        block.used.push(note.id.clone());
+        lines.push_str("- ");
+        lines.push_str(&note.rule);
+        lines.push('\n');
+    }
+
+    // Pusto znaczy pusto. Nagłówek nad niczym uczy model, że ta sekcja bywa pusta, i kosztuje
+    // długość za nic — a to jest dokładnie ten kształt, do którego ktoś dopisuje „a na końcu
+    // jeszcze kandydatki, żeby model miał kontekst".
+    if !block.used.is_empty() {
+        block.text = format!("{HEADING}\n{lines}");
+    }
+    block
 }
 
 /// Zapisuje kandydatkę jako plik i oddaje ją odczytaną z powrotem.
@@ -338,7 +447,72 @@ pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
 ///    drugie zgłoszenie podbija `occurrences` i przesuwa `modified`, a `status` zostaje
 ///    nietknięty — auto-promocja przy drugim wystąpieniu [T6 §5.3] jest świadomie nieobecna.
 pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
-    todo!("T-17 AC-2/AC-3: kandydatka {draft:?} w {root:?}, zawsze Suggested")
+    // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
+    // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
+    // dopisanie go do pliku byłoby o jedno słowo od prawdy — a to jest dokładnie ta zmiana,
+    // po której dwa stany są ozdobą (ARCHITECTURE §2 pyt. 5).
+    let NoteDraft {
+        title,
+        rule,
+        because,
+        scope,
+        kind,
+        status: _ignored_declaration,
+        at,
+    } = draft;
+
+    // PRZED dotknięciem dysku. Walidacja po zapisie odmawia równie głośno i zostawia plik,
+    // którego nikt nie chciał — a listing katalogu jest jedyną rzeczą, która te dwie
+    // implementacje rozróżnia [T6 §10.3: „no because, no memory"].
+    if because.trim().is_empty() {
+        return Err(Error::NoBecause);
+    }
+
+    let id = NoteId(super::slugify(&title));
+    let dir = root.join(NOTES_DIR);
+    let path = dir.join(format!("{id}.md"));
+
+    match fs::read_to_string(&path) {
+        // Ta sama kandydatka drugi raz: podbijamy licznik i przesuwamy moment, i NIC POZA TYM.
+        // Nie `status` — auto-promocja przy drugim wystąpieniu [T6 §5.3] jest świadomie
+        // nieobecna (ARCHITECTURE §2 pyt. 5). Nie `rule` ani `because` — plik mógł przejść
+        // przez ręce człowieka, a zgłoszenie agenta nie ma prawa nadpisać cudzej redakcji
+        // (niezmiennik 4: plik jest prawdą, także wtedy, gdy prawdę dopisał człowiek).
+        Ok(raw) => {
+            let (mut front, body_at) = FrontMatter::split(&raw)?;
+            let seen = front
+                .get("occurrences")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+            front.set("occurrences", &seen.saturating_add(1).to_string());
+            front.set("modified", &one_line(&at));
+            write_note(&path, &front, &raw[body_at..])?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(&dir)?;
+            let mut front = FrontMatter::default();
+            // Kolejność kluczy jest kontraktem [T6 §10.2] i jest tą samą, którą czyta człowiek
+            // w edytorze: czym to jest, o czym to jest, co z tego wynika, skąd to wiemy.
+            front.set("scope", scope_word(scope));
+            front.set("kind", kind_word(&kind));
+            front.set("title", &one_line(&title));
+            front.set("rule", &one_line(&rule));
+            front.set("because", &one_line(&because));
+            // Kandydatka powstaje jako `suggested`, choćby zgłaszający deklarował `in use`:
+            // deklaracja została wyrzucona wyżej i nie ma stąd drogi z powrotem.
+            front.set("status", "suggested");
+            front.set("occurrences", "1");
+            front.set("modified", &one_line(&at));
+            front.set("last_used_at", "null");
+            write_note(&path, &front, "")?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    // Wracamy z tym, co LEŻY NA DYSKU, a nie z tym, co przed chwilą złożyliśmy w pamięci.
+    // Wołający dostaje wtedy dokładnie to, co przeczyta następny skan — i nie ma jak zobaczyć
+    // notatki, której zapis po cichu nie doszedł.
+    read_note(&path)
 }
 
 /// Przestawia notatkę na [`Status::InUse`] — **wyłącznie** działaniem człowieka.
@@ -356,5 +530,202 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 /// Przy `Ok`: w pliku zmienia się `status` i `modified` (na `at` z [`Actor::You`]) i nic
 /// poza tym.
 pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
-    todo!("T-17 AC-2/AC-4: {id} w {root:?} na wniosek {by:?}, odmowy przed zapisem")
+    // 1. Wyłącznie człowiek — i to jest pierwsza linia, więc żadne inne wywołanie nie zdąży
+    //    otworzyć pliku do zapisu [ARCHITECTURE §2 pyt. 5].
+    let Actor::You { at } = by else {
+        return Err(Error::OnlyYouCanDoThat);
+    };
+
+    let path = root.join(NOTES_DIR).join(format!("{id}.md"));
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NoSuchNote(id.clone()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let (mut front, body_at) = FrontMatter::split(&raw)?;
+    let note = note_from(&path, &front);
+
+    // 2. „no because, no memory" obowiązuje też notatkę, która już leży: inaczej skasowanie
+    //    jednej linii w edytorze jest całą drogą dookoła tej reguły [T6 §5.1].
+    if note.because.trim().is_empty() {
+        return Err(Error::NoBecause);
+    }
+
+    // Notatka już w użyciu: nie ma czego przestawiać, więc plik zostaje nietknięty. Stempel
+    // `modified` za kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta
+    // notatka ostatnio się zmieniła — a to pole czyta człowiek, żeby wiedzieć, co jest świeże.
+    if note.status == Status::InUse {
+        return Ok(note);
+    }
+
+    // 3. Budżet zakresu, liczony Z PLIKÓW — nie z licznika trzymanego gdziekolwiek indziej.
+    //    Licznik, którego nie da się odtworzyć z plików, jest polem łamiącym niezmiennik 4.
+    let mut in_use: Vec<Note> = scan_notes(root)?
+        .into_iter()
+        .filter(|other| {
+            other.scope == note.scope && other.status == Status::InUse && other.id != note.id
+        })
+        .collect();
+    let spent: usize = in_use.iter().map(|other| other.est_tokens).sum();
+    let cap = note.scope.cap();
+
+    if spent + note.est_tokens > cap {
+        // Najdawniej użyte pierwsze. Kolejność JEST treścią tej listy: wybór postawiony przed
+        // człowiekiem ma zaczynać się od notatki, której model najdawniej potrzebował, a nie od
+        // tej, która akurat stała pierwsza w katalogu. `None` (nigdy nieużyta) sortuje się
+        // przed każdą datą i to jest właściwy kierunek.
+        in_use.sort_by(|left, right| {
+            (&left.last_used_at, &left.id).cmp(&(&right.last_used_at, &right.id))
+        });
+        return Err(Error::MemoryFull {
+            over_by: spent + note.est_tokens - cap,
+            // Cały zbiór w użyciu, nie sam prefiks pokrywający deficyt: wymuszony wybór, w
+            // którym jest dokładnie jedna pozycja, nie jest wyborem [T6 §5.3]. Prefiks tej
+            // listy pokrywa deficyt zawsze, kiedy pokryć go w ogóle można — a notatka dłuższa
+            // niż cały limit zakresu nie zmieści się choćby po odstawieniu wszystkiego i wtedy
+            // ta lista jest wszystkim, co uczciwie da się pokazać.
+            retire: in_use.into_iter().map(|other| other.id).collect(),
+        });
+    }
+
+    // Dwie linie w pliku i ani jedna więcej. Złożenie front-mattera od nowa z tego, co ta
+    // funkcja wie, przepisałoby pola, o które nikt jej nie pytał — razem z kluczami, których
+    // ta wersja Loadouta nie zna (niezmiennik 5).
+    front.set("status", "in-use");
+    front.set("modified", &one_line(&at));
+    write_note(&path, &front, &raw[body_at..])?;
+    read_note(&path)
+}
+
+// ── odczyt i zapis pliku ──────────────────────────────────────────────────────────────────
+
+/// Notatka spod tej ścieżki. Tożsamością jest **nazwa pliku bez rozszerzenia**.
+fn read_note(path: &Path) -> Result<Note> {
+    let raw = fs::read_to_string(path)?;
+    let (front, _) = FrontMatter::split(&raw)?;
+    Ok(note_from(path, &front))
+}
+
+/// Front-matter na notatkę. Nie zwraca [`Result`], bo **żadne** pole nie jest tu powodem do
+/// odrzucenia pliku: brak, literówka i wartość od nowszego Loadouta czytają się na wartość
+/// domyślną, a nie na błąd (niezmiennik 5). Jedyną porażką odczytu jest plik, który wcale nie
+/// ma nagłówka — i tę zgłasza [`FrontMatter::split`].
+fn note_from(path: &Path, front: &FrontMatter) -> Note {
+    let rule = front.get("rule").unwrap_or_default().to_owned();
+    let extra = front
+        .keys()
+        .into_iter()
+        .filter(|key| !KNOWN.contains(key))
+        .map(|key| {
+            (
+                key.to_owned(),
+                front.get(key).unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+
+    Note {
+        id: NoteId(
+            path.file_stem()
+                .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+        ),
+        scope: scope_from(front.get("scope").unwrap_or_default()),
+        kind: kind_from(front.get("kind").unwrap_or_default()),
+        title: front.get("title").unwrap_or_default().to_owned(),
+        because: front.get("because").unwrap_or_default().to_owned(),
+        status: status_from(front.get("status").unwrap_or_default()),
+        // Brak licznika czyta się jako jedno wystąpienie: plik istnieje, więc ktoś tę notatkę
+        // zgłosił co najmniej raz. Zero mówiłoby, że nie zgłosił jej nikt.
+        occurrences: front
+            .get("occurrences")
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(1),
+        modified: front.get("modified").unwrap_or_default().to_owned(),
+        last_used_at: front
+            .get("last_used_at")
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "null")
+            .map(ToOwned::to_owned),
+        // Liczone przy odczycie z długości `rule`, nigdy czytane z pliku: tej liczby nikt nie
+        // zapisuje, więc pole w pliku mogłoby wyłącznie kłamać.
+        est_tokens: super::est_tokens(rule.len()),
+        rule,
+        path: path.to_owned(),
+        extra,
+    }
+}
+
+/// Nagłówek plus ciało. Pusty separator należy do nagłówka, tak jak przy przekazaniach
+/// [T6 §10.2] — dzięki temu plik odczytany i zapisany bez zmian jest tym samym plikiem.
+fn write_note(path: &Path, front: &FrontMatter, body: &str) -> Result<()> {
+    let mut out = front.render();
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(body);
+    }
+    fs::write(path, out)?;
+    Ok(())
+}
+
+// ── słowa z pliku ─────────────────────────────────────────────────────────────────────────
+
+/// Nieczytelna albo brakująca wartość to [`Scope::ThisProject`] i **nigdy**
+/// [`Scope::Everywhere`]: notatki, której nie umiemy przeczytać, nie awansujemy na regułę
+/// obowiązującą we wszystkich projektach.
+fn scope_from(raw: &str) -> Scope {
+    match raw.trim() {
+        "everywhere" => Scope::Everywhere,
+        "this-agent" => Scope::ThisAgent,
+        _ => Scope::ThisProject,
+    }
+}
+
+const fn scope_word(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Everywhere => "everywhere",
+        Scope::ThisProject => "this-project",
+        Scope::ThisAgent => "this-agent",
+    }
+}
+
+/// Nieznany rodzaj jedzie dalej jako [`Kind::Other`] i wraca do pliku niezmieniony. Brak
+/// rodzaju to `fact`: notatka bez etykiety dalej jest czymś, co ktoś uznał za prawdę.
+fn kind_from(raw: &str) -> Kind {
+    match raw.trim() {
+        "rule" => Kind::Rule,
+        "pitfall" => Kind::Pitfall,
+        "" | "fact" => Kind::Fact,
+        other => Kind::Other(other.to_owned()),
+    }
+}
+
+fn kind_word(kind: &Kind) -> &str {
+    match kind {
+        Kind::Fact => "fact",
+        Kind::Rule => "rule",
+        Kind::Pitfall => "pitfall",
+        Kind::Other(raw) => raw,
+    }
+}
+
+/// Do `in use` prowadzi **wyłącznie** dosłowne `in-use`. Każda inna wartość — literówka, pole
+/// od nowszego Loadouta, pusty wiersz — czyta się jako `suggested`. Kierunek błędu jest tu
+/// wybrany: notatka, której statusu nie rozumiemy, nie wchodzi do promptu.
+fn status_from(raw: &str) -> Status {
+    if raw.trim() == "in-use" {
+        Status::InUse
+    } else {
+        Status::Suggested
+    }
+}
+
+/// Wartość, która na pewno zmieści się w jednym wierszu front-mattera.
+///
+/// Nowa linia w `rule` albo w `because` rozcięłaby nagłówek na pół: wszystko za nią przestałoby
+/// być nagłówkiem, a notatka wróciłaby ze skanu bez uzasadnienia — czyli jako notatka, której
+/// nie da się promować. Tekst przychodzi od agenta, więc to nie jest przypadek hipotetyczny.
+fn one_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
