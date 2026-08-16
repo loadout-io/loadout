@@ -103,11 +103,24 @@ Workflow: parallel([
 ])
 ```
 
-**Sześć naraz.** Liczba jest zmierzona na tej maszynie, nie przepisana z raportu: 64 GB RAM,
-16 rdzeni, agent zajmuje **385 MB** (nie 583 z T7 §7.1, które zakładało 16 GB i inny build).
-Sześciu agentów to ~2,3 GB — pomijalne. Wąskim gardłem NIE są agenci, tylko
-`checks/_cargo-serialize.sh`: mutex przepuszcza jeden ciężki cargo naraz (niezmiennik 26),
-więc zadania rustowe ustawiają się w kolejkę niezależnie od tego, ilu agentów myśli równolegle.
+**Tyle, ile ma szerokości fala zależności — sprzęt nie jest limitem.** Zmierzone na tej
+maszynie 2026-08-16, nie przepisane z raportu: Apple **M4 Max**, 64 GB RAM, 12 rdzeni wydajnych
++ 4 oszczędne. Agent zajmuje **385 MB** (nie 583 z T7 §7.1, które zakładało 16 GB). Sześciu
+agentów to 2,5 GB i `load 2,6` przy szesnastu rdzeniach — maszyna **stoi bezczynnie**.
+
+Powód jest strukturalny: agent w fazie kontraktu i implementacji czeka na **odpowiedź modelu**,
+nie na procesor. To praca związana z API, nie ze sprzętem. Dlatego liczba agentów nie jest
+pokrętłem wydajności — pokrętłem jest graf zależności z `tasks/INDEX.md`.
+
+**Zasada: odpalaj całą falę naraz, ile by jej nie było.** Nie dobieraj liczby do maszyny;
+dobierz ją do tego, ile zadań ma spełnione zależności. Kiedy zadanie ląduje, przelicz zbiór
+gotowych i dostaw wszystko, co się właśnie odblokowało.
+
+Uwaga o `checks/_cargo-serialize.sh` (niezmiennik 26): mutex przepuszcza jeden ciężki cargo
+naraz i **teoretycznie** jest wąskim gardłem dla fali rustowej. Zmierzone przy sześciu
+zadaniach: `[cargo] waited` wystąpiło **zero razy**, łącznie 0 s. Dopóki ta liczba jest zerem,
+nie ma czego optymalizować — a sam niezmiennik pochodzi z tej samej epoki założeń co błędne
+583 MB, więc **gdyby zaczął kosztować, najpierw go zmierz na tym sprzęcie, a nie zakładaj**.
 
 **Przy wachlarzu podnieś sufit czekania na mutex:** `LOADOUT_CARGO_LOCK_WAIT=2400`. Domyślne
 300 s jest dobre dla biegu szeregowego, gdzie pięciominutowe czekanie znaczy „coś wisi". Przy
