@@ -100,6 +100,24 @@ const THING_FAILS = [
 /** Cel istnieje, kompiluje się i nie ma w nim ANI JEDNEGO `#[test]`. */
 const THING_EMPTY = ['pub fn helper() -> u32 {', '    7', '}', ''].join('\n');
 
+/**
+ * Cel, którego jedyny test jest ODROCZONY przez `#[ignore]`.
+ *
+ * Cargo raportuje z niego dokładnie `0 passed`, tak samo jak z celu pustego, a to są dwie
+ * różne rzeczy i tylko jedna z nich jest awarią. `#[ignore]` stoi w pliku, widać go przy
+ * czytaniu i ma własne kryterium wołające `-- --include-ignored`; tak wygląda pięć celów
+ * supervisora w tym repo, bo odpalają prawdziwe procesy i idą minuty. Cel pusty nie
+ * deklaruje niczego i nikt nigdy się o tym nie dowie.
+ */
+const THING_IGNORED = [
+  '#[test]',
+  '#[ignore = "odpala prawdziwy proces; wolane osobnym kryterium"]',
+  'fn the_deferred_target_runs_elsewhere() {',
+  '    assert_eq!(2 + 2, 4);',
+  '}',
+  '',
+].join('\n');
+
 let dir = '';
 
 beforeAll(() => {
@@ -180,6 +198,23 @@ describe('full-test.sh runs the integration targets, not only --lib', () => {
       // Niezmiennik 19: cel, który istnieje i nie zameldował ani jednego przejścia, to nie
       // jest sukces — to jest filtr, cfg albo niezadeklarowany moduł.
       expect(run.out).toMatch(/no passing tests|zero/i);
+      expect(existsSync(lockPath(dir)), 'the cargo lock outlived the check').toBe(false);
+    },
+    SLOW,
+  );
+
+  it(
+    'case D: a target whose only test is #[ignore] is a declared deferral, not an empty target',
+    () => {
+      plant(dir, THING, THING_IGNORED);
+
+      const run = runCheck(dir, CHECK);
+
+      // Bez tego przypadku reguła z C jest zbyt szeroka i przewraca się na każdym celu
+      // odroczonym przez `#[ignore]` — a te w tym repo mają własne kryteria wołające
+      // `-- --include-ignored`. Odroczenie widoczne w pliku nie jest cichym zerem.
+      expect(run.code, run.out).toBe(0);
+      expect(reported(run.out), run.out).toBe(1);
       expect(existsSync(lockPath(dir)), 'the cargo lock outlived the check').toBe(false);
     },
     SLOW,

@@ -59,17 +59,25 @@ if [ -n "$rs" ]; then
   # nie zna żadnego układu katalogów poza tym, który cargo sam wypisał. Bin bez testów
   # jednostkowych (nasz main.rs ma cztery linie) jest normalny i celowo tu nie wchodzi:
   # sądzimy wyłącznie cele z tests/, bo plik położony tam istnieje po to, żeby coś dowieść.
+  #
+  # Warunkiem jest PUSTKA, nie zero przejść: `0 passed` RAZEM z `0 ignored` i `0 filtered out`.
+  # `#[ignore]` jest zadeklarowanym odroczeniem, widocznym w pliku i wołanym przez własne
+  # kryterium (`-- --include-ignored`) — pięć celów supervisora i drivera claude wygląda tak
+  # z premedytacją, bo odpalają prawdziwe procesy. Zero bez ani jednego pominięcia jest czym
+  # innym: to cel, który nie deklaruje niczego, albo filtr, który nic nie dopasował.
   empty="$(printf '%s\n' "$out" | awk '
       /^[[:space:]]+Running / { target = ($2 == "unittests") ? $3 : $2; next }
       /^test result:/ {
-        if (target ~ /^tests\// && index($0, "ok. 0 passed") > 0) print target
+        if (target ~ /^tests\// && $0 ~ /ok\. 0 passed;/ && $0 ~ /; 0 ignored;/ \
+            && $0 ~ /; 0 filtered out;/) print target
         target = ""
       }' | head -5)"
   if [ -n "$empty" ]; then
     echo "an integration test target ran and reported no passing tests" >&2
     printf '%s\n' "$empty" | sed 's/^/  /' >&2
-    echo "detail: the target compiled and exited 0 with zero #[test] executed — a filter," >&2
-    echo "detail: a cfg, or a file that declares nothing. Exit 0 is not evidence (inv. 19)." >&2
+    echo "detail: the target compiled and exited 0 having executed, ignored and filtered" >&2
+    echo "detail: nothing at all — it declares no #[test], or a cfg removed them all." >&2
+    echo "detail: Exit 0 is not evidence (invariant 19)." >&2
     exit 1
   fi
   if [ -n "$has_tests" ] && [ "${passed:-0}" -eq 0 ]; then
