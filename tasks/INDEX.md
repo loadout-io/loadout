@@ -35,6 +35,7 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
 | **T-22** | 4 | Sprawdzacze w bramce: granice modułów, gęstość, testy,… | T-08 | 7 | 7 |
 | **T-23** | 4 | Harness Loadouta wyrażony jako workflow Loadouta | T-15, T-13 | 8 | 6 |
 | **T-26** | 3 | Cztery sekcje dostają ekran: koniec z kartami, które nic… | T-11, T-13, T-14, T-17, T-19, T-25 | 8 | 4 |
+| **T-27** | 1 | Front i Rust naprawdę rozmawiają: koniec z aplikacją, która… | T-07, T-11, T-12, T-17, T-19 | 12 | 4 |
 
 ## Jak to czytać
 
@@ -51,6 +52,14 @@ kolejność budowy z `docs/PLAN.md` §2–§6, nie priorytet.
   ścieżka testu jest globalnie unikalna (egzekwuje `harness/gate.py`, `contract_problems`).
 - Bramka fazy 1 (`docs/PLAN.md` §3): dwa prawdziwe procesy `claude` **nakładają się w czasie**.
   Dopóki to nie jest udowodnione testem, faza 2 nie zaczyna się.
+
+**T-27 dopisane 2026-08-16, po uruchomieniu aplikacji RUSTA.** Okno wstaje i nie umie zrobić nic:
+zero `#[tauri::command]`, zero `generate_handler!`, brak `.invoke_handler`, a adaptery `io.ts` to
+`throw new Error('not implemented')`. Cała logika po stronie Rusta jest wylądowana i nieosiągalna
+z okna. Przyczyna jest strukturalna: **kryterium akceptacji nie sięga szwu między warstwami**, bo
+`Failed to launch` jest na liście `NOT_A_REAL_RED` — więc każde zadanie udowodniło swój środek
+i żadne nie mogło udowodnić szwu. T-27 daje szwowi dowód wykonywalny bez przeglądarki: złota lista
+nazw komend czytana z obu stron plus dwa przebiegi tam-i-z-powrotem przez prawdziwe funkcje.
 
 **T-26 dopisane 2026-08-16, po uruchomieniu aplikacji.** Powłoka i komponenty czterech sekcji były
 wylądowane i zielone, a `npm run dev` pokazywał cztery puste ekrany z pięciu: nikt nie napisał
