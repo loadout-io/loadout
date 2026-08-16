@@ -30,7 +30,43 @@ export interface KindEntry {
 
 export type Registry = Readonly<Record<Kind, KindEntry>>;
 
+/*
+ * Rejestr. Typ `Record<Kind, KindEntry>` jest tu całą obroną przed luką: `Kind` pochodzi
+ * z lustra drutu, więc rodzaj dodany po stronie Rusta przestaje się TU kompilować, zamiast
+ * po cichu wypaść z widoku jako wiersz, którego nikt nie umie narysować.
+ *
+ * Kolejność wpisów jest kolejnością z T2 §7.2, nie alfabetyczna: tak czyta się je razem
+ * z tabelą, z której pochodzą. Kryterium porównuje ZBIÓR kluczy, więc kolejność jest
+ * czytelnością, nie kontraktem.
+ *
+ * `Object.freeze`, bo „czytany, nigdy modyfikowany" ma być własnością obiektu, a nie prośbą
+ * w komentarzu: rejestr jest jeden na cały moduł i wskaźnik na niego dostaje każdy, kto woła
+ * `kinds()`. Jedno `registry.read.expanded = true` w cudzym kodzie zmieniłoby domyślny stan
+ * widoku wszystkim naraz i nie zostawiłoby po sobie ani jednej linii w diffie tego pliku.
+ */
+const REGISTRY: Registry = Object.freeze({
+  /* ── rozwinięte domyślnie: proza, pytania, błędy, struktura ── */
+  run: { route: 'history', expanded: true },
+  step: { route: 'history', expanded: true },
+  agent: { route: 'history', expanded: true },
+  note: { route: 'history', expanded: true },
+  asked: { route: 'history', expanded: true },
+  handoff: { route: 'history', expanded: true },
+  problem: { route: 'history', expanded: true },
+  done: { route: 'history', expanded: true },
+
+  /* ── zwinięte: mechanika. Rozwija ją człowiek albo niepowodzenie [T2 §7.3 reguła 3] ── */
+  read: { route: 'history', expanded: false },
+  search: { route: 'history', expanded: false },
+  edit: { route: 'history', expanded: false },
+  ran: { route: 'history', expanded: false },
+  memory: { route: 'history', expanded: false },
+
+  /* ── jedyny rodzaj, który nie wchodzi do historii [T2 §7.3 reguła 5] ── */
+  thinking: { route: 'now', expanded: false },
+});
+
 /** Rejestr. Czytany, nigdy modyfikowany. */
 export function kinds(): Registry {
-  throw new Error('not implemented');
+  return REGISTRY;
 }
