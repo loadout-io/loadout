@@ -13,9 +13,17 @@
 //! startu systemu i własny `pgid` przyjeżdżają w [`Machine`], a zabijanie w [`apply`] jako
 //! domykacz `FnMut(i32) -> ReapOutcome`.
 //!
-//! Konsekwencja, którą trzeba nazwać: [`decide`] jest czystą funkcją dwóch argumentów. Nie ma
-//! skąd wziąć ani czasu, ani stanu systemu, więc nie ma jak porównać wartości samej ze sobą —
-//! patrz datowana notka przy [`Machine::boot_id`].
+//! Konsekwencja, którą trzeba nazwać: [`decide`] nie ma skąd wziąć ani czasu startu systemu,
+//! ani własnego `pgid` po raz drugi, więc nie ma jak porównać wartości samej ze sobą — patrz
+//! datowana notka przy [`Machine::boot_id`].
+//!
+//! Jedyne, po co ten plik sięga poza swoje dwa argumenty, to **świeży identyfikator sesji**
+//! dla opcji „zacznij od nowa" ([`fresh_session`]). Jest to nazwane tutaj, bo inaczej byłoby
+//! ciche: `Uuid::now_v7()` czyta zegar, a nie stan procesów, więc nie dotyka granicy, której
+//! pilnuje niezmiennik 3 — `checks/quick-boundary.sh` szuka `#[cfg(unix)]`, a tutaj nie ma ani
+//! jednej gałęzi platformowej. Zamiany na wartość wyliczoną z wiersza nie ma: identyfikator
+//! wyliczony z `step_id` i próby byłby ten sam po każdej awarii tego samego kroku, czyli
+//! dokładnie tym sklejeniem dwóch tur w jedną sesję, przed którym broni AC-4.
 //!
 //! # Czego tu świadomie nie ma
 //!
@@ -30,7 +38,13 @@
 //! z `.loadout/runs/<ts>__<id>/run.json` i surowych `logs/agent-<id>.jsonl`. Ten plik zwraca
 //! **plan**, a nie zapis: kto go wczyta i kto go zapisze, rozstrzygają T-06 i T-15.
 
+use serde::Deserialize as _;
 use serde::Serialize;
+use serde::de::IntoDeserializer as _;
+use serde::de::value::StrDeserializer;
+use uuid::Uuid;
+
+use crate::engine::step::StepState;
 
 /// Status, który po odzyskaniu dostaje **bieg** — nigdy krok.
 ///
@@ -263,19 +277,269 @@ impl RecoveryReport {
     }
 }
 
+/// Powody, dla których wiersz trafia do [`RecoveryPlan::unreadable`].
+///
+/// Po angielsku, bo czyta je człowiek po awarii (`docs/DECISIONS-LOCKED.md` D5), i po **jednym
+/// zdaniu** każdy: to jest pozycja listy, nie raport. Stoją jako stałe, a nie w miejscu użycia,
+/// bo lista powodów jest tu jedyną odpowiedzią na pytanie „czego to odzyskiwanie nie umie".
+mod reason {
+    /// Status biegu spoza szóstki z `CHECK` przy tabeli `runs`.
+    pub const UNKNOWN_RUN: &str = "This run is in a state this version of Loadout does not know, so nothing about it \
+         could be decided.";
+    /// Status kroku spoza siódemki z `CHECK` przy tabeli `steps`.
+    pub const UNKNOWN_STEP: &str = "This step is in a state this version of Loadout does not know, so there is no telling \
+         whether it had already finished.";
+    /// Wiersz sprzed wprowadzenia kolumny z czasem startu systemu.
+    pub const NO_BOOT_TIME: &str = "This run does not say when the machine it started on was last booted, so there is no \
+         way to tell whether its group number still belongs to it.";
+    /// Krok przerwany w locie, któremu nikt nie zapisał sesji.
+    pub const NO_SESSION: &str = "This step was cut off in flight, but nothing was written down that its agent could \
+         be picked up from.";
+    /// Licznik prób, którego nie da się powiększyć.
+    pub const TRY_COUNT_MAXED: &str =
+        "The number of tries written down for this step cannot be counted any higher.";
+    /// Licznik prób poniżej zera.
+    pub const TRY_COUNT_BELOW_ZERO: &str = "The number of tries written down for this step is below zero, so the next try \
+         could not be numbered.";
+}
+
+/// Sześć stanów **biegu**, tak jak stoją w `CHECK` przy tabeli `runs` w `store::schema`.
+///
+/// Enum stoi tutaj, choć `store::NewRun::status` jest `String`iem i to też jest decyzja: tam
+/// o dozwolonych wartościach rozstrzyga `CHECK`, a nie typ w Ruście. Odzyskiwanie potrzebuje
+/// jednak czegoś więcej niż „dozwolone / niedozwolone" — musi odróżnić wartość **znaną
+/// i skończoną** od wartości, której ta wersja nie zna. Pierwsza znaczy „nie ma nic do roboty",
+/// druga „nie wiem, więc wypisz wiersz i nie strzelaj" (niezmiennik 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunState {
+    /// Bieg prowadzony przez planistę.
+    Running,
+    /// Bieg wstrzymany. Stan **biegu**, nigdy kroku [T7 §9.3].
+    Paused,
+    /// Koniec, powodzenie.
+    Succeeded,
+    /// Koniec, niepowodzenie.
+    Failed,
+    /// Koniec, bo użytkownik zatrzymał bieg.
+    Cancelled,
+    /// Koniec postawiony przez to odzyskiwanie przy poprzednim starcie.
+    Interrupted,
+}
+
+impl RunState {
+    /// Czyta wartość z bazy. `None` znaczy „napisała to wersja, której nie znamy".
+    fn from_wire(text: &str) -> Option<Self> {
+        match text {
+            "running" => Some(Self::Running),
+            "paused" => Some(Self::Paused),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            RUN_INTERRUPTED => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+
+    /// Czy awaria aplikacji zastała ten bieg w locie.
+    ///
+    /// `Interrupted` jest tu po stronie „nie", i to jest cała druga połowa AC-3: odzyskiwanie
+    /// biegnie przy KAŻDYM starcie, więc zobaczy także wiersze, które samo poprawiło godzinę
+    /// wcześniej. Bieg, który już nosi ten status, jest zamknięty — dopisanie go drugi raz
+    /// zamieniłoby jedną awarię w kolejkę identycznych zapisów.
+    fn was_cut_off(self) -> bool {
+        match self {
+            Self::Running | Self::Paused => true,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted => false,
+        }
+    }
+}
+
+/// Siedem stanów **kroku**, czytanych przez [`StepState`] — nie przepisanych tutaj po raz trzeci.
+///
+/// Ta sama siódemka stoi w `CHECK` przy `steps.status` i w `engine::step::StepState`. Trzecia
+/// kopia rozjechałaby się przy pierwszym dołożonym stanie, i rozjazd byłby cichy: nowy stan
+/// wyglądałby tu jak „skończony", czyli jak zgoda na porzucenie sieroty.
+///
+/// `StepState` jest enumem **zamkniętym** i taki ma zostać — nieznaną wartość odrzuca. Tutaj ta
+/// odmowa nie jest awarią: zamienia się w pozycję w [`RecoveryPlan::unreadable`], bo wiersz
+/// zapisała starsza wersja Loadouta (niezmiennik 5).
+fn step_state(text: &str) -> Option<StepState> {
+    let wire: StrDeserializer<serde::de::value::Error> = text.into_deserializer();
+    StepState::deserialize(wire).ok()
+}
+
+/// Świeży identyfikator sesji dla opcji „zacznij od nowa".
+///
+/// `now_v7`, jak wszędzie indziej w repo: sortuje się po czasie, więc dwie próby tego samego
+/// kroku dają się ustawić w kolejności bez czytania czegokolwiek innego. Wartość **musi** być
+/// nowa przy każdym wywołaniu — patrz notka o wyjątku w nagłówku pliku.
+fn fresh_session() -> String {
+    Uuid::now_v7().to_string()
+}
+
+/// Co jeden wiersz znaczy dla planu.
+#[derive(Debug)]
+enum RowVerdict {
+    /// Krok, którego odzyskiwanie nie dotyczy: już skończony albo jeszcze nieruszony.
+    Settled,
+    /// Krok przerwany awarią aplikacji.
+    CutOff {
+        /// Grupa do sprzątnięcia. `None`, kiedy strażnik czasu startu nie przepuścił.
+        reap: Option<i32>,
+        /// Sesja z wiersza, przydzielona przed spawnem [T7 §6.2, V].
+        session_id: String,
+        /// Numer próby po ponowieniu kroku.
+        next_attempt: i64,
+    },
+}
+
+/// Czyta jeden wiersz i mówi, co z nim zrobić. `Err` niesie zdanie do
+/// [`RecoveryPlan::unreadable`].
+///
+/// Kolejność sprawdzeń jest treścią, nie stylem: wiersz dostaje powód **pierwszej** rzeczy,
+/// której o nim nie wiemy, a strażnik czasu startu stoi przed wszystkim, co dotyczy `pgid`.
+fn read(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static str> {
+    let Some(state) = step_state(&row.step_status) else {
+        return Err(reason::UNKNOWN_STEP);
+    };
+    match state {
+        // Jedyne dwa stany, w których awaria aplikacji mogła przerwać krok w locie.
+        StepState::Ready | StepState::Running => {}
+        // Wyliczone po jednym zamiast `_`: ósmy stan kroku ma tutaj **nie skompilować**.
+        // Cichym skutkiem `_` byłoby uznanie nowego stanu za skończony, czyli porzucenie
+        // sierocego procesu bez ani jednego słowa w planie.
+        StepState::Pending
+        | StepState::Succeeded
+        | StepState::Failed
+        | StepState::Cancelled
+        | StepState::Skipped => return Ok(RowVerdict::Settled),
+    }
+
+    // Strażnik. Rozróżnienie, które tu stoi, jest całym AC-1: BRAK czasu startu to niewiedza
+    // (wiersz idzie do `unreadable` i nic się z nim nie dzieje), a czas INNY niż ten jest
+    // odpowiedzią — „restart maszyny już zabił sieroty" — więc wiersz zostaje obsłużony
+    // w całości, tylko bez sprzątania. Nie ma czego zabijać, jest o co zapytać [T7 §6.3].
+    let Some(recorded_boot) = row.run_boot_id.as_deref() else {
+        return Err(reason::NO_BOOT_TIME);
+    };
+    let same_machine_since = recorded_boot == machine.boot_id;
+
+    // Sesja jest przydzielana PRZED spawnem [T7 §6.2, V], więc krok, który biegł, ma ją mieć.
+    // Kiedy jej nie ma, istnieje proces, którego sesji nie umiemy nazwać: opcja „podejmij tam,
+    // gdzie stanęło" nie miałaby czego nieść, a pytanie z jedną opcją nie jest pytaniem.
+    let Some(session_id) = row
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
+    else {
+        return Err(reason::NO_SESSION);
+    };
+
+    // `attempt + 1` na `i64::MAX` się przekręca, a próba mniejsza od poprzedniej to ponowienie,
+    // które ląduje na wierszu innej próby. Ujemna próba przewraca to samo w drugą stronę
+    // i wchodzi tu razem z tamtą, bo obie znaczą to samo: tego licznika nie da się kontynuować.
+    if row.attempt < 0 {
+        return Err(reason::TRY_COUNT_BELOW_ZERO);
+    }
+    let Some(next_attempt) = row.attempt.checked_add(1) else {
+        return Err(reason::TRY_COUNT_MAXED);
+    };
+
+    Ok(RowVerdict::CutOff {
+        reap: if same_machine_since { row.pgid } else { None },
+        session_id: session_id.to_owned(),
+        next_attempt,
+    })
+}
+
+/// Jedno pytanie o jeden przerwany krok: dwie opcje, w ustalonej kolejności, żadna nie jest
+/// wybrana z góry.
+fn question(step_id: &str, session_id: &str, next_attempt: i64) -> Question {
+    Question {
+        step_id: step_id.to_owned(),
+        options: [
+            QuestionOption {
+                label: PICK_UP_LABEL.to_owned(),
+                effect: OptionEffect::PickUp {
+                    session_id: session_id.to_owned(),
+                },
+            },
+            QuestionOption {
+                label: START_OVER_LABEL.to_owned(),
+                effect: OptionEffect::StartOver {
+                    session_id: fresh_session(),
+                    attempt: next_attempt,
+                },
+            },
+        ],
+    }
+}
+
 /// Rozstrzyga, co zrobić z wierszami zastanymi przy starcie. **Niczego nie wykonuje.**
 ///
-/// Czysta funkcja dwóch argumentów: cały stan systemu wjeżdża w [`Machine`], więc nie ma tu
-/// skąd wziąć czasu startu po raz drugi i porównać go ze sobą (patrz [`Machine::boot_id`]).
+/// Cały stan systemu wjeżdża w [`Machine`], więc nie ma tu skąd wziąć czasu startu po raz drugi
+/// i porównać go ze sobą (patrz [`Machine::boot_id`]).
 ///
 /// Nie panikuje na żadnym wejściu. Nieznany status, `pgid = NULL`, brak sesji i próba, której
 /// nie da się powiększyć, kończą się wpisem w [`RecoveryPlan::unreadable`] — niezmiennik 5.
-// SZKIELET FAZY KONTRAKTU: pusty plan, żeby kryteria skompilowały się i padły na asercjach.
-// `todo!()` jest zabroniony przez `[workspace.lints.clippy] todo = "deny"`, a test, który się
-// nie kompiluje, niczego nie uruchomił i bramka odrzuca go jako fałszywą czerwień.
 #[must_use]
-pub fn decide(_rows: &[RecoveryRow], _machine: &Machine) -> RecoveryPlan {
-    RecoveryPlan::default()
+pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
+    let mut plan = RecoveryPlan::default();
+
+    for row in rows {
+        // Status biegu czytamy przed statusem kroku i NIEZALEŻNIE od niego. Bieg zastany
+        // w `running` po awarii jest przerwany także wtedy, kiedy o jego kroku nie umiemy
+        // powiedzieć nic — inaczej bieg, którego nikt już nie prowadzi, zostaje na ekranie
+        // jako żywy, bo jedyny jego wiersz zapisała starsza wersja Loadouta.
+        let Some(run_state) = RunState::from_wire(&row.run_status) else {
+            plan.unreadable.push(Unreadable {
+                step_id: row.step_id.clone(),
+                reason: reason::UNKNOWN_RUN.to_owned(),
+            });
+            continue;
+        };
+        let known_run = plan
+            .run_status
+            .iter()
+            .any(|change| change.run_id == row.run_id);
+        if run_state.was_cut_off() && !known_run {
+            plan.run_status.push(RunStatusChange {
+                run_id: row.run_id.clone(),
+                status: RUN_INTERRUPTED.to_owned(),
+            });
+        }
+
+        match read(row, machine) {
+            Ok(RowVerdict::Settled) => {}
+            Ok(RowVerdict::CutOff {
+                reap,
+                session_id,
+                next_attempt,
+            }) => {
+                // Duplikat znika bez słowa i to jest decyzja, nie usterka: dwa `SIGTERM` do tej
+                // samej grupy to drugi sygnał wysłany do grupy, która już nie istnieje. Wektor
+                // zamiast zbioru, bo kolejność wierszy jest częścią kontraktu, a wierszy jest
+                // tyle, ile kroków w biegu (~20).
+                if let Some(pgid) = reap.filter(|pgid| !plan.reap.contains(pgid)) {
+                    plan.reap.push(pgid);
+                }
+                plan.step_status.push(StepStatusChange {
+                    step_id: row.step_id.clone(),
+                    status: STEP_FAILED.to_owned(),
+                    reason: STEP_REASON_INTERRUPTED.to_owned(),
+                });
+                plan.ask
+                    .push(question(&row.step_id, &session_id, next_attempt));
+            }
+            Err(reason) => plan.unreadable.push(Unreadable {
+                step_id: row.step_id.clone(),
+                reason: reason.to_owned(),
+            }),
+        }
+    }
+
+    plan
 }
 
 /// Przepuszcza `plan.reap` przez domykacza i zbiera dowody.
