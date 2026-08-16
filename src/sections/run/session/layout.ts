@@ -24,6 +24,7 @@
  */
 import type { FeedView } from '../feed/model';
 import type { TranscriptLine } from './filter';
+import { sessionFeed } from './filter';
 
 /** Trzy sekcje, w tej kolejności, zawsze. */
 export type SectionId = 'given' | 'produced' | 'transcript';
@@ -113,7 +114,128 @@ export interface SessionInput {
   readonly notes: readonly UsedNote[];
 }
 
+/**
+ * Zdania pustych stanów — jedno na sekcję, po angielsku, bez nazw pól z danych.
+ *
+ * Puste `given` naprawdę się zdarza: pod-agent rozpuszczony w trakcie biegu nie stoi na
+ * żadnym kroku, nikt mu nic nie przekazał i żadna notatka nie poszła do jego promptu. Puste
+ * `produced` zdarza się jeszcze częściej i jest tym przypadkiem, dla którego cały ten podział
+ * powstał: agent pisze „I fixed everything", nie zmieniwszy ani jednego pliku.
+ *
+ * Zdanie, nie kreska. `SPEND: not reported` w poprzednim prototypie stało w tej samej siatce i tym
+ * samym krojem, co wiersz z prawdziwą liczbą, więc jednego od drugiego nie dało się odróżnić
+ * inaczej niż czytając.
+ */
+const NOTHING: Readonly<Record<SectionId, string>> = {
+  given: 'Nothing was given to this agent.',
+  produced: 'No files changed and nothing handed on yet.',
+  transcript: 'This agent has not said anything yet.',
+};
+
+/** Wiersz albo nic. Sekcja nie dostaje wiersza, którego wartość byłaby pusta. */
+function row(kind: RowKind, label: string, value: string, detailId: number | null): SectionRow {
+  return { kind, label, value, detailId };
+}
+
+/**
+ * Co ten agent dostał: krok, przekazania do niego, notatki w użyciu, wskazane pliki.
+ *
+ * Kolejność jest kolejnością z makiety (linie 509–517). Wiersza, dla którego nie ma wartości,
+ * po prostu nie ma — pięć wierszy wpisanych na stałe za makietą, z których trzy są puste,
+ * wygląda na skończone i mówi mniej.
+ */
+function givenRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[] {
+  const steps = run.steps.filter((step) => step.agent === agent.id);
+  const rows: SectionRow[] = [];
+
+  for (const step of steps) {
+    rows.push(row('step', 'Step', step.name + ' — ' + step.brief, null));
+  }
+  for (const handoff of run.handoffs) {
+    if (handoff.to !== agent.id) continue;
+    /* Etykieta niesie nadawcę, bo to jest pierwsza rzecz, o którą się pyta przy przekazaniu
+     * („od kogo to przyszło"), a treść wiersza jest wtedy samym plikiem [makieta 511]. */
+    rows.push(
+      row(
+        'handoff',
+        'From ' + handoff.from,
+        handoff.file + ' · ' + handoff.summary,
+        handoff.detailId,
+      ),
+    );
+  }
+  for (const note of run.notes) {
+    if (note.agent !== agent.id) continue;
+    rows.push(row('note', 'Note', note.text + ' — in use', note.detailId));
+  }
+  for (const step of steps) {
+    /* Krok, który nie wskazał żadnego pliku, nie dostaje wiersza `files` z kreską w środku. */
+    if (step.files.length === 0) continue;
+    rows.push(row('files', 'Files', step.files.join(', '), null));
+  }
+  return rows;
+}
+
+/**
+ * Co po tym agencie zostało: zmienione ścieżki i przekazania od niego.
+ *
+ * Oba są faktami z dysku i to jest cała teza tego bloku. Karmienie go ostatnią wiadomością
+ * agenta jest cichą porażką numer jeden całego ekranu: deklaracja postawiona w rubryce faktów
+ * czyta się jak fakt i nie ma na ekranie niczego, co by jej zaprzeczyło [00-SYNTHESIS §2.2].
+ * Zmiana zrobiona przez innego agenta należy do TAMTEGO agenta.
+ */
+function producedRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[] {
+  const rows: SectionRow[] = [];
+
+  for (const change of run.changes) {
+    if (change.agent !== agent.id) continue;
+    rows.push(
+      row(
+        'changes',
+        'Changes',
+        change.path + ' · +' + String(change.added) + ' −' + String(change.removed),
+        change.detailId,
+      ),
+    );
+  }
+  for (const handoff of run.handoffs) {
+    if (handoff.from !== agent.id) continue;
+    rows.push(row('handoff', 'Handoff', handoff.file + ' · ' + handoff.summary, handoff.detailId));
+  }
+  return rows;
+}
+
+/** Sekcja faktów: wiersze albo jedno zdanie o tym, że ich nie ma. */
+function factsSection(
+  id: 'given' | 'produced',
+  name: string,
+  rows: readonly SectionRow[],
+): Section {
+  return {
+    id,
+    heading: 'What ' + name + (id === 'given' ? ' was given' : ' produced'),
+    rows,
+    lines: [],
+    empty: rows.length === 0 ? NOTHING[id] : null,
+  };
+}
+
 /** Trzy sekcje ekranu agenta, w kolejności `given`, `produced`, `transcript`. */
-export function sessionSections(_agent: SessionAgent, _run: SessionInput): readonly Section[] {
-  throw new Error('not implemented');
+export function sessionSections(agent: SessionAgent, run: SessionInput): readonly Section[] {
+  /* Transkrypt jest trzeci i to jest cała decyzja tego pliku. Wersja oczywista — transkrypt
+   * na całą wysokość — odpowiada na pytanie „co ten agent gadał", a człowiek otwiera agenta,
+   * żeby dowiedzieć się dwóch innych rzeczy. */
+  const lines = sessionFeed(run.view, agent.id);
+
+  return [
+    factsSection('given', agent.name, givenRows(agent, run)),
+    factsSection('produced', agent.name, producedRows(agent, run)),
+    {
+      id: 'transcript',
+      heading: 'What ' + agent.name + ' said',
+      rows: [],
+      lines,
+      empty: lines.length === 0 ? NOTHING.transcript : null,
+    },
+  ];
 }
