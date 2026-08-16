@@ -207,7 +207,40 @@ export function createWorkflowListStore(io: WorkflowListIo) {
       set({ workflows: sortedByName([...onDisk, { path, workflow }]) });
     },
 
-    duplicate: notImplemented,
+    duplicate: async (id) => {
+      /* Ten sam odczyt katalogu i z tego samego powodu, co w `create`: duplikat jest nowym
+       * plikiem, więc też musi trafić na wolną nazwę. */
+      const onDisk = await io.list();
+      const source = onDisk.find((entry) => entry.workflow.id === id);
+      if (source === undefined) {
+        /* Plik zniknął spod ekranu — usunięty w drugim oknie albo w Finderze. Duplikowanie
+         * wiersza, którego nie ma na dysku, wskrzesiłoby workflow, który ktoś przed chwilą
+         * usunął; ekran ma się zamiast tego zgodzić z katalogiem (niezmiennik 4). */
+        set({ workflows: sortedByName(onDisk) });
+        return;
+      }
+
+      const name = `${source.workflow.name} (copy)`;
+      const copy: WorkflowFile = {
+        /* `structuredClone`, nie `{ ...wf }`. Rozłożenie obiektu kopiuje ODWOŁANIA do tablic
+         * `steps` i `links`, więc pierwsza edycja duplikatu po cichu przepisuje oryginał,
+         * na którym użytkownik pracuje od miesiąca — i widać to dopiero po biegu, który zrobił
+         * co innego, niż mówi ekran. */
+        ...structuredClone(source.workflow),
+        /* Własne `id`: dwie pozycje z jednym `id` to jeden workflow wypisany dwa razy,
+         * a wygrywa ta, którą zapisano później. `id` oryginału zostaje nietknięte [T3 §3.1]. */
+        id: await io.newId(),
+        name,
+      };
+      /* Identyfikatory kroków zostają takie, jakie były. Są lokalne dla pliku, a `links`
+       * wskazują na nie po tych identyfikatorach — świeżo wybite `id` kroków bez przepisania
+       * strzałek dałyby kopię podłączoną do niczego. */
+
+      const path = freeFileName(name, onDisk);
+      await io.write(path, copy);
+      set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]) });
+    },
+
     requestDelete: notImplemented,
     cancelDelete: notImplemented,
     confirmDelete: notImplemented,
