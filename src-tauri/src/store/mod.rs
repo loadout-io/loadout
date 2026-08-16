@@ -43,6 +43,10 @@ use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
 pub mod migrate;
+/// Katalog biegu → wiersze indeksu. Prywatny, bo jest drogą wejścia do [`Store::rebuild_from`],
+/// a nie osobnym API: gdyby ktoś mógł go wywołać z pominięciem [`Store`], mógłby też ominąć
+/// jedyne miejsce, które te wiersze niesie do pisarza.
+mod rebuild;
 pub mod schema;
 pub mod writer;
 
@@ -319,18 +323,30 @@ impl Store {
     /// i `handoffs/` (pliki przekazań). Wszystko, czego tu nie ma, **nie istnieje** po skasowaniu
     /// bazy — i to jest jedyny test niezmiennika 4, jaki ten podsystem ma.
     pub async fn rebuild_from(&self, run_dir: &Path) -> Result<()> {
-        // SZKIELET (2026-08-16): czytanie katalogu biegu jest całą treścią AC-4, więc tutaj go
-        // nie ma. Katalog jest porzucany bez otwarcia ani jednego pliku, do pisarza nie idzie
-        // żadne zlecenie, a baza zostaje pusta. Podkreślenie w nazwie znika razem ze szkieletem
-        // — sygnatura jest już ta docelowa.
-        tracing::debug!(
-            run = %run_dir.display(),
-            "SZKIELET: the run directory was not read and nothing was indexed"
-        );
-        // Jedyne `await` w szkielecie. Sygnatura ma być TA, którą wypełni implementacja — test
-        // skompilowany dziś przeciwko innej jutro nie skompiluje się wcale — a `async fn` bez
-        // `await` przewraca `clippy::unused_async` w pełnej bramce.
-        tokio::task::yield_now().await;
+        // Czytanie idzie na pulę blokującą, bo `logs/agent-<id>.jsonl` długiego biegu bywa duży
+        // (200 000 zdarzeń to normalna wielkość [T7 §5.3]), a jedyny objaw czytania go wprost na
+        // pętli byłby taki, że okno przestaje odpowiadać w chwili otwierania projektu.
+        let directory = run_dir.to_path_buf();
+        let indexed = tokio::task::spawn_blocking(move || rebuild::read(&directory))
+            .await
+            // Zadanie blokujące nie panikuje — `panic` jest `deny` w tym drzewie — więc `Err` tu
+            // znaczy „bardzo nie tak" i dla wołającego jest tym, czym każdy inny błąd odczytu.
+            .map_err(|joined| StoreError::Io(std::io::Error::other(joined)))??;
+
+        // Kolejność jest wymuszona kluczami obcymi i nie jest kwestią gustu: `events.step_id`
+        // i `artifacts.step_id` wskazują na `steps`, a te na `runs`. Wysłanie zdarzeń przed
+        // krokami wróciłoby jako `FOREIGN KEY constraint failed` — przy `foreign_keys` ON,
+        // czyli zawsze, odkąd pragmy są kompletne.
+        self.writer.insert_run(indexed.run).await?;
+        for step in indexed.steps {
+            self.writer.insert_step(step).await?;
+        }
+        for batch in indexed.steps_events.chunks(rebuild::EVENTS_PER_TRANSACTION) {
+            self.writer.append_events(batch.to_vec()).await?;
+        }
+        for artifact in indexed.artifacts {
+            self.writer.insert_artifact(artifact).await?;
+        }
         Ok(())
     }
 
