@@ -14,23 +14,11 @@
 //!
 //! Czego tu nie ma i nie będzie: portów, typu krawędzi, warunku, węzła-grupy, pętli. Strzałka
 //! znaczy „po" i nic więcej (T3 §6.2). Trzeci rodzaj kafelka jest tym, co zabiło poprzedniego prototypu.
-//!
-//! # Stan tego katalogu: SZKIELET (2026-08-16)
-//!
-//! Typy są kompletne — to one sprawiają, że kryteria się **kompilują** — a ciała funkcji
-//! w `file.rs` i `check.rs` są `todo!()`. To jest wymagany kształt fazy kontraktu: test ma się
-//! skompilować i paść **w czasie wykonania, na braku ZACHOWANIA**, bo test, który się nie
-//! kompiluje, niczego nie uruchomił (`AGENTS.md` §2a p. 5, który wprost każe zacząć od
-//! `todo!()`).
-//!
-//! Cena jest jedna i trzeba ją znać: `clippy::todo` jest `deny`
-//! w `[workspace.lints.clippy]`, więc `./verify.sh quick` jest w tej fazie czerwony na tych
-//! ciałach — i taki ma być, dopóki żadne z nich nie zostało napisane. `./verify.sh before`
-//! uruchamia same kryteria i ta czerwień go nie dotyczy.
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub mod check;
@@ -174,6 +162,17 @@ pub enum Folder {
     Pick { path: String },
 }
 
+impl Folder {
+    /// Czy ten krok dostaje **własną** kopię plików.
+    ///
+    /// Jedyny folder, który nie koliduje z niczym — także sam ze sobą, kiedy krok biegnie
+    /// w kilku kopiach. Reszta reguły o kolizjach mieszka w [`check`], bo to ona zna drugi krok.
+    #[must_use]
+    pub fn is_own_copy(&self) -> bool {
+        matches!(self, Self::FreshCopy)
+    }
+}
+
 /// `"all"` albo lista nazw [T3 §3.1].
 ///
 /// Znacznik jest osobnym typem, bo w enumie `untagged` wariant jednostkowy serializuje się jako
@@ -239,10 +238,66 @@ pub struct Link {
 /// Pozycja kafelka na płótnie.
 ///
 /// Pole jest `f64`, bo plik można poprawić ręcznie i przyjdzie stamtąd `241.4`. Zapisany tekst
-/// ma jednak nieść **całkowitą wielokrotność [`GRID`]** — przyciąganie robi [`file::save`],
-/// także wtedy, gdy zrobił je już frontend [T3 §8.2].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+/// niesie jednak zawsze **całkowitą wielokrotność [`GRID`]** [T3 §8.2].
+///
+/// 2026-08-16 — przyciąganie siedzi w samej serializacji, a nie w [`file::save`], i to jest
+/// mocniejsza wersja tej obietnicy: pozycji nieprzyciągniętej **nie da się** zapisać, także
+/// z pliku poprawionego ręcznie, w którym żadnego frontendu nie było. Odwrotnie —
+/// przyciąganie w jednej funkcji zapisującej trzeba pamiętać w każdej następnej, która też
+/// zapisze plik, a takich będzie więcej niż jedna.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
+}
+
+impl Serialize for Point {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut point = serializer.serialize_struct("Point", 2)?;
+        point.serialize_field("x", &Coordinate(snapped(self.x)))?;
+        point.serialize_field("y", &Coordinate(snapped(self.y)))?;
+        point.end()
+    }
+}
+
+/// Najbliższa całkowita wielokrotność [`GRID`].
+///
+/// `240.00000001` brudzi diff przy każdym najechaniu myszą, a `240` nie brudzi go nigdy.
+/// Wartość nieskończona albo NaN wraca bez zmiany: przyciąganie i tak dałoby z niej NaN,
+/// a plik ma się zapisać z tym, co w nim jest, zamiast po cichu przesuwać kafelek do zera.
+fn snapped(value: f64) -> f64 {
+    if value.is_finite() {
+        (value / GRID).round() * GRID
+    } else {
+        value
+    }
+}
+
+/// Współrzędna w tekście pliku — liczba całkowita, nie `240.0`.
+///
+/// 2026-08-16 — `f64` serializuje się przez `ryu`, które do liczby całkowitej zawsze dopisuje
+/// `.0`. Wtedy plik zapisany przez Loadouta różni się od tego samego pliku poprawionego ręcznie
+/// o kropkę przy każdej pozycji, czyli o wiersz diffa na każdym kroku — przy pierwszym zapisie
+/// po ręcznej poprawce przepisany zostaje cały plik.
+#[derive(Debug)]
+struct Coordinate(f64);
+
+impl Serialize for Coordinate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Przez tekst, nie przez `as i64`: rzutowanie z `f64` jest w tym repo stratne i pełna
+        // bramka je odrzuca (`engine/line.rs` nosi ten sam powód przy liczeniu czasu). Dla
+        // liczby już przyciągniętej do siatki `{:.0}` jest odwzorowaniem dokładnym.
+        match format!("{:.0}", self.0).parse::<i64>() {
+            Ok(whole) => serializer.serialize_i64(whole),
+            // Pozycja spoza zakresu `i64` — albo NaN z ręcznej edycji — nie może zniknąć po
+            // cichu. Zapisujemy ją taką, jaka przyszła; płótno poprawi ją przy pierwszym ruchu.
+            Err(_) => serializer.serialize_f64(self.0),
+        }
+    }
 }
