@@ -39,6 +39,9 @@ pub mod skills;
 /// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
 pub mod workflow;
 
+/// Rejestr workspace'ow: jeden folder — jedna karta, jedna wspolna pula miejsc. Wypelnia T-24.
+pub mod workspace;
+
 // 2026-08-15 — WARUNEK USUNIECIA DEKLARACJI TYMCZASOWEJ ZASZEDL, wiec jej tu nie ma.
 //
 // Stala tu para linii `#[path = "engine/supervisor.rs"] pub mod supervisor;`, bo `engine/mod.rs`
