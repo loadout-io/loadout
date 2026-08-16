@@ -172,11 +172,13 @@ pub struct Reviewed {
 /// rozpoznać.
 #[must_use]
 pub fn review(raw: &str) -> Reviewed {
-    // KROK 1 i 2 — normalizacja. Najpierw komentarze, potem znaki niewidzialne: komentarz
-    // rozbity zero-width joinerem (`<!\u{200b}--`) nie jest komentarzem dla przeglądarki,
-    // ale jest nim dla oka, więc kolejność odwrotna zostawiałaby tę parę bez znaleziska.
-    let (uncommented, comments) = strip_comments(raw);
-    let (body, invisible) = strip_invisible(&uncommented);
+    // KROK 1 i 2 — normalizacja. Znaki niewidzialne PIERWSZE, komentarze po nich, i ta
+    // kolejność jest wyborem, nie przypadkiem: `<!\u{200b}--` nie jest otwarciem komentarza
+    // dla żadnego parsera, więc pass komentarzowy puszczony pierwszy przechodzi obok niego
+    // i zostawia w zapisanym ciele żywy komentarz razem z tym, co w nim schowano. Odwrotnie —
+    // zero-width znika, `<!--` staje się `<!--`, a komentarz jest zdejmowany jak każdy inny.
+    let (seen, invisible) = strip_invisible(raw);
+    let (body, comments) = strip_comments(&seen);
 
     // KROK 3 — skan. Biegnie po `body`, czyli po tym, co za chwilę pójdzie na dysk. Skan na
     // `raw` z zapisem `body` jest cichą porażką numer jeden i cały ten porządek istnieje po to,
@@ -228,7 +230,7 @@ fn verdict_of(findings: &[Finding]) -> Verdict {
 /// Znak, którego człowiek nie zobaczy: zero-width i sterujące bidi.
 ///
 /// DLACZEGO lista, a nie `char::is_control`: `\n` i `\t` też są sterujące, a są treścią pliku.
-/// Ta piętnastka to znaki, których jedynym zastosowaniem w umiejętności jest sprawienie, żeby
+/// Ta czternastka to znaki, których jedynym zastosowaniem w umiejętności jest sprawienie, żeby
 /// tekst renderował się inaczej, niż się parsuje.
 fn is_invisible(character: char) -> bool {
     matches!(character,
