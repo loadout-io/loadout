@@ -685,7 +685,7 @@ pub fn with_deep_scan(mut reviewed: Reviewed, deep: &DeepScan) -> Reviewed {
 /// Hosty, z których wolno pobierać [T5 §5.1].
 ///
 /// Lista, nie wzorzec. `https://github.com.evil.tld/o/r` zawiera `github.com` i nie jest
-/// GitHubem; porównanie musi być równością CAŁEGO hosta, nie zawieraniem.
+/// żadnym z tych czterech hostów; porównanie musi być równością CAŁEGO hosta, nie zawieraniem.
 pub const ALLOWED_HOSTS: [&str; 4] = [
     "github.com",
     "raw.githubusercontent.com",
@@ -1199,9 +1199,93 @@ pub struct SelfTest {
 /// Tiera 3: pusty łańcuch znaczy „CLI nigdy nie wystartowało".
 #[must_use]
 pub fn self_test(skill: &Skill, wrote: &[PathBuf], init_line: &str) -> SelfTest {
-    todo!(
-        "przeczytaj {} katalogów z dysku dla umiejętności {:?}; init: {init_line:?}",
-        wrote.len(),
-        skill.name
-    )
+    // Tier 1 pyta o PLIK, który powstanie, nie o naszą strukturę: emitujemy go i czytamy
+    // z powrotem tym samym parserem, którym czyta go Tier 2. Walidacja `Skill` z pominięciem
+    // emitera przechodziłaby także wtedy, gdyby emiter gubił `description` po drodze.
+    let (written, _) = place::emit(skill);
+    let valid = match place::validate_strict(&skill.name, &parse_doc(&written)) {
+        Ok(()) => SpecCheck::Valid,
+        Err(messages) => SpecCheck::Invalid { messages },
+    };
+
+    let mut ok = 0usize;
+    let mut broken = Vec::new();
+    for dir in wrote {
+        if reads_back(dir) {
+            ok += 1;
+        } else {
+            broken.push(dir.clone());
+        }
+    }
+    let installed = Installed {
+        ok,
+        of: wrote.len(),
+        broken,
+    };
+
+    let discovered = place::discovery_from_init(&skill.name, init_line, wrote);
+    let summary = summarise(&valid, &installed, &discovered);
+
+    SelfTest {
+        valid,
+        installed,
+        discovered,
+        summary,
+    }
+}
+
+/// Czy w tym katalogu naprawdę leży czytelna umiejętność.
+///
+/// PONOWNY ODCZYT I PONOWNE SPARSOWANIE Z DYSKU — to jest całe Tier 2 i cały powód, dla
+/// którego nie liczy się go z [`super::place::InstallPlan`]. Plan mówi, co chcieliśmy zapisać.
+/// Plik obcięty do zera bajtów, zapisany do połowy albo nadpisany sekundę później przez czyjeś
+/// narzędzie wygląda w planie identycznie jak zdrowy.
+///
+/// Nazwa katalogu jedzie do walidatora razem z dokumentem, bo dwie z jego reguł dotyczą JEJ:
+/// katalog o innej nazwie niż `name` daje umiejętność, która ma dwie nazwy zależnie od tego,
+/// kto pyta.
+fn reads_back(dir: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
+        return false;
+    };
+    let dir_name = dir.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    place::validate_strict(dir_name, &parse_doc(&text)).is_ok()
+}
+
+/// Zdania dla karty, LICZONE z trzech tierów.
+///
+/// Zdanie o komplecie („Installed for N tools.") istnieje wyłącznie wtedy, gdy komplet jest
+/// prawdą. Postawione obok niepełnej instalacji byłoby gorsze niż brak zdania: człowiek
+/// przestaje sprawdzać dokładnie to, co właśnie nie zadziałało.
+fn summarise(valid: &SpecCheck, installed: &Installed, discovered: &Discovery) -> Vec<String> {
+    let mut said = Vec::new();
+
+    match valid {
+        SpecCheck::Valid => said.push("The skill is written correctly.".to_owned()),
+        SpecCheck::Invalid { messages } => said.extend(messages.iter().cloned()),
+    }
+
+    if installed.ok == installed.of {
+        said.push(format!("Installed for {} tools.", installed.of));
+    } else {
+        said.push(format!(
+            "Installed for {} of {} tools.",
+            installed.ok, installed.of
+        ));
+        // Ścieżka, nie liczba: zgłoszenie ma mówić GDZIE zajrzeć.
+        for path in &installed.broken {
+            said.push(format!("The copy in {} could not be read.", path.display()));
+        }
+    }
+
+    // Tier 3 nigdy nie mówi „failed". Brak CLI jest faktem o świecie, nie werdyktem
+    // o umiejętności — a czerwone przy vendorze, którego nikt nie zainstalował, uczy ignorować
+    // jedyny tier, który złapie vendora przenoszącego katalog [T5 §6.3].
+    said.push(match discovered {
+        Discovery::Seen => "Claude Code lists this skill.".to_owned(),
+        Discovery::NotSeen { .. } => "Claude Code does not list this skill yet.".to_owned(),
+        Discovery::Unknown(why) => format!("Whether Claude Code lists this skill: {why}."),
+    });
+
+    said
 }
