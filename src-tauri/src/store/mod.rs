@@ -228,6 +228,33 @@ pub struct NewEvent {
     pub body: Option<String>,
 }
 
+/// Wiersz `artifacts`: **ścieżka** do pliku, który leży na dysku, nigdy jego treść [T7 §5.4].
+///
+/// Odwrócenie tego — trzymanie bajtów w bazie — czyni bazę drugim źródłem prawdy o treści,
+/// która i tak jest w pliku, i łamie niezmiennik 4 tym samym ruchem: skasowanie `loadout.db`
+/// zabierałoby wtedy coś, czego nie ma gdzie indziej.
+#[derive(Debug, Clone)]
+pub struct NewArtifact {
+    /// Klucz wyliczony z biegu i ścieżki względnej, nigdy świeży uuid: odbudowa ma dać ten sam
+    /// wiersz co pierwsze indeksowanie, a `id` też jest kolumną w porównaniu (AC-4).
+    pub id: String,
+    /// Bieg, do którego artefakt należy.
+    pub run_id: String,
+    /// Krok, jeśli artefakt ma krok.
+    pub step_id: Option<String>,
+    /// Co to jest: `raw_log` dla surowego strumienia agenta, `handoff` dla pliku przekazania.
+    pub kind: String,
+    /// Nazwa pliku, tak jak stoi na dysku.
+    pub name: String,
+    /// Ścieżka do pliku.
+    pub path: String,
+    /// Rozmiar pliku w bajtach.
+    pub bytes: Option<i64>,
+    /// Kiedy powstał — wyliczone z `run.json`, nigdy z czasu modyfikacji pliku: `mtime` zmienia
+    /// się przy kopiowaniu katalogu i wtedy odbudowa daje inny wiersz niż indeksowanie.
+    pub created_at: i64,
+}
+
 /// Jedna baza, jedno zadanie piszące, dowolnie wiele czytających.
 #[derive(Debug)]
 pub struct Store {

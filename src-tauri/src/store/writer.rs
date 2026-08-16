@@ -32,13 +32,16 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::migrate::migrate;
-use super::{NewEvent, NewRun, NewStep, Pragmas, Result, StoreError, apply_pragmas, read_pragmas};
+use super::{
+    NewArtifact, NewEvent, NewRun, NewStep, Pragmas, Result, StoreError, apply_pragmas,
+    read_pragmas,
+};
 
 /// Ile zleceń mieści się w kanale, zanim nadawca zaczeka.
 ///
@@ -58,6 +61,8 @@ enum Rows {
     Run(Box<NewRun>),
     /// Nowy krok.
     Step(Box<NewStep>),
+    /// Nowy artefakt — **ścieżka** do pliku, nigdy jego treść [T7 §5.4].
+    Artifact(Box<NewArtifact>),
     /// Wsad zdarzeń — całość albo nic.
     Events(Vec<NewEvent>),
 }
@@ -104,6 +109,11 @@ impl Writer {
     /// Dopisuje krok.
     pub async fn insert_step(&self, step: NewStep) -> Result<()> {
         self.rows(Rows::Step(Box::new(step))).await
+    }
+
+    /// Dopisuje artefakt: wiersz wskazujący palcem na plik, który już leży na dysku.
+    pub async fn insert_artifact(&self, artifact: NewArtifact) -> Result<()> {
+        self.rows(Rows::Artifact(Box::new(artifact))).await
     }
 
     /// Dopisuje wsad zdarzeń. **Jedno wywołanie, jedna transakcja** — sto wierszy albo zero,
@@ -169,21 +179,41 @@ pub(crate) fn start(handle: &Handle, path: &Path) -> Result<(Writer, JoinHandle<
     Ok((Writer { jobs }, task))
 }
 
-/// Pętla zadania pisarza. Kończy się dopiero, kiedy zginie ostatni [`Writer`].
-async fn serve(conn: Connection, mut inbox: mpsc::Receiver<Job>) {
-    // SZKIELET (2026-08-16): zapis, transakcja na wsad i przeżycie złego wiersza są całą
-    // treścią AC-2, AC-5 i AC-6, więc tutaj ich nie ma. Zlecenia są odbierane i kwitowane
-    // `Ok`, ale nic nie ląduje w bazie. Pętla zostaje prawdziwa — bez niej `Writer::rows`
-    // wisiałby w oczekiwaniu na odpowiedź i kryteria padłyby na zwisie, a zwis to nie jest
-    // czerwień z właściwego powodu (rc 124 jest na liście podpisów, które bramka odrzuca).
-    tracing::debug!("SZKIELET: the writer task answers Ok and writes nothing");
+/// Bieg wchodzi jednym zdaniem; kolumny wypisane jawnie, nigdy `INSERT INTO runs VALUES (…)`
+/// po pozycjach — kolumna dołożona jutro przestawiłaby wtedy wszystkie następne po cichu.
+const INSERT_RUN: &str = "INSERT INTO runs \
+     (id, workflow_id, workflow_snapshot, title, status, concurrency, \
+      created_at, started_at, ended_at, error) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
+/// Krok. `status` i `attempt` przechodzą przez `CHECK` i `STRICT` w schemacie, nie przez Rusta.
+const INSERT_STEP: &str = "INSERT INTO steps \
+     (id, run_id, node_key, name, agent, depends_on, status, attempt, agent_session_id, \
+      pid, pgid, exit_code, started_at, ended_at, cost_usd, summary, error) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)";
+
+/// Artefakt: wskazanie palcem na plik.
+const INSERT_ARTIFACT: &str = "INSERT INTO artifacts \
+     (id, run_id, step_id, kind, name, path, bytes, created_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+
+/// Zdarzenie. `seq` nie występuje: nadaje je `SQLite`.
+const INSERT_EVENT: &str = "INSERT INTO events (run_id, step_id, ts, kind, level, body) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// Pętla zadania pisarza. Kończy się na [`Job::Close`] albo kiedy zginie ostatni [`Writer`].
+async fn serve(mut conn: Connection, mut inbox: mpsc::Receiver<Job>) {
     while let Some(job) = inbox.recv().await {
         match job {
-            Job::Rows(_, reply) => {
+            Job::Rows(rows, reply) => {
+                // Wynik idzie do wołającego i **nie** zatrzymuje pętli. To jest cała druga
+                // połowa AC-6: implementacja, która ratuje atomowość, kończąc zadanie, zostawia
+                // użytkownika z biegiem, w którym nic więcej się nie zapisze, i z aplikacją do
+                // restartu po jednym złym zdarzeniu.
+                let outcome = write(&mut conn, &rows);
                 // Odbiorca mógł już zniknąć — wołający ma prawo się rozmyślić. To nie jest
                 // błąd zapisu i nie ma prawa zatrzymać pętli.
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(outcome);
             }
             Job::Pragmas(reply) => {
                 let _ = reply.send(read_pragmas(&conn));
@@ -193,4 +223,113 @@ async fn serve(conn: Connection, mut inbox: mpsc::Receiver<Job>) {
             Job::Close => break,
         }
     }
+}
+
+/// Jedno zlecenie, jedna droga do bazy.
+fn write(conn: &mut Connection, rows: &Rows) -> Result<()> {
+    match rows {
+        Rows::Run(run) => insert_run(conn, run),
+        Rows::Step(step) => insert_step(conn, step),
+        Rows::Artifact(artifact) => insert_artifact(conn, artifact),
+        Rows::Events(batch) => append_events(conn, batch),
+    }
+}
+
+/// Dopisuje bieg.
+fn insert_run(conn: &Connection, run: &NewRun) -> Result<()> {
+    conn.execute(
+        INSERT_RUN,
+        params![
+            run.id,
+            run.workflow_id,
+            run.workflow_snapshot,
+            run.title,
+            run.status,
+            run.concurrency,
+            run.created_at,
+            run.started_at,
+            run.ended_at,
+            run.error,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Dopisuje krok.
+fn insert_step(conn: &Connection, step: &NewStep) -> Result<()> {
+    conn.execute(
+        INSERT_STEP,
+        params![
+            step.id,
+            step.run_id,
+            step.node_key,
+            step.name,
+            step.agent,
+            step.depends_on,
+            step.status,
+            step.attempt,
+            step.agent_session_id,
+            step.pid,
+            step.pgid,
+            step.exit_code,
+            step.started_at,
+            step.ended_at,
+            step.cost_usd,
+            step.summary,
+            step.error,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Dopisuje artefakt.
+fn insert_artifact(conn: &Connection, artifact: &NewArtifact) -> Result<()> {
+    conn.execute(
+        INSERT_ARTIFACT,
+        params![
+            artifact.id,
+            artifact.run_id,
+            artifact.step_id,
+            artifact.kind,
+            artifact.name,
+            artifact.path,
+            artifact.bytes,
+            artifact.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Dopisuje wsad zdarzeń **w jednej transakcji**: wszystkie wiersze albo żaden.
+///
+/// Odmowa niesie liczbę wierszy całego wsadu, a nie tego jednego, który ją wywołał, i to jest
+/// różnica, o którą chodzi: wołający ma się dowiedzieć, ile zdarzeń **nie weszło**, bo „jeden
+/// wiersz odrzucony" i „sto wierszy wróciło" proszą o zupełnie inną naprawę.
+///
+/// Wyjście przez `?` porzuca [`rusqlite::Transaction`] bez `commit()`, a jej `Drop` wycofuje
+/// całość. Nie polegamy na tym w milczeniu — to jest jedyny powód, dla którego pięćdziesiąt
+/// sześć sierot nie zostaje w transkrypcie, a dziura w transkrypcie jest gorsza niż brak wsadu,
+/// bo nikt nie umie jej zobaczyć.
+fn append_events(conn: &mut Connection, batch: &[NewEvent]) -> Result<()> {
+    let rows = batch.len();
+    let transaction = conn.transaction()?;
+    {
+        // `prepare_cached`, bo ta sama treść wraca przy każdym wsadzie przez cały bieg,
+        // a osiem producentów po 500 wysłań to 4000 przejść przez to miejsce (AC-5).
+        let mut statement = transaction.prepare_cached(INSERT_EVENT)?;
+        for event in batch {
+            statement
+                .execute(params![
+                    event.run_id,
+                    event.step_id,
+                    event.ts,
+                    event.kind,
+                    event.level,
+                    event.body,
+                ])
+                .map_err(|source| StoreError::Batch { rows, source })?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
 }
