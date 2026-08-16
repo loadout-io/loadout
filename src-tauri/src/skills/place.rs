@@ -514,7 +514,49 @@ fn stays_inside(relative: &Path) -> bool {
 ///
 /// Tworzy dokładnie te ścieżki, które plan wymienił, i ani jednej więcej.
 pub fn apply(plan: &InstallPlan, skill: &Skill) -> Result<()> {
-    todo!("T-18 AC-4: zapis dokładnie tego, co w {plan:?}, dla {skill:?}")
+    // Ta sama reguła co w `plan`, sprawdzona drugi raz, bo `apply` dostaje plan i umiejętność
+    // jako dwa osobne argumenty — nic nie gwarantuje, że pochodzą z jednego wywołania.
+    let escaping: Vec<String> = skill
+        .files
+        .iter()
+        .filter(|file| !stays_inside(&file.relative))
+        .map(|file| {
+            format!(
+                "Bundled file '{}' must stay inside the skill folder",
+                file.relative.display()
+            )
+        })
+        .collect();
+    if !escaping.is_empty() {
+        return Err(Error::Invalid { messages: escaping });
+    }
+
+    // Jeden `emit` na całą instalację, nie jeden na katalog. Dwie ścieżki, jeden plik:
+    // drugie brzmienie tej samej umiejętności jest drugą rzeczą do zdebugowania.
+    let (doc, _) = emit(skill);
+
+    for dir in &plan.writes {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join(SKILL_FILE), &doc)?;
+
+        for file in &skill.files {
+            let target = dir.join(&file.relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // `fs::copy`, nie `write(read(..))`: copy zachowuje uprawnienia, czyli bit
+            // wykonywalności `scripts/run.sh`. Zapis samych bajtów gubi go po cichu
+            // i skrypt przestaje się dać uruchomić dopiero u użytkownika.
+            fs::copy(&file.source, &target)?;
+        }
+    }
+
+    // Sidecar na końcu: zapis „to napisał Loadout" ma być prawdziwy w chwili, w której
+    // powstaje. Postawiony przed kopiowaniem przeżyłby błąd w połowie i uczyniłby naszym
+    // katalog, którego nigdy nie dokończyliśmy.
+    let mut ours = recorded(&plan.sidecar);
+    ours.extend(plan.writes.iter().cloned());
+    write_sidecar(&plan.sidecar, &ours)
 }
 
 /// Zdejmuje obie kopie umiejętności — i nic poza nimi.
