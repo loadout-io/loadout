@@ -19,6 +19,9 @@ use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
+/// Biblioteka uzytkownika: agenci, umiejetnosci, pamiec. Wypelnia T-11 i dalej.
+pub mod library;
+
 /// Pamiec: pliki przekazan miedzy krokami (T-16) i notatki (T-17).
 pub mod memory;
 
