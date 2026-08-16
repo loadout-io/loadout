@@ -29,14 +29,15 @@ use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
     SessionRef, Tokens,
 };
-use loadout_lib::engine::line::Line;
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::ipc::{LineSink, QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::read_agent_file;
 use loadout_lib::store::Store;
 use loadout_lib::workflow::check::{Level, check};
 use loadout_lib::workflow::file::load;
 use serde_json::Value as Json;
+use tauri::ipc::Channel;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -132,8 +133,7 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
         how_many_at_once: 3,
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<Line>>(64);
-    let drain = async move { while rx.recv().await.is_some() {} };
+    let (sink, drain) = the_pump_seam();
     let answer = async {
         let paused = wait_until_paused(bench.project.path()).await?;
         the_pause_sits_on_the_run(&paused, &watch)?;
@@ -142,7 +142,7 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
     };
 
     let (ran, answered, ()) = tokio::time::timeout(PATIENCE.saturating_mul(3), async {
-        tokio::join!(run_workflow_inner(&deps, &request, tx), answer, drain)
+        tokio::join!(run_workflow_inner(&deps, &request, sink), answer, drain)
     })
     .await
     .map_err(|_| "the run never came back after Continue".to_owned())?;
@@ -195,8 +195,7 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
         how_many_at_once: 3,
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<Line>>(64);
-    let drain = async move { while rx.recv().await.is_some() {} };
+    let (sink, drain) = the_pump_seam();
     let answer = async {
         let paused = wait_until_paused(bench.project.path()).await?;
         the_pause_sits_on_the_run(&paused, &watch)?;
@@ -204,7 +203,7 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
     };
 
     let (ran, stopped, ()) = tokio::time::timeout(PATIENCE.saturating_mul(3), async {
-        tokio::join!(run_workflow_inner(&deps, &request, tx), answer, drain)
+        tokio::join!(run_workflow_inner(&deps, &request, sink), answer, drain)
     })
     .await
     .map_err(|_| "the run never came back after Stop at the checkpoint".to_owned())?;
@@ -234,6 +233,24 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
         watch.times(BUILD)
     );
     Ok(())
+}
+
+/// Szew, którym bieg mówi do okna: nadajnik dla biegu i czekanie na pompę.
+///
+/// 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się
+/// pompa po drugiej stronie, więc kanał zakłada się tutaj tak, jak zakłada go komenda:
+/// `line_channel` + `spawn_pump`. Zmieniła się wyłącznie konstrukcja kanału przy wywołaniu —
+/// ani jedna asercja tego kryterium nie wie o tej zmianie, bo sądzi ono `run.json` i obserwatora
+/// sterownika, a nie wiersze. Kanał do okna jest czarną dziurą z tego samego powodu.
+///
+/// Czekanie oddajemy osobno, bo stoi w `join!` dokładnie tam, gdzie stało osuszanie kanału:
+/// pompa kończy się sama, kiedy zniknie ostatni nadajnik, a ten ginie razem z powrotem biegu.
+fn the_pump_seam() -> (LineSink, impl Future<Output = ()>) {
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    (sink, async move {
+        let _ = pump.await;
+    })
 }
 
 /// (a) i (b): pauza jest stanem **biegu**, żaden krok jej nie nosi, i nic za pytaniem nie ruszyło.
