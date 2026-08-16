@@ -12,9 +12,10 @@
  * jedno piętro wyżej, w `workflow-list.tsx`, gdzie mieszka obiekt `actions`. Kafelek zostaje
  * funkcją pliku.
  *
- * Czego wymagają kryteria od markupu: element nośny niesie `data-tile`, opis renderuje się
- * TYLKO wtedy, gdy jest (pusty `<p></p>` jest zakazany), a odmiana słowa idzie za liczbą —
- * `1 step`, nie `1 steps`.
+ * Z tego samego powodu kafelek nie jest `<button>`, choć makieta go tak rysuje: otwarcie
+ * workflow na płótnie należy do T-13, a przycisk, który nic nie woła, na zrzucie ekranu
+ * wygląda lepiej niż wersja poprawna. Wraca jako przycisk w tym samym commicie, w którym
+ * pojawia się płótno, do którego prowadzi.
  */
 import type { ReactElement } from 'react';
 import type { WorkflowFile } from './store';
@@ -23,11 +24,52 @@ export interface WorkflowTileProps {
   wf: WorkflowFile;
 }
 
-/* Szkielet fazy kontraktu — odpowiednik `todo!()`. Rzuca, więc kryterium pada w czasie
- * wykonania, na braku ZACHOWANIA, a nie przy rozwiązywaniu importu (AGENTS.md §2a).
- * Pusty fragment byłby tu gorszy: asercje negatywne („nie ma pustego akapitu", „nie ma
- * `used`") przechodzą na pustym markupie i w warstwie `before` świeciłyby na zielono,
- * niczego nie sprawdzając. */
-export function WorkflowTile(_props: WorkflowTileProps): ReactElement {
-  throw new Error('not implemented');
+/**
+ * `1 step`, ale `4 steps`.
+ *
+ * Odmiana idzie za liczbą, a nie obok niej: `${n} steps` czyta się poprawnie przy czterech
+ * i źle przy jednym, a napis wpisany na stałe czyta się poprawnie dokładnie na tym jednym
+ * workflow, na którym ktoś go sprawdzał.
+ */
+function counted(count: number, noun: string): string {
+  return count === 1 ? `1 ${noun}` : `${count} ${noun}s`;
+}
+
+/**
+ * Ilu RÓŻNYCH agentów robi tę robotę.
+ *
+ * Nie tyle, ile jest kroków: workflow z czterema krokami, w którym dwa robi ten sam agent,
+ * ma dwóch agentów. Krok rodzaju `checkpoint` nie ma agenta i nie liczy się do niczego.
+ */
+function differentAgents(steps: WorkflowFile['steps']): number {
+  const seen = new Set<string>();
+  for (const step of steps) {
+    if (step.agent !== undefined) {
+      seen.add(step.agent);
+    }
+  }
+  return seen.size;
+}
+
+export function WorkflowTile({ wf }: WorkflowTileProps): ReactElement {
+  /* Pusty opis to brak opisu. Plik z `"description": ""` — a taki powstaje z jednego
+   * skasowanego zdania — dałby zawsze renderowany akapit, czyli linijkę kafelka trzymaną
+   * otwartą dla tekstu, którego tam nie ma. */
+  const description = wf.description?.trim() ?? '';
+
+  return (
+    <article data-tile className="flex flex-col gap-2 rounded-sq border border-line bg-panel p-3">
+      <h2 className="text-heading text-ink">{wf.name}</h2>
+
+      {description === '' ? null : <p className="text-body text-muted">{description}</p>}
+
+      {/* Liczby są wartościami maszynowymi, więc mono — reguła semantyczna z DESIGN §4.
+       * Wiersz ma dokładnie dwie pozycje: obie są w pliku. Trzecia byłaby z historii biegów,
+       * której v1 nie ma. */}
+      <div className="flex gap-3 border-t border-line pt-2 font-mono text-mono text-muted">
+        <span>{counted(wf.steps.length, 'step')}</span>
+        <span>{counted(differentAgents(wf.steps), 'agent')}</span>
+      </div>
+    </article>
+  );
 }
