@@ -1,0 +1,218 @@
+# T-20 — Odzyskiwanie po awarii: wykryj, sprzątnij po `pgid`, zapytaj
+
+Kiedy Loadout ginie, agenci **nie giną razem z nim** — zostają przepięci pod PID 1 i dalej palą
+limit `[T7 §6.1, V]`. Odzyskanie ich jest możliwe, bo zapisany `pgid` przeżywa i dalej daje się
+zabić z nowego procesu. I dokładnie tu jest pułapka: `kern.maxproc` na macOS wynosi **16 000**
+`[T7 §6.3, V]`, PID-y się przewijają, a po restarcie maszyny zapisany `pgid` z dużym
+prawdopodobieństwem należy do czegoś zupełnie niewinnego. Cicha awaria tego zadania nie wygląda
+jak awaria: kod zapisuje czas startu systemu do bazy, przy odzyskiwaniu **odczytuje go z sysctl
+zamiast z wiersza** i porównuje wartość samą ze sobą — strażnik jest w kodzie, w testach jest
+zielony, a w praktyce nie strzeli nigdy. Druga cicha awaria to `killpg(0, …)`: wiersz z `pgid = 0`
+albo `NULL` przechodzi przez filtr, a `0` w `killpg` znaczy „moja własna grupa" — Loadout zabija
+sam siebie przy starcie i wygląda to jak crash pętli odzyskiwania. Trzecia: automatyczne
+wznowienie. Loadout **nigdy** nie wznawia przerwanego agenta po cichu — buduje wykrycie,
+sprzątnięcie i **pytanie**, bo błędne auto-wznowienie jest znacznie gorsze niż jedno uczciwe
+pytanie `[T7 §6.3]`.
+
+**Read first:**
+`docs/research/topics/T7-orchestration-engine.md` §6 (rozstrzyga, że agenci przeżywają śmierć
+Loadouta, że `killpg` po zapisanym `pgid` działa z nowego procesu, i że strażnikiem jest czas
+startu systemu — nie „sprawdzimy czy proces wygląda znajomo"), §6.2 (dlaczego `session_id` jest
+przydzielany **przed** spawnem: bez tego istnieje proces, którego sesji nie umiemy nazwać),
+ryzyko 2 (ponowne użycie PID/PGID to realne zagrożenie poprawności, nie teoretyczne).
+`docs/ARCHITECTURE.md` §5 (tabela przejść: `running` + crash aplikacji → `failed` z powodem
+`interrupted`, ustawiane **przy starcie przez `recovery.rs`**; `interrupted` jest statusem
+**biegu**, nie kroku) i §3 (granica: kod platformowy tylko w `engine/supervisor.rs`).
+`AGENTS.md` §3 (niezmienniki 3, 4, 5, 6, 24 — cytowane niżej po numerze).
+`docs/DECISIONS-LOCKED.md` D5 (teksty pytań, które zobaczy człowiek, są po angielsku).
+
+## Kto to robi
+
+- **Agent:** `rust-core` — pisarz: Claude Code
+- **Druga opinia:** Codex (nigdy ten sam vendor co pisarz; para jest wybieralna przez
+  `--agent` / `--reviewer`, decyzja D3)
+- **Artefakty biegu:** `runs/T-20/` — transkrypt, plik wyników, plan poprawki. Nigdy `$TMPDIR`.
+
+## Co to zadanie posiada
+
+- `src-tauri/src/recovery.rs` — cała logika uzgadniania stanu przy starcie. Jedno ograniczenie
+  trzyma się w poprzek całego pliku: **ten plik nie wykonuje żadnego wywołania systemowego.**
+  Decyduje, kto ma zostać zabity i o co trzeba zapytać; zabijaniem zajmuje się wstrzyknięty
+  domykacz, bo `kill`, `sysctl` i `#[cfg(unix)]` należą do `engine/supervisor.rs` (niezmiennik 3).
+- Pliki testowe, które są wyrocznią tego zadania i których nie deklaruje żadne inne:
+  `src-tauri/tests/recovery_boot_guard.rs`, `src-tauri/tests/recovery_reap_targets.rs`,
+  `src-tauri/tests/recovery_status_table.rs`, `src-tauri/tests/recovery_asks_never_resumes.rs`,
+  `src-tauri/tests/recovery_proof_of_death.rs`, `src-tauri/tests/recovery_unreadable_rows.rs`.
+
+**Warunek wstępny, którego to zadanie nie wolno mu naprawić samo:** żeby testy integracyjne
+widziały `loadout_lib::recovery`, w `src-tauri/src/lib.rs` musi stać `pub mod recovery;`.
+Ten plik należy do T-01. Jeśli linii nie ma — to jest luka T-01 do zgłoszenia, nie powód do
+dopisania jej tutaj (AGENTS.md §7).
+
+## Niezmienniki
+
+- **3 — kod platformowy tylko w `engine/supervisor.rs`.** Tutaj łamie się to najciszej ze
+  wszystkich miejsc w repo, bo `recovery.rs` *chce* zawołać `libc::kill`, `sysctl kern.boottime`
+  i `getpgrp()`. Każde z nich w tym pliku przewraca `checks/quick-boundary.sh` i zamienia port
+  na Windows z gałęzi `cfg` w przepisanie. Wszystkie trzy wchodzą jako argumenty: czas startu
+  systemu i własny `pgid` przyjeżdżają w strukturze `Machine`, a zabijanie przez domykacz
+  `FnMut(i32) -> ReapOutcome`.
+- **4 — pliki są prawdą, SQLite jest indeksem.** `recovery.rs` nie wymyśla ani jednego pola.
+  Wszystko, co ustawia (`interrupted`, `failed`, `attempt + 1`), musi dać się odtworzyć z
+  `.loadout/runs/<ts>__<id>/run.json` i surowych `logs/agent-<id>.jsonl`. Cicho łamie się to
+  wtedy, gdy odzyskiwanie zapisze „powód przerwania" wyłącznie do bazy — po skasowaniu
+  `loadout.db` powód przepada, a baza miała być kasowalna bez straty.
+- **5 — nigdy nie wywalaj biegu na nieznanej wartości.** Wiersze przychodzą z bazy zapisanej
+  przez **starszą** wersję Loadouta. Nieznany status kroku, `pgid = NULL`, brak `session_id`,
+  ujemna próba: żadne z nich nie ma prawa wywołać paniki. Panika w `recovery.rs` to aplikacja,
+  która nie startuje **dokładnie po tym, jak się wywaliła** — czyli w jedynym momencie, kiedy
+  użytkownik jej potrzebuje.
+- **6 — zabijamy grupę i dowodzimy, że nie żyje.** Dopóki nie ma dowodu (`ESRCH`), grupa jest
+  żywa. `EPERM` **nie jest dowodem śmierci** — znaczy, że grupa istnieje i należy do kogoś
+  innego, czyli że `pgid` został przewinięty. Cichy błąd: potraktowanie każdego niezerowego
+  wyniku `kill` jako „już nie żyje" i zameldowanie posprzątanego biegu.
+- **24 — komentuj DLACZEGO, zwłaszcza incydent.** Przy strażniku czasu startu ma stać datowane
+  zdanie z liczbą 16 000 i odwołaniem do `[T7 §6.3]`. Bez tego pierwszy refaktor uzna porównanie
+  dwóch stringów za martwy kod i skasuje je.
+
+## Kryteria akceptacji
+
+Kształt API, który spełnia poniższe kryteria (nazwy są sugestią, zachowanie nie jest):
+`RecoveryRow { step_id, run_id, run_status, step_status, run_boot_id: Option<String>, pid, pgid:
+Option<i32>, session_id: Option<String>, attempt }`, `Machine { boot_id: String, own_pgid: i32 }`,
+`decide(&[RecoveryRow], &Machine) -> RecoveryPlan`, `apply(&RecoveryPlan, &mut dyn FnMut(i32) ->
+ReapOutcome) -> RecoveryReport`, `ReapOutcome { ProvenDead, StillAlive, Foreign }`.
+
+**Jak zaczerwienić to poprawnie.** Test, który się nie kompiluje, niczego nie uruchomił, a bramka
+odrzuca `error[E0432]` jako fałszywą czerwień. Najpierw postaw `recovery.rs` z prawdziwymi
+sygnaturami zwracającymi pusty `RecoveryPlan::default()`, uruchom `./verify.sh before`, zobacz
+czerwień na **asercjach**, dopiero potem implementuj. `todo!()` jest zabroniony przez
+`[workspace.lints.clippy] todo = "deny"`.
+
+## AC-1 Zmiana czasu startu systemu wyłącza sprzątanie po `pgid` całkowicie
+check: cargo test --test recovery_boot_guard
+
+Ten sam zestaw pięciu wierszy (dwa kroki `running` z `pgid` 4321 i 4322, jeden `ready` z 4323,
+dwa `succeeded`) przepuszczony dwa razy. Kiedy `row.run_boot_id == machine.boot_id`:
+`plan.reap == [4321, 4322, 4323]` w kolejności wierszy. Kiedy `run_boot_id` jest inne
+(`"1786800000"` vs `"1786900000"`): `plan.reap` jest **puste**, a mimo to te same trzy kroki
+dostają status `failed`/`interrupted` i to samo pytanie — restart maszyny już zabił sieroty,
+więc nie ma czego sprzątać, ale jest o co zapytać `[T7 §6.3]`.
+Trzeci przypadek: `run_boot_id == None` (wiersz sprzed wprowadzenia pola) → `plan.reap` puste
+i wiersz trafia do `plan.unreadable` z powodem — brak strażnika to nie zgoda na strzał.
+
+*Słaba asercja:* `assert!(plan.reap.is_empty())` po zmianie czasu startu. Przechodzi implementacja,
+która nie sprząta **nigdy** — a to jest właśnie ten wariant, który w produkcji zostawia agenta na
+całą noc. Asercja rozstrzygająca: w **tym samym pliku testu** przypadek zgodnego czasu startu musi
+dać dokładnie `[4321, 4322, 4323]`, a nie „coś niepustego".
+
+## AC-2 Do sprzątania trafiają tylko `pgid`, których zabicie jest bezpieczne
+check: cargo test --test recovery_reap_targets
+
+Sześć wierszy w statusie `running`/`ready` z `pgid`: `Some(0)`, `None`, `Some(-9)`,
+`Some(machine.own_pgid)`, `Some(4321)`, `Some(4321)` (duplikat po ponowieniu). `plan.reap` musi
+być dokładnie `[4321]`. Powody, każdy do wypisania w `plan.unreadable`: `0` w `killpg` znaczy
+**własna grupa wołającego**, `None` znaczy „spawn nie doszedł do zapisu", wartość ujemna nie jest
+grupą, a `own_pgid` to Loadout zabijający sam siebie w pętli startowej. Duplikat znika, bo dwa
+`SIGTERM` do tej samej grupy to drugi sygnał wysłany do już nieistniejącej grupy.
+
+*Słaba asercja:* `assert_eq!(plan.reap.len(), 1)`. Przechodzi implementacja, która bierze
+**ostatni** wiersz zamiast filtrować — przy tym zestawie długość też wynosi 1. Asercja
+rozstrzygająca: porównanie całego wektora z `vec![4321]` **plus** asercja, że
+`plan.unreadable` ma dokładnie cztery pozycje i że każda niesie `step_id` swojego wiersza,
+więc żaden wiersz nie znika po cichu.
+
+## AC-3 Tabela statusów po odzyskaniu, i drugi start, który nie ma już nic do zrobienia
+check: cargo test --test recovery_status_table
+
+Bieg w `running` i bieg w `paused` → oba `interrupted`. Kroki w `ready` i `running` → `failed`
+z powodem `interrupted` (ARCHITECTURE §5: `interrupted` jest statusem **biegu**; krok idzie do
+`failed`, powód jest osobnym polem). Kroki w `pending`, `succeeded`, `failed`, `cancelled`,
+`skipped` → **nietknięte**, ani jednego wpisu w `plan.step_status`. Następnie: wynik pierwszego
+`decide` nałożony na wiersze i `decide` puszczony po raz drugi — `plan.reap`, `plan.ask` i
+`plan.step_status` muszą być puste, bo przy trzecim starcie ten sam `pgid` należy już do kogoś
+innego.
+
+*Słaba asercja:* sprawdzenie samego drugiego przebiegu („plan jest pusty"). Spełnia to funkcja
+zwracająca pusty plan zawsze. Asercja rozstrzygająca: pierwszy przebieg w tym samym teście musi
+dać niepuste `reap`, `ask` i `step_status` z wypisanymi wprost identyfikatorami kroków — puste i
+niepuste stoją obok siebie, więc identyczność nie przechodzi.
+
+## AC-4 Jedno pytanie na przerwany krok, dwie opcje, żadnej domyślnej
+check: cargo test --test recovery_asks_never_resumes
+
+Pięć wierszy, z czego dwa przerwane. `plan.ask` ma dokładnie dwie pozycje i dokładnie te
+`step_id`. Każde pytanie niesie dwie opcje i **żadnej wybranej z góry**: `Pick up where it left
+off` niesie `session_id` z wiersza (przydzielony przed spawnem, `[T7 §6.2, V]`), a `Start this
+step again` niesie `attempt + 1` i **nowe** `session_id`, różne od zapisanego. Bieg, którego
+wszystkie kroki są skończone, daje `plan.ask == []`. Nigdzie w `RecoveryPlan` nie ma pola, które
+oznaczałoby „wznów samo" — brak automatyki jest własnością typu, nie ustawieniem.
+
+*Słaba asercja:* `assert_eq!(plan.ask.len(), 2)`. Przechodzi implementacja generująca pytanie dla
+każdego wiersza z `session_id`, bo akurat tyle ich jest. Asercja rozstrzygająca: porównanie
+zbioru `step_id` w `ask` z oczekiwanym zbiorem **oraz** asercja, że nowe `session_id` w
+`Start this step again` różni się od starego (implementacja, która przepisuje ten sam UUID,
+skleiłaby dwie tury w jedną sesję i zgubiła granicę próby).
+
+## AC-5 Bez dowodu śmierci grupa jest żywa, a `EPERM` jest sygnałem przewinięcia PID-a
+check: cargo test --test recovery_proof_of_death
+
+`apply` z domykaczem sterowanym przez test, trzy grupy: 4321 → `ProvenDead` (odpowiednik `ESRCH`),
+4322 → `StillAlive`, 4323 → `Foreign` (odpowiednik `EPERM`). `report.reaped == [4321]`,
+`report.unproven == [4322]`, `report.foreign == [4323]`. Dla `Foreign` domykacz nie może zostać
+zawołany po raz drugi z eskalacją — cudza grupa nie dostaje `SIGKILL`, bo to jest dokładnie ten
+niewinny proces, przed którym broni strażnik z AC-1. `report.is_clean()` jest prawdą wyłącznie
+wtedy, gdy `unproven` i `foreign` są puste.
+
+*Słaba asercja:* `assert!(!report.unproven.is_empty())`. Przechodzi implementacja, która nigdy
+nie uznaje niczego za sprzątnięte i wszystko wrzuca do `unproven` — czyli raport, który zawsze
+mówi „nie wiem". Asercja rozstrzygająca: `reaped == [4321]` **i** `unproven == [4322]` **i**
+`foreign == [4323]` w jednym teście, plus licznik wywołań domykacza równy dokładnie 3.
+
+## AC-6 Nieczytelny wiersz jest wypisany, nie pominięty i nie fatalny
+check: cargo test --test recovery_unreadable_rows
+
+Siedem wierszy: jeden ze statusem kroku `"zombie"` (wartość, której nasz enum nie zna), jeden ze
+statusem biegu `"draining"`, jeden bez `session_id` w stanie `running`, jeden z `attempt`
+nienaturalnie dużym, plus trzy poprawne wiersze `running`. `decide` nie panikuje, zwraca plan,
+w którym trzy poprawne wiersze są w pełni obsłużone (`reap`, `step_status`, `ask`), a cztery
+pozostałe siedzą w `plan.unreadable` ze swoim `step_id` i jednozdaniowym powodem po angielsku.
+Kryterium obejmuje też brak `unwrap()` na ścieżce wykonania: `cargo clippy` z polityką repo
+(`unwrap_used = "deny"`) i tak by to złapał, ale test ma **wywołać** te ścieżki, żeby zieleń
+clippy nie była jedynym dowodem.
+
+*Słaba asercja:* `assert!(std::panic::catch_unwind(|| decide(&rows, &m)).is_ok())`. Spełnia to
+funkcja, która przy pierwszym nieznanym stringu zwraca pusty plan i porzuca również trzy dobre
+wiersze — awaria „cicha i uprzejma", najgorszy wariant. Asercja rozstrzygająca: w tym samym
+teście trzy poprawne wiersze muszą wyprodukować `reap` o trzech elementach i trzy pytania,
+a `plan.unreadable` musi mieć dokładnie cztery pozycje.
+
+## Świadomie poza zakresem
+
+- **Odczyt `kern.boottime`, `getpgrp()` i wysłanie `SIGTERM`.** To jest `engine/supervisor.rs`
+  (T-03) — niezmiennik 3. Tutaj wchodzą jako `Machine` i jako domykacz. Jeśli T-03 nie wystawia
+  jeszcze takiego szwu, to jest **ustalenie do zgłoszenia**, nie powód do wpisania `#[cfg(unix)]`
+  w ten plik.
+- **Czytanie wierszy z SQLite i zapisywanie ich z powrotem.** `store/**` należy do T-06.
+  `recovery.rs` przyjmuje `&[RecoveryRow]` i zwraca plan; kto go wczyta i kto go zapisze,
+  rozstrzyga T-06 i T-15.
+- **Ekran, na którym człowiek odpowiada na pytanie.** Teksty `Pick up where it left off` i
+  `Start this step again` są tu ustalone jako dane; ich wyświetlenie i obsługa kliknięcia to
+  widok pracy (T-08 / T-09). Kontrolka bez handlera nie wchodzi do repo (niezmiennik 16), więc
+  w tym zadaniu nie powstaje żadna kontrolka.
+- **Automatyczne wznowienie przerwanego agenta.** Świadomie odłożone `[T7 §9.4]`: instalacja
+  hydrauliki tak, automatyka nie. `--resume <session_id>` nie było testowane na sesji zabitej
+  w połowie tury `[T7 §11.1]`.
+- **Wznowienie po awarii w środku tury (odtworzenie wyjścia utraconego po crashu).** Nie da się:
+  nikt nie czytał tej rury `[T7 §6.1]`. Mówimy to wprost zamiast udawać ciągłość.
+
+<!-- OWNS
+src-tauri/src/lib.rs
+src-tauri/src/recovery.rs
+src-tauri/tests/recovery_boot_guard.rs
+src-tauri/tests/recovery_reap_targets.rs
+src-tauri/tests/recovery_status_table.rs
+src-tauri/tests/recovery_asks_never_resumes.rs
+src-tauri/tests/recovery_proof_of_death.rs
+src-tauri/tests/recovery_unreadable_rows.rs
+-->
