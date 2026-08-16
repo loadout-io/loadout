@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use loadout_lib::workflow::WorkflowFile;
 use loadout_lib::workflow::check::{Level, Note, check};
 
-/// Zdanie z uruchomienia w T3 §5.2. Nazywa krok jego nazwą, nie identyfikatorem: „s_lonely"
+/// Zdanie z uruchomienia w T3 §5.2. Nazywa krok jego nazwą, nie identyfikatorem: `s_lonely`
 /// nie jest niczym, co użytkownik widzi na płótnie.
 const LONELY: &str = "\"Lonely step\" is not connected to the rest of the workflow.";
 
