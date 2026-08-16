@@ -57,7 +57,7 @@ fn passthrough(vendor: &str, flag: &str, value: &str) -> Value {
 
 /// Workflow z jednym krokiem i podaną przelotką. Poza przelotką nie ma w nim nic, o co można
 /// się potknąć: jeden krok, jedna kopia, folder projektu.
-fn workflow_with(vendor_options: Value) -> Result<WorkflowFile, Box<dyn Error>> {
+fn workflow_with(vendor_options: &Value) -> Result<WorkflowFile, Box<dyn Error>> {
     let file = json!({
         "format": 1,
         "id": "wf_ship",
@@ -78,7 +78,7 @@ fn workflow_with(vendor_options: Value) -> Result<WorkflowFile, Box<dyn Error>> 
 }
 
 /// Zapisuje i wymaga odmowy; zwraca zdanie, które zobaczy użytkownik.
-fn refused(vendor_options: Value) -> Result<String, Box<dyn Error>> {
+fn refused(vendor_options: &Value) -> Result<String, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("ship-a-feature.json");
 
@@ -108,7 +108,7 @@ fn refused(vendor_options: Value) -> Result<String, Box<dyn Error>> {
 #[test]
 fn a_flag_loadout_sets_itself_is_refused_by_name_for_claude() -> Result<(), Box<dyn Error>> {
     for flag in RESERVED_CLAUDE {
-        let message = refused(passthrough("claude", flag, "whatever"))?;
+        let message = refused(&passthrough("claude", flag, "whatever"))?;
         assert!(
             message.contains(flag),
             "the user has to be told which entry to delete; a refusal that does not name the \
@@ -125,7 +125,7 @@ fn a_flag_loadout_sets_itself_is_refused_by_name_for_claude() -> Result<(), Box<
 #[test]
 fn a_flag_loadout_sets_itself_is_refused_by_name_for_codex() -> Result<(), Box<dyn Error>> {
     for flag in RESERVED_CODEX {
-        let message = refused(passthrough("codex", flag, "whatever"))?;
+        let message = refused(&passthrough("codex", flag, "whatever"))?;
         assert!(
             message.contains(flag),
             "`{flag}` is ours to set, so it has to be named when it is refused. It reads: \
@@ -141,7 +141,7 @@ fn a_flag_loadout_sets_itself_is_refused_by_name_for_codex() -> Result<(), Box<d
 
 #[test]
 fn the_passthrough_may_not_raise_what_an_agent_can_do_to_files() -> Result<(), Box<dyn Error>> {
-    let sandbox = refused(passthrough("codex", "--sandbox", "danger-full-access"))?;
+    let sandbox = refused(&passthrough("codex", "--sandbox", "danger-full-access"))?;
     assert!(
         sandbox.contains("danger-full-access"),
         "`--sandbox` is not on any reserved list, so only a rule that reads the VALUE catches \
@@ -152,7 +152,7 @@ fn the_passthrough_may_not_raise_what_an_agent_can_do_to_files() -> Result<(), B
         "named step, as everywhere else. It reads: {sandbox}"
     );
 
-    let settings = refused(passthrough("claude", "--settings", "bypassPermissions"))?;
+    let settings = refused(&passthrough("claude", "--settings", "bypassPermissions"))?;
     assert!(
         settings.contains("bypassPermissions"),
         "the same rule from the other vendor's side: what an agent may do with your files is \
@@ -169,7 +169,7 @@ fn a_new_vendor_flag_that_collides_with_nothing_saves_normally() -> Result<(), B
     let mut options = passthrough("claude", "--some-new-flag", "value");
     options["codex"] = json!({ "model_reasoning_summary": "detailed" });
 
-    save(&workflow_with(options.clone())?, &path)?;
+    save(&workflow_with(&options)?, &path)?;
 
     let written: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
     assert_eq!(

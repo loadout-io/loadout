@@ -30,7 +30,7 @@ const AT_THE_SAME_TIME: &str = "\"Research\" and \"Check\" can run at the same t
 
 /// Krok o zadanym folderze. Wszystko poza folderem jest kompletne, żeby żadna inna reguła nie
 /// dołożyła drugiej uwagi do fixture, która mierzy tę jedną.
-fn step(id: &str, name: &str, folder: Value) -> Value {
+fn step(id: &str, name: &str, folder: &Value) -> Value {
     json!({
         "kind": "agent",
         "id": id,
@@ -79,8 +79,8 @@ fn problems(notes: &[Note]) -> Vec<&Note> {
 fn a_chain_may_share_the_project_folder() -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
-            step("a", "Research", project()),
-            step("b", "Check", project()),
+            step("a", "Research", &project()),
+            step("b", "Check", &project()),
         ],
         &[("a", "b")],
     )?;
@@ -101,8 +101,8 @@ fn two_steps_with_no_arrow_between_them_may_not_share_the_project_folder()
 -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
-            step("a", "Research", project()),
-            step("b", "Check", project()),
+            step("a", "Research", &project()),
+            step("b", "Check", &project()),
         ],
         &[],
     )?;
@@ -126,8 +126,8 @@ fn two_steps_with_no_arrow_between_them_may_not_share_the_project_folder()
 fn a_fresh_copy_takes_the_collision_away() -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
-            step("a", "Research", project()),
-            step("b", "Check", fresh_copy()),
+            step("a", "Research", &project()),
+            step("b", "Check", &fresh_copy()),
         ],
         &[],
     )?;
@@ -146,8 +146,8 @@ fn a_fresh_copy_takes_the_collision_away() -> Result<(), Box<dyn Error>> {
 fn a_folder_inside_the_other_folder_is_the_same_collision() -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
-            step("a", "Research", pick("/Users/x/api")),
-            step("b", "Check", pick("/Users/x/api/src")),
+            step("a", "Research", &pick("/Users/x/api")),
+            step("b", "Check", &pick("/Users/x/api/src")),
         ],
         &[],
     )?;
@@ -175,8 +175,8 @@ fn a_folder_that_merely_starts_with_the_same_letters_is_not_a_collision()
 -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
-            step("a", "Research", pick("/Users/x/api")),
-            step("b", "Check", pick("/Users/x/api2")),
+            step("a", "Research", &pick("/Users/x/api")),
+            step("b", "Check", &pick("/Users/x/api2")),
         ],
         &[],
     )?;
@@ -194,7 +194,7 @@ fn a_folder_that_merely_starts_with_the_same_letters_is_not_a_collision()
 
 #[test]
 fn a_step_in_several_copies_collides_with_itself() -> Result<(), Box<dyn Error>> {
-    let mut step = step("a", "Research", project());
+    let mut step = step("a", "Research", &project());
     step["copies"] = json!(3);
     let workflow = workflow(&[step], &[])?;
 
