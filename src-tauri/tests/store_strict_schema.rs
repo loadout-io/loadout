@@ -120,18 +120,11 @@ fn rows_for(conn: &Connection, table: &str, run_id: &str) -> anyhow::Result<i64>
     )?)
 }
 
-#[test]
-fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
-    let dir = tempfile::tempdir()?;
-    let db = dir.path().join("loadout.db");
-
-    // Połączenie otwarte BEZPOŚREDNIO tutaj. Wszystko niżej idzie po nim, surowym SQL-em, bez
-    // ani jednej naszej funkcji zapisującej — więc każda odmowa pochodzi od schematu.
-    let conn = Connection::open(&db)?;
-    apply_pragmas(&conn)?;
-    migrate(&conn)?;
-
-    // ── Kontrole przeciw pustej asercji ────────────────────────────────────────────────────
+/// Kontrole przeciw pustej asercji: pięć tabel stoi, a klucze obce są włączone.
+///
+/// Bez pierwszej z nich `Err` z każdej próby niżej znaczyłby „nie ma tabeli", a nie „schemat
+/// odmówił". Bez drugiej kaskada z (c) nie miałaby prawa wystrzelić, cokolwiek mówi schemat.
+fn assert_schema_is_there(conn: &Connection) -> anyhow::Result<()> {
     for table in TABLES {
         let present: i64 = conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -155,13 +148,14 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
          below could not fire whatever the schema says. That is AC-3's criterion, not this one"
     );
 
-    insert_run(&conn, RUN_ID)?;
-    insert_run(&conn, OTHER_RUN_ID)?;
+    Ok(())
+}
 
-    // ── (a) CHECK na steps.status ──────────────────────────────────────────────────────────
+/// (a) `CHECK` na `steps.status`: siedem stanów z `docs/ARCHITECTURE.md` §5 wchodzi, ósmy nie.
+fn assert_status_check(conn: &Connection) {
     for (index, status) in STATUSES.into_iter().enumerate() {
         let accepted = insert_step(
-            &conn,
+            conn,
             &format!("step-{index}"),
             RUN_ID,
             &format!("node-{index}"),
@@ -176,7 +170,7 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
         );
     }
 
-    let bad_status = insert_step(&conn, "step-x", RUN_ID, "node-x", NOT_A_STATUS);
+    let bad_status = insert_step(conn, "step-x", RUN_ID, "node-x", NOT_A_STATUS);
     let bad_status_said = refusal_text(&bad_status);
     assert!(
         bad_status.is_err(),
@@ -189,10 +183,13 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
          the allowed set is not written into the schema, and then the first write from outside \
          our API puts it there: {bad_status_said:?}"
     );
+}
 
-    // ── (b) STRICT ─────────────────────────────────────────────────────────────────────────
-    // Bez STRICT SQLite przyjmie to i policzy jako tekst — a wtedy pierwszy odczyt dostaje
-    // „try 'dwa' of 3" albo panikę przy dodawaniu.
+/// (b) `STRICT`: `steps.attempt` nie przyjmie tekstu.
+///
+/// Bez `STRICT` `SQLite` przyjmie to i policzy jako tekst — a wtedy pierwszy odczyt dostaje
+/// „try 'dwa' of 3" albo panikę przy dodawaniu.
+fn assert_strict_types(conn: &Connection) {
     let wrong_type = conn.execute(
         "INSERT INTO steps (id, run_id, node_key, name, agent, depends_on, status, attempt) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -219,9 +216,11 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
         "the refusal does not name steps.attempt, so it may not be about the column's type at \
          all: {wrong_type_said:?}"
     );
+}
 
-    // ── (d) UNIQUE (run_id, node_key) ──────────────────────────────────────────────────────
-    let duplicate = insert_step(&conn, "step-z", RUN_ID, "node-0", "running");
+/// (d) `UNIQUE (run_id, node_key)` — para, nie sam `node_key`.
+fn assert_unique_node_key(conn: &Connection) {
+    let duplicate = insert_step(conn, "step-z", RUN_ID, "node-0", "running");
     let duplicate_said = refusal_text(&duplicate);
     assert!(
         duplicate.is_err(),
@@ -234,7 +233,7 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
         "steps refused the second row, but not with a UNIQUE constraint: {duplicate_said:?}"
     );
 
-    let same_key_other_run = insert_step(&conn, "step-w", OTHER_RUN_ID, "node-0", "running");
+    let same_key_other_run = insert_step(conn, "step-w", OTHER_RUN_ID, "node-0", "running");
     assert!(
         same_key_other_run.is_ok(),
         "the schema refused node key 'node-0' under a DIFFERENT run. The constraint is on the \
@@ -242,13 +241,15 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
          impossible: {:?}",
         refusal_text(&same_key_other_run)
     );
+}
 
-    // ── (c) ON DELETE CASCADE ──────────────────────────────────────────────────────────────
-    insert_event(&conn, RUN_ID, "step-0")?;
-    insert_event(&conn, OTHER_RUN_ID, "step-w")?;
+/// (c) `ON DELETE CASCADE` — kasuje swoje, i tylko swoje.
+fn assert_delete_cascades(conn: &Connection) -> anyhow::Result<()> {
+    insert_event(conn, RUN_ID, "step-0")?;
+    insert_event(conn, OTHER_RUN_ID, "step-w")?;
 
-    let planted_steps = rows_for(&conn, "steps", RUN_ID)?;
-    let planted_events = rows_for(&conn, "events", RUN_ID)?;
+    let planted_steps = rows_for(conn, "steps", RUN_ID)?;
+    let planted_events = rows_for(conn, "events", RUN_ID)?;
     assert!(
         planted_steps > 0 && planted_events > 0,
         "the rows the cascade is supposed to take are not there ({planted_steps} steps, \
@@ -259,8 +260,8 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
 
     assert_eq!(
         (
-            rows_for(&conn, "steps", RUN_ID)?,
-            rows_for(&conn, "events", RUN_ID)?
+            rows_for(conn, "steps", RUN_ID)?,
+            rows_for(conn, "events", RUN_ID)?
         ),
         (0, 0),
         "deleting the run left its steps or its events behind. Rows pointing at a run that no \
@@ -269,12 +270,39 @@ fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
     );
     assert_eq!(
         (
-            rows_for(&conn, "steps", OTHER_RUN_ID)?,
-            rows_for(&conn, "events", OTHER_RUN_ID)?
+            rows_for(conn, "steps", OTHER_RUN_ID)?,
+            rows_for(conn, "events", OTHER_RUN_ID)?
         ),
         (1, 1),
         "the OTHER run lost rows too, so what happened was not a cascade but a sweep"
     );
+
+    Ok(())
+}
+
+#[test]
+fn the_schema_refuses_on_its_own() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = dir.path().join("loadout.db");
+
+    // Połączenie otwarte BEZPOŚREDNIO tutaj. Wszystko niżej idzie po nim, surowym SQL-em, bez
+    // ani jednej naszej funkcji zapisującej — więc każda odmowa pochodzi od schematu.
+    let conn = Connection::open(&db)?;
+    apply_pragmas(&conn)?;
+    migrate(&conn)?;
+
+    assert_schema_is_there(&conn)?;
+
+    insert_run(&conn, RUN_ID)?;
+    insert_run(&conn, OTHER_RUN_ID)?;
+
+    // Kolejność jest częścią kryterium, a nie porządkiem opowiadania: (d) sprawdza `node-0`
+    // wstawiony przez (a), a (c) kasuje `step-0` z (a) i `step-w` z (d). Przestawienie tych
+    // czterech wywołań zabiera im wiersze, na których stoją.
+    assert_status_check(&conn);
+    assert_strict_types(&conn);
+    assert_unique_node_key(&conn);
+    assert_delete_cascades(&conn)?;
 
     Ok(())
 }

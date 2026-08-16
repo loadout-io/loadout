@@ -146,14 +146,14 @@ const LOG_B: &str = r#"{"type":"system","subtype":"init","session_id":"5f6d1c22-
 "#;
 
 /// Plik przekazania. Front-matter pisze Loadout, nie agent [T6 §10.2].
-const HANDOFF: &str = r#"---
+const HANDOFF: &str = r"---
 from: research
 to: fix
 title: What the parser does with quoted commas
 ---
 
 It splits on every comma, including the ones inside quotes.
-"#;
+";
 
 /// Krok w postaci, w jakiej go porównujemy: klucz węzła i trzy pola, których nikt nie pomyślał
 /// zapisać do pliku.
