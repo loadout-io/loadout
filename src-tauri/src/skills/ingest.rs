@@ -570,11 +570,85 @@ pub enum DeepScan {
 /// Skaner CZYTA katalog; jedynym uruchamianym plikiem jest on sam.
 #[must_use]
 pub fn deep_scan(dir: &Path, bin: &Path) -> DeepScan {
-    todo!(
-        "uruchom {} nad {} i przeczytaj JSON permisywnie",
-        bin.display(),
-        dir.display()
-    )
+    let Ok(answer) = Command::new(bin)
+        .arg("scan")
+        .arg(dir)
+        .arg("--type")
+        .arg("skill")
+        .arg("--format")
+        .arg("json")
+        .arg("--strict")
+        // Skaner CZYTA katalog. Zamknięte stdin jest tu jedną linią, która mówi, że nie ma
+        // rozmowy: narzędzie, które o coś zapyta, dostanie EOF zamiast zawiesić import.
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return DeepScan::Unavailable("not installed");
+    };
+
+    // `0` czysto, `1` są znaleziska, `2` błąd wykonania [T5 §5.4]. Kod czytamy PRZED wyjściem:
+    // atrapa, która wypisała poprawny JSON i wyszła dwójką, jest skanerem, który padł —
+    // a skaner, który padł, nie wystawia czystego rachunku.
+    if !matches!(answer.status.code(), Some(0 | 1)) {
+        return DeepScan::Unavailable("the check could not be run");
+    }
+    let Ok(text) = String::from_utf8(answer.stdout) else {
+        return DeepScan::Unavailable("the answer was not readable");
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return DeepScan::Unavailable("the answer was not readable");
+    };
+    // Odpowiedź bez tablicy `findings` jest BRAKIEM odpowiedzi, nie odpowiedzią „zero":
+    // vendorzy zmieniają kształt wyjścia po cichu, a pusta lista wzięta z niczego jest
+    // czystym rachunkiem wystawionym w imieniu narzędzia, które nic nie powiedziało.
+    let Some(listed) = value.get("findings").and_then(serde_json::Value::as_array) else {
+        return DeepScan::Unavailable("the answer did not list anything");
+    };
+
+    DeepScan::Ran {
+        findings: listed.iter().map(scanner_finding).collect(),
+    }
+}
+
+/// Jedno znalezisko skanera, czytane permisywnie (niezmiennik 5).
+///
+/// Id jedzie NIETŁUMACZONE: tabela mapująca ich reguły na nasze byłaby drugim rdzeniem
+/// polityki (niezmiennik 23), a przy pierwszej nowej regule skanera i tak zwracałaby „nieznana".
+/// Nieznana waga to [`Weight::Warn`], nie panika i nie milczenie — znalezisko wyrzucone za to,
+/// że ma pole, którego nie znamy, jest znaleziskiem, którego nikt nie zobaczy.
+fn scanner_finding(value: &serde_json::Value) -> Finding {
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let rule = text("rule")
+        .or_else(|| text("id"))
+        .or_else(|| text("name"))
+        .unwrap_or_else(|| "deep-scan-finding".to_owned());
+
+    let weight = match text("severity").unwrap_or_default().to_lowercase().as_str() {
+        "critical" | "high" | "error" => Weight::Block,
+        _ => Weight::Warn,
+    };
+    let line = value
+        .get("line")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|number| usize::try_from(number).ok());
+
+    Finding {
+        rule,
+        weight,
+        line,
+        quoted: text("snippet")
+            .or_else(|| text("match"))
+            .or_else(|| text("message"))
+            .or_else(|| text("description"))
+            .unwrap_or_default(),
+        recovered: None,
+        source: Source::DeepScan,
+    }
 }
 
 /// Dokłada znaleziska skanera do przeglądu rdzenia i przelicza werdykt.
@@ -583,12 +657,27 @@ pub fn deep_scan(dir: &Path, bin: &Path) -> DeepScan {
 /// jest po tej operacji identyczny co do jednego wpisu — i to jest jedyna rzecz, która
 /// odróżnia adapter od drugiego rdzenia polityki.
 #[must_use]
-pub fn with_deep_scan(reviewed: Reviewed, deep: &DeepScan) -> Reviewed {
-    todo!(
-        "dołóż znaleziska skanera do {} znalezisk rdzenia; {deep:?} nieobecny to Concerns, \
-         nigdy Clean",
-        reviewed.findings.len()
-    )
+pub fn with_deep_scan(mut reviewed: Reviewed, deep: &DeepScan) -> Reviewed {
+    match deep {
+        DeepScan::Ran { findings } => reviewed.findings.extend(findings.iter().cloned()),
+        // Brak skanera jest POZYCJĄ NA LIŚCIE, nie brakiem pozycji. `Warn`, nie `Block`:
+        // skaner jest heurystyką i naszą własną zależnością [T5 §10], więc jego nieobecność
+        // nie może zatrzymać człowieka przed instalacją umiejętności, którą sam napisał.
+        DeepScan::Unavailable(why) => reviewed.findings.push(Finding {
+            rule: DEEP_SCAN_UNAVAILABLE.to_owned(),
+            weight: Weight::Warn,
+            line: None,
+            quoted: (*why).to_owned(),
+            recovered: None,
+            source: Source::DeepScan,
+        }),
+    }
+
+    // Werdykt liczony na nowo, tą samą funkcją co w rdzeniu. Znaleziska rdzenia zostają co do
+    // jednego wpisu — adapter DOKŁADA (niezmiennik 23). Odwrotnie: pierwszy bieg bez binarki
+    // nie zostawiłby ani jednej reguły, i dokładnie tak umarło skanowanie sekretów w meetnotes.
+    reviewed.verdict = verdict_of(&reviewed.findings);
+    reviewed
 }
 
 // ── Polityka adresu i limity pobrania ──────────────────────────────────────────────────────
