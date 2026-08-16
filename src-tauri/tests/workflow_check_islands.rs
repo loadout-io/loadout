@@ -124,9 +124,7 @@ fn two_steps_connected_only_to_each_other_are_still_an_island() -> Result<(), Bo
         .map(|note| note.step_id.as_deref())
         .collect();
     assert!(
-        named
-            .iter()
-            .all(|id| matches!(*id, None | Some("x") | Some("y"))),
+        named.iter().all(|id| matches!(*id, None | Some("x" | "y"))),
         "the warning belongs to the island — naming a step from the main chain sends the user to \
          a tile that is fine. Whether the note carries one tile or none is the implementation's \
          call; carrying the wrong one is not. Got: {named:?}"
