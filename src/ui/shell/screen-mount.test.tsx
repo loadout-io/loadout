@@ -30,6 +30,20 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+/* `hidden` jako SAMODZIELNY token, obojętnie czy jest atrybutem, czy klasą.
+ *
+ * Wąski wzorzec ` hidden(?:=""|>|\s)` łapał tylko atrybut: `hidden=""`, `hidden>` i `hidden `
+ * przed następnym atrybutem. `class="p-4 hidden"` przechodziło, bo zaraz za słowem stoi
+ * cudzysłów, a `class="hidden"` przechodziło podwójnie — cudzysłów jest po OBU stronach. A to
+ * jest dziś najtańszy sposób schowania czterech zamontowanych ekranów: jedno słowo w klasie,
+ * reguła w arkuszu.
+ *
+ * Stąd granica z obu stron zamiast wyliczanki końcówek: przed słowem początek, biała spacja
+ * albo cudzysłów, za słowem koniec, biała spacja, cudzysłów, `>` albo `=`. `aria-hidden`
+ * i `data-hidden` zostają na zewnątrz — przed `hidden` stoi tam myślnik, a to już inne słowo.
+ */
+const HIDDEN_TOKEN = /(?:^|[\s"'])hidden(?:$|[\s"'>=])/;
+
 /** Ekran, który da się policzyć: jeden element, jeden znacznik, żadnej treści. */
 function screenFor(id: Id): () => ReactElement {
   return () => <p data-screen={id} />;
@@ -101,9 +115,9 @@ describe('the section that has a screen shows it, and the other four are not in 
     it('never hides a screen instead of leaving it out, with ' + id + ' open', () => {
       const markup = markupFor(id);
       expect(
-        / hidden(?:=""|>|\s)/.test(markup),
-        'nothing in the shell may carry the hidden attribute: hiding is how four screens stay ' +
-          'in the tree while the count above still reads one',
+        HIDDEN_TOKEN.test(markup),
+        'nothing in the shell may carry the hidden attribute or the hidden class: hiding is how ' +
+          'four screens stay in the tree while the count above still reads one',
       ).toBe(false);
       expect(
         /display\s*:\s*none/i.test(markup),
