@@ -19,7 +19,7 @@ import type { Section, SectionEntry } from './ui/sections';
 import { sectionEntry } from './ui/sections';
 import type { ScreenMap } from './ui/screens';
 import { discoverScreens, isScreen } from './ui/screens';
-import { TitleBar } from './ui/shell/titlebar';
+import { NAV_WIDTH, SideNav } from './ui/shell/titlebar';
 
 /* Odkrywanie biegnie RAZ, przy wczytaniu modułu, a nie przy każdym renderze: jego odpowiedź
  * zależy wyłącznie od tego, jakie pliki są w paczce, a to w trakcie życia okna nie zmienia się
@@ -44,9 +44,16 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
    * zadaje `screensFrom`, i zadaje je ta sama funkcja (niezmiennik 23). */
   const Screen = screens[entry.id];
   return (
-    <div className="flex h-full flex-col bg-bg">
-      <TitleBar section={section} />
-      <main data-section={entry.id} className="min-h-0 flex-1 p-4">
+    /* Dwie kolumny, nie pionowy stos: nawigacja stoi OBOK treści, więc do sufitu gęstości
+     * z ARCHITECTURE §7 wnosi zero. Geometria jest lustrem reguły `.app` z makiety
+     * (`grid-template-columns:196px minmax(0,1fr)`), a `minmax(0,1fr)` zamiast `1fr` dlatego,
+     * że bez tego szeroka treść ekranu rozpycha kolumnę zamiast się przewijać. */
+    <div
+      className="grid h-full bg-bg"
+      style={{ gridTemplateColumns: `${String(NAV_WIDTH)}px minmax(0,1fr)` }}
+    >
+      <SideNav section={section} />
+      <main data-section={entry.id} className="min-h-0 min-w-0 p-4">
         {isScreen(Screen) ? <Screen /> : <EmptySection entry={entry} />}
       </main>
     </div>

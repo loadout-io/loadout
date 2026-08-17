@@ -1,8 +1,19 @@
-/* Pasek tytułu — całe chrome, jakie ta aplikacja ma nad pierwszą treścią.
+/* Boczne menu — jedyna nawigacja, jaką ta aplikacja ma.
  *
- * JEDEN pasek, nie dwa. Sufit gęstości z ARCHITECTURE §7 to 96 px chrome i jedna metafora
- * nawigacji; drugi pasek „bo tam pasuje" ustala sufit po fakcie, czyli tam, gdzie akurat
- * jesteśmy [raport 03 §4.1].
+ * DLACZEGO Z BOKU, A NIE NA GÓRZE — i to nie jest kwestia gustu. `docs/ARCHITECTURE.md` §7
+ * mówi wprost: „**Boczne menu** odpowiada na »co robię« (Praca / Workflow / Agenci /
+ * Umiejętności / Pamięć), karty odpowiadają na »w którym folderze«", i podaje budżet chrome:
+ * „Karty 34 px + pasek loadoutu 56 px = **90 z 96**. Zostało sześć pikseli."
+ *
+ * Do 2026-08-17 stał tu pasek POZIOMY, `TITLEBAR_HEIGHT = 48`, wsadzony nad treść. To dawało
+ * 48 + 34 + 56 = **138 px chrome przy suficie 96** — 1,44× limitu, który ten sam paragraf
+ * nazywa nienegocjowalnym. Nie był to błąd wykonania: kontrakt T-01 zażądał dokładnie tego
+ * („Chrome nad pierwszą treścią: JEDEN PASEK, TITLEBAR_HEIGHT = 48"), powołując się na §7,
+ * ale na jego zły akapit — i własne kryterium to zabetonowało. Makieta
+ * (`docs/mockup/index.html`) opisywała boczne menu 196 px od początku i nikt jej nie czytał,
+ * bo nic nie było zbudowane, żeby na nią patrzeć.
+ *
+ * Menu z boku NIE jest chrome nad treścią: stoi OBOK, więc do sufitu z §7 wnosi zero.
  *
  * Która sekcja jest otwarta, jest powiedziane DOKŁADNIE RAZ: przez `aria-current` na
  * przełączniku (niezmiennik 13). Wygląd aktywnego przycisku bierze się z tego samego atrybutu
@@ -14,46 +25,73 @@ import type { Section } from '../sections';
 import { SECTIONS } from '../sections';
 import { FIRST_SECTION, useSectionStore } from './section-store';
 
-/** Wysokość paska. Poniżej sufitu 96 px z ARCHITECTURE §7 i to jest cały budżet chrome. */
-export const TITLEBAR_HEIGHT = 48;
+/** Szerokość bocznego menu. Wartość z `docs/mockup/index.html`, reguła `.app`. */
+export const NAV_WIDTH = 196;
 
 /**
- * Lewy odstęp paska: trzy światła zajmują ~52 px, plus `--s-4` odstępu, licząc od
- * `trafficLightPosition.x` z `tauri.conf.json`. Pierwsza kontrolka zaczyna się dopiero za nim,
- * inaczej przełącznik sekcji leży pod światłami i nie da się w niego kliknąć.
+ * Górny odstęp menu: światła macOS pływają NAD treścią (`titleBarStyle: "Overlay"`,
+ * `hiddenTitle: true`), a ich lewy górny róg to `trafficLightPosition` z `tauri.conf.json`.
+ * Marka zaczyna się dopiero pod nimi, inaczej leży pod światłami i jest nieczytelna.
  *
- * 16 (`trafficLightPosition.x`) + 52 + 16 = 84. Zmiana `trafficLightPosition` w
- * `tauri.conf.json` bez zmiany tej liczby jest czerwona w kryterium okna — te dwie wartości
+ * 16 (`trafficLightPosition.y`) + 20 (wysokość świateł) + 8 (odstęp) = 44. Makieta jest stroną
+ * WWW i okna Tauri nie modeluje — ta jedna liczba jest adaptacją, nie odstępstwem. Zmiana
+ * `trafficLightPosition` bez zmiany tej wartości jest czerwona w kryterium okna: te dwie liczby
  * są związane i mierzone razem, bo osobno każda wygląda rozsądnie [T8 §11, 2026-08-15].
  */
-export const CHROME_INSET_LEFT = 84;
+export const CHROME_INSET_TOP = 44;
 
-export interface TitleBarProps {
+export interface SideNavProps {
   section?: Section;
 }
 
-export function TitleBar({ section = FIRST_SECTION }: TitleBarProps): ReactElement {
+/* Znak marki: cztery kwadraty obrócone o 45°, dwa z nich w akcencie. Prosto z makiety
+ * (`.mark`), bo to jedyny element tożsamości, jaki ta aplikacja ma. */
+function Mark(): ReactElement {
   return (
-    <header
+    <span aria-hidden className="grid size-[22px] rotate-45 grid-cols-2 grid-rows-2 gap-[2px]">
+      <i className="bg-accent" />
+      <i className="bg-line-strong" />
+      <i className="bg-line-strong" />
+      <i className="bg-accent" />
+    </span>
+  );
+}
+
+export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement {
+  return (
+    <nav
       data-chrome
       data-tauri-drag-region
-      className="flex shrink-0 items-center border-b border-line bg-panel"
-      style={{ height: TITLEBAR_HEIGHT, paddingLeft: CHROME_INSET_LEFT }}
+      className="flex shrink-0 flex-col border-r border-line bg-panel px-2 pb-[10px]"
+      style={{ width: NAV_WIDTH, paddingTop: CHROME_INSET_TOP }}
     >
-      <nav className="flex items-center gap-1">
-        {SECTIONS.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            data-section-switch={entry.id}
-            aria-current={entry.id === section ? 'true' : undefined}
-            onClick={() => useSectionStore.getState().go(entry.id)}
-            className="h-7 rounded-sq px-3 text-ui text-muted aria-[current=true]:bg-raised aria-[current=true]:text-ink"
-          >
-            {entry.label}
-          </button>
-        ))}
-      </nav>
-    </header>
+      <div className="flex items-center gap-[10px] px-2 pb-4">
+        <Mark />
+        <b className="font-mono text-mono-strong text-ink">LOADOUT</b>
+      </div>
+
+      {SECTIONS.map((entry) => (
+        <button
+          key={entry.id}
+          type="button"
+          data-section-switch={entry.id}
+          aria-current={entry.id === section ? 'true' : undefined}
+          onClick={() => useSectionStore.getState().go(entry.id)}
+          className="w-full rounded-sq border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[current=true]:border-line aria-[current=true]:bg-raised aria-[current=true]:text-ink"
+        >
+          {entry.label}
+        </button>
+      ))}
+
+      {/* Stopka przypięta do dołu (`margin-top:auto` z makiety). Kropka żywotności i jedno
+       * zdanie o dostawcach — to jedyne miejsce, w którym aplikacja mówi o swoim otoczeniu. */}
+      {/* `tracking-normal` znosi rozstrzelenie tokenu `text-label` (0.08em, WERSALIKI). Przy
+       * 196 px menu daje ono ~18 px nadmiaru i zdanie łamie się na dwie linie — makieta ma
+       * tu zwykły monospace bez rozstrzelenia (`.foot`). */}
+      <div className="mt-auto flex items-center gap-[7px] border-t border-line px-[10px] pt-[10px] font-mono text-label tracking-normal text-muted">
+        <span aria-hidden className="size-[7px] rounded-full bg-accent" />
+        <span>Claude · Codex ready</span>
+      </div>
+    </nav>
   );
 }

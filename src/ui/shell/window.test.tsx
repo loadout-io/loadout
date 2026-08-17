@@ -17,7 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { CHROME_INSET_LEFT, TITLEBAR_HEIGHT, TitleBar } from './titlebar';
+import { CHROME_INSET_TOP, NAV_WIDTH, SideNav } from './titlebar';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -26,7 +26,9 @@ const NARROWEST = 1100;
 /** Sufit chrome nad pierwszą treścią, ARCHITECTURE.md §7. */
 const CHROME_CEILING = 96;
 /** Trzy światła zajmują ~52 px, plus `--s-4` odstępu. */
-const LIGHTS_PLUS_GAP = 68;
+/* Wysokość trzech świateł plus odstęp, licząc od `trafficLightPosition.y`. Menu stoi z boku,
+ * więc światła trzeba minąć W PIONIE, nie w poziomie: 20 px świateł + 8 px odstępu. */
+const LIGHTS_PLUS_GAP = 28;
 
 function fileText(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -63,7 +65,7 @@ const conf = fileJson(resolve(ROOT, 'src-tauri', 'tauri.conf.json'));
 const viteText = fileText(resolve(ROOT, 'vite.config.ts'));
 const windows = at(conf, 'app', 'windows');
 const only = Array.isArray(windows) ? (windows[0] as unknown) : undefined;
-const markup = renderToStaticMarkup(<TitleBar />);
+const markup = renderToStaticMarkup(<SideNav />);
 
 describe('the window opens with clean chrome and the dev address is the one we serve', () => {
   it('declares exactly one window', () => {
@@ -149,39 +151,49 @@ describe('the window opens with clean chrome and the dev address is the one we s
     ).toBe(declared);
   });
 
-  it('draws one bar and one drag area, under the chrome ceiling', () => {
+  it('draws one nav and one drag area, and spends nothing from the chrome ceiling', () => {
     expect(
       occurrences(markup, 'data-tauri-drag-region'),
-      'the bar has to carry exactly one drag area: none and the window cannot be moved, two and ' +
+      'the nav has to carry exactly one drag area: none and the window cannot be moved, two and ' +
         'a click meant for a control drags the window instead',
     ).toBe(1);
     expect(
       occurrences(markup, 'data-chrome'),
-      'exactly one bar sits above the first content. A second one settles the density ceiling ' +
-        'after the fact, which is how poprzedni prototyp reached 149 px of chrome on every screen',
+      'exactly one navigation metaphor. A second one settles the density ceiling after the ' +
+        'fact, which is how poprzedni prototyp reached 149 px of chrome on every screen',
     ).toBe(1);
+    /* 2026-08-17 — ta asercja mierzyła `TITLEBAR_HEIGHT <= 96` i była ZIELONA przy 138 px
+     * realnego chrome, bo mierzyła jeden pasek z trzech: karty (34) i pasek loadoutu (56) też
+     * stoją nad treścią, a ich nie widziała. Menu przeniesione do boku wnosi do tego sufitu
+     * ZERO — i to jest teraz to, czego pilnujemy, zamiast liczby, która zgadzała się sama
+     * ze sobą. Wysokość paska bocznego jest nieograniczona z definicji: to kolumna. */
     expect(
-      TITLEBAR_HEIGHT,
-      'TITLEBAR_HEIGHT has to stay at or under ' +
+      occurrences(markup, 'height:'),
+      'the side nav must not declare a height at all: a column that fixes its own height is a ' +
+        'bar in disguise, and a bar above content spends the ' +
         String(CHROME_CEILING) +
-        ' px, the ceiling ARCHITECTURE.md §7 fixed before this screen existed',
-    ).toBeLessThanOrEqual(CHROME_CEILING);
+        ' px ceiling ARCHITECTURE.md §7 fixed before this screen existed',
+    ).toBe(0);
+    expect(
+      NAV_WIDTH,
+      'the nav is a column beside the content, so it has a width and it comes from the mockup',
+    ).toBeGreaterThan(0);
   });
 
-  it('leaves the lights their room before the first control', () => {
-    const x = at(only, 'trafficLightPosition', 'x');
-    const room = typeof x === 'number' ? x + LIGHTS_PLUS_GAP : Number.POSITIVE_INFINITY;
+  it('leaves the lights their room above the brand', () => {
+    const y = at(only, 'trafficLightPosition', 'y');
+    const room = typeof y === 'number' ? y + LIGHTS_PLUS_GAP : Number.POSITIVE_INFINITY;
     expect(
-      CHROME_INSET_LEFT,
-      'the left inset of the bar has to clear the lights: trafficLightPosition.x plus ' +
+      CHROME_INSET_TOP,
+      'the top inset of the nav has to clear the lights: trafficLightPosition.y plus ' +
         String(LIGHTS_PLUS_GAP) +
         ' px, which is ' +
         String(room) +
-        ' here. Below that the section switcher sits under the lights and cannot be clicked',
+        ' here. Below that the brand sits under the lights and cannot be read',
     ).toBeGreaterThanOrEqual(room);
     expect(
-      occurrences(markup, 'padding-left:' + String(CHROME_INSET_LEFT) + 'px'),
-      'the inset has to reach the rendered bar exactly once. A constant nobody applies is a ' +
+      occurrences(markup, 'padding-top:' + String(CHROME_INSET_TOP) + 'px'),
+      'the inset has to reach the rendered nav exactly once. A constant nobody applies is a ' +
         'number that agrees with this measurement and with nothing on screen',
     ).toBe(1);
   });

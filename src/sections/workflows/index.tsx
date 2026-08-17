@@ -32,6 +32,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import type { WorkflowListIo } from './list/store';
 import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
+import * as Disk from './io';
 
 /** Magazyn listy workflow — dokładnie ten, który oddaje `createWorkflowListStore`. */
 export type WorkflowListStore = ReturnType<typeof createWorkflowListStore>;
@@ -47,18 +48,19 @@ export interface WorkflowsScreenProps {
 /* Zdanie odmowy jedzie do tego, kto wołał, jako `Error`. Sekcja nie ma go dziś gdzie pokazać
  * — obsługa błędów plików należy do T-12 — ale zapis, który po cichu KOŃCZY SIĘ SUKCESEM,
  * byłby kłamstwem o tym, co leży na dysku (niezmiennik 4), a to jest gorsze niż cisza. */
-const NO_DISK = 'Loadout cannot reach the folder that holds workflows yet.';
-
-/* Odczyt katalogu odpowiada „nic tam nie leży" i to jest dziś prawda, nie zaślepka: katalog
- * workflow zakłada strona Rusta, której jeszcze nie ma, więc nie ma tam ani jednego pliku.
- * Odmowa zamiast pustej listy dawałaby za to odrzuconą obietnicę bez ani jednego miejsca,
- * które by ją przechwyciło — czyli ostrzeżenie w konsoli zamiast pustej listy na ekranie. */
-const DISK: WorkflowListIo = {
-  list: () => Promise.resolve([]),
-  newId: () => Promise.reject(new Error(NO_DISK)),
-  write: () => Promise.reject(new Error(NO_DISK)),
-  remove: () => Promise.reject(new Error(NO_DISK)),
-};
+/* Adapter dysku sekcji — PRAWDZIWY, od 2026-08-17.
+ *
+ * Do tego dnia stała tu zaślepka z komentarzem „katalog workflow zakłada strona Rusta, której
+ * jeszcze nie ma". Ta strona powstała w T-27, a `src/sections/workflows/io.ts` eksportował
+ * komplet od kilkunastu godzin i nie miał ani jednego produkcyjnego wołającego.
+ *
+ * To jest wada, która nie krzyczy: `list` oddający pustą tablicę czyta się identycznie jak
+ * pusty katalog, więc ekran wygląda na poprawny, a `write` odmawia dopiero pod palcem.
+ *
+ * Adnotacja typu zostaje z rozmysłem: moduł eksportuje więcej niż `WorkflowListIo` (`load`
+ * i `check` należą do płótna), a to podstawienie ma sprawdzać, że NADAL niesie te cztery
+ * funkcje, których chce magazyn listy. */
+const DISK: WorkflowListIo = Disk;
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu, a nie przy renderze: magazyn
  * budowany w ciele komponentu gubiłby całą zawartość ekranu przy każdym przemontowaniu. */
