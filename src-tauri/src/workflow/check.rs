@@ -48,12 +48,28 @@ pub const RESERVED_CLAUDE: [&str; 7] = [
 /// To samo dla `codex`: `-C` (katalog roboczy), `-s` (piaskownica), `--json` (strumień zdarzeń).
 pub const RESERVED_CODEX: [&str; 3] = ["-C", "-s", "--json"];
 
-/// Wartości, których przelotka nie podnosi **niezależnie** od nazwy flagi.
+/// Podniesienia, których przelotka nie przepuszcza — **ani w nazwie flagi, ani w jej wartości**.
 ///
-/// Dial „co agent może zrobić z plikami" jest jedyną drogą do tych dwóch (ARCHITECTURE §6b
+/// Dial „co agent może zrobić z plikami" jest jedyną drogą do nich (ARCHITECTURE §6b
 /// reguła 2, D6). Sama lista zarezerwowanych by nie wystarczyła: `--sandbox` nie jest na niej,
 /// a `--sandbox danger-full-access` omija dial tak samo skutecznie jak `-s`.
-pub const FORBIDDEN_ESCALATIONS: [&str; 2] = ["bypassPermissions", "danger-full-access"];
+///
+/// Czytają ją **dwie** przelotki: krok workflow (`the_passthrough` niżej) i definicja agenta
+/// (`library::agents::vendor_args_filtered`). To jest cała polityka i jest jedna
+/// (niezmiennik 23) — wpis dopisany tutaj zamyka obie naraz, a wpis dopisany po jednej stronie
+/// jest dokładnie tą dziurą, przed którą ten komentarz stoi.
+///
+/// 2026-08-17 — `--dangerously-skip-permissions` dopisane po przeglądzie zewnętrznym (T-36).
+/// Obie dotychczasowe pozycje były **wartościami**, więc główna flaga eskalacyjna Claude
+/// Code — ta, która jest podniesieniem w samej NAZWIE i stoi z pustą wartością — przechodziła
+/// obie przelotki: wiersz `"--dangerously-skip-permissions": ""` w `~/.loadout/agents/*.json`
+/// omijał dial całkowicie, a ten sam wiersz na kroku workflow zapisywał się bez uwagi.
+/// Obie reguły czytają `flag` i `value`, więc pozycja w kształcie nazwy działa bez zmiany w kodzie.
+pub const FORBIDDEN_ESCALATIONS: [&str; 3] = [
+    "bypassPermissions",
+    "--dangerously-skip-permissions",
+    "danger-full-access",
+];
 
 /// Zdanie z uruchomienia w T3 §5.2.
 ///

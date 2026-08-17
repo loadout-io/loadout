@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::workflow::check::FORBIDDEN_ESCALATIONS;
+
 /// Wersja formatu, w którym zapisujemy agenta. Jedna liczba i na razie jedna wartość —
 /// migracja „na przyszłość" jest w `AGENTS.md` na liście zakazanych, a przy `schema < CURRENT`
 /// wchodzi wtedy, kiedy naprawdę powstanie druga wersja [T4 §5.2].
@@ -709,25 +711,102 @@ pub fn capability(field: Field, vendor: Vendor) -> Option<Capability> {
         .map(|(_, _, answer)| *answer)
 }
 
+/// Wpis przelotki, który nie dojechał do argv, i powód, dla którego nie dojechał.
+///
+/// Dwa pola, bo użytkownik potrzebuje dwóch rzeczy naraz: **który wiersz skasować** (`flag`)
+/// i **dlaczego** (`escalation`). Odmowa bez nazwy uczy go, że przelotka nie działa — zamiast
+/// tego, że została zablokowana; po stronie kroku workflow tę samą pomyłkę naprawia zdanie
+/// z `workflow::check`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    /// Klucz z `vendorOptions`, znak w znak taki, jak stoi w pliku agenta.
+    pub flag: String,
+    /// Podniesienie, przez które ten wpis odpadł. Słowo wzięte z JEDNEJ listy polityki
+    /// (`workflow::check::FORBIDDEN_ESCALATIONS`), nigdy z drugiej kopii — druga kopia listy
+    /// to sposób, w jaki w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23).
+    pub escalation: String,
+}
+
+/// Co przelotka oddaje vendorowi — i co jej po drodze odebrano.
+///
+/// Jedna wartość, dwie odpowiedzi, bo pytanie jest jedno: „co z tego pojedzie do argv".
+/// Rozbicie na dwie funkcje dałoby dwa przebiegi tej samej pętli po tej samej mapie i dwa
+/// miejsca, w których filtr może się rozjechać sam ze sobą.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Passthrough {
+    /// Argumenty w kolejności `klucz, wartość, klucz, wartość` — to, co dostaje vendor.
+    pub args: Vec<String>,
+    /// Odrzucone wpisy, po jednym na wpis. Puste, kiedy przelotka niczego nie podnosiła.
+    pub refused: Vec<Refusal>,
+}
+
+/// Jak [`vendor_args`], tylko mówi też, **czego nie przepuściła**.
+///
+/// `DECISIONS-LOCKED.md` §D6 stawia na przelotce dwa ograniczenia; drugie brzmi dosłownie
+/// „przelotka nie omija diala bezpieczeństwa". Filtr stoi tutaj, **zanim** ktokolwiek podepnie
+/// tę funkcję do biegu: podpięcie będzie jednolinijkowe i nikt przy nim nie przeczyta D6.
+///
+/// Lista podniesień jest ta sama, którą przy zapisie workflow czyta `workflow::check` — jedna
+/// lista, jedno miejsce (niezmiennik 23). Druga kopia rozjechałaby się w dniu, w którym ktoś
+/// dopisze flagę tylko do jednej z nich, i dokładnie tak powstała ta dziura.
+#[must_use]
+pub fn vendor_args_filtered(agent: &Agent, vendor: &str) -> Passthrough {
+    let Some(options) = agent.vendor_options.get(vendor) else {
+        // Vendor, o którym ta definicja nic nie mówi, nie ma przelotki — a nie pustą przelotkę
+        // z odmowami. Nazwy vendora, której nie znamy, nie tykamy (§D6).
+        return Passthrough::default();
+    };
+
+    let mut handed = Passthrough {
+        args: Vec::with_capacity(options.len() * 2),
+        refused: Vec::new(),
+    };
+    for (flag, value) in options {
+        // JEDNA lista i JEDNA reguła — te same, które przy zapisie kroku workflow czyta
+        // `workflow::check::the_passthrough`. Podniesienie liczy się tak samo, kiedy stoi
+        // w nazwie flagi, jak wtedy, kiedy stoi w jej wartości, i obie połówki są konieczne:
+        // sama nazwa przepuszcza `--sandbox danger-full-access` (`--sandbox` nie jest
+        // zarezerwowane, a dial omija dokładnie tak samo skutecznie jak `-s`), a sama wartość
+        // przepuszcza wiersz, którym otwiera się TASK.md — flagę, która JEST podniesieniem
+        // i stoi z pustą wartością.
+        if let Some(raise) = FORBIDDEN_ESCALATIONS
+            .iter()
+            .copied()
+            .find(|raise| flag.contains(raise) || value.contains(raise))
+        {
+            // Odmowa z nazwą, nie cisza. Cicha odmowa uczy użytkownika, że przelotka nie
+            // działa — zamiast tego, że została zablokowana — więc wpisuje to samo jeszcze raz,
+            // innym zapisem. Stąd dwa pola: `flag` to wiersz do skasowania, `escalation` to
+            // powód, bez którego `--settings` (samo w sobie legalne) czyta się jak awaria
+            // Loadouta.
+            handed.refused.push(Refusal {
+                flag: flag.clone(),
+                escalation: raise.to_string(),
+            });
+            continue;
+        }
+        // Klucz i wartość obok siebie, w tej kolejności i po jednym razie. Flaga wklejona bez
+        // wartości to albo błąd składni przy starcie, albo — gorzej — flaga, która znaczy
+        // wtedy co innego.
+        handed.args.push(flag.clone());
+        handed.args.push(value.clone());
+    }
+    handed
+}
+
 /// Tłumaczy przelotkę [`VendorOptions`] na dodatkowe argumenty **jednego** vendora.
 ///
 /// Czysta funkcja i nic więcej. Komendę buduje sterownik — `claude.rs` (T-04) i `codex.rs`
 /// (T-10) — bo polityka mieszka w jednym rdzeniu, a adaptery mają po pięć linii
 /// (niezmiennik 23). Nazwy vendora, której nie znamy, nie tykamy: przelotka ma przetrwać
 /// vendora, którego jeszcze nie wspieramy (`DECISIONS-LOCKED.md` §D6).
+///
+/// 2026-08-16 — **to są te same drzwi, tylko bez raportu**: ciało jest jedno i mieszka
+/// w [`vendor_args_filtered`]. To ta funkcja tłumaczy przelotkę prosto do argv i to ją podepnie
+/// sterownik — jednolinijkowo i bez czytania §D6 przy tym. Filtr, który mieszkałby wyłącznie
+/// w drugiej funkcji, byłby filtrem, którego bieg nigdy nie zawoła (niezmiennik 16), a dwie
+/// kopie filtra to dwie odpowiedzi na jedno pytanie, z których podpięta jest zawsze starsza.
 #[must_use]
 pub fn vendor_args(agent: &Agent, vendor: &str) -> Vec<String> {
-    let Some(options) = agent.vendor_options.get(vendor) else {
-        return Vec::new();
-    };
-
-    let mut args = Vec::with_capacity(options.len() * 2);
-    for (flag, value) in options {
-        // Klucz i wartość obok siebie, w tej kolejności i po jednym razie. Flaga wklejona bez
-        // wartości to albo błąd składni przy starcie, albo — gorzej — flaga, która znaczy
-        // wtedy co innego.
-        args.push(flag.clone());
-        args.push(value.clone());
-    }
-    args
+    vendor_args_filtered(agent, vendor).args
 }
