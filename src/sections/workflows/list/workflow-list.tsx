@@ -41,6 +41,11 @@ export interface WorkflowListProps {
   pendingDeleteId: string | null;
   /** Jeden obiekt na cały ekran; oba przyciski tworzenia dostają TEN SAM. */
   actions: WorkflowListActions;
+  /**
+   * Otwarcie workflow w edytorze. Bez tego płótno (`canvas.tsx`) jest kodem, do którego nie
+   * prowadzi ani jedno kliknięcie — a taki komponent ma testy i nie ma użytkowników.
+   */
+  onOpen: (path: string) => void;
 }
 
 /* Klasy komponentów z DESIGN §6, spisane raz. Wysokości idą po siatce 4px:
@@ -56,6 +61,7 @@ export function WorkflowList({
   workflows,
   pendingDeleteId,
   actions,
+  onOpen,
 }: WorkflowListProps): ReactElement {
   /* JEDNA funkcja tworząca na cały ekran, i to jest cały sens niezmiennika 16: przycisk
    * w pustym stanie i przycisk w nagłówku są dwoma wejściami do jednego przepływu. Drugi
@@ -121,6 +127,18 @@ export function WorkflowList({
                 {/* Obie kontrolki mają handler i obie wołają magazyn. Kafelek ich nie zna —
                  * akcje mieszkają tam, gdzie mieszka obiekt `actions`. */}
                 <div className="flex gap-2">
+                  {/* Otwarcie jest pierwszą kontrolką w rzędzie, bo jest tym, po co ta lista
+                   * istnieje: workflow bez edytora to plik, którego nie da się ułożyć. */}
+                  <button
+                    data-open
+                    type="button"
+                    className={SECONDARY}
+                    onClick={() => {
+                      onOpen(entry.path);
+                    }}
+                  >
+                    Open
+                  </button>
                   <button
                     type="button"
                     className={QUIET}

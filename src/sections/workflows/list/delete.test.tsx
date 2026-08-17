@@ -91,6 +91,7 @@ function screen(store: Store): string {
     <WorkflowList
       workflows={state.workflows}
       pendingDeleteId={state.pendingDeleteId}
+      onOpen={() => undefined}
       actions={state}
     />,
   );

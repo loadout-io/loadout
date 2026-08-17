@@ -7,8 +7,10 @@
  * drugą ścieżką, którą powstaje plik (niezmiennik 16). Między komponentem a sekcją brakowało
  * dokładnie dwóch rzeczy: magazynu i tego pliku.
  *
- * Płótno jest świadomie poza zakresem: przejście z listy na płótno domyka T-15, a kafelek,
- * który nigdzie nie prowadzi, nie jest tu przyciskiem właśnie dlatego (`list/tile.tsx`).
+ * 2026-08-17 — PŁÓTNO JEST JUŻ TUTAJ. Do tego dnia ten akapit mówił „płótno jest świadomie
+ * poza zakresem", a `canvas.tsx` i `step-panel/` miały testy i ani jednego miejsca montowania:
+ * do edytora nie prowadziło żadne kliknięcie. Ten plik trzyma teraz jeden fakt — który plik
+ * jest otwarty — i przełącza między listą a `editor.tsx`.
  *
  * DLACZEGO MAGAZYN NIE JEST CZYTANY HAKIEM ZUSTANDA — zmierzone 2026-08-16.
  * `renderToStaticMarkup` jest rendererem serwerowym, a zustand 5 podaje mu `getInitialState`
@@ -19,20 +21,21 @@
  * hydratuje serwerowego HTML-a, więc powód, dla którego React chce tam stanu początkowego
  * (zgodność hydratacji), tutaj nie istnieje.
  *
- * DLACZEGO ADAPTER DYSKU STOI W TYM PLIKU. Sekcja powinna mieć swój `io.ts` — tak jak mają
- * `sections/skills/` i `sections/memory/` — ale `src/sections/agents/io.ts` i jego odpowiednik
- * dla workflow nie istnieją, a warstwę IPC dowozi dopiero T-07 (zmierzone 2026-08-16: zero
- * `#[tauri::command]` w całym drzewie Rusta, brak `src/ipc.ts`). Adapter jest więc TUTAJ,
- * w jednym miejscu, i jest jedyną rzeczą w tej sekcji, która wie, że dysku jeszcze nie ma.
- * Przeniesienie go do `list/io.ts` jest zapisem poza blokiem OWNS tego zadania (AGENTS.md §7)
- * — zgłoszone człowiekowi razem z tym plikiem.
+ * ADAPTER DYSKU MIESZKA W `./io.ts` i ten plik tylko go podstawia. Poprzednia wersja tego
+ * akapitu tłumaczyła, dlaczego adapter stoi w środku — powodem był brak warstwy IPC, którą
+ * dowiozło T-27. Powód wygasł, więc zaślepka też.
  */
 import type { ReactElement } from 'react';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { WorkflowListIo } from './list/store';
 import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
 import * as Disk from './io';
+import * as agentsIo from '../agents/io';
+import type { Agent } from '../../state/agents';
+import type { WorkflowFile } from '../../state/workflows';
+import { useSectionStore } from '../../ui/shell/section-store';
+import { WorkflowEditor } from './editor';
 
 /** Magazyn listy workflow — dokładnie ten, który oddaje `createWorkflowListStore`. */
 export type WorkflowListStore = ReturnType<typeof createWorkflowListStore>;
@@ -76,13 +79,68 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
     void store.getState().load();
   }, [store]);
 
-  /* Cały stan idzie jako `actions`: `WorkflowListState` rozszerza `WorkflowListActions`, więc
-   * to jest TEN SAM obiekt, który magazyn wystawia — a nie jego przepisana kopia. */
+  /* Który plik jest otwarty w edytorze. `null` znaczy „lista" — jeden fakt, jedno miejsce,
+   * bez drugiego boolean-a „czy edytujemy" (niezmiennik 13). */
+  const [open, setOpen] = useState<{ path: string; document: WorkflowFile } | null>(null);
+  const [agents, setAgents] = useState<readonly Agent[]>([]);
+
+  /* Biblioteka agentów jedzie do panelu kroku: panel pokazuje wartości EFEKTYWNE, więc bez
+   * agenta nie umie odróżnić nadpisania od dziedziczenia. Czytamy ją raz, przy wejściu na
+   * sekcję — a nie przy otwarciu każdego workflow, bo to ta sama lista. */
+  useEffect(() => {
+    let alive = true;
+    agentsIo
+      .list()
+      .then((found) => {
+        if (alive) setAgents(found);
+      })
+      .catch(() => {
+        /* Brak biblioteki nie ma prawa zamknąć edytora: panel kroku bez agenta pokazuje
+         * zaproszenie zamiast wartości, a płótno działa dalej. */
+        if (alive) setAgents([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (open !== null) {
+    return (
+      /* `key={path}` jest MECHANIZMEM, nie ozdobą: magazyn dokumentu powstaje raz na
+       * zamontowanie edytora, więc wymiana otwartego pliku musi przemontować ekran.
+       * Bez tego drugie „Open" pokazałoby nowy dokument w magazynie starego. */
+      <WorkflowEditor
+        key={open.path}
+        path={open.path}
+        document={open.document}
+        agents={agents}
+        onClose={() => {
+          setOpen(null);
+          /* Katalog czytamy PONOWNIE po zamknięciu: autosave mógł zmienić nazwę workflow,
+           * a lista pokazująca starą nazwę jest widokiem, który rozjechał się z dyskiem. */
+          void store.getState().load();
+        }}
+        onRun={() => {
+          useSectionStore.getState().go('run');
+        }}
+      />
+    );
+  }
+
   return (
+    /* Cały stan idzie jako `actions`: `WorkflowListState` rozszerza `WorkflowListActions`,
+     * więc to jest TEN SAM obiekt, który magazyn wystawia — a nie jego przepisana kopia. */
     <WorkflowList
       workflows={state.workflows}
       pendingDeleteId={state.pendingDeleteId}
       actions={state}
+      onOpen={(path) => {
+        /* Dokument bierzemy z DYSKU, a nie z pozycji listy: lista trzyma migawkę z chwili
+         * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */
+        void Disk.load(path).then((document) => {
+          setOpen({ path, document });
+        });
+      }}
     />
   );
 }
