@@ -36,8 +36,8 @@ powstala.
 - `src/sections/run/io.ts`, `src/sections/workflows/io.ts` — **waski mandat**: wywolanie Start
   i Stop. Reszta cial nalezy do T-27.
 - Cztery pliki testow wymienione przy `check:`.
-- `src-tauri/tests/runcmd_end_to_end.rs`, `src-tauri/tests/runcmd_snapshot.rs`,
-  `src-tauri/tests/runcmd_checkpoint.rs` — **najwezszy mozliwy mandat**: dopasowac WYWOLANIE
+- **Cala rodzina `src-tauri/tests/runcmd_*.rs`** (`cancel`, `checkpoint`, `end_to_end`,
+  `parallel`, `refuses_invalid`, `snapshot`) — **najwezszy mozliwy mandat**: dopasowac WYWOLANIE
   `run_workflow_inner` do nowego typu trzeciego argumentu. Ani jednej asercji nie wolno tu
   usunac, oslabic ani przenumerowac; jesli dopasowanie wymaga czegos wiecej niz zmiany
   konstrukcji kanalu przy wywolaniu, to znaczy, ze zmiana w `run.rs` jest za szeroka —
@@ -50,6 +50,14 @@ powstala.
   Bez tych plikow zadanie jest NIEWYKONALNE: `full-clippy` i `full-test` nie kompiluja sie
   nigdy, wiec zadne kryterium nie ma jak zaswiecic na zielono. Petla `quick` pisarza tego nie
   widziala, bo `--all-targets` sadzi takze `tests/`, a `quick-clippy` chodzi po `--lib`.
+
+  **Dlaczego CALA rodzina, a nie wymienione pliki.** Pierwsze rozszerzenie wymienialo trzy
+  pliki i bylo ZA WASKIE, bo pomiar byl zly: `cargo check --all-targets` przerywa po kilku
+  padnietych targetach, wiec pokazal trzy z szesciu, a ja mu uwierzylem. Nastepna fala padla
+  na `runcmd_parallel.rs:211` — czwartym pliku tej samej rodziny. Powtorzony pomiar z
+  `--keep-going` (2026-08-17) daje `cancel`, `end_to_end`, `parallel`, `refuses_invalid`.
+  Kryterium przynaleznosci nie jest wiec lista nazw, tylko FAKT: `runcmd_*` to testy komendy
+  biegu, a T-30 zmienia jej sygnature, wiec dotyka ich wszystkich z definicji.
 
 ## Niezmienniki
 
@@ -126,4 +134,7 @@ src-tauri/tests/run_reaches_the_pump.rs
 src-tauri/tests/run_commands_registered.rs
 src-tauri/tests/run_stop_waits_for_proof.rs
 src/sections/run/start-invokes.test.tsx
+src-tauri/tests/runcmd_cancel.rs
+src-tauri/tests/runcmd_parallel.rs
+src-tauri/tests/runcmd_refuses_invalid.rs
 -->
