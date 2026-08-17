@@ -126,6 +126,7 @@
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - **Nie kopiuje plików projektu przy `fresh-copy`** — patrz [`workspace`].
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -1283,8 +1284,12 @@ impl Live {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_OPENS);
         for hand in &handed {
-            told.prompt
-                .push_str(&format!("\n- {}: {}", hand.from, hand.path.display()));
+            // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
+            // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
+            // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
+            // zwrócić tylko sam formatter — więc wynik idzie do `let _`, a nie do `expect()`,
+            // który w tym drzewie jest `warn`, czyli pod `-D warnings` też fatalny.
+            let _ = write!(told.prompt, "\n- {}: {}", hand.from, hand.path.display());
             told.reads.push(self.filed_as(&hand.path));
             // Jeden katalog na cały bieg, więc pętla dopisuje go raz — ale bierze go ze ścieżki,
             // a nie ze stałej: druga kopia nazwy `handoffs` byłaby drugim miejscem do poprawienia
