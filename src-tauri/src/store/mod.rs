@@ -159,6 +159,13 @@ pub struct NewRun {
     pub status: String,
     /// Ile kroków naraz miał ten bieg.
     pub concurrency: i64,
+    /// Kiedy wstała maszyna, na której ten bieg ruszył (`sysctl kern.boottime`, sekundy).
+    ///
+    /// STRAŻNIK odzyskiwania po awarii, nie diagnostyka. `None` znaczy „nie wiadomo" i jest
+    /// brakiem strażnika, a nie zgodą na strzał: `recovery::decide` odpowiada wtedy
+    /// `NO_BOOT_TIME` i NIC nie zabija. Wypełnia to `commands::run`, bo tylko tam wiadomo,
+    /// kiedy bieg naprawdę ruszył.
+    pub boot_id: Option<String>,
     /// Znaczniki czasu, wszystkie w milisekundach epoki.
     pub created_at: i64,
     /// Kiedy ruszył pierwszy krok.

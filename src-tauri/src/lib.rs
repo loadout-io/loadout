@@ -164,6 +164,80 @@ fn project_dir(home: &Path) -> PathBuf {
     std::env::var_os("LOADOUT_PROJECT").map_or_else(|| home.join("workspace"), PathBuf::from)
 }
 
+/// Domyka biegi, które zginęły razem z poprzednim uruchomieniem aplikacji.
+///
+/// Trzy kroki, w tej kolejności i nie w innej: przeczytaj, ROZSTRZYGNIJ, dopiero potem działaj.
+/// `recovery::decide` jest czystą funkcją i to ona trzyma wszystkie zasady — łącznie ze
+/// strażnikiem czasu startu maszyny, bez którego `killpg` po zapisanym `pgid` trafiałby po
+/// restarcie w niewinny proces (`kern.maxproc` = 16 000, PID-y przewijają się w godzinach).
+///
+/// Domykacz wstrzykujemy jako domknięcie, a nie wołamy w środku `apply`: dzięki temu kryterium
+/// akceptacji może podstawić własny i sprawdzić, że NIC nie zostało zabite, bez zabijania
+/// czegokolwiek na prawdziwej maszynie.
+///
+/// PUBLICZNA, i to nie jest ustępstwo na rzecz testu. To jest NAZWANA FAZA startu aplikacji,
+/// a kryterium AC-2 z `tasks/T-35.md` żąda dowodu, że biegnie ona przez ścieżkę startową, a nie
+/// że `decide()` da się zawołać wprost — bo `decide()` dawało się wołać od T-20 i przez cały ten
+/// czas nie wołał go nikt. Prywatna funkcja byłaby niesprawdzalna dokładnie w tym jednym
+/// wymiarze, o który tu chodzi.
+pub async fn recover_from_last_time(
+    store: &store::Store,
+) -> Result<(usize, usize, recovery::RecoveryReport), Box<dyn std::error::Error>> {
+    let rows = recovery::rows_to_judge(&store.reader()?)?;
+    if rows.is_empty() {
+        return Ok((0, 0, recovery::RecoveryReport::default()));
+    }
+
+    let machine = recovery::Machine {
+        // Brak odpowiedzi z systemu zapisujemy jako pusty napis, a nie jako zgadniętą wartość:
+        // pusty nie zrówna się z żadnym zapisanym znacznikiem, więc strażnik wstrzyma strzał.
+        // Zgadnięta wartość mogłaby przypadkiem trafić i wtedy strażnik byłby ozdobą.
+        boot_id: engine::supervisor::machine_booted_at().unwrap_or_default(),
+        own_pgid: own_process_group(),
+    };
+
+    let plan = recovery::decide(&rows, &machine);
+    let report = recovery::apply(
+        &plan,
+        &mut |pgid| match engine::supervisor::reap_group(pgid) {
+            engine::supervisor::GroupProof::Dead { .. } => recovery::ReapOutcome::ProvenDead,
+            engine::supervisor::GroupProof::Alive => recovery::ReapOutcome::StillAlive,
+        },
+    );
+
+    // Zapis idzie JEDYNYM pisarzem (niezmiennik 2), a nie własnym połączeniem: drugie
+    // połączenie zapisujące do tej bazy jest zakleszczeniem, nie „czasem wolniej", i
+    // `checks/quick-boundary.sh` czyta konstruktory połączeń gerpem właśnie po to.
+    let runs: Vec<(String, String)> = plan
+        .run_status
+        .iter()
+        .map(|c| (c.run_id.clone(), c.status.clone()))
+        .collect();
+    let steps: Vec<(String, String, String)> = plan
+        .step_status
+        .iter()
+        .map(|c| (c.step_id.clone(), c.status.clone(), c.reason.clone()))
+        .collect();
+    let counts = (runs.len(), steps.len());
+
+    // `await`, nie `block_on`: TA funkcja nie ma prawa decydować, jak jej wołający mostkuje
+    // sync z async. Zmierzone 2026-08-17 — `block_on` w środku panikuje zdaniem „Cannot start
+    // a runtime from within a runtime", kiedy woła ją ktoś, kto już jest w runtime (a kryterium
+    // akceptacji jest właśnie takim wołającym). Most stoi więc w `setup`, czyli w jedynym
+    // miejscu, które naprawdę nie jest asynchroniczne.
+    store.writer().recovered(runs, steps).await?;
+    Ok((counts.0, counts.1, report))
+}
+
+/// Własna grupa procesów. `0` w `killpg` znaczy „moja własna grupa", więc odzyskiwanie musi
+/// wiedzieć, która to, żeby nie zabić samego siebie — drugi strażnik z `recovery::Machine`.
+fn own_process_group() -> i32 {
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::getpgrp()
+    }
+}
+
 /// Otwiera okno. Cała powłoka po stronie Rusta zaczyna się tutaj i tutaj kończy.
 pub fn run() {
     match install_logging(&loadout_dir()) {
@@ -225,6 +299,38 @@ pub fn run() {
                 Vendor::ClaudeCode => Arc::clone(&claude),
                 Vendor::Codex => Arc::clone(&codex),
             });
+
+            /* ODZYSKIWANIE PO AWARII — wpięte 2026-08-17 (T-35 AC-2), i do tego dnia było
+             * STRUKTURALNIE MARTWE. `recovery::decide()` i `apply()` istniały od T-20, miały
+             * własne kryteria i **nikt ich nie wołał**; do tego nikt nie zapisywał czasu startu
+             * maszyny, więc gdyby je wtedy wpiąć, każdy wiersz padłby na `NO_BOOT_TIME` i nic
+             * by nie posprzątało. Mechanizm był zielony w testach i nie mógł zadziałać.
+             *
+             * Biegnie TUTAJ, przed oddaniem stanu oknu: bieg, który zginął razem z aplikacją,
+             * ma być oznaczony, ZANIM człowiek zobaczy listę. Ekran pokazujący `running` dla
+             * czegoś, czego nikt już nie prowadzi, jest gorszy niż pusta lista — bo wygląda
+             * na pracę w toku.
+             *
+             * PORAŻKA ODZYSKIWANIA NIE ZABIERA OKNA. Aplikacja, która nie wstaje, bo nie udało
+             * się posprzątać po poprzednim uruchomieniu, zamyka człowieka poza jego własnymi
+             * plikami. Zdanie idzie do dziennika i idziemy dalej. */
+            // `block_on` TUTAJ, bo `setup` Tauri nie jest kontekstem async, a pisarz magazynu
+            // jest zadaniem tokio. To jest jedyne miejsce w tym łańcuchu, które musi mostkować.
+            match tauri::async_runtime::block_on(recover_from_last_time(&store)) {
+                Ok((runs, steps, report)) if runs + steps > 0 => tracing::info!(
+                    "recovery: {runs} run(s) and {steps} step(s) marked interrupted; \
+                     {} group(s) proven dead, {} still alive, {} belong to someone else",
+                    report.reaped.len(),
+                    report.unproven.len(),
+                    report.foreign.len()
+                ),
+                Ok(_) => tracing::debug!("recovery: nothing was left running"),
+                Err(error) => {
+                    tracing::error!(
+                        "recovery could not finish, opening the window anyway: {error}"
+                    );
+                }
+            }
 
             app.manage(ipc::AppState::new(
                 home.clone(),

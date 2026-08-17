@@ -532,6 +532,40 @@ fn question(step_id: &str, session_id: &str, next_attempt: i64) -> Question {
     }
 }
 
+/// Wiersze, które odzyskiwanie ma osądzić: kroki biegów, które baza wciąż uważa za żywe.
+///
+/// SQL stoi TUTAJ, a nie w `store/`, i to jest świadome: to jest jedyne zapytanie, które
+/// istnieje wyłącznie dla odzyskiwania, a `store` jest wspólnym magazynem i nie ma powodu
+/// znać jego pojęć. Odczyt idzie przez połączenie TYLKO DO ODCZYTU (`Store::reader`), bo
+/// odzyskiwanie najpierw patrzy, a dopiero potem — osobno i świadomie — zapisuje.
+///
+/// `LEFT JOIN` nie jest tu potrzebny: krok bez biegu nie istnieje (klucz obcy z `ON DELETE
+/// CASCADE`), a krok, którego biegu nie da się przeczytać, i tak wypadłby z decyzji jako
+/// `UNKNOWN_RUN`.
+pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<RecoveryRow>> {
+    let mut q = conn.prepare(
+        "SELECT s.id, s.run_id, r.status, s.status, r.boot_id, s.pid, s.pgid,
+                s.agent_session_id, s.attempt
+           FROM steps s
+           JOIN runs r ON r.id = s.run_id
+          WHERE r.status = 'running' OR s.status = 'running'",
+    )?;
+    let rows = q.query_map([], |row| {
+        Ok(RecoveryRow {
+            step_id: row.get(0)?,
+            run_id: row.get(1)?,
+            run_status: row.get(2)?,
+            step_status: row.get(3)?,
+            run_boot_id: row.get(4)?,
+            pid: row.get(5)?,
+            pgid: row.get(6)?,
+            session_id: row.get(7)?,
+            attempt: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Rozstrzyga, co zrobić z wierszami zastanymi przy starcie. **Niczego nie wykonuje.**
 ///
 /// Cały stan systemu wjeżdża w [`Machine`], więc nie ma tu skąd wziąć czasu startu po raz drugi

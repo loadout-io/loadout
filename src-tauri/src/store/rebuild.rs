@@ -103,6 +103,8 @@ struct RunFile {
     #[serde(default = "default_concurrency")]
     concurrency: i64,
     created_at: i64,
+    #[serde(default)]
+    boot_id: Option<String>,
     started_at: Option<i64>,
     ended_at: Option<i64>,
     error: Option<String>,
@@ -168,6 +170,11 @@ pub(crate) fn read(run_dir: &Path) -> Result<Indexed> {
         started_at: file.started_at,
         ended_at: file.ended_at,
         error: file.error,
+        // Z PLIKU, nie zmyślone: `run.json` zapisuje znacznik w chwili startu biegu, a odbudowa
+        // dzieje się kiedyś potem. Plik sprzed wprowadzenia pola daje `None` i to jest poprawna
+        // odpowiedź — brak strażnika wstrzymuje strzał (`recovery::reason::NO_BOOT_TIME`),
+        // zamiast go przepuszczać.
+        boot_id: file.boot_id,
     };
 
     let mut steps = Vec::with_capacity(file.steps.len());

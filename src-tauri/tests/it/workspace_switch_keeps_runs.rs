@@ -67,6 +67,7 @@ fn a_run(id: &str) -> NewRun {
         created_at: 1_755_300_000_000,
         started_at: Some(1_755_300_001_000),
         ended_at: None,
+        boot_id: None,
         error: None,
     }
 }

@@ -58,6 +58,13 @@ enum Rows {
     Artifact(Box<NewArtifact>),
     /// Wsad zdarzeń — całość albo nic.
     Events(Vec<NewEvent>),
+    /// Domknięcie biegów zastanych po awarii aplikacji: statusy biegów i kroków, jedną
+    /// transakcją.
+    ///
+    /// Idzie TĄ SAMĄ drogą, co reszta zapisów, i to nie jest ceremonia: drugie połączenie
+    /// zapisujące do tej bazy jest zakleszczeniem, nie „czasem wolniej" (niezmiennik 2),
+    /// a `checks/quick-boundary.sh` czyta konstruktory połączeń gerpem właśnie po to.
+    Recovered(Vec<(String, String)>, Vec<(String, String, String)>),
 }
 
 /// Zlecenie dla zadania pisarza.
@@ -125,6 +132,25 @@ impl Writer {
         answer.await.map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Zapisuje decyzje odzyskiwania po awarii: biegi jako `(id, status)`, kroki jako
+    /// `(id, status, powód)`. Oddaje, ile wierszy naprawdę przepisano.
+    ///
+    /// Osobne zlecenie, a nie `insert_*`, bo to jest JEDYNY `UPDATE` w tym pliku: reszta tabeli
+    /// `steps` jest widokiem materializowanym utrzymywanym przez bieg, a tutaj piszemy do
+    /// wierszy po biegu, którego już nie ma.
+    pub async fn recovered(
+        &self,
+        runs: Vec<(String, String)>,
+        steps: Vec<(String, String, String)>,
+    ) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .send(Job::Rows(Rows::Recovered(runs, steps), reply))
+            .await
+            .map_err(|_| StoreError::WriterGone)?;
+        answer.await.map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Pragmy połączenia pisarza.
     pub(crate) async fn pragmas(&self) -> Result<Pragmas> {
         let (reply, answer) = oneshot::channel();
@@ -176,8 +202,8 @@ pub(crate) fn start(handle: &Handle, path: &Path) -> Result<(Writer, JoinHandle<
 /// po pozycjach — kolumna dołożona jutro przestawiłaby wtedy wszystkie następne po cichu.
 const INSERT_RUN: &str = "INSERT INTO runs \
      (id, workflow_id, workflow_snapshot, title, status, concurrency, \
-      created_at, started_at, ended_at, error) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+      created_at, started_at, ended_at, error, boot_id) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
 
 /// Krok. `status` i `attempt` przechodzą przez `CHECK` i `STRICT` w schemacie, nie przez Rusta.
 const INSERT_STEP: &str = "INSERT INTO steps \
@@ -225,7 +251,44 @@ fn write(conn: &mut Connection, rows: &Rows) -> Result<()> {
         Rows::Step(step) => insert_step(conn, step),
         Rows::Artifact(artifact) => insert_artifact(conn, artifact),
         Rows::Events(batch) => append_events(conn, batch),
+        Rows::Recovered(runs, steps) => write_recovered(conn, runs, steps),
     }
+}
+
+/// Domyka biegi i kroki zastane po awarii aplikacji — JEDNĄ transakcją.
+///
+/// Transakcja na cały plan, nie na wiersz: odzyskiwanie przerwane w połowie zostawiłoby bazę,
+/// w której część biegów jest `interrupted`, a część nadal `running` — czyli dokładnie ten
+/// stan, który to odzyskiwanie ma usunąć.
+///
+/// `COALESCE(ended_at, …)` zamiast nadpisania: bieg mógł zdążyć zapisać swój koniec, zanim
+/// aplikacja zginęła. Wtedy jego chwila jest prawdziwsza od naszej.
+fn write_recovered(
+    conn: &mut Connection,
+    runs: &[(String, String)],
+    steps: &[(String, String, String)],
+) -> Result<()> {
+    // Zegar czytamy RAZ: bieg i jego kroki skończyły się w tej samej chwili — wtedy, gdy
+    // zginęła aplikacja — więc mają nosić tę samą liczbę.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let tx = conn.transaction()?;
+    for (id, status) in runs {
+        tx.execute(
+            "UPDATE runs SET status = ?1, ended_at = COALESCE(ended_at, ?2) WHERE id = ?3",
+            rusqlite::params![status, now, id],
+        )?;
+    }
+    for (id, status, why) in steps {
+        tx.execute(
+            "UPDATE steps SET status = ?1, error = ?2, ended_at = COALESCE(ended_at, ?3) \
+             WHERE id = ?4",
+            rusqlite::params![status, why, now, id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Dopisuje bieg.
@@ -243,6 +306,7 @@ fn insert_run(conn: &Connection, run: &NewRun) -> Result<()> {
             run.started_at,
             run.ended_at,
             run.error,
+            run.boot_id,
         ],
     )?;
     Ok(())

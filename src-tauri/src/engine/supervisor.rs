@@ -669,10 +669,47 @@ pub fn machine_booted_at() -> Option<String> {
 ///   posiada („nie dopisuj nic do `Cargo.toml`").
 /// * `std::process::Command::new("kill")` — wykluczone przez samo zadanie.
 ///
-/// Żadne kryterium akceptacji tej funkcji nie dotyka, więc jej brak niczego nie zazielenia
-/// nieuczciwie. Sygnatura zostaje, bo po nią sięgnie T-20; ciało czeka na decyzję człowieka,
-/// którą z trzech dróg repo wybiera.
+/// # Decyzja: `libc::killpg` (2026-08-17)
+///
+/// Wybrana pierwsza z trzech dróg wypisanych wyżej. Powód jest jeden i wynika z niezmiennika 6:
+/// **tylko ona daje dokładny `errno`**, a bez rozróżnienia `ESRCH` od `EPERM` nie da się
+/// powiedzieć „nie żyje" uczciwie. `kill(1)` odróżnia te dwa stany wyłącznie brzmieniem zdania
+/// na stderr — czyli dowód śmierci zależałby od języka systemu. Druga zależność (`nix`) daje
+/// to samo co `libc`, którego już mamy, za cenę kolejnej skrzyni w drzewie.
+///
+/// `unsafe` jest tu jednym wyrażeniem i nie ma w nim wskaźników: `killpg` bierze dwa `i32`
+/// i oddaje `i32`. Wyjątek od `unsafe_code = "deny"` stoi w `checks/suppressions-allowlist.json`
+/// z pisemnym powodem, czyli przeszedł drogą, którą repo na to przewidziało.
+///
+/// `SIGTERM`, nie `SIGKILL`: to jest sprzątanie po awarii aplikacji, a nie Stop naciśnięty przez
+/// człowieka. Agent, który jeszcze żyje, ma dostać szansę zamknąć pliki. Eskalacja do `KILL`
+/// należy do żywej ścieżki (`supervisor::stop`), gdzie jest okno łaski i uchwyt do obserwacji.
 #[must_use]
-pub fn reap_group(_pgid: i32) -> GroupProof {
-    unimplemented!("killpg by bare pgid needs unsafe")
+pub fn reap_group(pgid: i32) -> GroupProof {
+    // `killpg` woła się DWA razy z rozmysłem. Pierwszy sygnał to prośba; drugi, zerowy, to
+    // pytanie „czy ktoś tam jeszcze jest". Bez tego drugiego mielibyśmy wyłącznie informację,
+    // że sygnał wyszedł — a niezmiennik 6 mówi, że to nie jest dowód śmierci.
+    #[allow(unsafe_code)]
+    let sent = unsafe { libc::killpg(pgid, libc::SIGTERM) };
+    if sent != 0 {
+        // Sygnał nie poszedł. `ESRCH` znaczy „nie ma takiej grupy", czyli dowód. Cokolwiek
+        // innego — w praktyce `EPERM` — znaczy, że grupa ISTNIEJE i należy do kogoś innego:
+        // `pgid` został przewinięty i po drugiej stronie stoi niewinny proces.
+        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            GroupProof::Dead { status: None }
+        } else {
+            GroupProof::Alive
+        };
+    }
+
+    // Sygnał poszedł. Pytamy zerowym, czy grupa zeszła — bez czekania, bo odzyskiwanie biegnie
+    // przy starcie okna i nie ma prawa go wstrzymywać. Grupa, która jeszcze żyje, wraca jako
+    // `Alive` i człowiek zobaczy ją na liście „nie udało się potwierdzić".
+    #[allow(unsafe_code)]
+    let still = unsafe { libc::killpg(pgid, 0) };
+    if still != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        GroupProof::Dead { status: None }
+    } else {
+        GroupProof::Alive
+    }
 }

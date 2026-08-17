@@ -395,6 +395,9 @@ struct Plan {
     steps: Vec<Planned>,
     /// Milisekundy epoki: kiedy ten bieg powstał.
     created_at: i64,
+    /// Kiedy wstała maszyna. Czytane RAZ, przy planowaniu: ten sam bieg ma nosić jedną
+    /// odpowiedź, a nie tyle, ile razy ktoś zapyta system.
+    boot_id: Option<String>,
 }
 
 /// Jeden krok, rozpisany przed startem.
@@ -530,6 +533,10 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
         concurrency: request.how_many_at_once,
         steps,
         created_at,
+        // Pytamy system RAZ, tutaj: ten bieg ma nosić jedną odpowiedź przez całe życie.
+        // Odczyt przy każdym zrzucie dałby wartości, które teoretycznie mogą się różnić —
+        // i strażnik porównywałby wtedy coś z czymś innym.
+        boot_id: crate::engine::supervisor::machine_booted_at(),
     })
 }
 
@@ -1034,6 +1041,11 @@ impl Live {
             status: book.status,
             concurrency: self.plan.concurrency,
             created_at: self.plan.created_at,
+            // Kiedy wstała maszyna, na której ten bieg ruszył. STRAŻNIK odzyskiwania po awarii:
+            // bez niego `recovery::decide` odmawia sprzątania (`NO_BOOT_TIME`), bo po restarcie
+            // zapisany `pgid` z dużym prawdopodobieństwem należy do niewinnego procesu
+            // (`kern.maxproc` = 16 000, więc PID-y przewijają się w godzinach).
+            boot_id: self.plan.boot_id.as_deref(),
             started_at: book.started_at,
             ended_at: book.ended_at,
             error: None,
@@ -1794,6 +1806,10 @@ struct RunFile<'a> {
     status: RunState,
     concurrency: usize,
     created_at: i64,
+    /// Kiedy wstała maszyna, na której ten bieg ruszył. Czyta to `store::rebuild` i po nim
+    /// odzyskiwanie po awarii decyduje, czy wolno sprzątnąć zapisaną grupę procesów.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    boot_id: Option<&'a str>,
     started_at: Option<i64>,
     ended_at: Option<i64>,
     error: Option<&'a str>,

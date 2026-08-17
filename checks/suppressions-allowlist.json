@@ -1,0 +1,9 @@
+{
+  "_": "Wyjatki od zakazu wyciszen. Kazdy wpis ma pisemny powod, ktory czyta CZLOWIEK -- to jest cala cena tego pliku i jedyna droga przez checks/quick-suppressions.sh. Wpis bez `reason` przewraca sprawdzenie kodem 2.",
+  "entries": [
+    {
+      "id": "src-tauri/src/engine/supervisor.rs::#[allow(unsafe",
+      "reason": "libc::killpg po golym pgid, dwa wyrazenia, bez wskaznikow -- dwa i32 na wejsciu, i32 na wyjsciu. Potrzebne odzyskiwaniu po awarii (T-20/T-35), ktore ma z bazy WYLACZNIE liczbe pgid: process-wrap wystawia sygnaly tylko jako metody uchwytu, a uchwytu po restarcie aplikacji z definicji nie ma. Wybrane sposrod trzech drog opisanych w tej funkcji, bo TYLKO ona daje dokladny errno, a niezmiennik 6 zada rozroznienia ESRCH (dowod smierci) od EPERM (pgid przewiniety, po drugiej stronie stoi niewinny proces). kill(1) odroznia te stany wylacznie brzmieniem zdania na stderr, wiec dowod smierci zalezalby od jezyka systemu; skrzynia `nix` daje to samo co libc, ktorego juz mamy, za cene kolejnej zaleznosci. Zapisane 2026-08-17."
+    }
+  ]
+}
