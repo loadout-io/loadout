@@ -193,7 +193,7 @@ pub async fn recover_from_last_time(
         // pusty nie zrówna się z żadnym zapisanym znacznikiem, więc strażnik wstrzyma strzał.
         // Zgadnięta wartość mogłaby przypadkiem trafić i wtedy strażnik byłby ozdobą.
         boot_id: engine::supervisor::machine_booted_at().unwrap_or_default(),
-        own_pgid: own_process_group(),
+        own_pgid: engine::supervisor::own_process_group(),
     };
 
     let plan = recovery::decide(&rows, &machine);
@@ -227,15 +227,6 @@ pub async fn recover_from_last_time(
     // miejscu, które naprawdę nie jest asynchroniczne.
     store.writer().recovered(runs, steps).await?;
     Ok((counts.0, counts.1, report))
-}
-
-/// Własna grupa procesów. `0` w `killpg` znaczy „moja własna grupa", więc odzyskiwanie musi
-/// wiedzieć, która to, żeby nie zabić samego siebie — drugi strażnik z `recovery::Machine`.
-fn own_process_group() -> i32 {
-    #[allow(unsafe_code)]
-    unsafe {
-        libc::getpgrp()
-    }
 }
 
 /// Otwiera okno. Cała powłoka po stronie Rusta zaczyna się tutaj i tutaj kończy.

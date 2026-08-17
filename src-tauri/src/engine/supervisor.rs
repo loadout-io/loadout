@@ -609,6 +609,26 @@ pub async fn run_with_deadline(command: Command, limit: Duration) -> io::Result<
     }
 }
 
+/// Własna grupa procesów Loadouta.
+///
+/// `0` w `killpg` znaczy „moja własna grupa", a wiersz z `pgid` równym tej wartości to my sami.
+/// Odzyskiwanie po awarii porównuje z tym każdy zapisany `pgid` i to jest jego DRUGI strażnik
+/// (pierwszym jest czas startu maszyny) — bez niego sprzątanie po poprzednim uruchomieniu
+/// zabijałoby okno, które właśnie wstało.
+///
+/// Wywołanie systemowe stoi TUTAJ, a nie w `lib.rs`, i nie jest to kwestia porządku:
+/// niezmiennik 3 mówi, że kod zależny od platformy mieszka wyłącznie w tym pliku, a
+/// `checks/quick-boundary.sh` czyta to gerpem. Zmierzone 2026-08-17 — pierwsza wersja
+/// odzyskiwania miała `libc::getpgrp()` w `lib.rs` i bramka słusznie zapaliła.
+#[must_use]
+pub fn own_process_group() -> i32 {
+    // Bez argumentów, bez wskaźników, bez stanu: `getpgrp()` oddaje liczbę i nie może zawieść.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::getpgrp()
+    }
+}
+
 /// Kiedy ta maszyna ostatnio wstała, jako napis nadający się do zapisania w bazie.
 ///
 /// DLACZEGO TO W OGÓLE ISTNIEJE — i to nie jest ciekawostka diagnostyczna. `kern.maxproc` na
