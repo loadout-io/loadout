@@ -152,11 +152,21 @@ cargo clippy --version >/dev/null 2>&1 \
 # Niezmiennik 26: full-test.sh i to sprawdzenie biegną w tej samej fali bramki.
 cargo_serialize || exit 2   # 2, nie 1: nic sie nie wykonalo, wiec to nie jest twierdzenie o kodzie (Q-3)
 
-if ! out="$(cargo clippy --all-targets -- -D warnings 2>&1)"; then
+# `--keep-going` NIE jest kosmetyką. Bez niego cargo przestaje kompilować kolejne cele po
+# kilku porażkach, więc raport wygląda na kompletny — każdy błąd ma plik i linię — a jest
+# PREFIKSEM listy, nie listą. Zmierzone 2026-08-17 na T-30: zmiana trzeciego argumentu
+# `run_workflow_inner` łamała sześć plików `tests/runcmd_*.rs`, raport pokazał trzy, więc
+# rozszerzenie OWNS objęło trzy — i następna pełna fala padła na czwartym. Ten sam błąd
+# dwa razy pod rząd, każdy za jeden pełny bieg.
+#
+# Naprawa jest tutaj, a nie w cudzej głowie: jeżeli bramka podaje niepełną listę, to każdy,
+# kto ją czyta, wyciągnie za wąski wniosek — i będzie miał rację co do tego, co zobaczył.
+if ! out="$(cargo clippy --all-targets --keep-going -- -D warnings 2>&1)"; then
   echo "clippy --all-targets found something it will not let through" >&2
   printf '%s\n' "$out" | grep -vE '^\s*(Compiling|Downloading|Updating|Checking|Fresh|Blocking)' \
     | head -60 >&2
   echo "detail: this form also judges tests, benches and examples — quick-clippy does not." >&2
+  echo "detail: --keep-going is on, so the files listed above are ALL of them, not the first few." >&2
   exit 1
 fi
 
