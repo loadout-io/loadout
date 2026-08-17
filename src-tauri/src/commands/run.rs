@@ -75,9 +75,11 @@
 //!   katalog biegu + run.json          ← plik istnieje, zanim ruszy pierwszy krok
 //!         │
 //!         ▼
-//!   scheduler::execute(graf, ile naraz, token)   ← liczba z ŻĄDANIA, nie ze stałej
-//!         │                                        (niezmiennik 11)
-//!         ├─ krok agenta:   AgentDriver::start → AgentEvent → Curator → Vec<Line>
+//!   scheduler::execute(graf, token)              ← zależnościami rządzi graf…
+//!         │
+//!         ├─ krok agenta:   limits::Run::dispatch → miejsce ze WSPÓLNEJ puli aplikacji
+//!         │                 (niezmiennik 11: „ile naraz" jest liczbą APLIKACJI, nie biegu)
+//!         │                 AgentDriver::start → AgentEvent → Curator → Vec<Line>
 //!         └─ krok kontrolny: status biegu = paused, czekaj na „dalej"
 //!         │
 //!         ▼
@@ -116,7 +118,7 @@ use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, Policy, RunSpec};
-use crate::engine::limits::Limiter;
+use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
@@ -214,30 +216,13 @@ pub async fn run_workflow_inner(
 /// tylko na szczęśliwej ścieżce zawiesza Stop przy każdym biegu, który padł, i wygląda to jak
 /// zawieszony agent, nie jak brakująca linijka. Dlatego cały bieg siedzi w [`the_whole_run`]:
 /// stamtąd wychodzi się kilkoma `?`, a stąd — dokładnie jednym `return`.
-///
-/// # SZKIELET (2026-08-17, faza kontraktu)
-///
-/// **`slots` nie steruje jeszcze niczym.** Miejsca bierze dalej semafor planisty, zakładany per
-/// bieg, więc ta funkcja robi dziś dokładnie to, co robiła przedtem — z parametrem, którego nie
-/// czyta. To jest ta „świadomie zła wartość", której wymaga faza kontraktu (`engine/mod.rs`,
-/// nagłówek): kryterium ma paść **na braku ZACHOWANIA**, a nie na braku symbolu, bo test, który
-/// się nie kompiluje, niczego nie uruchomił (`AGENTS.md` §2a p. 5).
-///
-/// `todo!()` tu nie stoi z dwóch mierzonych powodów: `run_workflow_inner` woła tę funkcję (bez
-/// tego jest to `pub fn` bez produkcyjnego wołającego, czyli dokładnie ta zgnilizna, którą
-/// odmawia `checks/quick-wired.sh`), a przez `run_workflow_inner` idą wszystkie biegi T-15 —
-/// panika w tym ciele zabrałaby sześć cudzych kryteriów przy commicie kontraktowym.
-///
-/// Parametr nie ma jak zgnić po cichu: dopóki nie steruje pulą, AC-1 mierzy **cztery** kroki
-/// naraz przy puli dwóch i jest czerwone.
 pub async fn run_workflow_with_slots(
     deps: &RunDeps<'_>,
     request: &RunRequest,
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    let _ = slots;
-    let report = the_whole_run(deps, request, lines).await;
+    let report = the_whole_run(deps, request, lines, slots).await;
     deps.control.settle();
     report
 }
@@ -248,6 +233,7 @@ async fn the_whole_run(
     deps: &RunDeps<'_>,
     request: &RunRequest,
     lines: LineSink,
+    slots: Limiter,
 ) -> Result<RunReport, RunError> {
     let plan = plan_run(deps, request)?;
     // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
@@ -255,7 +241,7 @@ async fn the_whole_run(
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
 
     lay_out_the_run_dir(&plan)?;
-    let live = Arc::new(Live::new(plan, lines, deps.control.clone()));
+    let live = Arc::new(Live::new(plan, lines, deps.control.clone(), slots));
     // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
     // [`Live::update`].
@@ -268,16 +254,18 @@ async fn the_whole_run(
             async move { live.step(id, cancel).await }
         }
     };
-    // Liczba „ile naraz" jedzie z ŻĄDANIA prosto do semafora planisty i nigdzie po drodze nie
-    // ma stałej, na którą dałoby się ją podmienić (niezmiennik 11). To jest jedyny wiersz
-    // w tym pliku, którego zniknięcie wygląda jak działający bieg.
-    let outcome = scheduler::execute(
-        &dag,
-        request.how_many_at_once,
-        deps.control.cancel_token(),
-        run_step,
-    )
-    .await;
+    // 2026-08-17 (T-31) — semafor planisty ma tu NIC nie ograniczać, i to jest cała treść tego
+    // podpięcia. „Ile naraz" jest liczbą CAŁEJ APLIKACJI, więc miejsce bierze każdy krok
+    // osobno, ze wspólnej puli ([`Live::a_slot_for_this_step`]). Semafor zakładany per bieg
+    // odpowiadał poprawnie na pytanie o jeden bieg i nie odpowiadał w ogóle na to, które zadaje
+    // niezmiennik 11: dwie karty po dwa agenty to cztery agenty po ~583 MB, czyli zamrożony
+    // laptop, a nie szybsza praca (`docs/ARCHITECTURE.md` §6a).
+    //
+    // Tyle permitów, ile kroków — czyli tyle, ile trzeba, żeby ten semafor nie odmówił nigdy.
+    // Nie zmienia to niczego, przed czym broni `engine::scheduler`: permit wspólnej puli bierze
+    // dalej ZADANIE, nie pętla wysyłki, więc różnica między „w kolejce" a „działa" zostaje tam,
+    // gdzie była, a szerokość wysyłki dalej nie udaje równoległości.
+    let outcome = scheduler::execute(&dag, dag.len(), deps.control.cancel_token(), run_step).await;
 
     live.close_the_book(&outcome.states, outcome.cancelled);
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
@@ -680,6 +668,11 @@ struct Live {
     lines: LineSink,
     /// Stop i Continue sięgają tędy do środka biegu.
     control: RunControl,
+    /// Wspólna pula miejsc **całej aplikacji** i pauza dostawcy — jedne drzwi dla obu
+    /// (`engine::limits`, nagłówek pliku): wysyłka pyta bieg, bieg pyta pulę. Uchwyt jest
+    /// klonem cudzej puli, nigdy własną: pula zakładana per bieg jest nie do odróżnienia od
+    /// tej, przez którą dwie karty dają `2 × limit` agentów naraz (niezmiennik 11).
+    gate: limits::Run,
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
@@ -742,7 +735,12 @@ enum RunState {
 
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
-    fn new(plan: Plan, lines: LineSink, control: RunControl) -> Self {
+    fn new(plan: Plan, lines: LineSink, control: RunControl, slots: Limiter) -> Self {
+        // Kopia stanów kroków, którą dostaje limit dostawcy, jest **martwa z rozmysłem**:
+        // `engine::limits::Run` ma pełny dostęp do statusów i podejść dokładnie po to, żeby
+        // T-21 mogło dowieść, że pauza ich nie rusza (`[T7 §7.2]`: „a pause, not a failure").
+        // Księga tego biegu żyje niżej, w [`Live::book`], i to ona jedzie do `run.json`.
+        let gate = limits::Run::new(slots, &vec![StepState::Pending; plan.steps.len()]);
         let steps = plan
             .steps
             .iter()
@@ -768,6 +766,7 @@ impl Live {
             }),
             lines,
             control,
+            gate,
             began: Instant::now(),
         }
     }
@@ -868,6 +867,31 @@ impl Live {
 
     /// Jeden krok, od pierwszego wpisu w księdze po ostatni.
     async fn step(&self, id: StepId, cancel: CancellationToken) -> StepReport {
+        // Miejsce ZANIM cokolwiek wpiszemy do księgi: `running` z chwilą startu wpisaną przed
+        // wzięciem miejsca to ten sam fałsz, przed którym stoi niezmiennik 11 — krok stojący
+        // w kolejce czytałby się jak krok, który działa.
+        //
+        // Trzyma się do końca kroku, bo `Slot` oddaje miejsce w `Drop`: wychodzi więc także
+        // przez panikę i przez anulowanie. Miejsce zwracane wyłącznie na szczęśliwej ścieżce
+        // daje pulę, która kurczy się przez cały bieg, aż nic już nie startuje.
+        let _slot = match &self.plan.steps[id].job {
+            Job::Agent(_) => {
+                let Some(slot) = self.a_slot_for_this_step(&cancel).await else {
+                    // Stop, zanim ten krok w ogóle ruszył: `cancelled`, nie `skipped` — nikt
+                    // wyżej nie padł, człowiek zatrzymał bieg [T7 §9.3]. Księga zostaje bez
+                    // chwili startu, bo startu nie było, a stan końcowy dopisze planista.
+                    return StepReport::Cancelled;
+                };
+                Some(slot)
+            }
+            // Kafelek kontrolny miejsca NIE bierze i to jest wybór, nie przeoczenie: pula liczy
+            // agentów po ~583 MB (`[T7 §7.1, V]`), a pytanie do człowieka nie waży nic i potrafi
+            // czekać godzinami. Pytanie trzymające miejsce ze wspólnej puli zagłodziłoby przy
+            // limicie 1 wszystkie pozostałe karty, i to na tak długo, jak długo nikt nie patrzy
+            // na ekran.
+            Job::Ask { .. } => None,
+        };
+
         let at = now_ms();
         self.update(|book| {
             book.started_at.get_or_insert(at);
@@ -891,6 +915,46 @@ impl Live {
             step.ended_at = Some(now_ms());
         });
         report
+    }
+
+    /// Miejsce ze **wspólnej puli aplikacji**, i limit dostawcy w tej samej pętli.
+    ///
+    /// `None` znaczy „nie ruszaj tego kroku": bieg zatrzymał człowiek, zanim to miejsce się
+    /// zwolniło. Nie jest to błąd i nie jest to `Err` (niezmiennik 7) — Stop, który mimo
+    /// wszystko wpuszcza agenta po to, żeby go zaraz zabić, płaci dostawcy za turę, której
+    /// nikt nie zobaczy.
+    ///
+    /// **Pętla, nie jedno pytanie**, bo odmowy są dwie różne i tylko jedna z nich mija sama:
+    /// [`limits::Refusal::Paused`] wraca natychmiast i mówi „nie teraz", a czekanie na wolne
+    /// miejsce siedzi już w środku [`limits::Run::dispatch`]. Bieg, który po odmowie zaczeka na
+    /// miejsce w puli, trzymałby zasób potrzebny komuś, kto może biec, i zajmował go przez całe
+    /// pięciogodzinne okno limitu.
+    async fn a_slot_for_this_step(&self, cancel: &CancellationToken) -> Option<limits::Slot> {
+        loop {
+            let asked = tokio::select! {
+                // `biased`, żeby Stop wygrywał z miejscem zwalnianym w tej samej chwili: krok,
+                // który po Stopie dostaje permit, startuje agenta i zabija go w następnej
+                // linijce.
+                biased;
+                () = cancel.cancelled() => return None,
+                asked = self.gate.dispatch() => asked,
+            };
+            match asked {
+                limits::Dispatch::Granted(slot) => return Some(slot),
+                limits::Dispatch::Refused(limits::Refusal::Paused) => {
+                    // Dokładnie do końca pauzy i ani razu wcześniej. Wersja pytająca co sto
+                    // milisekund budzi bieg trzy tysiące razy w pięciogodzinnym oknie, żeby
+                    // 2999 razy usłyszeć to samo — a `resetsAt` jest znane od pierwszego
+                    // zdarzenia i nikt go po drodze nie skraca (`engine::limits`).
+                    let left = self.gate.still_paused_for();
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return None,
+                        () = tokio::time::sleep(left) => {}
+                    }
+                }
+            }
+        }
     }
 
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.

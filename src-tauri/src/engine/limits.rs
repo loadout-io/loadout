@@ -440,12 +440,37 @@ impl Run {
     /// Pauza kończy się sama o `resetsAt`, więc powrót do `running` nie potrzebuje ani zadania
     /// w tle, ani budzika. To nie jest oszczędność, tylko granica: przejście, które nie ma
     /// własnego kodu, nie ma też jak przy okazji ruszyć kroku ani podbić podejścia.
+    ///
+    /// Porównania z zegarem nie ma tutaj, tylko w [`Run::still_paused_for`], i to jest ta sama
+    /// zasada, co przy dwóch licznikach na ekranie: dwa miejsca liczące jedną granicę różnią
+    /// się o milisekundę dokładnie wtedy, kiedy ta milisekunda decyduje.
     #[must_use]
     pub fn status(&self) -> RunStatus {
-        match self.paused_until {
-            Some(deadline) if Instant::now() < deadline => RunStatus::Paused,
-            _ => RunStatus::Running,
+        if self.still_paused_for().is_zero() {
+            RunStatus::Running
+        } else {
+            RunStatus::Paused
         }
+    }
+
+    /// Ile jeszcze bieg nie wysyła. `Duration::ZERO` znaczy „wysyła".
+    ///
+    /// Odpowiedź na pytanie **„to na jak długo"**, którego [`Run::status`] nie umie zadać.
+    /// Wołający, który dostał [`Refusal::Paused`], ma zaczekać dokładnie tyle i spróbować raz —
+    /// wersja pytająca co sto milisekund robi z pauzy odpytywanie i budzi bieg 3000 razy
+    /// w pięciogodzinnym oknie limitu, żeby 2999 razy usłyszeć to samo.
+    ///
+    /// Liczba maleje monotonicznie do zera, bo pauzy nie da się odwołać: kończy ją wyłącznie
+    /// upływ czasu do `resetsAt`, a zdarzenie ze statusem `allowed` jej nie skraca
+    /// (patrz [`Run::saw_rate_limit`]).
+    #[must_use]
+    pub fn still_paused_for(&self) -> Duration {
+        self.paused_until.map_or(Duration::ZERO, |deadline| {
+            // `saturating_*`, bo pauza po terminie ma dawać zero, a nie liczbę ujemną, której
+            // `Duration` i tak nie umie unieść — odejmowanie w drugą stronę byłoby paniką
+            // w silniku (`AGENTS.md` §4).
+            deadline.saturating_duration_since(Instant::now())
+        })
     }
 
     /// Stany kroków, w kolejności z [`Run::new`].
