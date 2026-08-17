@@ -1,0 +1,68 @@
+# T-31 — Limit „ile naraz" jest GLOBALNY, a bieg pauzuje na limicie dostawcy
+
+`docs/ARCHITECTURE.md` §6a nazywa to konsekwencja, ktora trzeba nazwac teraz:
+
+> **Limit „ile naraz" musi byc globalny, nie per bieg.** Trzy karty po trzech agentach to
+> dziewieciu agentow na jednej maszynie. Przy ~583 MB na agenta to jest zamrozony laptop,
+> a nie szybsza praca. Jeden semafor na cala aplikacje, dzielony przez wszystkie biegi.
+
+Zmierzone na wyladowanym trunku (przeglad zewnetrzny 2026-08-16): `run_workflow_inner` podaje
+`how_many_at_once` **prosto do semafora per bieg**. `engine::limits::Limiter` istnieje, jest
+przetestowany (T-21) i **nie ma ani jednego produkcyjnego wolajacego**. Dwa biegi w dwoch kartach
+daja `2 x limit`. Bieg tez nie pauzuje na `rate_limit`, mimo ze tabela §5 to obiecuje.
+
+To jest ta sama rodzina, co reszta szwow: mechanizm wyladowal, nikt go nie podlaczyl.
+
+**Read first:**
+`docs/ARCHITECTURE.md` §6a (model kart i konsekwencja globalnego semafora) i §5 (maszyna stanow
+kroku — `paused` istnieje w tabeli) · `src-tauri/src/engine/limits.rs` (T-21) ·
+`AGENTS.md` niezmienniki 11, 13, 16.
+
+## Kto to robi
+
+- **Agent:** `rust-core`
+- **Druga opinia:** inny vendor niz pisarz (D3).
+
+## Co to zadanie posiada
+
+- `src-tauri/src/engine/limits.rs` — **waski mandat**: dolozyc to, czego wymaga podpiecie.
+  Zasady limitu i test T-21 zostaja.
+- `src-tauri/src/commands/run.rs` — **waski mandat**: brac miejsca z limitera wspolnego dla
+  aplikacji, nie z semafora tworzonego per bieg; przejsc w `paused` na limicie dostawcy.
+- Dwa pliki testow wymienione przy `check:`.
+
+## Kryteria akceptacji
+
+## AC-1 Dwa biegi naraz nie przekraczaja limitu RAZEM
+check: cargo test --test limits_are_global_across_runs
+
+Odpal **dwa** biegi jednoczesnie na `FakeDriver`, kazdy po trzy kroki, przy limicie globalnym **2**.
+Zapisuj kazde wejscie i wyjscie kroku ze znacznikiem czasu. Asercja: w zadnej chwili nie bylo
+**wiecej niz dwoch** krokow naraz — liczac po obu biegach, nie w kazdym z osobna.
+
+Kontrola dodatnia w tym samym pliku: przy limicie **4** te same dwa biegi osiagaja w szczycie
+**wiecej niz dwa** kroki naraz. Bez niej asercja przechodzi na implementacji, ktora nie zrownolegla
+w ogole — czyli mierzy powolnosc zamiast limitu.
+
+*Slaba asercja:* sprawdzenie limitu w jednym biegu. Przechodzi dzis, bo semafor per bieg dziala
+poprawnie — i nie ma nic wspolnego z pytaniem, ktore to kryterium zadaje. Dyskryminuje: **suma
+po dwoch biegach** w jednym oknie czasu.
+
+## AC-2 Limit dostawcy pauzuje bieg i mowi, do kiedy — zamiast go wywalac
+check: cargo test --test limits_pause_on_rate_limit
+
+Sterownik zwraca zdarzenie limitu dostawcy z czasem odblokowania. Asercje: bieg przechodzi
+w `paused` (nie `failed`); zaden nowy krok nie startuje, dopoki trwa pauza; po uplywie czasu
+bieg rusza dalej **sam**; a stan niesie **jedno** zdanie o tym, do kiedy czeka — nie dwa liczniki
+opisujace to samo (niezmiennik 13).
+
+*Slaba asercja:* sprawdzenie, ze bieg sie zatrzymal. Przechodzi na implementacji, ktora traktuje
+limit jak blad i konczy bieg — a wtedy uzytkownik traci prace, ktora czekala piec minut.
+Dyskryminuje: **samoczynne** wznowienie i stan `paused`, nie `failed`.
+
+<!-- OWNS
+src-tauri/src/engine/limits.rs
+src-tauri/src/commands/run.rs
+src-tauri/tests/limits_are_global_across_runs.rs
+src-tauri/tests/limits_pause_on_rate_limit.rs
+-->
