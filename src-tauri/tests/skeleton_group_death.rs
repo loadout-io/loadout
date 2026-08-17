@@ -320,7 +320,20 @@ impl Bench {
     }
 }
 
+/* 2026-08-17 — DLACZEGO `#[ignore]` NA TEŚCIE, KTÓRY JEST KRYTERIUM.
+ * `checks/full-test.sh` odpala `cargo test --tests` BEZ filtra, więc bierze każdy cel
+ * z `src-tauri/tests/` — także ten. A ten cel uruchamia PRAWDZIWE procesy `claude`:
+ * kosztuje pieniądze przy każdym przebiegu pełnej bramki, a z otwartym stdinem czeka
+ * w nieskończoność (patrz nagłówek pliku). Zmierzone: T-29 i T-32 miały wszystkie
+ * własne kryteria zielone i 15/16 sprawdzeń, i oba padły WYŁĄCZNIE na `full-test`,
+ * każdy dokładnie w 3600 s = 2 × budżet 1800 s. Od 2026-08-17 nie wylądowałaby żadna
+ * gałąź. Poszerzenie bramki do `--tests` (f553404, 2026-08-16) było słuszne; błędem
+ * było wpuszczenie w jej zakres celu bez ograniczenia czasu (a7a2d87, 2026-08-17).
+ *
+ * Cel NIE jest schowany przed bramką: kryterium T-28 woła go wprost przez
+ * `-- --ignored`, więc dalej musi być zielony, tylko nigdy hurtem. */
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "uruchamia prawdziwe procesy claude: kosztuje pieniadze i czeka bez konca; wolany wprost przez kryterium T-28"]
 async fn stopping_two_real_agents_leaves_no_live_process_behind() -> Result<(), Box<dyn Error>> {
     let first_dir = tempfile::tempdir()?;
     let second_dir = tempfile::tempdir()?;
