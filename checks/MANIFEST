@@ -9,6 +9,8 @@
 # Ten plik mieszka w checks/, czyli tam, gdzie bieg nie pisze — a po N-06 jest to znowu prawda.
 # Dodanie sprawdzenia wymaga dopisania linijki tutaj. To jest cała ceremonia.
 
+before-spec-owns
+
 quick-boundary
 quick-clippy
 quick-fmt
@@ -18,6 +20,7 @@ quick-suppressions
 quick-tokens
 quick-types
 quick-vocabulary
+quick-wired
 
 full-clippy
 full-test
