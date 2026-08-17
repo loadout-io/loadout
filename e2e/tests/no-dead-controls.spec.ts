@@ -54,6 +54,52 @@ const EXCUSED: readonly Excused[] = [];
 
 const BUTTONS = 'main button:visible';
 
+/** Kafelek listy workflow (`src/sections/workflows/list/tile.tsx`) — dowód, że zasiew dojechał. */
+const TILE = 'main [data-tile]';
+
+/**
+ * Sekcje, które BEZ DANYCH pokazują wyłącznie swój pusty stan — i dlatego dostają zasiew.
+ *
+ * Zmierzone 2026-08-17. Atrapa odpowiada na każde `list_*` pustą listą (`harness.ts`,
+ * `answer()`), więc ekran Workflows zastaje katalog pusty i rysuje samo zaproszenie:
+ * `workflow-list.tsx` renderuje `<li>` z `Duplicate` i `Delete` dopiero przy niezerowej liście.
+ * Enumeracja niżej nigdy tych dwóch przycisków NIE WIDZIAŁA, a przycisk, którego pomiar nie
+ * widzi, jest w tym kryterium dokładnie tym samym, co przycisk nieklikany — trzy martwe
+ * kontrolki poprzedniego prototypu stały właśnie w miejscach, do których nikt nie zajrzał drugi raz.
+ *
+ * Zasiew idzie JEDNYM kliknięciem w jedyną kontrolkę tworzenia, czyli tą samą drogą, którą
+ * przechodzi człowiek — nie wstrzykiwaniem stanu do magazynu. I biegnie w KAŻDEJ sesji tej
+ * sekcji: i w cichej, z której bierzemy napisy, i w każdej świeżej, w której klikamy n-ty
+ * przycisk. Zasiew tylko po jednej stronie rozjechałby indeksy między tymi dwoma ekranami
+ * i kazałby klikać co innego, niż zostało nazwane.
+ *
+ * Czego zasiew NIE robi: nie dopisuje wyjątku. `Duplicate` i `Delete` są po nim sądzone tak
+ * samo jak każdy inny przycisk — wpisanie ich do `EXCUSED` byłoby schowaniem niesprawdzonych
+ * kontrolek pod powodem, czyli tą awarią, przed którą stoi niezmiennik 16.
+ */
+const SEEDED: readonly Id[] = ['workflows'];
+
+/** Klika `＋ Create` i czeka, aż na ekranie stanie kafelek. Bez cichego przełykania porażki. */
+async function seed(app: RunningApp): Promise<void> {
+  await app.page.click('main [data-create]');
+  try {
+    await app.page.locator(TILE).first().waitFor({ state: 'attached', timeout: MOUNTS });
+  } catch (cause) {
+    /* GŁOŚNO, a nie `catch(() => undefined)`. Zasiew, który po cichu nie doszedł, zostawia
+     * ekran w pustym stanie — czyli dokładnie tam, gdzie ten plik był przed tą poprawką,
+     * tylko że z pozorem, że coś sprawdza. To jest awaria produktu, nie przyrządu, i mówi
+     * o niej także AC-1. */
+    throw new Error(
+      'seeding the workflows screen failed: after clicking the only create control nothing ' +
+        'matched ' +
+        JSON.stringify(TILE) +
+        ', so Duplicate and Delete never enter the document and every assertion below would ' +
+        'be a statement about the empty state alone. AC-1 is red for the same reason.',
+      { cause },
+    );
+  }
+}
+
 /** Okno, w którym skutek kliknięcia ma się pokazać. Render Reacta i mikrozadanie, nie sieć. */
 const SETTLE = 300;
 
@@ -81,6 +127,7 @@ async function openAt(id: Id): Promise<RunningApp> {
     .locator('main[data-section="' + id + '"]')
     .waitFor({ state: 'attached', timeout: MOUNTS })
     .catch(() => undefined);
+  if (SEEDED.includes(id)) await seed(app);
   return app;
 }
 
