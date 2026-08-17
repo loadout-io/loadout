@@ -21,6 +21,37 @@ ustawienia przy starcie), nowe pliki, których nikt jeszcze nie woła.
 
 ---
 
+## Q-6 — zegar scienny nie odroznia „wolne" od „wisi"
+
+**Stan: OTWARTE. Zdiagnozowane 2026-08-17, naprawione tylko kalibracja.**
+
+`run_one` mierzy sprawdzenie zegarem sciennym i po dwoch przekroczeniach budzetu melduje
+`rc=124` z tekstem „it is waiting for something that is not going to arrive". To jest
+DIAGNOZA, na ktora bramka nie ma dowodu: identycznie wyglada sprawdzenie zawieszone i
+sprawdzenie, ktoremu ktos zabral procesor.
+
+Zmierzone tego dnia: `cargo test --tests` to 119 binariow, 444 s na maszynie bezczynnej
+i **1121 s** na maszynie, na ktorej obok chodzi fala. Przy budzecie 600 s bramka zabila
+suite dwa razy, zaswiecila trunk na czerwono i zablokowala ladowanie T-31 -- nie majac ani
+jednego padajacego testu. Poszla na to poltorej godziny diagnozy, w tym podejrzenie o
+zawieszenie rzucone na `claude_rate_limit`, czyli test, ktory jest czystym `include_str!`
+i parserem i nie ma czym wisiec.
+
+Naniesione teraz: budzet `full-test` z 600 na 1800 s, **z pomiaru**. To usuwa objaw i jest
+uczciwe (liczba zamiast przeczucia), ale nie usuwa przyczyny: kazdy budzet zgadnie zle,
+bo obciazenie maszyny nie jest wlasnoscia kodu.
+
+**Wlasciwa naprawa: liczyc CISZE, a nie czas.** `cargo test` drukuje „Running tests/x.rs"
+przy kazdym binarium, wiec postep jest obserwowalny. Sprawdzenie, ktore nadal pisze, zyje --
+zabijac wolno dopiero po N sekundach BEZ ANI JEDNEGO bajtu, plus twardy sufit (np. 3x budzet)
+na wypadek petli, ktora gada. Wtedy „wolne" i „wisi" przestaja byc tym samym sygnalem.
+
+**Dlaczego nie teraz:** to zmiana w `_run`, czyli w rdzeniu uruchamiania KAZDEGO sprawdzenia,
+a tego dnia bramka dostala juz cztery poprawki (lane szeregowy, zamek poziomu full,
+`--keep-going`, budzet). Blad w `_run` bylby gorszy niz problem, ktory naprawia. Do zrobienia
+na spokojnej bramce, z kontrola dwustronna: sprawdzenie gadajace i wolne ma przezyc,
+sprawdzenie ciche ma zginac.
+
 ## Puste
 
 Q-1 … Q-4 naniesione w `4f9a558`. Poprawka muteksu cargo w `689e432`.
