@@ -28,6 +28,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Agent, AgentsIo, Vendor } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
 import { AgentForm } from './agent-form';
+import * as Disk from './io';
 
 /** Magazyn agentów — dokładnie ten, który oddaje `createAgentsStore`. */
 export type AgentsStore = ReturnType<typeof createAgentsStore>;
@@ -37,19 +38,21 @@ export interface AgentsScreenProps {
   store?: AgentsStore;
 }
 
-/* Adapter dysku sekcji. Stoi w tym pliku z tego samego powodu, co adapter listy workflow
- * (`src/sections/workflows/index.tsx`): `src/sections/agents/io.ts` nie istnieje, a warstwę
- * IPC dowozi T-07. Odczyt katalogu odpowiada „nic tam nie leży", bo katalog agentów zakłada
- * strona Rusta, której jeszcze nie ma; zapis ODMAWIA, bo zapis kończący się po cichu sukcesem
- * byłby kłamstwem o tym, co jest na dysku (niezmiennik 4). */
-const NO_DISK = 'Loadout cannot reach the folder that holds agents yet.';
-
-const DISK: AgentsIo = {
-  list: () => Promise.resolve([]),
-  newId: () => Promise.reject(new Error(NO_DISK)),
-  save: () => Promise.reject(new Error(NO_DISK)),
-  remove: () => Promise.reject(new Error(NO_DISK)),
-};
+/* Adapter dysku sekcji — PRAWDZIWY, od 2026-08-17.
+ *
+ * Do tego dnia stała tu zaślepka: `list` oddawał pustą tablicę, a `newId`, `save` i `remove`
+ * odmawiały zdaniem „Loadout cannot reach the folder that holds agents yet". Jej komentarz
+ * mówił, że `src/sections/agents/io.ts` nie istnieje i że warstwę IPC dowozi T-27.
+ *
+ * T-27 dowiozło. Plik istniał od kilkunastu godzin, eksportował dokładnie te cztery funkcje
+ * i NIKT go nie wołał — jedynym miejscem w repo, które go importowało, był test. Sekcja przez
+ * ten czas była trwale pusta, a Create odmawiał pod palcem, i nic tego nie zgłaszało: zaślepka
+ * odpowiadająca „nic tam nie leży" czyta się dokładnie tak samo jak pusta biblioteka.
+ *
+ * Kształt modułu jest lustrem `AgentsIo`, więc podstawia się w całości. Adnotacja typu nie jest
+ * ozdobą: to ona sprawdza, że moduł NADAL spełnia interfejs magazynu — funkcja usunięta po
+ * tamtej stronie granicy przestaje się kompilować tutaj, zamiast odmawiać pod palcem. */
+const DISK: AgentsIo = Disk;
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu — magazyn budowany w ciele
  * komponentu gubiłby zawartość ekranu przy każdym przemontowaniu. */
