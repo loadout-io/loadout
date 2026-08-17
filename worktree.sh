@@ -122,16 +122,41 @@ fi
 
 # ── target/ ──────────────────────────────────────────────────────────────────
 #
-# Wspólny katalog build, przez symlink. Zimny `cargo clippy --lib` w świeżym
-# worktree to minuty, a sufit tieru quick wynosi 45 s — osobny target znaczyłby,
-# że bramka mierzy stan cache'u, nie kod.
+# WŁASNY katalog build w każdym worktree. Domyślnie osobny od 2026-08-17 — i to jest
+# odwrócenie wcześniejszej decyzji, więc należy się powód.
 #
-# Skutek uboczny jest tu POŻĄDANY: cargo bierze lock na katalog target, więc dwa
-# ciężkie buildy szeregują się zamiast biec naraz (niezmiennik 26 — kilka
-# równoległych linków przypina kompresor pamięci macOS i zamraża maszynę).
-# Drogie zależności są dzielone, nasze crate'y przebudowują się przy przełączeniu.
-# Wyłączenie: LOADOUT_SHARE_TARGET=0.
-if [ "${LOADOUT_SHARE_TARGET:-1}" = "1" ] && [ ! -e "$DEST/target" ]; then
+# Stał tu symlink do jednego `target/` w korzeniu, z uzasadnieniem „drogie zależności są
+# dzielone, nasze crate'y przebudowują się przy przełączeniu". Druga połowa tego zdania jest
+# NIEPRAWDZIWA i to jest błąd POPRAWNOŚCI, nie wydajności.
+#
+# Odtworzone w ../meetnotes (`.agents/harness/runtime.py`, cargo 1.96, przy ZEROWEJ
+# równoległości): dwa checkouty o tej samej nazwie pakietu, wersji i układzie WZGLĘDNYM,
+# budowane przez jeden `CARGO_TARGET_DIR`, dają jeden odcisk metadanych, jedną nazwę
+# artefaktu i jeden wpis fingerprintu. Sekwencja `build A; build B; build A` melduje
+# zadanie A jako `Fresh`, podczas gdy rlib na dysku zbudowano ze źródeł zadania B.
+# Czyli bramka potrafi osądzić CUDZY kod i zameldować zieleń.
+#
+# Druga połowa szkody jest mierzalna u nas. Zmierzone 2026-08-17: 24 worktree wskazywały
+# na jeden `target/`, który urósł do 66 GB i 886 645 plików. Rozbieżne gałęzie znaczą
+# rozjazd odcisków, więc cargo przebudowywał drzewo przy KAŻDYM przełączeniu — stąd 58 s
+# na cel testowy, które braliśmy za koszt linkowania. Dla porównania: ../meetnotes ma
+# 950 skrzyń (prawie dwa razy więcej) i 19 835 plików w `target/debug/deps`.
+#
+# Cena, którą świadomie przyjmujemy: pierwszy build w świeżym worktree jest zimny.
+# Płacimy ją RAZ, przy tworzeniu worktree (niżej), a nie w środku pierwszej bramki —
+# bramka, której werdykt zależy od tego, czy cache akurat był ciepły, mierzy maszynę,
+# nie kod (../spreadsheet, `worktree.sh`).
+#
+# Szeregowanie ciężkich buildów NIE ginie razem z tym symlinkiem: pilnuje go muteks
+# z `checks/_cargo-serialize.sh` i zamek poziomu `full` w `harness/gate.py` — oba
+# świadome, oba ze strażnikami, w odróżnieniu od locka na katalogu, który był skutkiem
+# ubocznym (niezmiennik 26).
+#
+# Włączenie z powrotem: LOADOUT_SHARE_TARGET=1. Zostawione wyłącznie po to, żeby dało się
+# odtworzyć powyższy pomiar, a nie jako tryb pracy.
+if [ "${LOADOUT_SHARE_TARGET:-0}" = "1" ] && [ ! -e "$DEST/target" ]; then
+  echo "note: sharing target/ between worktrees -- cargo can report Fresh against another" >&2
+  echo "note: task's artifacts (measured in ../meetnotes). This is for reproduction only." >&2
   mkdir -p "$ROOT/target"
   ln -s "$ROOT/target" "$DEST/target"
 fi

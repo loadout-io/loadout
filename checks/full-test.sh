@@ -2,6 +2,17 @@
 # Obie suity. Tylko w pełnej bramce — `cargo test` linkuje, a linkowanie w pętli
 # wewnętrznej to minuty, nie sekundy.
 #
+# 2026-08-17 — `--tests` znaczy dziś DWA cele, nie 123.
+#
+# Do tego dnia `src-tauri/tests/` miało 122 pliki, a Rust robi z każdego pliku OSOBNE binarium
+# linkujące całą bibliotekę z 527 skrzyniami. Zmierzone: same testy wykonują się w 6,0 s, a
+# składanie tych programów trwało godziny — to sprawdzenie przekraczało budżet 1800 s
+# dwukrotnie i od 2026-08-17 nie wylądowałaby żadna gałąź. Pliki są teraz modułami jednego
+# celu (`tests/it/main.rs`), więc link jest jeden. Zmierzone po scaleniu: 26 s.
+#
+# `--tests` zostaje mimo to: bierze także `--lib` i biny, a cel, który przestałby się
+# kompilować, ma być czerwony tutaj, a nie odkryty przy następnym `--all-targets`.
+
 # `--tests`, NIGDY `--lib`. Do 2026-08-16 stało tu `cargo test --lib`, a `--lib` nie kompiluje
 # `src-tauri/tests/*.rs` ANI RAZU. Każde kryterium akceptacji w tym repo ma postać
 # `cargo test --test <cel>` i mieszka właśnie tam: pełna bramka nie odpalała celów, na których

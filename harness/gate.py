@@ -296,12 +296,29 @@ NOT_A_REAL_RED = re.compile(
 NAME_FILTER = re.compile(
     r"(?:^|\s)(--test-name-pattern|--testNamePattern|--test-name|--grep|-t|-g)(?:[=\s]|$)")
 
-# Co uznajemy za "ścieżkę specyfikacji". Vitest wskazuje plik wprost; cargo wskazuje CEL
-# testu integracyjnego (`--test <nazwa>` = dokładnie jeden plik tests/<nazwa>.rs), więc oba
-# są jednoznaczne i oba dają się porównać między zadaniami.
+# Co uznajemy za "ścieżkę specyfikacji". Vitest wskazuje plik wprost; cargo wskazuje MODUŁ
+# wewnątrz jedynego celu integracyjnego, więc oba są jednoznaczne i oba dają się porównać
+# między zadaniami.
 SPEC_PATH = re.compile(r"(?:^|[\s=\"'])((?:[\w.@-]+/)+[\w.@-]+\.(?:test|spec)\.[jt]sx?"
                        r"|(?:[\w.@-]+/)+[\w.@-]+\.rs)")
-CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)")
+
+# 2026-08-17 — CEL PRZESTAŁ IDENTYFIKOWAĆ SPECYFIKACJĘ, i to jest cała treść tej zmiany.
+#
+# Do tego dnia `--test <nazwa>` wskazywał dokładnie jeden plik `tests/<nazwa>.rs`, bo Rust
+# robi z każdego pliku w `tests/` osobne binarium. To było jednoznaczne i to samo było
+# przyczyną, dla której `full-test` trwał godziny: 122 pliki = 122 programy, z których każdy
+# statycznie linkuje 527 skrzyń, żeby uruchomić 6 sekund testów.
+#
+# Po scaleniu (`tests/it/main.rs` z modułami) cel jest JEDEN — `it` — więc sam cel nie
+# odróżnia kryteriów. Rozróżnia je FILTR MODUŁU: `cargo test --test it store_pragmas::`
+# uruchamia dokładnie te testy, co dawne `cargo test --test store_pragmas`. Ten filtr jest
+# więc teraz tożsamością specyfikacji i to po nim liczy się reguła „jedna specyfikacja,
+# jedno kryterium".
+#
+# Filtr BEZ `::` odrzucamy świadomie: `cargo test --test it store` łapie także
+# `store_pragmas` i `storage_x`, czyli jedno kryterium sądziłoby cudze testy. Dwukropki
+# czynią z tego prefiks ścieżki modułu, a nie podciąg nazwy.
+CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)\s+([\w]+)::")
 
 
 # ---------------------------------------------------------------- kontrakt zadania
@@ -338,7 +355,8 @@ def read_task(path):
 def spec_tokens(cmd):
     """Ścieżki specyfikacji, jakie ta komenda uruchamia. Cel cargo liczy się jako ścieżka."""
     hits = [m.group(1) for m in SPEC_PATH.finditer(cmd)]
-    hits += ["cargo --test " + m.group(1) for m in CARGO_TARGET.finditer(cmd)]
+    # Ścieżka modułu, nie nazwa celu: po scaleniu cel jest jeden dla wszystkich kryteriów.
+    hits += ["src-tauri/tests/it/%s.rs" % m.group(2) for m in CARGO_TARGET.finditer(cmd)]
     # RÓŻNE ścieżki, nie wystąpienia. Komenda, która wymienia ten sam plik dwa razy
     # (`test -f x.test.ts && vitest run x.test.ts`), uruchamia JEDNĄ specyfikację —
     # licząc wystąpienia bramka meldowała "names 2 spec paths" i "run by AC-1, AC-1".
