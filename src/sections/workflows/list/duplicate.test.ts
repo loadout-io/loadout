@@ -54,6 +54,26 @@ function disk(seed: readonly WorkflowEntry[]): Disk {
   };
 }
 
+/* Krok agenta wypełniony do PEŁNEGO schematu pliku (2026-08-17: `list/store.ts` przestał
+ * trzymać własne, węższe lustro i bierze typy z `src/state/workflows.ts`). Lista czyta z kroku
+ * cztery pola, ale na dysku leży całość — a ten plik sprawdza właśnie KOPIOWANIE tej całości,
+ * więc fikstura z wycinkiem mierzyłaby mniej, niż mówi. */
+function step(id: string, name: string, agent: string): Step {
+  return {
+    kind: 'agent',
+    id,
+    name,
+    agent,
+    overrides: {},
+    copies: 1,
+    instructions: '',
+    skills: 'all',
+    folder: { use: 'project' },
+    handover: 'notes',
+    at: { x: 0, y: 0 },
+  };
+}
+
 /** Dwa kroki i jedna strzałka — tyle, ile trzeba, żeby płytka kopia miała co współdzielić. */
 function deepResearch(): WorkflowEntry {
   return {
@@ -64,8 +84,8 @@ function deepResearch(): WorkflowEntry {
       name: 'Deep research',
       description: 'Six readers on six questions, then one writer folds them into one document.',
       steps: [
-        { kind: 'agent', id: 's_read', name: 'Read the sources', agent: 'scout' },
-        { kind: 'agent', id: 's_write', name: 'Write it up', agent: 'scribe' },
+        step('s_read', 'Read the sources', 'scout'),
+        step('s_write', 'Write it up', 'scribe'),
       ],
       links: [{ from: 's_read', to: 's_write' }],
     },

@@ -21,8 +21,28 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { WorkflowFile } from './store';
+import type { Step, WorkflowFile } from './store';
 import { WorkflowTile } from './tile';
+
+/* Krok agenta wypełniony do PEŁNEGO schematu pliku (2026-08-17: `list/store.ts` przestał
+ * trzymać własne, węższe lustro i bierze typy z `src/state/workflows.ts`). Kafelek czyta
+ * z kroku rodzaj i identyfikator agenta; reszta pól jest tu po to, żeby fikstura była plikiem,
+ * a nie tym wycinkiem pliku, który akurat czyta ten jeden komponent. */
+function step(id: string, name: string, agent: string): Step {
+  return {
+    kind: 'agent',
+    id,
+    name,
+    agent,
+    overrides: {},
+    copies: 1,
+    instructions: '',
+    skills: 'all',
+    folder: { use: 'project' },
+    handover: 'notes',
+    at: { x: 0, y: 0 },
+  };
+}
 
 /** Cztery kroki, dwa różne identyfikatory agentów: `4 steps`, `2 agents`. */
 function research(): WorkflowFile {
@@ -32,10 +52,10 @@ function research(): WorkflowFile {
     name: 'Deep research',
     description: 'Six readers on six questions, then one writer folds them into one document.',
     steps: [
-      { kind: 'agent', id: 's_read', name: 'Read the sources', agent: 'scout' },
-      { kind: 'agent', id: 's_read_more', name: 'Read the code', agent: 'scout' },
-      { kind: 'agent', id: 's_write', name: 'Write it up', agent: 'scribe' },
-      { kind: 'agent', id: 's_polish', name: 'Tidy the wording', agent: 'scribe' },
+      step('s_read', 'Read the sources', 'scout'),
+      step('s_read_more', 'Read the code', 'scout'),
+      step('s_write', 'Write it up', 'scribe'),
+      step('s_polish', 'Tidy the wording', 'scribe'),
     ],
     links: [{ from: 's_read', to: 's_write' }],
   };
@@ -48,7 +68,7 @@ function quickFix(): WorkflowFile {
     id: 'wf-just-fix-it',
     name: 'Just fix it',
     description: 'One agent, no plan, no review. For a typo or a one-line change.',
-    steps: [{ kind: 'agent', id: 's_fix', name: 'Fix it', agent: 'forge' }],
+    steps: [step('s_fix', 'Fix it', 'forge')],
     links: [],
   };
 }
@@ -59,7 +79,7 @@ function undescribed(): WorkflowFile {
     format: 1,
     id: 'wf-nameless',
     name: 'Ship a feature',
-    steps: [{ kind: 'agent', id: 's_fix', name: 'Fix it', agent: 'forge' }],
+    steps: [step('s_fix', 'Fix it', 'forge')],
     links: [],
   };
 }

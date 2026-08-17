@@ -19,7 +19,7 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { WorkflowEntry, WorkflowFile, WorkflowListIo } from './store';
+import type { Step, WorkflowEntry, WorkflowFile, WorkflowListIo } from './store';
 import { createWorkflowListStore } from './store';
 import { WorkflowList } from './workflow-list';
 
@@ -60,6 +60,26 @@ function disk(seed: readonly WorkflowEntry[]): Disk {
   };
 }
 
+/* Krok agenta wypełniony do PEŁNEGO schematu pliku (2026-08-17: `list/store.ts` przestał
+ * trzymać własne, węższe lustro i bierze typy z `src/state/workflows.ts`). Lista czyta z kroku
+ * cztery pola, ale na dysku leży całość — fikstura ma wyglądać jak plik, a nie jak wycinek,
+ * który akurat czyta ten ekran. */
+function step(id: string, name: string, agent: string): Step {
+  return {
+    kind: 'agent',
+    id,
+    name,
+    agent,
+    overrides: {},
+    copies: 1,
+    instructions: '',
+    skills: 'all',
+    folder: { use: 'project' },
+    handover: 'notes',
+    at: { x: 0, y: 0 },
+  };
+}
+
 function entry(path: string, id: string, name: string): WorkflowEntry {
   return {
     path,
@@ -67,7 +87,7 @@ function entry(path: string, id: string, name: string): WorkflowEntry {
       format: 1,
       id,
       name,
-      steps: [{ kind: 'agent', id: 's_one', name: 'Do the thing', agent: 'forge' }],
+      steps: [step('s_one', 'Do the thing', 'forge')],
       links: [],
     },
   };

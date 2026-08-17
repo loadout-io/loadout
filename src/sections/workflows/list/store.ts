@@ -5,12 +5,16 @@
  * co leży na dysku, pod jakimi nazwami plików, i nic ponadto. Zlanie ich w jeden magazyn
  * daje stan, w którym „lista" i „otwarty plik" mówią co innego o tej samej nazwie.
  *
- * DLACZEGO TYPY SĄ TUTAJ, A NIE IMPORTOWANE. `src/state/workflows.ts` należy do T-13 i na
- * dzień pisania tego pliku jeszcze nie istnieje. Import nieistniejącego modułu daje
- * „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a) — kryterium
- * nie sprawdziłoby wtedy niczego. Poniżej jest więc WĘŻSZE lustro schematu z T3 §3.1:
- * dokładnie te pola, które lista czyta. Kiedy T-13 wyląduje, te dwa opisy schematu mają
- * zostać zredukowane do jednego — to jest zadanie dla człowieka, nie cicha decyzja tego pliku.
+ * SKĄD BIERZE SIĘ SCHEMAT PLIKU — domknięte 2026-08-17 (T-29, runda naprawcza).
+ * Stało tu WĘŻSZE lustro schematu z T3 §3.1 — własne `Step` i `WorkflowFile`, dokładnie te
+ * pola, które czyta lista. Powód był mechaniczny i wygasł: w dniu pisania tego pliku
+ * `src/state/workflows.ts` (T-13) jeszcze nie istniał, a import nieistniejącego modułu daje
+ * „Cannot find module", czyli czerwień, której bramka nie liczy (AGENTS.md §2a). T-13
+ * wylądowało, więc lustro nie jest już koniecznością, tylko drugim opisem tego samego pliku
+ * na dysku (niezmiennik 13) — a drugi opis kłamie w tę jedną stronę, która boli: plik zapisany
+ * przez ten magazyn przechodził kontrolę typów jako kompletny, mając kroki bez połowy pól.
+ * Schemat jest więc IMPORTOWANY z jednego miejsca i stamtąd reeksportowany, żeby ten moduł
+ * dalej był całym kontraktem listy dla tego, kto go czyta.
  *
  * Wszystko, co ten magazyn robi poza swoją głową, idzie przez wstrzyknięte `WorkflowListIo`
  * (niezmiennik 23: polityka w jednym rdzeniu, adapter po pięć linii). Test wstrzykuje atrapę
@@ -18,35 +22,16 @@
  */
 import { create } from 'zustand';
 
-/** Strzałka „po tym kroku". Bez portów, bez danych, bez warunku [T3 §3.1]. */
-export interface Link {
-  from: string;
-  to: string;
-}
+import type { WorkflowFile } from '../../../state/workflows';
 
 /**
- * Krok tak, jak widzi go LISTA — tyle, ile trzeba, żeby policzyć kroki i różnych agentów.
- * Pełny schemat kroku (instrukcje, `copies`, `at`, folder, handover) mieszka na płótnie [T3 §3.1].
+ * Schemat pliku workflow — jeden, ten sam, którym posługuje się otwarty dokument.
+ *
+ * Reeksport, a nie deklaracja: kto czyta listę, ma dostać jej kontrakt z jednego importu,
+ * ale opis pliku ma DOKŁADNIE jedno miejsce zamieszkania (`src/state/workflows.ts`, lustro
+ * `src-tauri/src/workflow/mod.rs`).
  */
-export interface Step {
-  kind: 'agent' | 'checkpoint';
-  id: string;
-  name: string;
-  /** Identyfikator zapisanego agenta. Krok rodzaju `checkpoint` go nie ma. */
-  agent?: string;
-}
-
-/** Plik workflow. `format` rośnie tylko przy zmianie łamiącej [T3 §3.1, §8.4]. */
-export interface WorkflowFile {
-  format: 1;
-  /** Stabilny i NIGDY nie zmienia się przy zmianie nazwy [T3 §3.1]. */
-  id: string;
-  /** To, co wpisał człowiek. Nazwa pliku powstaje z niej raz i potem żyje osobno. */
-  name: string;
-  description?: string;
-  steps: Step[];
-  links: Link[];
-}
+export type { Link, Step, WorkflowFile } from '../../../state/workflows';
 
 /** Jedna pozycja listy: plik i jego nazwa na dysku. */
 export interface WorkflowEntry {
