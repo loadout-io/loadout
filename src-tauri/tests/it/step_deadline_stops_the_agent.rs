@@ -115,7 +115,7 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
     // spało — a jedyną rzeczą, która wtedy śpi, jest limit kroku. Bez limitu ten bieg nigdy by
     // nie wrócił, i to jest cała treść tego testu.
     let report = tokio::time::timeout(
-        Duration::from_secs(60 * 60),
+        Duration::from_hours(1),
         run_workflow_inner(&deps, &request, sink),
     )
     .await
@@ -123,7 +123,7 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
         "the run never came back. A wedged agent with no deadline hangs until a human presses \
          Stop -- which is the financial bug this criterion exists for"
     })??;
-    let _ = tokio::time::timeout(Duration::from_secs(60), pump).await;
+    let _ = tokio::time::timeout(Duration::from_mins(1), pump).await;
 
     // (a) Krok padł, a nie „udał się" i nie „został anulowany".
     assert_eq!(

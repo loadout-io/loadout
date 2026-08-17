@@ -79,7 +79,7 @@ const GRACE: Duration = Duration::from_secs(1);
 /// 122 osobne binaria, więc powłoka kroku nie dostawała procesora w oknie, które wyglądało
 /// na aż nadto szerokie. Krótki limit na barierze przygotowania nie chroni przed niczym —
 /// zamienia tylko obciążenie maszyny w oskarżenie poprawnego kodu.
-const START_LIMIT: Duration = Duration::from_secs(120);
+const START_LIMIT: Duration = Duration::from_mins(2);
 
 /// Odstęp między pytaniami sondy. Krótki, bo mierzymy KOLEJNOŚĆ dwóch chwil, a nie czas.
 const PROBE_POLL: Duration = Duration::from_millis(2);

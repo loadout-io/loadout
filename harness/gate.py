@@ -318,7 +318,12 @@ SPEC_PATH = re.compile(r"(?:^|[\s=\"'])((?:[\w.@-]+/)+[\w.@-]+\.(?:test|spec)\.[
 # Filtr BEZ `::` odrzucamy świadomie: `cargo test --test it store` łapie także
 # `store_pragmas` i `storage_x`, czyli jedno kryterium sądziłoby cudze testy. Dwukropki
 # czynią z tego prefiks ścieżki modułu, a nie podciąg nazwy.
-CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)\s+([\w]+)::")
+# DWA KSZTAŁTY, bo są dwa rodzaje celów — i ta dwoistość jest zamierzona, nie przejściowa:
+#   `--test it <moduł>::`  — moduł scalonego celu; tożsamością jest MODUŁ,
+#   `--test <cel>`         — własny cel; tożsamością jest sam cel.
+# Osobny cel dostaje test, który mierzy albo zmienia stan CAŁEGO PROCESU (deskryptory, hak
+# paniki, `env::set_var`) — w scalonym binarium mierzyłby 285 cudzych testów naraz.
+CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)(?:\s+([\w]+)::)?")
 
 
 # ---------------------------------------------------------------- kontrakt zadania
@@ -356,7 +361,13 @@ def spec_tokens(cmd):
     """Ścieżki specyfikacji, jakie ta komenda uruchamia. Cel cargo liczy się jako ścieżka."""
     hits = [m.group(1) for m in SPEC_PATH.finditer(cmd)]
     # Ścieżka modułu, nie nazwa celu: po scaleniu cel jest jeden dla wszystkich kryteriów.
-    hits += ["src-tauri/tests/it/%s.rs" % m.group(2) for m in CARGO_TARGET.finditer(cmd)]
+    for m in CARGO_TARGET.finditer(cmd):
+        target, module = m.group(1), m.group(2)
+        hits.append(
+            "src-tauri/tests/it/%s.rs" % module
+            if module
+            else "src-tauri/tests/%s.rs" % target
+        )
     # RÓŻNE ścieżki, nie wystąpienia. Komenda, która wymienia ten sam plik dwa razy
     # (`test -f x.test.ts && vitest run x.test.ts`), uruchamia JEDNĄ specyfikację —
     # licząc wystąpienia bramka meldowała "names 2 spec paths" i "run by AC-1, AC-1".

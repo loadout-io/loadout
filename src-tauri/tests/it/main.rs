@@ -16,6 +16,14 @@
 //! `cargo test --test it store_pragmas::` robi dokładnie to, co robiło
 //! `cargo test --test store_pragmas`. Filtrowanie po nazwie testu działa jak dotąd.
 //!
+//! CO ZOSTAJE OSOBNYM CELEM, i to nie jest wyjątek dla wygody. Test, który mierzy albo zmienia
+//! stan CAŁEGO PROCESU, w scalonym binarium mierzy 285 cudzych testów naraz. Zmierzone
+//! 2026-08-17, przy pierwszym lądowaniu po scaleniu: `shell_logging` liczy otwarte deskryptory
+//! przez `/dev/fd` i instaluje globalny hak paniki — dostał 96 zamiast swojej liczby, bo
+//! sąsiedzi otwierali pliki w tej samej chwili. `supervisor_env_hygiene` woła `env::set_var`,
+//! co jest zmienną globalną procesu. Oba mieszkają więc w `tests/` jako własne cele; koszt to
+//! dwa linkowania zamiast stu dwudziestu dwóch.
+//!
 //! DOPISANIE NOWEGO PLIKU wymaga jednej linii `mod` niżej. To jest cena tej zmiany i jest
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
@@ -92,7 +100,6 @@ mod runcmd_end_to_end;
 mod runcmd_parallel;
 mod runcmd_refuses_invalid;
 mod runcmd_snapshot;
-mod shell_logging;
 mod skeleton_group_death;
 mod skeleton_two_real_agents;
 mod skills_ingest_clean;
@@ -126,7 +133,6 @@ mod stream_tee_survives_db_delete;
 mod stream_thinking_slot;
 mod stream_unknown_events;
 mod supervisor_drop_guard;
-mod supervisor_env_hygiene;
 mod supervisor_group_death;
 mod supervisor_pipe_eof;
 mod supervisor_term_then_kill;
