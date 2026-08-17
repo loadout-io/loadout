@@ -192,10 +192,24 @@ pub fn run() {
 
     let outcome = tauri::Builder::default()
         .setup(move |app| {
-            /* Baza otwiera się TUTAJ, w `setup`, a nie przed `Builder`: `Store::open` wymaga
-             * żywego runtime'u tokio (`Handle::try_current`), a ten powstaje dopiero razem
-             * z aplikacją Tauri. Otwarcie wcześniej daje `StoreError::NoRuntime`. */
-            let store = store::Store::open(&home.join("loadout.db"))?;
+            /* Baza otwiera się WEWNĄTRZ runtime'u Tauri, i to nie jest ozdoba składniowa.
+             *
+             * ZMIERZONE 2026-08-17: `setup` biegnie na wątku głównym i **nie jest** kontekstem
+             * tokio, więc `Store::open` — który pyta `Handle::try_current()` — nie znajduje
+             * runtime'u i cała aplikacja pada zdaniem „a store can only be opened from inside
+             * a tokio runtime". Panika w `setup` jest nieodwracalna (`panic in a function that
+             * cannot unwind`), więc okno nie zdąża się nawet pokazać.
+             *
+             * Poprzednia wersja tego komentarza twierdziła, że `setup` runtime MA. Twierdzenie
+             * było nieprawdziwe i kosztowało jedno uruchomienie; zostaje zapisane, bo następny
+             * czytelnik zada dokładnie to samo pytanie.
+             *
+             * `block_on` z runtime'u Tauri, a nie własny `Runtime::new()`: druga pętla zdarzeń
+             * w tym procesie to drugi zestaw wątków i drugie miejsce, w którym żyją zadania
+             * biegu. */
+            let store = tauri::async_runtime::block_on(async {
+                store::Store::open(&home.join("loadout.db"))
+            })?;
 
             /* Fabryka sterowników. Funkcja, nie mapa — trzeci vendor ma wejść bez wydania
              * Loadouta (`commands/mod.rs`). Dla Codeksa oddajemy sterownik, który ODMAWIA

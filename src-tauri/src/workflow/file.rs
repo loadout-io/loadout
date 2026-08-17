@@ -204,9 +204,28 @@ pub fn save(workflow: &WorkflowFile, path: &Path) -> Result<(), SaveError> {
     // Implementacja, która zapisuje i waliduje po zapisie, niszczy poprzednią wersję pliku
     // dokładnie w tym momencie, w którym sprawdzenie miało jej bronić. Ostrzeżenie nie blokuje
     // niczego — gdyby blokowało, jeden niepodłączony krok zamykałby plik na klucz.
-    if let Some(refusal) = check(workflow)
-        .into_iter()
-        .find(|note| note.level == Level::Problem)
+    //
+    // PUSTY PLIK JEST WYJĄTKIEM I TO NIE JEST ZŁAGODZENIE REGUŁY.
+    //
+    // `check` daje dla zera kroków `Level::Problem`, a jego własny test podaje powód: „there is
+    // nothing to run, so Run may not be offered" — ta odmowa broni URUCHOMIENIA. Komentarz obok
+    // niej mówi wprost: „pusty workflow to nie jest błąd danych, tylko stan, w którym użytkownik
+    // jeszcze nic nie zrobił".
+    //
+    // Zmierzone 2026-08-17 na prawdziwym oknie: bez tego wyjątku „＋ Create" nie umiał utworzyć
+    // NICZEGO. Nowy workflow z definicji nie ma kroków, więc zapis padał zawsze — a ekran połykał
+    // odmowę (`void actions.create(…)`), więc przycisk wyglądał na zepsuty i nie mówił dlaczego.
+    // Katalog `~/.loadout/workflows/` powstawał (robi go `create_dir_all` piętro wyżej) i zostawał
+    // pusty. Nie dało się przejść do edytora, bo nie było czego otworzyć.
+    //
+    // Zero kroków nie może niczego uszkodzić: nie ma cyklu, nie ma wyspy, nie ma nadpisanego
+    // pola. Niezmiennik 12 („odmowa pada przy zapisie, nie w trakcie biegu") mówi o plikach
+    // NIEPOPRAWNYCH, a szkic bez kroków jest poprawny — po prostu niegotowy. Run dalej go nie
+    // przyjmie, bo `check` woła się drugi raz przed biegiem (dowodzi tego T-15).
+    if !workflow.steps.is_empty()
+        && let Some(refusal) = check(workflow)
+            .into_iter()
+            .find(|note| note.level == Level::Problem)
     {
         return Err(SaveError::Refused(refusal));
     }
