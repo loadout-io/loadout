@@ -147,8 +147,24 @@ def unowned_test_files():
                 continue
             # `cargo test --test <nazwa>` -> src-tauri/tests/<nazwa>.rs (konwencja cargo,
             # nie nasza: integracyjny target o tej nazwie MUSI tam lezec).
+            #
+            # 2026-08-18 -- WYJATEK `it`, i nie jest kosmetyczny. Po scaleniu 122 celow
+            # testowych w jeden (`tests/it/`) kryteria wolaja `--test it <modul>::`, gdzie
+            # `it` jest CELEM, a `<modul>::` filtrem po nazwie. Stare odwzorowanie brало
+            # pierwszy token po `--test` i zadalo `src-tauri/tests/it.rs` -- sciezki, ktora
+            # nie istnieje (prawdziwa to `tests/it/main.rs` plus `tests/it/<modul>.rs`).
+            # Skutek: straznik oddawal 1 na trunku dla KAZDEGO zadania z kryterium rustowym
+            # (T-02, T-03, ...), a poniewaz pas `guards` w scripts/ci.sh biegnie tylko przy
+            # diffie tykajacym harness/, checks/ albo verify.sh, nikt tego nie zobaczyl.
             m = re.search(r"--test\s+(\S+)", line)
-            want = f"src-tauri/tests/{m.group(1)}.rs" if m else None
+            want = None
+            if m:
+                target = m.group(1)
+                if target == "it":
+                    mod = re.search(r"\s([A-Za-z_][A-Za-z0-9_]*)::", line[m.end():])
+                    want = f"src-tauri/tests/it/{mod.group(1)}.rs" if mod else None
+                else:
+                    want = f"src-tauri/tests/{target}.rs"
             if want is None:
                 # vitest i inne: sciezka stoi w linii wprost
                 m2 = re.search(r"(\S+\.(?:ts|tsx|rs))(?:\s|$)", line)
