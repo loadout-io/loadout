@@ -44,6 +44,25 @@ import { closeEverything, openApp } from '../harness';
 
 const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
 
+/**
+ * Trasa spaceru: te same pięć sekcji, a na końcu POWRÓT na `run`.
+ *
+ * Zmierzone 2026-08-17. Powłoka otwiera się na `run` (`FIRST_SECTION`,
+ * `src/ui/shell/section-store.ts`), więc pierwsze kliknięcie spaceru ląduje na sekcji, która
+ * JUŻ jest w dokumencie — i przechodzi identycznie dla działającego przełącznika, jak i dla
+ * takiego, który nie robi nic. Spośród pięciu sekcji `run` była jedyną, do której spacer nigdy
+ * nie WCHODZIŁ z innej: dokładnie to przejście, o które pyta ten test, było dla niej pominięte.
+ *
+ * Dopisane NA KOŃCU, nigdy przestawione na początek. Start od `workflows` przeniósłby tę samą
+ * lukę na sekcję, która stałaby się pierwsza — potrzebne jest przejście DO `run` z innej
+ * aktywnej sekcji, a nie inne miejsce na tę samą dziurę.
+ *
+ * Powtórzony identyfikator nie jest tu kosztem: pięć zimnych montaży wyżej ma po jednym
+ * werdykcie na sekcję, a ten test pyta o przełączanie w jednej karcie, gdzie drugie wejście
+ * na tę samą sekcję jest osobnym faktem (i tym, który psuje się najciszej).
+ */
+const WALK = [...EXPECTED, 'run'] as const;
+
 /** Ile czekamy na przemontowanie sekcji. Wymiana jednego poddrzewa Reacta, nie sieć. */
 const MOUNTS = 4_000;
 
@@ -116,7 +135,7 @@ describe('every section mounts its own screen, clicked through in a browser', ()
     try {
       const page = app.page;
 
-      for (const id of EXPECTED) {
+      for (const id of WALK) {
         const entry = sectionEntry(id);
         await page.click('[data-section-switch="' + id + '"]');
 
