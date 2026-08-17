@@ -116,6 +116,7 @@ use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, Policy, RunSpec};
+use crate::engine::limits::Limiter;
 use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
@@ -177,16 +178,65 @@ const SUMMARY_LIMIT: usize = 240;
 /// rozsypuje się na pojedyncze `sink.send(line)`. Sklejanie z powrotem robi pompa, po drugiej
 /// stronie kolejki — i to jest jedyne miejsce, w którym wolno je zrobić, bo tam je zmierzono.
 ///
-/// **`deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia**, także po odmowie: to na to
-/// zdanie czeka [`stop_run_inner`], żeby móc wrócić z dowodem (niezmiennik 6). Settle wpisany
-/// tylko na szczęśliwej ścieżce zawiesza Stop przy każdym biegu, który padł, i wygląda to jak
-/// zawieszony agent, nie jak brakująca linijka. Dlatego cały bieg siedzi w [`the_whole_run`]:
-/// stamtąd wychodzi się kilkoma `?`, a stąd — dokładnie jednym `return`.
+/// **Pulę miejsc robi sobie sam, na ten jeden bieg** — i to jest wada, nie wygoda: dwie karty
+/// dają wtedy `2 × limit` agentów naraz, a semafor ma być jeden na całą aplikację
+/// (`docs/ARCHITECTURE.md` §6a, niezmiennik 11). Wołający, który ma pulę wspólną, wchodzi
+/// [`run_workflow_with_slots`] i podaje ją argumentem; ta droga zostaje dla tego, kto żadnej
+/// nie ma i chce bieg sam dla siebie.
 pub async fn run_workflow_inner(
     deps: &RunDeps<'_>,
     request: &RunRequest,
     lines: LineSink,
 ) -> Result<RunReport, RunError> {
+    run_workflow_with_slots(deps, request, lines, Limiter::new(request.how_many_at_once)).await
+}
+
+/// Ten sam bieg, tylko miejsca bierze ze **wspólnej puli aplikacji** — jednej dla wszystkich
+/// kart, nie jednej na bieg.
+///
+/// [`run_workflow_inner`] podaje `how_many_at_once` prosto do semafora, który planista zakłada
+/// per bieg, więc dwie karty dają `2 × limit` agentów naraz. Przy ~583 MB na agenta
+/// `[T7 ryzyko 3, V]` to jest zamrożony laptop, a nie szybsza praca — dlatego semafor ma być
+/// jeden na całą aplikację (`docs/ARCHITECTURE.md` §6a, niezmiennik 11).
+///
+/// **Pula wchodzi argumentem.** Bieg, który robi ją sobie sam, jest nie do odróżnienia od biegu,
+/// który robi po jednej na kartę — to samo zdanie stoi przy [`crate::workspace::Registry::new`],
+/// i to jest dokładnie ten uchwyt, który tamten rejestr wydaje przez `Registry::slots`. Klon
+/// [`Limiter`] dzieli tę samą pulę i to jest cały mechanizm (`engine::limits`).
+///
+/// 2026-08-17 — naturalnym miejscem tego uchwytu jest pole w [`RunDeps`], żeby wszystkie drzwi
+/// do biegu miały je bez wyjątku. `commands/mod.rs` nie należy do T-31 (`AGENTS.md` §7), więc
+/// pula wchodzi tędy, a nie tamtędy; scalenie obu dróg w jedną należy do tego, kto będzie mógł
+/// dotknąć [`RunDeps`].
+///
+/// **`deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia**, także po odmowie: to na to
+/// zdanie czeka [`stop_run_inner`], żeby móc wrócić z dowodem (niezmiennik 6). Settle wpisany
+/// tylko na szczęśliwej ścieżce zawiesza Stop przy każdym biegu, który padł, i wygląda to jak
+/// zawieszony agent, nie jak brakująca linijka. Dlatego cały bieg siedzi w [`the_whole_run`]:
+/// stamtąd wychodzi się kilkoma `?`, a stąd — dokładnie jednym `return`.
+///
+/// # SZKIELET (2026-08-17, faza kontraktu)
+///
+/// **`slots` nie steruje jeszcze niczym.** Miejsca bierze dalej semafor planisty, zakładany per
+/// bieg, więc ta funkcja robi dziś dokładnie to, co robiła przedtem — z parametrem, którego nie
+/// czyta. To jest ta „świadomie zła wartość", której wymaga faza kontraktu (`engine/mod.rs`,
+/// nagłówek): kryterium ma paść **na braku ZACHOWANIA**, a nie na braku symbolu, bo test, który
+/// się nie kompiluje, niczego nie uruchomił (`AGENTS.md` §2a p. 5).
+///
+/// `todo!()` tu nie stoi z dwóch mierzonych powodów: `run_workflow_inner` woła tę funkcję (bez
+/// tego jest to `pub fn` bez produkcyjnego wołającego, czyli dokładnie ta zgnilizna, którą
+/// odmawia `checks/quick-wired.sh`), a przez `run_workflow_inner` idą wszystkie biegi T-15 —
+/// panika w tym ciele zabrałaby sześć cudzych kryteriów przy commicie kontraktowym.
+///
+/// Parametr nie ma jak zgnić po cichu: dopóki nie steruje pulą, AC-1 mierzy **cztery** kroki
+/// naraz przy puli dwóch i jest czerwone.
+pub async fn run_workflow_with_slots(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    slots: Limiter,
+) -> Result<RunReport, RunError> {
+    let _ = slots;
     let report = the_whole_run(deps, request, lines).await;
     deps.control.settle();
     report
