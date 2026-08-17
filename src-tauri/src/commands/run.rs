@@ -106,7 +106,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -384,6 +384,18 @@ enum Job {
     },
 }
 
+/// Czym skończyło się czekanie na turę. Trzy stany, bo `Option` umiał powiedzieć dwa, a od
+/// T-35 „skończył się czas" jest czymś innym niż „człowiek nacisnął Stop": pierwsze jest
+/// porażką kroku z nazwanym powodem, drugie jest anulowaniem i nie jest niczyją winą.
+enum Ended {
+    /// Tura wróciła sama — z wynikiem albo z błędem sterownika.
+    Turn(anyhow::Result<crate::engine::drivers::Outcome>),
+    /// Człowiek nacisnął Stop.
+    Stopped,
+    /// Krok przekroczył swój limit czasu.
+    Overdue,
+}
+
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
@@ -403,6 +415,14 @@ struct AgentJob {
     system_append: Option<String>,
     /// Co agentowi wolno zrobić z plikami — po ludzku, w trzech wariantach.
     policy: Policy,
+    /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
+    ///
+    /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
+    /// ANI JEDNEGO CZYTELNIKA: zaklinowany agent wisiał do ręcznego Stopu. Według taksonomii
+    /// tego repo to błąd **finansowy**, nie higieniczny — proces pali limit u dostawcy tak
+    /// długo, jak długo nikt nie patrzy. `ARCHITECTURE.md` §11 zapowiada właśnie tę ochronę
+    /// zamiast `--max-turns`.
+    give_up_after: Duration,
     /// Migawka konfiguracji **efektywnej**, zamrożona w chwili startu [T4 §5.2 p. 3].
     effective: Value,
 }
@@ -562,6 +582,10 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
         system_append: some_text(&effective.instructions),
         policy: policy_of(effective.file_access),
+        // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
+        // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
+        // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
+        give_up_after: Duration::from_secs(u64::from(effective.give_up_after_minutes.max(1)) * 60),
         effective: serde_json::to_value(&effective)?,
     })
 }
@@ -1130,26 +1154,72 @@ impl Live {
             });
         }
 
+        // Limit czasu kroku. Zegar rusza TUTAJ, przy czekaniu na turę, a nie przy planowaniu:
+        // krok czekający w kolejce na wolne miejsce nie zużywa niczyich pieniędzy, więc liczenie
+        // mu tego czasu ubijałoby kroki tym częściej, im dłuższa kolejka.
+        let limit = match &self.plan.steps[id].job {
+            Job::Agent(job) => job.give_up_after,
+            // Kafelek kontrolny czeka na CZŁOWIEKA i nie pali niczyich pieniędzy, więc limit
+            // agenta go nie dotyczy. Ubijanie pytania po dwudziestu minutach byłoby karą za to,
+            // że ktoś poszedł na obiad.
+            Job::Ask { .. } => Duration::MAX,
+        };
+
         let finished = {
             let waiting = handle.wait();
             tokio::pin!(waiting);
+            let overdue = tokio::time::sleep(limit);
+            tokio::pin!(overdue);
             tokio::select! {
                 // `biased`, bo tura, która właśnie się skończyła, ma pierwszeństwo przed Stopem
                 // wpadającym w tej samej chwili: zabijanie czegoś, co już zeszło, zamieniłoby
-                // udany krok w anulowany zależnie od tego, który poll wypadł pierwszy.
+                // udany krok w anulowany zależnie od tego, który poll wypadł pierwszy. Z tego
+                // samego powodu limit czasu stoi PO Stopie: człowiek, który nacisnął Stop
+                // w ostatniej sekundzie, ma dostać „anulowane", a nie „przekroczony limit".
                 biased;
-                done = &mut waiting => Some(done),
-                () = cancel.cancelled() => None,
+                done = &mut waiting => Ended::Turn(done),
+                () = cancel.cancelled() => Ended::Stopped,
+                () = &mut overdue => Ended::Overdue,
             }
             // Pożyczka `handle` kończy się razem z tym blokiem — dopiero po nim wolno zawołać
             // `cancel()` albo `close()` na tym samym uchwycie.
         };
 
         match finished {
+            // PRZEKROCZONY LIMIT IDZIE TĄ SAMĄ DROGĄ, CO STOP: przez sterownik.
+            //
+            // `tokio::time::timeout` owinięty wokół `handle.wait()` wygląda identycznie i jest
+            // o trzy linijki tańszy — i jest błędem, przed którym stoi niezmiennik 10: anuluje
+            // ZADANIE RUSTA, a proces systemowy zostaje żywy i pali limit u dostawcy do końca
+            // świata. Dlatego tutaj wołamy `cancel()` i pytamy o DOWÓD zejścia grupy.
+            Ended::Overdue => {
+                let proof = handle.cancel().await;
+                let unproven = matches!(proof, GroupProof::Alive);
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    // Powód nazywa LIMIT CZASU, nie „coś poszło nie tak". Człowiek ma stąd
+                    // wiedzieć, że to była nasza decyzja i którą liczbę zmienić, żeby jej nie
+                    // było — inaczej szuka wady w agencie, którego nikt nie zepsuł.
+                    step.error = Some(if unproven {
+                        format!(
+                            "This step ran longer than its {} minute limit, and Loadout could \
+                             not make sure the agent stopped, so it may still be running.",
+                            limit.as_secs() / 60
+                        )
+                    } else {
+                        format!(
+                            "This step ran longer than its {} minute limit, so Loadout stopped \
+                             it. Give it more minutes in the agent, or split the work.",
+                            limit.as_secs() / 60
+                        )
+                    });
+                });
+                StepReport::Failed
+            }
             // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
             // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
             // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
-            None => {
+            Ended::Stopped => {
                 let proof = handle.cancel().await;
                 if let GroupProof::Alive = proof {
                     // Dopóki nie ma dowodu, traktujemy jako żywe (niezmiennik 6). To jest zdanie
@@ -1164,11 +1234,11 @@ impl Live {
                 }
                 StepReport::Cancelled
             }
-            Some(Err(error)) => {
+            Ended::Turn(Err(error)) => {
                 self.update(|book| book.steps[id].error = Some(error.to_string()));
                 StepReport::Failed
             }
-            Some(Ok(turn)) => {
+            Ended::Turn(Ok(turn)) => {
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
                 // w nieskończoność, więc krok bez tego zostawia żywy proces [T1 §2, §4.6].
                 let code = handle.close().await.ok().flatten();
