@@ -120,6 +120,7 @@ use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
+use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::workflow::check::{Level, check};
 use crate::workflow::file::load;
@@ -160,24 +161,33 @@ const EVENT_QUEUE: usize = 256;
 /// Ile znaków przepisujemy z ostatniej wypowiedzi agenta do jednolinijkowego podsumowania kroku.
 const SUMMARY_LIMIT: usize = 240;
 
-/// Uruchamia workflow z pliku i wypuszcza jego linie na `lines`.
+/// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
 /// Odmowa przed pierwszym utworzonym katalogiem; szczegóły w nagłówku modułu.
 ///
-/// `lines` jest zwykłym `tokio::sync::mpsc` i to jest granica zadania: sklejacz 16 ms / 2000
-/// linii i adaptacja na `Channel` należą do T-07 (`docs/ARCHITECTURE.md` §4). Tutaj paczka
-/// wychodzi wtedy, kiedy powstanie.
+/// `lines` jest [`LineSink`] z T-07, a nie `mpsc::Sender<Vec<Line>>`, i to jest cała zmiana
+/// tego zadania. Sklejanie mieszka **po stronie pompy**, bo tam je zmierzono (16 ms / 2000
+/// linii, [T8 §5.3]), a `LineSink::send` nigdy nie blokuje producenta: na pełnej kolejce linia
+/// jest porzucana i **policzona**. Kanał, który każe czekać pętli czytającej stdout agenta,
+/// kasuje dokładnie tę własność, dla której ta pompa powstała.
+///
+/// [`LineSink`] jedzie stąd w dół jedną drogą i nigdzie się nie rozgałęzia:
+/// [`the_whole_run`] → [`Live::lines`] → [`forward`] → [`send_batch`], gdzie paczka kuratora
+/// rozsypuje się na pojedyncze `sink.send(line)`. Sklejanie z powrotem robi pompa, po drugiej
+/// stronie kolejki — i to jest jedyne miejsce, w którym wolno je zrobić, bo tam je zmierzono.
+///
+/// **`deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia**, także po odmowie: to na to
+/// zdanie czeka [`stop_run_inner`], żeby móc wrócić z dowodem (niezmiennik 6). Settle wpisany
+/// tylko na szczęśliwej ścieżce zawiesza Stop przy każdym biegu, który padł, i wygląda to jak
+/// zawieszony agent, nie jak brakująca linijka. Dlatego cały bieg siedzi w [`the_whole_run`]:
+/// stamtąd wychodzi się kilkoma `?`, a stąd — dokładnie jednym `return`.
 pub async fn run_workflow_inner(
     deps: &RunDeps<'_>,
     request: &RunRequest,
-    lines: mpsc::Sender<Vec<Line>>,
+    lines: LineSink,
 ) -> Result<RunReport, RunError> {
     let report = the_whole_run(deps, request, lines).await;
-    // Dowód schodzi TUTAJ, na każdej drodze wyjścia, także po odmowie. Po powrocie z tej funkcji
-    // nic po tym biegu nie żyje — a `stop_run_inner` czeka na to zdanie, żeby móc wrócić
-    // (niezmiennik 6). Settle wpisany tylko na szczęśliwej ścieżce zawiesza Stop przy każdym
-    // biegu, który padł, i wygląda to jak zawieszony agent, nie jak brakująca linijka.
     deps.control.settle();
     report
 }
@@ -187,7 +197,7 @@ pub async fn run_workflow_inner(
 async fn the_whole_run(
     deps: &RunDeps<'_>,
     request: &RunRequest,
-    lines: mpsc::Sender<Vec<Line>>,
+    lines: LineSink,
 ) -> Result<RunReport, RunError> {
     let plan = plan_run(deps, request)?;
     // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
@@ -614,8 +624,10 @@ struct Live {
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
     book: Mutex<Book>,
-    /// Linie na ekran. Paczka wychodzi wtedy, kiedy powstanie — sklejacz jest w T-07.
-    lines: mpsc::Sender<Vec<Line>>,
+    /// Linie na ekran, **po jednej**. Sklejaniem zajmuje się pompa z T-07 i tylko ona: bieg,
+    /// który skleja u siebie, ustala okno, którego nikt nie zmierzył, i odbiera pompie jedyną
+    /// rzecz, dla której ta pompa powstała.
+    lines: LineSink,
     /// Stop i Continue sięgają tędy do środka biegu.
     control: RunControl,
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
@@ -680,7 +692,7 @@ enum RunState {
 
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
-    fn new(plan: Plan, lines: mpsc::Sender<Vec<Line>>, control: RunControl) -> Self {
+    fn new(plan: Plan, lines: LineSink, control: RunControl) -> Self {
         let steps = plan
             .steps
             .iter()
@@ -986,7 +998,7 @@ impl Live {
         // z drugiej strony okna.
         self.control.pause();
         self.update(|book| book.status = RunState::Paused);
-        self.ask(id, question).await;
+        self.ask(id, question);
 
         if listening.wait().await {
             self.control.resume();
@@ -1007,7 +1019,12 @@ impl Live {
     /// dokłada planista (`engine::line`, nagłówek [`Line`]). Bez tego wiersza pole `question`
     /// nie miałoby ani jednego czytelnika, a pytanie, którego nie widać, zatrzymuje bieg bez
     /// powodu widocznego dla człowieka.
-    async fn ask(&self, id: StepId, question: Option<&str>) {
+    ///
+    /// 2026-08-17 — synchroniczna, odkąd wiersz jedzie do pompy przez `try_send`. `async fn`
+    /// bez ani jednego `await` w środku jest czerwony u `clippy::unused_async`, a udawane
+    /// czekanie przed pytaniem byłoby jedynym miejscem w tym pliku, w którym punkt kontrolny
+    /// zależy od tego, czy okno nadąża.
+    fn ask(&self, id: StepId, question: Option<&str>) {
         let step = &self.plan.steps[id];
         let line = Line::Asked {
             agent: step.name.clone(),
@@ -1018,7 +1035,7 @@ impl Live {
             // „odpowiedz własnymi słowami", nie „pytanie bez treści".
             options: Vec::new(),
         };
-        send_batch(&self.lines, vec![line]).await;
+        send_batch(&self.lines, vec![line]);
     }
 
     /// Zamyka księgę stanami **od planisty**.
@@ -1057,7 +1074,7 @@ impl Live {
 /// drugą implementacją kuracji, czyli tą, o której nikt by nie pamiętał.
 async fn forward(
     mut inbox: mpsc::Receiver<AgentEvent>,
-    lines: mpsc::Sender<Vec<Line>>,
+    lines: LineSink,
     agent: String,
     began: Instant,
 ) {
@@ -1070,21 +1087,29 @@ async fn forward(
             event: &event,
             tool: None,
         };
-        send_batch(&lines, curator.observe(seen)).await;
+        send_batch(&lines, curator.observe(seen));
     }
     // Ostatnia grupa sklejania wyszłaby inaczej nigdy, a użytkownik zobaczyłby o wiersz mniej,
     // niż się wydarzyło — najgorszy rodzaj zgubienia, bo cichy.
-    send_batch(&lines, curator.flush()).await;
+    send_batch(&lines, curator.flush());
 }
 
-/// Paczka linii na kanał. Pusta nie jedzie: pusta paczka jest tikiem, nie zdarzeniem.
-async fn send_batch(lines: &mpsc::Sender<Vec<Line>>, batch: Vec<Line>) {
-    if batch.is_empty() {
-        return;
+/// Wiersze kuratora oddane pompie, **po jednym**.
+///
+/// 2026-08-17 — funkcja jest synchroniczna i to jest cała treść tego szwu. `LineSink::send`
+/// robi `try_send`: albo ma miejsce, albo nie ma, i nigdy nie każe czekać. Wersja z `await`
+/// zatrzymywałaby na pełnej kolejce pętlę czytającą stdout agenta — czyli spowalniała agenta
+/// dlatego, że okno nie nadąża, co jest dokładnie tą własnością, którą pompa miała skasować
+/// (`ipc::LineSink`, [T7 §4.1]).
+///
+/// Odpowiedzi `Sent` nie liczymy tutaj i to też jest wybór: bilans przyjętych i porzuconych
+/// wraca JEDNĄ drogą, z `PumpStats` po drugiej stronie [`crate::ipc::spawn_pump`]
+/// (niezmiennik 13). Drugi licznik w biegu byłby drugą liczbą o tym samym zdarzeniu — a przy
+/// dwóch zawsze czyta się tę, która akurat kłamie.
+fn send_batch(lines: &LineSink, batch: Vec<Line>) {
+    for line in batch {
+        let _ = lines.send(line);
     }
-    // Odbiorca ma prawo zniknąć — okno mogło się zamknąć w trakcie biegu. To nie jest błąd
-    // biegu i nie ma prawa go zatrzymać.
-    let _ = lines.send(batch).await;
 }
 
 /// Jedna linia podsumowania kroku dla szyny agentów. `None`, kiedy agent nic nie powiedział.

@@ -32,13 +32,14 @@ use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
     SessionRef, Tokens,
 };
-use loadout_lib::engine::line::Line;
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::read_agent_file;
 use loadout_lib::store::Store;
 use loadout_lib::workflow::check::{Level, check};
 use loadout_lib::workflow::file::load;
+use tauri::ipc::Channel;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -203,12 +204,23 @@ async fn four_loose_steps(how_many_at_once: usize) -> Result<Measured, Box<dyn E
         how_many_at_once,
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<Line>>(64);
-    let drain = async move { while rx.recv().await.is_some() {} };
+    // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się
+    // pompa po drugiej stronie, więc kanał zakłada się tutaj tak, jak zakłada go komenda:
+    // `line_channel` + `spawn_pump`. Zmieniła się wyłącznie konstrukcja kanału przy wywołaniu;
+    // ani jedna asercja tego kryterium nie wie o tej zmianie, bo nakładanie się kroków w czasie
+    // mierzy obserwator sterownika, a nie wiersze. Kanał do okna jest czarną dziurą z tego
+    // samego powodu.
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    // Pompa kończy się sama, kiedy zniknie ostatni nadajnik — a ten ginie razem z powrotem
+    // biegu. Czekanie na nią zostaje w `join!` dokładnie tam, gdzie stało osuszanie kanału.
+    let drain = async move {
+        let _ = pump.await;
+    };
 
     let began = Instant::now();
     let (ran, ()) = tokio::time::timeout(PATIENCE, async {
-        tokio::join!(run_workflow_inner(&deps, &request, tx), drain)
+        tokio::join!(run_workflow_inner(&deps, &request, sink), drain)
     })
     .await
     .map_err(|_| format!("the run did not finish within {PATIENCE:?}"))?;

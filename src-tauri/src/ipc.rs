@@ -47,17 +47,21 @@
 //! zatrzyma. Trzeciego wyjścia nie ma i nie ma go z powodu, który widać w [`PumpStats`] —
 //! bilans jest kompletny dopiero w chwili końca, więc pompy nie wolno zabijać z zewnątrz.
 
-use std::sync::Arc;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
+use tauri::State;
 use tauri::ipc::{Channel, Invoke};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
 
-use crate::commands;
+use crate::commands::{self, Drivers, RunControl, RunDeps, RunRequest};
 use crate::engine::line::Line;
 use crate::library::agents::Agent;
+use crate::store::Store;
 use crate::workflow::WorkflowFile;
 use crate::workflow::check::Note;
 
@@ -322,6 +326,195 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
     })
 }
 
+// ── STAN, KTÓRY SKORUPY ROZPAKOWUJĄ ────────────────────────────────────────────────────────
+
+/// Katalog biblioteki, w którym leżą pliki workflow. Ta sama nazwa, co
+/// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
+const WORKFLOWS_DIR: &str = "workflows";
+
+/// Ci współpracownicy biegu, którzy **przeżywają jedno wywołanie komendy**.
+///
+/// To jest dokładnie ta połowa [`RunDeps`], której nie da się przysłać z okna: baza otwarta raz
+/// na aplikację, katalogi rozstrzygnięte przy starcie i uchwyt do żywego biegu — po nim Stop
+/// sięga do środka czegoś, co uruchomiła **inna** komenda. Reszta (który plik, ile naraz)
+/// przyjeżdża argumentem, bo to są odpowiedzi człowieka udzielone w tej chwili, a nie stan
+/// aplikacji.
+///
+/// Struktura stoi w tym pliku, bo `State<'_, _>` jest pojęciem Tauri, a `ipc.rs` jest jedynym
+/// miejscem, które ma prawo je znać (`docs/ARCHITECTURE.md` §3). Warstwa `commands/` jej nie
+/// widzi i widzieć nie ma: `*_inner` biorą `&RunDeps`, który da się zbudować w teście
+/// jednostkowym w sześciu wierszach (niezmiennik 23).
+///
+/// 2026-08-17 — **nikt jej jeszcze nie oddaje builderowi.** `.manage(…)` mieszka
+/// w `src-tauri/src/lib.rs`, a tego pliku T-30 nie posiada; tam też mieszka fabryka
+/// [`Drivers`], której to drzewo dziś nie ma nigdzie poza testami. Dopóki człowiek nie dopisze
+/// tych dwóch rzeczy, trzy komendy biegu są zarejestrowane i odmawiają wywołania zdaniem
+/// „state not managed" — głośno, w chwili pierwszego kliknięcia. Zgłoszone zamiast
+/// rozstrzygnięte tutaj (AGENTS.md §7).
+pub struct AppState {
+    /// `~/.loadout` — biblioteka użytkownika.
+    home: PathBuf,
+    /// Katalog projektu, pod którym powstaje `.loadout/runs/<ts>__<id>/`.
+    project: PathBuf,
+    /// Indeks biegów. Otwarty raz: drugie połączenie **zapisujące** to zakleszczenie, nie
+    /// „czasem wolniej" (niezmiennik 2).
+    store: Store,
+    /// Fabryka sterowników vendorów.
+    drivers: Drivers,
+    /// Uchwyt do biegu, który idzie **teraz**.
+    ///
+    /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie tego
+    /// zamka mieści się w jednym wyrażeniu, które kopiuje uchwyt i oddaje zamek, a dopiero
+    /// kopia jedzie w bieg. Zamek trzymany przez bieg zawiesiłby Stop na czas biegu — czyli
+    /// dokładnie wtedy, kiedy Stop jest do czegokolwiek potrzebny.
+    ///
+    /// Wymieniany na świeży przy KAŻDYM starcie ([`AppState::begin_run`]), bo anulowanie jest
+    /// monotoniczne: uchwyt raz zatrzymany zostaje zatrzymany, więc drugi bieg na tym samym
+    /// uchwycie startuje jako już anulowany i kończy się w milisekundach z samymi `cancelled`.
+    /// To wygląda jak szybki bieg, nie jak awaria (niezmiennik 7).
+    live: Mutex<RunControl>,
+}
+
+impl fmt::Debug for AppState {
+    /// Ręcznie, bo [`Drivers`] jest domknięciem i `Debug` nie ma dla niego nic do powiedzenia —
+    /// ten sam powód, co przy `RunDeps`.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppState")
+            .field("home", &self.home)
+            .field("project", &self.project)
+            .field("drivers", &"<factory>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AppState {
+    /// Składa stan aplikacji z rzeczy, które umie zbudować wyłącznie powłoka okna.
+    ///
+    /// Uchwyt biegu zaczyna życie **już zeszły**. Bez tego Stop naciśnięty, zanim cokolwiek
+    /// ruszyło, czekałby na dowód od biegu, którego nigdy nie było — a `stop_run_inner` mówi to
+    /// wprost: uchwyt biegu, którego nikt nie uruchomił, nie ma czego dowieść. Przycisk
+    /// wieszający okno jest gorszy od przycisku, który nic nie robi.
+    #[must_use]
+    pub fn new(home: PathBuf, project: PathBuf, store: Store, drivers: Drivers) -> Self {
+        let idle = RunControl::new();
+        idle.settle();
+        Self {
+            home,
+            project,
+            store,
+            drivers,
+            live: Mutex::new(idle),
+        }
+    }
+
+    /// Współpracownicy biegu, który idzie teraz.
+    ///
+    /// Zamek zatruty odplatamy zamiast panikować: `panic!` w agentowym runtime zabiera cały
+    /// bieg (AGENTS.md §4), a uchwyt po panice jednego kroku jest dalej poprawnym uchwytem.
+    fn deps(&self) -> RunDeps<'_> {
+        RunDeps {
+            home: self.home.as_path(),
+            project: self.project.as_path(),
+            store: &self.store,
+            drivers: Arc::clone(&self.drivers),
+            // Zamek wzięty i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await`
+            // wołającego nie ma ani jednej instrukcji (niezmiennik 8).
+            control: self
+                .live
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+        }
+    }
+
+    /// Świeży uchwyt biegu i współpracownicy, którzy go używają.
+    ///
+    /// Powód wymiany stoi przy [`AppState::live`]. Wymiana jest tutaj, a nie w skorupie, bo
+    /// skorupa z tym `let` w środku byłaby o jedną decyzję dalej od „rozpakuj i zawołaj".
+    fn begin_run(&self) -> RunDeps<'_> {
+        {
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            *live = RunControl::new();
+        }
+        self.deps()
+    }
+
+    /// Nazwa pliku z okna → żądanie biegu.
+    ///
+    /// Zapora i jej cena stoją przy [`run_request`]; tutaj zostaje samo podanie biblioteki,
+    /// bo katalog domowy jest jedyną rzeczą, którą stan do tej decyzji wnosi.
+    fn request(&self, file_name: &str, how_many_at_once: usize) -> Result<RunRequest, String> {
+        run_request(self.home.as_path(), file_name, how_many_at_once)
+    }
+}
+
+/// Nazwa pliku z okna → żądanie biegu, liczone wyłącznie z katalogu biblioteki.
+///
+/// 2026-08-17 — ta zapora jest **drugą kopią** `commands::workflows::in_library`, i jest
+/// tu świadomie, z nazwaną ceną. Nazwa przychodzi z webviewa, więc jest wejściem, któremu
+/// nie ufamy (T3 §5.2): `Path::join("../../.ssh/config")` wychodzi poza bibliotekę bez
+/// jednego ostrzeżenia, a `join("/etc/x")` odrzuca cały prefiks i zwraca `/etc/x` — czyli
+/// Start uruchamiałby plik wskazany przez okno. Tamta funkcja jest prywatna,
+/// a `src-tauri/src/commands/workflows.rs` nie należy do T-30, więc jedno `pub` w cudzym
+/// pliku jest pytaniem do człowieka, nie cichym dopiskiem (AGENTS.md §7). Reguła
+/// przepisana w adapterze jest tym, przed czym stoi niezmiennik 23 — dlatego stoi tu ten
+/// akapit, a nie sama zapora: dopóki obie kopie żyją, zmiana jednej ma być czerwona
+/// u człowieka, który to czyta.
+///
+/// 2026-08-17 — wolna funkcja, a nie ciało metody, z jednego powodu: [`AppState`] niesie
+/// [`Store`] i [`Drivers`], więc test tej zapory przez metodę musiałby otworzyć bazę
+/// i zbudować fabrykę sterowników, żeby sprawdzić `join` na napisie. Zapora, której koszt
+/// sprawdzenia jest wyższy niż koszt napisania, jest zaporą niesprawdzoną — a ta jest jedyną
+/// rzeczą między webviewem a `Command::new` w cudzym katalogu.
+fn run_request(
+    home: &Path,
+    file_name: &str,
+    how_many_at_once: usize,
+) -> Result<RunRequest, String> {
+    if Path::new(file_name)
+        .file_name()
+        .is_none_or(|name| name != file_name)
+    {
+        return Err(format!(
+            "{file_name} is not the name of a file in the workflow folder"
+        ));
+    }
+    Ok(RunRequest {
+        workflow: home.join(WORKFLOWS_DIR).join(file_name),
+        how_many_at_once,
+    })
+}
+
+/// Startuje pompę tego biegu i oddaje nadajnik, którym bieg pisze linie.
+///
+/// Kanał przychodzi **argumentem komendy** i nie ma jak przyjść inaczej: `Channel<Vec<Line>>`
+/// jest uchwytem do konkretnego webviewa, więc zakłada go okno i podaje przy `invoke`
+/// (`docs/ARCHITECTURE.md` §3, §4). Rust nie ma z czego go zbudować sam.
+///
+/// `JoinHandle` pompy nie ginie po cichu. Bilans przyjętych i porzuconych jest kompletny
+/// dopiero w chwili, w której pompa kończy się sama ([`PumpStats`]), a jedynym czytelnikiem,
+/// jakiego dziś ma, jest dziennik — porzucona linia, o której nikt nigdy nie napisał ani słowa,
+/// jest nie do odróżnienia od linii, której agent nie powiedział (niezmiennik 13).
+fn pump_into(channel: Channel<Vec<Line>>) -> LineSink {
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, channel);
+    // `drop` na `JoinHandle` **nie przerywa** zadania — odbiera tylko prawo czekania na nie.
+    // Odczepiamy z rozmysłem: komenda biegu wraca, kiedy wróci bieg, a bilans przychodzi chwilę
+    // później, bo pompa dowiaduje się o końcu producenta dopiero po jego zniknięciu.
+    drop(tokio::spawn(async move {
+        if let Ok(stats) = pump.await {
+            tracing::info!(
+                delivered = stats.delivered,
+                dropped = stats.dropped,
+                max_buffered = stats.max_buffered,
+                "the pump for this run closed its books"
+            );
+        }
+    }));
+    sink
+}
+
 // ── SKORUPY KOMEND ─────────────────────────────────────────────────────────────────────────
 //
 // Każda z nich robi dwie rzeczy i ani jednej więcej: rozpakowuje to, co komenda ma dostać
@@ -441,6 +634,56 @@ pub fn stop_using_note(
     commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
 }
 
+// ── TRZY KOMENDY BIEGU ─────────────────────────────────────────────────────────────────────
+//
+// Te trzy wyglądają inaczej niż czternaście wyżej i różnica jest jedna: biegu nie da się
+// obsłużyć bez stanu. Stop musi sięgnąć do środka biegu, który zaczęła INNA komenda, więc
+// uchwyt do niego musi gdzieś mieszkać między wywołaniami — i to jest cały powód, dla którego
+// [`AppState`] w ogóle istnieje. Reszta pliku bierze katalog z `crate::loadout_dir()` i niczego
+// nie pamięta.
+//
+// 2026-08-17 — WSZYSTKIE TRZY ODDAJĄ `()` I TO JEST DŁUG, NIE WYBÓR. `RunReport` niesie
+// identyfikator biegu i jego katalog, ale nie jest `Serialize`, a `src-tauri/src/commands/mod.rs`
+// nie należy do T-30 — jedno `#[derive(Serialize)]` w cudzym pliku jest pytaniem do człowieka
+// (AGENTS.md §7). Do tego czasu okno dowiaduje się o wyniku biegu z indeksu, który powstaje
+// z katalogu biegu (niezmiennik 4), a nie z odpowiedzi tej komendy.
+
+/// Start: uruchamia workflow z biblioteki i oddaje jego linie oknu.
+#[tauri::command]
+pub async fn run_workflow(
+    state: State<'_, AppState>,
+    file_name: &str,
+    how_many_at_once: usize,
+    lines: Channel<Vec<Line>>,
+) -> Result<(), String> {
+    let request = state.request(file_name, how_many_at_once)?;
+    commands::run::run_workflow_inner(&state.begin_run(), &request, pump_into(lines))
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Stop: zatrzymuje bieg i wraca **dopiero z dowodem**, że nic po nim nie żyje (niezmiennik 6).
+///
+/// [`crate::commands::Outcome`] przepada tutaj i nic się z nim nie traci: `stop_run_inner` ma
+/// jedną odpowiedź — `Cancelled` — bo bieg z anulowanym tokenem melduje anulowanie także wtedy,
+/// gdy ostatni krok zdążył się udać.
+#[tauri::command]
+pub async fn stop_run(state: State<'_, AppState>) -> Result<(), String> {
+    commands::run::stop_run_inner(&state.deps())
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// „Dalej": puszcza bieg zza punktu kontrolnego.
+#[tauri::command]
+pub async fn continue_run(state: State<'_, AppState>) -> Result<(), String> {
+    commands::run::continue_run_inner(&state.deps())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Jedyna lista komend, którą dostaje okno.
 ///
 /// Jedna, bo builder pamięta **ostatnią**, którą mu podano: druga podmieniłaby pierwszą po
@@ -454,6 +697,7 @@ pub fn stop_using_note(
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         check_workflow,
+        continue_run,
         delete_agent,
         delete_workflow,
         install_skill,
@@ -463,8 +707,79 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         new_id,
         put_note_to_use,
         review_skill,
+        run_workflow,
         save_agent,
         save_workflow,
+        stop_run,
         stop_using_note
     ]
+}
+
+/// Zapora [`run_request`] pod obstrzałem — jedyna rzecz w tym pliku, którą da się sprawdzić
+/// bez okna, i jedyna, której żadne kryterium T-30 nie dotyka.
+///
+/// 2026-08-17 — powstało dlatego, że druga opinia zmierzyła to wprost: AC-1 chodzi po pompie,
+/// AC-2 po liście komend, AC-4 po stronie okna, a `run_request` nie jest wołane w żadnym
+/// z nich. Zapora bez testu jest zaporą do chwili pierwszego refaktoru — a ta stoi między
+/// napisem z webviewa a plikiem, który bieg naprawdę odpali.
+///
+/// Trzy przypadki, bo dwa nie wystarczą. Sama odmowa przechodzi na zaporze, która odrzuca
+/// **wszystko** — a taka jest nie do odróżnienia od zepsutego Startu dopóki ktoś nie kliknie.
+/// Dlatego trzeci przypadek jest dodatni i porównuje **całą** ścieżkę, nie sam fakt `Ok`:
+/// zapora przepuszczająca nazwę i gubiąca katalog biblioteki jest tym samym błędem, tylko
+/// w drugą stronę.
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{WORKFLOWS_DIR, run_request};
+
+    /// Katalog biblioteki. Nie istnieje na dysku i istnieć nie musi: `run_request` decyduje
+    /// o napisie, nie o pliku — sprawdzanie obecności pliku należy do biegu, który go wczyta.
+    const HOME: &str = "/loadout-home";
+
+    /// To, co z żądania da się porównać: gdzie bieg pójdzie i ile ma robić naraz.
+    ///
+    /// [`super::RunRequest`] nie jest `PartialEq`, a jego plik nie należy do T-30 — więc
+    /// zamiast `derive` w cudzym pliku stoi tu rozbiór na dwa pola, które ta zapora ustawia.
+    fn requested(file_name: &str, how_many_at_once: usize) -> Result<(PathBuf, usize), String> {
+        run_request(Path::new(HOME), file_name, how_many_at_once)
+            .map(|request| (request.workflow, request.how_many_at_once))
+    }
+
+    /// `..` w nazwie wychodzi poza bibliotekę i `Path::join` nie powie o tym ani słowa.
+    #[test]
+    fn a_name_that_climbs_out_of_the_library_is_refused() {
+        assert!(
+            requested("../../.ssh/config", 1).is_err(),
+            "a name carrying `..` reaches outside the workflow folder and must be refused"
+        );
+    }
+
+    /// Ścieżka bezwzględna jest gorsza od `..`: `join` **odrzuca cały prefiks**, więc bez
+    /// zapory bieg odpaliłby dokładnie ten plik, który wskazało okno.
+    #[test]
+    fn an_absolute_path_is_refused() {
+        assert!(
+            requested("/etc/x", 1).is_err(),
+            "an absolute name replaces the library prefix entirely and must be refused"
+        );
+    }
+
+    /// Kontrola dodatnia: zwykła nazwa przechodzi i ląduje **w** bibliotece.
+    ///
+    /// Bez tego przypadku obie odmowy wyżej świecą na zielono także dla zapory, która nie
+    /// przepuszcza niczego — czyli dla Startu, który nigdy nic nie uruchamia.
+    #[test]
+    fn a_plain_file_name_passes_and_stays_inside_the_library() {
+        assert_eq!(
+            requested("nightly-review.yaml", 3),
+            Ok((
+                Path::new(HOME)
+                    .join(WORKFLOWS_DIR)
+                    .join("nightly-review.yaml"),
+                3
+            ))
+        );
+    }
 }
