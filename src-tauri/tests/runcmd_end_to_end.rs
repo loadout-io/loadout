@@ -289,7 +289,6 @@ fn the_run_left_a_directory(report: &RunReport, project: &Path) -> Result<(), Bo
     Ok(())
 }
 
-
 /// Etykiety wszystkich linii — do komunikatu, kiedy asercja padnie.
 fn labels(seen: &[(Instant, Json)]) -> Vec<&str> {
     seen.iter().map(|(_, line)| agent_of(line)).collect()
