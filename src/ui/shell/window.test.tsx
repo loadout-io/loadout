@@ -151,6 +151,36 @@ describe('the window opens with clean chrome and the dev address is the one we s
     ).toBe(declared);
   });
 
+  /* 2026-08-17 — ZMIERZONE NA PRAWDZIWYM OKNIE, nie wydedukowane.
+   *
+   * Test wyżej pilnuje PORTU i jego komunikat obiecuje, że dzięki temu `npm run app` nie da
+   * białego okna. Białe okno ma jednak drugą przyczynę, której tamta asercja nie widziała:
+   * `host: false` w `vite.config.ts` każe Node'owi związać „localhost", a to na macOS
+   * rozwiązuje się do `::1` — czyli serwer stoi WYŁĄCZNIE na IPv6 (`lsof`: `[::1]:5273`).
+   * WKWebView pyta o IPv4, połączenie nie dochodzi, okno jest białe i NIGDZIE nie ma błędu:
+   * strona nigdy nie zaczęła się ładować, więc nie ma czego zalogować.
+   *
+   * Dlatego adres jest tu sprawdzany W CAŁOŚCI, a nie po samym porcie: dwa pliki muszą mówić
+   * o tym samym gnieździe, a nie o tej samej liczbie. */
+  it('binds the dev server to an address the webview can actually reach', () => {
+    const host = /(?:^|\s)host:\s*'([^']+)'/m.exec(viteText)?.[1];
+    expect(
+      host,
+      "vite.config.ts has to bind an explicit loopback literal. `host: false` binds " +
+        '"localhost", which resolves to ::1 on macOS, so the server ends up IPv6-only and the ' +
+        'webview asking for IPv4 gets a blank window with no error anywhere',
+    ).toBe('127.0.0.1');
+
+    const devUrl = at(conf, 'build', 'devUrl');
+    const urlHost = typeof devUrl === 'string' ? /\/\/([^:/]+)/.exec(devUrl)?.[1] : undefined;
+    expect(
+      urlHost,
+      'build.devUrl has to name the SAME host vite binds, and name it literally: `localhost` ' +
+        'there re-introduces name resolution between two files that already agree. devUrl says: ' +
+        shown(devUrl),
+    ).toBe(host);
+  });
+
   it('draws one nav and one drag area, and spends nothing from the chrome ceiling', () => {
     expect(
       occurrences(markup, 'data-tauri-drag-region'),

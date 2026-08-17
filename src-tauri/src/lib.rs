@@ -13,6 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::Manager;
+
+use crate::commands::Drivers;
+use crate::engine::drivers::absent::Absent;
+use crate::engine::drivers::claude::ClaudeDriver;
+use crate::engine::drivers::AgentDriver;
+use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
@@ -140,6 +146,24 @@ fn loadout_dir() -> PathBuf {
     )
 }
 
+/// Katalog, w którym pracują agenci tego okna.
+///
+/// ZMIERZONE 2026-08-17, przy pierwszym prawdziwym uruchomieniu. Pierwsza wersja brała po prostu
+/// `current_dir()` i to jest ZŁE w obu przypadkach, w jakich ta aplikacja startuje: `npm run
+/// tauri dev` uruchamia cargo z `src-tauri/`, więc bieg zakładałby `src-tauri/.loadout/runs/`
+/// — w środku drzewa źródeł, gdzie `.gitignore` tego NIE łapie (ignoruje `/.loadout/runs/*`,
+/// czyli tylko w korzeniu). Artefakty biegu wjechałyby do repozytorium i zapaliłyby
+/// `quick-scope` przy pierwszym zadaniu. Kliknięcie w ikonę daje z kolei `/`.
+///
+/// Katalog projektu ma WYBIERAĆ CZŁOWIEK — to są karty workspace'ów z T-08 i `ARCHITECTURE.md`
+/// §6a („karty odpowiadają na »w którym folderze«"). Ta droga nie dochodzi jeszcze do stanu,
+/// więc do tego czasu: `LOADOUT_PROJECT`, jeśli ktoś go poda, a w przeciwnym razie DEDYKOWANY
+/// katalog w bibliotece. Dedykowany, a nie `current_dir()`, bo cicha praca w nieoczekiwanym
+/// miejscu jest gorsza niż praca w miejscu nudnym, ale nazwanym w dzienniku.
+fn project_dir(home: &Path) -> PathBuf {
+    std::env::var_os("LOADOUT_PROJECT").map_or_else(|| home.join("workspace"), PathBuf::from)
+}
+
 /// Otwiera okno. Cała powłoka po stronie Rusta zaczyna się tutaj i tutaj kończy.
 pub fn run() {
     match install_logging(&loadout_dir()) {
@@ -148,7 +172,50 @@ pub fn run() {
     }
     install_panic_hook();
 
+    /* STAN APLIKACJI — podłączony 2026-08-17, po tym jak okno stanęło i nie umiało nic zapisać.
+     *
+     * `ipc.rs` sam to zgłosił w komentarzu: „nikt jej jeszcze nie oddaje builderowi… trzy komendy
+     * biegu są zarejestrowane i odmawiają wywołania zdaniem »state not managed«". Pisarz T-30 nie
+     * mógł tego dopisać — `lib.rs` nie był w jego OWNS — i słusznie zostawił to człowiekowi
+     * (AGENTS.md §7). To jest ta decyzja.
+     *
+     * Bez `.manage(…)` KAŻDA komenda biorąca `State<'_, AppState>` pada pod palcem, a
+     * `generate_handler!` tego nie widzi: rejestracja i stan to dwie różne rzeczy, więc lista
+     * komend jest kompletna i aplikacja i tak nie działa.
+     *
+     * PROJEKT to katalog, w którym stoi proces. Karty workspace'ów (T-08) wybiorą go per karta,
+     * ale ta droga jeszcze nie dochodzi do stanu; do tego czasu jedno okno pracuje nad jednym
+     * katalogiem i mówi o tym wprost w dzienniku, zamiast po cichu pisać nie tam, gdzie myślisz. */
+    let home = loadout_dir();
+    let project = project_dir(&home);
+    tracing::info!("library at {}, project at {}", home.display(), project.display());
+
     let outcome = tauri::Builder::default()
+        .setup(move |app| {
+            /* Baza otwiera się TUTAJ, w `setup`, a nie przed `Builder`: `Store::open` wymaga
+             * żywego runtime'u tokio (`Handle::try_current`), a ten powstaje dopiero razem
+             * z aplikacją Tauri. Otwarcie wcześniej daje `StoreError::NoRuntime`. */
+            let store = store::Store::open(&home.join("loadout.db"))?;
+
+            /* Fabryka sterowników. Funkcja, nie mapa — trzeci vendor ma wejść bez wydania
+             * Loadouta (`commands/mod.rs`). Dla Codeksa oddajemy sterownik, który ODMAWIA
+             * z nazwą zadania: `ClaudeDriver` w tym miejscu wykonałby krok i skłamał o tym,
+             * kto go wykonał, a `SessionRef::vendor` zapisuje tę odpowiedź do bazy. */
+            let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
+            let codex: Arc<dyn AgentDriver> = Arc::new(Absent::new("codex", "T-10"));
+            let drivers: Drivers = Arc::new(move |vendor| match vendor {
+                Vendor::ClaudeCode => Arc::clone(&claude),
+                Vendor::Codex => Arc::clone(&codex),
+            });
+
+            app.manage(ipc::AppState::new(
+                home.clone(),
+                project.clone(),
+                store,
+                drivers,
+            ));
+            Ok(())
+        })
         // Pierwsza w kolejności i tak ma zostać: druga kopia Loadouta to drugi zestaw agentów
         // pod tymi samymi plikami. Zamiast otwierać kolejne okno, podnosimy to, które jest.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

@@ -27,6 +27,9 @@ use uuid::Uuid;
 
 use super::supervisor::{GroupId, GroupProof};
 
+/// Vendor, ktory jest w typie, ale nie ma jeszcze adaptera. Fabryka `Drivers` jest funkcja
+/// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
+pub mod absent;
 pub mod claude;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
