@@ -169,21 +169,57 @@ fn both_steps_spoke(seen: &[(Instant, Json)]) {
 }
 
 /// (b) **Pierwsza** linia `build` jest późniejsza niż **ostatnia** linia `plan`.
+///
+/// 2026-08-17 — asercja pytała o to przez PORÓWNANIE CHWIL i była przez to niestabilna: 5 na 10
+/// biegów czerwonych na bezczynnej maszynie, przy poprawnym produkcie. Zmierzone sondą (cztery
+/// linie, znaczniki względem pierwszej):
+///   zielony:  Planner@0 Planner@46 Builder@63  Builder@109   — cztery paczki
+///   czerwony: Planner@0 Planner@46 Builder@46  Builder@108   — trzy paczki
+/// Strzałka jest respektowana w obu: `Planner` stoi w sekwencji przed `Builder`em. Różnica jest
+/// taka, że w czerwonym przejście między krokami zmieściło się w JEDNYM oknie sklejania pompy
+/// (`ipc::FLUSH`, 16 ms), więc obie linie dostały tę samą chwilę odbioru paczki.
+///
+/// Znacznik czasu ma więc rozdzielczość okna pompy i pytanie „czy A jest po B" jest dla dwóch
+/// linii z jednej paczki nierozstrzygalne — nie dlatego, że coś jest zepsute, tylko dlatego,
+/// że sklejanie to właśnie znaczy. Stary komunikat sam nazywał prawdziwą wadę („every line was
+/// sent in one batch once the run was over"), ale asercja jej nie mierzyła: myliła „te dwie
+/// linie dzielą paczkę" z „CAŁY bieg przyjechał jedną paczką".
+///
+/// Rozdzielone na dwie asercje, obie mocniejsze od tamtej jednej:
+///   b1 — KOLEJNOŚĆ, po pozycji w sekwencji, której pompa nie gubi ani w jednej paczce,
+///   b2 — POSTĘPOWOŚĆ, po liczbie paczek: bieg, który przyjechał jedną, zostawił ekran pusty
+///        do końca i to jest dokładnie ta wada, o której mówił stary komunikat.
 fn the_arrow_means_after(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error>> {
-    let last_plan = at_of(seen, PLAN)
-        .last()
+    let last_plan = seen
+        .iter()
+        .rposition(|(_, line)| agent_of(line) == PLAN)
         .ok_or("\"Planner\" never reached the channel, so there is nothing to order against")?;
-    let first_build = at_of(seen, BUILD)
-        .next()
+    let first_build = seen
+        .iter()
+        .position(|(_, line)| agent_of(line) == BUILD)
         .ok_or("\"Builder\" never reached the channel, so there is nothing to order")?;
 
     assert!(
         first_build > last_plan,
-        "an arrow means \"after\", not \"beside\": the first \"{BUILD}\" line arrived {:?} \
-         before the last \"{PLAN}\" line. Equal instants mean every line was sent in one batch \
-         once the run was over — a run whose screen stays empty until it ends is the same defect \
-         (docs/ARCHITECTURE.md §4)",
-        last_plan.saturating_duration_since(first_build)
+        "an arrow means \"after\", not \"beside\": the first \"{BUILD}\" line came out at \
+         position {first_build}, before the last \"{PLAN}\" line at position {last_plan}. \
+         The channel carried {:?} (docs/ARCHITECTURE.md §4)",
+        labels(seen)
+    );
+
+    let batches = {
+        let mut stamps: Vec<Instant> = seen.iter().map(|(at, _)| *at).collect();
+        stamps.dedup();
+        stamps.len()
+    };
+    assert!(
+        batches > 1,
+        "the whole run arrived as ONE batch of {} line(s): the window stayed empty until the run \
+         was over, which is the defect docs/ARCHITECTURE.md §4 forbids. The pump flushes every \
+         {:?}, so a run of two {TURN:?} steps has to cross at least one flush boundary — unless \
+         nothing was handed over until the end.",
+        seen.len(),
+        loadout_lib::ipc::FLUSH
     );
     Ok(())
 }
@@ -253,12 +289,6 @@ fn the_run_left_a_directory(report: &RunReport, project: &Path) -> Result<(), Bo
     Ok(())
 }
 
-/// Chwile odbioru linii tego kroku, w kolejności.
-fn at_of<'a>(seen: &'a [(Instant, Json)], step: &'a str) -> impl Iterator<Item = Instant> + 'a {
-    seen.iter()
-        .filter(move |(_, line)| agent_of(line) == step)
-        .map(|(at, _)| *at)
-}
 
 /// Etykiety wszystkich linii — do komunikatu, kiedy asercja padnie.
 fn labels(seen: &[(Instant, Json)]) -> Vec<&str> {
