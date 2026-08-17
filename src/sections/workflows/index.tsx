@@ -19,17 +19,19 @@
  * hydratuje serwerowego HTML-a, więc powód, dla którego React chce tam stanu początkowego
  * (zgodność hydratacji), tutaj nie istnieje.
  *
- * DLACZEGO ADAPTER DYSKU STOI W TYM PLIKU. Sekcja powinna mieć swój `io.ts` — tak jak mają
- * `sections/skills/` i `sections/memory/` — ale `src/sections/agents/io.ts` i jego odpowiednik
- * dla workflow nie istnieją, a warstwę IPC dowozi dopiero T-07 (zmierzone 2026-08-16: zero
- * `#[tauri::command]` w całym drzewie Rusta, brak `src/ipc.ts`). Adapter jest więc TUTAJ,
- * w jednym miejscu, i jest jedyną rzeczą w tej sekcji, która wie, że dysku jeszcze nie ma.
- * Przeniesienie go do `list/io.ts` jest zapisem poza blokiem OWNS tego zadania (AGENTS.md §7)
- * — zgłoszone człowiekowi razem z tym plikiem.
+ * SKĄD BIERZE SIĘ ADAPTER DYSKU — poprawione 2026-08-17 (T-29, runda naprawcza).
+ * Stała tu wcześniej zaślepka `DISK`, której `newId` i `write` ODMAWIAŁY zawsze: powstała
+ * 2026-08-16, kiedy w drzewie Rusta nie było ani jednego `#[tauri::command]`, a `io.ts` tej
+ * sekcji jeszcze nie istniał. Dziś istnieje i wywołuje prawdziwe komendy (`list_workflows`,
+ * `new_id`, `save_workflow`, `delete_workflow`), więc zaślepka przestała opisywać świat
+ * i zaczęła go ZASŁANIAĆ: `＋ Create` w oknie dochodził do odrzuconej obietnicy i nie
+ * zostawiał ani pliku, ani kafelka — czyli był tym martwym przyciskiem, o którym mówi
+ * niezmiennik 16, tylko z handlerem. Sekcja bierze więc `io.ts` i nie zna ani jednej nazwy
+ * komendy sama (niezmiennik 23).
  */
 import type { ReactElement } from 'react';
 import { useEffect, useSyncExternalStore } from 'react';
-import type { WorkflowListIo } from './list/store';
+import * as io from './io';
 import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
 
@@ -44,25 +46,19 @@ export interface WorkflowsScreenProps {
   store?: WorkflowListStore;
 }
 
-/* Zdanie odmowy jedzie do tego, kto wołał, jako `Error`. Sekcja nie ma go dziś gdzie pokazać
- * — obsługa błędów plików należy do T-12 — ale zapis, który po cichu KOŃCZY SIĘ SUKCESEM,
- * byłby kłamstwem o tym, co leży na dysku (niezmiennik 4), a to jest gorsze niż cisza. */
-const NO_DISK = 'Loadout cannot reach the folder that holds workflows yet.';
-
-/* Odczyt katalogu odpowiada „nic tam nie leży" i to jest dziś prawda, nie zaślepka: katalog
- * workflow zakłada strona Rusta, której jeszcze nie ma, więc nie ma tam ani jednego pliku.
- * Odmowa zamiast pustej listy dawałaby za to odrzuconą obietnicę bez ani jednego miejsca,
- * które by ją przechwyciło — czyli ostrzeżenie w konsoli zamiast pustej listy na ekranie. */
-const DISK: WorkflowListIo = {
-  list: () => Promise.resolve([]),
-  newId: () => Promise.reject(new Error(NO_DISK)),
-  write: () => Promise.reject(new Error(NO_DISK)),
-  remove: () => Promise.reject(new Error(NO_DISK)),
-};
-
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu, a nie przy renderze: magazyn
- * budowany w ciele komponentu gubiłby całą zawartość ekranu przy każdym przemontowaniu. */
-const OWN_STORE = createWorkflowListStore(DISK);
+ * budowany w ciele komponentu gubiłby całą zawartość ekranu przy każdym przemontowaniu.
+ *
+ * Cztery funkcje wymienione po nazwie, a nie `io` w całości: `WorkflowListIo` jest kontraktem
+ * tego magazynu, a moduł `io.ts` niesie też `load` i `check`, których lista nie używa. Podanie
+ * całego modułu przeszłoby kompilację i zamieniłoby ten wiersz w miejsce, w którym nie widać,
+ * ILE granicy naprawdę dotyka ten ekran. */
+const OWN_STORE = createWorkflowListStore({
+  list: io.list,
+  newId: io.newId,
+  write: io.write,
+  remove: io.remove,
+});
 
 export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);

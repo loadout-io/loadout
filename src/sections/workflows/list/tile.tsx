@@ -44,7 +44,10 @@ function counted(count: number, noun: string): string {
 function differentAgents(steps: WorkflowFile['steps']): number {
   const seen = new Set<string>();
   for (const step of steps) {
-    if (step.agent !== undefined) {
+    /* Po RODZAJU kroku, a nie po obecności pola: `agent` jest wymagany na kroku agenta
+     * i nie istnieje na punkcie kontrolnym, więc rodzaj jest tym, co naprawdę rozstrzyga
+     * (2026-08-17: schemat przyjechał z `src/state/workflows.ts`, gdzie to są dwa typy). */
+    if (step.kind === 'agent') {
       seen.add(step.agent);
     }
   }
