@@ -30,7 +30,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -43,11 +43,13 @@ use loadout_lib::engine::drivers::{
 use loadout_lib::engine::line::Line;
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::read_agent_file;
 use loadout_lib::store::Store;
 use loadout_lib::workflow::check::{Level, check};
 use loadout_lib::workflow::file::load;
 use serde_json::Value as Json;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -156,10 +158,10 @@ async fn a_file_from_the_canvas_comes_out_as_lines_in_graph_order() -> Result<()
 }
 
 /// (a) Na kanale pojawiły się linie **obu** kroków.
-fn both_steps_spoke(seen: &[(Instant, Line)]) {
+fn both_steps_spoke(seen: &[(Instant, Json)]) {
     for step in [PLAN, BUILD] {
         assert!(
-            seen.iter().any(|(_, line)| line.agent() == step),
+            seen.iter().any(|(_, line)| agent_of(line) == step),
             "not one line came out for \"{step}\"; the channel carried {:?}",
             labels(seen)
         );
@@ -167,7 +169,7 @@ fn both_steps_spoke(seen: &[(Instant, Line)]) {
 }
 
 /// (b) **Pierwsza** linia `build` jest późniejsza niż **ostatnia** linia `plan`.
-fn the_arrow_means_after(seen: &[(Instant, Line)]) -> Result<(), Box<dyn Error>> {
+fn the_arrow_means_after(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error>> {
     let last_plan = at_of(seen, PLAN)
         .last()
         .ok_or("\"Planner\" never reached the channel, so there is nothing to order against")?;
@@ -187,11 +189,10 @@ fn the_arrow_means_after(seen: &[(Instant, Line)]) -> Result<(), Box<dyn Error>>
 }
 
 /// (c) Każda `Line` na drucie ma klucze wyłącznie w camelCase.
-fn every_key_is_camel_case(seen: &[(Instant, Line)]) -> Result<(), Box<dyn Error>> {
+fn every_key_is_camel_case(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error>> {
     let mut compound = 0usize;
-    for (_, line) in seen {
-        let wire = serde_json::to_value(line)?;
-        let snake = underscored(&wire);
+    for (_, wire) in seen {
+        let snake = underscored(wire);
         assert!(
             snake.is_empty(),
             "a line went on the wire with {snake:?}; the front end reads camelCase only, so \
@@ -199,7 +200,7 @@ fn every_key_is_camel_case(seen: &[(Instant, Line)]) -> Result<(), Box<dyn Error
              — and the first six fixes go into the view, because that is where the symptom is \
              [00-SYNTHESIS §3]"
         );
-        compound += usize::from(has_compound_key(&wire));
+        compound += usize::from(has_compound_key(wire));
     }
 
     assert!(
@@ -250,15 +251,25 @@ fn the_run_left_a_directory(report: &RunReport, project: &Path) -> Result<(), Bo
 }
 
 /// Chwile odbioru linii tego kroku, w kolejności.
-fn at_of<'a>(seen: &'a [(Instant, Line)], step: &'a str) -> impl Iterator<Item = Instant> + 'a {
+fn at_of<'a>(seen: &'a [(Instant, Json)], step: &'a str) -> impl Iterator<Item = Instant> + 'a {
     seen.iter()
-        .filter(move |(_, line)| line.agent() == step)
+        .filter(move |(_, line)| agent_of(line) == step)
         .map(|(at, _)| *at)
 }
 
 /// Etykiety wszystkich linii — do komunikatu, kiedy asercja padnie.
-fn labels(seen: &[(Instant, Line)]) -> Vec<&str> {
-    seen.iter().map(|(_, line)| line.agent()).collect()
+fn labels(seen: &[(Instant, Json)]) -> Vec<&str> {
+    seen.iter().map(|(_, line)| agent_of(line)).collect()
+}
+
+/// Etykieta wiersza, przeczytana z drutu.
+///
+/// `Line::agent()` po tej stronie granicy nie istnieje — przez kanał przechodzi JSON — a klucz
+/// nazywa się `agent` w każdym wariancie (`engine::line`, `rename_all_fields`). Wiersz bez tego
+/// klucza dostaje pustą etykietę i nie pasuje do żadnego kroku, więc milcząco nie przechodzi
+/// zamiast milcząco przechodzić.
+fn agent_of(line: &Json) -> &str {
+    line.get("agent").and_then(Json::as_str).unwrap_or("")
 }
 
 /// Klucze z podkreśleniem, na dowolnej głębokości.
@@ -290,7 +301,7 @@ fn has_compound_key(value: &Json) -> bool {
 }
 
 /// Jeden bieg fikstury: raport, linie ze znacznikami odbioru i katalogi, które muszą go przeżyć.
-async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Line)>, Bench), Box<dyn Error>> {
+async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Json)>, Bench), Box<dyn Error>> {
     let bench = Bench::new()?;
     let planner = bench.agent("planner", PLANNER_FILE)?;
     let builder = bench.agent("builder", BUILDER_FILE)?;
@@ -312,23 +323,74 @@ async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Line)>, Bench), B
         how_many_at_once: 2,
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<Line>>(64);
+    // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się
+    // pompa po drugiej stronie, więc kanał zakłada się tutaj tak, jak zakłada go komenda:
+    // `line_channel` + `spawn_pump`. Znacznik czasu zostaje tym, czym był — **chwilą odbioru
+    // paczki**, stemplowaną tam, gdzie stemplowało ją `rx.recv()`.
+    //
+    // Wiersze wracają jako JSON, a nie jako `Line`, i to nie jest wybór: `Channel` serializuje
+    // paczkę przy wysyłce, a `Line` jest typem WYJŚCIOWYM i nie ma `Deserialize`. Dopisanie mu
+    // derive'u to zmiana w `src-tauri/src/engine/line.rs`, którego T-30 nie posiada — czyli
+    // pytanie do człowieka, nie cichy dopisek w cudzym pliku (AGENTS.md §7). Asercje pytają
+    // dokładnie o to, o co pytały, tylko teraz o bajty, które NAPRAWDĘ przeszły granicę,
+    // zamiast o ich powtórną serializację.
+    let recorder = Delivered::default();
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, recorder.channel());
+    // Pompa kończy się sama, kiedy zniknie ostatni nadajnik — a ten ginie razem z powrotem
+    // biegu. Czekanie na nią stoi w `join!` dokładnie tam, gdzie stało czytanie kanału, więc
+    // ostatnia, niepełna paczka zdąży wyjść, zanim ktokolwiek spyta o wiersze.
     let collect = async move {
-        let mut seen: Vec<(Instant, Line)> = Vec::new();
-        while let Some(batch) = rx.recv().await {
-            let at = Instant::now();
-            seen.extend(batch.into_iter().map(|line| (at, line)));
-        }
-        seen
+        let _ = pump.await;
     };
 
     let both = tokio::time::timeout(PATIENCE, async {
-        tokio::join!(run_workflow_inner(&deps, &request, tx), collect)
+        tokio::join!(run_workflow_inner(&deps, &request, sink), collect)
     })
     .await
     .map_err(|_| format!("the run did not finish within {PATIENCE:?}"))?;
 
-    Ok((both.0?, both.1, bench))
+    Ok((both.0?, recorder.lines()?, bench))
+}
+
+/// Paczki, które **naprawdę wyszły kanałem**, każda ze swoją chwilą odbioru.
+///
+/// Nagrywamy po stronie okna, a nie po stronie kolejki do pompy: to, co bieg oddał `LineSink`,
+/// mówi wyłącznie o intencji, a pytanie tego kryterium brzmi „co dojechało i w jakiej
+/// kolejności".
+#[derive(Debug, Clone, Default)]
+struct Delivered(Arc<Mutex<Vec<(Instant, InvokeResponseBody)>>>);
+
+impl Delivered {
+    /// Kanał, który pompa dostanie zamiast webviewa.
+    fn channel(&self) -> Channel<Vec<Line>> {
+        let seen = Arc::clone(&self.0);
+        Channel::new(move |body| {
+            // Chwila odbioru bierze się PRZED zamkiem: czekanie na zamek jest kosztem nagrywarki,
+            // a nie opóźnieniem paczki.
+            let at = Instant::now();
+            // `std::sync::Mutex` w domknięciu SYNCHRONICZNYM: nie ma tu `await`, więc
+            // niezmiennik 8 stoi z konstrukcji, a nie z uwagi w komentarzu.
+            if let Ok(mut seen) = seen.lock() {
+                seen.push((at, body));
+            }
+            Ok(())
+        })
+    }
+
+    /// Wszystkie dostarczone wiersze, rozsypane z paczek, każdy z chwilą odbioru SWOJEJ paczki.
+    fn lines(&self) -> Result<Vec<(Instant, Json)>, Box<dyn Error>> {
+        let seen = self
+            .0
+            .lock()
+            .map_err(|error| format!("the recorder was poisoned: {error}"))?;
+        let mut out = Vec::new();
+        for (at, body) in seen.iter() {
+            let batch = body.clone().deserialize::<Vec<Json>>()?;
+            out.extend(batch.into_iter().map(|line| (*at, line)));
+        }
+        Ok(out)
+    }
 }
 
 /// Fikstura ma przejść walidator **bez ani jednego problemu**, a jej pliki agentów mają dać się
