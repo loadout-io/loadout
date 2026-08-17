@@ -1,4 +1,4 @@
-# Stan budowy — 2026-08-17, 01:30
+# Stan budowy — 2026-08-17, 18:10
 
 Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
@@ -8,51 +8,121 @@ co stanęło i dlaczego.
 
 | | |
 |---|---|
-| wylądowane | **29** — cały pierwotny plan (26) + T-26, T-27, T-34 |
-| kosztowało | **$352** (zmierzone z `runs/<ID>/*.jsonl`, bez recenzji i napraw) · średnia **$21** |
-| trunk | zielony: `verify.sh full` 11/11, `scripts/ci.sh` z 11 strażnikami |
-| produkt | 3 261 linii Rusta w 10 plikach, 21 plików testowych, 11 plików TS |
+| commitów lądowania | **32** (`git log --oneline main \| grep -c 'land task-'`) |
+| trunk | **CZERWONY** — `full-test` i `full-clippy`, paragon `runs/last.json` 2026-08-17T17:16 |
+| żywe gałęzie | **cztery**: T-29 (ahead 12) · T-32 (5) · T-28 (4) · T-37 (1, sam `TASK.md`) |
+| nie zaczęte | **S-3, T-10** — kredyty Codeksa wracają 2026-08-20; `drivers/absent.rs` uczciwie odmawia dla `Vendor::Codex` zamiast kłamać ClaudeDriverem |
+| napisane, nieuruchomione | **T-38** (szew front↔Rust + strażnik kluczy argumentów) |
+
+## Trzy rzeczy, które trzeba przeczytać przed jakąkolwiek pracą
+
+### 1. Pętla pracy przestała być używana — i to jest przyczyna, nie objaw
+
+**Od `14f5a31` (land task-T-31) main dostał 12 commitów i ani jednego `chore(main): land`.**
+Praca idzie wprost na trunk, bez gałęzi, bez dowodu czerwieni, bez bramki per zadanie:
+
+| commit | co wniósł | czyje zadanie |
+|---|---|---|
+| `62eef89` | `commands/run.rs`, `commands/mod.rs`, `lib.rs`, dwa testy `fresh_copy_*` | T-33, komplet |
+| `d9d31b7` | `commands/run.rs` + `step_deadline_stops_the_agent.rs` | **T-35 AC-1 z trzech** |
+| `a7a2d87` | oba pliki testów szkieletowych | T-28 |
+| `6bb2566`, `2fdc866` | powłoka jako makieta, boczne menu 196 px | T-37 |
+
+Konsekwencja jest strukturalna, nie estetyczna: **zadanie, które nie przechodzi przez gałąź,
+nie przechodzi przez `verify.sh full` ze swoim kontraktem.** Jedyną bramką, która mogłaby to
+złapać, jest bramka trunka — a ta od wczoraj umiera na budżecie (punkt 2). Dlatego dzisiejsze
+awarie były niewidzialne: nie było komu ich zobaczyć.
+
+**T-35 jest w połowie na trunku.** AC-1 wylądowało wprost, a plików dla AC-2 i AC-3 nie ma
+w żadnym refie repozytorium. Zadanie jest częściowo spełnione i nikt tego nie odnotował.
+
+**T-37 ma kontrakt na gałęzi, a pracę na main.** Gałąź `task-T-37` niesie jeden commit i jest
+nim sam `TASK.md`. Implementacja stoi w `2fdc866` i `6bb2566`, poza gałęzią.
+
+### 2. Mina, która wybuchnie przy najbliższym lądowaniu T-28
+
+`a7a2d87` dodał oba pliki testów szkieletowych **wprost na main**, a gałąź `task-T-28`
+(ahead 4) niesie **własną, rozjechaną kopię tych samych dwóch plików**:
+`git merge-base --is-ancestor a7a2d87 task-T-28` mówi **nie**. Różnica to 13 linii w każdym
+pliku, i tą różnicą jest dokładnie `#[ignore]` z `6e55daf`.
+
+**Więc lądowanie T-28 po cichu cofnie ogrodzenie płatnych testów** i wróci do hurtowego
+uruchamiania dwóch prawdziwych sesji `claude` w każdej pełnej bramce. To ten sam kształt, który
+ten plik opisuje niżej przy `refresh_harness_from_trunk`: cofnięte kryterium nie psuje testów,
+tylko je **osłabia**, więc bramka po takim lądowaniu jest **zielona**.
+
+Przed lądowaniem T-28: pogodzić te dwie wersje ręcznie i sprawdzić, że `#[ignore]` przeżyło.
+
+### 3. `full-test` nie wisi na kodzie — wisi na skanowaniu świeżych binarek
+
+Trzy pełne bramki z rzędu (T-29 o 11:22, T-32 o 16:05, trunk o 17:16) padły **wyłącznie** na
+`full-test`, każda w **3600 s = 2 × budżet 1800 s**, z komunikatem „it is waiting for something
+that is not going to arrive". Komunikat był dosłownie prawdziwy — czekała na `syspolicyd`.
+
+Zmierzone 2026-08-17 na dwóch celach, po dwa razy każdy:
+
+| binarka | 1. uruchomienie | 2. uruchomienie | sam test w środku |
+|---|---|---|---|
+| `store_strict_schema` | **36 s** | **0 s** | 0,01 s |
+| `workflow_check_ids` | **59 s** | **0 s** | — |
+
+To skanowanie kodu macOS przy **pierwszym** uruchomieniu niepodpisanej binarki debug, z wynikiem
+zapamiętanym per plik. W top CPU stoi `syspolicyd` i `XprotectService`. `cargo test --tests`
+buduje **125** binarek, a każda relinkowana zmiana każe przeskanować je od nowa: 125 × ~35 s
+to ponad godzina, więc 1800 s nie ma szans. Dlatego `full-clippy` schodzi w 144 s na tej samej
+skrzyni — clippy **nie uruchamia** binarek.
+
+**Wniosek dla harnessu, nieprzyjemny.** Budżet podniesiono 600 → 1800 s „z pomiaru"
+(`b768fbf`, przyczyna do kolejki jako Q-6). Pomiar zawierał ten narzut, czyli **limit podniesiono
+pod problem środowiskowy zamiast go usunąć** — i to tylko odsunęło ścianę o jedną fazę projektu.
+Q-6 jest tym samym rozstrzygnięte: przyczyną nie jest wolny kod.
+
+Zanim zaczniesz szukać winnego testu: **uruchom tę samą binarkę dwa razy.** Drugi przebieg
+bliski zeru znaczy, że to skanowanie. Naprawa trwała jest po stronie maszyny (Developer Tools
+dla narzędzia odpalającego cargo); obejście bez uprawnień to rozgrzanie binarek raz, poza bramką.
+
+### Pierwsza uczciwa czerwień, którą ten budżet maskował
+
+`src-tauri/tests/stream_raw_tee_live.rs` — `every_raw_line_is_in_the_file_including_the_one_nobody_understands`
+pada **deterministycznie** w 20,01 s, czyli równo we własnym `LIMIT`, na `Error: Elapsed(())`.
+Trzy przebiegi, wszystko rozgrzane, atrapa to skrypt `/bin/sh` (więc **nie** narzut skanowania).
+
+Ten sam test przeszedł w **0,6 s** przy lądowaniu T-34 (`runs/T-34/gate-final.json`,
+2026-08-16T23:47, `failed []`). Więc albo regresja wniesiona od wczoraj wieczorem, albo
+zależność od środowiska — przy lądowaniu biegł w worktree T-34, pomiar robiony na main.
+**Drugiej możliwości nie wykluczono.** Bisekcja odłożona: każdy jej krok to relink 125 binarek
+plus ich ponowne skanowanie.
 
 ## Gdzie co jest
 
-**Wylądowane (29):** cały pierwotny plan plus `T-26` (montowanie sekcji), `T-27` (spięcie
-front↔Rust) i `T-34` (tee transkryptu). Poza planem zostają `S-3` i `T-10` — Codex.
+Cztery żywe gałęzie mają **parami rozłączne** zbiory OWNS, a jedyny plik zmieniany przez
+wszystkie cztery to `TASK.md`, którego na main nie ma. Przecięcie OWNS `T-38` z T-28/T-29/T-32/T-37
+jest **puste**, więc T-38 może biec obok nich — czeka wyłącznie na zielony trunk.
 
-## Siedem szwów — stan po przeglądzie zewnętrznym 2026-08-16
+Około **osiemnastu worktree po zamkniętych zadaniach jest wciąż zamontowanych** (T-06…T-31,
+wszystkie `ahead=0`). Każde niesie klon `node_modules` i symlink do wspólnego `target/`.
+Nie są potrzebne i mieszają obraz przy diagnozie.
 
-Przegląd znalazł jeden systemowy wzorzec powtórzony siedem razy: **moduł wylądował i przeszedł
-swoje kryteria, ale szew między modułami nie ma właściciela.** Każdy szew dostał zadanie:
+## Siedem szwów — stan 2026-08-17
 
 | | szew | stan |
 |---|---|---|
 | `T-27` | komendy Tauri + adaptery `io.ts` | **wylądowane** |
-| `T-34` | tee surowego strumienia → `logs/` | **wylądowane** — niezmiennik 4 przestał być fałszywy |
-| `T-36` | filtr eskalacji na przelotce (D6) | biegnie, trzecie podejście |
-| `T-30` | most `Vec<Line>` → pompa, komendy biegu, Start | biegnie |
-| `T-31` | limit globalny na żywej ścieżce | napisane, czeka na T-30 |
-| `T-32` | przekazanie → prompt następnego kroku | napisane, czeka na T-30 |
-| `T-33` | fresh-copy to prawdziwa kopia, nie pusty katalog | napisane, czeka na T-30 |
-| `T-35` | limit czasu kroku + wpięcie recovery + boot time | napisane, czeka na T-30 |
-| `T-28` | szkielet chodzący (`PLAN.md` §1) | przepisane, czeka na T-30 |
-| `T-29` | klikanie po prawdziwej aplikacji | napisane, czeka na T-30 |
+| `T-34` | tee surowego strumienia → `logs/` | **wylądowane, ale jego test live jest dziś czerwony** — patrz wyżej |
+| `T-36` | filtr eskalacji na przelotce (D6) | **wylądowane** (`b70cc82`) |
+| `T-30` | most `Vec<Line>` → pompa, komendy biegu, Start | **wylądowane** (`03c0e52`) |
+| `T-31` | limit globalny na żywej ścieżce | **wylądowane** (`14f5a31`) |
+| `T-32` | przekazanie → prompt następnego kroku | gałąź żywa, 5 commitów; bramka RED tylko na `full-test` |
+| `T-33` | fresh-copy to prawdziwa kopia | na main wprost (`62eef89`), bez lądowania |
+| `T-35` | limit czasu kroku + recovery + boot time | **AC-1 z trzech** na main wprost (`d9d31b7`) |
+| `T-28` | szkielet chodzący | testy na main (`a7a2d87`), gałąź rozjechana — **patrz mina wyżej** |
+| `T-29` | klikanie po prawdziwej aplikacji | gałąź żywa, 12 commitów; **3/3 kryteria zielone**, bramka RED tylko na `full-test` |
+| `T-38` | szew front↔Rust + strażnik kluczy `invoke` | kontrakt napisany i zwalidowany, nieuruchomiony |
 
-**`T-36` odsłonił rzecz gorszą, niż mówił przegląd.** `FORBIDDEN_ESCALATIONS` liczy dwie pozycje
-i **nie zawiera `--dangerously-skip-permissions`** — więc ta flaga przechodzi także przez przelotkę
-kroku workflow, która uchodziła za zabezpieczoną. D6 („przelotka nie omija diala") jest dziś
-łamane z obu stron, nie z jednej.
-
-**W locie (2):** `T-15` (implementacja) i `T-22` (runda naprawcza).
-**Zostaje po nich `T-23`** — czeka na T-15 i jest ostatnim zadaniem planu.
-
-**Aplikacja renderuje wszystkie pięć sekcji.** Sprawdzone Playwrightem po wylądowaniu T-08 i T-26:
-każda zakładka montuje własny ekran z nagłówkiem, zaproszeniem i jedną akcją; zdania z rejestru
-(`sectionEntry(id).empty`) zniknęły ze wszystkich pięciu. Paska loadoutu nie widać, bo **nie ma
-biegu** — ozdoba bez danych nie wchodzi (niezmiennik 17). Zobaczy go dopiero `T-15`, który łączy
-płótno z silnikiem.
-
-**Zostało 6 poza falą:** `T-08` (czeka na T-07), `T-09 T-15 T-22 T-24` (czekają na T-08),
-`T-23` (na T-15). Ścieżka krytyczna to `T-07 → T-08 → T-15 → T-23`, czyli cztery zadania
-szeregowo — reszta zrównolegli się wokół nich.
+**T-29 i T-32 nie są zepsute.** Oba mają wszystkie własne kryteria zielone i 15 z 16 sprawdzeń;
+oba przewróciło jedno sprawdzenie projektowe, i to na powodzie środowiskowym. `integrate.sh`
+odmówił lądowania słusznie i powiedział dlaczego: *„the gate is red on main BEFORE anything was
+merged — nothing was landed. fix trunk first, otherwise the first branch gets blamed for it."*
 
 ## Wzorzec, którego bramka strukturalnie nie widzi — cztery przypadki jednego dnia
 
