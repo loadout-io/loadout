@@ -166,7 +166,7 @@ describe('the window opens with clean chrome and the dev address is the one we s
     const host = /(?:^|\s)host:\s*'([^']+)'/m.exec(viteText)?.[1];
     expect(
       host,
-      "vite.config.ts has to bind an explicit loopback literal. `host: false` binds " +
+      'vite.config.ts has to bind an explicit loopback literal. `host: false` binds ' +
         '"localhost", which resolves to ::1 on macOS, so the server ends up IPv6-only and the ' +
         'webview asking for IPv4 gets a blank window with no error anywhere',
     ).toBe('127.0.0.1');

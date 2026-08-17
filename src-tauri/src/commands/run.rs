@@ -101,7 +101,7 @@
 //! - **Nie rozwija `copies`** [T3 §4.4]. Krok z `copies: 3` biegnie tu jako jedna sesja:
 //!   rozwinięcie zmienia liczbę węzłów grafu, a `RunReport::steps` jest kontraktem „jeden wpis
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
-//! - **Nie kopiuje plików projektu przy `fresh-copy`** — patrz [`workspace`].
+//! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -240,7 +240,7 @@ async fn the_whole_run(
     // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
 
-    lay_out_the_run_dir(&plan)?;
+    lay_out_the_run_dir(&plan, deps.project)?;
     let live = Arc::new(Live::new(plan, lines, deps.control.clone(), slots));
     // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
@@ -599,13 +599,17 @@ fn find_agent(library: &Path, id: &str) -> Result<Agent, RunError> {
 
 /// Gdzie krok pracuje i czy ten katalog jest nasz.
 ///
-/// 2026-08-16 — `fresh-copy` dostaje **własny, pusty** katalog pod katalogiem biegu, a nie
-/// katalog projektu, i to jest świadomy wybór między dwoma niepełnymi odpowiedziami. Kopiowania
-/// plików projektu nie ma jeszcze w żadnym zadaniu (`ARCHITECTURE` §2 p. 4 obiecuje je jako
-/// zdolność produktu), więc krok dostanie tu pustkę i powie o tym głośno przy pierwszym `ls`.
-/// Wersja tańsza o jedną linijkę — podstawienie katalogu projektu — jest gorsza i cicha: cztery
-/// kroki bez strzałek zaczęłyby pisać po tych samych plikach, czyli robić dokładnie to, czego
-/// walidator odmawia przy zapisie (niezmiennik 12).
+/// 2026-08-17 (T-33) — `fresh-copy` dostaje **własny katalog z kopią plików projektu**.
+///
+/// Do tego dnia dostawał katalog PUSTY, a `ARCHITECTURE.md` §2 p. 4 obiecuje „każdy krok dostaje
+/// własną kopię twoich plików". To nie była brakująca wygoda: `workflow::check` odmawia zapisu
+/// workflow, w którym dwa kroki piszą po tych samych ścieżkach (T-12), i ta walidacja ZAKŁADA,
+/// że fresh-copy chroni. Nie chroniła — więc krok „na własnej kopii" pracował na pustce zamiast
+/// na projekcie, co jest gorsze od kolizji: agent nie widzi plików, które ma zmienić.
+///
+/// Ta funkcja dalej tylko WSKAZUJE katalog. Kopiowanie robi [`lay_out_the_run_dir`], bo dotyka
+/// dysku, a plan ma być czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć
+/// przy wznowieniu.
 fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (PathBuf, bool) {
     match folder {
         Folder::Project => (project.to_path_buf(), false),
@@ -636,8 +640,47 @@ fn some_text(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.to_owned())
 }
 
+/// Czego NIE kopiujemy do własnej kopii kroku.
+///
+/// `.loadout` jest tu obowiązkowy, nie kosmetyczny: katalog biegu leży pod
+/// `<projekt>/.loadout/runs/<…>/work/<krok>`, więc kopiowanie projektu do siebie samego
+/// schodziłoby w nieskończoność, aż do wyczerpania dysku albo limitu ścieżki.
+///
+/// Pozostałe trzy są wyborem, nie koniecznością, i wybór jest po stronie CZASU: `.git`
+/// dużego repozytorium to gigabajty, `node_modules` i `target` odtwarza się jedną komendą.
+/// Krok, który ich naprawdę potrzebuje, ma tryb „katalog projektu" i wtedy pracuje na
+/// oryginale — świadomie, a nie przez przypadek.
+const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "target"];
+
+/// Kopiuje drzewo projektu do katalogu roboczego kroku.
+///
+/// Rekurencja jawna, bez zewnętrznej skrzyni: to jest ~20 wierszy, a każda zależność w tym
+/// miejscu musiałaby jeszcze umieć pomijać `.loadout` (patrz [`NOT_COPIED`]).
+///
+/// Dowiązania symboliczne kopiujemy JAKO PLIKI (`fs::copy` podąża za nimi). Odtwarzanie
+/// dowiązania wskazującego poza kopię dawałoby krokowi ścieżkę do oryginału — czyli dziurę
+/// w izolacji, o którą całe to zadanie chodzi.
+fn copy_project_into(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if NOT_COPIED.iter().any(|skip| name == *skip) {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_project_into(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Tworzy katalog biegu i to, co do niego należy — **dopiero po planie**.
-fn lay_out_the_run_dir(plan: &Plan) -> Result<(), RunError> {
+fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<(), RunError> {
     // `logs/` powstaje razem z katalogiem, a nie przy pierwszej linii: katalog biegu bez niego
     // czyta się jak bieg, w którym agent nic nie powiedział, zamiast jak bieg, który jeszcze nic
     // nie zapisał.
@@ -646,7 +689,13 @@ fn lay_out_the_run_dir(plan: &Plan) -> Result<(), RunError> {
         if let Job::Agent(job) = &step.job
             && job.ours
         {
-            fs::create_dir_all(&job.cwd)?;
+            // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
+            // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
+            // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
+            copy_project_into(project, &job.cwd).map_err(|error| RunError::NoFreshCopy {
+                step: step.name.clone(),
+                why: error.to_string(),
+            })?;
         }
     }
     Ok(())

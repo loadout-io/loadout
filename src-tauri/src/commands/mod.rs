@@ -394,6 +394,29 @@ pub enum RunError {
     /// Katalog biegu albo `run.json` nie dały się zapisać.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Kroku w trybie „własna kopia twoich plików" nie dało się przygotować.
+    ///
+    /// WŁASNY WARIANT, a nie [`RunError::Io`], i to jest cała jego treść. `Io` jest
+    /// przezroczysty, więc człowiek zobaczyłby „Permission denied (os error 13)" — zdanie,
+    /// które mówi, co się nie udało systemowi, i nie mówi, co się nie udało JEMU. Tutaj
+    /// odpowiedź brzmi: ten krok miał dostać kopię twoich plików, nie dostał, i dlatego
+    /// nie ruszył.
+    ///
+    /// Bieg **musi** się na tym zatrzymać. Cicha degradacja do wspólnego katalogu jest
+    /// groźniejsza niż odmowa: dwa kroki pisałyby wtedy po tych samych plikach — czyli
+    /// robiły dokładnie to, czego `workflow::check` odmawia przy zapisie (niezmiennik 12) —
+    /// a każdy z nich skończyłby się „sukcesem" i bramka nie miałaby jak tego zobaczyć.
+    #[error(
+        "step \"{step}\" was set to work on its own copy of your files, and Loadout could \
+             not make that copy: {why}. Nothing ran: sharing one folder between steps would let \
+             them overwrite each other's work."
+    )]
+    NoFreshCopy {
+        /// Nazwa kroku, którego to dotyczy — człowiek szuka kafelka, nie identyfikatora.
+        step: String,
+        /// Co dokładnie odmówiło, zdaniem systemu plików.
+        why: String,
+    },
     /// Czegoś nie dało się zamienić w JSON albo z niego wyjąć.
     #[error(transparent)]
     Json(#[from] serde_json::Error),

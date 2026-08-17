@@ -15,9 +15,9 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::commands::Drivers;
+use crate::engine::drivers::AgentDriver;
 use crate::engine::drivers::absent::Absent;
 use crate::engine::drivers::claude::ClaudeDriver;
-use crate::engine::drivers::AgentDriver;
 use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
@@ -188,7 +188,11 @@ pub fn run() {
      * katalogiem i mówi o tym wprost w dzienniku, zamiast po cichu pisać nie tam, gdzie myślisz. */
     let home = loadout_dir();
     let project = project_dir(&home);
-    tracing::info!("library at {}, project at {}", home.display(), project.display());
+    tracing::info!(
+        "library at {}, project at {}",
+        home.display(),
+        project.display()
+    );
 
     let outcome = tauri::Builder::default()
         .setup(move |app| {
