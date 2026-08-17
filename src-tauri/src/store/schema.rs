@@ -99,7 +99,18 @@ pub const STATEMENTS: &[&str] = &[
       created_at        INTEGER NOT NULL,
       started_at        INTEGER,
       ended_at          INTEGER,
-      error             TEXT
+      error             TEXT,
+      -- Kiedy wstala maszyna, na ktorej ten bieg ruszyl (`sysctl kern.boottime`, sekundy).
+      --
+      -- STRAZNIK, nie diagnostyka. PID-y na macOS przewijaja sie w godzinach (`kern.maxproc`
+      -- = 16 000), wiec po restarcie zapisany `pgid` z duzym prawdopodobienstwem nalezy do
+      -- czegos niewinnego, a `killpg` po nim jest bledem POPRAWNOSCI [T7 ryzyko 2].
+      -- Odzyskiwanie po awarii porownuje te wartosc z tym, co mowi maszyna TERAZ, i sprzata
+      -- tylko wtedy, gdy oba napisy mowia o tym samym uruchomieniu systemu.
+      --
+      -- NULL znaczy `wiersz sprzed wprowadzenia pola` i jest brakiem straznika, a nie zgoda
+      -- na strzal: `recovery::decide` odpowiada wtedy NO_BOOT_TIME i NIC nie zabija.
+      boot_id           TEXT
     ) STRICT;
     ",
     // ── steps ──────────────────────────────────────────────────────────────────────────────

@@ -609,6 +609,41 @@ pub async fn run_with_deadline(command: Command, limit: Duration) -> io::Result<
     }
 }
 
+/// Kiedy ta maszyna ostatnio wstała, jako napis nadający się do zapisania w bazie.
+///
+/// DLACZEGO TO W OGÓLE ISTNIEJE — i to nie jest ciekawostka diagnostyczna. `kern.maxproc` na
+/// macOS wynosi 16 000, więc PID-y przewijają się w godzinach, nie w latach. Po restarcie
+/// maszyny `pgid` zapisany wczoraj z dużym prawdopodobieństwem należy do czegoś zupełnie
+/// niewinnego, a `killpg` po nim jest błędem POPRAWNOŚCI, nie ryzykiem teoretycznym
+/// [T7 ryzyko 2]. Odzyskiwanie po awarii porównuje tę wartość z tą zapisaną przy biegu
+/// (`recovery::RecoveryRow::run_boot_id`) i strzela dopiero, gdy obie mówią o tym samym
+/// uruchomieniu systemu.
+///
+/// Wołanie systemowe stoi TUTAJ, bo `recovery.rs` nie ma prawa go znać (niezmiennik 3):
+/// tamten plik ma być czystą funkcją decyzji, dającą się przetestować bez maszyny.
+///
+/// `sysctl` przez podproces, nie przez `libc::sysctl`: ta skrzynia jest tu „tylko po stałe
+/// sygnałów" (`Cargo.toml`), a odczyt raz na uruchomienie aplikacji nie jest miejscem, w którym
+/// opłaca się kupować `unsafe` i strukturę `timeval` z ręki.
+///
+/// `None` znaczy „nie wiadomo" i jest odpowiedzią, nie awarią — brak strażnika ma wtedy
+/// wstrzymać strzał, a nie go przepuścić (patrz `recovery::NO_BOOT_TIME`).
+#[must_use]
+pub fn machine_booted_at() -> Option<String> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "kern.boottime"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let said = String::from_utf8_lossy(&out.stdout);
+    // `{ sec = 1755381234, usec = 123456 } Sun Aug 17 ...` — bierzemy SEKUNDY, bo reszta tej
+    // linii to ta sama chwila zapisana po ludzku i zmienia się z lokalizacją systemu.
+    let sec = said.split("sec = ").nth(1)?.split(&[',', ' '][..]).next()?;
+    (!sec.is_empty() && sec.chars().all(|c| c.is_ascii_digit())).then(|| sec.to_owned())
+}
+
 /// Zabija grupę po samym `pgid` i zwraca dowód. Bez uchwytu — po nią sięga odzyskiwanie po
 /// awarii aplikacji (T-20), które ma z bazy tylko liczbę.
 ///

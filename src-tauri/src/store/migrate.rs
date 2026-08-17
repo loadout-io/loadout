@@ -25,6 +25,40 @@ use super::schema;
 /// Wołane przy **każdym** otwarciu bazy, jako ostatni krok kolejności open → pragmy →
 /// `busy_timeout` → `migrate()` [00-SYNTHESIS §3]. Migracja puszczona przed pragmami widzi
 /// wyłączone klucze obce, czyli inny świat niż ten, w którym potem biegnie aplikacja.
+/// Dokłada kolumnę, jeśli tabela jej jeszcze nie ma.
+///
+/// 2026-08-17 — NAPISANE, BO BYŁO OBIECANE I NIE ISTNIAŁO. Nagłówek tego pliku i `schema.rs`
+/// odsyłały do `add_column_if_missing` jako do jedynej dozwolonej drogi dokładania kolumn,
+/// a funkcji o tej nazwie nie było w repo. Pierwszy, kto potrzebowałby kolumny, napisałby
+/// gołe `ALTER TABLE … ADD COLUMN` — czyli dokładnie to, przed czym te dwa komentarze
+/// ostrzegają, bo drugi start aplikacji rzuca wtedy `duplicate column name`, a użytkownik
+/// czyta „nie udało się otworzyć projektu".
+///
+/// `CREATE TABLE IF NOT EXISTS` w `schema.rs` załatwia wyłącznie bazy NOWE: tabela, która już
+/// stoi, nie dostanie nowego pola stamtąd nigdy. Dlatego oba miejsca są potrzebne i oba
+/// opisują tę samą kolumnę — to jedyny w tym pliku wyjątek od „jeden fakt, jedno miejsce",
+/// i jest wymuszony przez `SQLite`, a nie wybrany.
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    // `PRAGMA table_info` zamiast łapania błędu z `ALTER TABLE`: odpowiedź „ta kolumna już
+    // jest" i odpowiedź „ta tabela jest zepsuta" wyglądają w błędzie tak samo, a różnią się
+    // wszystkim. Pytamy więc wprost.
+    let mut q = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut has = false;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            has = true;
+            break;
+        }
+    }
+    drop(rows);
+    drop(q);
+    if !has {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+    }
+    Ok(())
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     for statement in schema::STATEMENTS {
         // `execute_batch`, nie `execute`: jedno zdanie schematu bywa `CREATE TABLE` razem
@@ -32,5 +66,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // jedynym sposobem, żeby nie dało się dodać tabeli i zapomnieć jej wyzwalacza.
         conn.execute_batch(statement)?;
     }
+
+    // Kolumny dokładane do tabel, które mogą już istnieć u kogoś na dysku. Lista rośnie
+    // w dół i nigdy nie kurczy się w miejscu: usunięta pozycja to kolumna, której baza
+    // sprzed tej wersji nigdy nie dostanie.
+    add_column_if_missing(conn, "runs", "boot_id", "TEXT")?;
+
     Ok(())
 }

@@ -282,7 +282,17 @@ impl RecoveryReport {
 /// Po angielsku, bo czyta je człowiek po awarii (`docs/DECISIONS-LOCKED.md` D5), i po **jednym
 /// zdaniu** każdy: to jest pozycja listy, nie raport. Stoją jako stałe, a nie w miejscu użycia,
 /// bo lista powodów jest tu jedyną odpowiedzią na pytanie „czego to odzyskiwanie nie umie".
-mod reason {
+///
+/// 2026-08-17 — MODUŁ JEST `pub`, i to nie jest ustępstwo na rzecz testu. Te zdania są WYJŚCIEM
+/// tej funkcji: lądują w `RecoveryPlan::unreadable` i stamtąd na ekranie człowieka po awarii.
+/// Kryterium AC-3 z `tasks/T-35.md` nazywa jedno z nich wprost („`decide()` na tych danych
+/// **nie** zwraca `NO_BOOT_TIME`"), więc jest częścią kontraktu, a nie szczegółem środka.
+///
+/// Alternatywa, której świadomie NIE wybrano: zostawić moduł prywatny i wkleić to samo zdanie
+/// do testu. Wklejone zdanie przestaje cokolwiek znaczyć w dniu, w którym ktoś poprawi tutaj
+/// brzmienie — test dalej jest zielony i dalej porównuje napis, którego produkt już nie mówi
+/// (niezmiennik 13).
+pub mod reason {
     /// Status biegu spoza szóstki z `CHECK` przy tabeli `runs`.
     pub const UNKNOWN_RUN: &str = "This run is in a state this version of Loadout does not know, so nothing about it \
          could be decided.";

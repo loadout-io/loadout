@@ -89,6 +89,7 @@ mod recovery_asks_never_resumes;
 mod recovery_boot_guard;
 mod recovery_proof_of_death;
 mod recovery_reap_targets;
+mod recovery_records_boot_time;
 mod recovery_status_table;
 mod recovery_unreadable_rows;
 mod run_commands_registered;
