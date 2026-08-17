@@ -13,17 +13,20 @@
  * Krawędź, która sięgałaby po nie sama, byłaby drugim miejscem, w którym mieszka odpowiedź na
  * pytanie „co jest otwarte" — i pierwszym, które by się rozjechało.
  *
- * 2026-08-17 — CZEGO TA KRAWĘDŹ NIE WYSYŁA I DLACZEGO TO JEST DŁUG. Komenda `run_workflow`
- * bierze po tamtej stronie `Channel<Vec<Line>>` — to nim linie biegu wracają do okna
- * (`docs/ARCHITECTURE.md` §3, §4) i Rust nie ma jak go zbudować sam, bo kanał jest uchwytem do
- * TEGO webviewa. Założyć go musi okno: `new Channel()` z `@tauri-apps/api/core`, wpięte przez
- * `wireChannel` z `src/ipc/run.ts`. Tego wiersza tu nie ma, bo kryterium AC-4 podmienia cały
- * moduł `@tauri-apps/api/core` atrapą `{ invoke }` — `Channel` jest wtedy `undefined`, więc
- * krawędź zakładająca kanał przewraca się przy pierwszym kliknięciu i test o argumentach nie ma
- * czego mierzyć. Kod napisany po to, żeby przeżyć atrapę, byłby kodem napisanym dla testu, więc
- * go tu nie ma — jest za to to zdanie (AGENTS.md §7).
+ * 2026-08-18 — TA KRAWĘDŹ WYSYŁA KANAŁ, i to jest cały sens T-38. Do 2026-08-17 stał tu
+ * akapit o długu: `run_workflow` bierze po tamtej stronie `Channel<Vec<Line>>`, okno go nie
+ * zakładało, więc Tauri odrzucało wywołanie na deserializacji argumentów, zanim weszło
+ * w ciało komendy — Start odbijał się przy KAŻDYM kliknięciu. Powodem, dla którego wiersza
+ * tu nie było, była atrapa w kryterium T-30: oddawała samo `{ invoke }`, więc `Channel`
+ * był `undefined`. To był prawdziwy powód i zła konkluzja — atrapa transportu jest
+ * rzeczą do poprawienia, a nie granicą dla produktu. Atrapa umie dziś oddać `Channel`,
+ * a kryterium AC-1 z T-38 czyta listę parametrów WPROST z `src-tauri/src/ipc.rs`, więc
+ * czwarty argument dołożony po tamtej stronie zapala test sam.
  */
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { wireChannel } from '../../ipc/run';
+import { useRun } from '../../state/run';
+import { runFeed } from './feed/live';
 
 /**
  * Bieg, który idzie **teraz**, albo `null`.
@@ -65,7 +68,41 @@ export function start(workflow: string, howManyAtOnce: number): Promise<void> {
    * zdarzeń są jedynym przypadkiem, o który tu chodzi. Zwolnienie jedzie przez `finally`, więc
    * bieg zakończony odmową Rusta też ją zwalnia — przycisk, który po jednej nieudanej próbie
    * przestaje działać do końca sesji, jest gorszy od przycisku, który startuje dwa razy. */
-  const run = invoke<void>('run_workflow', { fileName: workflow, howManyAtOnce }).finally(() => {
+  /* Kanał zakłada OKNO, bo jest uchwytem do tego webviewa i Rust nie ma go jak zbudować sam
+   * (`docs/ARCHITECTURE.md` §3, §4). Powstaje na bieg, nie na moduł: uchwyt przeżywający bieg
+   * kierowałby linie drugiego biegu do odbiorcy pierwszego.
+   *
+   * Paczka wchodzi DWOMA wywołaniami i nigdzie indziej — tak, jak mówi
+   * `src/sections/run/feed/live.ts`: `runFeed.appendLines` niesie wiersze widoku,
+   * `useRun.appendLines` okno linii. Pętla po paczce mieszka w `wireChannel`, żeby zysk
+   * z pompy w Ruście przeżył granicę: jedna wiadomość to jedna aktualizacja stanu, nigdy
+   * jedna na wiersz. */
+  /* STEMPEL POWSTAJE TUTAJ, I TO JEST ROZBIEŻNOŚĆ DO ZGŁOSZENIA (AGENTS.md §7).
+   * `src/state/run.ts` opisuje `Stamped.id` jako „ściśle rosnący numer nadawany po stronie
+   * Rusta [T2 §6.3]" — a `src-tauri/src/engine/line.rs` nie serializuje ani `id`, ani `at`:
+   * `at_ms` istnieje wyłącznie w `Seen`, czyli w WEJŚCIU kuratora, i nigdy nie wychodzi na drut.
+   * Dopóki tak jest, jedynym miejscem, w którym te dwa pola mogą powstać, jest granica — czyli
+   * to miejsce. `at` jest tu poprawne z definicji („kiedy zdarzenie NAPŁYNĘŁO"), `id` jest
+   * zastępcze: zachowuje kolejność przybycia, ale nie przeżyje przeładowania okna i nie zgodzi
+   * się z żadnym numerem po stronie Rusta. Prawdziwa naprawa to pole na drucie, czyli
+   * `engine/line.rs`, który należy do T-05 — poza OWNS tego zadania. */
+  let stamp = 0;
+  const lines = new Channel<unknown[]>();
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => {
+      stamp += 1;
+      return { ...line, id: stamp, at };
+    });
+    runFeed.appendLines(stamped);
+    useRun.getState().appendLines(stamped);
+  });
+
+  const run = invoke<void>('run_workflow', {
+    fileName: workflow,
+    howManyAtOnce,
+    lines,
+  }).finally(() => {
     going = null;
   });
   going = run;
