@@ -442,30 +442,48 @@ impl AppState {
 
     /// Nazwa pliku z okna → żądanie biegu.
     ///
-    /// 2026-08-17 — ta zapora jest **drugą kopią** `commands::workflows::in_library`, i jest
-    /// tu świadomie, z nazwaną ceną. Nazwa przychodzi z webviewa, więc jest wejściem, któremu
-    /// nie ufamy (T3 §5.2): `Path::join("../../.ssh/config")` wychodzi poza bibliotekę bez
-    /// jednego ostrzeżenia, a `join("/etc/x")` odrzuca cały prefiks i zwraca `/etc/x` — czyli
-    /// Start uruchamiałby plik wskazany przez okno. Tamta funkcja jest prywatna,
-    /// a `src-tauri/src/commands/workflows.rs` nie należy do T-30, więc jedno `pub` w cudzym
-    /// pliku jest pytaniem do człowieka, nie cichym dopiskiem (AGENTS.md §7). Reguła
-    /// przepisana w adapterze jest tym, przed czym stoi niezmiennik 23 — dlatego stoi tu ten
-    /// akapit, a nie sama zapora: dopóki obie kopie żyją, zmiana jednej ma być czerwona
-    /// u człowieka, który to czyta.
+    /// Zapora i jej cena stoją przy [`run_request`]; tutaj zostaje samo podanie biblioteki,
+    /// bo katalog domowy jest jedyną rzeczą, którą stan do tej decyzji wnosi.
     fn request(&self, file_name: &str, how_many_at_once: usize) -> Result<RunRequest, String> {
-        if Path::new(file_name)
-            .file_name()
-            .is_none_or(|name| name != file_name)
-        {
-            return Err(format!(
-                "{file_name} is not the name of a file in the workflow folder"
-            ));
-        }
-        Ok(RunRequest {
-            workflow: self.home.join(WORKFLOWS_DIR).join(file_name),
-            how_many_at_once,
-        })
+        run_request(self.home.as_path(), file_name, how_many_at_once)
     }
+}
+
+/// Nazwa pliku z okna → żądanie biegu, liczone wyłącznie z katalogu biblioteki.
+///
+/// 2026-08-17 — ta zapora jest **drugą kopią** `commands::workflows::in_library`, i jest
+/// tu świadomie, z nazwaną ceną. Nazwa przychodzi z webviewa, więc jest wejściem, któremu
+/// nie ufamy (T3 §5.2): `Path::join("../../.ssh/config")` wychodzi poza bibliotekę bez
+/// jednego ostrzeżenia, a `join("/etc/x")` odrzuca cały prefiks i zwraca `/etc/x` — czyli
+/// Start uruchamiałby plik wskazany przez okno. Tamta funkcja jest prywatna,
+/// a `src-tauri/src/commands/workflows.rs` nie należy do T-30, więc jedno `pub` w cudzym
+/// pliku jest pytaniem do człowieka, nie cichym dopiskiem (AGENTS.md §7). Reguła
+/// przepisana w adapterze jest tym, przed czym stoi niezmiennik 23 — dlatego stoi tu ten
+/// akapit, a nie sama zapora: dopóki obie kopie żyją, zmiana jednej ma być czerwona
+/// u człowieka, który to czyta.
+///
+/// 2026-08-17 — wolna funkcja, a nie ciało metody, z jednego powodu: [`AppState`] niesie
+/// [`Store`] i [`Drivers`], więc test tej zapory przez metodę musiałby otworzyć bazę
+/// i zbudować fabrykę sterowników, żeby sprawdzić `join` na napisie. Zapora, której koszt
+/// sprawdzenia jest wyższy niż koszt napisania, jest zaporą niesprawdzoną — a ta jest jedyną
+/// rzeczą między webviewem a `Command::new` w cudzym katalogu.
+fn run_request(
+    home: &Path,
+    file_name: &str,
+    how_many_at_once: usize,
+) -> Result<RunRequest, String> {
+    if Path::new(file_name)
+        .file_name()
+        .is_none_or(|name| name != file_name)
+    {
+        return Err(format!(
+            "{file_name} is not the name of a file in the workflow folder"
+        ));
+    }
+    Ok(RunRequest {
+        workflow: home.join(WORKFLOWS_DIR).join(file_name),
+        how_many_at_once,
+    })
 }
 
 /// Startuje pompę tego biegu i oddaje nadajnik, którym bieg pisze linie.
@@ -695,4 +713,73 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         stop_run,
         stop_using_note
     ]
+}
+
+/// Zapora [`run_request`] pod obstrzałem — jedyna rzecz w tym pliku, którą da się sprawdzić
+/// bez okna, i jedyna, której żadne kryterium T-30 nie dotyka.
+///
+/// 2026-08-17 — powstało dlatego, że druga opinia zmierzyła to wprost: AC-1 chodzi po pompie,
+/// AC-2 po liście komend, AC-4 po stronie okna, a `run_request` nie jest wołane w żadnym
+/// z nich. Zapora bez testu jest zaporą do chwili pierwszego refaktoru — a ta stoi między
+/// napisem z webviewa a plikiem, który bieg naprawdę odpali.
+///
+/// Trzy przypadki, bo dwa nie wystarczą. Sama odmowa przechodzi na zaporze, która odrzuca
+/// **wszystko** — a taka jest nie do odróżnienia od zepsutego Startu dopóki ktoś nie kliknie.
+/// Dlatego trzeci przypadek jest dodatni i porównuje **całą** ścieżkę, nie sam fakt `Ok`:
+/// zapora przepuszczająca nazwę i gubiąca katalog biblioteki jest tym samym błędem, tylko
+/// w drugą stronę.
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{WORKFLOWS_DIR, run_request};
+
+    /// Katalog biblioteki. Nie istnieje na dysku i istnieć nie musi: `run_request` decyduje
+    /// o napisie, nie o pliku — sprawdzanie obecności pliku należy do biegu, który go wczyta.
+    const HOME: &str = "/loadout-home";
+
+    /// To, co z żądania da się porównać: gdzie bieg pójdzie i ile ma robić naraz.
+    ///
+    /// [`super::RunRequest`] nie jest `PartialEq`, a jego plik nie należy do T-30 — więc
+    /// zamiast `derive` w cudzym pliku stoi tu rozbiór na dwa pola, które ta zapora ustawia.
+    fn requested(file_name: &str, how_many_at_once: usize) -> Result<(PathBuf, usize), String> {
+        run_request(Path::new(HOME), file_name, how_many_at_once)
+            .map(|request| (request.workflow, request.how_many_at_once))
+    }
+
+    /// `..` w nazwie wychodzi poza bibliotekę i `Path::join` nie powie o tym ani słowa.
+    #[test]
+    fn a_name_that_climbs_out_of_the_library_is_refused() {
+        assert!(
+            requested("../../.ssh/config", 1).is_err(),
+            "a name carrying `..` reaches outside the workflow folder and must be refused"
+        );
+    }
+
+    /// Ścieżka bezwzględna jest gorsza od `..`: `join` **odrzuca cały prefiks**, więc bez
+    /// zapory bieg odpaliłby dokładnie ten plik, który wskazało okno.
+    #[test]
+    fn an_absolute_path_is_refused() {
+        assert!(
+            requested("/etc/x", 1).is_err(),
+            "an absolute name replaces the library prefix entirely and must be refused"
+        );
+    }
+
+    /// Kontrola dodatnia: zwykła nazwa przechodzi i ląduje **w** bibliotece.
+    ///
+    /// Bez tego przypadku obie odmowy wyżej świecą na zielono także dla zapory, która nie
+    /// przepuszcza niczego — czyli dla Startu, który nigdy nic nie uruchamia.
+    #[test]
+    fn a_plain_file_name_passes_and_stays_inside_the_library() {
+        assert_eq!(
+            requested("nightly-review.yaml", 3),
+            Ok((
+                Path::new(HOME)
+                    .join(WORKFLOWS_DIR)
+                    .join("nightly-review.yaml"),
+                3
+            ))
+        );
+    }
 }
