@@ -81,7 +81,33 @@ Zanim zaczniesz szukać winnego testu: **uruchom tę samą binarkę dwa razy.** 
 bliski zeru znaczy, że to skanowanie. Naprawa trwała jest po stronie maszyny (Developer Tools
 dla narzędzia odpalającego cargo); obejście bez uprawnień to rozgrzanie binarek raz, poza bramką.
 
-### Pierwsza uczciwa czerwień, którą ten budżet maskował
+### Częściowa inwentaryzacja suity Rusta — 49 z 125 celów, i dwie czerwienie
+
+Przelot per cel (każda binarka osobno, żeby oddzielić narzut skanowania od zachowania kodu)
+doszedł do **49 z 125** i został przerwany: hak Stop biegnie na każdej granicy tury z budżetem
+20 s na `quick-fmt` i `quick-types`, a przelot saturował CPU tak, że oba przekraczały ten budżet
+dwukrotnie. Zmierzone: przy wolnej maszynie oba schodzą w **1 s**. Nie da się jednocześnie
+trzymać dwugodzinnego pomiaru i zielonego haka Stop — to jest ograniczenie do zapamiętania,
+nie defekt.
+
+Co zdążył ustalić na 49 celach:
+
+- **Zero prawdziwych zwisów.** Jedyny kandydat, `workspace_switch_keeps_runs`, dobił do limitu
+  180 s — a uruchomiony sam przechodzi (2 testy, 0,02 s) przy 87 s zegara ściennego. Przerwany
+  skan nie zostaje zapamiętany, więc pierwsza próba zapłaciła go dwa razy.
+- **Dwie czerwienie, obie z rodziny tee T-34**: `stream_raw_tee_live` i
+  `stream_tee_survives_db_delete`, oba `rc=101`. Pozostałe pięć testów strumienia przechodzi
+  (`stream_unknown_events`, `stream_closing_lines`, `stream_coalesce_window`,
+  `stream_collapse_defaults` — czasy 0–124 s to czysty narzut). Trzeci test rodziny,
+  `stream_raw_tee`, **nie został jeszcze zmierzony**.
+- Dwie z trzech to nie szum. To jeden defekt w ścieżce tee — a T-34 jest zadaniem, któremu ten
+  plik przypisuje uczynienie niezmiennika 4 prawdziwym.
+
+**Dokończenie tego pomiaru jest najtańszą znaną robotą o najwyższej wartości w tym repo:**
+76 celów zostało, a wynik to pierwsza uczciwa lista czerwieni suity Rusta. Odpalać wtedy, gdy
+nie trzeba domykać tury — albo z podniesionym budżetem `quick-fmt`/`quick-types`.
+
+### Pierwsza z tych czerwieni w szczegółach
 
 `src-tauri/tests/stream_raw_tee_live.rs` — `every_raw_line_is_in_the_file_including_the_one_nobody_understands`
 pada **deterministycznie** w 20,01 s, czyli równo we własnym `LIMIT`, na `Error: Elapsed(())`.
