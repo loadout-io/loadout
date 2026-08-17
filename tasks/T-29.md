@@ -39,6 +39,25 @@ to samo miejsce, inny rodzaj dowodu) · `tasks/T-27.md` (nazwy komend; ta sama z
   `__TAURI_INTERNALS__` nagrywajaca `(cmd, args)`, sprzatanie obu.
 - `e2e/tests/*.spec.ts` -- trzy pliki wymienione przy `check:`.
 - `package.json` **nie** jest w OWNS: jesli potrzebny jest skrypt npm, zglos to jako znalezisko.
+- **Kod frontu, ktory e2e zastanie NIEPODLACZONY** — `src/sections/run/index.tsx`,
+  `src/sections/workflows/index.tsx`, `src/sections/workflows/list/{store.ts,tile.tsx}` i trzy
+  testy tych plikow (`delete.test.tsx`, `duplicate.test.ts`, `tile.test.tsx`). **Waski mandat:**
+  wylacznie PODPIECIE — sekcja ma brac prawdziwy adapter zamiast zaslepki i nazywac sie wlasnym
+  naglowkiem. Ani jednej nowej funkcji, ani jednej oslabionej asercji w tych testach.
+
+  **Dlaczego to jest w OWNS (§5c).** Zmierzone 2026-08-17 na galezi `task-T-29`: kryteria nie
+  daly sie spelnic, bo sekcja workflows byla podpieta do **odmawiajacej zaslepki**, a ekran
+  biegu nie mial naglowka, po ktorym spacer po sekcjach moze go rozpoznac. Kliknieciu w
+  prawdziwej aplikacji nie da sie dowiesc, nie naprawiwszy tego, w co sie klika — proza tego
+  zadania wymaga wiec zmiany, ktorej jego wlasny OWNS zabranial. To ta sama rodzina, co T-30
+  i T-36.
+
+  Osobno: `list/store.ts` niosl **wezsze lustro** schematu z T3 §3.1 i sam siebie opisywal jako
+  tymczasowe — „kiedy T-13 wyladuje, te dwa opisy maja zostac zredukowane do jednego, to jest
+  zadanie dla czlowieka". T-13 wyladowalo, a lustro klamalo w te jedna strone, ktora boli: plik
+  zapisany przez ten magazyn przechodzil kontrole typow jako KOMPLETNY, majac kroki bez polowy
+  pol (niezmiennik 13). Redukcja do jednego zrodla jest wiec wykonaniem tamtej notatki, a nie
+  cicha decyzja tego pliku.
 
 ## Koszt i przenosnosc -- swiadomie przyjete
 
@@ -112,4 +131,11 @@ e2e/harness.ts
 e2e/tests/create-workflow.spec.ts
 e2e/tests/sections-mount.spec.ts
 e2e/tests/no-dead-controls.spec.ts
+src/sections/run/index.tsx
+src/sections/workflows/index.tsx
+src/sections/workflows/list/store.ts
+src/sections/workflows/list/tile.tsx
+src/sections/workflows/list/delete.test.tsx
+src/sections/workflows/list/duplicate.test.ts
+src/sections/workflows/list/tile.test.tsx
 -->
