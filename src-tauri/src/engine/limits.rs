@@ -21,8 +21,8 @@
 //! Zejście do nowej wartości dzieje się wyłącznie przy zwalnianiu miejsc — obniżenie suwaka
 //! nie dotyka niczego, co już działa.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -154,6 +154,79 @@ pub fn read_gate(info: &Value) -> Gate {
     };
 
     Gate::PausedUntil(resets_at)
+}
+
+/// Do kiedy bieg nic nie wysyła — **jeden fakt, wiele uchwytów**.
+///
+/// Osobny typ, bo o pauzie mówią dwa różne miejsca biegu i żadne z nich nie trzyma go na
+/// wyłączność: chwilę powrotu zapisuje pętla czytająca zdarzenia sterownika, a pyta o nią
+/// wysyłka następnego kroku — dwa zadania, jedna odpowiedź. Klon dzieli tę samą chwilę,
+/// dokładnie tak, jak klon [`Limiter`] dzieli tę samą pulę.
+///
+/// **Dlaczego nie po prostu pole w [`Run`].** Wtedy podpięcie musiałoby trzymać cały `Run`
+/// pod zamkiem, a `Run::dispatch` czeka na miejsce przez `await` — czyli zamek przeżyłby
+/// `await` w miejscu, w którym `clippy::await_holding_lock` mówi `deny` (niezmiennik 8).
+/// Pauza jest jedyną rzeczą w `Run`, która zmienia się z zewnątrz, więc to ona dostaje uchwyt,
+/// a nie cały bieg.
+#[derive(Clone, Debug, Default)]
+pub struct Pause {
+    /// Chwila na **zegarze wykonania**, nie sekundy uniksowe z drutu: tylko ona idzie za czasem
+    /// wirtualnym w testach i tylko ona przeżywa przestawienie zegara maszyny w trakcie pauzy.
+    /// Liczbę z drutu, tę, z której UI robi godzinę lokalną, niesie [`Gate::PausedUntil`].
+    /// `None` znaczy „bieg wysyła".
+    ///
+    /// `std::sync::Mutex`, nigdy `tokio::sync::Mutex`, i to jest wybór, nie nawyk
+    /// (niezmiennik 8): każdy zamek poniżej powstaje i ginie w jednym wywołaniu bez `await`,
+    /// a zamek asynchroniczny kusiłby do dokładnie odwrotnego.
+    until: Arc<Mutex<Option<Instant>>>,
+}
+
+impl Pause {
+    /// Wchodzi surowe `rate_limit_info` i chwila, w której je zobaczyliśmy.
+    ///
+    /// `now_unix` jest argumentem, bo `resetsAt` przychodzi z drutu jako czas ścienny, a ten
+    /// plik ma dać się przetestować bez zegara maszyny — tak samo, jak daje się przetestować
+    /// bez okna.
+    ///
+    /// Odpowiedź trzeba przeczytać: zapisanie pauzy i niesprawdzenie, czy w ogóle zaszła, to
+    /// bieg, który stoi bez powodu widocznego dla człowieka — albo idzie mimo odmowy.
+    #[must_use]
+    pub fn saw(&self, info: &Value, now_unix: i64) -> Gate {
+        let gate = read_gate(info);
+        if let Gate::PausedUntil(resets_at) = gate {
+            let deadline = Instant::now() + duration_until_reset(resets_at, now_unix);
+            let mut until = self.lock();
+            // Dalsza z dwóch chwil, nigdy bliższa. Kroki, które biegną, strumieniują dalej
+            // (pauza wstrzymuje wysyłkę, nie egzekucję), więc druga linia limitu potrafi
+            // wejść zaraz po pierwszej i być od niej starsza. Skrócenie pauzy taką linią
+            // wygląda potem jak „wznowiło się samo, o minutę za wcześnie", a szuka się tego
+            // w zegarze, nie tutaj.
+            *until = Some(until.map_or(deadline, |set| set.max(deadline)));
+        }
+        // Zdarzenie ze statusem `allowed` NIE kończy trwającej pauzy i to jest decyzja, nie
+        // przeoczenie: wznowienie ma jeden wyzwalacz, `resetsAt` `[T7 §7.2]`. Te zdarzenia to
+        // 1,3% normalnego strumienia, a w pauzie strumieniują wciąż dwa czy trzy kroki —
+        // pierwsze z nich skasowałoby pauzę milisekundy po jej wejściu.
+        gate
+    }
+
+    /// Ile jeszcze bieg nie wysyła. `Duration::ZERO` znaczy „wysyła".
+    #[must_use]
+    pub fn left(&self) -> Duration {
+        self.lock().map_or(Duration::ZERO, |deadline| {
+            // `saturating_*`, bo pauza po terminie ma dawać zero, a nie liczbę ujemną, której
+            // `Duration` i tak nie umie unieść — odejmowanie w drugą stronę byłoby paniką
+            // w silniku (`AGENTS.md` §4).
+            deadline.saturating_duration_since(Instant::now())
+        })
+    }
+
+    /// Zamek na chwili powrotu. Bez `await` w środku — patrz pole [`Pause::until`].
+    fn lock(&self) -> MutexGuard<'_, Option<Instant>> {
+        // Zatruty zamek odplatamy, zamiast panikować: `panic!` w silniku zabiera cały bieg
+        // (`AGENTS.md` §4), a chwila powrotu po panice jednego kroku jest dalej poprawna.
+        self.until.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// Stan **biegu**.
@@ -404,12 +477,9 @@ impl Limiter {
 pub struct Run {
     /// Uchwyt do wspólnej puli. Klon, nie własna pula — patrz nagłówek pliku.
     limiter: Limiter,
-    /// Do kiedy nic nie wychodzi. `None` znaczy „bieg wysyła".
-    ///
-    /// Chwila na **zegarze wykonania**, nie sekundy uniksowe z drutu: tylko ona idzie za czasem
-    /// wirtualnym w testach i tylko ona przeżywa przestawienie zegara maszyny w trakcie pauzy.
-    /// Liczbę z drutu, tę, z której UI robi godzinę lokalną, niesie [`Gate::PausedUntil`].
-    paused_until: Option<Instant>,
+    /// Do kiedy nic nie wychodzi. **Uchwyt, nie pole**: pauzę zapisuje pętla zdarzeń
+    /// sterownika, a czyta ją wysyłka — powód stoi przy [`Pause`].
+    paused: Pause,
     steps: Vec<Step>,
 }
 
@@ -427,7 +497,7 @@ impl Run {
     pub fn new(limiter: Limiter, steps: &[StepState]) -> Self {
         Self {
             limiter,
-            paused_until: None,
+            paused: Pause::default(),
             steps: steps
                 .iter()
                 .map(|&state| Step { state, attempt: 1 })
@@ -465,12 +535,18 @@ impl Run {
     /// (patrz [`Run::saw_rate_limit`]).
     #[must_use]
     pub fn still_paused_for(&self) -> Duration {
-        self.paused_until.map_or(Duration::ZERO, |deadline| {
-            // `saturating_*`, bo pauza po terminie ma dawać zero, a nie liczbę ujemną, której
-            // `Duration` i tak nie umie unieść — odejmowanie w drugą stronę byłoby paniką
-            // w silniku (`AGENTS.md` §4).
-            deadline.saturating_duration_since(Instant::now())
-        })
+        self.paused.left()
+    }
+
+    /// Uchwyt do pauzy tego biegu — dla tego, kto czyta zdarzenia sterownika.
+    ///
+    /// Zdarzenia sterownika przychodzą w **innym zadaniu** niż wysyłka, a [`Run::saw_rate_limit`]
+    /// wymaga biegu na wyłączność, którego to zadanie mieć nie może. Uchwyt jest jedyną drogą
+    /// dookoła i prowadzi do tej samej chwili powrotu, nie do jej kopii: druga kopia znaczyłaby
+    /// bieg, który stoi według jednego zadania i wysyła według drugiego.
+    #[must_use]
+    pub fn pause_handle(&self) -> Pause {
+        self.paused.clone()
     }
 
     /// Stany kroków, w kolejności z [`Run::new`].
@@ -490,27 +566,18 @@ impl Run {
     /// `now_unix` jest argumentem, bo `resetsAt` przychodzi z drutu jako czas ścienny, a ten
     /// plik ma dać się przetestować bez zegara maszyny — tak samo, jak daje się przetestować
     /// bez okna.
+    /// Ta sama odpowiedź, co [`Pause::saw`], tylko przez bieg trzymany na wyłączność.
+    ///
+    /// `&mut self` mimo że nic tu nie wymaga wyłączności: chwila powrotu siedzi za uchwytem
+    /// [`Pause`], a ta droga jest dla tego, kto ma cały bieg i nie potrzebuje drugiego zadania.
+    /// Reguła jest jedna i mieszka w [`Pause::saw`] — tutaj nie ma jej kopii (niezmiennik 23).
+    ///
+    /// Żaden krok nie zmienia tu stanu i żaden nie dostaje podbitego podejścia. To nie jest
+    /// przeoczenie: `[T7 §7.2]` nazywa wprost błędem wersję, która oznacza kroki jako `failed`
+    /// („a pause, not a failure"), a na ekranie wygląda ona jak bieg, który się wywrócił na
+    /// limicie, zamiast takiego, który na niego czeka.
     pub fn saw_rate_limit(&mut self, info: &Value, now_unix: i64) -> Gate {
-        let gate = read_gate(info);
-        if let Gate::PausedUntil(resets_at) = gate {
-            let deadline = Instant::now() + duration_until_reset(resets_at, now_unix);
-            // Dalsza z dwóch chwil, nigdy bliższa. Kroki, które biegną, strumieniują dalej
-            // (pauza wstrzymuje wysyłkę, nie egzekucję), więc druga linia limitu potrafi
-            // wejść zaraz po pierwszej i być od niej starsza. Skrócenie pauzy taką linią
-            // wygląda potem jak „wznowiło się samo, o minutę za wcześnie", a szuka się tego
-            // w zegarze, nie tutaj.
-            self.paused_until = Some(self.paused_until.map_or(deadline, |set| set.max(deadline)));
-        }
-        // Zdarzenie ze statusem `allowed` NIE kończy trwającej pauzy i to jest decyzja, nie
-        // przeoczenie: wznowienie ma jeden wyzwalacz, `resetsAt` `[T7 §7.2]`. Te zdarzenia to
-        // 1,3% normalnego strumienia, a w pauzie strumieniują wciąż dwa czy trzy kroki —
-        // pierwsze z nich skasowałoby pauzę milisekundy po jej wejściu.
-        //
-        // Żaden krok nie zmienia tu stanu i żaden nie dostaje podbitego podejścia. To nie jest
-        // przeoczenie w drugą stronę: `[T7 §7.2]` nazywa wprost błędem wersję, która oznacza
-        // kroki jako `failed` („a pause, not a failure"), a na ekranie wygląda ona jak bieg,
-        // który się wywrócił na limicie, zamiast takiego, który na niego czeka.
-        gate
+        self.paused.saw(info, now_unix)
     }
 
     /// Prośba o miejsce dla jednego kroku. Jedyne wejście do puli.
@@ -522,6 +589,19 @@ impl Run {
             // nie wyśle, zajmowałoby slot potrzebny komuś, kto może biec.
             return Dispatch::Refused(Refusal::Paused);
         }
-        Dispatch::Granted(self.limiter.take_slot().await)
+        let slot = self.limiter.take_slot().await;
+        // 2026-08-17 (T-31) — i drugi raz, PO czekaniu. Pierwsze pytanie odpowiadało o biegu
+        // sprzed kolejki: limit dostawcy wchodzi w trakcie kroków, które już biegną, a ten
+        // krok stał w tym czasie po miejsce. Bez tego pytania pauza działa dokładnie na te
+        // kroki, których nikt nie zatrzymywał, a przepuszcza pierwszy krok po zwolnieniu
+        // miejsca — czyli ten jeden, który idzie prosto w zamknięte okno.
+        //
+        // Miejsce wraca do puli samo: `slot` ginie razem z tym `return`, a zwolnienie siedzi
+        // w `Drop`. Bieg, który nic nie wyśle, nie ma prawa trzymać miejsca potrzebnego komuś,
+        // kto może biec — tak samo, jak nie ma prawa po nie czekać.
+        if self.status() == RunStatus::Paused {
+            return Dispatch::Refused(Refusal::Paused);
+        }
+        Dispatch::Granted(slot)
     }
 }

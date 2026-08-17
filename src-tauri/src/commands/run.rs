@@ -682,6 +682,14 @@ struct Live {
 struct Book {
     /// Stan **biegu**. Jedyne miejsce, w którym istnieje `paused`.
     status: RunState,
+    /// Czy bieg stoi na pytaniu do człowieka.
+    ///
+    /// 2026-08-17 (T-31) — powody, dla których bieg stoi, są od teraz DWA i mijają niezależnie:
+    /// to pytanie i limit dostawcy. Bez tego pola oba pisałyby `status` bezwarunkowo i kasowały
+    /// się nawzajem — ten, który skończył pierwszy, ogłaszałby bieg jako idący, choć drugi wciąż
+    /// go trzyma. Do `run.json` to pole nie wychodzi: `RunFile` bierze z księgi sam `status`,
+    /// a dwa pola o jednym fakcie na ekranie są dokładnie tym, czego zabrania niezmiennik 13.
+    asking: bool,
     /// Kiedy ruszył pierwszy krok.
     started_at: Option<i64>,
     /// Kiedy skończył się ostatni.
@@ -760,6 +768,7 @@ impl Live {
             plan,
             book: Mutex::new(Book {
                 status: RunState::Running,
+                asking: false,
                 started_at: None,
                 ended_at: None,
                 steps,
@@ -866,7 +875,10 @@ impl Live {
     }
 
     /// Jeden krok, od pierwszego wpisu w księdze po ostatni.
-    async fn step(&self, id: StepId, cancel: CancellationToken) -> StepReport {
+    ///
+    /// `self: Arc<Self>`, bo pętla czytająca zdarzenia sterownika jest **osobnym zadaniem**
+    /// ([`forward`]) i musi umieć powiedzieć o limicie dostawcy temu samemu biegowi.
+    async fn step(self: Arc<Self>, id: StepId, cancel: CancellationToken) -> StepReport {
         // Miejsce ZANIM cokolwiek wpiszemy do księgi: `running` z chwilą startu wpisaną przed
         // wzięciem miejsca to ten sam fałsz, przed którym stoi niezmiennik 11 — krok stojący
         // w kolejce czytałby się jak krok, który działa.
@@ -917,6 +929,27 @@ impl Live {
         report
     }
 
+    /// Dostawca kazał czekać: bieg przestaje wysyłać i **mówi o tym dyskowi**.
+    ///
+    /// Adapter na pięć linii, polityka w jednym rdzeniu (niezmiennik 23): co znaczy „odmowa",
+    /// rozstrzyga `engine::limits::read_gate` i wyłącznie on — prawdziwa linia z **udanego**
+    /// biegu niesie `"status":"allowed"` obok dwóch pól ze słowem „rejected", a te zdarzenia to
+    /// 1,3% normalnego strumienia `[T7 §4.3, V]`. Wersja czytająca tutaj `pause_run` byłaby
+    /// drugą kopią tej reguły, a przy dwóch kopiach zawsze czyta się tę, która akurat kłamie.
+    /// Wracają więc na drut dokładnie te dwa pola, które tamten czyta, pod nazwami z drutu.
+    ///
+    /// **Chwili powrotu nie zapisujemy do `run.json`** i to jest wybór (niezmiennik 13): niesie
+    /// ją już wiersz kuratora (`Line::Problem::resets_at`), a godzinę lokalną rysuje z niej front
+    /// [T7 §7.2]. Druga kopia byłaby drugą rzeczą do utrzymania w zgodzie, a jedna z dwóch jest
+    /// zawsze tą nieaktualną. Na dysku zostaje sam fakt „bieg stoi" — bo stan, który nie dociera
+    /// na dysk, nie przeżywa awarii aplikacji (niezmiennik 4).
+    fn the_provider_said_wait(&self, status: &str, resets_at: i64) {
+        let told = serde_json::json!({ "status": status, "resetsAt": resets_at });
+        if let limits::Gate::PausedUntil(_) = self.gate.pause_handle().saw(&told, now_unix()) {
+            self.update(|book| run_stands_or_moves(book, true));
+        }
+    }
+
     /// Miejsce ze **wspólnej puli aplikacji**, i limit dostawcy w tej samej pętli.
     ///
     /// `None` znaczy „nie ruszaj tego kroku": bieg zatrzymał człowiek, zanim to miejsce się
@@ -930,6 +963,10 @@ impl Live {
     /// miejsce w puli, trzymałby zasób potrzebny komuś, kto może biec, i zajmował go przez całe
     /// pięciogodzinne okno limitu.
     async fn a_slot_for_this_step(&self, cancel: &CancellationToken) -> Option<limits::Slot> {
+        // Czy ten krok kiedykolwiek odbił się od limitu. Tylko taki krok ma prawo ogłosić, że
+        // bieg rusza dalej: inaczej każdy zwykły krok pisałby `running` po biegu, który stoi
+        // z zupełnie innego powodu.
+        let mut waited = false;
         loop {
             let asked = tokio::select! {
                 // `biased`, żeby Stop wygrywał z miejscem zwalnianym w tej samej chwili: krok,
@@ -940,8 +977,18 @@ impl Live {
                 asked = self.gate.dispatch() => asked,
             };
             match asked {
-                limits::Dispatch::Granted(slot) => return Some(slot),
+                limits::Dispatch::Granted(slot) => {
+                    if waited {
+                        // Bieg ruszył dalej SAM, o `resetsAt`, i nikt nie musiał nic nacisnąć.
+                        // Pytamy bramę jeszcze raz zamiast wpisać `false`: druga linia limitu
+                        // mogła wejść, kiedy spaliśmy, i wtedy bieg dalej stoi.
+                        let still = !self.gate.still_paused_for().is_zero();
+                        self.update(|book| run_stands_or_moves(book, still));
+                    }
+                    return Some(slot);
+                }
                 limits::Dispatch::Refused(limits::Refusal::Paused) => {
+                    waited = true;
                     // Dokładnie do końca pauzy i ani razu wcześniej. Wersja pytająca co sto
                     // milisekund budzi bieg trzy tysiące razy w pięciogodzinnym oknie, żeby
                     // 2999 razy usłyszeć to samo — a `resetsAt` jest znane od pierwszego
@@ -959,7 +1006,7 @@ impl Live {
 
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
-        &self,
+        self: &Arc<Self>,
         id: StepId,
         job: &AgentJob,
         cancel: &CancellationToken,
@@ -967,11 +1014,11 @@ impl Live {
         let (events, inbox) = mpsc::channel::<AgentEvent>(EVENT_QUEUE);
         // Odbiór staje PRZED startem sterownika: vendor ma prawo powiedzieć pierwsze zdarzenia
         // jeszcze w `start`, a kanał bez odbiorcy zatrzymałby go na pierwszym pełnym buforze.
+        // Limit dostawcy przychodzi właśnie tędy, więc pętla dostaje CAŁY bieg, nie same linie.
         let pump = tokio::spawn(forward(
+            Arc::clone(self),
             inbox,
-            self.lines.clone(),
             self.plan.steps[id].name.clone(),
-            self.began,
         ));
         // Własny klon nadawcy zostaje po to, żeby o nieudanym starcie dało się powiedzieć tą samą
         // drogą, którą mówi agent. Musi zginąć na OBU gałęziach — nadawca, który przeżył krok,
@@ -1111,17 +1158,30 @@ impl Live {
         // (niezmiennik 4), a stan, który istnieje wyłącznie na dysku, nie da się o nic zapytać
         // z drugiej strony okna.
         self.control.pause();
-        self.update(|book| book.status = RunState::Paused);
+        self.update(|book| {
+            book.asking = true;
+            // `true`, bo pytanie stoi tu i teraz; drugi powód czyta [`run_stands_or_moves`].
+            run_stands_or_moves(book, book.asking);
+        });
         self.ask(id, question);
 
         if listening.wait().await {
             self.control.resume();
-            self.update(|book| book.status = RunState::Running);
+            // Limit dostawcy mógł wejść W TRAKCIE pytania i wtedy odpowiedź człowieka nie
+            // wznawia niczego: bieg dalej stoi, tylko już z innego powodu.
+            let still = !self.gate.still_paused_for().is_zero();
+            self.update(|book| {
+                book.asking = false;
+                run_stands_or_moves(book, still);
+            });
             StepReport::Succeeded
         } else {
             self.control.resume();
             // Stop przy pytaniu. Krok jest `cancelled`, a jego potomkowie też — nie `skipped`,
-            // bo nikt nie padł: człowiek powiedział stop (ARCHITECTURE §5).
+            // bo nikt nie padł: człowiek powiedział stop (ARCHITECTURE §5). Statusu biegu nie
+            // ruszamy, bo bieg nie rusza dalej — zamyka go `close_the_book`. Gaśnie samo
+            // `asking`, żeby krok kończący się obok nie ogłosił pauzy, której już nie ma.
+            self.update(|book| book.asking = false);
             StepReport::Cancelled
         }
     }
@@ -1175,6 +1235,23 @@ impl Live {
     }
 }
 
+/// Bieg stoi albo idzie — **wyliczone z obu powodów naraz**, nigdy wpisane z jednego.
+///
+/// Powody są dwa i mijają niezależnie: pytanie do człowieka ([`Live::wait_for_a_person`]) i limit
+/// dostawcy ([`Live::the_provider_said_wait`]). Dwa bezwarunkowe przypisania do `status` kasują
+/// się nawzajem — ten powód, który skończył pierwszy, ogłasza bieg jako idący, choć drugi wciąż
+/// go trzyma, i na ekranie wygląda to jak bieg, który wysyła do zamkniętego okna.
+///
+/// Wolno to wołać **wyłącznie w trakcie biegu**: stany końcowe wpisuje [`Live::close_the_book`]
+/// i nic po nim nie pyta już o to, czy bieg idzie.
+fn run_stands_or_moves(book: &mut Book, paused_by_the_provider: bool) {
+    book.status = if book.asking || paused_by_the_provider {
+        RunState::Paused
+    } else {
+        RunState::Running
+    };
+}
+
 /// Zdarzenia jednego kroku → wiersze na ekran.
 ///
 /// Kuracja mieszka w [`Curator`] i **tylko** tam (niezmiennik 15): ta pętla nie decyduje, który
@@ -1186,26 +1263,34 @@ impl Live {
 /// powstać. Szew, w którym te dwie drogi mają się spotkać, należy do T-07 (`ARCHITECTURE` §4:
 /// `stream.rs` stoi między nadzorem a kuratorem); dopisanie tu drugiej klasyfikacji byłoby
 /// drugą implementacją kuracji, czyli tą, o której nikt by nie pamiętał.
-async fn forward(
-    mut inbox: mpsc::Receiver<AgentEvent>,
-    lines: LineSink,
-    agent: String,
-    began: Instant,
-) {
+/// 2026-08-17 (T-31) — pętla dostaje CAŁY bieg, a nie same linie, i to jest cała różnica między
+/// „widać banner" a „bieg umie się wznowić o właściwej godzinie". `AgentEvent::RateLimit`
+/// docierał tu i zostawał wierszem na ekranie, a wysyłka szła dalej, jakby nic nie zaszło —
+/// czyli następny agent dostawał odmowę, a okno limitu paliło się na odmowach.
+async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<AgentEvent>, agent: String) {
     let mut curator = Curator::new();
     while let Some(event) = inbox.recv().await {
-        let at_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // PRZED kuracją, nie po niej: wiersz jest zdaniem dla człowieka, a to niżej jest
+        // decyzją dla biegu. Kolejność odwrotna dokłada okno, w którym ekran już wie, a bieg
+        // jeszcze wysyła.
+        if let AgentEvent::RateLimit {
+            status, resets_at, ..
+        } = &event
+        {
+            live.the_provider_said_wait(status, *resets_at);
+        }
+        let at_ms = u64::try_from(live.began.elapsed().as_millis()).unwrap_or(u64::MAX);
         let seen = Seen {
             agent: &agent,
             at_ms,
             event: &event,
             tool: None,
         };
-        send_batch(&lines, curator.observe(seen));
+        send_batch(&live.lines, curator.observe(seen));
     }
     // Ostatnia grupa sklejania wyszłaby inaczej nigdy, a użytkownik zobaczyłby o wiersz mniej,
     // niż się wydarzyło — najgorszy rodzaj zgubienia, bo cichy.
-    send_batch(&lines, curator.flush());
+    send_batch(&live.lines, curator.flush());
 }
 
 /// Wiersze kuratora oddane pompie, **po jednym**.
@@ -1300,6 +1385,16 @@ fn now_ms() -> i64 {
         .map_or(0, |since| {
             i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
         })
+}
+
+/// Sekundy epoki — **ta sama jednostka, w której jedzie `resetsAt`** `[T7 §7.2, V]`.
+///
+/// Liczona z [`now_ms`], żeby bieg miał jeden zegar: druga droga do `SystemTime` znaczyłaby dwa
+/// miejsca do poprawienia, kiedy zegar wymaga poprawki, i jedno z nich zostałoby stare. Ta sama
+/// liczba w milisekundach mówi `duration_until_reset`, że limit wraca za 300 000 sekund — a to
+/// wygląda na usterkę zegara, nie na pomyloną jednostkę, więc szuka się tego godzinami.
+fn now_unix() -> i64 {
+    now_ms() / 1_000
 }
 
 /// `<ts>` z nazwy katalogu biegu: `20260816-194804`, czas UTC.
