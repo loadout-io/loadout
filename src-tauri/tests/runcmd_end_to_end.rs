@@ -152,7 +152,7 @@ async fn a_file_from_the_canvas_comes_out_as_lines_in_graph_order() -> Result<()
 
     both_steps_spoke(&seen);
     the_arrow_means_after(&seen)?;
-    every_key_is_camel_case(&seen)?;
+    every_key_is_camel_case(&seen);
     the_run_left_a_directory(&report, bench.project.path())?;
     Ok(())
 }
@@ -189,7 +189,11 @@ fn the_arrow_means_after(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error>>
 }
 
 /// (c) Każda `Line` na drucie ma klucze wyłącznie w camelCase.
-fn every_key_is_camel_case(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error>> {
+///
+/// 2026-08-17 (T-30) — bez `Result`, odkąd wiersz przyjeżdża tu **już jako JSON**: powtórna
+/// serializacja była jedyną rzeczą, która mogła tu paść, a `Result`, którego wariant błędu nie
+/// istnieje, jest czerwony u `clippy::unnecessary_wraps`. Asercje są co do znaku te same.
+fn every_key_is_camel_case(seen: &[(Instant, Json)]) {
     let mut compound = 0usize;
     for (_, wire) in seen {
         let snake = underscored(wire);
@@ -209,7 +213,6 @@ fn every_key_is_camel_case(seen: &[(Instant, Json)]) -> Result<(), Box<dyn Error
          here: `kind` and `text` read the same under every naming rule. A finished run has to \
          emit at least one row with a compound key — `durationMs` on the closing line"
     );
-    Ok(())
 }
 
 /// (d) Katalog biegu istnieje i ma w środku `run.json` oraz `logs/`.
