@@ -91,6 +91,29 @@
 //! zapisująca do bazy po drodze wygląda tak samo przez trzy tygodnie — do pierwszego skasowania
 //! `loadout.db`.
 //!
+//! # Wynik kroku → przekazanie → prompt następnego
+//!
+//! Szew, dla którego istnieje T-32, i cała jego treść mieści się w dwóch zdaniach. Po udanej
+//! turze wynik kroku ląduje w `handoffs/` ([`Live::hand_over`]); prompt kroku, który po nim
+//! idzie, niesie **ścieżkę** tego pliku ([`Live::prompt_for`]) i nigdy jego treść.
+//! Front-matter składa Loadout, ciałem jest dosłownie to, co oddał agent (`ARCHITECTURE` §8).
+//!
+//! **Indeks, nie transkrypt** (D6 punkt 5). Wklejenie ciała do promptu jest o linijkę tańsze
+//! i w pierwszym biegu wygląda lepiej: krok dostaje wszystko, czego mógłby chcieć, i nie musi
+//! otwierać ani jednego pliku. Płaci za to każdy krok po nim — przy czwartym prompt niesie trzy
+//! poprzednie tury w całości i jest większy niż praca. [T6 §10.2] każe dostarczać „belt and
+//! braces", czyli ciało **i** ścieżkę; to jest świadome odejście od tamtego akapitu, nie
+//! przeoczenie, i jest jedynym miejscem, w którym te dwa dokumenty się nie zgadzają.
+//!
+//! Skoro ścieżka jest jedyną drogą do treści, to musi **działać**: katalog przekazań jedzie do
+//! sterownika w `RunSpec::extra_dirs`, bo krok `fresh-copy` stoi w `work/<krok>` i bez tego
+//! dostałby odnośnik, którego nie wolno mu otworzyć — czyli kontrolkę bez handlera
+//! (niezmiennik 16).
+//!
+//! Kolejność wpisów bierze się **z grafu**, nigdy z chwili zakończenia: dwa biegi tego samego
+//! workflow mają dać ten sam prompt, a to, który agent odpowiedział szybciej, zmienia się
+//! z biegu na bieg.
+//!
 //! # Czego ta warstwa świadomie NIE robi
 //!
 //! - **Nie tee'uje surowego strumienia do `logs/agent-<id>.jsonl`.** `AgentDriver` oddaje już
@@ -125,6 +148,7 @@ use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
+use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::workflow::check::{Level, check};
 use crate::workflow::file::load;
 use crate::workflow::{AgentStep, Folder, Step, WorkflowFile};
@@ -163,6 +187,24 @@ const EVENT_QUEUE: usize = 256;
 
 /// Ile znaków przepisujemy z ostatniej wypowiedzi agenta do jednolinijkowego podsumowania kroku.
 const SUMMARY_LIMIT: usize = 240;
+
+/// Ile znaków ma tytuł przekazania.
+///
+/// Tytuł jest **jednym wierszem** płaskiego front-mattera (`memory::handoff`), a instrukcja kroku
+/// bywa akapitem: `title:` na dwieście znaków czyta się jak plik, który ktoś uszkodził.
+const TITLE_LIMIT: usize = 120;
+
+/// Zdanie, po którym w prompcie zaczyna się indeks przekazań.
+///
+/// Po angielsku, jak wszystko, co czyta agent i człowiek (decyzja D5), i bez ani jednego naszego
+/// słowa z drutu: „handoff" i „fan-in" nie znaczą nic dla kogoś, kto właśnie dostał zadanie
+/// (niezmiennik 14).
+const HANDOFF_INDEX_OPENS: &str = "Steps before this one left what they found in these files:";
+
+/// I zdanie, którym się kończy. Mówi wprost, że treści w prompcie nie ma — inaczej agent, który
+/// nie otworzy pliku, uzna brak cytatu za brak materiału.
+const HANDOFF_INDEX_CLOSES: &str =
+    "Read the ones you need; their contents were not copied into this prompt.";
 
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
@@ -395,7 +437,12 @@ struct AgentJob {
     cwd: PathBuf,
     /// Czy ten katalog jest nasz, czyli czy mamy go utworzyć.
     ours: bool,
-    /// Instrukcje kroku. Jadą do sterownika jako **dane** i wychodzą stdinem (niezmiennik 9).
+    /// Instrukcje kroku, dosłownie z pliku workflow.
+    ///
+    /// To jeszcze **nie** jest prompt: prompt składa [`Live::prompt_for`] w chwili startu kroku,
+    /// z tej instrukcji i z indeksu przekazań poprzedników. Przy planowaniu nie zszedł jeszcze
+    /// nikt, więc indeksu nie ma tu z czego zbudować. Jedno i drugie jedzie do sterownika jako
+    /// **dane** i wychodzi stdinem (niezmiennik 9).
     prompt: String,
     /// Model z konfiguracji efektywnej.
     model: Option<String>,
@@ -676,6 +723,18 @@ struct Live {
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
+    /// Gdzie leży przekazanie każdego kroku — po jednym wpisie na krok, w kolejności z pliku
+    /// workflow. `None` znaczy „ten krok jeszcze nic nie oddał": kafelek kontrolny nie oddaje
+    /// nigdy, a krok anulowany albo padnięty nie ma czego przekazać.
+    ///
+    /// Zamek osobny od [`Live::book`] z rozmysłem: to nie jest stan, który jedzie do `run.json`.
+    /// Ścieżka przekazania **jest** w plikach — nazwa pliku otwiera się numerem kroku — więc
+    /// druga kopia w `run.json` byłaby drugim miejscem, w którym mieszka jeden fakt
+    /// (niezmiennik 13), i tym, które kłamie po pierwszej ręcznej edycji katalogu.
+    ///
+    /// **Nie przechodzi przez `await`** (niezmiennik 8): oba wywołania, które go biorą
+    /// ([`Live::filed`], [`Live::handed_before`]), oddają go w tym samym wyrażeniu.
+    handoffs: Mutex<Vec<Option<PathBuf>>>,
 }
 
 /// Zmienna połowa biegu — dokładnie to, co zmienia się między zrzutami `run.json`.
@@ -741,6 +800,38 @@ enum RunState {
     Cancelled,
 }
 
+/// Jedno wejście indeksu: przekazanie jednego poprzednika, gotowe do wpisania w prompt.
+#[derive(Debug)]
+struct Handed {
+    /// Nazwa kafelka, który to oddał. Ta sama, która stoi na ekranie jako etykieta wiersza —
+    /// prompt nazywa więc krok tym samym słowem, co UI (niezmiennik 13). Identyfikator kroku
+    /// ani uuid agenta nie mają tu czego szukać (niezmiennik 14).
+    from: String,
+    /// Gdzie ten plik leży, **bezwzględnie**: katalogiem roboczym kroku `fresh-copy` jest
+    /// `work/<krok>`, więc ścieżka względna katalogu biegu nie rozwiązałaby się z miejsca,
+    /// w którym agent naprawdę stoi.
+    path: PathBuf,
+}
+
+/// Co krok dostaje na wejściu: prompt, ślad po tym, co do niego wstrzyknięto, i katalogi,
+/// które musi móc otworzyć.
+#[derive(Debug)]
+struct Told {
+    /// Instrukcja kroku plus indeks przekazań poprzedników. Jedzie stdinem (niezmiennik 9).
+    prompt: String,
+    /// Dokładnie to, co Loadout wstrzyknął — nie to, co agent twierdzi, że przeczytał.
+    /// Pochodzenie, o którym nie da się skłamać [T6 §10.2]; wchodzi jako `reads` do przekazania
+    /// **tego** kroku.
+    ///
+    /// Ścieżki względem katalogu biegu, a nie bezwzględne jak w prompcie: przekazanie jest
+    /// plikiem, który przeżywa `cp -r` katalogu biegu (niezmiennik 4), a ścieżka z `/var/folders`
+    /// w środku przestaje po takiej kopii cokolwiek znaczyć.
+    reads: Vec<String>,
+    /// Katalog przekazań, kiedy krok ma co czytać. Pusty, kiedy nie ma: `--add-dir` na katalog,
+    /// w którym nic dla tego kroku nie leży, poszerza mu dostęp bez powodu.
+    extra_dirs: Vec<PathBuf>,
+}
+
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
     fn new(plan: Plan, lines: LineSink, control: RunControl, slots: Limiter) -> Self {
@@ -764,6 +855,7 @@ impl Live {
                 error: None,
             })
             .collect();
+        let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         Self {
             plan,
             book: Mutex::new(Book {
@@ -777,6 +869,7 @@ impl Live {
             control,
             gate,
             began: Instant::now(),
+            handoffs,
         }
     }
 
@@ -1025,16 +1118,26 @@ impl Live {
         // trzyma kurator otwarty i `pump.await` niżej nie wróciłby nigdy.
         let ours = events.clone();
 
+        // Prompt składamy TERAZ, a nie przy planowaniu: indeks przekazań ma co wymienić dopiero
+        // wtedy, gdy poprzednicy zeszli, a przy planowaniu nie ruszył jeszcze nikt.
+        let Told {
+            prompt,
+            reads,
+            extra_dirs,
+        } = self.prompt_for(id, &job.prompt);
+
         let spec = RunSpec {
             run_id: job.session,
             cwd: job.cwd.clone(),
-            // Instrukcje jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani jednej
-            // flagi vendora (niezmiennik 9).
-            prompt: job.prompt.clone(),
+            // Instrukcja i indeks jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani
+            // jednej flagi vendora (niezmiennik 9).
+            prompt,
             model: job.model.clone(),
             system_append: job.system_append.clone(),
             policy: job.policy,
-            extra_dirs: Vec::new(),
+            // Katalog przekazań, kiedy krok ma co czytać. Odnośnik do pliku, którego agentowi nie
+            // wolno otworzyć, jest odnośnikiem bez handlera (niezmiennik 16).
+            extra_dirs,
             resume: None,
         };
 
@@ -1046,7 +1149,7 @@ impl Live {
         let report = match job.driver.start(spec, events).await {
             Ok(handle) => {
                 drop(ours);
-                self.one_turn(id, handle, cancel).await
+                self.one_turn(id, handle, cancel, &reads).await
             }
             Err(error) => {
                 let text = format!("Loadout could not start this agent: {error}");
@@ -1064,12 +1167,16 @@ impl Live {
         report
     }
 
-    /// Jedna tura agenta: czekaj na koniec albo na Stop.
+    /// Jedna tura agenta: czekaj na koniec albo na Stop, a udany wynik oddaj następnym.
+    ///
+    /// `reads` jest listą tego, co Loadout wstrzyknął w prompt tej tury ([`Live::prompt_for`]),
+    /// i jedzie prosto do front-mattera przekazania, które z niej powstanie.
     async fn one_turn(
         &self,
         id: StepId,
         mut handle: Box<dyn AgentHandle>,
         cancel: &CancellationToken,
+        reads: &[String],
     ) -> StepReport {
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
         // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
@@ -1134,11 +1241,187 @@ impl Live {
                     step.summary = summary_of(&turn.text);
                 });
                 if ok {
+                    // Przekazanie schodzi na dysk PRZED powrotem z tury, i to jest cały warunek
+                    // poprawności tego szwu: stopień wejściowy potomkom zdejmuje planista dopiero
+                    // po tym powrocie (`engine::scheduler`). Zapis dopisany za `run_agent`
+                    // otwierałby okno, w którym następny krok już wystartował, a jego prompt nie
+                    // ma jeszcze czego wymienić — i wyglądałoby to na przekazanie gubione raz na
+                    // sto biegów, czyli na wyścig, którego nikt nie umie powtórzyć.
+                    //
+                    // Tylko po **udanym** kroku: agent, który wyszedł błędem, nie oddał wyniku,
+                    // a plik z jego ostatnim zdaniem czytałby się jak wynik. Powód porażki jedzie
+                    // do księgi i na ekran, tamtą drogą.
+                    self.hand_over(id, &turn.text, reads);
                     StepReport::Succeeded
                 } else {
                     StepReport::Failed
                 }
             }
+        }
+    }
+
+    /// Prompt kroku: jego **własna instrukcja** plus indeks przekazań poprzedników.
+    ///
+    /// Instrukcja stoi pierwsza i jest w prompcie zawsze. Prompt złożony z samych cudzych wyników
+    /// oddaje agentowi pracę wszystkich pozostałych i ani jednego zdania o tym, co ma z nią
+    /// zrobić.
+    ///
+    /// Indeks jest **listą ścieżek**, nigdy treścią (D6 punkt 5, nagłówek modułu). Krok bez
+    /// poprzedników dostaje swoją instrukcję i nic więcej: pusty nagłówek „steps before this one"
+    /// nad zerem wpisów jest zdaniem o niczym, a agent przeczyta go jako zgubione wejście.
+    fn prompt_for(&self, id: StepId, instructions: &str) -> Told {
+        let handed = self.handed_before(id);
+        let mut told = Told {
+            prompt: instructions.to_owned(),
+            reads: Vec::with_capacity(handed.len()),
+            extra_dirs: Vec::new(),
+        };
+        if handed.is_empty() {
+            return told;
+        }
+
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(HANDOFF_INDEX_OPENS);
+        for hand in &handed {
+            told.prompt
+                .push_str(&format!("\n- {}: {}", hand.from, hand.path.display()));
+            told.reads.push(self.filed_as(&hand.path));
+            // Jeden katalog na cały bieg, więc pętla dopisuje go raz — ale bierze go ze ścieżki,
+            // a nie ze stałej: druga kopia nazwy `handoffs` byłaby drugim miejscem do poprawienia
+            // w dniu, w którym `memory::handoff` zmieni nazwę katalogu, i tym niepoprawionym.
+            if let Some(dir) = hand.path.parent()
+                && !told.extra_dirs.iter().any(|had| had == dir)
+            {
+                told.extra_dirs.push(dir.to_owned());
+            }
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(HANDOFF_INDEX_CLOSES);
+        told.prompt.push('\n');
+        told
+    }
+
+    /// Przekazania kroków, po których idzie ten krok — **w kolejności z grafu**.
+    ///
+    /// Kolejnością jest pozycja kroku w pliku workflow, i to nie jest wybór kosmetyczny: druga
+    /// możliwa kolejność — chwila zakończenia — zmienia się z biegu na bieg, bo zależy od tego,
+    /// który agent akurat odpowiedział szybciej. Prompt, który dwa razy z rzędu wygląda inaczej,
+    /// jest promptem, którego nie da się z niczym porównać, a przy trzech poprzednikach to
+    /// przestaje być teorią. Pozycja w pliku jest przy tym tą samą liczbą, którą niesie prefiks
+    /// nazwy pliku przekazania i wiersz w `run.json`, więc indeks w prompcie i `ls handoffs/`
+    /// czyta się w jednym porządku.
+    ///
+    /// Poprzednik, który nic nie oddał, **wypada z listy**: kafelek kontrolny nie oddaje nigdy,
+    /// a wpis bez pliku byłby ścieżką, której agent nie ma jak otworzyć.
+    fn handed_before(&self, id: StepId) -> Vec<Handed> {
+        let before = ends(&self.plan.arrows, |&(parent, child)| {
+            (child == id).then_some(parent)
+        });
+        // Zamek żyje w jednym wyrażeniu i nie ma w nim ani jednego `await` (niezmiennik 8).
+        let filed: Vec<Option<PathBuf>> = {
+            let handoffs = self.handoffs.lock().unwrap_or_else(PoisonError::into_inner);
+            before
+                .iter()
+                .map(|&step| handoffs.get(step).cloned().flatten())
+                .collect()
+        };
+
+        before
+            .into_iter()
+            .zip(filed)
+            .filter_map(|(step, path)| {
+                Some(Handed {
+                    from: self.plan.steps.get(step)?.name.clone(),
+                    path: path?,
+                })
+            })
+            .collect()
+    }
+
+    /// Ścieżka przekazania widziana **z katalogu biegu**, czyli tak, jak zapisuje ją plik.
+    ///
+    /// Bezwzględna ścieżka spoza tego katalogu byłaby w `reads` zapisem prawdziwym dokładnie do
+    /// pierwszego przeniesienia katalogu biegu; nazwa pliku sama w sobie zostaje, kiedy `dir`
+    /// nie jest przedrostkiem — a to znaczy, że przekazanie leży gdzieś, gdzie tego biegu nie ma.
+    fn filed_as(&self, path: &Path) -> String {
+        path.strip_prefix(&self.plan.dir)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+
+    /// Odnotowuje, gdzie leży przekazanie tego kroku.
+    ///
+    /// Zamek powstaje i ginie w jednym wyrażeniu, bez `await` w środku (niezmiennik 8).
+    fn filed(&self, id: StepId, path: PathBuf) {
+        if let Some(slot) = self
+            .handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            *slot = Some(path);
+        }
+    }
+
+    /// Wynik kroku → plik przekazania w `handoffs/`.
+    ///
+    /// **Front-matter składa Loadout, ciałem jest to, co oddał agent** (`ARCHITECTURE` §8,
+    /// [T6 §10.2]). Ciała nie parsujemy i nie czyścimy: blok `---`, który model wkleił do swojej
+    /// odpowiedzi, ma zostać tam, gdzie go postawił, bo jest jedynym śladem próby, na którą
+    /// człowiek może zareagować. Wszystkie siedem pól niżej pochodzi z pliku workflow albo z tego
+    /// biegu — ani jedno z tekstu, który przyszedł od modelu.
+    ///
+    /// Nieudany zapis **loguje się i nie przewraca kroku**, tą samą decyzją, co zrzut `run.json`
+    /// w locie ([`Live::update`]): tura jest już zapłacona, a jej wynik jest dalej prawdziwy.
+    /// Cena tej decyzji stoi w dzienniku wprost — następny krok dostaje wtedy prompt bez tego
+    /// odnośnika.
+    fn hand_over(&self, id: StepId, said: &str, reads: &[String]) {
+        let step = &self.plan.steps[id];
+        let draft = MetaDraft {
+            run: self.plan.id.clone(),
+            // Numer Loadouta, ten sam, którym ten krok nazywa się w `run.json` i w
+            // `RunReport::steps`. Liczenie od jedynki byłoby drugą numeracją kroków, żyjącą
+            // wyłącznie w nazwach plików — a wtedy `handoffs/03__…` i czwarty wiersz na ekranie
+            // są tym samym krokiem tylko dla kogoś, kto zna przesunięcie.
+            step: u32::try_from(id).unwrap_or(u32::MAX),
+            from: step.name.clone(),
+            to: ends(&self.plan.arrows, |&(parent, child)| {
+                (parent == id).then_some(child)
+            })
+            .into_iter()
+            .filter_map(|child| self.plan.steps.get(child).map(|step| step.name.clone()))
+            .collect(),
+            // Jeden rodzaj dla każdego kroku, i to jest niezmiennik 27 zapisany w danych: silnik
+            // nie zna pojęcia „recenzja", więc nie ma jak nazwać wyniku kroku inaczej dlatego,
+            // że ten krok recenzował. `findings` jest tym, czym `docs/ARCHITECTURE.md` §8 nazywa
+            // wynik kroku w swoim własnym przykładzie (`02__research-auth__findings.md`).
+            kind: Kind::Findings,
+            title: title_of(step),
+            reads: reads.to_vec(),
+        };
+
+        match handoff::write_handoff(&self.plan.dir, draft, said) {
+            Ok(written) => {
+                if !written.repaired.is_empty() || written.truncated {
+                    // Licznik, który warto oglądać [T6 §11.1]: ile tur nie oddało umówionego
+                    // kształtu i Loadout musiał go dopisać.
+                    tracing::debug!(
+                        run = %self.plan.id,
+                        step = id,
+                        repaired = written.repaired.len(),
+                        truncated = written.truncated,
+                        "the body of this handoff had to be reshaped"
+                    );
+                }
+                self.filed(id, written.path);
+            }
+            Err(error) => tracing::error!(
+                run = %self.plan.id,
+                step = id,
+                %error,
+                "this step's result could not be handed over, so the next step is not told about it"
+            ),
         }
     }
 
@@ -1313,15 +1596,57 @@ fn send_batch(lines: &LineSink, batch: Vec<Line>) {
 
 /// Jedna linia podsumowania kroku dla szyny agentów. `None`, kiedy agent nic nie powiedział.
 fn summary_of(text: &str) -> Option<String> {
+    one_line(text, SUMMARY_LIMIT)
+}
+
+/// Tytuł przekazania: **to, o co poproszono ten krok**, w jednym wierszu.
+///
+/// Z pliku workflow, nigdy z odpowiedzi modelu. `title` jest polem front-mattera, a te pisze
+/// Loadout (`ARCHITECTURE` §8): tytuł wzięty z ciała oddawałby zdanie „co to za przekazanie" temu,
+/// kto ma najwięcej do zyskania na tym, żeby ono dobrze brzmiało. Kafelek bez własnego zdania mówi
+/// swoją nazwą — ona też jest zdaniem, które napisał człowiek.
+fn title_of(step: &Planned) -> String {
+    match &step.job {
+        Job::Agent(job) => one_line(&job.prompt, TITLE_LIMIT),
+        Job::Ask { question } => question
+            .as_deref()
+            .and_then(|question| one_line(question, TITLE_LIMIT)),
+    }
+    .unwrap_or_else(|| step.name.clone())
+}
+
+/// Tekst zwinięty do jednej linii i przycięty do `limit` bajtów, po granicy znaku. `None`, kiedy
+/// nie zostało ani jedno słowo.
+///
+/// Jedna pętla na oba wywołania: podsumowanie kroku i tytuł przekazania różnią się wyłącznie
+/// limitem, a druga kopia byłaby tą, która kiedyś zacznie ciąć w środku znaku — i przewróci bieg
+/// na pierwszym emoji w odpowiedzi agenta.
+fn one_line(text: &str, limit: usize) -> Option<String> {
     let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() {
         return None;
     }
-    let mut end = line.len().min(SUMMARY_LIMIT);
+    let mut end = line.len().min(limit);
     while end > 0 && !line.is_char_boundary(end) {
         end -= 1;
     }
     Some(line[..end].to_owned())
+}
+
+/// Numery kroków po drugiej stronie strzałek — **rosnąco i każdy raz**.
+///
+/// Rosnąco, czyli w kolejności z pliku workflow: to jedyny porządek, o którym nie decyduje
+/// przypadek (patrz [`Live::handed_before`]). Bez powtórzeń, bo dwie strzałki między tą samą parą
+/// kroków są w pliku legalne, a wpis wymieniony dwa razy każe krokowi zapłacić tokenami za tę samą
+/// pracę dwa razy — i podwaja jedną z dwóch stron, którą krok syntezujący ma zważyć.
+fn ends(
+    arrows: &[(StepId, StepId)],
+    pick: impl Fn(&(StepId, StepId)) -> Option<StepId>,
+) -> Vec<StepId> {
+    let mut out: Vec<StepId> = arrows.iter().filter_map(pick).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 // ── KSZTAŁT `run.json` ─────────────────────────────────────────────────────────────────────
