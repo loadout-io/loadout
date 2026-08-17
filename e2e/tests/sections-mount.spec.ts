@@ -1,0 +1,105 @@
+/* AC-2 dla T-29: każda z pięciu sekcji montuje SWÓJ ekran — sprawdzone w przeglądarce,
+ * po kliknięciu w przełącznik.
+ *
+ * To jest to samo pytanie, które zadaje T-26 przez `renderToStaticMarkup`, zadane w działającej
+ * aplikacji. Różnica nie jest kosmetyczna: powłoka znajduje ekrany przez `import.meta.glob`
+ * (`src/ui/screens.ts`), a glob zachowuje się inaczej w buildzie niż w teście — i to jest
+ * dokładnie ta klasa rozjazdu, której nikt nie zobaczy, dopóki nie uruchomi aplikacji.
+ * Pięć pustych ekranów przy pięciu zielonych kryteriach zdarzyło się w tym repo 2026-08-16.
+ *
+ * DWIE ASERCJE, NIE JEDNA. Sam nagłówek przechodzi na ekranie, który rysuje nagłówek i pustkę
+ * z rejestru pod nim — czyli na sekcji, która wygląda na zamontowaną i nie jest. Sam brak zdania
+ * z rejestru przechodzi na ekranie eksportującym pusty `<div/>`. Dyskryminuje para: nagłówek
+ * TEJ sekcji ORAZ brak jej zdania z rejestru w tym samym dokumencie.
+ *
+ * PIĘĆ IDENTYFIKATORÓW JEST WYPISANYCH TUTAJ NA SZTYWNO, a nie czytane z `SECTIONS`: pętla po
+ * rejestrze sprawdzałaby rejestr sam sobą, a pusta tablica przeszłaby wtedy każde „dla każdej
+ * sekcji…". Ta sama pułapka jest opisana w `src/ui/shell/screen-mount.test.tsx`. Samo ZDANIE
+ * i sama ETYKIETA przychodzą już z rejestru, bo kryterium mówi wprost `sectionEntry(id).empty`,
+ * a przepisany tu literał rozjechałby się przy pierwszej zmianie brzmienia (niezmiennik 13).
+ *
+ * ŚWIEŻA APLIKACJA NA SEKCJĘ, a nie jeden spacer po pięciu przełącznikach. Pięć osobnych
+ * werdyktów zamiast jednego: sekcja, która pada jako pierwsza, nie chowa czterech pozostałych.
+ * I jest to warunek OSTRZEJSZY — ekran musi zamontować się bez rozgrzewki po poprzedniej sekcji.
+ *
+ * CZEGO STĄD NIE DA SIĘ SPRAWDZIĆ, i mówię to wprost. T-26 ma kontrolę przeciw pustej asercji
+ * przez `screens={{}}`: powłoka z pustą mapą MUSI pokazać zdanie z rejestru, inaczej „nie ma
+ * tego zdania" przechodzi także wtedy, gdy zepsuto pustkę zamiast zamontować ekran. Z przeglądarki
+ * nie da się tego zrobić — powłoka nie jest sterowalna spoza strony. Kontrolą, która TUTAJ ma
+ * sens, jest więc atrybut `data-section`: dowodzi, że klik naprawdę przestawił powłokę, więc
+ * żaden z faktów niżej nie jest odczytany z poprzedniego ekranu.
+ */
+import { afterAll, describe, expect, it } from 'vitest';
+
+import { sectionEntry } from '../../src/ui/sections';
+import { closeEverything, openApp } from '../harness';
+
+const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+
+/** Ile czekamy na przemontowanie sekcji. Wymiana jednego poddrzewa Reacta, nie sieć. */
+const MOUNTS = 4_000;
+
+const HEADINGS = 'main h1, main h2, main h3, main h4, main h5, main h6';
+
+afterAll(async () => {
+  await closeEverything();
+}, 30_000);
+
+describe('every section mounts its own screen, clicked through in a browser', () => {
+  for (const id of EXPECTED) {
+    it('mounts the ' + id + ' screen and stops showing its registry sentence', async () => {
+      const entry = sectionEntry(id);
+
+      /* Puste zdanie w rejestrze zamieniłoby asercję niżej w twierdzenie o niczym — każdy tekst
+       * „zawiera" pusty łańcuch. Ta sama uwaga dotyczy etykiety, którą porównujemy z nagłówkiem. */
+      expect(
+        entry.empty.trim().length,
+        'sectionEntry("' + id + '").empty has to be a sentence somebody can read',
+      ).toBeGreaterThan(0);
+      expect(
+        entry.label.trim().length,
+        'sectionEntry("' + id + '").label has to name the section',
+      ).toBeGreaterThan(0);
+
+      const app = await openApp();
+      try {
+        const page = app.page;
+        await page.click('[data-section-switch="' + id + '"]');
+
+        const main = page.locator('main[data-section="' + id + '"]');
+        await main.waitFor({ state: 'attached', timeout: MOUNTS }).catch(() => undefined);
+        expect(
+          await main.count(),
+          'clicking the ' +
+            id +
+            ' switch has to put that section in the shell. Without this line every fact below ' +
+            'could be read off whichever screen happened to still be open.',
+        ).toBe(1);
+
+        /* `textContent`, nie `innerText`: zdanie schowane arkuszem stylów DALEJ jest w dokumencie,
+         * a „zamontowane i schowane" jest tą samą awarią, co „nie zamontowane" (niezmiennik 15). */
+        const text = await page.evaluate(() => document.body.textContent ?? '');
+        expect(
+          text.includes(entry.empty),
+          'the ' +
+            id +
+            ' screen is not mounted: the document still carries the registry sentence ' +
+            JSON.stringify(entry.empty) +
+            '. That sentence is what the shell shows for a section that has no screen at all — ' +
+            'it is the five blank rectangles a person saw on 2026-08-16 under five green tests.',
+        ).toBe(false);
+
+        const headings = (await page.locator(HEADINGS).allInnerTexts()).map((line) => line.trim());
+        expect(
+          headings,
+          'the ' +
+            id +
+            ' screen has to head itself with its own name. A screen that draws content without ' +
+            'saying which section you are on passes "something mounted" and answers nothing.',
+        ).toContain(entry.label);
+      } finally {
+        await app.close();
+      }
+    }, 60_000);
+  }
+});
