@@ -27,6 +27,7 @@ import { Feed } from './feed/feed';
 import { attachPort, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
+import { Start } from './start';
 import { stripFor } from './strip/model';
 import { Strip } from './strip/strip';
 
@@ -45,6 +46,9 @@ export default function Run(): ReactElement {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <Strip strip={strip} />
+      {/* Bieg trwa wtedy, gdy magazyn zna jego workflow — ta sama prawda, z której żyje pasek
+       * loadoutu, więc nie powstaje drugi opis stanu biegu (niezmiennik 13). */}
+      <Start running={workflow !== ''} />
       <Feed
         view={view}
         portRef={attachPort}
