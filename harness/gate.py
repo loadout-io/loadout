@@ -74,7 +74,26 @@ CHECK_TIMEOUT_OVERRIDE = {
     # Sufit poziomu i tak wybacza wyłącznie ten czas, który to nadpisanie NAPRAWDĘ zjadło
     # (`ceiling_for`), więc podniesienie budżetu nie czyni bramki wolną — czyni ją cierpliwą
     # dokładnie tam, gdzie zmierzyliśmy, że trzeba.
-    "full-test": 1800.0,
+    # 9000 s NIE jest zapasem "na wszelki wypadek", tylko liczba. ZMIERZONE 2026-08-17,
+    # dwoma niezaleznymi sposobami:
+    #   - pelny przebieg: 122 cele testowe, ~60-99 s na cel, w sumie ~2 h;
+    #   - kontrolowany pomiar jednego celu po dotknieciu commands/run.rs: 60 s i 62 s.
+    # Same testy trwaja **6,0 s**. Cala reszta to budowanie 122 OSOBNYCH binariow, z ktorych
+    # kazde linkuje cala biblioteke razem z zaleznosciami Tauri.
+    #
+    # Dlatego kazda zmiana dotykajaca commands/ uniewazniala wszystkie cele i full-test NIE
+    # MIAL JAK zmiescic sie w 1800 s -- nigdy, na zadnej maszynie. Tak padly T-29, T-32
+    # i ladowanie po T-33, a bramka meldowala "waiting for something that is not going to
+    # arrive", czyli diagnoze bez dowodu (Q-6).
+    #
+    # Sprawdzone i ODRZUCONE: [profile.test] debug = "line-tables-only". Na macOS informacja
+    # debugowania zwykle dominuje czas linkera, ale nie tutaj -- 60/62 s wobec 62/71 s, czyli
+    # roznica w granicach szumu. Zmiana bez zmierzonego zysku nie zostaje w repo.
+    #
+    # PRAWDZIWA naprawa to mniej celow testowych (Q-7): 122 pliki w tests/ to 122 linkowania
+    # tej samej biblioteki. Scalenie ich w kilkanascie celow tnie ten czas o rzad wielkosci
+    # i jest refaktorem na spokojna glowe, a nie zmiana do zrobienia miedzy zadaniami.
+    "full-test": 9000.0,
 }
 
 # Kryteria akceptacji są per zadanie, więc tabela wyżej nie umie ich nazwać. A budżet warstwy

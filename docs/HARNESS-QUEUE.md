@@ -52,6 +52,34 @@ a tego dnia bramka dostala juz cztery poprawki (lane szeregowy, zamek poziomu fu
 na spokojnej bramce, z kontrola dwustronna: sprawdzenie gadajace i wolne ma przezyc,
 sprawdzenie ciche ma zginac.
 
+## Q-7 — 122 cele testowe to 122 linkowania tej samej biblioteki
+
+**Stan: OTWARTE. Zmierzone 2026-08-17, naniesiona tylko kalibracja budzetu.**
+
+`src-tauri/tests/` ma 122 pliki, a kazdy plik w `tests/` to OSOBNE binarium, ktore linkuje cala
+biblioteke razem z zaleznosciami Tauri. Zmierzone dwoma sposobami: pelny przebieg to ~2 h, a
+kontrolowany pomiar jednego celu po dotknieciu `commands/run.rs` daje 60 s i 62 s.
+
+**Same testy trwaja 6,0 s.** Cala reszta to linkowanie.
+
+Konsekwencja jest strukturalna: kazde zadanie dotykajace `commands/` uniewaznia wszystkie 122
+cele, wiec `full-test` kosztuje dwie godziny. Przy budzecie 1800 s nie mial jak przejsc nigdy —
+tak padly T-29, T-32 i ladowanie po T-33.
+
+Naniesione teraz: budzet 9000 s, z pomiaru. To usuwa objaw i jest uczciwe, ale nie usuwa
+przyczyny: ladowanie kazdej galezi trwa teraz dwie godziny.
+
+**Sprawdzone i odrzucone:** `[profile.test] debug = "line-tables-only"`. Na macOS informacja
+debugowania zwykle dominuje czas linkera — tutaj nie: 60/62 s wobec 62/71 s, roznica w granicach
+szumu. Zmiana bez zmierzonego zysku nie zostaje w repo.
+
+**Wlasciwa naprawa: mniej celow.** Scalenie 122 plikow w kilkanascie binariow (po podsystemie:
+`store`, `workflow`, `run`, `agents`, `skills`, `memory`, `engine`, `ipc`) tnie czas linkowania
+o rzad wielkosci. Kryteria zadan wskazuja jednak konkretne cele przez `cargo test --test <cel>`,
+wiec scalenie wymaga przepisania `check:` w kilkudziesieciu plikach zadan i sprawdzenia, ze
+`quick-scope` oraz regula „jedna sciezka spec, jedno kryterium" dalej trzymaja. To refaktor na
+spokojna glowe, nie zmiana miedzy zadaniami.
+
 ## Puste
 
 Q-1 … Q-4 naniesione w `4f9a558`. Poprawka muteksu cargo w `689e432`.

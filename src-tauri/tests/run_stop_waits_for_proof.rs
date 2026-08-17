@@ -67,8 +67,19 @@ const VENDOR: &str = "fake";
 /// „mam dowód": krok ignoruje TERM, więc grupa schodzi dopiero po tym oknie.
 const GRACE: Duration = Duration::from_secs(1);
 
-/// Ile czekamy na to, żeby krok w ogóle wystał sobie grupę procesów.
-const START_LIMIT: Duration = Duration::from_secs(10);
+/// Ile czekamy na to, żeby krok w ogóle wystał sobie grupę procesów i zainstalował trap.
+///
+/// HOJNE Z ROZMYSŁEM, i to niczego nie osłabia: obie bariery, które tej stałej używają, są
+/// PRZYGOTOWANIEM, a nie pomiarem. Ten test mierzy KOLEJNOŚĆ dwóch chwil — czy Stop wrócił
+/// przed dowodem zejścia grupy, czy po nim — a ta kolejność nie zależy od tego, jak długo
+/// wcześniej wstawała powłoka.
+///
+/// Zmierzone 2026-08-17: przy dziesięciu sekundach test padał w pełnej suicie i przechodził
+/// 3/3 na spokojnej maszynie w 1,2 s. Powód nie leżał w kodzie: `cargo test --tests` linkuje
+/// 122 osobne binaria, więc powłoka kroku nie dostawała procesora w oknie, które wyglądało
+/// na aż nadto szerokie. Krótki limit na barierze przygotowania nie chroni przed niczym —
+/// zamienia tylko obciążenie maszyny w oskarżenie poprawnego kodu.
+const START_LIMIT: Duration = Duration::from_secs(120);
 
 /// Odstęp między pytaniami sondy. Krótki, bo mierzymy KOLEJNOŚĆ dwóch chwil, a nie czas.
 const PROBE_POLL: Duration = Duration::from_millis(2);

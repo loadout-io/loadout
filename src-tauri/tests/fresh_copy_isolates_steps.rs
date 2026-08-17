@@ -157,14 +157,14 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
     //     katalog — i cały powód, dla którego ten test istnieje.
     for (step, look) in &looked {
         assert_eq!(
-            look.saw_existing.as_deref(),
+            look.existing.as_deref(),
             Some(ORIGINAL),
             "step {step} was set to work on its own COPY of the project, so it has to find \
              {EXISTING} with the human's text in it. It found: {:?}",
-            look.saw_existing
+            look.existing
         );
         assert!(
-            look.saw_nested,
+            look.nested,
             "step {step} did not see src/main.rs, so the copy is shallow: a project is a tree, \
              not a list of files in one folder"
         );
@@ -175,14 +175,14 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
         .get("s_two")
         .ok_or("the second step never reached the driver")?;
     assert_eq!(
-        second.saw_existing.as_deref(),
+        second.existing.as_deref(),
         Some(ORIGINAL),
         "the second step read {EXISTING} AFTER the first one rewrote its own copy. Seeing the \
          first step's text here means both steps share one folder, which is exactly what \
          workflow::check refuses at save time (invariant 12)"
     );
     assert!(
-        !second.saw_created,
+        !second.created,
         "the second step found {CREATED}, a file the FIRST step made. Their copies are not \
          separate, so two steps without an arrow would overwrite each other's work"
     );
@@ -209,11 +209,11 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
 #[derive(Debug, Default, Clone)]
 struct Look {
     /// Treść `EXISTING`, jeśli plik tam był.
-    saw_existing: Option<String>,
+    existing: Option<String>,
     /// Czy `src/main.rs` też dojechał — kopia płaska nie jest kopią projektu.
-    saw_nested: bool,
+    nested: bool,
     /// Czy krok zastał plik zrobiony przez INNY krok.
-    saw_created: bool,
+    created: bool,
 }
 
 /// Co zobaczył każdy krok, po jego identyfikatorze.
@@ -239,9 +239,9 @@ impl Seen {
 /// Odczyt katalogu roboczego, zrobiony w chwili wejścia kroku do sterownika.
 fn look_at(cwd: &Path) -> Look {
     Look {
-        saw_existing: fs::read_to_string(cwd.join(EXISTING)).ok(),
-        saw_nested: cwd.join("src").join("main.rs").exists(),
-        saw_created: cwd.join(CREATED).exists(),
+        existing: fs::read_to_string(cwd.join(EXISTING)).ok(),
+        nested: cwd.join("src").join("main.rs").exists(),
+        created: cwd.join(CREATED).exists(),
     }
 }
 
