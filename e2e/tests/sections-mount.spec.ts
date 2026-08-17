@@ -22,6 +22,14 @@
  * werdyktów zamiast jednego: sekcja, która pada jako pierwsza, nie chowa czterech pozostałych.
  * I jest to warunek OSTRZEJSZY — ekran musi zamontować się bez rozgrzewki po poprzedniej sekcji.
  *
+ * I JEDEN SPACER NA DOKŁADKĘ, dopisany 2026-08-17 — DO tych pięciu, nigdy zamiast nich.
+ * Pięć zimnych montaży pyta wyłącznie o pierwsze wejście na sekcję, a użytkownik chodzi po
+ * aplikacji w JEDNEJ karcie: przełącznik, który po drugim przejściu zostawia w dokumencie
+ * poprzedni ekran (albo dokłada drugi), przechodzi każdy z pięciu testów wyżej i psuje się
+ * dokładnie tam, gdzie nikt nie patrzy. Zamiana tych pięciu na ten jeden byłaby cofnięciem:
+ * spacer nie widzi sekcji, która montuje się WYŁĄCZNIE po rozgrzewce inną sekcją, a to jest
+ * ta klasa rozjazdu, którą niesie `import.meta.glob` z cache'em modułów.
+ *
  * CZEGO STĄD NIE DA SIĘ SPRAWDZIĆ, i mówię to wprost. T-26 ma kontrolę przeciw pustej asercji
  * przez `screens={{}}`: powłoka z pustą mapą MUSI pokazać zdanie z rejestru, inaczej „nie ma
  * tego zdania" przechodzi także wtedy, gdy zepsuto pustkę zamiast zamontować ekran. Z przeglądarki
@@ -102,4 +110,52 @@ describe('every section mounts its own screen, clicked through in a browser', ()
       }
     }, 60_000);
   }
+
+  it('walks all five switches in one session, and each one lands on its own screen', async () => {
+    const app = await openApp();
+    try {
+      const page = app.page;
+
+      for (const id of EXPECTED) {
+        const entry = sectionEntry(id);
+        await page.click('[data-section-switch="' + id + '"]');
+
+        const main = page.locator('main[data-section="' + id + '"]');
+        await main.waitFor({ state: 'attached', timeout: MOUNTS }).catch(() => undefined);
+        expect(
+          await main.count(),
+          'walking to ' +
+            id +
+            ' left the shell somewhere else. Exactly one main carries the section that was ' +
+            'just clicked — zero means the switch does nothing on a warm page, and more than ' +
+            'one means the previous screen stayed in the document next to the new one.',
+        ).toBe(1);
+
+        const text = await page.evaluate(() => document.body.textContent ?? '');
+        expect(
+          text.includes(entry.empty),
+          'after walking to ' +
+            id +
+            ' the document carries the registry sentence ' +
+            JSON.stringify(entry.empty) +
+            ' — the sentence the shell shows for a section with no screen. The cold-mount test ' +
+            'above says this section mounts on a fresh page, so what is broken is the second ' +
+            'visit, in the one card a person actually uses.',
+        ).toBe(false);
+
+        const headings = (await page.locator(HEADINGS).allInnerTexts()).map((line) => line.trim());
+        expect(
+          headings,
+          'after walking to ' +
+            id +
+            ' no heading says ' +
+            JSON.stringify(entry.label) +
+            '. Either the section did not swap, or it swapped and left the previous name ' +
+            'standing — and then the screen tells a person they are somewhere they are not.',
+        ).toContain(entry.label);
+      }
+    } finally {
+      await app.close();
+    }
+  }, 60_000);
 });
