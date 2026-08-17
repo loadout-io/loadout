@@ -60,7 +60,21 @@ CHECK_TIMEOUT = {"before": 20.0, "quick": 20.0, "full": 90.0}
 CHECK_TIMEOUT_OVERRIDE = {
     "quick-clippy": 420.0,   # 300 s zamka + zimne clippy --lib
     "full-clippy": 600.0,    # to samo z --all-targets (testy, benche, przykłady)
-    "full-test": 600.0,      # cargo test --lib linkuje, potem jeszcze vitest
+    # 1800 s NIE jest zapasem "na wszelki wypadek", tylko liczbą. ZMIERZONE 2026-08-17:
+    # `cargo test --tests` to 119 binariów i 1121 s na maszynie, na której obok chodzi fala
+    # zadania — przy 444 s na maszynie bezczynnej. Budżet 600 s stał tu od początku BEZ
+    # pomiaru, więc margines wynosił 15% na pustej maszynie i znikał przy pierwszym biegu obok.
+    #
+    # Co to naprawdę kosztowało: bramka zabiła suitę, powtórzyła ją, zabiła znowu i zameldowała
+    # „waiting for something that is not going to arrive" — czyli postawiła DIAGNOZĘ, na którą
+    # nie miała dowodu. Trunk zaświecił się na czerwono, lądowanie T-31 odmówiło startu, a nie
+    # było ani jednego padającego testu. Fałszywe oskarżenie kodu za zajętą maszynę jest gorsze
+    # niż wolna bramka, bo wysyła człowieka szukać wady, której nie ma (tu: półtorej godziny).
+    #
+    # Sufit poziomu i tak wybacza wyłącznie ten czas, który to nadpisanie NAPRAWDĘ zjadło
+    # (`ceiling_for`), więc podniesienie budżetu nie czyni bramki wolną — czyni ją cierpliwą
+    # dokładnie tam, gdzie zmierzyliśmy, że trzeba.
+    "full-test": 1800.0,
 }
 
 # Kryteria akceptacji są per zadanie, więc tabela wyżej nie umie ich nazwać. A budżet warstwy
