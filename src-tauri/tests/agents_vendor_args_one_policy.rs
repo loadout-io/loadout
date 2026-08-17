@@ -49,6 +49,12 @@ const STEP: &str = "Build";
 const INNOCENT: &str = "--some-new-flag";
 const INNOCENT_VALUE: &str = "value";
 
+/// Pusta wartość przy podniesieniu wpisanym jako **nazwa flagi**. Tak wygląda wiersz, którym
+/// otwiera się TASK.md — `"--dangerously-skip-permissions": ""` — i tylko połówka reguły
+/// patrząca na nazwę flagi go łapie. Bez tego obrotu obie przelotki są tu sprawdzane wyłącznie
+/// przez `value.contains`, więc filtr zawężony do samej wartości przechodzi na zielono.
+const NO_VALUE: &str = "";
+
 /// `{"claude": {"<flaga>": "<wartość>"}}` — kształt na drucie, wspólny dla obu plików.
 fn passthrough(flag: &str, value: &str) -> Value {
     let mut flags = serde_json::Map::new();
@@ -103,6 +109,7 @@ fn every_flag_on_the_one_list_is_refused_by_both_passthroughs() -> Result<(), Bo
     );
 
     for escalation in FORBIDDEN_ESCALATIONS {
+        // ── Podniesienie w WARTOŚCI, pod niewinną flagą ───────────────────────────────────
         // ── Pierwsze wywołanie: przelotka KROKU WORKFLOW ──────────────────────────────────
         let notes = check(&workflow_that_offers(CARRIER, escalation)?);
         assert!(
@@ -130,6 +137,42 @@ fn every_flag_on_the_one_list_is_refused_by_both_passthroughs() -> Result<(), Bo
             "the agent-side refusal does not name `{escalation}` as the reason it dropped \
              `{CARRIER}`. Naming the same word the list holds is what makes this ONE policy \
              rather than two that happen to agree today. Report: {:?}",
+            handed.refused
+        );
+
+        // ── To samo podniesienie w NAZWIE FLAGI, z pustą wartością ────────────────────────
+        // Ta połowa reguły jest osobnym pytaniem: `{"claude": {"--dangerously-skip-permissions":
+        // ""}}` omija dial bez wpisania ani jednego znaku w wartość. Obie przelotki czytają tę
+        // samą listę TYM SAMYM sposobem albo nie czytają jej tym samym sposobem — a jedna lista
+        // pod dwiema różnymi regułami to znowu dwie polityki, tyle że gorzej ukryte.
+
+        // ── Trzecie wywołanie: przelotka KROKU WORKFLOW ───────────────────────────────────
+        let notes = check(&workflow_that_offers(escalation, NO_VALUE)?);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.level == Level::Problem && note.message.contains(escalation)),
+            "the workflow step passthrough let `{escalation}` through as the flag NAME, or \
+             refused it without saying which flag it was. A raise written as the key needs no \
+             value at all. Notes: {notes:?}"
+        );
+
+        // ── Czwarte wywołanie: przelotka DEFINICJI AGENTA, ten sam wpis ───────────────────
+        let handed = vendor_args_filtered(&agent_that_offers(escalation, NO_VALUE), VENDOR);
+        assert!(
+            handed.args.is_empty(),
+            "`{escalation}` reached the argv built from an agent definition when it stood as the \
+             flag name. This is the literal line D6 is about, and it carries no value for a \
+             value-only filter to catch. Got: {:?}",
+            handed.args
+        );
+        assert!(
+            handed
+                .refused
+                .iter()
+                .any(|refusal| { refusal.flag == escalation && refusal.escalation == escalation }),
+            "the agent-side refusal does not name `{escalation}` as both the row to delete and \
+             the reason it went. Report: {:?}",
             handed.refused
         );
     }
