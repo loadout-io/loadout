@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::skills::ingest::{
     self, FILE_CAP, FetchError, Finding, Import, Reviewed, Target, Verdict, Weight,
 };
-use crate::skills::{Error, Roots, Scope};
+use crate::skills::{Error, Roots, Scope, Skill};
 
 /// Kopie kanoniczne wewnątrz biblioteki: `~/.loadout/skills/<name>/`
 /// (`docs/ARCHITECTURE.md` §8).
@@ -151,6 +151,31 @@ impl From<&Reviewed> for ReviewWire {
             .to_owned(),
         }
     }
+}
+
+/// Trzy pytania z formularza, dokładnie te trzy [T5 §8.3]. Lustro `Authored`
+/// z `src/state/skills.ts`.
+///
+/// DLACZEGO NIE `ImportWire` W DRUGĄ STRONĘ. Okno przysyła to, co człowiek **wpisał**, a nie
+/// umiejętność: nie ma tu ani nazwy katalogu, ani przejrzanego ciała, ani werdyktu. Wszystkie
+/// trzy powstają po tej stronie granicy i to jest cała treść tego typu — gdyby okno przysyłało
+/// `name` gotowe do wpisania w ścieżkę, byłoby drugim miejscem, w którym liczy się slug
+/// (niezmiennik 13), i pierwszym, które da się skierować gdziekolwiek.
+///
+/// Nazwy pól są nazwami pytań, a nie nazwami pól `SKILL.md`: człowiek odpowiada „kiedy tego
+/// użyć", a `description` jest tym, w co ta odpowiedź się zamienia. Zamiana zachodzi w jednym
+/// miejscu ([`author_skill_inner`]) i tylko dlatego da się o niej cokolwiek powiedzieć.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Authored {
+    /// Nazwa tak, jak ją wpisał człowiek — zdaniem, ze spacjami i wersalikami. Slug liczy
+    /// [`slug_of`], nigdy okno.
+    pub name: String,
+    /// „Kiedy tego użyć" → `description`. Jedyne pole, po którym model decyduje, czy sięgnąć.
+    pub when_to_use: String,
+    /// „Co zrobić" → ciało `SKILL.md`. Tekst nieufny dokładnie tak samo jak wklejony z linku:
+    /// człowiek potrafi wkleić tu cudzy akapit, a od T-43 wkleja tu draft modelu.
+    pub what_to_do: String,
 }
 
 /// Korzenie instalacji dla zakresu globalnego, wyprowadzone z katalogu biblioteki.
@@ -359,6 +384,125 @@ pub fn review_skill_inner(library: &Path, url: &str) -> Result<ImportWire, Fetch
     // Czytamy jeszcze raz, z miejsca docelowego: `Import` z `incoming` niesie ścieżki źródłowe
     // plików dołączonych, a te po przeniesieniu wskazują na katalog, którego już nie ma.
     Ok(ImportWire::from(&ingest::from_folder(&canonical)?))
+}
+
+/// Nazwa katalogu policzona z tego, co człowiek wpisał w pierwsze pole.
+///
+/// JEDNO MIEJSCE, w którym powstaje slug (niezmiennik 13). Slug jest **tym samym faktem**, co
+/// nazwa katalogu na dysku: to, co formularz pokazuje człowiekowi pod polem („to wyląduje jako
+/// `review-pull-requests`"), i to, co `place::plan` wpisze w ścieżkę. Drugie liczenie w oknie
+/// rozjechałoby się z tym na pierwszym znaku spoza ASCII — a rozjazd objawia się dopiero jako
+/// katalog o innej nazwie niż zdanie, które człowiek przeczytał przed naciśnięciem przycisku.
+///
+/// Ta funkcja **nie odmawia**. Odmowa jest jedna i mieszka w [`canonical_for`], razem
+/// z komunikatami walidatora — slug, którego nie da się przyjąć (puste wejście, samo `Claude`),
+/// ma zostać nazwany zdaniem rdzenia, a nie zdaniem wymyślonym tutaj drugi raz.
+#[must_use]
+pub fn slug_of(typed: &str) -> String {
+    // SZKIELET (T-42, faza kontraktu). Zwraca wejście nietknięte, czyli trywialnie złą
+    // odpowiedź: „Review pull requests" nie jest nazwą katalogu i `place::validate_strict`
+    // powie o niej dokładnie to. Implementacja podmienia ciało, nie sygnaturę.
+    typed.to_owned()
+}
+
+/// `<biblioteka>/skills/<name>` — albo odmowa, **zanim** cokolwiek zostanie skasowane.
+///
+/// 2026-08-19 — POWSTAŁO, BO OBIE DROGI WEJŚCIA LICZĄ TĘ SAMĄ ŚCIEŻKĘ I ŻADNA JEJ NIE
+/// SPRAWDZAŁA. [`review_skill_inner`] bierze `name` z front-mattera pobranego pliku, składa
+/// z niego ścieżkę i robi na niej `remove_dir_all` (przez [`gone`]). `SKILL.md` bez pola
+/// `name:` daje `Skill::default()`, czyli `name: ""`, czyli ścieżkę `<biblioteka>/skills/` —
+/// i kasowane są **wszystkie kopie kanoniczne razem z `installed.json`**. `name: ../../x`
+/// wychodzi poza bibliotekę. Dziś trafia to tylko wklejony link, więc zdarza się rzadko;
+/// formularz zamienia tę nazwę w rzecz, którą człowiek wpisuje palcami.
+///
+/// DLACZEGO ODMOWA JEST TU, A NIE W DWÓCH MIEJSCACH: policzenie ścieżki i decyzja „czy wolno"
+/// to jedno pytanie. Rozdzielone, przechodzą przez drugą drogę wejścia bez sprawdzenia —
+/// i tak właśnie wygląda dzisiejszy defekt.
+///
+/// DLACZEGO ZDANIE JEST WALIDATORA: `place::validate_strict` odpowiada już na pytanie „czy to
+/// jest nazwa umiejętności", jednym komunikatem na przyczynę i dosłownie tym, który powie
+/// vendor (niezmiennik 23). Nazwa, która przechodzi `is_slug`, składa się wyłącznie z `a-z`,
+/// `0-9` i łącznika — więc „jeden człon ścieżki" wychodzi z tej samej reguły, a nie z drugiej,
+/// napisanej obok.
+pub fn canonical_for(library: &Path, name: &str) -> Result<PathBuf, Error> {
+    // SZKIELET (T-42, faza kontraktu). Liczy dokładnie to, co dziś liczy `review_skill_inner`
+    // w jednej linii — i nie odmawia niczego, czyli zachowuje dzisiejszy defekt. Kryterium
+    // AC-1 (c) mierzy właśnie tę odmowę, więc jest czerwone.
+    Ok(library.join(SKILLS_DIR).join(name))
+}
+
+/// Zapisuje, skąd umiejętność się wzięła — poza jej katalogiem i poza sidecarem instalacji.
+///
+/// 2026-08-19 — DO TEGO DNIA POCHODZENIE BYŁO **WYWNIOSKOWANE**, a nie zapisane:
+/// [`list_skills_inner`] odpowiadał „z internetu" wtedy, gdy obok zainstalowanego katalogu
+/// leżała kopia kanoniczna, bo kopie kanoniczne powstawały wyłącznie w [`review_skill_inner`].
+/// Ta przesłanka przestaje być prawdziwa w chwili, w której [`author_skill_inner`] też odkłada
+/// kopię kanoniczną — więc znacznik musi mieć własny zapis (niezmiennik 4: pole, którego nie da
+/// się odtworzyć z plików, jest polem, którego nie wolno zapisać; tu jest odwrotnie — pole,
+/// którego nie da się już wywnioskować, trzeba zapisać jawnie).
+///
+/// DWA MIEJSCA, W KTÓRYCH TEN ZAPIS STAĆ NIE MOŻE, i oba są zmierzone, nie teoretyczne:
+///
+/// - **`skills/installed.json`.** `place::write_sidecar` odtwarza cały plik z samego zbioru
+///   ścieżek (`place.rs:673-689`), więc cokolwiek dopisanego obok przepada przy następnej
+///   instalacji albo usunięciu — po cichu i bez śladu.
+/// - **wnętrze katalogu umiejętności.** `ingest::bundled_files` zabiera **każdego** sąsiada
+///   `SKILL.md`, więc znacznik położony obok niego pojechałby do katalogów vendorów jako plik
+///   dołączony umiejętności — do żywej konfiguracji narzędzi człowieka.
+pub fn remember_origin(library: &Path, name: &str, from_the_internet: bool) -> Result<(), Error> {
+    // SZKIELET (T-42, faza kontraktu). ODMOWA, nie ciche `Ok(())`: funkcja, która melduje
+    // sukces i nie zapisuje nic, jest dokładnie tym kształtem, na który stoi niezmiennik 19 —
+    // fikstura AC-2 przeszłaby wtedy zasianie czterech źródeł i padła dopiero na asercji
+    // o czymś innym, a zdanie bramki mówiłoby o złym miejscu.
+    Err(Error::Invalid {
+        messages: vec![format!(
+            "nothing writes down yet that '{name}' {}, and {} holds no such record",
+            if from_the_internet {
+                "came from a link"
+            } else {
+                "was written here"
+            },
+            library.display()
+        )],
+    })
+}
+
+/// Trzy pola z formularza → ta sama droga, którą idzie wklejony link.
+///
+/// **Potok jest kolejnością, nie zbiorem funkcji** (nagłówek `skills::ingest`): złóż plik przez
+/// `place::emit`, zapisz go, przeczytaj przez `ingest::from_folder`. Tylko wtedy skan widzi
+/// **tekst pliku**, a nie strukturę, którą sobie zbudowaliśmy — a R1 (znaki niewidzialne,
+/// komentarze HTML) i R5 (`allowed-tools`, `hooks` we front-matterze) czytają wyłącznie tekst.
+/// Formularz budujący `Skill` wprost z trzech pól omija `ingest::review` w całości: wszystko
+/// działa, znaleziska nie powstają, a plik z ukrytym akapitem instaluje się jako czysty
+/// (niezmiennik 23).
+///
+/// Zakres zostaje globalny, dokładnie jak na drodze linku — wybór „ten projekt / wszędzie"
+/// jest osobnym zadaniem (T-44).
+pub fn author_skill_inner(library: &Path, authored: Authored) -> Result<ImportWire, Error> {
+    let name = slug_of(&authored.name);
+    // Odmowa PIERWSZA, przed policzeniem czegokolwiek, co dotyka dysku — powód stoi
+    // przy `canonical_for`.
+    let canonical = canonical_for(library, &name)?;
+
+    // Tutaj trzy odpowiedzi przestają być tekstem z okna i stają się umiejętnością. To jedyne
+    // miejsce, w którym „kiedy tego użyć" zamienia się w `description`.
+    let skill = Skill {
+        name,
+        description: authored.when_to_use,
+        body: authored.what_to_do,
+        ..Skill::default()
+    };
+    remember_origin(library, &skill.name, false)?;
+
+    // SZKIELET (T-42, faza kontraktu): ani `place::emit`, ani `ingest::from_folder`, ani
+    // jednego bajtu na dysku. Wszystkie cztery kryteria mierzą to, czego tu nie ma.
+    Err(Error::Invalid {
+        messages: vec![format!(
+            "Loadout does not write a skill of its own yet, so {} was left alone",
+            canonical.display()
+        )],
+    })
 }
 
 /// Zapisuje przejrzaną umiejętność w obu katalogach vendorów.

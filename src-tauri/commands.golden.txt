@@ -13,6 +13,7 @@
 # w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
 # (pierwszy argument `invoke`). Kolejność alfabetyczna, żeby dopisanie nazwy było jednym
 # wierszem diffu, a nie przesunięciem całego pliku.
+author_skill
 check_workflow
 continue_run
 delete_agent

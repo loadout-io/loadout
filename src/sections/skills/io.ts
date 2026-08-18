@@ -13,7 +13,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Import, InstalledSkill } from '../../state/skills';
+import type { Authored, Import, InstalledSkill } from '../../state/skills';
 
 /**
  * Co naprawdę leży w katalogach agentów.
@@ -39,6 +39,22 @@ export function listSkills(): Promise<InstalledSkill[]> {
  */
 export function readLink(url: string): Promise<Import> {
   return invoke<Import>('review_skill', { url });
+}
+
+/**
+ * Trzy odpowiedzi z formularza → przejrzana umiejętność, tą samą drogą co adres.
+ *
+ * 2026-08-19 — druga droga wejścia, obiecana na ekranie od pierwszego dnia sekcji („Paste
+ * a link, or write one yourself") i nieistniejąca do dziś: `review_skill(url)` był jedyną
+ * komendą, która cokolwiek wciągała.
+ *
+ * Jedzie to, co człowiek WPISAŁ, i nic ponadto — ani slug, ani złożony `SKILL.md`. Plik składa,
+ * zapisuje i skanuje Rust, w jednym miejscu i w jednej kolejności; tekst zbudowany tutaj byłby
+ * tekstem, którego nikt nie przeskanował, a nazwa policzona tutaj byłaby drugą odpowiedzią na
+ * pytanie „jak nazywa się katalog" (niezmienniki 23 i 13).
+ */
+export function authorSkill(authored: Authored): Promise<Import> {
+  return invoke<Import>('author_skill', { authored });
 }
 
 /**

@@ -28,7 +28,7 @@
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { useSkills } from '../../state/skills';
 import { ReviewCard } from './review-card';
 
@@ -60,7 +60,7 @@ const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label 
  * z ekranu, a nie z dokumentacji. Nazwy katalogów w tym zdaniu nie padają z rozmysłem: liczy
  * je Rust i to jest jedyne miejsce, w którym stoją (niezmiennik 13).
  */
-const WHERE_IT_LANDS =
+export const WHERE_IT_LANDS =
   'This goes into the folders your agent apps read on this machine, so every later run can ' +
   'use it. Remove takes it back out.';
 
@@ -85,12 +85,11 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
   /* Adres wklejany przez człowieka. `null` znaczy, że pole jest zamknięte — jedno miejsce
    * na to pytanie (niezmiennik 13), a nie osobna flaga „czy otwarte" obok wartości, która
    * potrafi się z nią rozjechać. */
-  const [link, setLink] = useState<string | null>(null);
-
   const empty = state.installed.length === 0 && state.pending === null;
+  const panel = state.adding;
 
   const openLink = (): void => {
-    setLink((typed) => typed ?? '');
+    store.getState().openAdd();
   };
 
   return (
@@ -112,15 +111,14 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {link === null ? null : (
+        {panel === null ? null : (
           <form
+            data-add-panel
             className="mx-auto mb-6 flex max-w-160 flex-col gap-2 rounded-sq border border-line bg-panel p-4"
             onSubmit={(event) => {
               event.preventDefault();
-              /* Cała droga bajtów — polityka adresu, limity, skan — mieszka po stronie Rusta
-               * za `useSkills.review`. Ekran wie tylko, że człowiek coś wkleił. */
-              void store.getState().review(link);
-              setLink(null);
+              void store.getState().review(panel.link);
+              store.getState().closeAdd();
             }}
           >
             <label htmlFor="skill-link" className="text-label text-muted">
@@ -129,20 +127,67 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             <input
               id="skill-link"
               className={FIELD}
-              value={link}
+              value={panel.link}
               onChange={(event) => {
-                setLink(event.target.value);
+                store.getState().typeInto({ link: event.target.value });
+              }}
+            />
+            <button type="submit" className={SECONDARY}>
+              Read it
+            </button>
+
+            <label htmlFor="skill-name" className="text-label text-muted">
+              What is it called?
+            </label>
+            <input
+              id="skill-name"
+              data-question="name"
+              className={FIELD}
+              value={panel.name}
+              onChange={(event) => {
+                store.getState().typeInto({ name: event.target.value });
+              }}
+            />
+            <label htmlFor="skill-when" className="text-label text-muted">
+              When should an agent use it?
+            </label>
+            <input
+              id="skill-when"
+              data-question="whenToUse"
+              className={FIELD}
+              value={panel.whenToUse}
+              onChange={(event) => {
+                store.getState().typeInto({ whenToUse: event.target.value });
+              }}
+            />
+            <label htmlFor="skill-what" className="text-label text-muted">
+              What should it do?
+            </label>
+            <textarea
+              id="skill-what"
+              data-question="whatToDo"
+              className={FIELD}
+              value={panel.whatToDo}
+              onChange={(event) => {
+                store.getState().typeInto({ whatToDo: event.target.value });
               }}
             />
             <div className="flex items-center gap-2">
-              <button type="submit" className={SECONDARY}>
-                Read it
+              <button
+                type="button"
+                data-write-it-yourself
+                className={SECONDARY}
+                onClick={() => {
+                  void store.getState().writeItHere();
+                }}
+              >
+                Save this skill
               </button>
               <button
                 type="button"
                 className={SECONDARY}
                 onClick={() => {
-                  setLink(null);
+                  store.getState().closeAdd();
                 }}
               >
                 Cancel

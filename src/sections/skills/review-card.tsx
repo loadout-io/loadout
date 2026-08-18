@@ -87,7 +87,7 @@ export function ReviewCard({
         <h2 className="text-heading text-ink">{item.name}</h2>
         {/* Znacznik pochodzenia stoi na karcie i zostaje po instalacji. To jedyna rzecz tutaj,
             która mówi, że ten tekst napisał ktoś obcy. */}
-        <span className={CHIP}>From the internet</span>
+        {item.fromTheInternet ? <span className={CHIP}>From the internet</span> : null}
       </header>
 
       <p className="text-body text-body">{item.summary}</p>

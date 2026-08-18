@@ -34,7 +34,7 @@ import * as skills from './skills/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
-import type { Import } from '../state/skills';
+import type { Authored, Import } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
 /* Atrapa jest podniesiona razem z `vi.mock`, żeby moduły sekcji dostały JĄ, a nie prawdziwy
@@ -114,6 +114,13 @@ const SKILL: Import = {
   reviewed: { body: '---\nname: pdf\n---\n', findings: [], verdict: 'clean' },
   scripts: 1,
   fromTheInternet: true,
+};
+
+/** Trzy odpowiedzi z formularza „write one yourself" [T5 §8.3]. */
+const AUTHORED: Authored = {
+  name: 'Review pull requests',
+  whenToUse: 'Use this when somebody asks for a second look at a pull request.',
+  whatToDo: 'Read the change first, then say in one paragraph what to fix.',
 };
 
 /** Jedna krawędź: skąd, co, którą komendę woła, z czym ją wołamy. */
@@ -254,6 +261,18 @@ const WIRES: readonly Wire[] = [
     command: 'list_handoffs',
     given: [],
     call: () => memory.listHandoffs(),
+  },
+  /* 2026-08-19 (T-42) — DRUGA DROGA WEJŚCIA DO UMIEJĘTNOŚCI, dopisana, nic nie usunięte.
+   * `authorSkill` jest krawędzią do komendy, która przyjmuje TREŚĆ umiejętności, a nie adres —
+   * czyli do jedynej rzeczy, której `commands.golden.txt` nie miał, choć pusty ekran obiecywał
+   * ją zdaniem „Paste a link, or write one yourself". Bez wiersza tutaj byłaby funkcją, której
+   * nikt nigdy nie zobaczył docierającej do Rusta. */
+  {
+    where: 'skills',
+    what: 'authorSkill',
+    command: 'author_skill',
+    given: [AUTHORED],
+    call: () => skills.authorSkill(AUTHORED),
   },
   /* 2026-08-18 — SIEDEM KRAWĘDZI BIEGU I ZAKRESU, i to jest domknięcie luki, którą ten plik
    * sam nazywał: `EDGES` obejmowało cztery sekcje, a Bieg — jedyna sekcja, która URUCHAMIA

@@ -20,7 +20,13 @@
  * jedzie drugą.
  */
 import { create } from 'zustand';
-import { install, listSkills, readLink, remove as removeFromDisk } from '../sections/skills/io';
+import {
+  authorSkill,
+  install,
+  listSkills,
+  readLink,
+  remove as removeFromDisk,
+} from '../sections/skills/io';
 import { why } from '../ipc/why';
 
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
@@ -70,6 +76,37 @@ export interface Import {
   fromTheInternet: boolean;
 }
 
+/**
+ * Trzy pytania z formularza, dokładnie te trzy [T5 §8.3]. Lustro `Authored`
+ * z `src-tauri/src/commands/skills.rs`.
+ *
+ * Nazwy pól są nazwami PYTAŃ, nie pól `SKILL.md`: człowiek odpowiada „kiedy tego użyć",
+ * a `description` jest tym, w co ta odpowiedź się zamienia — i zamienia się po drugiej stronie
+ * granicy, w jednym miejscu. `name` jest tym, co człowiek wpisał, a nie nazwą katalogu: slug
+ * liczy Rust, bo slug widziany na ekranie i nazwa katalogu na dysku to JEDEN fakt
+ * (niezmiennik 13), a dwa liczenia rozjeżdżają się na pierwszym znaku spoza ASCII.
+ */
+export interface Authored {
+  name: string;
+  whenToUse: string;
+  whatToDo: string;
+}
+
+/**
+ * Panel „Add a skill": jedno pole na adres i trzy pytania, oba wejścia pod TYM SAMYM
+ * przyciskiem. `null` znaczy „zamknięty" — jedno miejsce na to pytanie (niezmiennik 13),
+ * a nie osobna flaga „czy otwarty" obok treści, która potrafi się z nią rozjechać.
+ *
+ * DLACZEGO TREŚĆ PANELU MIESZKA W MAGAZYNIE, A NIE W `useState` EKRANU. Bo odmowa z Rusta musi
+ * zostawić to, co człowiek wpisał, na ekranie: tekst tracony przy odmowie to ten sam defekt co
+ * cisza, tylko droższy — człowiek pisze akapit, dostaje jedno zdanie o nazwie i traci akapit.
+ * Odmowa ląduje w magazynie (`message`), więc pola muszą leżeć tam, gdzie ona.
+ */
+export interface AddPanel extends Authored {
+  /** Adres wklejony przez człowieka. Pierwsza droga wejścia, ta, która już była. */
+  link: string;
+}
+
 /** Umiejętność, która już leży w katalogach vendorów. */
 export interface InstalledSkill {
   name: string;
@@ -99,6 +136,28 @@ export interface SkillsState {
   review: (url: string) => Promise<void>;
   acknowledge: (findingId: string) => void;
   add: () => Promise<void>;
+  /**
+   * Panel dodawania z obydwoma wejściami. `null` znaczy zamknięty.
+   *
+   * 2026-08-19 — do tego dnia sekcja obiecywała na pustym ekranie „Paste a link, or write one
+   * yourself" i umiała przyjąć WYŁĄCZNIE adres: `review_skill(url)` i nic więcej. Obietnica bez
+   * kontrolki jest tym samym defektem, co kontrolka bez skutku, tylko odwróconym
+   * (niezmiennik 16).
+   */
+  adding: AddPanel | null;
+  openAdd: () => void;
+  closeAdd: () => void;
+  /** Człowiek pisze w jednym z pól panelu. */
+  typeInto: (part: Partial<AddPanel>) => void;
+  /**
+   * „Save this skill" — trzy odpowiedzi jadą do Rusta i wracają jako przegląd, dokładnie tak
+   * samo jak wklejony link.
+   *
+   * Nie składa `SKILL.md` tutaj i nie ma prawa złożyć: potok (złóż → zapisz → przeczytaj
+   * i przeskanuj) mieszka po tamtej stronie granicy w jednym miejscu, a tekst zbudowany
+   * w oknie byłby tekstem, którego nikt nie przeskanował (niezmiennik 23).
+   */
+  writeItHere: () => Promise<void>;
   /**
    * „Remove" — zabierz tę umiejętność z katalogów agentów.
    *
@@ -136,11 +195,16 @@ const COULD_NOT_READ = 'Loadout could not read the skills on this machine.';
  * jego Claude Code, a on tam dalej leży. */
 const COULD_NOT_REMOVE = 'Loadout could not remove that skill.';
 
+/* Panel otwarty i jeszcze pusty. Cztery puste napisy, nie `undefined`: pole kontrolowane
+ * z wartością `undefined` przestaje być kontrolowane i React przestaje o nim wiedzieć. */
+const NOTHING_TYPED: AddPanel = { link: '', name: '', whenToUse: '', whatToDo: '' };
+
 export const useSkills = create<SkillsState>()((set, get) => ({
   pending: null,
   acknowledged: [],
   message: null,
   installed: [],
+  adding: null,
 
   load: async () => {
     try {
@@ -219,6 +283,39 @@ export const useSkills = create<SkillsState>()((set, get) => ({
         { name: pending.name, fromTheInternet: pending.fromTheInternet },
       ],
     });
+  },
+
+  openAdd: () => {
+    /* Otwarty panel zostaje taki, jaki jest. Wyzerowanie go tutaj kasowałoby akapit, który
+     * człowiek napisał, za drugie kliknięcie w ten sam przycisk. */
+    set({ adding: get().adding ?? NOTHING_TYPED });
+  },
+
+  closeAdd: () => {
+    set({ adding: null });
+  },
+
+  typeInto: (part: Partial<AddPanel>) => {
+    const { adding } = get();
+    /* Pisanie w panelu, którego nie ma, nie otwiera panelu: „otwórz" jest osobną decyzją
+     * człowieka i ma zostać jedna. */
+    if (adding === null) return;
+    set({ adding: { ...adding, ...part } });
+  },
+
+  writeItHere: async () => {
+    const { adding } = get();
+    if (adding === null) return;
+    try {
+      const pending = await authorSkill({
+        name: adding.name,
+        whenToUse: adding.whenToUse,
+        whatToDo: adding.whatToDo,
+      });
+      set({ pending, acknowledged: [], message: null, adding: null });
+    } catch (error) {
+      set({ message: why(error, 'Loadout could not save that skill.') });
+    }
   },
 
   remove: async (name: string) => {
