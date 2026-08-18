@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use super::line::Tool;
 use super::supervisor::{GroupId, GroupProof};
 
 /// Vendor, ktory jest w typie, ale nie ma jeszcze adaptera. Fabryka `Drivers` jest funkcja
@@ -161,6 +162,44 @@ pub enum AgentEvent {
     Finished(Outcome),
 }
 
+/// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
+///
+/// # Dlaczego to jest ładunek KANAŁU, a nie sam [`AgentEvent`] (2026-08-18)
+///
+/// Zmierzone, nie teoretyczne. `stream::decode` wyjmował z jednej linii drutu i zdarzenie,
+/// i [`Tool`] — a kanał sterownika miał typ `mpsc::Sender<AgentEvent>`, więc **`Tool` ginął na
+/// granicy sterownika**. Dalej było już tylko widać skutek: `commands::run::forward` musiał
+/// podać kuratorowi `tool: None`, `Curator::tool_start` bez faktów oddaje `Vec::new()`, i wiersze
+/// `read`, `search`, `edit` oraz `ran` **nie powstawały nigdy**. Widok pracy pokazywał wyłącznie
+/// prozę agenta, choć agent czytał pliki i uruchamiał komendy.
+///
+/// Druga droga naprawy — druga tabela nazw narzędzi w `run.rs` — byłaby drugą implementacją
+/// kuracji (niezmienniki 15 i 23), rozjeżdżającą się przy pierwszej zmianie u vendora i po cichu.
+/// Dlatego szew jest tutaj: **jeden** typ, którym sterownik mówi o tym, co się stało.
+///
+/// Adres tego typu jest `drivers`, choć wypełnia go `stream::decode`, i to nie jest kaprys:
+/// `AgentDriver::start` należy do tego pliku, a typ jego kanału mieszkający w module obok
+/// znaczyłby, że `trait` jest zależny od pętli czytającej strumień, a nie odwrotnie.
+/// `stream` re-eksportuje go pod dawnym adresem, żeby jedna nazwa nie miała dwóch ścieżek.
+#[derive(Debug)]
+pub struct DecodedEvent {
+    /// Zdarzenie neutralne wobec vendora.
+    pub event: AgentEvent,
+    /// To, czego kuracja potrzebuje ponad zdarzenie. `None` dla zdarzeń bez narzędzia.
+    pub tool: Option<Tool>,
+}
+
+impl From<AgentEvent> for DecodedEvent {
+    /// Zdarzenie, które z narzędziem nie ma nic wspólnego — czyli większość.
+    ///
+    /// Istnieje po to, żeby miejsce wołania nie musiało pisać `tool: None` przy każdym
+    /// `Notice`, `Thinking` i `Finished`: pole wypisane ręcznie w dwudziestu miejscach jest
+    /// dwudziestoma okazjami, żeby raz wpisać tam `None` tam, gdzie fakt jednak był.
+    fn from(event: AgentEvent) -> Self {
+        Self { event, tool: None }
+    }
+}
+
 /// Czym skończyła się tura [T1 §8.2].
 ///
 /// Pola są tu dlatego, że ktoś je czyta (niezmiennik 21): koszt i tury czyta T-06 (zapis do
@@ -257,10 +296,14 @@ pub trait AgentDriver: Send + Sync {
 
     /// Uruchamia krok. Zdarzenia płyną na `tx` aż do dokładnie jednego
     /// [`AgentEvent::Finished`] na turę.
+    ///
+    /// Ładunkiem kanału jest [`DecodedEvent`], a nie sam [`AgentEvent`], i powód stoi przy tym
+    /// typie: bez faktów o narzędziu wołający nie ma z czego zbudować ani jednego wiersza
+    /// `read`, `search`, `edit` czy `ran`.
     async fn start(
         &self,
         spec: RunSpec,
-        tx: mpsc::Sender<AgentEvent>,
+        tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>>;
 }
 
@@ -270,10 +313,47 @@ pub trait AgentDriver: Send + Sync {
 /// potrafi, adapter odpala świeży proces z `--resume` i wołający nie widzi różnicy [T1 §8.1].
 /// Różnica jest w rachunku, nie w typie: wariant z procesem na turę płaci zimny start
 /// i odbudowę cache'u za każdym razem.
+/// Co da się powiedzieć ŻYWEJ sesji agenta.
+///
+/// Dwa warianty, bo dwie rzeczy jadą tym samym potokiem i muszą jechać jednym kanałem: kolejna
+/// tura i przerwanie w paśmie. Dwa kanały nad jednym `stdin` to wyścig, w którym koperta tury
+/// wchodzi w środek prośby o przerwanie — a CLI czyta stdin **linia po linii**, więc rozjechana
+/// linia jest turą zgubioną po drugiej stronie.
+#[derive(Debug, Clone)]
+pub enum ToAgent {
+    /// Kolejna tura: to, co napisał człowiek albo bieg.
+    Turn(String),
+    /// Przerwanie w paśmie, z identyfikatorem prośby.
+    Interrupt(String),
+}
+
+/// Uchwyt do mówienia do sesji — **klonowalny i bez `&mut`**.
+///
+/// 2026-08-18 — PO CO TO ISTNIEJE, zgłoszone przez właściciela: „dalej nie działa pisanie do
+/// agenta przez terminal". Przyczyna nie była w wierszu wejścia, a tutaj: `stdin` był polem
+/// uchwytu, [`AgentHandle::send`] brał `&mut self`, a `one_turn` trzymał ten uchwyt pożyczony
+/// mutowalnie przez CAŁĄ turę (`handle.wait()` w `tokio::select!`). Cokolwiek z zewnątrz — okno,
+/// komenda, cokolwiek — nie miało jak dosięgnąć żywej sesji, dopóki tura się nie skończy.
+/// A wtedy sesji już nie ma, bo `close()` porzuca `stdin`, co JEST jej końcem.
+///
+/// Głos rozwiązuje to u przyczyny: `stdin` przechodzi na własność jednego zadania-pisarza,
+/// a wszyscy pozostali dostają nadajnik. Kolejność linii zostaje zachowana, bo kanał jest jeden
+/// i czyta go jeden odbiorca.
+pub type Voice = mpsc::Sender<ToAgent>;
+
 #[async_trait]
 pub trait AgentHandle: Send {
     /// Sesja tej rozmowy.
     fn session(&self) -> SessionRef;
+
+    /// Głos do tej sesji, jeśli ją da się jeszcze zagadać.
+    ///
+    /// `None` znaczy „ta sesja nie przyjmuje już nic": po [`AgentHandle::close`] albo w dublerze,
+    /// który nie ma procesu. Domyślnie `None`, żeby sterownik bez dwukierunkowego stdinu nie
+    /// musiał udawać, że go ma — a wołający dostał odpowiedź „nie da się", nie ciszę.
+    fn voice(&self) -> Option<Voice> {
+        None
+    }
 
     /// Grupa procesów tej sesji, dopóki żyje. Czyta to T-06 (zapisuje `pid` i `pgid` przy
     /// kroku, zanim popłynie cokolwiek ze stdout [T7 §6.2]) i T-20 (sprzątanie po awarii

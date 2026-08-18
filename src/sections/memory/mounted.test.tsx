@@ -8,7 +8,7 @@
  * notatki są w dokumencie" przechodzi na jednej płaskiej liście — czyli na ekranie, który tę
  * sekcję unieważnia. Dlatego pytamy o strefy, a nie o obecność.
  *
- * KONTRAKT NA MARKUP. Każda strefa niesie `data-zone` — `suggested` albo `in-use`. Kawałek
+ * KONTRAKT NA MARKUP. Każda strefa niesie `data-zone` — `suggested`, `in-use` albo `passed`. Kawałek
  * markupu strefy to wszystko od jej znacznika do znacznika następnej strefy, więc jedna płaska
  * lista daje jedną strefę i wywraca porównania niżej niezależnie od kolejności stref.
  *
@@ -27,7 +27,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../App';
-import type { Note } from '../../state/memory';
+import type { Handoff, Note } from '../../state/memory';
 import { useMemory } from '../../state/memory';
 import { sectionEntry } from '../../ui/sections';
 import MemoryScreen from './index';
@@ -61,6 +61,20 @@ const IN_USE: Note = {
   modified: '2026-08-14T11:30:00Z',
 };
 
+/** Plik, który jeden agent zostawił drugiemu — trzecia strefa ekranu. */
+const PASSED: Handoff = {
+  id: 'h-1',
+  run: '0198a1f2-3b4c-7d5e-8f60-99887766aabb',
+  from: 'Scout',
+  to: ['Forge'],
+  kind: 'findings',
+  title: 'What the quote parser actually does',
+  status: 'current',
+  created: '2026-08-16T09:02:11Z',
+  path: '/Users/someone/work/.loadout/runs/2026-08-16__abc/handoffs/02__scout__findings.md',
+  bytes: 3174,
+};
+
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
@@ -84,11 +98,13 @@ function chipIn(part: string): string {
 
 beforeEach(() => {
   /* Magazyn notatek jest singletonem, więc zasianie go w jednym teście dojechałoby do
-   * następnego. Stan pusty przed każdym: kolejność testów przestaje mieć znaczenie. */
-  useMemory.setState({ notes: [], message: null, choice: null });
+   * następnego. Stan pusty przed każdym: kolejność testów przestaje mieć znaczenie.
+   * WSZYSTKIE pola, także `passed` i `passedProblem`: pole pominięte tutaj przecieka między
+   * testami i pierwszym objawem jest test, który przechodzi tylko w swojej kolejności. */
+  useMemory.setState({ notes: [], passed: [], message: null, passedProblem: null, choice: null });
 });
 
-describe('the memory section mounts for real and keeps the two zones apart', () => {
+describe('the memory section mounts for real and keeps its three zones apart', () => {
   it('mounts through real discovery and says its own sentence when there is nothing', () => {
     const markup = renderToStaticMarkup(<App section="memory" />);
 
@@ -149,5 +165,89 @@ describe('the memory section mounts for real and keeps the two zones apart', () 
         'head of this file before changing this number: the mockup draws two actions and only ' +
         'one of them has anything behind it today',
     ).toBe(1);
+  });
+});
+
+/* Trzecia strefa: „What agents passed to each other".
+ *
+ * DLACZEGO TO JEST OSOBNY BLOK, A NIE ASERCJA W POPRZEDNIM. Poprzedni blok pilnuje ROZDZIAŁU
+ * dwóch połów jednej listy notatek. Ten pilnuje czegoś innego: obietnicy, którą rejestr sekcji
+ * składa na jej pustym ekranie („What agents leave for each other lands here",
+ * `src/ui/sections.tsx`) i której do 2026-08-18 nie realizował żaden ekran — sekcja rysowała
+ * DWIE strefy z trzech i nie miała ani jednej drogi, którą mogłaby zapytać o te pliki.
+ *
+ * JAK BRZMIAŁABY SŁABA WERSJA I CO JĄ ODRÓŻNI. Słaba wersja to „nagłówek trzeciej strefy jest
+ * w dokumencie". Przechodzi na strefie, która rysuje nagłówek i nigdy nie pokazuje ani jednego
+ * pliku — czyli na dokładnie tym samym braku, tylko z podpisem. Odróżniają ją dwie rzeczy:
+ * nazwa pliku Z FIKSTURY w środku strefy i asercja, że pusta strefa mówi ZDANIE, a nie milczy.
+ */
+describe('the third zone shows the files agents leave for each other', () => {
+  it('is on screen with nothing in it, and says why instead of showing a heading over air', () => {
+    useMemory.setState({ notes: [IN_USE], passed: [] });
+
+    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const passed = zone(markup, 'passed');
+
+    expect(
+      passed,
+      'the registry promises this on the empty screen of the section, so the zone that keeps ' +
+        'that promise may not be the one zone the screen leaves out',
+    ).not.toBe('');
+    expect(
+      passed,
+      'and an empty zone says why it is empty. These files appear when a step finishes and ' +
+        'hands its result on, and nothing has finished on this machine yet — a heading with ' +
+        'nothing under it leaves a person guessing whether the section is broken',
+    ).toContain('Nothing yet.');
+  });
+
+  it('shows the file, who left it for whom, and how big it is', () => {
+    useMemory.setState({ notes: [], passed: [PASSED] });
+
+    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const passed = zone(markup, 'passed');
+
+    expect(
+      markup,
+      'a section holding files an agent left is NOT empty, whatever the note list says. The ' +
+        'empty-screen sentence in its place would hide the only thing on screen',
+    ).not.toContain(NO_NOTES_YET);
+    expect(
+      passed,
+      'the file is named by the name it has in the folder — that is what makes "open them ' +
+        'anywhere" true rather than friendly',
+    ).toContain('02__scout__findings.md');
+    expect(passed, 'and by its full address, so it can be found').toContain(PASSED.path);
+    expect(
+      passed,
+      'who left it and for whom. This comes from the file, not from the order of the list',
+    ).toContain('Scout → Forge');
+    expect(
+      passed,
+      'and its size, read from the wire and written the way the mockup writes it',
+    ).toContain('3.1 KB');
+
+    expect(
+      passed.includes('<a '),
+      'the mockup draws each row as a link, and this wave has no command that opens a file, so ' +
+        'a link here would be a control that answers a click with nothing — worse than none ' +
+        '(invariant 16). The address on screen is what replaces it',
+    ).toBe(false);
+  });
+
+  it('keeps a refusal to read those files inside that zone', () => {
+    useMemory.setState({
+      notes: [IN_USE],
+      passed: [],
+      passedProblem: 'Loadout could not read what agents passed to each other.',
+    });
+
+    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+
+    expect(
+      zone(markup, 'passed'),
+      'notes and these files live in two different folders, so one sentence for both would ' +
+        'leave a person guessing which one to go and look at',
+    ).toContain('could not read what agents passed');
   });
 });

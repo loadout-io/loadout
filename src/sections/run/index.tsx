@@ -37,29 +37,35 @@
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
-/* OKNO WYBORU FOLDERU JEST WTYCZKĄ TAURI, nie komendą Loadouta — `dialog:allow-open` stoi
- * w `src-tauri/capabilities/default.json` od T-01 i do dziś nie miało ANI JEDNEGO wołającego,
- * czyli było uprawnieniem, którego nikt nie używa, a takie uprawnienie jest dziurą, o której
- * nikt się nie dowie (komentarz w tamtym pliku mówi to wprost). Import stoi TU, a nie
- * w `io.ts`, bo tamten plik należy dziś do równoległego zadania (AGENTS.md §7); kiedy się
- * zwolni, ta jedna linia przenosi się tam razem z `openFolder`, żeby granica sekcji miała
- * jedno miejsce (niezmiennik 23). */
-import { open as chooseFolder } from '@tauri-apps/plugin-dialog';
 
+import { why } from '../../ipc/why';
+import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
 import { useRun } from '../../state/run';
-import type { WorkspacesStore } from '../../state/workspaces';
-import { createWorkspacesStore } from '../../state/workspaces';
+import { useWorkspaces } from '../../state/workspaces';
 import { Feed } from './feed/feed';
 import { attachPort, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
 import { Entry } from './entry/entry';
-import { stop } from './io';
+import { chooseWorkingFolder, folderName } from './folders';
+import { sayToAgent, stop } from './io';
+import { atOnce as atOnceNow, subscribeToAtOnce } from './limits/chosen';
+import { waitingWhere } from './limits/waiting';
+import { toChoices } from './choices';
+import type { Named } from './run-command';
+import { startFromLine, workflowNames } from './run-command';
+import { list as listWorkflows } from '../workflows/io';
+import { cardsIn, runTabs } from './tabs/store';
 import { PausedBanner } from './limits/paused-banner';
 import type { AgentFacts } from './rail/roster';
 import { roster } from './rail/roster';
 import { Rail, RAIL_WIDTH } from './rail/rail';
+/* NAPIS ZAPROSZENIA JEDZIE ZE STAŁEJ PRZEŁĄCZNIKA, nie z literału tutaj: „dodaj zakres" ma
+ * w całej aplikacji jedno brzmienie, a dwie kopie tego samego zdania rozjeżdżają się przy
+ * pierwszej zmianie i wtedy odmowa odsyła do przycisku o innej nazwie (niezmiennik 13).
+ * Import idzie w tę stronę bez cyklu: przełącznik importuje `./folders`, a nie ten plik. */
+import { FIRST_INVITE } from '../../ui/shell/workspace-switcher';
 import { Start } from './start';
 import { stripFor } from './strip/model';
 import { Strip } from './strip/strip';
@@ -75,35 +81,23 @@ const WORK_COLUMNS = `minmax(0,1fr) ${String(RAIL_WIDTH)}px`;
 /** Reguła `.feedcol` z makiety: historia przewija się, TERAZ i wiersz wejścia stoją na dole. */
 const FEED_ROWS = 'minmax(0,1fr) auto auto';
 
+/* Przycisk podstawowy z DESIGN §6 — te same cztery tokeny, co w `src/ui/primitives/empty-state.tsx`:
+ * `--accent` na tle, `--bg` na tekście, wysokość 36 px. Akcent jest jedynym kolorem interaktywnym
+ * (DESIGN §3), a na ekranie bez zakresu to jest jedyna kontrolka, której człowiek może użyć —
+ * Start stoi wtedy wygaszony, bo bieg bez folderu odmawia. */
+const INVITE = 'h-primary rounded-sq bg-accent px-4 text-ui text-bg';
+
 /* Ta sama migawka dla okna i dla renderu serwerowego. Model nie ma stanu „po stronie serwera":
  * `renderToStaticMarkup` widzi po prostu bieg, którego jeszcze nie ma. */
 function currentView(): FeedView {
   return runFeed.view;
 }
 
-/**
- * Karty tego okna — magazyn na poziomie modułu, jak `runFeed`.
- *
- * ZATRZYMANIE WCHODZI ARGUMENTEM i dziś jest nim `stop()` z `io.ts`, czyli `stop_run`. To jest
- * poprawne dopóty, dopóki okno prowadzi JEDEN bieg: identyfikatora karty ta komenda nie bierze,
- * bo po tamtej stronie granicy nie ma dziś czego nim wybrać. Dzień, w którym biegów będzie
- * więcej niż jeden, jest dniem, w którym `stop_run` dostaje argument — i to jest ta jedna
- * linia, która się wtedy zmienia.
- *
- * Wyeksportowany, bo test kryterium musi móc zasiać karty i zobaczyć, że przełączenie naprawdę
- * przestawiło magazyn, a nie tylko klasę na przycisku.
- */
-export const workspaces: WorkspacesStore = createWorkspacesStore(() => stop());
-
-/** Nazwa folderu, czyli to, co karta mówi o sobie na pasku. Pełna ścieżka zostaje w podpowiedzi. */
-function folderName(path: string): string {
-  return (
-    path
-      .split('/')
-      .filter((part) => part !== '')
-      .at(-1) ?? path
-  );
-}
+/* Magazyn kart mieszka w `./tabs/store` (dawne `./workspaces-store`, przepisane 2026-08-18 na
+ * karty BIEGÓW). Re-eksport pod starą nazwą zostaje, bo dwa testy kryteriów importują
+ * `workspaces` WŁAŚNIE stąd (`tabs-switch-workspaces.test.tsx`, `entry-row.test.tsx`),
+ * a przepisanie ich importu przy okazji przeprowadzki byłoby zmianą cudzego kryterium. */
+export { runTabs as workspaces } from './tabs/store';
 
 /**
  * Kroki biegu jako fakty o agentach, których szuka lista agentów.
@@ -137,23 +131,52 @@ function pausedUntil(lines: readonly FeedLine[]): number | null {
   return last.resetsAt;
 }
 
-/** Zdanie odmowy, które napisał Rust; własne dokładamy tylko wtedy, gdy jego nie ma. */
-function why(error: unknown, mine: string): string {
-  const said = error instanceof Error ? error.message.trim() : '';
-  return said === '' ? mine : said;
-}
-
 export default function Run(): ReactElement {
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
   const run = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
-  const tabs = useSyncExternalStore(workspaces.subscribe, workspaces.getState, workspaces.getState);
+  const tabs = useSyncExternalStore(runTabs.subscribe, runTabs.getState, runTabs.getState);
+  /* ZAKRES CZYTAMY TĄ SAMĄ DROGĄ, CO POZOSTAŁE MAGAZYNY — i to jest jedyne miejsce, w którym
+   * ten ekran pyta „gdzie pracujemy". Odpowiedź mieszka w `src/state/workspaces.ts`
+   * (`activeWorkspace()`), a ekran jej nie kopiuje: bierze pole `activeId` z tej samej migawki,
+   * z której rysuje resztę, żeby przerysowanie po przełączeniu było jednym renderem, a nie dwoma
+   * z niespójnym stanem pośrednim. */
+  const scopes = useSyncExternalStore(
+    useWorkspaces.subscribe,
+    useWorkspaces.getState,
+    useWorkspaces.getState,
+  );
+  const folder = scopes.all.find((one) => one.id === scopes.activeId)?.folder ?? null;
 
   /* Jedno miejsce na to, co Loadout odpowiedział o folderze albo o zatrzymaniu wywołanym
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
   const [said, setSaid] = useState<string | null>(null);
 
+  /* Ta sama liczba, którą pokazuje kontrolka startu — jeden fakt, jedno miejsce (niezmiennik 13).
+   * Gdyby ekran trzymał własną kopię, pasek kart mówiłby „of 3", kiedy suwak stoi na 8. */
+  const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
+
   const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
+
+  /* KARTY TEGO ZAKRESU, i tylko tego. Bieg z innego zakresu nie znika i nie zwalnia — ma tylko
+   * swoją kartę tam, gdzie pracuje (rozstrzygnięcie właściciela: przełącznik w bocznym menu
+   * ORAZ karty w środku ekranu). Filtr jest funkcją czystą w `./tabs/store`, żeby dało się go
+   * osądzić bez okna. */
+  const shown = useMemo(() => cardsIn(tabs.tabs, folder), [tabs.tabs, folder]);
+  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ. Karta wybrana w innym zakresie zostaje
+   * wybrana w swoim, ale nie ma prawa zabrać podświetlenia jedynej karcie tutaj: pasek, na którym
+   * żadna karta nie jest otwarta, choć jedna stoi, to stan, w którym człowiek nie wie, na co
+   * patrzy. */
+  const onTop = shown.some((card) => card.id === tabs.activeId)
+    ? tabs.activeId
+    : (shown[0]?.id ?? null);
+
+  /* CZEGO TU NIE MA: przestawiania sesji przy przełączeniu zakresu. Oba magazyny robią to same
+   * i każdy z nich słucha magazynu zakresów u siebie — `runFeed` w `./feed/live`, `useRun`
+   * w `src/state/run.ts`. Trzecia droga do tej samej zmiany, dopisana tutaj z efektu, byłaby
+   * drugim miejscem, w którym mieszka odpowiedź „którą sesję widać" (niezmiennik 13), i to
+   * gorszym: efekt nie odpala się w renderze statycznym, więc test widziałby inną sesję niż
+   * okno. */
 
   /* LICZBA ZYWYCH AGENTOW WRACA DO KARTY, i to nie jest ozdoba.
    *
@@ -164,40 +187,83 @@ export default function Run(): ReactElement {
    * — zamontowane i przetestowane — bylo przez to kodem NIEOSIAGALNYM.
    *
    * Zrodlem jest ta sama lista, ktora rysuje szyne, wiec liczba na karcie i kafelki obok siebie
-   * nie moga sie rozjechac (niezmiennik 13). Tylko karta na wierzchu: silnik prowadzi jeden bieg
-   * i nie mowi, czyj on jest, wiec kazda inna karta dostalaby zgadniete zero z kropka „tu cos
-   * chodzi" nad folderem, w ktorym nic nie chodzi (niezmiennik 17). */
+   * nie moga sie rozjechac (niezmiennik 13). PISZEMY DO KARTY TEGO ZAKRESU, nie do „karty na
+   * wierzchu": kafelki opisuja sesje zakresu, w ktorym stoimy, wiec ich liczba nalezy do jego
+   * karty. Karta innego zakresu dostalaby zgadniete zero z kropka „tu cos chodzi" nad biegiem,
+   * o ktorym ten ekran nic nie wie (niezmiennik 17). */
   useEffect(() => {
-    const active = tabs.activeId;
-    if (active === null) return;
-    workspaces.getState().setAgents(active, cards.length);
-  }, [tabs.activeId, cards.length]);
+    if (folder === null) return;
+    runTabs.getState().setAgents(folder, cards.length);
+  }, [folder, cards.length]);
   const running = run.workflow !== '';
 
-  /** Wybór folderu — ta sama czynność pod `＋` na pasku kart i pod `/open` w wierszu wejścia. */
+  /* NAZWY WORKFLOW DO PODPOWIEDZI POD `/run` — zgłoszenie właściciela 2026-08-19: „powinno
+   * podpowiadać jakie workflow, tam podpowiadajka powinna być". Makieta obiecuje to samo w drugiej
+   * linii wiersza wejścia („Tab completes a workflow").
+   *
+   * Czytane przy wejściu na sekcję, tym samym adapterem, którego używa lista wyboru obok Startu
+   * i sekcja Workflow — pliki są prawdą (niezmiennik 4), a lista trzymana między wejściami
+   * podpowiadałaby nazwę workflow skasowanego obok. Cisza przy odmowie jest tu POPRAWNA: brak
+   * podpowiedzi jest niedogodnością, a `/run` i tak odmówi zdaniem, które wymienia nazwy. */
+  const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
+  useEffect(() => {
+    let alive = true;
+    listWorkflows()
+      .then((entries) => {
+        if (alive) setNamesToRun(workflowNames(toChoices(entries)));
+      })
+      .catch(() => {
+        /* Świadomie bez zdania na ekranie: o nieczytelnym katalogu mówi już kontrolka startu
+         * (`start.tsx`), a dwa zdania o jednym fakcie to dwa miejsca prawdy. */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * `/open` z wiersza wejścia: pyta o folder i dokłada go jako ZAKRES.
+   *
+   * 2026-08-18 — CO TA FUNKCJA ROBIŁA WCZEŚNIEJ. Otwierała kartę na wybranym folderze, bo karta
+   * znaczyła folder. Karty znaczą teraz biegi, a folder pracy jest zakresem — więc ta czynność
+   * kończy się tam, gdzie mieszka ta decyzja: w magazynie zakresów, tym samym, którego używa
+   * przełącznik w bocznym menu (niezmiennik 13). Nazwa nadana automatycznie jest nazwą folderu;
+   * człowiek zmienia ją w bocznym menu, gdzie jest na to pole.
+   *
+   * ODMOWA MA GŁOS. `add` oddaje `false` i zostawia zdanie w `said` magazynu — słowo w słowo od
+   * Rusta, bo to on wie, czego nie ma na dysku. Cisza po kontrolce wygląda dokładnie jak
+   * kontrolka martwa, a to jest defekt, z którego wzięło się całe to zadanie (niezmiennik 16).
+   */
   function openFolder(): void {
     setSaid(null);
-    chooseFolder({ directory: true, multiple: false, title: 'Choose a folder to work in' })
-      .then((picked) => {
+    chooseWorkingFolder()
+      .then(async (picked) => {
         /* Anulowanie okna wyboru jest wartością, nie błędem (niezmiennik 7): człowiek się
          * rozmyślił i nie ma o czym mówić. */
-        if (typeof picked !== 'string') return;
-        workspaces.getState().open({
-          /* Ścieżka JEST identyfikatorem karty: jeden folder = jedna karta (§6a reguła 1),
-           * a kanoniczną ścieżkę oddaje okno wyboru systemu. */
-          id: picked,
-          name: folderName(picked),
-          path: picked,
-          /* Zero, bo w folderze dopiero co otwartym nikt nie pracuje. Liczba żywych agentów
-           * per folder nie ma dziś źródła — silnik prowadzi jeden bieg i nie mówi, czyj on
-           * jest — a wpisanie tu czegokolwiek innego byłoby kropką „tu coś chodzi" nad
-           * folderem, w którym nic nie chodzi (niezmiennik 17). */
-          agents: 0,
-        });
+        if (picked === null) return;
+        const done = await useWorkspaces.getState().add(folderName(picked), picked);
+        if (!done) setSaid(useWorkspaces.getState().said);
       })
       .catch((error: unknown) => {
         setSaid(why(error, 'Loadout could not open the folder chooser.'));
       });
+  }
+
+  /**
+   * Proza z wiersza wejścia → agent, który pracuje.
+   *
+   * Zdanie odmowy WRACA do wiersza, a nie ląduje w `said` tego ekranu, i to jest jedyne miejsce,
+   * gdzie te dwa kanały świadomie się rozchodzą: odpowiedź na to, co człowiek właśnie napisał,
+   * ma stanąć pod polem, w które pisał. Zdanie o folderze albo o Starcie mówi o ekranie i stoi
+   * pod paskiem.
+   */
+  async function sayIt(text: string): Promise<string | null> {
+    try {
+      await sayToAgent(text);
+      return null;
+    } catch (error: unknown) {
+      return why(error, 'Loadout could not pass that on to the agent.');
+    }
   }
 
   /** Zatrzymanie z wiersza wejścia. `null`, kiedy nic nie biegnie — wtedy nie ma czego zatrzymać. */
@@ -210,37 +276,83 @@ export default function Run(): ReactElement {
 
   return (
     <section className="flex h-full min-h-0 flex-col">
-      {/* Ten sam pasek, co w Agents, Skills, Memory i Workflows — jedna konwencja na pięć
-          sekcji, a nie pięć wariantów tej samej odpowiedzi na pytanie „gdzie jestem". */}
-      <header className="flex h-13 items-center gap-3 border-b border-line bg-panel px-4">
-        <h1 className="text-title text-ink">Run</h1>
-      </header>
-
+      {/* OSOBNEGO PASKA NAGLOWKA TU NIE MA, i to jest naprawa, nie przeoczenie.
+       *
+       * Makieta na ekranie pracy (`data-screen="work"`) nie ma zadnego naglowka sekcji —
+       * ekran przechodzi wprost w pasek kart. Wlasny rzad 52 px stal tu do 2026-08-18 i byl
+       * zapisanym dlugiem: `docs/ARCHITECTURE.md` §7 daje 96 px nad pierwsza trescia, karty
+       * biora 34, pasek loadoutu 56, a ten pasek 52 — czyli sam sufit byl przekroczony,
+       * zanim doliczylo sie cokolwiek innego. Zmierzone na zywym oknie: 284 px.
+       *
+       * Rozstrzygniecie jest tym, ktore proponuje tamten paragraf: nazwa sekcji wchodzi
+       * W pasek loadoutu (`strip/strip.tsx`, stopien `.strip .title` z makiety). `<h1>` dalej
+       * istnieje w drzewie — wymaga go `e2e/tests/sections-mount.spec.ts`, bo bez naglowka
+       * „cos sie zamontowalo" nie odpowiada na pytanie, na ktorej sekcji stoisz — tylko nie
+       * kosztuje juz osobnego rzedu. */}
       <div className="grid min-h-0 flex-1" style={{ gridTemplateRows: SCREEN_ROWS }}>
         <TabBar
-          tabs={tabs.tabs}
-          activeId={tabs.activeId}
-          /* Nikt nie czeka w kolejce, więc pasek nie rysuje zdania o miejscach i te dwie
-           * liczby nigdzie nie docierają. Pula jest jedna na całą aplikację (niezmiennik 11)
-           * i dziś nie ma w oknie nikogo, kto by ją znał; kiedy limiter będzie, przyjadą tu
-           * wszystkie trzy naraz — a nie dwie z nich zgadnięte. */
-          busy={0}
-          atOnce={0}
-          waitingIn={null}
+          tabs={shown}
+          activeId={onTop}
+          /* TRZY LICZBY, TRZY PRAWDZIWE ŹRÓDŁA — i ani jednej zgadniętej.
+           *
+           * Do 2026-08-18 stały tu trzy zaszyte zera i zdanie „N of M slots in use" nie mogło się
+           * pokazać nigdy. Dwie z nich okno znało od rana: ilu agentów pracuje (ta sama lista,
+           * która rysuje szynę — więc liczba na pasku i kafelki obok siebie nie mogą się
+           * rozjechać, niezmiennik 13) i ile naraz wybrał człowiek (`limits/chosen.ts`).
+           *
+           * TRZECIA JEST TERAZ POLICZONA, nie zgadnięta. Nośnikiem jest stan kroku `ready`
+           * („gotowy, jeszcze bez permitu" [ARCHITECTURE §5]), który dowozi wiersz `stepState`
+           * i przepisuje `src/state/run.ts`. `waitingWhere` oddaje `null`, kiedy nikt nie czeka
+           * albo kiedy nie wiadomo, jak nazwać miejsce — a zdanie o kolejce, której nie ma,
+           * jest gorsze niż brak zdania (niezmiennik 17). */
+          busy={cards.length}
+          atOnce={atOnce}
+          waitingIn={waitingWhere(run.steps, run.folder ?? folder)}
           onSelect={tabs.activate}
           onClose={tabs.requestClose}
           onOpenFolder={openFolder}
         />
 
         <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex items-center gap-3">
-            <Strip strip={strip} />
-            {/* 2026-08-18: Start stoi tu, a nie w makiecie — makieta zaczyna bieg wierszem
-             * wejścia, czyli parserem, którego to repo świadomie nie ma (`start.tsx`). Dopóki
-             * wybór workflow i limit „ile naraz" mieszkają w tej kontrolce, ona jest jedynym
-             * miejscem, z którego da się zacząć bieg. */}
-            <Start running={running} />
-          </div>
+          {/* Nazwa sekcji z REJESTRU, nie literalem: `src/ui/sections.tsx` jest jedynym
+                miejscem, w ktorym mieszka nazwa sekcji, i to samo zdanie czyta boczne menu.
+                Napis „Run" wpisany tutaj rozjechalby sie z nawigacja przy pierwszej zmianie
+                brzmienia (niezmiennik 13). */}
+          <Strip
+            strip={strip}
+            heading={sectionEntry('run').label}
+            /* KONTROLKI BIEGU STOJĄ W PASKU, w jego prawej grupie — powód (zmierzone 189 px
+                 chrome przy sufcie 96) stoi przy `StripProps.controls`. Zdanie o tym, czego nie
+                 udało się zacząć, wraca TUTAJ i ląduje w jedynym slocie tego ekranu: dwa
+                 miejsca na „co powiedział Loadout" to dwa zdania sprzeczające się o to samo
+                 (niezmiennik 13). */
+            controls={<Start running={running} onSaid={setSaid} />}
+          />
+          {/* ZAPROSZENIE, KIEDY NIE MA GDZIE PRACOWAĆ — i to jest jedyny przycisk, jaki ten
+                ekran ma sam z siebie.
+
+                2026-08-18: `＋` zniknął z paska kart (powód w `tabs/tab-bar.tsx`), a bez zakresu
+                Start jest wygaszony i wygaszony musi zostać — bieg bez folderu odmawia. Świeży
+                ekran Run zostawał wtedy BEZ ANI JEDNEJ czynnej kontrolki do klikania, czyli
+                w dokładnie tym stanie, który T-39 AC-6 zmierzył jako defekt („one button,
+                `Start`, and it refused") i który DESIGN §6 nazywa komunikatem o braku danych
+                zamiast zaproszeniem.
+
+                Ten przycisk NIE jest drugim przełącznikiem zakresów: nie wybiera zakresu i nie
+                pokazuje listy — robi dokładnie to samo, co `/open` w wierszu wejścia, czyli
+                pyta o folder i dokłada go do jedynego magazynu zakresów, jaki jest
+                (niezmiennik 13). Napis jedzie ze stałej przełącznika, żeby zdanie z odmowy
+                (`NO_FOLDER` w `./launch`), przycisk w bocznym menu i ten przycisk nazywały tę
+                jedną czynność tym samym słowem.
+
+                Znika, kiedy zakres już jest: wtedy pierwszą czynnością jest Start, a przycisk
+                proszący o kolejny projekt na ekranie pracy przeszkadza w tym, co człowiek
+                właśnie robi. */}
+          {scopes.all.length === 0 ? (
+            <button type="button" data-add-workspace className={INVITE} onClick={openFolder}>
+              {FIRST_INVITE}
+            </button>
+          ) : null}
 
           {/* Jeden pasek na BIEG (niezmiennik 13). Komponent sam znika, kiedy nie ma pauzy. */}
           <PausedBanner
@@ -275,7 +387,17 @@ export default function Run(): ReactElement {
               onJumpToNewest={runFeed.jumpToNewest}
             />
             <Now now={view.now} />
-            <Entry onOpenFolder={openFolder} onStopRun={running ? stopRun : null} />
+            <Entry
+              onOpenFolder={openFolder}
+              onStopRun={running ? stopRun : null}
+              onSayToAgent={sayIt}
+              /* `/run` idzie WPROST do polityki startu, bez przechodzenia przez ten komponent:
+                 `startFromLine` czyta katalog workflow, rozbiera linię i woła `launchRun` z tym
+                 samym limitem, który trzyma suwak obok Startu. Zdanie odmowy wraca do wiersza,
+                 bo dotyczy tego, co człowiek właśnie napisał. */
+              onRunWorkflow={startFromLine}
+              workflows={namesToRun}
+            />
           </div>
 
           <Rail cards={cards} />

@@ -161,6 +161,7 @@ function editorWith(openStep: string): string {
       agents={[AGENT]}
       onClose={noop}
       onRun={noop}
+      onCreateAgent={noop}
       openStep={openStep}
     />,
   );
@@ -168,7 +169,14 @@ function editorWith(openStep: string): string {
 
 function editorWithNothingPicked(): string {
   return renderToStaticMarkup(
-    <WorkflowEditor path={PATH} document={DOC} agents={[AGENT]} onClose={noop} onRun={noop} />,
+    <WorkflowEditor
+      path={PATH}
+      document={DOC}
+      agents={[AGENT]}
+      onClose={noop}
+      onRun={noop}
+      onCreateAgent={noop}
+    />,
   );
 }
 

@@ -1,0 +1,57 @@
+/* Arkusz React Flow, przetłumaczony na tokeny tego repo.
+ *
+ * PO CO TO ISTNIEJE, zmierzone 2026-08-18. `canvas.tsx` importował
+ * `@xyflow/react/dist/style.css` i nie nadpisywał ani jednej zmiennej, więc na ekranie
+ * właściciela stały kolory z cudzego systemu projektowego: strzałki w jasnym szarym, kropki
+ * siatki w innym jasnym szarym, białe obwódki uchwytów i — najgorsze — zaznaczenie w mocnym
+ * niebieskim. Ten niebieski jest PIĄTYM kolorem semantycznym w aplikacji, która ma cztery
+ * i ani jednego więcej (DESIGN §3), więc nie chodzi o brzydotę: pojawia się piąte znaczenie,
+ * którego nikt nie zdefiniował, i cztery pozostałe przestają być odczytywalne.
+ *
+ * DLACZEGO ARKUSZ, A NIE PROPSY KOMPONENTÓW. `<Background color=…>` i `style` na krawędziach
+ * przyjmują wartość, więc kolor stałby W KOMPONENCIE jako literał — a literał koloru
+ * w komponencie jest zakazany (DESIGN §9, `checks/quick-tokens.sh`). Zmienne CSS biblioteki są
+ * jedynym miejscem, w którym da się powiedzieć „weź to z naszego motywu" jednym zdaniem
+ * i dla wszystkich krawędzi naraz.
+ *
+ * Kolejność importu jest MECHANIZMEM: `canvas.tsx` importuje najpierw arkusz biblioteki, potem
+ * ten. Odwrotnie ustawiłby te zmienne, a chwilę później `dist/style.css` przypisałby swoje
+ * `*-default` — i cały ten plik byłby martwym kodem, który wygląda na działający.
+ *
+ * ROZJAZD Z MAKIETĄ, świadomy i zgłoszony: makieta rysuje siatkę w `#1b2429`, a tokenów
+ * tożsamości powierzchni jest pięć i żaden nie ma tej wartości. Najbliższy sensowo jest
+ * `--color-line` (`#212a2f`) — ta sama rola: „linia, która dzieli, ale nie przyciąga oka".
+ */
+
+.react-flow {
+  /* Strzałki: makieta ma `#5a6d76` z grotem, czyli dokładnie `--color-line-strong`. */
+  --xy-edge-stroke: var(--color-line-strong);
+  /* Zaznaczona strzałka i strzałka W TRAKCIE rysowania są jedyną rzeczą, która „dzieje się
+   * teraz" na tym ekranie — a to jest dokładnie znaczenie accentu (DESIGN §3). */
+  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-connectionline-stroke: var(--color-accent);
+
+  /* Kropki siatki. Patrz akapit o rozjeździe z makietą w nagłówku. */
+  --xy-background-pattern-color: var(--color-line);
+
+  /* Uchwyty: wypełnienie linią mocną, obwódka w kolorze panelu, żeby uchwyt na krawędzi
+   * kafelka nie wyglądał jak biała kropka doklejona z innego programu. */
+  --xy-handle-background-color: var(--color-line-strong);
+  --xy-handle-border-color: var(--color-panel);
+
+  /* Prostokąt zaznaczenia. Tu siedział ten piąty kolor. */
+  --xy-selection-background-color: var(--color-accent-wash);
+  --xy-selection-border: 1px dotted var(--color-accent-edge);
+
+  /* Kafelek rysuje `canvas/tile.tsx` w całości — z własnym tłem, obrysem i promieniem. Karta
+   * biblioteki pod nim dawała drugą, białą ramkę o innym promieniu, czyli podwójny obrys
+   * widoczny na każdym kroku. */
+  --xy-node-background-color: transparent;
+  --xy-node-border: none;
+  --xy-node-border-radius: var(--radius-sq);
+  --xy-node-color: var(--color-body);
+  --xy-node-boxshadow-hover: none;
+  /* Zaznaczenie kafelka mówi obrysem `--color-accent` z `tile.tsx`. Cień biblioteki byłby
+   * drugą odpowiedzią na pytanie „który kafelek jest zaznaczony" (niezmiennik 13). */
+  --xy-node-boxshadow-selected: none;
+}

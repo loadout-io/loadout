@@ -17,16 +17,23 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as io from '../sections/memory/io';
-import type { MemoryFull, Note } from './memory';
+import type { Handoff, MemoryFull, Note } from './memory';
 import { useMemory } from './memory';
 
+/* Atrapa pokrywa CAŁĄ krawędź, także dwa odczyty, których większość testów w tym pliku nie
+ * dotyka: `load` woła oba, więc funkcja pominięta tutaj byłaby `undefined` i test przewracałby
+ * się na `TypeError` zamiast powiedzieć, co jest nie tak. */
 vi.mock('../sections/memory/io', () => ({
   putToUse: vi.fn(),
   stopUsing: vi.fn(),
+  listNotes: vi.fn(),
+  listHandoffs: vi.fn(),
 }));
 
 const putToUse = vi.mocked(io.putToUse);
 const stopUsing = vi.mocked(io.stopUsing);
+const listNotes = vi.mocked(io.listNotes);
+const listHandoffs = vi.mocked(io.listHandoffs);
 
 const TENANT = 'tenant-before-guard';
 const INDEX = 'the-index-is-disposable';
@@ -84,6 +91,8 @@ const BLANK = useMemory.getState();
 beforeEach(() => {
   useMemory.setState(BLANK, true);
   vi.resetAllMocks();
+  listNotes.mockResolvedValue([]);
+  listHandoffs.mockResolvedValue([]);
   useMemory.setState({ notes: [note(TENANT, 'suggested'), note(INDEX, 'in-use')] });
 });
 
@@ -193,5 +202,102 @@ describe('nothing moves in the section until Rust says it moved on disk', () => 
       'and the count stands where it stood: one ask, one refusal, no second thoughts sent to ' +
         'Rust behind the back of the person who just said no',
     ).toBe(1);
+  });
+});
+
+/** Plik, który jeden agent zostawił drugiemu. Trzecia strefa ekranu stoi na tej liście. */
+const PASSED: Handoff = {
+  id: 'h-1',
+  run: '0198a1f2-3b4c-7d5e-8f60-99887766aabb',
+  from: 'Scout',
+  to: ['Forge'],
+  kind: 'findings',
+  title: 'What the quote parser actually does',
+  status: 'current',
+  created: '2026-08-16T09:02:11Z',
+  path: '/Users/someone/work/.loadout/runs/2026-08-16__abc/handoffs/02__scout__findings.md',
+  bytes: 3174,
+};
+
+/* Wejście w sekcję czyta DWA katalogi, i awaria jednego nie ma prawa opróżnić drugiego.
+ *
+ * DLACZEGO TO JEST OSOBNE KRYTERIUM, A NIE OSTROŻNOŚĆ NA ZAPAS. Notatki leżą
+ * w `~/.loadout/memory/notes/`, przekazania w katalogach biegów. To dwie różne ścieżki, dwa
+ * różne prawa dostępu i dwie różne przyczyny awarii. Jeden `try` na oba znaczy, że katalog
+ * notatek, którego nie da się przeczytać, zabiera z ekranu także pliki, które agenci sobie
+ * przekazali — czyli człowiek traci strefę, której pliki są w porządku, i nie ma jak zgadnąć,
+ * dlaczego.
+ *
+ * JAK BRZMIAŁABY SŁABA WERSJA I CO JĄ ODRÓŻNI. Słaba wersja to „`load` woła oba odczyty".
+ * Przechodzi na implementacji z jednym `try` wokół obu, bo przy zielonym dysku oba i tak
+ * jadą. Odróżnia je test, w którym JEDEN z dwóch odczytów odmawia.
+ */
+describe('entering the section reads both folders, and one failing does not empty the other', () => {
+  it('fills both zones from disk and says nothing when nothing went wrong', async () => {
+    listNotes.mockResolvedValue([note(FLAKY, 'in-use')]);
+    listHandoffs.mockResolvedValue([PASSED]);
+
+    await useMemory.getState().load();
+
+    expect(
+      useMemory.getState().notes.map((one) => one.id),
+      'the list is REPLACED, not appended to. Entering the section twice would otherwise show ' +
+        'every note twice and count the same file twice in the line above the section',
+    ).toEqual([FLAKY]);
+    expect(useMemory.getState().passed).toEqual([PASSED]);
+    expect(useMemory.getState().message).toBeNull();
+    expect(useMemory.getState().passedProblem).toBeNull();
+  });
+
+  it('keeps the files agents passed on screen when the notes folder will not be read', async () => {
+    listNotes.mockRejectedValue('Loadout could not read the notes on this machine.');
+    listHandoffs.mockResolvedValue([PASSED]);
+
+    await useMemory.getState().load();
+
+    expect(
+      useMemory.getState().passed,
+      'these files were read without trouble, so taking them off the screen because a ' +
+        'different folder failed hides a zone that is perfectly fine',
+    ).toEqual([PASSED]);
+    expect(
+      useMemory.getState().message,
+      'and what Rust said reaches the screen word for word — Tauri rejects with a string, so a ' +
+        'store checking instanceof Error would drop every sentence it ever wrote',
+    ).toBe('Loadout could not read the notes on this machine.');
+    expect(useMemory.getState().passedProblem, 'and that zone has nothing to explain').toBeNull();
+  });
+
+  it('keeps the notes on screen when the files agents passed will not be read', async () => {
+    listNotes.mockResolvedValue([note(FLAKY, 'in-use')]);
+    listHandoffs.mockRejectedValue('handoffs is not a folder Loadout may read.');
+
+    await useMemory.getState().load();
+
+    expect(
+      useMemory.getState().notes.map((one) => one.id),
+      'the notes were read, so they stay. Two reads in one try is how the working half of a ' +
+        'screen disappears with the broken half',
+    ).toEqual([FLAKY]);
+    expect(useMemory.getState().passedProblem).toBe('handoffs is not a folder Loadout may read.');
+    expect(
+      useMemory.getState().message,
+      'and the notes zone says nothing, because nothing about the notes went wrong',
+    ).toBeNull();
+  });
+
+  it('empties a zone it could not read rather than showing what it remembered', async () => {
+    useMemory.setState({ passed: [PASSED] });
+    listNotes.mockResolvedValue([]);
+    listHandoffs.mockRejectedValue('handoffs is not a folder Loadout may read.');
+
+    await useMemory.getState().load();
+
+    expect(
+      useMemory.getState().passed,
+      'what the section remembers is not what is on disk, and only the second one is what this ' +
+        'zone is about (invariant 4). Showing the remembered list under a sentence saying the ' +
+        'folder could not be read is two answers to one question',
+    ).toEqual([]);
   });
 });

@@ -20,9 +20,10 @@
 //! Same trzy funkcje biegu (`run_workflow_inner`, `stop_run_inner`, `continue_run_inner`)
 //! siedzą w [`run`], razem z całym zapisem `run.json`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -36,6 +37,8 @@ use crate::workflow::file::LoadError;
 
 /// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
 pub mod agents;
+/// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
+pub mod handoffs;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.
 pub mod memory;
 /// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
@@ -45,6 +48,7 @@ pub mod run;
 pub mod skills;
 /// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
 pub mod workflows;
+pub mod workspaces;
 
 /// Chwila **teraz** w ISO 8601 UTC — to, co `memory::notes::Actor::You` nazywa `at`.
 ///
@@ -158,10 +162,79 @@ struct Signals {
     /// (niezmiennik 4). `paused` jest stanem **biegu** i nigdy stanem kroku
     /// (`docs/ARCHITECTURE.md` §5).
     paused: watch::Sender<bool>,
+    /// Głosy żywych kroków: nazwa kroku → nadajnik do jego sesji.
+    ///
+    /// 2026-08-18 — POWSTAŁO, ŻEBY OKNO MIAŁO JAK NAPISAĆ DO AGENTA, KTÓRY PRACUJE. Zgłoszenie
+    /// właściciela było jednozdaniowe („dalej nie działa pisanie do agenta przez terminal"), a
+    /// przyczyna dwuwarstwowa: `stdin` był polem uchwytu, więc pisanie wymagało `&mut` (naprawione
+    /// w `engine::drivers`, patrz `Voice`), i **nikt poza pętlą tury nie miał tego uchwytu**.
+    /// Bieg zna swoje kroki, więc to on jest miejscem, w którym te głosy mogą leżeć.
+    ///
+    /// Kluczem jest NAZWA KROKU — ta sama, którą widzi człowiek w strumieniu i na kafelku szyny
+    /// (`forward(…, plan.steps[id].name)`). Identyfikator wewnętrzny byłby kluczem, którego okno
+    /// nigdy nie widziało, więc nie dałoby się go wpisać.
+    ///
+    /// `BTreeMap`, nie `HashMap`: kolejność jest deterministyczna, a lista nazw jedzie w zdaniu
+    /// odmowy („powiedz, do którego") — dwie odpowiedzi w różnej kolejności na to samo pytanie
+    /// czytają się jak dwie różne odpowiedzi.
+    ///
+    /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie mieści się
+    /// w jednym wyrażeniu, które kopiuje nadajnik albo listę nazw i oddaje zamek.
+    voices: Mutex<BTreeMap<String, crate::engine::drivers::Voice>>,
+    /// Co człowiek napisał, odpowiadając na punkt kontrolny — do odebrania RAZ.
+    ///
+    /// 2026-08-18 — POWSTAŁO, BO ODPOWIEDŹ NIE DOCHODZIŁA NIGDZIE. `go_on` podbijał licznik
+    /// i to było wszystko: pytanie znikało z ekranu, bieg ruszał, a treść odpowiedzi nie trafiała
+    /// ani do promptu następnego kroku, ani na dysk. Człowiek pisał zdanie, po którym nic się
+    /// nie działo — czyli najgorszy rodzaj kontrolki, ta, która KŁAMIE.
+    ///
+    /// `std::sync::Mutex`, nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie tego
+    /// zamka mieści się w jednym wyrażeniu, które zabiera wartość i oddaje zamek.
+    ///
+    /// Do odebrania raz, bo odpowiedź należy do TEGO punktu kontrolnego. Wartość zostawiona
+    /// w polu weszłaby w prompt następnego kroku po następnym „dalej", w którym człowiek nic
+    /// nie napisał — czyli powtórzyłaby zdanie sprzed dziesięciu minut jako świeże.
+    answer: Mutex<Option<String>>,
     /// Zapalane, kiedy bieg naprawdę zszedł — po ostatnim kroku, nie po wysłaniu Stopu.
     /// Bez tego `stop_run_inner` mówiłby „zatrzymane" w chwili, w której wysłał sygnał
     /// (niezmiennik 6: dopóki nie ma dowodu, traktujemy jako żywe).
     settled: CancellationToken,
+    /// Zapalane, kiedy bieg **wszedł do roboty** — raz, przed wczytaniem pliku.
+    ///
+    /// # Po co to jest, skoro jest już [`Signals::settled`]
+    ///
+    /// Bo `settled` odpowiada na „czy bieg zszedł", a to jest inne pytanie niż „czy jest co
+    /// zatrzymywać". Świeży [`RunControl`] ma oba znaczniki zgaszone, więc uchwyt biegu, którego
+    /// nikt nigdy nie uruchomił, jest **nieodróżnialny** od biegu w trakcie — a `stop_run_inner`
+    /// czeka wtedy na dowód, który nigdy nie zapadnie (jego własna dokumentacja nazywa ten
+    /// warunek wołającemu).
+    ///
+    /// # Czego to naprawia
+    ///
+    /// Zgłoszenie właściciela 2026-08-19: „co się dzieje jak zamykasz apkę a leci jakiś workflow?
+    /// on się wyłączy?". Nie wyłączał się: w `lib.rs` nie było ani jednej obsługi zamknięcia okna,
+    /// więc agenci przechodzili pod PID 1 i dalej palili limit (`recovery.rs`, nagłówek), aż do
+    /// następnego uruchomienia Loadouta. Zamknięcie ma dziś zatrzymać bieg z dowodem — ale żeby
+    /// móc to zrobić bezpiecznie, musi najpierw umieć zapytać, czy w ogóle jest co zatrzymywać.
+    began: CancellationToken,
+    /// Strumień linii TEGO biegu — żeby zdarzenie spoza pętli kroku miało jak do niego wejść.
+    ///
+    /// # Po co to jest
+    ///
+    /// Tura człowieka („siema") jest zdarzeniem biegu, ale powstaje POZA nim: przychodzi komendą
+    /// z okna, w chwili, w której pętla kroku czeka na agenta. Bez tego pola nie ma jak jej
+    /// wpisać do historii, i to była przyczyna zgłoszenia „na pewno nie widać moich wiadomości" —
+    /// zdanie dochodziło do modelu i nie pojawiało się na ekranie, więc wiersz wejścia wyglądał
+    /// na martwy.
+    ///
+    /// `Option`, bo uchwyt biegu istnieje przed biegiem: dopóki nikt nie ruszył, nie ma strumienia,
+    /// do którego można by pisać. `None` znaczy „nie ma gdzie tego pokazać" i jest odpowiedzią,
+    /// nie awarią — zdanie i tak dojdzie do agenta.
+    ///
+    /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): wzięcia mieszczą się
+    /// w jednym wyrażeniu, bo [`crate::ipc::LineSink`] jest klonowalny, a jego `send` jest
+    /// synchroniczny i nie blokuje producenta.
+    heard: Mutex<Option<crate::ipc::LineSink>>,
 }
 
 impl RunControl {
@@ -173,10 +246,76 @@ impl RunControl {
             inner: Arc::new(Signals {
                 cancel: CancellationToken::new(),
                 go_on: watch::Sender::new(0),
+                answer: Mutex::new(None),
+                voices: Mutex::new(BTreeMap::new()),
                 paused: watch::Sender::new(false),
                 settled: CancellationToken::new(),
+                began: CancellationToken::new(),
+                heard: Mutex::new(None),
             }),
         }
+    }
+
+    /// Bieg wszedł do roboty. Woła to [`run::run_workflow_with_slots`], obok `settle()`.
+    pub fn begin(&self) {
+        self.inner.began.cancel();
+    }
+
+    /// Tędy bieg pokazuje linie oknu — zapisane raz, przy starcie.
+    pub fn lines_go_to(&self, lines: crate::ipc::LineSink) {
+        *self
+            .inner
+            .heard
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(lines);
+    }
+
+    /// Bieg zszedł: uchwyt PORZUCA nadajnik.
+    ///
+    /// # Dlaczego to musi istnieć, a nie wystarczy `Option` sam z siebie
+    ///
+    /// Zmierzone 2026-08-19, natychmiast po dołożeniu [`Signals::heard`]: **piętnaście testów
+    /// biegu zawisło** („the run did not finish within 10s"). Pompa kończy się dopiero, gdy zniknie
+    /// KAŻDY [`crate::ipc::LineSink`] — a uchwyt biegu trzymał klon w tym polu, więc kolejka nigdy
+    /// się nie zamykała, `spawn_pump` nigdy nie oddawał bilansu i bieg nie wracał NIGDY.
+    ///
+    /// To jest ta sama klasa błędu, którą tego samego dnia naprawiono w
+    /// `engine::drivers::claude::close()`: żywy klon nadajnika trzyma kanał otwarty, a czekanie na
+    /// jego koniec jest wtedy czekaniem na siebie. Dlatego stoi tu osobna metoda, a nie założenie,
+    /// że „kiedyś się posprząta".
+    pub fn lines_go_quiet(&self) {
+        *self
+            .inner
+            .heard
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// Wpisuje wiersz do historii tego biegu; `false`, kiedy nie ma gdzie.
+    ///
+    /// Odpowiedź jest wartością, nie błędem (niezmiennik 7): bieg, który zszedł między jednym
+    /// a drugim naciśnięciem Enter, nie jest awarią, a zdanie i tak zostało wysłane.
+    pub fn show_in_the_run(&self, line: crate::engine::line::Line) -> bool {
+        let lines = self
+            .inner
+            .heard
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        // Klon POD zamkiem, wysyłka NAD nim: `send` jest synchroniczny, ale trzymanie zamka przez
+        // cudzy kod jest tym, z czego robi się zakleszczenie, którego nikt nie umie odtworzyć.
+        lines.is_some_and(|lines| lines.send(line) == crate::ipc::Sent::Queued)
+    }
+
+    /// Czy jest co zatrzymywać: bieg ruszył i jeszcze nie zszedł.
+    ///
+    /// Odpowiedź jest złożona z DWÓCH znaczników, bo żaden z nich sam jej nie daje: `began`
+    /// zgaszone znaczy „ten uchwyt nigdy nie prowadził biegu", a `settled` zapalone znaczy „już
+    /// zszedł". Zatrzymywanie w którymkolwiek z tych stanów to czekanie na dowód, którego nikt
+    /// nie zapali.
+    #[must_use]
+    pub fn is_working(&self) -> bool {
+        self.inner.began.is_cancelled() && !self.inner.settled.is_cancelled()
     }
 
     /// Token anulowania **tego** biegu. Klon dostaje planista i klon dostaje każdy krok —
@@ -194,7 +333,81 @@ impl RunControl {
 
     /// Człowiek nacisnął Continue przy punkcie kontrolnym.
     pub fn go_on(&self) {
+        self.go_on_with(None);
+    }
+
+    /// „Dalej" razem z tym, co człowiek napisał.
+    ///
+    /// Zapis odpowiedzi idzie PRZED podbiciem licznika i to nie jest kosmetyka: licznik jest
+    /// tym, co budzi krok czekający na punkcie kontrolnym, więc odwrotna kolejność ma okno,
+    /// w którym krok już ruszył, a odpowiedzi jeszcze nie ma czym odebrać.
+    pub fn go_on_with(&self, answer: Option<String>) {
+        {
+            let mut slot = self
+                .inner
+                .answer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *slot = answer.filter(|said| !said.trim().is_empty());
+        }
         self.inner.go_on.send_modify(|times| *times += 1);
+    }
+
+    /// Zapisuje głos kroku, dopóki ten krok żyje.
+    ///
+    /// Wołane po starcie sterownika, zdejmowane w [`RunControl::step_went_quiet`]. Krok bez głosu
+    /// (dubler bez procesu, kafelek kontrolny) po prostu nie ma tu wpisu — a wtedy okno dostaje
+    /// odpowiedź „nie da się", nie ciszę.
+    pub fn step_can_hear(&self, step: &str, voice: crate::engine::drivers::Voice) {
+        self.inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(step.to_owned(), voice);
+    }
+
+    /// Zdejmuje głos kroku, który zszedł.
+    ///
+    /// Bez tego okno proponowałoby rozmowę z sesją, która już nie istnieje, i dowiadywałoby się
+    /// o tym z ciszy — a cisza jest tu nieodróżnialna od agenta, który myśli.
+    pub fn step_went_quiet(&self, step: &str) {
+        self.inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(step);
+    }
+
+    /// Głos tego kroku, jeśli krok jeszcze słucha.
+    #[must_use]
+    pub fn voice_of(&self, step: &str) -> Option<crate::engine::drivers::Voice> {
+        self.inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(step)
+            .cloned()
+    }
+
+    /// Kroki, które w tej chwili słuchają — po nazwie, w kolejności alfabetycznej.
+    #[must_use]
+    pub fn who_is_listening(&self) -> Vec<String> {
+        self.inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Odbiera odpowiedź człowieka. `None`, kiedy nic nie napisał albo kiedy ktoś już ją zabrał.
+    pub fn take_answer(&self) -> Option<String> {
+        self.inner
+            .answer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// Zakłada nasłuch na „dalej" i oddaje go wołającemu, **zanim** bieg ogłosi, że stoi.
@@ -333,6 +546,23 @@ pub struct RunRequest {
     /// złamania nie wygląda jak zły algorytm — wygląda jak pole, które jest wczytywane,
     /// logowane i nigdzie nie podawane, a semafor dostaje `1`. Tak przegrał poprzedni prototyp.
     pub how_many_at_once: usize,
+    /// Co ma zostać zbudowane w tym biegu — zdanie od człowieka, wspólne dla wszystkich kroków.
+    ///
+    /// # Po co to pole istnieje
+    ///
+    /// Zgłoszenie właściciela 2026-08-19: „jak ja mam np puścić jakieś workflow i przekazać
+    /// prompta?". Do tego dnia bieg brał WYŁĄCZNIE to, co stało w pliku, więc workflow był
+    /// jednorazowy: sześciu agentów ustawionych raz umiało zbudować dokładnie tę jedną rzecz,
+    /// którą ktoś wcześniej wpisał w `instructions` każdego kroku. Kształt pracy (kto z kim,
+    /// w jakiej kolejności) i treść pracy (co konkretnie robimy) są dwiema różnymi rzeczami,
+    /// a plik trzymał je zlepione — i to jest powód, dla którego makieta obiecuje w wierszu
+    /// wejścia `/run`, a nie tylko listę wyboru.
+    ///
+    /// `None` znaczy „bieg bez zadania z wiersza" i wtedy prompt kroku jest **co do bajtu** tym,
+    /// co stoi w pliku. To nie jest wygoda dla wołających: pusty blok „TWOJE ZADANIE" nad
+    /// promptem uczyłby model, że ta sekcja bywa pusta, i kosztowałby długość za nic — ten sam
+    /// powód stoi przy [`run::with_what_we_know`].
+    pub task: Option<String>,
 }
 
 /// Czym skończył się bieg.
@@ -417,7 +647,70 @@ pub enum RunError {
         /// Co dokładnie odmówiło, zdaniem systemu plików.
         why: String,
     },
+    /// W bibliotece nie ma ani jednego agenta, więc krok nie ma czym ruszyć.
+    ///
+    /// WŁASNY WARIANT, a nie [`RunError::Io`], i powód jest ten sam co przy
+    /// [`RunError::NoFreshCopy`]: `Io` jest przezroczysty, więc człowiek czytał
+    /// „No such file or directory (os error 2)" — zdanie, które mówi, co się nie udało
+    /// systemowi plików, i nie mówi ani co się nie udało JEMU, ani co ma z tym zrobić.
+    /// Zmierzone 2026-08-18: `~/.loadout/agents` nie istniał, bo zapis agenta padał cicho,
+    /// a siedemnaście naciśnięć Start skończyło się dokładnie tym komunikatem.
+    #[error(
+        "No agents are saved yet, so \"{step}\" has nothing to run. Create an agent in \
+         Agents, then pick it on the step."
+    )]
+    NoAgentsSaved {
+        /// Nazwa kroku, który o agenta poprosił — człowiek szuka kafelka, nie identyfikatora.
+        step: String,
+    },
     /// Czegoś nie dało się zamienić w JSON albo z niego wyjąć.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /* ── ODMOWY ROZMOWY Z ŻYWYM AGENTEM ────────────────────────────────────────────────────
+     *
+     * Pięć wariantów, pięć różnych zdań, i to nie jest rozrzutność: każde z nich człowiek
+     * naprawia inaczej. Jedno wspólne „could not send" kazałoby mu zgadywać, czy nic nie
+     * pracuje, czy pomylił nazwę, czy ten krok właśnie skończył — a wiersz wejścia jest jedynym
+     * miejscem, w którym te zdania widać (niezmiennik 14: zero żargonu).
+     *
+     * Powstały 2026-08-18 razem z przeniesieniem polityki z `#[tauri::command]` do
+     * `run::say_to_agent_inner`; przedtem były pięcioma napisami sklejanymi w skorupie, na którą
+     * nie dało się napisać kryterium. */
+    /// Człowiek nacisnął Enter na pustym wierszu.
+    #[error("Write something first, then press Enter.")]
+    NothingToSay,
+    /// Nic nie pracuje, więc nie ma z kim rozmawiać.
+    #[error("No agent is working right now, so there is nobody to talk to. Press Start first.")]
+    NobodyIsWorking,
+    /// Pracuje kilku i nie powiedziano, do którego.
+    ///
+    /// Zdanie **wymienia nazwy**, bo odmowa, która nie mówi, z czego wybrać, zamienia jedno
+    /// kliknięcie w zgadywanie.
+    #[error(
+        "{} agents are working, so say which one: put its name first, like \"{} …\".",
+        names.len(),
+        names.first().map_or("Builder", String::as_str)
+    )]
+    SeveralAreWorking {
+        /// Kroki, które w tej chwili słuchają.
+        names: Vec<String>,
+    },
+    /// Wskazany krok już zszedł, a nic innego nie pracuje.
+    #[error("That agent already finished, so there is nothing listening any more.")]
+    ThatOneFinished,
+    /// Takiego kroku nie ma wśród pracujących — ale inne pracują.
+    #[error("There is no agent called \"{name}\" working right now. These are: {}.", working.join(", "))]
+    NoSuchAgentWorking {
+        /// Nazwa, którą podało okno.
+        name: String,
+        /// Kroki, które naprawdę słuchają.
+        working: Vec<String>,
+    },
+    /// Sesja przestała czytać wejście między wyborem adresata a wysyłką.
+    #[error("\"{name}\" stopped listening before that could reach it.")]
+    StoppedListening {
+        /// Krok, do którego mówiliśmy.
+        name: String,
+    },
 }

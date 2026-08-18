@@ -25,9 +25,16 @@
  */
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { wireChannel } from '../../ipc/run';
-import { useRun } from '../../state/run';
+/* 2026-08-18 — POMPA PISZE DO SESJI ZAKRESU, NIE DO TEJ, KTÓRĄ WIDAĆ, i to jest cały wymóg
+ * właściciela „przełączam zakres i nie tracę sesji". Ta krawędź wie, do którego folderu wysłała
+ * bieg — sama go podaje `run_workflow` czwartym argumentem — więc paczki mają dokąd trafić
+ * niezależnie od tego, na co człowiek patrzy. Wersja pisząca przez uchwyt aktywnego zakresu
+ * przepisywałaby linie biegu z zakresu A do sesji zakresu B w chwili przełączenia, i wyglądałoby
+ * to na ekranie jak dwa pomieszane biegi. Nagłówki `./feed/live` i `../../state/run` mówią to
+ * samo z drugiej strony. */
+import { runFor } from '../../state/run';
 import type { Step } from '../../state/run';
-import { runFeed } from './feed/live';
+import { feedFor } from './feed/live';
 
 /**
  * Co dokładnie rusza — dwa pola paska loadoutu, oba znane oknu, zanim Rust cokolwiek powie.
@@ -76,6 +83,15 @@ let going: Promise<void> | null = null;
  * @param howManyAtOnce ile kroków ma NAPRAWDĘ biec naraz. Liczba jedzie w żądaniu, nigdy ze
  *   stałej po tamtej stronie (niezmiennik 11): cicha wersja złamania wygląda jak pole, które
  *   jest wczytywane, logowane i nigdzie nie podawane, a semafor dostaje `1`.
+ * @param folder katalog, w którym mają pracować agenci — ścieżka z aktywnej karty, albo `null`,
+ *   kiedy nie ma otwartej żadnej. `null`, a nie pominięty klucz: powód stoi przy `invoke` niżej.
+ *   Do 2026-08-18 tego argumentu nie było i wybrany folder nie dojeżdżał do biegu w ogóle.
+ * @param task zdanie z wiersza wejścia — co ten bieg ma zbudować — albo `null`, kiedy człowiek
+ *   nic nie napisał i biegnie tylko to, co stoi w pliku. `null`, a nie pominięty klucz: dokładnie
+ *   ten sam powód, co przy `folder`, i ta sama klasa awarii, która wywaliła Start 2026-08-17.
+ *   Nazwa jest nazwą parametru `run_workflow` z `src-tauri/src/ipc.rs`, przepisaną STAMTĄD.
+ *   Co Rust z tym robi: wpisuje je w prompt każdego kroku agenta — w miejsce `{{task}}`, jeśli plik
+ *   je wskazał, a w przeciwnym razie na górę promptu pod nagłówkiem (`commands::run::with_the_task`).
  * @param what nazwa i plan tego workflow — to, co ta krawędź zapisuje w magazynie biegu.
  *   Wartość domyślna jest MOSTEM, nie wygodą: dwa cudze kryteria (`start-invokes.test.tsx`
  *   z T-30 i `start-args-complete.test.tsx` z T-38 AC-1) wołają tę krawędź dwoma argumentami
@@ -87,6 +103,8 @@ export function start(
   workflow: string,
   howManyAtOnce: number,
   what: WhatIsRunning = { name: workflow, steps: [] },
+  folder: string | null = null,
+  task: string | null = null,
 ): Promise<void> {
   if (going !== null) {
     return going;
@@ -101,10 +119,14 @@ export function start(
    * kierowałby linie drugiego biegu do odbiorcy pierwszego.
    *
    * Paczka wchodzi DWOMA wywołaniami i nigdzie indziej — tak, jak mówi
-   * `src/sections/run/feed/live.ts`: `runFeed.appendLines` niesie wiersze widoku,
-   * `useRun.appendLines` okno linii. Pętla po paczce mieszka w `wireChannel`, żeby zysk
+   * `src/sections/run/feed/live.ts`: `feedFor(…).appendLines` niesie wiersze widoku,
+   * `runFor(…).appendLines` okno linii. Pętla po paczce mieszka w `wireChannel`, żeby zysk
    * z pompy w Ruście przeżył granicę: jedna wiadomość to jedna aktualizacja stanu, nigdy
-   * jedna na wiersz. */
+   * jedna na wiersz.
+   *
+   * OBIE SESJE ROZSTRZYGNIĘTE RAZ, PRZED PIERWSZĄ PACZKĄ, i to nie jest oszczędność wywołań:
+   * ten bieg należy do TEGO zakresu przez cały swój czas, a rozstrzyganie sesji w środku
+   * domknięcia dawałoby uchwyt, który mógłby się przesunąć razem z widokiem. */
   /* STEMPEL POWSTAJE TUTAJ, I TO JEST ROZBIEŻNOŚĆ DO ZGŁOSZENIA (AGENTS.md §7).
    * `src/state/run.ts` opisuje `Stamped.id` jako „ściśle rosnący numer nadawany po stronie
    * Rusta [T2 §6.3]" — a `src-tauri/src/engine/line.rs` nie serializuje ani `id`, ani `at`:
@@ -115,6 +137,11 @@ export function start(
    * się z żadnym numerem po stronie Rusta. Prawdziwa naprawa to pole na drucie, czyli
    * `engine/line.rs`, który należy do T-05 — poza OWNS tego zadania. */
   let stamp = 0;
+  /* Klucz sesji tego biegu. Pusty napis znaczy „bez wskazanego folderu" — Rust bierze wtedy
+   * katalog, pod którym wstała aplikacja (`AppState::project_for`), i to też jest jedna,
+   * konkretna sesja, a nie „żadna". Ten sam sentinel czyta rejestr strumienia. */
+  const session = runFor(folder);
+  const view = feedFor(folder ?? '');
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
     const at = Date.now();
@@ -122,8 +149,8 @@ export function start(
       stamp += 1;
       return { ...line, id: stamp, at };
     });
-    runFeed.appendLines(stamped);
-    useRun.getState().appendLines(stamped);
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
   });
 
   /* MAGAZYN DOWIADUJE SIĘ TUTAJ, I TO JEST DRUGA POŁOWA T-38 AC-3.
@@ -136,18 +163,42 @@ export function start(
    *
    * Przed `invoke`, nie po nim: komenda po tamtej stronie trwa tyle, co bieg, więc zapis po
    * jej powrocie ogłaszałby start biegu w chwili, w której bieg właśnie się skończył. */
-  useRun.getState().nowRunning(what.name, what.steps);
+  /* FOLDER JEDZIE DO MAGAZYNU TĄ SAMĄ DROGĄ, i to jest połowa naprawy „zamknięcie dowolnej
+   * karty ubija jedyny bieg". `stop_run` nie bierze identyfikatora, więc jedyne, co okno może
+   * zrobić uczciwie, to nie wołać go dla karty, do której ten bieg nie należy — a do tego
+   * musi wiedzieć, gdzie on idzie. Wie, bo sam ten folder tu wysyła (patrz `invoke` niżej). */
+  session.getState().nowRunning(what.name, what.steps, folder);
 
   const run = invoke<void>('run_workflow', {
     fileName: workflow,
     howManyAtOnce,
+    /* KLUCZ JEST OBECNY ZAWSZE, TAKŻE JAKO `null`, i to nie jest ozdoba. Tauri dopasowuje
+     * argumenty PO NAZWIE i deserializuje je PRZED wejściem w ciało komendy, więc brakujący
+     * klucz nie jest mniejszym wywołaniem — jest odrzuconym. `Option<String>` po tamtej
+     * stronie przyjmuje `null` i znaczy „biegnij tam, gdzie aplikacja wstała"; pominięcie
+     * klucza znaczyłoby „odrzuć to wywołanie". */
+    folder,
+    /* TEN SAM POWÓD, CO PRZY `folder` WYŻEJ, i nie jest to powtórka dla ozdoby: `task` doszedł
+     * do `run_workflow` po stronie Rusta, a ta krawędź do 2026-08-19 nadal wysyłała cztery
+     * klucze z pięciu. Tauri deserializuje argumenty PO NAZWIE i PRZED wejściem w ciało
+     * komendy, więc brakujący klucz odrzuca całe wywołanie — Start odbijałby się przy każdym
+     * kliknięciu, zdaniem, którego człowiek nie zobaczy. `Option<String>` przyjmuje `null`
+     * i znaczy „biegnij tym, co stoi w pliku". */
+    task,
     lines,
   }).finally(() => {
     going = null;
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
      * zawsze i jest kontrolką bez roboty (niezmiennik 16), a pasek loadoutu opisuje bieg,
      * którego nie ma. `finally`, nie `then`: odmowa jest zejściem tak samo jak koniec. */
-    useRun.getState().nowRunning('', []);
+    session.getState().nowRunning('', [], null);
+    /* Bieg zszedł, więc nie stoi już na niczyim pytaniu: kontrolka „dalej" ma zniknąć razem
+     * z nim, także wtedy, gdy człowiek odpowiedział na punkt kontrolny i biegu nie puścił.
+     * Bez tej linii zostawałaby na ekranie po biegu, którego nie ma (niezmiennik 16).
+     *
+     * W SESJI TEGO BIEGU, nie w tej, którą widać: bieg zakresu A kończący się wtedy, kiedy
+     * człowiek patrzy na zakres B, zdejmowałby przypięte pytanie z cudzej sesji. */
+    view.runEnded();
   });
   going = run;
   return run;
@@ -174,15 +225,46 @@ export function stop(): Promise<void> {
  * i z okna wyglądał dokładnie jak zawieszony agent. Mechanizm bez wołającego przechodzi każdą
  * bramkę, jaką mamy — dokładnie jak `wireChannel` przed tym zadaniem.
  *
- * Bez argumentów, bo punkt kontrolny nie ma identyfikatora po tamtej stronie: `continue_run`
- * bierze samo `State` i podbija licznik zgód biegu (`RunControl::go_on` — licznik, nie flaga,
- * żeby bieg z dwoma punktami kontrolnymi zapytał dwa razy). Front, który dokleiłby tu numer
- * kroku, byłby drugim miejscem, w którym mieszka odpowiedź na pytanie „na czym stoimy".
+ * Bez identyfikatora punktu kontrolnego, bo takiego po tamtej stronie nie ma: `continue_run`
+ * podbija licznik zgód biegu (`RunControl::go_on_with` — licznik, nie flaga, żeby bieg z dwoma
+ * punktami kontrolnymi zapytał dwa razy). Front, który dokleiłby tu numer kroku, byłby drugim
+ * miejscem, w którym mieszka odpowiedź na pytanie „na czym stoimy".
+ *
+ * 2026-08-18 — ODPOWIEDŹ CZŁOWIEKA JEDZIE RAZEM ZE ZGODĄ, i ten argument dołożył Rust w tej
+ * samej fali (`ipc.rs`: `continue_run(state, answer: Option<String>)`,
+ * `commands::run::continue_run_inner` → `go_on_with(answer)`). Bez klucza `answer` w żądaniu to
+ * wywołanie było ODRZUCANE, nie mniejsze: Tauri dopasowuje argumenty PO NAZWIE i deserializuje
+ * je przed wejściem w ciało komendy, więc kontrolka „dalej" odbijałaby się przy każdym
+ * kliknięciu, z komunikatem, którego nikt nie widzi. Dokładnie tak Start był zepsuty
+ * 2026-08-17 (`checks/quick-invoke-args.sh` istnieje z tego powodu).
+ *
+ * `null`, kiedy człowiek puścił bieg bez pisania — to jest cała treść `Option<String>` po
+ * tamtej stronie. Argument jest opcjonalny, bo cudze kryterium
+ * (`continue-at-checkpoint.test.tsx`) woła tę krawędź bez argumentów i nie wolno go tknąć;
+ * klucz jedzie jednak ZAWSZE, bo pominięty klucz to odrzucone wywołanie.
  *
  * Rozwiązuje się dopiero wtedy, kiedy bieg NAPRAWDĘ ruszył (`wait_until_moving` po tamtej
  * stronie) — tak samo jak Stop wraca dopiero z dowodem. Ekran, który wróci wcześniej, pokazuje
  * człowiekowi dalej stojący bieg tuż po tym, jak ten człowiek go puścił.
  */
-export function continueRun(): Promise<void> {
-  return invoke<void>('continue_run');
+export function continueRun(answer: string | null = null): Promise<void> {
+  return invoke<void>('continue_run', { answer });
+}
+
+/**
+ * Powiedz coś agentowi, który pracuje — kolejna tura w jego żywej sesji.
+ *
+ * 2026-08-18 — POWSTAŁO ZE ZGŁOSZENIA WŁAŚCICIELA: „dalej nie działa pisanie do agenta przez
+ * terminal". Wiersz wejścia odpowiadał na prozę zdaniem „That one is not known here", bo nie
+ * istniała ŻADNA droga do żywej sesji — nie z braku komendy, a z powodu, który leżał trzy
+ * warstwy niżej: `stdin` był polem uchwytu, więc pisanie wymagało `&mut`, a uchwyt jest
+ * pożyczony mutowalnie przez całą turę. Naprawa poszła w przyczynę (`engine::drivers::Voice`).
+ *
+ * @param text co człowiek napisał. Puste odmawia po tamtej stronie — nie zgadujemy tu, co znaczy
+ *   pusty Enter.
+ * @param agent nazwa kroku, do którego mówimy, albo `null`. `null` znaczy „ten jeden, który
+ *   pracuje": przy dwóch i więcej Rust odmawia z listą nazw, zamiast wysyłać do losowego.
+ */
+export function sayToAgent(text: string, agent: string | null = null): Promise<void> {
+  return invoke<void>('say_to_agent', { agent, text });
 }

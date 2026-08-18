@@ -69,6 +69,11 @@ export interface SessionAgent {
 export interface StepBrief {
   readonly agent: string;
   readonly name: string;
+  /**
+   * O co poproszono ten krok. **Puste znaczy „nie wiemy"** i wtedy wiersz niesie samą nazwę
+   * kroku — dziś tak jest zawsze w prawdziwym biegu, bo `planOf` nie przewozi `instructions`
+   * z pliku workflow do magazynu biegu. Zgłoszone jako brak na drucie okna.
+   */
   readonly brief: string;
   /** Puste, kiedy krok nie wskazał żadnych — wtedy wiersza `files` po prostu nie ma. */
   readonly files: readonly string[];
@@ -149,7 +154,16 @@ function givenRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[
   const rows: SectionRow[] = [];
 
   for (const step of steps) {
-    rows.push(row('step', 'Step', step.name + ' — ' + step.brief, null));
+    /* PUSTY BRIEF ZOSTAWIA SAMĄ NAZWĘ KROKU, i to jest naprawa z 2026-08-18, nie wygoda.
+     *
+     * Prompt kroku (`AgentStep.instructions`) jest czytany z dysku przez sekcję Bieg i GUBIONY
+     * w `choices.ts` (`planOf` przepisuje tylko `id`, `name`, `state`), więc magazyn biegu nie
+     * ma dziś czym tego briefu przewieźć. `name + ' — ' + ''` dawało wiersz kończący się
+     * półpauzą i spacją: dokładnie ten wiersz zastępczy, przed którym stoi nagłówek tego pliku,
+     * tylko bez słowa, które by go zdradziło. Nazwa kroku jest faktem i zostaje sama. */
+    rows.push(
+      row('step', 'Step', step.brief === '' ? step.name : step.name + ' — ' + step.brief, null),
+    );
   }
   for (const handoff of run.handoffs) {
     if (handoff.to !== agent.id) continue;

@@ -111,6 +111,36 @@ pub struct Note {
 /// przy Run — to drugie dowodzi T-15.
 #[must_use]
 pub fn check(workflow: &WorkflowFile) -> Vec<Note> {
+    notes(workflow, When::Saving)
+}
+
+/// To samo, ale sądzone tak, jak sądzi się plik, który ma **ruszyć** za sekundę.
+///
+/// JEDNA reguła zmienia wagę i to jest cała różnica: krok bez agenta. Przy zapisie jest
+/// ostrzeżeniem, bo szkic w połowie zbudowany ma się **zapisać** — kafelek dodany przed
+/// wybraniem agenta jest normalnym stanem pracy, a zapis, który go odrzuca, kasuje pracę
+/// człowieka w chwili, gdy ten pracuje. Przy Run jest problemem, bo krok, który nie nazywa
+/// agenta, nie ma czym ruszyć i lepiej powiedzieć to **przed** biegiem, zdaniem o agencie,
+/// niż w trakcie, zdaniem systemu plików.
+///
+/// Dwa wejścia, nie argument: `check` ma trzech wołających (zapis, `check_workflow` dla okna,
+/// bieg) i tylko jeden z nich sądzi bieg. Argument w sygnaturze zmuszałby dwóch pozostałych
+/// do wybierania wartości, o którą nie pytają.
+#[must_use]
+pub fn check_to_run(workflow: &WorkflowFile) -> Vec<Note> {
+    notes(workflow, When::Running)
+}
+
+/// Po co pytamy — jedyna rzecz, która zmienia wagę uwagi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum When {
+    /// Zapis pliku: szkic w połowie zbudowany jest poprawnym plikiem.
+    Saving,
+    /// Naciśnięty Run: plik ma za sekundę uruchomić procesy.
+    Running,
+}
+
+fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     let steps: Vec<Facts<'_>> = workflow.steps.iter().map(facts).collect();
 
     // Pusty plik kończy sprawdzanie. Każda następna reguła mówiłaby o krokach, których nie ma,
@@ -147,9 +177,11 @@ pub fn check(workflow: &WorkflowFile) -> Vec<Note> {
     one_id_two_steps(&steps, &mut notes);
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
+    a_step_without_an_agent(&steps, when, &mut notes);
+    a_step_without_a_task(&steps, when, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &arrows, &mut notes);
-    one_folder_two_steps(&steps, &arrows, &mut notes);
+    one_folder_two_steps(&steps, &arrows, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
 }
@@ -167,6 +199,23 @@ struct Facts<'a> {
     copies: u8,
     folder: Option<&'a Folder>,
     passthrough: Option<&'a BTreeMap<String, BTreeMap<String, String>>>,
+    /// Treść zadania kroku. `None` dla kafelka kontrolnego — on pyta człowieka, nie agenta.
+    ///
+    /// 2026-08-18 — DOŁOŻONE PO PIERWSZYM PRAWDZIWYM BIEGU. Właściciel uruchomił workflow, którego
+    /// oba kroki miały `"instructions": ""`, i agent odpowiedział mu w strumieniu zdaniem
+    /// „both have empty `instructions` — so the task description is blank there too. What would
+    /// you like me to implement?". Czyli: zapłacone wywołanie vendora, trzy tury, i pytanie
+    /// zamiast pracy. Loadout wiedział o tym PRZED startem i nie powiedział ani słowa.
+    instructions: Option<&'a str>,
+    /// Id agenta, którego krok nazywa. `None` dla kafelka kontrolnego — on nie woła vendora.
+    ///
+    /// 2026-08-18 — TEGO POLA TU NIE BYŁO i to była najdroższa luka walidatora. Żadna z siedmiu
+    /// reguł nie czytała `agent`, więc plik z krokiem, który nie nazywa żadnego agenta,
+    /// przechodził jako **bezproblemowy**: panel „things to fix" był pusty, `Run` aktywny,
+    /// a odmowa padała kilka ekranów dalej komunikatem systemu plików bez słowa „agent"
+    /// (`commands::run::find_agent` robiło `fs::read_dir` po nieistniejącym katalogu
+    /// biblioteki). Zmierzone na dwóch plikach właściciela: oba miały `"agent": ""`.
+    agent: Option<&'a str>,
 }
 
 fn facts(step: &Step) -> Facts<'_> {
@@ -177,6 +226,8 @@ fn facts(step: &Step) -> Facts<'_> {
             copies: agent.copies,
             folder: Some(&agent.folder),
             passthrough: Some(&agent.vendor_options),
+            instructions: Some(&agent.instructions),
+            agent: Some(&agent.agent),
         },
         Step::Checkpoint(checkpoint) => Facts {
             id: &checkpoint.id,
@@ -184,6 +235,8 @@ fn facts(step: &Step) -> Facts<'_> {
             copies: 1,
             folder: None,
             passthrough: None,
+            instructions: None,
+            agent: None,
         },
     }
 }
@@ -285,6 +338,61 @@ fn arrows_into_nowhere(
                 ),
             ));
         }
+    }
+}
+
+/// Krok, który nie nazywa żadnego agenta.
+///
+/// Waga zależy od tego, po co pytamy — powód stoi przy [`check_to_run`]. Zdanie jest to samo
+/// w obu przypadkach i mówi, **co zrobić**, a nie tylko czego brakuje (DESIGN §8): nazwa
+/// kafelka, potem dwie drogi wyjścia, w kolejności od tańszej.
+fn a_step_without_an_agent(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>) {
+    for step in steps {
+        // `Some("")`, nie `None`: kafelek kontrolny agenta nie ma i nie ma mieć, a krok agenta
+        // z pustym polem to krok, którego nikt jeszcze nie przypisał. Rozróżnienie po rodzaju,
+        // bo pusty napis niesie tu informację, a brak pola nie niesie żadnej.
+        let Some(agent) = step.agent else { continue };
+        if !agent.trim().is_empty() {
+            continue;
+        }
+        let message = format!(
+            "\"{}\" does not have an agent yet, so it has nothing to run. Pick an agent on \
+             the step, or create one in Agents first.",
+            step.name
+        );
+        notes.push(match when {
+            When::Saving => warning(Some(step.id), message),
+            When::Running => problem(Some(step.id), message),
+        });
+    }
+}
+
+/// Krok, który nie mówi, co ma zrobić.
+///
+/// Waga zależy od tego, po co pytamy — dokładnie jak przy [`a_step_without_an_agent`]: szkic
+/// w połowie zbudowany ma się ZAPISAĆ, a Run ma odmówić. Powód, dla którego ta reguła w ogóle
+/// istnieje, stoi przy polu [`Facts::instructions`] i jest zmierzony na prawdziwym biegu.
+///
+/// Zdanie mówi, gdzie to wpisać, a nie tylko czego brakuje (DESIGN §8). „What to do" jest
+/// etykietą TEGO pola w panelu kroku, więc człowiek czyta nazwę, którą widzi na ekranie.
+fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>) {
+    for step in steps {
+        // `Some("")`, nie `None`: kafelek kontrolny zadania nie ma i nie ma mieć.
+        let Some(task) = step.instructions else {
+            continue;
+        };
+        if !task.trim().is_empty() {
+            continue;
+        }
+        let message = format!(
+            "\"{}\" does not say what to do, so the agent would have to guess. Write it in \
+             \"What to do\" on the step.",
+            step.name
+        );
+        notes.push(match when {
+            When::Saving => warning(Some(step.id), message),
+            When::Running => problem(Some(step.id), message),
+        });
     }
 }
 
@@ -398,11 +506,36 @@ fn a_circle(steps: &[Facts<'_>], arrows: &[(usize, usize)], notes: &mut Vec<Note
 /// stąd tam, ani stamtąd tu. Reguła bez tego zdania odmawia zwykłego łańcucha `plan → build`,
 /// ktoś zgłasza to jako błąd, ktoś inny „naprawia" ją przez wyłączenie — i zostaje martwy kod
 /// (niezmiennik 12).
-fn one_folder_two_steps(steps: &[Facts<'_>], arrows: &[(usize, usize)], notes: &mut Vec<Note>) {
+/// Dwa kroki, które mogą biec równocześnie, celujące w te same pliki.
+///
+/// WAGA ZALEŻY OD TEGO, PO CO PYTAMY, i to jest rozstrzygnięcie właściciela z 2026-08-19.
+/// Para bez strzałki jest **ostrzeżeniem przy zapisie** i **problemem przy Run** — tym samym
+/// wzorcem, którym stoją [`a_step_without_an_agent`] i [`a_step_without_a_task`].
+///
+/// Powód jest mierzony na edytorze, nie estetyczny. Kafelki dokłada się na płótno luzem
+/// i dopiero potem łączy strzałkami — to jest cały gest budowania workflow, w tym takiego,
+/// gdzie trzy gałęzie wchodzą do jednego kroku. Dopóki ta reguła odmawiała przy zapisie, DRUGI
+/// dołożony kafelek robił z dokumentu plik niezapisywalny: autosave dostawał odmowę, na ekranie
+/// stało „this workflow was not saved", a praca człowieka żyła wyłącznie w pamięci okna.
+/// Wymuszało to strzałkę doklejaną automatycznie do ostatniego kroku — czyli edytor, w którym
+/// nie da się zbudować niczego poza łańcuchem.
+///
+/// Niezmiennik 12 na tym nie traci ANI JEDNEGO biegu: `check_to_run` woła się w
+/// `commands::run` **przed** uruchomieniem czegokolwiek, więc odmowa dalej pada, zanim
+/// pierwszy agent dotknie pliku. Zdanie niezmiennika przeciwstawia się odkrywaniu kolizji
+/// wtedy, gdy agenci już po sobie nadpisują — a nie Startowi.
+fn one_folder_two_steps(
+    steps: &[Facts<'_>],
+    arrows: &[(usize, usize)],
+    when: When,
+    notes: &mut Vec<Note>,
+) {
     for step in steps {
         // Krok w kilku kopiach biegnie równocześnie sam ze sobą — z definicji, bez żadnej
-        // strzałki. T3 proponował tu podpowiedź; niezmiennik 12 mówi „odmowa przy zapisie",
-        // a niezmiennik wygrywa nad raportem.
+        // strzałki. To JEDYNA gałąź tej reguły, która zostaje problemem także przy zapisie,
+        // i różnica jest realna: para bez strzałki to stan przejściowy, który człowiek naprawia
+        // gestem na płótnie, a krok kolidujący sam ze sobą nie ma strzałki, którą dałoby się go
+        // naprawić — wyjściem jest wyłącznie zmiana pola, więc nie ma czego czekać na Run.
         if step.copies > 1 && step.folder.is_some_and(|folder| !folder.is_own_copy()) {
             notes.push(problem(
                 Some(step.id),
@@ -427,16 +560,19 @@ fn one_folder_two_steps(steps: &[Facts<'_>], arrows: &[(usize, usize)], notes: &
             if !the_same_files(mine, theirs) {
                 continue;
             }
-            notes.push(problem(
-                Some(one.id),
-                format!(
-                    "\"{}\" and \"{}\" can run at the same time and {}. Give one of them a fresh \
-                     copy.",
-                    one.name,
-                    other.name,
-                    place(mine, theirs)
-                ),
-            ));
+            let message = format!(
+                "\"{}\" and \"{}\" can run at the same time and {}. Give one of them a fresh \
+                 copy.",
+                one.name,
+                other.name,
+                place(mine, theirs)
+            );
+            // Zdanie jest to samo w obu wagach: człowiek ma przeczytać przy zapisie dokładnie
+            // to, co zatrzyma mu Start, a nie dwa opisy jednej kolizji.
+            notes.push(match when {
+                When::Saving => warning(Some(one.id), message),
+                When::Running => problem(Some(one.id), message),
+            });
         }
     }
 }

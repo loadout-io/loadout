@@ -1,232 +1,223 @@
-/* Stan kart po stronie UI: co stoi na pasku, co jest na wierzchu i co czeka na potwierdzenie.
+/* Workspace: nazwany zakres, w którym pracują agenci. JEDNA odpowiedź na pytanie „gdzie pracujemy".
  *
- * Karta to folder, w którym pracuje AI (`docs/ARCHITECTURE.md` §6a). Otwarte karty są **stanem
- * UI, nie stanem biegu** (niezmiennik 4): mieszkają w `~/.loadout/ui.json`, a skasowanie tego
- * pliku ma kosztować układ kart i **nic więcej**. Dlatego nie ma tu ani jednego pola, którego
- * nie da się odtworzyć z plików: `id` przychodzi z rejestru po stronie Rusta, `agents` jest
- * bieżącym stanem silnika, a nie zapisem. Identyfikator biegu trzymany TUTAJ jako jedyne
- * miejsce, w którym istnieje, byłby dokładnie tym cichym złamaniem, o które chodzi.
+ * DECYZJA WŁAŚCICIELA, 2026-08-18. Do tego dnia folder pracy wybierało się **systemowym oknem,
+ * przy każdym uruchomieniu biegu**: `launchRun` pytał o katalog, kiedy żadna karta nie była
+ * otwarta. Zdanie właściciela po zobaczeniu tego okna brzmiało „mega chujnia" i było trafne —
+ * wybór folderu jest decyzją o PROJEKCIE, podejmowaną raz, a nie czynnością powtarzaną przed
+ * każdą pracą. Workspace jest więc nazwanym zakresem, wybieranym w bocznym menu, i to on mówi,
+ * gdzie pracują agenci.
  *
- * CZEGO TU NIE MA I DLACZEGO. Liczby „ile miejsc zajętych" i „ile naraz" nie są stanem kart —
- * są stanem CAŁEJ aplikacji, bo pula jest jedna (niezmiennik 11). Trzymanie ich w magazynie
- * kart robiłoby z niego drugie miejsce, w którym ta sama liczba żyje (niezmiennik 13);
- * pasek dostaje je propsem od tego, kto rozmawia z limiterem.
+ * CO WORKSPACE ZAKRESUJE, A CZEGO NIE. Wyłącznie **folder pracy i żywą sesję** (strumień, karty
+ * biegów, stan biegu). Workflow, agenci, umiejętności i pamięć zostają GLOBALNE w `~/.loadout` —
+ * powód stoi przy `src-tauri/src/commands/workspaces.rs` i jest nazwany: umiejętności piszą do
+ * `~/.claude/skills` i `~/.agents/skills`, czyli do konfiguracji NARZĘDZI człowieka, a nie do
+ * jego projektu. Zero migracji, zero drugiego katalogu.
  *
- * ANULOWANIE WCHODZI WSTRZYKNIĘTE. `cancel` to jedyne wejście tego magazynu do świata poza
- * oknem i dlatego jest argumentem fabryki, a nie importem: kryterium 6 mierzy KOLEJNOŚĆ —
- * karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności nie da się zmierzyć
- * na funkcji, której test nie może zatrzymać w połowie.
+ * WORKSPACE ≠ KARTA, i to jest jedyna rzecz, którą trzeba tu czytać uważnie. Do 2026-08-18 ten
+ * plik modelował KARTY FOLDERÓW (`WorkspaceTab`, `open`, `requestClose`) i słowo „workspace"
+ * znaczyło w nim coś innego niż dziś. Ten kod nie zniknął — przeniósł się do
+ * `src/state/run-tabs.ts` i jest re-eksportowany niżej, żeby przeprowadzka nie wywróciła pięciu
+ * plików sekcji Run w trakcie. Rozdział znaczeń:
  *
- * Fabryka i żadnego singletonu obok niej, w odróżnieniu od `src/state/run.ts`: egzemplarz okna
- * potrzebuje prawdziwego kanału anulowania, a ten mieszka w `src/ipc/`, poza blokiem OWNS tego
- * zadania (`AGENTS.md` §7). Singleton zbudowany tutaj z atrapą byłby kontrolką bez handlera
- * przebraną za stan (niezmiennik 16): `×` działałby, a agent by żył.
+ *   - **workspace** (ten plik) — nazwa + folder, wybierany w bocznym menu, TRWAŁY na dysku,
+ *     jeden na całą aplikację jako „aktywny";
+ *   - **karta** (`run-tabs.ts`) — bieg WEWNĄTRZ workspace, byt ulotny, żyje na ekranie Run.
+ *
+ * DYSK-PIERWSZY, WSZĘDZIE. `add`, `rename` i `remove` zmieniają stan DOPIERO po potwierdzeniu
+ * z dysku i oddają `boolean`, żeby wołający zamknął formularz tylko wtedy, kiedy plik naprawdę
+ * się zapisał. Odwrotna kolejność to defekt, który już raz w tym repo wystąpił: agent zniknięty
+ * z listy przy NIEUDANYM usunięciu wracał po restarcie, bo okno uwierzyło sobie, a nie plikowi.
+ *
+ * ODMOWY IDĄ PRZEZ `why()`, NIGDY PRZEZ `instanceof Error`. Tauri odrzuca NAPISEM
+ * (`src-tauri/src/ipc.rs` robi `.map_err(|e| e.to_string())`), więc warunek `error instanceof
+ * Error` jest tu ZAWSZE fałszywy — stał w siedmiu miejscach i kasował każdą precyzyjną odmowę,
+ * jaką Rust naprawdę pisze („The folder … is not there, so Loadout did not add it").
  */
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 
-/** Jedna karta paska: folder i to, co się w nim właśnie dzieje. */
-export interface WorkspaceTab {
-  /** Identyfikator z rejestru po stronie Rusta — kanoniczna ścieżka folderu. */
-  readonly id: string;
-  /** Nazwa folderu, czyli to, co karta mówi o sobie na pasku. */
-  readonly name: string;
-  /** Pełna ścieżka. Karta ma 34 px, więc pełna ścieżka mieszka w podpowiedzi, nie w napisie. */
-  readonly path: string;
-  /**
-   * Ilu agentów pracuje w tym folderze w tej chwili.
-   *
-   * Zero znaczy „nic tu nie chodzi" i to jest jedyne pytanie, na które karta w tle odpowiada
-   * sama z siebie (§6a reguła 4). Liczba, a nie `boolean`, bo potwierdzenie zamknięcia musi
-   * powiedzieć, ilu agentów zatrzymuje: zdanie bez liczby nie jest zdaniem, na podstawie
-   * którego da się podjąć decyzję.
-   */
-  readonly agents: number;
-}
+import { why } from '../ipc/why';
+import { deleteWorkspace, listWorkspaces, saveWorkspace } from './workspaces-io';
 
-/** Karta, o której zamknięcie właśnie zapytaliśmy człowieka. */
-export interface PendingClose {
-  /** Której karty dotyczy. */
-  readonly id: string;
-  /** Nazwa folderu — pytanie ma nazywać folder, a nie „bieżącą kartę". */
-  readonly name: string;
-  /** Ilu agentów pracowało w chwili zadania pytania. */
-  readonly agents: number;
-}
+/* SZEW MIGRACYJNY, 2026-08-18. Karty przeniosły się do `./run-tabs`, a te nazwy czyta dziś pięć
+ * plików sekcji Run i trzy testy. Re-eksport nie jest drugą definicją (niezmiennik 13: ciało
+ * stoi w jednym pliku) — jest przekierowaniem, które ma zniknąć w dniu, w którym te importy
+ * wskażą `./run-tabs` wprost. Zapisane jako dług, nie jako rozwiązanie. */
+export type {
+  CancelRun,
+  PendingClose,
+  RunTabsState,
+  WorkspaceTab,
+  WorkspacesStore,
+} from './run-tabs';
+export { createWorkspacesStore } from './run-tabs';
 
 /**
- * Zatrzymanie biegu w tym folderze.
+ * Jeden nazwany zakres pracy.
  *
- * Rozwiązuje się dopiero wtedy, gdy grupa procesów naprawdę nie żyje (niezmiennik 6) —
- * i dlatego zwraca `Promise`, a nie `void`. Wersja synchroniczna nie ma jak powiedzieć
- * „już po wszystkim", więc karta musiałaby zniknąć od razu, zostawiając osieroconego agenta
- * palącego limit u dostawcy.
+ * `id` JEST ścieżką folderu (`WorkspaceWire` po stronie Rusta), i to nie jest oszczędność: jeden
+ * folder = jeden workspace, więc ścieżka jest naturalnym kluczem i nie da się zapisać dwóch
+ * wpisów o tym samym folderze przez pomyłkę. `folder` stoi osobno, bo okno nie ma prawa zakładać,
+ * że klucz jest ścieżką — dzień, w którym klucz przestanie nią być, ma zmienić jeden plik.
  */
-export type CancelRun = (id: string) => Promise<void>;
+export interface Workspace {
+  /** Klucz wpisu. Dziś równy `folder`. */
+  readonly id: string;
+  /** Nazwa nadana przez człowieka. To ona stoi w przełączniku bocznego menu. */
+  readonly name: string;
+  /** Folder pracy — jedyna rzecz, którą ten wpis naprawdę niesie. */
+  readonly folder: string;
+}
 
 export interface WorkspacesState {
-  /** Karty w kolejności, w jakiej stoją na pasku. */
-  readonly tabs: readonly WorkspaceTab[];
-  /** Karta na wierzchu; `null`, dopóki żadnej nie ma. */
+  /** Wszystkie zakresy, w kolejności zapisu na dysku. Pusta lista jest poprawnym stanem. */
+  readonly all: readonly Workspace[];
+  /** Zakres, w którym pracujemy; `null`, dopóki żadnego nie ma. */
   readonly activeId: string | null;
-  /** Pytanie czekające na odpowiedź; `null`, kiedy o nic nie pytamy. */
-  readonly pendingClose: PendingClose | null;
+  /** Zdanie, którym dysk odmówił — dla człowieka, słowo w słowo od Rusta. `null`, kiedy nie odmówił. */
+  readonly said: string | null;
 
-  /** Dokłada kartę i przełącza na nią. Folder, który już ma kartę, jej nie dubluje. */
-  open: (tab: WorkspaceTab) => void;
+  /** Czyta listę z dysku. Wołane raz, przy starcie okna. */
+  load: () => Promise<void>;
+
+  /** Dokłada zakres albo zmienia nazwę istniejącego (klucz to folder). `true` = dysk potwierdził. */
+  add: (name: string, folder: string) => Promise<boolean>;
+
+  /** Zmienia nazwę zakresu, który już jest na liście. `true` = dysk potwierdził. */
+  rename: (id: string, name: string) => Promise<boolean>;
+
+  /** Zdejmuje zakres z listy. Folderu nie dotyka. `true` = dysk potwierdził. */
+  remove: (id: string) => Promise<boolean>;
 
   /**
-   * Przełącza kartę. **Wyłącznie zmiana widoku** (§6a reguła 2): nic się nie pauzuje,
-   * nie odłącza i nie ginie.
+   * Przełącza zakres. **Wyłącznie zmiana widoku** — dysku nie dotyka ani razu.
+   *
+   * Przełączenie nie ma prawa zgubić sesji i to jest wymóg twardy właściciela z 2026-08-18.
+   * Ten magazyn go spełnia przez to, czego NIE robi: nie zatrzymuje biegu, nie odłącza pompy
+   * linii i nie kasuje kart. Pompa należy do karty po stronie Rusta
+   * (`src-tauri/src/workspace.rs`), nie do tego pola.
    */
   activate: (id: string) => void;
 
-  /**
-   * `×` na karcie. Z pracującymi agentami zadaje pytanie; bez nich zamyka od razu.
-   *
-   * Pytanie tylko wtedy, kiedy jest o co pytać. Potwierdzenie przy każdym zamknięciu uczy
-   * klikać „tak" bez czytania, a wtedy przestaje chronić przed czymkolwiek.
-   */
-  requestClose: (id: string) => void;
-
-  /** Odpowiedź „nie". Nie zmienia niczego — ani kart, ani tego, co jest na wierzchu. */
-  /**
-   * Ilu agentow pracuje w tej karcie TERAZ.
-   *
-   * 2026-08-18 — DLACZEGO TO MUSI ISTNIEC. `agents` bylo pisane WYLACZNIE przy zakladaniu
-   * karty, i zawsze zerem. Nikt go nigdy nie podnosil, wiec `requestClose` zawsze wchodzil
-   * w galaz „nic nie chodzi": karta z zywym biegiem znikala BEZ pytania i BEZ `cancel(id)`,
-   * czyli bez anulowania biegu. Zostawal osierocony agent palacy limit u dostawcy — a to jest
-   * blad finansowy, nie higieniczny (niezmiennik 6). Potwierdzenie zamkniecia bylo przy tym
-   * kodem nieosiagalnym: zamontowanym, przetestowanym i niedostepnym dla czlowieka.
-   *
-   * Liczba przychodzi z JEDNEGO zrodla — z listy agentow biegu — i tylko dla karty na wierzchu,
-   * bo silnik prowadzi dzis jeden bieg i nie mowi, czyj on jest. Karta, ktora nie jest aktywna,
-   * dostaje zero, i to jest prawda o niej, a nie zgadywanie (niezmiennik 17).
-   */
-  setAgents: (id: string, agents: number) => void;
-
-  dismissClose: () => void;
-
-  /**
-   * Odpowiedź „tak": anuluj bieg i **dopiero potem** zdejmij kartę.
-   *
-   * Kolejność jest całą treścią tej metody. Wersja, która zdejmuje kartę od razu i anuluje
-   * w tle, wygląda na ekranie identycznie i zostawia osieroconego agenta — a to jest błąd
-   * finansowy, nie higieniczny (niezmiennik 6). Wołane bez czekającego pytania nie robi nic.
-   */
-  confirmClose: () => Promise<void>;
-}
-
-export type WorkspacesStore = UseBoundStore<StoreApi<WorkspacesState>>;
-
-/**
- * Karty i to, co jest na wierzchu, po zdjęciu jednej karty.
- *
- * Widok schodzi na sąsiada wyłącznie wtedy, gdy zniknęła karta, na którą człowiek patrzył.
- * Zamknięcie karty w tle nie ma prawa przestawić widoku: to jest ten rodzaj samowoli, po
- * którym `×` klika się z duszą na ramieniu, bo nie wiadomo, gdzie się po nim wyląduje.
- */
-function withoutTab(
-  state: WorkspacesState,
-  id: string,
-): Pick<WorkspacesState, 'tabs' | 'activeId'> {
-  const tabs = state.tabs.filter((tab) => tab.id !== id);
-  if (state.activeId !== id) return { tabs, activeId: state.activeId };
-
-  /* Sąsiad z prawej, a po ostatniej karcie ten z lewej — czyli miejsce, w którym stała
-   * zamknięta karta. Skok na początek paska gubi kontekst tym mocniej, im więcej kart jest
-   * otwartych, a otwiera się je właśnie po to, żeby ich było kilka. */
-  const closed = state.tabs.findIndex((tab) => tab.id === id);
-  const next = tabs[Math.min(closed, tabs.length - 1)];
-  return { tabs, activeId: next === undefined ? null : next.id };
+  /** Człowiek przeczytał odmowę. Nic poza zdaniem nie znika. */
+  dismiss: () => void;
 }
 
 /**
- * Nowy magazyn kart nad podanym kanałem anulowania.
+ * Który zakres ma być aktywny, kiedy lista właśnie się zmieniła.
  *
- * `cancel` wchodzi argumentem, a nie importem, i to jest cała konstrukcja kryterium 6: mierzy
- * ono KOLEJNOŚĆ — karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności nie
- * da się zmierzyć na funkcji, której test nie może zatrzymać w połowie.
+ * JEDEN NIEZMIENNIK NA CAŁY MAGAZYN: `activeId` wskazuje na wpis, który ISTNIEJE, albo jest
+ * `null`, kiedy nie ma żadnego. Bez tego zdania każda operacja musiałaby pamiętać własny
+ * przypadek brzegowy, a `activeWorkspace()` oddawałoby `null` przy niepustej liście — czyli
+ * ekran Run bez folderu przy trzech workspace'ach w menu.
+ *
+ * Pierwszy z listy, a nie `null`, kiedy życzenie przepadło: to samo zdanie obsługuje start okna
+ * (po restarcie `activeId` nie istnieje, bo NIE JEST zapisywany na dysku — wybór widoku nie jest
+ * stanem trwałym) i usunięcie aktywnego zakresu.
  */
-export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
-  /* Które zamknięcie jest w toku. Poza stanem widoku, bo widok nie ma o czym z tym rozmawiać:
-   * to jest wyłącznie zapadka przed drugim sygnałem stopu dla tego samego biegu. Dwa sygnały
-   * to dwie eskalacje ścigające się o tego samego agenta (niezmiennik 6), a klawisz Enter
-   * przytrzymany na potwierdzeniu wysyła je tyle razy, ile zdąży. */
-  let closing: string | null = null;
+function pick(all: readonly Workspace[], wanted: string | null): string | null {
+  if (wanted !== null && all.some((one) => one.id === wanted)) return wanted;
+  return all[0]?.id ?? null;
+}
 
-  return create<WorkspacesState>()((set, get) => ({
-    tabs: [],
+export const useWorkspaces: UseBoundStore<StoreApi<WorkspacesState>> = create<WorkspacesState>()(
+  (set, get) => ({
+    all: [],
     activeId: null,
-    pendingClose: null,
+    said: null,
 
-    open: (tab) => {
-      const { tabs } = get();
-      /* Jeden folder = jedna karta (§6a reguła 1). Folder, który już ma kartę, przełącza na
-       * nią — dwa biegi w jednym katalogu kolidowałyby na plikach, a kopia per krok chroni
-       * kroki między sobą, nigdy biegi między sobą. */
-      const already = tabs.some((open) => open.id === tab.id);
-      set({ tabs: already ? tabs : [...tabs, tab], activeId: tab.id });
+    load: async () => {
+      try {
+        const all = await listWorkspaces();
+        /* Pusta lista NIE jest błędem: na świeżej maszynie pliku nie ma i Rust oddaje `[]`.
+         * Przełącznik pokaże wtedy zaproszenie do dodania pierwszego zakresu (DESIGN §6),
+         * a nie zdanie o awarii. */
+        set({ all, activeId: pick(all, get().activeId), said: null });
+      } catch (error) {
+        set({ said: why(error, 'Loadout could not read your list of workspaces.') });
+      }
+    },
+
+    add: async (name, folder) => {
+      try {
+        /* DYSK PIERWSZY. Stan bierzemy z odpowiedzi, nie z argumentów: Rust przycina nazwę,
+         * odmawia folderowi, którego nie ma, i przy DRUGIM zapisie tego samego folderu zmienia
+         * nazwę zamiast dokładać wiersz. Lista złożona tutaj z `[...all, { name, folder }]`
+         * pokazywałaby duplikat, którego w pliku nie ma. */
+        const all = await saveWorkspace({ name, folder });
+        /* Nowy zakres staje się aktywny, bo dodanie go JEST zdaniem „chcę tu pracować".
+         * Wersja, która tylko dokłada wiersz, zostawia człowieka z listą i bez skutku. */
+        set({ all, activeId: pick(all, folder), said: null });
+        return true;
+      } catch (error) {
+        set({ said: why(error, 'Loadout could not add that workspace.') });
+        return false;
+      }
+    },
+
+    rename: async (id, name) => {
+      const had = get().all.find((one) => one.id === id);
+      /* Zmiana nazwy jedzie tą samą komendą co dodanie (klucz to folder), więc bez folderu nie
+       * ma czego zapisać. Nieznany identyfikator to nie awaria dysku i nie wolno o nim mówić
+       * zdaniem o dysku: lista zmieniła się pod ręką człowieka i to jest cała treść odmowy. */
+      if (had === undefined) {
+        set({ said: 'That workspace is no longer on the list, so Loadout did not rename it.' });
+        return false;
+      }
+      try {
+        const all = await saveWorkspace({ name, folder: had.folder });
+        set({ all, activeId: pick(all, get().activeId), said: null });
+        return true;
+      } catch (error) {
+        set({ said: why(error, 'Loadout could not rename that workspace.') });
+        return false;
+      }
+    },
+
+    remove: async (id) => {
+      try {
+        const all = await deleteWorkspace({ id });
+        /* Zdjęcie AKTYWNEGO zakresu zwalnia życzenie — wtedy `pick` bierze pierwszy z listy albo
+         * `null`. Zdjęcie zakresu w tle nie ma prawa przestawić widoku: to jest ta samowola, po
+         * której „Remove" klika się z duszą na ramieniu, bo nie wiadomo, gdzie się wyląduje. */
+        const wanted = get().activeId === id ? null : get().activeId;
+        set({ all, activeId: pick(all, wanted), said: null });
+        return true;
+      } catch (error) {
+        set({ said: why(error, 'Loadout could not remove that workspace.') });
+        return false;
+      }
     },
 
     activate: (id) => {
-      /* Wyłącznie zmiana widoku (§6a reguła 2). Nic się tu nie pauzuje, nie odłącza i nie
-       * ginie: pompa linii wisi na karcie po stronie Rusta, nie na tym polu. */
-      if (!get().tabs.some((tab) => tab.id === id)) return;
+      /* Zakres, którego nie ma na liście, nie staje się aktywny — inaczej `activeWorkspace()`
+       * oddawałoby wpis, którego nikt nie zapisał. Dysku ta metoda nie dotyka ani razu. */
+      if (!get().all.some((one) => one.id === id)) return;
       set({ activeId: id });
     },
 
-    requestClose: (id) => {
-      const tab = get().tabs.find((open) => open.id === id);
-      if (tab === undefined) return;
-
-      /* Nie ma o co pytać, kiedy nic nie chodzi. Potwierdzenie przy KAŻDYM zamknięciu uczy
-       * klikać „tak" bez czytania, a wtedy nie chroni już przed niczym — także przed tym
-       * jednym zamknięciem, przy którym pracowało trzech agentów. */
-      if (tab.agents === 0) {
-        set(withoutTab(get(), id));
-        return;
-      }
-      set({ pendingClose: { id: tab.id, name: tab.name, agents: tab.agents } });
+    dismiss: () => {
+      set({ said: null });
     },
+  }),
+);
 
-    setAgents: (id, agents) => {
-      const tabs = get().tabs;
-      const at = tabs.findIndex((tab) => tab.id === id);
-      /* Bez zmiany nie ruszamy stanu: `set` ze swieza tablica jest dla Reacta zmiana i
-       * przerysowuje caly pasek kart przy kazdej linii biegu. */
-      if (at < 0 || tabs[at]?.agents === agents) return;
-      const next = [...tabs];
-      const tab = tabs[at];
-      if (tab === undefined) return;
-      next[at] = { ...tab, agents };
-      set({ tabs: next });
-    },
-
-    dismissClose: () => {
-      set({ pendingClose: null });
-    },
-
-    confirmClose: async () => {
-      const { pendingClose } = get();
-      if (pendingClose === null || closing !== null) return;
-
-      closing = pendingClose.id;
-      try {
-        /* NAJPIERW anulowanie, do końca. Wersja, która zdejmuje kartę od razu i anuluje w tle,
-         * wygląda na ekranie identycznie i zostawia osieroconego agenta palącego limit
-         * u dostawcy — to jest błąd finansowy, nie higieniczny (niezmiennik 6). Pytanie zostaje
-         * na ekranie przez cały ten czas, bo bieg wciąż się zwija i nie ma o czym milczeć. */
-        await cancel(pendingClose.id);
-      } finally {
-        closing = null;
-      }
-
-      /* Stan czytany PONOWNIE, już po anulowaniu: minęła cała runda zwijania biegu i karty
-       * mogły się w tym czasie zmienić. Zapisanie tu migawki sprzed `await` cofałoby wszystko,
-       * co zdarzyło się w międzyczasie. */
-      set({ ...withoutTab(get(), pendingClose.id), pendingClose: null });
-    },
-  }));
+/**
+ * Aktywny workspace albo `null`. JEDNA definicja „gdzie pracujemy" na całe repo.
+ *
+ * FUNKCJA MODUŁOWA, NIE HAK, i to jest cała jej konstrukcja: czytają ją rzeczy spoza drzewa
+ * Reacta — kontrolka startu przed wysłaniem folderu do Rusta, kanał zdarzeń, kod uruchamiający
+ * bieg. Hak dałby tę odpowiedź wyłącznie w czasie renderu, więc obok musiałaby powstać druga
+ * droga do tej samej prawdy (niezmiennik 13).
+ *
+ * `activeWorkspace()?.folder` zastępuje `activeFolder()` z `src/sections/run/workspaces-store.ts`.
+ * `null` znaczy „człowiek nie wskazał jeszcze zakresu", a odpowiedź na to pytanie należy do
+ * Rusta (`AppState::project_for` bierze wtedy katalog, pod którym wstała aplikacja) — front,
+ * który podstawiłby tu własną domyślną ścieżkę, byłby drugim miejscem, w którym mieszka
+ * ta decyzja.
+ */
+export function activeWorkspace(): Workspace | null {
+  const { all, activeId } = useWorkspaces.getState();
+  if (activeId === null) return null;
+  return all.find((one) => one.id === activeId) ?? null;
 }

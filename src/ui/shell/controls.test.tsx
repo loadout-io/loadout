@@ -10,13 +10,62 @@
  *
  * W T-01 nie ma jeszcze czego tworzyć, więc pusta sekcja NIE MA przycisku. Ma jedno zdanie:
  * pusty ekran jest zaproszeniem, nie akapitem polityki (DESIGN.md §6).
+ *
+ * ZMIANA LICZBY, 2026-08-18, świadoma i nazwana. Do dziś stało tu `occurrences(markup, '<button')
+ * === 5` i ta liczba była DRUGĄ definicją zdania „w powłoce nie ma martwych przycisków" — takiej,
+ * która mierzy sumę zamiast własności. Decyzja właściciela z tego dnia stawia w bocznym menu
+ * przełącznik zakresu („my powinniśmy wybierać projekt z poziomu UI sidebar"), więc kontrolek
+ * jest sześć i przy każdej następnej prawdziwej kontrolce powłoki byłoby ich siedem. Liczba
+ * przepisana z palca zmusza wtedy albo do jej podnoszenia bez myślenia, albo — co gorsze — do
+ * niedodawania kontrolki, której człowiek potrzebuje.
+ *
+ * NOWA WERSJA JEST MOCNIEJSZA, nie luźniejsza, i to jest cały sens tej zmiany. Zamiast jednej
+ * sumy sprawdza trzy rzeczy naraz:
+ *   (a) przełącznik sekcji ma DOKŁADNIE pięć kontrolek, po jednej na sekcję — jak dotąd;
+ *   (b) każda kontrolka powłoki, która NIE jest przełącznikiem sekcji, stoi w liście `SHELL`
+ *       poniżej, a suma `5 + SHELL.length` musi się zgadzać co do jednego — czyli przycisk
+ *       dołożony bez wpisu jest czerwony;
+ *   (c) każdy wpis w `SHELL` niesie NAZWĘ swojego handlera, a test woła ten handler i pyta
+ *       magazyn, czy coś się naprawdę zmieniło.
+ *
+ * Punkt (c) jest tym, czego stara wersja nie umiała nigdy: liczba przepuszczała pięć przycisków
+ * `Create` bez handlera dokładnie tak samo jak pięć działających. Żeby dołożyć kontrolkę do
+ * powłoki, trzeba teraz dołożyć DOWÓD, że ona coś robi — a to jest niezmiennik 16 zapisany jako
+ * asercja, nie jako suma.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import { useSectionStore } from './section-store';
+import { useSwitcher } from './workspace-switcher';
 
 const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+
+/**
+ * Kontrolki powłoki poza przełącznikiem sekcji: marker w DOM, handler i dowód, że handler ma
+ * SKUTEK.
+ *
+ * `proof` dostaje magazyn w stanie początkowym, woła to, co woła przycisk, i oddaje `true`, kiedy
+ * stan naprawdę się zmienił. Wpis bez działającego dowodu jest czerwony — czyli dokładnie tak
+ * samo, jakby kontrolki nie było wcale.
+ *
+ * Powłoka rysuje przełącznik zakresu w stanie POCZĄTKOWYM magazynu (`renderToStaticMarkup` nie
+ * uruchamia efektów, więc `load()` nigdy tu nie biegnie i lista zakresów jest pusta), a pusta
+ * lista to zaproszenie do dodania pierwszego — jedna kontrolka. Rozwinięta lista zakresów ma
+ * własne kryteria w `workspace-switcher.test.tsx`; tutaj sądzimy to, co człowiek widzi po
+ * pierwszym uruchomieniu aplikacji.
+ */
+const SHELL = [
+  {
+    marker: 'data-workspace-new',
+    what: 'the invitation to add the first workspace',
+    proof: (): boolean => {
+      useSwitcher.setState({ adding: false });
+      useSwitcher.getState().startAdd();
+      return useSwitcher.getState().adding;
+    },
+  },
+] as const;
 
 /** Pusty ekran to zaproszenie: jedno zdanie, do dwunastu słów, najwyżej jedna kropka. */
 const MOST_WORDS = 12;
@@ -58,25 +107,34 @@ function emptyStateText(markup: string): string {
 
 describe('the only controls are the five section switches, and each one really switches', () => {
   for (const id of EXPECTED) {
-    it('shows five controls and no sixth, with ' + id + ' open', () => {
+    it('shows the five switches plus only the named shell controls, with ' + id + ' open', () => {
       const markup = markupFor(id);
-      expect(
-        occurrences(markup, '<button'),
-        'with ' +
-          id +
-          ' open the shell has to render exactly five controls — the switcher, nothing else. ' +
-          'A sixth one here is a Create that has nothing to create yet, which is a control ' +
-          'without a handler (invariant 16)',
-      ).toBe(EXPECTED.length);
       for (const other of EXPECTED) {
         expect(
           occurrences(markup, 'data-section-switch="' + other + '"'),
-          'each of the five controls has to carry data-section-switch with a different one of ' +
+          'each of the five switches has to carry data-section-switch with a different one of ' +
             'the five names; ' +
             other +
             ' is missing or doubled',
         ).toBe(1);
       }
+      for (const control of SHELL) {
+        expect(
+          occurrences(markup, control.marker),
+          'the shell has to render ' + control.what + ' exactly once, carrying ' + control.marker,
+        ).toBe(1);
+      }
+      expect(
+        occurrences(markup, '<button'),
+        'with ' +
+          id +
+          ' open the shell renders a control that is neither one of the five section switches ' +
+          'nor one of the ' +
+          String(SHELL.length) +
+          ' shell controls named in SHELL at the top of this file. A button nobody named is a ' +
+          'Create that has nothing to create — a control without a handler (invariant 16). Name ' +
+          'it in SHELL together with a proof that its handler changes something, or take it out.',
+      ).toBe(EXPECTED.length + SHELL.length);
     });
 
     it('greets an empty ' + id + ' with one short sentence', () => {
@@ -105,6 +163,19 @@ describe('the only controls are the five section switches, and each one really s
           ' says: ' +
           JSON.stringify(sentence),
       ).toBeLessThanOrEqual(MOST_STOPS);
+    });
+  }
+
+  for (const control of SHELL) {
+    it('proves the handler behind ' + control.marker + ' changes something', () => {
+      expect(
+        control.proof(),
+        control.what +
+          ' is rendered in the shell and its handler does nothing. A handler that is wired up ' +
+          'and has no effect looks identical in the markup and identical in a screenshot — that ' +
+          'is the whole family of defect this criterion exists to catch, and counting buttons ' +
+          'never saw it.',
+      ).toBe(true);
     });
   }
 

@@ -66,12 +66,26 @@ export interface AtOnceProps {
   suggested?: number;
   /** Wymagany: kontrolka bez handlera nie wchodzi do repo (niezmiennik 16). */
   onChange: (atOnce: number) => void;
+  /**
+   * Powód, dla którego tej liczby nie da się teraz zmienić — albo `null`, kiedy da się.
+   *
+   * ZDANIE, NIE `boolean`, i to jest cała treść tego pola. Wygaszona kontrolka bez powodu jest
+   * zagadką: człowiek widzi suwak, którym nie da się ruszyć, i nie wie, czy to awaria. Typ
+   * wymusza więc podanie zdania razem z wygaszeniem — nie da się wygasić po cichu.
+   *
+   * 2026-08-18 — POWSTAŁO, BO KONTROLKA KŁAMAŁA. Renderowała się zawsze czynna, a `atOnce` jest
+   * czytane wyłącznie przy starcie biegu (`Limiter::new` powstaje raz i żadna komenda nie zmienia
+   * limitu w trakcie). Przesunięcie z 3 na 8 w trakcie biegu zmieniało liczbę i ostrzeżenie
+   * o pamięci — i nie zmieniało niczego w biegu.
+   */
+  disabled?: string | null;
 }
 
 export function AtOnce({
   value,
   suggested = DEFAULT_AT_ONCE,
   onChange,
+  disabled = null,
 }: AtOnceProps): ReactElement {
   // Przycięcie także na wejściu, nie tylko w handlerze: zapisana wartość przychodzi z pliku
   // biegu i z workflow zapisanego na większej maszynie, a suwak z `value="12"` obiecuje
@@ -79,14 +93,28 @@ export function AtOnce({
   const atOnce = withinBounds(value ?? DEFAULT_AT_ONCE);
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-3">
-        <label className="text-label text-muted" htmlFor={FIELD_ID}>
-          How many agents at once?
-        </label>
-        {/* Liczba jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4. */}
-        <span className="font-mono text-mono text-ink">{atOnce}</span>
-      </div>
+    /* JEDEN WIERSZ, NIE KOLUMNA — i to jest naprawa mierzona, nie estetyczna.
+     *
+     * 2026-08-18. Ta kontrolka stała pionowo: etykieta z liczbą, pod nią suwak, pod nim zdanie
+     * „More agents finish sooner but use more memory". Razem z wyborem workflow i przyciskiem
+     * Startu dawało to pas o wysokości **155 px**, stojący nad obszarem pracy PRZEZ CAŁY CZAS —
+     * przy sufcie 96 px z `docs/ARCHITECTURE.md` §7 i 90 px w makiecie. Zmierzone w przeglądarce:
+     * `tabBar h=34` plus ten pas `h=155` to 189 px chrome, czyli dwa razy sufit.
+     *
+     * Zdanie pomocy schodzi do `title`, a nie znika: mówi o KOMPROMISIE, który widać na
+     * kontrolce (liczba i suwak), więc jego stała obecność kosztowała ~20 px na zawsze za
+     * informację, którą czyta się raz. Ostrzeżenie o pamięci ZOSTAJE widoczne, bo mówi o
+     * konkretnym ryzyku TERAZ — i nadal nie zajmuje miejsca, dopóki nie jest prawdą. */
+    <div className="flex min-w-0 items-center gap-2">
+      {/* PEŁNE PYTANIE ZOSTAJE W DRZEWIE, a skraca się CSS-em. Skrócenie napisu do „At once"
+       * mieściło się w pasku i kasowało własność, której pilnuje kryterium `at-once.test.tsx`:
+       * etykieta ma być pytaniem, jakie zadałby człowiek (DESIGN §8). Ucięcie wielokropkiem jest
+       * odpowiedzią na wąskie okno; przepisanie napisu jest odpowiedzią na inne pytanie. */}
+      <label className="min-w-0 truncate text-label text-muted" htmlFor={FIELD_ID}>
+        How many agents at once?
+      </label>
+      {/* Liczba jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4. */}
+      <span className="w-4 shrink-0 text-right font-mono text-mono text-ink">{atOnce}</span>
 
       <input
         id={FIELD_ID}
@@ -95,21 +123,32 @@ export function AtOnce({
         max={MAX_AT_ONCE}
         step={1}
         value={atOnce}
+        disabled={disabled !== null}
+        title={disabled ?? 'More agents finish sooner but use more memory.'}
         onChange={(event: ChangeEvent<HTMLInputElement>) => {
           onChange(withinBounds(Number(event.target.value)));
         }}
-        className="h-control w-full accent-accent"
+        className="h-control w-24 shrink-0 accent-accent disabled:opacity-40"
       />
 
-      <p className="text-muted">More agents finish sooner but use more memory.</p>
-
-      {/* JEDNO ostrzeżenie i tylko powyżej podpowiedzi (niezmiennik 13). Przy wartości, którą
-       * maszyna unosi spokojnie, nie ma tu pustego miejsca na ostrzeżenie — nie ma elementu. */}
-      {atOnce > suggested ? (
-        <p data-at-once-warning="" className="text-attend">
-          {memoryWarning(atOnce)}
+      {/* JEDEN SLOT NA JEDNO ZDANIE (niezmiennik 13), i te dwa zdania wykluczają się z natury:
+       * w trakcie biegu liczby nie da się zmienić, więc ostrzeżenie o pamięci mówiłoby o wyborze,
+       * którego w tej chwili nie ma. Powód wygaszenia ma pierwszeństwo — bo to on odpowiada na
+       * pytanie, które człowiek zadaje, kiedy suwak nie chce się ruszyć.
+       *
+       * Przy wartości, którą maszyna unosi spokojnie, i przy suwaku, którym da się ruszyć, nie ma
+       * tu ani jednego elementu — czyli zero pikseli za informację, której nie ma. */}
+      {disabled === null ? (
+        atOnce > suggested ? (
+          <p data-at-once-warning="" className="min-w-0 truncate text-attend">
+            {memoryWarning(atOnce)}
+          </p>
+        ) : null
+      ) : (
+        <p data-at-once-locked="" title={disabled} className="min-w-0 truncate text-muted">
+          {disabled}
         </p>
-      ) : null}
+      )}
     </div>
   );
 }

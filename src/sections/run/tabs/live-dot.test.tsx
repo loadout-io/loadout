@@ -21,7 +21,7 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { WorkspaceTab } from '../../../state/workspaces';
+import type { WorkspaceTab } from '../../../state/run-tabs';
 import { Tab } from './tab';
 import { TabBar } from './tab-bar';
 

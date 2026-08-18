@@ -23,6 +23,7 @@ import type { Edge, EdgeChange, Node, NodeChange, NodeProps } from '@xyflow/reac
 import {
   Background,
   Handle,
+  MarkerType,
   Panel,
   Position,
   ReactFlow,
@@ -32,13 +33,18 @@ import {
   useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+/* PO arkuszu biblioteki, nigdy przed. Ten plik nadpisuje zmienne, które `dist/style.css`
+ * przypisuje swoim `*-default`; zaimportowany wcześniej byłby martwym kodem wyglądającym
+ * na działający (powód w całości stoi w nagłówku tamtego pliku). */
+import './react-flow-tokens.css';
 import type { ReactElement } from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import type { Note, Point, Step, WorkflowFile } from '../../../state/workflows';
+import type { Agent } from '../../../state/agents';
+import type { Note, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
-import { freshId, freshStep, isValidConnection, onConnect, onConnectEnd } from './connect';
+import { addStep, isValidConnection, onConnect, onConnectEnd } from './connect';
 import type { CanvasNode } from './map';
-import { onNodeDragStop, snap, toCanvas, toFile } from './map';
+import { onNodeDragStop, toCanvas, toFile } from './map';
 import { RunBar, focusNote } from './problems';
 import { StepTile } from './tile';
 import { tidyUp } from './tidy';
@@ -61,6 +67,13 @@ type ArrowChanges = EdgeChange<Edge>[];
  * zmieni krok, a płótno jeszcze o tym nie wie. */
 const Opened = createContext<WorkflowFile | null>(null);
 
+/** Biblioteka agentów dla kafelków — tą samą drogą i z tego samego powodu co dokument.
+ *
+ * Kafelek pokazuje chip z NAZWĄ i kolorem agenta, a krok trzyma tylko jego identyfikator, więc
+ * bez tej listy chip byłby albo identyfikatorem na ekranie (niezmiennik 14), albo wypełniaczem
+ * (niezmiennik 17). Rozwiązanie stoi tutaj, jeden raz, a nie w każdym kafelku. */
+const Library = createContext<readonly Agent[]>([]);
+
 /** Kafelek na płótnie: dwa uchwyty i karta z `tile.tsx`.
  *
  * Uchwyty są TUTAJ, a nie w `StepTile`: `<Handle>` czyta magazyn React Flow, więc kafelek
@@ -68,13 +81,26 @@ const Opened = createContext<WorkflowFile | null>(null);
  * w środowisku `node`, w którym biegną wszystkie kryteria tego zadania. */
 function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null {
   const file = useContext(Opened);
+  const agents = useContext(Library);
   const step = file?.steps.find((one) => one.id === id);
   if (file === null || step === undefined) return null;
+
+  /* `undefined` znaczy „ten krok nie nazywa nikogo z biblioteki" i kafelek nie rysuje wtedy
+   * chipu. Krok agenta z pustym `agent` (tak wychodzi z `＋ Add step`) trafia tu też — i to
+   * jest poprawne: brak chipu jest tym, jak widać z płótna, że kroku nie da się jeszcze
+   * uruchomić. */
+  const agent = step.kind === 'agent' ? agents.find((one) => one.id === step.agent) : undefined;
 
   return (
     <>
       <Handle type="target" position={Position.Top} />
-      <StepTile step={step} steps={file.steps} links={file.links} selected={selected} />
+      <StepTile
+        step={step}
+        steps={file.steps}
+        links={file.links}
+        selected={selected}
+        {...(agent === undefined ? {} : { agent })}
+      />
       <Handle type="source" position={Position.Bottom} />
     </>
   );
@@ -91,6 +117,8 @@ const NODE_TYPES = { agent: CanvasTile, checkpoint: CanvasTile };
 export interface WorkflowCanvasProps {
   /** Otwarty dokument. Płótno go nie trzyma — pokazuje. */
   document: WorkflowFile;
+  /** Biblioteka agentów: kafelek nazywa agenta kroku po imieniu, a krok trzyma id. */
+  agents: readonly Agent[];
   /** Uwagi z walidatora Rusta (T-12). Płótno ich nie liczy i nie tłumaczy. */
   notes: Note[];
   /** Jedyne wyjście z tego komponentu: nowy dokument po decyzji użytkownika. */
@@ -119,6 +147,16 @@ function asCanvasNode(node: StepNode): CanvasNode {
   return { id: node.id, position: node.position, data: node.data.step };
 }
 
+/** Grot strzałki, z makiety (`<marker id="ar">`, `docs/mockup/index.html:558`).
+ *
+ * Kolor bierze `--xy-edge-stroke` z `react-flow-tokens.css`: `dist/style.css` maluje
+ * `.react-flow__arrowhead` tą samą zmienną, którą maluje samą linię, więc grot nie ma prawa
+ * rozjechać się ze strzałką, do której należy.
+ *
+ * Poza komponentem, bo to stała: nowy obiekt na każdy render przemontowywałby wszystkie
+ * krawędzie. */
+const ARROW = { type: MarkerType.ArrowClosed } as const;
+
 /** Kafelki i strzałki dla React Flow, zbudowane z dokumentu. */
 function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
   const view = toCanvas(file);
@@ -129,21 +167,16 @@ function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
       position: tile.position,
       data: { step: tile.data },
     })),
-    arrows: view.edges,
+    /* Grot dokładamy TUTAJ, a nie w `map.ts`: tamten plik jest mapperem PLIKU i wszystko, co
+     * do niego dopiszemy, jest kandydatem do wjechania na dysk. Strzałka w pliku to `from`
+     * i `to`, i nic poza tym (T3 §3.1). */
+    arrows: view.edges.map((arrow) => ({ ...arrow, markerEnd: ARROW })),
   };
-}
-
-/** Wolne miejsce pod najniższym kafelkiem — tam ląduje krok dodany przyciskiem.
- *
- * Nowy kafelek dokładnie na innym wygląda jak zgubiony, a płótno nie ma jak zapytać, gdzie
- * użytkownik go chciał: przycisk nie niesie punktu, w przeciwieństwie do upuszczenia strzałki. */
-function roomBelow(file: WorkflowFile): Point {
-  const lowest = file.steps.reduce((deepest, step) => Math.max(deepest, step.at.y), 0);
-  return snap({ x: GRID, y: file.steps.length === 0 ? GRID : lowest + 6 * GRID });
 }
 
 function Canvas({
   document: file,
+  agents,
   notes,
   onChange,
   onRun,
@@ -192,102 +225,139 @@ function Canvas({
     [tiles, arrows, file, onChange],
   );
 
+  /* Zapisuje TYLKO wtedy, kiedy dokument naprawdę się zmienił.
+   *
+   * 2026-08-19 — TO NIE JEST OSZCZĘDZANIE WYWOŁAŃ, tylko naprawa kasowania świeżej pracy.
+   * `onConnect` i `onConnectEnd` biegną w JEDNYM zdarzeniu wskaźnika, więc React zbiera je
+   * w jedną paczkę i `file` w drugim z nich jest tym sprzed pierwszego. `onConnectEnd` na
+   * upuszczeniu nad kafelkiem nie ma nic do roboty i oddaje dokument NIETKNIĘTY — czyli ten
+   * sprzed strzałki, którą `onConnect` właśnie dorysował. Podanie go dalej cofało tę strzałkę
+   * w tej samej chwili, w której powstała.
+   *
+   * Porównanie po referencji, nie po treści: obie funkcje z `connect.ts` oddają DOKŁADNIE ten
+   * sam obiekt, kiedy nie mają nic do zrobienia, i to jest ich udokumentowana umowa. Porównanie
+   * głębokie kosztowałoby obchód całego dokumentu przy każdym ruchu myszy i odpowiadałoby na
+   * inne pytanie — „czy wyszło to samo", a nie „czy ta funkcja czegokolwiek chciała". */
+  const changed = useCallback(
+    (next: WorkflowFile) => {
+      if (next !== file) onChange(next);
+    },
+    [file, onChange],
+  );
+
   const add = useCallback(
     (kind: Step['kind']) => {
-      const step = freshStep(kind, freshId(file), roomBelow(file));
-      onChange({ ...file, steps: [...file.steps, step] });
+      /* Decyzja „gdzie stanie i z czym się połączy" mieszka w `connect.ts` jako funkcja czysta
+       * i tam jest sprawdzana. Tutaj zostaje samo wywołanie: to jest ten sam podział, którym
+       * stoi cały ten plik (nagłówek), a przy okazji jedyny sposób, żeby napisać kryterium
+       * na cichą utratę pracy bez przeglądarki. */
+      const added = addStep(kind, file);
+      onChange(added.file);
       /* Nowy kafelek jest pusty i nie ma nic do pokazania, więc panel otwiera się od razu:
        * inaczej użytkownik dostaje kartę bez treści i musi zgadnąć, że trzeba w nią kliknąć. */
-      onOpenPanel(step.id);
+      onOpenPanel(added.step.id);
     },
     [file, onChange, onOpenPanel],
   );
 
   return (
-    <Opened.Provider value={file}>
-      <div className="flex h-full min-h-0 flex-col gap-2">
-        <div className="min-h-0 flex-1">
-          <ReactFlow
-            nodes={tiles}
-            edges={arrows}
-            nodeTypes={NODE_TYPES}
-            onNodesChange={tilesChanged}
-            onEdgesChange={arrowsChanged}
-            /* Siatka jest jedna i ta sama co w pliku: kafelek stoi tam, gdzie plik mówi,
-             * że stoi, także w trakcie przeciągania [T3 §8.2 reguła 1]. */
-            snapToGrid
-            snapGrid={[GRID, GRID]}
-            fitView
-            isValidConnection={(candidate) => isValidConnection(candidate, file)}
-            onConnect={(connection) => {
-              onChange(onConnect(connection, file));
-            }}
-            onConnectEnd={(event, connection) => {
-              onChange(
-                onConnectEnd(
-                  { at: screenToFlowPosition(pointerAt(event)) },
-                  {
-                    isValid: connection.isValid ?? false,
-                    fromNode: connection.fromNode === null ? null : { id: connection.fromNode.id },
-                  },
-                  file,
-                ),
-              );
-            }}
-            onNodeDragStop={(_event, node) => {
-              onChange(onNodeDragStop({ id: node.id, position: node.position }, file));
-            }}
-            onNodeClick={(_event, node) => {
-              onOpenPanel(node.id);
-            }}
-          >
-            <Background gap={GRID} />
-            <Panel position="top-right">
-              <RunBar
-                notes={notes}
-                onRun={onRun}
-                onFocusNote={(note) => {
-                  focusNote(note, { fitView, openPanel: onOpenPanel });
-                }}
-              />
-            </Panel>
-          </ReactFlow>
-        </div>
+    <Library.Provider value={agents}>
+      <Opened.Provider value={file}>
+        <div className="flex h-full min-h-0 flex-col gap-2">
+          <div className="min-h-0 flex-1">
+            <ReactFlow
+              nodes={tiles}
+              edges={arrows}
+              nodeTypes={NODE_TYPES}
+              onNodesChange={tilesChanged}
+              onEdgesChange={arrowsChanged}
+              /* Siatka jest jedna i ta sama co w pliku: kafelek stoi tam, gdzie plik mówi,
+               * że stoi, także w trakcie przeciągania [T3 §8.2 reguła 1]. */
+              snapToGrid
+              snapGrid={[GRID, GRID]}
+              fitView
+              /* SUFIT POWIĘKSZENIA 1. Domyślny `maxZoom` React Flow to 2, a `fitView` na świeżym
+               * workflow z jednym kafelkiem sięga po ten sufit — u właściciela cały edytor
+               * rysował się dwukrotnie za duży i to była najbardziej rzucająca się w oczy
+               * rozbieżność z makietą (skala 1.0, kafelek 246 px). Powiększenie WYŻEJ niż 1:1 nie
+               * pokazuje niczego więcej, bo kafelek nie ma drugiego poziomu szczegółu. */
+              fitViewOptions={{ maxZoom: 1 }}
+              /* Plakietka „React Flow" jest linkiem NA ZEWNĄTRZ aplikacji desktopowej: jedyne
+               * wyjście z okna, którego nikt nie zaprojektował, w prawym dolnym rogu ekranu,
+               * na którym człowiek układa swoją pracę. */
+              proOptions={{ hideAttribution: true }}
+              isValidConnection={(candidate) => isValidConnection(candidate, file)}
+              onConnect={(connection) => {
+                changed(onConnect(connection, file));
+              }}
+              onConnectEnd={(event, connection) => {
+                changed(
+                  onConnectEnd(
+                    { at: screenToFlowPosition(pointerAt(event)) },
+                    {
+                      isValid: connection.isValid ?? false,
+                      fromNode:
+                        connection.fromNode === null ? null : { id: connection.fromNode.id },
+                    },
+                    file,
+                  ),
+                );
+              }}
+              onNodeDragStop={(_event, node) => {
+                onChange(onNodeDragStop({ id: node.id, position: node.position }, file));
+              }}
+              onNodeClick={(_event, node) => {
+                onOpenPanel(node.id);
+              }}
+            >
+              <Background gap={GRID} />
+              <Panel position="top-right">
+                <RunBar
+                  notes={notes}
+                  onRun={onRun}
+                  onFocusNote={(note) => {
+                    focusNote(note, { fitView, openPanel: onOpenPanel });
+                  }}
+                />
+              </Panel>
+            </ReactFlow>
+          </div>
 
-        {/* Dokładnie dwa przyciski tworzące (makieta 528-529). „Tidy up" stoi obok nich, a nie
+          {/* Dokładnie dwa przyciski tworzące (makieta 528-529). „Tidy up" stoi obok nich, a nie
             w nagłówku ekranu: układ jest własnością płótna, a nagłówek należy do ekranu, który
             to płótno montuje. */}
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className={BUTTON}
-            onClick={() => {
-              add('agent');
-            }}
-          >
-            ＋ Add step
-          </button>
-          <button
-            type="button"
-            className={BUTTON}
-            onClick={() => {
-              add('checkpoint');
-            }}
-          >
-            ＋ Add a checkpoint
-          </button>
-          <button
-            type="button"
-            className={BUTTON}
-            onClick={() => {
-              onChange(tidyUp(file));
-            }}
-          >
-            Tidy up
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                add('agent');
+              }}
+            >
+              ＋ Add step
+            </button>
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                add('checkpoint');
+              }}
+            >
+              ＋ Add a checkpoint
+            </button>
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                onChange(tidyUp(file));
+              }}
+            >
+              Tidy up
+            </button>
+          </div>
         </div>
-      </div>
-    </Opened.Provider>
+      </Opened.Provider>
+    </Library.Provider>
   );
 }
 

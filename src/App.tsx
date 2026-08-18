@@ -19,6 +19,8 @@ import type { Section, SectionEntry } from './ui/sections';
 import { sectionEntry } from './ui/sections';
 import type { ScreenMap } from './ui/screens';
 import { discoverScreens, isScreen } from './ui/screens';
+import { ScreenBoundary } from './ui/shell/screen-boundary';
+import { useSectionStore } from './ui/shell/section-store';
 import { NAV_WIDTH, SideNav } from './ui/shell/titlebar';
 
 /* Odkrywanie biegnie RAZ, przy wczytaniu modułu, a nie przy każdym renderze: jego odpowiedź
@@ -53,8 +55,25 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
       style={{ gridTemplateColumns: `${String(NAV_WIDTH)}px minmax(0,1fr)` }}
     >
       <SideNav section={section} />
-      <main data-section={entry.id} className="min-h-0 min-w-0 p-4">
-        {isScreen(Screen) ? <Screen /> : <EmptySection entry={entry} />}
+      <main data-section={entry.id} className="min-h-0 min-w-0">
+        {/* OSŁONA WOKÓŁ SEKCJI, nie wokół roota: błąd renderu ma kosztować JEDNĄ sekcję,
+            a nie okno razem z nawigacją, czyli razem z jedyną drogą wyjścia z tej sekcji
+            (`ui/shell/screen-boundary.tsx`, zmierzone 2026-08-18). `key` na identyfikatorze
+            sekcji kasuje stan osłony przy każdym przejściu: bez tego jedna zepsuta sekcja
+            zostawiałaby zdanie o awarii na ekranie także po przełączeniu na zdrową. */}
+        <ScreenBoundary
+          key={entry.id}
+          section={entry.id}
+          onLeave={
+            entry.id === 'run'
+              ? null
+              : () => {
+                  useSectionStore.getState().go('run');
+                }
+          }
+        >
+          {isScreen(Screen) ? <Screen /> : <EmptySection entry={entry} />}
+        </ScreenBoundary>
       </main>
     </div>
   );

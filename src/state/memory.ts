@@ -19,7 +19,13 @@
  * więcej" ma sens tylko wtedy, kiedy jest jedna droga do policzenia.
  */
 import { create } from 'zustand';
-import { listNotes, putToUse, stopUsing as stopUsingOnDisk } from '../sections/memory/io';
+import {
+  listHandoffs,
+  listNotes,
+  putToUse,
+  stopUsing as stopUsingOnDisk,
+} from '../sections/memory/io';
+import { why } from '../ipc/why';
 
 /** Dwa stany i ani jeden trzeci [ARCHITECTURE §2 pyt. 5]. Słowo jest to samo, co w pliku. */
 export type NoteStatus = 'suggested' | 'in-use';
@@ -50,6 +56,35 @@ export interface Note {
 }
 
 /**
+ * Jeden plik, który jeden agent zostawił drugiemu. Lustro `HandoffWire`
+ * (`src-tauri/src/commands/memory.rs`, camelCase na drucie).
+ *
+ * Pola są tu WSZYSTKIE, także te, których trzecia strefa nie pokazuje (`run`, `kind`,
+ * `created`, `id`, `title`): lustro, które przepisuje połowę drutu, przy pierwszej zmianie
+ * kształtu milczy dokładnie o tej połowie, której nie zna. Co z tego dojeżdża na ekran,
+ * rozstrzyga `src/sections/memory/passed-row.tsx` i tylko on.
+ */
+export interface Handoff {
+  id: string;
+  /** Bieg, w którym ten plik powstał. Dziś nie ma go na ekranie — patrz `listHandoffs`. */
+  run: string;
+  /** Kto to zostawił. */
+  from: string;
+  /** Dla kogo. Pusta lista znaczy „dla nikogo w szczególności", nie „dla wszystkich". */
+  to: string[];
+  /** `brief`, `findings`, `plan`, `patch-summary`, `question`, `answer`, `review` — albo coś,
+   * czego ta wersja nie zna (niezmiennik 5: nieznana wartość jest niesiona, nie odrzucana). */
+  kind: string;
+  title: string;
+  /** `current` albo `superseded`. Przekazania są niezmienne — korekta to nowy plik [T6 §9]. */
+  status: string;
+  created: string;
+  /** Gdzie ten plik leży. To jest jedyna rzecz, która czyni z niego „plik na dysku". */
+  path: string;
+  bytes: number;
+}
+
+/**
  * Odmowa „zakres jest pełny", tak jak przyjeżdża z Rusta [T6 §5.3].
  *
  * Kształt jest tu wypisany, bo magazyn musi go rozpoznać, żeby otworzyć wymuszony wybór
@@ -72,8 +107,22 @@ export interface Choice {
 
 export interface MemoryState {
   notes: Note[];
+  /**
+   * Co agenci przekazali sobie po drodze. Trzecia strefa ekranu, do 2026-08-18 nieodczytywana
+   * przez nic.
+   */
+  passed: Handoff[];
   /** Zdanie po angielsku mówiące, co się stało. `null`, kiedy nie ma nic do powiedzenia. */
   message: string | null;
+  /**
+   * Odmowa odczytu PRZEKAZAŃ, osobno od `message`.
+   *
+   * To nie jest drugie miejsce na ten sam fakt (niezmiennik 13), a dwa różne fakty: „nie umiem
+   * przeczytać notatek" i „nie umiem przeczytać tego, co agenci sobie przekazali" mówią
+   * o dwóch różnych katalogach i wymagają dwóch różnych rzeczy do zrobienia. Zlane w jedno
+   * pole, drugie nadpisuje pierwsze i jedna z dwóch odmów ginie w każdym wejściu w sekcję.
+   */
+  passedProblem: string | null;
   choice: Choice | null;
   /**
    * Wejście w sekcję: przeczytaj, co leży na dysku, i pokaż to.
@@ -94,6 +143,7 @@ export interface MemoryState {
 const COULD_NOT_USE = 'Loadout could not put that note to use.';
 const COULD_NOT_STOP = 'Loadout could not stop using that note.';
 const COULD_NOT_READ = 'Loadout could not read the notes on this machine.';
+const COULD_NOT_READ_PASSED = 'Loadout could not read what agents passed to each other.';
 
 /**
  * Czy ta odmowa jest „zakres jest pełny".
@@ -109,12 +159,6 @@ function isMemoryFull(refusal: unknown): refusal is MemoryFull {
   return typeof maybe.overBy === 'number' && Array.isArray(maybe.retire);
 }
 
-/** Zdanie od Rusta, kiedy jakieś jest — jego odmowy są już napisane po ludzku. */
-function why(refusal: unknown, fallback: string): string {
-  const said = refusal instanceof Error ? refusal.message.trim() : '';
-  return said.length > 0 ? said : fallback;
-}
-
 /**
  * Notatka odczytana z pliku po zapisie zastępuje tę, którą sekcja trzymała.
  *
@@ -128,10 +172,18 @@ function replace(notes: Note[], fresh: Note): Note[] {
 
 export const useMemory = create<MemoryState>()((set, get) => ({
   notes: [],
+  passed: [],
   message: null,
+  passedProblem: null,
   choice: null,
 
   load: async () => {
+    /* DWA ODCZYTY, DWIE OSOBNE ODMOWY, i to nie jest ostrożność na zapas: notatki leżą
+     * w `~/.loadout/memory/notes/`, a przekazania w katalogach biegów
+     * (`<repo>/.loadout/runs/<…>/handoffs/`). Jeden `try` na oba znaczy, że katalog notatek,
+     * którego nie da się przeczytać, zabiera z ekranu także przekazania — czyli awaria jednej
+     * ścieżki pustoszy strefę, która ma swoje pliki w porządku. Awaria każdej z nich ma
+     * kosztować dokładnie tyle, ile mówi (niezmiennik 5). */
     try {
       /* PODMIANA CAŁEJ LISTY, nigdy dopisanie. Wejście w sekcję drugi raz dokładałoby wtedy
        * te same notatki jeszcze raz, a człowiek zobaczyłby każdą podwójnie i licznik nad
@@ -144,6 +196,13 @@ export const useMemory = create<MemoryState>()((set, get) => ({
        * tym, co sekcja PAMIĘTA, a nie tym, co leży w plikach, i pokazanie ich byłoby dokładnie
        * tym kłamstwem, przed którym stoi niezmiennik 4. */
       set({ notes: [], message: why(refusal, COULD_NOT_READ) });
+    }
+
+    try {
+      /* Ta sama reguła podmiany całej listy i ten sam powód. */
+      set({ passed: await listHandoffs(), passedProblem: null });
+    } catch (refusal) {
+      set({ passed: [], passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
     }
   },
 

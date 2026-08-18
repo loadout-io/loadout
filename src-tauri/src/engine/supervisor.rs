@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use tokio::io::AsyncWriteExt;
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
@@ -238,6 +238,19 @@ pub struct Supervised {
     /// Odebrany strumień wyjścia, czekający na tego, kto go czyta (T-05). Oddawany raz.
     stdout: Option<ChildStdout>,
 
+    /// Odebrany strumień skarg, czekający na tego, kto go czyta. Oddawany raz.
+    ///
+    /// 2026-08-18 — TEGO POLA TU NIE BYŁO, choć `spawn` od pierwszego dnia ustawiał
+    /// `command.stderr(Stdio::piped())`. Potok więc istniał i **nie dawał się odebrać**:
+    /// uchwyt zostawał w dziecku, nikt go nie czytał, a krok padał zdaniem „The agent stopped
+    /// without ever sending its result." — bez ani jednego słowa o przyczynie. Dwa skutki, oba
+    /// zmierzone: (1) najczęstsza realna awaria — brak albo niezalogowane CLI — była
+    /// niediagnozowalna z okna, a `which claude` na tej maszynie wskazuje wrapper, który przy
+    /// braku binarki pisze WŁAŚNIE na stderr i wychodzi 127; (2) potok o pojemności ~64 KB,
+    /// którego nikt nie opróżnia, blokuje dziecko na `write` — czyli agent gadatliwy na stderr
+    /// wisiał, a wyglądało to jak agent, który myśli.
+    stderr: Option<ChildStderr>,
+
     /// Potok wejściowy wracający z zadania, które wykonało pierwszy zapis z
     /// [`StdinPlan::Keep`]. `None` dla planów, które ten deskryptor zamykają.
     ///
@@ -278,6 +291,15 @@ impl Supervised {
     /// się go raz, temu, kto go czyta (T-05).
     pub fn stdout(&mut self) -> Option<ChildStdout> {
         self.stdout.take()
+    }
+
+    /// Odbiera strumień skarg. `None` przy drugim wywołaniu — dokładnie jak [`Supervised::stdout`].
+    ///
+    /// Ten, kto go weźmie, **musi go opróżniać do EOF**, a nie porzucić: porzucony uchwyt
+    /// zamyka potok i dziecko dostaje `EPIPE` na pierwszym ostrzeżeniu, a nieopróżniany —
+    /// blokuje je na pełnym buforze. Oba warianty są cichsze niż brak potoku.
+    pub fn stderr(&mut self) -> Option<ChildStderr> {
+        self.stderr.take()
     }
 
     /// Odbiera potok wejściowy — ten sam, przez który poszedł pierwszy zapis. `None` przy
@@ -497,9 +519,12 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
     };
     let pid = i32::try_from(pid).map_err(io::Error::other)?;
 
-    // Potok odbieramy od razu: uchwyt, który go w sobie trzyma, jest uchwytem, z którego T-05
+    // Potoki odbieramy od razu: uchwyt, który je w sobie trzyma, jest uchwytem, z którego T-05
     // nie przeczyta ani linii — a EOF na tym potoku ma osobne kryterium.
     let stdout = child.stdout().take();
+    // Ten sam powód dla skarg, plus drugi: potok, którego nikt nie odbierze i nie opróżni,
+    // zatrzymuje dziecko na `write` przy ~64 KB (powód w całości przy polu `stderr`).
+    let stderr = child.stderr().take();
 
     let mut kept = None;
     if let Some((text, keep)) = prompt
@@ -538,6 +563,7 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
         group: GroupId { pid, pgid: pid },
         child,
         stdout,
+        stderr,
         stdin: kept,
         status: None,
         proved_dead: false,

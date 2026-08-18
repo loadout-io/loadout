@@ -37,8 +37,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_with_slots;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::limits::Limiter;
 use loadout_lib::engine::step::StepState;
@@ -302,6 +302,7 @@ impl Lane {
         RunRequest {
             workflow: self.workflow.clone(),
             how_many_at_once,
+            task: None,
         }
     }
 }
@@ -464,7 +465,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let entry = self.watch.entered();
         let session = SessionRef {
@@ -473,17 +474,23 @@ impl AgentDriver for Fake {
         };
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         let _ = events
-            .send(AgentEvent::Said {
-                text: format!("working on {}", spec.prompt),
-            })
+            .send(
+                (AgentEvent::Said {
+                    text: format!("working on {}", spec.prompt),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn {
@@ -500,7 +507,7 @@ impl AgentDriver for Fake {
 #[derive(Debug)]
 struct Turn {
     watch: Arc<Watch>,
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
     entry: usize,
     hold: Duration,
@@ -535,7 +542,7 @@ impl AgentHandle for Turn {
         self.watch.left(self.entry);
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

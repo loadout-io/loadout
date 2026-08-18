@@ -1,4 +1,16 @@
-/* Pasek kart: karty, jedno zdanie o czekaniu na miejsce i przycisk otwarcia folderu.
+/* Pasek kart: karty biegów i jedno zdanie o czekaniu na miejsce.
+ *
+ * 2026-08-18 — ZNAK `＋` STĄD ZNIKNĄŁ, i to jest rozstrzygnięcie, nie przeoczenie. Stał tu jako
+ * „otwórz folder", bo karta znaczyła folder; właściciel przeniósł wybór projektu do bocznego menu
+ * (zakres wybiera się raz), więc `＋` na tym pasku mógł znaczyć już tylko jedno z dwojga.
+ *   „Nowy zakres"  byłby drugą drogą do kontrolki, która stoi w bocznym menu i ma tam własny
+ *                  formularz z nazwą — czyli drugim miejscem tej samej czynności, i to tym
+ *                  gorszym, bo bez nazwy (niezmiennik 13).
+ *   „Nowy bieg"    jest przyciskiem Start, a Start bierze DWIE rzeczy, których na tym pasku nie
+ *                  ma: który workflow i ilu agentów naraz. `＋` musiałby wybrać je po swojemu
+ *                  i cicho zignorować to, co człowiek ustawił obok — kontrolka, która przyjmuje
+ *                  polecenie i wykonuje inne, jest gorsza niż jej brak (niezmiennik 16).
+ * Zostaje więc pasek bez `＋`. Karty zakłada bieg, nie człowiek.
  *
  * Wysokość jest wydana z góry i nie podlega negocjacji: karty biorą 34 z 96 px budżetu chrome,
  * a pasek loadoutu drugie 56 — zostaje sześć (ARCHITECTURE §7). Zdanie o czekaniu musi się więc
@@ -26,7 +38,7 @@
  * nikt nie czeka: zdanie, które zostaje na pasku po końcu czekania, uczy ludzi nie czytać paska.
  */
 import type { ReactElement } from 'react';
-import type { WorkspaceTab } from '../../../state/workspaces';
+import type { WorkspaceTab } from '../../../state/run-tabs';
 import { Tab } from './tab';
 
 /** Wysokość paska kart: 34 z 96 px budżetu chrome (ARCHITECTURE §7). */
@@ -52,7 +64,19 @@ export interface TabBarProps {
   readonly onSelect: (id: string) => void;
   /** Wymagany: `×` na karcie. */
   readonly onClose: (id: string) => void;
-  /** Wymagany: `＋`, czyli menu wyboru folderu. */
+  /**
+   * `＋` na końcu paska: wskaż folder i pracuj w nim.
+   *
+   * 2026-08-18 — WRACA PO ZGŁOSZENIU WŁAŚCICIELA („nie mogę dodawać nowych tabów"). Zniknął tego
+   * samego dnia z rozumowaniem, które stoi w nagłówku tego pliku i było niegłupie: karta znaczy
+   * teraz bieg, nie folder, więc `＋` mógłby znaczyć albo „nowy zakres" (druga droga do kontrolki
+   * z bocznego menu), albo „nowy bieg" (czyli Start, który bierze dwie rzeczy, których na pasku
+   * nie ma). Zabrakło w tym rozumowaniu trzeciej możliwości i to ona jest właściwa: `＋` woła
+   * DOKŁADNIE TEN SAM handler, co zaproszenie na ekranie pracy i `/open` w wierszu wejścia —
+   * wybór folderu, nazwany folderem. Trzy wejścia do JEDNEJ funkcji nie są trzema miejscami
+   * prawdy (niezmiennik 13 mówi o faktach, nie o skrótach do czynności), a pasek bez `＋` przy
+   * otwartym zakresie nie miał ani jednej czynnej kontrolki dodania czegokolwiek.
+   */
   readonly onOpenFolder: () => void;
 }
 
@@ -76,6 +100,7 @@ export function TabBar({
   waitingIn,
   onSelect,
   onClose,
+
   onOpenFolder,
 }: TabBarProps): ReactElement {
   return (
@@ -94,10 +119,15 @@ export function TabBar({
         />
       ))}
 
+      {/* Ten sam napis, co w makiecie (`.tabadd`), i ten sam handler, co pod zaproszeniem na
+          ekranie pracy oraz pod `/open` w wierszu wejścia. Powód, dla którego wrócił, stoi przy
+          `TabBarProps.onOpenFolder`. */}
       <button
         type="button"
+        data-add-tab
         onClick={onOpenFolder}
-        aria-label={'Open a folder'}
+        aria-label="Open a folder"
+        title="Choose a folder to work in"
         className="h-7 shrink-0 rounded-sq px-2 text-muted"
       >
         ＋

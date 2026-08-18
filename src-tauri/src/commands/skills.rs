@@ -389,3 +389,55 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
     crate::skills::place::apply(&plan, &import.skill)?;
     Ok(plan.writes)
 }
+
+/// Zdejmuje umiejętność z katalogów agentów.
+///
+/// 2026-08-18 — POWSTAŁO, BO SEKCJA MIAŁA PRZYCISK BEZ SKUTKU. Lista z
+/// [`list_skills_inner`] czyta katalogi vendorów, więc wiersz na ekranie odpowiada plikom na
+/// dysku — a jedyne, co człowiek mógł z nim zrobić, to zainstalować go jeszcze raz. Kontrolka,
+/// której handler nie ma skutku, jest gorsza niż jej brak (niezmiennik 16).
+///
+/// **Ani jednej linii kasowania tutaj** (niezmiennik 23). Cała polityka mieszka
+/// w [`crate::skills::place::remove`]: dwa przebiegi (najpierw decyzja o obu katalogach, potem
+/// pierwsze skasowanie), sidecar jako jedyne źródło odpowiedzi „czy to nasze", i kopia
+/// kanoniczna, która **zostaje**, bo katalogi vendorów są wyjściem builda (niezmiennik 4).
+///
+/// # Trzy odpowiedzi, trzy różne zdania
+///
+/// - **Zdjęte.** `Ok(())` — i nic więcej, bo okno pyta tylko o to, czy się udało.
+/// - **Nie nasze.** Katalog o tej nazwie napisał ktoś inny, więc nie kasujemy **niczego**
+///   (także drugiej kopii). Zdanie rdzenia jedzie na ekran słowo w słowo: własne tłumaczenie
+///   byłoby drugim miejscem, w którym mieszka ten sam komunikat, a jedno z dwóch zawsze jest
+///   nieaktualne.
+/// - **Nic tam nie było.** Osobne zdanie, nie ciche `Ok(())`. Przycisk, który melduje sukces,
+///   choć nic nie zaszło, jest tym samym defektem, który to zadanie naprawia — a jedyny stan,
+///   w którym to się zdarza, to lista starsza niż dysk, i o tym właśnie ma być to zdanie.
+pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
+    // Nazwa przychodzi z okna, więc jest wejściem, któremu nie ufamy (T3 §5.2). Sidecar
+    // obroniłby nas i tak — `<katalog>/../..` nie stoi na liście „to napisał Loadout", więc
+    // `remove` odmówiłby — ale odmowa po ludzku ma padać PRZED dotknięciem dysku, i ma mówić
+    // o nazwie, a nie o cudzym katalogu.
+    if Path::new(name).file_name().is_none_or(|only| only != name) {
+        return Err(Error::Invalid {
+            messages: vec![format!(
+                "\"{name}\" is not the name of a skill Loadout installed. Pick one from the list."
+            )],
+        });
+    }
+
+    let roots = global_roots(library);
+    match crate::skills::place::remove(name, Scope::Global, &roots)? {
+        crate::skills::place::Removed::Done { paths } if paths.is_empty() => Err(Error::Invalid {
+            messages: vec![format!(
+                "There is nothing installed under the name '{name}' any more, so nothing was \
+                     removed. The list you are looking at is older than the folder."
+            )],
+        }),
+        crate::skills::place::Removed::Done { .. } => Ok(()),
+        // Zdanie rdzenia, nazwane katalogiem, którego to dotyczy. Kolizja nazw jest normalna:
+        // `pdf` to oczywista nazwa i ktoś mógł napisać swoją ręcznie.
+        crate::skills::place::Removed::Skipped { path, why } => Err(Error::Invalid {
+            messages: vec![format!("{why} ({}). Nothing was removed.", path.display())],
+        }),
+    }
+}

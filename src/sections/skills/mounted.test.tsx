@@ -1,26 +1,31 @@
-/* Kryterium 3 dla T-26: sekcja Skills montuje się naprawdę i pokazuje stan rozmieszczenia,
- * a nie same nazwy.
+/* Sekcja Skills montuje się naprawdę, nie kłamie o rozmieszczeniu i ma drogę powrotną.
  *
  * Powód dwóch połów i kontroli przeciw pustej asercji jest wypisany raz, w
- * `src/sections/workflows/mounted.test.tsx`. Tutaj cała waga leży na drugiej połowie: lista
- * samych nazw gubi różnicę, dla której ta sekcja w ogóle istnieje (`docs/ARCHITECTURE.md` §9),
- * a T-18 zbudował silnik rozmieszczania właśnie po to. Dlatego dwie umiejętności o różnym
- * stanie rozmieszczenia i asercja, że ich znaczniki SIĘ RÓŻNIĄ — znacznik wpisany na sztywno
- * jest przy obu taki sam i przewraca się dokładnie tutaj.
+ * `src/sections/workflows/mounted.test.tsx`.
  *
- * CZEGO TO KRYTERIUM NIE MIERZY I DLACZEGO — ZGŁOSZENIE DLA CZŁOWIEKA (zmierzone 2026-08-16).
- * „Dla ilu vendorów rozmieszczona" chciałoby dwóch pozycji `installed` różniących się liczbą
- * vendorów. `InstalledSkill` w `src/state/skills.ts` ma dokładnie dwa pola — `name`
- * i `fromTheInternet` — i ani jednego o vendorach, więc takiego stanu nie da się nawet ZASIAĆ:
- * nie ma pola, w którym by mieszkał, a `src/state/skills.ts` leży poza blokiem OWNS tego
- * zadania (AGENTS.md §7). Jedyna różnica rozmieszczenia, jaką ten magazyn dziś niesie, to
- * „leży już w katalogach obu vendorów" (`installed`) kontra „jeszcze czeka na człowieka"
- * (`pending`) — i na niej stoi asercja niżej. Pełne odczytanie wymaga pola per vendor od T-18.
+ * DLACZEGO TEN PLIK ZMIENIŁ SIĘ 2026-08-18 — ZMIERZONE. Do tego dnia stała tu asercja
+ * `expect(placedSays).toContain('Claude')` i `toContain('Codex')`, czyli WYMÓG, żeby każdy
+ * wiersz zainstalowanej umiejętności ogłaszał „Ready for Claude and Codex". Na dysku
+ * właściciela ten napis był nieprawdą dla wszystkich dziesięciu umiejętności: `notatki`
+ * i `spotkanie` leżą tylko w `~/.claude/skills`, osiem `superset-*` tylko
+ * w `~/.agents/skills`, ani jedna w obu. Kryterium było więc WĘŻSZE niż niezmiennik, którego
+ * pilnowało — mierzyło „czy napis jest", a napis brał się z argumentu wpisanego na sztywno
+ * (`readyFor(true)`), nie z pliku. To nie jest przeoczenie autora asercji: informacji o tym,
+ * który katalog trzymał plik, NIE MA po tej stronie granicy. `InstalledWire`
+ * (`src-tauri/src/commands/skills.rs`) niesie `name` i `fromTheInternet`, a
+ * `list_skills_inner` zwija oba katalogi do jednego `BTreeSet` nazw.
  *
- * KONTRAKT NA MARKUP. Każda umiejętność na tym ekranie niesie `data-skill="<nazwa>"`, a w niej
- * DOKŁADNIE JEDEN element z `data-ready`, którego treść jest tym znacznikiem. Bez znacznika
- * przypiętego do konkretnej umiejętności „obie mają znacznik" da się przejść jednym napisem
- * na całą stronę.
+ * JAK BRZMIAŁABY SŁABA WERSJA TEGO, CO STOI TU DZIŚ, I CO JĄ ODRÓŻNI. Słaba wersja to
+ * „wiersz zainstalowanej umiejętności istnieje". Przechodzi na dokładnie tym ekranie, który
+ * ta fala naprawia — z powrotem dopisanym znacznikiem „Ready for Claude and Codex" nad
+ * wierszem, bo znacznik nie przeszkadza istnieć wierszowi. Odróżnia je asercja NEGATYWNA
+ * o nazwach vendorow, postawiona razem z kontrolą, że wiersz nie jest po prostu pusty:
+ * osobno każda z nich przechodzi na ekranie, który nie renderuje niczego.
+ *
+ * KONTRAKT NA MARKUP. Każda umiejętność na tym ekranie niesie `data-skill="<nazwa>"`,
+ * a zainstalowana w środku `data-remove="<nazwa>"` — kontrolkę przypisaną do TEJ nazwy.
+ * Jeden przycisk „Remove" na całą stronę usuwałby zawsze to samo i przeszedłby asercję
+ * „przycisk jest".
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -70,14 +75,22 @@ function rowFor(markup: string, name: string): string {
   return next < 0 ? markup.slice(start) : markup.slice(start, start + 1 + next);
 }
 
-/** Treść jedynego elementu z `data-ready` w tym kawałku, bez znaczników i bez odstępów. */
-function readyMarker(row: string): string {
-  const hit = /<([a-z]+)[^>]*\bdata-ready\b[^>]*>([\s\S]*?)<\/\1>/i.exec(row);
-  return (hit?.[2] ?? '')
+/** Sam tekst tego kawałka markupu, bez znaczników i bez nadmiarowych odstępów. */
+function words(part: string): string {
+  return part
     .replace(/<[^>]*>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * Nazwy narzędzi agentowych, o których ekran NIE MA prawa nic twierdzić.
+ *
+ * Wprost z `VENDORS` w `src-tauri/src/skills/mod.rs`. Nie po to, żeby zabronić słowa, ale po
+ * to, żeby żaden wiersz nie odpowiadał na pytanie „który z nich to widzi" — bo odpowiedź na
+ * nie ginie po tamtej stronie granicy i nic tutaj jej nie zna.
+ */
+const VENDORS = ['Claude', 'Codex', 'Cursor', 'Gemini', 'opencode', 'Amp'];
 
 beforeEach(() => {
   /* Magazyn umiejętności jest singletonem, więc zasianie go w jednym teście dojechałoby do
@@ -85,7 +98,7 @@ beforeEach(() => {
   useSkills.setState({ pending: null, acknowledged: [], message: null, installed: [] });
 });
 
-describe('the skills section mounts for real and shows who each skill is ready for', () => {
+describe('the skills section mounts for real, tells the truth and has a way back', () => {
   it('mounts through real discovery and invites instead of reporting a lack of data', () => {
     const markup = renderToStaticMarkup(<App section="skills" />);
 
@@ -116,7 +129,7 @@ describe('the skills section mounts for real and shows who each skill is ready f
     ).toContain(sectionEntry('skills').empty);
   });
 
-  it('marks the placed skill differently from the one still waiting to be read', () => {
+  it('shows both skills under their own names and neither says which tool can see it', () => {
     useSkills.setState({ installed: [PLACED], pending: WAITING });
 
     const markup = renderToStaticMarkup(<SkillsScreen store={useSkills} />);
@@ -125,30 +138,49 @@ describe('the skills section mounts for real and shows who each skill is ready f
 
     expect(
       placed,
-      'the skill that is already in the vendor folders has to be in the document under its ' +
-        'own name — and carry its own marker, not one the page states once for everybody',
+      'the skill that is on disk has to be in the document under its own name',
     ).not.toBe('');
     expect(waiting, 'and so does the one that came from a link and still waits').not.toBe('');
 
-    const placedSays = readyMarker(placed);
-    const waitingSays = readyMarker(waiting);
+    /* Kontrola przeciw pustej asercji, i to ona jest tu połową kryterium: bez niej „nie ma
+       nazwy vendora" przechodzi na ekranie, który nie rysuje wiersza wcale. */
+    expect(
+      words(placed),
+      'the row carries the name of the skill, so the negative assertion below is about a row ' +
+        'that exists and says something',
+    ).toContain(PLACED.name);
 
-    expect(placedSays, 'the placed skill has to say who it is ready for').not.toBe('');
-    expect(waitingSays, 'and the waiting one has to say that too, in its own words').not.toBe('');
+    const named = VENDORS.filter((vendor) => words(markup).includes(vendor));
     expect(
-      placedSays,
-      'these two are in different states, so the two markers have to read differently. A skill ' +
-        'that is ready for both vendors may not look like one that is still waiting for a ' +
-        'person to read it — a marker written into the markup by hand reads the same for both ' +
-        'and falls over exactly here. The screen said ' +
-        JSON.stringify(placedSays) +
-        ' for both',
-    ).not.toBe(waitingSays);
+      named,
+      'no row may name the tool that can see a skill. list_skills folds .claude/skills and ' +
+        '.agents/skills into one set of names (list_skills_inner, BTreeSet) and InstalledWire ' +
+        'carries name and fromTheInternet only, so which folder held the file is not knowable ' +
+        'on this side of the seam. On the owner disk the old "Ready for Claude and Codex" was ' +
+        'false for all ten skills. The screen named: ' +
+        named.join(', '),
+    ).toEqual([]);
+  });
+
+  it('gives every skill on disk its own way back off this machine', () => {
+    useSkills.setState({ installed: [PLACED, { name: 'rust-tauri', fromTheInternet: false }] });
+
+    const markup = renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+
+    for (const name of [PLACED.name, 'rust-tauri']) {
+      expect(
+        rowFor(markup, name),
+        'this section writes into the folders the agent apps of this person read, so a skill ' +
+          'added by mistake stays in every later run of those tools forever unless the screen ' +
+          'offers the way back. The control has to be bound to THIS name: one Remove for the ' +
+          'whole page would always take away the same skill and still pass "a button is there"',
+      ).toContain('data-remove="' + name + '"');
+    }
+
     expect(
-      placedSays,
-      'the marker counts vendors, so the one that is placed names them: this is what the ' +
-        'placement engine from T-18 was built to answer',
-    ).toContain('Claude');
-    expect(placedSays, 'and the other vendor as well').toContain('Codex');
+      occurrences(markup, 'data-remove'),
+      'exactly one per skill — a second control on the same row is a second answer to the same ' +
+        'question (invariant 13)',
+    ).toBe(2);
   });
 });

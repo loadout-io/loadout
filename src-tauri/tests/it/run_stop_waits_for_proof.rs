@@ -45,7 +45,7 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::{run_workflow_inner, stop_run_inner};
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
+    AgentDriver, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
     SessionRef, Tokens,
 };
 use loadout_lib::engine::line::Line;
@@ -172,6 +172,7 @@ async fn stop_comes_back_only_after_the_group_is_proved_dead() -> Result<(), Box
     let request = RunRequest {
         workflow,
         how_many_at_once: 1,
+        task: None,
     };
 
     let recorder = Recorder::default();
@@ -458,7 +459,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        _events: mpsc::Sender<AgentEvent>,
+        _events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let session = SessionRef {
             vendor: VENDOR,

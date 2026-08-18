@@ -48,6 +48,7 @@
 //! bilans jest kompletny dopiero w chwili końca, więc pompy nie wolno zabijać z zewnątrz.
 
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -148,6 +149,25 @@ pub fn line_channel(capacity: usize) -> (LineSink, LineSource) {
         },
         LineSource { rx, dropped },
     )
+}
+
+impl LineSource {
+    /// Linia, która już czeka w kolejce — albo `None`, kiedy nic nie czeka.
+    ///
+    /// # Po co to jest, skoro jedynym konsumentem jest pompa
+    ///
+    /// Bo bez tego **nie da się osądzić, co bieg wypuścił**, inaczej niż budując
+    /// `tauri::ipc::Channel` i deserializując `InvokeResponseBody` — czyli mierząc pompę tam, gdzie
+    /// pytanie dotyczy zawartości. Kryterium „tura człowieka wchodzi do historii"
+    /// (`tests/it/person_turn_is_visible.rs`) pyta o JEDEN wiersz w strumieniu i nie ma powodu
+    /// przechodzić przez serializację, żeby go zobaczyć.
+    ///
+    /// `try_recv`, nie `recv`: „nic nie przyszło" jest odpowiedzią, o którą te kryteria pytają
+    /// wprost (zdanie odrzucone nie ma prawa zostawić wiersza), a `recv().await` zawieszałby test
+    /// dokładnie w przypadku, w którym poprawnym wynikiem jest pustka.
+    pub fn try_next(&mut self) -> Option<Line> {
+        self.rx.try_recv().ok()
+    }
 }
 
 impl LineSink {
@@ -412,10 +432,26 @@ impl AppState {
     ///
     /// Zamek zatruty odplatamy zamiast panikować: `panic!` w agentowym runtime zabiera cały
     /// bieg (AGENTS.md §4), a uchwyt po panice jednego kroku jest dalej poprawnym uchwytem.
-    fn deps(&self) -> RunDeps<'_> {
+    ///
+    /// `pub(crate)` od 2026-08-19: obsługa zamknięcia okna stoi w `lib.rs`, poza tym modułem,
+    /// a musi dosięgnąć tego samego żywego biegu, co komenda Stop — inaczej zatrzymywałaby
+    /// **inny** uchwyt niż ten, który naprawdę prowadzi agentów.
+    pub(crate) fn deps(&self) -> RunDeps<'_> {
+        self.deps_in(self.project.as_path())
+    }
+
+    /// Współpracownicy biegu, który ma pracować w **tym** katalogu.
+    ///
+    /// 2026-08-18 — POWSTAŁO, BO FOLDER WYBRANY W OKNIE NIE DOJEŻDŻAŁ NIGDZIE. `AppState.project`
+    /// ustala `lib.rs` raz, przy starcie okna, a `＋` na pasku kart zakładał kartę i kończył na
+    /// `workspaces.open(...)` — bez ani jednego `invoke`. Człowiek wybierał `~/Projects/moj`,
+    /// dostawał kartę z tą nazwą, a agent (gdyby wystartował) pracowałby w katalogu ustalonym
+    /// przy starcie. „Agenci pracują w twoim folderze" jest CAŁĄ obietnicą tego produktu, więc
+    /// katalog musi przyjechać z żądaniem, a nie ze stałej sprzed wyboru.
+    fn deps_in<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
         RunDeps {
             home: self.home.as_path(),
-            project: self.project.as_path(),
+            project,
             store: &self.store,
             drivers: Arc::clone(&self.drivers),
             // Zamek wzięty i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await`
@@ -432,20 +468,60 @@ impl AppState {
     ///
     /// Powód wymiany stoi przy [`AppState::live`]. Wymiana jest tutaj, a nie w skorupie, bo
     /// skorupa z tym `let` w środku byłaby o jedną decyzję dalej od „rozpakuj i zawołaj".
-    fn begin_run(&self) -> RunDeps<'_> {
+    fn begin_run<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
         {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             *live = RunControl::new();
         }
-        self.deps()
+        self.deps_in(project)
+    }
+
+    /// Katalog, w którym ma biec workflow: ten wybrany w oknie albo ten ze startu aplikacji.
+    ///
+    /// Ścieżka przychodzi z webviewa, więc jest wejściem, któremu nie ufamy (T3 §5.2) — ale
+    /// inaczej niż nazwa pliku workflow, NIE jest sklejana z niczym po naszej stronie: to jest
+    /// katalog, który człowiek wskazał systemowym oknem wyboru, i on ma prawo leżeć gdziekolwiek.
+    /// Sprawdzamy więc nie „czy jest w bibliotece", a „czy to w ogóle jest folder" — bo pomyłka
+    /// tutaj kończy się procesem agenta uruchomionym w katalogu, którego nie ma, i zdaniem
+    /// o systemie plików zamiast o folderze.
+    ///
+    /// Każda odmowa mówi, co zrobić (DESIGN §8). Zdanie „os error 2" nie mówi nic.
+    fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
+        let Some(folder) = folder.map(str::trim).filter(|folder| !folder.is_empty()) else {
+            // Brak wyboru jest wartością, nie błędem: dopóki nikt nie otworzył karty, biegniemy
+            // tam, gdzie aplikacja wstała.
+            return Ok(self.project.clone());
+        };
+        let path = PathBuf::from(folder);
+        if !path.is_absolute() {
+            return Err(format!(
+                "Loadout needs the whole path to the folder you want to work in, and \"{folder}\" \
+                 is only part of one. Open the folder again from the tab bar."
+            ));
+        }
+        match fs::metadata(&path) {
+            Ok(what) if what.is_dir() => Ok(path),
+            Ok(_) => Err(format!(
+                "\"{folder}\" is a file, not a folder. Pick the folder your project lives in."
+            )),
+            Err(_) => Err(format!(
+                "The folder \"{folder}\" is not there any more, so nothing was started. Open it \
+                 again from the tab bar."
+            )),
+        }
     }
 
     /// Nazwa pliku z okna → żądanie biegu.
     ///
     /// Zapora i jej cena stoją przy [`run_request`]; tutaj zostaje samo podanie biblioteki,
     /// bo katalog domowy jest jedyną rzeczą, którą stan do tej decyzji wnosi.
-    fn request(&self, file_name: &str, how_many_at_once: usize) -> Result<RunRequest, String> {
-        run_request(self.home.as_path(), file_name, how_many_at_once)
+    fn request(
+        &self,
+        file_name: &str,
+        how_many_at_once: usize,
+        task: Option<String>,
+    ) -> Result<RunRequest, String> {
+        run_request(self.home.as_path(), file_name, how_many_at_once, task)
     }
 }
 
@@ -471,6 +547,7 @@ fn run_request(
     home: &Path,
     file_name: &str,
     how_many_at_once: usize,
+    task: Option<String>,
 ) -> Result<RunRequest, String> {
     if Path::new(file_name)
         .file_name()
@@ -483,6 +560,7 @@ fn run_request(
     Ok(RunRequest {
         workflow: home.join(WORKFLOWS_DIR).join(file_name),
         how_many_at_once,
+        task,
     })
 }
 
@@ -627,6 +705,35 @@ pub fn list_skills() -> Result<Vec<commands::skills::InstalledWire>, String> {
     commands::skills::list_skills_inner(&crate::loadout_dir()).map_err(|error| error.to_string())
 }
 
+/// Zdejmuje umiejętność z katalogów agentów.
+///
+/// 2026-08-18 — bez tej komendy sekcja Umiejętności umiała tylko dokładać. Lista z
+/// [`list_skills`] czyta pliki, więc wiersz na ekranie odpowiada dyskowi — a jedyne, co
+/// człowiek mógł z nim zrobić, to zainstalować go jeszcze raz (niezmiennik 16).
+#[tauri::command]
+pub fn delete_skill(name: &str) -> Result<(), String> {
+    commands::skills::delete_skill_inner(&crate::loadout_dir(), name)
+        .map_err(|error| error.to_string())
+}
+
+/// Co jeden krok oddał następnemu — wszystkie przekazania biegów tego projektu.
+///
+/// 2026-08-18 — przekazania są JEDYNĄ drogą, którą wynik kroku dochodzi do promptu następnego
+/// (`docs/ARCHITECTURE.md` §8), a do tego dnia okno nie miało jak o nie zapytać: pliki
+/// powstawały, `memory::handoff` umiało je przeczytać, i człowiek nie widział z tego ani jednej
+/// litery.
+///
+/// Katalog projektu bierzemy ze stanu, nie z `crate::loadout_dir()`: biegi leżą pod
+/// `<projekt>/.loadout/runs/`, a nie w bibliotece. Dlatego ta jedna komenda odczytu ma `State`,
+/// choć nie dotyka żywego biegu.
+#[tauri::command]
+pub async fn list_handoffs(
+    state: State<'_, AppState>,
+) -> Result<Vec<commands::handoffs::HandoffWire>, String> {
+    commands::handoffs::list_handoffs_inner(state.project.as_path())
+        .map_err(|error| error.to_string())
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -656,6 +763,40 @@ pub fn stop_using_note(
     commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
 }
 
+/// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.
+///
+/// 2026-08-18 — TRZY KOMENDY, KTÓRE ZASTĄPIŁY SYSTEMOWE OKNO PRZY KAŻDYM BIEGU. Folder pracy
+/// wybierało się do tego dnia okienkiem wyboru katalogu, otwieranym przed uruchomieniem
+/// workflow, jeśli żadna karta nie była otwarta. To jest decyzja o PROJEKCIE, podejmowana raz —
+/// nie czynność powtarzana przed każdą pracą. Powód i zakres w całości stoją
+/// w `commands::workspaces`.
+///
+/// Katalog bierzemy z `crate::loadout_dir()`, nie ze stanu: lista workspace'ów jest biblioteką
+/// użytkownika, a nie stanem żywego biegu — czyli dokładnie tak samo jak agenci, workflow
+/// i notatki, i z tego samego powodu ta komenda nie ma `State`.
+#[tauri::command]
+pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
+    commands::workspaces::list_workspaces_inner(&crate::loadout_dir())
+        .map_err(|error| error.to_string())
+}
+
+/// Dokłada workspace albo zmienia nazwę istniejącego. Oddaje CAŁĄ listę po zapisie.
+#[tauri::command]
+pub fn save_workspace(
+    name: &str,
+    folder: &str,
+) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
+    commands::workspaces::save_workspace_inner(&crate::loadout_dir(), name, folder)
+        .map_err(|error| error.to_string())
+}
+
+/// Zdejmuje workspace z listy. **Folderu nie dotyka** — powód przy `delete_workspace_inner`.
+#[tauri::command]
+pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
+    commands::workspaces::delete_workspace_inner(&crate::loadout_dir(), id)
+        .map_err(|error| error.to_string())
+}
+
 // ── TRZY KOMENDY BIEGU ─────────────────────────────────────────────────────────────────────
 //
 // Te trzy wyglądają inaczej niż czternaście wyżej i różnica jest jedna: biegu nie da się
@@ -671,18 +812,47 @@ pub fn stop_using_note(
 // z katalogu biegu (niezmiennik 4), a nie z odpowiedzi tej komendy.
 
 /// Start: uruchamia workflow z biblioteki i oddaje jego linie oknu.
+///
+/// `task` to zdanie z wiersza wejścia — co ten bieg ma zbudować. `None` znaczy „tylko to, co
+/// stoi w pliku"; powód i sposób wpisania go w prompt kroku stoją przy [`RunRequest::task`]
+/// i [`commands::run`].
 #[tauri::command]
 pub async fn run_workflow(
     state: State<'_, AppState>,
     file_name: &str,
     how_many_at_once: usize,
+    folder: Option<String>,
+    task: Option<String>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    let request = state.request(file_name, how_many_at_once)?;
-    commands::run::run_workflow_inner(&state.begin_run(), &request, pump_into(lines))
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let request = state
+        .request(file_name, how_many_at_once, task)
+        .inspect_err(refused)?;
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::run::run_workflow_inner(
+        &state.begin_run(project.as_path()),
+        &request,
+        pump_into(lines),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Odmowa **do dziennika**, zanim pojedzie przez granicę.
+///
+/// 2026-08-18 — PO CO TO ISTNIEJE. Skorupy robiły `.map_err(|e| e.to_string())` i nie logowały
+/// niczego, a po drugiej stronie granicy Tauri odrzuca surowym napisem. Dziennik właściciela
+/// miał siedemnaście nieudanych startów i **ani jednej linii o powodzie** — czyli jedyne
+/// trwałe miejsce, w którym dałoby się dowiedzieć, dlaczego bieg nie ruszył, milczało.
+/// Zdanie idzie w `warn`, nie `error`: odmowa jest normalnym zakończeniem żądania, które
+/// człowiek zaraz naprawi, a nie awarią aplikacji.
+fn refused(said: &String) {
+    tracing::warn!(%said, "Loadout turned down a run");
 }
 
 /// Stop: zatrzymuje bieg i wraca **dopiero z dowodem**, że nic po nim nie żyje (niezmiennik 6).
@@ -695,15 +865,47 @@ pub async fn stop_run(state: State<'_, AppState>) -> Result<(), String> {
     commands::run::stop_run_inner(&state.deps())
         .await
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// „Dalej": puszcza bieg zza punktu kontrolnego.
 #[tauri::command]
-pub async fn continue_run(state: State<'_, AppState>) -> Result<(), String> {
-    commands::run::continue_run_inner(&state.deps())
+pub async fn continue_run(
+    state: State<'_, AppState>,
+    answer: Option<String>,
+) -> Result<(), String> {
+    commands::run::continue_run_inner(&state.deps(), answer)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
+}
+
+/// „Powiedz coś agentowi, który pracuje" — kolejna tura w jego żywej sesji.
+///
+/// Cała polityka — wybór adresata i pięć różnych odmów — stoi w
+/// [`commands::run::say_to_agent_inner`], razem z powodem, dla którego stoi tam, a nie tutaj.
+/// Ta skorupa robi dwie rzeczy, które umie zrobić tylko ona: sięga po zależności biegu
+/// z `State` i zamienia odmowę w napis dla okna.
+#[tauri::command]
+pub async fn say_to_agent(
+    state: State<'_, AppState>,
+    agent: Option<String>,
+    text: &str,
+) -> Result<(), String> {
+    commands::run::say_to_agent_inner(&state.deps().control, agent.as_deref(), text)
+        .await
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// Jedyna lista komend, którą dostaje okno.
@@ -721,12 +923,16 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         check_workflow,
         continue_run,
         delete_agent,
+        delete_skill,
         delete_workflow,
+        delete_workspace,
         install_skill,
         list_agents,
+        list_handoffs,
         list_notes,
         list_skills,
         list_workflows,
+        list_workspaces,
         load_workflow,
         new_id,
         put_note_to_use,
@@ -734,6 +940,8 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         run_workflow,
         save_agent,
         save_workflow,
+        save_workspace,
+        say_to_agent,
         stop_run,
         stop_using_note
     ]
@@ -767,7 +975,8 @@ mod tests {
     /// [`super::RunRequest`] nie jest `PartialEq`, a jego plik nie należy do T-30 — więc
     /// zamiast `derive` w cudzym pliku stoi tu rozbiór na dwa pola, które ta zapora ustawia.
     fn requested(file_name: &str, how_many_at_once: usize) -> Result<(PathBuf, usize), String> {
-        run_request(Path::new(HOME), file_name, how_many_at_once)
+        // Bez zadania: ta zapora sądzi NAZWĘ PLIKU, a zadanie z wiersza nie ma na nią wpływu.
+        run_request(Path::new(HOME), file_name, how_many_at_once, None)
             .map(|request| (request.workflow, request.how_many_at_once))
     }
 

@@ -81,12 +81,31 @@ function designSection8(design: string): string {
   return design.slice(from, to < 0 ? undefined : to);
 }
 
-/** Co PISZEMY zamiast żargonu z lewej kolumny §8. */
-function insteadOf(design: string, jargon: string): string {
-  const row = new RegExp('^\\|\\s*' + jargon + '\\s*\\|([^|]*)\\|', 'm').exec(
-    designSection8(design),
-  );
-  return (row?.[1] ?? '').replace(/`/g, '').trim();
+/**
+ * Napis, który DESIGN §8 każe pisać zamiast czegoś — znaleziony po SAMYM NAPISIE, nie po
+ * zakazanym słowie.
+ *
+ * 2026-08-18 — POWSTAŁO Z KONIECZNOŚCI I JEST LEPSZE OD TEGO, CO ZASTĄPIŁO. Stała tu funkcja
+ * szukająca wiersza po LEWEJ kolumnie tabeli, czyli po zakazanym słowie. Żeby ją zawołać,
+ * plik musiał to słowo ZACYTOWAĆ — a `checks/quick-vocabulary.sh` sądzi każdy plik
+ * zmieniony wobec `main`, więc przy pierwszym dotknięciu tego pliku dwa takie cytaty stały się
+ * czerwienią bramki. Osłabienie sprawdzenia (allowlist w `checks/`) albo sklejenie napisu
+ * z kawałków byłoby oszukaniem kryterium, które ma rację: żargon nie ma prawa stać w tekście,
+ * który człowiek czyta, a komunikat asercji jest takim tekstem.
+ *
+ * Pytanie zostaje to samo — „czy tabela nadal każe pisać `Stop`" — tylko zadane od drugiej
+ * strony: szukamy wiersza, którego PRAWA kolumna jest dokładnie tym napisem. Nie jest to
+ * słabsze: pusty wynik nadal znaczy „tabela tego nie mówi" i nadal wywraca kryterium niżej.
+ * Jest za to ciaśniejsze, bo wymaga zgodności co do znaku, a nie samego istnienia wiersza.
+ */
+function labelInSection8(design: string, label: string): string {
+  for (const row of designSection8(design).split('\n')) {
+    const cells = row.split('|');
+    if (cells.length < 4) continue;
+    const right = (cells[2] ?? '').replace(/`/g, '').trim();
+    if (right === label) return right;
+  }
+  return '';
 }
 
 /**
@@ -153,9 +172,12 @@ function portFromStart(): Port {
 
 const design = fileText(DESIGN);
 const known = goldenNames(fileText(GOLDEN));
+/* Sygnatura komendy, czytana z tego samego drzewa w tym samym biegu. Powód przy asercji
+ * o zbiorze argumentów niżej. */
+const rust = fileText(resolve(ROOT, 'src-tauri/src/ipc.rs'));
 const banned = bannedOnScreen(design);
 /** Napis kontrolki zatrzymania, czytany z §8 — bieg stojący na pytaniu dalej ma dać się zatrzymać. */
-const STOP = insteadOf(design, 'Terminate');
+const STOP = labelInSection8(design, 'Stop');
 
 const OPEN = 'ship-a-feature.json';
 const NAME = 'Ship a feature';
@@ -181,15 +203,39 @@ const CHECKPOINT = {
  * Trzy migawki w trzech różnych chwilach biegu, i tylko środek między nimi jest tym, o co pyta
  * kryterium. Nic tu nie dotyka magazynu ani modelu widoku wprost: jedyne, co ten plik robi, to
  * uruchamia Start i oddaje paczkę przez kanał, który Start sam założył. */
-const beforeAnyRun = renderToStaticMarkup(<Start />);
+const beforeAnyRun = renderToStaticMarkup(
+  <Start
+    onSaid={() => {
+      /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+    }}
+  />,
+);
 const going = start(OPEN, AT_ONCE, { name: NAME, steps: [] });
 const port = portFromStart();
-const whileRunning = renderToStaticMarkup(<Start />);
+const whileRunning = renderToStaticMarkup(
+  <Start
+    onSaid={() => {
+      /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+    }}
+  />,
+);
 if (port.onmessage === null) {
   throw new Error('nothing is listening on the channel Start opened');
 }
 port.onmessage([CHECKPOINT]);
-const atCheckpoint = renderToStaticMarkup(<Start />);
+const atCheckpoint = renderToStaticMarkup(
+  <Start
+    onSaid={() => {
+      /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+    }}
+  />,
+);
 
 /** Kontrolki, które przybyły dokładnie na zaparkowaniu biegu. */
 const appeared = buttonLabels(atCheckpoint).filter(
@@ -203,6 +249,60 @@ const appeared = buttonLabels(atCheckpoint).filter(
  * który sprawdza napis: różnica dwóch identycznych ekranów nie jest pytaniem o słownictwo.
  */
 const carryOn = appeared.at(0) ?? '';
+
+/* Parser listy parametrów komendy Rusta — ta sama trójka funkcji, co w
+ * `start-args-complete.test.tsx`. Kopia, nie import, i to jest zapisany dług: dwa pliki
+ * kryteriów nie mogą importować się wzajemnie bez zrobienia z jednego z nich biblioteki, a
+ * biblioteka kryteriów jest miejscem, w którym osłabienie asercji przestaje być widoczne
+ * w diffie tego kryterium. Zgłoszone: gdyby doszedł trzeci wołający, ta trójka należy do
+ * wspólnego pliku pomocniczego.
+ *
+ * Plik czytamy przez `existsSync ? readFileSync : ''`, żeby test padał na asercji o treści,
+ * nigdy na otwarciu pliku (AGENTS.md §2a p. 5). */
+function signature(rust: string, fn: string): string {
+  const at = rust.indexOf(`fn ${fn}(`);
+  if (at < 0) return '';
+  const from = rust.indexOf('(', at);
+  let depth = 0;
+  for (let i = from; i < rust.length; i += 1) {
+    const ch = rust[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return rust.slice(from + 1, i);
+    }
+  }
+  return '';
+}
+
+/** Dzieli listę parametrów po przecinkach NA POZIOMIE ZERO — `State<'_, AppState>` ma własny. */
+function parameters(inside: string): readonly string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of inside) {
+    if (ch === '<' || ch === '(' || ch === '[') depth += 1;
+    else if (ch === '>' || ch === ')' || ch === ']') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+    } else current += ch;
+  }
+  out.push(current);
+  return out.map((one) => one.trim()).filter((one) => one !== '');
+}
+
+function camel(snake: string): string {
+  return snake.replace(/_([a-z])/g, (_all, letter: string) => letter.toUpperCase());
+}
+
+/** Nazwy argumentów, które ma wysłać OKNO. Odpada tylko to, co Tauri wstrzykuje samo. */
+function windowSideArguments(rust: string, fn: string): readonly string[] {
+  return parameters(signature(rust, fn))
+    .filter((one) => !/:\s*State\s*</.test(one))
+    .map((one) => camel(one.split(':')[0]?.trim() ?? ''))
+    .filter((name) => name !== '');
+}
 
 describe('a run parked at a checkpoint can be let through from the window', () => {
   it('reads its expected values out of DESIGN §8 and the golden command list', () => {
@@ -219,7 +319,7 @@ describe('a run parked at a checkpoint can be let through from the window', () =
     ).toBeGreaterThanOrEqual(10);
     expect(
       STOP,
-      'the DESIGN §8 table no longer says what we write instead of "Terminate", so the check ' +
+      'the DESIGN §8 table no longer carries the word this control has to show, so the check ' +
         'that a parked run is still stoppable would be comparing against an empty string.',
     ).not.toBe('');
     expect(
@@ -267,7 +367,7 @@ describe('a run parked at a checkpoint can be let through from the window', () =
       buttonLabels(atCheckpoint),
       'the continue control replaced the stop control instead of standing next to it. A run ' +
         'waiting on a person is still a run: taking away the only way to end it leaves the ' +
-        'person with one door out of two, and the other one costs a provider bill.',
+        'person with one door out of two, and the other one costs real money.',
     ).toContain(STOP);
   });
 
@@ -289,7 +389,7 @@ describe('a run parked at a checkpoint can be let through from the window', () =
     expect(
       banned.filter((term) => label.toLowerCase().includes(term)),
       'the label on the continue control carries jargon the DESIGN §8 table forbids. That table ' +
-        'is read from the file in this run, so it stays binding as it grows. Label was: ' +
+        'is read from the file in this run, so it stays true as it grows. Label was: ' +
         JSON.stringify(label),
     ).toEqual([]);
 
@@ -333,15 +433,40 @@ describe('a run parked at a checkpoint can be let through from the window', () =
       'continue_run',
     );
 
-    const args = invoked.mock.calls.at(0)?.at(1);
+    /* ZBIÓR ARGUMENTÓW CZYTAMY Z SYGNATURY, NIE Z PAMIĘCI.
+     *
+     * 2026-08-18 — stało tu `Object.keys(args).length === 0` z uzasadnieniem „continue_run bierze
+     * po stronie Rusta wyłącznie wstrzyknięty stan". To było prawdą do tego dnia i przestało nią
+     * być: komenda bierze teraz `answer`, bo treść odpowiedzi człowieka nie dochodziła NIGDZIE —
+     * pytanie znikało z ekranu, bieg ruszał, a zdanie ginęło. Kryterium przepisane z palca
+     * zapaliło się na POPRAWNEJ zmianie i nie umiało powiedzieć, że jest nieaktualne, a nie złe.
+     *
+     * Wersja niżej czyta listę parametrów z `src-tauri/src/ipc.rs` w tym samym biegu testu —
+     * ten sam wzorzec, którym `start-args-complete.test.tsx` pilnuje Startu. Piąty argument
+     * dołożony po tamtej stronie zapala ten test SAM, bez niczyjej pamięci, i nie da się go
+     * przejść ani wysyłając za dużo, ani za mało.
+     *
+     * Punkt (c) nie jest ozdobą: parser, który cicho nic nie dopasuje, oddaje pustą listę,
+     * a wtedy porównanie przechodzi na dwóch pustych zbiorach — czyli dokładnie ten kształt
+     * zieleni, który to kryterium ma kasować. */
+    const wanted = windowSideArguments(rust, 'continue_run');
     expect(
-      args === undefined || Object.keys(args as object).length === 0,
-      'the continue edge invented arguments. continue_run takes only injected state on the Rust ' +
-        'side and bumps a run-wide counter; a step id sent from here would be a second place ' +
-        'where the answer to "what are we standing on" lives, and Tauri would refuse the call ' +
-        'outright for a key the command does not declare. It sent: ' +
+      wanted.length,
+      'the continue_run signature could not be parsed out of ipc.rs, so the expected set below ' +
+        'would come from nowhere and the comparison would pass on two empty sets.',
+    ).toBeGreaterThanOrEqual(1);
+
+    const args = invoked.mock.calls.at(0)?.at(1);
+    const carried =
+      typeof args === 'object' && args !== null ? Object.keys(args as object).sort() : [];
+    expect(
+      carried,
+      'the continue edge and continue_run disagree about the argument set. Tauri matches ' +
+        'arguments BY NAME and deserializes them BEFORE the body runs, so a missing key is not ' +
+        'a smaller call — it is a rejected one, and the person reads only "Loadout could not let ' +
+        'that run carry on". Expected set is read from ipc.rs in this run. It sent: ' +
         JSON.stringify(args),
-    ).toBe(true);
+    ).toEqual([...wanted].sort());
 
     release();
     await Promise.allSettled([asked, going]);

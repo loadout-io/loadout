@@ -22,8 +22,8 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { PendingClose, WorkspaceTab, WorkspacesStore } from '../../../state/workspaces';
-import { createWorkspacesStore } from '../../../state/workspaces';
+import type { PendingClose, WorkspaceTab, WorkspacesStore } from '../../../state/run-tabs';
+import { createWorkspacesStore } from '../../../state/run-tabs';
 import { CloseConfirm } from './picker';
 
 /** Karta z trzema pracującymi agentami — ta, o której zamknięcie trzeba zapytać. */

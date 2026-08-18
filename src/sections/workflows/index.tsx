@@ -32,9 +32,12 @@ import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
 import * as Disk from './io';
 import * as agentsIo from '../agents/io';
+import { listSkills } from '../skills/io';
+import { requestRun } from '../run/requested';
 import type { Agent } from '../../state/agents';
 import type { WorkflowFile } from '../../state/workflows';
 import { useSectionStore } from '../../ui/shell/section-store';
+import { why } from '../../ipc/why';
 import { WorkflowEditor } from './editor';
 
 /** Magazyn listy workflow — dokładnie ten, który oddaje `createWorkflowListStore`. */
@@ -83,6 +86,12 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
    * bez drugiego boolean-a „czy edytujemy" (niezmiennik 13). */
   const [open, setOpen] = useState<{ path: string; document: WorkflowFile } | null>(null);
   const [agents, setAgents] = useState<readonly Agent[]>([]);
+  const [skills, setSkills] = useState<readonly string[]>([]);
+  /* Jedno miejsce na to, czego nie udało się otworzyć. Do 2026-08-18 nie było go wcale:
+   * `Disk.load(path).then(setOpen)` stało bez `catch`, więc odmowa Rusta ginęła w cichej
+   * odrzuconej obietnicy, a plik, którego NIE dało się przeczytać, wjeżdżał do edytora jako
+   * `document` i zabijał sekcję na `state.document.steps` (zmierzone w przeglądarce). */
+  const [said, setSaid] = useState<string | null>(null);
 
   /* Biblioteka agentów jedzie do panelu kroku: panel pokazuje wartości EFEKTYWNE, więc bez
    * agenta nie umie odróżnić nadpisania od dziedziczenia. Czytamy ją raz, przy wejściu na
@@ -104,6 +113,30 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
     };
   }, []);
 
+  /* Umiejętności, które NAPRAWDĘ leżą w katalogach agentów. Wiersz Skills w panelu kroku ma
+   * z czego wybierać albo nie ma go wcale — lista wpisana z palca byłaby polem, które zapisuje
+   * do pliku nazwę umiejętności, jakiej na dysku nie ma (niezmiennik 17).
+   *
+   * Adapter jest CUDZY (`../skills/io`) i to jest świadome: nazwa komendy `list_skills` ma jedno
+   * miejsce w repo (niezmiennik 23), a dopisanie jej drugi raz w `./io.ts` dałoby dwie krawędzie
+   * do tej samej odpowiedzi. Ten sam kierunek importu ma już `src/state/skills.ts`. */
+  useEffect(() => {
+    let alive = true;
+    listSkills()
+      .then((found) => {
+        if (alive) setSkills(found.map((one) => one.name));
+      })
+      .catch(() => {
+        /* Brak umiejętności na dysku i nieudany odczyt dają ten sam skutek dla panelu: wiersza
+         * Skills nie ma. To nie jest połknięcie błędu, bo nie ma tu żadnej obietnicy do złamania
+         * — edytor workflow nie jest miejscem, w którym naprawia się bibliotekę umiejętności. */
+        if (alive) setSkills([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   if (open !== null) {
     return (
       /* `key={path}` jest MECHANIZMEM, nie ozdobą: magazyn dokumentu powstaje raz na
@@ -114,33 +147,77 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
         path={open.path}
         document={open.document}
         agents={agents}
+        skills={skills}
         onClose={() => {
           setOpen(null);
           /* Katalog czytamy PONOWNIE po zamknięciu: autosave mógł zmienić nazwę workflow,
            * a lista pokazująca starą nazwę jest widokiem, który rozjechał się z dyskiem. */
           void store.getState().load();
         }}
-        onRun={() => {
-          useSectionStore.getState().go('run');
+        /* 2026-08-18 — TO JEST NAPRAWA KŁAMIĄCEGO PRZYCISKU RUN. Do tego dnia stało tu
+         * `() => { useSectionStore.getState().go('run'); }`: `editor.tsx` podawał `path`,
+         * a ta linia go WYRZUCAŁA, więc w całym łańcuchu nie było ani jednego `invoke`.
+         * Klikasz Run, ekran przeskakuje, nic nie startuje i nic tego nie mówi.
+         *
+         * `requestRun` zapisuje intencję („uruchom TEN plik") i sam przechodzi na ekran pracy.
+         * `start()` NIE jest tu wołane z rozmysłem: polityka startu — zapadka na drugie
+         * kliknięcie, limit „ile naraz", folder z aktywnej karty — mieszka w sekcji Run
+         * (niezmiennik 23), a druga jej kopia tutaj rozjechałaby się przy pierwszej zmianie. */
+        onRun={requestRun}
+        onCreateAgent={() => {
+          useSectionStore.getState().go('agents');
         }}
       />
     );
   }
 
   return (
-    /* Cały stan idzie jako `actions`: `WorkflowListState` rozszerza `WorkflowListActions`,
-     * więc to jest TEN SAM obiekt, który magazyn wystawia — a nie jego przepisana kopia. */
-    <WorkflowList
-      workflows={state.workflows}
-      pendingDeleteId={state.pendingDeleteId}
-      actions={state}
-      onOpen={(path) => {
-        /* Dokument bierzemy z DYSKU, a nie z pozycji listy: lista trzyma migawkę z chwili
-         * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */
-        void Disk.load(path).then((document) => {
-          setOpen({ path, document });
-        });
-      }}
-    />
+    <>
+      {/* Zdanie o pliku, którego nie dało się otworzyć. Cicha porażka wygląda dokładnie jak
+          martwy kafelek: człowiek klika i nie dowiaduje się, że plik jest zepsuty. */}
+      {said === null ? null : (
+        <p data-said className="px-4 pt-3 text-body text-fail">
+          {said}
+        </p>
+      )}
+      {/* Cały stan idzie jako `actions`: `WorkflowListState` rozszerza `WorkflowListActions`,
+          więc to jest TEN SAM obiekt, który magazyn wystawia — a nie jego przepisana kopia.
+
+          KLAMRY SĄ TU KONIECZNE, NIE OZDOBNE, i to jest zapisany incydent z 2026-08-18. Po
+          owinięciu sekcji we fragment ten komentarz znalazł się między znacznikami BEZ klamer,
+          a taki zapis jest w JSX zwykłym TEKSTEM: cała polska proza renderowała się jako widoczny
+          wiersz nad nagłówkiem „Workflows". Widać to było na zrzucie z przeglądarki i na tym, że
+          prettier zaczął ją zawijać jak zdanie. Ani jedno z 571 kryteriów tego nie złapało —
+          `renderToStaticMarkup` pyta, czy w markupie coś jest, a nie co tam stoi. */}
+      <WorkflowList
+        workflows={state.workflows}
+        pendingDeleteId={state.pendingDeleteId}
+        actions={state}
+        onOpen={(path) => {
+          /* Dokument bierzemy z DYSKU, a nie z pozycji listy: lista trzyma migawkę z chwili
+           * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */
+          setSaid(null);
+          void Disk.load(path)
+            .then((document) => {
+              /* STRAŻ KSZTAŁTU, nie zaufanie do typu. Sygnatura mówi `Promise<WorkflowFile>`,
+               * ale po drugiej stronie granicy nie ma żadnych typów — jest JSON. Plik poprawiony
+               * ręcznie, zmergowany gitem albo oddany przez starszy build potrafi przyjechać bez
+               * `steps`, a edytor czyta `document.steps.find(...)` w pierwszym renderze i wtedy
+               * ginie CAŁA sekcja. Zmierzone w przeglądarce 2026-08-18:
+               * „TypeError: Cannot read properties of null (reading 'steps')". */
+              if (!Array.isArray(document.steps)) {
+                setSaid(
+                  'Loadout could not read ' + path + '. Open the file and check it, or delete it.',
+                );
+                return;
+              }
+              setOpen({ path, document });
+            })
+            .catch((error: unknown) => {
+              setSaid(why(error, 'Loadout could not open ' + path + '.'));
+            });
+        }}
+      />
+    </>
   );
 }

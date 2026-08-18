@@ -19,6 +19,12 @@
     "agent": "builder"
   },
   {
+    "kind": "stepState",
+    "agent": "builder",
+    "stepId": "s_2",
+    "state": "running"
+  },
+  {
     "kind": "read",
     "agent": "builder",
     "text": "Read 3 files",
@@ -57,6 +63,11 @@
     "kind": "note",
     "agent": "researcher-2",
     "text": "The bug is in the cookie name, not in the check."
+  },
+  {
+    "kind": "told",
+    "agent": "builder",
+    "text": "also add a dark mode toggle"
   },
   {
     "kind": "asked",

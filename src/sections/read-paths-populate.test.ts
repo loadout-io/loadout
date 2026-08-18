@@ -154,12 +154,32 @@ describe('entering Memory and Skills reads the disk instead of remembering what 
 
     await useMemory.getState().load();
 
+    /* 2026-08-18 — ASERCJA ROZSZERZONA, NIE OSLABIONA, i to jest cala jej tresc.
+     *
+     * Do tego dnia stalo tu `toEqual([NOTES_COMMAND])`, czyli „wejscie w Pamiec pyta o DOKLADNIE
+     * jedna rzecz". To bylo prawda przez przypadek: sekcja renderowala dwie strefy z trzech,
+     * a trzecia — „What agents passed to each other", naglowna obietnica tej sekcji wedlug
+     * zdania z rejestru — nie miala ZADNEJ drogi odczytu. Kiedy droga powstala (`list_handoffs`),
+     * ta asercja zapalila sie na PRAWIDLOWEJ zmianie.
+     *
+     * Rozstrzygniecie nie moze byc `toContain`: to zdjeloby wlasnosc „raz", ktora jest tu
+     * najcenniejsza — sekcja pytajaca o `list_notes` przy kazdym renderze wyglada dokladnie tak
+     * samo jak sekcja poprawna, tylko pali IPC. Wiec pytamy o dwie rzeczy osobno: ze `list_notes`
+     * padlo DOKLADNIE RAZ, i ze zadna komenda nie padla dwa razy. Odczyt trzeciej strefy wolno
+     * dolozyc; drugie zapytanie o TO SAMO nie. */
+    const sent = commandsSent();
     expect(
-      commandsSent(),
+      sent.filter((name) => name === NOTES_COMMAND),
       'entering the Memory section has to ask Rust once, by the name on ' +
         'src-tauri/commands.golden.txt. A section that never asks shows a note a person ' +
         'approved yesterday as if it were not there.',
     ).toEqual([NOTES_COMMAND]);
+    expect(
+      sent.filter((name, at) => sent.indexOf(name) !== at),
+      'no command may be asked twice for one entry into the section. Two reads of the same ' +
+        'thing are two answers to one question (invariant 13), and the second one is the one ' +
+        'that goes stale.',
+    ).toEqual([]);
     expect(
       useMemory.getState().notes,
       'the notes on disk did not reach the store. The section then renders "No notes yet." over ' +

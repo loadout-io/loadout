@@ -67,6 +67,19 @@ export interface HistoryRow {
   /** Identyfikatory sklejonych linii w kolejności napłynięcia — rozwinięcie oddaje je. */
   readonly ids: readonly number[];
   readonly expanded: boolean;
+  /**
+   * Prawa kolumna wiersza: liczba, którą ta czynność zostawiła po sobie. Puste, kiedy żadnej nie ma.
+   *
+   * Makieta (`.ln .m`) ma tam `+42 −8` przy zmianie pliku i `3 of 40` przy sprawdzeniu, które
+   * padło — i to jest jedyna metryka, jaką ten widok pokazuje przy wierszu. Do 2026-08-18
+   * `line.tsx` rysował całą prawą kolumnę jednym szarym `<p>`, więc liczby z drutu (`added`,
+   * `removed`, `preview`) nie miały gdzie wylądować i nie docierały nigdzie.
+   *
+   * SKŁADANE TUTAJ, nie w komponencie: wiersz sklejony stoi za kilkoma liniami, więc „co
+   * pokazać z ostatniej" jest decyzją modelu. Komponent, który liczyłby to sam, potrzebowałby
+   * całej linii z drutu i byłby drugim miejscem, w którym powstaje ta sama fraza.
+   */
+  readonly metric: string;
   /** Ostatnie 20 linii wyjścia; niepuste tylko dla `ran`, które padło [T2 §7.3 reguła 3]. */
   readonly output: readonly string[];
   /** Numer, o który poprosi panel szczegółów. Sam panel jest poza tym zadaniem. */
@@ -87,6 +100,43 @@ export interface FeedView {
   readonly history: readonly HistoryRow[];
   readonly now: NowZone;
   readonly pinned: Question | null;
+  /**
+   * Czy bieg STOI na punkcie kontrolnym i czeka, żeby go puścić dalej.
+   *
+   * 2026-08-18 — PO CO TO POLE, ZMIERZONE. Kontrolka „Continue" renderowała się dokładnie przy
+   * `pinned !== null`, a `answer()` zdejmuje przypięcie — więc odpowiedź na pytanie ODMONTOWYWAŁA
+   * jedyną kontrolkę wołającą `continue_run` i bieg parkował NA ZAWSZE. To są dwa różne fakty
+   * i dlatego są dwoma polami: `pinned` mówi „jest pytanie bez odpowiedzi" (i to ono rysuje blok
+   * z opcjami), `parked` mówi „bieg czeka na człowieka i nie ruszy, dopóki go nie puścisz".
+   * Odpowiedź gasi pierwsze i **nie** rusza drugiego — bo po stronie Rusta
+   * (`commands::run::wait_for_a_person`) bieg dalej stoi, dopóki nie podbije się licznik zgód.
+   *
+   * Gaśnie w dwóch chwilach i w żadnej innej: kiedy bieg zostanie puszczony (`carriedOn`) i kiedy
+   * bieg się skończy (`runEnded`). Kontrolka bez roboty nie ma prawa zostać na ekranie
+   * (niezmiennik 16).
+   */
+  readonly parked: boolean;
+  /**
+   * Odpowiedź, która ma POJECHAĆ DO AGENTA razem z puszczeniem biegu — albo pusty napis.
+   *
+   * 2026-08-18 — PO CO TO POLE. Człowiek pisze zdanie w karcie „Needs your answer", a agent po
+   * drugiej stronie nie dostaje z niego ani litery: `continue_run` bierze dziś samo `State`
+   * i podbija licznik zgód, więc treść zostawała w oknie i nigdzie nie jechała. Karta pytania
+   * przyjmująca zdanie, którego nikt nie przeczyta, jest kontrolką bez skutku (niezmiennik 16) —
+   * gorszą od jej braku, bo wygląda na rozmowę.
+   *
+   * TO NIE JEST DRUGA KOPIA `answers` (niezmiennik 13). `answers` jest ZAPISEM tego, co człowiek
+   * odpowiedział, i zostaje na zawsze; `toCarry` jest KOLEJKĄ WYSYŁKOWĄ o pojemności jednego
+   * zdania i gaśnie w chwili, w której bieg ruszył (`carriedOn`) albo zszedł (`runEnded`).
+   * Jedno pole na oba fakty wysyłałoby przy drugim punkcie kontrolnym odpowiedź na pierwszy.
+   *
+   * Pusty napis, nie `null`: „nic do przewiezienia" i „przewieź puste zdanie" to ta sama rzecz
+   * dla strony, która to odbiera, a dwa kształty na jeden stan dają gałąź, której nie da się
+   * przejść inaczej niż przez pomyłkę. Na drucie stoi `Option<String>`
+   * (`src-tauri/src/ipc.rs`, `continue_run(answer)`), więc przełożenie pustego napisu na `null`
+   * należy do krawędzi sekcji (`../io.ts`) — model nie zna kształtów drutu (niezmiennik 23).
+   */
+  readonly toCarry: string;
   readonly attention: Attention;
   readonly answers: readonly Answer[];
 }
@@ -101,8 +151,33 @@ export interface Feed {
   appendLines(batch: readonly Incoming[]): readonly HistoryRow[];
   /** Jedyna legalna droga imperatywna do portu przewijania. Ma swój przycisk. */
   jumpToNewest(): void;
-  /** Odpowiedź człowieka: zdejmuje przypięcie tego pytania i zapisuje ją z `who: 'you'`. */
+  /**
+   * Odpowiedź człowieka: zdejmuje przypięcie tego pytania i zapisuje ją z `who: 'you'`.
+   *
+   * NIE ODPARKOWUJE BIEGU. Po stronie Rusta odpowiedź nie jest zgodą na dalszą pracę — bieg
+   * stoi w `wait_for_a_person`, dopóki nie podbije się licznik zgód (`continue_run`), więc
+   * `parked` zostaje i kontrolka „dalej" zostaje razem z nim.
+   *
+   * Zdanie ląduje też w `view.toCarry`, czyli w kolejce wysyłkowej do agenta. Zapis bez wysyłki
+   * jest tym, czym była ta karta do 2026-08-18: miejscem, w którym człowiek pisze do nikogo.
+   */
   answer(questionId: number, option: string): void;
+  /**
+   * Bieg został puszczony dalej: gasi `parked`.
+   *
+   * Wołane po tym, jak `continue_run` WRÓCIŁO — komenda rozwiązuje się dopiero wtedy, kiedy bieg
+   * naprawdę ruszył (`wait_until_moving`), więc gaszenie wcześniej pokazywałoby ruszający bieg
+   * na sekundę przed tym, jak ruszył.
+   */
+  carriedOn(): void;
+  /**
+   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Gasi `parked`.
+   *
+   * Bieg, którego nie ma, nie stoi na niczyim pytaniu. Bez tego kontrolka „dalej" zostawałaby
+   * po biegu zaparkowanym i odpowiedzianym, wołając `continue_run` w próżnię — a Rust podbija
+   * wtedy licznik zgód i NASTĘPNY punkt kontrolny przelatuje bez pytania.
+   */
+  runEnded(): void;
   /**
    * Przełącza rozwinięcie JEDNEGO wiersza — to, co robi `+` przy zwiniętej linii.
    *
@@ -215,6 +290,29 @@ function failed(line: FeedLine): boolean {
   return line.kind === 'ran' && !line.ok;
 }
 
+/**
+ * Prawa kolumna wiersza — liczba, którą ta czynność zostawiła po sobie, albo nic.
+ *
+ * Zamknięta tabela dwóch rodzajów, nie gałąź `default`: piętnasty rodzaj dopisany po stronie
+ * Rusta dostaje pustą metrykę, a nie zgadniętą. `edit` niesie `added`/`removed`, czyli fakt
+ * z dysku; `ran`, które padło, niesie `preview` — pierwszą linię wyjścia, którą mapper po
+ * tamtej stronie składa właśnie jako streszczenie w rodzaju `3 of 40` (`engine/line.rs`).
+ *
+ * `ran`, które się udało, NIE ma metryki: jego zdanie już mówi, że zadziałało, a liczba obok
+ * niego byłaby drugim opisem tego samego. Sklejone odczyty też nie — ich licznik jest
+ * w etykiecie (`Read 6 files`), a ta sama liczba dwa razy w jednym wierszu to dwa żywe
+ * miejsca na jeden fakt (niezmiennik 13).
+ */
+function metricOf(line: FeedLine): string {
+  if (line.kind === 'edit') {
+    /* Znak minus U+2212, nie łącznik: makieta (`+42 −8`) i mapper po stronie Rusta piszą
+     * właśnie tak, a łącznik przy liczbie czyta się jak przedział. */
+    return '+' + String(line.added) + ' −' + String(line.removed);
+  }
+  if (line.kind === 'ran' && !line.ok) return line.preview;
+  return '';
+}
+
 /** Etykieta wiersza stojącego za `count` liniami tego rodzaju. */
 function labelFor(line: FeedLine, count: number): string {
   const folded = FOLDED[line.kind];
@@ -233,6 +331,7 @@ function rowFor(line: FeedLine): HistoryRow {
     label: labelFor(line, 1),
     count: 1,
     ids: [line.id],
+    metric: metricOf(line),
     /* Niepowodzenie rozwija SIEBIE i nic poza sobą. Rozwinięcie całego strumienia po
      * pierwszym błędzie („tryb paniki") jest dokładnie tą ścianą tekstu, przed którą stoi
      * reguła 2 — i wygląda jak troska. */
@@ -255,6 +354,10 @@ function grown(row: HistoryRow, line: FeedLine): HistoryRow {
      * jest po prostu gubieniem — a wygląda identycznie. */
     ids: [...row.ids, line.id],
     label: labelFor(line, count),
+    /* Metryka sklejonego wiersza jest pusta, i to nie jest przeoczenie: `+42 −8` z ostatniej
+     * z sześciu zmian opisywałoby jedną z nich w wierszu, który mówi o wszystkich. Liczba,
+     * której nie umiemy zsumować uczciwie, nie ma prawa stać obok liczby, którą umiemy. */
+    metric: '',
   };
 }
 
@@ -281,6 +384,19 @@ export function createFeed(scroller: Scroller): Feed {
   /** Pytania bez odpowiedzi, najstarsze pierwsze. Przypięte jest zawsze to spod zera. */
   let waiting: readonly Question[] = [];
 
+  /**
+   * Czy bieg stoi na punkcie kontrolnym — patrz `FeedView.parked`.
+   *
+   * Osobne od `waiting`, bo odpowiedź człowieka opróżnia kolejkę pytań i NIE puszcza biegu:
+   * to `continue_run` go puszcza. Jedna zmienna na oba fakty jest dokładnie tym defektem,
+   * który to pole zamyka — bieg parkował na zawsze, bo kontrolka „dalej" znikała razem
+   * z odpowiedzią.
+   */
+  let parked = false;
+
+  /** Zdanie czekające na przewiezienie do agenta — patrz `FeedView.toCarry`. */
+  let toCarry = '';
+
   let answers: readonly Answer[] = [];
 
   /**
@@ -297,6 +413,8 @@ export function createFeed(scroller: Scroller): Feed {
       history,
       now: { rows, thinking },
       pinned,
+      parked,
+      toCarry,
       /* Jeden fakt, jedno miejsce: „czyja kolej" wynika z przypięcia, więc nie da się ustawić
        * go osobno i rozjechać z nim (niezmiennik 13). */
       attention: pinned === null ? 'agents' : 'you',
@@ -330,9 +448,13 @@ export function createFeed(scroller: Scroller): Feed {
       if (!doing.has(line.agent)) doing.set(line.agent, '');
 
       if (REGISTRY[line.kind].route === 'now') {
-        /* Status, nie linia: nie wchodzi do historii, nie zamyka grupy i nie przepisuje tego,
-         * co agent ostatnio zrobił. Sam slot jest jeden na cały widok. */
-        thinking = line.agent;
+        /* Dwa rodzaje jadą do strefy TERAZ i odpowiadają na DWA różne pytania, więc nie wolno
+         * ich obsłużyć jedną linią. `thinking` mówi „ktoś myśli" i ma tu swój slot. `stepState`
+         * mówi, na czym stoi KROK — przestawia pasek loadoutu i chip na kafelku agenta,
+         * i robi to w magazynie biegu (`src/state/run.ts`, `withStepStates`), bo tam mieszka
+         * plan. Wersja, która zapaliłaby tym wierszem slot `Thinking…`, pokazywałaby myślącego
+         * agenta za każdym razem, gdy krok się kończy. */
+        if (line.kind === 'thinking') thinking = line.agent;
         continue;
       }
 
@@ -367,6 +489,9 @@ export function createFeed(scroller: Scroller): Feed {
         /* Kolejka, nie „ostatnie pytanie": bieg stoi na NAJSTARSZYM nieodpowiedzianym,
          * a odpowiedź na młodsze nie ma prawa go zdjąć. */
         waiting = [...waiting, { id: line.id, text: line.text, options: [...line.options] }];
+        /* Pytanie agenta zatrzymuje CAŁY bieg, nie sam krok (`commands::run::wait_for_a_person`),
+         * więc ta linia jest zarazem jedyną wiadomością „stoimy", jaką okno dostaje. */
+        parked = true;
       }
     }
 
@@ -409,6 +534,25 @@ export function createFeed(scroller: Scroller): Feed {
     waiting = waiting.filter((question) => question.id !== questionId);
     /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [00-SYNTHESIS §2.2]. */
     answers = [...answers, { questionId, option, who: 'you' }];
+    /* NADPISUJE, nie dokleja: agent stoi na JEDNYM pytaniu i dostanie JEDNO zdanie. Kolejka
+     * zbierająca odpowiedzi wysłałaby przy drugim punkcie kontrolnym wszystkie poprzednie
+     * jeszcze raz — a to jest ta klasa błędu, która wygląda jak agent, który nie słucha. */
+    toCarry = option;
+    publish();
+  }
+
+  /**
+   * Bieg już nie stoi. JEDNO ciało pod dwiema nazwami z interfejsu, bo to jest jedno pole
+   * i jedna zmiana — a dwie nazwy są tam, bo wołający mówią dwie różne rzeczy („puściłem go"
+   * i „skończył się") i tylko jedna z nich jest prawdą w danej chwili.
+   */
+  function unpark(): void {
+    /* Warunek liczy OBA pola: bieg puszczony bez odpowiedzi ma wyczyścić kolejkę wysyłkową tak
+     * samo jak bieg puszczony z odpowiedzią, a `if (!parked) return` zostawiłoby zdanie, które
+     * pojechałoby do NASTĘPNEGO pytania. */
+    if (!parked && toCarry === '') return;
+    parked = false;
+    toCarry = '';
     publish();
   }
 
@@ -436,6 +580,8 @@ export function createFeed(scroller: Scroller): Feed {
     appendLines,
     jumpToNewest,
     answer,
+    carriedOn: unpark,
+    runEnded: unpark,
     toggle,
     subscribe,
   };

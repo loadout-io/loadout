@@ -11,15 +11,18 @@
  * (`docs/mockup/index.html:716-735`) — a to jest jeden fakt w dwóch miejscach (niezmiennik 13).
  * Tutaj jest jedno miejsce: wiersz tej umiejętności, a karta przeglądu siedzi w nim.
  *
- * ZNACZNIK ROZMIESZCZENIA JEST LICZONY, NIE WPISANY. Umiejętność leży w katalogach vendorów
- * (`.claude/skills/` i `.agents/skills/`, ARCHITECTURE §9) albo jeszcze nie leży nigdzie,
- * bo czeka na człowieka — i to jest jedyna różnica rozmieszczenia, jaką ten magazyn dziś
- * niesie. `InstalledSkill` w `src/state/skills.ts` ma dokładnie dwa pola, `name`
- * i `fromTheInternet`, i ani jednego o vendorach, więc dwie POZYCJE `installed` nie mają dziś
- * jak różnić się rozmieszczeniem: takiego stanu nie da się nawet zasiać. Pełne odczytanie
- * („dla ilu z sześciu") wymaga pola per vendor od T-18, czyli zapisu w cudzym pliku
- * (AGENTS.md §7) — zgłoszone człowiekowi. Kiedy to pole wyląduje, zmienia się `readyFor`
- * i ani jedna linia niżej.
+ * ZNACZNIKA ROZMIESZCZENIA TU NIE MA I TO JEST NAPRAWA, NIE BRAK (zmierzone 2026-08-18).
+ * Do tego dnia każdy wiersz zainstalowanej umiejętności nosił napis „Ready for Claude and
+ * Codex", policzony przez `readyFor(placed)` z argumentem wpisanym na sztywno jako `true`.
+ * Na dysku właściciela to było NIEPRAWDĄ dla wszystkich dziesięciu umiejętności: `notatki`
+ * i `spotkanie` leżą tylko w `~/.claude/skills`, osiem `superset-*` tylko w
+ * `~/.agents/skills`, żadna w obu. Kłamał nie napis, a jego źródło: `InstalledWire`
+ * (`src-tauri/src/commands/skills.rs`) niesie WYŁĄCZNIE `name` i `fromTheInternet`, a
+ * `list_skills_inner` zwija oba katalogi vendorów do jednego `BTreeSet` nazw — informacja
+ * o tym, KTÓRY katalog trzymał plik, ginie po drugiej stronie granicy i nie ma jak tu
+ * dojechać. Znacznik policzony z danych, których nie ma, jest zmyśloną relacją
+ * (niezmiennik 17), więc nie ma go wcale. Wraca w tym samym commicie, w którym `InstalledWire`
+ * dostaje pole per katalog — zgłoszone człowiekowi.
  *
  * O migawce serwerowej zustanda i o tym, dlaczego magazyn czyta się tu przez
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
@@ -41,34 +44,25 @@ export interface SkillsScreenProps {
 const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
 const SECONDARY = 'h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
 const FIELD = 'h-8 rounded-sq border border-line-strong bg-well px-2 font-mono text-mono text-ink';
-/* `chip`: nasycony wariant znaczy „czeka na ciebie" (DESIGN §3 — `--attend` odpowiada na
- * pytanie „co czeka na moją decyzję"), neutralny znaczy „nic od ciebie nie chce". */
-const CHIP_WAITING =
-  'h-5 rounded-sq border border-attend-edge bg-attend-wash px-2 text-label text-attend';
+/* `button-danger` z DESIGN §6: jak `button-secondary`, ale obrys `--fail-edge` i tekst
+ * `--fail`, BEZ WYPEŁNIENIA — akcja niszcząca ma być rozpoznawalna, a nie najgłośniejsza. */
+const DANGER = 'h-8 rounded-sq border border-fail-edge px-3 text-ui text-fail';
+/* `chip`: neutralny wariant znaczy „nic od ciebie nie chce" (DESIGN §3 i §6). */
 const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label text-muted';
 
 /**
- * Vendorzy, w których katalogi ląduje umiejętność [ARCHITECTURE §9]. Jedna tablica, bo
- * znacznik ma LICZYĆ vendorów, a nie powtarzać zdanie wpisane ręcznie w dwóch miejscach.
- */
-const VENDORS = ['Claude', 'Codex'] as const;
-
-/**
- * Dla kogo ta umiejętność jest gotowa.
+ * Gdzie to wyląduje — zdanie czytane PRZED naciśnięciem „Add this skill", nie po.
  *
- * `installed` znaczy „leży już w obu katalogach" — zapis idzie do obu naraz i nie ma dziś
- * stanu pośredniego (`src/state/skills.ts`, `install`). Umiejętność, która czeka na człowieka,
- * nie leży jeszcze nigdzie. To jest CAŁE miejsce, w którym mieszka odpowiedź na pytanie
- * „dla ilu vendorów": pole per vendor od T-18 zmienia tę funkcję i nic poza nią.
+ * Ta sekcja jest jedynym miejscem w Loadoucie, które pisze poza własną bibliotekę: cel to
+ * katalogi, do których zaglądają narzędzia agentowe człowieka (`DESTINATION_DIRS`
+ * w `src-tauri/src/skills/mod.rs`). Umiejętność dodana tutaj wchodzi więc do każdego
+ * następnego uruchomienia tych narzędzi, także poza Loadoutem — i człowiek ma o tym wiedzieć
+ * z ekranu, a nie z dokumentacji. Nazwy katalogów w tym zdaniu nie padają z rozmysłem: liczy
+ * je Rust i to jest jedyne miejsce, w którym stoją (niezmiennik 13).
  */
-function readyFor(placed: boolean): readonly string[] {
-  return placed ? VENDORS : [];
-}
-
-/** Znacznik, który czyta człowiek. Liczba vendorów jest w nim wypowiedziana, nie policzona okiem. */
-function readySays(ready: readonly string[]): string {
-  return ready.length === 0 ? 'Ready for nobody yet' : 'Ready for ' + ready.join(' and ');
-}
+const WHERE_IT_LANDS =
+  'This goes into the folders your agent apps read on this machine, so every later run can ' +
+  'use it. Remove takes it back out.';
 
 export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
@@ -178,17 +172,19 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             </button>
           </div>
         ) : (
-          <ul className="mx-auto flex max-w-160 flex-col gap-3">
-            {/* Czekająca stoi PIERWSZA: jest jedyną rzeczą w tej sekcji, która czegoś od
-                człowieka chce, a rzecz wymagająca decyzji nie ma leżeć pod listą gotowych. */}
+          <>
+            {/* Czekająca stoi PIERWSZA i na całej szerokości: jest jedyną rzeczą w tej sekcji,
+                która czegoś od człowieka chce, a rzecz wymagająca decyzji nie ma leżeć pod
+                listą gotowych ani w kolumnie obok nich. */}
             {state.pending === null ? null : (
-              <li
+              <section
                 data-skill={state.pending.name}
-                className="flex flex-col gap-3 rounded-sq border border-attend-edge bg-panel p-3"
+                className="mx-auto mb-6 flex max-w-160 flex-col gap-3 rounded-sq border border-attend-edge bg-panel p-3"
               >
-                <span data-ready className={CHIP_WAITING}>
-                  {readySays(readyFor(false))}
-                </span>
+                {/* Zdanie o miejscu stoi TU, a nie w polu na link: pole zamyka się w chwili
+                    wklejenia, a decyzja „dodać czy nie" jest podejmowana dopiero nad tą kartą.
+                    Ostrzeżenie widoczne wcześniej niż decyzja nie jest ostrzeżeniem. */}
+                <p className="text-body text-muted">{WHERE_IT_LANDS}</p>
                 {/* Nazwy nie piszemy drugi raz — niesie ją nagłówek karty (niezmiennik 13). */}
                 <ReviewCard
                   item={state.pending}
@@ -200,27 +196,48 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                     void store.getState().add();
                   }}
                 />
-              </li>
+              </section>
             )}
 
-            {state.installed.map((skill) => (
-              <li
-                key={skill.name}
-                data-skill={skill.name}
-                className="flex items-center gap-2 rounded-sq border border-line bg-panel p-3"
-              >
-                <h2 className="text-heading text-ink">{skill.name}</h2>
-                <span data-ready className={CHIP_QUIET}>
-                  {readySays(readyFor(true))}
-                </span>
-                {/* Znacznik pochodzenia jest TRWAŁY i przeżywa instalację [T5 §5.4]: gasnący
-                    po zapisie mówiłby o umiejętności z sieci to samo, co o napisanej ręcznie. */}
-                {skill.fromTheInternet ? (
-                  <span className={`ml-auto ${CHIP_QUIET}`}>From the internet</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+            {/* Dwie kolumny, jak w makiecie (`docs/mockup/index.html`, `.grid.two`).
+                Opisu w kafelku NIE MA, bo `InstalledWire` nie niesie ani `summary`, ani
+                `description` — zdanie dopisane tutaj byłoby zmyślone (niezmiennik 17).
+                Zgłoszone człowiekowi razem z polem per katalog. */}
+            {state.installed.length === 0 ? null : (
+              <ul className="mx-auto grid max-w-160 grid-cols-2 gap-3">
+                {state.installed.map((skill) => (
+                  <li
+                    key={skill.name}
+                    data-skill={skill.name}
+                    className="flex flex-col gap-3 rounded-sq border border-line bg-panel p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-heading text-ink">{skill.name}</h2>
+                      {/* Znacznik pochodzenia jest TRWAŁY i przeżywa instalację [T5 §5.4]:
+                          gasnący po zapisie mówiłby o umiejętności z sieci to samo, co
+                          o napisanej ręcznie. */}
+                      {skill.fromTheInternet ? (
+                        <span className={`ml-auto ${CHIP_QUIET}`}>From the internet</span>
+                      ) : null}
+                    </div>
+                    {/* Jedyna droga powrotna z katalogów narzędzi agentowych. Magazyn po
+                        udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz znika dopiero
+                        wtedy, gdy pliku naprawdę już tam nie ma (`src/state/skills.ts`). */}
+                    <button
+                      type="button"
+                      data-remove={skill.name}
+                      className={`mr-auto ${DANGER}`}
+                      onClick={() => {
+                        void store.getState().remove(skill.name);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </div>
     </section>

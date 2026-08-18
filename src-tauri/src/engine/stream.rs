@@ -54,6 +54,15 @@ use super::drivers::AgentEvent;
 use super::drivers::claude::ClaudeDecoder;
 use super::line::{Action, Curator, Line, Seen, Tool};
 
+/// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
+///
+/// 2026-08-18 — definicja przeprowadziła się do `engine::drivers`, bo od tego dnia jest to
+/// **ładunek kanału sterownika**, nie prywatny wynik tej pętli (powód stoi przy tamtym typie:
+/// `Tool` ginął na granicy i wiersze `read`/`edit`/`ran` nie powstawały nigdy). Re-eksport, a nie
+/// druga definicja: jedna nazwa ma mieć jedną ścieżkę, a wszystko, co dziś pisze
+/// `stream::DecodedEvent`, mówi o tym samym typie.
+pub use super::drivers::DecodedEvent;
+
 /// Ile strumień miał linii i ile z nich nic nam nie powiedziało.
 ///
 /// Licznik istnieje, bo ma czytelnika (niezmiennik 21): zero przy niepustym biegu znaczy
@@ -66,15 +75,6 @@ pub struct Stats {
     /// Ile z nich nie dało się przeczytać jako znane zdarzenie: nie-JSON, nieznany `type`,
     /// znany `type` bez wymaganej treści.
     pub unrecognised: usize,
-}
-
-/// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
-#[derive(Debug)]
-pub struct DecodedEvent {
-    /// Zdarzenie neutralne wobec vendora.
-    pub event: AgentEvent,
-    /// To, czego kuracja potrzebuje ponad zdarzenie. `None` dla zdarzeń bez narzędzia.
-    pub tool: Option<Tool>,
 }
 
 /// Co wyszło z jednej linii drutu.

@@ -39,16 +39,23 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Wszystkie czternaście rodzajów wiersza [T2 §7.2], w kolejności deklaracji.
-const KINDS: [LineKind; 14] = [
+const KINDS: [LineKind; 16] = [
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
     LineKind::Thinking,
+    // 2026-08-18 — pietnasty rodzaj. Stan kroku nie wchodzi do historii (trasa `now`, tak jak
+    // `Thinking`), ale JEST na drucie, wiec ma tu stac: wariant bez wiersza w tej tablicy jest
+    // wariantem, ktorego nikt nigdy nie zobaczyl na drucie.
+    LineKind::StepState,
     LineKind::Read,
     LineKind::Search,
     LineKind::Edit,
     LineKind::Ran,
     LineKind::Note,
+    // 2026-08-19 — szesnasty rodzaj: tura CZLOWIEKA. Powod w calosci przy `Line::Told` —
+    // do tego dnia zdanie wpisane w wiersz wejscia nie mialo nosnika na drucie i znikalo.
+    LineKind::Told,
     LineKind::Asked,
     LineKind::Handoff,
     LineKind::Memory,
@@ -84,6 +91,11 @@ fn sample(kind: LineKind) -> Line {
         },
         LineKind::Thinking => Line::Thinking {
             agent: "builder".to_owned(),
+        },
+        LineKind::StepState => Line::StepState {
+            agent: "builder".to_owned(),
+            step_id: "s_2".to_owned(),
+            state: "running".to_owned(),
         },
         LineKind::Read => Line::Read {
             agent: "builder".to_owned(),
@@ -126,6 +138,10 @@ fn sample(kind: LineKind) -> Line {
         LineKind::Note => Line::Note {
             agent: "researcher-2".to_owned(),
             text: "The bug is in the cookie name, not in the check.".to_owned(),
+        },
+        LineKind::Told => Line::Told {
+            agent: "builder".to_owned(),
+            text: "also add a dark mode toggle".to_owned(),
         },
         LineKind::Asked => Line::Asked {
             agent: "lead".to_owned(),
@@ -224,7 +240,7 @@ async fn the_pump_puts_on_the_wire_exactly_what_the_golden_file_says() -> Result
         .iter()
         .filter(|kind| sink.send(sample(**kind)) == Sent::Queued)
         .count();
-    assert_eq!(queued, KINDS.len(), "all fourteen samples fit in the queue");
+    assert_eq!(queued, KINDS.len(), "every sample fits in the queue");
 
     drop(sink);
     let stats = pump.await?;
@@ -233,7 +249,7 @@ async fn the_pump_puts_on_the_wire_exactly_what_the_golden_file_says() -> Result
     assert_eq!(
         wire.len(),
         KINDS.len(),
-        "fourteen lines went in and fourteen came out THROUGH THE CHANNEL. Serialising a \
+        "as many lines came out THROUGH THE CHANNEL as went in. Serialising a \
          `Line` by hand instead would pass before anybody writes `spawn_pump`, and would \
          measure T-05's derive rather than this task's send path"
     );
@@ -259,7 +275,7 @@ async fn the_pump_puts_on_the_wire_exactly_what_the_golden_file_says() -> Result
     assert_eq!(
         kinds.len(),
         KINDS.len(),
-        "and the fourteen rows describe fourteen DIFFERENT kinds — two rows for one kind \
+        "and the rows describe that many DIFFERENT kinds — two rows for one kind \
          would leave another kind untested while the length still looked right"
     );
 

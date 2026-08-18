@@ -149,7 +149,20 @@ function noop(): void {
 
 function markup(step: AgentStep): string {
   return renderToStaticMarkup(
-    <StepPanel step={step} agent={forge()} onEdit={noop} onEditStep={noop} onReset={noop} />,
+    <StepPanel
+      step={step}
+      agent={forge()}
+      /* Biblioteka jedzie tu od 2026-08-18, bo wiersz „Who does this" jest listą WYBORU także
+       * po wyborze: do tego dnia był nieklikalnym `<span>` z nazwą agenta, więc pomyłka przy
+       * przypisaniu była nieodwracalna z okna. Jeden wpis, ten sam agent — kryterium niżej
+       * pyta o etykiety wierszy, nie o zawartość listy. */
+      agents={[forge()]}
+      onChooseAgent={noop}
+      onCreateAgent={noop}
+      onEdit={noop}
+      onEditStep={noop}
+      onReset={noop}
+    />,
   );
 }
 

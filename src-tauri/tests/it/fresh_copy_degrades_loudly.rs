@@ -27,8 +27,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunError, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
@@ -106,6 +106,7 @@ async fn a_copy_that_cannot_be_made_stops_the_run_and_says_why() -> Result<(), B
     let request = RunRequest {
         workflow: bench.workflow("no-copy", WORKFLOW)?,
         how_many_at_once: 1,
+        task: None,
     };
 
     let recorder = Delivered::default();
@@ -188,7 +189,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         self.started
             .lock()
@@ -200,12 +201,15 @@ impl AgentDriver for Fake {
             id: spec.run_id.to_string(),
         };
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         Ok(Box::new(Turn { events, session }))
     }
@@ -213,7 +217,7 @@ impl AgentDriver for Fake {
 
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -244,7 +248,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -160,6 +160,7 @@ async fn a_circle_is_refused_before_anything_starts() -> Result<(), Box<dyn Erro
     let request = RunRequest {
         workflow: workflow.clone(),
         how_many_at_once: 2,
+        task: None,
     };
 
     let refusal = match one_run(&deps, &request).await? {
@@ -220,6 +221,7 @@ async fn a_warning_alone_does_not_stop_the_run() -> Result<(), Box<dyn Error>> {
     let request = RunRequest {
         workflow: workflow.clone(),
         how_many_at_once: 2,
+        task: None,
     };
 
     // Fikstura ma nieść ostrzeżenie i ANI JEDNEGO problemu — inaczej ten test mówiłby o czymś
@@ -393,7 +395,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         // `RunSpec` nie niesie numeru kroku — niesie jego instrukcje, i to jest jedyne pole,
         // po którym da się kroki rozróżnić (niezmiennik 9: jadą tam jako **dane**).
@@ -404,17 +406,23 @@ impl AgentDriver for Fake {
         };
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         let _ = events
-            .send(AgentEvent::Said {
-                text: format!("working on {}", spec.prompt),
-            })
+            .send(
+                (AgentEvent::Said {
+                    text: format!("working on {}", spec.prompt),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn { events, session }))
@@ -424,7 +432,7 @@ impl AgentDriver for Fake {
 /// Jedna tura dublera.
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -455,7 +463,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

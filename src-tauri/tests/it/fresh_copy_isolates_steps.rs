@@ -27,8 +27,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -128,6 +128,7 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
     let request = RunRequest {
         workflow: bench.workflow("fresh-copy", WORKFLOW)?,
         how_many_at_once: 2,
+        task: None,
     };
 
     let recorder = Delivered::default();
@@ -277,7 +278,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         // Krok rozpoznajemy po treści zadania: `RunSpec` nie niesie identyfikatora kroku,
         // a prompt jest tym, co ten krok naprawdę dostał.
@@ -299,12 +300,15 @@ impl AgentDriver for Fake {
             id: spec.run_id.to_string(),
         };
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn { events, session }))
@@ -313,7 +317,7 @@ impl AgentDriver for Fake {
 
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -344,7 +348,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

@@ -33,8 +33,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -314,6 +314,7 @@ async fn scout_then_decide() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Er
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
+        task: None,
     };
 
     // Linie tego kryterium nie interesują: sądzi ono prompt, który przeszedł do sterownika.
@@ -487,7 +488,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let step = step_of(&spec.cwd);
         // Zapis PRZED pierwszym zdarzeniem: prompt jest tym, co ten krok dostał na wejściu,
@@ -501,20 +502,26 @@ impl AgentDriver for Fake {
         let reply = reply_of(step);
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         // Ta sama treść dwiema drogami: jako proza w trakcie tury i jako `Outcome::text` na jej
         // końcu. Implementacja ma prawo wziąć przekazanie z każdej z nich i to kryterium nie
         // sądzi z której.
         let _ = events
-            .send(AgentEvent::Said {
-                text: reply.to_owned(),
-            })
+            .send(
+                (AgentEvent::Said {
+                    text: reply.to_owned(),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn {
@@ -528,7 +535,7 @@ impl AgentDriver for Fake {
 /// Jedna tura dublera.
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
     reply: &'static str,
 }
@@ -563,7 +570,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

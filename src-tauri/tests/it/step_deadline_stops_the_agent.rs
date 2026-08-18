@@ -26,7 +26,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, Outcome as TurnOutcome, Probe, RunSpec, SessionRef,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Outcome as TurnOutcome, Probe, RunSpec,
+    SessionRef,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -105,6 +106,7 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
     let request = RunRequest {
         workflow: bench.workflow("deadline", WORKFLOW)?,
         how_many_at_once: 2,
+        task: None,
     };
 
     let recorder = Delivered::default();
@@ -220,19 +222,22 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let session = SessionRef {
             vendor: VENDOR,
             id: spec.run_id.to_string(),
         };
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         Ok(Box::new(Turn {
             watch: Arc::clone(&self.watch),

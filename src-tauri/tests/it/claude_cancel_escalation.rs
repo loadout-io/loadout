@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use loadout_lib::engine::drivers::claude::ClaudeDriver;
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Policy, RunSpec,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec,
 };
 use loadout_lib::engine::supervisor::GroupProof;
 use tokio::sync::mpsc;
@@ -163,13 +163,15 @@ async fn wait_for_lines(
 ///
 /// Anulowanie przed tym zdarzeniem nie miałoby czego feature-detektować, więc test, który nie
 /// czeka, mierzyłby wyścig zamiast eskalacji.
-async fn announced(rx: &mut mpsc::Receiver<AgentEvent>) -> Result<Vec<String>, Box<dyn Error>> {
+async fn announced(rx: &mut mpsc::Receiver<DecodedEvent>) -> Result<Vec<String>, Box<dyn Error>> {
     loop {
         let event = rx
             .recv()
             .await
             .ok_or("the driver closed the event channel before the session ever started")?;
-        if let AgentEvent::Started { capabilities, .. } = event {
+        // `event.event`: kanal sterownika niesie `DecodedEvent`, czyli zdarzenie PLUS fakt
+        // o narzedziu. To kryterium pyta wylacznie o zdarzenie.
+        if let AgentEvent::Started { capabilities, .. } = event.event {
             return Ok(capabilities);
         }
     }

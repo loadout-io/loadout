@@ -20,7 +20,8 @@
  * jedzie drugą.
  */
 import { create } from 'zustand';
-import { install, listSkills, readLink } from '../sections/skills/io';
+import { install, listSkills, readLink, remove as removeFromDisk } from '../sections/skills/io';
+import { why } from '../ipc/why';
 
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
 export type Weight = 'warn' | 'block';
@@ -98,6 +99,16 @@ export interface SkillsState {
   review: (url: string) => Promise<void>;
   acknowledge: (findingId: string) => void;
   add: () => Promise<void>;
+  /**
+   * „Remove" — zabierz tę umiejętność z katalogów agentów.
+   *
+   * 2026-08-18 — do tego dnia sekcja umiała wyłącznie DODAWAĆ, a dodaje do żywej konfiguracji
+   * narzędzi człowieka (`src-tauri/src/skills/mod.rs`, `DESTINATION_DIRS`): błędne kliknięcie
+   * „Add" zostawało w `~/.claude/skills` na stałe i wchodziło do każdego następnego
+   * uruchomienia Claude Code. Droga powrotna nie jest wygodą, jest warunkiem, żeby wolno było
+   * w ogóle pisać w tamte katalogi.
+   */
+  remove: (name: string) => Promise<void>;
 }
 
 /** Znaleziska, które zatrzymują instalację i których człowiek jeszcze nie otworzył. */
@@ -120,11 +131,10 @@ function held(count: number): string {
  * a pusta sekcja i „nie umiem przeczytać tego katalogu" to dwie różne rzeczy. */
 const COULD_NOT_READ = 'Loadout could not read the skills on this machine.';
 
-/** Zdanie od Rusta, kiedy jakieś jest — jego odmowy są już napisane po ludzku. */
-function why(error: unknown, fallback: string): string {
-  const said = error instanceof Error ? error.message.trim() : '';
-  return said.length > 0 ? said : fallback;
-}
+/* Zdanie zapasowe dla odmowy usunięcia. Cisza po „Remove" jest tu gorsza niż gdziekolwiek
+ * indziej: człowiek odchodzi w przekonaniu, że plik zniknął z katalogów, do których zagląda
+ * jego Claude Code, a on tam dalej leży. */
+const COULD_NOT_REMOVE = 'Loadout could not remove that skill.';
 
 export const useSkills = create<SkillsState>()((set, get) => ({
   pending: null,
@@ -196,8 +206,40 @@ export const useSkills = create<SkillsState>()((set, get) => ({
       acknowledged: [],
       message: null,
       /* Znacznik przeżywa instalację. Zastępuje podpisy i weryfikację pochodzenia, których w v1
-       * nie ma, więc znacznik gasnący po sukcesie nie znaczy nic. */
-      installed: [...installed, { name: pending.name, fromTheInternet: pending.fromTheInternet }],
+       * nie ma, więc znacznik gasnący po sukcesie nie znaczy nic.
+       *
+       * 2026-08-18 — pozycja o tej samej nazwie jest WYMIENIANA, nie doklejana. Nazwa
+       * umiejętności jest nazwą katalogu na dysku, więc drugie dodanie tego samego linku
+       * nadpisuje jeden plik, a lista pokazywała po nim DWA wiersze i licznik „N saved"
+       * liczył ten jeden plik dwa razy. Rust liczy to samo zbiorem
+       * (`list_skills_inner`, `BTreeSet`) — dwie odpowiedzi na jedno pytanie muszą się
+       * zgadzać co do znaku (niezmiennik 13). */
+      installed: [
+        ...installed.filter((one) => one.name !== pending.name),
+        { name: pending.name, fromTheInternet: pending.fromTheInternet },
+      ],
     });
+  },
+
+  remove: async (name: string) => {
+    try {
+      await removeFromDisk(name);
+    } catch (error) {
+      /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
+       * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,
+       * a jedno zdanie zapasowe zamienia je w jedną. */
+      set({ message: why(error, COULD_NOT_REMOVE) });
+      return;
+    }
+
+    /* Lista czytana JESZCZE RAZ Z DYSKU, nigdy odfiltrowana lokalnie.
+     *
+     * Instalacja pisze do DWÓCH katalogów vendorów naraz (`DESTINATION_DIRS`). Usunięcie,
+     * które sprzątnęło jeden i nie sprzątnęło drugiego, po lokalnym odfiltrowaniu wygląda
+     * dokładnie jak sukces: wiersz znika z ekranu, a plik dalej leży tam, gdzie agent po niego
+     * sięga. To jest ten sam defekt, który ta fala naprawia — kontrolka reaguje, ekran melduje
+     * skutek, skutek nie zachodzi (niezmiennik 16). Odczyt po zapisie jest jedyną odpowiedzią,
+     * której nie musimy zgadywać (niezmiennik 4: pliki są prawdą). */
+    await get().load();
   },
 }));

@@ -338,6 +338,32 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        /* ZAMKNIĘCIE OKNA ZATRZYMUJE BIEG, i to jest transport, nie polityka: całą decyzję
+         * podejmuje `commands::run::stop_before_closing` (niezmiennik 1 i 23), a tutaj zostaje
+         * wyłącznie „wstrzymaj zamknięcie, zawołaj, potem zamknij".
+         *
+         * `prevent_close` PRZED czymkolwiek innym: bez tego okno znika w tej samej chwili, proces
+         * kończy się razem z nim, a zadanie zatrzymujące bieg nie ma już gdzie działać — czyli
+         * agenci zostają żywi, dokładnie tak, jak było do 2026-08-19.
+         *
+         * `destroy()` na końcu, także po błędzie: okno, którego nie da się zamknąć, bo
+         * zatrzymywanie biegu się nie udało, zamykałoby człowieka wewnątrz aplikacji. Zdanie
+         * o niepowodzeniu idzie do dziennika — a odzyskiwanie przy następnym starcie jest siecią
+         * pod tym przypadkiem i tam już jest. */
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            api.prevent_close();
+            let window = window.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = window.state::<ipc::AppState>();
+                if let Err(error) = commands::run::stop_before_closing(&state.deps()).await {
+                    tracing::error!("closing anyway: the run could not be stopped: {error}");
+                }
+                let _ = window.destroy();
+            });
+        })
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())

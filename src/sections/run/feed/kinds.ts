@@ -50,6 +50,9 @@ const REGISTRY: Registry = Object.freeze({
   step: { route: 'history', expanded: true },
   agent: { route: 'history', expanded: true },
   note: { route: 'history', expanded: true },
+  /* Zdanie czlowieka wchodzi do historii i jest widoczne od razu. Zwiniete byloby jedynym
+   * wierszem, ktory czlowiek musi rozwinac, zeby przeczytac to, co sam napisal. */
+  told: { route: 'history', expanded: true },
   asked: { route: 'history', expanded: true },
   handoff: { route: 'history', expanded: true },
   problem: { route: 'history', expanded: true },
@@ -62,8 +65,13 @@ const REGISTRY: Registry = Object.freeze({
   ran: { route: 'history', expanded: false },
   memory: { route: 'history', expanded: false },
 
-  /* ── jedyny rodzaj, który nie wchodzi do historii [T2 §7.3 reguła 5] ── */
+  /* ── dwa rodzaje, które nie wchodzą do historii [T2 §7.3 reguła 5] ── */
   thinking: { route: 'now', expanded: false },
+  /* Stan kroku jest FAKTEM O TERAZ, nie zdarzeniem do przeczytania: przestawia blok paska
+   * loadoutu i chip na kafelku agenta. Wpisany do historii byłby czterema wierszami na krok
+   * („ready", „running", „succeeded", i to samo dla kopii), czyli ścianą, którą teza z DESIGN §1
+   * istnieje żeby skasować: „widok pracy nie przyrasta, aktualizuje się w miejscu". */
+  stepState: { route: 'now', expanded: false },
 });
 
 /** Rejestr. Czytany, nigdy modyfikowany. */

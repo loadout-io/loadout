@@ -24,6 +24,7 @@ import type { ReactElement } from 'react';
 import type { Section } from '../sections';
 import { SECTIONS } from '../sections';
 import { FIRST_SECTION, useSectionStore } from './section-store';
+import { NavWorkspaces } from './workspace-switcher';
 
 /** Szerokość bocznego menu. Wartość z `docs/mockup/index.html`, reguła `.app`. */
 export const NAV_WIDTH = 196;
@@ -39,6 +40,28 @@ export const NAV_WIDTH = 196;
  * są związane i mierzone razem, bo osobno każda wygląda rozsądnie [T8 §11, 2026-08-15].
  */
 export const CHROME_INSET_TOP = 44;
+
+/**
+ * Zdanie w stopce. Mówi o tym, czym ta aplikacja NAPRAWDĘ umie uruchomić krok.
+ *
+ * Do 2026-08-18 stało tu „Claude · Codex ready" i była to nieprawda o połowie otoczenia:
+ * `src-tauri/src/lib.rs:288` daje Codeksowi sterownik `Absent::new("codex", "T-10")`, którego
+ * `probe` oddaje `found: false`, a `start` odmawia. Aplikacja meldowała gotowość rzeczy, która
+ * przy pierwszym kroku odmawia — czyli dokładnie ten rodzaj kłamiącej kontrolki, po którym
+ * człowiek przestaje wierzyć całemu ekranowi.
+ *
+ * DLACZEGO NAPIS, A NIE ODCZYT. `src-tauri/commands.golden.txt` nie ma dziś ANI JEDNEJ komendy,
+ * która pyta o stan dostawców — `probe` istnieje na sterowniku i nie jest wystawiony na granicę.
+ * Napis, który nie ma skąd wziąć prawdy, ma mówić to, co jest pewne, a nie to, co brzmi lepiej;
+ * prawdziwy odczyt jest zgłoszony orkiestratorowi jako komenda do dopisania. Kiedy powstanie,
+ * ta stała zniknie razem z zaszytą wiedzą o vendorach.
+ *
+ * Zbiór dostawców, których tu nie ma, NIE jest wpisany z palca w kryterium: `nav-furniture.test.tsx`
+ * czyta `Absent::new("…")` z `lib.rs` w tym samym biegu testu i porównuje z tym zdaniem, więc
+ * dzień, w którym Codex naprawdę zacznie działać, jest dniem, w którym ten test świeci na
+ * czerwono, dopóki zdanie go nie nazwie.
+ */
+const READY = 'Claude ready';
 
 export interface SideNavProps {
   section?: Section;
@@ -70,6 +93,15 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
         <b className="font-mono text-mono-strong text-ink">LOADOUT</b>
       </div>
 
+      {/* PRZEŁĄCZNIK ZAKRESU STOI MIĘDZY ZNAKIEM A LISTĄ SEKCJI, i ta kolejność jest treścią,
+          nie układem: boczne menu odpowiada na „co robię", a zakres mówi, GDZIE to robię —
+          czyli jest ramą dla wszystkich pięciu sekcji, nie szóstą z nich. Postawiony pod nimi
+          czytałby się jak jeszcze jedno miejsce, do którego się wchodzi.
+
+          Poniżej nic go nie zasłania i nic o nim nie wie: `SideNav` zostaje bezstanowy poza
+          propsem `section`, a cały stan zakresu mieszka w `workspace-switcher.tsx`. */}
+      <NavWorkspaces />
+
       {SECTIONS.map((entry) => (
         <button
           key={entry.id}
@@ -84,13 +116,13 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
       ))}
 
       {/* Stopka przypięta do dołu (`margin-top:auto` z makiety). Kropka żywotności i jedno
-       * zdanie o dostawcach — to jedyne miejsce, w którym aplikacja mówi o swoim otoczeniu. */}
-      {/* `tracking-normal` znosi rozstrzelenie tokenu `text-label` (0.08em, WERSALIKI). Przy
-       * 196 px menu daje ono ~18 px nadmiaru i zdanie łamie się na dwie linie — makieta ma
-       * tu zwykły monospace bez rozstrzelenia (`.foot`). */}
-      <div className="mt-auto flex items-center gap-[7px] border-t border-line px-[10px] pt-[10px] font-mono text-label tracking-normal text-muted">
+       * zdanie o otoczeniu — to jedyne miejsce, w którym aplikacja mówi, czym umie uruchomić
+       * krok. Stopień `text-meta` to mono 11 bez rozstrzelenia, prosto z reguły `.foot`; do
+       * 2026-08-18 stało tu `text-label tracking-normal`, czyli token etykiety z ręcznie
+       * zniesioną połową jego własnej definicji, bo tego stopnia w drabince nie było. */}
+      <div className="mt-auto flex items-center gap-[7px] border-t border-line px-[10px] pt-[10px] font-mono text-meta text-muted">
         <span aria-hidden className="size-[7px] rounded-full bg-accent" />
-        <span>Claude · Codex ready</span>
+        <span>{READY}</span>
       </div>
     </nav>
   );

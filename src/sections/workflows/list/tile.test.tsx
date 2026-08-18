@@ -84,6 +84,11 @@ function undescribed(): WorkflowFile {
   };
 }
 
+/* Kafelek jest od 2026-08-18 `<button>` (makieta otwiera workflow kliknięciem w kartę), więc
+ * `onOpen` jest wymagany. Tu nic go nie woła: `renderToStaticMarkup` nie odpala zdarzeń, a to,
+ * że kafelek OTWIERA, sądzi kryterium o liście, nie to o treści karty. */
+const noop = (): void => undefined;
+
 /** To, co czyta człowiek: bez znaczników, z rozwiniętymi encjami, bez nadmiarowych odstępów. */
 function visibleText(markup: string): string {
   return markup
@@ -102,7 +107,7 @@ const RUN_HISTORY = /used|min|never|—|not reported/i;
 
 describe('a workflow tile shows what is in the file and leaves no empty cells', () => {
   it('counts the steps, and counts the agents as the different ones among them', () => {
-    const markup = renderToStaticMarkup(<WorkflowTile wf={research()} />);
+    const markup = renderToStaticMarkup(<WorkflowTile wf={research()} onOpen={noop} />);
     const text = visibleText(markup);
 
     expect(text, 'four steps in the file, four steps on the tile').toContain('4 steps');
@@ -121,7 +126,7 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
   });
 
   it('says 1 step and 1 agent, not 1 steps and 1 agents', () => {
-    const text = visibleText(renderToStaticMarkup(<WorkflowTile wf={quickFix()} />));
+    const text = visibleText(renderToStaticMarkup(<WorkflowTile wf={quickFix()} onOpen={noop} />));
 
     expect(text, 'one step').toContain('1 step');
     expect(
@@ -134,20 +139,23 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
   });
 
   it('leaves the description out entirely when the file has none', () => {
-    const markup = renderToStaticMarkup(<WorkflowTile wf={undescribed()} />);
+    const markup = renderToStaticMarkup(<WorkflowTile wf={undescribed()} onOpen={noop} />);
 
+    /* Element, nie akapit: kafelek jest od 2026-08-18 `<button>`, a `<p>` w przycisku nie jest
+     * poprawnym markupem. Pytanie zostaje to samo — czy pusty opis trzyma otwartą linijkę karty. */
     expect(
       markup,
-      'no empty paragraph. An always-rendered description holds a line of the tile open for ' +
-        'text that is not there, and every tile without one is a row of nothing',
-    ).not.toMatch(/<p[^>]*>\s*<\/p>/);
+      'no empty element in place of the description. An always-rendered one holds a line of the ' +
+        'tile open for text that is not there, and every tile without a description is a row ' +
+        'of nothing',
+    ).not.toMatch(/<span[^>]*>\s*<\/span>/);
     expect(visibleText(markup), 'the rest of the tile is still there').toContain('Ship a feature');
     expect(visibleText(markup), 'including the counts').toContain('1 step');
   });
 
   it('shows nothing about how often or how long, because there are no runs to read yet', () => {
     for (const workflow of [research(), quickFix(), undescribed()]) {
-      const markup = renderToStaticMarkup(<WorkflowTile wf={workflow} />);
+      const markup = renderToStaticMarkup(<WorkflowTile wf={workflow} onOpen={noop} />);
 
       expect(
         visibleText(markup),

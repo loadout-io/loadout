@@ -22,6 +22,7 @@
  */
 import type { ReactElement } from 'react';
 import type { Agent, Color, FileAccess, Thinking, Vendor } from '../../state/agents';
+import { missingForSave } from '../../state/agents';
 import { MoreSettings } from './more-settings';
 
 export interface AgentFormProps {
@@ -48,10 +49,43 @@ const COLOURS: ReadonlyArray<Choice<Color>> = [
   { value: 'rose', label: 'Rose' },
 ];
 
-const VENDORS: ReadonlyArray<Choice<Vendor>> = [
+/* Eksportowane, bo `index.tsx` potrzebowało DOKŁADNIE tych brzmień na kafelku i do 2026-08-18
+ * trzymało własną kopię tej tabeli (jej nagłówek nazywał to długiem i prosił o tę jedną linię).
+ * Dwie kopie brzmienia rozjeżdżają się przy pierwszej zmianie i nikt się o tym nie dowie:
+ * nazwa z drutu (`claude-code`) nie ma prawa dojechać na ekran (niezmiennik 14), więc obie
+ * kopie i tak wyglądają na poprawne. */
+export const VENDORS: ReadonlyArray<Choice<Vendor>> = [
   { value: 'claude-code', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' },
 ];
+
+/* Którzy vendorzy MAJĄ na tej maszynie sterownik, który cokolwiek uruchomi.
+ *
+ * ZMIERZONE 2026-08-18: `src-tauri/src/lib.rs:288` daje Codeksowi `Absent::new("codex", "T-10")`,
+ * a `Absent::start` robi `bail!`. Formularz oferował Codeksa jako równorzędny wybór i dowiedzieć
+ * się prawdy można było WYŁĄCZNIE nieudanym biegiem — po tym, jak człowiek zbudował workflow
+ * wokół agenta, który nie ma czym pracować.
+ *
+ * WYBÓR: pozycja ZOSTAJE na liście, nieklikalna, z powodem w brzmieniu. Zdjęcie jej z listy
+ * miałoby jedną wadę, której nie da się naprawić na ekranie: agent zapisany wcześniej z
+ * `runsWith: 'codex'` pokazywałby wtedy w tym polu Claude Code, czyli ekran KŁAMAŁBY o tym,
+ * co leży w pliku, i pierwszy zapis po cichu podmieniłby wartość. Pozycja wygaszona pokazuje
+ * prawdę i nie pozwala jej wybrać nikomu nowemu.
+ *
+ * Ta tabela ma zniknąć razem z T-10 (sterownik Codeksa). Do tego dnia jest jedynym miejscem,
+ * w którym stoi odpowiedź „czy da się na tym uruchomić krok" (niezmiennik 13). */
+const HAS_A_DRIVER: Readonly<Record<Vendor, boolean>> = {
+  'claude-code': true,
+  codex: false,
+};
+
+/** Dopisek w pozycji, której nie da się wybrać. Krótki, bo mieszka w `<option>`. */
+const NOT_HERE_YET = ' — not on this machine yet';
+
+/** Zdanie pod polem, kiedy agent zapisany wcześniej wskazuje na aplikację, której tu nie ma. */
+const NOTHING_TO_RUN_ON =
+  'Codex is not set up on this machine yet, so a step handed to this agent will not run. ' +
+  'Pick Claude Code.';
 
 const THINKING: ReadonlyArray<Choice<Thinking>> = [
   { value: 'quick', label: 'Quick' },
@@ -107,8 +141,15 @@ export function AgentForm({
   onSave,
 }: AgentFormProps): ReactElement {
   /* Nazwa i instrukcje. Reszta ma wartość domyślną, więc Save budzi się dokładnie wtedy, gdy
-   * te dwa pola są wypełnione [T4 §8.1]. Agent bez instrukcji to nazwa. */
-  const saveable = value.name.trim().length > 0 && value.instructions.trim().length > 0;
+   * te dwa pola są wypełnione [T4 §8.1]. Agent bez instrukcji to nazwa.
+   *
+   * Jedno pytanie, jedna odpowiedź, i mieszka ONA W MAGAZYNIE (`missingForSave`
+   * w `src/state/agents.ts`) — nie tutaj. Powód jest mechaniczny: `store.save` odmawia po tym
+   * samym warunku, bo jest jedyną krawędzią do dysku, a dwie kopie reguły znaczą przycisk,
+   * który budzi się przy trzecim polu wymaganym, i zapis, który dalej go nie przyjmuje
+   * (niezmiennik 13). */
+  const missing = missingForSave(value);
+  const saveable = missing === null;
 
   return (
     <form
@@ -116,6 +157,11 @@ export function AgentForm({
       className="flex flex-col gap-3"
       onSubmit={(event) => {
         event.preventDefault();
+        /* Wygaszony przycisk NIE JEST całą obroną. Formularz z jednym polem tekstowym wysyła
+         * się też Enterem, a zachowanie przeglądarki przy wygaszonym przycisku domyślnym nie
+         * jest jednakowe wszędzie — i to jest dokładnie ta droga, którą do magazynu jechałby
+         * agent bez instrukcji, czyli plik, który walidator biegu odrzuci pod palcem. */
+        if (!saveable) return;
         onSave();
       }}
     >
@@ -127,6 +173,10 @@ export function AgentForm({
           id="agent-name"
           data-field="name"
           className={FIELD}
+          /* `aria-required`, a nie `required`: walidacja HTML-a wyświetla własny balonik
+           * przeglądarki, którego brzmienia nie kontrolujemy i który mówi „Please fill out
+           * this field" obok naszego zdania. Powód stoi pod przyciskiem, jeden raz. */
+          aria-required="true"
           value={value.name}
           onChange={(event) => onChange({ ...value, name: event.target.value })}
         />
@@ -174,6 +224,7 @@ export function AgentForm({
           id="agent-instructions"
           data-field="instructions"
           className={AREA}
+          aria-required="true"
           value={value.instructions}
           onChange={(event) => onChange({ ...value, instructions: event.target.value })}
         />
@@ -193,11 +244,16 @@ export function AgentForm({
           }
         >
           {VENDORS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
+            <option key={option.value} value={option.value} disabled={!HAS_A_DRIVER[option.value]}>
+              {HAS_A_DRIVER[option.value] ? option.label : option.label + NOT_HERE_YET}
             </option>
           ))}
         </select>
+        {HAS_A_DRIVER[value.runsWith] ? null : (
+          <p data-no-driver className="text-body text-attend">
+            {NOTHING_TO_RUN_ON}
+          </p>
+        )}
       </div>
 
       <div className={ROW}>
@@ -286,19 +342,35 @@ export function AgentForm({
 
       {expanded ? <MoreSettings value={value} onChange={onChange} /> : null}
 
-      <div className="flex items-center gap-2 border-t border-line pt-3">
-        <button
-          type="button"
-          data-more
-          aria-expanded={expanded}
-          className="h-8 rounded-sq border border-line px-3 text-ui text-body"
-          onClick={onToggleMore}
-        >
-          More settings — tools, skills, connections
-        </button>
-        <button type="submit" data-save disabled={!saveable} className={saveable ? SAVE : SAVE_OFF}>
-          Save
-        </button>
+      <div className="flex flex-col gap-2 border-t border-line pt-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-more
+            aria-expanded={expanded}
+            className="h-8 rounded-sq border border-line px-3 text-ui text-body"
+            onClick={onToggleMore}
+          >
+            More settings — tools, skills, connections
+          </button>
+          <button
+            type="submit"
+            data-save
+            disabled={!saveable}
+            /* Powód jest PODPISANY pod przyciskiem, nie tylko na nim: `aria-describedby`
+             * wiąże wygaszony przycisk ze zdaniem, więc czytnik ekranu mówi jedno i drugie
+             * w jednym oddechu, zamiast „Save, niedostępny" i ciszy. */
+            aria-describedby={saveable ? undefined : 'agent-save-blocked'}
+            className={saveable ? SAVE : SAVE_OFF}
+          >
+            Save
+          </button>
+        </div>
+        {missing === null ? null : (
+          <p id="agent-save-blocked" data-save-blocked className="text-body text-muted">
+            {missing}
+          </p>
+        )}
       </div>
     </form>
   );

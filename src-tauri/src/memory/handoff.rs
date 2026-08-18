@@ -80,7 +80,12 @@ impl Kind {
     /// Nazwa w pliku i **trzeci człon nazwy pliku**, więc bez `_`: podkreślenie jest
     /// separatorem pól w `<NN>__<from>__<kind>.md` i pojedyncze `patch_summary` czytałoby się
     /// jako granicę pola przy ręcznym oglądaniu katalogu.
-    fn name(&self) -> &str {
+    ///
+    /// 2026-08-18 — `pub`, bo `commands::handoffs` wysyła ten napis na drut. To samo słowo,
+    /// jedno miejsce (niezmiennik 13): tabela „wariant → napis" przepisana w warstwie komend
+    /// rozjechałaby się z nazwą pliku przy pierwszym nowym rodzaju, i to po cichu.
+    #[must_use]
+    pub fn name(&self) -> &str {
         match self {
             Self::Brief => "brief",
             Self::Findings => "findings",
@@ -116,7 +121,13 @@ pub enum Status {
 }
 
 impl Status {
-    const fn name(self) -> &'static str {
+    /// Słowo, które stoi w pliku — i to samo, które jedzie na drut do okna.
+    ///
+    /// 2026-08-18 — `pub` z tego samego powodu, co [`Kind::name`]: `commands::handoffs`
+    /// potrzebuje tego napisu, a druga jego kopia byłaby drugim miejscem, w którym mieszka
+    /// odpowiedź na pytanie „czy to przekazanie jest jeszcze aktualne".
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Current => "current",
             Self::Superseded => "superseded",

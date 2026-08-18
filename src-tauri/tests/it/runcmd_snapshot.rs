@@ -29,8 +29,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -267,6 +267,7 @@ async fn one_run(
     let request = RunRequest {
         workflow: workflow.to_path_buf(),
         how_many_at_once: 1,
+        task: None,
     };
 
     // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się
@@ -398,7 +399,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let session = SessionRef {
             vendor: VENDOR,
@@ -406,17 +407,23 @@ impl AgentDriver for Fake {
         };
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         let _ = events
-            .send(AgentEvent::Said {
-                text: format!("working on {}", spec.prompt),
-            })
+            .send(
+                (AgentEvent::Said {
+                    text: format!("working on {}", spec.prompt),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn { events, session }))
@@ -426,7 +433,7 @@ impl AgentDriver for Fake {
 /// Jedna tura dublera.
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -457,7 +464,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

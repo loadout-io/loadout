@@ -20,13 +20,20 @@ import * as io from '../sections/skills/io';
 import type { Finding, Import, Verdict } from './skills';
 import { useSkills } from './skills';
 
+/* Atrapa pokrywa CAŁĄ krawędź, także funkcje, których ten plik nie wywołuje wprost: magazyn,
+ * który po usunięciu czyta katalogi jeszcze raz, wołałby wtedy `undefined` i test przewracałby
+ * się na `TypeError` zamiast powiedzieć, co jest nie tak. */
 vi.mock('../sections/skills/io', () => ({
   readLink: vi.fn(),
   install: vi.fn(),
+  listSkills: vi.fn(),
+  remove: vi.fn(),
 }));
 
 const readLink = vi.mocked(io.readLink);
 const install = vi.mocked(io.install);
+const listSkills = vi.mocked(io.listSkills);
+const removeFromDisk = vi.mocked(io.remove);
 
 const LINK = 'https://raw.githubusercontent.com/anthropics/skills/main/skills/pdf/SKILL.md';
 
@@ -77,6 +84,8 @@ beforeEach(() => {
   useSkills.setState(BLANK, true);
   vi.resetAllMocks();
   install.mockResolvedValue(undefined);
+  removeFromDisk.mockResolvedValue(undefined);
+  listSkills.mockResolvedValue([]);
 });
 
 describe('a skill from a link waits until a person has read what blocks it', () => {
@@ -178,5 +187,109 @@ describe('a skill from a link waits until a person has read what blocks it', () 
       'and the mark survives the install. It is what stands in for signing and provenance in ' +
         'v1, so a mark that clears on success marks nothing at all',
     ).toBe(true);
+  });
+});
+
+/* Droga powrotna: usunięcie umiejętności z katalogów, do których zaglądają narzędzia człowieka.
+ *
+ * DLACZEGO TO JEST TESTOWANE NA MAGAZYNIE, A NIE NA PRZYCISKU. W tym repo nie ma jsdom, więc
+ * `onClick` nigdy nie odpala i „klikam i coś się dzieje" nie da się tu napisać. Obecność
+ * `<button data-remove="pdf">` sprawdza `src/sections/skills/mounted.test.tsx`; TU sprawdzamy
+ * skutek, czyli jedyną rzecz, która obchodzi człowieka.
+ *
+ * JAK BRZMIAŁABY SŁABA WERSJA I CO JĄ ODRÓŻNI. Słaba wersja to `expect(io.remove).toHaveBeenCalled()`.
+ * Przechodzi na magazynie, który woła Rusta i wywala odmowę do kosza, i przechodzi na takim,
+ * który po usunięciu odfiltrowuje wiersz LOKALNIE — a to jest dokładnie ten defekt, którego ta
+ * fala szuka: instalacja pisze do DWÓCH katalogów, więc usunięcie, które sprzątnęło jeden,
+ * po lokalnym odfiltrowaniu wygląda identycznie jak sukces. Odróżnia je trzecia asercja:
+ * po udanym usunięciu lista ma pochodzić z `listSkills`, czyli z dysku, nawet gdy dysk mówi
+ * coś innego, niż magazyn się spodziewał.
+ */
+describe('a skill can be taken back out of the folders the agent apps read', () => {
+  it('asks Rust by name and then rereads the folders instead of trusting itself', async () => {
+    useSkills.setState({
+      installed: [
+        { name: 'pdf', fromTheInternet: true },
+        { name: 'rust-tauri', fromTheInternet: false },
+      ],
+    });
+    /* Dysk mówi, że `pdf` DALEJ tam leży — bo instalacja pisze do dwóch katalogów i sprzątnięty
+     * został jeden. Magazyn, który filtruje lokalnie, pokaże tu jeden wiersz i skłamie. */
+    listSkills.mockResolvedValue([
+      { name: 'pdf', fromTheInternet: true },
+      { name: 'rust-tauri', fromTheInternet: false },
+    ]);
+
+    await useSkills.getState().remove('pdf');
+
+    expect(
+      removeFromDisk.mock.calls,
+      'exactly once, and with the name — the folders are counted on the Rust side, so a path ' +
+        'handed over from the window would be a second answer to where this lives',
+    ).toEqual([['pdf']]);
+    expect(
+      listSkills,
+      'and then the folders are read again. Removing writes to two places at once, so the only ' +
+        'honest answer to "is it gone" comes from the files',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      useSkills.getState().installed.map((one) => one.name),
+      'the disk still holds it, so the row stays. A row that disappears while the file is still ' +
+        'where the agent looks for it is the lie this whole wave is about',
+    ).toEqual(['pdf', 'rust-tauri']);
+  });
+
+  it('drops the row when the folders really no longer hold it', async () => {
+    useSkills.setState({ installed: [{ name: 'pdf', fromTheInternet: true }] });
+    listSkills.mockResolvedValue([]);
+
+    await useSkills.getState().remove('pdf');
+
+    expect(useSkills.getState().installed).toEqual([]);
+    expect(
+      useSkills.getState().message,
+      'and nothing is said about it, because nothing went wrong. A sentence after every ' +
+        'successful action is how people stop reading sentences',
+    ).toBeNull();
+  });
+
+  it('says what Rust said when it refuses, and leaves the list where it was', async () => {
+    useSkills.setState({ installed: [{ name: 'pdf', fromTheInternet: true }] });
+    /* Tauri odrzuca NAPISEM, nie `Error` (`src/ipc/why.ts`) — i to jest kształt, na którym
+     * siedem miejsc w tym repo miało warunek zawsze fałszywy. */
+    removeFromDisk.mockRejectedValue('pdf is not in any of the folders Loadout writes to.');
+
+    await useSkills.getState().remove('pdf');
+
+    expect(
+      useSkills.getState().message,
+      'the sentence Rust wrote reaches the screen word for word. A fallback in its place turns ' +
+        '"it was never there" and "the folder would not let me write" into one shrug',
+    ).toBe('pdf is not in any of the folders Loadout writes to.');
+    expect(
+      listSkills,
+      'and the folders are NOT reread: nothing changed on disk, so a reread would only be a ' +
+        'chance to blank the list on a second refusal',
+    ).toHaveBeenCalledTimes(0);
+    expect(
+      useSkills.getState().installed.map((one) => one.name),
+      'and the row stays, because the file stayed',
+    ).toEqual(['pdf']);
+  });
+
+  it('adding the same skill twice leaves one row, not two', async () => {
+    readLink.mockResolvedValue(imported('pdf', [], 'clean'));
+
+    await useSkills.getState().review(LINK);
+    await useSkills.getState().add();
+    await useSkills.getState().review(LINK);
+    await useSkills.getState().add();
+
+    expect(
+      useSkills.getState().installed.map((one) => one.name),
+      'the name of a skill is the name of its folder, so the second add overwrites one file. ' +
+        'Two rows would count that one file twice in the "N saved" line above the section, and ' +
+        'Rust counts it with a set (list_skills_inner)',
+    ).toEqual(['pdf']);
   });
 });

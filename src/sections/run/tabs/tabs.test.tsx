@@ -23,7 +23,7 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { WorkspaceTab } from '../../../state/workspaces';
+import type { WorkspaceTab } from '../../../state/run-tabs';
 import { TabBar } from './tab-bar';
 
 const MEETNOTES: WorkspaceTab = {

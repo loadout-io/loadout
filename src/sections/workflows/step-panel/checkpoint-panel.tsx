@@ -11,6 +11,12 @@
  * warunkiem — a to jest ta sama konstrukcja, którą DESIGN §6 nazywa zakładkami w panelu.
  *
  * Sterowany, tak jak `StepPanel` i z tego samego powodu (nagłówek `panel.tsx`).
+ *
+ * 2026-08-18 — RAMKI TU JUŻ NIE MA. Ten plik rysował `<aside class="w-82 border-l bg-panel p-4">`
+ * wewnątrz `<aside>` szerokości 330 px z `editor.tsx`, czyli podwójny obrys, podwójny padding
+ * i poziomy pasek przewijania. Ramkę ma teraz `PanelForStep`, jedną, dla wszystkich trzech
+ * paneli — razem ze znacznikiem `data-step-panel`, który był przy okazji trzecim miejscem,
+ * w którym trzeba było pamiętać o jego dopisaniu.
  */
 import type { ReactElement } from 'react';
 import type { CheckpointStep } from '../../../state/workflows';
@@ -26,7 +32,7 @@ const FIELD = 'h-8 rounded-sq border border-line bg-well px-2 text-body text-ink
 
 export function CheckpointPanel({ step, onEditStep }: CheckpointPanelProps): ReactElement {
   return (
-    <aside className="flex w-82 flex-col gap-3 border-l border-line bg-panel p-4" data-step-panel>
+    <>
       <div className={ROW}>
         <label htmlFor="checkpoint-name" className={LABEL}>
           Name
@@ -58,6 +64,6 @@ export function CheckpointPanel({ step, onEditStep }: CheckpointPanelProps): Rea
         />
         <span className={LABEL}>The run stops here until you answer.</span>
       </div>
-    </aside>
+    </>
   );
 }

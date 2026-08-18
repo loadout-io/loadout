@@ -43,6 +43,31 @@ pub enum StepState {
     Skipped,
 }
 
+impl StepState {
+    /// Słowo, którym ten stan nazywa się **wszędzie**: w `run.json`, w kolumnie `steps.status`
+    /// i na drucie do okna (`Line::StepState::state`).
+    ///
+    /// 2026-08-18 — powstało, bo `Line::StepState` musi wysłać ten napis, a `serde` daje go
+    /// wyłącznie przez pełną serializację. `serde_json::to_string(&state)` oddałby `"running"`
+    /// **z cudzysłowami** i z alokacją na każdą zmianę stanu; ręczna tabela w warstwie komend
+    /// byłaby drugim miejscem, w którym mieszka ta odpowiedź (niezmiennik 13), i tym, które
+    /// rozjedzie się z `CHECK`iem w schemacie bazy.
+    ///
+    /// Wyczerpujący `match` bez gałęzi domyślnej: ósmy stan nie skompiluje się bez słowa.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
 /// Zdarzenie, które może ruszyć krok z miejsca.
 ///
 /// Nazwy mówią, **co się stało**, nie do jakiego stanu prowadzą — dzięki temu tabela przejść

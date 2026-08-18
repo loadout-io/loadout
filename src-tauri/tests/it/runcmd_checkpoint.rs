@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::{continue_run_inner, run_workflow_inner, stop_run_inner};
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -45,6 +45,10 @@ use tokio::sync::mpsc;
 const VENDOR: &str = "fake";
 
 /// Instrukcje kroku, który nie ma prawa ruszyć przed odpowiedzią człowieka.
+/// Co człowiek napisał w okienku punktu kontrolnego. Zdanie, nie słowo: fragment, który da się
+/// znaleźć w pliku i którego nic innego w tym biegu nie produkuje.
+const ANSWER: &str = "Ship it, but keep the old endpoint for one release.";
+
 const BUILD: &str = "build";
 
 /// Ile czekamy na pauzę, a potem na cały bieg. Bieg, który wisi, jest dla bramki
@@ -131,13 +135,18 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
     let request = RunRequest {
         workflow,
         how_many_at_once: 3,
+        task: None,
     };
 
     let (sink, drain) = the_pump_seam();
     let answer = async {
         let paused = wait_until_paused(bench.project.path()).await?;
         the_pause_sits_on_the_run(&paused, &watch)?;
-        continue_run_inner(&deps).await?;
+        // 2026-08-18 — ODPOWIEDŹ CZŁOWIEKA JEDZIE RAZEM ZE ZGODĄ, i to jest nowe. Do tego dnia
+        // `continue_run` nie brało argumentu: zdanie napisane w oknie znikało razem z pytaniem
+        // i nie trafiało nigdzie. Asercja na końcu tego pliku żąda, żeby zdanie wylądowało
+        // w `handoffs/` — czyli tą samą drogą, którą wchodzi wynik agenta.
+        continue_run_inner(&deps, Some(ANSWER.to_owned())).await?;
         Ok::<(), Box<dyn Error>>(())
     };
 
@@ -171,6 +180,32 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
         "`build` had to run exactly once after Continue; the driver started it {} time(s)",
         watch.times(BUILD)
     );
+
+    /* ODPOWIEDŹ CZŁOWIEKA JEST NA DYSKU, w przekazaniach tego biegu.
+     *
+     * SŁABA WERSJA TEJ ASERCJI: `assert!(continue_run_inner(&deps, Some(..)).is_ok())`. Przechodzi
+     * dla implementacji, która argument przyjmuje i wyrzuca — czyli dla dokładnie tego defektu,
+     * który tu naprawiamy. Odróżnia je pytanie o TREŚĆ na dysku: zdanie człowieka ma dojechać
+     * do pracy tą samą drogą, którą wchodzi wynik agenta, więc krok idący po punkcie kontrolnym
+     * przeczyta je w indeksie przekazań.
+     *
+     * Katalog, nie prompt: prompt następnego kroku składa się z indeksu przekazań, a ten powstaje
+     * z plików. Pytanie o pliki jest więc pytaniem o to samo, tylko odporniejszym na to, jak
+     * dokładnie prompt jest sklejony. */
+    let handoffs = report.dir.join("handoffs");
+    let mut said = String::new();
+    for entry in std::fs::read_dir(&handoffs)
+        .map_err(|error| format!("{} could not be read: {error}", handoffs.display()))?
+    {
+        said.push_str(&std::fs::read_to_string(entry?.path())?);
+    }
+    assert!(
+        said.contains(ANSWER),
+        "what the person typed at the checkpoint has to reach the work. It is nowhere in {} — \
+         so the answer was accepted, the run went on, and the sentence was thrown away. That is \
+         the control that LIES, and it is the one this argument exists to end.",
+        handoffs.display()
+    );
     Ok(())
 }
 
@@ -193,6 +228,7 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
     let request = RunRequest {
         workflow,
         how_many_at_once: 3,
+        task: None,
     };
 
     let (sink, drain) = the_pump_seam();
@@ -449,7 +485,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         self.watch.entered(&spec.prompt);
         let session = SessionRef {
@@ -458,17 +494,23 @@ impl AgentDriver for Fake {
         };
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
         let _ = events
-            .send(AgentEvent::Said {
-                text: format!("working on {}", spec.prompt),
-            })
+            .send(
+                (AgentEvent::Said {
+                    text: format!("working on {}", spec.prompt),
+                })
+                .into(),
+            )
             .await;
 
         Ok(Box::new(Turn { events, session }))
@@ -478,7 +520,7 @@ impl AgentDriver for Fake {
 /// Jedna tura dublera.
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -509,7 +551,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

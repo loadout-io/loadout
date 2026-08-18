@@ -135,7 +135,8 @@ fn a_stream_that_ends_without_a_result_is_a_failure_even_on_exit_zero() -> Resul
     }
 
     let ending = decoder
-        .end_of_stream(Some(0))
+        // Skarga pusta: ten strumien skonczyl sie czysto, agent nie narzekal na nic.
+        .end_of_stream(Some(0), "")
         .ok_or("a stream that never said how it went still has to end the turn somehow")?;
     let AgentEvent::Finished(outcome) = &ending else {
         return Err(format!("the end of a stream has to end the turn; it gave {ending:?}").into());

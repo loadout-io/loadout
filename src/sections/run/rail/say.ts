@@ -46,6 +46,11 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   step: 'loadout',
   agent: 'loadout',
   note: 'agent',
+  /* CIEBIE — i to jest pierwszy użytkownik trzeciego autorytetu, który stał w `Who` od początku
+   * i do 2026-08-19 nie miał ani jednego rodzaju. Zdanie, które napisał człowiek, podpisane
+   * `agent` byłoby cytatem przypisanym komuś, kto go nie wypowiedział; podpisane `loadout`
+   * udawałoby komunikat systemu. */
+  told: 'you',
   asked: 'agent',
   handoff: 'loadout',
   problem: 'loadout',
@@ -56,6 +61,8 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   ran: 'loadout',
   memory: 'loadout',
   thinking: 'loadout',
+  /* Loadout, nie agent: stan kroku ogłasza planista, a nie ten, kto ten krok wykonuje. */
+  stepState: 'loadout',
 };
 
 /** Kto powiedział to, co niesie wiersz tego rodzaju. */

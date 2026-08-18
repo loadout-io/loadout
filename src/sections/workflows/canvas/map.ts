@@ -11,7 +11,7 @@
  * — pola kosmetyczne są w nich wypisane z nazwy właśnie po to, żeby dało się dowieść, że nie
  * przechodzą dalej.
  */
-import type { Point, Step, WorkflowFile } from '../../../state/workflows';
+import type { Link, Point, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
 
 /** Tyle z `Node`, ile mapper widzi. Cztery ostatnie pola są tu wyłącznie po to, żeby test mógł
@@ -95,11 +95,38 @@ function inFileOrder(prev: WorkflowFile, nodes: CanvasNode[]): CanvasNode[] {
   return [...nodes].sort((one, other) => rankOf(one) - rankOf(other));
 }
 
+/** Strzałki bez powtórzeń, w kolejności pierwszego wystąpienia.
+ *
+ * TOŻSAMOŚCIĄ STRZAŁKI JEST PARA `from->to` i nic poza nią — plik nie ma na strzałce ani jednego
+ * innego pola, więc dwie pozycje o tej samej parze nie są dwiema strzałkami, tylko jedną
+ * zapisaną dwa razy. Do 2026-08-19 nikt tego nie egzekwował po żadnej stronie i skutek leżał
+ * na dysku właściciela: `new-workflow.json` niósł `s_2->s_3` dwa razy i `s_4->s_5` trzy razy.
+ *
+ * Kosztem nie był bałagan w pliku, tylko rozbite płótno. `toCanvas` nadaje krawędzi
+ * identyfikator `from->to`, więc powtórzona pozycja daje DWIE krawędzie o jednym identyfikatorze,
+ * a React na to odpowiada „Encountered two children with the same key" i ostrzega, że dzieci
+ * mogą zostać zdublowane albo pominięte. Strzałka, która czasem się nie rysuje, jest w edytorze
+ * grafu awarią, a nie kosmetyką.
+ *
+ * Zwężenie stoi w OBU mapperach, nie w jednym: `toCanvas` leczy pliki, które już leżą na dysku
+ * (także poprawione ręcznie albo zmergowane gitem), a `toFile` pilnuje, żeby płótno nigdy
+ * takiego pliku nie wyprodukowało. Jedna strona wystarczyłaby do zieleni testu i zostawiła
+ * drugą połowę awarii. */
+function eachArrowOnce(links: readonly Link[]): Link[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    const identity = `${link.from}->${link.to}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
 export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowFile {
   return {
     ...prev,
     steps: inFileOrder(prev, nodes).map((node) => onlyTheStep(node.data, snap(node.position))),
-    links: edges.map((edge) => ({ from: edge.source, to: edge.target })),
+    links: eachArrowOnce(edges.map((edge) => ({ from: edge.source, to: edge.target }))),
   };
 }
 
@@ -119,7 +146,7 @@ export function toCanvas(file: WorkflowFile): {
       position: step.at,
       data: step,
     })),
-    edges: file.links.map((link) => ({
+    edges: eachArrowOnce(file.links).map((link) => ({
       id: `${link.from}->${link.to}`,
       source: link.from,
       target: link.to,

@@ -19,13 +19,21 @@
  */
 import { describe, expect, it } from 'vitest';
 import golden from './line-wire.golden.json';
-import { parseLine } from './types';
+import { parseLine, WIRE_KINDS } from './types';
 
 /** Złoty plik jako zwykłe obiekty: tu chodzi o KLUCZE, więc typ z wnioskowania przeszkadza. */
 const entries = golden as unknown as Array<Record<string, unknown>>;
 
-/** Ile rodzajów wiersza jest [T2 §7.2]. Czternaście i ani jednego więcej. */
-const KINDS = 14;
+/**
+ * Ile rodzajów wiersza jest — CZYTANE z lustra, nie przepisane.
+ *
+ * 2026-08-18 — stało tu `const KINDS = 14`. Ta liczba żyła w czterech miejscach naraz (tutaj,
+ * w `KINDS: [LineKind; 14]` po stronie Rusta, w prozie obu plików i w liczbie wpisów złotego
+ * pliku), a rodzaj dołożony na drucie zapalał tylko jedno z nich. Teraz oczekiwanie pochodzi
+ * z `WIRE_KINDS`, czyli z tego samego lustra, którego kompletność ten plik sprawdza — a jeśli
+ * lustro zwróciłoby pustkę, dowodzi tego asercja niżej, zamiast porównywać dwa zera.
+ */
+const KINDS = WIRE_KINDS.length;
 
 /** Klucz na drucie i jego wersja po rustowemu — czyli dokładnie ten mutant, który ma odpaść. */
 const RENAMED: ReadonlyArray<readonly [string, string]> = [

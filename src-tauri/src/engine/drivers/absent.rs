@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use super::{AgentDriver, AgentEvent, AgentHandle, Probe, RunSpec};
+use super::{AgentDriver, AgentHandle, DecodedEvent, Probe, RunSpec};
 
 /// Vendor, który jest w typie, ale nie ma jeszcze adaptera.
 #[derive(Debug)]
@@ -54,7 +54,7 @@ impl AgentDriver for Absent {
     async fn start(
         &self,
         _spec: RunSpec,
-        _tx: mpsc::Sender<AgentEvent>,
+        _tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         anyhow::bail!(
             "Loadout has no adapter for {} yet ({} brings it). Pick an agent that runs on a \

@@ -66,7 +66,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
@@ -74,14 +74,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout, Command};
-use tokio::sync::mpsc;
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome, Policy, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
+    RunSpec, SessionRef, ToAgent, Tokens, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -829,7 +829,7 @@ impl ClaudeDecoder {
     /// końca biegu. Strumień zakończony kodem 0 bez `result` jest **niepowodzeniem**, nie
     /// sukcesem: proces, który wyszedł czysto i nie powiedział, co zrobił, nie ma czego
     /// przekazać dalej.
-    pub fn end_of_stream(&mut self, exit_code: Option<i32>) -> Option<AgentEvent> {
+    pub fn end_of_stream(&mut self, exit_code: Option<i32>, complaint: &str) -> Option<AgentEvent> {
         if self.ended {
             return None;
         }
@@ -837,10 +837,30 @@ impl ClaudeDecoder {
 
         // Kod wyjścia jest w tym zdaniu opisem, nie dowodem: proces, który wyszedł czysto i nie
         // powiedział, co zrobił, nie ma czego przekazać dalej [T1 §8.5].
-        let why = match exit_code {
+        let mut why = match exit_code {
             Some(code) => format!("The agent exited with code {code} and never sent its result."),
             None => "The agent stopped without ever sending its result.".to_owned(),
         };
+
+        // 2026-08-18 — TO, CO AGENT POWIEDZIAŁ NA STRUMIENIU SKARG, DOKLEJAMY DO ZDANIA.
+        //
+        // Bez tego zdanie wyżej było jedyną rzeczą, jaką dostawał człowiek, i nie mówiło ani
+        // słowa o przyczynie — a przyczyna niemal zawsze była wypisana, tylko na potoku, którego
+        // `Supervised` nie dawał odebrać. Zmierzone na tej maszynie: `which claude` wskazuje
+        // wrapper, który przy braku binarki pisze na stderr i wychodzi 127; z okna wyglądało to
+        // identycznie jak agent, który wystartował i zamilkł.
+        //
+        // Jedna linia, nie cały potok: to jest zdanie na ekran, a nie dziennik. Pierwsza
+        // niepusta linia skargi odpowiada na pytanie „dlaczego" w praktycznie każdym realnym
+        // przypadku, a reszta jest już śladem stosu, który należy do pliku, nie do wiersza.
+        if let Some(first) = complaint
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            why.push(' ');
+            why.push_str(&first_line(first));
+        }
 
         Some(AgentEvent::Finished(Outcome {
             ok: false,
@@ -1038,6 +1058,114 @@ fn interrupt_request(request_id: &str) -> serde_json::Result<String> {
 
 // ── Pętla czytająca ───────────────────────────────────────────────────────────────────────
 
+/// Ile linii do agenta mieści się w kolejce, zanim nadawca zaczeka.
+///
+/// Mała z rozmysłem: to jest kanał sterowania, nie strumień danych. Głęboka kolejka znaczyłaby,
+/// że tekst wpisany przez człowieka czeka w niej po tym, jak sesja już się skończyła — a wtedy
+/// nadawca dowiaduje się o tym dopiero z ciszy.
+const SAY_QUEUE: usize = 8;
+
+/// JEDYNY pisarz do `stdin` sesji: koperty tur i przerwania, w kolejności nadania.
+///
+/// 2026-08-18 — POWSTAŁO, ŻEBY DAŁO SIĘ NAPISAĆ DO ŻYWEGO AGENTA. Potok był polem uchwytu, więc
+/// pisanie wymagało `&mut self`, a uchwyt jest pożyczony mutowalnie przez całą turę. Powód
+/// w całości stoi przy polu [`ClaudeHandle::voice`].
+///
+/// Potok GINIE RAZEM Z TYM ZADANIEM i to jest jego druga robota: porzucenie `ChildStdin` jest
+/// tym, po czym CLI dostaje EOF i wychodzi zerem [T1 §2]. Dlatego [`AgentHandle::close`] czeka
+/// na to zadanie, zamiast tylko zamknąć kanał.
+///
+/// Bez `?` i bez `unwrap` (niezmiennik 5): linia, której nie dało się zapisać, kończy pętlę —
+/// dalsze pisanie do zamkniętego potoku dawałoby błąd na każdej następnej i tyle samo wierszy
+/// w dzienniku.
+///
+/// # Dlaczego osobna prośba o zamknięcie, a nie „koniec, gdy zniknie ostatni nadajnik"
+///
+/// 2026-08-18, zmierzone: pierwsza wersja kończyła pisanie wyłącznie na zamkniętym kanale, więc
+/// [`AgentHandle::close`] czekał, aż zniknie **każdy** klon głosu. Głos jest jednak klonowalny
+/// z definicji i produkcja trzyma jego kopię przez całą turę (`commands::run::RunControl.voices`,
+/// żeby dało się napisać do agenta, który pracuje). Jedna taka kopia — trzymana przez okno, przez
+/// test, przez rejestr, który jeszcze nie posprzątał — znaczyła: pisarz nie kończy, `stdin` nie
+/// ginie, CLI nie dostaje EOF, `close()` nie wraca **nigdy**. Sesja `claude` przeżyła w tym
+/// kształcie 15 minut przy dwóch turach po 3 s i zeszła dopiero z sygnału.
+///
+/// Dlatego zamknięcie jest teraz JAWNE i wygrywa niezależnie od tego, kto jeszcze trzyma głos.
+/// Ma to drugi, celowy skutek: kiedy to zadanie się kończy, ginie z nim odbiornik kanału, więc
+/// każde późniejsze `send` na starym klonie oddaje `Err` — czyli głos po zamknięciu odpowiada
+/// „ta sesja już nic nie przyjmuje", a nie ciszą (to samo obiecuje [`AgentHandle::voice`]).
+async fn talk(
+    mut pipe: ChildStdin,
+    mut inbox: mpsc::Receiver<ToAgent>,
+    session: String,
+    mut hush: oneshot::Receiver<()>,
+) {
+    loop {
+        // `biased`, bo prośba o zamknięcie ma wygrywać z linią, która właśnie przyszła: sesja
+        // zamykana ma się zamknąć, a nie dopisać jeszcze jedną turę i zamknąć się później.
+        let said = tokio::select! {
+            biased;
+            _ = &mut hush => break,
+            said = inbox.recv() => match said {
+                Some(said) => said,
+                // Kanał bez ani jednego nadajnika też kończy pisanie. To jest droga dublerów
+                // i testów, które nie wołają `close()`; produkcja przychodzi przez `hush`.
+                None => break,
+            },
+        };
+        let line = match &said {
+            ToAgent::Turn(text) => user_envelope(text),
+            ToAgent::Interrupt(id) => interrupt_request(id),
+        };
+        let Ok(line) = line else {
+            tracing::debug!(%session, "a line to the agent could not be built; dropping it");
+            continue;
+        };
+        // Znak nowej linii jest częścią protokołu, nie formatowaniem: CLI czyta stdin linia po
+        // linii i bez niego koperta nigdy się nie kończy.
+        if pipe.write_all(line.as_bytes()).await.is_err()
+            || pipe.write_all(b"\n").await.is_err()
+            || pipe.flush().await.is_err()
+        {
+            tracing::debug!(%session, "the agent stopped reading its input");
+            break;
+        }
+    }
+}
+
+/// Ile bajtów skargi trzymamy. Pierwsze, nie ostatnie.
+///
+/// Pierwsza linia stderr jest tą, która mówi, co się stało („command not found", „not logged
+/// in", „permission denied"); ostatnia jest zwykle ogonem śladu stosu. Bufor bez limitu byłby
+/// za to trzecim miejscem, w którym gadatliwy agent może zjeść pamięć okna.
+const COMPLAINT_KEPT: usize = 4 * 1024;
+
+/// Opróżnia strumień skarg do EOF i zapamiętuje początek tego, co powiedział.
+///
+/// **Opróżnia**, a nie „czyta, jeśli ktoś zapyta", i to jest cały powód, dla którego to zadanie
+/// istnieje osobno: potok o pojemności ~64 KB, którego nikt nie odbiera, zatrzymuje dziecko na
+/// `write` — czyli agent gadatliwy na stderr wisi, a z okna wygląda to jak agent, który myśli.
+///
+/// Bez `?` i bez `unwrap` (niezmiennik 5): błąd odczytu skargi nie ma prawa zabrać tury.
+/// Zamek brany i oddany w jednym wyrażeniu, nigdy przez `await` (niezmiennik 8).
+async fn drain_complaints(stderr: ChildStderr, into: Arc<Mutex<String>>) {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.len() < COMPLAINT_KEPT {
+            held.push_str(&line);
+        }
+        // Bez `break` po przekroczeniu limitu: pętla musi dalej OPRÓŻNIAĆ potok, nawet gdy nic
+        // już nie zapamiętuje. Wyjście tutaj przywróciłoby dokładnie tę blokadę, przed którą
+        // to zadanie stoi.
+    }
+}
+
 /// Czyta stdout linia po linii, kładzie **bajty** w transkrypcie kroku i sypie zdarzeniami,
 /// aż do końca strumienia.
 ///
@@ -1051,9 +1179,10 @@ fn interrupt_request(request_id: &str) -> serde_json::Result<String> {
 async fn pump(
     stdout: ChildStdout,
     capabilities: Arc<OnceLock<Vec<String>>>,
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     outcomes: mpsc::Sender<Outcome>,
     mut transcript: Option<Recorder>,
+    complaint: Arc<Mutex<String>>,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut decoder = ClaudeDecoder::new();
@@ -1122,20 +1251,37 @@ async fn pump(
             if let Some(recorder) = transcript.as_mut() {
                 recorder.curate(&event, tool.as_ref()).await;
             }
-            emit(event, &events, &outcomes).await;
+            // 2026-08-18 — FAKT O NARZĘDZIU JEDZIE DALEJ. Do tego dnia szło tu samo `event`,
+            // a `tool` kończyło życie w transkrypcie: wołający dostawał zdarzenie bez rodziny
+            // czynności, więc `Curator::tool_start` oddawał `Vec::new()` i wiersze `read`,
+            // `search`, `edit`, `ran` nie powstawały nigdy (powód w całości przy
+            // [`DecodedEvent`]).
+            emit(DecodedEvent { event, tool }, &events, &outcomes).await;
         }
     }
 
     // Kod wyjścia jest sygnałem drugorzędnym i tu go nie mamy: uchwyt procesu został przy
     // wołającym, a strumień skończył się przed nim. Zdarzenie końca musi paść mimo to, inaczej
     // krok wisi w `running` do końca biegu [T1 §8.5].
-    if let Some(event) = decoder.end_of_stream(None) {
+    // Skargę czytamy DOPIERO TERAZ, po EOF na wyjściu: proces, który się przewrócił, pisze na
+    // stderr zanim zamknie stdout, więc w tej chwili buforek ma już to, co miał do powiedzenia.
+    // Zamek brany i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await` nie ma ani
+    // jednej instrukcji (niezmiennik 8).
+    let said = complaint
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    // Kodu wyjścia tu nie ma i nie da się go tu mieć: uchwyt procesu został przy wołającym,
+    // a ta pętla kończy się na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Zdanie
+    // niesie więc skargę, nie numer — i to jest ta połowa, która odpowiada na „dlaczego".
+    // Zgłoszone: gałąź `Some(code)` niżej ma dziś jednego wołającego w testach dekodera.
+    if let Some(event) = decoder.end_of_stream(None, &said) {
         // Bez narzędzia i to nie jest brak: koniec strumienia jest faktem o turze, nie
         // o czynności. Wiersz z niego powstaje w kuratorze tak samo jak z linii `result`.
         if let Some(recorder) = transcript.as_mut() {
             recorder.curate(&event, None).await;
         }
-        emit(event, &events, &outcomes).await;
+        emit(event.into(), &events, &outcomes).await;
     }
 
     if let Some(recorder) = transcript.take()
@@ -1158,16 +1304,16 @@ async fn pump(
 /// Odwrotna kolejność kosztowałaby dokładnie to [T1 „Worth adding": wolny konsument opóźnia
 /// wyjście do 30 s].
 async fn emit(
-    event: AgentEvent,
-    events: &mpsc::Sender<AgentEvent>,
+    decoded: DecodedEvent,
+    events: &mpsc::Sender<DecodedEvent>,
     outcomes: &mpsc::Sender<Outcome>,
 ) {
-    if let AgentEvent::Finished(outcome) = &event {
+    if let AgentEvent::Finished(outcome) = &decoded.event {
         let _ = outcomes.send(outcome.clone()).await;
     }
     // Zamknięty kanał zdarzeń nie kończy pętli: nikt już nie patrzy na ekran, ale wynik tury
     // nadal ma dojść tam, gdzie ktoś na niego czeka.
-    let _ = events.send(event).await;
+    let _ = events.send(decoded).await;
 }
 
 /// Żywa sesja `claude` — jeden proces, wiele tur.
@@ -1179,10 +1325,30 @@ pub struct ClaudeHandle {
     /// jego polem, a nie kopią tutaj: dwie kopie tego samego faktu rozjeżdżają się dokładnie
     /// w chwili, w której zaczyna on być ciekawy.
     process: Supervised,
-    /// Wejście sesji, otwarte tak długo jak ona. Tędy jedzie koperta każdej kolejnej tury
-    /// i przerwanie w paśmie; `None` dopiero po [`AgentHandle::close`], bo porzucenie tego
-    /// potoku **jest** końcem sesji [T1 §2].
-    stdin: Option<ChildStdin>,
+    /// Nadajnik do sesji. Tędy jedzie koperta każdej kolejnej tury i przerwanie w paśmie.
+    ///
+    /// 2026-08-18 — TU BYŁ `Option<ChildStdin>` I TO BYŁA PRZYCZYNA, dla której nie dało się
+    /// napisać do żywego agenta. Potok był polem uchwytu, więc każdy pisarz potrzebował
+    /// `&mut self` — a `commands::run::one_turn` trzyma uchwyt pożyczony mutowalnie przez CAŁĄ
+    /// turę (`handle.wait()` w `tokio::select!`). Okno nie miało jak dosięgnąć sesji, dopóki tura
+    /// trwa; po turze `close()` porzuca potok, co JEST końcem sesji. Czyli: nigdy.
+    ///
+    /// Potok przechodzi teraz na własność [`talk`], a tu zostaje nadajnik — klonowalny, bez
+    /// `&mut`. Kolejność linii jest dalej zachowana, bo kanał jest jeden i czyta go jeden
+    /// odbiorca; dwa kanały nad jednym `stdin` przeplotłyby kopertę tury z prośbą o przerwanie,
+    /// a CLI czyta stdin linia po linii.
+    ///
+    /// `None` dopiero po [`AgentHandle::close`].
+    voice: Option<Voice>,
+    /// Zadanie, które trzyma potok. Czekamy na nie w [`AgentHandle::close`]: dopiero jego koniec
+    /// porzuca `stdin`, a porzucenie potoku jest tym, po czym CLI wychodzi zerem [T1 §2].
+    writer: Option<tokio::task::JoinHandle<()>>,
+    /// Prośba do pisarza: „koniec, porzuć potok".
+    ///
+    /// Istnieje, bo czekanie na zniknięcie ostatniego klonu głosu jest zawieszeniem, nie
+    /// zamknięciem — cały powód stoi przy [`talk`]. `None` po [`AgentHandle::close`], bo
+    /// zamknięcie ma się dziać raz.
+    hush: Option<oneshot::Sender<()>>,
     /// Zdolności protokołu ogłoszone w `system/init`, wpisane tu przez pętlę czytającą.
     ///
     /// Dzielone, bo ogłasza je strumień, a czyta eskalacja anulowania — i to jest jej **jedyny**
@@ -1214,18 +1380,18 @@ impl ClaudeHandle {
     /// Dokładnie **jedna** prośba na anulowanie: powtórzone pytanie, kiedy odpowiedź jest już
     /// w drodze, jest nieodróżnialne od dwóch anulowań i tak samo wygląda w dzienniku CLI.
     async fn ask_to_stop(&mut self) -> bool {
-        let Ok(request) = interrupt_request(&format!("req_{}", Uuid::now_v7().simple())) else {
+        let Some(voice) = self.voice.as_ref() else {
             return false;
         };
-        let Some(pipe) = self.stdin.as_mut() else {
-            return false;
-        };
-
-        // Znak nowej linii jest częścią protokołu, tak samo jak w kopercie tury: CLI czyta stdin
-        // linia po linii i bez niego prośba nigdy się nie kończy.
-        if pipe.write_all(request.as_bytes()).await.is_err()
-            || pipe.write_all(b"\n").await.is_err()
-            || pipe.flush().await.is_err()
+        // Prośba idzie TYM SAMYM kanałem, co koperty tur (powód przy polu `voice`): inaczej
+        // dwa pisarze nad jednym potokiem przeplotłyby linie i CLI dostałoby połowę każdej.
+        if voice
+            .send(ToAgent::Interrupt(format!(
+                "req_{}",
+                Uuid::now_v7().simple()
+            )))
+            .await
+            .is_err()
         {
             tracing::debug!(
                 session = %self.session.id,
@@ -1263,8 +1429,7 @@ impl AgentHandle for ClaudeHandle {
     /// `flush()` po zapisie, bo tura, która utknęła w buforze, wygląda dokładnie tak samo jak
     /// agent, który nie odpowiada.
     async fn send(&mut self, text: String) -> anyhow::Result<()> {
-        let envelope = user_envelope(&text)?;
-        let pipe = self.stdin.as_mut().ok_or_else(|| {
+        let voice = self.voice.as_ref().ok_or_else(|| {
             anyhow!(
                 "a follow-up turn of {} bytes has nowhere to go: session {} was already closed, \
                  and closing the input is how a session ends",
@@ -1272,10 +1437,14 @@ impl AgentHandle for ClaudeHandle {
                 self.session.id
             )
         })?;
-        pipe.write_all(envelope.as_bytes()).await?;
-        pipe.write_all(b"\n").await?;
-        pipe.flush().await?;
-        Ok(())
+        voice
+            .send(ToAgent::Turn(text))
+            .await
+            .map_err(|_| anyhow!("session {} stopped listening", self.session.id))
+    }
+
+    fn voice(&self) -> Option<Voice> {
+        self.voice.clone()
     }
 
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
@@ -1328,7 +1497,26 @@ impl AgentHandle for ClaudeHandle {
         // Porzucenie potoku JEST tym zamknięciem: dziecko dostaje EOF i wychodzi 0. Musi paść
         // przed czekaniem, bo inaczej czekamy na proces, któremu sami nie powiedzieliśmy, że to
         // koniec — i jest to zawieszenie nie do odróżnienia od agenta, który myśli.
-        drop(self.stdin.take());
+        //
+        // DWA KROKI, NIE JEDEN, odkąd potok należy do [`talk`]: najpierw ginie nadajnik (pętla
+        // pisarza kończy się na zamkniętym kanale), potem czekamy na samo zadanie — i dopiero
+        // jego koniec porzuca `ChildStdin`. Pominięcie tego czekania zostawiałoby potok żywy
+        // dokładnie tak długo, jak długo zadanie jeszcze nie zdążyło się zejść, czyli dawałoby
+        // zawieszenie zależne od pogody.
+        drop(self.voice.take());
+        /* PROŚBA, NIE CZEKANIE NA CUDZE KLONY. Głos jest klonowalny i produkcja trzyma jego
+         * kopię przez całą turę, więc samo porzucenie NASZEGO nadajnika nie kończy pisarza —
+         * a wtedy `stdin` żyje, CLI nie dostaje EOF i to czekanie nie wraca nigdy. Zmierzone
+         * 2026-08-18 na żywej sesji: 15 minut przy dwóch turach po trzy sekundy. Powód w całości
+         * przy `talk`. */
+        if let Some(hush) = self.hush.take() {
+            // Odbiornik już mógł zniknąć — pisarz kończy się też sam, kiedy CLI przestanie
+            // czytać. Wtedy nie ma komu tego powiedzieć i nie ma o czym mówić.
+            let _ = hush.send(());
+        }
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.await;
+        }
 
         // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
         // różnica, którą mierzy dowód z `cancel()`.
@@ -1407,7 +1595,7 @@ impl AgentDriver for ClaudeDriver {
     async fn start(
         &self,
         spec: RunSpec,
-        tx: mpsc::Sender<AgentEvent>,
+        tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         // Plik transkryptu powstaje TUTAJ, przed pierwszym procesem, i błąd jego otwarcia
         // przewraca start kroku (T-34, 2026-08-16). Sterownik poproszony o transkrypt nie ma
@@ -1443,6 +1631,21 @@ impl AgentDriver for ClaudeDriver {
             .stdout()
             .ok_or_else(|| anyhow!("the agent started without an output stream to read"))?;
 
+        // SKARGI ODBIERAMY I OPRÓŻNIAMY, i to jest jedna z dwóch rzeczy, bez których krok pada
+        // zdaniem bez przyczyny (druga to `end_of_stream`, które to zdanie składa). Potok był
+        // ustawiany od pierwszego dnia (`supervisor::spawn`, `Stdio::piped()`) i **nie dawał się
+        // odebrać**, więc nikt go nie czytał: przyczyna awarii szła do bufora o pojemności
+        // ~64 KB, a przy pełnym buforze dziecko blokuje się na `write`.
+        //
+        // Brak potoku NIE jest tu awarią startu: sonda wersji i część kryteriów sterownika
+        // uruchamiają proces bez niego, a agent bez strumienia skarg jest agentem, który po
+        // prostu nie ma na co narzekać.
+        let complaint = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = process.stderr() {
+            let into = Arc::clone(&complaint);
+            let _drain = tokio::spawn(drain_complaints(stderr, into));
+        }
+
         let (finished, outcomes) = mpsc::channel(TURNS_IN_FLIGHT);
         // Zdolności ogłasza `init`, czyli strumień — a potrzebuje ich uchwyt, w eskalacji
         // anulowania. Dlatego jedno pudełko, wypełniane przez pętlę czytającą.
@@ -1457,6 +1660,7 @@ impl AgentDriver for ClaudeDriver {
             tx,
             finished,
             transcript,
+            complaint,
         ));
 
         // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
@@ -1465,10 +1669,19 @@ impl AgentDriver for ClaudeDriver {
             anyhow!("the agent started without an input channel for the turns that follow")
         })?;
 
+        /* POTOK PRZECHODZI NA WŁASNOŚĆ ZADANIA, a uchwyt dostaje nadajnik. To jest cała zmiana,
+         * po której da się napisać do agenta, który właśnie pracuje — powód w całości przy polu
+         * `ClaudeHandle::voice` i przy `talk`. */
+        let (voice, inbox) = mpsc::channel(SAY_QUEUE);
+        let (hush, hushed) = oneshot::channel();
+        let writer = tokio::spawn(talk(stdin, inbox, session.id.clone(), hushed));
+
         Ok(Box::new(ClaudeHandle {
             session,
             process,
-            stdin: Some(stdin),
+            voice: Some(voice),
+            writer: Some(writer),
+            hush: Some(hush),
             capabilities,
             outcomes,
         }))

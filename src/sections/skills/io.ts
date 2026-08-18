@@ -50,3 +50,21 @@ export function readLink(url: string): Promise<Import> {
 export function install(item: Import): Promise<void> {
   return invoke<void>('install_skill', { item });
 }
+
+/**
+ * Zabierz umiejętność z katalogów agentów.
+ *
+ * 2026-08-18 — do tego dnia tej drogi NIE BYŁO WCALE: ani komendy, ani kontrolki. Skutek jest
+ * cięższy niż zwykły brak funkcji, bo ta sekcja pisze do ŻYWEJ konfiguracji narzędzi człowieka
+ * (`src-tauri/src/skills/mod.rs`, `DESTINATION_DIRS`): jedno błędne kliknięcie „Add" wchodziło
+ * do każdego następnego uruchomienia Claude Code i Codeksa, bez ostrzeżenia i bez drogi
+ * powrotu. Dodawanie bez zabierania nie jest połową mechanizmu — jest pułapką.
+ *
+ * Argumentem jest NAZWA, nie ścieżka. Katalogi vendorów wylicza Rust
+ * (`skills::place::destinations`) i to jest jedyne miejsce w repo, w którym stoi
+ * `.claude/skills`. Ścieżka podana z okna byłaby drugą odpowiedzią na pytanie „gdzie to leży"
+ * (niezmiennik 13) — i jedyną, którą da się skierować gdziekolwiek.
+ */
+export function remove(name: string): Promise<void> {
+  return invoke<void>('delete_skill', { name });
+}

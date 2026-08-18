@@ -49,8 +49,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::line::Line;
 use loadout_lib::engine::step::StepState;
@@ -135,24 +135,62 @@ async fn every_line_of_the_run_reaches_the_pump_in_order() -> Result<(), Box<dyn
         report.steps
     );
 
-    // (a) Pompa oddała DOKŁADNIE tyle linii, ile bieg wyprodukował.
+    /* 2026-08-18 — BIEG MÓWI TERAZ DWIE RZECZY OD SIEBIE, a nie tylko przekazuje sterownik.
+     *
+     * `Line::StepState` powstaje przy każdym przejściu stanu kroku (`commands::run::announce`) —
+     * dla jednego kroku są to dwa wiersze, `running` i `succeeded`. Do tego dnia stan kroku żył
+     * wyłącznie w księdze i w `run.json`, więc okno nie dostawało go NIGDY: pasek loadoutu stał
+     * na obrysach przez cały bieg, a kafelek agenta edytującego pliki pokazywał „waiting".
+     *
+     * To kryterium mierzy pompę, nie planistę: pyta, czy pod obciążeniem NIC NIE GINIE i czy
+     * kolejność zostaje. Liczba 300 była liczbą wierszy STEROWNIKA, nie „wszystkiego, co bieg
+     * wyprodukował" — te dwa pojęcia były do dziś tym samym i przestały nim być. Rozdzielamy
+     * je więc jawnie, zamiast podbijać stałą do 302: stała 302 jest liczbą przepisaną z palca
+     * i milczałaby o trzecim wierszu dołożonym za tydzień. */
+    // `u64` po stronie pompy, `usize` po stronie wektora — jedna konwersja, na górze, żeby
+    // asercje niżej mówiły o liczbach, a nie o rzutowaniach.
+    let glued = u64::try_from(delivered.len())?;
+    let from_driver_wanted = usize::try_from(LINES)?;
+
+    let (mine, from_driver): (Vec<Json>, Vec<Json>) = delivered
+        .iter()
+        .cloned()
+        .partition(|row| row.get("kind").and_then(Json::as_str) == Some("stepState"));
+
+    // (a) Pompa oddała DOKŁADNIE tyle linii, ile bieg jej podał — ani jednej mniej.
     assert_eq!(
-        stats.delivered, LINES,
-        "the pump delivered {} of the {LINES} lines the run produced. \"Some of them arrived\" \
-         is the assertion this criterion exists to refuse: a bridge that drops packets under \
-         load passes it, and load is the only condition this pump was built for",
-        stats.delivered
+        stats.delivered,
+        glued,
+        "the pump delivered {} lines and the window glued {} back together. \"Some of them \
+         arrived\" is the assertion this criterion exists to refuse: a bridge that drops packets \
+         under load passes it, and load is the only condition this pump was built for",
+        stats.delivered,
+        delivered.len()
+    );
+    assert_eq!(
+        from_driver.len(),
+        from_driver_wanted,
+        "the {LINES} lines the driver produced have to come out of the pump as {LINES}; {} came",
+        from_driver.len()
     );
 
     // (b) Bilans domyka się co do sztuki. To jest ta asercja, którą łamie most gubiący po cichu.
     assert_eq!(
         stats.delivered + stats.dropped,
-        LINES,
-        "the pump's books do not close: {} delivered plus {} dropped is not {LINES}. Every line \
-         the run handed over is either delivered or counted as lost — a line that falls out of \
-         both numbers at once is exactly the line nobody ever notices (invariant 13)",
+        glued + stats.dropped,
+        "the pump's books do not close: {} delivered plus {} dropped does not account for every \
+         line handed over. Every line the run handed over is either delivered or counted as \
+         lost — a line that falls out of both numbers at once is exactly the line nobody ever \
+         notices (invariant 13)",
         stats.delivered,
         stats.dropped
+    );
+    assert_eq!(
+        mine.len(),
+        2,
+        "one step means exactly two state changes on the wire — running, then succeeded. \
+         Anything else means the strip either never moves or moves on facts nobody produced. \
+         The rows were {mine:?}"
     );
 
     // (c) Ta sama treść, w tej samej kolejności, bez sortowania.
@@ -160,14 +198,14 @@ async fn every_line_of_the_run_reaches_the_pump_in_order() -> Result<(), Box<dyn
         .map(|number| serde_json::to_value(line(number)))
         .collect::<Result<Vec<Json>, _>>()?;
     assert_eq!(
-        delivered.len(),
+        from_driver.len(),
         wanted.len(),
         "gluing the batches back together gives {} rows against {} sent",
-        delivered.len(),
+        from_driver.len(),
         wanted.len()
     );
     assert_eq!(
-        delivered, wanted,
+        from_driver, wanted,
         "the lines came out of the pump changed, reordered or repeated. They are compared \
          WITHOUT SORTING and character for character: sorting first would erase the one property \
          being measured, and comparing presence instead of content would pass over a bridge that \
@@ -202,6 +240,7 @@ async fn three_hundred_lines() -> Result<(RunReport, PumpStats, Vec<Json>), Box<
     let request = RunRequest {
         workflow,
         how_many_at_once: 1,
+        task: None,
     };
 
     // Prawdziwy szew: bieg pisze do `LineSink`, pompa czyta z `LineSource` i wypycha paczki
@@ -349,7 +388,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let session = SessionRef {
             vendor: VENDOR,
@@ -362,9 +401,12 @@ impl AgentDriver for Fake {
         // w porównanie dwóch tych samych pomyłek.
         for number in 1..=self.lines {
             events
-                .send(AgentEvent::Said {
-                    text: number.to_string(),
-                })
+                .send(
+                    (AgentEvent::Said {
+                        text: number.to_string(),
+                    })
+                    .into(),
+                )
                 .await
                 .map_err(|_| anyhow!("the curator stopped listening after {} lines", number - 1))?;
         }

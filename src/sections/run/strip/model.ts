@@ -14,7 +14,7 @@
  * wypełniony to obietnica, że krok się udał, a pominięty krok pokazany jako zrobiony jest
  * kłamstwem, które użytkownik odkrywa dopiero po wyniku.
  */
-import type { Step, StepState } from '../../../state/run';
+import type { FeedLine, Step, StepState } from '../../../state/run';
 
 /** Trzy stany bloku [DESIGN §2]: wypełniony, akcent, obrys. */
 export type BlockState = 'done' | 'now' | 'todo';
@@ -31,6 +31,18 @@ export interface Strip {
   readonly blocks: readonly Block[];
   /** `<nazwa> · step N of M` / `<nazwa> · N of M running` / `<nazwa> · M steps`. */
   readonly caption: string;
+  /**
+   * Chip z prawej: ile ten bieg zajął agentom i ile kosztował. Puste, dopóki nie wiadomo.
+   *
+   * TO JEST JEDYNE DOZWOLONE MIEJSCE NA TE DWIE LICZBY w całej aplikacji (niezmiennik 13) —
+   * więc ich brak tutaj znaczył, że nie ma ich NIGDZIE, i tak było do 2026-08-18: makieta ma
+   * chip `4m 12s · $0.31`, a pasek nie miał ani jednej cyfry.
+   *
+   * Puste, nie „—" i nie „0.0s · $0.00": bieg, po którym nie skończył się ani jeden krok,
+   * nie ma jeszcze czego podać, a zero wygląda jak pomiar (`SPEND: not reported` z poprzedniego prototypu
+   * stało w tej samej siatce, co wiersz z prawdziwą liczbą).
+   */
+  readonly spend: string;
 }
 
 /**
@@ -86,8 +98,78 @@ function captionFor(workflow: string, blocks: readonly Block[]): string {
   return `${workflow} · ${total} steps`;
 }
 
-/** Pasek dla tego workflow i tych kroków, w kolejności grafu. */
-export function stripFor(workflow: string, steps: readonly Step[]): Strip {
+/** Sekundy w milisekundzie — jedyne miejsce, w którym ta zamiana tu żyje. */
+const MS_PER_SECOND = 1_000;
+/** Sekund w minucie. */
+const SECONDS_PER_MINUTE = 60;
+
+/**
+ * Czas tak, jak zapisuje go strona Rusta (`engine/line.rs`, `took_text`): `6.2s` pod minutą,
+ * `4m 12s` powyżej.
+ *
+ * Przepisany kształt, nie przepisana liczba: te dwa napisy muszą się czytać identycznie, bo
+ * ten sam bieg widać i w linii `done` w strumieniu, i w chipie na pasku. Dwie różne konwencje
+ * na jeden pomiar to dwa różne odczyty tej samej rzeczy na jednym ekranie.
+ */
+function tookText(ms: number): string {
+  if (ms < SECONDS_PER_MINUTE * MS_PER_SECOND) {
+    const tenths = Math.round(ms / 100) / 10;
+    return tenths.toFixed(1) + 's';
+  }
+  const seconds = Math.floor(ms / MS_PER_SECOND);
+  return (
+    String(Math.floor(seconds / SECONDS_PER_MINUTE)) +
+    'm ' +
+    String(seconds % SECONDS_PER_MINUTE) +
+    's'
+  );
+}
+
+/**
+ * Chip paska: ile czasu zebrało się na agentach i ile to kosztowało — z tego, co PRZYSZŁO.
+ *
+ * SKĄD TE LICZBY. Wiersz `done` zamyka turę agenta i niesie `durationMs` oraz `costUsd`
+ * (`engine/line.rs`, `done_line`) — surowo, nie zaokrąglone do wyświetlenia, właśnie po to,
+ * żeby suma biegu dała się policzyć. Sumujemy więc to, co dostaliśmy, i ani jednej liczby
+ * więcej: bieg bez ani jednej skończonej tury daje pusty napis, a nie zero.
+ *
+ * CZEGO TA FUNKCJA NIE UDAJE. Suma czasów tur NIE JEST czasem zegarowym biegu — przy dwóch
+ * agentach pracujących równolegle jest większa. Zegara ściennego biegu okno dziś nie ma
+ * (`run_workflow` oddaje `()`, a `RunReport` nie jest `Serialize`), więc chip mówi to, co
+ * naprawdę wiemy, a podpowiedź nad nim nazywa tę wielkość słowami. Wpisanie tu „elapsed"
+ * byłoby liczbą, która wygląda na zegar i nim nie jest.
+ *
+ * Koszt pomijany, kiedy ŻADNA tura go nie podała: `costUsd` jest `Option<f64>` i dostawca bez
+ * cenniku (albo tryb, w którym go nie ma) oddaje `null`. `$0.00` przy biegu, który kosztował
+ * nieznane pieniądze, jest gorsze niż brak liczby.
+ */
+export function spendFor(lines: readonly FeedLine[]): string {
+  let ms = 0;
+  let cost = 0;
+  let turns = 0;
+  let priced = false;
+  for (const line of lines) {
+    if (line.kind !== 'done') continue;
+    turns += 1;
+    ms += line.durationMs;
+    if (line.costUsd !== null) {
+      cost += line.costUsd;
+      priced = true;
+    }
+  }
+  if (turns === 0) return '';
+  return priced ? tookText(ms) + ' · $' + cost.toFixed(2) : tookText(ms);
+}
+
+/**
+ * Pasek dla tego workflow i tych kroków, w kolejności grafu.
+ *
+ * `spend` wchodzi gotowe, a nie liczy się tutaj z linii: pasek jest funkcją PLANU, a wydatek
+ * jest funkcją STRUMIENIA, i wołający ma pod ręką jedno i drugie. Trzeci argument jest
+ * opcjonalny, bo cudze kryterium (`strip/strip.test.ts`) woła tę funkcję dwoma i nie wolno
+ * go tknąć — a bieg bez ani jednej skończonej tury i tak nie ma czego pokazać.
+ */
+export function stripFor(workflow: string, steps: readonly Step[], spend = ''): Strip {
   /* Jeden blok na jeden krok, w kolejności grafu — długość bierze się z danych. Cztery bloki
    * „bo makieta ma cztery" to interfejs rysujący relację, której nie ma (niezmiennik 17). */
   const blocks: Block[] = steps.map((step) => ({
@@ -99,5 +181,5 @@ export function stripFor(workflow: string, steps: readonly Step[]): Strip {
     ended: ENDED.has(step.state),
   }));
 
-  return { blocks, caption: captionFor(workflow, blocks) };
+  return { blocks, caption: captionFor(workflow, blocks), spend };
 }

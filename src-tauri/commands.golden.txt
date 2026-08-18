@@ -16,12 +16,16 @@
 check_workflow
 continue_run
 delete_agent
+delete_skill
 delete_workflow
+delete_workspace
 install_skill
 list_agents
+list_handoffs
 list_notes
 list_skills
 list_workflows
+list_workspaces
 load_workflow
 new_id
 put_note_to_use
@@ -29,5 +33,7 @@ review_skill
 run_workflow
 save_agent
 save_workflow
+save_workspace
+say_to_agent
 stop_run
 stop_using_note

@@ -1,9 +1,15 @@
 /* Otwarty dokument workflow: `WorkflowFile` w pamięci plus akcje, które go zmieniają.
  *
- * Ten plik NIE importuje `@/ipc`. Nazwy komend zna jedno miejsce w sekcji —
- * `src/sections/workflows/canvas/io.ts` — i to ono wstrzykuje tu `WorkflowIo` (niezmiennik 23),
+ * Ten plik nie zna ANI JEDNEJ nazwy komendy Rusta. Zna je jedno miejsce w sekcji —
+ * `src/sections/workflows/io.ts` — i to ono wstrzykuje tu `WorkflowIo` (niezmiennik 23),
  * dokładnie tak jak `AgentsIo` w `src/state/agents.ts`. Test wstrzykuje atrapę zamiast mockować
  * transport, którego magazyn i tak nie widzi.
+ *
+ * 2026-08-18 — JEDEN import z `../ipc` jednak tu jest i to nie jest złamanie zdania wyżej:
+ * `ipc/why.ts` nie niesie żadnej nazwy komendy, tylko odpowiedź na pytanie „czym Tauri odrzuciło
+ * to wywołanie". Tauri odrzuca NAPISEM, więc `error instanceof Error` jest zawsze fałszywe i każda
+ * precyzyjna odmowa Rusta ginęła. Druga kopia tego rozpakowania, wpisana tutaj lokalnie, byłaby
+ * ósmym miejscem, dla którego `why` w ogóle powstało.
  *
  * Dlaczego `saveAgent` siedzi w `WorkflowIo`, choć to sekcja workflow: panel kroku ma w liście
  * „Who does this" pozycję `＋ Create a new agent…` (`docs/mockup/index.html:603`), więc ta sekcja
@@ -20,6 +26,7 @@
  * nowy dokument wchodzi do stanu.
  */
 import { create } from 'zustand';
+import { why } from '../ipc/why';
 import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
 import type { Agent } from './agents';
 
@@ -147,8 +154,34 @@ export interface WorkflowState {
   document: WorkflowFile;
   /** Ostatnie uwagi z Rusta. Frontend ich nie wymyśla. */
   notes: Note[];
+  /**
+   * Dokument, o którym WIEMY, że leży na dysku — po referencji, nie po treści.
+   *
+   * Ziarno jest dokumentem otwierającym, bo edytor dostał go z dysku. Porównanie referencji
+   * z `document` odpowiada więc na pytanie „czy ekran to plik" bez liczenia czegokolwiek
+   * i bez zegara, który po pięciu minutach zamienia „saved just now" w nieprawdę.
+   */
+  savedDocument: WorkflowFile;
+  /**
+   * Zdanie odmowy z OSTATNIEGO zapisu, albo `null`, kiedy ostatni zapis się udał.
+   *
+   * 2026-08-18 — PO CO TO POLE ISTNIEJE, zmierzone na dysku właściciela. `save_workflow` odmawia
+   * PRZED `fs::write` (`workflow::file::save`), a autosave wołał `void get().saveNow()` bez
+   * `catch`, z komentarzem, że odrzucenie „trafia do globalnej obsługi błędów okna" — a takiej
+   * obsługi w tej aplikacji nie ma. Skutek: płótno pokazywało krok, którego w pliku nie było,
+   * i nic o tym nie mówiło. Plik właściciela ma `s_1` i `s_3`, bez `s_2`.
+   */
+  couldNotSave: string | null;
   /** Jedyna droga, którą nowy dokument wchodzi do stanu — i miejsce na stos cofnij/ponów. */
   commit: (next: WorkflowFile) => void;
+  /**
+   * Nowa nazwa workflow. Jedzie przez `commit`, więc autosave zabiera ją na dysk.
+   *
+   * 2026-08-18 — do tego dnia nazwy nie dało się zmienić z okna wcale (`editor.tsx` rysował
+   * `<h1>{name}</h1>`), więc na dysku właściciela leżały „New workflow" i „New workflow 2",
+   * a Run startował ten z nich, który wypadał pierwszy w sortowaniu bajtowym.
+   */
+  rename: (name: string) => void;
   /** Odświeża uwagi. Wołane po zapisie i przed Run. */
   recheck: () => Promise<void>;
   /** Zapisuje otwarty dokument i odświeża uwagi. Odrzucenie jest widoczne dla wołającego. */
@@ -167,6 +200,12 @@ export interface WorkflowState {
  * który nie odzwierciedla ekranu przez cały czas pracy. 400 ms jest krótsze niż przerwa,
  * po której człowiek patrzy na wynik, i dłuższe niż przerwa między dwoma znakami. */
 const AUTOSAVE_MS = 400;
+
+/** Zdanie na wypadek odmowy, która nic nie powiedziała — zerwany kanał, wyjątek z `@tauri-apps`.
+ *
+ * Mówi, CO się nie udało, i mówi, że plik został nietknięty. „Something went wrong" w miejscu,
+ * w którym znamy czynność, jest gorsze niż brak zdania: człowiek nie wie nawet, czego szukać. */
+const COULD_NOT_SAVE = 'This workflow was not saved, so the file on disk is still the older one.';
 
 /** Magazyn otwartego dokumentu.
  *
@@ -202,6 +241,11 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
   return create<WorkflowState>()((set, get) => ({
     document: open,
     notes: [],
+    /* Ziarnem jest ten sam obiekt, nie jego kopia: edytor dostał go z dysku, więc w chwili
+     * otwarcia ekran JEST plikiem. Kopia (`structuredClone`) dałaby tu nierówność referencji
+     * i ekran twierdziłby, że ma niezapisane zmiany, zanim ktokolwiek czegokolwiek dotknął. */
+    savedDocument: open,
+    couldNotSave: null,
 
     /* Jedno miejsce, w którym dokument się zmienia. Stos cofnij/ponów (PLAN §7, v1.1) wchodzi
      * TUTAJ i nigdzie indziej — dopisany przy każdej akcji z osobna byłby pięcioma stosami,
@@ -219,13 +263,21 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
       }
       autosave = setTimeout(() => {
         autosave = null;
-        /* Świadomie BEZ `.catch`. Powód stoi trzy akapity niżej przy `saveNow` i jest istotą
-         * tego zapisu: autosave, który po cichu nie zapisał, jest gorszy niż jego brak.
-         * `.catch(() => {})` daje ekran twierdzący, że wszystko jest na dysku, kiedy nie jest;
-         * `.catch(console.error)` daje to samo, tylko z wierszem w konsoli, której nikt nie
-         * ogląda. Odrzucenie zostaje więc odrzuceniem i wychodzi na wierzch — w teście wywala
-         * bieg, w aplikacji trafia do globalnej obsługi błędów okna. */
-        void get().saveNow();
+        /* `catch`, który KOŃCZY W STANIE, a nie w konsoli — i to jest cała różnica.
+         *
+         * Do 2026-08-18 stało tu `void get().saveNow()` bez `catch`, z komentarzem, że odrzucenie
+         * „trafia do globalnej obsługi błędów okna". Takiej obsługi w tej aplikacji nie ma
+         * i nigdy nie było, więc odmowa Rusta — a `save_workflow` odmawia PRZED dotknięciem
+         * dysku — kończyła jako nieobsłużone odrzucenie obietnicy: zero pikseli na ekranie
+         * i plik o jedną (albo o dziesięć) zmian do tyłu wobec płótna.
+         *
+         * `.catch(console.error)` byłby tym samym defektem z wierszem w konsoli, której nikt nie
+         * otwiera. Zdanie idzie więc do stanu, a ekran ma obowiązek je pokazać (`editor.tsx`). */
+        void get()
+          .saveNow()
+          .catch((error: unknown) => {
+            set({ couldNotSave: why(error, COULD_NOT_SAVE) });
+          });
       }, AUTOSAVE_MS);
     },
 
@@ -240,8 +292,19 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
      * nie wyszedł. Autosave, który po cichu nie zapisał, jest gorszy niż jego brak: plik jest
      * prawdą, a użytkownik ma wtedy dwie różne prawdy i nie wie o żadnej. */
     saveNow: async () => {
-      await io.save(get().document);
+      /* Zapamiętujemy DOKŁADNIE ten obiekt, który poszedł na dysk, a nie `get().document`
+       * odczytany po `await`: w oknie oczekiwania człowiek zdąży wpisać kolejną literę, a wtedy
+       * „ekran to plik" byłoby zdaniem o dokumencie, którego nikt nie zapisał. */
+      const saving = get().document;
+      await io.save(saving);
+      set({ savedDocument: saving, couldNotSave: null });
       await get().recheck();
+    },
+
+    rename: (name: string) => {
+      /* Przez `commit`, jak każda inna zmiana: to pod nim wisi autosave, więc nazwa wpisana
+       * w nagłówku dojeżdża do pola `name` w pliku bez ani jednej dodatkowej drogi zapisu. */
+      get().commit({ ...get().document, name });
     },
 
     editStep: (stepId: string, agent: Agent, edit: Overrides) => {

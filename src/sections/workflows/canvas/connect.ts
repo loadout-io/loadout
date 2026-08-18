@@ -11,6 +11,7 @@
  * przychodzi jawnie — płótno robi `isValidConnection={(c) => isValidConnection(c, file)}`.
  */
 import type { Point, Step, WorkflowFile } from '../../../state/workflows';
+import { GRID } from '../../../state/workflows';
 import { snap } from './map';
 
 /** Tyle z `Connection` z `@xyflow/react`, ile ta warstwa czyta. Portów nie mamy (T3 §3.1). */
@@ -131,6 +132,54 @@ export function freshId(file: WorkflowFile): string {
  * `agent: ''` znaczy „jeszcze nie wybrano" i jest widoczne od razu: walidator (T-12) zgłasza
  * to jako problem. Zgadywanie pierwszego agenta z biblioteki byłoby decyzją podjętą za
  * użytkownika w miejscu, w którym on jej nie widzi. */
+/** Wolne miejsce pod najniższym kafelkiem — tam ląduje krok dodany przyciskiem.
+ *
+ * Nowy kafelek dokładnie na innym wygląda jak zgubiony, a przycisk nie niesie punktu, w którym
+ * użytkownik go chciał (w odróżnieniu od upuszczenia strzałki). */
+function roomBelow(file: WorkflowFile): Point {
+  const lowest = file.steps.reduce((deepest, step) => Math.max(deepest, step.at.y), 0);
+  return snap({ x: GRID, y: file.steps.length === 0 ? GRID : lowest + 6 * GRID });
+}
+
+/** Oba przyciski płótna, jednym ruchem: nowy krok stawiany LUZEM, bez żadnej strzałki.
+ *
+ * 2026-08-19 — ROZSTRZYGNIĘCIE WŁAŚCICIELA. Do tego dnia przycisk doklejał strzałkę od
+ * OSTATNIEGO kroku w pliku, więc płótno umiało zbudować wyłącznie łańcuch: żeby dostać trzy
+ * gałęzie wchodzące do jednego kroku, człowiek musiał najpierw skasować strzałkę, której
+ * nie prosił. Kafelki dokłada się luzem i łączy się je samemu — to jest cały gest tego edytora.
+ *
+ * DLACZEGO TO DOPIERO TERAZ, i dlaczego samo skreślenie strzałki wcześniej by nie wystarczyło.
+ * Nowy krok niesie `folder: { use: 'project' }`, a `one_folder_two_steps`
+ * (`src-tauri/src/workflow/check.rs`) mówi o dwóch krokach bez strzałki „mogą biec równocześnie
+ * i piszą po tych samych plikach". Dopóki była to `Level::Problem` przy zapisie, DRUGI dołożony
+ * kafelek robił z dokumentu plik, którego `workflow::file::save` odmawiał przed `fs::write` —
+ * autosave dostawał odmowę, a na dysku zostawał plik o jeden kafelek do tyłu. Zmierzone na dysku
+ * właściciela: plik z `s_1` i `s_3`, bez `s_2`. Ta sama reguła jest dziś ostrzeżeniem przy
+ * zapisie i problemem przy Run, więc szkic w budowie ZAPISUJE SIĘ, a bieg dalej nie ruszy
+ * z dwiema gałęziami w jednym folderze.
+ *
+ * `fresh-copy` na nowym kroku nie jest tu alternatywą i nigdy nie był: kasuje odmowę, ale
+ * podejmuje za człowieka decyzję o IZOLACJI, której on nie widzi — krok w osobnej kopii plików
+ * nie oddaje zmian do projektu, więc „agent poprawił, a w repo nic nie ma" byłoby następnym
+ * zgłoszeniem.
+ *
+ * Krok, który ma iść PO innym, robi się jednym gestem: pociągnij z dolnej kropki kafelka
+ * i upuść na pustym płótnie (`onConnectEnd`). Ten przycisk jest od stawiania, tamten gest od
+ * stawiania i łączenia naraz — dwie różne czynności, dwa różne wejścia. */
+export function addStep(
+  kind: Step['kind'],
+  file: WorkflowFile,
+): { file: WorkflowFile; step: Step } {
+  const step = freshStep(kind, freshId(file), roomBelow(file));
+
+  return {
+    /* `links` idzie NIETKNIĘTE, nie przepisane: strzałki są decyzją człowieka i ta funkcja
+     * nie ma o nich zdania. */
+    file: { ...file, steps: [...file.steps, step] },
+    step,
+  };
+}
+
 export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
   if (kind === 'checkpoint') return { kind, id, name: 'Ask me first', at };
 

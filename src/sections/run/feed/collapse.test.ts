@@ -21,11 +21,24 @@ import { kinds } from './kinds';
 import type { Feed } from './model';
 import { createFeed } from './model';
 
-/** Osiem rodzajów rozwiniętych domyślnie [T2 §7.3 reguła 2] — proza, pytania, błędy, struktura. */
-const OPEN = ['agent', 'asked', 'done', 'handoff', 'note', 'problem', 'run', 'step'];
+/** Dziewięć rodzajów rozwiniętych domyślnie [T2 §7.3 reguła 2] — proza, pytania, błędy, struktura. */
+const OPEN = [
+  'agent',
+  'asked',
+  'done',
+  'handoff',
+  'note',
+  'problem',
+  'run',
+  'step',
+  /* 2026-08-19 — tura CZLOWIEKA. Nalezy do prozy i dlatego jest rozwinieta: wiersz, ktory
+   * trzeba rozwinac, zeby przeczytac wlasne zdanie, jest zwinieta wlasna wypowiedzia.
+   * Powod, dla ktorego ten rodzaj w ogole powstal, stoi przy `Line::Told` po stronie Rusta. */
+  'told',
+];
 
 /** Sześć zwiniętych — mechanika. */
-const SHUT = ['edit', 'memory', 'ran', 'read', 'search', 'thinking'];
+const SHUT = ['edit', 'memory', 'ran', 'read', 'search', 'stepState', 'thinking'];
 
 /** Czterdzieści linii wyjścia, każda rozpoznawalna po numerze. */
 const OUTPUT = Array.from({ length: 40 }, (_, i) => 'output line ' + String(i + 1));
@@ -70,7 +83,7 @@ function rowFor(feed: Feed, id: number) {
 }
 
 describe('collapsed by default; a failure opens itself and nothing else', () => {
-  it('opens exactly eight kinds by default and shuts exactly six', () => {
+  it('opens exactly nine kinds by default and shuts exactly seven', () => {
     const registry = kinds();
     const open = Object.entries(registry)
       .filter(([, entry]) => entry.expanded)
@@ -84,10 +97,11 @@ describe('collapsed by default; a failure opens itself and nothing else', () => 
     expect(
       open,
       'prose, questions, failures and structure are visible; mechanics are not [T2 §7.3 rule 2]. ' +
-        'The two lists are written out rather than counted, because eight of the wrong ones is ' +
-        'still eight',
+        'The two lists are written out rather than counted, because nine of the wrong ones is ' +
+        'still nine. Which kinds open is a design decision [T2 §7.3 rule 2], not something the ' +
+        'wire can be asked about — unlike the SET of kinds, which kinds.test.ts reads from the mirror.',
     ).toEqual(OPEN);
-    expect(shut, 'and the other six stay shut until somebody asks').toEqual(SHUT);
+    expect(shut, 'and the other seven stay shut until somebody asks').toEqual(SHUT);
   });
 
   it('opens the failed line and leaves its neighbours alone', () => {

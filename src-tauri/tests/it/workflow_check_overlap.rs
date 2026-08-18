@@ -1,5 +1,19 @@
 //! AC-4 dla T-12: dwa kroki, które **mogą biec równocześnie**, nie piszą do jednego folderu —
-//! i odmowa pada przy zapisie, nie w trakcie biegu (niezmiennik 12).
+//! i odmowa pada najpóźniej przy Starcie, nigdy w trakcie biegu (niezmiennik 12).
+//!
+//! WAGA UWAGI ZALEŻY OD TEGO, PO CO PYTAMY, i to jest rozstrzygnięcie właściciela z 2026-08-19.
+//! Przy zapisie kolizja jest OSTRZEŻENIEM, przy Run PROBLEMEM. Powód jest mierzony na edytorze:
+//! kafelki dokłada się na płótno luzem i dopiero potem łączy strzałkami — inaczej nie da się
+//! zbudować trzech gałęzi wchodzących do jednego kroku. Dopóki ta reguła odmawiała przy zapisie,
+//! drugi dołożony kafelek robił z dokumentu plik niezapisywalny i praca człowieka żyła wyłącznie
+//! w pamięci okna. Bieg na tym nie traci nic: `check_to_run` woła się przed uruchomieniem
+//! czegokolwiek, więc odmowa dalej wyprzedza pierwszego agenta.
+//!
+//! DLATEGO KAŻDY PRZYPADEK KOLIZJI JEST TU SĄDZONY DWA RAZY. Sam zapis nie rozróżnia dziś
+//! „reguła przepuściła, bo nie ma kolizji" od „reguła przepuściła, bo jej nie ma" — obie dają
+//! zero problemów. Przypadki (b) i (d) mierzą więc obie wagi naraz, a (c) i (d2) — te, w których
+//! kolizji NIE MA — sądzone są `check_to_run`, czyli najsurowszym pytaniem, jakie ten walidator
+//! zna. Wersja pytająca tylko `check` przechodziłaby po wyłączeniu reguły.
 //!
 //! „Mogą biec równocześnie" znaczy dokładnie jedno: **nie istnieje ścieżka po strzałkach** ani
 //! z A do B, ani z B do A. Reguła, która porównuje folder na *wszystkich* parach kroków, jest
@@ -21,7 +35,7 @@ use std::error::Error;
 use serde_json::{Value, json};
 
 use loadout_lib::workflow::WorkflowFile;
-use loadout_lib::workflow::check::{Level, Note, check};
+use loadout_lib::workflow::check::{Level, Note, check, check_to_run};
 
 /// Zdanie z kryterium. Nazywa **oba** kroki — bez nich użytkownik wie, że coś koliduje, ale nie
 /// wie z czym — i mówi, co zrobić.
@@ -75,6 +89,15 @@ fn problems(notes: &[Note]) -> Vec<&Note> {
         .collect()
 }
 
+/// Uwagi wagi „ostrzeżenie". Zapis ich nie blokuje — i to jest cała różnica, którą mierzy
+/// przypadek (b): plik ma się zapisać, a człowiek ma i tak przeczytać zdanie o kolizji.
+fn warnings(notes: &[Note]) -> Vec<&Note> {
+    notes
+        .iter()
+        .filter(|note| note.level == Level::Warning)
+        .collect()
+}
+
 #[test]
 fn a_chain_may_share_the_project_folder() -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
@@ -97,8 +120,7 @@ fn a_chain_may_share_the_project_folder() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn two_steps_with_no_arrow_between_them_may_not_share_the_project_folder()
--> Result<(), Box<dyn Error>> {
+fn two_steps_with_no_arrow_warn_at_save_and_refuse_at_run() -> Result<(), Box<dyn Error>> {
     let workflow = workflow(
         &[
             step("a", "Research", &project()),
@@ -107,16 +129,37 @@ fn two_steps_with_no_arrow_between_them_may_not_share_the_project_folder()
         &[],
     )?;
 
-    let notes = check(&workflow);
-    let problems = problems(&notes);
+    /* PRZY ZAPISIE: ostrzeżenie i ANI JEDEN problem. Dwa kafelki leżące luzem to normalny stan
+     * pracy na płótnie — człowiek dopiero pociągnie strzałkę — a `workflow::file::save` odmawia
+     * na pierwszym problemie, więc problem w tym miejscu zamyka plik na klucz i kasuje autosave. */
+    let saving = check(&workflow);
+    let warned = warnings(&saving);
+
+    assert!(
+        problems(&saving).is_empty(),
+        "a draft where the tiles are not wired up yet has to SAVE: the refusal at save time is \
+         exactly what stopped `+ Add step` from ever placing a loose tile. Got: {saving:?}"
+    );
+    assert!(
+        warned.iter().any(|note| note.message == AT_THE_SAME_TIME),
+        "warning, not silence: the human has to read at save time the same sentence that will \
+         stop Start, or the collision is a surprise at the worst moment. Got: {saving:?}"
+    );
+
+    /* PRZY RUN: ten sam plik, to samo zdanie, waga problemu. Bez tej połowy reguła jest ozdobą:
+     * dwie gałęzie nadpisywałyby sobie pliki, a walidator tylko by o tym wspomniał. */
+    let running = check_to_run(&workflow);
+    let refused = problems(&running);
 
     assert_eq!(
-        problems.len(),
+        refused.len(),
         1,
-        "one collision between two steps is one thing to fix. Got: {notes:?}"
+        "one collision between two steps is one thing to fix, and before a run it has to be a \
+         REFUSAL — agents overwriting one another is the failure this whole rule exists for. \
+         Got: {running:?}"
     );
     assert_eq!(
-        problems[0].message, AT_THE_SAME_TIME,
+        refused[0].message, AT_THE_SAME_TIME,
         "the message has to name both steps and say what to do; 'path conflict' names neither"
     );
     Ok(())
@@ -132,12 +175,17 @@ fn a_fresh_copy_takes_the_collision_away() -> Result<(), Box<dyn Error>> {
         &[],
     )?;
 
-    let notes = check(&workflow);
+    /* `check_to_run`, nie `check`: przy zapisie kolizja jest dziś tylko ostrzeżeniem, więc
+     * pytanie o problemy przechodziłoby także dla reguły WYŁĄCZONEJ. Run jest najsurowszym
+     * pytaniem, jakie ten walidator zna, i tylko ono rozstrzyga, że świeża kopia naprawdę
+     * zdejmuje kolizję. */
+    let notes = check_to_run(&workflow);
 
     assert!(
         problems(&notes).is_empty(),
         "'a fresh copy just for this step' is the answer the message tells the user to pick, \
-         so taking it has to actually solve the problem. Got: {notes:?}"
+         so taking it has to actually solve the problem — including at Start, which is where \
+         the refusal now lands. Got: {notes:?}"
     );
     Ok(())
 }
@@ -152,7 +200,7 @@ fn a_folder_inside_the_other_folder_is_the_same_collision() -> Result<(), Box<dy
         &[],
     )?;
 
-    let notes = check(&workflow);
+    let notes = check_to_run(&workflow);
     let problems = problems(&notes);
 
     assert_eq!(
@@ -181,7 +229,8 @@ fn a_folder_that_merely_starts_with_the_same_letters_is_not_a_collision()
         &[],
     )?;
 
-    let notes = check(&workflow);
+    /* Znowu Run: przy zapisie ta asercja przechodziłaby dla reguły wyłączonej. */
+    let notes = check_to_run(&workflow);
 
     assert!(
         problems(&notes).is_empty(),
@@ -205,8 +254,10 @@ fn a_step_in_several_copies_collides_with_itself() -> Result<(), Box<dyn Error>>
         problems.len(),
         1,
         "three copies of one step run at the same time by definition, so one folder for all \
-         three is three agents overwriting one another. T3 wanted a hint here; invariant 12 \
-         says the refusal lands at save time, and the invariant wins. Got: {notes:?}"
+         three is three agents overwriting one another. This is the one branch of the rule that \
+         stays a refusal AT SAVE: a pair without an arrow is a passing state the human fixes \
+         with a gesture on the canvas, but a step colliding with itself has no arrow that would \
+         fix it — only a field does, so there is nothing to wait for. Got: {notes:?}"
     );
     assert_eq!(
         problems[0].step_id.as_deref(),

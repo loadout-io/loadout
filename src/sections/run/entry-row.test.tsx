@@ -27,7 +27,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { EntryProps } from './entry/entry';
-import { understand } from './entry/entry';
+import { KNOWN, suggestions, understand } from './entry/entry';
 
 const PICKED = '/Users/x/ledger-ui';
 
@@ -40,6 +40,25 @@ const { seen, chosen } = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: chosen }));
+
+/* 2026-08-18 — ADAPTER WORKSPACE'ÓW JEST PODSTAWIONY, i to jest cała zmiana tego pliku.
+ *
+ * `/open a folder` znaczyło do tego dnia „otwórz kartę folderu" i handler kończył na magazynie
+ * kart. Po decyzji właściciela folder pracy jest ZAKRESEM wybieranym w bocznym menu, więc ten
+ * sam handler dokłada teraz WORKSPACE — a to jest droga przez dysk (`save_workspace`), nie
+ * zmiana stanu w pamięci. Bez tej atrapy `invoke` nie istnieje w środowisku node, obietnica
+ * odrzuca, `add` oddaje `false`, lista zostaje pusta — i kryterium padałoby na BRAKU ATRAPY,
+ * nie na zachowaniu wiersza (AGENTS.md §2a p. 5).
+ *
+ * Atrapa oddaje CAŁĄ listę, tak jak oddaje ją Rust: magazyn bierze stan z odpowiedzi dysku,
+ * nigdy z argumentów, więc atrapa, która oddaje `void`, mierzyłaby inną implementację niż ta,
+ * która stoi w repo. */
+vi.mock('../../state/workspaces-io', () => ({
+  listWorkspaces: () => Promise.resolve([]),
+  saveWorkspace: ({ name, folder }: { name: string; folder: string }) =>
+    Promise.resolve([{ id: folder, name, folder }]),
+  deleteWorkspace: () => Promise.resolve([]),
+}));
 
 vi.mock('./entry/entry', async (importOriginal) => {
   const real = await importOriginal<typeof import('./entry/entry')>();
@@ -55,7 +74,7 @@ vi.mock('./entry/entry', async (importOriginal) => {
 });
 
 const Run = (await import('./index')).default;
-const { workspaces } = await import('./index');
+const { useWorkspaces } = await import('../../state/workspaces');
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MOCKUP = resolve(ROOT, 'docs/mockup/index.html');
@@ -175,6 +194,63 @@ describe('the entry row is there and its control really does something', () => {
     ).toBeNull();
   });
 
+  /* PODPOWIEDZI — zgłoszone przez właściciela ze zrzutu: „tu mi komend nie podpowiada, nie wiem
+   * co ten terminal robi jak nie ma podpowiedzi". Lista komend żyła WYŁĄCZNIE w `placeholder`,
+   * a placeholder znika przy pierwszym wpisanym znaku.
+   *
+   * SŁABA WERSJA: `expect(suggestions('/').length).toBeGreaterThan(0)`. Przechodzi dla funkcji
+   * oddającej wszystko na każde wejście — czyli dla podpowiadania `/stop` człowiekowi, który
+   * napisał `/op`. Odróżniają je trzy rzeczy niżej: filtrowanie po prefiksie, PUSTKA dla słowa,
+   * którego nie ma, i to, że lista pochodzi z tej samej wartości, którą wiersz WYKONUJE. */
+  it('suggests every command for a bare slash, and reads that list from the one it obeys', () => {
+    const all = suggestions('/');
+    expect(
+      all.map((one) => one.name),
+      'a bare slash has to offer everything this line understands. Anything shorter and the ' +
+        'person is guessing at a list that exists in the code.',
+    ).toEqual(KNOWN.map((one) => one.name));
+    for (const one of all) {
+      expect(
+        understand(one.name),
+        one.name +
+          ' is offered and not understood. That is the dead-control family (invariant 16) with ' +
+          'an extra insult: the line itself proposed the word it then refuses.',
+      ).toBe(one.name);
+      expect(
+        one.does.trim(),
+        one.name + ' is offered without saying what it does, which is the state this fixes',
+      ).not.toBe('');
+    }
+  });
+
+  it('narrows to what was typed, and says nothing when nothing fits', () => {
+    expect(
+      suggestions('/o').map((one) => one.name),
+      'typing narrows the list. A filter that ignores what was typed offers `/stop` to somebody ' +
+        'half way through `/open`.',
+    ).toEqual(['/open']);
+    expect(
+      suggestions('/zzz'),
+      'a word this line does not know has to leave the list EMPTY, so the row can say so while ' +
+        'the person is still typing instead of after they press Enter.',
+    ).toEqual([]);
+    expect(
+      suggestions('/open ~/Projects/x').map((one) => one.name),
+      'the first word decides. Losing the suggestion half way through a path would tell the ' +
+        'person their command stopped being valid, which is not true.',
+    ).toEqual(['/open']);
+  });
+
+  it('offers nothing at all until the line starts with a slash', () => {
+    for (const typed of ['', '   ', 'open', 'please stop']) {
+      expect(
+        suggestions(typed),
+        'prose is not a command, so there is nothing to complete. A list that shows up under ' +
+          'plain words promises a parser this repo does not have (invariant 16).',
+      ).toEqual([]);
+    }
+  });
+
   it('changes something real when the handler the screen wired is used', async () => {
     renderToStaticMarkup(<Run />);
     const props = seen.at(-1) as EntryProps | undefined;
@@ -182,8 +258,8 @@ describe('the entry row is there and its control really does something', () => {
     if (props === undefined) return;
 
     expect(
-      workspaces.getState().tabs,
-      'before the handler runs there is no folder open, otherwise the assertion below could ' +
+      useWorkspaces.getState().all,
+      'before the handler runs there is no workspace, otherwise the assertion below could ' +
         'not tell a working control from a dead one',
     ).toEqual([]);
 
@@ -196,17 +272,40 @@ describe('the entry row is there and its control really does something', () => {
         'does nothing is the dead control invariant 16 is about.',
     ).toHaveBeenCalled();
     expect(
-      workspaces.getState().tabs.map((tab) => tab.path),
-      'after the folder came back the store has to carry it as an open workspace. This is the ' +
-        'whole of "the control does something": the state a person can see changed, and it ' +
-        'changed through the handler the SCREEN gave the row, not one written in this test.',
+      useWorkspaces.getState().all.map((one) => one.folder),
+      'after the folder came back the store has to carry it as a workspace. This is the whole ' +
+        'of "the control does something": the state a person can see changed, and it changed ' +
+        'through the handler the SCREEN gave the row, not one written in this test. Stronger ' +
+        'than the version this replaced: the old one watched an in-memory tab list, this one ' +
+        'watches state that only exists AFTER the disk answered — so an optimistic write that ' +
+        'never reaches Rust fails here.',
     ).toEqual([PICKED]);
 
+    /* GDZIE PODZIALA SIE ASERCJA O EKRANIE — bo nie zniknela, tylko przeniosla sie do warstwy,
+     * ktora te rzecz teraz rysuje.
+     *
+     * Stala tu wersja `expect(renderToStaticMarkup(<Run />)).toContain(PICKED)` i byla sluszna,
+     * dopoki folder byl KARTA na ekranie Run. Po decyzji wlasciciela z 2026-08-18 folder pracy
+     * jest ZAKRESEM i widac go w przelaczniku w bocznym menu, czyli w powloce — a ten test
+     * renderuje sam `<Run />`, wiec przelacznika w tym drzewie nie ma i nigdy nie bedzie.
+     * Wersja `toContain` po przeprowadzce mierzylaby wiec brak komponentu, nie zachowanie wiersza.
+     *
+     * Wlasnosc „magazyn sie zmienil, a ekran nie" pilnuje teraz komponent, ktory ja posiada:
+     * `src/ui/shell/workspace-switcher.test.tsx` zada `toContain(SECOND.name)` dla nazwy zakresu
+     * i `toContain('roster')` dla wybranego folderu. Nie ubylo wiec kryterium — zmienil sie jego
+     * dom (niezmiennik 13: jeden fakt, jedno miejsce).
+     *
+     * Zamiast niej pytamy o rzecz, ktora TEN test moze udowodnic i ktora dla czlowieka znaczy
+     * wiecej niz obecnosc napisu: czy po wybraniu folderu da sie w nim PRACOWAC. Zakres dolozony
+     * i nieaktywny jest wpisem na liscie, nie miejscem pracy — a wtedy `/open a folder` konczy
+     * sie tym, ze czlowiek musi zrobic druga rzecz, o ktorej mu nikt nie powiedzial. */
     expect(
-      renderToStaticMarkup(<Run />),
-      'the folder that came back has to reach the screen as a tab; a store that changes and a ' +
-        'screen that does not is the same thing as no handler at all, seen from a chair.',
-    ).toContain(PICKED);
+      useWorkspaces.getState().activeId,
+      'the folder that came back has to become the ACTIVE workspace: that is the difference ' +
+        'between a row that adds an entry to a list and a row that puts a person to work. ' +
+        'A weak version of this asserts only that the list grew — and passes for a handler that ' +
+        'leaves the person one unexplained click away from being able to run anything.',
+    ).toBe(PICKED);
   });
 
   it('says all of that without one word from the jargon table', () => {

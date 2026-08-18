@@ -26,8 +26,22 @@ export type Line =
   | Says<'step'>
   | Says<'agent'>
   | Says<'note'>
+  /* Tura CZLOWIEKA. Osobny rodzaj, nie `note`: `note` znaczy „to powiedzial agent”, a widok
+   * rysuje te dwie rzeczy inaczej, bo czytelnik musi widziec, czyje zdanie czyta. Powod, dla
+   * ktorego to w ogole jedzie drutem, stoi przy `Line::Told` po stronie Rusta. */
+  | Says<'told'>
   | Says<'handoff'>
   | { kind: 'thinking'; agent: string }
+  /* Stan kroku zmienił się. NIE jest wierszem historii — przestawia blok paska loadoutu
+   * i chip na kafelku agenta, dokładnie tak, jak `thinking` nie wchodzi do historii,
+   * a zajmuje stały slot na dole (`docs/ARCHITECTURE.md` §6, reguła 5).
+   *
+   * OSOBNY RODZAJ, a nie pole dopisane do `step`, i to jest wymuszone przez lustro niżej:
+   * zestaw kluczy musi się zgadzać CO DO JEDNEGO, więc pole dołożone do istniejącego rodzaju
+   * kazałoby froncie PORZUCAĆ każdy wiersz `step` do chwili, w której obie strony granicy
+   * zmienią się w tym samym commicie. Nowy rodzaj jest addytywny w obie strony: starszy front
+   * porzuca go w ciszy (jedna linia mniej), starszy Rust go po prostu nie wysyła. */
+  | { kind: 'stepState'; agent: string; stepId: string; state: string }
   | {
       kind: 'read';
       agent: string;
@@ -104,6 +118,7 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['step', SAYS],
   ['agent', SAYS],
   ['thinking', { agent: str }],
+  ['stepState', { agent: str, stepId: str, state: str }],
   ['read', { agent: str, text: str, count: num, paths: strs, detailId: maybeNum }],
   ['search', { agent: str, text: str, count: num, paths: strs, detailId: maybeNum }],
   [
@@ -120,12 +135,28 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ],
   ['ran', { agent: str, text: str, ok: flag, preview: str, detail: strs, detailId: maybeNum }],
   ['note', SAYS],
+  ['told', SAYS],
   ['asked', { agent: str, text: str, options: strs }],
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],
   ['problem', { agent: str, text: str, resetsAt: maybeNum }],
   ['done', { agent: str, text: str, turns: num, durationMs: num, costUsd: maybeNum }],
 ]);
+
+/**
+ * Rodzaje wiersza, jakie drut umie wyprodukować — nazwa w nazwę, w kolejności deklaracji.
+ *
+ * WYEKSPORTOWANE, ŻEBY NIE TRZEBA BYŁO ICH PRZEPISYWAĆ. Rejestr widoku
+ * (`src/sections/run/feed/kinds.ts`) musi znać dokładnie te rodzaje i ani jednego więcej,
+ * a do 2026-08-18 jego kryterium miało tę listę **wpisaną z palca** — czyli było jednym z 68
+ * kryteriów, których wartość oczekiwana nie pochodzi z żadnego pliku. Rodzaj dodany po stronie
+ * Rusta zapala teraz to kryterium sam, bez niczyjej pamięci.
+ *
+ * Nie jest to pytanie rejestru o zdanie na własny temat: to DRUGIE, niezależne źródło.
+ * Rejestr pusty przestanie się zgadzać z tą listą, a lista pusta (gdyby ktoś ją zepsuł)
+ * przestanie się zgadzać z rejestrem — w obie strony.
+ */
+export const WIRE_KINDS: readonly string[] = Object.freeze([...SHAPES.keys()]);
 
 /**
  * Sprawdza jeden wiersz z drutu i oddaje go typowanego — albo `null`.

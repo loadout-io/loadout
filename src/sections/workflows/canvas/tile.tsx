@@ -12,8 +12,21 @@
  *
  * Komponent jest STEROWANY: `selected` przychodzi propsem i NIE jest zapisywane do pliku
  * (T3 §3.3, kryterium `to-file`).
+ *
+ * 2026-08-18 — UKŁAD Z MAKIETY, cztery rzeczy, których tu nie było. Do tego dnia kafelek był
+ * `<b>{step.name}</b>`, akapitem i stopką bez linii, o szerokości `w-70` (280 px). Makieta
+ * (`.node`, `docs/mockup/index.html:243`) ma 246 px, uchwyt przeciągania po lewej stronie
+ * nazwy, chip agenta z kolorową kostką tożsamości po prawej i stopkę NAD linią. U właściciela
+ * kafelki były przy tym rysowane w powiększeniu 2× (`fitView` bez `maxZoom`), więc różnica
+ * 280 do 246 była najmniejszym z problemów tego ekranu.
+ *
+ * CHIP AGENTA JEST OPCJONALNY i to jest treść niezmiennika 17 w tym pliku: kafelek rysuje go
+ * WYŁĄCZNIE wtedy, gdy dostał agenta, którego `step.agent` naprawdę wskazuje. Wypisanie tam
+ * identyfikatora albo słowa zastępczego byłoby relacją, której w danych nie ma — a krok bez
+ * agenta ma o tym mówić brakiem chipu, nie wypełniaczem.
  */
 import type { ReactElement } from 'react';
+import type { Agent, Color } from '../../../state/agents';
 import type { Link, Step } from '../../../state/workflows';
 
 export interface StepTileProps {
@@ -22,16 +35,46 @@ export interface StepTileProps {
   steps: Step[];
   /** Wszystkie strzałki. Stopka jest z nich wyliczana (niezmiennik 17). */
   links: Link[];
+  /**
+   * Agent, którego ten krok nazywa — jeżeli jest w bibliotece.
+   *
+   * Bez niego chip nie powstaje. Rozwiązanie `step.agent` należy do płótna, bo tam mieszka
+   * lista agentów; kafelek, który rozwiązywałby je drugi raz u siebie, mógłby rozwiązać
+   * inaczej niż panel i pokazać przy kroku innego agenta niż ten, którego panel nazywa.
+   */
+  agent?: Agent;
   /** Zaznaczenie jest stanem płótna, nie polem pliku. */
   selected?: boolean;
 }
 
-/* `node-card` z DESIGN §6: 280 px, `--raised`, obrys `--line-strong`, zaznaczony `--accent`.
- * Szerokość jest stała, bo płótno układa kafelki w kolumny — kafelek, który rośnie z treścią,
- * przesuwa sąsiadów przy każdej zmianie nazwy. */
-const CARD = 'w-70 rounded-sq border bg-raised p-3 text-body';
+/* `node-card` z makiety (`.node`): 246 px, `--raised`, obrys `--line-strong`, zaznaczony
+ * `--accent`. Szerokość jest stała, bo płótno układa kafelki w kolumny — kafelek, który rośnie
+ * z treścią, przesuwa sąsiadów przy każdej zmianie nazwy.
+ *
+ * `w-61.5` to `calc(var(--spacing) * 61.5)`, czyli 246 px przy bazie 4 px. Nie `w-[246px]`:
+ * liczba w klasie jest literałem rozmiaru, a mnożnik siatki nią nie jest — i przeżyje zmianę
+ * bazy. ROZJAZD, świadomy i zgłoszony: DESIGN §6 mówi w tym miejscu 280 px, makieta 246,
+ * a przy rozbieżności wygrywa makieta. */
+const CARD = 'w-61.5 rounded-sq border bg-raised p-3 text-body';
 const CARD_LINE = 'border-line-strong';
 const CARD_SELECTED = 'border-accent';
+
+/** Kostka tożsamości agenta → nazwa klasy tła.
+ *
+ * `Agent.color` jest polem, które formularz agenta zapisuje od T-11, a do 2026-08-18 NIC w całym
+ * repo go nie czytało: pięć kolorów do wyboru i ani jednego miejsca, w którym wybór był widoczny.
+ * Tu jest pierwsze, więc to mapowanie nie ma jeszcze drugiej kopii, z którą mogłoby się rozjechać.
+ *
+ * `Record`, nie `switch` z gałęzią domyślną: szósty kolor dopisany do `Color` przestaje TU się
+ * kompilować, zamiast po cichu wpaść w „reszta" i dostać kolor stanu — a mieszanie tożsamości ze
+ * stanem jest dokładnie tym błędem, przez który obie palety są rozdzielone (DESIGN §3). */
+const IDENTITY: Readonly<Record<Color, string>> = {
+  slate: 'bg-id-1',
+  plum: 'bg-id-2',
+  clay: 'bg-id-3',
+  moss: 'bg-id-4',
+  rose: 'bg-id-5',
+};
 
 /** Nazwa kroku o tym identyfikatorze.
  *
@@ -67,25 +110,49 @@ function saysWhat(step: Step): string {
   return step.kind === 'agent' ? step.instructions : (step.question ?? '');
 }
 
-export function StepTile({ step, steps, links, selected = false }: StepTileProps): ReactElement {
+export function StepTile({
+  step,
+  steps,
+  links,
+  agent,
+  selected = false,
+}: StepTileProps): ReactElement {
   const copies = copiesOf(step);
   const waits = waitsFor(step, steps, links);
   const handsOn = links.some((link) => link.from === step.id);
 
   return (
     <div className={`${CARD} ${selected ? CARD_SELECTED : CARD_LINE}`} data-step={step.id}>
-      <div className="flex items-baseline gap-2">
-        <b className="text-heading text-ink">{step.name}</b>
+      <div className="flex items-center gap-2">
+        {/* Uchwyt przeciągania z makiety (`.node .grab`). Nie jest `<button>` i nie ma
+            handlera z rozmysłem: ciągnie CAŁY kafelek, a to robi React Flow na samym
+            kafelku. Przycisk z własnym `onClick` byłby drugą, cichszą drogą do tego samego
+            gestu — i tą, która nie działa. */}
+        <span
+          aria-hidden
+          className="grid size-4.5 shrink-0 cursor-grab place-items-center rounded-sq border border-line bg-well font-mono text-label text-muted"
+        >
+          ⠿
+        </span>
+        <b className="min-w-0 flex-1 truncate text-heading text-ink">{step.name}</b>
         {step.kind === 'checkpoint' ? (
-          <span className="text-label text-muted">asks you</span>
+          <span className="shrink-0 text-label text-muted">asks you</span>
         ) : null}
+        {agent === undefined ? null : (
+          <span className="flex shrink-0 items-center gap-1 font-mono text-label text-muted">
+            <i className={`block size-2.75 ${IDENTITY[agent.color]}`} />
+            {agent.name}
+          </span>
+        )}
       </div>
 
       {/* Dwie linie, obcięte. Czwarta linia tekstu na kafelku jest błędem projektowym,
           nie ciasnotą (DESIGN §6), a `line-clamp` jest jedynym miejscem, w którym to widać. */}
       <p className="mt-1 line-clamp-2 text-body text-ink">{saysWhat(step)}</p>
 
-      <div className="mt-2 flex items-baseline justify-between text-label text-muted">
+      {/* Stopka NAD linią (`.node .bot`: `padding-top:7px; border-top:1px solid var(--line)`)
+          i w kroju maszynowym, bo to są wartości wyliczone, nie zdania. */}
+      <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-line pt-2 font-mono text-label text-muted">
         <span>{copies === null ? waits : `${copies} · ${waits}`}</span>
         {handsOn ? <span>runs before ▸</span> : null}
       </div>

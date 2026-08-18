@@ -1,9 +1,9 @@
 //! Zdarzenie → wiersz historii. **Tutaj powstaje „czysty terminal", nie w CSS**
 //! (niezmiennik 15, `docs/ARCHITECTURE.md` §6).
 //!
-//! Czternaście rodzajów wiersza [T2 §7.2] i pięć reguł zwijania [T2 §7.3] mieszkają w tym
-//! pliku i nigdzie indziej. Który wiersz w ogóle istnieje, co mówi i czy jest zwinięty,
-//! rozstrzyga [`Curator`]. Cicha wersja złamania nie wygląda jak zły wiersz — wygląda jak
+//! Rodzaje wiersza (czternaście z [T2 §7.2] plus `stepState`) i pięć reguł zwijania [T2 §7.3]
+//! mieszkają w tym pliku i nigdzie indziej. Który wiersz w ogóle istnieje, co mówi i czy jest
+//! zwinięty, rozstrzyga [`Curator`]. Cicha wersja złamania nie wygląda jak zły wiersz — wygląda jak
 //! [`Line`] niosący surowy `JSON` „na wszelki wypadek" i front decydujący, co pokazać: wtedy
 //! czysty widok da się zepsuć arkuszem stylów, więc nie jest czysty.
 //!
@@ -27,7 +27,7 @@
 //!
 //! # Co ten plik rozstrzyga, a czego nie
 //!
-//! Rozstrzyga: **czy wiersz w ogóle istnieje** (`system/init` i `thinking` nie istnieją),
+//! Rozstrzyga: **czy wiersz w ogóle istnieje** (`system/init` nie istnieje),
 //! **co mówi** (jedno zdanie po angielsku, bez żargonu — niezmiennik 14) i **czy jest
 //! zwinięty** (reguły 1–3). Nie rozstrzyga: jak wiersz wygląda, jaką ma wysokość i o której
 //! lokalnej godzinie wraca limit — to jest formatowanie i mieszka w widoku (T-08).
@@ -42,17 +42,23 @@ use serde::Serialize;
 
 use super::drivers::{AgentEvent, FinishReason, Outcome};
 
-/// Rodzaj wiersza. Czternaście i ani jednego więcej [T2 §7.2].
+/// Rodzaj wiersza. Czternaście z [T2 §7.2] plus [`LineKind::StepState`].
 ///
-/// Wariant [`LineKind::Thinking`] istnieje, ale kurator **nigdy** nie dokłada takiego wiersza
-/// do historii (reguła 5): „Thinking…" jest stałym slotem na dole ekranu, nadpisywanym. Ta
-/// jedna reguła usuwa większość wrażenia ściany tekstu.
+/// **Dwa z nich nie są wpisem w historii** i nie stają się nim przez to, że kurator je
+/// wypuszcza: [`LineKind::Thinking`] rysuje stały slot na dole ekranu, a [`LineKind::StepState`]
+/// przestawia blok paska loadoutu i chip na kafelku agenta. Dokąd wiersz idzie, rozstrzyga
+/// **jedno** miejsce — rejestr rodzajów po stronie okna (`src/sections/run/feed/kinds.ts`,
+/// pole `route`) — i to jest cała treść reguły 5 w wersji, którą da się wykonać: „nigdy nie
+/// powstaje" znaczyłoby, że dół ekranu jest martwy, a sześć z siedmiu stanów kroku
+/// nieosiągalnych (`docs/ARCHITECTURE.md` §5, §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     /// Nagłówek całego biegu.
     Run,
     /// Przerwa sekcyjna z etykietą; zaczepienie paska planu.
     Step,
+    /// Krok zmienił stan. **Nigdy w historii** — przestawia pasek loadoutu w miejscu.
+    StepState,
     /// Agent dołączył albo skończył. Nigdy paplanina.
     Agent,
     /// Stały slot na dole ekranu. **Nigdy w historii.**
@@ -65,8 +71,10 @@ pub enum LineKind {
     Edit,
     /// Uruchomiona komenda — blok Warpa: udało się albo nie, jak długo, wyjście za klikiem.
     Ran,
-    /// Proza agenta. Jedyna proza w widoku.
+    /// Proza agenta. Jedyna proza AGENTA w widoku.
     Note,
+    /// Proza człowieka — jego tura wpisana w wiersz wejścia. Powód przy [`Line::Told`].
+    Told,
     /// Pytanie do człowieka. Przyklejone, bo blokuje bieg.
     Asked,
     /// Przekazanie między agentami.
@@ -117,6 +125,38 @@ pub enum Line {
         agent: String,
         /// Tekst wiersza, gotowy na ekran.
         text: String,
+    },
+    /// Krok przeszedł w nowy stan: `{"kind":"stepState","agent":"Build","stepId":"build",
+    /// "state":"running"}`.
+    ///
+    /// 2026-08-18 — OSOBNY WARIANT, NIE POLE DOŁOŻONE DO [`Line::Step`], i wymusza to lustro po
+    /// stronie okna (`src/ipc/types.ts`, `parseLine`): ono porównuje zestaw kluczy **co do
+    /// jednego**, więc pole dopisane do istniejącego rodzaju kazałoby froncie PORZUCAĆ każdy
+    /// wiersz `step` do chwili, w której obie strony granicy zmienią się w tym samym commicie.
+    /// Nowy rodzaj jest addytywny w obie strony: starszy front porzuca go w ciszy, starszy Rust
+    /// go po prostu nie wysyła.
+    ///
+    /// Do tego dnia na drucie NIE BYŁO NOŚNIKA tego faktu — [`Line::Step`] niesie sam tekst —
+    /// więc pasek loadoutu stał na obrysach przez cały bieg, a kafelek agenta, który właśnie
+    /// edytował pliki, mówił „waiting". Sześć z siedmiu stanów z `docs/ARCHITECTURE.md` §5 było
+    /// nieosiągalnych.
+    StepState {
+        /// Nazwa kroku — **ten sam podpis**, którym ten krok mówi w każdym innym wierszu, żeby
+        /// szyna agentów nie dostała dwóch nazw dla jednego kafelka (niezmiennik 13).
+        agent: String,
+        /// Klucz kroku **z pliku workflow** (`node_key`), bo to po nim okno rozpoznaje swój
+        /// kafelek: plan paska powstaje z pliku, zanim Rust powie pierwsze słowo
+        /// (`src/state/run.ts`, `withStepStates` porównuje `step.id === line.stepId`).
+        /// Świeży uuid biegu byłby tu identyfikatorem, którego okno nigdy nie widziało.
+        step_id: String,
+        /// Jedno z siedmiu: `pending`, `ready`, `running`, `succeeded`, `failed`, `cancelled`,
+        /// `skipped`.
+        ///
+        /// Napis, a nie [`super::step::StepState`], bo lustro po stronie okna czyta to pole jako
+        /// zwykły tekst i **samo** odrzuca wartość spoza siódemki (`src/state/run.ts`,
+        /// `STEP_STATES`) — enum na drucie zmuszałby je do znajomości naszego `serde`. Wartość
+        /// składa `StepState::name`, więc te siedem słów stoi w drzewie raz.
+        state: String,
     },
     /// `Researcher 2 joined`
     Agent {
@@ -196,6 +236,39 @@ pub enum Line {
         /// Tekst wiersza, gotowy na ekran.
         text: String,
     },
+    /// Co powiedział CZŁOWIEK — jedyny wiersz historii, którego nie napisał agent.
+    ///
+    /// # Po co ten wariant istnieje
+    ///
+    /// Zgłoszenie właściciela 2026-08-19: „tak samo nadal jak coś piszę w terminal np siema, to
+    /// agent nie odpisuje i to się wgl nie wysyła", a chwilę potem rozstrzygające zdanie:
+    /// „a może odpisuje on, ale na pewno nie widać moich wiadomości". I to była dokładna
+    /// diagnoza. Droga do żywej sesji już działała (`commands::run::say_to_agent_inner`,
+    /// `engine::drivers::Voice`), ale **tura człowieka nie miała nośnika na drucie**: [`Note`]
+    /// jest opisany jako „jedyna proza w widoku" i należy do agenta, więc zdanie wpisane
+    /// w wiersz wejścia znikało bez śladu. Człowiek widział strumień, w którym agent
+    /// odpowiada na pytanie, którego nie widać — czyli wiersz wejścia wyglądał na martwy
+    /// niezależnie od tego, czy działał.
+    ///
+    /// # Dlaczego to jedzie drutem, a nie dopisuje się w oknie
+    ///
+    /// Bo tura człowieka JEST zdarzeniem tego biegu, a nie stanem widoku. Wiersz dopisany
+    /// lokalnie ginie przy przeładowaniu okna i nie ma go w `run.json` — a wtedy plik nie
+    /// potrafi wyjaśnić, dlaczego agent w połowie kroku zrobił coś, o co nikt go w pliku
+    /// workflow nie prosił (niezmiennik 4).
+    ///
+    /// Zestaw pól jest **taki sam** jak w [`Note`] i to jest celowe: lustro po stronie okna
+    /// porównuje klucze co do jednego, więc nowy rodzaj o znanym kształcie jest addytywny
+    /// w obie strony — starszy front porzuca go w ciszy, starszy Rust go nie wysyła.
+    Told {
+        /// Do KOGO to poszło — nazwa kroku, ta sama, którą niesie każdy inny wiersz tego kroku.
+        ///
+        /// Nie „człowiek": pole `agent` odpowiada w każdym wierszu na pytanie „czyj to kafelek",
+        /// a ta linia należy do rozmowy z tym właśnie krokiem. Że mówi człowiek, niesie rodzaj.
+        agent: String,
+        /// Zdanie człowieka, słowo w słowo — bez skracania i bez streszczania.
+        text: String,
+    },
     /// `Needs your answer: which database?`
     Asked {
         /// Kto pyta.
@@ -254,6 +327,7 @@ impl Line {
         match self {
             Self::Run { .. } => LineKind::Run,
             Self::Step { .. } => LineKind::Step,
+            Self::StepState { .. } => LineKind::StepState,
             Self::Agent { .. } => LineKind::Agent,
             Self::Thinking { .. } => LineKind::Thinking,
             Self::Read { .. } => LineKind::Read,
@@ -261,6 +335,7 @@ impl Line {
             Self::Edit { .. } => LineKind::Edit,
             Self::Ran { .. } => LineKind::Ran,
             Self::Note { .. } => LineKind::Note,
+            Self::Told { .. } => LineKind::Told,
             Self::Asked { .. } => LineKind::Asked,
             Self::Handoff { .. } => LineKind::Handoff,
             Self::Memory { .. } => LineKind::Memory,
@@ -276,6 +351,7 @@ impl Line {
         match self {
             Self::Run { agent, .. }
             | Self::Step { agent, .. }
+            | Self::StepState { agent, .. }
             | Self::Agent { agent, .. }
             | Self::Thinking { agent }
             | Self::Read { agent, .. }
@@ -283,6 +359,7 @@ impl Line {
             | Self::Edit { agent, .. }
             | Self::Ran { agent, .. }
             | Self::Note { agent, .. }
+            | Self::Told { agent, .. }
             | Self::Asked { agent, .. }
             | Self::Handoff { agent, .. }
             | Self::Memory { agent, .. }
@@ -296,7 +373,10 @@ impl Line {
     #[must_use]
     pub fn text(&self) -> &str {
         match self {
-            Self::Thinking { .. } => "",
+            // Oba rodzaje spoza historii mówią stanem, nie zdaniem: „Thinking…" rysuje stały
+            // slot, a stan kroku przestawia blok paska. Tekst dorobiony tutaj byłby drugim
+            // brzmieniem tego samego faktu, i to tym, którego nikt nie tłumaczy.
+            Self::Thinking { .. } | Self::StepState { .. } => "",
             Self::Run { text, .. }
             | Self::Step { text, .. }
             | Self::Agent { text, .. }
@@ -305,6 +385,7 @@ impl Line {
             | Self::Edit { text, .. }
             | Self::Ran { text, .. }
             | Self::Note { text, .. }
+            | Self::Told { text, .. }
             | Self::Asked { text, .. }
             | Self::Handoff { text, .. }
             | Self::Memory { text, .. }
@@ -357,9 +438,14 @@ impl Line {
             }
             Self::Run { .. }
             | Self::Step { .. }
+            | Self::StepState { .. }
             | Self::Agent { .. }
             | Self::Thinking { .. }
             | Self::Note { .. }
+            // Zdanie człowieka jest prozą i jest widoczne od razu, jak proza agenta. Zwinięte
+            // byłoby jedynym wierszem w historii, który człowiek musi rozwinąć, żeby przeczytać
+            // to, co sam napisał.
+            | Self::Told { .. }
             | Self::Asked { .. }
             | Self::Handoff { .. }
             | Self::Problem { .. }
@@ -565,6 +651,27 @@ impl Curator {
             // każdy wiersz, także pusty.
             AgentEvent::Thinking => {
                 self.status = Some(Status::Thinking);
+                // NIC W STRUMIENIU, i to jest cytat, nie interpretacja: `docs/ARCHITECTURE.md`
+                // linia 178 daje dla `thinking` i `thinking_tokens` wprost „*nic w strumieniu* —
+                // stały slot na dole, nadpisywany", a §6 reguła 5 powtarza „nigdy nie wchodzi
+                // do historii".
+                //
+                // 2026-08-18 — TU BYŁA PRÓBA ODWROTNA I ZOSTAŁA WYCOFANA. Rozumowanie za nią
+                // było niegłupie („reguła mówi »nie do historii«, a nie »nie na ekran«, a rejestr
+                // po stronie okna kieruje ten rodzaj na trasę `now`, więc do historii i tak nie
+                // wejdzie") i front rzeczywiście nie dokłada go do historii
+                // (`src/sections/run/feed/model.ts`, gałąź `route === 'now'` robi `continue`).
+                // Przewróciła jednak CZTERY kryteria w dwóch plikach, z których jedno przepuszcza
+                // przez PRAWDZIWĄ pompę złotą fiksturę szesnastu zdarzeń i wymaga dokładnie
+                // trzech wierszy — a przede wszystkim kłóciła się z linią 178, której żadne
+                // z tych kryteriów nie napisało samo.
+                //
+                // ZOSTAJE WIĘC LUKA I JEST ZGŁOSZONA, nie zaklajstrowana: slot „Thinking…" nie
+                // ma dziś ŻADNEGO nośnika. Jedynym śladem myślenia jest [`Curator::status`],
+                // którego w produkcji nikt nie czyta, więc dolna strefa ekranu jest martwa także
+                // wtedy, gdy agent myśli minutami. Domknięcie wymaga jednej z dwóch rzeczy,
+                // i obie są decyzją człowieka, nie tego pliku: albo osobnej drogi dla statusu
+                // (emit poza strumieniem wierszy), albo zmiany linii 178 w architekturze.
                 Vec::new()
             }
             // ZDARZENIA WIDZIANE I ŚWIADOMIE NIEBĘDĄCE WIERSZEM. Stoją w jednej gałęzi, bo

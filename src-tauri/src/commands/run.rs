@@ -128,6 +128,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -141,16 +142,16 @@ use uuid::Uuid;
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
-use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, Policy, RunSpec};
+use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
 use crate::engine::limits::{self, Limiter};
-use crate::engine::line::{Curator, Line, Seen};
+use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
-use crate::workflow::check::{Level, check};
+use crate::workflow::check::{Level, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::{AgentStep, Folder, Step, WorkflowFile};
 
@@ -265,7 +266,23 @@ pub async fn run_workflow_with_slots(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
+    /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
+     * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
+     * a `is_working()` czyta oba znaczniki i odpowie wtedy „nie ma czego zatrzymywać". Zapalenie
+     * dopiero po walidacji dałoby okno czasu, w którym bieg już czyta dysk, a zamknięcie okna
+     * uznałoby, że nie ma nic do roboty. */
+    deps.control.begin();
+    /* Strumień oddajemy biegowi DO UCHWYTU, bo tura człowieka przychodzi spoza pętli kroku:
+     * komendą z okna, w chwili, w której krok czeka na agenta. Klon, nie przekazanie: pompa ma
+     * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
+     * producentów naraz. */
+    deps.control.lines_go_to(lines.clone());
     let report = the_whole_run(deps, request, lines, slots).await;
+    /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
+     * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
+     * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
+     * bieg (powód w całości przy `RunControl::lines_go_quiet`). */
+    deps.control.lines_go_quiet();
     deps.control.settle();
     report
 }
@@ -349,21 +366,153 @@ pub async fn stop_run_inner(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
     Ok(Outcome::Cancelled)
 }
 
+/// Okno się zamyka: zatrzymuje bieg **z dowodem**, jeśli jest co zatrzymywać.
+///
+/// # Po co to istnieje
+///
+/// Zgłoszenie właściciela 2026-08-19: „co się dzieje jak zamykasz apkę a leci jakiś workflow?
+/// on się wyłączy?", a zaraz po nim „odpalałem kilka workflow i apkę zamykałem w trakcie".
+/// Nie wyłączał się. W `lib.rs` nie było ani jednego `on_window_event`, `CloseRequested` czy
+/// `RunEvent`, więc zamknięcie okna kończyło proces Loadouta i **nic więcej**: agenci przechodzili
+/// pod PID 1 i dalej pracowali, dalej pisali po plikach projektu i dalej palili limit u dostawcy,
+/// aż ktoś odpalił Loadouta ponownie (`recovery.rs`, nagłówek: „Agenci nie giną razem
+/// z Loadoutem"). Odzyskiwanie sprząta to dopiero przy NASTĘPNYM starcie, więc rachunek rósł przez
+/// cały czas, w którym aplikacja była zamknięta — czyli dokładnie wtedy, kiedy nikt nie patrzył.
+///
+/// # Dlaczego to pytanie o `is_working` jest konieczne
+///
+/// [`stop_run_inner`] czeka na dowód śmierci grupy procesów (niezmiennik 6), a dowód zapala bieg,
+/// który naprawdę przez siebie przeszedł. Wywołane na uchwycie biegu, którego nikt nie uruchomił,
+/// czekałoby **bez końca** — czyli zamknięcie okna wieszałoby aplikację w najczęstszym przypadku
+/// ze wszystkich: kiedy nic nie biegnie.
+///
+/// # Co ta funkcja świadomie robi wolno
+///
+/// Wraca dopiero z dowodem, więc zamknięcie okna trwa tyle, ile schodzenie agentów (TERM, potem
+/// KILL — `engine::supervisor`). Okno, które zamyka się natychmiast i zostawia procesy, jest
+/// szybsze i jest kłamstwem: człowiek czyta zniknięcie okna jako koniec pracy.
+pub async fn stop_before_closing(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
+    if !deps.control.is_working() {
+        // Nie ma czego zatrzymywać i nie ma na co czekać. `Cancelled` byłoby tu zdaniem
+        // o biegu, którego nie ma — a `Done` mówi prawdę: nic nie zostało niedokończone.
+        return Ok(Outcome::Done);
+    }
+    stop_run_inner(deps).await
+}
+
 /// Puszcza bieg dalej z punktu kontrolnego (T3 §6.1 reguła 5).
 ///
 /// Punkt kontrolny zatrzymuje **bieg**, nie krok, i nic za nim nie startuje, dopóki człowiek nie
 /// odpowie. Pytanie, które pojawia się na ekranie po tym, jak agent już zrobił swoje, nie jest
 /// pytaniem.
-pub async fn continue_run_inner(deps: &RunDeps<'_>) -> Result<(), RunError> {
+pub async fn continue_run_inner(
+    deps: &RunDeps<'_>,
+    answer: Option<String>,
+) -> Result<(), RunError> {
     // Licznik, nie flaga (`RunControl::go_on`): bieg z dwoma punktami kontrolnymi przeszedłby
     // przez drugi bez pytania, gdyby zgoda była flagą, która raz zapalona zostaje zapalona.
-    deps.control.go_on();
+    //
+    // 2026-08-18 — TREŚĆ ODPOWIEDZI JEDZIE RAZEM ZE ZGODĄ. Do tego dnia ta komenda nie brała
+    // żadnego argumentu: człowiek pisał zdanie, pytanie znikało z ekranu, bieg ruszał — i to
+    // zdanie nie trafiało ani do promptu następnego kroku, ani na dysk. Kontrolka, która
+    // przyjmuje tekst i go wyrzuca, jest gorsza niż jej brak (niezmiennik 16).
+    deps.control.go_on_with(answer);
     // Wracamy dopiero, kiedy bieg naprawdę ruszył — tak samo jak Stop wraca dopiero z dowodem.
     // Bez tego ekran wraca do człowieka w chwili, w której bieg **jeszcze stoi**, i pierwsze,
     // co ten człowiek widzi po odpowiedzeniu na pytanie, to dalej „paused". Czekanie kończy się
     // natychmiast, gdy nie było na co odpowiadać, i kończy się także wtedy, gdy bieg w tym
     // czasie zszedł (`RunControl::wait_until_moving`).
     deps.control.wait_until_moving().await;
+    Ok(())
+}
+
+/// Mówi coś agentowi, który **właśnie pracuje** — kolejna tura w jego żywej sesji.
+///
+/// # Po co to istnieje
+///
+/// Zgłoszenie właściciela 2026-08-18, dwa razy: „i pisać z nim nie mogę", potem „dalej nie działa
+/// pisanie do agenta przez terminal". Droga do żywej sesji nie istniała, i nie z braku komendy:
+/// `stdin` był polem uchwytu, więc pisanie wymagało `&mut`, a uchwyt jest pożyczony mutowalnie
+/// przez całą turę ([`Live::one_turn`]). Naprawa poszła w przyczynę — potok należy dziś do
+/// jednego zadania-pisarza, a bieg trzyma nadajniki pod nazwami kroków
+/// ([`RunControl::step_can_hear`]).
+///
+/// # Dlaczego to stoi TUTAJ, a nie w skorupie komendy
+///
+/// Bo to jest polityka, a nie transport: cztery różne odmowy, każda innym zdaniem, i wybór
+/// adresata przy jednym pracującym agencie. Do 2026-08-18 mieszkało to w całości w
+/// `#[tauri::command]` w `ipc.rs` — czterdzieści linii decyzji w skorupie, która ma mieć dwie
+/// (niezmiennik 1 i 23). Miało to jeden, konkretny koszt: `State<'_, AppState>` nie da się
+/// zbudować bez żywego Tauri, więc na ANI JEDNĄ z tych czterech odmów nie dało się napisać
+/// kryterium — a kryterium, którego nie da się napisać, jest zachowaniem, którego nikt nie
+/// sprawdził.
+///
+/// # Adresat
+///
+/// `agent` jest opcjonalny i to jest wygoda z pomiarem, nie zgadywanie: kiedy pracuje dokładnie
+/// jeden krok, nie ma czego wybierać. Przy dwóch i więcej **odmawiamy z listą nazw** — kontrolka,
+/// która wysyła tekst do losowego z dwóch agentów, jest gorsza niż odmowa (niezmiennik 16).
+pub async fn say_to_agent_inner(
+    control: &RunControl,
+    agent: Option<&str>,
+    text: &str,
+) -> Result<(), RunError> {
+    let said = text.trim();
+    if said.is_empty() {
+        return Err(RunError::NothingToSay);
+    }
+    /* Lista brana RAZ i po niej rozstrzygamy wszystko: drugi odczyt między wyborem adresata
+     * a wzięciem głosu dałby dwie różne odpowiedzi na jedno pytanie „kto pracuje", a wtedy
+     * zdanie odmowy mogłoby wymieniać kroki, których w chwili wysyłki już nie ma. */
+    let listening = control.who_is_listening();
+    let named = agent.map(str::trim).filter(|one| !one.is_empty());
+
+    let to = match (named, listening.as_slice()) {
+        (Some(named), _) => named.to_owned(),
+        (None, [only]) => only.clone(),
+        (None, []) => return Err(RunError::NobodyIsWorking),
+        (None, many) => {
+            return Err(RunError::SeveralAreWorking {
+                names: many.to_vec(),
+            });
+        }
+    };
+
+    let voice = control.voice_of(&to).ok_or_else(|| {
+        if listening.is_empty() {
+            RunError::ThatOneFinished
+        } else {
+            RunError::NoSuchAgentWorking {
+                name: to.clone(),
+                working: listening.clone(),
+            }
+        }
+    })?;
+
+    // Kanał, nie uchwyt: nadajnik jest klonowalny i nie wymaga `&mut`, czyli da się nim pisać
+    // do sesji, której tura właśnie trwa. Cała naprawa mieści się w tym jednym zdaniu.
+    voice
+        .send(crate::engine::drivers::ToAgent::Turn(said.to_owned()))
+        .await
+        .map_err(|_| RunError::StoppedListening { name: to.clone() })?;
+
+    /* DOPIERO TERAZ WIDAĆ TO NA EKRANIE, i kolejność jest tu treścią kryterium.
+     *
+     * Zgłoszenie właściciela 2026-08-19: „a może odpisuje on, ale na pewno nie widać moich
+     * wiadomości". Zdanie dochodziło do modelu i nie zostawiało śladu w strumieniu, bo tura
+     * człowieka nie miała nośnika na drucie (powód w całości przy `Line::Told`).
+     *
+     * PO wysłaniu, nie przed: wiersz dopisany wcześniej pokazywałby w historii zdanie, które za
+     * chwilę odbije się o `StoppedListening` — czyli historia twierdziłaby, że agent coś usłyszał,
+     * a nie usłyszał. Odwrotna kolejność jest tą, która kłamie w pliku (niezmiennik 4).
+     *
+     * Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem szybkiego agenta
+     * (`ipc::Sent`), a zdanie i tak POSZŁO. Odmowa w tym miejscu mówiłaby człowiekowi, że jego
+     * tura nie doszła, kiedy doszła. */
+    let _ = control.show_in_the_run(crate::engine::line::Line::Told {
+        agent: to,
+        text: said.to_owned(),
+    });
     Ok(())
 }
 
@@ -489,7 +638,10 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
     // własne tłumaczenie byłoby drugim miejscem, w którym mieszka ten sam komunikat.
-    if let Some(refusal) = check(&file)
+    // `check_to_run`, nie `check`: krok bez agenta jest przy zapisie ostrzeżeniem (szkic
+    // w połowie zbudowany ma się zapisać), a tutaj problemem — bo za sekundę miałby ruszyć.
+    // Powód w całości stoi przy `workflow::check::check_to_run`.
+    if let Some(refusal) = check_to_run(&file)
         .into_iter()
         .find(|note| note.level == Level::Problem)
     {
@@ -506,6 +658,16 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
 
     let setup = Setup {
         library: deps.home.join(AGENTS_DIR),
+        knows: what_the_agents_know(deps.home),
+        /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
+         * fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
+         * na pytanie, co ten bieg buduje. */
+        task: request
+            .task
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned(),
         project: deps.project,
         dir: &dir,
         drivers: &deps.drivers,
@@ -562,6 +724,97 @@ fn arrows(file: &WorkflowFile) -> Vec<(StepId, StepId)> {
         .collect()
 }
 
+/// Notatki, które człowiek dopuścił do użytku, jako blok tekstu na początek promptu.
+///
+/// 2026-08-18 — PO CO TO ISTNIEJE. `memory::notes::what_you_know` istniało od T-17 i miało
+/// wołających **wyłącznie w trzech plikach testowych**. Prompt kroku brzmiał
+/// `step.instructions.clone()` i nic poza tym, więc człowiek przestawiał notatkę na „in use",
+/// a agent w kolejnym biegu nic o niej nie wiedział. Siedem zielonych kryteriów T-17 stało nad
+/// martwym końcem: cała sekcja Pamięć była mechanizmem bez odbiorcy.
+///
+/// DWA ZAKRESY, KAŻDY ZE SWOIM BUDŻETEM. `Scope::Everywhere` idzie pierwszy, bo jest szerszym
+/// tłem, a `Scope::ThisProject` po nim — bliższy kontekst czyta się na końcu, tuż przed samym
+/// zadaniem. Każdy zakres ma własny sufit długości (`Scope::cap`), więc dwa wywołania nie są
+/// obejściem budżetu: to jest budżet policzony tak, jak go zaprojektowano [T6 §5.3].
+///
+/// `Scope::ThisAgent` NIE wchodzi i to jest zgłoszenie, nie przeoczenie: filtrowanie po agencie
+/// wymaga tożsamości agenta w chwili liczenia bloku, a blok liczymy raz na bieg, nie raz na krok.
+/// Zrobienie tego dobrze znaczy policzyć trzeci blok per krok — osobna zmiana.
+///
+/// **Odczyt, który się nie udał, nie zabiera biegu** (niezmiennik 5): katalog pamięci na świeżej
+/// maszynie nie istnieje i to jest stan normalny. Wtedy agent po prostu nic nie wie.
+fn what_the_agents_know(home: &Path) -> String {
+    let root = super::memory::notes_root(home);
+    let Ok(notes) = crate::memory::notes::scan_notes(&root) else {
+        tracing::debug!(root = %root.display(), "the notes could not be read; no step will carry them");
+        return String::new();
+    };
+    let mut text = String::new();
+    for scope in [
+        crate::memory::notes::Scope::Everywhere,
+        crate::memory::notes::Scope::ThisProject,
+    ] {
+        let block =
+            crate::memory::notes::what_you_know(&notes, crate::memory::notes::Budget::of(scope));
+        if block.text.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&block.text);
+    }
+    text
+}
+
+/// Zadanie kroku, poprzedzone tym, co wiadomo.
+///
+/// Pusty blok znaczy „nic nie wiadomo" i wtedy prompt jest DOKŁADNIE zadaniem kroku, bez ani
+/// jednego dodatkowego bajtu: nagłówek nad pustką uczy model, że ta sekcja bywa pusta,
+/// i kosztuje długość za nic (ten sam powód stoi przy `Block::text`).
+fn with_what_we_know(knows: &str, task: &str) -> String {
+    if knows.is_empty() {
+        return task.to_owned();
+    }
+    format!("{knows}\n\n{task}")
+}
+
+/// Znacznik, którym plik workflow wskazuje, GDZIE w promptcie kroku ma stanąć zadanie człowieka.
+///
+/// Ta sama rodzina, co `{{copy}}` i `{{copies}}` [T3 §4.3] — plik już umie mówić o rzeczach,
+/// które powstają dopiero przy starcie.
+const TASK_MARK: &str = "{{task}}";
+
+/// Nagłówek nad zadaniem, kiedy plik nie wskazał miejsca sam.
+///
+/// Zdanie, nie słowo: krok czyta to razem ze swoim promptem, więc musi wiedzieć, czyje to jest
+/// polecenie i że dotyczy całego biegu, a nie tylko jego jednego.
+const TASK_HEADING: &str = "What the person asked for, for this whole run:";
+
+/// Zadanie kroku z wpisanym zadaniem CAŁEGO biegu — albo bez, kiedy nikt go nie podał.
+///
+/// # Dwa sposoby, jeden powód
+///
+/// Jeśli prompt kroku zawiera [`TASK_MARK`], zadanie ląduje **dokładnie tam** — bo plik, który
+/// zadał sobie trud wskazania miejsca, wie o swoim promptcie więcej niż my. Jeśli nie zawiera,
+/// zadanie idzie na GÓRĘ, pod nagłówkiem. Nie na dół: prompt kroku kończy się zwykle instrukcją
+/// „co oddać", a zdanie doklejone po niej czyta się jak dopisek po podpisie.
+///
+/// Przy pustym zadaniu prompt NIE dostaje ani nagłówka, ani jednego dodatkowego bajtu — a sam
+/// znacznik **znika**. To jedyne miejsce, w którym ta funkcja zmienia prompt bez zadania, i ma
+/// nazwany powód: `{{task}}` zostawiony w tekście jest jedyną rzeczą w całym promptcie, której
+/// model nie umie przeczytać inaczej niż jako literalny nawias — czyli wygląda jak zepsute
+/// podstawienie, którym jest.
+fn with_the_task(task: &str, instructions: &str) -> String {
+    if task.is_empty() {
+        return instructions.replace(TASK_MARK, "");
+    }
+    if instructions.contains(TASK_MARK) {
+        return instructions.replace(TASK_MARK, task);
+    }
+    format!("{TASK_HEADING}\n{task}\n\n{instructions}")
+}
+
 /// Stabilny klucz węzła, niezależny od rodzaju kafelka.
 fn key_of(step: &Step) -> &str {
     match step {
@@ -575,6 +828,19 @@ fn key_of(step: &Step) -> &str {
 struct Setup<'a> {
     /// `~/.loadout/agents` — stąd bierzemy agenta, którego nazywa krok.
     library: PathBuf,
+    /// Co agent WIE, zanim przeczyta swoje zadanie — notatki, które człowiek dopuścił do użytku.
+    ///
+    /// Liczone RAZ, przy planowaniu, nie przy każdym kroku: ten sam bieg ma nieść jedną
+    /// odpowiedź na pytanie „co wiadomo". Odczyt per krok dałby dwóm krokom tego samego biegu
+    /// dwa różne konteksty, gdyby ktoś w międzyczasie dopuścił notatkę — a różnicy nie widać
+    /// nigdzie poza rachunkiem za długość.
+    knows: String,
+    /// Co człowiek kazał zbudować TYM biegiem — puste, kiedy nie kazał nic ponad plik.
+    ///
+    /// Jedna wartość na bieg, dokładnie jak [`Setup::knows`] i z tego samego powodu: zadanie
+    /// odczytane per krok mogłoby się różnić między krokami jednego biegu, a wtedy „co my właściwie
+    /// budujemy" przestaje mieć jedną odpowiedź.
+    task: String,
     /// Katalog projektu, w którym biegnie workflow.
     project: &'a Path,
     /// Katalog tego biegu. Jeszcze nie istnieje: pod nim lądują własne kopie plików.
@@ -612,7 +878,7 @@ fn plan_step(step: &Step, setup: &Setup<'_>) -> Result<Planned, RunError> {
 
 /// Krok agenta: konfiguracja efektywna, sterownik, katalog roboczy.
 fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
-    let saved = find_agent(&setup.library, &step.agent)?;
+    let saved = find_agent(&setup.library, &step.agent, &step.name)?;
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
@@ -631,7 +897,17 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
         // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
         // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
         // nic po drugiej stronie nie odpowiada.
-        prompt: step.instructions.clone(),
+        // Zadanie kroku POPRZEDZONE tym, co człowiek dopuścił do użytku (`what_the_agents_know`).
+        // Bez człowieka blok jest pusty i prompt jest dokładnie zadaniem kroku —
+        // `docs/ARCHITECTURE.md` §2 pytanie 5 obiecuje właśnie to.
+        // Zadanie CAŁEGO biegu wchodzi do zadania kroku (`with_the_task`), a dopiero to, co z tego
+        // wyszło, dostaje blok „co wiadomo". Ta kolejność jest treścią: notatki są kontekstem
+        // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
+        // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
+        prompt: with_what_we_know(
+            &setup.knows,
+            &with_the_task(&setup.task, &step.instructions),
+        ),
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
@@ -651,11 +927,32 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
 /// przeżywa zmianę nazwy (T3 §3.1). Plik, którego nie da się przeczytać, **nie zabiera biegu**,
 /// który go nie używa — ale jeśli szukanego nie ma, to właśnie jego błąd jest odpowiedzią,
 /// bo „nie ma takiego agenta" i „ten plik jest zepsuty" naprawia się inaczej [T4 §10].
-fn find_agent(library: &Path, id: &str) -> Result<Agent, RunError> {
-    let mut files: Vec<PathBuf> = fs::read_dir(library)?
+fn find_agent(library: &Path, id: &str, step: &str) -> Result<Agent, RunError> {
+    // 2026-08-18 — KATALOG, KTÓREGO NIE MA, TO ZDANIE O AGENTACH, NIE O SYSTEMIE PLIKÓW.
+    // `fs::read_dir(library)?` szło tu wprost w `RunError::Io`, który jest przezroczysty, więc
+    // pierwsze uruchomienie po instalacji kończyło się „No such file or directory (os error 2)".
+    // Katalog `agents/` powstaje dopiero przy pierwszym zapisanym agencie, czyli na świeżej
+    // maszynie NIE ISTNIEJE — to jest stan normalny, nie awaria dysku, i ma o tym mówić.
+    let listing = match fs::read_dir(library) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(RunError::NoAgentsSaved {
+                step: step.to_owned(),
+            });
+        }
+        Err(error) => return Err(RunError::Io(error)),
+    };
+    let mut files: Vec<PathBuf> = listing
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .collect();
+    // Katalog, który istnieje i jest pusty, jest tym samym faktem co katalog, którego nie ma:
+    // nie ma z czego wybrać. Dwa różne zdania o jednym stanie byłyby dwoma miejscami prawdy.
+    if files.is_empty() {
+        return Err(RunError::NoAgentsSaved {
+            step: step.to_owned(),
+        });
+    }
     // `read_dir` nie obiecuje żadnej kolejności, a odpowiedź „którego agenta wzięliśmy" nie ma
     // prawa zależeć od systemu plików.
     files.sort();
@@ -977,6 +1274,36 @@ impl Live {
     /// Błąd zrzutu w locie **loguje się i nie zatrzymuje biegu**: cztery żywe agenty to zły
     /// moment na przewracanie wszystkiego z powodu jednego nieudanego zapisu. Pierwszy zrzut
     /// jest inny i idzie przez [`Live::open_the_book`].
+    /// Stan kroku **do okna**, jednym wierszem `stepState`.
+    ///
+    /// 2026-08-18 — PO CO TO ISTNIEJE. Stan kroku żył wyłącznie w księdze i w `run.json`, więc
+    /// okno nie dostawało go nigdy: `RunState.steps` przychodziło z pliku workflow w chwili
+    /// kliknięcia Start, z każdym krokiem na `pending`, i **zostawało tak do końca biegu**.
+    /// Skutkiem nie była nieaktualna liczba: pasek loadoutu stał na samych obrysach, a kafelek
+    /// agenta, który właśnie edytował pliki, pokazywał „waiting". Sześć z siedmiu stanów
+    /// z `docs/ARCHITECTURE.md` §5 było po stronie okna NIEOSIĄGALNYCH.
+    ///
+    /// `node_key`, nie `id`: okno rozpoznaje swój kafelek po identyfikatorze **z pliku
+    /// workflow**, bo z tego pliku powstał plan paska, zanim Rust powiedział pierwsze słowo
+    /// (`src/state/run.ts`, `withStepStates` porównuje `step.id === line.stepId`). Świeży uuid
+    /// biegu byłby tu kluczem, którego okno nigdy nie widziało.
+    ///
+    /// `name`, nie identyfikator, w polu `agent`: to ten sam podpis, którym ten krok mówi
+    /// w każdym innym wierszu (`forward(…, plan.steps[id].name)`), więc szyna agentów nie
+    /// dostaje dwóch nazw na jeden kafelek (niezmiennik 13).
+    ///
+    /// Wiersz idzie **poza kuratorem** i to jest wymóg, nie skrót: kuracja rozstrzyga, co
+    /// człowiek czyta o CZYNNOŚCIACH agenta (niezmiennik 15), a to jest fakt o biegu. Puszczony
+    /// przez sklejanie zniknąłby w grupie `read` albo poczekał na jej domknięcie — czyli pasek
+    /// przestawiałby się z opóźnieniem względem tego, co widać w strumieniu.
+    fn announce(&self, id: StepId, state: StepState) {
+        let _ = self.lines.send(Line::StepState {
+            agent: self.plan.steps[id].name.clone(),
+            step_id: self.plan.steps[id].node_key.clone(),
+            state: state.name().to_owned(),
+        });
+    }
+
     fn update(&self, edit: impl FnOnce(&mut Book)) {
         let mut book = self.book();
         edit(&mut book);
@@ -1090,21 +1417,26 @@ impl Live {
             step.status = StepState::Running;
             step.started_at = Some(at);
         });
+        // Po zapisie do księgi, nie przed: ekran, który wie o kroku wcześniej niż `run.json`,
+        // pokazywałby po awarii aplikacji stan, którego odzyskiwanie nie potrafi odtworzyć.
+        self.announce(id, StepState::Running);
 
         let report = match &self.plan.steps[id].job {
             Job::Agent(job) => self.run_agent(id, job, &cancel).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
         };
 
+        let ended = match report {
+            StepReport::Succeeded => StepState::Succeeded,
+            StepReport::Failed => StepState::Failed,
+            StepReport::Cancelled => StepState::Cancelled,
+        };
         self.update(|book| {
             let step = &mut book.steps[id];
-            step.status = match report {
-                StepReport::Succeeded => StepState::Succeeded,
-                StepReport::Failed => StepState::Failed,
-                StepReport::Cancelled => StepState::Cancelled,
-            };
+            step.status = ended;
             step.ended_at = Some(now_ms());
         });
+        self.announce(id, ended);
         report
     }
 
@@ -1190,7 +1522,7 @@ impl Live {
         job: &AgentJob,
         cancel: &CancellationToken,
     ) -> StepReport {
-        let (events, inbox) = mpsc::channel::<AgentEvent>(EVENT_QUEUE);
+        let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
         // Odbiór staje PRZED startem sterownika: vendor ma prawo powiedzieć pierwsze zdarzenia
         // jeszcze w `start`, a kanał bez odbiorcy zatrzymałby go na pierwszym pełnym buforze.
         // Limit dostawcy przychodzi właśnie tędy, więc pętla dostaje CAŁY bieg, nie same linie.
@@ -1239,7 +1571,11 @@ impl Live {
             }
             Err(error) => {
                 let text = format!("Loadout could not start this agent: {error}");
-                let _ = ours.send(AgentEvent::Notice { text: text.clone() }).await;
+                // `.into()` — `DecodedEvent::from(AgentEvent)` podstawia `tool: None`. Nieudany
+                // start nie jest czynnością narzędzia, więc brak faktu jest tu prawdą, nie luką.
+                let _ = ours
+                    .send(AgentEvent::Notice { text: text.clone() }.into())
+                    .await;
                 drop(ours);
                 self.update(|book| book.steps[id].error = Some(text));
                 StepReport::Failed
@@ -1274,6 +1610,17 @@ impl Live {
             });
         }
 
+        /* GŁOS KROKU JEST DOSTĘPNY PRZEZ CAŁĄ TURĘ — i to jest cała naprawa „nie da się napisać
+         * do agenta". Rejestrujemy pod NAZWĄ kroku, bo to ją człowiek widzi w strumieniu i na
+         * kafelku szyny; identyfikator wewnętrzny byłby kluczem, którego okno nigdy nie dostało.
+         *
+         * Zdejmujemy w `finally`-podobnym miejscu na końcu tej funkcji, nie w gałęzi sukcesu:
+         * krok anulowany i krok po limicie czasu też przestają słuchać, a głos zostawiony po nich
+         * proponowałby rozmowę z sesją, której nie ma. */
+        if let Some(voice) = handle.voice() {
+            self.control.step_can_hear(&self.plan.steps[id].name, voice);
+        }
+
         // Limit czasu kroku. Zegar rusza TUTAJ, przy czekaniu na turę, a nie przy planowaniu:
         // krok czekający w kolejce na wolne miejsce nie zużywa niczyich pieniędzy, więc liczenie
         // mu tego czasu ubijałoby kroki tym częściej, im dłuższa kolejka.
@@ -1305,7 +1652,10 @@ impl Live {
             // `cancel()` albo `close()` na tym samym uchwycie.
         };
 
-        match finished {
+        /* Głos zdejmujemy PO tym `match`, nie w gałęziach: krok anulowany i krok po limicie czasu
+         * też przestają słuchać, a `report` jest jedynym miejscem, przez które przechodzą
+         * wszystkie trzy drogi wyjścia. */
+        let report = match finished {
             // PRZEKROCZONY LIMIT IDZIE TĄ SAMĄ DROGĄ, CO STOP: przez sterownik.
             //
             // `tokio::time::timeout` owinięty wokół `handle.wait()` wygląda identycznie i jest
@@ -1389,7 +1739,9 @@ impl Live {
                     StepReport::Failed
                 }
             }
-        }
+        };
+        self.control.step_went_quiet(&self.plan.steps[id].name);
+        report
     }
 
     /// Prompt kroku: jego **własna instrukcja** plus indeks przekazań poprzedników.
@@ -1586,6 +1938,20 @@ impl Live {
 
         if listening.wait().await {
             self.control.resume();
+            /* ODPOWIEDŹ CZŁOWIEKA STAJE SIĘ PRZEKAZANIEM TEGO KROKU.
+             *
+             * To jest jedyne uczciwe miejsce, w które może pójść: kafelek kontrolny nie woła
+             * żadnego agenta, więc nie ma komu jej „wysłać" — a krok, który idzie PO nim, i tak
+             * czyta przekazania swoich rodziców (`hand_over`, indeks przekazań w prompcie).
+             * Zdanie człowieka wchodzi więc do pracy tą samą drogą, którą wchodzi wynik agenta,
+             * i widać je w `handoffs/` razem z resztą biegu (niezmiennik 4: pliki są prawdą).
+             *
+             * Nic nie piszemy, kiedy człowiek nie napisał nic: puste przekazanie dołożyłoby
+             * do promptu następnego kroku nagłówek nad pustką, czyli kosztowałoby długość
+             * za informację, której nie ma. */
+            if let Some(said) = self.control.take_answer() {
+                self.hand_over(id, &said, &[]);
+            }
             // Limit dostawcy mógł wejść W TRAKCIE pytania i wtedy odpowiedź człowieka nie
             // wznawia niczego: bieg dalej stoi, tylko już z innego powodu.
             let still = !self.gate.still_paused_for().is_zero();
@@ -1686,9 +2052,20 @@ fn run_stands_or_moves(book: &mut Book, paused_by_the_provider: bool) {
 /// „widać banner" a „bieg umie się wznowić o właściwej godzinie". `AgentEvent::RateLimit`
 /// docierał tu i zostawał wierszem na ekranie, a wysyłka szła dalej, jakby nic nie zaszło —
 /// czyli następny agent dostawał odmowę, a okno limitu paliło się na odmowach.
-async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<AgentEvent>, agent: String) {
+async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<DecodedEvent>, agent: String) {
     let mut curator = Curator::new();
-    while let Some(event) = inbox.recv().await {
+    /* Czy okno już wie, że ten agent myśli. Powód, dla którego to jest tu, a nie w kuratorze,
+     * stoi przy wysyłce niżej. */
+    let mut told_it_thinks = false;
+    // 2026-08-18 — PACZKA NIESIE TERAZ FAKT O NARZEDZIU, nie samo zdarzenie. Do tego dnia
+    // kanal sterownika mial typ `Sender<AgentEvent>`, wiec `Tool` — rodzina czynnosci, pelna
+    // sciezka, pelne wyjscie — ginal na granicy sterownika, a ta petla musiala podac
+    // `tool: None`. Skutkiem nie byla gorsza jakosc wiersza: `Curator` bez `seen.tool` zwraca
+    // `Vec::new()`, wiec wiersze `read`, `search`, `edit` i `ran` NIE POWSTAWALY NIGDY
+    // i strumien pokazywal wylacznie proze agenta. Powod, dla ktorego naprawa nalezy tutaj,
+    // a nie do drugiej tabeli nazw narzedzi w tym pliku, stoi przy `engine::drivers::DecodedEvent`
+    // (niezmienniki 15 i 23).
+    while let Some(DecodedEvent { event, tool }) = inbox.recv().await {
         // PRZED kuracją, nie po niej: wiersz jest zdaniem dla człowieka, a to niżej jest
         // decyzją dla biegu. Kolejność odwrotna dokłada okno, w którym ekran już wie, a bieg
         // jeszcze wysyła.
@@ -1703,9 +2080,47 @@ async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<AgentEvent>, agent: 
             agent: &agent,
             at_ms,
             event: &event,
-            tool: None,
+            tool: tool.as_ref(),
         };
-        send_batch(&live.lines, curator.observe(seen));
+        let batch = curator.observe(seen);
+
+        /* SLOT „Thinking…" DOSTAJE SWÓJ NOŚNIK — i to jest jedyne miejsce, w którym wolno mu
+         * go dostać.
+         *
+         * 2026-08-18. `docs/ARCHITECTURE.md` linia 178 daje dla `thinking` i `thinking_tokens`
+         * wprost: „*nic w strumieniu* — stały slot na dole, nadpisywany". Kolumna tej tabeli
+         * nazywa się „Co widać", więc zdanie mówi dwie rzeczy naraz: żadnego wiersza HISTORII,
+         * ale slot ma pokazywać. Do dziś pokazywał nic: jedynym śladem myślenia był
+         * `Curator::status`, którego w produkcji **nikt nie czytał**, więc dolna strefa ekranu
+         * była martwa także wtedy, gdy agent myślał minutami.
+         *
+         * DLACZEGO TU, A NIE W KURATORZE. Próba odwrotna — `Curator::observe` oddające
+         * `vec![Line::Thinking]` — przewróciła CZTERY kryteria w dwóch plikach, z których jedno
+         * przepuszcza prawdziwą pompę przez złotą fiksturę szesnastu zdarzeń i żąda dokładnie
+         * trzech wierszy. I miały rację: wektor kuratora JEST strumieniem historii, więc wiersz
+         * w nim jest wierszem w historii. Tutaj nie jest: to jest osobna wysyłka obok kuracji,
+         * a rejestr po stronie okna kieruje ten rodzaj na trasę `now`, gdzie widok go
+         * NADPISUJE, nigdy nie dokłada (`src/sections/run/feed/model.ts`, gałąź `route === 'now'`
+         * robi `continue`).
+         *
+         * TYLKO NA ZMIANĘ STANU i tylko wtedy, gdy kuracja nie oddała ani jednego wiersza.
+         * Wiersz na każde zdarzenie myślenia to cztery wiadomości na turę przez pompę za jeden
+         * fakt; wiersz wysłany RAZEM z prawdziwym wierszem zapalałby slot w tej samej paczce,
+         * w której widok go gasi (prawdziwa linia gasi slot — [T2 §7.2 wiersz 4]). Gaśnięcia
+         * nie wysyłamy wcale: robi je okno, na pierwszej prawdziwej linii, i to jest jego jedna
+         * odpowiedź na to pytanie (niezmiennik 13). */
+        if batch.is_empty() {
+            if !told_it_thinks && curator.status() == Some(Status::Thinking) {
+                let _ = live.lines.send(Line::Thinking {
+                    agent: agent.clone(),
+                });
+                told_it_thinks = true;
+            }
+        } else {
+            told_it_thinks = false;
+        }
+
+        send_batch(&live.lines, batch);
     }
     // Ostatnia grupa sklejania wyszłaby inaczej nigdy, a użytkownik zobaczyłby o wiersz mniej,
     // niż się wydarzyło — najgorszy rodzaj zgubienia, bo cichy.
@@ -1908,4 +2323,86 @@ fn fingerprint(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(PRIME);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    //! Zadanie z wiersza wejścia wchodzi w prompt kroku — trzy przypadki, jeden na każdą drogę.
+    //!
+    //! # Dlaczego testy jednostkowe W TYM PLIKU, a nie w `tests/it/`
+    //!
+    //! [`with_the_task`] jest prywatna, a droga do niej z zewnątrz prowadzi przez `plan_run`, czyli
+    //! przez katalog biblioteki, plik workflow, definicję agenta i fabrykę sterowników. Test tej
+    //! jednej funkcji przez tamto stanowisko kosztowałby sto linii fikstury, żeby sprawdzić
+    //! sklejanie dwóch napisów — a zapora, której koszt sprawdzenia jest wyższy niż koszt
+    //! napisania, jest zaporą niesprawdzoną. Ten sam precedens i to samo uzasadnienie stoi przy
+    //! `run_request` w `src-tauri/src/ipc.rs`.
+    //!
+    //! # Słaba wersja tych kryteriów
+    //!
+    //! `assert!(out.contains(TASK))`. Przechodzi dla implementacji, która **zawsze** dokleja
+    //! nagłówek, także przy pustym zadaniu — czyli dla tej, która każdemu biegowi bez zadania
+    //! dopisuje do promptu nagłówek nad pustką i każe za niego płacić długością. Rozstrzyga
+    //! porównanie CO DO BAJTU w przypadku pustym.
+
+    use super::{TASK_MARK, with_the_task};
+
+    /// Prompt kroku, taki jak w pliku workflow.
+    const STEP: &str = "Write the tests first, then the code.";
+
+    /// Zadanie z wiersza wejścia.
+    const TASK: &str = "build a pretty todo list";
+
+    #[test]
+    fn no_task_leaves_the_step_prompt_byte_for_byte() {
+        assert_eq!(
+            with_the_task("", STEP),
+            STEP,
+            "a run started without a task has to send the step's prompt exactly as the file has \
+             it. An empty heading above nothing teaches the model that the section is sometimes \
+             empty, and costs length for nothing"
+        );
+    }
+
+    #[test]
+    fn a_task_goes_where_the_file_pointed() {
+        let pointed = format!("Context: {TASK_MARK}\n\nWrite the tests first.");
+        assert_eq!(
+            with_the_task(TASK, &pointed),
+            format!("Context: {TASK}\n\nWrite the tests first."),
+            "a file that took the trouble to mark the spot knows more about its own prompt than \
+             we do, so the task belongs exactly there and nowhere else"
+        );
+    }
+
+    #[test]
+    fn without_a_mark_the_task_goes_on_top_under_a_heading() {
+        let out = with_the_task(TASK, STEP);
+        assert!(
+            out.ends_with(STEP),
+            "the step's own prompt has to stay whole and stay last: it usually ends with what to \
+             hand back, and a sentence pasted after that reads like a note after the signature. \
+             What came out was:\n{out}"
+        );
+        assert!(
+            out.starts_with("What the person asked for"),
+            "without a mark the task goes on top, named — an unlabelled sentence glued to a \
+             prompt is indistinguishable from a typo in the file. What came out was:\n{out}"
+        );
+        assert!(
+            out.contains(TASK),
+            "and it has to actually carry the task. What came out was:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_mark_left_over_without_a_task_disappears() {
+        let pointed = format!("Context: {TASK_MARK}\n\nGo.");
+        assert_eq!(
+            with_the_task("", &pointed),
+            "Context: \n\nGo.",
+            "`{{task}}` left in the text is the one thing in the whole prompt the model cannot \
+             read as anything but a literal brace — it looks like the broken substitution it is"
+        );
+    }
 }

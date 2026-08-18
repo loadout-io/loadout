@@ -23,7 +23,7 @@
  * w której człowiek ma mu zaufać.
  */
 import type { ReactElement } from 'react';
-import type { PendingClose } from '../../../state/workspaces';
+import type { PendingClose } from '../../../state/run-tabs';
 
 export interface CloseConfirmProps {
   /** Karta, o której zamknięcie pytamy, razem z liczbą pracujących w niej agentów. */

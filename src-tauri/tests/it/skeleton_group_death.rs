@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use loadout_lib::engine::StepId;
 use loadout_lib::engine::dag::Dag;
 use loadout_lib::engine::drivers::claude::ClaudeDriver;
-use loadout_lib::engine::drivers::{AgentDriver, AgentEvent, Policy, RunSpec};
+use loadout_lib::engine::drivers::{AgentDriver, AgentEvent, DecodedEvent, Policy, RunSpec};
 use loadout_lib::engine::scheduler::execute;
 use loadout_lib::engine::step::{StepReport, StepState};
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -213,7 +213,7 @@ impl Bench {
     async fn step(self: Arc<Self>, id: StepId, cancel: CancellationToken) -> StepReport {
         let cwd = self.dirs[id].clone();
 
-        let (tx, mut inbox) = mpsc::channel(EVENTS);
+        let (tx, mut inbox) = mpsc::channel::<DecodedEvent>(EVENTS);
         // Kanał musi być OPRÓŻNIANY: pętla czytająca sterownika zatrzymuje się na pełnym
         // buforze, a zatrzymana pętla wygląda dokładnie jak zawieszony agent. Przy okazji to
         // jest jedyne miejsce, z którego widać `system/init` — czyli chwilę, w której agent
@@ -221,7 +221,8 @@ impl Bench {
         let watcher = Arc::clone(&self);
         let _drain = tokio::spawn(async move {
             while let Some(event) = inbox.recv().await {
-                if matches!(event, AgentEvent::Started { .. }) {
+                // `event.event`: kanal niesie `DecodedEvent`, a ten straznik pyta o samo zdarzenie.
+                if matches!(event.event, AgentEvent::Started { .. }) {
                     watcher.announce(id);
                 }
             }

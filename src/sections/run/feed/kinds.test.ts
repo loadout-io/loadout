@@ -1,41 +1,39 @@
-/* Kryterium 2: czternaście rodzajów linii i ani jednego więcej.
+/* Kryterium 2: rejestr widoku zna DOKŁADNIE te rodzaje, które umie wyprodukować drut.
  *
  * `expect(Object.keys(kinds()).length).toBe(14)` jest słabe dwa razy. Raz: przechodzi dla
  * czternastu ZŁYCH nazw. Dwa: przechodzi też wtedy, gdy obok rejestru stoi gałąź `default`,
  * która renderuje to, czego nie rozpoznała — a wtedy pierwszy nowy typ zdarzenia od vendora
  * wyświetla surowy enum z drutu na ekranie (niezmiennik 14). Dlatego zbiór kluczy porównuje
- * się z literałem, a nie liczy, i dlatego druga połowa tego pliku podaje modelowi dwa rodzaje
+ * się ze ZBIOREM, a nie liczy, i dlatego druga połowa tego pliku podaje modelowi dwa rodzaje
  * spoza zbioru i przechodzi po WSZYSTKICH polach tekstowych wyniku.
  *
- * Zbiór jest wypisany tutaj ręcznie i to jest celowe. Pętla po `kinds()` pytałaby rejestr
- * o zdanie na własny temat i przeszłaby dla rejestru pustego.
+ * 2026-08-18 — ZBIÓR BYŁ TU WPISANY Z PALCA I TO BYŁA WADA, nie decyzja. Uzasadnienie brzmiało
+ * „pętla po `kinds()` pytałaby rejestr o zdanie na własny temat i przeszłaby dla rejestru
+ * pustego" — i jest poprawne, tylko wyciąga zły wniosek. Rejestr ma DRUGIE, niezależne źródło:
+ * lustro drutu w `src/ipc/types.ts`. Porównanie z nim nie jest samozwrotne (rejestr pusty
+ * przestaje się zgadzać, lista pusta też) i zapala się SAMO, kiedy rodzaj dochodzi po stronie
+ * Rusta. Wersja z literałem przechodziła dopóty, dopóki ktoś nie zapomniał go dopisać — a wtedy
+ * wiersz z drutu wypadał z widoku po cichu, czyli dokładnie ta awaria, przed którą to stoi.
+ * Punkt (a) niżej dowodzi najpierw, że lustro W OGÓLE coś oddało: dwa puste zbiory są równe.
  */
 import { describe, expect, it } from 'vitest';
+import { WIRE_KINDS } from '../../../ipc/types';
 import { line } from './fixtures/lines';
 import { sealedScroller } from './fixtures/scroller';
 import { kinds } from './kinds';
 import { createFeed } from './model';
 
-/** Czternaście rodzajów [T2 §7.2], posortowane. */
-const EXPECTED = [
-  'agent',
-  'asked',
-  'done',
-  'edit',
-  'handoff',
-  'memory',
-  'note',
-  'problem',
-  'ran',
-  'read',
-  'run',
-  'search',
-  'step',
-  'thinking',
-];
+/** Rodzaje, jakie umie wyprodukować drut — CZYTANE z lustra, nie przepisane [T2 §7.2]. */
+const EXPECTED = [...WIRE_KINDS].sort();
 
-/** Jedyny rodzaj, który idzie do strefy TERAZ zamiast do historii. */
-const LIVE = 'thinking';
+/**
+ * Rodzaje, które nie wchodzą do historii, a zajmują stały slot [T2 §7.3 reguła 5].
+ *
+ * Dwa, i to nie łamie niezmiennika 13, bo to są DWA RÓŻNE FAKTY: `thinking` mówi, co agent robi
+ * w tej chwili, a `stepState` — na którym kroku stoi bieg. Fakt trzeci w tej strefie byłby już
+ * dwoma odpowiedziami na jedno pytanie i ma tu paść na czerwono.
+ */
+const LIVE = ['stepState', 'thinking'];
 
 /** Enumy prosto z drutu — dokładnie to, co przyjdzie, gdy vendor doda typ zdarzenia. */
 const FOREIGN = ['tool_use', 'stream_event'];
@@ -52,30 +50,42 @@ function textIn(value: unknown, found: string[] = []): string[] {
   return found;
 }
 
-describe('fourteen kinds of line and not one more', () => {
-  it('carries exactly the fourteen keys, compared as a sorted list', () => {
+describe('the view knows exactly the kinds the wire can send', () => {
+  it('reads a real set of kinds out of the wire mirror first', () => {
+    expect(
+      EXPECTED.length,
+      'the wire mirror in src/ipc/types.ts gave back no kinds at all. Everything below hangs ' +
+        'off that list, and an empty one turns the comparison into `[] equals []` — which is ' +
+        'exactly the shape of green this criterion exists to end.',
+    ).toBeGreaterThanOrEqual(14);
+  });
+
+  it('carries exactly the keys the wire declares, compared as a sorted list', () => {
     expect(
       Object.keys(kinds()).sort(),
-      'counting to fourteen passes for fourteen wrong names. The set itself is the check, and ' +
-        'it is closed [T2 §7.2]: a fifteenth key means somebody taught the view a word the ' +
-        'vocabulary table never agreed to',
+      'counting to a number passes for that many wrong names. The set itself is the check, and ' +
+        'it is closed [T2 §7.2]: a key the wire never declares means somebody taught the view ' +
+        'a word the vocabulary table never agreed to, and a kind the wire DOES declare and the ' +
+        'registry does not means that line falls out of the view in silence.',
     ).toEqual(EXPECTED);
   });
 
-  it('sends one kind to the NOW zone and the other thirteen to the history', () => {
+  it('keeps the standing slot to the two facts that belong there, and history for the rest', () => {
     const registry = kinds();
     const live = Object.entries(registry)
       .filter(([, entry]) => entry.route === 'now')
-      .map(([kind]) => kind);
+      .map(([kind]) => kind)
+      .sort();
 
     expect(
       live,
-      'Thinking… is a status, not a line [T2 §7.3 rule 5], and it is the ONLY one. A second ' +
-        'kind in the live slot means two facts fighting over one region (invariant 13)',
-    ).toEqual([LIVE]);
+      'Thinking… is a status, not a line [T2 §7.3 rule 5], and so is which step the run stands ' +
+        'on. A THIRD kind in the standing slot means two answers to one question fighting over ' +
+        'one region (invariant 13).',
+    ).toEqual(LIVE);
 
     for (const kind of EXPECTED) {
-      if (kind === LIVE) continue;
+      if (LIVE.includes(kind)) continue;
       expect(
         registry[kind as keyof typeof registry]?.route,
         kind + ' belongs in the history, where lines are appended and stay',

@@ -122,23 +122,46 @@ export function WorkflowList({
           <ul className="grid grid-cols-2 gap-3">
             {workflows.map((entry) => (
               <li key={entry.path} className="flex flex-col gap-2">
-                <WorkflowTile wf={entry.workflow} />
+                {/* KAFELEK JEST OTWARCIEM (makieta: `<button class="tile" data-go="flows">`).
+                 * Do 2026-08-18 stał tu `<article>` i osobny przycisk `Open` pod kartą —
+                 * czyli trzy szare przyciski pod każdą pozycją i ani jednego miejsca, w które
+                 * kliknięcie robi to, czego człowiek się spodziewa. */}
+                {/* PLIK, KTÓREGO NIE DA SIĘ PRZECZYTAĆ, DOSTAJE ZDANIE — nie wywraca listy.
+                    Zmierzone w przeglądarce 2026-08-18: „TypeError: Cannot read properties of
+                    undefined (reading 'description')" w `tile.tsx`. Sygnatura mówi
+                    `workflow: WorkflowFile`, ale po drugiej stronie granicy nie ma typów, jest
+                    JSON — a jeden zepsuty plik w katalogu zabierał CAŁĄ sekcję.
 
-                {/* Obie kontrolki mają handler i obie wołają magazyn. Kafelek ich nie zna —
-                 * akcje mieszkają tam, gdzie mieszka obiekt `actions`. */}
-                <div className="flex gap-2">
-                  {/* Otwarcie jest pierwszą kontrolką w rzędzie, bo jest tym, po co ta lista
-                   * istnieje: workflow bez edytora to plik, którego nie da się ułożyć. */}
-                  <button
-                    data-open
-                    type="button"
-                    className={SECONDARY}
-                    onClick={() => {
+                    Zdanie, nie pominięcie: plik odfiltrowany w ciszy znika z ekranu, a człowiek
+                    widzi katalog, w którym „nie ma" workflow, który tam leży. Bez `Open`, bo nie
+                    ma czego otworzyć — kontrolka bez skutku jest gorsza niż jej brak
+                    (niezmiennik 16). Usunąć go dalej można: `Delete` stoi niżej i działa na
+                    ścieżce, nie na treści. */}
+                {Array.isArray(entry.workflow?.steps) ? (
+                  <WorkflowTile
+                    wf={entry.workflow}
+                    onOpen={() => {
                       onOpen(entry.path);
                     }}
+                  />
+                ) : (
+                  <div
+                    data-unreadable={entry.path}
+                    className="rounded-sq border border-fail-edge bg-panel p-3"
                   >
-                    Open
-                  </button>
+                    <p className="text-heading text-ink">{entry.path}</p>
+                    <p className="text-body text-muted">
+                      This file is not a workflow Loadout can read. Open it and check it, or remove
+                      it below.
+                    </p>
+                  </div>
+                )}
+
+                {/* Obie kontrolki mają handler i obie wołają magazyn. Kafelek ich nie zna —
+                 * akcje mieszkają tam, gdzie mieszka obiekt `actions`. Stoją POZA kafelkiem,
+                 * a nie w nim: przycisk w przycisku jest markupem, w którym przeglądarka sama
+                 * decyduje, które kliknięcie wygrało. */}
+                <div className="flex gap-2">
                   <button
                     type="button"
                     className={QUIET}
@@ -160,6 +183,22 @@ export function WorkflowList({
                 </div>
               </li>
             ))}
+
+            {/* Kafelek tworzenia z makiety (linia 651, `border-style:dashed`). Ta sama funkcja,
+             * co oba pozostałe wejścia — jeden przepływ, trzy wejścia (niezmiennik 16).
+             * NIE nosi `data-tile`: `data-tile` znaczy „workflow, który leży na dysku", a licznik
+             * tych znaczników jest tym, czym kryteria mierzą zawartość katalogu. */}
+            <li className="flex flex-col gap-2">
+              <button
+                data-create
+                type="button"
+                onClick={createWorkflow}
+                className="flex h-full flex-col gap-2 rounded-sq border border-dashed border-line bg-transparent p-3 text-left text-muted hover:border-line-strong hover:text-ink"
+              >
+                <span className="text-heading">＋ Create a workflow</span>
+                <span className="text-body">Start from an empty canvas.</span>
+              </button>
+            </li>
           </ul>
         )}
       </div>

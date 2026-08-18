@@ -137,7 +137,15 @@ const PLAN = [
 
 /* Migawka SPRZED czegokolwiek: liczona przy wczytaniu modułu, więc żaden przypadek nie zdążył
  * jeszcze ruszyć biegu. Punkt (a) pyta dokładnie o ten moment. */
-const beforeAnyRun = renderToStaticMarkup(<Start />);
+const beforeAnyRun = renderToStaticMarkup(
+  <Start
+    onSaid={() => {
+      /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+    }}
+  />,
+);
 const workflowAtRest = useRun.getState().workflow;
 
 describe('Stop shows up only once there is a run to stop, and Start is what sets that up', () => {
@@ -211,7 +219,17 @@ describe('Stop shows up only once there is a run to stop, and Start is what sets
 
   it('carries the stop control once that Start path has gone through', async () => {
     const going = start(OPEN, AT_ONCE, { name: NAME, steps: PLAN });
-    const labels = buttonLabels(renderToStaticMarkup(<Start />));
+    const labels = buttonLabels(
+      renderToStaticMarkup(
+        <Start
+          onSaid={() => {
+            /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+          }}
+        />,
+      ),
+    );
 
     expect(
       labels.length,
@@ -236,7 +254,17 @@ describe('Stop shows up only once there is a run to stop, and Start is what sets
     await Promise.allSettled([going]);
 
     expect(
-      buttonLabels(renderToStaticMarkup(<Start />)),
+      buttonLabels(
+        renderToStaticMarkup(
+          <Start
+            onSaid={() => {
+              /* To kryterium nie pyta o zdanie odmowy — pyta o kontrolkę. Kanał raportowania
+               musi jednak istnieć, bo typ go wymaga, i to jest celowe: prop wymagany jest
+               sposobem, w jaki system typów pilnuje, żeby zdanie miało gdzie stanąć. */
+            }}
+          />,
+        ),
+      ),
       'the run finished and the stop control stayed on screen. It now asks Rust to kill a run ' +
         'that is already gone, and the loadout strip keeps captioning a run nobody is having — ' +
         'a control with nothing to do (invariant 16), which is the same defect as the one this ' +

@@ -39,8 +39,8 @@ use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::line::Line;
 use loadout_lib::engine::step::StepState;
@@ -177,6 +177,7 @@ async fn a_provider_limit_pauses_the_run_and_it_comes_back_on_its_own() -> Resul
         // Jeden naraz, więc jedyną rzeczą, która może odsunąć drugi krok od pierwszego
         // o więcej niż długość tury, jest pauza biegu.
         how_many_at_once: 1,
+        task: None,
     };
 
     let seen = Delivered::default();
@@ -555,7 +556,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         self.watch.entered();
         let session = SessionRef {
@@ -564,12 +565,15 @@ impl AgentDriver for Fake {
         };
 
         let _ = events
-            .send(AgentEvent::Started {
-                session: session.clone(),
-                model: spec.model.clone().unwrap_or_default(),
-                tools: Vec::new(),
-                capabilities: Vec::new(),
-            })
+            .send(
+                (AgentEvent::Started {
+                    session: session.clone(),
+                    model: spec.model.clone().unwrap_or_default(),
+                    tools: Vec::new(),
+                    capabilities: Vec::new(),
+                })
+                .into(),
+            )
             .await;
 
         if !self.told.swap(true, Ordering::SeqCst) {
@@ -577,12 +581,15 @@ impl AgentDriver for Fake {
             // jest zdaniem vendora o tym samym. Wszystkie trzy zgodne, żeby kryterium nie
             // zależało od tego, które pole czyta implementacja.
             let _ = events
-                .send(AgentEvent::RateLimit {
-                    status: REFUSED.to_owned(),
-                    resets_at: self.resets_at,
-                    rate_limit_type: WINDOW.to_owned(),
-                    pause_run: true,
-                })
+                .send(
+                    (AgentEvent::RateLimit {
+                        status: REFUSED.to_owned(),
+                        resets_at: self.resets_at,
+                        rate_limit_type: WINDOW.to_owned(),
+                        pause_run: true,
+                    })
+                    .into(),
+                )
                 .await;
         }
 
@@ -593,7 +600,7 @@ impl AgentDriver for Fake {
 /// Jedna tura dublera.
 #[derive(Debug)]
 struct Turn {
-    events: mpsc::Sender<AgentEvent>,
+    events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
 }
 
@@ -625,7 +632,7 @@ impl AgentHandle for Turn {
         };
         let _ = self
             .events
-            .send(AgentEvent::Finished(outcome.clone()))
+            .send((AgentEvent::Finished(outcome.clone())).into())
             .await;
         Ok(outcome)
     }

@@ -15,7 +15,9 @@
  *               w `panel.tsx`. Do tego dnia ten plik miał w CAŁYM repo zero importerów, więc
  *               punkt kontrolny postawiony na płótnie nie miał jak dostać ani nazwy, ani
  *               pytania: bieg zatrzymywał się na nim i nie pytał o nic.
- *   nadal bez montażu: `step-panel/skills-row.tsx` — ma własny test i ani jednego wołającego.
+ *   2026-08-18, wieczór: `step-panel/skills-row.tsx` — ostatni z czterech. Jedynym jego
+ *               importerem był jego własny test, a martwa była razem z nim akcja magazynu
+ *               `chooseSkills`: mechanizm, test i zero wołających, trzy razy pod rząd.
  *
  * Przy okazji przestał obowiązywać warunek, który tę listę trzymał krótką: panel montował się
  * tylko wtedy, gdy `step.agent` rozwiązał się w bibliotece. `freshStep` daje `agent: ''`
@@ -26,6 +28,15 @@
  * bierze dokument w konstruktorze, bo magazyn bez dokumentu nie ma sensu (`state/workflows.ts`).
  * Trzymanie jednego magazynu na całą sekcję wymagałoby `document: null`, czyli stanu, który
  * tamten plik świadomie wyklucza.
+ *
+ * NAGŁÓWEK JEST TERAZ NAGŁÓWKIEM Z MAKIETY (`.hd`, `docs/mockup/index.html:543-551`), i to jest
+ * naprawa trzech osobnych wad naraz:
+ *   `All workflows` zamiast nagiej strzałki „←" — strzałka bez podpisu nie mówi, gdzie prowadzi.
+ *   NAZWA JAKO POLE, nie `<h1>`. Do 2026-08-18 nazwy nie dało się zmienić z okna wcale, więc na
+ *   dysku właściciela leżały „New workflow" i „New workflow 2" — a to wprost napędzało następny
+ *   defekt, bo Run brał plik pierwszy w sortowaniu bajtowym.
+ *   `N steps · <stan zapisu>` — dowód, że zapis się odbył. Bez niego autosave jest niewidzialny
+ *   w obie strony: człowiek nie wie ani że zapisał, ani (przy odmowie) że właśnie stracił pracę.
  */
 import type { ReactElement } from 'react';
 import { useEffect, useState } from 'react';
@@ -47,8 +58,12 @@ export interface WorkflowEditorProps {
   document: WorkflowFile;
   /** Agenci z biblioteki: panel kroku pokazuje wartości efektywne, więc musi znać agenta. */
   agents: readonly Agent[];
+  /** Umiejętności leżące w katalogach agentów — wiersz Skills wybiera z nich, a nie z niczego. */
+  skills?: readonly string[];
   onClose: () => void;
   onRun: (path: string) => void;
+  /** Skrót na sekcję Agents: „nie mam kogo wybrać" ma mieć drogę wyjścia, nie samą informację. */
+  onCreateAgent: () => void;
   /**
    * Kafelek, którego panel jest otwarty już w chwili zamontowania ekranu.
    *
@@ -68,12 +83,19 @@ function withStep(file: WorkflowFile, id: string, change: (step: Step) => Step):
   return { ...file, steps: file.steps.map((step) => (step.id === id ? change(step) : step)) };
 }
 
+/** `1 step`, ale `4 steps`. Ta sama odmiana, co na kafelku listy (`list/tile.tsx`). */
+function counted(count: number, noun: string): string {
+  return count === 1 ? `1 ${noun}` : `${String(count)} ${noun}s`;
+}
+
 export function WorkflowEditor({
   path,
   document,
   agents,
+  skills = [],
   onClose,
   onRun,
+  onCreateAgent,
   openStep,
 }: WorkflowEditorProps): ReactElement {
   /* Magazyn powstaje DOKŁADNIE RAZ na zamontowanie tego ekranu — inicjalizator `useState`
@@ -122,27 +144,69 @@ export function WorkflowEditor({
    * kafelków kafelki bez panelu, a wyglądało to jak brak zaznaczenia. */
   const open = state.document.steps.find((step) => step.id === openStepId);
 
+  /* Stan zapisu, policzony z JEDNEGO faktu: czy dokument na ekranie to ten sam obiekt, który
+   * poszedł na dysk. Bez zegara i bez licznika — „saved just now" z makiety jest prawdą przez
+   * kilka sekund, a potem jest zdaniem, które ekran powtarza w nieskończoność. */
+  const saveState = state.document === state.savedDocument ? 'saved' : 'saving…';
+
   return (
     <section className="flex h-full min-h-0 flex-col">
       <header className="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-4">
         <button type="button" className={QUIET} onClick={onClose}>
-          ←
+          All workflows
         </button>
-        <h1 className="text-title text-ink">{state.document.name}</h1>
-        <span className="font-mono text-mono text-muted">{path}</span>
+        {/* Nazwa jako POLE. `aria-label`, a nie widoczna etykieta: wiersz nagłówka z makiety ma
+            tu tytuł, nie formularz, a pole bez żadnej nazwy dostępnej jest polem, o którym
+            czytnik ekranu nie umie nic powiedzieć. */}
+        <input
+          id="workflow-name"
+          aria-label="Workflow name"
+          className="min-w-0 flex-1 rounded-sq border border-transparent bg-transparent px-1 text-title text-ink hover:border-line focus:border-line-strong"
+          value={state.document.name}
+          onChange={(event) => {
+            state.rename(event.target.value);
+          }}
+        />
+        <span className="shrink-0 font-mono text-mono text-muted">
+          {counted(state.document.steps.length, 'step')} · {saveState}
+        </span>
         {/* Uwagi walidatora są faktem o dokumencie i mieszkają w jednym miejscu — tutaj.
-         * Płótno ich nie liczy i nie tłumaczy (`canvas.tsx`). */}
+         * Płótno ich nie liczy i nie tłumaczy (`canvas.tsx`).
+         *
+         * „things to fix", NIE „problems", i to nie jest zmiana kosmetyczna. Ta lista niesie dwie
+         * wagi: `problem` blokuje Run, `warning` nie blokuje niczego (`canvas/problems.tsx`).
+         * Odkąd kafelek dołożony luzem jest normalnym stanem pracy, ostrzeżenia są tu regułą,
+         * a nie wyjątkiem — a plakietka mówiąca „2 problems" nad szkicem, który zapisuje się
+         * i uruchamia bez przeszkód, nazywa problemem coś, co nim nie jest. Brzmienie jest
+         * dokładnie to samo, co na pasku nad przyciskiem Run: jeden fakt, jedno słowo. */}
         {state.notes.length === 0 ? null : (
-          <span className="rounded-sq border border-attend-edge bg-attend-wash px-2 font-mono text-label text-attend">
-            {state.notes.length === 1 ? '1 problem' : `${String(state.notes.length)} problems`}
+          <span className="shrink-0 rounded-sq border border-attend-edge bg-attend-wash px-2 font-mono text-label text-attend">
+            {state.notes.length === 1
+              ? '1 thing to fix'
+              : `${String(state.notes.length)} things to fix`}
           </span>
         )}
       </header>
 
+      {/* PASEK ODMOWY ZAPISU. Nie ma go w makiecie i to jest świadome: makieta nie przewiduje
+          stanu „plik na dysku nie jest tym, co widzisz", bo powstała przed pomiarem, który ten
+          stan wykrył. Kontrolki tu nie ma żadnej — zdanie znika samo, kiedy następny zapis się
+          uda (`saveNow` czyści pole), więc „OK" byłoby przyciskiem, który kasuje wiadomość
+          o nadal niezapisanym pliku. */}
+      {state.couldNotSave === null ? null : (
+        <p
+          data-could-not-save
+          className="shrink-0 border-b border-fail-edge bg-fail-wash px-4 py-2 text-body text-fail"
+        >
+          {state.couldNotSave}
+        </p>
+      )}
+
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]">
-        <div className="min-h-0 overflow-auto p-4">
+        <div className="min-h-0 overflow-auto p-3.5">
           <WorkflowCanvas
             document={state.document}
+            agents={agents}
             notes={state.notes}
             onChange={state.commit}
             onRun={() => {
@@ -152,16 +216,20 @@ export function WorkflowEditor({
           />
         </div>
 
-        {/* Panel kroku, szerokość 330 px prosto z makiety (`.side`). Bez otwartego kroku
-         * kolumna zostaje pusta, zamiast znikać: znikająca kolumna przesuwa płótno pod
-         * kursorem w chwili kliknięcia. */}
-        <aside className="min-h-0 overflow-auto border-l border-line bg-panel p-4">
+        {/* Panel kroku, szerokość 330 px prosto z makiety (`.side`), padding 14 px = `p-3.5`.
+            RAMKA JEST TU I TYLKO TU: do 2026-08-18 każdy z trzech paneli rysował własne
+            `<aside>` o szerokości 328 px wewnątrz tego, więc pola były ucięte, a panel miał
+            własny poziomy pasek przewijania. Bez otwartego kroku kolumna zostaje pusta, zamiast
+            znikać: znikająca kolumna przesuwa płótno pod kursorem w chwili kliknięcia. */}
+        <aside className="min-h-0 overflow-auto border-l border-line bg-panel p-3.5">
           {open === undefined ? (
             <p className="text-muted">Pick a step to see what it was given.</p>
           ) : (
             <PanelForStep
               step={open}
               agents={agents}
+              skills={skills}
+              onCreateAgent={onCreateAgent}
               onChooseAgent={(agentId) => {
                 /* Wybór agenta jest polem KROKU, nie nadpisaniem agenta, więc jedzie tą samą
                  * drogą co nazwa — `commit` — a nie przez `editStep`, które liczy różnicę
@@ -203,6 +271,10 @@ export function WorkflowEditor({
               }}
               onReset={(field) => {
                 state.resetRow(open.id, field);
+              }}
+              onChooseSkills={(choice) => {
+                /* Akcja magazynu, która do 2026-08-18 nie miała ANI JEDNEGO wołającego. */
+                state.chooseSkills(open.id, choice);
               }}
             />
           )}

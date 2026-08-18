@@ -98,14 +98,19 @@ function tabRow(markup: string): string {
 
 /** Napisy na kartach — przyciski z pełną ścieżką w podpowiedzi, czyli te z `tabs/tab.tsx`. */
 function tabLabels(markup: string): readonly string[] {
-  return [...tabRow(markup).matchAll(/<button[^>]*title="[^"]*"[^>]*>([\s\S]*?)<\/button>/g)].map(
-    (hit) => (hit[1] ?? '').replace(/<[^>]*>/g, '').trim(),
-  );
+  /* Po `data-tab`, nie po `title`: `title` ma na tym pasku także `＋` (i będzie miał każdy
+   * następny przycisk), więc czytnik oparty na podpowiedzi liczył jako kartę wszystko, co da się
+   * kliknąć. Znacznik nazywa, czym element JEST. */
+  return [
+    ...tabRow(markup).matchAll(/<button[^>]*data-tab="[^"]*"[^>]*>([\s\S]*?)<\/button>/g),
+  ].map((hit) => (hit[1] ?? '').replace(/<[^>]*>/g, '').trim());
 }
 
 /** Napis na karcie, którą pasek pokazuje jako otwartą. */
 function currentLabel(markup: string): string {
-  const hit = /<button[^>]*aria-current="true"[^>]*>([\s\S]*?)<\/button>/.exec(tabRow(markup));
+  const hit = /<button[^>]*data-tab="[^"]*"[^>]*aria-current="true"[^>]*>([\s\S]*?)<\/button>/.exec(
+    tabRow(markup),
+  );
   return (hit?.[1] ?? '').replace(/<[^>]*>/g, '').trim();
 }
 

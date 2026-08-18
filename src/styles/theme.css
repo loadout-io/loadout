@@ -16,6 +16,12 @@
   --font-*: initial;
   --radius-*: initial;
   --shadow-*: initial;
+  /* `--animate-*` dołożone 2026-08-18 razem z pierwszą własną animacją. Domyślny Tailwind
+   * daje tu `animate-pulse` — `opacity 1 → 0.5` w 2 s krzywą `cubic-bezier(.4,0,.6,1)`,
+   * czyli PŁYNNE pulsowanie, które DESIGN §7 zabrania wprost („czyta się jak oddychanie
+   * i rozprasza"). Zostawione otwarte, ta jedna klasa jest w każdym podpowiadaniu edytora
+   * i wygrywa z naszą przez samą nazwę. */
+  --animate-*: initial;
 
   /* ── powierzchnie ─────────────────────────────────────────────────── */
   --color-bg: #06090b;
@@ -64,6 +70,14 @@
 
   /* ── kroje ────────────────────────────────────────────────────────── */
   /* Inter = język ludzki. Mono = wartość maszynowa. Reguła semantyczna. */
+  /* STAN FAKTYCZNY, zmierzony 2026-08-18: Intera w tym repo NIE MA. `find src public -name
+   * '*.woff*'` daje zero, katalogu `public/` nie ma, `@font-face` nie ma ani jednego — więc na
+   * każdej maszynie, na której nikt nie zainstalował Intera systemowo, aplikacja rysuje się
+   * pierwszym działającym członem tej listy, czyli krojem systemowym (na macOS: San Francisco).
+   * Zapisane tutaj, a nie „naprawione" wpisaniem `@font-face`: reguła wskazująca na plik,
+   * którego nie ma, daje 404 przy każdym starcie i ten sam krój zapasowy, tylko po cichu.
+   * Domknięcie wymaga wniesienia pliku `.woff2` do repo (D1 żąda Intera, a aplikacja jest
+   * desktopowa i nie ma prawa ciągnąć kroju z sieci) — zgłoszone orkiestratorowi. */
   --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SFMono-Regular", "Roboto Mono", ui-monospace, Consolas, monospace;
 
@@ -105,6 +119,39 @@
   --text-stream--line-height: 1.5;
   --text-stream--font-weight: 400;
 
+  /* ── brakujące stopnie drabinki. 2026-08-18. ──────────────────────── */
+  /* DLACZEGO DOKŁADAMY. `docs/mockup/index.html` używa na KAŻDYM ekranie trzech rozmiarów,
+   * których drabinka DESIGN §4 nie miała: Inter 12, Inter 14 i mono 11 bez rozstrzelenia.
+   * Stopień, którego nie ma w tokenach, nie znika z ekranu — wychodzi z niego literał
+   * `text-[12px]` w komponencie, czyli dokładnie ta ucieczka, którą zamyka quick-tokens.sh.
+   * Zmierzone w audycie 2026-08-18: agenci sekcji pisali literały, bo nie mieli czym.
+   *
+   * Te trzy nazwy są DOKŁADANE, nie podmieniane: żadna istniejąca klasa nie zmienia
+   * wartości ani nazwy, bo pięć sekcji jest właśnie w budowie i nazwa skasowana pod nimi
+   * zostawia element bez ani jednej reguły CSS — awarię, która nie rzuca wyjątku. */
+
+  /* Inter 12: drugie zdanie, opis pod tytułem, podpowiedź pod polem. Makieta: `.node p`,
+   * `.tile p`, `.side .lead`, `.empty p`, `.toggle small`. */
+  --text-note: 12px;
+  --text-note--line-height: 1.45;
+  --text-note--font-weight: 400;
+
+  /* Inter 14: tytuł kafelka na liście. Makieta: `.tile .th b`. Świadomie NIE `--text-heading`
+   * (15 px): kafelek stoi w siatce po dwa i przy 15 px tytuł łamie się na drugą linię. */
+  --text-subhead: 14px;
+  --text-subhead--line-height: 1.3;
+  --text-subhead--font-weight: 600;
+
+  /* Mono 11 bez rozstrzelenia i BEZ wersalików — wartość maszynowa w drugim planie: ścieżka
+   * w stopce karty, rozmiar pliku, liczba w metryce. Makieta: `.tile .meta`, `.node .who`,
+   * `.node .bot`, `.nav .foot`. To NIE jest `--text-label`: tamten stopień jest etykietą pola
+   * (wersaliki, 0.08em), a `.foot` w makiecie jest zwykłym monospace. Do 2026-08-18 stopka
+   * nawigacji brała `text-label tracking-normal`, czyli znosiła połowę tokenu w komponencie,
+   * żeby udawać ten stopień. */
+  --text-meta: 11px;
+  --text-meta--line-height: 1.2;
+  --text-meta--font-weight: 400;
+
   /* ── przestrzeń: baza 4px ─────────────────────────────────────────── */
   --spacing: 4px;
 
@@ -119,10 +166,105 @@
 
   /* ── ruch: jedna mikrointerakcja ──────────────────────────────────── */
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* ── ruch: jedna animacja, `animate-blip`. 2026-08-18. ────────────── */
+  /* Trzy rzeczy w makiecie pulsują tym samym: kropka żywego biegu w stopce nawigacji
+   * (`.dot.live`), kropka na karcie folderu (`.tab .d`) i kropka po napisie „Thinking"
+   * (`.now .think::after`). Do 2026-08-18 w całym `src/` nie było ani jednego `@keyframes`,
+   * więc żadna z nich nie żyła.
+   *
+   * DEFINICJA JEST JEDNA I JEST TUTAJ (niezmiennik 13). Druga kopia w komponencie sekcji
+   * rozjechałaby się przy pierwszej zmianie czasu, a rozjazd animacji nie pada — po prostu
+   * dwie kropki obok siebie mrugają nie w takt.
+   *
+   * `steps(2, end)` jest CAŁYM sensem: DESIGN §7 chce skoku `opacity 1 → 0.35`, nie przejścia.
+   * Płynne pulsowanie czyta się jak oddychanie i oko goni ruch zamiast czytać wiersz.
+   *
+   * Wyłączenie przy `prefers-reduced-motion: reduce` NIE jest tutaj: robi je jeden blok na
+   * końcu tego pliku, który neutralizuje każdą animację w aplikacji. Drugie miejsce byłoby
+   * drugą odpowiedzią na to samo pytanie. */
+  --animate-blip: loadout-blip 1.4s steps(2, end) infinite;
+
+  @keyframes loadout-blip {
+    50% {
+      opacity: 0.35;
+    }
+  }
 }
 
 /* Cieni nie ma. Głębia bierze się ze zmiany koloru powierzchni.
  * Ten pusty blok jest celowy: gdyby ktoś dodał --shadow-*, ma zobaczyć ten komentarz. */
+
+/* ── warstwa `components`: dwa fakty o wyglądzie, które nie mieszczą się w tokenie ──────────
+ *
+ * DLACZEGO WŁAŚNIE `components`, a nie `utilities`. Tailwind wstawia wszystkie swoje klasy do
+ * warstwy `utilities`, a reguła dopisana ręcznie do TEJ SAMEJ warstwy trafia w wyniku PO nich,
+ * więc przy równej specyficzności wygrywa z każdą klasą narzędziową. `.text-label` z wersalikami
+ * w `utilities` biłoby więc `normal-case` napisane w komponencie i nie dałoby się go znieść.
+ * Warstwa `components` stoi NIŻEJ (`@layer theme, base, components, utilities` z pakietu), więc
+ * `normal-case` i `capitalize` nadal wygrywają — dokładnie tam, gdzie makieta nie ma wersalików.
+ * Zmierzone na `node_modules/tailwindcss/index.css` 2026-08-18. */
+@layer components {
+  /* WERSALIKI ETYKIET, dopisane 2026-08-18. DESIGN §4 opisuje `--t-label` jako „etykieta pola,
+   * WERSALIKI", a makieta ma `text-transform: uppercase` w pięciu selektorach (`.fld label`,
+   * `.card .role`, `.side h3`, `.rail h2`, `.ctx .ch`) — wszystkie stoją na tym stopniu.
+   * W kodzie produkcyjnym było ZERO `uppercase` przy 34 użyciach `text-label`.
+   *
+   * DLACZEGO W DEFINICJI, A NIE W KOMPONENTACH. Tailwind pozwala tokenowi `--text-*` nieść
+   * interlinię, rozstrzelenie i wagę, ale nie `text-transform` — dlatego wersaliki musiały być
+   * dopisywane ręcznie w każdym miejscu i nie były w żadnym. Reguła tutaj naprawia wszystkie 34
+   * naraz i, co ważniejsze, naprawia też trzydzieste piąte, którego jeszcze nie ma.
+   *
+   * Treść DOM się nie zmienia (wersaliki robi CSS), więc żaden test porównujący tekst znak
+   * w znak tego nie widzi — i to jest sprawdzone, nie założone: `src/ui/shell/type-ladder.test.ts`
+   * czyta tę regułę ze SKOMPILOWANEGO arkusza, a cała suita frontu przeszła bez zmian. */
+  .text-label {
+    text-transform: uppercase;
+  }
+
+  /* `field` z DESIGN §6 — JEDNA definicja pola na całą aplikację, dopisana 2026-08-18.
+   *
+   * Do dziś było ich dwie i były sprzeczne: panel kroku i formularz agenta rysowały pole
+   * obwódką `--line` i Interem 13, a Skills i Start obwódką `--line-strong` i mono 12. Dwa
+   * pola o dwóch różnych obwódkach na dwóch ekranach tej samej aplikacji czyta się jak dwa
+   * różne stany, a nie jak dwa pola.
+   *
+   * WYGRYWA MAKIETA (reguła `.fld input,.fld select,.fld textarea`), nie DESIGN §6: makieta
+   * jest jedyną wyrocznią wyglądu i podaje `padding: 7px 9px`, gdzie DESIGN mówi `8px 10px`.
+   * Zgłoszone w raporcie jako rozbieżność dokumentu, nie naprawiane tutaj po cichu.
+   *
+   * `user-select: text` jest częścią pola, nie ozdobą: `body` w tym pliku wyłącza zaznaczanie
+   * w całej aplikacji, więc pole bez tej linii jest polem, z którego nie da się skopiować
+   * własnego wpisu. */
+  .field {
+    width: 100%;
+    height: var(--height-control);
+    padding: 7px 9px;
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-sq);
+    background: var(--color-well);
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    line-height: var(--text-mono--line-height);
+    user-select: text;
+  }
+
+  /* Pole wielowierszowe rośnie i daje się rozciągnąć — makieta `.fld textarea`. Selektor jest
+   * z nazwą elementu, żeby `<input class="field">` nie dostał wysokości czterech wierszy. */
+  textarea.field {
+    height: 64px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+
+  /* Skupienie pola: obwódka w akcencie (DESIGN §6). Globalny `:focus-visible` niżej dokłada
+   * obrys — obwódka odpowiada na „które pole jest aktywne", obrys na „gdzie jest klawiatura",
+   * i to są dwa różne pytania. */
+  .field:focus {
+    border-color: var(--color-accent);
+  }
+}
 
 @layer base {
   html {
