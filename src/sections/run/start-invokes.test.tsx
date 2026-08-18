@@ -50,7 +50,21 @@ const { invoked, release } = vi.hoisted(() => {
   };
 });
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invoked }));
+/* 2026-08-18 (T-38) — DOPISANY `Channel`, ANI JEDNA ASERCJA NIE ZMIENIONA.
+ *
+ * Do dziś ta atrapa oddawała samo `{ invoke }`, a `io.ts` świadomie nie zakładał kanału, żeby
+ * jej nie wywrócić — i to była właśnie ta luka: `run_workflow` wymaga `lines: Channel<Vec<Line>>`,
+ * więc Start odbijał się od Rusta przy każdym kliknięciu, a to kryterium było zielone, bo
+ * rzutowało argumenty na dwa ręcznie wpisane klucze i brakującego trzeciego nie widziało.
+ *
+ * Kanał zakłada teraz okno (T-38 AC-1), więc atrapa transportu musi go umieć oddać — inaczej
+ * mierzyłaby brak atrapy zamiast zachowania Startu. To jedyna zmiana w tym pliku. */
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: invoked,
+  Channel: class {
+    public onmessage: ((batch: unknown) => void) | null = null;
+  },
+}));
 
 /** Ta sama lista, którą po drugiej stronie granicy czyta `run_commands_registered.rs`. */
 const GOLDEN = new URL('../../../src-tauri/commands.golden.txt', import.meta.url);
