@@ -61,7 +61,8 @@ function wireLine(agent: string, text: string): Record<string, unknown> {
 /** Kanał, który Start podał Rustowi. To jest cała rzecz, o którą tu chodzi. */
 function portFromStart(): Port {
   const args = invoked.mock.calls.at(0)?.at(1);
-  const carried = typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
+  const carried =
+    typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
   const port = carried['lines'];
   if (port === null || typeof port !== 'object') {
     throw new Error('Start did not hand Rust a channel under `lines`');
