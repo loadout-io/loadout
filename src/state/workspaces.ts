@@ -90,6 +90,22 @@ export interface WorkspacesState {
   requestClose: (id: string) => void;
 
   /** Odpowiedź „nie". Nie zmienia niczego — ani kart, ani tego, co jest na wierzchu. */
+  /**
+   * Ilu agentow pracuje w tej karcie TERAZ.
+   *
+   * 2026-08-18 — DLACZEGO TO MUSI ISTNIEC. `agents` bylo pisane WYLACZNIE przy zakladaniu
+   * karty, i zawsze zerem. Nikt go nigdy nie podnosil, wiec `requestClose` zawsze wchodzil
+   * w galaz „nic nie chodzi": karta z zywym biegiem znikala BEZ pytania i BEZ `cancel(id)`,
+   * czyli bez anulowania biegu. Zostawal osierocony agent palacy limit u dostawcy — a to jest
+   * blad finansowy, nie higieniczny (niezmiennik 6). Potwierdzenie zamkniecia bylo przy tym
+   * kodem nieosiagalnym: zamontowanym, przetestowanym i niedostepnym dla czlowieka.
+   *
+   * Liczba przychodzi z JEDNEGO zrodla — z listy agentow biegu — i tylko dla karty na wierzchu,
+   * bo silnik prowadzi dzis jeden bieg i nie mowi, czyj on jest. Karta, ktora nie jest aktywna,
+   * dostaje zero, i to jest prawda o niej, a nie zgadywanie (niezmiennik 17).
+   */
+  setAgents: (id: string, agents: number) => void;
+
   dismissClose: () => void;
 
   /**
@@ -173,6 +189,19 @@ export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
         return;
       }
       set({ pendingClose: { id: tab.id, name: tab.name, agents: tab.agents } });
+    },
+
+    setAgents: (id, agents) => {
+      const tabs = get().tabs;
+      const at = tabs.findIndex((tab) => tab.id === id);
+      /* Bez zmiany nie ruszamy stanu: `set` ze swieza tablica jest dla Reacta zmiana i
+       * przerysowuje caly pasek kart przy kazdej linii biegu. */
+      if (at < 0 || tabs[at]?.agents === agents) return;
+      const next = [...tabs];
+      const tab = tabs[at];
+      if (tab === undefined) return;
+      next[at] = { ...tab, agents };
+      set({ tabs: next });
     },
 
     dismissClose: () => {

@@ -35,7 +35,7 @@
  * hydratuje serwerowego HTML-a, więc powód, dla którego React chce tam stanu początkowego,
  * tutaj nie istnieje. Ten sam zapis stoi w `src/sections/workflows/index.tsx`.
  */
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
 /* OKNO WYBORU FOLDERU JEST WTYCZKĄ TAURI, nie komendą Loadouta — `dialog:allow-open` stoi
  * w `src-tauri/capabilities/default.json` od T-01 i do dziś nie miało ANI JEDNEGO wołającego,
@@ -154,6 +154,24 @@ export default function Run(): ReactElement {
 
   const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
+
+  /* LICZBA ZYWYCH AGENTOW WRACA DO KARTY, i to nie jest ozdoba.
+   *
+   * `WorkspaceTab.agents` bylo pisane tylko przy zakladaniu karty i zawsze zerem, wiec
+   * `requestClose` zawsze wchodzil w galaz „nic tu nie chodzi": karta z ZYWYM biegiem znikala
+   * bez pytania i bez `cancel(id)`, czyli bieg zostawal osierocony i dalej pali limit
+   * (niezmiennik 6 nazywa to bledem finansowym, nie higienicznym). Potwierdzenie zamkniecia
+   * — zamontowane i przetestowane — bylo przez to kodem NIEOSIAGALNYM.
+   *
+   * Zrodlem jest ta sama lista, ktora rysuje szyne, wiec liczba na karcie i kafelki obok siebie
+   * nie moga sie rozjechac (niezmiennik 13). Tylko karta na wierzchu: silnik prowadzi jeden bieg
+   * i nie mowi, czyj on jest, wiec kazda inna karta dostalaby zgadniete zero z kropka „tu cos
+   * chodzi" nad folderem, w ktorym nic nie chodzi (niezmiennik 17). */
+  useEffect(() => {
+    const active = tabs.activeId;
+    if (active === null) return;
+    workspaces.getState().setAgents(active, cards.length);
+  }, [tabs.activeId, cards.length]);
   const running = run.workflow !== '';
 
   /** Wybór folderu — ta sama czynność pod `＋` na pasku kart i pod `/open` w wierszu wejścia. */
