@@ -155,7 +155,8 @@ Jedyny dopuszczalny gradient to `linear-gradient` maskujący ucięcie długiej l
 **To jest reguła semantyczna, nie estetyczna.** Mono znaczy „to wyprodukowała maszyna i możesz to skopiować".
 Widzisz mono → wiesz, że to fakt, nie opis.
 
-> Świadoma zmiana wobec referencji: w `redesign poprzedniego prototypu.dc.html` około 90% tekstu jest w mono 12px.
+> Świadoma zmiana wobec referencji, z której ten system wyrósł: miała około 90% tekstu w mono 12px.
+> (Plik referencyjny usunięty z repo 2026-08-18 — jedyną wyrocznią wyglądu jest `docs/mockup/index.html`.)
 > To jest jedna z konkretnych przyczyn, dla których tamten interfejs męczy — wszystko wygląda jednakowo
 > ważne i jednakowo techniczne. Loadout odwraca proporcję: Inter jest domyślny, mono jest wyjątkiem.
 
