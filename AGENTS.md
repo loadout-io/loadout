@@ -115,7 +115,10 @@ Numerowane, bo pliki zadań je cytują („niezmiennik 6").
 11. **„Ile naraz" musi znaczyć naraz.** poprzedni prototyp miał `max_parallel`, które było tylko szerokością
     wysyłki: jeden worker, `run_ready(1)`, cztery „równoległe" pasy w rozłącznych oknach po ~0,5 s.
     Równoległość to cała przesłanka tego produktu. Test musi dowodzić nakładania się w czasie.
-12. **Dwa kroki nie mogą pisać po tych samych ścieżkach.** Odmowa przy zapisie workflow, nie w trakcie biegu.
+12. **Dwa kroki nie mogą pisać po tych samych ścieżkach.** Odmowa najpóźniej przy Starcie, nigdy
+    w trakcie biegu. Kolizja widoczna z samego pliku jest przy zapisie ostrzeżeniem, a przed biegiem
+    problemem: szkic, w którym kafelki leżą luzem, zanim człowiek pociągnie strzałki, ma się
+    ZAPISAĆ. Odmowa i tak pada, zanim ruszy pierwszy proces (`check_to_run` w `commands::run`).
 
 ### Interfejs
 
