@@ -139,7 +139,7 @@ fn on_the_golden_list() -> BTreeSet<String> {
         .collect()
 }
 
-/// Pola interfejsu TypeScriptu o tej nazwie, przeczytane ze źródła w tym samym biegu testu.
+/// Pola interfejsu `TypeScript` o tej nazwie, przeczytane ze źródła w tym samym biegu testu.
 ///
 /// Wypisanie ich literałem tutaj zamrażałoby to, co akurat zwraca Rust — a pytanie brzmi
 /// odwrotnie: czy Rust oddaje to, czego oczekuje okno. Wiersze komentarza odpadają po pierwszym

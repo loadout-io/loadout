@@ -82,7 +82,7 @@ function readCommandFor(thing: string): string {
       ' (' +
       found.join(', ') +
       '). Zero is the state this task exists to end: the section can write to disk and has no ' +
-      'way to read back, so it shows what this session added instead of what is on disk.',
+      'way to read back, so it shows what was added since the window opened, not what is on disk.',
   ).toHaveLength(1);
   return found.at(0) ?? '';
 }
@@ -144,7 +144,7 @@ beforeEach(() => {
   useSkills.setState(BLANK_SKILLS, true);
 });
 
-describe('entering Memory and Skills reads the disk instead of remembering this session', () => {
+describe('entering Memory and Skills reads the disk instead of remembering what was added', () => {
   it('(a) a fresh Memory store carries the notes the read command handed back', async () => {
     answers(NOTES_COMMAND, ON_DISK_NOTES);
     expect(
@@ -179,7 +179,7 @@ describe('entering Memory and Skills reads the disk instead of remembering this 
     expect(
       commandsSent(),
       'entering the Skills section has to ask Rust once, by the name on ' +
-        'src-tauri/commands.golden.txt. Without the question, "N saved" counts what this session ' +
+        'src-tauri/commands.golden.txt. Without the question, "N saved" counts what was added since ' +
         'added and a skill installed last week is invisible until it is installed again.',
     ).toEqual([SKILLS_COMMAND]);
     expect(
@@ -281,7 +281,7 @@ describe('entering Memory and Skills reads the disk instead of remembering this 
         source.includes(forbidden),
         'this file names the read function from sections/*/io.ts. Calling it here would prove ' +
           'that the function works and say nothing about whether the section ASKS — and not ' +
-          'asking is the whole defect: today the screen shows this session, not the disk.',
+          'asking is the whole defect: today the screen shows what was added, not the disk.',
       ).toBe(false);
     }
   });

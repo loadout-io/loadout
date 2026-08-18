@@ -73,7 +73,7 @@ describe('closing a tab with a live run asks first, and stopping really stops', 
     expect(
       store.getState().pendingClose,
       'the tab carried three working agents and closed without a word. That is the whole ' +
-        'defect: the run keeps burning the provider quota with nobody watching it, and ' +
+        'defect: the run keeps spending money with nobody watching it, and ' +
         'src/state/workspaces.ts calls that a financial error, not a hygiene one (invariant 6).',
     ).not.toBeNull();
     expect(
@@ -123,7 +123,7 @@ describe('closing a tab with a live run asks first, and stopping really stops', 
     ).toBe(true);
     expect(
       source.includes('cards.length'),
-      'the count has to come from the same list that draws the agent rail. A second source ' +
+      'the count has to come from the same list that draws the agents list. A second source ' +
         'for "how many are working" is a second answer to one question (invariant 13), and the ' +
         'two would drift on the first run that ends.',
     ).toBe(true);
