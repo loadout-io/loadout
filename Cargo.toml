@@ -42,6 +42,37 @@ missing_panics_doc = "allow"
 # bez tego link inkrementalny zżerał 15-20 GB RAM i zamrażał maszynę.
 # Cięcie: ~30-40% czasu inkrementalnego. (raport 04, §1.1)
 # Dotyczy WYŁĄCZNIE zależności — nasz kod zachowuje symbole debugowe.
+# ── CZAS KOMPILACJI, ZMIERZONY 2026-08-18 ───────────────────────────────────────────────────
+#
+# `debug = 2` (domyslne dla `dev`) generuje pelne debuginfo dla NASZEJ skrzyni i kaze linkerowi
+# je scalac przy kazdym z celow testowych. Nikt w tym repo nie uzywa debuggera — uzywamy
+# `RUST_BACKTRACE=1` (`.claude/settings.json`), a do niego wystarczaja tablice linii: backtrace
+# dalej pokazuje `plik:linia`. Zmierzone na tym drzewie: `target` waz 70 GB przy 936 071 plikach
+# w `target/debug/deps`, a cargo skanuje odciski po tym katalogu przy KAZDYM wywolaniu.
+# Dla skali: `../meetnotes` ma 950 skrzyn (prawie dwa razy wiecej niz nasze 527) i 19 835 plikow.
+#
+# `split-debuginfo = "unpacked"` jest tu jawnie, a nie z domyslnych: na macOS to ono decyduje,
+# czy po kazdym linkowaniu biegnie `dsymutil`. Domyslna wartosc zmieniala sie miedzy wydaniami
+# cargo, a to jest liczba, ktorej nie chcemy zgadywac.
+#
+# I REGULA, KTORA WYNIKA Z TEGO POMIARU, bo sama zmiana profilu jej nie zapewnia: **kiedy
+# `ls target/debug/deps | wc -l` przekracza kilkadziesiat tysiecy, zawolaj `cargo clean`.**
+# Cargo nie sprzata starych artefaktow, a odciski sprawdza po CALYM katalogu — wiec koszt kazdego
+# wywolania rosnie z liczba plikow, ktorych juz nikt nie uzywa. Zmierzone 2026-08-18, przed i po:
+#
+#   `cargo clean`                   usunelo 962 738 plikow / 118,7 GiB
+#   pelny build (lib + testy)       ~7-8 min  ->  36 s
+#   cargo clippy --all-targets      263-533 s ->  8 s
+#   ./verify.sh quick               534-684 s ->  3,6 s   (sufit 709 -> 45 s)
+#   cargo test --tests (calosc)     minuty    ->  7 s
+#
+# Nie bylo to nigdy wina kompilatora ani `full-test.sh`. `docs/STATUS.md` szukal przyczyny
+# w liczbie CELOW testowych (122 -> 1, i to bylo sluszne), ale zostala druga: liczba PLIKOW
+# po tamtych celach, ktorej nikt nie skasowal.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
 [profile.dev.package."*"]
 debug = false
 
