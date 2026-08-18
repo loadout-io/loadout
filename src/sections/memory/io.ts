@@ -15,6 +15,22 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Note } from '../../state/memory';
 
 /**
+ * Wszystkie notatki, które leżą na dysku.
+ *
+ * 2026-08-18 — do tego dnia sekcja Pamięć nie miała ŻADNEJ drogi odczytu: magazyn startował
+ * pustą listą, a jedyne, co mogło ją zmienić, to odpowiedź na promocję notatki, której ekran
+ * nigdy nie pokazał. Ekran mówił więc co innego niż pliki, czyli łamał niezmiennik 4 w jedynym
+ * miejscu, w którym człowiek może to zobaczyć.
+ *
+ * Bez argumentów: katalog notatek rozwiązuje Rust (`commands::memory::notes_root`). Ścieżka
+ * podana z okna byłaby drugim miejscem, w którym mieszka odpowiedź na pytanie „gdzie leżą
+ * notatki" — a to pytanie ma jedno miejsce.
+ */
+export function listNotes(): Promise<Note[]> {
+  return invoke<Note[]>('list_notes');
+}
+
+/**
  * „Use this": od tej chwili notatka wchodzi do promptu.
  *
  * Wraca **cała notatka odczytana z pliku po zapisie**, nie `void`: magazyn ma przestawić stan

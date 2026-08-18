@@ -19,6 +19,8 @@ delete_agent
 delete_workflow
 install_skill
 list_agents
+list_notes
+list_skills
 list_workflows
 load_workflow
 new_id

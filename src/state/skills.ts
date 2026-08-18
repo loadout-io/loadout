@@ -20,7 +20,7 @@
  * jedzie drugą.
  */
 import { create } from 'zustand';
-import { install, readLink } from '../sections/skills/io';
+import { install, listSkills, readLink } from '../sections/skills/io';
 
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
 export type Weight = 'warn' | 'block';
@@ -88,6 +88,13 @@ export interface SkillsState {
   /** Zdanie po angielsku mówiące, co trzeba zrobić. `null`, kiedy nie ma nic do powiedzenia. */
   message: string | null;
   installed: InstalledSkill[];
+  /**
+   * Wejście w sekcję: przeczytaj katalogi agentów i pokaż, co w nich naprawdę leży.
+   *
+   * Do 2026-08-18 `installed` rosło wyłącznie po udanym `add`, więc licznik „N saved" mówił
+   * „ile dodałeś w tej sesji", udając, że mówi „ile masz".
+   */
+  load: () => Promise<void>;
   review: (url: string) => Promise<void>;
   acknowledge: (findingId: string) => void;
   add: () => Promise<void>;
@@ -109,6 +116,10 @@ function held(count: number): string {
     : String(count) + ' lines in this skill have to be read before it can be added.';
 }
 
+/* Zdanie na wypadek, gdyby Rust nie przysłał własnego. Odmowa w ciszy wygląda jak pusta sekcja,
+ * a pusta sekcja i „nie umiem przeczytać tego katalogu" to dwie różne rzeczy. */
+const COULD_NOT_READ = 'Loadout could not read the skills on this machine.';
+
 /** Zdanie od Rusta, kiedy jakieś jest — jego odmowy są już napisane po ludzku. */
 function why(error: unknown, fallback: string): string {
   const said = error instanceof Error ? error.message.trim() : '';
@@ -120,6 +131,23 @@ export const useSkills = create<SkillsState>()((set, get) => ({
   acknowledged: [],
   message: null,
   installed: [],
+
+  load: async () => {
+    try {
+      /* PODMIANA CAŁEJ LISTY, nigdy dopisanie: drugie wejście w sekcję pokazałoby wtedy każdą
+       * umiejętność dwa razy, a licznik nad sekcją policzyłby dwa razy te same pliki.
+       * `pending` i `acknowledged` zostają nietknięte — odczyt katalogu nie ma nic wspólnego
+       * z przeglądem, który czeka na człowieka, a skasowanie go tutaj kasowałoby to, co ktoś
+       * właśnie czyta. */
+      set({ installed: await listSkills(), message: null });
+    } catch (error) {
+      /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
+       * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
+       * z poprzedniego odczytu, nie jest tym, co leży w katalogach agentów, a tylko o tym
+       * drugim ta lista mówi (niezmiennik 4). */
+      set({ installed: [], message: why(error, COULD_NOT_READ) });
+    }
+  },
 
   review: async (url: string) => {
     try {

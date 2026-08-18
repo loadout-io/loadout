@@ -28,11 +28,31 @@
  * w repo nie ma `jsdom` ani `@testing-library/react` (`package.json` jest na liście DENIED
  * w `checks/quick-scope.sh`), więc panel sprawdzamy przez `renderToStaticMarkup`, a stan
  * trzymany wewnątrz komponentu byłby dla takiego testu niewidoczny.
+ *
+ * 2026-08-18 — TEN PLIK JEST TERAZ TAKŻE ROZJAZDEM. `PanelForStep` na dole odpowiada na jedno
+ * pytanie: „jaki panel dostaje ZAZNACZONY kafelek". Odpowiedź jest tu, a nie w `editor.tsx`,
+ * z tego samego powodu, dla którego licznik „N changed" jest tu, a nie w kroku: kafelki są dwóch
+ * rodzajów, a krok agenta ma trzeci stan (agent jeszcze nie wybrany), więc gdyby ekran
+ * rozstrzygał to sam, drugi ekran montujący panel rozstrzygnąłby to inaczej i nikt by tego nie
+ * zauważył — oba wyglądają wtedy poprawnie.
  */
 import type { ReactElement } from 'react';
 import type { Agent, FileAccess } from '../../../state/agents';
-import type { AgentStep, OverridableField, Overrides } from '../../../state/workflows';
+import type {
+  AgentStep,
+  CheckpointStep,
+  OverridableField,
+  Overrides,
+  Step,
+} from '../../../state/workflows';
+import { CheckpointPanel } from './checkpoint-panel';
 import { resolve } from './overrides';
+
+/** Pola, które należą do samego KROKU agenta, a nie do agenta (patrz nagłówek pliku). */
+export type AgentStepFields = Partial<Pick<AgentStep, 'name' | 'instructions' | 'copies'>>;
+
+/** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
+export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>>;
 
 export interface StepPanelProps {
   step: AgentStep;
@@ -42,7 +62,7 @@ export interface StepPanelProps {
   /** Zmiana wiersza pochodzącego z agenta, podana wartością efektywną. */
   onEdit: (edit: Overrides) => void;
   /** Zmiana pola, które należy do samego kroku. */
-  onEditStep: (fields: Partial<Pick<AgentStep, 'name' | 'instructions' | 'copies'>>) => void;
+  onEditStep: (fields: AgentStepFields) => void;
   /** `Reset` przy jednym wierszu. */
   onReset: (field: OverridableField) => void;
 }
@@ -306,4 +326,143 @@ function minutesFrom(raw: string): number {
  * obietnicą, której ten napis nie składa. */
 function fileAccessFrom(raw: string, now: FileAccess): FileAccess {
   return FILE_ACCESS.find((one) => one.value === raw)?.value ?? now;
+}
+
+export interface PickAnAgentProps {
+  step: AgentStep;
+  /** Biblioteka agentów. Pusta znaczy „nie ma z czego wybierać" i mówimy to zdaniem. */
+  agents: readonly Agent[];
+  onChooseAgent: (agentId: string) => void;
+  onEditStep: (fields: AgentStepFields) => void;
+}
+
+/** Panel kroku, który nie ma jeszcze agenta — czyli KAŻDEGO kroku prosto z `＋ Add step`.
+ *
+ * Dlaczego osobny komponent, a nie siedem wierszy z ukrytą częścią: trzy z siedmiu wierszy
+ * `StepPanel` pokazują wartości EFEKTYWNE, a te nie istnieją, dopóki nie ma od kogo dziedziczyć.
+ * Formularz, w którym połowa wierszy jest schowana warunkiem, jest tą samą konstrukcją, którą
+ * DESIGN §6 nazywa zakładkami w panelu (nagłówek tego pliku), a wypisanie w tych wierszach zer
+ * i pustych napisów byłoby ekranem, który mówi nieprawdę o tym, co się stanie po uruchomieniu.
+ *
+ * Lista wyboru MA handler i on naprawdę zapisuje `step.agent` (niezmiennik 16). Do 2026-08-18
+ * tej listy nie było nigdzie: `freshStep` daje `agent: ''` z rozmysłem („jeszcze nie wybrano",
+ * `canvas/connect.ts`), a ekran umiał otworzyć panel dopiero po rozwiązaniu tego id w bibliotece
+ * — czyli nigdy. Krok dodany przyciskiem był trwale nieskonfigurowalny i to jest cała treść
+ * tego komponentu. */
+function PickAnAgent({ step, agents, onChooseAgent, onEditStep }: PickAnAgentProps): ReactElement {
+  return (
+    <aside
+      className="flex w-82 flex-col gap-3 border-l border-line bg-panel p-4"
+      data-step-panel
+      data-needs-agent
+    >
+      <div className={ROW}>
+        <label htmlFor="step-name" className={LABEL}>
+          Name
+        </label>
+        <input
+          id="step-name"
+          className={FIELD}
+          value={step.name}
+          onChange={(event) => {
+            onEditStep({ name: event.target.value });
+          }}
+        />
+      </div>
+
+      <div className={ROW}>
+        <label htmlFor="step-agent" className={LABEL}>
+          Who does this
+        </label>
+        {agents.length === 0 ? (
+          /* Pusta lista wyboru jest kontrolką, która nie ma czego zrobić (niezmiennik 16),
+           * więc zamiast niej stoi zdanie mówiące, gdzie się to naprawia. */
+          <span className={FROM_AGENT}>
+            You have not saved anyone yet. Make one in Agents, then come back and pick it here.
+          </span>
+        ) : (
+          <select
+            id="step-agent"
+            className={FIELD}
+            /* Sterowana pusta wartość, nie `defaultValue`: „nikt jeszcze nie wybrany" jest
+             * stanem kroku, a nie stanem DOM-u, i po wyborze ten panel znika w całości. */
+            value=""
+            onChange={(event) => {
+              /* Pozycja-zaproszenie nie jest wyborem. Bez tego warunku otwarcie listy
+               * i zamknięcie jej bez decyzji zapisywałoby `agent: ''` jako decyzję. */
+              if (event.target.value !== '') onChooseAgent(event.target.value);
+            }}
+          >
+            <option value="">Pick one</option>
+            {agents.map((one) => (
+              <option key={one.id} value={one.id}>
+                {one.name} — {one.summary}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className={FROM_AGENT}>This step waits here until it has someone to do it.</span>
+      </div>
+    </aside>
+  );
+}
+
+export interface PanelForStepProps {
+  /** Zaznaczony kafelek — DOWOLNEGO rodzaju. Rozstrzygnięcie, co z nim zrobić, jest niżej. */
+  step: Step;
+  /** Biblioteka agentów: panel pokazuje wartości efektywne, więc musi znać agenta kroku. */
+  agents: readonly Agent[];
+  onChooseAgent: (agentId: string) => void;
+  /** Agent jedzie Z POWROTEM do wołającego, bo to tutaj rozwiązuje się `step.agent`
+   * (niezmiennik 13). Ekran, który rozwiązywałby go drugi raz u siebie, mógłby rozwiązać
+   * inaczej i pokazać wartości efektywne innego agenta niż ten, którego panel nazywa. */
+  onEdit: (agent: Agent, edit: Overrides) => void;
+  onEditStep: (fields: AgentStepFields) => void;
+  onEditCheckpoint: (fields: CheckpointFields) => void;
+  onReset: (field: OverridableField) => void;
+}
+
+/** Jaki panel dostaje zaznaczony kafelek. Trzy odpowiedzi i ani jednego „nic".
+ *
+ * Kafelek bez panelu jest kafelkiem, którego nie da się skonfigurować — a płótno pozwala
+ * postawić go jednym kliknięciem. Dlatego ta funkcja jest CAŁKOWITA: nie ma wejścia, dla
+ * którego oddałaby `null`. Dopóki decyzja mieszkała w `editor.tsx` jako warunek
+ * `open === undefined || agentOf === undefined`, dwa z trzech wejść dostawały zdanie
+ * „Pick a step to see what it was given." — czyli odpowiedź na zupełnie inne pytanie. */
+export function PanelForStep({
+  step,
+  agents,
+  onChooseAgent,
+  onEdit,
+  onEditStep,
+  onEditCheckpoint,
+  onReset,
+}: PanelForStepProps): ReactElement {
+  if (step.kind === 'checkpoint') {
+    return <CheckpointPanel step={step} onEditStep={onEditCheckpoint} />;
+  }
+
+  const agent = agents.find((one) => one.id === step.agent);
+  if (agent === undefined) {
+    return (
+      <PickAnAgent
+        step={step}
+        agents={agents}
+        onChooseAgent={onChooseAgent}
+        onEditStep={onEditStep}
+      />
+    );
+  }
+
+  return (
+    <StepPanel
+      step={step}
+      agent={agent}
+      onEdit={(edit) => {
+        onEdit(agent, edit);
+      }}
+      onEditStep={onEditStep}
+      onReset={onReset}
+    />
+  );
 }

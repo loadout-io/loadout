@@ -25,7 +25,7 @@
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useSkills } from '../../state/skills';
 import { ReviewCard } from './review-card';
 
@@ -72,6 +72,22 @@ function readySays(ready: readonly string[]): string {
 
 export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+
+  /* ODCZYT PRZY WEJŚCIU W SEKCJĘ — bez tego cała ścieżka odczytu jest martwa.
+   *
+   * Magazyn dostał `load()` w T-38 AC-6 i do 2026-08-18 NIE MIAŁ ANI JEDNEGO WOŁAJĄCEGO:
+   * komenda po stronie Rusta istniała, krawędź `io.ts` istniała, magazyn umiał się wypełnić —
+   * i ekran nigdy o nic nie pytał. To jest ta sama rodzina, co płótno przed T-26 i `wireChannel`
+   * przed T-38: mechanizm wylądował, ma testy, nikt go nie zawołał. Objaw dla człowieka jest
+   * dokładnie taki, jak przy braku funkcji: otwierasz sekcję i nie ma w niej tego, co leży
+   * na dysku (niezmiennik 4 — pliki są prawdą).
+   *
+   * `void`, bo odmowa jest już obsłużona w magazynie i ląduje w jego stanie jako zdanie dla
+   * człowieka; drugie `catch` tutaj byłoby drugim miejscem, w którym mieszka ta sama decyzja.
+   * Pusta tablica zależności: sekcja pyta RAZ na zamontowanie, a nie na każdy render. */
+  useEffect(() => {
+    void store.getState().load();
+  }, [store]);
   /* Adres wklejany przez człowieka. `null` znaczy, że pole jest zamknięte — jedno miejsce
    * na to pytanie (niezmiennik 13), a nie osobna flaga „czy otwarte" obok wartości, która
    * potrafi się z nią rozjechać. */

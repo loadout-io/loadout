@@ -13,7 +13,22 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Import } from '../../state/skills';
+import type { Import, InstalledSkill } from '../../state/skills';
+
+/**
+ * Co naprawdę leży w katalogach agentów.
+ *
+ * 2026-08-18 — do tego dnia ta droga nie istniała, a skutek był zmierzony: `install` pisało na
+ * dysk, okno nigdy tego nie odczytywało, więc licznik „N saved" pokazywał wyłącznie to, co
+ * dodano w TEJ sesji, a zainstalowana umiejętność znikała po restarcie. Niezmiennik 4 mówi
+ * odwrotnie: pliki są prawdą, a ekran ma pokazywać je, a nie swoją pamięć.
+ *
+ * Bez argumentów: katalogi vendorów wylicza Rust (`skills::place::destinations`) i to jest
+ * jedyne miejsce, w którym stoi ścieżka `.claude/skills`.
+ */
+export function listSkills(): Promise<InstalledSkill[]> {
+  return invoke<InstalledSkill[]>('list_skills');
+}
 
 /**
  * Adres → pobrana i przejrzana umiejętność.

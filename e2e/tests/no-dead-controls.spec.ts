@@ -44,29 +44,17 @@ interface Excused {
 }
 
 /**
- * Lista pusta jest najlepsza z możliwych i taka ma zostać.
+ * Lista pusta jest najlepsza z możliwych — i od 2026-08-18 (T-39) znowu taka jest.
+ *
+ * Stał tu jeden wpis, dla `Start` na ekranie Run, i jego powód kończył się zdaniem „ten wpis
+ * znika, kiedy T-39 dowiezie te bloki". Dowiozło: ekran pracy ma karty workspace, listę
+ * agentów i wiersz wejścia, więc świeży ekran Run nie jest już jedną wyłączoną kontrolką.
  *
  * Wpis wolno dopisać tylko z powodem — lista bez powodów zamienia to kryterium w miejsce,
  * w którym chowa się martwe przyciski zamiast je naprawiać. Pilnuje tego asercja niżej,
  * nie uprzejmość autora.
  */
-const EXCUSED: readonly Excused[] = [
-  {
-    section: 'run',
-    name: 'Start',
-    why:
-      'Start JEST podpięty — od 2026-08-18 zakłada kanał i woła `run_workflow` (T-38 AC-1). ' +
-      'Jest `disabled`, bo w świeżej aplikacji żaden workflow nie jest otwarty, a bieg bez ' +
-      'workflow to bieg pusty. Kontrolka wyłączona nie jest kontrolką martwą: niezmiennik 16 ' +
-      'mówi o braku HANDLERA, a nie o stanie, który uczciwie odmawia. ' +
-      'ALE TO ODSŁANIA LUKĘ PRODUKTOWĄ I DLATEGO TEN WPIS JEST TU GŁOŚNY: w świeżej aplikacji ' +
-      'ekran Run nie ma ANI JEDNEJ czynnej kontrolki, czyli nie zaprasza do niczego — a DESIGN ' +
-      '§6 mówi wprost, że pusty ekran to zaproszenie do działania, nie komunikat o braku ' +
-      'danych. Makieta stawia tam karty workspace, pasek loadoutu i wiersz wejścia. ' +
-      'Ten wpis znika, kiedy T-39 dowiezie te bloki — i wtedy lista wraca do pustej, ' +
-      'czyli do stanu, który ten plik nazywa najlepszym z możliwych.',
-  },
-];
+const EXCUSED: readonly Excused[] = [];
 
 const BUTTONS = 'main button:visible';
 
@@ -235,6 +223,7 @@ describe('no button on any screen is dead', () => {
       }
 
       /* ── każdy przycisk z osobna, każdy na świeżo otwartej aplikacji ───────────────────── */
+      let usable = 0;
       for (let index = 0; index < names.length; index += 1) {
         const name = names[index] ?? '';
         const excuse = excuseFor(id, name);
@@ -242,6 +231,25 @@ describe('no button on any screen is dead', () => {
 
         const app = await openAt(id);
         try {
+          /* KONTROLKA WYŁĄCZONA JEST SĄDZONA, NIE KLIKANA — zapisane 2026-08-18 (T-39).
+           *
+           * Kliknięcie w `[disabled]` nie jest możliwe ani dla tego przyrządu, ani dla
+           * człowieka: Playwright czeka, aż przycisk się włączy, i po limicie rzuca —
+           * czyli mierzyłby czas oczekiwania, a nie kontrolkę. Do dziś stał tu wyjątek
+           * per przycisk (`EXCUSED` dla `Start`), czyli ta sama decyzja, tylko zapisana
+           * raz na kontrolkę i widoczna wyłącznie dla tego, kto czytał listę.
+           *
+           * Reguła jest WĘŻSZA od wpisu, który zastąpiła, i o to chodzi: pominięcie ma
+           * cenę, którą płaci asercja niżej — ekran, na którym KAŻDY przycisk odmawia,
+           * jest czerwony. To właśnie był stan ekranu Run przed T-39 (jeden przycisk,
+           * wyłączony) i to jest awaria produktu, o której mówi DESIGN §6, a nie stan,
+           * który wolno przemilczeć.
+           *
+           * Czego ta reguła NIE przykrywa: przycisku, który jest włączony i nic nie robi.
+           * Ten dalej przechodzi całą drogę niżej. */
+          if (!(await app.page.locator(BUTTONS).nth(index).isEnabled())) continue;
+          usable += 1;
+
           let sawDialog = false;
           app.page.on('dialog', (dialog) => {
             sawDialog = true;
@@ -269,6 +277,18 @@ describe('no button on any screen is dead', () => {
           await app.close();
         }
       }
+
+      expect(
+        names.length === 0 || usable > 0,
+        'every visible button on the ' +
+          id +
+          ' screen is disabled, so this screen refuses everything a person can reach: ' +
+          JSON.stringify(names) +
+          '. A screen made entirely of refusals passes "no dead controls" on a technicality ' +
+          'and invites nobody to anything — DESIGN §6 says an empty screen is an invitation, ' +
+          'not a notice that there is no data. This is the exact state the Run screen was in ' +
+          'on 2026-08-18, under a green suite.',
+      ).toBe(true);
     }, 120_000);
   }
 });

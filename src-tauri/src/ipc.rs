@@ -616,6 +616,28 @@ pub fn install_skill(item: commands::skills::ImportWire) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Co naprawdę leży w katalogach agentów — lista, którą sekcja Umiejętności czyta przy wejściu.
+///
+/// 2026-08-18 — bez tej komendy licznik „N saved" pokazywał wyłącznie to, co dodano w TEJ
+/// sesji: `install_skill` pisało na dysk, a okno nie miało jak tego odczytać z powrotem, więc
+/// zainstalowana umiejętność znikała po restarcie. To był niezmiennik 4 złamany wprost —
+/// pliki są prawdą, a ekran mówił co innego.
+#[tauri::command]
+pub fn list_skills() -> Result<Vec<commands::skills::InstalledWire>, String> {
+    commands::skills::list_skills_inner(&crate::loadout_dir()).map_err(|error| error.to_string())
+}
+
+/// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
+///
+/// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
+/// pusty i nic w produkcji nie umiało go wypełnić, więc `put_note_to_use` przestawiało status
+/// notatki, której sekcja nigdy nie pokazała.
+#[tauri::command]
+pub fn list_notes() -> Result<Vec<commands::memory::NoteWire>, String> {
+    let root = commands::memory::notes_root(&crate::loadout_dir());
+    commands::memory::list_notes_inner(&root).map_err(|error| error.to_string())
+}
+
 /// „Use this": od tej chwili notatka wchodzi do promptu.
 #[tauri::command]
 pub fn put_note_to_use(
@@ -702,6 +724,8 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         delete_workflow,
         install_skill,
         list_agents,
+        list_notes,
+        list_skills,
         list_workflows,
         load_workflow,
         new_id,

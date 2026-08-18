@@ -65,6 +65,7 @@ mod ipc_pump_cap;
 mod ipc_pump_lifecycle;
 mod ipc_pump_order;
 mod ipc_pump_timer;
+mod ipc_read_paths;
 mod ipc_workflow_roundtrip;
 mod limits_are_global_across_runs;
 mod limits_dial_lowers;

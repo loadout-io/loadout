@@ -26,7 +26,25 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { wireChannel } from '../../ipc/run';
 import { useRun } from '../../state/run';
+import type { Step } from '../../state/run';
 import { runFeed } from './feed/live';
+
+/**
+ * Co dokładnie rusza — dwa pola paska loadoutu, oba znane oknu, zanim Rust cokolwiek powie.
+ *
+ * DLACZEGO OKNO, A NIE ODPOWIEDŹ KOMENDY. `run_workflow` oddaje `()` i jest to zapisany dług
+ * (`src-tauri/src/ipc.rs`, akapit „WSZYSTKIE TRZY ODDAJĄ `()`"): `RunReport` nie jest
+ * `Serialize`, a jego plik nie należy do tego zadania. Plan jest jednak w oknie już wcześniej —
+ * sekcja Bieg czyta katalog workflow, żeby zbudować listę wyboru — więc pasek może pokazać
+ * plan od pierwszej sekundy, zamiast dorysowywać go z linii `step` w trakcie biegu
+ * (niezmiennik 17, i tak mówi komentarz przy `RunState.steps`).
+ */
+export interface WhatIsRunning {
+  /** Jak workflow nazywa SAM SIEBIE. To jest napis, który zobaczy człowiek — nie nazwa pliku. */
+  readonly name: string;
+  /** Kroki w kolejności z grafu; na starcie wszystkie czekają. */
+  readonly steps: readonly Step[];
+}
 
 /**
  * Bieg, który idzie **teraz**, albo `null`.
@@ -58,8 +76,18 @@ let going: Promise<void> | null = null;
  * @param howManyAtOnce ile kroków ma NAPRAWDĘ biec naraz. Liczba jedzie w żądaniu, nigdy ze
  *   stałej po tamtej stronie (niezmiennik 11): cicha wersja złamania wygląda jak pole, które
  *   jest wczytywane, logowane i nigdzie nie podawane, a semafor dostaje `1`.
+ * @param what nazwa i plan tego workflow — to, co ta krawędź zapisuje w magazynie biegu.
+ *   Wartość domyślna jest MOSTEM, nie wygodą: dwa cudze kryteria (`start-invokes.test.tsx`
+ *   z T-30 i `start-args-complete.test.tsx` z T-38 AC-1) wołają tę krawędź dwoma argumentami
+ *   i żadnego z nich nie wolno tknąć, więc trzeci parametr musi być opcjonalny. Wtedy zostaje
+ *   nazwa pliku: prawdziwa, ale nie ta, którą workflow nadał sobie sam. Jedyny wołający
+ *   produkcyjny — `src/sections/run/start.tsx` — podaje komplet.
  */
-export function start(workflow: string, howManyAtOnce: number): Promise<void> {
+export function start(
+  workflow: string,
+  howManyAtOnce: number,
+  what: WhatIsRunning = { name: workflow, steps: [] },
+): Promise<void> {
   if (going !== null) {
     return going;
   }
@@ -98,12 +126,28 @@ export function start(workflow: string, howManyAtOnce: number): Promise<void> {
     useRun.getState().appendLines(stamped);
   });
 
+  /* MAGAZYN DOWIADUJE SIĘ TUTAJ, I TO JEST DRUGA POŁOWA T-38 AC-3.
+   *
+   * `RunState.workflow` startowało `''` i do 2026-08-18 NIE MIAŁO PISARZA — komentarz przy polu
+   * obiecywał, że „wypełnia je komenda startu biegu", a nie robiło tego nic. Skutkiem nie był
+   * pusty napis: Stop renderuje się wyłącznie przy biegu, a „czy bieg trwa" to dokładnie
+   * `workflow !== ''`, więc przycisk Stop nie montował się NIGDY, pasek loadoutu był trwale
+   * pusty, a bieg dało się zacząć i nie dało się zatrzymać z okna.
+   *
+   * Przed `invoke`, nie po nim: komenda po tamtej stronie trwa tyle, co bieg, więc zapis po
+   * jej powrocie ogłaszałby start biegu w chwili, w której bieg właśnie się skończył. */
+  useRun.getState().nowRunning(what.name, what.steps);
+
   const run = invoke<void>('run_workflow', {
     fileName: workflow,
     howManyAtOnce,
     lines,
   }).finally(() => {
     going = null;
+    /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
+     * zawsze i jest kontrolką bez roboty (niezmiennik 16), a pasek loadoutu opisuje bieg,
+     * którego nie ma. `finally`, nie `then`: odmowa jest zejściem tak samo jak koniec. */
+    useRun.getState().nowRunning('', []);
   });
   going = run;
   return run;
@@ -118,4 +162,27 @@ export function start(workflow: string, howManyAtOnce: number): Promise<void> {
  */
 export function stop(): Promise<void> {
   return invoke<void>('stop_run');
+}
+
+/**
+ * Dalej: puszcza bieg zza punktu kontrolnego.
+ *
+ * DLACZEGO TA FUNKCJA W OGÓLE POWSTAŁA. `continue_run` jest po stronie Rusta zarejestrowana,
+ * stoi na `src-tauri/commands.golden.txt` i do 2026-08-18 miała w całym `src/` ZERO wołających.
+ * Kafelek punktu kontrolnego zatrzymuje przy tym cały bieg, nie sam krok
+ * (`commands::run::wait_for_a_person`), więc workflow z takim kafelkiem parkował na zawsze
+ * i z okna wyglądał dokładnie jak zawieszony agent. Mechanizm bez wołającego przechodzi każdą
+ * bramkę, jaką mamy — dokładnie jak `wireChannel` przed tym zadaniem.
+ *
+ * Bez argumentów, bo punkt kontrolny nie ma identyfikatora po tamtej stronie: `continue_run`
+ * bierze samo `State` i podbija licznik zgód biegu (`RunControl::go_on` — licznik, nie flaga,
+ * żeby bieg z dwoma punktami kontrolnymi zapytał dwa razy). Front, który dokleiłby tu numer
+ * kroku, byłby drugim miejscem, w którym mieszka odpowiedź na pytanie „na czym stoimy".
+ *
+ * Rozwiązuje się dopiero wtedy, kiedy bieg NAPRAWDĘ ruszył (`wait_until_moving` po tamtej
+ * stronie) — tak samo jak Stop wraca dopiero z dowodem. Ekran, który wróci wcześniej, pokazuje
+ * człowiekowi dalej stojący bieg tuż po tym, jak ten człowiek go puścił.
+ */
+export function continueRun(): Promise<void> {
+  return invoke<void>('continue_run');
 }

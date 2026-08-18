@@ -86,14 +86,20 @@ export interface RunState {
    * Przychodzą z grafu razem ze startem biegu, nie z linii — linia `step` jest kreską
    * w strumieniu, a nie stanem kroku, więc odtwarzanie z niej listy kroków dałoby pasek,
    * który rośnie w trakcie biegu zamiast pokazywać plan od pierwszej sekundy (niezmiennik 17).
-   * Wypełnia je komenda startu biegu; to zadanie ich nie pisze, tylko czyta.
+   *
+   * 2026-08-18 — OBIETNICA Z TEGO KOMENTARZA JEST WRESZCIE DOTRZYMANA. Do dziś stało tu
+   * „wypełnia je komenda startu biegu", a nic w repo tego nie robiło: pole nie miało settera
+   * i nie miało pisarza. Pisze je teraz `nowRunning`, wołane z jednego miejsca —
+   * `src/sections/run/io.ts`, czyli z tej samej ścieżki Startu, która woła `run_workflow`.
    */
   readonly steps: readonly Step[];
   /**
    * Nazwa workflow, który ten bieg wykonuje — pierwszy człon podpisu paska loadoutu.
    *
    * Stoi obok `steps`, bo przychodzi tą samą drogą i w tej samej chwili: pasek bez nazwy
-   * i pasek bez kroków to ten sam brak. Puste, dopóki nie ma biegu.
+   * i pasek bez kroków to ten sam brak. Puste, dopóki nie ma biegu — i to puste jest zarazem
+   * jedyną odpowiedzią całej aplikacji na pytanie „czy coś biegnie" (niezmiennik 13), z której
+   * żyje przycisk Stop.
    */
   readonly workflow: string;
   readonly answers: readonly Answer[];
@@ -103,6 +109,21 @@ export interface RunState {
    * dokładnie te obiekty, które przyszły, nigdy ich kopie.
    */
   appendLines: (batch: readonly FeedLine[]) => readonly FeedLine[];
+
+  /**
+   * Zapisuje, CO teraz biegnie: nazwę workflow i plan jego kroków.
+   *
+   * JEDNO wywołanie na oba pola, i to nie jest oszczędność. Nazwa i plan przychodzą tą samą
+   * drogą i w tej samej chwili (patrz komentarz przy `workflow`), więc dwa osobne settery
+   * dawałyby chwilę, w której pasek loadoutu ma już bloki i jeszcze nie ma podpisu — albo
+   * odwrotnie. Ta chwila jest krótka, przez co objawia się jako mignięcie, którego nikt nie
+   * umie powtórzyć.
+   *
+   * `nowRunning('', [])` jest tym samym zdaniem w drugą stronę: bieg zszedł. Wołanie tego
+   * z drogi powrotnej Startu jest wymagane przez niezmiennik 16 — Stop, który zostaje na
+   * ekranie po biegu, jest kontrolką, która nie ma czego zatrzymać.
+   */
+  nowRunning: (workflow: string, steps: readonly Step[]) => void;
 
   /** Zapisuje odpowiedź człowieka. */
   answer: (questionId: number, option: string) => void;
@@ -170,6 +191,14 @@ export function createRunStore(): RunStore {
       });
 
       return batch;
+    },
+
+    nowRunning(workflow: string, steps: readonly Step[]): void {
+      /* Podstawienie, nie doklejanie: plan biegu przychodzi z grafu w całości i drugi bieg
+       * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
+       * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
+       * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
+      set({ workflow, steps });
     },
 
     answer(questionId: number, option: string): void {

@@ -19,7 +19,7 @@
  * więcej" ma sens tylko wtedy, kiedy jest jedna droga do policzenia.
  */
 import { create } from 'zustand';
-import { putToUse, stopUsing as stopUsingOnDisk } from '../sections/memory/io';
+import { listNotes, putToUse, stopUsing as stopUsingOnDisk } from '../sections/memory/io';
 
 /** Dwa stany i ani jeden trzeci [ARCHITECTURE §2 pyt. 5]. Słowo jest to samo, co w pliku. */
 export type NoteStatus = 'suggested' | 'in-use';
@@ -75,6 +75,12 @@ export interface MemoryState {
   /** Zdanie po angielsku mówiące, co się stało. `null`, kiedy nie ma nic do powiedzenia. */
   message: string | null;
   choice: Choice | null;
+  /**
+   * Wejście w sekcję: przeczytaj, co leży na dysku, i pokaż to.
+   *
+   * Do 2026-08-18 tej ścieżki nie było wcale i to jest cały powód, dla którego pole istnieje.
+   */
+  load: () => Promise<void>;
   /** „Use this" — od tej chwili notatka wchodzi do promptu. Decyduje odpowiedź z Rusta. */
   use: (id: string) => Promise<void>;
   /** „Stop using" — notatka zostaje na liście i przestaje wchodzić do promptu. */
@@ -87,6 +93,7 @@ export interface MemoryState {
  * jak zepsuty przycisk, a człowiek, który nie wie, czego się od niego chce, klika drugi raz. */
 const COULD_NOT_USE = 'Loadout could not put that note to use.';
 const COULD_NOT_STOP = 'Loadout could not stop using that note.';
+const COULD_NOT_READ = 'Loadout could not read the notes on this machine.';
 
 /**
  * Czy ta odmowa jest „zakres jest pełny".
@@ -123,6 +130,22 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   notes: [],
   message: null,
   choice: null,
+
+  load: async () => {
+    try {
+      /* PODMIANA CAŁEJ LISTY, nigdy dopisanie. Wejście w sekcję drugi raz dokładałoby wtedy
+       * te same notatki jeszcze raz, a człowiek zobaczyłby każdą podwójnie i licznik nad
+       * sekcją policzyłby pliki dwa razy. Lista ma być odpowiedzią dysku, a nie sumą
+       * wszystkich odpowiedzi, jakich dysk kiedykolwiek udzielił. */
+      set({ notes: await listNotes(), message: null });
+    } catch (refusal) {
+      /* Odmowa NIE leci w górę: wywołujący to wejście w sekcję, a wyjątek stamtąd wywraca
+       * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — notatki sprzed odmowy są
+       * tym, co sekcja PAMIĘTA, a nie tym, co leży w plikach, i pokazanie ich byłoby dokładnie
+       * tym kłamstwem, przed którym stoi niezmiennik 4. */
+      set({ notes: [], message: why(refusal, COULD_NOT_READ) });
+    }
+  },
 
   use: async (id: string) => {
     try {

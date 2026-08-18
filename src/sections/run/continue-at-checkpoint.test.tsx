@@ -1,0 +1,349 @@
+/* AC-4 dla T-38: bieg zaparkowany na punkcie kontrolnym da się puścić dalej Z OKNA.
+ *
+ * DLACZEGO TO KRYTERIUM ISTNIEJE. `continue_run` jest po stronie Rusta zarejestrowana i stoi na
+ * `src-tauri/commands.golden.txt`, a `rg 'continue_run|continueRun' src/` do 2026-08-18 nie
+ * zwracało nic. Kafelek punktu kontrolnego zatrzymuje przy tym CAŁY bieg, nie sam krok
+ * (`commands::run::wait_for_a_person`), a warianty odpowiedzi są dziś zawsze puste
+ * (`options: Vec::new()`), więc w widoku pracy nie renderował się ani jeden przycisk. Workflow
+ * z punktem kontrolnym parkował więc na zawsze i z okna wyglądał dokładnie jak zawieszony agent.
+ *
+ * SŁABA WERSJA: `expect(io.continueRun).toBeTypeOf('function')`. Przechodzi na krawędzi, której
+ * nic nie renderuje — czyli na tym samym rodzaju martwego mechanizmu, którym był `wireChannel`
+ * przed tym zadaniem: zdefiniowany, poprawny, bez ani jednego wołającego. Odróżnia ten plik to,
+ * że stan „bieg stoi na punkcie kontrolnym" powstaje TU PRZEZ KOD PRODUKCYJNY: przechwytujemy
+ * kanał, który Start podał Rustowi, i oddajemy przez niego wiersz `asked` — dokładnie tak, jak
+ * zrobiłby to `commands::run::ask`. Wszystko pomiędzy kanałem a markupem jest produkcją.
+ *
+ * NAPIS NA KONTROLCE NIE JEST WPISANY, TYLKO WYPROWADZONY. Bierzemy RÓŻNICĘ zbiorów napisów na
+ * przyciskach sprzed i po zaparkowaniu biegu: kontrolka „dalej" to dokładnie to, co przybyło.
+ * Wersja szukająca w markupie z góry umówionego słowa przechodziłaby także wtedy, gdy to słowo
+ * stoi tam z zupełnie innego powodu, i nie umiałaby zobaczyć, że nic nowego się nie pojawiło.
+ * Napis sądzimy potem tabelą z `docs/design/DESIGN.md` §8, czytaną w tym samym biegu testu —
+ * lista zakazanych słów wpisana tutaj z palca rozjechałaby się z tabelą po pierwszej zmianie
+ * i przestałaby cokolwiek egzekwować (niezmiennik 14).
+ *
+ * CO ZNACZY TU „KLIKNIĘCIE". To repo NIE MA jsdom, a dopisanie `@testing-library/react` byłoby
+ * zmianą `package.json`, czyli momentem na zapytanie człowieka (AGENTS.md §7). Markup mówi, czy
+ * kontrolka JEST; krawędź z `io.ts` mówi, dokąd sięga — kryterium rozdziela te dwa pytania tak
+ * samo, w punktach (a)/(b).
+ *
+ * Pliki czytamy przez `existsSync(p) ? readFileSync(p) : ''`, żeby test padał na asercji o treści,
+ * nigdy na otwarciu pliku (AGENTS.md §2a p. 5). Każdy odczyt ma osobną asercję na to, że parser
+ * COŚ znalazł: porównanie z pustą listą przechodzi na niczym.
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+
+const { invoked, release } = vi.hoisted(() => {
+  const waiting: Array<() => void> = [];
+  return {
+    invoked: vi.fn(
+      (..._sent: unknown[]) =>
+        new Promise<undefined>((resolve2) => {
+          waiting.push(() => {
+            resolve2(undefined);
+          });
+        }),
+    ),
+    release: (): void => {
+      while (waiting.length > 0) waiting.pop()?.();
+    },
+  };
+});
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: invoked,
+  Channel: class {
+    public onmessage: ((batch: unknown) => void) | null = null;
+  },
+}));
+
+const { Start } = await import('./start');
+const { start, continueRun } = await import('./io');
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE, '..', '..', '..');
+const DESIGN = resolve(ROOT, 'docs/design/DESIGN.md');
+const GOLDEN = resolve(ROOT, 'src-tauri/commands.golden.txt');
+
+function fileText(path: string): string {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '';
+}
+
+/** Ciało tabeli DESIGN §8 — wiążącej dla języka interfejsu (decyzja D5). */
+function designSection8(design: string): string {
+  const from = design.indexOf('## 8.');
+  if (from < 0) return '';
+  const to = design.indexOf('## 9.', from);
+  return design.slice(from, to < 0 ? undefined : to);
+}
+
+/** Co PISZEMY zamiast żargonu z lewej kolumny §8. */
+function insteadOf(design: string, jargon: string): string {
+  const row = new RegExp('^\\|\\s*' + jargon + '\\s*\\|([^|]*)\\|', 'm').exec(
+    designSection8(design),
+  );
+  return (row?.[1] ?? '').replace(/`/g, '').trim();
+}
+
+/**
+ * Lewa kolumna tabeli §8, rozbita na pojedyncze terminy.
+ *
+ * To są słowa, których na ekranie być nie może. Czytamy je, zamiast wpisywać: lista wpisana tu
+ * z palca zostaje taka, jaka jest, kiedy tabela rośnie — i wtedy nowy zakazany termin przechodzi.
+ */
+function bannedOnScreen(design: string): readonly string[] {
+  const out: string[] = [];
+  for (const row of designSection8(design).split('\n')) {
+    const cells = row.split('|');
+    if (cells.length < 4) continue;
+    const left = (cells[1] ?? '').trim();
+    if (left === '' || left === 'Zamiast' || /^[-: ]+$/.test(left)) continue;
+    for (const piece of left.split(/[/,]/)) {
+      const term = piece.trim().toLowerCase();
+      if (term.length >= 3) out.push(term);
+    }
+  }
+  return out;
+}
+
+function goldenNames(text: string): ReadonlySet<string> {
+  return new Set(
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#')),
+  );
+}
+
+/** Napisy na WSZYSTKICH przyciskach markupu — kontrolki, nie dowolne wystąpienie słowa. */
+function buttonLabels(markup: string): readonly string[] {
+  return [...markup.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map((hit) =>
+    (hit[1] ?? '').trim(),
+  );
+}
+
+/** Sam tekst, który człowiek czyta. Bez znaczników, więc bez klas CSS i atrybutów `data-*`. */
+function visibleText(markup: string): string {
+  return markup
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Kształt kanału, którym Rust oddaje paczki. Tyle, ile ten test dotyka. */
+interface Port {
+  onmessage: ((batch: unknown) => void) | null;
+}
+
+/** Kanał, który Start podał Rustowi jako czwarty argument `run_workflow`. */
+function portFromStart(): Port {
+  const args = invoked.mock.calls.at(0)?.at(1);
+  const carried =
+    typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
+  const port = carried['lines'];
+  if (port === null || typeof port !== 'object') {
+    throw new Error('Start did not hand Rust a channel under `lines`');
+  }
+  return port as Port;
+}
+
+const design = fileText(DESIGN);
+const known = goldenNames(fileText(GOLDEN));
+const banned = bannedOnScreen(design);
+/** Napis kontrolki zatrzymania, czytany z §8 — bieg stojący na pytaniu dalej ma dać się zatrzymać. */
+const STOP = insteadOf(design, 'Terminate');
+
+const OPEN = 'ship-a-feature.json';
+const NAME = 'Ship a feature';
+const AT_ONCE = 5;
+
+/**
+ * Wiersz, którym Rust ogłasza punkt kontrolny.
+ *
+ * Kształt jest kształtem `Line::Asked` z `src-tauri/src/engine/line.rs`: `agent`, `text`
+ * i `options`, ani pola więcej — `parseLine` odrzuca wiersz z nadmiarowym kluczem. Lista opcji
+ * jest pusta, bo `commands::run::ask` wysyła dziś dokładnie `Vec::new()`, i to jest właśnie ten
+ * stan, w którym widok pracy nie renderuje ani jednego przycisku odpowiedzi.
+ */
+const CHECKPOINT = {
+  kind: 'asked',
+  agent: 'Does the plan look right?',
+  text: 'Does the plan look right?',
+  options: [] as string[],
+};
+
+/* ── Cała ścieżka produkcyjna, przejściem raz, przy wczytaniu modułu ──────────────────────────
+ *
+ * Trzy migawki w trzech różnych chwilach biegu, i tylko środek między nimi jest tym, o co pyta
+ * kryterium. Nic tu nie dotyka magazynu ani modelu widoku wprost: jedyne, co ten plik robi, to
+ * uruchamia Start i oddaje paczkę przez kanał, który Start sam założył. */
+const beforeAnyRun = renderToStaticMarkup(<Start />);
+const going = start(OPEN, AT_ONCE, { name: NAME, steps: [] });
+const port = portFromStart();
+const whileRunning = renderToStaticMarkup(<Start />);
+if (port.onmessage === null) {
+  throw new Error('nothing is listening on the channel Start opened');
+}
+port.onmessage([CHECKPOINT]);
+const atCheckpoint = renderToStaticMarkup(<Start />);
+
+/** Kontrolki, które przybyły dokładnie na zaparkowaniu biegu. */
+const appeared = buttonLabels(atCheckpoint).filter(
+  (label) => !buttonLabels(whileRunning).includes(label),
+);
+
+/**
+ * Napis kontrolki „dalej" — WYPROWADZONY z różnicy, nie umówiony z góry.
+ *
+ * Pusty, kiedy nic nie przybyło. Wtedy czerwony jest przypadek liczący tę różnicę, a nie ten,
+ * który sprawdza napis: różnica dwóch identycznych ekranów nie jest pytaniem o słownictwo.
+ */
+const carryOn = appeared.at(0) ?? '';
+
+describe('a run parked at a checkpoint can be let through from the window', () => {
+  it('reads its expected values out of DESIGN §8 and the golden command list', () => {
+    expect(
+      design,
+      'docs/design/DESIGN.md could not be read, so the vocabulary judgement below would run ' +
+        'against an empty list and every label on earth would pass it.',
+    ).not.toBe('');
+    expect(
+      banned.length,
+      'nothing was parsed out of the DESIGN §8 table. That table is what invariant 14 is ' +
+        'enforced against; an empty list turns the label check into a formality that says yes ' +
+        'to anything.',
+    ).toBeGreaterThanOrEqual(10);
+    expect(
+      STOP,
+      'the DESIGN §8 table no longer says what we write instead of "Terminate", so the check ' +
+        'that a parked run is still stoppable would be comparing against an empty string.',
+    ).not.toBe('');
+    expect(
+      known.size,
+      'src-tauri/commands.golden.txt parsed to nothing, so "under a name from the golden list" ' +
+        'would be a question with no list behind it.',
+    ).toBeGreaterThanOrEqual(10);
+  });
+
+  it('offers nothing to continue before there is any run at all', () => {
+    const idle = buttonLabels(beforeAnyRun);
+
+    expect(
+      idle.length,
+      'the run controls rendered no buttons at all on an idle screen, so "no continue control ' +
+        'here" would be true of an empty screen and would mean nothing.',
+    ).toBeGreaterThan(0);
+    expect(
+      carryOn,
+      'no control ever showed up when the run parked, so there is nothing whose absence this ' +
+        'case could be checking. The case below says the same thing louder.',
+    ).not.toBe('');
+    expect(
+      idle,
+      'the control that lets a run carry on is on screen before any run exists. Pressing it ' +
+        'there is not harmless: continue_run bumps a go-ahead counter on the Rust side, so the ' +
+        'press spends the answer to the NEXT checkpoint, which then flies past without ever ' +
+        'asking. A control with nothing to do does not ship (invariant 16). Buttons were: ' +
+        JSON.stringify(idle),
+    ).not.toContain(carryOn);
+  });
+
+  it('grows exactly one control the moment the run stands at a checkpoint', () => {
+    expect(
+      appeared,
+      'the run parked at a checkpoint and the window offered nothing new. This is the state the ' +
+        'task describes: the checkpoint stops the whole run, its answer options are always empty ' +
+        'today, so the work view draws no buttons either — the run waits forever and reads as a ' +
+        'hung agent. Buttons before: ' +
+        JSON.stringify(buttonLabels(whileRunning)) +
+        ', after: ' +
+        JSON.stringify(buttonLabels(atCheckpoint)),
+    ).toHaveLength(1);
+    expect(
+      buttonLabels(atCheckpoint),
+      'the continue control replaced the stop control instead of standing next to it. A run ' +
+        'waiting on a person is still a run: taking away the only way to end it leaves the ' +
+        'person with one door out of two, and the other one costs a provider bill.',
+    ).toContain(STOP);
+  });
+
+  it('names that control in plain English, with nothing off the DESIGN §8 table on it', () => {
+    const label = carryOn;
+
+    expect(
+      label,
+      'the control that appeared carries no text at all. A button with no word on it answers ' +
+        'nothing about what pressing it does.',
+    ).not.toBe('');
+    expect(
+      /^[A-Za-z][A-Za-z ]*$/.test(label),
+      'the label on the continue control is not plain English words: ' +
+        JSON.stringify(label) +
+        '. The UI is English (decision D5) and a wire enum never reaches a screen ' +
+        '(invariant 14).',
+    ).toBe(true);
+    expect(
+      banned.filter((term) => label.toLowerCase().includes(term)),
+      'the label on the continue control carries jargon the DESIGN §8 table forbids. That table ' +
+        'is read from the file in this run, so it stays binding as it grows. Label was: ' +
+        JSON.stringify(label),
+    ).toEqual([]);
+
+    const words = visibleText(atCheckpoint).toLowerCase();
+    expect(
+      words.includes('continue_run'),
+      'the name of a Rust command reached the screen. A wire name is never user-visible text ' +
+        '(invariant 14); the person reading it learns the shape of our IPC and nothing about ' +
+        'their run. Visible text was: ' +
+        visibleText(atCheckpoint),
+    ).toBe(false);
+    expect(
+      words.includes('checkpoint'),
+      'the word "checkpoint" reached the screen. It is our word for a tile in the editor, not ' +
+        'a word this person chose — what they see here is a question waiting on them. Visible ' +
+        'text was: ' +
+        visibleText(atCheckpoint),
+    ).toBe(false);
+  });
+
+  it('sends that control edge to the command the golden list names', async () => {
+    invoked.mockClear();
+    const asked = continueRun();
+
+    expect(
+      invoked.mock.calls.length,
+      'the continue edge never reached Rust. A control that renders and asks nobody anything is ' +
+        'the dead-button family invariant 16 names, and it is exactly what continue_run has been ' +
+        'since it was registered: on the golden list, with zero callers in src/.',
+    ).toBe(1);
+
+    const name = invoked.mock.calls.at(0)?.at(0);
+    expect(
+      typeof name === 'string' && known.has(name),
+      'the continue edge asked Rust for ' +
+        String(name) +
+        ', which is not on src-tauri/commands.golden.txt — so nothing on the Rust side keeps ' +
+        'that name alive, and the day it is renamed this call goes quiet instead of failing.',
+    ).toBe(true);
+    expect(name, 'and the command it asks for is the one that lets a parked run carry on').toBe(
+      'continue_run',
+    );
+
+    const args = invoked.mock.calls.at(0)?.at(1);
+    expect(
+      args === undefined || Object.keys(args as object).length === 0,
+      'the continue edge invented arguments. continue_run takes only injected state on the Rust ' +
+        'side and bumps a run-wide counter; a step id sent from here would be a second place ' +
+        'where the answer to "what are we standing on" lives, and Tauri would refuse the call ' +
+        'outright for a key the command does not declare. It sent: ' +
+        JSON.stringify(args),
+    ).toBe(true);
+
+    release();
+    await Promise.allSettled([asked, going]);
+  });
+});

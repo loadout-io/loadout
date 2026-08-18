@@ -21,6 +21,7 @@
 //! instalacja kopiuje je przez `fs::copy` (bit wykonywalności `scripts/run.sh`). Instalacja
 //! złożona z tego, co przyszło z okna, gubiłaby te pliki po cichu.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -168,6 +169,88 @@ fn global_roots(library: &Path) -> Roots {
         project: None,
         data: library.to_path_buf(),
     }
+}
+
+/// Umiejętność, która naprawdę leży w katalogach agentów. Lustro `InstalledSkill`
+/// z `src/state/skills.ts`, pole w pole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledWire {
+    /// Nazwa umiejętności, ona też jest nazwą katalogu.
+    pub name: String,
+    /// Czy przyszła z sieci. Znacznik jest trwały i przeżywa instalację [T5 §5.4].
+    pub from_the_internet: bool,
+}
+
+/// Co leży w katalogach agentów — odczytane z DYSKU, bez ani jednego bajtu pamięci procesu.
+///
+/// 2026-08-18 — powód, dla którego ta funkcja istnieje, jest zmierzony i brzmi tak: sekcja
+/// Umiejętności trzymała listę `installed` wyłącznie w magazynie okna i dopisywała do niej
+/// po udanym `install_skill`. Restart kasował listę, a pliki zostawały — czyli licznik
+/// „N saved" mówił „ile dodałeś w tej sesji", udając, że mówi „ile masz". Niezmiennik 4
+/// złamany wprost.
+///
+/// # Dlaczego katalogi vendorów, a nie kopie kanoniczne
+///
+/// `review_skill_inner` odkłada kopię kanoniczną w `<biblioteka>/skills/<name>/` ZANIM człowiek
+/// cokolwiek zatwierdzi — przegląd, który skończył się „nie, dziękuję", leży tam tak samo jak
+/// przyjęty. Lista czytana stamtąd pokazywałaby jako zainstalowane wszystko, co ktoś kiedykolwiek
+/// wkleił jako link. Zainstalowana znaczy „agent ją widzi", a to jest pytanie o katalogi
+/// docelowe — te same, które wylicza [`crate::skills::place::destinations`]. Ścieżki liczy więc
+/// tamta funkcja, nie ta (niezmiennik 23): drugie miejsce, w którym stoi `.claude/skills`,
+/// rozjechałoby się z pierwszym przy pierwszym vendorze, którego dołożymy.
+///
+/// # Skąd bierze się `from_the_internet`
+///
+/// Z plików, bo inaczej nie wolno go zapisać (niezmiennik 4). Kopia kanoniczna powstaje
+/// **wyłącznie** w [`review_skill_inner`], czyli na jedynej drodze, którą coś wchodzi tu z sieci
+/// — jej obecność obok zainstalowanego katalogu jest więc trwałym śladem pochodzenia, którego
+/// nie trzeba nigdzie zapisywać osobno. Umiejętność napisana ręcznie prosto w katalogu vendora
+/// nie ma kopii kanonicznej i dostaje `false`, i tak ma być: znacznik zastępuje podpisy, których
+/// v1 nie ma, więc ma świecić tam, gdzie treść przyszła od obcego.
+///
+/// Katalog, którego nie ma, daje **pustą listę**. Brak umiejętności to stan, nie awaria —
+/// czerwony pasek na świeżej instalacji uczy człowieka ignorować czerwone paski.
+pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
+    let roots = global_roots(library);
+    // Zbiór, nie wektor: ta sama umiejętność stoi w OBU katalogach docelowych, bo instalacja
+    // pisze w oba. Lista z powtórzeniem pokazałaby człowiekowi dwa wiersze o jednym pliku
+    // i policzyłaby go dwa razy w liczniku nad sekcją.
+    let mut names: BTreeSet<String> = BTreeSet::new();
+
+    for dir in
+        crate::skills::place::destinations(Scope::Global, &roots.home, roots.project.as_deref())
+    {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            // Nikt jeszcze nic nie zainstalował — zero umiejętności, nie błąd.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            // Każda inna awaria odczytu jedzie w górę. Pusta lista w odpowiedzi na „nie mam
+            // prawa czytać tego katalogu" jest zdaniem „nic tam nie ma", a to nieprawda.
+            Err(error) => return Err(Error::Io(error)),
+        };
+
+        for entry in entries.flatten() {
+            // Katalog z `SKILL.md` w środku, a nie każdy wpis: obok katalogów umiejętności
+            // leżą pliki vendorów i `.DS_Store`, a wiersz „umiejętność .DS_Store" jest
+            // dokładnie tym rodzajem śmiecia, przez który człowiek przestaje czytać listę.
+            if entry.path().join(SKILL_FILE).is_file() {
+                names.insert(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    Ok(names
+        .into_iter()
+        .map(|name| InstalledWire {
+            from_the_internet: library
+                .join(SKILLS_DIR)
+                .join(&name)
+                .join(SKILL_FILE)
+                .is_file(),
+            name,
+        })
+        .collect())
 }
 
 /// Zdejmuje katalog, jeżeli tam jest. Brak katalogu to **nie** jest awaria.

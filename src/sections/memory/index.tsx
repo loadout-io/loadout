@@ -30,7 +30,7 @@
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { useMemory } from '../../state/memory';
 import { ForcedChoice } from './forced-choice';
 import { NoteRow } from './note-row';
@@ -59,6 +59,22 @@ function counted(count: number, noun: string): string {
 
 export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+
+  /* ODCZYT PRZY WEJŚCIU W SEKCJĘ — bez tego cała ścieżka odczytu jest martwa.
+   *
+   * Magazyn dostał `load()` w T-38 AC-6 i do 2026-08-18 NIE MIAŁ ANI JEDNEGO WOŁAJĄCEGO:
+   * komenda po stronie Rusta istniała, krawędź `io.ts` istniała, magazyn umiał się wypełnić —
+   * i ekran nigdy o nic nie pytał. To jest ta sama rodzina, co płótno przed T-26 i `wireChannel`
+   * przed T-38: mechanizm wylądował, ma testy, nikt go nie zawołał. Objaw dla człowieka jest
+   * dokładnie taki, jak przy braku funkcji: otwierasz sekcję i nie ma w niej tego, co leży
+   * na dysku (niezmiennik 4 — pliki są prawdą).
+   *
+   * `void`, bo odmowa jest już obsłużona w magazynie i ląduje w jego stanie jako zdanie dla
+   * człowieka; drugie `catch` tutaj byłoby drugim miejscem, w którym mieszka ta sama decyzja.
+   * Pusta tablica zależności: sekcja pyta RAZ na zamontowanie, a nie na każdy render. */
+  useEffect(() => {
+    void store.getState().load();
+  }, [store]);
 
   /* Podział liczony ze stanu przy każdym renderze, a nie trzymany w dwóch tablicach: dwie
    * listy w magazynie rozjeżdżają się przy pierwszej promocji, która trafi tylko do jednej

@@ -162,6 +162,22 @@ fn on_disk(root: &Path, id: &NoteId) -> Result<Note, Error> {
         .ok_or_else(|| Error::NoSuchNote(id.clone()))
 }
 
+/// Wszystkie notatki z dysku, w kolejności, którą oddaje skaner.
+///
+/// 2026-08-18 — jedyna droga, którą sekcja Pamięć dowiaduje się, co leży w plikach. Do tego dnia
+/// takiej drogi nie było wcale: magazyn startował pustą listą, a jedynym miejscem, w którym
+/// notatka mogła się w nim pojawić, była odpowiedź na `put_note_to_use` — czyli na promocję
+/// notatki, której ekran nigdy nie pokazał.
+///
+/// **Ani jednej linii skanowania tutaj** (niezmiennik 23). Czytnik notatek jest jeden i mieszka
+/// w [`scan_notes`]: to on wie, że pliki leżą w `<korzeń>/notes/`, że biorą się wyłącznie te
+/// z rozszerzeniem `.md`, że kolejność idzie po nazwach i że **korzeń bez katalogu notatek ma
+/// zero notatek, a nie błąd**. Drugi czytnik w tej warstwie rozjechałby się z tamtym przy
+/// pierwszej zmianie formatu i rozjazd byłby widoczny dopiero na ekranie użytkownika.
+pub fn list_notes_inner(root: &Path) -> Result<Vec<NoteWire>, Error> {
+    Ok(scan_notes(root)?.iter().map(NoteWire::from).collect())
+}
+
 /// „Use this": od tej chwili notatka wchodzi do promptu.
 ///
 /// `at` podaje wołający, bo `memory::notes` nie ma zegara i mieć nie będzie — to jest chwila,

@@ -7,6 +7,21 @@
  * mechanizm wylądował, ma testy, nikt go nie podłączył. Test renderujący komponent wprost
  * nie odróżnia „zamontowane" od „istnieje".
  *
+ * KTÓRE Z TYCH CZTERECH DOSTAŁY MONTAŻ I KIEDY — żeby następny czytelnik nie musiał tego
+ * gerpować:
+ *   2026-08-17: `canvas/canvas.tsx` (niżej, `WorkflowCanvas`) i `step-panel/panel.tsx`
+ *               (`StepPanel`, montowany dziś przez `PanelForStep`).
+ *   2026-08-18: `step-panel/checkpoint-panel.tsx` — przez `PanelForStep`, czyli rozjazd
+ *               w `panel.tsx`. Do tego dnia ten plik miał w CAŁYM repo zero importerów, więc
+ *               punkt kontrolny postawiony na płótnie nie miał jak dostać ani nazwy, ani
+ *               pytania: bieg zatrzymywał się na nim i nie pytał o nic.
+ *   nadal bez montażu: `step-panel/skills-row.tsx` — ma własny test i ani jednego wołającego.
+ *
+ * Przy okazji przestał obowiązywać warunek, który tę listę trzymał krótką: panel montował się
+ * tylko wtedy, gdy `step.agent` rozwiązał się w bibliotece. `freshStep` daje `agent: ''`
+ * z rozmysłem, więc krok prosto z przycisku nie rozwiązywał się NIGDY. Trzy odpowiedzi na
+ * pytanie „jaki panel dostaje ten kafelek" mieszkają od teraz w jednym miejscu (`PanelForStep`).
+ *
  * Magazyn dokumentu powstaje NA OTWARTY PLIK i ginie przy zamknięciu: `createWorkflowStore`
  * bierze dokument w konstruktorze, bo magazyn bez dokumentu nie ma sensu (`state/workflows.ts`).
  * Trzymanie jednego magazynu na całą sekcję wymagałoby `document: null`, czyli stanu, który
@@ -16,12 +31,12 @@ import type { ReactElement } from 'react';
 import { useEffect, useState } from 'react';
 
 import type { Agent } from '../../state/agents';
-import type { AgentStep, WorkflowFile } from '../../state/workflows';
+import type { Step, WorkflowFile } from '../../state/workflows';
 import { createWorkflowStore } from '../../state/workflows';
 import * as agentsIo from '../agents/io';
 import { WorkflowCanvas } from './canvas/canvas';
 import * as disk from './io';
-import { StepPanel } from './step-panel/panel';
+import { PanelForStep } from './step-panel/panel';
 
 const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
 
@@ -34,6 +49,23 @@ export interface WorkflowEditorProps {
   agents: readonly Agent[];
   onClose: () => void;
   onRun: (path: string) => void;
+  /**
+   * Kafelek, którego panel jest otwarty już w chwili zamontowania ekranu.
+   *
+   * Bez propsu edytor otwiera panel dopiero na kliknięcie w kafelek — dokładnie tak, jak
+   * powłoka bierze swoje ekrany bez propsu `screens` (`src/App.tsx`), a sekcja swój magazyn
+   * bez propsu `store` (`./index.tsx`). Ten ekran ma stan, którego `renderToStaticMarkup`
+   * nie umie ruszyć (nie ma kliknięcia i nie biegną efekty), więc bez tego wejścia jedyną
+   * sprawdzalną odpowiedzią na pytanie „czy zaznaczenie daje panel" byłoby wyrenderowanie
+   * panelu wprost — czyli asercja, która nie odróżnia „zamontowane" od „istnieje".
+   */
+  openStep?: string;
+}
+
+/** Dokument z podmienionym jednym krokiem. Podmiana idzie przez `commit`, czyli tę jedną
+ * drogę, którą nowy dokument wchodzi do stanu (i pod którą wisi autosave). */
+function withStep(file: WorkflowFile, id: string, change: (step: Step) => Step): WorkflowFile {
+  return { ...file, steps: file.steps.map((step) => (step.id === id ? change(step) : step)) };
 }
 
 export function WorkflowEditor({
@@ -42,6 +74,7 @@ export function WorkflowEditor({
   agents,
   onClose,
   onRun,
+  openStep,
 }: WorkflowEditorProps): ReactElement {
   /* Magazyn powstaje DOKŁADNIE RAZ na zamontowanie tego ekranu — inicjalizator `useState`
    * biegnie tylko przy pierwszym renderze.
@@ -70,7 +103,7 @@ export function WorkflowEditor({
   );
 
   const state = store();
-  const [openStepId, setOpenStepId] = useState<string | null>(null);
+  const [openStepId, setOpenStepId] = useState<string | null>(openStep ?? null);
 
   /* Uwagi walidatora bierzemy przy otwarciu, nie dopiero po pierwszej zmianie: workflow zapisany
    * wczoraj i zepsuty od wczoraj ma powiedzieć o tym od razu, a nie po dotknięciu kafelka.
@@ -83,10 +116,11 @@ export function WorkflowEditor({
     void store.getState().recheck();
   }, [store]);
 
-  const open = state.document.steps.find(
-    (step): step is AgentStep => step.kind === 'agent' && step.id === openStepId,
-  );
-  const agentOf = open === undefined ? undefined : agents.find((a) => a.id === open.agent);
+  /* KAŻDY kafelek, nie tylko krok agenta z rozwiązanym agentem. Rodzaj kroku i to, czy agent
+   * jest już wybrany, rozstrzyga `PanelForStep` — tutaj zostaje jedno pytanie: który kafelek
+   * jest zaznaczony. Warunek zawężający, który stał w tej linii do 2026-08-18, robił z połowy
+   * kafelków kafelki bez panelu, a wyglądało to jak brak zaznaczenia. */
+  const open = state.document.steps.find((step) => step.id === openStepId);
 
   return (
     <section className="flex h-full min-h-0 flex-col">
@@ -122,28 +156,50 @@ export function WorkflowEditor({
          * kolumna zostaje pusta, zamiast znikać: znikająca kolumna przesuwa płótno pod
          * kursorem w chwili kliknięcia. */}
         <aside className="min-h-0 overflow-auto border-l border-line bg-panel p-4">
-          {open === undefined || agentOf === undefined ? (
+          {open === undefined ? (
             <p className="text-muted">Pick a step to see what it was given.</p>
           ) : (
-            <StepPanel
+            <PanelForStep
               step={open}
-              agent={agentOf}
-              onEdit={(edit) => {
+              agents={agents}
+              onChooseAgent={(agentId) => {
+                /* Wybór agenta jest polem KROKU, nie nadpisaniem agenta, więc jedzie tą samą
+                 * drogą co nazwa — `commit` — a nie przez `editStep`, które liczy różnicę
+                 * wobec agenta i bez agenta nie miałoby czego odjąć. */
+                state.commit(
+                  withStep(state.document, open.id, (step) =>
+                    /* Rodzaj sprawdzamy jeszcze raz, bo `withStep` widzi krok z dokumentu,
+                     * a nie ten zawężony przez panel: czytanie z dokumentu, nie z domknięcia,
+                     * jest tym, co trzyma dwie zmiany pod rząd na tym samym stanie. */
+                    step.kind === 'agent' ? { ...step, agent: agentId } : step,
+                  ),
+                );
+              }}
+              onEdit={(agent, edit) => {
                 /* Agent jedzie ARGUMENTEM, bo panel podaje wartości EFEKTYWNE, a różnicę
                  * wobec agenta liczy magazyn (`applyPanelEdit`). Bez tego edytor musiałby
                  * wiedzieć, co jest nadpisaniem, a co dziedziczeniem — czyli drugi raz. */
-                state.editStep(open.id, agentOf, edit);
+                state.editStep(open.id, agent, edit);
               }}
               onEditStep={(fields) => {
                 /* Pola własne kroku (nazwa, instrukcje, `copies`) nie są nadpisaniami agenta,
                  * więc nie mają osobnej akcji: jadą przez `commit`, czyli tę jedną drogę,
                  * którą nowy dokument wchodzi do stanu (i pod którą wisi autosave). */
-                state.commit({
-                  ...state.document,
-                  steps: state.document.steps.map((step) =>
-                    step.id === open.id ? { ...step, ...fields } : step,
+                state.commit(
+                  withStep(state.document, open.id, (step) =>
+                    step.kind === 'agent' ? { ...step, ...fields } : step,
                   ),
-                });
+                );
+              }}
+              onEditCheckpoint={(fields) => {
+                /* Ta sama droga dla punktu kontrolnego. Jego `question` jest jedynym powodem,
+                 * dla którego bieg ma się na nim o cokolwiek zapytać — pole, które nie dojeżdża
+                 * do pliku, daje bieg stojący w miejscu i milczący. */
+                state.commit(
+                  withStep(state.document, open.id, (step) =>
+                    step.kind === 'checkpoint' ? { ...step, ...fields } : step,
+                  ),
+                );
               }}
               onReset={(field) => {
                 state.resetRow(open.id, field);

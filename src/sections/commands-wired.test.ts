@@ -189,6 +189,25 @@ const WIRES: readonly Wire[] = [
     given: [{ id: 'note-to-drop' }],
     call: () => memory.stopUsing({ id: 'note-to-drop' }),
   },
+  /* 2026-08-18 (T-38 AC-5/AC-6) — DWIE NOWE KRAWĘDZIE ODCZYTU, DOPISANE, NIC NIE USUNIĘTE.
+   * Ten plik złapał je, zanim zdążyły wjechać niezauważone, i to jest dokładnie jego zadanie:
+   * `listNotes` i `listSkills` powstały po to, żeby Pamięć i Umiejętności czytały z dysku —
+   * bez tych dwóch wierszy byłyby funkcjami, których nikt nigdy nie zobaczył docierających
+   * do Rusta, a zapisana umiejętność ginęła po restarcie (niezmiennik 4). */
+  {
+    where: 'memory',
+    what: 'listNotes',
+    command: 'list_notes',
+    given: [],
+    call: () => memory.listNotes(),
+  },
+  {
+    where: 'skills',
+    what: 'listSkills',
+    command: 'list_skills',
+    given: [],
+    call: () => skills.listSkills(),
+  },
 ];
 
 const EDGES: ReadonlyArray<readonly [string, object]> = [
