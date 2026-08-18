@@ -86,8 +86,15 @@ export function ReviewCard({
       <header className="flex items-center gap-2">
         <h2 className="text-heading text-ink">{item.name}</h2>
         {/* Znacznik pochodzenia stoi na karcie i zostaje po instalacji. To jedyna rzecz tutaj,
-            która mówi, że ten tekst napisał ktoś obcy. */}
-        {item.fromTheInternet ? <span className={CHIP}>From the internet</span> : null}
+            która mówi, że ten tekst napisał ktoś obcy.
+
+            SZKIELET (T-42, faza kontraktu): plakietka jest tu WPISANA NA SZTYWNO i ignoruje
+            `item.fromTheInternet`. Do 2026-08-19 była to prawda przez konstrukcję — jedyną
+            drogą, którą cokolwiek wchodziło do tej karty, było `review_skill(url)`, czyli link.
+            Zdanie o internecie stawiane nad WŁASNYM tekstem człowieka jest tym, co AC-4 mierzy,
+            więc dopóki nie stoi tu warunek, kryterium jest czerwone. Implementacja podmienia tę
+            jedną linię i nic więcej w tym pliku. */}
+        <span className={CHIP}>From the internet</span>
       </header>
 
       <p className="text-body text-body">{item.summary}</p>

@@ -132,56 +132,21 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 store.getState().typeInto({ link: event.target.value });
               }}
             />
-            <button type="submit" className={SECONDARY}>
-              Read it
-            </button>
+            {/* SZKIELET (T-42, faza kontraktu): TRZECH PYTAŃ TU NIE MA, i to jest dzisiejszy
+                stan sekcji — panel przyjmuje wyłącznie adres, dokładnie tyle, ile umie
+                `review_skill(url)` po drugiej stronie granicy. Zaproszenie „Paste a link, or
+                write one yourself" niżej obiecuje więc kontrolkę, której nie ma — to jest
+                niezmiennik 16 od drugiej strony — a AC-3 (b), (c) i (d) mierzą dokładnie to.
+                Trzy pytania [T5 §8.3] i kontrolka oddająca odpowiedzi wchodzą TUTAJ, pod tym
+                samym przyciskiem `data-create`, nie obok niego.
 
-            <label htmlFor="skill-name" className="text-label text-muted">
-              What is it called?
-            </label>
-            <input
-              id="skill-name"
-              data-question="name"
-              className={FIELD}
-              value={panel.name}
-              onChange={(event) => {
-                store.getState().typeInto({ name: event.target.value });
-              }}
-            />
-            <label htmlFor="skill-when" className="text-label text-muted">
-              When should an agent use it?
-            </label>
-            <input
-              id="skill-when"
-              data-question="whenToUse"
-              className={FIELD}
-              value={panel.whenToUse}
-              onChange={(event) => {
-                store.getState().typeInto({ whenToUse: event.target.value });
-              }}
-            />
-            <label htmlFor="skill-what" className="text-label text-muted">
-              What should it do?
-            </label>
-            <textarea
-              id="skill-what"
-              data-question="whatToDo"
-              className={FIELD}
-              value={panel.whatToDo}
-              onChange={(event) => {
-                store.getState().typeInto({ whatToDo: event.target.value });
-              }}
-            />
+                Treść panelu jest już czytana z magazynu (`state.adding`), a nie z `useState`
+                ekranu, i to nie jest ustępstwo na rzecz testu: odmowa z Rusta ma zostawić
+                wpisany akapit na ekranie, więc pola muszą leżeć tam, gdzie ląduje odmowa
+                (niezmiennik 13). */}
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-write-it-yourself
-                className={SECONDARY}
-                onClick={() => {
-                  void store.getState().writeItHere();
-                }}
-              >
-                Save this skill
+              <button type="submit" className={SECONDARY}>
+                Read it
               </button>
               <button
                 type="button"
