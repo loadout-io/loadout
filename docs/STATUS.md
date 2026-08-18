@@ -4,6 +4,63 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-18, 05:30 — pietnascie kryteriow jednego dnia i aplikacja, ktora naprawde chodzi
+
+**Suita jednostkowa: 88 plikow / 440 testow zielonych. E2E w prawdziwym chromium: 13/13.**
+Dowiezione tego dnia: T-37 (3 kryteria), T-38 (8), T-39 (7). Kontroli negatywnych: **101 w piecu
+rownoleglych pasach plus 3 moje**, wszystkie czerwone, wszystkie przywrocone po md5.
+
+### Aplikacja dziala — zmierzone, nie zadeklarowane
+
+Zrzut zywego okna 05:24 pokazuje menu 196 px ze znakiem i `LOADOUT`, piec sekcji, stopke
+`Claude · Codex ready`, pasek kart z `＋`, wybor workflow, **wlaczony** `Start`, suwak „ile
+naraz", pusty stan z zaproszeniem, **szyne agentow** po prawej i **wiersz wejscia** na dole.
+
+**Dowod, ze to nie atrapa:** w wyborze stoi `New workflow 2`, a na dysku lezy
+`~/.loadout/workflows/new-workflow-2.json` z polem `"name": "New workflow 2"`. Lancuch
+plik → `list_workflows` → `invoke` → okno jest prawdziwy w obie strony — te pliki powstaly
+wczesniej przyciskiem `Create`.
+
+### Biale okno przy starcie — przyczyna zamknieta, NIE jest defektem produktu
+
+Dwie przyczyny, obie srodowiskowe. (1) `tauri dev` obserwuje `src-tauri/` i **restartuje
+aplikacje po kazdym zapisie** — przy pieciu agentach piszacych rownolegle okno ginelo co
+kilkadziesiat sekund, a czlowiek widzial „szary ekran na chwile". (2) vite pre-bunduje
+zaleznosci na zadanie i pierwsze wejscie po zmianie ich zestawu blokuje `/src/main.tsx`
+na **32 s**; webview trzyma wtedy polaczenia i pokazuje pusta strone.
+**Rozpoznanie jest jednolinijkowe:** `curl -o /dev/null -w '%{time_total}' /src/main.tsx`
+mierzy ten czas wprost. Okno maluje sie natychmiast po tym, jak serwer zaczyna oddawac modul.
+
+### Trzy rzeczy, ktore znalazl dopiero sprawdzajacy
+
+Pieciu niezaleznych sprawdzajacych z poleceniem „domyslaj sie na niekorzysc pasa". Kazdy
+odtworzyl po jednej kontroli negatywnej SAM i przeszukal pliki pod katem zaslepek.
+**Atrap nie znalezli zadnych.** Znalezli trzy rzeczy, ktorych nie widzialo zadne kryterium:
+
+1. **Zamkniecie karty z zywym biegiem nie anulowalo biegu.** `WorkspaceTab.agents` bylo pisane
+   tylko przy zakladaniu karty i zawsze zerem, wiec `requestClose` zawsze wchodzil w galaz
+   „nic tu nie chodzi": karta znikala bez pytania i bez `cancel()`. Osierocony agent dalej palil
+   limit (niezmiennik 6 — blad finansowy). `CloseConfirm` byl przez to kodem NIEOSIAGALNYM.
+   Naprawione, kryterium T-39 AC-7 z trzema sondami.
+2. **`useMemory.load` i `useSkills.load` nie mialy wolajacego** — sciezka odczytu byla zbudowana
+   i martwa, wiec obie sekcje dalej nie czytaly dysku. Naprawione.
+3. **`commands-wired.test.ts` byl czerwony**: doszly dwie krawedzie bez wiersza w tabeli strazy.
+   Dopisane, 16 → 18.
+
+### Co zostalo do prod-ready
+
+- **T-41 (napisane)** — odpowiedz czlowieka NIE dochodzi do agenta. `answer()` jest czysto
+  lokalne: pytanie znika z ekranu, agent dalej czeka. To jedyna znana martwa kontrolka i jedyna,
+  ktora **klamie**. Nie jest to podpiecie kabla — `RunControl` nie ma uchwytu do zywej sesji,
+  wiec trzeba przeciagnac kanal przez granice. `AgentDriver::send` juz istnieje.
+- **T-40 (napisane)** — wyrocznia „kazda kontrolka cos robi" poza pieciu ekranami: stany
+  zagniezdzone, pola i selecty, oraz dowod, ze skutek jest TYM skutkiem.
+- **`quick-types` nie umie byc czerwony na kodzie zadania** — prawdziwy blad typow melduje jako
+  „our TypeScript configuration is broken — this is not your code", kodem 2, o ktorym bramka
+  sama pisze „never a red". Trafilo mnie dwa razy jednego dnia.
+- **`tests/it/main.rs` to nowy kregoslup bez `merge=union` i bez wlasciciela** — dwa zadania
+  dodajace test naraz dadza pewny konflikt.
+
 ## Liczby
 
 | | |
