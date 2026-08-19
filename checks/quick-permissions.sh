@@ -144,7 +144,11 @@ if problems or collisions:
     print("deny beats allow, and Write is a different tool from Edit. Name the directories you", file=sys.stderr)
     print("actually want closed, pair every verb, and never anchor at ~/ or ../ — the repository", file=sys.stderr)
     print("lives under both.", file=sys.stderr)
-    sys.exit(1)
+    print("", file=sys.stderr)
+    print("This is OUR configuration disagreeing with itself, not a statement about the code", file=sys.stderr)
+    print("under test -- so it exits 2, not 1. Everything this check reads is out of the", file=sys.stderr)
+    print("writer's reach: .claude/settings.json, the task's OWNS block, and this file.", file=sys.stderr)
+    sys.exit(2)
 
 print(f"permissions: {len(deny)} deny rules · writable: {label} · nothing protected is reachable")
 PY

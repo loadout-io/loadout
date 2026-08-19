@@ -69,7 +69,34 @@ rc=0; gate || rc=$?
 # integrate.sh nieużywalnym w dniu pierwszym — jedyna kopia TASK.md przyjeżdża właśnie
 # tą gałęzią, której skrypt odmawiał wmerdżowania. Co egzekwuje trunk, egzekwuje CI
 # (`scripts/ci.sh full`), które nie potrzebuje kontraktu zadania.
+# ...ale WYLACZNIE wtedy, gdy zadne sprawdzenie nie oddalo 2 samo. Kod 2 ma dwa zrodla i tylko
+# jedno z nich jest tu niegrozne: brak kontraktu do osadzenia (poziom bramki) kontra sprawdzenie,
+# ktore stwierdzilo, ze NASZA konfiguracja przeczy sobie (np. quick-permissions). Stara wersja
+# wybaczala oba, wiec ladowala na drzewie, o ktorym bramka wlasnie powiedziala, ze nie umie go
+# osadzic -- a nastepna galaz obrywala za cudza wade. Zmierzone 2026-08-19 po T-53.
 if [ "$rc" -eq 2 ]; then
+  # KONSERWATYWNIE: wybaczamy tylko przy SWIEZYM paragonie z pusta lista. Brak paragonu,
+  # paragon o innym commicie (bramka oddaje 2 takze SCIEZKAMI PRZED zapisem paragonu, wiec
+  # zostaje wtedy poprzedni) i nieczytelny JSON znacza to samo -- nie mamy dowodu, ze to ten
+  # niegrozny wariant. Domyslna odpowiedzia na brak dowodu jest odmowa, nie zgoda.
+  bad="$(python3 - "$ROOT/runs/last.json" "$(git rev-parse HEAD)" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("no readable receipt"); raise SystemExit
+if d.get("commit") != sys.argv[2]:
+    print("receipt describes %s, not this tree" % (d.get("commit") or "no commit")[:8]); raise SystemExit
+print(" ".join(d.get("misconfigured") or []))
+PYEOF
+)"
+  if [ -n "$bad" ]; then
+    echo >&2
+    echo "the gate is MISCONFIGURED on $CURRENT before anything was merged: $bad" >&2
+    echo "a check said it cannot judge this tree -- landing on top of that would blame" >&2
+    echo "the next branch for it. Fix the configuration first. Nothing was landed." >&2
+    exit 2
+  fi
   echo
   echo "  (the gate has nothing to judge on $CURRENT yet -- exit 2 is our configuration,"
   echo "   not a red tree. scripts/ci.sh is what gates trunk. Landing anyway.)"
