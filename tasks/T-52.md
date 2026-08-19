@@ -122,4 +122,6 @@ src-tauri/tests/it/worktree_isolates_the_step.rs
 src-tauri/tests/it/worktree_carries_your_uncommitted_work.rs
 src-tauri/tests/it/isolation_survives_every_file_shape.rs
 src-tauri/tests/it/worktree_leaves_the_work_reachable.rs
-src-tauri/tests/it/isolation_names_what_it_could_not_do.rs-->
+src-tauri/src/engine/supervisor.rs
+src-tauri/tests/it/isolation_names_what_it_could_not_do.rs
+-->
