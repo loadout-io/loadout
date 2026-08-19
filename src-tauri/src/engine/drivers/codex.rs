@@ -29,12 +29,16 @@
 //! Nie ma tu też ani jednego `tauri::*` (niezmiennik 1): sterownik nie wie, że istnieje okno.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Outcome, Probe, RunSpec, SessionRef,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
+    SessionRef, Tokens,
 };
 use crate::engine::supervisor::{GroupId, GroupProof};
 
@@ -158,6 +162,174 @@ pub fn build_exec_argv(_spec: &RunSpec) -> Vec<String> {
     Vec::new()
 }
 
+// ── Wire enum Codeksa ─────────────────────────────────────────────────────────────────────
+//
+// Kształt z drutu mieszka WYŁĄCZNIE tutaj. Powyżej tej linii nie ma ani jednego `serde`, poniżej
+// nie ma ani jednego [`AgentEvent`] — to jest ten sam podział, dzięki któremu ten plik powstał
+// bez dotykania `stream.rs` i bez zmiany traitu [PLAN §8, założenie 5].
+
+/// Pole, którego kształt vendor może zmienić bez uprzedzenia.
+///
+/// Cokolwiek nie pasuje, znika jako `None` — zamiast wywalić **całą linię** do licznika
+/// porzuconych. To jest niezmiennik 5 w miejscu, w którym naprawdę się łamie: `#[serde(other)]`
+/// ratuje nieznany `type`, ale nie ratuje znanego typu, któremu vendor zmienił kształt pola
+/// zagnieżdżonego — a wtedy tracimy linię, która w 95% była dla nas czytelna.
+///
+/// Bliźniak tej funkcji stoi w `claude.rs` i to jest świadome powtórzenie, nie przeoczenie:
+/// wspólne miejsce dla obu jest w `drivers/mod.rs`, a ten task ma tam prawo dopisać **jeden**
+/// wiersz `pub mod codex;` i nic więcej.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// Jedna linia strumienia `codex exec --json` [T1 §6.2].
+///
+/// `#[serde(other)] Unknown` jest nienegocjowalny: vendorzy dokładają typy zdarzeń co tydzień,
+/// po cichu, i bieg nie ma prawa na tym paść (niezmiennik 5). Sam ten atrybut jednak **nie
+/// wystarcza** — decyduje to, że [`CodexDecoder::push`] nie zwraca `Result`, więc nie ma czego
+/// przepuścić przez `?` w pętli czytającej.
+///
+/// Nazwy są kropkowane (`thread.started`, a nie `thread_started`), więc każdy wariant ma własne
+/// `rename`: `rename_all = "snake_case"` zamieniłoby je na nazwy, których Codex nigdy nie
+/// wypisał, a linia z drutu wpadłaby cicho do `Unknown`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum CodexLine {
+    /// Otwarcie rozmowy. `thread_id` jest uchwytem wznowienia [T1 §6.2].
+    #[serde(rename = "thread.started")]
+    ThreadStarted { thread_id: Option<String> },
+    /// Tura ruszyła. T2 §9.3 stawia przy tej linii myślnik — nic z niej nie wynika.
+    #[serde(rename = "turn.started")]
+    TurnStarted {},
+    /// Tura skończyła się sama. Jedyna linia, która niesie zużycie kontekstu.
+    #[serde(rename = "turn.completed")]
+    TurnCompleted {
+        #[serde(default, deserialize_with = "lenient")]
+        usage: Option<Usage>,
+    },
+    /// Turę zamknął błąd — kształt z prawdziwego biegu [T1 §6.2].
+    #[serde(rename = "turn.failed")]
+    TurnFailed {
+        #[serde(default, deserialize_with = "lenient")]
+        error: Option<WireError>,
+    },
+    /// Czynność się zaczęła.
+    #[serde(rename = "item.started")]
+    ItemStarted {
+        #[serde(default, deserialize_with = "lenient")]
+        item: Option<Item>,
+    },
+    /// Czynność trwa.
+    ///
+    /// Świadomie **bez treści**: żywy licznik czasu dla `command_execution` jest poza zakresem
+    /// T-10 [T2 §12 pytanie 3], więc poprawnym mapowaniem jest zero zdarzeń, a nie drugi
+    /// `ToolStart`. Wariant istnieje mimo to, bo bez niego ta linia byłaby **nieznanym typem**
+    /// i wpadłaby do licznika porzuconych — a korekta 9 w T1 potwierdza, że ten typ istnieje.
+    #[serde(rename = "item.updated")]
+    ItemUpdated {},
+    /// Czynność się skończyła.
+    #[serde(rename = "item.completed")]
+    ItemCompleted {
+        #[serde(default, deserialize_with = "lenient")]
+        item: Option<Item>,
+    },
+    /// Skarga vendora w środku tury. Nie kończy jej — turę zamyka `turn.completed` albo
+    /// `turn.failed` [T1 §8.5].
+    ///
+    /// `rename` stoi tu, choć nazwa z drutu jest jednym słowem, i **nie jest ozdobą**: bez niego
+    /// serde szuka wariantu `"Error"`, linia `{"type":"error",…}` wpada w `Unknown`, a jedyne
+    /// zdanie mówiące, co się stało, znika po cichu. Zmierzone na złotym pliku 2026-08-19 — dwie
+    /// uwagi zamieniły się w jedną, a bieg wyglądał normalnie.
+    #[serde(rename = "error")]
+    Error { message: Option<String> },
+    /// Wszystko, czego jeszcze nie znamy.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Zużycie kontekstu z `turn.completed` [T1 §6.2].
+///
+/// Czego tu **nie ma**: `cost_usd`. Codex go nie podaje, a szacowanie z tokenów jest świadomie
+/// poza zakresem — cennik w kodzie byłby trzecim miejscem, w którym trzeba go aktualizować.
+#[derive(Debug, Deserialize)]
+struct Usage {
+    #[serde(rename = "input_tokens")]
+    input: Option<u64>,
+    /// Ta liczba, i tylko ta, mówi, czy izolacja kontekstu w ogóle działa [T1 §3.3].
+    #[serde(rename = "cached_input_tokens")]
+    cached: Option<u64>,
+    #[serde(rename = "output_tokens")]
+    output: Option<u64>,
+}
+
+/// Koperta błędu z `turn.failed`. Zdanie w środku jest już napisane po angielsku i to ono
+/// odpowiada na pytanie „dlaczego", które ktoś zaraz zada.
+#[derive(Debug, Deserialize)]
+struct WireError {
+    message: Option<String>,
+}
+
+/// Czynność wewnątrz tury **[3p] 2026-08-19**.
+///
+/// Nazwy typów i pól pochodzą z T1 §6.2 (lista wydobyta z binarki 0.147.0) i z tabeli T2 §9.3,
+/// czyli ze źródła trzeciej strony potwierdzonego dokumentacją — **nie z prawdziwego biegu**.
+/// Złoty plik ze spike'u S-3 nie dotyka ani jednego z tych typów, bo tamten bieg wpadł w limit
+/// konta, zanim agent cokolwiek zrobił. Kiedy S-3 nagra prawdziwą turę, ten komentarz znika
+/// razem z niepewnością, a nie sam.
+///
+/// `Option<T>` na **każdym** polu, łącznie z `exit_code`: pierwszy `command_execution` w stanie
+/// `in_progress` nie ma go jeszcze, a `i32` w tym miejscu przewraca całą turę (niezmiennik 5).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Item {
+    /// Komenda w powłoce: `command`, `aggregated_output`, `exit_code`.
+    CommandExecution {
+        id: Option<String>,
+        command: Option<String>,
+        exit_code: Option<i32>,
+        aggregated_output: Option<String>,
+    },
+    /// Zmiana plików — **lista**, nie jeden plik.
+    FileChange {
+        #[serde(default, deserialize_with = "lenient")]
+        changes: Option<Vec<Change>>,
+    },
+    /// Proza agenta, dosłownie.
+    AgentMessage { text: Option<String> },
+    /// Agent myśli. Treści **nie czytamy**: myślenie nie wchodzi do historii
+    /// [`docs/ARCHITECTURE.md` §6, reguła 5].
+    Reasoning {},
+    /// Szukanie w sieci.
+    WebSearch {
+        id: Option<String>,
+        query: Option<String>,
+    },
+    /// Czynność w podłączonej aplikacji.
+    McpToolCall {
+        id: Option<String>,
+        server: Option<String>,
+        tool: Option<String>,
+    },
+    /// Typ, którego nie znamy — a przybywa ich co tydzień, po cichu.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Jedna pozycja z `file_change.changes[]`.
+///
+/// `kind` (`add` / `modify` / `delete`) tu **nie wchodzi**, bo nikt go nie czyta: rodzaj zmiany
+/// jest faktem dla kuracji, a ta należy do T-05 i dostaje go z tej samej linii drutu. Pole bez
+/// czytelnika jest zakazane (niezmiennik 21).
+#[derive(Debug, Deserialize)]
+struct Change {
+    path: Option<String>,
+}
+
 /// Dekoder jednego strumienia Codeksa: linia tekstu → zero lub więcej [`AgentEvent`].
 ///
 /// **`push` nie zwraca `Result` i to jest cały niezmiennik 5 w jednej sygnaturze.** Cicha wersja
@@ -170,6 +342,15 @@ pub struct CodexDecoder {
     /// Ile linii dekoder porzucił: nie zrozumiał ich albo nic z nich nie wynikało. Liczba idzie
     /// do pliku debug i do zgłoszenia błędu, a nie do przerwania tury (niezmiennik 5).
     dropped: usize,
+    /// Ostatni `thread_id`, jaki ogłosił ten strumień. Uchwyt wznowienia i podpis pod wynikiem
+    /// tury [T1 §6.2].
+    thread: Option<String>,
+    /// Czy któraś linia zamknęła już turę. Po tym poznaje [`Self::end_of_stream`], że nie ma
+    /// czego domykać — i to jest cała obrona przed drugim `Finished`.
+    ended: bool,
+    /// Ostatnia proza agenta, czyli to, co krok przekazuje dalej. Zbierana po drodze, bo
+    /// `turn.completed` jej **nie powtarza** — inaczej niż linia `result` u Claude'a.
+    said: String,
 }
 
 impl CodexDecoder {
@@ -185,24 +366,357 @@ impl CodexDecoder {
     /// `thread.started` (zapamiętanie identyfikatora, bez zdarzenia), `turn.started` i każdy typ,
     /// którego jeszcze nie znamy.
     ///
-    /// # SZKIELET (2026-08-19)
+    /// # Co wpada do licznika porzuconych, a co nie
     ///
-    /// Zawsze pusto. Kryterium o złotym pliku pada na `assert!(!events.is_empty())`, a kryterium
-    /// o śmieciach — na ostatniej linii, tej, która dowodzi, że strumień **przeżył**: prawdziwe
-    /// `agent_message` po sześciu śmieciach ma dać dokładnie jeden `Said`, a tu nie daje żadnego.
-    pub fn push(&mut self, _line: &str) -> Vec<AgentEvent> {
-        Vec::new()
+    /// Licznik odpowiada na jedno pytanie: **ile razy strumień powiedział coś, z czego nic nie
+    /// wynikło**. Wpadają więc: nie-JSON, ucięta linia, pusta linia, nieznany typ najwyższego
+    /// poziomu, nieznany typ czynności i znana czynność bez pól, z których dałoby się cokolwiek
+    /// zbudować. Nie wpadają trzy linie, które są **rozpoznane i celowo nieme**:
+    /// `thread.started` (uczy nas identyfikatora), `turn.started` i `item.updated`. Liczenie ich
+    /// zrobiłoby z tej liczby stałą — każdy zdrowy bieg miałby ją niezerową, a wtedy przestaje
+    /// odróżniać zdrowy bieg od dziury.
+    ///
+    /// To jest inna umowa niż `ClaudeDecoder::unparsed`, gdzie nieznany `type` jest ROZPOZNANY
+    /// i nieliczony. Różnica jest świadoma i wynika z różnicy strumieni: Claude wysyła kilka
+    /// typów, których i tak nigdy nie pokazujemy, a Codex wysyła prawie wyłącznie rzeczy, które
+    /// mają trafić na ekran — więc u niego nieznany typ to naprawdę zgubiona treść.
+    pub fn push(&mut self, line: &str) -> Vec<AgentEvent> {
+        let line = line.trim();
+        if line.is_empty() {
+            self.dropped += 1;
+            return Vec::new();
+        }
+
+        let parsed = match serde_json::from_str::<CodexLine>(line) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.dropped += 1;
+                // Treści linii tu nie ma, i to jest świadome: surowy strumień leży już na dysku
+                // (tee z T-05), a dziennik aplikacji czyta się w zgłoszeniu błędu — nie ma
+                // powodu, żeby druga kopia cudzego tekstu jechała jeszcze tędy.
+                tracing::debug!(
+                    bytes = line.len(),
+                    %error,
+                    "a line of the agent stream could not be read; dropping it"
+                );
+                return Vec::new();
+            }
+        };
+
+        // Całe mapowanie linia → zdarzenia stoi w JEDNYM match: to jest ta lista, którą czyta
+        // się, pytając „co ten sterownik w ogóle rozumie".
+        let events = match parsed {
+            CodexLine::ThreadStarted { thread_id } => {
+                let id = thread_id.filter(|id| !id.trim().is_empty());
+                let Some(id) = id else {
+                    // Otwarcie rozmowy bez uchwytu wznowienia jest linią, z której naprawdę nic
+                    // nie wynika — i to jest dokładnie ten przypadek, dla którego licznik istnieje.
+                    self.dropped += 1;
+                    return Vec::new();
+                };
+                self.thread = Some(id);
+                return Vec::new();
+            }
+            // Rozpoznane i celowo nieme (powód w całości wyżej).
+            CodexLine::TurnStarted {} | CodexLine::ItemUpdated {} => return Vec::new(),
+            CodexLine::ItemStarted { item } => item.map(Self::begun).unwrap_or_default(),
+            CodexLine::ItemCompleted { item } => {
+                item.map(|item| self.completed(item)).unwrap_or_default()
+            }
+            CodexLine::TurnCompleted { usage } => vec![self.finish(usage.as_ref())],
+            CodexLine::TurnFailed { error } => self.failed(error.and_then(|error| error.message)),
+            // Skarga nie kończy tury: obie linie niosą problem na ekran (T2 §9.3 mapuje obie na
+            // `problem`), ale turę zamyka ta, która ją zamyka.
+            CodexLine::Error { message } => Self::notice(message),
+            CodexLine::Unknown => Vec::new(),
+        };
+
+        if events.is_empty() {
+            self.dropped += 1;
+        }
+        events
+    }
+
+    /// `item.started` → zapowiedź czynności, albo cisza.
+    ///
+    /// Cisza dla prozy i myślenia: one **są** dopiero wtedy, gdy się skończą, a wiersz otwarty na
+    /// zapowiedź zdania zostałby otwarty na zawsze.
+    fn begun(item: Item) -> Vec<AgentEvent> {
+        match item {
+            Item::CommandExecution { id, command, .. } => {
+                Self::tool_start(id, command_label(command.as_deref()))
+            }
+            Item::WebSearch { id, query } => Self::tool_start(id, search_label(query.as_deref())),
+            Item::McpToolCall {
+                id, server, tool, ..
+            } => Self::tool_start(id, app_label(server.as_deref(), tool.as_deref())),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `item.completed` → to, co z tej czynności zostało.
+    fn completed(&mut self, item: Item) -> Vec<AgentEvent> {
+        match item {
+            // `ok` bierze się z `exit_code` i **znikąd indziej**: komenda, która wyszła jedynką,
+            // ma się czytać jako nieudana, inaczej transkrypt mówi, że krok przebiegł czysto,
+            // podczas gdy budowanie było zepsute. Bez kodu wyjścia nie ma z czego zbudować `ok`,
+            // więc poprawną odpowiedzią jest cisza, a nie zmyślony sukces.
+            Item::CommandExecution {
+                id,
+                exit_code,
+                aggregated_output,
+                ..
+            } => match (id.filter(|id| !id.is_empty()), exit_code) {
+                (Some(id), Some(code)) => vec![AgentEvent::ToolEnd {
+                    id,
+                    ok: code == 0,
+                    summary: first_line(aggregated_output.as_deref().unwrap_or_default()),
+                }],
+                _ => Vec::new(),
+            },
+            // Po jednym zdarzeniu na pozycję listy: jedno na całą czynność powiedziałoby
+            // człowiekowi, że zmienił się jeden plik, podczas gdy zmieniły się dwa.
+            Item::FileChange { changes } => changes
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|change| change.path)
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| AgentEvent::FileEdit { path: path.into() })
+                .collect(),
+            Item::AgentMessage { text } => {
+                let text = text.unwrap_or_default();
+                if text.trim().is_empty() {
+                    return Vec::new();
+                }
+                // Ostatnia wypowiedź jest tym, co krok przekazuje dalej — a `turn.completed`
+                // jej nie powtarza, więc jedyne miejsce, w którym da się ją złapać, jest tutaj.
+                self.said.clone_from(&text);
+                vec![AgentEvent::Said { text }]
+            }
+            Item::Reasoning {} => vec![AgentEvent::Thinking],
+            // Ani szukanie, ani podłączona aplikacja nie mają kodu wyjścia: zakończyły się, więc
+            // się udały. Wymaganie tu `exit_code` skasowałoby oba wiersze z transkryptu.
+            Item::WebSearch { id, query } => {
+                Self::tool_end(id, first_line(query.as_deref().unwrap_or_default()))
+            }
+            Item::McpToolCall { id, server, tool } => {
+                Self::tool_end(id, app_label(server.as_deref(), tool.as_deref()))
+            }
+            Item::Unknown => Vec::new(),
+        }
+    }
+
+    /// Zapowiedź czynności — bez identyfikatora nie ma czego zapowiedzieć, bo to po nim
+    /// [`AgentEvent::ToolEnd`] trafia do swojej linii.
+    fn tool_start(id: Option<String>, label: String) -> Vec<AgentEvent> {
+        match id.filter(|id| !id.is_empty()) {
+            Some(id) => vec![AgentEvent::ToolStart { id, label }],
+            None => Vec::new(),
+        }
+    }
+
+    /// Koniec czynności, która nie ma kodu wyjścia.
+    fn tool_end(id: Option<String>, summary: String) -> Vec<AgentEvent> {
+        match id.filter(|id| !id.is_empty()) {
+            Some(id) => vec![AgentEvent::ToolEnd {
+                id,
+                ok: true,
+                summary,
+            }],
+            None => Vec::new(),
+        }
+    }
+
+    /// Skarga vendora → uwaga na ekran, dosłownie tym zdaniem, które napisał.
+    ///
+    /// To jedyna rzecz, która mówi czytającemu, że chodziło o limit kredytów i kiedy wraca —
+    /// przepisanie tego własnymi słowami skasowałoby datę i adres.
+    fn notice(message: Option<String>) -> Vec<AgentEvent> {
+        match message.filter(|text| !text.trim().is_empty()) {
+            Some(text) => vec![AgentEvent::Notice { text }],
+            None => Vec::new(),
+        }
+    }
+
+    /// `turn.completed` → koniec tury, która się udała.
+    fn finish(&mut self, usage: Option<&Usage>) -> AgentEvent {
+        self.ended = true;
+        AgentEvent::Finished(Outcome {
+            ok: true,
+            reason: FinishReason::Completed,
+            text: self.said.clone(),
+            // `None`, nie zero, i to jest cała różnica: Codex kosztu nie podaje, a `Some(0.0)`
+            // wypisze na ekranie `$0.00` i nauczy człowieka, że Codex jest darmowy — po czym ta
+            // liczba zsumuje się w rachunek, którego nikt nie zamawiał.
+            cost_usd: None,
+            tokens: Tokens {
+                input: usage.and_then(|usage| usage.input).unwrap_or_default(),
+                output: usage.and_then(|usage| usage.output).unwrap_or_default(),
+                cached: usage.and_then(|usage| usage.cached).unwrap_or_default(),
+            },
+            // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
+            // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
+            turns: 1,
+            // Vendor nie mówi, ile to trwało. Zero jest tu uczciwe tylko dlatego, że wypełnia to
+            // pole zmierzonym czasem sterownik, w [`pump`] — dekoder zegara nie ma i mieć nie ma
+            // po co (2026-08-19).
+            took: Duration::ZERO,
+            session: self.session_ref(),
+        })
+    }
+
+    /// `turn.failed` → uwaga **i** koniec tury.
+    ///
+    /// Dwa zdarzenia z jednej linii, nie dwa `Finished`: problem ma dojść na ekran, a turę zamyka
+    /// się raz (AC-5, niezmiennik 13 czytany od strony szyny).
+    fn failed(&mut self, message: Option<String>) -> Vec<AgentEvent> {
+        self.ended = true;
+        let said = message.filter(|text| !text.trim().is_empty());
+        let why = said.clone().unwrap_or_else(|| {
+            "The agent stopped before it finished its turn, and said nothing about why.".to_owned()
+        });
+
+        let mut events = Self::notice(said);
+        events.push(AgentEvent::Finished(Outcome {
+            ok: false,
+            // Zdanie vendora jedzie CAŁE, nieprzycięte: to ono niesie datę i adres, pod którym
+            // limit wraca, a przycięte do jednej linijki traci dokładnie tę połowę.
+            reason: FinishReason::Failed(why),
+            text: self.said.clone(),
+            cost_usd: None,
+            tokens: Tokens::default(),
+            turns: 1,
+            took: Duration::ZERO,
+            session: self.session_ref(),
+        }));
+        events
+    }
+
+    /// Sesja tej rozmowy. Pusty identyfikator znaczy „`thread.started` jeszcze nie przyszło",
+    /// a nie „nie ma sesji".
+    fn session_ref(&self) -> SessionRef {
+        SessionRef {
+            vendor: VENDOR,
+            id: self.thread.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Identyfikator wątku, który ten strumień ogłosił jako ostatni.
+    ///
+    /// Czyta to [`pump`] i **nikt poza nim** (niezmiennik 21): to stąd bierze się jeden wpis na
+    /// turę w [`CodexHandle::threads_seen`], czyli różnica między „widzieliśmy dwa identyfikatory
+    /// i pamiętamy oba" a „drugi nadpisał pierwszy".
+    #[must_use]
+    pub fn thread(&self) -> Option<&str> {
+        self.thread.as_deref()
     }
 
     /// Ile linii dekoder porzucił.
-    ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Zawsze zero, więc kryterium o śmieciach pada także na przyroście licznika: sześć linii,
-    /// których nie da się przeczytać, ma zostawić po sobie sześć wpisów, a nie ciszę.
     #[must_use]
     pub fn dropped(&self) -> usize {
         self.dropped
+    }
+
+    /// Domyka turę, kiedy strumień się skończył.
+    ///
+    /// Zwraca [`AgentEvent::Finished`] **tylko** wtedy, gdy linia zamykająca nie przyszła — bo
+    /// wtedy nikt inny go nie wypuści, a krok bez zdarzenia końca wisiałby w `running` do końca
+    /// biegu. Strumień zakończony kodem 0 bez `turn.completed` jest **niepowodzeniem**, nie
+    /// sukcesem: wyjście procesu jest sygnałem wtórnym [T1 §8.5], a agent, który wyszedł czysto
+    /// i nie powiedział, co zrobił, nie ma czego przekazać dalej.
+    ///
+    /// `cancelled` przychodzi **argumentem**, z generacji trzymanej przez uchwyt, a nie z
+    /// globalnego znacznika: to jest ta sama różnica, o której mówi niezmiennik 7, tylko widziana
+    /// od strony dekodera. Anulowanie jest wtedy WARTOŚCIĄ ([`FinishReason::Cancelled`]),
+    /// a nie błędem, więc „człowiek nacisnął Stop" nie ląduje w tej samej gałęzi co „padło
+    /// połączenie".
+    ///
+    /// Kodu wyjścia tu nie ma i nie da się go tu mieć: uchwyt procesu został przy sterowniku,
+    /// a ta ścieżka biegnie na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Zdanie niesie
+    /// więc pierwszą linię skargi — i to ona odpowiada na „dlaczego" w praktycznie każdym realnym
+    /// przypadku.
+    pub fn end_of_stream(&mut self, cancelled: bool, complaint: &str) -> Option<AgentEvent> {
+        if self.ended {
+            return None;
+        }
+        self.ended = true;
+
+        let reason = if cancelled {
+            FinishReason::Cancelled
+        } else {
+            let mut why = "The agent stopped without ever finishing its turn.".to_owned();
+            if let Some(first) = complaint
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+            {
+                why.push(' ');
+                why.push_str(&first_line(first));
+            }
+            FinishReason::Failed(why)
+        };
+
+        Some(AgentEvent::Finished(Outcome {
+            ok: false,
+            reason,
+            text: self.said.clone(),
+            cost_usd: None,
+            tokens: Tokens::default(),
+            turns: 0,
+            took: Duration::ZERO,
+            session: self.session_ref(),
+        }))
+    }
+}
+
+/// Ile znaków wolno mieć jednolinijkowemu podsumowaniu, zanim zostanie przycięte. Pełne wyjście
+/// i tak zostaje za kliknięciem — to jest linia w wierszu, nie dokument.
+const SUMMARY_LIMIT: usize = 120;
+
+/// Pierwsza niepusta linia, przycięta do długości, która mieści się w wierszu.
+///
+/// Bliźniak z `claude.rs`, z tego samego powodu co [`lenient`]: wspólne miejsce dla obu jest
+/// w `drivers/mod.rs`, którego ten task nie posiada.
+fn first_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    if line.chars().count() > SUMMARY_LIMIT {
+        line.chars().take(SUMMARY_LIMIT).collect::<String>() + "…"
+    } else {
+        line.to_owned()
+    }
+}
+
+/// Etykieta komendy: sama komenda, bo to ona jest tym, co człowiek chce zobaczyć.
+fn command_label(command: Option<&str>) -> String {
+    match command.map(str::trim).filter(|command| !command.is_empty()) {
+        Some(command) => first_line(command),
+        None => "Running a command".to_owned(),
+    }
+}
+
+/// Etykieta szukania w sieci.
+fn search_label(query: Option<&str>) -> String {
+    match query.map(str::trim).filter(|query| !query.is_empty()) {
+        Some(query) => format!("Searching for {}", first_line(query)),
+        None => "Searching the web".to_owned(),
+    }
+}
+
+/// Etykieta czynności w podłączonej aplikacji.
+///
+/// Zdanie po ludzku, nigdy nazwa z drutu (niezmiennik 14): „Asking notion to search" mówi
+/// czytającemu, co się dzieje, a `mcp_tool_call` nie mówi nic nikomu poza nami.
+fn app_label(server: Option<&str>, tool: Option<&str>) -> String {
+    let server = server.map(str::trim).filter(|name| !name.is_empty());
+    let tool = tool.map(str::trim).filter(|name| !name.is_empty());
+    match (server, tool) {
+        (Some(server), Some(tool)) => format!("Asking {server} to {tool}"),
+        (Some(server), None) => format!("Asking {server}"),
+        _ => "Working".to_owned(),
     }
 }
 
