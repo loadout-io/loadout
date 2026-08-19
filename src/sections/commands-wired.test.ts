@@ -274,6 +274,27 @@ const WIRES: readonly Wire[] = [
     given: [AUTHORED],
     call: () => skills.authorSkill(AUTHORED),
   },
+  /* 2026-08-19 (T-43) — TRZECIA DROGA WEJŚCIA DO UMIEJĘTNOŚCI, dopisana, nic nie usunięte.
+   * Adres i formularz przyjmują wyłącznie GOTOWY tekst; te dwie krawędzie są jedyną drogą,
+   * którą zdanie człowieka zamienia się w tekst od modelu, i jedyną, która potem tego modela
+   * zatrzymuje. Bez wiersza tutaj `stopWriting` byłaby funkcją, której nikt nigdy nie zobaczył
+   * docierającej do Rusta — a to jest ta jedna krawędź w tej sekcji, której cisza kosztuje
+   * pieniądze: proces vendora pisze dalej i dalej pali limit dostawcy (niezmienniki 6 i 10). */
+  {
+    where: 'skills',
+    what: 'askAnAgent',
+    command: 'draft_skill',
+    given: ['Something that reads a change and says what to fix first.', AGENT_ID],
+    call: () =>
+      skills.askAnAgent('Something that reads a change and says what to fix first.', AGENT_ID),
+  },
+  {
+    where: 'skills',
+    what: 'stopWriting',
+    command: 'stop_draft',
+    given: [],
+    call: () => skills.stopWriting(),
+  },
   /* 2026-08-18 — SIEDEM KRAWĘDZI BIEGU I ZAKRESU, i to jest domknięcie luki, którą ten plik
    * sam nazywał: `EDGES` obejmowało cztery sekcje, a Bieg — jedyna sekcja, która URUCHAMIA
    * agentów — nie miał tu ani jednego wiersza. Cztery jego krawędzie (`start`, `stop`,

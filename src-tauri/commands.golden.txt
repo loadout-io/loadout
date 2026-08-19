@@ -20,6 +20,7 @@ delete_agent
 delete_skill
 delete_workflow
 delete_workspace
+draft_skill
 install_skill
 list_agents
 list_handoffs
@@ -38,5 +39,6 @@ save_workflow
 save_workspace
 say_to_agent
 say_to_orchestrator
+stop_draft
 stop_run
 stop_using_note

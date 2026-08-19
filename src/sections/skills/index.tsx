@@ -90,6 +90,12 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
    * Pusta tablica zależności: sekcja pyta RAZ na zamontowanie, a nie na każdy render. */
   useEffect(() => {
     void store.getState().load();
+    /* DRUGI ODCZYT, DRUGIE PYTANIE. „Co leży w katalogach agentów" i „kogo mam zapisanych" to
+     * dwa różne fakty i dwie różne komendy; bez tego wiersza wybór w trzecim wejściu byłby
+     * pusty na każdej maszynie, czyli kontrolką, której nie da się użyć (niezmiennik 16).
+     * Osobna akcja, a nie jedno wywołanie w `load()`: liczbę pytań tamtej ścieżki zamraża
+     * `src/sections/read-paths-populate.test.ts`. */
+    void store.getState().loadAgents();
   }, [store]);
   /* Co człowiek wpisał w panelu dodawania — adres ALBO trzy odpowiedzi. `null` znaczy, że
    * panel jest zamknięty: jedno miejsce na to pytanie (niezmiennik 13), a nie osobna flaga
@@ -248,17 +254,115 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
               </button>
             </form>
 
-            {/* Wyjście z panelu jest jedno, bo panel jest jeden. Po jednym „Cancel" na wejście
-                człowiek musiałby wiedzieć, które z dwóch właśnie zamyka. */}
-            <button
-              type="button"
-              className={`mr-auto ${SECONDARY}`}
-              onClick={() => {
-                store.getState().closeAdd();
+            {/* TRZECIE WEJŚCIE: jedno zdanie człowieka i wybór tego, kto ma to napisać.
+                W TYM SAMYM panelu, co adres i formularz — „dodaj umiejętność" jest jedną
+                decyzją z trzema odpowiedziami, a nie trzema decyzjami (niezmiennik 13).
+
+                2026-08-19 — do tego dnia OBIE istniejące drogi wymagały, żeby człowiek napisał
+                treść sam: adres przyjmuje gotowy plik, formularz gotowe trzy odpowiedzi. Loadout
+                miał przy tym dwa sterowniki agentów, żywy nadzór i dowód śmierci grupy — i ani
+                jednej drogi, która zamienia zdanie człowieka w tekst od modelu.
+
+                DRAFT NIE JEST ZAPISEM. Trzy pola lądują w formularzu wyżej, edytowalne, i to
+                człowiek oddaje je dalej. Tekst poprawiony po drafcie przechodzi przez ten sam
+                skan, co wpisany od zera (niezmiennik 23) — a tekst przeskanowany przed poprawką
+                jest tekstem, którego nikt nie przeskanował.
+
+                NAZWY VENDORÓW TU NIE MA I MIEĆ NIE MOŻE. Pozycje wyboru pochodzą z magazynu,
+                czyli z dysku; informacja o tym, którym narzędziem biegnie agent, mieszka
+                w jego zapisanej definicji po tamtej stronie granicy (`runsWith`), a każde
+                zdanie o vendorze w tej sekcji byłoby zdaniem o czymś, czego nikt tu nie wie
+                (`mounted.test.tsx` zamraża brak tych nazw w tym markupie). */}
+            <form
+              className="flex flex-col gap-2 border-t border-line pt-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void store.getState().askAnAgent();
               }}
             >
-              Cancel
-            </button>
+              <div className={ROW}>
+                <label htmlFor="skill-what-you-want" className={LABEL}>
+                  Or say what you want, and an agent writes it
+                </label>
+                <input
+                  id="skill-what-you-want"
+                  data-what-you-want
+                  className={ANSWER}
+                  value={state.want}
+                  onChange={(event) => {
+                    store.getState().sayWhatYouWant(event.target.value);
+                  }}
+                />
+              </div>
+
+              <div className={ROW}>
+                <label htmlFor="skill-who-writes-it" className={LABEL}>
+                  Who should write it?
+                </label>
+                {/* Pozycją jest `id`, a widać nazwę: nazwa jest jedyną częścią zapisanego
+                    agenta, którą człowiek rozpoznaje, a `id` jedyną, która przeżywa zmianę
+                    nazwy (T4 §5.1) — i to ona jedzie do Rusta. */}
+                <select
+                  id="skill-who-writes-it"
+                  data-pick-an-agent
+                  className={ANSWER}
+                  value={state.chosenAgent}
+                  onChange={(event) => {
+                    store.getState().chooseAgent(event.target.value);
+                  }}
+                >
+                  {state.agents.map((agent) => (
+                    <option key={agent.id} data-agent={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* PODMIANA KONTROLKI, dokładnie ta sama, którą robią Start i Stop w sekcji Praca
+                  (`run/start.tsx`). „Napisz mi to" zostawione obok stanu „pisze" jest drugą turą
+                  za drugie naciśnięcie, przy pierwszej, która dalej biegnie i dalej kosztuje.
+                  Animacji nie ma żadnej: jedyna w aplikacji to kropka żywej karty (DESIGN §7). */}
+              {state.writing ? (
+                <>
+                  <p data-writing className="text-body text-muted">
+                    An agent is writing this skill now.
+                  </p>
+                  <button
+                    type="button"
+                    data-stop-writing
+                    className={`mt-1 mr-auto ${DANGER}`}
+                    onClick={() => {
+                      void store.getState().stopWriting();
+                    }}
+                  >
+                    Stop
+                  </button>
+                </>
+              ) : (
+                <button type="submit" data-ask-an-agent className={`mt-1 mr-auto ${SECONDARY}`}>
+                  Write it for me
+                </button>
+              )}
+            </form>
+
+            {/* Wyjście z panelu jest jedno, bo panel jest jeden. Po jednym „Cancel" na wejście
+                człowiek musiałby wiedzieć, które z trzech właśnie zamyka.
+
+                W stanie „pisze" go NIE MA, i to jest ta sama podmiana, co wyżej: panel zamknięty
+                w trakcie pisania zabiera ze sobą jedyną kontrolkę, która umie tego agenta
+                zatrzymać, a agent pisze dalej i dalej kosztuje (niezmienniki 6 i 16). */}
+            {state.writing ? null : (
+              <button
+                type="button"
+                className={`mr-auto ${SECONDARY}`}
+                onClick={() => {
+                  store.getState().closeAdd();
+                }}
+              >
+                Cancel
+              </button>
+            )}
           </div>
         )}
 

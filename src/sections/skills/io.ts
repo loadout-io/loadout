@@ -58,6 +58,36 @@ export function authorSkill(authored: Authored): Promise<Import> {
 }
 
 /**
+ * Jedno zdanie człowieka → trzy pola napisane przez agenta, którego wybrał.
+ *
+ * 2026-08-19 — trzecie wejście do tej sekcji. Adres i formularz wymagały, żeby człowiek napisał
+ * treść sam; ta droga zamienia jedno zdanie w tekst od modelu, który człowiek CZYTA przed
+ * zapisem. Nic tu nie zapisuje: trzy pola lądują w formularzu z T-42 i dopiero `authorSkill`
+ * składa z nich plik, skanuje go i odkłada kopię kanoniczną (niezmiennik 23).
+ *
+ * `null` znaczy „człowiek to zatrzymał" i jest **wartością**, nie odmową (niezmiennik 7): po niej
+ * gaśnie stan „pisze" i nie ma ani draftu, ani zdania o awarii.
+ *
+ * Jedzie `id` wybranego agenta, nie jego nazwa i nie nazwa vendora: model, prompt systemowy
+ * i dial bezpieczeństwa liczy Rust z zapisanej definicji, a nazwy vendorów nie ma prawa być
+ * w tej sekcji ani na ekranie, ani w kodzie (`mounted.test.tsx` zamraża ich brak w markupie).
+ */
+export function askAnAgent(want: string, agent: string): Promise<Authored | null> {
+  return invoke<Authored | null>('draft_skill', { want, agent });
+}
+
+/**
+ * „Stop" dla draftu: zatrzymaj agenta, który pisze umiejętność.
+ *
+ * Bez argumentów, bo draft jest jeden naraz — a uchwyt do tego, który pisze teraz, mieszka po
+ * tamtej stronie granicy. Osobna komenda od `stop` w sekcji Praca: jedna na oba znaczyłaby, że
+ * Stop tutaj ubija bieg w sąsiedniej karcie.
+ */
+export function stopWriting(): Promise<void> {
+  return invoke<void>('stop_draft');
+}
+
+/**
  * Zapisz przejrzaną umiejętność w katalogach vendorów.
  *
  * Jedzie CAŁY przegląd, nie samo ciało: na dysk ma trafić dokładnie ten tekst, który został

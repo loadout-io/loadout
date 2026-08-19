@@ -112,6 +112,8 @@ mod skeleton_group_death;
 mod skeleton_two_real_agents;
 mod skills_author_origin;
 mod skills_author_pipeline;
+mod skills_draft_asks_an_agent;
+mod skills_draft_stops_dead;
 mod skills_ingest_clean;
 mod skills_ingest_fetch_policy;
 mod skills_ingest_injection;

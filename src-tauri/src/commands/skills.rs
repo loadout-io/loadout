@@ -23,9 +23,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
+use crate::commands::Drivers;
+use crate::engine::drivers::{
+    AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome, Policy, RunSpec,
+};
+use crate::engine::supervisor::GroupProof;
+use crate::library::agents::{Agent, Overrides, resolve};
 use crate::skills::ingest::{
     self, FILE_CAP, FetchError, Finding, Import, Reviewed, Target, Verdict, Weight,
 };
@@ -795,5 +806,524 @@ pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
         crate::skills::place::Removed::Skipped { path, why } => Err(Error::Invalid {
             messages: vec![format!("{why} ({}). Nothing was removed.", path.display())],
         }),
+    }
+}
+
+// ── Draft: jedna tura POZA grafem ──────────────────────────────────────────────────────────
+//
+// Umiejętność, której człowiek chce, nie jest biegiem: to jedna tura, jeden prompt, jedna
+// odpowiedź. Droga prowadzi więc przez [`crate::engine::drivers::AgentDriver::start`], a nie
+// przez planistę — złożenie jednokrokowego workflow po to, żeby zawołać planistę, **jest**
+// etapem biegu zaszytym w Ruście, czyli dokładnie tym, czego zabrania niezmiennik 27
+// i decyzja D7. Warstwa sterowników nie zna słowa „krok" i to jest cały powód, dla którego
+// ta droga jest od tego wolna z definicji.
+
+/// Czego chcemy od modelu, słowo w słowo — prompt jako **dane** w tej warstwie (precedens:
+/// `HANDOFF_INDEX_OPENS` i `with_the_task` w `commands::run`).
+///
+/// KRÓTKI Z ROZMYSŁU (niezmiennik 28). Poprawność draftu nie stoi na dokładności tej instrukcji:
+/// tekst i tak przechodzi przez `ingest::from_folder` tutaj i przez `place::validate_strict` po
+/// drodze z T-42, a człowiek czyta trzy pola przed zapisem. Akapit dopisywany po każdym słabym
+/// drafcie jest dokładnie tym, co niezmiennik 28 nazywa promptem rosnącym monotonicznie —
+/// i kosztuje tokeny w każdym pytaniu, na zawsze.
+///
+/// Po angielsku, jak wszystko, co czyta model i człowiek (decyzja D5). Kończy się dwukropkiem
+/// i nową linią, bo zaraz za nim staje zdanie człowieka.
+const ASK_FOR_A_SKILL: &str = "\
+Write one skill as a single SKILL.md file and say nothing else.
+Open it with a front matter block between --- lines carrying two keys: name, which is lowercase \
+words joined by hyphens, and description, which says WHEN somebody should reach for this skill.
+After the front matter, write what to do, as Markdown, in the second person.
+
+This is what the person asked for:
+";
+
+/// Odmowa dla drugiego pytania zadanego, kiedy pierwsze jeszcze pisze.
+///
+/// Zdanie, nie cisza: cisza po kontrolce wygląda dokładnie jak kontrolka zepsuta, a tutaj drugie
+/// naciśnięcie kosztowałoby drugą turę u dostawcy.
+const ALREADY_WRITING: &str =
+    "An agent is already writing a skill. Wait for that one to finish, or stop it first.";
+
+/// Zdanie o grupie, która nadal odpowiada na sygnał zerowy (niezmiennik 6).
+///
+/// Ta sama treść, którą mówi krok biegu w tym samym stanie (`commands::run`, `Ended::Stopped`):
+/// dwa różne zdania o jednym fakcie to dwa różne zgłoszenia błędu od tej samej osoby.
+const MAY_STILL_BE_RUNNING: &str =
+    "Loadout could not make sure this agent stopped, so it may still be running.";
+
+/// Odmowa dla biblioteki, w której nikogo jeszcze nie zapisano.
+const NOBODY_SAVED: &str =
+    "There is no agent saved on this machine, so there is nobody to ask. Save one first.";
+
+/// Ile zdarzeń mieści się w kanale draftu, zanim sterownik na nim stanie.
+///
+/// Ta sama liczba, co `EVENT_QUEUE` w `commands::run`, i celowo nie pożyczona: tamta jest
+/// prywatna, a pojemność buforu draftu nie jest tym samym faktem co pojemność buforu biegu —
+/// tutaj nikt tych linii nie czyta, więc liczba decyduje wyłącznie o tym, jak często drenaż
+/// budzi się przy zalewie.
+const EVENT_QUEUE: usize = 256;
+
+/// Podkatalogi katalogu roboczego draftu: gdzie pracowała tura i gdzie stanął jej tekst.
+const ASKED_IN: &str = "asked";
+const ANSWERED_IN: &str = "answered";
+
+/// Czym skończyło się jedno pytanie zadane agentowi.
+///
+/// **Anulowanie jest wariantem wartości, nigdy błędem** (niezmiennik 7): `Err(Cancelled)`
+/// zmusza każdego wołającego do rozróżniania „to się nie udało" od „to zatrzymał człowiek",
+/// a rozróżnienie zgubione raz jest zgubione wszędzie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftOutcome {
+    /// Model oddał umiejętność: trzy pola, gotowe do formularza z T-42. Zapisu tu nie ma
+    /// i mieć nie będzie — droga zapisu jest jedna ([`author_skill_inner`]) i to ona składa
+    /// plik, skanuje go i odkłada kopię kanoniczną (niezmiennik 23).
+    Wrote(Authored),
+    /// Człowiek zatrzymał pisanie.
+    Cancelled,
+}
+
+/// Miejsce na JEDEN draft naraz i uchwyt do tego, który pisze teraz.
+///
+/// # Dlaczego jeden naraz, a nie „ile naraz" z suwaka
+///
+/// Bo tej liczby nie ma z czego wziąć. Limit równoległości jest dziś **per bieg**, nie globalny:
+/// `run_workflow_inner` zakłada sobie własny `Limiter`, a `run_workflow_with_slots` — jedyna
+/// funkcja przyjmująca wspólną pulę — nie ma w produkcji ani jednego wołającego. Draft
+/// udający, że bierze slot ze wspólnej puli, byłby czwartym miejscem, w którym ta liczba nie
+/// znaczy tego, co mówi. Granica jest więc własna i jawna: jeden, a drugie pytanie jest
+/// odmową ze zdaniem.
+#[derive(Debug, Default)]
+pub struct Drafting {
+    /// `Some` znaczy „ktoś właśnie pisze" i niesie token **tego** draftu.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): każde wzięcie tego
+    /// zamka mieści się w jednym wyrażeniu, które kopiuje token albo go odkłada i oddaje zamek.
+    /// Zamek trzymany przez turę zawiesiłby Stop na czas pisania przez model — czyli dokładnie
+    /// wtedy, kiedy Stop jest do czegokolwiek potrzebny.
+    ///
+    /// Token jest **własny**, a nie wzięty z `deps().control`, i to nie jest ostrożność na zapas:
+    /// `AppState.live` jest PODMIENIANY przy każdym Starcie (`AppState::begin_run`), więc draft
+    /// trzymający się tamtego uchwytu traci swój token w chwili, w której człowiek uruchomi bieg
+    /// w innej karcie — i Stop na drafcie przestaje cokolwiek robić.
+    writing: Mutex<Option<CancellationToken>>,
+}
+
+impl Drafting {
+    /// Miejsce, na którym nikt nie pisze.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// „Stop" z okna: zatrzymuje draft, który pisze teraz. Bez draftu nie robi nic.
+    ///
+    /// Dowód zejścia grupy **nie wraca tędy** i to jest wybór: [`GroupProof`] czyta tura
+    /// (`handle.cancel().await`), a niesie go odpowiedź [`draft_skill_inner`] — czyli to samo
+    /// wywołanie, na które okno już czeka. Druga droga na ten sam fakt byłaby drugim miejscem,
+    /// w którym mieszka odpowiedź „czy agent naprawdę zszedł" (niezmiennik 13).
+    ///
+    /// [`GroupProof`]: crate::engine::supervisor::GroupProof
+    pub fn stop(&self) {
+        // Zamek wzięty i oddany w JEDNYM wyrażeniu, przed czymkolwiek, co czeka (niezmiennik 8).
+        // Zatruty zamek odplatamy zamiast panikować: `panic!` w agentowym runtime zabiera cały
+        // bieg (AGENTS.md §4), a uchwyt po panice jednej tury jest dalej poprawnym uchwytem.
+        let token = self
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(token) = token {
+            token.cancel();
+        }
+    }
+
+    /// Zajmuje jedyne miejsce na draft. `None` znaczy „ktoś już pisze".
+    ///
+    /// Odmowa mieszka TUTAJ, a nie w widoku, i to jest ta sama decyzja, którą ma magazyn sekcji
+    /// (`src/state/skills.ts`, nagłówek): schowana kontrolka jest sugestią, bo zostaje klawiatura,
+    /// skrót i wywołanie komendy wprost. Warunkiem jest więc samo WYWOŁANIE.
+    fn claim(&self) -> Option<Claim<'_>> {
+        // Sprawdzenie i zajęcie w JEDNYM wzięciu zamka. Dwa osobne („czy wolne", potem „zajmij")
+        // zostawiają okno, w którym dwa pytania zadane w tej samej chwili widzą oba wolne
+        // miejsce — a wtedy „jeden naraz" jest zdaniem, nie własnością. Zamek ginie razem z tym
+        // wyrażeniem, przed pierwszym `await` (niezmiennik 8).
+        let mut writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        if writing.is_some() {
+            return None;
+        }
+        let stop = CancellationToken::new();
+        *writing = Some(stop.clone());
+        Some(Claim {
+            drafting: self,
+            stop,
+        })
+    }
+
+    /// Oddaje miejsce. Wołane wyłącznie przez [`Claim`], czyli na każdej drodze wyjścia z tury.
+    fn release(&self) {
+        *self.writing.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
+/// Zajęte miejsce na jeden draft — oddawane samo, na KAŻDEJ drodze wyjścia.
+///
+/// Struktura z [`Drop`], a nie para wywołań „zajmij" / „oddaj": dróg wyjścia z jednej tury jest
+/// siedem (odmowa biblioteki, nieudany start, Stop, limit czasu, tekst, który nie jest
+/// umiejętnością, sukces i panika w środku), a miejsce oddane w sześciu z siedmiu jest miejscem,
+/// którego już nikt nigdy nie dostanie — od tej chwili KAŻDE pytanie jest odmową „ktoś już pisze",
+/// aż do restartu aplikacji.
+struct Claim<'a> {
+    drafting: &'a Drafting,
+    /// Token TEGO draftu — ten sam, który cofa [`Drafting::stop`].
+    stop: CancellationToken,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.drafting.release();
+    }
+}
+
+/// Jedno zdanie człowieka → trzy pola napisane przez wybranego agenta, jedną turą poza grafem.
+///
+/// `library` to `~/.loadout` i przychodzi **argumentem**, nigdy z `HOME` czytanego w środku —
+/// ten sam powód, co przy [`author_skill_inner`]: katalog domowy odczytany tutaj znaczyłby, że
+/// każdy test pyta prawdziwą bibliotekę.
+///
+/// `agent` jest **identyfikatorem** zapisanego agenta, nie nazwą pliku i nie nazwą vendora:
+/// model, prompt systemowy i dial bezpieczeństwa biorą się z jego definicji przez
+/// `library::agents::resolve`, a nie z niczego wpisanego tutaj.
+pub async fn draft_skill_inner(
+    library: &Path,
+    drivers: &Drivers,
+    drafting: &Drafting,
+    want: &str,
+    agent: &str,
+) -> Result<DraftOutcome, Error> {
+    // JEDEN NARAZ, i odmowa PRZED czymkolwiek, co dotyka dysku albo sterownika: drugie pytanie
+    // ma zostawić pierwsze nietknięte, a jedynym sposobem, żeby to była prawda, jest nie zaczynać.
+    // Odmowa, która ubija to, co już pisze, jest gorsza od kolejki — człowiek traci odpowiedź,
+    // na którą czekał, i nigdy się nie dowiaduje dlaczego.
+    let Some(claim) = drafting.claim() else {
+        return Err(refusal(ALREADY_WRITING.to_owned()));
+    };
+
+    // Kto ma to napisać. Model, prompt systemowy, dial bezpieczeństwa i limit czasu biorą się
+    // z JEGO zapisanej definicji, złożonej tym samym `resolve`, którym składa je krok biegu.
+    let saved = the_agent_saved_as(library, agent)?;
+    let effective = resolve(&saved, &Overrides::default())
+        .map_err(|error| refusal(error.to_string()))?
+        .agent;
+
+    // Ten sam identyfikator nosi tura i jej katalog roboczy: gdyby katalog kiedyś przeżył
+    // awarię aplikacji, widać z jego nazwy, czyj był.
+    let run = Uuid::now_v7();
+    let scratch = Scratch::new(run)?;
+    let spec = RunSpec {
+        run_id: run,
+        cwd: scratch.asked(),
+        // Instrukcja i zdanie człowieka jadą jako DANE, wyłącznie stdinem (niezmiennik 9): ta
+        // warstwa nie skleja komendy i nie zna ani jednej flagi vendora.
+        prompt: format!("{ASK_FOR_A_SKILL}{want}"),
+        model: some_text(&effective.model),
+        // Prompt systemowy agenta, nie zdanie człowieka. Zdanie człowieka w tym polu byłoby
+        // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv, a argv widzi `ps`.
+        system_append: some_text(&effective.instructions),
+        // DIAL WOLNO TYLKO OBNIŻYĆ (D6: „przelotka nie omija diala bezpieczeństwa"). Odpowiedź
+        // wraca strumieniem, więc do pisania po dysku nie ma powodu — a dial skopiowany
+        // z definicji wygląda poprawnie do chwili, w której ktoś prosi o umiejętność swojego
+        // najmocniejszego agenta.
+        policy: Policy::ReadOnly,
+        // Nic poza katalogiem roboczym: umiejętność pisze się z jednego zdania, więc nie ma tu
+        // czego czytać. Odnośnik do pliku, którego agentowi nie wolno otworzyć, jest odnośnikiem
+        // bez handlera (niezmiennik 16).
+        extra_dirs: Vec::new(),
+        resume: None,
+    };
+
+    // Odbiór staje PRZED startem sterownika: vendor ma prawo powiedzieć pierwsze zdarzenia
+    // jeszcze w `start`, a kanał bez odbiorcy zatrzymałby go na pierwszym pełnym buforze.
+    let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
+    let drain = tokio::spawn(off_the_wire(inbox));
+
+    let drafted = match (drivers)(effective.runs_with).start(spec, events).await {
+        // Vendor bez adaptera odmawia dokładnie tutaj i jego zdanie jest CAŁĄ odpowiedzią: panika
+        // zabrałaby okno, a cisza zostawiłaby człowieka przy kontrolce, która nic nie robi.
+        Err(error) => Err(refusal(error.to_string())),
+        Ok(mut handle) => {
+            let limit = give_up_after(effective.give_up_after_minutes);
+            let ended = one_turn(&mut *handle, &claim.stop, limit).await;
+            what_came_of_it(&mut *handle, ended, limit, &scratch).await
+        }
+    };
+
+    // Uchwyt zszedł razem z gałęzią wyżej, więc kanał jest zamknięty i drenaż kończy się sam.
+    // Czekamy na niego, zamiast go porzucić: zadanie przeżywające to wywołanie trzymałoby
+    // odbiornik otwarty i przy następnym drafcie nie dałoby się powiedzieć, czyje linie są czyje.
+    let _ = drain.await;
+    drafted
+}
+
+/// Jedna tura draftu: skończyła się sama, zatrzymał ją człowiek, albo przekroczyła swój limit.
+enum Ended {
+    /// Tura wróciła sama — z wynikiem albo z błędem sterownika.
+    Turn(anyhow::Result<TurnOutcome>),
+    /// Człowiek nacisnął Stop.
+    Stopped,
+    /// Draft przekroczył limit czasu swojego agenta.
+    Overdue,
+}
+
+/// Czeka na koniec tury, na Stop albo na limit czasu — i **nie zdejmuje zadania Rusta**.
+///
+/// `tokio::time::timeout(limit, handle.wait())` robi z zewnątrz to samo, jest krótsze o trzy znaki
+/// i jest błędem, przed którym stoi niezmiennik 10: anuluje ZADANIE RUSTA, a proces vendora
+/// zostaje żywy i pali limit u dostawcy do końca świata. Dlatego limit czasu jest tutaj zwykłą
+/// gałęzią wyboru, a zejście po grupie robi dopiero [`what_came_of_it`], przez sterownik.
+async fn one_turn(
+    handle: &mut dyn AgentHandle,
+    stop: &CancellationToken,
+    limit: Duration,
+) -> Ended {
+    let waiting = handle.wait();
+    tokio::pin!(waiting);
+    let overdue = tokio::time::sleep(limit);
+    tokio::pin!(overdue);
+    tokio::select! {
+        // `biased`, bo tura, która właśnie się skończyła, ma pierwszeństwo przed Stopem wpadającym
+        // w tej samej chwili: ubijanie czegoś, co już zeszło, zamieniałoby gotowy draft
+        // w anulowany zależnie od tego, który poll wypadł pierwszy. Z tego samego powodu limit
+        // czasu stoi PO Stopie — człowiek, który nacisnął Stop w ostatniej sekundzie, ma
+        // przeczytać „zatrzymane", a nie „przekroczony limit".
+        biased;
+        done = &mut waiting => Ended::Turn(done),
+        () = stop.cancelled() => Ended::Stopped,
+        () = &mut overdue => Ended::Overdue,
+    }
+}
+
+/// Co z tury wynikło dla człowieka: trzy pola, anulowanie jako wartość, albo jedno zdanie.
+async fn what_came_of_it(
+    handle: &mut dyn AgentHandle,
+    ended: Ended,
+    limit: Duration,
+    scratch: &Scratch,
+) -> Result<DraftOutcome, Error> {
+    match ended {
+        // PRZEKROCZONY LIMIT IDZIE TĄ SAMĄ DROGĄ, CO STOP: przez sterownik, po dowód. Powód
+        // nazywa LIMIT CZASU i liczbę, którą trzeba zmienić — inaczej człowiek szuka wady
+        // w agencie, którego nikt nie zepsuł.
+        Ended::Overdue => {
+            let minutes = limit.as_secs() / 60;
+            Err(refusal(match handle.cancel().await {
+                GroupProof::Alive => format!(
+                    "This draft ran longer than its {minutes} minute limit, and Loadout could \
+                     not make sure the agent stopped, so it may still be running."
+                ),
+                GroupProof::Dead { .. } => format!(
+                    "This draft ran longer than its {minutes} minute limit, so Loadout stopped \
+                     it. Give that agent more minutes, or ask for something smaller."
+                ),
+            }))
+        }
+        // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta (niezmienniki 6 i 10).
+        Ended::Stopped => match handle.cancel().await {
+            // Dowód zejścia grupy jest, więc nie ma o czym mówić: anulowanie jest WARTOŚCIĄ,
+            // nigdy błędem (niezmiennik 7).
+            GroupProof::Dead { .. } => Ok(DraftOutcome::Cancelled),
+            // Dopóki dowodu nie ma, traktujemy grupę jak żywą (niezmiennik 6). Cisza jest tu
+            // najdroższa z możliwych: osierocony agent pisze dalej, a płaci za to człowiek.
+            GroupProof::Alive => Err(refusal(MAY_STILL_BE_RUNNING.to_owned())),
+        },
+        Ended::Turn(Err(error)) => Err(refusal(error.to_string())),
+        Ended::Turn(Ok(turn)) => {
+            // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
+            // w nieskończoność, więc tura bez tego zostawia żywy proces [T1 §2, §4.6].
+            let code = handle.close().await.ok().flatten();
+            // Sukces to zero **i** `is_error == false` (niezmiennik 19). Agent, który wypisał
+            // „nie dam rady" i wyszedł czysto, nie napisał umiejętności.
+            if !turn.ok || !matches!(code, None | Some(0)) {
+                return Err(refusal(nothing_came_back(&turn.reason)));
+            }
+            three_fields(scratch, &turn.text).map(DraftOutcome::Wrote)
+        }
+    }
+}
+
+/// Tekst modelu → trzy pola formularza, przeczytane rdzeniem, który czyta wklejony link.
+///
+/// **Tym samym rdzeniem, a nie własnym parserem front-mattera**, i to nie jest oszczędność kodu:
+/// `ingest::from_folder` czyta TEKST pliku, więc R1 (znaki niewidzialne, komentarze HTML) i R5
+/// (`hooks:`, `allowed-tools:` we front-matterze) mają na czym pracować. Odczyt, który tam nie
+/// wchodzi, nie produkuje ani jednego znaleziska — a umiejętność z ukrytą instrukcją wygląda
+/// wtedy na czystą aż do dysku.
+fn three_fields(scratch: &Scratch, text: &str) -> Result<Authored, Error> {
+    let skill = ingest::from_folder(&scratch.answer(text)?)
+        .map_err(|error| {
+            refusal(format!(
+                "Loadout could not read what the agent wrote: {error}"
+            ))
+        })?
+        .skill;
+
+    // Odmowa nazywa, CZEGO NIE MA, po jednej rzeczy na przyczynę: jedno „to nie jest
+    // umiejętność" na trzy różne braki nie mówi człowiekowi, co poprawić.
+    let mut missing = Vec::new();
+    if skill.name.trim().is_empty() {
+        missing.push("no name in it");
+    }
+    if skill.description.trim().is_empty() {
+        missing.push("nothing that says when to use it");
+    }
+    if skill.body.trim().is_empty() {
+        missing.push("nothing in it to do");
+    }
+    if !missing.is_empty() {
+        return Err(refusal(format!(
+            "The agent came back with something that is not a skill: {}. Ask again, or write \
+             the three answers yourself.",
+            missing.join(", ")
+        )));
+    }
+
+    // Pola przechodzą tak, jak je przeczytał rdzeń — bez jednego znaku poprawki tutaj. Drugie
+    // przycinanie w tym miejscu byłoby drugim brzmieniem tej samej treści, a człowiek zobaczy
+    // dokładnie to, co za chwilę pójdzie na dysk drogą z T-42.
+    Ok(Authored {
+        name: skill.name,
+        when_to_use: skill.description,
+        what_to_do: skill.body,
+    })
+}
+
+/// Zapisany agent o tym identyfikatorze.
+///
+/// Identyfikatorem, nie nazwą pliku: nazwa pliku powstaje ze zmiennej nazwy agenta, a `id`
+/// przeżywa zmianę nazwy (T4 §5.1). Lista przychodzi z `commands::agents::list_agents_inner`,
+/// czyli tą samą drogą, którą sekcja Agenci wypisuje ją na ekran — drugi spacer po katalogu
+/// byłby drugą odpowiedzią na pytanie „kogo mam zapisanych" (niezmiennik 13).
+fn the_agent_saved_as(library: &Path, id: &str) -> Result<Agent, Error> {
+    let saved =
+        super::agents::list_agents_inner(library).map_err(|error| refusal(error.to_string()))?;
+    // Biblioteka bez ani jednego agenta i biblioteka bez TEGO agenta to dwie różne rzeczy do
+    // zrobienia: pierwszą naprawia zapisanie kogokolwiek, drugą wybranie kogoś innego.
+    if saved.is_empty() {
+        return Err(refusal(NOBODY_SAVED.to_owned()));
+    }
+    saved
+        .into_iter()
+        .find(|one| one.id.to_string() == id)
+        .ok_or_else(|| {
+            refusal(format!(
+                "No agent saved here has the id {id}. Pick one from the list, or save one first."
+            ))
+        })
+}
+
+/// Zdejmuje z drutu wszystko, co powie sterownik, i porzuca to.
+///
+/// Draft nie pokazuje ani jednej z tych linii — widok strumienia ma jednego właściciela (sekcja
+/// Praca, niezmiennik 13) — ale MUSI je odebrać. `mpsc::Sender` staje na pełnym buforze, a tura,
+/// która stoi na `send`, nie kończy się nigdy: dla bramki to jest „nic się nie uruchomiło"
+/// (rc 124), nie czerwień. Zmierzone na agencie robiącym `find /usr/share`: 121 000 linii
+/// na sekundę.
+async fn off_the_wire(mut inbox: mpsc::Receiver<DecodedEvent>) {
+    while inbox.recv().await.is_some() {}
+}
+
+/// Zdanie o turze, która skończyła się bez umiejętności.
+fn nothing_came_back(reason: &FinishReason) -> String {
+    match reason {
+        FinishReason::Failed(said) => format!("The agent could not write this skill: {said}"),
+        FinishReason::LimitReached => {
+            "The agent stopped before it finished, because it ran into a limit of its own.\
+             Try again, or ask for something smaller."
+                .to_owned()
+        }
+        FinishReason::Cancelled | FinishReason::Completed => {
+            "The agent stopped before it wrote anything. Ask again.".to_owned()
+        }
+    }
+}
+
+/// Limit czasu draftu — minuty z definicji agenta, tak samo jak przy kroku biegu.
+///
+/// Zero znaczy „poddaj się natychmiast", więc traktujemy je jak brak zdania i zostawiamy jedną
+/// minutę: limit ubijający każdą turę w chwili startu jest gorszy niż brak limitu.
+fn give_up_after(minutes: u32) -> Duration {
+    Duration::from_secs(u64::from(minutes.max(1)) * 60)
+}
+
+/// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
+///
+/// Bliźniak tej funkcji stoi w `commands::run` (`some_text`) i jest tam prywatny. Jedno wyrażenie
+/// przepisane tutaj jest tańsze niż otwarcie tamtego pliku: `commands/run.rs` nie należy do tego
+/// zadania (AGENTS.md §7), a różnica między tymi dwiema odpowiedziami byłaby widoczna od razu —
+/// pusty napis podstawiony pod flagę modelu to vendor, który odmawia startu.
+fn some_text(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.to_owned())
+}
+
+/// Zdanie dla człowieka jako odmowa tej warstwy.
+///
+/// `Error::Invalid` niesie listę komunikatów i renderuje je jedną linią — tego samego wariantu
+/// używa [`author_skill_inner`], kiedy odmawia zdaniem, którego `skills::Error` nie ma w typie.
+/// Nowego wariantu nie dokładamy: `skills/mod.rs` nie należy do tego zadania (AGENTS.md §7).
+fn refusal(said: String) -> Error {
+    Error::Invalid {
+        messages: vec![said],
+    }
+}
+
+/// Katalog roboczy jednej tury draftu — POZA biblioteką i sprzątany na każdej drodze wyjścia.
+///
+/// # Dlaczego nie w bibliotece
+///
+/// Bo katalog, który zostałby tam po awarii aplikacji, jest umiejętnością, której nikt nie
+/// przejrzał, leżącą dokładnie tam, gdzie ta sekcja trzyma przejrzane. Draft nie zapisuje niczego
+/// trwałego i nie ma prawa zapisać: trzy pola wracają do formularza z T-42 i dopiero tamten zapis
+/// składa plik, skanuje go i odkłada kopię kanoniczną (niezmiennik 23).
+///
+/// # Dlaczego mimo to plik
+///
+/// Bo rdzeń czyta KATALOG (`ingest::from_folder`), i to jest niezmiennik 20 w tym jednym miejscu:
+/// skan, który nie widział bajtów pliku, nie widział ataku. Niezmiennik 9 dotyczy zdania człowieka
+/// i sekretów — te jadą stdinem i nie zatrzymują się nigdzie; tutaj ląduje ODPOWIEDŹ modelu, ta
+/// sama, która za sekundę stanie w oknie, i ginie razem z tym wywołaniem.
+struct Scratch {
+    root: PathBuf,
+}
+
+impl Scratch {
+    fn new(run: Uuid) -> std::io::Result<Self> {
+        let root = std::env::temp_dir().join(format!("loadout-draft-{run}"));
+        std::fs::create_dir_all(root.join(ASKED_IN))?;
+        Ok(Self { root })
+    }
+
+    /// Katalog roboczy tury: pusty i tylko do czytania.
+    fn asked(&self) -> PathBuf {
+        self.root.join(ASKED_IN)
+    }
+
+    /// Tekst modelu na dysku i adres katalogu, w którym leży.
+    ///
+    /// OSOBNY katalog, nie ten, w którym pracowała tura: `ingest::from_folder` liczy też pliki
+    /// dołączone, więc cokolwiek powstałoby obok, weszłoby do umiejętności jako jej plik.
+    fn answer(&self, text: &str) -> std::io::Result<PathBuf> {
+        let dir = self.root.join(ANSWERED_IN);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(SKILL_FILE), text)?;
+        Ok(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Bez `?` i bez `expect`: to jest ostatnia droga wyjścia z tury, a katalog, którego nie
+        // udało się usunąć z katalogu tymczasowego, nie jest niczym, o czym warto przewrócić
+        // odpowiedź dla człowieka. Biblioteki to nie dotyczy w ogóle — nic tu w niej nie leży.
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
