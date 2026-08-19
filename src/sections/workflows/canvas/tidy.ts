@@ -8,6 +8,7 @@
  */
 import type { Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
+import { isAWayBack } from './connect';
 import { snap } from './map';
 
 /* Odstępy w skokach siatki, nie w pikselach z oka: `GRID` jest tu mnożnikiem, więc każda
@@ -32,6 +33,14 @@ const MARGIN = GRID;
 function depths(file: WorkflowFile): Map<string, number> {
   const before = new Map<string, string[]>();
   for (const link of file.links) {
+    /* POWROTY SIĘ NIE LICZĄ, i to nie jest optymalizacja obchodu. Powrót idzie z sędziego pętli
+     * DO KROKU, KTÓRY BYŁ PRZED NIM — policzony jako wejście dałby implementerowi rząd większy
+     * niż testerowi i „Tidy up" postawiłby sędziego NAD krokiem, do którego zawraca. Układ
+     * kłamałby wtedy o kolejności pracy przy każdym kliknięciu tego przycisku.
+     *
+     * To ta sama reguła i ten sam powód, co przy liczeniu `forward` w walidatorze Rusta
+     * (`workflow::check`): kolejność wyznaczają strzałki BEZ powrotów, bo tylko one znaczą „po". */
+    if (isAWayBack(link)) continue;
     before.set(link.to, [...(before.get(link.to) ?? []), link.from]);
   }
 
