@@ -1085,7 +1085,12 @@ async fn emit(
     let mut event = event;
     if let AgentEvent::Finished(outcome) = &mut event {
         // Czas mierzony przez nas, bo vendor go nie podaje (powód przy starcie zegara w [`pump`]).
-        outcome.took = began.elapsed();
+        // Warunek, a nie przypisanie wprost: gdyby `turn.completed` kiedyś zaczęło nieść własną
+        // liczbę, dekoder ją tu położy, a to jest liczba VENDORA — nadpisanie jej naszą byłoby
+        // cichym skasowaniem jedynego pomiaru, którego sami nie umiemy zrobić lepiej.
+        if outcome.took.is_zero() {
+            outcome.took = began.elapsed();
+        }
         if let Some(tell) = told.take() {
             let _ = tell.send(outcome.clone());
         }
