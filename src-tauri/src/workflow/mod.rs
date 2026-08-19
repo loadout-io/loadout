@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 
 pub mod check;
 pub mod file;
+pub mod unroll;
 
 /// Skok siatki płótna w pikselach [T3 §8.2 reguła 1].
 ///
