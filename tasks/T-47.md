@@ -56,7 +56,11 @@ parzystosci — ten sam problem wraca tutaj).
 
 ## Co to zadanie posiada
 
-- `src/sections/run/feed/now.tsx` — zywy wiersz dostaje podklad i obrys, „Thinking" dostaje kropke.
+- `src/sections/run/feed/now.tsx` — jeden zywy region, bramkowany faktem „bieg zyje".
+- `src/sections/run/index.tsx` — **jedna linia**: przekazuje strefie flage `running`. Fakt „cos
+  sie teraz dzieje" mieszka w wywolujacym, nie w `NowZone`, bo `doing` w modelu jest tylko
+  DOPISYWANE i nigdy nie czyszczone — kropka bramkowana sama liczba wierszy pulsowalaby po
+  zakonczeniu biegu, czyli mowilaby „dzieje sie" o czyms, co stoi.
 - `src/sections/run/feed/line.tsx` — `You →` przestaje byc akcentem.
 - `src/sections/run/strip/strip.tsx` — segmenty w jednym szklanym torku, aktywny `--live`.
 - `src/sections/run/tabs/tab.tsx` — kropka zywego biegu `--live`.
@@ -94,8 +98,15 @@ Kryterium oparte na obliczonym stylu nie ruszylo by ani razu (`NOT_A_REAL_RED`).
 
 Asercje: (a) zbior nazw klas stojacych na elementach niosacych `live-*` i zbior tych z `fail-*`
 sa **rozlaczne**; (b) oba zbiory sa **niepuste** — pusty zbior daje rozlacznosc za darmo i jest
-ta sama awaria „porownanie przeszlo na niczym"; (c) skaner odwiedzil wiecej niz dziesiec plikow
-ekranu Run; (d) zdejmuje komentarze przed czytaniem, bo regula zacytowana w prozie nie jest regula.
+ta sama awaria „porownanie przeszlo na niczym"; (c) skaner widzi klasy podane takze
+przez **mapy i zmienne**, nie tylko literalne `className="..."` — bo tak wlasnie ten kod podaje
+barwy stanu (`BLOCK`, `LABEL`, `tone`), a skaner slepy na to sadzilby kilka recznie wybranych
+napisow; (d) zdejmuje komentarze przed czytaniem.
+
+**Rozlacznosc dotyczy CALEJ formy, nie pojedynczych nazw klas.** Dwa elementy dziela forme, gdy
+ich zestawy klas po odjeciu barwy sa IDENTYCZNE — bo wtedy jedyna roznica jest odcien, a on
+wynosi 13 stopni. Wspolne slowo narzedziowe (`text-center`, `font-mono`) formy nie tworzy:
+etykieta segmentu i glif bledu maja rozne stopnie drabinki i rozne zawijanie.
 
 *Slaba wersja:* kryterium na `getComputedStyle`. Niewykonalne w tym repo — i to jest w naglowku
 testu nazwane, a nie przemilczane.
@@ -119,9 +130,13 @@ teraz dzieje", a nie „ten konkretny agent pisze".
 Asercje: (a) przy niepustej strefie `--live` wystepuje w niej **dokladnie raz**; (b) strefa
 **nie niesie** ani jednej klasy `accent-*`; (c) przy zerze wierszy strefa nie renderuje ani
 jednego wiersza **ani** `--live` — zero atrap i zero coralu, gdy nic nie chodzi (niezmiennik 17);
-(d) strefa ma `shrink-0` albo zadeklarowana stala wysokosc, wiec **nie rosnie** z liczba wierszy
-(DESIGN §1: „stala wysokosc, nadpisywana w miejscu"); (e) zdania wierszy pochodza z przekazanego
-magazynu, nie z napisow w tescie.
+(d) zdania wierszy pochodza z przekazanego magazynu, nie z napisow w tescie.
+
+**Punkt o stalej wysokosci zostal USUNIETY, a nie oslabiony.** Brzmial „strefa ma `shrink-0`
+albo zadeklarowana stala wysokosc" i certyfikowal teze DESIGN §1, mierzac wlasciwosc, ktora jej
+nie implikuje: `shrink-0` jest wrecz odwrotnoscia ograniczenia wysokosci. Mechanizmem, ktory tu
+naprawde dziala, jest siatka kolumny strumienia (`minmax(0,1fr) auto auto`) — historia przewija
+sie i pochlania miejsce. Tego pilnuje `run-matches-mockup.test.tsx` i jest to jego pytanie.
 
 *Slaba wersja:* `expect(markup).toContain('live')`. Przechodzi, gdy coralowe jest wszystko —
 czyli gdy strefa przestaje odrozniac „dzieje sie" od „stoi".
@@ -147,7 +162,10 @@ check: npx --no-install vitest run src/sections/run/strip-is-one-glass-track.tes
 expect: (\d+) passed
 
 Asercje: (a) segmenty sa dziecmi **jednego** pojemnika, ktory niesie material szkla i promien
-kapsuly; (b) aktywny segment niesie `live-*`, skonczony `line-strong`, czekajacy obrys `line`;
+kapsuly; (b) **wszystkie trzy** stany segmentu zgadzaja sie z makieta, a wartosci sa z niej CZYTANE:
+aktywny niesie `live`, skonczony wypelnienie `muted`, czekajacy obrys `line-strong`.
+*Pierwotnie ten punkt mylil sie w obie strony i sadzil wylacznie segment aktywny — kryterium
+nazywajace trzy tokeny i sadzace jeden sadzi trzecia czesc siebie.*
 (c) aktywny segment **nie niesie** `accent-*`; (d) liczba segmentow rowna sie liczbie krokow
 przekazanych w danych, sprawdzone na dwoch roznych dlugosciach — **nie ma paska procentowego,
 bo kroki to nie procenty**; (e) przy zerze krokow pasek nie renderuje ani jednego segmentu.
@@ -173,6 +191,7 @@ rzecz, ani czy definicja nie zdublowala sie w komponencie.
 
 <!-- OWNS
 src/sections/run/feed/now.tsx
+src/sections/run/index.tsx
 src/sections/run/feed/line.tsx
 src/sections/run/strip/strip.tsx
 src/sections/run/strip/strip.test.ts
