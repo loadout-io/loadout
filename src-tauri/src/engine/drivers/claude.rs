@@ -239,14 +239,56 @@ const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static str>
 /// o dwóch skrajnościach — `""` znaczy „żadnych narzędzi", `default` znaczy „wszystkie" —
 /// i żadna polityka po ludzku nie znaczy żadnej z nich.
 ///
-/// **SZKIELET KONTRAKTU (2026-08-19): pusto dla każdej polityki.** `todo!()` jest w tym repo
-/// zakazane (`todo = "deny"`), więc zaślepka kompiluje się i oddaje pustą wartość — dzięki
-/// temu AC-1 i AC-2 padają na **asercji**, a nie na kompilatorze. Wypełnia to faza
-/// implementacji; pusta lista jest tu stanem przejściowym, nie polityką.
+/// # Trzy szczeble, a każdy dokłada inny RODZAJ zasięgu
+///
+/// Nie trzy różne listy dobrane do smaku, tylko jedna drabina, w której każdy stopień jest
+/// zdaniem, które ta polityka obiecuje na ekranie:
+///
+/// | Polityka | Na ekranie | Co dokłada ponad poprzedni szczebel |
+/// |---|---|---|
+/// | [`Policy::ReadOnly`] | „Read only" | czytanie i szukanie w repo |
+/// | [`Policy::EditInFolder`] | „Can edit this folder" | zmienianie tego repo (`Edit`, `Write`, `Bash`) |
+/// | [`Policy::Unrestricted`] | „No limits" | sięganie POZA repo (`WebFetch`, `WebSearch`) |
+///
+/// Zawierania są **ostre w obie strony i to jest asercja o zachowaniu**: agent obiecany jako
+/// czytający nie ma prawa mieć pod ręką `Write` ani `Edit`, a agent bez ograniczeń nie ma prawa
+/// mieć **mniej** niż ten, który edytuje folder. Adapter wypisujący jedną i tę samą listę
+/// wszystkim trzem jest dokładnie tą pomyłką, którą T-04 nazwało już raz przy
+/// `--permission-mode`.
+///
+/// `Bash` stoi tu gołe, a w [`permission_flags`] tej samej polityki stoi `Bash(git *)` — i to
+/// nie jest rozjazd, tylko cały podział między tymi dwiema flagami. `--tools` mówi „narzędzie
+/// jest w zestawie", `--allowedTools` mówi „ta jego część idzie bez pytania". Składnia zakresowa
+/// należy do drugiej z nich; w pierwszej jest tylko nazwa.
+///
+/// # Dziesięć nazw, których tu nie ma, i ile kosztowała każda z nich [2026-08-19]
+///
+/// `Task`, `Workflow`, `SendMessage`, `CronCreate`, `RemoteTrigger`, `ScheduleWakeup`,
+/// `EnterWorktree`, `Monitor` — każda z tych ośmiu startuje proces **poza naszą grupą**, czyli
+/// poza dowodem śmierci z niezmiennika 6: dowód zostaje prawdziwy i przestaje cokolwiek znaczyć,
+/// bo to nie ta grupa. `Agent` i `Skill` to ta sama czynność pod inną nazwą u tego samego
+/// vendora. Zmierzone: jedno takie wywołanie — projektowy podagent repo gospodarza — spaliło
+/// **38–41 tys. tokenów** całkowicie poza widokiem i rozliczeniem Loadouta. Ani jednej
+/// czerwieni, ani jednego wiersza na ekranie pracy, ani jednego dolara w podsumowaniu kroku.
+///
+/// Ich nieobecność jest tu **skutkiem ubocznym**, nie regułą: lista zakazów dostałaby dziurę
+/// przy najbliższym wydaniu CLI, po cichu, bo nikt nie czyta changelogu pod kątem „czy przybyło
+/// czasowników". Na tę listę nowe narzędzie po prostu nie wchodzi.
 #[must_use]
 pub const fn tools_for(policy: Policy) -> &'static [&'static str] {
     match policy {
-        Policy::ReadOnly | Policy::EditInFolder | Policy::Unrestricted => &[],
+        Policy::ReadOnly => &["Read", "Grep", "Glob"],
+        Policy::EditInFolder => &["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+        Policy::Unrestricted => &[
+            "Read",
+            "Grep",
+            "Glob",
+            "Edit",
+            "Write",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+        ],
     }
 }
 
@@ -454,6 +496,7 @@ impl ClaudeDriver {
     /// | `--strict-mcp-config` | 73 narzędzia z 9 serwerów zostają za drzwiami [T1 korekta 4] |
     /// | `--setting-sources ""` | argument o **zerowej długości**; `"user,project"` w tym miejscu to izolacja, która nie działa |
     /// | `--permission-mode` + `--allowedTools` | z [`super::Policy`], jedną tabelą (niezmiennik 23) |
+    /// | `--tools <lista>` | twarda biała lista **dostępności** z [`tools_for`]: czego na niej nie ma, tego proces nie ma pod ręką [2026-08-19] |
     ///
     /// Czego tu **nie ma**: `--bare` (wywala subskrypcję [T1 §3.3]), `--max-turns`
     /// i `--max-budget-usd` (spike S-2 nierozstrzygnięty [`docs/ARCHITECTURE.md` §11]).
@@ -490,6 +533,14 @@ impl ClaudeDriver {
         if let Some(tools) = tools {
             command.arg("--allowedTools").arg(tools);
         }
+
+        // Druga kolumna tej samej decyzji, nie druga decyzja (niezmiennik 23): wyżej stoi to,
+        // co idzie bez pytania, tutaj to, co w ogóle jest w zestawie. Jedno wystąpienie flagi
+        // i jeden argument z przecinkami — tak samo jak `--allowedTools`, tak samo jak mówi
+        // `claude --help`. Bez tej linii cała tabela wyżej jest napisem: `--allowedTools`
+        // to lista AUTO-ZATWIERDZANIA, a narzędzie spoza niej dalej jest pod ręką, tylko
+        // zapyta — i w biegu bez człowieka „zapyta" nie znaczy „nie zrobi" [2026-08-19].
+        command.arg("--tools").arg(tools_for(spec.policy).join(","));
 
         if let Some(model) = &spec.model {
             command.arg("--model").arg(model);
