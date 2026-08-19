@@ -32,6 +32,7 @@ use super::supervisor::{GroupId, GroupProof};
 /// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
 pub mod absent;
 pub mod claude;
+pub mod codex;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///
