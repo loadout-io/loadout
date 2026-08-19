@@ -93,7 +93,7 @@ const MODEL_TEXT: &str = concat!(
 
 /// Sufit czekania na jeden draft. Zegar jest zatrzymany, więc godzina nie kosztuje ani jednej
 /// prawdziwej sekundy; jest tu tylko po to, żeby zawieszona implementacja padła na zdaniu.
-const PATIENCE: Duration = Duration::from_secs(3_600);
+const PATIENCE: Duration = Duration::from_hours(1);
 
 /// Ile razy oddajemy sterowanie, czekając, aż dubler zapisze pierwsze uruchomienie.
 const YIELDS: usize = 10_000;
