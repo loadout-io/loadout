@@ -45,6 +45,7 @@ fn id(step: &Step) -> &str {
     match step {
         Step::Agent(agent) => &agent.id,
         Step::Checkpoint(checkpoint) => &checkpoint.id,
+        Step::Check(check) => &check.id,
     }
 }
 

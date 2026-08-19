@@ -152,8 +152,37 @@ subagentami ani z czymkolwiek, co Anthropic albo OpenAI dowiozą w przyszłym mi
 **Wszystko, co vendor wprowadzi, konfigurujemy per agent — nigdy jako nowy typ węzła.**
 
 Nowa flaga u Claude'a to nowe pole w definicji agenta. Nowy tryb u Codeksa to nowe pole w definicji
-agenta. Liczba rodzajów kafelka na płótnie zostaje **dwa** (krok i punkt kontrolny) niezależnie od
-tego, ile funkcji dołożą vendorzy.
+agenta. Liczba rodzajów kafelka na płótnie **nie rośnie od tego, ile funkcji dołożą vendorzy** —
+i to jest cała treść tej reguły. Nowa flaga u Claude'a albo nowy tryb u Codeksa to zawsze pole
+w definicji agenta, nigdy nowy kafelek.
+
+### Trzeci rodzaj: „sprawdź". Dopisany 2026-08-20, świadomie
+
+*Do 2026-08-20 ta reguła brzmiała „zostaje **dwa** (krok i punkt kontrolny)". Zmienione decyzją
+człowieka po tym, jak brak trzeciego rodzaju zablokował dwa etapy naraz.*
+
+Rodzajów jest **trzy**: krok, punkt kontrolny i **sprawdzenie**. Trzeci uruchamia komendę
+należącą do Loadouta i **sam wystawia wynik** — z kodu wyjścia plus licznika przejść
+(niezmiennik 19), nie ze zdania agenta.
+
+**Dlaczego to nie jest złamanie reguły wyżej.** Ta reguła zabrania kafelków, które **powtarzają
+funkcje vendorów** — i ten zakaz zostaje w mocy bez zmian. Żaden vendor nie dostarcza „uruchom
+komendę i sam orzeknij, czy przeszła"; przeciwnie, cała ich powierzchnia zwraca to, co agent
+**powiedział**. Rozróżnienie „co agent powiedział" kontra „co się stało" jest jedyną rzeczą,
+dla której ten produkt powstał (`00-SYNTHESIS.md` §2.1) — a bez tego rodzaju kroku nie ma go
+czym wyrazić.
+
+**Co ten brak kosztował, zmierzone.** `docs/harness-as-workflow.md` (ustalenie U-1) mierzy, czy
+najcięższa znana ceremonia — pętla, którą to repo biegnie na sobie — da się zapisać jako zwykły
+plik workflow. Odpowiedź: **cztery etapy z sześciu tak, dwa nie, i oba przewracają się o ten sam
+brak.** Etap bramki i etap wejścia na trunk to komendy Loadouta z własnym wynikiem, więc stały
+na kafelku kontrolnym, czyli na pytaniu do człowieka. Sam plik `harness_workflow_two_kinds.rs`
+zgłaszał `check` jako brakujący rodzaj, z nazwy, od T-23.
+
+**Czego ta zmiana NIE otwiera.** Czwarty rodzaj dalej wymaga prawdziwej skargi z pomiarem, nie
+wygody. W szczególności **nie ma i nie będzie kafelka „recenzja"**: recenzent jest zwykłym
+krokiem agenta, a etap nazwany w kodzie jest domyślny i nie da się go wyłączyć konfiguracją
+(D7, niezmiennik 27). Wyrocznia z T-23 pilnuje teraz właśnie tego — odmowy dla rodzaju `review`.
 
 ### Konsekwencja projektowa, bez której ta reguła jest pustym hasłem
 

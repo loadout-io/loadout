@@ -34,6 +34,13 @@ use super::supervisor::{GroupId, GroupProof};
 pub mod absent;
 pub mod claude;
 pub mod codex;
+/// Krok „sprawdź": komendę odpala Loadout, werdykt wystawia Loadout, nigdy agent.
+///
+/// Sąsiad `claude.rs`, choć **nie implementuje** [`AgentDriver`] i nie ma go implementować —
+/// to jest treść AC-4 z T-55, a nie pominięcie. Rodzaj sterownika, nie etap biegu:
+/// niezmiennik 27 zakazuje warunku NAZYWAJĄCEGO etap, a nie ramienia mówiącego, **czym** jest
+/// kafelek. Adres w `drivers/`, bo tu mieszka odpowiedź na pytanie „czym ten krok jedzie".
+pub mod command;
 /// Reguły `deny` repo gospodarza, przepisane do nas jako **tekst**, nigdy jako maszyneria.
 /// Sąsiad `claude.rs`, nie część rdzenia: `.claude/settings.json` to kształt jednego vendora,
 /// a ten plik nie zna ani jednego.
