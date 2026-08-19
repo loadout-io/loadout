@@ -29,7 +29,15 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useSyncExternalStore } from 'react';
+import type { Landing } from '../../state/skills';
 import { useSkills } from '../../state/skills';
+import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
+/* NAPIS KONTROLKI PRZYCHODZI Z KONTROLKI, nie jest tu przepisany. Zdanie odsyłające do rzeczy
+ * nazwanej na ekranie inaczej jest instrukcją, której nie da się wykonać — a to jest jedyne
+ * wyjście, jakie ta sekcja umie zaproponować człowiekowi bez otwartego projektu. Jedna nazwa,
+ * jedno miejsce (niezmiennik 13); `src/sections/run/launch.ts` ma ten sam obowiązek i wciąż
+ * trzyma napis z palca, co jest długiem tamtego pliku, nie wzorem do skopiowania. */
+import { FIRST_INVITE } from '../../ui/shell/workspace-switcher';
 import { ReviewCard } from './review-card';
 
 /** Magazyn umiejętności. Jest singletonem — `src/state/skills.ts` nie ma fabryki. */
@@ -85,8 +93,72 @@ export const WHERE_IT_LANDS =
   'This goes into the folders your agent apps read on this machine, so every later run can ' +
   'use it. Remove takes it back out.';
 
+/**
+ * To samo zdanie dla drugiego wyboru — i to jest CAŁY powód, dla którego wybór ma prawo tu stać.
+ *
+ * 2026-08-19 — DWA ZDANIA, NIGDY DWA NARAZ. Jedno miejsce na jeden fakt (niezmiennik 13): to,
+ * które stoi na ekranie, liczy się z tego, co człowiek wybrał, a drugie z ekranu znika. Oba
+ * jednocześnie znaczą ekran, na którym połowa nie zgadza się z drugą połową — i wtedy człowiek
+ * wierzy tej, którą przeczytał pierwszą.
+ *
+ * Nazwy katalogów nie padają tu tak samo jak wyżej: liczy je `place::destinations` po drugiej
+ * stronie granicy i to jest jedyne miejsce, w którym stoją (niezmiennik 23).
+ */
+export const WHERE_IT_LANDS_IN_THE_PROJECT =
+  'This goes into the folders your agent apps read inside the project you have open, so it ' +
+  'travels with that folder to anybody who works in it. Remove takes it back out.';
+
+/**
+ * Co powiedzieć, kiedy nie ma otwartego projektu, więc „this project" nie ma korzenia.
+ *
+ * ZDANIE, A NIE UKRYTA POZYCJA. Człowiek, który nie widzi możliwości, nie ma jak się dowiedzieć,
+ * że istnieje ani czego wymaga — więc pozycja zostaje na ekranie, wygaszona, a obok stoi to
+ * zdanie i mówi, co zrobić (DESIGN §8: każda odmowa nazywa wyjście).
+ *
+ * ZDANIE, A NIE DRUGI PRZYCISK. Zakres wybiera się w jednym miejscu, w bocznym menu — druga
+ * kontrolka dodająca workspace'a byłaby drugą odpowiedzią na pytanie „gdzie pracuję"
+ * (niezmiennik 13), a ekran Umiejętności nie jest miejscem, w którym wybiera się projekt.
+ */
+const NO_PROJECT_YET =
+  'No project is open, so a skill can only go into the folders on this machine. ' +
+  FIRST_INVITE +
+  ' in the side menu to put one inside a project instead.';
+
+/**
+ * Dwie pozycje wyboru i dokładnie dwie, w słowach człowieka [T5 §8.3].
+ *
+ * NAPISY LICZY EKRAN, nie drut: `Landing` jest słowem granicy (`this-project`, `everywhere`)
+ * i enum z drutu nigdy nie trafia na ekran (niezmiennik 14). Tabela stoi tu, przy jedynym
+ * miejscu, które ją czyta.
+ *
+ * „This project" pierwsze, bo to jest wybór, o którym człowiek musi pomyśleć; „Everywhere"
+ * jest tym, co ta sekcja robiła od pierwszego dnia i zostaje domyślne w magazynie.
+ */
+const LANDINGS: readonly { readonly value: Landing; readonly label: string }[] = [
+  { value: 'this-project', label: 'This project' },
+  { value: 'everywhere', label: 'Everywhere' },
+];
+
 export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+
+  /* SUBSKRYPCJA ZAKRESÓW, ŻEBY PRZERYSOWAĆ — a odpowiedź czytamy funkcją. Bez tego wiersza
+   * przełączenie projektu w bocznym menu zostawiłoby na ekranie wygaszoną pozycję „This project"
+   * i zdanie o tym, że nie ma gdzie zapisać, czyli kontrolkę kłamiącą o stanie, który już się
+   * zmienił.
+   *
+   * WARTOŚCI Z TEJ MIGAWKI NIE CZYTAMY ANI RAZU, i to jest rozmyślne. „Gdzie pracujemy" ma
+   * w tym repo jedną definicję — `activeWorkspace()` — i to ona jedzie do Rusta z magazynu tej
+   * sekcji. Drugie `find` po `activeId` tutaj byłoby drugą odpowiedzią na jedno pytanie
+   * (niezmiennik 13) i pierwszym miejscem, w którym ekran mógłby pokazać coś innego, niż
+   * pojedzie na dysk. `src/sections/run/index.tsx` liczy to u siebie i to jest dług tamtego
+   * pliku, nie wzór.
+   *
+   * Trzecim argumentem jest BIEŻĄCY stan, nie `getInitialState`: `renderToStaticMarkup` woła
+   * właśnie migawkę serwerową, więc magazyn zasiany przed renderem musi być tym, co ekran widzi
+   * (ten sam powód stoi w `src/sections/workflows/index.tsx`). */
+  useSyncExternalStore(useWorkspaces.subscribe, useWorkspaces.getState, useWorkspaces.getState);
+  const openProject = activeWorkspace();
 
   /* ODCZYT PRZY WEJŚCIU W SEKCJĘ — bez tego cała ścieżka odczytu jest martwa.
    *
@@ -188,10 +260,16 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             </form>
 
             {/* TRZY PYTANIA I DOKŁADNIE TRZY [T5 §8.3]: jak się nazywa, kiedy tego użyć, co
-                zrobić. Czwartym w badaniu jest zakres („ten projekt / wszędzie") i tu go NIE
-                MA z rozmysłu — zakres zostaje globalny, dokładnie jak na drodze adresu, a
-                wybór jest osobnym zadaniem (T-44). Pytanie postawione bez skutku byłoby tą
-                samą obietnicą bez kontrolki, którą ten commit zdejmuje.
+                zrobić. Czwartym w badaniu jest zakres („ten projekt / wszędzie") i tu go dalej
+                NIE MA — ale od 2026-08-19 z innego powodu niż wtedy, gdy ten panel powstał.
+
+                Wtedy stało tu, że zakres zostaje globalny, a wybór jest osobnym zadaniem.
+                Wybór już jest: stoi NAD KARTĄ PRZEGLĄDU, niżej w tym pliku, i pyta o miejsce
+                w chwili, w której człowiek decyduje, czy tę umiejętność dodać. Dodanie go
+                jeszcze raz TUTAJ byłoby dwoma miejscami na jedną odpowiedź (niezmiennik 13),
+                i to na dwóch różnych etapach: ten panel oddaje TREŚĆ do przeglądu, a nie
+                zapisuje jej do katalogów vendorów. Zapis następuje jedno wywołanie później,
+                pod kartą, i to tam wybór ma skutek.
 
                 ETYKIETY SĄ PYTANIAMI, a nie nazwami pól `SKILL.md`. „When should the agent
                 use it?" jest tym, co w pliku nazywa się `description`, i pytanie zadane wprost
@@ -408,10 +486,78 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 data-skill={state.pending.name}
                 className="mx-auto mb-6 flex max-w-160 flex-col gap-3 rounded-md border border-attend-edge bg-panel p-3"
               >
+                {/* WYBÓR STOI TAM, GDZIE ZAPADA DECYZJA, i nad kontrolką, która ją wykonuje.
+                    Cały mechanizm zakresu jest napisany i przetestowany po stronie Rusta od
+                    T-18 (`Scope`, `place::plan`, `place::remove`) i do 2026-08-19 był
+                    NIEOSIĄGALNY z okna: jedyny konstruktor `Roots` w produkcji miał wpisane
+                    `project: None`, magazyn wysyłał stałą, a ekran nie miał ani jednej
+                    kontrolki, którą dałoby się to zmienić. Umiejętność lądowała więc zawsze
+                    w katalogach domowych człowieka, niezależnie od tego, w którym projekcie
+                    pracował.
+
+                    NAD KARTĄ, NIE W NIEJ. Propsy `ReviewCard` się nie zmieniają — wybór jest
+                    pytaniem SEKCJI („gdzie zapisujemy"), a nie częścią przeglądu treści.
+
+                    NAD KONTROLKĄ DODANIA, NIE POD NIĄ. Wybór miejsca zaproponowany po
+                    przycisku, który tam zapisuje, nie jest wyborem: jest ostrzeżeniem
+                    przeczytanym po decyzji, a ta sekcja pisze do katalogów, które przeczyta
+                    każde następne uruchomienie narzędzi agentowych na tej maszynie.
+
+                    `<fieldset>` z `<legend>`, a nie `<div>` z `<p>`: dwie pozycje radiowe są
+                    jedną grupą i czytnik ekranu ma przeczytać pytanie przed odpowiedziami. */}
+                <fieldset data-pick-where className="flex flex-col gap-1">
+                  <legend className={LABEL}>Available in</legend>
+                  <div className="flex items-center gap-4">
+                    {LANDINGS.map((choice) => (
+                      <label
+                        key={choice.value}
+                        htmlFor={`skill-landing-${choice.value}`}
+                        className="flex items-center gap-1 text-body text-ink"
+                      >
+                        <input
+                          id={`skill-landing-${choice.value}`}
+                          type="radio"
+                          name="skill-landing"
+                          data-landing={choice.value}
+                          checked={state.landing === choice.value}
+                          /* WYGASZONA, A NIE UKRYTA, i wygaszona TUTAJ, nie wariantem
+                             `disabled:` Tailwinda — wariant zostawia słowo `disabled`
+                             w atrybucie `class` także wtedy, gdy kontrolka działa
+                             (`review-card.tsx` ma tę samą pułapkę opisaną). Bez otwartego
+                             projektu nie ma korzenia, pod którym pisać, a wybór, którego Rust
+                             i tak odmówi, każe człowiekowi czytać zdanie o czymś, czego nie
+                             wybierał. */
+                          disabled={choice.value === 'this-project' && openProject === null}
+                          onChange={() => {
+                            store.getState().chooseLanding(choice.value);
+                          }}
+                        />
+                        {choice.label}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {/* Odmowa czytana TAM, GDZIE ODMOWA ZACHODZI: pod pozycją, której nie da się
+                    wybrać, a nie na dole ekranu. Znika, kiedy projekt jest otwarty — zdanie
+                    stojące zawsze nie mówi nic i odsyła człowieka po coś, co już zrobił. */}
+                {openProject === null ? (
+                  <p className="text-body text-attend">{NO_PROJECT_YET}</p>
+                ) : null}
+
                 {/* Zdanie o miejscu stoi TU, a nie w polu na link: pole zamyka się w chwili
                     wklejenia, a decyzja „dodać czy nie" jest podejmowana dopiero nad tą kartą.
-                    Ostrzeżenie widoczne wcześniej niż decyzja nie jest ostrzeżeniem. */}
-                <p className="text-body text-muted">{WHERE_IT_LANDS}</p>
+                    Ostrzeżenie widoczne wcześniej niż decyzja nie jest ostrzeżeniem.
+
+                    JEDNO ZDANIE, POLICZONE Z WYBORU. Nie dwa naraz i nie zdanie, które nie
+                    zmienia się z wyborem: pierwsze łamie niezmiennik 13, drugie zamienia wybór
+                    w kontrolkę bez widocznego skutku (niezmiennik 16) dokładnie tam, gdzie
+                    skutkiem jest zapis do żywej konfiguracji cudzych narzędzi. */}
+                <p data-where-it-goes className="text-body text-muted">
+                  {state.landing === 'this-project'
+                    ? WHERE_IT_LANDS_IN_THE_PROJECT
+                    : WHERE_IT_LANDS}
+                </p>
                 {/* Nazwy nie piszemy drugi raz — niesie ją nagłówek karty (niezmiennik 13). */}
                 <ReviewCard
                   item={state.pending}

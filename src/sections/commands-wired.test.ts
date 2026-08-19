@@ -34,7 +34,7 @@ import * as skills from './skills/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
-import type { Authored, Import } from '../state/skills';
+import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
 /* Atrapa jest podniesiona razem z `vi.mock`, żeby moduły sekcji dostały JĄ, a nie prawdziwy
@@ -115,6 +115,19 @@ const SKILL: Import = {
   scripts: 1,
   fromTheInternet: true,
 };
+
+/* 2026-08-19 (T-44) — WYBÓR MIEJSCA I FOLDER, którymi wołane są trzy krawędzie umiejętności.
+ *
+ * `LANDING` jest typowane z rozmysłu: dzień, w którym ta unia zmieni kształt, ma zaczerwienić
+ * ten plik na kompilacji, a nie po cichu wysłać napis, którego Rust już nie rozpoznaje.
+ * „ten projekt", a nie „wszędzie", bo to jest wartość, której ta droga nigdy wcześniej nie
+ * niosła — wiersz wołany domyślną przechodziłby także wtedy, gdyby wybór był ignorowany.
+ *
+ * `FOLDER` jest ścieżką BEZWZGLĘDNĄ i nigdy nie dotyka dysku: granica jest atrapą, więc jedyne,
+ * co się z nią dzieje, to porównanie z tym, co pojechało. Napis, nie `null` — `insides()` niżej
+ * odrzuca `null`, więc wiersz wołany `null`em nie sprawdzałby, czy folder w ogóle dojechał. */
+const LANDING: Landing = 'this-project';
+const FOLDER = '/Users/somebody/Projects/Loadout';
 
 /** Trzy odpowiedzi z formularza „write one yourself" [T5 §8.3]. */
 const AUTHORED: Authored = {
@@ -199,12 +212,18 @@ const WIRES: readonly Wire[] = [
     given: ['https://example.invalid/skills/pdf/SKILL.md'],
     call: () => skills.readLink('https://example.invalid/skills/pdf/SKILL.md'),
   },
+  /* 2026-08-19 (T-44) — TE TRZY KRAWĘDZIE NIOSĄ TERAZ WYBÓR MIEJSCA I FOLDER. Nic tu nie
+   * usunięto: zmieniło się `given` i `call` w trzech istniejących wierszach, bo `install_skill`,
+   * `list_skills` i `delete_skill` przyjmują po tamtej stronie granicy o dwa (i o jeden)
+   * argumenty więcej. Wiersz, który wołałby je po staremu, wysyłałby klucze, których Rust już
+   * nie ma — a Tauri dopasowuje argumenty PO NAZWIE, więc byłoby to wywołanie ODRZUCONE, nie
+   * mniejsze. */
   {
     where: 'skills',
     what: 'install',
     command: 'install_skill',
-    given: [SKILL],
-    call: () => skills.install(SKILL),
+    given: [SKILL, LANDING, FOLDER],
+    call: () => skills.install(SKILL, LANDING, FOLDER),
   },
   {
     where: 'memory',
@@ -236,8 +255,8 @@ const WIRES: readonly Wire[] = [
     where: 'skills',
     what: 'listSkills',
     command: 'list_skills',
-    given: [],
-    call: () => skills.listSkills(),
+    given: [FOLDER],
+    call: () => skills.listSkills(FOLDER),
   },
   /* 2026-08-18 (fala pieciu sekcji) — DWIE KOLEJNE KRAWEDZIE, znowu dopisane, znowu nic
    * nie usuniete. Ten plik zlapal je w tej samej godzinie, w ktorej powstaly, i to jest jego
@@ -252,8 +271,8 @@ const WIRES: readonly Wire[] = [
     where: 'skills',
     what: 'remove',
     command: 'delete_skill',
-    given: ['a-skill-to-take-away'],
-    call: () => skills.remove('a-skill-to-take-away'),
+    given: ['a-skill-to-take-away', LANDING, FOLDER],
+    call: () => skills.remove('a-skill-to-take-away', LANDING, FOLDER),
   },
   {
     where: 'memory',

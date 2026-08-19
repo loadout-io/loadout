@@ -11,7 +11,7 @@
 //! # Bajty nie przechodzą przez okno
 //!
 //! [`review_skill_inner`] zapisuje pobraną umiejętność jako **kopię kanoniczną** w danych
-//! aplikacji (`<biblioteka>/skills/<name>/`), a oknu oddaje sam przegląd. [`install_skill_inner`]
+//! aplikacji (`<biblioteka>/skills/<name>/`), a oknu oddaje sam przegląd. [`install_skill_into`]
 //! czyta tę kopię z powrotem po nazwie. Treść, którą wykona agent, nie ma po co przechodzić
 //! przez warstwę, która ją renderuje — a katalogi vendorów są wyjściem builda, którego źródłem
 //! jest ta jedna kopia (niezmiennik 4, `skills::place::remove`).
@@ -200,20 +200,62 @@ pub struct Authored {
     pub what_to_do: String,
 }
 
-/// Korzenie instalacji dla zakresu globalnego, wyprowadzone z katalogu biblioteki.
+/// Gdzie umiejętność ma wylądować — pytanie z okna, w słowach okna [T5 §8.3].
+///
+/// DWIE WARTOŚCI I ANI JEDNEJ WIĘCEJ, bo tyle znają vendorzy: „u mnie" i „w tym repo".
+///
+/// OSOBNY TYP OD [`Scope`], mimo że odwzorowanie jest jeden-do-jednego — i to nie jest warstwa
+/// tłumaczeń na zapas. [`Scope`] jest słowem RDZENIA: `skills::place` liczy nim ścieżki i to on
+/// zostaje, kiedy okna nie ma (osobny daemon). To jest słowo DRUTU, czyli pozycja wyboru, którą
+/// człowiek czyta jako „This project" i „Everywhere" — a enum z drutu nigdy nie trafia na ekran
+/// (niezmiennik 14), więc napis dla człowieka liczy okno i tylko okno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Landing {
+    /// Korzeń otwartego projektu — umiejętność jedzie z nim do zespołu.
+    ThisProject,
+    /// Katalog domowy — umiejętność widoczna w każdym projekcie.
+    Everywhere,
+}
+
+/// Słowo drutu → słowo rdzenia. JEDNO miejsce, w którym te dwa enumy się spotykają.
+///
+/// 2026-08-19 — do tego dnia tego odwzorowania nie było wcale, bo nie było czego odwzorowywać:
+/// [`install_skill_into`], [`delete_skill_from`] i [`list_skills_in`] miały wpisane
+/// `Scope::Global`, więc cały zakres projektowy z T-18 był napisany, przetestowany
+/// i nieosiągalny z aplikacji.
+///
+/// DLACZEGO `From`, A NIE `match` W KAŻDYM Z TRZECH WOŁAJĄCYCH. Bo trzy odwzorowania to trzy
+/// okazje, żeby raz odwrócić kierunek — a rozjazd objawia się dopiero jako umiejętność zapisana
+/// w innym korzeniu niż ten, który człowiek przeczytał na ekranie, i to w żywej konfiguracji
+/// jego narzędzi agentowych. Jedna odpowiedź na pytanie „czym jest »ten projekt«" (niezmiennik 13).
+impl From<Landing> for Scope {
+    fn from(landing: Landing) -> Self {
+        match landing {
+            Landing::ThisProject => Self::Project,
+            Landing::Everywhere => Self::Global,
+        }
+    }
+}
+
+/// Korzenie rozmieszczania: dom wyprowadzony z katalogu biblioteki, korzeń projektu z okna.
 ///
 /// `~/.loadout` leży **w** katalogu domowym, więc jego rodzic jest tym katalogiem. To nie jest
 /// oszczędność argumentu: jedyne pytanie o `HOME` w całej aplikacji stoi w `lib.rs::loadout_dir`
 /// i ma tam zostać jedno (niezmiennik 13). Drugi odczyt `HOME` tutaj znaczyłby też, że każdy
 /// test pisze do prawdziwych katalogów vendorów.
 ///
-/// `project: None`, bo okno nie przysyła zakresu — a `plan` odmawia zakresu projektowego bez
-/// korzenia, zamiast zgadywać katalog roboczy.
+/// 2026-08-19 — KORZEŃ PROJEKTU PRZYJEŻDŻA ARGUMENTEM I NIGDY NIE JEST TU ZGADYWANY. Do tego dnia
+/// stała tu funkcja `global_roots` z wpisanym `project: None` i była JEDYNYM konstruktorem
+/// [`Roots`] w produkcji — czyli cały zakres projektowy z T-18 był napisany, przetestowany
+/// i nieosiągalny z aplikacji. `None` znaczy „nie ma otwartego projektu"; wtedy
+/// [`crate::skills::place::plan`] odmawia zakresu projektowego, zamiast pisać po katalogu
+/// roboczym procesu (`destinations` oddaje bez korzenia ścieżki WZGLĘDNE).
 #[must_use]
-fn global_roots(library: &Path) -> Roots {
+fn roots_for(library: &Path, project: Option<&Path>) -> Roots {
     Roots {
         home: library.parent().unwrap_or(library).to_path_buf(),
-        project: None,
+        project: project.map(Path::to_path_buf),
         data: library.to_path_buf(),
     }
 }
@@ -271,16 +313,45 @@ pub struct InstalledWire {
 ///
 /// Katalog, którego nie ma, daje **pustą listę**. Brak umiejętności to stan, nie awaria —
 /// czerwony pasek na świeżej instalacji uczy człowieka ignorować czerwone paski.
-pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
-    let roots = global_roots(library);
+///
+/// # Po co tu korzeń projektu
+///
+/// Bo lista odpowiada na pytanie „co widzi agent pracujący TUTAJ", a nie „co kiedykolwiek
+/// zapisaliśmy" (niezmiennik 4: pliki są prawdą). Umiejętność zapisana „w tym projekcie"
+/// i niewidoczna na liście jest umiejętnością, której człowiek nie ma jak zabrać — a ta sekcja
+/// pisze do żywej konfiguracji jego narzędzi agentowych. `None` znaczy „nie ma otwartego
+/// projektu" i wtedy widać wyłącznie korzeń globalny.
+pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<InstalledWire>, Error> {
+    let roots = roots_for(library, project);
     // Zbiór, nie wektor: ta sama umiejętność stoi w OBU katalogach docelowych, bo instalacja
     // pisze w oba. Lista z powtórzeniem pokazałaby człowiekowi dwa wiersze o jednym pliku
     // i policzyłaby go dwa razy w liczniku nad sekcją.
     let mut names: BTreeSet<String> = BTreeSet::new();
 
-    for dir in
-        crate::skills::place::destinations(Scope::Global, &roots.home, roots.project.as_deref())
-    {
+    // OBA KORZENIE, KIEDY PROJEKT JEST OTWARTY, i to jest połowa tej funkcji. Lista odpowiada
+    // na pytanie „co widzi agent pracujący TUTAJ", a agent zagląda w oba drzewa — więc korzeń
+    // pominięty tutaj jest umiejętnością, której człowiek nie zobaczy i **nie będzie miał jak
+    // zabrać**, choć leży w żywej konfiguracji jego narzędzi agentowych. Bez otwartego projektu
+    // widać wyłącznie globalny: „co kiedykolwiek zapisaliśmy" jest innym pytaniem, a katalog
+    // w cudzym repozytorium jest osiągalny tylko z jego wnętrza.
+    //
+    // Ścieżki liczy dalej WYŁĄCZNIE `place::destinations` (niezmiennik 23) — drugie miejsce,
+    // w którym stoi `.claude/skills`, rozjechałoby się z pierwszym przy pierwszym vendorze,
+    // którego dołożymy.
+    let mut dirs = Vec::from(crate::skills::place::destinations(
+        Scope::Global,
+        &roots.home,
+        roots.project.as_deref(),
+    ));
+    if roots.project.is_some() {
+        dirs.extend(crate::skills::place::destinations(
+            Scope::Project,
+            &roots.home,
+            roots.project.as_deref(),
+        ));
+    }
+
+    for dir in dirs {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             // Nikt jeszcze nic nie zainstalował — zero umiejętności, nie błąd.
@@ -441,7 +512,7 @@ pub fn review_skill_inner(library: &Path, url: &str) -> Result<ImportWire, Fetch
         std::fs::create_dir_all(parent)?;
     }
     // `rename`, nie kopiowanie: kopia kanoniczna ma powstać jednym ruchem, żeby nie istniał
-    // moment, w którym `install_skill_inner` widzi katalog w połowie zapisany.
+    // moment, w którym `install_skill_into` widzi katalog w połowie zapisany.
     std::fs::rename(&incoming, &canonical)?;
 
     // Czytamy jeszcze raz, z miejsca docelowego: `Import` z `incoming` niesie ścieżki źródłowe
@@ -567,7 +638,7 @@ pub fn canonical_for(library: &Path, name: &str) -> Result<PathBuf, Error> {
 /// Zapisuje, skąd umiejętność się wzięła — poza jej katalogiem i poza sidecarem instalacji.
 ///
 /// 2026-08-19 — DO TEGO DNIA POCHODZENIE BYŁO **WYWNIOSKOWANE**, a nie zapisane:
-/// [`list_skills_inner`] odpowiadał „z internetu" wtedy, gdy obok zainstalowanego katalogu
+/// [`list_skills_in`] odpowiadał „z internetu" wtedy, gdy obok zainstalowanego katalogu
 /// leżała kopia kanoniczna, bo kopie kanoniczne powstawały wyłącznie w [`review_skill_inner`].
 /// Ta przesłanka przestaje być prawdziwa w chwili, w której [`author_skill_inner`] też odkłada
 /// kopię kanoniczną — więc znacznik musi mieć własny zapis (niezmiennik 4: pole, którego nie da
@@ -628,7 +699,7 @@ fn origins_path(library: &Path) -> PathBuf {
 /// Co plik pochodzenia mówi o umiejętnościach w tej bibliotece.
 ///
 /// Brak pliku, plik nieczytelny i plik o nieznanym kształcie dają ten sam wynik: pustą mapę.
-/// Nieobecność zapisu jest odpowiedzią, którą [`list_skills_inner`] umie obsłużyć ostrożnie,
+/// Nieobecność zapisu jest odpowiedzią, którą [`list_skills_in`] umie obsłużyć ostrożnie,
 /// a błąd w tym miejscu zaczerwieniłby całą sekcję za brak pliku, którego wolno nie mieć —
 /// każda biblioteka starsza niż to zadanie go nie ma.
 fn origins_of(library: &Path) -> BTreeMap<String, bool> {
@@ -649,8 +720,16 @@ fn origins_of(library: &Path) -> BTreeMap<String, bool> {
 /// działa, znaleziska nie powstają, a plik z ukrytym akapitem instaluje się jako czysty
 /// (niezmiennik 23).
 ///
-/// Zakres zostaje globalny, dokładnie jak na drodze linku — wybór „ten projekt / wszędzie"
-/// jest osobnym zadaniem (T-44).
+/// ZAKRESU TU NIE MA I NIE MA GO POTRZEBOWAĆ, i to jest twierdzenie o tej funkcji, nie brak.
+/// Ta droga odkłada wyłącznie **kopię kanoniczną** w bibliotece (`~/.loadout/skills/<name>/`),
+/// a kopia kanoniczna jest globalna z definicji: jest źródłem, z którego katalogi vendorów są
+/// wyjściem builda (niezmiennik 4). Wybór „ten projekt / wszędzie" zapada dopiero przy
+/// rozmieszczaniu, jedno wywołanie później, i jedzie do [`install_skill_into`] razem z korzeniem
+/// projektu — tak samo dla umiejętności wpisanej tutaj, jak dla wklejonej linkiem.
+///
+/// 2026-08-19 — stało tu „zakres zostaje globalny […] wybór jest osobnym zadaniem (T-44)". To
+/// zdanie przestało być prawdziwe w chwili, w której wybór powstał: czytelnik brał z niego, że
+/// umiejętność napisana w formularzu ląduje wyłącznie u człowieka, a ona jedzie tam, gdzie wskazał.
 pub fn author_skill_inner(library: &Path, authored: Authored) -> Result<ImportWire, Error> {
     let name = slug_of(&authored.name);
     // Odmowa PIERWSZA, przed policzeniem czegokolwiek, co dotyka dysku — powód stoi
@@ -738,7 +817,20 @@ fn settled(composed: &str) -> String {
 /// Zgoda na znaleziska blokujące jest warunkiem WYWOŁANIA i mieszka w magazynie sekcji
 /// (`src/state/skills.ts`, T-19). Drugie sprawdzenie tutaj byłoby drugim miejscem, w którym
 /// mieszka odpowiedź na pytanie „czy człowiek to przeczytał" (niezmiennik 13).
-pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
+///
+/// # Zakres przyjeżdża z okna, korzeń projektu też
+///
+/// Wybór „ten projekt / wszędzie" jest odpowiedzią człowieka, a nie stałą tej warstwy, i jedzie
+/// razem z korzeniem projektu — tym samym, którego używa bieg (`AppState::project_for`). Dwie
+/// odpowiedzi na „który to projekt" rozjadą się pierwszego dnia, w którym ktoś przełączy kartę
+/// (niezmiennik 13). `project: None` z zakresem projektowym jest ODMOWĄ z rdzenia, nigdy
+/// katalogiem roboczym procesu.
+pub fn install_skill_into(
+    library: &Path,
+    name: &str,
+    landing: Landing,
+    project: Option<&Path>,
+) -> Result<Vec<PathBuf>, Error> {
     let canonical = library.join(SKILLS_DIR).join(name);
     let import = ingest::from_folder(&canonical).map_err(|error| Error::Invalid {
         // Nazwa przychodzi z okna, więc katalog może nie istnieć — a `place::Error` nie ma
@@ -749,10 +841,12 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
         )],
     })?;
 
-    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`. Zakres jest
-    // globalny, bo okno nie przysyła innego; korzenie wyprowadza `global_roots`.
-    let roots = global_roots(library);
-    let plan = crate::skills::place::plan(&import.skill, Scope::Global, &roots)?;
+    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`. Zakres
+    // projektowy bez korzenia odbija się TAM, zdaniem `Error::NoProjectRoot`, i to jest jedyny
+    // powód, dla którego można tu podać `project` niesprawdzony pod kątem „czy jest": ani
+    // `destinations`, ani `apply` nie zobaczą pustki, bo plan odmawia przed nimi.
+    let roots = roots_for(library, project);
+    let plan = crate::skills::place::plan(&import.skill, landing.into(), &roots)?;
     crate::skills::place::apply(&plan, &import.skill)?;
     Ok(plan.writes)
 }
@@ -760,7 +854,7 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
 /// Zdejmuje umiejętność z katalogów agentów.
 ///
 /// 2026-08-18 — POWSTAŁO, BO SEKCJA MIAŁA PRZYCISK BEZ SKUTKU. Lista z
-/// [`list_skills_inner`] czyta katalogi vendorów, więc wiersz na ekranie odpowiada plikom na
+/// [`list_skills_in`] czyta katalogi vendorów, więc wiersz na ekranie odpowiada plikom na
 /// dysku — a jedyne, co człowiek mógł z nim zrobić, to zainstalować go jeszcze raz. Kontrolka,
 /// której handler nie ma skutku, jest gorsza niż jej brak (niezmiennik 16).
 ///
@@ -779,7 +873,19 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
 /// - **Nic tam nie było.** Osobne zdanie, nie ciche `Ok(())`. Przycisk, który melduje sukces,
 ///   choć nic nie zaszło, jest tym samym defektem, który to zadanie naprawia — a jedyny stan,
 ///   w którym to się zdarza, to lista starsza niż dysk, i o tym właśnie ma być to zdanie.
-pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
+///
+/// # Ta sama nazwa w dwóch zakresach to dwie rzeczy
+///
+/// Dlatego zakres jedzie argumentem: zdjęcie umiejętności „z tego projektu" ma zostawić kopię
+/// globalną nietkniętą, i odwrotnie. Zabranie obu naraz jest inną czynnością, o którą nikt nie
+/// prosił — a kopia zabrana „przy okazji" znika z katalogów, do których zagląda Claude Code
+/// tego człowieka, bez ani jednego zdania na ekranie.
+pub fn delete_skill_from(
+    library: &Path,
+    name: &str,
+    landing: Landing,
+    project: Option<&Path>,
+) -> Result<(), Error> {
     // Nazwa przychodzi z okna, więc jest wejściem, któremu nie ufamy (T3 §5.2). Sidecar
     // obroniłby nas i tak — `<katalog>/../..` nie stoi na liście „to napisał Loadout", więc
     // `remove` odmówiłby — ale odmowa po ludzku ma padać PRZED dotknięciem dysku, i ma mówić
@@ -792,8 +898,11 @@ pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
         });
     }
 
-    let roots = global_roots(library);
-    match crate::skills::place::remove(name, Scope::Global, &roots)? {
+    // Zakres jedzie do `place::remove` tą samą drogą, którą jedzie do `place::plan`: ta sama
+    // nazwa w dwóch korzeniach to DWIE rzeczy, a kopia zabrana „przy okazji" znika z katalogów,
+    // do których zagląda Claude Code tego człowieka, bez ani jednego zdania na ekranie.
+    let roots = roots_for(library, project);
+    match crate::skills::place::remove(name, landing.into(), &roots)? {
         crate::skills::place::Removed::Done { paths } if paths.is_empty() => Err(Error::Invalid {
             messages: vec![format!(
                 "There is nothing installed under the name '{name}' any more, so nothing was \

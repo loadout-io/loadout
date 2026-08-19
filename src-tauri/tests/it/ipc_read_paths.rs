@@ -37,7 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use loadout_lib::commands::memory::{NoteWire, list_notes_inner, notes_root};
-use loadout_lib::commands::skills::{InstalledWire, install_skill_inner, list_skills_inner};
+use loadout_lib::commands::skills::{InstalledWire, Landing, install_skill_into, list_skills_in};
 
 /// Plik, w którym stoi jedyna lista `generate_handler!`.
 const IPC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ipc.rs"));
@@ -180,7 +180,7 @@ fn wire_keys<T: serde::Serialize>(value: &T) -> BTreeSet<String> {
 /// Biblioteka Loadouta wewnątrz świeżego katalogu tymczasowego.
 ///
 /// `~/.loadout` leży **w** katalogu domowym, więc rodzic biblioteki jest tym katalogiem — i to
-/// z niego `list_skills_inner` wyprowadza katalogi vendorów. Struktura tutaj jest więc taka
+/// z niego `list_skills_in` wyprowadza katalogi vendorów. Struktura tutaj jest więc taka
 /// sama jak u użytkownika, tylko korzeń inny.
 fn library(home: &Path) -> PathBuf {
     home.join(".loadout")
@@ -306,7 +306,7 @@ fn a_skill_that_install_wrote_comes_back_from_the_directory_and_not_from_memory(
 
     // 1. Nic nie zainstalowano: pusta lista, nie błąd.
     let before =
-        list_skills_inner(&library).expect("nothing installed yet is a state, not a failure");
+        list_skills_in(&library, None).expect("nothing installed yet is a state, not a failure");
     assert!(
         before.is_empty(),
         "a library where nobody installed anything answered {before:?}. A read path that invents \
@@ -315,9 +315,11 @@ fn a_skill_that_install_wrote_comes_back_from_the_directory_and_not_from_memory(
 
     // 2. Prawdziwa instalacja, tą samą funkcją, którą woła komenda `install_skill`.
     plant_canonical(&library, FROM_THE_LINK);
-    install_skill_inner(&library, FROM_THE_LINK).expect("a reviewed skill installs");
+    install_skill_into(&library, FROM_THE_LINK, Landing::Everywhere, None)
+        .expect("a reviewed skill installs");
 
-    let after = list_skills_inner(&library).expect("reading an installed skill is not a failure");
+    let after =
+        list_skills_in(&library, None).expect("reading an installed skill is not a failure");
     assert_eq!(
         after
             .iter()
@@ -342,7 +344,7 @@ fn a_skill_that_install_wrote_comes_back_from_the_directory_and_not_from_memory(
     fs::create_dir_all(&by_hand).unwrap();
     fs::write(by_hand.join("SKILL.md"), skill_md(BY_HAND)).unwrap();
 
-    let both = list_skills_inner(&library).expect("two skills on disk are two skills");
+    let both = list_skills_in(&library, None).expect("two skills on disk are two skills");
     assert_eq!(
         both.iter()
             .map(|one| (one.name.as_str(), one.from_the_internet))
@@ -364,7 +366,7 @@ fn a_skill_that_install_wrote_comes_back_from_the_directory_and_not_from_memory(
             fs::remove_dir_all(&dir).unwrap();
         }
     }
-    let gone = list_skills_inner(&library).expect("an emptied directory is not a failure");
+    let gone = list_skills_in(&library, None).expect("an emptied directory is not a failure");
     assert!(
         gone.is_empty(),
         "the agent directories are empty and the read path still answered {gone:?}. It is \
@@ -378,10 +380,11 @@ fn an_installed_skill_carries_the_fields_the_window_expects() {
     let home = tempfile::tempdir().unwrap();
     let library = library(home.path());
     plant_canonical(&library, FROM_THE_LINK);
-    install_skill_inner(&library, FROM_THE_LINK).expect("a reviewed skill installs");
+    install_skill_into(&library, FROM_THE_LINK, Landing::Everywhere, None)
+        .expect("a reviewed skill installs");
 
     let installed =
-        list_skills_inner(&library).expect("reading an installed skill is not a failure");
+        list_skills_in(&library, None).expect("reading an installed skill is not a failure");
     let one = installed
         .first()
         .expect("the skill that was just installed has to be on the list");
@@ -427,7 +430,7 @@ fn a_directory_that_is_not_there_is_an_empty_list_and_never_an_error() {
         "a directory that does not exist answered with {notes:?} notes"
     );
 
-    let skills = list_skills_inner(&library).expect(
+    let skills = list_skills_in(&library, None).expect(
         "a missing agent directory has to be zero skills. Nothing installed yet is a state, not \
          a failure",
     );

@@ -250,7 +250,7 @@ fn text_written_here_is_scanned_by_the_core_that_scans_a_link() {
     let on_disk = fs::read_to_string(&file).unwrap_or_default();
     assert!(
         !on_disk.is_empty(),
-        "nothing readable was left at {}. The canonical copy is what `install_skill_inner` reads \
+        "nothing readable was left at {}. The canonical copy is what `install_skill_into` reads \
          back — a skill written here that leaves no bytes there cannot be installed at all, and \
          everything below would be judging an empty string",
         file.display()

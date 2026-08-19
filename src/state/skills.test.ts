@@ -224,9 +224,12 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
 
     expect(
       removeFromDisk.mock.calls,
-      'exactly once, and with the name — the folders are counted on the Rust side, so a path ' +
-        'handed over from the window would be a second answer to where this lives',
-    ).toEqual([['pdf']]);
+      'exactly once, with the name and with the choice standing above the card. The folder ' +
+        'names are still counted on the Rust side and only there, so that stays the one answer ' +
+        'to where this lives; what the window hands over is which PROJECT, the same value ' +
+        'starting a run already takes. Empty means no project is open, and Rust decides what ' +
+        'that means — the list shows the home folders and saving into a project refuses',
+    ).toEqual([['pdf', 'everywhere', null]]);
     expect(
       listSkills,
       'and then the folders are read again. Removing writes to two places at once, so the only ' +

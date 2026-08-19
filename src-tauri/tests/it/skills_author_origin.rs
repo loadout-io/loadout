@@ -5,7 +5,7 @@
 //! Słabą wersją tego kryterium jest asercja, że umiejętność napisana tutaj ma
 //! `from_the_internet == false`. Przechodzi ją implementacja, która odwróciła stałą na nowej
 //! drodze i zostawiła listę taką, jaka jest — a lista wyprowadza znacznik z **istnienia kopii
-//! kanonicznej** (`list_skills_inner`, dziś jedna linia: `library/skills/<name>/SKILL.md`
+//! kanonicznej** (`list_skills_in`, dziś jedna linia: `library/skills/<name>/SKILL.md`
 //! `.is_file()`). Wtedy karta mówi prawdę, lista dalej kłamie, i kłamie dokładnie o tej
 //! umiejętności, którą człowiek właśnie napisał sam.
 //!
@@ -15,7 +15,7 @@
 //! i znacznik musi mieć **własny zapis** (niezmiennik 4: pliki są prawdą, a pole, którego nie da
 //! się już wywnioskować, trzeba zapisać jawnie).
 //!
-//! Rozstrzyga: cztery źródła naraz, wszystkie czytane przez `list_skills_inner` **z dysku**.
+//! Rozstrzyga: cztery źródła naraz, wszystkie czytane przez `list_skills_in` **z dysku**.
 //!
 //! # Dlaczego nieobecność zapisu znaczy „z internetu"
 //!
@@ -49,7 +49,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use loadout_lib::commands::skills::{
-    Authored, author_skill_inner, install_skill_inner, list_skills_inner, remember_origin,
+    Authored, Landing, author_skill_inner, install_skill_into, list_skills_in, remember_origin,
 };
 
 const SKILLS_DIR: &str = "skills";
@@ -133,12 +133,12 @@ fn answers(name: &str) -> Authored {
     }
 }
 
-/// `from_the_internet` dla tej nazwy, przeczytane przez `list_skills_inner` **z dysku**.
+/// `from_the_internet` dla tej nazwy, przeczytane przez `list_skills_in` **z dysku**.
 ///
 /// `None` znaczy „nie ma jej na liście wcale", i to jest inna odpowiedź niż `Some(false)`:
 /// pierwsza mówi, że agent jej nie widzi, druga — że widzi i że nikt jej nie pobierał.
 fn marked(library: &Path, name: &str) -> Option<bool> {
-    list_skills_inner(library)
+    list_skills_in(library, None)
         .expect("reading the agent directories is a state, not a failure")
         .into_iter()
         .find(|one| one.name == name)
@@ -191,21 +191,24 @@ fn the_list_tells_the_truth_about_every_way_a_skill_gets_onto_this_machine() {
     plant_canonical(&world.library, FROM_A_LINK);
     remember_origin(&world.library, FROM_A_LINK, true)
         .expect("the link path has to write down that these bytes came from a stranger");
-    install_skill_inner(&world.library, FROM_A_LINK).expect("a reviewed skill installs");
+    install_skill_into(&world.library, FROM_A_LINK, Landing::Everywhere, None)
+        .expect("a reviewed skill installs");
 
     // 2. Napisana tutaj: prawdziwą drogą wejścia, bo pytanie brzmi, czy TA droga to zapisuje.
     let written = author_skill_inner(&world.library, answers(WRITTEN_HERE_TYPED))
         .expect("three fields a person typed have to reach the same pipeline a link reaches");
-    install_skill_inner(&world.library, &written.name).expect("a skill written here installs");
+    install_skill_into(&world.library, &written.name, Landing::Everywhere, None)
+        .expect("a skill written here installs");
 
     // 3. Cudzy katalog: bez kopii kanonicznej i bez zapisu, ale agent go widzi.
     plant_by_hand(&world.home, BY_HAND);
 
     // 4. Kopia kanoniczna bez zapisu pochodzenia: umiejętność z czasów przed tym zadaniem.
     plant_canonical(&world.library, FROM_BEFORE);
-    install_skill_inner(&world.library, FROM_BEFORE).expect("an older skill installs the same way");
+    install_skill_into(&world.library, FROM_BEFORE, Landing::Everywhere, None)
+        .expect("an older skill installs the same way");
 
-    let listed: Vec<(String, bool)> = list_skills_inner(&world.library)
+    let listed: Vec<(String, bool)> = list_skills_in(&world.library, None)
         .expect("reading the agent directories is a state, not a failure")
         .into_iter()
         .map(|one| (one.name, one.from_the_internet))
@@ -213,7 +216,7 @@ fn the_list_tells_the_truth_about_every_way_a_skill_gets_onto_this_machine() {
 
     assert_eq!(
         listed,
-        // Alfabetycznie, bo `list_skills_inner` zwija oba katalogi docelowe do `BTreeSet`:
+        // Alfabetycznie, bo `list_skills_in` zwija oba katalogi docelowe do `BTreeSet`:
         // `notatki`, `pdf`, `release-notes`, `review-pull-requests`.
         vec![
             (BY_HAND.to_owned(), false),
@@ -237,7 +240,8 @@ fn the_list_tells_the_truth_about_every_way_a_skill_gets_onto_this_machine() {
 fn a_canonical_copy_nobody_recorded_is_from_a_link_and_not_written_here() {
     let world = empty_world();
     plant_canonical(&world.library, FROM_BEFORE);
-    install_skill_inner(&world.library, FROM_BEFORE).expect("an older skill installs");
+    install_skill_into(&world.library, FROM_BEFORE, Landing::Everywhere, None)
+        .expect("an older skill installs");
 
     assert_eq!(
         marked(&world.library, FROM_BEFORE),
@@ -270,14 +274,15 @@ fn where_a_skill_came_from_does_not_live_in_the_install_sidecar() {
     let world = empty_world();
     plant_canonical(&world.library, FROM_A_LINK);
     plant_canonical(&world.library, FROM_BEFORE);
-    install_skill_inner(&world.library, FROM_A_LINK).expect("a reviewed skill installs");
+    install_skill_into(&world.library, FROM_A_LINK, Landing::Everywhere, None)
+        .expect("a reviewed skill installs");
 
     let sidecar = world.library.join(SKILLS_DIR).join(SIDECAR_FILE);
     let before = recorded_paths(&sidecar);
     assert_eq!(
         before.len(),
         2,
-        "the install sidecar should hold the two vendor directories `install_skill_inner` just \
+        "the install sidecar should hold the two vendor directories `install_skill_into` just \
          wrote, and it holds {before:?}. Everything below compares against this set, and an \
          empty one agrees with anything"
     );
@@ -294,7 +299,8 @@ fn where_a_skill_came_from_does_not_live_in_the_install_sidecar() {
 
     // I ta połowa jest tą, na której to naprawdę stoi: `place::write_sidecar` odtwarza CAŁY plik
     // ze zbioru ścieżek, więc pochodzenie dopisane do niego przepada przy następnej instalacji.
-    install_skill_inner(&world.library, FROM_BEFORE).expect("a second skill installs");
+    install_skill_into(&world.library, FROM_BEFORE, Landing::Everywhere, None)
+        .expect("a second skill installs");
     assert_eq!(
         marked(&world.library, FROM_A_LINK),
         Some(true),
@@ -313,7 +319,8 @@ fn the_record_does_not_ride_along_into_the_agent_directories() {
     let canonical = plant_canonical(&world.library, FROM_A_LINK);
     remember_origin(&world.library, FROM_A_LINK, true)
         .expect("recording where a skill came from is the whole point of this criterion");
-    install_skill_inner(&world.library, FROM_A_LINK).expect("a reviewed skill installs");
+    install_skill_into(&world.library, FROM_A_LINK, Landing::Everywhere, None)
+        .expect("a reviewed skill installs");
 
     let wanted = relative_files(&canonical);
     assert!(
