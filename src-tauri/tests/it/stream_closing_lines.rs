@@ -332,3 +332,15 @@ fn a_limit_that_did_stop_something_is_one_row_carrying_the_reset_time() -> anyho
 
     Ok(())
 }
+
+#[test]
+fn a_warning_about_the_window_is_not_a_row_either() {
+    let lines = from_rate_limit("allowed_warning", false);
+
+    assert!(
+        lines.is_empty(),
+        "at 86% of a weekly window the vendor sends this on nearly every turn. A row for it \
+         says 'Hit the usage limit' while nothing was hit, and it says it again and again — \
+         the banner that cries wolf, one value further along. It produced {lines:?}"
+    );
+}
