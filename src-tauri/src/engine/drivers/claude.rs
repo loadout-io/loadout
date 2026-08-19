@@ -502,6 +502,32 @@ impl ClaudeDriver {
     /// jedyny bezpieczny kształt to tani klon z własną ścieżką. To jest też powód, dla którego
     /// nie ma tu nowego pola w [`RunSpec`]: tę strukturę konstruuje literałem trzynaście plików
     /// spoza tego zadania, a nowe pole wywróciłoby kompilację ich wszystkich.
+    ///
+    /// # Wołacza produkcyjnego ten szew nie ma i to jest pytanie do człowieka (T-53)
+    ///
+    /// Kształt jest ten sam co przy [`ClaudeDriver::with_transcript`] z T-34: mechanizm jest
+    /// kompletny i **nieużywany**, dopóki człowiek go nie zepnie. Wołaczem jest `commands/run.rs`,
+    /// a on **nie leży w bloku OWNS T-53** — jeden wiersz poza tym blokiem jest pytaniem, nie
+    /// cichym dopiskiem (`AGENTS.md` §7).
+    ///
+    /// Proponowane miejsce: `plan_agent` w `commands/run.rs`. Tam, i tylko tam, znane są
+    /// **naraz** obie ścieżki — katalog roboczy kroku (`cwd` policzone przez `workspace`; dla
+    /// `Folder::Project` to `setup.project`, a dla `fresh-copy` kopia pod katalogiem biegu) oraz
+    /// katalog biegu (`setup.dir`, ten sam, który dostaje `lay_out_the_run_dir`). Trzy wiersze,
+    /// w tej kolejności:
+    ///
+    /// 1. `let deny = super::host::deny_rules(&cwd);`
+    /// 2. `let settings = RunSettings::write(setup.dir, &deny)?;` — katalog biegu, nigdy
+    ///    `$TMPDIR` (`docs/ARCHITECTURE.md` §8); zapis idzie **przed** startem procesu, bo
+    ///    `--settings` bez pliku zabija CLI dopiero w produkcji (niezmiennik 21).
+    /// 3. `.with_settings(settings)` na sterowniku, **zanim** ktokolwiek zawoła
+    ///    [`ClaudeDriver::command`] — flaga wchodzi do argv wyłącznie stąd.
+    ///
+    /// Otwarte pytanie tej propozycji i drugi powód, dla którego decyzja należy do człowieka:
+    /// fabryka z `lib.rs` oddaje `Arc<dyn AgentDriver>` raz na aplikację, więc w `plan_agent`
+    /// konkretny typ jest już zgubiony, a ten budowniczy żyje na [`ClaudeDriver`], nie na
+    /// traicie. Wpięcie potrzebuje **albo** fabryki wołanej per bieg, **albo** tej samej
+    /// odpowiedzi, której T-34 nie dostało dla transkryptu. Obie zmieniają plik spoza OWNS.
     #[must_use]
     pub fn with_settings(mut self, settings: RunSettings) -> Self {
         self.settings = Some(settings);
