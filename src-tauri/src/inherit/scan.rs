@@ -217,5 +217,30 @@ pub fn recurring_patterns(text: &str) -> Result<String> {
 /// reguły `skills::ingest::parse_doc`.
 #[must_use]
 pub fn agent_body(text: &str) -> &str {
-    &text[..0]
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        // Plik bez nagłówka jest samym ciałem. Nie ma tu nic do zdejmowania i nie jest to stan
+        // wyjątkowy: podagent bez front-mattera to normalny plik cudzego repozytorium.
+        return text;
+    };
+
+    let mut consumed = 0usize;
+    for line in rest.split_inclusive('\n') {
+        consumed += line.len();
+        if line.trim_end_matches(['\n', '\r']).trim_end() == "---" {
+            // WYCINAMY CAŁY BLOK, nie filtrujemy z niego znanych pól. Czarna lista jest
+            // z definicji niekompletna i pęknie po cichu przy następnym wydaniu CLI — a filtr,
+            // który zdejmuje sam wiersz `mcpServers:`, zostawia jego wcięte dzieci
+            // (`command: npx`, `args: ["-y", "@playwright/mcp@0.0.75"]`), czyli dokładnie te
+            // dwie wartości, które startują proces poza naszą grupą procesów.
+            return &rest[consumed..];
+        }
+    }
+
+    // Front-matter bez domknięcia NIE JEST front-matterem: `---` w pierwszej linii pliku, który
+    // nigdy się nie domyka, to pozioma kreska. Cięcie na niej zjadłoby pierwszy akapit
+    // podagenta bez jednego słowa. Lustro reguły `skills::ingest::parse_doc`.
+    text
 }
