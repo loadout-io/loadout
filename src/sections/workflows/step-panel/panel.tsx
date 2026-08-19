@@ -97,11 +97,23 @@ export interface StepPanelProps {
 
 const ROW = 'flex flex-col gap-1';
 const LABEL = 'text-label text-muted';
-const FIELD = 'h-8 rounded-sq border border-line bg-well px-2 text-body text-ink';
-const AREA = 'min-h-24 rounded-sq border border-line bg-well p-2 text-body text-ink';
+/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+ *
+ * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
+ * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
+ * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
+ * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
+ * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
+ * sie jak dwa rozne stany, a nie jak dwa pola.
+ *
+ * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
+ * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
+ * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
+const FIELD = 'field';
+const AREA = 'field';
 /* `chip`, wariant neutralny (DESIGN §6): licznik zmian nie jest stanem biegu, więc nie bierze
  * żadnego z czterech kolorów stanu. */
-const CHIP = 'rounded-sq border border-line bg-raised px-2 text-label text-muted';
+const CHIP = 'rounded-pill border border-line bg-raised px-2 text-label text-muted';
 const QUIET = 'text-label text-muted underline';
 const FROM_AGENT = 'text-label text-muted';
 

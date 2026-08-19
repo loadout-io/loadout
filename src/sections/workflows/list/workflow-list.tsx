@@ -50,12 +50,12 @@ export interface WorkflowListProps {
 
 /* Klasy komponentów z DESIGN §6, spisane raz. Wysokości idą po siatce 4px:
  * 36px = `h-9` (button-primary), 32px = `h-8` (button-secondary), 28px = `h-7` (button-quiet). */
-const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
-const SECONDARY = 'h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
-const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
+const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
+const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 /* button-danger: jak secondary, ale bez wypełnienia. Akcja niszcząca ma być rozpoznawalna,
  * a nie najbardziej rzucająca się w oczy rzecz na ekranie (DESIGN §6). */
-const DANGER = 'h-8 rounded-sq border border-fail-edge px-3 text-ui text-fail';
+const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 
 export function WorkflowList({
   workflows,
@@ -108,11 +108,18 @@ export function WorkflowList({
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {workflows.length === 0 ? (
-          <div data-empty className="flex h-full flex-col items-center justify-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+          <div className="flex h-full flex-col items-center justify-center gap-3">
+            <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
               ◇
             </span>
-            <p className="text-ink">No workflows yet.</p>
+            {/* `data-empty` siedzi na elemencie, ktory niesie SAMO zdanie — nie na opakowaniu
+                z glifem, zaproszeniem i przyciskiem. Tak mowi o sobie `src/App.tsx` i tak robia
+                Agents, Skills i Memory; do 2026-08-19 ta jedna sekcja trzymala znacznik wyzej,
+                wiec kazda wyrocznia czytajaca ten znacznik dostawala tu cztero-czlonowy akapit
+                zamiast zdania. */}
+            <p data-empty className="text-ink">
+              No workflows yet.
+            </p>
             <p className="text-muted">Create one to lay out the steps a run follows.</p>
             <button data-create type="button" className={PRIMARY} onClick={createWorkflow}>
               ＋ Create
@@ -147,7 +154,7 @@ export function WorkflowList({
                 ) : (
                   <div
                     data-unreadable={entry.path}
-                    className="rounded-sq border border-fail-edge bg-panel p-3"
+                    className="rounded-md border border-fail-edge bg-panel p-3"
                   >
                     <p className="text-heading text-ink">{entry.path}</p>
                     <p className="text-body text-muted">
@@ -193,7 +200,7 @@ export function WorkflowList({
                 data-create
                 type="button"
                 onClick={createWorkflow}
-                className="flex h-full flex-col gap-2 rounded-sq border border-dashed border-line bg-transparent p-3 text-left text-muted hover:border-line-strong hover:text-ink"
+                className="flex h-full flex-col gap-2 rounded-md border border-dashed border-line bg-transparent p-3 text-left text-muted hover:border-line-strong hover:text-ink"
               >
                 <span className="text-heading">＋ Create a workflow</span>
                 <span className="text-body">Start from an empty canvas.</span>
@@ -208,7 +215,7 @@ export function WorkflowList({
           data-confirm-delete
           className="fixed inset-0 z-10 flex items-center justify-center bg-bg/72 p-6"
         >
-          <div className="flex w-full max-w-160 flex-col gap-4 rounded-sq border border-line-strong bg-panel p-6">
+          <div className="flex w-full max-w-160 flex-col gap-4 rounded-lg border border-line-strong bg-panel p-6">
             {/* Jedno zdanie, jeden węzeł tekstowy: nazywa workflow po imieniu, mówi, co
              * znika, i mówi, co zostaje. Bieg, który się odbył, nie zależy od pliku — i to
              * jest właśnie to, czego człowiek nie wie, stojąc nad tym pytaniem. */}

@@ -32,8 +32,8 @@ export interface NoteFocus {
  * wybierana TUTAJ, a nie wariantem `disabled:` Tailwinda: wariant zostawiłby słowo `disabled`
  * w atrybucie `class` także wtedy, gdy przycisk działa, więc „czy da się uruchomić" miałoby
  * w HTML-u dwie odpowiedzi, z których jedna kłamie (niezmiennik 13). */
-const RUN = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
-const RUN_OFF = 'h-9 rounded-sq bg-raised px-4 text-ui text-muted';
+const RUN = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
+const RUN_OFF = 'h-9 rounded-sm bg-raised px-4 text-ui text-muted';
 
 /** Kropka wagi: problem świeci kolorem awarii, ostrzeżenie kolorem „wymaga ciebie". */
 const DOT: Record<Note['level'], string> = {

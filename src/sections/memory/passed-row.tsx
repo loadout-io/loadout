@@ -33,7 +33,7 @@ const ROW =
 const WHO = 'font-mono text-label text-muted';
 const NAME = 'font-mono text-mono text-body';
 const SIZE = 'font-mono text-mono text-muted';
-const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label text-muted';
+const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
 
 /**
  * Nazwa pliku ze ścieżki.

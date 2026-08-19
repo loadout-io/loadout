@@ -49,7 +49,7 @@ import { WorkflowCanvas } from './canvas/canvas';
 import * as disk from './io';
 import { PanelForStep } from './step-panel/panel';
 
-const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 export interface WorkflowEditorProps {
   /** Nazwa pliku, pod którą ten dokument leży na dysku. */
@@ -161,7 +161,7 @@ export function WorkflowEditor({
         <input
           id="workflow-name"
           aria-label="Workflow name"
-          className="min-w-0 flex-1 rounded-sq border border-transparent bg-transparent px-1 text-title text-ink hover:border-line focus:border-line-strong"
+          className="min-w-0 flex-1 rounded-sm border border-transparent bg-transparent px-1 text-title text-ink hover:border-line focus:border-line-strong"
           value={state.document.name}
           onChange={(event) => {
             state.rename(event.target.value);
@@ -180,7 +180,7 @@ export function WorkflowEditor({
          * i uruchamia bez przeszkód, nazywa problemem coś, co nim nie jest. Brzmienie jest
          * dokładnie to samo, co na pasku nad przyciskiem Run: jeden fakt, jedno słowo. */}
         {state.notes.length === 0 ? null : (
-          <span className="shrink-0 rounded-sq border border-attend-edge bg-attend-wash px-2 font-mono text-label text-attend">
+          <span className="shrink-0 rounded-pill border border-attend-edge bg-attend-soft px-2 font-mono text-label text-attend">
             {state.notes.length === 1
               ? '1 thing to fix'
               : `${String(state.notes.length)} things to fix`}
@@ -196,7 +196,7 @@ export function WorkflowEditor({
       {state.couldNotSave === null ? null : (
         <p
           data-could-not-save
-          className="shrink-0 border-b border-fail-edge bg-fail-wash px-4 py-2 text-body text-fail"
+          className="shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
         >
           {state.couldNotSave}
         </p>
