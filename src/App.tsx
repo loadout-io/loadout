@@ -21,7 +21,7 @@ import type { ScreenMap } from './ui/screens';
 import { discoverScreens, isScreen } from './ui/screens';
 import { ScreenBoundary } from './ui/shell/screen-boundary';
 import { useSectionStore } from './ui/shell/section-store';
-import { NAV_WIDTH, SideNav } from './ui/shell/titlebar';
+import { NAV_WIDTH, PANE_GAP, SideNav } from './ui/shell/titlebar';
 
 /* Odkrywanie biegnie RAZ, przy wczytaniu modułu, a nie przy każdym renderze: jego odpowiedź
  * zależy wyłącznie od tego, jakie pliki są w paczce, a to w trakcie życia okna nie zmienia się
@@ -51,11 +51,26 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
      * (`grid-template-columns:196px minmax(0,1fr)`), a `minmax(0,1fr)` zamiast `1fr` dlatego,
      * że bez tego szeroka treść ekranu rozpycha kolumnę zamiast się przewijać. */
     <div
-      className="grid h-full bg-bg"
-      style={{ gridTemplateColumns: `${String(NAV_WIDTH)}px minmax(0,1fr)` }}
+      className="aurora grid h-full bg-bg"
+      style={{
+        gridTemplateColumns: `${String(NAV_WIDTH)}px minmax(0,1fr)`,
+        /* KARTKI PŁYWAJĄ. Jeden stopień skali odstępów oddziela je od krawędzi okna i od
+           siebie, a pod nimi widać aurorę — statyczną winietę przy lewej krawędzi, dzięki
+           której szkło ZAWSZE ma co załamywać. To rozwiązanie domu i ma konsekwencję, która
+           oszczędza całą klasę pracy: nie potrzebujemy `transparent: true` ani `windowEffects`,
+           więc strona Rusta zostaje nietknięta, a wygląd nie zależy od tapety użytkownika.
+
+           Te 8 px WCHODZI do budżetu chrome z ARCHITECTURE §7 i są policzone: 8 + 1 + 32 + 52
+           = 93 przy sufi 96 (kryterium AC-1 sumuje je z makiety, nie z tego komentarza). */
+        padding: PANE_GAP,
+        gap: PANE_GAP,
+      }}
     >
       <SideNav section={section} />
-      <main data-section={entry.id} className="min-h-0 min-w-0">
+      {/* TREŚĆ JEST PAPIEREM, nie szkłem. Reguła nadrzędna systemu, wprost z jego nazwy:
+          szkło jest chrome. Kartka treści jest nieprzejrzysta, bo pod tekstem i pod kodem,
+          które człowiek ma przeczytać, szkło nie wchodzi nigdy. */}
+      <main data-section={entry.id} className="paper min-h-0 min-w-0">
         {/* OSŁONA WOKÓŁ SEKCJI, nie wokół roota: błąd renderu ma kosztować JEDNĄ sekcję,
             a nie okno razem z nawigacją, czyli razem z jedyną drogą wyjścia z tej sekcji
             (`ui/shell/screen-boundary.tsx`, zmierzone 2026-08-18). `key` na identyfikatorze

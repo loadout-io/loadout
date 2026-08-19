@@ -23,23 +23,50 @@
 import type { ReactElement } from 'react';
 import type { Section } from '../sections';
 import { SECTIONS } from '../sections';
+import { NavIcon } from './nav-icons';
 import { FIRST_SECTION, useSectionStore } from './section-store';
 import { NavWorkspaces } from './workspace-switcher';
 
-/** Szerokość bocznego menu. Wartość z `docs/mockup/index.html`, reguła `.app`. */
-export const NAV_WIDTH = 196;
+/* Trzy nazwane stale, ktore do 2026-08-19 byly LICZBAMI W KOMENTARZU. Liczba w komentarzu jest
+ * wartoscia, ktorej nie da sie sprawdzic, a te trzy wchodza w jedna arytmetyke z `CHROME_INSET_TOP`
+ * i z `trafficLightPosition` w `tauri.conf.json`. Kryterium AC-2 liczy te sume z CZTERECH
+ * odczytow, wiec zadna z nich nie jest juz wpisana dwa razy.
+ */
+
+/** Wysokosc swiatel macOS, zmierzona na oknie. */
+export const LIGHTS_HEIGHT = 20;
+
+/** Odstep pod swiatlami, zeby marka ich nie dotykala. */
+export const LIGHTS_GAP = 8;
 
 /**
- * Górny odstęp menu: światła macOS pływają NAD treścią (`titleBarStyle: "Overlay"`,
+ * O ile kartki plywaja od krawedzi okna i od siebie — jeden stopien skali odstepow (`--space-2`).
+ *
+ * DLACZEGO 8, A NIE 6. Skala tego systemu ma baze 4 px, wiec 6 px nie ma w niej stopnia i wyszlo
+ * by z tego `p-[6px]`, czyli wartosc arbitralna — ta sama ucieczka, ktora `quick-tokens.sh`
+ * zamyka dla barw i promieni. 8 px jest na skali i zostawia trzy piksele zapasu w budzecie
+ * chrome: 8 + 1 (obrys kartki) + 32 (karty) + 52 (pasek) = 93 przy suficie 96 z ARCHITECTURE §7.
+ */
+export const PANE_GAP = 8;
+
+/** Szerokość bocznego menu. Wartość z `docs/mockup/index.html`, reguła `.app`. */
+export const NAV_WIDTH = 208;
+
+/**
+ * Górny odstęp kartki nawigacji: światła macOS pływają NAD treścią (`titleBarStyle: "Overlay"`,
  * `hiddenTitle: true`), a ich lewy górny róg to `trafficLightPosition` z `tauri.conf.json`.
  * Marka zaczyna się dopiero pod nimi, inaczej leży pod światłami i jest nieczytelna.
  *
- * 16 (`trafficLightPosition.y`) + 20 (wysokość świateł) + 8 (odstęp) = 44. Makieta jest stroną
- * WWW i okna Tauri nie modeluje — ta jedna liczba jest adaptacją, nie odstępstwem. Zmiana
- * `trafficLightPosition` bez zmiany tej wartości jest czerwona w kryterium okna: te dwie liczby
- * są związane i mierzone razem, bo osobno każda wygląda rozsądnie [T8 §11, 2026-08-15].
+ * Od T-46 kartka pływa o `PANE_GAP` niżej niż okno, więc jej własny odstęp MALEJE o tyle samo:
+ *
+ *   16 (`trafficLightPosition.y`) + 20 (`LIGHTS_HEIGHT`) + 8 (`LIGHTS_GAP`) − 8 (`PANE_GAP`) = 36
+ *
+ * Te cztery liczby są **związane i mierzone razem** przez kryterium AC-2, które czyta pierwszą
+ * z `tauri.conf.json`, czwartą z makiety, a dwie środkowe bierze z eksportów powyżej. Zmiana
+ * jednej bez pozostałych jest czerwona; osobno każda wygląda rozsądnie i właśnie dlatego marka
+ * leżała pod światłami przez trzy dni w repo źródłowym [T8 §11, 2026-08-15].
  */
-export const CHROME_INSET_TOP = 44;
+export const CHROME_INSET_TOP = 36;
 
 /**
  * Zdanie w stopce. Mówi o tym, czym ta aplikacja NAPRAWDĘ umie uruchomić krok.
@@ -85,7 +112,7 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
     <nav
       data-chrome
       data-tauri-drag-region
-      className="flex shrink-0 flex-col border-r border-line bg-panel px-2 pb-[10px]"
+      className="pane flex min-h-0 shrink-0 flex-col px-2 pb-[10px]"
       style={{ width: NAV_WIDTH, paddingTop: CHROME_INSET_TOP }}
     >
       <div className="flex items-center gap-[10px] px-2 pb-4">
@@ -109,9 +136,17 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
           data-section-switch={entry.id}
           aria-current={entry.id === section ? 'true' : undefined}
           onClick={() => useSectionStore.getState().go(entry.id)}
-          className="w-full rounded-sq border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[current=true]:border-line aria-[current=true]:bg-raised aria-[current=true]:text-ink"
+          className="group grid w-full grid-cols-[auto_1fr] items-center gap-[9px] rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[current=true]:bg-hover aria-[current=true]:text-ink"
         >
-          {entry.label}
+          {/* AKCENT BIERZE GLIF, NIGDY TŁO. To reguła domu, wprost z jego `glass.css`:
+              „the accent never fills chrome, it colors the active glyph/label only". Barwa jest
+              BRAMKOWANA wariantem `group-aria-[current=true]`, a nie policzona drugim razem
+              w TSX — bo która sekcja jest otwarta, mówi `aria-current` i tylko on
+              (niezmiennik 13). Ternary tutaj byłby drugą kopią tej samej decyzji. */}
+          <span className="text-muted group-aria-[current=true]:text-accent">
+            <NavIcon section={entry.id} />
+          </span>
+          <span>{entry.label}</span>
         </button>
       ))}
 
@@ -121,7 +156,11 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
        * 2026-08-18 stało tu `text-label tracking-normal`, czyli token etykiety z ręcznie
        * zniesioną połową jego własnej definicji, bo tego stopnia w drabince nie było. */}
       <div className="mt-auto flex items-center gap-[7px] border-t border-line px-[10px] pt-[10px] font-mono text-meta text-muted">
-        <span aria-hidden className="size-[7px] rounded-full bg-accent" />
+        {/* Kropka gotowości jest PRZYGASZONA od 2026-08-19. Akcent znaczy „to jest
+            interaktywne", a dostępność dostawcy nie jest ani interakcją, ani „teraz"
+            (DESIGN §3). Nie pulsuje też: pulsuje wyłącznie kropka pracującego agenta,
+            a sufit z ARCHITECTURE §7 daje dwa regiony animujące się od jednego zdarzenia. */}
+        <span aria-hidden className="size-[7px] rounded-full bg-muted" />
         <span>{READY}</span>
       </div>
     </nav>

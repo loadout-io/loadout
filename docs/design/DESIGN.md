@@ -269,8 +269,8 @@ nadal wygrywa tam, gdzie makieta nie ma wersalików.
 Baza 4px. Skala: `4 · 8 · 12 · 16 · 24 · 32 · 48`.
 
 ```
---s-1: 4px    --s-2: 8px    --s-3: 12px   --s-4: 16px
---s-5: 24px   --s-6: 32px   --s-7: 48px
+--space-1: 4px    --space-2: 8px    --space-3: 12px   --space-4: 16px
+--space-5: 24px   --space-6: 32px   --space-7: 48px
 ```
 
 - Padding wiersza strumienia: `8px 16px`
@@ -278,10 +278,82 @@ Baza 4px. Skala: `4 · 8 · 12 · 16 · 24 · 32 · 48`.
 - Padding panelu: `16px`
 - Odstęp między sekcjami: `24px`
 
-**`border-radius: 2px`. Wszędzie. Bez wyjątków.** Kółka tylko dla kropek stanu (`50%`, 8px).
+**Promienie: wyłącznie `--radius-sm 9px`, `--radius-md 13px`, `--radius-lg 18px`
+i `--radius-pill 999px`.** Pasmo domu ma jeszcze `24px`; my go świadomie nie bierzemy, bo
+narzędzie o tej gęstości przy 24 px wygląda jak aplikacja na iPada. **Wiersz strumienia nie ma
+promienia wcale** — i to on utrzymuje gęstość.
 
 Wysokość kontrolek: `28px` kompaktowa · `32px` domyślna · `36px` podstawowy przycisk.
 Cel dotykowy nie dotyczy — to aplikacja desktopowa sterowana myszą i klawiaturą.
+
+### Rama okna: dwie kartki, jeden odstęp, aurora pod nimi
+
+```
+okno (róg rysuje macOS)
+└─ odstęp 8px, aurora + --bg
+   ├─ nawigacja  208px · --radius-lg · szkło · PŁYWA (jedyny cień w aplikacji)
+   └─ treść      --radius-md · nieprzejrzysta · obrys --line
+      ├─ karty   32px · szkło
+      ├─ pasek   52px · szkło
+      └─ praca
+```
+
+**Aurora mieszka wewnątrz okna**, nie na pulpicie: statyczna winieta przy lewej krawędzi, pod
+kartkami. To rozwiązanie z systemu, z którego wzięliśmy wartości, i ma konsekwencję, która
+oszczędza całą klasę pracy — **szkło ma co załamywać bez przezroczystego okna.** Żadnego
+`transparent: true`, żadnego `windowEffects`, żadnej zależności od tapety użytkownika. Kolumna
+czytania siedzi na czystym `--bg`, więc kod i tekst nigdy nie leżą na barwie.
+
+**Pływa dokładnie jedna rzecz i tylko ona ma cień.** Refleks `inset` na górnej krawędzi szkła
+nie jest głębią — to światło na materiale i wolno go mieć wszędzie.
+
+### Budżet chrome jest prawie wydany, i to on wygrywa z projektem
+
+`docs/ARCHITECTURE.md` §7 daje **96 px nad pierwszą treścią**:
+
+| składnik | px |
+|---|---|
+| odstęp okna | 8 |
+| obrys kartki treści | 1 |
+| karty workspace | 32 |
+| pasek loadoutu | 52 |
+| **razem** | **93** |
+
+Trzy piksele zapasu. Naiwna wersja pływającej kartki dawała 100 — projekt się ścisnął, limit nie
+drgnął. §7 mówi wprost: kolejny pasek wymaga usunięcia innego, nie negocjacji limitu.
+
+Suma jest **mierzona z dwóch stron**, bo żadna nie widzi wszystkiego: strona makiety czyta
+cztery reguły CSS, strona aplikacji sumuje rodzeństwo nad treścią plus własny odstęp kontenera.
+Obrysu zadeklarowanego klasą nie da się odczytać z renderu — i to jest w obu miejscach zapisane,
+a nie przemilczane.
+
+### Trzy klasy materiału
+
+| Klasa | Czym jest | Kto ją nosi |
+|---|---|---|
+| `.glass` | wypełnienie, rozmycie, refleks na górnej krawędzi | pasek, szyna, karty |
+| `.pane` | `.glass`, które **pływa**: promień `lg`, obrys mocny, cień | nawigacja |
+| `.paper` | nieprzejrzysta kartka, promień `md`, obrys `line` | treść |
+
+Definicje mieszkają w warstwie `components` arkusza, nie w komponentach: rozmycie zapisane
+w komponencie jest literałem dokładnie tam, gdzie `checks/quick-tokens.sh` go zamyka, a przy
+trzech powierzchniach szklanych byłyby to trzy kopie jednej decyzji.
+
+**`prefers-reduced-transparency: reduce` zamienia wszystkie trzy naraz** na `--solid` i zdejmuje
+aurorę. Wymóg HIG. Zamiana jednej z trzech jest gorsza niż żadnej: okno miesza wtedy dwa
+materiały dla jednego rodzaju powierzchni.
+
+### Ikony: gramatyka, nie ozdoba
+
+| Forma | Znaczy | Kto ją dostaje |
+|---|---|---|
+| węzły i krawędzie | rzecz, która **jest** grafem | Workflows |
+| płyty | rzecz, która jest **zbiorem** | Agents, Skills, Memory |
+| trójkąt | jedyna rzecz, która się **dzieje** | Run |
+
+To niezmiennik 17 przeniesiony na ikonografię: nie rysujemy relacji tam, gdzie relacji nie ma.
+Ikona z dwoma okręgami połączonymi linią obiecuje zależność — jeśli jej w danych nie ma, kłamie
+dokładnie tak samo jak ozdobna krzywa między zakodowanymi na sztywno współrzędnymi.
 
 ---
 
@@ -353,13 +425,19 @@ jedno zdanie instrukcji w `--muted`, jeden przycisk podstawowy.
 ## 7. Ruch
 
 Jedna mikrointerakcja w całym systemie: `transform: scale(0.98)` na wciśnięciu.
+Krzywa jest jedna i pochodzi z domu: `--transition 200ms cubic-bezier(0.32, 0.72, 0, 1)`,
+wariant szybki `--transition-fast 130ms`.
 
 Poza tym:
-- Zmiana treści w strefie TERAZ: bez animacji. Tekst po prostu jest inny. Animowanie przepisania
-  linii sprawia, że oko goni ruch zamiast czytać.
-- Wejście nowej linii historii: `opacity 0 → 1` w `120ms ease-out`. Bez przesunięcia.
-- Pulsowanie: **tylko** kropka aktywnego agenta, `opacity 1 → 0.35`, `1.4s steps(2)`.
+- Zmiana treści w strefie TERAZ: **bez animacji**. Tekst po prostu jest inny. Animowanie
+  przepisania linii sprawia, że oko goni ruch zamiast czytać.
+- Wejście nowej linii historii: `opacity 0 → 1` w `--transition-fast`. Bez przesunięcia.
+- Pulsowanie: **tylko** kropka pracującego agenta, `opacity 1 → 0.35`, `1.4s steps(2)`.
   Skokowo, nie płynnie — płynne pulsowanie czyta się jak oddychanie i rozprasza.
+- **Kropka gotowości w stopce nie pulsuje i nie jest akcentem.** Dostępność dostawcy nie jest
+  ani interakcją, ani „teraz"; jest przygaszona i stoi w miejscu. Sufit z `ARCHITECTURE §7` daje
+  **dwa** regiony animujące się od jednego zdarzenia i ta kropka nie ma prawa być jednym z nich.
+- `--ease-spring` z domu **nie wchodzi**: nie mamy ani jednej powierzchni, która wjeżdża.
 
 `@media (prefers-reduced-motion: reduce)` wyłącza wszystko powyżej.
 
