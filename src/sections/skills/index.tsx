@@ -44,6 +44,15 @@ export interface SkillsScreenProps {
 const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
 const SECONDARY = 'h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
 const FIELD = 'h-8 rounded-sq border border-line-strong bg-well px-2 font-mono text-mono text-ink';
+/* Pole na ZDANIE, nie na adres. `FIELD` wyżej jest monospace z powodu: trzyma URL-a, a w adresie
+   liczy się każdy znak z osobna. Odpowiedź na „kiedy tego użyć" jest prozą i w monospace czyta
+   się jak dane do sprawdzenia, a nie jak zdanie do napisania. */
+const ANSWER = 'h-8 rounded-sq border border-line-strong bg-well px-2 text-body text-ink';
+/* „Co zrobić" jest ciałem `SKILL.md`, więc bywa akapitem — pole jednowierszowe pokazywałoby
+   z niego okno o szerokości ośmiu słów. Wysokość z `.fld textarea` w makiecie. */
+const ANSWER_LONG = 'min-h-24 rounded-sq border border-line-strong bg-well p-2 text-body text-ink';
+const LABEL = 'text-label text-muted';
+const ROW = 'flex flex-col gap-1';
 /* `button-danger` z DESIGN §6: jak `button-secondary`, ale obrys `--fail-edge` i tekst
  * `--fail`, BEZ WYPEŁNIENIA — akcja niszcząca ma być rozpoznawalna, a nie najgłośniejsza. */
 const DANGER = 'h-8 rounded-sq border border-fail-edge px-3 text-ui text-fail';
@@ -82,13 +91,15 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
   useEffect(() => {
     void store.getState().load();
   }, [store]);
-  /* Adres wklejany przez człowieka. `null` znaczy, że pole jest zamknięte — jedno miejsce
-   * na to pytanie (niezmiennik 13), a nie osobna flaga „czy otwarte" obok wartości, która
-   * potrafi się z nią rozjechać. */
+  /* Co człowiek wpisał w panelu dodawania — adres ALBO trzy odpowiedzi. `null` znaczy, że
+   * panel jest zamknięty: jedno miejsce na to pytanie (niezmiennik 13), a nie osobna flaga
+   * „czy otwarty" obok treści, która potrafi się z nią rozjechać. */
   const empty = state.installed.length === 0 && state.pending === null;
   const panel = state.adding;
 
-  const openLink = (): void => {
+  /* Jedna funkcja na oba przyciski `data-create` — ten w nagłówku i ten na pustym ekranie.
+   * Nigdy nie stoją w dokumencie naraz i otwierają ten sam panel. */
+  const openPanel = (): void => {
     store.getState().openAdd();
   };
 
@@ -103,7 +114,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
         {empty ? null : (
           <>
             <span className="font-mono text-mono text-muted">{`${String(state.installed.length)} saved`}</span>
-            <button data-create type="button" className={`ml-auto ${PRIMARY}`} onClick={openLink}>
+            <button data-create type="button" className={`ml-auto ${PRIMARY}`} onClick={openPanel}>
               ＋ Add a skill
             </button>
           </>
@@ -111,54 +122,144 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {panel === null ? null : (
-          <form
-            data-add-panel
-            className="mx-auto mb-6 flex max-w-160 flex-col gap-2 rounded-sq border border-line bg-panel p-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void store.getState().review(panel.link);
-              store.getState().closeAdd();
-            }}
-          >
-            <label htmlFor="skill-link" className="text-label text-muted">
-              Link
-            </label>
-            <input
-              id="skill-link"
-              className={FIELD}
-              value={panel.link}
-              onChange={(event) => {
-                store.getState().typeInto({ link: event.target.value });
-              }}
-            />
-            {/* SZKIELET (T-42, faza kontraktu): TRZECH PYTAŃ TU NIE MA, i to jest dzisiejszy
-                stan sekcji — panel przyjmuje wyłącznie adres, dokładnie tyle, ile umie
-                `review_skill(url)` po drugiej stronie granicy. Zaproszenie „Paste a link, or
-                write one yourself" niżej obiecuje więc kontrolkę, której nie ma — to jest
-                niezmiennik 16 od drugiej strony — a AC-3 (b), (c) i (d) mierzą dokładnie to.
-                Trzy pytania [T5 §8.3] i kontrolka oddająca odpowiedzi wchodzą TUTAJ, pod tym
-                samym przyciskiem `data-create`, nie obok niego.
+        {/* DWA WEJŚCIA, JEDEN PANEL, JEDEN PRZYCISK, KTÓRY GO OTWIERA.
+            Adres i umiejętność napisana tutaj to jedna decyzja z dwiema odpowiedziami, a nie
+            dwie decyzje — drugie zaproszenie obok pierwszego byłoby dwiema odpowiedziami na
+            pytanie „jak dodać umiejętność" (niezmiennik 13).
 
-                Treść panelu jest już czytana z magazynu (`state.adding`), a nie z `useState`
-                ekranu, i to nie jest ustępstwo na rzecz testu: odmowa z Rusta ma zostawić
-                wpisany akapit na ekranie, więc pola muszą leżeć tam, gdzie ląduje odmowa
-                (niezmiennik 13). */}
-            <div className="flex items-center gap-2">
-              <button type="submit" className={SECONDARY}>
+            2026-08-19 — DO TEGO DNIA PANEL PRZYJMOWAŁ WYŁĄCZNIE ADRES, dokładnie tyle, ile
+            umiało `review_skill(url)` po drugiej stronie granicy. Pusty ekran obiecywał przy
+            tym „Paste a link, or write one yourself", więc obietnica stała bez kontrolki —
+            ten sam defekt, co kontrolka bez skutku, tylko odwrócony (niezmiennik 16), i
+            droższy, bo człowiek szuka przycisku, którego nie ma, zamiast zgłosić jego brak.
+
+            DWA `<form>`, NIE JEDEN. Enter w polu wysyła formularz, w którym to pole stoi —
+            przy jednym formularzu Enter wpisany w nazwę odpalałby czytanie PUSTEGO adresu.
+            Panel jest za to jeden i to on nosi `data-add-panel`.
+
+            Treść panelu mieszka w magazynie (`state.adding`), nie w `useState` ekranu, i to
+            nie jest ustępstwo na rzecz testu: odmowa z Rusta ma zostawić wpisany akapit na
+            ekranie, więc pola muszą leżeć tam, gdzie ląduje odmowa (niezmiennik 13). */}
+        {panel === null ? null : (
+          <div
+            data-add-panel
+            className="mx-auto mb-6 flex max-w-160 flex-col gap-4 rounded-sq border border-line bg-panel p-4"
+          >
+            <form
+              className={ROW}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void store.getState().review(panel.link);
+                store.getState().closeAdd();
+              }}
+            >
+              <label htmlFor="skill-link" className={LABEL}>
+                Link
+              </label>
+              <input
+                id="skill-link"
+                className={FIELD}
+                value={panel.link}
+                onChange={(event) => {
+                  store.getState().typeInto({ link: event.target.value });
+                }}
+              />
+              <button type="submit" className={`mt-1 mr-auto ${SECONDARY}`}>
                 Read it
               </button>
-              <button
-                type="button"
-                className={SECONDARY}
-                onClick={() => {
-                  store.getState().closeAdd();
-                }}
-              >
-                Cancel
+            </form>
+
+            {/* TRZY PYTANIA I DOKŁADNIE TRZY [T5 §8.3]: jak się nazywa, kiedy tego użyć, co
+                zrobić. Czwartym w badaniu jest zakres („ten projekt / wszędzie") i tu go NIE
+                MA z rozmysłu — zakres zostaje globalny, dokładnie jak na drodze adresu, a
+                wybór jest osobnym zadaniem (T-44). Pytanie postawione bez skutku byłoby tą
+                samą obietnicą bez kontrolki, którą ten commit zdejmuje.
+
+                ETYKIETY SĄ PYTANIAMI, a nie nazwami pól `SKILL.md`. „When should the agent
+                use it?" jest tym, co w pliku nazywa się `description`, i pytanie zadane wprost
+                jest jedynym powodem, dla którego człowiek pisze tam prawdziwy warunek zamiast
+                drugiego tytułu — a to jest pole, po którym model decyduje, czy w ogóle sięgnąć
+                (T5 §8.3). Nazwa pola z pliku nie pada tu ani razu (niezmiennik 14).
+
+                SLUGA TU NIE LICZYMY. „Review pull requests" zamienia się w katalog
+                `review-pull-requests` po tamtej stronie granicy i tylko tam (`slug_of`).
+                Policzony drugi raz tutaj rozjechałby się z tamtym na pierwszym znaku spoza
+                ASCII, a rozjazd widać dopiero jako katalog o innej nazwie niż zdanie, które
+                człowiek przeczytał (niezmiennik 13). Człowiek widzi go raz — w nagłówku karty
+                przeglądu, która wraca z Rusta z policzoną nazwą. */}
+            <form
+              className="flex flex-col gap-2 border-t border-line pt-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                /* Bez `closeAdd()`: panel zamyka sam magazyn i TYLKO po udanym zapisie.
+                   Zamknięty tutaj, bezwarunkowo, zabierałby ze sobą trzy odpowiedzi za każdym
+                   razem, gdy Rust odmówi — a wtedy człowiek czyta jedno zdanie o nazwie
+                   i pisze akapit drugi raz. */
+                void store.getState().writeItHere();
+              }}
+            >
+              <div className={ROW}>
+                <label htmlFor="skill-name" className={LABEL}>
+                  What should it be called?
+                </label>
+                <input
+                  id="skill-name"
+                  data-question="name"
+                  className={ANSWER}
+                  value={panel.name}
+                  onChange={(event) => {
+                    store.getState().typeInto({ name: event.target.value });
+                  }}
+                />
+              </div>
+
+              <div className={ROW}>
+                <label htmlFor="skill-when-to-use" className={LABEL}>
+                  When should the agent use it?
+                </label>
+                <input
+                  id="skill-when-to-use"
+                  data-question="whenToUse"
+                  className={ANSWER}
+                  value={panel.whenToUse}
+                  onChange={(event) => {
+                    store.getState().typeInto({ whenToUse: event.target.value });
+                  }}
+                />
+              </div>
+
+              <div className={ROW}>
+                <label htmlFor="skill-what-to-do" className={LABEL}>
+                  What should it do?
+                </label>
+                <textarea
+                  id="skill-what-to-do"
+                  data-question="whatToDo"
+                  className={ANSWER_LONG}
+                  value={panel.whatToDo}
+                  onChange={(event) => {
+                    store.getState().typeInto({ whatToDo: event.target.value });
+                  }}
+                />
+              </div>
+
+              <button type="submit" data-write-it-yourself className={`mt-1 mr-auto ${SECONDARY}`}>
+                Save this skill
               </button>
-            </div>
-          </form>
+            </form>
+
+            {/* Wyjście z panelu jest jedno, bo panel jest jeden. Po jednym „Cancel" na wejście
+                człowiek musiałby wiedzieć, które z dwóch właśnie zamyka. */}
+            <button
+              type="button"
+              className={`mr-auto ${SECONDARY}`}
+              onClick={() => {
+                store.getState().closeAdd();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
         )}
 
         {/* Zdanie od magazynu: odmowa instalacji albo link, którego nie dało się przeczytać.
@@ -177,7 +278,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
               No skills yet.
             </p>
             <p className="text-muted">Paste a link, or write one yourself.</p>
-            <button data-create type="button" className={PRIMARY} onClick={openLink}>
+            <button data-create type="button" className={PRIMARY} onClick={openPanel}>
               ＋ Add a skill
             </button>
           </div>
