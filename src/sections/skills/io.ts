@@ -13,21 +13,28 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Authored, Import, InstalledSkill } from '../../state/skills';
+import type { Authored, Import, InstalledSkill, Landing } from '../../state/skills';
 
 /**
- * Co naprawdę leży w katalogach agentów.
+ * Co naprawdę leży w katalogach agentów, które czyta agent pracujący w TYM folderze.
  *
  * 2026-08-18 — do tego dnia ta droga nie istniała, a skutek był zmierzony: `install` pisało na
  * dysk, okno nigdy tego nie odczytywało, więc licznik „N saved" pokazywał wyłącznie to, co
  * dodano w TEJ sesji, a zainstalowana umiejętność znikała po restarcie. Niezmiennik 4 mówi
  * odwrotnie: pliki są prawdą, a ekran ma pokazywać je, a nie swoją pamięć.
  *
- * Bez argumentów: katalogi vendorów wylicza Rust (`skills::place::destinations`) i to jest
- * jedyne miejsce, w którym stoi ścieżka `.claude/skills`.
+ * 2026-08-19 — JEDZIE FOLDER, NIE ZAKRES. Lista odpowiada na jedno pytanie: „co widzi agent
+ * pracujący tutaj". Przy otwartym zakresie odpowiedź obejmuje oba korzenie, bo agent zagląda
+ * w oba — więc wybór „ten projekt / wszędzie" nie ma tu czego rozstrzygać. Sam folder wystarcza,
+ * a katalogi wylicza dalej Rust (`skills::place::destinations`) i to jest jedyne miejsce,
+ * w którym stoi ścieżka `.claude/skills`.
+ *
+ * `null` znaczy „nie ma otwartego zakresu" i jest wartością, nie brakiem argumentu: klucz musi
+ * dojechać, bo Tauri dopasowuje argumenty PO NAZWIE i deserializuje je, zanim wejdzie w ciało
+ * komendy.
  */
-export function listSkills(): Promise<InstalledSkill[]> {
-  return invoke<InstalledSkill[]>('list_skills');
+export function listSkills(folder: string | null): Promise<InstalledSkill[]> {
+  return invoke<InstalledSkill[]>('list_skills', { folder });
 }
 
 /**
@@ -88,13 +95,18 @@ export function stopWriting(): Promise<void> {
 }
 
 /**
- * Zapisz przejrzaną umiejętność w katalogach vendorów.
+ * Zapisz przejrzaną umiejętność w katalogach vendorów wybranego zakresu.
  *
  * Jedzie CAŁY przegląd, nie samo ciało: na dysk ma trafić dokładnie ten tekst, który został
  * przeskanowany, a nie tekst złożony jeszcze raz po drodze.
+ *
+ * 2026-08-19 — JEDZIE TEŻ WYBÓR I FOLDER. Zakres bez korzenia projektu nie odmawia po tamtej
+ * stronie po cichu — `place::destinations` oddaje wtedy ścieżki WZGLĘDNE — więc obie wartości
+ * jadą razem, a odpowiedź „który to projekt" liczy Rust jedną funkcją, tą samą, którą pyta
+ * o nią Start biegu.
  */
-export function install(item: Import): Promise<void> {
-  return invoke<void>('install_skill', { item });
+export function install(item: Import, landing: Landing, folder: string | null): Promise<void> {
+  return invoke<void>('install_skill', { item, landing, folder });
 }
 
 /**
@@ -110,7 +122,11 @@ export function install(item: Import): Promise<void> {
  * (`skills::place::destinations`) i to jest jedyne miejsce w repo, w którym stoi
  * `.claude/skills`. Ścieżka podana z okna byłaby drugą odpowiedzią na pytanie „gdzie to leży"
  * (niezmiennik 13) — i jedyną, którą da się skierować gdziekolwiek.
+ *
+ * 2026-08-19 — ZAKRES I FOLDER, bo ta sama nazwa w dwóch zakresach to dwie rzeczy. „Zabierz
+ * z tego projektu" ma zostawić kopię, która leży u człowieka i jest używana przez każdy inny
+ * projekt; zabranie obu naraz jest inną czynnością, o którą nikt nie prosił.
  */
-export function remove(name: string): Promise<void> {
-  return invoke<void>('delete_skill', { name });
+export function remove(name: string, landing: Landing, folder: string | null): Promise<void> {
+  return invoke<void>('delete_skill', { name, landing, folder });
 }

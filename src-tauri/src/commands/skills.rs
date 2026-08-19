@@ -200,20 +200,42 @@ pub struct Authored {
     pub what_to_do: String,
 }
 
-/// Korzenie instalacji dla zakresu globalnego, wyprowadzone z katalogu biblioteki.
+/// Gdzie umiejętność ma wylądować — pytanie z okna, w słowach okna [T5 §8.3].
+///
+/// DWIE WARTOŚCI I ANI JEDNEJ WIĘCEJ, bo tyle znają vendorzy: „u mnie" i „w tym repo".
+///
+/// OSOBNY TYP OD [`Scope`], mimo że odwzorowanie jest jeden-do-jednego — i to nie jest warstwa
+/// tłumaczeń na zapas. [`Scope`] jest słowem RDZENIA: `skills::place` liczy nim ścieżki i to on
+/// zostaje, kiedy okna nie ma (osobny daemon). To jest słowo DRUTU, czyli pozycja wyboru, którą
+/// człowiek czyta jako „This project" i „Everywhere" — a enum z drutu nigdy nie trafia na ekran
+/// (niezmiennik 14), więc napis dla człowieka liczy okno i tylko okno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Landing {
+    /// Korzeń otwartego projektu — umiejętność jedzie z nim do zespołu.
+    ThisProject,
+    /// Katalog domowy — umiejętność widoczna w każdym projekcie.
+    Everywhere,
+}
+
+/// Korzenie rozmieszczania: dom wyprowadzony z katalogu biblioteki, korzeń projektu z okna.
 ///
 /// `~/.loadout` leży **w** katalogu domowym, więc jego rodzic jest tym katalogiem. To nie jest
 /// oszczędność argumentu: jedyne pytanie o `HOME` w całej aplikacji stoi w `lib.rs::loadout_dir`
 /// i ma tam zostać jedno (niezmiennik 13). Drugi odczyt `HOME` tutaj znaczyłby też, że każdy
 /// test pisze do prawdziwych katalogów vendorów.
 ///
-/// `project: None`, bo okno nie przysyła zakresu — a `plan` odmawia zakresu projektowego bez
-/// korzenia, zamiast zgadywać katalog roboczy.
+/// 2026-08-19 — KORZEŃ PROJEKTU PRZYJEŻDŻA ARGUMENTEM I NIGDY NIE JEST TU ZGADYWANY. Do tego dnia
+/// stała tu funkcja `global_roots` z wpisanym `project: None` i była JEDYNYM konstruktorem
+/// [`Roots`] w produkcji — czyli cały zakres projektowy z T-18 był napisany, przetestowany
+/// i nieosiągalny z aplikacji. `None` znaczy „nie ma otwartego projektu"; wtedy
+/// [`crate::skills::place::plan`] odmawia zakresu projektowego, zamiast pisać po katalogu
+/// roboczym procesu (`destinations` oddaje bez korzenia ścieżki WZGLĘDNE).
 #[must_use]
-fn global_roots(library: &Path) -> Roots {
+fn roots_for(library: &Path, project: Option<&Path>) -> Roots {
     Roots {
         home: library.parent().unwrap_or(library).to_path_buf(),
-        project: None,
+        project: project.map(Path::to_path_buf),
         data: library.to_path_buf(),
     }
 }
@@ -271,8 +293,16 @@ pub struct InstalledWire {
 ///
 /// Katalog, którego nie ma, daje **pustą listę**. Brak umiejętności to stan, nie awaria —
 /// czerwony pasek na świeżej instalacji uczy człowieka ignorować czerwone paski.
-pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
-    let roots = global_roots(library);
+///
+/// # Po co tu korzeń projektu
+///
+/// Bo lista odpowiada na pytanie „co widzi agent pracujący TUTAJ", a nie „co kiedykolwiek
+/// zapisaliśmy" (niezmiennik 4: pliki są prawdą). Umiejętność zapisana „w tym projekcie"
+/// i niewidoczna na liście jest umiejętnością, której człowiek nie ma jak zabrać — a ta sekcja
+/// pisze do żywej konfiguracji jego narzędzi agentowych. `None` znaczy „nie ma otwartego
+/// projektu" i wtedy widać wyłącznie korzeń globalny.
+pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<InstalledWire>, Error> {
+    let roots = roots_for(library, project);
     // Zbiór, nie wektor: ta sama umiejętność stoi w OBU katalogach docelowych, bo instalacja
     // pisze w oba. Lista z powtórzeniem pokazałaby człowiekowi dwa wiersze o jednym pliku
     // i policzyłaby go dwa razy w liczniku nad sekcją.
@@ -322,6 +352,19 @@ pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
             name,
         })
         .collect())
+}
+
+/// To, co widzi agent bez otwartego projektu — czyli sam korzeń globalny.
+///
+/// 2026-08-19 — DLACZEGO TA SYGNATURA ZOSTAJE, choć produkcja woła już [`list_skills_in`].
+/// Wołają ją trzy pliki testowe, których T-44 nie ma w bloku `<!-- OWNS -->`:
+/// `tests/it/ipc_read_paths.rs`, `tests/it/skills_author_origin.rs` i `tests/flow_skill.rs`.
+/// Dwa pierwsze są modułami TEGO SAMEGO celu (`tests/it/main.rs`), co kryteria tego zadania,
+/// więc zmiana arności zamieniłaby każde z nich w „nie da się skompilować celu" — a to jest
+/// podpis, którego bramka nie liczy jako czerwieni (AGENTS.md §2a pkt 5). Ten sam powód
+/// stoi przy [`install_skill_inner`] i [`delete_skill_inner`].
+pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
+    list_skills_in(library, None)
 }
 
 /// Zdejmuje katalog, jeżeli tam jest. Brak katalogu to **nie** jest awaria.
@@ -738,7 +781,24 @@ fn settled(composed: &str) -> String {
 /// Zgoda na znaleziska blokujące jest warunkiem WYWOŁANIA i mieszka w magazynie sekcji
 /// (`src/state/skills.ts`, T-19). Drugie sprawdzenie tutaj byłoby drugim miejscem, w którym
 /// mieszka odpowiedź na pytanie „czy człowiek to przeczytał" (niezmiennik 13).
-pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
+///
+/// # Zakres przyjeżdża z okna, korzeń projektu też
+///
+/// Wybór „ten projekt / wszędzie" jest odpowiedzią człowieka, a nie stałą tej warstwy, i jedzie
+/// razem z korzeniem projektu — tym samym, którego używa bieg (`AppState::project_for`). Dwie
+/// odpowiedzi na „który to projekt" rozjadą się pierwszego dnia, w którym ktoś przełączy kartę
+/// (niezmiennik 13). `project: None` z zakresem projektowym jest ODMOWĄ z rdzenia, nigdy
+/// katalogiem roboczym procesu.
+pub fn install_skill_into(
+    library: &Path,
+    name: &str,
+    // SZKIELET, 2026-08-19 — podkreślenie jest CAŁYM defektem tej wersji i znika razem z nią:
+    // wybór z okna dojeżdża do sygnatury i NIE dojeżdża do `place::plan` niżej, gdzie stoi
+    // `Scope::Global` wpisany na sztywno. Kryteria T-44 AC-1 i AC-2 stoją właśnie na tym
+    // odwzorowaniu, więc dopóki ten argument jest ignorowany, oba są czerwone.
+    _landing: Landing,
+    project: Option<&Path>,
+) -> Result<Vec<PathBuf>, Error> {
     let canonical = library.join(SKILLS_DIR).join(name);
     let import = ingest::from_folder(&canonical).map_err(|error| Error::Invalid {
         // Nazwa przychodzi z okna, więc katalog może nie istnieć — a `place::Error` nie ma
@@ -749,12 +809,19 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
         )],
     })?;
 
-    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`. Zakres jest
-    // globalny, bo okno nie przysyła innego; korzenie wyprowadza `global_roots`.
-    let roots = global_roots(library);
+    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`.
+    let roots = roots_for(library, project);
     let plan = crate::skills::place::plan(&import.skill, Scope::Global, &roots)?;
     crate::skills::place::apply(&plan, &import.skill)?;
     Ok(plan.writes)
+}
+
+/// Zapis w zakresie globalnym, bez pytania o projekt.
+///
+/// Powód, dla którego ta sygnatura zostaje obok [`install_skill_into`], stoi
+/// przy [`list_skills_inner`].
+pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
+    install_skill_into(library, name, Landing::Everywhere, None)
 }
 
 /// Zdejmuje umiejętność z katalogów agentów.
@@ -779,7 +846,21 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
 /// - **Nic tam nie było.** Osobne zdanie, nie ciche `Ok(())`. Przycisk, który melduje sukces,
 ///   choć nic nie zaszło, jest tym samym defektem, który to zadanie naprawia — a jedyny stan,
 ///   w którym to się zdarza, to lista starsza niż dysk, i o tym właśnie ma być to zdanie.
-pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
+///
+/// # Ta sama nazwa w dwóch zakresach to dwie rzeczy
+///
+/// Dlatego zakres jedzie argumentem: zdjęcie umiejętności „z tego projektu" ma zostawić kopię
+/// globalną nietkniętą, i odwrotnie. Zabranie obu naraz jest inną czynnością, o którą nikt nie
+/// prosił — a kopia zabrana „przy okazji" znika z katalogów, do których zagląda Claude Code
+/// tego człowieka, bez ani jednego zdania na ekranie.
+pub fn delete_skill_from(
+    library: &Path,
+    name: &str,
+    // SZKIELET, 2026-08-19 — ten sam brak, co w [`install_skill_into`]: wybór dojeżdża do
+    // sygnatury i nie dojeżdża do `place::remove`, gdzie stoi `Scope::Global`.
+    _landing: Landing,
+    project: Option<&Path>,
+) -> Result<(), Error> {
     // Nazwa przychodzi z okna, więc jest wejściem, któremu nie ufamy (T3 §5.2). Sidecar
     // obroniłby nas i tak — `<katalog>/../..` nie stoi na liście „to napisał Loadout", więc
     // `remove` odmówiłby — ale odmowa po ludzku ma padać PRZED dotknięciem dysku, i ma mówić
@@ -792,7 +873,7 @@ pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
         });
     }
 
-    let roots = global_roots(library);
+    let roots = roots_for(library, project);
     match crate::skills::place::remove(name, Scope::Global, &roots)? {
         crate::skills::place::Removed::Done { paths } if paths.is_empty() => Err(Error::Invalid {
             messages: vec![format!(
@@ -807,6 +888,14 @@ pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
             messages: vec![format!("{why} ({}). Nothing was removed.", path.display())],
         }),
     }
+}
+
+/// Zdjęcie z zakresu globalnego, bez pytania o projekt.
+///
+/// Powód, dla którego ta sygnatura zostaje obok [`delete_skill_from`], stoi
+/// przy [`list_skills_inner`].
+pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
+    delete_skill_from(library, name, Landing::Everywhere, None)
 }
 
 // ── Draft: jedna tura POZA grafem ──────────────────────────────────────────────────────────

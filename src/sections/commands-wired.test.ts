@@ -199,12 +199,18 @@ const WIRES: readonly Wire[] = [
     given: ['https://example.invalid/skills/pdf/SKILL.md'],
     call: () => skills.readLink('https://example.invalid/skills/pdf/SKILL.md'),
   },
+  /* 2026-08-19 (T-44) — TE TRZY KRAWĘDZIE NIOSĄ TERAZ WYBÓR MIEJSCA I FOLDER. Nic tu nie
+   * usunięto: zmieniło się `given` i `call` w trzech istniejących wierszach, bo `install_skill`,
+   * `list_skills` i `delete_skill` przyjmują po tamtej stronie granicy o dwa (i o jeden)
+   * argumenty więcej. Wiersz, który wołałby je po staremu, wysyłałby klucze, których Rust już
+   * nie ma — a Tauri dopasowuje argumenty PO NAZWIE, więc byłoby to wywołanie ODRZUCONE, nie
+   * mniejsze. */
   {
     where: 'skills',
     what: 'install',
     command: 'install_skill',
-    given: [SKILL],
-    call: () => skills.install(SKILL),
+    given: [SKILL, LANDING, FOLDER],
+    call: () => skills.install(SKILL, LANDING, FOLDER),
   },
   {
     where: 'memory',
@@ -236,8 +242,8 @@ const WIRES: readonly Wire[] = [
     where: 'skills',
     what: 'listSkills',
     command: 'list_skills',
-    given: [],
-    call: () => skills.listSkills(),
+    given: [FOLDER],
+    call: () => skills.listSkills(FOLDER),
   },
   /* 2026-08-18 (fala pieciu sekcji) — DWIE KOLEJNE KRAWEDZIE, znowu dopisane, znowu nic
    * nie usuniete. Ten plik zlapal je w tej samej godzinie, w ktorej powstaly, i to jest jego

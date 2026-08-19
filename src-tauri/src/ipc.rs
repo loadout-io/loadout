@@ -536,28 +536,10 @@ impl AppState {
     ///
     /// Każda odmowa mówi, co zrobić (DESIGN §8). Zdanie „os error 2" nie mówi nic.
     fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
-        let Some(folder) = folder.map(str::trim).filter(|folder| !folder.is_empty()) else {
-            // Brak wyboru jest wartością, nie błędem: dopóki nikt nie otworzył karty, biegniemy
-            // tam, gdzie aplikacja wstała.
-            return Ok(self.project.clone());
-        };
-        let path = PathBuf::from(folder);
-        if !path.is_absolute() {
-            return Err(format!(
-                "Loadout needs the whole path to the folder you want to work in, and \"{folder}\" \
-                 is only part of one. Open the folder again from the tab bar."
-            ));
-        }
-        match fs::metadata(&path) {
-            Ok(what) if what.is_dir() => Ok(path),
-            Ok(_) => Err(format!(
-                "\"{folder}\" is a file, not a folder. Pick the folder your project lives in."
-            )),
-            Err(_) => Err(format!(
-                "The folder \"{folder}\" is not there any more, so nothing was started. Open it \
-                 again from the tab bar."
-            )),
-        }
+        // Brak wyboru jest wartością, nie błędem: dopóki nikt nie otworzył karty, biegniemy
+        // tam, gdzie aplikacja wstała. Sam FOLDER sprawdza [`project_folder`] i to jest jedyne
+        // miejsce, w którym te trzy zdania odmowy mieszkają.
+        Ok(project_folder(folder)?.unwrap_or_else(|| self.project.clone()))
     }
 
     /// Nazwa pliku z okna → żądanie biegu.
@@ -571,6 +553,49 @@ impl AppState {
         task: Option<String>,
     ) -> Result<RunRequest, String> {
         run_request(self.home.as_path(), file_name, how_many_at_once, task)
+    }
+}
+
+/// Folder przysłany z okna → korzeń projektu, albo zdanie o tym, czego z nim nie da się zrobić.
+///
+/// JEDNA ODPOWIEDŹ NA PYTANIE „KTÓRY TO PROJEKT" (niezmiennik 13) — i to jest cały powód, dla
+/// którego ta funkcja istnieje osobno. Bieg pyta o to przez [`AppState::project_for`], a od
+/// 2026-08-19 pyta też instalacja umiejętności w zakresie „ten projekt": obie drogi dostają
+/// ścieżkę z `activeWorkspace()` w oknie i obie muszą odmówić tym samym zdaniem. Druga kopia
+/// tych trzech warunków znaczyłaby, że człowiek czyta o folderze co innego zależnie od tego,
+/// czy nacisnął Run, czy „Add this skill".
+///
+/// `Ok(None)` znaczy „okno nic nie przysłało", czyli **nie ma otwartego zakresu** — i to jest
+/// wartość, nie błąd. Co z nią zrobić, decyduje wołający: bieg bierze wtedy katalog, pod którym
+/// wstała aplikacja, a instalacja projektowa odmawia zdaniem z rdzenia
+/// (`skills::Error::NoProjectRoot`), bo zgadnięty korzeń zapisuje umiejętność w losowym miejscu.
+///
+/// WOLNA FUNKCJA, A NIE METODA [`AppState`], z tego samego powodu, co [`run_request`]: tamten
+/// typ niesie [`Store`] i [`Drivers`], więc test tej zapory musiałby otworzyć bazę i zbudować
+/// fabrykę sterowników, żeby sprawdzić trzy warunki na napisie. Zapora, której koszt sprawdzenia
+/// jest wyższy niż koszt napisania, jest zaporą niesprawdzoną.
+///
+/// Każda odmowa mówi, co zrobić (DESIGN §8). Zdanie „os error 2" nie mówi nic.
+pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(folder) = folder.map(str::trim).filter(|folder| !folder.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(folder);
+    if !path.is_absolute() {
+        return Err(format!(
+            "Loadout needs the whole path to the folder you want to work in, and \"{folder}\" \
+             is only part of one. Open the folder again from the tab bar."
+        ));
+    }
+    match fs::metadata(&path) {
+        Ok(what) if what.is_dir() => Ok(Some(path)),
+        Ok(_) => Err(format!(
+            "\"{folder}\" is a file, not a folder. Pick the folder your project lives in."
+        )),
+        Err(_) => Err(format!(
+            "The folder \"{folder}\" is not there any more, so nothing was started. Open it \
+             again from the tab bar."
+        )),
     }
 }
 
@@ -740,15 +765,42 @@ pub fn author_skill(
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje przejrzaną umiejętność w katalogach vendorów.
+/// Zapisuje przejrzaną umiejętność w katalogach vendorów wybranego zakresu.
 #[tauri::command]
-pub fn install_skill(item: commands::skills::ImportWire) -> Result<(), String> {
+pub fn install_skill(
+    item: commands::skills::ImportWire,
+    landing: commands::skills::Landing,
+    folder: Option<&str>,
+) -> Result<(), String> {
     // Rozbiór, a nie `item.name`: z całego przeglądu Rust bierze WYŁĄCZNIE nazwę, bo bajty do
     // zapisania czyta z kopii kanonicznej — z tych samych, które przeskanował i pokazał
     // człowiekowi. Ten jeden wiersz mówi to wprost i nie da się go przeczytać inaczej.
     let commands::skills::ImportWire { name, .. } = item;
-    commands::skills::install_skill_inner(&crate::loadout_dir(), &name)
-        .map(|_| ())
+    install_reviewed_skill(&crate::loadout_dir(), &name, landing, folder).map(|_| ())
+}
+
+/// Ciało [`install_skill`] z biblioteką podaną **argumentem**.
+///
+/// WOLNA FUNKCJA Z TEGO SAMEGO POWODU, CO [`run_request`] i [`project_folder`]: skorupa liczy
+/// bibliotekę przez `crate::loadout_dir()`, czyli z prawdziwego `HOME`, więc test tej drogi
+/// pisałby do katalogów vendorów człowieka, który go uruchomił. A sprawdzić trzeba właśnie ją:
+/// to jest jedyne miejsce, w którym zakres z okna spotyka się z korzeniem projektu, i jedyne,
+/// w którym da się pomylić „nie ma otwartego projektu" z „zapisz gdziekolwiek".
+///
+/// Oddaje ścieżki z planu, bo to jest jedyna odpowiedź na pytanie „co się właśnie stało";
+/// skorupa wyżej zwija je do `()`, bo okno pyta tylko o to, czy się udało.
+pub fn install_reviewed_skill(
+    library: &Path,
+    name: &str,
+    landing: commands::skills::Landing,
+    folder: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
+    // SZKIELET, 2026-08-19 — TU JEST DEFEKT TEJ WERSJI: folder z okna jedzie dalej bez ani
+    // jednego pytania, więc ścieżka względna albo katalog, którego nie ma, dojeżdża do
+    // rozmieszczania zamiast odbić się zdaniem z [`project_folder`]. T-44 AC-1 (d) stoi
+    // dokładnie na tym: jedna odpowiedź na „który to projekt", nie dwie.
+    let project = folder.map(PathBuf::from);
+    commands::skills::install_skill_into(library, name, landing, project.as_deref())
         .map_err(|error| error.to_string())
 }
 
@@ -758,9 +810,16 @@ pub fn install_skill(item: commands::skills::ImportWire) -> Result<(), String> {
 /// sesji: `install_skill` pisało na dysk, a okno nie miało jak tego odczytać z powrotem, więc
 /// zainstalowana umiejętność znikała po restarcie. To był niezmiennik 4 złamany wprost —
 /// pliki są prawdą, a ekran mówił co innego.
+///
+/// 2026-08-19 — FOLDER, BO LISTA ODPOWIADA NA PYTANIE „CO WIDZI AGENT PRACUJĄCY TUTAJ". Bez niego
+/// umiejętność zapisana „w tym projekcie" nie pojawiłaby się na ekranie, więc człowiek nie miałby
+/// jak jej zabrać — droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
 #[tauri::command]
-pub fn list_skills() -> Result<Vec<commands::skills::InstalledWire>, String> {
-    commands::skills::list_skills_inner(&crate::loadout_dir()).map_err(|error| error.to_string())
+pub fn list_skills(folder: Option<&str>) -> Result<Vec<commands::skills::InstalledWire>, String> {
+    // SZKIELET, 2026-08-19 — jak w [`install_reviewed_skill`]: folder jedzie dalej niesprawdzony.
+    let project = folder.map(PathBuf::from);
+    commands::skills::list_skills_in(&crate::loadout_dir(), project.as_deref())
+        .map_err(|error| error.to_string())
 }
 
 /// Zdejmuje umiejętność z katalogów agentów.
@@ -768,9 +827,18 @@ pub fn list_skills() -> Result<Vec<commands::skills::InstalledWire>, String> {
 /// 2026-08-18 — bez tej komendy sekcja Umiejętności umiała tylko dokładać. Lista z
 /// [`list_skills`] czyta pliki, więc wiersz na ekranie odpowiada dyskowi — a jedyne, co
 /// człowiek mógł z nim zrobić, to zainstalować go jeszcze raz (niezmiennik 16).
+///
+/// 2026-08-19 — ZAKRES I FOLDER, bo ta sama nazwa w dwóch zakresach to dwie rzeczy: zdjęcie
+/// „z tego projektu" ma zostawić kopię globalną tam, gdzie jest.
 #[tauri::command]
-pub fn delete_skill(name: &str) -> Result<(), String> {
-    commands::skills::delete_skill_inner(&crate::loadout_dir(), name)
+pub fn delete_skill(
+    name: &str,
+    landing: commands::skills::Landing,
+    folder: Option<&str>,
+) -> Result<(), String> {
+    // SZKIELET, 2026-08-19 — jak w [`install_reviewed_skill`]: folder jedzie dalej niesprawdzony.
+    let project = folder.map(PathBuf::from);
+    commands::skills::delete_skill_from(&crate::loadout_dir(), name, landing, project.as_deref())
         .map_err(|error| error.to_string())
 }
 

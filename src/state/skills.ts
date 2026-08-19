@@ -40,6 +40,16 @@ import { why } from '../ipc/why';
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
 export type Weight = 'warn' | 'block';
 
+/**
+ * Gdzie umiejętność ma wylądować [T5 §8.3]. Lustro `Landing` z
+ * `src-tauri/src/commands/skills.rs`.
+ *
+ * DWIE WARTOŚCI, bo tyle znają narzędzia agentowe: „w tym repo" i „u mnie". Te napisy są SŁOWAMI
+ * DRUTU i nie mają prawa trafić na ekran (niezmiennik 14) — pozycje wyboru, które czyta człowiek,
+ * liczy ekran sekcji.
+ */
+export type Landing = 'this-project' | 'everywhere';
+
 /** Trzy stany importu. Nie ma czwartego i nie ma „prawie czysto". */
 export type Verdict = 'clean' | 'concerns' | 'blocked';
 
@@ -150,6 +160,20 @@ export interface SkillsState {
   /** Zdanie po angielsku mówiące, co trzeba zrobić. `null`, kiedy nie ma nic do powiedzenia. */
   message: string | null;
   installed: InstalledSkill[];
+  /**
+   * Gdzie ma wylądować to, co człowiek doda — jego wybór, jedno miejsce na ten fakt.
+   *
+   * Stąd bierze się ZARAZEM zaznaczona pozycja wyboru, ZARAZEM zdanie o miejscu na ekranie
+   * i ZARAZEM to, co jedzie do Rusta przy zapisie (niezmiennik 13). Dwa miejsca znaczyłyby ekran,
+   * na którym zaznaczone jest jedno, a plik ląduje gdzie indziej — a ląduje w żywej konfiguracji
+   * narzędzi agentowych człowieka.
+   *
+   * Domyślnie „wszędzie": to jest zakres, który ta sekcja miała od pierwszego dnia, więc wybór
+   * niezmieniony nie ma prawa przenieść zapisu w nowe miejsce.
+   */
+  landing: Landing;
+  /** Człowiek wybiera, gdzie to ma wylądować. */
+  chooseLanding: (landing: Landing) => void;
   /**
    * Wejście w sekcję: przeczytaj katalogi agentów i pokaż, co w nich naprawdę leży.
    *
@@ -305,6 +329,11 @@ export const useSkills = create<SkillsState>()((set, get) => ({
   want: '',
   chosenAgent: '',
   writing: false,
+  landing: 'everywhere',
+
+  chooseLanding: (landing: Landing) => {
+    set({ landing });
+  },
 
   load: async () => {
     try {
@@ -313,7 +342,10 @@ export const useSkills = create<SkillsState>()((set, get) => ({
        * `pending` i `acknowledged` zostają nietknięte — odczyt katalogu nie ma nic wspólnego
        * z przeglądem, który czeka na człowieka, a skasowanie go tutaj kasowałoby to, co ktoś
        * właśnie czyta. */
-      set({ installed: await listSkills(), message: null });
+      /* SZKIELET, 2026-08-19 — `null` wpisane na sztywno, czyli „nie ma otwartego zakresu"
+       * niezależnie od tego, co mówi `activeWorkspace()`. Dopóki tu stoi, lista nie widzi
+       * umiejętności zapisanych w projekcie i sekcja nie ma jak ich zabrać. */
+      set({ installed: await listSkills(null), message: null });
     } catch (error) {
       /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
        * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
@@ -358,8 +390,14 @@ export const useSkills = create<SkillsState>()((set, get) => ({
 
     try {
       /* Jedzie CAŁY przegląd, ten sam obiekt, który przyszedł z Rusta. Ciało złożone tu jeszcze
-       * raz byłoby tekstem, którego nikt nie przeskanował. */
-      await install(pending);
+       * raz byłoby tekstem, którego nikt nie przeskanował.
+       *
+       * SZKIELET, 2026-08-19 — dwie wartości wpisane na sztywno i to jest CAŁY defekt tej
+       * wersji: wybór człowieka (`get().landing`) i folder z `activeWorkspace()` nie jadą
+       * nigdzie, więc kontrolka wyboru byłaby kontrolką bez skutku (niezmiennik 16) w miejscu,
+       * w którym skutkiem jest zapis do żywej konfiguracji narzędzi agentowych. T-44 AC-3 (c)
+       * stoi dokładnie na tym. */
+      await install(pending, 'everywhere', null);
     } catch (error) {
       set({ message: why(error, 'Loadout could not add that skill.') });
       return;
@@ -529,7 +567,9 @@ export const useSkills = create<SkillsState>()((set, get) => ({
 
   remove: async (name: string) => {
     try {
-      await removeFromDisk(name);
+      /* SZKIELET, 2026-08-19 — jak w `add`: wybór i folder wpisane na sztywno, więc „zabierz
+       * z tego projektu" zabiera dziś kopię globalną. */
+      await removeFromDisk(name, 'everywhere', null);
     } catch (error) {
       /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
        * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,

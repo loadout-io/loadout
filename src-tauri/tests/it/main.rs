@@ -126,6 +126,8 @@ mod skills_place_emit;
 mod skills_place_plan;
 mod skills_place_remove;
 mod skills_place_validate;
+mod skills_scope_round_trip;
+mod skills_scope_two_roots;
 mod step_deadline_stops_the_agent;
 mod store_append_only;
 mod store_batch_atomic;
