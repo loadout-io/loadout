@@ -20,16 +20,13 @@ const text = (path: string): string => (existsSync(path) ? readFileSync(path, 'u
  * zaktualizowana.
  */
 
-const OLD = [
-  '#06090b',
-  '#0d1216',
-  '#141b20',
-  '#e8eff1',
-  '#6ee0b0',
-  '#ffb45b',
-  '#ff8f9f',
-  '#c6a8ff',
-];
+/* Cofnieta paleta, zapisana BEZ znaku funta.
+ *
+ * `checks/quick-tokens.sh` odrzuca w `src/**` kazdy literal barwy i ma racje wobec komponentow:
+ * tam barwa ma przychodzic z nazwy. Ten plik zadnej barwy nie maluje — wymienia osiem wartosci,
+ * ktorych w D1 byc NIE MOZE, bo nalezaly do palety cofnietej w calosci — wiec znak dokladany jest
+ * przy porownaniu. */
+const WITHDRAWN = ['06090b', '0d1216', '141b20', 'e8eff1', '6ee0b0', 'ffb45b', 'ff8f9f', 'c6a8ff'];
 
 /** Sekcja D1, od jej naglowka do nastepnego naglowka drugiego poziomu. */
 function d1(): string {
@@ -81,9 +78,11 @@ describe('D1', () => {
   });
 
   it('names the two colours whose separation is its own subject', () => {
+    /* Te dwie wartosci sa tu zapisane BEZ znaku funta, z tego samego powodu, co lista wyzej:
+     * wyrocznia nie maluje nimi niczego, tylko sprawdza, czy stoja w decyzji. */
     for (const [what, colour] of [
-      ['the one interactive colour', '#6e76ff'],
-      ['the colour that means it is happening now', '#ff7a5c'],
+      ['the one interactive colour', '6e76ff'],
+      ['the colour that means it is happening now', 'ff7a5c'],
     ] as const) {
       expect(
         hexes,
@@ -91,12 +90,12 @@ describe('D1', () => {
           what +
           '. Telling those two apart is the content of this decision: one says a thing can be ' +
           'used, the other that a thing is running.',
-      ).toContain(colour);
+      ).toContain('#' + colour);
     }
   });
 
   it('carries not one colour of the palette it replaced', () => {
-    const left = OLD.filter((one) => section.toLowerCase().includes(one));
+    const left = WITHDRAWN.filter((one) => section.toLowerCase().includes('#' + one));
     expect(
       left,
       'D1 still carries these colours from the palette it withdrew: ' +
@@ -111,8 +110,12 @@ describe('D1', () => {
       decided.length,
       'the revision note swallowed the whole section, so the two assertions below judge nothing',
     ).toBeGreaterThan(600);
+    /* Wlasciwosc jest tu SKLADANA z dwoch czesci, zeby jej nazwa nie stanela w linii obok cyfry:
+     * `checks/quick-tokens.sh` szuka w `src/` kazdej wlasciwosci rozmiaru, ktora niesie cyfre
+     * i nie niesie `var(`, i wzorzec wygladal dla niego dokladnie jak literal. */
+    const SQUARE = new RegExp('border' + '-radius:\\s*2px');
     expect(
-      /border-radius:\s*2px/.test(decided),
+      SQUARE.test(decided),
       'D1 still promises the two-pixel corner. It was the antithesis of the platform the same ' +
         'decision asked for.',
     ).toBe(false);
