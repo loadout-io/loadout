@@ -143,12 +143,14 @@ use super::isolate;
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
+use crate::engine::drivers::command::{CheckHow, CheckSpec, CommandDriver, GIVE_UP_AFTER};
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
+use crate::inherit::wire::{self, Chosen, Inherited};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
@@ -312,7 +314,16 @@ async fn the_whole_run(
     // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
     // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
-    let live = Arc::new(Live::new(plan, lines, deps.control.clone(), slots));
+    // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
+    // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
+    let inherited = what_the_host_lends(deps.project, &plan.dir)?;
+    let live = Arc::new(Live::new(
+        plan,
+        inherited,
+        lines,
+        deps.control.clone(),
+        slots,
+    ));
     // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
     // [`Live::update`].
@@ -617,7 +628,8 @@ struct Planned {
     job: Job,
 }
 
-/// Dwa rodzaje kafelka i ani jednego więcej (D6, `ARCHITECTURE` §6b).
+/// Co krok robi. Dwa rodzaje wobec vendorów (D6, `ARCHITECTURE` §6b) plus jeden, który vendora
+/// nie zna — powód w całości stoi przy [`crate::workflow::Step`].
 enum Job {
     /// Krok, który woła agenta.
     Agent(Box<AgentJob>),
@@ -626,6 +638,21 @@ enum Job {
         /// Pytanie z kafelka, gotowe na ekran.
         question: Option<String>,
     },
+    /// Krok „sprawdź": Loadout uruchamia komendę sam i sam orzeka.
+    ///
+    /// Planista nie wie, że ten krok „jest bramką" — dostaje z niego werdykt i nic więcej.
+    /// Ani jeden warunek w tym pliku nie nazywa etapu biegu (niezmiennik 27); to ramię mówi,
+    /// **czym** jest kafelek, dokładnie jak dwa ramiona obok.
+    Check(Box<CheckJob>),
+}
+
+/// Wszystko, czego krok „sprawdź" potrzebuje, żeby ruszyć — policzone przed startem biegu.
+struct CheckJob {
+    /// Co uruchomić, po czym poznać i gdzie. Prosto z pliku workflow, bez ani jednego naszego
+    /// słowa: komenda jest tym, co człowiek wpisał.
+    spec: CheckSpec,
+    /// Czy katalog roboczy jest nasz, czyli czy mamy go utworzyć — jak [`AgentJob::ours`].
+    ours: bool,
 }
 
 /// Czym skończyło się czekanie na turę. Trzy stany, bo `Option` umiał powiedzieć dwa, a od
@@ -926,6 +953,30 @@ fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunErr
                 job: Job::Agent(Box::new(job)),
             })
         }
+        Step::Check(check) => {
+            let (cwd, ours) = workspace(&check.folder, setup.project, setup.dir, &check.id);
+            Ok(Planned {
+                id: Uuid::now_v7().to_string(),
+                node_key: node_key_for(&check.id, turn),
+                tile_key: check.id.clone(),
+                turn,
+                name: check.name.clone(),
+                depends_on: Vec::new(),
+                /* PUSTA ETYKIETA VENDORA, i to nie jest brak wartości do wypełnienia.
+                 * Ten krok nie woła żadnego vendora, więc `"local"` albo `"loadout"` byłoby
+                 * wymyśleniem faktu, po którym wznowienie szukałoby kiedyś sesji, której nigdy
+                 * nie było — dokładnie ten sam powód, który stoi przy kafelku kontrolnym. */
+                vendor: String::new(),
+                job: Job::Check(Box::new(CheckJob {
+                    spec: CheckSpec {
+                        command: check.command.clone(),
+                        proof: check.proof.clone(),
+                        cwd,
+                    },
+                    ours,
+                })),
+            })
+        }
     }
 }
 
@@ -1080,22 +1131,29 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
     let mut made: Vec<Isolated> = Vec::new();
     for step in &plan.steps {
-        if let Job::Agent(job) = &step.job
-            && job.ours
-            && !made.iter().any(|one| one.cwd == job.cwd)
+        // Krok „sprawdź" dostaje własne drzewo tą samą drogą, co krok agenta, i to jest wymóg,
+        // nie symetria: `cargo test` pisze po `target/`, więc „to tylko sprawdzenie" jest
+        // nieprawdą, a obietnica z ARCHITECTURE §2 p. 4 jest jedna dla wszystkich kroków.
+        let fresh = match &step.job {
+            Job::Agent(job) => job.ours.then_some(&job.cwd),
+            Job::Check(job) => job.ours.then_some(&job.spec.cwd),
+            Job::Ask { .. } => None,
+        };
+        if let Some(cwd) = fresh
+            && !made.iter().any(|one| one.cwd == *cwd)
         {
             let branch = isolate::branch_for(&plan.id, &step.tile_key);
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
             let done =
-                isolate::make(project, &job.cwd, &branch).map_err(|why| RunError::NoFreshCopy {
+                isolate::make(project, cwd, &branch).map_err(|why| RunError::NoFreshCopy {
                     step: step.name.clone(),
                     why: why.to_string(),
                 })?;
             made.push(Isolated {
                 step: step.name.clone(),
-                cwd: job.cwd.clone(),
+                cwd: cwd.clone(),
                 branch: match done.how {
                     isolate::How::Tree { branch } => Some(branch),
                     isolate::How::Copy => None,
@@ -1183,12 +1241,50 @@ fn close_the_trees(project: &Path, made: &[Isolated], title: &str) {
     }
 }
 
+/// Co ten bieg bierze z repozytorium, w którym pracuje: katalog pluginu z wybranymi
+/// umiejętnościami (jedzie argv) i tekst z learnings oraz podagenta (jedzie promptem).
+///
+/// # Dlaczego dziś oddaje zawsze pusto — i czyja to decyzja
+///
+/// `Chosen` jest tu **stałą pustą**, bo wybór człowieka nie ma dziś nośnika: nazwy zaznaczonych
+/// pozycji musiałyby przyjść razem z naciśnięciem Start, czyli polem w [`RunRequest`] — a ten
+/// typ mieszka w `commands/mod.rs`, który **nie leży w bloku OWNS** T-57 (`AGENTS.md` §7).
+/// Zbudowanie sobie w zamian własnego źródła prawdy (plik pod `~/.loadout/`, którego nikt nie
+/// zapisuje) byłoby czytaniem artefaktu, którego nie pisze żaden skrypt — czyli niezmiennikiem
+/// 21 złamanym od drugiej strony.
+///
+/// **To nie jest wołający na pokaz.** Pusty wybór jest stanem domyślnym z AC-4 i biegnie tu tę
+/// samą drogą, którą pojedzie wybór niepusty: katalog biegu, prompt każdego kroku i argv
+/// sterownika są już spięte i sądzone czterema kryteriami. Brakuje **jednej** rzeczy — pola,
+/// którym ekran powie, co człowiek zaznaczył. Do tego czasu bieg zachowuje się dokładnie tak,
+/// jak obiecuje AC-4: pełne `.claude/` w cudzym repozytorium nie jest zgodą.
+///
+/// Liczone RAZ na bieg, nie per krok, dokładnie jak [`Setup::knows`] i z tego samego powodu:
+/// dwa kroki jednego biegu mają czytać ten sam kontekst, a różnicy nie widać nigdzie poza
+/// rachunkiem za długość.
+fn what_the_host_lends(project: &Path, run_dir: &Path) -> Result<Inherited, RunError> {
+    wire::from_the_host(project, run_dir, &Chosen::default()).map_err(|error| {
+        /* `RunError` nie ma wariantu na dziedziczenie, a `commands/mod.rs` nie leży w bloku OWNS
+         * tego zadania. `Io` jest wariantem PRZEZROCZYSTYM, więc niesie zdanie odmowy co do
+         * słowa — a to zdanie jest tu całą treścią: „Loadout was told to bring in the skill
+         * \"x\" …" wymienia pozycję, której zabrakło, i po to zostało napisane. */
+        RunError::Io(io::Error::other(error))
+    })
+}
+
 // ── ŻYWY BIEG ──────────────────────────────────────────────────────────────────────────────
 
 /// Bieg w trakcie: plan (niezmienny) plus księga (zmienna), plus to, czym mówi do świata.
 struct Live {
     /// Wszystko, co rozstrzygnięto przed startem.
     plan: Plan,
+    /// Co ten bieg wziął z repozytorium gospodarza: fragment argv i tekst do promptu.
+    ///
+    /// Jedna wartość na bieg, policzona raz ([`what_the_host_lends`]), bo katalog pluginu jest
+    /// jeden i jego ścieżka nie ma prawa różnić się między krokami. Trzyma to `Live`, a nie
+    /// [`Plan`], dokładnie z tego powodu, dla którego stoi obok: `Plan` powstaje **przed**
+    /// katalogiem biegu, a dziedziczenie do tego katalogu pisze.
+    inherited: Inherited,
     /// Stan, który zmienia się w trakcie. Zamek jest `std::sync::Mutex`, a każde jego wzięcie
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
@@ -1323,7 +1419,13 @@ struct Told {
 
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
-    fn new(plan: Plan, lines: LineSink, control: RunControl, slots: Limiter) -> Self {
+    fn new(
+        plan: Plan,
+        inherited: Inherited,
+        lines: LineSink,
+        control: RunControl,
+        slots: Limiter,
+    ) -> Self {
         // Kopia stanów kroków, którą dostaje limit dostawcy, jest **martwa z rozmysłem**:
         // `engine::limits::Run` ma pełny dostęp do statusów i podejść dokładnie po to, żeby
         // T-21 mogło dowieść, że pauza ich nie rusza (`[T7 §7.2]`: „a pause, not a failure").
@@ -1348,6 +1450,7 @@ impl Live {
         let settled_at = Mutex::new(None);
         Self {
             plan,
+            inherited,
             book: Mutex::new(Book {
                 status: RunState::Running,
                 asking: false,
@@ -1460,6 +1563,60 @@ impl Live {
         step.turn + 1 >= the_loop.turns
     }
 
+    /// To samo, ale werdykt przychodzi z **wyjścia komendy**, nie z ust agenta.
+    ///
+    /// Dwa wejścia do jednej pętli, i drugie nie jest duplikatem pierwszego: sędzia-agent zostaje
+    /// jedyną drogą dla repo, które sprawdzeń nie ma (D7, „Co musi przetrwać nawet przy zerowej
+    /// ceremonii"), a krok „sprawdź" jest drogą dla repo, które je ma. Skasowanie [`Live::verdict_after`]
+    /// nie byłoby uproszczeniem, tylko usunięciem ścieżki awaryjnej.
+    ///
+    /// Oddaje `true`, kiedy ten krok ma wrócić [`StepReport::Failed`] — a to znaczy trzy różne
+    /// rzeczy zależnie od tego, gdzie ten krok stoi, i wszystkie trzy są tu wypisane:
+    ///
+    /// * **krok „sprawdź" spoza pętli** — werdykt jest wprost stanem kroku. Komenda nie przeszła,
+    ///   więc krok padł i stożek za nim zostaje `Skipped`: praca nie ma prawa pojechać dalej na
+    ///   czymś, co nie przeszło.
+    /// * **sędzia pętli, który nie przepuścił, i ma jeszcze próbę** — krok wraca `Succeeded`,
+    ///   mimo że komenda padła, i to nie jest kłamstwo: planista zmniejsza stopień wejściowy
+    ///   dzieci WYŁĄCZNIE po tym stanie (`engine::scheduler`), a dzieckiem sędziego jest powrót
+    ///   do roboty. `Failed` w tym miejscu zatrzymałby pętlę na pierwszej czerwonej rundzie,
+    ///   czyli skasowałby całą jej treść. Że runda padła, widać po `exit_code` i po przekazaniu
+    ///   z wyjściem komendy, nie po słowie `succeeded`. Ta sama droga, którą chodzi
+    ///   [`Live::verdict_after`] dla sędziego-agenta.
+    /// * **sędzia pętli w OSTATNIEJ rundzie, który nie przepuścił** — `Failed`, bo prób już nie
+    ///   ma. Bez tej gałęzi wyczerpanie limitu tur wyglądałoby jak sukces, czyli limit byłby
+    ///   ozdobą.
+    ///
+    /// Werdykt `pass` zapala `settled_at` i wtedy rundy PO tej zostają pominięte
+    /// ([`Live::already_settled`]) — nie przepalone. To jest jedyne miejsce, w którym wyjście
+    /// komendy rozstrzyga o kształcie biegu, i jedyna różnica między „domknęło się na tym, co się
+    /// stało" a „domknęło się na tym, co ktoś powiedział".
+    fn verdict_of_a_check(&self, id: StepId, passed: bool) -> bool {
+        let step = &self.plan.steps[id];
+        // Sędzią jest krok, z którego WYCHODZI powrót. Krok „sprawdź" stojący w pętli, ale nie na
+        // jej powrocie, jest zwykłym krokiem i jego werdykt jest wprost jego stanem.
+        let judging = self
+            .plan
+            .the_loop
+            .as_ref()
+            .filter(|the_loop| step.tile_key == the_loop.judge);
+        let Some(the_loop) = judging else {
+            return !passed;
+        };
+
+        if passed {
+            let mut settled = self
+                .settled_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Pierwszy `pass` wygrywa — dokładnie jak przy sędzim-agencie: druga runda nie ma jak
+            // przepisać rundy pierwszej na późniejszą.
+            settled.get_or_insert(step.turn);
+            return false;
+        }
+        step.turn + 1 >= the_loop.turns
+    }
+
     fn announce(&self, id: StepId, state: StepState) {
         let _ = self.lines.send(Line::StepState {
             agent: self.plan.steps[id].name.clone(),
@@ -1512,7 +1669,10 @@ impl Live {
                 attempt: 0,
                 agent_session_id: match &planned.job {
                     Job::Agent(job) => Some(job.session.to_string()),
-                    Job::Ask { .. } => None,
+                    // Kafelek kontrolny i krok „sprawdź" nie mają sesji, bo nie mają vendora.
+                    // Wpisany identyfikator byłby numerem, pod którym wznowienie szukałoby
+                    // kiedyś rozmowy, której nigdy nie było.
+                    Job::Ask { .. } | Job::Check(_) => None,
                 },
                 pid: run.pid,
                 pgid: run.pgid,
@@ -1524,7 +1684,9 @@ impl Live {
                 error: run.error.as_deref(),
                 effective: match &planned.job {
                     Job::Agent(job) => Some(&job.effective),
-                    Job::Ask { .. } => None,
+                    // Nie ma czego zamrażać: ani kafelek kontrolny, ani krok „sprawdź" nie mają
+                    // konfiguracji agenta, bo żadnego agenta nie wołają.
+                    Job::Ask { .. } | Job::Check(_) => None,
                 },
             })
             .collect();
@@ -1593,7 +1755,11 @@ impl Live {
         }
 
         let _slot = match &self.plan.steps[id].job {
-            Job::Agent(_) => {
+            // Krok „sprawdź" bierze miejsce razem z krokami agenta, i to jest wybór z powodem:
+            // `./verify.sh full` odpala `cargo`, `cargo` odpala `rustc`, a to jest ta sama waga
+            // na maszynie, przed którą stoi niezmiennik 11. Pytanie do człowieka nie waży nic
+            // i miejsca nie bierze — to jest cała różnica między tymi dwoma ramionami.
+            Job::Agent(_) | Job::Check(_) => {
                 let Some(slot) = self.a_slot_for_this_step(&cancel).await else {
                     // Stop, zanim ten krok w ogóle ruszył: `cancelled`, nie `skipped` — nikt
                     // wyżej nie padł, człowiek zatrzymał bieg [T7 §9.3]. Księga zostaje bez
@@ -1624,6 +1790,7 @@ impl Live {
         let report = match &self.plan.steps[id].job {
             Job::Agent(job) => self.run_agent(id, job, &cancel).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
+            Job::Check(job) => self.run_check(id, job, &cancel).await,
         };
 
         let ended = match report {
@@ -1715,6 +1882,37 @@ impl Live {
         }
     }
 
+    /// Sterownik tego kroku, niosący fragment argv, który ten bieg odziedziczył — albo odmowa.
+    ///
+    /// Fragment niesie nazwę flagi **jednego** vendora (`--plugin-dir`), więc sterownik, który
+    /// jej nie zna, nie może jej dostać i nie ma jak jej udawać. Pytamy o to
+    /// [`AgentDriver::inheriting`], bo fabryka wydaje sterownik jako `Arc<dyn AgentDriver>`
+    /// i konkretny typ jest tu już zgubiony.
+    ///
+    /// ODMOWA, NIE CICHE POMINIĘCIE, i to jest jedyny powód, dla którego ta funkcja zwraca
+    /// `Result`. Krok, który po cichu nie dostał wybranych umiejętności, kończy się „sukcesem"
+    /// i odpowiedzią bez nich: „agent nie zna umiejętności" jest z zewnątrz nieodróżnialne od
+    /// „model nie uznał, że warto jej użyć". Zdanie odmowy jedzie tą samą drogą, co nieudany
+    /// start procesu — wierszem na ekranie kroku i polem `error` w `run.json`.
+    fn carrying_what_we_inherited(
+        &self,
+        driver: &Arc<dyn AgentDriver>,
+    ) -> anyhow::Result<Arc<dyn AgentDriver>> {
+        let flags = self.inherited.flags();
+        if flags.is_empty() {
+            // Nic nie odziedziczono, więc nie ma czego nieść i nie ma o co pytać: ten sam
+            // sterownik, bez klonowania czegokolwiek poza licznikiem.
+            return Ok(Arc::clone(driver));
+        }
+        driver.inheriting(flags).ok_or_else(|| {
+            anyhow::anyhow!(
+                "this agent app cannot be handed the skills you brought in from this project. \
+                 Loadout stopped the step instead of starting it without them: an agent that \
+                 quietly knows less than you picked answers as though there was nothing to know."
+            )
+        })
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -1744,7 +1942,12 @@ impl Live {
             extra_dirs,
         } = self.prompt_for(id, &job.prompt);
 
-        let spec = RunSpec {
+        // ODZIEDZICZONY TEKST DOPISUJE SIĘ TUTAJ, czyli tam, gdzie prompt tury naprawdę powstaje.
+        // Doklejenie w `plan_agent` weszłoby do `AgentJob::prompt`, a ten idzie do `run.json`
+        // i do każdej następnej rundy pętli — więc cudze reguły rosłyby o kopię na rundę.
+        // `applied_to` rozstrzyga też, że `system_append` wraca nietknięty: treść w tym polu
+        // staje się `--append-system-prompt`, czyli argumentem widocznym w `ps` (niezmiennik 9).
+        let spec = self.inherited.applied_to(RunSpec {
             run_id: job.session,
             cwd: job.cwd.clone(),
             // Instrukcja i indeks jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani
@@ -1757,14 +1960,31 @@ impl Live {
             // wolno otworzyć, jest odnośnikiem bez handlera (niezmiennik 16).
             extra_dirs,
             resume: None,
-        };
+        });
 
         // Start **nie** ściga się z anulowaniem i to jest wybór, nie przeoczenie: żeby zejść po
         // grupie procesów, trzeba mieć uchwyt, a uchwyt wydaje dopiero `start`. Zdjęcie tego
         // `await` w połowie zostawiłoby proces, który właśnie wstał, bez nikogo, kto by o nim
         // wiedział — czyli dokładnie ten osierocony `claude` palący limit w tle, przed którym
         // stoją niezmienniki 6 i 10. Token widzi więc dopiero tura, i widzi go od środka.
-        let report = match job.driver.start(spec, events).await {
+        // Fragment argv od gospodarza dojeżdża do TEGO vendora albo krok nie rusza — trzeciej
+        // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
+        // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
+        // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
+        let started = match self.carrying_what_we_inherited(&job.driver) {
+            Ok(driver) => driver.start(spec, events).await,
+            Err(refusal) => {
+                // NADAJNIK GINIE TAKŻE NA TEJ GAŁĘZI, i to nie jest higiena. Na ścieżce startu
+                // zabiera go `start`; tutaj nie zabiera go nikt, a `pump.await` niżej kończy się
+                // dopiero na zamkniętej kolejce. Nadawca, który przeżył krok, trzyma kurator
+                // otwarty — czyli odmowa wyglądałaby jak agent zawieszony na zawsze (ten sam
+                // powód stoi przy `ours` piętnaście linii wyżej).
+                drop(events);
+                Err(refusal)
+            }
+        };
+
+        let report = match started {
             Ok(handle) => {
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads).await
@@ -1787,6 +2007,115 @@ impl Live {
         // dalej znaczy.
         let _ = pump.await;
         report
+    }
+
+    /// Krok „sprawdź": nasza komenda, nasz werdykt, zero sesji agenta.
+    ///
+    /// Ta funkcja nie tworzy `RunSpec`, nie pyta fabryki [`super::Drivers`] o sterownik i nie ma
+    /// jak zapłacić za turę u vendora — i to jest jej treść, nie pominięcie (AC-4). Implementacja
+    /// routująca ten krok przez [`plan_agent`] przewróciłaby się na `RunError::NoAgentsSaved`
+    /// w repo, w którym nikt nie zapisał ani jednego agenta, a nie ma powodu, żeby taki krok
+    /// jakiegokolwiek agenta potrzebował.
+    async fn run_check(
+        &self,
+        id: StepId,
+        job: &CheckJob,
+        cancel: &CancellationToken,
+    ) -> StepReport {
+        let driver = CommandDriver::new();
+        // START I CZEKANIE OSOBNO, a nie jednym `CommandDriver::run`, i to jest cała różnica
+        // między księgą, która pomaga po awarii, a księgą, która opisuje przeszłość: `run` to
+        // `start` plus `settle().await`, więc wraca dopiero PO całym sprawdzeniu — a `pid`
+        // i `pgid` zapisane wtedy są nieobecne przez cały czas, w którym komenda naprawdę biegła.
+        let mut live = match driver.start(&job.spec) {
+            Ok(live) => live,
+            Err(error) => {
+                // Zdanie nazywa KOMENDĘ, bo to ona się nie uruchomiła. „Nie udało się" bez
+                // podmiotu wysyła człowieka szukać wady w agencie, którego tu nie ma.
+                let text = format!("Loadout could not start this check: {error}");
+                self.update(|book| book.steps[id].error = Some(text));
+                return StepReport::Failed;
+            }
+        };
+
+        // `pid` i `pgid` do księgi, ZANIM cokolwiek popłynie z wyjścia — dokładnie jak przy
+        // agencie (`one_turn`): po awarii aplikacji nie ma już kogo o nie zapytać, a to po nich
+        // sprząta odzyskiwanie [T7 §6.2]. `Checking::group` jest zwykłą wartością, dostępną
+        // synchronicznie zaraz po starcie, więc ten zapis nie czeka na nic.
+        let group = live.group();
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.pid = Some(group.pid);
+            step.pgid = Some(group.pgid);
+        });
+
+        let end = live.settle(cancel).await;
+
+        match end.how {
+            CheckHow::Ran(report) => {
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.exit_code = report.exit_code;
+                    step.summary = summary_of(&report.output);
+                });
+                /* WYJŚCIE KOMENDY MA DWÓCH CZYTELNIKÓW (niezmiennik 21): werdykt wyżej
+                 * i przekazanie do następnego kroku tutaj. Bez tego drugiego runda 1 pętli nie
+                 * wie, co padło w rundzie 0, i pętla nie ma po co istnieć. `reads` jest puste,
+                 * bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
+                 * promptu. */
+                self.hand_over(id, &report.output, &[]);
+                /* WERDYKT PO ZAPISIE PRZEKAZANIA, nie przed: plik z wyjściem komendy ma istnieć
+                 * niezależnie od tego, co postanowimy z biegiem — ta sama kolejność, którą trzyma
+                 * krok agenta.
+                 *
+                 * Jeden warunek, nie dwa. `verdict_of_a_check(…) || !report.passed` czytało się
+                 * niewinnie i kasowało pętlę: sędzia, który nie przepuścił, ale ma jeszcze próbę,
+                 * musi wrócić `Succeeded`, bo tylko po tym stanie planista wypuszcza jego dzieci —
+                 * a jego dzieckiem jest powrót do roboty. Cała różnica między „sprawdzenie padło"
+                 * i „runda padła, próbujemy dalej" mieszka więc w tamtej funkcji i nigdzie
+                 * indziej. */
+                if self.verdict_of_a_check(id, report.passed) {
+                    StepReport::Failed
+                } else {
+                    StepReport::Succeeded
+                }
+            }
+            // Anulowanie jest WARTOŚCIĄ, nie błędem (niezmiennik 7), a dowód zejścia grupy
+            // przyszedł już w `how` — to sterownik go zdobył, nie my.
+            CheckHow::Stopped(proof) => {
+                if let GroupProof::Alive = proof {
+                    self.update(|book| {
+                        book.steps[id].error = Some(
+                            "Loadout could not make sure this check stopped, so it may still be \
+                             running."
+                                .to_owned(),
+                        );
+                    });
+                }
+                StepReport::Cancelled
+            }
+            CheckHow::Overdue(proof) => {
+                let unproven = matches!(proof, GroupProof::Alive);
+                self.update(|book| {
+                    // Powód nazywa LIMIT CZASU i mówi, co zrobić. Liczba minut przychodzi ZE
+                    // STAŁEJ, a nie z tego zdania: dwa miejsca, w których mieszka jedna liczba,
+                    // rozjeżdżają się przy pierwszej zmianie i to zdanie zostaje tym nieaktualnym.
+                    let minutes = GIVE_UP_AFTER.as_secs() / 60;
+                    book.steps[id].error = Some(if unproven {
+                        format!(
+                            "This check ran longer than {minutes} minutes, and Loadout could not \
+                             make sure it stopped, so it may still be running."
+                        )
+                    } else {
+                        format!(
+                            "This check ran longer than {minutes} minutes, so Loadout stopped it. \
+                             Split the work, or run fewer things in one step."
+                        )
+                    });
+                });
+                StepReport::Failed
+            }
+        }
     }
 
     /// Jedna tura agenta: czekaj na koniec albo na Stop, a udany wynik oddaj następnym.
@@ -1829,7 +2158,11 @@ impl Live {
             // Kafelek kontrolny czeka na CZŁOWIEKA i nie pali niczyich pieniędzy, więc limit
             // agenta go nie dotyczy. Ubijanie pytania po dwudziestu minutach byłoby karą za to,
             // że ktoś poszedł na obiad.
-            Job::Ask { .. } => Duration::MAX,
+            //
+            // Krok „sprawdź" nie przechodzi TĄ funkcją — nie ma tury agenta, na którą można by
+            // czekać — a swój limit nosi jako stałą w `engine::drivers::command`. Ramię stoi tu
+            // wprost, żeby czwarty rodzaj kroku nie skompilował się bez decyzji, ile mu wolno.
+            Job::Ask { .. } | Job::Check(_) => Duration::MAX,
         };
 
         let finished = {
@@ -2375,6 +2708,9 @@ fn title_of(step: &Planned) -> String {
         Job::Ask { question } => question
             .as_deref()
             .and_then(|question| one_line(question, TITLE_LIMIT)),
+        // Tytułem przekazania kroku „sprawdź" jest to, co ten krok URUCHOMIŁ — jedyne zdanie
+        // o nim, które napisał człowiek, i to samo, które człowiek widzi w panelu kafelka.
+        Job::Check(job) => one_line(&job.spec.command, TITLE_LIMIT),
     }
     .unwrap_or_else(|| step.name.clone())
 }

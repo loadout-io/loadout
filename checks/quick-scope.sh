@@ -116,7 +116,13 @@ if [ -f TASK.md ]; then
     line="${line%"${line##*[![:space:]]}"}"   # rtrim
     line="${line%/}"
     [ -n "$line" ] && owns+=("$line")
-  done < <(sed -n '/<!--[[:space:]]*OWNS/,/-->/p' TASK.md | sed '1d;$d' || true)
+  # `sed '$d'` kasowalo CALA ostatnia linie -- a gdy terminator jest sklejony ze sciezka
+  # (`...cancel.rs-->`, tak konczy 42 z 60 plikow zadan), ginela razem z nim ostatnia
+  # pozycja OWNS. Zadanie traci prawo do pliku, ktorego wymaga jego wlasne `check:`,
+  # i nie ma ruchu, ktory to zamyka. Zmierzone 2026-08-19 na T-10 AC-6.
+  # Teraz terminator jest OBCINANY, nie kasowany z wierszem; linia zlozona z samego `-->`
+  # robi sie pusta i odpada na warunku [ -n "$line" ] wyzej.
+  done < <(sed -n '/<!--[[:space:]]*OWNS/,/-->/p' TASK.md | sed '1d' | sed 's/-->.*$//' || true)
 fi
 [ "${#owns[@]}" -gt 0 ] && scope="this task's OWNS block (${#owns[@]} paths)"
 

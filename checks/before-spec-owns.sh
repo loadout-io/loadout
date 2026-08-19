@@ -42,7 +42,13 @@ TS_DECL = re.compile(
 
 md = open("TASK.md", encoding="utf-8", errors="replace").read()
 
-owns = re.search(r"<!-- OWNS\n(.*?)\n-->", md, re.S)
+# TERMINATOR MOZE BYC SKLEJONY Z OSTATNIA SCIEZKA i przez lata byl -- 42 z 60 plikow zadan
+# koncza blok bajtami `...cancel.rs-->`, bez nowej linii. Stara forma `<!-- OWNS\n(.*?)\n-->`
+# NIE DOPASOWYWALA ich w ogole, wiec ten check wychodzil zerem z napisem "nothing to judge"
+# i NIE SADZIL NICZEGO na 42 zadaniach (niezmiennik 19: zielone bez dowodu jest czerwone).
+# Ta sama forma co `quick-permissions.sh:78` i `harness/task-spine.py:42` -- cztery konsumenty
+# OWNS musza czytac ten blok identycznie. Zmierzone 2026-08-19 na T-10.
+owns = re.search(r"<!--\s*OWNS(.*?)-->", md, re.S)
 if not owns:
     # Brak bloku OWNS to defekt kontraktu, ale ma go czyj inny check; tutaj milczymy,
     # zeby jedna wada nie swiecila w dwoch miejscach pod dwiema nazwami.
