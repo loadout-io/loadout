@@ -168,38 +168,81 @@ describe('the compiled style sheet says what the mockup says', () => {
     ).toBeGreaterThan(10);
   });
 
-  it('puts the label rung in capitals, because the mockup does it in five places', () => {
-    /* Pięć selektorów, które audyt wymienia. Czytamy z makiety, że NAPRAWDĘ są wersalikami —
-     * bez tego punkt niżej egzekwowałby wersaliki, których wyrocznia wcale nie chce. */
-    const five = ['.fld label', '.card .role', '.side h3', '.rail h2', '.ctx .ch'];
-    const notUpper = five.filter(
-      (selector) => property(ruleBody(html, selector), 'text-transform') !== 'uppercase',
-    );
+  it('puts the capitals on the EYEBROW rung and takes them off the LABEL rung', () => {
+    /* PRZEPISANE 2026-08-19 (T-45), nie skasowane. Do tej pory ten punkt zadal
+     * `text-transform:uppercase` na PIECIU selektorach makiety i cytowal DESIGN §4:
+     * „etykieta pola, WERSALIKI". DESIGN §4 mowi teraz co innego, bo jeden stopien
+     * drabinki obslugiwal DWA zastosowania — nadoczko sekcji i etykiete pola — wiec
+     * wersaliki wchodzily albo na wszystko, albo na nic.
+     *
+     * Podzial: TRZY reguly zostaja (nadoczka), DWIE traca (etykieta pola, rola agenta).
+     * Skasowanie tego punktu i napisanie nowego tylko o `--text-eyebrow` byloby zielone
+     * i jednoczesnie zdjeloby ochrone z trzech regul, ktore maja wersaliki ZACHOWAC. */
+    const eyebrows = ['.side h3', '.rail h2', '.ctx .ch'];
+    const labels = ['.fld label', '.card .role'];
+
+    const eyebrowBodies = eyebrows.map((selector) => [selector, ruleBody(html, selector)] as const);
+    const unreadEyebrows = eyebrowBodies.filter(([, body]) => body === '').map(([s2]) => s2);
+    expect(
+      unreadEyebrows,
+      'nothing was read out of these mockup rules, so the assertion below would pass on empty ' +
+        'strings instead of on capitals',
+    ).toEqual([]);
+    const notUpper = eyebrowBodies
+      .filter(([, body]) => property(body, 'text-transform') !== 'uppercase')
+      .map(([s2]) => s2);
     expect(
       notUpper,
-      'these mockup rules no longer say text-transform:uppercase, so the mockup stopped asking ' +
-        'for capitals and this point is measuring something it no longer wants',
+      'these mockup rules are section eyebrows and no longer say text-transform:uppercase, so ' +
+        'the mockup stopped asking for capitals and this point is measuring something it no ' +
+        'longer wants',
     ).toEqual([]);
 
-    /* Wszystkie reguły `.text-label` w arkuszu — Tailwind wypuszcza jedną (rozmiar, interlinia,
-     * rozstrzelenie, waga), nasza jest drugą. Pytamy o KAŻDĄ deklarację `text-transform`: ma być
-     * dokładnie jedna i ma brzmieć `uppercase`. Dwie znaczyłyby dwa miejsca na jeden fakt. */
-    const declared = ruleBodies(css, '.text-label')
+    const labelBodies = labels.map((selector) => [selector, ruleBody(html, selector)] as const);
+    const unreadLabels = labelBodies.filter(([, body]) => body === '').map(([s2]) => s2);
+    expect(
+      unreadLabels,
+      'nothing was read out of these mockup rules, so the assertion below would pass on empty ' +
+        'strings — the field label could be shouting and this test would not notice',
+    ).toEqual([]);
+    const stillUpper = labelBodies
+      .filter(([, body]) => property(body, 'text-transform') === 'uppercase')
+      .map(([s2]) => s2);
+    expect(
+      stillUpper,
+      'these mockup rules are a field label and an agent role and they still ask for capitals. ' +
+        'Capitals on every field label are the default move of an admin panel and the first ' +
+        'thing that stops a form reading as macOS.',
+    ).toEqual([]);
+
+    /* Wszystkie reguly `.text-eyebrow` w arkuszu. Pytamy o KAZDA deklaracje
+     * `text-transform`: ma byc dokladnie jedna i ma brzmiec `uppercase`. */
+    const eyebrowDeclared = ruleBodies(css, '.text-eyebrow')
       .map((body) => property(body, 'text-transform'))
       .filter((value) => value !== '');
     expect(
-      declared,
-      'the label rung does not carry capitals exactly once. DESIGN §4 calls --t-label "etykieta ' +
-        'pola, WERSALIKI" and the mockup does it in five rules; the ladder rung is the one ' +
-        'place that fixes all 34 uses of text-label at once, including the 35th nobody wrote yet.',
+      eyebrowDeclared,
+      'the eyebrow rung does not carry capitals exactly once. The ladder rung is the one place ' +
+        'that fixes every eyebrow at once, including the one nobody wrote yet; two declarations ' +
+        'would be two places for one fact (invariant 13).',
     ).toEqual(['uppercase']);
+
+    const labelDeclared = ruleBodies(css, '.text-label')
+      .map((body) => property(body, 'text-transform'))
+      .filter((value) => value === 'uppercase');
+    expect(
+      labelDeclared,
+      'the label rung still carries capitals in the compiled sheet, so every field label in the ' +
+        'app shouts regardless of what the mockup says',
+    ).toEqual([]);
   });
 
   it('leaves the capitals overridable, by keeping the rule below the utilities layer', () => {
     /* Ta reguła musi dać się ZNIEŚĆ. Makieta ma stopień 11 px także bez wersalików (`.foot`,
      * `.tile .meta`), a komponent znosi je klasą `normal-case`. Gdyby wersaliki stały w warstwie
      * `utilities`, trafiłyby w wyniku PO `.normal-case` i przy równej specyficzności wygrałyby —
-     * czyli nie dałoby się ich zdjąć nigdzie. */
+     * czyli nie dałoby się ich zdjąć nigdzie.
+     * 2026-08-19: reguła dotyczy `.text-eyebrow`, bo tam przeniosły się wersaliki (T-45). */
     expect(
       tight(css).includes('@layer theme,base,components,utilities'),
       'the sheet no longer declares the layer order, so which layer wins is decided by source ' +
@@ -213,7 +256,7 @@ describe('the compiled style sheet says what the mockup says', () => {
         'on an empty string',
     ).not.toBe('');
     expect(
-      property(ruleBody(components, '.text-label'), 'text-transform'),
+      property(ruleBody(components, '.text-eyebrow'), 'text-transform'),
       'the capitals do not live in the components layer. Below the utilities layer they can be ' +
         'lifted with `normal-case` where the mockup has no capitals; inside it they cannot be ' +
         'lifted anywhere.',
@@ -298,11 +341,20 @@ describe('the compiled style sheet says what the mockup says', () => {
       ).toBe(wanted);
     }
 
+    /* Dopisana kontrola 2026-08-19: to byl JEDYNY odczyt z makiety w tym pliku bez asercji
+     * na to, ze cokolwiek dopasowal — czyli jedyne miejsce, w ktorym porownanie moglo przejsc
+     * miedzy dwoma pustymi napisami. */
+    const wantedTextarea = property(ruleBody(html, '.fld textarea'), 'height');
+    expect(
+      wantedTextarea,
+      'no height was read out of the mockup `.fld textarea` rule, so the comparison below would ' +
+        'run between two empty strings',
+    ).not.toBe('');
     expect(
       property(ruleBody(css, 'textarea.field'), 'height'),
       'the multi-line field has to be the height the mockup gives `.fld textarea`; without it ' +
         'a textarea is one line tall and the class is unusable for a prompt',
-    ).toBe(property(ruleBody(html, '.fld textarea'), 'height'));
+    ).toBe(wantedTextarea);
   });
 
   it('pulses in steps, with the timing the mockup states, and nothing pulses smoothly', () => {

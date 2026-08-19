@@ -66,82 +66,131 @@ Nie ma paska postępu w procentach. Kroki to nie procenty.
 
 ## 3. Kolor
 
+Wartości pochodzą z systemu projektowego meetnotes (`../meetnotes/src/design-tokens/`, nazwa
+własna „Quiet Glass"). Bierzemy **wartości**, nie inspirację — dwie nasze aplikacje mają w Docku
+wyglądać na rodzeństwo (decyzja D1). Kopia wartości leży w `docs/design/house-values.json`
+i jest porównywana z `theme.css` w każdym biegu testu.
+
+Reguła nadrzędna całego systemu, wprost z tamtego pliku: **szkło jest chrome, treść jest
+papierem.** Szkło nie wchodzi nigdy pod tekst ani pod kod, które człowiek ma przeczytać.
+
 ### Powierzchnie
 
 | Token | Hex | Użycie |
 |---|---|---|
-| `--bg` | `#06090b` | tło aplikacji, obszar pracy |
-| `--panel` | `#0d1216` | panele boczne, nagłówki, paski |
-| `--raised` | `#141b20` | kontrolki na panelu, chipy, kafelki |
-| `--well` | `#040708` | pola wejściowe, bloki kodu, płótno edytora |
+| `--bg` | `#07070b` | tło aplikacji, kartka treści |
+| `--panel` | `rgba(255, 255, 255, 0.045)` | wypełnienie szkła: menu, pasek, szyna |
+| `--raised` | `rgba(255, 255, 255, 0.045)` | karty i kafelki na szkle |
+| `--well` | `rgba(255, 255, 255, 0.035)` | pola wejściowe, bloki kodu |
+| `--overlay` | `#1b1b24` | **nieprzejrzyste** menu i podpowiedzi |
+| `--solid` | `#111118` | gdy potrzebna jest prawdziwie kryjąca powierzchnia |
+| `--hover` | `rgba(255, 255, 255, 0.06)` | podkład wiersza pod kursorem |
+| `--scrim` | `rgba(0, 0, 0, 0.5)` | przygaszenie za modalem |
 
-Cztery poziomy. Głębia bierze się **wyłącznie** ze zmiany koloru powierzchni — nie ma cieni.
+Powierzchnie podniesione są **bielą-alfa**, nie własnym szarym. Jedna definicja daje dwa
+zachowania: nad aurorą załamuje światło, nad kartką treści czyta się jako delikatne podniesienie.
+Menu i podpowiedź **nie mogą** być szkłem — leżą nad treścią, którą człowiek właśnie czyta.
 
 ### Tekst
 
 | Token | Hex | Użycie |
 |---|---|---|
-| `--ink` | `#e8eff1` | nagłówki, wartości, aktywna treść |
-| `--body` | `#cbd6d9` | zdania, opisy, treść domyślna |
-| `--muted` | `#a3b1b5` | etykiety, metadane, rzeczy skończone |
+| `--ink` | `#f6f6fa` | nagłówki, wartości, aktywna treść |
+| `--body` | `#a6a6b6` | zdania, opisy, treść domyślna |
+| `--muted` | `#8a8a9c` | etykiety, metadane, rzeczy skończone |
+
+Dom ma **cztery** stopnie tekstu; bierzemy trzy. `--muted` to domowy `--text-tertiary`, nie
+`--text-muted`: tamten stopień (`#6c6c7d`) mierzy 3,62:1 na powierzchni podniesionej, czyli
+**pod progiem czytelności**, i dom trzyma go wyłącznie dla ≥13 px. U nas prawie każdy przygaszony
+napis to metadana ≤12 px, więc jaśniejszy stopień (5,50:1) jest jedynym poprawnym. Czwartego nie
+wprowadzamy, żeby nikt nie miał czym sięgnąć po ciemniejszy.
 
 ### Linie
 
+| Token | Hex |
+|---|---|
+| `--line` | `rgba(255, 255, 255, 0.09)` |
+| `--line-strong` | `rgba(255, 255, 255, 0.16)` |
+| `--line-subtle` | `rgba(255, 255, 255, 0.055)` |
+
+### Akcent — mówi „to jest interaktywne" i nic więcej
+
 | Token | Hex | Użycie |
 |---|---|---|
-| `--line` | `#212a2f` | podziały, obrysy kart, siatka |
-| `--line-strong` | `#5a6d76` | obrys kontrolki interaktywnej, focus w spoczynku |
+| `--accent` | `#6e76ff` | focus, przycisk podstawowy, aktywny glif, kursor w polu |
+| `--accent-hover` | `#8a90ff` | ten sam element pod kursorem |
+| `--accent-active` | `#5b63f0` | ten sam element wciśnięty |
+| `--accent-soft` | `rgba(110, 118, 255, 0.16)` | tło elementu wybranego |
+| `--accent-ring` | `rgba(110, 118, 255, 0.5)` | obrys kontrolki, pierścień focusu |
+
+Do 2026-08-19 jeden token odpowiadał na dwa różne pytania: ten dokument mówił jednocześnie
+„`--accent` jest **jedynym kolorem interaktywnym**" i „`--accent` znaczy **teraz**". To są dwa
+fakty, więc mają dwa tokeny (niezmiennik 13).
+
+**Akcent nigdy nie wypełnia chrome.** Bierze go focus, przycisk podstawowy i aktywny glif —
+i na tym koniec. Aktywny wiersz menu jest neutralny; barwę dostaje wyłącznie jego glif.
 
 ### Stan — cztery i ani jeden więcej
 
-To jest cały słownik semantyczny aplikacji. Każdy kolor odpowiada na jedno pytanie.
-
 | Token | Hex | Znaczy | Pytanie, na które odpowiada |
 |---|---|---|---|
-| `--accent` | `#6ee0b0` | **teraz** | co się dzieje w tej chwili? |
-| `--attend` | `#ffb45b` | **ty** | co czeka na moją decyzję? |
-| `--fail` | `#ff8f9f` | **zepsute** | co poszło źle? |
-| `--human` | `#c6a8ff` | **człowiek** | co zrobiła osoba, nie maszyna? |
+| `--live` | `#ff7a5c` | **teraz** | co się dzieje w tej chwili? |
+| `--attend` | `#f5b14c` | **ty** | co czeka na moją decyzję? |
+| `--fail` | `#ff6b6b` | **zepsute** | co poszło źle? |
+| `--human` | `#9d7bff` | **człowiek** | co zrobiła osoba, nie maszyna? |
 
-Wash i edge dla każdego (tło chipa i jego obrys):
+Wash i edge dla każdego — tło chipa i jego obrys:
 
-```
---accent-edge #3d8a70   --accent-wash #0f2620
---attend-edge #8f6f30   --attend-wash #2a1e0e
---fail-edge   #a1515f   --fail-wash   #2a1319
---human-edge  #7a6aa8   --human-wash  #1c1830
-```
+| Token | Hex | Token | Hex |
+|---|---|---|---|
+| `--live-soft` | `rgba(255, 122, 92, 0.16)` | `--live-edge` | `rgba(255, 122, 92, 0.5)` |
+| `--attend-soft` | `rgba(245, 177, 76, 0.14)` | `--attend-edge` | `rgba(245, 177, 76, 0.5)` |
+| `--fail-soft` | `rgba(255, 107, 107, 0.14)` | `--fail-edge` | `rgba(255, 107, 107, 0.5)` |
+| `--human-soft` | `rgba(157, 123, 255, 0.14)` | `--human-edge` | `rgba(157, 123, 255, 0.5)` |
+
+`--live` w domu nazywa się tak samo i pilnuje nagrywania; u nas pilnuje pracującego agenta.
+Ta sama robota: **żywe, nie alarmujące.**
+
+#### Reguła formy, bez której `--live` i `--fail` są nieodróżnialne
+
+Te dwie barwy różnią się odcieniem o **~13°**, a w naszym strumieniu stoją w sąsiednich
+wierszach — czego dom nigdy nie musi pokazać. Rozstrzyga to forma, nie barwa:
+
+- `--live` występuje **wyłącznie** jako: podkład aktywnego wiersza strefy „teraz", jego obrys,
+  aktywny segment paska loadoutu, pulsująca kropka, kropka karty w tle.
+- `--fail` występuje **wyłącznie** jako: glif `✕`, obrys chipa, lewa krawędź bloku błędu.
+
+Rozłączność tych dwóch słowników form jest **sprawdzana statycznie**, nie oceniana okiem.
 
 ### Tożsamość ≠ stan
 
-Agenci mają swoje kolory, żeby szyna dała się skanować wzrokiem. Ale kolor agenta **nigdy nie może
-być pomylony z kolorem stanu** — inaczej pomarańczowy agent i „czeka na twoją decyzję" znaczą to samo.
-
-Rozdział jest po nasyceniu:
+Agenci mają swoje kolory, żeby szyna dała się skanować wzrokiem. Ale kolor agenta **nigdy nie
+może być pomylony z kolorem stanu** — inaczej pomarańczowy agent i „czeka na twoją decyzję"
+znaczą to samo. Rozdział jest po nasyceniu.
 
 | | Nasycenie | Tokeny |
 |---|---|---|
-| **Stan** | nasycone | `--accent` `--attend` `--fail` `--human` |
-| **Tożsamość** | przygaszone, zbliżona jasność | `--id-1 #5c7a8a` `--id-2 #7a6a8a` `--id-3 #8a7a5c` `--id-4 #5c8a7a` `--id-5 #8a5c6a` |
+| **Stan** | nasycone | `--live` `--attend` `--fail` `--human` |
+| **Tożsamość** | przygaszone, zbliżona jasność | `--id-1 #6f8496` `--id-2 #7f7597` `--id-3 #94886b` `--id-4 #6b9285` `--id-5 #96707d` |
 
 Agent dostaje kwadrat 22px w swoim przygaszonym kolorze, z inicjałem w `--ink`.
 Stan agenta jest **słowem** w kolorze nasyconym, nigdy kolorem kwadratu.
 
-> Ta reguła powstała przy budowie makiety: referencyjny redesign poprzedniego prototypu daje agentowi Forge
-> kolor `#ffb45b`, czyli dokładnie ten sam hex co „wymaga uwagi". Na jednym ekranie oznaczały
-> dwie różne rzeczy tym samym kolorem.
+> Kolory tożsamości są **nasze** i nie mają odpowiednika w domu: tamtejsze `--graph-*` są
+> nasycone, bo obsługują legendę grafu. Reguła powstała przy budowie makiety: referencyjny
+> redesign poprzedniego prototypu dawał agentowi Forge dokładnie ten sam kod barwy co „wymaga uwagi".
+> Na jednym ekranie oznaczały dwie różne rzeczy tym samym kolorem.
 
-### Reguła jednego akcentu
+### Aliasy poprzedniej palety
 
-`--accent` jest **jedynym kolorem interaktywnym**. Przycisk podstawowy, focus, aktywna zakładka,
-kursor w polu, aktywny blok w pasku loadoutu. Nic innego go nie używa.
+`--accent-edge`, `--accent-wash`, `--attend-wash`, `--fail-wash`, `--human-wash` **żyją**
+i wskazują na nowe nazwy. Trzy powierzchnie wołają je jeszcze bezpośrednio i migrują osobno;
+nazwa skasowana pod niezmigrowanym komponentem zostawia element bez ani jednej reguły CSS —
+awarię, która nie rzuca wyjątku i nie pojawia się w żadnym logu (niezmiennik 25).
+Znikają razem z ostatnim wołającym.
 
-**Rzecz skończona jest cicha.** Ukończony krok to `✓` w kolorze `--muted`, nie zielony ptaszek.
-Zielony znaczy „dzieje się teraz", nie „udało się". To odróżnia Loadout od każdego dashboardu,
-który świeci na zielono, kiedy nic się nie dzieje.
-
-Zakazane: gradienty dekoracyjne, cienie na chrome, drugi kolor marki, kolor jako ozdoba.
-Jedyny dopuszczalny gradient to `linear-gradient` maskujący ucięcie długiej listy.
+Zakazane: gradienty dekoracyjne, drugi kolor marki, kolor jako ozdoba, barwione szkło,
+piąty kolor stanu, cień pod czymś, co nie pływa.
 
 ---
 
@@ -149,33 +198,69 @@ Jedyny dopuszczalny gradient to `linear-gradient` maskujący ucięcie długiej l
 
 ### Dwie rodziny, jedna reguła
 
-- **Inter** — język ludzki. Zdania, etykiety, przyciski, nagłówki, opisy.
-- **SFMono-Regular / Roboto Mono** — wartości maszynowe. Ścieżki, identyfikatory, hashe, liczby, czas, nazwy plików, komendy.
+- **Hanken Grotesk** — język ludzki. Zdania, etykiety, przyciski, nagłówki, opisy, logotyp.
+- **JetBrains Mono** — wartości maszynowe. Ścieżki, identyfikatory, hashe, liczby, czas, nazwy
+  plików, komendy.
 
-**To jest reguła semantyczna, nie estetyczna.** Mono znaczy „to wyprodukowała maszyna i możesz to skopiować".
-Widzisz mono → wiesz, że to fakt, nie opis.
+**To jest reguła semantyczna, nie estetyczna.** Mono znaczy „to wyprodukowała maszyna i możesz
+to skopiować". Widzisz mono → wiesz, że to fakt, nie opis.
 
-> Świadoma zmiana wobec referencji, z której ten system wyrósł: miała około 90% tekstu w mono 12px.
-> (Plik referencyjny usunięty z repo 2026-08-18 — jedyną wyrocznią wyglądu jest `docs/mockup/index.html`.)
-> To jest jedna z konkretnych przyczyn, dla których tamten interfejs męczy — wszystko wygląda jednakowo
-> ważne i jednakowo techniczne. Loadout odwraca proporcję: Inter jest domyślny, mono jest wyjątkiem.
+Oba kroje są **zmiennymi plikami `.woff2` w repo** (`src/styles/fonts/`), te same, które niesie
+`../meetnotes/src/assets/fonts/`. Oba OFL.
+
+> Zamknięty defekt, dla pamięci. Do 2026-08-19 ten dokument żądał Intera, `theme.css` go
+> deklarował, a w drzewie nie było ani jednego pliku kroju i ani jednej reguły `@font-face`.
+> Aplikacja rysowała się krojem systemowym — po cichu, bez ani jednego błędu w konsoli.
+> Dokładnie jedna rodzina na token stoi w cudzysłowie i dokładnie ta jedna ma swój `@font-face`;
+> dalsze człony są systemowe i bez cudzysłowu. Cudzysłów jest obietnicą, że plik leży w drzewie.
 
 ### Drabinka
 
 | Token | Rodzina | Rozmiar | Waga | Interlinia | Tracking | Użycie |
 |---|---|---|---|---|---|---|
-| `--t-title` | Inter | 20px | 600 | 1.2 | -0.2px | tytuł ekranu, jeden na widok |
-| `--t-heading` | Inter | 15px | 600 | 1.3 | -0.1px | nagłówek sekcji, tytuł karty |
-| `--t-body` | Inter | 13px | 400 | 1.5 | 0 | zdania i opisy |
-| `--t-ui` | Inter | 13px | 600 | 1.2 | 0 | przyciski, aktywne etykiety |
-| `--t-label` | Inter | 11px | 600 | 1.2 | 0.08em | etykieta pola, WERSALIKI |
+| `--t-title` | ui | 20px | 600 | 1.2 | -0.02em | tytuł ekranu, jeden na widok |
+| `--t-heading` | ui | 15px | 600 | 1.3 | -0.01em | nagłówek sekcji, tytuł karty |
+| `--t-subhead` | ui | 14px | 600 | 1.3 | 0 | tytuł kafelka na liście |
+| `--t-body` | ui | 13px | 400 | 1.5 | 0 | zdania i opisy |
+| `--t-ui` | ui | 13px | 600 | 1.2 | 0 | przyciski, aktywne etykiety |
+| `--t-note` | ui | 12px | 400 | 1.45 | 0 | drugie zdanie, podpowiedź pod polem |
+| `--t-label` | ui | 11px | 600 | 1.2 | 0 | **etykieta pola, zdaniowo** |
+| `--t-eyebrow` | ui | 11px | 600 | 1.2 | 0.06em | **nadoczko sekcji, WERSALIKI** |
+| `--t-meta` | ui | 11px | 400 | 1.2 | 0 | wartość maszynowa w drugim planie |
 | `--t-mono` | mono | 12px | 400 | 1.45 | 0 | wartości maszynowe |
 | `--t-mono-strong` | mono | 12px | 700 | 1.2 | 0.06em | identyfikator, nazwa agenta |
 | `--t-stream` | mono | 13px | 400 | 1.5 | 0 | linia w widoku pracy |
 
 Waga 500 nie istnieje. Drabinka to 400 / 600 / 700.
-
 Rozmiary poniżej 11px nie istnieją. Jeśli coś nie mieści się w 11px, jest niepotrzebne.
+
+`font-variant-numeric: tabular-nums` obowiązuje wszędzie, gdzie cyfry stoją w kolumnie.
+
+### Dwa stopnie tam, gdzie był jeden
+
+`--t-label` i `--t-eyebrow` mają ten sam rozmiar i tę samą wagę, a różnią się jedną rzeczą:
+**wersalikami**. Do 2026-08-19 istniał jeden stopień i obsługiwał oba zastosowania, więc
+wersaliki wchodziły albo na **każdą** etykietę pola, albo na żadną.
+
+Podział jest sprawdzalny i jest sprawdzany:
+
+- **Nadoczko sekcji** — `AGENTS`, `BUILD`, `WHAT IT DOES`. Wersaliki, tracking `0.06em`.
+- **Etykieta pola i rola agenta** — `Name`, `Give up after`, `writes code`. Zdaniowo, tracking 0.
+
+Wersaliki na każdej etykiecie pola są najczęstszym ruchem domyślnego panelu admina i pierwszą
+rzeczą, po której formularz przestaje wyglądać jak macOS.
+
+> **Rozbieżność zapisana, nie naprawiona po cichu.** Ten dokument stawia `--t-eyebrow` w rodzinie
+> `ui`, bo nadoczko jest językiem ludzkim, a `mono` znaczy „wartość maszynowa". Makieta trzyma
+> trzy reguły nadoczka (`.side h3`, `.rail h2`, `.ctx .ch`) w `mono` i komponenty niosą przy nich
+> klasę `font-mono`. **Żadna wyrocznia tego nie porównuje**, więc rozjazd nie świeci na czerwono
+> — i właśnie dlatego stoi tu wypisany. Zmiana rodziny jest zmianą WYGLĄDU, a wygląd zmienia się
+> razem z regułą w makiecie: należy do T-48, nie do zadania o słowniku.
+
+Reguła `text-transform` mieszka **w definicji stopnia**, w warstwie `components`, a nie
+w komponentach: Tailwind pozwala tokenowi `--text-*` nieść interlinię, rozstrzelenie i wagę,
+ale nie `text-transform`. Warstwa `components` stoi niżej niż `utilities`, więc `normal-case`
+nadal wygrywa tam, gdzie makieta nie ma wersalików.
 
 ---
 

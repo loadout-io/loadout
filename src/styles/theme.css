@@ -10,6 +10,37 @@
 
 @import "tailwindcss";
 
+/* ── kroje wniesione do repo. 2026-08-19, T-45. ─────────────────────────────────────────────
+ *
+ * DLACZEGO PLIKI, A NIE DEKLARACJA. Do dzisiaj ten plik deklarowal Intera, a `find src public
+ * -name '*.woff*'` dawal ZERO: katalogu `public/` nie bylo, `@font-face` nie bylo ani jednego.
+ * Aplikacja przez caly ten czas rysowala sie krojem systemowym — po cichu, bez ani jednego
+ * bledu w konsoli. Deklaracja wskazujaca na kroj, ktorego nie ma, jest gorsza niz jej brak:
+ * dalej wyglada na rozstrzygniecie i dalej jest cytowana w recenzjach.
+ *
+ * DLACZEGO ZMIENNE. Oba pliki niosa CALE pasmo wag w jednym zasobie (Hanken 100–900,
+ * JetBrains 100–800). Przypiecie jednej wagi wyrzucilo by wiekszosc 34 kB, a wage 600
+ * kazalo przegladarce SYNTEZOWAC z 400 — czyli pogrubiac obrys zamiast rysowac inny kroj.
+ *
+ * Oba sa te same pliki, ktore niesie ../meetnotes/src/assets/fonts/, i to jest cala tresc
+ * decyzji D1 o spojnosci: dwie nasze aplikacje w jednym Docku maja wygladac na rodzenstwo.
+ * Oba OFL. */
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/hanken-grotesk.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono.woff2") format("woff2");
+}
+
 @theme {
   /* ── kasujemy domyślną paletę Tailwinda ───────────────────────────── */
   --color-*: initial;
@@ -24,37 +55,85 @@
   --animate-*: initial;
 
   /* ── powierzchnie ─────────────────────────────────────────────────── */
-  --color-bg: #06090b;
-  --color-panel: #0d1216;
-  --color-raised: #141b20;
-  --color-well: #040708;
+  /* SZKLO JEST CHROME, TRESC JEST PAPIEREM. To zdanie jest reguła nadrzedna
+   * calego systemu i pochodzi z domu (../meetnotes/src/design-tokens/glass.css,
+   * gdzie brzmi doslownie „glass is CHROME, content is paper"). Powierzchnie
+   * podniesione sa BIELA-ALFA, nie wlasnym szarym: nad aurora zalamuja swiatlo,
+   * nad kartka tresci czytaja sie jak delikatne podniesienie. Jedna definicja,
+   * dwa zachowania, zero drugiego zestawu tokenow. */
+  --color-bg: #07070b;
+  --color-panel: rgba(255, 255, 255, 0.045);
+  --color-raised: rgba(255, 255, 255, 0.045);
+  --color-well: rgba(255, 255, 255, 0.035);
+  /* Nieprzejrzyste. Menu i podpowiedz NIE MOGA byc szklem: leza nad trescia,
+   * ktora czlowiek wlasnie czyta, a szklo pod tekstem lamie te regule wyzej. */
+  --color-overlay: #1b1b24;
+  --color-solid: #111118;
+  --color-hover: rgba(255, 255, 255, 0.06);
+  --color-scrim: rgba(0, 0, 0, 0.5);
 
   /* ── tekst ────────────────────────────────────────────────────────── */
-  --color-ink: #e8eff1;
-  --color-body: #cbd6d9;
-  --color-muted: #a3b1b5;
+  --color-ink: #f6f6fa;
+  --color-body: #a6a6b6;
+  /* To jest domowy `--text-tertiary`, NIE `--text-muted`. Tamten stopien (#6c6c7d)
+   * mierzy 3,62:1 na powierzchni podniesionej — pod progiem czytelnosci — i dom
+   * trzyma go wylacznie dla >=13 px. U nas prawie kazdy przygaszony napis to
+   * metadana <=12 px, wiec jasniejszy stopien (5,50:1) jest jedynym poprawnym.
+   * Czwartego stopnia NIE wprowadzamy, zeby nikt nie mial czym siegnac po ciemniejszy. */
+  --color-muted: #8a8a9c;
 
   /* ── linie ────────────────────────────────────────────────────────── */
-  --color-line: #212a2f;
-  --color-line-strong: #5a6d76;
+  --color-line: rgba(255, 255, 255, 0.09);
+  --color-line-strong: rgba(255, 255, 255, 0.16);
+  --color-line-subtle: rgba(255, 255, 255, 0.055);
+
+  /* ── akcent: mowi „to jest interaktywne" i NIC WIECEJ ─────────────── */
+  /* Do 2026-08-19 jeden token odpowiadal na dwa rozne pytania: DESIGN §3 mowil
+   * jednoczesnie „--accent jest JEDYNYM kolorem interaktywnym" i „--accent znaczy
+   * TERAZ". Interaktywnosc i dzialanie sie w tej chwili to dwa fakty, wiec od
+   * teraz maja dwa tokeny (niezmiennik 13). Akcent nigdy nie wypelnia chrome —
+   * bierze go focus, przycisk podstawowy i aktywny glif, i na tym koniec. */
+  --color-accent: #6e76ff;
+  --color-accent-hover: #8a90ff;
+  --color-accent-active: #5b63f0;
+  --color-accent-soft: rgba(110, 118, 255, 0.16);
+  --color-accent-ring: rgba(110, 118, 255, 0.5);
 
   /* ── stan: cztery i ani jeden więcej ──────────────────────────────── */
-  /* accent = TERAZ. Jedyny kolor interaktywny w całej aplikacji.        */
-  --color-accent: #6ee0b0;
-  --color-accent-edge: #3d8a70;
-  --color-accent-wash: #0f2620;
-  /* attend = TY. Czeka na decyzję człowieka.                            */
-  --color-attend: #ffb45b;
-  --color-attend-edge: #8f6f30;
-  --color-attend-wash: #2a1e0e;
-  /* fail = ZEPSUTE.                                                     */
-  --color-fail: #ff8f9f;
-  --color-fail-edge: #a1515f;
-  --color-fail-wash: #2a1319;
-  /* human = zrobił to człowiek, nie maszyna.                            */
-  --color-human: #c6a8ff;
-  --color-human-edge: #7a6aa8;
-  --color-human-wash: #1c1830;
+  /* live = TERAZ. W domu ten token pilnuje nagrywania i nazywa sie tak samo;
+   * u nas pilnuje pracujacego agenta. Ta sama robota: zywe, nie alarmujace. */
+  --color-live: #ff7a5c;
+  --color-live-soft: rgba(255, 122, 92, 0.16);
+  --color-live-edge: rgba(255, 122, 92, 0.5);
+  /* attend = TY. Czeka na decyzje czlowieka. */
+  --color-attend: #f5b14c;
+  --color-attend-soft: rgba(245, 177, 76, 0.14);
+  --color-attend-edge: rgba(245, 177, 76, 0.5);
+  /* fail = ZEPSUTE.
+   * UWAGA MIERZONA: --color-fail i --color-live roznia sie odcieniem o ~13 stopni,
+   * a w naszym strumieniu stoja w sasiednich wierszach — czego dom nigdy nie musi
+   * pokazac. Rozstrzyga to regula FORMY, nie barwy: live wystepuje wylacznie jako
+   * podklad wiersza, jego obrys, aktywny segment paska i pulsujaca kropka; fail
+   * wylacznie jako glif, obrys chipa i lewa krawedz bloku bledu. Rozlacznosc form
+   * jest sprawdzana statycznie w T-47, nie oceniana okiem. */
+  --color-fail: #ff6b6b;
+  --color-fail-soft: rgba(255, 107, 107, 0.14);
+  --color-fail-edge: rgba(255, 107, 107, 0.5);
+  /* human = zrobil to czlowiek, nie maszyna. Nasze — dom nie ma odpowiednika. */
+  --color-human: #9d7bff;
+  --color-human-soft: rgba(157, 123, 255, 0.14);
+  --color-human-edge: rgba(157, 123, 255, 0.5);
+
+  /* ── aliasy starych nazw. Zyja, bo trzy powierzchnie jeszcze ich wolaja ─ */
+  /* Niezmiennik 25 zastosowany do CSS: nowa nazwa dochodzi, stara wskazuje na nia.
+   * Nazwa skasowana pod niezmigrowanym komponentem zostawia element BEZ ANI JEDNEJ
+   * reguly CSS — awarie, ktora nie rzuca wyjatku i nie pojawia sie w zadnym logu.
+   * Gina w T-50, kiedy nikt ich nie wola. */
+  --color-accent-edge: var(--color-accent-ring);
+  --color-accent-wash: var(--color-accent-soft);
+  --color-attend-wash: var(--color-attend-soft);
+  --color-fail-wash: var(--color-fail-soft);
+  --color-human-wash: var(--color-human-soft);
 
   /* ── tożsamość agenta: PRZYGASZONE ────────────────────────────────── */
   /* Kolor agenta nigdy nie może być pomylony z kolorem stanu. Rozdział
@@ -62,11 +141,11 @@
    * i wszystkie mają zbliżoną jasność. Patrz DESIGN.md §3 "Tożsamość ≠ stan".
    * Referencyjny redesign poprzedniego prototypu dawał agentowi Forge #ffb45b — dokładnie
    * ten sam hex co "wymaga uwagi". Dwie różne rzeczy jednym kolorem. */
-  --color-id-1: #5c7a8a;
-  --color-id-2: #7a6a8a;
-  --color-id-3: #8a7a5c;
-  --color-id-4: #5c8a7a;
-  --color-id-5: #8a5c6a;
+  --color-id-1: #6f8496;
+  --color-id-2: #7f7597;
+  --color-id-3: #94886b;
+  --color-id-4: #6b9285;
+  --color-id-5: #96707d;
 
   /* ── kroje ────────────────────────────────────────────────────────── */
   /* Inter = język ludzki. Mono = wartość maszynowa. Reguła semantyczna. */
@@ -78,19 +157,23 @@
    * którego nie ma, daje 404 przy każdym starcie i ten sam krój zapasowy, tylko po cichu.
    * Domknięcie wymaga wniesienia pliku `.woff2` do repo (D1 żąda Intera, a aplikacja jest
    * desktopowa i nie ma prawa ciągnąć kroju z sieci) — zgłoszone orkiestratorowi. */
-  --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "SFMono-Regular", "Roboto Mono", ui-monospace, Consolas, monospace;
+  /* Dokladnie JEDNA rodzina w cudzysłowie na token, i ta jedna ma swoj `@font-face`
+   * wyzej. Cudzyslow jest obietnica, ze plik lezy w drzewie; rodzina cytowana bez
+   * pliku to defekt Intera powtorzony pod inna nazwa. Dalsze czlony sa systemowe
+   * i bez cudzyslowu — `Menlo` zamiast `"SF Mono"` wlasnie dlatego. */
+  --font-ui: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 
   /* ── drabinka typograficzna ───────────────────────────────────────── */
   /* Waga 500 nie istnieje. Poniżej 11px nie istnieje.                   */
   --text-title: 20px;
   --text-title--line-height: 1.2;
-  --text-title--letter-spacing: -0.2px;
+  --text-title--letter-spacing: -0.02em;
   --text-title--font-weight: 600;
 
   --text-heading: 15px;
   --text-heading--line-height: 1.3;
-  --text-heading--letter-spacing: -0.1px;
+  --text-heading--letter-spacing: -0.01em;
   --text-heading--font-weight: 600;
 
   --text-body: 13px;
@@ -101,10 +184,21 @@
   --text-ui--line-height: 1.2;
   --text-ui--font-weight: 600;
 
+  /* ── DWA stopnie tam, gdzie byl jeden. 2026-08-19, T-45. ────────────
+   * `--text-label` to ETYKIETA POLA i jest ZDANIOWA. `--text-eyebrow` to
+   * NADOCZKO SEKCJI i nosi wersaliki. Do dzisiaj jeden stopien obslugiwal
+   * oba, wiec wersaliki wchodzily albo na kazda etykiete pola, albo na
+   * zadna — a wersaliki na kazdej etykiecie pola sa najczestszym ruchem
+   * domyslnego panelu admina i pierwsza rzecza, po ktorej formularz
+   * przestaje wygladac jak macOS. */
   --text-label: 11px;
   --text-label--line-height: 1.2;
-  --text-label--letter-spacing: 0.08em;
   --text-label--font-weight: 600;
+
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 1.2;
+  --text-eyebrow--letter-spacing: 0.06em;
+  --text-eyebrow--font-weight: 600;
 
   --text-mono: 12px;
   --text-mono--line-height: 1.45;
@@ -155,16 +249,43 @@
   /* ── przestrzeń: baza 4px ─────────────────────────────────────────── */
   --spacing: 4px;
 
-  /* ── kształt: 2px wszędzie, koniec dyskusji ───────────────────────── */
-  --radius-sq: 2px;
-  --radius-dot: 9999px;
+  /* ── kształt: pasmo domu, dolny koniec ────────────────────────────── */
+  /* Dom ma 9 / 13 / 18 / 24 / pill. Bierzemy CZTERY dolne stopnie: narzedzie
+   * o tej gestosci przy 24 px wyglada jak aplikacja na iPada, a wiersz
+   * strumienia nie ma promienia wcale i to on utrzymuje gestosc. */
+  --radius-sm: 9px;
+  --radius-md: 13px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  /* Aliasy poprzedniego pasma. NIE wlasna kopia liczby: alias trzymajacy
+   * liczbe rozjezdza sie po cichu przy nastepnej zmianie pasma, i wtedy dwie
+   * powierzchnie maja dwa rozne „2 px", ktorych nikt nie widzi, dopoki nie
+   * stana obok siebie. Gina w T-50. */
+  --radius-sq: var(--radius-sm);
+  --radius-dot: var(--radius-pill);
 
   /* ── wysokości kontrolek ──────────────────────────────────────────── */
   --height-compact: 28px;
   --height-control: 32px;
   --height-primary: 36px;
 
-  /* ── ruch: jedna mikrointerakcja ──────────────────────────────────── */
+  /* ── cienie: WYLACZNIE pod tym, co plywa ──────────────────────────── */
+  /* W calej aplikacji plywa jedna rzecz: panel nawigacji. Modal, podpowiedz
+   * i menu plywaja tez, kiedy powstana. Element wewnatrz strony nie ma cienia
+   * nigdy — glebia bierze sie ze zmiany powierzchni, tak jak dotad. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 22px 56px rgba(0, 0, 0, 0.48);
+
+  /* ── szkło ────────────────────────────────────────────────────────── */
+  --glass-blur: 30px;
+  --glass-saturate: 135%;
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+
+  /* ── ruch: jedna mikrointerakcja, krzywa z domu ───────────────────── */
+  --transition: 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  --transition-fast: 130ms cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
 
   /* ── ruch: jedna animacja, `animate-blip`. 2026-08-18. ────────────── */
@@ -192,8 +313,10 @@
   }
 }
 
-/* Cieni nie ma. Głębia bierze się ze zmiany koloru powierzchni.
- * Ten pusty blok jest celowy: gdyby ktoś dodał --shadow-*, ma zobaczyć ten komentarz. */
+/* Cienie ISTNIEJA od 2026-08-19 i maja dokladnie jedno zastosowanie: rzecz, ktora PLYWA.
+ * Glebia wewnatrz strony dalej bierze sie wylacznie ze zmiany powierzchni. Trzy tokeny
+ * `--shadow-*` sa w bloku `@theme` wyzej; jesli dopisujesz czwarty, najpierw odpowiedz,
+ * co plywa, a czego dotad nie bylo. */
 
 /* ── warstwa `components`: dwa fakty o wyglądzie, które nie mieszczą się w tokenie ──────────
  *
@@ -205,20 +328,28 @@
  * `normal-case` i `capitalize` nadal wygrywają — dokładnie tam, gdzie makieta nie ma wersalików.
  * Zmierzone na `node_modules/tailwindcss/index.css` 2026-08-18. */
 @layer components {
-  /* WERSALIKI ETYKIET, dopisane 2026-08-18. DESIGN §4 opisuje `--t-label` jako „etykieta pola,
-   * WERSALIKI", a makieta ma `text-transform: uppercase` w pięciu selektorach (`.fld label`,
-   * `.card .role`, `.side h3`, `.rail h2`, `.ctx .ch`) — wszystkie stoją na tym stopniu.
-   * W kodzie produkcyjnym było ZERO `uppercase` przy 34 użyciach `text-label`.
+  /* WERSALIKI NADOCZKA, przeniesione tu 2026-08-19 (T-45).
    *
-   * DLACZEGO W DEFINICJI, A NIE W KOMPONENTACH. Tailwind pozwala tokenowi `--text-*` nieść
-   * interlinię, rozstrzelenie i wagę, ale nie `text-transform` — dlatego wersaliki musiały być
-   * dopisywane ręcznie w każdym miejscu i nie były w żadnym. Reguła tutaj naprawia wszystkie 34
-   * naraz i, co ważniejsze, naprawia też trzydzieste piąte, którego jeszcze nie ma.
+   * BYLO: `.text-label { text-transform: uppercase }`, bo DESIGN §4 opisywal `--t-label`
+   * jako „etykieta pola, WERSALIKI", a makieta miala `text-transform:uppercase` w PIECIU
+   * selektorach. Wszystkie piec stalo na jednym stopniu drabinki, wiec wersaliki wchodzily
+   * albo na wszystko, albo na nic.
    *
-   * Treść DOM się nie zmienia (wersaliki robi CSS), więc żaden test porównujący tekst znak
-   * w znak tego nie widzi — i to jest sprawdzone, nie założone: `src/ui/shell/type-ladder.test.ts`
-   * czyta tę regułę ze SKOMPILOWANEGO arkusza, a cała suita frontu przeszła bez zmian. */
-  .text-label {
+   * JEST: stopien jest rozszczepiony. Nadoczko sekcji (`.side h3`, `.rail h2`, `.ctx .ch`)
+   * nosi wersaliki; etykieta pola i rola agenta (`.fld label`, `.card .role`) sa zdaniowe.
+   * Powod nie jest estetyczny: wersaliki na kazdej etykiecie pola sa domyslnym ruchem
+   * panelu admina i pierwsza rzecza, po ktorej formularz przestaje wygladac jak macOS.
+   *
+   * DLACZEGO W DEFINICJI, A NIE W KOMPONENTACH. Tailwind pozwala tokenowi `--text-*` niesc
+   * interlinie, rozstrzelenie i wage, ale nie `text-transform` — bez tej reguly wersaliki
+   * trzeba by dopisywac recznie w kazdym miejscu i nie byloby ich w zadnym (zmierzone:
+   * ZERO `uppercase` przy 34 uzyciach `text-label` przed 2026-08-18).
+   *
+   * DLACZEGO WARSTWA `components`, A NIE `utilities`. Tailwind wstawia swoje klasy do
+   * `utilities`; regula dopisana do TEJ SAMEJ warstwy trafia w wyniku PO nich i przy rownej
+   * specyficznosci wygrywa z kazda klasa narzedziowa — czyli `normal-case` napisane
+   * w komponencie nie dalo by sie zniesc nigdzie. `components` stoi nizej. */
+  .text-eyebrow {
     text-transform: uppercase;
   }
 

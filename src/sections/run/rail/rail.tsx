@@ -84,7 +84,12 @@ export function Rail({ cards }: RailProps): ReactElement {
         data-rail
         className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-l border-line bg-panel"
       >
-        <h2 className="px-[14px] pt-3 pb-[9px] font-mono text-label text-muted">Agents</h2>
+        {/* Nadoczko sekcji, wiec stopien `text-eyebrow` — on jeden nosi wersaliki (DESIGN §4).
+            Do 2026-08-19 stal tu `text-label`, a wersaliki wisialy na TAMTYM stopniu; kiedy T-45
+            rozszczepil stopien, ten naglowek po cichu przestal krzyczec, a makieta dalej zadala
+            AGENTS. `font-mono` zostaje: makieta trzyma te regule w mono i rodzina zmienia sie
+            razem z NIA, w T-48. */}
+        <h2 className="px-[14px] pt-3 pb-[9px] font-mono text-eyebrow text-muted">Agents</h2>
 
         {/* `align-content:start` z makiety: przy jednym agencie kafelek stoi u góry, a nie
             rozciąga się na całą wysokość kolumny. */}

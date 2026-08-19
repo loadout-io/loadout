@@ -5,27 +5,60 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Loadout</title>
 <style>
+/* Kroje wniesione do repo (T-45). Makieta jest wyrocznia wygladu, wiec musi rysowac sie
+   TYM krojem, a nie systemowym — inaczej sadzi wyglad, ktorego sama nie pokazuje. */
+@font-face{font-family:"Hanken Grotesk";font-style:normal;font-weight:100 900;font-display:swap;
+  src:url("../../src/styles/fonts/hanken-grotesk.woff2") format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;
+  src:url("../../src/styles/fonts/jetbrains-mono.woff2") format("woff2")}
 /* ══════════════════════════════════════════════════════════════════════════
    Loadout — makieta. Tokeny są lustrem src/styles/theme.css i docs/design/DESIGN.md.
    Statyczna: nic tu nie woła Rusta. Pokazuje wygląd i przepływ, nie działanie.
    ══════════════════════════════════════════════════════════════════════════ */
 :root {
-  --bg:#06090b; --panel:#0d1216; --raised:#141b20; --well:#040708;
-  --ink:#e8eff1; --body:#cbd6d9; --muted:#a3b1b5;
-  --line:#212a2f; --line-strong:#5a6d76;
+  /* Quiet Glass. Wartosci 1:1 z ../meetnotes/src/design-tokens/ — lustrem jest
+     src/styles/theme.css, a checks/quick-tokens.sh porownuje oba przy kazdym biegu.
+     Regula nadrzedna tamtego systemu: szklo jest chrome, tresc jest papierem. */
+  --bg:#07070b;
+  --panel:rgba(255,255,255,0.045); --raised:rgba(255,255,255,0.045);
+  --well:rgba(255,255,255,0.035);  --overlay:#1b1b24; --solid:#111118;
+  --hover:rgba(255,255,255,0.06);  --scrim:rgba(0,0,0,0.5);
 
-  /* Stan — nasycone. Cztery i ani jeden więcej. */
-  --accent:#6ee0b0; --accent-edge:#3d8a70; --accent-wash:#0f2620;
-  --attend:#ffb45b; --attend-edge:#8f6f30; --attend-wash:#2a1e0e;
-  --fail:#ff8f9f;   --fail-edge:#a1515f;   --fail-wash:#2a1319;
-  --human:#c6a8ff;  --human-edge:#7a6aa8;  --human-wash:#1c1830;
+  --ink:#f6f6fa; --body:#a6a6b6; --muted:#8a8a9c;
 
-  /* Tożsamość — przygaszone. NIGDY nie mylone ze stanem. Patrz nota "identity vs status". */
-  --id-1:#5c7a8a; --id-2:#7a6a8a; --id-3:#8a7a5c; --id-4:#5c8a7a; --id-5:#8a5c6a;
+  --line:rgba(255,255,255,0.09); --line-strong:rgba(255,255,255,0.16);
+  --line-subtle:rgba(255,255,255,0.055);
 
-  --ui:"Inter",ui-sans-serif,system-ui,-apple-system,sans-serif;
-  --mono:"SFMono-Regular","Roboto Mono",ui-monospace,Consolas,monospace;
-  --r:2px;
+  /* Akcent mowi „to jest interaktywne" i nic wiecej. Nigdy nie znaczy „teraz". */
+  --accent:#6e76ff; --accent-hover:#8a90ff; --accent-active:#5b63f0;
+  --accent-soft:rgba(110,118,255,0.16); --accent-ring:rgba(110,118,255,0.5);
+
+  /* Stan — nasycone. Cztery i ani jeden wiecej. `--live` znaczy TERAZ.
+     `--live` i `--fail` roznia sie odcieniem o ~13 stopni, wiec NIGDY nie dziela
+     formy: live to podklad wiersza, obrys, aktywny segment paska i kropka;
+     fail to glif, obrys chipa i lewa krawedz bloku bledu. */
+  --live:#ff7a5c;   --live-soft:rgba(255,122,92,0.16);   --live-edge:rgba(255,122,92,0.5);
+  --attend:#f5b14c; --attend-soft:rgba(245,177,76,0.14); --attend-edge:rgba(245,177,76,0.5);
+  --fail:#ff6b6b;   --fail-soft:rgba(255,107,107,0.14);  --fail-edge:rgba(255,107,107,0.5);
+  --human:#9d7bff;  --human-soft:rgba(157,123,255,0.14); --human-edge:rgba(157,123,255,0.5);
+
+  /* Aliasy poprzedniej palety. Zyja, bo reguly nizej wolaja je jeszcze wprost;
+     migruja powierzchnia po powierzchni i gina razem z ostatnim wolajacym. */
+  --accent-edge:var(--accent-ring); --accent-wash:var(--accent-soft);
+  --attend-wash:var(--attend-soft); --fail-wash:var(--fail-soft);
+  --human-wash:var(--human-soft);
+
+  /* Tozsamosc — przygaszone. NIGDY nie mylone ze stanem. Patrz nota „identity vs status". */
+  --id-1:#6f8496; --id-2:#7f7597; --id-3:#94886b; --id-4:#6b9285; --id-5:#96707d;
+
+  --ui:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+
+  /* Pasmo domu, dolny koniec: 24 px nie istnieje. `--r` jest ALIASEM, nie wlasna
+     kopia liczby — alias trzymajacy liczbe rozjezdza sie po cichu przy nastepnej
+     zmianie pasma i wtedy dwie powierzchnie maja dwa rozne „2 px". */
+  --radius-sm:9px; --radius-md:13px; --radius-lg:18px; --radius-pill:999px;
+  --r:var(--radius-sm);
 }
 *,*::before,*::after{box-sizing:border-box}
 html,body{height:100%}
@@ -214,7 +247,10 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
 .card .sq{width:22px;height:22px;display:grid;place-items:center;font-family:var(--mono);
   font-size:11px;font-weight:700;color:var(--ink)}
 .card b{display:block;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink);letter-spacing:.05em}
-.card .role{display:block;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+/* ZDANIOWO od 2026-08-19 (T-45). Rola agenta stala na tym samym stopniu drabinki co
+   nadoczko sekcji, wiec wersaliki wchodzily albo na oba, albo na zadne. Stopien jest
+   teraz rozszczepiony: `--t-eyebrow` nosi wersaliki, `--t-label` jest zdaniowe. */
+.card .role{display:block;font-family:var(--ui);font-size:11px;font-weight:600;color:var(--muted)}
 .card .say{display:block;margin-top:4px;color:var(--body);font-size:12px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card .st{display:inline-block;margin-top:5px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.05em}
@@ -252,8 +288,10 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
   color:var(--muted);text-transform:uppercase}
 .side .lead{margin:0 0 14px;color:var(--body);font-size:12px}
 .fld{display:grid;gap:5px;margin-bottom:12px}
-.fld label{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.07em;
-  color:var(--muted);text-transform:uppercase}
+/* ZDANIOWO od 2026-08-19 (T-45). Wersaliki na kazdej etykiecie pola sa najczestszym
+   ruchem domyslnego panelu admina i pierwsza rzecza, po ktorej formularz przestaje
+   wygladac jak macOS. Nadoczka sekcji (`.side h3`, `.rail h2`, `.ctx .ch`) je zachowuja. */
+.fld label{font-family:var(--ui);font-size:11px;font-weight:600;color:var(--muted)}
 .fld input,.fld select,.fld textarea{
   background:var(--well);border:1px solid var(--line-strong);color:var(--ink);
   font-family:var(--mono);font-size:12px;padding:7px 9px;border-radius:var(--r);

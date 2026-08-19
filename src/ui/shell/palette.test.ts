@@ -6,6 +6,9 @@
  * `bg-slate-800` znów się kompiluje, i nic nie wygląda źle, bo nasze wartości też są na miejscu.
  * T8 §6.4 nazywa zamknięcie palety „the enforcement mechanism", nie dokumentacją — więc
  * sprawdzamy je egzekucją: klasa spoza listy ma NIE wyprodukować reguły.
+ *
+ * 2026-08-19, T-45: obie listy urosły razem z paletą Quiet Glass. Historia zmiany jest przy
+ * `THEIRS`, bo tam mieszka jedyna decyzja, która wygląda na cofnięcie ochrony, a nią nie jest.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -19,9 +22,30 @@ const MAIN = resolve(ROOT, 'src', 'main.tsx');
 const TAILWIND = resolve(ROOT, 'node_modules', 'tailwindcss', 'index.css');
 
 /** Klasy z naszej listy. Każda musi wyprodukować regułę. */
-const OURS = ['bg-panel', 'text-title', 'rounded-sq', 'font-mono'];
-/** Klasy spoza listy. Żadna nie ma prawa wyprodukować reguły. */
-const THEIRS = ['bg-slate-800', 'text-3xl', 'rounded-lg', 'shadow-lg', 'font-sans'];
+const OURS = [
+  'bg-panel',
+  'text-title',
+  'rounded-sq',
+  'font-mono',
+  /* Cztery dołożone 2026-08-19 (T-45): powierzchnia stanu „teraz", nowy stopień drabinki,
+   * nowy promień z pasma domu i cień. Bez nich lista pozytywna sądziła paletę, której
+   * połowa jest młodsza niż ona sama. */
+  'bg-live',
+  'text-eyebrow',
+  'rounded-md',
+  'shadow-md',
+];
+/** Klasy spoza listy. Żadna nie ma prawa wyprodukować reguły.
+ *
+ * DWIE NAZWY PRZESZŁY STĄD NA LISTĘ POWYŻEJ 2026-08-19 i to nie jest osłabienie strażnika.
+ * `rounded-lg` i `shadow-lg` były tu jako domyślne Tailwinda; T-45 wprowadza pasmo promieni
+ * i cieni z systemu meetnotes, a ono używa DOKŁADNIE tych nazw (`--radius-lg: 18px`,
+ * `--shadow-lg`). Nazwa, którą sami definiujemy, nie jest już obca — pytanie tego punktu
+ * brzmi „czy kompiluje się coś, czego NIE zadeklarowaliśmy", a nie „czy ta konkretna nazwa
+ * milczy". W ich miejsce wchodzą dwie, które obce pozostają: `--radius-*: initial`
+ * i `--shadow-*: initial` czyszczą całe przestrzenie, a my deklarujemy z nich cztery i trzy
+ * stopnie, więc `rounded-3xl` i `shadow-2xl` nie mają skąd się wziąć. */
+const THEIRS = ['bg-slate-800', 'text-3xl', 'rounded-3xl', 'shadow-2xl', 'font-sans'];
 
 function fileText(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -87,8 +111,9 @@ describe('the palette is closed in the style sheet this app actually loads', () 
       expect(
         hasRule(css, name),
         name +
-          ' has to produce a rule. These four are the surface, the ladder rung, the shape and ' +
-          'the machine-value family that DESIGN.md defines, and the shell is written in them',
+          ' has to produce a rule. These are the surfaces, the ladder rungs, the shapes, the ' +
+          'depth and the machine-value family that DESIGN.md defines, and the shell is written ' +
+          'in them',
       ).toBe(true);
     }
   });
