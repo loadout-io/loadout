@@ -448,6 +448,12 @@ pub struct ClaudeDriver {
     /// `None` znaczy „ten bieg go nie ma": sonda wersji nie ma katalogu biegu, więc nie ma
     /// gdzie go położyć, a `--settings` bez pliku pod podaną ścieżką zabiłoby CLI.
     settings: Option<RunSettings>,
+    /// Gotowy fragment argv przyniesiony przez warstwę wyżej — nic więcej.
+    ///
+    /// `Vec<String>`, nie `Option<PathBuf>` i nie żaden typ mówiący „umiejętność": ten plik nie
+    /// ma prawa wiedzieć, czym jest dziedziczenie ani kiedy flagę wolno postawić (niezmiennik
+    /// 23). Puste znaczy „nie było czego odziedziczyć" i rozstrzygnął to `inherit::wire`, nie my.
+    inherited: Vec<String>,
 }
 
 impl Default for ClaudeDriver {
@@ -464,6 +470,7 @@ impl ClaudeDriver {
             binary: PathBuf::from(DEFAULT_BINARY),
             transcript: None,
             settings: None,
+            inherited: Vec::new(),
         }
     }
 
@@ -475,6 +482,7 @@ impl ClaudeDriver {
             binary,
             transcript: None,
             settings: None,
+            inherited: Vec::new(),
         }
     }
 
@@ -552,8 +560,9 @@ impl ClaudeDriver {
     /// powodu: dziedziczenie jest **per bieg**, a sterownik bywa jeden na vendora, więc jedyny
     /// bezpieczny kształt to tani klon z własnym fragmentem.
     #[must_use]
-    pub fn with_inherited(self, flags: Vec<String>) -> Self {
-        todo!("T-57 AC-1: {flags:?} jeszcze nie wchodzi do argv sterownika {self:?}")
+    pub fn with_inherited(mut self, flags: Vec<String>) -> Self {
+        self.inherited = flags;
+        self
     }
 
     /// Buduje komendę jednej tury. **Promptu w niej nie ma i nigdy nie będzie**
@@ -623,6 +632,19 @@ impl ClaudeDriver {
         if let Some(settings) = &self.settings {
             command.arg("--settings").arg(settings.path());
         }
+
+        // FRAGMENT PRZYSZEDŁ GOTOWY I WCHODZI GOTOWY. Ani jednego warunku nad nim: „czy jest co
+        // odziedziczyć" rozstrzyga `inherit::wire` i rozstrzyga raz (niezmiennik 23). Pusty
+        // fragment to po prostu zero argumentów — nie flaga z pustą wartością, bo `--plugin-dir`
+        // bez wartości połknąłby następną flagę jako swój argument. Kształt „pusty argument jest
+        // poprawny" stoi w tym samym argv dwie linie wyżej (`--setting-sources ""`) i pomylenie
+        // tych dwóch nie wygląda jak błąd: proces startuje, tylko z wyjedzoną flagą.
+        //
+        // Stoi TUŻ ZA `--settings`, bo to jedna rodzina: oba wskazują coś, co napisaliśmy sami
+        // w katalogu tego biegu. Z repo gospodarza jedzie tu wyłącznie ŚCIEŻKA — jego treść
+        // (`## Recurring patterns`, ciało podagenta) jedzie promptem i nigdy argv, bo argumenty
+        // widzi `ps` każdego użytkownika maszyny (niezmiennik 9).
+        command.args(&self.inherited);
 
         // Jedna tabela, jedno miejsce (niezmiennik 23). `None` znaczy „nie wysyłaj listy",
         // a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne rzeczy.

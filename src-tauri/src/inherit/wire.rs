@@ -25,8 +25,19 @@
 
 use std::path::Path;
 
-use super::Result;
+use super::{Error, Result, rewrite, scan};
 use crate::engine::drivers::RunSpec;
+
+/// Podkatalog katalogu biegu, w którym staje katalog pluginu.
+///
+/// Miejsce jest **pod katalogiem biegu** i to jest cała treść tej stałej: katalog pluginu jest
+/// wyjściem builda (niezmiennik 4), więc ma zniknąć razem z biegiem. `$TMPDIR` zostawiałby
+/// artefakt biegu poza biegiem (`docs/ARCHITECTURE.md` §8), a `.claude/` gospodarza łamałoby
+/// jedyną obietnicę, jaką temu repozytorium złożyliśmy: czytamy je i niczego w nim nie ruszamy.
+const PLUGIN_DIR: &str = "plugin";
+
+/// Czego dotyczy odmowa — po ludzku, bo to zdanie czyta człowiek ([`Error::NotInTheHost`]).
+const A_SKILL: &str = "skill";
 
 /// Co człowiek wybrał z repozytorium gospodarza. **Pusty wybór jest domyślny.**
 ///
@@ -74,7 +85,10 @@ impl Inherited {
     /// (niezmiennik 23).
     #[must_use]
     pub fn flags(&self) -> &[String] {
-        todo!("T-57 AC-1: fragment argv jeszcze nie powstaje ({self:?})")
+        // Wycinek, nie kopia: sterownik ma dostać to, co przyszło, i ani jednej decyzji więcej.
+        // Puste znaczy „nie było czego odziedziczyć" i po tej stronie granicy nie ma nikogo,
+        // kto by z tego zrobił flagę bez wartości.
+        &self.flags
     }
 
     /// Ten sam krok, ale z odziedziczonym tekstem w prompcie — i **nigdzie indziej**.
@@ -88,11 +102,25 @@ impl Inherited {
     /// pustką uczy model, że ta sekcja bywa pusta, i kosztuje długość za nic (ten sam powód
     /// stoi przy `commands::run::with_what_we_know`).
     #[must_use]
-    pub fn applied_to(&self, spec: RunSpec) -> RunSpec {
-        todo!(
-            "T-57 AC-2/AC-3: odziedziczony tekst jeszcze nie wchodzi do promptu kroku {}",
-            spec.run_id
-        )
+    pub fn applied_to(&self, mut spec: RunSpec) -> RunSpec {
+        if self.text.is_empty() {
+            // CO DO BAJTU TEN SAM KROK. Nagłówek nad pustką uczy model, że ta sekcja bywa pusta,
+            // i kosztuje długość za nic — ten sam powód stoi przy `commands::run::with_what_we_know`.
+            return spec;
+        }
+
+        // ODZIEDZICZONE STOI NAD ZADANIEM, i to jest ta sama kolejność, co w `with_what_we_know`:
+        // kontekst nad polem pracy, pole pracy nad robotą. Zadanie kroku zostaje **na końcu**, bo
+        // to ono jest tym, o co człowiek poprosił; wstawione w środek cudzych reguł czyta się jak
+        // ich część.
+        //
+        // Doklejenie, nigdy podmiana: prompt zastąpiony odziedziczonym tekstem daje krok, który
+        // nie dostał swojego zadania, a widać to wyłącznie po odpowiedzi „jakoś nie o to".
+        spec.prompt = format!("{}\n\n{}", self.text, spec.prompt);
+        // `system_append` wraca nietknięty i to jest asercja o niezmienniku 9, nie oszczędność:
+        // to pole staje się `--append-system-prompt`, czyli argumentem, a argumenty widzi `ps`
+        // każdego użytkownika maszyny.
+        spec
     }
 }
 
@@ -110,9 +138,57 @@ impl Inherited {
 /// pięć umiejętności, dostał trzy i nie ma jak się o tym dowiedzieć — „agent nie zna
 /// umiejętności" jest nieodróżnialne od „model nie uznał, że warto jej użyć".
 pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<Inherited> {
-    todo!(
-        "T-57: {chosen:?} z {} jeszcze nie dojezdza do biegu w {}",
-        project.display(),
-        run_dir.display()
-    )
+    // NAJPIERW CZYTAMY I ODMAWIAMY, DOPIERO POTEM PISZEMY. Bieg, który przepisał połowę wyboru
+    // i dopiero na drugiej pozycji odmówił, zostawia katalog pluginu w kształcie, którego nikt
+    // nie zamawiał — a katalog, który powstał, prędzej czy później zostanie komuś podany. Ta
+    // kolejność jest jedynym powodem, dla którego cały ten blok stoi przed `plugin_dir`.
+    every_name_is_really_there(project, &chosen.skills)?;
+    let text = String::new();
+
+    // Katalog pluginu powstaje TYLKO wtedy, gdy jest co do niego włożyć — pilnuje tego
+    // `rewrite::plugin_dir`, który czyta wszystko przed pierwszym `create_dir_all`. Pusty
+    // katalog przekazany vendorowi to plugin, który ładuje się i rejestruje zero umiejętności,
+    // czyli dokładnie ta cicha zieleń, przed którą stoi całe to zadanie.
+    let rewritten = rewrite::plugin_dir(project, &chosen.skills, &run_dir.join(PLUGIN_DIR))?;
+
+    Ok(Inherited {
+        // Fragment **dwuelementowy albo pusty, nigdy jednoelementowy** — rozstrzyga to
+        // `rewrite::plugin_argv` po `names`, czyli po tym, co NAPRAWDĘ pojechało, a nie po tym,
+        // o co poproszono.
+        flags: rewrite::plugin_argv(&rewritten),
+        text,
+    })
+}
+
+/// Odmawia, jeśli człowiek wybrał umiejętność, której skan u gospodarza nie znalazł.
+///
+/// ODMOWA, NIE POMINIĘCIE, i to jest cały powód, dla którego ta funkcja istnieje osobno od
+/// zapisu: `rewrite::plugin_dir` sam z siebie **pomija** nazwę, której u gospodarza nie ma
+/// (dla niego to normalny stan cudzego repozytorium — ktoś mógł ją odznaczyć przed chwilą
+/// w innym narzędziu), a różnicę widać wyłącznie w `Rewritten::names`, czyli w polu, którego
+/// nikt nie czyta. Wtedy człowiek zaznacza pięć pozycji, agent dostaje trzy i nie ma jak się
+/// o tym dowiedzieć: „agent nie zna umiejętności" jest z zewnątrz nieodróżnialne od „model nie
+/// uznał, że warto jej użyć".
+///
+/// Pytamy [`scan::skills`], a nie systemu plików: to ta funkcja wyznacza, co człowiek widział
+/// na ekranie wyboru (katalog bez `SKILL.md` nie ma tam wpisu), więc to samo pytanie musi
+/// rozstrzygać tutaj. Drugi warunek dopisany przy zapisie byłby drugą definicją słowa
+/// „znalezione" (niezmiennik 23).
+fn every_name_is_really_there(project: &Path, selected: &[String]) -> Result<()> {
+    if selected.is_empty() {
+        // Pusty wybór nie ma czego nie znaleźć — i nie czytamy wtedy cudzego katalogu w ogóle,
+        // bo bieg bez dziedziczenia nie ma powodu dotykać `.claude/` gospodarza.
+        return Ok(());
+    }
+
+    let found = scan::skills(project)?;
+    for name in selected {
+        if !found.iter().any(|skill| skill.name == *name) {
+            return Err(Error::NotInTheHost {
+                what: A_SKILL,
+                name: name.clone(),
+            });
+        }
+    }
+    Ok(())
 }
