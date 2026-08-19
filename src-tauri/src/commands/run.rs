@@ -139,6 +139,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::isolate;
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
@@ -309,7 +310,10 @@ async fn the_whole_run(
     // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
 
-    lay_out_the_run_dir(&plan, deps.project)?;
+    let isolated = lay_out_the_run_dir(&plan, deps.project)?;
+    // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
+    // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
+    say_what_was_left_behind(&lines, &isolated);
     // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
     // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
     let inherited = what_the_host_lends(deps.project, &plan.dir)?;
@@ -346,6 +350,9 @@ async fn the_whole_run(
     let outcome = scheduler::execute(&dag, dag.len(), deps.control.cancel_token(), run_step).await;
 
     live.close_the_book(&outcome.states, outcome.cancelled);
+    // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
+    // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
+    close_the_trees(deps.project, &isolated, &live.plan.title);
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
     // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
@@ -1113,58 +1120,18 @@ fn some_text(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.to_owned())
 }
 
-/// Czego NIE kopiujemy do własnej kopii kroku.
-///
-/// `.loadout` jest tu obowiązkowy, nie kosmetyczny: katalog biegu leży pod
-/// `<projekt>/.loadout/runs/<…>/work/<krok>`, więc kopiowanie projektu do siebie samego
-/// schodziłoby w nieskończoność, aż do wyczerpania dysku albo limitu ścieżki.
-///
-/// Pozostałe trzy są wyborem, nie koniecznością, i wybór jest po stronie CZASU: `.git`
-/// dużego repozytorium to gigabajty, `node_modules` i `target` odtwarza się jedną komendą.
-/// Krok, który ich naprawdę potrzebuje, ma tryb „katalog projektu" i wtedy pracuje na
-/// oryginale — świadomie, a nie przez przypadek.
-const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "target"];
-
-/// Kopiuje drzewo projektu do katalogu roboczego kroku.
-///
-/// Rekurencja jawna, bez zewnętrznej skrzyni: to jest ~20 wierszy, a każda zależność w tym
-/// miejscu musiałaby jeszcze umieć pomijać `.loadout` (patrz [`NOT_COPIED`]).
-///
-/// Dowiązania symboliczne kopiujemy JAKO PLIKI (`fs::copy` podąża za nimi). Odtwarzanie
-/// dowiązania wskazującego poza kopię dawałoby krokowi ścieżkę do oryginału — czyli dziurę
-/// w izolacji, o którą całe to zadanie chodzi.
-fn copy_project_into(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if NOT_COPIED.iter().any(|skip| name == *skip) {
-            continue;
-        }
-        let from = entry.path();
-        let to = dst.join(&name);
-        if entry.file_type()?.is_dir() {
-            copy_project_into(&from, &to)?;
-        } else {
-            fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
-
 /// Tworzy katalog biegu i to, co do niego należy — **dopiero po planie**.
-fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<(), RunError> {
+fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, RunError> {
     // `logs/` powstaje razem z katalogiem, a nie przy pierwszej linii: katalog biegu bez niego
     // czyta się jak bieg, w którym agent nic nie powiedział, zamiast jak bieg, który jeszcze nic
     // nie zapisał.
     fs::create_dir_all(plan.dir.join(LOGS_DIR))?;
-    /* KOPIUJEMY KAZDY KATALOG RAZ. Rundy petli dziela katalog roboczy -- musza, bo inaczej runda 2
-     * nie widzi poprawek rundy 1 -- wiec bez tego zbioru kopiowalibysmy projekt N razy do tego
-     * samego miejsca. Przy duzym repo to minuty czekania za nic, i to przed pierwszym slowem
-     * agenta. */
-    let mut copied: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    /* JEDEN KATALOG ROBOCZY POWSTAJE RAZ. Rundy petli dziela katalog -- musza, bo inaczej runda 2
+     * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
+     * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
+    let mut made: Vec<Isolated> = Vec::new();
     for step in &plan.steps {
-        // Krok „sprawdź" dostaje własną kopię tą samą drogą, co krok agenta, i to jest wymóg,
+        // Krok „sprawdź" dostaje własne drzewo tą samą drogą, co krok agenta, i to jest wymóg,
         // nie symetria: `cargo test` pisze po `target/`, więc „to tylko sprawdzenie" jest
         // nieprawdą, a obietnica z ARCHITECTURE §2 p. 4 jest jedna dla wszystkich kroków.
         let fresh = match &step.job {
@@ -1173,18 +1140,105 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<(), RunError> {
             Job::Ask { .. } => None,
         };
         if let Some(cwd) = fresh
-            && copied.insert(cwd.clone())
+            && !made.iter().any(|one| one.cwd == *cwd)
         {
+            let branch = isolate::branch_for(&plan.id, &step.tile_key);
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
-            copy_project_into(project, cwd).map_err(|error| RunError::NoFreshCopy {
+            let done =
+                isolate::make(project, cwd, &branch).map_err(|why| RunError::NoFreshCopy {
+                    step: step.name.clone(),
+                    why: why.to_string(),
+                })?;
+            made.push(Isolated {
                 step: step.name.clone(),
-                why: error.to_string(),
-            })?;
+                cwd: cwd.clone(),
+                branch: match done.how {
+                    isolate::How::Tree { branch } => Some(branch),
+                    isolate::How::Copy => None,
+                },
+                left_behind: done.left_behind,
+            });
         }
     }
-    Ok(())
+    Ok(made)
+}
+
+/// Jedno drzewo robocze kroku: gdzie stoi, na czym stoi i czego do niego nie weszło.
+///
+/// Powstaje przy układaniu katalogu biegu, a czyta się je DWA razy: raz zaraz potem, żeby
+/// powiedzieć człowiekowi, czego agent nie zobaczy, i drugi raz po biegu, żeby pracę zamknąć
+/// na gałęzi albo posprzątać po kroku, który nic nie zrobił.
+#[derive(Debug, Clone)]
+struct Isolated {
+    /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
+    step: String,
+    /// Katalog roboczy kroku.
+    cwd: PathBuf,
+    /// Gałąź, jeśli to jest drzewo gita. `None` dla folderu, który repozytorium nie jest.
+    branch: Option<String>,
+    /// Pliki, o których git nie wie, więc drzewo ich nie niesie.
+    left_behind: Vec<String>,
+}
+
+/// Ile nazw plików mieści się w jednym wierszu, zanim zacznie być ścianą tekstu.
+///
+/// Pięć, nie „wszystkie": `docs/DECISIONS-LOCKED.md` §D4 stawia sufit gęstości na strumieniu,
+/// a wiersz dłuższy od ekranu kosztuje resztę strumienia, nie tylko siebie.
+const NAMED_AT_MOST: usize = 5;
+
+/// Mówi, czego agent NIE zobaczy — zanim ruszy.
+///
+/// Cicha strata jest tu gorsza niż brak funkcji: bieg wygląda na kompletny, a agentowi brakuje
+/// pliku, który człowiek widzi u siebie na ekranie. Wiersz powstaje wyłącznie wtedy, kiedy
+/// naprawdę coś zostało — zdanie „zostawiono 0 plików" uczy, że tę linię wolno pominąć.
+fn say_what_was_left_behind(lines: &LineSink, made: &[Isolated]) {
+    for one in made {
+        if one.left_behind.is_empty() {
+            continue;
+        }
+        // Nazwy, nie sama liczba: „3 pliki" nie mówi człowiekowi, czy brakuje `.env`, czy
+        // notatki, której i tak nie czytał. Ale nazwy PRZYCIĘTE, bo liczba bywa duża: zmierzone
+        // 2026-08-19 na `~/Projects/meetnotes` — 188 plików nieśledzonych, czyli wiersz na pół
+        // ekranu, którego nikt nie przeczyta i po którym reszta strumienia jest nie do
+        // znalezienia. Pierwsze pięć wystarczy, żeby człowiek poznał RODZAJ tego, czego brakuje.
+        let count = one.left_behind.len();
+        let named = if count > NAMED_AT_MOST {
+            format!(
+                "{}, and {} more",
+                one.left_behind[..NAMED_AT_MOST].join(", "),
+                count - NAMED_AT_MOST
+            )
+        } else {
+            one.left_behind.join(", ")
+        };
+        // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
+        // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+        let _ = lines.send(Line::Problem {
+            agent: one.step.clone(),
+            text: format!(
+                "Git does not track {count} file(s), so this step's tree does not have them: \
+                 {named}"
+            ),
+            resets_at: None,
+        });
+    }
+}
+
+/// Zamyka drzewa po biegu: praca ląduje na gałęzi, a po kroku, który nic nie zmienił, nie
+/// zostaje ani gałąź, ani wpis w `git worktree list`.
+fn close_the_trees(project: &Path, made: &[Isolated], title: &str) {
+    for one in made {
+        let Some(branch) = &one.branch else { continue };
+        let kept = isolate::finish(
+            project,
+            &one.cwd,
+            branch,
+            &format!("{}: {}", title, one.step),
+        );
+        tracing::debug!(step = %one.step, ?kept, "the step's tree was closed");
+    }
 }
 
 /// Co ten bieg bierze z repozytorium, w którym pracuje: katalog pluginu z wybranymi
