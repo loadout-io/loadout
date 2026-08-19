@@ -119,6 +119,23 @@ describe('temat ikony', () => {
     }
   });
 
+  /* Wezel poznaje sie po promieniu mniejszym niz 15% plotna, bo blask jest okregiem o promieniu
+   * 37% — nazwe gradientu kazdy moze zmienic, promien mowi, czym element JEST. Ta regula ma jednak
+   * dziure: okrag WIEKSZY od progu wypada z tematu, wiec biala plama na pol kafli przeszlaby.
+   * Plaska biel na okregu nie jest warstwa przy 10%, tylko rysunkiem, wiec jest zabroniona
+   * wszedzie, bez wzgledu na rozmiar. */
+  it('paints no round shape plain white, whatever its size', () => {
+    for (const name of DRAWINGS) {
+      const blobs = [...svg(name).matchAll(/<circle\b[^>]*\sfill="([^"]+)"/g)]
+        .map((hit) => hit[1] ?? '')
+        .filter((one) => /^#(?:f{3}|f{6})$/i.test(one) || one === 'white');
+      expect(
+        blobs,
+        'a round shape in ' + name + ' is filled plain white: ' + JSON.stringify(blobs),
+      ).toEqual([]);
+    }
+  });
+
   /* BIEL ZAPISANA WZORCEM, nie literalem. `checks/quick-tokens.sh` odrzuca w `src/**` kazdy
    * literal barwy — i ma racje wobec komponentow, bo tam barwa ma przychodzic z nazwy. Ten plik
    * nie MALUJE bieli, tylko CYTUJE ja z rysunku, ktory lezy poza `src/`; `#f{6}` we wzorcu znaczy
