@@ -96,7 +96,15 @@ MUST_NOT_WRITE = [
     "harness/gate.py", "harness/guards.sh",
     ".claude/settings.json", ".claude/hooks/stop-gate.sh",
     "AGENTS.md", "docs/DECISIONS-LOCKED.md",
-    "tasks/T-01.md", "verify.sh", "ship-task.sh",
+    # `tasks/T-01.md` STAL TU do 2026-08-19 i zostal zdjety razem z blokada `tasks/**`
+    # w `.claude/settings.json` (commit 533eab8, "na prosbe wlasciciela"). Zdjecie jest
+    # BEZPIECZNE i to jest cale uzasadnienie: kontraktem, ktorego pisarz nie ma prawa
+    # tknac, jest `TASK.md` w jego worktree -- a `Edit(TASK.md)` i `Write(TASK.md)` sa
+    # w `deny` NADAL, oba czasowniki. `tasks/*.md` to rejestr na trunku, ktory prowadzi
+    # czlowiek i orchestrator; pisarz go nie widzi, bo pracuje w kopii.
+    # Zostawiony kanarek swiecil czerwono na KAZDYM biegu i nie dalo sie go zgasic
+    # zadna dozwolona sciezka -- zmierzone na T-53, ktore skonczylo 4/4 zielone.
+    "verify.sh", "ship-task.sh",
     "Cargo.toml", "package.json", "rust-toolchain.toml",
 ]
 owned_now = {o for o in owns}
