@@ -23,7 +23,9 @@
 //! człowiek płaci za kontekst, o który nie prosił, i czyta odpowiedzi oparte na regułach,
 //! których nie widział. [`Chosen::default`] jest więc pustym wyborem, a nie pełnym.
 
-use std::path::Path;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
 
 use super::{Error, Result, rewrite, scan};
 use crate::engine::drivers::RunSpec;
@@ -36,8 +38,28 @@ use crate::engine::drivers::RunSpec;
 /// jedyną obietnicę, jaką temu repozytorium złożyliśmy: czytamy je i niczego w nim nie ruszamy.
 const PLUGIN_DIR: &str = "plugin";
 
+/// Katalog, w którym cudze repozytorium trzyma to, co bierzemy.
+///
+/// Ścieżkę do umiejętności wydaje [`scan::skill_file`] i ta stała nie jest jego kopią: tamta
+/// funkcja odpowiada na pytanie „gdzie leży `SKILL.md` tej umiejętności", a tu składamy dwie
+/// **inne** półki tego samego katalogu. Nazwy plików ról i podagentów nie mają odpowiednika po
+/// stronie [`scan`], bo [`scan::recurring_patterns`] i [`scan::agent_body`] są funkcjami nad
+/// **tekstem** — plik czyta ten, kto wie, którą pozycję wybrał człowiek, czyli ten plik.
+const HOST_DIR: &str = ".claude";
+
+/// Półka z plikami ról: `<projekt>/.claude/learnings/<rola>.md`.
+const LEARNINGS_DIR: &str = "learnings";
+
 /// Czego dotyczy odmowa — po ludzku, bo to zdanie czyta człowiek ([`Error::NotInTheHost`]).
 const A_SKILL: &str = "skill";
+const A_LEARNINGS_FILE: &str = "learnings file";
+
+/// Zdanie, po którym model wie, **czyje** są reguły stojące pod nim.
+///
+/// Bez nagłówka odziedziczony tekst zlewa się z zadaniem kroku w jedno polecenie, a wtedy cudza
+/// reguła czyta się jak nasza instrukcja. Zdanie, nie słowo — ten sam wybór, z tego samego
+/// powodu, stoi przy `commands::run::TASK_HEADING`.
+const PATTERNS_HEADING: &str = "Rules this project keeps, in its own words:";
 
 /// Co człowiek wybrał z repozytorium gospodarza. **Pusty wybór jest domyślny.**
 ///
@@ -143,7 +165,27 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     // nie zamawiał — a katalog, który powstał, prędzej czy później zostanie komuś podany. Ta
     // kolejność jest jedynym powodem, dla którego cały ten blok stoi przed `plugin_dir`.
     every_name_is_really_there(project, &chosen.skills)?;
-    let text = String::new();
+
+    // Bloki, nie jeden rosnący napis: każdy z nich ma własny nagłówek i własny powód, a blok,
+    // z którego nic nie wyszło, po prostu nie wchodzi na tę listę. Nagłówek nad pustką uczy
+    // model, że ta sekcja bywa pusta, i kosztuje długość za nic.
+    let mut blocks: Vec<String> = Vec::new();
+
+    if let Some(role) = &chosen.learnings {
+        // WYCINA `scan::recurring_patterns`, NIE MY. Naiwne `text.find("## Recurring patterns")`
+        // trafia w cytat blokowy z trzeciej linii każdego pliku roli u gospodarza i oddaje 131
+        // bajtów zdania o tym, że reguły są wiążące, zamiast 1701 bajtów reguł [2026-08-19].
+        // Przepisanie tego cięcia tutaj byłoby drugim znaczeniem słowa „sekcja" (niezmiennik 23).
+        let file = host_text(project, LEARNINGS_DIR, A_LEARNINGS_FILE, role)?;
+        let rules = scan::recurring_patterns(&file)?;
+        if !rules.is_empty() {
+            // Reszta pliku — u gospodarza do 73 KB `## Run journal` — nie wchodzi do budżetu
+            // tokenów ani razu, i to jest cała różnica między wstrzykiwaczem a wklejeniem pliku.
+            blocks.push(format!("{PATTERNS_HEADING}\n\n{rules}"));
+        }
+    }
+
+    let text = blocks.join("\n\n");
 
     // Katalog pluginu powstaje TYLKO wtedy, gdy jest co do niego włożyć — pilnuje tego
     // `rewrite::plugin_dir`, który czyta wszystko przed pierwszym `create_dir_all`. Pusty
@@ -191,4 +233,49 @@ fn every_name_is_really_there(project: &Path, selected: &[String]) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// Plik roli albo podagenta u gospodarza — albo odmowa **z nazwaniem pozycji**.
+///
+/// `name` przychodzi z ekranu wyboru, czyli z drutu, a wyznacza czytaną ścieżkę: `..`, `/etc`
+/// albo `a/b` w tym polu znaczyłyby odczyt poza katalogiem, którego dotyczy ta operacja. Pytanie
+/// zadajemy raz, w miejscu, w którym ścieżka się składa — to samo zdanie stoi przy
+/// [`scan::skill_file`], które robi to dla umiejętności.
+///
+/// WYBRANA I NIEISTNIEJĄCA POZYCJA JEST ODMOWĄ, dokładnie jak przy umiejętnościach. Brak wyboru
+/// to co innego i nikt tu wtedy nie zagląda: bieg bez doklejki jest wtedy poprawną odpowiedzią,
+/// a nie stratą (niezmiennik 5). Odmowa dotyczy stanu, w którym człowiek **wskazał** plik,
+/// którego u gospodarza nie ma — cicho pominięty daje bieg nieodróżnialny od tego, w którym
+/// model po prostu nie skorzystał z reguł.
+///
+/// Bajty spoza UTF-8 nie kasują pliku: plik JEST tam, więc rola jest tam. Odczyt stratny oddaje
+/// to, co człowiek wybrał; odmowa oddałaby mu bieg bez reguł z powodu, którego nie ma na żadnym
+/// ekranie — to samo rozstrzygnięcie, z tego samego powodu, stoi w `scan::first_line`.
+fn host_text(project: &Path, shelf: &str, what: &'static str, name: &str) -> Result<String> {
+    let missing = || Error::NotInTheHost {
+        what,
+        name: name.to_owned(),
+    };
+    let path = one_file_named(name)
+        .map(|file| project.join(HOST_DIR).join(shelf).join(file))
+        .ok_or_else(missing)?;
+
+    match fs::read(&path) {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(missing()),
+        // Awaria dysku to trzeci stan i o niej człowiek ma się dowiedzieć jako o awarii.
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// `<nazwa>.md`, jeśli `nazwa` jest nazwą **jednego** pliku — inaczej `None`.
+fn one_file_named(name: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        // Sprawdzamy nazwę PODANĄ, a rozszerzenie dokładamy po sprawdzeniu: `with_extension`
+        // na nazwie `a.b` zjadłoby `.b` i przeczytało plik o innej nazwie niż ta, którą człowiek
+        // zaznaczył — bez jednego słowa o podmianie.
+        (Some(Component::Normal(_)), None) => Some(PathBuf::from(format!("{name}.md"))),
+        _ => None,
+    }
 }
