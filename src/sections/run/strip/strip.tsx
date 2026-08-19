@@ -169,7 +169,7 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
           <span
             data-copyable
             title="Time the agents have spent on this run, and what it has cost so far"
-            className="inline-flex h-[19px] items-center rounded-sq border border-line bg-raised px-[7px] font-mono text-meta text-muted"
+            className="inline-flex h-[19px] items-center rounded-pill border border-line bg-raised px-[7px] font-mono text-meta text-muted"
           >
             {strip.spend}
           </span>

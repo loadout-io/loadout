@@ -47,7 +47,7 @@ export function Now({ now, live }: NowProps): ReactElement {
           znaczyc. */}
       {live && now.rows.length > 0 ? (
         <div className="flex items-center gap-[7px] px-4 pb-1">
-          <span aria-hidden className="size-1.5 animate-blip rounded-dot bg-live" />
+          <span aria-hidden className="size-1.5 animate-blip rounded-pill bg-live" />
           <span className="text-eyebrow text-muted">Now</span>
         </div>
       ) : null}

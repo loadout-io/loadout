@@ -99,7 +99,7 @@ export function Tab({ workspace, active, onSelect, onClose }: TabProps): ReactEl
             teraz", a nie „co jest klikalne" (T-45 rozszczepił token). Jest jednym z dwóch
             regionów, którym ARCHITECTURE §7 pozwala się ruszać. */}
         {workspace.agents > 0 ? (
-          <span data-live-dot className="size-1.5 shrink-0 animate-blip rounded-dot bg-live" />
+          <span data-live-dot className="size-1.5 shrink-0 animate-blip rounded-pill bg-live" />
         ) : null}
         {workspace.name}
       </button>

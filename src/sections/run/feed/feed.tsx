@@ -31,10 +31,10 @@ export interface FeedProps {
 }
 
 /** `button-secondary` z DESIGN §6, spisany raz. */
-const SECONDARY = 'h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
+const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
 
 /** `button-quiet` z DESIGN §6. */
-const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 interface AskedProps {
   question: Question;
@@ -80,7 +80,7 @@ function Asked({ question, onAnswer }: AskedProps): ReactElement {
   }
 
   return (
-    <div className="shrink-0 rounded-sq border border-attend-edge border-l-2 border-l-attend bg-attend-wash p-3">
+    <div className="shrink-0 rounded-md border border-attend-edge border-l-2 border-l-attend bg-attend-soft p-3">
       <p className="text-label text-attend">Needs your answer</p>
       <p className="mt-1 text-body text-ink">{question.text}</p>
 
@@ -137,7 +137,7 @@ export function Feed({
          * powierzchnią i w tej wersji ich nie ma. Zaproszenie wskazujące na kontrolkę, której
          * nie ma, jest gorsze niż zdanie mniej (niezmiennik 16). */
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+          <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
             ◇
           </span>
           <p data-empty className="text-ink">

@@ -25,7 +25,7 @@ const TAILWIND = resolve(ROOT, 'node_modules', 'tailwindcss', 'index.css');
 const OURS = [
   'bg-panel',
   'text-title',
-  'rounded-sq',
+  'rounded-md',
   'font-mono',
   /* Cztery dołożone 2026-08-19 (T-45): powierzchnia stanu „teraz", nowy stopień drabinki,
    * nowy promień z pasma domu i cień. Bez nich lista pozytywna sądziła paletę, której

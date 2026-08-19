@@ -132,7 +132,7 @@ export function TabBar({
         onClick={onOpenFolder}
         aria-label="Open a folder"
         title="Choose a folder to work in"
-        className="h-7 shrink-0 rounded-sq px-2 text-muted"
+        className="h-7 shrink-0 rounded-sm px-2 text-muted"
       >
         ＋
       </button>

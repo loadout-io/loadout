@@ -81,7 +81,7 @@ export class ScreenBoundary extends Component<ScreenBoundaryProps, ScreenBoundar
         data-screen-broke={section}
         className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center"
       >
-        <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-fail-edge text-fail">
+        <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-fail-edge text-fail">
           ◇
         </span>
         <p className="text-ink">This screen stopped working, so Loadout kept the rest running.</p>
@@ -93,7 +93,7 @@ export class ScreenBoundary extends Component<ScreenBoundaryProps, ScreenBoundar
         {onLeave === null ? null : (
           <button
             type="button"
-            className="h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink"
+            className="h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink"
             onClick={onLeave}
           >
             Go to Run

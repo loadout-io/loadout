@@ -87,7 +87,7 @@ export function PausedBanner({
   return (
     <p
       data-paused-banner=""
-      className="rounded-sq border border-attend-edge bg-attend-wash px-3 py-2 text-attend"
+      className="rounded-md border border-attend-edge bg-attend-soft px-3 py-2 text-attend"
     >
       {waitingSentence(run.waitingUntil, zone)}
     </p>

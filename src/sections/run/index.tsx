@@ -85,7 +85,7 @@ const FEED_ROWS = 'minmax(0,1fr) auto auto';
  * `--accent` na tle, `--bg` na tekście, wysokość 36 px. Akcent jest jedynym kolorem interaktywnym
  * (DESIGN §3), a na ekranie bez zakresu to jest jedyna kontrolka, której człowiek może użyć —
  * Start stoi wtedy wygaszony, bo bieg bez folderu odmawia. */
-const INVITE = 'h-primary rounded-sq bg-accent px-4 text-ui text-bg';
+const INVITE = 'h-primary rounded-sm bg-accent px-4 text-ui text-bg';
 
 /* Ta sama migawka dla okna i dla renderu serwerowego. Model nie ma stanu „po stronie serwera":
  * `renderToStaticMarkup` widzi po prostu bieg, którego jeszcze nie ma. */
