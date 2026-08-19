@@ -50,9 +50,13 @@ const HOST_DIR: &str = ".claude";
 /// Półka z plikami ról: `<projekt>/.claude/learnings/<rola>.md`.
 const LEARNINGS_DIR: &str = "learnings";
 
+/// Półka z podagentami: `<projekt>/.claude/agents/<rola>.md`.
+const SUBAGENTS_DIR: &str = "agents";
+
 /// Czego dotyczy odmowa — po ludzku, bo to zdanie czyta człowiek ([`Error::NotInTheHost`]).
 const A_SKILL: &str = "skill";
 const A_LEARNINGS_FILE: &str = "learnings file";
+const A_SUBAGENT: &str = "subagent";
 
 /// Zdanie, po którym model wie, **czyje** są reguły stojące pod nim.
 ///
@@ -60,6 +64,13 @@ const A_LEARNINGS_FILE: &str = "learnings file";
 /// reguła czyta się jak nasza instrukcja. Zdanie, nie słowo — ten sam wybór, z tego samego
 /// powodu, stoi przy `commands::run::TASK_HEADING`.
 const PATTERNS_HEADING: &str = "Rules this project keeps, in its own words:";
+
+/// To samo zdanie dla podagenta: czyj to opis roli i skąd się wziął.
+///
+/// Ani jedno słowo tego zdania nie nazywa pola front-mattera — i nie jest to ostrożność wobec
+/// kryterium, tylko wobec modelu: nazwa pola w naszym nagłówku czyta się jak zaproszenie do
+/// poszukania jego wartości, a wartości tego pola są dokładnie tym, czego stąd nie wypuszczamy.
+const SUBAGENT_HEADING: &str = "How this project describes the role you are filling:";
 
 /// Co człowiek wybrał z repozytorium gospodarza. **Pusty wybór jest domyślny.**
 ///
@@ -182,6 +193,24 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
             // Reszta pliku — u gospodarza do 73 KB `## Run journal` — nie wchodzi do budżetu
             // tokenów ani razu, i to jest cała różnica między wstrzykiwaczem a wklejeniem pliku.
             blocks.push(format!("{PATTERNS_HEADING}\n\n{rules}"));
+        }
+    }
+
+    if let Some(role) = &chosen.subagent {
+        // CIAŁO, CZYLI WSZYSTKO ZA DRUGIM `---`. Front-matter jest granicą maszynerii, nie
+        // brudem do posprzątania: jedno pole (`mcpServers`) znaczy „uruchom `npx` i pobierz
+        // z sieci paczkę", czyli proces **poza grupą procesów Loadouta** — a niezmiennik 6
+        // wymaga dowodu śmierci grupy, której nie założyliśmy. Zmierzone 2026-08-19: hak
+        // gospodarza zostawił 14 sierot z `ppid=1`, które przeżyły wyjście `claude`.
+        //
+        // Cięcie robi `scan::agent_body` i to jest cały powód, dla którego nie ma tu żadnej
+        // listy pól: czarna lista jest z definicji niekompletna i pęknie po cichu przy
+        // następnym wydaniu CLI, a filtr zdejmujący sam wiersz `mcpServers:` zostawia jego
+        // wcięte dzieci — czyli te dwie wartości, które startują proces.
+        let file = host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
+        let body = scan::agent_body(&file).trim();
+        if !body.is_empty() {
+            blocks.push(format!("{SUBAGENT_HEADING}\n\n{body}"));
         }
     }
 
