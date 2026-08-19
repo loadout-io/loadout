@@ -90,6 +90,28 @@ Przepis 1:1 z systemu, z którego wzięliśmy wartości: squircle `rx=232` na p�
 tło indygo, sheen zanikający na 34% wysokości, temat wyśrodkowany, ostra krawędź wewnętrzna
 w bieli 10%. Dwie nasze aplikacje mają w Docku wyglądać na rodzeństwo.
 
+**Trzy liczby, na których ta ikona stoi**, i wszystkie trzy są zmierzone 2026-08-19 po tym, jak
+pierwsza wersja została odrzucona na zrzucie ekranu z Docka („brzydka, z białymi elementami"):
+
+| Co | Wymóg | Dlaczego |
+|---|---|---|
+| Zasięg tematu | **≥ 70%** szerokości, **≥ 42%** wysokości, ≥ 8% marginesu | pierwsza wersja miała 66% i 39%: temat pływał w polu i przestawał być rozpoznawalny z odległości ręki |
+| Najjaśniejsza barwa tematu | **żaden kanał ≥ 224 na wszystkich trzech** | `#e6e2ff` i czysta biel to były te „białe elementy"; przy 32 px zostawały z nich cztery jasne plamki |
+| Kontrast temat ↔ tło | **pasmo 3 : 1 … 9 : 1** | pierwsza wersja miała 15,2 : 1 — tyle jest dobre, gdy temat wypełnia całą kaflę (czarno-biała ikona obok w Docku), ale przy dwóch trzecich odczepia temat od tła |
+
+Dół pasma to próg WCAG dla grafiki nietekstowej: poniżej znak ginie przy 16 px. Górny obowiązuje
+**bez wyjątku**, bo zasięg tematu i tak nie pozwala mu wypełnić kafli w całości — gdyby to się
+kiedyś zmieniło, oba wymagania trzeba zmienić razem.
+
+Tło jest **prawdziwym indygo** (`#4a44c8` → `#2a2486` → `#171240`), a nie prawie-czernią: kafla ma
+czytać się w Docku jako barwa, nie jako dziura między ikonami. Sheen i krawędź wewnętrzna zostają
+białe, bo działają przy 10% i są warstwami tła, nie tematem.
+
+**Trzy rysunki mówią jedną paletą.** Osobny rysunek na 32 i 16 px jest decyzją o czytelności, nie
+licencją na inne barwy: rysunek 32 bierze te same trzy przystanki tła, a rysunek 16 bierze
+najjaśniejszy z nich płasko — przy tym rozmiarze gradient to jeden piksel szarości, a ikona ma być
+kropką koloru. Barwy tematu w obu mniejszych muszą występować w rysunku pełnym.
+
 | Rozmiar | Rysunek |
 |---|---|
 | 1024 / 512 / 256 / 128 | pełny |
@@ -444,27 +466,74 @@ dokładnie tak samo jak ozdobna krzywa między zakodowanymi na sztywno współrz
 
 Definicja komponentu = tokeny, nie hexy. Poniżej pełna lista v1.
 
+### Promień bierze się z ROLI, nie z rozmiaru elementu
+
+To jest cała reguła i nie ma od niej wyjątku. Pasmo ma cztery wartości i każda odpowiada na inne
+pytanie o element:
+
+| Promień | Rola | Co to jest |
+|---|---|---|
+| `--radius-sm` `9px` | **kontrolka** | przycisk, pole, uchwyt, kwadrat tożsamości, wiersz w pudełku |
+| `--radius-md` `13px` | **pojemnik treści** | kafelek, karta kroku, panel, blok cytatu, ramka znaku w pustym ekranie |
+| `--radius-lg` `18px` | **rzecz nad treścią** | modal, wymuszony wybór, panel na całą szerokość okna |
+| `--radius-pill` | **rzecz, która jest odczytem** | chip, przełącznik, złącze, kropka koloru |
+
+Piąta wartość jest piątą decyzją. Wartość arbitralna (`rounded-[11px]`) jest decyzją zapisaną tam,
+gdzie nikt jej nie znajdzie.
+
 ### `button-primary`
-`background: --accent` · `color: --bg` · `--t-ui` · `radius 2px` · `padding 8px 16px` · `height 36px`
+`background: --accent` · `color: --bg` · `--t-ui` · `--radius-sm` · `padding 8px 16px` · `height 36px`
 Active: `transform: scale(0.98)`. Focus: `outline: 2px solid --accent; outline-offset: 2px`.
 
 ### `button-secondary`
-`background: --raised` · `color: --ink` · `border: 1px solid --line-strong` · `--t-ui` · `height 32px`
+`background: --raised` · `color: --ink` · `border: 1px solid --line-strong` · `--t-ui` · `--radius-sm` · `height 32px`
 
 ### `button-quiet`
-`background: transparent` · `color: --body` · `border: 1px solid --line` · `--t-ui` · `height 28px`
+`background: transparent` · `color: --body` · `border: 1px solid --line` · `--t-ui` · `--radius-sm` · `height 28px`
 
 ### `button-danger`
 Jak `button-secondary`, ale `border: 1px solid --fail-edge` · `color: --fail`. Bez wypełnienia — akcja
 niszcząca nie ma być najbardziej rzucającym się w oczy elementem, ma być rozpoznawalna.
 
 ### `chip`
-`padding 2px 8px` · `--t-label` · `height 20px` · `border 1px solid {stan}-edge` · `background {stan}-wash` · `color {stan}`
-Wariant neutralny: `--line` / `--raised` / `--muted`.
+`padding 2px 8px` · `--t-label` · `height 20px` · **`--radius-pill`** · `border 1px solid {stan}-edge` ·
+`background {stan}-soft` · `color {stan}`
+Wariant neutralny: `--line` / `--raised` / `--muted` — bo nie każdy chip mówi o stanie. Skąd przyszła
+umiejętność jest zwykłym faktem, a fakt pomalowany barwą stanu wygląda jak problem.
+
+**Chipa poznaje się po kształcie, nie po nazwie klasy**, i to jest reguła dla wyroczni: barwę stanu
+niosą trzy różne rzeczy i tylko jedna z nich jest chipem.
+
+| Co | Obrys | Wypełnienie | Promień |
+|---|---|---|---|
+| chip | pełny, `{stan}-edge` | `{stan}-soft` | `--radius-pill` |
+| `button-danger` | pełny, `--fail-edge` | **żadne** | `--radius-sm` |
+| pasek błędu | `border-b` | `--fail-soft` | żaden |
+
+Wypełniony przycisk jest najbardziej rzucającą się w oczy rzeczą na ekranie, a to miejsce należy do
+akcentu: wypełnione ostrzeżenie konkuruje z akcją, po którą człowiek przyszedł.
 
 ### `field`
-`background: --well` · `border: 1px solid --line-strong` · `color: --ink` · `--t-mono` · `padding 8px 10px` · `height 32px`
-Focus: `border-color: --accent`. Etykieta nad polem w `--t-label` / `--muted`.
+`background: --well` · `border: 1px solid --line-strong` · `color: --ink` · `--t-mono` · `--radius-sm` ·
+`padding 7px 9px` · `height 32px` · `user-select: text`
+Focus: `border-color: --accent`. Etykieta **nad** polem w `--t-label` / `--muted`, zdaniowo.
+
+**To jest JEDNA klasa `.field` w `theme.css` i wszystkie pięć sekcji ją wołają.** Do 2026-08-19
+wołały ją dwa miejsca, a cztery sekcje przepisywały ten sam wygląd ręcznie w dwunastu stałych —
+i rozjechały się: w Agents obrys był `--line`, w Skills `--line-strong`. Jeden fakt, jedno miejsce
+(niezmiennik 13); dwa opisy tego samego pola czyta się jak dwa różne stany, a nie jak dwa pola.
+
+`user-select: text` jest częścią pola, nie ozdobą: `body` wyłącza zaznaczanie w całej aplikacji,
+więc pole bez tej linii jest polem, z którego nie da się skopiować własnego wpisu.
+
+Skupienie mieszka też w jednym miejscu: `.field:focus` daje obwódkę w akcencie, a globalny
+`:focus-visible` obrys — obwódka odpowiada na „które pole jest aktywne", obrys na „gdzie jest
+klawiatura". Dopisywanie tego narzędziem na każdym polu byłoby trzecią kopią podjętej decyzji.
+
+**Etykieta zostaje nad polem, i to jest decyzja.** Inspektor dwukolumnowy z etykietą wyrównaną do
+prawej (Ustawienia systemowe) potrzebuje szerokości, której ten panel nie ma: przy 330 px kolumna
+etykiet szeroka na 90 px łamie „Give up after" i „File access" na dwa wiersze, a pole
+wielowierszowe zostaje na 220 px. Dwie kolumny wracają razem z szerszym inspektorem.
 
 ### `stream-line` — wiersz w widoku pracy
 Siatka `88px 1fr auto`. Padding `8px 16px`. Bez obramowania między wierszami — separacja przez odstęp.
@@ -502,19 +571,30 @@ Szerokość `280px` · `background: --raised` · `border: 1px solid --line-stron
 Nagłówek: uchwyt `⠿`, nazwa (`--t-heading`), kropka koloru agenta, nazwa agenta (`--t-mono`), `✕`.
 Ciało: jedno zdanie po ludzku o tym, co ten krok robi.
 Stopka: `◂ po: {krok}` po lewej, `działa przed ▸` po prawej.
-Zaznaczony: `border-color: --accent`.
+Promień `--radius-md`. Zaznaczony: `border-color: --accent`. Złącze i kropka koloru agenta biorą
+`--radius-pill`: złącze jest rzeczą, którą się chwyta, a nie kontrolką z etykietą.
 
 ### `loadout-strip` — pasek loadoutu
 Patrz §2. Blok `32×8px`, odstęp `8px`, etykieta pod blokiem `--t-label` / `--muted`.
 
 ### `modal`
-`background: --panel` · `border: 1px solid --line-strong` · `max-width 640px` · `padding 24px`.
+`background: --overlay` (nieprzejrzysty) · `border: 1px solid --line-strong` · `--radius-lg` ·
+`--shadow-lg` · `max-width 640px` · `padding 24px`.
 Tło za modalem: `rgba(6,9,11,0.72)`. Bez rozmycia, bez animacji wjazdu poza `opacity 120ms`.
 
 ### `empty-state`
-Wyśrodkowane. Znak `◇` w ramce `1px dashed --line-strong`, zdanie w `--ink`,
-jedno zdanie instrukcji w `--muted`, jeden przycisk podstawowy.
+Wyśrodkowane. Znak `◇` w ramce `1px dashed --line-strong` z promieniem `--radius-md`, zdanie
+w `--ink`, jedno zdanie instrukcji w `--muted`, jeden przycisk podstawowy.
 **Pusty ekran to zaproszenie do działania, nie komunikat o braku danych.**
+
+**`data-empty` siedzi na elemencie, który niesie SAMO zdanie** — nie na opakowaniu ze znakiem,
+zaproszeniem i przyciskiem. Znacznik jest czytany przez wyrocznie, a wyrocznia, która dla jednej
+sekcji dostaje zdanie, a dla drugiej „◇ zdanie zdanie ＋ Create", milczy dokładnie tam, gdzie ma
+krzyczeć. Do 2026-08-19 Workflows trzymał go wyżej niż pozostałe trzy sekcje.
+
+Czynna kontrolka jest wymogiem tam, gdzie autorem jest **człowiek**: Agents, Skills, Workflows.
+W Memory notatki pisze agent, więc przycisk dopisany tam „dla symetrii" byłby kontrolką bez
+czynności — i to jest decyzja, nie przeoczenie.
 
 ---
 

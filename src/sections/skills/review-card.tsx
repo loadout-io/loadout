@@ -47,16 +47,16 @@ const SAYS: Readonly<Record<string, string>> = {
 
 const OTHERWISE = 'There is something here worth reading before you add this skill.';
 
-const CHIP = 'rounded-sq border border-attend-edge bg-attend-wash px-2 text-label text-attend';
-const QUOTE = 'overflow-x-auto rounded-sq bg-well p-2 text-mono text-ink';
-const READ = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const CHIP = 'rounded-pill border border-attend-edge bg-attend-soft px-2 text-label text-attend';
+const QUOTE = 'overflow-x-auto rounded-md bg-well p-2 text-mono text-ink';
+const READ = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 /* Klasa przycisku „Add" zależy od stanu i jest wybierana TUTAJ, a nie wariantem `disabled:`
  * Tailwinda. Wariant zostawiłby słowo `disabled` w atrybucie `class` także wtedy, gdy przycisk
  * działa — czyli „czy da się dodać" miałoby w HTML-u dwie odpowiedzi, z których jedna kłamie
  * (niezmiennik 13). */
-const ADD = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
-const ADD_OFF = 'h-9 rounded-sq bg-raised px-4 text-ui text-muted';
+const ADD = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
+const ADD_OFF = 'h-9 rounded-sm bg-raised px-4 text-ui text-muted';
 
 function sentenceFor(finding: Finding): string {
   return SAYS[finding.rule] ?? OTHERWISE;
@@ -104,7 +104,7 @@ export function ReviewCard({
 
       <p className="text-body text-body">{item.summary}</p>
 
-      <details className="rounded-sq border border-line p-2">
+      <details className="rounded-md border border-line p-2">
         <summary className="text-ui text-body">Show what it tells the agent to do</summary>
         <pre className={QUOTE}>{item.reviewed.body}</pre>
       </details>

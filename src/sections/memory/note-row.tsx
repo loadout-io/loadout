@@ -46,12 +46,12 @@ export interface NoteRowProps {
  * ozdobą, po której nie da się przebiec wzrokiem. `--accent` odpada osobno — znaczy „teraz",
  * czyli coś, co się dzieje w tej chwili, a notatka niczego nie robi. */
 const CHIP_WAITING =
-  'h-5 rounded-sq border border-attend-edge bg-attend-wash px-2 text-label text-attend';
-const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label text-muted';
+  'h-5 rounded-pill border border-attend-edge bg-attend-soft px-2 text-label text-attend';
+const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
 
 /* `button-quiet` z DESIGN §6: przezroczyste tło, obrys `--line`, wysokość 28px. Akcja odwracalna
  * i wykonywana wielokrotnie nie ma być najgłośniejszą rzeczą w wierszu. */
-const ACT = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const ACT = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 /**
  * „Length 137" — słowo, którym o tym mówimy [DESIGN §8]; nazwa z drutu tu nie dojeżdża.

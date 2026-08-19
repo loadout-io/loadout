@@ -128,7 +128,7 @@ export interface WorkflowCanvasProps {
   onOpenPanel: (stepId: string) => void;
 }
 
-const BUTTON = 'h-8 rounded-sq border border-line bg-raised px-3 text-ui text-ink';
+const BUTTON = 'h-8 rounded-sm border border-line bg-raised px-3 text-ui text-ink';
 
 /** Punkt zdarzenia wskaźnika w układzie EKRANU. Dotyk daje współrzędne w innym miejscu niż
  * mysz, a `onConnectEnd` dostaje jedno i drugie. */

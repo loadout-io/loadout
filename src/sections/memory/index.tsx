@@ -65,7 +65,7 @@ export interface MemoryScreenProps {
 const ZONE_TITLE = 'text-eyebrow text-muted';
 const ZONE_LEAD = 'max-w-160 text-body text-muted';
 /* `.ctx` z makiety: obrys `--line`, tło `--panel`, pozycje w środku z odstępem. */
-const PASSED_BOX = 'flex flex-col gap-2 rounded-sq border border-line bg-panel p-3';
+const PASSED_BOX = 'flex flex-col gap-2 rounded-md border border-line bg-panel p-3';
 
 /**
  * Zdanie trzeciej strefy, kiedy nie ma w niej ani jednego pliku.
@@ -152,7 +152,7 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
             i „nie umiem tego przeczytać" to dwie różne rzeczy do zrobienia. */}
         {state.notes.length === 0 && state.passed.length === 0 && state.passedProblem === null ? (
           <div className="flex h-full flex-col items-center justify-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+            <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
               ◇
             </span>
             {/* `data-empty` na elemencie z samym zdaniem — tak samo jak w `src/App.tsx`. */}
