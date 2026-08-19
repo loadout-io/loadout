@@ -49,9 +49,27 @@ if not owns:
     print("spec-owns: TASK.md carries no OWNS block, nothing to judge")
     raise SystemExit(0)
 
-# Produkcyjne, czyli nie testy i nie dane. To wlasnie ten kod ma byc sprawdzony.
+# Produkcyjne, czyli KOD, ktory ten check umie czytac. Lista jest DODATNIA, nie odejmujaca,
+# i to jest poprawka z 2026-08-19 po fałszywym trafieniu na T-45.
+#
+# CO SIE STALO. Stara wersja odejmowala testy, `.md` i `.txt`, wiec `docs/mockup/index.html`
+# — dokument-wyrocznia, nie kod — przechodzil jako "produkcyjny". Potem `<script>` z makiety
+# byl parsowany REGEXEM RUSTA (bo plik nie konczy sie na .ts/.tsx), wiec jego trzy `const`
+# ladowaly w `symbols["rs"]`. Kryteria T-45 sa w TypeScripcie, czyli szukaja w `symbols["ts"]`,
+# ktory zostawal PUSTY. Warunek nie dal sie spelnic ANI RAZ, przy kontrakcie, ktory calym
+# swoim specem mierzy wlasny kod (theme.css, DESIGN.md, blok :root makiety, dwa pliki krojow).
+#
+# DLACZEGO TA ZMIANA JEST BEZPIECZNA, a nie tylko wygodna. Ekstrakcja symboli NIZEJ i tak umie
+# wylacznie dwa jezyki: `.ts/.tsx` do `symbols["ts"]`, wszystko inne do `symbols["rs"]`. Plik,
+# ktorego zaden z dwoch parserow nie rozumie, wnosil do tego zbioru wylacznie szum. Zwezenie
+# listy moze wiec zamienic falszywa czerwien na zielen, i NIGDY zieleni na czerwien: mniej
+# plikow to mniej symboli, a zero symboli wpada w jawna furtke ponizej ("declare nothing yet").
+# Kontrola negatywna do tej poprawki: kontrakt, ktory posiada prawdziwy plik `.ts` z symbolami
+# i celuje kryterium w cudzy spec, dalej wychodzi 1.
+CODE_EXT = (".rs", ".ts", ".tsx")
 prod = [f for f in owns.group(1).split()
-        if not re.search(r"(^|/)tests?/|\.(test|spec)\.[jt]sx?$|\.txt$|\.md$", f)]
+        if not re.search(r"(^|/)tests?/|\.(test|spec)\.[jt]sx?$", f)
+        and (f.endswith(CODE_EXT) or os.path.isdir(f))]
 
 # OWNS wskazuje takze KATALOGI (src-tauri/src/store). Bez rozwiniecia check czytalby
 # wylacznie lib.rs -- czyli liste modulow -- i oskarzal T-06 oraz T-12 na pusto.
