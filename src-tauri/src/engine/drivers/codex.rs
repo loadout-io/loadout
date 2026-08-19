@@ -6,18 +6,32 @@
 //! `AgentDriver` jest fikcją, a nie abstrakcją, i to jest **wynik badania, nie porażka do
 //! ukrycia** [PLAN §8, założenie 5].
 //!
-//! # Stan tego pliku: SZKIELET (2026-08-19)
+//! # Stan tego pliku: KOMPLETNY wobec sześciu kryteriów (2026-08-19)
 //!
-//! Ciała zwracają **świadomie złą wartość**: pustą listę argumentów, pustą sesję, zero
-//! zdarzeń, `GroupProof::Alive` („nie mam dowodu śmierci", niezmiennik 6) i `Err` tam, gdzie
-//! tura miałaby powiedzieć, jak poszła. To jest wymagany kształt fazy kontraktu: kryterium ma
-//! się **skompilować** i paść w czasie wykonania, na braku ZACHOWANIA — test, który się nie
-//! kompiluje, niczego nie uruchomił (`AGENTS.md` §2a p. 5). Żadna z tych wartości nie
-//! przechodzi żadnego z sześciu kryteriów; przy każdym ciele stoi osobno, dlaczego.
+//! Odpowiedź na założenie 5 z PLAN §8 brzmi **tak**: `AgentDriver` wytrzymał drugiego vendora
+//! bez jednej zmiany w `drivers/mod.rs` i bez jednej w `stream.rs`. Cała różnica — proces na
+//! turę, brak dwukierunkowego stdinu, tożsamość zbierana z drutu zamiast nadawana przed startem
+//! — zmieściła się po tej stronie traitu. Dwie rzeczy, które trait wchłonął, warto nazwać, bo to
+//! one były ryzykiem: [`AgentHandle::send`] startuje **nowy proces** zamiast pisać do żywego,
+//! a [`AgentHandle::voice`] zostaje przy domyślnym `None`, bo tej sesji naprawdę nie da się
+//! zagadać w trakcie tury — i to jest dokładnie ten wariant, który trait przewidział.
 //!
-//! `todo!()` tu nie ma i nie będzie: `clippy::todo` jest `deny` w `[workspace.lints]`, więc
-//! szkielet z nim nie przeszedłby nawet `./verify.sh quick` — a wtedy faza kontraktu kończy się
-//! na czerwieni, która nie mówi nic o kryteriach.
+//! # Czego ten plik świadomie NIE robi
+//!
+//! **Nie wypełnia [`super::DecodedEvent::tool`]** — jedzie tam `None`. Fakty o czynności buduje
+//! `stream::decode` z tej samej linii drutu, a `stream.rs` należy do T-05 i leży poza blokiem
+//! OWNS tego zadania. Skutek jest wąski i zgłoszony: transkrypt kroku Codeksa pokaże prozę
+//! agenta, ale nie wiersze `read`, `edit` ani `ran`. To jest ta sama awaria, którą u Claude'a
+//! zmierzono 2026-08-18, i domyka ją `decode_codex` w tamtym pliku, nie tutaj — druga tabela
+//! nazw z drutu po tej stronie byłaby drugą implementacją kuracji (niezmienniki 15 i 23).
+//!
+//! **Nie zapisuje surowego strumienia na dysk.** `logs/agent-<krok>.jsonl` czyta `store::rebuild`
+//! (T-06), więc bez tego zapisu skasowanie `loadout.db` zabiera zdarzenia kroków Codeksa
+//! (niezmiennik 4). Mechanizm istnieje — `claude::Transcript` plus `stream::Recorder` — ale
+//! wołającego nie ma i **nie miałby go także po dopisaniu go tutaj**: `commands::run` nie woła
+//! `ClaudeDriver::with_transcript` po dziś dzień, a jedyne miejsce, w którym ta wartość powinna
+//! stać dla OBU sterowników, to `RunSpec` w `drivers/mod.rs`. To jest jeden wiersz poza tym
+//! zadaniem, czyli pytanie do człowieka, nie cichy dopisek (`AGENTS.md` §7).
 //!
 //! # Czego ten plik nie ma prawa zawierać
 //!
