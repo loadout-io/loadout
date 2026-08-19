@@ -157,6 +157,25 @@ function asCanvasNode(node: StepNode): CanvasNode {
  * krawędzie. */
 const ARROW = { type: MarkerType.ArrowClosed } as const;
 
+/** Klasa powrotu — kolory podpisu bierze `react-flow-tokens.css`, bo hex w kodzie pali bramkę. */
+const WAY_BACK = 'loadout-way-back';
+
+/** Przerywanie linii. Kształt, nie kolor, więc wolno mu stać w kodzie (`checks/quick-tokens.sh`
+ * pilnuje hexów, rozmiarów pisma i zaokrągleń — nie wzoru kreski).
+ *
+ * Poza komponentem, bo to stała: nowy obiekt na każdy render przemontowywałby krawędzie. */
+const DASHED = { strokeDasharray: '6 4' } as const;
+
+/** Podpis powrotu: „up to 3 tries".
+ *
+ * „tries", nie „attempts" — tabela słownictwa (`checks/quick-vocabulary.sh`) wiąże `attempt`
+ * na „try", a to jest tekst, który człowiek czyta na płótnie. Liczba pojedyncza nie jest
+ * kosmetyką: „up to 1 tries" czyta się jak usterka narzędzia, a użytkownik ma w tej chwili
+ * wierzyć, że narzędzie wie, co mówi. */
+export function triesLabel(turns: number): string {
+  return `up to ${String(turns)} ${turns === 1 ? 'try' : 'tries'}`;
+}
+
 /** Kafelki i strzałki dla React Flow, zbudowane z dokumentu. */
 function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
   const view = toCanvas(file);
@@ -167,10 +186,24 @@ function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
       position: tile.position,
       data: { step: tile.data },
     })),
-    /* Grot dokładamy TUTAJ, a nie w `map.ts`: tamten plik jest mapperem PLIKU i wszystko, co
-     * do niego dopiszemy, jest kandydatem do wjechania na dysk. Strzałka w pliku to `from`
-     * i `to`, i nic poza tym (T3 §3.1). */
-    arrows: view.edges.map((arrow) => ({ ...arrow, markerEnd: ARROW })),
+    /* Grot i wygląd powrotu dokładamy TUTAJ, a nie w `map.ts`: tamten plik jest mapperem PLIKU
+     * i wszystko, co do niego dopiszemy, jest kandydatem do wjechania na dysk. Sam LIMIT rund
+     * jedzie przez mapper, bo jest znaczeniem strzałki; przerywana linia i podpis są wyłącznie
+     * jego obrazem i nie mają prawa istnieć poza tą funkcją. */
+    arrows: view.edges.map((arrow) =>
+      arrow.maxTurns === undefined
+        ? { ...arrow, markerEnd: ARROW }
+        : {
+            ...arrow,
+            markerEnd: ARROW,
+            /* PRZERYWANA I PODPISANA, bo powrót znaczy co innego niż „po" i człowiek musi to
+             * zobaczyć bez otwierania panelu. Bez tego pętla jest niewidoczna: dwie strzałki
+             * między tymi samymi kafelkami wyglądają jak pomyłka w rysowaniu. */
+            className: WAY_BACK,
+            style: DASHED,
+            label: triesLabel(arrow.maxTurns),
+          },
+    ),
   };
 }
 

@@ -55,3 +55,22 @@
    * drugą odpowiedzią na pytanie „który kafelek jest zaznaczony" (niezmiennik 13). */
   --xy-node-boxshadow-selected: none;
 }
+
+/* PODPIS KRAWĘDZI — dwie zmienne, bez których powrót jest białą pastylką na ciemnym płótnie.
+ *
+ * `dist/style.css` biblioteki maluje `.react-flow__edge-textbg` domyślnym
+ * `--xy-edge-label-background-color-default: #ffffff`, a ten arkusz nie ustawiał ani tła, ani
+ * koloru pisma. Podpis „up to 3 tries" wjechałby więc na płótno jako biały prostokąt — jedyny
+ * jasny element na całym ekranie. Kolory stoją tutaj, a nie w kodzie, bo `checks/quick-tokens.sh`
+ * nie przepuszcza hexów w komponentach i ma rację: paleta ma jedno miejsce. */
+.react-flow {
+  --xy-edge-label-background-color: var(--color-raised);
+  --xy-edge-label-color: var(--color-muted);
+}
+
+/* Powrót rysuje się słabiej niż strzałka „po": to jest ścieżka wyjątkowa, nie główny nurt pracy,
+ * i nie ma przykuwać wzroku mocniej niż kolejność kroków. Sam wzór kreski dokłada `canvas.tsx`
+ * (kształt, nie kolor). */
+.loadout-way-back .react-flow__edge-path {
+  stroke: var(--color-line);
+}

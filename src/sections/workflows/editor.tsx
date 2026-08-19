@@ -259,6 +259,28 @@ export function WorkflowEditor({
                   ),
                 );
               }}
+              /* Powrót WYCHODZĄCY z tego kroku, jeżeli jakiś jest. Liczony tutaj, nie w panelu:
+                 panel dostaje jedną liczbę i nie zna strzałek, więc nie ma jak pomylić się co do
+                 tego, która z nich jest powrotem (niezmiennik 13). */
+              wayBack={
+                state.document.links.find(
+                  (link) => link.from === open.id && link.max_turns !== undefined,
+                )?.max_turns ?? null
+              }
+              onEditWayBack={(turns) => {
+                /* Ta sama droga, co każda inna zmiana dokumentu: `commit`, pod którym wisi
+                   autosave. Przepisujemy WYŁĄCZNIE powrót wychodzący z otwartego kroku — reszta
+                   strzałek zostaje tymi samymi obiektami, więc porównanie referencji w Reakcie
+                   dalej mówi prawdę o tym, co się zmieniło. */
+                state.commit({
+                  ...state.document,
+                  links: state.document.links.map((link) =>
+                    link.from === open.id && link.max_turns !== undefined
+                      ? { ...link, max_turns: turns }
+                      : link,
+                  ),
+                });
+              }}
               onEditCheckpoint={(fields) => {
                 /* Ta sama droga dla punktu kontrolnego. Jego `question` jest jedynym powodem,
                  * dla którego bieg ma się na nim o cokolwiek zapytać — pole, które nie dojeżdża

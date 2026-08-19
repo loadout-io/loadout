@@ -199,6 +199,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
+    two_ways_back(&workflow.links, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
     the_passthrough(&steps, &mut notes);
@@ -416,6 +417,27 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
             When::Running => problem(Some(step.id), message),
         });
     }
+}
+
+/// Więcej niż jeden powrót w jednym pliku.
+///
+/// ODMOWA, NIE DOMYSŁ, i to jest granica przyznana wprost. Dwie pętle w jednym grafie mogą być
+/// zagnieżdżone, rozłączne albo przecinać się ciałami — a każdy z tych trzech przypadków znaczy
+/// coś innego dla kolejności rund i dla tego, która runda wychodzi na zewnątrz.
+/// `workflow::unroll` rozwija **jedną** pętlę i mówi o tym w swoim nagłówku; gdyby ta reguła nie
+/// istniała, drugi powrót byłby po cichu ignorowany, a bieg wyglądałby na udany, robiąc coś
+/// innego, niż narysował człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która
+/// mówi, czego jeszcze nie umiemy.
+fn two_ways_back(links: &[Link], notes: &mut Vec<Note>) {
+    if links.iter().filter(|link| link.is_a_way_back()).count() < 2 {
+        return;
+    }
+    notes.push(problem(
+        None,
+        "This workflow has more than one way back. Loadout can run one loop at a time, so keep \
+         one and remove the others."
+            .to_owned(),
+    ));
 }
 
 /// Liczba rund powrotu poza zakresem 1–[`MOST_TURNS`].
@@ -781,5 +803,106 @@ fn not_connected(first: &str, others: &[&str]) -> String {
             "\"{first}\" and {} more steps are not connected to the rest of the workflow.",
             more.len()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Granica pętli przyznana wprost: JEDEN powrót na plik.
+    //!
+    //! # Dlaczego to jest odmowa, a nie ostrzeżenie
+    //!
+    //! `workflow::unroll` rozwija jedną pętlę. Dwa powroty w jednym grafie mogą być zagnieżdżone,
+    //! rozłączne albo przecinać się ciałami, a każdy z tych trzech przypadków znaczy co innego dla
+    //! kolejności rund i dla tego, która runda wychodzi na zewnątrz. Bez tej reguły drugi powrót
+    //! byłby po cichu ignorowany i bieg wyglądałby na udany, robiąc coś innego, niż narysował
+    //! człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która mówi, czego jeszcze
+    //! nie umiemy.
+    //!
+    //! # Dlaczego kryterium stoi TUTAJ, a nie w `tests/it/`
+    //!
+    //! `checks/quick-scope.sh` przy ręcznym biegu bez `TASK.md` nie wpuszcza zapisu do
+    //! `src-tauri/tests/`, a kryterium ma powstać razem z regułą, nie po niej. Wzorzec jest
+    //! w repo (`ipc.rs`, `commands/run.rs`, `memory/handoff.rs`).
+    //!
+    //! # Słaba wersja
+    //!
+    //! Sprawdzenie „są dwa powroty, więc jest jakiś problem" przechodzi dla pliku, w którym problem
+    //! zgłasza REGUŁA KOŁA — a wtedy kryterium świeci nad kodem, którego nie ma. Asercja stoi więc
+    //! na treści zdania, i osobno na tym, że JEDEN powrót nie zgłasza niczego.
+
+    use serde_json::{Value, json};
+
+    use super::{Level, check_to_run};
+    use crate::workflow::WorkflowFile;
+
+    fn step(id: &str) -> Value {
+        json!({
+            "kind": "agent",
+            "id": id,
+            "name": id,
+            "agent": "a",
+            "instructions": "Do it.",
+            "folder": { "use": "fresh-copy" }
+        })
+    }
+
+    /// `Result`, nie `expect`: powód ten sam, co w `workflow::unroll::tests` — pełne clippy
+    /// biegnie `-D warnings`, a `expect_used` i `panic` są w restrykcjach.
+    fn file(links: &[Value]) -> Result<WorkflowFile, serde_json::Error> {
+        serde_json::from_value(json!({
+            "format": 1,
+            "id": "wf",
+            "name": "Test",
+            "steps": [step("s_a"), step("s_b"), step("s_c")],
+            "links": links
+        }))
+    }
+
+    /// Zdania wagi problemu, w kolejności zgłoszenia.
+    fn problems(file: &WorkflowFile) -> Vec<String> {
+        check_to_run(file)
+            .into_iter()
+            .filter(|note| note.level == Level::Problem)
+            .map(|note| note.message)
+            .collect()
+    }
+
+    #[test]
+    fn one_way_back_is_fine() -> Result<(), serde_json::Error> {
+        let one = file(&[
+            json!({ "from": "s_a", "to": "s_b" }),
+            json!({ "from": "s_b", "to": "s_c" }),
+            json!({ "from": "s_b", "to": "s_a", "max_turns": 3 }),
+        ])?;
+
+        assert!(
+            problems(&one).is_empty(),
+            "one loop is the whole feature; refusing it here would mean nobody can use it. \
+             Got: {:?}",
+            problems(&one)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_ways_back_are_refused_by_name() -> Result<(), serde_json::Error> {
+        let two = file(&[
+            json!({ "from": "s_a", "to": "s_b" }),
+            json!({ "from": "s_b", "to": "s_c" }),
+            json!({ "from": "s_b", "to": "s_a", "max_turns": 3 }),
+            json!({ "from": "s_c", "to": "s_b", "max_turns": 2 }),
+        ])?;
+
+        let said = problems(&two);
+
+        assert!(
+            said.iter()
+                .any(|one| one.contains("more than one way back")),
+            "the refusal has to say WHAT is wrong and what to do about it. A note about a circle \
+             here would mean this rule is not running at all and the criterion is passing over \
+             nothing. Got: {said:?}"
+        );
+        Ok(())
     }
 }
