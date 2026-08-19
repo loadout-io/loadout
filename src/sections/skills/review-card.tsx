@@ -86,8 +86,20 @@ export function ReviewCard({
       <header className="flex items-center gap-2">
         <h2 className="text-heading text-ink">{item.name}</h2>
         {/* Znacznik pochodzenia stoi na karcie i zostaje po instalacji. To jedyna rzecz tutaj,
-            która mówi, że ten tekst napisał ktoś obcy. */}
-        <span className={CHIP}>From the internet</span>
+            która mówi, że ten tekst napisał ktoś obcy.
+
+            2026-08-19 — WARUNEK, BO DO TEGO DNIA PLAKIETKA BYŁA WPISANA NA SZTYWNO i ignorowała
+            `item.fromTheInternet`. Była to prawda przez konstrukcję: jedyną drogą, którą
+            cokolwiek wchodziło do tej karty, było `review_skill(url)`, czyli link. Od chwili,
+            w której człowiek może napisać umiejętność sam, to samo zdanie mówi o JEGO tekście,
+            że przyszedł od obcego — a plakietka zastępuje w v1 podpisy i weryfikację
+            pochodzenia, których nie ma. Zdanie zawsze prawdziwe nie niesie informacji; zdanie
+            czasem nieprawdziwe uczy je ignorować, i to jest droższe z dwojga.
+
+            Zgaszenie jej CAŁKIEM byłoby drugą połową tego samego defektu: umiejętność napisana
+            przez obcego przestałaby różnić się od napisanej ręką. Dlatego warunek, a nie
+            usunięcie. */}
+        {item.fromTheInternet ? <span className={CHIP}>From the internet</span> : null}
       </header>
 
       <p className="text-body text-body">{item.summary}</p>

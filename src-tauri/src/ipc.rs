@@ -717,6 +717,15 @@ pub fn review_skill(url: &str) -> Result<commands::skills::ImportWire, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Trzy pytania z formularza → umiejętność przejrzana tym samym rdzeniem, co wklejony link.
+#[tauri::command]
+pub fn author_skill(
+    authored: commands::skills::Authored,
+) -> Result<commands::skills::ImportWire, String> {
+    commands::skills::author_skill_inner(&crate::loadout_dir(), authored)
+        .map_err(|error| error.to_string())
+}
+
 /// Zapisuje przejrzaną umiejętność w katalogach vendorów.
 #[tauri::command]
 pub fn install_skill(item: commands::skills::ImportWire) -> Result<(), String> {
@@ -1006,6 +1015,7 @@ pub async fn say_to_agent(
 /// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        author_skill,
         check_workflow,
         continue_run,
         delete_agent,
