@@ -43,6 +43,11 @@ node_modules
 .env.local
 /.claude/settings.local.json
 
+# Kopie robocze zakladane przez narzedzia sesji. Stan generowany, nigdy zrodlo — i dopoki
+# byl niesledzony, BLOKOWAL kazde ladowanie: integrate.sh odmawia na `git status --porcelain
+# -uall` niepustym, a ten katalog jest niepusty przez cala prace kazdej sesji obok.
+/.claude/worktrees/
+
 # Przestrzeń robocza sond i szkiców. Katalog wersjonowany, zawartość nie.
 /.loadout/scratch/*
 !/.loadout/scratch/.gitkeep
