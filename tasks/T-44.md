@@ -93,10 +93,25 @@ konflikt w kazdym lądowaniu. Kolejnosc: T-42, T-43, potem to zadanie.
   pliku nie wolno zmienic, usunac ani rozluznic.
 - `src-tauri/tests/it/ipc_read_paths.rs`, `src-tauri/tests/it/skills_author_origin.rs`,
   `src-tauri/tests/it/skills_author_pipeline.rs`, `src-tauri/tests/flow_skill.rs` —
-  **najwezszy mozliwy mandat**: WYLACZNIE przestawienie wywolan
-  `install_skill_inner(x, y)` na `install_skill_into(x, y, Landing::Everywhere, None)` plus import
-  i nazwa funkcji w tekstach komunikatow asercji. Ani jednej asercji nie wolno dodac, usunac
-  ani zmienic; liczba asercji w kazdym z tych plikow ma zostac ta sama.
+  **najwezszy mozliwy mandat**: WYLACZNIE przestawienie wywolan trzech skorup bez zakresu na ich
+  odpowiedniki swiadome zakresu (`install_skill_inner(x, y)` ->
+  `install_skill_into(x, y, Landing::Everywhere, None)` i tak samo dla `list_skills_inner`
+  i `delete_skill_inner`), plus importy i nazwy funkcji w tekstach komunikatow asercji. Ani jednej
+  asercji nie wolno dodac, usunac ani zmienic; liczba asercji w kazdym z tych plikow ma zostac
+  ta sama, i to jest do policzenia, nie do zadeklarowania.
+
+  **Dlaczego TRZY, a nie ta jedna, na ktora swieci bramka -- i to jest znalezisko o samym
+  sprawdzeniu (AGENTS.md §7).** Wszystkie trzy skorupy stracily produkcyjnych wolajacych w tym
+  samym commicie tej galezi: `ipc.rs` przelozyl `install_skill`, `list_skills` i `delete_skill`
+  na funkcje swiadome zakresu. `checks/quick-wired.sh` melduje JEDNA z nich, bo o dwoch
+  pozostalych proza `tasks/T-42.md` i `tasks/T-44.md` wspomina PRZYPADKIEM, przy okazji zdan
+  o czym innym -- a check uznaje wystapienie nazwy w pliku zadania za obietnice wolajacego.
+  Czyli jego dyskryminacja da sie uciszyc zdaniem napisanym w innej sprawie. Zdiagnozowal to
+  pisarz T-44 w docu `install_skill_inner` i to jest fakt o CHECKU, nie o kodzie: naprawa mieszka
+  w `checks/`, czyli na sciezce „stoj i zapytaj czlowieka", i nie nalezy do tego zadania.
+  Konsekwencja dla tej galezi jest jednak jednoznaczna: gdyby zniknela tylko ta jedna skorupa,
+  wyladowalyby dwie funkcje produkcyjne bez produkcyjnego wolajacego, o ktorych **nic by juz nigdy
+  nie powiedzialo**. Wiec znikaja trzy.
 
   **Dlaczego to jest w OWNS (par. 5c).** Zmierzone 2026-08-19 na galezi `task-T-44`: bramka
   czerwona na DWOCH sprawdzeniach projektowych przy WSZYSTKICH TRZECH kryteriach zielonych.
