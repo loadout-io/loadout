@@ -13,9 +13,48 @@
 //! brzmi tak samo w obu miejscach — front-matter bez domknięcia **nie jest** front-matterem,
 //! `---` w pierwszej linii pliku, który nigdy się nie domyka, to pozioma kreska.
 
-use std::path::Path;
+use std::fs;
+use std::io::{self, BufRead as _, BufReader, Read as _};
+use std::path::{Path, PathBuf};
 
 use super::{HostSkill, Result};
+use crate::skills::ingest;
+
+/// Nazwa pliku, po której poznaje się umiejętność w cudzym repozytorium.
+const SKILL_FILE: &str = "SKILL.md";
+
+/// `<projekt>/.claude/skills` — kształt gospodarza, zapisany **raz**.
+///
+/// Te dwa segmenty są jedyną wiedzą tego repo o tym, gdzie cudze repozytorium trzyma
+/// umiejętności. Drugi taki `join` gdziekolwiek indziej byłby drugą definicją tego samego
+/// pojęcia (niezmiennik 23), więc ścieżkę do konkretnego pliku wydaje [`skill_file`], a nie
+/// składa ją u siebie ten, kto jej potrzebuje.
+fn skills_root(project: &Path) -> PathBuf {
+    project.join(".claude").join("skills")
+}
+
+/// Pierwszy wiersz pliku, dosłownie — albo `None`, jeśli pliku nie da się przeczytać.
+///
+/// Czytamy **wiersz**, nie plik: `read_until` staje na pierwszym `\n`, więc 73 KB learnings ani
+/// megabajtowy `SKILL.md` nie wchodzą do pamięci po jedno zdanie. Sufit jest ten sam, co na
+/// ścieżce importu ([`ingest::FILE_CAP`]), bo „ile wolno przeczytać z cudzego `SKILL.md`" jest
+/// jedną decyzją, nie dwiema (niezmiennik 23).
+///
+/// Bajty spoza UTF-8 nie kasują wpisu: plik JEST tam, więc umiejętność jest tam. Pominięcie
+/// dałoby człowiekowi listę, na której jej nie ma — a to jest ta sama cicha porażka, przed którą
+/// stoi całe to zadanie, tylko od drugiej strony.
+fn first_line(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut raw = Vec::new();
+    BufReader::new(file.take(ingest::FILE_CAP))
+        .read_until(b'\n', &mut raw)
+        .ok()?;
+    Some(
+        String::from_utf8_lossy(&raw)
+            .trim_end_matches(['\n', '\r'])
+            .to_owned(),
+    )
+}
 
 /// Umiejętności gospodarza z `<projekt>/.claude/skills/**`: nazwa katalogu i pierwszy wiersz
 /// jego `SKILL.md`.
@@ -31,8 +70,44 @@ use super::{HostSkill, Result};
 /// (niezmiennik 5). Cicho łamie się to przez `?`, który zamienia „ten host nie ma
 /// umiejętności" w odmowę startu biegu.
 pub fn skills(project: &Path) -> Result<Vec<HostSkill>> {
-    let _ = project;
-    Ok(Vec::new())
+    let listing = match fs::read_dir(skills_root(project)) {
+        Ok(listing) => listing,
+        // Rozstrzyga RODZAJ błędu, nie sam fakt porażki. Brak katalogu to większość
+        // repozytoriów; nieczytelny katalog to stan, o którym człowiek ma się dowiedzieć, bo
+        // umiejętności tam są i nie widać ich na ekranie wyboru.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+
+    let mut found = Vec::new();
+    for entry in listing {
+        let entry = entry?;
+        // `file_type()` z `read_dir` NIE idzie za dowiązaniem — i o to chodzi. Dowiązanie
+        // prowadzi poza wybrane repozytorium, a wtedy zarówno wiersz na ekranie, jak i bajty
+        // w katalogu pluginu pochodzą z pliku, którego człowiek nie wybierał. Ta sama decyzja,
+        // z tego samego powodu, stoi w `ingest::walk_into`.
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if !kind.is_dir() {
+            // `README.md` leżący obok katalogów nie jest umiejętnością i nie jest błędem.
+            continue;
+        }
+        // Nazwa katalogu jest zarazem kluczem wyboru i nazwą, pod którą plik ląduje w katalogu
+        // pluginu. Nazwa nie-UTF-8 nie wróciłaby z drutu tą samą ścieżką, więc wpisu nie ma.
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        // Katalog bez `SKILL.md` nie ma wpisu i nie jest błędem — u gospodarza zostaje po
+        // ręcznym usunięciu pliku i po nieudanym `git checkout`.
+        let Some(first_line) = first_line(&entry.path().join(SKILL_FILE)) else {
+            continue;
+        };
+        found.push(HostSkill { name, first_line });
+    }
+
+    found.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(found)
 }
 
 /// Sekcja `## Recurring patterns` z pliku learnings — od nagłówka do następnego `## `.
