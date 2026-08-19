@@ -1861,8 +1861,12 @@ impl Live {
         cancel: &CancellationToken,
     ) -> StepReport {
         let driver = CommandDriver::new();
-        let end = match driver.run(&job.spec, cancel).await {
-            Ok(end) => end,
+        // START I CZEKANIE OSOBNO, a nie jednym `CommandDriver::run`, i to jest cała różnica
+        // między księgą, która pomaga po awarii, a księgą, która opisuje przeszłość: `run` to
+        // `start` plus `settle().await`, więc wraca dopiero PO całym sprawdzeniu — a `pid`
+        // i `pgid` zapisane wtedy są nieobecne przez cały czas, w którym komenda naprawdę biegła.
+        let mut live = match driver.start(&job.spec) {
+            Ok(live) => live,
             Err(error) => {
                 // Zdanie nazywa KOMENDĘ, bo to ona się nie uruchomiła. „Nie udało się" bez
                 // podmiotu wysyła człowieka szukać wady w agencie, którego tu nie ma.
@@ -1872,13 +1876,18 @@ impl Live {
             }
         };
 
-        // `pid` i `pgid` do księgi, ZANIM cokolwiek innego — dokładnie jak przy agencie: po awarii
-        // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie [T7 §6.2].
+        // `pid` i `pgid` do księgi, ZANIM cokolwiek popłynie z wyjścia — dokładnie jak przy
+        // agencie (`one_turn`): po awarii aplikacji nie ma już kogo o nie zapytać, a to po nich
+        // sprząta odzyskiwanie [T7 §6.2]. `Checking::group` jest zwykłą wartością, dostępną
+        // synchronicznie zaraz po starcie, więc ten zapis nie czeka na nic.
+        let group = live.group();
         self.update(|book| {
             let step = &mut book.steps[id];
-            step.pid = Some(end.group.pid);
-            step.pgid = Some(end.group.pgid);
+            step.pid = Some(group.pid);
+            step.pgid = Some(group.pgid);
         });
+
+        let end = live.settle(cancel).await;
 
         match end.how {
             CheckHow::Ran(report) => {
