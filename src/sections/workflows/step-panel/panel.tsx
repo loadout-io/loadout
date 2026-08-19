@@ -353,6 +353,66 @@ function CopiesRow({
   );
 }
 
+/** Wiersz „Try again up to" — liczba rund POWROTU wychodzącego z tego kroku.
+ *
+ * NIE MA GO W MAKIECIE, i mówię to wprost, bo makieta jest jedyną wyrocznią wyglądu tej
+ * aplikacji. Grep na `loop`, `again`, `retry` i `turns` w `docs/mockup/index.html` nie daje ani
+ * jednego trafienia: pętla powstała po makiecie, na prośbę właściciela, więc tej kontrolki nie ma
+ * skąd przepisać. Kształt jest zapożyczony z wiersza „How many at once", bo pyta o to samo —
+ * o jedną liczbę należącą do kroku.
+ *
+ * DLACZEGO NA KROKU, SKORO LICZBA NALEŻY DO STRZAŁKI. Panelu strzałki w tym repo nie ma i nie
+ * powstaje przy okazji. Rust już rozstrzygnął, gdzie to postawić: uwaga o złym zakresie
+ * (`check::turns_out_of_range`) czepia się kroku, z którego powrót WYCHODZI — „to on jest sędzią
+ * pętli i to jego kafelek człowiek otworzy, żeby zmienić tę liczbę" — a kliknięcie tej uwagi
+ * otwiera panel dokładnie tego kroku. Postawienie kontrolki gdzie indziej znaczyłoby, że uwaga
+ * prowadzi w miejsce, w którym nie da się jej spełnić.
+ *
+ * WIERSZA NIE MA, GDY Z KROKU NIE WYCHODZI POWRÓT. Pole „ile rund" przy kroku bez pętli jest
+ * kontrolką bez skutku (niezmiennik 16) — i to gorszego rodzaju, bo wyglądałoby na ustawienie,
+ * które czeka na włączenie gdzie indziej. */
+function TriesRow({
+  value,
+  onEditWayBack,
+}: {
+  value: number;
+  onEditWayBack: (turns: number) => void;
+}): ReactElement {
+  return (
+    <div className={ROW}>
+      <label htmlFor="step-tries" className={LABEL}>
+        Try again up to
+      </label>
+      <input
+        id="step-tries"
+        className={FIELD}
+        type="number"
+        min={1}
+        max={10}
+        value={String(value)}
+        onChange={(event) => {
+          onEditWayBack(turnsFrom(event.target.value));
+        }}
+      />
+      <span className={FROM_AGENT}>
+        The tester sends the work back until it passes, or until the tries run out.
+      </span>
+    </div>
+  );
+}
+
+/** Liczba tur z pola tekstowego, przycięta do zakresu, który przyjmuje plik.
+ *
+ * Pole `number` przepuszcza pustkę i tekst, a `Number('')` to zero — czyli pętla, która nie
+ * wykonuje się ani razu i którą walidator odrzuca. Zaciskamy TUTAJ, bo dokument ma być poprawny
+ * po każdym naciśnięciu klawisza: zapis leci autosavem 400 ms po ostatniej zmianie i nie ma
+ * chwili, w której wolno mu być nieprawidłowy. To ta sama decyzja, co przy `copiesFrom`. */
+function turnsFrom(typed: string): number {
+  const value = Number.parseInt(typed, 10);
+  if (Number.isNaN(value)) return 1;
+  return Math.min(10, Math.max(1, value));
+}
+
 /** Przełącznik „Fresh copy of the files" — makieta, linia 620-621.
  *
  * 2026-08-19 — PO CO POWSTAŁ. Reguła `one_folder_two_steps` mówi krokom, które mogą biec
@@ -629,6 +689,15 @@ export interface PanelForStepProps {
   onEditCheckpoint: (fields: CheckpointFields) => void;
   onReset: (field: OverridableField) => void;
   onChooseSkills: (choice: SkillChoice) => void;
+  /**
+   * Ile rund ma powrót wychodzący z tego kroku, albo `null`, gdy żaden z niego nie wychodzi.
+   *
+   * Liczba, nie strzałka: panel nie ma potrzeby wiedzieć, DOKĄD ten powrót prowadzi, a im mniej
+   * dokumentu tu wchodzi, tym mniej jest miejsc, w których panel mógłby coś o nim skłamać.
+   */
+  wayBack: number | null;
+  /** Nowa liczba rund dla tego powrotu. Nie ma jak jej podać, gdy `wayBack` jest `null`. */
+  onEditWayBack: (turns: number) => void;
 }
 
 /** Jaki panel dostaje zaznaczony kafelek. Trzy odpowiedzi i ani jednego „nic".
@@ -655,6 +724,8 @@ export function PanelForStep({
   onEditCheckpoint,
   onReset,
   onChooseSkills,
+  wayBack,
+  onEditWayBack,
 }: PanelForStepProps): ReactElement {
   if (step.kind === 'checkpoint') {
     return (
@@ -698,6 +769,9 @@ export function PanelForStep({
           dokładnie tam, gdzie stawia go makieta (linia 620), i z tego samego powodu, dla którego
           stoi tu Skills: to nie jest pole z etykietą, tylko przełącznik. */}
       <FreshCopyRow value={step.folder} onEditStep={onEditStep} />
+
+      {/* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */}
+      {wayBack === null ? null : <TriesRow value={wayBack} onEditWayBack={onEditWayBack} />}
 
       {/* Wiersz Skills, zamontowany PO SIEDMIU wierszach i poza `StepPanel` — patrz nagłówek.
           Przy pustej liście nie powstaje wcale: kiedy w katalogach agentów nie leży ani jedna

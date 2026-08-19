@@ -77,6 +77,10 @@ function markup(folder: Folder): string {
       onEditCheckpoint={noop}
       onReset={noop}
       onChooseSkills={noop}
+      /* Ten krok nie ma powrotu, więc wiersza liczby rund w nim nie ma — a to jest dokładnie
+         stan, w którym mierzymy przełącznik świeżej kopii. */
+      wayBack={null}
+      onEditWayBack={noop}
     />,
   );
 }
