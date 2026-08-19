@@ -1,56 +1,74 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- RYSUNEK PELNY: 1024, 512, 256 i 128 px. Przepis 1:1 z murmur-icon.svg z repo obok -
-       squircle rx=232 na plotnie 1024, radialne tlo indygo, sheen zanikajacy na 34% wysokosci,
-       temat wysrodkowany, ostra krawedz wewnetrzna w bieli 10%. Dwie nasze aplikacje maja
-       w Docku wygladac na rodzenstwo, i to jest decyzja D1, nie zbieg okolicznosci.
+  <!-- RYSUNEK PELNY: 1024, 512, 256 i 128 px.
 
-       Przy 32 i 16 px ten rysunek sie MYDLI: cztery krawedzie po 38 jednostek zlewaja sie
-       w plame, a sheen i krawedz wewnetrzna operuja na 3/1024, czyli na 0,1 piksela.
-       Dlatego istnieja dwa osobne pliki, a nie jeden przeskalowany. -->
+       PRZEPIS jest 1:1 z murmur-icon.svg z repo obok - squircle rx=232 na plotnie 1024, radialne
+       tlo, sheen zanikajacy na 34% wysokosci, temat wysrodkowany, ostra krawedz wewnetrzna
+       w bieli 10%. Dwie nasze aplikacje maja w Docku wygladac na rodzenstwo, i to jest decyzja D1.
+
+       PALETA I GEOMETRIA TEMATU ZMIENIONE 2026-08-19 po zgloszeniu wlasciciela ze zrzutem Docka.
+       Poprzednia wersja mierzyla sie tak: temat 66% szerokosci i 39% wysokosci plotna, wezly
+       z gradientem do #e6e2ff i czystej bieli, najjasniejszy przystanek tla o luminancji 0,019,
+       kontrast temat-tlo 15,2 : 1. Tyle kontrastu jest w porzadku, kiedy temat wypelnia kafle
+       w calosci - czarno-biala ikona obok w Docku tak wlasnie wyglada. Przy temacie zajmujacym
+       dwie trzecie kafli ten sam kontrast ODCZEPIA go od tla i cztery jasne plamki przestaja byc
+       jedna forma. Stad trzy zmiany naraz, bo zadna z nich osobno nie wystarcza:
+
+         1. TLO JEST PRAWDZIWYM INDYGO (#4a44c8 -> #2a2486 -> #171240), a nie prawie-czernia.
+            Kafla ma czytac sie jako barwa, nie jako dziura miedzy ikonami.
+         2. TEMAT JEST WIEKSZY o 15%: 76% szerokosci i 45% wysokosci plotna, przy 12% marginesu.
+         3. TEMAT NIE MA PRAWIE-BIELI. Najjasniejsza barwa to #dfdcff; sheen i krawedz wewnetrzna
+            zostaja biale, bo dzialaja przy 10% i sa warstwami tla, nie tematem.
+
+       Kontrast wychodzi 5,4 : 1, czyli w pasmie 3-9. Dol pasma to prog WCAG dla grafiki
+       nietekstowej: ponizej znak ginie przy 16 px.
+
+       Przy 32 i 16 px ten rysunek sie MYDLI: cztery krawedzie po 44 jednostki zlewaja sie
+       w plame, a sheen i krawedz wewnetrzna operuja na 0,1 piksela. Dlatego istnieja dwa osobne
+       pliki, a nie jeden przeskalowany. -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="36%" r="78%">
-      <stop offset="0%" stop-color="#221f52"/>
-      <stop offset="52%" stop-color="#100f26"/>
-      <stop offset="100%" stop-color="#07070f"/>
+    <radialGradient id="bg" cx="50%" cy="34%" r="80%">
+      <stop offset="0%" stop-color="#4a44c8"/>
+      <stop offset="55%" stop-color="#2a2486"/>
+      <stop offset="100%" stop-color="#171240"/>
     </radialGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
       <stop offset="34%" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
     <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#6e76ff" stop-opacity="0.55"/>
-      <stop offset="100%" stop-color="#6e76ff" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#8f8cff" stop-opacity="0.38"/>
+      <stop offset="100%" stop-color="#8f8cff" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#a6abff"/>
-      <stop offset="100%" stop-color="#6e76ff"/>
+      <stop offset="0%" stop-color="#d5d1ff"/>
+      <stop offset="100%" stop-color="#b3adff"/>
     </linearGradient>
     <radialGradient id="node" cx="38%" cy="30%" r="82%">
-      <stop offset="0%" stop-color="#e6e2ff"/>
-      <stop offset="46%" stop-color="#8079ff"/>
-      <stop offset="100%" stop-color="#5a4fe6"/>
+      <stop offset="0%" stop-color="#dfdcff"/>
+      <stop offset="46%" stop-color="#bdb6ff"/>
+      <stop offset="100%" stop-color="#9c93ff"/>
     </radialGradient>
     <radialGradient id="nodeout" cx="38%" cy="30%" r="82%">
-      <stop offset="0%" stop-color="#ffffff"/>
-      <stop offset="52%" stop-color="#cdc2ff"/>
-      <stop offset="100%" stop-color="#9d95ff"/>
+      <stop offset="0%" stop-color="#dfdcff"/>
+      <stop offset="52%" stop-color="#c9c3ff"/>
+      <stop offset="100%" stop-color="#a8a0ff"/>
     </radialGradient>
     <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#sq)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
     <rect width="1024" height="1024" fill="url(#sheen)"/>
-    <circle cx="512" cy="512" r="330" fill="url(#glow)"/>
-    <g fill="none" stroke="url(#edge)" stroke-width="38" stroke-linecap="round">
-      <path d="M236 512 L512 372"/>
-      <path d="M236 512 L512 652"/>
-      <path d="M512 372 L788 512"/>
-      <path d="M512 652 L788 512"/>
+    <circle cx="512" cy="512" r="380" fill="url(#glow)"/>
+    <g fill="none" stroke="url(#edge)" stroke-width="44" stroke-linecap="round">
+      <path d="M195 512 L512 351"/>
+      <path d="M195 512 L512 673"/>
+      <path d="M512 351 L829 512"/>
+      <path d="M512 673 L829 512"/>
     </g>
-    <circle cx="236" cy="512" r="60" fill="url(#node)"/>
-    <circle cx="512" cy="372" r="60" fill="url(#node)"/>
-    <circle cx="512" cy="652" r="60" fill="url(#node)"/>
-    <circle cx="788" cy="512" r="66" fill="url(#nodeout)"/>
+    <circle cx="195" cy="512" r="69" fill="url(#node)"/>
+    <circle cx="512" cy="351" r="69" fill="url(#node)"/>
+    <circle cx="512" cy="673" r="69" fill="url(#node)"/>
+    <circle cx="829" cy="512" r="76" fill="url(#nodeout)"/>
   </g>
   <rect x="1.5" y="1.5" width="1021" height="1021" rx="231" ry="231" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="3"/>
 </svg>

@@ -1,21 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- RYSUNEK 16 px. Jedna barwa tla, jedna barwa tematu, ANI JEDNEGO gradientu: przy 16 px
-       kazdy gradient jest jednym pikselem szarosci. Krawedzie 96 (przy 16 px to 1,5 px, czyli
-       najmniej, co jeszcze widac), wezly 104. Squircle w tej samej proporcji co dwa wieksze. -->
+  <!-- RYSUNEK NA 16 px. Sylwetka rombu i cztery kropki, jedna barwa.
+
+       TLO JEST PLASKIE I JEST NAJJASNIEJSZYM PRZYSTANKIEM KAFLI (#4a44c8). Przy 16 px gradient
+       to jeden piksel szarosci: kosztuje bajty, nie zmienia nic, a najmniejsza ikona ma czytac
+       sie jako BARWA - na pasku menu i w przelaczniku aplikacji jest kropka koloru, nie rysunkiem.
+
+       Krawedz 96 na 1024, czyli 1,5 piksela przy 16 px. Wezly 104 i 112, czyli 3,2 i 3,5 piksela:
+       ponizej tego cztery kropki zlewaja sie z liniami w jeden pierscien. Geometria jest tu
+       CIASNIEJSZA niz w dwoch wiekszych rysunkach (72% szerokosci wobec 76 i 79), bo przy 16 px
+       margines jest jedyna rzecza, ktora trzyma ksztalt w ryzach. -->
   <defs>
     <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#sq)">
-    <rect width="1024" height="1024" fill="#161436"/>
-    <g fill="none" stroke="#cdc2ff" stroke-width="96" stroke-linecap="round">
+    <rect width="1024" height="1024" fill="#4a44c8"/>
+    <g fill="none" stroke="#dfdcff" stroke-width="96" stroke-linecap="round">
       <path d="M252 512 L512 376"/>
       <path d="M252 512 L512 648"/>
       <path d="M512 376 L772 512"/>
       <path d="M512 648 L772 512"/>
     </g>
-    <circle cx="252" cy="512" r="104" fill="#cdc2ff"/>
-    <circle cx="512" cy="376" r="104" fill="#cdc2ff"/>
-    <circle cx="512" cy="648" r="104" fill="#cdc2ff"/>
-    <circle cx="772" cy="512" r="112" fill="#ffffff"/>
+    <circle cx="252" cy="512" r="104" fill="#dfdcff"/>
+    <circle cx="512" cy="376" r="104" fill="#dfdcff"/>
+    <circle cx="512" cy="648" r="104" fill="#dfdcff"/>
+    <circle cx="772" cy="512" r="112" fill="#dfdcff"/>
   </g>
 </svg>

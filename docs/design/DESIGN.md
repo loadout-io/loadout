@@ -90,6 +90,28 @@ Przepis 1:1 z systemu, z którego wzięliśmy wartości: squircle `rx=232` na p�
 tło indygo, sheen zanikający na 34% wysokości, temat wyśrodkowany, ostra krawędź wewnętrzna
 w bieli 10%. Dwie nasze aplikacje mają w Docku wyglądać na rodzeństwo.
 
+**Trzy liczby, na których ta ikona stoi**, i wszystkie trzy są zmierzone 2026-08-19 po tym, jak
+pierwsza wersja została odrzucona na zrzucie ekranu z Docka („brzydka, z białymi elementami"):
+
+| Co | Wymóg | Dlaczego |
+|---|---|---|
+| Zasięg tematu | **≥ 70%** szerokości, **≥ 42%** wysokości, ≥ 8% marginesu | pierwsza wersja miała 66% i 39%: temat pływał w polu i przestawał być rozpoznawalny z odległości ręki |
+| Najjaśniejsza barwa tematu | **żaden kanał ≥ 224 na wszystkich trzech** | `#e6e2ff` i czysta biel to były te „białe elementy"; przy 32 px zostawały z nich cztery jasne plamki |
+| Kontrast temat ↔ tło | **pasmo 3 : 1 … 9 : 1** | pierwsza wersja miała 15,2 : 1 — tyle jest dobre, gdy temat wypełnia całą kaflę (czarno-biała ikona obok w Docku), ale przy dwóch trzecich odczepia temat od tła |
+
+Dół pasma to próg WCAG dla grafiki nietekstowej: poniżej znak ginie przy 16 px. Górny obowiązuje
+**bez wyjątku**, bo zasięg tematu i tak nie pozwala mu wypełnić kafli w całości — gdyby to się
+kiedyś zmieniło, oba wymagania trzeba zmienić razem.
+
+Tło jest **prawdziwym indygo** (`#4a44c8` → `#2a2486` → `#171240`), a nie prawie-czernią: kafla ma
+czytać się w Docku jako barwa, nie jako dziura między ikonami. Sheen i krawędź wewnętrzna zostają
+białe, bo działają przy 10% i są warstwami tła, nie tematem.
+
+**Trzy rysunki mówią jedną paletą.** Osobny rysunek na 32 i 16 px jest decyzją o czytelności, nie
+licencją na inne barwy: rysunek 32 bierze te same trzy przystanki tła, a rysunek 16 bierze
+najjaśniejszy z nich płasko — przy tym rozmiarze gradient to jeden piksel szarości, a ikona ma być
+kropką koloru. Barwy tematu w obu mniejszych muszą występować w rysunku pełnym.
+
 | Rozmiar | Rysunek |
 |---|---|
 | 1024 / 512 / 256 / 128 | pełny |
