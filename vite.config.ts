@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -28,6 +29,19 @@ export default defineConfig({
       // to tysiące zdarzeń na sekundę i zamrożony dev server.
       ignored: ['**/src-tauri/**', '**/target/**', '**/.loadout/**', '**/runs/**'],
     },
+  },
+
+  test: {
+    // ZMIERZONE 2026-08-19. Narzedzia sesji zakladaja `.claude/worktrees/<nazwa>` jako PELNY
+    // checkout repo i trzymaja go przez cala prace sesji obok. Domyslne wykluczenia vitesta
+    // tego katalogu nie znaja, wiec `full-test` odkrywal tam DRUGA KOPIE calej suity: 38 s
+    // wobec 14 s na czystym drzewie, plus `e2e/tests/*.spec.ts` z tamtej kopii, ktore probuja
+    // otworzyc aplikacje i padaja na braku serwera. Bramka byla wtedy czerwona na trunku
+    // z powodu tego, ze ktos obok pracuje -- i winna byla pierwsza galaz, ktora chciala ladowac.
+    //
+    // Domyslne wykluczenia sa ROZSZERZANE, nie nadpisywane: podanie `exclude` w vitescie
+    // zastepuje cala liste, wiec bez `configDefaults.exclude` zniknelyby `node_modules` i `dist`.
+    exclude: [...configDefaults.exclude, '**/.claude/**'],
   },
 
   build: {
