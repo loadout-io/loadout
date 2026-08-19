@@ -39,7 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
-import { SideNav } from './titlebar';
+import { PANE_GAP, SideNav } from './titlebar';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CONF = resolve(ROOT, 'src-tauri/tauri.conf.json');
@@ -200,15 +200,22 @@ describe('the nav carries the brand and the status, and the lights cover neither
     ).not.toBeNull();
     expect(inset, 'the rendered nav declares no padding-top at all').not.toBeNull();
 
+    /* DWA UKLADY WSPOLRZEDNYCH, poprawione w T-46. Odstep odczytany z markupu jest LOKALNY
+     * dla kartki nawigacji, a wymog swiatel jest GLOBALNY dla okna. Dopoki kartka zaczynala sie
+     * w punkcie (0,0) okna, te dwie liczby byly tym samym. Odkad PLYWA o `PANE_GAP` nizej,
+     * roznia sie dokladnie o ten odstep — i to on jest brakujacym skladnikiem, nie zmiana
+     * wymogu: 8 + 36 = 44 spelnia to samo, co dawniej spelnialo samo 44. */
     expect(
-      inset ?? 0,
+      PANE_GAP + (inset ?? 0),
       'the brand sits under the three macOS lights and is unreadable. The window runs with ' +
         'titleBarStyle "Overlay" and hiddenTitle, so the lights float over the content at ' +
         'trafficLightPosition (y=' +
         String(y) +
-        '); the nav has to start at least ' +
+        '); measured in WINDOW coordinates the pane floats ' +
+        String(PANE_GAP) +
+        ' px down and then insets its own content, and the total has to be at least ' +
         String(LIGHTS_PLUS_GAP) +
-        ' px below that. Changing trafficLightPosition without ' +
+        ' px below the lights. Changing trafficLightPosition without ' +
         'changing the inset is exactly the case this binds: apart, each number looks sensible.',
     ).toBeGreaterThanOrEqual((y ?? 0) + LIGHTS_PLUS_GAP);
   });

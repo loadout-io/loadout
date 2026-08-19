@@ -108,7 +108,7 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
   return (
     <div
       data-strip
-      className="flex h-14 w-full shrink-0 items-center gap-[18px] border-b border-line bg-panel px-[18px]"
+      className="glass flex h-13 w-full shrink-0 items-center gap-[18px] border-b border-line px-[18px]"
     >
       {/* `items-end`: bloki stoją na jednej linii z dołu, a etykiety pod nimi. Wyrównanie do
           góry rozjeżdża je, gdy jedna etykieta jest dłuższa i łamie się. */}

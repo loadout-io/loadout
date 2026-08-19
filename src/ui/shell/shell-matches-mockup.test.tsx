@@ -52,16 +52,30 @@ function property(body: string, name: string): string {
 /** Etykiety przełączników z `<nav class="nav">` makiety, w kolejności wystąpienia. */
 function mockupNavLabels(html: string): readonly string[] {
   const nav = /<nav class="nav">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? '';
-  return [...nav.matchAll(/<button[^>]*data-go="[^"]*"[^>]*>\s*<span>([^<]*)<\/span>/g)].map(
+  /* `[\s\S]*?` miedzy przyciskiem a etykieta, bo od T-46 przed nia stoi GLIF
+   * (`<span class="ico">`). Stara wersja wymagala `<span>` NATYCHMIAST po znaczniku przycisku
+   * i po wstawieniu glifu zwracala pusta liste — czyli test melodwal „no nav buttons were read"
+   * na kodzie, ktory byl poprawny. Wzorzec `<span>` bez atrybutow trafia w etykiete, nie w glif. */
+  return [...nav.matchAll(/<button[^>]*data-go="[^"]*"[\s\S]*?<span>([^<]*)<\/span>/g)].map(
     (hit) => hit[1]?.trim() ?? '',
   );
 }
 
 /** Etykiety przełączników z wyrenderowanej powłoki, w kolejności wystąpienia. */
 function shellNavLabels(markup: string): readonly string[] {
-  return [
-    ...markup.matchAll(/<button[^>]*data-section-switch="[^"]*"[^>]*>([^<]*)<\/button>/g),
-  ].map((hit) => hit[1]?.trim() ?? '');
+  /* Etykieta jest OSTATNIM `<span>` przycisku, bo od T-46 przed nia stoi glif. Stara wersja
+   * brala tekst stojacy WPROST miedzy znacznikami przycisku i po owinieciu etykiety w `<span>`
+   * zwracala piec pustych napisow — czyli test padal na kodzie, ktory byl poprawny, i to samo
+   * zdarzylo sie po stronie makiety. Oba parsery pytaja teraz o to samo: „ktore slowo jest
+   * etykieta tego przelacznika". */
+  return [...markup.matchAll(/<button[^>]*data-section-switch="[^"]*"[\s\S]*?<\/button>/g)].map(
+    (hit) => {
+      const spans = [...(hit[0] ?? '').matchAll(/<span[^>]*>([^<]*)<\/span>/g)]
+        .map((span) => (span[1] ?? '').trim())
+        .filter((text) => text !== '');
+      return spans[spans.length - 1] ?? '';
+    },
+  );
 }
 
 const html = fileText(MOCKUP);
@@ -84,7 +98,13 @@ describe('the shell layout agrees with the mockup, and the mockup is the oracle'
         wanted,
     ).toBe(2);
 
-    const rendered = /style="([^"]*grid-template-columns[^"]*)"/.exec(markup)?.[1] ?? '';
+    /* JEDNA WLASCIWOSC, nie caly atrybut `style` — poprawione w T-46. Stara wersja brala caly
+     * atrybut, wiec dzialala wylacznie dopoki niosl on dokladnie jedna deklaracje; od chwili,
+     * gdy powloka dodala `padding` i `gap`, porownywala jedna wlasciwosc makiety z trzema
+     * naszymi i padala na kodzie, ktory byl poprawny. Obie strony sa teraz czytane tym samym
+     * pytaniem: „co ta regula mowi o `grid-template-columns`". */
+    const style = /style="([^"]*)"/.exec(markup)?.[1] ?? '';
+    const rendered = property(style, 'grid-template-columns');
     expect(
       rendered,
       'the rendered shell declares no grid-template-columns at all, so nothing says the nav ' +

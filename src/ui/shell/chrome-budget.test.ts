@@ -79,6 +79,32 @@ function childTags(markup: string): readonly string[] {
   return out;
 }
 
+/**
+ * Własny górny odstęp kontenera powłoki. TRZECI SKŁADNIK, dopisany 2026-08-19 (T-46).
+ *
+ * Do tej pory ta suma brała wyłącznie RODZEŃSTWO stojące nad `<main>`. To było zupełne dopóki
+ * kontener nie miał własnego odstępu — a odkąd kartki PŁYWAJĄ, ma go: osiem pikseli nad kartką
+ * treści jest chrome dokładnie tak samo jak pasek, tylko nie jest niczyim rodzeństwem i nie ma
+ * `height`, więc dla poprzedniej wersji było niewidzialne.
+ *
+ * Czego ta strona pomiaru wciąż NIE widzi, powiedziane wprost, bo pomiar z nieopisaną granicą
+ * jest gorszy niż jego brak. Po pierwsze: kart workspace ani paska loadoutu — one stoją WEWNĄTRZ
+ * `<main>`, a granica tego pomiaru jest w rodzeństwie kontenera i tylko tam (patrz akapit na
+ * początku pliku). Dziś rodzeństwa nad treścią nie ma wcale, więc ta suma to w praktyce sam
+ * odstęp kontenera. Po drugie: obrysu kartki treści. Jest on zadeklarowany klasą (`paper`),
+ * a nie liczbą w markupie, więc z renderu nie da się go odczytać. Wszystkie cztery składniki
+ * liczy strona MAKIETY —
+ * `floating-pane-fits-the-ceiling.test.ts` — która czyta obie wartości z reguł CSS i osobnym
+ * punktem wymaga, żeby powłoka deklarowała ten sam odstęp co makieta. Dwie strony jednego faktu,
+ * każda mierząca to, co naprawdę widzi.
+ */
+function declaredInsetTop(tag: string): number {
+  const padding = /(?:^|[;"])\s*padding:\s*(\d+)px/.exec(tag);
+  if (padding !== null) return Number(padding[1]);
+  const top = /(?:^|[;"])\s*padding-top:\s*(\d+)px/.exec(tag);
+  return top === null ? 0 : Number(top[1]);
+}
+
 /** Zadeklarowana wysokość elementu, albo `null`, gdy element jej nie podaje. */
 function declaredHeight(tag: string): number | null {
   const found = /(?:^|[;"])\s*(?:min-)?height:\s*(\d+)px/.exec(tag);
@@ -121,12 +147,17 @@ describe('the nav spends none of the chrome budget', () => {
         'Give it a declared height or take it out of the chrome.',
     ).toEqual([]);
 
-    const spent = above.reduce((total, tag) => total + (declaredHeight(tag) ?? 0), 0);
+    const spent =
+      above.reduce((total, tag) => total + (declaredHeight(tag) ?? 0), 0) +
+      declaredInsetTop(containerTag(markup));
     expect(
       spent,
       'the shell spends ' +
         String(spent) +
-        ' px above the first content and §7 allows ' +
+        ' px above the first content — siblings standing above <main> plus the container inset ' +
+        'of ' +
+        String(declaredInsetTop(containerTag(markup))) +
+        ' px — and §7 allows ' +
         String(ceiling) +
         '. Tabs (34) and the loadout bar (56) already claim 90 of it, so the ' +
         'six that are left are the whole negotiating room. §7 says another bar means removing ' +

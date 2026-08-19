@@ -17,7 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { CHROME_INSET_TOP, NAV_WIDTH, SideNav } from './titlebar';
+import { CHROME_INSET_TOP, NAV_WIDTH, PANE_GAP, SideNav } from './titlebar';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -213,13 +213,22 @@ describe('the window opens with clean chrome and the dev address is the one we s
   it('leaves the lights their room above the brand', () => {
     const y = at(only, 'trafficLightPosition', 'y');
     const room = typeof y === 'number' ? y + LIGHTS_PLUS_GAP : Number.POSITIVE_INFINITY;
+    /* DWA UKLADY WSPOLRZEDNYCH, poprawione w T-46. `CHROME_INSET_TOP` jest odstepem LOKALNYM
+     * dla kartki nawigacji, a wymog swiatel jest GLOBALNY dla okna. Dopoki kartka zaczynala sie
+     * w punkcie (0,0) okna, te dwie liczby byly tym samym i asercja na samym `CHROME_INSET_TOP`
+     * dzialala. Odkad kartka PLYWA o `PANE_GAP` nizej, roznia sie dokladnie o ten odstep —
+     * i to on jest brakujacym skladnikiem, nie zmiana wymogu. */
     expect(
-      CHROME_INSET_TOP,
-      'the top inset of the nav has to clear the lights: trafficLightPosition.y plus ' +
+      PANE_GAP + CHROME_INSET_TOP,
+      'the brand has to clear the lights measured in WINDOW coordinates: the pane floats ' +
+        String(PANE_GAP) +
+        ' px down and then insets its own content by ' +
+        String(CHROME_INSET_TOP) +
+        ', and the lights need trafficLightPosition.y plus ' +
         String(LIGHTS_PLUS_GAP) +
         ' px, which is ' +
         String(room) +
-        ' here. Below that the brand sits under the lights and cannot be read',
+        ' here. Below that the brand sits under the lights and cannot be read.',
     ).toBeGreaterThanOrEqual(room);
     expect(
       occurrences(markup, 'padding-top:' + String(CHROME_INSET_TOP) + 'px'),

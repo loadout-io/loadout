@@ -42,7 +42,11 @@ import type { WorkspaceTab } from '../../../state/run-tabs';
 import { Tab } from './tab';
 
 /** Wysokość paska kart: 34 z 96 px budżetu chrome (ARCHITECTURE §7). */
-export const TAB_BAR_HEIGHT = 34;
+/* 34 -> 32 (T-46). Plywajaca kartka nawigacji dokladа wlasny odstep do budzetu chrome
+ * z ARCHITECTURE §7, wiec dwa paski nad trescia musialy oddac po dwa piksele:
+ * 8 (odstep okna) + 1 (obrys kartki tresci) + 32 (karty) + 52 (pasek) = 93 przy sufi 96.
+ * §7 mowi wprost, ze kolejny pasek wymaga usuniecia innego, nie podniesienia limitu. */
+export const TAB_BAR_HEIGHT = 32;
 
 export interface TabBarProps {
   /** Karty w kolejności, w jakiej mają stać. */
