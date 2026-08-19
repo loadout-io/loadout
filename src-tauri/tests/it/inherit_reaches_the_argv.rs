@@ -133,7 +133,10 @@ fn times(argv: &[PathBuf], flag: &str) -> usize {
 
 /// Wartość stojąca **zaraz za** flagą.
 fn value_after<'a>(argv: &'a [PathBuf], flag: &str) -> Option<&'a Path> {
-    let at = argv.iter().position(|arg| *arg == PathBuf::from(flag))?;
+    // Porównanie z `Path`, nie z `PathBuf::from(flag)` — dokładnie tak, jak dwie linie wyżej
+    // w `times`. Ta sama równość, a `checks/full-clippy.sh` biegnie `--all-targets -- -D warnings`,
+    // więc alokacja na jedno porównanie ląduje w bramce, nie tutaj (`clippy::cmp_owned`).
+    let at = argv.iter().position(|arg| *arg == Path::new(flag))?;
     argv.get(at + 1).map(PathBuf::as_path)
 }
 
