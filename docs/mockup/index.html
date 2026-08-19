@@ -152,15 +152,20 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
   height:52px;display:flex;align-items:center;gap:18px;padding:0 18px;
   background:var(--panel);border-bottom:1px solid var(--line);
 }
-.blocks{display:flex;gap:8px;align-items:flex-end}
+/* JEDEN SZKLANY TOREK, nie cztery luzne znaczki. Kapsula jest ksztaltem, ktory ten jezyk
+   powtarza, a pasek jest jedynym miejscem, gdzie go pokazuje w chrome. */
+.blocks{display:flex;gap:8px;align-items:flex-end;padding:5px 8px;border-radius:999px;
+  background:rgba(255,255,255,0.045);
+  -webkit-backdrop-filter:saturate(135%) blur(30px);backdrop-filter:saturate(135%) blur(30px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.10)}
 /* Blok skaluje się do swojej etykiety — inaczej „research" nachodzi na „build". */
 .blk{min-width:38px;display:grid;gap:5px;justify-items:stretch}
-.blk s{display:block;width:100%;height:8px;background:var(--muted);text-decoration:none}
+.blk s{display:block;width:100%;height:8px;border-radius:999px;background:var(--muted);text-decoration:none}
 .blk[data-s="todo"] s{background:transparent;border:1px solid var(--line-strong)}
-.blk[data-s="now"] s{background:var(--accent)}
+.blk[data-s="now"] s{background:var(--live)}
 .blk em{font-family:var(--mono);font-size:11px;font-style:normal;color:var(--muted);
   letter-spacing:.04em;text-align:center;white-space:nowrap}
-.blk[data-s="now"] em{color:var(--accent)}
+.blk[data-s="now"] em{color:var(--live)}
 .strip .title{font-size:15px;font-weight:600;color:var(--ink)}
 .strip .sub{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .strip .sp{margin-left:auto;display:flex;gap:8px;align-items:center}
@@ -176,7 +181,7 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
 .tab[data-on]{background:var(--panel);color:var(--ink);font-weight:700;box-shadow:inset 0 2px var(--accent)}
 /* Karta w tle z żywym biegiem ma kropkę. To JEDYNA rzecz, jaką o sobie mówi —
    bez niej zapominasz, że coś ci chodzi w innym folderze, i płacisz za to limitem. */
-.tab .d{width:6px;height:6px;border-radius:9999px;background:var(--accent);
+.tab .d{width:6px;height:6px;border-radius:9999px;background:var(--live);
   animation:blip 1.4s steps(2,end) infinite;flex:0 0 auto}
 .tab .d.idle{background:var(--line-strong);animation:none}
 .tab .x{margin-left:3px;color:var(--muted);font-size:13px;line-height:1}
@@ -237,7 +242,15 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
   color:var(--attend);font-family:var(--mono);font-size:12px;font-weight:700}
 
 /* STREFA 2 — TERAZ. Stała wysokość. Nadpisywana. Nie wchodzi do historii. */
+/* JEDEN ZYWY REGION NA JEDEN FAKT (niezmiennik 13). Fakt brzmi „cos sie teraz dzieje" —
+   nie „ten agent pisze", bo tego dane nie niosa. Kropka pulsuje, jest coralowa i jest jedyna
+   barwna rzecza w tej strefie; nie ma jej, kiedy nie ma wierszy. */
 .now{background:var(--panel);border-top:1px solid var(--line);padding:9px 0 7px}
+.now .head{display:flex;align-items:center;gap:7px;padding:0 18px 4px}
+.now .head i{width:6px;height:6px;border-radius:9999px;background:var(--live);
+  animation:blip 1.4s steps(2,end) infinite;flex:0 0 auto}
+.now .head em{font-style:normal;font-size:11px;font-weight:600;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted)}
 .now .row{display:grid;grid-template-columns:76px 1fr auto;gap:12px;align-items:baseline;padding:3px 18px}
 .now .row .a{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.05em}
 .now .row .v{font-family:var(--mono);font-size:13px;color:var(--ink)}
@@ -269,7 +282,7 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
 .card{display:grid;grid-template-columns:22px minmax(0,1fr);gap:9px;padding:9px 10px;text-align:left;
   background:transparent;border:1px solid var(--line)}
 .card:hover{border-color:var(--line-strong)}
-.card[data-live] {background:var(--raised);border-color:var(--line-strong);box-shadow:inset 2px 0 var(--accent)}
+.card[data-live] {background:var(--raised);border-color:var(--line-strong);box-shadow:inset 2px 0 var(--live)}
 .card .sq{width:22px;height:22px;display:grid;place-items:center;font-family:var(--mono);
   font-size:11px;font-weight:700;color:var(--ink)}
 .card b{display:block;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink);letter-spacing:.05em}
@@ -388,7 +401,7 @@ body[data-notes] .anchor{outline:1px dashed #4a3a22;outline-offset:2px}
    Rozmycie zdejmujemy razem z przejrzystoscia — rozmywanie krycącego tla kosztuje GPU i nie
    zmienia ani jednego piksela. */
 @media (prefers-reduced-transparency:reduce){
-  .nav,.strip,.rail{background:var(--solid);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .nav,.strip,.rail,.blocks{background:var(--solid);-webkit-backdrop-filter:none;backdrop-filter:none}
   .app{background-image:none}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -476,8 +489,8 @@ body[data-notes] .anchor{outline:1px dashed #4a3a22;outline-offset:2px}
             <div class="ln done"><span class="g">✓</span><span class="t">Research done</span><span class="m">3 agents · 12 files · 1m 40s</span></div>
 
             <div class="ln rule"><span class="t">Build</span></div>
-            <div class="ln"><span class="g">→</span><span class="t"><span class="who" style="color:var(--id-3)">Forge</span>Read 6 files</span><span class="m"><button class="exp">+</button></span></div>
-            <div class="ln"><span class="g">→</span><span class="t"><span class="who" style="color:var(--id-3)">Forge</span>Edited <code>src/parser.rs</code></span><span class="m">+42 −8</span></div>
+            <div class="ln"><span class="g"></span><span class="t"><span class="who" style="color:var(--id-3)">Forge</span>Read 6 files</span><span class="m"><button class="exp">+</button></span></div>
+            <div class="ln"><span class="g"></span><span class="t"><span class="who" style="color:var(--id-3)">Forge</span>Edited <code>src/parser.rs</code></span><span class="m">+42 −8</span></div>
             <div class="ln bad"><span class="g">✕</span><span class="t"><span class="who" style="color:var(--id-1)">Needle</span>Ran tests — didn't work</span><span class="m">3 of 40</span></div>
             <div class="detail">parser_handles_quoted_commas ... FAILED
   expected 4 fields, got 3
@@ -505,6 +518,7 @@ parser_rejects_ragged_rows ...... FAILED</div>
 
           <!-- STREFA 2: teraz -->
           <div class="now" id="nowblk">
+            <div class="head"><i></i><em>Now</em></div>
             <div class="row"><span class="a" style="color:var(--id-3)">Forge</span><span class="v">writing <code>src/parser.rs</code></span><span class="n">42s</span></div>
             <div class="row"><span class="a" style="color:var(--id-1)">Needle</span><span class="v">waiting on Forge</span><span class="n">—</span></div>
             <div class="row"><span class="a" style="color:var(--id-2)">Rivet</span><span class="v">waiting on Needle</span><span class="n">—</span></div>

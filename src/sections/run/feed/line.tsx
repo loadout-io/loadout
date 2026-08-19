@@ -69,12 +69,14 @@ export function Line({ row, onToggle }: LineProps): ReactElement {
             mieszka (`rail/say.ts`) — drugi warunek `kind === 'told'` tutaj byłby drugą odpowiedzią
             na to samo pytanie (niezmiennik 13).
 
-            Kolor `--accent`, ten sam, co znak zachęty `❯` w wierszu wejścia: zdanie ma czytać się
-            jako pochodzące z tego pola, w które je wpisałeś. Nazwa adresata zostaje w SWOIM
-            kolorze tożsamości, żeby było widać, do kogo to poszło. */}
+            Kolor `--human` od 2026-08-19, wcześniej `--accent`. Ten wiersz odpowiada na pytanie
+            „co zrobiła osoba, a nie maszyna", i dokładnie na to pytanie odpowiada `--human`;
+            akcent od T-45 znaczy wyłącznie „to jest interaktywne", a Twoje zdanie nie jest
+            kontrolką. Nazwa adresata zostaje w SWOIM kolorze tożsamości, żeby było widać,
+            do kogo to poszło. */}
         {authorityOf(row.kind) === 'you' ? (
           <>
-            <span className="mr-1 font-mono text-mono-strong text-accent">You →</span>
+            <span className="mr-1 font-mono text-mono-strong text-human">You →</span>
             <span
               className="mr-2 font-mono text-mono-strong"
               style={{ color: `var(${identityToken(row.agent)})` }}
