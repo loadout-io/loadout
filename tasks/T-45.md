@@ -78,11 +78,16 @@ Niczego. To jest korzen fali.
 - `docs/design/house-values.json` — **nowy**, migawka wartosci domu.
 - `src/styles/fonts/hanken-grotesk.woff2`, `src/styles/fonts/jetbrains-mono.woff2` — **nowe**.
 - `src/ui/shell/type-ladder.test.ts` — przepisanie jednego punktu tej wyroczni.
+- **Trzy komponenty, ktore niosa nadoczka sekcji** — `src/sections/run/rail/rail.tsx`,
+  `src/sections/run/session/session.tsx`, `src/sections/memory/index.tsx`. Waski mandat: cztery
+  miejsca przechodza z `text-label` na `text-eyebrow` i trzy tracz `uppercase` wpisane z palca.
+  Ani jednej innej zmiany w tych plikach. Bez tego rozszczepienie drabinki jest MARTWE i szkodliwe
+  naraz — patrz AC-6.
 - `src/ui/shell/palette.test.ts` — dwie listy strazy rosna razem z paleta. `rounded-lg`
   i `shadow-lg` przechodza z listy „obce" na „nasze", bo pasmo domu uzywa DOKLADNIE tych nazw;
   w ich miejsce wchodza `rounded-3xl` i `shadow-2xl`, ktore obce pozostaja. Do listy pozytywnej
   dochodza `bg-live`, `text-eyebrow`, `rounded-md`, `shadow-md`.
-- Piec plikow testow wymienionych przy `check:`.
+- Szesc plikow testow wymienionych przy `check:`.
 
 **Czego to zadanie NIE dotyka:** ani jednego komponentu `.tsx` poza testami, ani jednego pliku
 w `src-tauri/**`, ani `docs/DECISIONS-LOCKED.md`. Stare nazwy promieni **zyja**: `--radius-sq`
@@ -218,6 +223,41 @@ test, ktory po zmianie porownuje dwa puste napisy, jest zielony i nic nie sprawd
 o `--text-eyebrow`. Przechodzi, a jednoczesnie zdejmuje ochrone z dwoch regul, ktore MAJA
 zostac w wersalikach — bo nikt ich juz nie sadzi.
 
+## AC-6 Stopien nadoczka ma nosniki, a wersaliki nie sa wpisane z palca
+check: npx --no-install vitest run src/ui/shell/eyebrow-has-carriers.test.ts
+expect: (\d+) passed
+
+**To kryterium dopisala DRUGA OPINIA, a nie zaden z pieciu pozostalych, i to jest cala jego
+historia.** Zmierzone 2026-08-19 na gotowym, ZIELONYM zestawie: `theme.css` skasowal
+`.text-label { text-transform: uppercase }` spod 42 uzyc `text-label`, a `--text-eyebrow` mial
+ZERO nosnikow w komponentach. Skutek: makieta dalej zadala `AGENTS`, aplikacja rysowala `Agents`,
+bramka byla zielona, i nic tego nie zglaszalo.
+
+To jest dokladnie awaria z niezmiennika 25, ktora ten plik cytuje trzy razy: deklaracja skasowana
+spod niezmigrowanych powierzchni, ktora nie rzuca wyjatku i nie pojawia sie w zadnym logu.
+Pasmo promieni dostalo na to alias. Rozszczepienie drabinki aliasu dostac NIE MOZE — z klasy
+`text-label` nie da sie odczytac, czy stoi na nadoczku sekcji, czy na etykiecie pola — wiec
+zamiast aliasu ma to kryterium.
+
+Asercje: (a) skaner odwiedzil wiecej niz 20 plikow produkcyjnych, bo inaczej nic nie zmierzyl;
+(b) `--text-eyebrow` ma **co najmniej jeden** nosnik — stopien, ktorego nikt nie niesie, jest
+martwy, a punkt sadzacy sam arkusz jest wtedy spelniony klasa, ktora nie jest napisany zaden
+ekran; (c) **zaden `<h2>`/`<h3>` w kodzie produkcyjnym nie nosi `text-label`** — naglowek nie
+jest etykieta, wiec stopien etykiety nie ma prawa na nim stac; (d) zaden komponent nie ma
+`uppercase` wpisanego z palca, bo druga kopia jednego faktu (niezmiennik 13) przezywa zmiane
+stopnia po cichu — i wlasnie tak trzy naglowki zachowaly wersaliki w tym zadaniu, gdy dwa inne
+je stracily i nic nie zzielenialo na czerwono; (e) skaner rozwija stale klas
+(`className={ZONE_TITLE}`), sprawdzone sonda — bez tego trzy naglowki strefy w Memory sa dla
+niego niewidoczne i punkt (c) jest zielony na dziurze.
+
+Punkt (c) jest tym, ktory lapie prawdziwy defekt, i dlatego jest sformulowany o SEMANTYCE,
+nie o wygladzie: `rail.tsx` niosl `<h2 className="... text-label ...">Agents</h2>`. Taki naglowek
+czyta sie poprawnie dokladnie tak dlugo, jak dlugo oba stopnie wygladaja jednakowo — a w chwili
+rozszczepienia zmienia wyglad i nie ma czego zapytac.
+
+*Slaba wersja:* asercja, ze `--text-eyebrow` istnieje w arkuszu. Dokladnie to sprawdza juz AC-5
+i dokladnie to bylo zielone, gdy aplikacja przestala krzyczec.
+
 <!-- OWNS
 src/styles/theme.css
 src/styles/fonts/hanken-grotesk.woff2
@@ -232,4 +272,8 @@ src/styles/fonts-are-really-here.test.ts
 src/styles/mirror-sees-alpha-too.test.ts
 src/styles/radius-aliases-still-resolve.test.ts
 src/ui/shell/eyebrow-carries-the-capitals.test.ts
+src/ui/shell/eyebrow-has-carriers.test.ts
+src/sections/run/rail/rail.tsx
+src/sections/run/session/session.tsx
+src/sections/memory/index.tsx
 -->
