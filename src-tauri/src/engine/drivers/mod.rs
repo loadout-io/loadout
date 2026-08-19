@@ -32,6 +32,10 @@ use super::supervisor::{GroupId, GroupProof};
 /// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
 pub mod absent;
 pub mod claude;
+/// Reguły `deny` repo gospodarza, przepisane do nas jako **tekst**, nigdy jako maszyneria.
+/// Sąsiad `claude.rs`, nie część rdzenia: `.claude/settings.json` to kształt jednego vendora,
+/// a ten plik nie zna ani jednego.
+pub mod host;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///
