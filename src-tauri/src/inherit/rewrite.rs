@@ -149,6 +149,20 @@ pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Re
 /// poprawny (niezmiennik 20).
 #[must_use]
 pub fn plugin_argv(rewritten: &Rewritten) -> Vec<String> {
-    let _ = rewritten;
-    Vec::new()
+    // `names`, nie `dir`: ścieżka jest znana zawsze, także wtedy, gdy nic po niej nie leży.
+    // Pytanie „czy jest co odziedziczyć" ma dokładnie jedną odpowiedź w tym typie i to jest ta.
+    if rewritten.names.is_empty() {
+        return Vec::new();
+    }
+
+    let dir = rewritten.dir.to_string_lossy();
+    if dir.is_empty() {
+        // Flaga bez wartości połknęłaby następną flagę sterownika jako swój argument. Kształt
+        // „pusty argument jest poprawny" istnieje w tym samym argv — `--setting-sources ""`
+        // z sąsiedniego zadania — i pomylenie tych dwóch jest realne, więc pusta wartość nie
+        // wychodzi stąd nigdy: bez ścieżki nie ma flagi.
+        return Vec::new();
+    }
+
+    vec!["--plugin-dir".to_owned(), dir.into_owned()]
 }
