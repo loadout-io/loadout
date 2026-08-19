@@ -55,9 +55,16 @@ Nad widokiem pracy siedzi pasek — wybrany workflow jako ciąg bloków, jeden n
  plan  bada  pisze sprawdza
 ```
 
-- Blok skończony: wypełniony, `--ink-muted`
-- Blok aktywny: wypełniony `--accent`, jedyny nasycony element na ekranie
+- Blok skończony: wypełniony, `--muted`
+- Blok aktywny: wypełniony `--live`, jedyny nasycony element na ekranie
 - Blok czekający: obrys `--line`, puste wnętrze
+- Segmenty stoją w **jednym szklanym torku** o promieniu kapsuły; nie są czterema luźnymi
+  znaczkami. Liczba segmentów bierze się z liczby kroków w danych — **nie ma paska
+  procentowego, bo kroki to nie procenty.**
+
+> `--ink-muted` w poprzedniej wersji tego akapitu nie istniał jako token ani jednego dnia,
+> a `--accent` od 2026-08-19 znaczy „to jest interaktywne" i nic więcej. Segment paska jest
+> odczytem, nie kontrolką.
 
 Pasek jest jednocześnie nawigacją: klik w blok pokazuje historię tego kroku.
 Nie ma paska postępu w procentach. Kroki to nie procenty.
@@ -388,7 +395,20 @@ Siatka `88px 1fr auto`. Padding `8px 16px`. Bez obramowania między wierszami �
 Kolumna 1: nazwa agenta, `--t-mono-strong`, kolor agenta.
 Kolumna 2: co robi, `--t-stream`, `--ink`.
 Kolumna 3: liczba/czas, `--t-mono`, `--muted`.
-Wiersz aktywny: lewy pasek `inset 2px 0 --accent`. Wiersz skończony: `opacity 0.55`.
+Wiersz skończony: `opacity 0.55`.
+
+**Strefa „teraz" ma dokładnie jeden żywy region na jeden fakt** (niezmiennik 13, limit 1):
+pulsującą kropkę w `--live` z nadoczkiem `Now`. Fakt brzmi „coś się teraz dzieje", a **nie**
+„ten konkretny agent pisze" — tego dane nie niosą, bo `NowRow` to `{ agent, text }`, a kto
+pracuje, a kto czeka, jest treścią zdania. Wyprowadzanie tego w widoku przez szukanie słowa
+`waiting` w napisie wymyśliłoby fakt (niezmiennik 17) i postawiło politykę „kto co robi” drugi
+raz, w komponencie (niezmiennik 23). Kropki nie ma wcale, kiedy nie ma wierszy.
+
+> **Reguła formy, powtórzona tu, bo tu się jej łamie.** `--live` występuje wyłącznie jako
+> podkład aktywnego wiersza i jego obrys, aktywny segment paska, pulsująca kropka i kropka
+> karty w tle. `--fail` wyłącznie jako glif `✕`, obrys chipa i lewa krawędź bloku błędu.
+> Te dwie barwy różnią się odcieniem o ~13°, więc kształt jest jedyną rzeczą, która je
+> rozróżnia — a kształt znaczący oba nie znaczy żadnego. Rozłączność jest sprawdzana statycznie.
 
 ### `history-line` — zwinięty krok
 Siatka `20px 1fr auto`. Padding `6px 16px`. `--t-body`. Znacznik `✓` w `--muted`.
@@ -481,7 +501,8 @@ Komponent nie trafia do repo, dopóki:
 - [ ] nie ma w kodzie ani jednego literału hex, px rozmiaru czcionki ani `border-radius` innego niż token
 - [ ] focus jest widoczny z klawiatury i wygląda tak samo we wszystkich kontrolkach
 - [ ] wygląda poprawnie przy szerokości okna 1100px (najwęższe wspierane)
-- [ ] nie używa `--accent` do niczego poza „teraz" i interakcją
+- [ ] nie używa `--accent` do niczego poza interakcją — „teraz" to `--live`
+- [ ] `--live` i `--fail` nie dzielą w nim ani jednej formy
 - [ ] nie dodaje piątego koloru semantycznego
 - [ ] `prefers-reduced-motion` go nie psuje
 - [ ] żaden tekst w nim nie jest w mono, jeśli nie jest wartością maszynową

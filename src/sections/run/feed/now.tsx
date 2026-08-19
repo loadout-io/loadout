@@ -18,11 +18,40 @@ import type { NowZone } from './model';
 
 export interface NowProps {
   now: NowZone;
+  /**
+   * Czy bieg NAPRAWDE zyje.
+   *
+   * Bramkowanie zywego regionu sama liczba wierszy bylo defektem znalezionym przez druga opinie:
+   * `doing` w `feed/model.ts` jest tylko DOPISYWANE i nigdy nie czyszczone, wiec po zakonczeniu
+   * biegu strefa dalej trzymala trzy wiersze („waiting on Forge") i dalej pulsowala coralem —
+   * czyli mowila „dzieje sie" o czyms, co stoi, i wydawala jeden z dwoch regionow animujacych
+   * z ARCHITECTURE §7 na fakt falszywy przez wiekszosc czasu.
+   *
+   * Ten fakt mieszka w wywolujacym i tylko tam (niezmiennik 13).
+   */
+  live: boolean;
 }
 
-export function Now({ now }: NowProps): ReactElement {
+export function Now({ now, live }: NowProps): ReactElement {
   return (
-    <div data-now className="shrink-0 rounded-sq bg-panel py-2">
+    <div data-now className="glass shrink-0 rounded-md py-2">
+      {/* JEDEN ZYWY REGION NA JEDEN FAKT (niezmiennik 13, limit 1). Fakt brzmi „cos sie teraz
+          dzieje" — nie „ten konkretny agent pisze", bo tego danych nie ma: `NowRow` to
+          `{ agent, text }`, a kto pracuje, a kto czeka, jest trescia zdania. Wyprowadzanie tego
+          w widoku przez szukanie slowa `waiting` wymyslilo by fakt (niezmiennik 17) i postawilo
+          polityke „kto co robi" drugi raz, w komponencie (niezmiennik 23).
+
+          Kropka pulsuje i jest coralowa — jest jednym z dwoch regionow, ktorym ARCHITECTURE §7
+          pozwala sie ruszac, i jedyna rzecza w tej strefie, ktora niesie barwe. Nie ma jej wcale,
+          kiedy nie ma wierszy: coral, ktory swieci przy pustej strefie, przestaje cokolwiek
+          znaczyc. */}
+      {live && now.rows.length > 0 ? (
+        <div className="flex items-center gap-[7px] px-4 pb-1">
+          <span aria-hidden className="size-1.5 animate-blip rounded-dot bg-live" />
+          <span className="text-eyebrow text-muted">Now</span>
+        </div>
+      ) : null}
+
       {now.rows.map((row) => (
         /* Siatka `stream-line` z DESIGN §6: `88px 1fr auto`. Trzecia kolumna zostaje pusta —
            czas trwania mieszka na pasku loadoutu i nigdzie indziej (niezmiennik 13). */

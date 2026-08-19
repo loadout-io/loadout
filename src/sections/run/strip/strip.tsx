@@ -87,7 +87,10 @@ export interface StripProps {
  */
 const BLOCK: Readonly<Record<Block['state'], string>> = {
   done: 'bg-muted',
-  now: 'bg-accent',
+  /* CORAL, nie akcent, od 2026-08-19. T-45 rozszczepil token: `--accent` znaczy „to jest
+   * interaktywne", `--live` znaczy „to sie dzieje teraz". Segment paska jest odczytem, nie
+   * kontrolka, wiec nalezy mu sie drugi z nich. */
+  now: 'bg-live',
   todo: 'border border-line-strong',
 };
 
@@ -100,7 +103,7 @@ const ENDED = 'border-dashed';
 /** Etykieta bloku: akcent tylko pod krokiem, który biegnie (makieta `.blk[data-s="now"] em`). */
 const LABEL: Readonly<Record<Block['state'], string>> = {
   done: 'text-muted',
-  now: 'text-accent',
+  now: 'text-live',
   todo: 'text-muted',
 };
 
@@ -125,11 +128,15 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
     >
       {/* `items-end`: bloki stoją na jednej linii z dołu, a etykiety pod nimi. Wyrównanie do
           góry rozjeżdża je, gdy jedna etykieta jest dłuższa i łamie się. */}
-      <div className="flex shrink-0 items-end gap-2">
+      {/* JEDEN SZKLANY TOREK, nie cztery luzne znaczki. Kapsula jest ksztaltem, ktory ten
+          jezyk powtarza, a pasek jest jedynym miejscem, gdzie go pokazuje w chrome. `data-blocks`
+          niesie tylko ten kontener — po nim kryterium pyta o material i promien. */}
+      <div data-blocks className="glass flex shrink-0 items-end gap-2 rounded-pill px-2 py-[5px]">
         {strip.blocks.map((block) => (
           <span key={block.id} className="grid min-w-[38px] gap-[5px] justify-items-stretch">
             <span
-              className={`h-2 w-full rounded-sq ${BLOCK[block.state]} ${block.ended ? ENDED : ''}`}
+              data-block={block.state}
+              className={`h-2 w-full rounded-pill ${BLOCK[block.state]} ${block.ended ? ENDED : ''}`}
             />
             {/* Mono 11 bez wersalików — etykieta kroku jest jego nazwą, a nie nazwą pola,
                 więc nie `text-label` (ten stopień jest w tym repo wersalikami). */}

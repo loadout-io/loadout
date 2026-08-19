@@ -9,8 +9,15 @@
  * jasności motywu. Rozróżnia asercja o NIEOBECNOŚCI elementu dla trzeciej karty, nie o jego
  * stylu: `toBe(0)`, nie „ma inny kolor".
  *
- * Druga połowa jest o słowniku kolorów. Kropka bierze `--accent`, bo accent znaczy „teraz"
- * (DESIGN §3), a karta nieaktywna nie ma prawa do żadnego z pozostałych trzech kolorów stanu:
+ * Druga połowa jest o słowniku kolorów. Kropka bierze `--live`, bo TO on znaczy „teraz".
+ *
+ * PRZEPISANE 2026-08-19 (T-47), nie skasowane. Do T-45 ten punkt żądał `--accent` i uzasadniał
+ * się zdaniem „accent znaczy teraz" — a T-45 to zdanie unieważnił: `--accent` odpowiada wyłącznie
+ * na „to jest interaktywne", a „teraz" dostało własny token. Kropka na karcie w tle nie jest
+ * kontrolką; jest odczytem, i to jedynym, jaki ta karta o sobie robi. Zostawiona tak, jak była,
+ * ta wyrocznia broniłaby reguły, której DESIGN.md już nie stawia.
+ *
+ * Karta nieaktywna nadal nie ma prawa do żadnego z pozostałych trzech kolorów stanu:
  * `--attend` pyta „co czeka na moją decyzję", `--fail` mówi „zepsute", `--human` znaczy „zrobił
  * to człowiek". Karta w tle mówi o sobie dokładnie jedno zdanie i żadne z tych trzech nim nie
  * jest (ARCHITECTURE §6a reguła 4).
@@ -106,7 +113,7 @@ describe('the dot that says an agent is working in this folder', () => {
     ).toBe(0);
   });
 
-  it('takes its colour from the one that means now', () => {
+  it('takes its colour from the one that means now, which is no longer the accent', () => {
     const cases: readonly (readonly [WorkspaceTab, boolean])[] = [
       [WATCHED, true],
       [BACKGROUND, false],
@@ -120,13 +127,20 @@ describe('the dot that says an agent is working in this folder', () => {
           ', otherwise there is nothing whose colour could be asked about',
       ).not.toBe('');
       expect(
+        /\blive\b/.test(dot),
+        'the dot in ' +
+          workspace.name +
+          ' answers one question — what is happening right now — and since 2026-08-19 there is a ' +
+          'colour whose whole job is that answer. A colour spelled out in the component instead ' +
+          'of named would also put a fifth meaning on a palette that has room for four.',
+      ).toBe(true);
+      expect(
         /\baccent\b/.test(dot),
         'the dot in ' +
           workspace.name +
-          ' answers one question — what is happening right now — and that is what accent means ' +
-          '(DESIGN §3). A colour spelled out in the component instead of named would also put ' +
-          'a fifth meaning on a palette that has room for four',
-      ).toBe(true);
+          ' carries the accent, which now means "this is interactive" and nothing else. The dot ' +
+          'is a readout: it says a run is alive in a folder you are not looking at.',
+      ).toBe(false);
     }
   });
 

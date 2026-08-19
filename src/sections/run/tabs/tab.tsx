@@ -95,8 +95,11 @@ export function Tab({ workspace, active, onSelect, onClose }: TabProps): ReactEl
             nie przejście — DESIGN §7 zabrania płynnego pulsowania wprost, bo czyta się jak
             oddychanie i oko goni ruch zamiast czytać. Wyłączenie przy `prefers-reduced-motion`
             robi jeden blok na końcu tamtego pliku, dla całej aplikacji naraz. */}
+        {/* CORAL, nie akcent, od 2026-08-19: ta kropka odpowiada na pytanie „co się dzieje
+            teraz", a nie „co jest klikalne" (T-45 rozszczepił token). Jest jednym z dwóch
+            regionów, którym ARCHITECTURE §7 pozwala się ruszać. */}
         {workspace.agents > 0 ? (
-          <span data-live-dot className="size-1.5 shrink-0 animate-blip rounded-dot bg-accent" />
+          <span data-live-dot className="size-1.5 shrink-0 animate-blip rounded-dot bg-live" />
         ) : null}
         {workspace.name}
       </button>

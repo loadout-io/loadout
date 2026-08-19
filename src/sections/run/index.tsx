@@ -434,7 +434,7 @@ export default function Run(): ReactElement {
               onAnswer={runFeed.answer}
               onJumpToNewest={runFeed.jumpToNewest}
             />
-            <Now now={view.now} />
+            <Now now={view.now} live={running} />
             <Entry
               onOpenFolder={openFolder}
               onStopRun={running ? stopRun : null}
