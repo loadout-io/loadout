@@ -28,6 +28,9 @@ pub mod commands;
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
 
+/// Dziedziczenie wiedzy repo gospodarza: tekst, nigdy maszyneria. Wypelnia T-54.
+pub mod inherit;
+
 /// Granica z oknem: pompa sklejajaca i kanal do webviewa. Wypelnia T-07.
 pub mod ipc;
 
