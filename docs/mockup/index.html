@@ -114,9 +114,16 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
   box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 12px 32px rgba(0,0,0,.35);
   display:flex;flex-direction:column;padding:36px 8px 10px}
 .brand{display:flex;align-items:center;gap:10px;padding:0 8px 16px}
-.mark{width:22px;height:22px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;transform:rotate(45deg)}
-.mark i{background:var(--line-strong)} .mark i:nth-child(1),.mark i:nth-child(4){background:var(--accent)}
-.brand b{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--ink);letter-spacing:.1em}
+/* ZNAK: najmniejszy PRAWDZIWY graf — jedno wejscie, dwie rownolegle galezie, jedna synteza.
+   Cztery luzne kwadraty (do 2026-08-19) nie maja krawedzi, wiec nie maja relacji, wiec nie sa
+   grafem. W chrome znak jest NEUTRALNY: akcent znaczy „to jest interaktywne", a znak wisi tu
+   takze wtedy, kiedy nic nie chodzi. */
+.mark{width:22px;height:22px;display:block;flex:0 0 auto}
+.mark path{fill:none;stroke:var(--muted);stroke-width:1.25;stroke-linecap:round}
+.mark circle{fill:var(--body)}
+/* LOGOTYP malymi literami, Hanken Grotesk 600, ciasny tracking — tak jak `murmur` w repo obok.
+   Mono w tym systemie znaczy „to wyprodukowala maszyna"; nazwa produktu jest jezykiem ludzkim. */
+.brand b{font-family:var(--ui);font-size:15px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .nav button{
   width:100%;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;
   padding:7px 10px;border:1px solid transparent;border-radius:9px;background:transparent;
@@ -424,8 +431,12 @@ body[data-notes] .anchor{outline:1px dashed #4a3a22;outline-offset:2px}
   <!-- ══ nawigacja ══ -->
   <nav class="nav">
     <div class="brand">
-      <span class="mark"><i></i><i></i><i></i><i></i></span>
-      <b>LOADOUT</b>
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3.7 12 L12 5.1 M3.7 12 L12 18.9 M12 5.1 L20.3 12 M12 18.9 L20.3 12"/>
+        <circle cx="3.7" cy="12" r="1.95"/><circle cx="12" cy="5.1" r="1.95"/>
+        <circle cx="12" cy="18.9" r="1.95"/><circle cx="20.3" cy="12" r="2.15"/>
+      </svg>
+      <b>loadout</b>
     </div>
     <button data-go="work" aria-current="page"><span class="ico"><svg viewBox="0 0 16 16"><path d="M4 3.6 L12.6 8 L4 12.4 Z"/></svg></span><span>Run</span><span class="badge" id="nb" hidden>1</span></button>
     <button data-go="flows"><span class="ico"><svg viewBox="0 0 16 16"><circle cx="3.6" cy="8" r="1.7"/><circle cx="12.4" cy="4.2" r="1.7"/><circle cx="12.4" cy="11.8" r="1.7"/><path d="M5.3 8 L10.7 4.2 M5.3 8 L10.7 11.8"/></svg></span><span>Workflows</span></button>

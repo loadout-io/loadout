@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- RYSUNEK 16 px. Jedna barwa tla, jedna barwa tematu, ANI JEDNEGO gradientu: przy 16 px
+       kazdy gradient jest jednym pikselem szarosci. Krawedzie 96 (przy 16 px to 1,5 px, czyli
+       najmniej, co jeszcze widac), wezly 104. Squircle w tej samej proporcji co dwa wieksze. -->
+  <defs>
+    <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="1024" height="1024" fill="#161436"/>
+    <g fill="none" stroke="#cdc2ff" stroke-width="96" stroke-linecap="round">
+      <path d="M252 512 L512 376"/>
+      <path d="M252 512 L512 648"/>
+      <path d="M512 376 L772 512"/>
+      <path d="M512 648 L772 512"/>
+    </g>
+    <circle cx="252" cy="512" r="104" fill="#cdc2ff"/>
+    <circle cx="512" cy="376" r="104" fill="#cdc2ff"/>
+    <circle cx="512" cy="648" r="104" fill="#cdc2ff"/>
+    <circle cx="772" cy="512" r="112" fill="#ffffff"/>
+  </g>
+</svg>

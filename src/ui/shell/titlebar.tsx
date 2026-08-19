@@ -23,6 +23,7 @@
 import type { ReactElement } from 'react';
 import type { Section } from '../sections';
 import { SECTIONS } from '../sections';
+import { Mark } from '../brand/mark';
 import { NavIcon } from './nav-icons';
 import { FIRST_SECTION, useSectionStore } from './section-store';
 import { NavWorkspaces } from './workspace-switcher';
@@ -94,19 +95,6 @@ export interface SideNavProps {
   section?: Section;
 }
 
-/* Znak marki: cztery kwadraty obrócone o 45°, dwa z nich w akcencie. Prosto z makiety
- * (`.mark`), bo to jedyny element tożsamości, jaki ta aplikacja ma. */
-function Mark(): ReactElement {
-  return (
-    <span aria-hidden className="grid size-[22px] rotate-45 grid-cols-2 grid-rows-2 gap-[2px]">
-      <i className="bg-accent" />
-      <i className="bg-line-strong" />
-      <i className="bg-line-strong" />
-      <i className="bg-accent" />
-    </span>
-  );
-}
-
 export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement {
   return (
     <nav
@@ -117,7 +105,11 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
     >
       <div className="flex items-center gap-[10px] px-2 pb-4">
         <Mark />
-        <b className="font-mono text-mono-strong text-ink">LOADOUT</b>
+        {/* LOGOTYP MAŁYMI LITERAMI od 2026-08-19. `LOADOUT` w monospace z rozstrzeleniem
+            `.12em` było cytatem z terminala, nie logotypem: mono w tym systemie znaczy „to
+            wyprodukowała maszyna", a nazwa produktu jest językiem ludzkim. Dom pisze `murmur`
+            dokładnie tak — Hanken Grotesk 600, ciasny tracking. */}
+        <b className="text-heading text-ink">loadout</b>
       </div>
 
       {/* PRZEŁĄCZNIK ZAKRESU STOI MIĘDZY ZNAKIEM A LISTĄ SEKCJI, i ta kolejność jest treścią,

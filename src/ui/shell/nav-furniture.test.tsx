@@ -113,10 +113,21 @@ const appMarkup = renderToStaticMarkup(<App section="run" screens={{}} />);
 
 describe('the nav carries the brand and the status, and the lights cover neither', () => {
   it('carries the mark and the word LOADOUT, with the mark first', () => {
-    expect(navMarkup, 'the nav does not carry the product name at all').toContain('LOADOUT');
+    /* PRZEPISANE 2026-08-19 (T-49). Do tej pory ten punkt zadal napisu `LOADOUT` i znaku
+     * `rotate-45`. Oba przestaly istniec: logotyp jest MALYMI LITERAMI w kroju jezyka ludzkiego
+     * (mono w tym systemie znaczy „to wyprodukowala maszyna"), a znak jest najmniejszym
+     * PRAWDZIWYM grafem — cztery luzne kwadraty nie mialy krawedzi, wiec nie byly grafem.
+     * Punkt sadzi to samo pytanie: czy nawigacja niesie marke i czy znak stoi PRZED slowem. */
+    expect(navMarkup, 'the nav does not carry the product name at all').toContain('loadout');
+    expect(
+      /LOADOUT/.test(navMarkup),
+      'the logotype shouts in capitals again. Capitals with wide tracking in a monospace face are ' +
+        'a quotation from a terminal, not a logotype: mono in this system means "a machine ' +
+        'produced this", and the product name is human language.',
+    ).toBe(false);
 
-    const markAt = navMarkup.indexOf('rotate-45');
-    const wordAt = navMarkup.indexOf('LOADOUT');
+    const markAt = navMarkup.indexOf('<svg');
+    const wordAt = navMarkup.indexOf('loadout');
     expect(
       markAt,
       'the mark is gone. It is four squares turned 45°, straight from `.mark` in the mockup, ' +

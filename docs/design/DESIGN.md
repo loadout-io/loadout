@@ -43,31 +43,107 @@ sam z siebie — projekt jest złamany.
 
 ---
 
-## 2. Podpis wizualny: pasek loadoutu
+## 2. Marka i podpis wizualny
+
+### Znak: najmniejszy prawdziwy graf
+
+Jedno wejście, dwie równoległe gałęzie, jedna synteza. Cztery węzły, cztery krawędzie.
+
+To nie jest ozdoba dobrana do nazwy. To **dwie z pięciu rzeczy z decyzji D6**, których żaden
+vendor nie zbuduje, bo nie ma w tym interesu: odpalić kilku agentów naraz i zebrać ich wyniki
+w jeden. Wnętrze aplikacji ma niezmiennik 17 — „UI nie rysuje relacji, których nie ma w danych" —
+więc marka, która **jest** najmniejszym grafem prawdziwym, jest jedynym ornamentem, na jaki ten
+produkt ma prawo.
+
+Do 2026-08-19 znak był czterema luźnymi kwadratami obróconymi o 45°. Cztery luźne kwadraty nie
+mają krawędzi, więc nie mają relacji, więc nie są grafem. Nowy znak dokłada dokładnie dwie
+rzeczy: **krawędzie i kierunek.**
+
+| | |
+|---|---|
+| Siatka | 24 × 24 |
+| Węzły | `3,7·12` · `12·5,1` · `12·18,9` · `20,3·12` |
+| Promień | 1,95; węzeł syntezy **2,15** (+10%, bo z wielu wychodzi jedno) |
+| Krawędź | 1,25, zakończenia okrągłe |
+| Stosunek | średnica węzła do grubości linii **3,1 : 1** |
+| Sylwetka | romb 16,6 × 13,8 — **szerszy niż wysoki** |
+
+Stosunek 3,1 : 1 jest liczbą, na której ten znak stoi: przy 2,4 : 1 węzeł czyta się jako
+zgrubienie linii i cały znak zamyka się w pierścień (zmierzone na 176 px). Romb jest szerszy niż
+wysoki, bo graf płynie w poziomie — symetryczny czytałby się jak karo.
+
+**W chrome znak jest neutralny**: węzły `--body`, krawędzie `--muted`. Ani akcentu, ani coralu.
+Akcent znaczy „to jest interaktywne", coral „to się dzieje teraz", a znak wisi w nawigacji także
+wtedy, kiedy nic nie chodzi i nic nie jest klikalne.
+
+Krawędzie brały najpierw `--line-strong`, czyli biel 16%. **Rodzina `--line-*` jest obramowaniem**
+— rysuje włos na krawędzi szkła — a krawędzie tego znaku są jego tematem, nie ramką wokół niego.
+Zmierzone na wyrenderowanej powłoce przy 22 px, w jedynym rozmiarze, w jakim znak stoi
+w aplikacji: linia 1,25 px w bieli 16% na panelu daje około 1,7 : 1 kontrastu, czyli nie czyta się
+wcale, a znak wraca do czterech kropek — czyli do tego, czym był stary znak i czym miał przestać
+być. Wartość z rodziny tekstu czyta się, a hierarchia zostaje ta sama, bo `--muted` jest
+ciemniejsze od `--body`: węzły nad krawędziami.
+
+### Ikona: trzy rysunki, nie jeden przeskalowany
+
+Przepis 1:1 z systemu, z którego wzięliśmy wartości: squircle `rx=232` na płótnie 1024, radialne
+tło indygo, sheen zanikający na 34% wysokości, temat wyśrodkowany, ostra krawędź wewnętrzna
+w bieli 10%. Dwie nasze aplikacje mają w Docku wyglądać na rodzeństwo.
+
+| Rozmiar | Rysunek |
+|---|---|
+| 1024 / 512 / 256 / 128 | pełny |
+| 32 | krawędzie grubsze, węzły jednolitą barwą, bez sheenu i bez krawędzi wewnętrznej |
+| 16 | sylwetka i cztery kropki, jedna barwa |
+
+Przy 32 px cztery krawędzie po 38 jednostek mierzą niecały 1,2 px i zlewają się w plamę, a sheen
+i krawędź wewnętrzna operują na 0,1 px. **`.icns` jest zestawem, nie skalowaniem** — ikona, która
+mydli się na pasku Docka, jest pierwszą rzeczą, jaką człowiek widzi o jakości aplikacji.
+
+Źródłem prawdy są trzy pliki SVG w `docs/branding/`. PNG-i i `.icns` są z nich **generowane**
+(`scripts/icons.sh`, przez `qlmanage` → `sips` → `iconutil`), więc nie ma dwóch rysunków tej samej
+rzeczy. Gradienty mieszkają wyłącznie tam — poza `src/`, gdzie żaden literał barwy nie ma prawa
+stanąć.
+
+**Przepis jest deterministyczny i to jest zmierzone**: 2026-08-19 pełne przebudowanie dało pięć
+plików bajt w bajt identycznych z tymi, które leżą w repo (md5 przed i po). Dlatego pochodzenie
+rastrów sprawdza się jednym uruchomieniem skryptu i `git status`, a nie okiem. W bramce tego nie
+ma z premedytacją: `qlmanage` wymaga sesji graficznej i skanowania Gatekeepera, a bramka ma chodzić
+bez okna. Zamiast tego bramka pilnuje **wieku**: `.icns` młodszy od każdego z trzech rysunków
+i od samego skryptu.
+
+### Logotyp
+
+`loadout` — **małymi literami, zawsze.** Hanken Grotesk 600, ciasny tracking, `--ink`, nigdy
+w akcencie. Podpis: **many agents, one plan**.
+
+`LOADOUT` w monospace z rozstrzeleniem `.12em` było cytatem z terminala, nie logotypem: mono
+w tym systemie znaczy „to wyprodukowała maszyna", a nazwa produktu jest językiem ludzkim. Podpis
+nie dokłada ani jednego terminu do słownika — `agent` i `plan` już są w interfejsie.
+
+Plik `docs/branding/loadout-logo.svg` **niesie krój w sobie**, jako `data:`. Wymóg brzmi „logotyp
+nie ma prawa po cichu spaść na inny krój", a powód jest zmierzony w tym repo: `theme.css`
+deklarował Intera od pierwszego dnia i rysował się krojem systemowym przez całe życie repo, bez
+ani jednego błędu w konsoli.
+
+### Podpis wizualny: pasek loadoutu
 
 Nazwa aplikacji pochodzi z gier: loadout to zestaw, który kompletujesz **przed** wyjściem w teren.
-To jest jedyny ozdobny element w całej aplikacji i jedyne miejsce, gdzie wolno nam być efektowni.
-
 Nad widokiem pracy siedzi pasek — wybrany workflow jako ciąg bloków, jeden na krok:
 
 ```
-▓▓▓▓  ▓▓▓▓  ░░░░  ░░░░      Exact-diff delivery · krok 2 z 4
+▓▓▓▓  ▓▓▓▓  ████  ░░░░      Exact-diff delivery · krok 3 z 4
  plan  bada  pisze sprawdza
 ```
 
 - Blok skończony: wypełniony, `--muted`
 - Blok aktywny: wypełniony `--live`, jedyny nasycony element na ekranie
-- Blok czekający: obrys `--line`, puste wnętrze
+- Blok czekający: obrys `--line-strong`, puste wnętrze
 - Segmenty stoją w **jednym szklanym torku** o promieniu kapsuły; nie są czterema luźnymi
   znaczkami. Liczba segmentów bierze się z liczby kroków w danych — **nie ma paska
   procentowego, bo kroki to nie procenty.**
 
-> `--ink-muted` w poprzedniej wersji tego akapitu nie istniał jako token ani jednego dnia,
-> a `--accent` od 2026-08-19 znaczy „to jest interaktywne" i nic więcej. Segment paska jest
-> odczytem, nie kontrolką.
-
 Pasek jest jednocześnie nawigacją: klik w blok pokazuje historię tego kroku.
-Nie ma paska postępu w procentach. Kroki to nie procenty.
 
 ---
 
