@@ -21,7 +21,7 @@
 //! instalacja kopiuje je przez `fs::copy` (bit wykonywalności `scripts/run.sh`). Instalacja
 //! złożona z tego, co przyszło z okna, gubiłaby te pliki po cichu.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::skills::ingest::{
     self, FILE_CAP, FetchError, Finding, Import, Reviewed, Target, Verdict, Weight,
 };
-use crate::skills::{Error, Roots, Scope, Skill};
+use crate::skills::{Error, Roots, Scope, Skill, SkillDoc};
 
 /// Kopie kanoniczne wewnątrz biblioteki: `~/.loadout/skills/<name>/`
 /// (`docs/ARCHITECTURE.md` §8).
@@ -43,6 +43,14 @@ const INCOMING_DIR: &str = "incoming";
 
 /// Nazwa pliku umiejętności. Ta sama po obu stronach pobrania.
 const SKILL_FILE: &str = "SKILL.md";
+
+/// Plik, w którym Loadout notuje, skąd wzięła się umiejętność o danej nazwie.
+///
+/// Leży OBOK kopii kanonicznych, w tym samym katalogu, co sidecar instalacji — bo to jest zapis
+/// Loadouta o umiejętnościach, a nie plik którejkolwiek z nich. Powód, dla którego nie może
+/// stać ani w środku katalogu umiejętności, ani w `installed.json`, stoi przy
+/// [`remember_origin`].
+const ORIGINS_FILE: &str = "origins.json";
 
 /// Ile bajtów odmowy `curl`-a czytamy, zanim przestaniemy. Zdanie dla człowieka ma się zmieścić
 /// w jednej linii, a `--show-error` tyle właśnie produkuje; sufit jest po to, żeby wywrócony
@@ -130,9 +138,12 @@ impl From<&Import> for ImportWire {
             summary: import.skill.description.clone(),
             reviewed: ReviewWire::from(&import.reviewed),
             scripts: import.scripts,
-            // Wszystko, co przechodzi przez [`review_skill_inner`], przyszło z sieci — to jest
-            // jedyna droga, którą coś tu wchodzi. Znacznik jest trwały, więc jego wartość nie
-            // ma prawa zależeć od tego, czy okno ją odesłało.
+            // OSTROŻNY DOMYŚLNY, i to jest jedyne pole tej struktury, którego nie ma w pliku.
+            // Do 2026-08-19 była to prosta prawda: [`review_skill_inner`] był jedyną drogą,
+            // którą cokolwiek tu wchodziło. Od chwili, w której [`author_skill_inner`] też
+            // buduje `ImportWire`, ta przesłanka przestaje obowiązywać — więc ta konwersja
+            // trzyma stronę bezpieczną (znacznik zastępuje podpisy, których v1 nie ma), a droga
+            // formularza nadpisuje ją JAWNIE, bo tylko ona wie o pochodzeniu więcej niż plik.
             from_the_internet: true,
         }
     }
@@ -281,11 +292,15 @@ pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
 /// Zdejmuje katalog, jeżeli tam jest. Brak katalogu to **nie** jest awaria.
 ///
 /// Osobna funkcja, bo pobranie robi to dwa razy — raz na katalogu roboczym, raz na kopii
-/// kanonicznej — a „nie ma go, czyli już jest zdjęty" napisane dwa razy to dwie okazje, żeby raz
-/// pomylić kierunek porównania i zacząć wywracać się na pierwszym imporcie każdej umiejętności.
-fn gone(dir: &Path) -> Result<(), FetchError> {
+/// kanonicznej — a droga formularza trzeci; „nie ma go, czyli już jest zdjęty" napisane trzy razy
+/// to trzy okazje, żeby raz pomylić kierunek porównania i zacząć wywracać się na pierwszym
+/// imporcie każdej umiejętności.
+///
+/// Zwraca `std::io::Error`, a nie enum jednej z dróg: obie umieją go przyjąć przez `From`, więc
+/// `?` w każdej z nich zachowuje przyczynę bez przepisywania jej przez `to_string()`.
+fn gone(dir: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(dir) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(FetchError::Io(error)),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
 }
@@ -372,7 +387,20 @@ pub fn review_skill_inner(library: &Path, url: &str) -> Result<ImportWire, Fetch
     // treści ani razu.
     let import = ingest::from_folder(&incoming)?;
 
-    let canonical = library.join(SKILLS_DIR).join(&import.skill.name);
+    // ODMOWA NAZWY PRZED PIERWSZYM `remove_dir_all`, i to jest naprawa defektu istniejącego
+    // dziś na trunku, osiągalnego z okna: do 2026-08-19 stała tu jedna linia licząca ścieżkę
+    // z pola `name` pobranego pliku. `SKILL.md` bez tego pola daje `Skill::default()`, czyli
+    // `name: ""`, czyli ścieżkę `<biblioteka>/skills/` — a `gone()` niżej kasuje wtedy WSZYSTKIE
+    // kopie kanoniczne razem z `installed.json`. `name: ../../x` wychodzi poza bibliotekę.
+    // Obie drogi wejścia liczą tę samą ścieżkę i oddają ją temu samemu `gone()`, więc obie
+    // pytają teraz tę samą funkcję.
+    //
+    // `FetchError` nie ma wariantu na „nazwa nie przechodzi walidacji" i nie dostanie go tutaj:
+    // `skills/mod.rs` nie należy do tego zadania (AGENTS.md §7). Zdanie walidatora jedzie więc
+    // w `Io` — jedynym wariancie niosącym cudzy tekst — i ląduje na ekranie słowo w słowo, bo
+    // `ipc.rs` woła na tym `to_string()`.
+    let canonical = canonical_for(library, &import.skill.name)
+        .map_err(|refused| FetchError::Io(std::io::Error::other(refused.to_string())))?;
     gone(&canonical)?;
     if let Some(parent) = canonical.parent() {
         std::fs::create_dir_all(parent)?;
@@ -399,11 +427,71 @@ pub fn review_skill_inner(library: &Path, url: &str) -> Result<ImportWire, Fetch
 /// ma zostać nazwany zdaniem rdzenia, a nie zdaniem wymyślonym tutaj drugi raz.
 #[must_use]
 pub fn slug_of(typed: &str) -> String {
-    // SZKIELET (T-42, faza kontraktu). Zwraca wejście nietknięte, czyli trywialnie złą
-    // odpowiedź: „Review pull requests" nie jest nazwą katalogu i `place::validate_strict`
-    // powie o niej dokładnie to. Implementacja podmienia ciało, nie sygnaturę.
-    typed.to_owned()
+    let mut slug = String::with_capacity(typed.len());
+
+    // `to_lowercase`, nie `to_ascii_lowercase`: wersalik spoza ASCII ma zejść do małej litery,
+    // ZANIM zapytamy, czy umiemy go zapisać. Inaczej „Śledzenie zmian" gubi pierwszą literę
+    // i katalog nazywa się `ledzenie-zmian` — czyli nie tak, jak nazwał go człowiek.
+    for character in typed.to_lowercase().chars() {
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            slug.push(character);
+        } else if let Some(letters) = without_accent(character) {
+            slug.push_str(letters);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            // Wszystko inne jest GRANICĄ SŁOWA, nie znakiem do zapisania: odstęp, przecinek,
+            // półpauza, a także litera pisma, którego nie umiemy przepisać. Warunek pilnuje
+            // obu reguł `is_slug` naraz — ani łącznika wiodącego, ani podwójnego.
+            slug.push('-');
+        }
+    }
+
+    // Łącznik końcowy bierze się z interpunkcji zamykającej („Ship it — fast, safely!"),
+    // a `is_slug` odrzuca go tak samo jak wiodący.
+    slug.trim_end_matches('-').to_owned()
 }
+
+/// Ta sama litera zapisana po ASCII — albo `None`, kiedy nie umiemy jej przepisać.
+///
+/// DLACZEGO TABLICA, A NIE ROZKŁAD UNICODE. Rozkład kanoniczny (NFD plus zdjęcie znaków
+/// łączących) to zależność na `unicode-normalization` i odpowiedź na pytanie szersze niż to,
+/// które tu stoi. Tu wystarczy: polskie dziewięć, bo w tym języku napisane jest to repo, i jeden
+/// ciągły blok Latin-1 Supplement, bo kosztuje pięć zakresów.
+///
+/// Litera spoza tej listy jest granicą słowa, a nie znakiem wyrzuconym po cichu: nazwa złożona
+/// wyłącznie z takich liter daje pusty slug i kończy się ODMOWĄ walidatora, zamiast katalogiem
+/// o nazwie, w której człowiek nie rozpozna tego, co wpisał.
+fn without_accent(character: char) -> Option<&'static str> {
+    // Jedna gałąź na literę WYJŚCIOWĄ, nie na wejściową: polskie i te z Latin-1 stoją obok
+    // siebie, bo `clippy::match_same_arms` czyta dwie gałęzie o tym samym ciele jako powtórzenie.
+    // Zakresy pokrywają całe bloki Latin-1 (`à`–`å`, `è`–`ë`, `ì`–`ï`, `ò`–`ö`, `ù`–`ü`), więc
+    // polskie `ó` siedzi w jednym z nich i nie ma własnej pozycji.
+    Some(match character {
+        'ą' | 'à'..='å' => "a",
+        'ć' | 'ç' => "c",
+        'ę' | 'è'..='ë' => "e",
+        'ì'..='ï' => "i",
+        'ł' => "l",
+        'ń' | 'ñ' => "n",
+        'ò'..='ö' | 'ø' => "o",
+        'ś' => "s",
+        'ù'..='ü' => "u",
+        'ý' | 'ÿ' => "y",
+        'ź' | 'ż' => "z",
+        // Dwuznaki: jedna litera na wejściu, dwie na wyjściu.
+        'ß' => "ss",
+        'æ' => "ae",
+        _ => return None,
+    })
+}
+
+/// Opis-zastępnik na czas pytania o samą nazwę.
+///
+/// `place::validate_strict` odpowiada o CAŁYM dokumencie, a [`canonical_for`] pyta o jeden człon
+/// ścieżki. Bez tego pola do odmowy o nazwie dołączałoby „Missing required field in frontmatter:
+/// description" — zdanie o czymś, o co nikt tutaj nie pytał, i którego człowiek stojący nad
+/// pierwszym polem formularza nie ma jak naprawić. Ten napis nie jedzie ani na ekran, ani do
+/// pliku: wchodzi do walidatora i wychodzi razem z jego odpowiedzią.
+const NAME_ONLY: &str = "asked about the name and nothing else";
 
 /// `<biblioteka>/skills/<name>` — albo odmowa, **zanim** cokolwiek zostanie skasowane.
 ///
@@ -425,9 +513,19 @@ pub fn slug_of(typed: &str) -> String {
 /// `0-9` i łącznika — więc „jeden człon ścieżki" wychodzi z tej samej reguły, a nie z drugiej,
 /// napisanej obok.
 pub fn canonical_for(library: &Path, name: &str) -> Result<PathBuf, Error> {
-    // SZKIELET (T-42, faza kontraktu). Liczy dokładnie to, co dziś liczy `review_skill_inner`
-    // w jednej linii — i nie odmawia niczego, czyli zachowuje dzisiejszy defekt. Kryterium
-    // AC-1 (c) mierzy właśnie tę odmowę, więc jest czerwone.
+    // Dokument, w którym jedyną rzeczą wartą zakwestionowania jest nazwa. Nazwa katalogu i pole
+    // `name` to ten sam napis, więc reguła „katalog musi zgadzać się z nazwą" nie ma tu o czym
+    // mówić — a to jest jedyna reguła walidatora, która pyta o dwie rzeczy naraz.
+    let doc = SkillDoc {
+        fields: vec![
+            ("name".to_owned(), name.to_owned()),
+            ("description".to_owned(), NAME_ONLY.to_owned()),
+        ],
+        body: String::new(),
+    };
+    crate::skills::place::validate_strict(name, &doc)
+        .map_err(|messages| Error::Invalid { messages })?;
+
     Ok(library.join(SKILLS_DIR).join(name))
 }
 
@@ -449,22 +547,61 @@ pub fn canonical_for(library: &Path, name: &str) -> Result<PathBuf, Error> {
 /// - **wnętrze katalogu umiejętności.** `ingest::bundled_files` zabiera **każdego** sąsiada
 ///   `SKILL.md`, więc znacznik położony obok niego pojechałby do katalogów vendorów jako plik
 ///   dołączony umiejętności — do żywej konfiguracji narzędzi człowieka.
-pub fn remember_origin(library: &Path, name: &str, from_the_internet: bool) -> Result<(), Error> {
-    // SZKIELET (T-42, faza kontraktu). ODMOWA, nie ciche `Ok(())`: funkcja, która melduje
-    // sukces i nie zapisuje nic, jest dokładnie tym kształtem, na który stoi niezmiennik 19 —
-    // fikstura AC-2 przeszłaby wtedy zasianie czterech źródeł i padła dopiero na asercji
-    // o czymś innym, a zdanie bramki mówiłoby o złym miejscu.
-    Err(Error::Invalid {
-        messages: vec![format!(
-            "nothing writes down yet that '{name}' {}, and {} holds no such record",
-            if from_the_internet {
-                "came from a link"
-            } else {
-                "was written here"
-            },
-            library.display()
-        )],
-    })
+///
+/// DLACZEGO `std::io::Result`, A NIE [`Error`]: zapisać ten wiersz nie da się wyłącznie wtedy,
+/// gdy nie da się napisać pliku, a wołają tę funkcję obie drogi wejścia — jedna niosąca
+/// [`Error`], druga [`FetchError`]. Oba te enumy umieją przyjąć `std::io::Error` przez `From`,
+/// więc `?` w każdej z nich zachowuje przyczynę. Własny wariant znaczyłby przepisanie zdania
+/// przez `to_string()` w jednej z dwóch.
+pub fn remember_origin(library: &Path, name: &str, from_the_internet: bool) -> std::io::Result<()> {
+    let path = origins_path(library);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Cały plik czytany i pisany na nowo. Wiersz per umiejętność w pliku dopisywanym końcem
+    // znaczyłby dwie odpowiedzi na jedno pytanie po drugim imporcie tej samej nazwy — a wtedy
+    // liczy się ta, którą czytelnik akurat znalazł pierwsza.
+    let mut record = Origins {
+        from_the_internet: origins_of(library),
+    };
+    record
+        .from_the_internet
+        .insert(name.to_owned(), from_the_internet);
+
+    let text = serde_json::to_string_pretty(&record).map_err(std::io::Error::other)?;
+    std::fs::write(&path, text + "\n")?;
+    Ok(())
+}
+
+/// Skąd wzięła się każda umiejętność, o której cokolwiek zapisaliśmy.
+///
+/// `#[serde(default)]` plus domyślne ignorowanie nieznanych pól: plik zapisany przez nowszą
+/// wersję Loadouta ma się wczytać, a nie wywrócić bieg (niezmiennik 5).
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Origins {
+    /// Nazwa umiejętności → czy jej treść przyszła z sieci. `BTreeMap`, żeby `git diff` na tym
+    /// pliku pokazywał zmianę, a nie przetasowanie kluczy.
+    #[serde(default)]
+    from_the_internet: BTreeMap<String, bool>,
+}
+
+fn origins_path(library: &Path) -> PathBuf {
+    library.join(SKILLS_DIR).join(ORIGINS_FILE)
+}
+
+/// Co plik pochodzenia mówi o umiejętnościach w tej bibliotece.
+///
+/// Brak pliku, plik nieczytelny i plik o nieznanym kształcie dają ten sam wynik: pustą mapę.
+/// Nieobecność zapisu jest odpowiedzią, którą [`list_skills_inner`] umie obsłużyć ostrożnie,
+/// a błąd w tym miejscu zaczerwieniłby całą sekcję za brak pliku, którego wolno nie mieć —
+/// każda biblioteka starsza niż to zadanie go nie ma.
+fn origins_of(library: &Path) -> BTreeMap<String, bool> {
+    std::fs::read_to_string(origins_path(library))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Origins>(&text).ok())
+        .map(|record| record.from_the_internet)
+        .unwrap_or_default()
 }
 
 /// Trzy pola z formularza → ta sama droga, którą idzie wklejony link.
@@ -493,16 +630,67 @@ pub fn author_skill_inner(library: &Path, authored: Authored) -> Result<ImportWi
         body: authored.what_to_do,
         ..Skill::default()
     };
-    remember_origin(library, &skill.name, false)?;
 
-    // SZKIELET (T-42, faza kontraktu): ani `place::emit`, ani `ingest::from_folder`, ani
-    // jednego bajtu na dysku. Wszystkie cztery kryteria mierzą to, czego tu nie ma.
-    Err(Error::Invalid {
+    // ZŁÓŻ PLIK. `place::emit` jest tu dwiema rzeczami naraz i obie są potrzebne. Pierwsza: to
+    // on nadaje plikowi front-matter, więc `hooks:` wpisane przez człowieka w polu „co zrobić"
+    // przestaje być front-matterem i staje się zwykłym wierszem ciała — pole, które WYKONUJE
+    // kod, nie ma jak dojechać do vendora. Druga: pola zdjęte wychodzą z niego listą, a nie po
+    // cichu (`_stripped` nikt jeszcze nie czyta i to jest znalezisko zgłoszone w TASK.md, nie
+    // przeoczenie tutaj).
+    let (composed, _stripped) = crate::skills::place::emit(&skill);
+    let text = settled(&composed);
+
+    // ZAPISZ TO, CO PRZESKANOWANE. Kopia kanoniczna powstaje jednym plikiem, po zdjęciu tego,
+    // co zdejmuje normalizacja — więc bajty na dysku i bajty pokazane człowiekowi są jednym
+    // napisem, a nie dwoma, które ktoś kiedyś porówna.
+    gone(&canonical)?;
+    std::fs::create_dir_all(&canonical)?;
+    std::fs::write(canonical.join(SKILL_FILE), &text)?;
+
+    // PRZECZYTAJ Z DYSKU, tą samą funkcją, którą czyta pobranie. Znaleziska i werdykt, które
+    // zobaczy człowiek, mówią wtedy o bajtach, które naprawdę tam leżą — a nie o napisie, który
+    // mieliśmy w zmiennej (niezmiennik 20).
+    let import = ingest::from_folder(&canonical).map_err(|error| Error::Invalid {
+        // `Error` nie ma wariantu na „nie dało się odczytać tego, co właśnie zapisaliśmy" i nie
+        // dostanie go tutaj: `skills/mod.rs` nie należy do tego zadania (AGENTS.md §7). Zdanie
+        // rdzenia niesie przyczynę — najczęściej sufit rozmiaru pliku.
         messages: vec![format!(
-            "Loadout does not write a skill of its own yet, so {} was left alone",
-            canonical.display()
+            "Loadout saved this skill and could not read it back: {error}"
         )],
+    })?;
+
+    // Zapis pochodzenia PO zapisie treści: wiersz mówiący „napisana tutaj" o umiejętności,
+    // której nie ma na dysku, byłby zapisem o czymś, co się nie stało.
+    remember_origin(library, &import.skill.name, false)?;
+
+    Ok(ImportWire {
+        // JEDYNE POLE, KTÓRE TA DROGA WIE LEPIEJ od `From<&Import>`: treść wpisał człowiek
+        // w tym oknie, więc znacznik nie ma się palić. Wszystkie pozostałe pochodzą z pliku.
+        from_the_internet: false,
+        ..ImportWire::from(&import)
     })
+}
+
+/// Tekst, na którym normalizacja rdzenia nie ma już nic do zdjęcia.
+///
+/// 2026-08-19 — PĘTLA, NIE JEDNO WYWOŁANIE, i to jest własność `ingest::review`, nie ostrożność
+/// na zapas. Zdjęcie komentarza HTML **skleja** tekst przed nim z tekstem po nim, więc potrafi
+/// odsłonić otwarcie następnego, którego w wejściu nie było: `<!<!---->--` wychodzi z pierwszego
+/// przejścia jako `<!--`. Kopia kanoniczna ma trzymać dokładnie te bajty, które przeskanowaliśmy
+/// i pokazaliśmy człowiekowi — plik i `ImportWire::reviewed.body` są jedną rzeczą — a to jest
+/// prawdą tylko dla tekstu, na którym drugie przejście już nic nie zmienia.
+///
+/// Kończy się zawsze: przejście, które cokolwiek zmieniło, zwróciło tekst KRÓTSZY, bo
+/// normalizacja wyłącznie zdejmuje znaki i nigdy żadnego nie dokłada.
+fn settled(composed: &str) -> String {
+    let mut text = ingest::review(composed).body;
+    loop {
+        let again = ingest::review(&text).body;
+        if again == text {
+            return text;
+        }
+        text = again;
+    }
 }
 
 /// Zapisuje przejrzaną umiejętność w obu katalogach vendorów.
