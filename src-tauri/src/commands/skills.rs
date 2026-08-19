@@ -860,6 +860,29 @@ pub fn install_skill_into(
 ///
 /// Powód, dla którego ta sygnatura zostaje obok [`install_skill_into`], stoi
 /// przy [`list_skills_inner`].
+///
+/// # `checks/quick-wired.sh` ŚWIECI NA TĘ FUNKCJĘ I NIE MA SIĘ MYLIĆ — 2026-08-19
+///
+/// Ta skorupa nie ma produkcyjnego wołającego i mieć go nie będzie: produkcja wchodzi tu przez
+/// okno, a okno **zawsze** przysyła zakres, więc arność 2 nie odpowiada na żadne pytanie, które
+/// aplikacja zadaje. Żyje wyłącznie dlatego, że wołają ją trzy pliki testowe spoza bloku
+/// `<!-- OWNS -->` T-44 (`tests/it/ipc_read_paths.rs`, `tests/it/skills_author_origin.rs`,
+/// `tests/flow_skill.rs`), a dwa pierwsze są modułami TEGO SAMEGO celu, co kryteria T-44 —
+/// zmiana arności zamieniłaby je w „nie da się skompilować celu", czyli w podpis, którego bramka
+/// nie liczy jako czerwieni (AGENTS.md §2a pkt 5).
+///
+/// [`list_skills_inner`] i [`delete_skill_inner`] są dokładnie tym samym długiem i przechodzą
+/// ten check tylko dlatego, że proza `tasks/T-42.md` i `tasks/T-44.md` wymienia je **przypadkiem**.
+/// Ta jedna nie jest tam wymieniona, więc świeci — i to jest prawdziwa granica checka, nie wada
+/// tego kodu: nie umie odróżnić „mechanizm wylądował i nikt go nie zawołał" od „adapter zgodności
+/// dla testów, których to zadanie nie posiada".
+///
+/// DWIE DROGI WYJŚCIA I OBIE NALEŻĄ DO CZŁOWIEKA: wymienić tę nazwę w `tasks/T-44.md`, albo
+/// skasować tę skorupę i poprawić te trzy pliki testowe. Czego robić NIE WOLNO, a co przechodzi:
+/// dopisać wywołanie do komentarza (check pyta o wystąpienie napisu — AGENTS.md §20, „przechodził
+/// na komentarzu"), albo przepuścić tędy `Landing::Everywhere` z [`install_skill_into`]. To drugie
+/// wygląda niewinnie i jest gorsze: dokłada gałąź, która duplikuje w warstwie komend decyzję
+/// należącą do `place::plan` (niezmiennik 23), żeby sprawdzenie przestało patrzeć.
 pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
     install_skill_into(library, name, Landing::Everywhere, None)
 }
