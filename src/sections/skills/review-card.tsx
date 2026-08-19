@@ -88,13 +88,18 @@ export function ReviewCard({
         {/* Znacznik pochodzenia stoi na karcie i zostaje po instalacji. To jedyna rzecz tutaj,
             która mówi, że ten tekst napisał ktoś obcy.
 
-            SZKIELET (T-42, faza kontraktu): plakietka jest tu WPISANA NA SZTYWNO i ignoruje
-            `item.fromTheInternet`. Do 2026-08-19 była to prawda przez konstrukcję — jedyną
-            drogą, którą cokolwiek wchodziło do tej karty, było `review_skill(url)`, czyli link.
-            Zdanie o internecie stawiane nad WŁASNYM tekstem człowieka jest tym, co AC-4 mierzy,
-            więc dopóki nie stoi tu warunek, kryterium jest czerwone. Implementacja podmienia tę
-            jedną linię i nic więcej w tym pliku. */}
-        <span className={CHIP}>From the internet</span>
+            2026-08-19 — WARUNEK, BO DO TEGO DNIA PLAKIETKA BYŁA WPISANA NA SZTYWNO i ignorowała
+            `item.fromTheInternet`. Była to prawda przez konstrukcję: jedyną drogą, którą
+            cokolwiek wchodziło do tej karty, było `review_skill(url)`, czyli link. Od chwili,
+            w której człowiek może napisać umiejętność sam, to samo zdanie mówi o JEGO tekście,
+            że przyszedł od obcego — a plakietka zastępuje w v1 podpisy i weryfikację
+            pochodzenia, których nie ma. Zdanie zawsze prawdziwe nie niesie informacji; zdanie
+            czasem nieprawdziwe uczy je ignorować, i to jest droższe z dwojga.
+
+            Zgaszenie jej CAŁKIEM byłoby drugą połową tego samego defektu: umiejętność napisana
+            przez obcego przestałaby różnić się od napisanej ręką. Dlatego warunek, a nie
+            usunięcie. */}
+        {item.fromTheInternet ? <span className={CHIP}>From the internet</span> : null}
       </header>
 
       <p className="text-body text-body">{item.summary}</p>
