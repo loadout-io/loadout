@@ -376,6 +376,26 @@ pub struct RunSettings {
     path: PathBuf,
 }
 
+/// Cały dokument, który idzie na dysk — i **jedyny kształt**, w jakim może iść.
+///
+/// Typ zamiast `serde_json::json!` jest tu decyzją, nie gustem: „jeden klucz" przestaje być
+/// obietnicą w komentarzu i staje się faktem o typie. Do struktury z jednym polem nie da się
+/// dopisać `env` ani `hooks` **przez pomyłkę** — a przepisanie hurtem cudzego obiektu
+/// `permissions` jest właśnie taką pomyłką, która przechodzi każdy test pytający wyłącznie
+/// o zawartość `deny`.
+#[derive(Debug, Serialize)]
+struct SettingsDocument<'a> {
+    permissions: DenyOnly<'a>,
+}
+
+/// Jedyne pole gospodarza, które przechodzi przez granicę — i jedyne, które ta struktura zna.
+#[derive(Debug, Serialize)]
+struct DenyOnly<'a> {
+    /// Reguły w **podanej kolejności**: `&[String]` serializuje się jako tablica JSON, więc
+    /// kolejność jest tu tą samą kolejnością, którą podał wołający.
+    deny: &'a [String],
+}
+
 impl RunSettings {
     /// Zapisuje plik ustawień biegu w **podanym** katalogu i oddaje uchwyt do niego.
     ///
@@ -383,16 +403,27 @@ impl RunSettings {
     /// i wchodzą do dokumentu **w podanej kolejności**, bo lista odmów czytana przez człowieka
     /// przetasowana po drodze jest listą, której nikt nie potrafi zweryfikować.
     ///
-    /// **SZKIELET KONTRAKTU (2026-08-19): jeszcze nic nie pisze i oddaje `Err`.** `todo!()`
-    /// jest w tym repo zakazane (`todo = "deny"`), więc zaślepka kompiluje się i pada wartością
-    /// — dzięki temu AC-3 i AC-4 są czerwone z **asercji**, a nie z kompilatora.
+    /// Katalogu **nie zakłada** i miejsca sobie **nie wybiera**, dokładnie jak
+    /// [`Transcript::open`]: katalog biegu powstaje w warstwie, która zna układ
+    /// z `docs/ARCHITECTURE.md` §8, a sterownik ma tam dopisać plik. Wymyślone miejsce byłoby
+    /// `$TMPDIR`, czyli artefaktem biegu poza biegiem.
     pub fn write(dir: &Path, deny: &[String]) -> anyhow::Result<Self> {
-        Err(anyhow!(
-            "the run settings file is not written yet: {} rewritten deny rule(s) had nowhere to \
-             go, and {} does not exist",
-            deny.len(),
-            dir.join(RUN_SETTINGS_FILE).display()
-        ))
+        let path = dir.join(RUN_SETTINGS_FILE);
+
+        let document = SettingsDocument {
+            permissions: DenyOnly { deny },
+        };
+        let text = serde_json::to_string_pretty(&document)
+            .context("the rewritten deny rules could not be turned into a settings document")?;
+
+        std::fs::write(&path, text).with_context(|| {
+            format!(
+                "the run settings file could not be written at {}",
+                path.display()
+            )
+        })?;
+
+        Ok(Self { path })
     }
 
     /// Ścieżka zapisanego pliku — ta sama, którą dostaje `--settings`.
@@ -495,6 +526,7 @@ impl ClaudeDriver {
     /// | `--session-id <run_id>` \| `--resume <id>` | dokładnie jedno z dwóch, nigdy oba |
     /// | `--strict-mcp-config` | 73 narzędzia z 9 serwerów zostają za drzwiami [T1 korekta 4] |
     /// | `--setting-sources ""` | argument o **zerowej długości**; `"user,project"` w tym miejscu to izolacja, która nie działa |
+    /// | `--settings <ścieżka>` | [`RunSettings`], jeśli ten bieg go ma: nośnik przepisanego `deny`, **nie** izolacja — sumuje się z projektowym i nie gasi hooków [2026-08-19] |
     /// | `--permission-mode` + `--allowedTools` | z [`super::Policy`], jedną tabelą (niezmiennik 23) |
     /// | `--tools <lista>` | twarda biała lista **dostępności** z [`tools_for`]: czego na niej nie ma, tego proces nie ma pod ręką [2026-08-19] |
     ///
@@ -525,6 +557,27 @@ impl ClaudeDriver {
         }
 
         command.args(LEAN_CONTEXT);
+
+        // NOŚNIK NASZEGO `deny` I NIC POZA TYM. `--settings` **sumuje się** z ustawieniami
+        // projektowymi i **nie gasi** hooków, nawet podany z pustą listą `PreToolUse`
+        // [zmierzone 2026-08-19] — izolacją jest wyłącznie `--setting-sources` o zerowej
+        // długości argumentu, dwie linie wyżej. Dlatego ta flaga stoi TUŻ ZA tamtą i nigdzie
+        // indziej: kto ją zobaczy, ma najpierw przeczytać, że tamta zostaje jedna.
+        //
+        // Cicho łamie się to jednym dopiskiem: ktoś stawia `--settings` i „dla pewności, żeby
+        // się wczytał" dokłada drugie `--setting-sources project`. Wtedy wraca CAŁY plik
+        // gospodarza — jego hak `PreToolUse` startuje proces we własnej grupie, dziecko dostaje
+        // `ppid=1` i przeżywa wyjście `claude` (30 sierot w eksperymentach), a każde sprawdzenie
+        // pytające o OBECNOŚĆ flagi zostaje zielone.
+        //
+        // Ścieżka, nigdy JSON w argumencie: `--settings` przyjmuje jedno i drugie, a treść
+        // w argv widzi `ps` każdego użytkownika maszyny (niezmiennik 9 także wtedy, gdy nie
+        // chodzi o prompt). `None` znaczy „ten bieg nie ma katalogu, w którym mógłby ten plik
+        // leżeć" — tak wygląda sonda wersji — i wtedy flagi nie ma w ogóle, bo `--settings`
+        // wskazujące nieistniejący plik zabija CLI przy starcie.
+        if let Some(settings) = &self.settings {
+            command.arg("--settings").arg(settings.path());
+        }
 
         // Jedna tabela, jedno miejsce (niezmiennik 23). `None` znaczy „nie wysyłaj listy",
         // a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne rzeczy.
