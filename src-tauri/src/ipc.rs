@@ -393,6 +393,19 @@ pub struct AppState {
     /// uchwycie startuje jako już anulowany i kończy się w milisekundach z samymi `cancelled`.
     /// To wygląda jak szybki bieg, nie jak awaria (niezmiennik 7).
     live: Mutex<RunControl>,
+    /// Miejsce na jeden draft umiejętności i token tego, który pisze teraz.
+    ///
+    /// **Osobne pole, nie [`AppState::live`]**, i to jest cała treść tego wiersza: `live` jest
+    /// PODMIENIANY przy każdym Starcie ([`AppState::begin_run`]), więc draft trzymający się
+    /// tamtego uchwytu traci swój token w chwili, w której człowiek uruchomi bieg w innej
+    /// karcie — a wtedy Stop na drafcie przestaje cokolwiek robić, bez ani jednego zdania.
+    ///
+    /// W środku siedzi `std::sync::Mutex` i **nigdy nie jest trzymany przez `await`**
+    /// (niezmiennik 8): klon tokena bierze i oddaje jedno wyrażenie w
+    /// [`commands::skills::Drafting`], przed czymkolwiek, co czeka. Zamek trzymany przez turę
+    /// zawiesiłby Stop na czas pisania przez model — czyli dokładnie wtedy, kiedy Stop jest
+    /// do czegokolwiek potrzebny.
+    drafting: commands::skills::Drafting,
 }
 
 impl fmt::Debug for AppState {
@@ -425,6 +438,7 @@ impl AppState {
             store,
             drivers,
             live: Mutex::new(idle),
+            drafting: commands::skills::Drafting::new(),
         }
     }
 
@@ -725,6 +739,71 @@ pub fn delete_skill(name: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+// ── DWIE KOMENDY DRAFTU ────────────────────────────────────────────────────────────────────
+//
+// 2026-08-19 — te dwie łamią OBIE reguły sąsiadów wyżej i każda z nich ma na to własny powód.
+//
+// PIERWSZA: `draft_skill` jest `async`, choć akapit nad `list_agents` mówi, że wszystkie
+// skorupy umiejętności są synchroniczne. Tam ten dług jest zapisany jawnie i tutaj się nie
+// domyka: Tauri wykonuje komendę bez `async` na wątku głównym, a ta czeka na model —
+// dziesiątki sekund, nie 20 ms. Synchroniczna zamroziłaby okno na cały czas pisania, czyli
+// zamieniłaby jedyną nową drogę tej sekcji w zawieszoną aplikację.
+//
+// DRUGA: obie mają `State`, choć czternaście skorup wyżej bierze katalog z
+// `crate::loadout_dir()` i niczego nie pamięta. Powód jest ten sam, co przy trzech komendach
+// biegu: Stop musi sięgnąć do środka draftu, który zaczęła INNA komenda, więc uchwyt do niego
+// musi gdzieś mieszkać między wywołaniami.
+//
+// `stop_draft` zostaje synchroniczne, bo nie ma na co czekać: cofa jedno wyrażenie na tokenie
+// i wraca. `async fn` bez ani jednego `await` jest ostrzeżeniem `clippy::unused_async`, a
+// bramka woła clippy z `-D warnings` — więc „na wszelki wypadek async" jest tu czerwienią,
+// nie ostrożnością. Dowód zejścia grupy (niezmiennik 6) nie wraca tędy i nie ma tędy wracać:
+// niesie go odpowiedź `draft_skill`, czyli to samo wywołanie, na które okno już czeka.
+
+/// Jedno zdanie człowieka → trzy pola napisane przez agenta, którego wybrał.
+///
+/// `None` znaczy „człowiek to zatrzymał" i jest **wartością**, nie odmową (niezmiennik 7):
+/// okno ma po niej wygasić stan „pisze" i nie pokazywać ani draftu, ani zdania o awarii.
+/// Odmowa jedzie zwykłą drogą odmowy i niesie zdanie rdzenia.
+///
+/// Zapisu tu nie ma. Trzy pola lądują w formularzu z T-42 i dopiero `author_skill` składa
+/// z nich plik, skanuje go i odkłada kopię kanoniczną — więc tekst poprawiony po drafcie
+/// przechodzi przez skan tak samo jak wpisany ręką (niezmiennik 23).
+#[tauri::command]
+pub async fn draft_skill(
+    state: State<'_, AppState>,
+    want: &str,
+    agent: &str,
+) -> Result<Option<commands::skills::Authored>, String> {
+    commands::skills::draft_skill_inner(
+        &crate::loadout_dir(),
+        &state.drivers,
+        &state.drafting,
+        want,
+        agent,
+    )
+    .await
+    .map(|outcome| match outcome {
+        commands::skills::DraftOutcome::Wrote(authored) => Some(authored),
+        commands::skills::DraftOutcome::Cancelled => None,
+    })
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// „Stop" dla draftu: zatrzymuje agenta, który pisze umiejętność.
+///
+/// Osobna komenda od [`stop_run`], bo zatrzymuje osobny uchwyt. Jedna komenda na oba
+/// znaczyłaby, że Stop w sekcji Umiejętności ubija bieg w sąsiedniej karcie.
+#[tauri::command]
+pub fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
+    state.drafting.stop();
+    Ok(())
+}
+
 /// Co jeden krok oddał następnemu — wszystkie przekazania biegów tego projektu.
 ///
 /// 2026-08-18 — przekazania są JEDYNĄ drogą, którą wynik kroku dochodzi do promptu następnego
@@ -936,6 +1015,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         delete_skill,
         delete_workflow,
         delete_workspace,
+        draft_skill,
         install_skill,
         list_agents,
         list_handoffs,
@@ -952,6 +1032,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         save_workflow,
         save_workspace,
         say_to_agent,
+        stop_draft,
         stop_run,
         stop_using_note
     ]

@@ -23,9 +23,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
+use crate::commands::Drivers;
 use crate::skills::ingest::{
     self, FILE_CAP, FetchError, Finding, Import, Reviewed, Target, Verdict, Weight,
 };
@@ -796,4 +799,111 @@ pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
             messages: vec![format!("{why} ({}). Nothing was removed.", path.display())],
         }),
     }
+}
+
+// ── Draft: jedna tura POZA grafem ──────────────────────────────────────────────────────────
+//
+// Umiejętność, której człowiek chce, nie jest biegiem: to jedna tura, jeden prompt, jedna
+// odpowiedź. Droga prowadzi więc przez [`crate::engine::drivers::AgentDriver::start`], a nie
+// przez planistę — złożenie jednokrokowego workflow po to, żeby zawołać planistę, **jest**
+// etapem biegu zaszytym w Ruście, czyli dokładnie tym, czego zabrania niezmiennik 27
+// i decyzja D7. Warstwa sterowników nie zna słowa „krok" i to jest cały powód, dla którego
+// ta droga jest od tego wolna z definicji.
+
+/// Czym skończyło się jedno pytanie zadane agentowi.
+///
+/// **Anulowanie jest wariantem wartości, nigdy błędem** (niezmiennik 7): `Err(Cancelled)`
+/// zmusza każdego wołającego do rozróżniania „to się nie udało" od „to zatrzymał człowiek",
+/// a rozróżnienie zgubione raz jest zgubione wszędzie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftOutcome {
+    /// Model oddał umiejętność: trzy pola, gotowe do formularza z T-42. Zapisu tu nie ma
+    /// i mieć nie będzie — droga zapisu jest jedna ([`author_skill_inner`]) i to ona składa
+    /// plik, skanuje go i odkłada kopię kanoniczną (niezmiennik 23).
+    Wrote(Authored),
+    /// Człowiek zatrzymał pisanie.
+    Cancelled,
+}
+
+/// Miejsce na JEDEN draft naraz i uchwyt do tego, który pisze teraz.
+///
+/// # Dlaczego jeden naraz, a nie „ile naraz" z suwaka
+///
+/// Bo tej liczby nie ma z czego wziąć. Limit równoległości jest dziś **per bieg**, nie globalny:
+/// `run_workflow_inner` zakłada sobie własny `Limiter`, a `run_workflow_with_slots` — jedyna
+/// funkcja przyjmująca wspólną pulę — nie ma w produkcji ani jednego wołającego. Draft
+/// udający, że bierze slot ze wspólnej puli, byłby czwartym miejscem, w którym ta liczba nie
+/// znaczy tego, co mówi. Granica jest więc własna i jawna: jeden, a drugie pytanie jest
+/// odmową ze zdaniem.
+#[derive(Debug, Default)]
+pub struct Drafting {
+    /// `Some` znaczy „ktoś właśnie pisze" i niesie token **tego** draftu.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): każde wzięcie tego
+    /// zamka mieści się w jednym wyrażeniu, które kopiuje token albo go odkłada i oddaje zamek.
+    /// Zamek trzymany przez turę zawiesiłby Stop na czas pisania przez model — czyli dokładnie
+    /// wtedy, kiedy Stop jest do czegokolwiek potrzebny.
+    ///
+    /// Token jest **własny**, a nie wzięty z `deps().control`, i to nie jest ostrożność na zapas:
+    /// `AppState.live` jest PODMIENIANY przy każdym Starcie (`AppState::begin_run`), więc draft
+    /// trzymający się tamtego uchwytu traci swój token w chwili, w której człowiek uruchomi bieg
+    /// w innej karcie — i Stop na drafcie przestaje cokolwiek robić.
+    writing: Mutex<Option<CancellationToken>>,
+}
+
+impl Drafting {
+    /// Miejsce, na którym nikt nie pisze.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// „Stop" z okna: zatrzymuje draft, który pisze teraz. Bez draftu nie robi nic.
+    ///
+    /// Dowód zejścia grupy **nie wraca tędy** i to jest wybór: [`GroupProof`] czyta tura
+    /// (`handle.cancel().await`), a niesie go odpowiedź [`draft_skill_inner`] — czyli to samo
+    /// wywołanie, na które okno już czeka. Druga droga na ten sam fakt byłaby drugim miejscem,
+    /// w którym mieszka odpowiedź „czy agent naprawdę zszedł" (niezmiennik 13).
+    ///
+    /// [`GroupProof`]: crate::engine::supervisor::GroupProof
+    pub fn stop(&self) {
+        // Zamek wzięty i oddany w JEDNYM wyrażeniu, przed czymkolwiek, co czeka (niezmiennik 8).
+        // Zatruty zamek odplatamy zamiast panikować: `panic!` w agentowym runtime zabiera cały
+        // bieg (AGENTS.md §4), a uchwyt po panice jednej tury jest dalej poprawnym uchwytem.
+        let token = self
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(token) = token {
+            token.cancel();
+        }
+    }
+}
+
+/// Jedno zdanie człowieka → trzy pola napisane przez wybranego agenta, jedną turą poza grafem.
+///
+/// `library` to `~/.loadout` i przychodzi **argumentem**, nigdy z `HOME` czytanego w środku —
+/// ten sam powód, co przy [`author_skill_inner`]: katalog domowy odczytany tutaj znaczyłby, że
+/// każdy test pyta prawdziwą bibliotekę.
+///
+/// `agent` jest **identyfikatorem** zapisanego agenta, nie nazwą pliku i nie nazwą vendora:
+/// model, prompt systemowy i dial bezpieczeństwa biorą się z jego definicji przez
+/// `library::agents::resolve`, a nie z niczego wpisanego tutaj.
+pub async fn draft_skill_inner(
+    library: &Path,
+    drivers: &Drivers,
+    drafting: &Drafting,
+    want: &str,
+    agent: &str,
+) -> Result<DraftOutcome, Error> {
+    // SZKIELET FAZY KONTRAKTU. `clippy::todo` jest `deny`, więc sygnatura oddaje trywialnie złą
+    // wartość zamiast `todo!()`: kryterium ma paść na ASERCJI, a nie na tym, że plik testu się
+    // nie skompilował. Implementacja zdejmuje te trzy wiersze razem z tym komentarzem.
+    //
+    // `yield_now` stoi tu wyłącznie po to, żeby `async fn` bez ani jednego `await` nie było
+    // ostrzeżeniem `clippy::unused_async` — a bramka woła clippy z `-D warnings`.
+    let _ = (library, drivers, drafting, want, agent);
+    tokio::task::yield_now().await;
+    Ok(DraftOutcome::Cancelled)
 }
