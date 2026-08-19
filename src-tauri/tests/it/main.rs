@@ -104,6 +104,7 @@ mod run_stop_waits_for_proof;
 mod runcmd_cancel;
 mod runcmd_checkpoint;
 mod runcmd_end_to_end;
+mod runcmd_loop;
 mod runcmd_parallel;
 mod runcmd_refuses_invalid;
 mod runcmd_snapshot;
