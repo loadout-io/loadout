@@ -1827,6 +1827,16 @@ impl AgentDriver for ClaudeDriver {
         VENDOR
     }
 
+    /// Ten sterownik szew dziedziczenia **ma**, bo `--plugin-dir` jest jego flagą.
+    ///
+    /// Klon, nie mutacja pola, i to jest ten sam powód, co przy [`ClaudeDriver::with_settings`]:
+    /// dziedziczenie jest **per bieg**, a sterownik bywa jeden na całą aplikację, więc
+    /// nadpisanie pola przepięłoby fragment argv biegowi, który akurat trwa. Kosztuje to jeden
+    /// tani klon na krok i nie kosztuje wyścigu.
+    fn inheriting(&self, flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(self.clone().with_inherited(flags.to_vec())))
+    }
+
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
     /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
     ///

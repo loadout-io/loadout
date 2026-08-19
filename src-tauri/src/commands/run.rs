@@ -148,6 +148,7 @@ use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
+use crate::inherit::wire::{self, Chosen, Inherited};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
@@ -308,7 +309,16 @@ async fn the_whole_run(
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
 
     lay_out_the_run_dir(&plan, deps.project)?;
-    let live = Arc::new(Live::new(plan, lines, deps.control.clone(), slots));
+    // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
+    // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
+    let inherited = what_the_host_lends(deps.project, &plan.dir)?;
+    let live = Arc::new(Live::new(
+        plan,
+        inherited,
+        lines,
+        deps.control.clone(),
+        slots,
+    ));
     // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
     // [`Live::update`].
@@ -1129,12 +1139,50 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<(), RunError> {
     Ok(())
 }
 
+/// Co ten bieg bierze z repozytorium, w którym pracuje: katalog pluginu z wybranymi
+/// umiejętnościami (jedzie argv) i tekst z learnings oraz podagenta (jedzie promptem).
+///
+/// # Dlaczego dziś oddaje zawsze pusto — i czyja to decyzja
+///
+/// `Chosen` jest tu **stałą pustą**, bo wybór człowieka nie ma dziś nośnika: nazwy zaznaczonych
+/// pozycji musiałyby przyjść razem z naciśnięciem Start, czyli polem w [`RunRequest`] — a ten
+/// typ mieszka w `commands/mod.rs`, który **nie leży w bloku OWNS** T-57 (`AGENTS.md` §7).
+/// Zbudowanie sobie w zamian własnego źródła prawdy (plik pod `~/.loadout/`, którego nikt nie
+/// zapisuje) byłoby czytaniem artefaktu, którego nie pisze żaden skrypt — czyli niezmiennikiem
+/// 21 złamanym od drugiej strony.
+///
+/// **To nie jest wołający na pokaz.** Pusty wybór jest stanem domyślnym z AC-4 i biegnie tu tę
+/// samą drogą, którą pojedzie wybór niepusty: katalog biegu, prompt każdego kroku i argv
+/// sterownika są już spięte i sądzone czterema kryteriami. Brakuje **jednej** rzeczy — pola,
+/// którym ekran powie, co człowiek zaznaczył. Do tego czasu bieg zachowuje się dokładnie tak,
+/// jak obiecuje AC-4: pełne `.claude/` w cudzym repozytorium nie jest zgodą.
+///
+/// Liczone RAZ na bieg, nie per krok, dokładnie jak [`Setup::knows`] i z tego samego powodu:
+/// dwa kroki jednego biegu mają czytać ten sam kontekst, a różnicy nie widać nigdzie poza
+/// rachunkiem za długość.
+fn what_the_host_lends(project: &Path, run_dir: &Path) -> Result<Inherited, RunError> {
+    wire::from_the_host(project, run_dir, &Chosen::default()).map_err(|error| {
+        /* `RunError` nie ma wariantu na dziedziczenie, a `commands/mod.rs` nie leży w bloku OWNS
+         * tego zadania. `Io` jest wariantem PRZEZROCZYSTYM, więc niesie zdanie odmowy co do
+         * słowa — a to zdanie jest tu całą treścią: „Loadout was told to bring in the skill
+         * \"x\" …" wymienia pozycję, której zabrakło, i po to zostało napisane. */
+        RunError::Io(io::Error::other(error))
+    })
+}
+
 // ── ŻYWY BIEG ──────────────────────────────────────────────────────────────────────────────
 
 /// Bieg w trakcie: plan (niezmienny) plus księga (zmienna), plus to, czym mówi do świata.
 struct Live {
     /// Wszystko, co rozstrzygnięto przed startem.
     plan: Plan,
+    /// Co ten bieg wziął z repozytorium gospodarza: fragment argv i tekst do promptu.
+    ///
+    /// Jedna wartość na bieg, policzona raz ([`what_the_host_lends`]), bo katalog pluginu jest
+    /// jeden i jego ścieżka nie ma prawa różnić się między krokami. Trzyma to `Live`, a nie
+    /// [`Plan`], dokładnie z tego powodu, dla którego stoi obok: `Plan` powstaje **przed**
+    /// katalogiem biegu, a dziedziczenie do tego katalogu pisze.
+    inherited: Inherited,
     /// Stan, który zmienia się w trakcie. Zamek jest `std::sync::Mutex`, a każde jego wzięcie
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
@@ -1269,7 +1317,13 @@ struct Told {
 
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
-    fn new(plan: Plan, lines: LineSink, control: RunControl, slots: Limiter) -> Self {
+    fn new(
+        plan: Plan,
+        inherited: Inherited,
+        lines: LineSink,
+        control: RunControl,
+        slots: Limiter,
+    ) -> Self {
         // Kopia stanów kroków, którą dostaje limit dostawcy, jest **martwa z rozmysłem**:
         // `engine::limits::Run` ma pełny dostęp do statusów i podejść dokładnie po to, żeby
         // T-21 mogło dowieść, że pauza ich nie rusza (`[T7 §7.2]`: „a pause, not a failure").
@@ -1294,6 +1348,7 @@ impl Live {
         let settled_at = Mutex::new(None);
         Self {
             plan,
+            inherited,
             book: Mutex::new(Book {
                 status: RunState::Running,
                 asking: false,
@@ -1661,6 +1716,37 @@ impl Live {
         }
     }
 
+    /// Sterownik tego kroku, niosący fragment argv, który ten bieg odziedziczył — albo odmowa.
+    ///
+    /// Fragment niesie nazwę flagi **jednego** vendora (`--plugin-dir`), więc sterownik, który
+    /// jej nie zna, nie może jej dostać i nie ma jak jej udawać. Pytamy o to
+    /// [`AgentDriver::inheriting`], bo fabryka wydaje sterownik jako `Arc<dyn AgentDriver>`
+    /// i konkretny typ jest tu już zgubiony.
+    ///
+    /// ODMOWA, NIE CICHE POMINIĘCIE, i to jest jedyny powód, dla którego ta funkcja zwraca
+    /// `Result`. Krok, który po cichu nie dostał wybranych umiejętności, kończy się „sukcesem"
+    /// i odpowiedzią bez nich: „agent nie zna umiejętności" jest z zewnątrz nieodróżnialne od
+    /// „model nie uznał, że warto jej użyć". Zdanie odmowy jedzie tą samą drogą, co nieudany
+    /// start procesu — wierszem na ekranie kroku i polem `error` w `run.json`.
+    fn carrying_what_we_inherited(
+        &self,
+        driver: &Arc<dyn AgentDriver>,
+    ) -> anyhow::Result<Arc<dyn AgentDriver>> {
+        let flags = self.inherited.flags();
+        if flags.is_empty() {
+            // Nic nie odziedziczono, więc nie ma czego nieść i nie ma o co pytać: ten sam
+            // sterownik, bez klonowania czegokolwiek poza licznikiem.
+            return Ok(Arc::clone(driver));
+        }
+        driver.inheriting(flags).ok_or_else(|| {
+            anyhow::anyhow!(
+                "this agent app cannot be handed the skills you brought in from this project. \
+                 Loadout stopped the step instead of starting it without them: an agent that \
+                 quietly knows less than you picked answers as though there was nothing to know."
+            )
+        })
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -1690,7 +1776,12 @@ impl Live {
             extra_dirs,
         } = self.prompt_for(id, &job.prompt);
 
-        let spec = RunSpec {
+        // ODZIEDZICZONY TEKST DOPISUJE SIĘ TUTAJ, czyli tam, gdzie prompt tury naprawdę powstaje.
+        // Doklejenie w `plan_agent` weszłoby do `AgentJob::prompt`, a ten idzie do `run.json`
+        // i do każdej następnej rundy pętli — więc cudze reguły rosłyby o kopię na rundę.
+        // `applied_to` rozstrzyga też, że `system_append` wraca nietknięty: treść w tym polu
+        // staje się `--append-system-prompt`, czyli argumentem widocznym w `ps` (niezmiennik 9).
+        let spec = self.inherited.applied_to(RunSpec {
             run_id: job.session,
             cwd: job.cwd.clone(),
             // Instrukcja i indeks jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani
@@ -1703,14 +1794,23 @@ impl Live {
             // wolno otworzyć, jest odnośnikiem bez handlera (niezmiennik 16).
             extra_dirs,
             resume: None,
-        };
+        });
 
         // Start **nie** ściga się z anulowaniem i to jest wybór, nie przeoczenie: żeby zejść po
         // grupie procesów, trzeba mieć uchwyt, a uchwyt wydaje dopiero `start`. Zdjęcie tego
         // `await` w połowie zostawiłoby proces, który właśnie wstał, bez nikogo, kto by o nim
         // wiedział — czyli dokładnie ten osierocony `claude` palący limit w tle, przed którym
         // stoją niezmienniki 6 i 10. Token widzi więc dopiero tura, i widzi go od środka.
-        let report = match job.driver.start(spec, events).await {
+        // Fragment argv od gospodarza dojeżdża do TEGO vendora albo krok nie rusza — trzeciej
+        // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
+        // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
+        // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
+        let started = match self.carrying_what_we_inherited(&job.driver) {
+            Ok(driver) => driver.start(spec, events).await,
+            Err(refusal) => Err(refusal),
+        };
+
+        let report = match started {
             Ok(handle) => {
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads).await
