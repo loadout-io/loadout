@@ -30,8 +30,11 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncReadExt;
+use tokio::process::{ChildStderr, ChildStdout};
 use tokio_util::sync::CancellationToken;
 
 use super::super::supervisor::{self, GroupId, GroupProof, StdinPlan, Supervised};
@@ -57,6 +60,14 @@ pub const GIVE_UP_AFTER: Duration = Duration::from_mins(30);
 /// sprawdzająca nie jest ani jednym, ani drugim i ma być widoczna w `ps`, żeby człowiek poznał
 /// swój własny bieg.
 const SHELL: &str = "/bin/sh";
+
+/// Jedyny metaznak wzorca dowodu: „co najmniej jedna cyfra".
+///
+/// Stała, a nie literał w dwóch miejscach: ta sekwencja jest jednocześnie tym, co człowiek pisze
+/// w linii `expect:` naszej własnej bramki (`AGENTS.md` §2a punkt 4), i tym, po czym [`proof_matches`]
+/// rozcina wzorzec. Dwie kopie tego napisu rozjechałyby się przy pierwszej zmianie notacji, a wtedy
+/// wzorce zapisane w plikach workflow przestałyby znaczyć to, co znaczyły.
+const DIGIT_RUN: &str = r"(\d+)";
 
 /// Co uruchomić, po czym poznać, że ruszyło, i gdzie.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,28 +150,108 @@ impl Checking {
         self.group
     }
 
+    /// Ile temu krokowi zostało z [`GIVE_UP_AFTER`].
+    ///
+    /// `saturating_sub`, bo limit mógł już minąć: `Duration` nie umie być ujemna, a odejmowanie
+    /// z przepełnieniem jest w trybie debug paniką — czyli awarią silnika (AGENTS.md §4) w miejscu,
+    /// w którym poprawną odpowiedzią jest „zero, czas się skończył".
+    fn left(&self) -> Duration {
+        GIVE_UP_AFTER.saturating_sub(self.began.elapsed())
+    }
+
     /// Czeka na koniec komendy, na Stop albo na limit czasu — i oddaje jedno z trzech.
     ///
-    /// SZKIELET (T-55, 2026-08-19): czytania obu potoków do EOF, eskalacji zabijania i werdyktu
-    /// tu jeszcze NIE MA. Ta funkcja oddaje dziś [`CheckHow::Ran`] z pustym wyjściem i bez kodu
-    /// wyjścia, czyli świadomie złą wartość — `todo!()` jest w tej skrzyni `deny`, a wartość
-    /// zwrócona z premedytacją źle daje się odróżnić od poprawnej **tylko** kryterium, które
-    /// naprawdę mierzy zachowanie. Dowodzą tego AC-3 i AC-4 w warstwie `before`.
-    pub async fn settle(&mut self, _cancel: &CancellationToken) -> CheckEnd {
-        // Kształt tej funkcji jest asynchroniczny, bo opróżnianie dwóch potoków do EOF nim jest.
-        // Samego opróżniania jeszcze nie ma, więc tu stoi jedno oddanie sterowania — po to, żeby
-        // sygnatura była już ta docelowa i żeby wołający nie musiał się zmieniać drugi raz.
-        tokio::task::yield_now().await;
-        let output = String::new();
+    /// # Kolejność, której nie wolno odwrócić
+    ///
+    /// **Najpierw oba potoki do EOF, dopiero potem `wait()`.** Odwrotnie wygląda naturalniej
+    /// i wiesza krok: bufor potoku ma ~64 KB, więc `cargo test` piszący więcej staje na `write`
+    /// i nigdy nie dojdzie do wyjścia, na które czekamy. To jest ta sama pomyłka, dla której
+    /// [`supervisor::run_with_deadline`] nie nadaje się na tę drogę, choć eskalację ma gotową.
+    ///
+    /// Stop i limit czasu są sprawdzane w OBU czekaniach, bo w obu można w nich utknąć: pierwsze
+    /// stoi na potoku, który trzyma wnuk, drugie na liderze, który nie chce zejść. Każde z nich
+    /// wychodzi tą samą drogą — przez [`Supervised::stop`], czyli przez eskalację i **dowód**,
+    /// nie przez zdjęcie zadania Rusta (niezmienniki 6 i 10).
+    pub async fn settle(&mut self, cancel: &CancellationToken) -> CheckEnd {
+        let group = self.group;
+
+        /* POTOKI WYJMUJEMY Z UCHWYTU, ZANIM ZACZNIE SIĘ CZEKANIE, i to nie jest kwestia stylu:
+         * czytanie pożycza je na całe opróżnianie, a `Supervised::stop` pożycza uchwyt mutowalnie.
+         * Wyjęte, jadą do zadania czytającego na własność i obie rzeczy mogą dziać się naraz. */
+        let reading = read_to_eof(self.handle.stdout(), self.handle.stderr());
+        tokio::pin!(reading);
+
+        let output = {
+            let overdue = tokio::time::sleep(self.left());
+            tokio::pin!(overdue);
+            tokio::select! {
+                // `biased`, bo komenda, która właśnie zamknęła wyjście, ma pierwszeństwo przed
+                // Stopem wpadającym w tej samej chwili: zatrzymywanie czegoś, co już zeszło,
+                // zamieniałoby udane sprawdzenie w anulowane zależnie od tego, który poll wypadł
+                // pierwszy. Limit czasu stoi PO Stopie z tego samego powodu.
+                biased;
+                said = &mut reading => said,
+                () = cancel.cancelled() => return self.give_up(group, CheckHow::Stopped).await,
+                () = &mut overdue => return self.give_up(group, CheckHow::Overdue).await,
+            }
+        };
+
+        // EOF na obu potokach znaczy, że nikt już do nich nie pisze — więc dopiero TERAZ `wait()`
+        // nie ma jak stanąć na pełnym buforze.
+        let left = self.left();
+        let ended = {
+            let waiting = self.handle.wait();
+            tokio::pin!(waiting);
+            let overdue = tokio::time::sleep(left);
+            tokio::pin!(overdue);
+            tokio::select! {
+                biased;
+                got = &mut waiting => Settled::Exited(got),
+                () = cancel.cancelled() => Settled::Stopped,
+                () = &mut overdue => Settled::Overdue,
+            }
+            // Pożyczka uchwytu kończy się razem z tym blokiem — dopiero po nim wolno zawołać
+            // `stop()` na tym samym uchwycie.
+        };
+
+        match ended {
+            Settled::Exited(status) => CheckEnd {
+                group,
+                // Kod wyjścia albo jego BRAK. `None` przychodzi z dwóch stron: proces zginął od
+                // sygnału (`ExitStatus::code()` nie ma czego oddać) albo statusu nie dało się
+                // zebrać. Obie odpowiedzi znaczą to samo dla werdyktu — `None` to nie zero.
+                how: CheckHow::Ran(self.report(status.ok().and_then(|how| how.code()), output)),
+            },
+            Settled::Stopped => self.give_up(group, CheckHow::Stopped).await,
+            Settled::Overdue => self.give_up(group, CheckHow::Overdue).await,
+        }
+    }
+
+    /// Werdykt i wszystko, z czego powstał.
+    ///
+    /// `matched` obok `passed`, a nie zamiast: człowiek ma widzieć, KTÓRA połowa zawiodła. „Testy
+    /// padły" naprawia się inaczej niż „nic się nie uruchomiło", a jedno pole `bool` na dwa różne
+    /// stany wysyłałoby go w połowie przypadków w złe miejsce.
+    fn report(&self, exit_code: Option<i32>, output: String) -> CheckReport {
+        CheckReport {
+            passed: passed(exit_code, &output, &self.proof),
+            exit_code,
+            matched: proof_matches(&self.proof, &output),
+            output,
+            took: self.began.elapsed(),
+        }
+    }
+
+    /// Zatrzymanie na żądanie albo po limicie czasu — jedną drogą, bo różnica jest w NAZWIE
+    /// wyniku, nie w tym, co trzeba zrobić z grupą procesów.
+    ///
+    /// Oba warianty niosą [`GroupProof`], więc obie drogi muszą przejść przez eskalację: nie da
+    /// się zwrócić dowodu, nie zabijając grupy. To jest cały niezmiennik 10 zapisany w typie —
+    /// `tokio::time::timeout` wokół czekania anuluje zadanie Rusta i zostawia grupę żywą.
+    async fn give_up(&mut self, group: GroupId, how: fn(GroupProof) -> CheckHow) -> CheckEnd {
         CheckEnd {
-            group: self.group,
-            how: CheckHow::Ran(CheckReport {
-                passed: passed(None, &output, &self.proof),
-                exit_code: None,
-                matched: proof_matches(&self.proof, &output),
-                output,
-                took: self.began.elapsed(),
-            }),
+            group,
+            how: how(self.handle.stop(supervisor::DEFAULT_GRACE).await),
         }
     }
 
@@ -170,6 +261,98 @@ impl Checking {
     /// wyniku: powtórzone zatrzymanie jest normalną ścieżką, nie błędem (`Supervised::stop`).
     pub async fn cancel(&mut self) -> GroupProof {
         self.handle.stop(supervisor::DEFAULT_GRACE).await
+    }
+}
+
+/// Czym skończyło się czekanie na komendę.
+///
+/// Trzy stany, bo trzy rzeczy są prawdziwie różne i każda kończy się czymś innym. `Option` umiał
+/// powiedzieć dwa — ten sam powód stoi przy `commands::run::Ended`.
+enum Settled {
+    /// Lider zszedł sam. `io::Result`, bo statusu czasem nie da się zebrać, a to nie jest to samo
+    /// co „wyszedł zerem".
+    Exited(io::Result<ExitStatus>),
+    /// Człowiek nacisnął Stop.
+    Stopped,
+    /// Minęło [`GIVE_UP_AFTER`].
+    Overdue,
+}
+
+/// Który potok coś powiedział — i ile.
+///
+/// Odpowiedź **wychodzi** z `select!` zamiast dopisywać się do bufora w gałęzi, i to jest wymóg
+/// pożyczek, nie ozdoba: futury odczytu trzymają swoje bufory pożyczone mutowalnie, dopóki całe
+/// wyrażenie `select!` się nie skończy.
+enum Said {
+    /// Ze strumienia wyjścia.
+    Out(io::Result<usize>),
+    /// Ze strumienia skarg. `cargo test` pisze podsumowanie na wyjście, a `npm` swoje tutaj —
+    /// dlatego werdykt czyta OBA (AC-2).
+    Complaints(io::Result<usize>),
+}
+
+/// Ile bajtów bierzemy z potoku za jednym razem. Osiem kilobajtów, czyli ósma część potoku:
+/// mniej znaczy więcej przebudzeń na tę samą treść, więcej nie przyspiesza już niczego.
+///
+/// Porcje leżą na **stercie**, nie na stosie, i to jest wymóg, nie gust: dwa bufory po 8 KB
+/// wewnątrz `async fn` wchodzą do wielkości future'a, a ten future jedzie przez `Live::step`
+/// i `CommandDriver::run` w górę biegu. Zmierzone: 17 440 bajtów na jedno wywołanie kroku
+/// i `clippy::large_futures` na czerwono w pełnej bramce.
+const CHUNK: usize = 8 * 1024;
+
+/// Oba potoki **do EOF**, złączone w jeden tekst w kolejności odczytu.
+///
+/// # Dlaczego jeden `select!`, a nie dwa zadania
+///
+/// Kolejność w buforze jest wtedy kolejnością, w jakiej komenda naprawdę pisała — a to jest
+/// jedyna kolejność, po której człowiek pozna swój własny bieg: ostrzeżenie `npm` stoi PRZED
+/// licznikiem, dokładnie tam, gdzie je wypisano. Dwa zadania zbierające do dwóch buforów dają
+/// tekst, w którym wszystkie skargi lądują na końcu, choć dotyczą początku.
+///
+/// # Dlaczego to musi dojść do EOF
+///
+/// Bufor potoku ma ~64 KB. Potok, którego nikt nie opróżnia, zatrzymuje dziecko na `write` —
+/// więc „czytamy później, najpierw poczekajmy na wyjście" jest zakleszczeniem, w którym krok wisi
+/// na 100% „running", a wyjścia, czyli jedynej rzeczy, z której powstaje werdykt, i tak nie ma.
+///
+/// Wyjścia NIE PRZYCINAMY i to jest wybór z ceną: komenda pisząca bez opamiętania zajmie tyle
+/// pamięci, ile napisze, aż do [`GIVE_UP_AFTER`]. Przycięcie do ostatnich N kilobajtów byłoby
+/// tańsze i kłamałoby o dowodzie — wzorzec bywa i na początku wyjścia (`error: no test target
+/// matched`), więc obcięty tekst zamieniałby „nic nie ruszyło" w „nie wiadomo".
+async fn read_to_eof(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -> String {
+    let mut said: Vec<u8> = Vec::new();
+    let mut out = stdout;
+    let mut complaints = stderr;
+    let mut from_out = vec![0_u8; CHUNK];
+    let mut from_complaints = vec![0_u8; CHUNK];
+
+    loop {
+        let heard = match (&mut out, &mut complaints) {
+            (Some(one), Some(other)) => tokio::select! {
+                // Odczyt porzucony w połowie nie gubi bajtów: `AsyncReadExt::read` jest
+                // bezpieczny w `select!` — kiedy wygra druga gałąź, ten potok po prostu nie
+                // został przeczytany.
+                got = one.read(&mut from_out) => Said::Out(got),
+                got = other.read(&mut from_complaints) => Said::Complaints(got),
+            },
+            (Some(one), None) => Said::Out(one.read(&mut from_out).await),
+            (None, Some(other)) => Said::Complaints(other.read(&mut from_complaints).await),
+            // Oba potoki na EOF: to jedyne wyjście z tej pętli, więc „do EOF" znaczy tu dokładnie
+            // to, co mówi. Tekst składamy raz, na końcu — `from_utf8_lossy` na każdym kawałku
+            // osobno zamieniałoby znak rozcięty na granicy porcji w znak zapytania.
+            (None, None) => return String::from_utf8_lossy(&said).into_owned(),
+        };
+
+        match heard {
+            // Zero bajtów to EOF, a błąd odczytu znaczy dla nas to samo: z tego potoku nie
+            // przyjdzie już nic. Zamknięty potok trzymany w pętli byłby czekaniem bez końca.
+            Said::Out(Ok(0) | Err(_)) => out = None,
+            Said::Complaints(Ok(0) | Err(_)) => complaints = None,
+            Said::Out(Ok(how_many)) => said.extend_from_slice(&from_out[..how_many]),
+            Said::Complaints(Ok(how_many)) => {
+                said.extend_from_slice(&from_complaints[..how_many]);
+            }
+        }
     }
 }
 
@@ -228,12 +411,73 @@ impl CommandDriver {
 /// blokiem OWNS tego zadania, więc dopisanie zależności jest pytaniem do człowieka
 /// (`AGENTS.md` §7), nie cichym dopiskiem.
 ///
-/// SZKIELET (T-55, 2026-08-19): oddaje `false` zawsze. AC-2 mierzy trzy rzeczy, których to nie
-/// umie — zero cyfr jest za mało, jedna wystarcza, wzorzec bez metaznaku jest zwykłym podciągiem.
+/// Wzorzec pusty oddaje `false`, i to jest decyzja, nie skutek uboczny pętli. Puste szukanie
+/// jest podciągiem każdego tekstu, więc „dopasowało się" znaczyłoby wtedy „nie sprawdzono nic" —
+/// czyli werdykt spadłby z powrotem na sam kod wyjścia, przed czym stoi niezmiennik 19. Kroku bez
+/// dowodu i tak nie da się zapisać (`workflow::check::a_check_without_a_proof`); to jest druga
+/// zapora, na wypadek wywołania z innej strony.
 #[must_use]
 pub fn proof_matches(proof: &str, output: &str) -> bool {
-    let _ = (proof, output);
+    if proof.trim().is_empty() {
+        return false;
+    }
+
+    // Wzorzec rozcięty na literały. Jeden metaznak znaczy, że między dwoma literałami stoi
+    // zawsze dokładnie jedna grupa cyfr — nie ma tu drzewa wyrażenia do zbudowania.
+    let literals: Vec<&str> = proof.split(DIGIT_RUN).collect();
+    let Some((first, rest)) = literals.split_first() else {
+        return false;
+    };
+    // Wzorzec bez metaznaku jest zwykłym podciągiem i tak ma zostać: tak wygląda dziewięć
+    // wzorców z dziesięciu, które napisze człowiek (`0 failed`).
+    if rest.is_empty() {
+        return output.contains(first);
+    }
+
+    // Każde miejsce, w którym stoi pierwszy literał — bo dopasowanie jest szukaniem PODCIĄGU,
+    // a nie sprawdzeniem początku. Pierwszy literał bywa pusty (wzorzec otwiera się cyframi)
+    // i wtedy ta pętla po prostu ogląda każdą pozycję po kolei.
+    let mut from = 0;
+    while let Some(at) = output.get(from..).and_then(|tail| tail.find(first)) {
+        let after = from + at + first.len();
+        if output
+            .get(after..)
+            .is_some_and(|tail| digits_then(rest, tail))
+        {
+            return true;
+        }
+        // O jeden ZNAK, nie o jeden bajt: `output` przychodzi z potoku komendy i bywa w nim
+        // wszystko, a indeks w środku znaku wielobajtowego jest paniką w silniku (AGENTS.md §4).
+        let step = output[from + at..].chars().next().map_or(1, char::len_utf8);
+        from = from + at + step;
+        if from > output.len() {
+            break;
+        }
+    }
     false
+}
+
+/// Ogon wzorca: co najmniej jedna cyfra, potem kolejny literał — i tak do końca.
+///
+/// Nawroty są tu potrzebne i dlatego jest tu `any`, a nie jedna próba na najdłuższym ciągu cyfr:
+/// wzorzec `(\d+)5` na wejściu `125` dopasowuje się wyłącznie wtedy, gdy grupie zostawimy dwie
+/// cyfry z trzech. Wersja zachłanna bez nawrotu odpowiedziałaby „nie" na tekst, który pasuje.
+fn digits_then(literals: &[&str], text: &str) -> bool {
+    let Some((literal, rest)) = literals.split_first() else {
+        return true;
+    };
+    // Cyfry są ASCII, więc liczba bajtów jest tu liczbą znaków i indeks nie może wpaść
+    // w środek znaku.
+    let how_many = text.bytes().take_while(u8::is_ascii_digit).count();
+    // Od jedynki, bo `(\d+)` znaczy CO NAJMNIEJ JEDNA cyfra. Zero cyfr jest za mało i to jest
+    // cała różnica między tym wzorcem a szukaniem samego napisu " passed".
+    (1..=how_many).any(|digits| {
+        text.get(digits..).is_some_and(|after| {
+            after
+                .strip_prefix(literal)
+                .is_some_and(|then| digits_then(rest, then))
+        })
+    })
 }
 
 /// Werdykt kroku „sprawdź": kod wyjścia **oraz** dopasowanie wzorca, nigdy jedno z dwóch.
@@ -249,10 +493,94 @@ pub fn proof_matches(proof: &str, output: &str) -> bool {
 /// `None` w kodzie wyjścia nigdy nie jest przejściem: proces zginął od sygnału, więc kodu po
 /// prostu nie ma, a `None` to nie zero.
 ///
-/// SZKIELET (T-55, 2026-08-19): oddaje `false` zawsze, czyli nie odróżnia ani jednego z czterech
-/// przebiegów AC-2 od pozostałych.
+/// KONIUNKCJA, i to jest cała funkcja. Każda z dwóch połówek osobno przechodzi trzy z czterech
+/// przebiegów z AC-2 i myli się na czwartym — dlatego tabela w kryterium ma cztery wiersze, nie
+/// dwa, i dlatego tu nie ma miejsca na `||`.
 #[must_use]
 pub fn passed(exit_code: Option<i32>, output: &str, proof: &str) -> bool {
-    let _ = (exit_code, output, proof);
-    false
+    // `Some(0)`, nie `is_none_or`: `None` znaczy „proces zginął od sygnału, więc kodu po prostu
+    // nie ma", a brak odpowiedzi nie jest odpowiedzią „udało się". Każde zatrzymane sprawdzenie
+    // czytałoby się inaczej jako przeszłe.
+    exit_code == Some(0) && proof_matches(proof, output)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Gałęzie dopasowania, których nie dotyka ani jedno kryterium akceptacji — i dlatego są tutaj.
+    //!
+    //! AC-2 mierzy notację od strony człowieka: cztery przebiegi werdyktu i cztery wzorce z linii
+    //! `expect:`. Wszystkie cztery przechodzą także dla wersji **zachłannej bez nawrotu**, bo żaden
+    //! wzorzec z bramki nie stawia cyfry zaraz po grupie cyfr. Uproszczenie `digits_then` do jednej
+    //! próby na najdłuższym ciągu byłoby więc zmianą, po której pełna bramka jest zielona, a wzorzec
+    //! `(\d+)5` przestaje działać — czyli dokładnie tym rodzajem cichej regresji, przed którą stoją
+    //! kryteria. Kryterium tego nie złapie, bo `check:` wskazuje pliki, których ta gałąź nie
+    //! interesuje; więc łapie to test przy kodzie.
+    //!
+    //! Wzorzec jest w tym repo (`workflow/check.rs`, `workflow/unroll.rs`, `commands/run.rs`):
+    //! `Result`, `assert!` i ani jednego `unwrap` — pełne clippy biegnie `--all-targets -- -D
+    //! warnings`, a `unwrap_used` jest w tej skrzyni odmową.
+
+    use super::{DIGIT_RUN, passed, proof_matches};
+
+    #[test]
+    fn a_digit_right_after_the_group_needs_a_step_back() {
+        // Zachłannie: grupa bierze `125`, po niej nie ma `5`, odpowiedź „nie". Z nawrotem: grupa
+        // bierze `12`, literał `5` stoi tam, gdzie ma stać.
+        assert!(
+            proof_matches(r"(\d+)5", "125"),
+            "the group has to give a digit back so the literal after it can match; a greedy pass \
+             with no step back answers 'no' to text that fits"
+        );
+        assert!(
+            !proof_matches(r"(\d+)5", "12 5"),
+            "and it may only give back DIGITS: a space is not one, so this must stay a miss"
+        );
+    }
+
+    #[test]
+    fn the_group_may_close_the_pattern_and_may_open_it() {
+        assert!(
+            proof_matches(r"passed (\d+)", "passed 12"),
+            "a pattern that ends with the group matches when digits are the last thing there is"
+        );
+        assert!(
+            !proof_matches(r"passed (\d+)", "passed none"),
+            "and misses when they are not — one metacharacter, no second meaning"
+        );
+        assert!(
+            proof_matches(DIGIT_RUN, "ran 7 of them"),
+            "a pattern that is nothing BUT the group asks one question: is there a digit anywhere"
+        );
+    }
+
+    #[test]
+    fn an_empty_proof_is_never_a_match_and_never_a_pass() {
+        // Puste szukanie jest podciągiem każdego tekstu, więc bez tej zapory werdykt spadłby na
+        // sam kod wyjścia — a suita, która nie uruchomiła ani jednego testu, wychodzi zerem
+        // (niezmiennik 19).
+        assert!(
+            !proof_matches("", "test result: ok. 12 passed; 0 failed"),
+            "an empty pattern is a substring of everything, and 'matched everything' has to read \
+             as 'checked nothing'"
+        );
+        assert!(
+            !passed(Some(0), "test result: ok. 12 passed; 0 failed", "   "),
+            "a check step with a blank proof cannot be saved, and if one arrives from anywhere \
+             else it still may not pass on the exit code alone"
+        );
+    }
+
+    #[test]
+    fn output_that_is_not_ascii_is_scanned_without_falling_over() {
+        // Wyjście przychodzi z potoku cudzej komendy, więc bywa w nim wszystko. Indeks w środku
+        // znaku wielobajtowego jest paniką, a panika w silniku zabiera cały bieg (AGENTS.md §4).
+        assert!(
+            proof_matches(r"(\d+) passed", "✅ zrobione — 3 passed; 0 failed"),
+            "the scan steps over characters, not bytes, and still finds the counter"
+        );
+        assert!(
+            !proof_matches(r"(\d+) passed", "✅✅✅ nic nie ruszyło"),
+            "and answers 'no' on the same kind of text instead of falling over on it"
+        );
+    }
 }
