@@ -462,6 +462,24 @@ zatrzymanie się na dwóch jest decyzją, a nie zbiegiem okoliczności.
 - **`ship-task.sh` sterowany plikiem workflow.** Dopóki nie ma kafelka i modalu, harness dalej
   biegnie skryptem. To zadanie zdejmuje **jedyną** przeszkodę z U-1, nie wszystkie.
 
+**Rozszerzenie OWNS 2026-08-20 (AGENTS.md par. 5c, po decyzji czlowieka o D6).** Doszly CZTERY
+pliki testow, wszystkie cudze, i mandat w kazdym jest waski:
+
+- `harness_workflow_two_kinds.rs` (wyrocznia AC-2 z T-23) — wolno ci zmienic DWIE rzeczy: liste
+  rodzajow, ktore ten plik uznaje za obecne w schemacie, oraz rodzaj uzywany jako NIEZNANY.
+  Nowym nieznanym jest **`review`**, i to nie jest wybor dowolny: D7 i niezmiennik 27 mowia, ze
+  silnik nie ma prawa znac etapu o tej nazwie, wiec wyrocznia zyskuje mocniejszy przypadek, niz
+  miala. **Nie wolno ci zmienic ksztaltu zadnej z trzech asercji** — rownosc zbiorow zostaje
+  rownoscia (nie „contains"), kontrola negatywna zostaje, a odmowa dalej musi NAZWAC nieznany
+  rodzaj. Ten plik zgloszil brak rodzaju `check` z nazwy, w komentarzu, od dnia napisania;
+  przepisujesz jego liste, nie jego sposob sadzenia.
+- `harness_workflow_chain.rs`, `harness_workflow_sequential.rs`, `harness_workflow_validates.rs`
+  — wolno ci dopisac po JEDNEJ linii ramienia `match` na nowy wariant `Step`. Kompilator wymaga
+  tego od kazdego wyczerpujacego dopasowania; nic poza tym w tych plikach nie jest twoje.
+
+Kryteria NIE zostaly tkniete: liczba i tresc linii `## AC-`, `check:` i `expect:` jest identyczna
+przed i po tej zmianie (sprawdzone mechanicznie, nie zadeklarowane).
+
 <!-- OWNS
 src-tauri/src/engine/drivers/command.rs
 src-tauri/src/engine/drivers/mod.rs
@@ -469,6 +487,10 @@ src-tauri/src/workflow/mod.rs
 src-tauri/src/workflow/check.rs
 src-tauri/src/commands/run.rs
 src-tauri/tests/it/main.rs
+src-tauri/tests/it/harness_workflow_two_kinds.rs
+src-tauri/tests/it/harness_workflow_chain.rs
+src-tauri/tests/it/harness_workflow_sequential.rs
+src-tauri/tests/it/harness_workflow_validates.rs
 src-tauri/tests/it/check_step_schema.rs
 src-tauri/tests/it/check_step_verdict.rs
 src-tauri/tests/it/check_step_process_group.rs
