@@ -140,9 +140,6 @@ const THINKING_TOKENS: &str = "thinking_tokens";
 /// `subtype` linii o ponowieniu zapytania do dostawcy [T1 §4.5, docs].
 const API_RETRY: &str = "api_retry";
 
-/// Jedyny stan limitu, przy którym jest jeszcze co wysyłać.
-const ALLOWED: &str = "allowed";
-
 /// Po tym prefiksie `subtype` poznajemy, że linia `result` opisuje błąd — używane **wyłącznie**
 /// wtedy, gdy vendor nie dosłał `is_error`.
 const ERROR_PREFIX: &str = "error";
@@ -742,9 +739,10 @@ impl ClaudeDecoder {
             status: status.to_owned(),
             resets_at,
             rate_limit_type: window.to_owned(),
-            // Cokolwiek innego niż „allowed" znaczy, że nie ma już czego wysyłać, więc bieg ma
-            // stanąć zamiast palić tury na odmowach. Samą pauzę robi T-21.
-            pause_run: status != ALLOWED,
+            // Co jest zgodą, rozstrzyga `engine::limits` i tylko on (niezmiennik 23) — tutaj
+            // stała była trzecią kopią tej samej reguły. Samą pauzę robi T-21; ten sterownik
+            // mówi wyłącznie, czy dostawca zostawił coś do wysłania.
+            pause_run: !crate::engine::limits::is_allowed(status),
         }]
     }
 

@@ -19,6 +19,19 @@ use std::sync::{Arc, Mutex, PoisonError};
 use loadout_lib::engine::limits::{Gate, read_gate};
 use serde_json::{Value, json};
 
+/// Ostrzeżenie o oknie tygodniowym — też **prawdziwa** linia, złapana 2026-08-19 na `claude`
+/// 2.1.235, kiedy konto stało na 86% okna `seven_day`.
+///
+/// Ta wartość nie mogła się pojawić w pomiarze, na którym zbudowano to kryterium: CLI wysyła
+/// `allowed_warning` dopiero po przekroczeniu `surpassedThreshold`, czyli 75% okna. Do tego
+/// dnia znano dwie wartości — `allowed` i odmowę — więc „cokolwiek innego niż `allowed`"
+/// wyglądało na regułę bezpieczną. Nie było: zatrzymała bieg `Murmur-1` na 50 godzin po
+/// pierwszym kroku, bo `resetsAt` okna tygodniowego jest o dwa dni dalej niż pięciogodzinnego.
+const WARNING_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../docs/research/fixtures/claude-rate-limit-warning.jsonl"
+));
+
 /// Szesnaście prawdziwych linii z tej maszyny; jedna z nich jest linią limitu.
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -37,7 +50,16 @@ const RESETS_AT: i64 = 1_786_800_600;
 /// optymistyczną: to raport opisał kiedyś to zdarzenie jako płaskie, a CLI nigdy takiego
 /// nie wysłało.
 fn real_rate_limit_info() -> Result<Value, Box<dyn Error>> {
-    let line = FIXTURE
+    info_in(FIXTURE)
+}
+
+/// Ten sam odczyt dla dowolnej fikstury: znajdź linię limitu, wyjmij kopertę.
+///
+/// Jedna implementacja na dwie fikstury, bo drugi odczyt napisany osobno rozjeżdża się przy
+/// pierwszej zmianie kształtu koperty — a wtedy jeden z dwóch testów milczy o zmianie, którą
+/// drugi widzi.
+fn info_in(fixture: &str) -> Result<Value, Box<dyn Error>> {
+    let line = fixture
         .lines()
         .find(|line| line.contains(RATE_LIMIT_TAG))
         .ok_or("the fixture holds no rate limit line, so this test would prove nothing")?;
@@ -152,4 +174,33 @@ fn a_shape_without_status_is_written_down_and_dropped() {
         "and the note has to name the field that was missing, otherwise it is a line that says \
          something happened. It said: {written:?}"
     );
+}
+
+#[test]
+fn a_warning_about_the_window_is_not_a_refusal() -> Result<(), Box<dyn Error>> {
+    let info = info_in(WARNING_FIXTURE)?;
+
+    // Najpierw dowód, że fikstura dalej jest tym przypadkiem: ostrzeżenie o oknie, nie odmowa.
+    assert_eq!(
+        info.get("status").and_then(Value::as_str),
+        Some("allowed_warning"),
+        "the fixture stopped carrying the value this criterion is about"
+    );
+    assert_eq!(
+        info.get("rateLimitType").and_then(Value::as_str),
+        Some("seven_day"),
+        "and it has to be the weekly window, because that is the one whose resetsAt is days \
+         away rather than hours"
+    );
+
+    assert_eq!(
+        read_gate(&info),
+        Gate::Open,
+        "a warning is the vendor saying 'you are at 86% of your week', not 'there is nothing \
+         left'. Reading it as a refusal pauses the run until the weekly reset — measured: a \
+         four step run finished step one and then stood for 50 hours, with no error anywhere, \
+         because a pause is deliberately not a failure"
+    );
+
+    Ok(())
 }

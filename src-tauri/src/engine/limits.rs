@@ -96,6 +96,30 @@ pub fn duration_until_reset(resets_at_unix: i64, now_unix: i64) -> Duration {
     Duration::from_secs(u64::try_from(seconds_left).unwrap_or(0))
 }
 
+/// Rodzina stanów, przy których jest jeszcze co wysyłać.
+const ALLOWED: &str = "allowed";
+
+/// Czy ten `status` jest zgodą — **cała rodzina `allowed…`, nie jedna wartość**.
+///
+/// 2026-08-19, zmierzone na `claude` 2.1.235: konto na 86% okna tygodniowego dostaje
+/// w praktyce w każdej turze `{"status":"allowed_warning","rateLimitType":"seven_day",
+/// "utilization":0.86,"surpassedThreshold":0.75}`. To jest zgoda z licznikiem, nie odmowa —
+/// CLI wysyła ją dopiero po przekroczeniu progu 0.75, więc pomiar `[T7 §4.3, V]`, na którym
+/// stanęła reguła „cokolwiek innego niż `allowed`", nie mógł jej zobaczyć.
+///
+/// Co ta reguła kosztowała, zanim tu stanęła: bieg `Murmur-1` skończył pierwszy krok
+/// i **stanął na 50 godzin**, bo `resetsAt` okna tygodniowego leży o dwa dni dalej niż
+/// pięciogodzinnego. Bez czerwieni, bez błędu i bez przycisku — pauza świadomie nie jest
+/// awarią, a chwili powrotu nie zapisujemy na dysk.
+///
+/// **Fail-closed zostaje.** Reguła brzmi „zgoda to `allowed…`", nie „odmowa to `rejected`":
+/// wartość, której dziś nie ma w żadnym pomiarze, dalej zatrzymuje wysyłkę. Przepuszczamy
+/// rodzinę, którą vendor sam nazwał zgodą, a nie wszystko, czego nie znamy.
+#[must_use]
+pub fn is_allowed(status: &str) -> bool {
+    status.starts_with(ALLOWED)
+}
+
 /// Odpowiedź bramy na jedno zdarzenie limitu dostawcy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
@@ -135,7 +159,7 @@ pub fn read_gate(info: &Value) -> Gate {
     // `overageDisabledReason` i nie ma sprawdzenia, czy obiekt w ogóle przyszedł: linia
     // z UDANEGO biegu niesie wszystkie trzy i mówi „allowed", a te zdarzenia to 1,3%
     // normalnego strumienia `[T7 §4.3, V]`.
-    if status == "allowed" {
+    if is_allowed(status) {
         return Gate::Open;
     }
 
