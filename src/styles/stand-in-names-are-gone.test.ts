@@ -31,12 +31,22 @@ const withoutRemarks = (source: string): string =>
  */
 
 const GONE = [/--radius-sq\b/, /--radius-dot\b/, /--color-[a-z]+-wash\b/];
+/* KSZTALT WOLANIA, NIE LISTA PREFIKSOW.
+ *
+ * Pierwsza wersja znala `var(--radius-sq)` i `var(--radius-dot)`, ale NIE znala
+ * `var(--color-*-wash)` — a wlasnie tak wash byl wolany w arkuszu React Flow. Cofniecie tamtej
+ * jednej linii wprowadzalo wolanie nazwy, ktorej `theme.css` nie definiuje: prostokat zaznaczenia
+ * tracil tlo w calosci, a wszystkie asercje zostawaly zielone. To jest dokladnie ta awaria, ktora
+ * to kryterium opisuje.
+ *
+ * Lista prefiksow tez byla wezsza od uzycia w tym repo, wiec zamiast jej pilnowac, pytamy
+ * o KSZTALT: cokolwiek-`-wash` jako klasa i cokolwiek-`-wash` w `var(...)`. */
 const CALLS = [
   /\brounded-sq\b/,
   /\brounded-dot\b/,
-  /var\(--radius-sq\)/,
-  /var\(--radius-dot\)/,
-  /\b(?:bg|border|text|fill|stroke)-[a-z]+-wash\b/,
+  /var\(\s*--radius-(?:sq|dot)\s*\)/,
+  /var\(\s*--color-[a-z]+-wash\s*\)/,
+  /\b[a-z]+(?:-[a-z]+)*-wash\b/,
 ];
 
 /** Wszystkie zrodla stylu i widoku, bez komentarzy. */

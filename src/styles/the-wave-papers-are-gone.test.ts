@@ -30,7 +30,20 @@ const PAPERS = [
   'docs/superpowers/plans/2026-08-19-quiet-glass.md',
 ] as const;
 
-const SKIP = new Set(['node_modules', 'dist', 'target', '.git', 'tasks', 'runs', '.loadout']);
+/* `.claude` jest tu razem z `node_modules`: narzedzia sesji trzymaja w `.claude/worktrees/<id>`
+ * PELNE kopie repo, kazda z wlasnym `TASK.md`, i ten katalog jest w `.gitignore` wlasnie dlatego.
+ * Skan, ktory tam zaglada, wydaje werdykt o stanie lokalnym, ktorego nikt czytajacy rownice nie
+ * widzi — w obie strony: raz falszywa czerwien, raz cisza. */
+const SKIP = new Set([
+  'node_modules',
+  'dist',
+  'target',
+  '.git',
+  '.claude',
+  'tasks',
+  'runs',
+  '.loadout',
+]);
 
 /* DWA PLIKI MAJA PRAWO WYMOWIC TE SCIEZKI.
  *
@@ -39,7 +52,10 @@ const SKIP = new Set(['node_modules', 'dist', 'target', '.git', 'tasks', 'runs',
  * zamrozonego kontraktu tego zadania: `tasks/` jest pominiete wyzej dokladnie dlatego, ze plik
  * zadania zapisuje, co bylo prawda w chwili, gdy zadanie powstalo, a przepisanie go po fakcie
  * falsyfikuje ten zapis. Kopia w korzeniu jest tym samym plikiem. */
-const MAY_NAME = new Set(['TASK.md', 'src/styles/the-wave-papers-are-gone.test.ts']);
+const SELF = 'src/styles/the-wave-papers-are-gone.test.ts';
+/* `TASK.md` jest wyjety, DOPOKI istnieje: jest kopia zamrozonego kontraktu tej galezi i ginie
+ * przy ladowaniu (`integrate.sh`). Wyjecie go nie moze byc wiec wymogiem jego obecnosci. */
+const MAY_NAME = new Set(['TASK.md', SELF]);
 
 /** Kazdy plik tekstowy repo poza katalogami, ktore sa wynikiem pracy albo zamrozonym zapisem. */
 function papersAndCode(): readonly (readonly [string, string])[] {
@@ -83,11 +99,17 @@ describe('papiery fali', () => {
         if (source.includes(one)) citing.push(path + ' -> ' + one);
       }
     }
+    /* KONTROLA PYTA O TEN PLIK, NIE O LICZBE.
+     *
+     * Pierwsza wersja zadala, zeby przeczytane byly DOKLADNIE dwa wyjete pliki — a `TASK.md` jest
+     * artefaktem GALEZI: `integrate.sh` kasuje go przy ladowaniu. Ten warunek zzielenialby tu
+     * i zaczerwienil sie na trunku, w `full-test`, razem ze scaleniem i bez zadnej zmiany w kodzie.
+     * Sens kontroli jest inny: sprawdzic, ze skan czyta to drzewo, a nie puste. Ten plik zawsze
+     * w nim jest — jesli go nie widzi, nie widzi niczego. */
     expect(
-      files.filter(([path]) => MAY_NAME.has(path)).length,
-      'neither of the two files allowed to name those paths was read, so the exemption above is ' +
-        'hiding nothing and the sweep may be reading the wrong tree',
-    ).toBe(MAY_NAME.size);
+      files.map(([path]) => path),
+      'the sweep did not even read the file doing the sweeping, so it is looking at the wrong tree',
+    ).toContain(SELF);
     expect(
       citing,
       'these files that stay point at a document that is gone: ' +
@@ -97,20 +119,29 @@ describe('papiery fali', () => {
     ).toEqual([]);
   });
 
+  /* SUBSTANCJA, NIE NAGLOWKI.
+   *
+   * Pierwsza wersja pytala o piec naglowkow `## n. ...` — a cztery z nich staly w `DESIGN.md`
+   * jeszcze przed ta fala, wiec warunek, ktory ma odroznic „wchlonieta" od „skasowana", nie
+   * odroznial niczego i przechodzil takze na dokumencie z wypatroszonymi sekcjami. Nizej stoja
+   * rzeczy, ktorych przed fala w `DESIGN.md` NIE BYLO i ktore byly cala trescia usunietych
+   * papierow. */
   it('left their content in the files that stay', () => {
     const design = text(DESIGN);
-    for (const [what, pattern] of [
-      ['the brand', /^## 2\. Marka/m],
-      ['colour', /^## 3\. Kolor/m],
-      ['type', /^## 4\. Typografia/m],
-      ['space and shape', /^## 5\. Przestrzen|^## 5\. Przestrzeń/m],
-      ['components', /^## 6\. Komponenty/m],
+    for (const [what, needle] of [
+      ['the corner band', '--radius-pill'],
+      ['the colour that means it is happening now', '--live'],
+      ['the glass recipe and its escape hatch', 'prefers-reduced-transparency'],
+      ['the one field the house owns', '`.field`'],
+      ['the marker on an empty screen', 'data-empty'],
     ] as const) {
       expect(
-        pattern.test(design),
-        'the design document has no section about ' +
+        design.includes(needle),
+        'the design document says nothing about ' +
           what +
-          ', so deleting the wave papers deleted content instead of absorbing it',
+          ' (' +
+          needle +
+          '), so deleting the wave papers deleted content instead of absorbing it',
       ).toBe(true);
     }
     expect(

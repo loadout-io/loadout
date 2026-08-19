@@ -32,6 +32,19 @@ function named(source: string): Map<string, string> {
   return out;
 }
 
+/* SEKCJA D1, od jej naglowka do nastepnego naglowka drugiego poziomu.
+ *
+ * Skan po CALYM pliku decyzji lapie flagi wiersza polecen z innych decyzji (`--session-id`,
+ * `--permission-mode`, `--agent`), ktore nie sa nazwami wartosci i nie maja czego szukac
+ * w arkuszu stylu. Pytanie dotyczy decyzji o WYGLADZIE, wiec czytana jest jej sekcja. */
+function d1(source: string): string {
+  const from = source.search(/^## D1\b/m);
+  if (from < 0) return '';
+  const rest = source.slice(from + 1);
+  const to = rest.search(/^## /m);
+  return to < 0 ? source.slice(from) : source.slice(from, from + 1 + to);
+}
+
 /** Wartosci z arkusza domu, po nazwie — razem z prefiksem `--color-`, ktorego proza nie pisze. */
 function sheetValues(): Map<string, string> {
   const out = new Map<string, string>();
@@ -47,7 +60,7 @@ function inSheet(name: string, sheet: Map<string, string>): string | undefined {
 }
 
 describe('trzy pliki, jedna wartosc', () => {
-  const decisions = named(text(DECISIONS));
+  const decisions = named(d1(text(DECISIONS)));
   const design = named(text(DESIGN));
   const sheet = sheetValues();
 
@@ -84,6 +97,32 @@ describe('trzy pliki, jedna wartosc', () => {
       compared + decisions.size,
       'no pair at all was compared, so this assertion passed without judging anything',
     ).toBeGreaterThan(0);
+  });
+
+  /* KAZDA NAZWA WYMIENIONA W D1, nie tylko te z wartoscia w tej samej linii.
+   *
+   * Punkt (d) kontraktu brzmi „zadna nazwa wymieniona w D1 nie jest w tych plikach nieznana",
+   * a poprzednia wersja pytala wylacznie o pary nazwa-wartosc — czyli o dwie nazwy z osmiu.
+   * Cztery nazwy pasma promieni D1 wymienia BEZ wartosci i nie byly sprawdzane wcale: decyzja
+   * mogla nazwac `--radius-xl`, ktorego nie ma nigdzie, i bramka milczala. */
+  it('names nothing this app does not have, value or no value', () => {
+    const mentioned = [...d1(text(DECISIONS)).matchAll(/(--[a-z][\w-]*)/g)].map(
+      (hit) => hit[1] ?? '',
+    );
+    const inD1 = new Set(mentioned);
+    expect(
+      inD1.size,
+      'fewer than four names were read out of the locked decisions, so this sweep judges almost ' +
+        'nothing',
+    ).toBeGreaterThan(3);
+    const unknown = [...inD1].filter((name) => inSheet(name, sheet) === undefined);
+    expect(
+      unknown,
+      'the locked decisions name these and the house sheet has none of them: ' +
+        JSON.stringify(unknown) +
+        '. A decision that names a value the app does not carry is the same defect as a typeface ' +
+        'declared and never shipped.',
+    ).toEqual([]);
   });
 
   it('agrees with the design document too, on the names both spell out', () => {

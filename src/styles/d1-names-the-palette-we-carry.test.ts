@@ -52,18 +52,25 @@ function body(section: string): string {
 
 describe('D1', () => {
   const section = d1();
-  const sheet = text(THEME).toLowerCase();
+  /* ARKUSZ BEZ KOMENTARZY. „Aplikacja niesie te barwe" spelnial dotad hex, ktory przetrwal
+   * wylacznie w komentarzu — na przyklad w notce o migracji przy nazwach zastepczych. Barwa
+   * wycofana z deklaracji, a wspomniana w komentarzu, trzymala D1 zielona. */
+  const sheet = text(THEME)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .toLowerCase();
   const hexes = [...section.matchAll(/#[0-9a-fA-F]{6}\b/g)].map((hit) => hit[0].toLowerCase());
 
   it('has a section to judge', () => {
     expect(section.length, 'no D1 section was read out of the locked decisions').toBeGreaterThan(
       400,
     );
+    /* ROZNE barwy, nie wystapienia: dwie nazwane po dwa razy dawaly cztery i kontrola meldowala
+     * szerokosc, ktorej nie zmierzyla. */
     expect(
-      hexes.length,
-      'fewer than four colours were read out of D1, so every assertion below would sweep an ' +
-        'almost empty list',
-    ).toBeGreaterThan(3);
+      new Set(hexes).size,
+      'fewer than two DISTINCT colours were read out of D1, so every assertion below would sweep ' +
+        'an almost empty list',
+    ).toBeGreaterThan(1);
   });
 
   it('names no colour the app does not carry', () => {
