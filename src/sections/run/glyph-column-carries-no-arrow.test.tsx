@@ -5,6 +5,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { HistoryRow } from './feed/model';
+import type { Kind } from './feed/kinds';
+import { kinds } from './feed/kinds';
 import { Line } from './feed/line';
 
 /* AC-3 dla T-47: cichy `✓`, czerwony `✕`, i ani jednej strzalki.
@@ -24,21 +26,31 @@ const MOCKUP = resolve(ROOT, 'docs/mockup/index.html');
 
 const text = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 
-function row(over: Partial<HistoryRow>): HistoryRow {
+/**
+ * Wiersz historii o PRAWDZIWYM ksztalcie.
+ *
+ * Poprzednia wersja podawala pola `text`, `meta`, `open` i napisowy `id`, ktorych `HistoryRow`
+ * nie ma (deklaruje `label`, `metric`, `expanded`, liczbowy `id`), a rzutowanie `as HistoryRow`
+ * kazalo temu sie skompilowac. Wiersz renderowal sie wiec z etykieta `undefined`. Sygnatura bez
+ * rzutowania jest cala poprawka: teraz kompilator sadzi kształt, a nie ja.
+ */
+function row(kind: Kind): HistoryRow {
   return {
-    id: 'r1',
-    kind: 'note',
+    id: 1,
+    kind,
     agent: 'Forge',
-    text: 'Read 6 files',
-    meta: '',
-    output: [],
-    open: false,
-    ...over,
-  } as HistoryRow;
+    label: 'Read 6 files',
+    count: 0,
+    ids: [1],
+    expanded: false,
+    metric: '',
+    output: kind === 'ran' ? ['parser_handles_crlf ... FAILED'] : [],
+    detailId: null,
+  };
 }
 
-const render = (over: Partial<HistoryRow>): string =>
-  renderToStaticMarkup(createElement(Line, { row: row(over), onToggle: () => undefined }));
+const render = (kind: Kind): string =>
+  renderToStaticMarkup(createElement(Line, { row: row(kind), onToggle: () => undefined }));
 
 /**
  * Klasy komorki glifu.
@@ -65,7 +77,7 @@ function glyphChar(html: string): string {
 
 describe('kolumna glifow', () => {
   it('marks a finished step QUIETLY', () => {
-    const html = render({ kind: 'done' });
+    const html = render('done');
     expect(glyphChar(html), 'the finished glyph is not the tick the mockup states').toBe('✓');
     expect(
       /muted/.test(glyphClasses(html)),
@@ -76,7 +88,7 @@ describe('kolumna glifow', () => {
   });
 
   it('marks a broken step with the broken colour', () => {
-    const html = render({ kind: 'problem' });
+    const html = render('problem');
     expect(glyphChar(html), 'the broken glyph is not the cross the mockup states').toBe('✕');
     expect(
       /fail/.test(glyphClasses(html)),
@@ -88,9 +100,14 @@ describe('kolumna glifow', () => {
     /* POPRAWIONE: pierwotnie ten punkt zadal pustego glifu dla „wiersza czynnosci", a model
      * nie odroznia czynnosci od noty — `marker()` zwraca kropke dla wszystkiego, co nie jest
      * skonczone ani zepsute. Prawdziwa tresc jest wezsza i w pelni sprawdzalna. */
-    const kinds = ['note', 'done', 'problem', 'told', 'said'];
-    const arrows = kinds
-      .map((kind) => [kind, glyphChar(render({ kind } as never))] as const)
+    /* RODZAJE Z REJESTRU, nie z listy wpisanej w test — poprawione po drugiej opinii. Lista
+     * pieciu nazw zawierala `said`, ktorego w zamknietym rejestrze `feed/kinds.ts` NIE MA
+     * (czyli jeden z pieciu punktow sadzil rodzaj, ktory nie moze istniec), i pomijala `ran`,
+     * jedyny rodzaj docierajacy do galezi `✕` przez pole `output`, a nie przez `kind`. */
+    const every = Object.keys(kinds()) as readonly Kind[];
+    expect(every.length, 'the kind registry is empty').toBeGreaterThan(5);
+    const arrows = every
+      .map((kind) => [kind, glyphChar(render(kind))] as const)
       .filter(([, char]) => /[→>»]/.test(char))
       .map(([kind, char]) => kind + ' -> ' + char);
     expect(
@@ -103,22 +120,43 @@ describe('kolumna glifow', () => {
   it('agrees with the mockup, which must not ask for an arrow either', () => {
     const html = text(MOCKUP);
     expect(html.length, 'docs/mockup/index.html could not be read').toBeGreaterThan(100);
-    const feed = /<div class="feed"[\s\S]*?<\/div>\s*<!-- STREFA 2/.exec(html)?.[0] ?? html;
-    const arrows = [...feed.matchAll(/<span class="g">\s*→\s*<\/span>/g)].length;
+    const drawn = [...html.matchAll(/<span class="g">([^<]*)<\/span>/g)].map((hit) =>
+      (hit[1] ?? '').trim(),
+    );
+    expect(
+      drawn.length,
+      'no glyph cell was read out of the mockup, so this point would pass on an empty list',
+    ).toBeGreaterThan(2);
+    const arrows = drawn.filter((char) => /[→>»]/.test(char));
     expect(
       arrows,
-      'the mockup still draws ' +
-        String(arrows) +
-        ' arrow(s) in the glyph column. The mockup is the only oracle for looks, so while it ' +
-        'asks for one the app is the thing that looks wrong — and this point would be measuring ' +
-        'our code against a drawing that disagrees with it.',
+      'the mockup still draws these arrows in the glyph column: ' +
+        JSON.stringify(arrows) +
+        '. The mockup is the only oracle for looks, so while it asks for one the app is the thing ' +
+        'that looks wrong.',
+    ).toEqual([]);
+
+    /* I DRUGA STRONA TEJ SAMEJ ROZBIEZNOSCI, dopisana po drugiej opinii: rysunek nie ma prawa
+     * zadac glifu PUSTEGO tam, gdzie aplikacja rysuje kropke. Zamiana strzalki na pustke
+     * wymienilaby nazwana rozbieznosc na nienazwana, a wzorzec szukajacy tylko strzalek
+     * strukturalnie nie moglby jej zobaczyc. */
+    const plain = glyphChar(render('note'));
+    const blanks = drawn.filter((char) => char === '' && plain !== '');
+    expect(
+      blanks.length,
+      'the mockup asks for an empty glyph in ' +
+        String(blanks.length) +
+        ' place(s) while the app draws ' +
+        JSON.stringify(plain) +
+        '. Trading a named divergence for an unnamed one is worse than leaving the first: nobody ' +
+        'is looking for the second.',
     ).toBe(0);
   });
 
   it('gives what a PERSON said the person colour, not the interactive one', () => {
     /* `told` jest rodzajem, ktoremu `authorityOf` przypisuje autorytet „you" — i to on gatuje
      * przedrostek. `said` niesie wypowiedz AGENTA, wiec sadzenie na nim mierzylo nie ten wiersz. */
-    const said = render({ kind: 'told' });
+    const said = render('told');
     expect(
       /accent/.test(said),
       'the prefix of a human sentence carries the accent. Since 2026-08-19 the accent means ' +

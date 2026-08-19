@@ -25,7 +25,8 @@ const busy: NowZone = {
 
 const idle: NowZone = { rows: [], thinking: null };
 
-const render = (zone: NowZone): string => renderToStaticMarkup(createElement(Now, { now: zone }));
+const render = (zone: NowZone, live = true): string =>
+  renderToStaticMarkup(createElement(Now, { now: zone, live }));
 
 const count = (html: string, pattern: RegExp): number => [...html.matchAll(pattern)].length;
 
@@ -66,6 +67,23 @@ describe('strefa teraz', () => {
       'the zone carries the accent. Since 2026-08-19 the accent means "this is interactive" and ' +
         'nothing else; the zone is not a control, it is a readout.',
     ).toBe(0);
+  });
+
+  it('says nothing is alive after the run has STOPPED, even though rows remain', () => {
+    /* DOPISANE po drugiej opinii. `doing` w modelu jest tylko dopisywane i nigdy nie czyszczone,
+     * wiec po zakonczeniu biegu strefa dalej trzyma wiersze („waiting on Forge") — a kropka
+     * bramkowana sama ich liczba pulsowalaby dalej i mowilaby „dzieje sie" o czyms, co stoi. */
+    const stopped = render(busy, false);
+    expect(
+      count(stopped, LIVE),
+      'the zone still pulses after the run stopped. The rows stay in the model for ever, so the ' +
+        'number of rows cannot decide it: coral that is on screen whether or not something runs ' +
+        'stops meaning anything, and it spends one of the two animating regions §7 allows on a ' +
+        'fact that is false most of the time.',
+    ).toBe(0);
+    for (const row of busy.rows) {
+      expect(stopped, 'the stopped zone dropped the rows it was given').toContain(row.text);
+    }
   });
 
   it('says nothing is alive when nothing is', () => {

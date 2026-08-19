@@ -51,12 +51,26 @@ function productionFiles(): readonly string[] {
   return out;
 }
 
-/** Napisy klas, ktore niosa animacje, razem z plikiem, z ktorego pochodza. */
+/**
+ * Napisy klas, ktore niosa animacje, razem z plikiem, z ktorego pochodza.
+ *
+ * SKANER WIDZI KAZDY LITERAL, nie tylko atrybut — poprawione po drugiej opinii. Ten kod podaje
+ * klasy takze przez mapy i zmienne (`BLOCK`, `LABEL`, `tone`), wiec wersja czytajaca wylacznie
+ * `className="..."` przepuscilaby trzecia ruszajaca sie rzecz dopisana w tym idiomie.
+ *
+ * CO TA LICZBA ZNACZY, powiedziane wprost, bo pomiar z nieopisana granica jest gorszy niz jego
+ * brak: liczymy MIEJSCA W KODZIE, ktore sie ruszaja, czyli RODZAJE ruszajacej sie rzeczy.
+ * Jedno miejsce moze wyrenderowac wiele wystapien — kropka na karcie w tle rysuje sie raz na
+ * kazdy folder z zywym biegiem. Sufit z §7 mowi o regionach animujacych sie OD JEDNEGO
+ * ZDARZENIA, a trzy kropki na trzech kartach sa jednym rodzajem odpowiedzi na jedno pytanie,
+ * nie trzema. Rozroznienie „ile rodzajow" wobec „ile sztuk naraz" jest tu wyborem, nie
+ * przeoczeniem; drugiego nie da sie zmierzyc bez uruchomionej aplikacji.
+ */
 function animated(): ReadonlyArray<readonly [string, string]> {
   const out: Array<readonly [string, string]> = [];
   for (const file of productionFiles()) {
     const src = withoutComments(text(file));
-    for (const hit of src.matchAll(/(?:className|class)\s*=\s*[{]?\s*[`'"]([^`'"]*)[`'"]/g)) {
+    for (const hit of src.matchAll(/[`'\x22]([^`'\x22\n]*)[`'\x22]/g)) {
       const value = hit[1] ?? '';
       if (/\banimate-[a-z-]+\b/.test(value)) out.push([relative(ROOT, file), value] as const);
     }
@@ -110,7 +124,7 @@ describe('co pulsuje', () => {
     expect(footer, 'no footer was found in the navigation card').not.toBe('');
     expect(
       /animate-/.test(footer),
-      'the readiness dot moves. Whether a provider can be reached is neither an interaction nor ' +
+      'the readiness dot moves. Whether Claude Code can be reached is neither an interaction nor ' +
         'something happening now, and a dot that blinks forever spends one of the two regions §7 ' +
         'allows on a fact that never changes.',
     ).toBe(false);
