@@ -87,6 +87,48 @@ konflikt w kazdym lądowaniu. Kolejnosc: T-42, T-43, potem to zadanie.
 - `src-tauri/tests/it/main.rs` — **waski mandat**: ten plik masz w OWNS WYLACZNIE po to, zeby
   dopisac dwa wiersze `mod skills_scope_two_roots;` i `mod skills_scope_round_trip;` w porzadku
   alfabetycznym. Zadnej innej zmiany.
+- `src/state/skills.test.ts` — **waski mandat, dopisany 2026-08-19 przez orchestratora**:
+  wolno zmienic **jedna** oczekiwana postac wywolania (`toEqual([['pdf']])` w tescie „asks Rust by
+  name and then rereads the folders") razem z jej komunikatem. Ani jednej innej asercji w tym
+  pliku nie wolno zmienic, usunac ani rozluznic.
+- `src-tauri/tests/it/ipc_read_paths.rs`, `src-tauri/tests/it/skills_author_origin.rs`,
+  `src-tauri/tests/it/skills_author_pipeline.rs`, `src-tauri/tests/flow_skill.rs` —
+  **najwezszy mozliwy mandat**: WYLACZNIE przestawienie wywolan
+  `install_skill_inner(x, y)` na `install_skill_into(x, y, Landing::Everywhere, None)` plus import
+  i nazwa funkcji w tekstach komunikatow asercji. Ani jednej asercji nie wolno dodac, usunac
+  ani zmienic; liczba asercji w kazdym z tych plikow ma zostac ta sama.
+
+  **Dlaczego to jest w OWNS (par. 5c).** Zmierzone 2026-08-19 na galezi `task-T-44`: bramka
+  czerwona na DWOCH sprawdzeniach projektowych przy WSZYSTKICH TRZECH kryteriach zielonych.
+
+  `full-test` — `src/state/skills.test.ts:229` zamraza kształt wywolania jako DOKLADNIE
+  jednoargumentowy (`toEqual([['pdf']])`), a AC-2 wymaga, zeby usuwanie widzialo zakres projektu,
+  czyli `remove` musi wiezc folder. Bez tej sciezki kryterium jest niespelnialne: kazda
+  implementacja albo lamie tamten test, albo nie robi tego, czego AC-2 zada. Uzasadnienie tamtej
+  asercji ZOSTAJE prawdziwe i ma zostac w nowym komunikacie: nazwy `.claude/skills`
+  i `.agents/skills` dalej liczy wylacznie `place::destinations`, a z okna jedzie wylacznie TO,
+  KTORY projekt — ta sama wartosc, ktora juz jedzie do `run_workflow(folder)` i ktora waliduje
+  `AppState::project_folder`.
+
+  `quick-wired` — `install_skill_inner` nie ma wolajacego w `src-tauri/src`, bo produkcja przeszla
+  na `install_skill_into` z zakresem. Ta funkcja jest dzis trzylinijkowa przelotka trzymana
+  wylacznie po to, zeby skompilowaly sie DWANASCIE wywolan w czterech plikach testow nalezacych do
+  T-19, T-38 i T-42. Jej wlasny doc opisuje ten stan i wymienia trzy obejscia jako zakazane —
+  w tym przepuszczenie przez nia `Landing::Everywhere` z produkcji, bo to dokłada w warstwie
+  komend galaz duplikujaca decyzje `place::plan` (niezmiennik 23) wylacznie po to, zeby
+  sprawdzenie przestalo patrzec. Druga furtka, ktora `quick-wired` oferuje — wymienienie nazwy
+  w pliku zadania — zostala ODRZUCONA swiadomie: sprawia, ze sprawdzenie przestaje patrzec na
+  prawdziwa rzecz, i zostawia dwie odpowiedzi na „jak zainstalowac". Wiec przelotka ZNIKA,
+  a wywolania przechodza na jedna droge.
+
+  Obejscia, ktore przechodza naiwna asercje i sa ZAKAZANE: (a) skasowanie asercji
+  z `state/skills.test.ts` zamiast jej poprawienia; (b) `expect.arrayContaining` albo
+  `toEqual([expect.anything()])`, ktore przepuszcza dowolna liczbe argumentow i dowolna tresc;
+  (c) czytanie folderu w magazynie z globalnego `activeWorkspace()` bez podania go krawedzi, zeby
+  wywolanie zostalo jednoargumentowe — wtedy „ktory projekt" ma dwie odpowiedzi, a to jest defekt,
+  przed ktorym stoi tamten komunikat; (d) zostawienie `install_skill_inner` z `#[allow(dead_code)]`
+  albo pod `#[cfg(test)]` — pierwsze `quick-suppressions` lapie, drugie zamienia produkcyjna
+  funkcje w atrape testowa.
 - 3 pliki testow wymienione przy `check:`.
 
 **Czego to zadanie NIE dotyka:** `src-tauri/src/skills/place.rs` i `mod.rs` (T-18 — `Scope`,
@@ -211,5 +253,10 @@ src/sections/skills/index.tsx
 src/sections/skills/io.ts
 src/state/skills.ts
 src/sections/commands-wired.test.ts
+src/state/skills.test.ts
+src-tauri/tests/it/ipc_read_paths.rs
+src-tauri/tests/it/skills_author_origin.rs
+src-tauri/tests/it/skills_author_pipeline.rs
+src-tauri/tests/flow_skill.rs
 src/sections/skills/where-it-goes.test.tsx
 -->
