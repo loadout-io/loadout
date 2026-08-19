@@ -142,7 +142,7 @@ use uuid::Uuid;
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
-use crate::engine::drivers::command::{CheckHow, CheckSpec, CommandDriver};
+use crate::engine::drivers::command::{CheckHow, CheckSpec, CommandDriver, GIVE_UP_AFTER};
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
