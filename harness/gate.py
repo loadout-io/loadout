@@ -939,6 +939,12 @@ def record(tier, results, failed, total):
         "dirty": bool(_git("status", "--porcelain", "-uall")),
         "seconds": round(total, 2),
         "failed": failed,
+        # KTORE sprawdzenia oddaly 2, osobno od `failed`. Paragon mowil dotad tylko "ok/nie ok",
+        # a to zlewa dwie rozne rzeczy: "kod jest zly" (1) i "MY jestesmy zle skonfigurowani" (2).
+        # `integrate.sh` musi je rozroznic, bo wybacza kod 2 przed pierwszym merge'em -- i bez tej
+        # listy wybaczal takze sprzecznosc konfiguracji, czyli ladowal na drzewie, o ktorym bramka
+        # wlasnie powiedziala, ze nie umie go osadzic. Dopisane 2026-08-19 po T-53.
+        "misconfigured": [r["id"] for r in results if r["rc"] == 2],
         # Werdykt POZIOMU, nie surowy kod wyjścia. W `before` to przeciwieństwa dla każdego
         # kryterium, a to jest plik, który czyta --report.
         "checks": [{"id": r["id"], "kind": r["kind"],

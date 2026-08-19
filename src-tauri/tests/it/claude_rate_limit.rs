@@ -40,6 +40,11 @@ const WINDOW: &str = "five_hour";
 /// Stan, przy którym bieg leci dalej.
 const ALLOWED: &str = "allowed";
 
+/// Stan, który mówi „zbliżasz się", a nie „koniec". Zmierzony 2026-08-19 na `claude` 2.1.235
+/// przy 86% okna tygodniowego — CLI wysyła go dopiero po przekroczeniu progu 0.75, więc pomiar,
+/// na którym stoi ten plik, nie mógł go zobaczyć.
+const WARNING: &str = "allowed_warning";
+
 /// Stan, przy którym nie ma już czego wysyłać. Wartości spoza `allowed` nie są znane
 /// z pomiaru — kontrakt brzmi „cokolwiek innego niż `allowed` zatrzymuje bieg", więc taka
 /// jest też asercja.
@@ -153,6 +158,41 @@ fn a_status_other_than_allowed_asks_the_run_to_stop() -> Result<(), Box<dyn Erro
         "anything other than 'allowed' means there is nothing left to send, so the run has to \
          be told to stop rather than keep spending turns on refusals. Pausing itself is T-21's \
          job; saying so is this driver's"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_warning_leaves_the_run_sending() -> Result<(), Box<dyn Error>> {
+    let allowed = format!(r#""status":"{ALLOWED}""#);
+    let warned = format!(r#""status":"{WARNING}""#);
+    let line = real_line()?.replace(&allowed, &warned);
+    assert_ne!(
+        line,
+        real_line()?,
+        "the substitution has to actually change the line, otherwise this test measures the \
+         allowed case twice"
+    );
+
+    let limits = limits_from(&line);
+    let Some(AgentEvent::RateLimit {
+        status, pause_run, ..
+    }) = limits.first()
+    else {
+        return Err(format!("expected a rate limit event, got {limits:?}").into());
+    };
+
+    assert_eq!(
+        status.as_str(),
+        WARNING,
+        "the status travels through unchanged"
+    );
+    assert!(
+        !*pause_run,
+        "'allowed_warning' is still permission: the vendor is naming how much of the window is \
+         gone, not refusing the turn. Asking the run to stop here parks it until the window \
+         resets — and the weekly window resets days later, not hours"
     );
 
     Ok(())
