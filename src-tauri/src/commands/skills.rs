@@ -328,9 +328,30 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
     // i policzyłaby go dwa razy w liczniku nad sekcją.
     let mut names: BTreeSet<String> = BTreeSet::new();
 
-    for dir in
-        crate::skills::place::destinations(Scope::Global, &roots.home, roots.project.as_deref())
-    {
+    // OBA KORZENIE, KIEDY PROJEKT JEST OTWARTY, i to jest połowa tej funkcji. Lista odpowiada
+    // na pytanie „co widzi agent pracujący TUTAJ", a agent zagląda w oba drzewa — więc korzeń
+    // pominięty tutaj jest umiejętnością, której człowiek nie zobaczy i **nie będzie miał jak
+    // zabrać**, choć leży w żywej konfiguracji jego narzędzi agentowych. Bez otwartego projektu
+    // widać wyłącznie globalny: „co kiedykolwiek zapisaliśmy" jest innym pytaniem, a katalog
+    // w cudzym repozytorium jest osiągalny tylko z jego wnętrza.
+    //
+    // Ścieżki liczy dalej WYŁĄCZNIE `place::destinations` (niezmiennik 23) — drugie miejsce,
+    // w którym stoi `.claude/skills`, rozjechałoby się z pierwszym przy pierwszym vendorze,
+    // którego dołożymy.
+    let mut dirs = Vec::from(crate::skills::place::destinations(
+        Scope::Global,
+        &roots.home,
+        roots.project.as_deref(),
+    ));
+    if roots.project.is_some() {
+        dirs.extend(crate::skills::place::destinations(
+            Scope::Project,
+            &roots.home,
+            roots.project.as_deref(),
+        ));
+    }
+
+    for dir in dirs {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             // Nikt jeszcze nic nie zainstalował — zero umiejętności, nie błąd.
@@ -875,9 +896,7 @@ pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, E
 pub fn delete_skill_from(
     library: &Path,
     name: &str,
-    // SZKIELET, 2026-08-19 — ten sam brak, co w [`install_skill_into`]: wybór dojeżdża do
-    // sygnatury i nie dojeżdża do `place::remove`, gdzie stoi `Scope::Global`.
-    _landing: Landing,
+    landing: Landing,
     project: Option<&Path>,
 ) -> Result<(), Error> {
     // Nazwa przychodzi z okna, więc jest wejściem, któremu nie ufamy (T3 §5.2). Sidecar
@@ -892,8 +911,11 @@ pub fn delete_skill_from(
         });
     }
 
+    // Zakres jedzie do `place::remove` tą samą drogą, którą jedzie do `place::plan`: ta sama
+    // nazwa w dwóch korzeniach to DWIE rzeczy, a kopia zabrana „przy okazji" znika z katalogów,
+    // do których zagląda Claude Code tego człowieka, bez ani jednego zdania na ekranie.
     let roots = roots_for(library, project);
-    match crate::skills::place::remove(name, Scope::Global, &roots)? {
+    match crate::skills::place::remove(name, landing.into(), &roots)? {
         crate::skills::place::Removed::Done { paths } if paths.is_empty() => Err(Error::Invalid {
             messages: vec![format!(
                 "There is nothing installed under the name '{name}' any more, so nothing was \

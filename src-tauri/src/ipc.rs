@@ -824,8 +824,10 @@ pub fn install_reviewed_skill(
 /// jak jej zabrać — droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
 #[tauri::command]
 pub fn list_skills(folder: Option<&str>) -> Result<Vec<commands::skills::InstalledWire>, String> {
-    // SZKIELET, 2026-08-19 — jak w [`install_reviewed_skill`]: folder jedzie dalej niesprawdzony.
-    let project = folder.map(PathBuf::from);
+    // Ten sam sąd nad folderem, co przy zapisie i przy Starcie biegu (`project_folder`).
+    // Lista czytana z folderu, którego nie ma, jest pustą listą — czyli zdaniem „nic tam nie
+    // leży" o katalogu, o który nikt nie umiał zapytać.
+    let project = project_folder(folder)?;
     commands::skills::list_skills_in(&crate::loadout_dir(), project.as_deref())
         .map_err(|error| error.to_string())
 }
@@ -844,8 +846,10 @@ pub fn delete_skill(
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<(), String> {
-    // SZKIELET, 2026-08-19 — jak w [`install_reviewed_skill`]: folder jedzie dalej niesprawdzony.
-    let project = folder.map(PathBuf::from);
+    // Ten sam sąd nad folderem, co przy zapisie: zdjęcie „z tego projektu" z folderu, którego
+    // nie ma, jest odmową o folderze, a nie o umiejętności — i to jest zdanie, po którym
+    // człowiek wie, co zrobić.
+    let project = project_folder(folder)?;
     commands::skills::delete_skill_from(&crate::loadout_dir(), name, landing, project.as_deref())
         .map_err(|error| error.to_string())
 }
