@@ -440,9 +440,22 @@ if receipt.get("tier") != "before":
     sys.exit(1)
 for c in receipt.get("checks", []):
     reason = c.get("reason") or ""
+    # 2026-08-19 -- „exit 0 but no evidence" ZNIKNELO Z TEGO WARUNKU, i to jest naprawa
+    # KLASYFIKACJI, nie rozluznienie bramki. Ta funkcja odpowiada na jedno pytanie: „czy
+    # jakies kryterium JEST ZIELONE przed implementacja", bo tylko wtedy wznowienie bywa
+    # oszustwem. „exit 0 bez licznika przejsc" znaczy dokladnie odwrotnie -- `cargo test
+    # --test it <nieistniejacy_modul>::` nie uruchomil ANI JEDNEGO testu, bramka liczy to jako
+    # CZERWONE (`not c.get("ok")` stoi w tym samym warunku) i jest to normalny stan przed faza
+    # kontraktu. Ten sam podpis dostal pre-flight pierwszego biegu T-42 i harness SLUSZNIE
+    # poslal go wtedy do fazy kontraktu.
+    #
+    # Zmierzone 2026-08-19 na T-43 odbitym od `task-T-42`: TASK.md przyniesiony z bazy ustawia
+    # RESUMED=1, wiec kazde swieze kryterium rustowe wpadalo tutaj i bieg konczyl sie kodem 2
+    # przy TRZECH uczciwie czerwonych kryteriach (`verify.sh before` w tym samym drzewie:
+    # „4 checks, 3 failed"). Sonda na tych samych bajtach, przed i po: „PASSES before
+    # implementation" -> rc=0 (dalej odmawia), „exit 0 but no evidence" -> rc=1 (wznawia).
     if (c.get("kind") == "acceptance" and not c.get("ok")
-            and ("PASSES before implementation" in reason
-                 or "exit 0 but no evidence" in reason)):
+            and "PASSES before implementation" in reason):
         sys.stderr.write("   %s passes before implementation -- it certifies nothing\n" % c["id"])
         sys.exit(0)
 sys.exit(1)
