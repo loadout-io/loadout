@@ -58,7 +58,11 @@ export interface MemoryScreenProps {
   store?: MemoryStore;
 }
 
-const ZONE_TITLE = 'text-label text-muted';
+/* Nadoczko strefy, wiec `text-eyebrow` — stopien, ktory nosi wersaliki (DESIGN §4). Do
+ * 2026-08-19 bylo tu `text-label`; po rozszczepieniu stopnia trzy naglowki stref przestaly
+ * krzyczec i nic tego nie zglaszalo, bo klasa trzymana w stalej jest niewidoczna dla skanera,
+ * ktory czyta wylacznie literaly `className="..."`. AC-6 rozwija teraz stale. */
+const ZONE_TITLE = 'text-eyebrow text-muted';
 const ZONE_LEAD = 'max-w-160 text-body text-muted';
 /* `.ctx` z makiety: obrys `--line`, tło `--panel`, pozycje w środku z odstępem. */
 const PASSED_BOX = 'flex flex-col gap-2 rounded-sq border border-line bg-panel p-3';

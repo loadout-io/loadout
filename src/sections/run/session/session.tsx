@@ -53,7 +53,7 @@ function FactRow({ label, value }: { label: string; value: string }): ReactEleme
       data-fact
       className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-[9px] border border-line bg-well px-2 py-[5px] font-mono text-mono text-body"
     >
-      <span className="text-label text-muted uppercase">{label}</span>
+      <span className="text-label text-muted">{label}</span>
       <span className="min-w-0 break-words">{value}</span>
     </div>
   );
@@ -63,7 +63,7 @@ function FactRow({ label, value }: { label: string; value: string }): ReactEleme
 function Facts({ section }: { section: Section }): ReactElement {
   return (
     <section data-facts={section.id} className="mb-4 border border-line bg-panel">
-      <h2 className="border-b border-line px-3 py-[9px] font-mono text-label text-muted uppercase">
+      <h2 className="border-b border-line px-3 py-[9px] font-mono text-eyebrow text-muted">
         {section.heading}
       </h2>
       <div className="grid gap-[7px] px-3 py-[11px]">
@@ -132,7 +132,7 @@ export function Session({ card, sections, onBack, onToggle }: SessionProps): Rea
               {/* Nagłówek trzeciej sekcji stoi bez ramki, jak w makiecie (`.ln.rule`): transkrypt
                   jest tym samym strumieniem co ekran pracy, więc nie ma prawa wyglądać jak
                   blok faktów. */}
-              <h2 className="border-b border-line px-[18px] py-[9px] font-mono text-label text-muted uppercase">
+              <h2 className="border-b border-line px-[18px] py-[9px] font-mono text-eyebrow text-muted">
                 {section.heading}
               </h2>
               {section.empty === null ? null : (

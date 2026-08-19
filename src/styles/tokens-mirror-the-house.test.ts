@@ -195,11 +195,42 @@ describe('tokeny zgadzaja sie z migawka domu', () => {
     const tokens = snap.values ?? {};
     const theme = variables(withoutComments(fileText(THEME)));
 
+    /* KIERUNEK ODWROCONY po drugiej opinii 2026-08-19. Petla szla po `MAP` i pomijala
+     * w ciszy strone pusta (`if (wanted === '' || mine === '') continue`). Skutek: zapisana
+     * kopia, ktora URASTA przy nastepnym odswiezeniu — a jej wlasne pole `why` do odswiezania
+     * zacheca — niesie pozycje, ktorych zadna asercja nie porownuje; a pozycja o wartosci
+     * pustej przechodzila najpierw kontrole martwego wpisu (klucz istnieje), a potem byla
+     * pomijana przez petle, ktora miala ja OSADZIC. To jest ta sama awaria „porownanie
+     * przeszlo na niczym", tylko o jeden poziom nizej.
+     *
+     * Teraz petla po zapisanej kopii sprawdza POKRYCIE, a brak wartosci u nas jest
+     * PORAZKA, nie pominieciem. */
+    const covered = new Set(MAP.map(([house]) => house));
+    const uncovered = Object.keys(tokens).filter((house) => !covered.has(house));
+    expect(
+      uncovered,
+      'the saved copy carries entries the mapping table never names, so nothing compares them. ' +
+        'A copy that grows quietly stops being a copy of anything checked.',
+    ).toEqual([]);
+
+    const blank = Object.entries(tokens)
+      .filter(([, value]) => tight(value) === '')
+      .map(([house]) => house);
+    expect(
+      blank,
+      'these entries of the saved copy hold an empty value. An empty value passes the dead-entry ' +
+        'check above, because the key is there, and would then be skipped by the very loop ' +
+        'meant to judge it.',
+    ).toEqual([]);
+
     const drift: string[] = [];
     for (const [house, ours] of MAP) {
       const wanted = tight(tokens[house] ?? '');
       const mine = theme.get(ours) ?? '';
-      if (wanted === '' || mine === '') continue;
+      if (mine === '') {
+        drift.push(ours + ': not defined in theme.css at all');
+        continue;
+      }
       if (wanted !== mine) drift.push(ours + ': house says ' + wanted + ', we say ' + mine);
     }
     expect(

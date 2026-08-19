@@ -34,26 +34,35 @@ function faces(css: string): readonly FaceRule[] {
   const out: FaceRule[] = [];
   for (const hit of css.matchAll(/@font-face\s*\{([^}]*)\}/g)) {
     const body = hit[1] ?? '';
-    const family = /font-family\s*:\s*["']?([^;"']+)["']?\s*;/.exec(body)?.[1]?.trim() ?? '';
-    const url = /src\s*:[^;]*url\(\s*["']?([^"')]+)["']?\s*\)/.exec(body)?.[1]?.trim() ?? '';
+    const family =
+      /font-family\s*:\s*[\x22\x27]?([^;\x22\x27]+)[\x22\x27]?\s*;/.exec(body)?.[1]?.trim() ?? '';
+    const url =
+      /src\s*:[^;]*url\(\s*[\x22\x27]?([^\x22\x27)]+)[\x22\x27]?\s*\)/.exec(body)?.[1]?.trim() ??
+      '';
     const weight = /font-weight\s*:\s*([^;]+);/.exec(body)?.[1]?.trim() ?? '';
     out.push({ family, url, weight });
   }
   return out;
 }
 
-/** Pierwszy czlon listy krojow tokenu, bez cudzyslowow. */
+/** Pierwszy czlon listy krojow, bez cudzyslowow.
+ *
+ * Cudzyslowy w wyrazeniach regularnych tego pliku sa zapisane heksadecymalnie (\x22, \x27).
+ * Literal o NIEPARZYSTEJ liczbie cudzyslowow rozsynchronizowuje skaner
+ * `checks/quick-vocabulary.sh`: jego wzorzec na literaly bierze wtedy KOD za tekst widoczny
+ * dla czlowieka i zglasza slowa, ktorych w zadnym napisie nie ma — i to nie w tym miejscu,
+ * a kilkadziesiat wierszy dalej. Zmierzone w tej fali dwa razy. */
 function firstFamily(css: string, token: string): string {
   const value = new RegExp('--' + token + '\\s*:\\s*([^;]+);').exec(css)?.[1] ?? '';
   const first = value.split(',')[0] ?? '';
-  return first.replace(/["']/g, '').trim();
+  return first.replace(/[\x22\x27]/g, '').trim();
 }
 
 /** Wszystkie rodziny cytowane w tokenach `--font-*`. Cudzyslow znaczy „nasza, wniesiona". */
 function quotedFamilies(css: string): readonly string[] {
   const out: string[] = [];
   for (const hit of css.matchAll(/--font-[a-z-]+\s*:\s*([^;]+);/g)) {
-    for (const q of (hit[1] ?? '').matchAll(/["']([^"']+)["']/g)) {
+    for (const q of (hit[1] ?? '').matchAll(/[\x22\x27]([^\x22\x27]+)[\x22\x27]/g)) {
       const name = (q[1] ?? '').trim();
       if (name !== '') out.push(name);
     }
@@ -103,6 +112,19 @@ describe('kroje naprawde sa', () => {
     expect(declared).toContain(mono);
     expect(ui, 'the ui list names no family at all').not.toBe('');
     expect(mono, 'the mono list names no family at all').not.toBe('');
+    /* PAROWANIE, dopisane po drugiej opinii 2026-08-19. Do tej pory ten punkt sprawdzal
+     * wylacznie PRZYNALEZNOSC do zbioru zadeklarowanych rodzin, wiec `--font-ui` wskazujacy
+     * na rodzine maszynowa przechodzil wszystkie piec punktow — czyli interfejs w calosci
+     * o stalej szerokosci znaku byl zielony. To niszczy regule semantyczna z DESIGN §4
+     * („mono znaczy: to wyprodukowala maszyna"), ktora jest calym powodem istnienia dwoch
+     * rodzin. Nie porownujemy z nazwami wpisanymi z palca — pytamy o to, co ta regula
+     * naprawde mowi: dwie rodziny musza byc DWIEMA. */
+    expect(
+      ui === mono,
+      'the human-language family and the machine-value family are the same face. DESIGN §4 ' +
+        'keeps two families for one reason: seeing mono has to mean "a machine produced this ' +
+        'and you can copy it". One face for both makes every sentence look like a value.',
+    ).toBe(false);
   });
 
   it('has no quoted family without a @font-face, so the rule holds both ways', () => {

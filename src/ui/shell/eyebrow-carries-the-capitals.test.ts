@@ -146,9 +146,36 @@ describe('wersaliki nosi nadoczko', () => {
     ).toEqual([]);
   });
 
-  it('does not let the rewritten ladder lose its empty-comparison guards', () => {
-    const ladder = fileText(LADDER);
-    expect(ladder.length, 'src/ui/shell/type-ladder.test.ts is missing').toBeGreaterThan(100);
+  it('does not let the rewritten ladder lose its coverage or its guards', () => {
+    /* POPRAWIONE po drugiej opinii 2026-08-19. Sam stosunek dwoch licznikow nie odroznia
+     * „zgubiono kontrole" od „zgubiono kontrole RAZEM z jej odczytem": skasowanie calego
+     * porownania `.field` wlasciwosc po wlasciwosci zostawia `guards >= reads` prawdziwe
+     * i zdejmuje ochrone. Fraza liczona byla tez GDZIEKOLWIEK, wiec wpisanie jej do komentarza
+     * podbijalo licznik bez ani jednej asercji.
+     *
+     * Stad dwie zmiany: komentarze SA zdejmowane przed liczeniem, a obok stosunku stoi
+     * POKRYCIE — imienna lista regul makiety, ktore ta wyrocznia musi sadzic. Usuniecie pary
+     * odczyt+kontrola przewraca teraz punkt o pokryciu, a nie stosunek. */
+    const ladderRaw = fileText(LADDER);
+    expect(ladderRaw.length, 'src/ui/shell/type-ladder.test.ts is missing').toBeGreaterThan(100);
+    const ladder = withoutComments(ladderRaw);
+
+    /* Reguly makiety, ktorych ta wyrocznia nie ma prawa przestac sadzic. Trzy nadoczka
+     * i dwie etykiety to sedno rozszczepienia stopnia; pole, obszar tekstowy i kropka
+     * to trzy inne fakty, ktore tylko ona porownuje z makieta. */
+    const MUST_JUDGE = [
+      ...EYEBROWS,
+      ...LABELS,
+      '.fld input,.fld select,.fld textarea',
+      '.fld textarea',
+      '.dot.live',
+    ];
+    const dropped = MUST_JUDGE.filter((selector) => !ladder.includes(selector));
+    expect(
+      dropped,
+      'the ladder no longer names these mockup rules at all. A rule nobody reads is a rule ' +
+        'nobody compares, and dropping a read together with its guard keeps every ratio happy.',
+    ).toEqual([]);
 
     const reads = [...ladder.matchAll(/ruleBod(?:y|ies)\(html,/g)].length;
     const guards = [...ladder.matchAll(/(?:nothing|no [a-z-]+) was read out of/g)].length;

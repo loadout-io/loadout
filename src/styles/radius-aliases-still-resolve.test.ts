@@ -77,9 +77,27 @@ describe('aliasy promieni', () => {
   });
 
   it('has no 24px rung, because a tool at this density stops looking like a tool', () => {
-    const wrong = [...table.entries()]
-      .filter(([name]) => name.startsWith('--radius-'))
-      .filter(([, value]) => value.replace(/\s/g, '') === '24px')
+    /* WARTOSC, nie pisownia — poprawione po drugiej opinii 2026-08-19. Porownanie napisu
+     * z `'24px'` przepuszczalo `24.0px`, `1.5rem` i `calc(12px * 2)`, czyli trzy zapisy
+     * dokladnie tego ksztaltu, ktorego ten punkt zabrania. `calc()` odrzucamy WPROST, bo
+     * jego wyniku nie da sie tu policzyc, a punkt udajacy, ze potrafi, jest gorszy niz brak. */
+    const pixels = (value: string): number | null => {
+      const v = value.replace(/\s/g, '');
+      const px = /^(\d+(?:\.\d+)?)px$/.exec(v);
+      if (px !== null) return Number(px[1]);
+      const rem = /^(\d+(?:\.\d+)?)rem$/.exec(v);
+      if (rem !== null) return Number(rem[1]) * 16;
+      return null;
+    };
+    const rungs = [...table.entries()].filter(([name]) => name.startsWith('--radius-'));
+    const calc = rungs.filter(([, value]) => value.includes('calc(')).map(([name]) => name);
+    expect(
+      calc,
+      'a radius rung is written with calc(), whose result this point cannot evaluate — so the ' +
+        'shape it forbids could be reached with nothing going red',
+    ).toEqual([]);
+    const wrong = rungs
+      .filter(([, value]) => pixels(expand(value, table)) === 24)
       .map(([name]) => name);
     expect(
       wrong,
@@ -111,14 +129,20 @@ describe('aliasy promieni', () => {
         raw,
         alias + ' has no value, so the comparison below would run against an empty string',
       ).not.toBe('');
+      /* NAZWA, nie sam ksztalt — poprawione po drugiej opinii 2026-08-19. Warunek „zawiera
+       * `var(`" przepuszczal `--radius-sq: var(--radius-old-sq)` z osobnym
+       * `--radius-old-sq: 9px`, czyli dokladnie ta druga kopie liczby, ktorej ten punkt
+       * zabrania — cicha rozbieznosc przesuwala sie o jedno przekierowanie dalej, a rownosc
+       * rozwinietych wartosci spelnia takze zdublowany literal. */
       expect(
-        raw,
+        raw.replace(/\s/g, ''),
         alias +
-          ' states a literal instead of pointing at ' +
+          ' does not name ' +
           target +
-          '. An alias holding its own copy of the number drifts silently the next time the band ' +
-          'moves, and then two surfaces have two different "2px".',
-      ).toContain('var(');
+          ' directly. An alias holding its own copy of the number — or pointing at a second ' +
+          'name that holds one — drifts silently the next time the band moves, and then two ' +
+          'surfaces have two different "2px".',
+      ).toBe('var(' + target + ')');
       expect(expand(raw, table)).toBe(expand(table.get(target) ?? 'MISSING', table));
     }
   });

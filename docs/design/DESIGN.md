@@ -250,6 +250,13 @@ Podział jest sprawdzalny i jest sprawdzany:
 Wersaliki na każdej etykiecie pola są najczęstszym ruchem domyślnego panelu admina i pierwszą
 rzeczą, po której formularz przestaje wyglądać jak macOS.
 
+> **Rozbieżność zapisana, nie naprawiona po cichu.** Ten dokument stawia `--t-eyebrow` w rodzinie
+> `ui`, bo nadoczko jest językiem ludzkim, a `mono` znaczy „wartość maszynowa". Makieta trzyma
+> trzy reguły nadoczka (`.side h3`, `.rail h2`, `.ctx .ch`) w `mono` i komponenty niosą przy nich
+> klasę `font-mono`. **Żadna wyrocznia tego nie porównuje**, więc rozjazd nie świeci na czerwono
+> — i właśnie dlatego stoi tu wypisany. Zmiana rodziny jest zmianą WYGLĄDU, a wygląd zmienia się
+> razem z regułą w makiecie: należy do T-48, nie do zadania o słowniku.
+
 Reguła `text-transform` mieszka **w definicji stopnia**, w warstwie `components`, a nie
 w komponentach: Tailwind pozwala tokenowi `--text-*` nieść interlinię, rozstrzelenie i wagę,
 ale nie `text-transform`. Warstwa `components` stoi niżej niż `utilities`, więc `normal-case`
