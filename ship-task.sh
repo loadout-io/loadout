@@ -412,19 +412,40 @@ fi
 # Zmierzone na T-19 (2026-08-16): bieg zabity w fazie kontraktu, osiem razy
 # "did not RUN (error: no test target)". Exit 0 znaczy "nie ma ani jednej specyfikacji".
 contract_has_no_specs_at_all() {
-  python3 - "$WT/runs/last.json" <<'RECEIPT'
-import json, sys
+  # 2026-08-19 -- PYTA DYSK, NIE PARAGONU, i to jest naprawa tej samej klasy co w funkcji
+  # nizej. Wersja poprzednia uznawala „nie ma ani jednej specyfikacji" wtedy i tylko wtedy,
+  # gdy KAZDE kryterium meldowalo `did not RUN`. Kryterium rustowe, ktorego modul jeszcze nie
+  # istnieje, melduje jednak `exit 0 but no evidence of execution`: po scaleniu celow testowych
+  # w jeden (`tests/it/`) cel `it` ISTNIEJE i biegnie z filtrem, ktory nic nie lapie. Wiec dla
+  # kazdego zadania z kryterium rustowym ten test byl falszem takze wtedy, gdy plikow nie bylo
+  # ani jednego -- a bieg szedl wtedy do RUNDY NAPRAWCZEJ ze zdaniem „the specs are already
+  # written and already judged". Komentarz nizej ostrzega przed dokladnie tym: naprawiacz nie ma
+  # czego naprawic, a kosztuje cale wywolanie modelu.
+  #
+  # Zmierzone 2026-08-19 na T-43: trzy kryteria, ZERO plikow specyfikacji, paragon 2x
+  # „exit 0 but no evidence" + 1x „did not RUN" -- stara wersja oddawala 1 („specyfikacje sa").
+  #
+  # Dlaczego dysk, a nie drugi napis w warunku: „czy plik specyfikacji istnieje" jest pytaniem
+  # o PLIK, a nie o brzmienie komunikatu (niezmiennik 20 zastosowany do harnessu). Sciezki
+  # liczy `gate.spec_tokens` -- ten sam parser, ktory sadzi kontrakt, wiec nie powstaje tu
+  # druga tabela odwzorowan `--test it <modul>:: -> plik` (niezmiennik 23). Rozne od zera
+  # trafienie znaczy „jest co naprawiac", zero znaczy „pisz od nowa".
+  python3 - "$WT" <<'SPECS'
+import os, sys
+
+wt = sys.argv[1]
+sys.path.insert(0, os.path.join(wt, "harness"))
 try:
-    receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+    import gate
 except Exception:
+    sys.exit(1)                      # brak parsera to brak dowodu, a nie dowod
+
+criteria = gate.read_task(os.path.join(wt, "TASK.md"))
+named = [path for c in criteria if c["check"] for path in gate.spec_tokens(c["check"])]
+if not named:
     sys.exit(1)
-if receipt.get("tier") != "before":
-    sys.exit(1)
-acceptance = [c for c in receipt.get("checks", []) if c.get("kind") == "acceptance"]
-if not acceptance:
-    sys.exit(1)
-sys.exit(0 if all("did not RUN" in (c.get("reason") or "") for c in acceptance) else 1)
-RECEIPT
+sys.exit(1 if any(os.path.isfile(os.path.join(wt, path)) for path in named) else 0)
+SPECS
 }
 
 
