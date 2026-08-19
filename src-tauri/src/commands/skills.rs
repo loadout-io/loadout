@@ -871,26 +871,43 @@ pub fn install_skill_into(
 ///
 /// # `checks/quick-wired.sh` ŚWIECI NA TĘ FUNKCJĘ I NIE MA SIĘ MYLIĆ — 2026-08-19
 ///
-/// Ta skorupa nie ma produkcyjnego wołającego i mieć go nie będzie: produkcja wchodzi tu przez
-/// okno, a okno **zawsze** przysyła zakres, więc arność 2 nie odpowiada na żadne pytanie, które
-/// aplikacja zadaje. Żyje wyłącznie dlatego, że wołają ją trzy pliki testowe spoza bloku
+/// I MÓWI PRAWDĘ, a nie myli się na heurystyce diffa — sprawdzone w kodzie bazowym gałęzi
+/// (`0cad4fe`). Do tego commita `ipc.rs` wołał WSZYSTKIE TRZY skorupy arności bez zakresu
+/// wprost: `install_skill` → ta funkcja, `list_skills` → [`list_skills_inner`],
+/// `delete_skill` → [`delete_skill_inner`]. Ta gałąź przełożyła te trzy komendy na funkcje
+/// świadome zakresu i tym samym **odebrała wszystkim trzem produkcyjnych wołających**. To jest
+/// dokładnie zdarzenie, po którym ten check powstał, tylko widziane od drugiej strony: nie
+/// „mechanizm wylądował i nikt go nie zawołał", a „mechanizm został wyminięty i nikt tego nie
+/// zauważył".
+///
+/// Produkcyjnego wołającego ta skorupa już nie dostanie i dostać nie ma: produkcja wchodzi tu
+/// przez okno, a okno **zawsze** przysyła zakres, więc arność 2 nie odpowiada na żadne pytanie,
+/// które aplikacja zadaje. Żyje wyłącznie dlatego, że wołają ją trzy pliki testowe spoza bloku
 /// `<!-- OWNS -->` T-44 (`tests/it/ipc_read_paths.rs`, `tests/it/skills_author_origin.rs`,
 /// `tests/flow_skill.rs`), a dwa pierwsze są modułami TEGO SAMEGO celu, co kryteria T-44 —
 /// zmiana arności zamieniłaby je w „nie da się skompilować celu", czyli w podpis, którego bramka
 /// nie liczy jako czerwieni (AGENTS.md §2a pkt 5).
 ///
-/// [`list_skills_inner`] i [`delete_skill_inner`] są dokładnie tym samym długiem i przechodzą
-/// ten check tylko dlatego, że proza `tasks/T-42.md` i `tasks/T-44.md` wymienia je **przypadkiem**.
-/// Ta jedna nie jest tam wymieniona, więc świeci — i to jest prawdziwa granica checka, nie wada
-/// tego kodu: nie umie odróżnić „mechanizm wylądował i nikt go nie zawołał" od „adapter zgodności
-/// dla testów, których to zadanie nie posiada".
+/// [`list_skills_inner`] i [`delete_skill_inner`] straciły wołających w tym samym commicie i są
+/// dokładnie tym samym długiem. Przechodzą ten check tylko dlatego, że proza `tasks/T-42.md`
+/// i `tasks/T-44.md` wymienia ich nazwy **przypadkiem**, przy okazji zdań o czymś innym. Jedyna
+/// granica checka jest więc taka: świeci na jedną z trzech identycznych sytuacji, bo o dwóch
+/// pozostałych ktoś kiedyś napisał zdanie. Sam fakt, który melduje, jest prawdziwy o wszystkich
+/// trzech.
 ///
-/// DWIE DROGI WYJŚCIA I OBIE NALEŻĄ DO CZŁOWIEKA: wymienić tę nazwę w `tasks/T-44.md`, albo
-/// skasować tę skorupę i poprawić te trzy pliki testowe. Czego robić NIE WOLNO, a co przechodzi:
-/// dopisać wywołanie do komentarza (check pyta o wystąpienie napisu — AGENTS.md §20, „przechodził
-/// na komentarzu"), albo przepuścić tędy `Landing::Everywhere` z [`install_skill_into`]. To drugie
-/// wygląda niewinnie i jest gorsze: dokłada gałąź, która duplikuje w warstwie komend decyzję
-/// należącą do `place::plan` (niezmiennik 23), żeby sprawdzenie przestało patrzeć.
+/// CZYSTE ZAKOŃCZENIE TO SKASOWANIE TYCH TRZECH SKORUP i poprawienie ~15 wywołań w tamtych
+/// plikach testowych — podmiana mechaniczna, `(&x, y)` na `(&x, y, Landing::Everywhere, None)`.
+/// Tego nie da się zrobić z wnętrza T-44 (te pliki nie są w jego `<!-- OWNS -->`), więc decyzja
+/// należy do człowieka; drugą drogą jest wymienienie tej nazwy w `tasks/T-44.md`, co przenosi
+/// dług tam, gdzie ktoś go widzi, zamiast go zdejmować.
+///
+/// CZEGO ROBIĆ NIE WOLNO, a co zazieleniłoby check: dopisać wywołanie do komentarza (check pyta
+/// o wystąpienie napisu — AGENTS.md §20 ma incydent, w którym selftest przechodził **na
+/// komentarzu**), zagnieździć tę deklarację w podmodule z `pub use` (regex sądzi `pub fn`
+/// w pierwszej kolumnie, więc wcięcie ją ukrywa), albo przepuścić tędy `Landing::Everywhere`
+/// z [`install_skill_into`]. To trzecie wygląda najniewinniej i jest najgorsze: dokłada gałąź
+/// duplikującą w warstwie komend decyzję należącą do `place::plan` (niezmiennik 23), i to
+/// wyłącznie po to, żeby sprawdzenie przestało patrzeć.
 pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
     install_skill_into(library, name, Landing::Everywhere, None)
 }
