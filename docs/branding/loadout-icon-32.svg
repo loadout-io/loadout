@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- RYSUNEK 32 px, RECZNIE DOCIAGNIETY. Trzy rzeczy inne niz w rysunku pelnym, kazda
+       z powodem: krawedzie 62 zamiast 38 (przy 32 px linia 38/1024 to niecale 1,2 px i ginie),
+       wezly jednolita barwa zamiast gradientu (gradient na dwoch pikselach to szara plama),
+       i BEZ sheenu ani krawedzi wewnetrznej (oba operuja na 0,1 px). Squircle zostaje w tej
+       samej proporcji - ikona nie ma prawa zmieniac ksztaltu razem z rozmiarem. -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="36%" r="78%">
+      <stop offset="0%" stop-color="#221f52"/>
+      <stop offset="52%" stop-color="#100f26"/>
+      <stop offset="100%" stop-color="#07070f"/>
+    </radialGradient>
+    <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <g fill="none" stroke="#8f96ff" stroke-width="62" stroke-linecap="round">
+      <path d="M244 512 L512 372"/>
+      <path d="M244 512 L512 652"/>
+      <path d="M512 372 L780 512"/>
+      <path d="M512 652 L780 512"/>
+    </g>
+    <circle cx="244" cy="512" r="78" fill="#cdc2ff"/>
+    <circle cx="512" cy="372" r="78" fill="#cdc2ff"/>
+    <circle cx="512" cy="652" r="78" fill="#cdc2ff"/>
+    <circle cx="780" cy="512" r="86" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,209 @@
+# T-49 — Znak, ikona i logotyp
+
+Czwarte zadanie fali. Aplikacja ma dzis znak, ktory jest czterema luznymi kwadratami obroconymi
+o 45 stopni, logotyp `LOADOUT` w monospace z rozstrzeleniem `.12em`, i **ani jednej ikony
+aplikacji** — `src-tauri/tauri.conf.json` nie ma nawet pola `bundle.icon`, a w `src-tauri/icons/`
+lezy jeden `icon.png`.
+
+## Znak: najmniejszy PRAWDZIWY graf
+
+Jedno wejscie, dwie rownolegle galezie, jedna synteza. To nie jest ozdoba dobrana do nazwy —
+to dwie z pieciu rzeczy z decyzji D6, ktorych zaden vendor nie zbuduje, bo nie ma w tym interesu:
+odpalic kilku agentow naraz i zebrac ich wyniki w jeden. Wnetrze aplikacji ma niezmiennik 17
+(„UI nie rysuje relacji, ktorych nie ma w danych"), wiec marka, ktora **jest** najmniejszym
+grafem prawdziwym, jest jedynym mozliwym ornamentem tego produktu.
+
+Cztery luzne kwadraty nie maja krawedzi, wiec nie maja relacji, wiec nie sa grafem. Nowy znak
+doklada dokladnie dwie rzeczy: **krawedzie i kierunek**.
+
+Siatka 24 × 24. Wezly: `3,7·12` · `12·5,1` · `12·18,9` · `20,3·12`. Promien 1,95; wezel syntezy
+2,15 (+10%, bo z wielu wychodzi jedno). Krawedz 1,25 — stosunek srednicy wezla do grubosci linii
+wynosi **3,1 : 1** i to jest liczba, na ktorej ten znak stoi: przy 2,4 : 1 wezel czyta sie jako
+zgrubienie linii i caly znak zamyka sie w pierscien (zmierzone na 176 px). Sylwetka: romb
+16,6 × 13,8, **szerszy niz wysoki**, bo graf plynie w poziomie.
+
+## Ikona: przepis z domu, i trzy rysunki zamiast jednego
+
+Przepis jest 1:1 z `../meetnotes/docs/branding/murmur-icon.svg`, zeby dwie aplikacje w jednym
+Docku wygladaly na rodzenstwo: squircle `rx=232` na plotnie 1024, radialne tlo indygo, sheen
+zanikajacy na 34% wysokosci, temat wysrodkowany, ostra krawedz wewnetrzna w bieli 10%.
+
+**Trzy rozmiary sa OSOBNYMI rysunkami, nie skalowaniem**, i to jest cala tresc AC-2:
+
+| rozmiar | co sie zmienia |
+|---|---|
+| 1024 / 512 / 256 / 128 | rysunek pelny |
+| 32 | krawedzie grubsze, wezly bez gradientu, bez sheenu i bez krawedzi wewnetrznej |
+| 16 | sylwetka rombu i cztery kropki, jedna barwa |
+
+Przy 32 px cztery krawedzie po 38 jednostek zlewaja sie w plame, a sheen i krawedz wewnetrzna
+znikaja. `.icns` jest **zestawem**, nie skalowaniem — i ikona, ktora mydli sie na pasku Docka,
+jest pierwsza rzecza, jaka czlowiek widzi o jakosci aplikacji.
+
+Rasteryzacja: `qlmanage -t` czyta SVG, `sips` doprowadza do dokladnego rozmiaru, `iconutil`
+pakuje `.icns`. Wszystkie trzy sa w systemie (sprawdzone). Zrodlem prawdy zostaje **SVG**;
+PNG-i i `.icns` sa z niego generowane skryptem, wiec nie ma dwoch rysunkow tej samej rzeczy.
+
+## Logotyp: `loadout` malymi literami
+
+Dom pisze `murmur` malymi literami w Hanken Grotesk 600 z ciasnym trackingiem. Dzisiejsze
+`LOADOUT` w mono z rozstrzeleniem `.12em` jest **cytatem z terminala, nie logotypem**: mono
+w tym systemie znaczy „to wyprodukowala maszyna", a nazwa produktu jest jezykiem ludzkim.
+
+Podpis: **many agents, one plan**. Wylacznie ze slow, ktore juz sa w interfejsie (`agent`,
+`/plan`), wiec nie doklada ani jednego terminu do slownika (D5, niezmiennik 14).
+
+**Logotyp idzie do repo jako KRZYWE, nie jako tekst z `font-family`.** Powod jest zmierzony
+w tym repo: `theme.css` deklarowal Intera od pierwszego dnia i rysowal sie krojem systemowym
+po cichu przez caly ten czas. Logotyp zlozony tekstem powtorzylby ten sam blad tam, gdzie widac
+go najbardziej.
+
+**Read first:**
+`docs/design/DESIGN.md` §2 · `../meetnotes/docs/branding/murmur-icon.svg` (przepis) ·
+`../meetnotes/docs/branding/murmur-logo.svg` (lockup i specyfikacja logotypu) ·
+`src/ui/shell/titlebar.tsx` (`Mark`, logotyp) · `src/ui/shell/nav-furniture.test.tsx`
+(**sadzi dzis `LOADOUT` i `rotate-45`** — oba przestaja istniec).
+
+## Kto to robi
+
+- **Agent:** `react-ui`
+- **Druga opinia:** inny vendor niz pisarz (D3).
+- **Artefakty biegu:** `runs/T-49/`
+
+## Zalezy od
+
+**T-45** (tokeny, kroje) i **T-46** (powloka, w ktorej znak stoi).
+
+## Co to zadanie posiada
+
+- `docs/branding/loadout-mark.svg`, `loadout-icon.svg`, `loadout-icon-32.svg`,
+  `loadout-icon-16.svg`, `loadout-logo.svg` — **nowe**, zrodlo prawdy.
+- `scripts/icons.sh` — **nowy**: rasteryzuje SVG do PNG i pakuje `.icns`. Jeden rysunek,
+  jedno zrodlo.
+- `src-tauri/icons/*` — zestaw generowany.
+- `src-tauri/tauri.conf.json` — **pole `bundle.icon`, ktorego dzis nie ma wcale**.
+- `src/ui/brand/mark.tsx` — **nowy**: znak jako komponent, dwa tokeny, zero literalow.
+- `src/ui/shell/titlebar.tsx` — znak i logotyp w nawigacji.
+- `src/ui/shell/nav-furniture.test.tsx` — wyrocznia sadzaca `LOADOUT` i `rotate-45`.
+- `docs/mockup/index.html` — **wylacznie** `.mark`, `.mark i`, `.brand b` i markup marki.
+- `docs/design/DESIGN.md` — **wylacznie §2** (podpis wizualny).
+- Piec plikow testow wymienionych przy `check:`.
+
+**Czego to zadanie NIE dotyka:** formularzy (T-48), `docs/DECISIONS-LOCKED.md` (T-50),
+`checks/**`, ani jednego pliku Rusta poza `tauri.conf.json`.
+
+## Niezmienniki
+
+- **17 — UI nie rysuje relacji, ktorych nie ma w danych.** Znak jest najmniejszym grafem
+  PRAWDZIWYM i to jest jedyny powod, dla ktorego wolno mu byc ornamentem.
+- **13 — jeden fakt, jedno miejsce.** Jeden rysunek na rozmiar, jedno zrodlo dla PNG i `.icns`.
+- **21 — nie pisz artefaktu, ktorego zaden skrypt nie czyta.** Kazdy plik SVG jest czytany
+  przez kryterium w kazdym biegu.
+- **DESIGN §3 — akcent nigdy nie wypelnia chrome.** Znak w nawigacji jest neutralny.
+
+## Kryteria akceptacji
+
+## AC-1 Znak jest najmniejszym prawdziwym grafem, a geometria jest czytana z pliku
+check: npx --no-install vitest run src/ui/brand/mark-is-the-smallest-true-graph.test.tsx
+expect: (\d+) passed
+
+Asercje: (a) `docs/branding/loadout-mark.svg` istnieje i niesie **dokladnie cztery** wezly;
+(b) niesie **dokladnie cztery** krawedzie — bez nich cztery okregi sa zbiorem, nie grafem, i to
+jest dokladnie to, czym jest dzisiejszy znak; (c) wezel syntezy jest **wiekszy** od pozostalych
+trzech, bo z wielu wychodzi jedno; (d) stosunek srednicy wezla do grubosci krawedzi jest **nie
+mniejszy niz 3** — przy 2,4 wezel czyta sie jako zgrubienie linii; (e) sylwetka jest **szersza
+niz wysoka**, bo graf plynie w poziomie; (f) komponent `Mark` renderuje **te sama** liczbe wezlow
+i krawedzi co plik — rysunek i kod nie moga sie rozjechac.
+
+*Slaba wersja:* asercja na obecnosc `<circle>`. Cztery luzne okregi bez krawedzi przechodza,
+a to jest znak, ktory to zadanie zastepuje.
+
+## AC-2 Ikona to trzy rysunki, nie jeden przeskalowany
+check: npx --no-install vitest run src/ui/brand/icon-set-is-three-drawings.test.ts
+expect: (\d+) passed
+
+Asercje: (a) trzy pliki SVG istnieja; (b) `loadout-icon-16.svg` nie niesie **ani jednego**
+gradientu ani sheenu — jedna barwa; (c) `loadout-icon-32.svg` ma krawedz **grubsza** niz rysunek
+pelny, mierzone stosunkiem do plotna, nie w jednostkach; (d) wszystkie trzy maja **ten sam**
+squircle, czyli `rx` w tej samej proporcji do plotna — inaczej ikona zmienia ksztalt razem
+z rozmiarem; (e) rysunek pelny niesie sheen i krawedz wewnetrzna, ktorych dwa mniejsze nie maja
+— czyli roznica jest realna, a nie zadeklarowana.
+
+*Slaba wersja:* sprawdzenie, ze trzy pliki istnieja. Trzy kopie tego samego rysunku przechodza,
+a caly sens tego kryterium jest w tym, ze sie roznia.
+
+## AC-3 Znak w kodzie nie niesie ani jednego literalu i jest neutralny w chrome
+check: npx --no-install vitest run src/ui/brand/mark-carries-no-literal.test.tsx
+expect: (\d+) passed
+
+Asercje: (a) `src/ui/brand/mark.tsx` nie niesie hexa, `rgba()` ani arbitralnej wartosci Tailwinda
+— to samo, co egzekwuje `checks/quick-tokens.sh`, sprawdzone tu z osobna, bo znak jest jedynym
+miejscem w `src/`, w ktorym gradient bylby naturalny; (b) wyrenderowany znak **nie niesie** ani
+`accent`, ani `live` — chrome jest neutralne, a coral w znaku bylby kłamstwem wtedy, kiedy nic
+nie chodzi; (c) niesie **dwa** tokeny: jeden na wezly, drugi na krawedzie; (d) jest ukryty przed
+czytnikiem ekranu, bo logotyp stoi obok i druga nazwa tej samej rzeczy jest halasem;
+(e) nawigacja **naprawde go montuje** — sprawdzone na wyrenderowanej powloce, nie na imporcie.
+
+*Slaba wersja:* wyrenderowanie `Mark` wprost. Przechodzi takze wtedy, gdy nikt go nie zamontowal.
+
+## AC-4 Logotyp nie zalezy od kroju zainstalowanego w systemie
+check: npx --no-install vitest run src/ui/brand/logotype-is-curves.test.ts
+expect: (\d+) passed
+
+**Pierwotnie to kryterium brzmialo „logotyp jest krzywymi, nie tekstem" i nazywalo JEDNA
+implementacje zamiast wymogu.** W tym srodowisku nie ma czym zamienic tekstu na krzywe: nie ma
+`fontTools`, `brotli`, `rsvg-convert`, Inkscape'a ani ImageMagicka (sprawdzone). Recznie
+narysowane litery bylyby amatorskie, a to jest zadanie o marce profesjonalnej.
+
+Wymog stojacy za slowem „krzywe" brzmi: **logotyp nie ma prawa po cichu spasc na inny kroj.**
+To samo osiaga wbudowanie kroju do pliku jako `data:` — i osiaga LEPIEJ, bo plik zostaje
+edytowalny. Powod jest zmierzony w tym repo: `theme.css` deklarowal Intera od pierwszego dnia
+i rysowal sie krojem systemowym po cichu przez cale zycie repo, bez ani jednego bledu.
+
+Asercje: (a) `docs/branding/loadout-logo.svg` istnieje; (b) **kazda** rodzina nazwana w tym pliku
+ma w nim `@font-face` ze zrodlem `data:` — albo pliku nie ma ani jednej nazwy rodziny, bo jest
+krzywymi; (c) plik niesie znak, czyli cztery wezly; (d) logotyp w nawigacji jest **malymi
+literami** i **nie** jest w monospace, sprawdzone na wyrenderowanej powloce; (e) makieta mowi
+to samo, czytane z niej.
+
+*Slaba wersja:* sprawdzenie samego pliku SVG. Nawigacja moze dalej krzyczec `LOADOUT` w mono,
+a wtedy plik brandingowy jest jedynym miejscem, w ktorym marka wyglada tak, jak zdecydowano.
+
+## AC-5 Konfiguracja okna wskazuje na ikony, ktore ISTNIEJA
+check: npx --no-install vitest run src/ui/brand/bundle-icons-exist.test.ts
+expect: (\d+) passed
+
+Asercje: (a) `src-tauri/tauri.conf.json` ma pole `bundle.icon` — dzis nie ma go **wcale**,
+wiec aplikacja bundluje sie z ikona domyslna; (b) **kazda** wymieniona sciezka istnieje na dysku
+i ma niezerowy rozmiar; (c) lista zawiera `.icns`, bo to jego macOS uzywa w Docku; (d) `.icns`
+jest **nowszy albo rowny** wiekowi zrodlowego SVG — plik zbudowany raz i nigdy nieodswiezony
+jest ikona poprzedniej wersji znaku; (e) rozmiary PNG-ow sa dokladnie takie, jak mowi ich nazwa,
+mierzone z naglowka pliku, nie z nazwy.
+
+*Slaba wersja:* asercja, ze pole `bundle.icon` istnieje. Sciezka wskazujaca na plik, ktorego nie
+ma, jest dokladnie tym defektem, ktory ten projekt juz raz mial z krojem Inter.
+
+<!-- OWNS
+docs/branding/loadout-mark.svg
+docs/branding/loadout-icon.svg
+docs/branding/loadout-icon-32.svg
+docs/branding/loadout-icon-16.svg
+docs/branding/loadout-logo.svg
+scripts/icons.sh
+src-tauri/icons/32x32.png
+src-tauri/icons/128x128.png
+src-tauri/icons/128x128@2x.png
+src-tauri/icons/icon.png
+src-tauri/icons/icon.icns
+src-tauri/tauri.conf.json
+src/ui/brand/mark.tsx
+src/ui/shell/titlebar.tsx
+src/ui/shell/nav-furniture.test.tsx
+docs/mockup/index.html
+docs/design/DESIGN.md
+src/ui/brand/mark-is-the-smallest-true-graph.test.tsx
+src/ui/brand/icon-set-is-three-drawings.test.ts
+src/ui/brand/mark-carries-no-literal.test.tsx
+src/ui/brand/logotype-is-curves.test.ts
+src/ui/brand/bundle-icons-exist.test.ts
+-->

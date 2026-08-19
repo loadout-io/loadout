@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Loadout">
+  <!-- Najmniejszy PRAWDZIWY graf: jedno wejscie, dwie rownolegle galezie, jedna synteza.
+       Cztery wezly, cztery krawedzie. Wezel syntezy jest o 10% wiekszy, bo z wielu wychodzi
+       jedno; przy 16 px ta roznica jest niewidoczna, wiec nic nie kosztuje.
+       Stosunek srednicy wezla do grubosci linii to 3,1 : 1 - przy 2,4 wezel czyta sie jako
+       zgrubienie linii i caly znak zamyka sie w pierscien (zmierzone na 176 px).
+       Romb jest SZERSZY niz wysoki (16,6 x 13,8), bo graf plynie w poziomie.
+       Jedna barwa, przez currentColor: w chrome znak jest neutralny (DESIGN paragraf 3). -->
+  <path d="M3.7 12 L12 5.1 M3.7 12 L12 18.9 M12 5.1 L20.3 12 M12 18.9 L20.3 12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+  <circle cx="3.7" cy="12" r="1.95" fill="currentColor"/>
+  <circle cx="12" cy="5.1" r="1.95" fill="currentColor"/>
+  <circle cx="12" cy="18.9" r="1.95" fill="currentColor"/>
+  <circle cx="20.3" cy="12" r="2.15" fill="currentColor"/>
+</svg>
