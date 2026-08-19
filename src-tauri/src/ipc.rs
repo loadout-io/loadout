@@ -754,11 +754,24 @@ pub fn delete_skill(name: &str) -> Result<(), String> {
 // biegu: Stop musi sięgnąć do środka draftu, który zaczęła INNA komenda, więc uchwyt do niego
 // musi gdzieś mieszkać między wywołaniami.
 //
-// `stop_draft` zostaje synchroniczne, bo nie ma na co czekać: cofa jedno wyrażenie na tokenie
-// i wraca. `async fn` bez ani jednego `await` jest ostrzeżeniem `clippy::unused_async`, a
-// bramka woła clippy z `-D warnings` — więc „na wszelki wypadek async" jest tu czerwienią,
-// nie ostrożnością. Dowód zejścia grupy (niezmiennik 6) nie wraca tędy i nie ma tędy wracać:
-// niesie go odpowiedź `draft_skill`, czyli to samo wywołanie, na które okno już czeka.
+// `stop_draft` jest `async` mimo tego, że nie ma na co czekać — cofa jedno wyrażenie na tokenie
+// i wraca. Zmierzone 2026-08-19, i to jest poprawka do zdania, które stało tu wcześniej:
+// wersja synchroniczna NIE PRZECHODZI bramki. `clippy::needless_pass_by_value` (pedantic, a bramka
+// woła clippy z `-D warnings`) melduje „this argument is passed by value, but not consumed":
+// `State` przyjeżdża wartością, bo taka jest konwencja wywołania Tauri, a ciało go tylko pożycza.
+// Sugestia clippy — `&State<'_, AppState>` — jest tu gorsza niż lint: `windowSideArguments`
+// w `src/sections/ipc-signature.ts` rozpoznaje wstrzykiwany argument po wzorcu `: State<`, więc
+// referencja zamieniłaby `state` w klucz, którego okno ma niby wysłać, i przewróciła kryterium
+// szwu po tamtej stronie granicy.
+//
+// Odwrotnego lintu, którego obawiał się poprzedni akapit, nie ma: `clippy::unused_async` nie
+// świeci na skorupie komendy — precedens stoi dwa akapity niżej w tym samym pliku
+// (`list_handoffs` jest `async` i nie ma w ciele ani jednego `await`), a `generate_handler!`
+// bierze te funkcje jako wartości. Async ma zresztą własny, samodzielny powód: żadna komenda
+// dotykająca zamka draftu nie biegnie wtedy na wątku okna.
+//
+// Dowód zejścia grupy (niezmiennik 6) nie wraca tędy i nie ma tędy wracać: niesie go odpowiedź
+// `draft_skill`, czyli to samo wywołanie, na które okno już czeka.
 
 /// Jedno zdanie człowieka → trzy pola napisane przez agenta, którego wybrał.
 ///
@@ -799,7 +812,7 @@ pub async fn draft_skill(
 /// Osobna komenda od [`stop_run`], bo zatrzymuje osobny uchwyt. Jedna komenda na oba
 /// znaczyłaby, że Stop w sekcji Umiejętności ubija bieg w sąsiedniej karcie.
 #[tauri::command]
-pub fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
     state.drafting.stop();
     Ok(())
 }
