@@ -32,8 +32,29 @@ import type { Authored, Import, InstalledSkill, Landing } from '../../state/skil
  * `null` znaczy „nie ma otwartego zakresu" i jest wartością, nie brakiem argumentu: klucz musi
  * dojechać, bo Tauri dopasowuje argumenty PO NAZWIE i deserializuje je, zanim wejdzie w ciało
  * komendy.
+ *
+ * # Dlaczego ten jeden argument ma domyślną wartość, i dlaczego jest nią `null`, a nie `?`
+ *
+ * Bo ma go dziś DWÓCH wołających i odpowiadają na dwa różne pytania. Sekcja Umiejętności pyta
+ * „co widzi agent pracujący tutaj" i podaje folder JAWNIE (`src/state/skills.ts`). Panel kroku
+ * w edytorze workflow (`src/sections/workflows/index.tsx`) pyta „z czego ten krok ma wybierać",
+ * a **zakres per krok workflow jest świadomie poza zakresem T-44** (TASK.md, „Świadomie poza
+ * zakresem": „Krok ma własny wybór umiejętności [T-13, `skills-row.tsx`] i to jest inne
+ * pytanie"). Domyślna wartość jest więc zapisem tej granicy: tamten wołacz zostaje przy
+ * odpowiedzi, którą miał przed tym zadaniem — samym korzeniem globalnym.
+ *
+ * `= null`, a nie `folder?: string`, i to nie jest kwestia stylu. `JSON.stringify` **zdejmuje**
+ * klucz o wartości `undefined`, a Tauri dopasowuje argumenty po nazwie i deserializuje je przed
+ * wejściem w ciało komendy — brakujący klucz nie daje więc mniejszego wywołania, daje ODRZUCONE,
+ * z odmową w postaci surowego napisu, którego nikt nie widzi. `null` dojeżdża i po tamtej stronie
+ * jest `None`, czyli dokładnie „nie ma otwartego projektu".
+ *
+ * CENA JEST NAZWANA, bo domyślna wartość jest miękka: wołacz, który o folder zapomni, dostanie
+ * po cichu samą listę globalną i kompilator go nie zapyta. Dopóki tak jest, ten akapit jest
+ * jedynym miejscem, w którym to widać — a pytanie „czy panel kroku ma widzieć umiejętności
+ * projektowe" jest otwarte i należy do T-13, nie do tego pliku.
  */
-export function listSkills(folder: string | null): Promise<InstalledSkill[]> {
+export function listSkills(folder: string | null = null): Promise<InstalledSkill[]> {
   return invoke<InstalledSkill[]>('list_skills', { folder });
 }
 
