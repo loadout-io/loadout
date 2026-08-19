@@ -73,6 +73,9 @@ fn with_an_arrow_into_nowhere() -> Result<WorkflowFile, Box<dyn Error>> {
     workflow.links.push(Link {
         from: EXPECTED[4].to_owned(),
         to: NOWHERE.to_owned(),
+        // Ta strzałka jest zła z powodu CELU, którego nie ma, a nie z powodu pętli — więc zwykłe
+        // „po". `Some(_)` dołożyłoby drugi powód i test przestałby mówić o jednym.
+        max_turns: None,
     });
     Ok(workflow)
 }

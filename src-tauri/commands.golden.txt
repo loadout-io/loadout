@@ -28,6 +28,7 @@ list_workflows
 list_workspaces
 load_workflow
 new_id
+open_chat
 put_note_to_use
 review_skill
 run_workflow
@@ -35,5 +36,6 @@ save_agent
 save_workflow
 save_workspace
 say_to_agent
+say_to_orchestrator
 stop_run
 stop_using_note

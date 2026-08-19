@@ -49,7 +49,7 @@ import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
 import { Entry } from './entry/entry';
 import { chooseWorkingFolder, folderName } from './folders';
-import { sayToAgent, stop } from './io';
+import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
 import { atOnce as atOnceNow, subscribeToAtOnce } from './limits/chosen';
 import { waitingWhere } from './limits/waiting';
 import { toChoices } from './choices';
@@ -158,6 +158,21 @@ export default function Run(): ReactElement {
   const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
 
+  /* KTO SŁUCHA, czyli do kogo dojdzie zdanie z wiersza wejścia. Rozstrzygnięcie właściciela
+   * 2026-08-19: „powinienem wiedzieć co piszę".
+   *
+   * Kroki w stanie `running` i tylko one: to jest dokładnie ten sam zbiór, z którego bieg buduje
+   * swoją odpowiedź po stronie Rusta (`RunControl::step_can_hear` rejestruje głos kroku, kiedy on
+   * rusza, i zdejmuje go, kiedy schodzi). Osobne pole „czy można pisać" byłoby drugim opisem tego
+   * samego faktu i pierwszą rzeczą, która rozjechałaby się z odmową (niezmiennik 13).
+   *
+   * Nazwa kroku, bo to nią człowiek adresuje zdanie i to ona stoi na kafelku szyny oraz w podpisie
+   * każdej linii tego kroku. */
+  const listening = useMemo(
+    () => run.steps.filter((step) => step.state === 'running').map((step) => step.name),
+    [run.steps],
+  );
+
   /* KARTY TEGO ZAKRESU, i tylko tego. Bieg z innego zakresu nie znika i nie zwalnia — ma tylko
    * swoją kartę tam, gdzie pracuje (rozstrzygnięcie właściciela: przełącznik w bocznym menu
    * ORAZ karty w środku ekranu). Filtr jest funkcją czystą w `./tabs/store`, żeby dało się go
@@ -205,6 +220,22 @@ export default function Run(): ReactElement {
    * i sekcja Workflow — pliki są prawdą (niezmiennik 4), a lista trzymana między wejściami
    * podpowiadałaby nazwę workflow skasowanego obok. Cisza przy odmowie jest tu POPRAWNA: brak
    * podpowiedzi jest niedogodnością, a `/run` i tak odmówi zdaniem, które wymienia nazwy. */
+  /* ROZMOWA DOSTAJE SWÓJ STRUMIEŃ przy wejściu na sekcję — proces jeszcze nie wstaje.
+   *
+   * Otwarcie zakłada wyłącznie kanał do okna; sesja u dostawcy powstaje przy PIERWSZYM zdaniu
+   * (`commands::chat::Chat::live`), bo tura wystartowana przy montażu ekranu jest turą, za którą
+   * ktoś płaci, choć nikt o nic nie zapytał.
+   *
+   * Zależne od `folder`: rozmowa patrzy w folder zakresu, a przełączenie zakresu ma ją tam
+   * przenieść razem ze strumieniem. Cisza przy odmowie jest poprawna — pierwsze zdanie i tak
+   * wróci z odmową, która nazywa następny ruch. */
+  useEffect(() => {
+    openChat(folder).catch(() => {
+      /* Świadomie bez zdania na ekranie: zdanie o niedostępnej rozmowie ma sens dopiero wtedy,
+       * gdy człowiek do niej napisze — a wtedy przyjdzie z `say_to_orchestrator`. */
+    });
+  }, [folder]);
+
   const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
   useEffect(() => {
     let alive = true;
@@ -258,11 +289,28 @@ export default function Run(): ReactElement {
    * pod paskiem.
    */
   async function sayIt(text: string): Promise<string | null> {
+    /* DWA ODBIORCY, ROZSTRZYGNIĘTE PRZEZ TO, CZY KTOŚ PRACUJE — i ŻADEN z nich nie uruchamia
+     * biegu. Rozstrzygnięcie właściciela 2026-08-19: „tylko komendy determinują akcje workflow".
+     *
+     * Ktoś pracuje → zdanie idzie do niego: człowiek dopowiada coś komuś w połowie roboty, i to
+     * była pierwsza rzecz, o którą prosił („pisać z nim nie mogę").
+     * Nikt nie pracuje → zdanie idzie do ORCHESTRATORA: rozmowa o tym, co ma się stać. Do
+     * 2026-08-19 leciało tam mimo braku adresata i wracało odmową o niczym, a przez chwilę —
+     * gorzej — po cichu startowało cały workflow.
+     *
+     * Wiersz mówi POD POLEM, który z tych dwóch to jest, zanim ktokolwiek naciśnie Enter
+     * (`entry/entry.tsx`, `whereItGoes`), więc rozróżnienie nie jest ukryte w kodzie. */
+    const toAgent = listening.length > 0;
     try {
-      await sayToAgent(text);
+      await (toAgent ? sayToAgent(text) : sayToOrchestrator(text, folder));
       return null;
     } catch (error: unknown) {
-      return why(error, 'Loadout could not pass that on to the agent.');
+      return why(
+        error,
+        toAgent
+          ? 'Loadout could not pass that on to the agent.'
+          : 'Loadout could not reach the lead agent.',
+      );
     }
   }
 
@@ -396,6 +444,9 @@ export default function Run(): ReactElement {
                  samym limitem, który trzyma suwak obok Startu. Zdanie odmowy wraca do wiersza,
                  bo dotyczy tego, co człowiek właśnie napisał. */
               onRunWorkflow={startFromLine}
+              /* Kto pracuje, żeby wiersz mógł powiedzieć POD polem, gdzie pójdzie zdanie —
+                 zamiast pozwolić człowiekowi wysłać je w ciemno. */
+              talkingTo={listening}
               workflows={namesToRun}
             />
           </div>

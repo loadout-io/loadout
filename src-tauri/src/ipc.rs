@@ -393,6 +393,19 @@ pub struct AppState {
     /// uchwycie startuje jako już anulowany i kończy się w milisekundach z samymi `cancelled`.
     /// To wygląda jak szybki bieg, nie jak awaria (niezmiennik 7).
     live: Mutex<RunControl>,
+    /// Rozmowa z orchestratorem. `None`, dopóki okno jej nie otworzyło.
+    ///
+    /// # Dlaczego `tokio::sync::Mutex`, a nie ten sam rodzaj co przy [`AppState::live`]
+    ///
+    /// Bo wysłanie tury do orchestratora JEST `await`-em: głos to kanał, a start sesji odpala
+    /// proces. Zamek `std::sync` trzymany przez `await` jest tym, czego zabrania niezmiennik 8
+    /// i co `Cargo.toml` odrzuca lintem `await_holding_lock`. Tamten zamek trzyma się przez jedno
+    /// wyrażenie kopiujące uchwyt; ten trzyma się przez rozmowę z procesem.
+    ///
+    /// Jedna na aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną
+    /// własne sesje (`workspace::Registry`). Dziś przełączenie zakresu zostawia rozmowę tam, gdzie
+    /// była, bo folder jedzie argumentem przy każdym zdaniu.
+    chat: tokio::sync::Mutex<Option<commands::chat::Chat>>,
 }
 
 impl fmt::Debug for AppState {
@@ -425,7 +438,29 @@ impl AppState {
             store,
             drivers,
             live: Mutex::new(idle),
+            chat: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Kończy rozmowę z orchestratorem, jeśli jakaś stoi.
+    ///
+    /// Wołane przy zamykaniu okna, obok zatrzymania biegu. Proces rozmowy jest procesem jak każdy
+    /// inny: po śmierci Loadouta przeszedłby pod PID 1 i pracował dalej (`recovery.rs`, nagłówek) —
+    /// czyli dokładnie ten defekt, który 2026-08-19 naprawiono dla biegów. Odzyskiwanie po nim nie
+    /// posprząta, bo rozmowa nie ma wpisu w indeksie biegów.
+    pub(crate) async fn close_chat(&self) {
+        if let Some(chat) = self.chat.lock().await.as_mut() {
+            chat.close().await;
+        }
+    }
+
+    /// Sterownik, którym rozmawia orchestrator.
+    ///
+    /// `Vendor::ClaudeCode` na sztywno i to jest świadome: rozmowa nie jest krokiem workflow, więc
+    /// nie ma definicji agenta, z której można by wziąć vendora. W dniu, w którym orchestrator
+    /// stanie się konfigurowalny, ta funkcja zniknie na rzecz jego zapisanej definicji.
+    fn chat_driver(&self) -> std::sync::Arc<dyn crate::engine::drivers::AgentDriver> {
+        (self.drivers)(crate::library::agents::Vendor::ClaudeCode)
     }
 
     /// Współpracownicy biegu, który idzie teraz.
@@ -872,6 +907,57 @@ pub async fn stop_run(state: State<'_, AppState>) -> Result<(), String> {
         })
 }
 
+/// Otwiera strumień rozmowy z orchestratorem — sam proces jeszcze nie wstaje.
+///
+/// Dwie komendy, nie jedna, i podział ma nazwany powód: kanał do okna umie zbudować **tylko okno**
+/// (`docs/ARCHITECTURE.md` §3), więc musi przyjść argumentem — a sesja u dostawcy ma wstać dopiero
+/// przy pierwszym zdaniu, bo tura wystartowana przy montażu ekranu jest turą, za którą ktoś płaci,
+/// choć nikt o nic nie zapytał. Ta komenda zakłada więc pompę i nic więcej.
+///
+/// Wołana ponownie PRZEKIEROWUJE istniejącą rozmowę na nowy kanał — nie kończy jej.
+///
+/// 2026-08-19 — WERSJA PIERWSZA ZAMYKAŁA ROZMOWĘ I BYŁO TO WIDAĆ W DZIENNIKU przy pierwszym
+/// uruchomieniu: „the pump for this run closed its books delivered=0", trzy razy pod rząd. Tę
+/// komendę woła KAŻDY montaż ekranu pracy i każde przeładowanie okna, więc wyjście na Agentów
+/// i powrót gubiłoby cały wątek — czyli dokładnie to, po co ta rozmowa istnieje („sobie
+/// piszemy/zmieniamy coś itp"). Sesja u dostawcy nie ma powodu o tym wiedzieć: zmienia się tylko
+/// to, komu jej wiersze są pokazywane ([`commands::chat::Chat::lines_go_to`]).
+#[tauri::command]
+pub async fn open_chat(
+    state: State<'_, AppState>,
+    lines: Channel<Vec<Line>>,
+) -> Result<(), String> {
+    let mut chat = state.chat.lock().await;
+    match chat.as_ref() {
+        Some(open) => open.lines_go_to(pump_into(lines)),
+        None => *chat = Some(commands::chat::Chat::new(pump_into(lines))),
+    }
+    Ok(())
+}
+
+/// Mówi zdanie orchestratorowi. **Nie uruchamia biegu i nie ma jak** — powód przy `commands::chat`.
+#[tauri::command]
+pub async fn say_to_orchestrator(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    text: &str,
+) -> Result<(), String> {
+    let cwd = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let driver = state.chat_driver();
+    let mut chat = state.chat.lock().await;
+    let open = chat.as_mut().ok_or_else(|| {
+        let said =
+            "The lead agent is not ready yet. Reopen the work screen and try again.".to_owned();
+        refused(&said);
+        said
+    })?;
+    open.say(driver.as_ref(), cwd, text).await.map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// „Dalej": puszcza bieg zza punktu kontrolnego.
 #[tauri::command]
 pub async fn continue_run(
@@ -935,6 +1021,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_workspaces,
         load_workflow,
         new_id,
+        open_chat,
         put_note_to_use,
         review_skill,
         run_workflow,
@@ -942,6 +1029,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         save_workflow,
         save_workspace,
         say_to_agent,
+        say_to_orchestrator,
         stop_run,
         stop_using_note
     ]

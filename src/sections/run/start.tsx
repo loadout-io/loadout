@@ -36,6 +36,7 @@ import { atOnce as atOnceNow, setAtOnce, subscribeToAtOnce } from './limits/chos
 import type { Choice } from './choices';
 import { choiceFor, firstRunnable, toChoices } from './choices';
 import { launchRun } from './launch';
+import { chosenWorkflow, setChosenWorkflow, subscribeToChosenWorkflow } from './chosen-workflow';
 import { requestedRun, subscribeToRequests, takeRequestedRun } from './requested';
 import { list } from '../workflows/io';
 import { runFeed } from './feed/live';
@@ -105,7 +106,13 @@ export interface StartProps {
 
 export function Start({ onSaid }: StartProps): ReactElement {
   const [choices, setChoices] = useState<readonly Choice[]>([]);
-  const [picked, setPicked] = useState('');
+  /* WYBÓR MIESZKA W MODULE, NIE W TYM KOMPONENCIE, i to jest ten sam ruch, co przy „ile naraz"
+   * o kilka linii niżej — z tego samego powodu i po tym samym zgłoszeniu. Od 2026-08-19 wiersz
+   * wejścia przyjmuje prozę bez ukośnika („or just say what you want" z makiety) i musi wtedy
+   * uruchomić TEN workflow, który człowiek widzi wybrany. Stan zamknięty tutaj zmuszałby go do
+   * zgadywania, a zgadnięty bieg kosztuje pieniądze, nie render. */
+  const picked = useSyncExternalStore(subscribeToChosenWorkflow, chosenWorkflow, chosenWorkflow);
+  const setPicked = setChosenWorkflow;
   /* Zdanie nie mieszka tutaj — jedzie do ekranu (patrz `StartProps.onSaid`). Nazwa lokalna
    * zostaje, żeby ciała handlerów niżej czytały się tak samo jak przedtem. */
   const setSaid = onSaid;

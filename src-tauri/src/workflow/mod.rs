@@ -12,8 +12,17 @@
 //!    jednego komunikatu**. T3 §3.2 uruchomił to na tej maszynie: wewnętrznie tagowany enum
 //!    z `flatten` przepuszcza nieznane klucze bez straty, razem z typem liczbowym.
 //!
-//! Czego tu nie ma i nie będzie: portów, typu krawędzi, warunku, węzła-grupy, pętli. Strzałka
-//! znaczy „po" i nic więcej (T3 §6.2). Trzeci rodzaj kafelka jest tym, co zabiło poprzedniego prototypu.
+//! Czego tu nie ma i nie będzie: portów, typu krawędzi, węzła-grupy. Trzeci rodzaj kafelka jest
+//! tym, co zabiło poprzedniego prototypu.
+//!
+//! 2026-08-19 — PĘTLA WESZŁA, i to jest zmiana rozstrzygnięcia, nie przeoczenie. Stało tu
+//! „strzałka znaczy »po« i nic więcej (T3 §6.2)", a właściciel poprosił o kształt, którego bez
+//! powrotu nie da się wyrazić: implementer wysyła do testera, tester zdaje raport, `fail` wraca
+//! do implementera, `pass` puszcza bieg dalej. Powrót jest **polem na strzałce**
+//! ([`Link::max_turns`]), a nie nowym rodzajem kafelka ani węzłem-grupą — czyli dokładnie tą
+//! rzeczą, przed którą broni akapit wyżej, nie została dodana. Sufit tur jest w schemacie
+//! obowiązkowy, więc pętli bez końca nie da się zapisać.
+//! Projekt: `docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md`.
 
 use std::collections::BTreeMap;
 
@@ -228,11 +237,35 @@ pub struct HandoverField {
     pub required: Option<bool>,
 }
 
-/// Strzałka. Bez portów, bez danych, bez warunku — znaczy „po" (T3 §3.1).
+/// Strzałka. Bez portów i bez danych — znaczy „po" (T3 §3.1).
+///
+/// JEDEN WYJĄTEK OD „BEZ WARUNKU": [`Link::max_turns`]. Strzałka, która niesie tę liczbę, jest
+/// **powrotem** — wraca do kroku, który już był, i zamyka pętlę o zapisanym z góry suficie.
+/// Projekt stoi w `docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     pub from: String,
     pub to: String,
+    /// Ile razy ta strzałka może zawrócić bieg, 1–[`MOST_TURNS`]. Brak pola znaczy „zwykłe po".
+    ///
+    /// BRAK POLA TO NIE JEST `Some(1)`. Rozróżnienie jest treścią: strzałka bez tej liczby nie
+    /// ma prawa domykać koła i walidator ją za to odrzuca, a strzałka z `1` domyka koło, które
+    /// przejdzie dokładnie jedną rundę. Dlatego `Option`, a nie liczba z domyślną wartością —
+    /// domyślna wartość zamieniłaby KAŻDĄ strzałkę w potencjalny powrót i skasowała regułę,
+    /// która broni przed strzałką pociągniętą w złą stronę.
+    ///
+    /// `skip_serializing_if`: plik bez pętli ma wyglądać dokładnie tak, jak wyglądał, żeby
+    /// dołożenie tej funkcji nie przepisało każdego workflow na dysku (T3 §8.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u8>,
+}
+
+impl Link {
+    /// Czy ta strzałka jest powrotem, czyli czy wolno jej domknąć koło.
+    #[must_use]
+    pub fn is_a_way_back(&self) -> bool {
+        self.max_turns.is_some()
+    }
 }
 
 /// Pozycja kafelka na płótnie.
