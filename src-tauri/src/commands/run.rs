@@ -1461,25 +1461,51 @@ impl Live {
     /// ceremonii"), a krok „sprawdź" jest drogą dla repo, które je ma. Skasowanie [`Live::verdict_after`]
     /// nie byłoby uproszczeniem, tylko usunięciem ścieżki awaryjnej.
     ///
-    /// SZKIELET (T-55, 2026-08-19): oddaje `false` i **nie zapala** `settled_at`, czyli pętla dalej
-    /// domyka się wyłącznie na słowie agenta. Dowodzi tego AC-5 w warstwie `before`: dubler
-    /// sterownika mówi zdanie, które w starym protokole jest ODMOWĄ, więc implementacja stojąca
-    /// na tamtej drodze przepala wszystkie rundy i kończy porażką.
+    /// Oddaje `true`, kiedy ten krok ma wrócić [`StepReport::Failed`] — a to znaczy trzy różne
+    /// rzeczy zależnie od tego, gdzie ten krok stoi, i wszystkie trzy są tu wypisane:
+    ///
+    /// * **krok „sprawdź" spoza pętli** — werdykt jest wprost stanem kroku. Komenda nie przeszła,
+    ///   więc krok padł i stożek za nim zostaje `Skipped`: praca nie ma prawa pojechać dalej na
+    ///   czymś, co nie przeszło.
+    /// * **sędzia pętli, który nie przepuścił, i ma jeszcze próbę** — krok wraca `Succeeded`,
+    ///   mimo że komenda padła, i to nie jest kłamstwo: planista zmniejsza stopień wejściowy
+    ///   dzieci WYŁĄCZNIE po tym stanie (`engine::scheduler`), a dzieckiem sędziego jest powrót
+    ///   do roboty. `Failed` w tym miejscu zatrzymałby pętlę na pierwszej czerwonej rundzie,
+    ///   czyli skasowałby całą jej treść. Że runda padła, widać po `exit_code` i po przekazaniu
+    ///   z wyjściem komendy, nie po słowie `succeeded`. Ta sama droga, którą chodzi
+    ///   [`Live::verdict_after`] dla sędziego-agenta.
+    /// * **sędzia pętli w OSTATNIEJ rundzie, który nie przepuścił** — `Failed`, bo prób już nie
+    ///   ma. Bez tej gałęzi wyczerpanie limitu tur wyglądałoby jak sukces, czyli limit byłby
+    ///   ozdobą.
+    ///
+    /// Werdykt `pass` zapala `settled_at` i wtedy rundy PO tej zostają pominięte
+    /// ([`Live::already_settled`]) — nie przepalone. To jest jedyne miejsce, w którym wyjście
+    /// komendy rozstrzyga o kształcie biegu, i jedyna różnica między „domknęło się na tym, co się
+    /// stało" a „domknęło się na tym, co ktoś powiedział".
     fn verdict_of_a_check(&self, id: StepId, passed: bool) -> bool {
-        let Some(the_loop) = &self.plan.the_loop else {
-            return false;
-        };
         let step = &self.plan.steps[id];
-        if step.tile_key != the_loop.judge {
+        // Sędzią jest krok, z którego WYCHODZI powrót. Krok „sprawdź" stojący w pętli, ale nie na
+        // jej powrocie, jest zwykłym krokiem i jego werdykt jest wprost jego stanem.
+        let judging = self
+            .plan
+            .the_loop
+            .as_ref()
+            .filter(|the_loop| step.tile_key == the_loop.judge);
+        let Some(the_loop) = judging else {
+            return !passed;
+        };
+
+        if passed {
+            let mut settled = self
+                .settled_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Pierwszy `pass` wygrywa — dokładnie jak przy sędzim-agencie: druga runda nie ma jak
+            // przepisać rundy pierwszej na późniejszą.
+            settled.get_or_insert(step.turn);
             return false;
         }
-        tracing::debug!(
-            step = id,
-            passed,
-            judge = %the_loop.judge,
-            "a check step's verdict does not close the loop yet"
-        );
-        false
+        step.turn + 1 >= the_loop.turns
     }
 
     fn announce(&self, id: StepId, state: StepState) {
@@ -1867,7 +1893,17 @@ impl Live {
                  * bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
                  * promptu. */
                 self.hand_over(id, &report.output, &[]);
-                if self.verdict_of_a_check(id, report.passed) || !report.passed {
+                /* WERDYKT PO ZAPISIE PRZEKAZANIA, nie przed: plik z wyjściem komendy ma istnieć
+                 * niezależnie od tego, co postanowimy z biegiem — ta sama kolejność, którą trzyma
+                 * krok agenta.
+                 *
+                 * Jeden warunek, nie dwa. `verdict_of_a_check(…) || !report.passed` czytało się
+                 * niewinnie i kasowało pętlę: sędzia, który nie przepuścił, ale ma jeszcze próbę,
+                 * musi wrócić `Succeeded`, bo tylko po tym stanie planista wypuszcza jego dzieci —
+                 * a jego dzieckiem jest powrót do roboty. Cała różnica między „sprawdzenie padło"
+                 * i „runda padła, próbujemy dalej" mieszka więc w tamtej funkcji i nigdzie
+                 * indziej. */
+                if self.verdict_of_a_check(id, report.passed) {
                     StepReport::Failed
                 } else {
                     StepReport::Succeeded
