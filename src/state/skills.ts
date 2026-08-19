@@ -93,6 +93,22 @@ export interface Authored {
 }
 
 /**
+ * Agent zapisany na dysku, tak jak potrzebuje go ta sekcja: tożsamość i nazwa dla człowieka.
+ *
+ * DWA POLA, NIE PIĘTNAŚCIE. `Agent` z `src/state/agents.ts` niesie jeszcze model, instrukcje,
+ * dial bezpieczeństwa i dziesięć innych pól — a wszystkie one są odpowiedzią po TAMTEJ stronie
+ * granicy: model, prompt systemowy i dial liczy Rust z zapisanej definicji
+ * (`library::agents::resolve`). Tutaj potrzebne jest dokładnie to, z czego składa się wybór na
+ * ekranie: co pojedzie do Rusta (`id`) i co przeczyta człowiek (`name`). Nazwy vendora nie ma
+ * i nie ma prawa być — `src/sections/skills/mounted.test.tsx` zamraża jej brak w markupie tej
+ * sekcji i ma do tego zmierzony powód.
+ */
+export interface SavedAgent {
+  id: string;
+  name: string;
+}
+
+/**
  * Panel „Add a skill": jedno pole na adres i trzy pytania, oba wejścia pod TYM SAMYM
  * przyciskiem. `null` znaczy „zamknięty" — jedno miejsce na to pytanie (niezmiennik 13),
  * a nie osobna flaga „czy otwarty" obok treści, która potrafi się z nią rozjechać.
@@ -159,6 +175,45 @@ export interface SkillsState {
    */
   writeItHere: () => Promise<void>;
   /**
+   * Agenci, których wolno poprosić o napisanie umiejętności — pozycje wyboru w trzecim wejściu.
+   *
+   * LISTA MIESZKA TU, A NIE W MAGAZYNIE SEKCJI AGENTS. Tamten jest fabryką
+   * (`createAgentsStore(io)`), więc ta sekcja nie ma jak sięgnąć po jego egzemplarz, a drugi
+   * egzemplarz obok byłby drugą odpowiedzią na pytanie „kogo mam zapisanych" (niezmiennik 13).
+   * Wypełnia ją odczyt z dysku, dokładnie tak samo jak `installed` — nazwy vendorów nie ma tu
+   * ani jednej i mieć nie może (`mounted.test.tsx`).
+   */
+  agents: SavedAgent[];
+  /** Zdanie, które napisał człowiek: czego chce od umiejętności. */
+  want: string;
+  /** `id` agenta wybranego z listy. Pusty napis znaczy „nikt jeszcze nie wybrany". */
+  chosenAgent: string;
+  /**
+   * Czy wybrany agent pisze właśnie teraz.
+   *
+   * Jedno miejsce na ten fakt (niezmiennik 13): to z niego bierze się ZARAZEM zdanie na ekranie
+   * i podmiana kontrolki „napisz mi to" na „zatrzymaj". Dwie flagi znaczyłyby ekran, na którym
+   * stoi zdanie o pisaniu i przycisk, który każe zacząć jeszcze raz.
+   */
+  writing: boolean;
+  /**
+   * „Write it for me" — jedno zdanie jedzie do wybranego agenta, wracają trzy pola.
+   *
+   * Nic nie zapisuje i nie ma prawa zapisać: draft ląduje w tych samych trzech polach, w których
+   * człowiek pisze ręką (`adding`), a plik składa, skanuje i odkłada dopiero `writeItHere` —
+   * czyli tekst poprawiony po drafcie przechodzi przez skan tak samo jak wpisany od zera
+   * (niezmiennik 23).
+   */
+  askAnAgent: () => Promise<void>;
+  /**
+   * „Stop" — zatrzymaj agenta, który pisze.
+   *
+   * Musi OPUŚCIĆ OKNO. Zgaszenie samego `writing` byłoby kontrolką, która melduje skutek bez
+   * skutku (niezmiennik 16), i to w miejscu, w którym cisza kosztuje pieniądze: proces vendora
+   * pisze dalej i dalej pali limit dostawcy (niezmiennik 6).
+   */
+  stopWriting: () => Promise<void>;
+  /**
    * „Remove" — zabierz tę umiejętność z katalogów agentów.
    *
    * 2026-08-18 — do tego dnia sekcja umiała wyłącznie DODAWAĆ, a dodaje do żywej konfiguracji
@@ -205,6 +260,10 @@ export const useSkills = create<SkillsState>()((set, get) => ({
   message: null,
   installed: [],
   adding: null,
+  agents: [],
+  want: '',
+  chosenAgent: '',
+  writing: false,
 
   load: async () => {
     try {
@@ -316,6 +375,24 @@ export const useSkills = create<SkillsState>()((set, get) => ({
     } catch (error) {
       set({ message: why(error, 'Loadout could not save that skill.') });
     }
+  },
+
+  /* SZKIELET FAZY KONTRAKTU — te dwie akcje jeszcze NIC nie robią, i to jest cały ich stan.
+   *
+   * Istnieją, żeby `src/sections/skills/the-agent-writes-it.test.tsx` się WCZYTAŁO i padło na
+   * asercji, a nie na `Cannot find` przy zbieraniu plików: vitest przewraca się już na zbieraniu,
+   * a podpis „Failed to load" nie liczy się jako czerwień (AGENTS.md §2a.5). Puste ciało jest
+   * odpowiednikiem `todo!()` z tamtego akapitu — mierzalnie brakuje zachowania, w czasie
+   * wykonania: zero wywołań na granicy IPC, zero zdań na ekranie, draft, który nigdy nie
+   * przychodzi. Implementacja zdejmuje te dwa ciała razem z tym komentarzem. */
+  askAnAgent: async () => {
+    /* Pusto z rozmysłu. Nie wolno tu wołać `askAnAgent` z `io.ts`: to jest DOKŁADNIE zachowanie,
+     * którego kryterium ma nie znaleźć w fazie `before`. */
+  },
+
+  stopWriting: async () => {
+    /* Pusto z rozmysłu, ten sam powód. Zgaszenie `writing` tutaj byłoby połową implementacji —
+     * i tą połową, która zazielenia asercję o podmianie kontrolki, nie ubijając agenta. */
   },
 
   remove: async (name: string) => {
