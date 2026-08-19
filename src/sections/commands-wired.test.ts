@@ -288,6 +288,25 @@ const WIRES: readonly Wire[] = [
     given: ['also add a dark mode toggle'],
     call: () => run.sayToAgent('also add a dark mode toggle'),
   },
+  /* 2026-08-19 — DWIE KRAWĘDZIE ROZMOWY Z AGENTEM WIODĄCYM. Rozstrzygnięcie właściciela: górny
+   * wiersz jest rozmową, a sztywny przebieg zaczyna wyłącznie komenda. Rozmowa ma więc własne
+   * komendy — i dokładnie te same ryzyka, co Start: `open_chat` bez `lines` byłoby wywołaniem
+   * odrzuconym przed wejściem w ciało, a `say_to_orchestrator` bez `folder` rozmawiałoby o innym
+   * katalogu niż ten, w którym człowiek stoi. */
+  {
+    where: 'run',
+    what: 'openChat',
+    command: 'open_chat',
+    given: [],
+    call: () => run.openChat(null),
+  },
+  {
+    where: 'run',
+    what: 'sayToOrchestrator',
+    command: 'say_to_orchestrator',
+    given: ['what should the checker look at?'],
+    call: () => run.sayToOrchestrator('what should the checker look at?', null),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',

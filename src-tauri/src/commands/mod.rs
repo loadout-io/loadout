@@ -37,6 +37,8 @@ use crate::workflow::file::LoadError;
 
 /// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
 pub mod agents;
+/// Rozmowa z orchestratorem — i jedyne miejsce, które NIE umie uruchomić biegu.
+pub mod chat;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod handoffs;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.

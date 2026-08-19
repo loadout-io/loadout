@@ -81,6 +81,11 @@ const CIRCLE: &str = "These steps point back at each other in a circle. Work wou
 /// maszynie to już dużo.
 const MOST_COPIES: u8 = 8;
 
+/// Sufit rund pętli. Dziesięć rund dwóch agentów to już długa noc bez nadzoru i prawdziwy
+/// rachunek — ta liczba jest tym samym rodzajem zapory, co [`MOST_COPIES`], i z tego samego
+/// powodu stoi w schemacie, a nie w głowie użytkownika.
+const MOST_TURNS: u8 = 10;
+
 /// Waga uwagi. `Problem` blokuje Run i zapis, `Warning` nie blokuje niczego.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +175,22 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
         })
         .collect();
 
+    // Strzałki BEZ POWROTÓW — to na nich liczy się koło. Powrót (`max_turns`) domyka koło
+    // z rozmysłu i jest całą treścią pętli; koło zamknięte czymkolwiek innym jest pomyłką,
+    // najczęściej strzałką pociągniętą w złą stronę, i ma zostać odmową. Reguła w jednym
+    // zdaniu: po usunięciu powrotów graf musi być bez cykli.
+    let forward: Vec<(usize, usize)> = workflow
+        .links
+        .iter()
+        .filter(|link| !link.is_a_way_back())
+        .filter_map(|link| {
+            Some((
+                *position.get(link.from.as_str())?,
+                *position.get(link.to.as_str())?,
+            ))
+        })
+        .collect();
+
     // Kolejność reguł jest kolejnością, w jakiej użytkownik zobaczy uwagi, a `save()` odmawia
     // zdaniem PIERWSZEGO problemu — więc idzie od „ten plik nie trzyma się kupy" do „ten bieg
     // by nie wyszedł". Ostrzeżenia na końcu: nie blokują niczego.
@@ -177,10 +198,11 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_id_two_steps(&steps, &mut notes);
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
+    turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
     the_passthrough(&steps, &mut notes);
-    a_circle(&steps, &arrows, &mut notes);
+    a_circle(&steps, &forward, &mut notes);
     one_folder_two_steps(&steps, &arrows, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
@@ -393,6 +415,42 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
             When::Saving => warning(Some(step.id), message),
             When::Running => problem(Some(step.id), message),
         });
+    }
+}
+
+/// Liczba rund powrotu poza zakresem 1–[`MOST_TURNS`].
+///
+/// `0` i `11` są dwoma różnymi rodzajami nonsensu i oba muszą paść. Zero znaczy „pętla, która
+/// nie wykonuje się ani razu" — czyli narysowana strzałka bez skutku, niezmiennik 16 wpisany do
+/// pliku. Powyżej sufitu to noc bez nadzoru i rachunek, którego nikt się nie spodziewa.
+///
+/// Uwaga nazywa krok, z którego powrót WYCHODZI: to on jest sędzią pętli i to jego kafelek
+/// człowiek otworzy, żeby zmienić tę liczbę.
+fn turns_out_of_range(
+    links: &[Link],
+    steps: &[Facts<'_>],
+    position: &BTreeMap<&str, usize>,
+    notes: &mut Vec<Note>,
+) {
+    for link in links {
+        let Some(turns) = link.max_turns else {
+            continue;
+        };
+        if (1..=MOST_TURNS).contains(&turns) {
+            continue;
+        }
+        // Krok po nazwie, nie po identyfikatorze: `s_test` nie jest niczym, co użytkownik widzi.
+        let named = position
+            .get(link.from.as_str())
+            .and_then(|&index| steps.get(index));
+        let name = named.map_or(link.from.as_str(), |step| step.name);
+        notes.push(problem(
+            named.map(|step| step.id),
+            format!(
+                "\"{name}\" would send the work back {turns} times. Pick a number from 1 to \
+                 {MOST_TURNS}."
+            ),
+        ));
     }
 }
 

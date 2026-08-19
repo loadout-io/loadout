@@ -268,3 +268,52 @@ export function continueRun(answer: string | null = null): Promise<void> {
 export function sayToAgent(text: string, agent: string | null = null): Promise<void> {
   return invoke<void>('say_to_agent', { agent, text });
 }
+
+/**
+ * Otwiera strumień rozmowy z orchestratorem — bez uruchamiania procesu.
+ *
+ * # Po co osobne otwarcie, a nie jedno wywołanie z tekstem
+ *
+ * Bo kanał do okna umie zbudować **tylko okno** (`docs/ARCHITECTURE.md` §3, §4), więc musi wejść
+ * argumentem — a sesji u dostawcy nie wolno tu wstawiać: tura wystartowana przy montażu ekranu
+ * jest turą, za którą ktoś płaci, choć nikt o nic nie zapytał. Ta krawędź zakłada więc pompę,
+ * a proces wstaje dopiero przy pierwszym zdaniu (`say_to_orchestrator`).
+ *
+ * # Gdzie lądują te wiersze
+ *
+ * W TYM SAMYM strumieniu, co bieg: rozmowa o tym, co ma się stać, i praca, która się dzieje, są
+ * jedną historią tego zakresu. Dlatego zapis idzie przez `feedFor(folder)` i `runFor(folder)` —
+ * tą samą drogą i tym samym stemplem, co paczki biegu (patrz `start`), bo dwie drogi do jednego
+ * widoku dałyby dwa porządki wierszy i pierwszy sklejony wiersz by je rozjechał.
+ */
+export function openChat(folder: string | null = null): Promise<void> {
+  const session = runFor(folder);
+  const view = feedFor(folder ?? '');
+  const lines = new Channel<unknown[]>();
+  let stamp = 0;
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => {
+      stamp += 1;
+      return { ...line, id: stamp, at };
+    });
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
+  });
+  return invoke<void>('open_chat', { lines });
+}
+
+/**
+ * Powiedz zdanie orchestratorowi — rozmowa, nie praca.
+ *
+ * ORCHESTRATOR NIE URUCHAMIA BIEGU I NIE MA JAK. Rozstrzygnięcie właściciela 2026-08-19: „tylko
+ * komendy determinują akcje workflow". Po tamtej stronie nie jest to prośba w promptcie
+ * systemowym, a własność struktury — `commands::chat` nie zna ani biegu, ani jego bazy.
+ *
+ * @param folder katalog, w którym rozmowa ma patrzeć — ścieżka aktywnego zakresu albo `null`.
+ *   Klucz jest obecny zawsze, także jako `null`: Tauri dopasowuje argumenty PO NAZWIE
+ *   i deserializuje je PRZED wejściem w ciało komendy, więc brakujący klucz odrzuca wywołanie.
+ */
+export function sayToOrchestrator(text: string, folder: string | null = null): Promise<void> {
+  return invoke<void>('say_to_orchestrator', { folder, text });
+}

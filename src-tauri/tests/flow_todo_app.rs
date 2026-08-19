@@ -400,6 +400,9 @@ fn todo_workflow(lead: &Agent, scout: &Agent, builder: &Agent, checker: &Agent) 
             .map(|(from, to)| Link {
                 from: (*from).to_owned(),
                 to: (*to).to_owned(),
+                // Zwykłe „po", nie powrót: ten workflow nie ma pętli, a `Some(_)` zamieniłoby
+                // każdą strzałkę w potencjalne koło (`workflow::Link::max_turns`).
+                max_turns: None,
             })
             .collect(),
         extra: serde_json::Map::new(),

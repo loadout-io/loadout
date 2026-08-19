@@ -84,6 +84,52 @@ export const HINT =
 export const NOTHING_RUNS = 'Nothing is running.';
 
 /**
+ * Zdanie pod polem: DO KOGO pójdzie to, co człowiek pisze.
+ *
+ * # Po co to istnieje
+ *
+ * Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę". Wiersz przyjmował prozę
+ * i wyglądał identycznie w trzech różnych sytuacjach — gdy zdanie dojdzie do jednego agenta, gdy
+ * trzeba wybrać z kilku, i gdy nie ma go komu doręczyć. Człowiek musiał WYSŁAĆ zdanie, żeby się
+ * dowiedzieć, co się z nim stanie; przy pracującym agencie to jest tura, za którą ktoś płaci.
+ *
+ * Trzy stany, trzy zdania, i każde nazywa następny ruch (DESIGN §8):
+ * jeden pracujący — mówimy, kto to jest; kilku — trzeba wpisać nazwę, więc je wypisujemy; żaden —
+ * proza nie ma adresata i zdanie mówi, czym się zaczyna pracę.
+ *
+ * TO SAMO ROZSTRZYGA RUST przy Enterze (`commands::run::say_to_agent_inner`), i to nie jest druga
+ * kopia polityki: tam mieszka odmowa, tu jej UPRZEDZENIE. Adres bierzemy z listy pracujących
+ * kroków, czyli z tego samego faktu, z którego Rust bierze swoją odpowiedź — a nie z osobnego
+ * pola „czy można pisać", które mogłoby mówić co innego (niezmiennik 13).
+ */
+export function whereItGoes(working: readonly string[]): string {
+  const [only] = working;
+  if (only === undefined) {
+    /* NIKT NIE PRACUJE → ROZMOWA Z ORCHESTRATOREM, nie pustka i nie cichy start biegu.
+     *
+     * 2026-08-19, dwie zmiany w jednym dniu i warto znać obie. Najpierw stała tu wersja, w której
+     * proza po cichu STARTOWAŁA wybrany workflow — właściciel odrzucił ją jednym zdaniem („jak
+     * piszę bez komendy… to się na nowo całe workflow odpala"). Potem, przez chwilę, stało tu „nie
+     * ma komu pisać", co było prawdą i było ubogie: nie było z kim rozmawiać o tym, co dopiero ma
+     * się stać. Rozstrzygnięcie: rozmowa TAK, uruchomienie NIE — „tylko komendy determinują akcje
+     * workflow" (`commands::chat`). */
+    return (
+      'Enter sends this to the lead agent — it can talk things through and prepare, ' +
+      'but only /run starts work.'
+    );
+  }
+  if (working.length === 1) {
+    return 'Enter sends this to ' + only + '. Start with a slash for a command.';
+  }
+  /* WYPISUJEMY NAZWY, bo przy kilku pracujących trzeba jedną WPISAĆ na początku linii — dokładnie
+   * tak, jak każe odmowa `RunError::SeveralAreWorking`. Sama liczba („2 agents are working")
+   * mówiłaby, że jest problem, i nie mówiłaby, jak go rozwiązać. */
+  return (
+    String(working.length) + ' agents are working, so put a name first: ' + working.join(', ') + '.'
+  );
+}
+
+/**
  * Odpowiedź na słowo, którego ten wiersz nie zna — z listą, która JEST listą, nie kopią.
  *
  * Wyliczanka po angielsku, nie `join(' and ')`: przy trzech komendach tamto dawało
@@ -191,6 +237,20 @@ export interface EntryProps {
    */
   readonly onRunWorkflow: (rest: string) => Promise<string | null>;
   /**
+   * Kto właśnie pracuje — nazwy kroków, którym dojdzie zdanie bez ukośnika.
+   *
+   * PO CO TO JEST. Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę".
+   * Wiersz przyjmował prozę i nie mówił, gdzie ona idzie — a idzie w dwa zupełnie różne miejsca
+   * w zależności od tego, czy coś biegnie. Pole, które wygląda identycznie, gdy zdanie dojdzie do
+   * agenta, i gdy nie ma go komu doręczyć, zmusza człowieka do wysłania zdania, żeby się
+   * dowiedzieć, co się z nim stanie.
+   *
+   * Nazwy, nie liczba: przy dwóch pracujących agentach trzeba WPISAĆ nazwę na początku linii,
+   * więc wiersz musi ją pokazać w postaci do przepisania (to samo robi odmowa po stronie Rusta,
+   * `RunError::SeveralAreWorking`).
+   */
+  readonly talkingTo?: readonly string[];
+  /**
    * Nazwy workflow do podpowiedzenia po `/run` — puste, dopóki katalog się czyta.
    *
    * Propsem, nie własnym odczytem: „jakie workflow istnieją" jest pytaniem do adaptera
@@ -215,6 +275,7 @@ export function Entry({
   onStopRun,
   onSayToAgent,
   onRunWorkflow,
+  talkingTo = [],
   workflows = [],
 }: EntryProps): ReactElement {
   const [typed, setTyped] = useState('');
@@ -256,17 +317,31 @@ export function Entry({
       onStopRun();
       return;
     }
-    /* PROZA IDZIE DO AGENTA, nie odbija się od wiersza.
+    /* PROZA NIE ODBIJA SIĘ OD WIERSZA.
      *
      * Warunek jest na UKOŚNIKU, nie na „czy to zdanie": słowo z ukośnikiem, którego nie znamy,
      * jest literówką w komendzie i ma dostać listę komend — a zdanie bez ukośnika jest tym,
-     * co człowiek chce powiedzieć agentowi. Wysłanie literówki jako prozy zamieniłoby `/stpo`
+     * co człowiek chce powiedzieć. Wysłanie literówki jako prozy zamieniłoby `/stpo`
      * w wiadomość do modelu i wyglądałoby jak zignorowana komenda. */
     if (typed.trim().startsWith('/')) {
       setSaid(NOT_KNOWN);
       return;
     }
     setSaid(null);
+    /* PROZA JEST ROZMOWĄ I NIGDY NIE URUCHAMIA BIEGU — rozstrzygnięcie właściciela 2026-08-19,
+     * po tym, jak zobaczył skutek wersji przeciwnej: „nie powinno być tak, że jak piszę bez
+     * komendy, a poprzednio odpaliłem komendę, to się ona na nowo całe workflow odpala".
+     *
+     * Stała tu wersja, która przy pustym ekranie startowała wybrany workflow z tym zdaniem jako
+     * zadaniem. Wyglądało to jak wygoda i było pułapką: to samo naciśnięcie Enter raz dopowiadało
+     * coś agentowi, a raz kupowało cały bieg sześciu agentów — a różnicy nie było widać w polu,
+     * w które człowiek pisał. Rozróżnienie „rozmowa czy praca" nie ma prawa zależeć od stanu,
+     * którego w tym miejscu nie widać; niesie je UKOŚNIK i tylko on.
+     *
+     * Sztywny przebieg zaczyna więc wyłącznie komenda (`/run`), a zdanie bez ukośnika idzie tam,
+     * gdzie człowiek je adresował. Kiedy nie ma komu — Rust odmawia zdaniem, które nazywa następny
+     * ruch („Press Start first."), a wiersz mówi to samo POD polem, jeszcze przed Enterem
+     * (`talkingTo`). */
     void onSayToAgent(typed).then(setSaid);
   }
 
@@ -348,8 +423,10 @@ export function Entry({
           )}
         </div>
       ) : (
+        /* GDZIE POJDZIE TO ZDANIE — pod polem, PRZED naciśnięciem Enter.
+           Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę". */
         <p data-entry-hint className="mt-[6px] ml-[26px] font-mono text-label text-muted">
-          {HINT}
+          {whereItGoes(talkingTo)}
         </p>
       )}
 
