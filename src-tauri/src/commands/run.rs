@@ -1807,7 +1807,15 @@ impl Live {
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
         let started = match self.carrying_what_we_inherited(&job.driver) {
             Ok(driver) => driver.start(spec, events).await,
-            Err(refusal) => Err(refusal),
+            Err(refusal) => {
+                // NADAJNIK GINIE TAKŻE NA TEJ GAŁĘZI, i to nie jest higiena. Na ścieżce startu
+                // zabiera go `start`; tutaj nie zabiera go nikt, a `pump.await` niżej kończy się
+                // dopiero na zamkniętej kolejce. Nadawca, który przeżył krok, trzyma kurator
+                // otwarty — czyli odmowa wyglądałaby jak agent zawieszony na zawsze (ten sam
+                // powód stoi przy `ours` piętnaście linii wyżej).
+                drop(events);
+                Err(refusal)
+            }
         };
 
         let report = match started {
