@@ -238,12 +238,25 @@ pub struct InstalledWire {
 ///
 /// # Skąd bierze się `from_the_internet`
 ///
-/// Z plików, bo inaczej nie wolno go zapisać (niezmiennik 4). Kopia kanoniczna powstaje
-/// **wyłącznie** w [`review_skill_inner`], czyli na jedynej drodze, którą coś wchodzi tu z sieci
-/// — jej obecność obok zainstalowanego katalogu jest więc trwałym śladem pochodzenia, którego
-/// nie trzeba nigdzie zapisywać osobno. Umiejętność napisana ręcznie prosto w katalogu vendora
-/// nie ma kopii kanonicznej i dostaje `false`, i tak ma być: znacznik zastępuje podpisy, których
-/// v1 nie ma, więc ma świecić tam, gdzie treść przyszła od obcego.
+/// Z plików, bo inaczej nie wolno go zapisać (niezmiennik 4) — ale od 2026-08-19 z ZAPISU,
+/// a nie z wniosku. Do tego dnia odpowiadała na to samo pytanie obecność kopii kanonicznej,
+/// i była to prawda przez konstrukcję: kopie kanoniczne powstawały **wyłącznie**
+/// w [`review_skill_inner`], czyli na jedynej drodze, którą cokolwiek wchodziło tu z sieci.
+/// [`author_skill_inner`] też odkłada kopię kanoniczną, więc ta przesłanka przestała
+/// obowiązywać — a wniosek wyciągany z niej dalej mówiłby „z internetu" o tekście, który
+/// człowiek wpisał w tym oknie palcami. Odpowiada więc [`remember_origin`], czyli plik
+/// zapisany jawnie.
+///
+/// **Nieobecność zapisu jest ostrożnym „tak", nie „napisana tutaj".** Biblioteka starsza niż to
+/// zadanie nie ma o swoich umiejętnościach ani jednego wiersza, a wtedy jedyna wiedza, jaka
+/// została, to tamta stara przesłanka: kopia kanoniczna znaczy link. Znacznik zastępuje podpisy
+/// i weryfikację pochodzenia, których v1 nie ma, więc ma świecić wszędzie tam, gdzie treść MOŻE
+/// być cudza — to ta sama reguła, którą trzymają `DeepScan::Unavailable` i `Discovery::Unknown`:
+/// brak dowodu nie jest dowodem braku. Domyślny odwrotny („nie wiem, czyli pewnie własna") gasi
+/// go dokładnie na tych umiejętnościach, na których jest potrzebny.
+///
+/// Katalog vendora bez kopii kanonicznej i bez zapisu (ktoś napisał umiejętność wprost tam)
+/// dostaje `false` — nic jej nigdy nie pobierało.
 ///
 /// Katalog, którego nie ma, daje **pustą listę**. Brak umiejętności to stan, nie awaria —
 /// czerwony pasek na świeżej instalacji uczy człowieka ignorować czerwone paski.
@@ -276,14 +289,25 @@ pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
         }
     }
 
+    // Zapis czytany RAZ, przed pętlą: plik jest jeden na bibliotekę, a odczyt per umiejętność
+    // znaczyłby N otwarć tego samego pliku i N różnych odpowiedzi, gdyby ktoś pisał w niego
+    // w trakcie.
+    let origins = origins_of(library);
+
     Ok(names
         .into_iter()
         .map(|name| InstalledWire {
-            from_the_internet: library
-                .join(SKILLS_DIR)
-                .join(&name)
-                .join(SKILL_FILE)
-                .is_file(),
+            from_the_internet: origins.get(&name).copied().unwrap_or_else(|| {
+                // Bez zapisu zostaje wyłącznie przesłanka sprzed tego zadania — i wolno jej
+                // ufać dokładnie w tę jedną stronę, bo do 2026-08-19 kopie kanoniczne
+                // powstawały tylko na drodze linku. Powód, dla którego ostrożny kierunek jest
+                // tu jedynym uczciwym, stoi w doc tej funkcji.
+                library
+                    .join(SKILLS_DIR)
+                    .join(&name)
+                    .join(SKILL_FILE)
+                    .is_file()
+            }),
             name,
         })
         .collect())
