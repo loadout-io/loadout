@@ -1124,6 +1124,12 @@ struct Isolated {
     left_behind: Vec<String>,
 }
 
+/// Ile nazw plików mieści się w jednym wierszu, zanim zacznie być ścianą tekstu.
+///
+/// Pięć, nie „wszystkie": `docs/DECISIONS-LOCKED.md` §D4 stawia sufit gęstości na strumieniu,
+/// a wiersz dłuższy od ekranu kosztuje resztę strumienia, nie tylko siebie.
+const NAMED_AT_MOST: usize = 5;
+
 /// Mówi, czego agent NIE zobaczy — zanim ruszy.
 ///
 /// Cicha strata jest tu gorsza niż brak funkcji: bieg wygląda na kompletny, a agentowi brakuje
@@ -1135,9 +1141,20 @@ fn say_what_was_left_behind(lines: &LineSink, made: &[Isolated]) {
             continue;
         }
         // Nazwy, nie sama liczba: „3 pliki" nie mówi człowiekowi, czy brakuje `.env`, czy
-        // notatki, której i tak nie czytał.
-        let named = one.left_behind.join(", ");
+        // notatki, której i tak nie czytał. Ale nazwy PRZYCIĘTE, bo liczba bywa duża: zmierzone
+        // 2026-08-19 na `~/Projects/meetnotes` — 188 plików nieśledzonych, czyli wiersz na pół
+        // ekranu, którego nikt nie przeczyta i po którym reszta strumienia jest nie do
+        // znalezienia. Pierwsze pięć wystarczy, żeby człowiek poznał RODZAJ tego, czego brakuje.
         let count = one.left_behind.len();
+        let named = if count > NAMED_AT_MOST {
+            format!(
+                "{}, and {} more",
+                one.left_behind[..NAMED_AT_MOST].join(", "),
+                count - NAMED_AT_MOST
+            )
+        } else {
+            one.left_behind.join(", ")
+        };
         // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
         // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
         let _ = lines.send(Line::Problem {
