@@ -12,6 +12,16 @@
 //! świadomie: `parse_doc` jest prywatny, a `ingest.rs` nie należy do tego zadania. Reguła
 //! brzmi tak samo w obu miejscach — front-matter bez domknięcia **nie jest** front-matterem,
 //! `---` w pierwszej linii pliku, który nigdy się nie domyka, to pozioma kreska.
+//!
+//! CZEGO TEN PLIK NIE ROBI, a co należy do jego wołającego: tekst gospodarza jest nieufany
+//! dokładnie tak samo jak umiejętność pobrana z sieci — to cudze repozytorium, w którym nikt nie
+//! audytował komentarzy HTML — więc **ciało, które jedzie do promptu, przechodzi przez
+//! [`ingest::review`]**, i dotyczy to obu wyjść tego pliku: sekcji z learnings i ciała podagenta.
+//! Nie robimy tego tutaj, bo obie te funkcje zwracają **wycinek tego, co przyszło**, a `review`
+//! zwraca tekst zmieniony razem ze znaleziskami; znaleziska są faktem o imporcie, który ma
+//! dojechać do człowieka, a nie zostać po drodze porzucony (niezmiennik 5). Miejsce, w którym
+//! prompt się składa, nie należy do tego zadania — patrz `tasks/T-54.md`, „Świadomie poza
+//! zakresem".
 
 use std::fs;
 use std::io::{self, BufRead as _, BufReader, Read as _};

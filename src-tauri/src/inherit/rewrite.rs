@@ -118,6 +118,11 @@ pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Re
     // BAJT W BAJT. Nie przez `place::emit`, bo emiter normalizuje — zdejmuje pola spoza
     // specyfikacji, przestawia kolejność, przecytowuje skalary — i zwraca poprawny `SKILL.md`,
     // tylko INNY. Człowiek ma móc porównać `diff` z cudzym plikiem i zobaczyć zero różnic.
+    //
+    // I nie przez `fs::copy`, mimo że to jedna linia mniej: `fs::copy` przenosi uprawnienia
+    // razem z treścią, więc cudzy `SKILL.md` z bitem wykonywalności wylądowałby u nas
+    // wykonywalny. `read` + `write` zapisuje wyłącznie to, co sam postanowił zapisać, i dlatego
+    // ten plik nie potrzebuje ani `PermissionsExt`, ani gałęzi platformowej (niezmienniki 3 i 4).
     for (name, bytes) in &carried {
         let dir = into.join(SKILLS_LEVEL).join(name.as_str());
         fs::create_dir_all(&dir)?;
