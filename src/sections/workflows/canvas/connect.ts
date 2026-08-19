@@ -10,7 +10,7 @@
  * z jednym argumentem, bo w React Flow ta funkcja jest domknięciem nad żywym grafem. Tutaj graf
  * przychodzi jawnie — płótno robi `isValidConnection={(c) => isValidConnection(c, file)}`.
  */
-import type { Point, Step, WorkflowFile } from '../../../state/workflows';
+import type { Link, Point, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
 import { snap } from './map';
 
@@ -38,9 +38,16 @@ export interface DropEvent {
 
 /** „Czy da się narysować tę strzałkę?" — jeden bool, jedyne sprawdzenie po stronie TypeScriptu.
  *
- * Cykl jest UNIEMOŻLIWIONY, nie zgłoszony: strzałka po prostu nie ląduje, uchwyt szarzeje
- * i nie ma żadnego komunikatu, bo użytkownik nie zrobił nic złego [T3 §5.1]. Reszta pytań
- * („czy to da się uruchomić?") należy do Rusta i wraca jako `Note[]`. */
+ * Cykl NIEOZNACZONY jest uniemożliwiony, nie zgłoszony: strzałka po prostu nie ląduje, uchwyt
+ * szarzeje i nie ma żadnego komunikatu, bo użytkownik nie zrobił nic złego [T3 §5.1]. Reszta pytań
+ * („czy to da się uruchomić?") należy do Rusta i wraca jako `Note[]`.
+ *
+ * 2026-08-19 — KRAWĘDŹ DOMYKAJĄCA KOŁO LĄDUJE, TYLKO JAKO POWRÓT. Do tego dnia ta funkcja mówiła
+ * „nie" każdemu kołu, i było to słuszne, dopóki koło znaczyło wyłącznie pracę, która się nie
+ * kończy. Właściciel poprosił o kształt, którego bez powrotu nie da się wyrazić: implementer
+ * wysyła do testera, tester zdaje raport, `fail` wraca do implementera, `pass` puszcza bieg dalej.
+ * Powrót niesie sufit tur (`Link.max_turns`), więc pętla bez końca dalej jest niewyrażalna —
+ * zmieniło się to, CO odmawiamy, a nie to, przed czym bronimy. */
 export function isValidConnection(connection: Connection, file: WorkflowFile): boolean {
   const { source, target } = connection;
 
@@ -54,30 +61,62 @@ export function isValidConnection(connection: Connection, file: WorkflowFile): b
    * a plik niesie obie. „Już jest" wygląda dla użytkownika tak samo jak „narysowano". */
   if (file.links.some((link) => link.from === source && link.to === target)) return false;
 
-  /* Czy z celu da się DOJŚĆ do źródła? Jeśli tak, ta strzałka domknęłaby koło — czyli pracę,
-   * która nigdy się nie kończy. Obchód w przód, `seen` przeciwko kołu, które już jest w pliku
-   * (plik bywa poprawiony ręcznie, a wtedy obchód bez `seen` nie wraca) [T3 §5.1]. */
+  /* DRUGI POWRÓT ODMAWIAMY TUTAJ, w chwili gestu. Rust daje na niego `Problem`
+   * (`check::two_ways_back`), czyli po narysowaniu plik przestałby się zapisywać — a płótno,
+   * które pozwala narysować rzecz blokującą zapis, jest gorsze od takiego, które mówi „nie"
+   * od razu: pierwsze kasuje pracę po cichu, drugie kosztuje jeden nieudany gest. */
+  if (wouldCloseACircle(source, target, file) && file.links.some(isAWayBack)) return false;
+
+  return true;
+}
+
+/** Czy ta krawędź jest POWROTEM — czyli czy wolno jej domknąć koło. Lustro `Link::is_a_way_back`. */
+export function isAWayBack(link: Link): boolean {
+  return link.max_turns !== undefined;
+}
+
+/** Ile rund dostaje powrót narysowany gestem.
+ *
+ * Trzy, nie jeden i nie dziesięć. Jedna runda to pętla, która wykonuje się raz i niczego nie
+ * powtarza — czyli gest bez skutku. Dziesięć to sufit (`MOST_TURNS` po stronie Rusta) i noc bez
+ * nadzoru dla kogoś, kto tylko pociągnął strzałkę. Liczbę zmienia się w panelu kroku. */
+export const TURNS_BY_DEFAULT = 3;
+
+/** Czy strzałka `source → target` domknęłaby koło.
+ *
+ * Obchód w przód od celu: jeżeli da się z niego wrócić do źródła, ta strzałka zamyka pętlę.
+ * `seen` broni przed kołem, które JUŻ jest w pliku — plik bywa poprawiony ręcznie albo zmergowany
+ * gitem, a obchód bez tego zbioru nie wraca [T3 §5.1].
+ *
+ * Osobna funkcja, bo odpowiedź jest potrzebna dwa razy i w dwóch różnych celach: `isValidConnection`
+ * pyta „czy odmówić", a `onConnect` pyta „czy oznaczyć jako powrót". Dwie kopie tego obchodu
+ * rozjechałyby się przy pierwszej poprawce. */
+export function wouldCloseACircle(source: string, target: string, file: WorkflowFile): boolean {
   const seen = new Set<string>();
   const ahead = [target];
   for (let next = ahead.pop(); next !== undefined; next = ahead.pop()) {
-    if (next === source) return false;
+    if (next === source) return true;
     if (seen.has(next)) continue;
     seen.add(next);
     for (const link of file.links) {
       if (link.from === next) ahead.push(link.to);
     }
   }
-  return true;
+  return false;
 }
 
 /** Dokłada strzałkę, jeżeli [`isValidConnection`] ją przepuszcza; inaczej oddaje dokument
  * bez zmiany. Odmowa jest cicha — tu nie powstaje żadna uwaga. */
 export function onConnect(connection: Connection, file: WorkflowFile): WorkflowFile {
   if (!isValidConnection(connection, file)) return file;
-  return {
-    ...file,
-    links: [...file.links, { from: connection.source, to: connection.target }],
-  };
+  /* Krawędź domykająca koło powstaje JAKO POWRÓT, z suficiem tur od razu. Wpuszczenie jej bez tej
+   * liczby dałoby plik z nieoznaczonym cyklem, którego walidator odmawia — czyli gest, po którym
+   * workflow przestaje się zapisywać. Liczba jest tu, a nie w osobnym kroku „a teraz ustaw tury",
+   * bo strzałka bez niej nie jest poprawnym dokumentem ani przez chwilę. */
+  const link = wouldCloseACircle(connection.source, connection.target, file)
+    ? { from: connection.source, to: connection.target, max_turns: TURNS_BY_DEFAULT }
+    : { from: connection.source, to: connection.target };
+  return { ...file, links: [...file.links, link] };
 }
 
 /** Upuszczenie końca strzałki.
