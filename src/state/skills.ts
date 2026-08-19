@@ -36,6 +36,13 @@ import {
  * (niezmiennik 23). Ten plik dalej nie zna ani jednej nazwy komendy. */
 import { list as listSavedAgents } from '../sections/agents/io';
 import { why } from '../ipc/why';
+/* „Gdzie pracujemy" ma w tym repo JEDNĄ definicję i to jest ona — ta sama, którą pyta Start
+ * biegu (`src/sections/run/launch.ts`) i którą po drugiej stronie granicy sądzi
+ * `AppState::project_for`. Druga odpowiedź (zmienna środowiskowa, katalog roboczy, pole
+ * skopiowane do tego magazynu) rozjeżdża się pierwszego dnia, w którym ktoś przełączy zakres
+ * w bocznym menu — a rozjazd objawia się jako umiejętność zapisana w innym projekcie niż ten,
+ * w którym pracuje bieg (niezmiennik 13). */
+import { activeWorkspace } from './workspaces';
 
 /** Dwie wagi i ani jednej więcej. Trzecia jest tym, jak lista znalezisk przestaje być czytana. */
 export type Weight = 'warn' | 'block';
@@ -319,6 +326,22 @@ const COULD_NOT_READ_AGENTS = 'Loadout could not read the agents saved on this m
 const NOWHERE_TO_LAND =
   'The agent finished writing after this panel closed, so there was nowhere to put it. Ask again.';
 
+/**
+ * Folder, w którym człowiek pracuje — albo `null`, kiedy żadnego nie wskazał.
+ *
+ * FUNKCJA, NIE POLE TEGO MAGAZYNU. Skopiowany do stanu sekcji byłby drugą odpowiedzią na jedno
+ * pytanie (niezmiennik 13) i zdążyłby się rozjechać z pierwszą już przy przełączeniu zakresu bez
+ * ponownego wejścia w tę sekcję. Czytany przy każdym wywołaniu jest zawsze tym, co widzi bieg.
+ *
+ * `null` jest WARTOŚCIĄ, nie brakiem: znaczy „nie ma otwartego projektu", a co z tym zrobić,
+ * decyduje Rust — lista pokazuje wtedy sam korzeń globalny, a zapis „w tym projekcie" odmawia
+ * zdaniem z rdzenia (`skills::Error::NoProjectRoot`), zamiast zapisywać umiejętność pod
+ * katalogiem, w którym akurat wstała aplikacja.
+ */
+function whereWeWork(): string | null {
+  return activeWorkspace()?.folder ?? null;
+}
+
 export const useSkills = create<SkillsState>()((set, get) => ({
   pending: null,
   acknowledged: [],
@@ -342,10 +365,12 @@ export const useSkills = create<SkillsState>()((set, get) => ({
        * `pending` i `acknowledged` zostają nietknięte — odczyt katalogu nie ma nic wspólnego
        * z przeglądem, który czeka na człowieka, a skasowanie go tutaj kasowałoby to, co ktoś
        * właśnie czyta. */
-      /* SZKIELET, 2026-08-19 — `null` wpisane na sztywno, czyli „nie ma otwartego zakresu"
-       * niezależnie od tego, co mówi `activeWorkspace()`. Dopóki tu stoi, lista nie widzi
-       * umiejętności zapisanych w projekcie i sekcja nie ma jak ich zabrać. */
-      set({ installed: await listSkills(null), message: null });
+      /* FOLDER JEDZIE RAZEM Z PYTANIEM, bo lista odpowiada na „co widzi agent pracujący TUTAJ",
+       * a nie na „co kiedykolwiek zapisaliśmy". Bez niego umiejętność zapisana w projekcie nie
+       * pojawiłaby się na ekranie — czyli człowiek by jej nie zobaczył i nie miałby jak jej
+       * zabrać, choć leży w żywej konfiguracji jego narzędzi agentowych. Katalogi wylicza dalej
+       * Rust i tylko Rust (`skills::place::destinations`, niezmiennik 23). */
+      set({ installed: await listSkills(whereWeWork()), message: null });
     } catch (error) {
       /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
        * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
@@ -392,12 +417,16 @@ export const useSkills = create<SkillsState>()((set, get) => ({
       /* Jedzie CAŁY przegląd, ten sam obiekt, który przyszedł z Rusta. Ciało złożone tu jeszcze
        * raz byłoby tekstem, którego nikt nie przeskanował.
        *
-       * SZKIELET, 2026-08-19 — dwie wartości wpisane na sztywno i to jest CAŁY defekt tej
-       * wersji: wybór człowieka (`get().landing`) i folder z `activeWorkspace()` nie jadą
-       * nigdzie, więc kontrolka wyboru byłaby kontrolką bez skutku (niezmiennik 16) w miejscu,
-       * w którym skutkiem jest zapis do żywej konfiguracji narzędzi agentowych. T-44 AC-3 (c)
-       * stoi dokładnie na tym. */
-      await install(pending, 'everywhere', null);
+       * WYBÓR CZŁOWIEKA I FOLDER JADĄ RAZEM Z NIM. Bez wyboru kontrolka na ekranie byłaby
+       * kontrolką bez skutku (niezmiennik 16) dokładnie tam, gdzie skutkiem jest zapis do żywej
+       * konfiguracji cudzych narzędzi; bez folderu Rust nie miałby korzenia, pod którym pisać,
+       * a `place::destinations` odpowiada na zakres bez korzenia ścieżkami WZGLĘDNYMI.
+       *
+       * FOLDER JEDZIE PRZY OBU ZAKRESACH, nie tylko przy „ten projekt": pytanie „gdzie
+       * pracujemy" ma jedną odpowiedź niezależnie od tego, co człowiek wybrał, a warunek tutaj
+       * byłby drugim miejscem, w którym mieszka odwzorowanie wyboru na korzeń (niezmiennik 13).
+       * Odwzorowanie stoi w `Landing -> Scope`, po tamtej stronie granicy. */
+      await install(pending, get().landing, whereWeWork());
     } catch (error) {
       set({ message: why(error, 'Loadout could not add that skill.') });
       return;
@@ -567,9 +596,19 @@ export const useSkills = create<SkillsState>()((set, get) => ({
 
   remove: async (name: string) => {
     try {
-      /* SZKIELET, 2026-08-19 — jak w `add`: wybór i folder wpisane na sztywno, więc „zabierz
-       * z tego projektu" zabiera dziś kopię globalną. */
-      await removeFromDisk(name, 'everywhere', null);
+      /* TEN SAM WYBÓR, CO PRZY ZAPISIE, bo ta sama nazwa w dwóch zakresach to DWIE rzeczy:
+       * `place::remove` zdejmuje wyłącznie kopie z podanego korzenia i zostawia drugą tam,
+       * gdzie jest. Zabranie obu naraz jest inną czynnością, o którą nikt nie prosił — a kopia
+       * zabrana „przy okazji" znika z katalogów, do których zagląda Claude Code tego człowieka,
+       * bez ani jednego zdania na ekranie.
+       *
+       * ZGŁOSZONE, NIE PRZEOCZONE: wiersz listy nie wie, w KTÓRYM korzeniu leży jego plik,
+       * bo `InstalledWire` niesie tylko `name` i `fromTheInternet`, a `list_skills_in` zwija
+       * oba korzenie do jednego zbioru nazw. Dopóki tak jest, „Remove" pyta o zakres wybrany
+       * nad kartą — jedyną odpowiedź, jaka w tym oknie istnieje. Wybór per wiersz wraca w tym
+       * samym commicie, w którym `InstalledWire` dostaje pole per korzeń (ten sam dług, który
+       * nagłówek `src/sections/skills/index.tsx` zgłasza dla znacznika rozmieszczenia). */
+      await removeFromDisk(name, get().landing, whereWeWork());
     } catch (error) {
       /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
        * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,

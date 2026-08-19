@@ -34,7 +34,7 @@ import * as skills from './skills/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
-import type { Authored, Import } from '../state/skills';
+import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
 /* Atrapa jest podniesiona razem z `vi.mock`, żeby moduły sekcji dostały JĄ, a nie prawdziwy
@@ -115,6 +115,19 @@ const SKILL: Import = {
   scripts: 1,
   fromTheInternet: true,
 };
+
+/* 2026-08-19 (T-44) — WYBÓR MIEJSCA I FOLDER, którymi wołane są trzy krawędzie umiejętności.
+ *
+ * `LANDING` jest typowane z rozmysłu: dzień, w którym ta unia zmieni kształt, ma zaczerwienić
+ * ten plik na kompilacji, a nie po cichu wysłać napis, którego Rust już nie rozpoznaje.
+ * „ten projekt", a nie „wszędzie", bo to jest wartość, której ta droga nigdy wcześniej nie
+ * niosła — wiersz wołany domyślną przechodziłby także wtedy, gdyby wybór był ignorowany.
+ *
+ * `FOLDER` jest ścieżką BEZWZGLĘDNĄ i nigdy nie dotyka dysku: granica jest atrapą, więc jedyne,
+ * co się z nią dzieje, to porównanie z tym, co pojechało. Napis, nie `null` — `insides()` niżej
+ * odrzuca `null`, więc wiersz wołany `null`em nie sprawdzałby, czy folder w ogóle dojechał. */
+const LANDING: Landing = 'this-project';
+const FOLDER = '/Users/somebody/Projects/Loadout';
 
 /** Trzy odpowiedzi z formularza „write one yourself" [T5 §8.3]. */
 const AUTHORED: Authored = {
@@ -258,8 +271,8 @@ const WIRES: readonly Wire[] = [
     where: 'skills',
     what: 'remove',
     command: 'delete_skill',
-    given: ['a-skill-to-take-away'],
-    call: () => skills.remove('a-skill-to-take-away'),
+    given: ['a-skill-to-take-away', LANDING, FOLDER],
+    call: () => skills.remove('a-skill-to-take-away', LANDING, FOLDER),
   },
   {
     where: 'memory',
