@@ -65,7 +65,7 @@
 //! ([`AgentHandle::close`]) i znaczy „koniec sesji", nigdy „koniec tury".
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -104,6 +104,14 @@ const DEFAULT_BINARY: &str = "claude";
 /// nazwie. Rozjazd nie wygląda jak błąd — plik powstaje, odbudowa go nie znajduje i nikt się
 /// o tym nie dowiaduje aż do pierwszego skasowania `loadout.db`.
 const LOGS_DIR: &str = "logs";
+
+/// Nazwa pliku ustawień biegu wewnątrz katalogu, który poda wołający.
+///
+/// Nazwa jest **nasza**, nie vendora: `.claude/settings.json` to kształt repo gospodarza, a ten
+/// plik ma się nie dać pomylić z tamtym ani na dysku, ani w `ps`. Katalogu sterownik sobie nie
+/// wybiera — dostaje go argumentem, bo artefakty biegu leżą w katalogu biegu
+/// (`docs/ARCHITECTURE.md` §8), a nie w `$TMPDIR`.
+const RUN_SETTINGS_FILE: &str = "claude-settings.json";
 
 /// Wiersz transportu: cztery flagi, które decydują, **czym** jest to wywołanie.
 ///
@@ -203,6 +211,84 @@ const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static str>
     }
 }
 
+/// Druga kolumna tej samej decyzji, co [`permission_flags`]: **co w ogóle jest w zestawie**.
+///
+/// Stoi obok tamtej tabeli, a nie zamiast niej, bo to są dwie różne flagi o dwóch różnych
+/// znaczeniach. `--allowedTools` jest listą **auto-zatwierdzania**: narzędzie spoza niej dalej
+/// jest w zestawie, tylko zapyta. `--tools` jest twardą listą **dostępności** — czego na niej
+/// nie ma, tego proces nie ma pod ręką [zmierzone 2026-08-19].
+///
+/// # Dlaczego biała, a nie czarna [2026-08-19]
+///
+/// W biegu bez człowieka „zapyta" nie znaczy „nie zrobi". Zmierzone: agent Loadouta wywołał
+/// **projektowego podagenta repo gospodarza**, ten wystartował jako osobny proces i spalił
+/// **38–41 tys. tokenów** całkowicie poza widokiem i rozliczeniem Loadouta. Ani jednej
+/// czerwieni, ani jednego wiersza na ekranie pracy, ani jednego dolara w podsumowaniu kroku.
+///
+/// Domyślna powierzchnia ma dziś **osiem ścieżek startu procesu** — `Task`, `Workflow`,
+/// `SendMessage`, `CronCreate`, `RemoteTrigger`, `ScheduleWakeup`, `EnterWorktree`, `Monitor` —
+/// a każda z nich startuje proces **poza naszą grupą**, czyli poza dowodem śmierci
+/// z niezmiennika 6. Lista rzeczy zakazanych dostaje dziurę przy najbliższym wydaniu CLI, po
+/// cichu, bo nikt nie czyta changelogu pod kątem „czy przybyło czasowników". Lista rzeczy
+/// **dozwolonych** dziury nie dostaje: nowe narzędzie po prostu na nią nie wchodzi.
+///
+/// Żaden wariant nie ma prawa oddać ani pustej listy, ani `default`. To są dwa słowa vendora
+/// o dwóch skrajnościach — `""` znaczy „żadnych narzędzi", `default` znaczy „wszystkie" —
+/// i żadna polityka po ludzku nie znaczy żadnej z nich.
+///
+/// # Trzy szczeble, a każdy dokłada inny RODZAJ zasięgu
+///
+/// Nie trzy różne listy dobrane do smaku, tylko jedna drabina, w której każdy stopień jest
+/// zdaniem, które ta polityka obiecuje na ekranie:
+///
+/// | Polityka | Na ekranie | Co dokłada ponad poprzedni szczebel |
+/// |---|---|---|
+/// | [`Policy::ReadOnly`] | „Read only" | czytanie i szukanie w repo |
+/// | [`Policy::EditInFolder`] | „Can edit this folder" | zmienianie tego repo (`Edit`, `Write`, `Bash`) |
+/// | [`Policy::Unrestricted`] | „No limits" | sięganie POZA repo (`WebFetch`, `WebSearch`) |
+///
+/// Zawierania są **ostre w obie strony i to jest asercja o zachowaniu**: agent obiecany jako
+/// czytający nie ma prawa mieć pod ręką `Write` ani `Edit`, a agent bez ograniczeń nie ma prawa
+/// mieć **mniej** niż ten, który edytuje folder. Adapter wypisujący jedną i tę samą listę
+/// wszystkim trzem jest dokładnie tą pomyłką, którą T-04 nazwało już raz przy
+/// `--permission-mode`.
+///
+/// `Bash` stoi tu gołe, a w [`permission_flags`] tej samej polityki stoi `Bash(git *)` — i to
+/// nie jest rozjazd, tylko cały podział między tymi dwiema flagami. `--tools` mówi „narzędzie
+/// jest w zestawie", `--allowedTools` mówi „ta jego część idzie bez pytania". Składnia zakresowa
+/// należy do drugiej z nich; w pierwszej jest tylko nazwa.
+///
+/// # Dziesięć nazw, których tu nie ma, i ile kosztowała każda z nich [2026-08-19]
+///
+/// `Task`, `Workflow`, `SendMessage`, `CronCreate`, `RemoteTrigger`, `ScheduleWakeup`,
+/// `EnterWorktree`, `Monitor` — każda z tych ośmiu startuje proces **poza naszą grupą**, czyli
+/// poza dowodem śmierci z niezmiennika 6: dowód zostaje prawdziwy i przestaje cokolwiek znaczyć,
+/// bo to nie ta grupa. `Agent` i `Skill` to ta sama czynność pod inną nazwą u tego samego
+/// vendora. Zmierzone: jedno takie wywołanie — projektowy podagent repo gospodarza — spaliło
+/// **38–41 tys. tokenów** całkowicie poza widokiem i rozliczeniem Loadouta. Ani jednej
+/// czerwieni, ani jednego wiersza na ekranie pracy, ani jednego dolara w podsumowaniu kroku.
+///
+/// Ich nieobecność jest tu **skutkiem ubocznym**, nie regułą: lista zakazów dostałaby dziurę
+/// przy najbliższym wydaniu CLI, po cichu, bo nikt nie czyta changelogu pod kątem „czy przybyło
+/// czasowników". Na tę listę nowe narzędzie po prostu nie wchodzi.
+#[must_use]
+pub const fn tools_for(policy: Policy) -> &'static [&'static str] {
+    match policy {
+        Policy::ReadOnly => &["Read", "Grep", "Glob"],
+        Policy::EditInFolder => &["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+        Policy::Unrestricted => &[
+            "Read",
+            "Grep",
+            "Glob",
+            "Edit",
+            "Write",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+        ],
+    }
+}
+
 /// Dokąd idzie transkrypt kroku i kto dostaje jego wiersze.
 ///
 /// Trzy fakty, których sterownik nie ma skąd wziąć sam, i ani jednego więcej: [`RunSpec`] nie
@@ -251,6 +337,99 @@ impl Transcript {
     }
 }
 
+/// Plik ustawień, który piszemy **my** — i jedyny, jaki ten bieg w ogóle wczyta.
+///
+/// # Dlaczego nie wczytujemy pliku gospodarza [zmierzone 2026-08-19]
+///
+/// Z repo gospodarza dziedziczymy **tekst**, nigdy **maszynerię**. `--setting-sources ""`
+/// odcina jego `.claude/settings.json` w całości i jest **jedyną** dźwignią, która gasi jego
+/// haki: hak `PreToolUse` gospodarza startuje proces we **własnej** grupie, jego dziecko
+/// dostaje `ppid=1` i **przeżywa wyjście `claude`** (jeden bieg zostawił 14 sierot,
+/// eksperymenty łącznie 30). Krok się kończy, dowód śmierci grupy z niezmiennika 6 jest
+/// prawdziwy — i nie dotyczy procesu, który nigdy nie był w naszej grupie. Nic nie pęka,
+/// bramka jest zielona, a sierota pali limit w tle.
+///
+/// Odcięte zostaje jednak także to, co gospodarz naprawdę chciał **zabronić**. Wraca do nas
+/// wyłącznie jako napis, przepisany do tego pliku: `--settings` **działa samodzielnie** przy
+/// `--setting-sources ""` i egzekwuje przepisane `permissions.deny`. Sam z siebie izolacją
+/// **nie jest** — sumuje się z projektowym i nie gasi hooków, nawet podany z pustą listą
+/// `PreToolUse` — więc jest nośnikiem naszego `deny` i niczym więcej.
+///
+/// # Jeden klucz, i drugi jest nowym kryterium, nie łatką
+///
+/// Cztery pozostałe pola gospodarza **rozszerzyłyby** nas, nie ograniczyły:
+/// `permissions.allow` to cudza polityka, `env` **nadpisuje** środowisko podane przez Loadouta
+/// (czyli przewraca `env_clear()` z niezmiennika 9 od zewnątrz), `sandbox` z
+/// `autoAllowBashIfSandboxed` przepuszcza **dowolną** komendę mimo białej listy narzędzi,
+/// a `hooks` to ta grupa procesów, której nie zabijemy. Żadne z nich nie przechodzi przez
+/// przepisanie — nigdy.
+///
+/// Czytelnik tego pliku jest dokładnie **jeden**: proces, który startujemy. Jeżeli powstaje,
+/// a `--settings` nie stoi w argv z **jego** ścieżką, to jest śmieć w katalogu biegu
+/// i jednocześnie cała izolacja, której nie ma (niezmiennik 21).
+#[derive(Debug, Clone)]
+pub struct RunSettings {
+    /// Gdzie ten plik leży. Ta sama ścieżka, która ma stanąć obok `--settings` w argv.
+    path: PathBuf,
+}
+
+/// Cały dokument, który idzie na dysk — i **jedyny kształt**, w jakim może iść.
+///
+/// Typ zamiast `serde_json::json!` jest tu decyzją, nie gustem: „jeden klucz" przestaje być
+/// obietnicą w komentarzu i staje się faktem o typie. Do struktury z jednym polem nie da się
+/// dopisać `env` ani `hooks` **przez pomyłkę** — a przepisanie hurtem cudzego obiektu
+/// `permissions` jest właśnie taką pomyłką, która przechodzi każdy test pytający wyłącznie
+/// o zawartość `deny`.
+#[derive(Debug, Serialize)]
+struct SettingsDocument<'a> {
+    permissions: DenyOnly<'a>,
+}
+
+/// Jedyne pole gospodarza, które przechodzi przez granicę — i jedyne, które ta struktura zna.
+#[derive(Debug, Serialize)]
+struct DenyOnly<'a> {
+    /// Reguły w **podanej kolejności**: `&[String]` serializuje się jako tablica JSON, więc
+    /// kolejność jest tu tą samą kolejnością, którą podał wołający.
+    deny: &'a [String],
+}
+
+impl RunSettings {
+    /// Zapisuje plik ustawień biegu w **podanym** katalogu i oddaje uchwyt do niego.
+    ///
+    /// Reguły przychodzą gotowe — przepisane z gospodarza przez [`super::host::deny_rules`] —
+    /// i wchodzą do dokumentu **w podanej kolejności**, bo lista odmów czytana przez człowieka
+    /// przetasowana po drodze jest listą, której nikt nie potrafi zweryfikować.
+    ///
+    /// Katalogu **nie zakłada** i miejsca sobie **nie wybiera**, dokładnie jak
+    /// [`Transcript::open`]: katalog biegu powstaje w warstwie, która zna układ
+    /// z `docs/ARCHITECTURE.md` §8, a sterownik ma tam dopisać plik. Wymyślone miejsce byłoby
+    /// `$TMPDIR`, czyli artefaktem biegu poza biegiem.
+    pub fn write(dir: &Path, deny: &[String]) -> anyhow::Result<Self> {
+        let path = dir.join(RUN_SETTINGS_FILE);
+
+        let document = SettingsDocument {
+            permissions: DenyOnly { deny },
+        };
+        let text = serde_json::to_string_pretty(&document)
+            .context("the rewritten deny rules could not be turned into a settings document")?;
+
+        std::fs::write(&path, text).with_context(|| {
+            format!(
+                "the run settings file could not be written at {}",
+                path.display()
+            )
+        })?;
+
+        Ok(Self { path })
+    }
+
+    /// Ścieżka zapisanego pliku — ta sama, którą dostaje `--settings`.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Sterownik `claude`.
 ///
 /// Ścieżka do binarki jest **polem**, nie stałą, i to jest jedyny szew, przez który kryteria
@@ -265,6 +444,10 @@ pub struct ClaudeDriver {
     /// zapisuje": sonda wersji nie ma katalogu biegu, a kryteria samego sterownika (T-04) pytają
     /// o zdarzenia, nie o transkrypt.
     transcript: Option<Transcript>,
+    /// Plik ustawień tego biegu, czyli jedyna droga, którą reguła gospodarza do nas wraca.
+    /// `None` znaczy „ten bieg go nie ma": sonda wersji nie ma katalogu biegu, więc nie ma
+    /// gdzie go położyć, a `--settings` bez pliku pod podaną ścieżką zabiłoby CLI.
+    settings: Option<RunSettings>,
 }
 
 impl Default for ClaudeDriver {
@@ -280,6 +463,7 @@ impl ClaudeDriver {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
             transcript: None,
+            settings: None,
         }
     }
 
@@ -290,6 +474,7 @@ impl ClaudeDriver {
         Self {
             binary,
             transcript: None,
+            settings: None,
         }
     }
 
@@ -310,6 +495,45 @@ impl ClaudeDriver {
         self
     }
 
+    /// Sterownik, który każe procesowi wczytać **nasz** plik ustawień — i żaden inny.
+    ///
+    /// Budowniczy przez wartość, dokładnie jak [`ClaudeDriver::with_transcript`], i z tego
+    /// samego powodu: plik ustawień jest **per bieg**, a sterownik bywa jeden na vendora, więc
+    /// jedyny bezpieczny kształt to tani klon z własną ścieżką. To jest też powód, dla którego
+    /// nie ma tu nowego pola w [`RunSpec`]: tę strukturę konstruuje literałem trzynaście plików
+    /// spoza tego zadania, a nowe pole wywróciłoby kompilację ich wszystkich.
+    ///
+    /// # Wołacza produkcyjnego ten szew nie ma i to jest pytanie do człowieka (T-53)
+    ///
+    /// Kształt jest ten sam co przy [`ClaudeDriver::with_transcript`] z T-34: mechanizm jest
+    /// kompletny i **nieużywany**, dopóki człowiek go nie zepnie. Wołaczem jest `commands/run.rs`,
+    /// a on **nie leży w bloku OWNS T-53** — jeden wiersz poza tym blokiem jest pytaniem, nie
+    /// cichym dopiskiem (`AGENTS.md` §7).
+    ///
+    /// Proponowane miejsce: `plan_agent` w `commands/run.rs`. Tam, i tylko tam, znane są
+    /// **naraz** obie ścieżki — katalog roboczy kroku (`cwd` policzone przez `workspace`; dla
+    /// `Folder::Project` to `setup.project`, a dla `fresh-copy` kopia pod katalogiem biegu) oraz
+    /// katalog biegu (`setup.dir`, ten sam, który dostaje `lay_out_the_run_dir`). Trzy wiersze,
+    /// w tej kolejności:
+    ///
+    /// 1. `let deny = super::host::deny_rules(&cwd);`
+    /// 2. `let settings = RunSettings::write(setup.dir, &deny)?;` — katalog biegu, nigdy
+    ///    `$TMPDIR` (`docs/ARCHITECTURE.md` §8); zapis idzie **przed** startem procesu, bo
+    ///    `--settings` bez pliku zabija CLI dopiero w produkcji (niezmiennik 21).
+    /// 3. `.with_settings(settings)` na sterowniku, **zanim** ktokolwiek zawoła
+    ///    [`ClaudeDriver::command`] — flaga wchodzi do argv wyłącznie stąd.
+    ///
+    /// Otwarte pytanie tej propozycji i drugi powód, dla którego decyzja należy do człowieka:
+    /// fabryka z `lib.rs` oddaje `Arc<dyn AgentDriver>` raz na aplikację, więc w `plan_agent`
+    /// konkretny typ jest już zgubiony, a ten budowniczy żyje na [`ClaudeDriver`], nie na
+    /// traicie. Wpięcie potrzebuje **albo** fabryki wołanej per bieg, **albo** tej samej
+    /// odpowiedzi, której T-34 nie dostało dla transkryptu. Obie zmieniają plik spoza OWNS.
+    #[must_use]
+    pub fn with_settings(mut self, settings: RunSettings) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
     /// Buduje komendę jednej tury. **Promptu w niej nie ma i nigdy nie będzie**
     /// (niezmiennik 9): treść zadania jedzie kopertą na stdin, bo argumenty widzi `ps`
     /// każdego użytkownika maszyny.
@@ -325,7 +549,9 @@ impl ClaudeDriver {
     /// | `--session-id <run_id>` \| `--resume <id>` | dokładnie jedno z dwóch, nigdy oba |
     /// | `--strict-mcp-config` | 73 narzędzia z 9 serwerów zostają za drzwiami [T1 korekta 4] |
     /// | `--setting-sources ""` | argument o **zerowej długości**; `"user,project"` w tym miejscu to izolacja, która nie działa |
+    /// | `--settings <ścieżka>` | [`RunSettings`], jeśli ten bieg go ma: nośnik przepisanego `deny`, **nie** izolacja — sumuje się z projektowym i nie gasi hooków [2026-08-19] |
     /// | `--permission-mode` + `--allowedTools` | z [`super::Policy`], jedną tabelą (niezmiennik 23) |
+    /// | `--tools <lista>` | twarda biała lista **dostępności** z [`tools_for`]: czego na niej nie ma, tego proces nie ma pod ręką [2026-08-19] |
     ///
     /// Czego tu **nie ma**: `--bare` (wywala subskrypcję [T1 §3.3]), `--max-turns`
     /// i `--max-budget-usd` (spike S-2 nierozstrzygnięty [`docs/ARCHITECTURE.md` §11]).
@@ -355,6 +581,27 @@ impl ClaudeDriver {
 
         command.args(LEAN_CONTEXT);
 
+        // NOŚNIK NASZEGO `deny` I NIC POZA TYM. `--settings` **sumuje się** z ustawieniami
+        // projektowymi i **nie gasi** hooków, nawet podany z pustą listą `PreToolUse`
+        // [zmierzone 2026-08-19] — izolacją jest wyłącznie `--setting-sources` o zerowej
+        // długości argumentu, dwie linie wyżej. Dlatego ta flaga stoi TUŻ ZA tamtą i nigdzie
+        // indziej: kto ją zobaczy, ma najpierw przeczytać, że tamta zostaje jedna.
+        //
+        // Cicho łamie się to jednym dopiskiem: ktoś stawia `--settings` i „dla pewności, żeby
+        // się wczytał" dokłada drugie `--setting-sources project`. Wtedy wraca CAŁY plik
+        // gospodarza — jego hak `PreToolUse` startuje proces we własnej grupie, dziecko dostaje
+        // `ppid=1` i przeżywa wyjście `claude` (30 sierot w eksperymentach), a każde sprawdzenie
+        // pytające o OBECNOŚĆ flagi zostaje zielone.
+        //
+        // Ścieżka, nigdy JSON w argumencie: `--settings` przyjmuje jedno i drugie, a treść
+        // w argv widzi `ps` każdego użytkownika maszyny (niezmiennik 9 także wtedy, gdy nie
+        // chodzi o prompt). `None` znaczy „ten bieg nie ma katalogu, w którym mógłby ten plik
+        // leżeć" — tak wygląda sonda wersji — i wtedy flagi nie ma w ogóle, bo `--settings`
+        // wskazujące nieistniejący plik zabija CLI przy starcie.
+        if let Some(settings) = &self.settings {
+            command.arg("--settings").arg(settings.path());
+        }
+
         // Jedna tabela, jedno miejsce (niezmiennik 23). `None` znaczy „nie wysyłaj listy",
         // a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne rzeczy.
         let (mode, tools) = permission_flags(spec.policy);
@@ -362,6 +609,14 @@ impl ClaudeDriver {
         if let Some(tools) = tools {
             command.arg("--allowedTools").arg(tools);
         }
+
+        // Druga kolumna tej samej decyzji, nie druga decyzja (niezmiennik 23): wyżej stoi to,
+        // co idzie bez pytania, tutaj to, co w ogóle jest w zestawie. Jedno wystąpienie flagi
+        // i jeden argument z przecinkami — tak samo jak `--allowedTools`, tak samo jak mówi
+        // `claude --help`. Bez tej linii cała tabela wyżej jest napisem: `--allowedTools`
+        // to lista AUTO-ZATWIERDZANIA, a narzędzie spoza niej dalej jest pod ręką, tylko
+        // zapyta — i w biegu bez człowieka „zapyta" nie znaczy „nie zrobi" [2026-08-19].
+        command.arg("--tools").arg(tools_for(spec.policy).join(","));
 
         if let Some(model) = &spec.model {
             command.arg("--model").arg(model);
