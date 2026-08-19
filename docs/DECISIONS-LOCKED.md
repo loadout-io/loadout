@@ -5,31 +5,42 @@ Research może dodać szczegóły implementacyjne, ale nie zmienia kierunku.
 
 ---
 
-## D1 — Wygląd: ciemny terminal + dyscyplina Apple
+## D1 — Wygląd: Loadout Quiet Glass
 
-Baza wizualna: paleta i layout z `redesign poprzedniego prototypu.dc.html` (kopia: `docs/design/poprzedni prototyp-redesign.dc.html`).
-Reguły kompozycji: z Apple DESIGN.md — ale **zasady, nie tokeny** (Apple to system marketingowy,
-17px body i 80px padding sekcji nie mają sensu w gęstym narzędziu pracy).
+*Zrewidowane 2026-08-19. Pierwotna D1 — paleta mint-na-czerni z `redesign poprzedniego prototypu.dc.html`,
+`border-radius: 2px` wszędzie, krój Inter — jest **cofnięta w całości**. Powody, wszystkie
+zmierzone: mint na czerni jest statystyczną średnią tego, co generują modele, i nie mówi nic
+o tym produkcie; dwupikselowy narożnik jest antytezą macOS, o który prosiła ta sama decyzja;
+a Inter był zadeklarowany w `theme.css` od pierwszego dnia i **nie istniał w drzewie** —
+aplikacja przez cały ten czas rysowała się krojem systemowym, po cichu, bez ani jednego błędu
+w konsoli.*
 
-Co bierzemy z Apple:
-- **Jeden kolor akcentu.** Wszystko, co interaktywne, ma ten sam kolor. Nie ma drugiego koloru marki.
-- **Zero gradientów dekoracyjnych.** Zero cieni na chrome. Głębia = zmiana koloru powierzchni.
-- **Typografia zamiast ozdób.** Hierarchia z rozmiaru i wagi, nie z ramek i tła.
-- **Waga 500 nie istnieje.** Drabinka: 400 / 600 / 700.
-- **Stan aktywny = `transform: scale(0.98)`.** Jedna mikrointerakcja w całym systemie.
-- **Nigdy nie dokumentujemy hover.** Tylko default i active/pressed.
+Baza wizualna: **system projektowy meetnotes** (`../meetnotes/src/design-tokens/`, nazwa własna
+„Quiet Glass"). Bierzemy **wartości**, nie inspirację: powierzchnie, obrysy, akcent, promienie,
+cienie, krzywe ruchu, przepis na szkło i oba kroje są 1:1. Dwie nasze aplikacje mają w Docku
+wyglądać na rodzeństwo.
 
-Co bierzemy z redesign poprzedniego prototypu:
-- `#06090b` tło · `#0d1216` panel · `#141b20` raised · `#040708` well
-- `#e8eff1` ink · `#cbd6d9` body · `#a3b1b5` muted · `#212a2f` line · `#5a6d76` line-control
-- Inter (UI) + SFMono/Roboto Mono (dane, identyfikatory, czas)
-- `border-radius: 2px` wszędzie. Kwadratowo, terminalowo.
-- Kolory statusu jako **semantyka, nie dekoracja**: `#6ee0b0` ok · `#ffb45b` czeka na ciebie · `#ff8f9f` błąd · `#c6a8ff` człowiek
+Reguła nadrzędna, wprost z tamtego systemu: **szkło jest chrome, treść jest papierem.** Szkło nie
+wchodzi nigdy pod tekst ani pod kod, które człowiek ma przeczytać.
 
-Akcent: `#6ee0b0`.
+Co jest nasze, bo dom tego nie rozwiązuje:
 
-Pełna specyfikacja: `docs/design/DESIGN.md`.
+- **Gęstość.** Listy meetnotes są znacznie luźniejsze — wiersz spotkania zajmuje w ich podglądzie
+  kilkukrotność naszego wiersza strumienia. Te same wartości, ciaśniejsze zastosowanie; sufit
+  gęstości z `docs/ARCHITECTURE.md` §7 obowiązuje bez zmian.
+- **Rozdział „interaktywne" od „teraz".** `--accent` `#6e76ff` mówi wyłącznie „to jest
+  interaktywne". `--live` `#ff7a5c` mówi wyłącznie „to się dzieje w tej chwili". Do 2026-08-19
+  jedna barwa robiła obie prace naraz, więc pulsująca kropka i przycisk wyglądały na spokrewnione.
+- **Przygaszone kolory tożsamości agentów.** Domowe barwy grafu są nasycone, bo obsługują legendę;
+  u nas kolor agenta obok koloru stanu jest awarią, więc tożsamość jest przygaszona.
+- **Znak.** Najmniejszy prawdziwy graf: jedno wejście, dwie równoległe gałęzie, jedna synteza.
+  Cztery luźne kwadraty nie mają krawędzi, więc nie mają relacji, więc nie są grafem.
 
+Promień bierze się z **roli**, nie z rozmiaru: kontrolka `--radius-sm`, pojemnik treści
+`--radius-md`, rzecz nad treścią `--radius-lg`, rzecz, która jest odczytem — `--radius-pill`.
+Piąta wartość jest piątą decyzją.
+
+Akcent: `#6e76ff`. „Teraz": `#ff7a5c`. Pełna specyfikacja: `docs/design/DESIGN.md`.
 ---
 
 ## D2 — Nowe repo, czysty start
@@ -141,8 +152,37 @@ subagentami ani z czymkolwiek, co Anthropic albo OpenAI dowiozą w przyszłym mi
 **Wszystko, co vendor wprowadzi, konfigurujemy per agent — nigdy jako nowy typ węzła.**
 
 Nowa flaga u Claude'a to nowe pole w definicji agenta. Nowy tryb u Codeksa to nowe pole w definicji
-agenta. Liczba rodzajów kafelka na płótnie zostaje **dwa** (krok i punkt kontrolny) niezależnie od
-tego, ile funkcji dołożą vendorzy.
+agenta. Liczba rodzajów kafelka na płótnie **nie rośnie od tego, ile funkcji dołożą vendorzy** —
+i to jest cała treść tej reguły. Nowa flaga u Claude'a albo nowy tryb u Codeksa to zawsze pole
+w definicji agenta, nigdy nowy kafelek.
+
+### Trzeci rodzaj: „sprawdź". Dopisany 2026-08-20, świadomie
+
+*Do 2026-08-20 ta reguła brzmiała „zostaje **dwa** (krok i punkt kontrolny)". Zmienione decyzją
+człowieka po tym, jak brak trzeciego rodzaju zablokował dwa etapy naraz.*
+
+Rodzajów jest **trzy**: krok, punkt kontrolny i **sprawdzenie**. Trzeci uruchamia komendę
+należącą do Loadouta i **sam wystawia wynik** — z kodu wyjścia plus licznika przejść
+(niezmiennik 19), nie ze zdania agenta.
+
+**Dlaczego to nie jest złamanie reguły wyżej.** Ta reguła zabrania kafelków, które **powtarzają
+funkcje vendorów** — i ten zakaz zostaje w mocy bez zmian. Żaden vendor nie dostarcza „uruchom
+komendę i sam orzeknij, czy przeszła"; przeciwnie, cała ich powierzchnia zwraca to, co agent
+**powiedział**. Rozróżnienie „co agent powiedział" kontra „co się stało" jest jedyną rzeczą,
+dla której ten produkt powstał (`00-SYNTHESIS.md` §2.1) — a bez tego rodzaju kroku nie ma go
+czym wyrazić.
+
+**Co ten brak kosztował, zmierzone.** `docs/harness-as-workflow.md` (ustalenie U-1) mierzy, czy
+najcięższa znana ceremonia — pętla, którą to repo biegnie na sobie — da się zapisać jako zwykły
+plik workflow. Odpowiedź: **cztery etapy z sześciu tak, dwa nie, i oba przewracają się o ten sam
+brak.** Etap bramki i etap wejścia na trunk to komendy Loadouta z własnym wynikiem, więc stały
+na kafelku kontrolnym, czyli na pytaniu do człowieka. Sam plik `harness_workflow_two_kinds.rs`
+zgłaszał `check` jako brakujący rodzaj, z nazwy, od T-23.
+
+**Czego ta zmiana NIE otwiera.** Czwarty rodzaj dalej wymaga prawdziwej skargi z pomiarem, nie
+wygody. W szczególności **nie ma i nie będzie kafelka „recenzja"**: recenzent jest zwykłym
+krokiem agenta, a etap nazwany w kodzie jest domyślny i nie da się go wyłączyć konfiguracją
+(D7, niezmiennik 27). Wyrocznia z T-23 pilnuje teraz właśnie tego — odmowy dla rodzaju `review`.
 
 ### Konsekwencja projektowa, bez której ta reguła jest pustym hasłem
 

@@ -40,7 +40,7 @@
   --xy-handle-border-color: var(--color-panel);
 
   /* Prostokąt zaznaczenia. Tu siedział ten piąty kolor. */
-  --xy-selection-background-color: var(--color-accent-wash);
+  --xy-selection-background-color: var(--color-accent-soft);
   --xy-selection-border: 1px dotted var(--color-accent-edge);
 
   /* Kafelek rysuje `canvas/tile.tsx` w całości — z własnym tłem, obrysem i promieniem. Karta
@@ -48,10 +48,29 @@
    * widoczny na każdym kroku. */
   --xy-node-background-color: transparent;
   --xy-node-border: none;
-  --xy-node-border-radius: var(--radius-sq);
+  --xy-node-border-radius: var(--radius-md);
   --xy-node-color: var(--color-body);
   --xy-node-boxshadow-hover: none;
   /* Zaznaczenie kafelka mówi obrysem `--color-accent` z `tile.tsx`. Cień biblioteki byłby
    * drugą odpowiedzią na pytanie „który kafelek jest zaznaczony" (niezmiennik 13). */
   --xy-node-boxshadow-selected: none;
+}
+
+/* PODPIS KRAWĘDZI — dwie zmienne, bez których powrót jest białą pastylką na ciemnym płótnie.
+ *
+ * `dist/style.css` biblioteki maluje `.react-flow__edge-textbg` domyślnym
+ * `--xy-edge-label-background-color-default: #ffffff`, a ten arkusz nie ustawiał ani tła, ani
+ * koloru pisma. Podpis „up to 3 tries" wjechałby więc na płótno jako biały prostokąt — jedyny
+ * jasny element na całym ekranie. Kolory stoją tutaj, a nie w kodzie, bo `checks/quick-tokens.sh`
+ * nie przepuszcza hexów w komponentach i ma rację: paleta ma jedno miejsce. */
+.react-flow {
+  --xy-edge-label-background-color: var(--color-raised);
+  --xy-edge-label-color: var(--color-muted);
+}
+
+/* Powrót rysuje się słabiej niż strzałka „po": to jest ścieżka wyjątkowa, nie główny nurt pracy,
+ * i nie ma przykuwać wzroku mocniej niż kolejność kroków. Sam wzór kreski dokłada `canvas.tsx`
+ * (kształt, nie kolor). */
+.loadout-way-back .react-flow__edge-path {
+  stroke: var(--color-line);
 }

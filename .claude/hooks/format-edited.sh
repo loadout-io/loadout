@@ -36,6 +36,20 @@ print(p)
 [ -n "$f" ] && [ -f "$f" ] || exit 0
 
 ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+# WORKTREE MA SWÓJ KORZEŃ, i bez tego hak MILCZY. `CLAUDE_PROJECT_DIR` wskazuje główny checkout,
+# a sesja może pracować w podpiętym worktree pod `<główny>/.claude/worktrees/<nazwa>/`. Ścieżka
+# względna wychodziła wtedy jako `.claude/worktrees/<nazwa>/src/plik.ts`, nie trafiała w żaden
+# wzorzec niżej i hak kończył się zerem bez formatowania — po cichu, bo reguła 2 zabrania mu
+# hałasować. Skutek widać dopiero jako czerwony `checks/quick-fmt.sh` w losowym momencie, bez
+# śladu, że hak w ogóle biegł. Zmierzone 2026-08-19: dwie czerwienie formatowania w jednej sesji.
+case "$f" in
+  "$ROOT"/.claude/worktrees/*/*)
+    rest="${f#"$ROOT"/.claude/worktrees/}"
+    ROOT="$ROOT/.claude/worktrees/${rest%%/*}"
+    ;;
+esac
+
 case "$f" in
   "$ROOT"/*) rel="${f#"$ROOT"/}" ;;
   *)         exit 0 ;;             # plik spoza projektu — nie nasza sprawa

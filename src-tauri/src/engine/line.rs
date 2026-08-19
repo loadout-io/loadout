@@ -630,9 +630,6 @@ const TAIL_LINES: usize = 20;
 /// wierszem (reguła 1).
 const SUBJECT_LIMIT: usize = 120;
 
-/// Stan limitu, przy którym vendor mówi „wszystko w porządku" [T1 korekta 3].
-const ALLOWED: &str = "allowed";
-
 impl Curator {
     /// Świeży kurator, przed pierwszym zdarzeniem.
     #[must_use]
@@ -887,7 +884,10 @@ impl Curator {
     /// Pola `pause_run` tu **nie ma** i to jest celowe: czyta je T-21 i nikt poza nim
     /// (niezmiennik 21). O tym, czy wiersz istnieje, rozstrzyga `status`.
     fn rate_limit(&mut self, seen: Seen<'_>, status: &str, resets_at: i64) -> Vec<Line> {
-        if status == ALLOWED {
+        // Pytamy rdzeń, nie własną stałą (niezmiennik 23). Druga kopia tej reguły stała tu
+        // do 2026-08-19 i rozjechała się z bramą dokładnie na `allowed_warning`: bieg stawał,
+        // a wiersz obok niego mówił „Hit the usage limit", choć niczego nie osiągnięto.
+        if super::limits::is_allowed(status) {
             return Vec::new();
         }
         let line = Line::Problem {

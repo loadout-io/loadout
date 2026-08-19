@@ -129,11 +129,11 @@
    * Nazwa skasowana pod niezmigrowanym komponentem zostawia element BEZ ANI JEDNEJ
    * reguly CSS — awarie, ktora nie rzuca wyjatku i nie pojawia sie w zadnym logu.
    * Gina w T-50, kiedy nikt ich nie wola. */
+  /* `--color-accent-edge` NIE jest nazwa zastepcza i zostaje: rodzina `-edge` ma piec czlonow
+   * (live, attend, fail, human, accent), a akcent po prostu ma te sama wartosc, co jego pierscien
+   * skupienia. Cztery nazwy `-wash` byly przekierowaniami na czas migracji i znikly z ostatnim
+   * wolajacym (T-50). */
   --color-accent-edge: var(--color-accent-ring);
-  --color-accent-wash: var(--color-accent-soft);
-  --color-attend-wash: var(--color-attend-soft);
-  --color-fail-wash: var(--color-fail-soft);
-  --color-human-wash: var(--color-human-soft);
 
   /* ── tożsamość agenta: PRZYGASZONE ────────────────────────────────── */
   /* Kolor agenta nigdy nie może być pomylony z kolorem stanu. Rozdział
@@ -262,8 +262,6 @@
    * liczbe rozjezdza sie po cichu przy nastepnej zmianie pasma, i wtedy dwie
    * powierzchnie maja dwa rozne „2 px", ktorych nikt nie widzi, dopoki nie
    * stana obok siebie. Gina w T-50. */
-  --radius-sq: var(--radius-sm);
-  --radius-dot: var(--radius-pill);
 
   /* ── wysokości kontrolek ──────────────────────────────────────────── */
   --height-compact: 28px;
@@ -417,7 +415,7 @@
     height: var(--height-control);
     padding: 7px 9px;
     border: 1px solid var(--color-line-strong);
-    border-radius: var(--radius-sq);
+    border-radius: var(--radius-sm);
     background: var(--color-well);
     color: var(--color-ink);
     font-family: var(--font-mono);
@@ -480,7 +478,7 @@
 
   button {
     font-family: inherit;
-    border-radius: var(--radius-sq);
+    border-radius: var(--radius-sm);
   }
 
   /* Jedyna mikrointerakcja w systemie. */

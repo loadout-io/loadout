@@ -1,20 +1,39 @@
-/* Kryterium 2 dla T-13: strzałka domykająca koło po prostu nie ląduje — bez komunikatu.
+/* Kryterium 2 dla T-13, PRZEPISANE 2026-08-19 za zgodą właściciela: strzałka domykająca koło
+ * ląduje, ale JAKO POWRÓT — z suficiem tur. Bez komunikatu, tak jak dotąd.
  *
- * Słaba wersja tego kryterium to pojedyncze `expect(isValidConnection(cAtoA)).toBe(false)`.
+ * CO SIĘ ZMIENIŁO I DLACZEGO. Pierwotne brzmienie tego pliku mówiło „koło jest UNIEMOŻLIWIONE,
+ * nie zgłoszone", i było słuszne, dopóki koło znaczyło wyłącznie pracę, która się nie kończy.
+ * Właściciel poprosił o kształt, którego bez powrotu nie da się wyrazić: implementer wysyła do
+ * testera, tester zdaje raport, `fail` wraca do implementera, `pass` puszcza bieg dalej. Powrót
+ * niesie `max_turns`, więc pętla bez końca dalej jest niewyrażalna — zmieniło się to, CO
+ * odmawiamy, a nie to, przed czym bronimy. Projekt:
+ * `docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md`.
+ *
+ * TRZY ODMOWY ZOSTAJĄ i są w tym pliku sądzone: pętla własna, ta sama strzałka drugi raz oraz
+ * DRUGI powrót. Ostatnia jest nowa i jest w chwili gestu z premedytacją: Rust daje na drugi
+ * powrót `Problem`, czyli po narysowaniu plik przestałby się zapisywać. Płótno, które pozwala
+ * narysować rzecz blokującą zapis, kasuje pracę po cichu; płótno, które mówi „nie" od razu,
+ * kosztuje jeden nieudany gest.
+ *
+ * SŁABA WERSJA tego kryterium to pojedyncze `expect(isValidConnection(...)).toBe(false)`.
  * Przechodzi dla `() => false`, czyli dla płótna, na którym nie da się narysować ani jednej
  * strzałki, i nikt tego nie zauważy przez tydzień, bo „nie da się połączyć" wygląda tak samo
- * jak „to połączenie jest złe". Rozróżnia to przypadek `a → c`, który jest rombem, nie kołem,
- * i musi wrócić `true`.
+ * jak „to połączenie jest złe". Rozróżniają to dwa przypadki, które MUSZĄ wrócić `true`: romb
+ * (`a → c`) i właśnie powrót.
  *
- * Druga połowa kryterium jest o tym, czego NIE MA na ekranie. Koło jest UNIEMOŻLIWIONE, nie
- * zgłoszone: uchwyt szarzeje, strzałka nie ląduje i nie pada ani jedno zdanie, bo użytkownik
- * nie zrobił nic złego [T3 §5.1]. Toast „cannot create cycle" jest tu regresją, nie ulepszeniem.
+ * DRUGA SŁABA WERSJA, nowa: sprawdzenie samego `true` dla krawędzi domykającej. Przechodzi dla
+ * implementacji, która wpuszcza koło BEZ oznaczenia — a taki plik walidator Rusta odrzuca, więc
+ * gest kończyłby się workflow, którego nie da się zapisać. Dlatego niżej sądzone jest, że
+ * `onConnect` dokłada strzałkę Z LICZBĄ TUR.
+ *
+ * Trzecia część kryterium zostaje bez zmian: koło nie produkuje ani jednego zdania na ekranie.
+ * Toast „cannot create cycle" był tu regresją i dalej nią jest.
  */
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { AgentStep, WorkflowFile } from '../../../state/workflows';
-import { isValidConnection, onConnect } from './connect';
+import { TURNS_BY_DEFAULT, isValidConnection, onConnect } from './connect';
 import { RunBar } from './problems';
 
 function step(id: string, name: string, y: number): AgentStep {
@@ -76,37 +95,66 @@ function bar(): string {
   return renderToStaticMarkup(createElement(RunBar, { notes: [], onRun: noop, onFocusNote: noop }));
 }
 
-describe('an arrow that would close a circle refuses to land, and says nothing about it', () => {
-  it('turns down the closing arrow and the self-loop, and still allows the diamond', () => {
+describe('an arrow that would close a circle lands as a way back, and says nothing about it', () => {
+  it('allows the closing arrow and the diamond, and still turns down the self-loop', () => {
     const doc = file();
 
     expect(
       isValidConnection({ source: 'c', target: 'a' }, doc),
-      'c already comes after a, so this arrow would make work that never finishes',
-    ).toBe(false);
+      'c already comes after a, so this arrow closes a circle — and that is exactly the loop the ' +
+        'owner asked for: the tester sends the work back to the implementer',
+    ).toBe(true);
     expect(
       isValidConnection({ source: 'a', target: 'a' }, doc),
-      'a step cannot wait for itself either',
+      'a step still cannot wait for itself: a way back to the same tile has no body to repeat, ' +
+        'and nothing downstream knows what it would mean',
     ).toBe(false);
     expect(
       isValidConnection({ source: 'a', target: 'c' }, doc),
       'this one is a diamond, not a circle, and it has to be allowed. Without this line the ' +
-        'two above also pass for a canvas on which no arrow can ever be drawn',
+        'refusal above also passes for a canvas on which no arrow can ever be drawn',
     ).toBe(true);
+  });
+
+  it('turns down a SECOND way back, in the gesture rather than at save time', () => {
+    const doc = file();
+    const withALoop = onConnect({ source: 'c', target: 'a' }, doc);
+
+    expect(
+      isValidConnection({ source: 'b', target: 'a' }, withALoop),
+      'Rust refuses a file with two ways back, so drawing the second one would leave a workflow ' +
+        'that cannot be saved. A canvas that allows the gesture loses work silently; one that ' +
+        'says no costs a single failed drag.',
+    ).toBe(false);
+    expect(
+      onConnect({ source: 'b', target: 'a' }, withALoop).links,
+      'and the refused one is not half-added',
+    ).toEqual(withALoop.links);
+  });
+
+  it('lands the closing arrow WITH a limit, and an ordinary one without', () => {
+    const doc = file();
+
+    expect(
+      onConnect({ source: 'c', target: 'a' }, doc).links,
+      'a way back without a limit is a file the validator refuses, so the gesture would end in a ' +
+        'workflow that cannot be saved. The number is set in the same move as the arrow, because ' +
+        'the document is not valid for even a moment without it.',
+    ).toEqual([...doc.links, { from: 'c', to: 'a', max_turns: TURNS_BY_DEFAULT }]);
+    expect(
+      onConnect({ source: 'a', target: 'c' }, doc).links,
+      'and an ordinary arrow stays ordinary: putting the key on every arrow would rewrite every ' +
+        'workflow on disk and make each one a potential loop',
+    ).toEqual([...doc.links, { from: 'a', to: 'c' }]);
   });
 
   it('leaves the arrows exactly as they were when it turns one down', () => {
     const doc = file();
 
     expect(
-      onConnect({ source: 'c', target: 'a' }, doc).links,
+      onConnect({ source: 'a', target: 'a' }, doc).links,
       'a refused arrow is not half-added and not queued — the file is the same file',
     ).toEqual(doc.links);
-    expect(
-      onConnect({ source: 'a', target: 'c' }, doc).links,
-      'and the allowed one does land, or the line above is only measuring a canvas that ' +
-        'accepts nothing',
-    ).toEqual([...doc.links, { from: 'a', to: 'c' }]);
   });
 
   it('puts no message, no warning line and no live Run block on the screen', () => {

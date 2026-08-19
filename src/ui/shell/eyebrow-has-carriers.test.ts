@@ -16,7 +16,8 @@ import { Rail } from '../../sections/run/rail/rail';
  *
  * To jest dokladnie awaria z niezmiennika 25, ktora plik zadania cytuje trzy razy: deklaracja
  * skasowana spod niezmigrowanych powierzchni, ktora nie rzuca wyjatku i nie pojawia sie
- * w zadnym logu. Pasmo promieni dostalo na to alias (`--radius-sq: var(--radius-sm)`).
+ * w zadnym logu. Pasmo promieni dostalo na to nazwe zastepcza na czas migracji; zniknela w T-50, kiedy
+ * ostatnia powierzchnia byla juz przeniesiona.
  * Rozszczepienie drabinki aliasu dostac NIE MOZE — z klasy `text-label` nie da sie odczytac,
  * czy stoi na nadoczku sekcji, czy na etykiecie pola — wiec zamiast aliasu ma to kryterium.
  *

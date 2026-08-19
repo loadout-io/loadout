@@ -4,6 +4,173 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-20, 00:20 — D6 ma trzeci rodzaj kafelka, i to byla decyzja czlowieka
+
+**Wyladowane tej nocy: T-53, T-10, T-54, T-55, T-57.** Pelna bramka po kazdym, 15/0.
+Strategia „harness jest nasz, dziedziczymy tekst" stoi w trunku w calosci:
+`drivers/{codex,command,host}.rs` i `inherit/{scan,rewrite,wire}.rs`, plus `Step::Check`
+w schemacie.
+
+### Blokada, ktora zatrzymala T-55, i jak zostala zdjeta
+
+T-55 skonczylo 5/5 kryteriow zielonych i utknelo na `harness_workflow_two_kinds` — wyroczni
+AC-2 z T-23, ktora asertuje **rownosc** zbioru rodzajow, nie zawieranie, z komentarzem
+napisanym wprost: *„trzeci rodzaj po cichu dolozony, zeby graf sie zmiescil, jest dokladnie
+ta awaria, ktora to zadanie ma lapac"*. Krok „sprawdz" JEST trzecim rodzajem. Wyrocznia
+zadzialala dokladnie tak, jak zaprojektowano.
+
+**Pisarz nie oslabil asercji** — zostawil plik nietkniety i pozwolil mu pasc, a piec innych
+plikow dostalo po JEDNEJ linii ramienia `match`, ktorej wymaga kompilator. To jest zachowanie,
+o ktore chodzi w AGENTS.md par. 7, i dlatego zostaje odnotowane.
+
+Rozstrzygnal czlowiek: **zmieniamy D6** (`94a0d23`). Regula „nie powtarzamy funkcji vendorow"
+zostaje w mocy bez jednej zmiany — zaden vendor nie dostarcza „uruchom komende i sam orzeknij,
+czy przeszla". Zmienil sie tylko limit liczbowy, ktory tej reguly nie wyrazal.
+
+**Czego to nie otwiera, zapisane w D6, zeby nie stalo sie precedensem:** nie ma i nie bedzie
+kafelka „recenzja" — etap nazwany w kodzie JEST domyslny i nie da sie go wylaczyc konfiguracja
+(D7, niezmiennik 27). Wyrocznia T-23 dostala wlasnie ten rodzaj jako swoj nowy przypadek
+odmowy, wiec regula jest **egzekwowana mechanicznie**, a nie tylko napisana.
+
+### Jedna stala odpowiadala na dwa pytania
+
+Przy okazji wyszlo, ze `KNOWN` w tej wyroczni znaczylo naraz „co zna schemat" i „czego uzywa
+mierzony plik" — i moglo, dopoki odpowiedz byla ta sama. Po dolozeniu `check` przestala:
+schemat zna trzy, a `ship-task.json` uzywa dwoch, bo etapy sprawdzenia i wejscia na trunk stoja
+w nim NADAL na kafelku kontrolnym. Stala nazywa sie teraz `IN_THE_FILE` i pilnuje pliku, bo
+asercja od poczatku byla o pliku. **Przepisanie `s_gate` i `s_land` na kroki sprawdzenia jest
+osobna praca** i tak stoi w komentarzu.
+
+### T-57: dlug po T-54 splacony, nie zamieciony
+
+T-54 wyladowalo z czterema funkcjami bez konsumenta produkcyjnego (`plugin_dir`, `plugin_argv`,
+`recurring_patterns`, `agent_body`) — wolanymi wylacznie z `tests/`, czyli z osobnych skrzyn,
+w ktorych `dead_code` milczy. `quick-wired` zlapal to i zaoferowal dwa wyjscia; wybrane zostalo
+drugie, ktore sam check opisuje jako „przeniesienie dlugu tam, gdzie ktos go widzi": napisane
+**T-57** z czterema prawdziwymi kryteriami, ktore te funkcje wolaja. Wyladowalo tej samej nocy.
+
+### Falszywa czerwien, ktora kosztowala jedno przejscie
+
+T-57 zglosilo `full-test` czerwone z „vitest exited 0 and reports no passing tests / no Tests
+line at all", przy 4/4 kryteriach zielonych. To bylo obciazenie maszyny (rownolegly bieg T-55),
+nie defekt: ta sama galaz na spokojnej maszynie daje **152 pliki / 817 testow**. Rozpoznanie
+jest jednolinijkowe — odpal `npx --no-install vitest run` na galezi i na trunku i porownaj.
+
+### Dwa biegi zginely na granicy tury — i to jest naprawione
+
+T-10 i T-54 zostaly ubite na twardym suficie 3600 s tla, oba w fazie recenzji albo poprawek,
+czyli PO wykonaniu pracy. Zero osieroconych procesow (sprawdzone `ps` po `claude -p`).
+Rozwiazanie: `scratchpad/detach.py` — podwojny fork + `setsid`, kod wyjscia do `<log>.rc`.
+T-55 i T-57 poszly odczepione i przezyly. **Helper nie jest w repo** i przy nastepnej sesji
+trzeba go napisac od nowa albo wpiac na stale.
+
+## 2026-08-19, 22:20 — harness jest NASZ: dziedziczymy tekst, nigdy maszynerie
+
+**Wyladowane: T-53 (4 kryteria) i T-10 (6).** Pelna bramka po kazdym: 15 sprawdzen, 0 czerwonych.
+Do tego zamkniety spike **S-3** i **trzy naprawy harnessu**, kazda z kontrola w obie strony.
+
+Pytanie wlasciciela brzmialo: co sie stanie, gdy Loadout odpali agentow w repo, ktore ma juz
+WLASNY harness (mierzone na `../meetnotes`, ale to tylko przyklad). Odpowiedz jest zmierzona,
+nie zalozona, i odwrotna do pierwszej hipotezy.
+
+### Kierunek „wczytaj ustawienia gospodarza, odejmij haki" NIE ISTNIEJE
+
+Zmierzone na 11 biegach `claude -p`: kazdy z `--setting-sources project` odpalil hak gospodarza
+(7/7); `--settings <plik>` SUMUJE sie z projektowym i nie gasi hakow nawet podana pusta lista
+`PreToolUse`; `--bare` gasi je kosztem OAuth (`Not logged in`), wiec na subskrypcji jest
+bezuzyteczny. Zostaje kierunek odwrotny: **odetnij wszystko, potem odbuduj wiedze po swojemu.**
+
+Cena wczytania jest twarda, nie estetyczna: **hak PreToolUse gospodarza startuje proces we
+WLASNEJ grupie procesow, a jego dziecko dostaje ppid=1 i przezywa wyjscie `claude`.** Zmierzone:
+jeden bieg zostawil 14 sierot, eksperymenty lacznie 30 zywych procesow ubitych recznie. Przy
+zaladowanych ustawieniach gospodarza **niezmiennik 6 jest nie do utrzymania** — zabicie naszej
+grupy nie dotyka ani jednej z tamtych.
+
+Zmierzone ryzyko, ktore ta fala zamyka: nasz agent wywolal projektowego podagenta gospodarza
+(`release-engineer`), ktory wystartowal jako osobny proces i spalil **38-41 tys. tokenow
+calkowicie poza widokiem i rozliczeniem Loadouta**.
+
+### Dwie rzeczy, w ktorych mylil sie research po drodze
+
+1. **`--allowedTools` to lista AUTO-ZATWIERDZANIA, nie filtr dostepnosci.** `Task`/`Agent`
+   i `Skill` sa dostepne w KAZDEJ z trzech polityk. Filtrem jest `--tools` — twarda biala lista, i to
+   ona wchodzi do sterownika (T-53 AC-1). Czarna lista nie wystarcza: domyslna powierzchnia ma
+   osiem sciezek startu procesu (Task, Workflow, SendMessage, CronCreate, RemoteTrigger,
+   ScheduleWakeup, EnterWorktree, Monitor) i cicho urosnie przy nastepnym wydaniu CLI.
+2. **`init.tools` nie jest powierzchnia uprawnien.** Lista pod `ReadOnly` zawiera `Bash`.
+   Porownywanie polityk przez dlugosc tej listy to blad kategorii — 27 pozycji to BAZA CLI,
+   a wymienienie `Glob` albo `Grep` w `--allowedTools` odslania oba, dajac 29.
+
+### Ustawienia gospodarza moga nas ROZSZERZYC, nie tylko zawezic
+
+`sandbox.autoAllowBashIfSandboxed: true` przepuszcza dowolna komende mimo naszego
+`--allowedTools`. Blok `env` gospodarza nadpisuje srodowisko podane przez Loadouta (jego haki
+czytaja wlasne zmienne, wiec haki i `env` to jedna calosc). Dlatego przepisujemy **wylacznie
+`permissions.deny`** — `src-tauri/src/engine/drivers/host.rs`, T-53 AC-4.
+
+### Trzy naprawy harnessu, kazda po prawdziwym incydencie
+
+- **`ac30479` — cztery konsumenty OWNS czytaly ten blok na trzy rozne sposoby.** 42 z 60 plikow
+  zadan konczy blok bajtami `...cancel.rs-->`, bez nowej linii. `quick-scope.sh` kasowal `sed '$d'`
+  CALA ostatnia linie (ginela ostatnia sciezka), a `before-spec-owns.sh` z regexem `\n-->`
+  **nie dopasowywal wcale** i wychodzil zerem z napisem „nothing to judge" — czyli NIE SADZIL
+  NICZEGO na 42 zadaniach. To niezmiennik 19 zlamany po cichu wewnatrz bramki. T-10 wpadl przez
+  to w pelne zakleszczenie: napiszesz plik -> `quick-scope` czerwony, nie napiszesz -> AC-6
+  czerwone, TASK.md zablokowany.
+- **`04a346e` — kanarek `tasks/T-01.md` pilnowal polityki, ktora wlasciciel cofnal** commitem
+  `533eab8`. T-53 skonczylo 4/4 zielone i utknelo na czerwieni, ktorej zadna dozwolona sciezka
+  nie gasi. Zdjecie jest bezpieczne: `Edit/Write(TASK.md)` zostaja w `deny`, wiec pisarz dalej
+  nie tknie wlasnego kontraktu.
+- **`699ef25` — kod 2 znaczy „nie twoje" na calej dlugosci.** `quick-permissions` oddawal 1 przy
+  sprzecznosci konfiguracji, choc CALY jego material (`.claude/settings.json`, blok OWNS, on sam)
+  lezy poza zasiegiem pisarza. Teraz oddaje 2. Razem z tym **zawezona karta w `integrate.sh`**:
+  stara wersja wybaczala KAZDY kod 2 na trunku, wiec sama pierwsza naprawa otworzylaby dziure.
+  Wybacza teraz wylacznie przy SWIEZYM paragonie z pusta lista `misconfigured` (nowe pole w
+  `runs/last.json`); brak paragonu i paragon o innym commicie znacza odmowe.
+
+**Zasada dla nastepnych sprawdzen:** sprawdzenie, ktorego caly material lezy poza zasiegiem
+pisarza, oddaje 2, nie 1.
+
+### S-3 zamkniety, T-10 odblokowane — ale pokrycie parsera jest zdegradowane
+
+`docs/research/fixtures/codex-stream.jsonl` pochodzi z PRAWDZIWEGO biegu `codex exec --json`
+(commit `7a24fd4`), ale zawiera wylacznie **koperte awaryjna**: cztery zdarzenia
+(`thread.started`, `turn.started`, `error`, `turn.failed`), bo konto Codeksa jest bez kredytow
+**do 2026-08-20 05:30**. Ani jednego `item.*`. T-10 AC-2 przewidzialo ten przypadek i wymaga
+oznaczenia mapowan `item.*` komentarzem `[3p]`. **Po 5:30 S-3 leci ponownie i ten plik ma sie
+POWIEKSZYC** — to jest zaplanowane, nie regresja.
+
+Dwa pomiary przy okazji: stdout Codeksa jest czystym JSONL, a stderr niesie `Reading additional
+input from stdin...` (potwierdza T2 §9.3: nigdy `2>&1`). `--ignore-user-config` USUWA ladowanie
+cudzych serwerow MCP — bieg bez tej flagi probowal odswiezyc OAuth dla figma, notion i linear,
+zanim ruszyla tura. Codex nie ma `--strict-mcp-config`, wiec to jedyny znany srodek.
+
+### Codex jest slabszym adapterem i to trzeba zapisac, a nie zalozyc symetrie
+
+Nie ma odpowiednika `--tools`, `--disallowedTools` ani `--setting-sources`. `--ignore-user-config`
+tyka WYLACZNIE `$CODEX_HOME/config.toml`, a `--ignore-rules` tylko pliki `.rules` — **zadna flaga
+nie wylacza projektowego `.codex/hooks.json` gospodarza** (meetnotes ma tam te same trzy straze
+co po stronie Claude'a). Jedyna obrona to zaufanie hakow po haszu tresci, czyli obrona MASZYNY,
+nie Loadouta: hak raz zatwierdzony wystartuje. Dla adaptera: piaskownica (`-s read-only` /
+`workspace-write`) jest glowna dzwignia, `--ephemeral` bez zapisu sesji, i **nigdy**
+`--dangerously-bypass-hook-trust`.
+
+### Co czeka
+
+| co | stan |
+|---|---|
+| **T-54** — dziedziczenie wiedzy (5 kryteriow) | **w biegu**, faza kontraktu |
+| **T-55** — krok „sprawdz" (5 kryteriow) | napisane, czeka na wolna maszyne |
+| **T-56** — jedna kopia dla lancucha + krok ciezki (2) | napisane, **czeka na T-52** |
+| **T-52** — izolacja jako drzewo gita | napisane przez wlasciciela, galaz `T-52`, niezlandowane |
+| S-3 ponownie + przeglad cross-vendor | po 2026-08-20 05:30 |
+
+**Wada, ktorej ta fala NIE zamyka:** bramka dalej nie odroznia „czerwien z mojego zakresu" od
+„czerwien odziedziczona z trunku w trakcie biegu". `refresh_harness_from_trunk` jest projektowane
+i moze wniesc czerwien, ktorej zadanie nie spowodowalo — T-53 musialo zglosic defekt konfiguracji
+(semantyka kodu 2) pod kodem 1, bo nie ma czym powiedziec tego inaczej. `699ef25` zamyka tylko te
+klase, w ktorej sprawdzenie SAMO wie, ze sadzi nasza konfiguracje.
+
 ## 2026-08-19 — sekcja Skills umie przyjac tresc, nie tylko adres
 
 **Wyladowane: T-42 (4 kryteria) i T-43 (3).** Pelna bramka po kazdym: 15 sprawdzen, 0 czerwonych.

@@ -179,16 +179,16 @@ export function refusal(disk: string | null, inWindow: string | null): string | 
 }
 
 /* Klasy w jednym miejscu, bo trzy kontrolki mają być tą samą kontrolką. Wysokość 32 px
- * (`h-control`), promień 2 px (`rounded-sq`), obrys `--line-strong` i tło `--raised` — DESIGN §3
+ * (`h-control`), promień kontrolki (`rounded-sm`), obrys `--line-strong` i tło `--raised`
  * i §6. `--accent` wyłącznie na kontrolce, która coś ZAPISUJE (reguła jednego akcentu). */
 const TRIGGER =
-  'flex h-control w-full items-center justify-between gap-2 rounded-sq border border-line-strong bg-raised px-[10px] text-ui text-ink';
+  'flex h-control w-full items-center justify-between gap-2 rounded-sm border border-line-strong bg-raised px-[10px] text-ui text-ink';
 const ITEM =
-  'w-full truncate rounded-sq border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[checked=true]:border-line aria-[checked=true]:bg-raised aria-[checked=true]:text-ink';
+  'w-full truncate rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[checked=true]:border-line aria-[checked=true]:bg-raised aria-[checked=true]:text-ink';
 const QUIET =
-  'w-full truncate rounded-sq border border-transparent px-[10px] py-[7px] text-left text-ui text-accent';
-const SECONDARY = 'h-control rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
-const PRIMARY = 'h-control rounded-sq bg-accent px-3 text-ui text-bg';
+  'w-full truncate rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-accent';
+const SECONDARY = 'h-control rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
+const PRIMARY = 'h-control rounded-sm bg-accent px-3 text-ui text-bg';
 
 export interface WorkspaceSwitcherProps {
   /** Zakresy zapisane na dysku. */
@@ -221,7 +221,7 @@ export function WorkspaceSwitcher({
   return (
     <div data-workspace-switcher className="flex flex-col gap-1 pb-4">
       {sentence === null ? null : (
-        <div className="flex flex-col gap-2 rounded-sq border border-fail-edge bg-fail-wash p-2">
+        <div className="flex flex-col gap-2 rounded-md border border-fail-edge bg-fail-soft p-2">
           <p data-workspace-said className="text-note text-fail">
             {sentence}
           </p>

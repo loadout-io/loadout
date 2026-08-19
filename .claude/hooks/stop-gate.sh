@@ -13,7 +13,32 @@
 # komendzie kończy skrypt jej kodem, a kod 2 znaczy tutaj „zablokuj model". Blokada z powodu
 # literówki w hooku jest nie do odróżnienia od blokady z powodu czerwonej bramki.
 set -uo pipefail
-cd "${CLAUDE_PROJECT_DIR:-$PWD}" || exit 0
+
+# Wejście hooka czytamy DOKŁADNIE RAZ — drugi `cat` dostałby już pustkę. Czytamy je PRZED zmianą
+# katalogu, bo to z niego bierze się katalog, w którym sesja naprawdę pracuje.
+INPUT="$(cat 2>/dev/null || true)"
+
+# KATALOG SESJI, NIE GŁÓWNY CHECKOUT — i to jest naprawa, nie wygoda. `CLAUDE_PROJECT_DIR` wskazuje
+# główny katalog projektu, a sesja może pracować w podpiętym worktree. Hak sądził wtedy CUDZE
+# drzewo: zmierzone 2026-08-19, bramka poszła na czerwono na słowie z pliku innej sesji, w kodzie,
+# którego sądzony agent nawet nie dotknął. On nie ma jak tego naprawić — nie wolno mu pisać po
+# cudzej robocie — więc miele tury aż do BLOCK_CAP i z zewnątrz wygląda to na zawieszenie.
+#
+# `cwd` z wejścia hooka jest jedynym miejscem, z którego da się to wyczytać. Bierzemy je tylko
+# wtedy, gdy naprawdę wygląda na checkout (`verify.sh` na miejscu); inaczej zostaje stara droga,
+# bo hak, który nie znajdzie bramki, ma milczeć, a nie zgadywać.
+HERE="$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    print((json.load(sys.stdin) or {}).get("cwd") or "")
+except Exception:
+    pass
+' 2>/dev/null || true)"
+
+cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || exit 0
+if [ -n "$HERE" ] && [ -f "$HERE/verify.sh" ]; then
+  cd "$HERE" || exit 0
+fi
 
 BLOCK_CAP=3
 
@@ -22,8 +47,6 @@ BLOCK_CAP=3
 # więc licznik zostaje prywatny dla gałęzi zamiast być wspólny dla wszystkich naraz.
 STATE="$(git rev-parse --git-dir 2>/dev/null || echo .git)/stop-gate-blocks"
 
-# Wejście hooka czytamy DOKŁADNIE RAZ — drugi `cat` dostałby już pustkę.
-INPUT="$(cat 2>/dev/null || true)"
 
 n=0
 [ -f "$STATE" ] && n="$(cat "$STATE" 2>/dev/null || echo 0)"
@@ -58,6 +81,30 @@ if [ "$rc" -eq 2 ]; then
   echo 0 > "$STATE"
   { echo "stop-gate: the gate is MISCONFIGURED (exit 2), not red — yielding to a human."
     printf '%s\n' "$out" | tail -20; } >&2
+  exit 0
+fi
+
+# BEZ TASK.md NIE MA CZEGO EGZEKWOWAC, wiec hak MELDUJE, a nie blokuje. To trzecie wystapienie
+# tej samej zasady w tym pliku: nie blokuj na czerwieni, ktorej sadzony agent nie moze naprawic
+# (patrz katalog sesji wyzej i `rc -eq 2` powyzej).
+#
+# Dwa powody, oba zmierzone. PIERWSZY: bez TASK.md nie ma bloku OWNS, wiec instrukcja "napraw
+# u siebie" degraduje sie do statycznej listy -- dokladnie tej, ktora S-1 zacytowal jako
+# sprzecznosc i ktora kosztowala 37 tur. DRUGI: `quick-permissions` i `quick-scope` sadza CALA
+# galaz, a nie ture. 2026-08-19: commit czlowieka `c7fe838` wjechal w trakcie sesji, w ktorej
+# model nie napisal ani bajtu, i zjadl dwie tury na spor o plik, ktorego nie wolno mu tknac --
+# poprawke i tak zrobil czlowiek dwoma wlasnymi commitami.
+#
+# `verify.sh` sam nazywa ten tryb higiena ("this tier reports hygiene, never that a task is
+# done"). Hak to teraz honoruje, zamiast robic z higieny blokade.
+#
+# CENA, swiadoma: w sesji orkiestratora czerwien od WLASNEJ edycji tez nie zablokuje. Zostaje
+# widoczna w raporcie ponizej, formatowanie i tak lapie hak `PostToolUse`, a pelna bramka stoi
+# na granicach etapow w ship-task.sh, gdzie jej czerwien cos znaczy.
+if [ ! -f TASK.md ]; then
+  echo 0 > "$STATE"
+  { echo "stop-gate: RED (exit $rc), but there is no TASK.md here — reporting, not blocking."
+    printf '%s\n' "$out" | tail -40; } >&2
   exit 0
 fi
 

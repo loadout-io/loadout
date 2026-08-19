@@ -145,6 +145,59 @@ impl Status {
     }
 }
 
+/// Werdykt sędziego pętli: czy robota przeszła.
+///
+/// `Fail` jest **domyślne** i to jest cała treść tego typu. Nie ma tu wariantu „nie wiem": brak
+/// werdyktu i werdykt odmowny prowadzą do tego samego — jeszcze jedna runda albo koniec biegu.
+/// Trzeci wariant zmuszałby każdego wołającego do wybrania, co z nim zrobić, a jedyna bezpieczna
+/// odpowiedź jest tą, którą daje `Fail`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Verdict {
+    /// Sędzia napisał, że robota przeszła. Pętla się domyka.
+    Pass,
+    /// Wszystko inne, **łącznie z brakiem werdyktu**.
+    #[default]
+    Fail,
+}
+
+/// Znacznik, którym sędzia pętli zapisuje werdykt. Musi być CAŁYM wierszem.
+///
+/// Wielkość liter i odstępy nie mają znaczenia; miejsce w wierszu ma. Powód stoi przy
+/// [`verdict_in`] i jest zmierzony na tym, jak modele naprawdę odpowiadają.
+const VERDICT_MARK: &str = "outcome:";
+
+/// Werdykt z ciała przekazania.
+///
+/// JEDEN WYJĄTEK OD „CIAŁA NIE PARSUJEMY", nazwany i wąski. `commands::run::Live::hand_over`
+/// składa front-matter sam i mówi wprost, że ani jedno jego pole nie pochodzi z tekstu modelu.
+/// Dlatego sędzia pętli nie ma jak zapisać werdyktu tam, gdzie pierwotnie zaprojektowano
+/// (spec §3) — jego jedynym kanałem jest ciało. Wyjątek jest jednym wierszem o sztywnym
+/// kształcie, a nie furtką: nic innego z ciała nie jedzie do żadnego pola.
+///
+/// DECYDUJE OSTATNI ZNACZNIK. Sędzia dostaje w prompcie zdanie o tym, jak zapisać werdykt,
+/// a modele powtarzają instrukcję, zanim zaczną pracować („napiszę OUTCOME: PASS, jeśli testy
+/// przejdą"). Pierwsze wystąpienie jest więc echem polecenia, nie sądem; wniosek stoi na końcu.
+///
+/// ZNACZNIK MUSI BYĆ CAŁYM WIERSZEM. Szukanie go w tekście przez `contains` zamyka pętlę na
+/// zdaniu „once the tests are green I will write OUTCOME: PASS" — czyli nad czerwonymi testami,
+/// na obietnicy werdyktu wziętej za werdykt.
+#[must_use]
+pub fn verdict_in(body: &str) -> Verdict {
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim().to_ascii_lowercase();
+            let rest = line.strip_prefix(VERDICT_MARK)?;
+            match rest.trim() {
+                "pass" => Some(Verdict::Pass),
+                // Wiersz, który zaczyna się znacznikiem i mówi coś innego, jest werdyktem
+                // odmownym, nie brakiem werdyktu: sędzia się wypowiedział, tylko nie przepuścił.
+                _ => Some(Verdict::Fail),
+            }
+        })
+        .next_back()
+        .unwrap_or_default()
+}
+
 /// Co podaje wołający. Siedem pól — reszta front-mattera jest wyliczana przez Loadout
 /// i wołający nie ma jak jej podać, właśnie o to chodzi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -806,5 +859,129 @@ fn meta_from(front: &FrontMatter) -> Meta {
         bytes: number("bytes"),
         est_tokens: number("est_tokens"),
         extra,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Werdykt sędziego pętli: czytany z CIAŁA przekazania, sztywnym znacznikiem, domyślnie `fail`.
+    //!
+    //! # Dlaczego testy jednostkowe W TYM PLIKU, a nie w `tests/it/`
+    //!
+    //! Ten sam powód, co przy `commands::run::tests`: [`verdict_in`] jest funkcją czystą od
+    //! napisu do decyzji, więc droga do niej z zewnątrz nie dokłada ani jednego faktu, a dokłada
+    //! bieg. Do tego `checks/quick-scope.sh` przy ręcznym biegu bez `TASK.md` nie wpuszcza zapisu
+    //! do `src-tauri/tests/`, a kryterium ma powstać razem z kodem, nie po nim.
+    //!
+    //! # Rozbieżność ze spec-em, znaleziona przy wdrożeniu
+    //!
+    //! Projekt (`docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md` §3) mówił
+    //! „tester pisze `outcome: pass` we front-matterze". Tego nie da się zrobić:
+    //! `commands::run::Live::hand_over` składa front-matter **sam** i mówi o tym wprost — „ani
+    //! jedno z tych pól nie pochodzi z tekstu, który przyszedł od modelu". Agent nie ma do
+    //! front-mattera dostępu i mieć nie ma. Jedynym kanałem modelu jest ciało, więc reguła
+    //! „ciała nie parsujemy" dostaje jeden wyjątek: wąski, nazwany, jeden wiersz.
+    //!
+    //! # Co tu jest najważniejsze
+    //!
+    //! Słabą wersją tych kryteriów jest sprawdzenie samego „PASS daje pass, FAIL daje fail".
+    //! Przechodzi ją implementacja szukająca znacznika gdziekolwiek w wierszu — czyli ta, w
+    //! której zdanie kończące się na „I will write OUTCOME: PASS" **zamyka pętlę nad czerwonymi
+    //! testami**, na obietnicy werdyktu wziętej za werdykt. Dwa razy z rzędu moja własna wersja
+    //! tego przypadku była za słaba i mutacja ją przeżyła: raz przez kropkę po znaczniku, raz
+    //! przez echo instrukcji wtrącone w zdanie zamiast postawione w osobnym wierszu.
+
+    use super::{Verdict, verdict_in};
+
+    /// Ciało, jakie naprawdę oddaje model: akapit, potem wniosek w osobnym wierszu.
+    fn body(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    #[test]
+    fn a_marker_on_its_own_line_passes() {
+        let said = body(&["Ran the suite. 40 rows, no problems.", "", "OUTCOME: PASS"]);
+
+        assert_eq!(verdict_in(&said), Verdict::Pass);
+    }
+
+    #[test]
+    fn the_same_marker_saying_fail_does_not_pass() {
+        let said = body(&[
+            "2 tests are red: the parser drops a quote.",
+            "OUTCOME: FAIL",
+        ]);
+
+        assert_eq!(verdict_in(&said), Verdict::Fail);
+    }
+
+    #[test]
+    fn no_marker_at_all_is_a_fail() {
+        let said = body(&["Looks good to me, shipping it."]);
+
+        assert_eq!(
+            verdict_in(&said),
+            Verdict::Fail,
+            "if a missing verdict passed, the cheapest way through the loop would be to write no \
+             verdict — and a model that forgot the line would be indistinguishable from one that \
+             judged the work good"
+        );
+    }
+
+    #[test]
+    fn the_last_marker_decides_not_the_first() {
+        /* OBA znaczniki są PEŁNYMI wierszami, i to jest cała moc tego przypadku. Model pokazuje
+         * format, którego ma użyć, w osobnym wierszu — a potem, po pracy, pisze werdykt. Wersja,
+         * w której echo jest wtrącone w zdanie, nie mierzy niczego: taki wiersz odpada już na
+         * regule „znacznik jest całym wierszem" i w tekście zostaje jeden znacznik, więc „pierwszy"
+         * i „ostatni" to ten sam wiersz. */
+        let said = body(&[
+            "The format you asked for looks like this:",
+            "OUTCOME: PASS",
+            "",
+            "Now the actual result. The suite is not green: 2 failures in the header parser.",
+            "",
+            "OUTCOME: FAIL",
+        ]);
+
+        assert_eq!(
+            verdict_in(&said),
+            Verdict::Fail,
+            "models restate the instruction they were given before doing the work, so the first \
+             marker is an echo of the prompt and not a judgement. The conclusion is at the end."
+        );
+    }
+
+    #[test]
+    fn a_marker_buried_in_a_sentence_is_not_a_verdict() {
+        /* Zdanie kończy się DOKŁADNIE znacznikiem, bez ani jednego znaku po nim. To jest kształt,
+         * który przepuszcza każda implementacja szukająca znacznika gdziekolwiek w wierszu —
+         * a wersja z kropką albo słowem po „PASS" odrzuca się sama i nie mierzy niczego. */
+        let said = body(&[
+            "They are not green yet. When they are, I will write OUTCOME: PASS",
+            "",
+            "For now the header parser drops a quote.",
+        ]);
+
+        assert_eq!(
+            verdict_in(&said),
+            Verdict::Fail,
+            "THIS is the case the whole file exists for: an implementation searching the text with \
+             contains() closes the loop over red tests on a sentence that promises a verdict instead \
+             of giving one. The marker has to be the whole line."
+        );
+    }
+
+    #[test]
+    fn spacing_and_case_do_not_change_the_verdict() {
+        for said in ["outcome: pass", "  OUTCOME:PASS  ", "Outcome:   Pass"] {
+            assert_eq!(
+                verdict_in(said),
+                Verdict::Pass,
+                "the verdict is a decision, not a typing exercise; refusing `outcome: pass` because \
+                 it is lower case would send the run round another turn for a reason the person \
+                 cannot see. It read: {said:?}"
+            );
+        }
     }
 }

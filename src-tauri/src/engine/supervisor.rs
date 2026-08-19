@@ -635,6 +635,20 @@ pub async fn run_with_deadline(command: Command, limit: Duration) -> io::Result<
     }
 }
 
+/// Zakłada dowiązanie symboliczne `at` wskazujące na `target`.
+///
+/// **Po co to jest TUTAJ, a nie tam, gdzie jest wołane.** `std::os::unix::fs::symlink` jest
+/// kodem zależnym od platformy, a niezmiennik 3 daje takiemu kodowi dokładnie jeden dom: ten
+/// plik. Wołający (`commands::isolate`) odtwarza dowiązania, kiedy robi krokowi kopię folderu,
+/// który repozytorium nie jest — a dowiązanie skopiowane jako jego CEL wciąga do kopii każdego
+/// kroku cały katalog po drugiej stronie (zmierzone 2026-08-19: drugie repozytorium).
+///
+/// Dzień, w którym powstanie gałąź windowsowa, jest dniem, w którym dopisuje się ją obok —
+/// w tym pliku, razem z resztą decyzji platformowych, a nie w pięciu miejscach naraz.
+pub fn link(target: &std::path::Path, at: &std::path::Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, at)
+}
+
 /// Własna grupa procesów Loadouta.
 ///
 /// `0` w `killpg` znaczy „moja własna grupa", a wiersz z `pgid` równym tej wartości to my sami.

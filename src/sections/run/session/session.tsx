@@ -44,7 +44,7 @@ export interface SessionProps {
 }
 
 /** `button-quiet` z DESIGN §6, ta sama fraza co w strumieniu (`feed/feed.tsx`). */
-const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 /** Wiersz bloku faktów: etykieta i wartość. Dwie kolumny, bo trzecia nie ma danych. */
 function FactRow({ label, value }: { label: string; value: string }): ReactElement {

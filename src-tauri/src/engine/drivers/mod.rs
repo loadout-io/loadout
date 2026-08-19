@@ -19,6 +19,7 @@
 //! i jest opisana tam, przy [`AgentDriver::start`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -32,6 +33,18 @@ use super::supervisor::{GroupId, GroupProof};
 /// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
 pub mod absent;
 pub mod claude;
+pub mod codex;
+/// Krok „sprawdź": komendę odpala Loadout, werdykt wystawia Loadout, nigdy agent.
+///
+/// Sąsiad `claude.rs`, choć **nie implementuje** [`AgentDriver`] i nie ma go implementować —
+/// to jest treść AC-4 z T-55, a nie pominięcie. Rodzaj sterownika, nie etap biegu:
+/// niezmiennik 27 zakazuje warunku NAZYWAJĄCEGO etap, a nie ramienia mówiącego, **czym** jest
+/// kafelek. Adres w `drivers/`, bo tu mieszka odpowiedź na pytanie „czym ten krok jedzie".
+pub mod command;
+/// Reguły `deny` repo gospodarza, przepisane do nas jako **tekst**, nigdy jako maszyneria.
+/// Sąsiad `claude.rs`, nie część rdzenia: `.claude/settings.json` to kształt jednego vendora,
+/// a ten plik nie zna ani jednego.
+pub mod host;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///
@@ -83,6 +96,11 @@ pub enum Policy {
     EditInFolder,
     /// Bez ograniczeń — i **żaden adapter nie ma prawa udawać**, że jakaś lista narzędzi
     /// jeszcze coś tu ogranicza [T1 §5.2].
+    ///
+    /// Zdanie wyżej zostaje prawdziwe o liście **auto-zatwierdzania** i przestaje być
+    /// prawdziwe o liście **dostępności**: pierwsza rzeczywiście nie wiąże
+    /// `bypassPermissions`, druga jest twarda i wyjmuje narzędzie z zestawu niezależnie od
+    /// trybu uprawnień, więc także tutaj [zmierzone 2026-08-19].
     Unrestricted,
 }
 
@@ -305,6 +323,31 @@ pub trait AgentDriver: Send + Sync {
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>>;
+
+    /// Ten sam sterownik, tylko niosący **gotowy** fragment argv przyniesiony przez warstwę
+    /// wyżej — albo `None`, kiedy ten vendor takiego szwu nie ma.
+    ///
+    /// # Po co to istnieje na TRAICIE, a nie na typie
+    ///
+    /// Fragment powstaje w `inherit::wire` (katalog pluginu z umiejętnościami gospodarza), a
+    /// bieg trzyma sterownik jako `Arc<dyn AgentDriver>`: fabryka z `lib.rs` wydaje go raz,
+    /// więc w `commands::run` konkretny typ jest już zgubiony. Budowniczy żyjący wyłącznie na
+    /// [`claude::ClaudeDriver`] jest przez to nieosiągalny z biegu — to jest ta sama dziura,
+    /// którą T-53 opisało przy `ClaudeDriver::with_settings` i której nie miało jak zamknąć.
+    ///
+    /// `Option`, a nie ciche „przyjąłem", i to jest cała treść tego typu zwrotnego. Fragment
+    /// niesie nazwę flagi konkretnego vendora, więc vendor, który jej nie zna, **nie może** jej
+    /// dostać — a wołający, który dostanie `None` przy niepustym fragmencie, ma o tym powiedzieć
+    /// głośno. Sterownik, który po cichu ignoruje przyniesiony fragment, daje bieg, w którym
+    /// człowiek zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi: „agent nie
+    /// zna umiejętności" jest z zewnątrz nieodróżnialne od „model nie uznał, że warto jej użyć".
+    ///
+    /// Domyślnie `None`, żeby ten trait dalej dał się zaimplementować bez wiedzy o dziedziczeniu
+    /// (niezmiennik 23): `CodexDriver` i atrapy testów nie zmieniają ani jednej linii, a to jest
+    /// warunek, pod którym ten plik zostaje „jedynym, którego T-10 nie musi zmienić".
+    fn inheriting(&self, _flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
 }
 
 /// Żywa sesja jednego agenta.

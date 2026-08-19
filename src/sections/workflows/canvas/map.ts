@@ -34,6 +34,22 @@ export interface CanvasEdge {
   id: string;
   source: string;
   target: string;
+  /**
+   * Limit rund, jeżeli ta krawędź jest POWROTEM.
+   *
+   * 2026-08-19 — POLE JEST TU, BO INACZEJ GINIE, i to jest naprawa utraty danych, nie wygoda.
+   * `toFile` odbudowuje `links` **z krawędzi** (`edges.map(...)`), więc wszystko, czego krawędź nie
+   * zna, przestaje istnieć w pliku. Zmierzone na ścieżkach, które przez `toFile` przechodzą:
+   * skasowanie kafelka i skasowanie strzałki. Skutek nie był cichy, był gorszy — plik zostawał
+   * z nieoznaczonym cyklem, walidator dawał `Problem`, a `save` odmawiał przed zapisem. Czyli
+   * **skasowanie jednej niepowiązanej strzałki zamieniało workflow z pętlą w plik, którego nie da
+   * się zapisać**, a płótno rozjeżdżało się z dyskiem.
+   *
+   * Nie jest to kosmetyka w rozumieniu `viewOf` w `canvas.tsx`: tamten nagłówek mówi, że wygląd
+   * nie ma prawa wejść do mappera, i to zostaje w mocy. `maxTurns` jest ZNACZENIEM strzałki —
+   * jedziemy nim tędy dokładnie z tego powodu.
+   */
+  maxTurns?: number;
 }
 
 /** Najbliższa całkowita wielokrotność `GRID` na jednej osi.
@@ -126,7 +142,17 @@ export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdg
   return {
     ...prev,
     steps: inFileOrder(prev, nodes).map((node) => onlyTheStep(node.data, snap(node.position))),
-    links: eachArrowOnce(edges.map((edge) => ({ from: edge.source, to: edge.target }))),
+    /* POWRÓT PRZEŻYWA PODRÓŻ, i to jest cała treść tych dwóch linii. Klucz `max_turns` jedzie
+     * tylko wtedy, gdy krawędź go niesie: dopisanie `max_turns: undefined` do każdej zwykłej
+     * strzałki wpisałoby do pliku pole, którego tam nie było, i przepisało każdy istniejący
+     * workflow przy pierwszym zapisie (T3 §8.2). */
+    links: eachArrowOnce(
+      edges.map((edge) =>
+        edge.maxTurns === undefined
+          ? { from: edge.source, to: edge.target }
+          : { from: edge.source, to: edge.target, max_turns: edge.maxTurns },
+      ),
+    ),
   };
 }
 
@@ -146,11 +172,19 @@ export function toCanvas(file: WorkflowFile): {
       position: step.at,
       data: step,
     })),
-    edges: eachArrowOnce(file.links).map((link) => ({
-      id: `${link.from}->${link.to}`,
-      source: link.from,
-      target: link.to,
-    })),
+    /* Klucz tylko wtedy, gdy plik go niesie — `exactOptionalPropertyTypes` tego pilnuje i ma
+     * rację: krawędź z `maxTurns: undefined` wróciłaby przez `toFile` jako strzałka z pustym
+     * polem, a stąd do przepisania każdego workflow przy pierwszym zapisie jest jeden krok. */
+    edges: eachArrowOnce(file.links).map((link) =>
+      link.max_turns === undefined
+        ? { id: `${link.from}->${link.to}`, source: link.from, target: link.to }
+        : {
+            id: `${link.from}->${link.to}`,
+            source: link.from,
+            target: link.to,
+            maxTurns: link.max_turns,
+          },
+    ),
   };
 }
 

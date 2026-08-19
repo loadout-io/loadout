@@ -44,11 +44,15 @@ import type { FeedView } from './feed/model';
 import { continueRun, stop } from './io';
 import { useRun } from '../../state/run';
 
-const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg disabled:opacity-40';
-const DANGER = 'h-7 rounded-sq border border-fail-edge px-3 text-ui text-fail';
+const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg disabled:opacity-40';
+const DANGER = 'h-7 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 /** Kolor `--attend` odpowiada na jedno pytanie: co czeka na MOJĄ decyzję [DESIGN §3]. */
-const ATTEND = 'h-7 rounded-sq border border-attend-edge px-3 text-ui text-attend';
-const FIELD = 'h-8 rounded-sq border border-line-strong bg-well px-2 font-mono text-mono text-ink';
+const ATTEND = 'h-7 rounded-sm border border-attend-edge px-3 text-ui text-attend';
+/* Klasa domu, tak jak w pieciu sekcjach po T-48: `theme.css` ma `.field` z ta sama studnia,
+ * mocnym obrysem, krojem maszynowym i `user-select: text`, bez ktorego z pola nie da sie skopiowac
+ * wlasnego wpisu. Recznie opisane pole rozjezdza sie z pozostalymi przy pierwszej zmianie
+ * (niezmiennik 13) — i wlasnie to sie stalo: tu obrys byl mocny, w Agents zwykly. */
+const FIELD = 'field';
 
 /**
  * Migawka magazynu biegu — TA SAMA dla okna i dla renderu statycznego.

@@ -199,8 +199,10 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
+    two_ways_back(&workflow.links, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
+    a_check_without_a_proof(&steps, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
     one_folder_two_steps(&steps, &arrows, when, &mut notes);
@@ -238,6 +240,13 @@ struct Facts<'a> {
     /// (`commands::run::find_agent` robiło `fs::read_dir` po nieistniejącym katalogu
     /// biblioteki). Zmierzone na dwóch plikach właściciela: oba miały `"agent": ""`.
     agent: Option<&'a str>,
+    /// Komenda kroku „sprawdź". `None` dla kroków, które żadnej nie uruchamiają.
+    command: Option<&'a str>,
+    /// Wzorzec dowodu kroku „sprawdź". `None` jak wyżej.
+    ///
+    /// Osobne pole od [`Facts::command`], choć jedna reguła czyta oba: krok bez komendy i krok
+    /// bez dowodu to dwa różne stany i naprawia się je w dwóch różnych polach kafelka.
+    proof: Option<&'a str>,
 }
 
 fn facts(step: &Step) -> Facts<'_> {
@@ -250,6 +259,8 @@ fn facts(step: &Step) -> Facts<'_> {
             passthrough: Some(&agent.vendor_options),
             instructions: Some(&agent.instructions),
             agent: Some(&agent.agent),
+            command: None,
+            proof: None,
         },
         Step::Checkpoint(checkpoint) => Facts {
             id: &checkpoint.id,
@@ -259,6 +270,29 @@ fn facts(step: &Step) -> Facts<'_> {
             passthrough: None,
             instructions: None,
             agent: None,
+            command: None,
+            proof: None,
+        },
+        // `folder: Some(…)`, i to jest asercja (d) z AC-1 zapisana w kodzie. „To tylko
+        // sprawdzenie, więc folder go nie dotyczy" jest nieprawdą — `cargo test` pisze po
+        // `target/`, `npm test` po `node_modules/.cache` — a `folder: None` tutaj znaczy, że
+        // `one_folder_two_steps` POMIJA ten krok całkowicie
+        // (`let (Some(mine), Some(theirs)) = … else continue`) i dwa równoległe sprawdzenia
+        // budujące w jednym katalogu zapisują się bez słowa (niezmiennik 12).
+        //
+        // `passthrough`, `instructions` i `agent` zostają `None`, bo krok „sprawdź" nie woła
+        // żadnego vendora: reguła o pustym agencie i reguła o pustym zadaniu mają go pomijać,
+        // a nie żądać od niego pól, których nie ma.
+        Step::Check(check) => Facts {
+            id: &check.id,
+            name: &check.name,
+            copies: 1,
+            folder: Some(&check.folder),
+            passthrough: None,
+            instructions: None,
+            agent: None,
+            command: Some(&check.command),
+            proof: Some(&check.proof),
         },
     }
 }
@@ -416,6 +450,76 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
             When::Running => problem(Some(step.id), message),
         });
     }
+}
+
+/// Krok „sprawdź", który nie mówi, co uruchomić albo po czym poznać, że to ruszyło.
+///
+/// PROBLEM, NIE OSTRZEŻENIE, i to jest inaczej niż przy [`a_step_without_an_agent`]. Różnica jest
+/// realna: kafelek bez agenta czeka na wybór z listy, którą człowiek zaraz zobaczy, a krok
+/// sprawdzający bez dowodu **jest gotowy i kłamie** — uruchomi się i orzeknie na samym kodzie
+/// wyjścia. Suita, która nie uruchomiła ani jednego testu, wychodzi zerem (niezmiennik 19).
+/// Ostrzeżenie tutaj nie blokowałoby `save()`, więc plik, który miał być odrzucony, wylądowałby
+/// na dysku i pobiegł.
+///
+/// DWIE UWAGI, NIE JEDNA, kiedy brakuje obu rzeczy. Krok bez komendy i krok bez dowodu to dwa
+/// różne stany i naprawia się je w dwóch różnych polach kafelka — zdanie mówiące o obu naraz
+/// wysyłałoby człowieka do jednego z nich, a drugie zostawiałoby na następny raz. Kolejność jest
+/// kolejnością pracy: najpierw wpisuje się, co uruchomić, potem po czym poznać, że ruszyło.
+///
+/// Zdania nazywają POLA TAK, JAK BRZMIĄ NA EKRANIE („Command to run", „Proof that it ran"),
+/// żeby człowiek szukał tego, co widzi, a nie nazwy z pliku (niezmiennik 13). Ani jedno nie
+/// niesie słowa „regex" ani nazwy kodu wyjścia: to zdanie czyta ktoś, kto właśnie dodał kafelek,
+/// a nie ktoś, kto zna nasz schemat (niezmiennik 14).
+fn a_check_without_a_proof(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
+    for step in steps {
+        // `Some("")`, nie `None`: krok agenta i kafelek kontrolny komendy nie mają i nie mają
+        // mieć, a krok sprawdzający z pustym polem to krok, którego nikt jeszcze nie wypełnił.
+        let (Some(command), Some(proof)) = (step.command, step.proof) else {
+            continue;
+        };
+        if command.trim().is_empty() {
+            notes.push(problem(
+                Some(step.id),
+                format!(
+                    "\"{}\" does not say what to run, so there would be nothing to start. Write \
+                     it in \"Command to run\" on the step.",
+                    step.name
+                ),
+            ));
+        }
+        if proof.trim().is_empty() {
+            notes.push(problem(
+                Some(step.id),
+                format!(
+                    "\"{}\" does not say how to tell that the work really ran, so it would call a \
+                     command that did nothing at all a success. Write what its output has to say \
+                     in \"Proof that it ran\" on the step.",
+                    step.name
+                ),
+            ));
+        }
+    }
+}
+
+/// Więcej niż jeden powrót w jednym pliku.
+///
+/// ODMOWA, NIE DOMYSŁ, i to jest granica przyznana wprost. Dwie pętle w jednym grafie mogą być
+/// zagnieżdżone, rozłączne albo przecinać się ciałami — a każdy z tych trzech przypadków znaczy
+/// coś innego dla kolejności rund i dla tego, która runda wychodzi na zewnątrz.
+/// `workflow::unroll` rozwija **jedną** pętlę i mówi o tym w swoim nagłówku; gdyby ta reguła nie
+/// istniała, drugi powrót byłby po cichu ignorowany, a bieg wyglądałby na udany, robiąc coś
+/// innego, niż narysował człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która
+/// mówi, czego jeszcze nie umiemy.
+fn two_ways_back(links: &[Link], notes: &mut Vec<Note>) {
+    if links.iter().filter(|link| link.is_a_way_back()).count() < 2 {
+        return;
+    }
+    notes.push(problem(
+        None,
+        "This workflow has more than one way back. Loadout can run one loop at a time, so keep \
+         one and remove the others."
+            .to_owned(),
+    ));
 }
 
 /// Liczba rund powrotu poza zakresem 1–[`MOST_TURNS`].
@@ -781,5 +885,106 @@ fn not_connected(first: &str, others: &[&str]) -> String {
             "\"{first}\" and {} more steps are not connected to the rest of the workflow.",
             more.len()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Granica pętli przyznana wprost: JEDEN powrót na plik.
+    //!
+    //! # Dlaczego to jest odmowa, a nie ostrzeżenie
+    //!
+    //! `workflow::unroll` rozwija jedną pętlę. Dwa powroty w jednym grafie mogą być zagnieżdżone,
+    //! rozłączne albo przecinać się ciałami, a każdy z tych trzech przypadków znaczy co innego dla
+    //! kolejności rund i dla tego, która runda wychodzi na zewnątrz. Bez tej reguły drugi powrót
+    //! byłby po cichu ignorowany i bieg wyglądałby na udany, robiąc coś innego, niż narysował
+    //! człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która mówi, czego jeszcze
+    //! nie umiemy.
+    //!
+    //! # Dlaczego kryterium stoi TUTAJ, a nie w `tests/it/`
+    //!
+    //! `checks/quick-scope.sh` przy ręcznym biegu bez `TASK.md` nie wpuszcza zapisu do
+    //! `src-tauri/tests/`, a kryterium ma powstać razem z regułą, nie po niej. Wzorzec jest
+    //! w repo (`ipc.rs`, `commands/run.rs`, `memory/handoff.rs`).
+    //!
+    //! # Słaba wersja
+    //!
+    //! Sprawdzenie „są dwa powroty, więc jest jakiś problem" przechodzi dla pliku, w którym problem
+    //! zgłasza REGUŁA KOŁA — a wtedy kryterium świeci nad kodem, którego nie ma. Asercja stoi więc
+    //! na treści zdania, i osobno na tym, że JEDEN powrót nie zgłasza niczego.
+
+    use serde_json::{Value, json};
+
+    use super::{Level, check_to_run};
+    use crate::workflow::WorkflowFile;
+
+    fn step(id: &str) -> Value {
+        json!({
+            "kind": "agent",
+            "id": id,
+            "name": id,
+            "agent": "a",
+            "instructions": "Do it.",
+            "folder": { "use": "fresh-copy" }
+        })
+    }
+
+    /// `Result`, nie `expect`: powód ten sam, co w `workflow::unroll::tests` — pełne clippy
+    /// biegnie `-D warnings`, a `expect_used` i `panic` są w restrykcjach.
+    fn file(links: &[Value]) -> Result<WorkflowFile, serde_json::Error> {
+        serde_json::from_value(json!({
+            "format": 1,
+            "id": "wf",
+            "name": "Test",
+            "steps": [step("s_a"), step("s_b"), step("s_c")],
+            "links": links
+        }))
+    }
+
+    /// Zdania wagi problemu, w kolejności zgłoszenia.
+    fn problems(file: &WorkflowFile) -> Vec<String> {
+        check_to_run(file)
+            .into_iter()
+            .filter(|note| note.level == Level::Problem)
+            .map(|note| note.message)
+            .collect()
+    }
+
+    #[test]
+    fn one_way_back_is_fine() -> Result<(), serde_json::Error> {
+        let one = file(&[
+            json!({ "from": "s_a", "to": "s_b" }),
+            json!({ "from": "s_b", "to": "s_c" }),
+            json!({ "from": "s_b", "to": "s_a", "max_turns": 3 }),
+        ])?;
+
+        assert!(
+            problems(&one).is_empty(),
+            "one loop is the whole feature; refusing it here would mean nobody can use it. \
+             Got: {:?}",
+            problems(&one)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_ways_back_are_refused_by_name() -> Result<(), serde_json::Error> {
+        let two = file(&[
+            json!({ "from": "s_a", "to": "s_b" }),
+            json!({ "from": "s_b", "to": "s_c" }),
+            json!({ "from": "s_b", "to": "s_a", "max_turns": 3 }),
+            json!({ "from": "s_c", "to": "s_b", "max_turns": 2 }),
+        ])?;
+
+        let said = problems(&two);
+
+        assert!(
+            said.iter()
+                .any(|one| one.contains("more than one way back")),
+            "the refusal has to say WHAT is wrong and what to do about it. A note about a circle \
+             here would mean this rule is not running at all and the criterion is passing over \
+             nothing. Got: {said:?}"
+        );
+        Ok(())
     }
 }

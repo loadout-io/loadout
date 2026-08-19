@@ -105,7 +105,7 @@ export function Line({ row, onToggle }: LineProps): ReactElement {
           type="button"
           onClick={() => onToggle(row.id)}
           aria-label={row.expanded ? 'Show less' : 'Show more'}
-          className="h-[17px] rounded-sq border border-line px-[5px] font-mono text-meta text-muted"
+          className="h-[17px] rounded-pill border border-line px-[5px] font-mono text-meta text-muted"
         >
           {row.expanded ? '−' : '+'}
         </button>
