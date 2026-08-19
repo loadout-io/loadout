@@ -23,6 +23,15 @@ use crate::skills::ingest;
 /// Nazwa pliku, po której poznaje się umiejętność w cudzym repozytorium.
 const SKILL_FILE: &str = "SKILL.md";
 
+/// Fraza, od której zaczyna się wiersz nagłówka sekcji z regułami.
+///
+/// To PRZEDROSTEK wiersza, nie cały wiersz i nie napis szukany w pliku. Obie te pomyłki są
+/// zmierzone i obie kończą się cicho — patrz [`recurring_patterns`].
+const PATTERNS_HEADING: &str = "## Recurring patterns";
+
+/// Początek każdego wiersza, który kończy sekcję: nagłówek tego samego poziomu.
+const HEADING_MARK: &str = "## ";
+
 /// `<projekt>/.claude/skills` — kształt gospodarza, zapisany **raz**.
 ///
 /// Te dwa segmenty są jedyną wiedzą tego repo o tym, gdzie cudze repozytorium trzyma
@@ -151,8 +160,39 @@ pub fn skills(project: &Path) -> Result<Vec<HostSkill>> {
 /// obietnica była zapisana w sygnaturze, a nie tylko w prozie: brak sekcji jest normalnym
 /// stanem cudzego repozytorium (niezmiennik 5).
 pub fn recurring_patterns(text: &str) -> Result<String> {
-    let _ = text;
-    Ok(String::new())
+    let mut offset = 0usize;
+    let mut section: Option<usize> = None;
+    let mut end = text.len();
+
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']);
+        if section.is_some() {
+            if content.starts_with(HEADING_MARK) {
+                // Nagłówek jest GRANICĄ, nie treścią: cięcie stoi na jego pierwszym znaku,
+                // więc `## Run journal` zostaje po tamtej stronie razem z całym journalem.
+                // `## `, ze spacją: `### Cokolwiek` jest podnagłówkiem WEWNĄTRZ sekcji.
+                end = offset;
+                break;
+            }
+        } else if content.starts_with(PATTERNS_HEADING) {
+            // NAGŁÓWEK ROZPOZNAJEMY JAKO WIERSZ, i to jest cała różnica wobec
+            // `text.find("## Recurring patterns")`. Trzecia linia każdego pliku roli
+            // u gospodarza niesie cytat blokowy z tą samą frazą w odwrotnych apostrofach:
+            // szukanie po całym tekście trafia w cytat trzy wiersze wyżej i zwraca 131 bajtów
+            // zdania o tym, że reguły są wiążące, zamiast 1701 bajtów reguł.
+            //
+            // `starts_with`, nie `==`: prawdziwy nagłówek niesie przyrostek
+            // (`## Recurring patterns (BINDING — do NOT repeat)`), a nagłówka równego dosłownie
+            // samej frazie nie ma w żadnym z dziesięciu plików gospodarza [2026-08-19].
+            section = Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+
+    // Sekcja obecna i pusta ma być nieodróżnialna od nieobecnej, dlatego końce obcinamy: pole
+    // „lekcje", które jest niepuste i nie niesie ani jednej reguły, to dokładnie ta cicha
+    // porażka, przed którą stoi ta funkcja.
+    Ok(section.map_or_else(String::new, |from| text[from..end].trim().to_owned()))
 }
 
 /// Ciało podagenta gospodarza — wszystko za drugim `---`. **Cały** front-matter zostaje po
