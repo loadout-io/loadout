@@ -28,19 +28,24 @@
 //!
 //! Nie ma tu też ani jednego `tauri::*` (niezmiennik 1): sterownik nie wie, że istnieje okno.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{ChildStderr, ChildStdout, Command};
+use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
+    RunSpec, SessionRef, Tokens,
 };
-use crate::engine::supervisor::{GroupId, GroupProof};
+use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
 ///
@@ -51,6 +56,18 @@ pub const VENDOR: &str = "codex";
 /// bezwzględna: znajduje się przez `PATH`, a `PATH` jest jedną ze zmiennych, które supervisor
 /// przepuszcza przez `env_clear()`.
 const DEFAULT_BINARY: &str = "codex";
+
+/// Numer pierwszej tury sesji. Numeracja zaczyna się od jedynki, żeby zero mogło znaczyć
+/// „nikt niczego nie anulował" — powód w całości przy [`CodexHandle::cancelled`].
+const FIRST_TURN: u64 = 1;
+
+/// Generacja, która nie jest numerem żadnej tury.
+const NOT_CANCELLED: u64 = 0;
+
+/// Ile bajtów skargi trzymamy. **Pierwsze, nie ostatnie**: pierwsza linia mówi, co się stało
+/// („command not found", „not logged in"), ostatnia jest zwykle ogonem śladu stosu. Bufor bez
+/// limitu byłby za to miejscem, w którym gadatliwy agent zjada pamięć okna.
+const COMPLAINT_KEPT: usize = 4 * 1024;
 
 /// Sterownik `codex`.
 ///
@@ -93,42 +110,145 @@ impl CodexDriver {
     /// kryterium o jednej tożsamości przez wiele tur. Implementacja traitu woła tę metodę
     /// i pakuje jej wynik w pudełko, więc ciało jest jedno.
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Nie startuje procesu i **od razu porzuca kanał zdarzeń**: sesja, której nikt nie
-    /// uruchomił, nie ma czego nim przysłać, a odbiornik ma dostać `None` zamiast ciszy —
-    /// kryterium ma paść na asercji w ułamku sekundy, a nie na limicie czasu, bo limit czasu
-    /// w bramce jest fałszywą czerwienią (rc 124), nie dowodem.
+    /// Prompt jedzie **stdinem i tylko stdinem** (niezmiennik 9), a deskryptor zostaje
+    /// **zamknięty**: bez EOF `codex exec` wypisuje `Reading additional input from stdin...`
+    /// i czeka [T1, „Worth adding"]. To jest cała różnica wobec `claude.rs`, gdzie ten sam
+    /// deskryptor zostaje otwarty na kolejne tury — Codex kolejnych tur tym kanałem nie
+    /// przyjmuje [T1 §6.4].
     pub async fn start_session(
         &self,
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<CodexHandle> {
-        tracing::debug!(
-            binary = %self.binary.display(),
-            "the codex driver is still a skeleton, so this step starts no process"
-        );
-        drop(tx);
+        let argv = build_exec_argv(&spec);
 
-        // `yield_now`, żeby ta sygnatura była asynchroniczna JUŻ TERAZ. Implementacja czeka
-        // tutaj na potok wejściowy procesu, a dołożenie `async` po napisaniu kryteriów
-        // kosztowałoby przepisanie wszystkich sześciu — czyli zmianę specyfikacji w fazie,
-        // w której specyfikacja jest już kontraktem.
+        // Wznowienie zna swoją tożsamość, ZANIM padnie pierwsza linia: dostało ją od tego, kto
+        // je zamówił. Pierwsza tura nie zna jej wcale i to jest uczciwe — sesja Codeksa
+        // przychodzi z drutu, w `thread.started`, więc dopóki nikt nie przeczytał ani jednej
+        // linii, nie ma czym się podpisać.
+        let threads: Vec<String> = spec
+            .resume
+            .as_ref()
+            .map(|session| session.id.clone())
+            .into_iter()
+            .collect();
+        let threads = Arc::new(Mutex::new(threads));
+        let cancelled = Arc::new(AtomicU64::new(NOT_CANCELLED));
+
+        let turn = Turn {
+            binary: self.binary.clone(),
+            cwd: spec.cwd.clone(),
+            argv,
+            prompt: spec.prompt,
+            events: tx.clone(),
+            threads: Arc::clone(&threads),
+            number: FIRST_TURN,
+            cancelled: Arc::clone(&cancelled),
+        };
+        let (process, outcome) = turn.start()?;
+
+        // `tokio::spawn` tylko PLANUJE zadanie — nie odpytuje go ani razu. To ustąpienie daje
+        // świeżo uruchomionej pętli czytającej jej pierwsze odpytanie, więc wołający dostaje
+        // uchwyt do sesji, która już czyta, a nie do takiej, która dopiero stoi w kolejce.
+        //
+        // Stoi tu także dlatego, że ta funkcja MUSI być asynchroniczna: jest ciałem
+        // `AgentDriver::start`, a kryteria wołają ją przez `timeout(...)`, czyli po Future.
+        // Wyciszenie lintu `clippy::unused_async` nie jest tu wyjściem — jedyna droga przez
+        // `quick-suppressions` prowadzi przez `checks/`, czyli przez to, co nas sądzi
+        // (`AGENTS.md` §7).
+        //
+        // Nazwa tego atrybutu jest wyżej wypisana bez nawiasu kwadratowego celowo, tak samo jak
+        // w `supervisor.rs`: `quick-suppressions` gerpuje SUROWY tekst pliku, więc wypisana
+        // w pełni wywraca to sprawdzenie także z komentarza, w którym jest tylko wzmianką.
+        // Zmierzone na tym pliku 2026-08-19, jedno trafienie.
         tokio::task::yield_now().await;
 
         Ok(CodexHandle {
-            // Pusty identyfikator, a nie wymyślony: sesja Codeksa przychodzi z drutu, w linii
-            // `thread.started`, więc dopóki nikt nie przeczytał ani jednej linii, nie ma czym
-            // się podpisać. Kryterium o wznowieniu porównuje to z identyfikatorem z atrapy
-            // i pada na pierwszej asercji.
-            session: SessionRef {
-                vendor: VENDOR,
-                id: spec
-                    .resume
-                    .map_or_else(String::new, |session| session.id.clone()),
-            },
-            threads: Vec::new(),
+            binary: self.binary.clone(),
+            cwd: spec.cwd,
+            events: tx,
+            threads,
+            cancelled,
+            number: FIRST_TURN,
+            process: Some(process),
+            outcome: Some(outcome),
         })
+    }
+}
+
+/// Wszystko, czego potrzeba, żeby ruszyć **jedną** turę Codeksa.
+///
+/// Istnieje jako typ, a nie jako osiem argumentów funkcji, bo tur jest wiele i każda startuje
+/// dokładnie tak samo: [`CodexDriver::start_session`] robi pierwszą, [`AgentHandle::send`] każdą
+/// następną. Dwa miejsca składające ten sam start osobno rozjeżdżają się przy pierwszej zmianie
+/// — a rozjazd byłby cichy, bo obie drogi dalej uruchamiałyby proces.
+#[derive(Debug)]
+struct Turn {
+    /// Co uruchamiamy.
+    binary: PathBuf,
+    /// Katalog roboczy kroku.
+    cwd: PathBuf,
+    /// Linia poleceń bez nazwy binarki i bez promptu.
+    argv: Vec<String>,
+    /// Treść tury. Jedzie stdinem (niezmiennik 9).
+    prompt: String,
+    /// Dokąd sypać zdarzeniami.
+    events: mpsc::Sender<DecodedEvent>,
+    /// Wspólna pamięć identyfikatorów wątku — jedna na sesję, nie na turę.
+    threads: Arc<Mutex<Vec<String>>>,
+    /// Która to tura tej sesji. Pierwsza ma numer [`FIRST_TURN`].
+    number: u64,
+    /// Generacja anulowania, wspólna dla sesji (powód przy [`CodexHandle::cancelled`]).
+    cancelled: Arc<AtomicU64>,
+}
+
+impl Turn {
+    /// Startuje proces tury i oddaje uchwyt do niego oraz obietnicę jej wyniku.
+    ///
+    /// Proces startuje przez `engine::supervisor::spawn` i **tylko** przez nie: własna grupa
+    /// procesów, `env_clear()` i cała eskalacja zabijania mieszkają tam (niezmienniki 3 i 23).
+    /// Ten plik nie zna ani jednej stałej sygnału.
+    fn start(self) -> anyhow::Result<(Supervised, oneshot::Receiver<Outcome>)> {
+        let mut command = Command::new(&self.binary);
+        // Katalog roboczy przychodzi ARGUMENTEM, nigdy stałą: literał ze ścieżką repo w pliku
+        // pod `engine/` przewraca granicę z niezmiennika 1.
+        command.current_dir(&self.cwd);
+        command.args(&self.argv);
+
+        // `Write`, nie `Keep`: po prompcie deskryptor się ZAMYKA, bo to zamknięcie jest tym
+        // EOF-em, na który `codex exec` czeka. `Keep` zostawiłby proces wiszący na wejściu,
+        // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
+        let mut process = supervisor::spawn(command, StdinPlan::Write(self.prompt))?;
+
+        let stdout = process
+            .stdout()
+            .ok_or_else(|| anyhow!("the agent started without an output stream to read"))?;
+
+        // SKARGI ODBIERAMY I OPRÓŻNIAMY. Potok o pojemności ~64 KB, którego nikt nie odbiera,
+        // zatrzymuje dziecko na `write` — czyli agent gadatliwy poza strumieniem zdarzeń wisi,
+        // a z okna wygląda to jak agent, który myśli. Drugi powód jest w [`CodexDecoder::
+        // end_of_stream`]: pierwsza linia skargi odpowiada na „dlaczego" w praktycznie każdym
+        // realnym przypadku, a bez niej krok pada zdaniem bez przyczyny.
+        let complaint = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = process.stderr() {
+            let into = Arc::clone(&complaint);
+            let _drain = tokio::spawn(drain_complaints(stderr, into));
+        }
+
+        let (tell, told) = oneshot::channel();
+        // Pętla czytająca żyje własnym zadaniem: uchwyt ma zostać responsywny na `cancel()`
+        // także wtedy, gdy nikt nie woła `wait()`.
+        let _reader = tokio::spawn(pump(
+            stdout,
+            self.events,
+            tell,
+            self.threads,
+            self.number,
+            self.cancelled,
+            complaint,
+        ));
+
+        Ok((process, told))
     }
 }
 
@@ -151,15 +271,82 @@ impl CodexDriver {
 /// użytkownika maszyny) i `--dangerously-bypass-approvals-and-sandbox` (to jest obejście
 /// całego diala, a nie jeden z jego trzech stopni).
 ///
-/// # SZKIELET (2026-08-19)
-///
-/// Pusta lista. Kryterium porównuje **całą** sekwencję argumentów z linią z T1 §8.4, więc pada
-/// na pierwszej asercji. Pusta lista przechodzi za to obie asercje o NIEOBECNOŚCI (promptu
-/// i flagi obejścia) — i to jest właśnie powód, dla którego samo „nie ma w argv" nie może być
-/// jedynym pomiarem tego kryterium.
+/// `spec.resume` przełącza tę funkcję na linię wznowienia [`resume_argv`], bo to jest ta sama
+/// decyzja co u Claude'a (`--session-id` albo `--resume`, nigdy oba) — tylko u Codeksa
+/// wznowienie jest osobnym **podpoleceniem**, a nie flagą.
 #[must_use]
-pub fn build_exec_argv(_spec: &RunSpec) -> Vec<String> {
-    Vec::new()
+pub fn build_exec_argv(spec: &RunSpec) -> Vec<String> {
+    let Some(session) = &spec.resume else {
+        return first_turn_argv(spec);
+    };
+    resume_argv(&session.id, &spec.cwd)
+}
+
+/// Linia pierwszej tury, w kolejności z T1 §8.4.
+fn first_turn_argv(spec: &RunSpec) -> Vec<String> {
+    let mut argv = vec![
+        "exec".to_owned(),
+        "--json".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "-C".to_owned(),
+        spec.cwd.display().to_string(),
+    ];
+
+    // `None` znaczy „to, co vendor ma domyślnie", więc flagi nie ma wcale. Pusty `-m` byłby
+    // modelem o nazwie zerowej długości, a to jest co innego niż brak wyboru.
+    if let Some(model) = &spec.model {
+        argv.push("-m".to_owned());
+        argv.push(model.clone());
+    }
+
+    // DOKŁADNIE JEDNO `-s`, zawsze. Zero znaczy, że dial nie decyduje o niczym i Codex spada
+    // na własną domyślną; dwa znaczą, że wygrywa ostatnie, a kto czyta linię poleceń, ten
+    // wierzy pierwszemu.
+    argv.push("-s".to_owned());
+    argv.push(sandbox_mode(spec.policy).to_owned());
+
+    // Myślnik na końcu jest tym, co każe czytać prompt ze stdinu [T1 §6.1]. Bez niego trzeba by
+    // go podać argumentem — czyli złamać niezmiennik 9 dokładnie tak, jak podpowiada T1 §8.4.
+    argv.push("-".to_owned());
+    argv
+}
+
+/// Linia tury wznawiającej [T1 §8.4].
+///
+/// Czego tu **nie ma i nie ma prawa być**: `-m` i `-s` należą do pierwszej tury (rozmowa ma już
+/// swój model i swoją piaskownicę), a `--skip-git-repo-check` razem z nimi — wznawiana rozmowa
+/// przeszła tę bramkę raz.
+fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
+    vec![
+        "exec".to_owned(),
+        "resume".to_owned(),
+        thread.to_owned(),
+        "--json".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "-C".to_owned(),
+        cwd.display().to_string(),
+        "-".to_owned(),
+    ]
+}
+
+/// Cała tabela tłumaczenia polityki na piaskownicę — **jedna, w adapterze** (niezmiennik 23).
+///
+/// Trzy warianty po ludzku muszą dojechać do CLI jako trzy **różne** tryby: adapter wypisujący
+/// jeden tryb dla wszystkich trzech przechodzi każde sprawdzenie, które pyta tylko, czy flaga
+/// jest. Agent, któremu obiecano „No limits", a dano `read-only`, nie zapisze ani linii.
+///
+/// Czego ta tabela nie ma i nigdy nie będzie miała: `--dangerously-bypass-approvals-and-sandbox`.
+/// To nie jest czwarty stopień diala, tylko drzwi obok niego — wyłącza zatwierdzenia **i**
+/// piaskownicę naraz. Cicha wersja złamania niezmiennika 23 wygląda inaczej: adapter dokłada
+/// sobie własną listę dozwolonych narzędzi „bo Codex ma inne nazwy" i tak właśnie po cichu
+/// umarło skanowanie sekretów w repo źródłowym [raport 05 §4].
+const fn sandbox_mode(policy: Policy) -> &'static str {
+    match policy {
+        Policy::ReadOnly => "read-only",
+        Policy::EditInFolder => "workspace-write",
+        Policy::Unrestricted => "danger-full-access",
+    }
 }
 
 // ── Wire enum Codeksa ─────────────────────────────────────────────────────────────────────
@@ -720,6 +907,195 @@ fn app_label(server: Option<&str>, tool: Option<&str>) -> String {
     }
 }
 
+// ── Pętla czytająca ───────────────────────────────────────────────────────────────────────
+
+/// Opróżnia strumień skarg do EOF i zapamiętuje początek tego, co powiedział.
+///
+/// **Opróżnia**, a nie „czyta, jeśli ktoś zapyta", i to jest cały powód, dla którego to zadanie
+/// istnieje osobno: potok o pojemności ~64 KB, którego nikt nie odbiera, zatrzymuje dziecko na
+/// `write`. Bliźniak z `claude.rs` — wspólne miejsce dla obu jest poza blokiem OWNS tego zadania.
+///
+/// Bez `?` i bez `unwrap` (niezmiennik 5): błąd odczytu skargi nie ma prawa zabrać tury.
+/// Zamek brany i oddany w jednym wyrażeniu, nigdy przez `await` (niezmiennik 8).
+async fn drain_complaints(stderr: ChildStderr, into: Arc<Mutex<String>>) {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.len() < COMPLAINT_KEPT {
+            held.push_str(&line);
+        }
+        // Bez `break` po przekroczeniu limitu: pętla musi dalej OPRÓŻNIAĆ potok, nawet gdy nic
+        // już nie zapamiętuje. Wyjście tutaj przywróciłoby dokładnie tę blokadę, przed którą
+        // to zadanie stoi.
+    }
+}
+
+/// Czyta strumień zdarzeń jednej tury linia po linii i sypie zdarzeniami aż do jego końca.
+///
+/// **Nie ma tu `?` i to nie jest przeoczenie** (niezmiennik 5): jedyny sposób, żeby nieznana
+/// linia zabiła turę, to zwrócić z tej pętli błąd. Dekoder oddaje pusty wektor, a pętla leci
+/// dalej — a prawdziwy bieg Codeksa przeplótł ten strumień liniami `ERROR rmcp::transport::
+/// worker: …` [T2 §9.3, zweryfikowane zagrożenie].
+///
+/// Zdarzenie końca pada **zawsze**, także wtedy, gdy tura nie powiedziała ani słowa: krok bez
+/// niego wisiałby w `running` do końca biegu.
+async fn pump(
+    stdout: ChildStdout,
+    events: mpsc::Sender<DecodedEvent>,
+    outcome: oneshot::Sender<Outcome>,
+    threads: Arc<Mutex<Vec<String>>>,
+    number: u64,
+    cancelled: Arc<AtomicU64>,
+    complaint: Arc<Mutex<String>>,
+) {
+    // Zegar startuje TU, a nie w dekoderze: Codex nie mówi, ile trwała tura, więc jedyna
+    // uczciwa liczba jest tą, którą zmierzyliśmy sami (2026-08-19). Zero w tym polu wypisałoby
+    // na ekranie „0s" przy każdym kroku — to ta sama klasa kłamstwa co `$0.00` przy koszcie.
+    let began = Instant::now();
+    let mut reader = BufReader::new(stdout);
+    let mut decoder = CodexDecoder::new();
+    let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut told = Some(outcome);
+    let mut seen: Option<String> = None;
+
+    loop {
+        buffer.clear();
+        // `read_until`, nie `lines()`: `lines()` przewraca się na bajtach nie-UTF-8, a linia,
+        // której nie da się przeczytać, ma zostać POLICZONA, a nie urwać czytanie.
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(%error, "the agent output stream broke off");
+                break;
+            }
+        }
+
+        // `from_utf8_lossy`, żeby KAŻDA linia doszła do dekodera: uszkodzona nie sparsuje się
+        // jako JSON i wpadnie do licznika porzuconych, zamiast zniknąć przed policzeniem.
+        // Bajtowa identyczność nie jest tu wymaganiem, bo tee na dysk należy do T-05 i ten
+        // sterownik go nie ma (patrz nagłówek pliku).
+        let line = String::from_utf8_lossy(&buffer);
+        let produced = decoder.push(&line);
+        remember_thread(&decoder, &mut seen, &threads);
+
+        for event in produced {
+            emit(event, began, &events, &mut told).await;
+        }
+    }
+
+    // Skargę czytamy DOPIERO TERAZ, po EOF na wyjściu: proces, który się przewrócił, pisze ją,
+    // zanim zamknie strumień zdarzeń, więc w tej chwili buforek ma już to, co miał do
+    // powiedzenia. Zamek brany i oddany w JEDNYM wyrażeniu (niezmiennik 8).
+    let said = complaint
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let stopped_by_a_person = cancelled.load(Ordering::SeqCst) == number;
+    if let Some(event) = decoder.end_of_stream(stopped_by_a_person, &said) {
+        emit(event, began, &events, &mut told).await;
+    }
+
+    if decoder.dropped() > 0 {
+        tracing::debug!(
+            dropped = decoder.dropped(),
+            turn = number,
+            "lines of the agent stream produced nothing and were let go"
+        );
+    }
+
+    // Nadajniki giną RAZEM Z TĄ PĘTLĄ i to jest ich druga robota: zamknięty kanał jest jedynym
+    // sygnałem, po którym odbiorca wie, że nic już nie przyjdzie.
+    drop(events);
+    drop(told);
+}
+
+/// Dopisuje identyfikator wątku do wspólnej pamięci sesji, jeśli jest nowy.
+///
+/// Powtórzenie tego samego identyfikatora **nie** dokłada wiersza: lista odpowiada na pytanie
+/// „czy vendor przestawił uchwyt", a ten sam numer powtórzony trzy razy nie jest przestawieniem.
+///
+/// 2026-08-19 — ROZBIEŻNOŚĆ ZAPISUJEMY RAZ, przy turze, w której powstała. T1 §11 pytanie 5 nie
+/// rozstrzyga, czy `codex exec resume` mintuje nowy identyfikator, więc kiedy vendor odda inny
+/// niż tożsamość sesji, to jest fakt wart jednego wiersza w dzienniku — i dokładnie jednego,
+/// bo wiersz na każdą linię strumienia zamieniłby go w szum.
+fn remember_thread(
+    decoder: &CodexDecoder,
+    seen: &mut Option<String>,
+    threads: &Mutex<Vec<String>>,
+) {
+    let Some(id) = decoder.thread() else {
+        return;
+    };
+    if seen.as_deref() == Some(id) {
+        return;
+    }
+    seen.replace(id.to_owned());
+
+    let mut held = threads.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.last().map(String::as_str) == Some(id) {
+        return;
+    }
+    let identity = held.first().cloned();
+    held.push(id.to_owned());
+    drop(held);
+
+    if let Some(identity) = identity
+        && identity != id
+    {
+        tracing::info!(
+            session = %identity,
+            handed_back = %id,
+            "the agent answered with a different thread id than the one this session is known by; \
+             the session keeps its first id and the next turn resumes the newest"
+        );
+    }
+}
+
+/// Wypuszcza jedno zdarzenie — **najpierw** do [`AgentHandle::wait`], potem na ekran.
+///
+/// Ta kolejność jest jedyną obroną przed wolnym konsumentem: kanał zdarzeń z pełnym buforem
+/// zatrzymuje wysyłkę, a wynik tury, który utknął za nim, wygląda jak zawieszony agent.
+async fn emit(
+    event: AgentEvent,
+    began: Instant,
+    events: &mpsc::Sender<DecodedEvent>,
+    told: &mut Option<oneshot::Sender<Outcome>>,
+) {
+    let mut event = event;
+    if let AgentEvent::Finished(outcome) = &mut event {
+        // Czas mierzony przez nas, bo vendor go nie podaje (powód przy starcie zegara w [`pump`]).
+        outcome.took = began.elapsed();
+        if let Some(tell) = told.take() {
+            let _ = tell.send(outcome.clone());
+        }
+    }
+    // Fakt o narzędziu jedzie tu jako `None` i to jest ZGŁOSZONA dziura, nie przeoczenie:
+    // buduje go `stream::decode` z tej samej linii drutu, a `stream.rs` należy do T-05 i leży
+    // poza blokiem OWNS tego zadania. Skutek jest wąski i nazwany: transkrypt kroku Codeksa
+    // pokaże prozę agenta, ale nie wiersze `read`, `edit` ani `ran` — dokładnie ta sama awaria,
+    // którą u Claude'a zmierzono 2026-08-18 i naprawiono przez [`DecodedEvent`].
+    let _ = events.send(event.into()).await;
+}
+
+/// Pierwsza niepusta linia, jaką powiedziała binarka. Tyle wystarczy na pytanie o wersję.
+async fn first_answer(stdout: ChildStdout) -> Option<String> {
+    let mut lines = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if !line.is_empty() {
+            return Some(line.to_owned());
+        }
+    }
+    None
+}
+
 /// Żywa sesja `codex` — **wiele procesów**, jedna tożsamość.
 ///
 /// To jest cała różnica wobec `ClaudeHandle`, w którym proces jest jeden na całą sesję. Tura
@@ -727,22 +1103,45 @@ fn app_label(server: Option<&str>, tool: Option<&str>) -> String {
 /// i odbudowa cache'u [T1 §8.1] — świadomy koszt, nie brak.
 #[derive(Debug)]
 pub struct CodexHandle {
-    /// Tożsamość tej rozmowy, czyli identyfikator z **pierwszego** `thread.started`.
-    ///
-    /// Nigdy nie przestawiany w trakcie sesji. Cicha porażka numer jeden tego zadania wygląda
-    /// dokładnie odwrotnie: sterownik mintuje nowy `SessionRef` przy każdej turze, bo przecież
-    /// `thread.started` przyszło znowu — szyna pokazuje wtedy trzech agentów zamiast jednego,
-    /// trzy podsumowania „Done", trzy koszty, i **wszystko wygląda na skończone**.
-    session: SessionRef,
+    /// Co uruchamiamy w kolejnych turach. Kopia z [`CodexDriver`], bo uchwyt przeżywa sterownik.
+    binary: PathBuf,
+    /// Katalog roboczy tej rozmowy. Kolejne tury dostają go z powrotem w `-C`.
+    cwd: PathBuf,
+    /// Kanał zdarzeń tej sesji. **Wszystkie** tury sypią w ten sam, bo z zewnątrz to jedna
+    /// rozmowa — proces na turę jest szczegółem, który trait ma wchłonąć.
+    events: mpsc::Sender<DecodedEvent>,
     /// Każdy `thread_id`, jaki ta sesja dostała, w kolejności przybycia. Pierwszy jest
-    /// tożsamością, ostatni jest celem wznowienia — a jeden wpis na turę znaczy, że rozbieżność
-    /// między nimi została zapisana raz, a nie przy każdej linii.
+    /// tożsamością, ostatni jest celem wznowienia.
     ///
     /// 2026-08-19 — TO POLE ISTNIEJE, BO T1 §11 PYTANIE 5 JEST OTWARTE: nie wiadomo, czy
     /// `codex exec resume` oddaje ten sam identyfikator, czy mintuje nowy. Dopóki nie wiadomo,
     /// sterownik nie ma prawa **zakładać** żadnej z dwóch odpowiedzi: trzyma obie liczby
     /// i zachowuje się poprawnie w obu przypadkach.
-    threads: Vec<String>,
+    ///
+    /// Dzielone, bo pisze to pętla czytająca, a czyta uchwyt — i czyta **w trakcie** tury, nie
+    /// po niej: [`AgentHandle::session`] ma odpowiadać prawdę od chwili, w której vendor ogłosił
+    /// identyfikator, bo to ją T-06 zapisuje przy kroku. Zamek brany i oddawany w jednym
+    /// wyrażeniu, nigdy przez `await` (niezmiennik 8).
+    threads: Arc<Mutex<Vec<String>>>,
+    /// Numer tury, którą anulowano — **generacja**, nie znacznik logiczny.
+    ///
+    /// Niezmiennik 7 czyta się tu dosłownie: `AtomicBool` przeciekłby między turami, bo sesja
+    /// Codeksa ma ich wiele, a znacznik podniesiony przy turze pierwszej kazałby turze drugiej
+    /// zameldować „człowiek nacisnął Stop", choć nikt niczego nie nacisnął. Liczba nie przecieka:
+    /// pętla czytająca tury N pyta, czy anulowano dokładnie N. [`NOT_CANCELLED`] nie jest
+    /// numerem żadnej tury, bo numeracja zaczyna się od [`FIRST_TURN`].
+    cancelled: Arc<AtomicU64>,
+    /// Która tura trwa albo skończyła się ostatnio.
+    number: u64,
+    /// Proces **bieżącej** tury. `None` dopiero po [`AgentHandle::close`] — między turami
+    /// zostaje tu proces poprzedniej, zebrany, żeby nie został po nim zombie.
+    process: Option<Supervised>,
+    /// Obietnica wyniku bieżącej tury. `None` znaczy „ta tura została już odebrana", i to jest
+    /// jedyny stan, w którym wolno zacząć następną.
+    ///
+    /// `oneshot`, a nie kanał: tura ma dokładnie jeden wynik, a nadajnik ginący razem z pętlą
+    /// czytającą zamienia „pętla padła" w `Err` zamiast w czekanie bez końca.
+    outcome: Option<oneshot::Receiver<Outcome>>,
 }
 
 impl CodexHandle {
@@ -753,63 +1152,127 @@ impl CodexHandle {
     /// Tu chodzi o różnicę między „widzieliśmy dwa identyfikatory i pamiętamy oba" a „drugi
     /// nadpisał pierwszy", której z zewnątrz nie da się inaczej odróżnić.
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Pusto, bo nikt nie przeczytał ani jednej linii.
+    /// **Migawka, nie pożyczka** (2026-08-19). Szkielet oddawał `&[String]`, bo miał jednego
+    /// pisarza i żadnego czytelnika. Odkąd pisze to pętla czytająca, lista siedzi za zamkiem,
+    /// a pożyczki zza zamka nie da się oddać na zewnątrz — kopia trzech napisów raz na turę jest
+    /// tańsza niż jakikolwiek sposób, żeby tego uniknąć.
     #[must_use]
-    pub fn threads_seen(&self) -> &[String] {
-        &self.threads
+    pub fn threads_seen(&self) -> Vec<String> {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Identyfikator, który wznowi kolejna tura: **najnowszy**, bo to jego vendor potwierdził
+    /// ostatnio.
+    fn newest_thread(&self) -> Option<String> {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last()
+            .cloned()
     }
 }
 
 #[async_trait]
 impl AgentHandle for CodexHandle {
+    /// Tożsamość tej rozmowy, czyli identyfikator z **pierwszego** `thread.started`.
+    ///
+    /// Nigdy nie przestawiany w trakcie sesji, choć vendor bywa innego zdania w każdej turze.
+    /// Cicha porażka numer jeden tego zadania wygląda dokładnie odwrotnie: sterownik mintuje
+    /// nowy `SessionRef` przy każdej turze, bo przecież `thread.started` przyszło znowu — szyna
+    /// pokazuje wtedy trzech agentów zamiast jednego, trzy podsumowania „Done", trzy koszty,
+    /// i **wszystko wygląda na skończone**, więc nikt tego nie zgłosi.
+    ///
+    /// Pusty identyfikator znaczy „pierwsza linia jeszcze nie przyszła", a nie „nie ma sesji".
     fn session(&self) -> SessionRef {
-        self.session.clone()
+        SessionRef {
+            vendor: VENDOR,
+            id: self
+                .threads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .first()
+                .cloned()
+                .unwrap_or_default(),
+        }
     }
 
     /// Grupa procesów **bieżącej** tury.
     ///
-    /// `None` między turami i to nie jest brak: przy sterowniku z procesem na turę naprawdę
-    /// bywa chwila, w której nie ma czego zabić. `ClaudeHandle` oddaje tu zawsze `Some`, bo
-    /// tam proces żyje przez całą sesję — i to jest ta różnica, którą trait ma wchłonąć.
-    ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Zawsze `None`, więc kryterium o anulowaniu nie ma czego zapytać jądra o dowód śmierci.
+    /// `None` dopiero po zamknięciu sesji i to nie jest brak: przy sterowniku z procesem na turę
+    /// naprawdę bywa chwila, w której nie ma czego zabić. `ClaudeHandle` oddaje tu zawsze `Some`,
+    /// bo tam proces żyje przez całą sesję — i to jest ta różnica, którą trait ma wchłonąć.
     fn group(&self) -> Option<GroupId> {
-        None
+        self.process.as_ref().map(Supervised::group)
     }
 
     /// Kolejna tura: **nowy proces** z `codex exec resume <thread_id>` i promptem na stdin.
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Odmawia zdaniem, które nazywa sesję i rozmiar tury. Kryterium o wznowieniu pada
-    /// wcześniej — na tożsamości, której ten szkielet nie ma skąd wziąć.
+    /// Wznawiamy po **najnowszym** identyfikatorze, nie po tożsamości sesji: T1 §11 pytanie 5 nie
+    /// rozstrzyga, czy `resume` mintuje nowy, więc sterownik ma być poprawny w obu przypadkach —
+    /// a najnowszy jest tym, który vendor potwierdził ostatnio. Wznawianie po pierwszym byłoby
+    /// sterownikiem, który założył jedną z dwóch odpowiedzi.
     async fn send(&mut self, text: String) -> anyhow::Result<()> {
-        anyhow::bail!(
-            "a follow-up turn of {} bytes has nowhere to go: session {:?} was never started, \
-             because this driver is still a skeleton",
-            text.len(),
-            self.session.id
-        )
+        if self.outcome.is_some() {
+            anyhow::bail!(
+                "a follow-up turn of {} bytes has nowhere to go yet: the previous turn has not \
+                 been collected, and codex exec has no way to take two at once - it reads one \
+                 prompt, answers it and exits",
+                text.len()
+            );
+        }
+
+        let Some(thread) = self.newest_thread() else {
+            anyhow::bail!(
+                "a follow-up turn of {} bytes has nothing to resume: this session never heard a \
+                 thread id, and that id is the only handle codex exec resume takes",
+                text.len()
+            );
+        };
+
+        // Zebranie poprzedniego procesu jest częścią tury, nie sprzątaniem po niej: zombie NADAL
+        // odpowiada na sygnał zerowy, więc grupa z zombie w środku nigdy nie da `ESRCH`
+        // (niezmiennik 6).
+        if let Some(previous) = self.process.as_mut() {
+            let _reaped = previous.wait().await;
+        }
+
+        self.number += 1;
+        let turn = Turn {
+            binary: self.binary.clone(),
+            cwd: self.cwd.clone(),
+            argv: resume_argv(&thread, &self.cwd),
+            prompt: text,
+            events: self.events.clone(),
+            threads: Arc::clone(&self.threads),
+            number: self.number,
+            cancelled: Arc::clone(&self.cancelled),
+        };
+        let (process, outcome) = turn.start()?;
+
+        // Podmiana, nie dopisanie: stary uchwyt ginie tutaj, a jego `Drop` jest ostatnią linią
+        // obrony przed wyciekiem grupy.
+        self.process = Some(process);
+        self.outcome = Some(outcome);
+        Ok(())
     }
 
     /// Czeka na koniec bieżącej tury.
-    ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Odmawia. **`Err`, a nie wymyślony `Outcome`**, i to jest wybór, nie wygoda: każdy
-    /// zmyślony wynik przechodziłby część kryterium o zakończeniu (`ok == false` z powodem
-    /// `Failed` jest dosłownie przypadkiem (b), a `FinishReason::Cancelled` — całym kryterium
-    /// o anulowaniu). Odmowa nie przechodzi żadnego.
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
-        anyhow::bail!(
-            "session {:?} has no outcome to give: this driver is still a skeleton, so no turn \
-             was ever started and nothing read the stream",
-            self.session.id
-        )
+        let told = self.outcome.take().ok_or_else(|| {
+            anyhow!("this session has no turn in flight, so there is no outcome to wait for")
+        })?;
+        let outcome = told
+            .await
+            .map_err(|_| anyhow!("the turn ended without ever saying how it went"))?;
+
+        // Zebranie procesu MUSI paść na każdej ścieżce terminalnej — powód przy `send`.
+        if let Some(process) = self.process.as_mut() {
+            let _reaped = process.wait().await;
+        }
+        Ok(outcome)
     }
 
     /// Anuluje turę i **dowodzi**, że po grupie nic nie zostało.
@@ -818,22 +1281,35 @@ impl AgentHandle for CodexHandle {
     /// łaska, SIGKILL, a potem pętla dowodowa aż do `ESRCH`. Stopnia „przerwanie w paśmie" tu
     /// nie ma i nie będzie — `codex exec` nie czyta stdinu po pierwszym prompcie [T1 §6.4].
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// `Alive`, bo to jest jedyna uczciwa odpowiedź szkieletu: niezmiennik 6 mówi, że dopóki
-    /// `kill(-pgid, 0)` nie dał `ESRCH`, grupa jest żywa. `Dead` byłoby kłamstwem, które
-    /// przechodzi połowę kryterium o anulowaniu.
+    /// Generacja idzie w górę **przed** sygnałem i to nie jest kwestia porządku: pętla czytająca
+    /// pyta o nią dopiero na EOF, a EOF przychodzi zaraz po zabiciu — znacznik postawiony po
+    /// sygnale bywa spóźniony, a wtedy „człowiek nacisnął Stop" melduje się jako „agent się
+    /// przewrócił" (niezmiennik 7 złamany o jedną instrukcję).
     async fn cancel(&mut self) -> GroupProof {
-        GroupProof::Alive
+        self.cancelled.store(self.number, Ordering::SeqCst);
+
+        let Some(process) = self.process.as_mut() else {
+            // Sesja bez procesu nie ma czego zabić i nie ma czego palić w tle. `Alive` posłałoby
+            // wołającego po grupę, której nie ma; `Dead` mówi to, co jest prawdą — nie zostało
+            // nic. Statusu nie ma, bo nie było czyjego odebrać.
+            return GroupProof::Dead { status: None };
+        };
+        process.stop(DEFAULT_GRACE).await
     }
 
-    /// Zamyka sesję.
+    /// Koniec sesji: czeka, aż bieżąca tura wyjdzie **sama**.
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// Nie ma czego zamykać, więc nie ma też kodu wyjścia. Żadne kryterium tego nie pyta.
+    /// Wejścia nie ma tu czego zamykać — `codex exec` dostał EOF razem z promptem, bo bez niego
+    /// w ogóle by nie ruszył. To jest ta połowa kontraktu, którą Codex spełnia za darmo, i ta
+    /// sama, przez którą traci wielotury w jednym procesie.
     async fn close(&mut self) -> anyhow::Result<Option<i32>> {
-        Ok(None)
+        let Some(process) = self.process.as_mut() else {
+            return Ok(None);
+        };
+        let status = process.wait().await?;
+        // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
+        // różnica, którą mierzy dowód z `cancel()`.
+        Ok(status.code())
     }
 }
 
@@ -843,21 +1319,48 @@ impl AgentDriver for CodexDriver {
         VENDOR
     }
 
-    /// Czy CLI jest i w jakiej wersji.
+    /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
+    /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
     ///
-    /// # SZKIELET (2026-08-19)
-    ///
-    /// „Nie ma" — zgodnie z kontraktem traitu brak binarki jest ekranem ustawień, a nie awarią
-    /// startu, więc ta odpowiedź nikogo nie wywraca. Żadne kryterium tego zadania jej nie sądzi
-    /// (`probe` jest świadomie poza zakresem), więc szkielet nie ma tu czego przejść ani oblać.
+    /// Najprościej, jak się da, i to jest świadome — ekranu ustawień na tym nie budujemy
+    /// („Świadomie poza zakresem"). Nieudany start jest odpowiedzią w **każdej** postaci, nie
+    /// tylko przy braku pliku: binarka bez prawa wykonania i binarka, której nie ma, znaczą dla
+    /// użytkownika dokładnie to samo zdanie.
     async fn probe(&self) -> anyhow::Result<Probe> {
-        tracing::debug!(
-            binary = %self.binary.display(),
-            "the codex probe is still a skeleton and asks the binary nothing"
-        );
+        let mut command = Command::new(&self.binary);
+        command.arg("--version");
+
+        // Przez ten sam start co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
+        // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
+        // wejściu oszczędza czekanie na EOF, którego nikt by nie wysłał.
+        let mut process = match supervisor::spawn(command, StdinPlan::Null) {
+            Ok(process) => process,
+            Err(error) => {
+                tracing::debug!(
+                    binary = %self.binary.display(),
+                    %error,
+                    "the agent CLI could not be started, so the setup screen has its answer"
+                );
+                return Ok(Probe {
+                    found: false,
+                    version: None,
+                });
+            }
+        };
+
+        let mut version = None;
+        if let Some(stdout) = process.stdout() {
+            version = first_answer(stdout).await;
+        }
+
+        // Zebranie procesu jest częścią jego uruchomienia, nie sprzątaniem po nim: zombie nadal
+        // odpowiada na sygnał zerowy, więc niezebrany `--version` zostawiłby grupę, której nikt
+        // nigdy nie udowodni martwej (niezmiennik 6).
+        let _reaped = process.wait().await;
+
         Ok(Probe {
-            found: false,
-            version: None,
+            found: true,
+            version,
         })
     }
 
