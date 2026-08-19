@@ -214,9 +214,8 @@ fn everywhere_writes_both_vendor_names_under_home_and_not_one_entry_under_the_pr
     assert_eq!(
         wrote.len(),
         2,
-        "the install reported {:?} as the folders it wrote. Two names cover all six agent apps \
-         [T5 §3.1], and a person reads that list before pressing the button",
-        wrote
+        "the install reported {wrote:?} as the folders it wrote. Two names cover all six agent \
+         apps [T5 §3.1], and a person reads that list before pressing the button"
     );
     assert_eq!(
         entries_under(&world.project),
