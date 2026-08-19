@@ -4,6 +4,73 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-19 — sekcja Skills umie przyjac tresc, nie tylko adres
+
+**Wyladowane: T-42 (4 kryteria) i T-43 (3).** Pelna bramka po kazdym: 15 sprawdzen, 0 czerwonych.
+Zamowienie czlowieka brzmialo „chce napisac jakiego chce skilla, a program buduje z niego skilla
+kompatybilnego z claude/codex", z wyborem „opis -> agent pisze". Rozbite na trzy kontrakty, bo to
+sa trzy rozne dowody: **T-42** droga wejscia dla TRESCI (trzy pytania -> `place::emit` -> zapis ->
+`ingest::from_folder`, ten sam skan co przy linku), **T-43** jedna tura agenta POZA grafem
+(`AgentDriver::start` -> `Outcome.text` -> trzy pola formularza), **T-44** wybor „ten projekt /
+wszedzie" (w toku).
+
+### Co z tego wynika dla produktu
+
+Zlota lista komend: 24 -> 29 (`author_skill`, `draft_skill`, `stop_draft` z tej fali, `open_chat`
+i `say_to_orchestrator` z pracy wlasciciela). Karta przegladu przestala twierdzic, ze wie, skad
+przyszla umiejetnosc: plakietka „From the internet" byla wpisana NA SZTYWNO i ignorowala
+`item.fromTheInternet` -- prawdziwa przez konstrukcje, dopoki jedyna droga byl link. Pochodzenie
+lezy teraz w plikach (`~/.loadout/skills/origins.json`), a nie w domysle z istnienia kopii
+kanonicznej, i ma ostrozny domyslny: kopia bez zapisu pochodzenia jest „z internetu", bo do tej
+fali tylko taka droga tworzyla kopie.
+
+### Trzy znaleziska, ktorych ta fala NIE zamiata (AGENTS.md §7)
+
+1. **Utrata danych osiagalna z okna, naprawiona po drodze w T-42 AC-1(c).** `review_skill_inner`
+   liczyl sciezke kopii kanonicznej z pola `name` front-mattera i robil na niej `remove_dir_all`
+   (`commands/skills.rs:350-351`); `from_folder` nie waliduje nazwy, a `Skill::default()` daje
+   `name: ""`. Sprawdzone `rustc`: `PathBuf::from("/a/b").join("")` to `"/a/b/"`. Link do dowolnego
+   `SKILL.md` BEZ pola `name:` kasowal `~/.loadout/skills/` razem z `installed.json`.
+2. **Globalny limit „ile naraz" nie jest podpiety w produkcji.** `run_workflow_with_slots(…, slots)`
+   nie ma wolajacego poza testami, a `run_workflow_inner:237` zaklada wlasny `Limiter` na kazdy
+   bieg. Kryterium T-31 dowodzi globalnosci, bo podaje pule argumentem. Trzy karty po trzech
+   agentach to dziewieciu agentow przy suwaku na 3 (niezmiennik 11). Dlatego T-43 nie udaje, ze
+   bierze slot -- ma jawna granice „jeden draft naraz".
+3. **Lista pol zdjetych przez `emit` nie ma konsumenta** (`let (doc, _) = emit(skill)`,
+   `place.rs:545`). `hooks:` znika z pliku bez ani jednego zdania na ekranie. Do tego
+   `allowed-tools` jest w `SPEC_FIELDS`, wiec JEDZIE do obu katalogow vendorow z samym `Warn` --
+   umiejetnosc moze przydzielic sobie narzedzia, a przy tekscie pisanym przez model przestaje to
+   byc rzadkie.
+
+### Dwa defekty harnessu, naprawione osobnymi commitami
+
+Odslonil je stos galezi (T-43 odbity od niewyladowanego `task-T-42`, bo trunk byl brudny). Oba
+mialy ten sam ksztalt: pytanie o stan dysku rozstrzygane po BRZMIENIU komunikatu.
+
+- `0140979` -- `exit 0 but no evidence` bylo liczone jako „kryterium przechodzi", wiec kazdy
+  wznowiony bieg z kryterium rustowym konczyl sie kodem 2 przy uczciwie czerwonych kryteriach.
+- `c696fc0` -- „czy sa specyfikacje" rozstrzygane po napisie `did not RUN`; kryterium rustowe bez
+  modulu udawalo istniejacy plik, wiec bieg szedl NAPRAWIAC pliki, ktorych nie ma. Teraz pyta
+  dysku przez `gate.spec_tokens` -- ten sam parser, ktory sadzi kontrakt.
+
+Oba z kontrola w obie strony na prawdziwych bajtach funkcji; grozny przypadek („PASSES before
+implementation") dalej odmawia.
+
+### Cena infrastruktury, zmierzona
+
+T-42 kosztowalo **~$36,50**, z czego **$12,15 to strata na infrastrukturze**: limit sesji (429 po
+811 ms, faza pisarza nie ruszyla) i ubicie biegu na granicy tury (7 minut pisania, `result:
+error_during_execution`, $8,44 za prace, ktorej nikt nie odebral). Zamkniete przez
+`scratchpad/detach.py` (podwojny fork + `setsid`, kod wyjscia do `runs/<ID>/wave.rc`) -- ten sam
+bieg odczepiony przezyl cztery granice tury. Do czekania na wynik uzywaj `Monitor` z
+`persistent: true`, nie `run_in_background`: czekacz ginie na kazdej granicy tury, praca nie.
+
+**Falszywa czerwien, ktorej nie warto szukac drugi raz:** `product_path_end_to_end`,
+`run_reaches_the_pump`, `runcmd_snapshot` i `runcmd_parallel` wieszaja sie na ZAJETEJ maszynie --
+mierza nakladanie sie na prawdziwym zegarze i maja limit 20 s w sobie, wiec
+`CHECK_TIMEOUT_OVERRIDE` ich nie podniesie. Przy siedmiu agentach w tle: cztery czerwone.
+Na bezczynnej maszynie ta sama migawka: 15 sprawdzen, 0 czerwonych, 16 s.
+
 ## 2026-08-18, 05:30 — pietnascie kryteriow jednego dnia i aplikacja, ktora naprawde chodzi
 
 **Suita jednostkowa: 88 plikow / 440 testow zielonych. E2E w prawdziwym chromium: 13/13.**

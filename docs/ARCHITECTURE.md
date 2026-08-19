@@ -228,8 +228,20 @@ Reguły, które to trzymają w ryzach:
    chroni tylko kroki między sobą, nie biegi między sobą.
 2. **Przełączenie karty to wyłącznie zmiana widoku.** Nic się nie pauzuje, nie odłącza i nie ginie.
    Silnik nie wie o kartach — zna tylko biegi. Karta to zapytanie: „pokaż mi bieg dla tego workspace'a".
-3. **Karty istnieją tylko w sekcji Praca.** Agenci, workflow i umiejętności są globalne
-   (`~/.loadout/`), więc karta nic by tam nie znaczyła. Pamięć podąża za aktywnym workspace'em.
+3. **Karty istnieją tylko w sekcji Praca.** Agenci i workflow są globalne (`~/.loadout/`), więc
+   karta nic by tam nie znaczyła. Pamięć podąża za aktywnym workspace'em.
+
+   *Poprawione 2026-08-19, po decyzji użytkownika o wyborze „ten projekt / wszędzie" przy
+   dodawaniu umiejętności (T-44).* Umiejętności były w tym zdaniu wymienione razem z agentami
+   i workflow, i połowa tego jest dalej prawdą: **biblioteka** jest globalna — kopia kanoniczna
+   leży w `~/.loadout/skills/<name>/` niezależnie od zakresu, sekcja pokazuje jedną listę, a karta
+   jej nie filtruje. Nieprawdą przestaje być zdanie o **miejscu docelowym**: `Scope::Project`
+   i `Roots.project` istnieją w rdzeniu od T-18, a od T-44 człowiek wybiera przy dodawaniu, czy
+   plik ląduje w katalogu domowym, czy pod korzeniem otwartego projektu — i wtedy jedzie z repo
+   do zespołu. Konsekwencja, której nie wolno rozdzielić od tej zmiany: **lista i „Remove" muszą
+   widzieć oba korzenie**, bo droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
+   `.gitignore` w repo człowieka pozostaje nietknięty (T5 §12 pyt. 6 rozstrzygnięte tak, że
+   pliki zapisujemy, a o ignorowaniu decyduje właściciel repo).
 4. **Karta w tle z żywym biegiem ma kropkę.** To jedyna rzecz, jaką karta w tle o sobie mówi.
    Bez tego zapominasz, że coś ci chodzi w innym folderze, i płacisz za to limitem.
 
