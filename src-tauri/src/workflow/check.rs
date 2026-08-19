@@ -273,18 +273,21 @@ fn facts(step: &Step) -> Facts<'_> {
             command: None,
             proof: None,
         },
-        // SZKIELET (T-55, 2026-08-19). To jest ten kształt, przed którym ostrzega niezmiennik 12
-        // — `folder: None`, „bo to tylko sprawdzenie" — i stoi tu z premedytacją: reguła
-        // `one_folder_two_steps` POMIJA krok, którego folder jest nieznany
-        // (`let (Some(mine), Some(theirs)) = … else continue`), więc dwa równoległe kroki
-        // budujące w jednym katalogu zapisałyby się bez słowa. `cargo test` pisze po `target/`.
-        // Dowodzi tego AC-1 punkt (d) w warstwie `before`; faza implementacji oddaje tu
-        // `Some(&check.folder)`, `Some(&check.command)` i `Some(&check.proof)`.
+        // `folder: Some(…)`, i to jest asercja (d) z AC-1 zapisana w kodzie. „To tylko
+        // sprawdzenie, więc folder go nie dotyczy" jest nieprawdą — `cargo test` pisze po
+        // `target/`, `npm test` po `node_modules/.cache` — a `folder: None` tutaj znaczy, że
+        // `one_folder_two_steps` POMIJA ten krok całkowicie
+        // (`let (Some(mine), Some(theirs)) = … else continue`) i dwa równoległe sprawdzenia
+        // budujące w jednym katalogu zapisują się bez słowa (niezmiennik 12).
+        //
+        // `passthrough`, `instructions` i `agent` zostają `None`, bo krok „sprawdź" nie woła
+        // żadnego vendora: reguła o pustym agencie i reguła o pustym zadaniu mają go pomijać,
+        // a nie żądać od niego pól, których nie ma.
         Step::Check(check) => Facts {
             id: &check.id,
             name: &check.name,
             copies: 1,
-            folder: None,
+            folder: Some(&check.folder),
             passthrough: None,
             instructions: None,
             agent: None,
@@ -458,24 +461,42 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
 /// Ostrzeżenie tutaj nie blokowałoby `save()`, więc plik, który miał być odrzucony, wylądowałby
 /// na dysku i pobiegł.
 ///
-/// SZKIELET (T-55, 2026-08-19): zdania jeszcze nie ma i to jest stan przejściowy. Reguła czyta
-/// już oba pola, żeby nie były polem bez czytelnika (niezmiennik 21), i nie dopisuje ani jednej
-/// uwagi — dowodzi tego AC-1 punkt (b) w warstwie `before`, gdzie brak tej odmowy musi być
-/// jedyną rzeczą, której brakuje.
-fn a_check_without_a_proof(steps: &[Facts<'_>], _notes: &mut Vec<Note>) {
+/// DWIE UWAGI, NIE JEDNA, kiedy brakuje obu rzeczy. Krok bez komendy i krok bez dowodu to dwa
+/// różne stany i naprawia się je w dwóch różnych polach kafelka — zdanie mówiące o obu naraz
+/// wysyłałoby człowieka do jednego z nich, a drugie zostawiałoby na następny raz. Kolejność jest
+/// kolejnością pracy: najpierw wpisuje się, co uruchomić, potem po czym poznać, że ruszyło.
+///
+/// Zdania nazywają POLA TAK, JAK BRZMIĄ NA EKRANIE („Command to run", „Proof that it ran"),
+/// żeby człowiek szukał tego, co widzi, a nie nazwy z pliku (niezmiennik 13). Ani jedno nie
+/// niesie słowa „regex" ani nazwy kodu wyjścia: to zdanie czyta ktoś, kto właśnie dodał kafelek,
+/// a nie ktoś, kto zna nasz schemat (niezmiennik 14).
+fn a_check_without_a_proof(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
     for step in steps {
         // `Some("")`, nie `None`: krok agenta i kafelek kontrolny komendy nie mają i nie mają
         // mieć, a krok sprawdzający z pustym polem to krok, którego nikt jeszcze nie wypełnił.
         let (Some(command), Some(proof)) = (step.command, step.proof) else {
             continue;
         };
-        if command.trim().is_empty() || proof.trim().is_empty() {
-            tracing::debug!(
-                step = step.id,
-                no_command = command.trim().is_empty(),
-                no_proof = proof.trim().is_empty(),
-                "a check step is not ready, and the refusal that says so is not written yet"
-            );
+        if command.trim().is_empty() {
+            notes.push(problem(
+                Some(step.id),
+                format!(
+                    "\"{}\" does not say what to run, so there would be nothing to start. Write \
+                     it in \"Command to run\" on the step.",
+                    step.name
+                ),
+            ));
+        }
+        if proof.trim().is_empty() {
+            notes.push(problem(
+                Some(step.id),
+                format!(
+                    "\"{}\" does not say how to tell that the work really ran, so it would call a \
+                     command that did nothing at all a success. Write what its output has to say \
+                     in \"Proof that it ran\" on the step.",
+                    step.name
+                ),
+            ));
         }
     }
 }
