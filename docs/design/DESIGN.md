@@ -286,13 +286,18 @@ Stan agenta jest **słowem** w kolorze nasyconym, nigdy kolorem kwadratu.
 > redesign poprzedniego prototypu dawał agentowi Forge dokładnie ten sam kod barwy co „wymaga uwagi".
 > Na jednym ekranie oznaczały dwie różne rzeczy tym samym kolorem.
 
-### Aliasy poprzedniej palety
+### Nazwy zastępcze poprzedniej palety: **nie żyją**
 
-`--accent-edge`, `--accent-wash`, `--attend-wash`, `--fail-wash`, `--human-wash` **żyją**
-i wskazują na nowe nazwy. Trzy powierzchnie wołają je jeszcze bezpośrednio i migrują osobno;
-nazwa skasowana pod niezmigrowanym komponentem zostawia element bez ani jednej reguły CSS —
-awarię, która nie rzuca wyjątku i nie pojawia się w żadnym logu (niezmiennik 25).
-Znikają razem z ostatnim wołającym.
+`--accent-wash`, `--attend-wash`, `--fail-wash`, `--human-wash`, `--radius-sq` i `--radius-dot`
+były przekierowaniami na czas migracji: paleta weszła **addytywnie**, żeby nazwa skasowana pod
+niezmigrowanym komponentem nie zostawiła elementu bez ani jednej reguły CSS — to jest awaria,
+która nie rzuca wyjątku i nie pojawia się w żadnym logu (niezmiennik 25).
+
+Zniknęły 2026-08-19 razem z ostatnim wołającym: 44 wołania w 19 plikach zostały przeniesione,
+a wtedy definicje wypadły z arkusza. **Wołanie którejkolwiek z nich jest dziś czerwienią bramki.**
+
+`--accent-edge` **zostaje i nie jest nazwą zastępczą**: rodzina `-edge` ma pięć członów (live,
+attend, fail, human, accent), a akcent po prostu ma tę samą wartość, co jego pierścień skupienia.
 
 Zakazane: gradienty dekoracyjne, drugi kolor marki, kolor jako ozdoba, barwione szkło,
 piąty kolor stanu, cień pod czymś, co nie pływa.
@@ -662,3 +667,8 @@ Komponent nie trafia do repo, dopóki:
 - [ ] nie dodaje piątego koloru semantycznego
 - [ ] `prefers-reduced-motion` go nie psuje
 - [ ] żaden tekst w nim nie jest w mono, jeśli nie jest wartością maszynową
+- [ ] nie woła nazwy zastępczej: `rounded-sq`, `rounded-dot`, `*-wash` — żadna z nich nie istnieje
+- [ ] jego promień wynika z **roli** (kontrolka `sm`, pojemnik `md`, rzecz nad treścią `lg`,
+      odczyt `pill`), a nie z rozmiaru elementu
+- [ ] pole formularza bierze klasę `.field`, a nie opisuje się samo
+- [ ] `data-empty` na pustym ekranie siedzi na elemencie, który niesie **samo zdanie**

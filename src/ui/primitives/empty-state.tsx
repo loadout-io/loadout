@@ -43,7 +43,7 @@ export interface EmptyStateProps {
 
 /* Przycisk podstawowy z DESIGN §6: `--accent` na tle, `--bg` na tekście, `--t-ui`, wysokość
  * 36 px. Jedyny kolor interaktywny w aplikacji, więc na pustym ekranie jest dokładnie jeden. */
-const PRIMARY = 'h-primary rounded-sq bg-accent px-4 text-ui text-bg';
+const PRIMARY = 'h-primary rounded-sm bg-accent px-4 text-ui text-bg';
 
 export function EmptyState({ children, hint, action }: EmptyStateProps): ReactElement {
   return (
@@ -54,7 +54,7 @@ export function EmptyState({ children, hint, action }: EmptyStateProps): ReactEl
           przerywana mówi „tu będzie treść, której jeszcze nie ma" — i to jest cały jej sens. */}
       <span
         aria-hidden
-        className="flex size-10 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted"
+        className="flex size-10 items-center justify-center rounded-md border border-dashed border-line-strong text-muted"
       >
         ◇
       </span>

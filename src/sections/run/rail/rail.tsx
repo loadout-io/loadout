@@ -105,7 +105,7 @@ export function Rail({ cards }: RailProps): ReactElement {
                 onClick={() => {
                   openAgent(card.id);
                 }}
-                className="grid grid-cols-[22px_minmax(0,1fr)] gap-[9px] rounded-sq border border-line px-[10px] py-[9px] text-left"
+                className="grid grid-cols-[22px_minmax(0,1fr)] gap-[9px] rounded-sm border border-line px-[10px] py-[9px] text-left"
               >
                 {/* Inicjał w `--ink` na przygaszonym kwadracie tożsamości [DESIGN §3].
                     `aria-hidden`, bo to jest ta sama nazwa jeszcze raz, tylko skrócona do

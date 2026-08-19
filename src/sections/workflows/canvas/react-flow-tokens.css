@@ -40,7 +40,7 @@
   --xy-handle-border-color: var(--color-panel);
 
   /* Prostokąt zaznaczenia. Tu siedział ten piąty kolor. */
-  --xy-selection-background-color: var(--color-accent-wash);
+  --xy-selection-background-color: var(--color-accent-soft);
   --xy-selection-border: 1px dotted var(--color-accent-edge);
 
   /* Kafelek rysuje `canvas/tile.tsx` w całości — z własnym tłem, obrysem i promieniem. Karta
@@ -48,7 +48,7 @@
    * widoczny na każdym kroku. */
   --xy-node-background-color: transparent;
   --xy-node-border: none;
-  --xy-node-border-radius: var(--radius-sq);
+  --xy-node-border-radius: var(--radius-md);
   --xy-node-color: var(--color-body);
   --xy-node-boxshadow-hover: none;
   /* Zaznaczenie kafelka mówi obrysem `--color-accent` z `tile.tsx`. Cień biblioteki byłby

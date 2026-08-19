@@ -46,7 +46,7 @@ export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProp
     <div
       role="dialog"
       aria-label={'Close ' + pending.name}
-      className="flex flex-col gap-3 rounded-sq border border-line bg-panel p-4"
+      className="flex flex-col gap-3 rounded-md border border-line bg-panel p-4"
     >
       <p data-close-confirm className="text-body text-ink">
         {question(pending)}
@@ -56,7 +56,7 @@ export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProp
         <button
           type="button"
           onClick={onDismiss}
-          className="h-control rounded-sq border border-line px-3 text-ui text-body"
+          className="h-control rounded-sm border border-line px-3 text-ui text-body"
         >
           Keep it open
         </button>
@@ -66,7 +66,7 @@ export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProp
         <button
           type="button"
           onClick={onConfirm}
-          className="h-control rounded-sq bg-accent px-3 text-ui text-bg"
+          className="h-control rounded-sm bg-accent px-3 text-ui text-bg"
         >
           Stop and close
         </button>

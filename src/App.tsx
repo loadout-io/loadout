@@ -111,7 +111,7 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
 function EmptySection({ entry }: { entry: SectionEntry }): ReactElement {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3">
-      <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+      <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
         ◇
       </span>
       <p data-empty className="text-ink">
