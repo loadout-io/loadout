@@ -534,6 +534,28 @@ impl ClaudeDriver {
         self
     }
 
+    /// Sterownik, który dopisuje do argv **gotowy** fragment przyniesiony przez warstwę wyżej.
+    ///
+    /// LISTA FLAG, NIE WIEDZA O DZIEDZICZENIU (niezmiennik 23). Ten plik nie ma prawa wiedzieć,
+    /// skąd ten fragment się wziął, czym jest „umiejętność gospodarza" ani kiedy `--plugin-dir`
+    /// wolno postawić: to rozstrzyga `inherit::wire` i rozstrzyga **raz**. Adapter, który zna
+    /// drugą połowę tej reguły, jest dokładnie tym drugim zestawem reguł, przez który w repo
+    /// źródłowym po cichu umarło skanowanie sekretów [raport 05 §4].
+    ///
+    /// Pusty fragment to **brak flagi**, nie flaga z pustą wartością. Rozróżnienie jest
+    /// zmierzone i kosztowne w obie strony: `--setting-sources ""` w tym samym argv jest flagą,
+    /// której pusty argument jest poprawny, a `--plugin-dir` bez wartości połknąłby następną
+    /// flagę sterownika jako swój argument. Dlatego stąd nie wychodzi ani jedna decyzja o tym,
+    /// co znaczy „nie ma czego odziedziczyć" — wychodzi tylko to, co przyszło.
+    ///
+    /// Budowniczy przez wartość, dokładnie jak [`ClaudeDriver::with_settings`] i z tego samego
+    /// powodu: dziedziczenie jest **per bieg**, a sterownik bywa jeden na vendora, więc jedyny
+    /// bezpieczny kształt to tani klon z własnym fragmentem.
+    #[must_use]
+    pub fn with_inherited(self, flags: Vec<String>) -> Self {
+        todo!("T-57 AC-1: {flags:?} jeszcze nie wchodzi do argv sterownika {self:?}")
+    }
+
     /// Buduje komendę jednej tury. **Promptu w niej nie ma i nigdy nie będzie**
     /// (niezmiennik 9): treść zadania jedzie kopertą na stdin, bo argumenty widzi `ps`
     /// każdego użytkownika maszyny.
