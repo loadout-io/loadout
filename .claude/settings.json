@@ -78,8 +78,6 @@
       "Write(/tmp/**)",
       "Edit(TASK.md)",
       "Write(TASK.md)",
-      "Edit(tasks/**)",
-      "Write(tasks/**)",
       "Edit(harness/**)",
       "Write(harness/**)",
       "Edit(.claude/**)",
