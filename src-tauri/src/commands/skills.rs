@@ -733,8 +733,16 @@ fn origins_of(library: &Path) -> BTreeMap<String, bool> {
 /// działa, znaleziska nie powstają, a plik z ukrytym akapitem instaluje się jako czysty
 /// (niezmiennik 23).
 ///
-/// Zakres zostaje globalny, dokładnie jak na drodze linku — wybór „ten projekt / wszędzie"
-/// jest osobnym zadaniem (T-44).
+/// ZAKRESU TU NIE MA I NIE MA GO POTRZEBOWAĆ, i to jest twierdzenie o tej funkcji, nie brak.
+/// Ta droga odkłada wyłącznie **kopię kanoniczną** w bibliotece (`~/.loadout/skills/<name>/`),
+/// a kopia kanoniczna jest globalna z definicji: jest źródłem, z którego katalogi vendorów są
+/// wyjściem builda (niezmiennik 4). Wybór „ten projekt / wszędzie" zapada dopiero przy
+/// rozmieszczaniu, jedno wywołanie później, i jedzie do [`install_skill_into`] razem z korzeniem
+/// projektu — tak samo dla umiejętności wpisanej tutaj, jak dla wklejonej linkiem.
+///
+/// 2026-08-19 — stało tu „zakres zostaje globalny […] wybór jest osobnym zadaniem (T-44)". To
+/// zdanie przestało być prawdziwe w chwili, w której wybór powstał: czytelnik brał z niego, że
+/// umiejętność napisana w formularzu ląduje wyłącznie u człowieka, a ona jedzie tam, gdzie wskazał.
 pub fn author_skill_inner(library: &Path, authored: Authored) -> Result<ImportWire, Error> {
     let name = slug_of(&authored.name);
     // Odmowa PIERWSZA, przed policzeniem czegokolwiek, co dotyka dysku — powód stoi

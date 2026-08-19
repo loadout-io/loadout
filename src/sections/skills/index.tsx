@@ -248,10 +248,16 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             </form>
 
             {/* TRZY PYTANIA I DOKŁADNIE TRZY [T5 §8.3]: jak się nazywa, kiedy tego użyć, co
-                zrobić. Czwartym w badaniu jest zakres („ten projekt / wszędzie") i tu go NIE
-                MA z rozmysłu — zakres zostaje globalny, dokładnie jak na drodze adresu, a
-                wybór jest osobnym zadaniem (T-44). Pytanie postawione bez skutku byłoby tą
-                samą obietnicą bez kontrolki, którą ten commit zdejmuje.
+                zrobić. Czwartym w badaniu jest zakres („ten projekt / wszędzie") i tu go dalej
+                NIE MA — ale od 2026-08-19 z innego powodu niż wtedy, gdy ten panel powstał.
+
+                Wtedy stało tu, że zakres zostaje globalny, a wybór jest osobnym zadaniem.
+                Wybór już jest: stoi NAD KARTĄ PRZEGLĄDU, niżej w tym pliku, i pyta o miejsce
+                w chwili, w której człowiek decyduje, czy tę umiejętność dodać. Dodanie go
+                jeszcze raz TUTAJ byłoby dwoma miejscami na jedną odpowiedź (niezmiennik 13),
+                i to na dwóch różnych etapach: ten panel oddaje TREŚĆ do przeglądu, a nie
+                zapisuje jej do katalogów vendorów. Zapis następuje jedno wywołanie później,
+                pod kartą, i to tam wybór ma skutek.
 
                 ETYKIETY SĄ PYTANIAMI, a nie nazwami pól `SKILL.md`. „When should the agent
                 use it?" jest tym, co w pliku nazywa się `description`, i pytanie zadane wprost
