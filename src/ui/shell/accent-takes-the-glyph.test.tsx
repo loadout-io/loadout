@@ -73,6 +73,25 @@ describe('akcent bierze glif', () => {
     ).toEqual([]);
   });
 
+  it('puts the accent on the element that CONTAINS the glyph', () => {
+    /* DOPISANE po drugiej opinii 2026-08-19. Poprzednie punkty liczyly wystapienia akcentu
+     * w calym ciele przycisku i wymagaly, zeby kazde bylo bramkowane — ale ani jeden nie mowil
+     * GDZIE ta barwa siedzi. Przeniesienie klasy z opakowania glifu na etykiete przechodzilo
+     * wszystkie piec asercji, a kryterium nazywa sie „akcent bierze glif". Tu sprawdzamy
+     * lokalizacje: element niosacy bramkowany akcent musi byc tym, w ktorym stoi `<svg>`. */
+    const carrier = /<span[^>]*aria-\[current=true\]:[a-z-]*accent[^>]*>\s*<svg/;
+    const guilty = blocks
+      .filter((block) => [...block.matchAll(GATED)].length > 0)
+      .filter((block) => !carrier.test(block))
+      .map((block) => block.slice(0, 140));
+    expect(
+      guilty,
+      'the gated accent does not sit on the element that holds the glyph. An accented label with ' +
+        'a muted glyph satisfies "exactly one gated mention" and breaks the rule this criterion ' +
+        'is named after — the accent colours the active GLYPH, and the label stays neutral.',
+    ).toEqual([]);
+  });
+
   it('puts the accent on the glyph of the active control, exactly once', () => {
     const openBlock = blocks.find((block) => OPEN.test(openingTag(block))) ?? '';
     expect(openBlock, 'no active navigation control body could be read').not.toBe('');

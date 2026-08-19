@@ -18,17 +18,20 @@ function glyph(section: string): string {
   return renderToStaticMarkup(createElement(NavIcon, { section }));
 }
 
-/** Ile okregow niesie glif. */
-function circles(svg: string): number {
+/** Ile okregow niesie glif. Okrag to WEZEL. */
+function nodeMarks(svg: string): number {
   return [...svg.matchAll(/<circle\b/g)].length;
 }
 
-/** Ile prostych odcinkow niesie glif: `<line>` albo polecenie `L` w sciezce. */
-function segments(svg: string): number {
-  const lines = [...svg.matchAll(/<line\b/g)].length;
-  const paths = [...svg.matchAll(/\sd=/g)].length;
-  const moves = [...svg.matchAll(/[ML]\s*-?\d/g)].length;
-  return lines + (paths > 0 ? moves : 0);
+/**
+ * Ile KRAWEDZI niesie glif: element `<line>` albo polecenie `L` w sciezce.
+ *
+ * POPRAWIONE po drugiej opinii 2026-08-19. Poprzednia wersja liczyla takze `M`, czyli samo
+ * PRZENIESIENIE piora — a graf, ktorego sciezka ma wylacznie `M`, nie rysuje ani jednej
+ * krawedzi i przechodzil punkt o „wezlach polaczonych liniami". Przeniesienie nie jest linia.
+ */
+function edgeMarks(svg: string): number {
+  return [...svg.matchAll(/<line\b/g)].length + [...svg.matchAll(/L\s*-?\d/g)].length;
 }
 
 describe('gramatyka ikon nawigacji', () => {
@@ -47,23 +50,39 @@ describe('gramatyka ikon nawigacji', () => {
   it('draws the workflow glyph as a graph, because a workflow IS one', () => {
     const svg = glyph('workflows');
     expect(
-      circles(svg),
+      nodeMarks(svg),
       'the workflow glyph carries no round marks. It is the one section whose subject is a graph, ' +
         'so it is the one glyph allowed round marks joined by lines.',
     ).toBeGreaterThan(1);
     expect(
-      segments(svg),
+      edgeMarks(svg),
       'the workflow glyph carries round marks and nothing joining them, so it draws a set and ' +
         'not a graph — and the joining lines are the whole difference between the two.',
     ).toBeGreaterThan(0);
   });
 
-  it('draws sets as sets, with no edge joining anything', () => {
+  it('draws sets as sets: no round marks and nothing joining anything', () => {
+    /* POPRAWIONE po drugiej opinii 2026-08-19. Poprzedni warunek brzmial
+     * `circles > 1 && segments > 0`, a zaden glif zbioru nie ma ANI JEDNEGO okregu — czyli
+     * pierwszy czlon byl zawsze falszywy i punkt nie sadzil zadnego glifu. Najlenieszy
+     * przechodzacy glif zbioru to dwie plyty spiete jawnym `<line>`: zero okregow, wiec nigdy
+     * nie zgloszony, a ikona obiecuje zaleznosc miedzy agentami, ktorej w danych nie ma.
+     *
+     * Teraz warunek jest ROZLACZNY i sprawdza kazdy glif zbioru osobno: zbior nie ma prawa
+     * niesc wezla (okregu) ani krawedzi (`<line>`). Gwiazda w `skills` jest jednym obrysem
+     * wielokata — ma polecenia `L`, ale ani jednego `<line>` i ani jednego okregu — wiec
+     * przechodzi, i to jest poprawne: wielokat nie lączy dwoch rzeczy. */
     const sets = ['agents', 'skills', 'memory'];
-    const guilty = sets.filter((id) => circles(glyph(id)) > 1 && segments(glyph(id)) > 0);
+    const withNodes = sets.filter((id) => nodeMarks(glyph(id)) > 0);
     expect(
-      guilty,
-      'these glyphs join shapes with an edge and their subject is a set, not a graph. An icon ' +
+      withNodes,
+      'these glyphs carry round marks and their subject is a set, not a graph. A round mark is ' +
+        'a joining point, and those exist in this alphabet only where a relation really does.',
+    ).toEqual([]);
+    const joined = sets.filter((id) => /<line\b/.test(glyph(id)));
+    expect(
+      joined,
+      'these glyphs join two shapes with an explicit line and their subject is a set. An icon ' +
         'that draws a relation the data does not have is the same failure as a canvas drawing ' +
         'a curve between hard-coded points (invariant 17).',
     ).toEqual([]);

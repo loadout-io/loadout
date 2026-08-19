@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { STRIP_HEIGHT } from '../../sections/run/strip/strip';
+import { TAB_BAR_HEIGHT } from '../../sections/run/tabs/tab-bar';
 import { PANE_GAP } from './titlebar';
 
 /* AC-1 dla T-46: chrome nad pierwsza trescia mieszczy sie w suficie — LICZAC odstep okna
@@ -22,6 +24,7 @@ import { PANE_GAP } from './titlebar';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const ARCHITECTURE = resolve(ROOT, 'docs/ARCHITECTURE.md');
 const MOCKUP = resolve(ROOT, 'docs/mockup/index.html');
+const THEME = resolve(ROOT, 'src/styles/theme.css');
 
 function fileText(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -116,14 +119,50 @@ describe('chrome nad pierwsza trescia', () => {
     ).toBeLessThanOrEqual(limit);
   });
 
-  it('makes the window declare the same inset the mockup pays for', () => {
-    const inset = px(property(ruleBody(html, '.app'), 'padding'));
-    expect(inset, 'no window inset was read out of the mockup .app rule').not.toBeNull();
+  it('ties ALL FOUR parts to what the app really renders', () => {
+    /* POPRAWIONE po drugiej opinii 2026-08-19, i to byla najpowazniejsza uwaga.
+     *
+     * Trzy z czterech skladnikow byly czytane WYLACZNIE z rysunku, a jedynym wiazaniem z kodem
+     * bylo porownanie odstepu okna. Skutek: ustawienie `TAB_BAR_HEIGHT = 44` i nic wiecej
+     * zostawialo ten punkt zielony (bo czyta 32 z makiety) ORAZ `chrome-budget.test.ts` zielony
+     * (bo ten pasek stoi wewnatrz `<main>` i jest dla niego niewidzialny), podczas gdy aplikacja
+     * wydawala 8 + 1 + 44 + 52 = 105 px nad trescia przy sufi 96. To ta sama wada, ktora
+     * `docs/STATUS.md` nazywa wzorcowa — pomiar zielony wobec ukladu, ktorego nikt nie renderuje
+     * — tylko przesunieta z „jeden pasek z trzech" na „rysunek, nie aplikacja".
+     *
+     * Teraz kazdy skladnik ma po obu stronach wartosc, ktora da sie porownac. Obrys kartki
+     * tresci czytamy z reguly `.paper` w arkuszu, bo w komponencie jest klasa, nie liczba. */
+    const pairs: ReadonlyArray<readonly [string, number | null, number | null]> = [
+      ['window inset', px(property(ruleBody(html, '.app'), 'padding')), PANE_GAP],
+      ['tabs height', px(property(ruleBody(html, '.tabs'), 'height')), TAB_BAR_HEIGHT],
+      ['loadout bar height', px(property(ruleBody(html, '.strip'), 'height')), STRIP_HEIGHT],
+      [
+        'content card border',
+        px(property(ruleBody(html, '.screen'), 'border')),
+        px(property(ruleBody(withoutComments(fileText(THEME)), '.paper'), 'border')),
+      ],
+    ];
+
+    const unread = pairs
+      .filter(([, drawn, built]) => drawn === null || built === null)
+      .map(([name]) => name);
     expect(
-      PANE_GAP,
-      'the shell and the mockup disagree about the window inset. The mockup can pay for eight ' +
-        'pixels the window does not actually have, and then the measurement above is about a ' +
-        'layout nobody renders.',
-    ).toBe(inset);
+      unread,
+      'these parts could not be read from both sides, so the comparison below would run against ' +
+        'nothing on one of them',
+    ).toEqual([]);
+
+    const drift = pairs
+      .filter(([, drawn, built]) => drawn !== built)
+      .map(
+        ([name, drawn, built]) =>
+          name + ': mockup says ' + String(drawn) + ', app says ' + String(built),
+      );
+    expect(
+      drift,
+      'the drawing and the app disagree about these parts of the chrome. The mockup is the only ' +
+        'oracle for looks, so a value that lives only in the drawing lets the app spend pixels ' +
+        'the limit never approved — and nothing goes red.',
+    ).toEqual([]);
   });
 });

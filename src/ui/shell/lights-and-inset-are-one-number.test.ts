@@ -118,6 +118,21 @@ describe('odstep panelu i swiatla macOS', () => {
     ).toBe(y + LIGHTS_HEIGHT + LIGHTS_GAP - inset);
   });
 
+  it('ties the mockup nav padding to the exported inset, so the drawing cannot drift', () => {
+    /* DOPISANE po drugiej opinii 2026-08-19. Makieta trzymala WLASNY egzemplarz liczby 36
+     * (`.nav{padding:36px 8px 10px}`) i nic go z niczym nie porownywalo — czyli trzeci,
+     * niezalezny zapis tej samej wartosci. Rysunek mogl sie rozjechac z kodem po cichu,
+     * a to on jest wyrocznia wygladu. */
+    const navTop = px(property(ruleBody(html, '.nav'), 'padding'));
+    expect(navTop, 'no padding was read out of the mockup .nav rule').not.toBeNull();
+    expect(
+      navTop,
+      'the mockup insets the navigation card by a different amount than the shell exports. The ' +
+        'mockup is the only oracle for looks, so a third independent copy of this number means ' +
+        'the drawing and the code can disagree with nothing going red.',
+    ).toBe(CHROME_INSET_TOP);
+  });
+
   it('agrees with the mockup on the inset the panel floats by', () => {
     expect(
       PANE_GAP,

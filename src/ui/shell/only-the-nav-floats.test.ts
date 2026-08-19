@@ -35,21 +35,43 @@ interface Rule {
   readonly body: string;
 }
 
-/** Wszystkie reguly arkusza makiety poza jej wlasnym rusztowaniem. */
-function appRules(html: string): readonly Rule[] {
-  const style = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? '';
-  const css = withoutComments(style);
+/** Ile regul arkusz w ogole ma: kazde `{`, ktore nie otwiera reguly `@`. */
+function ruleCount(css: string): number {
+  return [...css.matchAll(/([^{}]*)\{/g)].filter((hit) => !/@[a-z-]+/.test(hit[1] ?? '')).length;
+}
+
+/** Wszystkie reguly arkusza makiety poza jej wlasnym rusztowaniem.
+ *
+ * PODZIAL NA `}`, a nie wzorzec globalny — poprawione po drugiej opinii 2026-08-19.
+ * Poprzednia wersja szla wzorcem `/(^|\})\s*([^{}@]+?)\s*\{([^}]*)\}/g`, ktory ZJADA
+ * domykajacy nawias kazdej dopasowanej reguly i JEDNOCZESNIE wymaga nawiasu przed nastepnym
+ * selektorem. Skutek: reguly wpadaly naprzemiennie, czyli ten punkt przeszukiwal POLOWE
+ * arkusza — a punkt o liczbie regul tego nie widzial, bo polowa ze stu pieciudziesieciu
+ * to wciaz wiecej niz dwadziescia. Cien podnoszacy dopisany do reguly na pominietej
+ * parzystosci przechodzil zielono, czyli dokladnie ta „glebia wszedzie", przed ktora
+ * to kryterium stoi. Gorzej: wstawienie albo usuniecie JAKIEJKOLWIEK reguly wyzej
+ * przestawialo parzystosc wszystkiego ponizej.
+ */
+function appRules(css: string): readonly Rule[] {
   const out: Rule[] = [];
-  for (const hit of css.matchAll(/(^|\})\s*([^{}@]+?)\s*\{([^}]*)\}/g)) {
-    const selector = (hit[2] ?? '').replace(/\s+/g, ' ').trim();
-    if (selector === '') continue;
+  for (const chunk of css.split('}')) {
+    const at = chunk.indexOf('{');
+    if (at < 0) continue;
+    const selector = chunk.slice(0, at).replace(/\s+/g, ' ').trim();
+    const body = chunk.slice(at + 1);
+    if (selector === '' || selector.startsWith('@')) continue;
     /* Rusztowanie makiety, ktore makieta sama tak nazywa: „pasek makiety: NIE jest czescia
      * aplikacji" oraz noty projektowe. Nie podlegaja regule o cieniach, bo nie sa aplikacja. */
     if (/mockbar/.test(selector)) continue;
     if (/(^|[\s,])\.an(\b|[.:[])/.test(selector)) continue;
-    out.push({ selector, body: hit[3] ?? '' });
+    out.push({ selector, body });
   }
   return out;
+}
+
+/** Arkusz makiety, bez komentarzy. */
+function sheet(html: string): string {
+  return withoutComments(/<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? '');
 }
 
 /** Cienie reguly, ktore NIE sa `inset`. Refleks na krawedzi szkla nie jest glebia. */
@@ -63,8 +85,8 @@ function liftingShadows(body: string): readonly string[] {
 }
 
 describe('plywa dokladnie jedna rzecz', () => {
-  const html = fileText(MOCKUP);
-  const rules = appRules(html);
+  const css = sheet(fileText(MOCKUP));
+  const rules = appRules(css);
 
   it('read a real sheet out of the mockup', () => {
     expect(
@@ -72,6 +94,26 @@ describe('plywa dokladnie jedna rzecz', () => {
       'almost no rule was read out of the mockup style sheet, so every point below would loop ' +
         'over an empty list and pass on nothing',
     ).toBeGreaterThan(20);
+  });
+
+  it('reads EVERY rule, not every other one', () => {
+    /* KONTROLA PRZECIW PARZYSTOSCI, dopisana po drugiej opinii. Sama liczba regul nie odroznia
+     * „przeczytalem arkusz" od „przeczytalem co druga regule": polowa duzego arkusza jest wciaz
+     * duza. Porownujemy wiec liczbe przeczytanych regul z liczba WSZYSTKICH otwarc reguly
+     * w arkuszu, po odjeciu rusztowania makiety. */
+    const total = ruleCount(css);
+    expect(total, 'no rule opening was found in the sheet at all').toBeGreaterThan(20);
+    const harness = total - rules.length;
+    expect(
+      harness,
+      'the enumerator skipped ' +
+        String(harness) +
+        ' of ' +
+        String(total) +
+        ' rules while the mockup declares only a handful of harness ones. Half a sheet is still ' +
+        'a big number, so counting rules cannot tell reading the sheet apart from reading every ' +
+        'other rule of it — and a lifting shadow on a skipped one would pass green.',
+    ).toBeLessThan(12);
   });
 
   it('lifts the navigation panel, so it really does float', () => {
@@ -98,24 +140,49 @@ describe('plywa dokladnie jedna rzecz', () => {
   });
 
   it('turns ALL the glass solid when the reader asked for less transparency', () => {
-    const block =
-      /@media\s*\(prefers-reduced-transparency:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(
-        withoutComments(html),
-      )?.[1] ?? '';
+    /* POPRAWIONE po drugiej opinii 2026-08-19. Poprzednia wersja sprawdzala, czy blok ZAWIERA
+     * nazwy trzech selektorow — czyli przechodzila na bloku, ktory ustawia im `border-radius: 0`
+     * i nie zdejmuje ani rozmycia, ani przejrzystosci. Lista szklanych powierzchni byla przy tym
+     * WPISANA w test, wiec czwarta byla zwolniona z reguly przez samo powstanie.
+     *
+     * Teraz: lista jest CZYTANA z arkusza (szklana jest kazda regula deklarujaca rozmycie poza
+     * blokiem), a od bloku wymagamy dwoch rzeczy naraz — krycącego tla i zdjetego rozmycia. */
+    const blockAt = css.indexOf('@media (prefers-reduced-transparency');
     expect(
-      block,
+      blockAt,
       'the mockup has no prefers-reduced-transparency block. It is a HIG requirement and the ' +
         'design system next door enforces it: a reader who turned transparency off gets solid ' +
         'panes no matter what the design wants.',
-    ).not.toBe('');
+    ).toBeGreaterThan(-1);
+    const block = css.slice(blockAt, css.indexOf('\n}', blockAt) + 2);
 
-    const glass = ['.nav', '.strip', '.rail'];
+    /* Szklana jest kazda regula, ktora deklaruje rozmycie — poza samym blokiem, ktory je zdejmuje. */
+    const glass = appRules(css.slice(0, blockAt) + css.slice(blockAt + block.length))
+      .filter((rule) => /backdrop-filter\s*:\s*(?!none)/.test(rule.body))
+      .flatMap((rule) => rule.selector.split(',').map((one) => one.trim()));
+    expect(
+      glass.length,
+      'no glass surface was found in the sheet, so this point would demand nothing of the block',
+    ).toBeGreaterThan(0);
+
     const missed = glass.filter((selector) => !block.includes(selector));
     expect(
       missed,
-      'these glass surfaces are not turned solid by the reduced-transparency block. Turning one ' +
-        'of three solid is worse than turning none: the window then mixes two materials for one ' +
+      'these glass surfaces are not named by the reduced-transparency block. Turning one of ' +
+        'three solid is worse than turning none: the window then mixes two materials for one ' +
         'kind of surface.',
     ).toEqual([]);
+
+    expect(
+      /background\s*:\s*var\(--solid\)/.test(block),
+      'the block names the surfaces and never makes them opaque. A block that only changes a ' +
+        'corner radius satisfies "the selectors are listed" and leaves the reader with blurred ' +
+        'chrome, which is exactly the HIG requirement this point cites.',
+    ).toBe(true);
+    expect(
+      /backdrop-filter\s*:\s*none/.test(block),
+      'the block leaves the blur on. Blurring an opaque background costs GPU and changes not a ' +
+        'single pixel, so dropping transparency without dropping the blur is pure waste.',
+    ).toBe(true);
   });
 });

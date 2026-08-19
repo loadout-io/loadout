@@ -104,11 +104,24 @@ const LABEL: Readonly<Record<Block['state'], string>> = {
   todo: 'text-muted',
 };
 
+/**
+ * Wysokosc paska loadoutu. NAZWANA, a nie klasa `h-13` — poprawione po drugiej opinii 2026-08-19.
+ *
+ * Klasy narzedziowej nie da sie z niczym porownac, wiec dopoki ta liczba byla klasa, budzet
+ * chrome z ARCHITECTURE §7 byl mierzony WYLACZNIE na makiecie: podniesienie wysokosci paska
+ * w aplikacji przechodzilo zielono, bo kryterium czytalo 52 z rysunku, a `chrome-budget.test.ts`
+ * nie widzi tego paska w ogole (stoi wewnatrz `<main>`). Aplikacja wydawalaby wtedy wiecej
+ * pikseli nad trescia, niz limit pozwala, i nic by tego nie zglosilo — dokladnie ta wada,
+ * ktora `docs/STATUS.md` nazywa wzorcowa: pomiar zielony wobec ukladu, ktorego nikt nie renderuje.
+ */
+export const STRIP_HEIGHT = 52;
+
 export function Strip({ strip, heading, controls }: StripProps): ReactElement {
   return (
     <div
       data-strip
-      className="glass flex h-13 w-full shrink-0 items-center gap-[18px] border-b border-line px-[18px]"
+      className="glass flex w-full shrink-0 items-center gap-[18px] border-b border-line px-[18px]"
+      style={{ height: STRIP_HEIGHT }}
     >
       {/* `items-end`: bloki stoją na jednej linii z dołu, a etykiety pod nimi. Wyrównanie do
           góry rozjeżdża je, gdy jedna etykieta jest dłuższa i łamie się. */}
