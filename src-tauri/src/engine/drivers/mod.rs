@@ -87,6 +87,11 @@ pub enum Policy {
     EditInFolder,
     /// Bez ograniczeń — i **żaden adapter nie ma prawa udawać**, że jakaś lista narzędzi
     /// jeszcze coś tu ogranicza [T1 §5.2].
+    ///
+    /// Zdanie wyżej zostaje prawdziwe o liście **auto-zatwierdzania** i przestaje być
+    /// prawdziwe o liście **dostępności**: pierwsza rzeczywiście nie wiąże
+    /// `bypassPermissions`, druga jest twarda i wyjmuje narzędzie z zestawu niezależnie od
+    /// trybu uprawnień, więc także tutaj [zmierzone 2026-08-19].
     Unrestricted,
 }
 

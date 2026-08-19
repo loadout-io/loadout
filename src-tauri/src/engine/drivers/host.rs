@@ -39,7 +39,10 @@
 //! zabić naszego kroku jednym zepsutym przecinkiem — ani brakiem pliku, bo projekt, który nigdy
 //! nie widział Claude, ma prawo wystartować. Obie te sytuacje to **pusta lista, nie błąd**.
 
+use std::fs;
 use std::path::Path;
+
+use serde_json::Value;
 
 /// Katalog, w którym repo gospodarza trzyma swoje ustawienia projektowe.
 const HOST_SETTINGS_DIR: &str = ".claude";
@@ -58,18 +61,53 @@ const HOST_SETTINGS_FILE: &str = "settings.json";
 /// Pusta lista jest **normalną odpowiedzią**, nie sygnałem błędu — tak wygląda projekt bez
 /// tego pliku i projekt z plikiem, którego nie da się wczytać.
 ///
-/// **SZKIELET KONTRAKTU (2026-08-19): jeszcze nic nie czyta i oddaje pustkę.** `todo!()` jest
-/// w tym repo zakazane (`todo = "deny"`), więc zaślepka kompiluje się i oddaje pustą wartość —
-/// dzięki temu AC-4 pada na **asercji**, a nie na kompilatorze. Uwaga przy wypełnianiu:
-/// przepisanie ma iść **polem po polu**, nigdy przez skopiowanie obiektu `permissions` ani
-/// całego dokumentu z dołożonym `deny` na wierzch. Tamta droga przenosi `env`, `sandbox`
-/// i `hooks` **drugą drogą**, a test na samej zawartości `deny` świeci przy niej na zielono.
+/// # Dlaczego to jest PRZEPISANIE, a nie kopia
+///
+/// Z cudzego dokumentu wychodzą stąd wyłącznie `String`-i, po jednym na regułę. Nie wychodzi
+/// ani `Value`, ani obiekt `permissions`, ani nic, co dałoby się gdzieś dalej „dołożyć na
+/// wierzch" — bo to jest dokładnie ta droga, którą `env`, `sandbox` i `hooks` wracają **drugim
+/// wejściem**, przy teście na samej zawartości `deny` świecącym na zielono. Granica jest tu
+/// typem: `Vec<String>` nie ma jak przenieść maszynerii.
 #[must_use]
 pub fn deny_rules(project: &Path) -> Vec<String> {
     let settings = project.join(HOST_SETTINGS_DIR).join(HOST_SETTINGS_FILE);
-    tracing::debug!(
-        path = %settings.display(),
-        "the host deny rules are not rewritten yet; this run starts with none"
-    );
-    Vec::new()
+
+    // Brak pliku to normalny projekt, nie awaria: repo, które nigdy nie widziało Claude, ma
+    // prawo wystartować krok. Rozróżnianie „nie ma" od „nie da się przeczytać" nic by tu nie
+    // dało — odpowiedź jest ta sama i jest nią pusta lista.
+    let Ok(raw) = fs::read_to_string(&settings) else {
+        tracing::debug!(
+            path = %settings.display(),
+            "this project has no readable host settings; the run starts with no rewritten rules"
+        );
+        return Vec::new();
+    };
+
+    // Repo gospodarza, którego NIE KONTROLUJEMY, nie ma prawa zabić naszego kroku jednym
+    // zepsutym przecinkiem. Druga porażka byłaby tu wyskrobaniem reguł z popsutego tekstu
+    // wyrażeniem regularnym: przeszłoby wtedy to, co akurat dopasował regex, a lista odmów
+    // złożona z przypadkowych fragmentów jest gorsza niż jej brak, bo wygląda jak polityka.
+    let Ok(document) = serde_json::from_str::<Value>(&raw) else {
+        tracing::debug!(
+            path = %settings.display(),
+            "the host settings file is not valid JSON; the run starts with no rewritten rules"
+        );
+        return Vec::new();
+    };
+
+    // Pole po polu, i to jest cała różnica: schodzimy po `permissions` do `deny` i wyjmujemy
+    // wyłącznie napisy. Wpis, który napisem nie jest, znika po cichu — cudzy plik ma prawo
+    // mieć kształt, którego nie znamy, a niezmiennik 5 czyta się tu tak samo jak na drucie.
+    document
+        .get("permissions")
+        .and_then(|permissions| permissions.get("deny"))
+        .and_then(Value::as_array)
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
