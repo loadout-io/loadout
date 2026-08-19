@@ -473,9 +473,12 @@ pliki testow, wszystkie cudze, i mandat w kazdym jest waski:
   rownoscia (nie „contains"), kontrola negatywna zostaje, a odmowa dalej musi NAZWAC nieznany
   rodzaj. Ten plik zgloszil brak rodzaju `check` z nazwy, w komentarzu, od dnia napisania;
   przepisujesz jego liste, nie jego sposob sadzenia.
-- `harness_workflow_chain.rs`, `harness_workflow_sequential.rs`, `harness_workflow_validates.rs`
-  — wolno ci dopisac po JEDNEJ linii ramienia `match` na nowy wariant `Step`. Kompilator wymaga
-  tego od kazdego wyczerpujacego dopasowania; nic poza tym w tych plikach nie jest twoje.
+- `harness_workflow_chain.rs`, `harness_workflow_sequential.rs`, `harness_workflow_validates.rs`,
+  `harness_workflow_vendor_pairing.rs` oraz `src/workflow/unroll.rs` — wolno ci dopisac po JEDNEJ
+  linii ramienia `match` na nowy wariant `Step`. Kompilator wymaga tego od kazdego wyczerpujacego
+  dopasowania; nic poza tym w tych plikach nie jest twoje. Lista ma piec pozycji, nie trzy, i to
+  jest pomiar, nie oszacowanie: dwie ostatnie ujawnily sie dopiero przy kompilacji, bo `match`
+  bez wariantu jest bledem dopiero wtedy, gdy kompilator do niego dojdzie.
 
 Kryteria NIE zostaly tkniete: liczba i tresc linii `## AC-`, `check:` i `expect:` jest identyczna
 przed i po tej zmianie (sprawdzone mechanicznie, nie zadeklarowane).
@@ -491,6 +494,8 @@ src-tauri/tests/it/harness_workflow_two_kinds.rs
 src-tauri/tests/it/harness_workflow_chain.rs
 src-tauri/tests/it/harness_workflow_sequential.rs
 src-tauri/tests/it/harness_workflow_validates.rs
+src-tauri/tests/it/harness_workflow_vendor_pairing.rs
+src-tauri/src/workflow/unroll.rs
 src-tauri/tests/it/check_step_schema.rs
 src-tauri/tests/it/check_step_verdict.rs
 src-tauri/tests/it/check_step_process_group.rs
