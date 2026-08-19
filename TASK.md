@@ -1,263 +1,250 @@
-# T-42 — Umiejetnosc napisana tutaj wchodzi tym samym potokiem co link
+# T-43 — Powiedz, czego chcesz, a twoj agent napisze umiejetnosc; ty ja czytasz przed zapisem
 
-**Dwa zdania na ekranie obiecuja kontrolke, ktorej nie ma, a jedyna istniejaca droga wejscia
-kasuje biblioteke, kiedy plik nie ma nazwy.** Sekcja Skills umie przyjac WYLACZNIE adres:
-`review_skill(url)` i nic wiecej. Czlowiek, ktory chce napisac umiejetnosc sam, czyta na pustym
-ekranie zaproszenie i nie ma czego kliknac.
+**Loadout ma dwa sterowniki agentow, zywy nadzor procesow i dowod smierci grupy — i ani jednej
+drogi, ktora zamienia jedno zdanie czlowieka w tekst od modelu.** Kazde uruchomienie agenta w tej
+aplikacji przechodzi dzis przez plik workflow, katalog biegu, `Dag` i planiste. Umiejetnosc, ktorej
+czlowiek chce, nie jest biegiem: to jedna tura, jeden prompt, jedna odpowiedz.
 
 Zmierzone 2026-08-19 na wyladowanym trunku:
 
 ```
-src/sections/skills/index.tsx:169   <p>Paste a link, or write one yourself.</p>
-docs/mockup/index.html:712          Paste a link, or write it yourself. One flow either way.
-src-tauri/commands.golden.txt       24 nazwy komend; ani jedna nie bierze TRESCI umiejetnosci
-docs/research/topics/T5-...:585     „Create form: name / when-to-use / what-to-do" — Ships in MVP
+engine/drivers/mod.rs:288-305   trait AgentDriver { start(spec, tx) -> Box<dyn AgentHandle> }
+engine/drivers/mod.rs:345-393   AgentHandle { send, wait -> Outcome, cancel -> GroupProof, close }
+engine/drivers/mod.rs:209-230   Outcome { text: String, ... }   // dokladnie koncowa wypowiedz
+commands/run.rs:1495-1570       jedyny wolacz `start` w produkcji — wewnatrz Live::run_agent
 ```
 
-Formularz jest zaprojektowany w badaniu (T5 §8.3: trzy pytania, slug pokazany raz, bez zargonu)
-i stoi na liscie MVP od 2026-08-15. Nie powstal, bo zadne kryterium o niego nie poprosilo — ta
-sama rodzina, co cztery puste ekrany przed T-26 i martwy `wireChannel` przed T-38.
+Czyli mechanizm dostarczenia ISTNIEJE w calosci i jest publiczny. Brakuje **jednej funkcji
+w warstwie komend**, ktora sklada `RunSpec`, drenuje kanal zdarzen, czeka na `Outcome` i oddaje
+`Outcome.text`. Reszta tego zadania to szew do okna i uczciwosc wobec trzech niezmiennikow, ktore
+przy jednorazowym wywolaniu lamie sie najlatwiej: 6 (dowod smierci), 7 (anulowanie jest wartoscia)
+i 10 (limit czasu nie jest `tokio::time::timeout`).
 
-## Dlaczego to nie jest „dodaj formularz i zawolaj install"
+## Dlaczego to nie jest „odpal agenta i wez wyjscie"
 
-Dwie rzeczy stoja na drodze i obie sa mierzalne.
+**Nie wolno zrobic tego przez podstawienie jednokrokowego workflow.** Synteza pliku workflow
+w Ruscie, zeby zawolac planiste, jest etapem biegu zaszytym w kodzie — czyli dokladnie tym, co
+zabrania niezmiennik 27 i decyzja D7. Droga przez `AgentDriver::start` jest od tego wolna
+z definicji: warstwa sterownikow nie zna slowa „krok".
 
-**PIERWSZA: dzisiejsza droga wejscia kasuje katalog zbudowany z nieufnej nazwy, bez ani jednej
-walidacji.** `review_skill_inner` liczy sciezke z pola `name` z front-mattera i natychmiast robi
-na niej `remove_dir_all`:
+**Trzy rzeczy urwa sie po cichu, jesli skopiowac naiwnie:**
 
-```
-src-tauri/src/commands/skills.rs:350   let canonical = library.join(SKILLS_DIR).join(&import.skill.name);
-src-tauri/src/commands/skills.rs:351   gone(&canonical)?;
-src-tauri/src/skills/ingest.rs:1114    fn skill_from(...) -> Skill { ..Skill::default() }   // name: ""
-```
+1. **Kanal.** `start` bierze `mpsc::Sender<DecodedEvent>` i pcha w niego zdarzenia. Nieodbierany
+   kanal staje na 256 pozycjach (`EVENT_QUEUE`, run.rs:188) i tura nigdy sie nie konczy. Draft nie
+   potrzebuje ani jednej z tych linii na ekranie, ale MUSI je odebrac.
+2. **Limit czasu.** `tokio::time::timeout(limit, handle.wait())` ubija zadanie Rusta i zostawia
+   zywego `claude`, ktory dalej pali limit dostawcy (niezmiennik 10, blad finansowy z niezmiennika 6).
+   Wzor jest w `Live::one_turn` (run.rs:1620-1690): `select!` z `biased`, a `Overdue` i `Stopped`
+   ida przez `handle.cancel().await` i **czytaja** `GroupProof`.
+3. **Uchwyt anulowania.** `AppState.live` jest PODMIENIANY przy kazdym Start (`begin_run`,
+   ipc.rs:452-459). Draft trzymajacy sie `deps().control` traci swoj token w chwili, w ktorej
+   czlowiek uruchomi bieg w innej karcie — i `Stop` na drafcie przestaje cokolwiek robic.
 
-`from_folder` nie waliduje nazwy ani razu (ingest.rs:984-1013), a `Skill::default()` daje
-`name: ""`. Wiec `SKILL.md` bez pola `name:` daje `<library>/skills/` i `gone()` kasuje **wszystkie
-kopie kanoniczne razem z `installed.json`**; `name: ../../x` kasuje poza biblioteka. Dzis trafia
-to tylko wklejony link, wiec zdarza sie rzadko. Formularz zamienia nazwe z front-mattera w rzecz,
-ktora czlowiek wpisuje palcami — czyli w przypadek zwykly. Odmowa musi padac PRZED pierwszym
-`remove_dir_all`, a wzor odmowy stoi obok, w `delete_skill_inner` (skills.rs:420).
+**I jedna rzecz, ktorej NIE robimy, zeby nie klamac o „ile naraz".** Limit rownoleglosci jest dzis
+**per bieg**, nie globalny: `run_workflow_inner` robi sobie wlasny `Limiter::new(how_many_at_once)`
+(run.rs:232-237), a `run_workflow_with_slots(..., slots)` — funkcja przyjmujaca wspolna pule — **nie
+ma w produkcji ani jednego wolajacego**. Wiec draft nie ma z czego wziac slotu i udawanie, ze bierze,
+byloby czwartym miejscem, w ktorym ta liczba nie znaczy tego, co mowi. Zamiast tego draft ma wlasna,
+jawna granice: **jeden naraz** (AC-2 d). Brakujaca wspolna pula jest znaleziskiem dla czlowieka,
+zapisanym na koncu tego pliku.
 
-**DRUGA: potok jest kolejnoscia, nie zbiorem funkcji.** Naglowek `ingest.rs` nazywa ciche
-porazki po imieniu: skan na tekscie surowym przy zapisie tekstu znormalizowanego, i skan po
-rozbiciu na pola, kiedy `hooks:` z front-mattera przejezdza bokiem. Dlatego tekst napisany tutaj
-ma pojsc DOKLADNIE ta sama droga: zloz plik przez `place::emit`, zapisz go, przeczytaj przez
-`ingest::from_folder`. Formularz, ktory buduje `Skill` wprost z trzech pol, omija `review()`
-w calosci — a wtedy znikaja R1 (znaki niewidzialne, komentarze HTML) i R5 (`allowed-tools`,
-`hooks`), bo one czytaja TEKST PLIKU, nie strukture. Zaden test tego nie zauwazy, dopoki
-kryterium nie porowna zbioru znalezisk z tym, co daje rdzen na tych samych bajtach.
-
-Czyli zadanie polega na **doprowadzeniu tekstu do istniejacego potoku i zamknieciu drogi, ktora
-kasuje cudze pliki**, nie na napisaniu drugiego potoku obok.
+Czyli zadanie polega na **jednej turze poza grafem, z uczciwym wyjsciem, anulowaniem i limitem**,
+nie na dopisaniu przycisku „napisz mi to".
 
 **Read first:**
-`src-tauri/src/commands/skills.rs:326-391` (jak wchodzi link i co robi instalacja) ·
-`src-tauri/src/skills/ingest.rs:984-1013` (`from_folder` — caly potok w jednej funkcji, bez sieci) ·
-`src-tauri/src/skills/place.rs:277-326` (`emit` — szesc pol i lista zdjetych) ·
-`src-tauri/src/skills/place.rs:410-471` (`plan` — walidacja i kolizje, NIC nie zapisuje) ·
-`src-tauri/src/skills/mod.rs:139-238` (komunikaty walidatora, slowo w slowo) ·
-`docs/research/topics/T5-skill-portability.md` §8.3 (trzy pytania, slug, „no vendor checkboxes") ·
-`src/sections/skills/index.tsx` (panel z jednym polem) · `docs/mockup/index.html:704-735` ·
-`AGENTS.md` niezmienniki 4, 13, 16, 20, 21, 23.
+`src-tauri/src/engine/drivers/mod.rs:288-393` (oba traity, `Outcome`, `RunSpec`, `Policy`) ·
+`src-tauri/src/commands/run.rs:1495-1570` (jak sklada sie `RunSpec` i kto odbiera kanal) ·
+`src-tauri/src/commands/run.rs:1620-1690` (`Ended`, `biased`, `Overdue` -> `cancel` -> `GroupProof`) ·
+`src-tauri/src/commands/run.rs:856-900` (`plan_agent` — skad biora sie model, instrukcje i dial) ·
+`src-tauri/src/commands/agents.rs:85` (`list_agents_inner` — publiczna lista agentow z dysku) ·
+`src-tauri/src/library/agents.rs:258` (`resolve`) · `src-tauri/src/engine/drivers/absent.rs`
+(vendor, ktorego nie ma) · `src-tauri/tests/it/runcmd_parallel.rs` (wzor atrapy `AgentDriver`
+wewnatrz pliku testu) · `tasks/T-42.md` (droga, w ktora draft wpada) ·
+`AGENTS.md` niezmienniki 5, 6, 7, 8, 9, 10, 16, 27, 28.
 
 ## Kto to robi
 
-- **Agent:** `rust-core` na `commands/skills.rs`, potem `react-ui` na sekcji — jeden worktree,
+- **Agent:** `rust-engine` na warstwie komend, potem `react-ui` na panelu — jeden worktree,
   dwa kroki, jedna bramka.
-- **Druga opinia:** inny vendor niz pisarz (D3); recenzentowi powiedz wprost, zeby atakowal AC-1
-  pytaniem „czy da sie to przejsc bez wolania `review()`".
-- **Artefakty biegu:** `runs/T-42/`
+- **Druga opinia:** inny vendor niz pisarz (D3); recenzentowi powiedz wprost, zeby szukal
+  `tokio::time::timeout` wokol tury i uchwytu anulowania wzietego z `deps().control`.
+- **Artefakty biegu:** `runs/T-43/`
 
 ## Zalezy od
 
-**Fala z 2026-08-18, ktora musi najpierw wyladowac w trunku** (`delete_skill`, `list_skills`
-czytajace dysk, `useSkills.load` z wolajacym). Ten kontrakt opisuje stan PO niej i wymienia
-`commands/skills.rs`, `state/skills.ts` oraz `commands-wired.test.ts` w OWNS — te same pliki,
-ktore tamta fala zmienia. Galaz odbita przed jej wyladowaniem dostanie pewny konflikt w kazdym
-z nich.
+**T-42.** Draft nie zapisuje niczego sam: oddaje trzy pola, ktore wypelniaja formularz z T-42,
+i dopiero zapis z tamtej strony sklada plik, skanuje go i odklada kopie kanoniczna. Zbudowany
+wczesniej musialby miec wlasna droge zapisu — czyli drugi potok obok tego, ktory T-42 wlasnie
+otwiera (niezmiennik 23). Kolejnosc ladowania: T-42, potem T-43.
 
 ## Co to zadanie posiada
 
-- `src-tauri/src/commands/skills.rs` — nowa droga wejscia dla tresci, walidacja nazwy przed
-  dotknieciem dysku, zapis pochodzenia i odczyt pochodzenia w `list_skills_inner`.
-- `src-tauri/src/ipc.rs` — **waski mandat**: jedna nowa skorupa `#[tauri::command]` w bloku
-  „SKORUPY KOMEND" i jeden wiersz w `generate_handler!`. Dwie linie ciala, jak `delete_skill`
-  (ipc.rs:695-698).
-- `src-tauri/commands.golden.txt` — **waski mandat**: jedna nowa nazwa, alfabetycznie. Ani jednej
+- `src-tauri/src/commands/skills.rs` — `draft_skill_inner`, `enum DraftOutcome { Wrote(..),
+  Cancelled }`, prompt jako **dane** w tej warstwie (precedens: `HANDOFF_INDEX_OPENS`
+  i `with_the_task` w `commands/run.rs`), drenaz kanalu, `select!` z `biased`, wybor agenta przez
+  `commands::agents::list_agents_inner` + `library::agents::resolve`.
+- `src-tauri/src/ipc.rs` — jedno nowe pole w `AppState` na token anulowania draftu (obok `live`,
+  z komentarzem o niezmienniku 8 na samym polu), dwie nowe skorupy **`async`** i dwa wiersze
+  w `generate_handler!`. Skorupy skills sa dzis synchroniczne i to jest jawnie zapisany dlug
+  (ipc.rs:588-593): synchroniczna skorupa zamrozilaby okno na czas pisania przez model, czyli
+  dziesiatki sekund, a nie 20 ms.
+- `src-tauri/commands.golden.txt` — **waski mandat**: dwie nowe nazwy, alfabetycznie. Ani jednej
   istniejacej nie wolno usunac ani przestawic.
-- `src/sections/skills/index.tsx` — drugie wejscie w tym samym panelu, pod tym samym przyciskiem.
-- `src/sections/skills/review-card.tsx` — **waski mandat**: plakietka pochodzenia przestaje byc
-  wpisana na sztywno (dzis `review-card.tsx:90` renderuje ja bezwarunkowo, ignorujac
-  `item.fromTheInternet`). Zadnej innej zmiany w tym pliku.
-- `src/sections/skills/io.ts`, `src/state/skills.ts` — krawedz i akcja magazynu.
-- `src/sections/commands-wired.test.ts` — **waski mandat**: JEDEN nowy wiersz w tabeli `WIRES`.
-  Ani jednego istniejacego nie wolno zmienic ani usunac; `what` musi byc dokladnie nazwa nowego
-  eksportu z `io.ts`, bo test porownuje tabele z eksportami przez `toEqual`.
+- `src/sections/skills/index.tsx`, `src/sections/skills/io.ts`, `src/state/skills.ts` — trzecie
+  wejscie w tym samym panelu, stan „pisze" i droga zatrzymania.
+- `src/sections/commands-wired.test.ts` — **waski mandat**: DWA nowe wiersze w tabeli `WIRES`.
+  Ani jednego istniejacego nie wolno zmienic ani usunac.
 - `src-tauri/tests/it/main.rs` — **waski mandat**: ten plik masz w OWNS WYLACZNIE po to, zeby
-  dopisac dwa wiersze `mod skills_author_pipeline;` i `mod skills_author_origin;` w porzadku
-  alfabetycznym. Zadnej innej zmiany; bez tych wierszy pliki kompiluja sie do niczego,
-  a zestaw wyglada jak przeszly (pilnuje tego `checks/quick-tests-listed.sh`).
-- 4 pliki testow wymienione przy `check:`.
+  dopisac dwa wiersze `mod skills_draft_asks_an_agent;` i `mod skills_draft_stops_dead;`
+  w porzadku alfabetycznym. Zadnej innej zmiany; bez nich pliki kompiluja sie do niczego,
+  a zestaw wyglada jak przeszly.
+- 3 pliki testow wymienione przy `check:`.
 
-**Czego to zadanie NIE dotyka:** `src-tauri/src/skills/place.rs` i `ingest.rs` (T-18 i T-19 —
-konsumujesz je, nie przepisujesz), `src-tauri/src/skills/mod.rs`, `src/sections/skills/mounted.test.tsx`
-(T-26), `src/sections/skills/review-card.test.tsx` i `src/state/skills.test.ts` (T-19),
-`src/sections/read-paths-populate.test.ts` (T-38). Cztery ostatnie zamrazaja dzisiejszy ksztalt
-`fromTheInternet` jako `boolean` i wszystkie ich fikstury maja `true` tam, gdzie sprawdzaja
-plakietke — dlatego pole zostaje `boolean`em, a zmienia sie wylacznie to, skad bierze sie jego
-wartosc. Zamiana go na enum zaczerwieni cztery cudze pliki i jest poza tym zadaniem.
+**Czego to zadanie NIE dotyka:** `src-tauri/src/engine/**` — ani jednej linii. Trait wystarcza
+taki, jaki jest, a `Policy::ReadOnly` juz istnieje. Nie dotyka tez `commands/run.rs` (planista
+i bieg zostaja czyje sa), `src-tauri/src/skills/**` (T-18, T-19) ani `src/sections/skills/mounted.test.tsx`
+(T-26) — panel po otwarciu nie ma prawa wypisac nazwy zadnego vendora, bo tamten plik zamraza
+brak tych nazw w markupie i ma do tego zmierzony powod.
 
 ## Niezmienniki
 
-- **23 — polityka w jednym rdzeniu, adaptery po piec linii.** *Jak sie lamie po cichu:* nowa droga
-  buduje `Skill` z trzech pol i pomija `ingest::review`. Wszystko dziala, znaleziska nie powstaja,
-  a plik z ukrytym tekstem instaluje sie jako czysty.
-- **4 — pliki sa prawda, SQLite jest indeksem.** Pochodzenie musi dac sie odczytac z dysku po
-  restarcie. Dzis odpowiada na to obecnosc kopii kanonicznej (skills.rs:246) — po tym zadaniu ta
-  przeslanka przestaje byc prawdziwa, wiec zapis musi byc jawny.
-- **20 — test sprawdza zachowanie, nie obecnosc stringa.** *Jak sie lamie po cichu:*
-  `assert!(result.is_ok())` na drodze, ktora zapisala plik inny niz przeskanowany.
-- **13 — jeden fakt, jedno miejsce.** Slug widziany przez czlowieka i nazwa katalogu na dysku to
-  jeden fakt. Dwa liczenia sluga — jedno w oknie, drugie w Ruscie — rozjada sie na pierwszym
-  polskim znaku.
-- **16 — kontrolka bez skutku nie wchodzi do repo.** Zdanie „write one yourself" bez drugiego
-  wejscia jest tym samym defektem, tylko odwroconym: obietnica bez kontrolki.
+- **10 — `tokio::time::timeout` wokol kroku anuluje zadanie Rusta, nie proces.** *Jak sie lamie po
+  cichu:* `timeout(limit, handle.wait())` zwraca `Err(Elapsed)`, okno pokazuje „nie udalo sie",
+  a `claude` pisze dalej i placi za to czlowiek.
+- **6 — zabijamy grupe i dowodzimy, ze nie zyje.** `handle.cancel()` oddaje `GroupProof` wlasnie po
+  to, zeby `Ok(())` nie moglo znaczyc „wyslalem sygnal". `GroupProof::Alive` ma dac zdanie
+  o tym, ze proces moze dalej dzialac — nigdy ciszy.
+- **7 — anulowanie jest wartoscia, nie bledem.** `DraftOutcome::Cancelled`, nigdy
+  `Err(Cancelled)`.
+- **9 — prompt wylacznie przez stdin.** Prompt jedzie w `RunSpec.prompt`, a `ClaudeDriver` wklada
+  go w koperte na stdin. Ani jednego znaku pytania czlowieka w argv.
+- **8 — `std::sync::Mutex` nigdy przez `await`.** Nowe pole w `AppState` jest wlasnie takim
+  mutexem: klon tokena bierz i oddawaj w jednym wyrazeniu, przed pierwszym `await`. Udokumentuj
+  to na polu.
+- **27 — zaden etap biegu nie jest zaszyty w Ruscie.** *Jak sie lamie po cichu:* draft zrobiony
+  przez zlozenie jednokrokowego workflow i wolanie planisty. Wtedy „napisz mi umiejetnosc" jest
+  etapem w kodzie, ktorego nie da sie wylaczyc konfiguracja.
+- **28 — najpierw mechanizm, potem prompt.** Poprawnosc draftu **nie** stoi na dokladnosci
+  instrukcji dla modelu: tekst i tak przechodzi `ingest::from_folder` i `place::validate_strict`
+  po drodze z T-42. Prompt ma byc krotki, a sprawdzanie maszynowe.
 
 ## Kryteria akceptacji
 
-**Jak zaczerwienic to poprawnie.** `clippy::todo` jest `deny` w `[workspace.lints.clippy]`, wiec
-najpierw prawdziwe sygnatury zwracajace trywialnie zla wartosc (pusty `ImportWire`, `Ok(())`),
-nigdy `todo!()`. Kazdy plik testu Rusta zaczyna sie od
-`#![allow(clippy::unwrap_used, clippy::expect_used)]` z powodem — `checks/full-clippy.sh` biegnie
-`--all-targets -- -D warnings`. Rozgrzej build przed pierwszym `before`: `cargo test --no-run
---test it`; limit sprawdzenia w tej warstwie to 20 s. Po stronie okna repo NIE MA jsdom: testy
-renderuja przez `renderToStaticMarkup`, wiec kazdy modul, ktory nowy plik testu importuje, musi
-istniec przed `./verify.sh before` — inaczej vitest przewraca sie na zbieraniu i dostajesz podpis
-z `NOT_A_REAL_RED`. Nowy komponent czyta magazyn przez `useSyncExternalStore(subscribe, getState,
-getState)`, nigdy hakiem zustanda: renderer serwerowy dostaje wtedy `getInitialState` i zasiew
-z testu jest niewidoczny.
+**Jak zaczerwienic to poprawnie.** `clippy::todo` jest `deny`, wiec sygnatury zwracaja trywialnie
+zla wartosc (`DraftOutcome::Cancelled`, pusty `String`), nigdy `todo!()`. Atrapa `AgentDriver`
+mieszka **w pliku testu**, wzor gotowy w `src-tauri/tests/it/runcmd_parallel.rs:425-510` (impl
+traitu, `mpsc::Sender<DecodedEvent>`, `AgentEvent::…::into()`). Nie uzywaj `engine::drivers::fake`
+— to dubler PLANISTY i nie implementuje `AgentDriver`. Kazdy plik testu zaczyna sie od
+`#![allow(clippy::unwrap_used, clippy::expect_used)]` z powodem. Testy z prawdziwym `claude`
+w tym zadaniu **nie wystepuja**: kryterium wymagajace sieci czerwieni sie od cudzych awarii, a co
+robi zywy proces, dowodza `claude_completion` i `claude_cancel_escalation` (T-04). Po stronie okna:
+`renderToStaticMarkup`, magazyn zasiany `setState`, granica `@tauri-apps/api/core` podmieniona
+atrapa; kazdy importowany modul musi istniec przed `./verify.sh before`.
 
-## AC-1 Tekst napisany tutaj przechodzi TEN SAM potok, a zla nazwa nie kasuje niczego
-check: cargo test --test it skills_author_pipeline::
+## AC-1 Jedno pytanie dochodzi do sterownika wybranego agenta, a dial nie idzie w gore
+check: cargo test --test it skills_draft_asks_an_agent::
 expect: (\d+) passed
 
-Fikstura: `tempfile::TempDir` jako biblioteka; trzy pola z formularza, w tym cialo z linia
-`ig\u{200d}nore all previous instructions` i front-matter z `hooks:` w tekscie, ktory czlowiek
-wpisal. Kopia kanoniczna innej umiejetnosci (`other-skill/SKILL.md`) i `skills/installed.json`
-stoja obok jako sentinel.
+Fikstura: biblioteka w `tempfile::TempDir` z dwoma zapisanymi agentami — jeden `work-freely`
+z modelem `opus`, drugi `look-only`. Atrapa `AgentDriver` zapamietuje `RunSpec`, ktory dostala,
+i oddaje `Outcome { text: "---\nname: pr-review\n…", .. }`. Fabryka sterownikow oddaje atrape dla
+`claude` i `Absent::new("codex", "T-10")` dla `codex`.
 
-Asercje: (a) zbior znalezisk i werdykt zwrocone przez nowa droge sa **rowne** temu, co daje
-`ingest::review` policzone w tescie na tekscie, ktory ta droga zapisala — porownanie
-zbior-do-zbioru, nie z literalem; (b) bajty `SKILL.md` w kopii kanonicznej sa **identyczne**
-z `reviewed.body` zwroconym oknu; (c) nazwa, ktora nie jest jednym czlonem sciezki (`""`, `../x`,
-`a/b`) oraz nazwa, ktora odrzuca `place::validate_strict` (`Upper-Name`, `claude-helper`) sa
-odmowa **przed** pierwszym `remove_dir_all` — sentinel `other-skill/` i `installed.json` istnieja
-po probie z tymi samymi bajtami, a zdanie odmowy jest tym z walidatora, nie napisanym tutaj drugi
-raz; (d) slug policzony z tego, co wpisal czlowiek (`Review pull requests`), spelnia
-`validate_strict` dla kazdego wejscia z korpusu (spacje, wersaliki, interpunkcja, 80 znakow,
-`Claude review`) — a tam, gdzie nie moze, odmawia zdaniem walidatora zamiast zapisac cokolwiek.
+Asercje: (a) draft wola `start` **dokladnie raz**, a `RunSpec.prompt` niesie zdanie, ktore napisal
+czlowiek — porownane z tym, co podano wywolaniu, nie z literalem; (b) `RunSpec.policy` to
+`Policy::ReadOnly` dla OBU agentow, takze dla `work-freely` — tekst wraca strumieniem, wiec do
+pisania po dysku nie ma powodu, a dial wolno tylko obnizyc (D6: „przelotka nie omija diala
+bezpieczenstwa"); (c) `model` i `system_append` sa **te z definicji wybranego agenta**, wziete
+z `resolve`, a nie wpisane w draft — porownane z `Resolved`, nie z napisem; (d) zwrocone trzy pola
+to `name`/`description`/`body` przeczytane z tekstu modelu tym samym rdzeniem, co przy linku
+(`ingest::from_folder`), a nie wlasnym parserem front-mattera; (e) vendor, ktorego nie ma
+(`codex` -> `Absent`), jest zdaniem dla czlowieka, nie panika i nie cisza.
 
-*Slaba wersja:* `assert!(inner(...).is_ok())` plus `assert!(canonical.join("SKILL.md").exists())`.
-Przechodzi implementacja, ktora zbudowala `Skill` z trzech pol, nie zawolala `review()` ani razu
-i zapisala plik zlozony po skanie. Rozstrzyga porownanie z `ingest::review` na TYCH SAMYCH
-bajtach — jeden rdzen daje jeden zbior znalezisk, dwa rdzenie nie daja nigdy.
+*Slaba wersja:* asercja, ze funkcja zwrocila niepusty `String`. Przechodzi implementacja, ktora
+sklada `RunSpec` z wlasnym modelem, z `Policy::Unrestricted` i z promptem w argv. Rozstrzyga
+porownanie CALEGO `RunSpec` z tym, co daje `resolve` na zapisanej definicji, plus asercja o polu
+`policy`.
 
-## AC-2 Pochodzenie jest prawda dla trzech zrodel i przezywa restart
-check: cargo test --test it skills_author_origin::
+## AC-2 Zatrzymanie i limit czasu ubijaja grupe, dowodza tego, i sa wartoscia
+check: cargo test --test it skills_draft_stops_dead::
 expect: (\d+) passed
 
-Fikstura: jedna biblioteka, trzy umiejetnosci w katalogach vendorow: jedna z linku (kopia
-kanoniczna + zapisane pochodzenie), jedna napisana tutaj, jedna wlozona do
-`~/.claude/skills/<name>/` przez kogos innego (bez kopii kanonicznej). Czwarta: kopia kanoniczna
-bez zapisu pochodzenia — umiejetnosc z czasow przed tym zadaniem.
+Fikstura: atrapa, ktorej `wait()` **nigdy nie wraca**, i ktora zapisuje, czy zawolano na niej
+`cancel()` oraz co oddala jako `GroupProof`. Drugi wariant atrapy oddaje `GroupProof::Alive`.
 
-Asercje: (a) `list_skills_inner` czytane **z dysku** oddaje `fromTheInternet` prawdziwe dla
-wszystkich czterech: link tak, napisana tutaj nie, cudzy katalog nie; (b) kopia kanoniczna bez
-zapisu pochodzenia jest **z internetu**, nie „napisana tutaj" — do tego zadania kopie kanoniczne
-powstawaly wylacznie w `review_skill_inner`, wiec ostrozny kierunek jest jedynym uczciwym
-(ta sama regula, co `DeepScan::Unavailable` i `Discovery::Unknown`: nieobecnosc dowodu nie jest
-dowodem); (c) `skills/installed.json` ma po zapisie pochodzenia te same wpisy co przed —
-`place::write_sidecar` odtwarza cala strukture z samego zbioru sciezek (place.rs:673-689), wiec
-pochodzenie nie moze mieszkac w tym pliku; (d) zapis pochodzenia nie stoi wewnatrz katalogu
-umiejetnosci — po instalacji w katalogach vendorow leza dokladnie te pliki, co w kopii
-kanonicznej, ani jednego wiecej (`bundled_files` zabiera kazdego sasiada `SKILL.md`).
+Asercje: (a) zatrzymanie w trakcie pisania daje `DraftOutcome::Cancelled` — wartosc, nie `Err` —
+i na uchwycie **zostalo zawolane `cancel()`**; (b) draft, ktory przekroczyl swoj limit czasu,
+konczy sie ta sama droga: `cancel()` zawolane, `GroupProof` odczytany; asercja o samym czasie nie
+wystarcza, bo `tokio::time::timeout` wokol `wait()` konczy sie tak samo szybko i **nie wola
+`cancel()`** — to jest jedyna rzecz, ktora te dwie implementacje rozroznia; (c) `GroupProof::Alive`
+daje zdanie mowiace, ze proces moze dalej dzialac, i nie melduje sukcesu; (d) drugie pytanie
+zadane w chwili, gdy pierwsze jeszcze pisze, jest odmowa ze zdaniem, a pierwsze zostaje nietkniete
+— jeden draft naraz, bo wspolnej puli miejsc w produkcji nie ma; (e) po zakonczeniu draftu, jakkolwiek
+sie skonczyl, w bibliotece nie zostaje ani jeden katalog roboczy draftu.
 
-*Slaba wersja:* asercja, ze umiejetnosc napisana tutaj ma `fromTheInternet == false`. Przechodzi
-implementacja, ktora tylko odwrocila stala na nowej drodze, a lista dalej wyprowadza znacznik
-z istnienia kopii kanonicznej — czyli klamstwo zostaje w liscie, a naprawiona jest tylko karta.
-Rozstrzyga: cztery zrodla w jednym tescie, wszystkie czytane przez `list_skills_inner`.
+*Slaba wersja:* asercja, ze funkcja wrocila w mniej niz N sekund. Przechodzi na `tokio::time::timeout`,
+czyli na implementacji, ktora zostawia zywego `claude` palacego limit dostawcy — to jest dokladnie
+niezmiennik 10 i strata pieniedzy, nie estetyka. Rozstrzyga: zapis wywolania `cancel()` na uchwycie.
 
-## AC-3 Drugie wejscie ISTNIEJE, jest w tym samym panelu i OPUSZCZA OKNO
-check: npx --no-install vitest run src/sections/skills/write-it-yourself.test.tsx
+## AC-3 Draft wpada w trzy pytania, czlowiek go czyta i poprawia PRZED zapisem
+check: npx --no-install vitest run src/sections/skills/the-agent-writes-it.test.tsx
 expect: (\d+) passed
 
-Fikstura: `renderToStaticMarkup` na calym `<SkillsScreen>`, magazyn zasiany `setState` przed
-renderem, granica `@tauri-apps/api/core` podmieniona atrapa liczaca wywolania (wzor:
-`src/sections/commands-wired.test.ts`).
+Fikstura: `renderToStaticMarkup` na calym `<SkillsScreen>`, magazyn zasiany `setState` (lista
+zapisanych agentow, stan „pisze", gotowy draft), granica IPC podmieniona atrapa liczaca wywolania.
 
-Asercje: (a) pusty ekran ma **dokladnie jeden** `data-create` — drugie wejscie mieszka w panelu,
-ktory ten przycisk otwiera, a nie obok niego (te liczbe zamraza
-`src/sections/skills/mounted.test.tsx` i to jest jej cala tresc: jedno zaproszenie, nie dwa);
-(b) otwarty panel niesie **oba** wejscia: pole na adres i trzy pytania, kazde z etykieta;
-(c) oddanie trzech pytan wysyla do Rusta wywolanie nazwa ze `src-tauri/commands.golden.txt` —
-nazwa czytana z tego pliku, nie wpisana w test — a wszystkie trzy wartosci sa w argumentach;
-(d) odmowa z tamtej strony zostawia to, co czlowiek wpisal, w polach i stawia na ekranie zdanie,
-ktore przyszlo z Rusta: tekst tracony przy odmowie to ten sam defekt co cisza, tylko drozszy.
+Asercje: (a) panel niesie trzecie wejscie: pole na zdanie „czego chcesz" i wybor **spisanego
+agenta** — pozycje z magazynu, nie nazwy vendorow wpisane w kod (`mounted.test.tsx` zamraza brak
+nazw vendorow w markupie tej sekcji i ma do tego zmierzony powod); (b) oddanie tego pytania wysyla
+do Rusta wywolanie nazwa ze `src-tauri/commands.golden.txt` — czytana z tego pliku — a zdanie
+czlowieka i wybrany agent sa w argumentach; (c) w stanie „pisze" na ekranie stoi zdanie o tym, co
+sie dzieje, ORAZ kontrolka zatrzymania, ktora **tez opuszcza okno** drugim wywolaniem z tej samej
+listy; kontrolki „napisz mi to" w tym stanie nie ma (podmiana kontrolki, jak `Start`/`Stop`
+w `run/start.tsx:263-276`), a animacji nie ma zadnej (DESIGN §7: jedyna w aplikacji to kropka
+zywej karty); (d) gotowy draft stoi w trzech polach formularza z T-42, edytowalny, i **nic jeszcze
+nie jest zapisane** — zapis idzie ta sama droga co tekst wpisany reka, wiec tekst poprawiony po
+drafcie zostaje przeskanowany jeszcze raz; (e) odmowa (zaden agent nie jest zapisany, vendor
+niedostepny, model oddal cos, co nie jest umiejetnoscia) stawia zdanie na ekranie i **zostawia
+tekst czlowieka w polu**.
 
-*Slaba wersja:* asercja, ze w markupie sa trzy `<input>`. Przechodzi na formularzu, ktory nie
-wola niczego — a to jest dokladnie dzisiejszy stan `answer()` z T-41, tylko w innej sekcji.
-Rozstrzyga policzenie wywolan na atrapie granicy i porownanie argumentow z tym, co wpisano.
-
-## AC-4 Karta przestaje twierdzic, ze wie, skad to przyszlo
-check: npx --no-install vitest run src/sections/skills/origin-is-not-a-guess.test.tsx
-expect: (\d+) passed
-
-Fikstura: dwa `Import`y rozniace sie **wylacznie** polem `fromTheInternet`, oba renderowane tym
-samym komponentem karty.
-
-Asercje: (a) karta dla umiejetnosci napisanej tutaj nie niesie zdania o internecie; (b) karta dla
-tej z linku niesie je dalej — bez tej polowy asercja (a) przechodzi na komponencie, ktory przestal
-mowic cokolwiek; (c) kontrola przeciw pustej asercji: obie karty niosa nazwe i cialo, wiec (a)
-mowi o karcie, ktora istnieje i cos pokazuje; (d) zdanie o tym, gdzie umiejetnosc wyladuje
-(`WHERE_IT_LANDS`), stoi nad decyzja w obu przypadkach — ostrzezenie widoczne wczesniej niz
-decyzja nie jest ostrzezeniem.
-
-*Slaba wersja:* `expect(markup).not.toContain('From the internet')` na jednym `Import`. Przechodzi
-na karcie, ktora zdjela plakietke calkiem — czyli umiejetnosc z sieci przestaje sie roznic od
-napisanej reka, a plakietka zastepuje w v1 podpisy i weryfikacje pochodzenia. Rozroznia: dwa
-`Import`y w jednym tescie, rozniace sie jednym polem.
+*Slaba wersja:* asercja, ze w markupie jest przycisk z napisem o pisaniu. Przechodzi na przycisku
+bez handlera i na stanie „pisze", ktorego nie da sie zatrzymac — czyli na kontrolce, ktora klamie
+(niezmiennik 16), i to w miejscu, gdzie klamstwo kosztuje pieniadze. Rozstrzyga: policzenie DWOCH
+wywolan na atrapie granicy (pisz, zatrzymaj) i asercja o nieobecnosci kontrolki „napisz" w stanie
+pisania.
 
 ## Swiadomie poza zakresem
 
-- **„Napisz mi go" — draft od agenta.** T-43. Ta droga wejscia jest jego warunkiem: draft ladujac
-  w tych samych trzech polach idzie potem dokladnie tym potokiem, co tekst wpisany reka.
-- **Wybor „ten projekt / wszedzie".** T-44. Tutaj zakres zostaje globalny, dokladnie jak dzis
-  (`Scope::Global`, `global_roots`).
-- **Edycja zapisanej umiejetnosci.** T5 §11 ma to w MVP, ale jest to osobna droga (odczyt kopii
-  kanonicznej do formularza) i osobne zadanie.
-- **Lista pol zdjetych przez `emit`.** `emit` ja zwraca i **nikt jej nie czyta** (`let (doc, _) =
-  emit(skill)`, place.rs:545). To jest znalezisko dla czlowieka, nie robota tego zadania: pole
-  `hooks:` znika z pliku bez ani jednego zdania na ekranie, a przy tekscie pisanym przez model
-  (T-43) bedzie to zdarzenie czeste, nie rzadkie.
+- **Wspolna pula miejsc dla wszystkiego, co odpala agenta.** Poza tym zadaniem; opisane nizej jako
+  znalezisko.
+- **Linie od agenta na ekranie sekcji Skills.** Draft drenuje kanal i porzuca zdarzenia. Widok
+  strumienia ma jednego wlasciciela (sekcja Praca) i drugi zywy region na ten sam fakt lamalby
+  niezmiennik 13.
+- **Kolejka draftow.** Jeden naraz, odmowa dla drugiego. Kolejka jest stanem, ktorego nikt nie
+  zamowil.
+- **Codex jako autor draftu.** `codex.rs` nie istnieje, `Absent` odmawia z nazwa zadania T-10.
+  AC-1 (e) pilnuje wylacznie tego, zeby odmowa byla zdaniem.
 
-**Znalezisko, ktore to zadanie naprawia po drodze, i o ktorym czlowiek ma wiedziec.** Kasowanie
-`<library>/skills/` przez `SKILL.md` bez pola `name:` jest defektem ISTNIEJACYM DZIS na trunku,
-osiagalnym z okna: wklejasz link do pliku bez nazwy i tracisz wszystkie kopie kanoniczne razem
-z `installed.json`. AC-1 (c) zamyka to na obu drogach, bo obie licza te sama sciezke.
+**Znalezisko, ktorego to zadanie NIE naprawia (AGENTS.md §7).** Limit „ile naraz" nie jest dzis
+globalny w produkcji. `run_workflow_with_slots(deps, request, lines, slots)` — jedyna funkcja
+przyjmujaca wspolna pule — nie ma ani jednego wolajacego poza testami, a `run_workflow_inner`
+zaklada wlasny `Limiter` per bieg (run.rs:232-237). Trzy karty po trzech agentach to dziewieciu
+agentow przy suwaku ustawionym na trzy. `workspace::Registry::slots()` jest przewidzianym zrodlem
+wspolnej puli i jest konstruowany wylacznie w `src-tauri/tests/it/**`. To jest ten sam ksztalt
+defektu, co linie, ktore nie dochodzily do okna przed T-38: mechanizm wyladowal, ma testy, nikt go
+nie zawolal. Naprawa dotyka `ipc.rs`, `commands/run.rs` i `workspace.rs` naraz i nalezy do
+osobnego zadania.
 
 <!-- OWNS
 src-tauri/src/commands/skills.rs
 src-tauri/src/ipc.rs
 src-tauri/commands.golden.txt
-src-tauri/tests/it/skills_author_pipeline.rs
-src-tauri/tests/it/skills_author_origin.rs
+src-tauri/tests/it/skills_draft_asks_an_agent.rs
+src-tauri/tests/it/skills_draft_stops_dead.rs
 src-tauri/tests/it/main.rs
 src/sections/skills/index.tsx
-src/sections/skills/review-card.tsx
 src/sections/skills/io.ts
 src/state/skills.ts
 src/sections/commands-wired.test.ts
-src/sections/skills/write-it-yourself.test.tsx
-src/sections/skills/origin-is-not-a-guess.test.tsx
+src/sections/skills/the-agent-writes-it.test.tsx
 -->
