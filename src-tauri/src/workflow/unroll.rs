@@ -148,17 +148,30 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
     let mut nodes: Vec<Node> = Vec::new();
     // Numer węzła dla (krok, runda). Kroki spoza ciała mają jeden węzeł i rundę zero.
     let mut number = std::collections::BTreeMap::<(usize, u8), usize>::new();
+
+    // KOLEJNOŚĆ WĘZŁÓW JEST KOLEJNOŚCIĄ Z PLIKU, a rundy tego samego kroku idą jedna za drugą.
+    //
+    // 2026-08-19 — TO JEST NAPRAWA, nie kosmetyka, i została znaleziona analizą kontraktu raportu.
+    // Pierwsza wersja tej funkcji emitowała najpierw WSZYSTKIE kroki spoza ciała, a dopiero potem
+    // rundy. Numer węzła jest jednak prefiksem nazwy pliku przekazania (`<NN>__<from>__<kind>.md`,
+    // `memory::handoff`) i wierszem w `run.json`, więc `ship` — chronologicznie ostatni — dostawał
+    // numer `01` i `ls handoffs/` pokazywał go DRUGIM, przed pracą, którą syntetyzuje.
+    //
+    // Łamało to trzy zapisane obietnice naraz: „kolejność wynikowa jest kolejnością nazw plików,
+    // bo prefiks NN jest numerem kroku" (`memory::handoff`), „pozycja w pliku jest tą samą liczbą,
+    // którą niesie prefiks nazwy pliku przekazania" (`commands::run`) i „rosnąco, czyli
+    // w kolejności z pliku workflow" przy liczeniu indeksu przekazań dla kroku syntezy. Ostatnie
+    // jest najgorsze: krok z trzema wejściami dostawałby je w innej kolejności, niż mówi graf,
+    // i nikt by tego nie zauważył, bo prompt dalej wygląda poprawnie.
     for step in 0..file.steps.len() {
         if body.contains(&step) {
-            continue;
-        }
-        number.insert((step, 0), nodes.len());
-        nodes.push(Node { step, turn: 0 });
-    }
-    for turn in 0..turns {
-        for &step in &body {
-            number.insert((step, turn), nodes.len());
-            nodes.push(Node { step, turn });
+            for turn in 0..turns {
+                number.insert((step, turn), nodes.len());
+                nodes.push(Node { step, turn });
+            }
+        } else {
+            number.insert((step, 0), nodes.len());
+            nodes.push(Node { step, turn: 0 });
         }
     }
 
@@ -332,6 +345,37 @@ mod tests {
             vec![0, 1, 2],
             "the turns are numbered from zero and in order, because the run report and the file \
              names are read by people"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nodes_come_out_in_the_order_of_the_file() -> Result<(), serde_json::Error> {
+        /* NUMER WĘZŁA JEST PREFIKSEM NAZWY PLIKU PRZEKAZANIA (`<NN>__<from>__<kind>.md`) i wierszem
+         * w `run.json`. Pierwsza wersja tej funkcji emitowała kroki spoza ciała przed rundami, więc
+         * `ship` — chronologicznie ostatni — dostawał numer `01` i `ls handoffs/` pokazywał go
+         * drugim. Najgorszy skutek nie był kosmetyczny: krok z kilkoma wejściami dostawał indeks
+         * przekazań w innej kolejności, niż mówi graf, a prompt dalej wyglądał poprawnie.
+         *
+         * Kryterium sądzi CAŁĄ listę, nie samą pozycję `ship`: asercja na jednym węźle przechodzi
+         * dla implementacji, która przestawia dwa inne. */
+        let unrolled = unroll(&with_a_loop(3)?);
+
+        assert_eq!(
+            unrolled.nodes,
+            vec![
+                Node { step: 0, turn: 0 },
+                Node { step: 1, turn: 0 },
+                Node { step: 1, turn: 1 },
+                Node { step: 1, turn: 2 },
+                Node { step: 2, turn: 0 },
+                Node { step: 2, turn: 1 },
+                Node { step: 2, turn: 2 },
+                Node { step: 3, turn: 0 },
+            ],
+            "steps in file order, and the turns of one step next to each other. The node number is \
+             the prefix of the handoff file name, so this order IS what `ls handoffs/` shows and \
+             what a merging step reads its inputs in."
         );
         Ok(())
     }
