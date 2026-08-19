@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Import, InstalledSkill } from '../state/skills';
@@ -26,6 +29,7 @@ import SkillsScreen from './skills/index';
  * ani jednego. Zrodlo przechodzilo tu takze na chipie, ktorego nikt nie montuje.
  */
 
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STATES = ['live', 'fail', 'attend', 'accent', 'human'] as const;
 
 const WAITING: Note = {
@@ -67,8 +71,13 @@ const wholeOutline = (classes: string): boolean => /(?:^|\s)border(?:\s|$)/.test
 const outlineState = (classes: string): string | undefined =>
   STATES.find((one) => new RegExp('border-' + one + '-edge\\b').test(classes));
 
+/* Wypelnienie stanu: wash ALBO LITE tlo.
+ *
+ * Pierwsza wersja rozpoznawala tylko `bg-{stan}-soft`. Lite `bg-fail` bylo wtedy dla tej wyroczni
+ * niewidzialne we WSZYSTKICH trzech punktach — a przycisk `border-fail-edge bg-fail text-bg` jest
+ * glosniejszy od wszystkiego, czego to kryterium zabrania, i przechodzil nietkniety. */
 const fillState = (classes: string): string | undefined =>
-  STATES.find((one) => new RegExp('bg-' + one + '-(?:soft|wash)\\b').test(classes));
+  STATES.find((one) => new RegExp('bg-' + one + '(?:-(?:soft|wash))?(?![\\w-])').test(classes));
 
 describe('chip stanu', () => {
   beforeEach(() => {
@@ -155,5 +164,116 @@ describe('chip stanu', () => {
       'no quiet chip was read. Not everything a chip says is a state: where a skill came from is ' +
         'a plain fact, and painting it in a state colour would make a fact look like a problem.',
     ).toBeGreaterThan(0);
+  });
+});
+
+/* ── POLOWA ZRODLOWA ────────────────────────────────────────────────────────────────────────
+ *
+ * Zasiane ekrany dowodza, ze chipy NAPRAWDE sie montuja — i to jest ich zadanie. Nie dowodza
+ * niczego o galeziach, ktorych ta jedna fikstura nie otwiera: karta bledu w Agents, chip
+ * w edytorze workflow, pasek bledu w edytorze, przyciski usuwania w trzech sekcjach, wymuszony
+ * wybor i wiersz przekazania. Zmierzone: barwe stanu niosa w tych sekcjach elementy z SIEDMIU
+ * miejsc, a fikstura montuje dwa z nich.
+ *
+ * Dlatego dwie reguly, ktore nie potrzebuja wiedziec, jakim elementem jest napis — „wypelniony
+ * i obwiedziony w calosci bierze pigulke" oraz „nigdy dwa stany na raz" — sa tu zadane KAZDEMU
+ * napisowi klasowemu w czterech sekcjach. Regula o przyciskach zostaje na wyrenderowanym ekranie,
+ * bo tam i tylko tam wiadomo, ze to jest przycisk.
+ *
+ * Wzorzec jest ten sam, co w `src/sections/run/live-and-fail-never-share-a-form.test.ts`: klasy
+ * mieszkaja tez w stalych i w mapach, wiec `className=` szukane wprost widzi mniej niz polowe. */
+const SECTIONS = ['agents', 'skills', 'memory', 'workflows'] as const;
+
+const withoutRemarks = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, ' ');
+
+/** Wszystkie napisy klasowe pliku, ze wstawionymi wartosciami stalych z tego samego pliku. */
+function classLiterals(source: string): readonly string[] {
+  const constants = new Map<string, string>();
+  for (const hit of source.matchAll(/const ([A-Z_][A-Z0-9_]*)\s*=\s*\x27([^\x27]*)\x27/g)) {
+    constants.set(hit[1] ?? '', hit[2] ?? '');
+  }
+  const out: string[] = [];
+  /* TRZY SPOSOBY ZAPISU NAPISU, nie jeden. Pierwsza wersja czytala apostrofy i backticki, a JSX
+   * pisze `className=\x22...\x22` w cudzyslowach — wiec polowa zrodlowa nie widziala ani jednego
+   * chipa wpisanego wprost w element, czyli dokladnie tych, ktorych zadna fikstura nie otwiera.
+   * Znaki cudzyslowu sa tu przez `\x22`, bo skaner `checks/quick-vocabulary.sh` liczy je w linii
+   * i nieparzysta liczba rozjezdza mu odczyt tekstu uzytkownika na kilkadziesiat linii dalej. */
+  for (const hit of source.matchAll(/[\x27\x22`]([^\x27\x22`]*)[\x27\x22`]/g)) {
+    const text = hit[1] ?? '';
+    if (!/(?:^|\s)(?:bg|border|rounded|text|h|px|py|flex|grid|size)-/.test(text)) continue;
+    out.push(
+      text.replace(/\$\{([A-Za-z_][\w]*)\}/g, (_, name: string) => constants.get(name) ?? ' '),
+    );
+  }
+  for (const [, value] of constants) {
+    if (/(?:^|\s)(?:bg|border|rounded|text)-/.test(value)) out.push(value);
+  }
+  return out;
+}
+
+function sources(): readonly (readonly [string, string])[] {
+  const out: [string, string][] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name)) {
+        out.push([path.slice(ROOT.length + 1), withoutRemarks(readFileSync(path, 'utf8'))]);
+      }
+    }
+  };
+  for (const one of SECTIONS) walk(resolve(ROOT, 'src', 'sections', one));
+  return out;
+}
+
+describe('chip stanu, tym razem w kazdej galezi', () => {
+  const written = sources().flatMap(([path, text]) =>
+    classLiterals(text).map((classes) => [path, classes] as const),
+  );
+
+  it('read the class lists out of all four sections', () => {
+    expect(
+      written.length,
+      'almost no class lists were read out of the four sections, so both rules below would sweep ' +
+        'an empty list',
+    ).toBeGreaterThan(60);
+    expect(
+      written.filter(([, classes]) => outlineState(classes) !== undefined).length,
+      'not one state outline was read. The four sections carry them in seven places; reading zero ' +
+        'means the reader stopped seeing constants and maps again.',
+    ).toBeGreaterThan(4);
+  });
+
+  it('makes every filled state element a pill, in branches no fixture opens', () => {
+    const square = written.filter(
+      ([, classes]) =>
+        wholeOutline(classes) &&
+        outlineState(classes) !== undefined &&
+        fillState(classes) !== undefined &&
+        !/\brounded-pill\b/.test(classes),
+    );
+    expect(
+      square,
+      'these state elements are filled and outlined all round, which is what a chip is, and they ' +
+        'do not take the pill corner: ' +
+        JSON.stringify(square) +
+        '. Most of them are in branches a person reaches on a bad day — which is exactly when ' +
+        'the screen has to stay readable.',
+    ).toEqual([]);
+  });
+
+  it('never mixes one state with another, anywhere in the four', () => {
+    const mixed = written.filter(([, classes]) => {
+      const outline = outlineState(classes);
+      const fill = fillState(classes);
+      return outline !== undefined && fill !== undefined && outline !== fill;
+    });
+    expect(
+      mixed,
+      'these places take the outline of one state and the fill of another: ' +
+        JSON.stringify(mixed) +
+        '. Two states on one element means it states two things at once, and a person reads ' +
+        'whichever is louder.',
+    ).toEqual([]);
   });
 });

@@ -55,8 +55,13 @@ const NOTE = 'text-body text-muted';
  * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
  * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
 const FIELD = 'field';
-/* Wylaczone pole: ta sama studnia, tylko bez wnetrza i bez tuszu — narzedzia bija klase. */
-const FIELD_OFF = 'field bg-panel text-muted';
+/* WYLACZONE POLE ZOSTAJE POLEM. Do 2026-08-19 stalo tu `field bg-panel text-muted`, czyli klasa
+ * domu z NADPISANYM tlem — a wtedy jedyna kontrolka, ktora Codex wylacza (`Tools`), rysowala sie
+ * bez studni. Pole bez studni czyta sie jak podpis, nie jak pole: znika informacja, ze to jest
+ * miejsce do pisania, ktore w tym ukladzie jest chwilowo zamkniete. Zostaje wiec studnia, gasnie
+ * tylko tusz — plus atrybut `disabled`, ktory jest prawdziwym nosnikiem tego stanu, i zdanie pod
+ * polem, ktore mowi DLACZEGO. */
+const FIELD_OFF = 'field text-muted';
 
 function fieldClass(state: Capability): string {
   return state === 'unavailable' ? FIELD_OFF : FIELD;

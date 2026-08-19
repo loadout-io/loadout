@@ -91,16 +91,28 @@ function sources(section: string): readonly (readonly [string, string])[] {
 
 describe('pole formularza', () => {
   /* `expanded` na `true`, bo trzy wiersze za `More settings` sa POZA drzewem, kiedy jest
-   * zwiniete — a pole, ktorego nie ma w dokumencie, nie jest tu sadzone wcale. */
-  const form = renderToStaticMarkup(
-    <AgentForm
-      value={FORGE}
-      expanded
-      onChange={() => undefined}
-      onToggleMore={() => undefined}
-      onSave={() => undefined}
-    />,
+   * zwiniete — a pole, ktorego nie ma w dokumencie, nie jest tu sadzone wcale.
+   *
+   * DWA WARIANTY, i to nie jest nadmiar. `Tools` jest jedynym polem, ktore ktorykolwiek vendor
+   * ZAMYKA (`capabilities.ts`: `tools` przy `codex` to `unavailable`), a zamkniete pole ma wlasna
+   * klase. Formularz renderowany wylacznie z Claude Code nigdy tej galezi nie dotyka — i wlasnie
+   * w niej stalo pole z nadpisanym tlem. */
+  const forms = (['claude-code', 'codex'] as const).map(
+    (vendor) =>
+      [
+        vendor,
+        renderToStaticMarkup(
+          <AgentForm
+            value={{ ...FORGE, runsWith: vendor }}
+            expanded
+            onChange={() => undefined}
+            onToggleMore={() => undefined}
+            onSave={() => undefined}
+          />,
+        ),
+      ] as const,
   );
+  const [, form = ''] = forms[0] ?? [];
   const labels = [...form.matchAll(/<label[^>]*\sfor="([^"]*)"[^>]*>/g)].map(
     (hit) => [hit[1] ?? '', hit.index ?? 0] as const,
   );
@@ -128,30 +140,66 @@ describe('pole formularza', () => {
     }
   });
 
-  it('draws every control with the one field the house owns', () => {
-    for (const [id] of labels) {
-      const classes = classesOf(controlFor(form, id));
+  it('draws every control with the one field the house owns, on either vendor', () => {
+    for (const [vendor, markup] of forms) {
+      for (const [id] of [...markup.matchAll(/<label[^>]*\sfor="([^"]*)"[^>]*>/g)].map(
+        (hit) => [hit[1] ?? ''] as const,
+      )) {
+        judge(id, classesOf(controlFor(markup, id)), vendor);
+      }
+    }
+  });
+
+  it('keeps that true for the fields a vendor closes', () => {
+    const [, closed = ''] = forms[1] ?? [];
+    const off = [...closed.matchAll(/<(?:input|select|textarea)[^>]*\sdisabled[^>]*>/g)].map(
+      (hit) => hit[0],
+    );
+    expect(
+      off.length,
+      'no closed control was rendered for the vendor that closes one, so the branch where a field ' +
+        'wears a second class is judged by nothing. capabilities.ts says tools is unavailable on ' +
+        'codex; if that changed, this point has to be pointed somewhere else, not deleted.',
+    ).toBeGreaterThan(0);
+    for (const element of off) {
+      const id = /\bid="([^"]*)"/.exec(element)?.[1] ?? '(no id)';
+      judge(id, classesOf(element), 'codex, closed');
+    }
+  });
+
+  /** Jedno pytanie zadane jednej kontrolce, wolane z obu galezi. */
+  function judge(id: string, classes: string, where: string): void {
+    {
       expect(
         classes.split(/\s+/),
         'the control named ' +
           id +
-          ' describes its own look instead of taking the one the house already owns. Two ' +
+          ' (' +
+          where +
+          ') describes its own look instead of taking the one the house already owns. Two ' +
           'descriptions of the same field drift, and they did: the outline here was the quiet ' +
           'line while the same field in another section took the strong one.',
       ).toContain('field');
+      /* NADPISANIE, NIE TYLKO POWTORZENIE. Pierwsza wersja wymieniala `bg-well` i przez to
+       * lapala pole, ktore POWTARZA poprawna wartosc, a przepuszczala pole, ktore ja PODMIENIA:
+       * `field bg-panel` przechodzilo — i tak wlasnie bylo napisane wylaczone pole w More
+       * settings, czyli jedyna kontrolka, ktora Codex zamyka. Tlo, obrys, promien, wysokosc,
+       * odstep i kroj naleza do klasy; barwa tuszu (`text-*`) nie, bo nia mowi sie o stanie. */
       const repainted = classes
         .split(/\s+/)
-        .filter((one) => /^(?:bg-well|border-line|rounded-|px-\d|h-8|font-mono)/.test(one));
+        .filter((one) => /^(?:bg-|border-|rounded-|px-|py-|p-|h-\d|min-h-|font-)/.test(one));
       expect(
         repainted,
         'the control named ' +
           id +
-          ' takes the house field AND repaints part of it: ' +
+          ' (' +
+          where +
+          ') takes the house field AND repaints part of it: ' +
           JSON.stringify(repainted) +
           '. Whichever wins, the loser is a decision written where nobody will look for it.',
       ).toEqual([]);
     }
-  });
+  }
 
   it('defines that field once, as a well with an outline and a corner from the band', () => {
     const rule = /\.field\s*\{([^}]*)\}/.exec(theme)?.[1] ?? '';
@@ -252,9 +300,18 @@ describe('pole formularza', () => {
           const id = /\bid="([^\x22]*)"/.exec(element)?.[1] ?? '';
           if (id === '' || !named.includes(id)) continue;
           judged += 1;
-          const classes = /className=[\x22{]([^\x22}]*)/.exec(element)?.[1] ?? '';
-          if (!/\b(?:field|FIELD|AREA|ANSWER|ANSWER_LONG)\b/.test(classes))
-            wrong.push(path + ': ' + id);
+          /* ROZWIJAMY STALA, a nie ufamy jej nazwie. Pierwsza wersja przyjmowala liste nazw,
+           * ktore dzis istnieja (`FIELD`, `AREA`, `ANSWER`) — czyli wartosc wpisana z palca dla
+           * dzisiejszego wejscia. `const AREA = 'w-full rounded-md border border-line bg-panel'`
+           * przechodzilby wtedy jako pole, bedac dokladnie tym recznym opisem, ktory to kryterium
+           * kasuje. Nazwa jest tylko adresem; sadzona jest wartosc pod tym adresem. */
+          const written = /className=[\x22{]([^\x22}]*)/.exec(element)?.[1]?.trim() ?? '';
+          const resolved = /^[A-Z_][A-Z0-9_]*$/.test(written)
+            ? (new RegExp('const ' + written + '\\s*=\\s*\x27([^\x27]*)\x27').exec(text)?.[1] ?? '')
+            : written;
+          if (!/(?:^|\s)field(?:\s|$)/.test(resolved)) {
+            wrong.push(path + ': ' + id + ' -> ' + JSON.stringify(resolved || written));
+          }
         }
       }
     }

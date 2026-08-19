@@ -15,8 +15,15 @@ import { describe, expect, it } from 'vitest';
  * w kodzie tych sekcji zostal choc jeden alias", a nie „co widzi czlowiek". Alias na sciezce,
  * ktora renderuje sie raz na tydzien, jest tym samym dlugiem co alias na widoku glownym.
  *
- * SLABA WERSJA: asercja, ze `rounded-md` gdzies jest. Przechodzi z szescdziesiecioma aliasami
- * obok — czyli na dzisiejszym stanie plus jedna linia.
+ * SLABA WERSJA: asercja, ze `rounded-md` gdzies jest. Przechodzi z szescdziesiecioma nazwami
+ * zastepczymi obok — czyli na dzisiejszym stanie plus jedna linia.
+ *
+ * CZEGO TO KRYTERIUM NIE PILNUJE, I JEST TO PRZYJETE SWIADOMIE: nie widzi powierzchni, ktora
+ * promien STRACILA. Nazwy klas nie odpowiadaja na to pytanie, bo promien legalnie WYPROWADZA sie
+ * z klasy narzedziowej do klasy domu — `more-settings.tsx` nie ma dzis ani jednego `rounded-*`
+ * i jest to poprawne, bo jego pola biora `.field`. Pilnuja tego dwie inne rzeczy: kryterium AC-4,
+ * ktore czyta definicje `.field` w arkuszu, oraz makieta, ktora jest wyrocznia wygladu i ma
+ * promien wpisany w kazda regule powierzchni.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');

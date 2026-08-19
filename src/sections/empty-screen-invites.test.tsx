@@ -72,15 +72,42 @@ function regionAround(markup: string, at: number): string {
 /** Elementy bez zamkniecia — inaczej stos przodkow rozjezdza sie na pierwszym `<br>`. */
 const VOID = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'area', 'col']);
 
-/** Tekst widoczny w oznaczonym elemencie: bez znacznikow, ze scisnietymi odstepami. */
-function markedText(markup: string): readonly string[] {
-  return [...markup.matchAll(/<([a-z]+)[^>]*\sdata-empty\b[^>]*>([\s\S]*?)<\/\1>/g)].map((hit) =>
-    (hit[2] ?? '')
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim(),
-  );
+/* Tekst widoczny w oznaczonym elemencie — wyciety PO GLEBOKOSCI, nie leniwym wzorcem.
+ *
+ * Leniwe `<\/\1>` konczy na PIERWSZYM zamknieciu tej samej nazwy, a nie na zamknieciu TEGO
+ * elementu. Opakowanie `<div data-empty>` z pierwszym dzieckiem `<div>` daje wtedy tresc
+ * `<div>Zdanie`, ktora po zdjeciu znacznikow jest samym zdaniem i przechodzi kazdy warunek nizej
+ * — czyli forma z opakowaniem, ktora to kryterium ma usuwac, zostaje dopuszczalna, jesli tylko
+ * pierwsze dziecko ma te sama nazwe co opakowanie. */
+function markedSpans(markup: string): readonly string[] {
+  const out: string[] = [];
+  const open = /<([a-z]+)[^>]*\sdata-empty\b[^>]*>/g;
+  let hit = open.exec(markup);
+  while (hit !== null) {
+    const name = hit[1] ?? '';
+    const from = hit.index + hit[0].length;
+    const walk = new RegExp('<(/?)' + name + '\\b[^>]*>', 'g');
+    walk.lastIndex = from;
+    let depth = 1;
+    let to = markup.length;
+    let step = walk.exec(markup);
+    while (step !== null) {
+      depth += step[1] === '/' ? -1 : 1;
+      if (depth === 0) {
+        to = step.index;
+        break;
+      }
+      step = walk.exec(markup);
+    }
+    out.push(markup.slice(from, to));
+    open.lastIndex = to;
+    hit = open.exec(markup);
+  }
+  return out;
 }
+
+/** Tekst widoczny w oznaczonym elemencie: bez znacznikow, ze scisnietymi odstepami. */
+const markedText = (markup: string): readonly string[] => markedSpans(markup).map(plain);
 
 describe('pusty ekran', () => {
   const screens = FIVE.map(
