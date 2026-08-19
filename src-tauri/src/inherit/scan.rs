@@ -15,7 +15,7 @@
 
 use std::fs;
 use std::io::{self, BufRead as _, BufReader, Read as _};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::{HostSkill, Result};
 use crate::skills::ingest;
@@ -31,6 +31,25 @@ const SKILL_FILE: &str = "SKILL.md";
 /// składa ją u siebie ten, kto jej potrzebuje.
 fn skills_root(project: &Path) -> PathBuf {
     project.join(".claude").join("skills")
+}
+
+/// `SKILL.md` wybranej umiejętności u gospodarza — albo `None`, gdy `name` nie jest nazwą
+/// **jednego** katalogu.
+///
+/// DLACZEGO ten warunek stoi tutaj, a nie po stronie zapisu: `name` przychodzi z ekranu wyboru,
+/// czyli z drutu, a wyznacza jednocześnie ścieżkę czytaną u gospodarza i podkatalog zapisywany
+/// u nas. `..`, `/etc` albo `a/b` w tym polu znaczyłyby odczyt i zapis poza dwoma katalogami,
+/// których dotyczy ta operacja. Pytanie zadajemy raz, w miejscu, w którym mieszka kształt
+/// gospodarza — druga taka lista przy zapisie byłaby drugą definicją tej samej reguły
+/// (niezmiennik 23).
+pub(crate) fn skill_file(project: &Path, name: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        (Some(Component::Normal(folder)), None) => {
+            Some(skills_root(project).join(folder).join(SKILL_FILE))
+        }
+        _ => None,
+    }
 }
 
 /// Pierwszy wiersz pliku, dosłownie — albo `None`, jeśli pliku nie da się przeczytać.
