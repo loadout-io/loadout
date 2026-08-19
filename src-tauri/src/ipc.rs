@@ -795,11 +795,19 @@ pub fn install_reviewed_skill(
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<Vec<PathBuf>, String> {
-    // SZKIELET, 2026-08-19 — TU JEST DEFEKT TEJ WERSJI: folder z okna jedzie dalej bez ani
-    // jednego pytania, więc ścieżka względna albo katalog, którego nie ma, dojeżdża do
-    // rozmieszczania zamiast odbić się zdaniem z [`project_folder`]. T-44 AC-1 (d) stoi
-    // dokładnie na tym: jedna odpowiedź na „który to projekt", nie dwie.
-    let project = folder.map(PathBuf::from);
+    // FOLDER SĄDZI [`project_folder`], I TO JEST CAŁA TREŚĆ TEJ LINII. Nic poniżej tej warstwy
+    // nie pyta, czy ścieżka jest bezwzględna i czy to w ogóle katalog — `place::plan` wierzy
+    // korzeniowi, który dostał. Bez tego wywołania ścieżka względna z okna dojechałaby do
+    // rozmieszczania i umiejętność wylądowałaby tam, gdzie ją postawi `Path::join`.
+    //
+    // `?` oddaje zdanie tej funkcji SŁOWO W SŁOWO, bo to samo zdanie czyta człowiek, który
+    // nacisnął Run (`AppState::project_for` jest nad nią jedną linią). Własne brzmienie tutaj
+    // byłoby drugą odpowiedzią na „który to projekt" (niezmiennik 13).
+    //
+    // Sprawdzamy przy KAŻDYM zakresie, nie tylko przy „ten projekt": folder, którego nie ma,
+    // jest tą samą pomyłką niezależnie od tego, gdzie ma wylądować plik, a odmowa zależna od
+    // pozycji wyboru każe człowiekowi zgadywać, czy jego zakres jest w porządku.
+    let project = project_folder(folder)?;
     commands::skills::install_skill_into(library, name, landing, project.as_deref())
         .map_err(|error| error.to_string())
 }

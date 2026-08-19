@@ -218,6 +218,26 @@ pub enum Landing {
     Everywhere,
 }
 
+/// Słowo drutu → słowo rdzenia. JEDNO miejsce, w którym te dwa enumy się spotykają.
+///
+/// 2026-08-19 — do tego dnia tego odwzorowania nie było wcale, bo nie było czego odwzorowywać:
+/// [`install_skill_into`], [`delete_skill_from`] i [`list_skills_in`] miały wpisane
+/// `Scope::Global`, więc cały zakres projektowy z T-18 był napisany, przetestowany
+/// i nieosiągalny z aplikacji.
+///
+/// DLACZEGO `From`, A NIE `match` W KAŻDYM Z TRZECH WOŁAJĄCYCH. Bo trzy odwzorowania to trzy
+/// okazje, żeby raz odwrócić kierunek — a rozjazd objawia się dopiero jako umiejętność zapisana
+/// w innym korzeniu niż ten, który człowiek przeczytał na ekranie, i to w żywej konfiguracji
+/// jego narzędzi agentowych. Jedna odpowiedź na pytanie „czym jest »ten projekt«" (niezmiennik 13).
+impl From<Landing> for Scope {
+    fn from(landing: Landing) -> Self {
+        match landing {
+            Landing::ThisProject => Self::Project,
+            Landing::Everywhere => Self::Global,
+        }
+    }
+}
+
 /// Korzenie rozmieszczania: dom wyprowadzony z katalogu biblioteki, korzeń projektu z okna.
 ///
 /// `~/.loadout` leży **w** katalogu domowym, więc jego rodzic jest tym katalogiem. To nie jest
@@ -792,11 +812,7 @@ fn settled(composed: &str) -> String {
 pub fn install_skill_into(
     library: &Path,
     name: &str,
-    // SZKIELET, 2026-08-19 — podkreślenie jest CAŁYM defektem tej wersji i znika razem z nią:
-    // wybór z okna dojeżdża do sygnatury i NIE dojeżdża do `place::plan` niżej, gdzie stoi
-    // `Scope::Global` wpisany na sztywno. Kryteria T-44 AC-1 i AC-2 stoją właśnie na tym
-    // odwzorowaniu, więc dopóki ten argument jest ignorowany, oba są czerwone.
-    _landing: Landing,
+    landing: Landing,
     project: Option<&Path>,
 ) -> Result<Vec<PathBuf>, Error> {
     let canonical = library.join(SKILLS_DIR).join(name);
@@ -809,9 +825,12 @@ pub fn install_skill_into(
         )],
     })?;
 
-    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`.
+    // Walidacja, plan i odmowa przed pierwszym zapisem — wszystko w `place::plan`. Zakres
+    // projektowy bez korzenia odbija się TAM, zdaniem `Error::NoProjectRoot`, i to jest jedyny
+    // powód, dla którego można tu podać `project` niesprawdzony pod kątem „czy jest": ani
+    // `destinations`, ani `apply` nie zobaczą pustki, bo plan odmawia przed nimi.
     let roots = roots_for(library, project);
-    let plan = crate::skills::place::plan(&import.skill, Scope::Global, &roots)?;
+    let plan = crate::skills::place::plan(&import.skill, landing.into(), &roots)?;
     crate::skills::place::apply(&plan, &import.skill)?;
     Ok(plan.writes)
 }
