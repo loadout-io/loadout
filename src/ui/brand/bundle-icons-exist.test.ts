@@ -19,7 +19,20 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CONF = resolve(ROOT, 'src-tauri', 'tauri.conf.json');
-const SOURCE = resolve(ROOT, 'docs', 'branding', 'loadout-icon.svg');
+
+/* WSZYSTKIE zrodla, nie jedno.
+ *
+ * Do 2026-08-19 swiezosc mierzona byla wzgledem `loadout-icon.svg`, a `.icns` powstaje z TRZECH
+ * rysunkow: 16 px z rysunku 16, 16@2x i 32 z rysunku 32. Poprawienie jednego z tych dwoch bez
+ * przebudowy zostawialo w Docku poprzednia wersje znaku dokladnie w tych rozmiarach, dla ktorych
+ * te pliki istnieja — i kontrola byla zielona, bo porownywala sie z plikiem, ktory sie nie
+ * zmienil. Skrypt jest tu razem z nimi: zmiana przepisu tez unieważnia zbudowany plik. */
+const SOURCES = [
+  resolve(ROOT, 'docs', 'branding', 'loadout-icon.svg'),
+  resolve(ROOT, 'docs', 'branding', 'loadout-icon-32.svg'),
+  resolve(ROOT, 'docs', 'branding', 'loadout-icon-16.svg'),
+  resolve(ROOT, 'scripts', 'icons.sh'),
+] as const;
 
 const text = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 
@@ -33,6 +46,30 @@ function declared(): readonly string[] {
   } catch {
     return [];
   }
+}
+
+/* Czlonkowie kontenera `.icns`: typ i dlugosc rekordu.
+ *
+ * Format jest prosty i dlatego da sie go tu przeczytac bez ani jednej zaleznosci: `icns`, dlugosc
+ * calosci na czterech bajtach big-endian, a potem rekordy „cztery bajty typu, cztery dlugosci,
+ * reszta to obraz". Sprawdzanie samej koncowki nazwy i niezerowego rozmiaru przepuszczalo plik
+ * tekstowy nazwany `icon.icns` oraz — grozniej, bo wyglada dobrze — kontener z JEDNYM rozmiarem.
+ * Zdanie nosne calej sekcji o ikonie brzmi „`.icns` jest ZESTAWEM, nie skalowaniem", wiec zestaw
+ * trzeba policzyc. */
+function icnsMembers(path: string): readonly (readonly [string, number])[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path);
+  if (raw.subarray(0, 4).toString('latin1') !== 'icns') return [];
+  if (raw.readUInt32BE(4) !== raw.length) return [];
+  const out: (readonly [string, number])[] = [];
+  let at = 8;
+  while (at + 8 <= raw.length) {
+    const length = raw.readUInt32BE(at + 4);
+    if (length < 8 || at + length > raw.length) break;
+    out.push([raw.subarray(at, at + 4).toString('latin1'), length - 8] as const);
+    at += length;
+  }
+  return out;
 }
 
 /** Szerokosc i wysokosc z naglowka IHDR pliku PNG. */
@@ -76,17 +113,49 @@ describe('ikony aplikacji', () => {
     ).toBe(true);
   });
 
-  it('keeps the built icon no older than the drawing it came from', () => {
+  it('ships that .icns as a real SET of sizes, not one drawing under a matching name', () => {
+    const icns = paths.find((one) => one.endsWith('.icns'));
+    expect(icns, 'no .icns among the declared paths').toBeDefined();
+    const members = icnsMembers(resolve(ROOT, 'src-tauri', icns ?? ''));
+    expect(
+      members.length,
+      'the declared .icns does not read as an icns container at all — the magic bytes or the ' +
+        'length in its header do not hold. A text file under that name passes an ends-with check ' +
+        'and leaves the Dock on the default icon.',
+    ).toBeGreaterThan(0);
+    const images = members.filter(([type]) => type.startsWith('ic'));
+    expect(
+      images.map(([type]) => type),
+      'the .icns carries fewer than ten sizes, so macOS scales one of them for the rest. Scaling ' +
+        'is exactly what three separate drawings exist to avoid: at 32 px the full drawing turns ' +
+        'the four edges into a blob.',
+    ).toHaveLength(10);
+    const empty = images.filter(([, size]) => size < 500);
+    expect(
+      empty.map(([type]) => type),
+      'these members of the .icns are too small to be an image: ' +
+        JSON.stringify(empty) +
+        '. A container of ten placeholders counts as ten and shows as one.',
+    ).toEqual([]);
+  });
+
+  it('keeps the built icon no older than ANY drawing it came from', () => {
     const icns = paths.find((one) => one.endsWith('.icns'));
     expect(icns, 'no .icns among the declared paths').toBeDefined();
     const built = resolve(ROOT, 'src-tauri', icns ?? '');
     expect(existsSync(built), 'the declared .icns is not on disk').toBe(true);
-    expect(existsSync(SOURCE), 'the source drawing is not on disk').toBe(true);
+    const stale: string[] = [];
+    for (const source of SOURCES) {
+      expect(existsSync(source), source + ' is not on disk').toBe(true);
+      if (statSync(built).mtimeMs < statSync(source).mtimeMs) stale.push(source);
+    }
     expect(
-      statSync(built).mtimeMs,
-      'the built icon is older than the drawing it comes from, so it is the icon of a PREVIOUS ' +
-        'version of the mark — and it looks exactly like a fresh one. Run scripts/icons.sh.',
-    ).toBeGreaterThanOrEqual(statSync(SOURCE).mtimeMs);
+      stale,
+      'the built icon is older than these files it comes from: ' +
+        JSON.stringify(stale.map((one) => one.slice(ROOT.length + 1))) +
+        '. It is then the icon of a PREVIOUS version of the mark — and it looks exactly like a ' +
+        'fresh one. Run scripts/icons.sh.',
+    ).toEqual([]);
   });
 
   it('makes every PNG the size its own name states', () => {

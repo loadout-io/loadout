@@ -72,9 +72,17 @@ Stosunek 3,1 : 1 jest liczbą, na której ten znak stoi: przy 2,4 : 1 węzeł cz
 zgrubienie linii i cały znak zamyka się w pierścień (zmierzone na 176 px). Romb jest szerszy niż
 wysoki, bo graf płynie w poziomie — symetryczny czytałby się jak karo.
 
-**W chrome znak jest neutralny**: węzły `--body`, krawędzie `--line-strong`. Ani akcentu, ani
-coralu. Akcent znaczy „to jest interaktywne", coral „to się dzieje teraz", a znak wisi
-w nawigacji także wtedy, kiedy nic nie chodzi i nic nie jest klikalne.
+**W chrome znak jest neutralny**: węzły `--body`, krawędzie `--muted`. Ani akcentu, ani coralu.
+Akcent znaczy „to jest interaktywne", coral „to się dzieje teraz", a znak wisi w nawigacji także
+wtedy, kiedy nic nie chodzi i nic nie jest klikalne.
+
+Krawędzie brały najpierw `--line-strong`, czyli biel 16%. **Rodzina `--line-*` jest obramowaniem**
+— rysuje włos na krawędzi szkła — a krawędzie tego znaku są jego tematem, nie ramką wokół niego.
+Zmierzone na wyrenderowanej powłoce przy 22 px, w jedynym rozmiarze, w jakim znak stoi
+w aplikacji: linia 1,25 px w bieli 16% na panelu daje około 1,7 : 1 kontrastu, czyli nie czyta się
+wcale, a znak wraca do czterech kropek — czyli do tego, czym był stary znak i czym miał przestać
+być. Wartość z rodziny tekstu czyta się, a hierarchia zostaje ta sama, bo `--muted` jest
+ciemniejsze od `--body`: węzły nad krawędziami.
 
 ### Ikona: trzy rysunki, nie jeden przeskalowany
 
@@ -96,6 +104,13 @@ mydli się na pasku Docka, jest pierwszą rzeczą, jaką człowiek widzi o jako�
 (`scripts/icons.sh`, przez `qlmanage` → `sips` → `iconutil`), więc nie ma dwóch rysunków tej samej
 rzeczy. Gradienty mieszkają wyłącznie tam — poza `src/`, gdzie żaden literał barwy nie ma prawa
 stanąć.
+
+**Przepis jest deterministyczny i to jest zmierzone**: 2026-08-19 pełne przebudowanie dało pięć
+plików bajt w bajt identycznych z tymi, które leżą w repo (md5 przed i po). Dlatego pochodzenie
+rastrów sprawdza się jednym uruchomieniem skryptu i `git status`, a nie okiem. W bramce tego nie
+ma z premedytacją: `qlmanage` wymaga sesji graficznej i skanowania Gatekeepera, a bramka ma chodzić
+bez okna. Zamiast tego bramka pilnuje **wieku**: `.icns` młodszy od każdego z trzech rysunków
+i od samego skryptu.
 
 ### Logotyp
 

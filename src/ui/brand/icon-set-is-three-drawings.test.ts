@@ -20,12 +20,22 @@ const BRAND = resolve(ROOT, 'docs', 'branding');
 const text = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 const svg = (name: string): string => text(resolve(BRAND, name));
 
-/** Grubosc krawedzi w proporcji do plotna — porownywalna miedzy rysunkami. */
-function strokeShare(src: string): number {
-  const width = Number(/stroke-width="([\d.]+)"/.exec(src)?.[1] ?? '0');
+/* WSZYSTKIE grubosci krawedzi w proporcji do plotna, nie pierwsza.
+ *
+ * Do 2026-08-19 czytana byla tylko PIERWSZA — a wtedy bajtowa kopia rysunku pelnego z jedna
+ * podmieniona liczba przechodzila cale to kryterium, zachowujac poswiate, gradienty wezlow
+ * i krawedz wewnetrzna, czyli dokladnie roznice ZADEKLAROWANA zamiast prawdziwej. Pelny rysunek
+ * niesie dwie krawedzie: temat (38) i wlos wewnetrzny (3). Kiedy warunek brzmi „KAZDA krawedz
+ * mniejszego rysunku jest grubsza od najgrubszej krawedzi pelnego", taka kopia pada na tym
+ * wlosie, bo wlos zostaje. */
+function strokeShares(src: string): readonly number[] {
   const canvas = Number(/viewBox="0 0 (\d+)/.exec(src)?.[1] ?? '0');
-  return canvas === 0 ? 0 : width / canvas;
+  if (canvas === 0) return [];
+  return [...src.matchAll(/stroke-width="([\d.]+)"/g)].map((hit) => Number(hit[1]) / canvas);
 }
+
+/** Najgrubsza krawedz rysunku, w proporcji do plotna. */
+const thickest = (src: string): number => Math.max(0, ...strokeShares(src));
 
 /** Promien squircle w proporcji do plotna. */
 function cornerShare(src: string): number {
@@ -36,6 +46,15 @@ function cornerShare(src: string): number {
 
 const gradients = (src: string): number =>
   [...src.matchAll(/<(?:radial|linear)Gradient\b/g)].length;
+
+/* Podpis poswiaty i blasku, czytany BEZ nazwy: przejscie w nic.
+ *
+ * Sprawdzanie `id="sheen"` mierzy identyfikator, ktory kazdy moze przezwac jednym ruchem —
+ * a przejscia w przezroczystosc przezwac nie da sie, bo to one rysuja efekt. */
+const fades = (src: string): number => [...src.matchAll(/stop-opacity="0(?:\.0+)?"/g)].length;
+
+/** Krawedz wewnetrzna: obrys o wlasnej przezroczystosci. */
+const innerEdge = (src: string): boolean => /stroke-opacity="/.test(src);
 
 describe('zestaw ikony', () => {
   const full = svg('loadout-icon.svg');
@@ -60,18 +79,29 @@ describe('zestaw ikony', () => {
     ).toBe(0);
   });
 
-  it('thickens the line as the drawing gets smaller', () => {
-    expect(strokeShare(full), 'no stroke was read out of the full drawing').toBeGreaterThan(0);
+  it('thickens EVERY line as the drawing gets smaller', () => {
+    expect(strokeShares(full).length, 'no stroke was read out of the full drawing').toBeGreaterThan(
+      1,
+    );
+    for (const [name, src] of [
+      ['loadout-icon-32.svg', small],
+      ['loadout-icon-16.svg', tiny],
+    ] as const) {
+      const shares = strokeShares(src);
+      expect(shares.length, 'no stroke was read out of ' + name).toBeGreaterThan(0);
+      expect(
+        Math.min(...shares),
+        name +
+          ' carries a line no thicker than the full drawing carries. At 32 px a line of that ' +
+          'weight measures barely one pixel and the four edges merge into a blob — which is the ' +
+          'whole reason this file exists separately. A byte copy of the full drawing with one ' +
+          'number changed fails here, because the hairline it copied along stays.',
+      ).toBeGreaterThan(thickest(full));
+    }
     expect(
-      strokeShare(small),
-      'the 32 px drawing keeps the same line weight as the full one. At 32 px that line measures ' +
-        'barely one pixel and the four edges merge into a blob — which is the whole reason this ' +
-        'file exists separately.',
-    ).toBeGreaterThan(strokeShare(full));
-    expect(
-      strokeShare(tiny),
+      thickest(tiny),
       'the 16 px drawing does not thicken its line beyond the 32 px one',
-    ).toBeGreaterThan(strokeShare(small));
+    ).toBeGreaterThan(thickest(small));
   });
 
   it('keeps the SAME corner on all three, so the icon does not change shape with size', () => {
@@ -92,23 +122,35 @@ describe('zestaw ikony', () => {
 
   it('keeps the gleam and the inner edge for the full drawing only', () => {
     expect(
-      /id="sheen"/.test(full),
-      'the full drawing lost its gleam. It is one of the three things that make this icon read ' +
-        'as a sibling of the app next door.',
-    ).toBe(true);
-    expect(/stroke-opacity="0.10"/.test(full), 'the full drawing lost its crisp inner edge').toBe(
-      true,
-    );
-    for (const [name, src] of [
-      ['loadout-icon-32.svg', small],
-      ['loadout-icon-16.svg', tiny],
+      fades(full),
+      'the full drawing carries no fade into nothing, so it lost the gleam and the glow. They ' +
+        'are two of the three things that make this icon read as a sibling of the app next door.',
+    ).toBeGreaterThanOrEqual(2);
+    expect(gradients(full), 'the full drawing lost its gradients').toBeGreaterThanOrEqual(4);
+    expect(innerEdge(full), 'the full drawing lost its crisp inner edge').toBe(true);
+
+    for (const [name, src, allowed] of [
+      ['loadout-icon-32.svg', small, 1],
+      ['loadout-icon-16.svg', tiny, 0],
     ] as const) {
       expect(
-        /id="sheen"/.test(src),
+        fades(src),
         name +
-          ' carries the gleam. At its size the gleam operates on a tenth of a pixel, so keeping ' +
-          'it means the difference between these drawings is declared rather than real.',
+          ' fades something into nothing. At its size such a fade operates on a tenth of a ' +
+          'pixel, so keeping it means the difference between these drawings is declared rather ' +
+          'than real — and renaming the fade changes nothing about that, which is why this is ' +
+          'measured on the fade itself and not on what it is called.',
+      ).toBe(0);
+      expect(
+        innerEdge(src),
+        name + ' keeps the inner edge, which at its size is a fraction of a pixel of grey',
       ).toBe(false);
+      expect(
+        gradients(src),
+        name +
+          ' carries more gradients than the background alone needs, so it is the full drawing ' +
+          'wearing a different first number rather than its own drawing',
+      ).toBeLessThanOrEqual(allowed);
     }
   });
 });
