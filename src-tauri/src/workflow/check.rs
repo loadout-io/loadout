@@ -202,6 +202,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     two_ways_back(&workflow.links, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
+    a_check_without_a_proof(&steps, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
     one_folder_two_steps(&steps, &arrows, when, &mut notes);
@@ -239,6 +240,13 @@ struct Facts<'a> {
     /// (`commands::run::find_agent` robiło `fs::read_dir` po nieistniejącym katalogu
     /// biblioteki). Zmierzone na dwóch plikach właściciela: oba miały `"agent": ""`.
     agent: Option<&'a str>,
+    /// Komenda kroku „sprawdź". `None` dla kroków, które żadnej nie uruchamiają.
+    command: Option<&'a str>,
+    /// Wzorzec dowodu kroku „sprawdź". `None` jak wyżej.
+    ///
+    /// Osobne pole od [`Facts::command`], choć jedna reguła czyta oba: krok bez komendy i krok
+    /// bez dowodu to dwa różne stany i naprawia się je w dwóch różnych polach kafelka.
+    proof: Option<&'a str>,
 }
 
 fn facts(step: &Step) -> Facts<'_> {
@@ -251,6 +259,8 @@ fn facts(step: &Step) -> Facts<'_> {
             passthrough: Some(&agent.vendor_options),
             instructions: Some(&agent.instructions),
             agent: Some(&agent.agent),
+            command: None,
+            proof: None,
         },
         Step::Checkpoint(checkpoint) => Facts {
             id: &checkpoint.id,
@@ -260,6 +270,26 @@ fn facts(step: &Step) -> Facts<'_> {
             passthrough: None,
             instructions: None,
             agent: None,
+            command: None,
+            proof: None,
+        },
+        // SZKIELET (T-55, 2026-08-19). To jest ten kształt, przed którym ostrzega niezmiennik 12
+        // — `folder: None`, „bo to tylko sprawdzenie" — i stoi tu z premedytacją: reguła
+        // `one_folder_two_steps` POMIJA krok, którego folder jest nieznany
+        // (`let (Some(mine), Some(theirs)) = … else continue`), więc dwa równoległe kroki
+        // budujące w jednym katalogu zapisałyby się bez słowa. `cargo test` pisze po `target/`.
+        // Dowodzi tego AC-1 punkt (d) w warstwie `before`; faza implementacji oddaje tu
+        // `Some(&check.folder)`, `Some(&check.command)` i `Some(&check.proof)`.
+        Step::Check(check) => Facts {
+            id: &check.id,
+            name: &check.name,
+            copies: 1,
+            folder: None,
+            passthrough: None,
+            instructions: None,
+            agent: None,
+            command: Some(&check.command),
+            proof: Some(&check.proof),
         },
     }
 }
@@ -416,6 +446,37 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
             When::Saving => warning(Some(step.id), message),
             When::Running => problem(Some(step.id), message),
         });
+    }
+}
+
+/// Krok „sprawdź", który nie mówi, co uruchomić albo po czym poznać, że to ruszyło.
+///
+/// PROBLEM, NIE OSTRZEŻENIE, i to jest inaczej niż przy [`a_step_without_an_agent`]. Różnica jest
+/// realna: kafelek bez agenta czeka na wybór z listy, którą człowiek zaraz zobaczy, a krok
+/// sprawdzający bez dowodu **jest gotowy i kłamie** — uruchomi się i orzeknie na samym kodzie
+/// wyjścia. Suita, która nie uruchomiła ani jednego testu, wychodzi zerem (niezmiennik 19).
+/// Ostrzeżenie tutaj nie blokowałoby `save()`, więc plik, który miał być odrzucony, wylądowałby
+/// na dysku i pobiegł.
+///
+/// SZKIELET (T-55, 2026-08-19): zdania jeszcze nie ma i to jest stan przejściowy. Reguła czyta
+/// już oba pola, żeby nie były polem bez czytelnika (niezmiennik 21), i nie dopisuje ani jednej
+/// uwagi — dowodzi tego AC-1 punkt (b) w warstwie `before`, gdzie brak tej odmowy musi być
+/// jedyną rzeczą, której brakuje.
+fn a_check_without_a_proof(steps: &[Facts<'_>], _notes: &mut Vec<Note>) {
+    for step in steps {
+        // `Some("")`, nie `None`: krok agenta i kafelek kontrolny komendy nie mają i nie mają
+        // mieć, a krok sprawdzający z pustym polem to krok, którego nikt jeszcze nie wypełnił.
+        let (Some(command), Some(proof)) = (step.command, step.proof) else {
+            continue;
+        };
+        if command.trim().is_empty() || proof.trim().is_empty() {
+            tracing::debug!(
+                step = step.id,
+                no_command = command.trim().is_empty(),
+                no_proof = proof.trim().is_empty(),
+                "a check step is not ready, and the refusal that says so is not written yet"
+            );
+        }
     }
 }
 

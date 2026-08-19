@@ -231,6 +231,7 @@ fn key_of(step: &super::Step) -> &str {
     match step {
         super::Step::Agent(one) => one.id.as_str(),
         super::Step::Checkpoint(one) => one.id.as_str(),
+        super::Step::Check(one) => one.id.as_str(),
     }
 }
 

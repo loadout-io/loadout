@@ -64,12 +64,30 @@ pub struct WorkflowFile {
     pub extra: Map<String, Value>,
 }
 
-/// Dwa rodzaje kafelka. To jest cała lista i ma taka zostać (D6, ARCHITECTURE §6b).
+/// Dwa rodzaje kafelka **wobec vendorów**. To jest cała lista i ma taka zostać
+/// (D6, ARCHITECTURE §6b).
+///
+/// 2026-08-19 — DOCHODZI TRZECI WARIANT, KTÓRY VENDORA NIE ZNA, i to jest poprawka zdania,
+/// nie jego skasowanie. D6 brzmi w całości: „wszystko, co **vendor** wprowadzi, konfigurujemy
+/// per agent — nigdy jako nowy typ węzła", a konsekwencja z `ARCHITECTURE.md` §6b ma dopisany
+/// zakres: „liczba rodzajów kafelka zostaje dwa **niezależnie od tego, ile funkcji dowiozą
+/// vendorzy**". D6 broni płótna przed powtarzaniem funkcji Claude'a i Codeksa.
+///
+/// [`Step::Check`] nie jest funkcją żadnego vendora — jest mechanizmem Loadouta, wymienionym
+/// **z nazwy** w tabeli D7 („bramka (verify.sh) → krok typu »sprawdź« — uruchamia twoje checki").
+/// Obie decyzje zapisano tego samego dnia i obie są zamknięte, więc sprzeczności nie ma.
+///
+/// I drugie rozstrzygnięcie, ważniejsze dla silnika: ten wariant nazywa **rodzaj sterownika**,
+/// dokładnie tak jak `claude` stoi obok `codex` — nie ETAP biegu. Niezmiennik 27 zakazuje
+/// `if review_enabled` i każdego innego warunku nazywającego etap; test rozróżniający jest
+/// jednozdaniowy: *czy da się zapisać graf, w którym ten krok stoi w innym miejscu albo nie
+/// stoi wcale?* Dla kroku „sprawdź" — tak, trywialnie, bo kolejność mieszka wyłącznie w grafie.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Step {
     Agent(AgentStep),
     Checkpoint(CheckpointStep),
+    Check(CheckStep),
 }
 
 /// Krok, który uruchamia agenta.
@@ -151,6 +169,50 @@ pub struct CheckpointStep {
     #[serde(default)]
     pub at: Point,
     /// Jak `AgentStep::extra`.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Krok, który uruchamia **naszą** komendę i sam orzeka, czy przeszła.
+///
+/// Ani modelu, ani promptu, ani agenta: to jest cała różnica między tym kafelkiem a krokiem
+/// agenta o instrukcji „uruchom `./verify.sh full` i powiedz, czy przeszło". Tamten waliduje
+/// się, biegnie, mówi `checks passed` — i sprzedaje jedyne rozróżnienie, dla którego ten produkt
+/// powstał: co agent POWIEDZIAŁ kontra co się STAŁO
+/// (`docs/research/projects/00-SYNTHESIS.md` §2.1, `docs/harness-as-workflow.md` ustalenie U-1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckStep {
+    pub id: String,
+    /// Nazwa widoczna na kafelku — „Run the checks". To ona pada w uwagach z [`check`].
+    pub name: String,
+    /// Wiersz powłoki, dosłownie jak wpisał go człowiek: `./verify.sh full && npm test`.
+    ///
+    /// `#[serde(default)]` jest ROZSTRZYGNIĘCIEM, nie niedbałością, i ten sam powód stoi przy
+    /// [`AgentStep::at`]: plik poprawiony ręcznie ma się **wczytać** i dostać zdanie z `check()`
+    /// przy kafelku, a nie odbić się o błąd serde, którego użytkownik nie umie umiejscowić
+    /// (T3 §8.4). Odmowa pada przy **zapisie**, a nie przy odczycie.
+    #[serde(default)]
+    pub command: String,
+    /// Wzorzec dowodu: zwykły tekst z jednym metaznakiem, `(\d+)` znaczy „co najmniej jedna
+    /// cyfra". Ta sama notacja, którą człowiek pisze w linii `expect:` naszej własnej bramki
+    /// (`AGENTS.md` §2a punkt 4) — jedna notacja, jedno znaczenie.
+    ///
+    /// Pole jest OBOWIĄZKOWE w sensie walidatora, a nie w sensie serde, i to jest niezmiennik 19:
+    /// bez dowodu werdykt liczyłby się z samego kodu wyjścia, a suita, która nie uruchomiła ani
+    /// jednego testu, wychodzi zerem. Dlatego `check()` odmawia zapisu kroku bez tego wzorca —
+    /// patrz [`check`] — a `#[serde(default)]` służy wyłącznie temu, żeby taki plik dał się
+    /// OTWORZYĆ i naprawić.
+    #[serde(default)]
+    pub proof: String,
+    /// Gdzie ta komenda biegnie. `cargo test` pisze po `target/`, więc to **nie** jest krok
+    /// tylko do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta.
+    #[serde(default)]
+    pub folder: Folder,
+    /// Jak [`AgentStep::at`].
+    #[serde(default)]
+    pub at: Point,
+    /// Jak [`AgentStep::extra`].
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
