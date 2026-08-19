@@ -52,10 +52,28 @@ export interface Point {
 /** Skok siatki w pikselach [T3 §8.2 reguła 1]. Ta sama liczba co `workflow::GRID`. */
 export const GRID = 24;
 
-/** Strzałka. Bez portów, bez danych, bez warunku — znaczy „po" (T3 §3.1). */
+/** Strzałka. Bez portów i bez danych — znaczy „po" (T3 §3.1).
+ *
+ * JEDEN WYJĄTEK OD „BEZ WARUNKU": `maxTurns`. Strzałka z tą liczbą jest POWROTEM — wraca do
+ * kroku, który już był, i zamyka pętlę o suficie zapisanym z góry. Lustro `workflow::Link`
+ * z Rusta; projekt w `docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md`.
+ */
 export interface Link {
   from: string;
   to: string;
+  /**
+   * Ile razy ta strzałka może zawrócić bieg, 1–10. Brak pola znaczy „zwykłe po".
+   *
+   * NAZWA JEST `max_turns`, NIE `maxTurns`, i to nie jest przeoczenie: `workflow::Link` w Ruście
+   * **nie ma** `#[serde(rename_all = "camelCase")]` — w odróżnieniu od kroku, który go ma. Klucz
+   * jedzie więc przez granicę dosłownie tak, jak stoi w pliku. Przepisanie go tutaj na `maxTurns`
+   * dałoby pole, które okno wypełnia, a Rust ignoruje — czyli kontrolkę bez skutku
+   * (niezmiennik 16), i to taką, której nikt nie zauważy, bo plik dalej się zapisuje.
+   *
+   * `Link` nie ma po tamtej stronie `#[serde(flatten)] extra`, więc nie ma tu żadnej siatki
+   * bezpieczeństwa: klucz, którego okno nie przewiezie, po prostu przestaje istnieć.
+   */
+  max_turns?: number;
 }
 
 export type Folder = { use: 'project' } | { use: 'fresh-copy' } | { use: 'pick'; path: string };
