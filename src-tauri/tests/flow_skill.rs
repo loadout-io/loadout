@@ -35,7 +35,9 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use loadout_lib::commands::skills::{install_skill_inner, list_skills_inner, review_skill_inner};
+use loadout_lib::commands::skills::{
+    Landing, install_skill_into, list_skills_in, review_skill_inner,
+};
 use loadout_lib::skills::place::remove;
 use loadout_lib::skills::{DESTINATION_DIRS, Roots, Scope};
 
@@ -78,7 +80,7 @@ fn a_skill_can_be_added_and_taken_away() -> Result<(), Box<dyn Error>> {
     );
 
     // ── (b) INSTALACJA: skill trafia do KAŻDEGO katalogu narzędzi ───────────────────────────
-    let wrote = install_skill_inner(&bench.library, NAME)?;
+    let wrote = install_skill_into(&bench.library, NAME, Landing::Everywhere, None)?;
     assert!(
         !wrote.is_empty(),
         "installing has to write something; it reported no files at all"
@@ -94,7 +96,7 @@ fn a_skill_can_be_added_and_taken_away() -> Result<(), Box<dyn Error>> {
     );
 
     // ── (c) LISTA WIDZI TO, CO LEŻY NA DYSKU ────────────────────────────────────────────────
-    let listed = list_skills_inner(&bench.library)?;
+    let listed = list_skills_in(&bench.library, None)?;
     assert!(
         listed.iter().any(|one| one.name == NAME),
         "the section reads its list from disk, so a skill that was just installed has to be in \

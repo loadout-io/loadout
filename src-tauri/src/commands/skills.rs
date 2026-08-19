@@ -11,7 +11,7 @@
 //! # Bajty nie przechodzą przez okno
 //!
 //! [`review_skill_inner`] zapisuje pobraną umiejętność jako **kopię kanoniczną** w danych
-//! aplikacji (`<biblioteka>/skills/<name>/`), a oknu oddaje sam przegląd. [`install_skill_inner`]
+//! aplikacji (`<biblioteka>/skills/<name>/`), a oknu oddaje sam przegląd. [`install_skill_into`]
 //! czyta tę kopię z powrotem po nazwie. Treść, którą wykona agent, nie ma po co przechodzić
 //! przez warstwę, która ją renderuje — a katalogi vendorów są wyjściem builda, którego źródłem
 //! jest ta jedna kopia (niezmiennik 4, `skills::place::remove`).
@@ -395,19 +395,6 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
         .collect())
 }
 
-/// To, co widzi agent bez otwartego projektu — czyli sam korzeń globalny.
-///
-/// 2026-08-19 — DLACZEGO TA SYGNATURA ZOSTAJE, choć produkcja woła już [`list_skills_in`].
-/// Wołają ją trzy pliki testowe, których T-44 nie ma w bloku `<!-- OWNS -->`:
-/// `tests/it/ipc_read_paths.rs`, `tests/it/skills_author_origin.rs` i `tests/flow_skill.rs`.
-/// Dwa pierwsze są modułami TEGO SAMEGO celu (`tests/it/main.rs`), co kryteria tego zadania,
-/// więc zmiana arności zamieniłaby każde z nich w „nie da się skompilować celu" — a to jest
-/// podpis, którego bramka nie liczy jako czerwieni (AGENTS.md §2a pkt 5). Ten sam powód
-/// stoi przy [`install_skill_inner`] i [`delete_skill_inner`].
-pub fn list_skills_inner(library: &Path) -> Result<Vec<InstalledWire>, Error> {
-    list_skills_in(library, None)
-}
-
 /// Zdejmuje katalog, jeżeli tam jest. Brak katalogu to **nie** jest awaria.
 ///
 /// Osobna funkcja, bo pobranie robi to dwa razy — raz na katalogu roboczym, raz na kopii
@@ -525,7 +512,7 @@ pub fn review_skill_inner(library: &Path, url: &str) -> Result<ImportWire, Fetch
         std::fs::create_dir_all(parent)?;
     }
     // `rename`, nie kopiowanie: kopia kanoniczna ma powstać jednym ruchem, żeby nie istniał
-    // moment, w którym `install_skill_inner` widzi katalog w połowie zapisany.
+    // moment, w którym `install_skill_into` widzi katalog w połowie zapisany.
     std::fs::rename(&incoming, &canonical)?;
 
     // Czytamy jeszcze raz, z miejsca docelowego: `Import` z `incoming` niesie ścieżki źródłowe
@@ -651,7 +638,7 @@ pub fn canonical_for(library: &Path, name: &str) -> Result<PathBuf, Error> {
 /// Zapisuje, skąd umiejętność się wzięła — poza jej katalogiem i poza sidecarem instalacji.
 ///
 /// 2026-08-19 — DO TEGO DNIA POCHODZENIE BYŁO **WYWNIOSKOWANE**, a nie zapisane:
-/// [`list_skills_inner`] odpowiadał „z internetu" wtedy, gdy obok zainstalowanego katalogu
+/// [`list_skills_in`] odpowiadał „z internetu" wtedy, gdy obok zainstalowanego katalogu
 /// leżała kopia kanoniczna, bo kopie kanoniczne powstawały wyłącznie w [`review_skill_inner`].
 /// Ta przesłanka przestaje być prawdziwa w chwili, w której [`author_skill_inner`] też odkłada
 /// kopię kanoniczną — więc znacznik musi mieć własny zapis (niezmiennik 4: pole, którego nie da
@@ -712,7 +699,7 @@ fn origins_path(library: &Path) -> PathBuf {
 /// Co plik pochodzenia mówi o umiejętnościach w tej bibliotece.
 ///
 /// Brak pliku, plik nieczytelny i plik o nieznanym kształcie dają ten sam wynik: pustą mapę.
-/// Nieobecność zapisu jest odpowiedzią, którą [`list_skills_inner`] umie obsłużyć ostrożnie,
+/// Nieobecność zapisu jest odpowiedzią, którą [`list_skills_in`] umie obsłużyć ostrożnie,
 /// a błąd w tym miejscu zaczerwieniłby całą sekcję za brak pliku, którego wolno nie mieć —
 /// każda biblioteka starsza niż to zadanie go nie ma.
 fn origins_of(library: &Path) -> BTreeMap<String, bool> {
@@ -864,58 +851,10 @@ pub fn install_skill_into(
     Ok(plan.writes)
 }
 
-/// Zapis w zakresie globalnym, bez pytania o projekt.
-///
-/// Powód, dla którego ta sygnatura zostaje obok [`install_skill_into`], stoi
-/// przy [`list_skills_inner`].
-///
-/// # `checks/quick-wired.sh` ŚWIECI NA TĘ FUNKCJĘ I NIE MA SIĘ MYLIĆ — 2026-08-19
-///
-/// I MÓWI PRAWDĘ, a nie myli się na heurystyce diffa — sprawdzone w kodzie bazowym gałęzi
-/// (`0cad4fe`). Do tego commita `ipc.rs` wołał WSZYSTKIE TRZY skorupy arności bez zakresu
-/// wprost: `install_skill` → ta funkcja, `list_skills` → [`list_skills_inner`],
-/// `delete_skill` → [`delete_skill_inner`]. Ta gałąź przełożyła te trzy komendy na funkcje
-/// świadome zakresu i tym samym **odebrała wszystkim trzem produkcyjnych wołających**. To jest
-/// dokładnie zdarzenie, po którym ten check powstał, tylko widziane od drugiej strony: nie
-/// „mechanizm wylądował i nikt go nie zawołał", a „mechanizm został wyminięty i nikt tego nie
-/// zauważył".
-///
-/// Produkcyjnego wołającego ta skorupa już nie dostanie i dostać nie ma: produkcja wchodzi tu
-/// przez okno, a okno **zawsze** przysyła zakres, więc arność 2 nie odpowiada na żadne pytanie,
-/// które aplikacja zadaje. Żyje wyłącznie dlatego, że wołają ją trzy pliki testowe spoza bloku
-/// `<!-- OWNS -->` T-44 (`tests/it/ipc_read_paths.rs`, `tests/it/skills_author_origin.rs`,
-/// `tests/flow_skill.rs`), a dwa pierwsze są modułami TEGO SAMEGO celu, co kryteria T-44 —
-/// zmiana arności zamieniłaby je w „nie da się skompilować celu", czyli w podpis, którego bramka
-/// nie liczy jako czerwieni (AGENTS.md §2a pkt 5).
-///
-/// [`list_skills_inner`] i [`delete_skill_inner`] straciły wołających w tym samym commicie i są
-/// dokładnie tym samym długiem. Przechodzą ten check tylko dlatego, że proza `tasks/T-42.md`
-/// i `tasks/T-44.md` wymienia ich nazwy **przypadkiem**, przy okazji zdań o czymś innym. Jedyna
-/// granica checka jest więc taka: świeci na jedną z trzech identycznych sytuacji, bo o dwóch
-/// pozostałych ktoś kiedyś napisał zdanie. Sam fakt, który melduje, jest prawdziwy o wszystkich
-/// trzech.
-///
-/// CZYSTE ZAKOŃCZENIE TO SKASOWANIE TYCH TRZECH SKORUP i poprawienie ~15 wywołań w tamtych
-/// plikach testowych — podmiana mechaniczna, `(&x, y)` na `(&x, y, Landing::Everywhere, None)`.
-/// Tego nie da się zrobić z wnętrza T-44 (te pliki nie są w jego `<!-- OWNS -->`), więc decyzja
-/// należy do człowieka; drugą drogą jest wymienienie tej nazwy w `tasks/T-44.md`, co przenosi
-/// dług tam, gdzie ktoś go widzi, zamiast go zdejmować.
-///
-/// CZEGO ROBIĆ NIE WOLNO, a co zazieleniłoby check: dopisać wywołanie do komentarza (check pyta
-/// o wystąpienie napisu — AGENTS.md §20 ma incydent, w którym selftest przechodził **na
-/// komentarzu**), zagnieździć tę deklarację w podmodule z `pub use` (regex sądzi `pub fn`
-/// w pierwszej kolumnie, więc wcięcie ją ukrywa), albo przepuścić tędy `Landing::Everywhere`
-/// z [`install_skill_into`]. To trzecie wygląda najniewinniej i jest najgorsze: dokłada gałąź
-/// duplikującą w warstwie komend decyzję należącą do `place::plan` (niezmiennik 23), i to
-/// wyłącznie po to, żeby sprawdzenie przestało patrzeć.
-pub fn install_skill_inner(library: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
-    install_skill_into(library, name, Landing::Everywhere, None)
-}
-
 /// Zdejmuje umiejętność z katalogów agentów.
 ///
 /// 2026-08-18 — POWSTAŁO, BO SEKCJA MIAŁA PRZYCISK BEZ SKUTKU. Lista z
-/// [`list_skills_inner`] czyta katalogi vendorów, więc wiersz na ekranie odpowiada plikom na
+/// [`list_skills_in`] czyta katalogi vendorów, więc wiersz na ekranie odpowiada plikom na
 /// dysku — a jedyne, co człowiek mógł z nim zrobić, to zainstalować go jeszcze raz. Kontrolka,
 /// której handler nie ma skutku, jest gorsza niż jej brak (niezmiennik 16).
 ///
@@ -977,14 +916,6 @@ pub fn delete_skill_from(
             messages: vec![format!("{why} ({}). Nothing was removed.", path.display())],
         }),
     }
-}
-
-/// Zdjęcie z zakresu globalnego, bez pytania o projekt.
-///
-/// Powód, dla którego ta sygnatura zostaje obok [`delete_skill_from`], stoi
-/// przy [`list_skills_inner`].
-pub fn delete_skill_inner(library: &Path, name: &str) -> Result<(), Error> {
-    delete_skill_from(library, name, Landing::Everywhere, None)
 }
 
 // ── Draft: jedna tura POZA grafem ──────────────────────────────────────────────────────────
