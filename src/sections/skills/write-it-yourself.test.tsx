@@ -136,14 +136,27 @@ function labelFor(markup: string, id: string): string {
   return (found?.[1] ?? '').trim();
 }
 
-/** Każda wartość prosta w środku, na dowolnym poziomie zagnieżdżenia. */
-function insides(value: unknown, into: unknown[]): unknown[] {
+/**
+ * Każda para (klucz, wartość) w środku, na dowolnym poziomie zagnieżdżenia.
+ *
+ * PARY, NIE SAME WARTOŚCI, i to jest cała treść tej funkcji. Zbiór samych wartości odpowiada
+ * wyłącznie na pytanie „czy ten napis gdziekolwiek pojechał" — a wtedy wywołanie, które wysłało
+ * odpowiedź na „kiedy tego użyć" pod kluczem `name` i odwrotnie, przechodzi: oba napisy są
+ * w ładunku, oba pod właściwie NAZWANYMI kluczami, tylko zamienione. Po drugiej stronie granicy
+ * to jest umiejętność, która nazywa się jednym zdaniem opisu i opisuje się swoją nazwą, zapisana
+ * na dysk bez ani jednego pytania. Klucz musi więc trzymać SWOJĄ wartość, nie czyjąkolwiek.
+ *
+ * Zagnieżdżenie jest tu prawdziwe, nie hipotetyczne: `author_skill` bierze jeden argument
+ * `authored`, więc trzy odpowiedzi jadą o poziom niżej niż klucze, które porównuje asercja wyżej.
+ */
+function pairs(value: unknown, into: [string, unknown][]): [string, unknown][] {
   if (Array.isArray(value)) {
-    for (const item of value as unknown[]) insides(item, into);
+    for (const item of value as unknown[]) pairs(item, into);
   } else if (typeof value === 'object' && value !== null) {
-    for (const item of Object.values(value as Record<string, unknown>)) insides(item, into);
-  } else if (value !== undefined && value !== null) {
-    into.push(value);
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      into.push([key, item]);
+      pairs(item, into);
+    }
   }
   return into;
 }
@@ -307,15 +320,20 @@ describe('a person can write a skill here, and what they write leaves the window
         'nobody sees',
     ).toEqual(wanted);
 
-    const leaves = insides(carried, []);
-    const lost = QUESTIONS.filter((key) => !leaves.includes(TYPED[key]));
+    const sentPairs = pairs(carried, []);
+    const lost = QUESTIONS.filter(
+      (key) => !sentPairs.some(([named, said]) => named === key && said === TYPED[key]),
+    );
     expect(
       lost,
-      'the call reached Rust and left some of what the person typed behind: ' +
+      'the call reached Rust and did not carry what the person typed under ' +
         JSON.stringify(lost) +
-        '. A form that calls the right command with an empty body is the same silence as no call ' +
-        'at all — and the weak version of this criterion (three inputs are in the markup) passes ' +
-        'on exactly that',
+        '. Either the answer is missing altogether — a form that calls the right command with an ' +
+        'empty body is the same silence as no call at all, and the weak version of this criterion ' +
+        '(three inputs are in the markup) passes on exactly that — or it travelled under somebody ' +
+        "else's key, which is worse: two answers swapped arrive as a skill named after its own " +
+        'description, saved to disk with nobody asked. The keys are checked against ipc.rs above; ' +
+        'this pins each of them to ITS value',
     ).toEqual([]);
   });
 
