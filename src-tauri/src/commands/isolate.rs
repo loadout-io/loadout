@@ -39,6 +39,12 @@ use std::process::{Command, Stdio};
 /// Przy drzewie gita ta lista nie jest potrzebna: git sam nie niesie tego, czego nie śledzi.
 const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "target"];
 
+/// Nasz własny katalog w projekcie (`docs/ARCHITECTURE.md` §8).
+///
+/// Ukośnik na końcu jest treścią: bez niego wzorzec łapałby też plik o nazwie zaczynającej się
+/// od `.loadout`, którego nie zostawiliśmy tam my.
+const OURS: &str = ".loadout/";
+
 /// Jak powstało drzewo tego kroku.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum How {
@@ -155,6 +161,13 @@ pub fn make(project: &Path, dest: &Path, branch: &str) -> Result<Made, Trouble> 
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        // NASZYCH WŁASNYCH PLIKÓW NIE MELDUJEMY CZŁOWIEKOWI JAKO JEGO BRAKÓW. Zmierzone
+        // 2026-08-19 na `~/Projects/meetnotes`: `.loadout/` nie jest tam w `.gitignore`, więc
+        // ze 188 plików nieśledzonych **171 to zawartość katalogu poprzedniego biegu**. Bez
+        // tego wiersza filtru pierwsze, co człowiek czyta po naciśnięciu Start, to pięć nazw
+        // z `work/s_1` sprzed godziny — a lista rośnie z każdym biegiem, bo każdy zostawia
+        // swoje drzewo w tym samym miejscu.
+        .filter(|line| !line.starts_with(OURS))
         .map(str::to_owned)
         .collect();
 
