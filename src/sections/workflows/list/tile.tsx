@@ -95,7 +95,7 @@ export function WorkflowTile({ wf, onOpen }: WorkflowTileProps): ReactElement {
       data-tile
       type="button"
       onClick={onOpen}
-      className="flex flex-col gap-2 rounded-sq border border-line bg-panel p-3 text-left hover:border-line-strong"
+      className="flex flex-col gap-2 rounded-md border border-line bg-panel p-3 text-left hover:border-line-strong"
     >
       <span className="text-heading text-ink">{wf.name}</span>
 

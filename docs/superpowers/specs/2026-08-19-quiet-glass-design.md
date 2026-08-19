@@ -382,7 +382,7 @@ Nie przepisuję całej listy; poniżej wyłącznie to, co się zmienia.
 | `loadout-strip` | segmenty w **jednym szklanym torku** (`--radius-pill`). Skończony `--line-strong`, aktywny `--live`, czekający obrys `--line` |
 | `modal` | `--overlay` (nieprzejrzysty!), `--radius-lg`, `--shadow-lg`, tło `--scrim` |
 | `nav-item` | nowy: glif + etykieta + opcjonalna plakietka; aktywny wg §5.2 |
-| `mark` | nowy: znak jako komponent. Węzły klasą `fill-body`, krawędzie `stroke-line-strong` — **nie** `currentColor`, bo to dwa różne tokeny. Wariant jednobarwny (pasek menu, favicon) bierze `currentColor` |
+| `mark` | nowy: znak jako komponent. Węzły klasą `fill-body`, krawędzie `stroke-muted` — **nie** `currentColor`, bo to dwa różne tokeny, i **nie** `stroke-line-strong`: rodzina `--line-*` jest obramowaniem, a krawędzie znaku są jego tematem. Zmierzone przy 22 px na wyrenderowanej powłoce: biel 16% daje 1,7 : 1 kontrastu, czyli linia nie czyta się wcale i znak wraca do czterech kropek. Wariant jednobarwny (pasek menu, favicon) bierze `currentColor` |
 
 **Ograniczenie, które trzeba znać, zanim napiszesz komponent:** `checks/quick-tokens.sh` odrzuca
 w `src/**` każdy literał hex, każdą liczbową wartość `font-size` i `border-radius` bez `var(`,

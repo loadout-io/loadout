@@ -55,7 +55,7 @@ export interface StepTileProps {
  * liczba w klasie jest literałem rozmiaru, a mnożnik siatki nią nie jest — i przeżyje zmianę
  * bazy. ROZJAZD, świadomy i zgłoszony: DESIGN §6 mówi w tym miejscu 280 px, makieta 246,
  * a przy rozbieżności wygrywa makieta. */
-const CARD = 'w-61.5 rounded-sq border bg-raised p-3 text-body';
+const CARD = 'w-61.5 rounded-md border bg-raised p-3 text-body';
 const CARD_LINE = 'border-line-strong';
 const CARD_SELECTED = 'border-accent';
 
@@ -130,7 +130,7 @@ export function StepTile({
             gestu — i tą, która nie działa. */}
         <span
           aria-hidden
-          className="grid size-4.5 shrink-0 cursor-grab place-items-center rounded-sq border border-line bg-well font-mono text-label text-muted"
+          className="grid size-4.5 shrink-0 cursor-grab place-items-center rounded-sm border border-line bg-well font-mono text-label text-muted"
         >
           ⠿
         </span>

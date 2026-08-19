@@ -42,8 +42,21 @@ const NOTE = 'text-body text-muted';
  * `disabled` także wtedy, gdy kontrolka działa — a wtedy „czy ta kontrolka jest wygaszona"
  * przestaje mieć jedną odpowiedź w HTML-u i zaczyna mieć dwie, z których jedna kłamie.
  * Ta sama pułapka stoi w przycisku Save w `agent-form.tsx`. */
-const FIELD = 'h-8 rounded-sq border border-line bg-well px-2 text-body text-ink';
-const FIELD_OFF = 'h-8 rounded-sq border border-line bg-panel px-2 text-body text-muted';
+/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+ *
+ * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
+ * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
+ * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
+ * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
+ * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
+ * sie jak dwa rozne stany, a nie jak dwa pola.
+ *
+ * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
+ * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
+ * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
+const FIELD = 'field';
+/* Wylaczone pole: ta sama studnia, tylko bez wnetrza i bez tuszu — narzedzia bija klase. */
+const FIELD_OFF = 'field bg-panel text-muted';
 
 function fieldClass(state: Capability): string {
   return state === 'unavailable' ? FIELD_OFF : FIELD;

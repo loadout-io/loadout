@@ -41,23 +41,35 @@ export interface SkillsScreenProps {
 }
 
 /* Klasy komponentów z DESIGN §6. */
-const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
-const SECONDARY = 'h-8 rounded-sq border border-line-strong bg-raised px-3 text-ui text-ink';
-const FIELD = 'h-8 rounded-sq border border-line-strong bg-well px-2 font-mono text-mono text-ink';
+const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
+const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
+/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+ *
+ * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
+ * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
+ * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
+ * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
+ * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
+ * sie jak dwa rozne stany, a nie jak dwa pola.
+ *
+ * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
+ * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
+ * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
+const FIELD = 'field';
 /* Pole na ZDANIE, nie na adres. `FIELD` wyżej jest monospace z powodu: trzyma URL-a, a w adresie
    liczy się każdy znak z osobna. Odpowiedź na „kiedy tego użyć" jest prozą i w monospace czyta
    się jak dane do sprawdzenia, a nie jak zdanie do napisania. */
-const ANSWER = 'h-8 rounded-sq border border-line-strong bg-well px-2 text-body text-ink';
+const ANSWER = 'field';
 /* „Co zrobić" jest ciałem `SKILL.md`, więc bywa akapitem — pole jednowierszowe pokazywałoby
    z niego okno o szerokości ośmiu słów. Wysokość z `.fld textarea` w makiecie. */
-const ANSWER_LONG = 'min-h-24 rounded-sq border border-line-strong bg-well p-2 text-body text-ink';
+const ANSWER_LONG = 'field';
 const LABEL = 'text-label text-muted';
 const ROW = 'flex flex-col gap-1';
 /* `button-danger` z DESIGN §6: jak `button-secondary`, ale obrys `--fail-edge` i tekst
  * `--fail`, BEZ WYPEŁNIENIA — akcja niszcząca ma być rozpoznawalna, a nie najgłośniejsza. */
-const DANGER = 'h-8 rounded-sq border border-fail-edge px-3 text-ui text-fail';
+const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 /* `chip`: neutralny wariant znaczy „nic od ciebie nie chce" (DESIGN §3 i §6). */
-const CHIP_QUIET = 'h-5 rounded-sq border border-line bg-raised px-2 text-label text-muted';
+const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
 
 /**
  * Gdzie to wyląduje — zdanie czytane PRZED naciśnięciem „Add this skill", nie po.
@@ -149,7 +161,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
         {panel === null ? null : (
           <div
             data-add-panel
-            className="mx-auto mb-6 flex max-w-160 flex-col gap-4 rounded-sq border border-line bg-panel p-4"
+            className="mx-auto mb-6 flex max-w-160 flex-col gap-4 rounded-md border border-line bg-panel p-4"
           >
             <form
               className={ROW}
@@ -374,7 +386,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
 
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+            <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
               ◇
             </span>
             {/* `data-empty` na elemencie z samym zdaniem — tak samo jak w `src/App.tsx`. */}
@@ -394,7 +406,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             {state.pending === null ? null : (
               <section
                 data-skill={state.pending.name}
-                className="mx-auto mb-6 flex max-w-160 flex-col gap-3 rounded-sq border border-attend-edge bg-panel p-3"
+                className="mx-auto mb-6 flex max-w-160 flex-col gap-3 rounded-md border border-attend-edge bg-panel p-3"
               >
                 {/* Zdanie o miejscu stoi TU, a nie w polu na link: pole zamyka się w chwili
                     wklejenia, a decyzja „dodać czy nie" jest podejmowana dopiero nad tą kartą.
@@ -424,7 +436,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                   <li
                     key={skill.name}
                     data-skill={skill.name}
-                    className="flex flex-col gap-3 rounded-sq border border-line bg-panel p-3"
+                    className="flex flex-col gap-3 rounded-md border border-line bg-panel p-3"
                   >
                     <div className="flex items-center gap-2">
                       <h2 className="text-heading text-ink">{skill.name}</h2>

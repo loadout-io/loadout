@@ -35,8 +35,8 @@ export interface ForcedChoiceProps {
  * bo ta sama liczba w dwóch miejscach jest tym, jak paleta przestaje być zamknięta. */
 const BACKDROP = 'fixed inset-0 flex items-center justify-center bg-bg/72';
 const WINDOW =
-  'flex w-full max-w-160 flex-col gap-3 rounded-sq border border-line-strong bg-panel p-6';
-const ACT = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+  'flex w-full max-w-160 flex-col gap-3 rounded-lg border border-line-strong bg-panel p-6';
+const ACT = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 /** Zdanie o tym, ile brakuje. Jedna liczba, jedno miejsce — resztę mówi lista pod nim. */
 function overBySentence(overBy: number): string {

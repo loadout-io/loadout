@@ -134,22 +134,22 @@ const THINKING_SAYS: Readonly<Record<Thinking, string>> = {
 
 /* Klasy komponentów z DESIGN §6. Wysokości idą po siatce 4px: 36px = `h-9` (button-primary),
  * 28px = `h-7` (button-quiet). */
-const PRIMARY = 'h-9 rounded-sq bg-accent px-4 text-ui text-bg';
-const QUIET = 'h-7 rounded-sq border border-line px-3 text-ui text-body';
+const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
+const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 /* `button-danger` z DESIGN §6: jak `button-secondary`, ale obrys `--fail-edge` i tekst `--fail`,
  * BEZ WYPEŁNIENIA. Akcja niszcząca ma być rozpoznawalna, a nie najbardziej rzucająca się
  * w oczy rzecz na ekranie. */
-const DANGER = 'h-7 rounded-sq border border-fail-edge px-3 text-ui text-fail';
+const DANGER = 'h-7 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 /* `chip`, wariant neutralny: vendor, model i głębokość myślenia są tożsamością agenta, a nie
  * jego stanem — nasycony kolor znaczy w tej aplikacji „twoja kolej" albo „teraz" (DESIGN §3). */
 const CHIP =
-  'h-5 shrink-0 rounded-sq border border-line bg-raised px-2 font-mono text-meta text-muted';
+  'h-5 shrink-0 rounded-pill border border-line bg-raised px-2 font-mono text-meta text-muted';
 /* Kwadrat tożsamości ma 22 px — makieta, `.sqid{width:22px;height:22px}`. DESIGN.md podaje tu
  * dwie różne liczby (22 px w linii 127, 14 px w linii 243) i przy rozbieżności wygrywa makieta;
  * rozjazd jest zgłoszony człowiekowi. `size-5.5` to `calc(var(--spacing) * 5.5)`, czyli 22 px
  * na bazie 4px — nie literał (`checks/quick-tokens.sh`). */
 const SQID =
-  'grid size-5.5 shrink-0 place-items-center rounded-sq font-mono text-mono-strong text-ink';
+  'grid size-5.5 shrink-0 place-items-center rounded-sm font-mono text-mono-strong text-ink';
 
 /**
  * Nowy agent, zanim człowiek cokolwiek w nim wpisze.
@@ -299,7 +299,7 @@ export default function AgentsScreen({
         <div
           data-refusal
           role="alert"
-          className="flex items-start gap-3 border-b border-fail-edge bg-fail-wash px-4 py-2"
+          className="flex items-start gap-3 border-b border-fail-edge bg-fail-soft px-4 py-2"
         >
           <p className="text-body text-fail">{state.refusal}</p>
           <button
@@ -318,7 +318,7 @@ export default function AgentsScreen({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {empty ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
-              <span className="flex size-8 items-center justify-center rounded-sq border border-dashed border-line-strong text-muted">
+              <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
                 ◇
               </span>
               {/* `data-empty` siedzi na elemencie, który niesie SAMO zdanie — nie na ramce
@@ -343,7 +343,7 @@ export default function AgentsScreen({
                   <button
                     data-agent={agent.id}
                     type="button"
-                    className="flex w-full flex-col gap-2 rounded-sq border border-line bg-panel p-3 text-left hover:border-line-strong"
+                    className="flex w-full flex-col gap-2 rounded-md border border-line bg-panel p-3 text-left hover:border-line-strong"
                     onClick={() => {
                       open(agent);
                     }}

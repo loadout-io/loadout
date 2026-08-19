@@ -111,15 +111,27 @@ const MODELS: Record<Vendor, readonly string[]> = {
 
 const ROW = 'flex flex-col gap-1';
 const LABEL = 'text-label text-muted';
-const FIELD = 'h-8 rounded-sq border border-line bg-well px-2 text-body text-ink';
-const AREA = 'min-h-24 rounded-sq border border-line bg-well p-2 text-body text-ink';
+/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+ *
+ * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
+ * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
+ * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
+ * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
+ * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
+ * sie jak dwa rozne stany, a nie jak dwa pola.
+ *
+ * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
+ * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
+ * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
+const FIELD = 'field';
+const AREA = 'field';
 
 /* Klasa przycisku Save zależy od stanu i jest wybierana TUTAJ, a nie wariantem `disabled:`
  * Tailwinda. Wariant zostawiłby słowo `disabled` w atrybucie `class` także wtedy, gdy przycisk
  * działa — czyli „czy da się zapisać" miałoby w HTML-u dwie odpowiedzi, z których jedna kłamie
  * (niezmiennik 13: jeden fakt, jedno miejsce). */
-const SAVE = 'ml-auto h-8 rounded-sq bg-accent px-4 text-ui text-bg';
-const SAVE_OFF = 'ml-auto h-8 rounded-sq bg-raised px-4 text-ui text-muted';
+const SAVE = 'ml-auto h-8 rounded-sm bg-accent px-4 text-ui text-bg';
+const SAVE_OFF = 'ml-auto h-8 rounded-sm bg-raised px-4 text-ui text-muted';
 
 /** Wartość z listy albo dotychczasowa. Rzutowanie napisu z DOM-u na wariant enuma byłoby
  * obietnicą, której ten napis nie składa. */
@@ -348,7 +360,7 @@ export function AgentForm({
             type="button"
             data-more
             aria-expanded={expanded}
-            className="h-8 rounded-sq border border-line px-3 text-ui text-body"
+            className="h-8 rounded-sm border border-line px-3 text-ui text-body"
             onClick={onToggleMore}
           >
             More settings — tools, skills, connections
