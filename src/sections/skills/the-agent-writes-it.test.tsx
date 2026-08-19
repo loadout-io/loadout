@@ -352,8 +352,8 @@ describe('a person says what they want, an agent writes it, and the person reads
       field,
       'the panel carries no field for the sentence a person writes. This is the state the section ' +
         'is in today: two ways in, both of which need the person to write the whole skill ' +
-        'themselves, while Loadout drives two agent vendors and can already prove a process group ' +
-        'is dead',
+        'themselves, while Loadout drives two agent vendors and can already prove the group it ' +
+        'started is dead',
     ).not.toBe('');
 
     const id = attributeOf(field, 'id');
@@ -445,7 +445,8 @@ describe('a person says what they want, an agent writes it, and the person reads
     expect(
       invoked.mock.calls.length,
       'the question never left the window. Every way of running an agent in this application goes ' +
-        'through a workflow file, a run folder, a Dag and the scheduler — and a skill a person ' +
+        'through a workflow file, a run folder, a graph of steps and the scheduler — and a skill ' +
+        'a person ' +
         'wants is not a run: it is one turn, one prompt, one answer. Exactly one call, because ' +
         'more than one means the same sentence is paid for twice',
     ).toBe(1);
@@ -528,7 +529,7 @@ describe('a person says what they want, an agent writes it, and the person reads
       said,
       'nothing on the screen says what is happening while the model writes. Silence after a ' +
         'control looks exactly like a broken control: the person presses it a second time, and ' +
-        'here the second press costs another turn of somebody paid for by the token',
+        'here the second press costs another turn of an agent somebody is paying for',
     ).not.toBe('');
     expect(
       howManyWords(said),
@@ -541,7 +542,7 @@ describe('a person says what they want, an agent writes it, and the person reads
     expect(
       occurrences(markup, 'data-stop-writing'),
       'the writing state has no way out, or it has two. A turn that cannot be stopped is a turn ' +
-        'that keeps burning the provider allowance of this person while they watch — invariant 6 ' +
+        'that keeps burning the paid allowance of this person while they watch — invariant 6 ' +
         'calls that a financial error, not a hygiene one',
     ).toBe(1);
 
@@ -581,7 +582,7 @@ describe('a person says what they want, an agent writes it, and the person reads
       'writing and stopping are TWO calls across the seam and the window made ' +
         String(invoked.mock.calls.length) +
         '. A Stop that only clears a flag in this store is the control this criterion exists to ' +
-        'refuse: the process on the other side keeps writing and keeps being paid for, and the ' +
+        'refuse: the agent on the other side keeps writing and keeps being paid for, and the ' +
         'screen reports it stopped (invariants 6, 10 and 16)',
     ).toBe(2);
 
@@ -621,7 +622,7 @@ describe('a person says what they want, an agent writes it, and the person reads
         ', which is a command the Work section calls (read out of src/sections/run/io.ts). Then ' +
         'Stop in this panel reaches into the run in the next tab and kills it — and the two ' +
         'handles are genuinely separate on the Rust side: AppState.live is REPLACED on every ' +
-        'Start, which is the whole reason the draft carries a token of its own',
+        'Start, which is the whole reason the draft carries a stop handle of its own',
     ).toBe(false);
 
     expect(
