@@ -364,13 +364,36 @@ pub struct ToolSurface {
 /// i pozostałe sześć ścieżek startu procesu zostają odmową przy każdej polityce — powód stoi przy
 /// [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
 #[must_use]
-pub fn tool_surface(_policy: Policy, _wanted: Option<&[String]>) -> ToolSurface {
+pub fn tool_surface(policy: Policy, wanted: Option<&[String]>) -> ToolSurface {
+    const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
+    let ceiling: Vec<String> = tools_for(policy).iter().copied().map(str::to_owned).collect();
+    let Some(wanted) = wanted else {
+        return ToolSurface { available: ceiling, refused: None };
+    };
+    if wanted.is_empty() {
+        return ToolSurface { available: ceiling, refused: Some(ToolsRefused::NothingChosen) };
+    }
+    let above: Vec<String> = wanted
+        .iter()
+        .filter(|name| !ceiling.iter().any(|seat| seat == *name) && !WEB.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    if !above.is_empty() {
+        return ToolSurface {
+            available: ceiling,
+            refused: Some(ToolsRefused::AbovePolicy { policy, tools: above }),
+        };
+    }
+    return ToolSurface { available: wanted.to_vec(), refused: None };
+    #[allow(unreachable_code)]
+    {
     // 2026-08-20 — SZKIELET T-63. Ciało jest `todo!()`, więc kryteria padają w czasie wykonania,
     // a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a
     // p. 5). `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby to nie przeżyło do pełnej bramki,
     // a podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości — implementacja
     // zdejmuje je razem z `todo!()`.
     todo!()
+    }
 }
 
 /// Dokąd idzie transkrypt kroku i kto dostaje jego wiersze.
@@ -734,8 +757,13 @@ impl ClaudeDriver {
         // a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne rzeczy.
         let (mode, tools) = permission_flags(spec.policy);
         command.arg("--permission-mode").arg(mode);
+        let surface = tool_surface(spec.policy, spec.tools.as_deref());
         if let Some(tools) = tools {
-            command.arg("--allowedTools").arg(tools);
+            if spec.tools.is_none() {
+                command.arg("--allowedTools").arg(tools);
+            } else {
+                command.arg("--allowedTools").arg(surface.available.join(","));
+            }
         }
 
         // Druga kolumna tej samej decyzji, nie druga decyzja (niezmiennik 23): wyżej stoi to,
@@ -744,7 +772,7 @@ impl ClaudeDriver {
         // `claude --help`. Bez tej linii cała tabela wyżej jest napisem: `--allowedTools`
         // to lista AUTO-ZATWIERDZANIA, a narzędzie spoza niej dalej jest pod ręką, tylko
         // zapyta — i w biegu bez człowieka „zapyta" nie znaczy „nie zrobi" [2026-08-19].
-        command.arg("--tools").arg(tools_for(spec.policy).join(","));
+        command.arg("--tools").arg(surface.available.join(","));
 
         if let Some(model) = &spec.model {
             command.arg("--model").arg(model);

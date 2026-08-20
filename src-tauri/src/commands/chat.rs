@@ -40,7 +40,7 @@ use crate::engine::drivers::{
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, FileAccess};
+use crate::library::agents::Agent;
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -419,14 +419,7 @@ impl Lead {
     /// żadne sprawdzenie w tym repo nie widzi.
     #[must_use]
     pub fn policy(&self) -> Policy {
-        match self.agent.file_access {
-            FileAccess::LookOnly => Policy::ReadOnly,
-            // Środkowa pozycja jest przybliżeniem i tak jest opisana w macierzy T4 §6.3:
-            // [`Policy`] nie ma dziś wariantu „pytaj", więc `ask-first` ląduje na „edytuje
-            // w swoim folderze". To jest to samo zdanie, które stoi przy tabeli biegu.
-            FileAccess::AskFirst => Policy::EditInFolder,
-            FileAccess::WorkFreely => Policy::Unrestricted,
-        }
+        super::run::policy_of(self.agent.file_access)
     }
 
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
