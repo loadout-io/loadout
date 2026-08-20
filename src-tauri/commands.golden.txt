@@ -16,6 +16,7 @@
 author_skill
 check_trigger
 check_workflow
+close_terminal
 continue_run
 delete_agent
 delete_skill

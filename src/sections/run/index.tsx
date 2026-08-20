@@ -52,13 +52,17 @@ import { Now } from './feed/now';
 import { Entry } from './entry/entry';
 import { chooseWorkingFolder, folderName } from './folders';
 import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
+/* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
+ * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
+import { lead } from './lead';
 import { atOnce as atOnceNow, subscribeToAtOnce } from './limits/chosen';
 import { waitingWhere } from './limits/waiting';
 import { toChoices } from './choices';
 import type { Named } from './run-command';
 import { startFromLine, workflowNames } from './run-command';
 import { list as listWorkflows } from '../workflows/io';
-import { cardsIn, runTabs } from './tabs/store';
+import { cardOnTop, cardsIn, runTabs } from './tabs/store';
+import { newTerminal } from './tabs/terminal';
 import { PausedBanner } from './limits/paused-banner';
 import type { AgentFacts } from './rail/roster';
 import { roster } from './rail/roster';
@@ -161,7 +165,12 @@ export default function Run(): ReactElement {
     useWorkspaces.getState,
     useWorkspaces.getState,
   );
-  const folder = scopes.all.find((one) => one.id === scopes.activeId)?.folder ?? null;
+  /* Zakres, w którym człowiek pracuje — CAŁY, nie sam folder, bo `＋` potrzebuje też jego nazwy:
+   * świeży terminal nie ma jeszcze workflow, więc mówi o sobie tym słowem, które człowiek sam
+   * wpisał w bocznym menu. Nazwa folderu wyliczona z jego ścieżki byłaby drugą odpowiedzią na
+   * pytanie „jak nazywa się ten projekt" (niezmiennik 13). */
+  const scope = scopes.all.find((one) => one.id === scopes.activeId) ?? null;
+  const folder = scope?.folder ?? null;
 
   /* Jedno miejsce na to, co Loadout odpowiedział o folderze albo o zatrzymaniu wywołanym
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
@@ -203,13 +212,14 @@ export default function Run(): ReactElement {
    * ORAZ karty w środku ekranu). Filtr jest funkcją czystą w `./tabs/store`, żeby dało się go
    * osądzić bez okna. */
   const shown = useMemo(() => cardsIn(tabs.tabs, folder), [tabs.tabs, folder]);
-  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ. Karta wybrana w innym zakresie zostaje
-   * wybrana w swoim, ale nie ma prawa zabrać podświetlenia jedynej karcie tutaj: pasek, na którym
-   * żadna karta nie jest otwarta, choć jedna stoi, to stan, w którym człowiek nie wie, na co
-   * patrzy. */
-  const onTop = shown.some((card) => card.id === tabs.activeId)
-    ? tabs.activeId
-    : (shown[0]?.id ?? null);
+  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ, i to jest to samo wyrażenie, którym
+   * rozstrzyga to rejestr strumienia (`./feed/live`, `runFeed`). Jedna odpowiedź na jedno pytanie
+   * (niezmiennik 13): dwie kopie dałyby pasek podświetlający jedną kartę nad historią należącą
+   * do drugiej — i wyglądałoby to jak lider, który odpowiada nie na to, o co pytano. */
+  const onTop = useMemo(
+    () => cardOnTop(tabs.tabs, tabs.activeId, folder),
+    [tabs.tabs, tabs.activeId, folder],
+  );
 
   /* CZEGO TU NIE MA: przestawiania sesji przy przełączeniu zakresu. Oba magazyny robią to same
    * i każdy z nich słucha magazynu zakresów u siebie — `runFeed` w `./feed/live`, `useRun`
@@ -227,14 +237,23 @@ export default function Run(): ReactElement {
    * — zamontowane i przetestowane — bylo przez to kodem NIEOSIAGALNYM.
    *
    * Zrodlem jest ta sama lista, ktora rysuje szyne, wiec liczba na karcie i kafelki obok siebie
-   * nie moga sie rozjechac (niezmiennik 13). PISZEMY DO KARTY TEGO ZAKRESU, nie do „karty na
-   * wierzchu": kafelki opisuja sesje zakresu, w ktorym stoimy, wiec ich liczba nalezy do jego
-   * karty. Karta innego zakresu dostalaby zgadniete zero z kropka „tu cos chodzi" nad biegiem,
-   * o ktorym ten ekran nic nie wie (niezmiennik 17). */
+   * nie moga sie rozjechac (niezmiennik 13).
+   *
+   * 2026-08-20 (T-71) — PISZEMY DO KARTY NA WIERZCHU, i to jest poprawka do zdania, ktore stalo
+   * tu wczesniej („do karty tego ZAKRESU, nie do karty na wierzchu"). Tamto bylo prawdziwe,
+   * dopoki w zakresie mogla stac najwyzej jedna karta: „karta zakresu" i „karta na wierzchu"
+   * byly wtedy tym samym. Od dziś nie sa. Szyna rysuje sie z `runFeed.view`, czyli z sesji
+   * TERMINALU NA WIERZCHU, wiec `cards.length` jest liczba o nim — a wpisana na karte folderu
+   * bylaby zdaniem o jednej karcie policzonym z danych drugiej (niezmiennik 17).
+   *
+   * W trakcie biegu te dwie odpowiedzi i tak sie zgadzaja: karte biegu zaklada `cardForRun`
+   * i STAWIA JA NA WIERZCHU, wiec `onTop` jest wtedy karta biegu. Roznica widac tylko wtedy,
+   * kiedy nic nie biegnie, a czlowiek rozmawia w swiezym terminalu — i wtedy liczba nalezy do
+   * tego terminalu. */
   useEffect(() => {
-    if (folder === null) return;
-    runTabs.getState().setAgents(folder, cards.length);
-  }, [folder, cards.length]);
+    if (onTop === null) return;
+    runTabs.getState().setAgents(onTop, cards.length);
+  }, [onTop, cards.length]);
   const running = run.workflow !== '';
 
   /* NAZWY WORKFLOW DO PODPOWIEDZI POD `/run` — zgłoszenie właściciela 2026-08-19: „powinno
@@ -245,21 +264,30 @@ export default function Run(): ReactElement {
    * i sekcja Workflow — pliki są prawdą (niezmiennik 4), a lista trzymana między wejściami
    * podpowiadałaby nazwę workflow skasowanego obok. Cisza przy odmowie jest tu POPRAWNA: brak
    * podpowiedzi jest niedogodnością, a `/run` i tak odmówi zdaniem, które wymienia nazwy. */
-  /* ROZMOWA DOSTAJE SWÓJ STRUMIEŃ przy wejściu na sekcję — proces jeszcze nie wstaje.
+  /* ROZMOWA DOSTAJE SWÓJ STRUMIEŃ przy wejściu na sekcję — lider jeszcze nie wstaje.
    *
-   * Otwarcie zakłada wyłącznie kanał do okna; sesja u dostawcy powstaje przy PIERWSZYM zdaniu
-   * (`commands::chat::Chat::live`), bo tura wystartowana przy montażu ekranu jest turą, za którą
-   * ktoś płaci, choć nikt o nic nie zapytał.
+   * Otwarcie zakłada wyłącznie kanał do okna; rozmowa u dostawcy powstaje przy PIERWSZYM zdaniu
+   * (`commands::chat::Threads::say_in`), bo tura wystartowana przy montażu ekranu jest turą, za
+   * którą ktoś płaci, choć nikt o nic nie zapytał.
    *
-   * Zależne od `folder`: rozmowa patrzy w folder zakresu, a przełączenie zakresu ma ją tam
-   * przenieść razem ze strumieniem. Cisza przy odmowie jest poprawna — pierwsze zdanie i tak
-   * wróci z odmową, która nazywa następny ruch. */
+   * ZALEŻNE OD KARTY, NIE TYLKO OD ZAKRESU, i to jest zmiana z 2026-08-20. Rozmowa należy do
+   * TERMINALU: rejestr po tamtej stronie potrzebuje wpisu na tę kartę, zanim padnie w niej
+   * pierwsze zdanie — bez niego odmawia, bo wątek bez kanału jest wątkiem, którego wierszy nikt
+   * nie odbiera. Wołanie zależne tylko od folderu zostawiałoby drugą kartę bez strumienia,
+   * a jej pierwsze zdanie odbijałoby się zdaniem o niegotowym liderze.
+   *
+   * WOŁANE PONOWNIE NIC NIE KOŃCZY — przekierowuje wiersze na nowy kanał i zostawia rozmowę
+   * (`ipc::open_chat`, akapit o dzienniku z 2026-08-19). Dlatego powrót na kartę, na której już
+   * się rozmawiało, jest kolejną turą tej samej rozmowy, a nie nową.
+   *
+   * Cisza przy odmowie jest poprawna — pierwsze zdanie i tak wróci z odmową, która nazywa
+   * następny ruch. */
   useEffect(() => {
-    openChat(folder).catch(() => {
+    openChat(folder, onTop).catch(() => {
       /* Świadomie bez zdania na ekranie: zdanie o niedostępnej rozmowie ma sens dopiero wtedy,
        * gdy człowiek do niej napisze — a wtedy przyjdzie z `say_to_orchestrator`. */
     });
-  }, [folder]);
+  }, [folder, onTop]);
 
   const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
   useEffect(() => {
@@ -306,6 +334,44 @@ export default function Run(): ReactElement {
   }
 
   /**
+   * `＋` na pasku kart: NOWY TERMINAL w projekcie, który już wybrano.
+   *
+   * ZGŁOSZENIE, Z KTÓREGO TO WZIĘŁO SIĘ W CAŁOŚCI (właściciel, 2026-08-20): „jak klikam plusik to
+   * powinno po prostu odpalać nowy nasz terminal i sobie tam możemy kolejne workflow w naszym
+   * scope co mamy zaznaczone, a nie tak jak teraz że scope wybieramy znowu".
+   *
+   * STAN BYŁ GORSZY, NIŻ BRZMI ZGŁOSZENIE. `＋` wołał [`openFolder`], czyli systemowe okno wyboru
+   * katalogu, a wybór kończył się dołożeniem nowego ZAKRESU — który od razu stawał się aktywny.
+   * Pasek pokazuje karty aktywnego zakresu, a w świeżym nie ma żadnej: kliknięcie w `＋` nie
+   * dokładało więc karty **nigdy**, tylko wymieniało projekt i opróżniało pasek.
+   *
+   * DECYZJA MIESZKA TUTAJ, A NIE W PASKU, bo to ten ekran wie, czy jest gdzie postawić terminal.
+   * Pasek dostaje jeden handler i nie zna pojęcia zakresu (`./tabs/tab-bar.tsx`).
+   *
+   * BEZ ZAKRESU DALEJ PYTAMY O FOLDER, i to nie jest wyjątek dla wygody: terminal bez miejsca
+   * pracy nie ma gdzie stanąć, a karta, której praca nie ma domu, jest kropką nad folderem,
+   * którego nie ma (niezmiennik 17). Pytanie o folder jest wtedy jedyną uczciwą odpowiedzią —
+   * i jest tą samą czynnością, co zaproszenie na pustym ekranie i `/open` w wierszu wejścia.
+   *
+   * KURSOR WRACA DO POLA, bo otwarcie terminalu JEST prośbą o to, żeby w nim pisać. Przeglądarka
+   * zostawia ognisko na przycisku, który nacisnięto, więc bez tej linii każdy nowy terminal
+   * kosztowałby jedno kliknięcie więcej przed pierwszym zdaniem — czyli dokładnie tę wadę, którą
+   * właściciel zgłosił tego samego dnia o wierszu wejścia (T-58 AC-3).
+   */
+  function newTerminalHere(): void {
+    setSaid(null);
+    if (scope === null || folder === null) {
+      openFolder();
+      return;
+    }
+    /* `open` z fabryki dokłada kartę I STAWIA JĄ NA WIERZCHU — jednym `set`, więc nie ma chwili,
+     * w której karta już stoi, a wierzch należy jeszcze do poprzedniej. Człowiek, który poprosił
+     * o nowe miejsce do pracy, patrzy na nie, a nie na to, co było przedtem. */
+    runTabs.getState().open(newTerminal(folder, scope.name));
+    field.current?.focus();
+  }
+
+  /**
    * Proza z wiersza wejścia → lider, albo krok, którego człowiek nazwał na początku linii.
    *
    * Zdanie odmowy WRACA do wiersza, a nie ląduje w `said` tego ekranu, i to jest jedyne miejsce,
@@ -335,11 +401,21 @@ export default function Run(): ReactElement {
      * zamknięta w `sayIt` byłaby kodem, którego nie umie dotknąć żadne kryterium. Wiersz mówi
      * POD POLEM, do kogo trafi zdanie, zanim ktokolwiek naciśnie Enter (`entry/entry.tsx`,
      * `whereItGoes`), i czyta to z tej samej listy pracujących kroków. */
+    /* KTÓRY TERMINAL TO MÓWI I KOGO CZŁOWIEK WSKAZAŁ NA LIDERA — dwie wartości, które od
+     * 2026-08-20 dojeżdżają do Rusta, i bez których żadna z nich nie miała nośnika.
+     *
+     * `onTop` odróżnia dwie karty jednego projektu. Bez niego rejestr wątków oddaje im JEDNĄ
+     * rozmowę: człowiek pisze w lewej karcie, a odpowiedź pojawia mu się w prawej.
+     *
+     * `lead()` jest wskazaniem z paska (`./lead.ts`, kontrolka w `./start.tsx`) i do tego dnia
+     * NIE MIAŁO DRUTU: wybór żył w oknie, a Rust rozmawiał zaszytym Claude'em, kimkolwiek by ten
+     * wybór nie był. Czytamy je w chwili wysyłki, nie z migawki renderu — zdanie ma pójść do tego
+     * lidera, którego widać na pasku teraz. */
     const going = addresseeOf(text, listening);
     try {
       await (going.to === 'agent'
         ? sayToAgent(going.text, going.agent)
-        : sayToOrchestrator(going.text, folder));
+        : sayToOrchestrator(going.text, folder, onTop, lead()));
       return null;
     } catch (error: unknown) {
       return why(
@@ -437,7 +513,11 @@ export default function Run(): ReactElement {
           waitingIn={waitingWhere(run.steps, run.folder ?? folder)}
           onSelect={tabs.activate}
           onClose={tabs.requestClose}
-          onOpenFolder={openFolder}
+          /* `＋` OTWIERA TERMINAL, nie okno wyboru katalogu — powód w całości stoi przy
+             `newTerminalHere`. Nazwa propsa jest zapisanym długiem i jest zgłoszona przy
+             `TabBarProps.onOpenFolder`; zaproszenie na pustym ekranie niżej i `/open` w wierszu
+             wejścia wołają dalej `openFolder`, bo one naprawdę pytają o folder. */
+          onOpenFolder={newTerminalHere}
         />
 
         <div className="flex shrink-0 flex-col gap-2">
