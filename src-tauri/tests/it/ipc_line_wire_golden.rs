@@ -79,6 +79,16 @@ const GOLDEN: &str = include_str!(concat!(
 /// wariant `Line` nie skompiluje tego pliku, dopóki ktoś nie powie, jak wygląda na drucie.
 /// Lista nazw pól pisana ręcznie nie ma tej własności — milczy dokładnie o tym wariancie,
 /// o którym autor zapomniał.
+///
+/// 2026-08-20 — SUFIT `too_many_lines` (pedantic, 100) PĘKŁ NA SIEDEMNASTYM WARIANCIE: 101
+/// linii, i przekroczenie przyszło z commitem kontraktowym T-61, a nie z tej implementacji
+/// (`quick-clippy` woła `--lib`, więc `tests/` widzi dopiero pełna bramka). Ten `allow` jest
+/// tańszy niż każda alternatywa i nie kupuje niczego pod stołem: lint mierzy złożoność, a to
+/// jest TABELA — jedna gałąź na rodzaj, bez ani jednego warunku. Rozbicie jej na dwie funkcje
+/// zabrałoby tej tabeli jej jedyną własność, czyli wyczerpujący `match`: to on sprawia, że
+/// osiemnasty wariant `Line` nie skompiluje tego pliku, dopóki ktoś nie powie, jak wygląda
+/// na drucie.
+#[allow(clippy::too_many_lines)]
 fn sample(kind: LineKind) -> Line {
     match kind {
         LineKind::Run => Line::Run {
