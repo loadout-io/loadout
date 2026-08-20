@@ -47,6 +47,20 @@ tu staje sie per terminal),
 - **16 — kontrolka bez handlera.** `＋`, ktore nie dokłada nic widocznego, jest dzis dokladnie
   taka kontrolka.
 
+## Waski mandat na zlota liste komend
+
+`src-tauri/commands.golden.txt` **wchodzi do OWNS z jednym dozwolonym uzyciem: dopisujesz nazwe
+JEDNEJ nowej komendy — tej, ktora konczy watek zamykanego terminalu.** Bez tego AC-3(c) nie da sie
+spelnic koniec-koniec: `Threads::close_at` istnieje, ale zaden `#[tauri::command]` go nie opakowuje,
+a `tests/it/ipc_commands_registered.rs` porownuje liste handlera z tym plikiem **co do sztuki** —
+wiec komendy nie da sie dodac bez wpisu tutaj.
+
+Skutek dzisiejszego stanu jest finansowy, nie kosmetyczny: kazdy terminal otwarty plusikiem
+i zamkniety krzyzykiem zostawia swojego lidera zywego i placacego do zamkniecia okna
+(niezmiennik 6 — „osierocony `claude` pali limit w tle"). Zadna inna zmiana w tym pliku nie nalezy
+do tego zadania; plik ma tez wlasciciela w niewyladowanym T-41. Jesli okaze sie, ze trzeba tknac
+cokolwiek wiecej, **stoj i zglos** (AGENTS.md §7).
+
 ## Szkielet, bez ktorego `before` nie jest czerwone
 
 `src/sections/run/tabs/terminal.ts` (tozsamosc terminalu) musi istniec jako pusty szkielet
@@ -150,6 +164,7 @@ src/sections/run/index.tsx
 src/sections/run/io.ts
 src-tauri/src/commands/chat.rs
 src-tauri/src/ipc.rs
+src-tauri/commands.golden.txt
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/lead_thread_per_terminal.rs
 src-tauri/tests/it/live_chat_goes_through_the_registry.rs
