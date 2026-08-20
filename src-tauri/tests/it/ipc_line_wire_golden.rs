@@ -143,6 +143,23 @@ fn sample(kind: LineKind) -> Line {
             agent: "builder".to_owned(),
             text: "also add a dark mode toggle".to_owned(),
         },
+        // 2026-08-20 — SIEDEMNASTY RODZAJ: lider proponuje bieg (T-61). Próbka stoi tu, bo
+        // `sample` jest wyczerpującym `match`em — bez niej ten plik przestaje się kompilować,
+        // czyli KAŻDE kryterium rustowe pada na budowie i żadne z nich nic nie mierzy.
+        //
+        // WIERSZA W ZŁOTYM PLIKU ANI WPISU W `KINDS` TU JESZCZE NIE MA, i to nie jest
+        // przeoczenie: obie te rzeczy razem z lustrem po stronie okna są dokładnie tym, czego
+        // wymaga AC-2 tamtego zadania, więc dopisane w fazie kontraktu zazieleniłyby kryterium,
+        // zanim cokolwiek powstało. Wchodzą razem — wpis, wiersz i lustro — w fazie
+        // implementacji; do tego czasu ta tablica opisuje szesnaście rodzajów i tyle samo
+        // wierszy widzi w pliku, więc to kryterium mówi dalej prawdę o tym, czego pilnuje.
+        LineKind::Suggested => Line::Suggested {
+            agent: "lead".to_owned(),
+            text: "/run easy Make the flaky login test pass — the cookie name is wrong in two \
+                   places, so Easy will find it in one pass."
+                .to_owned(),
+            command: "/run easy Make the flaky login test pass".to_owned(),
+        },
         LineKind::Asked => Line::Asked {
             agent: "lead".to_owned(),
             text: "Which database should this use?".to_owned(),

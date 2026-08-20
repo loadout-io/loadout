@@ -30,6 +30,21 @@ export interface LineProps {
   row: HistoryRow;
   /** Wymagany: `+` bez tego jest ozdobą, a ozdób z kształtem przycisku to repo nie przyjmuje. */
   onToggle: (rowId: number) => void;
+  /**
+   * Komenda, którą przyniósł wiersz propozycji — znak w znak taka, jaką napisał lider.
+   *
+   * PO CO OSOBNY PROP, A NIE POLE WIERSZA. Bo `HistoryRow` mieszka w `./model.ts`, którego to
+   * zadanie (T-61) nie ma w bloku `<!-- OWNS -->`, a `command` z drutu kończy bieg właśnie tam:
+   * model składa wiersz z `kind`, `label`, `metric` i `output`, i komendę gubi. Prop jest więc
+   * szwem, przez który kryterium umie ten wiersz narysować — a nie drogą, którą komenda naprawdę
+   * przyjeżdża, bo takiej drogi dziś NIE MA i jest to zgłoszone (AGENTS.md §7).
+   *
+   * CZEGO TEN PROP NIE ROZSTRZYGA: czy przycisk w ogóle jest. To rozstrzyga `row.kind`, czyli
+   * decyzja podjęta w Ruście. Wiersz `note` z tą samą komendą przycisku nie dostaje — inaczej
+   * okno dorysowywałoby go każdemu, kto napisze `/run` w prozie, i wracalibyśmy do kuracji
+   * w CSS-ie (niezmiennik 15).
+   */
+  command?: string;
 }
 
 /**
