@@ -34,18 +34,22 @@ export interface LineProps {
   /**
    * Komenda, którą przyniósł wiersz propozycji — znak w znak taka, jaką napisał lider.
    *
-   * PO CO OSOBNY PROP, A NIE POLE WIERSZA. Bo `HistoryRow` mieszka w `./model.ts`, którego to
-   * zadanie (T-61) nie ma w bloku `<!-- OWNS -->`, a `command` z drutu kończy bieg właśnie tam:
-   * model składa wiersz z `kind`, `label`, `metric` i `output`, i komendę gubi. Prop jest więc
-   * szwem, przez który kryterium umie ten wiersz narysować — a nie drogą, którą komenda naprawdę
-   * przyjeżdża, bo takiej drogi dziś NIE MA i jest to zgłoszone (AGENTS.md §7).
+   * SKĄD PRZYJEŻDŻA: z pola `command` w linii z drutu, przez `HistoryRow.command`, które podaje
+   * tu `./feed.tsx` — jeden przewóz, bez ani jednej gałęzi po drodze. Nieobecna znaczy „ten
+   * wiersz nie jest propozycją": tak wygląda każdy inny rodzaj i tak wygląda wiersz zbudowany
+   * przez kogoś, kto o propozycjach nie wie.
+   *
+   * PROPS, A NIE ODCZYT `row.command` W ŚRODKU, i to jest różnica na jeden fakt: wiersz jest
+   * jedynym miejscem, w którym ta komenda mieszka, a komponent ją tylko dostaje. Wersja czytająca
+   * pole samodzielnie miałaby ją z dwóch stron naraz w chwili, w której ktokolwiek poda inną
+   * (niezmiennik 13).
    *
    * CZEGO TEN PROP NIE ROZSTRZYGA: czy przycisk w ogóle jest. To rozstrzyga `row.kind`, czyli
    * decyzja podjęta w Ruście. Wiersz `note` z tą samą komendą przycisku nie dostaje — inaczej
    * okno dorysowywałoby go każdemu, kto napisze `/run` w prozie, i wracalibyśmy do kuracji
    * w CSS-ie (niezmiennik 15).
    */
-  command?: string;
+  command?: string | undefined;
 }
 
 /**
@@ -101,10 +105,10 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
   /**
    * Zdanie, które wróciło z próby uruchomienia; `null`, dopóki nie ma o czym mówić.
    *
-   * TRZYMANE TUTAJ, bo dotyczy TEGO wiersza i tego kliknięcia — inne miejsce musiałoby dostać
-   * je propsem przez `./feed.tsx`, którego to zadanie nie ma w swoim bloku `<!-- OWNS -->`.
-   * Odmowa porzucona po drodze jest gorsza niż brak przycisku: człowiek klika, nie dzieje się
-   * nic, o czym da się przeczytać, i to czyta się jak zepsuta aplikacja (DESIGN §8).
+   * TRZYMANE TUTAJ, bo dotyczy TEGO wiersza i tego kliknięcia: zdanie odmowy nie jest stanem
+   * strumienia i nie ma prawa przeżyć wiersza, przy którym powstało. Odmowa porzucona po drodze
+   * jest gorsza niż brak przycisku: człowiek klika, nie dzieje się nic, o czym da się przeczytać,
+   * i to czyta się jak zepsuta aplikacja (DESIGN §8).
    */
   const [said, setSaid] = useState<string | null>(null);
 

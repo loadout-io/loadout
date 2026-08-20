@@ -26,6 +26,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import type { FeedLine } from '../../../state/run';
+import { Feed } from './feed';
 import { sealedScroller } from './fixtures/scroller';
 import type { Kind } from './kinds';
 import { Line } from './line';
@@ -189,5 +190,43 @@ describe('a suggested run carries a button that names the workflow', () => {
       'and the other half, without which the line above passes for a view that draws no buttons ' +
         'at all: the row Rust DID mint as a proposal has one',
     ).toBe(1);
+  });
+
+  it('draws the same button through the whole history, with nothing handed over by this file', () => {
+    const feed = createFeed(sealedScroller());
+    feed.appendLines([suggested(1, 0), note(2, 5_000)]);
+
+    /* CAŁA STREFA HISTORII, NIE POJEDYNCZY WIERSZ, i to jest jedyna różnica wobec przypadków
+       wyżej — te podają komendę propsem, więc dowodzą, że wiersz UMIE się narysować. Tutaj nie
+       podaje jej nikt stąd: jeśli przycisk jest, to znaczy, że komenda przeszła całą drogę,
+       którą przechodzi w działającej aplikacji — z linii przez model do wiersza, a z wiersza
+       przez `./feed.tsx` do komponentu. Kontrolka, której jedynym wołającym jest kryterium,
+       jest kontrolką, której nikt nigdy nie naciśnie (niezmiennik 16). */
+    const markup = renderToStaticMarkup(
+      <Feed
+        view={feed.view}
+        portRef={() => {
+          /* Przewijanie ma swój własny plik; ten przypadek pyta o markup. */
+        }}
+        onToggle={() => {
+          /* Rozwijanie wiersza też. */
+        }}
+        onAnswer={() => {
+          /* Pytania do człowieka w tej historii nie ma. */
+        }}
+        onJumpToNewest={() => {
+          /* Skok do najnowszego wiersza to inna kontrolka. */
+        }}
+      />,
+    );
+
+    expect(
+      buttonNames(markup),
+      'the history the screen really draws has no button naming the workflow, so the command ' +
+        'stops somewhere between the line and the row: the button renders only when the row is ' +
+        'given one, and in the running app the screen is the only thing that gives it. Passing ' +
+        'the command in by hand, as the cases above do, proves the row can be drawn — it cannot ' +
+        'prove anybody draws it.',
+    ).toContain('Run ' + WORKFLOW);
   });
 });
