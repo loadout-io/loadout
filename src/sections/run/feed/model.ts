@@ -627,15 +627,18 @@ export function createFeed(scroller: Scroller): Feed {
    * `doing` przy każdej paczce daje pustą strefę równie skutecznie i zostawia w niej to, co
    * przyszło ostatnią paczką — czyli odpowiada na pytanie „kto powiedział coś ostatni" zamiast
    * „kto pracuje", a przy czterech agentach naraz to są dwa różne zdania w każdej chwili biegu.
+   *
+   * HISTORII NIE TYKA, i zostaje ona TĄ SAMĄ tablicą (`snapshot` bierze ją przez referencję):
+   * koniec biegu kasuje strefę STANU, nigdy zapisu tego, co się stało. Świeża tablica prosiłaby
+   * Reacta o przerysowanie całego transkryptu za coś, co do niego nie weszło.
    */
   function runEnded(): void {
     doing.clear();
     /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
      * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
     thinking = null;
-    /* HISTORIA ZOSTAJE, i to samą tablicą: koniec biegu kasuje strefę STANU, nigdy zapisu tego,
-     * co się stało. Świeża tablica prosiłaby Reacta o przerysowanie całego transkryptu za coś,
-     * co do niego nie weszło — a to przy dziesięciu tysiącach linii jest cały koszt. */
+    /* Dwie rzeczy, które ta chwila gasiła zawsze — powód stoi przy `carriedOn`. Opróżnienie
+     * strefy TERAZ nie ma prawa ich kosztować. */
     parked = false;
     toCarry = '';
     publish();
