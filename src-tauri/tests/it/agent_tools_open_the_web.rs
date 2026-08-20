@@ -30,6 +30,11 @@
 // `expect()` w teście: panika w teście JEST jego wynikiem. Ten sam idiom i ten sam powód, co
 // w `driver_claude_tool_surface` i w pozostałych plikach tego celu.
 #![allow(clippy::expect_used)]
+// Wynik `Result` w teście, który nigdy nie oddaje `Err`: clippy nazywa to zbędnym opakowaniem,
+// a `--all-targets` w pełnej bramce podnosi to do błędu (`quick` katalogu tests/ nie widzi).
+// ADDYTYWNIE, bo asercji tego pliku zdejmować nie wolno — a jednolity kształt podpisu jest tym,
+// dzięki któremu `?` da się dopisać w kolejnej asercji bez ruszania nagłówka funkcji.
+#![allow(clippy::unnecessary_wraps)]
 
 use std::error::Error;
 use std::path::PathBuf;

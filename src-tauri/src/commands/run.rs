@@ -154,7 +154,7 @@ use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
 use crate::inherit::wire::{self, Chosen, Inherited};
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, FileAccess, Overrides, Tools, read_agent_file, resolve};
+use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
@@ -1481,30 +1481,24 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (Pa
 
 /// Dial „co agent może zrobić z plikami" → polityka, którą rozumie sterownik.
 ///
-/// Trzy pozycje na trzy warianty, po kolei. Środkowa jest przybliżeniem i tak jest opisana
-/// w macierzy T4 §6.3 (`fileAccess` jest `Approximate` u obu vendorów): `Policy` nie ma dziś
-/// wariantu „pytaj", więc `ask-first` ląduje na „edytuje w swoim folderze". Sklejenie dwóch
-/// pozycji dialu w jedną politykę byłoby gorsze — dial miałby wtedy pozycję, która nic nie
-/// robi, czyli kontrolkę bez handlera (niezmiennik 16).
+/// # Ta nazwa zostaje pod tym adresem, a tabela stoi przy dialu [2026-08-20, T-63]
 ///
-/// 2026-08-20 — `pub`, i to jest jedna z dwóch rzeczy, których wymaga T-62 AC-1. Bieg
-/// jednokrokowy ma brać politykę z definicji agenta **tą samą tabelą**, co bieg z pliku, a
-/// „tą samą" da się osądzić tylko wtedy, kiedy kryterium umie ją zawołać: asercja na
-/// wpisanym z palca `Policy::ReadOnly` przechodzi także dla drugiej kopii tego `match`, czyli
-/// dokładnie dla tego, przed czym stoi niezmiennik 23. Widoczność, nie nowa funkcja — nie ma
-/// tu drugiego wołającego ani drugiego zdania o tym dialu.
+/// Do tego dnia `match` mieszkał tutaj, a `commands::chat` trzymał jego drugą kopię, bo moduł
+/// obok nie widział prywatnego elementu sąsiada. T-63 AC-4 każe skasować kopię i **mierzy** to
+/// (`one_table_for_policy.rs` liczy pliki, w których stoi to odwzorowanie, i wymaga jednego).
 ///
-/// `#[must_use]` przyszło razem z `pub`: tabela bez wołającego, który czyta jej odpowiedź, jest
-/// wywołaniem bez skutku, a `clippy::pedantic` mówi to wprost przy każdej publicznej funkcji
-/// czystej z definicji.
-#[must_use]
-pub fn policy_of(access: FileAccess) -> Policy {
-    match access {
-        FileAccess::LookOnly => Policy::ReadOnly,
-        FileAccess::AskFirst => Policy::EditInFolder,
-        FileAccess::WorkFreely => Policy::Unrestricted,
-    }
-}
+/// Drogą, którą wskazywał tamten kontrakt — „lider woła `super::run::policy_of`" — pójść nie da
+/// się: `chat_never_starts_a_run.rs` (T-60) asertuje, że napisu `super::run` w kodzie
+/// `commands/chat.rs` NIE MA, bo brak tej zależności jest jedynym mechanizmem, którym rozmowa nie
+/// może zacząć biegu. Napisanie tej samej ścieżki inaczej (`crate::commands::run`) przeszłoby przez
+/// to sprawdzenie i byłoby tą samą zależnością w przebraniu — dokładnie tym, co niezmiennik 20
+/// nazywa testem na obecność napisu.
+///
+/// Więc wspólny fakt zszedł do modułu, od którego oba moduły komend już zależą, i stanął przy
+/// [`crate::library::agents::FileAccess`], czyli przy dialu, o którym mówi. Re-eksport zostaje,
+/// bo pod adresem `commands::run::policy_of` wołają go dwa kryteria (T-62 `ask_one_agent.rs`
+/// i T-63 `one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej, zero drugich tabel.
+pub use crate::library::agents::policy_of;
 
 /// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
 fn some_text(text: &str) -> Option<String> {
