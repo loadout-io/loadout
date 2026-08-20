@@ -40,7 +40,7 @@ use crate::engine::drivers::{
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, FileAccess};
+use crate::library::agents::Agent;
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -405,28 +405,21 @@ impl Lead {
     /// źródłowym po cichu umarło skanowanie sekretów: obie wyglądają poprawnie, a podpięta jest
     /// zawsze starsza.
     ///
-    /// # 2026-08-20 — ZDANIE WYŻEJ JEST DZIŚ NIEPRAWDĄ I JEST TO ZGŁOSZENIE, NIE PRZEOCZENIE
+    /// # 2026-08-20 (T-63) — ZDANIE WYŻEJ ZNOWU JEST PRAWDĄ, I TO JEST CAŁA TREŚĆ AC-4
     ///
-    /// `commands::run::policy_of` jest **prywatne** i ma dokładnie jednego wołającego
-    /// (`run.rs:1019`). Moduł obok nie widzi prywatnego elementu sąsiada, a `src-tauri/src/commands/
-    /// run.rs` nie stoi w bloku `<!-- OWNS -->` tego zadania — więc jedyny ruch, który zrobiłby
-    /// z tamtej tabeli JEDNĄ tabelę (dopisanie `pub(crate)`), jest tu niedostępny. Ta tabela jest
-    /// jej drugą kopią i tak ma być czytana, dopóki tamto słowo nie padnie.
+    /// Do tego dnia stała tu **druga, ręcznie napisana** kopia tamtej tabeli, bo `policy_of` było
+    /// prywatne, a T-60 nie posiadało `run.rs`. Kopia nie była zepsuta — oba dopasowania oddawały
+    /// to samo, więc każda asercja o wartościach przechodziła dla obu. Rozjechać się mogła dokładnie
+    /// jedna rzecz: **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc, i tego nie
+    /// widziało żadne sprawdzenie w tym repo. Lider, któremu wolno pisać, choć człowiek ustawił
+    /// „look only", nie wygląda na awarię — wygląda na lidera, który zapisał plik.
     ///
-    /// Co z tej kopii NIE MOŻE się rozjechać po cichu: oba dopasowania są **wyczerpujące** po
-    /// `FileAccess`, więc czwarta pozycja dialu nie skompiluje się bez ruszenia obu. Rozjechać się
-    /// może wyłącznie **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc — i tego
-    /// żadne sprawdzenie w tym repo nie widzi.
+    /// Dlatego tu nie ma ani jednego ramienia po `FileAccess`, i to jest **mierzone**, nie obiecane:
+    /// `one_table_for_policy.rs` liczy pliki pod `src/`, w których to odwzorowanie jest zapisane,
+    /// i wymaga dokładnie jednego.
     #[must_use]
     pub fn policy(&self) -> Policy {
-        match self.agent.file_access {
-            FileAccess::LookOnly => Policy::ReadOnly,
-            // Środkowa pozycja jest przybliżeniem i tak jest opisana w macierzy T4 §6.3:
-            // [`Policy`] nie ma dziś wariantu „pytaj", więc `ask-first` ląduje na „edytuje
-            // w swoim folderze". To jest to samo zdanie, które stoi przy tabeli biegu.
-            FileAccess::AskFirst => Policy::EditInFolder,
-            FileAccess::WorkFreely => Policy::Unrestricted,
-        }
+        super::run::policy_of(self.agent.file_access)
     }
 
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
