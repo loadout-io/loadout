@@ -69,6 +69,18 @@ fn clamp_at_once(at_once: usize) -> usize {
     at_once.clamp(MIN_AT_ONCE, MAX_AT_ONCE)
 }
 
+/// Przycięcie limitu ciężkich do `1..=at_once`, w tym samym jednym miejscu, co wyżej.
+///
+/// Podłoga jest ta sama i z tego samego powodu: zero ciężkich miejsc to nie jest „ostrożniej",
+/// tylko pula, w której krok ciężki czeka na miejsce, którego nikt nigdy nie odda. Sufit jest
+/// węższy, bo ten limit mieszka WEWNĄTRZ puli — krok ciężki bierze miejsce z puli i miejsce
+/// stąd, więc liczba większa niż `at_once` nie ogranicza już niczego.
+fn clamp_heavy_at_once(heavy_at_once: usize, at_once: usize) -> usize {
+    // `at_once` przychodzi tu już przycięte, więc jest co najmniej równe [`MIN_AT_ONCE`] i sufit
+    // nigdy nie leży pod podłogą.
+    heavy_at_once.clamp(MIN_AT_ONCE, at_once)
+}
+
 /// Podpowiedź przy pierwszym uruchomieniu: `clamp(total_gb / 4, 1, 8)` `[T7 §7.1]`.
 ///
 /// Pamięć maszyny wchodzi **argumentem**. Kto ją zmierzy, potrzebuje `sysinfo`, czyli zmiany
@@ -340,11 +352,17 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct Slot {
     pool: Arc<Pool>,
+    /// Ile ta prośba wzięła: miejsce z puli, a prośba ciężka także miejsce z węższego limitu.
+    ///
+    /// Waga jedzie razem ze slotem, żeby oddawał go **ten sam [`Drop`]**. Osobne
+    /// `release_heavy()` przecieka przy panice i przy anulowaniu — a wtedy limit ciężkich
+    /// kurczy się przez cały bieg, aż żaden krok ciężki już nie startuje.
+    weight: Weight,
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.pool.give_back();
+        self.pool.give_back(self.weight);
     }
 }
 
@@ -375,6 +393,16 @@ struct Pool {
     /// Zwykłe `usize`, nie `AtomicUsize`: ta liczba nie ma dziś suwaka, a pole atomowe zapraszałoby
     /// do dopisania drugiego zejścia do nowej wartości obok tego, które już tu jest.
     heavy_at_once: usize,
+    /// Miejsca dla kroków ciężkich — [`Pool::heavy_at_once`] permitów i ani jednego więcej.
+    ///
+    /// Drugi semafor, nie druga pula, i różnica jest cała: wejście dalej jest jedno
+    /// ([`Run::dispatch_as`]), a prośba ciężka bierze stąd miejsce **oprócz** miejsca z
+    /// [`Pool::slots`], nie zamiast niego. Bez tego osiem kroków ciężkich biegłoby obok trzech
+    /// zwykłych i sufit pamięci z niezmiennika 26 przestałby cokolwiek znaczyć.
+    ///
+    /// Permity są tu zapominane przy braniu i oddawane w [`Pool::give_back`], dokładnie jak
+    /// w puli obok — jedna droga zwrotu, jeden `Drop`.
+    heavy: Semaphore,
 }
 
 impl Pool {
@@ -429,11 +457,17 @@ impl Pool {
     }
 
     /// Slot wraca do puli. Tu, i tylko tu, obniżenie suwaka wchodzi w życie.
-    fn give_back(&self) {
+    fn give_back(&self, weight: Weight) {
         // Najpierw licznik biegnących, dopiero potem miejsce. W odwrotnej kolejności następne
         // zadanie zdąży wystartować, zanim to policzy swoje wyjście, i `running_now()` pokaże
         // wtedy o jeden za dużo — akurat w chwili, w której ktoś patrzy, ile biegnie.
         self.running.fetch_sub(1, Ordering::SeqCst);
+        // Miejsce ciężkie wraca PRZED zwykłym, bo tylko w tej kolejności następna prośba ciężka
+        // zastaje oba wolne naraz. W odwrotnej pierwszy obudzony bywa krokiem zwykłym, który
+        // zabiera zwolnione miejsce z puli, a ciężki czeka drugie okno na coś, co już oddano.
+        if weight == Weight::Heavy {
+            self.heavy.add_permits(1);
+        }
         if self.forgive(1) == 0 {
             self.slots.add_permits(1);
         }
@@ -472,18 +506,17 @@ impl Limiter {
     #[must_use]
     pub fn with_heavy(at_once: usize, heavy_at_once: usize) -> Self {
         let at_once = clamp_at_once(at_once);
+        // Obie liczby przycięte w jednej linii jedna pod drugą, bo obie przychodzą tą samą drogą:
+        // z pliku biegu i z zapisanego workflow, czyli mijając każdą kontrolkę.
+        let heavy_at_once = clamp_heavy_at_once(heavy_at_once, at_once);
         Self {
             pool: Arc::new(Pool {
                 slots: Semaphore::new(at_once),
                 at_once: AtomicUsize::new(at_once),
                 running: AtomicUsize::new(0),
                 owed: AtomicUsize::new(0),
-                /* SZKIELET FAZY KONTRAKTU (T-56 AC-2). Liczba wchodzi tu SUROWA i nikt jej o nic
-                 * nie pyta — czyli dokładnie tak, jak `max_parallel` mieszkał w poprzednim prototypie:
-                 * pole było, testy były zielone, dwóch agentów naraz nie było nigdy
-                 * (niezmiennik 11). Przycięcie i drugi semafor należą do fazy implementacji;
-                 * asercje (a) i (f) z AC-2 stoją dokładnie na tych dwóch brakach. */
                 heavy_at_once,
+                heavy: Semaphore::new(heavy_at_once),
             }),
         }
     }
@@ -524,11 +557,22 @@ impl Limiter {
         self.pool.take_back(previous.saturating_sub(wanted));
     }
 
-    /// Bierze miejsce z puli, czekając, aż będzie wolne.
+    /// Bierze miejsce z puli, czekając, aż będzie wolne. Prośba ciężka bierze **dwa**: jedno
+    /// z węższego limitu i jedno z puli.
     ///
     /// Prywatne z rozmysłem: jedyne wejście do puli prowadzi przez [`Run::dispatch`], więc nie
     /// da się wziąć slotu z pominięciem pauzy biegu.
-    async fn take_slot(&self) -> Slot {
+    async fn take_slot(&self, weight: Weight) -> Slot {
+        // NAJPIERW MIEJSCE CIĘŻKIE, DOPIERO POTEM Z PULI, i ta kolejność jest treścią. Odwrotna
+        // daje pulę zapchaną krokami ciężkimi, z których biegnie jeden: trzy prośby ciężkie
+        // trzymałyby wtedy trzy miejsca z puli i czekały na jedno miejsce ciężkie, więc żaden
+        // krok zwykły nie ruszyłby przez cały ten czas. Zakleszczenia nie ma w żadnej z nich —
+        // ciężki czeka na zwykłe miejsce, a zwykły nigdy nie czeka na ciężkie.
+        if weight == Weight::Heavy
+            && let Ok(permit) = self.pool.heavy.acquire().await
+        {
+            permit.forget();
+        }
         if let Ok(permit) = self.pool.slots.acquire().await {
             // Permit zapominamy, bo o zwrocie decyduje [`Pool::give_back`], nie `Drop` permitu.
             permit.forget();
@@ -538,6 +582,7 @@ impl Limiter {
         self.pool.running.fetch_add(1, Ordering::SeqCst);
         Slot {
             pool: Arc::clone(&self.pool),
+            weight,
         }
     }
 }
@@ -675,17 +720,12 @@ impl Run {
     /// ciężkie oddaje **ten sam [`Drop`]**, co zwykłe — osobne `release_heavy()` przecieka przy
     /// panice i przy anulowaniu, a pula kurczy się przez cały bieg, aż nic już nie startuje.
     pub async fn dispatch_as(&self, weight: Weight) -> Dispatch {
-        /* SZKIELET FAZY KONTRAKTU (T-56 AC-2). Waga dojeżdża tutaj i zostaje porzucona: prośba
-         * ciężka bierze DZIŚ dokładnie to samo, co zwykła — jedno miejsce z puli i ani jednego
-         * z węższego limitu. Przy suwaku na trzy znaczy to trzy `cargo test` naraz, czyli
-         * zamrożoną maszynę z niezmiennika 26. Asercja (a) z AC-2 istnieje po to, żeby to padło. */
-        let _ = weight;
         if self.status() == RunStatus::Paused {
             // Odmowa przed `await`, nie po nim: czekanie na miejsce w biegu, który i tak nic
             // nie wyśle, zajmowałoby slot potrzebny komuś, kto może biec.
             return Dispatch::Refused(Refusal::Paused);
         }
-        let slot = self.limiter.take_slot().await;
+        let slot = self.limiter.take_slot(weight).await;
         // 2026-08-17 (T-31) — i drugi raz, PO czekaniu. Pierwsze pytanie odpowiadało o biegu
         // sprzed kolejki: limit dostawcy wchodzi w trakcie kroków, które już biegną, a ten
         // krok stał w tym czasie po miejsce. Bez tego pytania pauza działa dokładnie na te
