@@ -31,6 +31,8 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncReadExt;
@@ -300,6 +302,16 @@ enum Said {
 /// i `clippy::large_futures` na czerwono w pełnej bramce.
 const CHUNK: usize = 8 * 1024;
 
+/// Ile ostatnich bajtów wyjścia trzyma dla okna rzecz, która ZOSTAJE.
+///
+/// Sufit, a nie cały tekst, i różnica wobec [`read_to_eof`] ma nazwany powód. Tam wyjścia nie
+/// wolno przyciąć: wzorzec dowodu bywa w pierwszej linii (`error: no test target matched`), więc
+/// obcięty tekst zamieniłby „nic nie ruszyło" w „nie wiadomo". Tutaj werdyktu nie ma i nie
+/// będzie, a rzecz biegnie godzinami — dev server pisze bez końca, więc bufor bez sufitu rośnie
+/// dokładnie tak długo, jak długo człowiek jej nie zatrzyma. Sześćdziesiąt cztery kilobajty to
+/// kilkaset linii, czyli tyle, ile widać w oknie terminala po przewinięciu.
+const KEEP_LAST: usize = 64 * 1024;
+
 /// Oba potoki **do EOF**, złączone w jeden tekst w kolejności odczytu.
 ///
 /// # Dlaczego jeden `select!`, a nie dwa zadania
@@ -321,6 +333,30 @@ const CHUNK: usize = 8 * 1024;
 /// matched`), więc obcięty tekst zamieniałby „nic nie ruszyło" w „nie wiadomo".
 async fn read_to_eof(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -> String {
     let mut said: Vec<u8> = Vec::new();
+    // Tekst składamy raz, na końcu — `from_utf8_lossy` na każdym kawałku osobno zamieniałoby
+    // znak rozcięty na granicy porcji w znak zapytania.
+    read_both(stdout, stderr, |chunk| said.extend_from_slice(chunk)).await;
+    String::from_utf8_lossy(&said).into_owned()
+}
+
+/// Oba potoki do EOF, kawałek po kawałku, do `into`.
+///
+/// # Dlaczego to jest osobna funkcja od [`read_to_eof`]
+///
+/// Bo dwie rzeczy czytają te potoki i różnią się dokładnie jednym: KIEDY wołający dostaje bajty.
+/// Krok „sprawdź" dostaje je raz, na końcu, bo dopiero wtedy jest z czego orzekać. Rzecz, która
+/// ZOSTAJE ([`Staying`]), nie ma końca — więc tekst oddany na końcu jest tekstem oddanym w chwili,
+/// w której przestał być komukolwiek potrzebny. Druga kopia tej pętli obok byłaby dwoma miejscami,
+/// w których mieszka odpowiedź na „co znaczy do EOF" (niezmiennik 13), a jedna z nich zawsze
+/// gubi gałąź: pierwsza wersja tego pliku miała ich siedem i każda była o jeden `select!`.
+///
+/// Powód, dla którego to MUSI dojść do EOF, i powód, dla którego to jest jeden `select!`, a nie
+/// dwa zadania, stoją w całości przy [`read_to_eof`].
+async fn read_both<Into: FnMut(&[u8])>(
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    mut into: Into,
+) {
     let mut out = stdout;
     let mut complaints = stderr;
     let mut from_out = vec![0_u8; CHUNK];
@@ -338,9 +374,8 @@ async fn read_to_eof(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -
             (Some(one), None) => Said::Out(one.read(&mut from_out).await),
             (None, Some(other)) => Said::Complaints(other.read(&mut from_complaints).await),
             // Oba potoki na EOF: to jedyne wyjście z tej pętli, więc „do EOF" znaczy tu dokładnie
-            // to, co mówi. Tekst składamy raz, na końcu — `from_utf8_lossy` na każdym kawałku
-            // osobno zamieniałoby znak rozcięty na granicy porcji w znak zapytania.
-            (None, None) => return String::from_utf8_lossy(&said).into_owned(),
+            // to, co mówi.
+            (None, None) => return,
         };
 
         match heard {
@@ -348,10 +383,8 @@ async fn read_to_eof(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -
             // przyjdzie już nic. Zamknięty potok trzymany w pętli byłby czekaniem bez końca.
             Said::Out(Ok(0) | Err(_)) => out = None,
             Said::Complaints(Ok(0) | Err(_)) => complaints = None,
-            Said::Out(Ok(how_many)) => said.extend_from_slice(&from_out[..how_many]),
-            Said::Complaints(Ok(how_many)) => {
-                said.extend_from_slice(&from_complaints[..how_many]);
-            }
+            Said::Out(Ok(how_many)) => into(&from_out[..how_many]),
+            Said::Complaints(Ok(how_many)) => into(&from_complaints[..how_many]),
         }
     }
 }
@@ -397,6 +430,194 @@ impl CommandDriver {
     pub async fn run(&self, spec: &CheckSpec, cancel: &CancellationToken) -> io::Result<CheckEnd> {
         let mut live = self.start(spec)?;
         Ok(live.settle(cancel).await)
+    }
+
+    /// Startuje komendę, która ma **zostać** — i oddaje uchwyt, nie wynik.
+    ///
+    /// Ta sama droga do systemu, co [`CommandDriver::start`]: [`supervisor::spawn`], własna grupa,
+    /// `env_clear()` plus jawna lista, potoki. Różnica jest jedna i cała mieszka w tym, czego tu
+    /// NIE ma: nie ma [`CheckSpec::proof`], bo nie ma werdyktu, i nie ma [`GIVE_UP_AFTER`], bo
+    /// proces zamówiony przez człowieka kończy się na żądanie albo razem z oknem.
+    ///
+    /// Uchwyt, a nie `async fn` czekająca do końca, i to jest cała różnica wobec kroku „sprawdź".
+    /// Wersja czekająca kompiluje się, czyta dobrze i zamienia tę drogę w krok sprawdzający
+    /// z inną nazwą: wołający dowiaduje się o `pgid` dopiero wtedy, gdy proces już zszedł, więc
+    /// przez cały czas jego życia nie ma go czym pokazać ani czym ubić.
+    pub fn start_to_stay(&self, spec: &StartSpec) -> io::Result<Staying> {
+        let mut command = tokio::process::Command::new(SHELL);
+        command.arg("-c").arg(&spec.command);
+        command.current_dir(&spec.cwd);
+        // `StdinPlan::Null` z tego samego powodu, co w [`CommandDriver::start`]: rzecz zamówiona
+        // komendą nie ma promptu, a odziedziczony stdin kosztuje sekundy czekania [T1 §4.6].
+        // Dzień, w którym `/start` ma przyjmować pisanie, jest dniem, w którym wchodzi tu
+        // `StdinPlan::Keep` — nie ma go, bo nie ma kontrolki, która by to wysyłała
+        // (niezmiennik 16).
+        let mut handle = supervisor::spawn(command, StdinPlan::Null)?;
+        let group = handle.group();
+
+        let up = Arc::new(AtomicBool::new(true));
+        let said = Arc::new(Mutex::new(Vec::new()));
+
+        // Potoki wyjmujemy PRZED oddaniem uchwytu do struktury, dokładnie jak w `Checking::settle`
+        // i z tego samego powodu: czytanie pożycza je na cały swój czas, a `Supervised::stop`
+        // pożycza uchwyt mutowalnie. Wyjęte, jadą do zadania czytającego na własność.
+        let out = handle.stdout();
+        let complaints = handle.stderr();
+
+        /* POTOKI OPRÓŻNIA ZADANIE W TLE, I TO NIE JEST WYGODA — jest to jedyny kształt, w którym
+         * ta rzecz może biec dłużej niż wywołanie, które ją zamówiło. Bufor potoku ma ~64 KB, więc
+         * nieopróżniany zatrzymuje dziecko na `write`: dev server pisze pierwsze kilkadziesiąt
+         * kilobajtów w ciągu sekund i zawiesza się na zawsze, a z okna wygląda to jak apka, która
+         * wstała i zamilkła. Krok „sprawdź" opróżnia je w `settle()`, bo tam ktoś na nie czeka;
+         * tutaj nie czeka nikt. */
+        let keep = Arc::clone(&said);
+        let alive = Arc::clone(&up);
+        let _reading = tokio::spawn(async move {
+            read_both(out, complaints, |chunk| remember(&keep, chunk)).await;
+            /* EOF NA OBU POTOKACH JEST TU DOWODEM ŻYCIA, i to jest dokładnie ten pomiar, o którym
+             * mówi nagłówek `supervisor.rs`: sierota dziedziczy stdout, więc potok, którego ktoś
+             * jeszcze trzyma, NIE DOCHODZI do EOF (`lsof` pokazał obie sieroty na fd 1 i fd 2
+             * [T7 §3.1]). Odwrotnie: EOF na obu znaczy, że nikogo, kto je trzymał, już nie ma.
+             *
+             * Dlaczego nie `wait()` na liderze: lider bywa najszybszy, a płacimy za wnuki —
+             * `npm run dev` rozwidla dziecko i sam wychodzi, więc status lidera powiedziałby
+             * „zeszło" nad rzeczą, która pracuje dalej. To jest ta sama różnica, dla której
+             * niezmiennik 6 mówi o GRUPIE, nie o procesie. */
+            alive.store(false, Ordering::Relaxed);
+        });
+
+        Ok(Staying {
+            group,
+            command: spec.command.clone(),
+            handle,
+            up,
+            said,
+        })
+    }
+}
+
+/* ── KOMENDA, KTÓRA MA ZOSTAĆ ───────────────────────────────────────────────────────────────
+ *
+ * DLACZEGO TO NIE JEST KROK „SPRAWDŹ" Z INNYM SUFITEM. Krok sprawdzający ma koniec, o którym
+ * decyduje on sam: komenda wraca, my orzekamy. Rzecz zamówiona przez człowieka (`/start npm run
+ * dev`) nie ma takiego końca — kończy się, kiedy człowiek ją zatrzyma albo kiedy zniknie okno.
+ * Trzy rzeczy z [`CheckSpec`] tracą tu więc sens naraz: wzorzec dowodu (nie ma werdyktu),
+ * [`GIVE_UP_AFTER`] (nie ma limitu) i sama forma „jedno wywołanie robi wszystko" (bo przez cały
+ * czas życia tej rzeczy ktoś musi mieć czym ją pokazać i czym ją ubić).
+ *
+ * CZEGO TU CELOWO NIE MA: ani jednego warunku platformowego, ani jednej stałej sygnału, ani
+ * jednego `killpg`. Zabijanie i eskalacja należą do `supervisor.rs` (niezmiennik 3) i pilnuje
+ * tego `checks/quick-boundary.sh`. Ten plik prosi o zatrzymanie neutralnym czasownikiem i czyta
+ * zwrócony dowód — dokładnie jak [`Checking`] o jeden ekran wyżej.
+ */
+
+/// Co uruchomić i gdzie — komenda zamówiona z wiersza wejścia.
+///
+/// Bez wzorca dowodu, i to jest różnica merytoryczna wobec [`CheckSpec`], nie oszczędność pola:
+/// werdyktu tu nie ma, bo nie ma czego orzekać. Rzecz, która biegnie, biegnie; rzecz, która
+/// zeszła, zeszła — a „przeszło / nie przeszło" jest pytaniem o krok sprawdzający.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSpec {
+    /// Wiersz powłoki, dosłownie jak wpisał go człowiek.
+    ///
+    /// Co do znaku, bo to ON jest nazwą tej rzeczy na ekranie: wymyślona etykieta („Dev server")
+    /// byłaby relacją, której w danych nie ma (niezmiennik 17), a człowiek szuka na liście tego,
+    /// co sam wpisał.
+    pub command: String,
+    /// Katalog, w którym ta komenda ma stanąć.
+    pub cwd: PathBuf,
+}
+
+/// Żywa komenda, która ma zostać: własna grupa, potoki opróżniane do EOF, zejście z dowodem.
+///
+/// Uchwyt, a nie jedno wywołanie „zrób wszystko", i to jest ten sam wymóg z niezmiennika 6, co
+/// przy [`Checking`]: `pgid` musi dać się przeczytać ZANIM ktokolwiek przeczyta pierwszy bajt
+/// wyjścia. Tutaj waży to jeszcze więcej niż tam — kafelek na ekranie istnieje przez cały czas
+/// życia tej rzeczy, więc bez uchwytu nie ma czego pokazać ani czego ubić.
+#[derive(Debug)]
+pub struct Staying {
+    /// Zwykła wartość, wzięta ze [`supervisor::spawn`] synchronicznie [T7 §6.2].
+    group: GroupId,
+    /// Wiersz powłoki, co do znaku — patrz [`StartSpec::command`].
+    command: String,
+    /// Nadzorowana grupa procesów. Porzucenie tego pola też ją zabija — gwardia siedzi
+    /// w `Drop` uchwytu, a normalną drogą jest [`Staying::stop`].
+    handle: Supervised,
+    /// Czy cokolwiek, co trzymało potoki tej rzeczy, jeszcze żyje.
+    ///
+    /// Gaszone przez zadanie czytające, w chwili EOF na obu potokach — powód, dla którego to
+    /// jest właśnie ten pomiar, a nie status lidera, stoi przy [`CommandDriver::start_to_stay`].
+    /// `Arc`, bo pisze do tego zadanie, a czyta okno przez [`Staying::alive`].
+    up: Arc<AtomicBool>,
+    /// Ogon tego, co ta rzecz wypisała — oba potoki, w kolejności odczytu.
+    ///
+    /// **Bajty, nie tekst**, i to jest wymóg, nie gust: porcja bywa rozcięta w środku znaku
+    /// wielobajtowego, więc `from_utf8_lossy` na każdej z nich osobno zamieniałby taki znak
+    /// w znak zapytania. Tekst powstaje raz, w [`Staying::said`].
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): oba wzięcia —
+    /// dopisanie porcji w [`remember`] i klon w [`Staying::said`] — mieszczą się w jednym
+    /// wyrażeniu, w którym nie ma czego czekać.
+    said: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Staying {
+    /// `pid` i `pgid`, dostępne od razu po starcie i bez czekania na cokolwiek z wyjścia.
+    #[must_use]
+    pub const fn group(&self) -> GroupId {
+        self.group
+    }
+
+    /// Wiersz powłoki, co do znaku. To on jest nazwą tej rzeczy na ekranie.
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Czy to jeszcze biegnie.
+    ///
+    /// Odpowiedź jest o CAŁEJ GRUPIE, nie o liderze, i to jest cała jej wartość: „Running" nad
+    /// rzeczą, która zeszła dwie minuty temu, jest tym samym kłamstwem, co widmowy agent z T-66.
+    /// Skąd ta odpowiedź się bierze, stoi przy [`CommandDriver::start_to_stay`].
+    #[must_use]
+    pub fn alive(&self) -> bool {
+        self.up.load(Ordering::Relaxed)
+    }
+
+    /// Co ta rzecz do tej pory wypisała — ogon długości [`KEEP_LAST`].
+    ///
+    /// Czyta to okno, żeby mieć co pokazać po kliknięciu w kafelek: kafelek, w który da się
+    /// wejść i nie ma tam nic, jest kontrolką bez skutku (niezmiennik 16). Tekst składany
+    /// dopiero tutaj — powód przy polu [`Staying::said`].
+    #[must_use]
+    pub fn said(&self) -> String {
+        let kept = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&kept).into_owned()
+    }
+
+    /// Prosi grupę o zejście i oddaje **dowód**, nie potwierdzenie wysłania sygnału.
+    ///
+    /// Wraca dopiero z `ESRCH` dla całej grupy (niezmiennik 6). `Ok(())` po sygnale czytałoby się
+    /// u wołającego jako „nie żyje", a wnuki biegłyby dalej i dalej płaciły [T7 §3.1] — przy
+    /// rzeczy, którą człowiek uruchomił świadomie, to jest ta sama klasa wady co „Running" nad
+    /// komendą, która zeszła dwie minuty temu, tylko w drugą stronę.
+    pub async fn stop(&mut self) -> GroupProof {
+        self.handle.stop(supervisor::DEFAULT_GRACE).await
+    }
+}
+
+/// Dopisuje porcję do ogona i przycina go do [`KEEP_LAST`].
+///
+/// Przycinamy PRZÓD, bo terminal pokazuje koniec: człowiek, który wchodzi w kafelek dev servera
+/// po godzinie, chce zobaczyć ostatni błąd, a nie pierwszy wiersz startu. Cena jest zapisana
+/// i jest świadoma — początek wyjścia przepada, więc to nie jest miejsce, z którego wolno
+/// orzekać, czy cokolwiek ruszyło (niezmiennik 19); werdykty wystawia krok „sprawdź", który
+/// wyjścia nie tnie wcale.
+fn remember(said: &Mutex<Vec<u8>>, chunk: &[u8]) {
+    let mut kept = said.lock().unwrap_or_else(PoisonError::into_inner);
+    kept.extend_from_slice(chunk);
+    if let Some(over) = kept.len().checked_sub(KEEP_LAST).filter(|over| *over > 0) {
+        kept.drain(..over);
     }
 }
 
