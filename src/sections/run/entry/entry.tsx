@@ -78,7 +78,7 @@ export const PROMPT = KNOWN.map((one) => `${one.name} ${one.tail}`).join('  ·  
 
 /** Druga linia z makiety (`.entry .hint`): co robi Enter i jak daleko sięga ten wiersz. */
 export const HINT =
-  'Enter sends it. Start with a slash for a command, or just write to the agent that is working.';
+  'Enter sends it. Start with a slash for a command, or just write to the lead agent.';
 
 /** Odpowiedź na `/stop`, kiedy nic nie biegnie. Cisza czyta się jak zepsuty klawisz. */
 export const NOTHING_RUNS = 'Nothing is running.';
@@ -93,9 +93,16 @@ export const NOTHING_RUNS = 'Nothing is running.';
  * trzeba wybrać z kilku, i gdy nie ma go komu doręczyć. Człowiek musiał WYSŁAĆ zdanie, żeby się
  * dowiedzieć, co się z nim stanie; przy pracującym agencie to jest tura, za którą ktoś płaci.
  *
- * Trzy stany, trzy zdania, i każde nazywa następny ruch (DESIGN §8):
- * jeden pracujący — mówimy, kto to jest; kilku — trzeba wpisać nazwę, więc je wypisujemy; żaden —
- * proza nie ma adresata i zdanie mówi, czym się zaczyna pracę.
+ * 2026-08-20 — ADRESATEM JEST ZAWSZE LIDER, a agent wyłącznie po nazwie, więc te trzy zdania
+ * mówią teraz co innego niż dzień wcześniej. Zgłoszenie właściciela: „proza w trakcie biegu
+ * znika z rozmowy z liderem, bo leci do pracującego agenta" — do 2026-08-20 jeden pracujący
+ * krok przechwytywał KAŻDE zdanie, czyli lider milczał przez cały bieg, dokładnie wtedy, kiedy
+ * człowiek chce zapytać, co się właściwie dzieje. Polityka mieszka w `../addressee.ts` i jest
+ * sądzona bez okna; te zdania są jej UPRZEDZENIEM, a nie drugą kopią (niezmiennik 13).
+ *
+ * Trzy stany, trzy zdania, i każde nazywa następny ruch (DESIGN §8): żaden pracujący — zdanie
+ * mówi, czym się zaczyna pracę; jeden — mówimy, czyją nazwą się go dosięga; kilku — wypisujemy
+ * nazwy, bo jedną trzeba WPISAĆ na początku linii.
  *
  * TO SAMO ROZSTRZYGA RUST przy Enterze (`commands::run::say_to_agent_inner`), i to nie jest druga
  * kopia polityki: tam mieszka odmowa, tu jej UPRZEDZENIE. Adres bierzemy z listy pracujących
@@ -119,13 +126,22 @@ export function whereItGoes(working: readonly string[]): string {
     );
   }
   if (working.length === 1) {
-    return 'Enter sends this to ' + only + '. Start with a slash for a command.';
+    /* NAZWA JEST ADRESEM, nie informacją o tym, kto pracuje. Do 2026-08-20 stało tu „Enter
+     * sends this to Forge" i było prawdą o implementacji, którą to zadanie zamyka: jeden
+     * pracujący krok przechwytywał całą prozę. Teraz zdanie musi nieść oba fakty naraz —
+     * gdzie zdanie POJDZIE i czym się dosięga kogoś innego — bo pierwszy bez drugiego zostawia
+     * człowieka bez drogi do agenta, którego widzi na ekranie. */
+    return 'Enter sends this to the lead agent. Start the line with ' + only + ' to reach it.';
   }
   /* WYPISUJEMY NAZWY, bo przy kilku pracujących trzeba jedną WPISAĆ na początku linii — dokładnie
    * tak, jak każe odmowa `RunError::SeveralAreWorking`. Sama liczba („2 agents are working")
    * mówiłaby, że jest problem, i nie mówiłaby, jak go rozwiązać. */
   return (
-    String(working.length) + ' agents are working, so put a name first: ' + working.join(', ') + '.'
+    'Enter sends this to the lead agent. ' +
+    String(working.length) +
+    ' agents are working, so start the line with a name to reach one: ' +
+    working.join(', ') +
+    '.'
   );
 }
 
@@ -209,7 +225,14 @@ export function suggestions(typed: string, workflows: readonly Named[] = []): re
 
 export interface EntryProps {
   /**
-   * Co powiedzieć agentowi, który pracuje. Oddaje zdanie odmowy albo `null`, kiedy doszło.
+   * Zdanie bez ukośnika. Oddaje zdanie odmowy albo `null`, kiedy doszło.
+   *
+   * NAZWA PROPSA JEST STARSZA NIŻ POLITYKA, KTÓRĄ OPISUJE, i zostaje: od 2026-08-20 zdanie idzie
+   * do LIDERA, a do pracującego kroku wyłącznie wtedy, gdy człowiek nazwał go na początku linii
+   * (`../addressee.ts`). Adresata wybiera ekran, nie ten wiersz — tu jest jedna droga na całą
+   * prozę i tak ma zostać, bo wiersz, który sam decyduje, komu ją oddać, jest drugim miejscem
+   * z tą polityką (niezmiennik 23). Przepisanie nazwy zmieniłoby cudze kryteria, które montują
+   * ten wiersz i podają ten props (`caret.test.tsx`, `suggests-workflows.test.ts`).
    *
    * 2026-08-18 — DO TEGO DNIA TEJ DROGI NIE BYŁO WCALE, i to jest zgłoszenie właściciela
    * („dalej nie działa pisanie do agenta przez terminal"). Wiersz odpowiadał na każde zdanie
@@ -237,7 +260,11 @@ export interface EntryProps {
    */
   readonly onRunWorkflow: (rest: string) => Promise<string | null>;
   /**
-   * Kto właśnie pracuje — nazwy kroków, którym dojdzie zdanie bez ukośnika.
+   * Kto właśnie pracuje — czyli czyją nazwą wolno zaadresować zdanie bez ukośnika.
+   *
+   * 2026-08-20 — NAZWY SĄ ADRESAMI, nie listą odbiorców. Do tego dnia niepustość tej listy
+   * wystarczała, żeby zdanie poszło do agenta; teraz idzie do lidera, dopóki któraś z tych nazw
+   * nie stanie na początku linii (`../addressee.ts`).
    *
    * PO CO TO JEST. Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę".
    * Wiersz przyjmował prozę i nie mówił, gdzie ona idzie — a idzie w dwa zupełnie różne miejsca

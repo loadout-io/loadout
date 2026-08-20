@@ -40,6 +40,25 @@ export type Addressee =
  *   adresem: jego nazwa na początku linii jest wtedy zwykłym słowem i jedzie do lidera razem
  *   z resztą zdania, bo zdanie wysłane komuś, kto nie słucha, przepada bez śladu.
  */
-export function addresseeOf(_typed: string, _working: readonly string[]): Addressee {
-  throw new Error('not implemented');
+export function addresseeOf(typed: string, working: readonly string[]): Addressee {
+  const text = typed.trim();
+  /* PIERWSZE SŁOWO, nie prefiks linii, i to jest cała obrona przed pomyłką z nagłówka:
+   * `Plan` nie adresuje kroku `Planner`. Dopasowanie po prefiksie wysłałoby „Plan the work"
+   * do Plannera ZE ZDJĘTYM pierwszym słowem — zły czytelnik i zdanie, które nie mówi już
+   * tego, co mówiło. */
+  const first = text.split(/\s+/)[0] ?? '';
+  const addressed = working.find((name) => name === first);
+
+  /* KROK, KTÓRY NIE PRACUJE, NIE JEST ADRESEM. Jego nazwa jest wtedy zwykłym słowem i jedzie
+   * do lidera RAZEM z resztą zdania: zdjęcie jej po drodze zmieniłoby zdanie, które człowiek
+   * napisał, i nic na ekranie by o tym nie powiedziało. */
+  if (addressed === undefined) return { to: 'lead', text };
+
+  return {
+    to: 'agent',
+    agent: addressed,
+    /* Adres SCHODZI z treści: krok, do którego dojdzie „Forge use tabs", jest adresowany
+     * własną nazwą — czyta się to jak ktoś, kto cytuje mu ją z powrotem. */
+    text: text.slice(addressed.length).trimStart(),
+  };
 }

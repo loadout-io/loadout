@@ -43,6 +43,7 @@ import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
 import { useRun } from '../../state/run';
 import { useWorkspaces } from '../../state/workspaces';
+import { addresseeOf } from './addressee';
 import { Feed } from './feed/feed';
 import { attachPort, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
@@ -158,8 +159,13 @@ export default function Run(): ReactElement {
   const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
 
-  /* KTO SŁUCHA, czyli do kogo dojdzie zdanie z wiersza wejścia. Rozstrzygnięcie właściciela
-   * 2026-08-19: „powinienem wiedzieć co piszę".
+  /* KTO SŁUCHA, czyli czyją nazwą można zaadresować zdanie z wiersza wejścia. Rozstrzygnięcie
+   * właściciela 2026-08-19: „powinienem wiedzieć co piszę".
+   *
+   * 2026-08-20 — TA LISTA PRZESTAŁA BYĆ LISTĄ ODBIORCÓW I STAŁA SIĘ LISTĄ ADRESÓW. Do tego dnia
+   * jej niepustość WYSTARCZAŁA, żeby zdanie poszło do agenta; teraz zdanie idzie do lidera,
+   * dopóki nazwa z tej listy nie stanie na początku linii (`./addressee.ts`). Sam zbiór jest ten
+   * sam i musi być ten sam — to z niego Rust buduje swoją odmowę.
    *
    * Kroki w stanie `running` i tylko one: to jest dokładnie ten sam zbiór, z którego bieg buduje
    * swoją odpowiedź po stronie Rusta (`RunControl::step_can_hear` rejestruje głos kroku, kiedy on
@@ -281,7 +287,7 @@ export default function Run(): ReactElement {
   }
 
   /**
-   * Proza z wiersza wejścia → agent, który pracuje.
+   * Proza z wiersza wejścia → lider, albo krok, którego człowiek nazwał na początku linii.
    *
    * Zdanie odmowy WRACA do wiersza, a nie ląduje w `said` tego ekranu, i to jest jedyne miejsce,
    * gdzie te dwa kanały świadomie się rozchodzą: odpowiedź na to, co człowiek właśnie napisał,
@@ -289,25 +295,37 @@ export default function Run(): ReactElement {
    * pod paskiem.
    */
   async function sayIt(text: string): Promise<string | null> {
-    /* DWA ODBIORCY, ROZSTRZYGNIĘTE PRZEZ TO, CZY KTOŚ PRACUJE — i ŻADEN z nich nie uruchamia
-     * biegu. Rozstrzygnięcie właściciela 2026-08-19: „tylko komendy determinują akcje workflow".
+    /* KOMU DORĘCZYĆ, ROZSTRZYGA `addressee.ts` — i to jest ZMIANA POLITYKI z 2026-08-20, nie
+     * przeprowadzka warunku.
      *
-     * Ktoś pracuje → zdanie idzie do niego: człowiek dopowiada coś komuś w połowie roboty, i to
-     * była pierwsza rzecz, o którą prosił („pisać z nim nie mogę").
-     * Nikt nie pracuje → zdanie idzie do ORCHESTRATORA: rozmowa o tym, co ma się stać. Do
-     * 2026-08-19 leciało tam mimo braku adresata i wracało odmową o niczym, a przez chwilę —
-     * gorzej — po cichu startowało cały workflow.
+     * CO BYŁO. Stał tu jeden warunek: `listening.length > 0` → zdanie idzie do pracującego
+     * agenta. Skutek zgłosił właściciel: „proza w trakcie biegu znika z rozmowy z liderem, bo
+     * leci do pracującego agenta". Lider milczał przez cały bieg, czyli dokładnie wtedy, kiedy
+     * człowiek chce zapytać, co się właściwie dzieje — i wysłanie tego pytania komuś, kto pisze
+     * kod, jest zarazem bezużyteczne i płatne.
      *
-     * Wiersz mówi POD POLEM, który z tych dwóch to jest, zanim ktokolwiek naciśnie Enter
-     * (`entry/entry.tsx`, `whereItGoes`), więc rozróżnienie nie jest ukryte w kodzie. */
-    const toAgent = listening.length > 0;
+     * CO JEST. Zdanie bez ukośnika idzie do lidera ZAWSZE, a do kroku wyłącznie wtedy, gdy jego
+     * nazwa stoi na początku linii. Konwencja nie jest wymyślona tutaj: tak każe adresować Rust,
+     * kiedy pracuje kilku (`RunError::SeveralAreWorking`), więc to samo słowo znaczy to samo po
+     * obu stronach granicy.
+     *
+     * ŻADEN Z TYCH DWÓCH NIE URUCHAMIA BIEGU — rozstrzygnięcie właściciela 2026-08-19: „tylko
+     * komendy determinują akcje workflow".
+     *
+     * Rozbiór mieszka w czystym module, a nie w tym ciele, bo to repo nie ma jsdom: polityka
+     * zamknięta w `sayIt` byłaby kodem, którego nie umie dotknąć żadne kryterium. Wiersz mówi
+     * POD POLEM, do kogo trafi zdanie, zanim ktokolwiek naciśnie Enter (`entry/entry.tsx`,
+     * `whereItGoes`), i czyta to z tej samej listy pracujących kroków. */
+    const going = addresseeOf(text, listening);
     try {
-      await (toAgent ? sayToAgent(text) : sayToOrchestrator(text, folder));
+      await (going.to === 'agent'
+        ? sayToAgent(going.text, going.agent)
+        : sayToOrchestrator(going.text, folder));
       return null;
     } catch (error: unknown) {
       return why(
         error,
-        toAgent
+        going.to === 'agent'
           ? 'Loadout could not pass that on to the agent.'
           : 'Loadout could not reach the lead agent.',
       );
