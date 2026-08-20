@@ -1,0 +1,33 @@
+{
+  "data": {
+    "issues": {
+      "nodes": [
+        {
+          "id": "issue-1",
+          "identifier": "LOAD-101",
+          "title": "Keep the cursor on disk",
+          "url": "https://linear.app/loadout/issue/LOAD-101",
+          "description": "Do not fire the same work twice.",
+          "updatedAt": "2026-08-20T08:00:00.000Z",
+          "addedByLinearLater": { "safe": true }
+        },
+        {
+          "id": "issue-2",
+          "identifier": "LOAD-102",
+          "title": "Accept an empty description",
+          "url": "https://linear.app/loadout/issue/LOAD-102",
+          "description": null,
+          "updatedAt": "2026-08-20T09:00:00.000Z"
+        },
+        {
+          "id": "issue-3",
+          "identifier": "LOAD-103",
+          "title": "Hand the whole issue to the run",
+          "url": "https://linear.app/loadout/issue/LOAD-103",
+          "description": "The agent needs the title, identifier, URL and body.",
+          "updatedAt": "2026-08-20T10:00:00.000Z"
+        }
+      ]
+    }
+  }
+}

@@ -31,6 +31,7 @@ import { ipcSource, windowSideArguments } from './ipc-signature';
 import * as memory from './memory/io';
 import * as run from './run/io';
 import * as skills from './skills/io';
+import * as triggers from './triggers/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
@@ -450,6 +451,13 @@ const WIRES: readonly Wire[] = [
     given: [],
     call: () => run.listProcesses(null),
   },
+  {
+    where: 'triggers',
+    what: 'checkTrigger',
+    command: 'check_trigger',
+    given: ['assigned-to-me'],
+    call: () => triggers.checkTrigger('assigned-to-me'),
+  },
 ];
 
 const EDGES: ReadonlyArray<readonly [string, object]> = [
@@ -457,6 +465,7 @@ const EDGES: ReadonlyArray<readonly [string, object]> = [
   ['memory', memory],
   ['run', run],
   ['skills', skills],
+  ['triggers', triggers],
   ['workflows', workflows],
   ['workspaces', workspaces],
 ];

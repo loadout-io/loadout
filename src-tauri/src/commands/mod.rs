@@ -51,6 +51,8 @@ pub mod processes;
 pub mod run;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
 pub mod skills;
+/// Zrodla zdarzen, ktore pytaja zewnetrzny serwis i pamietaja kursor w pliku.
+pub mod triggers;
 /// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
 pub mod workflows;
 pub mod workspaces;
