@@ -35,6 +35,8 @@ mod agents_vendor_args_filtered;
 mod agents_vendor_args_one_policy;
 mod agents_vendor_options;
 mod agents_wire_shape;
+mod ask_one_agent;
+mod ask_respects_the_pool;
 mod brief_matches_the_policy;
 mod chat_never_starts_a_run;
 mod check_step_closes_the_loop;

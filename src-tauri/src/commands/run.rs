@@ -126,6 +126,7 @@
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -134,7 +135,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -154,9 +155,9 @@ use crate::inherit::wire::{self, Chosen, Inherited};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
-use crate::workflow::check::{Level, check_to_run};
+use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
-use crate::workflow::{AgentStep, Folder, Step};
+use crate::workflow::{AgentStep, Folder, Handover, Point, Skills, Step, WorkflowFile};
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
 const AGENTS_DIR: &str = "agents";
@@ -297,6 +298,84 @@ pub async fn run_workflow_with_slots(
     report
 }
 
+/// Jeden agent, jedno zdanie — żądanie biegu jednokrokowego.
+///
+/// # Dlaczego to nie jest [`RunRequest`]
+///
+/// Tamta struktura niesie `workflow: PathBuf`, czyli PLIK, i to jest jej cała treść: bieg nie
+/// ufa UI, więc jedyne, co o planie wiadomo na pewno, to gdzie leży. Tutaj planu nie ma —
+/// jednostką jest definicja agenta z biblioteki, a nazwa pliku byłaby zmyśleniem, po którym
+/// wznowienie szukałoby kiedyś workflow, którego nikt nigdy nie zapisał.
+///
+/// Osobny typ, a nie pole `Option` w [`RunRequest`], bo `src-tauri/src/commands/mod.rs` nie
+/// należy do T-62 (`AGENTS.md` §7) — a i tak byłby to jeden typ z dwoma znaczeniami, czyli
+/// para, którą prędzej czy później ktoś zamieni miejscami.
+#[derive(Debug, Clone)]
+pub struct AskRequest {
+    /// Identyfikator agenta z biblioteki — ten sam, którym nazywa go krok pliku workflow.
+    ///
+    /// Identyfikator, nie nazwa: przeżywa zmianę nazwy (T3 §3.1), a wiersz wejścia i tak
+    /// tłumaczy wpisane słowo na identyfikator, zanim tu dojedzie.
+    pub agent: String,
+    /// Zdanie człowieka — CO ten agent ma zrobić.
+    ///
+    /// Puste znaczy „nic nie kazano" i jest odmową po stronie wiersza wejścia, nie tutaj:
+    /// agent bez polecenia to tura, za którą ktoś płaci, choć nikt o nic nie zapytał.
+    pub task: String,
+    /// Ile kroków ma **naprawdę** działać naraz — ta sama liczba, co przy biegu z pliku.
+    ///
+    /// Jest tu, a nie w stałej `1`, bo bieg jednokrokowy bierze miejsce z TEJ SAMEJ puli
+    /// (niezmiennik 11). Bieg, który zna swój limit z definicji, jest biegiem, który idzie
+    /// obok puli — a wtedy człowiek ustawia trzech i pracuje piątka.
+    pub how_many_at_once: usize,
+}
+
+/// Uruchamia JEDNEGO agenta z jednym zdaniem — zwykłym biegiem, nie drugą maszynerią.
+///
+/// Katalog `runs/<ts>__<id>/`, `run.json`, miejsce w puli i dowód śmierci grupy na końcu: to
+/// wszystko przychodzi stąd, bo bieg jednokrokowy JEST biegiem. Druga ścieżka wykonania —
+/// „lekki tryb bez katalogu" — byłaby dokładnie tym, co `docs/ARCHITECTURE.md` opisuje jako
+/// osiem rodzajów autorytetu w repo źródłowym.
+///
+/// Pulę robi sobie sam, dokładnie jak [`run_workflow_inner`], i z dokładnie tą samą wadą:
+/// wołający, który ma pulę wspólną, wchodzi [`run_agent_with_slots`].
+pub async fn run_agent_inner(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+) -> Result<RunReport, RunError> {
+    run_agent_with_slots(deps, ask, lines, Limiter::new(ask.how_many_at_once)).await
+}
+
+/// Ten sam bieg jednokrokowy, tylko miejsce bierze ze **wspólnej puli aplikacji**.
+///
+/// Cała treść niezmiennika 11 w tym zadaniu siedzi w tym, że ta funkcja istnieje i że nie
+/// zakłada semafora sama: dwa `/ask` przy puli trzech to dalej najwyżej trzech pracujących
+/// agentów. Bieg jednokrokowy, który omija limiter, wygląda jak wygoda („to tylko jeden
+/// agent") i znaczy, że `atOnce` przestaje być prawdą o maszynie.
+///
+/// **`deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia**, także po odmowie — powód
+/// w całości stoi przy [`run_workflow_with_slots`] i jest tu dokładnie ten sam: na to zdanie
+/// czeka [`stop_run_inner`], żeby móc wrócić z dowodem (niezmiennik 6). Dlatego cały bieg
+/// siedzi w [`the_whole_ask`]: stamtąd wychodzi się kilkoma `?`, a stąd jednym `return`.
+pub async fn run_agent_with_slots(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+    slots: Limiter,
+) -> Result<RunReport, RunError> {
+    // Kolejność i powód każdej z tych czterech linii stoją przy `run_workflow_with_slots`.
+    // Ta sama czwórka, nie jej wariant: uchwyt biegu odpowiada na pytanie „czy jest co
+    // zatrzymywać" tak samo dla obu rodzajów biegu, bo Stop nie wie, którym z nich jest ten,
+    // który idzie.
+    deps.control.begin();
+    deps.control.lines_go_to(lines.clone());
+    let report = the_whole_ask(deps, ask, lines, slots).await;
+    deps.control.lines_go_quiet();
+    deps.control.settle();
+    report
+}
+
 /// Bieg od wczytania pliku do zamknięcia księgi. Wydzielony z [`run_workflow_inner`], żeby
 /// dowód z `settle()` schodził dokładnie raz, niezależnie od tego, którym `?` się stąd wyszło.
 async fn the_whole_run(
@@ -305,7 +384,36 @@ async fn the_whole_run(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    let plan = plan_run(deps, request)?;
+    the_planned_run(deps, plan_run(deps, request)?, lines, slots).await
+}
+
+/// To samo dla biegu jednokrokowego: plan powstaje z definicji agenta, a nie z pliku.
+///
+/// Dwie linie i ani jednej decyzji więcej — cała różnica między `/ask` i `/run` mieści się
+/// w tym, KTO rozpisuje plan. Wszystko, co dalej, jest dosłownie tym samym wykonaniem
+/// ([`the_planned_run`]), bo bieg jednokrokowy **jest** biegiem: druga ścieżka wykonania byłaby
+/// tym, co `docs/ARCHITECTURE.md` opisuje jako osiem rodzajów autorytetu w repo źródłowym.
+async fn the_whole_ask(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+    slots: Limiter,
+) -> Result<RunReport, RunError> {
+    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots).await
+}
+
+/// Rozpisany plan → katalog, kroki, indeks. **Jedna droga wykonania na oba rodzaje biegu.**
+///
+/// Wydzielone 2026-08-20 (T-62) z [`the_whole_run`], bez zmiany ani jednej linii w środku:
+/// od tego miejsca w dół nie ma jak zapytać, czy plan przyszedł z pliku, czy z jednego zdania
+/// w wierszu wejścia — i to jest jedyny sposób, żeby „`/ask` to zwykły bieg" było własnością
+/// kodu, a nie zdaniem w komentarzu.
+async fn the_planned_run(
+    deps: &RunDeps<'_>,
+    plan: Plan,
+    lines: LineSink,
+    slots: Limiter,
+) -> Result<RunReport, RunError> {
     // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
     // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
@@ -796,6 +904,143 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
     })
 }
 
+/// Czym jest „krok", kiedy kroku nie ma — nazwa dla odmów [`find_agent`] w biegu z `/ask`.
+///
+/// Tamte dwa zdania wplatają nazwę kroku, bo w biegu z pliku człowiek szuka KAFELKA. Tutaj
+/// kafelka nie ma, a nazwa agenta byłaby najgorszym z możliwych wypełnień: odmowa brzmiałaby
+/// „Scout has nothing to run" o agencie, którego w bibliotece nie ma.
+const THE_ASK: &str = "/ask";
+
+/// Rozpisuje bieg jednokrokowy z definicji agenta — **bez dotykania dysku**.
+///
+/// Ten sam [`Plan`], co przy pliku, i to jest cała treść zdania „to jest zwykły bieg": od
+/// [`the_planned_run`] w dół — graf, katalog biegu, pula miejsc, dowód śmierci grupy, odbudowa
+/// indeksu — nikt nie ma jak zapytać, skąd ten plan się wziął.
+///
+/// # Dlaczego wychodzi stąd PLIK, którego nikt nie zapisał
+///
+/// [`Plan::graph`] jest migawką grafu **jak biegł** i ląduje w `run.json`, skąd czyta ją
+/// odbudowa indeksu i historia. Migawka w innym kształcie niż każda inna byłaby drugim
+/// kształtem tej samej odpowiedzi, więc bieg z jednym agentem opisuje się dokładnie tak, jak
+/// opisałby się plik z jednym kafelkiem. Na dysk ten plik nie idzie i **nie ma nazwy**:
+/// [`Plan::workflow_id`] niesie identyfikator AGENTA, bo zmyślona nazwa pliku byłaby czymś,
+/// czego wznowienie szukałoby kiedyś w bibliotece workflow — a nikt jej tam nigdy nie zapisał.
+///
+/// # Czego tu świadomie nie ma
+///
+/// **Walidatora.** `check_to_run` sądzi plik, któremu nie ufamy (T3 §5.2, plik mógł zostać
+/// zmergowany gitem między zapisem a Startem). Ten plan powstał przed chwilą tutaj i jedyną
+/// rzeczą, którą przyniósł człowiek, jest identyfikator agenta i zdanie — pierwsze sprawdza
+/// [`find_agent`], a drugie nie ma czego łamać. Sądzenie własnej konstrukcji dałoby odmowę,
+/// której nie da się naprawić z drugiej strony granicy.
+fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
+    let library = deps.home.join(AGENTS_DIR);
+    /* ODMOWA PRZED PIERWSZYM KATALOGIEM — kolejność z `ARCHITECTURE` §4, ta sama, co przy
+     * biegu z pliku. Bieg, który najpierw zakłada `runs/<ts>__<id>/`, a odmawia potem,
+     * zostawia w historii ślad biegu, którego nie było (niezmiennik 4), i robi to w chwili,
+     * w której człowiek pomylił się w jednym słowie.
+     *
+     * TA SAMA funkcja, co przy kroku z pliku — więc i to samo zdanie o agencie, którego nie
+     * ma. Druga odpowiedź na pytanie „kogo nazywa ten identyfikator" rozjechałaby się przy
+     * pierwszej zmianie którejkolwiek z nich (niezmiennik 13). */
+    let saved = find_agent(&library, &ask.agent, THE_ASK)?;
+
+    let id = Uuid::now_v7().to_string();
+    let created_at = now_ms();
+    let dir = deps
+        .project
+        .join(PROJECT_DIR)
+        .join(RUNS_DIR)
+        .join(format!("{}__{id}", stamp(created_at)));
+    /* TYTUŁ W HISTORII TO TO, O CO POPROSZONO, w jednym wierszu — bo tym jeden bieg `/ask`
+     * różni się od drugiego. Bez zdania zostaje nazwa agenta: bieg musi dać się rozpoznać na
+     * liście także wtedy, gdy nikt nie kazał nic ponad „ruszaj". */
+    let title = one_line(&ask.task, TITLE_LIMIT).unwrap_or_else(|| saved.name.clone());
+
+    let file = WorkflowFile {
+        format: crate::workflow::file::CURRENT,
+        id: saved.id.to_string(),
+        name: title.clone(),
+        description: None,
+        steps: vec![Step::Agent(AgentStep {
+            /* KLUCZEM KAFELKA JEST IDENTYFIKATOR AGENTA, i to nie jest ozdoba. Okno rozpoznaje
+             * po nim swój wiersz w pasku (`Line::StepState { step_id }` → `withStepStates`),
+             * a jedyną rzeczą, którą okno o tym biegu wie na pewno, jest to, o KOGO poprosiło:
+             * uuid kroku powstaje tutaj i nikt go po tamtej stronie nigdy nie widział, więc
+             * pasek stałby na „waiting" do końca biegu. */
+            id: saved.id.to_string(),
+            /* Nazwa agenta jest etykietą wiersza — i tą samą nazwą, którą trzeba WPISAĆ, żeby
+             * powiedzieć mu coś w trakcie (`RunControl::step_can_hear`). */
+            name: saved.name.clone(),
+            agent: saved.id.to_string(),
+            /* Nic do nadpisania: nadpisania są różnicą między definicją agenta a tym, czego
+             * chce od niego JEDEN kafelek, a tu kafelka nie ma. Agent biegnie taki, jaki jest
+             * zapisany — i dlatego wiersz wejścia nie ma czym skłamać o jego ustawieniach. */
+            overrides: Map::new(),
+            vendor_options: BTreeMap::new(),
+            copies: 1,
+            /* ZDANIE CZŁOWIEKA JEST INSTRUKCJĄ TEGO KROKU, więc ląduje w migawce na dysku:
+             * bieg, po którym nie da się powiedzieć, o co go poproszono, jest biegiem, którego
+             * nie da się potem wyjaśnić (niezmiennik 4). */
+            instructions: ask.task.clone(),
+            skills: Skills::default(),
+            /* FOLDER PRACY, nie własna kopia. `/ask` jest najczęstszą czynnością dnia, a własna
+             * kopia znaczy gałąź i drzewo robocze na każde zdanie — czyli cenę, którą płaci się
+             * za ochronę przed kolizją, której przy jednym kroku nie ma z czym mieć
+             * (niezmiennik 12 mówi o DWÓCH krokach). */
+            folder: Folder::Project,
+            handover: Handover::default(),
+            at: Point::default(),
+            extra: Map::new(),
+        })],
+        links: Vec::new(),
+        extra: Map::new(),
+    };
+
+    let setup = Setup {
+        library,
+        knows: what_the_agents_know(deps.home),
+        /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
+         * zadanie biegu dałoby prompt, w którym to samo polecenie stoi dwukrotnie — raz pod
+         * nagłówkiem „o co poproszono" (`with_the_task`). */
+        task: String::new(),
+        project: deps.project,
+        dir: &dir,
+        drivers: &deps.drivers,
+    };
+    /* JEDNA DROGA PLANOWANIA KROKU, także za cenę drugiego przejścia po bibliotece: `plan_step`
+     * woła [`find_agent`] jeszcze raz, dla identyfikatora, który właśnie się znalazł. Kilka
+     * małych plików czytanych dwa razy jest tańsze niż druga kopia rozpisywania kroku — a to
+     * ona trzyma politykę plików (`policy_of`), model, limit czasu i migawkę konfiguracji
+     * efektywnej (niezmiennik 23). */
+    let steps = file
+        .steps
+        .iter()
+        .map(|step| plan_step(step, 0, &setup))
+        .collect::<Result<Vec<Planned>, RunError>>()?;
+    let graph = serde_json::to_value(&file)?;
+
+    Ok(Plan {
+        id,
+        dir,
+        title,
+        workflow_id: file.id.clone(),
+        /* ODCISK PLANU, nie pliku: „czy to był ten sam plan" ma dla biegu jednokrokowego jedną
+         * odpowiedź — ten agent i to zdanie — i dokładnie tyle jest w tych bajtach. */
+        hash: fingerprint(graph.to_string().as_bytes()),
+        graph,
+        /* Jeden krok nie ma po czym iść: strzałka w planie o jednym węźle byłaby krawędzią do
+         * siebie, czyli tym, czego `Dag::new` odmawia. */
+        arrows: Vec::new(),
+        concurrency: ask.how_many_at_once,
+        the_loop: None,
+        steps,
+        created_at,
+        // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
+        boot_id: crate::engine::supervisor::machine_booted_at(),
+    })
+}
+
 /// Notatki, które człowiek dopuścił do użytku, jako blok tekstu na początek promptu.
 ///
 /// 2026-08-18 — PO CO TO ISTNIEJE. `memory::notes::what_you_know` istniało od T-17 i miało
@@ -1062,19 +1307,57 @@ fn find_agent(library: &Path, id: &str, step: &str) -> Result<Agent, RunError> {
     files.sort();
 
     let mut broken = None;
+    // Nazwy, które udało się przeczytać. Zbierane po drodze, bo drugi spacer po katalogu byłby
+    // drugą odpowiedzią na pytanie „kogo mam zapisanych" (niezmiennik 13).
+    let mut saved: Vec<String> = Vec::new();
     for path in files {
         match read_agent_file(&path) {
             Ok(agent) if agent.id.to_string() == id => return Ok(agent),
-            Ok(_) => {}
+            Ok(agent) => saved.push(agent.name),
             Err(error) => broken = broken.or(Some(error)),
         }
     }
-    Err(RunError::Agent(broken.unwrap_or_else(|| {
-        crate::library::agents::AgentError::Unreadable {
-            file: library.display().to_string(),
-            detail: format!("no agent saved here has the id {id}"),
-        }
-    })))
+    /* PLIK ZEPSUTY I AGENT, KTÓREGO NIE MA, TO DWIE RÓŻNE RZECZY DO ZROBIENIA [T4 §10]:
+     * pierwszą naprawia się poprawką w tym pliku, drugą wpisaniem innej nazwy. Zdanie o
+     * literówce w `scout.md` wygrywa, bo dopóki tamten plik się nie czyta, „nie ma takiego
+     * agenta" może być nieprawdą. */
+    if let Some(error) = broken {
+        return Err(RunError::Agent(error));
+    }
+    /* ODMOWA WYMIENIA NAZWY — i to jest cała jej treść, ten sam powód, dla którego odmowa
+     * `/run` wypisuje nazwy workflow (`run-command.ts`, `noSuchWorkflow`). „No agent with that
+     * id" zostawia człowieka dokładnie tam, gdzie był, a nazw, których nie widzi, nie ma jak
+     * zgadnąć: powstają z plików w bibliotece (DESIGN §8).
+     *
+     * 2026-08-20 (T-62) — do tego dnia szło tu `AgentError::Unreadable`, więc zdanie zaczynało
+     * się absolutną ścieżką katalogu i nie mówiło ani jednej nazwy. Dla biegu z pliku było to
+     * słabe, dla `/ask` byłoby bezużyteczne: tam ten napis ląduje w wierszu wejścia, pół
+     * sekundy po tym, jak człowiek wpisał nazwę z palca. */
+    Err(RunError::Refused(Note {
+        level: Level::Problem,
+        // Kropka na kafelku wymaga kroku, KTÓRY ISTNIEJE (`check::Note::step_id`), a tego kroku
+        // nie ma: agent, którego nazywa, nie jest w bibliotece.
+        step_id: None,
+        message: no_agent_called(id, &saved),
+    }))
+}
+
+/// Zdanie o agencie, którego w bibliotece nie ma — z nazwami tych, którzy są.
+///
+/// Osobna funkcja, bo składa się z dwóch kawałków, z których drugi bywa pusty: biblioteka
+/// z samymi nieczytelnymi plikami nie ma czego wymienić, a zdanie „These are the ones you
+/// have: ." jest gorsze niż jego brak. Pusta lista nie zdarza się w praktyce — [`find_agent`]
+/// odmawia wcześniej, kiedy w katalogu nie ma ani jednego pliku — więc ten warunek jest
+/// obroną kształtu zdania, nie ścieżką, którą ktoś przejdzie.
+fn no_agent_called(id: &str, saved: &[String]) -> String {
+    let mut said = format!("No agent saved in Agents has the id {id}.");
+    if !saved.is_empty() {
+        // Nazwy, nie liczba: „you have 2 agents" mówi, że jest problem, i nie mówi, jak go
+        // rozwiązać. Kolejność jest kolejnością plików, czyli alfabetyczna po nazwie pliku —
+        // ta sama, którą człowiek widzi w sekcji Agenci.
+        let _ = write!(said, " These are the ones you have: {}.", saved.join(", "));
+    }
+    said
 }
 
 /// Gdzie krok pracuje i czy ten katalog jest nasz.
@@ -1107,7 +1390,19 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (Pa
 /// wariantu „pytaj", więc `ask-first` ląduje na „edytuje w swoim folderze". Sklejenie dwóch
 /// pozycji dialu w jedną politykę byłoby gorsze — dial miałby wtedy pozycję, która nic nie
 /// robi, czyli kontrolkę bez handlera (niezmiennik 16).
-fn policy_of(access: FileAccess) -> Policy {
+///
+/// 2026-08-20 — `pub`, i to jest jedna z dwóch rzeczy, których wymaga T-62 AC-1. Bieg
+/// jednokrokowy ma brać politykę z definicji agenta **tą samą tabelą**, co bieg z pliku, a
+/// „tą samą" da się osądzić tylko wtedy, kiedy kryterium umie ją zawołać: asercja na
+/// wpisanym z palca `Policy::ReadOnly` przechodzi także dla drugiej kopii tego `match`, czyli
+/// dokładnie dla tego, przed czym stoi niezmiennik 23. Widoczność, nie nowa funkcja — nie ma
+/// tu drugiego wołającego ani drugiego zdania o tym dialu.
+///
+/// `#[must_use]` przyszło razem z `pub`: tabela bez wołającego, który czyta jej odpowiedź, jest
+/// wywołaniem bez skutku, a `clippy::pedantic` mówi to wprost przy każdej publicznej funkcji
+/// czystej z definicji.
+#[must_use]
+pub fn policy_of(access: FileAccess) -> Policy {
     match access {
         FileAccess::LookOnly => Policy::ReadOnly,
         FileAccess::AskFirst => Policy::EditInFolder,

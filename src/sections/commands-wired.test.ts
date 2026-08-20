@@ -388,6 +388,30 @@ const WIRES: readonly Wire[] = [
     given: [{ id: '/Users/somebody/Projects/Loadout' }],
     call: () => workspaces.deleteWorkspace({ id: '/Users/somebody/Projects/Loadout' }),
   },
+  /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.
+   * Dopisana, nic nie usunięte i żaden istniejący wiersz nie przepisany — mandat tego zadania
+   * na ten plik pozwala dokładnie na tyle (TASK.md, „lustro komend"), a wiersz jest tu dlatego,
+   * że bez niego pierwszy test wyżej jest czerwony: `run/io.ts` eksportuje `ask`, więc krawędź
+   * bez wiersza jest krawędzią, której nikt nie zobaczył docierającej do Rusta.
+   *
+   * `given` NIE ZAWIERA NAZWY AGENTA, i to nie jest przeoczenie: na drut jedzie identyfikator,
+   * bo przeżywa zmianę nazwy i bo `run_agent` szuka nim agenta w bibliotece — nazwa zostaje
+   * w oknie, na pasku loadoutu (`run/io.ts`, `interface Asked`). Wiersz wymagający jej po tamtej
+   * stronie żądałby klucza, którego Rust nie ma, a klucz, który się nie zgadza, nie daje
+   * mniejszego wywołania — daje odrzucone.
+   *
+   * `howManyAtOnce` jedzie tu z tego samego powodu, z którego jedzie przy Starcie: bieg
+   * jednokrokowy bierze miejsce z TEJ SAMEJ puli (niezmiennik 11). Wiersz, który by go nie
+   * wysłał, przechodziłby także dla krawędzi wołającej `run_agent` ze stałą `1` po tamtej
+   * stronie — czyli dla `/ask`, które omija limiter. */
+  {
+    where: 'run',
+    what: 'ask',
+    command: 'run_agent',
+    given: [AGENT_ID, 'read the change and say what to fix first', 3],
+    call: () =>
+      run.ask({ id: AGENT_ID, name: AGENT.name }, 'read the change and say what to fix first', 3),
+  },
 ];
 
 const EDGES: ReadonlyArray<readonly [string, object]> = [
