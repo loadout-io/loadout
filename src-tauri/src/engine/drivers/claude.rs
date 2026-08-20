@@ -289,6 +289,90 @@ pub const fn tools_for(policy: Policy) -> &'static [&'static str] {
     }
 }
 
+/// Czego polityka nie dała agentowi, który o to poprosił.
+///
+/// **Odmowa NAZYWAJĄCA narzędzie, nigdy ciche pominięcie**, i to jest cała treść tego typu.
+/// Agent, któremu po cichu zabrano `Write`, wygląda z zewnątrz dokładnie jak agent, który „nie
+/// umiał": pisze, że zrobi, nie robi, i kosztuje godzinę diagnozy. Ta sama para pól i ten sam
+/// powód, co przy [`crate::library::agents::Refusal`] — `tools` to wiersz do skasowania
+/// w formularzu, `policy` to powód, bez którego zdanie nie mówi, co człowiek ma zmienić.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolsRefused {
+    /// Lista agenta jest pusta.
+    ///
+    /// Osobny wariant, nie `AbovePolicy` z pustym wektorem: tu nie ma czego nazwać, bo nic nie
+    /// zostało odcięte — człowiek wyczyścił listę. Naprawia się to inaczej (wpisz choć jedno
+    /// narzędzie) niż prośbę ponad sufitem (poszerz dostęp albo skreśl narzędzie), a jedno zdanie
+    /// na dwa stany zostawia połowę ludzi przy instrukcji, która nie może zadziałać.
+    NothingChosen,
+    /// Narzędzia ponad sufitem tej polityki.
+    AbovePolicy {
+        /// Polityka, która je odcięła.
+        policy: Policy,
+        /// Nazwy, o które agent poprosił i których nie dostał — po jednej na narzędzie, znak
+        /// w znak takie, jak stoją w jego definicji.
+        tools: Vec<String>,
+    },
+}
+
+/// Powierzchnia narzędzi jednego kroku: co jest w zestawie i czego polityka nie dała.
+///
+/// Jedna wartość, dwie odpowiedzi, bo pytanie jest jedno („co z tego pojedzie do argv") — ten sam
+/// kształt i ten sam powód, co przy [`crate::library::agents::Passthrough`]. Rozbicie na dwie
+/// funkcje dałoby dwa przebiegi tej samej reguły po tej samej liście i dwa miejsca, w których
+/// filtr może się rozjechać sam ze sobą.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSurface {
+    /// Co pojedzie do `--tools`, w kolejności, w której agent to wymienił.
+    ///
+    /// **Nigdy puste**, choćby prośba była pusta albo cała leżała ponad sufitem: `--tools ""` to
+    /// słowo vendora znaczące „żadnych narzędzi", czyli agent, który nie przeczyta ani jednego
+    /// pliku. Krok z niepustym [`ToolSurface::refused`] i tak nie rusza, więc ta lista jest wtedy
+    /// sufitem polityki — tym samym, który ten krok dostawał przed T-63.
+    pub available: Vec<String>,
+    /// Czego agent chciał, a polityka nie dała. `None` znaczy „prośba mieści się w suficie".
+    ///
+    /// **Niepuste znaczy „krok nie rusza"** (niezmiennik 12: odmowa najpóźniej przy Starcie, nigdy
+    /// w trakcie biegu). Kto to czyta, ten odmawia — a nie przycina listę i jedzie dalej.
+    pub refused: Option<ToolsRefused>,
+}
+
+/// Lista agenta przepuszczona przez sufit polityki — **jedna tabela, lista jako argument**
+/// (niezmiennik 23).
+///
+/// `wanted` to `None`, kiedy definicja agenta mówi „wszystkie narzędzia"
+/// ([`crate::library::agents::Tools::Everything`]), i lista nazw, kiedy mówi „tylko te"
+/// (`Tools::Only`). Tłumaczenie wariantu na `Option` robi warstwa, która zna definicję agenta —
+/// dokładnie ta sama, która tłumaczy dial `FileAccess` na [`Policy`].
+///
+/// # Co ta funkcja rozstrzyga, a czego nie
+///
+/// Rozstrzyga JEDNO: czy o to, o co agent poprosił, wolno go poprosić przy tej polityce. Nie
+/// rozstrzyga, co się dzieje z odmową — to należy do warstwy, która umie nie wystartować kroku.
+/// Funkcja jest **totalna**, bo [`ClaudeDriver::command`] oddaje `Command`, nie `Result`:
+/// sterownik, który miałby tu wybierać między odmową a argv, byłby drugim miejscem
+/// podejmowania tej decyzji.
+///
+/// # Sufit dotyczy plików i komend, nie sieci [2026-08-20, T-63]
+///
+/// To jest cała różnica, dzięki której „look only" znaczy „nie zmienia plików", a nie „nie widzi
+/// świata": `WebFetch` i `WebSearch` wolno wymienić przy KAŻDEJ polityce, a `Write`, `Bash` i całą
+/// rodzinę startującą proces wolno wymienić dopiero tam, gdzie [`tools_for`] je daje. Zamówienie,
+/// dla którego to zadanie istnieje, brzmiało „lider do researchu, który nie może zepsuć repo".
+///
+/// Czego ta furtka NIE otwiera: nazwy, której nie ma na żadnym suficie. `Task`, `Workflow`
+/// i pozostałe sześć ścieżek startu procesu zostają odmową przy każdej polityce — powód stoi przy
+/// [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
+#[must_use]
+pub fn tool_surface(_policy: Policy, _wanted: Option<&[String]>) -> ToolSurface {
+    // 2026-08-20 — SZKIELET T-63. Ciało jest `todo!()`, więc kryteria padają w czasie wykonania,
+    // a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a
+    // p. 5). `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby to nie przeżyło do pełnej bramki,
+    // a podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości — implementacja
+    // zdejmuje je razem z `todo!()`.
+    todo!()
+}
+
 /// Dokąd idzie transkrypt kroku i kto dostaje jego wiersze.
 ///
 /// Trzy fakty, których sterownik nie ma skąd wziąć sam, i ani jednego więcej: [`RunSpec`] nie

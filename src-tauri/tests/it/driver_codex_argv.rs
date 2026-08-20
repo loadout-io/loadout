@@ -67,6 +67,7 @@ fn spec(cwd: &Path, policy: Policy) -> RunSpec {
         model: Some(MODEL.to_owned()),
         system_append: None,
         policy,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

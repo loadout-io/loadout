@@ -40,6 +40,7 @@ fn spec(resume: Option<SessionRef>) -> RunSpec {
         model: None,
         system_append: None,
         policy: Policy::ReadOnly,
+        tools: None,
         extra_dirs: Vec::new(),
         resume,
     }

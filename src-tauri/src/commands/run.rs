@@ -2251,6 +2251,7 @@ impl Live {
             model: job.model.clone(),
             system_append: job.system_append.clone(),
             policy: job.policy,
+            tools: None,
             // Katalog przekazań, kiedy krok ma co czytać. Odnośnik do pliku, którego agentowi nie
             // wolno otworzyć, jest odnośnikiem bez handlera (niezmiennik 16).
             extra_dirs,

@@ -75,6 +75,27 @@ pub struct RunSpec {
     /// Co agentowi wolno zrobić z plikami, po ludzku. Tłumaczenie na flagi jest jedną tabelą
     /// w adapterze (niezmiennik 23).
     pub policy: Policy,
+    /// Które narzędzia ten krok ma mieć pod ręką — albo `None`, czyli „tyle, ile daje polityka".
+    ///
+    /// 2026-08-20 (T-63) — DO DZIŚ TEGO POLA NIE BYŁO, a `Agent.tools` (`library::agents::Tools`)
+    /// jest polem formularza agenta od T-11: człowiek je ustawia, ekran je pokazuje, dysk je
+    /// zapisuje i **nic go nie czyta**. To jest martwa kontrolka (niezmiennik 16) schowana
+    /// o warstwę głębiej — nie da się jej zobaczyć, klikając, bo „agent nie użył narzędzia" jest
+    /// nieodróżnialne od „agent uznał, że nie warto".
+    ///
+    /// **Nazwy, nie wariant `Tools`**, i to nie jest kwestia gustu. Ten plik jest granicą, za którą
+    /// nie ma ani jednego vendora — i nie ma też definicji agenta: dial `FileAccess` przechodzi
+    /// tędy jako [`Policy`], tłumaczony jedną tabelą w warstwie, która zna jedno i drugie
+    /// (`commands::run::policy_of`). Wariant biblioteki w tym polu odwróciłby tę strzałkę:
+    /// `engine/` zależałby od `library/`, a `library/` zależy już od `workflow/`, które zależy od
+    /// `engine::dag`. Zamknięte koło Rust skompiluje i nikt go nie zauważy, dopóki ktoś nie zapyta,
+    /// co jest pod czym.
+    ///
+    /// `None` znaczy „nie zawężaj", czyli DOKŁADNIE dzisiejsze argv: sufit polityki
+    /// z `claude::tools_for`. Nie pusta lista — `--tools ""` znaczy u vendora „żadnych narzędzi"
+    /// i wygląda jak zawieszony agent, więc lista, która wyszła pusta, jest odmową przy budowie
+    /// zadania, nie wartością tego pola [`claude::ToolsRefused::NothingChosen`].
+    pub tools: Option<Vec<String>>,
     /// Katalogi poza `cwd`, do których krok ma mieć dostęp — w praktyce katalog przekazań
     /// [`docs/ARCHITECTURE.md` §8].
     pub extra_dirs: Vec<PathBuf>,

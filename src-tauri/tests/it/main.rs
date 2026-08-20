@@ -28,6 +28,9 @@
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
+mod agent_tools_keep_the_ceiling;
+mod agent_tools_open_the_web;
+mod agent_tools_reach_the_argv;
 mod agents_capture;
 mod agents_file_format;
 mod agents_resolve;
@@ -120,6 +123,7 @@ mod memory_notes_budget;
 mod memory_notes_files;
 mod memory_notes_injection;
 mod memory_notes_promotion;
+mod one_table_for_policy;
 mod person_turn_is_visible;
 mod product_path_end_to_end;
 mod recovery_asks_never_resumes;

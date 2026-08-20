@@ -721,6 +721,7 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
          * człowiek pracuje. Uruchomienia biegu to nie dotyczy i nie ma jak dotyczyć — biegi
          * zaczyna komenda, a tej nie ma w żadnym narzędziu, które ten proces widzi. */
         policy: Policy::EditInFolder,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }
@@ -745,6 +746,7 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
         model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
         system_append: Some(lead.brief()),
         policy: lead.policy(),
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

@@ -103,6 +103,7 @@ fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
         model: None,
         system_append: None,
         policy: Policy::ReadOnly,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

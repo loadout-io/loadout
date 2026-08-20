@@ -1144,6 +1144,7 @@ pub async fn draft_skill_inner(
         // z definicji wygląda poprawnie do chwili, w której ktoś prosi o umiejętność swojego
         // najmocniejszego agenta.
         policy: Policy::ReadOnly,
+        tools: None,
         // Nic poza katalogiem roboczym: umiejętność pisze się z jednego zdania, więc nie ma tu
         // czego czytać. Odnośnik do pliku, którego agentowi nie wolno otworzyć, jest odnośnikiem
         // bez handlera (niezmiennik 16).

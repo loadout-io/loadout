@@ -158,6 +158,7 @@ fn spec(cwd: &Path) -> RunSpec {
         // punkt (d) miał co porównać: pole, które po dziedziczeniu ma być co do bajtu tym samym.
         system_append: Some(format!("{SYSTEM_MARKER}: answer in English.")),
         policy: Policy::ReadOnly,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }
