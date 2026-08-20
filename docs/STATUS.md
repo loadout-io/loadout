@@ -4,6 +4,53 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-21, 01:53 — trzy urwane sesje rozliczone: T-71 i T-64 w trunku, T-40 wycofane, T-65 uczciwie wstrzymane
+
+**Wyladowane: T-71 i T-64.** T-71 przeszlo 20/0 na galezi i 15/0 na trunku; po znalezieniu
+urwanej uwagi recenzenta jego AC-4 zostalo w tej samej rundzie wzmocnione o drugie klikniecie
+`+` przy juz otwartym terminalu, potem ponownie 20/0 na galezi i 15/0 po ladowaniu. To odroznia
+„0 kart → 1" od prawdziwej obietnicy wlasciciela: kolejne terminale w tym samym zakresie nie
+podmieniaja poprzednich.
+
+W T-64 wszystkie szesc kryteriow bylo w `before` czerwonych z wlasciwego powodu; potem `quick`
+dal 19/0, a `full` 21/0. Klucz Lineara jedzie w konfiguracji `curl --config -` na stdin,
+srodowisko jest wyczyszczone do `PATH`, odpowiedz GraphQL jest deserializowana permisywnie wobec
+obcych pol, a kursor pod `~/.loadout/triggers/` jest zapisany atomowo przed oddaniem trafienia.
+Awaria zapisu jest odmowa, nie trafieniem. Druga opinia Claude byla niedostepna (`api_error`),
+co zgodnie z kontraktem review jest notatka advisory i `exit 0`, nie blokada. Po nalozeniu na
+T-71 pelna bramka zostala powtorzona (21/0), a trunk po ladowaniu dal 15/0.
+
+**T-40 wycofane pomiarem.** AC-1 przeszlo mimo dwoch celowych martwych handlerow zasadzonych
+w produkcji, a AC-2 nie skonczylo sie w 40,42 s. Pierwsze nie widzi obiecanego naruszenia,
+drugie nie uruchamia sadu; oba sa zakazanymi pseudo-czerwieniami z AGENTS.md §2a. Galaz
+`task-T-40` zostaje jako paragon i nie jest integrowana — niesie mutacje kontrolne, nie naprawy.
+
+**T-65 wstrzymane przed `before`.** `RunState.workflow` klamie po odmowie drugiego startu, ale
+zastapienie go samym `ALREADY_GOING` zostawia wyscig: T-64 przesuwa kursor przed Startem, wiec
+odmowa po trafieniu zjada sprawe. Przesuniecie kursora po Starcie dubluje ja po awarii miedzy
+akceptacja a zapisem. Rozstrzygniecie: potrzebna jest trwala tozsamosc i chwila akceptacji biegu
+po stronie Rusta, z ktora da sie zwiazac trafienie i odtworzyc decyzje po restarcie. Etap B jest
+nazwany w T-71, ale nie ma pliku zadania; T-65 nie obchodzi tej luki stanem okna. AC-2 i AC-6
+zostaly juz poprawione pod niezmiennik 29: przyszly sad ma renderowac prawdziwy ekran.
+
+**Brudny trunk zachowany, nie przepchniety.** Dziewiec plikow z urwanych sesji lezy w commicie
+`1fdbefd` na `rescue/2026-08-21-three-sessions`. Czesc rozmowy byla starsza i wezsza od T-71
+(watek per zakres zamiast per terminal), wiec zostala zastapiona przez wyladowane T-71. Cztery
+pliki wlaczajace `CodexDriver` w aplikacji sa sensowne, ale nie naleza do OWNS T-10 ani zadnego
+innego istniejacego zadania; pozostaja zachowane, nie w trunku.
+
+**Trzy luki runtime z pierwszej sesji pozostaja znaleziskami, nie cichymi poprawkami:** produkcja
+nie wola `ClaudeDriver::with_transcript`, `copies > 1` nadal nie rozwija krokow, a limit czasu nie
+jest widoczny agentowi i przy ubiciu gubi `cost_usd`/`summary`. Zadnego odpowiadajacego pliku
+`tasks/<ID>.md` nie ma. AGENTS.md §2 zabrania wymyslenia zadan w przelocie, a §7 zabrania wejscia
+w szwy przypisane innym taskom. Handoff zalacznika, ktory ujawnil te luki, jest juz w trunku
+(`693f894`, poprawka full-clippy `209ba7f`).
+
+**Dowod, ktorego T-64 swiadomie nie ma:** nie wykonano zywego zapytania do Lineara, bo w repo i
+w bramce nie ma klucza. Do sprawdzenia reka po skonfigurowaniu pierwszego triggera: czy zapytanie
+GraphQL jest przyjmowane przez aktualne API. Drugi jawny dlug T-64: budowniczy bezpiecznego `curl`
+jest teraz drugi obok `skills::ingest`; wspolny rdzen wymaga osobnego zadania z OWNS obu stron.
+
 ## 2026-08-20, 07:10 — biurko rozliczone: trzy zadania w trunku, niezmiennik 29, trzy decyzje w kontraktach
 
 **Wyladowane: T-68, T-69, T-70.** Pelna bramka po kazdym, 15/0. Do tego **niezmiennik 29**
