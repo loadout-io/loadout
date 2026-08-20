@@ -800,7 +800,7 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
          * ROZMOWY. Odmowa startu biegu i odmowa rozmowy nie ważą tyle samo, a żadne kryterium
          * T-63 tego nie sądzi. */
         tools: None,
-        extra_dirs: Vec::new(),
+        extra_dirs: reaches,
         resume: None,
     }
 }
