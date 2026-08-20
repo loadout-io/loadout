@@ -732,22 +732,14 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
         run_id: Uuid::now_v7(),
         cwd,
         prompt: first.to_owned(),
-        // Puste pole w definicji znaczy „nie mam zdania", a nie „ustaw pustkę" — ta sama reguła
-        // i ten sam powód, co przy `some_text` w biegu.
-        model: some_text(&lead.agent.model),
+        /* Puste pole w definicji znaczy „nie mam zdania", a nie „ustaw pustkę" — ta sama reguła
+         * i ten sam powód, co przy `some_text` w biegu. WPROST, a nie własną funkcją o tej samej
+         * nazwie: druga `some_text` w drzewie czytałaby się jak rozjazd do wyśledzenia, a mamy tu
+         * jedno miejsce wołania. `None` znaczy dla sterownika „to, co vendor ma domyślnie". */
+        model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
         system_append: Some(lead.brief()),
         policy: lead.policy(),
         extra_dirs: Vec::new(),
         resume: None,
     }
-}
-
-/// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
-///
-/// Ta sama reguła stoi w biegu i jest tam własną funkcją; ta jest jej odpowiednikiem dla rozmowy.
-/// Tamta jest prywatna w swoim module i nie ma drogi, którą ten plik mógłby jej użyć — dokładnie
-/// tak samo jak tabela `FileAccess` → [`Policy`], i z tym samym zgłoszeniem (patrz
-/// [`Lead::policy`]).
-fn some_text(text: &str) -> Option<String> {
-    (!text.trim().is_empty()).then(|| text.to_owned())
 }
