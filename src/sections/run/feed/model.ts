@@ -197,14 +197,23 @@ export interface Feed {
    */
   carriedOn(): void;
   /**
-   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Opróżnia strefę TERAZ i gasi `parked`.
+   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Gasi KAŻDE pole, które opisywało żywy bieg.
+   *
+   * LISTA JEST ZAMKNIĘTA I WYPISANA, i to jest jedyna postać tej reguły, której nie trzeba pisać
+   * piąty raz: strefa TERAZ (`NowZone.rows`, `NowZone.thinking`), pytanie bez odpowiedzi
+   * (`pinned`, a przez nie `attention`), stanie na punkcie kontrolnym (`parked`) i kolejka
+   * wysyłkowa (`toCarry`). Nowe pole opisujące żywy bieg dopisuje się do tej listy w tej samej
+   * zmianie, w której powstaje — pilnuje tego `./nothing-live-survives-the-run.test.ts`,
+   * porównując klucze widoku z dwiema wypisanymi listami, więc pole nienazwane na żadnej z nich
+   * zapala kryterium, zanim ktoś napisze piąty przypis.
    *
    * Bieg, którego nie ma, nie stoi na niczyim pytaniu. Bez tego kontrolka „dalej" zostawałaby
    * po biegu zaparkowanym i odpowiedzianym, wołając `continue_run` w próżnię — a Rust podbija
    * wtedy licznik zgód i NASTĘPNY punkt kontrolny przelatuje bez pytania.
    *
-   * I nie ma w nim nikogo pracującego, więc strefa TERAZ schodzi razem z nim (`NowZone.rows`).
-   * Historii nie tyka: to, co się stało, zostaje do przeczytania.
+   * ZOSTAJĄ DOKŁADNIE DWA POLA i oba są ZAPISEM, nie stanem: `history` i `answers`. To, co się
+   * stało, zostaje do przeczytania — transkrypt biegu, który właśnie zszedł, jest jedyną rzeczą,
+   * po którą człowiek na ten ekran wraca.
    */
   runEnded(): void;
   /**
@@ -458,7 +467,13 @@ export function createFeed(scroller: Scroller): Feed {
   /** Otwarta grupa per agent — klucz sklejania to para (agent, rodzaj), stąd mapa po agencie. */
   const groups = new Map<string, Group>();
 
-  /** Pytania bez odpowiedzi, najstarsze pierwsze. Przypięte jest zawsze to spod zera. */
+  /**
+   * Pytania bez odpowiedzi, najstarsze pierwsze. Przypięte jest zawsze to spod zera.
+   *
+   * Opisuje ŻYWY bieg, więc schodzi CAŁA razem z nim (`runEnded`) — dokładnie jak `doing`.
+   * Pytanie bez biegu, który na nie czeka, nie jest pytaniem, tylko kartą z przyciskami
+   * prowadzącymi donikąd.
+   */
   let waiting: readonly Question[] = [];
 
   /**
@@ -647,7 +662,7 @@ export function createFeed(scroller: Scroller): Feed {
   }
 
   /**
-   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Opróżnia strefę TERAZ i gasi `parked`.
+   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Gasi KAŻDE pole, które opisywało żywy bieg.
    *
    * 2026-08-20 — ZMIERZONA WADA, KTÓRĄ TA FUNKCJA ZAMYKA. Mapa `doing` była tylko dopisywana,
    * więc po zejściu biegu ostatnie zdanie każdego agenta stało w strefie „co się dzieje teraz"
@@ -662,13 +677,31 @@ export function createFeed(scroller: Scroller): Feed {
    *
    * HISTORII NIE TYKA, i zostaje ona TĄ SAMĄ tablicą (`snapshot` bierze ją przez referencję):
    * koniec biegu kasuje strefę STANU, nigdy zapisu tego, co się stało. Świeża tablica prosiłaby
-   * Reacta o przerysowanie całego transkryptu za coś, co do niego nie weszło.
+   * Reacta o przerysowanie całego transkryptu za coś, co do niego nie weszło. Z tego samego
+   * powodu nie wolno naprawiać tej rodziny wad przez zbudowanie modelu od nowa: `createFeed()`
+   * opróżnia całą listę jedną linią i zabiera transkrypt razem z nią.
    */
   function runEnded(): void {
     doing.clear();
     /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
      * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
     thinking = null;
+    /* 2026-08-20 — CZWARTY RAZ TEN SAM KSZTAŁT, I DLATEGO KOLEJKA PYTAŃ STOI TERAZ W TEJ LIŚCIE.
+     * Kolejka przeżywała bieg, który ją napełnił, więc pytanie, na które człowiek nie zdążył
+     * odpowiedzieć przed Stopem albo przed błędem, zostawało przypięte: `pinned` pełne,
+     * `attention` na `you`, a karta „Needs your answer" wisiała z kompletem kontrolek wołających
+     * `answer()` dla agenta, który nie pracuje — kontrolka bez roboty (niezmiennik 16) przypięta
+     * do relacji, której w danych już nie ma (niezmiennik 17).
+     *
+     * GAŚNIE TUTAJ, A NIE WARUNKIEM W `./feed.tsx`. Karta wisi na samym `pinned`, więc drugi
+     * warunek („rysuj, jeśli przypięte ORAZ bieg żyje") byłby drugim miejscem, w którym mieszka
+     * odpowiedź na pytanie „czy cokolwiek żyje", i rozjechałby się z tym pierwszym po cichu
+     * (niezmiennik 13). Kuracja mieszka w modelu, nie w widoku (niezmiennik 15).
+     *
+     * PYTANIA ZNIKAJĄ, NIE SĄ ODPOWIADANE. Domknięcie ich przez `answer()` dopisałoby do
+     * `answers` zdanie, którego człowiek nie powiedział, a `answers` jest jego zapisem i zostaje
+     * na zawsze. Że agent zapytał, się wydarzyło — i to zostaje: wiersz `asked` stoi w historii. */
+    waiting = [];
     /* Dwie rzeczy, które ta chwila gasiła zawsze — powód stoi przy `carriedOn`. Opróżnienie
      * strefy TERAZ nie ma prawa ich kosztować. */
     parked = false;
