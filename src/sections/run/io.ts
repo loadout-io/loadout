@@ -64,6 +64,25 @@ export interface WhatIsRunning {
 let going: Promise<void> | null = null;
 
 /**
+ * Co powiedzieć drugiemu naciśnięciu Run, kiedy pierwszy bieg jeszcze nie wrócił.
+ *
+ * ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
+ * tam, gdzie był — a tutaj wyjście jest jedno kliknięcie dalej. Mówi też DLACZEGO: bez powodu
+ * czyta się to jak ograniczenie na złość, a prawdziwy powód jest finansowy — Loadout prowadzi
+ * jeden bieg naraz, żeby Stop zawsze sięgał tego, który pracuje.
+ *
+ * NIE JEST TO DRUGA KOPIA `ALREADY_GOING` z `src-tauri/src/ipc.rs`, choć czyta się podobnie,
+ * i nie da się jej stamtąd wziąć: zapadka `going` odpowiada ZAMIAST wołać Rusta — i musi tak
+ * robić, bo dwa biegi jednego workflow to dwa zestawy agentów piszących po tych samych plikach
+ * (niezmiennik 12) — więc po tamtej stronie granicy nikt tej sytuacji nie widzi i nie ma o niej
+ * czego powiedzieć. Zdanie od autora, którego nikt nie zapytał, nie jest odpowiedzią na to samo
+ * pytanie.
+ */
+const ONE_RUN_AT_A_TIME =
+  'That run is still going, and Loadout leads one at a time so that Stop always reaches the one ' +
+  'that is working. Press Stop first, then press Run again.';
+
+/**
  * Start: uruchamia otwarty workflow.
  *
  * Rozwiązuje się dopiero wtedy, kiedy bieg się skończy — komenda po stronie Rusta trwa tyle,
@@ -73,9 +92,24 @@ let going: Promise<void> | null = null;
  * walidator odmawia przy zapisie (niezmiennik 12) — tylko że tutaj nikt nie odmawia, bo z
  * punktu widzenia Rusta to są dwa poprawne żądania.
  *
- * Drugie kliknięcie dostaje **ten sam** bieg, a nie odmowę: pytanie „kiedy to się skończy" ma
- * jedną odpowiedź, więc oddajemy tę, którą mamy. Wyjątek zmuszałby każde wywołanie do `catch`
- * wokół czegoś, co nie jest błędem (niezmiennik 7 w duchu).
+ * Drugie kliknięcie dostaje **odmowę ze zdaniem**, a nie bieg poprzedni, i to jest zmiana
+ * z 2026-08-20 (T-69). Do tego dnia stało tu, że oddajemy ten sam bieg, bo „pytanie »kiedy to
+ * się skończy« ma jedną odpowiedź" — tylko że naciskający nie zadał tego pytania. Zadał inne:
+ * „czy moje naciśnięcie coś zrobiło". Odpowiedzią na nie był wynik biegu PIERWSZEGO, czyli przy
+ * udanym biegu `null` — czyli cisza. Człowiek naciskał Run i nie miał jak odróżnić biegu, który
+ * ruszył, od biegu, który nie ruszył nigdy; jedynym czytelnym śladem była linia w dzienniku,
+ * którego nikt nie otwiera. Przycisk, który tak odpowiada, czyta się jak martwy
+ * (niezmiennik 16 w duchu).
+ *
+ * ODMOWA JEST NAPISEM, nie `Error`em, i nie jest to skrót: dokładnie tym kształtem odrzuca
+ * Tauri (`.map_err(|e| e.to_string())` po tamtej stronie, `reject(napis)` po tej), więc wołający
+ * ma z tej krawędzi JEDEN kształt odmowy na wszystkie powody i wyjmuje z niego zdanie tym samym
+ * `why()`, którym wyjmuje odmowę Rusta (niezmiennik 23 — kształt drutu zna jeden adapter).
+ *
+ * PODPIS ZOSTAJE `Promise<void>`. `Promise<string | null>` nie jest przypisywalne do
+ * `Promise<void>`, a `start-invokes.test.tsx` — cudze kryterium — trzyma wynik tej funkcji pod
+ * adnotacją `Promise<void> | null`. Powód wraca więc drogą odmowy, tą samą, którą wraca każda
+ * inna.
  *
  * @param workflow identyfikator otwartego workflow — to samo, czym front nazywa jego plik.
  *   Katalog rozwiązuje Rust [T3 §8.3]; front, który dokleiłby ścieżkę sam, byłby drugim
@@ -107,7 +141,10 @@ export function start(
   task: string | null = null,
 ): Promise<void> {
   if (going !== null) {
-    return going;
+    /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego
+     * samego workflow nadal nie ma prawa dojść do Rusta (niezmiennik 12, `start-invokes.test.tsx`
+     * tego pilnuje), a `going` zwalnia dopiero `finally` pierwszego biegu. */
+    return Promise.reject(ONE_RUN_AT_A_TIME);
   }
 
   /* Zapadka zapada się PRZED pierwszym `await`, bo dwa kliknięcia w jednym tyknięciu pętli

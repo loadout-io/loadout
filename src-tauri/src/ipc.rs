@@ -49,9 +49,12 @@
 
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Waker};
 
 use tauri::State;
 use tauri::ipc::{Channel, Invoke};
@@ -352,7 +355,11 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 /// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
 const WORKFLOWS_DIR: &str = "workflows";
 
-/// Co powiedzieć drugiemu `/ask`, kiedy pierwszy bieg jeszcze nie zszedł.
+/// Co powiedzieć KAŻDEMU drugiemu startowi, kiedy pierwszy bieg jeszcze nie zszedł.
+///
+/// Jedno zdanie na obie drogi (`/ask` i bieg z pliku), bo pytanie jest jedno: „czy coś już
+/// idzie". Osobne brzmienie per komenda znaczyłoby, że człowiek czyta o tej samej odmowie co
+/// innego zależnie od tego, którym przyciskiem ją wywołał (niezmiennik 13).
 ///
 /// ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
 /// tam, gdzie był. Mówi też DLACZEGO: bez powodu czyta się to jak ograniczenie na złość, a
@@ -399,10 +406,17 @@ pub struct AppState {
     /// kopia jedzie w bieg. Zamek trzymany przez bieg zawiesiłby Stop na czas biegu — czyli
     /// dokładnie wtedy, kiedy Stop jest do czegokolwiek potrzebny.
     ///
-    /// Wymieniany na świeży przy KAŻDYM starcie ([`AppState::begin_run`]), bo anulowanie jest
-    /// monotoniczne: uchwyt raz zatrzymany zostaje zatrzymany, więc drugi bieg na tym samym
-    /// uchwycie startuje jako już anulowany i kończy się w milisekundach z samymi `cancelled`.
-    /// To wygląda jak szybki bieg, nie jak awaria (niezmiennik 7).
+    /// Wymieniany na świeży przy każdym starcie, KTÓRY DOSZEDŁ DO SKUTKU
+    /// ([`AppState::begin_run`]), bo anulowanie jest monotoniczne: uchwyt raz zatrzymany zostaje
+    /// zatrzymany, więc drugi bieg na tym samym uchwycie startuje jako już anulowany i kończy się
+    /// w milisekundach z samymi `cancelled`. To wygląda jak szybki bieg, nie jak awaria
+    /// (niezmiennik 7).
+    ///
+    /// 2026-08-20 (T-69) — „KTÓRY DOSZEDŁ DO SKUTKU" jest tu całą treścią poprawki. Do tego dnia
+    /// start z płótna wymieniał to pole BEZWARUNKOWO, także pod żywym biegiem — a wtedy Stop
+    /// czytał uchwyt DRUGIEGO biegu, pierwszy pracował dalej i dalej płacił, i nie było już
+    /// nikogo, kto mógłby zażądać od niego dowodu śmierci grupy (niezmienniki 6 i 11). Kto teraz
+    /// odmawia i dlaczego jednym ciałem, stoi przy [`AppState::begin_run`].
     live: Mutex<RunControl>,
     /// Rozmowa z orchestratorem. `None`, dopóki okno jej nie otworzyło.
     ///
@@ -552,49 +566,111 @@ impl AppState {
         }
     }
 
-    /// Świeży uchwyt biegu i współpracownicy, którzy go używają.
+    /// Świeży uchwyt biegu z pliku i współpracownicy, którzy go używają — albo zdanie o tym,
+    /// dlaczego jeszcze go nie ma.
     ///
     /// Powód wymiany stoi przy [`AppState::live`]. Wymiana jest tutaj, a nie w skorupie, bo
     /// skorupa z tym `let` w środku byłaby o jedną decyzję dalej od „rozpakuj i zawołaj".
-    fn begin_run<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
-        {
-            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-            *live = RunControl::new();
-        }
-        self.deps_in(project)
-    }
-
-    /// Świeży uchwyt dla NOWEGO biegu — albo zdanie o tym, dlaczego jeszcze go nie ma.
     ///
-    /// # Czego to pilnuje i dlaczego [`AppState::begin_run`] tego nie umie
+    /// # 2026-08-20 — `pub` I `Result`, BO TA DROGA JEST SĄDZONA OBOK DRUGIEJ
     ///
-    /// Tamta metoda podmienia [`AppState::live`] **bezwarunkowo** i dla Startu z płótna jest to
-    /// w porządku: okno ma zapadkę (`src/sections/run/io.ts`, `going`), więc drugi bieg nie ma
-    /// jak ruszyć, dopóki pierwszy nie wróci. `/ask` tej zapadki nie ma i mieć nie może — to
-    /// jest jedna linia w wierszu wejścia, najczęstsza czynność dnia — a podmiana uchwytu w
-    /// trakcie biegu znaczy, że Stop sięga do biegu DRUGIEGO, a pierwszy pracuje dalej i dalej
-    /// płaci, bo nikt już nie trzyma jego tokena (niezmienniki 6 i 11).
+    /// `pub`, bo `tests/it/no_start_orphans_the_previous.rs` pyta o WSZYSTKIE pary dróg startu
+    /// i nie ma jak zapytać o tę, jeśli jedyne wejście do niej stoi za `#[tauri::command]`.
+    /// `Result`, bo obie drogi mają od tego kryterium jedną odpowiedź na jedno pytanie („czy
+    /// coś już idzie"), a droga, która nie umie odmówić, nie ma czym tej odpowiedzi oddać.
+    ///
+    /// # 2026-08-20 (T-69) — TU MIESZKA CAŁA ODPOWIEDŹ NA „CZY COŚ JUŻ IDZIE"
+    ///
+    /// Do tego dnia ta metoda podmieniała uchwyt **bezwarunkowo**, a warunek stał tylko w drodze
+    /// `/ask` ([`AppState::begin_a_run`]) — i była to naprawa jednej strony. Ścieżka awarii szła
+    /// przez trzy warstwy okna do jednej linii tutaj: `/ask` startował agenta, człowiek naciskał
+    /// Start, [`AppState::live`] zostawał nadpisany, Stop sięgał do biegu DRUGIEGO, a agent
+    /// z `/ask` pracował dalej i dalej płacił. Dowodu śmierci grupy nie było komu zażądać, bo
+    /// uchwyt, który jako jedyny o tamtym biegu wiedział, właśnie przestał istnieć (niezmienniki
+    /// 6 i 11). Z okna nie było po tym ŻADNEJ drogi do tamtego biegu.
+    ///
+    /// Warunek stoi więc w JEDNYM ciele, a tamta metoda woła to ciało: dwie kopie tego pytania
+    /// to dwie odpowiedzi na „czy coś już idzie" (niezmiennik 13), a przy dwóch kopiach zawsze
+    /// poprawia się tę, której nikt nie woła. Zamknięte są przez to WSZYSTKIE pary dróg startu,
+    /// nie jedna — Start → Start i Start → `/ask` dokładnie tak samo jak `/ask` → Start.
     ///
     /// Odmowa, nie kolejka, i to jest wybór z nazwaną ceną: czekanie w tej metodzie trzymałoby
     /// zamek na `live` przez cały poprzedni bieg, czyli zawieszałoby Stop dokładnie wtedy, kiedy
     /// Stop jest do czegokolwiek potrzebny. Zdanie mówi, co zrobić (DESIGN §8), więc człowiek
     /// ma następny ruch, a nie ciszę.
     ///
-    /// Wymiana jest tu, a nie w skorupie, z tego samego powodu, co przy [`AppState::begin_run`]:
-    /// skorupa z `let` i warunkiem w środku byłaby o dwie decyzje dalej od „rozpakuj i zawołaj".
-    pub fn begin_a_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
+    /// Blokady „na zawsze" tu nie ma i nie może być: warunek pyta o DOWÓD ZEJŚCIA
+    /// ([`proved_down`]), a ten dowód zapala `settle()` na każdej drodze wyjścia z biegu — więc
+    /// bieg, który zszedł, przestaje kogokolwiek zatrzymywać. Zapadka, która nigdy się nie
+    /// otwiera, jest gorsza od wady, przed którą stoi.
+    ///
+    /// # 2026-08-20 (T-69, runda naprawcza) — WARUNEK PYTA O DOWÓD ZEJŚCIA, NIE O „PRACUJE"
+    ///
+    /// Warunek na [`RunControl::is_working`] zostawiał tę samą wadę otwartą na szczelinę kilku
+    /// instrukcji, a wąskie okno nie jest tu żadną obroną — jest wyłącznie powodem, dla którego
+    /// trafia się w nie wtedy, kiedy człowiek naciska dwa razy, a nie wtedy, kiedy ktoś tego
+    /// szuka. `is_working` znaczy „ruszył i nie zszedł", a „ruszył" zapala PIERWSZA LINIA biegu
+    /// (`run_workflow_with_slots`), czyli kod, do którego wchodzi się dopiero po tym, jak ta
+    /// metoda oddała zamek i wróciła. Żadnego `await` w środku nie ma, ale `Cargo.toml` włącza
+    /// `rt-multi-thread`, a Tauri wysyła każdą komendę jako OSOBNE zadanie tej puli: dwa Starty
+    /// stoją na dwóch wątkach naprawdę. Wątek drugi bierze ten sam zamek, zanim pierwszy zawołał
+    /// `begin()`, czyta „nikt nie pracuje" i podmienia uchwyt — dokładnie ta cicha podmiana,
+    /// przed którą stoi całe to zadanie (niezmienniki 6 i 11).
+    ///
+    /// Odpowiedzią jest pytanie o jedną chwilę wcześniejsze, i **nie wymaga ono ani jednego
+    /// nowego znacznika**: uchwyt trafia do [`AppState::live`] dokładnie w dwóch miejscach —
+    /// [`AppState::new`] wkłada tam uchwyt Z DOWODEM zejścia (tamten `settle()` ma swój własny
+    /// powód: Stop przed pierwszym biegiem nie ma na co czekać), a podmiana niżej wkłada świeży,
+    /// który dowodu jeszcze nie ma i mieć nie może. „W stanie stoi uchwyt bez dowodu zejścia"
+    /// znaczy więc dokładnie „ktoś ten uchwyt już wziął i bieg jeszcze nie zszedł" — a zapala
+    /// się to W TEJ SAMEJ instrukcji, w której uchwyt tam wchodzi, pod tym samym zamkiem. Okno
+    /// nie jest przez to węższe; nie ma go wcale.
+    ///
+    /// Czego świadomie NIE robimy, bo każde z tego przerzedza trafienia i żadne nie zamyka okna:
+    /// ponownego sprawdzenia `is_working` po podmianie, zamka `tokio::sync` z `await` w środku,
+    /// pętli z ponawianiem. I czego nie robimy, bo psuje Stop: zapalenia `began` przy podmianie —
+    /// `stop_run_inner` żądałby wtedy dowodu śmierci od biegu, który jeszcze nie ruszył, czyli
+    /// czekałby bez końca. „Czy ktoś wziął uchwyt" i „czy jest co zatrzymywać" to dwa pytania
+    /// i mają dwie odpowiedzi.
+    ///
+    /// Najprostszym zapisem tego warunku byłby drugi znacznik w [`RunControl`] („wzięty", obok
+    /// „ruszył"). Ten typ mieszka w `src-tauri/src/commands/mod.rs`, który nie należy do T-69
+    /// (`AGENTS.md` §7), a `settled` jest w nim prywatne — stąd sonda w [`proved_down`] zamiast
+    /// pola. Zachowanie jest to samo w każdym osiągalnym stanie, bo każdy uchwyt, który tu wchodzi,
+    /// jest wzięty przez ten start.
+    pub fn begin_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
         {
             // Zamek na CAŁE pytanie i na wymianę, nie na dwa osobne wyrażenia: „czy coś idzie"
             // sprawdzone przed wzięciem zamka jest odpowiedzią sprzed chwili, a między nią
-            // a podmianą mieści się drugie `/ask`. Zamek `std::sync` i ani jednego `await`
+            // a podmianą mieści się drugi start. Zamek `std::sync` i ani jednego `await`
             // w środku (niezmiennik 8) — powód stoi przy [`AppState::deps_in`].
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-            if live.is_working() {
+            if !proved_down(&live) {
                 return Err(ALREADY_GOING.to_owned());
             }
+            // Ta jedna instrukcja jest i podmianą, i zamknięciem zapadki dla każdego następnego
+            // startu: świeży uchwyt nie ma dowodu zejścia, a warunek wyżej pyta właśnie o dowód.
+            // Powód w całości stoi w nagłówku tej metody.
             *live = RunControl::new();
         }
         Ok(self.deps_in(project))
+    }
+
+    /// Świeży uchwyt dla biegu z `/ask` — ta sama polityka, co przy starcie z płótna.
+    ///
+    /// # Dlaczego ta nazwa zostaje, choć ciało jest jedno
+    ///
+    /// Bo woła ją skorupa [`run_agent`], a `tests/it/no_start_orphans_the_previous.rs` pyta obie
+    /// drogi Z NAZWY: macierz par dróg startu nie ma jak istnieć, jeśli obie drogi wchodzą jednym
+    /// wejściem. Ciało jest jednak wspólne od 2026-08-20 (T-69) i mieszka w
+    /// [`AppState::begin_run`] razem z całym powodem — do tego dnia warunek stał TYLKO tutaj,
+    /// czyli `/ask` nie potrafił osierocić biegu, a Start potrafił.
+    ///
+    /// Dlaczego `/ask` nie ma i nie może mieć zapadki w oknie — `src/sections/run/io.ts`, akapit
+    /// przy `ask`: jest to jedna linia w wierszu wejścia, najczęstsza czynność dnia, a nie drugie
+    /// naciśnięcie tego samego przycisku.
+    pub fn begin_a_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
+        self.begin_run(project)
     }
 
     /// Katalog, w którym ma biec workflow: ten wybrany w oknie albo ten ze startu aplikacji.
@@ -626,6 +702,36 @@ impl AppState {
     ) -> Result<RunRequest, String> {
         run_request(self.home.as_path(), file_name, how_many_at_once, task)
     }
+}
+
+/// Czy ten uchwyt biegu ma już **dowód zejścia** — czyli czy `settle()` na nim zapadło.
+///
+/// Pytanie startu, nie Stopu, i cały jego powód stoi przy [`AppState::begin_run`]: uchwyt bez
+/// dowodu zejścia jest uchwytem wziętym przez start, którego bieg jeszcze nie skończył, i to
+/// jest jedyny stan, w którym drugi start musi odmówić.
+///
+/// # Dlaczego SONDA, a nie `is_working()` ani nowe pole
+///
+/// [`RunControl::is_working`] odpowiada na inne pytanie („ruszył i nie zszedł"), a różnica
+/// między nim a tym jest właśnie tą szczeliną, przez którą bieg dawał się osierocić. Prostszym
+/// zapisem byłoby pole w [`RunControl`], ale ten typ mieszka w cudzym pliku (`AGENTS.md` §7,
+/// powód w całości przy [`AppState::begin_run`]) i trzyma `settled` prywatnie — jedynym
+/// wejściem do tej odpowiedzi jest więc `wait_until_settled()`.
+///
+/// Sondujemy tę przyszłość DOKŁADNIE RAZ, budzikiem, który nikogo nie budzi
+/// ([`Waker::noop`]): `Poll::Ready` znaczy „dowód już jest", `Poll::Pending` znaczy „jeszcze
+/// nie". Wewnątrz jest to `CancellationToken::cancelled()`, więc pojedyncze spojrzenie nic nie
+/// konsumuje, na nic nie czeka i po porzuceniu przyszłości nie zostawia po sobie ani zapisu, ani
+/// czekającego — to jest odczyt jednego znacznika, tylko wyrażony przez jedyne dostępne drzwi.
+///
+/// SYNCHRONICZNIE, i to jest wymóg, nie wygoda: to zdanie stoi pod zamkiem na
+/// [`AppState::live`], a zamek `std::sync` trzymany przez `await` jest niezmiennikiem 8.
+fn proved_down(control: &RunControl) -> bool {
+    let mut proof = pin!(control.wait_until_settled());
+    proof
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_ready()
 }
 
 /// Folder przysłany z okna → korzeń projektu, albo zdanie o tym, czego z nim nie da się zrobić.
@@ -1118,7 +1224,12 @@ pub async fn run_workflow(
         .inspect_err(refused)?;
     let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
     commands::run::run_workflow_inner(
-        &state.begin_run(project.as_path()),
+        // `?` NA MIEJSCU, A NIE W OSOBNYM `let`, i to nie jest gust: `run_commands_registered`
+        // liczy instrukcje tej skorupy z sufitem 3 („rozpakuj, zawołaj, wróć"), a czwarta
+        // instrukcja jest logiką napisaną tam, gdzie żaden test jednostkowy jej nie dosięgnie
+        // (niezmiennik 23). Od T-69 ta droga umie odmówić tak samo jak `/ask`: uchwyt żywego
+        // biegu nie ma prawa zniknąć pod Stopem (powód w całości przy [`AppState::begin_run`]).
+        &state.begin_run(project.as_path()).inspect_err(refused)?,
         &request,
         pump_into(lines),
     )
