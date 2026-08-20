@@ -345,6 +345,13 @@ export function stop(): Promise<void> {
 }
 
 /**
+ * Karta zamknięta: rozmowa tego terminalu schodzi, rozmowy pozostałych kart zostają.
+ */
+export function closeTerminal(terminal: string): Promise<void> {
+  return invoke<void>('close_terminal', { terminal });
+}
+
+/**
  * Dalej: puszcza bieg zza punktu kontrolnego.
  *
  * DLACZEGO TA FUNKCJA W OGÓLE POWSTAŁA. `continue_run` jest po stronie Rusta zarejestrowana,

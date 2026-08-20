@@ -567,6 +567,20 @@ impl AppState {
         }
     }
 
+    /// Człowiek zamknął TĘ kartę: rozmowa TEGO terminalu schodzi i oddaje dowód śmierci grupy.
+    ///
+    /// Kończy JEDEN wątek i milczy o pozostałych — [`AppState::close_chat`] robi to samo dla
+    /// wszystkich naraz i należy do zamknięcia OKNA, nie karty.
+    pub async fn close_the_lead(&self, terminal: &str) {
+        let proof = self.leads.lock().await.close_at(terminal).await;
+        if matches!(proof, Some(crate::engine::supervisor::GroupProof::Alive)) {
+            tracing::error!(
+                "a lead agent was still answering after its terminal was closed; look for it in \
+                 Activity Monitor"
+            );
+        }
+    }
+
     /* ── ROZMOWA NALEŻY DO TERMINALU ────────────────────────────────────────────────────────
      *
      * DLACZEGO TE DWIE METODY W OGÓLE ISTNIEJĄ, skoro obok stoją skorupy `#[tauri::command]`.
@@ -1500,6 +1514,13 @@ pub async fn say_to_orchestrator(
         .await
 }
 
+/// Karta zamknięta: rozmowa TEGO terminalu schodzi, rozmowy pozostałych zostają.
+#[tauri::command]
+pub async fn close_terminal(state: State<'_, AppState>, terminal: &str) -> Result<(), String> {
+    state.close_the_lead(terminal).await;
+    Ok(())
+}
+
 /// „Dalej": puszcza bieg zza punktu kontrolnego.
 #[tauri::command]
 pub async fn continue_run(
@@ -1695,6 +1716,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
     tauri::generate_handler![
         author_skill,
         check_workflow,
+        close_terminal,
         continue_run,
         delete_agent,
         delete_skill,
