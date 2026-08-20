@@ -167,6 +167,7 @@ impl Bench {
             system_append: None,
             // Czyta i szuka, nie zapisuje niczego. Najtańsza polityka, jaka wystarcza.
             policy: Policy::ReadOnly,
+            tools: None,
             extra_dirs: Vec::new(),
             resume: None,
         };

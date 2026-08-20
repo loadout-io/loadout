@@ -144,6 +144,7 @@ use super::isolate;
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
+use crate::engine::drivers::claude::{ToolsRefused, tool_surface};
 use crate::engine::drivers::command::{CheckHow, CheckSpec, CommandDriver, GIVE_UP_AFTER};
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
 use crate::engine::limits::{self, Limiter};
@@ -153,7 +154,7 @@ use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
 use crate::inherit::wire::{self, Chosen, Inherited};
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, FileAccess, Overrides, read_agent_file, resolve};
+use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
@@ -799,6 +800,13 @@ struct AgentJob {
     system_append: Option<String>,
     /// Co agentowi wolno zrobić z plikami — po ludzku, w trzech wariantach.
     policy: Policy,
+    /// Które narzędzia ten krok ma pod ręką — albo `None`, czyli „tyle, ile daje polityka".
+    ///
+    /// Lista z definicji agenta, już przepuszczona przez sufit jego dialu
+    /// (`what_this_step_may_use`). Policzona **przy planowaniu**, a nie w chwili startu kroku,
+    /// z tego samego powodu, z którego stoi tu polityka: krok, który miałby to policzyć sam,
+    /// mógłby odmówić w połowie biegu, a niezmiennik 12 mówi „najpóźniej przy Starcie".
+    tools: Option<Vec<String>>,
     /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
@@ -1233,6 +1241,12 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
     let effective = resolve(&saved, &overrides)?.agent;
 
+    // Polityka policzona RAZ i czytana dwa razy: raz jako dial kroku, raz jako sufit jego listy
+    // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby
+    // pojechać z inną polityką, niż ta, którą przepuszczono jego narzędzia.
+    let policy = policy_of(effective.file_access);
+    let tools = what_this_step_may_use(&effective, policy, step)?;
+
     let (cwd, ours) = workspace(&step.folder, setup.project, setup.dir, &step.id);
     Ok(AgentJob {
         // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
@@ -1261,13 +1275,100 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
         system_append: some_text(&effective.instructions),
-        policy: policy_of(effective.file_access),
+        policy,
+        tools,
         // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
         // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
         // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
         give_up_after: Duration::from_secs(u64::from(effective.give_up_after_minutes.max(1)) * 60),
         effective: serde_json::to_value(&effective)?,
     })
+}
+
+/// Które narzędzia ten krok dostaje pod rękę — albo odmowa, jeśli prosi o coś ponad swój dial.
+///
+/// # 2026-08-20 (T-63) — DO TEGO DNIA `agent.tools` NIE MIAŁO TU ANI JEDNEGO CZYTELNIKA
+///
+/// Pole `tools` jest w formularzu agenta od T-11: człowiek je ustawia, panel kroku pokazuje je
+/// jako „Agent uses: …", plik na dysku je zapisuje — i nie docierało do biegu, bo `RunSpec` nie
+/// miał na nie pola, a jedynym źródłem `--tools` był sufit polityki. Człowiek zawężający narzędzia,
+/// bo nie chce, żeby agent sięgał do sieci albo odpalał komendy, dostawał ekran, który to przyjmuje
+/// i potwierdza; agent i tak dostawał wszystko, co daje jego dial. Nikt się o tym nie dowiedział,
+/// bo „agent nie użył narzędzia" jest nieodróżnialne od „agent uznał, że nie warto" — to jest
+/// martwa kontrolka (niezmiennik 16) schowana o warstwę głębiej.
+///
+/// # Odmowa pada TUTAJ, przy budowie zadania
+///
+/// Niezmiennik 12: odmowa najpóźniej przy Starcie, nigdy w trakcie biegu. Ten kod biegnie
+/// w planowaniu, czyli **zanim** ruszy pierwszy proces — a `RunError::Refused` zabiera cały bieg,
+/// więc nie ma stanu, w którym część kroków ruszyła z listą, której nikt nie przepuścił.
+/// Alternatywa — przycięcie listy i jazda dalej — jest najdroższą wersją tej wady: agent, któremu
+/// po cichu zabrano narzędzie, wygląda dokładnie jak agent, który „nie umiał".
+fn what_this_step_may_use(
+    agent: &Agent,
+    policy: Policy,
+    step: &AgentStep,
+) -> Result<Option<Vec<String>>, RunError> {
+    let wanted = match &agent.tools {
+        // „Wszystkie narzędzia" jedzie do sterownika jako `None`, czyli „nie zawężaj". To jest
+        // DOKŁADNIE dzisiejsze argv — sufit polityki — i dlatego ta gałąź nie woła niczego:
+        // przepuszczenie sufitu przez własny filtr dawałoby ten sam wynik dłuższą drogą, a przy
+        // pierwszej zmianie filtra przestałoby go dawać.
+        Tools::Everything => return Ok(None),
+        Tools::Only(names) => names,
+    };
+
+    let surface = tool_surface(policy, Some(wanted));
+    match surface.refused {
+        None => Ok(Some(surface.available)),
+        Some(refused) => Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to jego lista narzędzi i jego dial, a odmowa
+            // bez wskazania kafelka zostawia człowieka ze szukaniem, którego agenta dotyczy.
+            step_id: Some(step.id.clone()),
+            message: no_such_tools(&agent.name, &refused),
+        })),
+    }
+}
+
+/// Zdanie o narzędziach, których ten agent nie dostanie — i o tym, co z tym zrobić.
+///
+/// Dwie naprawy, nie jedna, i to jest cała treść tej funkcji: skreślić narzędzie albo poszerzyć
+/// dostęp do plików. Odmowa nazywająca tylko jedną z nich zostawia połowę ludzi przy instrukcji,
+/// która w ich przypadku nie może zadziałać — a odmowa, która nie nazywa ani narzędzia, ani dialu,
+/// uczy, że lista narzędzi „nie działa".
+fn no_such_tools(agent: &str, refused: &ToolsRefused) -> String {
+    match refused {
+        ToolsRefused::NothingChosen => format!(
+            "{agent} has no tools left on its list, so it could not read a single file. Pick at \
+             least one tool for it, or set it back to using everything."
+        ),
+        ToolsRefused::AbovePolicy { policy, tools } => {
+            let named = tools.join(", ");
+            format!(
+                "{agent} is set to {} and asks for {named}. Either take {named} off its tool \
+                 list, or give it wider access to files.",
+                on_screen(*policy)
+            )
+        }
+    }
+}
+
+/// Polityka tak, jak brzmi w formularzu agenta.
+///
+/// Bez tego zdanie o odmowie nazywałoby wariant z drutu (`ReadOnly`), a człowiek szukałby w oknie
+/// napisu, którego tam nie ma (niezmiennik 14). Trzy pozycje, te same trzy słowa co na ekranie.
+///
+/// Kotwicą są brzmienia dialu, a nie ta funkcja: `Look only` / `Ask first` / `Work freely` stoją
+/// w `src/sections/agents/agent-form.tsx`, `src/sections/agents/index.tsx` i
+/// `src/sections/workflows/step-panel/panel.tsx`. Kiedy tam się zmienią, TO MIEJSCE jest błędne —
+/// nie odwrotnie, bo tamte trzy człowiek czyta, a tego zdania szuka dopiero po odmowie.
+const fn on_screen(policy: Policy) -> &'static str {
+    match policy {
+        Policy::ReadOnly => "look only",
+        Policy::EditInFolder => "ask first",
+        Policy::Unrestricted => "work freely",
+    }
 }
 
 /// Znajduje w bibliotece agenta o tym identyfikatorze.
@@ -1385,30 +1486,24 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (Pa
 
 /// Dial „co agent może zrobić z plikami" → polityka, którą rozumie sterownik.
 ///
-/// Trzy pozycje na trzy warianty, po kolei. Środkowa jest przybliżeniem i tak jest opisana
-/// w macierzy T4 §6.3 (`fileAccess` jest `Approximate` u obu vendorów): `Policy` nie ma dziś
-/// wariantu „pytaj", więc `ask-first` ląduje na „edytuje w swoim folderze". Sklejenie dwóch
-/// pozycji dialu w jedną politykę byłoby gorsze — dial miałby wtedy pozycję, która nic nie
-/// robi, czyli kontrolkę bez handlera (niezmiennik 16).
+/// # Ta nazwa zostaje pod tym adresem, a tabela stoi przy dialu [2026-08-20, T-63]
 ///
-/// 2026-08-20 — `pub`, i to jest jedna z dwóch rzeczy, których wymaga T-62 AC-1. Bieg
-/// jednokrokowy ma brać politykę z definicji agenta **tą samą tabelą**, co bieg z pliku, a
-/// „tą samą" da się osądzić tylko wtedy, kiedy kryterium umie ją zawołać: asercja na
-/// wpisanym z palca `Policy::ReadOnly` przechodzi także dla drugiej kopii tego `match`, czyli
-/// dokładnie dla tego, przed czym stoi niezmiennik 23. Widoczność, nie nowa funkcja — nie ma
-/// tu drugiego wołającego ani drugiego zdania o tym dialu.
+/// Do tego dnia `match` mieszkał tutaj, a `commands::chat` trzymał jego drugą kopię, bo moduł
+/// obok nie widział prywatnego elementu sąsiada. T-63 AC-4 każe skasować kopię i **mierzy** to
+/// (`one_table_for_policy.rs` liczy pliki, w których stoi to odwzorowanie, i wymaga jednego).
 ///
-/// `#[must_use]` przyszło razem z `pub`: tabela bez wołającego, który czyta jej odpowiedź, jest
-/// wywołaniem bez skutku, a `clippy::pedantic` mówi to wprost przy każdej publicznej funkcji
-/// czystej z definicji.
-#[must_use]
-pub fn policy_of(access: FileAccess) -> Policy {
-    match access {
-        FileAccess::LookOnly => Policy::ReadOnly,
-        FileAccess::AskFirst => Policy::EditInFolder,
-        FileAccess::WorkFreely => Policy::Unrestricted,
-    }
-}
+/// Drogą, którą wskazywał tamten kontrakt — „lider woła `super::run::policy_of`" — pójść nie da
+/// się: `chat_never_starts_a_run.rs` (T-60) asertuje, że napisu `super::run` w kodzie
+/// `commands/chat.rs` NIE MA, bo brak tej zależności jest jedynym mechanizmem, którym rozmowa nie
+/// może zacząć biegu. Napisanie tej samej ścieżki inaczej (`crate::commands::run`) przeszłoby przez
+/// to sprawdzenie i byłoby tą samą zależnością w przebraniu — dokładnie tym, co niezmiennik 20
+/// nazywa testem na obecność napisu.
+///
+/// Więc wspólny fakt zszedł do modułu, od którego oba moduły komend już zależą, i stanął przy
+/// [`crate::library::agents::FileAccess`], czyli przy dialu, o którym mówi. Re-eksport zostaje,
+/// bo pod adresem `commands::run::policy_of` wołają go dwa kryteria (T-62 `ask_one_agent.rs`
+/// i T-63 `one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej, zero drugich tabel.
+pub use crate::library::agents::policy_of;
 
 /// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
 fn some_text(text: &str) -> Option<String> {
@@ -2251,6 +2346,10 @@ impl Live {
             model: job.model.clone(),
             system_append: job.system_append.clone(),
             policy: job.policy,
+            // Lista z definicji agenta, przepuszczona przez sufit jego dialu **przy planowaniu**
+            // (`what_this_step_may_use`). Tu jest już tylko przeniesieniem: krok, który liczyłby to
+            // sam, mógłby odmówić w połowie biegu (niezmiennik 12).
+            tools: job.tools.clone(),
             // Katalog przekazań, kiedy krok ma co czytać. Odnośnik do pliku, którego agentowi nie
             // wolno otworzyć, jest odnośnikiem bez handlera (niezmiennik 16).
             extra_dirs,

@@ -143,6 +143,7 @@ fn spec(cwd: &Path) -> RunSpec {
         // naszej własnej flagi `--permission-mode`, więc przemiatanie argv po tym napisie
         // sądziłoby politykę biegu zamiast dziedziczenia.
         policy: Policy::ReadOnly,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

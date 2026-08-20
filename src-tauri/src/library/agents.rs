@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::engine::drivers::Policy;
 use crate::workflow::check::FORBIDDEN_ESCALATIONS;
 
 /// Wersja formatu, w którym zapisujemy agenta. Jedna liczba i na razie jedna wartość —
@@ -75,6 +76,50 @@ pub enum FileAccess {
     LookOnly,
     AskFirst,
     WorkFreely,
+}
+
+/// Dial „co agent może zrobić z plikami" → polityka, którą rozumie sterownik.
+///
+/// Trzy pozycje na trzy warianty, po kolei. Środkowa jest przybliżeniem i tak jest opisana
+/// w macierzy T4 §6.3 (`fileAccess` jest `Approximate` u obu vendorów): [`Policy`] nie ma dziś
+/// wariantu „pytaj", więc `ask-first` ląduje na „edytuje w swoim folderze". Sklejenie dwóch pozycji
+/// dialu w jedną politykę byłoby gorsze — dial miałby wtedy pozycję, która nic nie robi, czyli
+/// kontrolkę bez handlera (niezmiennik 16).
+///
+/// # To jest JEDYNA kopia tego odwzorowania i jest to mierzone (T-63 AC-4)
+///
+/// `one_table_for_policy.rs` liczy pliki pod `src-tauri/src/`, w których stoi ramię
+/// `FileAccess::… => Policy::…`, i wymaga dokładnie jednego. Dwie wyczerpujące kopie, które po
+/// prostu się zgadzają, są nieodróżnialne dla każdej asercji o wartościach — a rozjechać się może
+/// **przecelowanie jednego ramienia** w jednej z nich. Lider, któremu wolno pisać, choć człowiek
+/// ustawił „look only", nie wygląda na awarię: wygląda na lidera, który zapisał plik.
+///
+/// # Dlaczego ta tabela mieszka TUTAJ, a nie w `commands::run` [2026-08-20, T-63]
+///
+/// Bo ma dwóch czytelników w dwóch **równorzędnych** modułach komend — krok biegu
+/// (`commands::run::plan_agent`) i rozmowę z liderem (`commands::chat::Lead::policy`) — a jeden
+/// z nich nie ma prawa zależeć od drugiego. `chat_never_starts_a_run.rs` (T-60) asertuje, że
+/// w kodzie `commands/chat.rs` nie ma napisu `super::run`, i to **nie jest kosmetyka**: brak tej
+/// zależności JEST mechanizmem, którym rozmowa nie może zacząć biegu, a zdanie w promptcie
+/// systemowym to tylko prośba, którą model może zignorować.
+///
+/// Więc wspólny fakt idzie w dół, do modułu, od którego oba te moduły już zależą — i idzie
+/// dokładnie tam, gdzie stoi [`FileAccess`], bo to jest jedno zdanie o jednym dialu. Strzałka się
+/// przy tym nie odwraca: `library/` zależy od `workflow/`, a to od `engine::dag`, więc
+/// `library/` → `engine::drivers` jest kierunkiem, który już istnieje. Odwrotność —
+/// `engine/` zależne od `library/` — jest tym, przed czym ostrzega [`RunSpec::tools`], i tego tu
+/// nie ma.
+///
+/// `commands::run` re-eksportuje tę nazwę, bo pod tamtym adresem woła ją T-62
+/// (`ask_one_agent.rs`) i T-63 (`one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej,
+/// zero drugich tabel.
+#[must_use]
+pub const fn policy_of(access: FileAccess) -> Policy {
+    match access {
+        FileAccess::LookOnly => Policy::ReadOnly,
+        FileAccess::AskFirst => Policy::EditInFolder,
+        FileAccess::WorkFreely => Policy::Unrestricted,
+    }
 }
 
 /// Narzędzia: wszystkie albo wymieniona lista.

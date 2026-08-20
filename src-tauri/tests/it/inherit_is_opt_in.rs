@@ -115,6 +115,7 @@ fn spec(cwd: &Path) -> RunSpec {
         model: None,
         system_append: Some("Answer in English.".to_owned()),
         policy: Policy::ReadOnly,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

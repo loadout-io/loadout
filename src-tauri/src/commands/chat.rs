@@ -40,7 +40,7 @@ use crate::engine::drivers::{
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, FileAccess};
+use crate::library::agents::{Agent, policy_of};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -405,28 +405,26 @@ impl Lead {
     /// źródłowym po cichu umarło skanowanie sekretów: obie wyglądają poprawnie, a podpięta jest
     /// zawsze starsza.
     ///
-    /// # 2026-08-20 — ZDANIE WYŻEJ JEST DZIŚ NIEPRAWDĄ I JEST TO ZGŁOSZENIE, NIE PRZEOCZENIE
+    /// # 2026-08-20 (T-63) — ZDANIE WYŻEJ ZNOWU JEST PRAWDĄ, I TO JEST CAŁA TREŚĆ AC-4
     ///
-    /// `commands::run::policy_of` jest **prywatne** i ma dokładnie jednego wołającego
-    /// (`run.rs:1019`). Moduł obok nie widzi prywatnego elementu sąsiada, a `src-tauri/src/commands/
-    /// run.rs` nie stoi w bloku `<!-- OWNS -->` tego zadania — więc jedyny ruch, który zrobiłby
-    /// z tamtej tabeli JEDNĄ tabelę (dopisanie `pub(crate)`), jest tu niedostępny. Ta tabela jest
-    /// jej drugą kopią i tak ma być czytana, dopóki tamto słowo nie padnie.
+    /// Do tego dnia stała tu **druga, ręcznie napisana** kopia tamtej tabeli, bo tamta była
+    /// prywatna, a T-60 nie posiadało `run.rs`. Kopia nie była zepsuta — oba dopasowania oddawały
+    /// to samo, więc każda asercja o wartościach przechodziła dla obu. Rozjechać się mogła dokładnie
+    /// jedna rzecz: **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc, i tego nie
+    /// widziało żadne sprawdzenie w tym repo. Lider, któremu wolno pisać, choć człowiek ustawił
+    /// „look only", nie wygląda na awarię — wygląda na lidera, który zapisał plik.
     ///
-    /// Co z tej kopii NIE MOŻE się rozjechać po cichu: oba dopasowania są **wyczerpujące** po
-    /// `FileAccess`, więc czwarta pozycja dialu nie skompiluje się bez ruszenia obu. Rozjechać się
-    /// może wyłącznie **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc — i tego
-    /// żadne sprawdzenie w tym repo nie widzi.
+    /// Dlatego tu nie ma ani jednego ramienia po dialu, i to jest **mierzone**, nie obiecane:
+    /// `one_table_for_policy.rs` liczy pliki pod `src/`, w których to odwzorowanie jest zapisane,
+    /// i wymaga dokładnie jednego.
+    ///
+    /// Tabela stoi przy dialu ([`crate::library::agents::policy_of`]), a nie w module biegu, i to
+    /// nie jest wybór estetyczny: rozmowa **nie ma prawa** zależeć od `commands::run`, bo brak tej
+    /// zależności jest jedynym mechanizmem, którym nie może zacząć biegu (`chat_never_starts_a_run`
+    /// asertuje to na źródle tego pliku). Powód pełny stoi przy definicji tamtej funkcji.
     #[must_use]
     pub fn policy(&self) -> Policy {
-        match self.agent.file_access {
-            FileAccess::LookOnly => Policy::ReadOnly,
-            // Środkowa pozycja jest przybliżeniem i tak jest opisana w macierzy T4 §6.3:
-            // [`Policy`] nie ma dziś wariantu „pytaj", więc `ask-first` ląduje na „edytuje
-            // w swoim folderze". To jest to samo zdanie, które stoi przy tabeli biegu.
-            FileAccess::AskFirst => Policy::EditInFolder,
-            FileAccess::WorkFreely => Policy::Unrestricted,
-        }
+        policy_of(self.agent.file_access)
     }
 
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
@@ -721,6 +719,7 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
          * człowiek pracuje. Uruchomienia biegu to nie dotyczy i nie ma jak dotyczyć — biegi
          * zaczyna komenda, a tej nie ma w żadnym narzędziu, które ten proces widzi. */
         policy: Policy::EditInFolder,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }
@@ -745,6 +744,22 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
         model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
         system_append: Some(lead.brief()),
         policy: lead.policy(),
+        /* 2026-08-20 (T-63) — LISTA NARZĘDZI LIDERA WCIĄŻ TU NIE DOJEŻDŻA I JEST TO ZGŁOSZENIE,
+         * NIE PRZEOCZENIE. Bieg kroku bierze ją od tego dnia z definicji agenta
+         * (`commands::run::what_this_step_may_use`), więc `Agent.tools` przestało być martwą
+         * kontrolką TAM — a tutaj nie: lider z zawężoną listą dostaje dalej cały sufit swojej
+         * polityki, dokładnie jak przed tym zadaniem.
+         *
+         * Czego brakuje, dosłownie: `claude::tool_surface(lead.policy(), …)` oddaje też `refused`,
+         * a `refused` nie ma tu gdzie pojechać — ta funkcja zwraca `RunSpec`, nie `Result`.
+         * Przycięcie listy po cichu jest wykluczone (to najdroższa wersja tej wady: agent, któremu
+         * po cichu zabrano narzędzie, wygląda jak agent, który „nie umiał"), więc wpięcie znaczy
+         * nowy wariant [`ChatError`] i sygnatura `Result<RunSpec, ChatError>`. Oba pliki są
+         * w bloku OWNS tego zadania, więc to nie jest bariera techniczna — decyzja jest
+         * produktowa i należy do człowieka: czy lider z listą ponad swoim dialem ma ODMÓWIĆ
+         * ROZMOWY. Odmowa startu biegu i odmowa rozmowy nie ważą tyle samo, a żadne kryterium
+         * T-63 tego nie sądzi. */
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }

@@ -124,6 +124,7 @@ fn spec(cwd: &Path) -> RunSpec {
         model: Some("gpt-5-codex".to_owned()),
         system_append: None,
         policy: Policy::EditInFolder,
+        tools: None,
         extra_dirs: Vec::new(),
         resume: None,
     }
