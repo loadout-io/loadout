@@ -297,6 +297,74 @@ pub async fn run_workflow_with_slots(
     report
 }
 
+/// Jeden agent, jedno zdanie — żądanie biegu jednokrokowego.
+///
+/// # Dlaczego to nie jest [`RunRequest`]
+///
+/// Tamta struktura niesie `workflow: PathBuf`, czyli PLIK, i to jest jej cała treść: bieg nie
+/// ufa UI, więc jedyne, co o planie wiadomo na pewno, to gdzie leży. Tutaj planu nie ma —
+/// jednostką jest definicja agenta z biblioteki, a nazwa pliku byłaby zmyśleniem, po którym
+/// wznowienie szukałoby kiedyś workflow, którego nikt nigdy nie zapisał.
+///
+/// Osobny typ, a nie pole `Option` w [`RunRequest`], bo `src-tauri/src/commands/mod.rs` nie
+/// należy do T-62 (`AGENTS.md` §7) — a i tak byłby to jeden typ z dwoma znaczeniami, czyli
+/// para, którą prędzej czy później ktoś zamieni miejscami.
+#[derive(Debug, Clone)]
+pub struct AskRequest {
+    /// Identyfikator agenta z biblioteki — ten sam, którym nazywa go krok pliku workflow.
+    ///
+    /// Identyfikator, nie nazwa: przeżywa zmianę nazwy (T3 §3.1), a wiersz wejścia i tak
+    /// tłumaczy wpisane słowo na identyfikator, zanim tu dojedzie.
+    pub agent: String,
+    /// Zdanie człowieka — CO ten agent ma zrobić.
+    ///
+    /// Puste znaczy „nic nie kazano" i jest odmową po stronie wiersza wejścia, nie tutaj:
+    /// agent bez polecenia to tura, za którą ktoś płaci, choć nikt o nic nie zapytał.
+    pub task: String,
+    /// Ile kroków ma **naprawdę** działać naraz — ta sama liczba, co przy biegu z pliku.
+    ///
+    /// Jest tu, a nie w stałej `1`, bo bieg jednokrokowy bierze miejsce z TEJ SAMEJ puli
+    /// (niezmiennik 11). Bieg, który zna swój limit z definicji, jest biegiem, który idzie
+    /// obok puli — a wtedy człowiek ustawia trzech i pracuje piątka.
+    pub how_many_at_once: usize,
+}
+
+/// Uruchamia JEDNEGO agenta z jednym zdaniem — zwykłym biegiem, nie drugą maszynerią.
+///
+/// Katalog `runs/<ts>__<id>/`, `run.json`, miejsce w puli i dowód śmierci grupy na końcu: to
+/// wszystko przychodzi stąd, bo bieg jednokrokowy JEST biegiem. Druga ścieżka wykonania —
+/// „lekki tryb bez katalogu" — byłaby dokładnie tym, co `docs/ARCHITECTURE.md` opisuje jako
+/// osiem rodzajów autorytetu w repo źródłowym.
+///
+/// Pulę robi sobie sam, dokładnie jak [`run_workflow_inner`], i z dokładnie tą samą wadą:
+/// wołający, który ma pulę wspólną, wchodzi [`run_agent_with_slots`].
+pub async fn run_agent_inner(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+) -> Result<RunReport, RunError> {
+    run_agent_with_slots(deps, ask, lines, Limiter::new(ask.how_many_at_once)).await
+}
+
+/// Ten sam bieg jednokrokowy, tylko miejsce bierze ze **wspólnej puli aplikacji**.
+///
+/// Cała treść niezmiennika 11 w tym zadaniu siedzi w tym, że ta funkcja istnieje i że nie
+/// zakłada semafora sama: dwa `/ask` przy puli trzech to dalej najwyżej trzech pracujących
+/// agentów. Bieg jednokrokowy, który omija limiter, wygląda jak wygoda („to tylko jeden
+/// agent") i znaczy, że `atOnce` przestaje być prawdą o maszynie.
+pub async fn run_agent_with_slots(
+    _deps: &RunDeps<'_>,
+    _ask: &AskRequest,
+    _lines: LineSink,
+    _slots: Limiter,
+) -> Result<RunReport, RunError> {
+    // SZKIELET T-62. Sygnatura istnieje, żeby kryterium się SKOMPILOWAŁO i padło w czasie
+    // wykonania (AGENTS.md §2a p. 5): test, który się nie skompilował, nie uruchomił niczego.
+    // `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno takie ciało nie dożyło
+    // pełnej bramki.
+    todo!()
+}
+
 /// Bieg od wczytania pliku do zamknięcia księgi. Wydzielony z [`run_workflow_inner`], żeby
 /// dowód z `settle()` schodził dokładnie raz, niezależnie od tego, którym `?` się stąd wyszło.
 async fn the_whole_run(
@@ -1107,7 +1175,14 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (Pa
 /// wariantu „pytaj", więc `ask-first` ląduje na „edytuje w swoim folderze". Sklejenie dwóch
 /// pozycji dialu w jedną politykę byłoby gorsze — dial miałby wtedy pozycję, która nic nie
 /// robi, czyli kontrolkę bez handlera (niezmiennik 16).
-fn policy_of(access: FileAccess) -> Policy {
+///
+/// 2026-08-20 — `pub`, i to jest jedna z dwóch rzeczy, których wymaga T-62 AC-1. Bieg
+/// jednokrokowy ma brać politykę z definicji agenta **tą samą tabelą**, co bieg z pliku, a
+/// „tą samą" da się osądzić tylko wtedy, kiedy kryterium umie ją zawołać: asercja na
+/// wpisanym z palca `Policy::ReadOnly` przechodzi także dla drugiej kopii tego `match`, czyli
+/// dokładnie dla tego, przed czym stoi niezmiennik 23. Widoczność, nie nowa funkcja — nie ma
+/// tu drugiego wołającego ani drugiego zdania o tym dialu.
+pub fn policy_of(access: FileAccess) -> Policy {
     match access {
         FileAccess::LookOnly => Policy::ReadOnly,
         FileAccess::AskFirst => Policy::EditInFolder,

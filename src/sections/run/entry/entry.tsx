@@ -42,6 +42,19 @@ import { useState } from 'react';
 import type { Named } from '../run-command';
 
 /**
+ * Skąd bierze się lista, którą Tab uzupełnia PO nazwie tej komendy.
+ *
+ * `null` znaczy „ta komenda nie ma nazwy do uzupełnienia": `/stop` nie bierze argumentu, a
+ * ścieżki dla `/open` nie ma czym sprawdzić, więc podpowiadanie jej byłoby zgadywaniem.
+ *
+ * Pole w [`KNOWN`], nie druga tabela obok: „co ta komenda wykonuje" i „co jej się podpowiada"
+ * to jeden fakt o jednej komendzie (niezmiennik 13). Druga mapa rozjeżdża się w dniu, w którym
+ * ktoś doda komendę z argumentem i zapomni jej dopisać — a wtedy wiersz przyjmuje nazwę, której
+ * nie pokazuje.
+ */
+export type Completes = 'workflows' | 'agents' | null;
+
+/**
  * Komendy, które ten wiersz wykonuje — cała lista, w kolejności zachęty.
  *
  * Zamknięta jako WARTOŚĆ, nie jako zdanie w komentarzu: zachęta i odpowiedź „nie znam tego"
@@ -52,9 +65,20 @@ export const KNOWN = [
     name: '/run',
     tail: 'a workflow',
     does: 'Start a workflow. Add what to build after its name.',
+    completes: 'workflows' as Completes,
   },
-  { name: '/open', tail: 'a folder', does: 'Choose a folder to work in.' },
-  { name: '/stop', tail: 'the run', does: 'Stop the run that is going.' },
+  {
+    name: '/open',
+    tail: 'a folder',
+    does: 'Choose a folder to work in.',
+    completes: null as Completes,
+  },
+  {
+    name: '/stop',
+    tail: 'the run',
+    does: 'Stop the run that is going.',
+    completes: null as Completes,
+  },
 ] as const;
 
 /**
@@ -182,11 +206,24 @@ export function understand(typed: string): Command | null {
  * pisze ZADANIE, a lista workflow wisząca pod zdaniem „build me a todo list" jest szumem — i, co
  * gorsza, sugerowałaby, że Tab dalej coś uzupełni.
  *
+ * 2026-08-20 — KTÓRA LISTA UZUPEŁNIA KTÓRĄ KOMENDĘ, MÓWI [`KNOWN`]. Do tego dnia stał tu
+ * warunek `first === '/run'`, czyli nazwa komendy wpisana drugi raz, obok tej samej nazwy w
+ * [`KNOWN`]. Przy dwóch komendach z argumentem (`/run` bierze workflow, `/ask` bierze agenta)
+ * ten warunek musiałby rosnąć razem z listą — a rósłby OSOBNO od niej, więc komenda dopisana
+ * do [`KNOWN`] podpowiadałaby się jako słowo i milczała o swoim argumencie.
+ *
  * @param workflows nazwy do podpowiedzenia po `/run` (`run-command.ts`, `workflowNames`). Domyślnie
  *   puste, bo ten wiersz nie czyta dysku sam: katalog jest pytaniem do adaptera, a komponent, który
  *   zadaje je sam, jest drugim miejscem, w którym mieszka odpowiedź „jakie workflow istnieją".
+ * @param agents nazwy do podpowiedzenia po `/ask` (`ask-command.ts`, `agentNames`). Domyślnie
+ *   puste, z tego samego powodu — a osobno od `workflows`, bo zlanie ich w jedną listę
+ *   podpowiadałoby workflow tam, gdzie wiersz przyjmuje wyłącznie agenta, i odwrotnie.
  */
-export function suggestions(typed: string, workflows: readonly Named[] = []): readonly Named[] {
+export function suggestions(
+  typed: string,
+  workflows: readonly Named[] = [],
+  agents: readonly Named[] = [],
+): readonly Named[] {
   const line = typed.trimStart();
   if (!line.startsWith('/')) return [];
 
@@ -197,10 +234,12 @@ export function suggestions(typed: string, workflows: readonly Named[] = []): re
   }
 
   const first = line.slice(0, space).toLowerCase();
-  if (first === '/run') {
+  const completes = KNOWN.find((one) => one.name === first)?.completes ?? null;
+  if (completes !== null) {
     const partial = line.slice(space + 1).trimStart();
     if (partial.includes(' ')) return [];
-    return workflows.filter((one) => one.name.startsWith(partial.toLowerCase()));
+    const named = completes === 'agents' ? agents : workflows;
+    return named.filter((one) => one.name.startsWith(partial.toLowerCase()));
   }
   /* Pierwsze słowo jest już całe, więc podpowiedź jest dokładnie jedna albo żadna: prefiks
    * przestaje mieć sens, kiedy po komendzie stoi jej argument. */

@@ -33,6 +33,7 @@ new_id
 open_chat
 put_note_to_use
 review_skill
+run_agent
 run_workflow
 save_agent
 save_workflow
