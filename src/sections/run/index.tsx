@@ -58,7 +58,8 @@ import { toChoices } from './choices';
 import type { Named } from './run-command';
 import { startFromLine, workflowNames } from './run-command';
 import { list as listWorkflows } from '../workflows/io';
-import { cardsIn, runTabs } from './tabs/store';
+import { cardOnTop, cardsIn, runTabs } from './tabs/store';
+import { newTerminal } from './tabs/terminal';
 import { PausedBanner } from './limits/paused-banner';
 import type { AgentFacts } from './rail/roster';
 import { roster } from './rail/roster';
@@ -161,7 +162,12 @@ export default function Run(): ReactElement {
     useWorkspaces.getState,
     useWorkspaces.getState,
   );
-  const folder = scopes.all.find((one) => one.id === scopes.activeId)?.folder ?? null;
+  /* Zakres, w którym człowiek pracuje — CAŁY, nie sam folder, bo `＋` potrzebuje też jego nazwy:
+   * świeży terminal nie ma jeszcze workflow, więc mówi o sobie tym słowem, które człowiek sam
+   * wpisał w bocznym menu. Nazwa folderu wyliczona z jego ścieżki byłaby drugą odpowiedzią na
+   * pytanie „jak nazywa się ten projekt" (niezmiennik 13). */
+  const scope = scopes.all.find((one) => one.id === scopes.activeId) ?? null;
+  const folder = scope?.folder ?? null;
 
   /* Jedno miejsce na to, co Loadout odpowiedział o folderze albo o zatrzymaniu wywołanym
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
@@ -203,13 +209,14 @@ export default function Run(): ReactElement {
    * ORAZ karty w środku ekranu). Filtr jest funkcją czystą w `./tabs/store`, żeby dało się go
    * osądzić bez okna. */
   const shown = useMemo(() => cardsIn(tabs.tabs, folder), [tabs.tabs, folder]);
-  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ. Karta wybrana w innym zakresie zostaje
-   * wybrana w swoim, ale nie ma prawa zabrać podświetlenia jedynej karcie tutaj: pasek, na którym
-   * żadna karta nie jest otwarta, choć jedna stoi, to stan, w którym człowiek nie wie, na co
-   * patrzy. */
-  const onTop = shown.some((card) => card.id === tabs.activeId)
-    ? tabs.activeId
-    : (shown[0]?.id ?? null);
+  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ, i to jest to samo wyrażenie, którym
+   * rozstrzyga to rejestr strumienia (`./feed/live`, `runFeed`). Jedna odpowiedź na jedno pytanie
+   * (niezmiennik 13): dwie kopie dałyby pasek podświetlający jedną kartę nad historią należącą
+   * do drugiej — i wyglądałoby to jak lider, który odpowiada nie na to, o co pytano. */
+  const onTop = useMemo(
+    () => cardOnTop(tabs.tabs, tabs.activeId, folder),
+    [tabs.tabs, tabs.activeId, folder],
+  );
 
   /* CZEGO TU NIE MA: przestawiania sesji przy przełączeniu zakresu. Oba magazyny robią to same
    * i każdy z nich słucha magazynu zakresów u siebie — `runFeed` w `./feed/live`, `useRun`
@@ -303,6 +310,44 @@ export default function Run(): ReactElement {
       .catch((error: unknown) => {
         setSaid(why(error, 'Loadout could not open the folder chooser.'));
       });
+  }
+
+  /**
+   * `＋` na pasku kart: NOWY TERMINAL w projekcie, który już wybrano.
+   *
+   * ZGŁOSZENIE, Z KTÓREGO TO WZIĘŁO SIĘ W CAŁOŚCI (właściciel, 2026-08-20): „jak klikam plusik to
+   * powinno po prostu odpalać nowy nasz terminal i sobie tam możemy kolejne workflow w naszym
+   * scope co mamy zaznaczone, a nie tak jak teraz że scope wybieramy znowu".
+   *
+   * STAN BYŁ GORSZY, NIŻ BRZMI ZGŁOSZENIE. `＋` wołał [`openFolder`], czyli systemowe okno wyboru
+   * katalogu, a wybór kończył się dołożeniem nowego ZAKRESU — który od razu stawał się aktywny.
+   * Pasek pokazuje karty aktywnego zakresu, a w świeżym nie ma żadnej: kliknięcie w `＋` nie
+   * dokładało więc karty **nigdy**, tylko wymieniało projekt i opróżniało pasek.
+   *
+   * DECYZJA MIESZKA TUTAJ, A NIE W PASKU, bo to ten ekran wie, czy jest gdzie postawić terminal.
+   * Pasek dostaje jeden handler i nie zna pojęcia zakresu (`./tabs/tab-bar.tsx`).
+   *
+   * BEZ ZAKRESU DALEJ PYTAMY O FOLDER, i to nie jest wyjątek dla wygody: terminal bez miejsca
+   * pracy nie ma gdzie stanąć, a karta, której praca nie ma domu, jest kropką nad folderem,
+   * którego nie ma (niezmiennik 17). Pytanie o folder jest wtedy jedyną uczciwą odpowiedzią —
+   * i jest tą samą czynnością, co zaproszenie na pustym ekranie i `/open` w wierszu wejścia.
+   *
+   * KURSOR WRACA DO POLA, bo otwarcie terminalu JEST prośbą o to, żeby w nim pisać. Przeglądarka
+   * zostawia ognisko na przycisku, który nacisnięto, więc bez tej linii każdy nowy terminal
+   * kosztowałby jedno kliknięcie więcej przed pierwszym zdaniem — czyli dokładnie tę wadę, którą
+   * właściciel zgłosił tego samego dnia o wierszu wejścia (T-58 AC-3).
+   */
+  function newTerminalHere(): void {
+    setSaid(null);
+    if (scope === null || folder === null) {
+      openFolder();
+      return;
+    }
+    /* `open` z fabryki dokłada kartę I STAWIA JĄ NA WIERZCHU — jednym `set`, więc nie ma chwili,
+     * w której karta już stoi, a wierzch należy jeszcze do poprzedniej. Człowiek, który poprosił
+     * o nowe miejsce do pracy, patrzy na nie, a nie na to, co było przedtem. */
+    runTabs.getState().open(newTerminal(folder, scope.name));
+    field.current?.focus();
   }
 
   /**
@@ -437,7 +482,11 @@ export default function Run(): ReactElement {
           waitingIn={waitingWhere(run.steps, run.folder ?? folder)}
           onSelect={tabs.activate}
           onClose={tabs.requestClose}
-          onOpenFolder={openFolder}
+          /* `＋` OTWIERA TERMINAL, nie okno wyboru katalogu — powód w całości stoi przy
+             `newTerminalHere`. Nazwa propsa jest zapisanym długiem i jest zgłoszona przy
+             `TabBarProps.onOpenFolder`; zaproszenie na pustym ekranie niżej i `/open` w wierszu
+             wejścia wołają dalej `openFolder`, bo one naprawdę pytają o folder. */
+          onOpenFolder={newTerminalHere}
         />
 
         <div className="flex shrink-0 flex-col gap-2">
