@@ -8,6 +8,16 @@
  * Kafelek istnieje wtedy i TYLKO wtedy, gdy agent pojawił się w strumieniu. Kolejność jest
  * kolejnością pierwszego pojawienia się, nie kolejnością kroków w grafie.
  *
+ * 2026-08-20 — CZWARTA CICHA PORAŻKA, ZMIERZONA. „Agent pojawił się w strumieniu" i „w polu
+ * `agent` wiersza stoi jakaś nazwa" to nie to samo zdanie, a ten plik czytał je jak jedno.
+ * W strumieniu stoją też wiersze, które złożyło samo okno — echo wpisanej komendy i odpowiedź,
+ * którą wiersz wejścia daje sam sobie (`../entry/echo.ts`) — i one nie opisują niczyjej pracy.
+ * Pierwsza komenda w sesji dokładała więc kafelek „Loadout", a stan brał się z planu, którego
+ * ten kafelek nie ma: `statusOf(null, false)` daje `working`, czyli agent, którego nikt nie
+ * uruchomił, pracował do końca pracy. Rozmowa z liderem robiła to samo od dawna, tylko raz na
+ * rozmowę. To jest relacja, której w danych nie ma (niezmiennik 17) — dokładnie ta, przed którą
+ * broni komentarz przy `railCard` niżej.
+ *
  * Dwa wejścia i podział między nimi jest tezą tego pliku:
  *   `view`    strumień. Jedyne źródło tego, KTÓRZY agenci istnieją i w jakiej kolejności.
  *   `agents`  co Loadout wie o agencie poza strumieniem: jak się nazywa, po co jest i na
@@ -21,7 +31,7 @@
  * (agent, stan kroku) jest zadeklarowana tutaj i składa ją ten, kto montuje ekran pracy.
  */
 import type { StepState } from '../../../state/run';
-import type { FeedView } from '../feed/model';
+import type { FeedView, HistoryRow } from '../feed/model';
 import type { AgentStatus, RailCard } from './card';
 import { railCard } from './card';
 import type { Utterance } from './say';
@@ -83,6 +93,27 @@ function statusOf(step: StepState | null, waitsOnYou: boolean): AgentStatus {
   return OF_STEP[step];
 }
 
+/**
+ * Czy ten wiersz złożyło okno — czyli czy za nim NIE stoi żadna praca.
+ *
+ * Pyta o POCHODZENIE wiersza, nigdy o to, jak nazywa się jego autor. Numer ujemny wydaje
+ * wyłącznie `../entry/echo.ts` i wydaje go właśnie dlatego, że obie pompy — biegu i rozmowy —
+ * stemplują od 1 każda z osobna, więc dodatni licznik w oknie zderzyłby się z ich numerami.
+ * „Skład okna" jest więc faktem zapisanym w wierszu i ma tu jedną odpowiedź (niezmiennik 13).
+ *
+ * Lista zakazanych nazw byłaby drugą tabelą prawdy o tym samym i myliłaby się w obie strony:
+ * skasowałaby pierwszego agenta nazwanego „Loadout", a wiersz okna podpisany cudzą nazwą
+ * przepuściłaby jako cytat agenta, który tego zdania nie wypowiedział. Nazwa autora nie jest
+ * tym miejscem, w którym mieszka pochodzenie wiersza — numer jest.
+ *
+ * Czego to NIE jest: cięcia po braku kroku w planie. Pod-agent rozpuszczony w trakcie pracy też
+ * nie ma kroku i nigdy nie będzie miał, a jest jedynym agentem, po którym kafelek jest CAŁYM
+ * śladem. Ta wersja naprawy wygląda identycznie w liczbie kafelków i kasuje właśnie jego.
+ */
+function windowWrote(row: HistoryRow): boolean {
+  return row.id < 0;
+}
+
 /** Kafelki, w kolejności pierwszego pojawienia się w strumieniu. */
 export function roster(state: RosterInput): readonly RailCard[] {
   const known = new Map(state.agents.map((facts) => [facts.id, facts]));
@@ -95,6 +126,11 @@ export function roster(state: RosterInput): readonly RailCard[] {
   const waitingOnYou = new Set<string>();
 
   for (const row of state.view.history) {
+    /* Odsiew stoi TUTAJ, przed mapą, a nie za nią, i to nie jest kwestia gustu: kolejność
+     * kafelków jest kolejnością wstawienia do `Map`, więc przesianie historii po zbudowaniu mapy
+     * zostawiłoby na liście miejsce po oknie i przestawiło agentów, którzy nadali po nim. Liczba
+     * wyszłaby wtedy ta sama i nie byłoby tego po czym poznać. */
+    if (windowWrote(row)) continue;
     const before = said.get(row.agent);
     const utterances = before ?? [];
     if (before === undefined) said.set(row.agent, utterances);
