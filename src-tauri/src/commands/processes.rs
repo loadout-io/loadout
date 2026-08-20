@@ -174,7 +174,23 @@ impl Processes {
         // a w nim lista pokazywałaby jako żywe coś, co właśnie schodzi z ekranu na oczach
         // człowieka, który nacisnął Stop.
         let mut staying = taken?;
-        Some(staying.stop().await)
+        let proof = staying.stop().await;
+        /* ESKALACJA, KTÓRA NIE DOWIODŁA ŚMIERCI, ODDAJE UCHWYT REJESTROWI. Zdjęcie wpisu przed
+         * eskalacją jest słuszne dla rzeczy, która zeszła — ale przy `GroupProof::Alive` w tej
+         * grupie ktoś dalej biegnie, a rejestr, który o niej zapomniał, nie ma jak jej już
+         * zgłosić: [`Processes::list`] jej nie wymieni, więc kafelek gaśnie (reguła 2 w
+         * `src/sections/run/rail/processes.ts`), a drugie kliknięcie „stop" trafi na `None`,
+         * czyli na `Ok(())` w `ipc::stop_process` — sukces zameldowany nad rzeczą, która nie
+         * umarła. To jest to samo kłamstwo, przed którym stoi ten plik, tylko w drugą stronę:
+         * cisza nad grupą, która pali maszynę. Uchwyt wraca ten sam, więc następny „stop" umie
+         * powtórzyć eskalację na tej grupie, a nie na jej wspomnieniu. */
+        if matches!(proof, GroupProof::Alive) {
+            self.held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(pgid, staying);
+        }
+        Some(proof)
     }
 
     /// Zamknięcie okna: schodzą **wszystkie** i każda oddaje dowód śmierci swojej grupy.
