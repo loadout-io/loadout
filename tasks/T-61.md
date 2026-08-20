@@ -53,6 +53,16 @@ sie bez nowego wpisu — i to jest cala obrona przed wierszem, ktorego nikt nie 
    zdejmujesz i nie przepisujesz**. Jesli okaze sie, ze trzeba tknac cokolwiek innego, **stoj
    i zglos** (AGENTS.md §7).
 
+3. `src/sections/run/feed/collapse.test.ts` (kryterium T-08) wypisuje DWIE listy — dziewiec
+   rodzajow rozwinietych i siedem zwinietych — i jego wlasna proza mowi, po co: *„obie listy sa
+   wypisane, a nie liczone, bo dziewiec zlych to nadal dziewiec; ktore rodzaje sie otwieraja, jest
+   decyzja projektowa [T2 §7.3 regula 2]"*. Nowy rodzaj MUSI wiec wejsc na jedna z tych list
+   swiadomie, w tym samym diffie, w ktorym powstaje — i to jest cala dozwolona zmiana w tym pliku:
+   **dopisujesz `suggested` do listy rozwinietych i nic wiecej**. Ani jedna asercja nie znika, ani
+   jedno zdanie uzasadnienia nie jest przepisywane, lista zwinietych zostaje bez zmiany. To lustro
+   zadzialalo dokladnie tak, jak zaprojektowano: wymusilo decyzje zamiast przepuscic ja po cichu.
+   Jesli okaze sie, ze trzeba tknac cokolwiek innego, **stoj i zglos** (AGENTS.md §7).
+
 ## Szkielet, bez ktorego `before` nie jest czerwone
 
 Rust: nowy wariant `Line` plus funkcja rozpoznajaca z `todo!()`. TypeScript:
@@ -132,6 +142,7 @@ src/ipc/types.ts
 src/ipc/line-wire.golden.json
 src/ipc/suggested-crosses-the-wire.test.ts
 src/sections/run/feed/kinds.ts
+src/sections/run/feed/collapse.test.ts
 src/sections/run/feed/line.tsx
 src/sections/run/feed/suggested.ts
 src/sections/run/feed/suggestion-has-a-button.test.tsx
