@@ -523,6 +523,46 @@ impl Threads {
         }
     }
 
+    /// Gdzie leży biblioteka tego człowieka — `~/.loadout` (`docs/ARCHITECTURE.md` §8).
+    ///
+    /// # Po co rozmowa w ogóle o tym wie
+    ///
+    /// Bo bez tego „przygotuję ci to" jest obietnicą bez pokrycia. Lider startuje w folderze
+    /// zakresu i **wyłącznie** w nim, a twoje workflow i twoi agenci leżą poza nim. „Załóż mi
+    /// agenta do recenzji" albo „popraw ten krok w workflow" kończy się wtedy instrukcją, jak
+    /// zrobić to RĘCZNIE — czyli doradcą odciętym od jedynych plików, o których rozmawiacie.
+    ///
+    /// Katalogi, nie ich zawartość: biblioteka JEST plikami (niezmiennik 4), więc lider
+    /// poprawiający workflow poprawia to samo, co czyta okno, i żaden stan pośredni nie jest do
+    /// tego potrzebny.
+    ///
+    /// **Ścieżka przychodzi argumentem, nigdy z `HOME` czytanego w środku.** Katalog domowy
+    /// odczytany tutaj znaczyłby, że każdy test rozmawia z prawdziwą biblioteką — ten sam wybór
+    /// i ten sam powód, co przy [`super::agents::list_agents_inner`] i przy `RunDeps::home`.
+    ///
+    /// # Czego to NIE dosypuje, i to jest granica decyzji, nie przeoczenie
+    ///
+    /// Kroku biegu. Agent piszący kod w projekcie nie ma powodu przepisywać definicji innych
+    /// agentów, a bieg czyta tę definicję RAZ, przy starcie kroku: nadpisana w trakcie nie
+    /// przewraca niczego dzisiaj, więc awarii nie widać aż do NASTĘPNEGO biegu, kiedy „ten sam
+    /// workflow" robi co innego. Wersja dosypująca katalogi wszystkim wygląda przy tym dokładnie
+    /// tak samo jak ta — różnicę widać wyłącznie po stronie kroku.
+    ///
+    /// Sufit zostaje przy [`Lead::policy`] i tylko tam (niezmiennik 23): to zdanie mówi GDZIE,
+    /// nie CO. Lider `look only` bibliotekę czyta — na tym polega cała wartość pytania „jakie mam
+    /// workflow?" — a pisze dopiero ten, któremu człowiek dał wyżej.
+    ///
+    /// # 2026-08-20 — SZKIELET T-70
+    ///
+    /// Ciało jest `todo!()`, żeby kryteria padały w czasie wykonania, a nie na kompilacji: test,
+    /// który się nie zbudował, nie uruchomił niczego (`AGENTS.md` §2a p. 5). `clippy::todo = deny`
+    /// w `Cargo.toml` pilnuje, żeby nie przeżyło do pełnej bramki, a podkreślenie przy nazwie
+    /// parametru jest częścią tej samej tymczasowości — ciało, które go nie czyta, dawałoby
+    /// `unused_variables`.
+    pub fn library_is(&mut self, _library: PathBuf) {
+        todo!("T-70: katalogi biblioteki mają dojechać do RunSpec każdej rozmowy tego okna")
+    }
+
     /// Czy w tym zakresie stoi wątek.
     ///
     /// Pytanie zadawane o zakres, nie o aplikację: to na nim stoi asercja „sesja zakresu B żyje
