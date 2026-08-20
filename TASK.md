@@ -1,0 +1,177 @@
+# T-63 — Lista narzedzi z definicji agenta dojezdza do procesu
+
+**Zastepuje wycofane T-59** i powstalo z jego incydentu. Tamten kontrakt chcial wpuscic siec na
+kazdy szczebel `Policy` — konstrukcja tania i zla: `driver_claude_policy_surface.rs:171`
+asertuje `editing.is_subset(&unlimited) && editing != unlimited`, a po przeniesieniu sieci
+w dol `Unrestricted` nie dokladalby do `--tools` niczego wlasnego. Kryterium T-53 jest przy tym
+DOBRE (ostre zawieranie lapie adapter drukujacy jedna liste dla trzech polityk), wiec droga
+prowadzi tedy, gdzie D6 wskazuje od poczatku: **wszystko, co vendor wprowadzi, konfigurujemy
+per agent**.
+
+**Wada, ktora to zamyka, jest starsza niz oba te kontrakty.** `Agent.tools`
+(`library/agents.rs`, `Tools::Everything | Only`) jest polem formularza agenta, widac je
+w panelu kroku jako „Agent uses: ...", i ma **zero konsumentow w silniku**: `RunSpec` nie ma
+pola na narzedzia, `commands/run.rs` nigdy `agent.tools` nie czyta, a jedynym zrodlem
+`--tools` jest `tools_for(policy)`. Ustawienie jest zapisywane na dysk, pokazywane czlowiekowi
+i **nie robi nic**. To jest ta sama rodzina, co martwa kontrolka (niezmiennik 16), tylko
+schowana o warstwe glebiej: nie da sie jej zobaczyc, klikajac.
+
+**Cicha porazka, przed ktora stoi ten kontrakt:** czlowiek zawezajacy narzedzia agentowi —
+bo nie chce, zeby ten siegal do sieci albo odpalal komendy — dostaje ekran, ktory to przyjmuje,
+zapisuje i potwierdza. Agent i tak dostaje wszystko, co daje jego polityka. Nikt sie o tym nie
+dowie, bo „agent nie uzyl narzedzia" jest nieodrozninalne od „agent uznal, ze nie warto".
+
+**Wlasnosc, ktora ten kontrakt musi zachowac, i to jest jego najwazniejsza asercja:** agent
+domyslny (`Tools::Everything`) sklada argv **co do bajtu** takie, jakie jest dzis. Wtedy ani
+`claude_argv_policy.rs` (napisy `--allowedTools`), ani `driver_claude_policy_surface.rs` (ostre
+zawieranie trzech list) nie przestaja byc prawdziwe — i to jest cala roznica miedzy tym
+kontraktem a wycofanym T-59.
+
+**Read first:**
+`src-tauri/src/library/agents.rs` (`Tools`, `Agent.tools`, `VendorOptions`),
+`src-tauri/src/engine/drivers/mod.rs` (`RunSpec`, `Policy` i jego wlasna dokumentacja: trzy
+zdania o PLIKACH),
+`src-tauri/src/engine/drivers/claude.rs` (`permission_flags`, `tools_for`, `command()`),
+`src-tauri/src/commands/run.rs` (`policy_of` — tabela `FileAccess` -> `Policy`; tu powstaje
+`RunSpec` kroku),
+`src-tauri/tests/it/driver_claude_tool_surface.rs` i `claude_argv_policy.rs` oraz
+`driver_claude_policy_surface.rs` (trzej strazniicy, ktorzy maja zostac zieloni BEZ tkniecia),
+`docs/DECISIONS-LOCKED.md` D6 (regula wynikowa: per agent, nigdy nowy rodzaj kafelka),
+`AGENTS.md` niezmienniki 9, 16, 23.
+
+## Niezmienniki, ktorych to dotyczy
+
+- **23 — polityka w jednym rdzeniu.** Dalej JEDNA tabela sklada obie flagi. Lista agenta wchodzi
+  do niej jako argument, nie jako druga tabela obok.
+- **16 — kontrolka bez skutku.** Pole `tools` w formularzu agenta przestaje byc obietnica.
+- **9 — prompt i sekrety wylacznie przez stdin.** Nazwy narzedzi w argv sa w porzadku; nic
+  z tresci zadania nie ma prawa tam trafic przy okazji.
+
+## Promien razenia jest ceną, nie przeoczeniem
+
+`RunSpec` dostaje pole, wiec **kazdy** literal tej struktury przestaje sie kompilowac: trzy
+konstruktory produkcyjne (`commands/run.rs`, `commands/chat.rs`, `commands/skills.rs`)
+i **21 plikow testowych**. Wszystkie sa w bloku OWNS i wszystkie dostaja **dokladnie jedna
+linie** — `tools: <domyslne>`. Ani jedna asercja w tych plikach nie jest zdejmowana ani
+przepisywana; jesli okaze sie, ze trzeba tknac cokolwiek wiecej, **stoj i zglos**
+(AGENTS.md §7). To jest ta sama sytuacja, co przy T-55, gdzie piec plikow dostalo po jednym
+ramieniu `match`, ktorego wymagal kompilator.
+
+## Szkielet, bez ktorego `before` nie jest czerwone
+
+Najpierw pole w `RunSpec` i sygnatura skladajaca liste z `todo!()` — test, ktory sie nie
+kompiluje, niczego nie uruchomil, a „brak pola w strukturze" jest bledem kompilacji, czyli
+podpisem z `NOT_A_REAL_RED` (AGENTS.md §2a).
+
+## Kryteria akceptacji
+
+## AC-1 Lista agenta wchodzi do argv, a agent domyslny nie zmienia ani bajtu
+check: cargo test --test it agent_tools_reach_the_argv::
+expect: (\d+) passed
+
+Asercje: (a) agent z `Tools::Only([...])` daje `--tools` **dokladnie** z tej listy, w jednym
+wystapieniu flagi, po przecinku; (b) `Tools::Everything` daje argv **identyczne** z dzisiejszym
+dla kazdej z trzech polityk — porownane z `tools_for(policy)` i z napisami `--allowedTools`,
+bo to jest jedyna rzecz, ktora chroni trzech wyladowanych straznikow; (c) `Only([])` jest
+**odmowa przy budowie zadania**, nie pustym argumentem: `--tools ""` znaczy u vendora „zadnych
+narzedzi" i wyglada jak zawieszony agent; (d) `Unrestricted` z zawezona lista dalej **nie
+wysyla `--allowedTools` w ogole** — `bypassPermissions` i tak jej nie sluchа, a wyslanie listy
+byloby klamstwem o tym, co ogranicza; (e) kontrola: test sprawdza, ze fikstura niesie liste
+ROZNA od `tools_for(policy)`, inaczej porownuje dwie identyczne rzeczy.
+
+*Slaba asercja:* sam (a). Przechodzi dla implementacji, ktora ignoruje `Everything` i zawsze
+sklada liste po swojemu — czyli przewraca `claude_argv_policy.rs` i `driver_claude_policy_surface.rs`
+dokladnie tak, jak zrobilo to wycofane T-59. Rozroznia to (b).
+
+## AC-2 Siec jest wyborem agenta na kazdym szczeblu polityki
+check: cargo test --test it agent_tools_open_the_web::
+expect: (\d+) passed
+
+To jest zamowienie, dla ktorego cale to zadanie istnieje: lider do researchu, ktory nie moze
+zepsuc repo. Asercje: (a) agent `look-only` z `WebSearch` i `WebFetch` na swojej liscie dostaje
+oba **w obu flagach** — dostepnosc bez zatwierdzenia jest bezuzyteczna, bo przy
+`--permission-mode dontAsk` nie ma kto zatwierdzic; (b) ten sam agent **nie** dostaje `Edit`,
+`Write` ani `Bash` w zadnej postaci; (c) `--permission-mode` dalej wynika wylacznie z polityki
+(`dontAsk`), a lista narzedzi go nie rusza; (d) kontrola: agent `look-only` **bez** sieci na
+liscie jej nie dostaje — inaczej (a) przechodzi dla implementacji, ktora dosypuje siec wszystkim.
+
+*Slaba asercja:* `assert!(tools.contains("WebSearch"))` na samym `--tools`. Przechodzi dla
+narzedzia, ktore jest pod reka i zawsze odmawia. Rozroznia to (a) razem z (c).
+
+## AC-3 Polityka zostaje sufitem, a odmowa nazywa narzedzie i szczebel
+check: cargo test --test it agent_tools_keep_the_ceiling::
+expect: (\d+) passed
+
+Asercje: (a) agent `look-only`, ktory prosi o `Write` albo `Bash`, **nie dostaje ich** — lista
+wybiera Z dostepnych, nigdy ponad; (b) taka prosba jest odmowa **nazywajaca narzedzie i polityke**,
+nie cichym pominieciem: agent, ktoremu po cichu zabrano narzedzie, wyglada jak agent, ktory
+„nie umial", i kosztuje godzine diagnozy; (c) ten sam agent z polityka `work-freely` `Write`
+DOSTAJE — inaczej test mierzy implementacje, ktora nigdy nic nie daje; (d) sufit dotyczy
+narzedzi plikowych i startujacych proces, a nie sieciowych: to jest cala roznica, dzieki ktorej
+„look only" znaczy „nie zmienia plikow", a nie „nie widzi swiata"; (e) kontrola: test wymienia
+sufit dla trzech polityk z `tools_for` i wymaga, zeby byly ROZNE — inaczej mierzy jeden sufit
+trzy razy.
+
+*Slaba asercja:* test na samym (a). Przechodzi dla implementacji, ktora odmawia po cichu —
+czyli dla najdrozszej wersji tej wady. Rozroznia to (b).
+
+## AC-4 Jedna tabela `FileAccess` -> `Policy` dla biegu i dla rozmowy
+check: cargo test --test it one_table_for_policy::
+expect: (\d+) passed
+
+Znalezisko drugiej opinii przy T-60, ktore tamto zadanie moglo tylko UDOKUMENTOWAC, nie
+naprawic: `policy_of` jest prywatne w `commands/run.rs`, a T-60 tego pliku nie posiadalo — wiec
+lider dostal **druga, recznie napisana** tabele `FileAccess` -> `Policy` w `chat.rs`, ktora
+przechodzi kazdy test porownujacy wartosci, bo dzis obie daja to samo. Komentarz autora mowi
+to wprost („ZDANIE WYZEJ JEST DZIS NIEPRAWDA"). To jest niezmiennik 23 zlamany w slowach
+samego kryterium: dwie wyczerpujace tabele, ktore po prostu sie zgadzaja, rozjada sie po cichu
+w dniu, w ktorym ktoras zmieni jedno ramie.
+
+To zadanie posiada oba pliki, wiec zamyka to jednym ruchem. Asercje: (a) rozmowa i krok biegu
+skladaja polityke **ta sama funkcja** — nie dwiema o zgodnych wynikach; (b) dowod nie stoi na
+rownosci czterech wartosci: test przechodzi po **wszystkich** wariantach `FileAccess` i porownuje
+wynik obu drog, a takze wymaga, zeby w `chat.rs` nie bylo drugiego dopasowania po `FileAccess`;
+(c) zmiana jednego ramienia we wspolnej tabeli zmienia obie drogi naraz — test wyraza to
+sprawdzeniem, ze istnieje dokladnie JEDNO miejsce, w ktorym to odwzorowanie jest zapisane;
+(d) kontrola przeciw pustemu przejsciu: test sam sprawdza, ze `FileAccess` ma co najmniej trzy
+warianty i ze przeszedl przez kazdy z nich.
+
+*Slaba asercja:* `assert_eq!(lead_policy(FileAccess::LookOnly), Policy::ReadOnly)` powtorzone
+trzy razy. Przechodzi dla dwoch kopii tabeli, czyli dla dokladnie tego stanu, ktory to kryterium
+ma skasowac — i to jest ten sam blad kategorii, ktory recenzent nazwal przy T-60: asercja
+o wartosciach udaje kryterium o zrodle prawdy. Rozroznia to (b) razem z (c).
+
+<!-- OWNS
+src-tauri/src/engine/drivers/mod.rs
+src-tauri/src/engine/drivers/claude.rs
+src-tauri/src/library/agents.rs
+src-tauri/tests/it/main.rs
+src-tauri/tests/it/agent_tools_reach_the_argv.rs
+src-tauri/tests/it/agent_tools_open_the_web.rs
+src-tauri/tests/it/agent_tools_keep_the_ceiling.rs
+src-tauri/tests/it/one_table_for_policy.rs
+src-tauri/src/commands/chat.rs
+src-tauri/src/commands/run.rs
+src-tauri/src/commands/skills.rs
+src-tauri/tests/flow_say_to_agent.rs
+src-tauri/tests/it/claude_argv_policy.rs
+src-tauri/tests/it/claude_argv_transport.rs
+src-tauri/tests/it/claude_cancel_escalation.rs
+src-tauri/tests/it/claude_session_process.rs
+src-tauri/tests/it/driver_claude_policy_surface.rs
+src-tauri/tests/it/driver_claude_settings_file.rs
+src-tauri/tests/it/driver_claude_tool_surface.rs
+src-tauri/tests/it/driver_codex_argv.rs
+src-tauri/tests/it/driver_codex_cancel.rs
+src-tauri/tests/it/driver_codex_finish.rs
+src-tauri/tests/it/driver_codex_resume.rs
+src-tauri/tests/it/inherit_is_opt_in.rs
+src-tauri/tests/it/inherit_reaches_the_argv.rs
+src-tauri/tests/it/inherit_reaches_the_prompt.rs
+src-tauri/tests/it/inherit_subagent_is_text_only.rs
+src-tauri/tests/it/skeleton_group_death.rs
+src-tauri/tests/it/skeleton_two_real_agents.rs
+src-tauri/tests/it/stream_live_curation.rs
+src-tauri/tests/it/stream_raw_tee_live.rs
+src-tauri/tests/it/stream_tee_survives_db_delete.rs
+-->
