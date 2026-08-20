@@ -273,8 +273,50 @@ describe('the plus sign opens a terminal where the person already works', () => 
         'after opening a terminal the caret sits on ' +
           JSON.stringify(on) +
           ' instead of the command line. Opening a terminal is asking to type in it, and a ' +
-          'browser leaves the caret on whatever button was pressed — so this costs one more ' +
+        'browser leaves the caret on whatever button was pressed — so this costs one more ' +
           'click before every first line, which is the defect the owner reported on 2026-08-20.',
+      ).toBe('Command line');
+
+      // ── DRUGI PLUS: 1 → 2, NIE PODMIANA PIERWSZEJ KARTY ───────────────────────────────
+      // 2026-08-21: recenzja zlapala, ze samo przejscie 0 → 1 przepuszcza implementacje,
+      // ktora przy kolejnym kliknieciu podmienia istniejacy terminal. Zgloszenie wlasciciela
+      // bylo wlasnie o KOLEJNYCH terminalach w tym samym zakresie, wiec ta sama sciezka idzie
+      // drugi raz, juz przy karcie stojacej na pasku.
+      await app.page.click(PLUS);
+      await app.page
+        .locator(CARD)
+        .nth(now.length)
+        .waitFor({ state: 'attached', timeout: APPEARS })
+        .catch(() => undefined);
+
+      expect(
+        await folderQuestions(app),
+        'the second + in the same project asked for a folder. The first terminal did not make ' +
+          'the chosen scope disappear, so repeating that decision is still the original defect.',
+      ).toBe(asked);
+
+      const twice = await cardIds(app);
+      expect(
+        twice.length,
+        'the second + did not add a second terminal. A 0-to-1-only implementation passes the ' +
+          'first half while replacing or reusing the existing card on every later click.',
+      ).toBe(now.length + 1);
+      expect(
+        now.every((card) => twice.includes(card)),
+        'opening the second terminal removed or replaced a card that was already open. The bar ' +
+          'after the first click was ' +
+          JSON.stringify(now) +
+          ', and after the second it is ' +
+          JSON.stringify(twice),
+      ).toBe(true);
+
+      const secondFresh = twice.filter((card) => !now.includes(card));
+      expect(await cardsOnTop(app), 'the terminal opened by the second + is not on top').toEqual(
+        secondFresh,
+      );
+      expect(
+        (await focused(app)).label,
+        'the second terminal opened, but the command line did not regain the caret',
       ).toBe('Command line');
     } finally {
       await app.close();
