@@ -61,6 +61,32 @@ i zamkniety krzyzykiem zostawia swojego lidera zywego i placacego do zamkniecia 
 do tego zadania; plik ma tez wlasciciela w niewyladowanym T-41. Jesli okaze sie, ze trzeba tknac
 cokolwiek wiecej, **stoj i zglos** (AGENTS.md §7).
 
+## Waski mandat na kryterium starego modelu kart
+
+`src/sections/run/tabs/cards-are-runs.test.ts` (wyladowane) adresuje karty FOLDEREM —
+`cardForRun(nazwa, folder)` plus `requestClose(folder)` — bo do dzis karta ZNACZYLA bieg
+w zakresie, a jej `id` bylo folderem. To zadanie zmienia ten model na zamowienie wlasciciela
+(„plusik otwiera nowy terminal w zakresie, ktory juz wybrales"), wiec tamta fikstura przestaje
+trafiac w karte.
+
+**Wolno ci przepisac wylacznie ADRESOWANIE: fikstura ma brac identyfikator terminalu zamiast
+zakladac, ze jest nim folder.** Ani jedna asercja, ani jedno zdanie uzasadnienia i ani jeden
+komunikat bledu nie zmienia sie — bo tresc tego kryterium przezywa zmiane modelu w calosci
+i jest wazna: zamkniecie karty, na ktorej NIC nie idzie, nie ma prawa zawolac `stop_run`, bo
+przy jednym biegu naraz po stronie Rusta to zabija bieg w INNYM zakresie.
+
+Jesli ktorakolwiek asercja przestaje dac sie utrzymac przy karcie-terminalu, **stoj i zglos**
+(AGENTS.md §7) — wtedy to nie jest przepisanie adresu, a zmiana kryterium, i rozstrzyga czlowiek.
+
+## Waski mandat na lustro komend okna
+
+`src/sections/commands-wired.test.ts` wchodzi do OWNS z jednym dozwolonym uzyciem: dopisujesz
+**jeden addytywny wiersz** dla `run.closeTerminal` → `close_terminal`, z identyfikatorem terminalu
+jako argumentem. T-71 dodaje eksport do `src/sections/run/io.ts`, a to lustro z premedytacja
+odmawia kazdemu eksportowi bez wykonywalnej krawedzi. Nie wolno usunac ani przepisac zadnego
+istniejacego wiersza. Bez tego mandatu pelna bramka jest czerwona na poprawnym lustrze poza
+zakresem, mimo ze AC-3 wymaga tej samej komendy koniec-koniec.
+
 ## Szkielet, bez ktorego `before` nie jest czerwone
 
 `src/sections/run/tabs/terminal.ts` (tozsamosc terminalu) musi istniec jako pusty szkielet
@@ -155,6 +181,7 @@ ta wada, ktora znalazl recenzent T-70: mechanizm dowiedziony, produkt go nie wol
 
 <!-- OWNS
 src/sections/run/tabs/store.ts
+src/sections/run/tabs/cards-are-runs.test.ts
 src/sections/run/tabs/terminal.ts
 src/sections/run/tabs/tab-bar.tsx
 src/state/run-tabs.ts
@@ -171,4 +198,5 @@ src-tauri/tests/it/live_chat_goes_through_the_registry.rs
 src/sections/run/tabs/terminal-has-its-own-identity.test.ts
 src/sections/run/feed/session-per-terminal.test.ts
 e2e/tests/plus-opens-a-terminal.spec.ts
+src/sections/commands-wired.test.ts
 -->
