@@ -251,6 +251,13 @@ export function ask(
   howManyAtOnce: number,
   folder: string | null = null,
 ): Promise<void> {
+  /* TE DZIESIĘĆ LINII SĄ TRZECIĄ KOPIĄ (`start`, `openChat`, tutaj) I TO JEST ZGŁOSZENIE, NIE
+   * WYGODA. Wyciągnięcie ich do jednej funkcji jest oczywiste i należy do właściciela tego
+   * pliku: mandat T-62 na `io.ts` pozwala DOPISAĆ jedną krawędź i mówi wprost, że żadna
+   * istniejąca sygnatura nie jest przy tym zmieniana (TASK.md, „Wąskie mandaty na cudze
+   * pliki"). Wspólny szew ruszyłby ciała `start` i `openChat`, czyli dokładnie to, przed czym
+   * ten mandat stoi — a stempel powstaje tu z tego samego powodu, co tam (`src/state/run.ts`
+   * opisuje `Stamped.id` jako numer z Rusta, a drut go nie niesie). */
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
   const lines = new Channel<unknown[]>();

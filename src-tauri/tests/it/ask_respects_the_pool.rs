@@ -96,7 +96,11 @@ const POLL: Duration = Duration::from_millis(5);
 
 /// Tura, która nie kończy się sama. Stop jest jedyną drogą wyjścia, więc dowód nie ma jak
 /// przyjść „przy okazji".
-const NEVER_ENDS: Duration = Duration::from_secs(3_600);
+///
+/// `from_hours`, nie `from_secs(3_600)`: ta sama wartość, a `clippy::duration_suboptimal_units`
+/// pod `-D warnings` nie przepuszcza tej drugiej formy przez `full-clippy`. Zmiana zapisu
+/// jednej stałej fikstury, ani jednej asercji.
+const NEVER_ENDS: Duration = Duration::from_hours(1);
 
 /// Identyfikator agenta w fiksturze.
 const HAND_ID: &str = "01990000-0000-7000-8000-0000000000d1";
@@ -140,6 +144,17 @@ const WORKFLOW: &str = r#"{
 }
 "#;
 
+/* ASERCJA NA STAŁYCH JEST TU CAŁYM SENSEM ASERCJI (d), więc `clippy::assertions_on_constants`
+ * dostaje wyjątek zamiast racji. Ta jedna linia pilnuje FIKSTURY, nie kodu produkcyjnego:
+ * pytanie „czy pula naprawdę ma sufit mniejszy niż liczba kroków" jest pytaniem o dwie stałe
+ * z tego pliku i o nic więcej. Podpowiadane `const { assert!(…) }` nie przyjmuje sformatowanego
+ * komunikatu — formatowania nie da się zawołać w kontekście stałym — a komunikat jest tu
+ * połową wartości: bez niego czerwień mówi „false", nie mówi, co w fiksturze przestało wiązać.
+ *
+ * Wyciszenie stoi w `src-tauri/tests/`, więc nie ma jak ukryć niczego w kodzie produkcyjnym
+ * (`checks/quick-suppressions.sh` czyta `src/` i `src-tauri/src/`, i tylko je). Zapisane
+ * 2026-08-20. */
+#[allow(clippy::assertions_on_constants)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ask_and_a_file_run_over_one_pool_never_go_beside_each_other()
 -> Result<(), Box<dyn Error>> {
@@ -285,17 +300,17 @@ async fn a_second_ask_before_the_first_is_down_does_not_orphan_it() -> Result<()
          below can tell whose handle is live"
     );
 
-    let said = match state.begin_a_run(bench.project.path()) {
-        Ok(_) => {
-            return Err(
-                "a second /ask took a handle while the first run was still going. That \
+    // `let … else`, nie `match`: ta sama asercja co do znaku (drugie `/ask`, które DOSTAŁO
+    // uchwyt, przewraca ten przypadek zdaniem niżej), tylko w formie, którą `-D warnings`
+    // przepuszcza — `clippy::manual_let_else` odrzuca `match` z ramieniem wychodzącym.
+    let Err(said) = state.begin_a_run(bench.project.path()) else {
+        return Err(
+            "a second /ask took a handle while the first run was still going. That \
                         swap is silent and it costs money: Stop reaches the second run, the \
                         first keeps writing and keeps paying, and nobody holds its token any \
                         more (invariants 6 and 11)"
-                    .into(),
-            );
-        }
-        Err(said) => said,
+                .into(),
+        );
     };
     assert!(
         said.trim().len() > 20,
