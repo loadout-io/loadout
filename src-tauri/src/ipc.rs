@@ -552,16 +552,31 @@ impl AppState {
         }
     }
 
-    /// Świeży uchwyt biegu i współpracownicy, którzy go używają.
+    /// Świeży uchwyt biegu z pliku i współpracownicy, którzy go używają — albo zdanie o tym,
+    /// dlaczego jeszcze go nie ma.
     ///
     /// Powód wymiany stoi przy [`AppState::live`]. Wymiana jest tutaj, a nie w skorupie, bo
     /// skorupa z tym `let` w środku byłaby o jedną decyzję dalej od „rozpakuj i zawołaj".
-    fn begin_run<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
+    ///
+    /// # 2026-08-20 — `pub` I `Result`, BO TA DROGA JEST SĄDZONA OBOK DRUGIEJ
+    ///
+    /// `pub`, bo `tests/it/no_start_orphans_the_previous.rs` pyta o WSZYSTKIE pary dróg startu
+    /// i nie ma jak zapytać o tę, jeśli jedyne wejście do niej stoi za `#[tauri::command]`.
+    /// `Result`, bo obie drogi mają od tego kryterium jedną odpowiedź na jedno pytanie („czy
+    /// coś już idzie"), a droga, która nie umie odmówić, nie ma czym tej odpowiedzi oddać.
+    ///
+    /// **SZKIELET FAZY KONTRAKTU: WARUNKU TU JESZCZE NIE MA.** Ta wersja podmienia uchwyt
+    /// BEZWARUNKOWO, dokładnie jak przed T-69 — czyli osieroca żywy bieg, kiedy ktoś naciśnie
+    /// Start po `/ask` albo drugi raz Start w drugim oknie. Warunek dopisuje faza
+    /// implementacji, w jednym miejscu wspólnym z [`AppState::begin_a_run`]: dwie kopie tego
+    /// pytania to dwie odpowiedzi na „czy coś już idzie" (niezmiennik 13), a przy dwóch kopiach
+    /// zawsze poprawia się tę, która nie jest wołana.
+    pub fn begin_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
         {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             *live = RunControl::new();
         }
-        self.deps_in(project)
+        Ok(self.deps_in(project))
     }
 
     /// Świeży uchwyt dla NOWEGO biegu — albo zdanie o tym, dlaczego jeszcze go nie ma.
@@ -1118,7 +1133,12 @@ pub async fn run_workflow(
         .inspect_err(refused)?;
     let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
     commands::run::run_workflow_inner(
-        &state.begin_run(project.as_path()),
+        // `?` NA MIEJSCU, A NIE W OSOBNYM `let`, i to nie jest gust: `run_commands_registered`
+        // liczy instrukcje tej skorupy z sufitem 3 („rozpakuj, zawołaj, wróć"), a czwarta
+        // instrukcja jest logiką napisaną tam, gdzie żaden test jednostkowy jej nie dosięgnie
+        // (niezmiennik 23). Od T-69 ta droga umie odmówić tak samo jak `/ask`: uchwyt żywego
+        // biegu nie ma prawa zniknąć pod Stopem (powód w całości przy [`AppState::begin_run`]).
+        &state.begin_run(project.as_path()).inspect_err(refused)?,
         &request,
         pump_into(lines),
     )

@@ -123,6 +123,7 @@ mod memory_notes_budget;
 mod memory_notes_files;
 mod memory_notes_injection;
 mod memory_notes_promotion;
+mod no_start_orphans_the_previous;
 mod one_table_for_policy;
 mod person_turn_is_visible;
 mod product_path_end_to_end;
