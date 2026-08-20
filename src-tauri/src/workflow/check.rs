@@ -205,6 +205,11 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     a_check_without_a_proof(&steps, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
+    // STRZAŁKI BEZ POWROTÓW, nie wszystkie, i to jest ta sama lista, po której liczy się koło.
+    // Powrót wchodzi do kroku dopiero w rundzie drugiej (`workflow::unroll`), więc krok, do
+    // którego prowadzi WYŁĄCZNIE powrót, w rundzie pierwszej dalej nie ma nikogo przed sobą —
+    // a to jest dokładnie ta runda, która ruszy jako pierwsza.
+    nothing_before_it(&steps, &forward, &mut notes);
     one_folder_two_steps(&steps, &arrows, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
@@ -662,6 +667,51 @@ fn a_circle(steps: &[Facts<'_>], arrows: &[(usize, usize)], notes: &mut Vec<Note
     }
 }
 
+/// Zdanie o kroku, który ma pracować tam, gdzie krok przed nim, a przed nim nie ma nikogo.
+///
+/// `pub`, bo mówią je **dwa miejsca** i ma być jednym zdaniem (niezmiennik 13): walidator poniżej
+/// oraz planista biegu (`commands::run`), który dochodzi do tego samego braku od drugiej strony —
+/// przy rozwiązywaniu katalogu roboczego, już po rozwinięciu pętli. Dwie kopie tego samego zdania
+/// rozjechałyby się przy pierwszej poprawce jednej z nich.
+///
+/// Krok nazwany jest **nazwą z kafelka**: `s_head` jest kluczem w pliku i nie ma go na ekranie
+/// (niezmiennik 14). Zdanie mówi też, co z tym zrobić, i wymienia obie drogi wyjścia (DESIGN §8) —
+/// pociągnąć strzałkę albo dać krokowi własną kopię.
+#[must_use]
+pub fn nothing_before(name: &str) -> String {
+    format!(
+        "\"{name}\" is set to work in the same folder as the step before it, and nothing comes \
+         before it. Draw an arrow into it, or give it a fresh copy."
+    )
+}
+
+/// Krok „to samo drzewo, w którym pracował krok przede mną", przed którym nic nie stoi.
+///
+/// PROBLEM, NIE OSTRZEŻENIE, także przy zapisie — inaczej niż para kolidujących kroków
+/// z [`one_folder_two_steps`], i różnica jest ta sama, co przy kroku o zerowej liczbie kopii:
+/// tamta para to stan przejściowy, który jest poprawnym plikiem, dopóki nikt nie naciśnie Run,
+/// a ten krok wskazuje katalog, którego **nie ma jak wyliczyć** — plik niesie ustawienie bez
+/// znaczenia i żaden bieg z niego nie ruszy. Autosave nie ma tu czego zablokować w połowie gestu:
+/// przełącznik folderu w panelu kroku przestawia wyłącznie między folderem projektu a własną
+/// kopią (`src/sections/workflows/step-panel/panel.tsx`), więc ta wartość bierze się dziś
+/// wyłącznie z pliku napisanego ręcznie albo przez inny build.
+fn nothing_before_it(steps: &[Facts<'_>], forward: &[(usize, usize)], notes: &mut Vec<Note>) {
+    for (index, step) in steps.iter().enumerate() {
+        // Kafelek kontrolny folderu nie ma i mieć nie może, więc `Some` jest tu częścią pytania,
+        // a nie zabezpieczeniem przed `None`.
+        if !step
+            .folder
+            .is_some_and(|folder| matches!(folder, Folder::SameCopy))
+        {
+            continue;
+        }
+        if forward.iter().any(|&(_, to)| to == index) {
+            continue;
+        }
+        notes.push(problem(Some(step.id), nothing_before(step.name)));
+    }
+}
+
 /// Dwa kroki, które **mogą biec równocześnie**, piszące po tych samych plikach.
 ///
 /// „Mogą biec równocześnie" znaczy dokładnie jedno: nie istnieje ścieżka po strzałkach ani
@@ -754,6 +804,16 @@ fn the_same_files(one: &Folder, other: &Folder) -> bool {
         // §2 punkt 4. `project` kontra `pick` też nie: 2026-08-16 — w pliku workflow nie ma
         // ścieżki projektu, bo projekt wybiera się przy uruchomieniu, więc porównanie ich tutaj
         // byłoby zgadywaniem. Tę parę widzi dopiero bieg (T-15), który zna oba katalogi.
+        //
+        // 2026-08-20 (T-56) — `same-copy` WPADA TU BEZ ODPOWIEDZI I TO JEST PRZYZNANE WPROST,
+        // a nie przeoczone. Dwa kroki „to samo drzewo" schodzące z JEDNEGO poprzednika pracują
+        // w jednym katalogu i mogą biec równocześnie: to jest kolizja z niezmiennika 12, której
+        // ta funkcja nie zgłasza. Dwa schodzące z RÓŻNYCH drzew kolizją nie są. Rozróżnia je
+        // wyłącznie graf, a tutaj wchodzi para folderów i nic więcej — więc `true` odmawiałoby
+        // zwykłemu rozwidleniu, a `false` jest brakiem odpowiedzi, nie odpowiedzią „nie koliduje".
+        // Żadne kryterium tego nie sądzi (TASK.md, „Świadomie poza zakresem"): to jest luka
+        // w wyroczni, zgłoszona właścicielowi, a nie defekt do cichego załatania regułą, której
+        // nikt nie mierzy.
         _ => false,
     }
 }

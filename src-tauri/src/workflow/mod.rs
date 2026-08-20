@@ -222,6 +222,15 @@ pub struct CheckStep {
 /// `fresh-copy` to obietnica izolacji z ARCHITECTURE §2 punkt 4 („każdy krok dostaje własną
 /// kopię twoich plików"). Dlatego dwa kroki, które **mogą biec równocześnie** i celują w ten
 /// sam folder, są odmową przy zapisie, a nie podpowiedzią (niezmiennik 12).
+///
+/// 2026-08-20 (T-56) — DOCHODZI CZWARTY WARIANT, a trzy dotychczasowe zostają z tymi samymi
+/// nazwami i tym samym zachowaniem (niezmiennik 25). Powód jest zmierzony na harnessie, który
+/// budujemy z Loadouta: łańcuch „implementacja → sprawdzenie → druga opinia → poprawka" ma JEDNO
+/// drzewo robocze repo, a tych trzech wariantów nie da się tak ustawić. Zostawał wybór między
+/// dwoma kłamstwami: `project` (poprawka pisze po plikach człowieka) albo `fresh-copy` (każdy krok
+/// dostaje własne drzewo, więc poprawka nie widzi kodu, który ma poprawić). Oba **kończą się
+/// sukcesem**, więc nikt nie zgłasza biegu, w którym recenzent czytał nie ten kod
+/// (`docs/harness-as-workflow.md`, ustalenie U-2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "use", rename_all = "kebab-case")]
 pub enum Folder {
@@ -230,6 +239,13 @@ pub enum Folder {
     Project,
     /// Własna kopia tylko dla tego kroku.
     FreshCopy,
+    /// To samo drzewo robocze, w którym pracował krok przede mną.
+    ///
+    /// **WSKAZUJE, nie zakłada.** Czym jest własne drzewo — drzewem gita na własnej gałęzi dla
+    /// repozytorium, klonem systemowym dla folderu, który repem nie jest — rozstrzyga T-52 i to
+    /// zadanie tego nie rusza. Ten wariant mówi wyłącznie „ten sam katalog roboczy, co najbliższy
+    /// poprzednik po strzałkach", jakiegokolwiek rodzaju ten poprzednik jest.
+    SameCopy,
     /// Wskazany ręcznie.
     Pick { path: String },
 }
