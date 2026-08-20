@@ -16,7 +16,7 @@ fn issue(index: usize) -> Value {
     })
 }
 
-fn answer(nodes: Vec<Value>) -> Vec<u8> {
+fn answer(nodes: &[Value]) -> Vec<u8> {
     serde_json::to_vec(&json!({"data":{"issues":{"nodes":nodes}}})).expect("answer JSON")
 }
 
@@ -36,19 +36,19 @@ fn first_poll_arms_at_the_latest_issue_and_the_boundary_is_strict() {
         "fixture accidentally sorted"
     );
 
-    let armed = triggers::check_answer(temp.path(), "mine", &answer(nodes)).expect("arming poll");
+    let armed = triggers::check_answer(temp.path(), "mine", &answer(&nodes)).expect("arming poll");
     assert!(armed.is_none(), "first poll fired the existing backlog");
     let cursor =
         fs::read_to_string(triggers::cursor_path(temp.path(), "mine")).expect("armed cursor");
     assert_eq!(cursor.trim(), "2026-08-20T23:00:00.000Z");
 
     let newer = json!({"id":"new","identifier":"LOAD-NEW","title":"New","url":"https://linear.app/loadout/issue/LOAD-NEW","description":"body","updatedAt":"2026-08-21T00:00:00.000Z"});
-    let hit = triggers::check_answer(temp.path(), "mine", &answer(vec![newer.clone()]))
+    let hit = triggers::check_answer(temp.path(), "mine", &answer(std::slice::from_ref(&newer)))
         .expect("new poll")
         .expect("one new issue");
     assert_eq!(hit.identifier, "LOAD-NEW");
     assert!(
-        triggers::check_answer(temp.path(), "mine", &answer(vec![newer]))
+        triggers::check_answer(temp.path(), "mine", &answer(&[newer]))
             .expect("equal poll")
             .is_none(),
         "updatedAt equal to the cursor fired again"
