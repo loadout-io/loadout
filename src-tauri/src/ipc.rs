@@ -352,6 +352,17 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 /// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
 const WORKFLOWS_DIR: &str = "workflows";
 
+/// Co powiedzieć drugiemu `/ask`, kiedy pierwszy bieg jeszcze nie zszedł.
+///
+/// ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
+/// tam, gdzie był. Mówi też DLACZEGO: bez powodu czyta się to jak ograniczenie na złość, a
+/// prawdziwy powód jest finansowy — Loadout prowadzi jeden bieg naraz, więc drugi uchwyt
+/// znaczyłby, że Stop sięga do biegu drugiego, a pierwszy pracuje dalej i dalej płaci
+/// (niezmienniki 6 i 11).
+const ALREADY_GOING: &str = "A run is already going, and Loadout leads one at a time so that \
+                             Stop always reaches the one that is working. Press Stop first, \
+                             then ask again.";
+
 /// Ci współpracownicy biegu, którzy **przeżywają jedno wywołanie komendy**.
 ///
 /// To jest dokładnie ta połowa [`RunDeps`], której nie da się przysłać z okna: baza otwarta raz
@@ -507,7 +518,13 @@ impl AppState {
     /// `pub(crate)` od 2026-08-19: obsługa zamknięcia okna stoi w `lib.rs`, poza tym modułem,
     /// a musi dosięgnąć tego samego żywego biegu, co komenda Stop — inaczej zatrzymywałaby
     /// **inny** uchwyt niż ten, który naprawdę prowadzi agentów.
-    pub(crate) fn deps(&self) -> RunDeps<'_> {
+    ///
+    /// 2026-08-20 — `pub`, bo T-62 AC-2 pyta o UCHWYT, KTÓRY JEST ŻYWY, a nie o klon, który
+    /// wołający sam trzyma w ręku. Drugie `/ask`, które po cichu podmieni [`AppState::live`],
+    /// nie zmienia niczego w klonie, jaki test dostał przy pierwszym — więc jedynym miejscem,
+    /// z którego widać osierocenie, jest ta metoda. Nie jest to druga odpowiedź na „który bieg
+    /// jest żywy" (niezmiennik 13): to jest TA odpowiedź, tylko odczytana z zewnątrz.
+    pub fn deps(&self) -> RunDeps<'_> {
         self.deps_in(self.project.as_path())
     }
 
@@ -545,6 +562,39 @@ impl AppState {
             *live = RunControl::new();
         }
         self.deps_in(project)
+    }
+
+    /// Świeży uchwyt dla NOWEGO biegu — albo zdanie o tym, dlaczego jeszcze go nie ma.
+    ///
+    /// # Czego to pilnuje i dlaczego [`AppState::begin_run`] tego nie umie
+    ///
+    /// Tamta metoda podmienia [`AppState::live`] **bezwarunkowo** i dla Startu z płótna jest to
+    /// w porządku: okno ma zapadkę (`src/sections/run/io.ts`, `going`), więc drugi bieg nie ma
+    /// jak ruszyć, dopóki pierwszy nie wróci. `/ask` tej zapadki nie ma i mieć nie może — to
+    /// jest jedna linia w wierszu wejścia, najczęstsza czynność dnia — a podmiana uchwytu w
+    /// trakcie biegu znaczy, że Stop sięga do biegu DRUGIEGO, a pierwszy pracuje dalej i dalej
+    /// płaci, bo nikt już nie trzyma jego tokena (niezmienniki 6 i 11).
+    ///
+    /// Odmowa, nie kolejka, i to jest wybór z nazwaną ceną: czekanie w tej metodzie trzymałoby
+    /// zamek na `live` przez cały poprzedni bieg, czyli zawieszałoby Stop dokładnie wtedy, kiedy
+    /// Stop jest do czegokolwiek potrzebny. Zdanie mówi, co zrobić (DESIGN §8), więc człowiek
+    /// ma następny ruch, a nie ciszę.
+    ///
+    /// Wymiana jest tu, a nie w skorupie, z tego samego powodu, co przy [`AppState::begin_run`]:
+    /// skorupa z `let` i warunkiem w środku byłaby o dwie decyzje dalej od „rozpakuj i zawołaj".
+    pub fn begin_a_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
+        {
+            // Zamek na CAŁE pytanie i na wymianę, nie na dwa osobne wyrażenia: „czy coś idzie"
+            // sprawdzone przed wzięciem zamka jest odpowiedzią sprzed chwili, a między nią
+            // a podmianą mieści się drugie `/ask`. Zamek `std::sync` i ani jednego `await`
+            // w środku (niezmiennik 8) — powód stoi przy [`AppState::deps_in`].
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            if live.is_working() {
+                return Err(ALREADY_GOING.to_owned());
+            }
+            *live = RunControl::new();
+        }
+        Ok(self.deps_in(project))
     }
 
     /// Katalog, w którym ma biec workflow: ten wybrany w oknie albo ten ze startu aplikacji.
@@ -1081,6 +1131,45 @@ pub async fn run_workflow(
     })
 }
 
+/// `/ask`: uruchamia JEDNEGO agenta z jednym zdaniem — i jest to zwykły bieg.
+///
+/// Jednostką pracy było do dziś PLIK: żeby puścić jednego agenta z jednym zdaniem, człowiek
+/// musiał wejść do edytora, założyć workflow, postawić jeden kafelek, zapisać go i wrócić.
+/// Ta komenda jest skrótem do TEJ SAMEJ maszynerii, nie drugą maszynerią obok: katalog biegu,
+/// `run.json`, miejsce we wspólnej puli i dowód śmierci grupy przychodzą z
+/// [`commands::run::run_agent_inner`], dokładnie jak przy [`run_workflow`].
+///
+/// `how_many_at_once` jedzie argumentem, nie stałą `1`, i to jest cała obrona niezmiennika 11:
+/// bieg jednokrokowy bierze miejsce z puli całej aplikacji, więc dwa `/ask` przy suwaku na
+/// trzech to najwyżej trzech pracujących agentów, a nie piątka.
+#[tauri::command]
+pub async fn run_agent(
+    state: State<'_, AppState>,
+    agent: &str,
+    task: &str,
+    how_many_at_once: usize,
+    folder: Option<String>,
+    lines: Channel<Vec<Line>>,
+) -> Result<(), String> {
+    let ask = commands::run::AskRequest {
+        agent: agent.to_owned(),
+        task: task.to_owned(),
+        how_many_at_once,
+    };
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    // `begin_a_run`, nie `begin_run`: uchwyt żywego biegu nie ma prawa zniknąć pod Stopem
+    // (powód w całości stoi przy tamtej metodzie).
+    let deps = state.begin_a_run(project.as_path()).inspect_err(refused)?;
+    commands::run::run_agent_inner(&deps, &ask, pump_into(lines))
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
+}
+
 /// Odmowa **do dziennika**, zanim pojedzie przez granicę.
 ///
 /// 2026-08-18 — PO CO TO ISTNIEJE. Skorupy robiły `.map_err(|e| e.to_string())` i nie logowały
@@ -1229,6 +1318,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         open_chat,
         put_note_to_use,
         review_skill,
+        run_agent,
         run_workflow,
         save_agent,
         save_workflow,

@@ -42,6 +42,16 @@ T-60). To zadanie startuje **dopiero po ich wyladowaniu** i wtedy dopisuje do ni
 krawedz oraz jedna nowa komende. Zadna istniejaca sygnatura nie jest przy tym zmieniana; jesli
 okaze sie, ze trzeba — **stoj i zglos**.
 
+`src/sections/commands-wired.test.ts` (kryterium T-27/T-41) wypisuje wiersz dla KAZDEJ
+krawedzi sekcji i kazdej nazwy komendy, i asertuje, ze zadna nie zostala bez wiersza. Nowa
+komenda `run_agent` z nowa krawedzia w `io.ts` przewraca je z definicji. Wolno ci dopisac tam
+**jeden wiersz dla tej jednej komendy** — z wartosciami, ktore ta krawedz naprawde wysyla —
+i nic wiecej: zadna asercja nie znika, zaden istniejacy wiersz nie jest przepisywany.
+
+To lustro dziala dokladnie tak, jak ma dzialac: nowa komenda bez wiersza jest komenda, ktorej
+nikt nie sprawdzil na granicy. Plik ma wlasciciela w niewyladowanym T-41 i w T-64 — jesli
+okaze sie, ze trzeba tknac cokolwiek poza tym jednym wierszem, **stoj i zglos** (AGENTS.md §7).
+
 ## Szkielet, bez ktorego `before` nie jest czerwone
 
 Rust: `run_agent` z `todo!()` i wpis w zlotej liscie. TypeScript: `src/sections/run/ask-command.ts`
@@ -99,6 +109,7 @@ i nie jest rozumiana — czyli dla obietnicy w napisie (niezmiennik 16). Rozrozn
 src-tauri/src/ipc.rs
 src-tauri/src/commands/run.rs
 src-tauri/commands.golden.txt
+src/sections/commands-wired.test.ts
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/ask_one_agent.rs
 src-tauri/tests/it/ask_respects_the_pool.rs
