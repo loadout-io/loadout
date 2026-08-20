@@ -52,6 +52,9 @@ import { Now } from './feed/now';
 import { Entry } from './entry/entry';
 import { chooseWorkingFolder, folderName } from './folders';
 import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
+/* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
+ * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
+import { lead } from './lead';
 import { atOnce as atOnceNow, subscribeToAtOnce } from './limits/chosen';
 import { waitingWhere } from './limits/waiting';
 import { toChoices } from './choices';
@@ -252,21 +255,30 @@ export default function Run(): ReactElement {
    * i sekcja Workflow — pliki są prawdą (niezmiennik 4), a lista trzymana między wejściami
    * podpowiadałaby nazwę workflow skasowanego obok. Cisza przy odmowie jest tu POPRAWNA: brak
    * podpowiedzi jest niedogodnością, a `/run` i tak odmówi zdaniem, które wymienia nazwy. */
-  /* ROZMOWA DOSTAJE SWÓJ STRUMIEŃ przy wejściu na sekcję — proces jeszcze nie wstaje.
+  /* ROZMOWA DOSTAJE SWÓJ STRUMIEŃ przy wejściu na sekcję — lider jeszcze nie wstaje.
    *
-   * Otwarcie zakłada wyłącznie kanał do okna; sesja u dostawcy powstaje przy PIERWSZYM zdaniu
-   * (`commands::chat::Chat::live`), bo tura wystartowana przy montażu ekranu jest turą, za którą
-   * ktoś płaci, choć nikt o nic nie zapytał.
+   * Otwarcie zakłada wyłącznie kanał do okna; rozmowa u dostawcy powstaje przy PIERWSZYM zdaniu
+   * (`commands::chat::Threads::say_in`), bo tura wystartowana przy montażu ekranu jest turą, za
+   * którą ktoś płaci, choć nikt o nic nie zapytał.
    *
-   * Zależne od `folder`: rozmowa patrzy w folder zakresu, a przełączenie zakresu ma ją tam
-   * przenieść razem ze strumieniem. Cisza przy odmowie jest poprawna — pierwsze zdanie i tak
-   * wróci z odmową, która nazywa następny ruch. */
+   * ZALEŻNE OD KARTY, NIE TYLKO OD ZAKRESU, i to jest zmiana z 2026-08-20. Rozmowa należy do
+   * TERMINALU: rejestr po tamtej stronie potrzebuje wpisu na tę kartę, zanim padnie w niej
+   * pierwsze zdanie — bez niego odmawia, bo wątek bez kanału jest wątkiem, którego wierszy nikt
+   * nie odbiera. Wołanie zależne tylko od folderu zostawiałoby drugą kartę bez strumienia,
+   * a jej pierwsze zdanie odbijałoby się zdaniem o niegotowym liderze.
+   *
+   * WOŁANE PONOWNIE NIC NIE KOŃCZY — przekierowuje wiersze na nowy kanał i zostawia rozmowę
+   * (`ipc::open_chat`, akapit o dzienniku z 2026-08-19). Dlatego powrót na kartę, na której już
+   * się rozmawiało, jest kolejną turą tej samej rozmowy, a nie nową.
+   *
+   * Cisza przy odmowie jest poprawna — pierwsze zdanie i tak wróci z odmową, która nazywa
+   * następny ruch. */
   useEffect(() => {
-    openChat(folder).catch(() => {
+    openChat(folder, onTop).catch(() => {
       /* Świadomie bez zdania na ekranie: zdanie o niedostępnej rozmowie ma sens dopiero wtedy,
        * gdy człowiek do niej napisze — a wtedy przyjdzie z `say_to_orchestrator`. */
     });
-  }, [folder]);
+  }, [folder, onTop]);
 
   const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
   useEffect(() => {
@@ -380,11 +392,21 @@ export default function Run(): ReactElement {
      * zamknięta w `sayIt` byłaby kodem, którego nie umie dotknąć żadne kryterium. Wiersz mówi
      * POD POLEM, do kogo trafi zdanie, zanim ktokolwiek naciśnie Enter (`entry/entry.tsx`,
      * `whereItGoes`), i czyta to z tej samej listy pracujących kroków. */
+    /* KTÓRY TERMINAL TO MÓWI I KOGO CZŁOWIEK WSKAZAŁ NA LIDERA — dwie wartości, które od
+     * 2026-08-20 dojeżdżają do Rusta, i bez których żadna z nich nie miała nośnika.
+     *
+     * `onTop` odróżnia dwie karty jednego projektu. Bez niego rejestr wątków oddaje im JEDNĄ
+     * rozmowę: człowiek pisze w lewej karcie, a odpowiedź pojawia mu się w prawej.
+     *
+     * `lead()` jest wskazaniem z paska (`./lead.ts`, kontrolka w `./start.tsx`) i do tego dnia
+     * NIE MIAŁO DRUTU: wybór żył w oknie, a Rust rozmawiał zaszytym Claude'em, kimkolwiek by ten
+     * wybór nie był. Czytamy je w chwili wysyłki, nie z migawki renderu — zdanie ma pójść do tego
+     * lidera, którego widać na pasku teraz. */
     const going = addresseeOf(text, listening);
     try {
       await (going.to === 'agent'
         ? sayToAgent(going.text, going.agent)
-        : sayToOrchestrator(going.text, folder));
+        : sayToOrchestrator(going.text, folder, onTop, lead()));
       return null;
     } catch (error: unknown) {
       return why(

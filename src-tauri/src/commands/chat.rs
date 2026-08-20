@@ -558,9 +558,14 @@ impl Threads {
     ///
     /// Folder nazywa domyślny terminal tego zakresu ([`key_of`]): to jest ta sama czynność, co
     /// [`Threads::terminal_lines_go_to`], tylko zadana pytaniem „ten folder" zamiast „ten
-    /// terminal", i wchodzi do tego samego, jednego rejestru.
+    /// terminal" — i dosłownie tą drugą drogą wykonana, żeby dwa pytania nie mogły dostać dwóch
+    /// odpowiedzi (niezmiennik 13).
     pub fn lines_go_to(&mut self, cwd: PathBuf, lines: LineSink) {
-        self.watch(key_of(&cwd), lines);
+        let terminal = Terminal {
+            id: key_of(&cwd),
+            folder: cwd,
+        };
+        self.terminal_lines_go_to(&terminal, lines);
     }
 
     /// Wiersze tego terminalu idą odtąd tam — jedno ciało dla obu dróg wyżej.

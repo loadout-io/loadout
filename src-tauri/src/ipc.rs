@@ -418,36 +418,32 @@ pub struct AppState {
     /// nikogo, kto mógłby zażądać od niego dowodu śmierci grupy (niezmienniki 6 i 11). Kto teraz
     /// odmawia i dlaczego jednym ciałem, stoi przy [`AppState::begin_run`].
     live: Mutex<RunControl>,
-    /// Rozmowa z orchestratorem. `None`, dopóki okno jej nie otworzyło.
+    /// Wątki lidera — po jednym na TERMINAL, wszystkie w jednym rejestrze.
     ///
     /// # Dlaczego `tokio::sync::Mutex`, a nie ten sam rodzaj co przy [`AppState::live`]
     ///
-    /// Bo wysłanie tury do orchestratora JEST `await`-em: głos to kanał, a start sesji odpala
-    /// proces. Zamek `std::sync` trzymany przez `await` jest tym, czego zabrania niezmiennik 8
+    /// Bo wysłanie tury do lidera JEST `await`-em: głos to kanał, a start wątku odpala prawdziwy
+    /// program. Zamek `std::sync` trzymany przez `await` jest tym, czego zabrania niezmiennik 8
     /// i co `Cargo.toml` odrzuca lintem `await_holding_lock`. Tamten zamek trzyma się przez jedno
-    /// wyrażenie kopiujące uchwyt; ten trzyma się przez rozmowę z procesem.
+    /// wyrażenie kopiujące uchwyt; ten trzyma się przez rozmowę z żywym programem.
     ///
-    /// Jedna na aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną
-    /// własne sesje (`workspace::Registry`). Dziś przełączenie zakresu zostawia rozmowę tam, gdzie
-    /// była, bo folder jedzie argumentem przy każdym zdaniu.
+    /// # 2026-08-20 (T-71) — TU STAŁA JEDNA ROZMOWA NA CAŁĄ APLIKACJĘ, I TO JEST ZDJĘTA BLOKADA
     ///
-    /// # 2026-08-20 — WĄTEK PER ZAKRES ISTNIEJE I NIE STOI TUTAJ, I JEST TO ZGŁOSZENIE
+    /// Do tego dnia stało w tym miejscu `tokio::sync::Mutex<Option<commands::chat::Chat>>`, czyli
+    /// JEDNA rozmowa na aplikację, a rejestr wątków — istniejący od T-60, z własnymi kryteriami —
+    /// nie był przez żywą aplikację konstruowany ani razu. Pisarz T-60 zapisał powód wprost:
+    /// `Threads::say` wymaga WSKAZANEGO lidera, a wskazania nie było czym dowieźć z okna, bo
+    /// brakowało klucza obok `folder` — czyli zmiany w `src/sections/run/io.ts`, na którą jego
+    /// mandat nie pozwalał. Odmówił podstawienia połowy i miał rację: rozmowa, w której każde
+    /// zdanie odbija się o „wskaż lidera", jest odmową, której człowiek nie ma jak spełnić.
     ///
-    /// [`commands::chat::Threads`] robi dokładnie to, co obiecuje akapit wyżej: trzyma wątek na
-    /// zakres, kieruje wiersze do strumienia tego zakresu i przy zamknięciu okna oddaje po jednym
-    /// dowodzie śmierci grupy na wątek. Nie da się go tu jednak podstawić w połowie: `Threads::say`
-    /// wymaga [`commands::chat::Lead`], czyli WSKAZANEGO agenta, a wskazania nie ma czym dowieźć
-    /// z okna. [`say_to_orchestrator`] musiałaby dostać klucz `lead` obok `folder`, co znaczy zmianę
-    /// w `src/sections/run/io.ts` — a mandat T-60 na tamten plik (należący do niewyładowanego T-41)
-    /// pozwala dopisać WYŁĄCZNIE klucz `folder` przy [`open_chat`]. Nowej komendy nie da się dodać
-    /// obok, bo `tests/it/ipc_commands_registered.rs` porównuje listę handlera
-    /// z `src-tauri/commands.golden.txt` co do sztuki.
-    ///
-    /// Podstawienie samej połowy byłoby gorsze niż zostawienie tego stanu: rozmowa, w której każde
-    /// zdanie odbija się o „wskaż lidera", jest odmową, której człowiek nie ma jak spełnić. Dopóki
-    /// człowiek nie rozstrzygnie tego jednego pytania, żywa rozmowa idzie tą drogą, ze zaszytym
-    /// vendorem z [`AppState::chat_driver`].
-    chat: tokio::sync::Mutex<Option<commands::chat::Chat>>,
+    /// T-71 posiada oba końce tej drogi, więc blokada jest zdjęta w całości, a stare pole
+    /// **znika**, nie zostaje obok. Dwa domy dla odpowiedzi „gdzie mieszka ta rozmowa" są pierwszą
+    /// rzeczą, która się rozjedzie (niezmiennik 13), i rozjadą się po cichu: jedna droga zakłada
+    /// wątki per terminal, druga pisze do jednej rozmowy na całą aplikację, a z ekranu obie
+    /// wyglądają tak samo. Pilnuje tego kryterium na źródle tego pliku
+    /// (`tests/it/live_chat_goes_through_the_registry.rs`).
+    leads: tokio::sync::Mutex<commands::chat::Threads>,
     /// Miejsce na jeden draft umiejętności i token tego, który pisze teraz.
     ///
     /// **Osobne pole, nie [`AppState::live`]**, i to jest cała treść tego wiersza: `live` jest
@@ -508,7 +504,7 @@ impl AppState {
             store,
             drivers,
             live: Mutex::new(idle),
-            chat: tokio::sync::Mutex::new(None),
+            leads: tokio::sync::Mutex::new(commands::chat::Threads::new()),
             drafting: commands::skills::Drafting::new(),
             started: commands::processes::Processes::new(),
         }
@@ -541,23 +537,37 @@ impl AppState {
         self.started.close().await
     }
 
-    /// Kończy rozmowę z orchestratorem, jeśli jakaś stoi.
+    /// Kończy rozmowy lidera — WSZYSTKIE, po jednej na terminal — i żąda od każdej dowodu.
     ///
-    /// Wołane przy zamykaniu okna, obok zatrzymania biegu. Proces rozmowy jest procesem jak każdy
-    /// inny: po śmierci Loadouta przeszedłby pod PID 1 i pracował dalej (`recovery.rs`, nagłówek) —
-    /// czyli dokładnie ten defekt, który 2026-08-19 naprawiono dla biegów. Odzyskiwanie po nim nie
-    /// posprząta, bo rozmowa nie ma wpisu w indeksie biegów.
+    /// Wołane przy zamykaniu okna, obok zatrzymania biegu (`lib.rs`, `CloseRequested`). Rozmowa
+    /// jest programem jak każdy inny: po śmierci Loadouta przeszłaby pod PID 1 i pracowała dalej
+    /// (`recovery.rs`, nagłówek) — czyli dokładnie ten defekt, który 2026-08-19 naprawiono dla
+    /// biegów. Odzyskiwanie po niej nie posprząta, bo rozmowa nie ma wpisu w indeksie biegów,
+    /// a osierocony agent pali limit u dostawcy: to jest błąd finansowy, nie higieniczny.
+    ///
+    /// NAZWA ZOSTAJE, bo woła ją `lib.rs` jedną linią, a tamten plik nie należy do tego zadania
+    /// (AGENTS.md §7). Zmieniła się liczba rozmów, które kończy, nie czynność.
+    ///
+    /// ZAMEK ODDANY PRZED PĘTLĄ, i to nie jest kosmetyka: `close()` prowadzi całą eskalację
+    /// zabijania w środku, a `let` bez tego rozbicia trzymałby zamek na rejestrze przez cały ten
+    /// czas — czyli przez sekundy, w których nikt inny nie mógłby zapytać, czy jego wątek żyje.
+    ///
+    /// `Alive` po pełnej eskalacji idzie do dziennika, bo jest jedynym trwałym śladem: to jest
+    /// stan, o którym nikt się inaczej nie dowie, a `lib.rs` zamyka okno tak czy inaczej —
+    /// okno, którego nie da się zamknąć, zamykałoby człowieka wewnątrz aplikacji.
     pub(crate) async fn close_chat(&self) {
-        if let Some(chat) = self.chat.lock().await.as_mut() {
-            chat.close().await;
+        let proofs = self.leads.lock().await.close().await;
+        for proof in proofs {
+            if matches!(proof, crate::engine::supervisor::GroupProof::Alive) {
+                tracing::error!(
+                    "a lead agent was still answering after Loadout asked it to stop; look for \
+                     it in Activity Monitor"
+                );
+            }
         }
     }
 
     /* ── ROZMOWA NALEŻY DO TERMINALU ────────────────────────────────────────────────────────
-     *
-     * 2026-08-20 — SZKIELET T-71. Ciała są `todo!()`, więc kryterium pada w czasie wykonania,
-     * a nie na kompilacji (AGENTS.md §2a p. 5); `clippy::todo = deny` w `Cargo.toml` pilnuje,
-     * żeby ani jedno z nich nie przeżyło do pełnej bramki.
      *
      * DLACZEGO TE DWIE METODY W OGÓLE ISTNIEJĄ, skoro obok stoją skorupy `#[tauri::command]`.
      * Bo skorupa bierze `State<'_, AppState>`, którego w teście nie da się zbudować — a wtedy
@@ -578,13 +588,31 @@ impl AppState {
     /// tura wystartowana przy montażu ekranu jest turą, za którą ktoś płaci, choć nikt o nic nie
     /// zapytał. Wołane ponownie PRZEKIEROWUJE wiersze na nowy kanał i nie kończy rozmowy: tę drogę
     /// woła każdy montaż ekranu pracy i każde przeładowanie okna.
+    ///
+    /// BIBLIOTEKA JEDZIE TUTAJ, a nie przy pierwszym zdaniu, i to jest wymóg czasu, nie porządku:
+    /// `--add-dir` wchodzi w argv przy STARCIE wątku, więc rozmowa, która zaczęła się przed tym
+    /// zdaniem, dostałaby zasięg dopiero przy następnej ([`commands::chat::Threads::library_is`]).
+    /// Ta droga stoi przed pierwszym zdaniem z konstrukcji: okno woła ją przy montażu ekranu.
     pub async fn watching_the_lead(
         &self,
-        _terminal: &str,
-        _folder: Option<&str>,
-        _lines: LineSink,
+        terminal: &str,
+        folder: Option<&str>,
+        lines: LineSink,
     ) -> Result<(), String> {
-        todo!()
+        // Ten sam sąd nad folderem, co przy biegu i przy instalacji umiejętności
+        // ([`project_folder`]): rozmowa w katalogu, którego nie ma, jest programem, który nie
+        // wstaje, a nie ostrzeżeniem. Brak wyboru znaczy „tam, gdzie aplikacja wstała".
+        let cwd = self.project_for(folder).inspect_err(refused)?;
+        let mut leads = self.leads.lock().await;
+        leads.library_is(self.home.clone());
+        leads.terminal_lines_go_to(
+            &commands::chat::Terminal {
+                id: terminal.to_owned(),
+                folder: cwd,
+            },
+            lines,
+        );
+        Ok(())
     }
 
     /// Zdanie człowieka do lidera TEGO terminalu.
@@ -596,28 +624,44 @@ impl AppState {
     ///
     /// Odmowa wraca NAPISEM, bo dokładnie tym kształtem odrzuca Tauri i dokładnie ten napis
     /// człowiek czyta pod wierszem wejścia (niezmiennik 29).
+    /// KIM JEST LIDER, ROZSTRZYGA JEGO ZAPISANA DEFINICJA, i to jest drugie zdjęte zaszycie.
+    /// Do 2026-08-20 stała obok tej metody funkcja `chat_driver`, oddająca `Vendor::ClaudeCode`
+    /// na sztywno; zniknęła w całości, bo vendora wybiera dziś fabryka po polu `runs_with`
+    /// z pliku ([`commands::chat::Threads::say_in`]). Gałąź domyślna jest tym, czego konfiguracją
+    /// nie da się wyłączyć — a tutaj nie ma ani jednej gałęzi.
     pub async fn say_to_the_lead(
         &self,
-        _terminal: &str,
-        _folder: Option<&str>,
-        _lead: Option<&str>,
-        _text: &str,
+        terminal: &str,
+        folder: Option<&str>,
+        lead: Option<&str>,
+        text: &str,
     ) -> Result<(), String> {
-        todo!()
-    }
-
-    /// Sterownik, którym rozmawia orchestrator.
-    ///
-    /// `Vendor::ClaudeCode` na sztywno i to jest świadome: rozmowa nie jest krokiem workflow, więc
-    /// nie ma definicji agenta, z której można by wziąć vendora. W dniu, w którym orchestrator
-    /// stanie się konfigurowalny, ta funkcja zniknie na rzecz jego zapisanej definicji.
-    ///
-    /// 2026-08-20 — DEFINICJA JUŻ JEST, DRUTU DO NIEJ NIE MA. Odczyt zapisanej definicji stoi
-    /// w [`commands::chat::Lead::pointed_at`] i to on ma tę funkcję skasować; brakuje jednej
-    /// rzeczy, i jest nią wskazanie z okna. Powód, dlaczego nie da się go tu dowieźć, i jedyne
-    /// pytanie do człowieka stoją przy [`AppState::chat`].
-    fn chat_driver(&self) -> std::sync::Arc<dyn crate::engine::drivers::AgentDriver> {
-        (self.drivers)(crate::library::agents::Vendor::ClaudeCode)
+        let cwd = self.project_for(folder).inspect_err(refused)?;
+        /* WSKAZANIE SĄDZIMY PRZED WZIĘCIEM ZAMKA, bo odmowa „nie wskazałeś lidera" nie ma nic
+         * wspólnego z rejestrem wątków: czytanie biblioteki pod zamkiem trzymałoby go przez
+         * odczyt katalogu, w którym nic się nie zmienia. */
+        let who = commands::chat::Lead::pointed_at(self.home.as_path(), lead).map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })?;
+        let mut leads = self.leads.lock().await;
+        leads
+            .say_in(
+                &self.drivers,
+                &who,
+                &commands::chat::Terminal {
+                    id: terminal.to_owned(),
+                    folder: cwd,
+                },
+                text,
+            )
+            .await
+            .map_err(|error| {
+                let said = error.to_string();
+                refused(&said);
+                said
+            })
     }
 
     /// Współpracownicy biegu, który idzie teraz.
@@ -1406,55 +1450,54 @@ pub async fn stop_run(state: State<'_, AppState>) -> Result<(), String> {
         })
 }
 
-/// Otwiera strumień rozmowy z orchestratorem — sam proces jeszcze nie wstaje.
+/// Otwiera strumień rozmowy z liderem TEGO terminalu — sam program jeszcze nie wstaje.
 ///
 /// Dwie komendy, nie jedna, i podział ma nazwany powód: kanał do okna umie zbudować **tylko okno**
-/// (`docs/ARCHITECTURE.md` §3), więc musi przyjść argumentem — a sesja u dostawcy ma wstać dopiero
-/// przy pierwszym zdaniu, bo tura wystartowana przy montażu ekranu jest turą, za którą ktoś płaci,
-/// choć nikt o nic nie zapytał. Ta komenda zakłada więc pompę i nic więcej.
+/// (`docs/ARCHITECTURE.md` §3), więc musi przyjść argumentem — a rozmowa u dostawcy ma wstać
+/// dopiero przy pierwszym zdaniu, bo tura wystartowana przy montażu ekranu jest turą, za którą
+/// ktoś płaci, choć nikt o nic nie zapytał. Ta komenda zakłada więc pompę i nic więcej.
 ///
 /// Wołana ponownie PRZEKIEROWUJE istniejącą rozmowę na nowy kanał — nie kończy jej.
 ///
 /// 2026-08-19 — WERSJA PIERWSZA ZAMYKAŁA ROZMOWĘ I BYŁO TO WIDAĆ W DZIENNIKU przy pierwszym
 /// uruchomieniu: „the pump for this run closed its books delivered=0", trzy razy pod rząd. Tę
-/// komendę woła KAŻDY montaż ekranu pracy i każde przeładowanie okna, więc wyjście na Agentów
-/// i powrót gubiłoby cały wątek — czyli dokładnie to, po co ta rozmowa istnieje („sobie
-/// piszemy/zmieniamy coś itp"). Sesja u dostawcy nie ma powodu o tym wiedzieć: zmienia się tylko
-/// to, komu jej wiersze są pokazywane ([`commands::chat::Chat::lines_go_to`]).
+/// komendę woła KAŻDY montaż ekranu pracy, każde przeładowanie okna i — od T-71 — każde
+/// przełączenie karty, więc wyjście na Agentów i powrót gubiłoby cały wątek, czyli dokładnie to,
+/// po co ta rozmowa istnieje („sobie piszemy/zmieniamy coś itp").
+///
+/// `terminal` jest tożsamością karty, wybitą w oknie (`src/sections/run/tabs/terminal.ts`).
+/// Kiedy w zakresie nie stoi ani jedna karta, okno przysyła tu ścieżkę folderu — czyli folder
+/// nazywa DOMYŚLNY terminal tego zakresu, tą samą regułą, którą rejestr trzyma u siebie
+/// ([`commands::chat::Threads`]).
 #[tauri::command]
 pub async fn open_chat(
     state: State<'_, AppState>,
+    terminal: &str,
+    folder: Option<String>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    let mut chat = state.chat.lock().await;
-    match chat.as_ref() {
-        Some(open) => open.lines_go_to(pump_into(lines)),
-        None => *chat = Some(commands::chat::Chat::new(pump_into(lines))),
-    }
-    Ok(())
+    state
+        .watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
+        .await
 }
 
-/// Mówi zdanie orchestratorowi. **Nie uruchamia biegu i nie ma jak** — powód przy `commands::chat`.
+/// Mówi zdanie liderowi tego terminalu. **Nie uruchamia biegu i nie ma jak** — powód przy
+/// `commands::chat`.
+///
+/// `lead` jest identyfikatorem zapisanego agenta i jego brak jest **odmową nazywającą następny
+/// ruch**, nigdy cichym powrotem do zaszytego vendora — powód w całości stoi przy
+/// [`AppState::say_to_the_lead`].
 #[tauri::command]
 pub async fn say_to_orchestrator(
     state: State<'_, AppState>,
+    terminal: &str,
     folder: Option<String>,
+    lead: Option<String>,
     text: &str,
 ) -> Result<(), String> {
-    let cwd = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    let driver = state.chat_driver();
-    let mut chat = state.chat.lock().await;
-    let open = chat.as_mut().ok_or_else(|| {
-        let said =
-            "The lead agent is not ready yet. Reopen the work screen and try again.".to_owned();
-        refused(&said);
-        said
-    })?;
-    open.say(driver.as_ref(), cwd, text).await.map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    state
+        .say_to_the_lead(terminal, folder.as_deref(), lead.as_deref(), text)
+        .await
 }
 
 /// „Dalej": puszcza bieg zza punktu kontrolnego.
