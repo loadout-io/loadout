@@ -36,10 +36,13 @@
  * ZERO ŻARGONU W TEKŚCIE WIDOCZNYM (niezmiennik 14, DESIGN §8): „folder", „run", „stop" —
  * żadnego `workspace`, `session`, `process`, `execute`.
  */
-import type { FormEvent, ReactElement } from 'react';
-import { useState } from 'react';
+import type { FormEvent, ReactElement, Ref } from 'react';
+import { useRef, useState } from 'react';
 
 import type { Named } from '../run-command';
+import type { WindowLine } from './echo';
+import { echoOf, saidOf } from './echo';
+import { createHistory } from './history';
 
 /**
  * Komendy, które ten wiersz wykonuje — cała lista, w kolejności zachęty.
@@ -78,7 +81,7 @@ export const PROMPT = KNOWN.map((one) => `${one.name} ${one.tail}`).join('  ·  
 
 /** Druga linia z makiety (`.entry .hint`): co robi Enter i jak daleko sięga ten wiersz. */
 export const HINT =
-  'Enter sends it. Start with a slash for a command, or just write to the agent that is working.';
+  'Enter sends it. Start with a slash for a command, or just write to the lead agent.';
 
 /** Odpowiedź na `/stop`, kiedy nic nie biegnie. Cisza czyta się jak zepsuty klawisz. */
 export const NOTHING_RUNS = 'Nothing is running.';
@@ -93,9 +96,16 @@ export const NOTHING_RUNS = 'Nothing is running.';
  * trzeba wybrać z kilku, i gdy nie ma go komu doręczyć. Człowiek musiał WYSŁAĆ zdanie, żeby się
  * dowiedzieć, co się z nim stanie; przy pracującym agencie to jest tura, za którą ktoś płaci.
  *
- * Trzy stany, trzy zdania, i każde nazywa następny ruch (DESIGN §8):
- * jeden pracujący — mówimy, kto to jest; kilku — trzeba wpisać nazwę, więc je wypisujemy; żaden —
- * proza nie ma adresata i zdanie mówi, czym się zaczyna pracę.
+ * 2026-08-20 — ADRESATEM JEST ZAWSZE LIDER, a agent wyłącznie po nazwie, więc te trzy zdania
+ * mówią teraz co innego niż dzień wcześniej. Zgłoszenie właściciela: „proza w trakcie biegu
+ * znika z rozmowy z liderem, bo leci do pracującego agenta" — do 2026-08-20 jeden pracujący
+ * krok przechwytywał KAŻDE zdanie, czyli lider milczał przez cały bieg, dokładnie wtedy, kiedy
+ * człowiek chce zapytać, co się właściwie dzieje. Polityka mieszka w `../addressee.ts` i jest
+ * sądzona bez okna; te zdania są jej UPRZEDZENIEM, a nie drugą kopią (niezmiennik 13).
+ *
+ * Trzy stany, trzy zdania, i każde nazywa następny ruch (DESIGN §8): żaden pracujący — zdanie
+ * mówi, czym się zaczyna pracę; jeden — mówimy, czyją nazwą się go dosięga; kilku — wypisujemy
+ * nazwy, bo jedną trzeba WPISAĆ na początku linii.
  *
  * TO SAMO ROZSTRZYGA RUST przy Enterze (`commands::run::say_to_agent_inner`), i to nie jest druga
  * kopia polityki: tam mieszka odmowa, tu jej UPRZEDZENIE. Adres bierzemy z listy pracujących
@@ -119,13 +129,22 @@ export function whereItGoes(working: readonly string[]): string {
     );
   }
   if (working.length === 1) {
-    return 'Enter sends this to ' + only + '. Start with a slash for a command.';
+    /* NAZWA JEST ADRESEM, nie informacją o tym, kto pracuje. Do 2026-08-20 stało tu „Enter
+     * sends this to Forge" i było prawdą o implementacji, którą to zadanie zamyka: jeden
+     * pracujący krok przechwytywał całą prozę. Teraz zdanie musi nieść oba fakty naraz —
+     * gdzie zdanie POJDZIE i czym się dosięga kogoś innego — bo pierwszy bez drugiego zostawia
+     * człowieka bez drogi do agenta, którego widzi na ekranie. */
+    return 'Enter sends this to the lead agent. Start the line with ' + only + ' to reach it.';
   }
   /* WYPISUJEMY NAZWY, bo przy kilku pracujących trzeba jedną WPISAĆ na początku linii — dokładnie
    * tak, jak każe odmowa `RunError::SeveralAreWorking`. Sama liczba („2 agents are working")
    * mówiłaby, że jest problem, i nie mówiłaby, jak go rozwiązać. */
   return (
-    String(working.length) + ' agents are working, so put a name first: ' + working.join(', ') + '.'
+    'Enter sends this to the lead agent. ' +
+    String(working.length) +
+    ' agents are working, so start the line with a name to reach one: ' +
+    working.join(', ') +
+    '.'
   );
 }
 
@@ -209,7 +228,14 @@ export function suggestions(typed: string, workflows: readonly Named[] = []): re
 
 export interface EntryProps {
   /**
-   * Co powiedzieć agentowi, który pracuje. Oddaje zdanie odmowy albo `null`, kiedy doszło.
+   * Zdanie bez ukośnika. Oddaje zdanie odmowy albo `null`, kiedy doszło.
+   *
+   * NAZWA PROPSA JEST STARSZA NIŻ POLITYKA, KTÓRĄ OPISUJE, i zostaje: od 2026-08-20 zdanie idzie
+   * do LIDERA, a do pracującego kroku wyłącznie wtedy, gdy człowiek nazwał go na początku linii
+   * (`../addressee.ts`). Adresata wybiera ekran, nie ten wiersz — tu jest jedna droga na całą
+   * prozę i tak ma zostać, bo wiersz, który sam decyduje, komu ją oddać, jest drugim miejscem
+   * z tą polityką (niezmiennik 23). Przepisanie nazwy zmieniłoby cudze kryteria, które montują
+   * ten wiersz i podają ten props (`caret.test.tsx`, `suggests-workflows.test.ts`).
    *
    * 2026-08-18 — DO TEGO DNIA TEJ DROGI NIE BYŁO WCALE, i to jest zgłoszenie właściciela
    * („dalej nie działa pisanie do agenta przez terminal"). Wiersz odpowiadał na każde zdanie
@@ -237,7 +263,11 @@ export interface EntryProps {
    */
   readonly onRunWorkflow: (rest: string) => Promise<string | null>;
   /**
-   * Kto właśnie pracuje — nazwy kroków, którym dojdzie zdanie bez ukośnika.
+   * Kto właśnie pracuje — czyli czyją nazwą wolno zaadresować zdanie bez ukośnika.
+   *
+   * 2026-08-20 — NAZWY SĄ ADRESAMI, nie listą odbiorców. Do tego dnia niepustość tej listy
+   * wystarczała, żeby zdanie poszło do agenta; teraz idzie do lidera, dopóki któraś z tych nazw
+   * nie stanie na początku linii (`../addressee.ts`).
    *
    * PO CO TO JEST. Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę".
    * Wiersz przyjmował prozę i nie mówił, gdzie ona idzie — a idzie w dwa zupełnie różne miejsca
@@ -268,6 +298,34 @@ export interface EntryProps {
    * jeden fakt, a dwa pola obok siebie dają stan, w którym mówią co innego.
    */
   readonly onStopRun: (() => void) | null;
+  /**
+   * Wiersz, który to pole właśnie złożyło — do dopisania w strumieniu.
+   *
+   * PO CO TO ISTNIEJE. Zgłoszenie właściciela 2026-08-20: komendy nie zostawiają po sobie ani
+   * jednego wiersza. Terminal, w którym wpisana komenda nie zostawia śladu, jest nieodróżnialny
+   * od terminala, który tej komendy nie przyjął — a `/run`, `/open`, `/stop` i odpowiedzi samego
+   * wiersza są dla drutu niewidzialne, więc ich jedynym śladem jest to, co dopisze okno.
+   *
+   * WIERSZ SKŁADA TEN PLIK, a DOKĄD on idzie wie ekran, i ten podział jest celowy: kształt
+   * wiersza jest sprawą wiersza wejścia (`./echo.ts` leży obok tego pliku), a „która sesja
+   * strumienia" jest sprawą ekranu, bo to on wie, w jakim zakresie stoimy (`../feed/live.ts`).
+   * Ten wiersz wołający `feedFor` sam byłby drugim miejscem, w którym mieszka ta odpowiedź.
+   *
+   * Wartość domyślna jest MOSTEM dla cudzych kryteriów, które montują ten wiersz bez tego propsa
+   * (`caret.test.tsx`, `suggests-workflows.test.ts`) — tak samo jak przy [`talkingTo`]. Że
+   * produkcyjny wołający go PODAJE, dowodzi `e2e/tests/terminal-behaves.spec.ts`: pyta o wiersz
+   * w strumieniu prawdziwej przeglądarki, więc zapomniany props jest tam czerwony.
+   */
+  readonly onShowInStream?: (row: WindowLine) => void;
+  /**
+   * Uchwyt do pola, żeby ktoś z zewnątrz mógł mu ODDAĆ kursor.
+   *
+   * Jedynym wołającym jest dziś kolumna strumienia (`../index.tsx`): kliknięcie w miejsce bez
+   * kontrolki wraca kursorem tutaj. Uchwytem, a nie szukaniem po etykiecie w dokumencie —
+   * `aria-label="Command line"` przepisane w drugim pliku rozjechałoby się przy pierwszej
+   * zmianie brzmienia, a wtedy kursor przestałby wracać i nikt by nie wiedział dlaczego.
+   */
+  readonly fieldRef?: Ref<HTMLInputElement>;
 }
 
 export function Entry({
@@ -277,43 +335,82 @@ export function Entry({
   onRunWorkflow,
   talkingTo = [],
   workflows = [],
+  onShowInStream = () => undefined,
+  fieldRef,
 }: EntryProps): ReactElement {
   const [typed, setTyped] = useState('');
   /* Co pasuje do tego, co już stoi w polu. Liczone przy renderze, nie trzymane w stanie: druga
    * kopia tej odpowiedzi mogłaby opisywać tekst sprzed jednego znaku. */
   const matching = suggestions(typed, workflows);
-  /** Ostatnia odpowiedź wiersza; `null`, dopóki nie ma o czym mówić. */
-  const [said, setSaid] = useState<string | null>(null);
+
+  /* HISTORIA CHODZENIA — po tym, co JUŻ wysłano z tego pola.
+   *
+   * `useRef`, bo to nie jest stan renderu: chodzenie po historii zmienia wyłącznie zawartość
+   * pola, a tę trzyma już `typed`. Trzymana w `useState` kazałaby przerysować wiersz przy każdym
+   * `remember`, czyli przy każdym Enterze, i to bez ani jednej zmiany na ekranie.
+   *
+   * `useRef` trzyma PIERWSZĄ z tych historii i wyrzuca każdą następną — bez tego strzałka gubiłaby
+   * wszystko przy pierwszym przerysowaniu wiersza. Że fabryka biegnie mimo to przy każdym
+   * renderze, jest tu świadomie niezoptymalizowane: to trzy domknięcia i tablica, a wersja
+   * z leniwą inicjalizacją (`useRef<History | null>(null)`) dokłada w każdym użyciu gałąź
+   * „a jeśli jeszcze nie ma", której nie da się przejść. */
+  const walk = useRef(createHistory());
+
+  /**
+   * To, co odpowiedział ten wiersz, do strumienia — albo nic, kiedy odpowiedzi nie ma.
+   *
+   * `null` znaczy „doszło", i tak właśnie mówią oba propsy (`onRunWorkflow`, `onSayToAgent`):
+   * cisza po udanej komendzie jest poprawna, bo skutek widać w biegu.
+   */
+  function showTheAnswer(answer: string | null): void {
+    if (answer === null) return;
+    onShowInStream(saidOf(answer));
+  }
 
   function send(event: FormEvent<HTMLFormElement>): void {
     /* Bez tego przeglądarka przeładowuje stronę i bieg znika razem z nią — okno Tauri nie ma
      * dokąd nawigować, a magazyny żyją na poziomie modułu. */
     event.preventDefault();
-    if (typed.trim() === '') return;
+    const line = typed.trim();
+    if (line === '') return;
 
     const command = understand(typed);
     setTyped('');
+    /* STRZAŁKA MA PO CO SIĘGAĆ — zapamiętujemy KAŻDĄ wysłaną linię, także tę, która odbije się
+     * od wiersza: literówka w komendzie jest dokładnie tą linią, którą człowiek chce poprawić,
+     * a nie przepisywać z pamięci. */
+    walk.current.remember(line);
+
+    /* ŚLAD PO KOMENDZIE, ZANIM COKOLWIEK POJEDZIE DALEJ.
+     *
+     * Kolejność jest tu odwrotna niż po stronie Rusta, i to nie jest niekonsekwencja. Tam wiersz
+     * `Told` powstaje PO wysłaniu tury, bo twierdzi, że agent ją usłyszał (`commands::run`), i
+     * dopisany wcześniej kłamałby o cudzym stanie. Tutaj wiersz twierdzi tylko, że TA LINIA
+     * ZOSTAŁA WPISANA — a to jest prawdą w chwili Enteru, niezależnie od tego, czym skończy się
+     * komenda. Echo po fakcie stawiałoby odmowę PRZED linią, której dotyczy.
+     *
+     * Proza wraca tu `null` i to jest cała treść `echoOf`: jej wiersz przyjeżdża z drutu jako
+     * `told`, a dwa wiersze o jednym zdaniu to dwa miejsca prawdy (niezmiennik 13). */
+    const echo = echoOf(line);
+    if (echo !== null) onShowInStream(echo);
 
     if (command === '/run') {
-      setSaid(null);
       /* RESZTA LINII PO NAZWIE KOMENDY, przycięta — i to jest jedyna rzecz, którą ten wiersz
        * z niej wyciąga. Podział na „nazwa workflow" i „zadanie" należy do `../run-command.ts`,
        * bo to polityka i ma być sądzona bez okna (to repo nie ma jsdom, więc Enter jest
        * nieosiągalny dla kryterium). */
-      void onRunWorkflow(typed.trim().slice('/run'.length).trim()).then(setSaid);
+      void onRunWorkflow(line.slice('/run'.length).trim()).then(showTheAnswer);
       return;
     }
     if (command === '/open') {
-      setSaid(null);
       onOpenFolder();
       return;
     }
     if (command === '/stop') {
       if (onStopRun === null) {
-        setSaid(NOTHING_RUNS);
+        showTheAnswer(NOTHING_RUNS);
         return;
       }
-      setSaid(null);
       onStopRun();
       return;
     }
@@ -323,11 +420,10 @@ export function Entry({
      * jest literówką w komendzie i ma dostać listę komend — a zdanie bez ukośnika jest tym,
      * co człowiek chce powiedzieć. Wysłanie literówki jako prozy zamieniłoby `/stpo`
      * w wiadomość do modelu i wyglądałoby jak zignorowana komenda. */
-    if (typed.trim().startsWith('/')) {
-      setSaid(NOT_KNOWN);
+    if (line.startsWith('/')) {
+      showTheAnswer(NOT_KNOWN);
       return;
     }
-    setSaid(null);
     /* PROZA JEST ROZMOWĄ I NIGDY NIE URUCHAMIA BIEGU — rozstrzygnięcie właściciela 2026-08-19,
      * po tym, jak zobaczył skutek wersji przeciwnej: „nie powinno być tak, że jak piszę bez
      * komendy, a poprzednio odpaliłem komendę, to się ona na nowo całe workflow odpala".
@@ -342,7 +438,7 @@ export function Entry({
      * gdzie człowiek je adresował. Kiedy nie ma komu — Rust odmawia zdaniem, które nazywa następny
      * ruch („Press Start first."), a wiersz mówi to samo POD polem, jeszcze przed Enterem
      * (`talkingTo`). */
-    void onSayToAgent(typed).then(setSaid);
+    void onSayToAgent(typed).then(showTheAnswer);
   }
 
   return (
@@ -357,14 +453,48 @@ export function Entry({
           ❯
         </span>
         <input
+          ref={fieldRef}
           aria-label="Command line"
           placeholder={PROMPT}
           spellCheck={false}
+          /* KURSOR STOI TU OD PIERWSZEJ SEKUNDY — zgłoszenie właściciela 2026-08-20: „kursor
+             nie stoi w polu, trzeba kliknąć, za każdym razem". Niezmiennik 16 mówi o kontrolce
+             bez handlera, a to jest jej odmiana: pole, które nazywa się terminalem i wymaga
+             jednego kliknięcia, zanim przyjmie znak, każe płacić to kliknięcie przy KAŻDYM
+             wejściu na ekran pracy — a człowiek patrzy już na pole ze znakiem zachęty przed nim.
+
+             DOKŁADNIE JEDEN ELEMENT W TYM WIERSZU o to prosi, i to jest cała reszta reguły:
+             przeglądarka daje ognisko jednemu z proszących i nie mówi któremu, więc dwa
+             `autoFocus` to nie „dwa razy uprzejmiej", tylko wiersz, którego zachowanie zależy
+             od kolejności markupu. */
+          autoFocus
           value={typed}
           onChange={(event) => {
             setTyped(event.target.value);
           }}
           onKeyDown={(event) => {
+            /* STRZAŁKI CHODZĄ PO HISTORII, i to jest druga z czterech wad z 2026-08-20:
+             * „strzalka w gore nie cofa do poprzedniej linii". Cała polityka chodzenia — łącznie
+             * z tym, że krok naprzód oddaje SZKIC, a nie puste pole — mieszka w `./history.ts`,
+             * bo to repo nie ma jsdom i naciśnięcia klawisza nie da się odpalić w kryterium.
+             * Tutaj zostaje przewiezienie napisu do pola.
+             *
+             * `null` znaczy „nie ma czego oddać" i wtedy NIE ROBIMY NIC — ani nie czyścimy pola,
+             * ani nie zabieramy strzałce jej zwykłej roboty. Bez tego warunku strzałka w górę
+             * w polu z pustą historią przestałaby przesuwać kursor na początek linii, czyli
+             * odebrałaby zachowanie, którego nikt jej nie kazał zmieniać.
+             *
+             * `preventDefault` wyłącznie wtedy, gdy naprawdę wstawiamy linię: w jednoliniowym
+             * polu strzałka w górę skacze kursorem na początek, a po wstawieniu cudzej linii
+             * kursor ma stać na jej KOŃCU — tam, gdzie się dopisuje. */
+            if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+              const stepped =
+                event.key === 'ArrowUp' ? walk.current.back(typed) : walk.current.forward();
+              if (stepped === null) return;
+              event.preventDefault();
+              setTyped(stepped);
+              return;
+            }
             /* TAB UZUPEŁNIA, kiedy pasuje DOKŁADNIE jedna komenda. Przy dwóch nie zgadujemy:
              * uzupełnienie do pierwszej z listy wpisuje za człowieka decyzję, której nie podjął,
              * a lista pod polem i tak już mu ją pokazuje. `preventDefault` tylko wtedy, gdy
@@ -424,17 +554,23 @@ export function Entry({
         </div>
       ) : (
         /* GDZIE POJDZIE TO ZDANIE — pod polem, PRZED naciśnięciem Enter.
-           Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę". */
+           Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę".
+
+           TEN WIERSZ ZOSTAJE, choć odpowiedzi wiersza przeniosły się do strumienia: mówi o innym
+           fakcie i w innej chwili. „Gdzie to pójdzie" jest zdaniem PRZED Enterem i dotyczy tekstu,
+           który jeszcze stoi w polu; „co Loadout odpowiedział" jest zdaniem PO Enterze i dotyczy
+           linii, która już poszła. Jeden region na jeden fakt (niezmiennik 13). */
         <p data-entry-hint className="mt-[6px] ml-[26px] font-mono text-label text-muted">
           {whereItGoes(talkingTo)}
         </p>
       )}
 
-      {said === null ? null : (
-        <p data-entry-said className="mt-[6px] ml-[26px] text-body text-attend">
-          {said}
-        </p>
-      )}
+      {/* CZEGO TU JUŻ NIE MA: `data-entry-said`, czyli ostatniej odpowiedzi wiersza pod polem.
+          Zgłoszenie właściciela 2026-08-20 dotyczyło śladu po komendach, a to miejsce było jego
+          połowiczną wersją: pokazywało JEDNO zdanie, ostatnie, i gasło przy następnej linii.
+          Trzy odpowiedzi z rzędu zostawiały dwie niewidziane, a rozmowa z Loadoutem czytała się
+          jak dwie różne historie — jedna w strumieniu, druga pod polem (niezmiennik 13).
+          Wszystkie te zdania wchodzą teraz do strumienia przez `onShowInStream` (`./echo.ts`). */}
     </form>
   );
 }

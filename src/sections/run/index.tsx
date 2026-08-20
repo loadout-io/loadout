@@ -35,16 +35,18 @@
  * hydratuje serwerowego HTML-a, więc powód, dla którego React chce tam stanu początkowego,
  * tutaj nie istnieje. Ten sam zapis stoi w `src/sections/workflows/index.tsx`.
  */
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import type { ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { MouseEvent, ReactElement } from 'react';
 
 import { why } from '../../ipc/why';
 import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
 import { useRun } from '../../state/run';
 import { useWorkspaces } from '../../state/workspaces';
+import { addresseeOf } from './addressee';
+import type { WindowLine } from './entry/echo';
 import { Feed } from './feed/feed';
-import { attachPort, runFeed } from './feed/live';
+import { attachPort, feedFor, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
 import { Entry } from './entry/entry';
@@ -80,6 +82,20 @@ const WORK_COLUMNS = `minmax(0,1fr) ${String(RAIL_WIDTH)}px`;
 
 /** Reguła `.feedcol` z makiety: historia przewija się, TERAZ i wiersz wejścia stoją na dole. */
 const FEED_ROWS = 'minmax(0,1fr) auto auto';
+
+/**
+ * Co w kolumnie strumienia zatrzymuje kursor u siebie.
+ *
+ * Kontrolka, w którą człowiek CELOWAŁ, ma dostać klawiaturę — wiersz wejścia, który zabiera
+ * kursor po KAŻDYM kliknięciu w tej kolumnie, psuje każdy przycisk, jaki strumień rysuje
+ * (dziś `Jump to newest`, `+` przy wyjściu, które padło, i przyciski odpowiedzi na pytanie).
+ * Kryterium `e2e/tests/terminal-behaves.spec.ts` stoi po obu stronach tej reguły: raz pyta, czy
+ * kursor WRACA, i raz, czy ZOSTAJE tam, gdzie kliknięto.
+ *
+ * Lista jest zbiorem rzeczy skupialnych, nie listą naszych komponentów: `[tabindex]` łapie
+ * wszystko, co ktoś kiedyś uczyni skupialnym bez pytania tego pliku o zgodę.
+ */
+const KEEPS_THE_CARET = 'a, button, input, select, textarea, [contenteditable], [tabindex]';
 
 /* Przycisk podstawowy z DESIGN §6 — te same cztery tokeny, co w `src/ui/primitives/empty-state.tsx`:
  * `--accent` na tle, `--bg` na tekście, wysokość 36 px. Akcent jest jedynym kolorem interaktywnym
@@ -151,6 +167,10 @@ export default function Run(): ReactElement {
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
   const [said, setSaid] = useState<string | null>(null);
 
+  /* Uchwyt do pola wiersza wejścia — po to, żeby kliknięcie w strumień mogło mu ODDAĆ kursor.
+   * Powód w całości przy `caretBackToTheField`. */
+  const field = useRef<HTMLInputElement>(null);
+
   /* Ta sama liczba, którą pokazuje kontrolka startu — jeden fakt, jedno miejsce (niezmiennik 13).
    * Gdyby ekran trzymał własną kopię, pasek kart mówiłby „of 3", kiedy suwak stoi na 8. */
   const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
@@ -158,8 +178,13 @@ export default function Run(): ReactElement {
   const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
 
-  /* KTO SŁUCHA, czyli do kogo dojdzie zdanie z wiersza wejścia. Rozstrzygnięcie właściciela
-   * 2026-08-19: „powinienem wiedzieć co piszę".
+  /* KTO SŁUCHA, czyli czyją nazwą można zaadresować zdanie z wiersza wejścia. Rozstrzygnięcie
+   * właściciela 2026-08-19: „powinienem wiedzieć co piszę".
+   *
+   * 2026-08-20 — TA LISTA PRZESTAŁA BYĆ LISTĄ ODBIORCÓW I STAŁA SIĘ LISTĄ ADRESÓW. Do tego dnia
+   * jej niepustość WYSTARCZAŁA, żeby zdanie poszło do agenta; teraz zdanie idzie do lidera,
+   * dopóki nazwa z tej listy nie stanie na początku linii (`./addressee.ts`). Sam zbiór jest ten
+   * sam i musi być ten sam — to z niego Rust buduje swoją odmowę.
    *
    * Kroki w stanie `running` i tylko one: to jest dokładnie ten sam zbiór, z którego bieg buduje
    * swoją odpowiedź po stronie Rusta (`RunControl::step_can_hear` rejestruje głos kroku, kiedy on
@@ -281,7 +306,7 @@ export default function Run(): ReactElement {
   }
 
   /**
-   * Proza z wiersza wejścia → agent, który pracuje.
+   * Proza z wiersza wejścia → lider, albo krok, którego człowiek nazwał na początku linii.
    *
    * Zdanie odmowy WRACA do wiersza, a nie ląduje w `said` tego ekranu, i to jest jedyne miejsce,
    * gdzie te dwa kanały świadomie się rozchodzą: odpowiedź na to, co człowiek właśnie napisał,
@@ -289,29 +314,83 @@ export default function Run(): ReactElement {
    * pod paskiem.
    */
   async function sayIt(text: string): Promise<string | null> {
-    /* DWA ODBIORCY, ROZSTRZYGNIĘTE PRZEZ TO, CZY KTOŚ PRACUJE — i ŻADEN z nich nie uruchamia
-     * biegu. Rozstrzygnięcie właściciela 2026-08-19: „tylko komendy determinują akcje workflow".
+    /* KOMU DORĘCZYĆ, ROZSTRZYGA `addressee.ts` — i to jest ZMIANA POLITYKI z 2026-08-20, nie
+     * przeprowadzka warunku.
      *
-     * Ktoś pracuje → zdanie idzie do niego: człowiek dopowiada coś komuś w połowie roboty, i to
-     * była pierwsza rzecz, o którą prosił („pisać z nim nie mogę").
-     * Nikt nie pracuje → zdanie idzie do ORCHESTRATORA: rozmowa o tym, co ma się stać. Do
-     * 2026-08-19 leciało tam mimo braku adresata i wracało odmową o niczym, a przez chwilę —
-     * gorzej — po cichu startowało cały workflow.
+     * CO BYŁO. Stał tu jeden warunek: `listening.length > 0` → zdanie idzie do pracującego
+     * agenta. Skutek zgłosił właściciel: „proza w trakcie biegu znika z rozmowy z liderem, bo
+     * leci do pracującego agenta". Lider milczał przez cały bieg, czyli dokładnie wtedy, kiedy
+     * człowiek chce zapytać, co się właściwie dzieje — i wysłanie tego pytania komuś, kto pisze
+     * kod, jest zarazem bezużyteczne i płatne.
      *
-     * Wiersz mówi POD POLEM, który z tych dwóch to jest, zanim ktokolwiek naciśnie Enter
-     * (`entry/entry.tsx`, `whereItGoes`), więc rozróżnienie nie jest ukryte w kodzie. */
-    const toAgent = listening.length > 0;
+     * CO JEST. Zdanie bez ukośnika idzie do lidera ZAWSZE, a do kroku wyłącznie wtedy, gdy jego
+     * nazwa stoi na początku linii. Konwencja nie jest wymyślona tutaj: tak każe adresować Rust,
+     * kiedy pracuje kilku (`RunError::SeveralAreWorking`), więc to samo słowo znaczy to samo po
+     * obu stronach granicy.
+     *
+     * ŻADEN Z TYCH DWÓCH NIE URUCHAMIA BIEGU — rozstrzygnięcie właściciela 2026-08-19: „tylko
+     * komendy determinują akcje workflow".
+     *
+     * Rozbiór mieszka w czystym module, a nie w tym ciele, bo to repo nie ma jsdom: polityka
+     * zamknięta w `sayIt` byłaby kodem, którego nie umie dotknąć żadne kryterium. Wiersz mówi
+     * POD POLEM, do kogo trafi zdanie, zanim ktokolwiek naciśnie Enter (`entry/entry.tsx`,
+     * `whereItGoes`), i czyta to z tej samej listy pracujących kroków. */
+    const going = addresseeOf(text, listening);
     try {
-      await (toAgent ? sayToAgent(text) : sayToOrchestrator(text, folder));
+      await (going.to === 'agent'
+        ? sayToAgent(going.text, going.agent)
+        : sayToOrchestrator(going.text, folder));
       return null;
     } catch (error: unknown) {
       return why(
         error,
-        toAgent
+        going.to === 'agent'
           ? 'Loadout could not pass that on to the agent.'
           : 'Loadout could not reach the lead agent.',
       );
     }
+  }
+
+  /**
+   * Wiersz złożony przez OKNO → strumień tego zakresu.
+   *
+   * `feedFor(folder ?? '')`, nie `runFeed`: to jest ta sama sesja i ten sam sentinel pustego
+   * napisu, którymi piszą obie pompy na granicy (`./io.ts`, `start` i `openChat`), więc wiersz
+   * wpisany tutaj stoi w historii w kolejności, w której się wydarzył. `runFeed` rozstrzyga sesję
+   * W CHWILI WYWOŁANIA, czyli po zakresie AKTUALNIE widocznym — a linia należy do zakresu, w
+   * którym ją wpisano, nawet jeśli człowiek przełączy się, zanim wróci odmowa.
+   *
+   * DO WIDOKU, NIGDY DO MAGAZYNU LINII (`runFor`). Ten wiersz nie jest zdarzeniem biegu: nie ma
+   * go w `run.json`, nie przeżyje przeładowania okna i niesie to w swoim ujemnym identyfikatorze
+   * (niezmiennik 4). Dopisany do okna linii udawałby zdarzenie, którego nie da się odtworzyć
+   * z plików — a `pausedUntil` w tym pliku czyta z tego okna OSTATNI wiersz i zgadywałby po nim,
+   * czy bieg czeka na limit dostawcy.
+   */
+  function showInStream(row: WindowLine): void {
+    feedFor(folder ?? '').appendLines([row]);
+  }
+
+  /**
+   * Kliknięcie w kolumnę strumienia oddaje kursor polu — chyba że celowało w kontrolkę.
+   *
+   * DRUGA POŁOWA WADY „kursor nie stoi w polu" (zgłoszenie właściciela 2026-08-20). Pole, które
+   * startuje z ogniskiem i nigdy go nie odzyskuje, działa dokładnie raz: pierwsze kliknięcie
+   * gdziekolwiek w strumień odbiera klawiaturę i człowiek wraca do klikania w pole przed każdą
+   * linią. Terminal tak się nie zachowuje.
+   *
+   * DWA WYJĄTKI, i oba są warunkiem, żeby ta wygoda nie zabrała czegoś cenniejszego:
+   *   kontrolka   człowiek celował w przycisk i klawiatura ma zostać na nim ([`KEEPS_THE_CARET`]),
+   *   zaznaczenie skupienie pola KASUJE zaznaczenie w dokumencie, a wyjście polecenia, które
+   *               padło, jest w tym widoku wartością do skopiowania (`feed/line.tsx`,
+   *               `data-copyable`) — kursor wracający po zaznaczeniu logu zabierałby ten log.
+   *
+   * `onClick`, nie `onMouseDown`: ognisko zabrane przy WCIŚNIĘCIU przerywa zaznaczanie w połowie
+   * ruchu myszy, czyli psuje tę samą rzecz, której pilnuje warunek wyżej.
+   */
+  function caretBackToTheField(event: MouseEvent<HTMLDivElement>): void {
+    if (event.target instanceof Element && event.target.closest(KEEPS_THE_CARET) !== null) return;
+    if (window.getSelection()?.isCollapsed === false) return;
+    field.current?.focus();
   }
 
   /** Zatrzymanie z wiersza wejścia. `null`, kiedy nic nie biegnie — wtedy nie ma czego zatrzymać. */
@@ -424,6 +503,11 @@ export default function Run(): ReactElement {
         <div data-work className="grid min-h-0" style={{ gridTemplateColumns: WORK_COLUMNS }}>
           <div
             data-stream-column
+            /* Kliknięcie w tę kolumnę oddaje kursor wierszowi wejścia — powód i dwa wyjątki
+               stoją w całości przy `caretBackToTheField`. Handler wisi na kolumnie, a nie na
+               całym ekranie: lista agentów obok ma własne kontrolki i nie ma prawa tracić
+               kliknięcia na rzecz pola, w które nikt nie celował. */
+            onClick={caretBackToTheField}
             className="grid min-h-0 min-w-0"
             style={{ gridTemplateRows: FEED_ROWS }}
           >
@@ -448,6 +532,11 @@ export default function Run(): ReactElement {
                  zamiast pozwolić człowiekowi wysłać je w ciemno. */
               talkingTo={listening}
               workflows={namesToRun}
+              /* ŚLAD PO KAŻDEJ WYSŁANEJ LINII. Wiersz składa `entry/echo.ts`, a ten ekran wie
+                 tylko, DO KTÓREJ sesji strumienia on należy — powód przy `showInStream`. */
+              onShowInStream={showInStream}
+              /* Uchwyt do pola, żeby kliknięcie w tę kolumnę mogło oddać mu kursor. */
+              fieldRef={field}
             />
           </div>
 
