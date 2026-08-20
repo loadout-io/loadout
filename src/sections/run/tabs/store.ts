@@ -8,14 +8,20 @@
  * miejscem, w którym mieszkało „gdzie pracujemy"; oba te zadania mu odebrano: pierwsze przeszło
  * tutaj w nowym znaczeniu, drugie do `activeWorkspace()` w `src/state/workspaces.ts`.
  *
- * ILE KART MOŻE BYĆ — i to jest liczba z danych, nie z makiety. Karta to jeden bieg, a bieg
- * należy do dokładnie jednego zakresu; zakres to dokładnie jeden folder. Dwa biegi w jednym
- * folderze pisałyby po tych samych plikach, czego to repo odmawia już przy zapisie workflow
- * (niezmiennik 12), więc **w jednym zakresie może stać najwyżej jedna karta**, i tak jest
- * dopóty, dopóki bieg nie ma tożsamości na drucie. Pasek pokazujący trzy karty „bo makieta ma
- * trzy" rysowałby relację, której w danych nie ma (niezmiennik 17). Stąd `id` karty JEST
- * folderem biegu: jedno pole odpowiada na pytania „która to karta" i „gdzie ten bieg pracuje",
- * zamiast dokładać odwzorowanie między dwoma identyfikatorami (niezmiennik 13).
+ * ILE KART MOŻE BYĆ — i to jest liczba z danych, nie z makiety. Stało tu do 2026-08-20, że
+ * **w jednym zakresie może stać najwyżej jedna karta**, bo karta znaczyła bieg, bieg pisze po
+ * plikach folderu, a dwa biegi w jednym folderze kolidowałyby na nich (niezmiennik 12). Rachunek
+ * był poprawny i odpowiadał na złe pytanie: właściciel poprosił o drugie MIEJSCE DO PRACY
+ * w projekcie, który już wybrał („kolejne workflow w naszym scope co mamy zaznaczone"), a nie
+ * o drugi bieg naraz. Karta jest więc od T-71 TERMINALEM z własną tożsamością (`./terminal.ts`),
+ * folder jest jej polem (`path`), i w jednym zakresie stoi ich tyle, ile człowiek otworzył.
+ *
+ * BIEG DALEJ JEST JEDEN NA APLIKACJĘ (`AppState.live`, zapadka `going` w `../io`), więc karta
+ * biegu, który właśnie ruszył, nadal nazywa się jego FOLDEREM (`cardForRun` niżej). To nie jest
+ * drugie znaczenie pola `id` dołożone obok pierwszego, tylko to samo pole użyte przez jedynego
+ * właściciela, jakiego bieg dziś ma: bieg należy do folderu, nie do karty, bo na drucie nie ma
+ * czym go zaadresować (`stop_run` nie bierze identyfikatora). Dzień, w którym bieg dostanie
+ * tożsamość na drucie — etap B — jest dniem, w którym to znika.
  *
  * MAGAZYN NA POZIOMIE MODUŁU, bo bieg trwa dłużej niż ekran: wyjście do Agentów odmontowuje
  * komponent i nie ma prawa zgubić kart ani skasować biegu.
@@ -98,9 +104,17 @@ export function cardForRun(workflow: string, folder: string): void {
 /**
  * Karty, które należą do tego zakresu — czyli te, które pasek ma pokazać.
  *
- * Pasek pokazuje biegi zakresu, w którym człowiek stoi (rozstrzygnięcie właściciela: switcher
- * w bocznym menu ORAZ karty w środku). Bieg z innego zakresu nie znika i nie zwalnia — ma
- * tylko swoją kartę tam, gdzie pracuje.
+ * Pasek pokazuje karty zakresu, w którym człowiek stoi (rozstrzygnięcie właściciela: switcher
+ * w bocznym menu ORAZ karty w środku). Praca z innego zakresu nie znika i nie zwalnia — ma
+ * tylko swoją kartę tam, gdzie się dzieje.
+ *
+ * 2026-08-20 (T-71) — FILTR PYTA O `path`, NIE O `id`, I TO JEST CAŁA ZMIANA W TEJ FUNKCJI.
+ * Do tego dnia stało tu `tab.id === folder`, czyli pytanie „która karta NAZYWA SIĘ tym folderem",
+ * a nie „które karty w nim stoją". Odpowiedź na pierwsze jest z definicji jedna, więc pasek
+ * jednego zakresu mógł pokazać najwyżej jedną kartę — i to jest powód, dla którego kliknięcie
+ * w `＋` nie dokładało człowiekowi niczego widocznego NIGDY (zgłoszenie właściciela 2026-08-20).
+ * Nośnikiem folderu jest `WorkspaceTab.path` od pierwszego dnia; ta linia przestaje go dublować
+ * przez `id` (niezmiennik 13).
  *
  * BEZ ZAKRESU NIE FILTRUJEMY, i to jest wybór, nie przeoczenie. Filtr wymaga zakresu; okno bez
  * ani jednego zakresu nie ma jak zacząć biegu (`launchRun` odmawia), więc karta może tam stać
@@ -112,5 +126,29 @@ export function cardsIn(
   folder: string | null,
 ): readonly WorkspaceTab[] {
   if (folder === null) return tabs;
-  return tabs.filter((tab) => tab.id === folder);
+  return tabs.filter((tab) => tab.path === folder);
+}
+
+/**
+ * Która karta jest na wierzchu — Z TYCH, KTÓRE WIDAĆ. `null`, kiedy w tym zakresie nie stoi żadna.
+ *
+ * JEDNA ODPOWIEDŹ NA TO PYTANIE (niezmiennik 13) i dlatego jest to funkcja czysta tutaj, a nie
+ * wyrażenie w ciele ekranu. Pytają o nią dwa miejsca, każde po swoje: ekran rysuje z niej
+ * podświetlenie karty (`../index.tsx`), a rejestr strumienia rozstrzyga nią, czyją historię
+ * pokazać (`../feed/live.ts`, `runFeed`). Dwie kopie tego wyrażenia rozjechałyby się po cichu —
+ * pasek podświetlałby jedną kartę, a historia pod nim należałaby do drugiej.
+ *
+ * KARTA WYBRANA W INNYM ZAKRESIE NIE ZABIERA PODŚWIETLENIA TUTAJ. `activeId` jest jeden na okno,
+ * więc po przełączeniu zakresu wskazuje kartę, której na tym pasku nie ma; pasek, na którym żadna
+ * karta nie jest otwarta, choć jedna stoi, to stan, w którym człowiek nie wie, na co patrzy.
+ * Wtedy odpowiedzią jest pierwsza karta zakresu.
+ */
+export function cardOnTop(
+  tabs: readonly WorkspaceTab[],
+  activeId: string | null,
+  folder: string | null,
+): string | null {
+  const shown = cardsIn(tabs, folder);
+  if (shown.some((card) => card.id === activeId)) return activeId;
+  return shown[0]?.id ?? null;
 }
