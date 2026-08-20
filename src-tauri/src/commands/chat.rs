@@ -39,7 +39,7 @@ use crate::engine::drivers::{
 use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
-use crate::library::agents::Agent;
+use crate::library::agents::{Agent, FileAccess};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -73,6 +73,34 @@ about to. Only the person can start work, by typing /run in the input line. If t
 run something, say plainly that they start it with /run, and offer what you can prepare first.
 
 Answer in the language the person writes in. Keep answers short unless they ask for depth.";
+
+/// Zdanie [`BRIEF`] o plikach — **znak w znak to, które w nim stoi**.
+///
+/// Wyjęte do stałej, bo przy `look only` staje się nieprawdą i musi dać się wymienić. Jeżeli
+/// ktoś przepisze brief innymi słowami, podmiana niżej nie znajdzie tej frazy i wersja dla
+/// `ReadOnly` zostanie z obietnicą zapisu — a to jest czerwień `brief_matches_the_policy`,
+/// nie ciche przejście. Kryterium jest tu strażnikiem, bo `replace` sam z siebie nic nie mówi.
+const MAY_WRITE_DRAFTS: &str = "You may read files and write draft files when asked.";
+
+/// To samo zdanie przy [`Policy::ReadOnly`].
+///
+/// Model nie ma skąd wiedzieć, że mu nie wolno: dial jedzie do vendora osobno, flagami, a prompt
+/// systemowy mówi swoje. Lider, który obieca plik i go nie zapisze, zostawia człowieka czekającego
+/// na coś, co nie powstanie — więc zamiast obietnicy dostaje tu ruch, który MOŻE wykonać.
+const LOOK_ONLY: &str = "You may read files. You cannot write anything, not even a rough one: \
+     this lead was set to look only, so put what you would have saved into your answer instead of \
+     promising a file.";
+
+/// To samo zdanie przy [`Policy::EditInFolder`].
+///
+/// Nazywa granicę, bo to ona jest treścią tej pozycji dialu: „przygotować szkic" znaczy zapisać
+/// go **w folderze, w którym człowiek pracuje**, a nie gdziekolwiek.
+const MAY_WRITE_DRAFTS_HERE: &str = "You may read files and write draft files when asked, inside \
+     the folder this person is working in.";
+
+/// To samo zdanie przy [`Policy::Unrestricted`].
+const MAY_WRITE_DRAFTS_ANYWHERE: &str = "You may read files and write draft files when asked, and \
+     you are not held to the folder this person is working in.";
 
 /// Co poszło nie tak w rozmowie.
 ///
@@ -308,9 +336,29 @@ impl Lead {
     /// nigdy drugą jej kopią (niezmiennik 23). Druga kopia tej tabeli to sposób, w jaki w repo
     /// źródłowym po cichu umarło skanowanie sekretów: obie wyglądają poprawnie, a podpięta jest
     /// zawsze starsza.
+    ///
+    /// # 2026-08-20 — ZDANIE WYŻEJ JEST DZIŚ NIEPRAWDĄ I JEST TO ZGŁOSZENIE, NIE PRZEOCZENIE
+    ///
+    /// `commands::run::policy_of` jest **prywatne** i ma dokładnie jednego wołającego
+    /// (`run.rs:1019`). Moduł obok nie widzi prywatnego elementu sąsiada, a `src-tauri/src/commands/
+    /// run.rs` nie stoi w bloku `<!-- OWNS -->` tego zadania — więc jedyny ruch, który zrobiłby
+    /// z tamtej tabeli JEDNĄ tabelę (dopisanie `pub(crate)`), jest tu niedostępny. Ta tabela jest
+    /// jej drugą kopią i tak ma być czytana, dopóki tamto słowo nie padnie.
+    ///
+    /// Co z tej kopii NIE MOŻE się rozjechać po cichu: oba dopasowania są **wyczerpujące** po
+    /// `FileAccess`, więc czwarta pozycja dialu nie skompiluje się bez ruszenia obu. Rozjechać się
+    /// może wyłącznie **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc — i tego
+    /// żadne sprawdzenie w tym repo nie widzi.
     #[must_use]
     pub fn policy(&self) -> Policy {
-        todo!("T-60 AC-1: tabela z commands::run::policy_of, nie druga kopia")
+        match self.agent.file_access {
+            FileAccess::LookOnly => Policy::ReadOnly,
+            // Środkowa pozycja jest przybliżeniem i tak jest opisana w macierzy T4 §6.3:
+            // [`Policy`] nie ma dziś wariantu „pytaj", więc `ask-first` ląduje na „edytuje
+            // w swoim folderze". To jest to samo zdanie, które stoi przy tabeli biegu.
+            FileAccess::AskFirst => Policy::EditInFolder,
+            FileAccess::WorkFreely => Policy::Unrestricted,
+        }
     }
 
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
@@ -318,9 +366,27 @@ impl Lead {
     /// Razem, nie zamiast: [`BRIEF`] mówi, czego lider nie umie zrobić (zaczynać biegów) i czym
     /// się to robi (`/run`), a instrukcje mówią, kim on jest. Lider bez pierwszego zdania obieca
     /// start, którego nie wykona; lider bez drugiego jest agentem, którego nikt nie konfigurował.
+    ///
+    /// Z briefu wymieniane jest DOKŁADNIE jedno zdanie — to o plikach ([`MAY_WRITE_DRAFTS`]) —
+    /// bo dokładnie ono jedno zależy od dialu. Trzy osobne kopie całego promptu byłyby trzema
+    /// miejscami, w których mieszka zdanie „biegów nie zaczynasz", i pierwszym, które by się
+    /// rozjechało (niezmiennik 13).
     #[must_use]
     pub fn brief(&self) -> String {
-        todo!("T-60 AC-3: brief dla polityki + instrukcje z definicji")
+        let about_files = match self.policy() {
+            Policy::ReadOnly => LOOK_ONLY,
+            Policy::EditInFolder => MAY_WRITE_DRAFTS_HERE,
+            Policy::Unrestricted => MAY_WRITE_DRAFTS_ANYWHERE,
+        };
+        let brief = BRIEF.replace(MAY_WRITE_DRAFTS, about_files);
+        // Puste `instructions` znaczą „nie mam zdania", a nie „dopisz pustkę": dwie puste linie
+        // na końcu promptu systemowego to ten sam artefakt, którym `some_text` w biegu odmawia
+        // być (`commands::run`).
+        let says = self.agent.instructions.trim();
+        if says.is_empty() {
+            return brief;
+        }
+        format!("{brief}\n\n{says}")
     }
 }
 
