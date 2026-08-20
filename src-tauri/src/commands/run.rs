@@ -848,6 +848,12 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
         .join(RUNS_DIR)
         .join(format!("{}__{id}", stamp(created_at)));
 
+    /* ROZWINIĘCIE PĘTLI, i to jest jedyne miejsce, w którym plik przestaje odpowiadać planowi
+     * jeden do jednego. `unroll` oddaje graf BEZ cykli o większej liczbie węzłów, więc wszystko
+     * niżej — `Dag`, pula miejsc, dowód śmierci grupy, anulowanie — nie widzi żadnej różnicy.
+     * Plik bez ani jednego powrotu wychodzi z `unroll` w kształcie 1:1 (dowodzi tego kryterium
+     * `a_file_with_no_way_back_comes_out_unchanged`), więc żaden istniejący bieg się nie zmienia. */
+    let unrolled = crate::workflow::unroll::unroll(&file);
     let setup = Setup {
         library: deps.home.join(AGENTS_DIR),
         knows: what_the_agents_know(deps.home),
@@ -863,19 +869,17 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
         project: deps.project,
         dir: &dir,
         drivers: &deps.drivers,
+        file: &file,
+        /* GRAF, NIE SAM PLIK: „krok przede mną" liczy się po ROZWINIĘCIU, więc runda druga pętli
+         * schodzi z sędziego rundy pierwszej, a nie z kroku, który stoi przed pętlą. */
+        unrolled: &unrolled,
     };
-    /* ROZWINIĘCIE PĘTLI, i to jest jedyne miejsce, w którym plik przestaje odpowiadać planowi
-     * jeden do jednego. `unroll` oddaje graf BEZ cykli o większej liczbie węzłów, więc wszystko
-     * niżej — `Dag`, pula miejsc, dowód śmierci grupy, anulowanie — nie widzi żadnej różnicy.
-     * Plik bez ani jednego powrotu wychodzi z `unroll` w kształcie 1:1 (dowodzi tego kryterium
-     * `a_file_with_no_way_back_comes_out_unchanged`), więc żaden istniejący bieg się nie zmienia. */
-    let unrolled = crate::workflow::unroll::unroll(&file);
     let mut steps = Vec::with_capacity(unrolled.nodes.len());
-    for node in &unrolled.nodes {
+    for (index, node) in unrolled.nodes.iter().enumerate() {
         let Some(step) = file.steps.get(node.step) else {
             continue;
         };
-        steps.push(plan_step(step, node.turn, &setup)?);
+        steps.push(plan_step(step, index, node.turn, &setup)?);
     }
     let arrows: Vec<(StepId, StepId)> = unrolled.arrows.clone();
     /* Powrót z pliku, przełożony na „kto orzeka i ile prób". Pierwszy, bo walidator dopuszcza
@@ -1005,6 +1009,11 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         extra: Map::new(),
     };
 
+    /* TEN SAM ROZWIJACZ, CO PRZY PLIKU, choć rozwijać tu nie ma czego: bieg z `/ask` ma jeden
+     * kafelek i ani jednej strzałki. Graf policzony tą samą funkcją, a nie wpisany z ręki, bo
+     * druga odpowiedź na pytanie „jak wygląda graf tego biegu" rozjechałaby się przy pierwszej
+     * zmianie tamtej (niezmiennik 13) — a od tego grafu zależy, gdzie kroki pracują. */
+    let unrolled = crate::workflow::unroll::unroll(&file);
     let setup = Setup {
         library,
         knows: what_the_agents_know(deps.home),
@@ -1015,6 +1024,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         project: deps.project,
         dir: &dir,
         drivers: &deps.drivers,
+        file: &file,
+        unrolled: &unrolled,
     };
     /* JEDNA DROGA PLANOWANIA KROKU, także za cenę drugiego przejścia po bibliotece: `plan_step`
      * woła [`find_agent`] jeszcze raz, dla identyfikatora, który właśnie się znalazł. Kilka
@@ -1024,7 +1035,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     let steps = file
         .steps
         .iter()
-        .map(|step| plan_step(step, 0, &setup))
+        .enumerate()
+        .map(|(node, step)| plan_step(step, node, 0, &setup))
         .collect::<Result<Vec<Planned>, RunError>>()?;
     let graph = serde_json::to_value(&file)?;
 
@@ -1164,6 +1176,16 @@ struct Setup<'a> {
     dir: &'a Path,
     /// Fabryka sterowników z [`RunDeps`].
     drivers: &'a super::Drivers,
+    /// Plik, z którego bierze się ten bieg. Kroki czyta się z niego po numerze węzła.
+    file: &'a WorkflowFile,
+    /// Graf po rozwinięciu pętli — węzły i strzałki po numerach.
+    ///
+    /// 2026-08-20 (T-56) — WCHODZI TU, BO JEDEN WARIANT FOLDERU JEST ZDANIEM O GRAFIE.
+    /// `Folder::SameCopy` znaczy „to samo drzewo, w którym pracował krok przede mną", a „przede
+    /// mną" nie jest własnością kroku: niesie ją strzałka. Graf stoi w [`Setup`], a nie leci
+    /// argumentem obok, z tego samego powodu, co [`Setup::knows`] — jest jeden na bieg,
+    /// a policzony drugi raz per krok mógłby się między krokami różnić.
+    unrolled: &'a crate::workflow::unroll::Unrolled,
 }
 
 /// Klucz węzła: `id` kroku z pliku, a dla dalszych rund pętli ten sam klucz z numerem rundy.
@@ -1179,7 +1201,10 @@ fn node_key_for(tile_key: &str, turn: u8) -> String {
 }
 
 /// Jeden węzeł rozwiniętego grafu → jeden krok planu.
-fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunError> {
+///
+/// `node` jest numerem tego węzła w [`Setup::unrolled`], a nie pozycją kroku w pliku: rundy pętli
+/// mają wspólny krok i różne węzły, a „krok przede mną" jest pytaniem o węzeł.
+fn plan_step(step: &Step, node: usize, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunError> {
     match step {
         Step::Checkpoint(ask) => Ok(Planned {
             id: Uuid::now_v7().to_string(),
@@ -1194,7 +1219,7 @@ fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunErr
             },
         }),
         Step::Agent(agent) => {
-            let job = plan_agent(agent, setup)?;
+            let job = plan_agent(agent, node, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
                 node_key: node_key_for(&agent.id, turn),
@@ -1207,7 +1232,7 @@ fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunErr
             })
         }
         Step::Check(check) => {
-            let (cwd, ours) = workspace(&check.folder, setup.project, setup.dir, &check.id);
+            let spot = where_it_works(&check.folder, &check.id, &check.name, node, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
                 node_key: node_key_for(&check.id, turn),
@@ -1224,9 +1249,9 @@ fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunErr
                     spec: CheckSpec {
                         command: check.command.clone(),
                         proof: check.proof.clone(),
-                        cwd,
+                        cwd: spot.cwd,
                     },
-                    ours,
+                    ours: spot.ours,
                 })),
             })
         }
@@ -1234,7 +1259,7 @@ fn plan_step(step: &Step, turn: u8, setup: &Setup<'_>) -> Result<Planned, RunErr
 }
 
 /// Krok agenta: konfiguracja efektywna, sterownik, katalog roboczy.
-fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
+fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
     let saved = find_agent(&setup.library, &step.agent, &step.name)?;
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
@@ -1247,15 +1272,15 @@ fn plan_agent(step: &AgentStep, setup: &Setup<'_>) -> Result<AgentJob, RunError>
     let policy = policy_of(effective.file_access);
     let tools = what_this_step_may_use(&effective, policy, step)?;
 
-    let (cwd, ours) = workspace(&step.folder, setup.project, setup.dir, &step.id);
+    let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
     Ok(AgentJob {
         // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
         // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
         // wtedy, gdy krok nigdy nie ruszył.
         driver: (setup.drivers)(effective.runs_with),
         session: Uuid::now_v7(),
-        cwd,
-        ours,
+        cwd: spot.cwd,
+        ours: spot.ours,
         // Treść zadania. `{{copy}}` i `{{copies}}` podstawia dopiero rozwinięcie kroku na kopie
         // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
         // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
@@ -1461,7 +1486,150 @@ fn no_agent_called(id: &str, saved: &[String]) -> String {
     said
 }
 
-/// Gdzie krok pracuje i czy ten katalog jest nasz.
+/// Katalog roboczy kroku i jedyna rzecz, którą trzeba o nim wiedzieć poza ścieżką.
+#[derive(Debug, Clone)]
+struct Workspace {
+    /// Gdzie ten krok pracuje.
+    cwd: PathBuf,
+    /// Czy ten bieg ma ten katalog **założyć**. Fałsz dla każdego katalogu, który jest już czyjś:
+    /// folder projektu, folder wskazany ręcznie, i drzewo, w którym pracował krok przed tym.
+    ours: bool,
+}
+
+/// Folder kroku i klucz, pod którym leży jego katalog roboczy.
+///
+/// `None` dla kafelka kontrolnego: on nie dotyka plików, tylko pyta człowieka. To rozróżnienie
+/// jest treścią przy [`trees_before`] — pytanie „w którym drzewie pracował krok przede mną"
+/// przechodzi przez taki kafelek dalej, zamiast rozbić się o brak odpowiedzi.
+fn folder_and_key(step: &Step) -> Option<(&Folder, &str)> {
+    match step {
+        Step::Agent(one) => Some((&one.folder, one.id.as_str())),
+        Step::Check(one) => Some((&one.folder, one.id.as_str())),
+        Step::Checkpoint(_) => None,
+    }
+}
+
+/// Gdzie pracuje jeden krok — z odpowiedzią także dla tego, który sam jej nie zna.
+///
+/// [`Folder::SameCopy`] jest jedynym wariantem, którego nie da się rozstrzygnąć z samego kroku:
+/// „to samo drzewo, w którym pracował krok przede mną" jest zdaniem o GRAFIE. Dlatego wejście do
+/// rozwiązywania folderu jest tutaj, a nie w [`workspace`] — i jest dalej jedno, bo obie drogi
+/// schodzą się w tej funkcji.
+///
+/// Odmowa zamiast domysłu, w obu brakujących odpowiedziach. Ciche zejście do folderu projektu
+/// byłoby dokładnie tą implementacją, przed którą ten wariant powstał: kafelek mówi „to samo
+/// drzewo", a krok pisze po prawdziwych plikach człowieka. Pada **przy planowaniu**, czyli zanim
+/// ruszy pierwszy proces i zanim powstanie katalog biegu (niezmiennik 12).
+fn where_it_works(
+    folder: &Folder,
+    key: &str,
+    name: &str,
+    node: usize,
+    setup: &Setup<'_>,
+) -> Result<Workspace, RunError> {
+    if let Some(spot) = workspace(folder, setup.project, setup.dir, key) {
+        return Ok(spot);
+    }
+
+    let mut before = trees_before(node, setup);
+    let refuse = |message: String| {
+        Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to on nie ma odpowiedzi na pytanie „które
+            // drzewo", więc to jego człowiek otworzy.
+            step_id: Some(key.to_owned()),
+            message,
+        }))
+    };
+    match before.len() {
+        // TO SAMO ZDANIE, CO W WALIDATORZE, i dlatego przychodzi z `workflow::check`. Tą drogą
+        // człowiek nie idzie: `check_to_run` mówi to samo kilkadziesiąt linii wcześniej i bieg
+        // odmawia tam. Ale ta funkcja musi zwrócić WARTOŚĆ, a jedyną wartością, która tu nie
+        // kłamie, jest odmowa — folder projektu wpisany w to miejsce byłby cichym powrotem
+        // do wady, którą `same-copy` usuwa.
+        0 => refuse(crate::workflow::check::nothing_before(name)),
+        1 => Ok(Workspace {
+            // Gość w cudzym drzewie: zakłada je krok, który je NAZWAŁ (`fresh-copy`), a bieg
+            // robi to raz na katalog roboczy (`lay_out_the_run_dir` dedupikuje po `cwd`).
+            // `ours: true` tutaj znaczyłoby dwa kroki, z których każdy chce założyć to samo
+            // drzewo, a wtedy o wyniku decyduje kolejność w pliku.
+            cwd: before.remove(0),
+            ours: false,
+        }),
+        // FAN-IN Z RÓŻNYCH DRZEW. Krok, przed którym stoją dwa kroki pracujące gdzie indziej,
+        // nie ma odpowiedzi na pytanie „które drzewo" — a wybranie pierwszego z brzegu znaczyłoby
+        // bieg, w którym poprawka czyta nie ten kod. Żadne kryterium tego nie sądzi (TASK.md,
+        // „Świadomie poza zakresem”); odmowa nazywa krok, bo to jedyna rzecz, którą da się
+        // powiedzieć uczciwie.
+        //
+        // Liczba mówi o KATALOGACH, nie o krokach: trzy kroki pracujące w dwóch drzewach są
+        // dwiema odpowiedziami, nie trzema, i człowiek ma szukać dwóch miejsc.
+        trees => refuse(format!(
+            "\"{name}\" is set to work in the same folder as the step before it, and the steps \
+             before it work in {trees} different folders. Leave one arrow into it, or give it a \
+             fresh copy."
+        )),
+    }
+}
+
+/// W jakich katalogach pracują kroki PRZED tym — bez powtórzeń.
+///
+/// Obchód idzie po strzałkach **wstecz**, ze zbiorem odwiedzonych: fan-in bywa diamentem, więc
+/// bez niego ten sam krok liczyłby się dwa razy i zwykłe rozwidlenie wyglądałoby jak dwa różne
+/// drzewa. Iteracyjny, nie rekurencyjny — łańcuch dwudziestu kroków nie ma prawa przepełnić stosu
+/// (ta sama zasada, co przy obchodach w `workflow::check`).
+///
+/// Mija po drodze dwa rodzaje kroków, które drzewa nie wyznaczają: kafelek kontrolny (nie dotyka
+/// plików) i kolejny krok „to samo drzewo" (jego odpowiedź jest tym samym pytaniem, zadanym dalej).
+/// Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
+///
+/// Zero katalogów znaczy „przed tym krokiem nie ma nikogo", więcej niż jeden — „poprzednicy
+/// pracują w różnych drzewach". Obie odpowiedzi są odmowami u wołającego.
+fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
+    let mut seen = vec![false; setup.unrolled.nodes.len()];
+    // Ten krok od razu jako odwiedzony: strzałka do siebie samego jest kształtem, którego
+    // `Dag::new` odmawia, ale obchód nie ma prawa się o nią zapętlić, gdyby jednak tu doszła.
+    if let Some(mine) = seen.get_mut(node) {
+        *mine = true;
+    }
+    let mut stack = vec![node];
+    let mut found: Vec<PathBuf> = Vec::new();
+    while let Some(at) = stack.pop() {
+        for &(from, to) in &setup.unrolled.arrows {
+            if to != at {
+                continue;
+            }
+            // Numer spoza listy węzłów jest kształtem niemożliwym (`unroll` numeruje węzły
+            // i strzałki razem), więc pomijamy go zamiast indeksować: panika w silniku zabiera
+            // cały bieg (`AGENTS.md` §4).
+            let Some(first_time) = seen.get_mut(from).filter(|been| !**been) else {
+                continue;
+            };
+            *first_time = true;
+            let step = setup
+                .unrolled
+                .nodes
+                .get(from)
+                .and_then(|one| setup.file.steps.get(one.step));
+            // Krok, którego nie ma w pliku, nie wyznacza drzewa i nie ma poprzedników do
+            // odpytania — `unroll` numeruje węzły z tego samego pliku, więc to jest kształt
+            // niemożliwy, a nie ścieżka, którą ktoś przejdzie.
+            let Some((folder, key)) = step.and_then(folder_and_key) else {
+                stack.push(from);
+                continue;
+            };
+            match workspace(folder, setup.project, setup.dir, key) {
+                Some(spot) if !found.contains(&spot.cwd) => found.push(spot.cwd),
+                Some(_) => {}
+                // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
+                None => stack.push(from),
+            }
+        }
+    }
+    found
+}
+
+/// Gdzie krok pracuje i czy ten katalog jest nasz — **jeśli mówi to sam krok**.
 ///
 /// 2026-08-17 (T-33) — `fresh-copy` dostaje **własny katalog z kopią plików projektu**.
 ///
@@ -1474,22 +1642,22 @@ fn no_agent_called(id: &str, saved: &[String]) -> String {
 /// Ta funkcja dalej tylko WSKAZUJE katalog. Kopiowanie robi [`lay_out_the_run_dir`], bo dotyka
 /// dysku, a plan ma być czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć
 /// przy wznowieniu.
-fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (PathBuf, bool) {
-    match folder {
-        /* `SameCopy` STOI TU RAMIĘ W RAMIĘ Z `Project` I TO JEST SZKIELET FAZY KONTRAKTU
-         * (T-56 AC-1), nie rozstrzygnięcie. „To samo drzewo, w którym pracował krok przede mną"
-         * schodzi dziś do folderu projektu, czyli do tej jednej implementacji, którą kryterium ma
-         * odrzucić: trzy kroki w folderze projektu też są „jednym katalogiem", a plik napisany
-         * przez pierwszy jest widoczny dla trzeciego — tylko z całkowicie złego powodu, bo krok
-         * pisze po prawdziwych plikach człowieka. Asercje (a), (b) i (d) z AC-1 stoją dokładnie
-         * tutaj. Prawdziwa odpowiedź potrzebuje NAJBLIŻSZEGO POPRZEDNIKA PO STRZAŁKACH, a tego ta
-         * funkcja nie widzi: dostaje jeden folder i klucz jednego węzła. */
-        Folder::Project | Folder::SameCopy => (project.to_path_buf(), false),
+///
+/// 2026-08-20 (T-56) — `None` DLA [`Folder::SameCopy`], i to jest cała treść tego wariantu.
+/// „To samo drzewo, w którym pracował krok przede mną" jest zdaniem o GRAFIE, a tutaj wchodzi
+/// jeden folder i klucz jednego węzła — nie ma z czego wyliczyć odpowiedzi. Odpowiada
+/// [`where_it_works`], które widzi strzałki; brak wartości mówi to wprost, zamiast schodzić po
+/// cichu do folderu projektu.
+fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Option<Workspace> {
+    let (cwd, ours) = match folder {
+        Folder::Project => (project.to_path_buf(), false),
         // Katalog wskazany ręcznie jest cudzy: nie tworzymy go, bo „nie ma takiego folderu" jest
         // odpowiedzią, a utworzenie go po cichu zamienia literówkę w pusty bieg.
         Folder::Pick { path } => (PathBuf::from(path), false),
         Folder::FreshCopy => (dir.join(WORK_DIR).join(node_key), true),
-    }
+        Folder::SameCopy => return None,
+    };
+    Some(Workspace { cwd, ours })
 }
 
 /// Dial „co agent może zrobić z plikami" → polityka, którą rozumie sterownik.
