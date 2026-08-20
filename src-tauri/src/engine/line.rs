@@ -539,12 +539,14 @@ impl Line {
 }
 
 // ── PROPOZYCJA BIEGU: ROZPOZNANIE, KTÓRE NALEŻY DO ROZMOWY ─────────────────────────────────
-//
-// 2026-08-20 — SZKIELET T-61. Ciało jest `todo!()`, więc kryterium pada w czasie wykonania,
-// a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a p. 5).
-// `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno z nich nie przeżyło do pełnej
-// bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości: ciało, które
-// ich nie czyta, dawałoby `unused_variables` — implementacja zdejmuje je razem z `todo!()`.
+
+/// Komenda, którą zaczyna się bieg — **to samo słowo**, które przyjmuje wiersz wejścia
+/// (`src/sections/run/run-command.ts`) i które makieta obiecuje pod polem („`/plan · /run ·
+/// or just say what you want`").
+///
+/// Napis, nie wyrażenie regularne: wzorzec pisany osobno łapie przy okazji `/runner` i `/runs`,
+/// a to są inne komendy, które tylko zaczynają się tymi samymi literami.
+const RUN: &str = "/run";
 
 /// Wiersz rozmowy, w którym proza lidera jest propozycją biegu — albo ten sam wiersz.
 ///
@@ -569,8 +571,63 @@ impl Line {
 /// jedna wartość, żadnego `unwrap_or` po drodze (niezmiennik 23 — polityka ma jedno miejsce,
 /// a wołający nie ma prawa mieć własnego zdania na jej temat).
 #[must_use]
-pub fn suggested(_line: Line, _event: &AgentEvent) -> Line {
-    todo!("proza lidera, której linia zaczyna się od `/run <workflow> <zadanie>`, jest propozycją")
+pub fn suggested(line: Line, event: &AgentEvent) -> Line {
+    // Zdarzenie, które prozą nie jest, nie może być propozycją: `/run` w wyjściu komendy albo
+    // w czytanym pliku jest tekstem, na który agent PATRZY, a nie zdaniem, które mówi.
+    let AgentEvent::Said { text } = event else {
+        return line;
+    };
+    let Some(command) = command_in(text) else {
+        return line;
+    };
+    match line {
+        /* WYŁĄCZNIE WIERSZ PROZY, i to nie jest ostrożność na zapas: `Curator::observe` oddaje
+         * przy jednym zdarzeniu `Said` także wiersz grupy sklejania, którą to zdanie zamknęło
+         * (`Read 3 files` sprzed zdania) — a wołający pyta tą samą funkcją o KAŻDY wiersz
+         * z tego wektora (`commands::chat::read_along`). Rozpoznanie patrzące na samo zdarzenie
+         * zamieniłoby więc w propozycję cudzy wiersz, i to ten, który o niczym nie mówi. */
+        Line::Note { agent, text } => Line::Suggested {
+            agent,
+            // Tekst zostaje TAKI, JAKI ZŁOŻYŁ GO KURATOR — cała proza w jednej linii (reguła 1).
+            // Sama komenda jedzie osobnym polem, bo człowiek ma przeczytać, DLACZEGO lider to
+            // proponuje, zanim kliknie; wiersz z samą komendą jest formularzem z jednym polem.
+            text,
+            command,
+        },
+        other => other,
+    }
+}
+
+/// Komenda z tej prozy — pierwsza linia, która **jest** poleceniem — albo `None`.
+///
+/// LINIA, NIE WYSTĄPIENIE NAPISU, i na tej różnicy stoi całe to rozpoznanie. „Zrobiłbym to
+/// przez /run easy" jest zdaniem O poleceniu, a nie poleceniem: przycisk pod opisem startuje
+/// bieg, o który nikt nie prosił, a lider opisujący drogę do celu robi to w co drugim zdaniu.
+///
+/// Linię przycinamy z obu stron i to jest świadome wobec „znak w znak": komenda ma pojechać
+/// dalej dokładnie w tej postaci, w której da się ją uruchomić, a wcięcie i biała spacja na
+/// końcu nie należą do niej — po tej samej stronie granicy przycina je `startFromLine`.
+fn command_in(prose: &str) -> Option<String> {
+    prose
+        .lines()
+        .map(str::trim)
+        .find(|line| names_a_workflow(line))
+        .map(str::to_owned)
+}
+
+/// Czy ta linia jest poleceniem uruchomienia, które **nazywa** workflow.
+///
+/// Nazwa jest wymagana, bo przycisk pod tym wierszem ma powiedzieć, CO uruchomi — samo „Run"
+/// nie mówi, a to jest ta jedna czynność, po której zaczynają pracować agenci i zaczynają się
+/// pieniądze. Zadania nie wymagamy: `/run easy` jest kompletnym poleceniem, w którym każdy krok
+/// robi to, co stoi w pliku workflow (`readRunLine` oddaje wtedy `task: null`).
+fn names_a_workflow(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix(RUN) else {
+        return false;
+    };
+    // Biała spacja po komendzie, bo bez niej `/runner easy` czytałoby się jako `/run` z nazwą
+    // `ner easy` — czyli propozycja z nazwy, której nikt nie napisał.
+    rest.starts_with(char::is_whitespace) && rest.split_whitespace().next().is_some()
 }
 
 /// Stały slot na dole ekranu — jedyne miejsce, w którym widać myślenie (reguła 5).
