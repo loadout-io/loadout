@@ -24,18 +24,23 @@
 //! końcu. Rozmowa nie ma nic z tego i udawanie, że ma, kosztowałoby wpis w historii biegów za
 //! każde „siema". To jest jedna sesja, jeden proces, tyle tur, ile człowiek napisze.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use super::Drivers;
 use crate::engine::drivers::{
     AgentDriver, AgentHandle, DecodedEvent, Policy, RunSpec, ToAgent, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen};
+use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
+use crate::library::agents::{Agent, FileAccess};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -70,6 +75,34 @@ run something, say plainly that they start it with /run, and offer what you can 
 
 Answer in the language the person writes in. Keep answers short unless they ask for depth.";
 
+/// Zdanie [`BRIEF`] o plikach — **znak w znak to, które w nim stoi**.
+///
+/// Wyjęte do stałej, bo przy `look only` staje się nieprawdą i musi dać się wymienić. Jeżeli
+/// ktoś przepisze brief innymi słowami, podmiana niżej nie znajdzie tej frazy i wersja dla
+/// `ReadOnly` zostanie z obietnicą zapisu — a to jest czerwień `brief_matches_the_policy`,
+/// nie ciche przejście. Kryterium jest tu strażnikiem, bo `replace` sam z siebie nic nie mówi.
+const MAY_WRITE_DRAFTS: &str = "You may read files and write draft files when asked.";
+
+/// To samo zdanie przy [`Policy::ReadOnly`].
+///
+/// Model nie ma skąd wiedzieć, że mu nie wolno: dial jedzie do vendora osobno, flagami, a prompt
+/// systemowy mówi swoje. Lider, który obieca plik i go nie zapisze, zostawia człowieka czekającego
+/// na coś, co nie powstanie — więc zamiast obietnicy dostaje tu ruch, który MOŻE wykonać.
+const LOOK_ONLY: &str = "You may read files. You cannot write anything, not even a rough one: \
+     this lead was set to look only, so put what you would have saved into your answer instead of \
+     promising a file.";
+
+/// To samo zdanie przy [`Policy::EditInFolder`].
+///
+/// Nazywa granicę, bo to ona jest treścią tej pozycji dialu: „przygotować szkic" znaczy zapisać
+/// go **w folderze, w którym człowiek pracuje**, a nie gdziekolwiek.
+const MAY_WRITE_DRAFTS_HERE: &str = "You may read files and write draft files when asked, inside \
+     the folder this person is working in.";
+
+/// To samo zdanie przy [`Policy::Unrestricted`].
+const MAY_WRITE_DRAFTS_ANYWHERE: &str = "You may read files and write draft files when asked, and \
+     you are not held to the folder this person is working in.";
+
 /// Co poszło nie tak w rozmowie.
 ///
 /// Osobny typ, nie `anyhow`: każda z tych rzeczy ma inne zdanie dla człowieka i inną czynność
@@ -91,6 +124,31 @@ pub enum ChatError {
     CouldNotStart(String),
     /// Sesja zeszła i nie przyjmuje już tur.
     StoppedListening,
+    /// Nikt nie jest wskazany na lidera.
+    ///
+    /// **Odmowa, nigdy cichy powrót do zaszytego vendora**, i to jest cała treść tego wariantu.
+    /// Powrót jest tu gorszy niż odmowa: rozmowa idzie, płaci i odpowiada — tylko nie ten agent,
+    /// którego człowiek wybrał. Nie ma przy tym żadnego sygnału, po którym dałoby się odróżnić
+    /// lidera, którego wybrał, od lidera, którego dostał.
+    NobodyIsTheLead,
+    /// Wskazano lidera, którego w bibliotece nie ma.
+    ///
+    /// Osobny wariant, nie [`ChatError::NobodyIsTheLead`], bo **czynność naprawcza jest inna**:
+    /// brak wskazania naprawia wybranie kogokolwiek, a wskazanie na nieistniejącego — wybranie
+    /// kogoś INNEGO. Jedno zdanie na dwa stany zostawiałoby połowę ludzi przy niedziałającej
+    /// instrukcji.
+    NoSuchLead(String),
+    /// Biblioteki agentów nie dało się przeczytać — zdanie z `library::agents` w środku.
+    ///
+    /// Przezroczyste, bo tamten typ nazywa PLIK (T4 §10), a „popraw ten plik" jest wykonalne
+    /// tylko wtedy, kiedy widać który.
+    CouldNotReadTheLibrary(String),
+    /// Okno nie otworzyło jeszcze strumienia tego zakresu.
+    ///
+    /// Wątek bez kanału jest wątkiem, którego wierszy nikt nie odbiera — czyli rozmową, która
+    /// płaci u dostawcy i nie ma jak nic pokazać. Kolejność jest odwrotna i tak ją woła okno:
+    /// najpierw `open_chat`, potem pierwsze zdanie.
+    NotWatchingThatFolder,
 }
 
 impl std::fmt::Display for ChatError {
@@ -106,6 +164,26 @@ impl std::fmt::Display for ChatError {
                 f,
                 "The lead agent stopped listening. Write again and it will start a fresh \
                  conversation."
+            ),
+            // Nazywa NASTĘPNY RUCH, bo odmowa bez niego zostawia człowieka tam, gdzie był
+            // (DESIGN §8) — a tu jest gdzie odesłać: kontrolka lidera stoi w pasku pracy.
+            Self::NobodyIsTheLead => write!(
+                f,
+                "Pick a lead agent first: Loadout will not guess who you are talking to. Choose \
+                 one in the work screen, or save one in Agents if the list is empty."
+            ),
+            Self::NoSuchLead(who) => write!(
+                f,
+                "The lead agent you picked is not in your library any more ({who}). Choose \
+                 another one in the work screen."
+            ),
+            Self::CouldNotReadTheLibrary(said) => {
+                write!(f, "Loadout could not read your saved agents: {said}")
+            }
+            Self::NotWatchingThatFolder => write!(
+                f,
+                "The lead agent is not ready in this folder yet. Reopen the work screen and try \
+                 again."
             ),
         }
     }
@@ -215,7 +293,8 @@ impl Chat {
              * `Send`, ale nie `Sync`, a `&T: Send` wymaga `T: Sync`. Pożyczka `self` przeżywająca
              * `await` czyni całą komendę nie-`Send`, czego Tauri nie przyjmuje — i słusznie,
              * bo to zadanie może wznowić się na innym wątku. */
-            let session = begin(driver, cwd, Arc::clone(&self.lines), said).await?;
+            let session =
+                begin(driver, spec_hard_wired(cwd, said), Arc::clone(&self.lines)).await?;
             self.live = Some(session);
         }
 
@@ -255,6 +334,307 @@ impl Chat {
         /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, więc po `close()` nie ma na
          * co czekać — ale porzucony `JoinHandle` zostawiłby zadanie, o którym nikt nie wie. */
         session.reader.abort();
+    }
+}
+
+// ── KIM JEST LIDER I GDZIE MIESZKA JEGO WĄTEK ──────────────────────────────────────────────
+//
+// 2026-08-20 — SZKIELET T-60. Ciała są `todo!()`, więc kryteria padają w czasie wykonania,
+// a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a p. 5).
+// `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno z nich nie przeżyło do pełnej
+// bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości: ciało, które
+// ich nie czyta, dawałoby `unused_variables` — implementacja zdejmuje je razem z `todo!()`.
+
+/// Kim jest lider tej rozmowy — jego zapisana definicja i nic obok niej.
+///
+/// # Dlaczego to jest typ, a nie sam [`Agent`]
+///
+/// Bo pytanie „co z definicji dojeżdża do sesji" ma mieć JEDNĄ odpowiedź w jednym miejscu
+/// (niezmiennik 13): vendor wybiera sterownik, `model` jedzie do [`RunSpec::model`],
+/// `file_access` przechodzi TĄ SAMĄ tabelą, którą czyta bieg, a `instructions` doklejają się do
+/// briefu. Kopia któregokolwiek z tych czterech pól, trzymana obok definicji — w stanie okna,
+/// w polu struktury, w stałej — jest pierwszą rzeczą, która się rozjedzie, i rozjedzie się po
+/// cichu: lider odpowiadający innym modelem niż wybrany wygląda dokładnie jak lider, który się
+/// myli.
+#[derive(Debug, Clone)]
+pub struct Lead {
+    /// Definicja, znak w znak taka, jak leży w bibliotece.
+    pub agent: Agent,
+}
+
+impl Lead {
+    /// Wskazany lider → jego zapisana definicja.
+    ///
+    /// `who` jest **identyfikatorem** zapisanego agenta, nie nazwą pliku i nie nazwą vendora —
+    /// ten sam wybór, co przy [`super::skills::draft_skill_inner`], i z tego samego powodu:
+    /// `id` przeżywa zmianę nazwy (T4 §5.1).
+    ///
+    /// `None` znaczy „nikt nie jest wskazany" i jest **odmową nazywającą następny ruch**, nigdy
+    /// cichym powrotem do zaszytego vendora. Cichy powrót jest tu gorszy niż odmowa, bo nie ma
+    /// żadnego sygnału, po którym człowiek mógłby odróżnić lidera, którego wybrał, od lidera,
+    /// którego dostał — a jedyną rzeczą, która się zmieniła, był jego własny klik.
+    pub fn pointed_at(library: &Path, who: Option<&str>) -> Result<Self, ChatError> {
+        // Pusty napis jest tym samym faktem, co brak wskazania: tak wygląda „człowiek jeszcze
+        // nie wybierał" po przejściu przez okno (`src/sections/run/lead.ts` trzyma `''`).
+        // Rozróżnianie ich tutaj dałoby drugie zdanie o jednym stanie.
+        let who = who
+            .map(str::trim)
+            .filter(|who| !who.is_empty())
+            .ok_or(ChatError::NobodyIsTheLead)?;
+
+        // Przez `list_agents_inner`, nie przez własny spacer po katalogu: gdzie leżą agenci
+        // i jak się czyta ich plik, wie `commands::agents` razem z `library::agents` (T-11).
+        // Druga odpowiedź na „gdzie leży ten agent" jest tą, która przestanie się zgadzać
+        // przy pierwszej zmianie reguły nazwy pliku (niezmiennik 23).
+        let saved = super::agents::list_agents_inner(library)
+            .map_err(|error| ChatError::CouldNotReadTheLibrary(error.to_string()))?;
+
+        saved
+            .into_iter()
+            .find(|agent| agent.id.to_string() == who)
+            // Nie „pierwszy z katalogu": lider, którego nikt nie wskazał, wygląda na ekranie
+            // dokładnie jak wskazany, a odpowiada nie tym, czym miał.
+            .map(|agent| Self { agent })
+            .ok_or_else(|| ChatError::NoSuchLead(who.to_owned()))
+    }
+
+    /// Co temu liderowi wolno zrobić z plikami.
+    ///
+    /// TĄ SAMĄ tabelą `FileAccess` → [`Policy`], którą czyta bieg (`commands::run::policy_of`),
+    /// nigdy drugą jej kopią (niezmiennik 23). Druga kopia tej tabeli to sposób, w jaki w repo
+    /// źródłowym po cichu umarło skanowanie sekretów: obie wyglądają poprawnie, a podpięta jest
+    /// zawsze starsza.
+    ///
+    /// # 2026-08-20 — ZDANIE WYŻEJ JEST DZIŚ NIEPRAWDĄ I JEST TO ZGŁOSZENIE, NIE PRZEOCZENIE
+    ///
+    /// `commands::run::policy_of` jest **prywatne** i ma dokładnie jednego wołającego
+    /// (`run.rs:1019`). Moduł obok nie widzi prywatnego elementu sąsiada, a `src-tauri/src/commands/
+    /// run.rs` nie stoi w bloku `<!-- OWNS -->` tego zadania — więc jedyny ruch, który zrobiłby
+    /// z tamtej tabeli JEDNĄ tabelę (dopisanie `pub(crate)`), jest tu niedostępny. Ta tabela jest
+    /// jej drugą kopią i tak ma być czytana, dopóki tamto słowo nie padnie.
+    ///
+    /// Co z tej kopii NIE MOŻE się rozjechać po cichu: oba dopasowania są **wyczerpujące** po
+    /// `FileAccess`, więc czwarta pozycja dialu nie skompiluje się bez ruszenia obu. Rozjechać się
+    /// może wyłącznie **przecelowanie istniejącego ramienia** w jednym z dwóch miejsc — i tego
+    /// żadne sprawdzenie w tym repo nie widzi.
+    #[must_use]
+    pub fn policy(&self) -> Policy {
+        match self.agent.file_access {
+            FileAccess::LookOnly => Policy::ReadOnly,
+            // Środkowa pozycja jest przybliżeniem i tak jest opisana w macierzy T4 §6.3:
+            // [`Policy`] nie ma dziś wariantu „pytaj", więc `ask-first` ląduje na „edytuje
+            // w swoim folderze". To jest to samo zdanie, które stoi przy tabeli biegu.
+            FileAccess::AskFirst => Policy::EditInFolder,
+            FileAccess::WorkFreely => Policy::Unrestricted,
+        }
+    }
+
+    /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
+    ///
+    /// Razem, nie zamiast: [`BRIEF`] mówi, czego lider nie umie zrobić (zaczynać biegów) i czym
+    /// się to robi (`/run`), a instrukcje mówią, kim on jest. Lider bez pierwszego zdania obieca
+    /// start, którego nie wykona; lider bez drugiego jest agentem, którego nikt nie konfigurował.
+    ///
+    /// Z briefu wymieniane jest DOKŁADNIE jedno zdanie — to o plikach ([`MAY_WRITE_DRAFTS`]) —
+    /// bo dokładnie ono jedno zależy od dialu. Trzy osobne kopie całego promptu byłyby trzema
+    /// miejscami, w których mieszka zdanie „biegów nie zaczynasz", i pierwszym, które by się
+    /// rozjechało (niezmiennik 13).
+    #[must_use]
+    pub fn brief(&self) -> String {
+        let about_files = match self.policy() {
+            Policy::ReadOnly => LOOK_ONLY,
+            Policy::EditInFolder => MAY_WRITE_DRAFTS_HERE,
+            Policy::Unrestricted => MAY_WRITE_DRAFTS_ANYWHERE,
+        };
+        let brief = BRIEF.replace(MAY_WRITE_DRAFTS, about_files);
+        // Puste `instructions` znaczą „nie mam zdania", a nie „dopisz pustkę": dwie puste linie
+        // na końcu promptu systemowego to ten sam artefakt, którym `some_text` w biegu odmawia
+        // być (`commands::run`).
+        let says = self.agent.instructions.trim();
+        if says.is_empty() {
+            return brief;
+        }
+        format!("{brief}\n\n{says}")
+    }
+}
+
+/// Wątki lidera: po jednym na zakres, wszystkie w jednym miejscu.
+///
+/// # Po co to istnieje obok [`Chat`]
+///
+/// Bo [`Chat`] jest JEDNĄ rozmową i jego własny komentarz zapowiada ten dzień: „jedna na
+/// aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną własne
+/// sesje" (`ipc::AppState::chat`). Skutek dzisiejszego stanu widzi człowiek: `Chat::say` używa
+/// `cwd` **wyłącznie przy zakładaniu sesji**, więc rozmowa o projekcie A, po przełączeniu na B,
+/// odpowiada dalej o A — bez ani jednego zdania ostrzeżenia, z żywego procesu siedzącego
+/// w folderze sprzed przełączenia.
+///
+/// Zakres jest kluczem, bo zakres jest tym, co człowiek przełącza. Wpis w [`Threads::lines`]
+/// powstaje, kiedy okno pierwszy raz na ten zakres patrzy; wpis w [`Threads::live`] dopiero przy
+/// pierwszym zdaniu — sesja wystartowana przy montażu ekranu płaci za turę, o którą nikt nie
+/// zapytał, i to jest ten sam powód, który stoi przy [`Chat::live`].
+#[derive(Default)]
+pub struct Threads {
+    /// Kanał wierszy tego zakresu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
+    /// zamknięcie cudzej rozmowy przy przełączeniu byłoby zgubieniem wątku, o który chodzi
+    /// cała ta zmiana.
+    lines: HashMap<PathBuf, Arc<Mutex<LineSink>>>,
+    /// Sesja tego zakresu. Osobny wpis na zakres, bo to jest jedyna rzecz, która czyni zdanie
+    /// „wątek należy do zakresu" prawdziwym, a nie zadeklarowanym.
+    live: HashMap<PathBuf, Session>,
+}
+
+/* RĘCZNIE, z tego samego powodu, co przy [`Chat`]: `Box<dyn AgentHandle>` nie jest `Debug`
+ * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile zakresów
+ * okno patrzyło i ile wątków naprawdę stoi. */
+impl std::fmt::Debug for Threads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Threads")
+            .field("watched", &self.lines.len())
+            .field("live", &self.live.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Threads {
+    /// Ani jednego wątku i ani jednego widoku — stan aplikacji, która właśnie wstała.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Okno patrzy na ten zakres: jego wiersze idą odtąd TAM, a wątek zostaje.
+    ///
+    /// Wołane przy każdym montażu ekranu pracy i przy każdym przeładowaniu okna, więc **nie może**
+    /// niczego kończyć — powód i pomiar stoją przy [`Chat::lines_go_to`].
+    pub fn lines_go_to(&mut self, cwd: PathBuf, lines: LineSink) {
+        match self.lines.entry(cwd) {
+            /* PODMIENIAMY ZAWARTOŚĆ UCHWYTU, nie sam wpis w mapie, i to jest cała naprawa
+             * „wyjście na inną sekcję gubi rozmowę". Zadanie czytające trzyma ten `Arc` od chwili
+             * startu wątku, więc wstawienie w to miejsce NOWEGO uchwytu zostawiłoby je piszące
+             * w kanał, którego nikt już nie słucha — powód i pomiar stoją przy [`Chat::lines`]. */
+            Entry::Occupied(open) => {
+                *open.get().lock().unwrap_or_else(PoisonError::into_inner) = lines;
+            }
+            // Pierwszy raz na tym zakresie: sam widok, jeszcze bez wątku. Sesja wstaje przy
+            // pierwszym zdaniu, bo tura wystartowana przy montażu ekranu jest turą, za którą
+            // ktoś płaci, choć nikt o nic nie zapytał.
+            Entry::Vacant(spot) => {
+                spot.insert(Arc::new(Mutex::new(lines)));
+            }
+        }
+    }
+
+    /// Czy w tym zakresie stoi wątek.
+    ///
+    /// Pytanie zadawane o zakres, nie o aplikację: to na nim stoi asercja „sesja zakresu B żyje
+    /// dalej, kiedy okno patrzy na A".
+    #[must_use]
+    pub fn is_live_in(&self, cwd: &Path) -> bool {
+        self.live.contains_key(cwd)
+    }
+
+    /// Mówi zdanie liderowi w TYM zakresie — pierwsze zdanie zakłada jego wątek, każde następne
+    /// jest kolejną turą tego samego wątku.
+    ///
+    /// Sterownik wybiera **fabryka**, po vendorze z definicji lidera, i dlatego jedzie tu
+    /// [`Drivers`], a nie gotowy sterownik: wybór po vendorze jest jedną z rzeczy, których to
+    /// zadanie dowodzi, a wybór zrobiony u wołającego byłby wyborem, którego żaden test bez okna
+    /// nie widzi (dziś robi go `ipc::AppState::chat_driver`, na sztywno).
+    pub async fn say(
+        &mut self,
+        drivers: &Drivers,
+        lead: &Lead,
+        cwd: PathBuf,
+        text: &str,
+    ) -> Result<(), ChatError> {
+        let said = text.trim();
+        if said.is_empty() {
+            return Err(ChatError::NothingToSay);
+        }
+
+        if let Some(thread) = self.live.get(&cwd) {
+            /* WĄTEK TEGO ZAKRESU STOI: zdanie jest jego kolejną turą i jedzie głosem, bez `&mut`
+             * na uchwycie. To ten punkt odróżnia „wątek na zakres" od „wątek na turę":
+             * implementacja startująca proces na każde zdanie płaci zimny start za każdym razem
+             * i gubi rozmowę, bo model nie słyszał poprzedniego zdania. */
+            thread
+                .voice
+                .send(ToAgent::Turn(said.to_owned()))
+                .await
+                .map_err(|_| ChatError::StoppedListening)?;
+        } else {
+            /* Uchwyt strumienia KLONUJEMY przed `await` — powód (a `&Chat` nie jest `Send`) stoi
+             * przy [`Chat::say`] i dotyczy tu tego samego uchwytu sesji. */
+            let lines = self
+                .lines
+                .get(&cwd)
+                .map(Arc::clone)
+                .ok_or(ChatError::NotWatchingThatFolder)?;
+            /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
+             * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna, a gałąź domyślna
+             * jest tym, czego konfiguracją nie da się wyłączyć. Tutaj nie ma ani jednej gałęzi:
+             * jest jedna wartość z pliku i jedno wywołanie fabryki. */
+            let driver = drivers(lead.agent.runs_with);
+            let session = begin(driver.as_ref(), spec_for(lead, cwd.clone(), said), lines).await?;
+            self.live.insert(cwd.clone(), session);
+        }
+
+        /* TWOJE ZDANIE W STRUMIENIU TEGO ZAKRESU. Wynik świadomie porzucony z tego samego powodu,
+         * co w [`Chat::say`]: pełna kolejka do okna jest stanem normalnym, a zdanie i tak POSZŁO. */
+        let _ = self.say_in_the_stream(
+            &cwd,
+            Line::Told {
+                agent: LEAD.to_owned(),
+                text: said.to_owned(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Wpisuje wiersz do strumienia TEGO zakresu; `false`, kiedy nie dojechał.
+    ///
+    /// Klon POD zamkiem, wysyłka NAD nim — ten sam zabieg i ten sam powód, co przy
+    /// [`Chat::say_in_the_stream`].
+    fn say_in_the_stream(&self, cwd: &Path, line: Line) -> bool {
+        let Some(sink) = self
+            .lines
+            .get(cwd)
+            .map(|open| open.lock().unwrap_or_else(PoisonError::into_inner).clone())
+        else {
+            return false;
+        };
+        sink.send(line) == crate::ipc::Sent::Queued
+    }
+
+    /// Zamknięcie okna: schodzą WSZYSTKIE wątki i każdy oddaje dowód śmierci swojej grupy.
+    ///
+    /// Dowód, nie „wysłałem sygnał" (niezmiennik 6): rozmowa porzucona żywa przechodzi pod PID 1
+    /// i pracuje dalej (`recovery.rs`, nagłówek), a odzyskiwanie po niej nie posprząta, bo
+    /// rozmowa nie ma wpisu w indeksie biegów. Osierocony agent pali limit w tle — to jest błąd
+    /// finansowy, nie higieniczny.
+    ///
+    /// Oddaje po jednym dowodzie na wątek, bo bilans jest kompletny tylko wtedy, kiedy widać
+    /// KAŻDY z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt
+    /// się nie dowie z liczby „zamknięto pięć".
+    pub async fn close(&mut self) -> Vec<GroupProof> {
+        /* ZDJĘTE Z MAPY PRZED PIERWSZYM `await`, i to nie jest kosmetyka: `Drain` trzymany przez
+         * całą eskalację zabijania pożyczałby mapę mutowalnie przez sekundy, a `is_live_in`
+         * pytane w tym czasie odpowiadałoby o wątkach, które już schodzą. Po tej linii nie ma
+         * ani jednego wątku, o którym to okno jeszcze wie. */
+        let closing: Vec<(PathBuf, Session)> = self.live.drain().collect();
+        let mut proofs = Vec::with_capacity(closing.len());
+        for (_, mut session) in closing {
+            /* `cancel`, nie `close`, i to jest wymóg niezmiennika 6: `close` oddaje KOD WYJŚCIA,
+             * a nie dowód, więc „zamknięte" znaczyłoby wtedy „wysłałem sygnał". Łaska nie ginie —
+             * trzystopniowa eskalacja (przerwanie w paśmie, SIGTERM, SIGKILL) siedzi w środku
+             * `cancel` u sterownika, razem z powodem, dla którego nie wolno jej skracać. */
+            proofs.push(session.handle.cancel().await);
+            /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, ale porzucony
+             * `JoinHandle` zostawiłby zadanie, o którym nikt nie wie — jak w [`Chat::close`]. */
+            session.reader.abort();
+        }
+        proofs
     }
 }
 
@@ -299,12 +679,31 @@ async fn read_along(mut inbox: mpsc::Receiver<DecodedEvent>, lines: Arc<Mutex<Li
 /// uczyniłaby całą komendę nie-`Send`, czego Tauri nie przyjmuje.
 async fn begin(
     driver: &dyn AgentDriver,
-    cwd: PathBuf,
+    spec: RunSpec,
     lines: Arc<Mutex<LineSink>>,
-    first: &str,
 ) -> Result<Session, ChatError> {
     let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENTS);
-    let spec = RunSpec {
+    let handle = driver
+        .start(spec, events)
+        .await
+        .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
+    let voice = handle.voice().ok_or(ChatError::StoppedListening)?;
+    let reader = tokio::spawn(read_along(inbox, lines));
+    Ok(Session {
+        voice,
+        handle,
+        reader,
+    })
+}
+
+/// Specyfikacja sesji **zaszytego** lidera — ta, którą startuje [`Chat`].
+///
+/// Wolna funkcja obok [`spec_for`], a nie trzecia gałąź w środku: te dwa zestawy wartości mają
+/// dwóch różnych właścicieli. Tutaj właścicielem jest to źródło (stała [`BRIEF`], `None` na model,
+/// jedna polityka), a tam — zapisana definicja agenta. Zlanie ich w jedną funkcję z warunkiem
+/// dałoby dokładnie tę gałąź domyślną, której zniknięcia dowodzi AC-1.
+fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
+    RunSpec {
         run_id: Uuid::now_v7(),
         cwd,
         prompt: first.to_owned(),
@@ -318,17 +717,29 @@ async fn begin(
         policy: Policy::EditInFolder,
         extra_dirs: Vec::new(),
         resume: None,
-    };
+    }
+}
 
-    let handle = driver
-        .start(spec, events)
-        .await
-        .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
-    let voice = handle.voice().ok_or(ChatError::StoppedListening)?;
-    let reader = tokio::spawn(read_along(inbox, lines));
-    Ok(Session {
-        voice,
-        handle,
-        reader,
-    })
+/// Specyfikacja sesji **wskazanego** lidera: cztery pola, wszystkie z jego zapisanej definicji.
+///
+/// To jest całe miejsce, w którym definicja agenta spotyka sesję, i dlatego jest jedno
+/// (niezmiennik 13): `model` jedzie do [`RunSpec::model`] (do dziś było tam zawsze `None`, czyli
+/// „co vendor ma domyślnie"), dial przechodzi przez [`Lead::policy`], a `instructions` doklejają
+/// się do briefu w [`Lead::brief`]. Vendora nie ma w tej strukturze — on wybrał sterownik jedną
+/// linią wyżej, u wołającego.
+fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
+    RunSpec {
+        run_id: Uuid::now_v7(),
+        cwd,
+        prompt: first.to_owned(),
+        /* Puste pole w definicji znaczy „nie mam zdania", a nie „ustaw pustkę" — ta sama reguła
+         * i ten sam powód, co przy `some_text` w biegu. WPROST, a nie własną funkcją o tej samej
+         * nazwie: druga `some_text` w drzewie czytałaby się jak rozjazd do wyśledzenia, a mamy tu
+         * jedno miejsce wołania. `None` znaczy dla sterownika „to, co vendor ma domyślnie". */
+        model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
+        system_append: Some(lead.brief()),
+        policy: lead.policy(),
+        extra_dirs: Vec::new(),
+        resume: None,
+    }
 }

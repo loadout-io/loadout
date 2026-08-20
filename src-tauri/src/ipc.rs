@@ -405,6 +405,23 @@ pub struct AppState {
     /// Jedna na aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną
     /// własne sesje (`workspace::Registry`). Dziś przełączenie zakresu zostawia rozmowę tam, gdzie
     /// była, bo folder jedzie argumentem przy każdym zdaniu.
+    ///
+    /// # 2026-08-20 — WĄTEK PER ZAKRES ISTNIEJE I NIE STOI TUTAJ, I JEST TO ZGŁOSZENIE
+    ///
+    /// [`commands::chat::Threads`] robi dokładnie to, co obiecuje akapit wyżej: trzyma wątek na
+    /// zakres, kieruje wiersze do strumienia tego zakresu i przy zamknięciu okna oddaje po jednym
+    /// dowodzie śmierci grupy na wątek. Nie da się go tu jednak podstawić w połowie: `Threads::say`
+    /// wymaga [`commands::chat::Lead`], czyli WSKAZANEGO agenta, a wskazania nie ma czym dowieźć
+    /// z okna. [`say_to_orchestrator`] musiałaby dostać klucz `lead` obok `folder`, co znaczy zmianę
+    /// w `src/sections/run/io.ts` — a mandat T-60 na tamten plik (należący do niewyładowanego T-41)
+    /// pozwala dopisać WYŁĄCZNIE klucz `folder` przy [`open_chat`]. Nowej komendy nie da się dodać
+    /// obok, bo `tests/it/ipc_commands_registered.rs` porównuje listę handlera
+    /// z `src-tauri/commands.golden.txt` co do sztuki.
+    ///
+    /// Podstawienie samej połowy byłoby gorsze niż zostawienie tego stanu: rozmowa, w której każde
+    /// zdanie odbija się o „wskaż lidera", jest odmową, której człowiek nie ma jak spełnić. Dopóki
+    /// człowiek nie rozstrzygnie tego jednego pytania, żywa rozmowa idzie tą drogą, ze zaszytym
+    /// vendorem z [`AppState::chat_driver`].
     chat: tokio::sync::Mutex<Option<commands::chat::Chat>>,
     /// Miejsce na jeden draft umiejętności i token tego, który pisze teraz.
     ///
@@ -473,6 +490,11 @@ impl AppState {
     /// `Vendor::ClaudeCode` na sztywno i to jest świadome: rozmowa nie jest krokiem workflow, więc
     /// nie ma definicji agenta, z której można by wziąć vendora. W dniu, w którym orchestrator
     /// stanie się konfigurowalny, ta funkcja zniknie na rzecz jego zapisanej definicji.
+    ///
+    /// 2026-08-20 — DEFINICJA JUŻ JEST, DRUTU DO NIEJ NIE MA. Odczyt zapisanej definicji stoi
+    /// w [`commands::chat::Lead::pointed_at`] i to on ma tę funkcję skasować; brakuje jednej
+    /// rzeczy, i jest nią wskazanie z okna. Powód, dlaczego nie da się go tu dowieźć, i jedyne
+    /// pytanie do człowieka stoją przy [`AppState::chat`].
     fn chat_driver(&self) -> std::sync::Arc<dyn crate::engine::drivers::AgentDriver> {
         (self.drivers)(crate::library::agents::Vendor::ClaudeCode)
     }
