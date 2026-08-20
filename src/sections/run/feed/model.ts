@@ -46,7 +46,14 @@ export interface NowRow {
 }
 
 export interface NowZone {
-  /** Jeden wiersz na agenta biegu. Nigdy wycinek historii — wycinek pełznie. */
+  /**
+   * Jeden wiersz na agenta biegu, który IDZIE. Nigdy wycinek historii — wycinek pełznie.
+   *
+   * Dwa rodzaje wiersza tu nie wchodzą i oba mówiłyby o pracy, której nikt nie wykonuje
+   * (niezmiennik 17): wiersz złożony przez samo okno (patrz [`windowWrote`]) i każdy wiersz
+   * biegu, który już zszedł (patrz `Feed.runEnded`). Pusta lista jest zwykłym stanem tej
+   * strefy — tak wygląda aplikacja, w której nic nie biegnie.
+   */
   readonly rows: readonly NowRow[];
   /**
    * JEDNO pole, nigdy tablica: `Thinking…` to status, nie linia [T2 §7.3 reguła 5].
@@ -171,11 +178,14 @@ export interface Feed {
    */
   carriedOn(): void;
   /**
-   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Gasi `parked`.
+   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Opróżnia strefę TERAZ i gasi `parked`.
    *
    * Bieg, którego nie ma, nie stoi na niczyim pytaniu. Bez tego kontrolka „dalej" zostawałaby
    * po biegu zaparkowanym i odpowiedzianym, wołając `continue_run` w próżnię — a Rust podbija
    * wtedy licznik zgód i NASTĘPNY punkt kontrolny przelatuje bez pytania.
+   *
+   * I nie ma w nim nikogo pracującego, więc strefa TERAZ schodzi razem z nim (`NowZone.rows`).
+   * Historii nie tyka: to, co się stało, zostaje do przeczytania.
    */
   runEnded(): void;
   /**
@@ -280,6 +290,37 @@ function sentence(line: FeedLine): string {
   return 'text' in line ? line.text : '';
 }
 
+/**
+ * Czy ten wiersz złożyło samo okno — czyli czy za nim NIE stoi niczyja praca.
+ *
+ * 2026-08-20 — PO CO TO ISTNIEJE, ZMIERZONE. Do dziś każda linia trasy `history` szła do mapy
+ * `doing`, a ta mapa JEST strefą TERAZ. Po T-58 wiersz wejścia dopisuje do tej samej historii
+ * echo wpisanej komendy i odpowiedź, którą daje sam sobie (`../entry/echo.ts`) — więc pierwszy
+ * `/stop` przy niczym niebiegnącym stawiał w strefie „co się dzieje teraz" wpis
+ * „Loadout — Nothing is running.", nieodróżnialny od pracującego agenta, i zostawiał go tam do
+ * końca pracy. Agent, który nie pracuje, nie ma prawa stać w tej strefie (niezmiennik 17), a jest
+ * to jeden z dwóch regionów, którym ARCHITECTURE §7 pozwala się ruszać — czyli dokładnie to
+ * miejsce, w które człowiek patrzy, żeby wiedzieć, czy cokolwiek żyje.
+ *
+ * Pyta o POCHODZENIE wiersza, nigdy o to, jak nazywa się jego autor. Numer ujemny wydaje wyłącznie
+ * `../entry/echo.ts` i wydaje go właśnie dlatego, że obie pompy — biegu i rozmowy — stemplują od 1
+ * każda z osobna, więc dodatni licznik w oknie zderzyłby się z ich numerami. Lista zakazanych nazw
+ * byłaby drugą tabelą prawdy o tym samym (niezmiennik 13) i myliłaby się w obie strony: skasowałaby
+ * pierwszego agenta nazwanego „Loadout", a wiersz okna podpisany cudzą nazwą przepuściłaby jako
+ * cytat agenta, który tego zdania nie wypowiedział.
+ *
+ * Odsiew jest TYLKO na strefie TERAZ. Do historii te wiersze wchodzą dalej i to jest cały sens
+ * T-58: terminal, w którym wpisana komenda nie zostawia śladu, jest nieodróżnialny od terminala,
+ * który tej komendy nie przyjął.
+ *
+ * Ta sama reguła stoi drugi raz w `../rail/roster.ts` (T-66), bo szyna agentów czyta historię, nie
+ * tę mapę. Jedno wspólne miejsce na nią byłoby `../entry/echo.ts` — moduł, który te numery wydaje —
+ * i jest poza blokiem OWNS tego zadania.
+ */
+function windowWrote(line: Incoming): boolean {
+  return line.id < 0;
+}
+
 /** Numer dla panelu szczegółów; większość rodzajów nie ma czego pokazać pod kliknięciem. */
 function detailOf(line: FeedLine): number | null {
   return 'detailId' in line ? line.detailId : null;
@@ -367,11 +408,15 @@ export function createFeed(scroller: Scroller): Feed {
   let history: readonly HistoryRow[] = [];
 
   /**
-   * Agent → co robi teraz.
+   * Agent → co robi teraz. JEST strefą TERAZ, więc trzyma wyłącznie tych, którzy pracują.
    *
    * `Map`, bo kolejność wstawienia JEST kolejnością pojawienia się w biegu, a strefa TERAZ ma
    * mieć jeden wiersz na agenta. Wycinek historii (`lines.slice(-4)`) daje na zrzucie ekranu
    * to samo i pełznie o wiersz na każde zdarzenie.
+   *
+   * Rośnie na liniach, za którymi stoi praca ([`windowWrote`]), i schodzi CAŁA w chwili, w której
+   * schodzi bieg (`runEnded`). Do 2026-08-20 była tylko dopisywana i nie czyszczona nigdy, więc
+   * strefa TERAZ opisywała pracę, której nikt nie wykonywał, do końca pracy człowieka.
    */
   const doing = new Map<string, string>();
 
@@ -445,7 +490,11 @@ export function createFeed(scroller: Scroller): Feed {
       const line = incoming;
       changed = true;
 
-      if (!doing.has(line.agent)) doing.set(line.agent, '');
+      /* Czy za tym wierszem stoi czyjaś praca — patrz [`windowWrote`]. Rozstrzyga to o strefie
+       * TERAZ i o niczym więcej: historia bierze wszystkie wiersze, także te z okna. */
+      const atWork = !windowWrote(line);
+
+      if (atWork && !doing.has(line.agent)) doing.set(line.agent, '');
 
       if (REGISTRY[line.kind].route === 'now') {
         /* Dwa rodzaje jadą do strefy TERAZ i odpowiadają na DWA różne pytania, więc nie wolno
@@ -458,10 +507,14 @@ export function createFeed(scroller: Scroller): Feed {
         continue;
       }
 
-      /* Prawdziwa linia gasi slot [T2 §7.2 wiersz 4] — dowolna, nie tylko od tego agenta:
-       * slot jest jeden, więc pytanie „czyj jest" ma dokładnie jedną odpowiedź. */
-      thinking = null;
-      doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
+      if (atWork) {
+        /* Prawdziwa linia gasi slot [T2 §7.2 wiersz 4] — dowolna, nie tylko od tego agenta:
+         * slot jest jeden, więc pytanie „czyj jest" ma dokładnie jedną odpowiedź. Echo własnego
+         * Entera prawdziwą linią NIE jest: zgaszony tutaj slot mówiłby, że agent przestał myśleć,
+         * bo człowiek wpisał ukośnik. Gasi go zdanie od agenta i nic poza nim. */
+        thinking = null;
+        doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
+      }
 
       const rows = (next ??= [...history]);
       const group = groups.get(line.agent);
@@ -542,15 +595,50 @@ export function createFeed(scroller: Scroller): Feed {
   }
 
   /**
-   * Bieg już nie stoi. JEDNO ciało pod dwiema nazwami z interfejsu, bo to jest jedno pole
-   * i jedna zmiana — a dwie nazwy są tam, bo wołający mówią dwie różne rzeczy („puściłem go"
-   * i „skończył się") i tylko jedna z nich jest prawdą w danej chwili.
+   * Bieg został puszczony dalej i IDZIE: gasi `parked` i kolejkę wysyłkową.
+   *
+   * 2026-08-20 — DLACZEGO TO NIE JEST JEDNO CIAŁO Z `runEnded`. Do dziś obie nazwy z interfejsu
+   * wskazywały jedną funkcję (`unpark`), bo obie chwile gaszą to samo jedno pole. Ten kształt
+   * przemilczał różnicę, która jest dla strefy TERAZ całą treścią: bieg puszczony PRACUJE dalej,
+   * więc strefy dotknąć nie wolno, a bieg, którego nie ma, nie ma nikogo pracującego. Alias
+   * dziedziczy zachowanie w obie strony i tak właśnie ta wada przeżyła — poprawka dopisana do
+   * wspólnego ciała opróżniałaby strefę TERAZ w środku biegu stojącego na punkcie kontrolnym.
    */
-  function unpark(): void {
+  function carriedOn(): void {
     /* Warunek liczy OBA pola: bieg puszczony bez odpowiedzi ma wyczyścić kolejkę wysyłkową tak
      * samo jak bieg puszczony z odpowiedzią, a `if (!parked) return` zostawiłoby zdanie, które
      * pojechałoby do NASTĘPNEGO pytania. */
     if (!parked && toCarry === '') return;
+    parked = false;
+    toCarry = '';
+    publish();
+  }
+
+  /**
+   * Bieg zszedł — koniec, odmowa albo zatrzymanie. Opróżnia strefę TERAZ i gasi `parked`.
+   *
+   * 2026-08-20 — ZMIERZONA WADA, KTÓRĄ TA FUNKCJA ZAMYKA. Mapa `doing` była tylko dopisywana,
+   * więc po zejściu biegu ostatnie zdanie każdego agenta stało w strefie „co się dzieje teraz"
+   * do końca pracy — cztery wiersze o pracy, której nikt nie wykonuje, w jednym z dwóch regionów,
+   * którym ARCHITECTURE §7 pozwala się ruszać (niezmiennik 17). Człowiek patrzy w to miejsce
+   * właśnie po to, żeby wiedzieć, czy cokolwiek żyje.
+   *
+   * Bez wyłączania strefy: opróżnia ją TA JEDNA chwila, w której bieg schodzi. Wersja czyszcząca
+   * `doing` przy każdej paczce daje pustą strefę równie skutecznie i zostawia w niej to, co
+   * przyszło ostatnią paczką — czyli odpowiada na pytanie „kto powiedział coś ostatni" zamiast
+   * „kto pracuje", a przy czterech agentach naraz to są dwa różne zdania w każdej chwili biegu.
+   *
+   * HISTORII NIE TYKA, i zostaje ona TĄ SAMĄ tablicą (`snapshot` bierze ją przez referencję):
+   * koniec biegu kasuje strefę STANU, nigdy zapisu tego, co się stało. Świeża tablica prosiłaby
+   * Reacta o przerysowanie całego transkryptu za coś, co do niego nie weszło.
+   */
+  function runEnded(): void {
+    doing.clear();
+    /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
+     * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
+    thinking = null;
+    /* Dwie rzeczy, które ta chwila gasiła zawsze — powód stoi przy `carriedOn`. Opróżnienie
+     * strefy TERAZ nie ma prawa ich kosztować. */
     parked = false;
     toCarry = '';
     publish();
@@ -580,8 +668,8 @@ export function createFeed(scroller: Scroller): Feed {
     appendLines,
     jumpToNewest,
     answer,
-    carriedOn: unpark,
-    runEnded: unpark,
+    carriedOn,
+    runEnded,
     toggle,
     subscribe,
   };
