@@ -44,6 +44,14 @@ pub const MAX_AT_ONCE: usize = 8;
 /// a od zatrzymywania biegu jest Stop, nie suwak.
 const MIN_AT_ONCE: usize = 1;
 
+/// Ile kroków **ciężkich** naraz, dopóki nikt nie powiedział inaczej.
+///
+/// Jedna, stała liczba w Ruście i na razie bez suwaka: kontrolka bez handlera nie wchodzi do repo
+/// (niezmiennik 16), a handler bez ekranu to martwy kod. Powód dla jedynki jest zmierzony
+/// i zapisany w niezmienniku 26: dwa równoległe linki `cargo` przypinają kompresor pamięci macOS
+/// i zamrażają maszynę przy zerowym swapie — bieg wygląda wtedy na wolny, nie na zepsuty.
+const DEFAULT_HEAVY_AT_ONCE: usize = 1;
+
 /// Ile gigabajtów maszyny przypada w podpowiedzi na jednego agenta.
 ///
 /// Cztery przy zmierzonych 583 MB szczytowego RSS `[T7 §7.1, V]`, a nie „583 MB, więc zmieści
@@ -301,6 +309,20 @@ pub enum Dispatch {
     Refused(Refusal),
 }
 
+/// Ile miejsca zajmuje jedna prośba.
+///
+/// **Własność kroku z grafu, nigdy wniosek z jego nazwy ani roli** (niezmiennik 27). `if
+/// step.name == "check"` w silniku wywraca bramkę tak samo jak `if review_enabled`: ta wartość
+/// wchodzi tu **argumentem prośby** i pula nie ma jak zapytać, którym etapem biegu jest ten krok.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weight {
+    /// Rozmowa: jedno miejsce z puli i nic więcej.
+    Ordinary,
+    /// Praca, która zjada maszynę — `cargo test`, `npm run build`. Bierze miejsce z puli
+    /// **i** miejsce z węższego limitu, nie zamiast (niezmiennik 26).
+    Heavy,
+}
+
 /// Czym skończył ten, kto prosił o slot. Anulowanie jest wartością (niezmiennik 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -346,6 +368,13 @@ struct Pool {
     /// prosił. Więc różnica zostaje tutaj jako dług i spłaca ją pierwsze zwolnienie: slot
     /// wraca, ale nie do puli, tylko na spłatę.
     owed: AtomicUsize,
+    /// Ile miejsc naraz wolno zająć krokom ciężkim. Węższy limit **wewnątrz** tej puli, nie obok
+    /// niej: druga pula z własnym wejściem znaczyłaby, że krok ciężki bierze miejsce bokiem,
+    /// z pominięciem pauzy limitu dostawcy.
+    ///
+    /// Zwykłe `usize`, nie `AtomicUsize`: ta liczba nie ma dziś suwaka, a pole atomowe zapraszałoby
+    /// do dopisania drugiego zejścia do nowej wartości obok tego, które już tu jest.
+    heavy_at_once: usize,
 }
 
 impl Pool {
@@ -430,6 +459,18 @@ impl Limiter {
     /// przechodzi przez żaden suwak.
     #[must_use]
     pub fn new(at_once: usize) -> Self {
+        Self::with_heavy(at_once, DEFAULT_HEAVY_AT_ONCE)
+    }
+
+    /// Ta sama pula, z podanym limitem kroków ciężkich.
+    ///
+    /// Obie liczby przycinane w JEDNYM miejscu, i to jest treść, nie porządek: limit ciężkich
+    /// spoza `1..=at_once` jest tak samo nonsensem jak suwak spoza `1..=8`. Zero znaczy pulę,
+    /// w której żaden krok ciężki nigdy nie ruszy — to nie jest „ostrożniej", tylko
+    /// zakleszczenie; więcej niż `at_once` nie ogranicza niczego, bo krok ciężki i tak potrzebuje
+    /// miejsca z puli.
+    #[must_use]
+    pub fn with_heavy(at_once: usize, heavy_at_once: usize) -> Self {
         let at_once = clamp_at_once(at_once);
         Self {
             pool: Arc::new(Pool {
@@ -437,6 +478,12 @@ impl Limiter {
                 at_once: AtomicUsize::new(at_once),
                 running: AtomicUsize::new(0),
                 owed: AtomicUsize::new(0),
+                /* SZKIELET FAZY KONTRAKTU (T-56 AC-2). Liczba wchodzi tu SUROWA i nikt jej o nic
+                 * nie pyta — czyli dokładnie tak, jak `max_parallel` mieszkał w poprzednim prototypie:
+                 * pole było, testy były zielone, dwóch agentów naraz nie było nigdy
+                 * (niezmiennik 11). Przycięcie i drugi semafor należą do fazy implementacji;
+                 * asercje (a) i (f) z AC-2 stoją dokładnie na tych dwóch brakach. */
+                heavy_at_once,
             }),
         }
     }
@@ -445,6 +492,12 @@ impl Limiter {
     #[must_use]
     pub fn at_once(&self) -> usize {
         self.pool.at_once.load(Ordering::SeqCst)
+    }
+
+    /// Ile kroków ciężkich naraz.
+    #[must_use]
+    pub fn heavy_at_once(&self) -> usize {
+        self.pool.heavy_at_once
     }
 
     /// Ile biegnie naraz **naprawdę**, w tej chwili.
@@ -604,10 +657,29 @@ impl Run {
         self.paused.saw(info, now_unix)
     }
 
+    /// Prośba o miejsce dla kroku, który waży tyle, co rozmowa.
+    ///
+    /// Jedna linia nad [`Run::dispatch_as`], żeby wołający, który o wagach nie słyszał, dostawał
+    /// zachowanie, które miał przedtem.
+    pub async fn dispatch(&self) -> Dispatch {
+        self.dispatch_as(Weight::Ordinary).await
+    }
+
     /// Prośba o miejsce dla jednego kroku. Jedyne wejście do puli.
     ///
     /// W pauzie odmawia **od razu i wartością**; poza pauzą czeka na wolne miejsce.
-    pub async fn dispatch(&self) -> Dispatch {
+    ///
+    /// **Waga jest argumentem prośby, nie drugą pulą.** Pula z własnym wejściem dla kroków
+    /// ciężkich łamałaby zasadę z nagłówka tego pliku („wysyłka pyta bieg, bieg pyta pulę"):
+    /// krok ciężki wziąłby wtedy miejsce bokiem, z pominięciem pauzy limitu dostawcy. Miejsce
+    /// ciężkie oddaje **ten sam [`Drop`]**, co zwykłe — osobne `release_heavy()` przecieka przy
+    /// panice i przy anulowaniu, a pula kurczy się przez cały bieg, aż nic już nie startuje.
+    pub async fn dispatch_as(&self, weight: Weight) -> Dispatch {
+        /* SZKIELET FAZY KONTRAKTU (T-56 AC-2). Waga dojeżdża tutaj i zostaje porzucona: prośba
+         * ciężka bierze DZIŚ dokładnie to samo, co zwykła — jedno miejsce z puli i ani jednego
+         * z węższego limitu. Przy suwaku na trzy znaczy to trzy `cargo test` naraz, czyli
+         * zamrożoną maszynę z niezmiennika 26. Asercja (a) z AC-2 istnieje po to, żeby to padło. */
+        let _ = weight;
         if self.status() == RunStatus::Paused {
             // Odmowa przed `await`, nie po nim: czekanie na miejsce w biegu, który i tak nic
             // nie wyśle, zajmowałoby slot potrzebny komuś, kto może biec.

@@ -1476,7 +1476,15 @@ fn no_agent_called(id: &str, saved: &[String]) -> String {
 /// przy wznowieniu.
 fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (PathBuf, bool) {
     match folder {
-        Folder::Project => (project.to_path_buf(), false),
+        /* `SameCopy` STOI TU RAMIĘ W RAMIĘ Z `Project` I TO JEST SZKIELET FAZY KONTRAKTU
+         * (T-56 AC-1), nie rozstrzygnięcie. „To samo drzewo, w którym pracował krok przede mną"
+         * schodzi dziś do folderu projektu, czyli do tej jednej implementacji, którą kryterium ma
+         * odrzucić: trzy kroki w folderze projektu też są „jednym katalogiem", a plik napisany
+         * przez pierwszy jest widoczny dla trzeciego — tylko z całkowicie złego powodu, bo krok
+         * pisze po prawdziwych plikach człowieka. Asercje (a), (b) i (d) z AC-1 stoją dokładnie
+         * tutaj. Prawdziwa odpowiedź potrzebuje NAJBLIŻSZEGO POPRZEDNIKA PO STRZAŁKACH, a tego ta
+         * funkcja nie widzi: dostaje jeden folder i klucz jednego węzła. */
+        Folder::Project | Folder::SameCopy => (project.to_path_buf(), false),
         // Katalog wskazany ręcznie jest cudzy: nie tworzymy go, bo „nie ma takiego folderu" jest
         // odpowiedzią, a utworzenie go po cichu zamienia literówkę w pusty bieg.
         Folder::Pick { path } => (PathBuf::from(path), false),
