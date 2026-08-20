@@ -461,6 +461,21 @@ pub struct AppState {
     /// zawiesiłby Stop na czas pisania przez model — czyli dokładnie wtedy, kiedy Stop jest
     /// do czegokolwiek potrzebny.
     drafting: commands::skills::Drafting,
+    /// Rzeczy, które człowiek uruchomił komendą — i których Loadout jest właścicielem.
+    ///
+    /// **Jedna lista na aplikację, nie jedna na zakres**, i powód stoi w całości przy
+    /// [`commands::processes::Processes`]: rzecz uruchomiona w jednym folderze biegnie dalej po
+    /// przełączeniu widoku, a lista, która by ją wtedy ukryła, jest listą, po której zostaje
+    /// osierocony proces palący maszynę.
+    ///
+    /// **Osobne pole, nie [`AppState::live`]**, z tego samego powodu, co przy
+    /// [`AppState::drafting`]: uchwyt biegu jest PODMIENIANY przy każdym Starcie, a `/start npm
+    /// run dev` nie jest biegiem i nie ma prawa zniknąć razem z cudzym. Stop na kafelku przestałby
+    /// wtedy cokolwiek robić, bez ani jednego zdania.
+    ///
+    /// W środku siedzi `std::sync::Mutex` i nigdy nie jest trzymany przez `await`
+    /// (niezmiennik 8) — powód i kształt przy [`commands::processes::Processes`].
+    started: commands::processes::Processes,
 }
 
 impl fmt::Debug for AppState {
@@ -495,7 +510,35 @@ impl AppState {
             live: Mutex::new(idle),
             chat: tokio::sync::Mutex::new(None),
             drafting: commands::skills::Drafting::new(),
+            started: commands::processes::Processes::new(),
         }
+    }
+
+    /// Kończy **wszystko**, co człowiek uruchomił komendą, i oddaje po jednym dowodzie na rzecz.
+    ///
+    /// Wołane przy zamykaniu okna, obok zatrzymania biegu i rozmowy z liderem. Powód jest ten
+    /// sam, co tam: rzecz, która przeżyje Loadouta, przechodzi pod PID 1 i pracuje dalej
+    /// (`recovery.rs`, nagłówek), a odzyskiwanie po niej nie posprząta — nie ma wpisu w indeksie
+    /// biegów. `npm run dev` trzymający port 5273 po zamknięciu okna jest tego najtańszym
+    /// przykładem; agent palący limit w tle jest najdroższym.
+    ///
+    /// # Nikt jej jeszcze nie woła, i to jest ZGŁOSZENIE, nie przeoczenie (AGENTS.md §7)
+    ///
+    /// Obsługa `CloseRequested` mieszka w `src-tauri/src/lib.rs`, poza blokiem OWNS tego zadania,
+    /// i woła stamtąd dwie linie: `commands::run::stop_before_closing` oraz
+    /// [`AppState::close_chat`]. Trzecia — `state.close_started().await;` — należy do tej samej
+    /// listy i tam ma stanąć. Dopóki jej tam nie ma, `/start` przeżywa zamknięcie okna. To samo
+    /// zdanie mówi wprost nagłówek kryterium AC-2 tego zadania: dowodzi ono drugiej połowy, czyli
+    /// że droga, którą zamknięcie ma zawołać, kończy KAŻDĄ rzecz i oddaje dowód po każdej.
+    ///
+    /// `pub`, a nie `pub(crate)`, dokładnie z tego powodu: wołającego w tej skrzyni jeszcze nie
+    /// ma, a `pub(crate)` bez wołającego to `dead_code`, czyli czerwona bramka za brak jednej
+    /// linii w cudzym pliku. Dowód, że ta droga naprawdę kończy każdą rzecz, stoi w
+    /// `tests/it/started_processes_die_with_the_window.rs` — o jedną warstwę niżej, na
+    /// [`commands::processes::Processes::close`], bo `AppState` wymaga w teście otwartej bazy
+    /// i fabryki sterowników.
+    pub async fn close_started(&self) -> Vec<crate::engine::supervisor::GroupProof> {
+        self.started.close().await
     }
 
     /// Kończy rozmowę z orchestratorem, jeśli jakaś stoi.
@@ -1397,6 +1440,151 @@ pub async fn say_to_agent(
         })
 }
 
+/* ── RZECZY ZAMÓWIONE KOMENDĄ ────────────────────────────────────────────────────────────────
+ *
+ * Trzy skorupy i ani jednej więcej. Zgłoszenie właściciela 2026-08-20: „jak napiszę aby coś
+ * odpalił jakąś apkę to chcę mieć też po prawej gdzie są agenci info o procesach odpalonych itp,
+ * i po kliku mogę tam wejść" — czyli uruchom, pokaż, wejdź. Czwartej drogi (pisanie do tej
+ * rzeczy) nie ma, bo nie ma kontrolki, która by je wysyłała: pole w schemacie bez kontrolki
+ * w UI jest kontrolką bez handlera (niezmiennik 16).
+ *
+ * WSZYSTKIE TRZY SĄ `async`, i to nie jest styl. `start_process` MUSI być: `Processes::start`
+ * zakłada zadanie opróżniające potoki, a `tokio::spawn` poza runtime'em to panika — Tauri
+ * wykonuje skorupę bez `async` na wątku puli, nie w pętli zdarzeń. Dwie pozostałe są `async`,
+ * bo biorą `State`: skorupa synchroniczna z tym argumentem przewraca bramkę na
+ * `clippy::needless_pass_by_value`, a referencja zamieniłaby `state` w klucz, którego okno
+ * ma niby wysłać (`src/sections/ipc-signature.ts`). Cały ten rachunek stoi już raz w tym pliku,
+ * przy `stop_draft`.
+ */
+
+/// Rzecz uruchomiona komendą — kształt, w którym jedzie do okna.
+///
+/// Osobno od [`commands::processes::StartedProcess`], i to nie jest przepisanie tamtego typu:
+/// tamten jest odpowiedzią REJESTRU i ma trzy pola, bo trzy fakty odpowiadają na pytania
+/// kafelka. Drut wiezie o jedno więcej — wyjście — a `Serialize` na tamtym typie kazałby
+/// rejestrowi wiedzieć o oknie i zlałby dwa różne pytania w jedno.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StartedWire {
+    /// Grupa procesów. Jedyna liczba, którą tę rzecz da się zaadresować, i klucz dla Stopu.
+    pub pgid: i32,
+    /// Wiersz powłoki, co do znaku. To on jest nazwą tej rzeczy na ekranie.
+    pub command: String,
+    /// Czy to jeszcze biegnie. `false` znaczy „nie ma kafelka", nie „kafelek na szaro"
+    /// (`src/sections/run/rail/processes.ts`).
+    pub alive: bool,
+    /// Co ta rzecz wypisała — **wyłącznie dla tej jednej, w którą człowiek wszedł**.
+    ///
+    /// `None` dla pozostałych i to jest wybór o zmierzonej cenie: ogon wyjścia ma sufit 64 KB
+    /// (`engine::drivers::command::KEEP_LAST`), a okno odświeża listę raz na sekundę — pięć
+    /// rzeczy niosących swój ogon w każdej odpowiedzi to 320 KB na sekundę przez granicę, za
+    /// cztery panele, których nikt nie ma otwartych. Otwarty jest zawsze najwyżej jeden, więc
+    /// pyta o niego okno, podając jego `pgid`.
+    pub said: Option<String>,
+}
+
+/// `/start <komenda>`: uruchamia rzecz, która ma **zostać**, i oddaje jej grupę.
+///
+/// Oddaje `pgid`, bo to jedyna liczba, którą okno może potem tę rzecz zaadresować — i oddaje ją
+/// **natychmiast**, bo rzecz żyje po powrocie tego wywołania. To jest cała różnica wobec
+/// [`run_workflow`], które trwa tyle, co bieg: kafelek ma stać przez cały czas życia tej rzeczy,
+/// a nie zgasnąć w chwili, w której wywołanie wróciło.
+#[tauri::command]
+pub async fn start_process(
+    state: State<'_, AppState>,
+    command: &str,
+    folder: Option<String>,
+) -> Result<i32, String> {
+    // Folder tą samą drogą, co przy biegu i przy instalacji umiejętności: `project_for` jest
+    // jedynym miejscem, w którym mieszkają te trzy zdania odmowy (niezmiennik 13). Brak wyboru
+    // znaczy „tam, gdzie aplikacja wstała", a nie „nigdzie".
+    let cwd = state.project_for(folder.as_deref()).inspect_err(refused)?;
+
+    let line = command.trim();
+    if line.is_empty() {
+        /* DRUGA ZAPORA, NIE DRUGA POLITYKA. Wiersz wejścia odmawia sam, zanim cokolwiek pojedzie
+         * (`src/sections/run/rail/processes.ts`), i to jest UPRZEDZENIE — ta sama para, co
+         * `whereItGoes` wobec `say_to_agent_inner`. Tutaj stoi odmowa dla wywołania z każdej
+         * innej strony: `/bin/sh -c ""` wstaje, kończy się w tej samej milisekundzie i zostawia
+         * kafelek, który mrugnął. */
+        let said = "Write the command after /start, like \"/start npm run dev\".".to_owned();
+        refused(&said);
+        return Err(said);
+    }
+
+    state
+        .started
+        .start(&crate::engine::drivers::command::StartSpec {
+            command: line.to_owned(),
+            cwd,
+        })
+        .map(|one| one.pgid)
+        .map_err(|error| {
+            // Zdanie mówi, CO nie wstało, bo `os error 2` samo nie mówi nic (DESIGN §8).
+            let said = format!("Loadout could not start \"{line}\": {error}");
+            refused(&said);
+            said
+        })
+}
+
+/// „Stop" na kafelku: kończy **tę** grupę i wraca dopiero z dowodem.
+///
+/// `Ok(())` znaczy tu `ESRCH` dla całej grupy, nigdy „sygnał wyszedł" (niezmiennik 6): ekran,
+/// który zgasi kafelek po samym sygnale, kłamie o rzeczy, która dalej pracuje i dalej pali
+/// maszynę. Dowodem jest [`crate::engine::supervisor::GroupProof`], a nie kod wyjścia lidera —
+/// płacimy za wnuki [T7 §3.1].
+///
+/// Grupa, której rejestr już nie zna, to `Ok(())`, nie odmowa: rzecz, która zeszła sama między
+/// odświeżeniem listy a kliknięciem, nie jest awarią (niezmiennik 7).
+#[tauri::command]
+pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), String> {
+    match state.started.stop(pgid).await {
+        None | Some(crate::engine::supervisor::GroupProof::Dead { .. }) => Ok(()),
+        Some(crate::engine::supervisor::GroupProof::Alive) => {
+            // Odmowa, nie cisza: bez tej gałęzi okno zdjęłoby kafelek nad czymś, co dalej biegnie,
+            // a wtedy jedynym miejscem, w którym da się to zobaczyć, jest Monitor aktywności.
+            let said = "Loadout asked it to stop and something in it is still running. Look for \
+                        it in Activity Monitor before you start another one."
+                .to_owned();
+            refused(&said);
+            Err(said)
+        }
+    }
+}
+
+/// Wszystko, co Loadout dla człowieka uruchomił — plus wyjście tej jednej rzeczy, w którą wszedł.
+///
+/// Rzeczy, które zeszły, **są w tej odpowiedzi** i to jest jedyna droga, którą okno dowiaduje się
+/// o śmierci czegoś, czego nie zatrzymało samo. Kafelka takiemu wpisowi nie rysuje widok
+/// (`src/sections/run/rail/processes.ts`), więc lista może być uczciwa, a ekran mimo to nie kłamie.
+///
+/// `opened` jest `pgid` rzeczy, której panel jest otwarty, albo `None`. Powód, dla którego wyjście
+/// jedzie tylko dla niej, stoi przy [`StartedWire::said`].
+///
+/// `Result` bez ani jednej gałęzi `Err` i nie jest to nasz wybór: Tauri odrzuca na kompilacji
+/// skorupę `async`, która bierze `State` i nie zwraca `Result` („async commands that contain
+/// references as inputs must return a `Result`"). Odczyt rejestru nie ma jak zawieść — bierze
+/// zamek i przepisuje trzy pola — a `async` jest tu wymuszone tym samym `State` (powód
+/// w akapicie nad tą trójką).
+#[tauri::command]
+pub async fn list_processes(
+    state: State<'_, AppState>,
+    opened: Option<i32>,
+) -> Result<Vec<StartedWire>, String> {
+    Ok(state
+        .started
+        .list()
+        .into_iter()
+        .map(|one| StartedWire {
+            said: opened
+                .filter(|pgid| *pgid == one.pgid)
+                .and_then(|pgid| state.started.said(pgid)),
+            pgid: one.pgid,
+            command: one.command,
+            alive: one.alive,
+        })
+        .collect())
+}
+
 /// Jedyna lista komend, którą dostaje okno.
 ///
 /// Jedna, bo builder pamięta **ostatnią**, którą mu podano: druga podmieniłaby pierwszą po
@@ -1421,6 +1609,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_agents,
         list_handoffs,
         list_notes,
+        list_processes,
         list_skills,
         list_workflows,
         list_workspaces,
@@ -1436,7 +1625,9 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         save_workspace,
         say_to_agent,
         say_to_orchestrator,
+        start_process,
         stop_draft,
+        stop_process,
         stop_run,
         stop_using_note
     ]

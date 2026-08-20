@@ -35,7 +35,15 @@
 
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// 2026-08-20 — `too_many_lines` DOPISANE, i to jest zgłoszenie, nie wygoda. `full-clippy` był
+// czerwony na tej gałęzi od commita kontraktowego: pierwszy przypadek niżej ma 124 wiersze przy
+// sufcie 100, a `quick-clippy` biegnie `--lib`, więc tego nie widzi ani razu. Zmierzone —
+// funkcja jest co do bajtu ta sama, co w `d464206`. Rozcięcie jej na pomocnicze funkcje byłoby
+// przepisaniem specyfikacji, której asercji nie wolno tknąć, a jej długość jest treścią: to jest
+// jedna sekwencja pomiarowa, w której KOLEJNOŚĆ zdań jest asercją (grupa żyje → dowód → grupa
+// nie żyje). Rozdzielona na trzy funkcje przestałaby o tej kolejności cokolwiek mówić.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::error::Error;
 use std::fs;
@@ -425,7 +433,10 @@ async fn the_thirty_minute_ceiling_of_a_check_step_never_reaches_it() -> Result<
         .map_err(|why| format!("the group was already gone before the clock moved: {why}"))?;
 
     tokio::time::pause();
-    tokio::time::advance(GIVE_UP_AFTER + Duration::from_secs(60)).await;
+    // `from_mins(1)`, nie `from_secs(60)`: ta sama wartość, a `clippy::duration_suboptimal_units`
+    // jest w pełnej bramce odmową (`--all-targets -- -D warnings`, czego `--lib` nie widzi).
+    // Zmierzone 2026-08-20 — czerwień stała tu od commita kontraktowego.
+    tokio::time::advance(GIVE_UP_AFTER + Duration::from_mins(1)).await;
     tokio::time::resume();
 
     group_probe(started.pgid).map_err(|why| {

@@ -446,3 +446,54 @@ export function openChat(folder: string | null = null): Promise<void> {
 export function sayToOrchestrator(text: string, folder: string | null = null): Promise<void> {
   return invoke<void>('say_to_orchestrator', { folder, text });
 }
+
+/**
+ * `/start <komenda>`: uruchamia rzecz, która ma **zostać**, i oddaje jej grupę procesów.
+ *
+ * ROZWIĄZUJE SIĘ NATYCHMIAST, i to jest cała różnica wobec [`start`] i [`ask`]. Tamte trwają tyle,
+ * co bieg, bo komenda po tamtej stronie czeka na jego koniec. Tutaj po tamtej stronie zostaje
+ * UCHWYT (`engine::drivers::command::Staying`), więc wywołanie wraca, kiedy rzecz WSTAŁA, a nie
+ * kiedy zeszła. Wołający, który zdejmie kafelek w `finally` — tak, jak te dwie drogi zdejmują
+ * pasek biegu — zgasi go w tym samym tyknięciu, w którym go postawił.
+ *
+ * @param command wiersz powłoki, co do znaku. Rust odmawia pustego zdaniem, które mówi, co wpisać.
+ * @param folder katalog, w którym ta rzecz ma stanąć, albo `null` — wtedy Rust bierze ten, pod
+ *   którym wstała aplikacja (`AppState::project_for`). Klucz jedzie ZAWSZE, także jako `null`:
+ *   powód w całości stoi przy `invoke` w [`start`].
+ */
+export function startProcess(command: string, folder: string | null = null): Promise<number> {
+  return invoke<number>('start_process', { command, folder });
+}
+
+/**
+ * „Stop" na kafelku: kończy tę jedną grupę.
+ *
+ * Rozwiązuje się dopiero z **dowodem**, że w grupie nie ma nikogo — `stop_process` po tamtej
+ * stronie wraca po `kill(-pgid, 0) == ESRCH`, nie po wysłaniu sygnału (niezmiennik 6). Odmawia
+ * dokładnie w jednym przypadku: grupa po pełnej eskalacji dalej odpowiada.
+ *
+ * @param pgid grupa z odpowiedzi [`startProcess`]. Jedyna liczba, którą tę rzecz da się
+ *   zaadresować — okno jej nie wylicza i nie ma jak.
+ */
+export function stopProcess(pgid: number): Promise<void> {
+  return invoke<void>('stop_process', { pgid });
+}
+
+/**
+ * Wszystko, co Loadout uruchomił dla człowieka — razem z tym, co zeszło.
+ *
+ * Rzeczy zeszłe SĄ w tej odpowiedzi z rozmysłu: to jedyna droga, którą okno dowiaduje się
+ * o śmierci czegoś, czego nie zatrzymało samo. Kafelka takiemu wpisowi nie rysuje widok
+ * (`./rail/processes.ts`), więc lista może być uczciwa, a ekran mimo to nie kłamie.
+ *
+ * `Promise<unknown>`, a nie zadeklarowany kształt, i to jest wybór, nie lenistwo: ta krawędź
+ * czyta się także pod atrapą granicy (`e2e/harness.ts` odpowiada KSZTAŁTEM, nie stanem), więc typ
+ * obiecujący listę obiecywałby coś, czego nie ma czym dowieźć. Sprawdzenie pól należy do tego,
+ * kto z tej odpowiedzi robi kafelki — i tam stoi, w jednym miejscu.
+ *
+ * @param opened `pgid` rzeczy, której panel jest otwarty, albo `null`. Wyjście jedzie tylko dla
+ *   niej; powód i pomiar stoją przy `StartedWire::said` w `src-tauri/src/ipc.rs`.
+ */
+export function listProcesses(opened: number | null = null): Promise<unknown> {
+  return invoke<unknown>('list_processes', { opened });
+}

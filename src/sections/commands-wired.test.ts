@@ -412,6 +412,44 @@ const WIRES: readonly Wire[] = [
     call: () =>
       run.ask({ id: AGENT_ID, name: AGENT.name }, 'read the change and say what to fix first', 3),
   },
+  /* 2026-08-20 (T-72) — TRZY KRAWĘDZIE RZECZY URUCHOMIONYCH KOMENDĄ, dopisane, nic nie usunięte
+   * i żaden istniejący wiersz nie przepisany.
+   *
+   * Ten plik jest dla nich JEDYNYM sądem po tej stronie granicy i to nie jest przesada: `/start`
+   * nie idzie żadną drogą, którą widzi kryterium e2e — tam granica Rusta jest atrapą i odpowiada
+   * kształtem — a po tamtej stronie nie ma czego wołać bez okna. Krawędź z podmienionym kluczem
+   * dawałaby wywołanie ODRZUCONE, nie mniejsze, i człowiek zobaczyłby dokładnie to samo, co przy
+   * Starcie zepsutym 2026-08-17: kafelek, który się nie pojawia, i ani jednego zdania dlaczego.
+   *
+   * `startProcess` niesie FOLDER, choć po tamtej stronie jest `Option<String>`: wiersz wołany
+   * `null`em przechodziłby także dla krawędzi, która folder gubi — `insides()` niżej odrzuca
+   * `null`, więc nie byłoby czego zgubić. To jest ta sama pułapka, którą ten plik nazywa przy
+   * `FOLDER` wyżej.
+   *
+   * `listProcesses` jedzie z `null`em i to jest jedyna wartość, jaką ta krawędź w kryterium może
+   * ponieść: `opened` jest `pgid` OTWARTEGO panelu, a w teście krawędzi nie ma otwartego niczego.
+   * Sam KLUCZ jest tu tym, co się sądzi — bez niego wywołanie byłoby odrzucone. */
+  {
+    where: 'run',
+    what: 'startProcess',
+    command: 'start_process',
+    given: ['npm run dev', FOLDER],
+    call: () => run.startProcess('npm run dev', FOLDER),
+  },
+  {
+    where: 'run',
+    what: 'stopProcess',
+    command: 'stop_process',
+    given: [4213],
+    call: () => run.stopProcess(4213),
+  },
+  {
+    where: 'run',
+    what: 'listProcesses',
+    command: 'list_processes',
+    given: [],
+    call: () => run.listProcesses(null),
+  },
 ];
 
 const EDGES: ReadonlyArray<readonly [string, object]> = [

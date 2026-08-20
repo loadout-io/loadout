@@ -40,6 +40,7 @@ import type { FormEvent, ReactElement, Ref } from 'react';
 import { useRef, useState } from 'react';
 
 import { startAskFromLine } from '../ask-command';
+import { startFromLine } from '../rail/processes';
 import type { Named } from '../run-command';
 import type { WindowLine } from './echo';
 import { echoOf, saidOf } from './echo';
@@ -83,6 +84,25 @@ export const KNOWN = [
     tail: 'an agent',
     does: 'Start one agent. Add what it should do after its name.',
     completes: 'agents' as Completes,
+  },
+  {
+    /* 2026-08-20 — POWSTAŁO Z ZGŁOSZENIA WŁAŚCICIELA: „jak napiszę aby coś odpalił jakąś apkę to
+     * chcę mieć też po prawej gdzie są agenci info o procesach odpalonych itp". Rzecz odpalona
+     * przez AGENTA stoi w jego grupie i Loadout widzi po niej wyłącznie wiersz `ran` — czynność
+     * ZAKOŃCZONĄ. Nośnika na „to biegnie teraz" nie było, więc kafelka nie było z czego zbudować
+     * (niezmiennik 17), a „stop" pod nim nie miałby czego ubić (niezmiennik 6). Stąd trzecia
+     * komenda, która zaczyna pracę: rzecz zamawia się TUTAJ, a właścicielem jest Loadout.
+     *
+     * ZARAZ PO `/run` i `/ask`, bo te trzy zaczynają pracę i mają stać obok siebie. `/open`
+     * i `/stop` są pomocnicze.
+     *
+     * BEZ PODPOWIADANIA (`completes: null`): po `/start` stoi wiersz powłoki, a listy komend
+     * powłoki nie ma czym przeczytać — podpowiadanie jej byłoby zgadywaniem, dokładnie jak
+     * ścieżka przy `/open`. */
+    name: '/start',
+    tail: 'a command',
+    does: 'Start a command and keep it running. It shows up in the agents list.',
+    completes: null as Completes,
   },
   {
     name: '/open',
@@ -333,6 +353,23 @@ export interface EntryProps {
    */
   readonly onAskAgent?: (rest: string) => Promise<string | null>;
   /**
+   * `/start <komenda>` — oddaje zdanie odmowy albo `null`, kiedy rzecz wstała.
+   *
+   * 2026-08-20 — POWSTAŁO Z ZGŁOSZENIA WŁAŚCICIELA („info o procesach odpalonych… po kliku mogę
+   * tam wejść"); powód, dla którego tej drogi nie było, stoi przy wpisie `/start` w [`KNOWN`].
+   *
+   * WARTOŚĆ DOMYŚLNA JEST TĄ PRODUKCYJNĄ, dokładnie jak przy [`EntryProps::onAskAgent`] i z tego
+   * samego powodu: ekran pracy (`../index.tsx`) nie należy do zadania, które tę komendę dołożyło,
+   * a komenda stojąca w zachęcie i odpowiadająca „nie znam tego" jest obietnicą w napisie
+   * (niezmiennik 16). Domyślna wskazuje więc TĘ SAMĄ politykę, którą podałby ekran —
+   * `../rail/processes.ts`, obok magazynu, z którego lista bierze kafelki — a nie `io.ts` wołane
+   * z komponentu: nazwa komendy dalej istnieje w sekcji raz.
+   *
+   * Zdanie WRACA, zamiast być rzucane, jak przy każdej innej komendzie tego wiersza: odmowa Rusta
+   * jest już napisana po ludzku i ma się pokazać tam, gdzie człowiek właśnie pisał.
+   */
+  readonly onStartCommand?: (rest: string) => Promise<string | null>;
+  /**
    * Kto właśnie pracuje — czyli czyją nazwą wolno zaadresować zdanie bez ukośnika.
    *
    * 2026-08-20 — NAZWY SĄ ADRESAMI, nie listą odbiorców. Do tego dnia niepustość tej listy
@@ -418,6 +455,7 @@ export function Entry({
   onSayToAgent,
   onRunWorkflow,
   onAskAgent = startAskFromLine,
+  onStartCommand = startFromLine,
   talkingTo = [],
   workflows = [],
   onShowInStream = () => undefined,
@@ -494,6 +532,15 @@ export function Entry({
        * razem z odmowami: zdanie dla agenta jedzie stamtąd CO DO ZNAKU, więc wiersz nie ma
        * prawa go po drodze przepisać. */
       void onAskAgent(typed.trim().slice('/ask'.length).trim()).then(showTheAnswer);
+      return;
+    }
+    if (command === '/start') {
+      /* CAŁA RESZTA LINII, przycięta tylko po końcach — i to jest ta sama umowa, co przy `/run`
+       * i `/ask`, tylko waży tu więcej: dalej jedzie WIERSZ POWŁOKI. Wiersz, który skleiłby
+       * wielokrotne spacje albo tknął cudzysłowy, zmieniłby komendę, którą człowiek napisał,
+       * i uruchomił coś innego niż to, co ma na ekranie. Rozbiór na „nazwę" i „argumenty" nie
+       * istnieje z rozmysłu: to powłoka rozbiera tę linię, nie my (`SHELL` w `command.rs`). */
+      void onStartCommand(typed.trim().slice('/start'.length).trim()).then(showTheAnswer);
       return;
     }
     if (command === '/open') {
