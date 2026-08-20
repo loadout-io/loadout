@@ -193,6 +193,35 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
     zero, a dochodzi ryzyko fałszywej odmowy. Wybór promptu ma być **udokumentowany**
     (`docs/HARNESS-QUEUE.md`, sekcja „czego świadomie nie mechanizujemy”), nie domyślny.
 
+29. **Kryterium o komunikacie albo odmowie asertuje je tam, gdzie CZŁOWIEK je widzi** — nigdy
+    tylko w funkcji, która je produkuje. Zwrócona wartość dowodzi, że mechanizm istnieje;
+    zdanie na ekranie dowodzi, że produkt działa. Między jednym a drugim mieszka klasa wady,
+    dla której to repo powstało: **kryterium zielone, funkcja martwa.**
+
+    Zmierzone 2026-08-20, w jednej fali siedmiu zadań. Recenzent — ten sam vendor, inny model —
+    złapał tę klasę **cztery razy na ZIELONEJ bramce**, a żadne z siedemnastu kryteriów tej
+    fali jej nie widziało:
+
+    - przycisk propozycji renderował się wyłącznie z propsem `command`, którego `HistoryRow`
+      nie miał, a żaden produkcyjny wołający nie podawał. Jedyną ścieżką zapalającą asercję
+      był test, który podawał go wprost;
+    - odmowa użycia narzędzia była dowodzona na wartości `ToolsRefused`, a nie na zdaniu, które
+      z niej powstaje — regresja gubiąca `step_id` przeszłaby, zostawiając człowieka z odmową,
+      która nie mówi, który kafelek odmówił;
+    - zdanie odmowy `/run` miało wracać **i być pokazane**, a testowana była wyłącznie połowa
+      „wracać";
+    - wiersz z odpowiedzią wiersza wejścia istniał w modelu i nie miał drogi na ekran.
+
+    **Jak to spełnić, kiedy nie ma jsdom.** Czysty moduł dowodzi TREŚCI zdania; `renderToStatic
+    Markup` dowodzi, że zdanie jest w markupie i wisi na prawdziwej ścieżce; `e2e/harness.ts`
+    dowodzi, że dochodzi tam po prawdziwym kliknięciu. Kryterium wolno wybrać jedno z trzech,
+    ale **nie wolno poprzestać na czwartym** — na wartości zwróconej przez funkcję, której nikt
+    nie woła.
+
+    To jest ta sama różnica, na której stoi cały produkt: **co agent powiedział** kontra
+    **co się stało** (`docs/research/projects/00-SYNTHESIS.md` §2.1). Kryterium, które pyta
+    wyłącznie funkcję, pyta o pierwsze.
+
 ---
 
 ## 4. Zakazane → zamiast tego
