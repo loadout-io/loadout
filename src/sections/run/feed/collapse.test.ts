@@ -31,6 +31,9 @@ const OPEN = [
   'problem',
   'run',
   'step',
+  /* 2026-08-20 — propozycja biegu. Wybór świadomy, nie dopisek: powód, dla którego ten rodzaj
+   * stoi otwarty, stoi przy jego wpisie w `kinds.ts`. */
+  'suggested',
   /* 2026-08-19 — tura CZLOWIEKA. Nalezy do prozy i dlatego jest rozwinieta: wiersz, ktory
    * trzeba rozwinac, zeby przeczytac wlasne zdanie, jest zwinieta wlasna wypowiedzia.
    * Powod, dla ktorego ten rodzaj w ogole powstal, stoi przy `Line::Told` po stronie Rusta. */
