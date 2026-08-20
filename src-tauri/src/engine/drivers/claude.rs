@@ -800,12 +800,19 @@ impl ClaudeDriver {
         // widzi `ps` każdego użytkownika maszyny (niezmiennik 9).
         command.args(&self.inherited);
 
-        // Jedna tabela, jedno miejsce (niezmiennik 23). `None` znaczy „nie wysyłaj listy",
-        // a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne rzeczy.
-        let (mode, tools) = permission_flags(spec.policy);
+        // JEDNO WYWOŁANIE SKŁADA OBIE FLAGI, a lista agenta wchodzi do niego argumentem
+        // (niezmiennik 23). Druga droga — sterownik pytający tabelę o sufit i przycinający go tu
+        // na miejscu — byłaby drugim miejscem, w którym mieszka furtka sieciowa, a dwie kopie
+        // jednej reguły to dwie odpowiedzi, z których podpięta jest zawsze starsza.
+        let surface = tool_surface(spec.policy, spec.tools.as_deref());
+
+        // Tryb uprawnień wynika WYŁĄCZNIE z polityki i lista narzędzi go nie rusza. Inaczej sieć
+        // dałaby się „kupić", przestawiając agenta na tryb, który zatwierdza wszystko — czyli
+        // oddając mu przy okazji całą resztę.
+        let (mode, approved) = permission_flags(spec.policy);
         command.arg("--permission-mode").arg(mode);
-        if let Some(tools) = tools {
-            command.arg("--allowedTools").arg(tools);
+        if let Some(approved) = approved {
+            command.arg("--allowedTools").arg(approved);
         }
 
         // Druga kolumna tej samej decyzji, nie druga decyzja (niezmiennik 23): wyżej stoi to,
@@ -814,7 +821,12 @@ impl ClaudeDriver {
         // `claude --help`. Bez tej linii cała tabela wyżej jest napisem: `--allowedTools`
         // to lista AUTO-ZATWIERDZANIA, a narzędzie spoza niej dalej jest pod ręką, tylko
         // zapyta — i w biegu bez człowieka „zapyta" nie znaczy „nie zrobi" [2026-08-19].
-        command.arg("--tools").arg(tools_for(spec.policy).join(","));
+        //
+        // 2026-08-20 (T-63) — do tego dnia stało tu `tools_for(spec.policy)` i to była jedyna
+        // droga do tej flagi, więc `Agent.tools` z formularza nie miało w silniku ani jednego
+        // czytelnika. Teraz jedzie tu powierzchnia kroku: dla agenta domyślnego jest nią sufit
+        // polityki, znak w znak jak przedtem, a dla agenta z własną listą — ta lista.
+        command.arg("--tools").arg(surface.available.join(","));
 
         if let Some(model) = &spec.model {
             command.arg("--model").arg(model);
