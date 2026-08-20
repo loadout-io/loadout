@@ -51,6 +51,11 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
    * `agent` byłoby cytatem przypisanym komuś, kto go nie wypowiedział; podpisane `loadout`
    * udawałoby komunikat systemu. */
   told: 'you',
+  /* Trzeci rodzaj należący do agenta: propozycja biegu jest jego własnymi słowami — to lider
+   * patrzy na projekt i mówi, co warto uruchomić. Podpisana `loadout` czytałaby się jak
+   * komunikat aplikacji, czyli ten sam błąd, co kafelek cytujący „3 of 40 checks failed" jako
+   * zdanie agenta [00-SYNTHESIS §2.2]; podpisana `you` wkładałaby zdanie lidera w Twoje usta. */
+  suggested: 'agent',
   asked: 'agent',
   handoff: 'loadout',
   problem: 'loadout',

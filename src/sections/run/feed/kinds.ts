@@ -53,6 +53,10 @@ const REGISTRY: Registry = Object.freeze({
   /* Zdanie czlowieka wchodzi do historii i jest widoczne od razu. Zwiniete byloby jedynym
    * wierszem, ktory czlowiek musi rozwinac, zeby przeczytac to, co sam napisal. */
   told: { route: 'history', expanded: true },
+  /* Propozycja biegu wchodzi do historii i stoi otwarta. Zwinięta byłaby propozycją, której nie
+   * widać: zdanie lidera i przycisk siedziałyby oba za kliknięciem, o którym nikt nie wie, że
+   * trzeba je zrobić — a wtedy „jedno kliknięcie zamiast przepisywania" jest dwoma. */
+  suggested: { route: 'history', expanded: true },
   asked: { route: 'history', expanded: true },
   handoff: { route: 'history', expanded: true },
   problem: { route: 'history', expanded: true },

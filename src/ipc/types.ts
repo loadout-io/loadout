@@ -30,6 +30,13 @@ export type Line =
    * rysuje te dwie rzeczy inaczej, bo czytelnik musi widziec, czyje zdanie czyta. Powod, dla
    * ktorego to w ogole jedzie drutem, stoi przy `Line::Told` po stronie Rusta. */
   | Says<'told'>
+  /* Lider proponuje bieg: proza plus gotowa komenda. TRZY POLA, nie dwa, i to jest cały powód,
+   * dla którego nie jest to `note` z ukośnikiem w środku: `text` przyjeżdża sklejony do jednej
+   * linii (reguła 1), więc granica między komendą a powodem, dla którego lider ją podaje, jest
+   * po tej stronie granicy nieodtwarzalna. Okno, które składa komendę z powrotem z prozy, jest
+   * tym samym oknem, które samo szuka `/run` — tylko o jeden krok dalej (niezmiennik 15).
+   * Rozstrzygnięcie i pełny powód stoją przy `Line::Suggested` po stronie Rusta. */
+  | { kind: 'suggested'; agent: string; text: string; command: string }
   | Says<'handoff'>
   | { kind: 'thinking'; agent: string }
   /* Stan kroku zmienił się. NIE jest wierszem historii — przestawia blok paska loadoutu
@@ -136,6 +143,10 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['ran', { agent: str, text: str, ok: flag, preview: str, detail: strs, detailId: maybeNum }],
   ['note', SAYS],
   ['told', SAYS],
+  /* NIE `SAYS`: propozycja niesie o jedno pole więcej i lustro porównuje zestaw kluczy CO DO
+   * JEDNEGO, więc kształt pożyczony od prozy porzucałby każdy taki wiersz w ciszy — widok
+   * po prostu nigdy nie pokazywałby tego, co lider zaproponował. */
+  ['suggested', { agent: str, text: str, command: str }],
   ['asked', { agent: str, text: str, options: strs }],
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],

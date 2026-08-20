@@ -39,7 +39,7 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Wszystkie czternaście rodzajów wiersza [T2 §7.2], w kolejności deklaracji.
-const KINDS: [LineKind; 16] = [
+const KINDS: [LineKind; 17] = [
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
@@ -56,6 +56,10 @@ const KINDS: [LineKind; 16] = [
     // 2026-08-19 — szesnasty rodzaj: tura CZLOWIEKA. Powod w calosci przy `Line::Told` —
     // do tego dnia zdanie wpisane w wiersz wejscia nie mialo nosnika na drucie i znikalo.
     LineKind::Told,
+    // 2026-08-20 — siedemnasty rodzaj: lider proponuje bieg (T-61). Wpis wchodzi razem
+    // z wierszem w zlotym pliku i z lustrem po stronie okna, bo dopisany osobno albo przewraca
+    // dlugosc, albo opisuje rodzaj, ktorego okno nie przyjmie.
+    LineKind::Suggested,
     LineKind::Asked,
     LineKind::Handoff,
     LineKind::Memory,
@@ -147,12 +151,12 @@ fn sample(kind: LineKind) -> Line {
         // `sample` jest wyczerpującym `match`em — bez niej ten plik przestaje się kompilować,
         // czyli KAŻDE kryterium rustowe pada na budowie i żadne z nich nic nie mierzy.
         //
-        // WIERSZA W ZŁOTYM PLIKU ANI WPISU W `KINDS` TU JESZCZE NIE MA, i to nie jest
-        // przeoczenie: obie te rzeczy razem z lustrem po stronie okna są dokładnie tym, czego
-        // wymaga AC-2 tamtego zadania, więc dopisane w fazie kontraktu zazieleniłyby kryterium,
-        // zanim cokolwiek powstało. Wchodzą razem — wpis, wiersz i lustro — w fazie
-        // implementacji; do tego czasu ta tablica opisuje szesnaście rodzajów i tyle samo
-        // wierszy widzi w pliku, więc to kryterium mówi dalej prawdę o tym, czego pilnuje.
+        // Próbka weszła w fazie kontraktu SAMA, bez wpisu w `KINDS` i bez wiersza w złotym
+        // pliku, i to nie było przeoczenie: te dwie rzeczy razem z lustrem po stronie okna są
+        // dokładnie tym, czego wymaga drugie kryterium tamtego zadania, więc dopisane wtedy
+        // zazieleniłyby je, zanim cokolwiek powstało. Weszły razem w fazie implementacji —
+        // wpis, wiersz i lustro — więc od tej chwili tablica opisuje siedemnaście rodzajów
+        // i tyle samo wierszy widzi w pliku.
         LineKind::Suggested => Line::Suggested {
             agent: "lead".to_owned(),
             text: "/run easy Make the flaky login test pass — the cookie name is wrong in two \
