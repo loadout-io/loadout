@@ -364,13 +364,83 @@ pub struct ToolSurface {
 /// i pozostałe sześć ścieżek startu procesu zostają odmową przy każdej polityce — powód stoi przy
 /// [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
 #[must_use]
-pub fn tool_surface(_policy: Policy, _wanted: Option<&[String]>) -> ToolSurface {
-    // 2026-08-20 — SZKIELET T-63. Ciało jest `todo!()`, więc kryteria padają w czasie wykonania,
-    // a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a
-    // p. 5). `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby to nie przeżyło do pełnej bramki,
-    // a podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości — implementacja
-    // zdejmuje je razem z `todo!()`.
-    todo!()
+pub fn tool_surface(policy: Policy, wanted: Option<&[String]>) -> ToolSurface {
+    let ceiling = tools_for(policy);
+
+    // AGENT DOMYŚLNY: sufit polityki, znak w znak jak przed T-63. Ta gałąź jest jedyną rzeczą,
+    // która chroni trzech wyładowanych strażników (`claude_argv_policy`,
+    // `driver_claude_policy_surface`, `driver_claude_tool_surface`) — i cała różnica między tym
+    // zadaniem a wycofanym T-59, które składało listę po swojemu także wtedy, gdy nikt o nic nie
+    // prosił, i przewracało ostre zawierania trzech list.
+    let Some(wanted) = wanted else {
+        return ToolSurface {
+            available: names(ceiling),
+            refused: None,
+        };
+    };
+
+    // WYCZYSZCZONA LISTA JEST ODMOWĄ, NIE INSTRUKCJĄ. `--tools ""` to słowo vendora znaczące
+    // „żadnych narzędzi", więc krok wystartowałby agenta, który nie przeczyta ani jednego pliku
+    // i z zewnątrz wygląda dokładnie jak zawieszony. Człowiek, który wyczyścił listę, ma dostać
+    // zdanie — a `available` zostaje sufitem, bo krok z odmową i tak nie rusza (niezmiennik 12).
+    if wanted.is_empty() {
+        return ToolSurface {
+            available: names(ceiling),
+            refused: Some(ToolsRefused::NothingChosen),
+        };
+    }
+
+    // Porównanie **równością na surowej nazwie**, nigdy po normalizacji, i to jest wybór w stronę
+    // odmowy: `--tools` zna wyłącznie nazwy, składnia zakresowa należy do `--allowedTools`
+    // (powód stoi przy [`tools_for`]). Wpisane w formularzu `Task(*)` nie ma więc żadnego sufitu
+    // i wraca odmową, zamiast przejść jako `Task` w przebraniu.
+    let above: Vec<String> = wanted
+        .iter()
+        .filter(|name| !within_reach(policy, name))
+        .cloned()
+        .collect();
+    if !above.is_empty() {
+        return ToolSurface {
+            available: names(ceiling),
+            refused: Some(ToolsRefused::AbovePolicy {
+                policy,
+                tools: above,
+            }),
+        };
+    }
+
+    // Lista mieści się w suficie, więc TO ONA jest zestawem — w kolejności, w której człowiek ją
+    // wymienił. Nie zbiór złożony na nowo z sufitu: gdyby sterownik przebudowywał tę listę,
+    // „agent uses: …" z formularza znów byłoby ustawieniem, które ekran przyjmuje, a bieg
+    // przycina po cichu.
+    ToolSurface {
+        available: wanted.to_vec(),
+        refused: None,
+    }
+}
+
+/// Dwie nazwy, na które sufit polityki się **nie** rozciąga.
+///
+/// To jest cała furtka z AC-2 i ma dwie pozycje, nie klasę: dial obiecuje coś o PLIKACH („look
+/// only" znaczy „nie zmienia plików"), a nie o tym, czy agent widzi świat. Bez tych dwóch nazw
+/// agenta do researchu nie da się skonfigurować — sieć daje dziś wyłącznie ta sama pozycja dialu,
+/// która daje `Write` i `Bash`, więc człowiek wybiera między „widzi świat i może zepsuć pliki"
+/// a „nie zepsuje niczego i nie widzi nic".
+///
+/// Czego ta furtka NIE otwiera: `Task`, `Workflow` i pozostałych sześciu ścieżek startu procesu.
+/// Powód stoi przy [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
+const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
+
+/// Czy o to narzędzie wolno poprosić przy tej polityce: sufit [`tools_for`] plus furtka [`WEB`].
+fn within_reach(policy: Policy, name: &str) -> bool {
+    tools_for(policy).contains(&name) || WEB.contains(&name)
+}
+
+/// Statyczna lista nazw jako właścicielska. Jedna linia w jednym miejscu, żeby `map(str::to_owned)`
+/// nie stało w czterech gałęziach [`tool_surface`] — cztery kopie to cztery okazje, żeby w jednej
+/// z nich zgubić kolejność.
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().copied().map(str::to_owned).collect()
 }
 
 /// Dokąd idzie transkrypt kroku i kto dostaje jego wiersze.
