@@ -1358,11 +1358,16 @@ fn no_such_tools(agent: &str, refused: &ToolsRefused) -> String {
 ///
 /// Bez tego zdanie o odmowie nazywałoby wariant z drutu (`ReadOnly`), a człowiek szukałby w oknie
 /// napisu, którego tam nie ma (niezmiennik 14). Trzy pozycje, te same trzy słowa co na ekranie.
+///
+/// Kotwicą są brzmienia dialu, a nie ta funkcja: `Look only` / `Ask first` / `Work freely` stoją
+/// w `src/sections/agents/agent-form.tsx`, `src/sections/agents/index.tsx` i
+/// `src/sections/workflows/step-panel/panel.tsx`. Kiedy tam się zmienią, TO MIEJSCE jest błędne —
+/// nie odwrotnie, bo tamte trzy człowiek czyta, a tego zdania szuka dopiero po odmowie.
 const fn on_screen(policy: Policy) -> &'static str {
     match policy {
-        Policy::ReadOnly => "read only",
-        Policy::EditInFolder => "able to edit this folder",
-        Policy::Unrestricted => "unlimited",
+        Policy::ReadOnly => "look only",
+        Policy::EditInFolder => "ask first",
+        Policy::Unrestricted => "work freely",
     }
 }
 
