@@ -4,6 +4,71 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-20, 07:10 — biurko rozliczone: trzy zadania w trunku, niezmiennik 29, trzy decyzje w kontraktach
+
+**Wyladowane: T-68, T-69, T-70.** Pelna bramka po kazdym, 15/0. Do tego **niezmiennik 29**
+w karcie pracy, **trzy decyzje produktowe** zamienione w kontrakty (T-70, T-71, T-72)
+i **T-73 wycofane po pomiarze**.
+
+### Niezmiennik 29 — kryterium asertuje zdanie tam, gdzie czlowiek je widzi
+
+Wszedl na wyrazne polecenie wlasciciela, po tym jak recenzent zlapal te klase CZTERY RAZY na
+zielonej bramce w jednej fali. Regula nie zada niemozliwego w repo bez jsdom i mowi to wprost:
+czysty modul dowodzi TRESCI, `renderToStaticMarkup` obecnosci na prawdziwej sciezce,
+`e2e/harness.ts` dojscia po prawdziwym kliknieciu. Wolno wybrac jedno z trzech; nie wolno
+poprzestac na wartosci zwroconej przez funkcje, ktorej nikt nie wola.
+
+**Regula od razu zaczela pracowac.** Recenzent T-70 zlapal, ze kryteria wolaja `Threads::say`
+wprost, a **zywa aplikacja `Threads` nie konstruuje w ogole** — `AppState.chat` to nadal
+`Mutex<Option<Chat>>`. Biblioteka dla lidera byla wiec dowiedziona na typie, ktorego produkt
+nie wola.
+
+### Blokada, ktora postawil orchestrator, i ktora zdejmuje T-71 AC-5
+
+Przyczyna tamtego stanu NIE jest wada pisarza i to jest wazniejsze niz sama naprawa. Pisarz T-60
+opisal go co do zdania (`ipc.rs`, „WATEK PER ZAKRES ISTNIEJE I NIE STOI TUTAJ"): `Threads::say`
+wymaga wskazanego lidera, wskazania nie ma czym dowiezc z okna, bo wymagaloby klucza obok
+`folder` w `io.ts` — a **moj mandat na tamten plik pozwalal dopisac wylacznie `folder`**.
+Odmowil podstawienia polowy i mial racje: rozmowa zakladajaca nowy watek przy kazdym zdaniu
+bylaby gorsza od tej, ktora stoi.
+
+Blokada jest wiec granica orchestratora, nie modelu, i dlatego zdejmuje ja zadanie, ktore posiada
+wszystkie trzy pliki. **Nauka: waski mandat na cudzy plik potrafi zablokowac podpiecie, ktore
+jest CALYM sensem zadania. Kiedy go stawiasz, sprawdz, czy zadanie da sie wtedy skonczyc.**
+
+### T-73 wycofane, bo wada byla zamknieta I PILNOWANA
+
+Kontrakt na sklejanie wierszy przechodzacych przez koniec biegu zeszl z „PASSES before
+implementation" na obu kryteriach. Zamiast zgadywac, zmierzylem mutacja: zdjecie `groups.clear()`
+z `runEnded` zapala `nothing-live-survives-the-run.test.ts > closes the open fold windows, so the
+next run cannot grow the last row of this one`; po przywroceniu 7 passed. Czyli pisarz T-68
+przewidzial te wade i pokryl ja kryterium **w tym samym biegu**, a recenzent czytal kod, ktory
+juz ja zamykal.
+
+**Wzor do zapamietania:** „zielone before" nie odroznia „zachowanie istnieje" od „test jest
+zepsuty". Kiedy oba kryteria swieca zielono przed implementacja, mutacja odpowiada w 30 sekund,
+a lektura nie odpowiada wcale.
+
+### Trzeci raz: limit konta wyglada jak zly kontrakt
+
+T-72 zeszlo rc=1 z „did not RUN" na wszystkich czterech kryteriach i galezia zawierajaca
+**wylacznie commit kontraktowy**. To ten sam podpis, co dwa razy wczesniej tej nocy.
+Rozpoznanie jednolinijkowe: `git log main..HEAD` na galezi pokazuje jeden commit zamiast kilku.
+Po resecie wznowione bez zmiany ani jednego znaku w kontrakcie.
+
+### Co czeka
+
+| co | stan |
+|---|---|
+| **T-72** — procesy, ktore Loadout trzyma (`/start`, kafelek w szynie, kill z dowodem) | wznowione |
+| **T-71** — plusik otwiera terminal + AC-5 (zywa komenda przez rejestr watkow) | po T-72, dzieli `ipc.rs` i `io.ts` |
+| T-40, T-41, T-45, T-56 | starsza kolejka, nietkniete |
+| T-64, T-65 | triggery Lineara, druga fala |
+
+**Etap B dla terminali** (biegi rownolegle: tozsamosc biegu na drucie, `stop_run(id)`, rejestr
+zamiast jednego `AppState.live`) nie ma jeszcze kontraktu. Jego warunkiem wstepnym byl T-69
+i ten juz stoi w trunku.
+
 ## 2026-08-20, 05:40 — terminal, lider i siedem zadan w trunku
 
 **Wyladowane: T-58, T-66, T-67, T-60, T-61, T-62, T-63.** Pelna bramka po KAZDYM ladowaniu,
