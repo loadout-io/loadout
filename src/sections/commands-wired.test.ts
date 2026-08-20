@@ -366,6 +366,26 @@ const WIRES: readonly Wire[] = [
     given: ['what should the checker look at?'],
     call: () => run.sayToOrchestrator('what should the checker look at?', null),
   },
+  /* 2026-08-20 (T-71) — JEDNA NOWA KRAWĘDŹ BIEGU: koniec rozmowy zamykanej karty. Dopisana,
+   * nic nie usunięte i żaden istniejący wiersz nie przepisany — bez niej pierwszy test wyżej
+   * jest czerwony, bo `run/io.ts` eksportuje `closeTerminal`, a krawędź bez wiersza jest
+   * krawędzią, której nikt nie zobaczył docierającej do Rusta. To nie jest ostrożność na
+   * przyszłość: `close_terminal` po tamtej stronie granicy stało otestowane i bez ani jednego
+   * wołającego z produkcji, więc każdy terminal zamknięty `×` zostawiał lidera żywego
+   * i płacącego (niezmiennik 6).
+   *
+   * `given` NIESIE IDENTYFIKATOR TERMINALU, bo on JEST tu całym wywołaniem: `close_terminal`
+   * bierze jeden argument i to nim rejestr rozmów wybiera, którą kończy. Wiersz wołany bez
+   * niego przechodziłby także dla krawędzi, która kończy rozmowę pierwszą z listy — czyli
+   * cudzą. Wartością jest folder, bo karta biegu nazywa się folderem po obu stronach granicy
+   * (`run/tabs/store.ts`, `endLeadOf`). */
+  {
+    where: 'run',
+    what: 'closeTerminal',
+    command: 'close_terminal',
+    given: [FOLDER],
+    call: () => run.closeTerminal(FOLDER),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',
