@@ -479,30 +479,44 @@ impl Lead {
     }
 }
 
-/// Wątki lidera: po jednym na zakres, wszystkie w jednym miejscu.
+/// Wątki lidera: po jednym na TERMINAL, wszystkie w jednym miejscu.
 ///
 /// # Po co to istnieje obok [`Chat`]
 ///
 /// Bo [`Chat`] jest JEDNĄ rozmową i jego własny komentarz zapowiada ten dzień: „jedna na
 /// aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną własne
-/// sesje" (`ipc::AppState::chat`). Skutek dzisiejszego stanu widzi człowiek: `Chat::say` używa
-/// `cwd` **wyłącznie przy zakładaniu sesji**, więc rozmowa o projekcie A, po przełączeniu na B,
-/// odpowiada dalej o A — bez ani jednego zdania ostrzeżenia, z żywego procesu siedzącego
-/// w folderze sprzed przełączenia.
+/// sesje". Skutek tamtego stanu widział człowiek: `Chat::say` używa `cwd` **wyłącznie przy
+/// zakładaniu sesji**, więc rozmowa o projekcie A, po przełączeniu na B, odpowiada dalej o A —
+/// bez ani jednego zdania ostrzeżenia, z żywego procesu siedzącego w folderze sprzed
+/// przełączenia.
 ///
-/// Zakres jest kluczem, bo zakres jest tym, co człowiek przełącza. Wpis w [`Threads::lines`]
-/// powstaje, kiedy okno pierwszy raz na ten zakres patrzy; wpis w [`Threads::live`] dopiero przy
-/// pierwszym zdaniu — sesja wystartowana przy montażu ekranu płaci za turę, o którą nikt nie
-/// zapytał, i to jest ten sam powód, który stoi przy [`Chat::live`].
+/// # 2026-08-20 (T-71) — KLUCZEM JEST TERMINAL, NIE FOLDER
+///
+/// T-60 kluczowało zakresem, bo zakres był najdrobniejszą rzeczą, jaką okno umiało nazwać: karta
+/// BYŁA folderem (`src/sections/run/tabs/store.ts`, „w jednym zakresie może stać najwyżej jedna
+/// karta"). Od T-71 karta jest terminalem z własną tożsamością, więc dwie rozmowy w jednym
+/// projekcie są zwykłym stanem — a rejestr kluczowany folderem oddaje im JEDEN wątek: człowiek
+/// pisze w lewej karcie, a odpowiedź pojawia mu się w prawej.
+///
+/// **Rejestr jest jeden, dróg do niego dwie** (niezmiennik 13). Droga po folderze zostaje, bo
+/// woła ją kryterium sprzed tego zadania, i nazywa wtedy DOMYŚLNY terminal tego zakresu
+/// ([`key_of`]). Drugi rejestr obok byłby drugim domem dla odpowiedzi „gdzie mieszka ta rozmowa"
+/// i rozjechałby się przy pierwszym zamknięciu okna: [`Threads::close`] widziałaby jeden z nich,
+/// a drugi zostawiał żywe procesy pod PID 1.
+///
+/// Wpis w [`Threads::lines`] powstaje, kiedy okno pierwszy raz na ten terminal patrzy; wpis
+/// w [`Threads::live`] dopiero przy pierwszym zdaniu — sesja wystartowana przy montażu ekranu
+/// płaci za turę, o którą nikt nie zapytał, i to jest ten sam powód, który stoi przy
+/// [`Chat::live`].
 #[derive(Default)]
 pub struct Threads {
-    /// Kanał wierszy tego zakresu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
+    /// Kanał wierszy tego terminalu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
     /// zamknięcie cudzej rozmowy przy przełączeniu byłoby zgubieniem wątku, o który chodzi
     /// cała ta zmiana.
-    lines: HashMap<PathBuf, Arc<Mutex<LineSink>>>,
-    /// Sesja tego zakresu. Osobny wpis na zakres, bo to jest jedyna rzecz, która czyni zdanie
-    /// „wątek należy do zakresu" prawdziwym, a nie zadeklarowanym.
-    live: HashMap<PathBuf, Session>,
+    lines: HashMap<String, Arc<Mutex<LineSink>>>,
+    /// Sesja tego terminalu. Osobny wpis na terminal, bo to jest jedyna rzecz, która czyni
+    /// zdanie „wątek należy do terminalu" prawdziwym, a nie zadeklarowanym.
+    live: HashMap<String, Session>,
     /// Gdzie leży biblioteka tego człowieka — `~/.loadout`, powiedziane przez okno.
     ///
     /// JEDNA na wszystkie zakresy, a nie jedna na wątek, bo biblioteka jest globalna
@@ -517,7 +531,7 @@ pub struct Threads {
 }
 
 /* RĘCZNIE, z tego samego powodu, co przy [`Chat`]: `Box<dyn AgentHandle>` nie jest `Debug`
- * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile zakresów
+ * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile terminali
  * okno patrzyło i ile wątków naprawdę stoi — plus biblioteką, bo `None` w tym polu jest jedynym
  * odróżnieniem lidera odciętego od plików, o których rozmawia, od lidera, który ich nie znalazł. */
 impl std::fmt::Debug for Threads {
@@ -541,8 +555,17 @@ impl Threads {
     ///
     /// Wołane przy każdym montażu ekranu pracy i przy każdym przeładowaniu okna, więc **nie może**
     /// niczego kończyć — powód i pomiar stoją przy [`Chat::lines_go_to`].
+    ///
+    /// Folder nazywa domyślny terminal tego zakresu ([`key_of`]): to jest ta sama czynność, co
+    /// [`Threads::terminal_lines_go_to`], tylko zadana pytaniem „ten folder" zamiast „ten
+    /// terminal", i wchodzi do tego samego, jednego rejestru.
     pub fn lines_go_to(&mut self, cwd: PathBuf, lines: LineSink) {
-        match self.lines.entry(cwd) {
+        self.watch(key_of(&cwd), lines);
+    }
+
+    /// Wiersze tego terminalu idą odtąd tam — jedno ciało dla obu dróg wyżej.
+    fn watch(&mut self, terminal: String, lines: LineSink) {
+        match self.lines.entry(terminal) {
             /* PODMIENIAMY ZAWARTOŚĆ UCHWYTU, nie sam wpis w mapie, i to jest cała naprawa
              * „wyjście na inną sekcję gubi rozmowę". Zadanie czytające trzyma ten `Arc` od chwili
              * startu wątku, więc wstawienie w to miejsce NOWEGO uchwytu zostawiłoby je piszące
@@ -550,7 +573,7 @@ impl Threads {
             Entry::Occupied(open) => {
                 *open.get().lock().unwrap_or_else(PoisonError::into_inner) = lines;
             }
-            // Pierwszy raz na tym zakresie: sam widok, jeszcze bez wątku. Sesja wstaje przy
+            // Pierwszy raz na tym terminalu: sam widok, jeszcze bez wątku. Sesja wstaje przy
             // pierwszym zdaniu, bo tura wystartowana przy montażu ekranu jest turą, za którą
             // ktoś płaci, choć nikt o nic nie zapytał.
             Entry::Vacant(spot) => {
@@ -629,10 +652,10 @@ impl Threads {
     /// Czy w tym zakresie stoi wątek.
     ///
     /// Pytanie zadawane o zakres, nie o aplikację: to na nim stoi asercja „sesja zakresu B żyje
-    /// dalej, kiedy okno patrzy na A".
+    /// dalej, kiedy okno patrzy na A". Folder nazywa domyślny terminal tego zakresu ([`key_of`]).
     #[must_use]
     pub fn is_live_in(&self, cwd: &Path) -> bool {
-        self.live.contains_key(cwd)
+        self.is_live_at(&key_of(cwd))
     }
 
     /// Mówi zdanie liderowi w TYM zakresie — pierwsze zdanie zakłada jego wątek, każde następne
@@ -641,7 +664,10 @@ impl Threads {
     /// Sterownik wybiera **fabryka**, po vendorze z definicji lidera, i dlatego jedzie tu
     /// [`Drivers`], a nie gotowy sterownik: wybór po vendorze jest jedną z rzeczy, których to
     /// zadanie dowodzi, a wybór zrobiony u wołającego byłby wyborem, którego żaden test bez okna
-    /// nie widzi (dziś robi go `ipc::AppState::chat_driver`, na sztywno).
+    /// nie widzi.
+    ///
+    /// Folder nazywa domyślny terminal tego zakresu, więc to jest jedno wywołanie
+    /// [`Threads::say_in`] i ani jednej decyzji obok.
     pub async fn say(
         &mut self,
         drivers: &Drivers,
@@ -649,66 +675,21 @@ impl Threads {
         cwd: PathBuf,
         text: &str,
     ) -> Result<(), ChatError> {
-        let said = text.trim();
-        if said.is_empty() {
-            return Err(ChatError::NothingToSay);
-        }
-
-        if let Some(thread) = self.live.get(&cwd) {
-            /* WĄTEK TEGO ZAKRESU STOI: zdanie jest jego kolejną turą i jedzie głosem, bez `&mut`
-             * na uchwycie. To ten punkt odróżnia „wątek na zakres" od „wątek na turę":
-             * implementacja startująca proces na każde zdanie płaci zimny start za każdym razem
-             * i gubi rozmowę, bo model nie słyszał poprzedniego zdania. */
-            thread
-                .voice
-                .send(ToAgent::Turn(said.to_owned()))
-                .await
-                .map_err(|_| ChatError::StoppedListening)?;
-        } else {
-            /* Uchwyt strumienia KLONUJEMY przed `await` — powód (a `&Chat` nie jest `Send`) stoi
-             * przy [`Chat::say`] i dotyczy tu tego samego uchwytu sesji. */
-            let lines = self
-                .lines
-                .get(&cwd)
-                .map(Arc::clone)
-                .ok_or(ChatError::NotWatchingThatFolder)?;
-            /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
-             * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna, a gałąź domyślna
-             * jest tym, czego konfiguracją nie da się wyłączyć. Tutaj nie ma ani jednej gałęzi:
-             * jest jedna wartość z pliku i jedno wywołanie fabryki. */
-            let driver = drivers(lead.agent.runs_with);
-            /* ZASIĘG SKŁADANY PRZED `await`, i to jest ta sama reguła, co linię wyżej: `reaches`
-             * oddaje własną listę, więc pożyczka `self` kończy się na tym wywołaniu i nie ma
-             * wyrażenia, w którym `&Threads` dożyłby do punktu zawieszenia. */
-            let session = begin(
-                driver.as_ref(),
-                spec_for(lead, cwd.clone(), said, self.reaches()),
-                lines,
-            )
-            .await?;
-            self.live.insert(cwd.clone(), session);
-        }
-
-        /* TWOJE ZDANIE W STRUMIENIU TEGO ZAKRESU. Wynik świadomie porzucony z tego samego powodu,
-         * co w [`Chat::say`]: pełna kolejka do okna jest stanem normalnym, a zdanie i tak POSZŁO. */
-        let _ = self.say_in_the_stream(
-            &cwd,
-            Line::Told {
-                agent: LEAD.to_owned(),
-                text: said.to_owned(),
-            },
-        );
-        Ok(())
+        let terminal = Terminal {
+            id: key_of(&cwd),
+            folder: cwd,
+        };
+        self.say_in(drivers, lead, &terminal, text).await
     }
 
-    /// Wpisuje wiersz do strumienia TEGO zakresu; `false`, kiedy nie dojechał.
+    /// Wpisuje wiersz do strumienia TEGO terminalu; `false`, kiedy nie dojechał.
     ///
     /// Klon POD zamkiem, wysyłka NAD nim — ten sam zabieg i ten sam powód, co przy
     /// [`Chat::say_in_the_stream`].
-    fn say_in_the_stream(&self, cwd: &Path, line: Line) -> bool {
+    fn say_in_the_stream(&self, terminal: &str, line: Line) -> bool {
         let Some(sink) = self
             .lines
-            .get(cwd)
+            .get(terminal)
             .map(|open| open.lock().unwrap_or_else(PoisonError::into_inner).clone())
         else {
             return false;
@@ -731,7 +712,7 @@ impl Threads {
          * całą eskalację zabijania pożyczałby mapę mutowalnie przez sekundy, a `is_live_in`
          * pytane w tym czasie odpowiadałoby o wątkach, które już schodzą. Po tej linii nie ma
          * ani jednego wątku, o którym to okno jeszcze wie. */
-        let closing: Vec<(PathBuf, Session)> = self.live.drain().collect();
+        let closing: Vec<(String, Session)> = self.live.drain().collect();
         let mut proofs = Vec::with_capacity(closing.len());
         for (_, mut session) in closing {
             /* `cancel`, nie `close`, i to jest wymóg niezmiennika 6: `close` oddaje KOD WYJŚCIA,
@@ -748,12 +729,24 @@ impl Threads {
 }
 
 // ── TERMINAL, CZYLI JEDNOSTKA DROBNIEJSZA NIŻ ZAKRES ───────────────────────────────────────
-//
-// 2026-08-20 — SZKIELET T-71. Ciała są `todo!()`, więc kryteria padają w czasie wykonania,
-// a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a p. 5).
-// `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno z nich nie przeżyło do pełnej
-// bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości — ciało,
-// które ich nie czyta, dawałoby `unused_variables`.
+
+/// Tożsamość DOMYŚLNEGO terminalu tego zakresu — czyli klucz rejestru, którym folder nazywa
+/// sam siebie.
+///
+/// # Dlaczego rejestr jest kluczowany napisem, a nie `PathBuf`
+///
+/// Bo terminal, który wybiło okno, nie jest ścieżką (`src/sections/run/tabs/terminal.ts` oddaje
+/// `terminal-1`) — a rejestr ma być JEDEN (niezmiennik 13). Napis jest jedynym typem, w którym
+/// obie tożsamości mieszczą się bez odwzorowania między nimi; odwzorowanie byłoby drugą
+/// odpowiedzią na pytanie „gdzie mieszka ta rozmowa".
+///
+/// `to_string_lossy` jest tu bezpieczne w jedną stronę, która ma znaczenie: obie drogi do tego
+/// rejestru są nasze, a okno przysyła tę samą ścieżkę, którą tu widzimy, więc klucz zgadza się
+/// sam z sobą. Prefiks `terminal-` po tamtej stronie nie zderzy się ze ścieżką bezwzględną
+/// nigdy — ta zaczyna się od `/`.
+fn key_of(folder: &Path) -> String {
+    folder.to_string_lossy().into_owned()
+}
 
 /// Który terminal mówi i gdzie stoi.
 ///
@@ -792,8 +785,8 @@ impl Threads {
     /// zadania, i ma zostać JEDNĄ DROGĄ do jednego rejestru — folder nazywa wtedy domyślny
     /// terminal tego zakresu. Drugi rejestr obok byłby drugim domem dla odpowiedzi „gdzie mieszka
     /// ta rozmowa" (niezmiennik 13) i rozjechałby się przy pierwszym zamknięciu okna.
-    pub fn terminal_lines_go_to(&mut self, _terminal: &Terminal, _lines: LineSink) {
-        todo!()
+    pub fn terminal_lines_go_to(&mut self, terminal: &Terminal, lines: LineSink) {
+        self.watch(terminal.id.clone(), lines);
     }
 
     /// Czy w tym terminalu stoi wątek.
@@ -801,8 +794,8 @@ impl Threads {
     /// Pytanie zadawane o terminal, nie o folder: to na nim stoi asercja „zamknięcie jednego
     /// terminalu zostawia drugi", której nie da się wypowiedzieć, dopóki oba mają jeden klucz.
     #[must_use]
-    pub fn is_live_at(&self, _terminal: &str) -> bool {
-        todo!()
+    pub fn is_live_at(&self, terminal: &str) -> bool {
+        self.live.contains_key(terminal)
     }
 
     /// Mówi zdanie liderowi w TYM terminalu — pierwsze zdanie zakłada jego wątek, każde następne
@@ -817,12 +810,66 @@ impl Threads {
     /// zdania.
     pub async fn say_in(
         &mut self,
-        _drivers: &Drivers,
-        _lead: &Lead,
-        _terminal: &Terminal,
-        _text: &str,
+        drivers: &Drivers,
+        lead: &Lead,
+        terminal: &Terminal,
+        text: &str,
     ) -> Result<(), ChatError> {
-        todo!()
+        let said = text.trim();
+        if said.is_empty() {
+            return Err(ChatError::NothingToSay);
+        }
+
+        if let Some(thread) = self.live.get(&terminal.id) {
+            /* WĄTEK TEGO TERMINALU STOI: zdanie jest jego kolejną turą i jedzie głosem, bez `&mut`
+             * na uchwycie. To ten punkt odróżnia „wątek na terminal" od „wątek na turę":
+             * implementacja startująca proces na każde zdanie płaci zimny start za każdym razem
+             * i gubi rozmowę, bo model nie słyszał poprzedniego zdania. */
+            thread
+                .voice
+                .send(ToAgent::Turn(said.to_owned()))
+                .await
+                .map_err(|_| ChatError::StoppedListening)?;
+        } else {
+            /* Uchwyt strumienia KLONUJEMY przed `await` — powód (a `&Chat` nie jest `Send`) stoi
+             * przy [`Chat::say`] i dotyczy tu tego samego uchwytu sesji. */
+            let lines = self
+                .lines
+                .get(&terminal.id)
+                .map(Arc::clone)
+                .ok_or(ChatError::NotWatchingThatFolder)?;
+            /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
+             * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna, a gałąź domyślna
+             * jest tym, czego konfiguracją nie da się wyłączyć. Tutaj nie ma ani jednej gałęzi:
+             * jest jedna wartość z pliku i jedno wywołanie fabryki. */
+            let driver = drivers(lead.agent.runs_with);
+            /* ZASIĘG SKŁADANY PRZED `await`, i to jest ta sama reguła, co linię wyżej: `reaches`
+             * oddaje własną listę, więc pożyczka `self` kończy się na tym wywołaniu i nie ma
+             * wyrażenia, w którym `&Threads` dożyłby do punktu zawieszenia.
+             *
+             * FOLDER BIERZEMY Z TERMINALU, nie z klucza: klucz jest tożsamością karty, a katalog
+             * roboczy sesji jest tym, co terminal NIESIE. Wersja licząca katalog z klucza
+             * postawiłaby rozmowę drugiego terminalu w katalogu o nazwie `terminal-2`. */
+            let session = begin(
+                driver.as_ref(),
+                spec_for(lead, terminal.folder.clone(), said, self.reaches()),
+                lines,
+            )
+            .await?;
+            self.live.insert(terminal.id.clone(), session);
+        }
+
+        /* TWOJE ZDANIE W STRUMIENIU TEGO TERMINALU. Wynik świadomie porzucony z tego samego
+         * powodu, co w [`Chat::say`]: pełna kolejka do okna jest stanem normalnym, a zdanie
+         * i tak POSZŁO. */
+        let _ = self.say_in_the_stream(
+            &terminal.id,
+            Line::Told {
+                agent: LEAD.to_owned(),
+                text: said.to_owned(),
+            },
+        );
+        Ok(())
     }
 
     /// Człowiek zamknął ten terminal: jego wątek schodzi i oddaje dowód śmierci swojej grupy.
@@ -835,8 +882,19 @@ impl Threads {
     ///
     /// Kończy JEDEN wątek i milczy o pozostałych. Zamknięcie karty, w której nic nie chodzi, nie
     /// jest instrukcją o karcie obok — a przy jednym kluczu na folder byłoby nią zawsze.
-    pub async fn close_at(&mut self, _terminal: &str) -> Option<GroupProof> {
-        todo!()
+    pub async fn close_at(&mut self, terminal: &str) -> Option<GroupProof> {
+        /* ZDJĘTE Z MAPY PRZED `await`, z tego samego powodu, co w [`Threads::close`]: pożyczka
+         * mapy trzymana przez całą eskalację zabijania kazałaby `is_live_at` odpowiadać
+         * o wątku, który już schodzi. Po tej linii nie ma ani jednego wątku pod tym kluczem. */
+        let mut session = self.live.remove(terminal)?;
+        /* `cancel`, nie `close`, i to jest wymóg niezmiennika 6: `close` oddaje KOD WYJŚCIA,
+         * a nie dowód, więc „zamknięte" znaczyłoby wtedy „wysłałem sygnał". Łaska nie ginie —
+         * trzystopniowa eskalacja siedzi w środku `cancel` u sterownika. */
+        let proof = session.handle.cancel().await;
+        /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, ale porzucony `JoinHandle`
+         * zostawiłby zadanie, o którym nikt nie wie — jak w [`Chat::close`]. */
+        session.reader.abort();
+        Some(proof)
     }
 }
 
