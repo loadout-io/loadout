@@ -55,6 +55,29 @@ pub const LEAD: &str = "Lead";
 /// zatrzymałby pętlę czytającą model, czyli mierzylibyśmy własny przyrząd.
 const EVENTS: usize = 128;
 
+/// Katalog agentów w bibliotece człowieka: `~/.loadout/agents/` (`docs/ARCHITECTURE.md` §8).
+///
+/// # Dlaczego własna stała, a nie import z [`super::agents`]
+///
+/// Bo tamta jest prywatna — i to nie jest przeoczenie, tylko kształt, którym ten fakt stoi w tym
+/// drzewie już cztery razy: `commands::agents` i `commands::run` (agenci), `commands::workflows`
+/// i `ipc` (workflow). Jedna odpowiedź mieszka w §8, a każdy moduł, który składa ścieżkę, trzyma
+/// swoją kopię z odnośnikiem do niej.
+///
+/// Ta kopia niesie więc dokładnie ten sam obowiązek, co tamte cztery: dzień, w którym §8 zmieni
+/// nazwę któregoś z tych dwóch katalogów, jest dniem, w którym `"agents"` i `"workflows"` trzeba
+/// przeszukać po całym `src-tauri/src`. Rozjazd nie wygląda tu na literówkę — wygląda na lidera,
+/// który „nie widzi" workflow leżącego na dysku.
+///
+/// Piąte trafienie tego gerpu jest przy tym FAŁSZYWE i dlatego stoi tu wymienione:
+/// `inherit::wire::SUBAGENTS_DIR` to `agents/` w repo **gospodarza** (`.claude/agents`), czyli
+/// inny fakt o tej samej nazwie. Zmiana §8 nie ma go dotknąć.
+const AGENTS_DIR: &str = "agents";
+
+/// Katalog workflow w tej samej bibliotece: `~/.loadout/workflows/` (§8 tamże, ten sam powód
+/// i ten sam obowiązek, co przy [`AGENTS_DIR`]).
+const WORKFLOWS_DIR: &str = "workflows";
+
 /// Prompt systemowy orchestratora.
 ///
 /// Mówi trzy rzeczy i każda ma powód. Że jest do rozmowy — bo inaczej model zachowuje się jak
@@ -480,16 +503,29 @@ pub struct Threads {
     /// Sesja tego zakresu. Osobny wpis na zakres, bo to jest jedyna rzecz, która czyni zdanie
     /// „wątek należy do zakresu" prawdziwym, a nie zadeklarowanym.
     live: HashMap<PathBuf, Session>,
+    /// Gdzie leży biblioteka tego człowieka — `~/.loadout`, powiedziane przez okno.
+    ///
+    /// JEDNA na wszystkie zakresy, a nie jedna na wątek, bo biblioteka jest globalna
+    /// (`docs/ARCHITECTURE.md` §8): agenci i workflow są tym, co się przenosi między projektami,
+    /// i to jest cały powód, dla którego leżą poza repo.
+    ///
+    /// `None` znaczy „okno jeszcze nie powiedziało" i daje liderowi dokładnie to, co miał przed
+    /// tym zadaniem — sam folder zakresu. Ścieżka zgadnięta tutaj z `HOME` byłaby gorsza od braku:
+    /// każdy test rozmawiałby wtedy z prawdziwą biblioteką człowieka (ten sam wybór i ten sam
+    /// powód, co przy [`super::agents::list_agents_inner`] i przy `RunDeps::home`).
+    library: Option<PathBuf>,
 }
 
 /* RĘCZNIE, z tego samego powodu, co przy [`Chat`]: `Box<dyn AgentHandle>` nie jest `Debug`
  * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile zakresów
- * okno patrzyło i ile wątków naprawdę stoi. */
+ * okno patrzyło i ile wątków naprawdę stoi — plus biblioteką, bo `None` w tym polu jest jedynym
+ * odróżnieniem lidera odciętego od plików, o których rozmawia, od lidera, który ich nie znalazł. */
 impl std::fmt::Debug for Threads {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Threads")
             .field("watched", &self.lines.len())
             .field("live", &self.live.len())
+            .field("library", &self.library)
             .finish_non_exhaustive()
     }
 }
@@ -552,15 +588,42 @@ impl Threads {
     /// nie CO. Lider `look only` bibliotekę czyta — na tym polega cała wartość pytania „jakie mam
     /// workflow?" — a pisze dopiero ten, któremu człowiek dał wyżej.
     ///
-    /// # 2026-08-20 — SZKIELET T-70
+    /// Wołane, kiedy okno wie, gdzie ta biblioteka leży, i dotyczy KAŻDEGO wątku tego okna —
+    /// także tych, które już stoją. Wątek stojący ma jednak swój proces wystartowany, a `--add-dir`
+    /// jedzie w argv przy starcie: rozmowa, która zaczęła się przed tym zdaniem, dostanie zasięg
+    /// przy następnej. Wołanie z okna stoi więc przed pierwszym zdaniem (przy `open_chat`), a nie
+    /// po nim.
+    pub fn library_is(&mut self, library: PathBuf) {
+        self.library = Some(library);
+    }
+
+    /// Katalogi biblioteki, które lider tej rozmowy ma prawo otworzyć — po jednym na jej połowę.
     ///
-    /// Ciało jest `todo!()`, żeby kryteria padały w czasie wykonania, a nie na kompilacji: test,
-    /// który się nie zbudował, nie uruchomił niczego (`AGENTS.md` §2a p. 5). `clippy::todo = deny`
-    /// w `Cargo.toml` pilnuje, żeby nie przeżyło do pełnej bramki, a podkreślenie przy nazwie
-    /// parametru jest częścią tej samej tymczasowości — ciało, które go nie czyta, dawałoby
-    /// `unused_variables`.
-    pub fn library_is(&mut self, _library: PathBuf) {
-        todo!("T-70: katalogi biblioteki mają dojechać do RunSpec każdej rozmowy tego okna")
+    /// Puste, dopóki [`Threads::library_is`] nie powiedziało, gdzie biblioteka leży: to jest
+    /// zachowanie sprzed tego zadania, czyli lider widzący sam folder zakresu.
+    ///
+    /// # Dlaczego katalog, którego NIE MA, tu nie wchodzi
+    ///
+    /// Bo `--add-dir` na nieistniejącą ścieżkę nie jest u vendora ostrzeżeniem — jest procesem,
+    /// który nie wstaje. Ten sam powód i ta sama linia obrony stoi już przy przekazaniach
+    /// (`commands::run::prompt_for` dokłada katalog załączników pod warunkiem `is_dir()`, żeby nie
+    /// zamienić nieczytelnego załącznika w nieuruchomiony krok). Tutaj cena byłaby wyższa: tam nie
+    /// wstaje jeden krok, a tu cała rozmowa — czyli jedyna rzecz, którą to okno robi.
+    ///
+    /// Kogo to zostawia bez zasięgu, wypisane wprost, żeby nie wyglądało na przeoczenie: człowieka,
+    /// który nie zapisał jeszcze ANI JEDNEGO workflow. Jego `workflows/` powstaje przy pierwszym
+    /// zapisie (`super::workflows::save_workflow_inner`) i od tej chwili lider go widzi. Po stronie
+    /// agentów tej dziury nie ma i nie może być: lider **jest** zapisanym agentem, więc `agents/`
+    /// istnieje, zanim padnie pierwsze zdanie ([`Lead::pointed_at`] czyta je z tego samego miejsca).
+    fn reaches(&self) -> Vec<PathBuf> {
+        let Some(library) = self.library.as_ref() else {
+            return Vec::new();
+        };
+        [AGENTS_DIR, WORKFLOWS_DIR]
+            .into_iter()
+            .map(|folder| library.join(folder))
+            .filter(|folder| folder.is_dir())
+            .collect()
     }
 
     /// Czy w tym zakresie stoi wątek.
@@ -614,7 +677,15 @@ impl Threads {
              * jest tym, czego konfiguracją nie da się wyłączyć. Tutaj nie ma ani jednej gałęzi:
              * jest jedna wartość z pliku i jedno wywołanie fabryki. */
             let driver = drivers(lead.agent.runs_with);
-            let session = begin(driver.as_ref(), spec_for(lead, cwd.clone(), said), lines).await?;
+            /* ZASIĘG SKŁADANY PRZED `await`, i to jest ta sama reguła, co linię wyżej: `reaches`
+             * oddaje własną listę, więc pożyczka `self` kończy się na tym wywołaniu i nie ma
+             * wyrażenia, w którym `&Threads` dożyłby do punktu zawieszenia. */
+            let session = begin(
+                driver.as_ref(),
+                spec_for(lead, cwd.clone(), said, self.reaches()),
+                lines,
+            )
+            .await?;
             self.live.insert(cwd.clone(), session);
         }
 
@@ -772,7 +843,12 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
 /// „co vendor ma domyślnie"), dial przechodzi przez [`Lead::policy`], a `instructions` doklejają
 /// się do briefu w [`Lead::brief`]. Vendora nie ma w tej strukturze — on wybrał sterownik jedną
 /// linią wyżej, u wołającego.
-fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
+///
+/// `reaches` przychodzi **argumentem**, a nie jest tu składane z katalogu domowego, i to jest ta
+/// sama granica, którą pilnuje [`Threads::library`]: ta funkcja nie wie, gdzie leży biblioteka,
+/// i nie ma prawa wiedzieć. Wersja czytająca `HOME` w środku znaczyłaby, że każdy test rozmawia
+/// z prawdziwą biblioteką człowieka.
+fn spec_for(lead: &Lead, cwd: PathBuf, first: &str, reaches: Vec<PathBuf>) -> RunSpec {
     RunSpec {
         run_id: Uuid::now_v7(),
         cwd,
@@ -800,6 +876,24 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str) -> RunSpec {
          * ROZMOWY. Odmowa startu biegu i odmowa rozmowy nie ważą tyle samo, a żadne kryterium
          * T-63 tego nie sądzi. */
         tools: None,
+        /* 2026-08-20 (T-70) — BIBLIOTEKA W ZASIĘGU ROZMOWY I **TYLKO** ROZMOWY.
+         *
+         * Do tego dnia stało tu `Vec::new()`, więc lider widział wyłącznie folder zakresu, a twoje
+         * workflow i twoi agenci leżą poza nim (`~/.loadout`, `docs/ARCHITECTURE.md` §8). „Załóż
+         * mi agenta do recenzji" kończyło się wtedy zdaniem, jak to zrobić RĘCZNIE — czyli doradcą
+         * odciętym od jedynych plików, o których rozmawiacie.
+         *
+         * Czego tu NIE MA i to jest granica decyzji, nie przeoczenie: tej listy nie dostaje krok
+         * biegu. Agent piszący kod w projekcie nie ma powodu przepisywać definicji innych agentów,
+         * a bieg czyta tę definicję RAZ, przy starcie kroku — nadpisana w trakcie nie przewraca
+         * dzisiaj niczego, więc awarii nie widać aż do NASTĘPNEGO biegu, kiedy „ten sam workflow"
+         * robi co innego. Prawa kroku składa `commands::run::prompt_for` i po tej zmianie stoi
+         * tam dokładnie to, co stało: katalog przekazań i nic ponad to.
+         *
+         * Sufit zostaje przy `policy` linię wyżej i tylko tam (niezmiennik 23): ta lista mówi
+         * GDZIE lider patrzy, nie CO mu wolno. Lider `look only` bibliotekę czyta — na tym polega
+         * cała wartość pytania „jakie mam workflow?" — a pisze dopiero ten, któremu człowiek dał
+         * wyżej, i to samą tabelą dialu, bez ani jednej flagi dosypanej „żeby mogło działać". */
         extra_dirs: reaches,
         resume: None,
     }
