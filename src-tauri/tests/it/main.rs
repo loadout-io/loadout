@@ -97,6 +97,7 @@ mod ipc_workflow_roundtrip;
 mod isolation_names_what_it_could_not_do;
 mod isolation_survives_every_file_shape;
 mod lead_comes_from_the_agent;
+mod lead_suggests_a_run;
 mod lead_thread_per_scope;
 mod limits_are_global_across_runs;
 mod limits_dial_lowers;

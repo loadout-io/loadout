@@ -91,6 +91,25 @@ export interface HistoryRow {
   readonly output: readonly string[];
   /** Numer, o który poprosi panel szczegółów. Sam panel jest poza tym zadaniem. */
   readonly detailId: number | null;
+  /**
+   * Komenda, którą przyniósł wiersz propozycji — znak w znak taka, jaką napisał lider.
+   *
+   * PRZEPISANA Z LINII, NIGDY WYCIĘTA Z `label`. Tekst przyjeżdża z drutu sklejony do jednej
+   * linii (reguła 1), więc granica między komendą a powodem, dla którego lider ją podaje, jest
+   * po tej stronie nieodtwarzalna — a okno, które składa komendę z powrotem z prozy, jest tym
+   * samym oknem, które samo szuka `/run` w akapicie, tylko o krok dalej (niezmiennik 15).
+   * Rust wysyła ją osobnym polem dokładnie po to (`engine::line::Line::Suggested`).
+   *
+   * BEZ TEGO POLA PRZYCISK PROPOZYCJI JEST MARTWY W DZIAŁAJĄCEJ APLIKACJI: `./line.tsx` rysuje
+   * go wyłącznie wtedy, gdy dostanie komendę, a wiersz jest jedyną rzeczą, którą widok dostaje.
+   * Komenda kończąca bieg w modelu daje kontrolkę, którą umie narysować tylko test — czyli tę
+   * samą rodzinę, dla której istnieje `checks/quick-wired.sh`, po stronie Reacta.
+   *
+   * Nieobowiązkowe, bo „nie ma komendy" i „ten wiersz nie jest propozycją" to jedno i to samo:
+   * pole wymagane kazałoby każdemu wierszowi odpowiadać na pytanie, które dotyczy jednego
+   * rodzaju.
+   */
+  readonly command?: string | undefined;
 }
 
 /** Pytanie do człowieka. Przyklejone, dopóki nie ma odpowiedzi [T2 §7.2 wiersz 10]. */
@@ -326,6 +345,18 @@ function detailOf(line: FeedLine): number | null {
   return 'detailId' in line ? line.detailId : null;
 }
 
+/**
+ * Komenda, którą niesie ta linia — albo nic, bo niesie ją dokładnie jeden rodzaj.
+ *
+ * PO RODZAJU, nie po obecności pola: `'command' in line` przepuściłoby każdy przyszły rodzaj,
+ * który akurat nazwie swoje pole tak samo, a o tym, czy proza jest propozycją, rozstrzygnął już
+ * Rust w mapowaniu zdarzenie → linia (niezmiennik 15). Model przewozi tę odpowiedź, nie wydaje
+ * jej po raz drugi.
+ */
+function commandOf(line: FeedLine): string | undefined {
+  return line.kind === 'suggested' ? line.command : undefined;
+}
+
 /** Czy ta linia jest niepowodzeniem, które rozwija się samo [T2 §7.3 reguła 3]. */
 function failed(line: FeedLine): boolean {
   return line.kind === 'ran' && !line.ok;
@@ -382,6 +413,7 @@ function rowFor(line: FeedLine): HistoryRow {
      * same wiersze. */
     output: broke && line.kind === 'ran' ? line.detail.slice(-OUTPUT_LINES) : [],
     detailId: detailOf(line),
+    command: commandOf(line),
   };
 }
 

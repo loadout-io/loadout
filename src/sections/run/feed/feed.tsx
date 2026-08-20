@@ -149,8 +149,14 @@ export function Feed({
           {/* Jedno dziecko kontenera odwróconego: wiersze zostają w swojej kolejności, a to,
               co się odwraca, to kierunek wypełniania — czyli przypięcie do dołu. */}
           <div>
+            {/* KOMENDA JEDZIE Z WIERSZA, i to jest cała droga propozycji do przycisku: model
+                przepisuje ją z linii, ten plik podaje ją komponentowi, a `line.tsx` rysuje
+                kontrolkę wyłącznie wtedy, gdy ją dostanie. Bez tej jednej właściwości przycisk
+                startu istnieje tylko w teście — czyli jest kontrolką, której nikt nie zobaczy
+                (niezmiennik 16). O tym, CZY on w ogóle jest, rozstrzyga rodzaj wiersza, czyli
+                decyzja podjęta w Ruście; ta linia niczego nie rozpoznaje. */}
             {view.history.map((row) => (
-              <Line key={row.id} row={row} onToggle={onToggle} />
+              <Line key={row.id} row={row} onToggle={onToggle} command={row.command} />
             ))}
           </div>
         </div>

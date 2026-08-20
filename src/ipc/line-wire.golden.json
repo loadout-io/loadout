@@ -70,6 +70,12 @@
     "text": "also add a dark mode toggle"
   },
   {
+    "kind": "suggested",
+    "agent": "lead",
+    "text": "/run easy Make the flaky login test pass — the cookie name is wrong in two places, so Easy will find it in one pass.",
+    "command": "/run easy Make the flaky login test pass"
+  },
+  {
     "kind": "asked",
     "agent": "lead",
     "text": "Which database should this use?",

@@ -21,15 +21,35 @@
  *   3. BLOK BŁĘDU NA LEWEJ KRAWĘDZI W `--fail` (`.detail`). Wyjście, które padło, wyglądało
  *      identycznie jak zwykły blok tekstu.
  */
-import type { ReactElement } from 'react';
+import { type ReactElement, useState } from 'react';
 import { identityToken } from '../rail/colour';
 import { authorityOf } from '../rail/say';
 import type { HistoryRow } from './model';
+import { runSuggestion, suggestion } from './suggested';
 
 export interface LineProps {
   row: HistoryRow;
   /** Wymagany: `+` bez tego jest ozdobą, a ozdób z kształtem przycisku to repo nie przyjmuje. */
   onToggle: (rowId: number) => void;
+  /**
+   * Komenda, którą przyniósł wiersz propozycji — znak w znak taka, jaką napisał lider.
+   *
+   * SKĄD PRZYJEŻDŻA: z pola `command` w linii z drutu, przez `HistoryRow.command`, które podaje
+   * tu `./feed.tsx` — jeden przewóz, bez ani jednej gałęzi po drodze. Nieobecna znaczy „ten
+   * wiersz nie jest propozycją": tak wygląda każdy inny rodzaj i tak wygląda wiersz zbudowany
+   * przez kogoś, kto o propozycjach nie wie.
+   *
+   * PROPS, A NIE ODCZYT `row.command` W ŚRODKU, i to jest różnica na jeden fakt: wiersz jest
+   * jedynym miejscem, w którym ta komenda mieszka, a komponent ją tylko dostaje. Wersja czytająca
+   * pole samodzielnie miałaby ją z dwóch stron naraz w chwili, w której ktokolwiek poda inną
+   * (niezmiennik 13).
+   *
+   * CZEGO TEN PROP NIE ROZSTRZYGA: czy przycisk w ogóle jest. To rozstrzyga `row.kind`, czyli
+   * decyzja podjęta w Ruście. Wiersz `note` z tą samą komendą przycisku nie dostaje — inaczej
+   * okno dorysowywałoby go każdemu, kto napisze `/run` w prozie, i wracalibyśmy do kuracji
+   * w CSS-ie (niezmiennik 15).
+   */
+  command?: string | undefined;
 }
 
 /**
@@ -45,9 +65,52 @@ function marker(row: HistoryRow): { glyph: string; tone: string } {
   return { glyph: '·', tone: 'text-muted' };
 }
 
-export function Line({ row, onToggle }: LineProps): ReactElement {
+/**
+ * Akcent, bo od T-45 znaczy dokładnie jedno: „to jest interaktywne" [DESIGN §3]. Pastylka
+ * i ten sam stopień co przy `+` obok, żeby wiersz zachował swój rytm — kontrolka startu jest
+ * czynnością w wierszu rozmowy, nie przyciskiem Start z paska pracy.
+ */
+const PROPOSE =
+  'h-[17px] rounded-pill border border-accent-edge px-[7px] font-mono text-meta text-accent';
+
+/** Co wiersz propozycji daje przyciskowi: nazwę do przeczytania i komendę do uruchomienia. */
+interface Proposal {
+  readonly workflow: string;
+  readonly command: string;
+}
+
+/**
+ * Co ten wiersz proponuje — albo `null`, kiedy niczego nie proponuje.
+ *
+ * RODZAJ ROZSTRZYGA, NIE TREŚĆ. Wiersz `note` z tą samą prozą i tą samą komendą przycisku nie
+ * dostaje, bo o tym, czy proza lidera jest propozycją, zdecydował Rust w mapowaniu
+ * zdarzenie → linia (niezmiennik 15). Okno, które dorysowuje przycisk każdemu, kto napisze
+ * `/run` w akapicie, jest kuracją w CSS-ie: da się ją zepsuć arkuszem stylów i nie ma jej
+ * w `run.json`.
+ *
+ * Nazwa workflow pochodzi z `./suggested`, nie z rozbioru napisanego tutaj: to jest polityka,
+ * a polityka w komponencie jest kodem, którego kryterium nie umie dotknąć — to repo nie ma
+ * jsdom, więc `onClick` nie odpala się w żadnym teście.
+ */
+function proposalOf(row: HistoryRow, command: string | undefined): Proposal | null {
+  if (row.kind !== 'suggested' || command === undefined) return null;
+  const proposes = suggestion(command);
+  return proposes === null ? null : { workflow: proposes.workflow, command };
+}
+
+export function Line({ row, onToggle, command }: LineProps): ReactElement {
   const { glyph, tone } = marker(row);
   const hasMore = row.output.length > 0;
+  const proposal = proposalOf(row, command);
+  /**
+   * Zdanie, które wróciło z próby uruchomienia; `null`, dopóki nie ma o czym mówić.
+   *
+   * TRZYMANE TUTAJ, bo dotyczy TEGO wiersza i tego kliknięcia: zdanie odmowy nie jest stanem
+   * strumienia i nie ma prawa przeżyć wiersza, przy którym powstało. Odmowa porzucona po drodze
+   * jest gorsza niż brak przycisku: człowiek klika, nie dzieje się nic, o czym da się przeczytać,
+   * i to czyta się jak zepsuta aplikacja (DESIGN §8).
+   */
+  const [said, setSaid] = useState<string | null>(null);
 
   return (
     <div
@@ -97,10 +160,29 @@ export function Line({ row, onToggle }: LineProps): ReactElement {
         {row.label}
       </span>
 
-      {/* Prawa kolumna: albo liczba, którą ta czynność zostawiła, albo `+` do wyjścia, które
-          padło, albo nic. Nigdy oba — `+` stoi przy wierszu, który ma co pokazać, a metryka
-          przy tym, który ma co powiedzieć liczbą. */}
-      {hasMore ? (
+      {/* Prawa kolumna: albo kontrolka startu propozycji, albo liczba, którą ta czynność
+          zostawiła, albo `+` do wyjścia, które padło, albo nic. Nigdy dwa naraz — jedna
+          propozycja jest jedną kontrolką, a dwie rzeczy wyglądające na klikalne w jednym
+          wierszu nie mówią, która z nich zaczyna pracę.
+
+          NAZWA WORKFLOW JEST W NAZWIE PRZYCISKU, nie w tekście obok: „Run" samo nie mówi, co
+          się stanie — a stanie się to, że ruszą agenci i zaczną się pieniądze. To jest ta jedna
+          rzecz, którą kontrolka musi powiedzieć, zanim ktoś ją naciśnie. */}
+      {proposal !== null ? (
+        <button
+          type="button"
+          onClick={() => {
+            /* JEDNA DROGA STARTU, ta sama, co Enter w wierszu wejścia (niezmiennik 23):
+               `runSuggestion` oddaje ją `startFromLine`, więc limit „ile naraz", folder zakresu
+               i zdania odmowy mają jedno miejsce. Wynik NIE jest porzucany — odmowa wraca tu
+               i staje w wierszu pod przyciskiem. */
+            void runSuggestion(proposal.command).then(setSaid);
+          }}
+          className={PROPOSE}
+        >
+          {'Run ' + proposal.workflow}
+        </button>
+      ) : hasMore ? (
         <button
           type="button"
           onClick={() => onToggle(row.id)}
@@ -125,6 +207,17 @@ export function Line({ row, onToggle }: LineProps): ReactElement {
           {row.output.join('\n')}
         </pre>
       ) : null}
+
+      {/* CO POWIEDZIAŁA PRÓBA URUCHOMIENIA. Stoi w tym wierszu, bo dotyczy tego przycisku:
+          workflow, którego nie ma na dysku, kończy się zdaniem, a nie ciszą. Kontrolka, po
+          której nic nie widać, jest nieodróżnialna od zepsutej (DESIGN §8), a ta zaczyna pracę
+          za pieniądze. Gaśnie razem z wierszem — nie ma tu drugiego żywego regionu na fakt,
+          o którym mówi pasek pracy (niezmiennik 13). */}
+      {said === null ? null : (
+        <p data-line-said className="col-start-2 text-body text-fail">
+          {said}
+        </p>
+      )}
     </div>
   );
 }

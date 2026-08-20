@@ -37,7 +37,7 @@ use super::Drivers;
 use crate::engine::drivers::{
     AgentDriver, AgentHandle, DecodedEvent, Policy, RunSpec, ToAgent, Voice,
 };
-use crate::engine::line::{Curator, Line, Seen};
+use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, FileAccess};
@@ -658,6 +658,12 @@ async fn read_along(mut inbox: mpsc::Receiver<DecodedEvent>, lines: Arc<Mutex<Li
             tool: tool.as_ref(),
         };
         for line in curator.observe(seen) {
+            /* JEDNO WYWOŁANIE, I TO ONO ODDZIELA ROZMOWĘ OD BIEGU. Propozycja jest własnością
+             * TEJ pętli — wierszy biegu nikt tak nie pyta, bo krok, który napisze w prozie
+             * `/run …`, dostałby przycisk startujący DRUGI bieg (powód w całości stoi przy
+             * `engine::line::Line::Suggested`). Kuracja zostaje po tamtej stronie: ta linia nie
+             * decyduje, który wiersz istnieje ani co mówi (niezmiennik 15). */
+            let line = suggested(line, &event);
             /* Uchwyt czytany PRZY KAŻDYM wierszu, nie raz na starcie: okno mogło się w międzyczasie
              * przeładować i odtąd wiersze mają iść do nowego kanału. */
             let sink = lines.lock().unwrap_or_else(PoisonError::into_inner).clone();

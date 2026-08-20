@@ -39,7 +39,7 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Wszystkie czternaście rodzajów wiersza [T2 §7.2], w kolejności deklaracji.
-const KINDS: [LineKind; 16] = [
+const KINDS: [LineKind; 17] = [
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
@@ -56,6 +56,10 @@ const KINDS: [LineKind; 16] = [
     // 2026-08-19 — szesnasty rodzaj: tura CZLOWIEKA. Powod w calosci przy `Line::Told` —
     // do tego dnia zdanie wpisane w wiersz wejscia nie mialo nosnika na drucie i znikalo.
     LineKind::Told,
+    // 2026-08-20 — siedemnasty rodzaj: lider proponuje bieg (T-61). Wpis wchodzi razem
+    // z wierszem w zlotym pliku i z lustrem po stronie okna, bo dopisany osobno albo przewraca
+    // dlugosc, albo opisuje rodzaj, ktorego okno nie przyjmie.
+    LineKind::Suggested,
     LineKind::Asked,
     LineKind::Handoff,
     LineKind::Memory,
@@ -75,6 +79,16 @@ const GOLDEN: &str = include_str!(concat!(
 /// wariant `Line` nie skompiluje tego pliku, dopóki ktoś nie powie, jak wygląda na drucie.
 /// Lista nazw pól pisana ręcznie nie ma tej własności — milczy dokładnie o tym wariancie,
 /// o którym autor zapomniał.
+///
+/// 2026-08-20 — SUFIT `too_many_lines` (pedantic, 100) PĘKŁ NA SIEDEMNASTYM WARIANCIE: 101
+/// linii, i przekroczenie przyszło z commitem kontraktowym T-61, a nie z tej implementacji
+/// (`quick-clippy` woła `--lib`, więc `tests/` widzi dopiero pełna bramka). Ten `allow` jest
+/// tańszy niż każda alternatywa i nie kupuje niczego pod stołem: lint mierzy złożoność, a to
+/// jest TABELA — jedna gałąź na rodzaj, bez ani jednego warunku. Rozbicie jej na dwie funkcje
+/// zabrałoby tej tabeli jej jedyną własność, czyli wyczerpujący `match`: to on sprawia, że
+/// osiemnasty wariant `Line` nie skompiluje tego pliku, dopóki ktoś nie powie, jak wygląda
+/// na drucie.
+#[allow(clippy::too_many_lines)]
 fn sample(kind: LineKind) -> Line {
     match kind {
         LineKind::Run => Line::Run {
@@ -142,6 +156,23 @@ fn sample(kind: LineKind) -> Line {
         LineKind::Told => Line::Told {
             agent: "builder".to_owned(),
             text: "also add a dark mode toggle".to_owned(),
+        },
+        // 2026-08-20 — SIEDEMNASTY RODZAJ: lider proponuje bieg (T-61). Próbka stoi tu, bo
+        // `sample` jest wyczerpującym `match`em — bez niej ten plik przestaje się kompilować,
+        // czyli KAŻDE kryterium rustowe pada na budowie i żadne z nich nic nie mierzy.
+        //
+        // Próbka weszła w fazie kontraktu SAMA, bez wpisu w `KINDS` i bez wiersza w złotym
+        // pliku, i to nie było przeoczenie: te dwie rzeczy razem z lustrem po stronie okna są
+        // dokładnie tym, czego wymaga drugie kryterium tamtego zadania, więc dopisane wtedy
+        // zazieleniłyby je, zanim cokolwiek powstało. Weszły razem w fazie implementacji —
+        // wpis, wiersz i lustro — więc od tej chwili tablica opisuje siedemnaście rodzajów
+        // i tyle samo wierszy widzi w pliku.
+        LineKind::Suggested => Line::Suggested {
+            agent: "lead".to_owned(),
+            text: "/run easy Make the flaky login test pass — the cookie name is wrong in two \
+                   places, so Easy will find it in one pass."
+                .to_owned(),
+            command: "/run easy Make the flaky login test pass".to_owned(),
         },
         LineKind::Asked => Line::Asked {
             agent: "lead".to_owned(),

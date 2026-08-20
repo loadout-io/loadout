@@ -75,6 +75,8 @@ pub enum LineKind {
     Note,
     /// Proza człowieka — jego tura wpisana w wiersz wejścia. Powód przy [`Line::Told`].
     Told,
+    /// Lider proponuje bieg: proza plus gotowa komenda. Powód przy [`Line::Suggested`].
+    Suggested,
     /// Pytanie do człowieka. Przyklejone, bo blokuje bieg.
     Asked,
     /// Przekazanie między agentami.
@@ -269,6 +271,51 @@ pub enum Line {
         /// Zdanie człowieka, słowo w słowo — bez skracania i bez streszczania.
         text: String,
     },
+    /// Lider proponuje bieg: `/run easy Make the flaky login test pass`.
+    ///
+    /// # Po co ten wariant istnieje
+    ///
+    /// Rozstrzygnięcie właściciela 2026-08-20, wariant A: lider **podaje gotową komendę**, a nie
+    /// startuje bieg sam. Wartość jest w jednym kliknięciu zamiast przepisywania: lider patrzy na
+    /// projekt, więc umie powiedzieć „to jest robota dla Easy, z takim zadaniem", a człowiek nie
+    /// musi pamiętać nazw plików workflow ani przepisywać zdania. Uruchomienie zostaje przy
+    /// człowieku — `commands::chat` nie zna `RunDeps`, nie importuje `run` i nie widzi bazy
+    /// biegów, więc ta propozycja jest **tekstem**.
+    ///
+    /// # Dlaczego to jest rodzaj wiersza, a nie robota okna
+    ///
+    /// Bo wiersz strumienia jest decyzją podjętą tutaj, w mapowaniu zdarzenie → linia
+    /// (niezmiennik 15, decyzja D4). Okno, które samo szuka `/run` w prozie agenta i dorysowuje
+    /// przycisk, jest kuracją w CSS-ie: da się ją zepsuć arkuszem stylów, nie da się jej sprawdzić
+    /// bez przeglądarki i nie ma jej w `run.json`.
+    ///
+    /// Cicha porażka, przed którą stoi ten wariant: propozycja rozpoznana u KAŻDEGO agenta.
+    /// Krok w środku biegu, który napisze w prozie `/run …`, dostałby wtedy przycisk startujący
+    /// DRUGI bieg — a silnik prowadzi dziś jeden (`AppState::begin_run` podmienia uchwyt, więc
+    /// pierwszy zostałby osierocony, niezmiennik 6). Dlatego rozpoznanie jest własnością
+    /// rozmowy: robi je [`suggested`], którego woła wyłącznie `commands::chat::read_along`,
+    /// a nie [`Curator::observe`], przez które idą wiersze biegu.
+    ///
+    /// Zestaw pól jest addytywny w obie strony — starszy front porzuca ten rodzaj w ciszy,
+    /// starszy Rust go po prostu nie wysyła — a nowy rodzaj, nie pole dołożone do [`Note`],
+    /// bo lustro po stronie okna porównuje klucze **co do jednego** (`src/ipc/types.ts`).
+    Suggested {
+        /// Kto to zaproponował. Ten sam podpis, którym ten agent mówi w każdym innym wierszu.
+        agent: String,
+        /// Tekst wiersza: **cała** proza lidera, nie sama komenda.
+        ///
+        /// Człowiek ma przeczytać, DLACZEGO lider to proponuje, zanim kliknie. Wiersz niosący
+        /// samą komendę jest formularzem z jednym polem, a nie zdaniem w rozmowie.
+        text: String,
+        /// Komenda, znak w znak taka, jak lider ją napisał.
+        ///
+        /// OSOBNE POLE, a nie wycinek z `text`, i to jest cały powód, dla którego ten wariant
+        /// ma trzy pola zamiast dwóch: `text` jest sklejony do jednej linii (reguła 1,
+        /// [`one_line`]), więc granica między komendą a powodem, dla którego lider ją podaje,
+        /// jest po tej stronie granicy nieodtwarzalna. Okno, które składa komendę z powrotem
+        /// z prozy, jest tym samym oknem, które samo szuka `/run` — tylko o jeden krok dalej.
+        command: String,
+    },
     /// `Needs your answer: which database?`
     Asked {
         /// Kto pyta.
@@ -336,6 +383,7 @@ impl Line {
             Self::Ran { .. } => LineKind::Ran,
             Self::Note { .. } => LineKind::Note,
             Self::Told { .. } => LineKind::Told,
+            Self::Suggested { .. } => LineKind::Suggested,
             Self::Asked { .. } => LineKind::Asked,
             Self::Handoff { .. } => LineKind::Handoff,
             Self::Memory { .. } => LineKind::Memory,
@@ -360,6 +408,7 @@ impl Line {
             | Self::Ran { agent, .. }
             | Self::Note { agent, .. }
             | Self::Told { agent, .. }
+            | Self::Suggested { agent, .. }
             | Self::Asked { agent, .. }
             | Self::Handoff { agent, .. }
             | Self::Memory { agent, .. }
@@ -386,6 +435,7 @@ impl Line {
             | Self::Ran { text, .. }
             | Self::Note { text, .. }
             | Self::Told { text, .. }
+            | Self::Suggested { text, .. }
             | Self::Asked { text, .. }
             | Self::Handoff { text, .. }
             | Self::Memory { text, .. }
@@ -446,6 +496,9 @@ impl Line {
             // byłoby jedynym wierszem w historii, który człowiek musi rozwinąć, żeby przeczytać
             // to, co sam napisał.
             | Self::Told { .. }
+            // Propozycja zwinięta jest propozycją, której nie widać — a wiersz, który trzeba
+            // najpierw rozwinąć, żeby zobaczyć w nim przycisk, jest przyciskiem schowanym.
+            | Self::Suggested { .. }
             | Self::Asked { .. }
             | Self::Handoff { .. }
             | Self::Problem { .. }
@@ -483,6 +536,98 @@ impl Line {
             _ => None,
         }
     }
+}
+
+// ── PROPOZYCJA BIEGU: ROZPOZNANIE, KTÓRE NALEŻY DO ROZMOWY ─────────────────────────────────
+
+/// Komenda, którą zaczyna się bieg — **to samo słowo**, które przyjmuje wiersz wejścia
+/// (`src/sections/run/run-command.ts`) i które makieta obiecuje pod polem („`/plan · /run ·
+/// or just say what you want`").
+///
+/// Napis, nie wyrażenie regularne: wzorzec pisany osobno łapie przy okazji `/runner` i `/runs`,
+/// a to są inne komendy, które tylko zaczynają się tymi samymi literami.
+const RUN: &str = "/run";
+
+/// Wiersz rozmowy, w którym proza lidera jest propozycją biegu — albo ten sam wiersz.
+///
+/// # Dlaczego to jest funkcja obok [`Curator`], a nie gałąź w środku
+///
+/// Bo [`Curator`] jest kuratorem **biegu** i jego wierszy nie wolno tym dotknąć. Propozycja
+/// rozpoznana w kuratorze byłaby rozpoznana u każdego agenta, a krok w środku biegu, który
+/// napisze w prozie `/run …`, dostałby wtedy przycisk startujący DRUGI bieg — powód w całości
+/// stoi przy [`Line::Suggested`]. Tę funkcję woła dokładnie jedno miejsce
+/// (`commands::chat::read_along`), i to jest cała treść zdania „rozpoznanie jest własnością
+/// rozmowy, nie kuratora biegu".
+///
+/// # Dlaczego zdarzenie, a nie sam wiersz
+///
+/// Bo [`Line::Note`] jest już sklejony do jednej linii (reguła 1, [`one_line`]), a granica
+/// między komendą i powodem, dla którego lider ją podaje, biegnie po **znaku nowej linii**.
+/// Wiersz jest tu więc tym, co ma się zmienić, a zdarzenie — jedynym miejscem, w którym
+/// surowa proza jeszcze istnieje. Zdarzenie, które prozą nie jest, nie może być propozycją
+/// i oddaje wiersz bez zmiany.
+///
+/// Oddaje wiersz, nie [`Option`], żeby wołający nie musiał pisać gałęzi: jedno wywołanie,
+/// jedna wartość, żadnego `unwrap_or` po drodze (niezmiennik 23 — polityka ma jedno miejsce,
+/// a wołający nie ma prawa mieć własnego zdania na jej temat).
+#[must_use]
+pub fn suggested(line: Line, event: &AgentEvent) -> Line {
+    // Zdarzenie, które prozą nie jest, nie może być propozycją: `/run` w wyjściu komendy albo
+    // w czytanym pliku jest tekstem, na który agent PATRZY, a nie zdaniem, które mówi.
+    let AgentEvent::Said { text } = event else {
+        return line;
+    };
+    let Some(command) = command_in(text) else {
+        return line;
+    };
+    match line {
+        /* WYŁĄCZNIE WIERSZ PROZY, i to nie jest ostrożność na zapas: `Curator::observe` oddaje
+         * przy jednym zdarzeniu `Said` także wiersz grupy sklejania, którą to zdanie zamknęło
+         * (`Read 3 files` sprzed zdania) — a wołający pyta tą samą funkcją o KAŻDY wiersz
+         * z tego wektora (`commands::chat::read_along`). Rozpoznanie patrzące na samo zdarzenie
+         * zamieniłoby więc w propozycję cudzy wiersz, i to ten, który o niczym nie mówi. */
+        Line::Note { agent, text } => Line::Suggested {
+            agent,
+            // Tekst zostaje TAKI, JAKI ZŁOŻYŁ GO KURATOR — cała proza w jednej linii (reguła 1).
+            // Sama komenda jedzie osobnym polem, bo człowiek ma przeczytać, DLACZEGO lider to
+            // proponuje, zanim kliknie; wiersz z samą komendą jest formularzem z jednym polem.
+            text,
+            command,
+        },
+        other => other,
+    }
+}
+
+/// Komenda z tej prozy — pierwsza linia, która **jest** poleceniem — albo `None`.
+///
+/// LINIA, NIE WYSTĄPIENIE NAPISU, i na tej różnicy stoi całe to rozpoznanie. „Zrobiłbym to
+/// przez /run easy" jest zdaniem O poleceniu, a nie poleceniem: przycisk pod opisem startuje
+/// bieg, o który nikt nie prosił, a lider opisujący drogę do celu robi to w co drugim zdaniu.
+///
+/// Linię przycinamy z obu stron i to jest świadome wobec „znak w znak": komenda ma pojechać
+/// dalej dokładnie w tej postaci, w której da się ją uruchomić, a wcięcie i biała spacja na
+/// końcu nie należą do niej — po tej samej stronie granicy przycina je `startFromLine`.
+fn command_in(prose: &str) -> Option<String> {
+    prose
+        .lines()
+        .map(str::trim)
+        .find(|line| names_a_workflow(line))
+        .map(str::to_owned)
+}
+
+/// Czy ta linia jest poleceniem uruchomienia, które **nazywa** workflow.
+///
+/// Nazwa jest wymagana, bo przycisk pod tym wierszem ma powiedzieć, CO uruchomi — samo „Run"
+/// nie mówi, a to jest ta jedna czynność, po której zaczynają pracować agenci i zaczynają się
+/// pieniądze. Zadania nie wymagamy: `/run easy` jest kompletnym poleceniem, w którym każdy krok
+/// robi to, co stoi w pliku workflow (`readRunLine` oddaje wtedy `task: null`).
+fn names_a_workflow(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix(RUN) else {
+        return false;
+    };
+    // Biała spacja po komendzie, bo bez niej `/runner easy` czytałoby się jako `/run` z nazwą
+    // `ner easy` — czyli propozycja z nazwy, której nikt nie napisał.
+    rest.starts_with(char::is_whitespace) && rest.split_whitespace().next().is_some()
 }
 
 /// Stały slot na dole ekranu — jedyne miejsce, w którym widać myślenie (reguła 5).
