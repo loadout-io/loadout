@@ -1668,6 +1668,26 @@ pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), S
     }
 }
 
+/// Pyta jedno zrodlo o nastepna sprawe. Sekret i adres zostaja w konfiguracji `curl` na stdin;
+/// okno wysyla tylko nazwe pliku triggera.
+#[tauri::command]
+pub async fn check_trigger(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Option<commands::triggers::Issue>, String> {
+    // `curl` jest procesem blokujacym. Kopiujemy sama sciezke przed `await`, wiec ani stan
+    // Tauri, ani zamek zywego biegu nie jest trzymany podczas zapytania.
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::check(&home, &slug))
+        .await
+        .map_err(|error| format!("Loadout could not finish the Linear check: {error}"))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
+}
+
 /// Wszystko, co Loadout dla człowieka uruchomił — plus wyjście tej jednej rzeczy, w którą wszedł.
 ///
 /// Rzeczy, które zeszły, **są w tej odpowiedzi** i to jest jedyna droga, którą okno dowiaduje się
@@ -1715,6 +1735,7 @@ pub async fn list_processes(
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         author_skill,
+        check_trigger,
         check_workflow,
         close_terminal,
         continue_run,
