@@ -46,6 +46,8 @@ pub mod isolate;
 pub mod memory;
 /// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
 pub mod mint;
+/// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
+pub mod processes;
 pub mod run;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
 pub mod skills;

@@ -398,6 +398,91 @@ impl CommandDriver {
         let mut live = self.start(spec)?;
         Ok(live.settle(cancel).await)
     }
+
+    /// Startuje komendę, która ma **zostać** — i oddaje uchwyt, nie wynik.
+    ///
+    /// Ta sama droga do systemu, co [`CommandDriver::start`]: [`supervisor::spawn`], własna grupa,
+    /// `env_clear()` plus jawna lista, potoki. Różnica jest jedna i cała mieszka w tym, czego tu
+    /// NIE ma: nie ma [`CheckSpec::proof`], bo nie ma werdyktu, i nie ma [`GIVE_UP_AFTER`], bo
+    /// proces zamówiony przez człowieka kończy się na żądanie albo razem z oknem.
+    ///
+    /// Uchwyt, a nie `async fn` czekająca do końca, i to jest cała różnica wobec kroku „sprawdź".
+    /// Wersja czekająca kompiluje się, czyta dobrze i zamienia tę drogę w krok sprawdzający
+    /// z inną nazwą: wołający dowiaduje się o `pgid` dopiero wtedy, gdy proces już zszedł, więc
+    /// przez cały czas jego życia nie ma go czym pokazać ani czym ubić.
+    pub fn start_to_stay(&self, _spec: &StartSpec) -> io::Result<Staying> {
+        todo!("T-72: własna grupa przez supervisor::spawn, potoki opróżniane do EOF, bez sufitu")
+    }
+}
+
+/* ── KOMENDA, KTÓRA MA ZOSTAĆ ───────────────────────────────────────────────────────────────
+ *
+ * DLACZEGO TO NIE JEST KROK „SPRAWDŹ" Z INNYM SUFITEM. Krok sprawdzający ma koniec, o którym
+ * decyduje on sam: komenda wraca, my orzekamy. Rzecz zamówiona przez człowieka (`/start npm run
+ * dev`) nie ma takiego końca — kończy się, kiedy człowiek ją zatrzyma albo kiedy zniknie okno.
+ * Trzy rzeczy z [`CheckSpec`] tracą tu więc sens naraz: wzorzec dowodu (nie ma werdyktu),
+ * [`GIVE_UP_AFTER`] (nie ma limitu) i sama forma „jedno wywołanie robi wszystko" (bo przez cały
+ * czas życia tej rzeczy ktoś musi mieć czym ją pokazać i czym ją ubić).
+ *
+ * CZEGO TU CELOWO NIE MA: ani jednego warunku platformowego, ani jednej stałej sygnału, ani
+ * jednego `killpg`. Zabijanie i eskalacja należą do `supervisor.rs` (niezmiennik 3) i pilnuje
+ * tego `checks/quick-boundary.sh`. Ten plik prosi o zatrzymanie neutralnym czasownikiem i czyta
+ * zwrócony dowód — dokładnie jak [`Checking`] o jeden ekran wyżej.
+ */
+
+/// Co uruchomić i gdzie — komenda zamówiona z wiersza wejścia.
+///
+/// Bez wzorca dowodu, i to jest różnica merytoryczna wobec [`CheckSpec`], nie oszczędność pola:
+/// werdyktu tu nie ma, bo nie ma czego orzekać. Rzecz, która biegnie, biegnie; rzecz, która
+/// zeszła, zeszła — a „przeszło / nie przeszło" jest pytaniem o krok sprawdzający.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSpec {
+    /// Wiersz powłoki, dosłownie jak wpisał go człowiek.
+    ///
+    /// Co do znaku, bo to ON jest nazwą tej rzeczy na ekranie: wymyślona etykieta („Dev server")
+    /// byłaby relacją, której w danych nie ma (niezmiennik 17), a człowiek szuka na liście tego,
+    /// co sam wpisał.
+    pub command: String,
+    /// Katalog, w którym ta komenda ma stanąć.
+    pub cwd: PathBuf,
+}
+
+/// Żywa komenda, która ma zostać: własna grupa, potoki opróżniane do EOF, zejście z dowodem.
+///
+/// Uchwyt, a nie jedno wywołanie „zrób wszystko", i to jest ten sam wymóg z niezmiennika 6, co
+/// przy [`Checking`]: `pgid` musi dać się przeczytać ZANIM ktokolwiek przeczyta pierwszy bajt
+/// wyjścia. Tutaj waży to jeszcze więcej niż tam — kafelek na ekranie istnieje przez cały czas
+/// życia tej rzeczy, więc bez uchwytu nie ma czego pokazać ani czego ubić.
+#[derive(Debug)]
+pub struct Staying {
+    /// Zwykła wartość, wzięta ze [`supervisor::spawn`] synchronicznie [T7 §6.2].
+    group: GroupId,
+    /// Wiersz powłoki, co do znaku — patrz [`StartSpec::command`].
+    command: String,
+}
+
+impl Staying {
+    /// `pid` i `pgid`, dostępne od razu po starcie i bez czekania na cokolwiek z wyjścia.
+    #[must_use]
+    pub const fn group(&self) -> GroupId {
+        self.group
+    }
+
+    /// Wiersz powłoki, co do znaku. To on jest nazwą tej rzeczy na ekranie.
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Prosi grupę o zejście i oddaje **dowód**, nie potwierdzenie wysłania sygnału.
+    ///
+    /// Wraca dopiero z `ESRCH` dla całej grupy (niezmiennik 6). `Ok(())` po sygnale czytałoby się
+    /// u wołającego jako „nie żyje", a wnuki biegłyby dalej i dalej płaciły [T7 §3.1] — przy
+    /// rzeczy, którą człowiek uruchomił świadomie, to jest ta sama klasa wady co „Running" nad
+    /// komendą, która zeszła dwie minuty temu, tylko w drugą stronę.
+    pub async fn stop(&mut self) -> GroupProof {
+        todo!("T-72: eskalacja przez Supervised::stop i dowód ESRCH dla całej grupy")
+    }
 }
 
 /// Czy wzorzec dowodu trafia w wyjście komendy.
