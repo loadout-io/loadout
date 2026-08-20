@@ -15,6 +15,7 @@
 # wierszem diffu, a nie przesunięciem całego pliku.
 author_skill
 check_workflow
+close_terminal
 continue_run
 delete_agent
 delete_skill
