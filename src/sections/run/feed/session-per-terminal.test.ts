@@ -33,7 +33,14 @@ import type { Workspace } from '../../../state/workspaces';
 import { useWorkspaces } from '../../../state/workspaces';
 import { feedFor, runFeed } from './live';
 
-vi.mock('../io', () => ({ stop: vi.fn(() => Promise.resolve()) }));
+/* `closeTerminal` dołożone do atrapy 2026-08-20 razem z naprawą po sprawdzającym: magazyn kart
+ * bierze stąd DWA kanały — zatrzymanie biegu i koniec rozmowy z liderem zamykanej karty. Ani
+ * jedna asercja niżej się o to nie pyta i żadnej nie ubyło; bez tego wiersza vitest przewraca
+ * się na dostępie do brakującego eksportu atrapy, czyli przed pierwszą asercją. */
+vi.mock('../io', () => ({
+  stop: vi.fn(() => Promise.resolve()),
+  closeTerminal: vi.fn(() => Promise.resolve()),
+}));
 
 const { runTabs } = await import('../tabs/store');
 

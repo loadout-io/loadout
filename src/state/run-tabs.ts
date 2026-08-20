@@ -12,10 +12,37 @@
  * kart robiłoby z niego drugie miejsce, w którym ta sama liczba żyje (niezmiennik 13);
  * pasek dostaje je propsem od tego, kto rozmawia z limiterem.
  *
- * ANULOWANIE WCHODZI WSTRZYKNIĘTE. `cancel` to jedyne wejście tego magazynu do świata poza
- * oknem i dlatego jest argumentem fabryki, a nie importem: kryterium 6 mierzy KOLEJNOŚĆ —
- * karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności nie da się zmierzyć
- * na funkcji, której test nie może zatrzymać w połowie.
+ * ANULOWANIE WCHODZI WSTRZYKNIĘTE. `cancel` jest argumentem fabryki, a nie importem: kryterium 6
+ * mierzy KOLEJNOŚĆ — karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności
+ * nie da się zmierzyć na funkcji, której test nie może zatrzymać w połowie.
+ *
+ * 2026-08-20 (T-71) — DRUGIE WEJŚCIE DO ŚWIATA POZA OKNEM, `endLead`, i powód, dla którego nie
+ * dało się go dołożyć do pierwszego. Stało tu, że `cancel` jest wejściem JEDYNYM, i to przestało
+ * być prawdą w dniu, w którym karta stała się terminalem z własną rozmową: zamknięcie karty musi
+ * zakończyć rozmowę TEGO terminalu, bo inaczej lider żyje i płaci do zamknięcia okna
+ * (niezmiennik 6 — „osierocony `claude` pali limit w tle"). Zgłosił to sprawdzający T-71 jako
+ * wadę wysokiej wagi i miał rację: `Threads::close_at` istniało bez ani jednego produkcyjnego
+ * wołającego.
+ *
+ * DLACZEGO OSOBNY KANAŁ, A NIE `cancel`. Bo te dwie czynności dzieją się w RÓŻNYCH momentach
+ * i dla różnych kart. `cancel` biegnie wyłącznie po potwierdzeniu pytania, czyli tylko wtedy,
+ * gdy w karcie pracowali agenci; karta czatowa zamyka się bez pytania (`requestClose`, gałąź
+ * „nic tu nie chodzi") i cudze kryterium mierzy wprost, że `cancel` się wtedy NIE woła
+ * (`src/sections/run/closing-a-tab-asks-and-stops.test.tsx`). Rozmowa z liderem nie zależy od
+ * tego, czy coś biegło — i to jest właśnie ten najczęstszy przypadek, w którym limit palił się
+ * w tle: terminal otwarty `＋`, wygadany, zamknięty `×`, bez ani jednego biegu.
+ *
+ * SYNCHRONICZNY I BEZ DOWODU, w odróżnieniu od `cancel`. `requestClose` jest synchroniczne
+ * i takie zostaje (mierzy to cudze kryterium wyżej), więc karta nie ma jak zaczekać na dowód
+ * śmierci grupy. Dowód nie ginie: żąda go i melduje strona Rusta (`AppState::close_the_lead`),
+ * czyli to samo miejsce, które zna `pgid`. Kolejność „najpierw dowód, potem karta" należy do
+ * BIEGU, bo tam człowiek naciska `×` po to, żeby coś zatrzymać; tu naciska po to, żeby zamknąć
+ * miejsce pracy, a rozmowa schodzi razem z nim.
+ *
+ * DOMYŚLNIE PUSTY, i to jest ustępstwo wobec cudzych kryteriów, nie wygoda: dwa pliki spoza
+ * bloku OWNS tego zadania wołają tę fabrykę z jednym argumentem
+ * (`closing-a-tab-asks-and-stops.test.tsx`, `src/sections/run/tabs/picker.test.tsx`), a parametr
+ * wymagany zaczerwieniłby je na kompilacji. Zmiana jest więc addytywna.
  *
  * Fabryka i żadnego singletonu obok niej, w odróżnieniu od `src/state/run.ts`: egzemplarz okna
  * potrzebuje prawdziwego kanału anulowania, a ten mieszka w `src/ipc/`, poza blokiem OWNS tego
@@ -80,6 +107,17 @@ export interface PendingClose {
  * palącego limit u dostawcy.
  */
 export type CancelRun = (id: string) => Promise<void>;
+
+/**
+ * Zakończenie rozmowy z liderem TEJ karty.
+ *
+ * Wołane przy każdym zamknięciu karty i tylko przy zamknięciu: odpowiedź „nie" na pytanie
+ * o zamknięcie nie kończy niczego, bo karta zostaje.
+ *
+ * Zwraca `void`, nie `Promise`: dowodu śmierci grupy żąda strona Rusta, a nie ta karta — powód
+ * w całości stoi w nagłówku pliku, akapit „SYNCHRONICZNY I BEZ DOWODU".
+ */
+export type EndLead = (id: string) => void;
 
 export interface RunTabsState {
   /** Karty w kolejności, w jakiej stoją na pasku. */
@@ -157,13 +195,23 @@ function withoutTab(state: RunTabsState, id: string): Pick<RunTabsState, 'tabs' 
 }
 
 /**
- * Nowy magazyn kart nad podanym kanałem anulowania.
+ * Nowy magazyn kart nad podanym kanałem anulowania i podanym kanałem końca rozmowy.
  *
  * `cancel` wchodzi argumentem, a nie importem, i to jest cała konstrukcja kryterium 6: mierzy
  * ono KOLEJNOŚĆ — karta znika dopiero po tym, jak anulowanie się rozwiązało — a kolejności nie
  * da się zmierzyć na funkcji, której test nie może zatrzymać w połowie.
+ *
+ * `endLead` wchodzi tą samą drogą i z tego samego powodu, tylko o rok później: powód, dla którego
+ * nie jest to ten sam kanał, stoi w nagłówku pliku.
  */
-export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
+export function createWorkspacesStore(
+  cancel: CancelRun,
+  endLead: EndLead = () => {
+    /* Magazyn zbudowany bez tego kanału jest magazynem w teście cudzego kryterium — w oknie
+     * podaje go `src/sections/run/tabs/store.ts`. Cisza jest tu poprawna: rozmowa, której nikt
+     * nie otworzył, nie ma czego kończyć. */
+  },
+): WorkspacesStore {
   /* Które zamknięcie jest w toku. Poza stanem widoku, bo widok nie ma o czym z tym rozmawiać:
    * to jest wyłącznie zapadka przed drugim sygnałem stopu dla tego samego biegu. Dwa sygnały
    * to dwie eskalacje ścigające się o tego samego agenta (niezmiennik 6), a klawisz Enter
@@ -199,6 +247,11 @@ export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
        * klikać „tak" bez czytania, a wtedy nie chroni już przed niczym — także przed tym
        * jednym zamknięciem, przy którym pracowało trzech agentów. */
       if (tab.agents === 0) {
+        /* Rozmowa schodzi razem z kartą, i to jest ta ścieżka, na której limit palił się w tle
+         * najczęściej: terminal, w którym człowiek tylko rozmawiał z liderem, ma zero pracujących
+         * agentów, więc zamyka się właśnie tędy — bez pytania i do 2026-08-20 bez końca rozmowy
+         * (niezmiennik 6). */
+        endLead(id);
         set(withoutTab(get(), id));
         return;
       }
@@ -236,6 +289,10 @@ export function createWorkspacesStore(cancel: CancelRun): WorkspacesStore {
       } finally {
         closing = null;
       }
+
+      /* Rozmowa schodzi PO biegu, nie przed nim: dopóki agenci pracują, lider jest jedynym
+       * miejscem, w którym człowiek może zapytać, co się właściwie zwija. */
+      endLead(pendingClose.id);
 
       /* Stan czytany PONOWNIE, już po anulowaniu: minęła cała runda zwijania biegu i karty
        * mogły się w tym czasie zmienić. Zapisanie tu migawki sprzed `await` cofałoby wszystko,

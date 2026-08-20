@@ -33,7 +33,7 @@
 import { createWorkspacesStore } from '../../../state/run-tabs';
 import type { WorkspaceTab, WorkspacesStore } from '../../../state/run-tabs';
 import { runFor } from '../../../state/run';
-import { stop } from '../io';
+import { closeTerminal, stop } from '../io';
 
 /**
  * Zatrzymuje bieg **tej** karty — i milczy o cudzym.
@@ -65,13 +65,42 @@ async function stopRunOf(tab: string): Promise<void> {
 }
 
 /**
+ * Kończy rozmowę z liderem TEJ karty — i milczy o rozmowach pozostałych.
+ *
+ * 2026-08-20 (T-71) — DEFEKT, KTÓRY TA FUNKCJA ZAMYKA, i znalazł go sprawdzający, bo żadne
+ * kryterium tego zadania go nie dotyka. `commands::chat::Threads::close_at` po tamtej stronie
+ * granicy istniało i było otestowane wprost, a **produkcja go nie wołała**: jedynym miejscem,
+ * które kończyło rozmowy, był `AppState::close_chat` na zamknięciu OKNA. Czyli każdy terminal
+ * otwarty `＋` i zamknięty `×` zostawiał swojego lidera żywego i płacącego do końca sesji —
+ * błąd finansowy, nie higieniczny (niezmiennik 6).
+ *
+ * IDENTYFIKATOR KARTY JEST KLUCZEM WĄTKU po obu stronach granicy: tym samym `onTop` woła się
+ * `open_chat` i `say_to_orchestrator` (`../index.tsx`), więc karta biegu — nazwana folderem —
+ * kończy dokładnie tę rozmowę, którą sama zaczęła.
+ *
+ * CISZA PRZY ODMOWIE JEST POPRAWNA i to jedyne miejsce, w którym to piszę: karta w tej chwili
+ * znika, więc nie ma już ekranu, na którym to zdanie mogłoby stanąć, a rozmowa, której rejestr
+ * nie zna, nie ma czego kończyć. O liderze, który przeżył zamknięcie swojej karty, melduje
+ * strona Rusta — tam, gdzie jest dowód (`ipc::AppState::close_the_lead`).
+ */
+function endLeadOf(tab: string): void {
+  closeTerminal(tab).catch(() => {
+    /* Świadomie bez zdania: ekran tej karty właśnie zniknął, a powód stoi wyżej. */
+  });
+}
+
+/**
  * Karty biegów tego okna.
  *
  * ZATRZYMANIE WCHODZI ARGUMENTEM i dziś jest nim `stopRunOf` — `stop_run` obwarowany pytaniem
  * „czy ten bieg w ogóle należy do tej karty". Dzień, w którym `stop_run` dostanie identyfikator
  * biegu, jest dniem, w którym zmienia się dokładnie ta jedna linia.
+ *
+ * KONIEC ROZMOWY WCHODZI DRUGIM ARGUMENTEM, a nie tym samym: zatrzymanie biegu dzieje się tylko
+ * po potwierdzeniu pytania, a rozmowa schodzi przy KAŻDYM zamknięciu karty. Powód w całości stoi
+ * w `src/state/run-tabs.ts`.
  */
-export const runTabs: WorkspacesStore = createWorkspacesStore(stopRunOf);
+export const runTabs: WorkspacesStore = createWorkspacesStore(stopRunOf, endLeadOf);
 
 /**
  * Zakłada (albo odświeża) kartę biegu, który właśnie rusza, i stawia ją na wierzchu.
