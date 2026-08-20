@@ -63,6 +63,20 @@ sie bez nowego wpisu — i to jest cala obrona przed wierszem, ktorego nikt nie 
    zadzialalo dokladnie tak, jak zaprojektowano: wymusilo decyzje zamiast przepuscic ja po cichu.
    Jesli okaze sie, ze trzeba tknac cokolwiek innego, **stoj i zglos** (AGENTS.md §7).
 
+4. `src/sections/run/feed/model.ts` i `src/sections/run/feed/feed.tsx` — **przewoz komendy
+   i nic wiecej.** Bez tego przycisk propozycji jest martwy w dzialajacej aplikacji: renderuje
+   sie wylacznie, gdy `<Line>` dostanie props `command`, a `HistoryRow` nie ma takiego pola
+   i zaden produkcyjny wolajacy go nie podaje. Kryterium AC-3 przechodzi wtedy jedyna sciezka,
+   ktora istnieje — testowa — czyli certyfikuje funkcje, ktorej nikt nie widzi. To jest ta sama
+   rodzina, dla ktorej istnieje `checks/quick-wired.sh`, tylko po stronie Reacta, gdzie ten
+   check nie siega.
+
+   Dozwolone jest dokladnie: pole na komende w wierszu historii, wypelnienie go przy sklejaniu
+   wiersza z linii nowego rodzaju, i podanie go komponentowi przez `feed.tsx`. Zadna inna
+   zmiana w tych dwoch plikach nie nalezy do tego zadania — `feed/model.ts` ma wlasciciela
+   w niewyladowanym T-41 oraz w T-67 i T-68. Jesli okaze sie, ze trzeba tknac cokolwiek
+   wiecej, **stoj i zglos** (AGENTS.md §7).
+
 ## Szkielet, bez ktorego `before` nie jest czerwone
 
 Rust: nowy wariant `Line` plus funkcja rozpoznajaca z `todo!()`. TypeScript:
@@ -144,6 +158,8 @@ src/ipc/suggested-crosses-the-wire.test.ts
 src/sections/run/feed/kinds.ts
 src/sections/run/feed/collapse.test.ts
 src/sections/run/feed/line.tsx
+src/sections/run/feed/model.ts
+src/sections/run/feed/feed.tsx
 src/sections/run/feed/suggested.ts
 src/sections/run/feed/suggestion-has-a-button.test.tsx
 src/sections/run/feed/suggested-runs-one-policy.test.ts
