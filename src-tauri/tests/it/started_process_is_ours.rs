@@ -316,6 +316,65 @@ async fn a_started_command_is_ours_and_goes_down_with_proof() -> Result<(), Box<
     Ok(())
 }
 
+/// To, co ta rzecz wypisze, DOCHODZI — i dochodzi z obu potoków.
+///
+/// # Po co ta asercja tu stoi
+///
+/// Bo panel, który otwiera kliknięcie w kafelek, pokazuje dokładnie tę wartość, a żadne
+/// z czterech zdań kryterium jej nie dotyka: kryterium frontendowe biegnie pod atrapą granicy,
+/// która odpowiada KSZTAŁTEM, więc przechodzi z pustym wyjściem co do joty. Zostawiłoby to
+/// kafelek, w który da się wejść i nie ma tam nic — czyli kontrolkę bez skutku z dodatkowym
+/// krokiem (niezmiennik 16), przy zamówieniu, które brzmiało „po kliku mogę tam wejść".
+///
+/// OBA POTOKI, nie jeden, i to jest ta sama wada, która żyła w `supervisor.rs` do 2026-08-18:
+/// `stderr` był ustawiany na potok i **nie dawał się odebrać**, więc najczęstsza realna awaria —
+/// brak albo niezalogowane CLI, które pisze WŁAŚNIE tam — była niediagnozowalna z okna. Rzecz
+/// uruchomiona z ręki pisze tam jeszcze częściej: `npm` sypie ostrzeżeniami na skargi, a wyjście
+/// bez nich czyta się jak bieg bez problemów.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_a_started_command_prints_reaches_the_registry() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let processes = Processes::new();
+    let started = processes.start(&StartSpec {
+        // Jedno zdanie na wyjście, jedno na skargi. Przez powłokę, bo tak wygląda każda linia,
+        // którą wpisze człowiek — i bo `2>&1` po drodze zlałoby te dwa potoki w jeden, czyli
+        // skasowałoby połowę tej asercji.
+        command: "echo it-said-this; echo it-complained-this 1>&2".to_owned(),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let said = processes.said(started.pgid).unwrap_or_default();
+        if said.contains("it-said-this") && said.contains("it-complained-this") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the registry holds {said:?}, and this thing printed one \
+                 sentence to each of its two streams. A thing whose output never arrives is a \
+                 tile you can click into and find empty — and worse, a pipe nobody empties stops \
+                 the child on `write` at ~64 KB, which from the window looks like an app that \
+                 came up and went quiet"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Rejestr, który nie zna tej grupy, oddaje `None` — wartość, nie błąd. Kontrola przeciw
+    // wersji, która na KAŻDE pytanie odpowiada tym samym tekstem.
+    assert_eq!(
+        processes.said(started.pgid + 1_000_000),
+        None,
+        "asking about a group the list does not know has to answer 'nothing', or the assertion \
+         above says nothing about WHICH thing printed that"
+    );
+
+    let _ = tokio::time::timeout(PATIENCE, processes.close()).await;
+    Ok(())
+}
+
 /// Rzecz, która zeszła SAMA, przestaje mówić o sobie, że żyje.
 ///
 /// # Po co ta asercja tu stoi, skoro żadne z czterech zdań kryterium jej nie żąda
