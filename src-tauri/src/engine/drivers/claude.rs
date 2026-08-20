@@ -202,11 +202,22 @@ const TURNS_IN_FLIGHT: usize = 8;
 /// Cicha wersja złamania niezmiennika 23 nie wygląda jak drugi adapter — wygląda jak
 /// `if agent == "claude" { … }` w miejscu wywołania, i tak właśnie po cichu umarło skanowanie
 /// sekretów w repo źródłowym [raport 05 §4].
-const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static str>) {
+///
+/// # Pozycje, nie gotowy napis [2026-08-20, T-63]
+///
+/// Do tego dnia druga kolumna była jednym napisem z przecinkami, bo miała dokładnie jednego
+/// czytelnika, który wklejał ją do argv. Teraz przechodzi przez [`tool_surface`], gdzie lista
+/// agenta wybiera z niej **po nazwie** — a to wymaga pozycji, nie sklejonego zdania. Sklejenie
+/// z powrotem robi `join(",")` i daje bajt w bajt te same dwa napisy, które przypina
+/// `claude_argv_policy.rs`.
+const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static [&'static str]>) {
     match policy {
-        Policy::ReadOnly => ("dontAsk", Some("Read,Grep,Glob")),
+        Policy::ReadOnly => ("dontAsk", Some(&["Read", "Grep", "Glob"])),
         // `Bash(git *)` to git i **tylko** git; gołe `Bash` byłoby każdą komendą na maszynie.
-        Policy::EditInFolder => ("acceptEdits", Some("Read,Grep,Glob,Edit,Write,Bash(git *)")),
+        Policy::EditInFolder => (
+            "acceptEdits",
+            Some(&["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)"]),
+        ),
         Policy::Unrestricted => ("bypassPermissions", None),
     }
 }
@@ -315,12 +326,15 @@ pub enum ToolsRefused {
     },
 }
 
-/// Powierzchnia narzędzi jednego kroku: co jest w zestawie i czego polityka nie dała.
+/// Powierzchnia narzędzi jednego kroku: co jest w zestawie, co idzie bez pytania i czego polityka
+/// nie dała.
 ///
-/// Jedna wartość, dwie odpowiedzi, bo pytanie jest jedno („co z tego pojedzie do argv") — ten sam
+/// Jedna wartość, trzy odpowiedzi, bo pytanie jest jedno („co z tego pojedzie do argv") — ten sam
 /// kształt i ten sam powód, co przy [`crate::library::agents::Passthrough`]. Rozbicie na dwie
 /// funkcje dałoby dwa przebiegi tej samej reguły po tej samej liście i dwa miejsca, w których
-/// filtr może się rozjechać sam ze sobą.
+/// filtr może się rozjechać sam ze sobą — a przy TYCH dwóch kolumnach rozjazd nie wygląda jak
+/// błąd: narzędzie dostępne i niezatwierdzone startuje agenta, który pyta, i nie dostaje
+/// odpowiedzi, bo w biegu nie ma człowieka przy klawiaturze.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSurface {
     /// Co pojedzie do `--tools`, w kolejności, w której agent to wymienił.
@@ -330,6 +344,14 @@ pub struct ToolSurface {
     /// pliku. Krok z niepustym [`ToolSurface::refused`] i tak nie rusza, więc ta lista jest wtedy
     /// sufitem polityki — tym samym, który ten krok dostawał przed T-63.
     pub available: Vec<String>,
+    /// Co pojedzie do `--allowedTools`. `None` znaczy **„nie wysyłaj tej flagi w ogóle"** — tak
+    /// wygląda [`Policy::Unrestricted`] od T-04 i tak ma zostać: lista dozwolonych nie wiąże
+    /// `bypassPermissions`, więc jej wysłanie mówiłoby, że coś jest ograniczone, gdy nie jest.
+    ///
+    /// Zawsze podzbiór [`ToolSurface::available`] po znormalizowanej nazwie (`Bash(git *)` to
+    /// `Bash`). Narzędzie zatwierdzone i niedostępne jest obietnicą, której proces nie dotrzyma,
+    /// a kto czyta tę linię w `ps` albo w dzienniku, ten uwierzy liście.
+    pub approved: Option<Vec<String>>,
     /// Czego agent chciał, a polityka nie dała. `None` znaczy „prośba mieści się w suficie".
     ///
     /// **Niepuste znaczy „krok nie rusza"** (niezmiennik 12: odmowa najpóźniej przy Starcie, nigdy
@@ -365,28 +387,33 @@ pub struct ToolSurface {
 /// [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
 #[must_use]
 pub fn tool_surface(policy: Policy, wanted: Option<&[String]>) -> ToolSurface {
-    let ceiling = tools_for(policy);
+    let (_, approval) = permission_flags(policy);
 
-    // AGENT DOMYŚLNY: sufit polityki, znak w znak jak przed T-63. Ta gałąź jest jedyną rzeczą,
-    // która chroni trzech wyładowanych strażników (`claude_argv_policy`,
-    // `driver_claude_policy_surface`, `driver_claude_tool_surface`) — i cała różnica między tym
-    // zadaniem a wycofanym T-59, które składało listę po swojemu także wtedy, gdy nikt o nic nie
-    // prosił, i przewracało ostre zawierania trzech list.
+    // SUFIT OBU KOLUMN, czyli dokładnie to argv, które ten krok dostawał przed T-63. Jedzie tędy
+    // agent domyślny i **każda** odmowa: krok z odmową i tak nie rusza (niezmiennik 12), więc jego
+    // powierzchnia ma być tą, o której nikt niczego nie obiecywał, a nie pustką.
+    let ceiling = || ToolSurface {
+        available: names(tools_for(policy)),
+        approved: approval.map(names),
+        refused: None,
+    };
+
+    // AGENT DOMYŚLNY. Ta gałąź jest jedyną rzeczą, która chroni trzech wyładowanych strażników
+    // (`claude_argv_policy`, `driver_claude_policy_surface`, `driver_claude_tool_surface`) — i cała
+    // różnica między tym zadaniem a wycofanym T-59, które składało listę po swojemu także wtedy,
+    // gdy nikt o nic nie prosił, i przewracało ostre zawierania trzech list.
     let Some(wanted) = wanted else {
-        return ToolSurface {
-            available: names(ceiling),
-            refused: None,
-        };
+        return ceiling();
     };
 
     // WYCZYSZCZONA LISTA JEST ODMOWĄ, NIE INSTRUKCJĄ. `--tools ""` to słowo vendora znaczące
     // „żadnych narzędzi", więc krok wystartowałby agenta, który nie przeczyta ani jednego pliku
     // i z zewnątrz wygląda dokładnie jak zawieszony. Człowiek, który wyczyścił listę, ma dostać
-    // zdanie — a `available` zostaje sufitem, bo krok z odmową i tak nie rusza (niezmiennik 12).
+    // zdanie.
     if wanted.is_empty() {
         return ToolSurface {
-            available: names(ceiling),
             refused: Some(ToolsRefused::NothingChosen),
+            ..ceiling()
         };
     }
 
@@ -401,22 +428,63 @@ pub fn tool_surface(policy: Policy, wanted: Option<&[String]>) -> ToolSurface {
         .collect();
     if !above.is_empty() {
         return ToolSurface {
-            available: names(ceiling),
             refused: Some(ToolsRefused::AbovePolicy {
                 policy,
                 tools: above,
             }),
+            ..ceiling()
         };
     }
 
     // Lista mieści się w suficie, więc TO ONA jest zestawem — w kolejności, w której człowiek ją
     // wymienił. Nie zbiór złożony na nowo z sufitu: gdyby sterownik przebudowywał tę listę,
-    // „agent uses: …" z formularza znów byłoby ustawieniem, które ekran przyjmuje, a bieg
+    // „Agent uses: …" z formularza znów byłoby ustawieniem, które ekran przyjmuje, a bieg
     // przycina po cichu.
     ToolSurface {
         available: wanted.to_vec(),
+        // DRUGA KOLUMNA TEJ SAMEJ DECYZJI, składana z tej samej listy i w tym samym miejscu.
+        // Dostępność bez zatwierdzenia jest przy `--permission-mode dontAsk` bezużyteczna: agent
+        // pyta, nikt nie odpowiada, i z zewnątrz wygląda to jak narzędzie, które zawsze odmawia.
+        approved: approval.map(|approval| approved_from(approval, wanted)),
         refused: None,
     }
+}
+
+/// Kolumna auto-zatwierdzania dla agenta, który wymienił własne narzędzia.
+///
+/// Trzy reguły i wszystkie trzy są zdaniem o zachowaniu:
+///
+/// 1. **Składnia zakresowa polityki zostaje jej.** Agent `ask-first`, który wpisał `Bash`, dostaje
+///    `Bash` w zestawie i `Bash(git *)` bez pytania — dokładnie tyle, ile jego dial obiecuje na
+///    ekranie. Gołe `Bash` w tej kolumnie byłoby każdą komendą na maszynie, czyli listą narzędzi
+///    jako drugą drogą do uprawnień obok trzypozycyjnego diala (`DECISIONS-LOCKED.md` §D6).
+/// 2. **Furtka [`WEB`] dotyczy obu kolumn.** Żadna polityka poniżej `Unrestricted` nie zatwierdza
+///    sieci sama z siebie, więc bez tej linii `WebSearch` byłby dostępny i niezatwierdzony, czyli
+///    w biegu bez człowieka — nieobecny.
+/// 3. **Czego polityka nie zatwierdza, tego ta funkcja nie wymyśla.** Nazwa dostępna przy tej
+///    polityce, której jej kolumna zatwierdzania nie wymienia i która nie jest siecią, wypada.
+///    Dziś taki przypadek nie zachodzi (obie kolumny mają te same nazwy po normalizacji), a kiedy
+///    zajdzie, ma zachować się tak: lista agenta wybiera Z tego, co polityka daje, nigdy ponad.
+fn approved_from(approval: &[&str], wanted: &[String]) -> Vec<String> {
+    wanted
+        .iter()
+        .filter_map(|name| {
+            approval
+                .iter()
+                .find(|entry| bare_name(entry) == name.as_str())
+                .map(|entry| (*entry).to_owned())
+                .or_else(|| WEB.contains(&name.as_str()).then(|| name.clone()))
+        })
+        .collect()
+}
+
+/// Pozycja listy sprowadzona do samej nazwy narzędzia — `Bash(git *)` znaczy tu `Bash`.
+///
+/// Ta sama normalizacja, którą robią kryteria po drugiej stronie argv, i z tego samego powodu:
+/// bez niej `Bash(git *)` z kolumny zatwierdzania nigdy nie spotkałoby się z `Bash` z listy
+/// agenta, choć narzędzie jest dokładnie to samo.
+fn bare_name(entry: &str) -> &str {
+    entry.split_once('(').map_or(entry, |(name, _)| name).trim()
 }
 
 /// Dwie nazwy, na które sufit polityki się **nie** rozciąga.
@@ -809,10 +877,15 @@ impl ClaudeDriver {
         // Tryb uprawnień wynika WYŁĄCZNIE z polityki i lista narzędzi go nie rusza. Inaczej sieć
         // dałaby się „kupić", przestawiając agenta na tryb, który zatwierdza wszystko — czyli
         // oddając mu przy okazji całą resztę.
-        let (mode, approved) = permission_flags(spec.policy);
-        command.arg("--permission-mode").arg(mode);
-        if let Some(approved) = approved {
-            command.arg("--allowedTools").arg(approved);
+        // Z tabeli bierzemy tu WYŁĄCZNIE tryb; jej drugą kolumnę czyta `tool_surface`, bo to tam
+        // — i tylko tam — spotyka się ona z listą agenta. `None` w powierzchni znaczy „nie wysyłaj
+        // tej flagi w ogóle", a nie „wyślij pustą": pusta lista i brak listy to dla CLI dwie różne
+        // rzeczy.
+        command
+            .arg("--permission-mode")
+            .arg(permission_flags(spec.policy).0);
+        if let Some(approved) = &surface.approved {
+            command.arg("--allowedTools").arg(approved.join(","));
         }
 
         // Druga kolumna tej samej decyzji, nie druga decyzja (niezmiennik 23): wyżej stoi to,
