@@ -66,7 +66,10 @@ const WORK: Duration = Duration::from_millis(250);
 /// Ile czekamy na wszystkie prośby, zanim uznamy pulę za zakleszczoną. Na zegarze wirtualnym
 /// ten limit nic nie kosztuje: runtime przesuwa czas dopiero wtedy, gdy nie ma nic do roboty,
 /// więc dosięga go wyłącznie bieg, który naprawdę stanął.
-const PATIENCE: Duration = Duration::from_secs(60);
+///
+/// Minuta, nie 60 s: `clippy::duration_suboptimal_units` biegnie w `full` na `-D warnings`,
+/// a to jest ta sama liczba, nie inna wartość — tłumienie byłoby tu droższe niż zapis wprost.
+const PATIENCE: Duration = Duration::from_mins(1);
 
 /// Okno jednej prośby: kiedy dostała miejsce i kiedy je oddała.
 type Span = (Instant, Instant);
@@ -226,6 +229,11 @@ async fn three_ordinary_requests_still_share_one_moment() -> Result<(), Box<dyn 
     Ok(())
 }
 
+// `clippy::int_plus_one` chce tu `< POOL` zamiast `<= POOL - 1`, a to jest ta sama liczba
+// napisana inaczej niż zdanie, które przy niej stoi: komunikat asercji mówi „at most {POOL - 1}
+// ordinary ones fit beside it", więc porównanie ma brzmieć tak samo, jak to, co przeczyta ktoś,
+// komu ta asercja padnie. Wyłączone na jednym teście, nie na pliku — reszta ma tę regułę dalej.
+#[allow(clippy::int_plus_one)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_heavy_request_also_takes_one_of_the_ordinary_places() -> Result<(), Box<dyn Error>> {
     // (e) ZAGNIEŻDŻENIE. Bez niego osiem kroków ciężkich biegłoby OBOK trzech zwykłych i sufit

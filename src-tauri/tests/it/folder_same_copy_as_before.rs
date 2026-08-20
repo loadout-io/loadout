@@ -142,6 +142,12 @@ connections: []
 Do the work.
 ";
 
+// `clippy::too_many_lines` liczy tu 109 linii i prawie wszystkie z nich są ZDANIAMI: asercje
+// (a)–(d) czytają jeden i ten sam bieg, a każda niesie komunikat mówiący, co poszło nie tak
+// i dlaczego to jest wada, a nie drobiazg. Rozbicie na funkcje pomocnicze znaczyłoby albo
+// uruchomić ten bieg kilka razy, albo przewlec jego wynik przez cudzą sygnaturę — obie wersje
+// są dłuższe niż ta, tylko rozłożone tak, żeby licznik ich nie widział.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chain_of_three_steps_works_in_one_tree() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
