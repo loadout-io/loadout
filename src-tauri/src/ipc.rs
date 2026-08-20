@@ -352,6 +352,17 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 /// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
 const WORKFLOWS_DIR: &str = "workflows";
 
+/// Co powiedzieć drugiemu `/ask`, kiedy pierwszy bieg jeszcze nie zszedł.
+///
+/// ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
+/// tam, gdzie był. Mówi też DLACZEGO: bez powodu czyta się to jak ograniczenie na złość, a
+/// prawdziwy powód jest finansowy — Loadout prowadzi jeden bieg naraz, więc drugi uchwyt
+/// znaczyłby, że Stop sięga do biegu drugiego, a pierwszy pracuje dalej i dalej płaci
+/// (niezmienniki 6 i 11).
+const ALREADY_GOING: &str = "A run is already going, and Loadout leads one at a time so that \
+                             Stop always reaches the one that is working. Press Stop first, \
+                             then ask again.";
+
 /// Ci współpracownicy biegu, którzy **przeżywają jedno wywołanie komendy**.
 ///
 /// To jest dokładnie ta połowa [`RunDeps`], której nie da się przysłać z okna: baza otwarta raz
@@ -571,10 +582,19 @@ impl AppState {
     ///
     /// Wymiana jest tu, a nie w skorupie, z tego samego powodu, co przy [`AppState::begin_run`]:
     /// skorupa z `let` i warunkiem w środku byłaby o dwie decyzje dalej od „rozpakuj i zawołaj".
-    ///
-    /// 2026-08-20 — SZKIELET T-62: ciało jest `todo!()`, żeby kryterium padło na ZACHOWANIU.
-    pub fn begin_a_run<'a>(&'a self, _project: &'a Path) -> Result<RunDeps<'a>, String> {
-        todo!()
+    pub fn begin_a_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
+        {
+            // Zamek na CAŁE pytanie i na wymianę, nie na dwa osobne wyrażenia: „czy coś idzie"
+            // sprawdzone przed wzięciem zamka jest odpowiedzią sprzed chwili, a między nią
+            // a podmianą mieści się drugie `/ask`. Zamek `std::sync` i ani jednego `await`
+            // w środku (niezmiennik 8) — powód stoi przy [`AppState::deps_in`].
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            if live.is_working() {
+                return Err(ALREADY_GOING.to_owned());
+            }
+            *live = RunControl::new();
+        }
+        Ok(self.deps_in(project))
     }
 
     /// Katalog, w którym ma biec workflow: ten wybrany w oknie albo ten ze startu aplikacji.

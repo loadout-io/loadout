@@ -1397,6 +1397,11 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> (Pa
 /// wpisanym z palca `Policy::ReadOnly` przechodzi także dla drugiej kopii tego `match`, czyli
 /// dokładnie dla tego, przed czym stoi niezmiennik 23. Widoczność, nie nowa funkcja — nie ma
 /// tu drugiego wołającego ani drugiego zdania o tym dialu.
+///
+/// `#[must_use]` przyszło razem z `pub`: tabela bez wołającego, który czyta jej odpowiedź, jest
+/// wywołaniem bez skutku, a `clippy::pedantic` mówi to wprost przy każdej publicznej funkcji
+/// czystej z definicji.
+#[must_use]
 pub fn policy_of(access: FileAccess) -> Policy {
     match access {
         FileAccess::LookOnly => Policy::ReadOnly,
