@@ -4,19 +4,31 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
-## 2026-08-20, 05:00 — terminal, lider i szesc zielonych galezi, ktore czekaja na czyste drzewo
+## 2026-08-20, 05:40 — terminal, lider i siedem zadan w trunku
 
-**Zielone i NIEZLANDOWANE: T-58, T-60, T-61, T-62, T-66, T-67.** Pelna bramka na kazdej
-osobno: T-58 20/0, T-60 19/0, T-61 19/0, T-62 18/0, T-66 17/0, T-67 17/0. **T-63 w biegu.**
+**Wyladowane: T-58, T-66, T-67, T-60, T-61, T-62, T-63.** Pelna bramka po KAZDYM ladowaniu,
+15/0 za kazdym razem; na galeziach przed ladowaniem T-58 20/0, T-60 19/0, T-61 19/0, T-62 18/0,
+T-63 19/0, T-66 17/0, T-67 17/0.
 **T-59 wycofane w trakcie.** Fala wziela sie z rozmowy z wlascicielem, nie z planu.
 
-### Dlaczego nic nie wyladowalo, choc wszystko jest zielone
+### Ladowanie stalo godziny na CUDZEJ niezacommitowanej pracy, i jak zostalo zdjete
 
 `integrate.sh` odmawia lądowania na brudnym drzewie i ma racje. W drzewie glownym leza od
 kilku godzin trzy pliki CUDZEJ, niezacommitowanej pracy (`commands/run.rs`,
 `memory/handoff.rs`, nowy `tests/handoff_attachment_is_openable.rs` — zalaczniki przekazan).
-Nie ruszam ich: `git stash` jest odwracalny, ale znika wtedy z drzewa robota, ktorej autor
-jest w trakcie zadania, a to jest klasa incydentu droga do odkrecenia.
+Rozwiazanie: **zmierzyc, zanim sie ruszy.** `./verify.sh quick` dalo 13/0, a `cargo test
+--test handoff_attachment_is_openable` 1 passed — praca byla wiec SKONCZONA i dala sie
+zacommitowac jako wlasny commit. Nic nie zginelo: `git reset --soft HEAD~1` cofa ja jednym
+ruchem. `git stash` bylby gorszy, bo znika wtedy z drzewa robota, ktorej autor jest w trakcie
+zadania.
+
+**I tu wpadla pulapka warta zapisania.** Ta praca przechodzila `quick` (`--lib`) i swoj wlasny
+test, a mimo to zostawiala trunk CZERWONY: `full-clippy` sadzi `--all-targets`, czyli takze
+`tests/`, i jedno `redundant closure` przy `-D warnings` zatrzymalo cala fale. `integrate.sh`
+zameldowal to dokladnie tak, jak trzeba — czerwien na main PRZED jakimkolwiek merge'em, nic nie
+wyladowane, zeby wina nie spadla na pierwsza galaz. Naprawa: jedna linia,
+`.filter_map(Result::ok)`. **Zielony `quick` plus zielony wlasny test NIE znaczy, ze trunk
+przyjmie.**
 
 **Nauka operacyjna:** drugi agent pracowal NA TRUNKU, nie w worktree. Przy dwoch agentach na
 jednym repo to zatrzymuje lądowanie calej fali. Kazda praca — takze jego — potrzebuje pliku
@@ -108,12 +120,25 @@ jednoczesnie. Po resecie limitu te same kontrakty przeszly bez zmiany ani jedneg
 Zginal dwa razy (19.08 i 20.08), za kazdym razem kosztem sesji, ktora go potrzebowala.
 Zmierzone tej nocy: dziewiec biegow w czterech falach, zero zgubionych na granicy tury.
 
+### Konflikt przy ladowaniu, ktory byl prawdziwy
+
+`task-T-62` zderzyl sie z `entry/entry.tsx` przepisanym przez T-58: jedno zadanie przebudowalo
+wiersz wejscia (historia strzalka, echo do strumienia, ognisko), drugie dolozylo do niego `/ask`.
+Trzy hunki, rozwiazane addytywnie z zachowaniem architektury MLODSZEJ, bo ona jest na trunku.
+
+Ostatnia pozostalosc znalazl `tsc`, nie ja: dwa wywolania `setSaid` przezyly merge, bo lezaly
+POZA znacznikami konfliktu — T-58 skasowal ten stan, przenoszac odpowiedzi wiersza do strumienia.
+Wniosek na przyszlosc: po recznym rozwiazaniu konfliktu w pliku, ktory ktos przepisal, `tsc`
+jest tania kontrola przeciw pozostalosciom, ktorych `git` nie pokazal.
+
+Drugi wniosek, tanszy: **kazda galaz stosu nosi swoj `TASK.md`**, a `integrate.sh` kasuje go przy
+ladowaniu — wiec druga galaz w kolejce konfliktuje o ten plik. Zdejmuj `TASK.md` z galezi
+PRZED ladowaniem, jednym commitem na kazda.
+
 ### Co czeka
 
 | co | stan |
 |---|---|
-| **ladowanie szesciu galezi** | czeka na czyste drzewo; `git merge-tree` potwierdza, ze oba lancuchy wchodza czysto |
-| **T-63** — narzedzia per agent + jedna tabela `policy_of` (4) | w biegu |
 | **T-68** — koniec biegu gasi wszystko, co opisywalo zywy bieg (2) | napisane |
 | **T-69** — zaden start nie osieroca poprzednika (2) | napisane, niezmiennik 6 |
 | T-40, T-41, T-45, T-56 | starsza kolejka, nietkniete |
