@@ -23,6 +23,7 @@
  * da się osądzić czystym wejściem i czystym wyjściem.
  */
 import type { RailCard } from './card';
+import { railCard } from './card';
 
 /**
  * Jedna rzecz uruchomiona komendą, tak jak widzi ją okno.
@@ -67,6 +68,51 @@ export interface RailGroups {
  * Rzecz, która zeszła, nie dostaje kafelka wcale. To jest cała treść tej funkcji i cały powód,
  * dla którego ona istnieje osobno od komponentu.
  */
-export function railGroups(_input: GroupsInput): RailGroups {
-  throw new Error('not implemented');
+export function railGroups(input: GroupsInput): RailGroups {
+  return {
+    /* KAFELKI AGENTÓW JADĄ DALEJ CO DO WARTOŚCI, nie przez `map`. Przeliczenie ich tutaj
+     * postawiłoby odpowiedź na pytanie „co ten agent ostatnio powiedział" w dwóch miejscach,
+     * a jedno z dwóch jest zawsze tym nieaktualnym (niezmiennik 13). Ten plik wolno DOŁOŻYĆ
+     * grupę obok; przepisać tamtej nie wolno. */
+    agents: input.agents,
+    started: input.started.filter((one) => one.alive).map(tileFor),
+  };
+}
+
+/**
+ * Kafelek jednej rzeczy, która jeszcze biegnie.
+ *
+ * TĄ SAMĄ FUNKCJĄ, którą kafelek dostaje agent (`railCard`), i to jest wymóg, nie oszczędność:
+ * kwadrat tożsamości przydziela `colour.ts` i ma go przydzielać RAZ dla całej listy. Ręczny
+ * literał obok byłby drugim miejscem, w którym powstaje kafelek — a wtedy rzecz uruchomiona
+ * komendą mogłaby dostać odcień z palety STANU, czyli ten sam błąd, przez który cała reguła
+ * „tożsamość ≠ stan" powstała [DESIGN §3].
+ */
+function tileFor(one: StartedProcess): RailCard {
+  return railCard({
+    id: one.id,
+    /* WIERSZ POWŁOKI JEST NAZWĄ, co do znaku. Etykieta wymyślona z komendy („Dev server")
+     * byłaby relacją, której w danych nie ma (niezmiennik 17), a człowiek szuka na liście tego,
+     * co sam wpisał. */
+    name: one.command,
+    /* PUSTA ROLA, bo tego faktu nie ma. „Po co ten agent jest" jest zdaniem z definicji agenta,
+     * a rzecz uruchomiona komendą żadnej definicji nie ma — pusty slot kafelek po prostu
+     * pomija (`rail.tsx`, `CardLine`), a zdanie zmyślone zajęłoby jego miejsce i czytałoby się
+     * jak fakt. */
+    role: '',
+    /* ZIELONE „working", bo to znaczy „dzieje się TERAZ" [DESIGN §3] — a kafelek dostaje
+     * wyłącznie rzecz, która biegnie. Rzecz, która zeszła, nie ma kafelka wcale, więc żaden
+     * inny stan nie ma tu jak wystąpić. */
+    status: 'working',
+    /* JEDNA WYPOWIEDŹ Z PUSTYM ZDANIEM, nie pusta lista, i to jest wybór o nazwanym powodzie:
+     * `sayFor([])` oddaje „Thinking…", czyli zdanie o kimś, kto MYŚLI. Nad wierszem powłoki jest
+     * to relacja, której w danych nie ma (niezmiennik 17) — komenda nie myśli, komenda biegnie.
+     * Puste zdanie kafelek pomija tak samo jak pustą rolę, więc zostają dwie linie, które są
+     * prawdziwe: co to jest i że to się dzieje.
+     *
+     * Dzień, w którym ta linia zacznie nieść ostatni wiersz wyjścia, jest dniem, w którym
+     * `StartedProcess` dostanie czwarte pole — a dziś nie ma, bo wyjście jedzie na drut raz
+     * i tylko dla tej rzeczy, w którą człowiek wszedł (`commands::processes::Processes::said`). */
+    lines: [{ kind: 'run', text: '' }],
+  });
 }
