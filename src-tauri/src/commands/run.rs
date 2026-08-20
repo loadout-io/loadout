@@ -2329,6 +2329,27 @@ impl Live {
                 told.extra_dirs.push(dir.to_owned());
             }
         }
+        // 2026-08-20 — CIĘCIE PRZEKAZANIA ROBI DRUGI KATALOG, A PRAWA DOSTAWAŁ TYLKO PIERWSZY.
+        // `memory::handoff` ucina ciało na `BODY_CAP`, pisze ORYGINAŁ do `attachments/` i wstawia
+        // w ciało wiersz `Moved to attachments/<nazwa>__full.md`. Ten wiersz składa Loadout, nie
+        // agent, więc krok dostawał od NAS odnośnik, którego nie wolno mu było otworzyć — czyli
+        // dokładnie kontrolkę bez handlera z niezmiennika 16, przed którą ostrzega nagłówek tego
+        // modułu („skoro ścieżka jest jedyną drogą do treści, to musi działać").
+        //
+        // Zmierzone na biegu `20260819-223942`: krok Analysis dostał trzy takie wskaźniki, nie
+        // otworzył żadnego, napisał, że pełnego załącznika „nie ma", i wyliczył cały dowód po raz
+        // drugi wprost z repo — 9 z 10 minut swojego limitu na pracę, która leżała gotowa obok.
+        //
+        // Warunek to ISTNIENIE KATALOGU, nie nazwa pliku składana tu po raz drugi: katalog
+        // powstaje wyłącznie wtedy, gdy jakieś przekazanie tego biegu zostało ucięte, więc jego
+        // obecność JEST tym pytaniem. Wersja z ponownym składaniem `<nazwa>__full.md` rozjechałaby
+        // się po cichu z `handoff::write_inner` (ten sam powód stoi nad `Transcript`), a wersja
+        // bezwarunkowa dawałaby `--add-dir` na ścieżkę, której nie ma — czyli zamieniałaby
+        // nieczytelny załącznik w nieuruchomiony krok.
+        let attachments = self.plan.dir.join(handoff::ATTACHMENTS_DIR);
+        if attachments.is_dir() && !told.extra_dirs.iter().any(|had| had == &attachments) {
+            told.extra_dirs.push(attachments);
+        }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
         told.prompt.push('\n');

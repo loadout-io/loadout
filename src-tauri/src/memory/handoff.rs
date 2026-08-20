@@ -35,6 +35,15 @@ use super::{Error, FrontMatter, Result, est_tokens, slugify};
 /// granicy sekcji, a pełny tekst zawsze ląduje w `attachments/`.
 pub const BODY_CAP: usize = 8192;
 
+/// Katalog obok `handoffs/`, w którym ląduje ORYGINAŁ przekazania uciętego na [`BODY_CAP`].
+///
+/// Nazwa stoi w jednym miejscu, bo dwa rozjechałyby się po cichu: [`write_inner`] tworzy tu plik
+/// i wpisuje do ciała wskaźnik, a `commands::run` musi dać następnemu krokowi prawo ten plik
+/// otworzyć. Gdyby każde z tych miejsc składało nazwę osobno, pierwsza jej zmiana dałaby
+/// wskaźnik prowadzący tam, gdzie nikt nie otworzył drzwi — czyli odnośnik bez handlera
+/// (niezmiennik 16). Ten sam powód stoi nad `drivers::claude::Transcript`.
+pub const ATTACHMENTS_DIR: &str = "attachments";
+
 /// Trzy sekcje o stałych nazwach i stałej kolejności [T6 §10.2].
 ///
 /// `Answer` to jest to, czego potrzebuje następny agent; `Evidence` to `plik:linia` albo URL,
@@ -412,7 +421,7 @@ fn write_inner(
         .and_then(|value| value.to_str())
         .unwrap_or(stem.as_str());
     let attachment_name = format!("{name}__full.md");
-    let pointer = format!("Moved to attachments/{attachment_name}");
+    let pointer = format!("Moved to {ATTACHMENTS_DIR}/{attachment_name}");
 
     let normalized = normalize(agent_body);
     let (shaped, repaired) = reshape(&normalized);
@@ -422,7 +431,7 @@ fn write_inner(
         // Niezmiennik 21: plik powstaje TYLKO wtedy, gdy w ciele stoi wskaźnik, który do
         // niego prowadzi. Trzyma **oryginał** agenta, nie to, co zostało po cięciu — inaczej
         // zgubionego zdania nie ma nigdzie [T6 §11.2].
-        let attachments = run_dir.join("attachments");
+        let attachments = run_dir.join(ATTACHMENTS_DIR);
         fs::create_dir_all(&attachments)?;
         let at = attachments.join(&attachment_name);
         fs::write(&at, normalized.as_bytes())?;
