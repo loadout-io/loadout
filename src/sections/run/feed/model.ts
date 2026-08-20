@@ -464,7 +464,13 @@ export function createFeed(scroller: Scroller): Feed {
   /** Nazwa agenta, którego slot `Thinking…` jest żywy. JEDNO pole, nigdy tablica. */
   let thinking: string | null = null;
 
-  /** Otwarta grupa per agent — klucz sklejania to para (agent, rodzaj), stąd mapa po agencie. */
+  /**
+   * Otwarta grupa per agent — klucz sklejania to para (agent, rodzaj), stąd mapa po agencie.
+   *
+   * Opisuje ŻYWY bieg, więc schodzi CAŁA razem z nim (`runEnded`) — dokładnie jak `doing`.
+   * Grupa otwarta przez bieg, który zszedł, nie ma czego sklejać: doliczyłaby linię następnego
+   * biegu do wiersza poprzedniego.
+   */
   const groups = new Map<string, Group>();
 
   /**
@@ -683,6 +689,13 @@ export function createFeed(scroller: Scroller): Feed {
    */
   function runEnded(): void {
     doing.clear();
+    /* Otwarte grupy sklejania też opisują ŻYWY bieg, a `FeedView` ich nie pokazuje — więc lista
+     * pól wypisana w kryterium ich nie widzi i mapa przeżywała bieg razem z całą sesją folderu
+     * (`feedFor` oddaje jedną `Feed` na workspace na zawsze). Pierwsza linia następnego biegu
+     * mieszcząca się w oknie sklejania doliczała się wtedy do wiersza POPRZEDNIEGO biegu:
+     * dwa biegi w jednym wierszu historii, czyli relacja, której w danych nie ma
+     * (niezmiennik 17). Zamknięcie CAŁEJ mapy, nie wybranych wpisów: dokładnie jak `doing`. */
+    groups.clear();
     /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
      * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
     thinking = null;

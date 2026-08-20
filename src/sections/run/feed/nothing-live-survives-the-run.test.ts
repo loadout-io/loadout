@@ -41,6 +41,10 @@ const FORGE_RESUMED = 'Back on the splitter.';
 const FIRST_QUESTION = 'Should the old splitter stay behind a switch?';
 const SECOND_QUESTION = 'Which header row is the real one?';
 
+/** Dwa pliki dla sceny okna sklejania: ten sam rodzaj linii po obu stronach zejścia biegu. */
+const FIRST_FILE = 'src/splitter.ts';
+const SECOND_FILE = 'src/header.ts';
+
 /** Zdanie człowieka na pierwsze pytanie — jednocześnie opcja, którą to pytanie podało. */
 const ANSWERED = 'Yes, keep the old one behind a switch.';
 
@@ -260,6 +264,30 @@ describe('nothing that described a live run survives the run', () => {
         'with it. The rows have to be the very same rows: same identifiers, same order, nothing ' +
         'renumbered underneath the screen.',
     ).toEqual(HISTORY_IDS);
+  });
+
+  it('closes the open fold windows, so the next run cannot grow the last row of this one', () => {
+    /* POLE STREFY ŻYWEJ, KTÓREGO ŻADNA Z DWÓCH LIST WYŻEJ NIE ZOBACZY. Otwarte okna sklejania
+     * (`groups` w modelu) nie stoją w `FeedView`, więc porównanie kluczy widoku nie ma o nie jak
+     * zapytać — a opisują ŻYWY bieg dokładnie tak jak `doing`. Model żyje dłużej niż bieg: okno
+     * oddaje JEDEN model na workspace i trzyma go, więc mapa przeżywała bieg razem z nim.
+     * Dlatego to kryterium schodzi tu o warstwę niżej i sądzi wiersze historii wprost. */
+    const feed = createFeed(sealedScroller());
+    feed.appendLines([line.read(1, 0, FORGE, FIRST_FILE)]);
+
+    feed.runEnded();
+
+    /* Pół sekundy po tamtej linii, ten sam agent, ten sam rodzaj — czyli wnętrze okna
+     * sklejania (2 s) liczonego od linii z biegu, który już zszedł. */
+    feed.appendLines([line.read(2, 500, FORGE, SECOND_FILE)]);
+
+    expect(
+      feed.view.history.map((row) => row.ids),
+      'the window that folds neighbouring lines into one row belongs to the run that opened it. ' +
+        'Left open, the first foldable line of the NEXT run grows the LAST row of the one before ' +
+        'it: two runs standing in the transcript as one row, over a relationship the data does ' +
+        'not have. Two rows here, one line each.',
+    ).toEqual([[1], [2]]);
   });
 
   it('fills the live fields again on the next run', () => {
