@@ -188,7 +188,7 @@ async fn the_next_step_may_open_the_attachment_its_handoff_points_at() -> Result
     // katalogu nie byłoby niczego warte, a test dalej by przechodził.
     let handoffs = report.dir.join("handoffs");
     let bodies: String = fs::read_dir(&handoffs)?
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
         .filter_map(|entry| fs::read_to_string(entry.path()).ok())
         .collect();
     assert!(
