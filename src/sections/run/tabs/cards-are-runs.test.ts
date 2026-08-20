@@ -18,7 +18,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { stopped } = vi.hoisted(() => ({ stopped: vi.fn(() => Promise.resolve()) }));
 
-vi.mock('../io', () => ({ stop: stopped, start: vi.fn(), continueRun: vi.fn() }));
+/* `closeTerminal` dołożone do atrapy 2026-08-20: magazyn kart bierze z `../io` DWA kanały —
+ * zatrzymanie biegu i koniec rozmowy z liderem zamykanej karty — a atrapa znała tylko pierwszy,
+ * więc vitest przewracał się na kolekcji, przed pierwszą asercją. Ani jedna asercja niżej się
+ * o niego nie pyta i żadnej nie ubyło. Oddaje spełnioną obietnicę, bo magazyn wiesza na niej
+ * `.catch` (`store.ts`, `endLeadOf`); atrapa bez obietnicy mierzyłaby brak atrapy. */
+vi.mock('../io', () => ({
+  stop: stopped,
+  start: vi.fn(),
+  continueRun: vi.fn(),
+  closeTerminal: vi.fn(() => Promise.resolve()),
+}));
 
 const { cardForRun, cardsIn, runTabs } = await import('./store');
 const { runFor } = await import('../../../state/run');
