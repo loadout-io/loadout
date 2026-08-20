@@ -280,6 +280,37 @@ function sentence(line: FeedLine): string {
   return 'text' in line ? line.text : '';
 }
 
+/**
+ * Czy ten wiersz złożyło samo okno — czyli czy za nim NIE stoi niczyja praca.
+ *
+ * 2026-08-20 — PO CO TO ISTNIEJE, ZMIERZONE. Do dziś każda linia trasy `history` szła do mapy
+ * `doing`, a ta mapa JEST strefą TERAZ. Po T-58 wiersz wejścia dopisuje do tej samej historii
+ * echo wpisanej komendy i odpowiedź, którą daje sam sobie (`../entry/echo.ts`) — więc pierwszy
+ * `/stop` przy niczym niebiegnącym stawiał w strefie „co się dzieje teraz" wpis
+ * „Loadout — Nothing is running.", nieodróżnialny od pracującego agenta, i zostawiał go tam do
+ * końca pracy. Agent, który nie pracuje, nie ma prawa stać w tej strefie (niezmiennik 17), a jest
+ * to jeden z dwóch regionów, którym ARCHITECTURE §7 pozwala się ruszać — czyli dokładnie to
+ * miejsce, w które człowiek patrzy, żeby wiedzieć, czy cokolwiek żyje.
+ *
+ * Pyta o POCHODZENIE wiersza, nigdy o to, jak nazywa się jego autor. Numer ujemny wydaje wyłącznie
+ * `../entry/echo.ts` i wydaje go właśnie dlatego, że obie pompy — biegu i rozmowy — stemplują od 1
+ * każda z osobna, więc dodatni licznik w oknie zderzyłby się z ich numerami. Lista zakazanych nazw
+ * byłaby drugą tabelą prawdy o tym samym (niezmiennik 13) i myliłaby się w obie strony: skasowałaby
+ * pierwszego agenta nazwanego „Loadout", a wiersz okna podpisany cudzą nazwą przepuściłaby jako
+ * cytat agenta, który tego zdania nie wypowiedział.
+ *
+ * Odsiew jest TYLKO na strefie TERAZ. Do historii te wiersze wchodzą dalej i to jest cały sens
+ * T-58: terminal, w którym wpisana komenda nie zostawia śladu, jest nieodróżnialny od terminala,
+ * który tej komendy nie przyjął.
+ *
+ * Ta sama reguła stoi drugi raz w `../rail/roster.ts` (T-66), bo szyna agentów czyta historię, nie
+ * tę mapę. Jedno wspólne miejsce na nią byłoby `../entry/echo.ts` — moduł, który te numery wydaje —
+ * i jest poza blokiem OWNS tego zadania.
+ */
+function windowWrote(line: Incoming): boolean {
+  return line.id < 0;
+}
+
 /** Numer dla panelu szczegółów; większość rodzajów nie ma czego pokazać pod kliknięciem. */
 function detailOf(line: FeedLine): number | null {
   return 'detailId' in line ? line.detailId : null;
@@ -445,7 +476,11 @@ export function createFeed(scroller: Scroller): Feed {
       const line = incoming;
       changed = true;
 
-      if (!doing.has(line.agent)) doing.set(line.agent, '');
+      /* Czy za tym wierszem stoi czyjaś praca — patrz [`windowWrote`]. Rozstrzyga to o strefie
+       * TERAZ i o niczym więcej: historia bierze wszystkie wiersze, także te z okna. */
+      const atWork = !windowWrote(line);
+
+      if (atWork && !doing.has(line.agent)) doing.set(line.agent, '');
 
       if (REGISTRY[line.kind].route === 'now') {
         /* Dwa rodzaje jadą do strefy TERAZ i odpowiadają na DWA różne pytania, więc nie wolno
@@ -458,10 +493,14 @@ export function createFeed(scroller: Scroller): Feed {
         continue;
       }
 
-      /* Prawdziwa linia gasi slot [T2 §7.2 wiersz 4] — dowolna, nie tylko od tego agenta:
-       * slot jest jeden, więc pytanie „czyj jest" ma dokładnie jedną odpowiedź. */
-      thinking = null;
-      doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
+      if (atWork) {
+        /* Prawdziwa linia gasi slot [T2 §7.2 wiersz 4] — dowolna, nie tylko od tego agenta:
+         * slot jest jeden, więc pytanie „czyj jest" ma dokładnie jedną odpowiedź. Echo własnego
+         * Entera prawdziwą linią NIE jest: zgaszony tutaj slot mówiłby, że agent przestał myśleć,
+         * bo człowiek wpisał ukośnik. Gasi go zdanie od agenta i nic poza nim. */
+        thinking = null;
+        doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
+      }
 
       const rows = (next ??= [...history]);
       const group = groups.get(line.agent);
