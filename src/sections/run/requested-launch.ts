@@ -15,12 +15,15 @@
  * żądanie zapadką i przekazuje je tam — bo zapadka jest CAŁĄ ochroną przed dwoma biegami z jednego
  * kliknięcia, a to jest klasa błędu, która kosztuje pieniądze, nie render.
  *
- * SZKIELET T-60: ciało rzuca, żeby kryterium padło na zachowaniu, a nie na zbieraniu importu
- * („Cannot find module" jest podpisem z `NOT_A_REAL_RED`). Podkreślenia przy nazwach parametrów
- * są częścią tej samej tymczasowości — `noUnusedParameters` z `checks/tsconfig.strict.json` liczy
- * parametr, którego ciało nie czyta.
+ * ZDJĘCIE ŻĄDANIA JEST PIERWSZĄ INSTRUKCJĄ, przed czymkolwiek, co czeka. Odwrotna kolejność —
+ * najpierw start, potem zapadka — zostawiałaby żądanie w module przez cały czas trwania biegu,
+ * a `launchRun` rozwiązuje się dopiero z jego końcem: każdy powrót na ekran pracy w trakcie
+ * odbierałby je drugi raz.
  */
 import type { Choice } from './choices';
+import { choiceFor } from './choices';
+import { launchRun } from './launch';
+import { takeRequestedRun } from './requested';
 
 /**
  * Uruchamia to, o co poprosił edytor — albo `null`, kiedy nikt o nic nie prosił.
@@ -34,9 +37,15 @@ import type { Choice } from './choices';
  *   z listą, którą widzi człowiek (niezmiennik 13).
  * @param atOnce ile kroków ma naprawdę biec naraz — liczba z jednej puli na okno (niezmiennik 11).
  */
-export function launchRequested(
-  _choices: readonly Choice[],
-  _atOnce: number,
+export async function launchRequested(
+  choices: readonly Choice[],
+  atOnce: number,
 ): Promise<string | null> {
-  throw new Error('not implemented');
+  const taken = takeRequestedRun();
+  /* Nikt o nic nie prosił — i to jest wartość, nie błąd. Ten moduł woła każdy render ekranu
+   * pracy, więc cisza jest tu stanem normalnym, a nie zdaniem do postawienia na ekranie. */
+  if (taken === null) return null;
+  /* Który plik i co powiedzieć, kiedy go już nie ma, decyduje `./launch` — także wtedy, gdy
+   * `choiceFor` oddaje `null`, bo katalog zmienił się między odczytem a kliknięciem. */
+  return launchRun(choiceFor(choices, taken.path), atOnce);
 }

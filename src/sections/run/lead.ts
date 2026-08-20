@@ -14,8 +14,12 @@
  * DLACZEGO MODUŁ, A NIE `useState` W KONTROLCE STARTU. Wybór człowieka przeżywa odmontowanie
  * ekranu: powłoka montuje dokładnie jedną sekcję (`src/App.tsx`), więc wyjście do Agentów
  * i powrót niszczyłoby stan kontrolki. Ten sam ruch i ten sam zmierzony powód, co przy
- * `./chosen-workflow.ts` i `./limits/chosen.ts` — i ten sam kształt, którego chce
- * `useSyncExternalStore`.
+ * `./limits/chosen.ts` — i ten sam kształt, którego chce `useSyncExternalStore`.
+ *
+ * Stał tu jeszcze `./chosen-workflow.ts` jako drugi przykład i przestał, bo tamten modułu już
+ * nie ma: był wyniesiony na poziom modułu dla zachowania, które właściciel skasował 2026-08-19
+ * („nie powinno być tak, że jak piszę bez komendy... to się na nowo całe workflow odpala"),
+ * a jego jedynym konsumentem była lista wyboru, której miejsce zajęła ta kontrolka.
  */
 
 /**
@@ -30,20 +34,37 @@
  */
 export const LEAD_LABEL = 'Lead agent';
 
+let chosen = '';
+const listeners = new Set<() => void>();
+
 /** Identyfikator wskazanego agenta, albo `''`, dopóki człowiek nie wybierał. */
 export function lead(): string {
-  throw new Error('not implemented');
+  return chosen;
 }
 
 /**
  * Zapisuje wskazanie. Identyfikatorem, nie nazwą: nazwa agenta się zmienia, `id` przeżywa
  * zmianę nazwy (T4 §5.1) i to nim posługuje się Rust, szukając definicji w bibliotece.
+ *
+ * 2026-08-20 — TO WSKAZANIE NIE MA JESZCZE DRUTU DO RUSTA I JEST TO ZGŁOSZENIE, NIE PRZEOCZENIE.
+ * `say_to_orchestrator` musiałoby dostać klucz `lead` obok `folder`, a `src/sections/run/io.ts`
+ * należy do niewyładowanego T-41 i mandat T-60 na tamten plik pozwala dopisać WYŁĄCZNIE klucz
+ * `folder` przy `open_chat`. Nowej komendy nie da się dodać obok: `ipc_commands_registered.rs`
+ * porównuje listę handlera z `src-tauri/commands.golden.txt` co do sztuki. Dopóki człowiek tego
+ * nie rozstrzygnie, wybór żyje w oknie i czeka na odbiorcę — a Rust dalej rozmawia zaszytym
+ * Claude'em (`ipc::AppState::chat_driver`). Cała reszta drogi jest gotowa:
+ * `commands::chat::Lead::pointed_at` bierze dokładnie ten napis.
  */
-export function setLead(_id: string): void {
-  throw new Error('not implemented');
+export function setLead(id: string): void {
+  if (id === chosen) return;
+  chosen = id;
+  for (const listener of listeners) listener();
 }
 
 /** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
-export function subscribeToLead(_listener: () => void): () => void {
-  throw new Error('not implemented');
+export function subscribeToLead(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }

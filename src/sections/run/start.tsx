@@ -36,9 +36,11 @@ import { atOnce as atOnceNow, setAtOnce, subscribeToAtOnce } from './limits/chos
 import type { Choice } from './choices';
 import { choiceFor, firstRunnable, toChoices } from './choices';
 import { launchRun } from './launch';
-import { chosenWorkflow, setChosenWorkflow, subscribeToChosenWorkflow } from './chosen-workflow';
-import { requestedRun, subscribeToRequests, takeRequestedRun } from './requested';
+import { LEAD_LABEL, lead as leadNow, setLead, subscribeToLead } from './lead';
+import { launchRequested } from './requested-launch';
+import { requestedRun, subscribeToRequests } from './requested';
 import { list } from '../workflows/io';
+import { list as savedAgents } from '../agents/io';
 import { runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { continueRun, stop } from './io';
@@ -110,13 +112,18 @@ export interface StartProps {
 
 export function Start({ onSaid }: StartProps): ReactElement {
   const [choices, setChoices] = useState<readonly Choice[]>([]);
-  /* WYBÓR MIESZKA W MODULE, NIE W TYM KOMPONENCIE, i to jest ten sam ruch, co przy „ile naraz"
-   * o kilka linii niżej — z tego samego powodu i po tym samym zgłoszeniu. Od 2026-08-19 wiersz
-   * wejścia przyjmuje prozę bez ukośnika („or just say what you want" z makiety) i musi wtedy
-   * uruchomić TEN workflow, który człowiek widzi wybrany. Stan zamknięty tutaj zmuszałby go do
-   * zgadywania, a zgadnięty bieg kosztuje pieniądze, nie render. */
-  const picked = useSyncExternalStore(subscribeToChosenWorkflow, chosenWorkflow, chosenWorkflow);
-  const setPicked = setChosenWorkflow;
+  /* KIM JEST LIDER — jeden fakt, jeden dom (niezmiennik 13). W oknie mieszka WYŁĄCZNIE wskazanie,
+   * czyli identyfikator zapisanego agenta; vendor, model i dial bezpieczeństwa czyta Rust z jego
+   * pliku (`commands::chat::Lead`). Kopia któregokolwiek z tych pól trzymana tutaj byłaby pierwszą
+   * rzeczą, która się rozjedzie — i rozjechałaby się po cichu, bo lider odpowiadający innym
+   * modelem niż wybrany wygląda dokładnie jak lider, który się myli.
+   *
+   * W MODULE, nie w `useState`: powłoka montuje dokładnie jedną sekcję (`src/App.tsx`), więc
+   * wyjście do Agentów i powrót niszczyłoby wybór. Ten sam ruch i ten sam zmierzony powód, co
+   * przy „ile naraz" o kilka linii niżej. */
+  const chosenLead = useSyncExternalStore(subscribeToLead, leadNow, leadNow);
+  /** Zapisani agenci — z czego wybiera się lider. Pusto, dopóki biblioteka się nie przeczyta. */
+  const [leads, setLeads] = useState<readonly { readonly id: string; readonly name: string }[]>([]);
   /* Zdanie nie mieszka tutaj — jedzie do ekranu (patrz `StartProps.onSaid`). Nazwa lokalna
    * zostaje, żeby ciała handlerów niżej czytały się tak samo jak przedtem. */
   const setSaid = onSaid;
@@ -167,6 +174,26 @@ export function Start({ onSaid }: StartProps): ReactElement {
     };
   }, []);
 
+  /* Biblioteka agentów, tym samym adapterem, którego używa sekcja Agenci — więc nie powstaje
+   * druga odpowiedź na pytanie „kogo mam zapisanego" (niezmiennik 13). Czytana tutaj, a nie
+   * z magazynu tamtej sekcji: ten magazyn jest FABRYKĄ i jego jedyna instancja jest prywatna
+   * w `sections/agents/index.tsx`, więc sięgnięcie po nią znaczyłoby zbudowanie drugiej. */
+  useEffect(() => {
+    let alive = true;
+    savedAgents()
+      .then((agents) => {
+        if (!alive) return;
+        setLeads(agents.map((agent) => ({ id: agent.id, name: agent.name })));
+      })
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setSaid(why(error, 'Loadout could not read the agents you have saved.'));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   /* DOMYŚLNY WYBÓR TO PIERWSZY WORKFLOW, KTÓRY MA KROKI — nie pierwszy z listy.
    *
    * 2026-08-18 — stało tu `choices[0]?.path`, a lista przychodzi posortowana BAJTOWO
@@ -178,8 +205,14 @@ export function Start({ onSaid }: StartProps): ReactElement {
    * że aplikacja nie jest atrapą.
    *
    * Pusty napis, kiedy ŻADEN workflow nie ma kroków: wtedy nie ma czego wybrać, a Start jest
-   * wygaszony. Wybór, który z definicji odmówi, jest gorszy niż brak wyboru. */
-  const chosen = picked === '' ? (firstRunnable(choices)?.path ?? '') : picked;
+   * wygaszony. Wybór, który z definicji odmówi, jest gorszy niż brak wyboru.
+   *
+   * 2026-08-20 — ODKĄD LISTA WYBORU ODDAŁA SWOJE MIEJSCE LIDEROWI, ten domyślny wybór jest
+   * JEDYNYM, jaki ma przycisk Start: nie ma już czym wskazać innego pliku z paska. Drogi, które
+   * plik WYBIERAJĄ, są dwie i obie zostają — `/run <workflow> <co zbudować>` w wierszu wejścia
+   * i zielony `Run` w edytorze workflow (przez `./requested-launch`). Jest to zawężenie i jest
+   * zapisane tutaj, a nie przemilczane. */
+  const chosen = firstRunnable(choices)?.path ?? '';
 
   async function go(): Promise<void> {
     setSaid(null);
@@ -198,17 +231,16 @@ export function Start({ onSaid }: StartProps): ReactElement {
    * workflow jeszcze się czyta. Zdjęcie żądania przed czasem zamieniłoby je w `GONE_FROM_DISK` —
    * zdanie o pliku, którego nie ma, wypowiedziane o pliku, który jest.
    *
-   * `takeRequestedRun` ZDEJMUJE żądanie i to jest cała ochrona przed drugim biegiem: żądanie
-   * zostawione w module startowałoby bieg przy każdym powrocie na ten ekran, a to jest klasa
-   * błędu, która kosztuje pieniądze, nie render. */
+   * ZAPADKA I PRZEKAZANIE MIESZKAJĄ W `./requested-launch`, NIE TUTAJ, i to jest wymóg fazy:
+   * `renderToStaticMarkup` nie uruchamia efektów, a to repo nie ma jsdom — polityka zamknięta
+   * w tym efekcie byłaby więc kodem, którego żadne kryterium nie umie dotknąć. To ta sama
+   * rodzina, z której wzięło się siedemnaście kłamiących kontrolek. Tutaj zostaje wyłącznie to,
+   * co umie zrobić tylko komponent: zauważyć żądanie i zaczekać na katalog. */
   const asked = useSyncExternalStore(subscribeToRequests, requestedRun, requestedRun);
   useEffect(() => {
     if (asked === null || choices.length === 0) return;
-    const taken = takeRequestedRun();
-    if (taken === null) return;
-    setPicked(taken.path);
     setSaid(null);
-    void launchRun(choiceFor(choices, taken.path), atOnceNow()).then(setSaid);
+    void launchRequested(choices, atOnceNow()).then(setSaid);
   }, [asked, choices]);
 
   async function carryOn(): Promise<void> {
@@ -244,23 +276,39 @@ export function Start({ onSaid }: StartProps): ReactElement {
     /* JEDEN WIERSZ, bez panelu i bez paddingu: ta kontrolka stoi teraz w prawej grupie paska
      * loadoutu, więc własne tło i obramowanie rysowałyby panel w panelu. */
     <div className="flex min-w-0 items-center gap-2">
+      {/* KTO TU RZĄDZI — w miejscu, w którym do 2026-08-20 stała lista wyboru workflow.
+       *
+       * Rozstrzygnięcie właściciela: tamta lista była słabszą z dwóch dróg do jednej czynności
+       * (nie umiała przyjąć zadania, które `/run <workflow> <co zbudować>` przyjmuje), a trzymała
+       * miejsce w pasku NA STAŁE — przy suficie chrome 96 px z `docs/ARCHITECTURE.md` §7.
+       *
+       * Kontrolka MA NAZWĘ, i to nie jest ozdoba dostępnościowa: wybór bez nazwy jest zagadką,
+       * a „z kim rozmawiam" jest jedyną rzeczą, której z układu paska nie da się odgadnąć.
+       * Napis mieszka w `./lead.ts`, żeby kryterium mogło go CZYTAĆ, nie przepisywać.
+       *
+       * BEZ WYBORU DOMYŚLNEGO. Pierwszy agent z biblioteki wyglądałby na ekranie dokładnie jak
+       * wskazany i odpowiadałby nie tym, czym miał; Rust odmawia w tej samej sytuacji tym samym
+       * zdaniem (`ChatError::NobodyIsTheLead`). */}
       <select
-        aria-label="Workflow to run"
+        aria-label={LEAD_LABEL}
         className={FIELD}
-        value={chosen}
-        disabled={busy || choices.length === 0}
+        value={chosenLead}
+        disabled={leads.length === 0}
         onChange={(event) => {
-          setPicked(event.target.value);
+          setLead(event.target.value);
         }}
       >
-        {choices.length === 0 ? (
-          <option value="">No workflows saved yet</option>
+        {leads.length === 0 ? (
+          <option value="">No agents saved yet</option>
         ) : (
-          choices.map((choice) => (
-            <option key={choice.path} value={choice.path}>
-              {choice.name}
-            </option>
-          ))
+          <>
+            {chosenLead === '' ? <option value="">Pick a lead agent</option> : null}
+            {leads.map((one) => (
+              <option key={one.id} value={one.id}>
+                {one.name}
+              </option>
+            ))}
+          </>
         )}
       </select>
 
