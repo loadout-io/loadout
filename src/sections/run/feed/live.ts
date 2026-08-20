@@ -1,4 +1,4 @@
-/* Żywe modele widoku pracy — JEDEN NA WORKSPACE — i port przewijania, po którym jeżdżą.
+/* Żywe modele widoku pracy — JEDEN NA TERMINAL — i port przewijania, po którym jeżdżą.
  *
  * DLACZEGO NA POZIOMIE MODUŁU, A NIE W KOMPONENCIE. Bieg nie zatrzymuje się, kiedy człowiek
  * wejdzie do Agentów. Model stworzony w `useState` znika razem z ekranem sekcji, więc powrót
@@ -20,24 +20,43 @@
  * niesie sam model (`LINE_LIMIT` wierszy okna), więc rejestr rośnie o tyle, ile folderów
  * człowiek naprawdę otworzył.
  *
- * KTO PISZE, A KTO PATRZY — dwie różne odpowiedzi i to jest jedyna trudna rzecz w tym pliku:
- *   `feedFor(id)`   sesja TEGO workspace'a. Tym pisze POMPA — bieg należy do folderu, w którym
- *                   idzie, a nie do tego, na który człowiek akurat patrzy.
- *   `runFeed`       sesja NA WIERZCHU. Tym czyta EKRAN. Przełączenie workspace'a przestawia
- *                   wyłącznie ten uchwyt i budzi subskrybentów, więc widok przerysowuje się
- *                   z drugiej sesji, a pierwsza dalej przyjmuje linie.
+ * 2026-08-20 (T-71) — SESJI JEST TYLE, ILE TERMINALI, NIE ILE ZAKRESÓW. Klucz był folderem, bo
+ * folder był najdrobniejszą rzeczą, jaką okno umiało nazwać: karta BYŁA folderem
+ * (`../tabs/store.ts`). Właściciel poprosił o drugie miejsce do pracy w projekcie, który już
+ * wybrał, więc dwie karty w jednym folderze są od dziś zwykłym stanem — a rejestr kluczowany
+ * folderem oddaje im WSPÓLNY model widoku. To jest dokładnie ta cicha porażka, przed którą stoi
+ * całe to zadanie: terminal, który wygląda na osobny i dzieli strumień. Człowiek wpisuje zdanie
+ * w jedną kartę, widzi je w obu, i przestaje wierzyć, że cokolwiek na tym ekranie należy do
+ * czegokolwiek.
  *
- * CZEGO TU NIE MA: odpowiedzi na pytanie „który workspace jest aktywny". Ten plik jej nie trzyma
- * i nie ma prawa trzymać — PYTA o nią magazyn zakresów (`activeWorkspace()`), przy każdym
- * odczycie (niezmiennik 13). Kopia trzymana tutaj i przestawiana osobnym wywołaniem wygląda
- * identycznie do pierwszego przełączenia, którego ktoś zapomni zgłosić — a wtedy okno pokazuje
- * sesję jednego folderu pod nazwą drugiego i nic o tym nie mówi.
+ * Sam rejestr nie zmienił się ani o linię — jego kluczem jest zwykły napis. Zmieniło się to,
+ * CZYM ten napis jest, kiedy pyta o niego `runFeed`.
+ *
+ * KTO PISZE, A KTO PATRZY — dwie różne odpowiedzi i to jest jedyna trudna rzecz w tym pliku:
+ *   `feedFor(id)`   sesja TEGO terminalu. Tym pisze POMPA — praca należy do miejsca, w którym
+ *                   się dzieje, a nie do tego, na które człowiek akurat patrzy.
+ *   `runFeed`       sesja NA WIERZCHU. Tym czyta EKRAN. Przełączenie karty ALBO zakresu
+ *                   przestawia wyłącznie ten uchwyt i budzi subskrybentów, więc widok
+ *                   przerysowuje się z drugiej sesji, a pierwsza dalej przyjmuje linie.
+ *
+ * CZEGO TU NIE MA: odpowiedzi na pytania „który zakres jest aktywny" i „która karta jest na
+ * wierzchu". Ten plik nie trzyma ani jednej z nich i nie ma prawa trzymać — PYTA o nie magazyn
+ * zakresów (`activeWorkspace()`) i magazyn kart (`cardOnTop`), przy każdym odczycie
+ * (niezmiennik 13). Kopia trzymana tutaj i przestawiana osobnym wywołaniem wygląda identycznie
+ * do pierwszego przełączenia, którego ktoś zapomni zgłosić — a wtedy okno pokazuje historię
+ * jednego terminalu pod nazwą drugiego i nic o tym nie mówi.
  */
 import type { Feed, FeedView } from './model';
 import { createFeed } from './model';
 import type { HistoryRow, Scroller } from './model';
 import type { Incoming } from '../../../state/run';
 import { activeWorkspace, useWorkspaces } from '../../../state/workspaces';
+/* Magazyn kart, nie jego fabryka: pytanie brzmi „na którą kartę patrzy TO okno", a odpowiada na
+ * nie egzemplarz. Import zamyka pętlę `./live` → `../tabs/store` → `../io` → `./live` i to jest
+ * bezpieczne z konstrukcji, nie z nadziei: ani jeden z tych trzech modułów nie woła cudzej
+ * funkcji w czasie wczytywania, a `runTabs` powstaje w `../tabs/store` z domknięcia, które
+ * `../io` tylko przekazuje dalej. */
+import { cardOnTop, runTabs } from '../tabs/store';
 
 /**
  * Element, po którym jeździ port. Ustawia go ekran przez `ref`, zdejmuje przy odmontowaniu.
@@ -73,11 +92,11 @@ const scroller: Scroller = {
   },
 };
 
-/** Sesje, kluczowane identyfikatorem workspace'a. Rośnie; nic z niej nie wypada. */
+/** Sesje, kluczowane tożsamością terminalu. Rośnie; nic z niej nie wypada. */
 const feeds = new Map<string, Feed>();
 
 /**
- * Sesja tego workspace'a — powstaje przy pierwszym pytaniu i zostaje do końca życia okna.
+ * Sesja tego terminalu — powstaje przy pierwszym pytaniu i zostaje do końca życia okna.
  *
  * TĄ FUNKCJĄ PISZE POMPA, i to jest różnica, od której zależy cały wymóg. `start()`
  * (`src/sections/run/io.ts`) zna folder, do którego wysłał bieg — sam go podał `run_workflow`
@@ -85,10 +104,12 @@ const feeds = new Map<string, Feed>();
  * patrzy. Pompa pisząca przez `runFeed` przepisywałaby linie biegu z folderu A do sesji
  * folderu B w chwili przełączenia, i wyglądałoby to jak dwa pomieszane biegi.
  *
- * Identyfikator jest identyfikatorem workspace'a, czyli jego folderem (`id === folder`,
- * kontrakt granicy z 2026-08-18). Pusty napis znaczy „bieg bez wskazanego folderu" — Rust
- * bierze wtedy katalog, pod którym wstała aplikacja (`AppState::project_for`), i to też jest
- * jedna, konkretna sesja.
+ * Identyfikator jest tożsamością terminalu (`../tabs/terminal.ts`). Kiedy w zakresie nie stoi
+ * ani jedna karta, jest nią identyfikator zakresu, czyli jego folder (`id === folder`, kontrakt
+ * granicy z 2026-08-18) — czyli folder nazywa DOMYŚLNY terminal tego zakresu, dokładnie tym
+ * samym ruchem, co po stronie Rusta (`commands::chat::Threads::lines_go_to`). Pusty napis znaczy
+ * „bieg bez wskazanego folderu": Rust bierze wtedy katalog, pod którym wstała aplikacja
+ * (`AppState::project_for`), i to też jest jedna, konkretna sesja.
  */
 export function feedFor(id: string): Feed {
   const known = feeds.get(id);
@@ -99,15 +120,26 @@ export function feedFor(id: string): Feed {
 }
 
 /**
- * Sesja, którą okno POKAZUJE — czyli sesja aktywnego zakresu.
+ * Sesja, którą okno POKAZUJE — czyli sesja terminalu na wierzchu.
  *
- * Pusty napis, kiedy żadnego zakresu nie ma. To jest stan świeżej maszyny (magazyn startuje
- * z `activeId: null`, a `list_workspaces` oddaje wtedy pustą listę, nie błąd), więc musi być
- * zwykłą sesją, a nie gałęzią awaryjną: bieg puszczony przed wybraniem zakresu ma gdzie
- * wylądować i ma się gdzie pokazać.
+ * DWA PYTANIA, DWA MAGAZYNY, ANI JEDNEJ KOPII. „Gdzie pracujemy" odpowiada magazyn zakresów,
+ * „na którą kartę patrzymy" — magazyn kart, przez `cardOnTop`, czyli przez to samo wyrażenie,
+ * z którego ekran rysuje podświetlenie karty (niezmiennik 13). Druga kopia tego wyboru dałaby
+ * pasek podświetlający jedną kartę nad historią należącą do drugiej.
+ *
+ * BEZ ANI JEDNEJ KARTY ODPOWIADA ZAKRES, i to nie jest gałąź awaryjna: świeże okno nie ma kart
+ * (zakłada je `＋` albo start biegu), a bieg puszczony w takim oknie ma gdzie wylądować i ma się
+ * gdzie pokazać. Folder nazywa wtedy domyślny terminal tego zakresu — ten sam ruch, co po
+ * stronie Rusta.
+ *
+ * Pusty napis, kiedy nie ma ani karty, ani zakresu. To jest stan świeżej maszyny (magazyn
+ * startuje z `activeId: null`, a `list_workspaces` oddaje wtedy pustą listę, nie błąd), więc
+ * musi być zwykłą sesją.
  */
 function shown(): string {
-  return activeWorkspace()?.id ?? '';
+  const here = activeWorkspace();
+  const { tabs, activeId } = runTabs.getState();
+  return cardOnTop(tabs, activeId, here?.folder ?? null) ?? here?.id ?? '';
 }
 
 /**
@@ -148,27 +180,37 @@ export const runFeed: Feed = {
    * Powiadomienie o zmianie TEGO, CO WIDAĆ — czyli o dwóch różnych rzeczach naraz: o nowej
    * linii w sesji na wierzchu i o tym, że wierzch się zmienił.
    *
+   * WIERZCH ZMIENIAJĄ DWA MAGAZYNY, więc słuchamy obu. Przełączenie zakresu w bocznym menu
+   * zmienia zbiór kart, które widać; kliknięcie w kartę na pasku zmienia to, która z nich jest
+   * na wierzchu. Wersja słuchająca tylko zakresów przechodzi każdy test pisany na jednej karcie
+   * i po przełączeniu karty trzyma na ekranie historię poprzedniej, dopóki nie napłynie linia —
+   * czyli pokazuje pracę jednego terminalu pod nazwą drugiego.
+   *
    * Subskrypcja przewiązuje się przy przełączeniu i budzi słuchacza od razu. Wersja, która
-   * subskrybuje sesję raz, na zawsze, przechodzi każdy test pisany na jednym workspace i po
-   * przełączeniu rysuje historię z poprzedniego, dopóki nie napłynie linia — czyli pokazuje
-   * cudzą pracę pod nazwą tego folderu.
+   * subskrybuje sesję raz, na zawsze, oddaje `useSyncExternalStore` migawkę bez powiadomienia,
+   * a to znaczy widok, który się sam nie naprawi.
    */
   subscribe(listener: () => void): () => void {
     let at = shown();
     let drop = feedFor(at).subscribe(listener);
-    /* Magazyn zakresów woła nas przy KAŻDEJ swojej zmianie — także przy zapisie nazwy i przy
-     * odmowie z dysku. Przewiązujemy się wyłącznie wtedy, gdy zmienił się aktywny zakres:
-     * bezwarunkowe przewiązanie budziłoby ekran pracy przy każdym zapisie w bocznym menu. */
-    const dropStore = useWorkspaces.subscribe(() => {
+    /* Oba magazyny wołają nas przy KAŻDEJ swojej zmianie — także przy zapisie nazwy zakresu,
+     * przy odmowie z dysku i przy podniesieniu liczby pracujących agentów na karcie.
+     * Przewiązujemy się wyłącznie wtedy, gdy zmieniła się sesja NA WIERZCHU: bezwarunkowe
+     * przewiązanie budziłoby ekran pracy przy każdej linii biegu, bo licznik agentów na karcie
+     * jedzie tą samą drogą. */
+    const rebind = (): void => {
       const now = shown();
       if (now === at) return;
       at = now;
       drop();
       drop = feedFor(at).subscribe(listener);
       listener();
-    });
+    };
+    const dropScopes = useWorkspaces.subscribe(rebind);
+    const dropCards = runTabs.subscribe(rebind);
     return () => {
-      dropStore();
+      dropScopes();
+      dropCards();
       drop();
     };
   },

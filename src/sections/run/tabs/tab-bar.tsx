@@ -1,16 +1,20 @@
-/* Pasek kart: karty biegów i jedno zdanie o czekaniu na miejsce.
+/* Pasek kart: karty terminali i jedno zdanie o czekaniu na miejsce.
  *
- * 2026-08-18 — ZNAK `＋` STĄD ZNIKNĄŁ, i to jest rozstrzygnięcie, nie przeoczenie. Stał tu jako
- * „otwórz folder", bo karta znaczyła folder; właściciel przeniósł wybór projektu do bocznego menu
- * (zakres wybiera się raz), więc `＋` na tym pasku mógł znaczyć już tylko jedno z dwojga.
+ * 2026-08-18 — ZNAK `＋` STĄD ZNIKNĄŁ I WRÓCIŁ TEGO SAMEGO DNIA, a jego znaczenie ustaliło się
+ * dopiero 2026-08-20. Rozumowanie, które go najpierw skasowało, stoi tu w całości, bo dwie z jego
+ * trzech gałęzi są dalej prawdziwe i dalej zabraniają czegoś:
  *   „Nowy zakres"  byłby drugą drogą do kontrolki, która stoi w bocznym menu i ma tam własny
  *                  formularz z nazwą — czyli drugim miejscem tej samej czynności, i to tym
- *                  gorszym, bo bez nazwy (niezmiennik 13).
+ *                  gorszym, bo bez nazwy (niezmiennik 13). Tym `＋` NIE jest.
  *   „Nowy bieg"    jest przyciskiem Start, a Start bierze DWIE rzeczy, których na tym pasku nie
  *                  ma: który workflow i ilu agentów naraz. `＋` musiałby wybrać je po swojemu
  *                  i cicho zignorować to, co człowiek ustawił obok — kontrolka, która przyjmuje
- *                  polecenie i wykonuje inne, jest gorsza niż jej brak (niezmiennik 16).
- * Zostaje więc pasek bez `＋`. Karty zakłada bieg, nie człowiek.
+ *                  polecenie i wykonuje inne, jest gorsza niż jej brak (niezmiennik 16). Tym
+ *                  `＋` też NIE jest.
+ *   „Nowy terminal" — trzecia możliwość, której w tamtym rozumowaniu zabrakło, i to ona jest
+ *                  właściwa: kolejne MIEJSCE DO PRACY w projekcie, który człowiek już wybrał.
+ *                  Nie pyta o nic, bo nie ma o co: zakres jest wybrany, a workflow wybiera się
+ *                  dopiero przy Starcie. Karty zakłada więc i człowiek, i bieg.
  *
  * Wysokość jest wydana z góry i nie podlega negocjacji: karty biorą 34 z 96 px budżetu chrome,
  * a pasek loadoutu drugie 56 — zostaje sześć (ARCHITECTURE §7). Zdanie o czekaniu musi się więc
@@ -69,17 +73,29 @@ export interface TabBarProps {
   /** Wymagany: `×` na karcie. */
   readonly onClose: (id: string) => void;
   /**
-   * `＋` na końcu paska: wskaż folder i pracuj w nim.
+   * `＋` na końcu paska: NOWY TERMINAL w projekcie, który już wybrano.
    *
    * 2026-08-18 — WRACA PO ZGŁOSZENIU WŁAŚCICIELA („nie mogę dodawać nowych tabów"). Zniknął tego
    * samego dnia z rozumowaniem, które stoi w nagłówku tego pliku i było niegłupie: karta znaczy
    * teraz bieg, nie folder, więc `＋` mógłby znaczyć albo „nowy zakres" (druga droga do kontrolki
    * z bocznego menu), albo „nowy bieg" (czyli Start, który bierze dwie rzeczy, których na pasku
-   * nie ma). Zabrakło w tym rozumowaniu trzeciej możliwości i to ona jest właściwa: `＋` woła
-   * DOKŁADNIE TEN SAM handler, co zaproszenie na ekranie pracy i `/open` w wierszu wejścia —
-   * wybór folderu, nazwany folderem. Trzy wejścia do JEDNEJ funkcji nie są trzema miejscami
-   * prawdy (niezmiennik 13 mówi o faktach, nie o skrótach do czynności), a pasek bez `＋` przy
-   * otwartym zakresie nie miał ani jednej czynnej kontrolki dodania czegokolwiek.
+   * nie ma). Zabrakło w tym rozumowaniu trzeciej możliwości — i ona okazała się właściwa, tylko
+   * nie tą, którą wtedy wybrano: `＋` wołał wybór folderu.
+   *
+   * 2026-08-20 (T-71) — CO BYŁO ZŁEGO W TAMTYM WYBORZE, zmierzone z kodu. Wybrany folder stawał
+   * się nowym ZAKRESEM i od razu aktywnym, a pasek pokazuje karty aktywnego zakresu — a w świeżym
+   * zakresie nie ma żadnej. Kliknięcie w `＋` nie dokładało więc karty **nigdy**: wymieniało
+   * projekt i pasek robił się pusty. Kontrolka, która przyjmuje polecenie i wykonuje inne, jest
+   * gorsza niż jej brak (niezmiennik 16), a właściciel powiedział to wprost: „a nie tak jak teraz
+   * ze scope wybieramy znowu".
+   *
+   * NAZWA TEGO PROPSA JEST ZAPISANYM DŁUGIEM, nie opisem. Handler znaczy dziś „otwórz miejsce do
+   * pracy tutaj", a folderu pyta wyłącznie wtedy, kiedy nie ma go gdzie postawić — o czym wie
+   * ekran, nie pasek (`../index.tsx`, `newTerminalHere`). Przemianowanie na `onNewTerminal` jest
+   * jedną linią tutaj i czterema w cudzych kryteriach, które ten props podają
+   * (`./tabs.test.tsx`, `./live-dot.test.tsx`, `../entry/caret.test.tsx`,
+   * `../entry-row.test.tsx`) — a przepisanie cudzego kryterium przy okazji zmiany o czymś innym
+   * jest zmianą tego kryterium. Zgłoszone zamiast zrobione (AGENTS.md §7).
    */
   readonly onOpenFolder: () => void;
 }
@@ -123,15 +139,19 @@ export function TabBar({
         />
       ))}
 
-      {/* Ten sam napis, co w makiecie (`.tabadd`), i ten sam handler, co pod zaproszeniem na
-          ekranie pracy oraz pod `/open` w wierszu wejścia. Powód, dla którego wrócił, stoi przy
-          `TabBarProps.onOpenFolder`. */}
+      {/* Ten sam znak, co w makiecie (`.tabadd`). Co się po nim dzieje, rozstrzyga ekran —
+          powód w całości stoi przy `TabBarProps.onOpenFolder`.
+
+          NAZWA MÓWI, CO POWSTANIE, a nie czego się w tym celu wybiera. Etykieta „Open a folder"
+          stała tu do 2026-08-20 i była zarazem przyczyną i opisem defektu: człowiek naciskał
+          `＋` po drugie miejsce do pracy w projekcie, który już wybrał, a dostawał pytanie o ten
+          projekt drugi raz. */}
       <button
         type="button"
         data-add-tab
         onClick={onOpenFolder}
-        aria-label="Open a folder"
-        title="Choose a folder to work in"
+        aria-label="New terminal"
+        title="Open another terminal in this project"
         className="h-7 shrink-0 rounded-sm px-2 text-muted"
       >
         ＋

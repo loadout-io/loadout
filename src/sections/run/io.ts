@@ -345,6 +345,13 @@ export function stop(): Promise<void> {
 }
 
 /**
+ * Karta zamknięta: rozmowa tego terminalu schodzi, rozmowy pozostałych kart zostają.
+ */
+export function closeTerminal(terminal: string): Promise<void> {
+  return invoke<void>('close_terminal', { terminal });
+}
+
+/**
  * Dalej: puszcza bieg zza punktu kontrolnego.
  *
  * DLACZEGO TA FUNKCJA W OGÓLE POWSTAŁA. `continue_run` jest po stronie Rusta zarejestrowana,
@@ -399,52 +406,97 @@ export function sayToAgent(text: string, agent: string | null = null): Promise<v
 }
 
 /**
- * Otwiera strumień rozmowy z orchestratorem — bez uruchamiania procesu.
+ * Tożsamość terminalu, do której należy ta rozmowa — z tego, co przysłał wołający.
+ *
+ * FOLDER NAZYWA DOMYŚLNY TERMINAL SWOJEGO ZAKRESU, i ta jedna reguła stoi w trzech miejscach
+ * naraz, w każdym po swojej stronie tej samej granicy: tutaj, w rejestrze strumienia
+ * (`./feed/live.ts`, `shown`) i po stronie Rusta (`commands::chat::key_of`). Nie jest to trzy razy
+ * przepisana polityka, a jedna wartość policzona tam, gdzie ją widać — okno zna kartę, Rust dostaje
+ * jej nazwę gotową. Wersja bez tej reguły oddawałaby historię do sesji `''`, kiedy zakres jest
+ * wybrany, a karty jeszcze nie ma — czyli wiersze rozmowy trafiałyby do widoku, na który nikt nie
+ * patrzy.
+ *
+ * Pusty napis znaczy „ani karty, ani zakresu": Rust bierze wtedy katalog, pod którym wstała
+ * aplikacja (`AppState::project_for`), i to też jest jedna, konkretna rozmowa.
+ */
+function terminalOf(terminal: string | null, folder: string | null): string {
+  return terminal ?? folder ?? '';
+}
+
+/**
+ * Otwiera strumień rozmowy z liderem TEGO terminalu — bez uruchamiania programu.
  *
  * # Po co osobne otwarcie, a nie jedno wywołanie z tekstem
  *
  * Bo kanał do okna umie zbudować **tylko okno** (`docs/ARCHITECTURE.md` §3, §4), więc musi wejść
- * argumentem — a sesji u dostawcy nie wolno tu wstawiać: tura wystartowana przy montażu ekranu
+ * argumentem — a rozmowy u dostawcy nie wolno tu wstawiać: tura wystartowana przy montażu ekranu
  * jest turą, za którą ktoś płaci, choć nikt o nic nie zapytał. Ta krawędź zakłada więc pompę,
- * a proces wstaje dopiero przy pierwszym zdaniu (`say_to_orchestrator`).
+ * a lider wstaje dopiero przy pierwszym zdaniu (`say_to_orchestrator`).
  *
  * # Gdzie lądują te wiersze
  *
  * W TYM SAMYM strumieniu, co bieg: rozmowa o tym, co ma się stać, i praca, która się dzieje, są
- * jedną historią tego zakresu. Dlatego zapis idzie przez `feedFor(folder)` i `runFor(folder)` —
+ * jedną historią tego miejsca. Dlatego zapis idzie przez `feedFor(...)` i `runFor(folder)` —
  * tą samą drogą i tym samym stemplem, co paczki biegu (patrz `start`), bo dwie drogi do jednego
  * widoku dałyby dwa porządki wierszy i pierwszy sklejony wiersz by je rozjechał.
+ *
+ * @param folder katalog, w którym rozmowa ma patrzeć, albo `null`.
+ * @param terminal karta, do której ta rozmowa należy, albo `null` — wtedy odpowiada folder
+ *   ([`terminalOf`]). Argument opcjonalny, bo lustro komend (`src/sections/commands-wired.test.ts`)
+ *   woła tę krawędź jednym argumentem i nie wolno go tknąć; klucz jedzie jednak ZAWSZE, bo
+ *   pominięty klucz to wywołanie odrzucone, nie mniejsze.
  */
-export function openChat(folder: string | null = null): Promise<void> {
+export function openChat(
+  folder: string | null = null,
+  terminal: string | null = null,
+): Promise<void> {
   const session = runFor(folder);
-  const view = feedFor(folder ?? '');
+  const at = terminalOf(terminal, folder);
+  const view = feedFor(at);
   const lines = new Channel<unknown[]>();
   let stamp = 0;
   wireChannel(lines, (batch) => {
-    const at = Date.now();
+    const now = Date.now();
     const stamped = batch.map((line) => {
       stamp += 1;
-      return { ...line, id: stamp, at };
+      return { ...line, id: stamp, at: now };
     });
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
   });
-  return invoke<void>('open_chat', { lines });
+  return invoke<void>('open_chat', { terminal: at, folder, lines });
 }
 
 /**
- * Powiedz zdanie orchestratorowi — rozmowa, nie praca.
+ * Powiedz zdanie liderowi tego terminalu — rozmowa, nie praca.
  *
- * ORCHESTRATOR NIE URUCHAMIA BIEGU I NIE MA JAK. Rozstrzygnięcie właściciela 2026-08-19: „tylko
+ * LIDER NIE URUCHAMIA BIEGU I NIE MA JAK. Rozstrzygnięcie właściciela 2026-08-19: „tylko
  * komendy determinują akcje workflow". Po tamtej stronie nie jest to prośba w promptcie
  * systemowym, a własność struktury — `commands::chat` nie zna ani biegu, ani jego bazy.
  *
  * @param folder katalog, w którym rozmowa ma patrzeć — ścieżka aktywnego zakresu albo `null`.
  *   Klucz jest obecny zawsze, także jako `null`: Tauri dopasowuje argumenty PO NAZWIE
  *   i deserializuje je PRZED wejściem w ciało komendy, więc brakujący klucz odrzuca wywołanie.
+ * @param terminal karta, która to mówi, albo `null` — wtedy odpowiada folder ([`terminalOf`]).
+ *   Bez tego klucza dwie karty jednego projektu dostałyby JEDNĄ rozmowę: człowiek pisze w lewej,
+ *   a odpowiedź pojawia mu się w prawej.
+ * @param lead identyfikator zapisanego agenta, którego człowiek wskazał na lidera, albo `null`.
+ *   `null` jest po tamtej stronie **odmową nazywającą następny ruch**, nigdy cichym powrotem do
+ *   zaszytego vendora: rozmowa, która idzie, płaci i odpowiada nie tym agentem, którego człowiek
+ *   wybrał, nie ma ani jednego sygnału, po którym dałoby się to zauważyć.
  */
-export function sayToOrchestrator(text: string, folder: string | null = null): Promise<void> {
-  return invoke<void>('say_to_orchestrator', { folder, text });
+export function sayToOrchestrator(
+  text: string,
+  folder: string | null = null,
+  terminal: string | null = null,
+  lead: string | null = null,
+): Promise<void> {
+  return invoke<void>('say_to_orchestrator', {
+    terminal: terminalOf(terminal, folder),
+    folder,
+    lead,
+    text,
+  });
 }
 
 /**
