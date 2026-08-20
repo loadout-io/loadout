@@ -308,6 +308,88 @@ async fn a_started_command_is_ours_and_goes_down_with_proof() -> Result<(), Box<
     Ok(())
 }
 
+/// Rzecz, która zeszła SAMA, przestaje mówić o sobie, że żyje.
+///
+/// # Po co ta asercja tu stoi, skoro żadne z czterech zdań kryterium jej nie żąda
+///
+/// Bo bez niej cały ten plik dowodzi wyłącznie tego, że rzecz startuje i że da się ją ubić — a
+/// kafelek ma istnieć dokładnie tak długo, jak rzecz za nim (niezmiennik 17). Odsiew robi czysta
+/// funkcja po stronie okna (`src/sections/run/rail/processes.ts`) i sądzi go osobne kryterium,
+/// tylko że ona odsiewa po POLU `alive` — a tego, że to pole kiedykolwiek gaśnie, nie sprawdzało
+/// nic. Pole, które nie gaśnie, przechodzi tamto kryterium co do joty i zostawia „Running" nad
+/// komendą zeszłą dwie minuty temu, czyli dokładnie tę cichą porażkę, przed którą stoi to
+/// zadanie. To jest ta sama luka co „kryterium zielone, funkcja martwa" (niezmiennik 29), tylko
+/// o jedno pole niżej.
+///
+/// Rzecz, która zeszła, ZOSTAJE na liście i to jest osobne zdanie tej samej asercji: rejestr,
+/// który zapomina wpis w chwili śmierci, nie ma jak POWIEDZIEĆ oknu, że coś zeszło — a okno,
+/// które o tym nie usłyszy, zostawia kafelek na ekranie.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_started_command_that_went_down_by_itself_stops_saying_it_is_up()
+-> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let processes = Processes::new();
+    // Komenda, która kończy się sama i od razu — najkrótsza rzecz, jaką człowiek może wpisać
+    // i która ma po sobie coś sprzątnąć.
+    let started = processes.start(&StartSpec {
+        command: "true".to_owned(),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    // Kontrola przeciw pustemu przejściu: bez niej „przestało mówić, że żyje" jest prawdą także
+    // o polu, które nie powiedziało tego ani razu — czyli o kafelku, którego nigdy nie było.
+    assert!(
+        started.alive,
+        "it has to say it is up at the moment it starts, or the assertion below is about a \
+         field that was never true: {started:?}"
+    );
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let known = processes.list();
+        let Some(one) = known.iter().find(|one| one.pgid == started.pgid) else {
+            return Err(format!(
+                "the list forgot pgid {} the moment it went down. Then the window never hears \
+                 about the death it did not cause, and the tile stays on the screen saying \
+                 'running' over something that is gone",
+                started.pgid
+            )
+            .into());
+        };
+        if !one.alive {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the list still says it is up, and it ended by itself long \
+                 ago. A field that never goes out passes the sifting on the window side word for \
+                 word and leaves 'Running' over a line that went down two minutes ago: {one:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // I nadal da się po niej sprzątnąć: dowód dotyczy grupy, a nie tego, kto ją zatrzymał.
+    let proofs = tokio::time::timeout(PATIENCE, processes.close())
+        .await
+        .map_err(|_| format!("closing did not come back within {PATIENCE:?}"))?;
+    assert!(
+        proofs
+            .iter()
+            .all(|one| matches!(one, GroupProof::Dead { .. })),
+        "closing has to prove the group gone even for something that ended on its own: a leader \
+         nobody collected is a zombie, and a zombie still answers the zero signal — so the group \
+         would never give ESRCH, not here and not in recovery. It gave {proofs:?}"
+    );
+    assert!(
+        processes.list().is_empty(),
+        "and nothing stays behind: {:?}",
+        processes.list()
+    );
+    Ok(())
+}
+
 /// (d) Sufit kroku „sprawdź" nie ma tu prawa nic ubić.
 ///
 /// Zegar wirtualny, nie prawdziwy: trzydziestu minut nie da się przeczekać w bramce, a stała

@@ -32,9 +32,11 @@
 //! a start i eskalacja mieszkają tam, gdzie mieszkały: w sterowniku i w `supervisor.rs`
 //! (niezmiennik 23). Tutaj jest wyłącznie mapa uchwytów i cztery czasowniki nad nią.
 
+use std::collections::BTreeMap;
 use std::io;
+use std::sync::{Mutex, PoisonError};
 
-use crate::engine::drivers::command::StartSpec;
+use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying};
 use crate::engine::supervisor::GroupProof;
 
 /// Co okno wie o jednej uruchomionej rzeczy.
@@ -66,13 +68,33 @@ pub struct StartedProcess {
 /// zakres: rzecz uruchomiona w jednym folderze biegnie dalej po przełączeniu widoku, a lista,
 /// która by ją wtedy ukryła, jest listą, po której zostaje osierocony proces palący maszynę.
 #[derive(Debug, Default)]
-pub struct Processes;
+pub struct Processes {
+    /// `pgid` → uchwyt do tej jednej rzeczy.
+    ///
+    /// MAPA, NIE POLE, i to jest asercja (a) z AC-2 zapisana w typie: implementacja trzymająca
+    /// JEDEN uchwyt osieroca pierwszą rzecz w chwili, w której człowiek uruchomi drugą — kafelków
+    /// jest wtedy dwa, oba mówią „running", a jedna z tych grup nie ma już nikogo, kto mógłby
+    /// zażądać od niej dowodu śmierci. Ten sam kształt zamknęło T-69 po stronie biegów
+    /// (`ipc::AppState::begin_run`) i wraca on powierzchnia po powierzchni.
+    ///
+    /// `BTreeMap`, nie `HashMap`: kolejność [`Processes::list`] jest kolejnością kafelków
+    /// w oknie, a lista przestawiająca się przy każdym odświeżeniu jest listą, po której nie da
+    /// się kliknąć. Ten sam powód stoi przy `RunControl::voices`.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): każde wzięcie tego
+    /// zamka mieści się w jednym bloku, który wyjmuje albo przepisuje wartości i oddaje zamek —
+    /// eskalacja czeka DOPIERO po jego zwolnieniu. Zamek trzymany przez zatrzymywanie zawiesiłby
+    /// całe okno na czas okna łaski, czyli dokładnie wtedy, kiedy człowiek na coś patrzy.
+    held: Mutex<BTreeMap<i32, Staying>>,
+}
 
 impl Processes {
     /// Ani jednej rzeczy — stan aplikacji, która właśnie wstała.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            held: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// Odpala komendę, która ma zostać, i zapisuje ją w rejestrze.
@@ -81,8 +103,22 @@ impl Processes {
     /// rzecz żyje po powrocie tego wywołania. Wersja czekająca do końca komendy oddawałaby
     /// wołającemu wyłącznie nekrolog — nie byłoby czego pokazać na kafelku ani czego ubić przez
     /// cały czas, kiedy to naprawdę biegnie.
-    pub fn start(&self, _spec: &StartSpec) -> io::Result<StartedProcess> {
-        todo!("T-72: start przez CommandDriver::start_to_stay i wpis w rejestrze")
+    pub fn start(&self, spec: &StartSpec) -> io::Result<StartedProcess> {
+        let staying = CommandDriver::new().start_to_stay(spec)?;
+        let started = one_of(&staying);
+        /* WPIS POWSTAJE PO STARCIE, NIGDY PRZED, i to nie jest kolejność dla porządku: komenda,
+         * której nie dało się odpalić, nie ma grupy, więc wpis zrobiony wcześniej byłby kafelkiem
+         * nad rzeczą, której nie ma (niezmiennik 17), i musiałby go potem ktoś zdjąć na ścieżce
+         * błędu — czyli dokładnie na tej, na której wołający wychodzi przez `?`.
+         *
+         * `pgid` jest tu kluczem unikalnym z definicji: dopóki grupa żyje, jądro nie wyda tej
+         * liczby drugi raz, a rzecz, która zeszła, zostaje pod swoim kluczem do
+         * [`Processes::stop`] albo [`Processes::close`]. */
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(started.pgid, staying);
+        Ok(started)
     }
 
     /// Wszystko, o czym ten rejestr jeszcze wie — także to, co zeszło i nie zostało jeszcze
@@ -94,7 +130,29 @@ impl Processes {
     /// mimo to nie kłamie.
     #[must_use]
     pub fn list(&self) -> Vec<StartedProcess> {
-        todo!("T-72: rejestr oddaje to, co wie, razem z aktualnym stanem każdej grupy")
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(one_of)
+            .collect()
+    }
+
+    /// Co ta jedna rzecz do tej pory wypisała. `None`, kiedy rejestr jej nie zna.
+    ///
+    /// Osobno od [`Processes::list`], bo [`StartedProcess`] ma trzy pola i ma je zachować:
+    /// wyjście jest długie, a lista jedzie na drut przy każdym odświeżeniu okna. Kto pyta o nie,
+    /// pyta o JEDNĄ rzecz — tę, w którą właśnie wszedł.
+    ///
+    /// `None` jest wartością, nie błędem (niezmiennik 7): rzecz zatrzymana między odświeżeniem
+    /// listy a kliknięciem w kafelek nie jest awarią.
+    #[must_use]
+    pub fn said(&self, pgid: i32) -> Option<String> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&pgid)
+            .map(Staying::said)
     }
 
     /// „Stop" na kafelku: prosi TĘ grupę o zejście i oddaje **dowód**.
@@ -104,8 +162,19 @@ impl Processes {
     ///
     /// `GroupProof`, nigdy `io::Result<()>`: `Ok(())` znaczyłoby „wysłałem sygnał", a wołający
     /// przeczytałby „nie żyje" i zgasił kafelek nad żywym procesem (niezmiennik 6).
-    pub async fn stop(&self, _pgid: i32) -> Option<GroupProof> {
-        todo!("T-72: eskalacja przez Staying::stop, zdjęcie wpisu, dowód do wołającego")
+    pub async fn stop(&self, pgid: i32) -> Option<GroupProof> {
+        // Uchwyt WYJMUJEMY pod zamkiem, a eskalacja czeka po jego zwolnieniu — niezmiennik 8
+        // zapisany blokiem, nie komentarzem: `clippy::await_holding_lock` jest w tej skrzyni
+        // odmową, a zamek trzymany przez okno łaski zawiesza całe okno.
+        let taken = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.remove(&pgid)
+        };
+        // Wpis zdejmujemy PRZED eskalacją, nie po niej: między jednym a drugim jest okno łaski,
+        // a w nim lista pokazywałaby jako żywe coś, co właśnie schodzi z ekranu na oczach
+        // człowieka, który nacisnął Stop.
+        let mut staying = taken?;
+        Some(staying.stop().await)
     }
 
     /// Zamknięcie okna: schodzą **wszystkie** i każda oddaje dowód śmierci swojej grupy.
@@ -119,6 +188,38 @@ impl Processes {
     /// z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt się nie
     /// dowie z liczby „zamknięto pięć".
     pub async fn close(&self) -> Vec<GroupProof> {
-        todo!("T-72: każda grupa przez eskalację, po jednym dowodzie, rejestr zostaje pusty")
+        // Cały rejestr wyjęty JEDNYM ruchem, pod zamkiem, i dopiero potem eskalacja — powód ten
+        // sam, co przy [`Processes::stop`]. Pusty rejestr od tej chwili: rzecz, która ma zejść,
+        // nie jest już rzeczą, którą wolno komukolwiek pokazać.
+        let taken = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *held)
+        };
+
+        // PO KOLEI, nie równolegle, i cena jest zapisana: przy pięciu rzeczach, z których żadna
+        // nie schodzi po SIGTERM-ie, zamykanie okna trwa pięć okien łaski zamiast jednego.
+        // Zmierzone na tej fiksturze: powłoka w pętli schodzi w milisekundach, bo pętla dowodowa
+        // pyta jądro co 10 ms (`supervisor::PROOF_POLL`). Wersja równoległa wymaga `FuturesUnordered`,
+        // czyli skrzyni `futures`, a `src-tauri/Cargo.toml` leży poza blokiem OWNS tego zadania
+        // (AGENTS.md §7) — więc to jest dług zapisany, nie przemilczany.
+        let mut proofs = Vec::with_capacity(taken.len());
+        for mut staying in taken.into_values() {
+            proofs.push(staying.stop().await);
+        }
+        proofs
+    }
+}
+
+/// Co okno wie o TEJ jednej rzeczy — jedno miejsce, w którym uchwyt zamienia się w trzy pola.
+///
+/// Funkcja, nie trzy literały w trzech metodach: [`Processes::start`] i [`Processes::list`]
+/// odpowiadają na to samo pytanie w dwóch chwilach, a dwie kopie tego przepisania rozjechałyby
+/// się przy pierwszym polu dołożonym do [`StartedProcess`] (niezmiennik 13). Wtedy rzecz
+/// zgłoszona przy starcie i ta sama rzecz na liście mówiłyby o sobie co innego.
+fn one_of(staying: &Staying) -> StartedProcess {
+    StartedProcess {
+        command: staying.command().to_owned(),
+        pgid: staying.group().pgid,
+        alive: staying.alive(),
     }
 }
