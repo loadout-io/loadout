@@ -66,15 +66,64 @@ export interface History {
  * i drugie z nich chodziłoby po liniach pierwszego.
  */
 export function createHistory(): History {
+  /** Wysłane linie, NAJSTARSZA pierwsza — czyli w kolejności, w jakiej je napisano. */
+  const sent: string[] = [];
+
+  /**
+   * Jak głęboko stoi chodzenie: `0` znaczy „w szkicu", `1` najmłodsza linia, `2` przedostatnia.
+   *
+   * Głębokość, nie indeks tablicy, i to jest cała oszczędność tego pliku: najstarsza linia
+   * wypada z głowy [`sent`] przy sufcie, więc indeks liczony od zera przesuwałby się pod
+   * chodzeniem za każdym `remember`, a głębokość liczona od końca nie przesuwa się nigdy.
+   */
+  let deep = 0;
+
+  /**
+   * Szkic — to, co stało w polu, zanim człowiek pierwszy raz sięgnął wstecz.
+   *
+   * Powód, dla którego to pole w ogóle istnieje, stoi w nagłówku pliku: bez niego krok naprzód
+   * poniżej najmłodszej linii czyści pole, czyli po cichu kasuje zdanie, które ktoś pisał.
+   */
+  let held = '';
+
   return {
-    remember(): void {
-      throw new Error('not implemented');
+    remember(line: string): void {
+      /* Chodzenie wraca na początek przy KAŻDEJ wysłanej linii, razem ze szkicem: pole jest
+       * już puste, a głębokość z poprzedniego chodzenia opisywałaby historię o jeden wpis
+       * krótszą, niż ta, po której miałaby chodzić. */
+      deep = 0;
+      held = '';
+      /* DWIE IDENTYCZNE POD RZĄD ZAJMUJĄ JEDEN WPIS — porównujemy z ostatnią, nie z całą
+       * historią: `/stop` wysłane teraz i `/stop` wysłane pół godziny temu to dwie różne
+       * rzeczy, które człowiek zrobił, i chodzenie ma minąć obie. */
+      if (sent[sent.length - 1] === line) return;
+      sent.push(line);
+      /* Wypada NAJSTARSZA. `splice` z policzoną liczbą, nie `shift` w pętli: sufit da się
+       * przekroczyć tylko o jeden na raz, ale kod, który to zakłada, jest kodem, który
+       * przestaje być prawdziwy w dniu, w którym ktoś zasieje historię hurtem. */
+      if (sent.length > HISTORY_LIMIT) sent.splice(0, sent.length - HISTORY_LIMIT);
     },
-    back(): string | null {
-      throw new Error('not implemented');
+
+    back(draft: string): string | null {
+      /* Pusta historia i dno historii dają tę samą odpowiedź, i to jest poprawne: w obu
+       * wypadkach nie ma czego oddać, więc pole ma zostać nietknięte. `null`, nigdy pusty
+       * napis — pusty napis WCHODZI do pola i kasuje to, co w nim stało. */
+      if (deep >= sent.length) return null;
+      /* SZKIC ZAPAMIĘTUJEMY WYŁĄCZNIE PRZY PIERWSZYM KROKU. Przy drugim w polu stoi już cudza
+       * linia, więc zapisanie jej tutaj zgubiłoby to jedno zdanie, którego ten argument
+       * ma pilnować. */
+      if (deep === 0) held = draft;
+      deep += 1;
+      return sent[sent.length - deep] ?? null;
     },
+
     forward(): string | null {
-      throw new Error('not implemented');
+      /* W szkicu nie ma dokąd iść naprzód. Oddanie szkicu drugi raz wstawiłoby go w pole,
+       * w którym człowiek zdążył już napisać coś innego. */
+      if (deep === 0) return null;
+      deep -= 1;
+      if (deep === 0) return held;
+      return sent[sent.length - deep] ?? null;
     },
   };
 }
