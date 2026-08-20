@@ -360,6 +360,17 @@ export function Entry({
           aria-label="Command line"
           placeholder={PROMPT}
           spellCheck={false}
+          /* KURSOR STOI TU OD PIERWSZEJ SEKUNDY — zgłoszenie właściciela 2026-08-20: „kursor
+             nie stoi w polu, trzeba kliknąć, za każdym razem". Niezmiennik 16 mówi o kontrolce
+             bez handlera, a to jest jej odmiana: pole, które nazywa się terminalem i wymaga
+             jednego kliknięcia, zanim przyjmie znak, każe płacić to kliknięcie przy KAŻDYM
+             wejściu na ekran pracy — a człowiek patrzy już na pole ze znakiem zachęty przed nim.
+
+             DOKŁADNIE JEDEN ELEMENT W TYM WIERSZU o to prosi, i to jest cała reszta reguły:
+             przeglądarka daje ognisko jednemu z proszących i nie mówi któremu, więc dwa
+             `autoFocus` to nie „dwa razy uprzejmiej", tylko wiersz, którego zachowanie zależy
+             od kolejności markupu. */
+          autoFocus
           value={typed}
           onChange={(event) => {
             setTyped(event.target.value);
