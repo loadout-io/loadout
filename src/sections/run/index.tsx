@@ -237,14 +237,23 @@ export default function Run(): ReactElement {
    * — zamontowane i przetestowane — bylo przez to kodem NIEOSIAGALNYM.
    *
    * Zrodlem jest ta sama lista, ktora rysuje szyne, wiec liczba na karcie i kafelki obok siebie
-   * nie moga sie rozjechac (niezmiennik 13). PISZEMY DO KARTY TEGO ZAKRESU, nie do „karty na
-   * wierzchu": kafelki opisuja sesje zakresu, w ktorym stoimy, wiec ich liczba nalezy do jego
-   * karty. Karta innego zakresu dostalaby zgadniete zero z kropka „tu cos chodzi" nad biegiem,
-   * o ktorym ten ekran nic nie wie (niezmiennik 17). */
+   * nie moga sie rozjechac (niezmiennik 13).
+   *
+   * 2026-08-20 (T-71) — PISZEMY DO KARTY NA WIERZCHU, i to jest poprawka do zdania, ktore stalo
+   * tu wczesniej („do karty tego ZAKRESU, nie do karty na wierzchu"). Tamto bylo prawdziwe,
+   * dopoki w zakresie mogla stac najwyzej jedna karta: „karta zakresu" i „karta na wierzchu"
+   * byly wtedy tym samym. Od dziś nie sa. Szyna rysuje sie z `runFeed.view`, czyli z sesji
+   * TERMINALU NA WIERZCHU, wiec `cards.length` jest liczba o nim — a wpisana na karte folderu
+   * bylaby zdaniem o jednej karcie policzonym z danych drugiej (niezmiennik 17).
+   *
+   * W trakcie biegu te dwie odpowiedzi i tak sie zgadzaja: karte biegu zaklada `cardForRun`
+   * i STAWIA JA NA WIERZCHU, wiec `onTop` jest wtedy karta biegu. Roznica widac tylko wtedy,
+   * kiedy nic nie biegnie, a czlowiek rozmawia w swiezym terminalu — i wtedy liczba nalezy do
+   * tego terminalu. */
   useEffect(() => {
-    if (folder === null) return;
-    runTabs.getState().setAgents(folder, cards.length);
-  }, [folder, cards.length]);
+    if (onTop === null) return;
+    runTabs.getState().setAgents(onTop, cards.length);
+  }, [onTop, cards.length]);
   const running = run.workflow !== '';
 
   /* NAZWY WORKFLOW DO PODPOWIEDZI POD `/run` — zgłoszenie właściciela 2026-08-19: „powinno

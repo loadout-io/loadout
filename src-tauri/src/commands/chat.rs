@@ -225,6 +225,21 @@ struct Session {
 }
 
 /// Rozmowa z orchestratorem: strumień do okna i sesja, która powstaje przy pierwszym zdaniu.
+///
+/// # 2026-08-20 (T-71) — TEN TYP NIE MA JUŻ PRODUKCYJNEGO WOŁAJĄCEGO, I JEST TO ZGŁOSZENIE
+///
+/// `ipc::AppState` trzymał go w polu `chat` jako JEDNĄ rozmowę na całą aplikację; pole zniknęło,
+/// bo żywa droga idzie dziś przez [`Threads`], po jednym wątku na terminal. Konstruują ten typ
+/// wyłącznie dwa pliki testowe (`tests/it/chat_never_starts_a_run.rs`,
+/// `tests/flow_lead_agent_chat.rs`), więc jest to dokładnie ten kształt, na który to repo ma
+/// osobne sprawdzenie: mechanizm z testem i bez wołającego (`checks/quick-wired.sh`, nagłówek).
+/// Sprawdzenie nie świeci, bo sądzi wyłącznie `pub fn` na poziomie modułu DOPISANE przez gałąź.
+///
+/// Skasowania nie robię tutaj i to nie jest wygoda: `chat_never_starts_a_run` jest kryterium
+/// sprzed tego zadania i dowodzi na tym typie rzeczy, której nie dowodzi nic innego — że rozmowa
+/// nie ma **żadnej** drogi do uruchomienia biegu. Zabranie mu podmiotu jest zmianą cudzego
+/// kryterium, a nie porządkami (AGENTS.md §7). Ten akapit jest po to, żeby dzień, w którym ktoś
+/// przepisze tamto kryterium na [`Threads`], był zarazem dniem, w którym ten typ znika.
 pub struct Chat {
     /// Tędy wiersze rozmowy idą do okna — uchwyt WYMIENNY, wspólny z zadaniem czytającym.
     ///

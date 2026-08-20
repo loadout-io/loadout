@@ -29,6 +29,14 @@
 // `expect()` w teście: panika w teście JEST jego wynikiem. Ten sam idiom i ten sam powód, co
 // w `lead_thread_per_scope` i w pozostałych plikach tego celu.
 #![allow(clippy::expect_used)]
+// 2026-08-20 — DOPISANE PRZY IMPLEMENTACJI, i to jest jedyna linia tego pliku, której nie
+// napisała faza kontraktu. `two_terminals` bierze `&PathBuf`, a `clippy::ptr_arg` (kategoria
+// `all`, czyli `deny`) chce `&Path`. Bramka `quick` woła `clippy --lib` i tego nie widzi;
+// `full-clippy` sądzi `--all-targets`, więc widzi — i przewracał się na tej jednej linii przy
+// każdej zieleni pięciu kryteriów. Wybór między `allow` a przepisaniem fikstury rozstrzyga to,
+// czego wolno dotknąć: `allow` jest ADDYTYWNE i nie rusza ani jednej asercji, a przepisanie
+// sygnatury pociąga dwa `clone()` w ciele pomocnika, czyli zmianę w wyroczni (AGENTS.md §7).
+#![allow(clippy::ptr_arg)]
 
 use std::error::Error;
 use std::path::PathBuf;
