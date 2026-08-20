@@ -4,6 +4,126 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-20, 05:00 — terminal, lider i szesc zielonych galezi, ktore czekaja na czyste drzewo
+
+**Zielone i NIEZLANDOWANE: T-58, T-60, T-61, T-62, T-66, T-67.** Pelna bramka na kazdej
+osobno: T-58 20/0, T-60 19/0, T-61 19/0, T-62 18/0, T-66 17/0, T-67 17/0. **T-63 w biegu.**
+**T-59 wycofane w trakcie.** Fala wziela sie z rozmowy z wlascicielem, nie z planu.
+
+### Dlaczego nic nie wyladowalo, choc wszystko jest zielone
+
+`integrate.sh` odmawia lądowania na brudnym drzewie i ma racje. W drzewie glownym leza od
+kilku godzin trzy pliki CUDZEJ, niezacommitowanej pracy (`commands/run.rs`,
+`memory/handoff.rs`, nowy `tests/handoff_attachment_is_openable.rs` — zalaczniki przekazan).
+Nie ruszam ich: `git stash` jest odwracalny, ale znika wtedy z drzewa robota, ktorej autor
+jest w trakcie zadania, a to jest klasa incydentu droga do odkrecenia.
+
+**Nauka operacyjna:** drugi agent pracowal NA TRUNKU, nie w worktree. Przy dwoch agentach na
+jednym repo to zatrzymuje lądowanie calej fali. Kazda praca — takze jego — potrzebuje pliku
+zadania z blokiem OWNS, bo blok OWNS jest jedynym zamkiem, jaki to repo ma.
+
+### Stos zamiast czekania — brudny trunk nie musi zatrzymywac budowy
+
+Repo ma na to gotowy mechanizm i tej nocy zostal uzyty pierwszy raz na serio: `FROM=` w
+`worktree.sh` odbija galaz od wskazanej bazy, a `LOADOUT_TRUNK=` ustawia zakres, po ktorym
+sadzi `quick-scope`. Trzy fale poszly na stosie:
+
+    main -- task-T-58 -- task-T-66 -- task-T-67          (front)
+    main -- task-T-60 -+- task-T-61                      (lider)
+                       +- task-T-62
+                       +- stack-T-63 (T-60+T-61+T-62) -- task-T-63
+
+**Trzy pulapki stosu, kazda zmierzona:**
+
+1. **Worktree z bazy nie widzi plikow zadan zacommitowanych na main.** Kontrakt trzeba najpierw
+   domergowac do bazy, inaczej bieg nie ma czego zamrozic.
+2. **Rozszerzenie kontraktu wciagniete do galezi merge'em z main wyglada dla bramki jak zapis
+   poza zakresem.** `quick-scope` sadzi CALA galaz wzgledem bazy, wiec zmieniony `tasks/<ID>.md`
+   jest „plikiem spoza OWNS", choc zmienil go orchestrator. Harness robi to u siebie poprawnie
+   (`refresh_harness_from_trunk` przywraca po merge'u wylacznie wlasny plik zadania) — recznym
+   merge'em ten krok sie pomija. Poprawna kolejnosc: **baza do trunku, galaz do bazy, plik
+   zadania z bazy, dopiero potem `TASK.md`**.
+3. **Baza zlozona z dwoch galezi konfliktuje o `TASK.md`** — kazda niesie swoj zamrozony
+   kontrakt pod ta sama sciezka. W bazie `TASK.md` musi ZNIKNAC, inaczej swiezy worktree rodzi
+   sie w trybie wznowienia i sadzi sie cudzym kontraktem.
+
+### T-59: kontrakt byl zly i wykrylo to dopiero uruchomienie
+
+Mial wpuscic `WebSearch`/`WebFetch` na kazdy szczebel `Policy`, zeby lider do researchu nie
+wymagal oddania calej maszyny. Zapowiedziana cena byly dwa napisy w `claude_argv_policy.rs`.
+Prawdziwa: `driver_claude_policy_surface.rs:171` trzyma `editing.is_subset(&unlimited) &&
+editing != unlimited`, a po przeniesieniu sieci w dol `Unrestricted` nie dokłada do `--tools`
+niczego wlasnego — obie listy sie zrownuja. Zmierzone: **401 passed / 3 failed**, czerwien poza
+OWNS. Kryterium T-53 jest DOBRE (ostre zawieranie lapie adapter drukujacy jedna liste dla trzech
+polityk), wiec bieg zatrzymany, grupa ubita z dowodem ESRCH, specyfikacje (818 linii) zachowane.
+Zamiennik — **T-63** — robi to per agent, wiec agent domyslny sklada argv co do bajtu jak dzis
+i zaden wyladowany straznik nie przestaje byc prawdziwy.
+
+### Recenzent w SLABSZYM trybie zlapal szesc defektow na ZIELONEJ bramce
+
+Ten sam vendor, inny model, rola recenzenta. Zaden z tych szesciu nie byl widoczny dla
+zadnego z moich kryteriow:
+
+1. **Widmowy agent w szynie.** `roster.ts` bije kafelek na kazde odrebne `row.agent`; po T-58
+   kazda komenda sklada wiersz podpisany oknem, wiec pierwsze `/stop` sadza agenta „working"
+   na zawsze. -> **T-66, zielone.**
+2. **Widmowy wiersz w strefie TERAZ.** Ta sama linia idzie do mapy `doing`, a `now.tsx` nie
+   bramkuje listy wierszy propsem `live`. -> **T-67, zielone.**
+3. **Przypiete pytanie przezywa bieg.** `runEnded` nie gasi `waiting`, wiec karta „Needs your
+   answer" wisi po biegu i dalej daje sie kliknac. -> **T-68, napisane.**
+4. **Druga tabela `FileAccess` -> `Policy`.** T-60 nie posiadalo `run.rs`, wiec lider dostal
+   reczna kopie tabeli, a pisarz ZAPISAL w komentarzu, ze wymog jest niespelniony. -> **T-63 AC-4.**
+5. **Przycisk propozycji martwy w aplikacji.** Renderowal sie tylko z propsem `command`, ktorego
+   `HistoryRow` nie mial, a produkcyjni wolajacy nie podawali. Kryterium zielone, funkcja
+   nieistniejaca. -> naprawione w T-61 po rozszerzeniu OWNS.
+6. **Start osieroca agenta z `/ask`.** `begin_a_run` dostalo warunek, `begin_run` nie — a wola
+   je Start, `/run` i zielony Run. Osierocony agent pracuje i placi, Stop go nie dosiega.
+   Zgloszone niezaleznie przez DWA rozne biegi recenzji. -> **T-69, napisane.**
+
+### Wzor, ktory kosztowal trzy rozszerzenia OWNS
+
+Pisalem bloki OWNS pod pliki, ktore zadanie ZMIENIA, i nie pod **lustra**, ktore o tej zmianie
+musza sie dowiedziec. Trzy razy: nowy rodzaj wiersza przewrocil `feed/collapse.test.ts`
+(dziewiec rozwinietych), nowy wariant na drucie tablice `KINDS: [LineKind; 16]`, nowa komenda
+`commands-wired.test.ts`. Kazde lustro zachowalo sie poprawnie — wymusilo swiadoma decyzje
+zamiast przepuscic ja po cichu.
+
+**Regula na nastepne kontrakty:** zadanie dotykajace drutu (nowy rodzaj wiersza, nowa komenda,
+nowe pole w `RunSpec`) dostaje swoje lustro w OWNS od razu, z mandatem waskim do jednego wiersza.
+
+Wszystkie trzy rozszerzenia poszly procedura §5c z dowodem mechanicznym: linie `## AC-`,
+`check:` i `expect:` porownane miedzy zamrozonym `TASK.md` i nowym kontraktem, za kazdym razem
+identyczne co do znaku.
+
+### Limit uzycia konta wyglada jak zly kontrakt
+
+Trzy biegi zeszly naraz z „did not RUN (No test files found)" i galeziami zawierajacymi WYLACZNIE
+commit kontraktowy. Bramka nazwala to wada kontraktu, bo nie ma czym odroznic „kontrakt jest zly"
+od „agent nigdy nie odpowiedzial". Rozpoznanie: zero plikow specyfikacji na trzech galeziach
+jednoczesnie. Po resecie limitu te same kontrakty przeszly bez zmiany ani jednego znaku.
+**Wniosek operacyjny:** nie wiecej niz dwie fazy kontraktu naraz.
+
+### `scripts/detach.py` jest w repo
+
+Zginal dwa razy (19.08 i 20.08), za kazdym razem kosztem sesji, ktora go potrzebowala.
+Zmierzone tej nocy: dziewiec biegow w czterech falach, zero zgubionych na granicy tury.
+
+### Co czeka
+
+| co | stan |
+|---|---|
+| **ladowanie szesciu galezi** | czeka na czyste drzewo; `git merge-tree` potwierdza, ze oba lancuchy wchodza czysto |
+| **T-63** — narzedzia per agent + jedna tabela `policy_of` (4) | w biegu |
+| **T-68** — koniec biegu gasi wszystko, co opisywalo zywy bieg (2) | napisane |
+| **T-69** — zaden start nie osieroca poprzednika (2) | napisane, niezmiennik 6 |
+| T-40, T-41, T-45, T-56 | starsza kolejka, nietkniete |
+| T-64, T-65 | triggery Lineara, druga fala; dziela `ipc.rs` z T-60 i T-62 |
+
+**Luka wymieniona, nie zamknieta:** AC-4(c) w T-61 wymaga, zeby zdanie odmowy „wracalo i bylo
+pokazane", a testowana jest tylko polowa „wracalo" — bez jsdom `onClick` nie odpala sie w zadnym
+tescie. Prawdziwe klikniecie sadzi wylacznie harness e2e (tak zrobilo T-58 AC-5). Ta sama luka
+dotyczy `start-invokes.test.tsx` i jest w tym repo strukturalna, nie swieza.
+
 ## 2026-08-20, 00:20 — D6 ma trzeci rodzaj kafelka, i to byla decyzja czlowieka
 
 **Wyladowane tej nocy: T-53, T-10, T-54, T-55, T-57.** Pelna bramka po kazdym, 15/0.
