@@ -39,6 +39,7 @@
 import type { FormEvent, ReactElement } from 'react';
 import { useState } from 'react';
 
+import { startAskFromLine } from '../ask-command';
 import type { Named } from '../run-command';
 
 /**
@@ -66,6 +67,19 @@ export const KNOWN = [
     tail: 'a workflow',
     does: 'Start a workflow. Add what to build after its name.',
     completes: 'workflows' as Completes,
+  },
+  {
+    /* 2026-08-20 — POWSTAŁO Z ZAMÓWIENIA WŁAŚCICIELA: „odpalać nasze workflows/agents".
+     * Workflow miał drogę z tego wiersza, agent nie miał żadnej — bo jednostką pracy jest
+     * PLIK. Jeden agent z jednym zdaniem kosztował wejście do edytora, założenie workflow,
+     * postawienie jednego kafelka, zapisanie go i powrót. Za najczęstszą czynność dnia.
+     *
+     * ZARAZ PO `/run`, bo to są dwie komendy, które zaczynają pracę, i człowiek szukający
+     * „jak to uruchomić" ma je zobaczyć obok siebie. `/open` i `/stop` są pomocnicze. */
+    name: '/ask',
+    tail: 'an agent',
+    does: 'Start one agent. Add what it should do after its name.',
+    completes: 'agents' as Completes,
   },
   {
     name: '/open',
@@ -276,6 +290,23 @@ export interface EntryProps {
    */
   readonly onRunWorkflow: (rest: string) => Promise<string | null>;
   /**
+   * `/ask <agent> <zadanie>` — oddaje zdanie odmowy albo `null`, kiedy agent ruszył.
+   *
+   * 2026-08-20 — DO TEGO DNIA TEJ DROGI NIE BYŁO, i to jest zamówienie właściciela: „odpalać
+   * nasze workflows/agents". Workflow miał drogę z tego wiersza, agent nie miał żadnej — bo
+   * jednostką pracy jest PLIK, więc jeden agent z jednym zdaniem kosztował wejście do edytora,
+   * założenie workflow, postawienie jednego kafelka i powrót. Za najczęstszą czynność dnia.
+   *
+   * WARTOŚĆ DOMYŚLNA JEST TĄ PRODUKCYJNĄ, a nie mostem dla kryteriów, i to jest różnica wobec
+   * `onRunWorkflow`. Tamtą politykę podaje ekran pracy (`../index.tsx`), bo `/run` powstało
+   * razem z nim; `/ask` nie ma tam ani jednego wiersza, którego mógłby dotknąć to zadanie
+   * (jego blok OWNS nie obejmuje tamtego pliku), a komenda stojąca w zachęcie i odpowiadająca
+   * „nie znam tego" jest obietnicą w napisie (niezmiennik 16). Domyślna wartość wskazuje więc
+   * TĘ SAMĄ politykę, którą podałby ekran — `../ask-command.ts`, obok rozbioru linii — i nie
+   * jest to `io.ts` wołane z komponentu: nazwa komendy dalej istnieje w sekcji raz.
+   */
+  readonly onAskAgent?: (rest: string) => Promise<string | null>;
+  /**
    * Kto właśnie pracuje — nazwy kroków, którym dojdzie zdanie bez ukośnika.
    *
    * PO CO TO JEST. Rozstrzygnięcie właściciela 2026-08-19: „powinienem wiedzieć co piszę".
@@ -298,6 +329,20 @@ export interface EntryProps {
    * które montują ten wiersz bez tego propsa.
    */
   readonly workflows?: readonly Named[];
+  /**
+   * Nazwy agentów do podpowiedzenia po `/ask` — puste, dopóki biblioteka się czyta.
+   *
+   * Propsem, nie własnym odczytem, z tego samego powodu, co [`EntryProps::workflows`]: „jacy
+   * agenci istnieją" jest pytaniem do adaptera (`sections/agents/io.ts`), a komponent, który
+   * zadaje je sam, jest drugim miejscem, w którym mieszka ta odpowiedź (niezmiennik 13).
+   *
+   * ZGŁOSZENIE, NIE PRZEOCZENIE: produkcyjnym wołającym tego wiersza jest `../index.tsx`, a ten
+   * plik nie należy do T-62 (`AGENTS.md` §7), więc dopóki człowiek nie dopisze tam jednej linii
+   * (`agents={agentNames(...)}`), Tab po `/ask ` nie uzupełni nazwy. Sama komenda działa: Enter
+   * na nieznanej nazwie odmawia zdaniem, które WYMIENIA istniejące nazwy (`../ask-command.ts`),
+   * więc lista jest osiągalna, tylko o jedno naciśnięcie dalej.
+   */
+  readonly agents?: readonly Named[];
   /** Wymagany: wybór folderu, czyli dołożenie zakresu — ten sam handler, co pod zaproszeniem. */
   readonly onOpenFolder: () => void;
   /**
@@ -314,13 +359,15 @@ export function Entry({
   onStopRun,
   onSayToAgent,
   onRunWorkflow,
+  onAskAgent = startAskFromLine,
   talkingTo = [],
   workflows = [],
+  agents = [],
 }: EntryProps): ReactElement {
   const [typed, setTyped] = useState('');
   /* Co pasuje do tego, co już stoi w polu. Liczone przy renderze, nie trzymane w stanie: druga
    * kopia tej odpowiedzi mogłaby opisywać tekst sprzed jednego znaku. */
-  const matching = suggestions(typed, workflows);
+  const matching = suggestions(typed, workflows, agents);
   /** Ostatnia odpowiedź wiersza; `null`, dopóki nie ma o czym mówić. */
   const [said, setSaid] = useState<string | null>(null);
 
@@ -340,6 +387,15 @@ export function Entry({
        * bo to polityka i ma być sądzona bez okna (to repo nie ma jsdom, więc Enter jest
        * nieosiągalny dla kryterium). */
       void onRunWorkflow(typed.trim().slice('/run'.length).trim()).then(setSaid);
+      return;
+    }
+    if (command === '/ask') {
+      setSaid(null);
+      /* RESZTA LINII PO NAZWIE KOMENDY, przycięta tylko po końcach — i to jest ta sama umowa,
+       * co przy `/run`. Podział na „nazwa agenta" i „zadanie" należy do `../ask-command.ts`,
+       * razem z odmowami: zdanie dla agenta jedzie stamtąd CO DO ZNAKU, więc wiersz nie ma
+       * prawa go po drodze przepisać. */
+      void onAskAgent(typed.trim().slice('/ask'.length).trim()).then(setSaid);
       return;
     }
     if (command === '/open') {

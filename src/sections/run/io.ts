@@ -205,6 +205,91 @@ export function start(
 }
 
 /**
+ * Kogo pytamy — dwa pola definicji agenta, oba potrzebne po dwóch różnych stronach granicy.
+ *
+ * IDENTYFIKATOR JEDZIE NA DRUT, bo przeżywa zmianę nazwy [T3 §3.1] i bo `run_agent` po tamtej
+ * stronie szuka nim agenta w bibliotece. NAZWA zostaje w oknie: staje na pasku loadoutu i na
+ * karcie, a Rust jej nie potrzebuje — weźmie ją z tej samej definicji.
+ *
+ * Kształt, nie typ `Agent`: ta krawędź nie ma powodu wiedzieć o dziewięciu polach agenta,
+ * a definicja z biblioteki pasuje tu bez ani jednej konwersji.
+ */
+export interface Asked {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * `/ask`: uruchamia JEDNEGO agenta z jednym zdaniem — i jest to zwykły bieg.
+ *
+ * Rozwiązuje się dopiero wtedy, kiedy bieg się skończy, dokładnie jak [`start`]: komenda po
+ * tamtej stronie trwa tyle, co bieg.
+ *
+ * # Dlaczego tu NIE MA zapadki `going`
+ *
+ * Bo drugie `/ask` ma dostać ZDANIE, a nie ten sam bieg co pierwsze. Zapadka pod Startem
+ * odpowiada na pytanie „drugie kliknięcie tego samego przycisku" i oddaje wtedy bieg, który
+ * już idzie — bo pytanie „kiedy to się skończy" ma jedną odpowiedź. Tutaj drugie `/ask` jest
+ * pytaniem o INNEGO agenta z INNYM zdaniem, więc oddanie mu cudzego biegu byłoby ciszą
+ * w miejscu, w którym człowiek właśnie o coś poprosił. Odmawia Rust
+ * (`AppState::begin_a_run`), jednym zdaniem, które mówi, co zrobić — i to jest jedyne miejsce,
+ * które WIE, czy jakiś bieg naprawdę jeszcze nie zszedł.
+ *
+ * @param who kogo pytamy — z biblioteki agentów, nie z pola tekstowego: rozbiór linii
+ *   tłumaczy wpisane słowo na definicję, zanim cokolwiek pojedzie na drut (`../ask-command.ts`).
+ * @param task zdanie człowieka, co do znaku. Puste odmawia po stronie rozbioru — agent bez
+ *   polecenia to tura, za którą ktoś płaci, choć nikt o nic nie zapytał.
+ * @param howManyAtOnce ile kroków ma NAPRAWDĘ biec naraz. Ta sama liczba, co przy biegu
+ *   z pliku, i nigdy stała `1` po tamtej stronie: bieg jednokrokowy bierze miejsce z TEJ SAMEJ
+ *   puli (niezmiennik 11).
+ * @param folder katalog, w którym ma pracować agent, albo `null`. Klucz jedzie ZAWSZE, także
+ *   jako `null` — powód w całości stoi przy `invoke` w [`start`].
+ */
+export function ask(
+  who: Asked,
+  task: string,
+  howManyAtOnce: number,
+  folder: string | null = null,
+): Promise<void> {
+  const session = runFor(folder);
+  const view = feedFor(folder ?? '');
+  const lines = new Channel<unknown[]>();
+  let stamp = 0;
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => {
+      stamp += 1;
+      return { ...line, id: stamp, at };
+    });
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
+  });
+
+  /* PLAN JEST JEDEN I OKNO GO ZNA, zanim Rust cokolwiek powie — tak samo jak przy biegu
+   * z pliku. Klucz kroku to IDENTYFIKATOR AGENTA i musi nim być: pasek dopasowuje linie stanu
+   * do bloków po tym kluczu (`state/run.ts`, `withStepStates`), a po tamtej stronie ten sam
+   * klucz nosi kafelek jednokrokowego planu (`commands::run::plan_ask`). Uuid kroku powstaje
+   * w Ruście, więc okno nigdy go nie widziało — pasek stałby na „waiting" do końca biegu. */
+  session
+    .getState()
+    .nowRunning(who.name, [{ id: who.id, name: who.name, state: 'pending' }], folder);
+
+  return invoke<void>('run_agent', {
+    agent: who.id,
+    task,
+    howManyAtOnce,
+    folder,
+    lines,
+  }).finally(() => {
+    /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
+     * zawsze i jest kontrolką bez roboty (niezmiennik 16). Powód w całości stoi przy [`start`],
+     * razem z tym, dlaczego to jest `finally`, a nie `then`. */
+    session.getState().nowRunning('', [], null);
+    view.runEnded();
+  });
+}
+
+/**
  * Stop: zatrzymuje bieg, który idzie.
  *
  * Rozwiązuje się dopiero z **dowodem**, że po biegu nic nie żyje — `stop_run` po tamtej stronie
