@@ -553,6 +553,59 @@ impl AppState {
         }
     }
 
+    /* ── ROZMOWA NALEŻY DO TERMINALU ────────────────────────────────────────────────────────
+     *
+     * 2026-08-20 — SZKIELET T-71. Ciała są `todo!()`, więc kryterium pada w czasie wykonania,
+     * a nie na kompilacji (AGENTS.md §2a p. 5); `clippy::todo = deny` w `Cargo.toml` pilnuje,
+     * żeby ani jedno z nich nie przeżyło do pełnej bramki.
+     *
+     * DLACZEGO TE DWIE METODY W OGÓLE ISTNIEJĄ, skoro obok stoją skorupy `#[tauri::command]`.
+     * Bo skorupa bierze `State<'_, AppState>`, którego w teście nie da się zbudować — a wtedy
+     * jedynym sposobem na osądzenie żywej drogi byłoby zbudowanie [`commands::chat::Threads`]
+     * w teście, czyli dowiedzenie mechanizmu, którego produkt nie woła. Dokładnie tę wadę
+     * znalazł recenzent T-70 i dokładnie tę wadę opisuje akapit „WĄTEK PER ZAKRES ISTNIEJE
+     * I NIE STOI TUTAJ". Skorupa ma więc rozpakować `State` i zawołać to, co niżej, a te dwie
+     * metody są tym, co woła okno.
+     *
+     * `LineSink`, nie `Channel<Vec<Line>>`: kanał do okna umie zbudować wyłącznie okno
+     * (`docs/ARCHITECTURE.md` §3), więc zamiana jednego w drugi (`pump_into`) zostaje w skorupie.
+     * To jest ten sam szew, którym `tests/it` już dziś otwiera strumień rozmowy.
+     */
+
+    /// Okno patrzy na ten terminal — zakłada pompę wierszy i nic więcej.
+    ///
+    /// Sesja u dostawcy wstaje dopiero przy pierwszym zdaniu ([`AppState::say_to_the_lead`]), bo
+    /// tura wystartowana przy montażu ekranu jest turą, za którą ktoś płaci, choć nikt o nic nie
+    /// zapytał. Wołane ponownie PRZEKIEROWUJE wiersze na nowy kanał i nie kończy rozmowy: tę drogę
+    /// woła każdy montaż ekranu pracy i każde przeładowanie okna.
+    pub async fn watching_the_lead(
+        &self,
+        _terminal: &str,
+        _folder: Option<&str>,
+        _lines: LineSink,
+    ) -> Result<(), String> {
+        todo!()
+    }
+
+    /// Zdanie człowieka do lidera TEGO terminalu.
+    ///
+    /// `lead` jest identyfikatorem zapisanego agenta i jego brak jest **odmową nazywającą następny
+    /// ruch**, nigdy cichym powrotem do zaszytego vendora ([`commands::chat::Lead::pointed_at`]).
+    /// Cichy powrót jest tu gorszy niż odmowa: rozmowa idzie, płaci i odpowiada — tylko nie ten
+    /// agent, którego człowiek wybrał, a nie ma żadnego sygnału, po którym dałoby się to odróżnić.
+    ///
+    /// Odmowa wraca NAPISEM, bo dokładnie tym kształtem odrzuca Tauri i dokładnie ten napis
+    /// człowiek czyta pod wierszem wejścia (niezmiennik 29).
+    pub async fn say_to_the_lead(
+        &self,
+        _terminal: &str,
+        _folder: Option<&str>,
+        _lead: Option<&str>,
+        _text: &str,
+    ) -> Result<(), String> {
+        todo!()
+    }
+
     /// Sterownik, którym rozmawia orchestrator.
     ///
     /// `Vendor::ClaudeCode` na sztywno i to jest świadome: rozmowa nie jest krokiem workflow, więc

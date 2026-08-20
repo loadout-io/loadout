@@ -747,6 +747,99 @@ impl Threads {
     }
 }
 
+// ── TERMINAL, CZYLI JEDNOSTKA DROBNIEJSZA NIŻ ZAKRES ───────────────────────────────────────
+//
+// 2026-08-20 — SZKIELET T-71. Ciała są `todo!()`, więc kryteria padają w czasie wykonania,
+// a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a p. 5).
+// `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno z nich nie przeżyło do pełnej
+// bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości — ciało,
+// które ich nie czyta, dawałoby `unused_variables`.
+
+/// Który terminal mówi i gdzie stoi.
+///
+/// # Dlaczego to jest para, a nie sam identyfikator
+///
+/// Bo zakres pracy zostaje tam, gdzie mieszkał — w magazynie zakresów po stronie okna — a terminal
+/// go tylko NIESIE (niezmiennik 13). Wątek potrzebuje obu odpowiedzi naraz i w tej samej chwili:
+/// `id` mówi, KTÓRA to rozmowa, `folder` mówi, GDZIE ona patrzy. Dwa osobne argumenty dawałyby
+/// wywołanie, w którym da się podać tożsamość jednego terminalu z folderem drugiego, a to jest
+/// dokładnie ta pomyłka, której nie widać na ekranie: lider odpowiada o innym projekcie.
+///
+/// # Co się zmieniło wobec [`Threads`] z T-60
+///
+/// Klucz. Wątek należał do ZAKRESU, bo zakres był najdrobniejszą rzeczą, jaką okno umiało nazwać —
+/// karta była wtedy folderem (`src/sections/run/tabs/store.ts`, „w jednym zakresie może stać
+/// najwyżej jedna karta"). Od T-71 karta jest terminalem z własną tożsamością, więc dwie rozmowy
+/// w jednym projekcie są zwykłym stanem, a nie stanem, którego nie da się wyrazić.
+#[derive(Debug, Clone)]
+pub struct Terminal {
+    /// Tożsamość terminalu, znak w znak ta, którą wybiło okno.
+    pub id: String,
+    /// Folder zakresu, w którym ten terminal stoi. Tu startuje sesja lidera i tylko tu patrzy.
+    pub folder: PathBuf,
+}
+
+impl Threads {
+    /// Okno patrzy na ten terminal: jego wiersze idą odtąd TAM, a wątek zostaje.
+    ///
+    /// Wołane przy każdym montażu ekranu pracy i przy każdym przeładowaniu okna, więc **nie może**
+    /// niczego kończyć — powód i pomiar stoją przy [`Chat::lines_go_to`].
+    ///
+    /// # Jak to się ma do [`Threads::lines_go_to`]
+    ///
+    /// To jest ta sama czynność, tylko zadana pytaniem, na które da się odpowiedzieć: „ten
+    /// terminal", a nie „ten folder". Droga po folderze zostaje, bo woła ją kryterium sprzed tego
+    /// zadania, i ma zostać JEDNĄ DROGĄ do jednego rejestru — folder nazywa wtedy domyślny
+    /// terminal tego zakresu. Drugi rejestr obok byłby drugim domem dla odpowiedzi „gdzie mieszka
+    /// ta rozmowa" (niezmiennik 13) i rozjechałby się przy pierwszym zamknięciu okna.
+    pub fn terminal_lines_go_to(&mut self, _terminal: &Terminal, _lines: LineSink) {
+        todo!()
+    }
+
+    /// Czy w tym terminalu stoi wątek.
+    ///
+    /// Pytanie zadawane o terminal, nie o folder: to na nim stoi asercja „zamknięcie jednego
+    /// terminalu zostawia drugi", której nie da się wypowiedzieć, dopóki oba mają jeden klucz.
+    #[must_use]
+    pub fn is_live_at(&self, _terminal: &str) -> bool {
+        todo!()
+    }
+
+    /// Mówi zdanie liderowi w TYM terminalu — pierwsze zdanie zakłada jego wątek, każde następne
+    /// jest kolejną turą tego samego wątku.
+    ///
+    /// Sterownik wybiera **fabryka**, po vendorze z definicji lidera, i dlatego jedzie tu
+    /// [`Drivers`], a nie gotowy sterownik — powód w całości stoi przy [`Threads::say`].
+    ///
+    /// Powrót do terminalu, w którym rozmowa już stoi, jest kolejną turą i to jest cała różnica
+    /// między „wątek na terminal" a „wątek na turę": implementacja startująca sesję przy każdym
+    /// zdaniu płaci zimny start za każdym razem i gubi rozmowę, bo model nie słyszał poprzedniego
+    /// zdania.
+    pub async fn say_in(
+        &mut self,
+        _drivers: &Drivers,
+        _lead: &Lead,
+        _terminal: &Terminal,
+        _text: &str,
+    ) -> Result<(), ChatError> {
+        todo!()
+    }
+
+    /// Człowiek zamknął ten terminal: jego wątek schodzi i oddaje dowód śmierci swojej grupy.
+    ///
+    /// `None`, kiedy w tym terminalu nie stała żadna rozmowa — nie ma wtedy czego dowodzić i nie
+    /// jest to odmowa. Dowód, nie „wysłałem sygnał" (niezmiennik 6): rozmowa porzucona żywa
+    /// przechodzi pod PID 1 i pracuje dalej (`recovery.rs`, nagłówek), a odzyskiwanie po niej nie
+    /// posprząta, bo rozmowa nie ma wpisu w indeksie biegów. Osierocony agent pali limit w tle —
+    /// to jest błąd finansowy, nie higieniczny.
+    ///
+    /// Kończy JEDEN wątek i milczy o pozostałych. Zamknięcie karty, w której nic nie chodzi, nie
+    /// jest instrukcją o karcie obok — a przy jednym kluczu na folder byłoby nią zawsze.
+    pub async fn close_at(&mut self, _terminal: &str) -> Option<GroupProof> {
+        todo!()
+    }
+}
+
 /// Zdarzenia sesji rozmowy → wiersze na ekran.
 ///
 /// Kuracja mieszka w [`Curator`] i tylko tam (niezmiennik 15): ta pętla nie decyduje, który wiersz
