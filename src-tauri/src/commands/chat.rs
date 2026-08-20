@@ -24,18 +24,22 @@
 //! końcu. Rozmowa nie ma nic z tego i udawanie, że ma, kosztowałoby wpis w historii biegów za
 //! każde „siema". To jest jedna sesja, jeden proces, tyle tur, ile człowiek napisze.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use super::Drivers;
 use crate::engine::drivers::{
     AgentDriver, AgentHandle, DecodedEvent, Policy, RunSpec, ToAgent, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen};
+use crate::engine::supervisor::GroupProof;
 use crate::ipc::LineSink;
+use crate::library::agents::Agent;
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -255,6 +259,162 @@ impl Chat {
         /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, więc po `close()` nie ma na
          * co czekać — ale porzucony `JoinHandle` zostawiłby zadanie, o którym nikt nie wie. */
         session.reader.abort();
+    }
+}
+
+// ── KIM JEST LIDER I GDZIE MIESZKA JEGO WĄTEK ──────────────────────────────────────────────
+//
+// 2026-08-20 — SZKIELET T-60. Ciała są `todo!()`, więc kryteria padają w czasie wykonania,
+// a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego (AGENTS.md §2a p. 5).
+// `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby ani jedno z nich nie przeżyło do pełnej
+// bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości: ciało, które
+// ich nie czyta, dawałoby `unused_variables` — implementacja zdejmuje je razem z `todo!()`.
+
+/// Kim jest lider tej rozmowy — jego zapisana definicja i nic obok niej.
+///
+/// # Dlaczego to jest typ, a nie sam [`Agent`]
+///
+/// Bo pytanie „co z definicji dojeżdża do sesji" ma mieć JEDNĄ odpowiedź w jednym miejscu
+/// (niezmiennik 13): vendor wybiera sterownik, `model` jedzie do [`RunSpec::model`],
+/// `file_access` przechodzi TĄ SAMĄ tabelą, którą czyta bieg, a `instructions` doklejają się do
+/// briefu. Kopia któregokolwiek z tych czterech pól, trzymana obok definicji — w stanie okna,
+/// w polu struktury, w stałej — jest pierwszą rzeczą, która się rozjedzie, i rozjedzie się po
+/// cichu: lider odpowiadający innym modelem niż wybrany wygląda dokładnie jak lider, który się
+/// myli.
+#[derive(Debug, Clone)]
+pub struct Lead {
+    /// Definicja, znak w znak taka, jak leży w bibliotece.
+    pub agent: Agent,
+}
+
+impl Lead {
+    /// Wskazany lider → jego zapisana definicja.
+    ///
+    /// `who` jest **identyfikatorem** zapisanego agenta, nie nazwą pliku i nie nazwą vendora —
+    /// ten sam wybór, co przy [`super::skills::draft_skill_inner`], i z tego samego powodu:
+    /// `id` przeżywa zmianę nazwy (T4 §5.1).
+    ///
+    /// `None` znaczy „nikt nie jest wskazany" i jest **odmową nazywającą następny ruch**, nigdy
+    /// cichym powrotem do zaszytego vendora. Cichy powrót jest tu gorszy niż odmowa, bo nie ma
+    /// żadnego sygnału, po którym człowiek mógłby odróżnić lidera, którego wybrał, od lidera,
+    /// którego dostał — a jedyną rzeczą, która się zmieniła, był jego własny klik.
+    pub fn pointed_at(_library: &Path, _who: Option<&str>) -> Result<Self, ChatError> {
+        todo!("T-60 AC-1: wskazany lider -> jego zapisana definicja, brak wskazania -> odmowa")
+    }
+
+    /// Co temu liderowi wolno zrobić z plikami.
+    ///
+    /// TĄ SAMĄ tabelą `FileAccess` → [`Policy`], którą czyta bieg (`commands::run::policy_of`),
+    /// nigdy drugą jej kopią (niezmiennik 23). Druga kopia tej tabeli to sposób, w jaki w repo
+    /// źródłowym po cichu umarło skanowanie sekretów: obie wyglądają poprawnie, a podpięta jest
+    /// zawsze starsza.
+    #[must_use]
+    pub fn policy(&self) -> Policy {
+        todo!("T-60 AC-1: tabela z commands::run::policy_of, nie druga kopia")
+    }
+
+    /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
+    ///
+    /// Razem, nie zamiast: [`BRIEF`] mówi, czego lider nie umie zrobić (zaczynać biegów) i czym
+    /// się to robi (`/run`), a instrukcje mówią, kim on jest. Lider bez pierwszego zdania obieca
+    /// start, którego nie wykona; lider bez drugiego jest agentem, którego nikt nie konfigurował.
+    #[must_use]
+    pub fn brief(&self) -> String {
+        todo!("T-60 AC-3: brief dla polityki + instrukcje z definicji")
+    }
+}
+
+/// Wątki lidera: po jednym na zakres, wszystkie w jednym miejscu.
+///
+/// # Po co to istnieje obok [`Chat`]
+///
+/// Bo [`Chat`] jest JEDNĄ rozmową i jego własny komentarz zapowiada ten dzień: „jedna na
+/// aplikację, nie jedna na zakres — i to jest do przemyślenia, kiedy zakresy dostaną własne
+/// sesje" (`ipc::AppState::chat`). Skutek dzisiejszego stanu widzi człowiek: `Chat::say` używa
+/// `cwd` **wyłącznie przy zakładaniu sesji**, więc rozmowa o projekcie A, po przełączeniu na B,
+/// odpowiada dalej o A — bez ani jednego zdania ostrzeżenia, z żywego procesu siedzącego
+/// w folderze sprzed przełączenia.
+///
+/// Zakres jest kluczem, bo zakres jest tym, co człowiek przełącza. Wpis w [`Threads::lines`]
+/// powstaje, kiedy okno pierwszy raz na ten zakres patrzy; wpis w [`Threads::live`] dopiero przy
+/// pierwszym zdaniu — sesja wystartowana przy montażu ekranu płaci za turę, o którą nikt nie
+/// zapytał, i to jest ten sam powód, który stoi przy [`Chat::live`].
+#[derive(Default)]
+pub struct Threads {
+    /// Kanał wierszy tego zakresu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
+    /// zamknięcie cudzej rozmowy przy przełączeniu byłoby zgubieniem wątku, o który chodzi
+    /// cała ta zmiana.
+    lines: HashMap<PathBuf, Arc<Mutex<LineSink>>>,
+    /// Sesja tego zakresu. Osobny wpis na zakres, bo to jest jedyna rzecz, która czyni zdanie
+    /// „wątek należy do zakresu" prawdziwym, a nie zadeklarowanym.
+    live: HashMap<PathBuf, Session>,
+}
+
+/* RĘCZNIE, z tego samego powodu, co przy [`Chat`]: `Box<dyn AgentHandle>` nie jest `Debug`
+ * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile zakresów
+ * okno patrzyło i ile wątków naprawdę stoi. */
+impl std::fmt::Debug for Threads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Threads")
+            .field("watched", &self.lines.len())
+            .field("live", &self.live.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Threads {
+    /// Ani jednego wątku i ani jednego widoku — stan aplikacji, która właśnie wstała.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Okno patrzy na ten zakres: jego wiersze idą odtąd TAM, a wątek zostaje.
+    ///
+    /// Wołane przy każdym montażu ekranu pracy i przy każdym przeładowaniu okna, więc **nie może**
+    /// niczego kończyć — powód i pomiar stoją przy [`Chat::lines_go_to`].
+    pub fn lines_go_to(&mut self, _cwd: PathBuf, _lines: LineSink) {
+        todo!("T-60 AC-2: strumień per zakres, wątek nietknięty")
+    }
+
+    /// Czy w tym zakresie stoi wątek.
+    ///
+    /// Pytanie zadawane o zakres, nie o aplikację: to na nim stoi asercja „sesja zakresu B żyje
+    /// dalej, kiedy okno patrzy na A".
+    #[must_use]
+    pub fn is_live_in(&self, _cwd: &Path) -> bool {
+        todo!("T-60 AC-2: wątek jest własnością zakresu")
+    }
+
+    /// Mówi zdanie liderowi w TYM zakresie — pierwsze zdanie zakłada jego wątek, każde następne
+    /// jest kolejną turą tego samego wątku.
+    ///
+    /// Sterownik wybiera **fabryka**, po vendorze z definicji lidera, i dlatego jedzie tu
+    /// [`Drivers`], a nie gotowy sterownik: wybór po vendorze jest jedną z rzeczy, których to
+    /// zadanie dowodzi, a wybór zrobiony u wołającego byłby wyborem, którego żaden test bez okna
+    /// nie widzi (dziś robi go `ipc::AppState::chat_driver`, na sztywno).
+    pub async fn say(
+        &mut self,
+        _drivers: &Drivers,
+        _lead: &Lead,
+        _cwd: PathBuf,
+        _text: &str,
+    ) -> Result<(), ChatError> {
+        todo!("T-60 AC-1/AC-2: vendor, model, polityka i brief z definicji; wątek per zakres")
+    }
+
+    /// Zamknięcie okna: schodzą WSZYSTKIE wątki i każdy oddaje dowód śmierci swojej grupy.
+    ///
+    /// Dowód, nie „wysłałem sygnał" (niezmiennik 6): rozmowa porzucona żywa przechodzi pod PID 1
+    /// i pracuje dalej (`recovery.rs`, nagłówek), a odzyskiwanie po niej nie posprząta, bo
+    /// rozmowa nie ma wpisu w indeksie biegów. Osierocony agent pali limit w tle — to jest błąd
+    /// finansowy, nie higieniczny.
+    ///
+    /// Oddaje po jednym dowodzie na wątek, bo bilans jest kompletny tylko wtedy, kiedy widać
+    /// KAŻDY z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt
+    /// się nie dowie z liczby „zamknięto pięć".
+    pub async fn close(&mut self) -> Vec<GroupProof> {
+        todo!("T-60 AC-2: wszystkie wątki schodzą, każdy z dowodem")
     }
 }
 
