@@ -49,9 +49,12 @@
 
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Waker};
 
 use tauri::State;
 use tauri::ipc::{Channel, Invoke};
@@ -596,10 +599,45 @@ impl AppState {
     /// Stop jest do czegokolwiek potrzebny. Zdanie mówi, co zrobić (DESIGN §8), więc człowiek
     /// ma następny ruch, a nie ciszę.
     ///
-    /// Blokady „na zawsze" tu nie ma i nie może być: warunek pyta [`RunControl::is_working`],
-    /// czyli „ruszył i jeszcze nie zszedł", więc bieg, który zszedł (`settle`), przestaje
-    /// kogokolwiek zatrzymywać. Zapadka, która nigdy się nie otwiera, jest gorsza od wady, przed
-    /// którą stoi.
+    /// Blokady „na zawsze" tu nie ma i nie może być: warunek pyta o DOWÓD ZEJŚCIA
+    /// ([`proved_down`]), a ten dowód zapala `settle()` na każdej drodze wyjścia z biegu — więc
+    /// bieg, który zszedł, przestaje kogokolwiek zatrzymywać. Zapadka, która nigdy się nie
+    /// otwiera, jest gorsza od wady, przed którą stoi.
+    ///
+    /// # 2026-08-20 (T-69, runda naprawcza) — WARUNEK PYTA O DOWÓD ZEJŚCIA, NIE O „PRACUJE"
+    ///
+    /// Warunek na [`RunControl::is_working`] zostawiał tę samą wadę otwartą na szczelinę kilku
+    /// instrukcji, a wąskie okno nie jest tu żadną obroną — jest wyłącznie powodem, dla którego
+    /// trafia się w nie wtedy, kiedy człowiek naciska dwa razy, a nie wtedy, kiedy ktoś tego
+    /// szuka. `is_working` znaczy „ruszył i nie zszedł", a „ruszył" zapala PIERWSZA LINIA biegu
+    /// (`run_workflow_with_slots`), czyli kod, do którego wchodzi się dopiero po tym, jak ta
+    /// metoda oddała zamek i wróciła. Żadnego `await` w środku nie ma, ale `Cargo.toml` włącza
+    /// `rt-multi-thread`, a Tauri wysyła każdą komendę jako OSOBNE zadanie tej puli: dwa Starty
+    /// stoją na dwóch wątkach naprawdę. Wątek drugi bierze ten sam zamek, zanim pierwszy zawołał
+    /// `begin()`, czyta „nikt nie pracuje" i podmienia uchwyt — dokładnie ta cicha podmiana,
+    /// przed którą stoi całe to zadanie (niezmienniki 6 i 11).
+    ///
+    /// Odpowiedzią jest pytanie o jedną chwilę wcześniejsze, i **nie wymaga ono ani jednego
+    /// nowego znacznika**: uchwyt trafia do [`AppState::live`] dokładnie w dwóch miejscach —
+    /// [`AppState::new`] wkłada tam uchwyt Z DOWODEM zejścia (tamten `settle()` ma swój własny
+    /// powód: Stop przed pierwszym biegiem nie ma na co czekać), a podmiana niżej wkłada świeży,
+    /// który dowodu jeszcze nie ma i mieć nie może. „W stanie stoi uchwyt bez dowodu zejścia"
+    /// znaczy więc dokładnie „ktoś ten uchwyt już wziął i bieg jeszcze nie zszedł" — a zapala
+    /// się to W TEJ SAMEJ instrukcji, w której uchwyt tam wchodzi, pod tym samym zamkiem. Okno
+    /// nie jest przez to węższe; nie ma go wcale.
+    ///
+    /// Czego świadomie NIE robimy, bo każde z tego przerzedza trafienia i żadne nie zamyka okna:
+    /// ponownego sprawdzenia `is_working` po podmianie, zamka `tokio::sync` z `await` w środku,
+    /// pętli z ponawianiem. I czego nie robimy, bo psuje Stop: zapalenia `began` przy podmianie —
+    /// `stop_run_inner` żądałby wtedy dowodu śmierci od biegu, który jeszcze nie ruszył, czyli
+    /// czekałby bez końca. „Czy ktoś wziął uchwyt" i „czy jest co zatrzymywać" to dwa pytania
+    /// i mają dwie odpowiedzi.
+    ///
+    /// Najprostszym zapisem tego warunku byłby drugi znacznik w [`RunControl`] („wzięty", obok
+    /// „ruszył"). Ten typ mieszka w `src-tauri/src/commands/mod.rs`, który nie należy do T-69
+    /// (`AGENTS.md` §7), a `settled` jest w nim prywatne — stąd sonda w [`proved_down`] zamiast
+    /// pola. Zachowanie jest to samo w każdym osiągalnym stanie, bo każdy uchwyt, który tu wchodzi,
+    /// jest wzięty przez ten start.
     pub fn begin_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
         {
             // Zamek na CAŁE pytanie i na wymianę, nie na dwa osobne wyrażenia: „czy coś idzie"
@@ -607,9 +645,12 @@ impl AppState {
             // a podmianą mieści się drugi start. Zamek `std::sync` i ani jednego `await`
             // w środku (niezmiennik 8) — powód stoi przy [`AppState::deps_in`].
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-            if live.is_working() {
+            if !proved_down(&live) {
                 return Err(ALREADY_GOING.to_owned());
             }
+            // Ta jedna instrukcja jest i podmianą, i zamknięciem zapadki dla każdego następnego
+            // startu: świeży uchwyt nie ma dowodu zejścia, a warunek wyżej pyta właśnie o dowód.
+            // Powód w całości stoi w nagłówku tej metody.
             *live = RunControl::new();
         }
         Ok(self.deps_in(project))
@@ -661,6 +702,36 @@ impl AppState {
     ) -> Result<RunRequest, String> {
         run_request(self.home.as_path(), file_name, how_many_at_once, task)
     }
+}
+
+/// Czy ten uchwyt biegu ma już **dowód zejścia** — czyli czy `settle()` na nim zapadło.
+///
+/// Pytanie startu, nie Stopu, i cały jego powód stoi przy [`AppState::begin_run`]: uchwyt bez
+/// dowodu zejścia jest uchwytem wziętym przez start, którego bieg jeszcze nie skończył, i to
+/// jest jedyny stan, w którym drugi start musi odmówić.
+///
+/// # Dlaczego SONDA, a nie `is_working()` ani nowe pole
+///
+/// [`RunControl::is_working`] odpowiada na inne pytanie („ruszył i nie zszedł"), a różnica
+/// między nim a tym jest właśnie tą szczeliną, przez którą bieg dawał się osierocić. Prostszym
+/// zapisem byłoby pole w [`RunControl`], ale ten typ mieszka w cudzym pliku (`AGENTS.md` §7,
+/// powód w całości przy [`AppState::begin_run`]) i trzyma `settled` prywatnie — jedynym
+/// wejściem do tej odpowiedzi jest więc `wait_until_settled()`.
+///
+/// Sondujemy tę przyszłość DOKŁADNIE RAZ, budzikiem, który nikogo nie budzi
+/// ([`Waker::noop`]): `Poll::Ready` znaczy „dowód już jest", `Poll::Pending` znaczy „jeszcze
+/// nie". Wewnątrz jest to `CancellationToken::cancelled()`, więc pojedyncze spojrzenie nic nie
+/// konsumuje, na nic nie czeka i po porzuceniu przyszłości nie zostawia po sobie ani zapisu, ani
+/// czekającego — to jest odczyt jednego znacznika, tylko wyrażony przez jedyne dostępne drzwi.
+///
+/// SYNCHRONICZNIE, i to jest wymóg, nie wygoda: to zdanie stoi pod zamkiem na
+/// [`AppState::live`], a zamek `std::sync` trzymany przez `await` jest niezmiennikiem 8.
+fn proved_down(control: &RunControl) -> bool {
+    let mut proof = pin!(control.wait_until_settled());
+    proof
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_ready()
 }
 
 /// Folder przysłany z okna → korzeń projektu, albo zdanie o tym, czego z nim nie da się zrobić.

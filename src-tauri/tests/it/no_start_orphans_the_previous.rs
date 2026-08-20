@@ -41,6 +41,12 @@
 //! zawsze. Przechodzi wszystkie asercje wyżej i zamienia `/ask` w komendę do jednorazowego
 //! użycia; rozstrzygają `the_next_start_goes_through_once_the_first_run_is_down` i
 //! `every_road_starts_when_nothing_is_going`.
+//!
+//! Trzecia, dołożona 2026-08-20 w rundzie naprawczej: odmowa, która pyta „czy coś PRACUJE".
+//! Przechodzi wszystkie pary powyżej, bo fikstura wchodzi do roboty (`begin()`) przed drugim
+//! startem — a zostawia otwartą szczelinę między podmianą uchwytu i pierwszą linią biegu, w
+//! której nic jeszcze nie pracuje i drugi start podmienia uchwyt tak samo cicho jak przed całą
+//! naprawą. Rozstrzyga to `a_start_holds_the_handle_before_the_run_reaches_its_first_line`.
 
 use std::error::Error;
 use std::fs;
@@ -291,11 +297,95 @@ async fn every_road_starts_when_nothing_is_going() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+/// (f) Uchwyt wzięty jest czyjś JUŻ, a nie dopiero od pierwszej linii biegu.
+///
+/// # Co dokładnie rozstrzyga ten przypadek, czego nie rozstrzygają (a)–(e)
+///
+/// Wszystkie powyżej stawiają pytanie o bieg, który już wszedł do roboty: fikstura
+/// [`a_run_is_going`] woła `begin()` sama, zaraz po wzięciu uchwytu. Odmowa oparta na „czy coś
+/// PRACUJE" spełnia je więc wszystkie i zostawia otwartą szczelinę, w której nic jeszcze nie
+/// pracuje, a uchwyt jest już podmieniony: skorupa komendy wraca z `begin_run` i dopiero POTEM
+/// wchodzi do biegu, który jako pierwszą linię zapala „ruszyłem". Rust nie wykonuje tych dwóch
+/// rzeczy jako jednej — `Cargo.toml` włącza `rt-multi-thread`, a Tauri wysyła każdą komendę
+/// jako osobne zadanie tej puli, więc dwa Starty naprawdę stoją na dwóch wątkach i drugi
+/// naprawdę trafia w tę szczelinę. Skutek jest ten sam co bez żadnej odmowy: pierwszy bieg
+/// zostaje bez uchwytu, agent pracuje dalej i płaci dalej (niezmienniki 6 i 11).
+///
+/// Ten przypadek mierzy tę szczelinę BEZ dwóch wątków i bez zegara — po prostu nie woła
+/// `begin()`, czyli zostawia stan dokładnie taki, jaki widzi drugi wątek. Wyścigu w czasie nie
+/// odtwarza (o tym niżej, przy [`a_run_is_going`]), ale odróżnia obie implementacje na pewno,
+/// zawsze i w tę samą stronę.
+#[tokio::test]
+async fn a_start_holds_the_handle_before_the_run_reaches_its_first_line()
+-> Result<(), Box<dyn Error>> {
+    for (first_road, second_road) in PAIRS {
+        let bench = Bench::new()?;
+        let state = bench.app_state()?;
+        let project = bench.project.path();
+
+        // Uchwyt wzięty i ANI JEDNEJ linii biegu — świadomie bez `begin()`: to jest stan,
+        // w którym skorupa komendy wróciła z uchwytem i jeszcze nie weszła do biegu.
+        let first = first_road.take(&state, project).map_err(|said| {
+            format!(
+                "the first start by {} was turned down with nothing going: {said:?}",
+                first_road.command()
+            )
+        })?;
+        let first_token = first.control.cancel_token();
+
+        let Err(said) = second_road.take(&state, project) else {
+            return Err(format!(
+                "{second} handed out a handle while the run started by {first} was still on its \
+                 way to its first line. Nothing reported working yet, and that is the whole \
+                 point: the window is a few instructions wide, both commands run as separate \
+                 tasks of the same thread pool, and a person pressing twice lands in it. What \
+                 comes out of it is the orphan from the header — the first agent keeps working \
+                 and keeps paying with nobody holding its handle. The pair was {first} then \
+                 {second}",
+                first = first_road.command(),
+                second = second_road.command()
+            )
+            .into());
+        };
+        assert!(
+            !said.trim().is_empty(),
+            "{} turned the second start down with an empty answer, and silence in the place \
+             where a person just asked for work is the same as no refusal at all (invariant 7)",
+            second_road.command()
+        );
+
+        // Tak samo jak w `stop_still_reaches_the_first_run`: Stop dosięga tego, czyj token
+        // trzyma żywy uchwyt. Token PIERWSZEGO startu jest tu całą treścią odpowiedzi.
+        state.deps().control.stop();
+        assert!(
+            first_token.is_cancelled(),
+            "Stop pressed after a second start by {second} did not reach the run that {first} \
+             had just started: its cancel token is still alive. A refusal that leaves the handle \
+             swapped is, for the person at the screen, the same thing as no refusal",
+            first = first_road.command(),
+            second = second_road.command()
+        );
+        drop(first);
+    }
+    Ok(())
+}
+
 /// Bieg, który idzie TERAZ — i uchwyt, który go prowadzi.
 ///
 /// PRZESŁANKA, NIE ASERCJA KRYTERIUM: dwa zdania w środku pilnują samej fikstury. Uchwyt, który
 /// nie melduje prowadzonego biegu, nie postawiłby pytania, o które chodzi — „drugi start przy
 /// ŻYWYM pierwszym" — a wtedy każda asercja niżej byłaby zdaniem o stanie bezczynnym.
+///
+/// # CZEGO TA FIKSTURA NIE MIERZY — luka znana i zostawiona świadomie
+///
+/// `begin()` stoi tu SYNCHRONICZNIE, przed drugim startem, więc żaden przypadek w tym pliku nie
+/// przeplata dwóch startów na dwóch wątkach naprawdę: mierzą stan, nie wyścig. Prawdziwe
+/// przeplecenie („wątek B bierze zamek dokładnie w szczelinie wątku A") wymagałoby zatrzymania
+/// jednego wątku w środku `begin_run`, czyli albo punktu wstrzyknięcia w kodzie produkcyjnym,
+/// albo testu na zegarze — a test na zegarze bywa zielony na wolnej maszynie i czerwony na
+/// zajętej, czyli przestaje być wyrocznią. Szczelinę samą sądzi bez zegara
+/// [`a_start_holds_the_handle_before_the_run_reaches_its_first_line`]; czy dołożyć do tego
+/// przypadek naprawdę współbieżny, jest decyzją człowieka, nie pisarza tej naprawy.
 fn a_run_is_going<'a>(
     state: &'a AppState,
     project: &'a Path,
