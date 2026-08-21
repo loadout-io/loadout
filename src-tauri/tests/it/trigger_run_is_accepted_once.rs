@@ -146,6 +146,42 @@ fn pending_is_durable_before_the_cursor_and_restart_keeps_its_ids() -> Result<()
 }
 
 #[test]
+fn an_accepted_receipt_does_not_hide_later_issues() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let delivery = bench.one_delivery()?;
+    let run_file = bench
+        .project
+        .path()
+        .join(".loadout/runs/already-accepted/run.json");
+    triggers::bind_delivery(bench.home.path(), &delivery.claim, &run_file)?;
+    fs::create_dir_all(run_file.parent().ok_or("run.json has no parent")?)?;
+    fs::write(
+        &run_file,
+        serde_json::to_vec_pretty(&accepted_run_json(&delivery))?,
+    )?;
+    assert!(matches!(
+        triggers::reconcile_delivery(bench.home.path(), &delivery.claim)?,
+        DeliveryState::Accepted { .. }
+    ));
+
+    let next = poll(&bench, &[issue("issue-b", "LOAD-2", 10)])?;
+    assert!(
+        matches!(
+            next,
+            TriggerPoll::Pending {
+                delivery: TriggerDelivery { ref issue, .. }
+            } if issue.id == "issue-b"
+        ),
+        "an old Accepted receipt short-circuited the fetch and hid a later issue: {next:?}"
+    );
+    assert_eq!(
+        issue_ids(&triggers::pending_deliveries(bench.home.path(), "mine")?),
+        vec!["issue-b"]
+    );
+    Ok(())
+}
+
+#[test]
 fn already_going_leaves_the_claim_pending_until_the_run_settles() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     let delivery = bench.one_delivery()?;
