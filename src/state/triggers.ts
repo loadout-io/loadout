@@ -10,6 +10,7 @@ import * as triggerIo from '../sections/triggers/io';
 import type {
   BrokenTriggerEntry,
   ConfiguredTriggerEntry,
+  TriggerClaim,
   TriggerDelivery,
   TriggerEntry,
   TriggerIo,
@@ -32,7 +33,7 @@ export interface TriggerRunPath {
     choice: Choice | null,
     atOnce: number,
     task: string | null,
-    claim: TriggerDelivery['claim'] | null,
+    deliveryReference: TriggerClaim | null,
   ): Promise<string | null>;
   atOnce(): number;
 }
@@ -73,6 +74,18 @@ export interface TriggersState {
 }
 
 export type TriggersStore = UseBoundStore<StoreApi<TriggersState>>;
+
+interface ToggleRefusal {
+  /** The exact status object installed by the failed write, so later polling cannot be mistaken for it. */
+  readonly status: Extract<TriggerVisibleStatus, { readonly kind: 'refused' }>;
+  /** The useful row state hidden temporarily by that write refusal. */
+  readonly before: TriggerVisibleStatus;
+}
+
+interface LibraryLoad {
+  readonly request: { epoch: number; readonly mutation: number };
+  readonly promise: Promise<void>;
+}
 
 /** The task has no URL: identity, title and body are the three fields the contract names. */
 export function taskForIssue(issue: TriggerIssue): string {
@@ -124,8 +137,13 @@ export function createTriggersStore(
   let watchHandle: unknown = null;
   let watching = false;
   let generation = 0;
+  let libraryMutation = 0;
+  let libraryLoad: LibraryLoad | null = null;
   const checking = new Set<string>();
   const pending = new Map<string, TriggerDelivery>();
+  const refreshedAfterRun = new Map<string, string>();
+  const refreshAfterChecking = new Map<string, number>();
+  const toggleRefusals = new Map<string, ToggleRefusal>();
 
   return create<TriggersState>()((set, get) => {
     const configuredNow = (slug: string): ConfiguredTriggerView | null => {
@@ -168,9 +186,15 @@ export function createTriggersStore(
       }));
     };
 
-    const refuse = (slug: string, error: unknown, fallback: string, epoch: number): void => {
+    const refuse = (
+      slug: string,
+      error: unknown,
+      fallback: string,
+      epoch: number,
+      includeDisabled = false,
+    ): void => {
       const current = configuredNow(slug);
-      if (current === null || !current.enabled) return;
+      if (current === null || (!current.enabled && !includeDisabled)) return;
       setStatus(slug, { kind: 'refused', sentence: why(error, fallback) }, epoch);
     };
 
@@ -197,13 +221,29 @@ export function createTriggersStore(
        * receipt. Accepted comes solely from a later Rust poll with its durable receiptAt. */
       void launched
         .then((sentence) => {
-          if (sentence === null || epoch !== generation) return;
+          if (epoch !== generation) return;
+          if (sentence === null) {
+            const current = configuredNow(slug);
+            if (current === null) return;
+            const deliveryId = delivery.claim.deliveryId;
+            /* The command resolves only after the run settles. Ask Rust for its durable receipt
+             * now rather than leaving a finished run labelled busy until the next minute. One
+             * refresh per delivery also prevents a dishonest Pending adapter from spinning. */
+            if (refreshedAfterRun.get(slug) === deliveryId) return;
+            refreshedAfterRun.set(slug, deliveryId);
+            if (checking.has(slug)) {
+              refreshAfterChecking.set(slug, epoch);
+            } else {
+              void pollOne(slug, epoch, true);
+            }
+            return;
+          }
           const current = configuredNow(slug);
           if (current?.status.kind === 'accepted') return;
-          refuse(slug, sentence, 'Loadout could not start that trigger.', epoch);
+          refuse(slug, sentence, 'Loadout could not start that trigger.', epoch, true);
         })
         .catch((error: unknown) => {
-          refuse(slug, error, 'Loadout could not start that trigger.', epoch);
+          refuse(slug, error, 'Loadout could not start that trigger.', epoch, true);
         });
     };
 
@@ -227,14 +267,18 @@ export function createTriggersStore(
       }
     };
 
-    const pollOne = async (slug: string, epoch: number): Promise<void> => {
+    const pollOne = async (
+      slug: string,
+      epoch: number,
+      completionReceipt = false,
+    ): Promise<void> => {
       if (checking.has(slug)) return;
       checking.add(slug);
       try {
         const result = await io.checkTrigger(slug);
         if (epoch !== generation) return;
         const current = configuredNow(slug);
-        if (current === null || !current.enabled) return;
+        if (current === null || (!current.enabled && !completionReceipt)) return;
 
         if (result.status === 'armed') {
           pending.delete(slug);
@@ -256,12 +300,25 @@ export function createTriggersStore(
             epoch,
           );
         } else {
-          await handlePending(slug, result.delivery, epoch);
+          if (completionReceipt) {
+            pending.set(slug, result.delivery);
+            setStatus(slug, { kind: 'busy', delivery: result.delivery }, epoch);
+          } else {
+            await handlePending(slug, result.delivery, epoch);
+          }
         }
       } catch (error) {
-        refuse(slug, error, `Loadout could not check ${slug}.`, epoch);
+        refuse(slug, error, `Loadout could not check ${slug}.`, epoch, completionReceipt);
       } finally {
         checking.delete(slug);
+        const refreshEpoch = refreshAfterChecking.get(slug);
+        if (refreshEpoch !== undefined) {
+          refreshAfterChecking.delete(slug);
+          const current = configuredNow(slug);
+          if (refreshEpoch === generation && current !== null) {
+            void pollOne(slug, refreshEpoch, true);
+          }
+        }
       }
     };
 
@@ -273,52 +330,81 @@ export function createTriggersStore(
       await Promise.all(enabled.map((trigger) => pollOne(trigger.slug, epoch)));
     };
 
-    return {
-      triggers: [],
-      said: null,
+    const loadLibrary = (): Promise<void> => {
+      if (libraryLoad !== null) {
+        /* Root and TriggersScreen can request the same read in adjacent effects. The newest
+         * application epoch is allowed to consume that one result; Stop still invalidates it. */
+        libraryLoad.request.epoch = generation;
+        return libraryLoad.promise;
+      }
 
-      load: async () => {
-        const epoch = generation;
-        try {
-          const [entries, listed] = await Promise.all([io.listTriggers(), run.listWorkflows()]);
-          if (epoch !== generation) return;
+      const request = { epoch: generation, mutation: libraryMutation };
+      const promise = Promise.all([io.listTriggers(), run.listWorkflows()])
+        .then(([entries, listed]) => {
+          if (request.epoch !== generation || request.mutation !== libraryMutation) return;
           choices = toChoices(listed);
           const before = new Map(get().triggers.map((trigger) => [trigger.slug, trigger]));
           set({
             triggers: entries.map((entry) => viewOf(entry, choices, before.get(entry.slug))),
             said: null,
           });
-        } catch (error) {
-          if (epoch !== generation) return;
+        })
+        .catch((error: unknown) => {
+          if (request.epoch !== generation || request.mutation !== libraryMutation) return;
           set({ said: why(error, 'Loadout could not read your triggers.') });
-        }
-      },
+        });
+      const load = { request, promise };
+      libraryLoad = load;
+      const release = (): void => {
+        if (libraryLoad === load) libraryLoad = null;
+      };
+      promise.then(release, release);
+      return promise;
+    };
+
+    return {
+      triggers: [],
+      said: null,
+
+      load: loadLibrary,
 
       toggle: async (slug, enabled) => {
         const before = configuredNow(slug);
         if (before === null) return;
         try {
           const saved = await io.setTriggerEnabled(slug, enabled);
+          libraryMutation += 1;
+          const refused = toggleRefusals.get(slug);
           set((state) => ({
-            triggers: state.triggers.map((trigger) =>
-              trigger.slug === slug ? viewOf(saved, choices, trigger) : trigger,
-            ),
+            triggers: state.triggers.map((trigger) => {
+              if (trigger.slug !== slug) return trigger;
+              /* A successful retry removes only the write refusal it is recovering from. A poll
+               * or launch refusal that arrived meanwhile is a different fact and must survive. */
+              const previous =
+                refused !== undefined && trigger.status === refused.status
+                  ? withStatus(trigger, refused.before)
+                  : trigger;
+              return viewOf(saved, choices, previous);
+            }),
           }));
+          toggleRefusals.delete(slug);
         } catch (error) {
           const still = configuredNow(slug);
           if (still === null) return;
           const side = still.enabled ? 'on' : 'off';
+          const prior = toggleRefusals.get(slug);
+          const refused = {
+            status: {
+              kind: 'refused',
+              sentence: why(error, `Loadout could not save that trigger, so it is still ${side}.`),
+            },
+            /* Repeated failed retries keep the last meaningful status, not the first refusal. */
+            before: prior?.status === still.status ? prior.before : still.status,
+          } satisfies ToggleRefusal;
+          toggleRefusals.set(slug, refused);
           set((state) => ({
             triggers: state.triggers.map((trigger) =>
-              trigger.slug === slug
-                ? withStatus(trigger, {
-                    kind: 'refused',
-                    sentence: why(
-                      error,
-                      `Loadout could not save that trigger, so it is still ${side}.`,
-                    ),
-                  })
-                : trigger,
+              trigger.slug === slug ? withStatus(trigger, refused.status) : trigger,
             ),
           }));
         }

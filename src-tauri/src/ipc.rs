@@ -476,11 +476,12 @@ pub struct AppState {
 
 /// Jednorazowe pozwolenie Rusta na odpytanie triggera.
 ///
-/// Typ niesie albo katalog biblioteki, albo sam fakt `busy`; okno nie ma pola, którym mogłoby
-/// podrobić tę decyzję. Pozwolenie jest własnością, więc jeden tick nie uruchomi dwóch fetchy.
+/// Typ niesie katalog i rustowy fakt `busy`; okno nie ma pola, którym mogłoby podrobić tę
+/// decyzję. Zajęty tick czyta najwyżej gotowy receipt i nigdy nie fetchuje ani nie zapisuje.
 #[derive(Debug)]
 pub struct TriggerPollPermit {
-    home: Option<PathBuf>,
+    home: PathBuf,
+    busy: bool,
 }
 
 impl TriggerPollPermit {
@@ -490,10 +491,12 @@ impl TriggerPollPermit {
         slug: &str,
         created_at: i64,
     ) -> Result<commands::triggers::TriggerPoll, String> {
-        let Some(home) = self.home else {
-            return Ok(commands::triggers::TriggerPoll::Busy);
-        };
-        commands::triggers::poll(&home, slug, created_at).map_err(|error| error.to_string())
+        if self.busy {
+            return commands::triggers::accepted_while_busy(&self.home, slug)
+                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
+                .map_err(|error| error.to_string());
+        }
+        commands::triggers::poll(&self.home, slug, created_at).map_err(|error| error.to_string())
     }
 
     /// Ten sam odczyt z wstrzykniętym fetcherem, żeby test mógł policzyć wywołania bez sieci.
@@ -508,10 +511,12 @@ impl TriggerPollPermit {
             &commands::triggers::Trigger,
         ) -> Result<Vec<u8>, commands::triggers::TriggerError>,
     {
-        let Some(home) = self.home else {
-            return Ok(commands::triggers::TriggerPoll::Busy);
-        };
-        commands::triggers::poll_with(&home, slug, created_at, fetch)
+        if self.busy {
+            return commands::triggers::accepted_while_busy(&self.home, slug)
+                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
+                .map_err(|error| error.to_string());
+        }
+        commands::triggers::poll_with(&self.home, slug, created_at, fetch)
             .map_err(|error| error.to_string())
     }
 }
@@ -855,16 +860,24 @@ impl AppState {
     /// Rezerwuje żywy uchwyt dla Startu z claimem, nie zmieniając ledgeru przy odmowie zajętości.
     pub fn begin_triggered_run<'a>(
         &'a self,
-        _project: &'a Path,
-        _claim: &commands::triggers::TriggerClaim,
+        project: &'a Path,
+        claim: &commands::triggers::TriggerClaim,
     ) -> Result<RunDeps<'a>, String> {
-        todo!("T-65 AC-8: validate the claim and reserve the existing run handle atomically")
+        // Claim jest sądzony przed wymianą uchwytu: podrobiona wartość nie może zająć
+        // zapadki ani odciąć Stopu od biegu, który w tym samym czasie naprawdę pracuje.
+        commands::triggers::claimed_delivery(&self.home, claim)
+            .map_err(|error| error.to_string())?;
+        self.begin_run(project)
     }
 
     /// Pyta jedyny rustowy autorytet o zajętość przed siecią i przed jakimkolwiek zapisem.
     #[must_use]
     pub fn trigger_poll_permit(&self) -> TriggerPollPermit {
-        todo!("T-65 AC-4: decide trigger polling from AppState.live")
+        let live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+        TriggerPollPermit {
+            home: self.home.clone(),
+            busy: !proved_down(&live),
+        }
     }
 
     /// Świeży uchwyt dla biegu z `/ask` — ta sama polityka, co przy starcie z płótna.
@@ -1776,10 +1789,7 @@ pub async fn check_trigger(
     tokio::task::spawn_blocking(move || permit.poll(&slug, unix_millis()))
         .await
         .map_err(|error| format!("Loadout could not finish the Linear check: {error}"))?
-        .map_err(|error| {
-            refused(&error);
-            error
-        })
+        .inspect_err(refused)
 }
 
 /// Milisekundy epoki dla trwałego receipt triggera; zegar webviewa nie bierze udziału.

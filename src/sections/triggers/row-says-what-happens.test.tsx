@@ -189,4 +189,84 @@ describe('the real Triggers screen explains and controls its library', () => {
     expect(store.getState().triggers[0]?.enabled).toBe(true);
     expect(renderToStaticMarkup(<TriggersScreen store={store} />)).toContain(refusal);
   });
+
+  it('removes a toggle refusal after the retry is saved and restores the earlier row status', async () => {
+    const refusal = 'Loadout could not save that trigger, so it is still on.';
+    let attempts = 0;
+    const store = seeded(
+      ioWith(async (slug, enabled) => {
+        attempts += 1;
+        if (attempts === 1) throw refusal;
+        return {
+          slug,
+          source: 'Linear',
+          condition: 'Assigned to you',
+          workflow: 'analysis.json',
+          enabled,
+        };
+      }),
+    );
+    const handlers = new Map<string, TriggerRowProps['onToggle']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onToggle);
+      return <TriggerRow {...props} />;
+    }
+    renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
+    const toggle = handlers.get('assigned-to-me');
+
+    await toggle?.('assigned-to-me', false);
+    expect(renderToStaticMarkup(<TriggersScreen store={store} />)).toContain(refusal);
+
+    await toggle?.('assigned-to-me', false);
+    const recovered = renderToStaticMarkup(<TriggersScreen store={store} />);
+    expect(store.getState().triggers[0]?.enabled).toBe(false);
+    expect(store.getState().triggers[0]?.status).toEqual({ kind: 'armed' });
+    expect(row(recovered, 'assigned-to-me')).toContain('aria-pressed="false"');
+    expect(recovered).not.toContain(refusal);
+  });
+
+  it('does not let a shared stale load undo a confirmed toggle write', async () => {
+    const stale = deferred<TriggerEntry[]>();
+    let reads = 0;
+    let diskEnabled = true;
+    const io: TriggerIo = {
+      listTriggers: () => {
+        reads += 1;
+        return stale.promise;
+      },
+      setTriggerEnabled: async (slug, enabled) => {
+        diskEnabled = enabled;
+        return {
+          slug,
+          source: 'Linear',
+          condition: 'Assigned to you',
+          workflow: 'analysis.json',
+          enabled,
+        };
+      },
+      checkTrigger: async () => ({ status: 'armed' }),
+    };
+    const store = seeded(io);
+    const rootLoad = store.getState().load();
+    const screenLoad = store.getState().load();
+    expect(reads, 'root and screen must share the read already in flight').toBe(1);
+
+    await store.getState().toggle('assigned-to-me', false);
+    expect(diskEnabled).toBe(false);
+    stale.resolve([
+      {
+        slug: 'assigned-to-me',
+        source: 'Linear',
+        condition: 'Assigned to you',
+        workflow: 'analysis.json',
+        enabled: true,
+      },
+    ]);
+    await Promise.all([rootLoad, screenLoad]);
+
+    const markup = renderToStaticMarkup(<TriggersScreen store={store} />);
+    expect(diskEnabled).toBe(false);
+    expect(store.getState().triggers[0]?.enabled).toBe(false);
+    expect(row(markup, 'assigned-to-me')).toContain('aria-pressed="false"');
+  });
 });

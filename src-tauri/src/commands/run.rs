@@ -128,19 +128,21 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::isolate;
+use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
 use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
@@ -192,6 +194,9 @@ const NOT_NEEDED: &str = "Not needed: the work already passed in an earlier try.
 
 /// Katalog, pod którym powstają własne kopie plików dla kroków `fresh-copy`.
 const WORK_DIR: &str = "work";
+
+/// Trwałe granice kompletności kopii, poza samymi worktree i ich roboczym diffem.
+const ISOLATION_MARKERS_DIR: &str = ".isolation";
 
 /// Ile zdarzeń sterownika mieści się w kanale, zanim ten zaczeka.
 ///
@@ -266,12 +271,24 @@ pub enum TriggerRunReport {
 /// Istniejąca droga biegu z jedną różnicą: plan bierze UUID i czas z trwałej dostawy, a pierwszy
 /// `run.json` domyka ledger przed pierwszym wywołaniem sterownika.
 pub async fn run_triggered_workflow_inner(
-    _deps: &RunDeps<'_>,
-    _request: &RunRequest,
-    _claim: &crate::commands::triggers::TriggerClaim,
-    _lines: LineSink,
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    claim: &TriggerClaim,
+    lines: LineSink,
 ) -> Result<TriggerRunReport, RunError> {
-    todo!("T-65 AC-8: accept one durable delivery through the existing run path")
+    deps.control.begin();
+    deps.control.lines_go_to(lines.clone());
+    let report = the_whole_triggered_run(
+        deps,
+        request,
+        claim,
+        lines,
+        Limiter::new(request.how_many_at_once),
+    )
+    .await;
+    deps.control.lines_go_quiet();
+    deps.control.settle();
+    report
 }
 
 /// Ten sam bieg, tylko miejsca bierze ze **wspólnej puli aplikacji** — jednej dla wszystkich
@@ -410,7 +427,66 @@ async fn the_whole_run(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(deps, plan_run(deps, request)?, lines, slots).await
+    the_planned_run(deps, plan_run(deps, request)?, lines, slots, None).await
+}
+
+/// Claim triggera przechodzi przez ten sam plan i wykonanie, a ledger oplata tylko dwie
+/// atomowe granice: zwiazanie przed katalogiem i akceptacje po pierwszym `run.json`.
+async fn the_whole_triggered_run(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    claim: &TriggerClaim,
+    lines: LineSink,
+    slots: Limiter,
+) -> Result<TriggerRunReport, RunError> {
+    let delivery = triggers::claimed_delivery(deps.home, claim)?;
+    let requested = request.workflow.file_name().and_then(|name| name.to_str());
+    if requested != Some(claim.workflow.as_str()) {
+        return Err(triggers::TriggerError::InvalidClaim.into());
+    }
+
+    let run_dir = run_directory(deps.project, &delivery.claim.run_id, delivery.created_at);
+    // Ten dowod stoi przed `bind`: symlink przygotowany pod prealokowanym UUID nie moze nawet
+    // przejsc ledgera z Pending do Bound, a tym bardziej zapisac czegos poza projektem.
+    if let Err(problem) = prove_run_candidate(deps.project, &run_dir) {
+        // Bound bez dowiedzionego katalogu nie ma pliku, ktoremu wolno zaufac. Cofamy go tak
+        // samo jak odmowe planu, zeby po usunieciu obcego linku ten sam claim/UUID mogl wrocic.
+        triggers::release_delivery(deps.home, claim)?;
+        return Err(RunError::Io(io::Error::other(problem.to_string())));
+    }
+    let run_file = run_dir.join(RUN_FILE);
+    triggers::bind_delivery(deps.home, claim, &run_file)?;
+    // Reconcile czyta `run.json` dopiero po dowodzie sciezki i idempotentnym bindzie. Inaczej
+    // stary Bound wskazujacy przez symlink moglby zaakceptowac podrobiony plik poza biegiem.
+    if let DeliveryState::Accepted { run_file, .. } =
+        triggers::reconcile_delivery(deps.home, claim, |bound_file| {
+            read_and_sync_run_file(deps.project, bound_file)
+        })?
+    {
+        return Ok(TriggerRunReport::AlreadyAccepted {
+            id: claim.run_id.clone(),
+            run_file,
+        });
+    }
+    let plan = match plan_triggered_run(deps, request, &delivery) {
+        Ok(plan) => plan,
+        Err(error) => {
+            triggers::release_delivery(deps.home, claim)?;
+            return Err(error);
+        }
+    };
+    let acceptance = TriggerAcceptance {
+        home: deps.home.to_path_buf(),
+        claim: claim.clone(),
+    };
+    match the_planned_run(deps, plan, lines, slots, Some(acceptance)).await {
+        Ok(report) => Ok(TriggerRunReport::Ran(report)),
+        Err(error) if !run_file.exists() => {
+            triggers::release_delivery(deps.home, claim)?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// To samo dla biegu jednokrokowego: plan powstaje z definicji agenta, a nie z pliku.
@@ -425,7 +501,12 @@ async fn the_whole_ask(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots).await
+    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots, None).await
+}
+
+struct TriggerAcceptance {
+    home: PathBuf,
+    claim: TriggerClaim,
 }
 
 /// Rozpisany plan → katalog, kroki, indeks. **Jedna droga wykonania na oba rodzaje biegu.**
@@ -439,6 +520,7 @@ async fn the_planned_run(
     plan: Plan,
     lines: LineSink,
     slots: Limiter,
+    acceptance: Option<TriggerAcceptance>,
 ) -> Result<RunReport, RunError> {
     // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
     // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
@@ -462,6 +544,21 @@ async fn the_planned_run(
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
     // [`Live::update`].
     live.open_the_book()?;
+    // Ten rename jest granica dokladnie-jeden: ledger domykamy po atomowym pliku, lecz przed
+    // pierwszym sterownikiem. Po awarii oba pliki daja sie pogodzic bez SQLite (niezmiennik 4).
+    if let Some(acceptance) = acceptance {
+        let run_file = live.plan.dir.join(RUN_FILE);
+        // Atomowy rename chroni czytelnika przed polowa JSON-u, ale dopiero fsync pliku i
+        // katalogu czyni ten rename dowodem, ktory recovery moze przyjac po restarcie procesu.
+        if read_and_sync_run_file(deps.project, &run_file)?.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the run file disappeared before it could be saved safely",
+            )
+            .into());
+        }
+        triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
+    }
 
     let run_step = {
         let live = Arc::clone(&live);
@@ -709,6 +806,8 @@ struct Plan {
     steps: Vec<Planned>,
     /// Milisekundy epoki: kiedy ten bieg powstał.
     created_at: i64,
+    /// Zrodlo triggera; brak pola w JSON zachowuje doslownie ksztalt recznego biegu.
+    trigger_origin: Option<TriggerOrigin>,
     /// Kiedy wstała maszyna. Czytane RAZ, przy planowaniu: ten sam bieg ma nosić jedną
     /// odpowiedź, a nie tyle, ile razy ktoś zapyta system.
     boot_id: Option<String>,
@@ -846,6 +945,34 @@ struct AgentJob {
 
 /// Wczytuje plik, sprawdza go drugi raz i rozpisuje bieg — **bez dotykania dysku**.
 fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> {
+    plan_run_with_identity(deps, request, Uuid::now_v7().to_string(), now_ms(), None)
+}
+
+fn plan_triggered_run(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    delivery: &TriggerDelivery,
+) -> Result<Plan, RunError> {
+    plan_run_with_identity(
+        deps,
+        request,
+        delivery.claim.run_id.clone(),
+        delivery.created_at,
+        Some(TriggerOrigin {
+            slug: delivery.claim.slug.clone(),
+            delivery_id: delivery.claim.delivery_id.clone(),
+            issue_id: delivery.issue.id.clone(),
+        }),
+    )
+}
+
+fn plan_run_with_identity(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    id: String,
+    created_at: i64,
+    trigger_origin: Option<TriggerOrigin>,
+) -> Result<Plan, RunError> {
     // Bajty czytamy osobno od `load()`, bo odcisk ma odpowiadać na pytanie „czy to ten sam
     // PLIK". Odcisk liczony z naszej serializacji odpowiadałby na pytanie „czy to ten sam plik
     // po przejściu przez nas", czyli milczałby o każdej zmianie, której nie rozumiemy.
@@ -865,13 +992,7 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
         return Err(RunError::Refused(refusal));
     }
 
-    let id = Uuid::now_v7().to_string();
-    let created_at = now_ms();
-    let dir = deps
-        .project
-        .join(PROJECT_DIR)
-        .join(RUNS_DIR)
-        .join(format!("{}__{id}", stamp(created_at)));
+    let dir = run_directory(deps.project, &id, created_at);
 
     /* ROZWINIĘCIE PĘTLI, i to jest jedyne miejsce, w którym plik przestaje odpowiadać planowi
      * jeden do jednego. `unroll` oddaje graf BEZ cykli o większej liczbie węzłów, więc wszystko
@@ -934,11 +1055,19 @@ fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> 
         the_loop,
         steps,
         created_at,
+        trigger_origin,
         // Pytamy system RAZ, tutaj: ten bieg ma nosić jedną odpowiedź przez całe życie.
         // Odczyt przy każdym zrzucie dałby wartości, które teoretycznie mogą się różnić —
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
     })
+}
+
+fn run_directory(project: &Path, id: &str, created_at: i64) -> PathBuf {
+    project
+        .join(PROJECT_DIR)
+        .join(RUNS_DIR)
+        .join(format!("{}__{id}", stamp(created_at)))
 }
 
 /// Czym jest „krok", kiedy kroku nie ma — nazwa dla odmów [`find_agent`] w biegu z `/ask`.
@@ -984,11 +1113,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
 
     let id = Uuid::now_v7().to_string();
     let created_at = now_ms();
-    let dir = deps
-        .project
-        .join(PROJECT_DIR)
-        .join(RUNS_DIR)
-        .join(format!("{}__{id}", stamp(created_at)));
+    let dir = run_directory(deps.project, &id, created_at);
     /* TYTUŁ W HISTORII TO TO, O CO POPROSZONO, w jednym wierszu — bo tym jeden bieg `/ask`
      * różni się od drugiego. Bez zdania zostaje nazwa agenta: bieg musi dać się rozpoznać na
      * liście także wtedy, gdy nikt nie kazał nic ponad „ruszaj". */
@@ -1081,6 +1206,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         the_loop: None,
         steps,
         created_at,
+        trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
         boot_id: crate::engine::supervisor::machine_booted_at(),
     })
@@ -1713,10 +1839,10 @@ fn some_text(text: &str) -> Option<String> {
 
 /// Tworzy katalog biegu i to, co do niego należy — **dopiero po planie**.
 fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, RunError> {
-    // `logs/` powstaje razem z katalogiem, a nie przy pierwszej linii: katalog biegu bez niego
-    // czyta się jak bieg, w którym agent nic nie powiedział, zamiast jak bieg, który jeszcze nic
-    // nie zapisał.
-    fs::create_dir_all(plan.dir.join(LOGS_DIR))?;
+    // Proof obejmuje kazdy bieg, takze bez `fresh-copy`. Dopiero on tworzy realny katalog biegu
+    // i `logs/`; zadne `create_dir_all` nie moze po cichu przejsc przez symlink przodka.
+    prepare_run_directory(project, &plan.dir)
+        .map_err(|problem| RunError::Io(io::Error::other(problem.to_string())))?;
     /* JEDEN KATALOG ROBOCZY POWSTAJE RAZ. Rundy petli dziela katalog -- musza, bo inaczej runda 2
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
@@ -1737,11 +1863,12 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
-            let done =
-                isolate::make(project, cwd, &branch).map_err(|why| RunError::NoFreshCopy {
+            let done = make_or_recover_tree(project, &plan.dir, cwd, &branch).map_err(|why| {
+                RunError::NoFreshCopy {
                     step: step.name.clone(),
                     why: why.to_string(),
-                })?;
+                }
+            })?;
             made.push(Isolated {
                 step: step.name.clone(),
                 cwd: cwd.clone(),
@@ -1754,6 +1881,828 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
         }
     }
     Ok(made)
+}
+
+/// Powtarza layout po awarii miedzy `bind` i pierwszym `run.json`.
+///
+/// W tym oknie sterownik jeszcze nie ruszyl, wiec katalog kopii nie niesie pracy agenta.
+/// Worktree gita juz niesie natomiast naniesiony diff czlowieka: jego nie wolno skasowac ani
+/// nakladac drugi raz, dlatego wraca tylko po dowodzie oczekiwanej galezi.
+fn make_or_recover_tree(
+    project: &Path,
+    run_dir: &Path,
+    cwd: &Path,
+    branch: &str,
+) -> Result<isolate::Made, isolate::Trouble> {
+    // Walidacja stoi przed `exists`, `make` i `remove_dir_all`: inaczej niebezpieczny klucz
+    // albo symlink przodka moze wskazac ofiare poza biegiem, zanim cleanup zobaczy cel.
+    let marker_path = prove_generated_work_path(project, run_dir, cwd)?;
+    let marker = read_isolation_marker(&marker_path)?;
+    if !isolate::is_a_repo(project) {
+        return make_or_recover_file_copy(project, cwd, branch, marker.is_some());
+    }
+    make_or_recover_git_tree(project, cwd, branch, &marker_path, marker.as_ref())
+}
+
+fn prove_run_candidate(project: &Path, run_dir: &Path) -> Result<(), isolate::Trouble> {
+    let runs_root = project.join(PROJECT_DIR).join(RUNS_DIR);
+    require_one_normal_child_for(&runs_root, run_dir, unsafe_run_path)?;
+    let canonical_runs = prove_generated_runs_root(project)?;
+    match fs::symlink_metadata(run_dir) {
+        Ok(_) => {
+            let canonical_run =
+                prove_real_child_for(run_dir, &canonical_runs, false, unsafe_run_path)?;
+            prove_reserved_run_files(run_dir)?;
+            prove_existing_run_child(&run_dir.join(LOGS_DIR), &canonical_run)?;
+            prove_run_artifact_tree(run_dir, &canonical_run)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    Ok(())
+}
+
+/// Otwiera, czyta i fsyncuje dokladnie ten `run.json`, ktory przeszedl dowod wygenerowanej
+/// sciezki, a potem fsyncuje jego realny katalog. Recovery waliduje zwrocone stad bajty, wiec
+/// nie moze zaakceptowac innego odczytu niz ten, ktory stal sie trwaly.
+fn read_and_sync_run_file(project: &Path, run_file: &Path) -> io::Result<Option<Vec<u8>>> {
+    let run_dir = run_file
+        .parent()
+        .ok_or_else(|| io::Error::other("the run file has no parent directory"))?;
+    if run_file != run_dir.join(RUN_FILE) {
+        return Err(io::Error::other(
+            "the durable run file is not the exact generated run.json",
+        ));
+    }
+    prove_run_candidate(project, run_dir)
+        .map_err(|problem| io::Error::other(problem.to_string()))?;
+    let directory = match fs::File::open(run_dir) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let directory_path_metadata = fs::symlink_metadata(run_dir)?;
+    if !directory_path_metadata.file_type().is_dir() || !directory.metadata()?.file_type().is_dir()
+    {
+        return Err(io::Error::other(
+            "the durable run directory is not a real directory",
+        ));
+    }
+    let mut file = match OpenOptions::new().read(true).open(run_file) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // Otwieramy tylko do odczytu, po czym ponownie pytamy o ostatni komponent: przygotowany albo
+    // pozostawiony pod nazwa link jest odmowa. Atomowe no-follow wobec aktywnego swapu wymaga
+    // platformowego open w `supervisor.rs`, poza OWNS T-65; ten helper nie udaje takiej gwarancji.
+    let path_metadata = fs::symlink_metadata(run_file)?;
+    if !path_metadata.file_type().is_file() || !file.metadata()?.file_type().is_file() {
+        return Err(io::Error::other(
+            "the durable run file is not a regular file",
+        ));
+    }
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    file.sync_all()?;
+    directory.sync_all()?;
+    Ok(Some(raw))
+}
+
+fn prove_existing_run_child(path: &Path, canonical_run: &Path) -> Result<(), isolate::Trouble> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            prove_real_child_for(path, canonical_run, false, unsafe_run_path)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    Ok(())
+}
+
+fn prepare_run_directory(project: &Path, run_dir: &Path) -> Result<(), isolate::Trouble> {
+    let runs_root = project.join(PROJECT_DIR).join(RUNS_DIR);
+    require_one_normal_child_for(&runs_root, run_dir, unsafe_run_path)?;
+    let canonical_runs = prove_generated_runs_root(project)?;
+    let canonical_run = prove_real_child_for(run_dir, &canonical_runs, true, unsafe_run_path)?;
+    prove_reserved_run_files(run_dir)?;
+    prove_run_artifact_tree(run_dir, &canonical_run)?;
+    // `logs/` istnieje od poczatku, ale tylko jako realny potomek dowiedzionego katalogu biegu.
+    prove_real_child_for(
+        &run_dir.join(LOGS_DIR),
+        &canonical_run,
+        true,
+        unsafe_run_path,
+    )?;
+    Ok(())
+}
+
+/// Dowodzi istniejacych artefaktow przed pierwszym zapisem/driverem bez kopiowania listy ich
+/// nazw. `work/` i `.isolation/` sa wyjatkami rekurencji: prawdziwy worktree moze zawierac
+/// symlinki projektu, a oba korzenie, wybrane cwd i marker maja osobny, scislejszy protokol
+/// izolacji ponizej.
+fn prove_run_artifact_tree(run_dir: &Path, canonical_run: &Path) -> Result<(), isolate::Trouble> {
+    let work_root = run_dir.join(WORK_DIR);
+    let marker_root = run_dir.join(ISOLATION_MARKERS_DIR);
+    let mut directories = vec![(run_dir.to_path_buf(), canonical_run.to_path_buf())];
+    while let Some((directory, canonical_directory)) = directories.pop() {
+        for entry in fs::read_dir(&directory).map_err(isolate::Trouble::Copying)? {
+            let entry = entry.map_err(isolate::Trouble::Copying)?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(isolate::Trouble::Copying)?;
+            if kind.is_symlink() {
+                return Err(unsafe_run_path());
+            }
+            let canonical = fs::canonicalize(&path).map_err(isolate::Trouble::Copying)?;
+            if canonical.parent() != Some(canonical_directory.as_path()) {
+                return Err(unsafe_run_path());
+            }
+            if kind.is_dir() {
+                if path != work_root && path != marker_root {
+                    directories.push((path, canonical));
+                }
+            } else if !kind.is_file() {
+                return Err(unsafe_run_path());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prove_generated_runs_root(project: &Path) -> Result<PathBuf, isolate::Trouble> {
+    let canonical_project = fs::canonicalize(project).map_err(isolate::Trouble::Copying)?;
+    let loadout_root = project.join(PROJECT_DIR);
+    let canonical_loadout =
+        prove_real_child_for(&loadout_root, &canonical_project, true, unsafe_run_path)?;
+    prove_real_child_for(
+        &loadout_root.join(RUNS_DIR),
+        &canonical_loadout,
+        true,
+        unsafe_run_path,
+    )
+}
+
+fn prove_reserved_run_files(run_dir: &Path) -> Result<(), isolate::Trouble> {
+    match fs::symlink_metadata(run_dir.join(RUN_FILE)) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Err(unsafe_run_path()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    match fs::symlink_metadata(run_dir.join(RUN_FILE_WRITING)) {
+        Ok(_) => {
+            return Err(isolate::Trouble::Copying(io::Error::other(
+                "the run file staging path is already occupied; nothing ran",
+            )));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    Ok(())
+}
+
+fn prove_generated_work_path(
+    project: &Path,
+    run_dir: &Path,
+    cwd: &Path,
+) -> Result<PathBuf, isolate::Trouble> {
+    let loadout_root = project.join(PROJECT_DIR);
+    let runs_root = loadout_root.join(RUNS_DIR);
+    let work_root = run_dir.join(WORK_DIR);
+    require_one_normal_child(&runs_root, run_dir)?;
+    require_one_normal_child(&work_root, cwd)?;
+
+    // `project` jest wyborem czlowieka i moze sam byc otwarty przez symlink. Od pierwszego
+    // katalogu tworzonego przez Loadout kazdy poziom musi jednak byc realnym katalogiem,
+    // a kanoniczny rodzic musi byc dokladnie poprzednim, juz dowiedzionym poziomem.
+    let canonical_project = fs::canonicalize(project).map_err(isolate::Trouble::Copying)?;
+    let canonical_loadout = prove_real_child(&loadout_root, &canonical_project, false)?;
+    let canonical_runs = prove_real_child(&runs_root, &canonical_loadout, false)?;
+    let canonical_run_dir = prove_real_child(run_dir, &canonical_runs, false)?;
+    let canonical_work = prove_real_child(&work_root, &canonical_run_dir, true)?;
+    match fs::symlink_metadata(cwd) {
+        Ok(_) => {
+            prove_real_child(cwd, &canonical_work, false)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    let marker_root = run_dir.join(ISOLATION_MARKERS_DIR);
+    prove_real_child(&marker_root, &canonical_run_dir, true)?;
+    let name = cwd.file_name().ok_or_else(unsafe_work_path)?;
+    let marker_path = marker_root.join(name);
+    match fs::symlink_metadata(&marker_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Err(unsafe_work_path()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    Ok(marker_path)
+}
+
+fn require_one_normal_child(parent: &Path, child: &Path) -> Result<(), isolate::Trouble> {
+    require_one_normal_child_for(parent, child, unsafe_work_path)
+}
+
+fn require_one_normal_child_for(
+    parent: &Path,
+    child: &Path,
+    problem: fn() -> isolate::Trouble,
+) -> Result<(), isolate::Trouble> {
+    let relative = child.strip_prefix(parent).map_err(|_| problem())?;
+    let mut components = relative.components();
+    if matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+    {
+        Ok(())
+    } else {
+        Err(problem())
+    }
+}
+
+fn prove_real_child(
+    path: &Path,
+    expected_parent: &Path,
+    create: bool,
+) -> Result<PathBuf, isolate::Trouble> {
+    prove_real_child_for(path, expected_parent, create, unsafe_work_path)
+}
+
+fn prove_real_child_for(
+    path: &Path,
+    expected_parent: &Path,
+    create: bool,
+    problem: fn() -> isolate::Trouble,
+) -> Result<PathBuf, isolate::Trouble> {
+    if create {
+        match fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(path).map_err(isolate::Trouble::Copying)?;
+            }
+            Err(error) => return Err(isolate::Trouble::Copying(error)),
+        }
+    }
+    let metadata = fs::symlink_metadata(path).map_err(isolate::Trouble::Copying)?;
+    if !metadata.file_type().is_dir() {
+        return Err(problem());
+    }
+    let actual = fs::canonicalize(path).map_err(isolate::Trouble::Copying)?;
+    if actual.parent() != Some(expected_parent) {
+        return Err(problem());
+    }
+    Ok(actual)
+}
+
+fn unsafe_work_path() -> isolate::Trouble {
+    isolate::Trouble::Copying(io::Error::other(
+        "the step's file-copy path crosses a link or leaves this run's folders",
+    ))
+}
+
+fn unsafe_run_path() -> isolate::Trouble {
+    isolate::Trouble::Copying(io::Error::other(
+        "the run path crosses a link or leaves Loadout's run folders; nothing ran",
+    ))
+}
+
+fn make_or_recover_file_copy(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    has_git_marker: bool,
+) -> Result<isolate::Made, isolate::Trouble> {
+    if has_git_marker {
+        return Err(isolate::Trouble::Git(
+            "the retry found a git isolation record, but this project is no longer the same git repository"
+                .to_owned(),
+        ));
+    }
+    if !path_entry_exists(cwd)? {
+        return isolate::make(project, cwd, branch);
+    }
+    if !cwd.is_dir() {
+        return Err(isolate::Trouble::Copying(io::Error::other(
+            "the retry found an unexpected path where its file copy belongs",
+        )));
+    }
+    // 2026-08-21, T-65: brak `run.json` dowodzi, ze zaden driver nie wystartowal. Usuwamy
+    // wylacznie wygenerowana, potencjalnie polowiczna kopie pod tym samym katalogiem biegu.
+    fs::remove_dir_all(cwd).map_err(isolate::Trouble::Copying)?;
+    isolate::make(project, cwd, branch)
+}
+
+fn make_or_recover_git_tree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    marker_path: &Path,
+    marker: Option<&IsolationMarker>,
+) -> Result<isolate::Made, isolate::Trouble> {
+    if let Some(marked) = marker
+        && marked.branch() != branch
+    {
+        return Err(isolate::Trouble::Git(
+            "the isolation record names a different branch; nothing was removed".to_owned(),
+        ));
+    }
+
+    if path_entry_exists(cwd)? {
+        if !worktree_points_at(project, cwd, branch) {
+            return Err(isolate::Trouble::Git(
+                "the retry found a different work tree at the run's reserved path; nothing was removed"
+                    .to_owned(),
+            ));
+        }
+        let head = branch_oid(project, branch)?;
+        match marker {
+            Some(IsolationMarker::Complete { head: expected, .. }) if expected == &head => {
+                return Ok(isolate::Made {
+                    how: isolate::How::Tree {
+                        branch: branch.to_owned(),
+                    },
+                    // Ostrzezenia policzyl pierwszy layout. Marker dowodzi, ze `git apply` i
+                    // liczenie brakow doszly do konca; ponowienie diffu podwoiloby zmiany.
+                    left_behind: Vec::new(),
+                });
+            }
+            Some(IsolationMarker::Complete { .. }) => {
+                return Err(isolate::Trouble::Git(
+                    "the completed work tree moved to a different commit; nothing was removed"
+                        .to_owned(),
+                ));
+            }
+            Some(IsolationMarker::Recovering { head: expected, .. }) if expected == &head => {}
+            Some(IsolationMarker::Recovering { .. }) => {
+                return Err(isolate::Trouble::Git(
+                    "the work tree changed after recovery began; nothing was removed".to_owned(),
+                ));
+            }
+            None => {
+                // Ten fsync jest PRZED pierwszym skutkiem cleanup. Po awarii marker jest
+                // uprawnieniem wylacznie do tej sciezki, galezi i tego niezmienionego OID.
+                write_isolation_marker(
+                    marker_path,
+                    &IsolationMarker::Recovering {
+                        branch: branch.to_owned(),
+                        head,
+                    },
+                )?;
+            }
+        }
+        cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
+    } else {
+        match marker {
+            Some(IsolationMarker::Recovering { .. }) => {
+                cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
+            }
+            Some(IsolationMarker::Complete { .. }) => {
+                return Err(isolate::Trouble::Git(
+                    "the completed work tree is missing; nothing was removed".to_owned(),
+                ));
+            }
+            None if branch_exists(project, branch)? => {
+                // Naturalne okno awarii: `git worktree add` zdazyl zapisac branch i admin,
+                // katalog cwd fizycznie zniknal, a marker nie powstal. Prealokowana sciezka,
+                // branch i OID musza wskazac jeden prunable record; dopiero potem fsyncujemy
+                // Recovering i wchodzimy do tego samego idempotentnego cleanupu.
+                let head = branch_oid(project, branch)?;
+                match expected_worktree_admin(project, cwd, branch, &head)? {
+                    ExpectedWorktreeAdmin::Present { prunable: true } => {
+                        write_isolation_marker(
+                            marker_path,
+                            &IsolationMarker::Recovering {
+                                branch: branch.to_owned(),
+                                head,
+                            },
+                        )?;
+                        cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
+                    }
+                    ExpectedWorktreeAdmin::Present { prunable: false } => {
+                        return Err(isolate::Trouble::Git(
+                            "the missing work tree is not marked removable by git; nothing was removed"
+                                .to_owned(),
+                        ));
+                    }
+                    ExpectedWorktreeAdmin::Absent => {
+                        return Err(isolate::Trouble::Git(
+                            "the recovery branch has no matching work tree administration; nothing was removed"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    let made = isolate::make(project, cwd, branch)?;
+    if matches!(&made.how, isolate::How::Tree { .. }) {
+        let head = branch_oid(project, branch)?;
+        // Dopiero caly `isolate::make` (worktree, dirty diff i lista brakow) moze wystawic
+        // marker. Fsync pliku i katalogu stoi w helperze przed zwrotem do layoutu.
+        write_isolation_marker(
+            marker_path,
+            &IsolationMarker::Complete {
+                branch: branch.to_owned(),
+                head,
+            },
+        )?;
+    }
+    Ok(made)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum IsolationMarker {
+    Complete { branch: String, head: String },
+    Recovering { branch: String, head: String },
+}
+
+impl IsolationMarker {
+    fn branch(&self) -> &str {
+        match self {
+            Self::Complete { branch, .. } | Self::Recovering { branch, .. } => branch,
+        }
+    }
+}
+
+fn read_isolation_marker(path: &Path) -> Result<Option<IsolationMarker>, isolate::Trouble> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+        isolate::Trouble::Copying(io::Error::new(io::ErrorKind::InvalidData, error))
+    })
+}
+
+fn write_isolation_marker(path: &Path, marker: &IsolationMarker) -> Result<(), isolate::Trouble> {
+    let parent = path.parent().ok_or_else(|| {
+        isolate::Trouble::Copying(io::Error::other("the isolation record has no parent"))
+    })?;
+    fs::create_dir_all(parent).map_err(isolate::Trouble::Copying)?;
+    let bytes = serde_json::to_vec(marker).map_err(|error| {
+        isolate::Trouble::Copying(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
+    let temp = parent.join(format!(".{}.writing", Uuid::now_v7()));
+    let result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)?;
+        fs::File::open(parent)?.sync_all()?;
+        if let Some(run_dir) = parent.parent() {
+            fs::File::open(run_dir)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map_err(isolate::Trouble::Copying)
+}
+
+fn remove_isolation_marker(path: &Path) -> Result<(), isolate::Trouble> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(isolate::Trouble::Copying(error)),
+    }
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(isolate::Trouble::Copying)?;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ListedWorktree {
+    path: Option<PathBuf>,
+    head: Option<String>,
+    branch: Option<String>,
+    prunable: bool,
+    locked: bool,
+    unsafe_shape: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExpectedWorktreeAdmin {
+    Absent,
+    Present { prunable: bool },
+}
+
+fn listed_worktrees(project: &Path) -> Result<Vec<ListedWorktree>, isolate::Trouble> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+        .map_err(|error| isolate::Trouble::Git(error.to_string()))?;
+    if !output.status.success() {
+        return Err(isolate::Trouble::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let text = String::from_utf8(output.stdout).map_err(|_| {
+        isolate::Trouble::Git(
+            "git returned a work tree record that is not valid text; nothing was removed"
+                .to_owned(),
+        )
+    })?;
+    parse_worktree_records(&text)
+}
+
+fn parse_worktree_records(text: &str) -> Result<Vec<ListedWorktree>, isolate::Trouble> {
+    let mut records = Vec::new();
+    let mut record = ListedWorktree::default();
+    for field in text.split('\0') {
+        if field.is_empty() {
+            if record.path.is_some() || record.head.is_some() || record.branch.is_some() {
+                if record.path.is_none() || record.head.is_none() {
+                    return Err(malformed_worktree_record());
+                }
+                records.push(std::mem::take(&mut record));
+            }
+        } else if let Some(path) = field.strip_prefix("worktree ") {
+            if record.path.replace(PathBuf::from(path)).is_some() {
+                return Err(malformed_worktree_record());
+            }
+        } else if let Some(head) = field.strip_prefix("HEAD ") {
+            if record.head.replace(head.to_owned()).is_some() {
+                return Err(malformed_worktree_record());
+            }
+        } else if let Some(branch) = field.strip_prefix("branch ") {
+            if record.branch.replace(branch.to_owned()).is_some() {
+                return Err(malformed_worktree_record());
+            }
+        } else if field == "prunable" || field.starts_with("prunable ") {
+            record.prunable = true;
+        } else if field == "locked" || field.starts_with("locked ") {
+            record.locked = true;
+        } else if field == "bare" || field == "detached" {
+            record.unsafe_shape = true;
+        } else {
+            // Git moze dodac pole w przyszlosci. Nieznany rekord nie blokuje sprzatania innego
+            // worktree, ale nigdy sam nie staje sie uprawnieniem do kasowania.
+            record.unsafe_shape = true;
+        }
+    }
+    if record.path.is_some() || record.head.is_some() || record.branch.is_some() {
+        return Err(malformed_worktree_record());
+    }
+    Ok(records)
+}
+
+fn malformed_worktree_record() -> isolate::Trouble {
+    isolate::Trouble::Git(
+        "git returned an incomplete work tree record; nothing was removed".to_owned(),
+    )
+}
+
+fn expected_worktree_admin(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    head: &str,
+) -> Result<ExpectedWorktreeAdmin, isolate::Trouble> {
+    let expected_path = anchored_child_path(cwd)?;
+    let expected_branch = format!("refs/heads/{branch}");
+    let mut found = None;
+    for record in listed_worktrees(project)? {
+        let branch_matches = record.branch.as_deref() == Some(expected_branch.as_str());
+        let listed_path = anchored_child_path_if_possible(
+            record
+                .path
+                .as_deref()
+                .ok_or_else(malformed_worktree_record)?,
+        );
+        let path_matches = listed_path.as_ref() == Some(&expected_path);
+        if !branch_matches && !path_matches {
+            continue;
+        }
+        if found.is_some()
+            || !path_matches
+            || !branch_matches
+            || record.head.as_deref() != Some(head)
+            || record.locked
+            || record.unsafe_shape
+        {
+            return Err(isolate::Trouble::Git(
+                "the work tree administration no longer matches the recovery record; nothing was removed"
+                    .to_owned(),
+            ));
+        }
+        found = Some(ExpectedWorktreeAdmin::Present {
+            prunable: record.prunable,
+        });
+    }
+    Ok(found.unwrap_or(ExpectedWorktreeAdmin::Absent))
+}
+
+fn anchored_child_path(path: &Path) -> Result<PathBuf, isolate::Trouble> {
+    anchored_child_path_if_possible(path).ok_or_else(|| {
+        isolate::Trouble::Git(
+            "the recovery work tree path has no stable parent; nothing was removed".to_owned(),
+        )
+    })
+}
+
+fn anchored_child_path_if_possible(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let name = path.file_name()?;
+    let parent = path.parent()?;
+    if !fs::symlink_metadata(parent).ok()?.file_type().is_dir() {
+        return None;
+    }
+    let parent = fs::canonicalize(parent).ok()?;
+    Some(parent.join(name))
+}
+
+fn cleanup_incomplete_worktree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    marker_path: &Path,
+) -> Result<(), isolate::Trouble> {
+    let marker = read_isolation_marker(marker_path)?.ok_or_else(|| {
+        isolate::Trouble::Git(
+            "the incomplete work tree has no durable recovery record; nothing was removed"
+                .to_owned(),
+        )
+    })?;
+    let IsolationMarker::Recovering {
+        branch: marked_branch,
+        head: marked_head,
+    } = marker
+    else {
+        return Err(isolate::Trouble::Git(
+            "the work tree is marked complete; nothing was removed".to_owned(),
+        ));
+    };
+    if marked_branch != branch {
+        return Err(isolate::Trouble::Git(
+            "the recovery record names a different branch; nothing was removed".to_owned(),
+        ));
+    }
+
+    let cwd_exists = path_entry_exists(cwd)?;
+    let admin = expected_worktree_admin(project, cwd, branch, &marked_head)?;
+    if cwd_exists {
+        if !worktree_points_at(project, cwd, branch) || branch_oid(project, branch)? != marked_head
+        {
+            return Err(isolate::Trouble::Git(
+                "the work tree no longer matches its recovery record; nothing was removed"
+                    .to_owned(),
+            ));
+        }
+        if admin == ExpectedWorktreeAdmin::Absent {
+            return Err(isolate::Trouble::Git(
+                "the work tree has no matching git administration; nothing was removed".to_owned(),
+            ));
+        }
+    }
+    if let ExpectedWorktreeAdmin::Present { prunable } = admin {
+        if !cwd_exists && !prunable {
+            return Err(isolate::Trouble::Git(
+                "the missing work tree is not marked removable by git; nothing was removed"
+                    .to_owned(),
+            ));
+        }
+        if !branch_exists(project, branch)? || branch_oid(project, branch)? != marked_head {
+            return Err(isolate::Trouble::Git(
+                "the recovery branch no longer matches its recorded commit; nothing was removed"
+                    .to_owned(),
+            ));
+        }
+        let destination = cwd.display().to_string();
+        git_for_recovery(
+            project,
+            &["worktree", "remove", "--force", "--", &destination],
+        )?;
+    }
+    if path_entry_exists(cwd)? {
+        return Err(isolate::Trouble::Git(
+            "git reported removing the incomplete work tree, but its path still exists; the branch was kept"
+                .to_owned(),
+        ));
+    }
+    if expected_worktree_admin(project, cwd, branch, &marked_head)? != ExpectedWorktreeAdmin::Absent
+    {
+        return Err(isolate::Trouble::Git(
+            "git kept the incomplete work tree administration; the branch was kept".to_owned(),
+        ));
+    }
+    if branch_exists(project, branch)? {
+        // `update-ref` laczy porownanie i kasowanie w jednej operacji CAS. Reczne przesuniecie
+        // galezi miedzy osobnym `rev-parse` i `branch -D` nie moze wpasc w okno TOCTOU.
+        let reference = format!("refs/heads/{branch}");
+        git_for_recovery(project, &["update-ref", "-d", &reference, &marked_head])?;
+    }
+    if branch_exists(project, branch)? {
+        return Err(isolate::Trouble::Git(
+            "git kept the recovery branch after its guarded removal".to_owned(),
+        ));
+    }
+    remove_isolation_marker(marker_path)
+}
+
+fn path_entry_exists(path: &Path) -> Result<bool, isolate::Trouble> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(isolate::Trouble::Copying(error)),
+    }
+}
+
+fn branch_exists(project: &Path, branch: &str) -> Result<bool, isolate::Trouble> {
+    let reference = format!("refs/heads/{branch}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["show-ref", "--verify", "--quiet", &reference])
+        .output()
+        .map_err(|error| isolate::Trouble::Git(error.to_string()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(isolate::Trouble::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )),
+    }
+}
+
+fn branch_oid(project: &Path, branch: &str) -> Result<String, isolate::Trouble> {
+    let reference = format!("refs/heads/{branch}");
+    git_for_recovery(project, &["rev-parse", "--verify", &reference])
+        .map(|oid| oid.trim().to_owned())
+}
+
+fn worktree_points_at(project: &Path, cwd: &Path, branch: &str) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(cwd) else {
+        return false;
+    };
+    // `canonicalize` ponizej celowo porownuje prawdziwe sciezki repozytorium, ale nie moze
+    // jednoczesnie sluzyc za dowod wlasnosci wpisu pod `run/work`. Symlink w tym miejscu
+    // moglby wskazac poprawny worktree poza biegiem, a cleanup usunalby cudza sciezke.
+    if !metadata.file_type().is_dir() {
+        return false;
+    }
+    let Ok(expected_cwd) = fs::canonicalize(cwd) else {
+        return false;
+    };
+    let Some(top) = git_for_recovery(cwd, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .and_then(|path| fs::canonicalize(path.trim()).ok())
+    else {
+        return false;
+    };
+    if top != expected_cwd {
+        return false;
+    }
+    let Ok(reference) = git_for_recovery(cwd, &["symbolic-ref", "--quiet", "HEAD"]) else {
+        return false;
+    };
+    if reference.trim() != format!("refs/heads/{branch}") {
+        return false;
+    }
+    let common = |at: &Path| {
+        git_for_recovery(at, &["rev-parse", "--git-common-dir"])
+            .ok()
+            .and_then(|path| {
+                let path = PathBuf::from(path.trim());
+                fs::canonicalize(if path.is_absolute() {
+                    path
+                } else {
+                    at.join(path)
+                })
+                .ok()
+            })
+    };
+    common(project).is_some_and(|expected| Some(expected) == common(cwd))
+}
+
+fn git_for_recovery(at: &Path, args: &[&str]) -> Result<String, isolate::Trouble> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(at)
+        .args(args)
+        .output()
+        .map_err(|error| isolate::Trouble::Git(error.to_string()))?;
+    if !output.status.success() {
+        return Err(isolate::Trouble::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Jedno drzewo robocze kroku: gdzie stoi, na czym stoi i czego do niego nie weszło.
@@ -2233,11 +3182,29 @@ impl Live {
     /// Księga → `run.json`, przez plik tymczasowy i `rename`.
     fn spill(&self, book: &Book) -> Result<(), RunError> {
         let text = serde_json::to_string_pretty(&self.run_file(book))?;
-        let writing = self.plan.dir.join(RUN_FILE_WRITING);
-        fs::write(&writing, text)?;
+        let writing = self
+            .plan
+            .dir
+            .join(format!(".run.json.{}.writing", Uuid::now_v7()));
+        let result = (|| -> io::Result<()> {
+            // `create_new` jest atomowym no-follow dla ostatniego komponentu. Losowa nazwa
+            // usuwa wspolny cel miedzy zrzutami, wiec przygotowany symlink nie moze zostac
+            // otwarty przez `truncate`, jak dawny staly `run.json.writing`.
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&writing)?;
+            file.write_all(text.as_bytes())?;
+            drop(file);
+            fs::rename(&writing, self.plan.dir.join(RUN_FILE))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&writing);
+        }
+        result?;
         // `rename` w obrębie jednego katalogu jest atomowe: czytelnik widzi albo poprzedni plik
         // w całości, albo nowy w całości, i nigdy zera bajtów w środku.
-        fs::rename(&writing, self.plan.dir.join(RUN_FILE))?;
         Ok(())
     }
 
@@ -2291,6 +3258,7 @@ impl Live {
             status: book.status,
             concurrency: self.plan.concurrency,
             created_at: self.plan.created_at,
+            trigger_origin: self.plan.trigger_origin.as_ref(),
             // Kiedy wstała maszyna, na której ten bieg ruszył. STRAŻNIK odzyskiwania po awarii:
             // bez niego `recovery::decide` odmawia sprzątania (`NO_BOOT_TIME`), bo po restarcie
             // zapisany `pgid` z dużym prawdopodobieństwem należy do niewinnego procesu
@@ -3386,6 +4354,9 @@ struct RunFile<'a> {
     status: RunState,
     concurrency: usize,
     created_at: i64,
+    /// Brak dla recznego Startu; trigger zapisuje tylko zredagowane identyfikatory receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trigger_origin: Option<&'a TriggerOrigin>,
     /// Kiedy wstała maszyna, na której ten bieg ruszył. Czyta to `store::rebuild` i po nim
     /// odzyskiwanie po awarii decyduje, czy wolno sprzątnąć zapisaną grupę procesów.
     #[serde(skip_serializing_if = "Option::is_none")]

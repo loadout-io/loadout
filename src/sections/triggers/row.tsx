@@ -9,15 +9,15 @@ export interface TriggerRowProps {
 
 interface SaidStatus {
   readonly sentence: string;
-  readonly receipt?: string;
+  readonly machineTime?: string;
 }
 
-function utcReceipt(milliseconds: number): { readonly label: string; readonly iso: string } {
-  const receipt = new Date(milliseconds);
-  if (Number.isNaN(receipt.getTime())) {
-    return { label: 'an unknown receipt time', iso: '' };
+function utcStartTime(milliseconds: number): { readonly label: string; readonly iso: string } {
+  const started = new Date(milliseconds);
+  if (Number.isNaN(started.getTime())) {
+    return { label: 'an unknown start time', iso: '' };
   }
-  const iso = receipt.toISOString();
+  const iso = started.toISOString();
   return { label: `${iso.slice(0, 19).replace('T', ' ')} UTC`, iso };
 }
 
@@ -28,15 +28,15 @@ function says(status: TriggerVisibleStatus): SaidStatus {
   }
   if (status.kind === 'busy') {
     return {
-      sentence: `${status.delivery.issue.identifier} is saved and will start when the current run finishes.`,
+      sentence: `${status.delivery.issue.identifier} is saved while Loadout handles the run.`,
     };
   }
   if (status.kind === 'refused') return { sentence: status.sentence };
 
-  const receipt = utcReceipt(status.receiptAt);
+  const started = utcStartTime(status.receiptAt);
   return {
-    sentence: `Started ${status.workflow} at ${receipt.label}.`,
-    receipt: receipt.iso,
+    sentence: `Started ${status.workflow} at ${started.label}.`,
+    machineTime: started.iso,
   };
 }
 
@@ -94,7 +94,9 @@ export function TriggerRow({ trigger, onToggle }: TriggerRowProps): ReactElement
         >
           {status.sentence}
         </span>
-        {status.receipt === undefined ? null : <time aria-hidden dateTime={status.receipt} />}
+        {status.machineTime === undefined ? null : (
+          <time aria-hidden dateTime={status.machineTime} />
+        )}
         <button
           type="button"
           data-trigger-toggle

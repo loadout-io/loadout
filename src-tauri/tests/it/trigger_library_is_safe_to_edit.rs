@@ -10,14 +10,62 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use loadout_lib::commands::triggers::{self, Source};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const SECRET: &str = "lin_api_1234567890123456789012345678901234567890";
+
+#[test]
+fn accepted_poll_uses_the_frontend_wire_names() -> Result<(), Box<dyn Error>> {
+    let wire = serde_json::to_value(triggers::TriggerPoll::Accepted {
+        workflow: "ship-it.json".to_owned(),
+        receipt_at: 17,
+    })?;
+    assert_eq!(wire["status"], "accepted");
+    assert_eq!(wire["workflow"], "ship-it.json");
+    assert_eq!(wire["receiptAt"], 17);
+    assert!(
+        wire.get("receipt_at").is_none(),
+        "Rust exposed a field name the frontend never reads"
+    );
+    Ok(())
+}
+
+#[test]
+fn boxed_pending_keeps_the_same_frontend_object() -> Result<(), Box<dyn Error>> {
+    let delivery = triggers::TriggerDelivery {
+        claim: triggers::TriggerClaim {
+            slug: "mine".to_owned(),
+            delivery_id: "delivery-1".to_owned(),
+            workflow: "ship-it.json".to_owned(),
+            run_id: "run-1".to_owned(),
+        },
+        issue: triggers::Issue {
+            id: "issue-1".to_owned(),
+            identifier: "LOAD-1".to_owned(),
+            title: "Ship it".to_owned(),
+            url: "https://linear.app/loadout/issue/LOAD-1".to_owned(),
+            body: "body".to_owned(),
+            updated_at: "2026-08-21T09:00:00.000Z".to_owned(),
+        },
+        created_at: 17,
+    };
+    let wire = serde_json::to_value(triggers::TriggerPoll::Pending {
+        delivery: Box::new(delivery.clone()),
+    })?;
+    assert_eq!(wire["status"], "pending");
+    assert_eq!(wire["delivery"], serde_json::to_value(delivery)?);
+    assert!(
+        wire["delivery"].is_object(),
+        "boxing the Rust payload changed the IPC object into a wrapper"
+    );
+    Ok(())
+}
 
 #[test]
 fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn Error>> {
@@ -88,6 +136,36 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn an_unknown_source_never_echoes_a_value_that_may_be_a_key() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let dir = home.path().join(triggers::TRIGGERS_DIR);
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("mine.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema": 1,
+            "source": SECRET,
+            "enabled": true,
+            "workflow": "ship-it",
+            "condition": "assigned to me",
+            "api_key": SECRET
+        }))?,
+    )?;
+
+    let error = triggers::poll_with(home.path(), "mine", 17, |_| {
+        panic!("an invalid source reached the fetcher")
+    })
+    .expect_err("a secret-shaped source was accepted");
+    let exposed = format!("{error} {error:?}");
+    assert!(
+        !exposed.contains(SECRET) && !exposed.contains("lin_api_"),
+        "the error crossing IPC echoed the unknown source: {exposed}"
+    );
+    assert!(exposed.contains("Choose `linear`"));
+    Ok(())
+}
+
+#[test]
 fn switching_is_atomic_and_preserves_every_other_byte_of_meaning() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let dir = home.path().join(triggers::TRIGGERS_DIR);
@@ -139,6 +217,121 @@ fn switching_is_atomic_and_preserves_every_other_byte_of_meaning() -> Result<(),
         loaded.api_key.exposes(SECRET),
         "the switch replaced or erased the secret"
     );
+    Ok(())
+}
+
+#[test]
+fn temp_is_restricted_before_content_and_a_manual_edit_wins_the_compare()
+-> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let dir = home.path().join(triggers::TRIGGERS_DIR);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("mine.json");
+    write_trigger(&path, true, "ship-it")?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let manual = serde_json::to_vec_pretty(&json!({
+        "schema": 1,
+        "source": "linear",
+        "enabled": true,
+        "workflow": "edited-by-hand",
+        "condition": "keep this manual edit",
+        "api_key": SECRET
+    }))?;
+    let mut saw_empty_restricted_temp = false;
+    let mut saw_complete_temp = false;
+
+    let result = triggers::set_enabled_with(home.path(), "mine", false, |stage, temp| {
+        let metadata = fs::metadata(temp)?;
+        match stage {
+            triggers::ToggleStage::BeforeContent => {
+                if metadata.len() != 0 || metadata.permissions().mode() & 0o777 != 0o600 {
+                    return Err(std::io::Error::other(format!(
+                        "temp had length {} and mode {:o} before content",
+                        metadata.len(),
+                        metadata.permissions().mode() & 0o777
+                    )));
+                }
+                saw_empty_restricted_temp = true;
+            }
+            triggers::ToggleStage::BeforeCompare => {
+                let staged = fs::read(temp)?;
+                if !staged
+                    .windows(SECRET.len())
+                    .any(|window| window == SECRET.as_bytes())
+                {
+                    return Err(std::io::Error::other(
+                        "the compare seam ran before the complete secret-bearing file was staged",
+                    ));
+                }
+                saw_complete_temp = true;
+                fs::write(&path, &manual)?;
+            }
+        }
+        Ok(())
+    });
+
+    assert!(
+        matches!(result, Err(triggers::TriggerError::ConfigChanged)),
+        "a manual edit after the snapshot was overwritten: {result:?}"
+    );
+    assert!(saw_empty_restricted_temp && saw_complete_temp);
+    assert_eq!(
+        fs::read(&path)?,
+        manual,
+        "the conflict refusal did not preserve the manual file byte for byte"
+    );
+    assert!(
+        fs::read_dir(&dir)?
+            .filter_map(Result::ok)
+            .all(|entry| { !entry.file_name().to_string_lossy().ends_with(".writing") }),
+        "the conflict left a secret-bearing temp file behind"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_app_toggles_are_serialized_around_the_snapshot() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let dir = home.path().join(triggers::TRIGGERS_DIR);
+    fs::create_dir_all(&dir)?;
+    write_trigger(&dir.join("mine.json"), true, "ship-it")?;
+    let home = Arc::new(home);
+    let (inside_tx, inside_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_home = Arc::clone(&home);
+    let first = thread::spawn(move || {
+        triggers::set_enabled_with(first_home.path(), "mine", false, |stage, _| {
+            if stage == triggers::ToggleStage::BeforeCompare {
+                inside_tx
+                    .send(())
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                release_rx
+                    .recv()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+            }
+            Ok(())
+        })
+    });
+    inside_rx.recv()?;
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let second_home = Arc::clone(&home);
+    let second = thread::spawn(move || {
+        let _ = started_tx.send(());
+        let result = triggers::set_enabled(second_home.path(), "mine", true);
+        let _ = done_tx.send(());
+        result
+    });
+    started_rx.recv()?;
+    assert!(
+        done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "the second app toggle read a snapshot while the first still owned it"
+    );
+    release_tx.send(())?;
+    first.join().map_err(|_| "first toggle panicked")??;
+    second.join().map_err(|_| "second toggle panicked")??;
+    assert!(triggers::load(home.path(), "mine")?.enabled);
     Ok(())
 }
 

@@ -53,7 +53,7 @@ const IO: TriggerIo = {
 
 const UNCHECKED = 'Not checked yet.';
 const ARMED = 'Watching for new issues. Nothing has started yet.';
-const BUSY = 'LIN-42 is saved and will start when the current run finishes.';
+const BUSY = 'LIN-42 is saved while Loadout handles the run.';
 const ACCEPTED = 'Started Analysis at 2026-08-21 01:53:13 UTC.';
 
 function trigger(status: TriggerView['status']): TriggerView {
@@ -92,7 +92,9 @@ describe('the real Triggers screen tells five materially different truths', () =
   });
 
   it('says a busy trigger kept the concrete issue for later', () => {
-    expect(statusText(markupFor({ kind: 'busy', delivery: DELIVERY }))).toBe(BUSY);
+    const sentence = statusText(markupFor({ kind: 'busy', delivery: DELIVERY }));
+    expect(sentence).toBe(BUSY);
+    expect(sentence).not.toMatch(/will start|has not started|when .* finishes/i);
   });
 
   it('shows the launch refusal word for word where a person can read it', () => {
@@ -101,7 +103,7 @@ describe('the real Triggers screen tells five materially different truths', () =
     );
   });
 
-  it('names the accepted workflow and the durable receipt time', () => {
+  it('names the accepted workflow and the durable start time', () => {
     const markup = markupFor({ kind: 'accepted', workflow: 'Analysis', receiptAt: RECEIPT_AT });
     expect(statusText(markup)).toBe(ACCEPTED);
     /* React's static renderer preserves the JSX property spelling (`dateTime`). The browser

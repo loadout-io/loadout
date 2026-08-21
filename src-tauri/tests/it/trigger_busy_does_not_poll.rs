@@ -10,6 +10,7 @@
 use std::cell::Cell;
 use std::error::Error;
 use std::fs;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -140,13 +141,157 @@ async fn a_reserved_run_is_busy_before_its_first_line() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[tokio::test]
+async fn busy_replays_a_durable_acceptance_but_never_hides_pending_work()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let state = bench.app_state()?;
+    assert_eq!(
+        state
+            .trigger_poll_permit()
+            .poll_with("mine", NOW, |_| Ok(answer()))?,
+        TriggerPoll::Armed
+    );
+    let pending = state
+        .trigger_poll_permit()
+        .poll_with("mine", NOW + 1, |_| Ok(answer_at("issue-a", "LOAD-2", 9)))?;
+    let TriggerPoll::Pending { delivery } = pending else {
+        return Err(format!("the new issue did not become pending: {pending:?}").into());
+    };
+
+    let run_file = bench
+        .project
+        .path()
+        .join(".loadout/runs/already-accepted/run.json");
+    triggers::bind_delivery(bench.home.path(), &delivery.claim, &run_file)?;
+    fs::create_dir_all(run_file.parent().ok_or("run.json has no parent")?)?;
+    fs::write(
+        &run_file,
+        serde_json::to_vec_pretty(&json!({
+            "id": delivery.claim.run_id,
+            "created_at": delivery.created_at,
+            "trigger_origin": {
+                "slug": delivery.claim.slug,
+                "delivery_id": delivery.claim.delivery_id,
+                "issue_id": delivery.issue.id
+            }
+        }))?,
+    )?;
+    assert!(matches!(
+        triggers::reconcile_delivery(
+            bench.home.path(),
+            &delivery.claim,
+            read_and_sync_fixture_run,
+        )?,
+        triggers::DeliveryState::Accepted { .. }
+    ));
+
+    let live = state.begin_run(bench.project.path())?;
+    live.control.begin();
+    let before = snapshot(&bench.trigger_dir())?;
+    let calls = Cell::new(0_usize);
+    let receipt = state
+        .trigger_poll_permit()
+        .poll_with("mine", NOW + 2, |_| {
+            calls.set(calls.get() + 1);
+            Ok(answer_at("must-not-fetch", "LOAD-3", 10))
+        })?;
+    assert_eq!(
+        receipt,
+        TriggerPoll::Accepted {
+            workflow: "ship-it".to_owned(),
+            receipt_at: delivery.created_at,
+        },
+        "busy hid a receipt that was already durable before this run"
+    );
+    assert_eq!(calls.get(), 0, "busy acceptance reached the fetcher");
+    assert_eq!(
+        snapshot(&bench.trigger_dir())?,
+        before,
+        "busy acceptance rewrote trigger control files"
+    );
+    live.control.settle();
+
+    let later = state
+        .trigger_poll_permit()
+        .poll_with("mine", NOW + 3, |_| Ok(answer_at("issue-b", "LOAD-4", 11)))?;
+    assert!(
+        matches!(
+            later,
+            TriggerPoll::Pending { ref delivery } if delivery.issue.id == "issue-b"
+        ),
+        "the accepted receipt blocked discovery of a later issue: {later:?}"
+    );
+
+    let live = state.begin_a_run(bench.project.path())?;
+    live.control.begin();
+    let before = snapshot(&bench.trigger_dir())?;
+    let calls = Cell::new(0_usize);
+    let busy = state
+        .trigger_poll_permit()
+        .poll_with("mine", NOW + 4, |_| {
+            calls.set(calls.get() + 1);
+            Ok(answer_at("must-not-fetch", "LOAD-5", 12))
+        })?;
+    assert_eq!(
+        busy,
+        TriggerPoll::Busy,
+        "an old acceptance was shown while a newer delivery was still pending"
+    );
+    assert_eq!(calls.get(), 0, "busy with pending work reached the fetcher");
+    assert_eq!(
+        snapshot(&bench.trigger_dir())?,
+        before,
+        "busy with pending work changed the ledger or cursor"
+    );
+    live.control.settle();
+    Ok(())
+}
+
+fn read_and_sync_fixture_run(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    file.sync_all()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("fixture run has no parent"))?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(Some(raw))
+}
+
 fn answer() -> Vec<u8> {
+    answer_at("old", "LOAD-1", 8)
+}
+
+fn answer_at(id: &str, identifier: &str, hour: u8) -> Vec<u8> {
     serde_json::to_vec(&json!({"data":{"issues":{"nodes":[{
-        "id":"old", "identifier":"LOAD-1", "title":"Existing backlog",
-        "url":"https://linear.app/loadout/issue/LOAD-1", "description":null,
-        "updatedAt":"2026-08-21T08:00:00.000Z"
+        "id":id, "identifier":identifier, "title":format!("Issue {identifier}"),
+        "url":format!("https://linear.app/loadout/issue/{identifier}"), "description":null,
+        "updatedAt":format!("2026-08-21T{hour:02}:00:00.000Z")
     }]}}}))
     .expect("answer JSON")
+}
+
+fn snapshot(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
+    let mut files = fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            entry
+                .file_type()
+                .ok()?
+                .is_file()
+                .then(|| (name, entry.path()))
+        })
+        .map(|(name, path)| fs::read(path).map(|bytes| (name, bytes)))
+        .collect::<Result<Vec<_>, _>>()?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
 }
 
 fn names_in(dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {

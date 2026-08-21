@@ -11,6 +11,7 @@ import type {
   TriggerDelivery,
   TriggerIo,
   TriggerIssue,
+  TriggerPoll,
 } from '../sections/triggers/io';
 import { useWorkspaces } from './workspaces';
 import { createTriggersStore, taskForIssue } from './triggers';
@@ -66,6 +67,24 @@ const CLOCK: TriggerClock = {
   clearInterval: () => undefined,
 };
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let release: ((value: T) => void) | undefined;
+  let refuse: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    release = resolve;
+    refuse = reject;
+  });
+  return {
+    promise,
+    resolve: (value) => release?.(value),
+    reject: (reason) => refuse?.(reason),
+  };
+}
+
 function view(): TriggerView {
   return {
     slug: CLAIM.slug,
@@ -99,8 +118,10 @@ beforeEach(() => {
 });
 
 describe('a trigger takes the same launch path as Start', () => {
-  it('launches the real workflow choice with the durable claim and canonical issue task', async () => {
-    const launched = vi.fn<TriggerRunPath['launchRun']>(async () => null);
+  it('launches the real workflow choice with the durable delivery reference and canonical issue task', async () => {
+    const launched = vi.fn<TriggerRunPath['launchRun']>(
+      () => new Promise<string | null>(() => undefined),
+    );
     const run: TriggerRunPath = {
       listWorkflows: async () => [LISTED],
       launchRun: launched,
@@ -115,7 +136,7 @@ describe('a trigger takes the same launch path as Start', () => {
     expect(launched).toHaveBeenCalledWith(CHOICE, 4, TASK, CLAIM);
   });
 
-  it('launchRun forwards a trigger claim to the existing run_workflow invocation', async () => {
+  it('launchRun forwards a trigger delivery reference to the existing run_workflow invocation', async () => {
     useWorkspaces.setState({
       all: [{ id: '/project', name: 'Project', folder: '/project' }],
       activeId: '/project',
@@ -136,7 +157,7 @@ describe('a trigger takes the same launch path as Start', () => {
     );
   });
 
-  it('keeps pending visible until Rust returns its later durable acceptance receipt', async () => {
+  it('keeps pending visible until Rust returns its later durable acceptance time', async () => {
     let polls = 0;
     const acceptedAt = DELIVERY.createdAt + 9_000;
     const io: TriggerIo = {
@@ -149,9 +170,8 @@ describe('a trigger takes the same launch path as Start', () => {
           : { status: 'accepted' as const, workflow: CLAIM.workflow, receiptAt: acceptedAt };
       },
     };
-    const launched = vi.fn<TriggerRunPath['launchRun']>(
-      () => new Promise<string | null>(() => undefined),
-    );
+    const runEnded = deferred<string | null>();
+    const launched = vi.fn<TriggerRunPath['launchRun']>(() => runEnded.promise);
     const store = createTriggersStore(io, CLOCK, {
       listWorkflows: async () => [LISTED],
       launchRun: launched,
@@ -165,15 +185,167 @@ describe('a trigger takes the same launch path as Start', () => {
       expect.objectContaining({ kind: 'accepted', receiptAt: DELIVERY.createdAt }),
     );
 
-    await store.getState().tick();
-    expect(store.getState().triggers[0]?.status).toEqual({
-      kind: 'accepted',
-      workflow: 'Analysis',
-      receiptAt: acceptedAt,
+    runEnded.resolve(null);
+    await vi.waitFor(() => {
+      expect(polls).toBe(2);
+      expect(store.getState().triggers[0]?.status).toEqual({
+        kind: 'accepted',
+        workflow: 'Analysis',
+        receiptAt: acceptedAt,
+      });
     });
   });
 
-  it('carries an explicit null claim for an ordinary manual Start', async () => {
+  it('runs the result refresh after an overlapping check releases the slug', async () => {
+    const acceptedAt = DELIVERY.createdAt + 12_000;
+    const overlappingCheck = deferred<TriggerPoll>();
+    const runEnded = deferred<string | null>();
+    let polls = 0;
+    const io: TriggerIo = {
+      listTriggers: async () => [],
+      setTriggerEnabled: async () => view(),
+      checkTrigger: () => {
+        polls += 1;
+        if (polls === 1) {
+          return Promise.resolve({ status: 'pending', delivery: DELIVERY });
+        }
+        if (polls === 2) return overlappingCheck.promise;
+        return Promise.resolve({
+          status: 'accepted',
+          workflow: CLAIM.workflow,
+          receiptAt: acceptedAt,
+        });
+      },
+    };
+    const store = createTriggersStore(io, CLOCK, {
+      listWorkflows: async () => [LISTED],
+      launchRun: () => runEnded.promise,
+      atOnce: () => 4,
+    });
+    store.setState({ triggers: [view()] });
+
+    await store.getState().tick();
+    const overlapping = store.getState().tick();
+    expect(polls).toBe(2);
+
+    runEnded.resolve(null);
+    await Promise.resolve();
+    expect(polls, 'the completion must not overlap the check already holding this slug').toBe(2);
+
+    overlappingCheck.resolve({ status: 'busy' });
+    await overlapping;
+    await vi.waitFor(() => {
+      expect(polls).toBe(3);
+      expect(store.getState().triggers[0]?.status).toEqual({
+        kind: 'accepted',
+        workflow: 'Analysis',
+        receiptAt: acceptedAt,
+      });
+    });
+  });
+
+  it('reconciles an overlapping completion while disabled without launching the delivery again', async () => {
+    const overlappingCheck = deferred<TriggerPoll>();
+    const runEnded = deferred<string | null>();
+    const acceptedAt = DELIVERY.createdAt + 15_000;
+    let polls = 0;
+    const io: TriggerIo = {
+      listTriggers: async () => [],
+      setTriggerEnabled: async (slug, enabled) => ({
+        slug,
+        source: 'Linear',
+        condition: 'assigned-to-me',
+        workflow: CLAIM.workflow,
+        enabled,
+      }),
+      checkTrigger: () => {
+        polls += 1;
+        if (polls === 1) {
+          return Promise.resolve({ status: 'pending', delivery: DELIVERY });
+        }
+        if (polls === 2) return overlappingCheck.promise;
+        return Promise.resolve({
+          status: 'accepted',
+          workflow: CLAIM.workflow,
+          receiptAt: acceptedAt,
+        });
+      },
+    };
+    const launched = vi.fn<TriggerRunPath['launchRun']>(() => runEnded.promise);
+    const store = createTriggersStore(io, CLOCK, {
+      listWorkflows: async () => [LISTED],
+      launchRun: launched,
+      atOnce: () => 4,
+    });
+    store.setState({ triggers: [view()] });
+
+    await store.getState().tick();
+    const overlapping = store.getState().tick();
+    expect(polls).toBe(2);
+    runEnded.resolve(null);
+    await Promise.resolve();
+    await store.getState().toggle(CLAIM.slug, false);
+
+    overlappingCheck.resolve({ status: 'busy' });
+    await overlapping;
+    await vi.waitFor(() => {
+      expect(store.getState().triggers[0]?.enabled).toBe(false);
+      expect(store.getState().triggers[0]?.status).toEqual({
+        kind: 'accepted',
+        workflow: 'Analysis',
+        receiptAt: acceptedAt,
+      });
+    });
+    expect(polls).toBe(3);
+    expect(
+      launched,
+      'the one result check must not launch an already handled delivery again',
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['resolved sentence', 'rejected promise'] as const)(
+    'shows a launch refusal after the trigger was disabled: %s',
+    async (outcome) => {
+      const launch = deferred<string | null>();
+      let polls = 0;
+      const refusal = 'That trigger run could not be accepted.';
+      const io: TriggerIo = {
+        listTriggers: async () => [],
+        setTriggerEnabled: async (slug, enabled) => ({
+          slug,
+          source: 'Linear',
+          condition: 'assigned-to-me',
+          workflow: CLAIM.workflow,
+          enabled,
+        }),
+        checkTrigger: async () => {
+          polls += 1;
+          return { status: 'pending', delivery: DELIVERY };
+        },
+      };
+      const store = createTriggersStore(io, CLOCK, {
+        listWorkflows: async () => [LISTED],
+        launchRun: () => launch.promise,
+        atOnce: () => 4,
+      });
+      store.setState({ triggers: [view()] });
+      await store.getState().tick();
+      await store.getState().toggle(CLAIM.slug, false);
+
+      if (outcome === 'resolved sentence') launch.resolve(refusal);
+      else launch.reject(refusal);
+      await vi.waitFor(() => {
+        expect(store.getState().triggers[0]?.status).toEqual({
+          kind: 'refused',
+          sentence: refusal,
+        });
+      });
+      expect(store.getState().triggers[0]?.enabled).toBe(false);
+      expect(polls).toBe(1);
+    },
+  );
+
+  it('carries an explicit null trigger reference for an ordinary manual Start', async () => {
     await start('analysis.json', 2, { name: 'Analysis', steps: CHOICE.steps }, '/project', null);
     const args = invoked.mock.calls[0]?.[1] as Record<string, unknown> | undefined;
     expect(args).toBeDefined();

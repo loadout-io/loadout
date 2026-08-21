@@ -610,7 +610,7 @@ pub struct RunReport {
 pub enum RunError {
     /// Trwały ledger triggera odmówił związania albo akceptacji biegu.
     ///
-    /// Własny wariant zachowuje zdanie z rdzenia triggerów i nie udaje błędu SQLite: pliki są
+    /// Własny wariant zachowuje zdanie z rdzenia triggerów i nie udaje błędu `SQLite`: pliki są
     /// prawdą tej dostawy, tak samo jak `run.json` jest prawdą biegu (niezmienniki 2 i 4).
     #[error(transparent)]
     Trigger(#[from] triggers::TriggerError),
