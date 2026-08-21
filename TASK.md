@@ -38,10 +38,12 @@ zakresem. Ten kontrakt domyka produktową drogę Lineara; człowiek nie tworzy a
    edycji zachowuje jego świeżą wartość, a wpisany nowy klucz jawnie ją zastępuje.
 8. **Delete jest świadomie destrukcyjne i dwustopniowe.** Pytanie mówi, że oczekująca sprawa,
    która jeszcze nie zaczęła biegu, zostanie odrzucona. Rust pod wspólnym zamkiem kończy
-   Pending/Bound jako anulowane, utrwala ledger, a dopiero potem atomowo chowa konfigurację.
-   Crash przed ukryciem zostawia trigger widoczny i bez pracy udającej Pending; crash po
-   ukryciu zostawia go usuniętego. Ukryty plik kończący usunięcie jest sprzątany przy następnym
-   odczycie, więc nie powstaje artefakt bez czytelnika (niezmiennik 21).
+   Pending jako anulowane, utrwala ledger, a dopiero potem atomowo chowa konfigurację. Bound
+   znaczy, że Start już wiąże bieg; Delete odmawia wtedy przed jakąkolwiek mutacją i prosi
+   poczekać. Anulowanie rozpoczętego Startu należy do Stop, nie do usuwania konfiguracji. Crash
+   przed ukryciem zostawia trigger widoczny i bez pracy udającej Pending; crash po ukryciu
+   zostawia go usuniętego. Ukryty plik kończący usunięcie jest sprzątany przy następnym odczycie,
+   więc nie powstaje artefakt bez czytelnika (niezmiennik 21).
 
 ## Kształt ekranu
 
@@ -85,7 +87,8 @@ woła jedną właściwą akcję: Test nie zapisuje; Create wysyła Linear, kanon
 workflow, cadence i wpisany klucz; Edit wysyła `null` dla pustego pola klucza; lista zmienia się
 dopiero po potwierdzeniu IO; odmowa zostawia panel i wpisane niesekretne pola oraz stoi na
 ekranie (niezmiennik 29). Delete najpierw pokazuje zdanie o odrzuceniu oczekującej sprawy,
-Cancel nie dotyka IO, a potwierdzenie usuwa wiersz dopiero po sukcesie dysku.
+Cancel nie dotyka IO, a potwierdzenie usuwa wiersz dopiero po sukcesie dysku. Odmowa dla biegu,
+który już startuje, zostawia panel i wiersz oraz stoi na prawdziwym ekranie (niezmiennik 29).
 
 ## AC-3 Rust tworzy i edytuje pełny plik bez ujawnienia albo nadpisania sekretu
 check: cargo test --test it trigger_editor_writes_safe_file::
@@ -131,17 +134,18 @@ woła dokładnie jedną literalną komendę z kompletem argumentów pod nazwami,
 Tauri; klucz występuje wyłącznie w żądaniu Test/Save, nigdy w odpowiedzi ani liście. Kontrola
 odmawia przy pustej złotej liście i przy eksporcie bez wykonanego przypadku.
 
-## AC-7 Delete kończy oczekującą dostawę przed zniknięciem konfiguracji
+## AC-7 Delete kończy oczekującą dostawę i odmawia biegu, który już startuje
 check: cargo test --test it trigger_editor_deletes_safely::
 expect: (\d+) passed
 
-Test zasadza Pending i Bound, po czym potwierdzone Delete zapisuje oba jako anulowane przed
-ukryciem pliku; żaden późniejszy poll ani claim nie może ich uruchomić. Zmieniona ręką migawka,
-brak pliku, symlink i uszkodzony ledger odmawiają bez zmiany drzewa. Macierz awarii przed i po
-atomowym ukryciu dowodzi dwóch uczciwych stanów: widoczny trigger bez fałszywego Pending albo
-usunięty trigger z odzyskiwalnym cleanupem — nigdy aktywny config nad skasowanym ledgerem.
-Sukces usuwa wpis z prawdziwego `list`, sprząta nazwany tombstone przy następnym odczycie i nie
-wypisuje klucza.
+Test zasadza Pending, po czym potwierdzone Delete zapisuje je jako anulowane przed ukryciem
+pliku; żaden późniejszy poll ani claim nie może go uruchomić. Osobny Bound daje nazwaną,
+naprawialną odmowę **przed** zmianą któregokolwiek bajtu: Delete nie ściga się z biegiem, który
+już startuje. Zmieniona ręką migawka, brak pliku, symlink i uszkodzony ledger także odmawiają
+bez zmiany drzewa. Macierz awarii przed i po atomowym ukryciu dowodzi dwóch uczciwych stanów:
+widoczny trigger bez fałszywego Pending albo usunięty trigger z odzyskiwalnym cleanupem — nigdy
+aktywny config nad skasowanym ledgerem. Sukces usuwa wpis z prawdziwego `list`, sprząta nazwany
+tombstone przy następnym odczycie i nie wypisuje klucza.
 
 ## Świadomie poza zakresem
 
