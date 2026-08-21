@@ -43,7 +43,8 @@ Rozstrzygam je tutaj. Każde ma powód i koszt zmiany zdania później.
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  React 19 · Vite · Tailwind v4 · Zustand · Base UI               │
-│  Pięć sekcji, bez routera:  Praca · Workflow · Agenci · Umiejętności · Pamięć │
+│  Sześć sekcji, bez routera: Praca · Workflow · Agenci · Umiejętności     │
+│  · Pamięć · Triggery                                                    │
 └───────────────┬──────────────────────────────┬───────────────────┘
       invoke()  │  żądanie → odpowiedź         │  Channel<Vec<Line>>
                 │                              │  sklejane 16 ms / 2000 linii
@@ -75,7 +76,7 @@ Rozstrzygam je tutaj. Każde ma powód i koszt zmiany zdania później.
                 │
 ┌───────────────▼──────────────────────────────────────────────────┐
 │  Pliki — TO JEST PRAWDA                                          │
-│  ~/.loadout/{workflows,agents,skills,memory}/                    │
+│  ~/.loadout/{workflows,agents,skills,memory,triggers}/           │
 │  <repo>/.loadout/runs/<ts>__<id>/{run.json,handoffs/,logs/}      │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -326,6 +327,34 @@ Liczba rodzajów kafelka zostaje **dwa** niezależnie od tego, ile funkcji dowio
 funkcja Claude'a to nowe pole w kreatorze agenta albo wpis w przelotce — nigdy nowy typ węzła.
 To jest jedyna reguła, która utrzyma płótno czytelne przez rok.
 
+## 6c. Triggery: trwała dostawa do istniejącej drogi Startu
+
+*Dodane 2026-08-21 decyzją właściciela w T-65. Zakres kończy się na jednym biegu w otwartej
+aplikacji: nie powstaje daemon, rejestr wielu biegów ani `stop_run(id)`.*
+
+**Rust rozstrzyga zajętość.** Zegar żyje przy korzeniu okna, a nie przy ekranie Triggers, lecz
+każdy jego tik pyta `AppState.live` przed siecią i zapisem. `RunState.workflow` pozostaje lustrem
+prezentacji i nie jest autorytetem: odmowa drugiego Startu może je wyzerować, kiedy pierwszy bieg
+nadal trwa. Rustowy zamek nie przechodzi przez `await`.
+
+**Kursor jest skrótem, ledger jest prawdą.** Pod `~/.loadout/triggers/` każdy slug ma atomowo
+zapisywany, ukryty ledger identyfikatorów spraw i dostaw. Pierwsze odpytanie tylko uzbraja
+trigger na istniejącym backlogu. Każde późniejsze nowe `Issue.id` dostaje trwały delivery,
+prealokowany UUID v7 przyszłego biegu, workflow i czas. Zmiana `updatedAt` tej samej sprawy nie
+tworzy drugiej dostawy, a restart oddaje ten sam pending z tym samym UUID.
+
+**Okno nie buduje drugiej ścieżki uruchomienia.** Pending przechodzi przez istniejące
+`launchRun` i `run_workflow`; zwykły Start niesie jawne `claim: null`. Pod rustowym zamkiem
+claim musi nadal pasować do sluga, `delivery_id`, workflow i UUID. Wyścig z ręcznym Startem
+kończy się zwykłym `ALREADY_GOING` i zostawia dostawę pending, zamiast przesuwać kursor i zgubić
+sprawę.
+
+**Pierwszy `run.json` jest granicą akceptacji.** Plan biegu używa UUID i czasu z delivery, a
+pierwszy atomowy paragon zapisuje przed procesem wyłącznie zredagowane pochodzenie: slug,
+`delivery_id` i `issue_id`. Dopiero ten plik zmienia dostawę z bound na accepted. Po awarii
+pasujący paragon domyka ledger bez drugiego katalogu i drugiego startu; brak paragonu pozwala
+ponowić to samo wiązanie. SQLite nie uczestniczy w rozstrzygnięciu (niezmiennik 4).
+
 ## 7. Sufit gęstości
 
 Liczby ustalone **przed** pierwszym ekranem. Mierzone skryptem, nie okiem. Baseline może tylko maleć.
@@ -362,6 +391,8 @@ usunięcia którejś z tych dwóch.
   agents/<slug>.json                 # definicja agenta — 11 pól, 9 widocznych [T4 §3]
   workflows/<slug>.json              # graf; pozycje przyciągane do 24 px [T3 §8]
   skills/<slug>/SKILL.md             # kanoniczna umiejętność
+  triggers/<slug>.json               # konfiguracja; sekret nie przekracza granicy IPC
+  triggers/.*                        # kursory i trwałe ledgery dostaw, niewidoczne w bibliotece
   memory/INDEX.md                    # generowany, limit 200 linii / 25 KB
   memory/notes/<slug>.md
   memory/agents/<slug>.md            # pamięć podróżująca z agentem
@@ -369,7 +400,7 @@ usunięcia którejś z tych dwóch.
 <repo>/.loadout/                     # projektowe, bezpieczne do commitowania
   memory/…
   runs/<ts>__<id>/
-    run.json                         # workflow, kroki, status, sumy
+    run.json                         # workflow, kroki, status, sumy; opcjonalne redagowane pochodzenie
     handoffs/01__orchestrator__brief.md
              02__research-auth__findings.md      ← to widzisz w UI jako „co przekazał"
     logs/agent-<id>.jsonl            # surowe, nierenderowane domyślnie

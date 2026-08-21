@@ -1,14 +1,14 @@
-/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z pięciu, a pozostałych czterech NIE MA
+/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z sześciu, a pozostałych pięciu NIE MA
  * w drzewie.
  *
- * Oczekiwana piątka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
+ * Oczekiwana szóstka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
  * SECTIONS sprawdzałaby rejestr sam sobą: pusta tablica przechodzi wtedy każde „dla każdej
  * sekcji…", bo nie ma żadnej.
  *
  * Rozróżnienie, o które chodzi: `expect(html).toContain('data-section="agents"')` przechodzi
- * na powłoce, która montuje wszystkie pięć sekcji i chowa cztery CSS-em. To jest dokładnie ten
+ * na powłoce, która montuje wszystkie sześć sekcji i chowa pięć CSS-em. To jest dokładnie ten
  * „always-mounted route stack", przez który poprzedni prototyp renderował 142 elementy niosące tekst
- * przy suficie 60 [raport 03 §4.1]. Widać go dopiero wtedy, gdy policzy się pozostałe cztery
+ * przy suficie 60 [raport 03 §4.1]. Widać go dopiero wtedy, gdy policzy się pozostałe pięć
  * identyfikatory DO ZERA i zabroni `hidden` oraz `display:none`.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -23,6 +23,7 @@ const EXPECTED = [
   { id: 'agents', label: 'Agents' },
   { id: 'skills', label: 'Skills' },
   { id: 'memory', label: 'Memory' },
+  { id: 'triggers', label: 'Triggers' },
 ] as const;
 
 function occurrences(haystack: string, needle: string): number {
@@ -33,11 +34,11 @@ function markupFor(id: (typeof EXPECTED)[number]['id']): string {
   return renderToStaticMarkup(<App section={id} />);
 }
 
-describe('one section of five is on screen and the other four are not in the tree', () => {
-  it('registers the five, in order, under the words a person reads', () => {
+describe('one section of six is on screen and the other five are not in the tree', () => {
+  it('registers the six, in order, under the words a person reads', () => {
     expect(
       SECTIONS.length,
-      'SECTIONS has to hold exactly five entries — the five top-level places this app has. It ' +
+      'SECTIONS has to hold exactly six entries — the six top-level places this app has. It ' +
         'holds ' +
         String(SECTIONS.length),
     ).toBe(EXPECTED.length);
@@ -53,7 +54,7 @@ describe('one section of five is on screen and the other four are not in the tre
   });
 
   for (const entry of EXPECTED) {
-    it('mounts ' + entry.id + ' once and leaves the other four out of the tree', () => {
+    it('mounts ' + entry.id + ' once and leaves the other five out of the tree', () => {
       const markup = markupFor(entry.id);
       expect(
         occurrences(markup, 'data-section="' + entry.id + '"'),
@@ -71,7 +72,7 @@ describe('one section of five is on screen and the other four are not in the tre
             entry.id +
             ' open, ' +
             other.id +
-            ' has to be absent from the tree, not merely invisible. Five mounted and four hidden ' +
+            ' has to be absent from the tree, not merely invisible. Six mounted and five hidden ' +
             'is the shape that put 142 text-carrying elements on one poprzedni prototyp screen',
         ).toBe(0);
       }
@@ -81,7 +82,7 @@ describe('one section of five is on screen and the other four are not in the tre
       const markup = markupFor(entry.id);
       expect(
         / hidden(?:=""|>|\s)/.test(markup),
-        'nothing in the shell may carry the hidden attribute: hiding is how four sections stay ' +
+        'nothing in the shell may carry the hidden attribute: hiding is how five sections stay ' +
           'mounted while the measurement above still passes',
       ).toBe(false);
       expect(

@@ -13,8 +13,8 @@
  * wykonanie: każda funkcja jest wołana naprawdę, nazwa komendy jest odczytana z atrapy, a to,
  * co funkcja dostała, ma się znaleźć w tym, co pojechało do Rusta.
  *
- * KONTROLA PRZECIW PUSTEJ ASERCJI. Dziś wszystkie cztery krawędzie rzucają `not implemented`,
- * więc każdy test, który tylko LICZY wystąpienia `invoke` w plikach, przechodzi na nich bez
+ * KONTROLA PRZECIW PUSTEJ ASERCJI. Początkowo krawędzie rzucały `not implemented`, więc każdy
+ * test, który tylko LICZY wystąpienia `invoke` w plikach, przechodził na nich bez
  * zmiany ani jednej linii. Stąd asercja jawna: żadna z nich nie ma prawa tak odmówić.
  *
  * TABELA MUSI POKRYWAĆ CAŁY EKSPORT. Wiersze niżej nie są listą przykładów — pierwszy test
@@ -74,6 +74,7 @@ const WHERE_PATH: Readonly<Record<string, string>> = {
   memory: 'src/sections/memory/io.ts',
   run: 'src/sections/run/io.ts',
   skills: 'src/sections/skills/io.ts',
+  triggers: 'src/sections/triggers/io.ts',
   workflows: 'src/sections/workflows/io.ts',
   workspaces: 'src/state/workspaces-io.ts',
 };
@@ -471,6 +472,24 @@ const WIRES: readonly Wire[] = [
     given: [],
     call: () => run.listProcesses(null),
   },
+  /* 2026-08-21 (T-65) — TRZY KRAWEDZIE TRIGGEROW, razem z cala zredagowana biblioteka.
+   * Listowanie nie bierze argumentow, zapis niesie obie wartosci kontrolki, a odpytanie slug.
+   * Kazdy eksport jest tu wykonany, wiec dopisanie przycisku bez drogi do Rusta albo klucza
+   * argumentu zapali to samo lustro, ktore pilnuje pozostalych sekcji. */
+  {
+    where: 'triggers',
+    what: 'listTriggers',
+    command: 'list_triggers',
+    given: [],
+    call: () => triggers.listTriggers(),
+  },
+  {
+    where: 'triggers',
+    what: 'setTriggerEnabled',
+    command: 'set_trigger_enabled',
+    given: ['assigned-to-me', false],
+    call: () => triggers.setTriggerEnabled('assigned-to-me', false),
+  },
   {
     where: 'triggers',
     what: 'checkTrigger',
@@ -522,12 +541,12 @@ function insides(value: unknown, into: unknown[]): unknown[] {
   return into;
 }
 
-describe('the six section edges and the one list of command names', () => {
+describe('the six section edges, the workspace edge and the one list of command names', () => {
   beforeEach(() => {
     invoked.mockClear();
   });
 
-  it('has a row below for every function the six edges export', () => {
+  it('has a row below for every function the seven edges export', () => {
     for (const [where, edge] of EDGES) {
       const exported = exportedFunctions(edge);
       const covered = WIRES.filter((wire) => wire.where === where)

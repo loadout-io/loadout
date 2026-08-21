@@ -446,9 +446,10 @@ body[data-notes] .anchor{outline:1px dashed #4a3a22;outline-offset:2px}
     <button data-go="agents"><span class="ico"><svg viewBox="0 0 16 16"><rect x="2.4" y="2.4" width="7.4" height="7.4" rx="1.8"/><rect x="6.2" y="6.2" width="7.4" height="7.4" rx="1.8"/></svg></span><span>Agents</span></button>
     <button data-go="skills"><span class="ico"><svg viewBox="0 0 16 16"><path d="M8 2.2 L9.5 6.5 L13.8 8 L9.5 9.5 L8 13.8 L6.5 9.5 L2.2 8 L6.5 6.5 Z"/></svg></span><span>Skills</span></button>
     <button data-go="memory"><span class="ico"><svg viewBox="0 0 16 16"><rect x="2.4" y="3" width="11.2" height="4" rx="1.4"/><rect x="2.4" y="9" width="11.2" height="4" rx="1.4"/></svg></span><span>Memory</span></button>
+    <button data-go="triggers"><span class="ico"><svg viewBox="0 0 16 16"><path d="M8 2.4 A5.6 5.6 0 1 1 2.4 8 A5.6 5.6 0 0 1 8 2.4 M8 5.1 V8 L10.2 9.4"/></svg></span><span>Triggers</span></button>
     <div class="foot"><span class="dot live"></span><span>Claude · Codex ready</span></div>
     <div class="an anchor" style="left:206px;bottom:52px">
-      <b>JEDNA METAFORA</b>Pięć sekcji, bez zakładek i bez routera. poprzedni prototyp miał trzy metafory nawigacji naraz — każda z inną odpowiedzią na „gdzie jestem".
+      <b>JEDNA METAFORA</b>Sześć sekcji, bez zakładek i bez routera. poprzedni prototyp miał trzy metafory nawigacji naraz — każda z inną odpowiedzią na „gdzie jestem".
     </div>
   </nav>
 
@@ -894,6 +895,27 @@ parser_rejects_ragged_rows ...... FAILED</div>
     </div>
   </section>
 
+  <!-- ══ EKRAN: triggery ══ -->
+  <section class="screen" data-screen="triggers">
+    <div style="display:grid;grid-template-rows:auto minmax(0,1fr)">
+      <div class="hd"><h1>Triggers</h1><span class="sub">2 configured</span></div>
+      <div class="pane">
+        <div class="grid" style="max-width:760px">
+          <div class="tile">
+            <div class="th"><b>Linear · Assigned to you</b><span class="chip ok">on</span></div>
+            <p>Exact-diff delivery</p>
+            <div class="meta"><span>Watching for new issues. Nothing has started yet.</span>
+              <label style="margin-left:auto;display:flex;align-items:center;gap:7px">On <input type="checkbox" checked></label></div>
+          </div>
+          <div class="tile">
+            <div class="th"><b>weekly-triage</b><span class="chip you">needs attention</span></div>
+            <p>This trigger file is not valid JSON.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
 </div>
 
 <script>
@@ -903,7 +925,7 @@ const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
 function show(name){
   $$('.screen').forEach(s=>s.toggleAttribute('data-on', s.dataset.screen===name));
   const navFor = {work:'work', session:'work', flows:'flows', flowlist:'flows',
-                  agents:'agents', skills:'skills', memory:'memory'}[name] || name;
+                  agents:'agents', skills:'skills', memory:'memory', triggers:'triggers'}[name] || name;
   $$('.nav button[data-go]').forEach(b=>
     b.setAttribute('aria-current', b.dataset.go===navFor ? 'page' : 'false'));
 }

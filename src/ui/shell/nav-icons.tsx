@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 
-/* Glify nawigacji. Piec, po jednym na sekcje, 16 px, obrys, `currentColor`.
+/* Glify nawigacji. Szesc, po jednym na sekcje, 16 px, obrys, `currentColor`.
  *
  * GRAMATYKA JEST TRESCIA, NIE STYLEM, i jest sprawdzana (T-46 AC-5):
  *
@@ -41,6 +41,10 @@ const PATHS: Readonly<Record<string, readonly ReactElement[]>> = {
   memory: [
     <rect key="a" x="2.4" y="3" width="11.2" height="4" rx="1.4" />,
     <rect key="b" x="2.4" y="9" width="11.2" height="4" rx="1.4" />,
+  ],
+  /* Zegar pyta cyklicznie. Jeden obrys i wskazowka, bez wezlow ani ozdobnej relacji. */
+  triggers: [
+    <path key="t" d="M8 2.4 A5.6 5.6 0 1 1 2.4 8 A5.6 5.6 0 0 1 8 2.4 M8 5.1 V8 L10.2 9.4" />,
   ],
 };
 

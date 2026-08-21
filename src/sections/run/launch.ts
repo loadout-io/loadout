@@ -25,6 +25,7 @@ import { activeWorkspace } from '../../state/workspaces';
 import type { Choice } from './choices';
 import { start } from './io';
 import { cardForRun } from './tabs/store';
+import type { TriggerClaim } from '../triggers/io';
 
 /** Co powiedzieć, kiedy nie ma czego uruchomić. */
 export const NOTHING_TO_RUN =
@@ -83,6 +84,8 @@ export async function launchRun(
    * wołają tę krawędź dwoma argumentami i ich kryteria nie mają się o to potknąć.
    */
   task: string | null = null,
+  /** A durable trigger delivery, or null for every human-started run. */
+  claim: TriggerClaim | null = null,
 ): Promise<string | null> {
   if (choice === null) return GONE_FROM_DISK;
   /* Workflow bez kroków odmawia po stronie Rusta, i to zdaniem lepszym niż nasze — ale odmowa
@@ -104,7 +107,21 @@ export async function launchRun(
   cardForRun(choice.name, folder);
 
   try {
-    await start(choice.path, atOnce, { name: choice.name, steps: choice.steps }, folder, task);
+    /* Keep the five-argument manual call intact: older callers and its independent oracle own
+     * that public seam. Only a trigger adds the sixth argument; `start` itself still sends an
+     * explicit `claim: null` over IPC for the manual branch. */
+    if (claim === null) {
+      await start(choice.path, atOnce, { name: choice.name, steps: choice.steps }, folder, task);
+    } else {
+      await start(
+        choice.path,
+        atOnce,
+        { name: choice.name, steps: choice.steps },
+        folder,
+        task,
+        claim,
+      );
+    }
     return null;
   } catch (error: unknown) {
     return why(error, 'Loadout could not start that run.');

@@ -608,6 +608,12 @@ pub struct RunReport {
 /// Każdy wariant jest osobnym zdaniem dla użytkownika, bo każdy naprawia się inaczej.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// Trwały ledger triggera odmówił związania albo akceptacji biegu.
+    ///
+    /// Własny wariant zachowuje zdanie z rdzenia triggerów i nie udaje błędu `SQLite`: pliki są
+    /// prawdą tej dostawy, tak samo jak `run.json` jest prawdą biegu (niezmienniki 2 i 4).
+    #[error(transparent)]
+    Trigger(#[from] triggers::TriggerError),
     /// [`crate::workflow::check`] znalazło problem. **Nic nie ruszyło** — ani jeden proces,
     /// ani jeden katalog.
     ///

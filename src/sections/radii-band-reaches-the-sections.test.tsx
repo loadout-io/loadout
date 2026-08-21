@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-/* AC-1 dla T-48: pasmo promieni i prawdziwe nazwy docieraja do czterech sekcji listowych.
+/* AC-1 dla T-48: pasmo promieni i prawdziwe nazwy docieraja do pieciu sekcji listowych.
  *
  * `rounded-sq` i `bg-*-wash` to ALIASY, ktore T-45 utrzymal przy zyciu wylacznie po to, zeby
  * migracja byla addytywna: `--radius-sq: var(--radius-sm)`, `--color-attend-wash:
@@ -27,7 +27,7 @@ import { describe, expect, it } from 'vitest';
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SECTIONS = ['agents', 'skills', 'memory', 'workflows'] as const;
+const SECTIONS = ['agents', 'skills', 'memory', 'workflows', 'triggers'] as const;
 const BAND = ['sm', 'md', 'lg', 'pill'];
 
 /* Zrodlo bez komentarzy blokowych, i to nie jest ostroznosc na zapas: naglowek
@@ -61,7 +61,7 @@ describe('pasmo promieni w sekcjach', () => {
   );
 
   it('read enough to judge', () => {
-    expect(files.length, 'fewer files were read than these four sections hold').toBeGreaterThan(11);
+    expect(files.length, 'fewer files were read than these five sections hold').toBeGreaterThan(11);
     expect(
       radii.length,
       'almost no corner names were read, so every assertion below would pass on an empty list',
@@ -110,7 +110,7 @@ describe('pasmo promieni w sekcjach', () => {
     for (const want of ['md', 'pill']) {
       expect(
         radii.some(([, name]) => name === want),
-        'not one place in these four sections asks for the ' +
+        'not one place in these five sections asks for the ' +
           want +
           ' corner, and they hold both cards and chips. Everything landing on the smallest ' +
           'corner is the old square language under new names.',
@@ -120,16 +120,16 @@ describe('pasmo promieni w sekcjach', () => {
 
   /* PER SEKCJA, nie w sumie. Zmierzone dwiema kontrolami negatywnymi 2026-08-19:
    *
-   *   1. „gdzies w tych czterech sekcjach jest promien sredni" przechodzi takze wtedy, gdy TRZY
-   *      z nich wrocily na kwadrat — jedno wystapienie w czwartej wystarcza calej czworce.
+   *   1. „gdzies w tych pieciu sekcjach jest promien sredni" przechodzi takze wtedy, gdy CZTERY
+   *      z nich wrocily na kwadrat — jedno wystapienie w piatej wystarcza calej piatce.
    *   2. „ta sekcja uzywa wiecej niz jednego promienia" przechodzi po zwinieciu kart do promienia
    *      kontrolki, bo chip zostawia w zbiorze druga nazwe.
    *
-   * Dlatego warunek jest postawiony na POJEMNIKU: kazda z tych czterech sekcji jest lista, a lista
+   * Dlatego warunek jest postawiony na POJEMNIKU: kazda z tych pieciu sekcji jest lista, a lista
    * ma kafelek, karte albo panel — i to jest struktura, ktorej nie da sie stracic, zostajac lista.
    * Chip per sekcja nie jest wymagany: sekcja, ktora naprawde nie ma nic w stanie, nie ma byc
    * zmuszana do dorobienia sobie chipa, zeby kryterium zzielenialo. */
-  it('gives EVERY one of the four a container corner, not just the four together', () => {
+  it('gives EVERY one of the five a container corner, not just the five together', () => {
     for (const section of SECTIONS) {
       const mine = radii
         .filter(([path]) => path.startsWith('src/sections/' + section + '/'))

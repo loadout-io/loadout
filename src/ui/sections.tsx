@@ -17,6 +17,7 @@ export const SECTIONS = [
   { id: 'agents', label: 'Agents', empty: 'Agents you add will be listed here.' },
   { id: 'skills', label: 'Skills', empty: 'Skills you write will be listed here.' },
   { id: 'memory', label: 'Memory', empty: 'What agents leave for each other lands here.' },
+  { id: 'triggers', label: 'Triggers', empty: 'Configured triggers will be listed here.' },
 ] as const;
 
 /* Bez routera, bez URL-i, bez historii: T8 §6.2 mówi wprost, że to jest `type Section`
