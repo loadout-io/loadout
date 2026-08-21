@@ -1,3 +1,6 @@
+/* AC-6 dla T-74: cztery nowe akcje mają jedną krawędź, literalną nazwę i komplet argumentów.
+ * Funkcje są wykonywane na atrapie `invoke`; grep po źródle przechodziłby dla martwej gałęzi.
+ * Lista przypadków porównuje się z nowymi eksportami io, więc piąty eksport bez sędziego pali. */
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +12,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: invoked }));
 
 const io = await import('./io');
 const GOLDEN = new URL('../../../src-tauri/commands.golden.txt', import.meta.url);
+const WIRED = new URL('../commands-wired.test.ts', import.meta.url);
+
 const KEY = 'lin_api_1234567890123456789012345678901234567890';
 const DRAFT: TriggerDraft = {
   source: 'linear',
@@ -36,27 +41,6 @@ interface Edge {
 }
 
 const EDGES: readonly Edge[] = [
-  {
-    exported: 'listTriggers',
-    command: 'list_triggers',
-    rustArguments: [],
-    sent: ['list_triggers'],
-    call: () => io.listTriggers(),
-  },
-  {
-    exported: 'setTriggerEnabled',
-    command: 'set_trigger_enabled',
-    rustArguments: ['slug', 'enabled'],
-    sent: ['set_trigger_enabled', { slug: 'assigned-to-me', enabled: false }],
-    call: () => io.setTriggerEnabled('assigned-to-me', false),
-  },
-  {
-    exported: 'checkTrigger',
-    command: 'check_trigger',
-    rustArguments: ['slug'],
-    sent: ['check_trigger', { slug: 'assigned-to-me' }],
-    call: () => io.checkTrigger('assigned-to-me'),
-  },
   {
     exported: 'createTrigger',
     command: 'create_trigger',
@@ -87,32 +71,66 @@ const EDGES: readonly Edge[] = [
   },
 ];
 
+const LEGACY = new Set(['listTriggers', 'setTriggerEnabled', 'checkTrigger']);
 const known = readFileSync(GOLDEN, 'utf8')
   .split('\n')
   .map((line) => line.trim())
   .filter((line) => line !== '' && !line.startsWith('#'));
 const rust = ipcSource();
 
-describe('every Triggers edge asks Rust once, by its registered name and arguments', () => {
+describe('every Linear editor action crosses its one named Rust edge', () => {
   beforeEach(() => invoked.mockClear());
 
-  it('covers every function exported by the Triggers edge', () => {
-    const exported = Object.entries(io)
+  it('has an executed case for every non-legacy function exported by trigger io', () => {
+    const editorExports = Object.entries(io)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
+      .filter((name) => !LEGACY.has(name))
       .sort();
-    expect(EDGES.map((edge) => edge.exported).sort()).toEqual(exported);
+    expect(EDGES.map((edge) => edge.exported).sort()).toEqual(editorExports);
+  });
+
+  it('also places all four real calls in the repository-wide EDGES table', () => {
+    const source = readFileSync(WIRED, 'utf8');
+    for (const edge of EDGES) {
+      const row = new RegExp(
+        `where:\\s*['"]triggers['"][\\s\\S]*?what:\\s*['"]${edge.exported}['"][\\s\\S]*?command:\\s*['"]${edge.command}['"]`,
+      );
+      expect(source, `${edge.exported} has no triggers row in commands-wired.test.ts`).toMatch(row);
+    }
   });
 
   for (const edge of EDGES) {
-    it(edge.exported + ' calls ' + edge.command + ' exactly once', async () => {
+    it(`${edge.exported} calls ${edge.command} once with every named argument`, async () => {
       expect(known.length, 'the golden command list was empty').toBeGreaterThan(0);
       expect(known).toContain(edge.command);
       expect(windowSideArguments(rust, edge.command)).toEqual(edge.rustArguments);
 
-      await edge.call();
+      let refusal: unknown = null;
+      try {
+        await edge.call();
+      } catch (error) {
+        refusal = error;
+      }
+      expect(
+        refusal instanceof Error ? refusal.message : String(refusal ?? ''),
+        `${edge.exported} is still only a red-before skeleton`,
+      ).not.toContain('not implemented');
       expect(invoked).toHaveBeenCalledTimes(1);
       expect(invoked).toHaveBeenCalledWith(...edge.sent);
     });
   }
+
+  it('carries the key only on explicit Test or Save requests, never Delete', async () => {
+    for (const edge of EDGES) {
+      try {
+        await edge.call();
+      } catch {
+        // The explicit assertions below distinguish a skeleton from a real request.
+      }
+    }
+    const calls = invoked.mock.calls.map((call) => JSON.stringify(call));
+    expect(calls.filter((call) => call.includes(KEY))).toHaveLength(3);
+    expect(calls.find((call) => call.includes('delete_trigger'))).not.toContain(KEY);
+  });
 });

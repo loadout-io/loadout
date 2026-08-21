@@ -1763,7 +1763,63 @@ pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), S
 pub async fn list_triggers(
     state: State<'_, AppState>,
 ) -> Result<Vec<commands::triggers::TriggerEntry>, String> {
-    commands::triggers::list(&state.home).map_err(|error| error.to_string())
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::list(&home))
+        .await
+        .map_err(|error| format!("Loadout could not finish reading the trigger list: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+/// Tworzy trigger z formularza; nazwe pliku wybija Rust, a odpowiedz jest zredagowana.
+#[tauri::command]
+pub async fn create_trigger(
+    state: State<'_, AppState>,
+    draft: commands::triggers::TriggerDraft,
+) -> Result<commands::triggers::TriggerEntry, String> {
+    commands::triggers::create(&state.home, draft).map_err(|error| error.to_string())
+}
+
+/// Zapisuje edycje tylko wtedy, gdy zredagowana migawka nadal opisuje ten sam plik.
+#[tauri::command]
+pub async fn update_trigger(
+    state: State<'_, AppState>,
+    slug: String,
+    expected: commands::triggers::TriggerSnapshot,
+    draft: commands::triggers::TriggerDraft,
+) -> Result<commands::triggers::TriggerEntry, String> {
+    commands::triggers::update(&state.home, &slug, &expected, draft)
+        .map_err(|error| error.to_string())
+}
+
+/// Potwierdzone Delete najpierw konczy nieprzyjete dostawy, potem chowa konfiguracje.
+#[tauri::command]
+pub async fn delete_trigger(
+    state: State<'_, AppState>,
+    slug: String,
+    expected: commands::triggers::TriggerSnapshot,
+) -> Result<(), String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::delete(&home, &slug, &expected))
+        .await
+        .map_err(|error| format!("Loadout could not finish deleting the trigger: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+/// Sprawdza nowy, zastepczy albo zapisany klucz bez odpytania issue i bez zapisu stanu.
+#[tauri::command]
+pub async fn test_linear_connection(
+    state: State<'_, AppState>,
+    slug: Option<String>,
+    api_key: Option<commands::triggers::Secret>,
+) -> Result<(), String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let key = commands::triggers::connection_key(&home, slug.as_deref(), api_key)?;
+        commands::triggers::test_connection(&key)
+    })
+    .await
+    .map_err(|error| format!("Loadout could not finish the Linear connection test: {error}"))?
+    .map_err(|error| error.to_string())
 }
 
 /// Trwały przełącznik jednego triggera. Sekret nigdy nie przekracza tej granicy.
@@ -1852,8 +1908,10 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         check_workflow,
         close_terminal,
         continue_run,
+        create_trigger,
         delete_agent,
         delete_skill,
+        delete_trigger,
         delete_workflow,
         delete_workspace,
         draft_skill,
@@ -1883,7 +1941,9 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         stop_draft,
         stop_process,
         stop_run,
-        stop_using_note
+        stop_using_note,
+        test_linear_connection,
+        update_trigger
     ]
 }
 

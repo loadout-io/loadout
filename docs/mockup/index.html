@@ -332,6 +332,14 @@ code,.mono,[data-copy]{font-family:var(--mono);user-select:text}
 .side h3{margin:0 0 3px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.08em;
   color:var(--muted);text-transform:uppercase}
 .side .lead{margin:0 0 14px;color:var(--body);font-size:12px}
+.side .fact{margin:0;padding:8px 9px;background:var(--well);border:1px solid var(--line);
+  border-radius:var(--radius-sm);color:var(--body);font-size:12px}
+.side .actions{display:flex;align-items:center;gap:7px;margin-top:14px;padding-top:12px;
+  border-top:1px solid var(--line)}
+.side .actions button,.hd .create{height:32px;padding:0 11px;border:1px solid var(--line-strong);
+  background:var(--well);color:var(--body)}
+.side .actions .save,.hd .create{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.side .actions .save{margin-left:auto}
 .fld{display:grid;gap:5px;margin-bottom:12px}
 /* ZDANIOWO od 2026-08-19 (T-45). Wersaliki na kazdej etykiecie pola sa najczestszym
    ruchem domyslnego panelu admina i pierwsza rzecza, po ktorej formularz przestaje
@@ -898,20 +906,29 @@ parser_rejects_ragged_rows ...... FAILED</div>
   <!-- ══ EKRAN: triggery ══ -->
   <section class="screen" data-screen="triggers">
     <div style="display:grid;grid-template-rows:auto minmax(0,1fr)">
-      <div class="hd"><h1>Triggers</h1><span class="sub">2 configured</span></div>
-      <div class="pane">
-        <div class="grid" style="max-width:760px">
-          <div class="tile">
-            <div class="th"><b>Linear · Assigned to you</b><span class="chip ok">on</span></div>
-            <p>Exact-diff delivery</p>
-            <div class="meta"><span>Watching for new issues. Nothing has started yet.</span>
-              <label style="margin-left:auto;display:flex;align-items:center;gap:7px">On <input type="checkbox" checked></label></div>
-          </div>
-          <div class="tile">
-            <div class="th"><b>weekly-triage</b><span class="chip you">needs attention</span></div>
-            <p>This trigger file is not valid JSON.</p>
+      <div class="hd"><h1>Triggers</h1><span class="sub">1 configured</span>
+        <span class="sp"><button class="create">Create trigger</button></span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 330px;min-height:0">
+        <div class="pane">
+          <div class="grid" style="max-width:760px">
+            <div class="tile">
+              <div class="th"><b>Linear · Assigned to you</b><span class="chip ok">on</span></div>
+              <p>Analysis · every 5 minutes</p>
+              <div class="meta"><span>Watching for new issues. Nothing has started yet.</span>
+                <label style="margin-left:auto;display:flex;align-items:center;gap:7px">On <input type="checkbox" checked></label></div>
+            </div>
           </div>
         </div>
+        <aside class="side">
+          <h3>New trigger</h3>
+          <p class="lead">Connect Linear and choose what should run when new work arrives.</p>
+          <div class="fld"><label>Connector</label><select><option>Choose a connector</option><option>Linear</option></select></div>
+          <div class="fld"><label>Linear API key</label><input type="password" placeholder="lin_api_…"><span class="note">Create or copy it in Linear Settings → Security &amp; access.</span></div>
+          <div class="fld"><label>When</label><p class="fact">An issue is assigned to you</p></div>
+          <div class="fld"><label>Check every</label><select><option selected>Every minute</option><option>Every 5 minutes</option><option>Every 15 minutes</option><option>Every hour</option></select></div>
+          <div class="fld"><label>Workflow</label><select><option>Analysis</option><option>Verify</option></select></div>
+          <div class="actions"><button>Test connection</button><button>Cancel</button><button class="save">Save</button></div>
+        </aside>
       </div>
     </div>
   </section>

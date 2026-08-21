@@ -6,17 +6,21 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
+use uuid::{Uuid, Version};
 
 pub const TRIGGERS_DIR: &str = "triggers";
+pub const DEFAULT_POLL_EVERY_MINUTES: u32 = 1;
+const TRIGGER_SCHEMA: u32 = 1;
 const API: &str = "https://api.linear.app/graphql";
 const TIMEOUT_SECONDS: u64 = 20;
-const QUERY: &str = "query AssignedToMe { issues(filter: { assignee: { isMe: { eq: true } } }, orderBy: updatedAt) { nodes { id identifier title url description updatedAt } } }";
+const MAX_API_KEY_BYTES: usize = 256;
+pub const ISSUES_QUERY: &str = "query AssignedToMe { issues(filter: { assignee: { isMe: { eq: true } } }, orderBy: updatedAt) { nodes { id identifier title url description updatedAt } } }";
+const VIEWER_QUERY: &str = "query ConnectionTest { viewer { id } }";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -58,7 +62,54 @@ pub struct Trigger {
     pub enabled: bool,
     pub workflow: String,
     pub condition: String,
+    #[serde(default = "default_poll_every_minutes")]
+    pub poll_every_minutes: u32,
     pub api_key: Secret,
+}
+
+const fn default_poll_every_minutes() -> u32 {
+    DEFAULT_POLL_EVERY_MINUTES
+}
+
+/// Dane wpisane w formularzu. Slug i `enabled` nie przychodza z okna: Rust wybija nazwe,
+/// a edycja zachowuje osobny, trwaly przelacznik z biblioteki.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriggerDraft {
+    pub source: String,
+    pub condition: String,
+    pub workflow: String,
+    pub poll_every_minutes: u32,
+    pub api_key: Option<Secret>,
+}
+
+impl fmt::Debug for TriggerDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let source = (self.source == "linear").then_some("linear");
+        let condition = (self.condition == "assigned-to-me").then_some("assigned-to-me");
+        formatter
+            .debug_struct("TriggerDraft")
+            .field("source", &source.unwrap_or("<redacted>"))
+            .field("condition", &condition.unwrap_or("<redacted>"))
+            .field("workflow", &"<selected>")
+            .field("poll_every_minutes", &self.poll_every_minutes)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Zredagowana migawka niesiona z listy do Edit/Delete jako ochrona przed utrata recznej zmiany.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriggerSnapshot {
+    pub slug: String,
+    pub source: Source,
+    pub condition: String,
+    pub workflow: String,
+    pub enabled: bool,
+    pub poll_every_minutes: u32,
+    #[serde(rename = "hasApiKey")]
+    pub key_saved: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +144,12 @@ pub struct TriggerEntry {
     /// Czy zegar ma pytac ten trigger.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Czestotliwosc sprawdzania; uszkodzony wpis nie zmysla wartosci.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_every_minutes: Option<u32>,
+    /// Sam fakt zapisania sekretu. Wartosc ani jej pochodna nie przekracza IPC.
+    #[serde(rename = "hasApiKey", skip_serializing_if = "Option::is_none")]
+    pub key_saved: Option<bool>,
     /// Nazwany problem z konkretnym plikiem; zdrowy wpis pomija to pole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
@@ -177,6 +234,8 @@ pub enum DeliveryState {
         /// Czas receipt w milisekundach epoki, zapisany przez Rust.
         accepted_at: i64,
     },
+    /// Delete trwale odrzucil dostawe, zanim konfiguracja zniknela z biblioteki.
+    Cancelled,
 }
 
 /// Zredagowane pochodzenie zapisane w pierwszym `run.json`.
@@ -201,10 +260,14 @@ pub enum TriggerError {
     InvalidConfig(serde_json::Error),
     #[error("Add a Linear API key as `api_key` in this trigger file, then try again.")]
     MissingKey,
+    #[error("Enter a Linear API key, then try again.")]
+    EditorMissingKey,
     #[error("The trigger source `{0}` is not available. Choose `linear`.")]
     UnknownSource(String),
     #[error("This trigger source is not available. Choose `linear`.")]
     UnknownSourceRedacted,
+    #[error("This trigger file uses an unsupported format version.")]
+    UnsupportedSchema,
     #[error("The Linear API key has an invalid shape. Replace it with a `lin_api_...` key.")]
     InvalidKey,
     #[error("Linear returned an empty response. Check the connection and try again.")]
@@ -213,18 +276,44 @@ pub enum TriggerError {
     HtmlAnswer,
     #[error("Linear returned data that is not JSON: {0}")]
     InvalidAnswer(serde_json::Error),
-    #[error("Linear refused the request: {0}")]
-    Api(String),
+    #[error("Linear refused the request. Check the key and try again.")]
+    Api,
     #[error("Linear's response did not contain an issue list.")]
     MissingIssues,
+    #[error("Linear did not confirm the signed-in account. Check the key and try again.")]
+    MissingViewer,
+    #[error("Linear refused this key. Replace it and try again.")]
+    ConnectionRefused,
     #[error("Loadout could not read the trigger cursor: {0}")]
     ReadCursor(io::Error),
     #[error("Loadout could not save the trigger cursor, so it did not accept the issue: {0}")]
     WriteCursor(io::Error),
     #[error("Loadout could not read the trigger library: {0}")]
     ReadLibrary(io::Error),
+    #[error("Loadout could not access the trigger folder: {0}")]
+    TriggerDirectory(io::Error),
+    #[error("Loadout's trigger folder must be a regular folder. Replace it, then try again.")]
+    UnsafeTriggerDirectory,
     #[error("Loadout could not save the trigger file: {0}")]
     WriteConfig(io::Error),
+    #[error("That trigger already exists. Create a new trigger instead.")]
+    AlreadyExists,
+    #[error("This trigger no longer exists. Reload the trigger list, then try again.")]
+    MissingConfig,
+    #[error("Choose an existing workflow before saving this trigger.")]
+    MissingWorkflow,
+    #[error("Choose how often to check Linear: 1, 5, 15 or 60 minutes.")]
+    InvalidCadence,
+    #[error("This trigger condition is not available. Choose issues assigned to you.")]
+    InvalidCondition,
+    #[error("This trigger is not a regular file, so Loadout left it unchanged.")]
+    NotRegularConfig,
+    #[error(
+        "Loadout is still finishing an earlier delete. Reload the trigger list, then try again."
+    )]
+    DeleteInProgress,
+    #[error("A run from this trigger is starting. Wait for it to start, then try deleting again.")]
+    RunStarting,
     #[error(
         "This trigger changed while Loadout was switching it. Review the file, then try again."
     )]
@@ -233,6 +322,8 @@ pub enum TriggerError {
     ReadLedger(io::Error),
     #[error("The trigger delivery ledger is invalid: {0}")]
     InvalidLedger(serde_json::Error),
+    #[error("The trigger delivery ledger uses an unsupported format version.")]
+    UnsupportedLedgerSchema,
     #[error("Loadout could not save the trigger delivery ledger: {0}")]
     WriteLedger(io::Error),
     #[error("This trigger delivery is no longer available. Check the trigger again.")]
@@ -251,8 +342,33 @@ pub enum TriggerError {
     CurlFailed(String),
 }
 
+/// Etapy odzyskiwalnego cleanupu po Delete. Tombstone jest ostatnim, atomowym commitem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanupStage {
+    WritingCandidate,
+    BeforeWritingRemoval,
+    AfterLedger,
+    AfterCursor,
+    BeforeCommit,
+    AfterCommit,
+}
+
 /// Wypisuje cala biblioteke bez sekretow, lacznie z nazwanymi problemami pojedynczych plikow.
 pub fn list(home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
+    list_with_cleanup(home, |_, _| Ok(()))
+}
+
+/// Produkcyjna lista z fault seamem dowodzacym, ze tombstone pozostaje czytelnikiem do commit.
+pub fn list_with_cleanup<F>(home: &Path, mut observe: F) -> Result<Vec<TriggerEntry>, TriggerError>
+where
+    F: FnMut(CleanupStage, &Path) -> io::Result<()>,
+{
+    let _config_guard = config_guard();
+    let Some(_) = existing_trigger_dir(home)? else {
+        return Ok(Vec::new());
+    };
+    cleanup_writing_files(home, &mut observe)?;
+    cleanup_tombstones(home, &mut observe)?;
     let dir = home.join(TRIGGERS_DIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -269,10 +385,25 @@ pub fn list(home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
         let is_json = Path::new(&name)
             .extension()
             .is_some_and(|extension| extension == "json");
-        if !kind.is_file() || name.starts_with('.') || !is_json {
+        if name.starts_with('.') || !is_json {
             continue;
         }
         let slug = name.trim_end_matches(".json").to_owned();
+        if !kind.is_file() {
+            out.push(TriggerEntry {
+                slug,
+                source: None,
+                condition: None,
+                workflow: None,
+                enabled: None,
+                poll_every_minutes: None,
+                key_saved: None,
+                problem: Some(
+                    "This trigger is not a regular file, so Loadout left it unchanged.".to_owned(),
+                ),
+            });
+            continue;
+        }
         match load(home, &slug) {
             Ok(trigger) => out.push(TriggerEntry {
                 slug,
@@ -280,6 +411,8 @@ pub fn list(home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
                 condition: Some(trigger.condition),
                 workflow: Some(trigger.workflow),
                 enabled: Some(trigger.enabled),
+                poll_every_minutes: Some(trigger.poll_every_minutes),
+                key_saved: Some(true),
                 problem: None,
             }),
             Err(error) => out.push(TriggerEntry {
@@ -288,6 +421,8 @@ pub fn list(home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
                 condition: None,
                 workflow: None,
                 enabled: None,
+                poll_every_minutes: None,
+                key_saved: None,
                 // Biblioteka jest granica redakcji. Nawet wartosc wpisana omylkowo w `source`
                 // nie moze stac sie komunikatem, bo mogla byc sekretem w zlym polu.
                 problem: Some(library_problem(&error)),
@@ -296,6 +431,210 @@ pub fn list(home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
     }
     out.sort_by(|left, right| left.slug.cmp(&right.slug));
     Ok(out)
+}
+
+/// Rozpoznawalne `.writing` sa plikami transakcji Loadoutu, wiec prawdziwa lista jest ich
+/// czytelnikiem po awarii procesu. Nieznane dotfile, katalogi i symlinki zostaja nietkniete.
+fn cleanup_writing_files<F>(home: &Path, observe: &mut F) -> Result<(), TriggerError>
+where
+    F: FnMut(CleanupStage, &Path) -> io::Result<()>,
+{
+    let dir = home.join(TRIGGERS_DIR);
+    let entries = fs::read_dir(&dir).map_err(TriggerError::ReadLibrary)?;
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry.map_err(TriggerError::ReadLibrary)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(owner) = recognized_writing_file(&name) else {
+            continue;
+        };
+        let kind = entry.file_type().map_err(TriggerError::ReadLibrary)?;
+        if !kind.is_file() || kind.is_symlink() {
+            continue;
+        }
+        observe(CleanupStage::WritingCandidate, &entry.path())
+            .map_err(TriggerError::WriteConfig)?;
+        let ledger_lock = match owner {
+            WritingOwner::Config => None,
+            WritingOwner::Ledger(slug) => Some(ledger_lock_for(home, &slug)?),
+        };
+        let _ledger_guard = ledger_lock
+            .as_ref()
+            .map(|lock| lock.lock().unwrap_or_else(PoisonError::into_inner));
+        let metadata = match fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            // Wlasciciel mogl opublikowac aktywny temp przez rename, zanim cleanup przejal
+            // jego slug lock. Brak starej nazwy jest wtedy sukcesem transakcji, nie awaria listy.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(TriggerError::ReadLibrary(error)),
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        observe(CleanupStage::BeforeWritingRemoval, &entry.path())
+            .map_err(TriggerError::WriteConfig)?;
+        fs::remove_file(entry.path()).map_err(TriggerError::WriteConfig)?;
+        removed = true;
+    }
+    if removed {
+        File::open(&dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(TriggerError::WriteConfig)?;
+    }
+    Ok(())
+}
+
+enum WritingOwner {
+    Config,
+    Ledger(String),
+}
+
+fn recognized_writing_file(name: &str) -> Option<WritingOwner> {
+    let body = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".writing"))?;
+
+    // `create_with`: `.linear-<uuid-v7>-<tempfile random>.writing`.
+    if let Some(rest) = body.strip_prefix("linear-") {
+        let bytes = rest.as_bytes();
+        if bytes.len() > 37 && bytes.get(36) == Some(&b'-') {
+            let uuid = std::str::from_utf8(&bytes[..36])
+                .ok()
+                .and_then(|raw| Uuid::parse_str(raw).ok());
+            let random = &bytes[37..];
+            if uuid.is_some_and(|id| id.get_version() == Some(Version::SortRand))
+                && !random.is_empty()
+                && random.iter().all(u8::is_ascii_alphanumeric)
+            {
+                return Some(WritingOwner::Config);
+            }
+        }
+    }
+
+    // `replace_atomically`: `.<regular-name>.json-<pid>-<nonce>.writing`.
+    let (with_pid, nonce) = body.rsplit_once('-')?;
+    let (file, pid) = with_pid.rsplit_once('-')?;
+    let slug = file.strip_suffix(".json")?;
+    let recognized = !pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && !nonce.is_empty()
+        && nonce.bytes().all(|byte| byte.is_ascii_digit())
+        && valid_slug(slug).is_ok();
+    if !recognized {
+        return None;
+    }
+    match slug.strip_suffix(".ledger") {
+        Some(trigger_slug) if valid_slug(trigger_slug).is_ok() => {
+            Some(WritingOwner::Ledger(trigger_slug.to_owned()))
+        }
+        _ => Some(WritingOwner::Config),
+    }
+}
+
+/// Tombstone jest czytany przez prawdziwa sciezke listy: po crashu Delete nastepny odczyt
+/// konczy cleanup konfiguracji i jej lokalnego stanu, zamiast zostawiac martwy artefakt.
+fn cleanup_tombstones<F>(home: &Path, observe: &mut F) -> Result<(), TriggerError>
+where
+    F: FnMut(CleanupStage, &Path) -> io::Result<()>,
+{
+    let dir = home.join(TRIGGERS_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(TriggerError::ReadLibrary(error)),
+    };
+    let mut tombstones = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(TriggerError::ReadLibrary)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(slug) = name
+            .strip_prefix('.')
+            .and_then(|name| name.strip_suffix(".deleted.json"))
+        else {
+            continue;
+        };
+        if valid_slug(slug).is_err() {
+            continue;
+        }
+        let tombstone_kind = entry.file_type().map_err(TriggerError::ReadLibrary)?;
+        if !tombstone_kind.is_file() || tombstone_kind.is_symlink() {
+            continue;
+        }
+        tombstones.push((slug.to_owned(), entry.path()));
+    }
+    if tombstones.is_empty() {
+        return Ok(());
+    }
+
+    for (slug, tombstone) in tombstones {
+        // Zwykla lista nie czeka na siec innego triggera. Bierzemy zamek tylko tego sluga,
+        // ktorego marker sprzatamy; kolejnosc pozostaje config -> ledger konkretnego sluga.
+        let ledger_lock = ledger_lock_for(home, &slug)?;
+        let _ledger_guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let metadata = fs::symlink_metadata(&tombstone).map_err(TriggerError::ReadLibrary)?;
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let visible = home.join(TRIGGERS_DIR).join(format!("{slug}.json"));
+        match fs::symlink_metadata(&visible) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(TriggerError::ReadLibrary(error)),
+        }
+        let ledger_file = ledger_path(home, &slug)?;
+        let ledger = match fs::symlink_metadata(&ledger_file) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(TriggerError::ReadLedger(error)),
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let raw = fs::read(&ledger_file).map_err(TriggerError::ReadLedger)?;
+                Some(parse_ledger(&raw)?)
+            }
+            Ok(_) => {
+                return Err(TriggerError::ReadLedger(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "trigger ledger is not a regular file",
+                )));
+            }
+        };
+        if ledger.as_ref().is_some_and(|ledger| {
+            ledger.deliveries.iter().any(|record| {
+                matches!(
+                    &record.state,
+                    DeliveryState::Pending | DeliveryState::Bound { .. }
+                )
+            })
+        }) {
+            return Err(TriggerError::DeleteInProgress);
+        }
+        remove_if_present(&ledger_file).map_err(TriggerError::WriteConfig)?;
+        observe(CleanupStage::AfterLedger, &tombstone).map_err(TriggerError::WriteConfig)?;
+        remove_if_present(&cursor_path(home, &slug)).map_err(TriggerError::WriteConfig)?;
+        observe(CleanupStage::AfterCursor, &tombstone).map_err(TriggerError::WriteConfig)?;
+        // Pierwsza bariera czyni usuniecie sidecarow trwalym ZANIM zniknie jedyny czytelnik
+        // recovery. Power loss nie moze zostawic ledgera bez tombstone'a, ktory go posprzata.
+        File::open(&dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(TriggerError::WriteConfig)?;
+        observe(CleanupStage::BeforeCommit, &tombstone).map_err(TriggerError::WriteConfig)?;
+        remove_if_present(&tombstone).map_err(TriggerError::WriteConfig)?;
+        observe(CleanupStage::AfterCommit, &tombstone).map_err(TriggerError::WriteConfig)?;
+        File::open(&dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(TriggerError::WriteConfig)?;
+    }
+    Ok(())
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn library_problem(error: &TriggerError) -> String {
@@ -307,6 +646,15 @@ fn library_problem(error: &TriggerError) -> String {
         }
         TriggerError::UnknownSource(_) | TriggerError::UnknownSourceRedacted => {
             "This trigger uses an unavailable source. Choose linear.".to_owned()
+        }
+        TriggerError::UnsupportedSchema => {
+            "This trigger uses an unsupported file format.".to_owned()
+        }
+        TriggerError::InvalidCondition => {
+            "This trigger needs the assigned-to-me condition.".to_owned()
+        }
+        TriggerError::InvalidCadence => {
+            "This trigger needs a 1, 5, 15 or 60 minute schedule.".to_owned()
         }
         _ => "This trigger file could not be loaded.".to_owned(),
     }
@@ -339,7 +687,8 @@ where
 {
     let _guard = config_guard();
     valid_slug(slug)?;
-    let path = home.join(TRIGGERS_DIR).join(format!("{slug}.json"));
+    let dir = require_trigger_dir(home)?;
+    let path = dir.join(format!("{slug}.json"));
     let mut original = File::open(&path).map_err(TriggerError::ReadConfig)?;
     let permissions = original
         .metadata()
@@ -373,7 +722,343 @@ where
         condition: Some(trigger.condition),
         workflow: Some(trigger.workflow),
         enabled: Some(trigger.enabled),
+        poll_every_minutes: Some(trigger.poll_every_minutes),
+        key_saved: Some(true),
         problem: None,
+    })
+}
+
+/// Punkty obserwacji zapisu formularza. Sedzia widzi kolejnosc, ale nigdy bajty z sekretem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorStage {
+    /// Plik tymczasowy ma juz prywatne prawa, lecz nie ma jeszcze tresci.
+    BeforeContent,
+    /// Pelna tresc jest trwala; za chwile zapis sprawdzi migawke i opublikuje plik.
+    BeforeCompare,
+}
+
+/// Punkty obserwacji Delete oddzielaja trwaly koniec pracy od atomowego znikniecia configu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteStage {
+    /// Pending sa juz trwale anulowane, ale konfiguracja nadal jest widoczna.
+    AfterCancellation,
+    /// Konfiguracja ma juz ukryta nazwe; cleanup moze zostac dokonczony po restarcie.
+    AfterHide,
+}
+
+/// Tworzy kompletny trigger pod slugiem wybitym przez Rust.
+pub fn create(home: &Path, draft: TriggerDraft) -> Result<TriggerEntry, TriggerError> {
+    create_with(home, draft, Uuid::now_v7, |_, _| Ok(()))
+}
+
+/// Wariant z obserwatorem dla dowodu praw i publikacji no-clobber.
+pub fn create_with<M, F>(
+    home: &Path,
+    draft: TriggerDraft,
+    mint: M,
+    mut observe: F,
+) -> Result<TriggerEntry, TriggerError>
+where
+    M: FnOnce() -> Uuid,
+    F: FnMut(EditorStage, &Path) -> io::Result<()>,
+{
+    let _guard = config_guard();
+    let trigger = trigger_from_draft(home, draft, TRIGGER_SCHEMA, true, None)?;
+    let slug = format!("linear-{}", mint());
+    let parent = ensure_trigger_dir(home)?;
+    let path = parent.join(format!("{slug}.json"));
+    let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(&format!(".{slug}-"))
+        .suffix(".writing")
+        .tempfile_in(&parent)
+        .map_err(TriggerError::WriteConfig)?;
+    // `tempfile` otwiera plik z 0600 w samym create(2), przed tym seamem i pierwszym bajtem.
+    // To zachowuje niezmiennik 3: kod platformowy zostaje w zaleznosci, nie w tym module.
+    observe(EditorStage::BeforeContent, temporary.path()).map_err(TriggerError::WriteConfig)?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(TriggerError::WriteConfig)?;
+    observe(EditorStage::BeforeCompare, temporary.path()).map_err(TriggerError::WriteConfig)?;
+    let persisted = match temporary.persist_noclobber(&path) {
+        Ok(file) => file,
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(TriggerError::AlreadyExists);
+        }
+        Err(error) => return Err(TriggerError::WriteConfig(error.error)),
+    };
+    drop(persisted);
+    File::open(&parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(TriggerError::WriteConfig)?;
+    Ok(entry_for(&slug, &trigger))
+}
+
+/// Zmienia niesekretne pola, a pusty klucz zachowuje sekret ze swiezej wersji pliku.
+pub fn update(
+    home: &Path,
+    slug: &str,
+    expected: &TriggerSnapshot,
+    draft: TriggerDraft,
+) -> Result<TriggerEntry, TriggerError> {
+    update_with(home, slug, expected, draft, |_, _| Ok(()))
+}
+
+/// Wariant z obserwatorem dla deterministycznego testu konfliktu i praw pliku.
+pub fn update_with<F>(
+    home: &Path,
+    slug: &str,
+    expected: &TriggerSnapshot,
+    draft: TriggerDraft,
+    mut observe: F,
+) -> Result<TriggerEntry, TriggerError>
+where
+    F: FnMut(EditorStage, &Path) -> io::Result<()>,
+{
+    let _guard = config_guard();
+    valid_slug(slug)?;
+    let dir = require_trigger_dir(home)?;
+    let path = dir.join(format!("{slug}.json"));
+    let (snapshot, permissions) = read_regular_config(&path)?;
+    let current = parse_trigger(&snapshot)?;
+    if snapshot_for(slug, &current) != *expected {
+        return Err(TriggerError::ConfigChanged);
+    }
+    let trigger = trigger_from_draft(
+        home,
+        draft,
+        current.schema,
+        current.enabled,
+        Some(current.api_key),
+    )?;
+    let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
+    let mut editor_observer = |stage, path: &Path| {
+        let stage = match stage {
+            ToggleStage::BeforeContent => EditorStage::BeforeContent,
+            ToggleStage::BeforeCompare => EditorStage::BeforeCompare,
+        };
+        observe(stage, path)
+    };
+    match replace_atomically(
+        &path,
+        &bytes,
+        Some(permissions),
+        Some(&snapshot),
+        &mut editor_observer,
+    )
+    .map_err(TriggerError::WriteConfig)?
+    {
+        Replaced::Saved => Ok(entry_for(slug, &trigger)),
+        Replaced::Changed => Err(TriggerError::ConfigChanged),
+    }
+}
+
+/// Konczy nieprzyjeta prace i usuwa konfiguracje bez okna z aktywnym configiem nad ledgerem.
+pub fn delete(home: &Path, slug: &str, expected: &TriggerSnapshot) -> Result<(), TriggerError> {
+    delete_with(home, slug, expected, |_, _| Ok(()))
+}
+
+/// Wariant z obserwatorem zasadza awarie po obu stronach atomowego ukrycia konfiguracji.
+pub fn delete_with<F>(
+    home: &Path,
+    slug: &str,
+    expected: &TriggerSnapshot,
+    mut observe: F,
+) -> Result<(), TriggerError>
+where
+    F: FnMut(DeleteStage, &Path) -> io::Result<()>,
+{
+    let _config_guard = config_guard();
+    valid_slug(slug)?;
+    let ledger_lock = ledger_lock_for(home, slug)?;
+    let _ledger_guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = require_trigger_dir(home)?;
+    let path = dir.join(format!("{slug}.json"));
+    let (snapshot, _) = read_regular_config(&path)?;
+    let trigger = parse_trigger(&snapshot)?;
+    if snapshot_for(slug, &trigger) != *expected {
+        return Err(TriggerError::ConfigChanged);
+    }
+    let tombstone = tombstone_path(home, slug);
+    match fs::symlink_metadata(&tombstone) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(TriggerError::ReadConfig(error)),
+        Ok(_) => return Err(TriggerError::DeleteInProgress),
+    }
+
+    let mut ledger = read_ledger(home, slug)?;
+    // Bound nalezy juz do drogi Startu. Delete nie moze cofnac tego wiazania ani schowac
+    // konfiguracji przed pierwszym run.json; operator powinien dokonczyc Start, potem usunac.
+    if ledger
+        .deliveries
+        .iter()
+        .any(|record| matches!(&record.state, DeliveryState::Bound { .. }))
+    {
+        return Err(TriggerError::RunStarting);
+    }
+    let mut cancelled = false;
+    for record in &mut ledger.deliveries {
+        if matches!(&record.state, DeliveryState::Pending) {
+            record.state = DeliveryState::Cancelled;
+            cancelled = true;
+        }
+    }
+    if cancelled {
+        write_ledger(home, slug, &ledger)?;
+    }
+    observe(DeleteStage::AfterCancellation, &path).map_err(TriggerError::WriteConfig)?;
+
+    // Reczna zmiana publicznych pol po potwierdzeniu zostaje widoczna. Ledger jest juz
+    // bezpiecznie anulowany, wiec odmowa nie zostawia pracy udajacej Pending.
+    let (current, _) = read_regular_config(&path)?;
+    if current != snapshot {
+        return Err(TriggerError::ConfigChanged);
+    }
+    fs::rename(&path, &tombstone).map_err(TriggerError::WriteConfig)?;
+    let parent = path.parent().ok_or_else(|| {
+        TriggerError::WriteConfig(io::Error::other("trigger file has no parent directory"))
+    })?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(TriggerError::WriteConfig)?;
+    observe(DeleteStage::AfterHide, &tombstone).map_err(TriggerError::WriteConfig)?;
+    Ok(())
+}
+
+/// Rozstrzyga klucz podany w formularzu albo zapisany pod slugiem; niczego nie zapisuje.
+pub fn connection_key(
+    home: &Path,
+    slug: Option<&str>,
+    api_key: Option<Secret>,
+) -> Result<Secret, TriggerError> {
+    let key = if let Some(key) = api_key {
+        key
+    } else {
+        let slug = slug.ok_or(TriggerError::EditorMissingKey)?;
+        valid_slug(slug)?;
+        let path = require_trigger_dir(home)?.join(format!("{slug}.json"));
+        let (raw, _) = read_regular_config(&path)?;
+        parse_trigger(&raw)?.api_key
+    };
+    if !valid_key(key.as_str()) {
+        return Err(TriggerError::InvalidKey);
+    }
+    Ok(key)
+}
+
+fn trigger_from_draft(
+    home: &Path,
+    draft: TriggerDraft,
+    schema: u32,
+    enabled: bool,
+    saved_key: Option<Secret>,
+) -> Result<Trigger, TriggerError> {
+    let TriggerDraft {
+        source,
+        condition,
+        workflow,
+        poll_every_minutes,
+        api_key,
+    } = draft;
+    if source != "linear" {
+        return Err(TriggerError::UnknownSourceRedacted);
+    }
+    if condition != "assigned-to-me" {
+        return Err(TriggerError::InvalidCondition);
+    }
+    if !valid_cadence(poll_every_minutes) {
+        return Err(TriggerError::InvalidCadence);
+    }
+    let api_key = api_key
+        .or(saved_key)
+        .ok_or(TriggerError::EditorMissingKey)?;
+    if !valid_key(api_key.as_str()) {
+        return Err(TriggerError::InvalidKey);
+    }
+    // Ten sam loader, ktory zasila prawdziwa biblioteke, jest jedyna odpowiedzia na pytanie,
+    // czy wybrana nazwa istnieje i nie wychodzi przez `../` poza katalog workflow.
+    super::workflows::load_workflow_inner(home, &workflow)
+        .map_err(|_| TriggerError::MissingWorkflow)?;
+    Ok(Trigger {
+        schema,
+        source: Source::Linear,
+        enabled,
+        workflow,
+        condition,
+        poll_every_minutes,
+        api_key,
+    })
+}
+
+fn read_regular_config(path: &Path) -> Result<(Vec<u8>, fs::Permissions), TriggerError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(TriggerError::MissingConfig);
+        }
+        Err(error) => return Err(TriggerError::ReadConfig(error)),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(TriggerError::NotRegularConfig);
+    }
+    let mut file = File::open(path).map_err(TriggerError::ReadConfig)?;
+    if !file.metadata().map_err(TriggerError::ReadConfig)?.is_file() {
+        return Err(TriggerError::NotRegularConfig);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(TriggerError::ReadConfig)?;
+    Ok((bytes, metadata.permissions()))
+}
+
+fn snapshot_for(slug: &str, trigger: &Trigger) -> TriggerSnapshot {
+    TriggerSnapshot {
+        slug: slug.to_owned(),
+        source: trigger.source.clone(),
+        condition: trigger.condition.clone(),
+        workflow: trigger.workflow.clone(),
+        enabled: trigger.enabled,
+        poll_every_minutes: trigger.poll_every_minutes,
+        key_saved: true,
+    }
+}
+
+fn entry_for(slug: &str, trigger: &Trigger) -> TriggerEntry {
+    TriggerEntry {
+        slug: slug.to_owned(),
+        source: Some(trigger.source.clone()),
+        condition: Some(trigger.condition.clone()),
+        workflow: Some(trigger.workflow.clone()),
+        enabled: Some(trigger.enabled),
+        poll_every_minutes: Some(trigger.poll_every_minutes),
+        key_saved: Some(true),
+        problem: None,
+    }
+}
+
+/// Probe nie przyjmuje `home`: w jego typie nie istnieje sciezka do kursora ani ledgeru.
+pub fn test_connection_with<F>(api_key: &Secret, fetch: F) -> Result<(), TriggerError>
+where
+    F: FnOnce(&Secret, &str) -> Result<Vec<u8>, TriggerError>,
+{
+    if !valid_key(api_key.as_str()) {
+        return Err(TriggerError::InvalidKey);
+    }
+    let answer = fetch(api_key, VIEWER_QUERY)?;
+    parse_connection_response(&answer)
+}
+
+/// Produkcyjny probe uzywa tego samego bezpiecznego budowniczego curl co watcher.
+pub fn test_connection(api_key: &Secret) -> Result<(), TriggerError> {
+    test_connection_with(api_key, |key, query| {
+        let output = build_linear_curl_command(key, query)
+            .output()
+            .map_err(TriggerError::Start)?;
+        if !output.status.success() {
+            return Err(TriggerError::CurlFailed(output.status.to_string()));
+        }
+        Ok(output.stdout)
     })
 }
 
@@ -390,17 +1075,20 @@ pub fn poll_with<F>(
 where
     F: FnOnce(&Trigger) -> Result<Vec<u8>, TriggerError>,
 {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let trigger = load(home, slug)?;
     let mut ledger = read_ledger(home, slug)?;
     // 2026-08-21, T-65: poll zna tylko `home`, nie zaufany root projektu. Bound pozostaje
     // lokalnym Pending; jedyne pogodzenie `run.json` robi droga Startu po dowodzie sciezki.
     // Inaczej symlink w zapisanym run_file pozwolilby samemu watcherowi zaakceptowac obcy plik.
     if ledger.cursor_dirty
-        && ledger
-            .deliveries
-            .iter()
-            .any(|record| !matches!(&record.state, DeliveryState::Accepted { .. }))
+        && ledger.deliveries.iter().any(|record| {
+            matches!(
+                &record.state,
+                DeliveryState::Pending | DeliveryState::Bound { .. }
+            )
+        })
     {
         // Ledger jest prawda o identyfikatorach. Po awarii kursora najpierw oddajemy juz
         // zapisana prace; nastepny czysty tick znow pobierze wszystkie unseen.
@@ -482,12 +1170,26 @@ where
     Ok(poll_fallback(&ledger))
 }
 
+/// Prawdziwa krawedz watchera z wstrzyknietym wykonaniem procesu do deterministycznego testu.
+pub fn poll_with_curl_runner<F>(
+    home: &Path,
+    slug: &str,
+    created_at: i64,
+    run: F,
+) -> Result<TriggerPoll, TriggerError>
+where
+    F: FnOnce(Command, &str) -> Result<Vec<u8>, TriggerError>,
+{
+    poll_with(home, slug, created_at, |trigger| {
+        let config = curl_config(trigger);
+        run(build_curl_command(trigger), &config)
+    })
+}
+
 /// Produkcyjny wariant [`poll_with`], którego fetcherem jest bezpieczna komenda `curl`.
 pub fn poll(home: &Path, slug: &str, created_at: i64) -> Result<TriggerPoll, TriggerError> {
-    poll_with(home, slug, created_at, |trigger| {
-        let output = build_curl_command(trigger)
-            .output()
-            .map_err(TriggerError::Start)?;
+    poll_with_curl_runner(home, slug, created_at, |mut command, _| {
+        let output = command.output().map_err(TriggerError::Start)?;
         if !output.status.success() {
             return Err(TriggerError::CurlFailed(output.status.to_string()));
         }
@@ -502,7 +1204,8 @@ pub fn bind_delivery(
     claim: &TriggerClaim,
     run_file: &Path,
 ) -> Result<(), TriggerError> {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, &claim.slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ledger = read_ledger(home, &claim.slug)?;
     let record = exact_record_mut(&mut ledger, claim)?;
     match &record.state {
@@ -519,12 +1222,14 @@ pub fn bind_delivery(
         DeliveryState::Bound { .. } | DeliveryState::Accepted { .. } => {
             Err(TriggerError::InvalidClaim)
         }
+        DeliveryState::Cancelled => Err(TriggerError::InvalidClaim),
     }
 }
 
 /// Cofa wiazanie, jezeli plan odmowil zanim powstal pierwszy `run.json`.
 pub fn release_delivery(home: &Path, claim: &TriggerClaim) -> Result<(), TriggerError> {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, &claim.slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ledger = read_ledger(home, &claim.slug)?;
     let record = exact_record_mut(&mut ledger, claim)?;
     if matches!(&record.state, DeliveryState::Bound { .. }) {
@@ -541,7 +1246,8 @@ pub fn accept_delivery(
     run_file: &Path,
     accepted_at: i64,
 ) -> Result<(), TriggerError> {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, &claim.slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ledger = read_ledger(home, &claim.slug)?;
     accept_in_ledger(&mut ledger, claim, run_file, accepted_at)?;
     write_ledger(home, &claim.slug, &ledger)
@@ -557,7 +1263,8 @@ pub fn reconcile_delivery<F>(
 where
     F: FnOnce(&Path) -> io::Result<Option<Vec<u8>>>,
 {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, &claim.slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ledger = read_ledger(home, &claim.slug)?;
     let before = delivery_state(&ledger, claim)?.clone();
     reconcile_one(&mut ledger, claim, durable_read)?;
@@ -571,7 +1278,8 @@ where
 /// Trwaly receipt, ktory wolno pokazac podczas innego biegu bez fetchu i bez zapisu.
 /// Pending albo bound ma pierwszenstwo: wtedy UI dostaje zwykle `busy`, nie stary sukces.
 pub fn accepted_while_busy(home: &Path, slug: &str) -> Result<Option<TriggerPoll>, TriggerError> {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let ledger = read_ledger(home, slug)?;
     if pending_deliveries(&ledger).next().is_some() {
         return Ok(None);
@@ -584,9 +1292,14 @@ pub fn claimed_delivery(
     home: &Path,
     claim: &TriggerClaim,
 ) -> Result<TriggerDelivery, TriggerError> {
-    let _guard = ledger_guard();
+    let ledger_lock = ledger_lock_for(home, &claim.slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let ledger = read_ledger(home, &claim.slug)?;
-    Ok(exact_record(&ledger, claim)?.delivery.clone())
+    let record = exact_record(&ledger, claim)?;
+    if matches!(&record.state, DeliveryState::Cancelled) {
+        return Err(TriggerError::InvalidClaim);
+    }
+    Ok(record.delivery.clone())
 }
 
 const LEDGER_SCHEMA: u32 = 1;
@@ -630,9 +1343,60 @@ struct RunReceipt {
     trigger_origin: TriggerOrigin,
 }
 
-fn ledger_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn existing_trigger_dir(home: &Path) -> Result<Option<PathBuf>, TriggerError> {
+    let dir = home.join(TRIGGERS_DIR);
+    match fs::symlink_metadata(&dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(TriggerError::TriggerDirectory(error)),
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(Some(dir)),
+        Ok(_) => Err(TriggerError::UnsafeTriggerDirectory),
+    }
+}
+
+fn require_trigger_dir(home: &Path) -> Result<PathBuf, TriggerError> {
+    existing_trigger_dir(home)?.ok_or(TriggerError::MissingConfig)
+}
+
+fn ensure_trigger_dir(home: &Path) -> Result<PathBuf, TriggerError> {
+    if let Some(dir) = existing_trigger_dir(home)? {
+        return Ok(dir);
+    }
+    fs::create_dir_all(home).map_err(TriggerError::TriggerDirectory)?;
+    let dir = home.join(TRIGGERS_DIR);
+    match fs::create_dir(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(TriggerError::TriggerDirectory(error)),
+    }
+    existing_trigger_dir(home)?.ok_or(TriggerError::UnsafeTriggerDirectory)
+}
+
+fn require_regular_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "trigger folder is not a regular directory",
+        ))
+    }
+}
+
+fn ledger_locks() -> &'static Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn ledger_lock_for(home: &Path, slug: &str) -> Result<Arc<Mutex<()>>, TriggerError> {
+    valid_slug(slug)?;
+    let key = home.join(TRIGGERS_DIR).join(slug);
+    let mut locks = ledger_locks()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Ok(Arc::clone(
+        locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))),
+    ))
 }
 
 fn config_lock() -> &'static Mutex<()> {
@@ -644,26 +1408,34 @@ fn config_guard() -> MutexGuard<'static, ()> {
     config_lock().lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn ledger_guard() -> MutexGuard<'static, ()> {
-    ledger_lock().lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 fn ledger_path(home: &Path, slug: &str) -> Result<PathBuf, TriggerError> {
     valid_slug(slug)?;
     Ok(home.join(TRIGGERS_DIR).join(format!(".{slug}.ledger.json")))
 }
 
 fn read_ledger(home: &Path, slug: &str) -> Result<Ledger, TriggerError> {
+    if existing_trigger_dir(home)?.is_none() {
+        return Ok(Ledger::default());
+    }
     let path = ledger_path(home, slug)?;
     let raw = match fs::read(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Ledger::default()),
         Err(error) => return Err(TriggerError::ReadLedger(error)),
     };
-    serde_json::from_slice(&raw).map_err(TriggerError::InvalidLedger)
+    parse_ledger(&raw)
+}
+
+fn parse_ledger(raw: &[u8]) -> Result<Ledger, TriggerError> {
+    let ledger: Ledger = serde_json::from_slice(raw).map_err(TriggerError::InvalidLedger)?;
+    if ledger.schema != LEDGER_SCHEMA {
+        return Err(TriggerError::UnsupportedLedgerSchema);
+    }
+    Ok(ledger)
 }
 
 fn write_ledger(home: &Path, slug: &str, ledger: &Ledger) -> Result<(), TriggerError> {
+    ensure_trigger_dir(home)?;
     let path = ledger_path(home, slug)?;
     let bytes = serde_json::to_vec_pretty(ledger).map_err(TriggerError::InvalidLedger)?;
     let permissions = fs::metadata(&path).ok().map(|meta| meta.permissions());
@@ -691,7 +1463,7 @@ where
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("file has no parent directory"))?;
-    fs::create_dir_all(parent)?;
+    require_regular_directory(parent)?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
@@ -781,10 +1553,12 @@ fn pending_poll(ledger: &Ledger) -> Option<TriggerPoll> {
 /// Jedna definicja "jeszcze nie przyjete": `pending` i crash-window `bound` sa dalej praca,
 /// ktora musi wygrac z historycznym receipt w pollu oraz w busy guardzie.
 fn pending_deliveries(ledger: &Ledger) -> impl Iterator<Item = &DeliveryRecord> {
-    ledger
-        .deliveries
-        .iter()
-        .filter(|record| !matches!(&record.state, DeliveryState::Accepted { .. }))
+    ledger.deliveries.iter().filter(|record| {
+        matches!(
+            &record.state,
+            DeliveryState::Pending | DeliveryState::Bound { .. }
+        )
+    })
 }
 
 fn accepted_poll(ledger: &Ledger) -> Option<TriggerPoll> {
@@ -795,7 +1569,7 @@ fn accepted_poll(ledger: &Ledger) -> Option<TriggerPoll> {
             DeliveryState::Accepted { accepted_at, .. } => {
                 Some((*accepted_at, record.delivery.claim.workflow.as_str()))
             }
-            DeliveryState::Pending | DeliveryState::Bound { .. } => None,
+            DeliveryState::Pending | DeliveryState::Bound { .. } | DeliveryState::Cancelled => None,
         })
         .max_by_key(|(accepted_at, _)| *accepted_at)
         .map(|(receipt_at, workflow)| TriggerPoll::Accepted {
@@ -847,7 +1621,9 @@ fn receipt_matches(
 ) -> Result<(), TriggerError> {
     let expected_file = match &record.state {
         DeliveryState::Bound { run_file } | DeliveryState::Accepted { run_file, .. } => run_file,
-        DeliveryState::Pending => return Err(TriggerError::InvalidClaim),
+        DeliveryState::Pending | DeliveryState::Cancelled => {
+            return Err(TriggerError::InvalidClaim);
+        }
     };
     let claim = &record.delivery.claim;
     let origin = &receipt.trigger_origin;
@@ -894,7 +1670,7 @@ where
     let record = exact_record(ledger, claim)?;
     let run_file = match &record.state {
         DeliveryState::Bound { run_file } => run_file.clone(),
-        DeliveryState::Pending | DeliveryState::Accepted { .. } => {
+        DeliveryState::Pending | DeliveryState::Accepted { .. } | DeliveryState::Cancelled => {
             return Ok(());
         }
     };
@@ -921,6 +1697,8 @@ struct TriggerWire {
     enabled: bool,
     workflow: String,
     condition: String,
+    #[serde(default = "default_poll_every_minutes")]
+    poll_every_minutes: u32,
     api_key: Option<String>,
 }
 
@@ -929,6 +1707,23 @@ struct Answer {
     data: Option<Data>,
     #[serde(default)]
     errors: Vec<ApiError>,
+}
+
+#[derive(Deserialize)]
+struct ViewerAnswer {
+    data: Option<ViewerData>,
+    #[serde(default)]
+    errors: Vec<ApiError>,
+}
+
+#[derive(Deserialize)]
+struct ViewerData {
+    viewer: Option<Viewer>,
+}
+
+#[derive(Deserialize)]
+struct Viewer {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -942,9 +1737,7 @@ struct Issues {
 }
 
 #[derive(Deserialize)]
-struct ApiError {
-    message: Option<String>,
-}
+struct ApiError {}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -959,13 +1752,16 @@ struct IssueWire {
 
 pub fn load(home: &Path, slug: &str) -> Result<Trigger, TriggerError> {
     valid_slug(slug)?;
-    let raw = fs::read(home.join(TRIGGERS_DIR).join(format!("{slug}.json")))
-        .map_err(TriggerError::ReadConfig)?;
+    let path = require_trigger_dir(home)?.join(format!("{slug}.json"));
+    let (raw, _) = read_regular_config(&path)?;
     parse_trigger(&raw)
 }
 
 fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
     let wire: TriggerWire = serde_json::from_slice(raw).map_err(TriggerError::InvalidConfig)?;
+    if wire.schema != TRIGGER_SCHEMA {
+        return Err(TriggerError::UnsupportedSchema);
+    }
     let source = match wire.source.as_str() {
         "linear" => Source::Linear,
         unknown => {
@@ -983,12 +1779,22 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
     if !valid_key(&api_key) {
         return Err(TriggerError::InvalidKey);
     }
+    // 2026-08-21, T-74: T-65 zapisywalo czytelne `assigned to me`. Loader utrzymuje te
+    // istniejace pliki, lecz formularz i kazdy nowy zapis pozostaja przy jednym kanonie.
+    let condition = match wire.condition.as_str() {
+        "assigned-to-me" | "assigned to me" => "assigned-to-me".to_owned(),
+        _ => return Err(TriggerError::InvalidCondition),
+    };
+    if !valid_cadence(wire.poll_every_minutes) {
+        return Err(TriggerError::InvalidCadence);
+    }
     Ok(Trigger {
         schema: wire.schema,
         source,
         enabled: wire.enabled,
         workflow: wire.workflow,
-        condition: wire.condition,
+        condition,
+        poll_every_minutes: wire.poll_every_minutes,
         api_key: Secret::new(api_key),
     })
 }
@@ -1006,16 +1812,23 @@ fn public_unsupported_source(source: &str) -> Option<&'static str> {
 
 #[must_use]
 pub fn curl_config(trigger: &Trigger) -> String {
-    let body = serde_json::json!({ "query": QUERY }).to_string();
+    linear_curl_config(&trigger.api_key, ISSUES_QUERY)
+}
+
+/// Jeden budowniczy konfiguracji dla watchera i probe. Klucz oraz query zostaja na stdin.
+#[must_use]
+pub fn linear_curl_config(api_key: &Secret, query: &str) -> String {
+    let body = serde_json::json!({ "query": query }).to_string();
     format!(
         "proto = \"=https\"\nmax-time = \"{TIMEOUT_SECONDS}\"\nfail\nsilent\nshow-error\nurl = \"{API}\"\nrequest = \"POST\"\nheader = \"Content-Type: application/json\"\nheader = \"Authorization: {}\"\ndata = {}\n",
-        trigger.api_key.as_str(),
+        api_key.as_str(),
         curl_quote(&body),
     )
 }
 
+/// Proces curl dla dowolnego stalego zapytania Lineara; argv i env nie niosa sekretu.
 #[must_use]
-pub fn build_curl_command(trigger: &Trigger) -> Command {
+pub fn build_linear_curl_command(api_key: &Secret, query: &str) -> Command {
     let mut command = Command::new("curl");
     command.arg("--config").arg("-");
     command.env_clear();
@@ -1023,11 +1836,45 @@ pub fn build_curl_command(trigger: &Trigger) -> Command {
         command.env("PATH", path);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    match config_on_stdin(&curl_config(trigger)) {
+    match config_on_stdin(&linear_curl_config(api_key, query)) {
         Ok(reader) => command.stdin(reader),
         Err(_) => command.stdin(Stdio::null()),
     };
     command
+}
+
+#[must_use]
+pub fn build_curl_command(trigger: &Trigger) -> Command {
+    build_linear_curl_command(&trigger.api_key, ISSUES_QUERY)
+}
+
+fn parse_connection_response(bytes: &[u8]) -> Result<(), TriggerError> {
+    if bytes.is_empty() {
+        return Err(TriggerError::EmptyAnswer);
+    }
+    if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'<')
+    {
+        return Err(TriggerError::HtmlAnswer);
+    }
+    let answer: ViewerAnswer =
+        serde_json::from_slice(bytes).map_err(TriggerError::InvalidAnswer)?;
+    // Linear moze odbic dowolny fragment zadania w `message`, takze sekret. Probe zwraca
+    // wlasne naprawialne zdanie i nigdy nie przenosi tekstu serwera przez IPC.
+    if !answer.errors.is_empty() {
+        return Err(TriggerError::ConnectionRefused);
+    }
+    let id = answer
+        .data
+        .and_then(|data| data.viewer)
+        .map(|viewer| viewer.id)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or(TriggerError::MissingViewer)?;
+    drop(id);
+    Ok(())
 }
 
 pub fn parse_response(bytes: &[u8]) -> Result<Vec<Issue>, TriggerError> {
@@ -1044,17 +1891,9 @@ pub fn parse_response(bytes: &[u8]) -> Result<Vec<Issue>, TriggerError> {
     }
     let answer: Answer = serde_json::from_slice(bytes).map_err(TriggerError::InvalidAnswer)?;
     if !answer.errors.is_empty() {
-        let said = answer
-            .errors
-            .into_iter()
-            .filter_map(|error| error.message)
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(TriggerError::Api(if said.is_empty() {
-            "the API returned an error".to_owned()
-        } else {
-            said
-        }));
+        // Wiadomosc serwera jest niezaufana i moze odbic Authorization. Stale zdanie jest
+        // jedyna wartoscia, ktora wolno pokazac i zapisac przez `refused`.
+        return Err(TriggerError::Api);
     }
     let data = answer.data.ok_or(TriggerError::MissingIssues)?;
     Ok(data
@@ -1077,8 +1916,16 @@ pub fn cursor_path(home: &Path, slug: &str) -> PathBuf {
     home.join(TRIGGERS_DIR).join(format!(".{slug}.cursor"))
 }
 
+/// Ukryta nazwa oznaczajaca, ze ledger jest zakonczony, a cleanup Delete da sie ponowic.
+#[must_use]
+pub fn tombstone_path(home: &Path, slug: &str) -> PathBuf {
+    home.join(TRIGGERS_DIR)
+        .join(format!(".{slug}.deleted.json"))
+}
+
 pub fn check_answer(home: &Path, slug: &str, answer: &[u8]) -> Result<Option<Issue>, TriggerError> {
     valid_slug(slug)?;
+    require_trigger_dir(home)?;
     let issues = parse_response(answer)?;
     let path = cursor_path(home, slug);
     let cursor = match fs::read_to_string(&path) {
@@ -1131,9 +1978,14 @@ fn valid_slug(slug: &str) -> Result<(), TriggerError> {
 fn valid_key(key: &str) -> bool {
     key.starts_with("lin_api_")
         && key.len() >= 40
+        && key.len() <= MAX_API_KEY_BYTES
         && key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+const fn valid_cadence(minutes: u32) -> bool {
+    matches!(minutes, 1 | 5 | 15 | 60)
 }
 
 fn curl_quote(value: &str) -> String {
@@ -1150,7 +2002,7 @@ fn write_cursor(path: &Path, value: &str) -> Result<(), TriggerError> {
     let parent = path.parent().ok_or_else(|| {
         TriggerError::WriteCursor(io::Error::other("cursor has no parent directory"))
     })?;
-    fs::create_dir_all(parent).map_err(TriggerError::WriteCursor)?;
+    require_regular_directory(parent).map_err(TriggerError::WriteCursor)?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());

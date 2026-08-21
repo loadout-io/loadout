@@ -10,8 +10,28 @@ import { TriggerRow } from './row';
 import type { TriggerRowProps } from './row';
 
 const CLOCK: TriggerClock = {
+  now: () => 0,
   setInterval: () => 1,
   clearInterval: () => undefined,
+};
+
+const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const EDITOR_IO: Pick<
+  TriggerIo,
+  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+> = {
+  createTrigger: async () => {
+    throw new Error('not used');
+  },
+  updateTrigger: async () => {
+    throw new Error('not used');
+  },
+  deleteTrigger: async () => {
+    throw new Error('not used');
+  },
+  testLinearConnection: async () => {
+    throw new Error('not used');
+  },
 };
 
 const RUN: TriggerRunPath = {
@@ -28,6 +48,7 @@ const LIBRARY: readonly TriggerView[] = [
     workflow: 'analysis.json',
     workflowName: 'Analysis',
     enabled: true,
+    ...REDACTED,
     status: { kind: 'armed' },
   },
   {
@@ -37,6 +58,7 @@ const LIBRARY: readonly TriggerView[] = [
     workflow: 'repair.json',
     workflowName: 'Repair',
     enabled: false,
+    ...REDACTED,
     status: { kind: 'unchecked' },
   },
   {
@@ -46,6 +68,7 @@ const LIBRARY: readonly TriggerView[] = [
     workflow: 'retired.json',
     workflowName: null,
     enabled: true,
+    ...REDACTED,
     status: { kind: 'unchecked' },
   },
   {
@@ -62,9 +85,11 @@ function ioWith(
     condition: 'Assigned to you',
     workflow: 'analysis.json',
     enabled,
+    ...REDACTED,
   }),
 ): TriggerIo {
   return {
+    ...EDITOR_IO,
     listTriggers: async () => [...LIBRARY],
     setTriggerEnabled,
     checkTrigger: async () => ({ status: 'armed' }),
@@ -170,6 +195,7 @@ describe('the real Triggers screen explains and controls its library', () => {
       condition: 'Assigned to you',
       workflow: 'analysis.json',
       enabled: false,
+      ...REDACTED,
     });
     await changing;
     expect(store.getState().triggers[0]?.enabled).toBe(false);
@@ -203,6 +229,7 @@ describe('the real Triggers screen explains and controls its library', () => {
           condition: 'Assigned to you',
           workflow: 'analysis.json',
           enabled,
+          ...REDACTED,
         };
       }),
     );
@@ -230,6 +257,7 @@ describe('the real Triggers screen explains and controls its library', () => {
     let reads = 0;
     let diskEnabled = true;
     const io: TriggerIo = {
+      ...EDITOR_IO,
       listTriggers: () => {
         reads += 1;
         return stale.promise;
@@ -242,6 +270,7 @@ describe('the real Triggers screen explains and controls its library', () => {
           condition: 'Assigned to you',
           workflow: 'analysis.json',
           enabled,
+          ...REDACTED,
         };
       },
       checkTrigger: async () => ({ status: 'armed' }),
@@ -260,6 +289,7 @@ describe('the real Triggers screen explains and controls its library', () => {
         condition: 'Assigned to you',
         workflow: 'analysis.json',
         enabled: true,
+        ...REDACTED,
       },
     ]);
     await Promise.all([rootLoad, screenLoad]);

@@ -77,6 +77,8 @@ prawdziwego wyboru connectora Linear; pola klucza `type=password`, którego wart
 jest w markupie edycji; uczciwego zdania o warunku; czterech cadence; prawdziwych nazw i ścieżek
 workflow; Test/Save/Cancel; widocznego powodu blokującego Save; oraz wiersza otwierającego
 edycję bez zabrania przełącznika. Uszkodzony wpis nadal ma zero kontrolek.
+Przy wyborze cadence prawdziwy ekran mówi wprost, że sprawdzanie działa tylko, gdy Loadout
+jest otwarty; `Every hour` nie udaje harmonogramu działającego w tle.
 
 ## AC-2 Create, Edit, Test i Delete mają prawdziwe handlery i widoczne skutki
 check: npx --no-install vitest run src/sections/triggers/setup-actions-are-real.test.tsx
@@ -102,6 +104,9 @@ klucz, `Some` zastępuje go, a tryb pliku zostaje. Ręczna zmiana pola niesekret
 i pozostawia identyczne bajty; osobny przypadek zmienia ręką tylko klucz i dowodzi, że `None`
 zachowuje jego świeżą wartość. Żaden zwrot, `Display`, `Debug` ani serializacja nie niesie obu
 secret-shaped wartości. Symlink i ścieżka niebędąca zwykłym plikiem są odmawiane.
+Pełny plik zapisany przez T-65 z równoważnym warunkiem `assigned to me` nadal ładuje się jako
+zdrowy i jest normalizowany do `assigned-to-me`; nowe Create/Edit przyjmują wyłącznie zapis
+kanoniczny.
 
 ## AC-4 Test połączenia z Linearem nie zmienia ani jednego pliku
 check: cargo test --test it trigger_connection_test_has_no_effect::

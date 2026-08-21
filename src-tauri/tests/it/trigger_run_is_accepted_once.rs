@@ -1689,7 +1689,12 @@ fn pending_deliveries_on_disk(
     Ok(ledger_on_disk(home, slug)?
         .deliveries
         .into_iter()
-        .filter(|record| !matches!(&record.state, DeliveryState::Accepted { .. }))
+        .filter(|record| {
+            matches!(
+                &record.state,
+                DeliveryState::Pending | DeliveryState::Bound { .. }
+            )
+        })
         .map(|record| record.delivery)
         .collect())
 }
@@ -1761,7 +1766,7 @@ impl Bench {
             home.path().join("triggers/mine.json"),
             serde_json::to_vec_pretty(&json!({
                 "schema": 1, "source": "linear", "enabled": true,
-                "workflow": "ship-it.json", "condition": "assigned to me", "api_key": KEY
+                "workflow": "ship-it.json", "condition": "assigned-to-me", "api_key": KEY
             }))?,
         )?;
         Ok(Self { home, project })

@@ -63,8 +63,28 @@ const LISTED: Listed = {
 };
 
 const CLOCK: TriggerClock = {
+  now: () => DELIVERY.createdAt,
   setInterval: () => 1,
   clearInterval: () => undefined,
+};
+
+const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const EDITOR_IO: Pick<
+  TriggerIo,
+  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+> = {
+  createTrigger: async () => {
+    throw new Error('not used');
+  },
+  updateTrigger: async () => {
+    throw new Error('not used');
+  },
+  deleteTrigger: async () => {
+    throw new Error('not used');
+  },
+  testLinearConnection: async () => {
+    throw new Error('not used');
+  },
 };
 
 function deferred<T>(): {
@@ -93,12 +113,14 @@ function view(): TriggerView {
     workflow: CLAIM.workflow,
     workflowName: 'Analysis',
     enabled: true,
+    ...REDACTED,
     status: { kind: 'armed' },
   };
 }
 
 function triggerIo(): TriggerIo {
   return {
+    ...EDITOR_IO,
     listTriggers: async () => [],
     setTriggerEnabled: async (slug, enabled) => ({
       slug,
@@ -106,6 +128,7 @@ function triggerIo(): TriggerIo {
       condition: 'Assigned to you',
       workflow: CLAIM.workflow,
       enabled,
+      ...REDACTED,
     }),
     checkTrigger: async () => ({ status: 'pending', delivery: DELIVERY }),
   };
@@ -161,6 +184,7 @@ describe('a trigger takes the same launch path as Start', () => {
     let polls = 0;
     const acceptedAt = DELIVERY.createdAt + 9_000;
     const io: TriggerIo = {
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => view(),
       checkTrigger: async () => {
@@ -202,6 +226,7 @@ describe('a trigger takes the same launch path as Start', () => {
     const runEnded = deferred<string | null>();
     let polls = 0;
     const io: TriggerIo = {
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => view(),
       checkTrigger: () => {
@@ -250,6 +275,7 @@ describe('a trigger takes the same launch path as Start', () => {
     const acceptedAt = DELIVERY.createdAt + 15_000;
     let polls = 0;
     const io: TriggerIo = {
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async (slug, enabled) => ({
         slug,
@@ -257,6 +283,7 @@ describe('a trigger takes the same launch path as Start', () => {
         condition: 'assigned-to-me',
         workflow: CLAIM.workflow,
         enabled,
+        ...REDACTED,
       }),
       checkTrigger: () => {
         polls += 1;
@@ -310,6 +337,7 @@ describe('a trigger takes the same launch path as Start', () => {
       let polls = 0;
       const refusal = 'That trigger run could not be accepted.';
       const io: TriggerIo = {
+        ...EDITOR_IO,
         listTriggers: async () => [],
         setTriggerEnabled: async (slug, enabled) => ({
           slug,
@@ -317,6 +345,7 @@ describe('a trigger takes the same launch path as Start', () => {
           condition: 'assigned-to-me',
           workflow: CLAIM.workflow,
           enabled,
+          ...REDACTED,
         }),
         checkTrigger: async () => {
           polls += 1;

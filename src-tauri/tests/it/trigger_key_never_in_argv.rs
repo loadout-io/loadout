@@ -11,6 +11,7 @@ fn trigger() -> Trigger {
         enabled: true,
         workflow: "ship.json".to_owned(),
         condition: "assigned-to-me".to_owned(),
+        poll_every_minutes: triggers::DEFAULT_POLL_EVERY_MINUTES,
         api_key: Secret::new(KEY),
     }
 }

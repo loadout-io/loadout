@@ -355,6 +355,38 @@ pierwszy atomowy paragon zapisuje przed procesem wyłącznie zredagowane pochodz
 pasujący paragon domyka ledger bez drugiego katalogu i drugiego startu; brak paragonu pozwala
 ponowić to samo wiązanie. SQLite nie uczestniczy w rozstrzygnięciu (niezmiennik 4).
 
+### Linear konfiguruje się w oknie
+
+*Dodane 2026-08-21 decyzją właściciela w T-74. Pierwszy prawdziwy connector to Linear; ekran
+nie pokazuje nazw integracji, których produkt jeszcze nie wykonuje.*
+
+**Formularz zapisuje konfigurację przez Rust.** Człowiek wybiera Linear, istniejący workflow
+oraz sprawdzanie co 1, 5, 15 albo 60 minut. Warunek `An issue is assigned to you` jest tekstem,
+bo rustowe zapytanie nie obsługuje innego filtra. Rust wybija niezmienny slug, waliduje workflow
+i publikuje nowy plik bez nadpisania istniejącego. Edycja porównuje zredagowaną migawkę pól
+niesekretnych; pusty klucz zachowuje najnowszy sekret z pliku, a wpisany klucz jawnie go
+zastępuje.
+
+**Sekret przekracza IPC tylko w jedną stronę.** Pole klucza jest hasłem i przy edycji zawsze
+pozostaje puste. Lista zwraca wyłącznie fakt, że klucz zapisano. Plik powstaje z prywatnymi
+prawami przed pierwszym bajtem, lecz T-74 nie nazywa tego szyfrowaniem ani Keychainem. Osobna
+akcja `Test connection` wykonuje stałe zapytanie `viewer` przez tę samą politykę HTTPS, stdin,
+wyczyszczonego środowiska i limitu czasu co watcher. Nie przyjmuje sprawy, nie rusza kursora,
+ledgeru ani biegu.
+
+**Cadence należy do pliku, heartbeat do korzenia okna.** Jeden minutowy heartbeat wylicza
+osobny termin dla każdego sluga; wolniejszy trigger nie pyta wcześniej, a dwa pytania tego
+samego sluga nie nakładają się. Zmiana cadence przelicza kolejny termin dopiero po potwierdzeniu
+zapisu. Plik sprzed T-74 bez pola cadence zachowuje jedną minutę.
+
+**Delete najpierw kończy pracę, potem chowa plik.** Widoczne, dwustopniowe potwierdzenie mówi,
+że zapisane sprawy czekające na Start zostaną odrzucone. Rust trwale zmienia Pending na
+Cancelled, a dopiero potem atomowo ukrywa konfigurację. Bound oznacza już rozpoczęty Start,
+więc Delete odmawia bez mutacji i każe poczekać; zatrzymanie biegu pozostaje odpowiedzialnością
+Stop. Tombstone jest czytany i sprzątany przy następnym listowaniu; po awarii zostaje więc albo
+widoczny trigger bez pracy udającej Pending, albo uczciwie usunięty trigger — nigdy aktywny
+plik nad skasowaną kolejką.
+
 ## 7. Sufit gęstości
 
 Liczby ustalone **przed** pierwszym ekranem. Mierzone skryptem, nie okiem. Baseline może tylko maleć.
