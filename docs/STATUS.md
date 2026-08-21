@@ -4,21 +4,28 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
-## 2026-08-21 — T-65 odblokowane decyzją właściciela, implementacja w toku
+## 2026-08-21, 09:22 — T-65 gotowe na gałęzi, pełna bramka zielona
 
-Właściciel polecił zaplanować i wykonać T-65 oraz oddał wybór rozwiązania agentowi. To jest
-brakująca decyzja człowieka, przy której poprzednia sesja słusznie stanęła. Zakres zadania został
-rozszerzony bez tworzenia nowego ID: trwały ledger dostaw pod `~/.loadout/triggers/`, UUID v7
-przydzielony przed Startem i pierwszy atomowy `run.json` jako chwila akceptacji.
+Właściciel polecił zaplanować i wykonać T-65 oraz oddał wybór rozwiązania agentowi. Powstał
+trwały ledger dostaw pod `~/.loadout/triggers/`, UUID v7 przydzielony przed Startem i pierwszy
+atomowy oraz zsynchronizowany `run.json` jako chwila akceptacji. Rozwiązanie nie ufa
+`RunState.workflow`: o zajętości decyduje `AppState.live`, a wyścig z ręcznym Startem zostawia
+ten sam pending i UUID do ponowienia. SQLite pozostaje indeksem; nadal nie ma daemona, wielu
+żywych biegów ani `stop_run(id)` z Etapu B T-71.
 
-Rozwiązanie nie ufa `RunState.workflow`. O zajętości nadal decyduje jeden `AppState.live`,
-pending przechodzi istniejącą drogą `launchRun` → `run_workflow`, a wyścig z ręcznym Startem
-zostawia go do ponowienia. Pasujący `run.json` godzi ledger po awarii bez drugiego biegu;
-SQLite pozostaje indeksem. Nadal nie ma daemona, wielu żywych biegów ani `stop_run(id)` z Etapu B
-T-71.
+**Paragon kontraktu.** Pierwsze `before`: 9/9 kryteriów czerwonych z właściwego powodu w 6,68 s;
+po wzmocnieniu recovery AC-8 osobny `before` dał 2/2 w 4,17 s. Końcowy `quick` po aktualizacji
+makiety: 21/0 w 9,64 s. Pełna bramka nie została uznana po dwóch częściowych przebiegach: pierwszy
+znalazł lint w teście i utratę komunikatu T-64, drugi stare pięciosekcyjne lustro makiety. Po
+naprawach oraz jawnej zgodzie właściciela na dodanie `docs/mockup/index.html` do OWNS finalny
+`full` dał 23/0 w 29,81 s.
 
-To wpis o decyzji i bieżącej pracy na `task-T-65`, nie paragon zielonej bramki. Wyniki `before`,
-`quick`, `full`, review i lądowania trzeba dopisać dopiero po ich rzeczywistym wykonaniu.
+Niezależne audyty przed bramką znalazły i dostały regresje między innymi dla: wszystkich nowych
+spraw zamiast tylko najnowszej, local Pending przy niedostępnym Linearze, crashy przed
+`run.json`, osieroconej administracji worktree, symlinków w artefaktach biegu oraz ponownego
+`fsync` pliku i katalogu przed recovery-acceptance. AC-8 kończy z 27 testami. Druga opinia Claude
+była niedostępna (`api_error`); `review.sh` zgodnie z kontraktem zwrócił 0 jako advisory, więc nie
+powstał plan rundy naprawczej. Pozostało lądowanie i pełna bramka na trunku.
 
 ## 2026-08-21, 01:53 — trzy urwane sesje rozliczone: T-71 i T-64 w trunku, T-40 wycofane, T-65 uczciwie wstrzymane
 
