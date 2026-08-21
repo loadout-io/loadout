@@ -5,6 +5,7 @@ import type { TriggerVisibleStatus, TriggerView } from '../../state/triggers';
 export interface TriggerRowProps {
   readonly trigger: TriggerView;
   readonly onToggle: (slug: string, enabled: boolean) => Promise<void>;
+  readonly onOpen: (slug: string) => void;
 }
 
 interface SaidStatus {
@@ -50,8 +51,14 @@ function conditionName(condition: string): string {
   return words.length === 0 ? 'No condition saved' : words[0]?.toUpperCase() + words.slice(1);
 }
 
+function cadenceName(minutes: number): string {
+  if (minutes === 1) return 'Every minute';
+  if (minutes === 60) return 'Every hour';
+  return `Every ${String(minutes)} minutes`;
+}
+
 /** One library row: at most four visible facts and one switch, with no invented broken config. */
-export function TriggerRow({ trigger, onToggle }: TriggerRowProps): ReactElement {
+export function TriggerRow({ trigger, onToggle, onOpen }: TriggerRowProps): ReactElement {
   if (trigger.problem !== undefined) {
     return (
       <li
@@ -75,7 +82,15 @@ export function TriggerRow({ trigger, onToggle }: TriggerRowProps): ReactElement
       data-trigger-row={trigger.slug}
       className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 py-3 last:border-b-0"
     >
-      <div className="grid min-w-0 grid-cols-3 items-center gap-3">
+      <button
+        data-trigger-open
+        type="button"
+        aria-label={`Edit ${trigger.slug}`}
+        className="grid min-w-0 grid-cols-3 items-center gap-3 text-left"
+        onClick={() => {
+          onOpen(trigger.slug);
+        }}
+      >
         <span data-trigger-text className="text-label text-ink">
           {sourceName(trigger.source)}
         </span>
@@ -83,9 +98,9 @@ export function TriggerRow({ trigger, onToggle }: TriggerRowProps): ReactElement
           {conditionName(trigger.condition)}
         </span>
         <span data-trigger-text className="truncate text-body text-muted">
-          {workflow}
+          {`${workflow} · ${cadenceName(trigger.pollEveryMinutes)}`}
         </span>
-      </div>
+      </button>
       <div className="flex items-center gap-3">
         <span
           data-trigger-text

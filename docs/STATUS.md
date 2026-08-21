@@ -4,6 +4,41 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-21, 13:10 — T-74 gotowe w worktree; Linear ma pełną drogę konfiguracji
+
+Właściciel odrzucił ręczne tworzenie JSON-u po T-65 i polecił zbudować najpierw prawdziwy
+connector Lineara. Ekran Triggers prowadzi teraz przez Create/Edit/Delete: wybór Lineara,
+jednokierunkowe podanie klucza, prawdziwą listę workflow oraz sprawdzanie co 1, 5, 15 albo
+60 minut. Przy cadence ekran mówi wprost, że sprawdzanie działa tylko przy otwartym Loadoucie.
+`Test connection` wykonuje osobne zapytanie `viewer`; nie uzbraja triggera i nie zapisuje
+kursora, kolejki ani biegu.
+
+**Granica sekretu i zapisu.** Okno nigdy nie dostaje klucza ani jego pochodnej. Rust tworzy
+plik jako 0600 przed pierwszym bajtem, publikuje Create bez nadpisania i odmawia stale Edit.
+Puste pole edycji zachowuje najnowszy klucz z pliku, wpisany zastępuje go jawnie. Pliki T-65
+z `condition: "assigned to me"` i bez cadence nadal się ładują, ale nowe zapisy używają wyłącznie
+`assigned-to-me`. Nie twierdzimy, że to Keychain albo szyfrowanie at rest.
+
+**Delete nie ściga się ze Startem.** Pending jest trwale kończone jako Cancelled przed ukryciem
+konfiguracji. Bound oznacza, że Start już wiąże bieg, więc Delete odmawia przed jakąkolwiek
+mutacją i pokazuje człowiekowi, żeby poczekał; rozpoczęty bieg zatrzymuje Stop. Crashowe pliki
+tymczasowe i tombstone mają czytelnika, blokadę per katalog+slug oraz bariery fsync. Niezależny
+audyt zakończył się `none` osobno dla frontendu i Rusta.
+
+**Paragon.** Formalne `before` uruchomiło 8 kryteriów i wszystkie były czerwone z właściwego
+powodu w 3,60 s. Późniejsze wzmocnienia miały własne celowane czerwienie: między innymi Delete
+dla Bound 5/1, symlink korzenia 5/1, współbieżność curl 3/2, publish ledger-temp 7/1 i legacy
+condition 0/1. Końcowe kryteria: frontend 31/31, Rust AC-3 10/10 po mechanicznym podziale testu,
+AC-4 5/5, AC-7 7/7; sąsiedzi T-65 3/3, 7/7 i 27/27. Pełny rerun miał zielone wszystkie
+21 sprawdzeń kodu w 23,79 s, w tym `full-clippy` i `full-test`.
+
+Jedyny niezerowy wynik to infrastrukturalne `MISC quick-permissions`: T-74 posiada
+`src-tauri/Cargo.toml`, ale `.claude/settings.json` jednocześnie zabrania jego edycji. Ten sam
+konflikt występuje na trunku, zanim gałąź zostanie nałożona; zgodnie z §7 pisarz nie zmienia
+pliku ustawień bez decyzji właściciela. Druga opinia Claude była niedostępna (`api_error`), więc
+`review.sh` zwrócił 0 jako advisory i nie otworzył rundy naprawczej. Żywego wywołania Lineara
+nie wykonano, bo w bramce nie ma klucza; produkcyjny przycisk jest gotowy do takiego testu.
+
 ## 2026-08-21, 09:22 — T-65 gotowe na gałęzi, pełna bramka zielona
 
 Właściciel polecił zaplanować i wykonać T-65 oraz oddał wybór rozwiązania agentowi. Powstał

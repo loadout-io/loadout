@@ -18,8 +18,10 @@ check_trigger
 check_workflow
 close_terminal
 continue_run
+create_trigger
 delete_agent
 delete_skill
+delete_trigger
 delete_workflow
 delete_workspace
 draft_skill
@@ -50,3 +52,5 @@ stop_draft
 stop_process
 stop_run
 stop_using_note
+test_linear_connection
+update_trigger

@@ -7,7 +7,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -75,6 +75,10 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
     write_trigger(&dir.join("mine.json"), true, "ship-it")?;
     write_trigger(&dir.join("nightly.json"), false, "verify")?;
     fs::write(dir.join("broken.json"), b"{ definitely not json")?;
+    let victim = home.path().join("outside.json");
+    fs::write(&victim, SECRET)?;
+    symlink(&victim, dir.join("linked.json"))?;
+    fs::create_dir(dir.join("directory.json"))?;
     // Ukryte pliki są ledgerem/kursorem, nie konfiguracją. JSON-owa treść celowo wygląda
     // wiarygodnie, żeby filtr oparty na samym rozszerzeniu tego nie przeoczył.
     fs::write(dir.join(".mine.ledger.json"), b"{}")?;
@@ -87,7 +91,7 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
         .collect::<Vec<_>>();
     assert_eq!(
         slugs,
-        vec!["broken", "mine", "nightly"],
+        vec!["broken", "directory", "linked", "mine", "nightly"],
         "hidden cursor/ledger files were presented as triggers, or a broken named file vanished"
     );
 
@@ -96,7 +100,7 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
         .find(|entry| entry.slug == "mine")
         .ok_or("the healthy trigger disappeared from the library")?;
     assert_eq!(mine.source, Some(Source::Linear));
-    assert_eq!(mine.condition.as_deref(), Some("assigned to me"));
+    assert_eq!(mine.condition.as_deref(), Some("assigned-to-me"));
     assert_eq!(mine.workflow.as_deref(), Some("ship-it"));
     assert_eq!(mine.enabled, Some(true));
     assert!(
@@ -122,6 +126,20 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
             && broken.enabled.is_none(),
         "the invalid JSON was filled with invented configuration values"
     );
+    for slug in ["directory", "linked"] {
+        let unsafe_entry = entries
+            .iter()
+            .find(|entry| entry.slug == slug)
+            .ok_or("a non-regular trigger vanished")?;
+        assert!(unsafe_entry.problem.is_some());
+        assert!(
+            unsafe_entry.source.is_none()
+                && unsafe_entry.condition.is_none()
+                && unsafe_entry.workflow.is_none()
+                && unsafe_entry.enabled.is_none(),
+            "a non-regular trigger gained live controls: {unsafe_entry:?}"
+        );
+    }
 
     let wire = serde_json::to_string(&entries)?;
     let debug = format!("{entries:?}");
@@ -148,7 +166,7 @@ fn an_unknown_source_never_echoes_a_value_that_may_be_a_key() -> Result<(), Box<
                 "source": secret_shaped_source,
                 "enabled": true,
                 "workflow": "ship-it",
-                "condition": "assigned to me",
+                "condition": "assigned-to-me",
                 "api_key": SECRET
             }))?,
         )?;
@@ -348,7 +366,7 @@ fn write_trigger(path: &Path, enabled: bool, workflow: &str) -> Result<(), Box<d
             "source": "linear",
             "enabled": enabled,
             "workflow": workflow,
-            "condition": "assigned to me",
+            "condition": "assigned-to-me",
             "api_key": SECRET
         }))?,
     )?;

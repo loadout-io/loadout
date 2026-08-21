@@ -31,6 +31,7 @@ const DELIVERY: TriggerDelivery = {
 };
 
 const CLOCK: TriggerClock = {
+  now: () => RECEIPT_AT,
   setInterval: () => 1,
   clearInterval: () => undefined,
 };
@@ -47,8 +48,22 @@ const IO: TriggerIo = {
     condition: 'Assigned to you',
     workflow: 'analysis.json',
     enabled,
+    pollEveryMinutes: 1,
+    hasApiKey: true,
   }),
   checkTrigger: async () => ({ status: 'armed' }),
+  createTrigger: async () => {
+    throw new Error('not used');
+  },
+  updateTrigger: async () => {
+    throw new Error('not used');
+  },
+  deleteTrigger: async () => {
+    throw new Error('not used');
+  },
+  testLinearConnection: async () => {
+    throw new Error('not used');
+  },
 };
 
 const UNCHECKED = 'Not checked yet.';
@@ -64,6 +79,8 @@ function trigger(status: TriggerView['status']): TriggerView {
     workflow: 'analysis.json',
     workflowName: 'Analysis',
     enabled: true,
+    pollEveryMinutes: 1,
+    hasApiKey: true,
     status,
   };
 }

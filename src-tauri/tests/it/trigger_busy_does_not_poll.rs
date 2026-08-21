@@ -321,7 +321,7 @@ impl Bench {
             home.path().join(triggers::TRIGGERS_DIR).join("mine.json"),
             serde_json::to_vec_pretty(&json!({
                 "schema": 1, "source": "linear", "enabled": true,
-                "workflow": "ship-it", "condition": "assigned to me", "api_key": KEY
+                "workflow": "ship-it", "condition": "assigned-to-me", "api_key": KEY
             }))?,
         )?;
         Ok(Self { home, project })

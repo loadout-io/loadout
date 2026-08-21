@@ -31,6 +31,8 @@ export interface ConfiguredTriggerEntry {
   readonly condition: string;
   readonly workflow: string;
   readonly enabled: boolean;
+  readonly pollEveryMinutes: TriggerCadence;
+  readonly hasApiKey: boolean;
   readonly problem?: never;
 }
 
@@ -42,10 +44,35 @@ export interface BrokenTriggerEntry {
   readonly condition?: never;
   readonly workflow?: never;
   readonly enabled?: never;
+  readonly pollEveryMinutes?: never;
+  readonly hasApiKey?: never;
 }
 
 /** The redacted part of one trigger file which is safe to cross the IPC boundary. */
 export type TriggerEntry = ConfiguredTriggerEntry | BrokenTriggerEntry;
+
+/** The only polling cadences which the Linear form can honestly schedule. */
+export type TriggerCadence = 1 | 5 | 15 | 60;
+
+/** Everything Rust needs to create or update a trigger, including a one-way optional secret. */
+export interface TriggerDraft {
+  readonly source: string;
+  readonly condition: string;
+  readonly workflow: string;
+  readonly pollEveryMinutes: TriggerCadence;
+  readonly apiKey: string | null;
+}
+
+/** A redacted optimistic snapshot. The secret itself never returns to the webview. */
+export interface TriggerSnapshot {
+  readonly slug: string;
+  readonly source: string;
+  readonly condition: string;
+  readonly workflow: string;
+  readonly enabled: boolean;
+  readonly pollEveryMinutes: TriggerCadence;
+  readonly hasApiKey: boolean;
+}
 
 /** Rust, rather than window state, is authoritative for every polling decision. */
 export type TriggerPoll =
@@ -58,6 +85,14 @@ export interface TriggerIo {
   listTriggers(): Promise<TriggerEntry[]>;
   setTriggerEnabled(slug: string, enabled: boolean): Promise<TriggerEntry>;
   checkTrigger(slug: string): Promise<TriggerPoll>;
+  createTrigger(draft: TriggerDraft): Promise<ConfiguredTriggerEntry>;
+  updateTrigger(
+    slug: string,
+    expected: TriggerSnapshot,
+    draft: TriggerDraft,
+  ): Promise<ConfiguredTriggerEntry>;
+  deleteTrigger(slug: string, expected: TriggerSnapshot): Promise<void>;
+  testLinearConnection(slug: string | null, apiKey: string | null): Promise<void>;
 }
 
 /** The whole redacted library. Secrets remain in Rust and never enter this type. */
@@ -72,4 +107,28 @@ export function setTriggerEnabled(slug: string, enabled: boolean): Promise<Trigg
 
 export function checkTrigger(slug: string): Promise<TriggerPoll> {
   return invoke<TriggerPoll>('check_trigger', { slug });
+}
+
+/** Create is one request; the secret travels only inside the explicitly submitted draft. */
+export function createTrigger(draft: TriggerDraft): Promise<ConfiguredTriggerEntry> {
+  return invoke<ConfiguredTriggerEntry>('create_trigger', { draft });
+}
+
+/** The redacted snapshot lets Rust refuse a stale editor without returning the saved key. */
+export function updateTrigger(
+  slug: string,
+  expected: TriggerSnapshot,
+  draft: TriggerDraft,
+): Promise<ConfiguredTriggerEntry> {
+  return invoke<ConfiguredTriggerEntry>('update_trigger', { slug, expected, draft });
+}
+
+/** Rust confirms ledger cancellation and disk removal before the window removes its row. */
+export function deleteTrigger(slug: string, expected: TriggerSnapshot): Promise<void> {
+  return invoke<void>('delete_trigger', { slug, expected });
+}
+
+/** A dedicated viewer probe: it neither polls a trigger nor arms durable delivery state. */
+export function testLinearConnection(slug: string | null, apiKey: string | null): Promise<void> {
+  return invoke<void>('test_linear_connection', { slug, apiKey });
 }

@@ -14,6 +14,11 @@ class FakeClock implements TriggerClock {
   readonly callbacks = new Map<number, () => void>();
   readonly cleared: number[] = [];
   private next = 1;
+  private current = 0;
+
+  now(): number {
+    return this.current;
+  }
 
   setInterval(callback: () => void, milliseconds: number): number {
     const handle = this.next;
@@ -30,6 +35,7 @@ class FakeClock implements TriggerClock {
   }
 
   advance(): void {
+    this.current += TRIGGER_WATCH_INTERVAL_MS;
     for (const callback of [...this.callbacks.values()]) callback();
   }
 }
@@ -40,6 +46,25 @@ const RUN: TriggerRunPath = {
   atOnce: () => 3,
 };
 
+const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const EDITOR_IO: Pick<
+  TriggerIo,
+  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+> = {
+  createTrigger: async () => {
+    throw new Error('not used');
+  },
+  updateTrigger: async () => {
+    throw new Error('not used');
+  },
+  deleteTrigger: async () => {
+    throw new Error('not used');
+  },
+  testLinearConnection: async () => {
+    throw new Error('not used');
+  },
+};
+
 function trigger(slug: string, enabled = true): TriggerView {
   return {
     slug,
@@ -48,6 +73,7 @@ function trigger(slug: string, enabled = true): TriggerView {
     workflow: 'analysis.json',
     workflowName: 'Analysis',
     enabled,
+    ...REDACTED,
     status: { kind: 'unchecked' },
   };
 }
@@ -75,6 +101,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
   it('asks on both named ticks and skips disabled entries', async () => {
     const checked = vi.fn(async (_slug: string) => ({ status: 'armed' as const }));
     const io: TriggerIo = {
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async (slug, enabled) => ({
         slug,
@@ -82,6 +109,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
         condition: 'Assigned to you',
         workflow: 'analysis.json',
         enabled,
+        ...REDACTED,
       }),
       checkTrigger: checked,
     };
@@ -108,10 +136,12 @@ describe('the trigger watcher belongs to the application lifetime', () => {
         condition: 'assigned-to-me',
         workflow: 'analysis.json',
         enabled: true,
+        ...REDACTED,
       },
     ]);
     const checked = vi.fn(async (_slug: string) => ({ status: 'armed' as const }));
     const { store, clock } = withIo({
+      ...EDITOR_IO,
       listTriggers: listed,
       setTriggerEnabled: async () => trigger('loaded'),
       checkTrigger: checked,
@@ -131,6 +161,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     const waiting = deferred<{ readonly status: 'armed' }>();
     const checked = vi.fn(() => waiting.promise);
     const { store, clock } = withIo({
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => trigger('one'),
       checkTrigger: checked,
@@ -157,6 +188,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
         : Promise.resolve({ status: 'armed' as const }),
     );
     const { store, clock } = withIo({
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => trigger('one'),
       checkTrigger: checked,
@@ -176,6 +208,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
   it('clears the schedule and performs no later poll after stopWatching', async () => {
     const checked = vi.fn(async (_slug: string) => ({ status: 'armed' as const }));
     const { store, clock } = withIo({
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => trigger('one'),
       checkTrigger: checked,
@@ -197,6 +230,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     const waiting = deferred<{ readonly status: 'armed' }>();
     const checked = vi.fn(() => waiting.promise);
     const { store, clock } = withIo({
+      ...EDITOR_IO,
       listTriggers: async () => [],
       setTriggerEnabled: async () => trigger('one'),
       checkTrigger: checked,

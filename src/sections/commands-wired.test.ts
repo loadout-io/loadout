@@ -138,6 +138,24 @@ const AUTHORED: Authored = {
   whatToDo: 'Read the change first, then say in one paragraph what to fix.',
 };
 
+const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
+const TRIGGER_DRAFT: triggers.TriggerDraft = {
+  source: 'linear',
+  condition: 'assigned-to-me',
+  workflow: 'analysis.json',
+  pollEveryMinutes: 5,
+  apiKey: LINEAR_KEY,
+};
+const TRIGGER_EXPECTED: triggers.TriggerSnapshot = {
+  slug: 'linear-0198ca82-ded0-7000-8000-000000000074',
+  source: 'linear',
+  condition: 'assigned-to-me',
+  workflow: 'analysis.json',
+  enabled: true,
+  pollEveryMinutes: 5,
+  hasApiKey: true,
+};
+
 /** Jedna krawędź: skąd, co, którą komendę woła, z czym ją wołamy. */
 interface Wire {
   readonly where: string;
@@ -496,6 +514,34 @@ const WIRES: readonly Wire[] = [
     command: 'check_trigger',
     given: ['assigned-to-me'],
     call: () => triggers.checkTrigger('assigned-to-me'),
+  },
+  {
+    where: 'triggers',
+    what: 'createTrigger',
+    command: 'create_trigger',
+    given: [TRIGGER_DRAFT],
+    call: () => triggers.createTrigger(TRIGGER_DRAFT),
+  },
+  {
+    where: 'triggers',
+    what: 'updateTrigger',
+    command: 'update_trigger',
+    given: [TRIGGER_EXPECTED.slug, TRIGGER_EXPECTED, TRIGGER_DRAFT],
+    call: () => triggers.updateTrigger(TRIGGER_EXPECTED.slug, TRIGGER_EXPECTED, TRIGGER_DRAFT),
+  },
+  {
+    where: 'triggers',
+    what: 'deleteTrigger',
+    command: 'delete_trigger',
+    given: [TRIGGER_EXPECTED.slug, TRIGGER_EXPECTED],
+    call: () => triggers.deleteTrigger(TRIGGER_EXPECTED.slug, TRIGGER_EXPECTED),
+  },
+  {
+    where: 'triggers',
+    what: 'testLinearConnection',
+    command: 'test_linear_connection',
+    given: [LINEAR_KEY],
+    call: () => triggers.testLinearConnection(null, LINEAR_KEY),
   },
 ];
 

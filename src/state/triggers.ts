@@ -11,17 +11,26 @@ import type {
   BrokenTriggerEntry,
   ConfiguredTriggerEntry,
   TriggerClaim,
+  TriggerCadence,
+  TriggerDraft,
   TriggerDelivery,
   TriggerEntry,
   TriggerIo,
   TriggerIssue,
+  TriggerSnapshot,
 } from '../sections/triggers/io';
+import type { TriggerConnectionState, TriggerWorkflowOption } from '../sections/triggers/form';
 import { list as listWorkflows } from '../sections/workflows/io';
 
 /** The interval is named so the scheduler and the application share one answer. */
 export const TRIGGER_WATCH_INTERVAL_MS = 60_000;
 
+function cadenceMilliseconds(minutes: TriggerCadence): number {
+  return minutes * TRIGGER_WATCH_INTERVAL_MS;
+}
+
 export interface TriggerClock {
+  now(): number;
   setInterval(callback: () => void, milliseconds: number): unknown;
   clearInterval(handle: unknown): void;
 }
@@ -62,12 +71,22 @@ export type BrokenTriggerView = BrokenTriggerEntry & {
 /** Healthy rows resolve a workflow; a broken file has no workflow value to resolve. */
 export type TriggerView = ConfiguredTriggerView | BrokenTriggerView;
 
+export type TriggerMutationResult =
+  { readonly ok: true } | { readonly ok: false; readonly refusal: string };
+
 export interface TriggersState {
   readonly triggers: readonly TriggerView[];
+  readonly workflows: readonly TriggerWorkflowOption[];
+  readonly connection: TriggerConnectionState;
   /** A library-level refusal. Per-trigger refusals live on their one row. */
   readonly said: string | null;
   load(): Promise<void>;
   toggle(slug: string, enabled: boolean): Promise<void>;
+  create(draft: TriggerDraft): Promise<TriggerMutationResult>;
+  update(expected: TriggerSnapshot, draft: TriggerDraft): Promise<TriggerMutationResult>;
+  remove(expected: TriggerSnapshot): Promise<TriggerMutationResult>;
+  testConnection(slug: string | null, apiKey: string | null): Promise<boolean>;
+  resetEditorFeedback(): void;
   tick(): Promise<void>;
   startWatching(): void;
   stopWatching(): void;
@@ -137,6 +156,7 @@ export function createTriggersStore(
   let watchHandle: unknown = null;
   let watching = false;
   let generation = 0;
+  let connectionRequest = 0;
   let libraryMutation = 0;
   let libraryLoad: LibraryLoad | null = null;
   const checking = new Set<string>();
@@ -144,8 +164,50 @@ export function createTriggersStore(
   const refreshedAfterRun = new Map<string, string>();
   const refreshAfterChecking = new Map<string, number>();
   const toggleRefusals = new Map<string, ToggleRefusal>();
+  /* One heartbeat serves every trigger, but each file owns its next due time. Keeping this
+   * outside React state prevents a minute tick from repainting the whole library. */
+  const nextDue = new Map<string, number>();
 
   return create<TriggersState>()((set, get) => {
+    const scheduleFromNow = (trigger: ConfiguredTriggerEntry): void => {
+      if (!watching || !trigger.enabled) {
+        nextDue.delete(trigger.slug);
+        return;
+      }
+      nextDue.set(trigger.slug, clock.now() + cadenceMilliseconds(trigger.pollEveryMinutes));
+    };
+
+    const reconcileSchedule = (
+      fresh: readonly TriggerView[],
+      before: ReadonlyMap<string, TriggerView>,
+    ): void => {
+      if (!watching) return;
+      const live = new Set<string>();
+      for (const trigger of fresh) {
+        if (trigger.problem !== undefined || !trigger.enabled) continue;
+        live.add(trigger.slug);
+        const previous = before.get(trigger.slug);
+        const unchanged =
+          previous !== undefined &&
+          previous.problem === undefined &&
+          previous.enabled &&
+          previous.pollEveryMinutes === trigger.pollEveryMinutes;
+        if (!unchanged || !nextDue.has(trigger.slug)) scheduleFromNow(trigger);
+      }
+      for (const slug of nextDue.keys()) {
+        if (!live.has(slug)) nextDue.delete(slug);
+      }
+    };
+
+    const forget = (slug: string): void => {
+      nextDue.delete(slug);
+      checking.delete(slug);
+      pending.delete(slug);
+      refreshedAfterRun.delete(slug);
+      refreshAfterChecking.delete(slug);
+      toggleRefusals.delete(slug);
+    };
+
     const configuredNow = (slug: string): ConfiguredTriggerView | null => {
       const trigger = get().triggers.find((one) => one.slug === slug);
       if (trigger === undefined || trigger.problem !== undefined) return null;
@@ -322,12 +384,27 @@ export function createTriggersStore(
       }
     };
 
-    const poll = async (epoch: number): Promise<void> => {
+    const poll = async (epoch: number, onlyDue = false): Promise<void> => {
       const enabled = get().triggers.filter(
         (trigger): trigger is ConfiguredTriggerView =>
           trigger.problem === undefined && trigger.enabled,
       );
-      await Promise.all(enabled.map((trigger) => pollOne(trigger.slug, epoch)));
+      const now = clock.now();
+      const due = onlyDue
+        ? enabled.filter((trigger) => {
+            const at = nextDue.get(trigger.slug);
+            if (at === undefined) {
+              scheduleFromNow(trigger);
+              return false;
+            }
+            if (at > now) return false;
+            /* Advance before asking. A slow question therefore cannot create a queue of
+             * overlapping catch-up requests for the same slug. */
+            nextDue.set(trigger.slug, now + cadenceMilliseconds(trigger.pollEveryMinutes));
+            return true;
+          })
+        : enabled;
+      await Promise.all(due.map((trigger) => pollOne(trigger.slug, epoch)));
     };
 
     const loadLibrary = (): Promise<void> => {
@@ -344,8 +421,11 @@ export function createTriggersStore(
           if (request.epoch !== generation || request.mutation !== libraryMutation) return;
           choices = toChoices(listed);
           const before = new Map(get().triggers.map((trigger) => [trigger.slug, trigger]));
+          const fresh = entries.map((entry) => viewOf(entry, choices, before.get(entry.slug)));
+          reconcileSchedule(fresh, before);
           set({
-            triggers: entries.map((entry) => viewOf(entry, choices, before.get(entry.slug))),
+            triggers: fresh,
+            workflows: choices.map(({ path, name }) => ({ path, name })),
             said: null,
           });
         })
@@ -364,6 +444,8 @@ export function createTriggersStore(
 
     return {
       triggers: [],
+      workflows: [],
+      connection: { kind: 'idle' },
       said: null,
 
       load: loadLibrary,
@@ -387,6 +469,7 @@ export function createTriggersStore(
               return viewOf(saved, choices, previous);
             }),
           }));
+          if (saved.problem === undefined) scheduleFromNow(saved);
           toggleRefusals.delete(slug);
         } catch (error) {
           const still = configuredNow(slug);
@@ -410,6 +493,93 @@ export function createTriggersStore(
         }
       },
 
+      create: async (draft) => {
+        try {
+          const saved = await io.createTrigger(draft);
+          libraryMutation += 1;
+          set((state) => ({
+            triggers: [
+              ...state.triggers.filter((trigger) => trigger.slug !== saved.slug),
+              viewOf(saved, choices),
+            ],
+            said: null,
+          }));
+          scheduleFromNow(saved);
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            refusal: why(error, 'Loadout could not save that trigger.'),
+          };
+        }
+      },
+
+      update: async (expected, draft) => {
+        try {
+          const saved = await io.updateTrigger(expected.slug, expected, draft);
+          libraryMutation += 1;
+          set((state) => ({
+            triggers: state.triggers.map((trigger) =>
+              trigger.slug === expected.slug ? viewOf(saved, choices, trigger) : trigger,
+            ),
+            said: null,
+          }));
+          scheduleFromNow(saved);
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            refusal: why(error, 'Loadout could not save that trigger.'),
+          };
+        }
+      },
+
+      remove: async (expected) => {
+        try {
+          await io.deleteTrigger(expected.slug, expected);
+          libraryMutation += 1;
+          forget(expected.slug);
+          set((state) => ({
+            triggers: state.triggers.filter((trigger) => trigger.slug !== expected.slug),
+            said: null,
+          }));
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            refusal: why(error, 'Loadout could not delete that trigger.'),
+          };
+        }
+      },
+
+      testConnection: async (slug, apiKey) => {
+        const request = connectionRequest + 1;
+        connectionRequest = request;
+        set({ connection: { kind: 'testing' } });
+        try {
+          await io.testLinearConnection(slug, apiKey);
+          if (request !== connectionRequest) return false;
+          set({
+            connection: { kind: 'worked', sentence: 'Linear connection works.' },
+          });
+          return true;
+        } catch (error) {
+          if (request !== connectionRequest) return false;
+          set({
+            connection: {
+              kind: 'refused',
+              sentence: why(error, 'Loadout could not test that Linear connection.'),
+            },
+          });
+          return false;
+        }
+      },
+
+      resetEditorFeedback: () => {
+        connectionRequest += 1;
+        set({ connection: { kind: 'idle' } });
+      },
+
       tick: () => poll(generation),
 
       startWatching: () => {
@@ -417,12 +587,16 @@ export function createTriggersStore(
         watching = true;
         generation += 1;
         const epoch = generation;
+        nextDue.clear();
+        for (const trigger of get().triggers) {
+          if (trigger.problem === undefined) scheduleFromNow(trigger);
+        }
         /* Root calls only startWatching. An empty singleton therefore has to load here before
          * the first interval; injected stores that were explicitly seeded keep that seed. */
         if (get().triggers.length === 0) void get().load();
         watchHandle = clock.setInterval(() => {
           if (!watching || epoch !== generation) return;
-          void poll(epoch);
+          void poll(epoch, true);
         }, TRIGGER_WATCH_INTERVAL_MS);
       },
 
@@ -432,6 +606,7 @@ export function createTriggersStore(
         watching = false;
         clock.clearInterval(watchHandle);
         watchHandle = null;
+        nextDue.clear();
       },
     };
   });
@@ -441,9 +616,14 @@ const DISK: TriggerIo = {
   listTriggers: triggerIo.listTriggers,
   setTriggerEnabled: triggerIo.setTriggerEnabled,
   checkTrigger: triggerIo.checkTrigger,
+  createTrigger: triggerIo.createTrigger,
+  updateTrigger: triggerIo.updateTrigger,
+  deleteTrigger: triggerIo.deleteTrigger,
+  testLinearConnection: triggerIo.testLinearConnection,
 };
 
 const WINDOW_CLOCK: TriggerClock = {
+  now: () => Date.now(),
   setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds),
   clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof setInterval>),
 };

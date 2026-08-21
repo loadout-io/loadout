@@ -55,6 +55,7 @@ uuid = { version = "1.24.1", features = ["v7", "serde"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # tylko po stałe sygnałów
@@ -62,4 +63,3 @@ libc = "0.2" # tylko po stałe sygnałów
 [dev-dependencies]
 tokio = { version = "1.53", features = ["full", "test-util"] }
 proptest = "1.11.0"
-tempfile = "3"
