@@ -114,8 +114,6 @@
       "Write(Cargo.toml)",
       "Edit(Cargo.lock)",
       "Write(Cargo.lock)",
-      "Edit(src-tauri/Cargo.toml)",
-      "Write(src-tauri/Cargo.toml)",
       "Edit(rust-toolchain.toml)",
       "Write(rust-toolchain.toml)",
       "Edit(tsconfig*.json)",
