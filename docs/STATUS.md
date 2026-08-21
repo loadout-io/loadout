@@ -4,6 +4,22 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-21 — T-65 odblokowane decyzją właściciela, implementacja w toku
+
+Właściciel polecił zaplanować i wykonać T-65 oraz oddał wybór rozwiązania agentowi. To jest
+brakująca decyzja człowieka, przy której poprzednia sesja słusznie stanęła. Zakres zadania został
+rozszerzony bez tworzenia nowego ID: trwały ledger dostaw pod `~/.loadout/triggers/`, UUID v7
+przydzielony przed Startem i pierwszy atomowy `run.json` jako chwila akceptacji.
+
+Rozwiązanie nie ufa `RunState.workflow`. O zajętości nadal decyduje jeden `AppState.live`,
+pending przechodzi istniejącą drogą `launchRun` → `run_workflow`, a wyścig z ręcznym Startem
+zostawia go do ponowienia. Pasujący `run.json` godzi ledger po awarii bez drugiego biegu;
+SQLite pozostaje indeksem. Nadal nie ma daemona, wielu żywych biegów ani `stop_run(id)` z Etapu B
+T-71.
+
+To wpis o decyzji i bieżącej pracy na `task-T-65`, nie paragon zielonej bramki. Wyniki `before`,
+`quick`, `full`, review i lądowania trzeba dopisać dopiero po ich rzeczywistym wykonaniu.
+
 ## 2026-08-21, 01:53 — trzy urwane sesje rozliczone: T-71 i T-64 w trunku, T-40 wycofane, T-65 uczciwie wstrzymane
 
 **Wyladowane: T-71 i T-64.** T-71 przeszlo 20/0 na galezi i 15/0 na trunku; po znalezieniu

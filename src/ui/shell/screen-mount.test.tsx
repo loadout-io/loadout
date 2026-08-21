@@ -1,15 +1,15 @@
-/* Kryterium 1 dla T-25: sekcja, która ma ekran, pokazuje TEN ekran, a pozostałe cztery nie są
+/* Kryterium 1 dla T-25: sekcja, która ma ekran, pokazuje TEN ekran, a pozostałe pięć nie są
  * w drzewie.
  *
- * `expect(html).toContain('agents-screen')` przechodzi na powłoce, która trzyma wszystkie pięć
- * ekranów naraz i chowa cztery CSS-em — czyli na „always-mounted route stack", przez który
+ * `expect(html).toContain('agents-screen')` przechodzi na powłoce, która trzyma wszystkie sześć
+ * ekranów naraz i chowa pięć CSS-em — czyli na „always-mounted route stack", przez który
  * poprzedni prototyp renderował 142 elementy niosące tekst przy suficie 60 [raport 03 §4.1]. Odróżniają
- * je dopiero trzy rzeczy naraz: PEŁNA mapa pięciu ekranów (dopóki cztery pozostałe nie mają
- * czego pokazać, „pozostałe cztery" nic nie znaczy), policzenie ich DO ZERA, i zakaz `hidden`
- * oraz `display:none` — bo dokładnie tymi dwiema rzeczami chowa się cztery zamontowane ekrany
+ * je dopiero trzy rzeczy naraz: PEŁNA mapa sześciu ekranów (dopóki pięć pozostałych nie ma
+ * czego pokazać, „pozostałe pięć" nic nie znaczy), policzenie ich DO ZERA, i zakaz `hidden`
+ * oraz `display:none` — bo dokładnie tymi dwiema rzeczami chowa się pięć zamontowanych ekranów
  * tak, żeby licznik dalej się zgadzał.
  *
- * Pięć identyfikatorów jest wypisanych TUTAJ na sztywno, a nie czytane z SECTIONS: pętla po
+ * Sześć identyfikatorów jest wypisanych TUTAJ na sztywno, a nie czytane z SECTIONS: pętla po
  * rejestrze sprawdzałaby rejestr sam sobą, a pusta tablica przeszłaby wtedy każde „dla każdej
  * sekcji…". Ta sama pułapka jest opisana w sections.test.tsx z T-01.
  *
@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import type { ScreenMap } from '../screens';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers'] as const;
 
 type Id = (typeof EXPECTED)[number];
 
@@ -35,7 +35,7 @@ function occurrences(haystack: string, needle: string): number {
  * Wąski wzorzec ` hidden(?:=""|>|\s)` łapał tylko atrybut: `hidden=""`, `hidden>` i `hidden `
  * przed następnym atrybutem. `class="p-4 hidden"` przechodziło, bo zaraz za słowem stoi
  * cudzysłów, a `class="hidden"` przechodziło podwójnie — cudzysłów jest po OBU stronach. A to
- * jest dziś najtańszy sposób schowania czterech zamontowanych ekranów: jedno słowo w klasie,
+ * jest dziś najtańszy sposób schowania pięciu zamontowanych ekranów: jedno słowo w klasie,
  * reguła w arkuszu.
  *
  * Stąd granica z obu stron zamiast wyliczanki końcówek: `hidden` ma nie być otoczone znakiem
@@ -53,20 +53,21 @@ function screenFor(id: Id): () => ReactElement {
   return () => <p data-screen={id} />;
 }
 
-/** Wszystkie pięć sekcji mają ekran — inaczej „pozostałe cztery" nie ma czego wykluczać. */
+/** Wszystkie sześć sekcji ma ekran — inaczej „pozostałe pięć" nie ma czego wykluczać. */
 const ALL: ScreenMap = {
   run: screenFor('run'),
   workflows: screenFor('workflows'),
   agents: screenFor('agents'),
   skills: screenFor('skills'),
   memory: screenFor('memory'),
+  triggers: screenFor('triggers'),
 };
 
 function markupFor(id: Id): string {
   return renderToStaticMarkup(<App section={id} screens={ALL} />);
 }
 
-describe('the section that has a screen shows it, and the other four are not in the tree', () => {
+describe('the section that has a screen shows it, and the other five are not in the tree', () => {
   it('shows the screen it was handed for the open section', () => {
     const markup = renderToStaticMarkup(
       <App section="agents" screens={{ agents: () => <p data-probe="agents-screen">…</p> }} />,
@@ -74,14 +75,14 @@ describe('the section that has a screen shows it, and the other four are not in 
     expect(
       occurrences(markup, 'data-probe="agents-screen"'),
       'asking for agents with an agents screen in hand has to put that screen in the tree ' +
-        'exactly once. The shell this task replaces shows the empty screen for all five ' +
-        'sections and never reaches for a screen at all — green everywhere, five blank ' +
+        'exactly once. The shell this task replaces shows the empty screen for all six ' +
+        'sections and never reaches for a screen at all — green everywhere, six blank ' +
         'rectangles in the window',
     ).toBe(1);
   });
 
   for (const id of EXPECTED) {
-    it('draws the ' + id + ' screen and only that one, with all five available', () => {
+    it('draws the ' + id + ' screen and only that one, with all six available', () => {
       const markup = markupFor(id);
       expect(
         occurrences(markup, 'data-screen="' + id + '"'),
@@ -95,13 +96,13 @@ describe('the section that has a screen shows it, and the other four are not in 
             id +
             ' open, the ' +
             other +
-            ' screen has to be absent from the tree, not merely invisible. Five kept alive and ' +
-            'four hidden is the shape that put 142 text-carrying elements on one poprzedni prototyp screen',
+            ' screen has to be absent from the tree, not merely invisible. Six kept alive and ' +
+            'five hidden is the shape that put 142 text-carrying elements on one poprzedni prototyp screen',
         ).toBe(0);
       }
     });
 
-    it('leaves the other four sections out of the tree, with ' + id + ' open', () => {
+    it('leaves the other five sections out of the tree, with ' + id + ' open', () => {
       const markup = markupFor(id);
       expect(
         occurrences(markup, 'data-section="' + id + '"'),
@@ -121,7 +122,7 @@ describe('the section that has a screen shows it, and the other four are not in 
       expect(
         HIDDEN_TOKEN.test(markup),
         'nothing in the shell may carry the hidden attribute or the hidden class: hiding is how ' +
-          'four screens stay in the tree while the count above still reads one',
+          'five screens stay in the tree while the count above still reads one',
       ).toBe(false);
       expect(
         /display\s*:\s*none/i.test(markup),

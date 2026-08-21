@@ -4,7 +4,7 @@
  * nic nie robią — to jest dosłownie stan poprzedniego prototypu (`Export receipt`, `Copy`, `Review decision →`
  * bez handlera) i na zrzucie ekranu wygląda lepiej niż wersja poprawna [raport 03 §7.3].
  *
- * Rozróżniają je dwie rzeczy: DOKŁADNA liczba pięciu przycisków w każdej sekcji — czyli sam
+ * Rozróżniają je dwie rzeczy: DOKŁADNA liczba sześciu przycisków w każdej sekcji — czyli sam
  * przełącznik, i ani jednego więcej — oraz pytanie do store'a, czy przełączenie naprawdę
  * zmieniło wartość.
  *
@@ -21,15 +21,15 @@
  *
  * NOWA WERSJA JEST MOCNIEJSZA, nie luźniejsza, i to jest cały sens tej zmiany. Zamiast jednej
  * sumy sprawdza trzy rzeczy naraz:
- *   (a) przełącznik sekcji ma DOKŁADNIE pięć kontrolek, po jednej na sekcję — jak dotąd;
+ *   (a) przełącznik sekcji ma DOKŁADNIE sześć kontrolek, po jednej na sekcję;
  *   (b) każda kontrolka powłoki, która NIE jest przełącznikiem sekcji, stoi w liście `SHELL`
- *       poniżej, a suma `5 + SHELL.length` musi się zgadzać co do jednego — czyli przycisk
+ *       poniżej, a suma `6 + SHELL.length` musi się zgadzać co do jednego — czyli przycisk
  *       dołożony bez wpisu jest czerwony;
  *   (c) każdy wpis w `SHELL` niesie NAZWĘ swojego handlera, a test woła ten handler i pyta
  *       magazyn, czy coś się naprawdę zmieniło.
  *
- * Punkt (c) jest tym, czego stara wersja nie umiała nigdy: liczba przepuszczała pięć przycisków
- * `Create` bez handlera dokładnie tak samo jak pięć działających. Żeby dołożyć kontrolkę do
+ * Punkt (c) jest tym, czego stara wersja nie umiała nigdy: liczba przepuszczała sześć przycisków
+ * `Create` bez handlera dokładnie tak samo jak sześć działających. Żeby dołożyć kontrolkę do
  * powłoki, trzeba teraz dołożyć DOWÓD, że ona coś robi — a to jest niezmiennik 16 zapisany jako
  * asercja, nie jako suma.
  */
@@ -39,7 +39,7 @@ import { App } from '../../App';
 import { useSectionStore } from './section-store';
 import { useSwitcher } from './workspace-switcher';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers'] as const;
 
 /**
  * Kontrolki powłoki poza przełącznikiem sekcji: marker w DOM, handler i dowód, że handler ma
@@ -105,15 +105,15 @@ function emptyStateText(markup: string): string {
     .trim();
 }
 
-describe('the only controls are the five section switches, and each one really switches', () => {
+describe('the only controls are the six section switches, and each one really switches', () => {
   for (const id of EXPECTED) {
-    it('shows the five switches plus only the named shell controls, with ' + id + ' open', () => {
+    it('shows the six switches plus only the named shell controls, with ' + id + ' open', () => {
       const markup = markupFor(id);
       for (const other of EXPECTED) {
         expect(
           occurrences(markup, 'data-section-switch="' + other + '"'),
-          'each of the five switches has to carry data-section-switch with a different one of ' +
-            'the five names; ' +
+          'each of the six switches has to carry data-section-switch with a different one of ' +
+            'the six names; ' +
             other +
             ' is missing or doubled',
         ).toBe(1);
@@ -128,7 +128,7 @@ describe('the only controls are the five section switches, and each one really s
         occurrences(markup, '<button'),
         'with ' +
           id +
-          ' open the shell renders a control that is neither one of the five section switches ' +
+          ' open the shell renders a control that is neither one of the six section switches ' +
           'nor one of the ' +
           String(SHELL.length) +
           ' shell controls named in SHELL at the top of this file. A button nobody named is a ' +

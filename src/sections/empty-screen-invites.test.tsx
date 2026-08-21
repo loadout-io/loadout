@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../App';
 import type { Section } from '../ui/sections';
 
-/* AC-3 dla T-48: znacznik pustego ekranu siedzi na ZDANIU, w kazdej z pieciu sekcji.
+/* AC-3 dla T-48: znacznik pustego ekranu siedzi na ZDANIU, w kazdej z szesciu sekcji.
  *
  * `src/App.tsx` mowi to o sobie wprost: „`data-empty` siedzi na elemencie, ktory niesie SAMO
  * zdanie — nie na ramce z zaproszeniem", bo trescia tak oznaczonego elementu ma byc zdanie,
@@ -13,7 +13,7 @@ import type { Section } from '../ui/sections';
  * rzecz, milczy dokladnie tam, gdzie powinna krzyczec.
  *
  * PRAWDZIWE ODKRYWANIE, nie `screens={{}}`. Z pusta mapa ekranow powloka rysuje zdanie
- * z rejestru sekcji i zadnej sekcji nie montuje: kazdy z pieciu ekranow wyglada wtedy identycznie
+ * z rejestru sekcji i zadnej sekcji nie montuje: kazdy z szesciu ekranow wyglada wtedy identycznie
  * i test przechodzi, nie zobaczywszy ani jednej sekcji. Zmierzone 2026-08-19: piec ekranow,
  * po szesc przyciskow, zero pol, `data-empty` wszedzie — czyli sama powloka.
  *
@@ -28,7 +28,14 @@ import type { Section } from '../ui/sections';
  * elementu jest cztero-czlonowe „glif zdanie zdanie przycisk".
  */
 
-const FIVE: readonly Section[] = ['run', 'workflows', 'agents', 'skills', 'memory'];
+const FIVE = [
+  'run',
+  'workflows',
+  'agents',
+  'skills',
+  'memory',
+  'triggers',
+] as const satisfies readonly Section[];
 
 /** Tekst bez znacznikow, ze scisnietymi odstepami. */
 const plain = (html: string): string =>
@@ -118,11 +125,11 @@ describe('pusty ekran', () => {
     for (const [section, markup] of screens) {
       expect(markup.length, 'nothing at all was rendered for ' + section).toBeGreaterThan(400);
     }
-    /* Kontrola: ekrany musza sie od siebie ROZNIC. Piec identycznych znaczy, ze zadna sekcja
+    /* Kontrola: ekrany musza sie od siebie ROZNIC. Szesc identycznych znaczy, ze zadna sekcja
      * sie nie zamontowala i wszystko nizej mierzy sama powloke. */
     expect(
       new Set(screens.map(([, markup]) => markup)).size,
-      'the five sections rendered the same document, so none of them mounted and every ' +
+      'the six sections rendered the same document, so none of them mounted and every ' +
         'assertion below is about the window frame',
     ).toBe(FIVE.length);
   });
@@ -179,12 +186,13 @@ describe('pusty ekran', () => {
       const around = plain(region.replace(/<([a-z]+)[^>]*\sdata-empty\b[^>]*>[\s\S]*?<\/\1>/, ' '));
       /* DWA MIEJSCA, W KTORYCH MOZE STAC WYJSCIE, i to nie jest rozluznienie.
        *
-       * W czterech sekcjach listowych zaproszenie stoi w tej samej strefie, co zdanie: „Add one,
+       * W pieciu sekcjach listowych zaproszenie stoi w tej samej strefie, co zdanie: „Add one,
        * and a step in any workflow can be handed to it" plus przycisk. W Run stoi w wierszu
        * wejscia na dole ekranu, ktory jest tam ZAWSZE, takze wtedy, gdy nic nie chodzi — i to on
        * jest cala droga dalej, bo bieg zaczyna sie od napisania, czego chcesz. Zmierzone
        * 2026-08-19: pola tekstowe na pustym ekranie ma WYLACZNIE Run (jedno zywe), a cztery
-       * pozostale sekcje zero. Ta druga galaz nie jest wiec dziura dla nich — nie ma czym jej
+       * pozostale sekcje zero. T-65 dopisuje piata sekcje listowa i ten sam warunek. Ta druga
+       * galaz nie jest wiec dziura dla nich — nie ma czym jej
        * spelnic poza dorobieniem sobie pola do pisania. */
       const typing = [...markup.matchAll(/<(?:textarea|input)\b[^>]*>/g)]
         .map((one) => one[0])
