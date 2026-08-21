@@ -160,7 +160,10 @@ use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
-use crate::workflow::{AgentStep, Folder, Handover, Point, Skills, Step, WorkflowFile};
+use crate::workflow::{
+    AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence, Skills, Step,
+    WorkflowFile,
+};
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
 const AGENTS_DIR: &str = "agents";
@@ -578,7 +581,18 @@ async fn the_planned_run(
     // Nie zmienia to niczego, przed czym broni `engine::scheduler`: permit wspólnej puli bierze
     // dalej ZADANIE, nie pętla wysyłki, więc różnica między „w kolejce" a „działa" zostaje tam,
     // gdzie była, a szerokość wysyłki dalej nie udaje równoległości.
-    let outcome = scheduler::execute(&dag, dag.len(), deps.control.cancel_token(), run_step).await;
+    let route_after = {
+        let live = Arc::clone(&live);
+        move |id: StepId, _report: StepReport| live.route_after(id)
+    };
+    let outcome = scheduler::execute_routed(
+        &dag,
+        dag.len(),
+        deps.control.cancel_token(),
+        run_step,
+        route_after,
+    )
+    .await;
 
     live.close_the_book(&outcome.states, outcome.cancelled);
     // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
@@ -794,6 +808,8 @@ struct Plan {
     graph: Value,
     /// Krawędzie po numerach kroków, gotowe dla `engine::dag`.
     arrows: Vec<(StepId, StepId)>,
+    /// Warunki po numerach rozwiniętych węzłów. Pusty wektor zachowuje zwykły scheduler.
+    routes: Vec<PlannedRoute>,
     /// Ile kroków ma naprawdę działać naraz — prosto z żądania.
     concurrency: usize,
     /// Sędzia pętli i liczba jej rund, jeżeli plik ma powrót.
@@ -811,6 +827,21 @@ struct Plan {
     /// Kiedy wstała maszyna. Czytane RAZ, przy planowaniu: ten sam bieg ma nosić jedną
     /// odpowiedź, a nie tyle, ile razy ktoś zapyta system.
     boot_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedRoute {
+    from: StepId,
+    to: StepId,
+    link: ConditionalLink,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteDecision {
+    step_id: String,
+    to: String,
+    evidence: RouteEvidence,
 }
 
 /// Pętla tego biegu: kto orzeka i ile razy wolno próbować.
@@ -931,6 +962,8 @@ struct AgentJob {
     /// z tego samego powodu, z którego stoi tu polityka: krok, który miałby to policzyć sam,
     /// mógłby odmówić w połowie biegu, a niezmiennik 12 mówi „najpóźniej przy Starcie".
     tools: Option<Vec<String>>,
+    /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
+    connections: Vec<crate::connections::Connection>,
     /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
@@ -946,6 +979,39 @@ struct AgentJob {
 /// Wczytuje plik, sprawdza go drugi raz i rozpisuje bieg — **bez dotykania dysku**.
 fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> {
     plan_run_with_identity(deps, request, Uuid::now_v7().to_string(), now_ms(), None)
+}
+
+fn planned_routes(
+    file: &WorkflowFile,
+    steps: &[Planned],
+    arrows: &[(StepId, StepId)],
+) -> Result<Vec<PlannedRoute>, RunError> {
+    let Some(value) = file.extra.get("linkConditions") else {
+        return Ok(Vec::new());
+    };
+    let declared: Vec<ConditionalLink> = serde_json::from_value(value.clone())?;
+    let mut routes = Vec::new();
+    for condition in declared {
+        let mut found = false;
+        for &(from, to) in arrows {
+            if steps[from].tile_key == condition.from && steps[to].tile_key == condition.to {
+                found = true;
+                routes.push(PlannedRoute {
+                    from,
+                    to,
+                    link: condition.clone(),
+                });
+            }
+        }
+        if !found {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "An imported condition points to a connection that is not in this workflow.",
+            )
+            .into());
+        }
+    }
+    Ok(routes)
 }
 
 fn plan_triggered_run(
@@ -1002,6 +1068,7 @@ fn plan_run_with_identity(
     let unrolled = crate::workflow::unroll::unroll(&file);
     let setup = Setup {
         library: deps.home.join(AGENTS_DIR),
+        connections: deps.home.join("connections"),
         knows: what_the_agents_know(deps.home),
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
          * fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
@@ -1042,6 +1109,7 @@ fn plan_run_with_identity(
     for &(parent, child) in &arrows {
         steps[child].depends_on.push(keys[parent].clone());
     }
+    let routes = planned_routes(&file, &steps, &arrows)?;
 
     Ok(Plan {
         id,
@@ -1051,6 +1119,7 @@ fn plan_run_with_identity(
         hash: fingerprint(&bytes),
         graph: serde_json::to_value(&file)?,
         arrows,
+        routes,
         concurrency: request.how_many_at_once,
         the_loop,
         steps,
@@ -1166,6 +1235,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     let unrolled = crate::workflow::unroll::unroll(&file);
     let setup = Setup {
         library,
+        connections: deps.home.join("connections"),
         knows: what_the_agents_know(deps.home),
         /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
          * zadanie biegu dałoby prompt, w którym to samo polecenie stoi dwukrotnie — raz pod
@@ -1202,6 +1272,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         /* Jeden krok nie ma po czym iść: strzałka w planie o jednym węźle byłaby krawędzią do
          * siebie, czyli tym, czego `Dag::new` odmawia. */
         arrows: Vec::new(),
+        routes: Vec::new(),
         concurrency: ask.how_many_at_once,
         the_loop: None,
         steps,
@@ -1308,6 +1379,8 @@ fn with_the_task(task: &str, instructions: &str) -> String {
 struct Setup<'a> {
     /// `~/.loadout/agents` — stąd bierzemy agenta, którego nazywa krok.
     library: PathBuf,
+    /// `~/.loadout/connections` — wyłącznie natywne, jawnie zatwierdzone pliki.
+    connections: PathBuf,
     /// Co agent WIE, zanim przeczyta swoje zadanie — notatki, które człowiek dopuścił do użytku.
     ///
     /// Liczone RAZ, przy planowaniu, nie przy każdym kroku: ten sam bieg ma nieść jedną
@@ -1422,6 +1495,16 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     // pojechać z inną polityką, niż ta, którą przepuszczono jego narzędzia.
     let policy = policy_of(effective.file_access);
     let tools = what_this_step_may_use(&effective, policy, step)?;
+    let connections =
+        crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
+            |error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: Some(step.id.clone()),
+                    message: error.to_string(),
+                })
+            },
+        )?;
 
     let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
     Ok(AgentJob {
@@ -1453,6 +1536,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         system_append: some_text(&effective.instructions),
         policy,
         tools,
+        connections,
         // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
         // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
         // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
@@ -2860,6 +2944,10 @@ struct Live {
     /// Jedno pole, bo pętla jest jedna (`check::two_ways_back`). Czytane przed każdym krokiem
     /// ciała pętli i przez to jedyny nośnik faktu „dalszych rund już nie potrzebujemy".
     settled_at: Mutex<Option<u8>>,
+    /// Wynik kroku używany wyłącznie przez zapisane warunki jego strzałek.
+    route_evidence: Mutex<Vec<Option<RouteEvidence>>>,
+    /// Trwały dowód wyboru, kopiowany do `run.json` przy każdym zrzucie.
+    route_decisions: Mutex<Vec<RouteDecision>>,
 }
 
 /// Zmienna połowa biegu — dokładnie to, co zmienia się między zrzutami `run.json`.
@@ -2988,6 +3076,7 @@ impl Live {
             .collect();
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         let settled_at = Mutex::new(None);
+        let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         Self {
             plan,
             inherited,
@@ -3004,6 +3093,8 @@ impl Live {
             began: Instant::now(),
             handoffs,
             settled_at,
+            route_evidence,
+            route_decisions: Mutex::new(Vec::new()),
         }
     }
 
@@ -3075,6 +3166,86 @@ impl Live {
         // do niej. Pole zostaje, bo rozstrzyga, KTO pisze werdykt (patrz `verdict_after`).
         let _ = &the_loop.judge;
         settled.is_some_and(|turn| step.turn > turn)
+    }
+
+    fn has_routes(&self, id: StepId) -> bool {
+        self.plan.routes.iter().any(|route| route.from == id)
+    }
+
+    fn remember_evidence(&self, id: StepId, evidence: RouteEvidence) {
+        let mut all = self
+            .route_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        all[id] = Some(evidence);
+    }
+
+    fn remember_handoff_evidence(&self, id: StepId, text: &str) {
+        if !self.has_routes(id) {
+            return;
+        }
+        let fields: BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+            .collect();
+        self.remember_evidence(id, RouteEvidence::Handoff(fields));
+    }
+
+    fn route_after(&self, id: StepId) -> scheduler::Route {
+        let relevant: Vec<&PlannedRoute> = self
+            .plan
+            .routes
+            .iter()
+            .filter(|route| route.from == id)
+            .collect();
+        if relevant.is_empty() {
+            return scheduler::Route::All;
+        }
+        let evidence = self
+            .route_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .flatten();
+        let links: Vec<ConditionalLink> = relevant.iter().map(|route| route.link.clone()).collect();
+        let selected = match crate::workflow::select_branch(
+            &links,
+            &self.plan.steps[id].tile_key,
+            evidence.as_ref(),
+        ) {
+            Ok(Some(selected)) => selected,
+            Ok(None) => return scheduler::Route::All,
+            Err(error) => return self.refuse_route(id, &error.to_string()),
+        };
+        let Some(route) = relevant
+            .into_iter()
+            .find(|route| route.link.to == selected.to)
+        else {
+            return self.refuse_route(id, "The selected next step is not in this run.");
+        };
+        let Some(evidence) = evidence else {
+            return self.refuse_route(
+                id,
+                "This step did not produce the value needed to choose what runs next.",
+            );
+        };
+        self.route_decisions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(RouteDecision {
+                step_id: self.plan.steps[id].tile_key.clone(),
+                to: self.plan.steps[route.to].tile_key.clone(),
+                evidence,
+            });
+        scheduler::Route::Only(vec![route.to])
+    }
+
+    fn refuse_route(&self, id: StepId, message: &str) -> scheduler::Route {
+        self.update(|book| book.steps[id].error = Some(message.to_owned()));
+        scheduler::Route::Blocked
     }
 
     /// Zapisuje werdykt sędziego pętli i mówi, czy to była ostatnia szansa.
@@ -3267,6 +3438,11 @@ impl Live {
             started_at: book.started_at,
             ended_at: book.ended_at,
             error: None,
+            route_decisions: self
+                .route_decisions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
             steps,
         }
     }
@@ -3534,7 +3710,30 @@ impl Live {
         // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
         // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
-        let started = match self.carrying_what_we_inherited(&job.driver) {
+        let configured = (|| -> anyhow::Result<Arc<dyn AgentDriver>> {
+            let driver = if job.connections.is_empty() {
+                Arc::clone(&job.driver)
+            } else {
+                let directory = self
+                    .plan
+                    .dir
+                    .join("connections")
+                    .join(&self.plan.steps[id].node_key);
+                let configuration = crate::connections::runtime::for_driver(
+                    &directory,
+                    job.driver.id(),
+                    &job.connections,
+                    |name| std::env::var_os(name),
+                )?;
+                job.driver.configured(&configuration).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
+                    )
+                })?
+            };
+            self.carrying_what_we_inherited(&driver)
+        })();
+        let started = match configured {
             Ok(driver) => driver.start(spec, events).await,
             Err(refusal) => {
                 // NADAJNIK GINIE TAKŻE NA TEJ GAŁĘZI, i to nie jest higiena. Na ścieżce startu
@@ -3627,6 +3826,17 @@ impl Live {
                  * bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
                  * promptu. */
                 self.hand_over(id, &report.output, &[]);
+                if self.has_routes(id) {
+                    self.remember_evidence(
+                        id,
+                        RouteEvidence::Check(if report.passed {
+                            CheckOutcome::Passed
+                        } else {
+                            CheckOutcome::Failed
+                        }),
+                    );
+                    return StepReport::Succeeded;
+                }
                 /* WERDYKT PO ZAPISIE PRZEKAZANIA, nie przed: plik z wyjściem komendy ma istnieć
                  * niezależnie od tego, co postanowimy z biegiem — ta sama kolejność, którą trzyma
                  * krok agenta.
@@ -3830,6 +4040,7 @@ impl Live {
                     // a plik z jego ostatnim zdaniem czytałby się jak wynik. Powód porażki jedzie
                     // do księgi i na ekran, tamtą drogą.
                     self.hand_over(id, &turn.text, reads);
+                    self.remember_handoff_evidence(id, &turn.text);
                     /* WERDYKT SEDZIEGO PETLI, czytany z tego samego tekstu, ktory wlasnie stal sie
                      * przekazaniem. Po `pass` pętla sie domyka i dalsze rundy zostana pominiete
                      * (`already_settled`); po `fail` w OSTATNIEJ rundzie krok wraca `Failed`,
@@ -4080,6 +4291,9 @@ impl Live {
              * do promptu następnego kroku nagłówek nad pustką, czyli kosztowałoby długość
              * za informację, której nie ma. */
             if let Some(said) = self.control.take_answer() {
+                if self.has_routes(id) {
+                    self.remember_evidence(id, RouteEvidence::Checkpoint(said.clone()));
+                }
                 self.hand_over(id, &said, &[]);
             }
             // Limit dostawcy mógł wejść W TRAKCIE pytania i wtedy odpowiedź człowieka nie
@@ -4364,6 +4578,8 @@ struct RunFile<'a> {
     started_at: Option<i64>,
     ended_at: Option<i64>,
     error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    route_decisions: Vec<RouteDecision>,
     steps: Vec<StepEntry<'a>>,
 }
 

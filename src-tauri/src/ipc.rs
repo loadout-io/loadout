@@ -1100,6 +1100,24 @@ pub fn new_id() -> String {
     commands::mint::new_id_inner().to_string()
 }
 
+/// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
+#[tauri::command]
+pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::ImportPreview, String> {
+    let result = commands::import::scan_setup_inner(&workspace);
+    drop(workspace);
+    result.map_err(|error| error.to_string())
+}
+
+/// Zapisuje ponownie zweryfikowaną migawkę do biblioteki Loadouta.
+#[tauri::command]
+pub fn apply_setup(
+    request: commands::import::ApplySetup,
+) -> Result<crate::import::apply::ImportReceipt, String> {
+    let result = commands::import::apply_setup_inner(&crate::loadout_dir(), &request);
+    drop(request);
+    result.map_err(|error| error.to_string())
+}
+
 /// Zapisuje definicję agenta.
 #[tauri::command]
 pub fn save_agent(agent: Agent) -> Result<(), String> {
@@ -1903,6 +1921,7 @@ pub async fn list_processes(
 /// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        apply_setup,
         author_skill,
         check_trigger,
         check_workflow,
@@ -1934,6 +1953,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         save_agent,
         save_workflow,
         save_workspace,
+        scan_setup,
         say_to_agent,
         say_to_orchestrator,
         set_trigger_enabled,

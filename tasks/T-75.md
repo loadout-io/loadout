@@ -156,7 +156,6 @@ ukrytej sesji. Scan nic nie zmienia; Apply daje receipt i ponowne listy zwracaj�
 - Jira/Slack/Linear jako źródła workflow — ich triggery pozostają osobną biblioteką.
 
 <!-- OWNS
-AGENTS.md
 docs/PLAN.md
 docs/STATUS.md
 tasks/T-75.md
@@ -183,6 +182,10 @@ src-tauri/src/workflow/check.rs
 src-tauri/src/workflow/unroll.rs
 src-tauri/src/engine/dag.rs
 src-tauri/src/engine/scheduler.rs
+src-tauri/src/engine/supervisor.rs
+src-tauri/src/engine/drivers/mod.rs
+src-tauri/src/engine/drivers/claude.rs
+src-tauri/src/engine/drivers/codex.rs
 src-tauri/src/commands/run.rs
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/import_discovers_without_effects.rs

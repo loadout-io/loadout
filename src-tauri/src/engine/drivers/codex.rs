@@ -56,8 +56,8 @@ use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
-    RunSpec, SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
+    Policy, Probe, RunSpec, SessionRef, Tokens,
 };
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 
@@ -92,6 +92,8 @@ const COMPLAINT_KEPT: usize = 4 * 1024;
 pub struct CodexDriver {
     /// Co uruchamiamy.
     binary: PathBuf,
+    /// Konfiguracja Connections jednego kroku; Debug pokazuje tylko nazwy środowiska.
+    configuration: DriverConfiguration,
 }
 
 impl Default for CodexDriver {
@@ -106,6 +108,7 @@ impl CodexDriver {
     pub fn new() -> Self {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
+            configuration: DriverConfiguration::default(),
         }
     }
 
@@ -113,7 +116,16 @@ impl CodexDriver {
     /// proces — i dla użytkownika, który trzyma CLI poza `PATH`.
     #[must_use]
     pub fn with_binary(binary: PathBuf) -> Self {
-        Self { binary }
+        Self {
+            binary,
+            configuration: DriverConfiguration::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_configuration(mut self, configuration: DriverConfiguration) -> Self {
+        self.configuration = configuration;
+        self
     }
 
     /// Startuje sesję i oddaje **konkretny** uchwyt.
@@ -134,7 +146,8 @@ impl CodexDriver {
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<CodexHandle> {
-        let argv = build_exec_argv(&spec);
+        let mut argv = self.configuration.arguments.clone();
+        argv.extend(build_exec_argv(&spec));
 
         // Wznowienie zna swoją tożsamość, ZANIM padnie pierwsza linia: dostało ją od tego, kto
         // je zamówił. Pierwsza tura nie zna jej wcale i to jest uczciwe — sesja Codeksa
@@ -158,6 +171,7 @@ impl CodexDriver {
             threads: Arc::clone(&threads),
             number: FIRST_TURN,
             cancelled: Arc::clone(&cancelled),
+            configuration: self.configuration.clone(),
         };
         let (process, outcome) = turn.start()?;
 
@@ -186,6 +200,7 @@ impl CodexDriver {
             number: FIRST_TURN,
             process: Some(process),
             outcome: Some(outcome),
+            configuration: self.configuration.clone(),
         })
     }
 }
@@ -214,6 +229,7 @@ struct Turn {
     number: u64,
     /// Generacja anulowania, wspólna dla sesji (powód przy [`CodexHandle::cancelled`]).
     cancelled: Arc<AtomicU64>,
+    configuration: DriverConfiguration,
 }
 
 impl Turn {
@@ -232,7 +248,11 @@ impl Turn {
         // `Write`, nie `Keep`: po prompcie deskryptor się ZAMYKA, bo to zamknięcie jest tym
         // EOF-em, na który `codex exec` czeka. `Keep` zostawiłby proces wiszący na wejściu,
         // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
-        let mut process = supervisor::spawn(command, StdinPlan::Write(self.prompt))?;
+        let mut process = supervisor::spawn_with_environment(
+            command,
+            StdinPlan::Write(self.prompt),
+            &self.configuration.environment,
+        )?;
 
         let stdout = process
             .stdout()
@@ -1161,6 +1181,8 @@ pub struct CodexHandle {
     /// `oneshot`, a nie kanał: tura ma dokładnie jeden wynik, a nadajnik ginący razem z pętlą
     /// czytającą zamienia „pętla padła" w `Err` zamiast w czekanie bez końca.
     outcome: Option<oneshot::Receiver<Outcome>>,
+    /// Te same Connections muszą wrócić w każdej świeżej turze `codex exec resume`.
+    configuration: DriverConfiguration,
 }
 
 impl CodexHandle {
@@ -1259,15 +1281,18 @@ impl AgentHandle for CodexHandle {
         }
 
         self.number += 1;
+        let mut argv = self.configuration.arguments.clone();
+        argv.extend(resume_argv(&thread, &self.cwd));
         let turn = Turn {
             binary: self.binary.clone(),
             cwd: self.cwd.clone(),
-            argv: resume_argv(&thread, &self.cwd),
+            argv,
             prompt: text,
             events: self.events.clone(),
             threads: Arc::clone(&self.threads),
             number: self.number,
             cancelled: Arc::clone(&self.cancelled),
+            configuration: self.configuration.clone(),
         };
         let (process, outcome) = turn.start()?;
 
@@ -1336,6 +1361,12 @@ impl AgentHandle for CodexHandle {
 impl AgentDriver for CodexDriver {
     fn id(&self) -> &'static str {
         VENDOR
+    }
+
+    fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(
+            self.clone().with_configuration(configuration.clone()),
+        ))
     }
 
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:

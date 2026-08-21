@@ -80,8 +80,8 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
-    RunSpec, SessionRef, ToAgent, Tokens, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
+    Policy, Probe, RunSpec, SessionRef, ToAgent, Tokens, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -676,6 +676,8 @@ pub struct ClaudeDriver {
     /// ma prawa wiedzieć, czym jest dziedziczenie ani kiedy flagę wolno postawić (niezmiennik
     /// 23). Puste znaczy „nie było czego odziedziczyć" i rozstrzygnął to `inherit::wire`, nie my.
     inherited: Vec<String>,
+    /// Konfiguracja Connections wyłącznie dla tego kroku; wartości są redagowane przez Debug.
+    configuration: DriverConfiguration,
 }
 
 impl Default for ClaudeDriver {
@@ -693,6 +695,7 @@ impl ClaudeDriver {
             transcript: None,
             settings: None,
             inherited: Vec::new(),
+            configuration: DriverConfiguration::default(),
         }
     }
 
@@ -705,6 +708,7 @@ impl ClaudeDriver {
             transcript: None,
             settings: None,
             inherited: Vec::new(),
+            configuration: DriverConfiguration::default(),
         }
     }
 
@@ -784,6 +788,12 @@ impl ClaudeDriver {
     #[must_use]
     pub fn with_inherited(mut self, flags: Vec<String>) -> Self {
         self.inherited = flags;
+        self
+    }
+
+    #[must_use]
+    pub fn with_configuration(mut self, configuration: DriverConfiguration) -> Self {
+        self.configuration = configuration;
         self
     }
 
@@ -867,6 +877,7 @@ impl ClaudeDriver {
         // (`## Recurring patterns`, ciało podagenta) jedzie promptem i nigdy argv, bo argumenty
         // widzi `ps` każdego użytkownika maszyny (niezmiennik 9).
         command.args(&self.inherited);
+        command.args(&self.configuration.arguments);
 
         // JEDNO WYWOŁANIE SKŁADA OBIE FLAGI, a lista agenta wchodzi do niego argumentem
         // (niezmiennik 23). Druga droga — sterownik pytający tabelę o sufit i przycinający go tu
@@ -2076,6 +2087,12 @@ impl AgentDriver for ClaudeDriver {
         Some(Arc::new(self.clone().with_inherited(flags.to_vec())))
     }
 
+    fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(
+            self.clone().with_configuration(configuration.clone()),
+        ))
+    }
+
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
     /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
     ///
@@ -2165,12 +2182,13 @@ impl AgentDriver for ClaudeDriver {
         };
 
         let envelope = user_envelope(&spec.prompt)?;
-        let mut process = supervisor::spawn(
+        let mut process = supervisor::spawn_with_environment(
             self.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
             // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
             StdinPlan::Keep(format!("{envelope}\n")),
+            &self.configuration.environment,
         )?;
 
         let stdout = process

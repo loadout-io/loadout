@@ -31,6 +31,12 @@ pub mod engine;
 /// Dziedziczenie wiedzy repo gospodarza: tekst, nigdy maszyneria. Wypelnia T-54.
 pub mod inherit;
 
+/// Import setupow repo do natywnych agentow, skilli, polaczen i workflow. Wypelnia T-75.
+pub mod import;
+
+/// Polaczenia narzedziowe zarzadzane przez Loadout. Wypelnia T-75.
+pub mod connections;
+
 /// Granica z oknem: pompa sklejajaca i kanal do webviewa. Wypelnia T-07.
 pub mod ipc;
 

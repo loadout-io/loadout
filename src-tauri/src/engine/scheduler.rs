@@ -38,6 +38,17 @@ pub struct Outcome {
     pub cancelled: bool,
 }
 
+/// Które zapisane dzieci naprawdę wynikają z wartości wyprodukowanej przez krok.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// Zwykły graf: wszystkie strzałki znaczą „po".
+    All,
+    /// Warunkowy graf: dokładnie wskazane dzieci dostają aktywną drogę.
+    Only(Vec<StepId>),
+    /// Brak wartości, nieznana wartość albo więcej niż jedna zgodna droga.
+    Blocked,
+}
+
 /// Wykonuje graf i zwraca stan końcowy każdego węzła.
 ///
 /// `limit` to liczba kroków, które **naprawdę** mogą działać naraz. `cancel` jest tokenem
@@ -59,10 +70,27 @@ where
     F: Fn(StepId, CancellationToken) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = StepReport> + Send + 'static,
 {
+    execute_routed(dag, limit, cancel, run_step, |_, _| Route::All).await
+}
+
+/// Wariant wykonania, w którym wynik kroku może zawęzić jego zapisane strzałki.
+pub async fn execute_routed<F, Fut, R>(
+    dag: &Dag,
+    limit: usize,
+    cancel: CancellationToken,
+    run_step: F,
+    route_after: R,
+) -> Outcome
+where
+    F: Fn(StepId, CancellationToken) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = StepReport> + Send + 'static,
+    R: Fn(StepId, StepReport) -> Route,
+{
     let children = dag.children();
     // Kopia stopni wejściowych, nigdy sam graf: ten sam `Dag` ma dać się uruchomić drugi raz,
     // a AC-6 robi dokładnie to, żeby przyłapać stan przeciekający między biegami.
     let mut remaining = dag.in_degree();
+    let mut activated = vec![false; dag.len()];
     // 2026-08-15 — wektor stanów jest współdzielony, bo `Running` wpisuje ZADANIE, nie pętla:
     // dopiero ono wie, kiedy permit naprawdę jest w ręku (niezmiennik 11). Zamek jest
     // `std::sync::Mutex`, a każde jego wzięcie mieści się w jednym bloku bez `await`
@@ -74,6 +102,9 @@ where
     // żeby dzielić wektor, nie żeby ratować kolejność.
     let states = Arc::new(Mutex::new(vec![StepState::Pending; dag.len()]));
     let mut ready: Vec<StepId> = (0..dag.len()).filter(|&id| remaining[id] == 0).collect();
+    for &id in &ready {
+        activated[id] = true;
+    }
 
     // `limit.max(1)`: semafor bez ani jednego permitu nie przepuściłby nikogo, pętla skończyłaby
     // się przy `inflight == 0` w pierwszym obrocie i bieg zameldowałby koniec, w którym nic nie
@@ -160,15 +191,32 @@ where
         let mut guard = lock(&states);
         match report {
             StepReport::Succeeded => {
-                guard[id] = StepState::Succeeded;
-                for &child in &children[id] {
-                    remaining[child] -= 1;
-                    // Warunek na `Pending` jest tym, co daje „dokładnie raz": węzeł zamknięty
-                    // wcześniej przez stożek nie wraca do zbioru gotowych.
-                    if remaining[child] == 0 && guard[child] == StepState::Pending {
-                        ready.push(child);
-                    }
+                let route = route_after(id, StepReport::Succeeded);
+                if route == Route::Blocked {
+                    guard[id] = StepState::Failed;
+                    mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
+                    continue;
                 }
+                let selected = match route {
+                    Route::All => children[id].clone(),
+                    Route::Only(selected) => selected,
+                    Route::Blocked => Vec::new(),
+                };
+                if selected.iter().any(|child| !children[id].contains(child)) {
+                    guard[id] = StepState::Failed;
+                    mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
+                    continue;
+                }
+                guard[id] = StepState::Succeeded;
+                release_children(
+                    children,
+                    &mut remaining,
+                    &mut activated,
+                    &mut guard,
+                    &mut ready,
+                    id,
+                    &selected,
+                );
             }
             StepReport::Failed => {
                 guard[id] = StepState::Failed;
@@ -190,6 +238,37 @@ where
     Outcome {
         states: std::mem::take(&mut *guard),
         cancelled,
+    }
+}
+
+/// Rozlicza wszystkie strzałki rodzica. Nieaktywna gałąź jest pomijana, ale fan-in rusza,
+/// jeżeli dotarła do niego choć jedna aktywna droga i wszystkie pozostałe są rozstrzygnięte.
+fn release_children(
+    children: &[Vec<StepId>],
+    remaining: &mut [usize],
+    activated: &mut [bool],
+    states: &mut [StepState],
+    ready: &mut Vec<StepId>,
+    parent: StepId,
+    selected: &[StepId],
+) {
+    let mut queue = vec![(parent, selected.to_vec())];
+    while let Some((from, chosen)) = queue.pop() {
+        for &child in &children[from] {
+            remaining[child] = remaining[child].saturating_sub(1);
+            if chosen.contains(&child) {
+                activated[child] = true;
+            }
+            if remaining[child] != 0 || states[child] != StepState::Pending {
+                continue;
+            }
+            if activated[child] {
+                ready.push(child);
+            } else {
+                states[child] = StepState::Skipped;
+                queue.push((child, Vec::new()));
+            }
+        }
     }
 }
 

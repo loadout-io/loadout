@@ -14,6 +14,26 @@
 import type { Link, Point, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
 
+export type LinkCondition =
+  | { source: 'check'; outcome: 'passed' | 'failed' }
+  | { source: 'checkpoint'; choice: string }
+  | { source: 'handoff'; field: string; equals: string };
+
+interface ConditionalLink {
+  from: string;
+  to: string;
+  when: LinkCondition;
+}
+
+type ImportedWorkflow = WorkflowFile & { linkConditions?: ConditionalLink[] };
+
+export function importedConditionLabel(condition: LinkCondition): string {
+  if (condition.source === 'check')
+    return condition.outcome === 'passed' ? 'When checks pass' : 'When checks fail';
+  if (condition.source === 'checkpoint') return `When you choose ${condition.choice}`;
+  return `When ${condition.field} is ${condition.equals}`;
+}
+
 /** Tyle z `Node`, ile mapper widzi. Cztery ostatnie pola są tu wyłącznie po to, żeby test mógł
  * je podać i sprawdzić, że w pliku ich nie ma. */
 export interface CanvasNode {
@@ -50,6 +70,7 @@ export interface CanvasEdge {
    * jedziemy nim tędy dokładnie z tego powodu.
    */
   maxTurns?: number;
+  condition?: LinkCondition;
 }
 
 /** Najbliższa całkowita wielokrotność `GRID` na jednej osi.
@@ -139,7 +160,12 @@ function eachArrowOnce(links: readonly Link[]): Link[] {
 }
 
 export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowFile {
-  return {
+  const conditions = edges.flatMap((edge) =>
+    edge.condition === undefined
+      ? []
+      : [{ from: edge.source, to: edge.target, when: edge.condition }],
+  );
+  const next: ImportedWorkflow = {
     ...prev,
     steps: inFileOrder(prev, nodes).map((node) => onlyTheStep(node.data, snap(node.position))),
     /* POWRÓT PRZEŻYWA PODRÓŻ, i to jest cała treść tych dwóch linii. Klucz `max_turns` jedzie
@@ -154,6 +180,9 @@ export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdg
       ),
     ),
   };
+  if (conditions.length === 0) delete next.linkConditions;
+  else next.linkConditions = conditions;
+  return next;
 }
 
 /** Plik → płótno. Druga połowa mappera i jedyne miejsce, w którym powstają identyfikatory
@@ -175,16 +204,18 @@ export function toCanvas(file: WorkflowFile): {
     /* Klucz tylko wtedy, gdy plik go niesie — `exactOptionalPropertyTypes` tego pilnuje i ma
      * rację: krawędź z `maxTurns: undefined` wróciłaby przez `toFile` jako strzałka z pustym
      * polem, a stąd do przepisania każdego workflow przy pierwszym zapisie jest jeden krok. */
-    edges: eachArrowOnce(file.links).map((link) =>
-      link.max_turns === undefined
-        ? { id: `${link.from}->${link.to}`, source: link.from, target: link.to }
-        : {
-            id: `${link.from}->${link.to}`,
-            source: link.from,
-            target: link.to,
-            maxTurns: link.max_turns,
-          },
-    ),
+    edges: eachArrowOnce(file.links).map((link) => {
+      const condition = (file as ImportedWorkflow).linkConditions?.find(
+        (candidate) => candidate.from === link.from && candidate.to === link.to,
+      )?.when;
+      return {
+        id: `${link.from}->${link.to}`,
+        source: link.from,
+        target: link.to,
+        ...(link.max_turns === undefined ? {} : { maxTurns: link.max_turns }),
+        ...(condition === undefined ? {} : { condition }),
+      };
+    }),
   };
 }
 

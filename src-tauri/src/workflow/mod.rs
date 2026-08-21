@@ -347,6 +347,87 @@ impl Link {
     }
 }
 
+/// Zamknięty język decyzji na strzałce. Nie przyjmuje skryptu ani dowolnego wyrażenia.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Condition {
+    Check { outcome: CheckOutcome },
+    Checkpoint { choice: String },
+    Handoff { field: String, equals: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckOutcome {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionalLink {
+    pub from: String,
+    pub to: String,
+    pub when: Condition,
+}
+
+/// Wartość, która naprawdę powstała podczas biegu i może wybrać strzałkę.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", content = "value", rename_all = "kebab-case")]
+pub enum RouteEvidence {
+    Check(CheckOutcome),
+    Checkpoint(String),
+    Handoff(BTreeMap<String, String>),
+}
+
+#[must_use]
+pub fn condition_matches(condition: &Condition, evidence: &RouteEvidence) -> bool {
+    match (condition, evidence) {
+        (Condition::Check { outcome: left }, RouteEvidence::Check(right)) => left == right,
+        (Condition::Checkpoint { choice: left }, RouteEvidence::Checkpoint(right)) => left == right,
+        (Condition::Handoff { field, equals }, RouteEvidence::Handoff(fields)) => {
+            fields.get(field) == Some(equals)
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RouteError {
+    #[error("This step did not produce the value needed to choose what runs next.")]
+    MissingEvidence,
+    #[error("This result does not match any next step in the workflow.")]
+    NoMatch,
+    #[error("This result matches more than one next step in the workflow.")]
+    Ambiguous,
+}
+
+/// Wybiera dokładnie jedną zapisaną strzałkę. Brak warunków zachowuje zwykłą semantykę grafu.
+pub fn select_branch<'a>(
+    links: &'a [ConditionalLink],
+    from: &str,
+    evidence: Option<&RouteEvidence>,
+) -> Result<Option<&'a ConditionalLink>, RouteError> {
+    let relevant: Vec<&ConditionalLink> = links.iter().filter(|link| link.from == from).collect();
+    if relevant.is_empty() {
+        return Ok(None);
+    }
+    let evidence = evidence.ok_or(RouteError::MissingEvidence)?;
+    let selected: Vec<&ConditionalLink> = relevant
+        .into_iter()
+        .filter(|link| condition_matches(&link.when, evidence))
+        .collect();
+    match selected.as_slice() {
+        [] => Err(RouteError::NoMatch),
+        [only] => Ok(Some(*only)),
+        [_, _, ..] => Err(RouteError::Ambiguous),
+    }
+}
+
 /// Pozycja kafelka na płótnie.
 ///
 /// Pole jest `f64`, bo plik można poprawić ręcznie i przyjdzie stamtąd `241.4`. Zapisany tekst

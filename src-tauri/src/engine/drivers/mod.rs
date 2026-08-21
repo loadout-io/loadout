@@ -18,6 +18,7 @@
 //! Jedyna dziura w implementacji siedzi w `claude.rs`, w kolejnej turze tej samej sesji,
 //! i jest opisana tam, przy [`AgentDriver::start`].
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,6 +102,31 @@ pub struct RunSpec {
     pub extra_dirs: Vec<PathBuf>,
     /// Sesja do wznowienia. `None` przy pierwszej turze kroku.
     pub resume: Option<SessionRef>,
+}
+
+/// Vendorowe argumenty i jawnie rozwiązane środowisko zatwierdzonych Connections.
+/// Własny `Debug` celowo nie pokazuje wartości sekretów.
+#[derive(Clone, Default)]
+pub struct DriverConfiguration {
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, OsString)>,
+}
+
+impl std::fmt::Debug for DriverConfiguration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DriverConfiguration")
+            .field("arguments", &self.arguments)
+            .field(
+                "environment_names",
+                &self
+                    .environment
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Co agentowi wolno zrobić z plikami — **po ludzku**, w trzech wariantach [T1 §9].
@@ -367,6 +393,11 @@ pub trait AgentDriver: Send + Sync {
     /// (niezmiennik 23): `CodexDriver` i atrapy testów nie zmieniają ani jednej linii, a to jest
     /// warunek, pod którym ten plik zostaje „jedynym, którego T-10 nie musi zmienić".
     fn inheriting(&self, _flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Klon sterownika skonfigurowany dla zatwierdzonych Connections tego jednego kroku.
+    fn configured(&self, _configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
         None
     }
 }
