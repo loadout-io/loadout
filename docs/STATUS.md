@@ -4,7 +4,7 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
-## 2026-08-21, 13:10 — T-74 gotowe w worktree; Linear ma pełną drogę konfiguracji
+## 2026-08-21, 13:57 — T-74 w main i uruchomione; Linear ma pełną drogę konfiguracji
 
 Właściciel odrzucił ręczne tworzenie JSON-u po T-65 i polecił zbudować najpierw prawdziwy
 connector Lineara. Ekran Triggers prowadzi teraz przez Create/Edit/Delete: wybór Lineara,
@@ -32,12 +32,17 @@ condition 0/1. Końcowe kryteria: frontend 31/31, Rust AC-3 10/10 po mechaniczny
 AC-4 5/5, AC-7 7/7; sąsiedzi T-65 3/3, 7/7 i 27/27. Pełny rerun miał zielone wszystkie
 21 sprawdzeń kodu w 23,79 s, w tym `full-clippy` i `full-test`.
 
-Jedyny niezerowy wynik to infrastrukturalne `MISC quick-permissions`: T-74 posiada
-`src-tauri/Cargo.toml`, ale `.claude/settings.json` jednocześnie zabrania jego edycji. Ten sam
-konflikt występuje na trunku, zanim gałąź zostanie nałożona; zgodnie z §7 pisarz nie zmienia
-pliku ustawień bez decyzji właściciela. Druga opinia Claude była niedostępna (`api_error`), więc
-`review.sh` zwrócił 0 jako advisory i nie otworzył rundy naprawczej. Żywego wywołania Lineara
-nie wykonano, bo w bramce nie ma klucza; produkcyjny przycisk jest gotowy do takiego testu.
+Właściciel jawnie zezwolił usunąć sprzeczny deny dla posiadanego `src-tauri/Cargo.toml`;
+`quick-permissions` wróciło do zieleni w `c484b6f`, a T-74 weszło do main jako `81337c2`.
+Przed merge'em trunk przeszedł 15/0. Po merge'u bramka dwa razy zatrzymała się wyłącznie na
+starszym `workspace_global_slots`: w pełnej równoległej suicie zmierzył peak 2 zamiast 3.
+Ten sam test przechodzi osobno (1/1), przeszedł w bramce gałęzi i trunka przed merge'em, a pełne
+`cargo test -- --nocapture` po merge'u także przeszło; zwykłe `cargo test` odtwarza peak 2.
+Test i jego kontrakt leżą poza OWNS T-74, więc nie zostały cicho osłabione. Merge pozostaje
+w main zgodnie z zachowaniem `integrate.sh`, a aplikacja została zbudowana i uruchomiona z tego
+SHA. Druga opinia Claude była niedostępna (`api_error`), więc `review.sh` zwrócił 0 jako advisory.
+Żywego wywołania Lineara nie wykonano, bo w bramce nie ma klucza; produkcyjny przycisk jest
+gotowy do takiego testu.
 
 ## 2026-08-21, 09:22 — T-65 gotowe na gałęzi, pełna bramka zielona
 
