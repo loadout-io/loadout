@@ -277,7 +277,9 @@ fn answer_at(id: &str, identifier: &str, hour: u8) -> Vec<u8> {
     .expect("answer JSON")
 }
 
-fn snapshot(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
+type DirectorySnapshot = Vec<(String, Vec<u8>)>;
+
+fn snapshot(dir: &Path) -> Result<DirectorySnapshot, Box<dyn Error>> {
     let mut files = fs::read_dir(dir)?
         .filter_map(Result::ok)
         .filter_map(|entry| {

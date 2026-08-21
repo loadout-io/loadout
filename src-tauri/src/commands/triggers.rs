@@ -201,8 +201,10 @@ pub enum TriggerError {
     InvalidConfig(serde_json::Error),
     #[error("Add a Linear API key as `api_key` in this trigger file, then try again.")]
     MissingKey,
+    #[error("The trigger source `{0}` is not available. Choose `linear`.")]
+    UnknownSource(String),
     #[error("This trigger source is not available. Choose `linear`.")]
-    UnknownSource,
+    UnknownSourceRedacted,
     #[error("The Linear API key has an invalid shape. Replace it with a `lin_api_...` key.")]
     InvalidKey,
     #[error("Linear returned an empty response. Check the connection and try again.")]
@@ -303,7 +305,7 @@ fn library_problem(error: &TriggerError) -> String {
         TriggerError::MissingKey | TriggerError::InvalidKey => {
             "This trigger needs a valid Linear key.".to_owned()
         }
-        TriggerError::UnknownSource => {
+        TriggerError::UnknownSource(_) | TriggerError::UnknownSourceRedacted => {
             "This trigger uses an unavailable source. Choose linear.".to_owned()
         }
         _ => "This trigger file could not be loaded.".to_owned(),
@@ -966,7 +968,13 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
     let wire: TriggerWire = serde_json::from_slice(raw).map_err(TriggerError::InvalidConfig)?;
     let source = match wire.source.as_str() {
         "linear" => Source::Linear,
-        _ => return Err(TriggerError::UnknownSource),
+        unknown => {
+            let error = public_unsupported_source(unknown)
+                .map_or(TriggerError::UnknownSourceRedacted, |name| {
+                    TriggerError::UnknownSource(name.to_owned())
+                });
+            return Err(error);
+        }
     };
     let api_key = wire
         .api_key
@@ -983,6 +991,17 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
         condition: wire.condition,
         api_key: Secret::new(api_key),
     })
+}
+
+fn public_unsupported_source(source: &str) -> Option<&'static str> {
+    /* T-64 wymaga nazwac bezpieczna nazwe zrodla, ale T-65 ujawnilo, ze dowolny regex nazwy
+     * przepusci tez jakis sekret. Odbijamy tylko jawne nazwy integracji, nigdy surowe pole. */
+    match source {
+        "clickup" => Some("clickup"),
+        "jira" => Some("jira"),
+        "slack" => Some("slack"),
+        _ => None,
+    }
 }
 
 #[must_use]

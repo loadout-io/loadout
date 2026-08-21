@@ -1,6 +1,6 @@
 //! AC-8 dla T-65: jedna sprawa dostaje jeden trwały claim i najwyżej jedną akceptację biegu.
 //!
-//! SQLite nie bierze udziału w deduplikacji. Każda asercja po restarcie buduje odpowiedź
+//! `SQLite` nie bierze udziału w deduplikacji. Każda asercja po restarcie buduje odpowiedź
 //! wyłącznie z plików triggera i `run.json` (niezmiennik 4), a żywa część używa tej samej
 //! `run_triggered_workflow_inner`, którą opakowuje istniejące `run_workflow`.
 
@@ -1716,12 +1716,10 @@ fn accepted_run_file(
     }
 }
 
-fn snapshot_tree(root: &Path) -> Result<Vec<(PathBuf, Option<Vec<u8>>)>, Box<dyn Error>> {
-    fn visit(
-        root: &Path,
-        at: &Path,
-        out: &mut Vec<(PathBuf, Option<Vec<u8>>)>,
-    ) -> Result<(), Box<dyn Error>> {
+type TreeSnapshot = Vec<(PathBuf, Option<Vec<u8>>)>;
+
+fn snapshot_tree(root: &Path) -> Result<TreeSnapshot, Box<dyn Error>> {
+    fn visit(root: &Path, at: &Path, out: &mut TreeSnapshot) -> Result<(), Box<dyn Error>> {
         let mut entries = fs::read_dir(at)?.collect::<Result<Vec<_>, _>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {

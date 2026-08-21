@@ -140,28 +140,33 @@ fn an_unknown_source_never_echoes_a_value_that_may_be_a_key() -> Result<(), Box<
     let home = TempDir::new()?;
     let dir = home.path().join(triggers::TRIGGERS_DIR);
     fs::create_dir_all(&dir)?;
-    fs::write(
-        dir.join("mine.json"),
-        serde_json::to_vec_pretty(&json!({
-            "schema": 1,
-            "source": SECRET,
-            "enabled": true,
-            "workflow": "ship-it",
-            "condition": "assigned to me",
-            "api_key": SECRET
-        }))?,
-    )?;
+    for secret_shaped_source in [SECRET, "d7c44d8f5f0a4a069bcb86279301fd29"] {
+        fs::write(
+            dir.join("mine.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schema": 1,
+                "source": secret_shaped_source,
+                "enabled": true,
+                "workflow": "ship-it",
+                "condition": "assigned to me",
+                "api_key": SECRET
+            }))?,
+        )?;
 
-    let error = triggers::poll_with(home.path(), "mine", 17, |_| {
-        panic!("an invalid source reached the fetcher")
-    })
-    .expect_err("a secret-shaped source was accepted");
-    let exposed = format!("{error} {error:?}");
-    assert!(
-        !exposed.contains(SECRET) && !exposed.contains("lin_api_"),
-        "the error crossing IPC echoed the unknown source: {exposed}"
-    );
-    assert!(exposed.contains("Choose `linear`"));
+        let mut fetched = false;
+        let error = triggers::poll_with(home.path(), "mine", 17, |_| {
+            fetched = true;
+            Err(triggers::TriggerError::EmptyAnswer)
+        })
+        .expect_err("a secret-shaped source was accepted");
+        assert!(!fetched, "an invalid source reached the fetcher");
+        let exposed = format!("{error} {error:?}");
+        assert!(
+            !exposed.contains(secret_shaped_source) && !exposed.contains("lin_api_"),
+            "the error crossing IPC echoed the unknown source: {exposed}"
+        );
+        assert!(exposed.contains("Choose `linear`"));
+    }
     Ok(())
 }
 
