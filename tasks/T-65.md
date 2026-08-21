@@ -176,6 +176,7 @@ i po `AlreadyAccepted`. Kontrola dowodzi, że ręczny Start nadal sam wybija UUI
 tasks/T-65.md
 docs/ARCHITECTURE.md
 docs/STATUS.md
+docs/mockup/index.html
 src/main.tsx
 src/App.tsx
 src/sections/triggers/index.tsx
