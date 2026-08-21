@@ -144,7 +144,7 @@ czyli niezmiennik 21. Zobowiązanie mieszka tutaj i jest sprawdzalne oczami.
 | Podpisywanie i notaryzacja | **przy pierwszej instalacji u drugiej osoby** | |
 | Auto-aktualizacja | v1.0 publiczne | Klucze generujemy teraz, żeby się nie zabetonować |
 | Windows | v2 | Po miesiącu codziennego użycia na macOS. Wtedy powtórzyć benchmark IPC na WebView2 |
-| Pętle, warunki, pod-workflowy | **nie planowane** | „Pętle to sposób, w jaki silniki grafów zamieniają się w języki programowania" |
+| Ograniczone warunki i rozwijane pod-workflowy | **v1.1 — T-75** | Potrzebne do wiernego importu istniejącej ceremonii; wyłącznie typowane wyniki, bez dowolnych wyrażeń i bez czwartego rodzaju kafelka |
 | Osadzone wektory w pamięci | nie planowane | FTS5 wystarcza dla kilku tysięcy notatek |
 | Zatwierdzanie akcji agenta w locie | nie planowane w v1 | Wymaga hostowania serwera MCP albo hooka; listy dozwolonych narzędzi wystarczą |
 

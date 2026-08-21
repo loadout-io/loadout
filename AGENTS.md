@@ -21,6 +21,14 @@ w `docs/research/projects/` i jest wiążąca jako lista rzeczy, których nie po
 
 ## 2. Pętla pracy
 
+### Wyjątek właściciela — authoring zadań
+
+Na jawne polecenie właściciela „utwórz taski” agent może utworzyć nowe `tasks/<ID>.md`
+oraz zaktualizować `docs/PLAN.md` bez wcześniejszego taska. Ten wyjątek obejmuje wyłącznie
+kontrakty zadań i dokumentację; kod produkcyjny nadal wymaga osobnego worktree, czerwonego
+`before` i `OWNS`. Dodane 2026-08-21 po wyraźnym „masz approve na wszystko, god mode”, żeby
+zgoda właściciela nie była interpretowana jako zgoda na pominięcie bramki.
+
 ```
 tasks/<ID>.md                       ← zadanie już istnieje; nie wymyślasz go sam
    │
