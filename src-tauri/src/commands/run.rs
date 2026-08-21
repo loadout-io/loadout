@@ -249,6 +249,31 @@ pub async fn run_workflow_inner(
     run_workflow_with_slots(deps, request, lines, Limiter::new(request.how_many_at_once)).await
 }
 
+/// Wynik Startu niosącego trwały claim triggera.
+#[derive(Debug, Clone)]
+pub enum TriggerRunReport {
+    /// Ten Start utworzył bieg i doprowadził go zwykłą drogą do wyniku.
+    Ran(RunReport),
+    /// Ledger po restarcie znalazł już pierwszy `run.json`; drugi agent nie został uruchomiony.
+    AlreadyAccepted {
+        /// UUID v7 przydzielony jeszcze przy utworzeniu dostawy.
+        id: String,
+        /// Plik, który jest dowodem trwałej akceptacji.
+        run_file: PathBuf,
+    },
+}
+
+/// Istniejąca droga biegu z jedną różnicą: plan bierze UUID i czas z trwałej dostawy, a pierwszy
+/// `run.json` domyka ledger przed pierwszym wywołaniem sterownika.
+pub async fn run_triggered_workflow_inner(
+    _deps: &RunDeps<'_>,
+    _request: &RunRequest,
+    _claim: &crate::commands::triggers::TriggerClaim,
+    _lines: LineSink,
+) -> Result<TriggerRunReport, RunError> {
+    todo!("T-65 AC-8: accept one durable delivery through the existing run path")
+}
+
 /// Ten sam bieg, tylko miejsca bierze ze **wspólnej puli aplikacji** — jednej dla wszystkich
 /// kart, nie jednej na bieg.
 ///

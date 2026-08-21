@@ -25,6 +25,7 @@ import { activeWorkspace } from '../../state/workspaces';
 import type { Choice } from './choices';
 import { start } from './io';
 import { cardForRun } from './tabs/store';
+import type { TriggerClaim } from '../triggers/io';
 
 /** Co powiedzieć, kiedy nie ma czego uruchomić. */
 export const NOTHING_TO_RUN =
@@ -83,6 +84,8 @@ export async function launchRun(
    * wołają tę krawędź dwoma argumentami i ich kryteria nie mają się o to potknąć.
    */
   task: string | null = null,
+  /** T-65 scaffold: the signature exists before the durable claim is forwarded. */
+  _claim: TriggerClaim | null = null,
 ): Promise<string | null> {
   if (choice === null) return GONE_FROM_DISK;
   /* Workflow bez kroków odmawia po stronie Rusta, i to zdaniem lepszym niż nasze — ale odmowa

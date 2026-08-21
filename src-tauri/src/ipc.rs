@@ -474,6 +474,48 @@ pub struct AppState {
     started: commands::processes::Processes,
 }
 
+/// Jednorazowe pozwolenie Rusta na odpytanie triggera.
+///
+/// Typ niesie albo katalog biblioteki, albo sam fakt `busy`; okno nie ma pola, którym mogłoby
+/// podrobić tę decyzję. Pozwolenie jest własnością, więc jeden tick nie uruchomi dwóch fetchy.
+#[derive(Debug)]
+pub struct TriggerPollPermit {
+    home: Option<PathBuf>,
+}
+
+impl TriggerPollPermit {
+    /// Produkcyjny odczyt przez `curl`, wykonywany dopiero po decyzji o zajętości.
+    pub fn poll(
+        self,
+        slug: &str,
+        created_at: i64,
+    ) -> Result<commands::triggers::TriggerPoll, String> {
+        let Some(home) = self.home else {
+            return Ok(commands::triggers::TriggerPoll::Busy);
+        };
+        commands::triggers::poll(&home, slug, created_at).map_err(|error| error.to_string())
+    }
+
+    /// Ten sam odczyt z wstrzykniętym fetcherem, żeby test mógł policzyć wywołania bez sieci.
+    pub fn poll_with<F>(
+        self,
+        slug: &str,
+        created_at: i64,
+        fetch: F,
+    ) -> Result<commands::triggers::TriggerPoll, String>
+    where
+        F: FnOnce(
+            &commands::triggers::Trigger,
+        ) -> Result<Vec<u8>, commands::triggers::TriggerError>,
+    {
+        let Some(home) = self.home else {
+            return Ok(commands::triggers::TriggerPoll::Busy);
+        };
+        commands::triggers::poll_with(&home, slug, created_at, fetch)
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl fmt::Debug for AppState {
     /// Ręcznie, bo [`Drivers`] jest domknięciem i `Debug` nie ma dla niego nic do powiedzenia —
     /// ten sam powód, co przy `RunDeps`.
@@ -808,6 +850,21 @@ impl AppState {
             *live = RunControl::new();
         }
         Ok(self.deps_in(project))
+    }
+
+    /// Rezerwuje żywy uchwyt dla Startu z claimem, nie zmieniając ledgeru przy odmowie zajętości.
+    pub fn begin_triggered_run<'a>(
+        &'a self,
+        _project: &'a Path,
+        _claim: &commands::triggers::TriggerClaim,
+    ) -> Result<RunDeps<'a>, String> {
+        todo!("T-65 AC-8: validate the claim and reserve the existing run handle atomically")
+    }
+
+    /// Pyta jedyny rustowy autorytet o zajętość przed siecią i przed jakimkolwiek zapisem.
+    #[must_use]
+    pub fn trigger_poll_permit(&self) -> TriggerPollPermit {
+        todo!("T-65 AC-4: decide trigger polling from AppState.live")
     }
 
     /// Świeży uchwyt dla biegu z `/ask` — ta sama polityka, co przy starcie z płótna.
@@ -1371,25 +1428,45 @@ pub async fn run_workflow(
     how_many_at_once: usize,
     folder: Option<String>,
     task: Option<String>,
+    claim: Option<commands::triggers::TriggerClaim>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
     let request = state
         .request(file_name, how_many_at_once, task)
         .inspect_err(refused)?;
     let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::run::run_workflow_inner(
-        // `?` NA MIEJSCU, A NIE W OSOBNYM `let`, i to nie jest gust: `run_commands_registered`
-        // liczy instrukcje tej skorupy z sufitem 3 („rozpakuj, zawołaj, wróć"), a czwarta
-        // instrukcja jest logiką napisaną tam, gdzie żaden test jednostkowy jej nie dosięgnie
-        // (niezmiennik 23). Od T-69 ta droga umie odmówić tak samo jak `/ask`: uchwyt żywego
-        // biegu nie ma prawa zniknąć pod Stopem (powód w całości przy [`AppState::begin_run`]).
-        &state.begin_run(project.as_path()).inspect_err(refused)?,
-        &request,
-        pump_into(lines),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| {
+    run_workflow_from_window(&state, &project, &request, claim.as_ref(), pump_into(lines)).await
+}
+
+/// Jedna produkcyjna krawędź Startu: ręczna bez claimu i triggerowa z trwałym claimem.
+async fn run_workflow_from_window(
+    state: &AppState,
+    project: &Path,
+    request: &RunRequest,
+    claim: Option<&commands::triggers::TriggerClaim>,
+    lines: LineSink,
+) -> Result<(), String> {
+    let result = if let Some(claim) = claim {
+        commands::run::run_triggered_workflow_inner(
+            &state
+                .begin_triggered_run(project, claim)
+                .inspect_err(refused)?,
+            request,
+            claim,
+            lines,
+        )
+        .await
+        .map(|_| ())
+    } else {
+        commands::run::run_workflow_inner(
+            &state.begin_run(project).inspect_err(refused)?,
+            request,
+            lines,
+        )
+        .await
+        .map(|_| ())
+    };
+    result.map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -1668,24 +1745,50 @@ pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), S
     }
 }
 
-/// Pyta jedno zrodlo o nastepna sprawe. Sekret i adres zostaja w konfiguracji `curl` na stdin;
-/// okno wysyla tylko nazwe pliku triggera.
+/// Zredagowana biblioteka triggerów; uszkodzony plik wraca jako nazwany wpis, nie znika.
+#[tauri::command]
+pub async fn list_triggers(
+    state: State<'_, AppState>,
+) -> Result<Vec<commands::triggers::TriggerEntry>, String> {
+    commands::triggers::list(&state.home).map_err(|error| error.to_string())
+}
+
+/// Trwały przełącznik jednego triggera. Sekret nigdy nie przekracza tej granicy.
+#[tauri::command]
+pub async fn set_trigger_enabled(
+    state: State<'_, AppState>,
+    slug: String,
+    enabled: bool,
+) -> Result<commands::triggers::TriggerEntry, String> {
+    commands::triggers::set_enabled(&state.home, &slug, enabled).map_err(|error| error.to_string())
+}
+
+/// Pyta jedno źródło o następną sprawę. Sekret i adres zostają w konfiguracji `curl` na stdin;
+/// okno wysyła tylko nazwę pliku triggera.
 #[tauri::command]
 pub async fn check_trigger(
     state: State<'_, AppState>,
     slug: String,
-) -> Result<Option<commands::triggers::Issue>, String> {
-    // `curl` jest procesem blokujacym. Kopiujemy sama sciezke przed `await`, wiec ani stan
-    // Tauri, ani zamek zywego biegu nie jest trzymany podczas zapytania.
-    let home = state.home.clone();
-    tokio::task::spawn_blocking(move || commands::triggers::check(&home, &slug))
+) -> Result<commands::triggers::TriggerPoll, String> {
+    // Pozwolenie powstaje przed `await`: zamek żywego biegu jest oddany, zanim ruszy proces,
+    // a wariant `busy` nie ma w środku katalogu, z którym dałoby się mimo to wykonać fetch.
+    let permit = state.trigger_poll_permit();
+    tokio::task::spawn_blocking(move || permit.poll(&slug, unix_millis()))
         .await
         .map_err(|error| format!("Loadout could not finish the Linear check: {error}"))?
         .map_err(|error| {
-            let said = error.to_string();
-            refused(&said);
-            said
+            refused(&error);
+            error
         })
+}
+
+/// Milisekundy epoki dla trwałego receipt triggera; zegar webviewa nie bierze udziału.
+fn unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(i64::MAX)
 }
 
 /// Wszystko, co Loadout dla człowieka uruchomił — plus wyjście tej jednej rzeczy, w którą wszedł.
@@ -1750,6 +1853,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_notes,
         list_processes,
         list_skills,
+        list_triggers,
         list_workflows,
         list_workspaces,
         load_workflow,
@@ -1764,6 +1868,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         save_workspace,
         say_to_agent,
         say_to_orchestrator,
+        set_trigger_enabled,
         start_process,
         stop_draft,
         stop_process,

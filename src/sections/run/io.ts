@@ -35,6 +35,7 @@ import { wireChannel } from '../../ipc/run';
 import { runFor } from '../../state/run';
 import type { Step } from '../../state/run';
 import { feedFor } from './feed/live';
+import type { TriggerClaim } from '../triggers/io';
 
 /**
  * Co dokładnie rusza — dwa pola paska loadoutu, oba znane oknu, zanim Rust cokolwiek powie.
@@ -139,6 +140,8 @@ export function start(
   what: WhatIsRunning = { name: workflow, steps: [] },
   folder: string | null = null,
   task: string | null = null,
+  /** T-65 scaffold: the invoke payload remains red until this optional claim is carried. */
+  _claim: TriggerClaim | null = null,
 ): Promise<void> {
   if (going !== null) {
     /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego

@@ -69,6 +69,115 @@ pub struct Issue {
     pub updated_at: String,
 }
 
+/// Zredagowany wpis biblioteki triggerow, gotowy do przekroczenia granicy IPC.
+///
+/// Sekret celowo nie ma tu pola: `skip_serializing` chroniloby tylko jeden sposob wypisania,
+/// a ten typ ma byc bezpieczny takze w `Debug` i w przyszlym loggerze.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerEntry {
+    /// Nazwa pliku bez `.json`; jedyny identyfikator wysylany przez okno.
+    pub slug: String,
+    /// Zrodlo spraw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+    /// Warunek zapisany przez czlowieka.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// Prawdziwy identyfikator workflow z konfiguracji.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// Czy zegar ma pytac ten trigger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Nazwany problem z konkretnym plikiem; zdrowy wpis pomija to pole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// Niepodrabialny uchwyt jednego trafienia przekazywany z Rusta z powrotem do Startu.
+///
+/// Nie niesie tresci sprawy ani sekretu. Pelna dostawa zostaje w ledgerze plikowym, a Start
+/// sprawdza te cztery pola przeciwko niemu przed utworzeniem biegu.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriggerClaim {
+    /// Trigger, ktory zobaczyl sprawe.
+    pub slug: String,
+    /// Stabilny identyfikator dostawy, inny od identyfikatora sprawy.
+    pub delivery_id: String,
+    /// Workflow zamrozony z konfiguracji w chwili dostawy.
+    pub workflow: String,
+    /// UUID v7 przyszlego biegu, przydzielony przed pokazaniem dostawy oknu.
+    pub run_id: String,
+}
+
+/// Pelna, trwala dostawa sprawy do otwartego okna.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriggerDelivery {
+    /// Zredagowany uchwyt wracajacy pozniej do `run_workflow`.
+    pub claim: TriggerClaim,
+    /// Sprawa, z ktorej okno buduje kanoniczne zadanie.
+    pub issue: Issue,
+    /// Czas utworzenia receipt w milisekundach epoki; nie zegar webviewa.
+    pub created_at: i64,
+}
+
+/// Wynik jednego tykniecia zegara triggera.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum TriggerPoll {
+    /// Rust odmowil przed zapytaniem zewnetrznego serwisu, bo jeden bieg juz ma uchwyt.
+    Busy,
+    /// Pierwszy odczyt zapisal zastany backlog jako widziany i niczego nie uruchomil.
+    Armed,
+    /// Jedna dostawa czeka na przejscie istniejaca droga Startu.
+    Pending {
+        /// Dostawa wraz z claimem przyszlego biegu.
+        delivery: TriggerDelivery,
+    },
+    /// Restart pogodził `bound` z istniejącym `run.json`; nic nie zostanie uruchomione drugi raz.
+    Accepted {
+        /// Workflow, który trwale przyjął sprawę.
+        workflow: String,
+        /// Czas receipt zapisany w ledgerze, nie czas ponownego montażu okna.
+        receipt_at: i64,
+    },
+}
+
+/// Trwaly stan dostawy, odczytywany wprost z pliku ledgeru.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum DeliveryState {
+    /// Dostawa istnieje, ale nie zostala jeszcze zwiazana z projektem i biegiem.
+    Pending,
+    /// Start zarezerwowal docelowy `run.json`, lecz pierwszy atomowy zrzut jeszcze nie istnieje.
+    Bound {
+        /// Dokladny plik, ktory stanowi granice akceptacji tej dostawy.
+        run_file: PathBuf,
+    },
+    /// Pierwszy `run.json` istnieje i ta dostawa nigdy nie moze uruchomic drugiego biegu.
+    Accepted {
+        /// Plik bedacy trwalym dowodem akceptacji.
+        run_file: PathBuf,
+        /// Czas receipt w milisekundach epoki, zapisany przez Rust.
+        accepted_at: i64,
+    },
+}
+
+/// Zredagowane pochodzenie zapisane w pierwszym `run.json`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerOrigin {
+    /// Trigger, ktory dostarczyl prace.
+    pub slug: String,
+    /// Identyfikator receipt, po ktorym ledger i bieg godza sie po awarii.
+    pub delivery_id: String,
+    /// Stabilny identyfikator sprawy u zrodla.
+    pub issue_id: String,
+}
+
 #[derive(Debug, Error)]
 pub enum TriggerError {
     #[error("Trigger names use letters, numbers, dots, dashes and underscores only.")]
@@ -101,6 +210,85 @@ pub enum TriggerError {
     Start(io::Error),
     #[error("Linear could not be checked because curl exited with status {0}.")]
     CurlFailed(String),
+}
+
+/// Wypisuje cala biblioteke bez sekretow, lacznie z nazwanymi problemami pojedynczych plikow.
+pub fn list(_home: &Path) -> Result<Vec<TriggerEntry>, TriggerError> {
+    todo!("T-65 AC-7: list the redacted trigger library")
+}
+
+/// Atomowo zmienia `enabled`, zachowujac sekret, pozostale pola i prawa pliku.
+pub fn set_enabled(
+    _home: &Path,
+    _slug: &str,
+    _enabled: bool,
+) -> Result<TriggerEntry, TriggerError> {
+    todo!("T-65 AC-7: persist the trigger switch")
+}
+
+/// Przetwarza odpowiedz fetchera przez trwaly ledger identyfikatorow i dostaw.
+///
+/// Fetcher jest argumentem, zeby AC-4 moglo dowiesc, ze zajety rustowy uchwyt nie dotyka ani
+/// sieci, ani plikow. Produkcja poda tu `curl`, a test licznik bez procesu.
+pub fn poll_with<F>(
+    _home: &Path,
+    _slug: &str,
+    _created_at: i64,
+    _fetch: F,
+) -> Result<TriggerPoll, TriggerError>
+where
+    F: FnOnce(&Trigger) -> Result<Vec<u8>, TriggerError>,
+{
+    todo!("T-65 AC-4/8: stage every unseen issue before advancing the cursor")
+}
+
+/// Produkcyjny wariant [`poll_with`], którego fetcherem jest bezpieczna komenda `curl`.
+pub fn poll(_home: &Path, _slug: &str, _created_at: i64) -> Result<TriggerPoll, TriggerError> {
+    todo!("T-65 AC-4/8: poll Linear through the durable delivery ledger")
+}
+
+/// Wszystkie oczekujace dostawy sluga w deterministycznej kolejnosci.
+pub fn pending_deliveries(_home: &Path, _slug: &str) -> Result<Vec<TriggerDelivery>, TriggerError> {
+    todo!("T-65 AC-8: recover pending deliveries from files")
+}
+
+/// Wiaze pending z dokladnym przyszlym `run.json`; ponowienie tego samego wiazania jest
+/// idempotentne, a inny claim jest odmowa.
+pub fn bind_delivery(
+    _home: &Path,
+    _claim: &TriggerClaim,
+    _run_file: &Path,
+) -> Result<(), TriggerError> {
+    todo!("T-65 AC-8: durably bind a delivery to its preallocated run")
+}
+
+/// Cofa wiazanie, jezeli plan odmowil zanim powstal pierwszy `run.json`.
+pub fn release_delivery(_home: &Path, _claim: &TriggerClaim) -> Result<(), TriggerError> {
+    todo!("T-65 AC-8: leave a refused workflow pending")
+}
+
+/// Domyka ledger dopiero po atomowym pierwszym `run.json`.
+pub fn accept_delivery(
+    _home: &Path,
+    _claim: &TriggerClaim,
+    _run_file: &Path,
+    _accepted_at: i64,
+) -> Result<(), TriggerError> {
+    todo!("T-65 AC-8: accept only after the run file exists")
+}
+
+/// Godzi `bound` po restarcie: istniejacy, pasujacy `run.json` staje sie `accepted`, a jego
+/// brak zostawia ten sam claim i UUID do ponowienia.
+pub fn reconcile_delivery(
+    _home: &Path,
+    _claim: &TriggerClaim,
+) -> Result<DeliveryState, TriggerError> {
+    todo!("T-65 AC-8: reconcile a crash from files without starting twice")
+}
+
+/// Odczytuje stan jednej dostawy do testu granicy akceptacji i do komunikatu zegara.
+pub fn delivery_state(_home: &Path, _claim: &TriggerClaim) -> Result<DeliveryState, TriggerError> {
+    todo!("T-65 AC-8: read the durable delivery state")
 }
 
 #[derive(Deserialize)]

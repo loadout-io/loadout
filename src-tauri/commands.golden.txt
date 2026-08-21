@@ -29,6 +29,7 @@ list_handoffs
 list_notes
 list_processes
 list_skills
+list_triggers
 list_workflows
 list_workspaces
 load_workflow
@@ -43,6 +44,7 @@ save_workflow
 save_workspace
 say_to_agent
 say_to_orchestrator
+set_trigger_enabled
 start_process
 stop_draft
 stop_process
