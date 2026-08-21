@@ -60,14 +60,14 @@ export interface TriggerIo {
   checkTrigger(slug: string): Promise<TriggerPoll>;
 }
 
-/** Skeleton for T-65's honest red: the module exists, but the new command is not wired yet. */
+/** The whole redacted library. Secrets remain in Rust and never enter this type. */
 export function listTriggers(): Promise<TriggerEntry[]> {
-  throw new Error('not implemented');
+  return invoke<TriggerEntry[]>('list_triggers');
 }
 
-/** Skeleton for T-65's honest red: state must not move until this command confirms the write. */
-export function setTriggerEnabled(_slug: string, _enabled: boolean): Promise<TriggerEntry> {
-  throw new Error('not implemented');
+/** Persist one switch. The returned entry is the file after its atomic rewrite. */
+export function setTriggerEnabled(slug: string, enabled: boolean): Promise<TriggerEntry> {
+  return invoke<TriggerEntry>('set_trigger_enabled', { slug, enabled });
 }
 
 export function checkTrigger(slug: string): Promise<TriggerPoll> {

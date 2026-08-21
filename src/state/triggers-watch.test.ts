@@ -88,6 +88,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     const { store, clock } = withIo(io);
     store.setState({ triggers: [trigger('on'), trigger('off', false)] });
     store.getState().startWatching();
+    store.getState().startWatching();
 
     expect(clock.periods).toEqual([TRIGGER_WATCH_INTERVAL_MS]);
     expect(checked).not.toHaveBeenCalled();
@@ -97,6 +98,33 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     clock.advance();
     await settle();
     expect(checked.mock.calls.map(([slug]) => slug)).toEqual(['on', 'on']);
+  });
+
+  it('loads an empty production-shaped store before its first scheduled poll', async () => {
+    const listed = vi.fn(async () => [
+      {
+        slug: 'loaded',
+        source: 'Linear',
+        condition: 'assigned-to-me',
+        workflow: 'analysis.json',
+        enabled: true,
+      },
+    ]);
+    const checked = vi.fn(async (_slug: string) => ({ status: 'armed' as const }));
+    const { store, clock } = withIo({
+      listTriggers: listed,
+      setTriggerEnabled: async () => trigger('loaded'),
+      checkTrigger: checked,
+    });
+
+    store.getState().startWatching();
+    await settle();
+    expect(listed).toHaveBeenCalledTimes(1);
+    expect(store.getState().triggers.map((one) => one.slug)).toEqual(['loaded']);
+
+    clock.advance();
+    await settle();
+    expect(checked).toHaveBeenCalledWith('loaded');
   });
 
   it('never overlaps two Rust questions for one slug', async () => {
@@ -163,6 +191,26 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     expect(checked).toHaveBeenCalledTimes(1);
     expect(clock.cleared).toHaveLength(1);
     expect(clock.callbacks.size).toBe(0);
+  });
+
+  it('ignores a check result that arrives after stopWatching invalidates its generation', async () => {
+    const waiting = deferred<{ readonly status: 'armed' }>();
+    const checked = vi.fn(() => waiting.promise);
+    const { store, clock } = withIo({
+      listTriggers: async () => [],
+      setTriggerEnabled: async () => trigger('one'),
+      checkTrigger: checked,
+    });
+    store.setState({ triggers: [trigger('one')] });
+    store.getState().startWatching();
+    clock.advance();
+    await Promise.resolve();
+    expect(checked).toHaveBeenCalledTimes(1);
+
+    store.getState().stopWatching();
+    waiting.resolve({ status: 'armed' });
+    await settle();
+    expect(store.getState().triggers[0]?.status).toEqual({ kind: 'unchecked' });
   });
 
   it('starts and stops the watcher in the production root, even if Triggers is never opened', () => {

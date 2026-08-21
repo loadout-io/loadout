@@ -140,8 +140,8 @@ export function start(
   what: WhatIsRunning = { name: workflow, steps: [] },
   folder: string | null = null,
   task: string | null = null,
-  /** T-65 scaffold: the invoke payload remains red until this optional claim is carried. */
-  _claim: TriggerClaim | null = null,
+  /** Durable trigger delivery; every ordinary Start carries an explicit null. */
+  claim: TriggerClaim | null = null,
 ): Promise<void> {
   if (going !== null) {
     /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego
@@ -225,6 +225,9 @@ export function start(
      * kliknięciu, zdaniem, którego człowiek nie zobaczy. `Option<String>` przyjmuje `null`
      * i znaczy „biegnij tym, co stoi w pliku". */
     task,
+    /* Present even for a manual Start. Tauri matches arguments by name before entering Rust,
+     * so omitting this optional Rust value is not equivalent to sending `null`. */
+    claim,
     lines,
   }).finally(() => {
     going = null;

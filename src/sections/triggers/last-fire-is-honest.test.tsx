@@ -104,7 +104,10 @@ describe('the real Triggers screen tells five materially different truths', () =
   it('names the accepted workflow and the durable receipt time', () => {
     const markup = markupFor({ kind: 'accepted', workflow: 'Analysis', receiptAt: RECEIPT_AT });
     expect(statusText(markup)).toBe(ACCEPTED);
-    expect(markup).toContain('datetime="2026-08-21T01:53:13.400Z"');
+    /* React's static renderer preserves the JSX property spelling (`dateTime`). The browser
+     * normalises it as the standard HTML datetime attribute; lower-case here would test a
+     * serialisation detail contrary to the renderer this criterion actually uses. */
+    expect(markup).toContain('dateTime="2026-08-21T01:53:13.400Z"');
   });
 
   it('keeps all five visible sentences pairwise distinct and never substitutes Date.now', () => {

@@ -136,6 +136,43 @@ describe('a trigger takes the same launch path as Start', () => {
     );
   });
 
+  it('keeps pending visible until Rust returns its later durable acceptance receipt', async () => {
+    let polls = 0;
+    const acceptedAt = DELIVERY.createdAt + 9_000;
+    const io: TriggerIo = {
+      listTriggers: async () => [],
+      setTriggerEnabled: async () => view(),
+      checkTrigger: async () => {
+        polls += 1;
+        return polls === 1
+          ? { status: 'pending' as const, delivery: DELIVERY }
+          : { status: 'accepted' as const, workflow: CLAIM.workflow, receiptAt: acceptedAt };
+      },
+    };
+    const launched = vi.fn<TriggerRunPath['launchRun']>(
+      () => new Promise<string | null>(() => undefined),
+    );
+    const store = createTriggersStore(io, CLOCK, {
+      listWorkflows: async () => [LISTED],
+      launchRun: launched,
+      atOnce: () => 4,
+    });
+    store.setState({ triggers: [view()] });
+
+    await store.getState().tick();
+    expect(store.getState().triggers[0]?.status).toEqual({ kind: 'busy', delivery: DELIVERY });
+    expect(store.getState().triggers[0]?.status).not.toEqual(
+      expect.objectContaining({ kind: 'accepted', receiptAt: DELIVERY.createdAt }),
+    );
+
+    await store.getState().tick();
+    expect(store.getState().triggers[0]?.status).toEqual({
+      kind: 'accepted',
+      workflow: 'Analysis',
+      receiptAt: acceptedAt,
+    });
+  });
+
   it('carries an explicit null claim for an ordinary manual Start', async () => {
     await start('analysis.json', 2, { name: 'Analysis', steps: CHOICE.steps }, '/project', null);
     const args = invoked.mock.calls[0]?.[1] as Record<string, unknown> | undefined;
