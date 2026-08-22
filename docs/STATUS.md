@@ -4,6 +4,74 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-22, 18:20 — T-79 w main: skille docierają do vendora, potwierdzone przez vendora
+
+`131d214`. Bramka gałęzi 20/0, bramka trunka po lądowaniu 15/0 w 110 s.
+
+Zbiór efektywny liczy się z agenta złożonego z nadpisaniem kroku; brak klucza znaczy „weź to,
+co ma agent", `[]` znaczy żadnych, lista znaczy podzbiór skilli tego agenta. Nazwa spoza
+zbioru zatrzymuje bieg **przed pierwszym procesem**, z nazwą brakującego skilla w zdaniu.
+`RunSpec` nietknięty zgodnie z rozstrzygnięciem właściciela — wybór jedzie istniejącym szwem
+dziedziczenia.
+
+**Najmocniejszy dowód w tym biegu**: AC-3 uruchamia PRAWDZIWE Claude Code z tym samym
+fragmentem argv, bierze linię `system`/`init` z transkryptu i przepuszcza ją przez
+`place::discovery_from_init` — `Seen` dla obu wybranych, `NotSeen` dla trzeciego. Odpalone na
+żywym CLI: 3,75 s, vendor ogłasza `<plugin>:alpha` i `<plugin>:beta`. To nie jest „napisaliśmy
+pliki do katalogu"; to vendor mówi, że je widzi.
+
+Cztery biegi zamiast jednego. Pierwszy padł, bo faza kontraktu napisała 33 KB specyfikacji bez
+ani jednego `mod` w `tests/it/main.rs`; drugi i trzeci dowiozły resztę; czwarty przeszedł po
+naprawie `before-spec-owns`. Obie przyczyny opisane niżej.
+
+### Dwie rzeczy, które T-79 zostawia człowiekowi
+
+1. **AC-3 jest naprawione w połowie.** Wyrocznia sięga do konta i sieci, więc musi być
+   `#[ignore]`, a linia `check:` tego kryterium nie ma `--include-ignored`. Wzór: T-04 AC-6.
+   Do czasu dopisania bramka dowodzi z dysku i manifestu, a dowód od vendora przechodzi się
+   ręcznie: `cargo test --test it skills_reach_claude:: -- --ignored`. Cena dopisania jest
+   realna: każdy bieg bramki zaczyna kosztować wywołanie vendora i wymagać sieci.
+
+2. **AC-5 dowodzi, że callback działa, gdy się go zawoła — nie że Start go woła.** Pisarz
+   odmówił naprawy przez skrót i nazwał powody: `go()` czyta `choices` wypełniane przez
+   `useEffect`, którego `renderToStaticMarkup` nie uruchamia; DOM-u nie ma, bo vitest biegnie
+   w `node`, a jsdom, happy-dom, `@testing-library` i `react-test-renderer` nie leżą
+   w `node_modules`; Playwright odpada, bo `e2e/` jest poza OWNS tego zadania. Wybór: devDependency
+   na środowisko DOM plus zmiana linii `check:`, albo przeniesienie kryterium do `e2e/`.
+
+## Szósty defekt harnessu: `before-spec-owns` nie umiał rozwiązać celu `it`
+
+`e9ddaae`. `CARGO_TARGET` w tym pliku był jednogrupowy, więc `--test it <modul>::`
+rozwiązywało się na `src-tauri/tests/it.rs` — plik, który nie istnieje. `harness/gate.py:326`
+ma na tę samą składnię regex dwugrupowy. Piąty konsument tej składni czytał ją inaczej niż
+cztery pozostałe.
+
+Skutek: składni używa **56 plików zadań**. Przy zadaniu czysto rustowym check wypadał przez
+furtkę „the specs do not exist yet" z kodem 0 — milczał tam, gdzie miał sądzić. Przy mieszanym
+sądził sam front i oskarżał kontrakt na pusto.
+
+Kontrola pozytywna po naprawie: przegląd wszystkich kontraktów — 81 sądzonych i zielonych,
+6 milczących, **0 czerwonych**. Kontrola negatywna: OWNS na `engine/limits.rs` z kryterium
+w `store_pragmas::` daje 1 i wypisuje poprawnie rozwiązaną ścieżkę.
+
+**Znalezisko przy okazji, nienaprawione:** rozróżnianie tego checku jest słabe. Pierwsza wersja
+kontroli negatywnej PRZESZŁA, bo spec magazynu trafił w symbol `Result` z plików OWNS. Filtr
+odrzuca nazwy do trzech znaków, więc zwykłe angielskie słowa przeciekają. Zaostrzenie wymaga
+pomiaru na 81 kontraktach — **czeka na człowieka**.
+
+## T-77 stoi na jednej decyzji projektowej
+
+Oba własne kryteria zielone: Import JEST siódmą sekcją, otwiera się, Agenci przestali być drogą
+do niego. Padło `shell-matches-mockup`: powłoka ma siedem przełączników, `docs/mockup/index.html`
+ma sześć, a makieta jest wyrocznią nawigacji („a different set here is a different product,
+not a different style"). **Czeka na człowieka: czy makieta dostaje siódmą pozycję „Import".**
+Gałąź `task-T-77` gotowa, dwanaście plików, nic poza OWNS — pisarz uderzył w ścianę i stanął,
+zamiast sięgnąć poza zakres.
+
+Mój błąd w autorstwie kontraktu: naliczyłem pięć plików kodujących listę sekcji, bo znalazłem
+je gerpem po nazwach. Szósty, `shell-matches-mockup.test.tsx`, nie wymienia ich wcale —
+wyprowadza je z makiety.
+
 ## 2026-08-22, 15:13 — T-75 w main, T-76 cofnięte pomiarem, cztery defekty harnessu, osiem nowych kontraktów
 
 Właściciel polecił zacommitować zastaną pracę, wyładować gałęzie importu i zacząć budowę
