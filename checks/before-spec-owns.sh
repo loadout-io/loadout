@@ -32,7 +32,13 @@ exec python3 - <<'PY'
 import os, re, sys
 
 SPEC_PATH = re.compile(r"(?:^|[\s=\"'])((?:[\w.@-]+/)+[\w.@-]+\.(?:test|spec)\.[jt]sx?)")
-CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)")
+# TA SAMA FORMA CO harness/gate.py:326 — piaty konsument tej skladni. Cel `it` jest
+# ZBIORCZY: `--test it <modul>::` mieszka w `tests/it/<modul>.rs`, nie w `tests/it.rs`,
+# ktory nie istnial nigdy. Bez drugiej grupy KAZDA specyfikacja rustowa rozwiazywala sie
+# na nieistniejaca sciezke i wypadala z rozwazan — przy zadaniu czysto rustowym check
+# wychodzil zerem przez furtke "nothing yet", a przy mieszanym sadzil sam front i oskarzal
+# kontrakt na pusto. Zmierzone 2026-08-22 na T-79; skladni uzywa 56 plikow zadan.
+CARGO_TARGET = re.compile(r"--test[= ]+([\w-]+)(?:\s+([\w]+)::)?")
 RS_DECL = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
     r"(?:fn|struct|enum|trait|const|static|type)\s+([A-Za-z_]\w*)", re.M)
@@ -113,7 +119,9 @@ for cid, check in re.findall(r"^## (AC-\d+)[^\n]*\ncheck:\s*(.+)$", md, re.M):
     for m in SPEC_PATH.finditer(check):
         specs.append((cid, m.group(1)))
     for m in CARGO_TARGET.finditer(check):
-        specs.append((cid, "src-tauri/tests/%s.rs" % m.group(1)))
+        target, module = m.group(1), m.group(2)
+        specs.append((cid, "src-tauri/tests/it/%s.rs" % module if module
+                           else "src-tauri/tests/%s.rs" % target))
 
 present = [(cid, p) for cid, p in specs if os.path.isfile(p)]
 if not present:
