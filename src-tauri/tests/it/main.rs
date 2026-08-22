@@ -83,6 +83,7 @@ mod harness_workflow_two_kinds;
 mod harness_workflow_validates;
 mod harness_workflow_vendor_pairing;
 mod heavy_step_takes_its_own_slot;
+mod history_reads_the_runs;
 mod host_deny_rewrite;
 mod import_agents_are_native;
 mod import_apply_is_atomic;

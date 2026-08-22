@@ -53,6 +53,7 @@ import { attachPort, feedFor, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
 import { Entry } from './entry/entry';
+import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
 import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
@@ -717,6 +718,16 @@ export default function Run(): ReactElement {
           <Rail cards={cards} />
         </div>
       </div>
+
+      {/* HISTORIA BIEGÓW TEGO FOLDERU — panel, który stawia `/history` z wiersza wejścia.
+          Sam znika, kiedy nikt o nią nie poprosił, więc ekran pracy nie ma tu ani jednej
+          gałęzi do podjęcia. Montowany TUTAJ, obok pytania o zamknięcie karty, bo obie te
+          rzeczy stoją NAD widokiem pracy i obie stawia magazyn na poziomie modułu — a wtedy
+          jedno miejsce w drzewie odpowiada za wszystko, co ten ekran zakrywa.
+
+          Bez tej jednej linii `/history` byłoby komendą, która czyta dysk i nie ma jak niczego
+          pokazać: mechanizm bez wołającego jest wadą, nie postępem (niezmiennik 16). */}
+      <PastRuns />
 
       {/* Pytanie o zamknięcie karty, w której ktoś pracuje. Magazyn je stawia; bez tego jednego
           renderu byłoby to pytanie zadane w próżnię, a `×` gubiłby bieg po cichu. */}

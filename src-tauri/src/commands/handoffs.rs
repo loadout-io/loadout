@@ -92,7 +92,12 @@ pub struct HandoffWire {
 
 impl HandoffWire {
     /// Przekazanie z dysku → kształt dla okna, ze ścieżką liczoną od katalogu projektu.
-    fn from(handoff: &Handoff, project: &Path) -> Self {
+    ///
+    /// `pub(crate)`, bo od 2026-08-23 czyta je także historia biegów
+    /// ([`crate::commands::history::read_run_inner`]): ekran otwartego biegu pokazuje te same
+    /// przekazania, co sekcja przekazań, więc drugi przekład `Handoff` → kształt drutu byłby
+    /// drugim miejscem, w którym mieszka jeden fakt (niezmiennik 13).
+    pub(crate) fn from(handoff: &Handoff, project: &Path) -> Self {
         // Deklaracja z pliku i pomiar rozeszły się: to jest fakt do zaraportowania, nie do
         // wygładzenia. Dziennik jest tu jedynym właściwym miejscem — okno dostaje pomiar, a nikt
         // nie zobaczyłby po samej liczbie, że plik kłamie o własnej długości.
@@ -133,24 +138,46 @@ impl HandoffWire {
 pub fn list_handoffs_inner(project: &Path) -> Result<Vec<HandoffWire>> {
     let mut out = Vec::new();
     for dir in run_dirs(project) {
-        // Błąd jednego katalogu biegu **nie zabiera pozostałych** (niezmiennik 5): bieg
-        // z katalogiem `handoffs/`, do którego nie mamy prawa czytać, jest jednym biegiem
-        // mniej na liście, a nie pustą sekcją. `scan_run_dir` sam już milczy o katalogu,
-        // którego nie ma.
-        match scan_run_dir(&dir) {
-            Ok(handed) => out.extend(handed.iter().map(|one| HandoffWire::from(one, project))),
-            Err(error) => tracing::warn!(
-                run = %dir.display(),
-                %error,
-                "this run's handoffs could not be read, so they are not on the list"
-            ),
-        }
+        out.extend(handoffs_of_run(project, &dir));
     }
     Ok(out)
 }
 
+/// Przekazania **jednego** biegu, w kolejności numerów kroków. Nieczytelny katalog daje pusto.
+///
+/// Błąd jednego katalogu biegu **nie zabiera pozostałych** (niezmiennik 5): bieg z katalogiem
+/// `handoffs/`, do którego nie mamy prawa czytać, jest jednym biegiem mniej na liście, a nie
+/// pustą sekcją. `scan_run_dir` sam już milczy o katalogu, którego nie ma.
+///
+/// Osobna funkcja od [`list_handoffs_inner`] od 2026-08-23, bo pytających jest dwóch i pytają
+/// o co innego: sekcja przekazań pyta „co ten projekt przekazywał", a ekran otwartego biegu
+/// (`crate::commands::history`) pyta „co przekazał TEN bieg". Druga pętla po katalogach,
+/// napisana tam osobno, byłaby drugim miejscem, w którym mieszka reguła „jeden nieczytelny
+/// bieg nie kasuje listy".
+pub(crate) fn handoffs_of_run(project: &Path, run_dir: &Path) -> Vec<HandoffWire> {
+    match scan_run_dir(run_dir) {
+        Ok(handed) => handed
+            .iter()
+            .map(|one| HandoffWire::from(one, project))
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                run = %run_dir.display(),
+                %error,
+                "this run's handoffs could not be read, so they are not on the list"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// Katalogi biegów tego projektu, **od najnowszego**. Katalog, którego nie ma, daje pustą listę.
-fn run_dirs(project: &Path) -> Vec<PathBuf> {
+///
+/// `pub(crate)` od 2026-08-23: historia biegów wypisuje dokładnie te same katalogi i w tej
+/// samej kolejności (`crate::commands::history::list_runs_inner`). Druga kopia tej pętli
+/// rozjechałaby się przy pierwszej zmianie układu z `docs/ARCHITECTURE.md` §8 — i rozjechałaby
+/// się cicho, bo obie dalej oddawałyby listę katalogów.
+pub(crate) fn run_dirs(project: &Path) -> Vec<PathBuf> {
     let runs = project.join(PROJECT_DIR).join(RUNS_DIR);
     let Ok(entries) = std::fs::read_dir(&runs) else {
         // Świeża maszyna: nikt jeszcze nic nie uruchomił. Zero biegów, nie awaria — powód

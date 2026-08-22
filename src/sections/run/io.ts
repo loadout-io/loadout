@@ -34,6 +34,7 @@ import { wireChannel } from '../../ipc/run';
  * samo z drugiej strony. */
 import { runFor } from '../../state/run';
 import type { Step } from '../../state/run';
+import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { feedFor } from './feed/live';
 import type { TriggerClaim } from '../triggers/io';
@@ -558,6 +559,90 @@ export function sayToOrchestrator(
     text,
     images,
   });
+}
+
+/**
+ * Jeden bieg z historii TEGO folderu, tak jak przyjeżdża z Rusta.
+ *
+ * Lustro `commands::history::RunWire`. Ręcznie, jak `src/ipc/types.ts` — powód i cena stoją
+ * tam; tutaj dochodzi jeden fakt: kryterium szwu (`src/sections/commands-wired.test.ts`)
+ * wykonuje tę krawędź naprawdę, więc klucz, który by się rozjechał, jest widoczny.
+ */
+export interface PastRunRow {
+  /** Nazwa katalogu biegu — adres, którym prosi się o niego z powrotem. Nigdy napis na ekranie. */
+  readonly folder: string;
+  /** Kiedy ruszył, gotowe do przeczytania: `2026-08-16 19:48`. */
+  readonly when: string;
+  /** Jak workflow nazywa sam siebie. Pusty, kiedy Rust nie dał rady przeczytać opisu. */
+  readonly title: string;
+  /** Słowo z drutu (`succeeded`, `failed`, …). Tłumaczy je `./history-command.ts`. */
+  readonly state: string;
+  /** Ile kroków miał ten bieg. */
+  readonly steps: number;
+  /** Ile kosztował, albo `null` — a to jest inne zdanie niż zero (niezmiennik 17). */
+  readonly costUsd: number | null;
+  /** Uczciwe zdanie, kiedy opisu biegu nie dało się przeczytać. `null` znaczy „przeczytany". */
+  readonly said: string | null;
+}
+
+/** Krok otwartego biegu. Lustro `commands::history::PastStepWire`. */
+export interface PastStep {
+  readonly id: string;
+  readonly name: string;
+  readonly agent: string;
+  readonly state: string;
+  /** Jedno zdanie, które ten krok po sobie zostawił. Puste, kiedy żadnego nie zostawił. */
+  readonly summary: string;
+  /** Powód, jeśli coś poszło nie tak. */
+  readonly error: string;
+  readonly costUsd: number | null;
+  /** Zapisany strumień tego kroku — te same wiersze, które widać było na żywo. */
+  readonly lines: readonly Line[];
+}
+
+/** Przekazanie, tak jak widzi je okno. Lustro `commands::handoffs::HandoffWire`. */
+export interface PastHandoff {
+  readonly from: string;
+  readonly to: readonly string[];
+  readonly title: string;
+  readonly kind: string;
+}
+
+/** Otwarty bieg z historii. Lustro `commands::history::PastRunWire`. */
+export interface PastRun {
+  readonly folder: string;
+  readonly when: string;
+  readonly title: string;
+  readonly state: string;
+  readonly steps: readonly PastStep[];
+  readonly handoffs: readonly PastHandoff[];
+  readonly said: string | null;
+}
+
+/**
+ * Co ten folder do tej pory uruchomił — od najnowszego.
+ *
+ * FOLDER JEST JEDYNYM ZAKRESEM i to jest cały warunek właściciela („wszystko ma być per
+ * workspace ta historia"). `null` zostaje jawne, żeby Rust mógł wziąć katalog, pod którym
+ * wstała aplikacja (`AppState::project_for`), zamiast żeby okno podstawiało własną domyślną
+ * ścieżkę — druga odpowiedź na pytanie „gdzie pracujemy" jest tą, która się rozjedzie.
+ *
+ * Nie odmawia z powodu jednego nieczytelnego biegu: taki wraca jako wiersz z uczciwym zdaniem
+ * (`commands::history`, nagłówek modułu).
+ */
+export function listRuns(folder: string | null): Promise<readonly PastRunRow[]> {
+  return invoke<readonly PastRunRow[]>('list_runs', { folder });
+}
+
+/**
+ * Jeden bieg z historii, otwarty DO ODCZYTU.
+ *
+ * @param folder zakres, w którym ten bieg leży — ta sama ścieżka, którą dostało [`listRuns`].
+ * @param run nazwa katalogu z `PastRunRow.folder`. Sprawdza ją Rust, zanim dotknie dysku:
+ *   ten napis potrafi przyjechać z linii, którą wpisał człowiek.
+ */
+export function readRun(folder: string | null, run: string): Promise<PastRun> {
+  return invoke<PastRun>('read_run', { folder, run });
 }
 
 /** Licznikowy paragon kopiowania; raport nigdy nie wraca do JavaScriptu. */

@@ -43,6 +43,8 @@ pub mod chat;
 pub mod diagnostics;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod handoffs;
+/// Historia biegów TEGO projektu: co tu już ruszyło i co z tego zostało na dysku.
+pub mod history;
 pub mod import;
 pub mod isolate;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.

@@ -32,6 +32,7 @@ list_agents
 list_handoffs
 list_notes
 list_processes
+list_runs
 list_skills
 list_triggers
 list_workflows
@@ -40,6 +41,7 @@ load_workflow
 new_id
 open_chat
 put_note_to_use
+read_run
 rerun_step
 retry_trigger
 review_skill

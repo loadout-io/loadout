@@ -426,6 +426,29 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER],
     call: () => run.closeTerminal(FOLDER),
   },
+  /* 2026-08-23 — DWIE KRAWĘDZIE HISTORII BIEGÓW, dopisane, nic nie usunięte i żaden istniejący
+   * wiersz nie przepisany. Bez nich pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
+   * `listRuns` i `readRun`, a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył
+   * docierającej do Rusta.
+   *
+   * OBIE WOŁANE Z FOLDEREM, i to nie jest ozdoba wiersza: „per workspace" jest tu jedynym
+   * warunkiem właściciela, a niesie go dokładnie ten jeden klucz. Krawędź, która by go zgubiła,
+   * pokazywałaby historię katalogu, pod którym wstała aplikacja — czyli cudzą — i wyglądałoby
+   * to jak własna. */
+  {
+    where: 'run',
+    what: 'listRuns',
+    command: 'list_runs',
+    given: [FOLDER],
+    call: () => run.listRuns(FOLDER),
+  },
+  {
+    where: 'run',
+    what: 'readRun',
+    command: 'read_run',
+    given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
+    call: () => run.readRun(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',

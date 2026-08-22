@@ -1439,6 +1439,50 @@ pub async fn list_handoffs(
         .map_err(|error| error.to_string())
 }
 
+/// Co ten projekt do tej pory uruchomił — biegi leżące w JEGO katalogu, od najnowszego.
+///
+/// 2026-08-23 — zamówienie właściciela: „powinna być opcja zapisu naszych sesji i wyboru
+/// z historii, /history komenda np", z warunkiem „pamiętaj że wszystko ma być per workspace ta
+/// historia". Ten warunek jest tu jedną linią i jest całym powodem, dla którego ta komenda ma
+/// argument: zakres bierzemy z okna, przez [`AppState::project_for`], dokładnie tak jak
+/// [`copy_diagnostics`]. Wersja czytająca katalog procesu pokazywałaby biegi sąsiedniego
+/// projektu i nie miałaby jak o tym powiedzieć.
+///
+/// **Nie oddaje odmowy za nieczytelny bieg.** Katalog, którego `run.json` nie da się przeczytać,
+/// wraca jako JEDNA POZYCJA z uczciwym zdaniem (`commands::history`, nagłówek modułu) —
+/// odmowa całej listy z powodu jednego ręcznie edytowanego pliku jest tą wersją niezmiennika 5,
+/// którą najłatwiej napisać przez przypadek.
+#[tauri::command]
+pub async fn list_runs(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<commands::history::RunWire>, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    Ok(commands::history::list_runs_inner(&project))
+}
+
+/// Jeden bieg z historii, otwarty DO ODCZYTU: jego kroki, ich strumienie i jego przekazania.
+///
+/// `run` jest nazwą katalogu z `RunWire::folder`, czyli tym samym napisem, który okno dostało
+/// z [`list_runs`]. Sprawdza go warstwa niżej, zanim dotknie dysku: nazwa przyjeżdża z okna,
+/// a okno rysuje ją z tego, co ktoś wpisał w wiersz wejścia.
+///
+/// **Wznowienia tędy nie ma i nie ma być.** Ta komenda czyta pliki i nie dotyka ani jednego
+/// żywego uchwytu biegu — dlatego jej `State` służy wyłącznie do rozstrzygnięcia zakresu.
+#[tauri::command]
+pub async fn read_run(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run: String,
+) -> Result<commands::history::PastRunWire, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::history::read_run_inner(&project, &run).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -2172,6 +2216,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_handoffs,
         list_notes,
         list_processes,
+        list_runs,
         list_skills,
         list_triggers,
         list_workflows,
@@ -2180,6 +2225,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         new_id,
         open_chat,
         put_note_to_use,
+        read_run,
         retry_trigger,
         review_skill,
         run_agent,

@@ -410,15 +410,35 @@ function labelFor(line: FeedLine, count: number): string {
   return sentence(line);
 }
 
-/** Świeży wiersz historii dla tej linii. */
-function rowFor(line: FeedLine): HistoryRow {
+/**
+ * Świeży wiersz historii dla tej linii.
+ *
+ * 2026-08-23 — WYEKSPORTOWANA, bo pytających jest dwóch. Żywy strumień pyta o nią przez
+ * [`Feed.appendLines`], które dokłada drugie sklejanie okna; historia biegu odczytana z dysku
+ * (`../past/rows.ts`) pyta o JEDEN wiersz na JEDNĄ linię i sklejać go drugi raz nie ma prawa —
+ * te linie skleił już kurator po stronie Rusta, w tym samym biegu, w którym powstały
+ * (niezmiennik 15: kuracja mieszka w jednym miejscu). Druga funkcja składająca wiersz obok tej
+ * pokazywałaby przy tej samej linii inną etykietę i inną metrykę, a nic na ekranie nie mówiłoby,
+ * który z dwóch obrazów jest prawdziwy.
+ */
+export function rowFor(line: FeedLine): HistoryRow {
   const broke = failed(line);
+  /* ILE CZYNNOŚCI STOI ZA TĄ LINIĄ — pytamy LINIĘ, a nie zakładamy jednej.
+   *
+   * 2026-08-23, zmierzone na `src/ipc/line-wire.golden.json`. Kurator po stronie Rusta skleja
+   * sąsiednie odczyty w oknie 2 s i wysyła JEDEN wiersz z `count: 3` i tekstem `Read 3 files`.
+   * Ten plik składał z niego wiersz `labelFor(line, 1)`, czyli `Read 1 file` — liczbę, której
+   * nie ma w żadnym pliku i której nikt nie zmierzył (niezmiennik 17), na wierszu mówiącym
+   * o trzech odczytach. Sklejanie okna zostaje bez zmian: linia z `count: 1` daje dokładnie tę
+   * samą etykietę, co przed tą poprawką, więc `coalesce.test.ts` mierzy dalej to samo.
+   */
+  const behind = 'count' in line ? line.count : 1;
   return {
     id: line.id,
     kind: line.kind,
     agent: line.agent,
-    label: labelFor(line, 1),
-    count: 1,
+    label: labelFor(line, behind),
+    count: behind,
     ids: [line.id],
     metric: metricOf(line),
     /* Niepowodzenie rozwija SIEBIE i nic poza sobą. Rozwinięcie całego strumienia po

@@ -40,6 +40,7 @@ import type { ClipboardEvent as ReactClipboardEvent, FormEvent, ReactElement, Re
 import { useEffect, useRef, useState } from 'react';
 
 import { startAskFromLine } from '../ask-command';
+import { openHistoryFromLine } from '../history-command';
 import { startFromLine } from '../rail/processes';
 import type { Named } from '../run-command';
 import type { WindowLine } from './echo';
@@ -112,6 +113,25 @@ export const KNOWN = [
     name: '/start',
     tail: 'a command',
     does: 'Start a command and keep it running. It shows up in the agents list.',
+    completes: null as Completes,
+  },
+  {
+    /* 2026-08-22 — POWSTAŁO Z ZAMÓWIENIA WŁAŚCICIELA: „powinna być opcja zapisu naszych sesji
+     * i wyboru z historii, /history komenda np", z warunkiem „pamiętaj że wszystko ma być per
+     * workspace ta historia". Rozmowa tego ekranu żyje w oknie i nie przeżywa zamknięcia karty
+     * ani przeładowania; wszystko, co po biegu zostaje, leży w katalogu projektu — i do tego
+     * dnia nie było stąd do tych plików ani jednej drogi.
+     *
+     * PO TRZECH, KTÓRE ZACZYNAJĄ PRACĘ, a przed `/open` i `/stop`: `/history` nic nie uruchamia
+     * i nic nie zatrzymuje, więc stoi tam, gdzie człowiek szuka „co tu już było".
+     *
+     * BEZ PODPOWIADANIA (`completes: null`), choć argument bierze. Podpowiedź musiałaby czytać
+     * dysk przy każdym znaku wpisanym po `/history `, a lista, którą ten argument ZAWĘŻA, i tak
+     * staje człowiekowi przed oczami po naciśnięciu Enter. Podpowiadanie nazw workflow byłoby
+     * przy tym nieprawdą: zawężamy to, co JUŻ biegło, a nie to, co da się uruchomić. */
+    name: '/history',
+    tail: 'past runs',
+    does: 'Show what has run in this folder. Add a word to narrow the list.',
     completes: null as Completes,
   },
   {
@@ -383,6 +403,19 @@ export interface EntryProps {
    */
   readonly onStartCommand?: (rest: string) => Promise<string | null>;
   /**
+   * `/history [słowo]` — oddaje zdanie odmowy albo `null`, kiedy panel historii stanął.
+   *
+   * WARTOŚĆ DOMYŚLNA JEST TĄ PRODUKCYJNĄ, dokładnie jak przy [`EntryProps::onAskAgent`]
+   * i [`EntryProps::onStartCommand`], i z tego samego powodu: komenda stojąca w zachęcie
+   * i odpowiadająca „nie znam tego" jest obietnicą w napisie (niezmiennik 16). Domyślna
+   * wskazuje TĘ SAMĄ politykę, którą podałby ekran — `../history-command.ts`, obok rozbioru
+   * linii i obok zdań odmowy — a nie `io.ts` wołane z komponentu: nazwa komendy dalej istnieje
+   * w sekcji raz.
+   *
+   * `null` znaczy „skutek widać", i widać go w panelu, który właśnie zakrył widok pracy.
+   */
+  readonly onOpenHistory?: (rest: string) => Promise<string | null>;
+  /**
    * Kto właśnie pracuje — czyli czyją nazwą wolno zaadresować zdanie bez ukośnika.
    *
    * 2026-08-20 — NAZWY SĄ ADRESAMI, nie listą odbiorców. Do tego dnia niepustość tej listy
@@ -482,6 +515,7 @@ export function Entry({
   onRunWorkflow,
   onAskAgent = startAskFromLine,
   onStartCommand = startFromLine,
+  onOpenHistory = openHistoryFromLine,
   talkingTo = [],
   workflows = [],
   onShowInStream = () => undefined,
@@ -684,6 +718,13 @@ export function Entry({
        * i uruchomił coś innego niż to, co ma na ekranie. Rozbiór na „nazwę" i „argumenty" nie
        * istnieje z rozmysłu: to powłoka rozbiera tę linię, nie my (`SHELL` w `command.rs`). */
       void onStartCommand(line.slice('/start'.length).trim()).then(showTheAnswer);
+      return;
+    }
+    if (command === '/history') {
+      /* RESZTA LINII PO NAZWIE KOMENDY, przycięta — ta sama umowa, co przy `/run` i `/ask`.
+       * Co ten dopisek znaczy (zawężenie listy, nie nazwa katalogu), rozstrzyga
+       * `../history-command.ts`: to jest polityka i ma dać się osądzić bez okna. */
+      void onOpenHistory(line.slice('/history'.length).trim()).then(showTheAnswer);
       return;
     }
     if (command === '/open') {
