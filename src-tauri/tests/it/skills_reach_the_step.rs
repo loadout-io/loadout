@@ -37,7 +37,13 @@
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `too_many_lines` z tego samego powodu i **wyłącznie dodane**, nie w miejsce niczego: siedem
+// punktów tego kryterium (a–g) mierzy JEDEN bieg i musi stać w jednym `#[test]`. Nie jest to
+// wybór stylu — sześć kroków jednej ławki dzieli jeden magazyn, jeden dubler i jedną migawkę
+// tego, co dubler zobaczył, więc cięcie po granicy funkcji znaczyłoby sześć osobnych biegów
+// albo stan dzielony między testami, które cargo uruchamia równolegle.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
