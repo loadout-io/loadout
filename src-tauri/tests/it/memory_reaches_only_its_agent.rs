@@ -223,6 +223,16 @@ async fn each_step_is_told_what_its_own_agent_knows_and_nothing_of_the_other()
     bench.agent("backend", BACKEND_AGENT)?;
     bench.agent("frontend", FRONTEND_AGENT)?;
 
+    // Tożsamość agenta stoi w DWÓCH plikach fikstury: w jego karcie i w kroku, który go wskazuje.
+    // Rozjazd między nimi daje krok bez agenta, czyli bieg, który nie rusza — a wtedy każda
+    // asercja niżej jest prawdziwa o promptcie, którego nikt nie złożył. Ta linia mówi to nazwą.
+    for (id, card) in [(BACKEND_ID, BACKEND_AGENT), (FRONTEND_ID, FRONTEND_AGENT)] {
+        assert!(
+            card.contains(id) && WORKFLOW.contains(id),
+            "the fixture names {id} in only one of the two files that have to agree on it"
+        );
+    }
+
     bench.note(
         "everyone-knows-this",
         &note_file(
