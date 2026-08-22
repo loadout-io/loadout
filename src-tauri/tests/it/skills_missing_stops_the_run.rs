@@ -13,6 +13,13 @@
 //! uruchomień dublera równy zeru**: brak wyjścia niczego by nie rozróżnił, bo dubler i tak nic
 //! nie pisze.
 //!
+//! **TRZECIĄ SŁABĄ WERSJĄ JEST SĄDZENIE SAMEGO WALIDATORA.** „Nie da się przeczytać" i „nie
+//! przechodzi walidatora" to w `StepSkills::for_the_step` dwie osobne gałęzie — dwa pytania do
+//! dysku, jedno po drugim — a przypadek z treścią nie do przyjęcia dotyka wyłącznie drugiej.
+//! Pierwszą sądzą dwa kształty pliku, którego `read_to_string` nie zwróci: katalog pod nazwą
+//! pliku i bajty, które nie są UTF-8. Zmierzone mutacją: nieudany odczyt potraktowany jak zdrowa
+//! umiejętność przechodzi każdy inny przypadek w tym pliku.
+//!
 //! ZDANIA ODMOWY NIE MA W TYM PLIKU JAKO LITERAŁU i to jest połowa jego wartości. Składamy je
 //! z `skills::Missing`, czyli z typu, w którym ono mieszka; przepisane tutaj byłoby drugą kopią,
 //! a druga kopia jednego zdania jest zawsze tą nieaktualną (niezmiennik 23). Sprawdzamy
@@ -57,6 +64,23 @@ const BETA: &str = "beta";
 const NOWHERE: &str = "nowhere";
 /// Umiejętność, której `SKILL.md` nie przechodzi walidatora.
 const BROKEN: &str = "broken";
+/// Umiejętność, której `SKILL.md` **stoi na swoim miejscu i nie da się go przeczytać**: katalog
+/// w miejscu pliku.
+///
+/// To jest INNA GAŁĄŹ niż `broken` i dlatego stoi osobno. `StepSkills::for_the_step` pyta dysk
+/// dwa razy — najpierw `read_to_string`, potem walidator — i tylko druga z tych odpowiedzi jest
+/// zmierzona przez `broken`. Kryterium, które sądzi wyłącznie treść nie do przyjęcia, przechodzi
+/// dla implementacji, w której nieudany odczyt jest po cichu pustym plikiem albo `?` wyniesionym
+/// wyżej jako błąd wejścia-wyjścia: pierwsze daje agenta bez umiejętności, o której człowiek myśli,
+/// że ją ma, drugie daje zdanie o systemie plików zamiast zdania o umiejętności i kroku.
+const UNREADABLE: &str = "unreadable";
+/// Umiejętność, której `SKILL.md` jest plikiem — tyle że nie tekstem.
+///
+/// Drugi kształt tej samej gałęzi, bo `read_to_string` pada z dwóch różnych powodów i oba są
+/// realne: katalog w miejscu pliku (narzędzie, które rozpakowało archiwum obok) i bajty, które nie
+/// są UTF-8 (plik binarny zapisany pod tą nazwą). Deterministyczne na każdej maszynie — inaczej niż
+/// odebranie praw do odczytu, które dla użytkownika `root` nic nie znaczy.
+const NOT_TEXT: &str = "not-text";
 
 fn skill_file(name: &str) -> String {
     format!(
@@ -221,6 +245,66 @@ async fn a_file_that_is_not_a_skill_stops_the_run_too() -> Result<(), Box<dyn Er
          first one is paid for"
     );
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_skill_md_nobody_can_read_stops_the_run_too() -> Result<(), Box<dyn Error>> {
+    for (name, fixture) in [
+        (UNREADABLE, Fixture::DirectoryInPlaceOfTheFile),
+        (NOT_TEXT, Fixture::BytesThatAreNotText),
+    ] {
+        let bench = Bench::new()?;
+        bench.agent(&agent_file(&format!("[{name}]")))?;
+        let dir = bench.unreadable_skill(name, fixture)?;
+        let workflow = bench.workflow(&workflow_file("{}"))?;
+
+        // Fikstura ma naprawdę być NIE DO ODCZYTU, a katalog umiejętności ma naprawdę stać na
+        // swoim miejscu — inaczej ten przypadek mierzy nazwę spoza biblioteki, czyli to samo,
+        // co pierwszy test w tym pliku, i o dwóch różnych naprawach mówi jednym zdaniem.
+        assert!(
+            fs::symlink_metadata(&dir).is_ok(),
+            "{name} has to be saved in the library for this case to be about a file that cannot \
+             be read; without the directory it would be the same case as a name nobody saved"
+        );
+        assert!(
+            fs::read_to_string(dir.join("SKILL.md")).is_err(),
+            "the fixture for {name} became readable, so this case would be measuring the \
+             validator instead of the read that never got to it"
+        );
+
+        let (refusal, started) = one_run(&bench, workflow).await?;
+
+        let expected = Missing {
+            step: STEP.to_owned(),
+            skill: name.to_owned(),
+            why: Why::Unusable,
+        }
+        .to_string();
+        assert!(
+            refusal
+                .as_ref()
+                .is_some_and(|said| said.contains(&expected)),
+            "a SKILL.md that cannot be read at all is the same refusal as one that is not a \
+             skill: from outside, an agent without the skill and an agent whose skill could not \
+             be opened answer identically. Expected to find {expected:?}; the run answered \
+             {refusal:?}"
+        );
+        assert_eq!(
+            started, 0,
+            "the run started {started} agent(s) before refusing; the refusal has to land before \
+             the first one is paid for"
+        );
+    }
+    Ok(())
+}
+
+/// Dwa sposoby, na które `SKILL.md` istnieje i nie daje się przeczytać.
+#[derive(Debug, Clone, Copy)]
+enum Fixture {
+    /// Katalog pod nazwą pliku.
+    DirectoryInPlaceOfTheFile,
+    /// Plik, którego bajty nie są tekstem.
+    BytesThatAreNotText,
 }
 
 /// Jeden bieg. Oddaje zdanie odmowy (albo `None`, kiedy bieg mimo wszystko poszedł) i licznik
@@ -393,6 +477,23 @@ impl Bench {
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("SKILL.md"), text)?;
         Ok(())
+    }
+
+    /// Umiejętność zapisana w bibliotece, której `SKILL.md` nie da się przeczytać. Oddaje jej
+    /// katalog, bo to on ma stać na dysku, kiedy odczyt pada.
+    fn unreadable_skill(&self, name: &str, fixture: Fixture) -> Result<PathBuf, Box<dyn Error>> {
+        let dir = self.home.path().join("skills").join(name);
+        let file = dir.join("SKILL.md");
+        match fixture {
+            Fixture::DirectoryInPlaceOfTheFile => fs::create_dir_all(&file)?,
+            Fixture::BytesThatAreNotText => {
+                fs::create_dir_all(&dir)?;
+                // Bajty, których nie da się zdekodować jako UTF-8 — samotny bajt startowy
+                // sekwencji czterobajtowej i ciąg dalszy bez początku.
+                fs::write(&file, [0xF0_u8, 0x28, 0x8C, 0xBC, 0x80])?;
+            }
+        }
+        Ok(dir)
     }
 
     fn workflow(&self, text: &str) -> Result<PathBuf, Box<dyn Error>> {
