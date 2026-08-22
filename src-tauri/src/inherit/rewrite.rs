@@ -18,6 +18,14 @@
 //! Bitu wykonywalności nie wykrywamy — wykrywamy go **nie wykrywając**: ten plik zapisuje
 //! wyłącznie to, co sam postanowił zapisać, więc żaden `PermissionsExt` ani `#[cfg(unix)]` nie
 //! jest tu potrzebny (niezmienniki 3 i 4).
+//!
+//! 2026-08-22 (T-79) — DRUGI KORZEŃ ŹRÓDŁOWY, TA SAMA DROGA. Katalog pluginu jest jedynym
+//! kanałem, którym Claude Code przyjmuje umiejętność podaną z zewnątrz [S1 §3], a Loadout ma
+//! dwa źródła takich umiejętności: cudze repozytorium ([`plugin_dir`]) i własną bibliotekę
+//! ([`plugin_dir_from_the_library`]). Druga funkcja mieszka tutaj, a nie w `skills/place.rs`,
+//! bo obowiązkowy poziom `skills/`, manifest przypinający przedrostek i reguła „pusty wybór nie
+//! tworzy katalogu" są **jedną** wiedzą o tym vendorze — a druga jej kopia byłaby pierwszą
+//! rzeczą, która zostanie stara (niezmiennik 23).
 
 use std::fs;
 use std::io;
@@ -25,6 +33,8 @@ use std::path::Path;
 
 use super::scan;
 use super::{Result, Rewritten};
+use crate::skills::StepSkills;
+use crate::skills::place::copy_the_skill;
 
 /// Poziom, bez którego plugin ładuje się i rejestruje ZERO umiejętności.
 ///
@@ -48,15 +58,23 @@ const SKILL_FILE: &str = "SKILL.md";
 /// (`s1-plugin-a:alpha`), a nasz katalog nazywa się od biegu — bez przypiętej nazwy przedrostek
 /// zmieniałby się co bieg i żaden ekran nie mógłby go pokazać dwa razy tak samo.
 ///
-/// Jedno pole, bo dokładnie jedno ma czytelnika (niezmiennik 21). Treść jest stałą, a nie
-/// wynikiem serializacji: nazwa jest tu jedyną wartością i nie ma w niej znaku, który trzeba by
-/// cytować, więc `serde_json` dołożyłby wyłącznie ścieżkę błędu, której nie da się wywołać.
+/// Jedno pole, bo dokładnie jedno ma czytelnika (niezmiennik 21). Treść składamy `format!`, a nie
+/// `serde_json`: nazwa jest tu jedyną wartością, jest stałą tego pliku i nie ma w niej znaku,
+/// który trzeba by cytować — serializator dołożyłby wyłącznie ścieżkę błędu, której nie da się
+/// wywołać.
 const MANIFEST_DIR: &str = ".claude-plugin";
 const MANIFEST_FILE: &str = "plugin.json";
-const MANIFEST: &str = r#"{
-  "name": "loadout-inherited"
-}
-"#;
+
+/// Nazwa pluginu z materiałem CUDZEGO repozytorium.
+const INHERITED_PLUGIN: &str = "loadout-inherited";
+
+/// Nazwa pluginu z materiałem BIBLIOTEKI Loadouta.
+///
+/// Inna niż [`INHERITED_PLUGIN`], bo przedrostek w `system/init` (`<plugin>:<nazwa>` [S1 §2])
+/// jest jedyną rzeczą, po której człowiek pozna, skąd wzięła się umiejętność, którą sesja
+/// właśnie ogłosiła. Jedna nazwa na oba źródła zlepiłaby „to twoje" i „to z tego repozytorium"
+/// w jeden napis — a to są dwa różne pytania o zaufanie.
+const LIBRARY_PLUGIN: &str = "loadout-skills";
 
 /// Przepisuje wybrane umiejętności gospodarza do katalogu pluginu biegu.
 ///
@@ -129,16 +147,59 @@ pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Re
         fs::write(dir.join(SKILL_FILE), bytes)?;
     }
 
-    // Manifest NA KOŃCU, i to jest wybór kierunku porażki. Przerwany zapis zostawia wtedy
-    // katalog z umiejętnościami i bez przypiętej nazwy — przedrostek spada do nazwy katalogu
-    // biegu, czyli degraduje się do niestabilnego. Manifest zapisany pierwszy zostawiłby przy
-    // tej samej porażce katalog z nazwą i z zerem umiejętności, czyli dokładnie ten kształt,
-    // który ładuje się na zielono i nic nie wnosi.
-    let manifest = into.join(MANIFEST_DIR);
-    fs::create_dir_all(&manifest)?;
-    fs::write(manifest.join(MANIFEST_FILE), MANIFEST)?;
+    pin_the_name(into, INHERITED_PLUGIN)?;
 
     Ok(rewritten)
+}
+
+/// Przepisuje umiejętności **naszej biblioteki** do katalogu pluginu jednego kroku.
+///
+/// TA SAMA DROGA, INNY KORZEŃ ŹRÓDŁOWY, i to jest cała różnica wobec [`plugin_dir`]: ten sam
+/// obowiązkowy poziom `skills/`, ten sam manifest przypinający przedrostek, ta sama obietnica
+/// „pusty wybór nie tworzy katalogu". Zmienia się to, skąd bierzemy bajty — z `<dane>/skills/`
+/// zamiast z `.claude/skills/` cudzego repozytorium — i to, ile ich bierzemy.
+///
+/// **CAŁY KATALOG UMIEJĘTNOŚCI, nie sam `SKILL.md`**, i ta jedna różnica jest rozstrzygnięciem,
+/// nie niekonsekwencją. Umiejętność gospodarza Loadout **cytuje**: jego `scripts/` to cudza
+/// maszyneria, której nie przenosimy (nagłówek tego pliku). Umiejętność z biblioteki Loadout
+/// **posiada** — jej pliki dołączone zapisał `place::apply` i są jej częścią, a `SKILL.md`
+/// odsyłający do skryptu, którego przy nim nie ma, jest umiejętnością zepsutą po cichu.
+///
+/// `into` przychodzi argumentem, tak samo jak w [`plugin_dir`], bo katalog kroku należy do biegu,
+/// a nie do rozmieszczania.
+pub fn plugin_dir_from_the_library(skills: &StepSkills, into: &Path) -> Result<Rewritten> {
+    let rewritten = Rewritten {
+        dir: into.to_path_buf(),
+        names: skills.names.clone(),
+    };
+    // Pusty wybór NIE TWORZY KATALOGU — ten sam powód, co w [`plugin_dir`]: pusty katalog podany
+    // vendorowi to plugin, który ładuje się i rejestruje zero umiejętności.
+    if skills.names.is_empty() {
+        return Ok(rewritten);
+    }
+
+    for (name, source) in skills.names.iter().zip(&skills.dirs) {
+        copy_the_skill(source, &into.join(SKILLS_LEVEL).join(name))?;
+    }
+    pin_the_name(into, LIBRARY_PLUGIN)?;
+
+    Ok(rewritten)
+}
+
+/// Przypina nazwę pluginu manifestem — **na końcu**, i to jest wybór kierunku porażki.
+///
+/// Przerwany zapis zostawia wtedy katalog z umiejętnościami i bez przypiętej nazwy — przedrostek
+/// spada do nazwy katalogu biegu, czyli degraduje się do niestabilnego. Manifest zapisany
+/// pierwszy zostawiłby przy tej samej porażce katalog z nazwą i z zerem umiejętności, czyli
+/// dokładnie ten kształt, który ładuje się na zielono i nic nie wnosi.
+fn pin_the_name(into: &Path, plugin: &str) -> Result<()> {
+    let manifest = into.join(MANIFEST_DIR);
+    fs::create_dir_all(&manifest)?;
+    fs::write(
+        manifest.join(MANIFEST_FILE),
+        format!("{{\n  \"name\": \"{plugin}\"\n}}\n"),
+    )?;
+    Ok(())
 }
 
 /// Fragment argv, który sterownik dopnie do swojego: `["--plugin-dir", <katalog>]` albo nic.

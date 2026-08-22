@@ -26,7 +26,23 @@ pub mod place;
 /// Kolejność jest kolejnością zapisu i kolejnością w [`place::destinations`]. Nie ma znaczenia
 /// dla vendorów; ma znaczenie dla `git diff` planu instalacji, który człowiek czyta przed
 /// naciśnięciem przycisku.
-pub const DESTINATION_DIRS: [&str; 2] = [".claude/skills", ".agents/skills"];
+pub const DESTINATION_DIRS: [&str; 2] = [SHELF_CLAUDE_READS, SHELF_THE_OTHER_FIVE_READ];
+
+/// Półka Claude Code. Osobna nazwa, bo osobno pyta o nią bieg.
+///
+/// 2026-08-22 (T-79) — rozbicie tablicy na dwie nazwane stałe nie dokłada ani jednego napisu:
+/// tablica składa się z nich, więc `.agents/skills` dalej stoi w repo **raz**. Powodem jest
+/// [`StepSkills::into_the_step_folder`], które pyta o JEDNĄ z tych dwóch półek — a indeks
+/// (`DESTINATION_DIRS[1]`) byłby odwołaniem, które po przestawieniu tablicy dalej się kompiluje
+/// i wskazuje na drugiego vendora.
+pub const SHELF_CLAUDE_READS: &str = ".claude/skills";
+
+/// Półka, do której zaglądają Codex, Cursor, Gemini CLI, opencode i Amp [T5 §3.1].
+///
+/// Dla tych pięciu **nie ma drugiego kanału**: żaden z nich nie umie przyjąć ścieżki katalogu
+/// umiejętności argumentem, więc „agent ma umiejętność" znaczy dla nich dosłownie „plik leży
+/// w jego katalogu roboczym".
+pub const SHELF_THE_OTHER_FIVE_READ: &str = ".agents/skills";
 
 /// Vendorzy, których te dwa katalogi obsługują. Lista jest tu po to, żeby UI („Installed for
 /// 6 tools") liczyło z tego samego miejsca, z którego bierze się zapis — a nie z osobnej stałej,
@@ -184,6 +200,91 @@ pub struct SkillDoc {
     pub body: String,
 }
 
+/// Umiejętności, które **jeden krok** naprawdę dostaje — policzone z efektywnego agenta.
+///
+/// Zbiór liczy się tak, jak liczy się cała reszta definicji agenta: `library::agents::resolve`
+/// scala krok z agentem patchem RFC 7396, więc brak klucza na kroku znaczy „weź to, co ma
+/// agent", `[]` znaczy „żadnych", a lista znaczy **podzbiór** tego, co agent ma. Nazwa spoza
+/// zbioru agenta jest odmową ([`Missing`]), nie cichym dołożeniem: krok, który dostał więcej,
+/// niż dał mu jego agent, jest krokiem, o którego uprawnieniach nie mówi żaden ekran.
+///
+/// DWA POLA, NIE JEDNO, i to jest ta sama różnica, co w [`crate::inherit::Rewritten`]: `names`
+/// odpowiada na pytanie „co człowiek wybrał", a `dirs` na pytanie „skąd to wzięliśmy". Sama
+/// lista nazw kazałaby każdemu wołającemu drugi raz składać ścieżkę kanonicznej kopii, a druga
+/// kopia tej reguły jest tą, która przy pierwszej zmianie układu katalogów zostaje stara
+/// (niezmiennik 23).
+///
+/// Pusty zbiór jest normalnym wynikiem, nie awarią: tak wygląda krok agenta, któremu nikt
+/// umiejętności nie przypisał, i krok, który wyłączył je wszystkie zapisem `[]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepSkills {
+    /// Nazwy w kolejności z definicji agenta — tej samej, w której człowiek je widzi.
+    pub names: Vec<String>,
+    /// Kanoniczny katalog każdej nazwy (`<dane>/skills/<nazwa>/`), w tej samej kolejności.
+    pub dirs: Vec<PathBuf>,
+}
+
+/// Dlaczego wybrana umiejętność nie dojedzie do kroku — po ludzku, bo to zdanie czyta człowiek.
+///
+/// Cztery powody, bo naprawia się je czterema różnymi ruchami: dopisz umiejętność do biblioteki,
+/// dopisz ją agentowi, popraw jej `SKILL.md`, daj krokowi własną kopię folderu. Jedno wspólne
+/// zdanie na cztery stany zostawia trzy czwarte ludzi przy instrukcji, która w ich przypadku nie
+/// może zadziałać — ten sam wybór i ten sam powód stoi przy
+/// [`crate::engine::drivers::claude::ToolsRefused`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Why {
+    /// Nazwy nie ma w bibliotece Loadouta.
+    #[error("your library has nothing saved under that name")]
+    NotInTheLibrary,
+    /// Nazwa jest w bibliotece, ale nie na agencie tego kroku.
+    #[error(
+        "the agent on this step was never given it, and a step may only narrow what its agent \
+         already has"
+    )]
+    NotOnTheAgent,
+    /// `SKILL.md` nie da się przeczytać albo nie przechodzi walidatora.
+    #[error("its SKILL.md could not be read as a skill")]
+    Unusable,
+    /// Krok pracuje wprost w folderze człowieka, więc kopia nie ma gdzie stanąć.
+    ///
+    /// Odmowa, nie cichy zapis: katalog dopisany do cudzego repozytorium jest zmianą, o której
+    /// jego właściciel dowiaduje się z `git status`, a Loadout obiecuje pisać wyłącznie do
+    /// własnego katalogu biegu (`docs/ARCHITECTURE.md` §8).
+    #[error(
+        "this step works straight inside {}, and Loadout writes nothing into a folder of yours. \
+         Give the step its own copy of your files, or take the skill off it",
+        .folder.display()
+    )]
+    WouldWriteIntoYourFolder {
+        /// Folder, do którego Loadout odmówił pisać — człowiek szuka ścieżki, nie identyfikatora.
+        folder: PathBuf,
+    },
+}
+
+/// Umiejętność, której ten krok nie dostanie — **odmowa nazywająca pozycję i krok**.
+///
+/// TO JEST ODMOWA, A NIE POMINIĘCIE, i to jest jedyny powód, dla którego ten typ istnieje obok
+/// [`Error`]. Ciche pominięcie daje bieg, w którym człowiek zaznaczył pięć umiejętności, agent
+/// dostał trzy, nic nie padło i nikt się o tym nie dowiedział — bo „agent nie zna tej
+/// umiejętności" jest z zewnątrz nieodróżnialne od „model nie uznał, że warto po nią sięgnąć".
+/// Ta sama cicha porażka, przed którą stoi [`crate::inherit::Error::NotInTheHost`].
+///
+/// Zdanie wymienia OBIE nazwy: bez nazwy umiejętności odmowa zamienia jedno odznaczenie
+/// w przeszukiwanie listy, a bez nazwy kroku człowiek nie wie, który kafelek otworzyć.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "\"{step}\" was set to use the skill \"{skill}\", and {why}. Nothing started: a step that \
+     quietly knows less than you picked answers as though there was nothing to know."
+)]
+pub struct Missing {
+    /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
+    pub step: String,
+    /// Nazwa umiejętności, dosłownie tak, jak stoi w definicji.
+    pub skill: String,
+    /// Co dokładnie odmówiło.
+    pub why: Why,
+}
+
 /// Błędy rozmieszczania.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -199,6 +300,17 @@ pub enum Error {
     /// zgadnięty korzeń zapisuje umiejętność w losowym miejscu i nikt się o tym nie dowie.
     #[error("there is no open project, so a project skill has no place to go")]
     NoProjectRoot,
+
+    /// Umiejętność, której ten krok nie dostanie ([`Missing`]).
+    ///
+    /// PRZEZROCZYSTY, bo [`Missing`] jest już zdaniem napisanym dla człowieka — a zdanie
+    /// nadpisane drugim zdaniem o tej samej odmowie to dwa miejsca, w których mieszka jedna
+    /// odpowiedź (niezmiennik 13). Wariant istnieje po to, żeby rozmieszczanie umiejętności
+    /// kroku miało JEDEN typ błędu na dwa różne stany: odmowę (ta pozycja nie dojedzie) i awarię
+    /// dysku ([`Error::Io`]). Bez niego awaria dysku musiałaby udawać jedną z czterech przyczyn
+    /// z [`Why`], czyli kłamać o tym, co się stało.
+    #[error(transparent)]
+    Refused(#[from] Missing),
 }
 
 /// Skrót modułu. Drugi parametr z domyślną wartością, bo `validate_strict` zwraca listę
