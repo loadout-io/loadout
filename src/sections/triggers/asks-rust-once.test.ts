@@ -14,6 +14,7 @@ const DRAFT: TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: '/project',
   pollEveryMinutes: 5,
   apiKey: KEY,
 };
@@ -22,6 +23,7 @@ const EXPECTED: TriggerSnapshot = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: '/project',
   enabled: true,
   pollEveryMinutes: 5,
   hasApiKey: true,
@@ -56,6 +58,13 @@ const EDGES: readonly Edge[] = [
     rustArguments: ['slug'],
     sent: ['check_trigger', { slug: 'assigned-to-me' }],
     call: () => io.checkTrigger('assigned-to-me'),
+  },
+  {
+    exported: 'retryTrigger',
+    command: 'retry_trigger',
+    rustArguments: ['slug'],
+    sent: ['retry_trigger', { slug: 'assigned-to-me' }],
+    call: () => io.retryTrigger('assigned-to-me'),
   },
   {
     exported: 'createTrigger',

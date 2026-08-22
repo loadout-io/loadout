@@ -71,6 +71,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -81,11 +82,12 @@ use uuid::Uuid;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
-    RunSpec, SessionRef, ToAgent, Tokens, Voice,
+    RunSpec, SessionRef, ToAgent, Tokens, ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
+use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
 pub const VENDOR: &str = "claude";
@@ -521,7 +523,7 @@ fn names(list: &[&str]) -> Vec<String> {
 /// po cichu, a wtedy plik powstaje, odbudowa go nie znajduje i nikt się o tym nie dowiaduje aż
 /// do pierwszego skasowania `loadout.db`. Dlatego tu stoi katalog biegu i identyfikator kroku,
 /// a nie gotowa ścieżka: kryterium ma czego pilnować, a wołający nie ma czego pomylić.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Transcript {
     /// Katalog biegu z `docs/ARCHITECTURE.md` §8: `<repo>/.loadout/runs/<ts>__<id>/`.
     pub run_dir: PathBuf,
@@ -534,6 +536,15 @@ pub struct Transcript {
     /// Wiersze na ekran. Ścieżka dysku nie gubi nigdy, ścieżka widoku wolno gubić [T7 §4.1] —
     /// zamknięty odbiornik nie ma prawa zatrzymać zapisu.
     pub lines: mpsc::Sender<Line>,
+}
+
+impl std::fmt::Debug for Transcript {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Transcript")
+            .field("configured", &true)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Transcript {
@@ -589,10 +600,19 @@ impl Transcript {
 /// Czytelnik tego pliku jest dokładnie **jeden**: proces, który startujemy. Jeżeli powstaje,
 /// a `--settings` nie stoi w argv z **jego** ścieżką, to jest śmieć w katalogu biegu
 /// i jednocześnie cała izolacja, której nie ma (niezmiennik 21).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunSettings {
     /// Gdzie ten plik leży. Ta sama ścieżka, która ma stanąć obok `--settings` w argv.
     path: PathBuf,
+}
+
+impl std::fmt::Debug for RunSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunSettings")
+            .field("configured", &true)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Cały dokument, który idzie na dysk — i **jedyny kształt**, w jakim może iść.
@@ -658,7 +678,7 @@ impl RunSettings {
 /// AC-6 i AC-7 wpuszczają skrypt-atrapę zamiast prawdziwego CLI. Atrapa loguje **obok
 /// siebie**, nigdy przez zmienną środowiskową: supervisor robi `env_clear()`, więc fikstura
 /// sterowana envem po cichu przestałaby działać.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClaudeDriver {
     /// Co uruchamiamy.
     binary: PathBuf,
@@ -666,6 +686,10 @@ pub struct ClaudeDriver {
     /// zapisuje": sonda wersji nie ma katalogu biegu, a kryteria samego sterownika (T-04) pytają
     /// o zdarzenia, nie o transkrypt.
     transcript: Option<Transcript>,
+    /// Produkcyjny, vendor-neutralny target prywatnych dowodow tej sesji.
+    evidence: Option<EvidenceTarget>,
+    /// Obrazy pierwszej tury, ustawiane tylko na tanim klonie per start.
+    images: ValidatedImages,
     /// Plik ustawień tego biegu, czyli jedyna droga, którą reguła gospodarza do nas wraca.
     /// `None` znaczy „ten bieg go nie ma": sonda wersji nie ma katalogu biegu, więc nie ma
     /// gdzie go położyć, a `--settings` bez pliku pod podaną ścieżką zabiłoby CLI.
@@ -676,6 +700,19 @@ pub struct ClaudeDriver {
     /// ma prawa wiedzieć, czym jest dziedziczenie ani kiedy flagę wolno postawić (niezmiennik
     /// 23). Puste znaczy „nie było czego odziedziczyć" i rozstrzygnął to `inherit::wire`, nie my.
     inherited: Vec<String>,
+}
+
+impl std::fmt::Debug for ClaudeDriver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClaudeDriver")
+            .field("transcript", &self.transcript.is_some())
+            .field("evidence", &self.evidence.is_some())
+            .field("images", &self.images.as_slice().len())
+            .field("settings", &self.settings.is_some())
+            .field("inherited_arguments", &self.inherited.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ClaudeDriver {
@@ -691,6 +728,8 @@ impl ClaudeDriver {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
             transcript: None,
+            evidence: None,
+            images: ValidatedImages::default(),
             settings: None,
             inherited: Vec::new(),
         }
@@ -703,6 +742,8 @@ impl ClaudeDriver {
         Self {
             binary,
             transcript: None,
+            evidence: None,
+            images: ValidatedImages::default(),
             settings: None,
             inherited: Vec::new(),
         }
@@ -722,6 +763,12 @@ impl ClaudeDriver {
     #[must_use]
     pub fn with_transcript(mut self, transcript: Transcript) -> Self {
         self.transcript = Some(transcript);
+        self
+    }
+
+    #[must_use]
+    fn carrying_evidence(mut self, evidence: EvidenceTarget) -> Self {
+        self.evidence = Some(evidence);
         self
     }
 
@@ -1535,27 +1582,46 @@ struct Envelope<'a> {
 #[derive(Debug, Serialize)]
 struct EnvelopeMessage<'a> {
     role: &'static str,
-    content: [EnvelopeBlock<'a>; 1],
+    content: Vec<EnvelopeBlock<'a>>,
 }
 
-/// Jedyny blok treści koperty.
+/// Jeden natywny blok treści koperty.
 #[derive(Debug, Serialize)]
-struct EnvelopeBlock<'a> {
+#[serde(tag = "type", rename_all = "snake_case")]
+enum EnvelopeBlock<'a> {
+    Text { text: &'a str },
+    Image { source: ImageSource },
+}
+
+#[derive(Debug, Serialize)]
+struct ImageSource {
     #[serde(rename = "type")]
     kind: &'static str,
-    text: &'a str,
+    media_type: &'static str,
+    data: String,
 }
 
 /// Buduje kopertę jednej tury — **jedna linia**, bo CLI czyta stdin linia po linii.
 ///
 /// Serializujemy zamiast sklejać stringi: prompt z cudzysłowem albo znakiem nowej linii,
 /// wklejony ręcznie, rozjeżdża linię JSON i cała tura ginie na parsowaniu po drugiej stronie.
-fn user_envelope(text: &str) -> serde_json::Result<String> {
+fn user_envelope(text: &str, images: &ValidatedImages) -> serde_json::Result<String> {
+    let mut content = Vec::with_capacity(1 + images.as_slice().len());
+    content.push(EnvelopeBlock::Text { text });
+    for image in images.as_slice() {
+        content.push(EnvelopeBlock::Image {
+            source: ImageSource {
+                kind: "base64",
+                media_type: image.mime().as_str(),
+                data: base64::engine::general_purpose::STANDARD.encode(image.bytes()),
+            },
+        });
+    }
     serde_json::to_string(&Envelope {
         kind: "user",
         message: EnvelopeMessage {
             role: "user",
-            content: [EnvelopeBlock { kind: "text", text }],
+            content,
         },
     })
 }
@@ -1601,6 +1667,42 @@ fn interrupt_request(request_id: &str) -> serde_json::Result<String> {
 /// nadawca dowiaduje się o tym dopiero z ciszy.
 const SAY_QUEUE: usize = 8;
 
+struct NativeTurn {
+    text: String,
+    images: ValidatedImages,
+}
+
+#[derive(Default)]
+struct NativeTurns(Mutex<HashMap<String, NativeTurn>>);
+
+impl NativeTurns {
+    fn stage(&self, turn: NativeTurn) -> String {
+        let token = format!("loadout-native-{}", Uuid::now_v7().simple());
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(token.clone(), turn);
+        token
+    }
+
+    fn take(&self, token: &str) -> Option<NativeTurn> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(token)
+    }
+}
+
+impl std::fmt::Debug for NativeTurns {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queued = self.0.lock().unwrap_or_else(PoisonError::into_inner).len();
+        formatter
+            .debug_struct("NativeTurns")
+            .field("queued", &queued)
+            .finish()
+    }
+}
+
 /// JEDYNY pisarz do `stdin` sesji: koperty tur i przerwania, w kolejności nadania.
 ///
 /// 2026-08-18 — POWSTAŁO, ŻEBY DAŁO SIĘ NAPISAĆ DO ŻYWEGO AGENTA. Potok był polem uchwytu, więc
@@ -1632,28 +1734,55 @@ const SAY_QUEUE: usize = 8;
 async fn talk(
     mut pipe: ChildStdin,
     mut inbox: mpsc::Receiver<ToAgent>,
-    session: String,
+    native: Arc<NativeTurns>,
+    private: Arc<Mutex<Vec<Vec<u8>>>>,
     mut hush: oneshot::Receiver<()>,
 ) {
     loop {
         // `biased`, bo prośba o zamknięcie ma wygrywać z linią, która właśnie przyszła: sesja
         // zamykana ma się zamknąć, a nie dopisać jeszcze jedną turę i zamknąć się później.
+        enum Said {
+            Plain(ToAgent),
+            Native(NativeTurn),
+        }
         let said = tokio::select! {
             biased;
             _ = &mut hush => break,
             said = inbox.recv() => match said {
-                Some(said) => said,
+                Some(ToAgent::Turn(token)) => native
+                    .take(&token)
+                    .map_or_else(
+                        || Said::Plain(ToAgent::Turn(token)),
+                        Said::Native,
+                    ),
+                Some(said) => Said::Plain(said),
                 // Kanał bez ani jednego nadajnika też kończy pisanie. To jest droga dublerów
                 // i testów, które nie wołają `close()`; produkcja przychodzi przez `hush`.
                 None => break,
             },
         };
+        {
+            let mut known = private.lock().unwrap_or_else(PoisonError::into_inner);
+            match &said {
+                Said::Plain(ToAgent::Turn(text)) => remember_private_text(&mut known, text),
+                Said::Native(turn) => {
+                    remember_private_text(&mut known, &turn.text);
+                    for image in turn.images.as_slice() {
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(image.bytes());
+                        remember_private_text(&mut known, &encoded);
+                    }
+                }
+                Said::Plain(ToAgent::Interrupt(_)) => {}
+            }
+        }
         let line = match &said {
-            ToAgent::Turn(text) => user_envelope(text),
-            ToAgent::Interrupt(id) => interrupt_request(id),
+            Said::Plain(ToAgent::Turn(text)) => user_envelope(text, &ValidatedImages::default()),
+            Said::Plain(ToAgent::Interrupt(id)) => interrupt_request(id),
+            Said::Native(turn) => user_envelope(&turn.text, &turn.images),
         };
         let Ok(line) = line else {
-            tracing::debug!(%session, "a line to the agent could not be built; dropping it");
+            tracing::debug!("a line to the agent could not be built; dropping it");
             continue;
         };
         // Znak nowej linii jest częścią protokołu, nie formatowaniem: CLI czyta stdin linia po
@@ -1662,7 +1791,7 @@ async fn talk(
             || pipe.write_all(b"\n").await.is_err()
             || pipe.flush().await.is_err()
         {
-            tracing::debug!(%session, "the agent stopped reading its input");
+            tracing::debug!("the agent stopped reading its input");
             break;
         }
     }
@@ -1683,23 +1812,60 @@ const COMPLAINT_KEPT: usize = 4 * 1024;
 ///
 /// Bez `?` i bez `unwrap` (niezmiennik 5): błąd odczytu skargi nie ma prawa zabrać tury.
 /// Zamek brany i oddany w jednym wyrażeniu, nigdy przez `await` (niezmiennik 8).
-async fn drain_complaints(stderr: ChildStderr, into: Arc<Mutex<String>>) {
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
+async fn drain_complaints(
+    stderr: ChildStderr,
+    into: Arc<Mutex<String>>,
+    mut evidence: Option<EvidenceWriter>,
+    target: Option<EvidenceTarget>,
+    private: Arc<Mutex<Vec<Vec<u8>>>>,
+) {
+    let mut stderr = BufReader::new(stderr);
+    let mut bytes = Vec::with_capacity(8 * 1024);
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        bytes.clear();
+        let read = match stderr.read_until(b'\n', &mut bytes).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) => {
+                if let Some(target) = &target {
+                    target.mark_incomplete();
+                }
+                tracing::debug!(%error, "the agent complaint stream broke off");
+                break;
+            }
+        };
+        let private_line = contains_private(&bytes[..read], &private);
+        if !private_line
+            && let Some(writer) = evidence.as_mut()
+            && let Err(error) = writer.write(&bytes[..read]).await
+        {
+            tracing::warn!(%error, "the agent stderr evidence would not take more bytes");
+            evidence = None;
         }
         let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
         if held.len() < COMPLAINT_KEPT {
-            held.push_str(&line);
+            let left = COMPLAINT_KEPT - held.len();
+            let lossy = String::from_utf8_lossy(&bytes[..read]);
+            held.extend(lossy.chars().take(left));
         }
         // Bez `break` po przekroczeniu limitu: pętla musi dalej OPRÓŻNIAĆ potok, nawet gdy nic
         // już nie zapamiętuje. Wyjście tutaj przywróciłoby dokładnie tę blokadę, przed którą
         // to zadanie stoi.
     }
+    if let Some(writer) = evidence
+        && let Err(error) = writer.close().await
+    {
+        tracing::warn!(%error, "the agent stderr evidence would not flush");
+    }
+}
+
+/// Prywatna polowa ujscia Claude'a. Jeden pakiet utrzymuje granice evidence w jednym argumencie
+/// pętli, zamiast rozrzucać cztery współdzielone uchwyty po jej sygnaturze.
+struct PumpEvidence {
+    writer: Option<EvidenceWriter>,
+    target: Option<EvidenceTarget>,
+    private: Arc<Mutex<Vec<Vec<u8>>>>,
+    complaint: Arc<Mutex<String>>,
 }
 
 /// Czyta stdout linia po linii, kładzie **bajty** w transkrypcie kroku i sypie zdarzeniami,
@@ -1718,8 +1884,14 @@ async fn pump(
     events: mpsc::Sender<DecodedEvent>,
     outcomes: mpsc::Sender<Outcome>,
     mut transcript: Option<Recorder>,
-    complaint: Arc<Mutex<String>>,
+    evidence: PumpEvidence,
 ) {
+    let PumpEvidence {
+        writer: mut evidence,
+        target: evidence_target,
+        private,
+        complaint,
+    } = evidence;
     let mut reader = BufReader::new(stdout);
     let mut decoder = ClaudeDecoder::new();
     let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
@@ -1733,18 +1905,30 @@ async fn pump(
             Ok(0) => break,
             Ok(_) => {}
             Err(error) => {
+                if let Some(target) = &evidence_target {
+                    target.mark_incomplete();
+                }
                 tracing::debug!(%error, "the agent output stream broke off");
                 break;
             }
         }
 
-        // TEE PRZED PARSOWANIEM. Linia, której nikt nie zrozumie, jest w pliku tak samo jak
-        // każda inna — a to właśnie ona jest potrzebna w zgłoszeniu błędu, i to ona przybywa
-        // u vendora co tydzień, po cichu.
-        if let Some(recorder) = transcript.as_mut()
+        let private_line = contains_private(&buffer, &private);
+        // Nieznana linia zostaje byte-exact, ale echo wejscia jest najpierw rozpoznawane i
+        // pomijane. Claude serializuje cudzyslowy, newline i backslash, wiec samo szukanie
+        // nieucieczonego promptu nie stanowiloby granicy prywatnosci.
+        if !private_line
+            && let Some(recorder) = transcript.as_mut()
             && let Err(error) = recorder.raw(&buffer).await
         {
             tracing::warn!(%error, "the step transcript would not take a line of the stream");
+        }
+        if !private_line
+            && let Some(writer) = evidence.as_mut()
+            && let Err(error) = writer.write(&buffer).await
+        {
+            tracing::warn!(%error, "the agent stdout evidence would not take more bytes");
+            evidence = None;
         }
 
         let Ok(text) = std::str::from_utf8(&buffer) else {
@@ -1825,12 +2009,51 @@ async fn pump(
     {
         tracing::warn!(%error, "the step transcript would not close cleanly");
     }
+    if let Some(writer) = evidence
+        && let Err(error) = writer.close().await
+    {
+        tracing::warn!(%error, "the agent stdout evidence would not flush");
+    }
 
     // Oba nadajniki giną RAZEM Z TĄ PĘTLĄ i to jest ich druga robota: zamknięty kanał wyników
     // jest jedynym sygnałem, po którym `wait()` wie, że nic już nie przyjdzie. Bez tego czekanie
     // na turę, która nigdy się nie skończy, jest nieodróżnialne od czekania na turę, która trwa.
     drop(events);
     drop(outcomes);
+}
+
+fn contains_private(bytes: &[u8], private: &Arc<Mutex<Vec<Vec<u8>>>>) -> bool {
+    let is_user_echo = serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|line| line.get("type").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "user");
+    is_user_echo
+        || private
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|needle| !needle.is_empty())
+            .any(|needle| bytes.windows(needle.len()).any(|window| window == needle))
+}
+
+fn remember_private_text(known: &mut Vec<Vec<u8>>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    known.push(text.as_bytes().to_vec());
+    if let Ok(escaped) = serde_json::to_string(text) {
+        known.push(escaped.into_bytes());
+    }
+}
+
+fn private_needles(prompt: &str, images: &ValidatedImages) -> Arc<Mutex<Vec<Vec<u8>>>> {
+    let mut private = Vec::new();
+    remember_private_text(&mut private, prompt);
+    for image in images.as_slice() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(image.bytes());
+        remember_private_text(&mut private, &encoded);
+    }
+    Arc::new(Mutex::new(private))
 }
 
 /// Wypuszcza jedno zdarzenie — **najpierw** do [`AgentHandle::wait`], potem na ekran.
@@ -1853,7 +2076,6 @@ async fn emit(
 }
 
 /// Żywa sesja `claude` — jeden proces, wiele tur.
-#[derive(Debug)]
 pub struct ClaudeHandle {
     /// Sesja, którą sami nadaliśmy przed startem [T7 §6.2].
     session: SessionRef,
@@ -1876,6 +2098,9 @@ pub struct ClaudeHandle {
     ///
     /// `None` dopiero po [`AgentHandle::close`].
     voice: Option<Voice>,
+    /// Prywatne ciala obrazowych tur. W kanale `voice` stoi tylko losowy token, dzieki czemu
+    /// tekst, obraz i interrupt maja jeden FIFO bez publicznego wariantu niosacego bajty.
+    native: Arc<NativeTurns>,
     /// Zadanie, które trzyma potok. Czekamy na nie w [`AgentHandle::close`]: dopiero jego koniec
     /// porzuca `stdin`, a porzucenie potoku jest tym, po czym CLI wychodzi zerem [T1 §2].
     writer: Option<tokio::task::JoinHandle<()>>,
@@ -1896,6 +2121,25 @@ pub struct ClaudeHandle {
     /// Wyniki tur, w kolejności, w jakiej padły. Osobno od kanału zdarzeń, bo `wait()` musi je
     /// dostać także wtedy, gdy nikt nie czyta ekranu.
     outcomes: mpsc::Receiver<Outcome>,
+    /// Czytniki sa polami uchwytu, nie odczepionymi zadaniami: `Dead` nie znaczy jeszcze EOF,
+    /// flush ani `sync_all`, dopoki obu nie zbierzemy.
+    reader: Option<tokio::task::JoinHandle<()>>,
+    complaints: Option<tokio::task::JoinHandle<()>>,
+    evidence: Option<EvidenceTarget>,
+}
+
+impl std::fmt::Debug for ClaudeHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClaudeHandle")
+            .field("listening", &self.voice.is_some())
+            .field("writer_active", &self.writer.is_some())
+            .field("reader_active", &self.reader.is_some())
+            .field("complaints_active", &self.complaints.is_some())
+            .field("evidence", &self.evidence.is_some())
+            .field("capabilities", &self.capabilities.get().map_or(0, Vec::len))
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClaudeHandle {
@@ -1929,13 +2173,23 @@ impl ClaudeHandle {
             .await
             .is_err()
         {
-            tracing::debug!(
-                session = %self.session.id,
-                "the interrupt could not be written; falling through to signals"
-            );
+            tracing::debug!("the interrupt could not be written; falling through to signals");
             return false;
         }
         true
+    }
+
+    async fn finish_evidence(&mut self) {
+        for task in [&mut self.reader, &mut self.complaints] {
+            if let Some(task) = task.take()
+                && let Err(error) = task.await
+            {
+                if let Some(evidence) = &self.evidence {
+                    evidence.mark_incomplete();
+                }
+                tracing::warn!(%error, "an agent evidence reader did not join cleanly");
+            }
+        }
     }
 }
 
@@ -1977,6 +2231,29 @@ impl AgentHandle for ClaudeHandle {
             .send(ToAgent::Turn(text))
             .await
             .map_err(|_| anyhow!("session {} stopped listening", self.session.id))
+    }
+
+    async fn send_with_images(
+        &mut self,
+        text: String,
+        images: ValidatedImages,
+    ) -> anyhow::Result<()> {
+        if images.is_empty() {
+            return self.send(text).await;
+        }
+        let voice = self.voice.as_ref().ok_or_else(|| {
+            anyhow!(
+                "a follow-up turn of {} bytes has nowhere to go: session {} was already closed",
+                text.len(),
+                self.session.id
+            )
+        })?;
+        let token = self.native.stage(NativeTurn { text, images });
+        if voice.send(ToAgent::Turn(token.clone())).await.is_err() {
+            let _ = self.native.take(&token);
+            return Err(anyhow!("session {} stopped listening", self.session.id));
+        }
+        Ok(())
     }
 
     fn voice(&self) -> Option<Voice> {
@@ -2022,7 +2299,11 @@ impl AgentHandle for ClaudeHandle {
             let _timed_out = timeout(INTERRUPT_WINDOW, self.process.wait()).await;
         }
 
-        self.process.stop(DEFAULT_GRACE).await
+        let proof = self.process.stop(DEFAULT_GRACE).await;
+        if matches!(proof, GroupProof::Dead { .. }) {
+            self.finish_evidence().await;
+        }
+        proof
     }
 
     /// Koniec **sesji**, nie tury: dziecko dostaje EOF i wychodzi samo.
@@ -2056,7 +2337,9 @@ impl AgentHandle for ClaudeHandle {
 
         // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
         // różnica, którą mierzy dowód z `cancel()`.
-        Ok(self.process.wait().await?.code())
+        let status = self.process.wait().await?;
+        self.finish_evidence().await;
+        Ok(status.code())
     }
 }
 
@@ -2092,10 +2375,8 @@ impl AgentDriver for ClaudeDriver {
         // stdinie oszczędza tu 3 s ostrzeżenia `no stdin data received` [T1 §4.6].
         let mut process = match supervisor::spawn(command, StdinPlan::Null) {
             Ok(process) => process,
-            Err(error) => {
+            Err(_error) => {
                 tracing::debug!(
-                    binary = %self.binary.display(),
-                    %error,
                     "the agent CLI could not be started, so the setup screen has its answer"
                 );
                 return Ok(Probe {
@@ -2143,6 +2424,21 @@ impl AgentDriver for ClaudeDriver {
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let Some(target) = &self.evidence else {
+            /* Puste pliki nie sa potrzebne sondzie i testom samego dekodera. Dwie opcje
+             * rozpakowujemy osobno nizej, zamiast wymyslac plik tymczasowy. */
+            let transcript = match &self.transcript {
+                Some(transcript) => Some(transcript.open().await?),
+                None => None,
+            };
+            return self
+                .start_after_evidence(spec, tx, transcript, None, None)
+                .await;
+        };
+        let EvidenceStreams {
+            stdout: evidence_stdout,
+            stderr: evidence_stderr,
+        } = target.open().await?;
         // Plik transkryptu powstaje TUTAJ, przed pierwszym procesem, i błąd jego otwarcia
         // przewraca start kroku (T-34, 2026-08-16). Sterownik poproszony o transkrypt nie ma
         // prawa udawać, że go zrobił: cicha wersja tej porażki jest dokładnie tym, co zmierzył
@@ -2154,6 +2450,41 @@ impl AgentDriver for ClaudeDriver {
             None => None,
         };
 
+        self.start_after_evidence(
+            spec,
+            tx,
+            transcript,
+            Some(evidence_stdout),
+            Some(evidence_stderr),
+        )
+        .await
+    }
+
+    async fn start_with_images(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let mut driver = self.clone();
+        driver.images = images;
+        driver.start(spec, tx).await
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(self.clone().carrying_evidence(target)))
+    }
+}
+
+impl ClaudeDriver {
+    async fn start_after_evidence(
+        &self,
+        spec: RunSpec,
+        tx: mpsc::Sender<DecodedEvent>,
+        transcript: Option<Recorder>,
+        evidence_stdout: Option<EvidenceWriter>,
+        evidence_stderr: Option<EvidenceWriter>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
         // Sesję nadajemy PRZED startem procesu: dopiero to znosi wyścig o to, pod jakim numerem
         // zapisać krok, i dopiero to czyni odzyskiwanie po awarii możliwym [T7 §6.2].
         let session = SessionRef {
@@ -2164,18 +2495,33 @@ impl AgentDriver for ClaudeDriver {
                 .map_or_else(|| spec.run_id.to_string(), |session| session.id.clone()),
         };
 
-        let envelope = user_envelope(&spec.prompt)?;
+        let private = private_needles(&spec.prompt, &self.images);
+        let envelope = user_envelope(&spec.prompt, &self.images).inspect_err(|_error| {
+            if let Some(target) = &self.evidence {
+                target.mark_incomplete();
+            }
+        })?;
         let mut process = supervisor::spawn(
             self.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
             // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
             StdinPlan::Keep(format!("{envelope}\n")),
-        )?;
+        )
+        .inspect_err(|_error| {
+            if let Some(target) = &self.evidence {
+                target.mark_incomplete();
+            }
+        })?;
 
         let stdout = process
             .stdout()
-            .ok_or_else(|| anyhow!("the agent started without an output stream to read"))?;
+            .ok_or_else(|| anyhow!("the agent started without an output stream to read"))
+            .inspect_err(|_error| {
+                if let Some(target) = &self.evidence {
+                    target.mark_incomplete();
+                }
+            })?;
 
         // SKARGI ODBIERAMY I OPRÓŻNIAMY, i to jest jedna z dwóch rzeczy, bez których krok pada
         // zdaniem bez przyczyny (druga to `end_of_stream`, które to zdanie składa). Potok był
@@ -2187,10 +2533,22 @@ impl AgentDriver for ClaudeDriver {
         // uruchamiają proces bez niego, a agent bez strumienia skarg jest agentem, który po
         // prostu nie ma na co narzekać.
         let complaint = Arc::new(Mutex::new(String::new()));
-        if let Some(stderr) = process.stderr() {
+        let complaints = if let Some(stderr) = process.stderr() {
             let into = Arc::clone(&complaint);
-            let _drain = tokio::spawn(drain_complaints(stderr, into));
-        }
+            let target = self.evidence.clone();
+            Some(tokio::spawn(drain_complaints(
+                stderr,
+                into,
+                evidence_stderr,
+                target,
+                Arc::clone(&private),
+            )))
+        } else {
+            if let Some(target) = &self.evidence {
+                target.mark_incomplete();
+            }
+            None
+        };
 
         let (finished, outcomes) = mpsc::channel(TURNS_IN_FLIGHT);
         // Zdolności ogłasza `init`, czyli strumień — a potrzebuje ich uchwyt, w eskalacji
@@ -2200,36 +2558,54 @@ impl AgentDriver for ClaudeDriver {
         // także wtedy, gdy nikt nie woła `wait()`. Startuje PRZED odebraniem stdinu, bo
         // odebranie stdinu czeka na koniec pierwszego zapisu — a agent, który zaczyna mówić
         // w trakcie, ma mieć kto czytać.
-        let _reader = tokio::spawn(pump(
+        let reader = tokio::spawn(pump(
             stdout,
             Arc::clone(&capabilities),
             tx,
             finished,
             transcript,
-            complaint,
+            PumpEvidence {
+                writer: evidence_stdout,
+                target: self.evidence.clone(),
+                private: Arc::clone(&private),
+                complaint,
+            },
         ));
 
         // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
         // i nie ma czym wysłać przerwania.
-        let stdin = process.stdin().await.ok_or_else(|| {
-            anyhow!("the agent started without an input channel for the turns that follow")
-        })?;
+        let stdin = process
+            .stdin()
+            .await
+            .ok_or_else(|| {
+                anyhow!("the agent started without an input channel for the turns that follow")
+            })
+            .inspect_err(|_error| {
+                if let Some(target) = &self.evidence {
+                    target.mark_incomplete();
+                }
+            })?;
 
         /* POTOK PRZECHODZI NA WŁASNOŚĆ ZADANIA, a uchwyt dostaje nadajnik. To jest cała zmiana,
          * po której da się napisać do agenta, który właśnie pracuje — powód w całości przy polu
          * `ClaudeHandle::voice` i przy `talk`. */
         let (voice, inbox) = mpsc::channel(SAY_QUEUE);
+        let native = Arc::new(NativeTurns::default());
         let (hush, hushed) = oneshot::channel();
-        let writer = tokio::spawn(talk(stdin, inbox, session.id.clone(), hushed));
+        let writer = tokio::spawn(talk(stdin, inbox, Arc::clone(&native), private, hushed));
 
         Ok(Box::new(ClaudeHandle {
             session,
             process,
             voice: Some(voice),
+            native,
             writer: Some(writer),
             hush: Some(hush),
             capabilities,
             outcomes,
+            reader: Some(reader),
+            complaints,
+            evidence: self.evidence.clone(),
         }))
     }
 }

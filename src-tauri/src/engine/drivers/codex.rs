@@ -42,6 +42,8 @@
 //!
 //! Nie ma tu też ani jednego `tauri::*` (niezmiennik 1): sterownik nie wie, że istnieje okno.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -49,17 +51,22 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Deserialize;
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{ChildStderr, ChildStdout, Command};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
-    RunSpec, SessionRef, Tokens,
+    RunSpec, SessionRef, Tokens, ValidatedImages,
 };
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
+use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
 ///
@@ -83,15 +90,77 @@ const NOT_CANCELLED: u64 = 0;
 /// limitu byłby za to miejscem, w którym gadatliwy agent zjada pamięć okna.
 const COMPLAINT_KEPT: usize = 4 * 1024;
 
+/// App Server gets one chance to acknowledge an in-band interrupt before the supervisor takes
+/// over. The supervisor still runs afterwards: a JSON-RPC response proves only that the request
+/// was read, never that the process group is dead (invariants 6 and 10).
+const APP_INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
+
+/// Commands waiting between a Lead handle and its one stdin owner. The protocol is sequential at
+/// the product boundary, but a small reserve prevents stderr/stdout draining from depending on a
+/// consumer polling at precisely the right moment.
+const APP_COMMAND_CAPACITY: usize = 16;
+
+/// Outcomes are one-at-a-time by contract. A reserve lets the reader finish emitting before the
+/// UI begins awaiting the result.
+const APP_OUTCOME_CAPACITY: usize = 4;
+
+/// Odstęp między ponowieniami eskalacji na ścieżce startu, która nie ma już komu oddać
+/// uchwytu. `Alive` nie może wyjść z tej funkcji razem z jedynym właścicielem procesu.
+const START_CLEANUP_RETRY: Duration = Duration::from_secs(1);
+
+/// Tylko ten wariant pozwala porzucic uchwyt procesu i joiny czytnikow. `Alive` nie znaczy
+/// „stop sie nie udal, posprzataj mimo to", tylko „jadro nadal widzi grupe" — wiec caly stan
+/// musi zostac w handle, aby kolejne Stop moglo ponowic eskalacje (niezmiennik 6).
+fn proof_allows_cleanup(proof: &GroupProof) -> bool {
+    matches!(proof, GroupProof::Dead { .. })
+}
+
+fn mark_evidence_incomplete(target: Option<&EvidenceTarget>) {
+    if let Some(target) = target {
+        target.mark_incomplete();
+    }
+}
+
+/// Fatalna porażka startu nie ma zewnętrznego uchwytu, który mógłby ponowić Stop. Dlatego ten
+/// właściciel zostaje w funkcji tak długo, aż supervisor przyniesie rzeczywisty dowód `Dead`.
+async fn stop_startup_process(process: &mut Supervised) -> GroupProof {
+    loop {
+        let proof = process.stop(DEFAULT_GRACE).await;
+        if proof_allows_cleanup(&proof) {
+            return proof;
+        }
+        tracing::error!(
+            "the Codex App Server is still alive after a failed start; Loadout retains its handle \
+             and will retry"
+        );
+        tokio::time::sleep(START_CLEANUP_RETRY).await;
+    }
+}
+
 /// Sterownik `codex`.
 ///
 /// Ścieżka do binarki jest **polem**, nie stałą, i to jest jedyny szew, przez który kryteria
 /// wpuszczają skrypt-atrapę zamiast prawdziwego CLI — inaczej żadnego z nich nie dałoby się
 /// uruchomić bez konta i bez sieci.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodexDriver {
     /// Co uruchamiamy.
     binary: PathBuf,
+    /// Prywatny target dowodow gotowy dla jednej logicznej sesji.
+    evidence: Option<EvidenceTarget>,
+}
+
+impl fmt::Debug for CodexDriver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CodexDriver")
+            .field(
+                "uses_custom_binary",
+                &(self.binary != Path::new(DEFAULT_BINARY)),
+            )
+            .field("has_evidence", &self.evidence.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for CodexDriver {
@@ -106,6 +175,7 @@ impl CodexDriver {
     pub fn new() -> Self {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
+            evidence: None,
         }
     }
 
@@ -113,7 +183,10 @@ impl CodexDriver {
     /// proces — i dla użytkownika, który trzyma CLI poza `PATH`.
     #[must_use]
     pub fn with_binary(binary: PathBuf) -> Self {
-        Self { binary }
+        Self {
+            binary,
+            evidence: None,
+        }
     }
 
     /// Startuje sesję i oddaje **konkretny** uchwyt.
@@ -134,6 +207,13 @@ impl CodexDriver {
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<CodexHandle> {
+        // Dowody otwieramy PRZED spawnem. Nieudany zapis manifestu nie moze dac procesu, ktory
+        // wykonal prace bez odbudowywalnego sladu, a wczesne `?` nie zostawia wtedy grupy.
+        let evidence = match &self.evidence {
+            Some(target) => Some(target.open().await?),
+            None => None,
+        };
+        let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
         let argv = build_exec_argv(&spec);
 
         // Wznowienie zna swoją tożsamość, ZANIM padnie pierwsza linia: dostało ją od tego, kto
@@ -158,8 +238,15 @@ impl CodexDriver {
             threads: Arc::clone(&threads),
             number: FIRST_TURN,
             cancelled: Arc::clone(&cancelled),
+            stdout_evidence,
+            stderr_evidence,
+            evidence_target: self.evidence.clone(),
         };
-        let (process, outcome) = turn.start()?;
+        let started = turn.start();
+        if started.is_err() {
+            mark_evidence_incomplete(self.evidence.as_ref());
+        }
+        let (process, outcome, drained, stderr_task) = started?;
 
         // `tokio::spawn` tylko PLANUJE zadanie — nie odpytuje go ani razu. To ustąpienie daje
         // świeżo uruchomionej pętli czytającej jej pierwsze odpytanie, więc wołający dostaje
@@ -181,11 +268,14 @@ impl CodexDriver {
             binary: self.binary.clone(),
             cwd: spec.cwd,
             events: tx,
+            evidence: self.evidence.clone(),
             threads,
             cancelled,
             number: FIRST_TURN,
             process: Some(process),
             outcome: Some(outcome),
+            drained: Some(drained),
+            stderr_task: Some(stderr_task),
         })
     }
 }
@@ -196,7 +286,6 @@ impl CodexDriver {
 /// dokładnie tak samo: [`CodexDriver::start_session`] robi pierwszą, [`AgentHandle::send`] każdą
 /// następną. Dwa miejsca składające ten sam start osobno rozjeżdżają się przy pierwszej zmianie
 /// — a rozjazd byłby cichy, bo obie drogi dalej uruchamiałyby proces.
-#[derive(Debug)]
 struct Turn {
     /// Co uruchamiamy.
     binary: PathBuf,
@@ -214,6 +303,50 @@ struct Turn {
     number: u64,
     /// Generacja anulowania, wspólna dla sesji (powód przy [`CodexHandle::cancelled`]).
     cancelled: Arc<AtomicU64>,
+    /// Surowy stdout workflow; Lead ma osobna, filtrowana petle App Servera.
+    stdout_evidence: Option<EvidenceWriter>,
+    /// Surowy stderr workflow, zawsze bajt w bajt.
+    stderr_evidence: Option<EvidenceWriter>,
+    /// Wspólny bezpiecznik kompletu; błędy odczytu i kanałów są utratą dowodu nawet wtedy,
+    /// gdy sam deskryptor pliku nadal przyjmuje bajty.
+    evidence_target: Option<EvidenceTarget>,
+}
+
+type StartedTurn = (
+    Supervised,
+    oneshot::Receiver<Outcome>,
+    oneshot::Receiver<()>,
+    JoinHandle<()>,
+);
+
+struct PumpInput {
+    stdout: ChildStdout,
+    events: mpsc::Sender<DecodedEvent>,
+    outcome: oneshot::Sender<Outcome>,
+    threads: Arc<Mutex<Vec<String>>>,
+    number: u64,
+    cancelled: Arc<AtomicU64>,
+    complaint: Arc<Mutex<String>>,
+    evidence: Option<EvidenceWriter>,
+    evidence_target: Option<EvidenceTarget>,
+    drained: oneshot::Sender<()>,
+}
+
+impl fmt::Debug for Turn {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Turn")
+            .field(
+                "uses_custom_binary",
+                &(self.binary != Path::new(DEFAULT_BINARY)),
+            )
+            .field("workspace", &"<private>")
+            .field("argument_count", &self.argv.len())
+            .field("prompt_bytes", &self.prompt.len())
+            .field("number", &self.number)
+            .field("has_evidence", &self.stdout_evidence.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Turn {
@@ -222,7 +355,7 @@ impl Turn {
     /// Proces startuje przez `engine::supervisor::spawn` i **tylko** przez nie: własna grupa
     /// procesów, `env_clear()` i cała eskalacja zabijania mieszkają tam (niezmienniki 3 i 23).
     /// Ten plik nie zna ani jednej stałej sygnału.
-    fn start(self) -> anyhow::Result<(Supervised, oneshot::Receiver<Outcome>)> {
+    fn start(self) -> anyhow::Result<StartedTurn> {
         let mut command = Command::new(&self.binary);
         // Katalog roboczy przychodzi ARGUMENTEM, nigdy stałą: literał ze ścieżką repo w pliku
         // pod `engine/` przewraca granicę z niezmiennika 1.
@@ -234,9 +367,12 @@ impl Turn {
         // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
         let mut process = supervisor::spawn(command, StdinPlan::Write(self.prompt))?;
 
-        let stdout = process
-            .stdout()
-            .ok_or_else(|| anyhow!("the agent started without an output stream to read"))?;
+        let Some(stdout) = process.stdout() else {
+            mark_evidence_incomplete(self.evidence_target.as_ref());
+            return Err(anyhow!(
+                "the agent started without an output stream to read"
+            ));
+        };
 
         // SKARGI ODBIERAMY I OPRÓŻNIAMY. Potok o pojemności ~64 KB, którego nikt nie odbiera,
         // zatrzymuje dziecko na `write` — czyli agent gadatliwy poza strumieniem zdarzeń wisi,
@@ -244,25 +380,1097 @@ impl Turn {
         // end_of_stream`]: pierwsza linia skargi odpowiada na „dlaczego" w praktycznie każdym
         // realnym przypadku, a bez niej krok pada zdaniem bez przyczyny.
         let complaint = Arc::new(Mutex::new(String::new()));
-        if let Some(stderr) = process.stderr() {
+        let stderr_task = if let Some(stderr) = process.stderr() {
             let into = Arc::clone(&complaint);
-            let _drain = tokio::spawn(drain_complaints(stderr, into));
-        }
+            tokio::spawn(drain_complaints(
+                stderr,
+                into,
+                self.stderr_evidence,
+                self.evidence_target.clone(),
+            ))
+        } else {
+            mark_evidence_incomplete(self.evidence_target.as_ref());
+            tokio::spawn(close_evidence(self.stderr_evidence))
+        };
 
         let (tell, told) = oneshot::channel();
+        let (drained_tx, drained_rx) = oneshot::channel();
         // Pętla czytająca żyje własnym zadaniem: uchwyt ma zostać responsywny na `cancel()`
         // także wtedy, gdy nikt nie woła `wait()`.
-        let _reader = tokio::spawn(pump(
+        let _reader = tokio::spawn(pump(PumpInput {
             stdout,
-            self.events,
-            tell,
-            self.threads,
-            self.number,
-            self.cancelled,
+            events: self.events,
+            outcome: tell,
+            threads: self.threads,
+            number: self.number,
+            cancelled: self.cancelled,
             complaint,
-        ));
+            evidence: self.stdout_evidence,
+            evidence_target: self.evidence_target,
+            drained: drained_tx,
+        }));
 
-        Ok((process, told))
+        Ok((process, told, drained_rx, stderr_task))
+    }
+}
+
+fn split_evidence(
+    evidence: Option<EvidenceStreams>,
+) -> (Option<EvidenceWriter>, Option<EvidenceWriter>) {
+    match evidence {
+        Some(EvidenceStreams { stdout, stderr }) => (Some(stdout), Some(stderr)),
+        None => (None, None),
+    }
+}
+
+// ── Lead przez Codex App Server ───────────────────────────────────────────────────────────
+
+/// Jedyny wlasciciel JSON-RPC stdinu. Zaden wariant nie implementuje `Debug`: request tury
+/// zawiera prompt oraz data URL obrazu i nie ma bezpiecznej reprezentacji tekstowej.
+enum AppCommand {
+    Request {
+        id: u64,
+        method: &'static str,
+        body: Vec<u8>,
+        begins_turn: bool,
+        reply: oneshot::Sender<anyhow::Result<Value>>,
+    },
+    Notify {
+        body: Vec<u8>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    SetThread {
+        id: String,
+        reply: oneshot::Sender<()>,
+    },
+    MarkCancelled,
+    Close {
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+}
+
+struct PendingAppRequest {
+    method: &'static str,
+    reply: oneshot::Sender<anyhow::Result<Value>>,
+}
+
+/// Klonowalny glos do jednego aktora App Servera. Licznik jest atomowy tylko dlatego, ze
+/// przerwanie i zwykla tura moga przyjsc z roznych taskow; nie przechowuje stanu anulowania.
+#[derive(Clone)]
+struct AppClient {
+    commands: mpsc::Sender<AppCommand>,
+    next_id: Arc<AtomicU64>,
+    evidence: Option<EvidenceTarget>,
+}
+
+impl fmt::Debug for AppClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppClient")
+            .field("next_id", &self.next_id.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl AppClient {
+    fn new(commands: mpsc::Sender<AppCommand>, evidence: Option<EvidenceTarget>) -> Self {
+        Self {
+            commands,
+            next_id: Arc::new(AtomicU64::new(1)),
+            evidence,
+        }
+    }
+
+    fn mark_incomplete(&self) {
+        mark_evidence_incomplete(self.evidence.as_ref());
+    }
+
+    async fn request(
+        &self,
+        method: &'static str,
+        params: Value,
+        begins_turn: bool,
+    ) -> anyhow::Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let body = serde_json::to_vec(&json!({
+            "id": id,
+            "method": method,
+            "params": params,
+        }))
+        .map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("Loadout could not encode a Codex App Server request.")
+        })?;
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(AppCommand::Request {
+                id,
+                method,
+                body,
+                begins_turn,
+                reply,
+            })
+            .await
+            .map_err(|_| {
+                self.mark_incomplete();
+                anyhow!("The Codex App Server input channel closed.")
+            })?;
+        let answer = response.await.map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("The Codex App Server stopped before it answered.")
+        })?;
+        if answer.is_err() {
+            self.mark_incomplete();
+        }
+        answer
+    }
+
+    async fn notify(&self, method: &'static str, params: Value) -> anyhow::Result<()> {
+        let body = serde_json::to_vec(&json!({
+            "method": method,
+            "params": params,
+        }))
+        .map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("Loadout could not encode a Codex App Server notification.")
+        })?;
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(AppCommand::Notify { body, reply })
+            .await
+            .map_err(|_| {
+                self.mark_incomplete();
+                anyhow!("The Codex App Server input channel closed.")
+            })?;
+        let answer = response.await.map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("The Codex App Server stopped before reading its input.")
+        })?;
+        if answer.is_err() {
+            self.mark_incomplete();
+        }
+        answer
+    }
+
+    async fn set_thread(&self, id: String) -> anyhow::Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(AppCommand::SetThread { id, reply })
+            .await
+            .map_err(|_| {
+                self.mark_incomplete();
+                anyhow!("The Codex App Server stopped before opening its thread.")
+            })?;
+        response.await.map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("The Codex App Server stopped before opening its thread.")
+        })
+    }
+
+    async fn mark_cancelled(&self) {
+        if self.commands.send(AppCommand::MarkCancelled).await.is_err() {
+            self.mark_incomplete();
+        }
+    }
+
+    async fn close(&self) -> anyhow::Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(AppCommand::Close { reply })
+            .await
+            .map_err(|_| {
+                self.mark_incomplete();
+                anyhow!("The Codex App Server input channel already closed.")
+            })?;
+        let answer = response.await.map_err(|_| {
+            self.mark_incomplete();
+            anyhow!("The Codex App Server stopped while closing its input.")
+        })?;
+        if answer.is_err() {
+            self.mark_incomplete();
+        }
+        answer
+    }
+}
+
+/// Stan kuracji App Servera. Uzywa tych samych metod `CodexDecoder`, ktore obsluguja `exec`;
+/// koperta JSON-RPC jest jedyna roznica transportowa.
+struct AppServerState {
+    decoder: CodexDecoder,
+    active: bool,
+    cancelled: bool,
+    began: Instant,
+    cumulative: Tokens,
+    baseline: Tokens,
+}
+
+impl fmt::Debug for AppServerState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppServerState")
+            .field("active", &self.active)
+            .field("cancelled", &self.cancelled)
+            .field("dropped", &self.decoder.dropped())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AppServerState {
+    fn new() -> Self {
+        Self {
+            decoder: CodexDecoder::new(),
+            active: false,
+            cancelled: false,
+            began: Instant::now(),
+            cumulative: Tokens::default(),
+            baseline: Tokens::default(),
+        }
+    }
+
+    fn begin_turn(&mut self) {
+        self.decoder.ended = false;
+        self.decoder.said.clear();
+        self.active = true;
+        self.cancelled = false;
+        self.began = Instant::now();
+        self.baseline = self.cumulative;
+    }
+
+    fn set_thread(&mut self, id: String) {
+        self.decoder.thread = Some(id);
+    }
+
+    fn mark_cancelled(&mut self) {
+        self.cancelled = true;
+    }
+
+    fn notification(&mut self, value: &Value) -> Vec<AgentEvent> {
+        let Some(method) = value.get("method").and_then(Value::as_str) else {
+            self.decoder.dropped += 1;
+            return Vec::new();
+        };
+
+        match method {
+            "turn/started" | "thread/started" => Vec::new(),
+            "thread/tokenUsage/updated" => {
+                if let Some(total) = app_usage(value) {
+                    self.cumulative = total;
+                }
+                Vec::new()
+            }
+            "item/started" if self.active => {
+                app_item(value).map(CodexDecoder::begun).unwrap_or_default()
+            }
+            "item/completed" if self.active => app_item(value)
+                .map(|item| self.decoder.completed(item))
+                .unwrap_or_default(),
+            "turn/completed" if self.active => self.complete_turn(value),
+            "error" => CodexDecoder::notice(
+                value
+                    .pointer("/params/error/message")
+                    .or_else(|| value.pointer("/params/message"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+            // Nieznany payload jest liczony i porzucany. Nigdy nie trafia do dowodow, bo moze
+            // byc nowym wariantem odbicia userMessage z promptem albo obrazem.
+            _ => {
+                self.decoder.dropped += 1;
+                Vec::new()
+            }
+        }
+    }
+
+    fn complete_turn(&mut self, value: &Value) -> Vec<AgentEvent> {
+        self.active = false;
+        let status = value
+            .pointer("/params/turn/status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+
+        if self.cancelled || status.eq_ignore_ascii_case("interrupted") {
+            return self.decoder.end_of_stream(true, "");
+        }
+        if status.eq_ignore_ascii_case("failed") {
+            let message = value
+                .pointer("/params/turn/error/message")
+                .or_else(|| value.pointer("/params/error/message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            return self.decoder.failed(message);
+        }
+
+        if let Some(total) = app_usage(value) {
+            self.cumulative = total;
+        }
+        let used = token_delta(self.cumulative, self.baseline);
+        vec![self.decoder.finish_tokens(used)]
+    }
+
+    fn end_of_stream(&mut self, complaint: &str) -> Vec<AgentEvent> {
+        if !self.active {
+            return Vec::new();
+        }
+        self.active = false;
+        self.decoder.end_of_stream(self.cancelled, complaint)
+    }
+}
+
+fn app_item(value: &Value) -> Option<Item> {
+    let item = value.pointer("/params/item")?.clone();
+    serde_json::from_value(item).ok()
+}
+
+fn app_usage(value: &Value) -> Option<Tokens> {
+    ["/params/usage", "/params/tokenUsage/total", "/params/total"]
+        .into_iter()
+        .filter_map(|path| value.pointer(path))
+        .find_map(|usage| serde_json::from_value::<Usage>(usage.clone()).ok())
+        .map(|usage| Tokens {
+            input: usage.input.unwrap_or_default(),
+            output: usage.output.unwrap_or_default(),
+            cached: usage.cached.unwrap_or_default(),
+        })
+}
+
+fn token_delta(total: Tokens, baseline: Tokens) -> Tokens {
+    fn component(total: u64, baseline: u64) -> u64 {
+        if total >= baseline {
+            total - baseline
+        } else {
+            // Vendor zrestartowal licznik; zero zgubiloby cala ture, wiec nowa wartosc jest
+            // jedynym uczciwym zuzyciem od restartu.
+            total
+        }
+    }
+
+    Tokens {
+        input: component(total.input, baseline.input),
+        output: component(total.output, baseline.output),
+        cached: component(total.cached, baseline.cached),
+    }
+}
+
+/// Buduje NOWY rekord dowodu z zamknietej listy pol. Nigdy nie zapisuje calej koperty App
+/// Servera: `turn/completed` niesie pelna liste `Turn.items`, a w niej moze zyc poprzedni
+/// `userMessage` razem z data URL obrazu, mimo ze osobne item-notification bylo odfiltrowane.
+fn curated_app_evidence(value: &Value) -> Option<Vec<u8>> {
+    let method = value.get("method").and_then(Value::as_str)?;
+    let record = match method {
+        "turn/started" | "turn/completed" => {
+            let status = value
+                .pointer("/params/turn/status")
+                .and_then(Value::as_str)
+                .filter(|status| {
+                    matches!(
+                        *status,
+                        "completed" | "failed" | "interrupted" | "inProgress"
+                    )
+                })
+                .unwrap_or("unknown");
+            let usage = app_usage(value).unwrap_or_default();
+            json!({
+                "method": method,
+                "status": status,
+                "usage": {
+                    "inputTokens": usage.input,
+                    "outputTokens": usage.output,
+                    "cachedInputTokens": usage.cached,
+                }
+            })
+        }
+        "thread/tokenUsage/updated" => {
+            let usage = app_usage(value)?;
+            json!({
+                "method": method,
+                "usage": {
+                    "inputTokens": usage.input,
+                    "outputTokens": usage.output,
+                    "cachedInputTokens": usage.cached,
+                }
+            })
+        }
+        "item/started" | "item/completed" => {
+            let item = curated_app_item(app_item(value)?)?;
+            json!({ "method": method, "item": item })
+        }
+        // `thread/started` potrafi niesc path i cala metadane watku; pozostale metody sa
+        // nieznane albo jawnie prywatne (`codex/event/user_message`).
+        _ => return None,
+    };
+
+    let mut bytes = serde_json::to_vec(&record).ok()?;
+    if bytes
+        .windows(b"data:image/".len())
+        .any(|window| window == b"data:image/")
+    {
+        return None;
+    }
+    bytes.push(b'\n');
+    Some(bytes)
+}
+
+fn curated_app_item(item: Item) -> Option<Value> {
+    match item {
+        Item::CommandExecution {
+            command,
+            exit_code,
+            aggregated_output,
+            ..
+        } => Some(json!({
+            "type": "commandExecution",
+            "command": command,
+            "exitCode": exit_code,
+            "aggregatedOutput": aggregated_output,
+        })),
+        Item::FileChange { changes } => Some(json!({
+            "type": "fileChange",
+            "changes": changes
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|change| change.path)
+                .collect::<Vec<_>>(),
+        })),
+        Item::AgentMessage { text } => Some(json!({
+            "type": "agentMessage",
+            "text": text,
+        })),
+        Item::Reasoning {} => Some(json!({ "type": "reasoning" })),
+        Item::WebSearch { query, .. } => Some(json!({
+            "type": "webSearch",
+            "query": query,
+        })),
+        Item::McpToolCall { server, tool, .. } => Some(json!({
+            "type": "mcpToolCall",
+            "server": server,
+            "tool": tool,
+        })),
+        Item::Unknown => None,
+    }
+}
+
+async fn write_app_line(stdin: &mut ChildStdin, body: &[u8]) -> anyhow::Result<()> {
+    stdin
+        .write_all(body)
+        .await
+        .map_err(|_| anyhow!("The Codex App Server stopped reading requests."))?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|_| anyhow!("The Codex App Server stopped reading requests."))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|_| anyhow!("The Codex App Server stopped reading requests."))
+}
+
+async fn handle_app_command(
+    command: Option<AppCommand>,
+    stdin: &mut ChildStdin,
+    pending: &mut HashMap<u64, PendingAppRequest>,
+    state: &mut AppServerState,
+    evidence_target: Option<&EvidenceTarget>,
+) -> bool {
+    match command {
+        Some(AppCommand::Request {
+            id,
+            method,
+            body,
+            begins_turn,
+            reply,
+        }) => {
+            if begins_turn {
+                state.begin_turn();
+            }
+            match write_app_line(stdin, &body).await {
+                Ok(()) => {
+                    pending.insert(id, PendingAppRequest { method, reply });
+                }
+                Err(error) => {
+                    mark_evidence_incomplete(evidence_target);
+                    if reply.send(Err(error)).is_err() {
+                        mark_evidence_incomplete(evidence_target);
+                    }
+                }
+            }
+            true
+        }
+        Some(AppCommand::Notify { body, reply }) => {
+            let result = write_app_line(stdin, &body).await;
+            if result.is_err() {
+                mark_evidence_incomplete(evidence_target);
+            }
+            if reply.send(result).is_err() {
+                mark_evidence_incomplete(evidence_target);
+            }
+            true
+        }
+        Some(AppCommand::SetThread { id, reply }) => {
+            state.set_thread(id);
+            if reply.send(()).is_err() {
+                mark_evidence_incomplete(evidence_target);
+            }
+            true
+        }
+        Some(AppCommand::MarkCancelled) => {
+            state.mark_cancelled();
+            true
+        }
+        Some(AppCommand::Close { reply }) => {
+            let result = stdin
+                .shutdown()
+                .await
+                .map_err(|_| anyhow!("The Codex App Server input could not be closed."));
+            if result.is_err() {
+                mark_evidence_incomplete(evidence_target);
+            }
+            if reply.send(result).is_err() {
+                mark_evidence_incomplete(evidence_target);
+            }
+            false
+        }
+        None => {
+            mark_evidence_incomplete(evidence_target);
+            let _ = stdin.shutdown().await;
+            false
+        }
+    }
+}
+
+struct AppServerInput<Output> {
+    stdin: ChildStdin,
+    stdout: Output,
+    commands: mpsc::Receiver<AppCommand>,
+    events: mpsc::Sender<DecodedEvent>,
+    outcomes: mpsc::Sender<Outcome>,
+    complaint: Arc<Mutex<String>>,
+    evidence: Option<EvidenceWriter>,
+    evidence_target: Option<EvidenceTarget>,
+}
+
+fn fail_pending_app_requests(
+    pending: HashMap<u64, PendingAppRequest>,
+    evidence_target: Option<&EvidenceTarget>,
+) {
+    for request in pending.into_values() {
+        if request
+            .reply
+            .send(Err(anyhow!(
+                "The Codex App Server stopped before its {} request completed.",
+                request.method
+            )))
+            .is_err()
+        {
+            mark_evidence_incomplete(evidence_target);
+        }
+    }
+}
+
+async fn app_server_actor<Output>(input: AppServerInput<Output>)
+where
+    Output: AsyncRead + Unpin,
+{
+    let AppServerInput {
+        mut stdin,
+        stdout,
+        mut commands,
+        events,
+        outcomes,
+        complaint,
+        mut evidence,
+        evidence_target,
+    } = input;
+    let mut reader = BufReader::new(stdout);
+    let mut buffer = Vec::with_capacity(8 * 1024);
+    let mut pending: HashMap<u64, PendingAppRequest> = HashMap::new();
+    let mut state = AppServerState::new();
+    let mut commands_open = true;
+
+    loop {
+        buffer.clear();
+        tokio::select! {
+            command = commands.recv(), if commands_open => {
+                commands_open =
+                    handle_app_command(
+                        command,
+                        &mut stdin,
+                        &mut pending,
+                        &mut state,
+                        evidence_target.as_ref(),
+                    ).await;
+            }
+            read = reader.read_until(b'\n', &mut buffer) => {
+                match read {
+                    Ok(0) => break,
+                    Err(_) => {
+                        mark_evidence_incomplete(evidence_target.as_ref());
+                        tracing::debug!("the Codex App Server output stream broke off");
+                        break;
+                    }
+                    Ok(_) => {}
+                }
+
+                let parsed = match serde_json::from_slice::<Value>(&buffer) {
+                    Ok(parsed) => parsed,
+                    Err(_error) => {
+                        state.decoder.dropped += 1;
+                        tracing::debug!(bytes = buffer.len(), "an App Server line could not be read; dropping it");
+                        continue;
+                    }
+                };
+
+                if let Some(id) = parsed.get("id").and_then(Value::as_u64) {
+                    if let Some(request) = pending.remove(&id) {
+                        let answer = if parsed.get("error").is_some_and(|error| !error.is_null()) {
+                            Err(anyhow!("The Codex App Server rejected its {} request.", request.method))
+                        } else {
+                            Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
+                        };
+                        if request.reply.send(answer).is_err() {
+                            mark_evidence_incomplete(evidence_target.as_ref());
+                        }
+                    } else {
+                        state.decoder.dropped += 1;
+                    }
+                    continue;
+                }
+
+                if let Some(record) = curated_app_evidence(&parsed)
+                    && let Some(writer) = evidence.as_mut()
+                    && let Err(_error) = writer.write(&record).await
+                {
+                    tracing::debug!("the curated App Server evidence could not be appended");
+                }
+
+                let began = state.began;
+                for event in state.notification(&parsed) {
+                    emit_app(
+                        event,
+                        began,
+                        &events,
+                        &outcomes,
+                        evidence_target.as_ref(),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    fail_pending_app_requests(pending, evidence_target.as_ref());
+    close_evidence(evidence).await;
+    let said = complaint
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let began = state.began;
+    for event in state.end_of_stream(&said) {
+        emit_app(event, began, &events, &outcomes, evidence_target.as_ref()).await;
+    }
+}
+
+async fn emit_app(
+    mut event: AgentEvent,
+    began: Instant,
+    events: &mpsc::Sender<DecodedEvent>,
+    outcomes: &mpsc::Sender<Outcome>,
+    evidence_target: Option<&EvidenceTarget>,
+) {
+    if let AgentEvent::Finished(outcome) = &mut event {
+        if outcome.took.is_zero() {
+            outcome.took = began.elapsed();
+        }
+        if outcomes.send(outcome.clone()).await.is_err() {
+            mark_evidence_incomplete(evidence_target);
+        }
+    }
+    if events.send(event.into()).await.is_err() {
+        mark_evidence_incomplete(evidence_target);
+    }
+}
+
+fn app_server_sandbox(policy: Policy) -> &'static str {
+    match policy {
+        Policy::ReadOnly => "readOnly",
+        Policy::EditInFolder => "workspaceWrite",
+        Policy::Unrestricted => "dangerFullAccess",
+    }
+}
+
+fn app_turn_input(text: &str, images: &ValidatedImages) -> anyhow::Result<Vec<Value>> {
+    let mut input = Vec::with_capacity(images.as_slice().len() + usize::from(!text.is_empty()));
+    if !text.is_empty() {
+        input.push(json!({ "type": "text", "text": text }));
+    }
+    for image in images.as_slice() {
+        // Data URL zyje tylko w anonimowej pamieci tego requestu i leci jednym stdinem. Nigdy
+        // nie ma sciezki pliku, argv ani surowego tee App Servera (niezmiennik 9).
+        let url = format!(
+            "data:{};base64,{}",
+            image.mime().as_str(),
+            BASE64_STANDARD.encode(image.bytes())
+        );
+        input.push(json!({ "type": "image", "url": url }));
+    }
+    if input.is_empty() {
+        anyhow::bail!("Write a message or attach an image before starting the agent.");
+    }
+    Ok(input)
+}
+
+fn ephemeral_thread(result: &Value) -> anyhow::Result<String> {
+    let id = result
+        .pointer("/thread/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("The Codex App Server opened a thread without an id."))?;
+    if result.pointer("/thread/ephemeral").and_then(Value::as_bool) != Some(true)
+        || result.pointer("/thread/path") != Some(&Value::Null)
+    {
+        anyhow::bail!("The Codex App Server did not confirm an ephemeral thread.");
+    }
+    Ok(id)
+}
+
+fn started_turn(result: &Value) -> anyhow::Result<String> {
+    result
+        .pointer("/turn/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("The Codex App Server started a turn without an id."))
+}
+
+/// Jeden proces App Servera na cala rozmowe Lead. Pola tekstowe sa identyfikatorami vendora,
+/// wiec reczny Debug pokazuje wylacznie stan transportu.
+struct CodexConversationHandle {
+    process: Option<Supervised>,
+    client: AppClient,
+    evidence: Option<EvidenceTarget>,
+    session_id: String,
+    active_turn: Option<String>,
+    in_flight: bool,
+    outcomes: mpsc::Receiver<Outcome>,
+    reader_task: Option<JoinHandle<()>>,
+    stderr_task: Option<JoinHandle<()>>,
+}
+
+impl fmt::Debug for CodexConversationHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CodexConversationHandle")
+            .field("has_process", &self.process.is_some())
+            .field("has_session", &!self.session_id.is_empty())
+            .field("has_active_turn", &self.active_turn.is_some())
+            .field("in_flight", &self.in_flight)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CodexConversationHandle {
+    async fn handshake(&mut self, spec: RunSpec, images: ValidatedImages) -> anyhow::Result<()> {
+        if spec.resume.is_some() {
+            anyhow::bail!("An ephemeral Codex Lead conversation cannot resume a persisted thread.");
+        }
+
+        let _initialized = self
+            .client
+            .request(
+                "initialize",
+                json!({
+                    "clientInfo": {
+                        "name": "loadout",
+                        "title": "Loadout",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }
+                }),
+                false,
+            )
+            .await?;
+        self.client.notify("initialized", json!({})).await?;
+
+        let mut params = serde_json::Map::new();
+        params.insert("ephemeral".to_owned(), Value::Bool(true));
+        params.insert(
+            "approvalPolicy".to_owned(),
+            Value::String("never".to_owned()),
+        );
+        params.insert(
+            "sandbox".to_owned(),
+            Value::String(app_server_sandbox(spec.policy).to_owned()),
+        );
+        if let Some(model) = spec.model {
+            params.insert("model".to_owned(), Value::String(model));
+        }
+        if let Some(instructions) = spec.system_append {
+            params.insert(
+                "developerInstructions".to_owned(),
+                Value::String(instructions),
+            );
+        }
+        // `cwd` celowo nie ma w JSON-ie. `command.current_dir` daje agentowi folder, a jawne
+        // pole cwd w App Serverze 0.148 potrafi zapisac zaufanie projektu pod `.codex`.
+        let result = self
+            .client
+            .request("thread/start", Value::Object(params), false)
+            .await?;
+        self.session_id = ephemeral_thread(&result)?;
+        self.client.set_thread(self.session_id.clone()).await?;
+        self.start_turn(spec.prompt, images).await
+    }
+
+    async fn start_turn(&mut self, text: String, images: ValidatedImages) -> anyhow::Result<()> {
+        if self.in_flight {
+            anyhow::bail!("Wait for the current Codex turn before sending another message.");
+        }
+        let input = app_turn_input(&text, &images)?;
+        let result = match self
+            .client
+            .request(
+                "turn/start",
+                json!({
+                    "threadId": self.session_id,
+                    "input": input,
+                }),
+                true,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.force_stop().await;
+                return Err(error);
+            }
+        };
+        let turn = match started_turn(&result) {
+            Ok(turn) => turn,
+            Err(error) => {
+                // Bez id nie da sie ani przerwac, ani odroznic wyniku tej tury od kolejnej.
+                // To jest fatalny blad transportu, nie zaproszenie do ponownego send na tym
+                // samym kanale z potencjalnie starym outcome.
+                let _ = self.force_stop().await;
+                return Err(error);
+            }
+        };
+        self.active_turn = Some(turn);
+        self.in_flight = true;
+        Ok(())
+    }
+
+    async fn finish_tasks(&mut self) {
+        if let Some(reader) = self.reader_task.take()
+            && reader.await.is_err()
+        {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            tracing::warn!("the Codex App Server evidence reader did not join cleanly");
+        }
+        if let Some(stderr) = self.stderr_task.take()
+            && stderr.await.is_err()
+        {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            tracing::warn!("the Codex App Server complaint reader did not join cleanly");
+        }
+    }
+
+    async fn cleanup_after_proof(&mut self, proof: &GroupProof) {
+        if proof_allows_cleanup(proof) {
+            self.finish_tasks().await;
+            self.process = None;
+        }
+    }
+
+    async fn force_stop(&mut self) -> GroupProof {
+        let proof = match self.process.as_mut() {
+            Some(process) => process.stop(DEFAULT_GRACE).await,
+            None => GroupProof::Dead { status: None },
+        };
+        self.cleanup_after_proof(&proof).await;
+        proof
+    }
+
+    async fn force_stop_after_failed_start(&mut self) {
+        loop {
+            let proof = self.force_stop().await;
+            if proof_allows_cleanup(&proof) {
+                return;
+            }
+            tracing::error!(
+                "the Codex App Server is still alive after a failed handshake; Loadout retains \
+                 its handle and will retry"
+            );
+            tokio::time::sleep(START_CLEANUP_RETRY).await;
+        }
+    }
+}
+
+impl CodexDriver {
+    async fn start_app_conversation(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<CodexConversationHandle> {
+        let evidence = match &self.evidence {
+            Some(target) => Some(target.open().await?),
+            None => None,
+        };
+        let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
+
+        let mut command = Command::new(&self.binary);
+        command.current_dir(&spec.cwd);
+        command.args(["app-server", "--listen", "stdio://"]);
+        let mut process = match supervisor::spawn(command, StdinPlan::Keep(String::new())) {
+            Ok(process) => process,
+            Err(error) => {
+                mark_evidence_incomplete(self.evidence.as_ref());
+                return Err(error.into());
+            }
+        };
+
+        let Some(stdout) = process.stdout() else {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            close_evidence(stdout_evidence).await;
+            close_evidence(stderr_evidence).await;
+            let _proof = stop_startup_process(&mut process).await;
+            anyhow::bail!("The Codex App Server started without an output stream.");
+        };
+        let Some(stdin) = process.stdin().await else {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            close_evidence(stdout_evidence).await;
+            close_evidence(stderr_evidence).await;
+            let _proof = stop_startup_process(&mut process).await;
+            anyhow::bail!("The Codex App Server started without an input stream.");
+        };
+
+        let complaint = Arc::new(Mutex::new(String::new()));
+        let stderr_task = if let Some(stderr) = process.stderr() {
+            tokio::spawn(drain_complaints(
+                stderr,
+                Arc::clone(&complaint),
+                stderr_evidence,
+                self.evidence.clone(),
+            ))
+        } else {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            tokio::spawn(close_evidence(stderr_evidence))
+        };
+        let (commands_tx, commands_rx) = mpsc::channel(APP_COMMAND_CAPACITY);
+        let (outcomes_tx, outcomes_rx) = mpsc::channel(APP_OUTCOME_CAPACITY);
+        let reader_task = tokio::spawn(app_server_actor(AppServerInput {
+            stdin,
+            stdout,
+            commands: commands_rx,
+            events: tx,
+            outcomes: outcomes_tx,
+            complaint,
+            evidence: stdout_evidence,
+            evidence_target: self.evidence.clone(),
+        }));
+        let mut handle = CodexConversationHandle {
+            process: Some(process),
+            client: AppClient::new(commands_tx, self.evidence.clone()),
+            evidence: self.evidence.clone(),
+            session_id: String::new(),
+            active_turn: None,
+            in_flight: false,
+            outcomes: outcomes_rx,
+            reader_task: Some(reader_task),
+            stderr_task: Some(stderr_task),
+        };
+
+        if let Err(error) = handle.handshake(spec, images).await {
+            mark_evidence_incomplete(handle.evidence.as_ref());
+            handle.force_stop_after_failed_start().await;
+            return Err(error);
+        }
+        Ok(handle)
+    }
+}
+
+#[async_trait]
+impl AgentHandle for CodexConversationHandle {
+    fn session(&self) -> SessionRef {
+        SessionRef {
+            vendor: VENDOR,
+            id: self.session_id.clone(),
+        }
+    }
+
+    fn group(&self) -> Option<GroupId> {
+        self.process.as_ref().map(Supervised::group)
+    }
+
+    async fn send(&mut self, text: String) -> anyhow::Result<()> {
+        self.start_turn(text, ValidatedImages::default()).await
+    }
+
+    async fn send_with_images(
+        &mut self,
+        text: String,
+        images: ValidatedImages,
+    ) -> anyhow::Result<()> {
+        self.start_turn(text, images).await
+    }
+
+    async fn wait(&mut self) -> anyhow::Result<Outcome> {
+        if !self.in_flight {
+            anyhow::bail!("This Codex conversation has no turn to wait for.");
+        }
+        let Some(outcome) = self.outcomes.recv().await else {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            return Err(anyhow!("The Codex App Server ended without a turn result."));
+        };
+        self.in_flight = false;
+        self.active_turn = None;
+        Ok(outcome)
+    }
+
+    async fn cancel(&mut self) -> GroupProof {
+        self.client.mark_cancelled().await;
+        if let Some(turn) = self.active_turn.clone() {
+            let interrupt = self.client.request(
+                "turn/interrupt",
+                json!({
+                    "threadId": self.session_id,
+                    "turnId": turn,
+                }),
+                false,
+            );
+            // Odpowiedz JSON-RPC nie jest dowodem smierci. Okno daje vendorowi szanse domknac
+            // ture, po czym zawsze przechodzimy przez supervisor i jego GroupProof.
+            let _ = timeout(APP_INTERRUPT_WINDOW, interrupt).await;
+        }
+        let proof = self.force_stop().await;
+        if proof_allows_cleanup(&proof) {
+            self.in_flight = false;
+            self.active_turn = None;
+        }
+        proof
+    }
+
+    async fn close(&mut self) -> anyhow::Result<Option<i32>> {
+        if self.process.is_none() {
+            return Ok(None);
+        }
+        if let Err(error) = self.client.close().await {
+            let _ = self.force_stop().await;
+            return Err(error);
+        }
+        let waited = match self.process.as_mut() {
+            Some(process) => process.wait().await,
+            None => return Ok(None),
+        };
+        let status = match waited {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.force_stop().await;
+                return Err(error.into());
+            }
+        };
+        self.finish_tasks().await;
+        self.process = None;
+        Ok(status.code())
     }
 }
 
@@ -328,18 +1536,23 @@ fn first_turn_argv(spec: &RunSpec) -> Vec<String> {
 
 /// Linia tury wznawiającej [T1 §8.4].
 ///
+/// `-C` stoi PRZED `resume`, bo jest opcją rodzica `codex exec`, nie podkomendy `resume`.
+/// Zmierzone 2026-08-21 na codex-cli 0.148.0: `exec resume <id> ... -C <cwd> -` kończy się
+/// natychmiast `unexpected argument '-C'`, zanim prompt dotrze do rozmowy. Proces mimo to daje
+/// się uruchomić, więc z okna wyglądało to jak `Didn't work · 0 turns · 0.0s`.
+///
 /// Czego tu **nie ma i nie ma prawa być**: `-m` i `-s` należą do pierwszej tury (rozmowa ma już
 /// swój model i swoją piaskownicę), a `--skip-git-repo-check` razem z nimi — wznawiana rozmowa
 /// przeszła tę bramkę raz.
 fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
     vec![
         "exec".to_owned(),
+        "-C".to_owned(),
+        cwd.display().to_string(),
         "resume".to_owned(),
         thread.to_owned(),
         "--json".to_owned(),
         "--ignore-user-config".to_owned(),
-        "-C".to_owned(),
-        cwd.display().to_string(),
         "-".to_owned(),
     ]
 }
@@ -459,12 +1672,12 @@ enum CodexLine {
 /// poza zakresem — cennik w kodzie byłby trzecim miejscem, w którym trzeba go aktualizować.
 #[derive(Debug, Deserialize)]
 struct Usage {
-    #[serde(rename = "input_tokens")]
+    #[serde(rename = "input_tokens", alias = "inputTokens")]
     input: Option<u64>,
     /// Ta liczba, i tylko ta, mówi, czy izolacja kontekstu w ogóle działa [T1 §3.3].
-    #[serde(rename = "cached_input_tokens")]
+    #[serde(rename = "cached_input_tokens", alias = "cachedInputTokens")]
     cached: Option<u64>,
-    #[serde(rename = "output_tokens")]
+    #[serde(rename = "output_tokens", alias = "outputTokens")]
     output: Option<u64>,
 }
 
@@ -489,28 +1702,35 @@ struct WireError {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Item {
     /// Komenda w powłoce: `command`, `aggregated_output`, `exit_code`.
+    #[serde(alias = "commandExecution")]
     CommandExecution {
         id: Option<String>,
         command: Option<String>,
+        #[serde(alias = "exitCode")]
         exit_code: Option<i32>,
+        #[serde(alias = "aggregatedOutput")]
         aggregated_output: Option<String>,
     },
     /// Zmiana plików — **lista**, nie jeden plik.
+    #[serde(alias = "fileChange")]
     FileChange {
         #[serde(default, deserialize_with = "lenient")]
         changes: Option<Vec<Change>>,
     },
     /// Proza agenta, dosłownie.
+    #[serde(alias = "agentMessage")]
     AgentMessage { text: Option<String> },
     /// Agent myśli. Treści **nie czytamy**: myślenie nie wchodzi do historii
     /// [`docs/ARCHITECTURE.md` §6, reguła 5].
     Reasoning {},
     /// Szukanie w sieci.
+    #[serde(alias = "webSearch")]
     WebSearch {
         id: Option<String>,
         query: Option<String>,
     },
     /// Czynność w podłączonej aplikacji.
+    #[serde(alias = "mcpToolCall")]
     McpToolCall {
         id: Option<String>,
         server: Option<String>,
@@ -590,14 +1810,13 @@ impl CodexDecoder {
 
         let parsed = match serde_json::from_str::<CodexLine>(line) {
             Ok(parsed) => parsed,
-            Err(error) => {
+            Err(_error) => {
                 self.dropped += 1;
                 // Treści linii tu nie ma, i to jest świadome: surowy strumień leży już na dysku
                 // (tee z T-05), a dziennik aplikacji czyta się w zgłoszeniu błędu — nie ma
                 // powodu, żeby druga kopia cudzego tekstu jechała jeszcze tędy.
                 tracing::debug!(
                     bytes = line.len(),
-                    %error,
                     "a line of the agent stream could not be read; dropping it"
                 );
                 return Vec::new();
@@ -741,6 +1960,16 @@ impl CodexDecoder {
 
     /// `turn.completed` → koniec tury, która się udała.
     fn finish(&mut self, usage: Option<&Usage>) -> AgentEvent {
+        self.finish_tokens(Tokens {
+            input: usage.and_then(|usage| usage.input).unwrap_or_default(),
+            output: usage.and_then(|usage| usage.output).unwrap_or_default(),
+            cached: usage.and_then(|usage| usage.cached).unwrap_or_default(),
+        })
+    }
+
+    /// Wspolny koniec tury dla `exec` i App Servera. Ten drugi odejmuje kumulatywny licznik
+    /// przed wywolaniem, dzieki czemu ekran nie dolicza poprzednich tur po raz drugi.
+    fn finish_tokens(&mut self, tokens: Tokens) -> AgentEvent {
         self.ended = true;
         AgentEvent::Finished(Outcome {
             ok: true,
@@ -750,11 +1979,7 @@ impl CodexDecoder {
             // wypisze na ekranie `$0.00` i nauczy człowieka, że Codex jest darmowy — po czym ta
             // liczba zsumuje się w rachunek, którego nikt nie zamawiał.
             cost_usd: None,
-            tokens: Tokens {
-                input: usage.and_then(|usage| usage.input).unwrap_or_default(),
-                output: usage.and_then(|usage| usage.output).unwrap_or_default(),
-                cached: usage.and_then(|usage| usage.cached).unwrap_or_default(),
-            },
+            tokens,
             // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
             // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
             turns: 1,
@@ -836,9 +2061,9 @@ impl CodexDecoder {
     /// a ta ścieżka biegnie na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Zdanie niesie
     /// więc pierwszą linię skargi — i to ona odpowiada na „dlaczego" w praktycznie każdym realnym
     /// przypadku.
-    pub fn end_of_stream(&mut self, cancelled: bool, complaint: &str) -> Option<AgentEvent> {
+    pub fn end_of_stream(&mut self, cancelled: bool, complaint: &str) -> Vec<AgentEvent> {
         if self.ended {
-            return None;
+            return Vec::new();
         }
         self.ended = true;
 
@@ -857,7 +2082,16 @@ impl CodexDecoder {
             FinishReason::Failed(why)
         };
 
-        Some(AgentEvent::Finished(Outcome {
+        /* 2026-08-21 — `FinishReason` NIE JEDZIE DO WIERSZA `Done`. Zmierzone na żywym
+         * `codex exec resume`: parser odrzucił źle położone `-C`, a człowiek zobaczył wyłącznie
+         * `Didn't work · 0 turns · 0.0s`, choć pełna diagnoza była już tutaj. `Notice` przechodzi
+         * przez jedyną kurację do widocznego `Line::Problem`; anulowanie pozostaje wartością i
+         * nie udaje awarii (niezmienniki 7, 15 i 29). */
+        let mut events = Vec::with_capacity(2);
+        if let FinishReason::Failed(why) = &reason {
+            events.push(AgentEvent::Notice { text: why.clone() });
+        }
+        events.push(AgentEvent::Finished(Outcome {
             ok: false,
             reason,
             text: self.said.clone(),
@@ -866,7 +2100,8 @@ impl CodexDecoder {
             turns: 0,
             took: Duration::ZERO,
             session: self.session_ref(),
-        }))
+        }));
+        events
     }
 }
 
@@ -931,22 +2166,47 @@ fn app_label(server: Option<&str>, tool: Option<&str>) -> String {
 ///
 /// Bez `?` i bez `unwrap` (niezmiennik 5): błąd odczytu skargi nie ma prawa zabrać tury.
 /// Zamek brany i oddany w jednym wyrażeniu, nigdy przez `await` (niezmiennik 8).
-async fn drain_complaints(stderr: ChildStderr, into: Arc<Mutex<String>>) {
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
+async fn drain_complaints(
+    mut stderr: ChildStderr,
+    into: Arc<Mutex<String>>,
+    mut evidence: Option<EvidenceWriter>,
+    evidence_target: Option<EvidenceTarget>,
+) {
+    let mut buffer = vec![0_u8; 8 * 1024];
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        let read = match stderr.read(&mut buffer).await {
+            Ok(0) => break,
+            Err(_) => {
+                mark_evidence_incomplete(evidence_target.as_ref());
+                tracing::debug!("the agent complaint stream broke off");
+                break;
+            }
+            Ok(read) => read,
+        };
+        let chunk = &buffer[..read];
+        if let Some(writer) = evidence.as_mut()
+            && let Err(_error) = writer.write(chunk).await
+        {
+            tracing::debug!("the private stderr evidence could not be appended");
         }
         let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
         if held.len() < COMPLAINT_KEPT {
-            held.push_str(&line);
+            let left = COMPLAINT_KEPT - held.len();
+            let lossy = String::from_utf8_lossy(chunk);
+            held.extend(lossy.chars().take(left));
         }
         // Bez `break` po przekroczeniu limitu: pętla musi dalej OPRÓŻNIAĆ potok, nawet gdy nic
         // już nie zapamiętuje. Wyjście tutaj przywróciłoby dokładnie tę blokadę, przed którą
         // to zadanie stoi.
+    }
+    close_evidence(evidence).await;
+}
+
+async fn close_evidence(evidence: Option<EvidenceWriter>) {
+    if let Some(writer) = evidence
+        && let Err(_error) = writer.close().await
+    {
+        tracing::debug!("the private evidence stream could not be flushed");
     }
 }
 
@@ -959,15 +2219,19 @@ async fn drain_complaints(stderr: ChildStderr, into: Arc<Mutex<String>>) {
 ///
 /// Zdarzenie końca pada **zawsze**, także wtedy, gdy tura nie powiedziała ani słowa: krok bez
 /// niego wisiałby w `running` do końca biegu.
-async fn pump(
-    stdout: ChildStdout,
-    events: mpsc::Sender<DecodedEvent>,
-    outcome: oneshot::Sender<Outcome>,
-    threads: Arc<Mutex<Vec<String>>>,
-    number: u64,
-    cancelled: Arc<AtomicU64>,
-    complaint: Arc<Mutex<String>>,
-) {
+async fn pump(input: PumpInput) {
+    let PumpInput {
+        stdout,
+        events,
+        outcome,
+        threads,
+        number,
+        cancelled,
+        complaint,
+        mut evidence,
+        evidence_target,
+        drained,
+    } = input;
     // Zegar startuje TU, a nie w dekoderze: Codex nie mówi, ile trwała tura, więc jedyna
     // uczciwa liczba jest tą, którą zmierzyliśmy sami (2026-08-19). Zero w tym polu wypisałoby
     // na ekranie „0s" przy każdym kroku — to ta sama klasa kłamstwa co `$0.00` przy koszcie.
@@ -985,10 +2249,19 @@ async fn pump(
         match reader.read_until(b'\n', &mut buffer).await {
             Ok(0) => break,
             Ok(_) => {}
-            Err(error) => {
-                tracing::debug!(%error, "the agent output stream broke off");
+            Err(_) => {
+                mark_evidence_incomplete(evidence_target.as_ref());
+                tracing::debug!("the agent output stream broke off");
                 break;
             }
+        }
+
+        // Workflow zachowuje surowy strumien bajt w bajt, przed dekodowaniem. Nieznany event
+        // nadal jest dowodem, mimo ze czysty widok zgodnie z niezmiennikiem 5 go porzuca.
+        if let Some(writer) = evidence.as_mut()
+            && let Err(_error) = writer.write(&buffer).await
+        {
+            tracing::debug!("the private stdout evidence could not be appended");
         }
 
         // `from_utf8_lossy`, żeby KAŻDA linia doszła do dekodera: uszkodzona nie sparsuje się
@@ -1000,7 +2273,7 @@ async fn pump(
         remember_thread(&decoder, &mut seen, &threads);
 
         for event in produced {
-            emit(event, began, &events, &mut told).await;
+            emit(event, began, &events, &mut told, evidence_target.as_ref()).await;
         }
     }
 
@@ -1012,8 +2285,8 @@ async fn pump(
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
     let stopped_by_a_person = cancelled.load(Ordering::SeqCst) == number;
-    if let Some(event) = decoder.end_of_stream(stopped_by_a_person, &said) {
-        emit(event, began, &events, &mut told).await;
+    for event in decoder.end_of_stream(stopped_by_a_person, &said) {
+        emit(event, began, &events, &mut told, evidence_target.as_ref()).await;
     }
 
     if decoder.dropped() > 0 {
@@ -1022,6 +2295,11 @@ async fn pump(
             turn = number,
             "lines of the agent stream produced nothing and were let go"
         );
+    }
+
+    close_evidence(evidence).await;
+    if drained.send(()).is_err() {
+        mark_evidence_incomplete(evidence_target.as_ref());
     }
 
     // Nadajniki giną RAZEM Z TĄ PĘTLĄ i to jest ich druga robota: zamknięty kanał jest jedynym
@@ -1060,14 +2338,10 @@ fn remember_thread(
     held.push(id.to_owned());
     drop(held);
 
-    if let Some(identity) = identity
-        && identity != id
-    {
+    if identity.is_some_and(|identity| identity != id) {
         tracing::info!(
-            session = %identity,
-            handed_back = %id,
-            "the agent answered with a different thread id than the one this session is known by; \
-             the session keeps its first id and the next turn resumes the newest"
+            "the agent answered with a different thread id than the one this session is known \
+             by; the session keeps its first id and the next turn resumes the newest"
         );
     }
 }
@@ -1081,6 +2355,7 @@ async fn emit(
     began: Instant,
     events: &mpsc::Sender<DecodedEvent>,
     told: &mut Option<oneshot::Sender<Outcome>>,
+    evidence_target: Option<&EvidenceTarget>,
 ) {
     let mut event = event;
     if let AgentEvent::Finished(outcome) = &mut event {
@@ -1091,8 +2366,10 @@ async fn emit(
         if outcome.took.is_zero() {
             outcome.took = began.elapsed();
         }
-        if let Some(tell) = told.take() {
-            let _ = tell.send(outcome.clone());
+        if let Some(tell) = told.take()
+            && tell.send(outcome.clone()).is_err()
+        {
+            mark_evidence_incomplete(evidence_target);
         }
     }
     // Fakt o narzędziu jedzie tu jako `None` i to jest ZGŁOSZONA dziura, nie przeoczenie:
@@ -1100,7 +2377,9 @@ async fn emit(
     // poza blokiem OWNS tego zadania. Skutek jest wąski i nazwany: transkrypt kroku Codeksa
     // pokaże prozę agenta, ale nie wiersze `read`, `edit` ani `ran` — dokładnie ta sama awaria,
     // którą u Claude'a zmierzono 2026-08-18 i naprawiono przez [`DecodedEvent`].
-    let _ = events.send(event.into()).await;
+    if events.send(event.into()).await.is_err() {
+        mark_evidence_incomplete(evidence_target);
+    }
 }
 
 /// Pierwsza niepusta linia, jaką powiedziała binarka. Tyle wystarczy na pytanie o wersję.
@@ -1120,7 +2399,6 @@ async fn first_answer(stdout: ChildStdout) -> Option<String> {
 /// To jest cała różnica wobec `ClaudeHandle`, w którym proces jest jeden na całą sesję. Tura
 /// druga i każda następna to `codex exec resume <thread_id>`, czyli świeży proces, zimny start
 /// i odbudowa cache'u [T1 §8.1] — świadomy koszt, nie brak.
-#[derive(Debug)]
 pub struct CodexHandle {
     /// Co uruchamiamy w kolejnych turach. Kopia z [`CodexDriver`], bo uchwyt przeżywa sterownik.
     binary: PathBuf,
@@ -1129,6 +2407,8 @@ pub struct CodexHandle {
     /// Kanał zdarzeń tej sesji. **Wszystkie** tury sypią w ten sam, bo z zewnątrz to jedna
     /// rozmowa — proces na turę jest szczegółem, który trait ma wchłonąć.
     events: mpsc::Sender<DecodedEvent>,
+    /// Ten sam append-only target otwierany osobno dla kazdego procesu `exec resume`.
+    evidence: Option<EvidenceTarget>,
     /// Każdy `thread_id`, jaki ta sesja dostała, w kolejności przybycia. Pierwszy jest
     /// tożsamością, ostatni jest celem wznowienia.
     ///
@@ -1161,6 +2441,35 @@ pub struct CodexHandle {
     /// `oneshot`, a nie kanał: tura ma dokładnie jeden wynik, a nadajnik ginący razem z pętlą
     /// czytającą zamienia „pętla padła" w `Err` zamiast w czekanie bez końca.
     outcome: Option<oneshot::Receiver<Outcome>>,
+    /// EOF stdoutu i zamkniecie jego writer-a. Nigdy nie czekamy na to przed zakonczeniem
+    /// procesu, bo potok moze miec jeszcze dane do oproznienia.
+    drained: Option<oneshot::Receiver<()>>,
+    /// Osobny czytelnik stderr; `JoinHandle` jest jedynym dowodem, ze bajty zostaly doslane i
+    /// zsynchronizowane przed oddaniem wyniku wyzej.
+    stderr_task: Option<JoinHandle<()>>,
+}
+
+impl fmt::Debug for CodexHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let thread_count = self
+            .threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        formatter
+            .debug_struct("CodexHandle")
+            .field(
+                "uses_custom_binary",
+                &(self.binary != Path::new(DEFAULT_BINARY)),
+            )
+            .field("workspace", &"<private>")
+            .field("thread_count", &thread_count)
+            .field("number", &self.number)
+            .field("has_process", &self.process.is_some())
+            .field("has_outcome", &self.outcome.is_some())
+            .field("has_evidence", &self.evidence.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CodexHandle {
@@ -1191,6 +2500,22 @@ impl CodexHandle {
             .unwrap_or_else(PoisonError::into_inner)
             .last()
             .cloned()
+    }
+
+    /// Czeka, az oba czytniki oproznia potoki i zamkna append-only dowody.
+    async fn drain_current(&mut self) {
+        if let Some(drained) = self.drained.take()
+            && drained.await.is_err()
+        {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            tracing::warn!("the Codex stdout evidence reader did not finish cleanly");
+        }
+        if let Some(stderr) = self.stderr_task.take()
+            && stderr.await.is_err()
+        {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            tracing::warn!("the Codex stderr evidence reader did not join cleanly");
+        }
     }
 }
 
@@ -1257,6 +2582,13 @@ impl AgentHandle for CodexHandle {
         if let Some(previous) = self.process.as_mut() {
             let _reaped = previous.wait().await;
         }
+        self.drain_current().await;
+
+        let evidence = match &self.evidence {
+            Some(target) => Some(target.open().await?),
+            None => None,
+        };
+        let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
 
         self.number += 1;
         let turn = Turn {
@@ -1268,13 +2600,22 @@ impl AgentHandle for CodexHandle {
             threads: Arc::clone(&self.threads),
             number: self.number,
             cancelled: Arc::clone(&self.cancelled),
+            stdout_evidence,
+            stderr_evidence,
+            evidence_target: self.evidence.clone(),
         };
-        let (process, outcome) = turn.start()?;
+        let started = turn.start();
+        if started.is_err() {
+            mark_evidence_incomplete(self.evidence.as_ref());
+        }
+        let (process, outcome, drained, stderr_task) = started?;
 
         // Podmiana, nie dopisanie: stary uchwyt ginie tutaj, a jego `Drop` jest ostatnią linią
         // obrony przed wyciekiem grupy.
         self.process = Some(process);
         self.outcome = Some(outcome);
+        self.drained = Some(drained);
+        self.stderr_task = Some(stderr_task);
         Ok(())
     }
 
@@ -1283,14 +2624,16 @@ impl AgentHandle for CodexHandle {
         let told = self.outcome.take().ok_or_else(|| {
             anyhow!("this session has no turn in flight, so there is no outcome to wait for")
         })?;
-        let outcome = told
-            .await
-            .map_err(|_| anyhow!("the turn ended without ever saying how it went"))?;
+        let Ok(outcome) = told.await else {
+            mark_evidence_incomplete(self.evidence.as_ref());
+            return Err(anyhow!("the turn ended without ever saying how it went"));
+        };
 
         // Zebranie procesu MUSI paść na każdej ścieżce terminalnej — powód przy `send`.
         if let Some(process) = self.process.as_mut() {
             let _reaped = process.wait().await;
         }
+        self.drain_current().await;
         Ok(outcome)
     }
 
@@ -1313,7 +2656,11 @@ impl AgentHandle for CodexHandle {
             // nic. Statusu nie ma, bo nie było czyjego odebrać.
             return GroupProof::Dead { status: None };
         };
-        process.stop(DEFAULT_GRACE).await
+        let proof = process.stop(DEFAULT_GRACE).await;
+        if proof_allows_cleanup(&proof) {
+            self.drain_current().await;
+        }
+        proof
     }
 
     /// Koniec sesji: czeka, aż bieżąca tura wyjdzie **sama**.
@@ -1326,6 +2673,7 @@ impl AgentHandle for CodexHandle {
             return Ok(None);
         };
         let status = process.wait().await?;
+        self.drain_current().await;
         // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
         // różnica, którą mierzy dowód z `cancel()`.
         Ok(status.code())
@@ -1354,10 +2702,8 @@ impl AgentDriver for CodexDriver {
         // wejściu oszczędza czekanie na EOF, którego nikt by nie wysłał.
         let mut process = match supervisor::spawn(command, StdinPlan::Null) {
             Ok(process) => process,
-            Err(error) => {
+            Err(_error) => {
                 tracing::debug!(
-                    binary = %self.binary.display(),
-                    %error,
                     "the agent CLI could not be started, so the setup screen has its answer"
                 );
                 return Ok(Probe {
@@ -1389,5 +2735,433 @@ impl AgentDriver for CodexDriver {
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         Ok(Box::new(self.start_session(spec, tx).await?))
+    }
+
+    async fn start_conversation(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        Ok(Box::new(
+            self.start_app_conversation(spec, images, tx).await?,
+        ))
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        let mut configured = self.clone();
+        configured.evidence = Some(target);
+        Some(Arc::new(configured))
+    }
+}
+
+#[cfg(test)]
+mod stop_proof_tests {
+    use std::io::{self, Write};
+    use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+    use tokio::io::{AsyncRead, ReadBuf};
+    use tokio::process::Command;
+    use tokio::sync::{mpsc, oneshot};
+
+    use super::{
+        AgentHandle, AppClient, AppServerInput, AppServerState, CodexConversationHandle,
+        CodexDriver, CodexHandle, GroupProof, Turn, app_server_actor, proof_allows_cleanup,
+        remember_thread, stop_startup_process,
+    };
+    use crate::engine::supervisor::{self, StdinPlan, Supervised};
+    use crate::evidence::{EvidenceTarget, SafeInputManifest};
+
+    #[derive(Debug)]
+    struct Scribe(Arc<Mutex<Vec<u8>>>);
+
+    struct FailingOutput;
+
+    impl AsyncRead for FailingOutput {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::other(
+                "deterministic App Server reader failure",
+            )))
+        }
+    }
+
+    impl Write for Scribe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn target(directory: &TempDir, name: &str) -> EvidenceTarget {
+        EvidenceTarget::workflow_step(
+            directory.path().to_path_buf(),
+            name.to_owned(),
+            SafeInputManifest::default(),
+        )
+    }
+
+    fn empty_handle(evidence: EvidenceTarget) -> CodexHandle {
+        let (events, _inbox) = mpsc::channel(1);
+        CodexHandle {
+            binary: PathBuf::from("codex"),
+            cwd: PathBuf::from("/private/workspace"),
+            events,
+            evidence: Some(evidence),
+            threads: Arc::new(Mutex::new(vec!["vendor-thread".to_owned()])),
+            cancelled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            number: 1,
+            process: None,
+            outcome: None,
+            drained: None,
+            stderr_task: None,
+        }
+    }
+
+    fn empty_app_handle(evidence: EvidenceTarget) -> CodexConversationHandle {
+        let (commands, command_inbox) = mpsc::channel(1);
+        drop(command_inbox);
+        let (outcome_sender, outcomes) = mpsc::channel(1);
+        drop(outcome_sender);
+        CodexConversationHandle {
+            process: None,
+            client: AppClient::new(commands, Some(evidence.clone())),
+            evidence: Some(evidence),
+            session_id: String::new(),
+            active_turn: None,
+            in_flight: false,
+            outcomes,
+            reader_task: None,
+            stderr_task: None,
+        }
+    }
+
+    fn sleeping_process() -> anyhow::Result<Supervised> {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        Ok(supervisor::spawn(command, StdinPlan::Null)?)
+    }
+
+    #[test]
+    fn alive_keeps_process_readers_and_evidence_owned_for_retry() {
+        assert!(!proof_allows_cleanup(&GroupProof::Alive));
+        assert!(proof_allows_cleanup(&GroupProof::Dead { status: None }));
+    }
+
+    #[tokio::test]
+    async fn actual_app_handle_keeps_process_tasks_state_and_evidence_until_dead()
+    -> anyhow::Result<()> {
+        let directory = TempDir::new()?;
+        let evidence = target(&directory, "app-alive-then-dead");
+        let state = Arc::new(Mutex::new(AppServerState::new()));
+        state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .begin_turn();
+
+        let (release_reader, reader_release) = oneshot::channel();
+        let reader_state = Arc::clone(&state);
+        let reader_task = tokio::spawn(async move {
+            let _released = reader_release.await;
+            reader_state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .active = false;
+        });
+        let (release_stderr, stderr_release) = oneshot::channel();
+        let stderr_task = tokio::spawn(async move {
+            let _released = stderr_release.await;
+        });
+
+        let mut handle = empty_app_handle(evidence.clone());
+        handle.process = Some(sleeping_process()?);
+        handle.reader_task = Some(reader_task);
+        handle.stderr_task = Some(stderr_task);
+        let group = handle.group();
+
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            handle.cleanup_after_proof(&GroupProof::Alive),
+        )
+        .await?;
+
+        assert_eq!(
+            handle.group(),
+            group,
+            "Alive dropped the only process owner"
+        );
+        assert!(
+            handle.reader_task.is_some(),
+            "Alive dropped the App Server state owner"
+        );
+        assert!(
+            handle.stderr_task.is_some(),
+            "Alive dropped the complaint reader owner"
+        );
+        assert!(
+            handle.evidence.is_some(),
+            "Alive dropped the evidence target"
+        );
+        assert!(
+            evidence.is_healthy(),
+            "retaining an Alive group is not an evidence failure"
+        );
+        assert!(
+            state.lock().unwrap_or_else(PoisonError::into_inner).active,
+            "the reader-owned AppServerState was cleared before a Dead proof"
+        );
+
+        release_reader
+            .send(())
+            .map_err(|()| anyhow::anyhow!("the App Server reader was not retained after Alive"))?;
+        release_stderr
+            .send(())
+            .map_err(|()| anyhow::anyhow!("the complaint reader was not retained after Alive"))?;
+        let process = handle
+            .process
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("the second Stop lost its process owner"))?;
+        let proof = stop_startup_process(process).await;
+        assert!(matches!(&proof, GroupProof::Dead { .. }));
+        handle.cleanup_after_proof(&proof).await;
+
+        assert!(
+            handle.process.is_none(),
+            "Dead did not release the process owner"
+        );
+        assert!(
+            handle.reader_task.is_none(),
+            "Dead did not join the App Server reader"
+        );
+        assert!(
+            handle.stderr_task.is_none(),
+            "Dead did not join the complaint reader"
+        );
+        assert!(
+            !state.lock().unwrap_or_else(PoisonError::into_inner).active,
+            "the joined reader left AppServerState active"
+        );
+        assert!(
+            evidence.is_healthy(),
+            "clean joins after Dead must keep evidence complete"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn actual_app_reader_error_poisons_its_evidence_target() -> anyhow::Result<()> {
+        let directory = TempDir::new()?;
+        let evidence = target(&directory, "app-read-error");
+        let mut command = Command::new("sh");
+        command.args(["-c", "read _line"]);
+        let mut process = supervisor::spawn(command, StdinPlan::Keep(String::new()))?;
+        let stdin = process
+            .stdin()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the App Server process has no input pipe"))?;
+        let (commands, command_inbox) = mpsc::channel(1);
+        let (events, _event_inbox) = mpsc::channel(1);
+        let (outcomes, _outcome_inbox) = mpsc::channel(1);
+
+        app_server_actor(AppServerInput {
+            stdin,
+            stdout: FailingOutput,
+            commands: command_inbox,
+            events,
+            outcomes,
+            complaint: Arc::new(Mutex::new(String::new())),
+            evidence: None,
+            evidence_target: Some(evidence.clone()),
+        })
+        .await;
+        drop(commands);
+
+        assert!(
+            !evidence.is_healthy(),
+            "an App Server stdout read error must make a later Finished receipt ineligible"
+        );
+        let proof = stop_startup_process(&mut process).await;
+        assert!(matches!(proof, GroupProof::Dead { .. }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn each_actual_app_reader_join_error_poisons_its_own_target() -> anyhow::Result<()> {
+        let directory = TempDir::new()?;
+
+        let stdout_evidence = target(&directory, "app-stdout-join");
+        let mut stdout_handle = empty_app_handle(stdout_evidence.clone());
+        let stdout_reader = tokio::spawn(async { std::future::pending::<()>().await });
+        stdout_reader.abort();
+        stdout_handle.reader_task = Some(stdout_reader);
+        stdout_handle.finish_tasks().await;
+        assert!(
+            !stdout_evidence.is_healthy(),
+            "an App Server stdout JoinError must poison its receipt"
+        );
+
+        let stderr_evidence = target(&directory, "app-stderr-join");
+        let mut stderr_handle = empty_app_handle(stderr_evidence.clone());
+        let stderr_reader = tokio::spawn(async { std::future::pending::<()>().await });
+        stderr_reader.abort();
+        stderr_handle.stderr_task = Some(stderr_reader);
+        stderr_handle.finish_tasks().await;
+        assert!(
+            !stderr_evidence.is_healthy(),
+            "an App Server stderr JoinError must poison its receipt"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_app_and_exec_channels_poison_the_actual_evidence_targets() -> anyhow::Result<()>
+    {
+        let directory = TempDir::new()?;
+        let app_target = target(&directory, "app-channel");
+        let (commands, inbox) = mpsc::channel(1);
+        drop(inbox);
+        let client = AppClient::new(commands, Some(app_target.clone()));
+        assert!(
+            client
+                .request("initialize", serde_json::json!({}), false)
+                .await
+                .is_err(),
+            "a closed App Server command channel must be a transport failure"
+        );
+        assert!(
+            !app_target.is_healthy(),
+            "the receipt must stay incomplete after the App Server channel disappears"
+        );
+
+        let exec_target = target(&directory, "exec-channel");
+        let mut handle = empty_handle(exec_target.clone());
+        let (finished, outcome) = oneshot::channel();
+        drop(finished);
+        handle.outcome = Some(outcome);
+        assert!(
+            handle.wait().await.is_err(),
+            "a vanished exec outcome sender must not manufacture a finished turn"
+        );
+        assert!(
+            !exec_target.is_healthy(),
+            "a post-channel Finished result cannot be accepted as complete evidence"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_reader_join_failure_poisons_the_actual_exec_target() -> anyhow::Result<()> {
+        let directory = TempDir::new()?;
+        let evidence = target(&directory, "join-failure");
+        let mut handle = empty_handle(evidence.clone());
+        let reader = tokio::spawn(async { std::future::pending::<()>().await });
+        reader.abort();
+        handle.stderr_task = Some(reader);
+
+        handle.drain_current().await;
+
+        assert!(
+            !evidence.is_healthy(),
+            "a reader that did not join cannot leave the receipt eligible for completion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_debug_objects_and_thread_change_trace_redact_control_data() {
+        const BINARY: &str = "/PRIVATE_BINARY_SENTINEL/codex";
+        const WORKSPACE: &str = "/PRIVATE_WORKSPACE_SENTINEL/project";
+        const MODEL: &str = "PRIVATE_MODEL_SENTINEL";
+        const FIRST_THREAD: &str = "PRIVATE_VENDOR_THREAD_SENTINEL_A";
+        const NEXT_THREAD: &str = "PRIVATE_VENDOR_THREAD_SENTINEL_B";
+
+        let (events, _inbox) = mpsc::channel(1);
+        let turn = Turn {
+            binary: PathBuf::from(BINARY),
+            cwd: PathBuf::from(WORKSPACE),
+            argv: vec![
+                "exec".to_owned(),
+                "-C".to_owned(),
+                WORKSPACE.to_owned(),
+                "-m".to_owned(),
+                MODEL.to_owned(),
+                "resume".to_owned(),
+                FIRST_THREAD.to_owned(),
+            ],
+            prompt: "PRIVATE_PROMPT_SENTINEL".to_owned(),
+            events: events.clone(),
+            threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
+            number: 2,
+            cancelled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            stdout_evidence: None,
+            stderr_evidence: None,
+            evidence_target: None,
+        };
+        let turn_debug = format!("{turn:?}");
+
+        let handle = CodexHandle {
+            binary: PathBuf::from(BINARY),
+            cwd: PathBuf::from(WORKSPACE),
+            events,
+            evidence: None,
+            threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
+            cancelled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            number: 2,
+            process: None,
+            outcome: None,
+            drained: None,
+            stderr_task: None,
+        };
+        let handle_debug = format!("{handle:?}");
+        let driver_debug = format!("{:?}", CodexDriver::with_binary(PathBuf::from(BINARY)));
+
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&notes);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(move || Scribe(Arc::clone(&sink)))
+            .finish();
+        let threads = Mutex::new(vec![FIRST_THREAD.to_owned()]);
+        let mut seen = None;
+        tracing::subscriber::with_default(subscriber, || {
+            let mut decoder = super::CodexDecoder::new();
+            decoder.thread = Some(NEXT_THREAD.to_owned());
+            remember_thread(&decoder, &mut seen, &threads);
+        });
+        let trace = {
+            let held = notes.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8_lossy(&held).into_owned()
+        };
+        let exposed = format!("{turn_debug}\n{handle_debug}\n{driver_debug}\n{trace}");
+
+        assert!(
+            trace.contains("different thread id"),
+            "the oracle must exercise the real trace"
+        );
+        for private in [BINARY, WORKSPACE, MODEL, FIRST_THREAD, NEXT_THREAD] {
+            assert!(
+                !exposed.contains(private),
+                "private Codex control data escaped through Debug or tracing: {exposed}"
+            );
+        }
+        assert!(turn_debug.contains("argument_count"));
+        assert!(handle_debug.contains("thread_count"));
+        assert!(driver_debug.contains("uses_custom_binary"));
     }
 }

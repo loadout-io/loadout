@@ -33,6 +33,7 @@ use loadout_lib::engine::drivers::codex::CodexDriver;
 use loadout_lib::engine::drivers::{
     AgentEvent, AgentHandle, FinishReason, Outcome, Policy, RunSpec,
 };
+use loadout_lib::engine::line::{Curator, Line, Seen};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -75,6 +76,14 @@ const COMPLETED_THEN_BROKE: &str = r#"#!/bin/sh
 printf '{"type":"thread.started","thread_id":"thread-d"}\n'
 printf '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_tokens":8,"output_tokens":9}}\n'
 exit 3
+"#;
+
+/// CLI, które odrzuciło argv przed uruchomieniem tury. To jest dokładny kształt incydentu z
+/// 2026-08-21: `-C` stało po `resume`, więc prawdziwy codex-cli 0.148.0 napisał tylko na stderr
+/// i wyszedł 2. Sam `Finished::reason` nie jest widoczny w wierszu `Done`.
+const REJECTED_ARGV: &str = r#"#!/bin/sh
+printf '%s\n' "error: unexpected argument '-C' found" >&2
+exit 2
 "#;
 
 /// Zapisuje wykonywalny skrypt i zwraca jego ścieżkę.
@@ -280,5 +289,51 @@ async fn a_process_that_breaks_after_the_turn_does_not_get_a_second_ending()
          not a second one synthesised from the exit code"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cli_parse_error_reaches_the_visible_problem_before_the_summary()
+-> Result<(), Box<dyn Error>> {
+    let (events, outcome) = one_turn(REJECTED_ARGV).await?;
+    one_ending_and_nothing_after(&events, "(e) CLI rejected argv")?;
+    assert_eq!(
+        events.len(),
+        2,
+        "an EOF failure needs a Notice before Finished. FinishReason is not part of the Done \
+         line, so a lone Finished produces only `Didn't work · 0 turns` and hides the cause. \
+         The live stream produced {events:?}"
+    );
+
+    let mut curator = Curator::new();
+    let mut lines = Vec::new();
+    for (at_ms, event) in events.iter().enumerate() {
+        lines.extend(curator.observe(Seen {
+            agent: "Lead",
+            at_ms: u64::try_from(at_ms).unwrap_or_default(),
+            event,
+            tool: None,
+        }));
+    }
+    lines.extend(curator.flush());
+
+    let Some(Line::Problem { text, .. }) = lines.first() else {
+        return Err(format!(
+            "the CLI's sentence did not become the Problem row a person sees before Done: \
+             {lines:?}"
+        )
+        .into());
+    };
+    assert!(
+        text.contains("unexpected argument '-C'"),
+        "the visible Problem row replaced the CLI's diagnosis with {text:?}"
+    );
+    assert!(
+        matches!(lines.get(1), Some(Line::Done { .. })),
+        "the visible diagnosis must be followed by the ordinary terminal summary: {lines:?}"
+    );
+
+    let outcome = outcome?;
+    assert!(!outcome.ok);
     Ok(())
 }

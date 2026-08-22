@@ -81,6 +81,7 @@ const WHERE_PATH: Readonly<Record<string, string>> = {
 
 const AGENT_ID = '0198a1f2-3b4c-7d5e-8f60-112233445566';
 const FILE_NAME = 'ship-a-feature.json';
+const IMAGE = { mime: 'image/png' as const, base64: 'iVBORw0KGgoAAAANSUhEUg==' };
 
 const AGENT: Agent = {
   schema: 1,
@@ -143,6 +144,7 @@ const TRIGGER_DRAFT: triggers.TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: FOLDER,
   pollEveryMinutes: 5,
   apiKey: LINEAR_KEY,
 };
@@ -151,6 +153,7 @@ const TRIGGER_EXPECTED: triggers.TriggerSnapshot = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: FOLDER,
   enabled: true,
   pollEveryMinutes: 5,
   hasApiKey: true,
@@ -383,8 +386,16 @@ const WIRES: readonly Wire[] = [
     where: 'run',
     what: 'sayToOrchestrator',
     command: 'say_to_orchestrator',
-    given: ['what should the checker look at?'],
-    call: () => run.sayToOrchestrator('what should the checker look at?', null),
+    given: ['what should the checker look at?', AGENT_ID, IMAGE],
+    call: () =>
+      run.sayToOrchestrator('what should the checker look at?', null, null, AGENT_ID, [IMAGE]),
+  },
+  {
+    where: 'run',
+    what: 'copyDiagnostics',
+    command: 'copy_diagnostics',
+    given: [FOLDER],
+    call: () => run.copyDiagnostics(FOLDER),
   },
   /* 2026-08-20 (T-71) — JEDNA NOWA KRAWĘDŹ BIEGU: koniec rozmowy zamykanej karty. Dopisana,
    * nic nie usunięte i żaden istniejący wiersz nie przepisany — bez niej pierwszy test wyżej
@@ -514,6 +525,13 @@ const WIRES: readonly Wire[] = [
     command: 'check_trigger',
     given: ['assigned-to-me'],
     call: () => triggers.checkTrigger('assigned-to-me'),
+  },
+  {
+    where: 'triggers',
+    what: 'retryTrigger',
+    command: 'retry_trigger',
+    given: ['assigned-to-me'],
+    call: () => triggers.retryTrigger('assigned-to-me'),
   },
   {
     where: 'triggers',

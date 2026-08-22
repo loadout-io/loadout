@@ -327,7 +327,7 @@ async fn one_sentence(
     cwd: &Path,
 ) -> Result<RunSpec, Box<dyn Error>> {
     let (sink, _source) = line_channel(LINES);
-    let mut threads = Threads::new();
+    let threads = Threads::new();
     threads.library_is(library.to_path_buf());
     threads.lines_go_to(cwd.to_path_buf(), sink);
     threads

@@ -55,6 +55,11 @@ export const NO_FOLDER =
   'Nothing started: agents work inside a folder, and no workspace is chosen yet. Add a ' +
   'workspace in the side menu, then press Run again.';
 
+/** A legacy trigger has no safe project default: asking the active window would redirect work. */
+export const TRIGGER_NO_WORKSPACE =
+  'Nothing started: this trigger has no workspace. Open Triggers, choose where it should run, ' +
+  'then save it.';
+
 /**
  * Uruchamia ten workflow i oddaje zdanie, które ma stanąć na ekranie — albo `null`, kiedy
  * wszystko poszło.
@@ -93,11 +98,12 @@ export async function launchRun(
    * loadoutu opisującego bieg, którego nie ma. Pytamy więc tutaj, gdzie plan już znamy. */
   if (choice.steps.length === 0) return NOTHING_TO_RUN;
 
-  /* FOLDER Z AKTYWNEGO ZAKRESU, czytany w chwili naciśnięcia, a nie zapamiętany przy renderze:
-   * człowiek może przełączyć zakres między jednym a drugim, a bieg ma pójść tam, gdzie stoi
-   * w chwili kliknięcia. */
-  const folder = activeWorkspace()?.folder ?? null;
-  if (folder === null) return NO_FOLDER;
+  /* 2026-08-21: ręczny Run bierze bieżący zakres w chwili kliknięcia. Trigger jest odwrotną
+   * umową: workspace zamrożony w claimie ma wygrać nawet wtedy, gdy człowiek przełączy boczne
+   * menu podczas odczytu workflow. Fallback do aktywnego zakresu wysyłałby cudze zadanie do
+   * projektu, który akurat jest na ekranie. Legacy claim bez targetu odmawia przed kartą i IPC. */
+  const folder = claim === null ? (activeWorkspace()?.folder ?? null) : (claim.workspace ?? null);
+  if (folder === null) return claim === null ? NO_FOLDER : TRIGGER_NO_WORKSPACE;
 
   /* KARTA POWSTAJE TU, czyli w jedynym miejscu, które wie JEDNOCZEŚNIE, jak nazywa się workflow
    * i w którym zakresie pójdzie. Przed `start`, nie po nim: `start` rozwiązuje się dopiero

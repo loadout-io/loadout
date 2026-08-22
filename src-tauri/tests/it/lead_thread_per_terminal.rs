@@ -40,6 +40,7 @@
 
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -50,10 +51,13 @@ use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
     Probe, RunSpec, SessionRef, ToAgent, Tokens, Voice,
 };
+use loadout_lib::engine::line::LineKind;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::evidence::EvidenceTarget;
 use loadout_lib::ipc::{LineSource, line_channel};
 use loadout_lib::library::agents::Agent;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 /// Etykieta vendora dublera.
 const VENDOR: &str = "fake";
@@ -305,7 +309,7 @@ fn two_terminals(folder: &PathBuf) -> (Terminal, Terminal) {
 }
 
 /// Otwiera strumień tego terminalu tak, jak otwiera go okno (`open_chat`).
-fn watching(threads: &mut Threads, terminal: &Terminal) -> LineSource {
+fn watching(threads: &Threads, terminal: &Terminal) -> LineSource {
     let (sink, source) = line_channel(LINES);
     threads.terminal_lines_go_to(terminal, sink);
     source
@@ -330,9 +334,9 @@ async fn two_terminals_in_one_folder_are_two_threads_and_coming_back_lands_in_th
 
     let (drivers, watch) = one_vendor();
     let lead = any_lead();
-    let mut threads = Threads::new();
-    let _stream_left = watching(&mut threads, &left);
-    let _stream_right = watching(&mut threads, &right);
+    let threads = Threads::new();
+    let _stream_left = watching(&threads, &left);
+    let _stream_right = watching(&threads, &right);
 
     threads
         .say_in(&drivers, &lead, &left, FROM_THE_LEFT)
@@ -413,9 +417,9 @@ async fn closing_one_terminal_ends_its_own_thread_and_proves_it() -> Result<(), 
 
     let (drivers, watch) = one_vendor();
     let lead = any_lead();
-    let mut threads = Threads::new();
-    let _stream_left = watching(&mut threads, &left);
-    let _stream_right = watching(&mut threads, &right);
+    let threads = Threads::new();
+    let _stream_left = watching(&threads, &left);
+    let _stream_right = watching(&threads, &right);
 
     threads
         .say_in(&drivers, &lead, &left, FROM_THE_LEFT)
@@ -473,9 +477,9 @@ async fn closing_the_window_ends_every_thread_and_each_one_proves_it() -> Result
 
     let (drivers, watch) = one_vendor();
     let lead = any_lead();
-    let mut threads = Threads::new();
-    let _stream_left = watching(&mut threads, &left);
-    let _stream_right = watching(&mut threads, &right);
+    let threads = Threads::new();
+    let _stream_left = watching(&threads, &left);
+    let _stream_right = watching(&threads, &right);
 
     threads
         .say_in(&drivers, &lead, &left, FROM_THE_LEFT)
@@ -516,6 +520,478 @@ async fn closing_the_window_ends_every_thread_and_each_one_proves_it() -> Result
     assert!(
         !threads.is_live_at(&left.id) && !threads.is_live_at(&right.id),
         "the window closed and a conversation is still standing"
+    );
+    Ok(())
+}
+
+// ── ACTOR: CODEX CZEKA PER TERMINAL, A STOP MA OSOBNE PASMO ─────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+enum ActorMode {
+    BlockingCodex,
+    DeadVoice,
+    AliveVoice,
+    ImmediateFirstAnswer,
+    FinalAnswerOnCancel,
+    FirstReceiptFailure,
+}
+
+#[derive(Debug, Default)]
+struct ActorWatch {
+    starts: AtomicUsize,
+    cancels: AtomicUsize,
+    drops: AtomicUsize,
+}
+
+struct ActorFake {
+    mode: ActorMode,
+    watch: Arc<ActorWatch>,
+    waiting: mpsc::Sender<()>,
+    evidence: Option<EvidenceTarget>,
+}
+
+#[async_trait]
+impl AgentDriver for ActorFake {
+    fn id(&self) -> &'static str {
+        "actor-fake"
+    }
+
+    async fn probe(&self) -> anyhow::Result<Probe> {
+        Ok(Probe {
+            found: true,
+            version: Some("actor-fake".to_owned()),
+        })
+    }
+
+    async fn start(
+        &self,
+        spec: RunSpec,
+        events: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        self.watch.starts.fetch_add(1, Ordering::SeqCst);
+        if matches!(self.mode, ActorMode::FirstReceiptFailure) {
+            let evidence = self
+                .evidence
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("the Lead omitted its evidence target"))?;
+            /* Psujemy DOKŁADNIE receipt po udanym starcie dublera. Dzięki temu wyrocznia
+             * przechodzi przez produkcyjne `accept_turn(1)`, a nie testuje pomocnik obok niego. */
+            std::fs::write(evidence.root().join("conversation.json"), b"{")?;
+        }
+        let session = SessionRef {
+            vendor: "actor-fake",
+            id: spec.run_id.to_string(),
+        };
+        if matches!(self.mode, ActorMode::ImmediateFirstAnswer) {
+            events
+                .send(
+                    (AgentEvent::Said {
+                        text: "first answer".to_owned(),
+                    })
+                    .into(),
+                )
+                .await?;
+        }
+        let voice = match self.mode {
+            ActorMode::BlockingCodex
+            | ActorMode::ImmediateFirstAnswer
+            | ActorMode::FinalAnswerOnCancel
+            | ActorMode::FirstReceiptFailure => None,
+            ActorMode::DeadVoice | ActorMode::AliveVoice => {
+                /* Nadajnik wygląda jak prawdziwa zdolność, ale odbiorca już nie żyje. To jest
+                 * awaria, która wcześniej zostawiała na zawsze martwy wpis w `Threads::live`. */
+                let (voice, heard) = mpsc::channel(1);
+                drop(heard);
+                Some(voice)
+            }
+        };
+        Ok(Box::new(ActorTurn {
+            mode: self.mode,
+            watch: Arc::clone(&self.watch),
+            waiting: self.waiting.clone(),
+            blocks_in_wait: matches!(self.mode, ActorMode::BlockingCodex)
+                && spec.prompt == FROM_THE_LEFT,
+            waited: false,
+            events,
+            session,
+            voice,
+        }))
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            mode: self.mode,
+            watch: Arc::clone(&self.watch),
+            waiting: self.waiting.clone(),
+            evidence: Some(target),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct ActorTurn {
+    mode: ActorMode,
+    watch: Arc<ActorWatch>,
+    waiting: mpsc::Sender<()>,
+    blocks_in_wait: bool,
+    waited: bool,
+    events: mpsc::Sender<DecodedEvent>,
+    session: SessionRef,
+    voice: Option<Voice>,
+}
+
+impl ActorTurn {
+    fn outcome(&self) -> TurnOutcome {
+        TurnOutcome {
+            ok: true,
+            reason: FinishReason::Completed,
+            text: String::new(),
+            cost_usd: None,
+            tokens: Tokens::default(),
+            turns: 1,
+            took: Duration::from_millis(1),
+            session: self.session.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentHandle for ActorTurn {
+    fn session(&self) -> SessionRef {
+        self.session.clone()
+    }
+
+    fn voice(&self) -> Option<Voice> {
+        self.voice.clone()
+    }
+
+    fn group(&self) -> Option<GroupId> {
+        None
+    }
+
+    async fn send(&mut self, _text: String) -> anyhow::Result<()> {
+        if !self.waited {
+            anyhow::bail!("send was called before wait completed");
+        }
+        self.waited = false;
+        Ok(())
+    }
+
+    async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
+        if self.blocks_in_wait {
+            let _ = self.waiting.send(()).await;
+            std::future::pending::<()>().await;
+        }
+        self.waited = true;
+        let outcome = self.outcome();
+        let _ = self
+            .events
+            .send((AgentEvent::Finished(outcome.clone())).into())
+            .await;
+        Ok(outcome)
+    }
+
+    async fn cancel(&mut self) -> GroupProof {
+        if matches!(self.mode, ActorMode::FinalAnswerOnCancel) {
+            let _ = self
+                .events
+                .send(
+                    (AgentEvent::Said {
+                        text: "final answer while stopping".to_owned(),
+                    })
+                    .into(),
+                )
+                .await;
+        }
+        let attempt = self.watch.cancels.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            self.mode,
+            ActorMode::AliveVoice | ActorMode::FirstReceiptFailure
+        ) && attempt == 0
+        {
+            GroupProof::Alive
+        } else {
+            GroupProof::Dead { status: None }
+        }
+    }
+
+    async fn close(&mut self) -> anyhow::Result<Option<i32>> {
+        Ok(Some(0))
+    }
+}
+
+impl Drop for ActorTurn {
+    fn drop(&mut self) {
+        self.watch.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn actor_vendor(mode: ActorMode) -> (Drivers, Arc<ActorWatch>, mpsc::Receiver<()>) {
+    let watch = Arc::new(ActorWatch::default());
+    let (waiting, heard_wait) = mpsc::channel(4);
+    let driver: Arc<dyn AgentDriver> = Arc::new(ActorFake {
+        mode,
+        watch: Arc::clone(&watch),
+        waiting,
+        evidence: None,
+    });
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&driver));
+    (drivers, watch, heard_wait)
+}
+
+async fn two_visible_lines(source: &mut LineSource) -> Vec<(LineKind, String)> {
+    let mut seen = Vec::new();
+    for _ in 0..YIELDS {
+        while let Some(line) = source.try_next() {
+            seen.push((line.kind(), line.text().to_owned()));
+        }
+        if seen.len() >= 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    seen
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dead_proof_drains_the_final_answer_before_close_returns() -> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let terminal = Terminal {
+        id: "terminal-final-answer".to_owned(),
+        folder: here.path().to_path_buf(),
+    };
+    let (drivers, _watch, _heard_wait) = actor_vendor(ActorMode::FinalAnswerOnCancel);
+    let lead = any_lead();
+    let threads = Threads::new();
+    let mut stream = watching(&threads, &terminal);
+
+    threads
+        .say_in(&drivers, &lead, &terminal, "please finish this")
+        .await?;
+    assert!(matches!(
+        threads.close_at(&terminal.id).await,
+        Some(GroupProof::Dead { .. })
+    ));
+
+    assert_eq!(
+        two_visible_lines(&mut stream).await,
+        vec![
+            (LineKind::Told, "please finish this".to_owned()),
+            (LineKind::Note, "final answer while stopping".to_owned()),
+        ],
+        "Dead is not permission to abort the reader: events queued by cancel must drain through \
+         Curator before close returns"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_first_answer_never_overtakes_the_persons_first_turn() -> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let terminal = Terminal {
+        id: "terminal-first-order".to_owned(),
+        folder: here.path().to_path_buf(),
+    };
+    let (drivers, _watch, _heard_wait) = actor_vendor(ActorMode::ImmediateFirstAnswer);
+    let lead = any_lead();
+    let threads = Threads::new();
+    let mut stream = watching(&threads, &terminal);
+
+    threads
+        .say_in(&drivers, &lead, &terminal, "first question")
+        .await?;
+    assert_eq!(
+        two_visible_lines(&mut stream).await,
+        vec![
+            (LineKind::Told, "first question".to_owned()),
+            (LineKind::Note, "first answer".to_owned()),
+        ],
+        "the reader must not forward a fast vendor answer before the accepted first turn is visible"
+    );
+    assert!(matches!(
+        threads.close_at(&terminal.id).await,
+        Some(GroupProof::Dead { .. })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_waiting_codex_terminal_does_not_block_another_terminal_or_stop()
+-> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let folder = here.path().to_path_buf();
+    let (left, right) = two_terminals(&folder);
+    let (drivers, _watch, mut heard_wait) = actor_vendor(ActorMode::BlockingCodex);
+    let lead = any_lead();
+    let threads = Arc::new(Threads::new());
+    let _stream_left = watching(threads.as_ref(), &left);
+    let _stream_right = watching(threads.as_ref(), &right);
+
+    threads
+        .say_in(&drivers, &lead, &left, FROM_THE_LEFT)
+        .await?;
+    threads
+        .say_in(&drivers, &lead, &right, FROM_THE_RIGHT)
+        .await?;
+
+    let waiting_threads = Arc::clone(&threads);
+    let waiting_drivers = Arc::clone(&drivers);
+    let waiting_lead = lead.clone();
+    let waiting_left = left.clone();
+    let blocked = tokio::spawn(async move {
+        waiting_threads
+            .say_in(
+                &waiting_drivers,
+                &waiting_lead,
+                &waiting_left,
+                "second turn waits for the first process",
+            )
+            .await
+    });
+    timeout(Duration::from_secs(1), heard_wait.recv())
+        .await
+        .expect("the left actor has to enter its deliberately blocked wait")
+        .expect("the wait signal channel must stay open");
+
+    timeout(
+        Duration::from_secs(1),
+        threads.say_in(&drivers, &lead, &right, "right terminal stays responsive"),
+    )
+    .await
+    .expect("terminal B was blocked by terminal A's handle.wait")
+    .expect("terminal B preserves its own wait-before-send order");
+
+    let right_proof = timeout(Duration::from_secs(1), threads.close_at(&right.id))
+        .await
+        .expect("closing terminal B was blocked by terminal A")
+        .expect("terminal B has a live conversation to close");
+    assert!(matches!(right_proof, GroupProof::Dead { .. }));
+
+    let left_proof = timeout(Duration::from_secs(1), threads.close_at(&left.id))
+        .await
+        .expect("Stop could not interrupt the blocked wait in its own actor")
+        .expect("terminal A has a live conversation to close");
+    assert!(matches!(left_proof, GroupProof::Dead { .. }));
+    assert!(
+        blocked.await?.is_err(),
+        "the interrupted follow-up must not be reported as delivered"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_dead_voice_is_replaced_by_a_fresh_conversation_on_the_next_message()
+-> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let terminal = Terminal {
+        id: "terminal-dead-voice".to_owned(),
+        folder: here.path().to_path_buf(),
+    };
+    let (drivers, watch, _heard_wait) = actor_vendor(ActorMode::DeadVoice);
+    let lead = any_lead();
+    let threads = Threads::new();
+    let _stream = watching(&threads, &terminal);
+
+    threads.say_in(&drivers, &lead, &terminal, "first").await?;
+    assert!(
+        threads
+            .say_in(&drivers, &lead, &terminal, "second")
+            .await
+            .is_err(),
+        "the dead Voice must refuse the follow-up"
+    );
+    threads
+        .say_in(&drivers, &lead, &terminal, "fresh third")
+        .await
+        .expect("Dead proof must make the next message open a fresh conversation");
+    assert_eq!(watch.starts.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        threads.close_at(&terminal.id).await,
+        Some(GroupProof::Dead { .. })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn alive_proof_keeps_the_handle_registered_until_stop_can_prove_dead()
+-> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let terminal = Terminal {
+        id: "terminal-alive-proof".to_owned(),
+        folder: here.path().to_path_buf(),
+    };
+    let (drivers, watch, _heard_wait) = actor_vendor(ActorMode::AliveVoice);
+    let lead = any_lead();
+    let threads = Threads::new();
+    let _stream = watching(&threads, &terminal);
+
+    threads.say_in(&drivers, &lead, &terminal, "first").await?;
+    let refusal = threads
+        .say_in(&drivers, &lead, &terminal, "second")
+        .await
+        .expect_err("the dead Voice has to fail before cleanup is judged");
+    assert!(
+        refusal.to_string().contains("still tracking it"),
+        "Alive must not promise a fresh conversation: {refusal}"
+    );
+    assert!(
+        threads.is_live_at(&terminal.id),
+        "GroupProof::Alive was dropped out of the registry together with its only handle"
+    );
+    assert_eq!(watch.starts.load(Ordering::SeqCst), 1);
+
+    let proof = threads
+        .close_at(&terminal.id)
+        .await
+        .expect("the retained handle must be available to retry Stop");
+    assert!(matches!(proof, GroupProof::Dead { .. }));
+    assert_eq!(watch.cancels.load(Ordering::SeqCst), 2);
+    assert!(!threads.is_live_at(&terminal.id));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_receipt_failure_keeps_its_unregistered_handle_until_dead()
+-> Result<(), Box<dyn Error>> {
+    let here = tempfile::tempdir()?;
+    let terminal = Terminal {
+        id: "terminal-first-receipt-refusal".to_owned(),
+        folder: here.path().to_path_buf(),
+    };
+    let (drivers, watch, _heard_wait) = actor_vendor(ActorMode::FirstReceiptFailure);
+    let lead = any_lead();
+    let threads = Threads::new();
+    let _stream = watching(&threads, &terminal);
+
+    let refusal = timeout(
+        Duration::from_secs(3),
+        threads.say_in(&drivers, &lead, &terminal, "first"),
+    )
+    .await
+    .expect("cleanup stopped retrying before its second deterministic proof")
+    .expect_err("a corrupt first-turn receipt was accepted");
+    assert!(
+        refusal.to_string().contains("did not send the message"),
+        "the person did not receive the fixed safe receipt refusal: {refusal}"
+    );
+    assert_eq!(watch.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        watch.cancels.load(Ordering::SeqCst),
+        2,
+        "GroupProof::Alive dropped the only handle instead of retrying Stop on that same handle"
+    );
+    assert_eq!(
+        watch.drops.load(Ordering::SeqCst),
+        1,
+        "the handle was leaked or dropped before its deterministic Dead proof"
+    );
+    assert!(
+        !threads.is_live_at(&terminal.id),
+        "a conversation that never passed its first receipt was registered as live"
+    );
+    assert!(
+        threads.close_at(&terminal.id).await.is_none(),
+        "the failed first turn left a hidden handle in the terminal registry"
     );
     Ok(())
 }

@@ -208,6 +208,7 @@ mod trigger_library_is_safe_to_edit;
 mod trigger_never_fires_twice;
 mod trigger_reads_the_answer;
 mod trigger_run_is_accepted_once;
+mod trigger_workspace_is_authority;
 mod workflow_check_cycles;
 mod workflow_check_ids;
 mod workflow_check_islands;

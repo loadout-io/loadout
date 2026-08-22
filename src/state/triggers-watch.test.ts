@@ -46,11 +46,18 @@ const RUN: TriggerRunPath = {
   atOnce: () => 3,
 };
 
-const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const REDACTED = {
+  workspace: '/project',
+  pollEveryMinutes: 1 as const,
+  hasApiKey: true as const,
+};
 const EDITOR_IO: Pick<
   TriggerIo,
-  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
 > = {
+  retryTrigger: async () => {
+    throw new Error('not used');
+  },
   createTrigger: async () => {
     throw new Error('not used');
   },
@@ -126,6 +133,33 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     clock.advance();
     await settle();
     expect(checked.mock.calls.map(([slug]) => slug)).toEqual(['on', 'on']);
+  });
+
+  it('does not poll an enabled legacy trigger until a workspace is repaired', async () => {
+    const checked = vi.fn(async (_slug: string) => ({ status: 'armed' as const }));
+    /* This is the actual old IPC shape: the property is absent, not a convenient explicit null. */
+    const withoutWorkspace = {
+      slug: 'legacy',
+      source: 'Linear',
+      condition: 'Assigned to you',
+      workflow: 'analysis.json',
+      enabled: true,
+      pollEveryMinutes: 1 as const,
+      hasApiKey: true,
+    };
+    const { store, clock } = withIo({
+      ...EDITOR_IO,
+      listTriggers: async () => [withoutWorkspace],
+      setTriggerEnabled: async () => trigger('legacy'),
+      checkTrigger: checked,
+    });
+    store.getState().startWatching();
+    await settle();
+    expect(store.getState().triggers[0]).toEqual(expect.objectContaining({ workspace: null }));
+
+    clock.advance();
+    await settle();
+    expect(checked).not.toHaveBeenCalled();
   });
 
   it('loads an empty production-shaped store before its first scheduled poll', async () => {

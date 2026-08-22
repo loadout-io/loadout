@@ -67,6 +67,7 @@ function entry(slug: string, pollEveryMinutes: 1 | 5 | 15 | 60, enabled = true) 
     source: 'linear',
     condition: 'assigned-to-me',
     workflow: 'analysis.json',
+    workspace: '/project',
     workflowName: 'Analysis',
     enabled,
     pollEveryMinutes,
@@ -81,6 +82,7 @@ function snapshotOf(one: ConfiguredTriggerEntry): TriggerSnapshot {
     source: one.source,
     condition: one.condition,
     workflow: one.workflow,
+    workspace: one.workspace ?? null,
     enabled: one.enabled,
     pollEveryMinutes: one.pollEveryMinutes,
     hasApiKey: one.hasApiKey,
@@ -89,9 +91,12 @@ function snapshotOf(one: ConfiguredTriggerEntry): TriggerSnapshot {
 
 function editorDefaults(): Pick<
   TriggerIo,
-  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
 > {
   return {
+    retryTrigger: async () => {
+      throw new Error('not used');
+    },
     createTrigger: async () => {
       throw new Error('not used');
     },
@@ -217,6 +222,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
         source: 'linear',
         condition: 'assigned-to-me',
         workflow: 'analysis.json',
+        workspace: '/project',
         pollEveryMinutes: 15,
         apiKey: null,
       })
@@ -237,6 +243,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
       source: 'linear',
       condition: 'assigned-to-me',
       workflow: 'analysis.json',
+      workspace: '/project',
       enabled: true,
       pollEveryMinutes: 15 as const,
       hasApiKey: true,
@@ -271,6 +278,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
       source: 'linear',
       condition: 'assigned-to-me',
       workflow: 'analysis.json',
+      workspace: '/project',
       pollEveryMinutes: 60,
       apiKey: 'lin_api_explicit_create_key',
     });

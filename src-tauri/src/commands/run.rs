@@ -147,14 +147,17 @@ use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
 use crate::engine::drivers::claude::{ToolsRefused, tool_surface};
-use crate::engine::drivers::command::{CheckHow, CheckSpec, CommandDriver, GIVE_UP_AFTER};
+use crate::engine::drivers::command::{
+    CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
+};
 use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
-use crate::inherit::wire::{self, Chosen, Inherited};
+use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
+use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
@@ -918,6 +921,9 @@ struct AgentJob {
     /// nikt, więc indeksu nie ma tu z czego zbudować. Jedno i drugie jedzie do sterownika jako
     /// **dane** i wychodzi stdinem (niezmiennik 9).
     prompt: String,
+    /// Dokładne źródła planowanej części promptu, bez treści. Przekazania dopisuje
+    /// [`Live::prompt_for`] dopiero wtedy, gdy naprawdę istnieją.
+    context: Vec<ContextSource>,
     /// Model z konfiguracji efektywnej.
     model: Option<String>,
     /// Prompt systemowy agenta. To jest konfiguracja agenta, nie treść zadania.
@@ -1003,6 +1009,7 @@ fn plan_run_with_identity(
     let setup = Setup {
         library: deps.home.join(AGENTS_DIR),
         knows: what_the_agents_know(deps.home),
+        is_ask: false,
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
          * fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
          * na pytanie, co ten bieg buduje. */
@@ -1167,6 +1174,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     let setup = Setup {
         library,
         knows: what_the_agents_know(deps.home),
+        is_ask: true,
         /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
          * zadanie biegu dałoby prompt, w którym to samo polecenie stoi dwukrotnie — raz pod
          * nagłówkiem „o co poproszono" (`with_the_task`). */
@@ -1231,13 +1239,22 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
 ///
 /// **Odczyt, który się nie udał, nie zabiera biegu** (niezmiennik 5): katalog pamięci na świeżej
 /// maszynie nie istnieje i to jest stan normalny. Wtedy agent po prostu nic nie wie.
-fn what_the_agents_know(home: &Path) -> String {
+struct Known {
+    text: String,
+    sources: Vec<ContextSource>,
+}
+
+fn what_the_agents_know(home: &Path) -> Known {
     let root = super::memory::notes_root(home);
     let Ok(notes) = crate::memory::notes::scan_notes(&root) else {
         tracing::debug!(root = %root.display(), "the notes could not be read; no step will carry them");
-        return String::new();
+        return Known {
+            text: String::new(),
+            sources: Vec::new(),
+        };
     };
     let mut text = String::new();
+    let mut sources = Vec::new();
     for scope in [
         crate::memory::notes::Scope::Everywhere,
         crate::memory::notes::Scope::ThisProject,
@@ -1251,8 +1268,21 @@ fn what_the_agents_know(home: &Path) -> String {
             text.push_str("\n\n");
         }
         text.push_str(&block.text);
+        for id in &block.used {
+            let Some(note) = notes.iter().find(|note| &note.id == id) else {
+                continue;
+            };
+            let Ok(relative) = note.path.strip_prefix(home) else {
+                continue;
+            };
+            sources.push(ContextSource {
+                kind: ContextKind::MemoryNote,
+                reference: relative.to_string_lossy().into_owned(),
+                bytes: note.rule.len(),
+            });
+        }
     }
-    text
+    Known { text, sources }
 }
 
 /// Zadanie kroku, poprzedzone tym, co wiadomo.
@@ -1314,7 +1344,9 @@ struct Setup<'a> {
     /// odpowiedź na pytanie „co wiadomo". Odczyt per krok dałby dwóm krokom tego samego biegu
     /// dwa różne konteksty, gdyby ktoś w międzyczasie dopuścił notatkę — a różnicy nie widać
     /// nigdzie poza rachunkiem za długość.
-    knows: String,
+    knows: Known,
+    /// `/ask` ma jedno źródło `RunTask`; zwykły workflow ma osobne zadanie biegu i instrukcję.
+    is_ask: bool,
     /// Co człowiek kazał zbudować TYM biegiem — puste, kiedy nie kazał nic ponad plik.
     ///
     /// Jedna wartość na bieg, dokładnie jak [`Setup::knows`] i z tego samego powodu: zadanie
@@ -1424,6 +1456,33 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     let tools = what_this_step_may_use(&effective, policy, step)?;
 
     let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
+    let mut context = setup.knows.sources.clone();
+    if setup.is_ask {
+        if !step.instructions.is_empty() {
+            context.push(ContextSource {
+                kind: ContextKind::RunTask,
+                reference: "ask/task".to_owned(),
+                bytes: step.instructions.len(),
+            });
+        }
+    } else {
+        if !setup.task.is_empty() {
+            context.push(ContextSource {
+                kind: ContextKind::RunTask,
+                reference: "run/task".to_owned(),
+                bytes: setup.task.len(),
+            });
+        }
+        let instruction_bytes = step.instructions.replace(TASK_MARK, "").len();
+        if instruction_bytes > 0 {
+            context.push(ContextSource {
+                kind: ContextKind::WorkflowStep,
+                reference: format!("workflow/steps/{node}"),
+                bytes: instruction_bytes,
+            });
+        }
+    }
+
     Ok(AgentJob {
         // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
         // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
@@ -1444,9 +1503,10 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
         prompt: with_what_we_know(
-            &setup.knows,
+            &setup.knows.text,
             &with_the_task(&setup.task, &step.instructions),
         ),
+        context,
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
@@ -2897,8 +2957,20 @@ struct StepRun {
     pgid: Option<i32>,
     /// Kod wyjścia.
     exit_code: Option<i32>,
+    /// Czy supervisor dostał z jądra dowód, że cała grupa procesu nie żyje.
+    ///
+    /// `false` nie znaczy „żyje”: naturalne `close()` zbiera lidera, ale nie produkuje
+    /// [`GroupProof`]. `true` zapisujemy wyłącznie na ścieżce Stop/limitu, która naprawdę
+    /// dostała [`GroupProof::Dead`] (niezmiennik 6).
+    death_proof: bool,
     /// Ile kosztował.
     cost_usd: Option<f64>,
+    /// Rzeczywiste liczniki z terminalnego [`crate::engine::drivers::Outcome`]. `None` znaczy,
+    /// że krok nie dostał wyniku agenta (np. Check albo odmowa przed startem), nie zero.
+    turns: Option<u32>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
     /// Jedna linia dla szyny agentów.
     summary: Option<String>,
     /// Powód, jeśli coś poszło nie tak.
@@ -2952,6 +3024,8 @@ struct Told {
     /// plikiem, który przeżywa `cp -r` katalogu biegu (niezmiennik 4), a ścieżka z `/var/folders`
     /// w środku przestaje po takiej kopii cokolwiek znaczyć.
     reads: Vec<String>,
+    /// Wszystkie źródła wejścia w rzeczywistej kolejności kompozycji, bez ich treści.
+    context: Vec<ContextSource>,
     /// Katalog przekazań, kiedy krok ma co czytać. Pusty, kiedy nie ma: `--add-dir` na katalog,
     /// w którym nic dla tego kroku nie leży, poszerza mu dostęp bez powodu.
     extra_dirs: Vec<PathBuf>,
@@ -2981,7 +3055,12 @@ impl Live {
                 pid: None,
                 pgid: None,
                 exit_code: None,
+                death_proof: false,
                 cost_usd: None,
+                turns: None,
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
                 summary: None,
                 error: None,
             })
@@ -3220,6 +3299,11 @@ impl Live {
                 node_key: &planned.node_key,
                 name: &planned.name,
                 agent: &planned.vendor,
+                kind: match &planned.job {
+                    Job::Agent(_) => "agent",
+                    Job::Check(_) => "check",
+                    Job::Ask { .. } => "checkpoint",
+                },
                 depends_on: &planned.depends_on,
                 status: run.status,
                 // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
@@ -3235,9 +3319,14 @@ impl Live {
                 pid: run.pid,
                 pgid: run.pgid,
                 exit_code: run.exit_code,
+                death_proof: run.death_proof,
                 started_at: run.started_at,
                 ended_at: run.ended_at,
                 cost_usd: run.cost_usd,
+                turns: run.turns,
+                input_tokens: run.input_tokens,
+                output_tokens: run.output_tokens,
+                cached_tokens: run.cached_tokens,
                 summary: run.summary.as_deref(),
                 error: run.error.as_deref(),
                 effective: match &planned.job {
@@ -3472,6 +3561,38 @@ impl Live {
         })
     }
 
+    /// Składa bezpieczny manifest dokładnie w kolejności, w której powstał finalny prompt.
+    fn evidence_for_agent(
+        &self,
+        id: StepId,
+        prompt_bytes: usize,
+        context: Vec<ContextSource>,
+    ) -> EvidenceTarget {
+        let mut inherited_context = self
+            .inherited
+            .sources()
+            .iter()
+            .map(|source| ContextSource {
+                kind: match source.kind {
+                    InheritedSourceKind::Skill => ContextKind::InheritedSkill,
+                    InheritedSourceKind::Learning => ContextKind::InheritedLearning,
+                },
+                reference: source.reference.clone(),
+                bytes: source.bytes,
+            })
+            .collect::<Vec<_>>();
+        inherited_context.extend(context);
+        EvidenceTarget::workflow_step(
+            self.plan.dir.clone(),
+            self.plan.steps[id].id.clone(),
+            SafeInputManifest {
+                prompt_bytes,
+                context: inherited_context,
+                images: Vec::new(),
+            },
+        )
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -3498,8 +3619,24 @@ impl Live {
         let Told {
             prompt,
             reads,
+            context,
             extra_dirs,
-        } = self.prompt_for(id, &job.prompt);
+        } = match self.prompt_for(id, &job.prompt, &job.context) {
+            Ok(told) => told,
+            Err(_error) => {
+                let text = "Loadout could not prove the context files for this agent, so it did \
+                            not start the step."
+                    .to_owned();
+                let _ = ours
+                    .send(AgentEvent::Notice { text: text.clone() }.into())
+                    .await;
+                drop(events);
+                drop(ours);
+                self.update(|book| book.steps[id].error = Some(text));
+                let _ = pump.await;
+                return StepReport::Failed;
+            }
+        };
 
         // ODZIEDZICZONY TEKST DOPISUJE SIĘ TUTAJ, czyli tam, gdzie prompt tury naprawdę powstaje.
         // Doklejenie w `plan_agent` weszłoby do `AgentJob::prompt`, a ten idzie do `run.json`
@@ -3534,8 +3671,32 @@ impl Live {
         // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
         // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
+        let target = self.evidence_for_agent(id, spec.prompt.len(), context);
+        let evidence = target.clone();
         let started = match self.carrying_what_we_inherited(&job.driver) {
-            Ok(driver) => driver.start(spec, events).await,
+            Ok(driver) => {
+                let driver = match driver.with_evidence(target) {
+                    Some(driver) => Ok(driver),
+                    /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
+                     * testowania planisty. Produkcyjna fabryka ma tylko te dwa identyfikatory;
+                     * dla nich brak szwu jest odmowa, nigdy cichym biegiem bez dowodu. */
+                    None if matches!(driver.id(), "claude" | "codex") => Err(anyhow::anyhow!(
+                        "this agent app cannot preserve its private run evidence"
+                    )),
+                    None => Ok(driver),
+                };
+                match driver {
+                    Ok(driver) => driver.start(spec, events).await,
+                    Err(error) => {
+                        // 2026-08-21: odmowa obowiązkowego evidence pada już po zbudowaniu
+                        // kanału, ale przed przekazaniem nadajnika sterownikowi. Bez jawnego
+                        // dropu kurator czekał na EOF w nieskończoność i zwykła odmowa wyglądała
+                        // jak zawieszony `/ask`.
+                        drop(events);
+                        Err(error)
+                    }
+                }
+            }
             Err(refusal) => {
                 // NADAJNIK GINIE TAKŻE NA TEJ GAŁĘZI, i to nie jest higiena. Na ścieżce startu
                 // zabiera go `start`; tutaj nie zabiera go nikt, a `pump.await` niżej kończy się
@@ -3550,7 +3711,7 @@ impl Live {
         let report = match started {
             Ok(handle) => {
                 drop(ours);
-                self.one_turn(id, handle, cancel, &reads).await
+                self.one_turn(id, handle, cancel, &reads, &evidence).await
             }
             Err(error) => {
                 let text = format!("Loadout could not start this agent: {error}");
@@ -3645,26 +3806,35 @@ impl Live {
             }
             // Anulowanie jest WARTOŚCIĄ, nie błędem (niezmiennik 7), a dowód zejścia grupy
             // przyszedł już w `how` — to sterownik go zdobył, nie my.
-            CheckHow::Stopped(proof) => {
-                if let GroupProof::Alive = proof {
-                    self.update(|book| {
-                        book.steps[id].error = Some(
+            CheckHow::Stopped(first_proof) => {
+                let proof = self.prove_check_dead(&mut live, first_proof).await;
+                let unproven = matches!(&proof, GroupProof::Alive);
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.death_proof = proven_dead;
+                    if unproven {
+                        step.error = Some(
                             "Loadout could not make sure this check stopped, so it may still be \
                              running."
                                 .to_owned(),
                         );
-                    });
-                }
+                    }
+                });
                 StepReport::Cancelled
             }
-            CheckHow::Overdue(proof) => {
-                let unproven = matches!(proof, GroupProof::Alive);
+            CheckHow::Overdue(first_proof) => {
+                let proof = self.prove_check_dead(&mut live, first_proof).await;
+                let unproven = matches!(&proof, GroupProof::Alive);
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     // Powód nazywa LIMIT CZASU i mówi, co zrobić. Liczba minut przychodzi ZE
                     // STAŁEJ, a nie z tego zdania: dwa miejsca, w których mieszka jedna liczba,
                     // rozjeżdżają się przy pierwszej zmianie i to zdanie zostaje tym nieaktualnym.
                     let minutes = GIVE_UP_AFTER.as_secs() / 60;
-                    book.steps[id].error = Some(if unproven {
+                    let step = &mut book.steps[id];
+                    step.death_proof = proven_dead;
+                    step.error = Some(if unproven {
                         format!(
                             "This check ran longer than {minutes} minutes, and Loadout could not \
                              make sure it stopped, so it may still be running."
@@ -3681,6 +3851,70 @@ impl Live {
         }
     }
 
+    /// Zachowuje uchwyt komendy sprawdzającej po pierwszym niepełnym dowodzie Stopu.
+    async fn prove_check_dead(&self, live: &mut Checking, mut proof: GroupProof) -> GroupProof {
+        while matches!(proof, GroupProof::Alive) {
+            tracing::error!(
+                "a check group is still alive after escalation; Loadout retains its handle and \
+                 will retry"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            proof = live.cancel().await;
+        }
+        proof
+    }
+
+    /// Kończy krok po limicie wyłącznie przez supervisor i utrwala jego rzeczywisty dowód.
+    async fn stop_overdue_agent(
+        &self,
+        id: StepId,
+        handle: &mut dyn AgentHandle,
+        limit: Duration,
+    ) -> StepReport {
+        let proof = self.prove_agent_dead(handle).await;
+        let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.death_proof = proven_dead;
+            step.error = Some(format!(
+                "This step ran longer than its {} minute limit, so Loadout stopped it. Give it \
+                 more minutes in the agent, or split the work.",
+                limit.as_secs() / 60
+            ));
+        });
+        StepReport::Failed
+    }
+
+    /// Kończy krok po Stopie i nie myli wysłanego sygnału z dowodem martwej grupy.
+    async fn stop_cancelled_agent(&self, id: StepId, handle: &mut dyn AgentHandle) -> StepReport {
+        let proof = self.prove_agent_dead(handle).await;
+        let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.death_proof = proven_dead;
+        });
+        StepReport::Cancelled
+    }
+
+    /// Zachowuje jedynego właściciela uchwytu aż supervisor dowiedzie `Dead`.
+    ///
+    /// `Alive` nie jest wynikiem końcowym. Powrót z tej funkcji na takim dowodzie zrzuciłby
+    /// `Box<dyn AgentHandle>` i osierocił proces, więc pełna eskalacja jest ponawiana w tym samym
+    /// stosie tak długo, jak długo istnieje coś, czego nie umiemy uznać za martwe.
+    async fn prove_agent_dead(&self, handle: &mut dyn AgentHandle) -> GroupProof {
+        loop {
+            let proof = handle.cancel().await;
+            if matches!(proof, GroupProof::Dead { .. }) {
+                return proof;
+            }
+            tracing::error!(
+                "an agent group is still alive after escalation; Loadout retains its handle and \
+                 will retry"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     /// Jedna tura agenta: czekaj na koniec albo na Stop, a udany wynik oddaj następnym.
     ///
     /// `reads` jest listą tego, co Loadout wstrzyknął w prompt tej tury ([`Live::prompt_for`]),
@@ -3691,6 +3925,7 @@ impl Live {
         mut handle: Box<dyn AgentHandle>,
         cancel: &CancellationToken,
         reads: &[String],
+        evidence: &EvidenceTarget,
     ) -> StepReport {
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
         // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
@@ -3758,65 +3993,60 @@ impl Live {
             // o trzy linijki tańszy — i jest błędem, przed którym stoi niezmiennik 10: anuluje
             // ZADANIE RUSTA, a proces systemowy zostaje żywy i pali limit u dostawcy do końca
             // świata. Dlatego tutaj wołamy `cancel()` i pytamy o DOWÓD zejścia grupy.
-            Ended::Overdue => {
-                let proof = handle.cancel().await;
-                let unproven = matches!(proof, GroupProof::Alive);
-                self.update(|book| {
-                    let step = &mut book.steps[id];
-                    // Powód nazywa LIMIT CZASU, nie „coś poszło nie tak". Człowiek ma stąd
-                    // wiedzieć, że to była nasza decyzja i którą liczbę zmienić, żeby jej nie
-                    // było — inaczej szuka wady w agencie, którego nikt nie zepsuł.
-                    step.error = Some(if unproven {
-                        format!(
-                            "This step ran longer than its {} minute limit, and Loadout could \
-                             not make sure the agent stopped, so it may still be running.",
-                            limit.as_secs() / 60
-                        )
-                    } else {
-                        format!(
-                            "This step ran longer than its {} minute limit, so Loadout stopped \
-                             it. Give it more minutes in the agent, or split the work.",
-                            limit.as_secs() / 60
-                        )
-                    });
-                });
-                StepReport::Failed
-            }
+            Ended::Overdue => self.stop_overdue_agent(id, handle.as_mut(), limit).await,
             // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
             // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
             // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
-            Ended::Stopped => {
-                let proof = handle.cancel().await;
-                if let GroupProof::Alive = proof {
-                    // Dopóki nie ma dowodu, traktujemy jako żywe (niezmiennik 6). To jest zdanie
-                    // dla człowieka, bo osierocony agent pali pieniądze w tle.
-                    self.update(|book| {
-                        book.steps[id].error = Some(
-                            "Loadout could not make sure this agent stopped, so it may still be \
-                             running."
-                                .to_owned(),
-                        );
-                    });
-                }
-                StepReport::Cancelled
-            }
+            Ended::Stopped => self.stop_cancelled_agent(id, handle.as_mut()).await,
             Ended::Turn(Err(error)) => {
-                self.update(|book| book.steps[id].error = Some(error.to_string()));
+                let proof = self.prove_agent_dead(handle.as_mut()).await;
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.death_proof = matches!(proof, GroupProof::Dead { .. });
+                    step.error = Some(error.to_string());
+                });
                 StepReport::Failed
             }
             Ended::Turn(Ok(turn)) => {
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
                 // w nieskończoność, więc krok bez tego zostawia żywy proces [T1 §2, §4.6].
-                let code = handle.close().await.ok().flatten();
+                let closed = handle.close().await;
+                if closed.is_err() {
+                    evidence.mark_incomplete();
+                    let proof = self.prove_agent_dead(handle.as_mut()).await;
+                    self.update(|book| {
+                        book.steps[id].death_proof = matches!(proof, GroupProof::Dead { .. });
+                    });
+                }
+                let close_succeeded = closed.is_ok();
+                let code = closed.ok().flatten();
                 // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
                 // Samo zero z drivera nie kończy kroku sukcesem — agent, który wypisał „nie dam
                 // rady" i wyszedł czysto, nie zrobił tego, o co go proszono.
-                let ok = turn.ok && matches!(code, None | Some(0));
+                let evidence_complete = evidence.is_healthy();
+                let ok = turn.ok
+                    && close_succeeded
+                    && evidence_complete
+                    && matches!(code, None | Some(0));
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.exit_code = code;
                     step.cost_usd = turn.cost_usd;
+                    step.turns = Some(turn.turns);
+                    step.input_tokens = Some(turn.tokens.input);
+                    step.output_tokens = Some(turn.tokens.output);
+                    step.cached_tokens = Some(turn.tokens.cached);
                     step.summary = summary_of(&turn.text);
+                    if !close_succeeded || !evidence_complete {
+                        /* Surowy blad zapisu moze zawierac prywatna sciezke albo tekst vendora.
+                         * Ksiege i ekran dostaja staly rodzaj; szczegol zostaje lokalnie przy
+                         * prywatnym artefakcie, ktory nadal ma stan niekompletny. */
+                        step.error = Some(
+                            "Loadout could not preserve this agent's private run evidence. The \
+                             step was not accepted as complete."
+                                .to_owned(),
+                        );
+                    }
                 });
                 if ok {
                     // Przekazanie schodzi na dysk PRZED powrotem z tury, i to jest cały warunek
@@ -3862,15 +4092,21 @@ impl Live {
     /// Indeks jest **listą ścieżek**, nigdy treścią (D6 punkt 5, nagłówek modułu). Krok bez
     /// poprzedników dostaje swoją instrukcję i nic więcej: pusty nagłówek „steps before this one"
     /// nad zerem wpisów jest zdaniem o niczym, a agent przeczyta go jako zgubione wejście.
-    fn prompt_for(&self, id: StepId, instructions: &str) -> Told {
+    fn prompt_for(
+        &self,
+        id: StepId,
+        instructions: &str,
+        planned_context: &[ContextSource],
+    ) -> anyhow::Result<Told> {
         let handed = self.handed_before(id);
         let mut told = Told {
             prompt: instructions.to_owned(),
             reads: Vec::with_capacity(handed.len()),
+            context: planned_context.to_vec(),
             extra_dirs: Vec::new(),
         };
         if handed.is_empty() {
-            return told;
+            return Ok(told);
         }
 
         told.prompt.push_str("\n\n");
@@ -3883,6 +4119,19 @@ impl Live {
             // który w tym drzewie jest `warn`, czyli pod `-D warnings` też fatalny.
             let _ = write!(told.prompt, "\n- {}: {}", hand.from, hand.path.display());
             told.reads.push(self.filed_as(&hand.path));
+            let metadata = fs::symlink_metadata(&hand.path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                anyhow::bail!("a handoff context source is not a real regular file");
+            }
+            told.context.push(ContextSource {
+                kind: ContextKind::Handoff,
+                reference: told
+                    .reads
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("a handoff lost its safe reference"))?,
+                bytes: usize::try_from(metadata.len())?,
+            });
             // Jeden katalog na cały bieg, więc pętla dopisuje go raz — ale bierze go ze ścieżki,
             // a nie ze stałej: druga kopia nazwy `handoffs` byłaby drugim miejscem do poprawienia
             // w dniu, w którym `memory::handoff` zmieni nazwę katalogu, i tym niepoprawionym.
@@ -3916,7 +4165,7 @@ impl Live {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
         told.prompt.push('\n');
-        told
+        Ok(told)
     }
 
     /// Przekazania kroków, po których idzie ten krok — **w kolejności z grafu**.
@@ -4374,6 +4623,8 @@ struct StepEntry<'a> {
     node_key: &'a str,
     name: &'a str,
     agent: &'a str,
+    /// Zamknięty rodzaj kroku; diagnostyka nie zgaduje po obecności artefaktów agenta.
+    kind: &'static str,
     depends_on: &'a [String],
     status: StepState,
     attempt: u32,
@@ -4381,9 +4632,17 @@ struct StepEntry<'a> {
     pid: Option<i32>,
     pgid: Option<i32>,
     exit_code: Option<i32>,
+    /// Tylko rzeczywisty dowód supervisora. Brak pola oznacza „nie dowiedziono”, nigdy
+    /// „dowiedziono, bo krok wygląda na zakończony”.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    death_proof: bool,
     started_at: Option<i64>,
     ended_at: Option<i64>,
     cost_usd: Option<f64>,
+    turns: Option<u32>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
     summary: Option<&'a str>,
     error: Option<&'a str>,
     /// Konfiguracja **efektywna**, zamrożona w chwili startu [T4 §5.2 p. 3]. `None` dla kafelka

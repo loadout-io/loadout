@@ -16,14 +16,17 @@ use tauri::Manager;
 
 use crate::commands::Drivers;
 use crate::engine::drivers::AgentDriver;
-use crate::engine::drivers::absent::Absent;
 use crate::engine::drivers::claude::ClaudeDriver;
+use crate::engine::drivers::codex::CodexDriver;
 use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
 /// Warstwa komend: funkcje `*_inner`, ktore nie znaja slowa „Tauri". Wypelnia T-15.
 pub mod commands;
+
+/// Prywatne dowody biegow i rozmow oraz bezpieczne manifesty ich wejscia. Wypelnia T-34.
+pub mod evidence;
 
 /// Silnik: graf, planista, nadzor procesow. Wypelnia T-02 i dalej.
 pub mod engine;
@@ -284,11 +287,11 @@ pub fn run() {
             })?;
 
             /* Fabryka sterowników. Funkcja, nie mapa — trzeci vendor ma wejść bez wydania
-             * Loadouta (`commands/mod.rs`). Dla Codeksa oddajemy sterownik, który ODMAWIA
-             * z nazwą zadania: `ClaudeDriver` w tym miejscu wykonałby krok i skłamał o tym,
-             * kto go wykonał, a `SessionRef::vendor` zapisuje tę odpowiedź do bazy. */
+             * Loadouta (`commands/mod.rs`). Każde ramię oddaje własny adapter, bo
+             * `SessionRef::vendor` zapisuje tę odpowiedź do bazy i podstawienie innego
+             * sterownika skłamałoby o tym, kto wykonał krok. */
             let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
-            let codex: Arc<dyn AgentDriver> = Arc::new(Absent::new("codex", "T-10"));
+            let codex: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
             let drivers: Drivers = Arc::new(move |vendor| match vendor {
                 Vendor::ClaudeCode => Arc::clone(&claude),
                 Vendor::Codex => Arc::clone(&codex),
@@ -374,6 +377,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(ipc::command_handler())
         .run(tauri::generate_context!());

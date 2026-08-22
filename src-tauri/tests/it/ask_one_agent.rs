@@ -48,6 +48,7 @@ use loadout_lib::engine::drivers::{
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::evidence::EvidenceTarget;
 use loadout_lib::ipc::{LineSink, QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::{FileAccess, Vendor, read_agent_file};
 use loadout_lib::store::Store;
@@ -444,6 +445,7 @@ fn fake_drivers(watch: Arc<Watch>, hold: Duration) -> Drivers {
             vendor,
             watch: Arc::clone(&watch),
             hold,
+            evidence: None,
         })
     })
 }
@@ -479,6 +481,9 @@ struct Fake {
     vendor: Vendor,
     watch: Arc<Watch>,
     hold: Duration,
+    /// Produkcyjny Codex nie może ruszyć bez prywatnego celu dowodowego. Dubler zachowuje ten
+    /// sam kontrakt, choć samo I/O nadal należy do testowanego silnika.
+    evidence: Option<EvidenceTarget>,
 }
 
 #[async_trait]
@@ -502,6 +507,10 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let _evidence = self
+            .evidence
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the run omitted its evidence target"))?;
         let session = SessionRef {
             vendor: self.id(),
             id: spec.run_id.to_string(),
@@ -532,6 +541,15 @@ impl AgentDriver for Fake {
             events,
             session,
             hold: self.hold,
+        }))
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            vendor: self.vendor,
+            watch: Arc::clone(&self.watch),
+            hold: self.hold,
+            evidence: Some(target),
         }))
     }
 }

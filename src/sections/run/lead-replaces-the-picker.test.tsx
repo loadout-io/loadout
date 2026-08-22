@@ -45,7 +45,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-const { Start } = await import('./start');
+const { Start, WorkflowRunButton } = await import('./start');
 const { LEAD_LABEL } = await import('./lead');
 const { launchRequested } = await import('./requested-launch');
 const { requestRun, requestedRun, takeRequestedRun } = await import('./requested');
@@ -185,6 +185,46 @@ describe('the run controls carry the lead, and the green Run in the editor still
         'The named controls were: ' +
         JSON.stringify(named),
     ).toBe(1);
+  });
+
+  it('names the workflow run separately from the lead conversation', () => {
+    const rendered = markup();
+    const labels = buttonLabels(rendered);
+
+    expect(
+      labels,
+      'the real run strip still carries the bare `Start` action next to the lead selector. That ' +
+        'makes a complete new workflow run look like the next turn of the selected lead.',
+    ).toContain('Run workflow');
+    expect(
+      labels,
+      'the ambiguous bare `Start` label is still visible in the real strip',
+    ).not.toContain('Start');
+
+    expect(
+      rendered,
+      'the true Start path does not mount the workflow action component whose loaded state is ' +
+        'judged below.',
+    ).toContain('data-workflow-run="manual"');
+
+    const loaded = renderToStaticMarkup(
+      <WorkflowRunButton choice={CHOICES[1] ?? null} disabled={false} onRun={() => undefined} />,
+    );
+    expect(
+      buttonLabels(loaded),
+      'the actual workflow button mounted by Start does not name the loaded workflow.',
+    ).toEqual(['Run Ship a feature']);
+    expect(
+      loaded,
+      'the explanation has to say this is a new complete run from the beginning, not a resumed ' +
+        'lead conversation.',
+    ).toContain(
+      'title="Starts a new run of the complete Ship a feature workflow from the beginning."',
+    );
+    expect(
+      loaded,
+      'the visible workflow and the file sent on click have to come from the same choice.',
+    ).toContain('data-workflow="ship-a-feature.json"');
   });
 
   it('launches the workflow the editor asked for, with the limit it was given', async () => {

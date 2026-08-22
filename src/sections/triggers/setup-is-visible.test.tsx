@@ -7,10 +7,16 @@
 import { Children, isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createTriggersStore } from '../../state/triggers';
-import type { TriggerClock, TriggerRunPath, TriggerView } from '../../state/triggers';
+import type {
+  ConfiguredTriggerView,
+  TriggerClock,
+  TriggerRunPath,
+  TriggerView,
+} from '../../state/triggers';
+import { useWorkspaces } from '../../state/workspaces';
 import type { TriggerIo } from './io';
 import TriggersScreen, { DefaultCreateControl } from './index';
 import type {
@@ -34,12 +40,17 @@ const RUN: TriggerRunPath = {
   atOnce: () => 3,
 };
 
+const WORKSPACE = '/project';
+
 const IO: TriggerIo = {
   listTriggers: async () => [],
   setTriggerEnabled: async () => {
     throw new Error('not used');
   },
   checkTrigger: async () => ({ status: 'armed' }),
+  retryTrigger: async () => {
+    throw new Error('not used');
+  },
   createTrigger: async () => {
     throw new Error('not used');
   },
@@ -54,11 +65,12 @@ const IO: TriggerIo = {
   },
 };
 
-const HEALTHY: TriggerView = {
+const HEALTHY: ConfiguredTriggerView = {
   slug: 'linear-one',
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: WORKSPACE,
   workflowName: 'Analysis',
   enabled: true,
   pollEveryMinutes: 5,
@@ -74,22 +86,43 @@ const BROKEN: TriggerView = {
 
 const CREATE: OpenedTriggerEditor = {
   mode: 'create',
-  value: { connector: '', apiKey: '', workflow: 'analysis.json', pollEveryMinutes: 1 },
+  value: {
+    connector: '',
+    apiKey: '',
+    workflow: 'analysis.json',
+    workspace: WORKSPACE,
+    pollEveryMinutes: 1,
+  },
 };
 
 const EDIT: OpenedTriggerEditor = {
   mode: 'edit',
-  value: { connector: 'linear', apiKey: '', workflow: 'verify.json', pollEveryMinutes: 15 },
+  value: {
+    connector: 'linear',
+    apiKey: '',
+    workflow: 'verify.json',
+    workspace: WORKSPACE,
+    pollEveryMinutes: 15,
+  },
   expected: {
     slug: HEALTHY.slug,
     source: HEALTHY.source,
     condition: HEALTHY.condition,
     workflow: HEALTHY.workflow,
+    workspace: HEALTHY.workspace,
     enabled: HEALTHY.enabled,
     pollEveryMinutes: HEALTHY.pollEveryMinutes,
     hasApiKey: HEALTHY.hasApiKey,
   },
 };
+
+beforeEach(() => {
+  useWorkspaces.setState({
+    all: [{ id: WORKSPACE, name: 'Project', folder: WORKSPACE }],
+    activeId: WORKSPACE,
+    said: null,
+  });
+});
 
 function screen(
   options: {
@@ -188,7 +221,13 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
     expect(editor.state).toEqual({
       opened: {
         mode: 'create',
-        value: { connector: '', apiKey: '', workflow: '', pollEveryMinutes: 1 },
+        value: {
+          connector: '',
+          apiKey: '',
+          workflow: '',
+          workspace: WORKSPACE,
+          pollEveryMinutes: 1,
+        },
       },
       confirmingDelete: false,
       busy: 'idle',
@@ -223,6 +262,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
         source: 'linear',
         condition: 'assigned-to-me',
         workflow: 'loaded-analysis.json',
+        workspace: WORKSPACE,
         enabled: true,
         pollEveryMinutes: 5,
         hasApiKey: true,
@@ -245,6 +285,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
         connector: '',
         apiKey: '',
         workflow: 'loaded-analysis.json',
+        workspace: WORKSPACE,
         pollEveryMinutes: 1,
       },
     });
@@ -256,6 +297,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
       source: 'linear',
       condition: 'assigned-to-me',
       workflow: 'loaded-analysis.json',
+      workspace: WORKSPACE,
       pollEveryMinutes: 5,
       apiKey: 'lin_api_explicit_save_key',
     });
@@ -265,7 +307,14 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
   it('renders the complete create form inside that screen, with one real connector', () => {
     const markup = screen({ opened: CREATE });
     expect(markup).toContain('data-trigger-editor');
-    for (const label of ['Connector', 'Linear API key', 'When', 'Check every', 'Workflow']) {
+    for (const label of [
+      'Connector',
+      'Linear API key',
+      'When',
+      'Workspace',
+      'Check every',
+      'Workflow',
+    ]) {
       expect(markup).toContain(label);
     }
     expect(markup).toContain('An issue is assigned to you');
@@ -293,6 +342,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
           connector: 'linear',
           apiKey: 'lin_api_ready_for_an_explicit_save',
           workflow: '',
+          workspace: WORKSPACE,
           pollEveryMinutes: 1,
         },
       },
@@ -343,6 +393,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
         connector: 'linear',
         apiKey: '',
         workflow: HEALTHY.workflow,
+        workspace: HEALTHY.workspace ?? '',
         pollEveryMinutes: HEALTHY.pollEveryMinutes,
       },
       expected: {
@@ -350,6 +401,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
         source: HEALTHY.source,
         condition: HEALTHY.condition,
         workflow: HEALTHY.workflow,
+        workspace: HEALTHY.workspace,
         enabled: HEALTHY.enabled,
         pollEveryMinutes: HEALTHY.pollEveryMinutes,
         hasApiKey: HEALTHY.hasApiKey,

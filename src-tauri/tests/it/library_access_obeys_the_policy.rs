@@ -379,7 +379,7 @@ fn folder_of(file: &Path) -> Result<PathBuf, Box<dyn Error>> {
 async fn one_sentence(library: &Path, lead: &Lead, cwd: &Path) -> Result<RunSpec, Box<dyn Error>> {
     let (drivers, watch) = one_vendor();
     let (sink, _source) = line_channel(LINES);
-    let mut threads = Threads::new();
+    let threads = Threads::new();
     threads.library_is(library.to_path_buf());
     threads.lines_go_to(cwd.to_path_buf(), sink);
     threads

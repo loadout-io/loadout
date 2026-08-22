@@ -15,6 +15,8 @@ export interface TriggerClaim {
   readonly deliveryId: string;
   readonly workflow: string;
   readonly runId: string;
+  /** Frozen when Rust mints the delivery. Legacy receipts can predate workspace ownership. */
+  readonly workspace: string | null;
 }
 
 /** A durable issue delivery. Its timestamp and run id were minted before the webview saw it. */
@@ -30,6 +32,8 @@ export interface ConfiguredTriggerEntry {
   readonly source: string;
   readonly condition: string;
   readonly workflow: string;
+  /** Missing/null means this legacy trigger must be repaired before use. Normalized in state. */
+  readonly workspace?: string | null;
   readonly enabled: boolean;
   readonly pollEveryMinutes: TriggerCadence;
   readonly hasApiKey: boolean;
@@ -43,6 +47,7 @@ export interface BrokenTriggerEntry {
   readonly source?: never;
   readonly condition?: never;
   readonly workflow?: never;
+  readonly workspace?: never;
   readonly enabled?: never;
   readonly pollEveryMinutes?: never;
   readonly hasApiKey?: never;
@@ -59,6 +64,8 @@ export interface TriggerDraft {
   readonly source: string;
   readonly condition: string;
   readonly workflow: string;
+  /** A submitted editor always names one registered workspace; Rust validates it again. */
+  readonly workspace: string;
   readonly pollEveryMinutes: TriggerCadence;
   readonly apiKey: string | null;
 }
@@ -69,6 +76,7 @@ export interface TriggerSnapshot {
   readonly source: string;
   readonly condition: string;
   readonly workflow: string;
+  readonly workspace: string | null;
   readonly enabled: boolean;
   readonly pollEveryMinutes: TriggerCadence;
   readonly hasApiKey: boolean;
@@ -79,12 +87,18 @@ export type TriggerPoll =
   | { readonly status: 'busy' }
   | { readonly status: 'armed' }
   | { readonly status: 'pending'; readonly delivery: TriggerDelivery }
-  | { readonly status: 'accepted'; readonly workflow: string; readonly receiptAt: number };
+  | {
+      readonly status: 'accepted';
+      readonly workflow: string;
+      readonly workspace: string | null;
+      readonly receiptAt: number;
+    };
 
 export interface TriggerIo {
   listTriggers(): Promise<TriggerEntry[]>;
   setTriggerEnabled(slug: string, enabled: boolean): Promise<TriggerEntry>;
   checkTrigger(slug: string): Promise<TriggerPoll>;
+  retryTrigger(slug: string): Promise<TriggerDelivery>;
   createTrigger(draft: TriggerDraft): Promise<ConfiguredTriggerEntry>;
   updateTrigger(
     slug: string,
@@ -107,6 +121,11 @@ export function setTriggerEnabled(slug: string, enabled: boolean): Promise<Trigg
 
 export function checkTrigger(slug: string): Promise<TriggerPoll> {
   return invoke<TriggerPoll>('check_trigger', { slug });
+}
+
+/** Ask Rust to return the pending attempt or mint one from the latest accepted run. */
+export function retryTrigger(slug: string): Promise<TriggerDelivery> {
+  return invoke<TriggerDelivery>('retry_trigger', { slug });
 }
 
 /** Create is one request; the secret travels only inside the explicitly submitted draft. */

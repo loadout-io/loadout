@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use super::line::Tool;
 use super::supervisor::{GroupId, GroupProof};
+use crate::evidence::EvidenceTarget;
 
 /// Vendor, ktory jest w typie, ale nie ma jeszcze adaptera. Fabryka `Drivers` jest funkcja
 /// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
@@ -54,7 +55,7 @@ pub mod host;
 /// flagę, jest kontrolką bez handlera (niezmiennik 16) — a sufit i tak egzekwuje limit czasu
 /// ściennego z T-03, bo to on robi to, co użytkownik ma na myśli mówiąc „nie mielże
 /// w nieskończoność" [T4 §3.3].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunSpec {
     /// Identyfikator biegu, wygenerowany przez nas **przed** startem procesu. Dla `claude`
     /// staje się `--session-id`, więc sesja jest znana zanim przyjdzie `system/init` i nie ma
@@ -101,6 +102,29 @@ pub struct RunSpec {
     pub extra_dirs: Vec<PathBuf>,
     /// Sesja do wznowienia. `None` przy pierwszej turze kroku.
     pub resume: Option<SessionRef>,
+}
+
+impl std::fmt::Debug for RunSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /* Prompt, dopisek systemowy, model i absolutny cwd sa danymi prywatnymi. Ten Debug
+         * trafia do bledow spawn/transport, wiec redakcja musi byc w typie, nie w kazdym
+         * wołajacym, ktory akurat pamietal o niezmienniku 9. */
+        formatter
+            .debug_struct("RunSpec")
+            .field("run_id", &self.run_id)
+            .field("cwd", &"<private workspace path>")
+            .field("prompt_bytes", &self.prompt.len())
+            .field(
+                "system_append_bytes",
+                &self.system_append.as_ref().map(String::len),
+            )
+            .field("model", &self.model.as_ref().map(|_| "<configured>"))
+            .field("policy", &self.policy)
+            .field("tools", &self.tools.as_ref().map(Vec::len))
+            .field("extra_dirs", &self.extra_dirs.len())
+            .field("resuming", &self.resume.is_some())
+            .finish()
+    }
 }
 
 /// Co agentowi wolno zrobić z plikami — **po ludzku**, w trzech wariantach [T1 §9].
@@ -321,6 +345,146 @@ pub struct Probe {
     pub version: Option<String>,
 }
 
+/// Jeden z czterech formatow obrazu, ktore oba wspierane vendory przyjmuja natywnie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageMime {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+impl ImageMime {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+
+/// Prywatne bajty jednego obrazu. Debug celowo nie wypisuje zawartosci.
+#[derive(Clone)]
+pub struct ImageInput {
+    mime: ImageMime,
+    bytes: Arc<[u8]>,
+}
+
+impl ImageInput {
+    /// Buduje prywatny obraz z drutu webviewa, odmawiajac MIME spoza zamknietej listy.
+    ///
+    /// Szkielet istnieje przed implementacja, zeby SVG i dowolny napis padaly podczas
+    /// wykonania acceptance testu, a nie byly niewyrazalne w jego typach.
+    pub fn from_wire(mime: &str, bytes: impl Into<Arc<[u8]>>) -> Result<Self, ImageError> {
+        let mime = match mime {
+            "image/png" => ImageMime::Png,
+            "image/jpeg" => ImageMime::Jpeg,
+            "image/gif" => ImageMime::Gif,
+            "image/webp" => ImageMime::Webp,
+            _ => return Err(ImageError::Unsupported),
+        };
+        Ok(Self::new(mime, bytes))
+    }
+
+    #[must_use]
+    pub fn new(mime: ImageMime, bytes: impl Into<Arc<[u8]>>) -> Self {
+        Self {
+            mime,
+            bytes: bytes.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn mime(&self) -> ImageMime {
+        self.mime
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::fmt::Debug for ImageInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ImageInput")
+            .field("mime", &self.mime)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// Obrazy, ktore przeszly wspolna walidacje przed startem jakiegokolwiek procesu.
+#[derive(Clone, Debug, Default)]
+pub struct ValidatedImages(Vec<ImageInput>);
+
+impl ValidatedImages {
+    /// Jedyna walidacja MIME, magic bytes i limitow dla obu adapterow.
+    pub fn validate(images: Vec<ImageInput>) -> Result<Self, ImageError> {
+        const MAX_IMAGES: usize = 4;
+        const MAX_ONE: usize = 5 * 1024 * 1024;
+        const MAX_ALL: usize = 12 * 1024 * 1024;
+
+        if images.len() > MAX_IMAGES {
+            return Err(ImageError::TooMany);
+        }
+        let mut total = 0_usize;
+        for image in &images {
+            if image.bytes().len() > MAX_ONE {
+                return Err(ImageError::OneTooLarge);
+            }
+            total = total.saturating_add(image.bytes().len());
+            if total > MAX_ALL {
+                return Err(ImageError::AllTooLarge);
+            }
+            if !magic_matches(image.mime(), image.bytes()) {
+                return Err(ImageError::WrongMagic);
+            }
+        }
+        Ok(Self(images))
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[ImageInput] {
+        &self.0
+    }
+}
+
+fn magic_matches(mime: ImageMime, bytes: &[u8]) -> bool {
+    match mime {
+        ImageMime::Png => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        ImageMime::Jpeg => bytes.starts_with(b"\xff\xd8\xff"),
+        ImageMime::Gif => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        ImageMime::Webp => {
+            bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
+        }
+    }
+}
+
+/// Nazwane odmowy wspolnej walidacji obrazow.
+#[derive(Debug, thiserror::Error)]
+pub enum ImageError {
+    #[error("Attach no more than 4 images at once.")]
+    TooMany,
+    #[error("Each image must be no larger than 5 MiB.")]
+    OneTooLarge,
+    #[error("The attached images must be no larger than 12 MiB together.")]
+    AllTooLarge,
+    #[error("Attach a PNG, JPEG, GIF or WebP image.")]
+    Unsupported,
+    #[error("The image contents do not match their file type.")]
+    WrongMagic,
+}
+
 /// Sterownik jednego vendora. Dwie implementacje od pierwszego dnia (decyzja D3): ta jest
 /// pierwszą z dwóch, `CodexDriver` z T-10 jest testem, czy ten trait jest abstrakcją.
 #[async_trait]
@@ -344,6 +508,39 @@ pub trait AgentDriver: Send + Sync {
         spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>>;
+
+    /// Uruchamia pierwsza ture z natywnymi obrazami, po wspolnej walidacji.
+    ///
+    /// Pusta lista zachowuje dotychczasowa droge tekstowa. Niepusta lista jest nazwana odmowa
+    /// dla adaptera bez natywnego transportu, nigdy panika w silniku (AGENTS.md §2a).
+    async fn start_with_images(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        if images.is_empty() {
+            return self.start(spec, tx).await;
+        }
+        Err(anyhow::anyhow!(
+            "this agent app does not accept images in a conversation"
+        ))
+    }
+
+    /// Uruchamia interaktywna rozmowe Lead, ktora moze miec inny transport niz krok grafu.
+    ///
+    /// Codex jest pierwszym przypadkiem: workflow tekstowy zachowuje `codex exec`, ale Lead
+    /// musi uzyc jednego `app-server` po stdio, zeby obrazy nie trafily ani do pliku, ani do
+    /// trwalej sesji vendora. Domyslne cialo zachowuje dotychczasowe duble i Claude'a; adapter
+    /// Codeksa nadpisuje caly czas zycia rozmowy.
+    async fn start_conversation(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        self.start_with_images(spec, images, tx).await
+    }
 
     /// Ten sam sterownik, tylko niosący **gotowy** fragment argv przyniesiony przez warstwę
     /// wyżej — albo `None`, kiedy ten vendor takiego szwu nie ma.
@@ -369,6 +566,14 @@ pub trait AgentDriver: Send + Sync {
     fn inheriting(&self, _flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
         None
     }
+
+    /// Ten sam sterownik z prywatnym targetem dowodow tej logicznej sesji.
+    ///
+    /// `Option` uniemozliwia produkcji ciche uruchomienie vendora bez dowodow. Implementacje
+    /// wejda w Phase 2; domyslne `None` utrzymuje istniejace duble kompilowalne w honest-red.
+    fn with_evidence(&self, _target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
 }
 
 /// Żywa sesja jednego agenta.
@@ -383,12 +588,24 @@ pub trait AgentDriver: Send + Sync {
 /// tura i przerwanie w paśmie. Dwa kanały nad jednym `stdin` to wyścig, w którym koperta tury
 /// wchodzi w środek prośby o przerwanie — a CLI czyta stdin **linia po linii**, więc rozjechana
 /// linia jest turą zgubioną po drugiej stronie.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ToAgent {
     /// Kolejna tura: to, co napisał człowiek albo bieg.
     Turn(String),
     /// Przerwanie w paśmie, z identyfikatorem prośby.
     Interrupt(String),
+}
+
+impl std::fmt::Debug for ToAgent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Turn(text) => formatter
+                .debug_struct("Turn")
+                .field("text", &format_args!("<private; {} bytes>", text.len()))
+                .finish(),
+            Self::Interrupt(_) => formatter.write_str("Interrupt(<private request id>)"),
+        }
+    }
 }
 
 /// Uchwyt do mówienia do sesji — **klonowalny i bez `&mut`**.
@@ -426,6 +643,20 @@ pub trait AgentHandle: Send {
 
     /// Kolejna tura w tej samej sesji.
     async fn send(&mut self, text: String) -> anyhow::Result<()>;
+
+    /// Kolejna tura z natywnymi obrazami, przez ten sam logiczny watek.
+    async fn send_with_images(
+        &mut self,
+        text: String,
+        images: ValidatedImages,
+    ) -> anyhow::Result<()> {
+        if images.is_empty() {
+            return self.send(text).await;
+        }
+        Err(anyhow::anyhow!(
+            "this agent app does not accept images in a follow-up turn"
+        ))
+    }
 
     /// Czeka na koniec bieżącej tury.
     async fn wait(&mut self) -> anyhow::Result<Outcome>;

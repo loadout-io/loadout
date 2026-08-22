@@ -47,6 +47,7 @@ use loadout_lib::engine::drivers::{
 };
 use loadout_lib::engine::line::Line;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::evidence::EvidenceTarget;
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::{Agent, Vendor};
 use loadout_lib::store::Store;
@@ -315,7 +316,10 @@ struct Watched(Arc<Mutex<Vec<String>>>);
 
 impl Watched {
     fn drivers(&self) -> Drivers {
-        let driver: Arc<dyn AgentDriver> = Arc::new(Fake(Self(Arc::clone(&self.0))));
+        let driver: Arc<dyn AgentDriver> = Arc::new(Fake {
+            watched: Self(Arc::clone(&self.0)),
+            evidence: None,
+        });
         Arc::new(move |_vendor| Arc::clone(&driver))
     }
 
@@ -329,7 +333,11 @@ impl Watched {
 
 /// Dubler sterownika: zapamiętuje prompt, mówi jedno zdanie i kończy turę sukcesem.
 #[derive(Debug)]
-struct Fake(Watched);
+struct Fake {
+    watched: Watched,
+    /// Zachowuje obowiązkowy cel prywatnego dowodu; zapis nadal wykonuje produkcyjny silnik.
+    evidence: Option<EvidenceTarget>,
+}
 
 #[async_trait]
 impl AgentDriver for Fake {
@@ -349,7 +357,11 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: tokio::sync::mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        self.0
+        let _evidence = self
+            .evidence
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the run omitted its evidence target"))?;
+        self.watched
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -371,6 +383,13 @@ impl AgentDriver for Fake {
             session,
             events,
             done: false,
+        }))
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            watched: self.watched.clone(),
+            evidence: Some(target),
         }))
     }
 }

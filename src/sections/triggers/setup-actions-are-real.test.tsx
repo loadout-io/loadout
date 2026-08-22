@@ -4,10 +4,11 @@
 import { Children, isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTriggersStore } from '../../state/triggers';
 import type { TriggerClock, TriggerRunPath } from '../../state/triggers';
+import { useWorkspaces } from '../../state/workspaces';
 import { TriggerForm } from './form';
 import type { TriggerFormProps } from './form';
 import type {
@@ -34,22 +35,26 @@ const RUN: TriggerRunPath = {
 };
 
 const KEY = 'lin_api_1234567890123456789012345678901234567890';
+const WORKSPACE = '/project';
+const OTHER_WORKSPACE = '/other-project';
 const DRAFT: TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: WORKSPACE,
   pollEveryMinutes: 5,
   apiKey: KEY,
 };
-const ENTRY: ConfiguredTriggerEntry = {
+const ENTRY = {
   slug: 'linear-0198ca82-ded0-7000-8000-000000000074',
   source: DRAFT.source,
   condition: DRAFT.condition,
   workflow: DRAFT.workflow,
+  workspace: DRAFT.workspace,
   enabled: true,
   pollEveryMinutes: DRAFT.pollEveryMinutes,
   hasApiKey: true,
-};
+} satisfies ConfiguredTriggerEntry;
 const EXPECTED: TriggerSnapshot = { ...ENTRY };
 
 const CREATE: OpenedTriggerEditor = {
@@ -58,6 +63,7 @@ const CREATE: OpenedTriggerEditor = {
     connector: 'linear',
     apiKey: KEY,
     workflow: DRAFT.workflow,
+    workspace: DRAFT.workspace,
     pollEveryMinutes: DRAFT.pollEveryMinutes,
   },
 };
@@ -67,6 +73,7 @@ const BLANK_CREATE: OpenedTriggerEditor = {
     connector: '',
     apiKey: '',
     workflow: '',
+    workspace: '',
     pollEveryMinutes: 1,
   },
 };
@@ -76,6 +83,7 @@ const EDIT: OpenedTriggerEditor = {
     connector: 'linear',
     apiKey: '',
     workflow: 'verify.json',
+    workspace: DRAFT.workspace,
     pollEveryMinutes: 15,
   },
   expected: EXPECTED,
@@ -108,6 +116,9 @@ function ioWith(overrides: Partial<TriggerIo> = {}): TriggerIo {
     listTriggers: async () => [],
     setTriggerEnabled: async () => ENTRY,
     checkTrigger: async () => ({ status: 'armed' }),
+    retryTrigger: async () => {
+      throw new Error('not used');
+    },
     createTrigger: async () => ENTRY,
     updateTrigger: async () => ENTRY,
     deleteTrigger: async () => undefined,
@@ -233,7 +244,14 @@ function capture(
   const store = createTriggersStore(io, CLOCK, RUN);
   if (options.entry !== undefined) {
     store.setState({
-      triggers: [{ ...options.entry, workflowName: 'Analysis', status: { kind: 'armed' } }],
+      triggers: [
+        {
+          ...options.entry,
+          workspace: options.entry.workspace ?? null,
+          workflowName: 'Analysis',
+          status: { kind: 'armed' },
+        },
+      ],
     });
   }
   store.setState({
@@ -248,6 +266,17 @@ function capture(
   });
   return { store, editor, form: observeForm(store, editor) };
 }
+
+beforeEach(() => {
+  useWorkspaces.setState({
+    all: [
+      { id: WORKSPACE, name: 'Project', folder: WORKSPACE },
+      { id: OTHER_WORKSPACE, name: 'Other project', folder: OTHER_WORKSPACE },
+    ],
+    activeId: WORKSPACE,
+    said: null,
+  });
+});
 
 describe('the four setup actions cross the true screen and the disk-backed store', () => {
   it('tests the entered key without saving or changing the library, then shows success', async () => {
@@ -287,8 +316,13 @@ describe('the four setup actions cross the true screen and the disk-backed store
 
     changeThroughRealForm(observeForm(store, editor), 'connector', 'linear');
     changeThroughRealForm(observeForm(store, editor), 'apiKey', KEY);
+    changeThroughRealForm(observeForm(store, editor), 'workspace', WORKSPACE);
     changeThroughRealForm(observeForm(store, editor), 'cadence', '5');
     changeThroughRealForm(observeForm(store, editor), 'workflow', 'analysis.json');
+
+    /* 2026-08-21: the editor owns an explicit target. A side-menu switch between editing and
+     * Save must not retarget the trigger behind the person's back. */
+    useWorkspaces.getState().activate(OTHER_WORKSPACE);
 
     const ready = observeForm(store, editor);
     const saving = Promise.resolve(submitThroughRealForm(ready)).catch(() => undefined);
@@ -320,6 +354,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
       source: 'linear',
       condition: 'assigned-to-me',
       workflow: 'verify.json',
+      workspace: WORKSPACE,
       pollEveryMinutes: 15,
       apiKey: null,
     });
@@ -333,6 +368,133 @@ describe('the four setup actions cross the true screen and the disk-backed store
       expect.objectContaining({ workflow: 'verify.json', pollEveryMinutes: 15 }),
     );
     expect(editor.state.opened).toBeNull();
+  });
+
+  it('keeps a legacy trigger editable but blocks Save until its workspace is explicit', async () => {
+    const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: null, enabled: false };
+    const expected: TriggerSnapshot = { ...legacy, workspace: legacy.workspace ?? null };
+    const repaired: ConfiguredTriggerEntry = { ...legacy, workspace: WORKSPACE };
+    const update = vi.fn(
+      async (_slug: string, _expected: TriggerSnapshot, _draft: TriggerDraft) => repaired,
+    );
+    const store = createTriggersStore(ioWith({ updateTrigger: update }), CLOCK, RUN);
+    store.setState({
+      triggers: [
+        {
+          ...legacy,
+          workspace: legacy.workspace ?? null,
+          workflowName: 'Analysis',
+          status: { kind: 'unchecked' },
+        },
+      ],
+      workflows: [{ path: 'analysis.json', name: 'Analysis' }],
+    });
+    const editor = controller({ opened: null, confirmingDelete: false });
+
+    openSavedThroughRealRow(store, editor);
+    const blocked = observeForm(store, editor);
+    expect(editor.state.opened).toEqual(
+      expect.objectContaining({
+        mode: 'edit',
+        value: expect.objectContaining({ workspace: '' }),
+        expected,
+      }),
+    );
+    expect(findControl(realForm(blocked), 'data-trigger-action', 'save')?.props.disabled).toBe(
+      true,
+    );
+    expect(renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />)).toContain(
+      'Choose an available workspace to save this trigger.',
+    );
+
+    changeThroughRealForm(blocked, 'workspace', WORKSPACE);
+    await Promise.resolve(submitThroughRealForm(observeForm(store, editor)));
+    expect(update).toHaveBeenCalledWith(legacy.slug, expected, {
+      source: 'linear',
+      condition: 'assigned-to-me',
+      workflow: legacy.workflow,
+      workspace: WORKSPACE,
+      pollEveryMinutes: legacy.pollEveryMinutes,
+      apiKey: null,
+    });
+  });
+
+  it('removes an old missing-workspace retry refusal after the real Save repairs the target', async () => {
+    const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: null };
+    const expected: TriggerSnapshot = { ...legacy, workspace: null };
+    const repaired: ConfiguredTriggerEntry = { ...legacy, workspace: WORKSPACE };
+    const update = vi.fn(async () => repaired);
+    const store = createTriggersStore(ioWith({ updateTrigger: update }), CLOCK, RUN);
+    store.setState({
+      triggers: [
+        {
+          ...legacy,
+          workspace: null,
+          workflowName: 'Analysis',
+          status: {
+            kind: 'accepted',
+            workflow: 'Analysis',
+            workspace: null,
+            receiptAt: Date.UTC(2026, 7, 21, 2, 12, 9, 700),
+            retryRefusal: 'Choose a workspace before saving this trigger.',
+          },
+        },
+      ],
+      workflows: [{ path: 'analysis.json', name: 'Analysis' }],
+    });
+    const editor = controller({ opened: null, confirmingDelete: false });
+
+    openSavedThroughRealRow(store, editor);
+    changeThroughRealForm(observeForm(store, editor), 'workspace', WORKSPACE);
+    await Promise.resolve(submitThroughRealForm(observeForm(store, editor)));
+
+    expect(update).toHaveBeenCalledWith(legacy.slug, expected, {
+      source: 'linear',
+      condition: 'assigned-to-me',
+      workflow: legacy.workflow,
+      workspace: WORKSPACE,
+      pollEveryMinutes: legacy.pollEveryMinutes,
+      apiKey: null,
+    });
+    const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
+    expect(visible).toContain('Analysis · Project · Every 5 minutes');
+    expect(visible).toContain(
+      'Started Analysis in an unspecified workspace at 2026-08-21 02:12:09 UTC. · Run again',
+    );
+    expect(visible).not.toContain('Choose a workspace before saving this trigger.');
+  });
+
+  it('does not let a Save confirmation erase a newer Run again refusal', async () => {
+    const saved = deferred<ConfiguredTriggerEntry>();
+    const update = vi.fn(async () => saved.promise);
+    const retryTrigger = vi.fn(async () => {
+      throw new Error('That trigger run is still active.');
+    });
+    const { store, editor } = capture(ioWith({ updateTrigger: update, retryTrigger }), EDIT, {
+      entry: ENTRY,
+    });
+    store.setState((state) => ({
+      triggers: state.triggers.map((trigger) => ({
+        ...trigger,
+        status: {
+          kind: 'accepted' as const,
+          workflow: 'Analysis',
+          workspace: WORKSPACE,
+          receiptAt: Date.UTC(2026, 7, 21, 2, 12, 9, 700),
+          retryRefusal: 'An older refusal.',
+        },
+      })),
+    }));
+
+    const saving = Promise.resolve(submitThroughRealForm(observeForm(store, editor)));
+    await store.getState().runAgain(ENTRY.slug);
+    saved.resolve({ ...ENTRY, workflow: 'verify.json', pollEveryMinutes: 15 });
+    await saving;
+
+    expect(retryTrigger).toHaveBeenCalledTimes(1);
+    const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
+    expect(visible).toContain('That trigger run is still active. · Run again');
+    expect(visible).not.toContain('An older refusal.');
   });
 
   it('keeps the panel values and puts a refused Save on the true screen', async () => {

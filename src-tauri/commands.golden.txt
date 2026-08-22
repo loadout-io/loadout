@@ -18,6 +18,7 @@ check_trigger
 check_workflow
 close_terminal
 continue_run
+copy_diagnostics
 create_trigger
 delete_agent
 delete_skill
@@ -38,6 +39,7 @@ load_workflow
 new_id
 open_chat
 put_note_to_use
+retry_trigger
 review_skill
 run_agent
 run_workflow

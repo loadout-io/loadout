@@ -45,11 +45,14 @@ import { useRun } from '../../state/run';
 import { useWorkspaces } from '../../state/workspaces';
 import { addresseeOf } from './addressee';
 import type { WindowLine } from './entry/echo';
+import { IMAGE_SEND_FAILED, IMAGES_TO_LEAD_ONLY } from './entry/images';
+import type { ConversationImage } from './entry/images';
 import { Feed } from './feed/feed';
 import { attachPort, feedFor, runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { Now } from './feed/now';
 import { Entry } from './entry/entry';
+import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
 import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
@@ -221,6 +224,35 @@ export default function Run(): ReactElement {
     [tabs.tabs, tabs.activeId, folder],
   );
 
+  /* INSTANCJA COMPOSERA, nie tylko kanoniczny klucz feedu. Zwykłe `null → folder` zachowuje
+   * rozmowę, bo oba zapisy znaczą domyślny terminal folderu. Ruch odwrotny jest inny: dzieje się
+   * po `Close`, które woła `close_terminal`, więc ten sam napis klucza nazywa już NOWĄ rozmowę.
+   * Generacja niesie tę różnicę bez zmiany kontraktu kart (poza OWNS T-34). */
+  const canonicalEntryTerminal = onTop ?? folder ?? '';
+  const entryInstance = useRef({
+    folder,
+    onTop,
+    canonicalTerminal: canonicalEntryTerminal,
+    generation: 0,
+  });
+  const previousEntry = entryInstance.current;
+  const conversationChanged =
+    previousEntry.folder !== folder ||
+    previousEntry.canonicalTerminal !== canonicalEntryTerminal ||
+    (previousEntry.onTop !== null && onTop === null);
+  entryInstance.current = {
+    folder,
+    onTop,
+    canonicalTerminal: canonicalEntryTerminal,
+    generation: previousEntry.generation + (conversationChanged ? 1 : 0),
+  };
+  const entryKey =
+    (folder ?? '') +
+    '\u0000' +
+    canonicalEntryTerminal +
+    '\u0000' +
+    String(entryInstance.current.generation);
+
   /* CZEGO TU NIE MA: przestawiania sesji przy przełączeniu zakresu. Oba magazyny robią to same
    * i każdy z nich słucha magazynu zakresów u siebie — `runFeed` w `./feed/live`, `useRun`
    * w `src/state/run.ts`. Trzecia droga do tej samej zmiany, dopisana tutaj z efektu, byłaby
@@ -379,7 +411,10 @@ export default function Run(): ReactElement {
    * ma stanąć pod polem, w które pisał. Zdanie o folderze albo o Starcie mówi o ekranie i stoi
    * pod paskiem.
    */
-  async function sayIt(text: string): Promise<string | null> {
+  async function sayIt(
+    text: string,
+    images: readonly ConversationImage[] = [],
+  ): Promise<string | null> {
     /* KOMU DORĘCZYĆ, ROZSTRZYGA `addressee.ts` — i to jest ZMIANA POLITYKI z 2026-08-20, nie
      * przeprowadzka warunku.
      *
@@ -412,12 +447,18 @@ export default function Run(): ReactElement {
      * wybór nie był. Czytamy je w chwili wysyłki, nie z migawki renderu — zdanie ma pójść do tego
      * lidera, którego widać na pasku teraz. */
     const going = addresseeOf(text, listening);
+    /* `say_to_agent` nie ma nośnika obrazów. Jawna odmowa przed IPC jest węższa i uczciwsza
+     * niż ciche zdjęcie załączników ze szkicu adresowanego nazwą żywego kroku. */
+    if (images.length > 0 && going.to === 'agent') return IMAGES_TO_LEAD_ONLY;
     try {
       await (going.to === 'agent'
         ? sayToAgent(going.text, going.agent)
-        : sayToOrchestrator(going.text, folder, onTop, lead()));
+        : sayToOrchestrator(going.text, folder, onTop, lead(), images));
       return null;
     } catch (error: unknown) {
+      /* Odrzucenie obrazu może nieść stderr vendora albo fragment prywatnego payloadu. Dla tej
+       * granicy odpowiedź jest stała; ścieżka tekstowa zachowuje dotychczasowe `why`. */
+      if (images.length > 0) return IMAGE_SEND_FAILED;
       return why(
         error,
         going.to === 'agent'
@@ -533,7 +574,15 @@ export default function Run(): ReactElement {
                  udało się zacząć, wraca TUTAJ i ląduje w jedynym slocie tego ekranu: dwa
                  miejsca na „co powiedział Loadout" to dwa zdania sprzeczające się o to samo
                  (niezmiennik 13). */
-            controls={<Start running={running} onSaid={setSaid} />}
+            controls={
+              <div className="flex min-w-0 items-center gap-2">
+                {/* Diagnostyka należy do aktywnego workspace i stoi przy czynnościach tego
+                    ekranu. W fazie `before` komponent jest pustym szkieletem: prawdziwy mount
+                    istnieje, a kryterium pada na braku kontrolki, nie brakującym imporcie. */}
+                <Diagnostics folder={folder} />
+                <Start running={running} onSaid={setSaid} />
+              </div>
+            }
           />
           {/* ZAPROSZENIE, KIEDY NIE MA GDZIE PRACOWAĆ — i to jest jedyny przycisk, jaki ten
                 ekran ma sam z siebie.
@@ -600,6 +649,12 @@ export default function Run(): ReactElement {
             />
             <Now now={view.now} live={running} />
             <Entry
+              /* SZKIC NALEŻY DO ROZMOWY, nie do całego ekranu. Zmiana folderu albo terminalu
+                 odmontowuje jego właściciela: cleanup odcina blob URL, a nowe pole zaczyna
+                 puste. To świadomy kontrakt „clear on switch" — mniejszy koszt niż screenshot
+                 z projektu A wysłany przez Enter w projekcie B. Fallback terminalu i wyjątek
+                 zamknięcia są składane raz, wyżej, w `entryKey`. */
+              key={entryKey}
               onOpenFolder={openFolder}
               onStopRun={running ? stopRun : null}
               onSayToAgent={sayIt}

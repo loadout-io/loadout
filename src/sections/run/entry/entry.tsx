@@ -36,8 +36,8 @@
  * ZERO ŻARGONU W TEKŚCIE WIDOCZNYM (niezmiennik 14, DESIGN §8): „folder", „run", „stop" —
  * żadnego `workspace`, `session`, `process`, `execute`.
  */
-import type { FormEvent, ReactElement, Ref } from 'react';
-import { useRef, useState } from 'react';
+import type { ClipboardEvent as ReactClipboardEvent, FormEvent, ReactElement, Ref } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { startAskFromLine } from '../ask-command';
 import { startFromLine } from '../rail/processes';
@@ -45,6 +45,16 @@ import type { Named } from '../run-command';
 import type { WindowLine } from './echo';
 import { echoOf, saidOf } from './echo';
 import { createHistory } from './history';
+import { ImageStrip } from './image-strip';
+import {
+  conversationImages,
+  IMAGE_PASTE_FAILED,
+  IMAGE_SEND_FAILED,
+  IMAGES_WITH_COMMANDS,
+  readPastedImages,
+  revokePastedImages,
+} from './images';
+import type { ConversationImage, PastedImage } from './images';
 
 /**
  * Skąd bierze się lista, którą Tab uzupełnia PO nazwie tej komendy.
@@ -319,7 +329,10 @@ export interface EntryProps {
    * Zdanie WRACA, zamiast być rzucane: odmowa Rusta jest już napisana po ludzku, a ten wiersz
    * ma ją pokazać w miejscu, w którym człowiek właśnie pisał.
    */
-  readonly onSayToAgent: (text: string) => Promise<string | null>;
+  readonly onSayToAgent: (
+    text: string,
+    images?: readonly ConversationImage[],
+  ) => Promise<string | null>;
   /**
    * `/run <workflow> <co zbudować>` — oddaje zdanie odmowy albo `null`, kiedy bieg ruszył.
    *
@@ -449,6 +462,19 @@ export interface EntryProps {
   readonly fieldRef?: Ref<HTMLInputElement>;
 }
 
+interface EntryDraft {
+  readonly text: string;
+  readonly images: readonly PastedImage[];
+}
+
+function isSameDraft(left: EntryDraft, right: EntryDraft): boolean {
+  return (
+    left.text === right.text &&
+    left.images.length === right.images.length &&
+    left.images.every((image, index) => image.id === right.images[index]?.id)
+  );
+}
+
 export function Entry({
   onOpenFolder,
   onStopRun,
@@ -462,7 +488,28 @@ export function Entry({
   fieldRef,
   agents = [],
 }: EntryProps): ReactElement {
-  const [typed, setTyped] = useState('');
+  const [draft, setDraft] = useState<EntryDraft>({ text: '', images: [] });
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const sending = useRef(false);
+  const readingImages = useRef(false);
+  const mounted = useRef(true);
+  const typed = draft.text;
+  const images = draft.images;
+
+  /* Object URL jest zasobem okna, nie pliku. Odcinamy go przy zejściu z prawdziwego ekranu;
+   * inaczej każde wejście do Run zostawiałoby obrazy przy życiu do zamknięcia aplikacji. */
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      revokePastedImages(draftRef.current.images);
+    };
+  }, []);
+
+  function setTyped(text: string): void {
+    setDraft((current) => ({ ...current, text }));
+  }
   /* Co pasuje do tego, co już stoi w polu. Liczone przy renderze, nie trzymane w stanie: druga
    * kopia tej odpowiedzi mogłaby opisywać tekst sprzed jednego znaku. */
   const matching = suggestions(typed, workflows, agents);
@@ -491,14 +538,110 @@ export function Entry({
     onShowInStream(saidOf(answer));
   }
 
+  function removeImage(id: string): void {
+    setDraft((current) => {
+      const removed = current.images.find((image) => image.id === id);
+      if (removed === undefined) return current;
+      revokePastedImages([removed]);
+      return { ...current, images: current.images.filter((image) => image.id !== id) };
+    });
+  }
+
+  function paste(event: ReactClipboardEvent<HTMLInputElement>): void {
+    const files = Array.from(event.clipboardData.files);
+    /* Tekst pozostaje natywnym paste. Przechwytujemy zdarzenie wyłącznie, gdy schowek naprawdę
+     * niesie plik; inaczej React odebrałby przeglądarce zwykłe wklejenie zdania. */
+    if (files.length === 0) return;
+    event.preventDefault();
+    /* Część schowków niesie screenshot i podpis jednocześnie. Po przejęciu natywnego paste
+     * przeglądarka nie wstawi tekstu sama, więc robimy ten sam splice po aktualnym zaznaczeniu.
+     * Pominięcie `text/plain` byłoby cichym zgubieniem połowy jednego paste. */
+    const pastedText = event.clipboardData.getData('text/plain');
+    if (pastedText !== '') {
+      const field = event.currentTarget;
+      const start = field.selectionStart ?? field.value.length;
+      const end = field.selectionEnd ?? start;
+      const caret = start + pastedText.length;
+      setDraft((current) => ({
+        ...current,
+        text: current.text.slice(0, start) + pastedText + current.text.slice(end),
+      }));
+      queueMicrotask(() => {
+        if (!mounted.current) return;
+        field.focus();
+        field.setSelectionRange(caret, caret);
+      });
+    }
+    if (readingImages.current) {
+      showTheAnswer(IMAGE_PASTE_FAILED);
+      return;
+    }
+    readingImages.current = true;
+    const before = draftRef.current.images;
+    void readPastedImages(files, before)
+      .then((added) => {
+        if (!mounted.current) {
+          revokePastedImages(added);
+          return;
+        }
+        setDraft((current) => ({ ...current, images: [...current.images, ...added] }));
+      })
+      .catch(() => {
+        if (mounted.current) showTheAnswer(IMAGE_PASTE_FAILED);
+      })
+      .finally(() => {
+        readingImages.current = false;
+      });
+  }
+
   function send(event: FormEvent<HTMLFormElement>): void {
     /* Bez tego przeglądarka przeładowuje stronę i bieg znika razem z nią — okno Tauri nie ma
      * dokąd nawigować, a magazyny żyją na poziomie modułu. */
     event.preventDefault();
-    const line = typed.trim();
-    if (line === '') return;
+    const snapshot = draftRef.current;
+    const line = snapshot.text.trim();
+    if (line === '' && snapshot.images.length === 0) return;
 
-    const command = understand(typed);
+    /* Obraz nie może po cichu wypaść z komendy. Komendy mają osobne protokoły bez obrazów, więc
+     * zatrzymujemy je jeszcze przed historią, echem i IPC, zachowując kompletny szkic. */
+    if (snapshot.images.length > 0 && line.startsWith('/')) {
+      showTheAnswer(IMAGES_WITH_COMMANDS);
+      return;
+    }
+
+    const command = understand(snapshot.text);
+
+    if (!line.startsWith('/')) {
+      /* Ref jest zatrzaskiem synchronicznym. Stan Reacta nie zdążyłby się przerysować między
+       * dwoma Enterami, więc sam `disabled` nie chroni przed dwiema płatnymi turami. */
+      if (sending.current) return;
+      sending.current = true;
+      if (line !== '') walk.current.remember(line);
+      const payload = conversationImages(snapshot.images);
+      void Promise.resolve()
+        .then(() => onSayToAgent(snapshot.text, payload))
+        .then((answer) => {
+          if (answer !== null) {
+            showTheAnswer(answer);
+            return;
+          }
+          setDraft((current) => {
+            /* Odpowiedź dotyczy snapshotu z chwili Enter. Tekst dopisany podczas oczekiwania jest
+             * już nowym szkicem i nie wolno go wyczyścić ani odebrać mu blob URL. */
+            if (!isSameDraft(current, snapshot)) return current;
+            revokePastedImages(snapshot.images);
+            return { text: '', images: [] };
+          });
+        })
+        .catch(() => {
+          if (mounted.current) showTheAnswer(IMAGE_SEND_FAILED);
+        })
+        .finally(() => {
+          sending.current = false;
+        });
+      return;
+    }
+
     setTyped('');
     /* STRZAŁKA MA PO CO SIĘGAĆ — zapamiętujemy KAŻDĄ wysłaną linię, także tę, która odbije się
      * od wiersza: literówka w komendzie jest dokładnie tą linią, którą człowiek chce poprawić,
@@ -531,7 +674,7 @@ export function Entry({
        * co przy `/run`. Podział na „nazwa agenta" i „zadanie" należy do `../ask-command.ts`,
        * razem z odmowami: zdanie dla agenta jedzie stamtąd CO DO ZNAKU, więc wiersz nie ma
        * prawa go po drodze przepisać. */
-      void onAskAgent(typed.trim().slice('/ask'.length).trim()).then(showTheAnswer);
+      void onAskAgent(line.slice('/ask'.length).trim()).then(showTheAnswer);
       return;
     }
     if (command === '/start') {
@@ -540,7 +683,7 @@ export function Entry({
        * wielokrotne spacje albo tknął cudzysłowy, zmieniłby komendę, którą człowiek napisał,
        * i uruchomił coś innego niż to, co ma na ekranie. Rozbiór na „nazwę" i „argumenty" nie
        * istnieje z rozmysłu: to powłoka rozbiera tę linię, nie my (`SHELL` w `command.rs`). */
-      void onStartCommand(typed.trim().slice('/start'.length).trim()).then(showTheAnswer);
+      void onStartCommand(line.slice('/start'.length).trim()).then(showTheAnswer);
       return;
     }
     if (command === '/open') {
@@ -565,21 +708,6 @@ export function Entry({
       showTheAnswer(NOT_KNOWN);
       return;
     }
-    /* PROZA JEST ROZMOWĄ I NIGDY NIE URUCHAMIA BIEGU — rozstrzygnięcie właściciela 2026-08-19,
-     * po tym, jak zobaczył skutek wersji przeciwnej: „nie powinno być tak, że jak piszę bez
-     * komendy, a poprzednio odpaliłem komendę, to się ona na nowo całe workflow odpala".
-     *
-     * Stała tu wersja, która przy pustym ekranie startowała wybrany workflow z tym zdaniem jako
-     * zadaniem. Wyglądało to jak wygoda i było pułapką: to samo naciśnięcie Enter raz dopowiadało
-     * coś agentowi, a raz kupowało cały bieg sześciu agentów — a różnicy nie było widać w polu,
-     * w które człowiek pisał. Rozróżnienie „rozmowa czy praca" nie ma prawa zależeć od stanu,
-     * którego w tym miejscu nie widać; niesie je UKOŚNIK i tylko on.
-     *
-     * Sztywny przebieg zaczyna więc wyłącznie komenda (`/run`), a zdanie bez ukośnika idzie tam,
-     * gdzie człowiek je adresował. Kiedy nie ma komu — Rust odmawia zdaniem, które nazywa następny
-     * ruch („Press Start first."), a wiersz mówi to samo POD polem, jeszcze przed Enterem
-     * (`talkingTo`). */
-    void onSayToAgent(typed).then(showTheAnswer);
   }
 
   return (
@@ -588,6 +716,7 @@ export function Entry({
       onSubmit={send}
       className="border-t border-line-strong px-[18px] pt-[10px] pb-3"
     >
+      <ImageStrip images={images} onRemove={removeImage} />
       <div className="grid h-10 grid-cols-[26px_1fr_auto] items-center border border-line-strong border-l-2 border-l-accent bg-well">
         {/* Znak zachęty z makiety. `aria-hidden`, bo dla czytnika ekranu to jest ozdoba. */}
         <span aria-hidden className="text-center font-mono text-accent">
@@ -610,6 +739,7 @@ export function Entry({
              od kolejności markupu. */
           autoFocus
           value={typed}
+          onPaste={paste}
           onChange={(event) => {
             setTyped(event.target.value);
           }}

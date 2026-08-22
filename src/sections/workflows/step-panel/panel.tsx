@@ -43,7 +43,22 @@
  *      blokadą z punktu 1. Dowód, że właściciel tam nie dotarł: oba jego pliki workflow mają
  *      `"instructions": ""`. Instrukcje kroku są teraz edytowalne od pierwszej chwili — razem
  *      z `How many at once`, bo to też jest pole KROKU i nie potrzebuje agenta.
+ *
+ * 2026-08-22 — TRZECIA NAPRAWA TEGO SAMEGO WIERSZA, ze zrzutu ekranu właściciela.
+ *
+ * Wybór DAŁO się już zrobić, ale rozwijał się jako natywny `<select>`, w którym każda pozycja
+ * niosła `nazwa — opis`. Zmierzone na jego bibliotece: siedemnaście agentów, opisy po dwieście
+ * znaków, więc lista brała szerokość najdłuższego opisu i całą wysokość okna — zasłaniała ekran,
+ * na którym się wybiera, razem z panelem, do którego wybór wraca. Rozwijanej listy natywnej nie
+ * da się ani zwęzić, ani przyciąć, ani przeszukać: `<option>` nie przyjmuje ani stylu, ani
+ * drugiego wiersza. Wiersz jest teraz własną kontrolką: zwinięty pokazuje samą nazwę, rozwinięty
+ * daje pole szukania i listę z sufitem wysokości, w której opis jest przycięty do dwóch wierszy.
+ *
+ * Co z tego wynika dla testów: `AgentChoice` trzyma trzy pola stanu WIDOKU (`open`, `query`,
+ * `at`). Nagłówek wyżej dalej obowiązuje — dotyczy WARTOŚCI, a rozwinięcie listy wartością nie
+ * jest. Renderowanie statyczne widzi więc stan zwinięty i to jest ten, o który pytają kryteria.
  */
+import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Agent, FileAccess } from '../../../state/agents';
 import type {
@@ -68,13 +83,12 @@ export type AgentStepFields = Partial<
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
 export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>>;
 
-/** Pozycja `＋ Create a new agent…` z makiety (linia 603).
+/* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
  *
- * Wartość jest napisem, którego żaden agent nie może nosić: identyfikatory są uuid v7
- * (`src/state/agents.ts`, `newId`), więc kolizja nie jest „mało prawdopodobna", tylko niemożliwa.
- * Bez wartości-wartownika trzeba by rozpoznawać tę pozycję po jej TEKŚCIE, a wtedy zmiana copy
- * cicho zamienia skrót w wybór agenta o nazwie, której nie ma. */
-const CREATE_AN_AGENT = 'create-a-new-agent';
+ * Dopóki lista była `<select>`, skrót do sekcji Agents musiał być `<option>` z wartością,
+ * której żaden agent nie może nosić — inaczej rozpoznawało by się go po TEKŚCIE, a zmiana copy
+ * cicho zamieniałaby skrót w wybór agenta o nazwie, której nie ma. Lista jest teraz zbiorem
+ * przycisków, a skrót ma własny `onClick`, więc nie ma wartości, z którą mógłby się zderzyć. */
 
 export interface StepPanelProps {
   step: AgentStep;
@@ -190,6 +204,51 @@ interface AgentChoiceProps {
   onCreateAgent: () => void;
 }
 
+/* Powierzchnie listy wyboru. Ramkę rysuje `.paper` — kartka treści z `theme.css`, czyli ta sama
+ * klasa domu, którą biorą wszystkie nieprzejrzyste powierzchnie pod tekstem do czytania. `.pane`
+ * byłby tu błędem: pływa i ma cień, a w aplikacji pływa dokładnie jedna rzecz (DESIGN §3), a ta
+ * lista rozwija się W TOKU panelu. */
+const LIST = 'paper flex flex-col';
+/* Sufit wysokości, po którym lista zaczyna się przewijać SAMA. To jest cała różnica wobec
+ * `<select>`: siedemnaście pozycji rozwijanych natywnie rysowało się na całą wysokość okna,
+ * a szerokość brała najdłuższy opis, więc lista zasłaniała ekran, na którym się wybiera.
+ *
+ * Wysokość jest dobrana tak, żeby ostatni widoczny wiersz był PRZYCIĘTY W POŁOWIE. macOS chowa
+ * paski przewijania, dopóki nikt nie kręci kółkiem, więc niepełny wiersz jest jedyną rzeczą,
+ * która mówi „lista jedzie dalej" — sufit równy całkowitej liczbie wierszy wygląda jak koniec. */
+const SCROLLER = 'max-h-80 overflow-auto';
+const PICK = 'flex w-full flex-col gap-0.5 px-2.5 py-2 text-left hover:bg-hover';
+/* Podświetlenie klawiatury i myszy to JEDNA wartość — `at` niżej — więc i jedna klasa. Dwa
+ * osobne wyróżnienia dają ekran, na którym dwie pozycje wyglądają na wybrane naraz. */
+const PICK_ON = 'bg-accent-soft';
+const PICK_NAME = 'min-w-0 truncate font-mono text-mono text-ink';
+/* Opis jest PRZYCIĘTY DO DWÓCH WIERSZY i to jest decyzja, nie oszczędność miejsca: opisy
+ * agentów w bibliotece właściciela mają po dwieście znaków, a lista, w której jedna pozycja
+ * zajmuje sześć wierszy, przestaje być listą do przebiegnięcia wzrokiem. */
+const PICK_SAYS = 'line-clamp-2 text-note text-muted';
+const CREATE_ROW = 'border-t border-line px-2.5 py-2 text-left text-label text-muted';
+const NO_MATCH = 'px-2.5 py-2 text-note text-muted';
+
+/** Czy agent pasuje do wpisanego szukania.
+ *
+ * Nazwa I opis, bo w bibliotece, która wywróciła ten ekran, połowa pozycji nazywa się
+ * `*-verifier` albo `*-dev`: po samej nazwie nie da się ich rozróżnić, a po opisie tak. */
+function looksLike(one: Agent, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return true;
+  return `${one.name} ${one.summary}`.toLowerCase().includes(needle);
+}
+
+/** Na którym wierszu stanąć po rozwinięciu listy: na agencie, którego krok już ma.
+ *
+ * Zero dla kroku bez agenta i dla agenta, którego w bibliotece nie ma (plik workflow mógł
+ * przeżyć skasowanie agenta). Wersja bez tej funkcji — stałe zero — po `Change` podświetlała
+ * PIERWSZEGO z listy, czyli Enter podmieniał agenta na kogoś innego jednym klawiszem. */
+function standsAt(agents: readonly Agent[], chosen: string): number {
+  const seat = agents.findIndex((one) => one.id === chosen);
+  return seat === -1 ? 0 : seat;
+}
+
 /** Kontrolka wyboru agenta — JEDNA na całą sekcję i to jest cały sens tego komponentu.
  *
  * Do 2026-08-18 istniała tylko w panelu kroku BEZ agenta, więc zmiana raz podjętej decyzji była
@@ -199,13 +258,30 @@ interface AgentChoiceProps {
  *
  * Pusta biblioteka nie dostaje listy, tylko zdanie i DROGĘ WYJŚCIA. Wcześniej stało tam samo
  * zdanie („Make one in Agents, then come back") i ani jednej ścieżki z powrotem — czyli
- * instrukcja nawigacji zamiast nawigacji. */
+ * instrukcja nawigacji zamiast nawigacji.
+ *
+ * DLACZEGO STAN JEST TUTAJ, W PANELU, KTÓRY POZA TYM JEST STEROWANY. Nagłówek pliku mówi, że
+ * wartości i kliknięcia wychodzą propsami, bo test statyczny nie zobaczy stanu wewnętrznego.
+ * To dalej obowiązuje dla WARTOŚCI. `open`, `query` i `at` wartościami nie są: nie ma ich
+ * w dokumencie, nie przeżywają zamknięcia panelu i nie ma czego o nich zapisać na dysk.
+ * Wypchnięcie ich propsami znaczyłoby trzy pola „czy lista jest rozwinięta" w magazynie
+ * workflow — czyli stan widoku w pliku, który ma być prawdą o kroku.
+ */
 function AgentChoice({
   chosen,
   agents,
   onChooseAgent,
   onCreateAgent,
 }: AgentChoiceProps): ReactElement {
+  /* ROZWINIĘTA OD RAZU, KIEDY KROK NIE MA JESZCZE AGENTA — i to nie jest wygoda, tylko warunek
+   * z kryterium `every-tile-opens-a-panel`: panel kroku bez agenta ma OFEROWAĆ bibliotekę, a nie
+   * pokazywać dziurę z przyciskiem, za którym ona jest. Krok prosto z `＋ Add step` ma dokładnie
+   * jedno zadanie i to ono stoi otwarte. Po wyborze lista zwija się sama i już się nie otwiera. */
+  const [open, setOpen] = useState(() => !agents.some((one) => one.id === chosen));
+  const [query, setQuery] = useState('');
+  /** Podświetlona pozycja — indeks w LIŚCIE PO ODSIANIU, nie w bibliotece. */
+  const [at, setAt] = useState(() => standsAt(agents, chosen));
+
   if (agents.length === 0) {
     return (
       <>
@@ -217,37 +293,160 @@ function AgentChoice({
     );
   }
 
-  /* „Pick one" stoi w liście DOKŁADNIE wtedy, gdy nikt jeszcze nie jest wybrany. Pozycja pusta
-   * zostawiona na stałe pozwala wybrać ją z powrotem, a `agent: ''` jako decyzja to krok, który
-   * przy Run odmawia zdaniem o brakującym agencie — czyli cofnięcie się do stanu wyjściowego
-   * bez powiedzenia o tym ani słowa. */
-  const nobodyYet = !agents.some((one) => one.id === chosen);
+  const picked = agents.find((one) => one.id === chosen);
+  const shown = agents.filter((one) => looksLike(one, query));
+
+  const choose = (agentId: string): void => {
+    setOpen(false);
+    setQuery('');
+    setAt(0);
+    onChooseAgent(agentId);
+  };
+
+  /* ZWINIĘTA: jeden wiersz, który mówi, kto to robi, i nic poza tym.
+   *
+   * Opisu agenta tu NIE MA świadomie. Stał w treści `<option>` razem z nazwą i to jest dokładny
+   * powód, dla którego rozwinięta lista miała szerokość ekranu — a po wyborze i tak widać go
+   * było tylko w jednej trzeciej, bo `<select>` przycina zamkniętą wartość. Opis jest tam, gdzie
+   * jest potrzebny: przy WYBIERANIU, w rozwiniętej liście. */
+  if (!open) {
+    return (
+      <button
+        id="step-agent"
+        type="button"
+        className={`${FIELD} flex items-center justify-between gap-2 text-left`}
+        onClick={() => {
+          setOpen(true);
+          setQuery('');
+          setAt(standsAt(agents, chosen));
+        }}
+      >
+        {picked === undefined ? (
+          /* Barwa tuszu mówi o stanie i tylko ona — studnia, obrys i promień zostają te same,
+           * co w każdym innym polu panelu. Krok bez agenta ma jedno zadanie i to zdanie jest
+           * jedyną rzeczą w panelu, która niesie akcent. */
+          <span className="text-accent">Pick an agent</span>
+        ) : (
+          <span className={PICK_NAME}>{picked.name}</span>
+        )}
+        <span className={FROM_AGENT}>{picked === undefined ? 'Choose' : 'Change'}</span>
+      </button>
+    );
+  }
 
   return (
-    <select
-      id="step-agent"
-      className={FIELD}
-      value={nobodyYet ? '' : chosen}
-      onChange={(event) => {
-        const picked = event.target.value;
-        /* Skrót do sekcji Agents rozpoznajemy po WARTOŚCI, nie po tekście pozycji. */
-        if (picked === CREATE_AN_AGENT) {
-          onCreateAgent();
-          return;
-        }
-        /* Pozycja-zaproszenie nie jest wyborem. Bez tego warunku otwarcie listy i zamknięcie
-         * jej bez decyzji zapisywałoby `agent: ''` jako decyzję. */
-        if (picked !== '') onChooseAgent(picked);
+    <div
+      className="flex flex-col gap-2"
+      onBlur={(event) => {
+        /* Zamknięcie po WYJŚCIU OGNISKA, nie po kliknięciu w tło — tła nie ma, bo lista rozwija
+         * się w toku panelu. Kliknięcia w samą listę tu nie trafiają: wiersze zabraniają myszy
+         * zabierać ognisko (`onMouseDown` niżej), więc `relatedTarget` poza tym drzewem znaczy
+         * naprawdę „człowiek poszedł gdzie indziej". Bez tego bloku lista zostawałaby otwarta
+         * pod polem, w którym ktoś już pisze instrukcje. */
+        const next = event.relatedTarget;
+        if (next === null || !event.currentTarget.contains(next)) setOpen(false);
       }}
     >
-      {nobodyYet ? <option value="">Pick one</option> : null}
-      {agents.map((one) => (
-        <option key={one.id} value={one.id}>
-          {one.name} — {one.summary}
-        </option>
-      ))}
-      <option value={CREATE_AN_AGENT}>＋ Create a new agent…</option>
-    </select>
+      <input
+        id="step-agent"
+        className={FIELD}
+        /* Ognisko wchodzi w pole szukania od razu, bo rozwinięcie listy JEST początkiem pisania.
+         * Zmierzone w tym repo: `autoFocus` daje i `autofocus=""` w markupie, i `.focus()`
+         * w oknie — jedno i drugie jest tu potrzebne. */
+        autoFocus
+        value={query}
+        placeholder="Type a name"
+        aria-label="Find an agent"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setAt(0);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setOpen(false);
+            return;
+          }
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            setAt((now) => (now + 1 >= shown.length ? now : now + 1));
+            return;
+          }
+          if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            setAt((now) => (now === 0 ? 0 : now - 1));
+            return;
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            const hit = shown[at];
+            /* Enter na liście bez ani jednego trafienia nie robi NIC. Wybranie „pierwszego
+             * z brzegu", kiedy odsianie nie zostawiło nikogo, przypisałoby krokowi agenta,
+             * którego człowiek w tej chwili nie widzi na ekranie. */
+            if (hit !== undefined) choose(hit.id);
+          }
+        }}
+      />
+
+      <div
+        className={LIST}
+        /* Mysz NIE zabiera ogniska polu szukania. Bez tego kliknięcie w wiersz najpierw
+         * zamyka listę przez `onBlur`, a `onClick` leci już w element, którego nie ma —
+         * czyli wybór myszą po prostu nie działa, i wygląda to na zawieszenie. */
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+      >
+        <div className={SCROLLER}>
+          {shown.length === 0 ? (
+            <p className={NO_MATCH}>Nobody here goes by that.</p>
+          ) : (
+            shown.map((one, index) => (
+              <button
+                key={one.id}
+                data-agent={one.id}
+                type="button"
+                className={index === at ? `${PICK} ${PICK_ON}` : PICK}
+                /* Podświetlony wiersz dojeżdża na ekran SAM. Bez tego strzałka w dół gubi się
+                   pod krawędzią przy piątej pozycji, a lista wygląda, jakby przestała reagować.
+                   `nearest` nie rusza niczym, kiedy wiersz i tak jest widoczny — czyli przy
+                   podświetleniu myszą, które zawsze pada na wiersz pod kursorem. */
+                ref={
+                  index === at
+                    ? (node) => {
+                        node?.scrollIntoView({ block: 'nearest' });
+                      }
+                    : null
+                }
+                onMouseEnter={() => {
+                  setAt(index);
+                }}
+                onClick={() => {
+                  choose(one.id);
+                }}
+              >
+                <span className={PICK_NAME}>{one.name}</span>
+                {one.summary === '' ? null : <span className={PICK_SAYS}>{one.summary}</span>}
+              </button>
+            ))
+          )}
+        </div>
+
+        {/* Skrót do sekcji Agents stoi POD listą i za linią, bo nie jest jedną z pozycji do
+            wyboru. W `<select>` musiał nią być — `<option>` to jedyne, co lista rozwijana
+            umie w sobie zmieścić — i przez to stał w tym samym rzędzie, co siedemnastu
+            agentów, tuż pod ostatnim z nich. */}
+        <button
+          type="button"
+          className={CREATE_ROW}
+          onClick={() => {
+            setOpen(false);
+            onCreateAgent();
+          }}
+        >
+          ＋ Create a new agent…
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -265,9 +464,12 @@ function WhoDoesThis({ chip, note, inherited, ...choice }: WhoDoesThisProps): Re
   return (
     <div className={ROW}>
       <div className="flex items-baseline gap-2">
-        {/* `htmlFor` celuje w `select` z `AgentChoice`. Przy pustej bibliotece tego pola nie ma
-            i etykieta zostaje bez celu — świadomie: alternatywą jest pusta lista wyboru, czyli
-            kontrolka, która nie ma czego zrobić (niezmiennik 16). */}
+        {/* `htmlFor` celuje w `step-agent` z `AgentChoice` — czyli w przycisk, kiedy lista jest
+            zwinięta, i w pole szukania, kiedy jest rozwinięta. Jeden identyfikator na obie
+            postacie, bo obie są TĄ SAMĄ kontrolką w dwóch stanach, a nigdy nie stoją obok
+            siebie. Przy pustej bibliotece nie ma żadnej z nich i etykieta zostaje bez celu —
+            świadomie: alternatywą jest pusta lista wyboru, czyli kontrolka, która nie ma czego
+            zrobić (niezmiennik 16). */}
         <label htmlFor="step-agent" className={LABEL}>
           Who does this
         </label>

@@ -73,6 +73,31 @@ export interface TauriCall {
   readonly args: Record<string, unknown>;
 }
 
+/** Wynik, którym test domyka wywołanie odroczone w prawdziwej karcie. */
+export type TauriCompletion = { readonly value: unknown } | { readonly error: string };
+
+/** Jedna jawna odpowiedź granicy dla sceny, która musi rozróżnić sukces od odmowy. */
+export type TauriReply = TauriCompletion | { readonly deferred: string };
+
+/**
+ * Dane należące do jednej sceny przeglądarkowej.
+ *
+ * Domyślna atrapa niżej dalej odpowiada wyłącznie trzema ogólnymi kształtami. Konkretna
+ * odpowiedź pojawia się dopiero wtedy, gdy kryterium SĄDZI właśnie ten powrót — na przykład
+ * widoczne zdanie po odmowie kopiowania diagnostyki. Kolejka pozwala tej samej karcie dostać
+ * najpierw odmowę, a po ponowieniu sukces, bez przepisywania `__TAURI_INTERNALS__` w teście.
+ */
+export interface OpenAppOptions {
+  readonly replies?: Readonly<Record<string, readonly TauriReply[]>>;
+}
+
+/** To, co Playwright przewozi do funkcji [`recorder`] wykonywanej w przeglądarce. */
+interface RecorderSetup {
+  readonly tape: string;
+  readonly deferred: string;
+  readonly replies: Readonly<Record<string, readonly TauriReply[]>>;
+}
+
 /**
  * Jedna otwarta aplikacja: własna karta, własny magazyn, własna taśma wywołań.
  *
@@ -93,6 +118,9 @@ export interface RunningApp {
    */
   calls(): Promise<readonly TauriCall[]>;
 
+  /** Kończy nazwane odroczone wywołanie tej karty sukcesem albo odmową. */
+  settle(id: string, completion: TauriCompletion): Promise<void>;
+
   /** Zamyka tę kartę. Serwer i przeglądarka zostają dla następnej. */
   close(): Promise<void>;
 }
@@ -108,6 +136,9 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
  * rozjechałby się po cichu i dałby „żaden przycisk nic nie woła" o harnessie, nie o produkcie.
  */
 const TAPE = '__LOADOUT_E2E_CALLS__';
+
+/** Nazwane, jeszcze nierozwiązane invoke tej karty. Osobny rejestr od taśmy wywołań. */
+const DEFERRED = '__LOADOUT_E2E_DEFERRED__';
 
 /** Powłoka w dokumencie. `main[data-section]` renderuje `src/App.tsx` i nic innego. */
 const SHELL = 'main[data-section]';
@@ -170,7 +201,7 @@ async function boot(): Promise<Booted> {
  * Otwiera aplikację: serwer vite na wolnym porcie, chromium, atrapa `__TAURI_INTERNALS__`
  * zasiana PRZED pierwszym skryptem strony, i karta z powłoką już w dokumencie.
  */
-export async function openApp(): Promise<RunningApp> {
+export async function openApp(options: OpenAppOptions = {}): Promise<RunningApp> {
   booted ??= boot();
   const { browser, url } = await booted;
 
@@ -187,7 +218,11 @@ export async function openApp(): Promise<RunningApp> {
     crashes.push(error.message);
   });
 
-  await page.addInitScript(recorder, TAPE);
+  await page.addInitScript(recorder, {
+    tape: TAPE,
+    deferred: DEFERRED,
+    replies: options.replies ?? {},
+  } satisfies RecorderSetup);
   /* 2026-08-18 — LIMIT PIERWSZEGO WEJŚCIA. Domyślne 30 s Playwrighta mierzy tu nie produkt,
    * tylko pierwsze uruchomienie dev-serwera: vite pre-bunduje zależności na żądanie, a graf
    * modułów urósł o edytor workflow i płótno. Zmierzone: `page.goto` przekraczał 30 s
@@ -216,6 +251,12 @@ export async function openApp(): Promise<RunningApp> {
   return {
     page,
     calls: () => page.evaluate(readTape, TAPE),
+    settle: (id, completion) =>
+      page.evaluate(settleDeferred, {
+        deferred: DEFERRED,
+        id,
+        completion,
+      }),
     close: async () => {
       await page.close();
     },
@@ -254,11 +295,28 @@ export async function closeEverything(): Promise<void> {
  */
 
 /** Atrapa granicy Rusta. Zasiana `addInitScript`, czyli przed pierwszym skryptem strony. */
-function recorder(tape: string): void {
+function recorder(setup: RecorderSetup): void {
   const host = globalThis as unknown as Record<string, unknown>;
+  const tape = setup.tape;
 
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
   host[tape] = calls;
+
+  /* Własna kopia kolejek tej karty. `shift()` nie może przepisywać argumentu przekazanego przez
+   * test, bo jedna tabela odpowiedzi by wtedy zależała od kolejności otwierania kart. */
+  const replies: Record<string, TauriReply[]> = {};
+  for (const [command, queued] of Object.entries(setup.replies)) {
+    replies[command] = [...queued];
+  }
+
+  /* Nazwany uchwyt jest kontrolą czasu, nie odpowiedzią Rusta napisaną w teście. Pozwala
+   * utrzymać prawdziwy handler Reacta pomiędzy Enterem a powrotem invoke i sprawdzić, czy drugi
+   * Enter lub edycja szkicu nie ścigają się z pierwszym wysłaniem. */
+  const deferred: Record<
+    string,
+    { readonly resolve: (value: unknown) => void; readonly reject: (reason: string) => void }
+  > = {};
+  host[setup.deferred] = deferred;
 
   /* Kopia Z CHWILI WYSŁANIA, nie odwołanie. Magazyn, który po `await` dopisuje pole do tego
    * samego obiektu, przepisałby wtedy przeszłość na taśmie — a taśma jest jedynym świadkiem
@@ -295,6 +353,18 @@ function recorder(tape: string): void {
   host['__TAURI_INTERNALS__'] = {
     invoke: (cmd: string, args?: unknown): Promise<unknown> => {
       calls.push({ cmd, args: asSent(args) });
+      const canned = replies[cmd]?.shift();
+      if (canned !== undefined) {
+        if ('error' in canned) return Promise.reject(canned.error);
+        if ('value' in canned) return Promise.resolve(canned.value);
+        return new Promise((resolve, reject) => {
+          if (deferred[canned.deferred] !== undefined) {
+            reject('the deferred Tauri reply ' + canned.deferred + ' is already waiting');
+            return;
+          }
+          deferred[canned.deferred] = { resolve, reject };
+        });
+      }
       return Promise.resolve(answer(cmd));
     },
 
@@ -317,6 +387,28 @@ function recorder(tape: string): void {
       Reflect.deleteProperty(host, '_' + String(id));
     },
   };
+}
+
+/** Domyka jedno wywołanie, które recorder zostawił w toku. Wykonywane w przeglądarce. */
+function settleDeferred(input: {
+  readonly deferred: string;
+  readonly id: string;
+  readonly completion: TauriCompletion;
+}): void {
+  const host = globalThis as unknown as Record<string, unknown>;
+  const waiting = host[input.deferred] as
+    | Record<
+        string,
+        { readonly resolve: (value: unknown) => void; readonly reject: (reason: string) => void }
+      >
+    | undefined;
+  const one = waiting?.[input.id];
+  if (one === undefined) {
+    throw new Error('nothing is waiting under deferred Tauri reply ' + JSON.stringify(input.id));
+  }
+  Reflect.deleteProperty(waiting, input.id);
+  if ('error' in input.completion) one.reject(input.completion.error);
+  else one.resolve(input.completion.value);
 }
 
 /** Taśma tej karty, przeczytana ze strony. */

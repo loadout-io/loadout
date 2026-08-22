@@ -7,11 +7,18 @@ export interface TriggerWorkflowOption {
   readonly name: string;
 }
 
+export interface TriggerWorkspaceOption {
+  readonly id: string;
+  readonly name: string;
+  readonly folder: string;
+}
+
 /** The editable values in the panel. The saved secret is represented by a fact, never a value. */
 export interface TriggerFormValue {
   readonly connector: '' | 'linear';
   readonly apiKey: string;
   readonly workflow: string;
+  readonly workspace: string;
   readonly pollEveryMinutes: TriggerCadence;
 }
 
@@ -25,6 +32,7 @@ export interface TriggerFormProps {
   readonly mode: 'create' | 'edit';
   readonly value: TriggerFormValue;
   readonly workflows: readonly TriggerWorkflowOption[];
+  readonly workspaces: readonly TriggerWorkspaceOption[];
   readonly hasSavedKey: boolean;
   readonly refusal: string | null;
   readonly connection: TriggerConnectionState;
@@ -63,11 +71,15 @@ function missingForSave(
   mode: TriggerFormProps['mode'],
   value: TriggerFormValue,
   hasSavedKey: boolean,
+  workspaces: readonly TriggerWorkspaceOption[],
 ): string | null {
   if (value.apiKey.trim() === '' && (mode === 'create' || !hasSavedKey)) {
     return 'Enter a Linear API key to save this trigger.';
   }
   if (value.connector !== 'linear') return 'Choose Linear to save this trigger.';
+  if (!workspaces.some((workspace) => workspace.folder === value.workspace)) {
+    return 'Choose an available workspace to save this trigger.';
+  }
   if (value.workflow.trim() === '') return 'Choose a workflow to save this trigger.';
   return null;
 }
@@ -77,6 +89,7 @@ export function TriggerForm({
   mode,
   value,
   workflows,
+  workspaces,
   hasSavedKey,
   refusal,
   connection,
@@ -90,7 +103,7 @@ export function TriggerForm({
   onConfirmDelete,
   onKeep,
 }: TriggerFormProps): ReactElement {
-  const missing = missingForSave(mode, value, hasSavedKey);
+  const missing = missingForSave(mode, value, hasSavedKey, workspaces);
   const canTest = value.apiKey.trim() !== '' || (mode === 'edit' && hasSavedKey);
   const testing = connection.kind === 'testing';
 
@@ -163,6 +176,40 @@ export function TriggerForm({
         <span className={LABEL}>When</span>
         <p data-trigger-condition className="text-body text-ink">
           An issue is assigned to you
+        </p>
+      </div>
+
+      <div className={ROW}>
+        <label htmlFor="trigger-workspace" className={LABEL}>
+          Workspace
+        </label>
+        <select
+          id="trigger-workspace"
+          data-trigger-field="workspace"
+          className={FIELD}
+          disabled={busy !== 'idle'}
+          value={value.workspace}
+          onChange={(event) => {
+            onChange({ ...value, workspace: event.target.value });
+          }}
+        >
+          <option value="" disabled>
+            Choose a workspace
+          </option>
+          {value.workspace === '' ||
+          workspaces.some((workspace) => workspace.folder === value.workspace) ? null : (
+            <option value={value.workspace} disabled>
+              Saved workspace is no longer available
+            </option>
+          )}
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.folder}>
+              {`${workspace.name} — ${workspace.folder}`}
+            </option>
+          ))}
+        </select>
+        <p className="text-note text-muted">
+          Runs from this trigger always use this workspace, even while another one is open.
         </p>
       </div>
 

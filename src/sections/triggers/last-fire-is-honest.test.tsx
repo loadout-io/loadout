@@ -2,13 +2,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { GONE_FROM_DISK } from '../run/launch';
 import type { TriggerDelivery, TriggerIo } from './io';
 import TriggersScreen from './index';
 import { createTriggersStore } from '../../state/triggers';
 import type { TriggerClock, TriggerRunPath, TriggerView } from '../../state/triggers';
+import { useWorkspaces } from '../../state/workspaces';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const RECEIPT_AT = Date.UTC(2026, 7, 21, 1, 53, 13, 400);
@@ -18,6 +19,7 @@ const DELIVERY: TriggerDelivery = {
     deliveryId: 'delivery-7',
     workflow: 'analysis.json',
     runId: '0198ca82-ded0-7000-8000-000000000042',
+    workspace: '/project',
   },
   issue: {
     id: 'issue-db-id',
@@ -47,11 +49,15 @@ const IO: TriggerIo = {
     source: 'Linear',
     condition: 'Assigned to you',
     workflow: 'analysis.json',
+    workspace: '/project',
     enabled,
     pollEveryMinutes: 1,
     hasApiKey: true,
   }),
   checkTrigger: async () => ({ status: 'armed' }),
+  retryTrigger: async () => {
+    throw new Error('not used');
+  },
   createTrigger: async () => {
     throw new Error('not used');
   },
@@ -68,8 +74,8 @@ const IO: TriggerIo = {
 
 const UNCHECKED = 'Not checked yet.';
 const ARMED = 'Watching for new issues. Nothing has started yet.';
-const BUSY = 'LIN-42 is saved while Loadout handles the run.';
-const ACCEPTED = 'Started Analysis at 2026-08-21 01:53:13 UTC.';
+const BUSY = 'LIN-42 is saved for Project while Loadout handles the run.';
+const ACCEPTED = 'Started Analysis in Project at 2026-08-21 01:53:13 UTC.';
 
 function trigger(status: TriggerView['status']): TriggerView {
   return {
@@ -77,6 +83,7 @@ function trigger(status: TriggerView['status']): TriggerView {
     source: 'Linear',
     condition: 'Assigned to you',
     workflow: 'analysis.json',
+    workspace: '/project',
     workflowName: 'Analysis',
     enabled: true,
     pollEveryMinutes: 1,
@@ -98,6 +105,14 @@ function statusText(markup: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+beforeEach(() => {
+  useWorkspaces.setState({
+    all: [{ id: '/project', name: 'Project', folder: '/project' }],
+    activeId: '/project',
+    said: null,
+  });
+});
 
 describe('the real Triggers screen tells five materially different truths', () => {
   it('says plainly that an unchecked trigger has not been asked yet', () => {
@@ -121,8 +136,13 @@ describe('the real Triggers screen tells five materially different truths', () =
   });
 
   it('names the accepted workflow and the durable start time', () => {
-    const markup = markupFor({ kind: 'accepted', workflow: 'Analysis', receiptAt: RECEIPT_AT });
-    expect(statusText(markup)).toBe(ACCEPTED);
+    const markup = markupFor({
+      kind: 'accepted',
+      workflow: 'Analysis',
+      workspace: '/project',
+      receiptAt: RECEIPT_AT,
+    });
+    expect(statusText(markup)).toBe(`${ACCEPTED} · Run again`);
     /* React's static renderer preserves the JSX property spelling (`dateTime`). The browser
      * normalises it as the standard HTML datetime attribute; lower-case here would test a
      * serialisation detail contrary to the renderer this criterion actually uses. */
@@ -135,7 +155,14 @@ describe('the real Triggers screen tells five materially different truths', () =
       statusText(markupFor({ kind: 'armed' })),
       statusText(markupFor({ kind: 'busy', delivery: DELIVERY })),
       statusText(markupFor({ kind: 'refused', sentence: GONE_FROM_DISK })),
-      statusText(markupFor({ kind: 'accepted', workflow: 'Analysis', receiptAt: RECEIPT_AT })),
+      statusText(
+        markupFor({
+          kind: 'accepted',
+          workflow: 'Analysis',
+          workspace: '/project',
+          receiptAt: RECEIPT_AT,
+        }),
+      ),
     ];
     expect(new Set(sentences).size).toBe(5);
 

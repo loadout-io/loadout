@@ -11,6 +11,7 @@ use loadout_lib::commands::triggers::{
     self, CleanupStage, DeleteStage, Source, TriggerClaim, TriggerError, TriggerPoll,
     TriggerSnapshot,
 };
+use loadout_lib::commands::workspaces;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -19,6 +20,8 @@ const KEY: &str = "lin_api_1234567890123456789012345678901234567890";
 type DirectorySnapshot = Vec<(PathBuf, Option<Vec<u8>>)>;
 
 fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
+    let workspace = home.to_str().ok_or("test workspace is not UTF-8")?;
+    workspaces::save_workspace_inner(home, "Trigger tests", workspace)?;
     let dir = home.join(triggers::TRIGGERS_DIR);
     fs::create_dir_all(&dir)?;
     fs::write(
@@ -28,6 +31,7 @@ fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
             "source": "linear",
             "enabled": true,
             "workflow": "linear.json",
+            "workspace": workspace,
             "condition": "assigned-to-me",
             "poll_every_minutes": 1,
             "api_key": KEY,
@@ -36,12 +40,13 @@ fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn snapshot(slug: &str) -> TriggerSnapshot {
+fn snapshot(home: &Path, slug: &str) -> TriggerSnapshot {
     TriggerSnapshot {
         slug: slug.to_owned(),
         source: Source::Linear,
         condition: "assigned-to-me".to_owned(),
         workflow: "linear.json".to_owned(),
+        workspace: Some(home.to_string_lossy().into_owned()),
         enabled: true,
         poll_every_minutes: 1,
         key_saved: true,
@@ -145,7 +150,7 @@ fn delete_cancels_pending_but_refuses_bound_before_any_mutation() -> Result<(), 
     let bound_run = home.path().join("runs/bound/run.json");
     triggers::bind_delivery(home.path(), &bound_claim, &bound_run)?;
 
-    triggers::delete(home.path(), "pending", &snapshot("pending"))?;
+    triggers::delete(home.path(), "pending", &snapshot(home.path(), "pending"))?;
     assert_cancelled(home.path(), "pending")?;
     let listed = triggers::list(home.path())?;
     assert!(
@@ -168,7 +173,7 @@ fn delete_cancels_pending_but_refuses_bound_before_any_mutation() -> Result<(), 
     assert!(!triggers::tombstone_path(home.path(), "pending").exists());
 
     let before_bound = tree(home.path())?;
-    let refusal = triggers::delete(home.path(), "bound", &snapshot("bound"))
+    let refusal = triggers::delete(home.path(), "bound", &snapshot(home.path(), "bound"))
         .expect_err("Delete must not race a delivery already bound to Start");
     assert_eq!(
         refusal.to_string(),
@@ -205,14 +210,14 @@ fn stale_missing_symlink_and_broken_ledger_refuse_without_changing_the_tree()
     fs::write(&stale_path, serde_json::to_vec_pretty(&stale_file)?)?;
     let before_stale = tree(home.path())?;
     assert!(matches!(
-        triggers::delete(home.path(), "stale", &snapshot("stale")),
+        triggers::delete(home.path(), "stale", &snapshot(home.path(), "stale")),
         Err(TriggerError::ConfigChanged)
     ));
     assert_eq!(tree(home.path())?, before_stale);
 
     let before_missing = tree(home.path())?;
     assert!(matches!(
-        triggers::delete(home.path(), "missing", &snapshot("missing")),
+        triggers::delete(home.path(), "missing", &snapshot(home.path(), "missing")),
         Err(TriggerError::MissingConfig)
     ));
     assert_eq!(tree(home.path())?, before_missing);
@@ -225,7 +230,7 @@ fn stale_missing_symlink_and_broken_ledger_refuse_without_changing_the_tree()
     )?;
     let before_link = tree(home.path())?;
     assert!(matches!(
-        triggers::delete(home.path(), "linked", &snapshot("linked")),
+        triggers::delete(home.path(), "linked", &snapshot(home.path(), "linked")),
         Err(TriggerError::NotRegularConfig)
     ));
     assert_eq!(tree(home.path())?, before_link);
@@ -240,7 +245,11 @@ fn stale_missing_symlink_and_broken_ledger_refuse_without_changing_the_tree()
     )?;
     let before_broken = tree(home.path())?;
     assert!(matches!(
-        triggers::delete(home.path(), "broken-ledger", &snapshot("broken-ledger")),
+        triggers::delete(
+            home.path(),
+            "broken-ledger",
+            &snapshot(home.path(), "broken-ledger")
+        ),
         Err(TriggerError::InvalidLedger(_))
     ));
     assert_eq!(tree(home.path())?, before_broken);
@@ -258,7 +267,11 @@ fn stale_missing_symlink_and_broken_ledger_refuse_without_changing_the_tree()
     )?;
     let before_future = tree(home.path())?;
     assert!(matches!(
-        triggers::delete(home.path(), "future-ledger", &snapshot("future-ledger")),
+        triggers::delete(
+            home.path(),
+            "future-ledger",
+            &snapshot(home.path(), "future-ledger")
+        ),
         Err(TriggerError::UnsupportedLedgerSchema)
     ));
     assert_eq!(
@@ -277,7 +290,7 @@ fn failures_on_both_sides_of_hide_leave_only_the_two_recoverable_states()
     let visible_result = triggers::delete_with(
         visible.path(),
         "visible",
-        &snapshot("visible"),
+        &snapshot(visible.path(), "visible"),
         |stage, _| {
             if stage == DeleteStage::AfterCancellation {
                 return Err(std::io::Error::other("injected before hide"));
@@ -304,13 +317,17 @@ fn failures_on_both_sides_of_hide_leave_only_the_two_recoverable_states()
 
     let hidden = TempDir::new()?;
     let hidden_claim = pending(hidden.path(), "hidden")?;
-    let hidden_result =
-        triggers::delete_with(hidden.path(), "hidden", &snapshot("hidden"), |stage, _| {
+    let hidden_result = triggers::delete_with(
+        hidden.path(),
+        "hidden",
+        &snapshot(hidden.path(), "hidden"),
+        |stage, _| {
             if stage == DeleteStage::AfterHide {
                 return Err(std::io::Error::other("injected after hide"));
             }
             Ok(())
-        });
+        },
+    );
     assert!(hidden_result.is_err());
     assert_cancelled(hidden.path(), "hidden")?;
     assert!(
@@ -400,7 +417,7 @@ fn cleanup_keeps_its_reader_until_sidecars_are_durable_and_retry_finishes()
     ] {
         let home = TempDir::new()?;
         let claim = pending(home.path(), "cleanup")?;
-        triggers::delete(home.path(), "cleanup", &snapshot("cleanup"))?;
+        triggers::delete(home.path(), "cleanup", &snapshot(home.path(), "cleanup"))?;
         let dir = home.path().join(triggers::TRIGGERS_DIR);
         let ledger = dir.join(".cleanup.ledger.json");
         let cursor = triggers::cursor_path(home.path(), "cleanup");
@@ -451,7 +468,7 @@ fn cleanup_keeps_its_reader_until_sidecars_are_durable_and_retry_finishes()
 fn every_delete_return_and_refusal_is_redacted() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     write_trigger(home.path(), "mine")?;
-    let result = triggers::delete(home.path(), "mine", &snapshot("mine"));
+    let result = triggers::delete(home.path(), "mine", &snapshot(home.path(), "mine"));
     let text = format!("{result:?}");
     assert!(!text.contains(KEY), "Delete returned the API key: {text}");
     Ok(())
@@ -468,7 +485,7 @@ fn delete_never_follows_a_linked_trigger_root() -> Result<(), Box<dyn Error>> {
     symlink(&external_dir, home.path().join(triggers::TRIGGERS_DIR))?;
     let before = tree(external.path())?;
 
-    let result = triggers::delete(home.path(), "outside", &snapshot("outside"));
+    let result = triggers::delete(home.path(), "outside", &snapshot(home.path(), "outside"));
     assert!(result.is_err(), "Delete followed a linked trigger folder");
     assert_eq!(
         tree(external.path())?,

@@ -72,24 +72,15 @@ export const CHROME_INSET_TOP = 36;
 /**
  * Zdanie w stopce. Mówi o tym, czym ta aplikacja NAPRAWDĘ umie uruchomić krok.
  *
- * Do 2026-08-18 stało tu „Claude · Codex ready" i była to nieprawda o połowie otoczenia:
- * `src-tauri/src/lib.rs:288` daje Codeksowi sterownik `Absent::new("codex", "T-10")`, którego
- * `probe` oddaje `found: false`, a `start` odmawia. Aplikacja meldowała gotowość rzeczy, która
- * przy pierwszym kroku odmawia — czyli dokładnie ten rodzaj kłamiącej kontrolki, po którym
- * człowiek przestaje wierzyć całemu ekranowi.
+ * ZMIERZONE 2026-08-21: fabryka w `src-tauri/src/lib.rs` daje obu dostawcom ich prawdziwe
+ * adaptery. `nav-furniture.test.tsx` czyta unię dostawców i mapowanie `Absent` w tym samym
+ * biegu, więc kolejna rozbieżność między stopką a runtime'em przewróci test.
  *
  * DLACZEGO NAPIS, A NIE ODCZYT. `src-tauri/commands.golden.txt` nie ma dziś ANI JEDNEJ komendy,
  * która pyta o stan dostawców — `probe` istnieje na sterowniku i nie jest wystawiony na granicę.
- * Napis, który nie ma skąd wziąć prawdy, ma mówić to, co jest pewne, a nie to, co brzmi lepiej;
- * prawdziwy odczyt jest zgłoszony orkiestratorowi jako komenda do dopisania. Kiedy powstanie,
- * ta stała zniknie razem z zaszytą wiedzą o vendorach.
- *
- * Zbiór dostawców, których tu nie ma, NIE jest wpisany z palca w kryterium: `nav-furniture.test.tsx`
- * czyta `Absent::new("…")` z `lib.rs` w tym samym biegu testu i porównuje z tym zdaniem, więc
- * dzień, w którym Codex naprawdę zacznie działać, jest dniem, w którym ten test świeci na
- * czerwono, dopóki zdanie go nie nazwie.
+ * Kiedy taki odczyt powstanie, ta stała zniknie razem z zaszytą wiedzą o vendorach.
  */
-const READY = 'Claude ready';
+const READY = 'Claude · Codex ready';
 
 export interface SideNavProps {
   section?: Section;

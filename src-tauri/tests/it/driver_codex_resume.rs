@@ -66,6 +66,18 @@ for a in "$@"; do
   printf '%s\n' "$a" >> "$here/argv-$n.log"
 done
 
+# 2026-08-21 — TA ATRAPA MA GRANICE PRAWDZIWEGO PARSERA, NIE TYLKO LICZNIK TUR.
+# `-C` jest opcja rodzica `codex exec`; codex-cli 0.148.0 odmawia jej po podkomendzie `resume`.
+# Bez tej odmowy test akceptowal dokladnie bledne argv, ktore produkcja pokazywala jako
+# `Didn't work · 0 turns · 0.0s`.
+if [ "$n" -gt 1 ]; then
+  if [ "${1-}" != "exec" ] || [ "${2-}" != "-C" ] || [ "${3-}" != "$here" ] || \
+     [ "${4-}" != "resume" ]; then
+    printf '%s\n' "error: unexpected argument '-C' found after resume" >&2
+    exit 2
+  fi
+fi
+
 printf '{"type":"thread.started","thread_id":"thread-%s"}\n' "$n"
 
 cat > "$here/stdin-$n.log"
@@ -105,12 +117,12 @@ fn text_of(path: &Path) -> Result<String, Box<dyn Error>> {
 fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
     vec![
         "exec".to_owned(),
+        "-C".to_owned(),
+        cwd.display().to_string(),
         "resume".to_owned(),
         thread.to_owned(),
         "--json".to_owned(),
         "--ignore-user-config".to_owned(),
-        "-C".to_owned(),
-        cwd.display().to_string(),
         "-".to_owned(),
     ]
 }
@@ -165,7 +177,13 @@ async fn three_turns_keep_one_identity_and_resume_the_newest_thread() -> Result<
 
     // ── Tura druga: nowy proces, wznowienie po PIERWSZYM identyfikatorze ───────────────────
     timeout(LIMIT, handle.send(SECOND_PROMPT.to_owned())).await??;
-    let _second = timeout(LIMIT, handle.wait()).await??;
+    let second = timeout(LIMIT, handle.wait()).await??;
+    assert!(
+        second.ok,
+        "the parser-faithful fake refused the second-turn argv, so the follow-up never reached \
+         the conversation: {:?}",
+        second.reason
+    );
 
     assert_eq!(
         lines_of(&dir.path().join("argv-2.log"))?,
@@ -193,7 +211,13 @@ async fn three_turns_keep_one_identity_and_resume_the_newest_thread() -> Result<
 
     // ── Tura trzecia: wznowienie po NAJNOWSZYM identyfikatorze ────────────────────────────
     timeout(LIMIT, handle.send(THIRD_PROMPT.to_owned())).await??;
-    let _third = timeout(LIMIT, handle.wait()).await??;
+    let third = timeout(LIMIT, handle.wait()).await??;
+    assert!(
+        third.ok,
+        "the parser-faithful fake refused the third-turn argv, so the follow-up never reached \
+         the conversation: {:?}",
+        third.reason
+    );
 
     assert_eq!(
         lines_of(&dir.path().join("argv-3.log"))?,

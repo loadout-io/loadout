@@ -36,6 +36,7 @@ use loadout_lib::engine::drivers::{
     Policy, Probe, RunSpec, SessionRef, Tokens, Voice,
 };
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
+use loadout_lib::evidence::EvidenceTarget;
 use loadout_lib::ipc::line_channel;
 use loadout_lib::library::agents::{Agent, FileAccess, Vendor};
 use tokio::sync::mpsc;
@@ -58,6 +59,9 @@ struct Watch {
     /// Specyfikacja KAŻDEGO uruchomienia. Sama długość tej listy odpowiada na pytanie, którego
     /// asercja o `model` nie zadaje: czy sesja stanęła u TEGO vendora.
     started: Mutex<Vec<RunSpec>>,
+    /// Kolejne tury przyjete przez uchwyt tego vendora. Prawdziwy Codex nie ma stalego
+    /// `Voice`: kolejna wiadomosc jedzie przez `AgentHandle::send` i `codex exec resume`.
+    sent: Mutex<Vec<String>>,
 }
 
 impl Watch {
@@ -72,6 +76,13 @@ impl Watch {
     fn first(&self) -> Option<RunSpec> {
         self.started().into_iter().next()
     }
+
+    fn sent(&self) -> Vec<String> {
+        self.sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 #[derive(Debug)]
@@ -79,6 +90,9 @@ struct Fake {
     /// Etykieta vendora — ta sama, która ląduje w [`SessionRef::vendor`].
     id: &'static str,
     watch: Arc<Watch>,
+    /// Target niesiony wyłącznie po to, by dubler przechodził ten sam obowiązkowy szew co
+    /// produkcyjni vendorzy. Polityka plików pozostaje w `EvidenceTarget`, nie w tym teście.
+    evidence: Option<EvidenceTarget>,
 }
 
 #[async_trait]
@@ -99,6 +113,10 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let _evidence = self
+            .evidence
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the Lead omitted its evidence target"))?;
         let session = SessionRef {
             vendor: self.id,
             id: spec.run_id.to_string(),
@@ -108,15 +126,30 @@ impl AgentDriver for Fake {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(spec);
-        /* Odbiornik głosu żyje tak długo, jak sesja: porzucony razem ze `start` zamykałby kanał,
-         * a wtedy każda następna tura odbijałaby się o „stopped listening" i mierzylibyśmy własne
-         * sprzątanie. Tury same tutaj nikogo nie interesują — o nie pyta AC-2. */
-        let (voice, mut heard) = mpsc::channel(4);
-        tokio::spawn(async move { while heard.recv().await.is_some() {} });
+        /* Claude ma dwukierunkowy stdin, Codex nie. Wczesniejszy dubler dawal `Voice` obu
+         * vendorom i przez to omijal dokladnie produkcyjna granice, na ktorej rozmowa z
+         * Codeksem odmawiala przed pierwszym zdaniem. */
+        let voice = if self.id == "codex" {
+            None
+        } else {
+            let (voice, mut heard) = mpsc::channel(4);
+            tokio::spawn(async move { while heard.recv().await.is_some() {} });
+            Some(voice)
+        };
         Ok(Box::new(Turn {
             events,
             session,
             voice,
+            watch: Arc::clone(&self.watch),
+            waited: false,
+        }))
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            id: self.id,
+            watch: Arc::clone(&self.watch),
+            evidence: Some(target),
         }))
     }
 }
@@ -125,7 +158,10 @@ impl AgentDriver for Fake {
 struct Turn {
     events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
-    voice: Voice,
+    voice: Option<Voice>,
+    watch: Arc<Watch>,
+    /// Dubler Codexa odmawia `send`, dopóki koordynator nie zbierze poprzedniego procesu.
+    waited: bool,
 }
 
 #[async_trait]
@@ -135,18 +171,28 @@ impl AgentHandle for Turn {
     }
 
     fn voice(&self) -> Option<Voice> {
-        Some(self.voice.clone())
+        self.voice.clone()
     }
 
     fn group(&self) -> Option<GroupId> {
         None
     }
 
-    async fn send(&mut self, _text: String) -> anyhow::Result<()> {
+    async fn send(&mut self, text: String) -> anyhow::Result<()> {
+        if self.voice.is_none() && !self.waited {
+            anyhow::bail!("a process-per-turn handle requires wait before send");
+        }
+        self.waited = false;
+        self.watch
+            .sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(text);
         Ok(())
     }
 
     async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
+        self.waited = true;
         let outcome = TurnOutcome {
             ok: true,
             reason: FinishReason::Completed,
@@ -184,10 +230,12 @@ fn two_vendors() -> (Drivers, Arc<Watch>, Arc<Watch>) {
     let claude_driver: Arc<dyn AgentDriver> = Arc::new(Fake {
         id: "claude",
         watch: Arc::clone(&claude),
+        evidence: None,
     });
     let codex_driver: Arc<dyn AgentDriver> = Arc::new(Fake {
         id: "codex",
         watch: Arc::clone(&codex),
+        evidence: None,
     });
     let drivers: Drivers = Arc::new(move |vendor| match vendor {
         Vendor::ClaudeCode => Arc::clone(&claude_driver),
@@ -229,7 +277,7 @@ fn saved(library: &Path, agent: &Agent) -> String {
 /// jest wątkiem, którego wierszy nikt nie odbiera — a to jest inny stan niż ten, o który pytamy.
 async fn one_sentence(drivers: &Drivers, lead: &Lead, cwd: PathBuf) -> Threads {
     let (sink, _source) = line_channel(LINES);
-    let mut threads = Threads::new();
+    let threads = Threads::new();
     threads.lines_go_to(cwd.clone(), sink);
     threads
         .say(drivers, lead, cwd, "what should the checker look at?")
@@ -301,6 +349,59 @@ async fn the_vendor_the_model_and_the_brief_come_from_the_definition() -> Result
         "the instructions replaced the brief instead of joining it. A lead without the sentence \
          naming what DOES start work promises \"already starting it\" and leaves the person \
          waiting for something that never comes. It said: {brief}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_codex_lead_keeps_one_conversation_without_a_duplex_voice() -> Result<(), Box<dyn Error>>
+{
+    let library = tempfile::tempdir()?;
+    let cwd = tempfile::tempdir()?;
+    let agent = definition(11, "Codex Lead", Vendor::Codex, FileAccess::LookOnly);
+    let who = saved(library.path(), &agent);
+    let (drivers, claude, codex) = two_vendors();
+    let lead = Lead::pointed_at(library.path(), Some(&who))
+        .map_err(|refusal| refusal.to_string())
+        .expect("the saved Codex lead has to resolve");
+    let (sink, _source) = line_channel(LINES);
+    let threads = Threads::new();
+    threads.lines_go_to(cwd.path().to_path_buf(), sink);
+
+    threads
+        .say(
+            &drivers,
+            &lead,
+            cwd.path().to_path_buf(),
+            "map the registration flow",
+        )
+        .await
+        .expect("the first sentence must start a Codex lead without inventing a duplex voice");
+    threads
+        .say(
+            &drivers,
+            &lead,
+            cwd.path().to_path_buf(),
+            "now turn that into a concrete plan",
+        )
+        .await
+        .expect("the second sentence must resume the same Codex conversation");
+
+    assert_eq!(
+        codex.started().len(),
+        1,
+        "a follow-up to one Codex lead must resume its existing logical session, not ask the \
+         driver factory to mint another conversation"
+    );
+    assert_eq!(
+        codex.sent(),
+        ["now turn that into a concrete plan"],
+        "a process-per-turn vendor has to receive the follow-up through AgentHandle::send; a \
+         fake Voice is a capability real Codex does not have"
+    );
+    assert!(
+        claude.started().is_empty(),
+        "resuming a Codex lead must not fall back to Claude"
     );
     Ok(())
 }

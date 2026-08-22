@@ -56,13 +56,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Waker};
 
+use base64::Engine as _;
 use tauri::State;
 use tauri::ipc::{Channel, Invoke};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
 
 use crate::commands::{self, Drivers, RunControl, RunDeps, RunRequest};
+use crate::engine::drivers::{ImageInput, ValidatedImages};
 use crate::engine::line::Line;
 use crate::library::agents::Agent;
 use crate::store::Store;
@@ -420,12 +423,12 @@ pub struct AppState {
     live: Mutex<RunControl>,
     /// Wątki lidera — po jednym na TERMINAL, wszystkie w jednym rejestrze.
     ///
-    /// # Dlaczego `tokio::sync::Mutex`, a nie ten sam rodzaj co przy [`AppState::live`]
+    /// # Dlaczego nie ma tu globalnego zamka asynchronicznego
     ///
-    /// Bo wysłanie tury do lidera JEST `await`-em: głos to kanał, a start wątku odpala prawdziwy
-    /// program. Zamek `std::sync` trzymany przez `await` jest tym, czego zabrania niezmiennik 8
-    /// i co `Cargo.toml` odrzuca lintem `await_holding_lock`. Tamten zamek trzyma się przez jedno
-    /// wyrażenie kopiujące uchwyt; ten trzyma się przez rozmowę z żywym programem.
+    /// Rejestr bierze krótki `std::sync::Mutex` wyłącznie na lookup/insert/clone, a żywą sesję
+    /// posiada actor konkretnego terminalu. Dzięki temu wielominutowe `Codex handle.wait()` w
+    /// terminalu A nie zatrzymuje wiadomości ani Stopu terminalu B, a żaden zamek synchroniczny
+    /// nie przeżywa `await` (niezmiennik 8).
     ///
     /// # 2026-08-20 (T-71) — TU STAŁA JEDNA ROZMOWA NA CAŁĄ APLIKACJĘ, I TO JEST ZDJĘTA BLOKADA
     ///
@@ -443,7 +446,10 @@ pub struct AppState {
     /// wątki per terminal, druga pisze do jednej rozmowy na całą aplikację, a z ekranu obie
     /// wyglądają tak samo. Pilnuje tego kryterium na źródle tego pliku
     /// (`tests/it/live_chat_goes_through_the_registry.rs`).
-    leads: tokio::sync::Mutex<commands::chat::Threads>,
+    /* Rejestr ma krótki zamek wewnętrzny, a każdy terminal własnego actora. Pole NIE jest
+     * opakowane w globalny async Mutex: Codex `handle.wait()` może trwać minuty i nie wolno mu
+     * wtedy zatrzymać rozmowy ani Stopu innego terminalu (niezmiennik 8). */
+    leads: commands::chat::Threads,
     /// Miejsce na jeden draft umiejętności i token tego, który pisze teraz.
     ///
     /// **Osobne pole, nie [`AppState::live`]**, i to jest cała treść tego wiersza: `live` jest
@@ -519,6 +525,25 @@ impl TriggerPollPermit {
         commands::triggers::poll_with(&self.home, slug, created_at, fetch)
             .map_err(|error| error.to_string())
     }
+
+    /// Jawne ponowienie korzysta z tego samego rustowego autorytetu co Start i `/ask`.
+    ///
+    /// `Accepted` powstaje przed pierwszym wywolaniem sterownika, wiec sam receipt nie dowodzi,
+    /// ze poprzedni bieg juz zszedl. Odmowa dzieje sie przed odczytem ledgera: zywy bieg nie
+    /// moze dostac drugiej proby tylko dlatego, ze okno pokazalo historyczny receipt.
+    pub fn retry(
+        self,
+        slug: &str,
+        created_at: i64,
+    ) -> Result<commands::triggers::TriggerDelivery, String> {
+        if self.busy {
+            return Err(
+                "A run is already going. Wait for it to finish or press Stop before starting this issue again."
+                    .to_owned(),
+            );
+        }
+        commands::triggers::retry(&self.home, slug, created_at).map_err(|error| error.to_string())
+    }
 }
 
 impl fmt::Debug for AppState {
@@ -551,7 +576,7 @@ impl AppState {
             store,
             drivers,
             live: Mutex::new(idle),
-            leads: tokio::sync::Mutex::new(commands::chat::Threads::new()),
+            leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
             started: commands::processes::Processes::new(),
         }
@@ -595,15 +620,15 @@ impl AppState {
     /// NAZWA ZOSTAJE, bo woła ją `lib.rs` jedną linią, a tamten plik nie należy do tego zadania
     /// (AGENTS.md §7). Zmieniła się liczba rozmów, które kończy, nie czynność.
     ///
-    /// ZAMEK ODDANY PRZED PĘTLĄ, i to nie jest kosmetyka: `close()` prowadzi całą eskalację
-    /// zabijania w środku, a `let` bez tego rozbicia trzymałby zamek na rejestrze przez cały ten
-    /// czas — czyli przez sekundy, w których nikt inny nie mógłby zapytać, czy jego wątek żyje.
+    /// `Threads::close` najpierw wysyła Stop do wszystkich actorów, a dopiero potem czeka na
+    /// dowody. Dlatego długa eskalacja terminalu A nie opóźnia nawet rozpoczęcia eskalacji B;
+    /// krótki zamek rejestru nie przeżywa żadnego z tych `await`-ów (niezmiennik 8).
     ///
     /// `Alive` po pełnej eskalacji idzie do dziennika, bo jest jedynym trwałym śladem: to jest
     /// stan, o którym nikt się inaczej nie dowie, a `lib.rs` zamyka okno tak czy inaczej —
     /// okno, którego nie da się zamknąć, zamykałoby człowieka wewnątrz aplikacji.
     pub(crate) async fn close_chat(&self) {
-        let proofs = self.leads.lock().await.close().await;
+        let proofs = self.leads.close().await;
         for proof in proofs {
             if matches!(proof, crate::engine::supervisor::GroupProof::Alive) {
                 tracing::error!(
@@ -619,7 +644,7 @@ impl AppState {
     /// Kończy JEDEN wątek i milczy o pozostałych — [`AppState::close_chat`] robi to samo dla
     /// wszystkich naraz i należy do zamknięcia OKNA, nie karty.
     pub async fn close_the_lead(&self, terminal: &str) {
-        let proof = self.leads.lock().await.close_at(terminal).await;
+        let proof = self.leads.close_at(terminal).await;
         if matches!(proof, Some(crate::engine::supervisor::GroupProof::Alive)) {
             tracing::error!(
                 "a lead agent was still answering after its terminal was closed; look for it in \
@@ -654,7 +679,7 @@ impl AppState {
     /// `--add-dir` wchodzi w argv przy STARCIE wątku, więc rozmowa, która zaczęła się przed tym
     /// zdaniem, dostałaby zasięg dopiero przy następnej ([`commands::chat::Threads::library_is`]).
     /// Ta droga stoi przed pierwszym zdaniem z konstrukcji: okno woła ją przy montażu ekranu.
-    pub async fn watching_the_lead(
+    pub fn watching_the_lead(
         &self,
         terminal: &str,
         folder: Option<&str>,
@@ -664,9 +689,8 @@ impl AppState {
         // ([`project_folder`]): rozmowa w katalogu, którego nie ma, jest programem, który nie
         // wstaje, a nie ostrzeżeniem. Brak wyboru znaczy „tam, gdzie aplikacja wstała".
         let cwd = self.project_for(folder).inspect_err(refused)?;
-        let mut leads = self.leads.lock().await;
-        leads.library_is(self.home.clone());
-        leads.terminal_lines_go_to(
+        self.leads.library_is(self.home.clone());
+        self.leads.terminal_lines_go_to(
             &commands::chat::Terminal {
                 id: terminal.to_owned(),
                 folder: cwd,
@@ -697,6 +721,18 @@ impl AppState {
         lead: Option<&str>,
         text: &str,
     ) -> Result<(), String> {
+        self.say_to_the_lead_with_images(terminal, folder, lead, text, ValidatedImages::default())
+            .await
+    }
+
+    pub async fn say_to_the_lead_with_images(
+        &self,
+        terminal: &str,
+        folder: Option<&str>,
+        lead: Option<&str>,
+        text: &str,
+        images: ValidatedImages,
+    ) -> Result<(), String> {
         let cwd = self.project_for(folder).inspect_err(refused)?;
         /* WSKAZANIE SĄDZIMY PRZED WZIĘCIEM ZAMKA, bo odmowa „nie wskazałeś lidera" nie ma nic
          * wspólnego z rejestrem wątków: czytanie biblioteki pod zamkiem trzymałoby go przez
@@ -706,9 +742,8 @@ impl AppState {
             refused(&said);
             said
         })?;
-        let mut leads = self.leads.lock().await;
-        leads
-            .say_in(
+        self.leads
+            .say_in_with_images(
                 &self.drivers,
                 &who,
                 &commands::chat::Terminal {
@@ -716,6 +751,7 @@ impl AppState {
                     folder: cwd,
                 },
                 text,
+                images,
             )
             .await
             .map_err(|error| {
@@ -863,11 +899,37 @@ impl AppState {
         project: &'a Path,
         claim: &commands::triggers::TriggerClaim,
     ) -> Result<RunDeps<'a>, String> {
-        // Claim jest sądzony przed wymianą uchwytu: podrobiona wartość nie może zająć
-        // zapadki ani odciąć Stopu od biegu, który w tym samym czasie naprawdę pracuje.
-        commands::triggers::claimed_delivery(&self.home, claim)
+        // Claim i jego workspace są sądzone przed wymianą uchwytu: podrobiona wartość ani
+        // folder z aktywnej właśnie karty nie mogą zająć zapadki i odciąć Stopu od prawdziwego
+        // biegu. Powtórzenie walidacji po `triggered_project` zamyka też zmianę rejestru między
+        // rozstrzygnięciem ścieżki a wzięciem uchwytu (incydent 2026-08-21).
+        let frozen = commands::triggers::claimed_workspace(&self.home, claim)
             .map_err(|error| error.to_string())?;
+        if frozen != project {
+            return Err(commands::triggers::TriggerError::WorkspaceMismatch.to_string());
+        }
         self.begin_run(project)
+    }
+
+    /// Wybiera projekt triggera z trwałej dostawy, nigdy z aktywnego workspace okna.
+    ///
+    /// Podany folder jest wyłącznie powtórzeniem do porównania. `None` nie znaczy tutaj
+    /// „projekt startowy aplikacji” jak przy ręcznym Run: ledger ma własny, zamrożony autorytet.
+    pub fn triggered_project(
+        &self,
+        folder: Option<&str>,
+        claim: &commands::triggers::TriggerClaim,
+    ) -> Result<PathBuf, String> {
+        let frozen = commands::triggers::claimed_workspace(&self.home, claim)
+            .map_err(|error| error.to_string())?;
+        if let Some(folder) = folder {
+            let repeated = project_folder(Some(folder))?
+                .ok_or_else(|| commands::triggers::TriggerError::WorkspaceMismatch.to_string())?;
+            if repeated != frozen {
+                return Err(commands::triggers::TriggerError::WorkspaceMismatch.to_string());
+            }
+        }
+        Ok(frozen)
     }
 
     /// Pyta jedyny rustowy autorytet o zajętość przed siecią i przed jakimkolwiek zapisem.
@@ -1444,15 +1506,45 @@ pub async fn run_workflow(
     claim: Option<commands::triggers::TriggerClaim>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
+    run_workflow_from_window(
+        &state,
+        file_name,
+        how_many_at_once,
+        folder.as_deref(),
+        task,
+        claim.as_ref(),
+        pump_into(lines),
+    )
+    .await
+}
+
+/// Jedna produkcyjna krawędź przed wyborem projektu: komenda Tauri i sędzia podają tu te same
+/// argumenty. Dzięki temu rozstrzygnięcie claim→workspace nie chowa się w nietestowalnej
+/// konstrukcji [`State`] ani nie może wrócić do chwilowego aktywnego folderu okna.
+pub async fn run_workflow_from_window(
+    state: &AppState,
+    file_name: &str,
+    how_many_at_once: usize,
+    folder: Option<&str>,
+    task: Option<String>,
+    claim: Option<&commands::triggers::TriggerClaim>,
+    lines: LineSink,
+) -> Result<(), String> {
     let request = state
         .request(file_name, how_many_at_once, task)
         .inspect_err(refused)?;
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    run_workflow_from_window(&state, &project, &request, claim.as_ref(), pump_into(lines)).await
+    let project = if let Some(claim) = claim {
+        state
+            .triggered_project(folder, claim)
+            .inspect_err(refused)?
+    } else {
+        state.project_for(folder).inspect_err(refused)?
+    };
+    run_workflow_in_project(state, &project, &request, claim, lines).await
 }
 
-/// Jedna produkcyjna krawędź Startu: ręczna bez claimu i triggerowa z trwałym claimem.
-async fn run_workflow_from_window(
+/// Jedna produkcyjna krawędź wykonania: ręczna bez claimu i triggerowa z trwałym claimem.
+async fn run_workflow_in_project(
     state: &AppState,
     project: &Path,
     request: &RunRequest,
@@ -1580,9 +1672,7 @@ pub async fn open_chat(
     folder: Option<String>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    state
-        .watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
-        .await
+    state.watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
 }
 
 /// Mówi zdanie liderowi tego terminalu. **Nie uruchamia biegu i nie ma jak** — powód przy
@@ -1598,10 +1688,96 @@ pub async fn say_to_orchestrator(
     folder: Option<String>,
     lead: Option<String>,
     text: &str,
+    images: Option<Vec<PastedImage>>,
 ) -> Result<(), String> {
+    say_to_orchestrator_from_window(
+        &state,
+        terminal,
+        folder.as_deref(),
+        lead.as_deref(),
+        text,
+        images.unwrap_or_default(),
+    )
+    .await
+}
+
+/// Testowalna krawedz produkcyjnej komendy: dekoduje drut okna i dopiero potem wpuszcza
+/// zatwierdzone obrazy do rejestru rozmow. Skorupa Tauri nie ma drugiej implementacji tej
+/// kolejnosci, wiec kryterium moze osadzic pierwsza i kolejna ture bez budowania `State`.
+pub async fn say_to_orchestrator_from_window(
+    state: &AppState,
+    terminal: &str,
+    folder: Option<&str>,
+    lead: Option<&str>,
+    text: &str,
+    images: Vec<PastedImage>,
+) -> Result<(), String> {
+    let images = validate_pasted_images(images).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })?;
     state
-        .say_to_the_lead(terminal, folder.as_deref(), lead.as_deref(), text)
+        .say_to_the_lead_with_images(terminal, folder, lead, text, images)
         .await
+}
+
+/// Obraz z webviewa. Nazwy pliku nie ma w typie, wiec nie moze opuscic okna przez przypadek.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PastedImage {
+    pub mime: String,
+    pub base64: String,
+}
+
+impl std::fmt::Debug for PastedImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PastedImage")
+            .field("mime", &self.mime)
+            .field(
+                "base64",
+                &format_args!("<private; {} bytes>", self.base64.len()),
+            )
+            .finish()
+    }
+}
+
+fn validate_pasted_images(
+    images: Vec<PastedImage>,
+) -> Result<ValidatedImages, crate::engine::drivers::ImageError> {
+    let images = images
+        .into_iter()
+        .map(|image| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(image.base64)
+                .map_err(|_error| crate::engine::drivers::ImageError::WrongMagic)?;
+            ImageInput::from_wire(&image.mime, bytes)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ValidatedImages::validate(images)
+}
+
+/// Kopiuje allowlistowany raport aktywnego workspace i zwraca wyłącznie liczniki.
+///
+/// `async` utrzymuje wstrzykiwane przez Tauri `AppHandle` i `State` w ich rozpoznawalnym
+/// kształcie bez blokowania wątku okna. Referencje sugerowane przez `needless_pass_by_value`
+/// zostałyby uznane przez generator sygnatur IPC za argumenty, które ma przesłać webview.
+#[tauri::command]
+pub async fn copy_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<commands::diagnostics::DiagnosticsReceipt, String> {
+    let workspace = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::diagnostics::copy_diagnostics_with(&workspace, |report| {
+        app.clipboard().write_text(report.to_owned())
+    })
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
 }
 
 /// Karta zamknięta: rozmowa TEGO terminalu schodzi, rozmowy pozostałych zostają.
@@ -1848,6 +2024,19 @@ pub async fn check_trigger(
         .inspect_err(refused)
 }
 
+/// Jawne "Run again": Rust wybiera trwala dostawe, a okno dostaje tylko nowy uchwyt Startu.
+#[tauri::command]
+pub async fn retry_trigger(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<commands::triggers::TriggerDelivery, String> {
+    let permit = state.trigger_poll_permit();
+    tokio::task::spawn_blocking(move || permit.retry(&slug, unix_millis()))
+        .await
+        .map_err(|error| format!("Loadout could not finish retrying this trigger: {error}"))?
+        .inspect_err(refused)
+}
+
 /// Milisekundy epoki dla trwałego receipt triggera; zegar webviewa nie bierze udziału.
 fn unix_millis() -> i64 {
     std::time::SystemTime::now()
@@ -1908,6 +2097,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         check_workflow,
         close_terminal,
         continue_run,
+        copy_diagnostics,
         create_trigger,
         delete_agent,
         delete_skill,
@@ -1928,6 +2118,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         new_id,
         open_chat,
         put_note_to_use,
+        retry_trigger,
         review_skill,
         run_agent,
         run_workflow,

@@ -27,18 +27,25 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::Drivers;
 use crate::engine::drivers::{
-    AgentDriver, AgentHandle, DecodedEvent, Policy, RunSpec, ToAgent, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec, ToAgent,
+    ValidatedImages, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
+use crate::evidence::{
+    ConversationMetadata, ConversationVendor, EvidenceFailureKind, EvidenceTarget, ImageFact,
+    SafeInputManifest, TurnCounters,
+};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, policy_of};
 
@@ -54,6 +61,9 @@ pub const LEAD: &str = "Lead";
 /// Mniej niż bieg, bo tu pracuje jeden agent, a nie ośmiu — ale z zapasem: pełny kanał
 /// zatrzymałby pętlę czytającą model, czyli mierzylibyśmy własny przyrząd.
 const EVENTS: usize = 128;
+
+/// Ile czekamy, aż po dowodzie `Dead` czytnik opróżni już zakolejkowane zdarzenia i `flush()`.
+const READER_DRAIN: Duration = Duration::from_secs(1);
 
 /// Katalog agentów w bibliotece człowieka: `~/.loadout/agents/` (`docs/ARCHITECTURE.md` §8).
 ///
@@ -145,8 +155,12 @@ pub enum ChatError {
     NoFolder,
     /// Sesji nie udało się wystartować — zdanie od sterownika w środku.
     CouldNotStart(String),
+    /// Bezpiecznego receiptu nie dało sie zapisac, wiec tura nie pojechala.
+    CouldNotRecord,
     /// Sesja zeszła i nie przyjmuje już tur.
     StoppedListening,
+    /// Sterownik odmówił tury, a eskalacja nie dowiodła jeszcze śmierci procesu.
+    StillRunning,
     /// Nikt nie jest wskazany na lidera.
     ///
     /// **Odmowa, nigdy cichy powrót do zaszytego vendora**, i to jest cała treść tego wariantu.
@@ -183,10 +197,20 @@ impl std::fmt::Display for ChatError {
                 "Pick a workspace first: the lead agent looks at the folder you are working in."
             ),
             Self::CouldNotStart(said) => write!(f, "The lead agent could not start: {said}"),
+            Self::CouldNotRecord => write!(
+                f,
+                "Loadout could not save this conversation, so it did not send the message."
+            ),
             Self::StoppedListening => write!(
                 f,
                 "The lead agent stopped listening. Write again and it will start a fresh \
                  conversation."
+            ),
+            Self::StillRunning => write!(
+                f,
+                "The lead agent stopped accepting messages, but it is still running after \
+                 Loadout tried to stop it. Loadout is still tracking it; close this terminal to \
+                 try stopping it again."
             ),
             // Nazywa NASTĘPNY RUCH, bo odmowa bez niego zostawia człowieka tam, gdzie był
             // (DESIGN §8) — a tu jest gdzie odesłać: kontrolka lidera stoi w pasku pracy.
@@ -216,12 +240,43 @@ impl std::error::Error for ChatError {}
 
 /// Żywa sesja rozmowy.
 struct Session {
-    /// Głos do niej — klonowalny nadajnik, bez `&mut` (`engine::drivers::Voice`).
-    voice: Voice,
+    /// Głos do niej, kiedy vendor trzyma jeden dwukierunkowy proces. `None` nie znaczy, ze
+    /// rozmowy nie ma: Codex konczy proces po turze i wznawia ja przez [`AgentHandle::send`].
+    voice: Option<Voice>,
     /// Uchwyt sesji. Trzymany, bo jego porzucenie jest końcem procesu.
     handle: Box<dyn AgentHandle>,
     /// Zadanie zamieniające zdarzenia na wiersze. Kończy się razem z kanałem sesji.
     reader: JoinHandle<()>,
+    /// Prywatny receipt tej rozmowy. `None` tylko w legacy `Chat`, bez produkcyjnego wolacza.
+    evidence: Option<EvidenceTarget>,
+    /// Liczba rozpoczętych prób, także tej, której transport odmówił przed dostarczeniem.
+    attempts: usize,
+}
+
+/// Uchwyt jest już przyjęty przez sterownik, ale odpowiedzi nie mają jeszcze drogi na ekran.
+///
+/// Ten stan trwa dokładnie do zapisania pierwszego [`Line::Told`]. Dopiero potem [`Self::listen`]
+/// uruchamia czytnik. Zdarzenia, które szybki vendor zdążył wysłać w `start`, bezpiecznie
+/// czekają w `inbox` i nie mogą wyprzedzić pytania człowieka.
+struct ReadySession {
+    voice: Option<Voice>,
+    handle: Box<dyn AgentHandle>,
+    inbox: mpsc::Receiver<DecodedEvent>,
+    evidence: Option<EvidenceTarget>,
+    attempts: usize,
+}
+
+impl ReadySession {
+    fn listen(self, lines: Arc<Mutex<LineSink>>) -> Session {
+        let reader = tokio::spawn(read_along(self.inbox, lines, self.evidence.clone()));
+        Session {
+            voice: self.voice,
+            handle: self.handle,
+            reader,
+            evidence: self.evidence,
+            attempts: self.attempts,
+        }
+    }
 }
 
 /// Rozmowa z orchestratorem: strumień do okna i sesja, która powstaje przy pierwszym zdaniu.
@@ -318,22 +373,41 @@ impl Chat {
             return Err(ChatError::NothingToSay);
         }
 
-        if let Some(session) = self.live.as_ref() {
-            // Sesja stoi: zdanie jest kolejną turą i jedzie głosem, bez `&mut` na uchwycie.
-            session
-                .voice
-                .send(ToAgent::Turn(said.to_owned()))
-                .await
-                .map_err(|_| ChatError::StoppedListening)?;
+        if let Some(session) = self.live.as_mut() {
+            let delivered = next_turn(session, said).await;
+            if delivered.is_err() {
+                /* „Fresh conversation" wolno obiecać dopiero po dowodzie `Dead`. `Alive` po
+                 * pełnej eskalacji nadal jest żywym, płatnym procesem: uchwyt wraca wtedy do
+                 * rejestru zamiast wypaść z niego przy wyjściu z tej funkcji (niezmiennik 6). */
+                if let Some(mut failed) = self.live.take() {
+                    match failed.handle.cancel().await {
+                        GroupProof::Dead { status } => {
+                            finish_dead_session(failed, status.and_then(|status| status.code()))
+                                .await;
+                        }
+                        GroupProof::Alive => {
+                            self.live = Some(failed);
+                            return Err(ChatError::StillRunning);
+                        }
+                    }
+                }
+            }
+            delivered?;
         } else {
             /* Strumień KLONUJEMY przed `await`, i to nie jest kosmetyka. `begin` nie bierze
              * `&self`, bo `&Chat` nie jest `Send`: uchwyt sesji (`Box<dyn AgentHandle>`) jest
              * `Send`, ale nie `Sync`, a `&T: Send` wymaga `T: Sync`. Pożyczka `self` przeżywająca
              * `await` czyni całą komendę nie-`Send`, czego Tauri nie przyjmuje — i słusznie,
              * bo to zadanie może wznowić się na innym wątku. */
-            let session =
-                begin(driver, spec_hard_wired(cwd, said), Arc::clone(&self.lines)).await?;
-            self.live = Some(session);
+            let ready = begin(driver, spec_hard_wired(cwd, said)).await?;
+            /* CZYTNIK JESZCZE NIE ISTNIEJE. Vendor przyjął prompt, więc wiersz jest uczciwy;
+             * odpowiedź może ruszyć na ekran dopiero po nim. */
+            let _ = self.say_in_the_stream(Line::Told {
+                agent: LEAD.to_owned(),
+                text: said.to_owned(),
+            });
+            self.live = Some(ready.listen(Arc::clone(&self.lines)));
+            return Ok(());
         }
 
         /* TWOJE ZDANIE W STRUMIENIU. Wynik świadomie porzucony: pełna kolejka do okna jest
@@ -519,19 +593,30 @@ impl Lead {
 /// i rozjechałby się przy pierwszym zamknięciu okna: [`Threads::close`] widziałaby jeden z nich,
 /// a drugi zostawiał żywe procesy pod PID 1.
 ///
-/// Wpis w [`Threads::lines`] powstaje, kiedy okno pierwszy raz na ten terminal patrzy; wpis
-/// w [`Threads::live`] dopiero przy pierwszym zdaniu — sesja wystartowana przy montażu ekranu
-/// płaci za turę, o którą nikt nie zapytał, i to jest ten sam powód, który stoi przy
-/// [`Chat::live`].
+/// Wpis w `ThreadRegistry::lines` powstaje, kiedy okno pierwszy raz na ten terminal patrzy; actor
+/// w `ThreadRegistry::live` dopiero przy pierwszym zdaniu — sesja wystartowana przy montażu
+/// ekranu płaci za turę, o którą nikt nie zapytał, i to jest ten sam powód, który stoi
+/// przy [`Chat::live`].
 #[derive(Default)]
 pub struct Threads {
+    /// Krótki rejestr, nigdy trzymany przez `await` (niezmiennik 8).
+    ///
+    /// Każdy żywy uchwyt należy do osobnego actora. Dzięki temu Codex czekający na koniec
+    /// tury w terminalu A nie trzyma zamka aplikacji i nie zatrzymuje wiadomości ani Stopu
+    /// terminalu B. `std::sync::Mutex` jest tutaj celowy: pod nim są wyłącznie lookup, clone
+    /// i podmiana `LineSink`; cudzy kod oraz sterownik stoją po drugiej stronie kanału actora.
+    state: Mutex<ThreadRegistry>,
+}
+
+#[derive(Default)]
+struct ThreadRegistry {
     /// Kanał wierszy tego terminalu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
     /// zamknięcie cudzej rozmowy przy przełączeniu byłoby zgubieniem wątku, o który chodzi
     /// cała ta zmiana.
     lines: HashMap<String, Arc<Mutex<LineSink>>>,
-    /// Sesja tego terminalu. Osobny wpis na terminal, bo to jest jedyna rzecz, która czyni
-    /// zdanie „wątek należy do terminalu" prawdziwym, a nie zadeklarowanym.
-    live: HashMap<String, Session>,
+    /// Actor tego terminalu. Tylko on posiada `Session`, więc `wait -> send` nie może zostać
+    /// przeplecione drugą turą, a Stop może przerwać `wait` i przejść przez `cancel`.
+    live: HashMap<String, Conversation>,
     /// Gdzie leży biblioteka tego człowieka — `~/.loadout`, powiedziane przez okno.
     ///
     /// JEDNA na wszystkie zakresy, a nie jedna na wątek, bo biblioteka jest globalna
@@ -545,16 +630,488 @@ pub struct Threads {
     library: Option<PathBuf>,
 }
 
+/// Sufit kolejki jednego terminalu. Kolejka porządkuje tury, nie uruchamia ich równolegle.
+const THREAD_COMMANDS: usize = 16;
+const THREAD_IDLE: u8 = 0;
+const THREAD_ACTIVE: u8 = 1;
+const THREAD_CLOSING: u8 = 2;
+const THREAD_CLOSED: u8 = 3;
+
+/// Klamka do actora jednego terminalu.
+///
+/// Dwa kanały są rozdzielone celowo. Gdy Codex czeka w `handle.wait()`, zwykłe tury zostają
+/// w swojej kolejce, a Stop ma osobne pasmo i może przerwać oczekiwanie przez `tokio::select!`.
+/// Jeden kanał FIFO stawiałby Stop za dowolną liczbą wiadomości, czyli człowiek naciskałby
+/// Stop dokładnie wtedy, gdy nie ma on kiedy zadziałać.
+#[derive(Clone)]
+struct Conversation {
+    inner: Arc<ConversationInner>,
+}
+
+struct ConversationInner {
+    turns: mpsc::Sender<TurnRequest>,
+    stops: mpsc::Sender<StopRequest>,
+    /// Obserwowalny cień stanu actora; nie jest tokenem anulowania ani autorytetem procesu.
+    ///
+    /// Jedynym autorytetem śmierci pozostaje `GroupProof`. Atom służy wyłącznie temu, by
+    /// synchroniczne `is_live_at` nie musiało zaglądać do uchwytu należącego do zadania.
+    status: Arc<AtomicU8>,
+}
+
+struct TurnRequest {
+    driver: Arc<dyn AgentDriver>,
+    spec: RunSpec,
+    text: String,
+    images: ValidatedImages,
+    done: oneshot::Sender<Result<(), ChatError>>,
+}
+
+struct StopRequest {
+    done: oneshot::Sender<Option<GroupProof>>,
+}
+
+enum FollowUp {
+    Delivered(Result<(), ChatError>),
+    Stop(Option<StopRequest>),
+}
+
+impl Conversation {
+    fn new(lines: Arc<Mutex<LineSink>>) -> Self {
+        let (turns, turn_inbox) = mpsc::channel(THREAD_COMMANDS);
+        let (stops, stop_inbox) = mpsc::channel(1);
+        let status = Arc::new(AtomicU8::new(THREAD_IDLE));
+        tokio::spawn(conversation_actor(
+            turn_inbox,
+            stop_inbox,
+            Arc::clone(&status),
+            lines,
+        ));
+        Self {
+            inner: Arc::new(ConversationInner {
+                turns,
+                stops,
+                status,
+            }),
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        matches!(
+            self.inner.status.load(Ordering::Acquire),
+            THREAD_ACTIVE | THREAD_CLOSING
+        )
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    async fn say_with_images(
+        &self,
+        driver: Arc<dyn AgentDriver>,
+        spec: RunSpec,
+        text: String,
+        images: ValidatedImages,
+    ) -> Result<(), ChatError> {
+        let (done, answer) = oneshot::channel();
+        self.inner
+            .turns
+            .send(TurnRequest {
+                driver,
+                spec,
+                text,
+                images,
+                done,
+            })
+            .await
+            .map_err(|_| ChatError::StoppedListening)?;
+        answer.await.unwrap_or(Err(ChatError::StoppedListening))
+    }
+
+    /// Wysyła Stop i oddaje odbiornik dowodu. Rozdzielenie wysłania od czekania pozwala
+    /// [`Threads::close`] najpierw obudzić KAŻDEGO actora, a dopiero potem czekać na najwolniejszy.
+    async fn ask_to_stop(&self) -> Result<oneshot::Receiver<Option<GroupProof>>, ()> {
+        let (done, proof) = oneshot::channel();
+        self.inner
+            .stops
+            .send(StopRequest { done })
+            .await
+            .map_err(|_| ())?;
+        Ok(proof)
+    }
+
+    async fn stop(&self) -> Option<GroupProof> {
+        if self.inner.status.load(Ordering::Acquire) == THREAD_CLOSED {
+            return None;
+        }
+        let Ok(proof) = self.ask_to_stop().await else {
+            /* Zerwany kanał bez otrzymanego `Dead` jest stanem nieznanym. Konserwatywne `Alive`
+             * zachowuje wpis w rejestrze i nie zamienia utraty actora w fałszywy dowód śmierci. */
+            return Some(GroupProof::Alive);
+        };
+        proof.await.unwrap_or(Some(GroupProof::Alive))
+    }
+}
+
+/// Jedyny właściciel `Session` jednego terminalu.
+async fn conversation_actor(
+    mut turns: mpsc::Receiver<TurnRequest>,
+    mut stops: mpsc::Receiver<StopRequest>,
+    status: Arc<AtomicU8>,
+    lines: Arc<Mutex<LineSink>>,
+) {
+    let mut session: Option<Session> = None;
+    let mut closing = false;
+
+    loop {
+        if closing {
+            serve_while_closing(&mut session, &mut turns, &mut stops, &status).await;
+            return;
+        }
+
+        tokio::select! {
+            biased;
+            stop = stops.recv() => {
+                let Some(stop) = stop else {
+                    stop_orphan(session, &status).await;
+                    return;
+                };
+                let proof = cancel_session(&mut session).await;
+                let alive = matches!(proof, Some(GroupProof::Alive));
+                status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
+                let _ = stop.done.send(proof);
+                if alive {
+                    closing = true;
+                } else {
+                    return;
+                }
+            }
+            turn = turns.recv() => {
+                let Some(turn) = turn else {
+                    stop_orphan(session, &status).await;
+                    return;
+                };
+
+                status.store(THREAD_ACTIVE, Ordering::Release);
+                if session.is_none() {
+                    match begin_thread(turn.driver, turn.spec, turn.images).await {
+                        Ok(ready) => {
+                            /* Najpierw przyjęta tura człowieka, dopiero potem zadanie, które
+                             * może przepuścić odpowiedź. `start` mógł już zapełnić `inbox`, ale
+                             * bez czytnika żaden z tych wierszy nie wyprzedzi `Told`. */
+                            say_to_stream(&lines, &turn.text);
+                            session = Some(ready.listen(Arc::clone(&lines)));
+                            let _ = turn.done.send(Ok(()));
+                        }
+                        Err(error) => {
+                            status.store(THREAD_IDLE, Ordering::Release);
+                            let _ = turn.done.send(Err(error));
+                        }
+                    }
+                    continue;
+                }
+
+                let Some(running) = session.as_mut() else {
+                    status.store(THREAD_IDLE, Ordering::Release);
+                    let _ = turn.done.send(Err(ChatError::StoppedListening));
+                    continue;
+                };
+                let follow_up =
+                    interruptible_next_turn(running, &turn.text, turn.images, &mut stops).await;
+                match follow_up {
+                    FollowUp::Delivered(Ok(())) => {
+                        say_to_stream(&lines, &turn.text);
+                        let _ = turn.done.send(Ok(()));
+                    }
+                    FollowUp::Delivered(Err(error)) => {
+                        let proof = cancel_session(&mut session).await;
+                        if matches!(proof, Some(GroupProof::Alive)) {
+                            status.store(THREAD_CLOSING, Ordering::Release);
+                            closing = true;
+                            let _ = turn.done.send(Err(ChatError::StillRunning));
+                        } else {
+                            status.store(THREAD_IDLE, Ordering::Release);
+                            let reply = if matches!(&error, ChatError::CouldNotRecord) {
+                                error
+                            } else {
+                                ChatError::StoppedListening
+                            };
+                            let _ = turn.done.send(Err(reply));
+                        }
+                    }
+                    FollowUp::Stop(Some(stop)) => {
+                        let proof = cancel_session(&mut session).await;
+                        let alive = matches!(proof, Some(GroupProof::Alive));
+                        status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
+                        let _ = turn.done.send(Err(if alive {
+                            ChatError::StillRunning
+                        } else {
+                            ChatError::StoppedListening
+                        }));
+                        let _ = stop.done.send(proof);
+                        if alive {
+                            closing = true;
+                        } else {
+                            return;
+                        }
+                    }
+                    FollowUp::Stop(None) => {
+                        let _ = turn.done.send(Err(ChatError::StoppedListening));
+                        stop_orphan(session, &status).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Po `Alive` actor nie przyjmuje już tur, ale zachowuje uchwyt i obsługuje kolejne próby Stop.
+async fn serve_while_closing(
+    session: &mut Option<Session>,
+    turns: &mut mpsc::Receiver<TurnRequest>,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    status: &AtomicU8,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            stop = stops.recv() => {
+                let Some(stop) = stop else {
+                    stop_orphan(session.take(), status).await;
+                    return;
+                };
+                let proof = cancel_session(session).await;
+                let alive = matches!(proof, Some(GroupProof::Alive));
+                status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
+                let _ = stop.done.send(proof);
+                if !alive {
+                    return;
+                }
+            }
+            turn = turns.recv() => {
+                let Some(turn) = turn else {
+                    stop_orphan(session.take(), status).await;
+                    return;
+                };
+                let _ = turn.done.send(Err(ChatError::StillRunning));
+            }
+        }
+    }
+}
+
+/// Kolejna tura, z priorytetowym pasmem Stop podczas każdego długiego `await` sterownika.
+async fn interruptible_next_turn(
+    session: &mut Session,
+    text: &str,
+    images: ValidatedImages,
+    stops: &mut mpsc::Receiver<StopRequest>,
+) -> FollowUp {
+    let number = session.attempts + 1;
+    let evidence = session.evidence.clone();
+    if let Some(evidence) = &evidence {
+        let input = safe_input(text, &images);
+        if evidence.begin_turn(number, &input).await.is_err() {
+            evidence.mark_incomplete();
+            return FollowUp::Delivered(Err(ChatError::CouldNotRecord));
+        }
+    }
+    // Od tej chwili numer jest zajęty nawet wtedy, gdy transport odmówi. Następna próba nie
+    // może nadpisać pliku, który mówi prawdę o tej odmowie.
+    session.attempts = number;
+
+    let delivered = if let Some(voice) = session.voice.clone() {
+        if images.is_empty() {
+            tokio::select! {
+                biased;
+                stop = stops.recv() => {
+                    cancel_pending_attempt(evidence.as_ref(), number).await;
+                    return FollowUp::Stop(stop);
+                },
+                sent = voice.send(ToAgent::Turn(text.to_owned())) => {
+                    sent.map_err(|_| ChatError::StoppedListening)
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                stop = stops.recv() => {
+                    cancel_pending_attempt(evidence.as_ref(), number).await;
+                    return FollowUp::Stop(stop);
+                },
+                sent = session.handle.send_with_images(text.to_owned(), images) => {
+                    sent.map_err(|_| ChatError::StoppedListening)
+                }
+            }
+        }
+    } else {
+        let waited = tokio::select! {
+            biased;
+            stop = stops.recv() => {
+                cancel_pending_attempt(evidence.as_ref(), number).await;
+                return FollowUp::Stop(stop);
+            },
+            waited = session.handle.wait() => waited,
+        };
+        if waited.is_err() {
+            fail_pending_attempt(
+                evidence.as_ref(),
+                number,
+                EvidenceFailureKind::DeliveryFailed,
+            )
+            .await;
+            return FollowUp::Delivered(Err(ChatError::StoppedListening));
+        }
+        tokio::select! {
+            biased;
+            stop = stops.recv() => {
+                cancel_pending_attempt(evidence.as_ref(), number).await;
+                return FollowUp::Stop(stop);
+            },
+            sent = session.handle.send_with_images(text.to_owned(), images) => {
+                sent.map_err(|_| ChatError::StoppedListening)
+            }
+        }
+    };
+    if delivered.is_ok() {
+        if let Some(evidence) = &evidence
+            && evidence.accept_turn(number).await.is_err()
+        {
+            evidence.mark_incomplete();
+            return FollowUp::Delivered(Err(ChatError::CouldNotRecord));
+        }
+    } else {
+        fail_pending_attempt(
+            evidence.as_ref(),
+            number,
+            EvidenceFailureKind::DeliveryFailed,
+        )
+        .await;
+    }
+    FollowUp::Delivered(delivered)
+}
+
+async fn fail_pending_attempt(
+    evidence: Option<&EvidenceTarget>,
+    number: usize,
+    failure: EvidenceFailureKind,
+) {
+    if let Some(evidence) = evidence
+        && evidence.fail_turn(number, failure).await.is_err()
+    {
+        evidence.mark_incomplete();
+    }
+}
+
+async fn cancel_pending_attempt(evidence: Option<&EvidenceTarget>, number: usize) {
+    fail_pending_attempt(evidence, number, EvidenceFailureKind::Cancelled).await;
+}
+
+/// Eskalacja jednego actora. `Dead` opróżnia slot; `Alive` zostawia uchwyt dokładnie tam,
+/// gdzie był, żeby następny Stop miał do czego wrócić (niezmiennik 6).
+async fn cancel_session(session: &mut Option<Session>) -> Option<GroupProof> {
+    let running = session.as_mut()?;
+    let proof = running.handle.cancel().await;
+    if let GroupProof::Dead { status } = &proof
+        && let Some(ended) = session.take()
+    {
+        finish_dead_session(
+            ended,
+            status.as_ref().and_then(std::process::ExitStatus::code),
+        )
+        .await;
+    }
+    Some(proof)
+}
+
+/// `Dead` kończy proces, nie koleję zdarzeń, które zdążył wysłać.
+///
+/// Najpierw znikają wszystkie nadajniki należące do sesji. Czytnik dostaje wtedy EOF, opróżnia
+/// koleję i wykonuje `Curator::flush`. Abort jest wyłącznie bezpiecznikiem na wadliwy adapter,
+/// który po dowodzie śmierci nadal trzyma klon nadajnika; po aborcie również odbieramy wynik
+/// zadania, żeby nie zostawić porzuconego `JoinHandle`.
+async fn finish_dead_session(ended: Session, exit_code: Option<i32>) {
+    let Session {
+        voice,
+        handle,
+        mut reader,
+        evidence,
+        attempts: _,
+    } = ended;
+    drop(voice);
+    drop(handle);
+    let drained = match tokio::time::timeout(READER_DRAIN, &mut reader).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "the lead evidence reader did not finish cleanly");
+            false
+        }
+        Err(_) => {
+            reader.abort();
+            let _aborted = reader.await;
+            false
+        }
+    };
+    if let Some(evidence) = evidence {
+        if !drained {
+            evidence.mark_incomplete();
+        }
+        if drained && let Err(error) = evidence.finish_conversation(exit_code, true).await {
+            evidence.mark_incomplete();
+            tracing::warn!(%error, "the lead conversation receipt stayed incomplete");
+        }
+    }
+}
+
+/// Ostatni `Conversation` zniknął bez jawnego Close (np. podczas gaszenia runtime).
+///
+/// `Alive` nie może wypuścić uchwytu ze scope. Actor ponawia pełną eskalację i pozostaje
+/// jedynym właścicielem sesji tak długo, aż dostanie dowód `Dead`.
+async fn stop_orphan(mut session: Option<Session>, status: &AtomicU8) {
+    loop {
+        match cancel_session(&mut session).await {
+            None | Some(GroupProof::Dead { .. }) => {
+                status.store(THREAD_CLOSED, Ordering::Release);
+                return;
+            }
+            Some(GroupProof::Alive) => {
+                status.store(THREAD_CLOSING, Ordering::Release);
+                tracing::error!(
+                    "a lead agent is still alive after losing its terminal; Loadout will retry \
+                     stopping it"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+fn say_to_stream(lines: &Arc<Mutex<LineSink>>, text: &str) {
+    let sink = lines.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let _ = sink.send(Line::Told {
+        agent: LEAD.to_owned(),
+        text: text.to_owned(),
+    });
+}
+
 /* RĘCZNIE, z tego samego powodu, co przy [`Chat`]: `Box<dyn AgentHandle>` nie jest `Debug`
  * i nie ma być. Pokazujemy dwie liczby, które cokolwiek znaczą w dzienniku — na ile terminali
  * okno patrzyło i ile wątków naprawdę stoi — plus biblioteką, bo `None` w tym polu jest jedynym
  * odróżnieniem lidera odciętego od plików, o których rozmawia, od lidera, który ich nie znalazł. */
 impl std::fmt::Debug for Threads {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         f.debug_struct("Threads")
-            .field("watched", &self.lines.len())
-            .field("live", &self.live.len())
-            .field("library", &self.library)
+            .field("watched", &state.lines.len())
+            .field(
+                "live",
+                &state
+                    .live
+                    .values()
+                    .filter(|thread| thread.is_live())
+                    .count(),
+            )
+            .field("library", &state.library)
             .finish_non_exhaustive()
     }
 }
@@ -575,7 +1132,7 @@ impl Threads {
     /// [`Threads::terminal_lines_go_to`], tylko zadana pytaniem „ten folder" zamiast „ten
     /// terminal" — i dosłownie tą drugą drogą wykonana, żeby dwa pytania nie mogły dostać dwóch
     /// odpowiedzi (niezmiennik 13).
-    pub fn lines_go_to(&mut self, cwd: PathBuf, lines: LineSink) {
+    pub fn lines_go_to(&self, cwd: PathBuf, lines: LineSink) {
         let terminal = Terminal {
             id: key_of(&cwd),
             folder: cwd,
@@ -584,8 +1141,9 @@ impl Threads {
     }
 
     /// Wiersze tego terminalu idą odtąd tam — jedno ciało dla obu dróg wyżej.
-    fn watch(&mut self, terminal: String, lines: LineSink) {
-        match self.lines.entry(terminal) {
+    fn watch(&self, terminal: String, lines: LineSink) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        match state.lines.entry(terminal) {
             /* PODMIENIAMY ZAWARTOŚĆ UCHWYTU, nie sam wpis w mapie, i to jest cała naprawa
              * „wyjście na inną sekcję gubi rozmowę". Zadanie czytające trzyma ten `Arc` od chwili
              * startu wątku, więc wstawienie w to miejsce NOWEGO uchwytu zostawiłoby je piszące
@@ -636,37 +1194,11 @@ impl Threads {
     /// jedzie w argv przy starcie: rozmowa, która zaczęła się przed tym zdaniem, dostanie zasięg
     /// przy następnej. Wołanie z okna stoi więc przed pierwszym zdaniem (przy `open_chat`), a nie
     /// po nim.
-    pub fn library_is(&mut self, library: PathBuf) {
-        self.library = Some(library);
-    }
-
-    /// Katalogi biblioteki, które lider tej rozmowy ma prawo otworzyć — po jednym na jej połowę.
-    ///
-    /// Puste, dopóki [`Threads::library_is`] nie powiedziało, gdzie biblioteka leży: to jest
-    /// zachowanie sprzed tego zadania, czyli lider widzący sam folder zakresu.
-    ///
-    /// # Dlaczego katalog, którego NIE MA, tu nie wchodzi
-    ///
-    /// Bo `--add-dir` na nieistniejącą ścieżkę nie jest u vendora ostrzeżeniem — jest procesem,
-    /// który nie wstaje. Ten sam powód i ta sama linia obrony stoi już przy przekazaniach
-    /// (`commands::run::prompt_for` dokłada katalog załączników pod warunkiem `is_dir()`, żeby nie
-    /// zamienić nieczytelnego załącznika w nieuruchomiony krok). Tutaj cena byłaby wyższa: tam nie
-    /// wstaje jeden krok, a tu cała rozmowa — czyli jedyna rzecz, którą to okno robi.
-    ///
-    /// Kogo to zostawia bez zasięgu, wypisane wprost, żeby nie wyglądało na przeoczenie: człowieka,
-    /// który nie zapisał jeszcze ANI JEDNEGO workflow. Jego `workflows/` powstaje przy pierwszym
-    /// zapisie (`super::workflows::save_workflow_inner`) i od tej chwili lider go widzi. Po stronie
-    /// agentów tej dziury nie ma i nie może być: lider **jest** zapisanym agentem, więc `agents/`
-    /// istnieje, zanim padnie pierwsze zdanie ([`Lead::pointed_at`] czyta je z tego samego miejsca).
-    fn reaches(&self) -> Vec<PathBuf> {
-        let Some(library) = self.library.as_ref() else {
-            return Vec::new();
-        };
-        [AGENTS_DIR, WORKFLOWS_DIR]
-            .into_iter()
-            .map(|folder| library.join(folder))
-            .filter(|folder| folder.is_dir())
-            .collect()
+    pub fn library_is(&self, library: PathBuf) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .library = Some(library);
     }
 
     /// Czy w tym zakresie stoi wątek.
@@ -689,7 +1221,7 @@ impl Threads {
     /// Folder nazywa domyślny terminal tego zakresu, więc to jest jedno wywołanie
     /// [`Threads::say_in`] i ani jednej decyzji obok.
     pub async fn say(
-        &mut self,
+        &self,
         drivers: &Drivers,
         lead: &Lead,
         cwd: PathBuf,
@@ -702,21 +1234,6 @@ impl Threads {
         self.say_in(drivers, lead, &terminal, text).await
     }
 
-    /// Wpisuje wiersz do strumienia TEGO terminalu; `false`, kiedy nie dojechał.
-    ///
-    /// Klon POD zamkiem, wysyłka NAD nim — ten sam zabieg i ten sam powód, co przy
-    /// [`Chat::say_in_the_stream`].
-    fn say_in_the_stream(&self, terminal: &str, line: Line) -> bool {
-        let Some(sink) = self
-            .lines
-            .get(terminal)
-            .map(|open| open.lock().unwrap_or_else(PoisonError::into_inner).clone())
-        else {
-            return false;
-        };
-        sink.send(line) == crate::ipc::Sent::Queued
-    }
-
     /// Zamknięcie okna: schodzą WSZYSTKIE wątki i każdy oddaje dowód śmierci swojej grupy.
     ///
     /// Dowód, nie „wysłałem sygnał" (niezmiennik 6): rozmowa porzucona żywa przechodzi pod PID 1
@@ -727,24 +1244,51 @@ impl Threads {
     /// Oddaje po jednym dowodzie na wątek, bo bilans jest kompletny tylko wtedy, kiedy widać
     /// KAŻDY z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt
     /// się nie dowie z liczby „zamknięto pięć".
-    pub async fn close(&mut self) -> Vec<GroupProof> {
-        /* ZDJĘTE Z MAPY PRZED PIERWSZYM `await`, i to nie jest kosmetyka: `Drain` trzymany przez
-         * całą eskalację zabijania pożyczałby mapę mutowalnie przez sekundy, a `is_live_in`
-         * pytane w tym czasie odpowiadałoby o wątkach, które już schodzą. Po tej linii nie ma
-         * ani jednego wątku, o którym to okno jeszcze wie. */
-        let closing: Vec<(String, Session)> = self.live.drain().collect();
-        let mut proofs = Vec::with_capacity(closing.len());
-        for (_, mut session) in closing {
-            /* `cancel`, nie `close`, i to jest wymóg niezmiennika 6: `close` oddaje KOD WYJŚCIA,
-             * a nie dowód, więc „zamknięte" znaczyłoby wtedy „wysłałem sygnał". Łaska nie ginie —
-             * trzystopniowa eskalacja (przerwanie w paśmie, SIGTERM, SIGKILL) siedzi w środku
-             * `cancel` u sterownika, razem z powodem, dla którego nie wolno jej skracać. */
-            proofs.push(session.handle.cancel().await);
-            /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, ale porzucony
-             * `JoinHandle` zostawiłby zadanie, o którym nikt nie wie — jak w [`Chat::close`]. */
-            session.reader.abort();
+    pub async fn close(&self) -> Vec<GroupProof> {
+        let closing: Vec<(String, Conversation)> = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .iter()
+            .map(|(terminal, thread)| (terminal.clone(), thread.clone()))
+            .collect();
+
+        /* STOP WYSŁANY DO KAŻDEGO PRZED CZEKANIEM NA PIERWSZY DOWÓD. Actor A może być
+         * w wielosekundowej eskalacji; terminal B dostaje własny sygnał od razu, a nie dopiero
+         * po jej końcu. To jest równoległość kontroli, nie tylko lista actorów. */
+        let mut pending = Vec::with_capacity(closing.len());
+        for (terminal, thread) in closing {
+            let proof = thread.ask_to_stop().await.ok();
+            pending.push((terminal, thread, proof));
+        }
+
+        let mut proofs = Vec::with_capacity(pending.len());
+        for (terminal, thread, pending_proof) in pending {
+            let proof = match pending_proof {
+                Some(pending_proof) => pending_proof.await.unwrap_or(Some(GroupProof::Alive)),
+                None => Some(GroupProof::Alive),
+            };
+            let stopped = !matches!(proof, Some(GroupProof::Alive));
+            if stopped {
+                self.forget(&terminal, &thread);
+            }
+            if let Some(proof) = proof {
+                proofs.push(proof);
+            }
         }
         proofs
+    }
+
+    fn forget(&self, terminal: &str, thread: &Conversation) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state
+            .live
+            .get(terminal)
+            .is_some_and(|current| current.same_as(thread))
+        {
+            state.live.remove(terminal);
+        }
     }
 }
 
@@ -805,7 +1349,7 @@ impl Threads {
     /// zadania, i ma zostać JEDNĄ DROGĄ do jednego rejestru — folder nazywa wtedy domyślny
     /// terminal tego zakresu. Drugi rejestr obok byłby drugim domem dla odpowiedzi „gdzie mieszka
     /// ta rozmowa" (niezmiennik 13) i rozjechałby się przy pierwszym zamknięciu okna.
-    pub fn terminal_lines_go_to(&mut self, terminal: &Terminal, lines: LineSink) {
+    pub fn terminal_lines_go_to(&self, terminal: &Terminal, lines: LineSink) {
         self.watch(terminal.id.clone(), lines);
     }
 
@@ -815,7 +1359,12 @@ impl Threads {
     /// terminalu zostawia drugi", której nie da się wypowiedzieć, dopóki oba mają jeden klucz.
     #[must_use]
     pub fn is_live_at(&self, terminal: &str) -> bool {
-        self.live.contains_key(terminal)
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .get(terminal)
+            .is_some_and(Conversation::is_live)
     }
 
     /// Mówi zdanie liderowi w TYM terminalu — pierwsze zdanie zakłada jego wątek, każde następne
@@ -829,67 +1378,68 @@ impl Threads {
     /// zdaniu płaci zimny start za każdym razem i gubi rozmowę, bo model nie słyszał poprzedniego
     /// zdania.
     pub async fn say_in(
-        &mut self,
+        &self,
         drivers: &Drivers,
         lead: &Lead,
         terminal: &Terminal,
         text: &str,
     ) -> Result<(), ChatError> {
+        self.say_in_with_images(drivers, lead, terminal, text, ValidatedImages::default())
+            .await
+    }
+
+    pub async fn say_in_with_images(
+        &self,
+        drivers: &Drivers,
+        lead: &Lead,
+        terminal: &Terminal,
+        text: &str,
+        images: ValidatedImages,
+    ) -> Result<(), ChatError> {
         let said = text.trim();
-        if said.is_empty() {
+        if said.is_empty() && images.is_empty() {
             return Err(ChatError::NothingToSay);
         }
 
-        if let Some(thread) = self.live.get(&terminal.id) {
-            /* WĄTEK TEGO TERMINALU STOI: zdanie jest jego kolejną turą i jedzie głosem, bez `&mut`
-             * na uchwycie. To ten punkt odróżnia „wątek na terminal" od „wątek na turę":
-             * implementacja startująca proces na każde zdanie płaci zimny start za każdym razem
-             * i gubi rozmowę, bo model nie słyszał poprzedniego zdania. */
-            thread
-                .voice
-                .send(ToAgent::Turn(said.to_owned()))
-                .await
-                .map_err(|_| ChatError::StoppedListening)?;
-        } else {
-            /* Uchwyt strumienia KLONUJEMY przed `await` — powód (a `&Chat` nie jest `Send`) stoi
-             * przy [`Chat::say`] i dotyczy tu tego samego uchwytu sesji. */
-            let lines = self
+        let (lines, library) = {
+            /* TEN ZAMEK KOŃCZY SIĘ PRZED PIERWSZYM `await` I PRZED PYTANIEM SYSTEMU PLIKÓW.
+             * W środku są wyłącznie lookup i clone. Sterownik — w tym długi Codex `wait()` —
+             * nigdy go nie widzi (niezmiennik 8). */
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let lines = state
                 .lines
                 .get(&terminal.id)
                 .map(Arc::clone)
                 .ok_or(ChatError::NotWatchingThatFolder)?;
-            /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
-             * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna, a gałąź domyślna
-             * jest tym, czego konfiguracją nie da się wyłączyć. Tutaj nie ma ani jednej gałęzi:
-             * jest jedna wartość z pliku i jedno wywołanie fabryki. */
-            let driver = drivers(lead.agent.runs_with);
-            /* ZASIĘG SKŁADANY PRZED `await`, i to jest ta sama reguła, co linię wyżej: `reaches`
-             * oddaje własną listę, więc pożyczka `self` kończy się na tym wywołaniu i nie ma
-             * wyrażenia, w którym `&Threads` dożyłby do punktu zawieszenia.
-             *
-             * FOLDER BIERZEMY Z TERMINALU, nie z klucza: klucz jest tożsamością karty, a katalog
-             * roboczy sesji jest tym, co terminal NIESIE. Wersja licząca katalog z klucza
-             * postawiłaby rozmowę drugiego terminalu w katalogu o nazwie `terminal-2`. */
-            let session = begin(
-                driver.as_ref(),
-                spec_for(lead, terminal.folder.clone(), said, self.reaches()),
-                lines,
-            )
-            .await?;
-            self.live.insert(terminal.id.clone(), session);
-        }
+            (lines, state.library.clone())
+        };
+        let reaches = library
+            .as_ref()
+            .into_iter()
+            .flat_map(|library| [AGENTS_DIR, WORKFLOWS_DIR].map(|name| library.join(name)))
+            .filter(|folder| folder.is_dir())
+            .collect();
+        let thread = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state
+                .live
+                .entry(terminal.id.clone())
+                .or_insert_with(|| Conversation::new(lines))
+                .clone()
+        };
 
-        /* TWOJE ZDANIE W STRUMIENIU TEGO TERMINALU. Wynik świadomie porzucony z tego samego
-         * powodu, co w [`Chat::say`]: pełna kolejka do okna jest stanem normalnym, a zdanie
-         * i tak POSZŁO. */
-        let _ = self.say_in_the_stream(
-            &terminal.id,
-            Line::Told {
-                agent: LEAD.to_owned(),
-                text: said.to_owned(),
-            },
-        );
-        Ok(())
+        /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
+         * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
+         * jednej gałęzi: actor dostaje jedną wartość z pliku i zachowuje kolejność tur. */
+        let driver = drivers(lead.agent.runs_with);
+        thread
+            .say_with_images(
+                driver,
+                spec_for(lead, terminal.folder.clone(), said, reaches),
+                said.to_owned(),
+                images,
+            )
+            .await
     }
 
     /// Człowiek zamknął ten terminal: jego wątek schodzi i oddaje dowód śmierci swojej grupy.
@@ -902,19 +1452,21 @@ impl Threads {
     ///
     /// Kończy JEDEN wątek i milczy o pozostałych. Zamknięcie karty, w której nic nie chodzi, nie
     /// jest instrukcją o karcie obok — a przy jednym kluczu na folder byłoby nią zawsze.
-    pub async fn close_at(&mut self, terminal: &str) -> Option<GroupProof> {
-        /* ZDJĘTE Z MAPY PRZED `await`, z tego samego powodu, co w [`Threads::close`]: pożyczka
-         * mapy trzymana przez całą eskalację zabijania kazałaby `is_live_at` odpowiadać
-         * o wątku, który już schodzi. Po tej linii nie ma ani jednego wątku pod tym kluczem. */
-        let mut session = self.live.remove(terminal)?;
-        /* `cancel`, nie `close`, i to jest wymóg niezmiennika 6: `close` oddaje KOD WYJŚCIA,
-         * a nie dowód, więc „zamknięte" znaczyłoby wtedy „wysłałem sygnał". Łaska nie ginie —
-         * trzystopniowa eskalacja siedzi w środku `cancel` u sterownika. */
-        let proof = session.handle.cancel().await;
-        /* Zadanie czytające kończy się na zamkniętym kanale zdarzeń, ale porzucony `JoinHandle`
-         * zostawiłby zadanie, o którym nikt nie wie — jak w [`Chat::close`]. */
-        session.reader.abort();
-        Some(proof)
+    pub async fn close_at(&self, terminal: &str) -> Option<GroupProof> {
+        let thread = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .get(terminal)
+            .cloned()?;
+        let proof = thread.stop().await;
+        /* `Alive` ZOSTAJE W REJESTRZE razem z jedynym uchwytem. Dopiero `Dead` albo brak sesji
+         * pozwala usunąć actora; inaczej kolejne Close nie miałoby już czego zatrzymać. */
+        if !matches!(proof, Some(GroupProof::Alive)) {
+            self.forget(terminal, &thread);
+        }
+        proof
     }
 }
 
@@ -926,10 +1478,35 @@ impl Threads {
 ///
 /// Czas liczymy od pierwszego zdarzenia, nie od zegara ściennego: [`Seen::at_ms`] służy oknu
 /// sklejania, a nie datowaniu, i kurator z własnym zegarem nie dałby się sprawdzić bez `sleep`.
-async fn read_along(mut inbox: mpsc::Receiver<DecodedEvent>, lines: Arc<Mutex<LineSink>>) {
+async fn read_along(
+    mut inbox: mpsc::Receiver<DecodedEvent>,
+    lines: Arc<Mutex<LineSink>>,
+    evidence: Option<EvidenceTarget>,
+) {
     let mut curator = Curator::new();
     let began = std::time::Instant::now();
+    let mut attempt = 1_usize;
     while let Some(DecodedEvent { event, tool }) = inbox.recv().await {
+        if let AgentEvent::Finished(outcome) = &event {
+            if let Some(evidence) = &evidence {
+                let counters = TurnCounters {
+                    turns: u64::from(outcome.turns),
+                    input_tokens: outcome.tokens.input,
+                    output_tokens: outcome.tokens.output,
+                    cached_tokens: outcome.tokens.cached,
+                };
+                let cancelled = outcome.reason == FinishReason::Cancelled;
+                if evidence
+                    .finish_turn(attempt, counters, outcome.ok, cancelled)
+                    .await
+                    .is_err()
+                {
+                    evidence.mark_incomplete();
+                    tracing::warn!(attempt, "the Lead turn receipt could not be finalized");
+                }
+            }
+            attempt = attempt.saturating_add(1);
+        }
         let at_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
         let seen = Seen {
             agent: LEAD,
@@ -958,28 +1535,168 @@ async fn read_along(mut inbox: mpsc::Receiver<DecodedEvent>, lines: Arc<Mutex<Li
     }
 }
 
-/// Startuje sesję rozmowy z pierwszym zdaniem człowieka jako pierwszą turą.
+/// Startuje sesję z pierwszym zdaniem, ale jeszcze nie uruchamia czytnika odpowiedzi.
 ///
 /// Wolna funkcja, nie metoda, i powód jest twardy: `&Chat` nie jest `Send`, bo uchwyt sesji jest
 /// `Send` ale nie `Sync`, a `&T: Send` wymaga `T: Sync`. Pożyczka `self` przeżywająca `await`
 /// uczyniłaby całą komendę nie-`Send`, czego Tauri nie przyjmuje.
-async fn begin(
-    driver: &dyn AgentDriver,
-    spec: RunSpec,
-    lines: Arc<Mutex<LineSink>>,
-) -> Result<Session, ChatError> {
+async fn begin(driver: &dyn AgentDriver, spec: RunSpec) -> Result<ReadySession, ChatError> {
     let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENTS);
     let handle = driver
         .start(spec, events)
         .await
         .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
-    let voice = handle.voice().ok_or(ChatError::StoppedListening)?;
-    let reader = tokio::spawn(read_along(inbox, lines));
-    Ok(Session {
+    /* Claude daje dwukierunkowy glos do jednego procesu. Codex swiadomie go nie daje: jedna
+     * tura to jeden proces, a kolejna jedzie przez `AgentHandle::send` jako `exec resume`.
+     * Brak glosu jest wiec zdolnoscia adaptera, nie dowodem martwej rozmowy. */
+    let voice = handle.voice();
+    Ok(ReadySession {
         voice,
         handle,
-        reader,
+        inbox,
+        evidence: None,
+        attempts: 1,
     })
+}
+
+/// Produkcyjny start wątku Lead: prywatny receipt powstaje przed procesem, a sterownik dostaje
+/// ten sam target niezależnie od vendora. Codex wybiera tu app-server przez `start_conversation`;
+/// workflow dalej woła zwykłe `start` w `commands::run`.
+async fn begin_thread(
+    driver: Arc<dyn AgentDriver>,
+    spec: RunSpec,
+    images: ValidatedImages,
+) -> Result<ReadySession, ChatError> {
+    let conversation = Uuid::now_v7();
+    let input = safe_input(&spec.prompt, &images);
+    let evidence = EvidenceTarget::lead(&spec.cwd, conversation, input.clone());
+    let vendor = conversation_vendor(driver.id());
+    evidence
+        .begin_conversation(ConversationMetadata {
+            vendor,
+            model_configured: spec
+                .model
+                .as_deref()
+                .is_some_and(|model| !model.trim().is_empty()),
+        })
+        .await
+        .map_err(|_error| ChatError::CouldNotRecord)?;
+    evidence
+        .begin_turn(1, &input)
+        .await
+        .map_err(|_error| ChatError::CouldNotRecord)?;
+
+    let driver = match driver.with_evidence(evidence.clone()) {
+        Some(driver) => driver,
+        None if vendor != ConversationVendor::Unknown => {
+            if evidence
+                .fail_turn(1, EvidenceFailureKind::EvidenceIncomplete)
+                .await
+                .is_err()
+            {
+                evidence.mark_incomplete();
+            }
+            return Err(ChatError::CouldNotStart(
+                "this agent app cannot preserve its private conversation evidence".to_owned(),
+            ));
+        }
+        // Legacy test doubles do not expose raw vendor bytes. Produkcyjna fabryka nie ma
+        // trzeciego ramienia, wiec ta furtka nie jest osiagalna z okna.
+        None => driver,
+    };
+    let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENTS);
+    let mut handle = match driver.start_conversation(spec, images, events).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            if evidence
+                .fail_turn(1, EvidenceFailureKind::StartFailed)
+                .await
+                .is_err()
+            {
+                evidence.mark_incomplete();
+            }
+            return Err(ChatError::CouldNotStart(error.to_string()));
+        }
+    };
+    if evidence.accept_turn(1).await.is_err() {
+        evidence.mark_incomplete();
+        stop_unregistered_handle(handle.as_mut()).await;
+        return Err(ChatError::CouldNotRecord);
+    }
+    let voice = handle.voice();
+    Ok(ReadySession {
+        voice,
+        handle,
+        inbox,
+        evidence: Some(evidence),
+        attempts: 1,
+    })
+}
+
+/// Proces wystartował, ale nie wolno go jeszcze włożyć do rejestru: receipt pierwszej tury nie
+/// potwierdził dostarczenia. `Alive` nie jest zgodą na porzucenie ostatniego uchwytu — ten scope
+/// pozostaje właścicielem i ponawia pełną eskalację aż do prawdziwego `Dead` (niezmiennik 6).
+async fn stop_unregistered_handle(handle: &mut dyn AgentHandle) {
+    loop {
+        match handle.cancel().await {
+            GroupProof::Dead { .. } => return,
+            GroupProof::Alive => {
+                tracing::error!(
+                    "an unregistered Lead process is still alive; Loadout will retry stopping it"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+fn conversation_vendor(driver: &str) -> ConversationVendor {
+    match driver {
+        "claude" => ConversationVendor::Claude,
+        "codex" => ConversationVendor::Codex,
+        _ => ConversationVendor::Unknown,
+    }
+}
+
+fn safe_input(text: &str, images: &ValidatedImages) -> SafeInputManifest {
+    SafeInputManifest {
+        prompt_bytes: text.len(),
+        context: Vec::new(),
+        images: images
+            .as_slice()
+            .iter()
+            .map(|image| ImageFact {
+                mime: image.mime().as_str().to_owned(),
+                bytes: image.bytes().len(),
+            })
+            .collect(),
+    }
+}
+
+/// Wysyla kolejna ture niezaleznie od ksztaltu procesu vendora.
+///
+/// Claude przyjmuje koperte od razu przez klonowalny [`Voice`]. Codex musi najpierw zebrac wynik
+/// poprzedniego procesu, a potem startuje nowy przez [`AgentHandle::send`]. To rozgalezienie
+/// nalezy do granicy sesji, nie do wyboru vendora: nowy adapter bez dwukierunkowego stdinu dostaje
+/// ten sam poprawny kontrakt bez kolejnego `if vendor == ...` (niezmiennik 23).
+async fn next_turn(session: &mut Session, text: &str) -> Result<(), ChatError> {
+    if let Some(voice) = session.voice.as_ref() {
+        return voice
+            .send(ToAgent::Turn(text.to_owned()))
+            .await
+            .map_err(|_| ChatError::StoppedListening);
+    }
+
+    session
+        .handle
+        .wait()
+        .await
+        .map_err(|_| ChatError::StoppedListening)?;
+    session
+        .handle
+        .send(text.to_owned())
+        .await
+        .map_err(|_| ChatError::StoppedListening)
 }
 
 /// Specyfikacja sesji **zaszytego** lidera — ta, którą startuje [`Chat`].

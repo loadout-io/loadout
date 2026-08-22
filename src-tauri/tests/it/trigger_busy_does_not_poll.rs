@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use loadout_lib::commands::triggers::{self, TriggerPoll};
+use loadout_lib::commands::workspaces;
 use loadout_lib::commands::{Drivers, RunDeps};
 use loadout_lib::engine::drivers::AgentDriver;
 use loadout_lib::engine::drivers::absent::Absent;
@@ -189,6 +190,18 @@ async fn busy_replays_a_durable_acceptance_but_never_hides_pending_work()
     let live = state.begin_run(bench.project.path())?;
     live.control.begin();
     let before = snapshot(&bench.trigger_dir())?;
+    let retried = state.trigger_poll_permit().retry("mine", NOW + 2);
+    assert!(
+        retried
+            .as_ref()
+            .is_err_and(|said| said.contains("already going") && said.contains("Stop")),
+        "a live run did not produce the named Run-again refusal: {retried:?}"
+    );
+    assert_eq!(
+        snapshot(&bench.trigger_dir())?,
+        before,
+        "Run again changed the accepted ledger while Rust still owned a live run"
+    );
     let calls = Cell::new(0_usize);
     let receipt = state
         .trigger_poll_permit()
@@ -200,6 +213,7 @@ async fn busy_replays_a_durable_acceptance_but_never_hides_pending_work()
         receipt,
         TriggerPoll::Accepted {
             workflow: "ship-it".to_owned(),
+            workspace: Some(bench.project.path().to_string_lossy().into_owned()),
             receipt_at: delivery.created_at,
         },
         "busy hid a receipt that was already durable before this run"
@@ -223,6 +237,11 @@ async fn busy_replays_a_durable_acceptance_but_never_hides_pending_work()
         "the accepted receipt blocked discovery of a later issue: {later:?}"
     );
 
+    assert_pending_is_busy(&state, &bench)?;
+    Ok(())
+}
+
+fn assert_pending_is_busy(state: &AppState, bench: &Bench) -> Result<(), Box<dyn Error>> {
     let live = state.begin_a_run(bench.project.path())?;
     live.control.begin();
     let before = snapshot(&bench.trigger_dir())?;
@@ -317,11 +336,17 @@ impl Bench {
         let project = TempDir::new()?;
         fs::create_dir_all(home.path().join(triggers::TRIGGERS_DIR))?;
         fs::create_dir_all(project.path().join(".loadout"))?;
+        let workspace = project
+            .path()
+            .to_str()
+            .ok_or("test workspace is not UTF-8")?;
+        workspaces::save_workspace_inner(home.path(), "Trigger tests", workspace)?;
         fs::write(
             home.path().join(triggers::TRIGGERS_DIR).join("mine.json"),
             serde_json::to_vec_pretty(&json!({
                 "schema": 1, "source": "linear", "enabled": true,
-                "workflow": "ship-it", "condition": "assigned-to-me", "api_key": KEY
+                "workflow": "ship-it", "workspace": workspace,
+                "condition": "assigned-to-me", "api_key": KEY
             }))?,
         )?;
         Ok(Self { home, project })

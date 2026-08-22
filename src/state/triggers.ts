@@ -51,14 +51,17 @@ export type TriggerVisibleStatus =
   | { readonly kind: 'unchecked' }
   | { readonly kind: 'armed' }
   | { readonly kind: 'busy'; readonly delivery: TriggerDelivery }
-  | { readonly kind: 'refused'; readonly sentence: string }
+  | { readonly kind: 'refused'; readonly sentence: string; readonly retryable?: true }
   | {
       readonly kind: 'accepted';
       readonly workflow: string;
+      readonly workspace: string | null;
       readonly receiptAt: number;
+      readonly retryRefusal?: string;
     };
 
-export type ConfiguredTriggerView = ConfiguredTriggerEntry & {
+export type ConfiguredTriggerView = Omit<ConfiguredTriggerEntry, 'workspace'> & {
+  readonly workspace: string | null;
   readonly workflowName: string | null;
   readonly status: TriggerVisibleStatus;
 };
@@ -82,6 +85,7 @@ export interface TriggersState {
   readonly said: string | null;
   load(): Promise<void>;
   toggle(slug: string, enabled: boolean): Promise<void>;
+  runAgain(slug: string): Promise<void>;
   create(draft: TriggerDraft): Promise<TriggerMutationResult>;
   update(expected: TriggerSnapshot, draft: TriggerDraft): Promise<TriggerMutationResult>;
   remove(expected: TriggerSnapshot): Promise<TriggerMutationResult>;
@@ -106,6 +110,11 @@ interface LibraryLoad {
   readonly promise: Promise<void>;
 }
 
+interface RetryIntent {
+  readonly epoch: number;
+  readonly startingStatus: TriggerVisibleStatus;
+}
+
 /** The task has no URL: identity, title and body are the three fields the contract names. */
 export function taskForIssue(issue: TriggerIssue): string {
   return `${issue.identifier}: ${issue.title}\n\n${issue.body}`;
@@ -114,6 +123,23 @@ export function taskForIssue(issue: TriggerIssue): string {
 function withStatus(trigger: TriggerView, status: TriggerVisibleStatus): TriggerView {
   if (trigger.problem !== undefined) return { ...trigger, status };
   return { ...trigger, status };
+}
+
+/** A confirmed edit keeps durable run history, but not a refusal produced by the old config. */
+function afterConfirmedUpdate(trigger: TriggerView): TriggerView {
+  if (trigger.problem !== undefined) return trigger;
+  if (trigger.status.kind === 'accepted') {
+    return withStatus(trigger, {
+      kind: 'accepted',
+      workflow: trigger.status.workflow,
+      workspace: trigger.status.workspace,
+      receiptAt: trigger.status.receiptAt,
+    });
+  }
+  if (trigger.status.kind === 'refused') {
+    return withStatus(trigger, { kind: 'unchecked' });
+  }
+  return trigger;
 }
 
 function viewOf(
@@ -137,6 +163,9 @@ function viewOf(
     (previousConfigured?.workflow === entry.workflow ? previousConfigured.workflowName : null);
   return {
     ...entry,
+    /* 2026-08-21: stare pliki nie miały workspace. Normalizujemy brak z drutu dokładnie tutaj,
+     * żeby ekran i scheduler widziały jedną jawną, bezpiecznie odmawiającą wartość. */
+    workspace: entry.workspace ?? null,
     workflowName,
     status: previousConfigured?.status ?? { kind: 'unchecked' },
   };
@@ -160,6 +189,8 @@ export function createTriggersStore(
   let libraryMutation = 0;
   let libraryLoad: LibraryLoad | null = null;
   const checking = new Set<string>();
+  const retrying = new Set<string>();
+  const retryIntents = new Map<string, RetryIntent>();
   const pending = new Map<string, TriggerDelivery>();
   const refreshedAfterRun = new Map<string, string>();
   const refreshAfterChecking = new Map<string, number>();
@@ -170,7 +201,7 @@ export function createTriggersStore(
 
   return create<TriggersState>()((set, get) => {
     const scheduleFromNow = (trigger: ConfiguredTriggerEntry): void => {
-      if (!watching || !trigger.enabled) {
+      if (!watching || !trigger.enabled || (trigger.workspace ?? null) === null) {
         nextDue.delete(trigger.slug);
         return;
       }
@@ -184,7 +215,9 @@ export function createTriggersStore(
       if (!watching) return;
       const live = new Set<string>();
       for (const trigger of fresh) {
-        if (trigger.problem !== undefined || !trigger.enabled) continue;
+        if (trigger.problem !== undefined || !trigger.enabled || trigger.workspace === null) {
+          continue;
+        }
         live.add(trigger.slug);
         const previous = before.get(trigger.slug);
         const unchanged =
@@ -202,6 +235,8 @@ export function createTriggersStore(
     const forget = (slug: string): void => {
       nextDue.delete(slug);
       checking.delete(slug);
+      retrying.delete(slug);
+      retryIntents.delete(slug);
       pending.delete(slug);
       refreshedAfterRun.delete(slug);
       refreshAfterChecking.delete(slug);
@@ -253,11 +288,18 @@ export function createTriggersStore(
       error: unknown,
       fallback: string,
       epoch: number,
-      includeDisabled = false,
+      options: { readonly includeDisabled?: boolean; readonly retryable?: boolean } = {},
     ): void => {
       const current = configuredNow(slug);
-      if (current === null || (!current.enabled && !includeDisabled)) return;
-      setStatus(slug, { kind: 'refused', sentence: why(error, fallback) }, epoch);
+      if (current === null || (!current.enabled && options.includeDisabled !== true)) return;
+      const sentence = why(error, fallback);
+      setStatus(
+        slug,
+        options.retryable === true
+          ? { kind: 'refused', sentence, retryable: true }
+          : { kind: 'refused', sentence },
+        epoch,
+      );
     };
 
     const watchLaunch = (
@@ -275,7 +317,7 @@ export function createTriggersStore(
           delivery.claim,
         );
       } catch (error) {
-        refuse(slug, error, 'Loadout could not start that trigger.', epoch);
+        refuse(slug, error, 'Loadout could not start that trigger.', epoch, { retryable: true });
         return;
       }
 
@@ -302,10 +344,16 @@ export function createTriggersStore(
           }
           const current = configuredNow(slug);
           if (current?.status.kind === 'accepted') return;
-          refuse(slug, sentence, 'Loadout could not start that trigger.', epoch, true);
+          refuse(slug, sentence, 'Loadout could not start that trigger.', epoch, {
+            includeDisabled: true,
+            retryable: true,
+          });
         })
         .catch((error: unknown) => {
-          refuse(slug, error, 'Loadout could not start that trigger.', epoch, true);
+          refuse(slug, error, 'Loadout could not start that trigger.', epoch, {
+            includeDisabled: true,
+            retryable: true,
+          });
         });
     };
 
@@ -325,7 +373,71 @@ export function createTriggersStore(
         rememberChoices(fresh, epoch);
         watchLaunch(slug, delivery, choiceFor(fresh, delivery.claim.workflow), epoch);
       } catch (error) {
-        refuse(slug, error, 'Loadout could not read workflows for that trigger.', epoch);
+        refuse(slug, error, 'Loadout could not read workflows for that trigger.', epoch, {
+          retryable: true,
+        });
+      }
+    };
+
+    const performRetry = async (slug: string, intent: RetryIntent): Promise<void> => {
+      checking.add(slug);
+      retrying.add(slug);
+      try {
+        const delivery = await io.retryTrigger(slug);
+        if (intent.epoch !== generation) return;
+        const current = configuredNow(slug);
+        if (current === null || !current.enabled) return;
+        await handlePending(slug, delivery, intent.epoch);
+      } catch (error) {
+        const sentence = why(error, 'Loadout could not run that trigger again.');
+        if (intent.startingStatus.kind === 'accepted') {
+          const current = configuredNow(slug);
+          const accepted =
+            current?.status.kind === 'accepted' ? current.status : intent.startingStatus;
+          setStatus(slug, { ...accepted, retryRefusal: sentence }, intent.epoch);
+        } else {
+          setStatus(slug, { kind: 'refused', sentence, retryable: true }, intent.epoch);
+        }
+      } finally {
+        retrying.delete(slug);
+        finishChecking(slug);
+      }
+    };
+
+    const finishChecking = (slug: string): void => {
+      checking.delete(slug);
+
+      const retry = retryIntents.get(slug);
+      if (retry !== undefined) {
+        retryIntents.delete(slug);
+        const current = configuredNow(slug);
+        /* Poll, ktory znalazl Pending, juz zmienil wiersz na Busy i uruchomil trwala dostawe.
+         * Klik nie znika wtedy w ciszy: wiersz widocznie przeszedl do pracy zwroconej przez
+         * Rusta, a ponowne uruchomienie tutaj zawolaloby Start dwa razy. */
+        if (
+          retry.epoch === generation &&
+          current !== null &&
+          current.enabled &&
+          current.status.kind !== 'busy'
+        ) {
+          /* 2026-08-21: klik podczas odczytu ma zostać wykonany po zwolnieniu tego samego
+           * zamka, jezeli odczyt sam nie znalazl pracy. Wywołanie bez await natychmiast
+           * przejmuje `checking`, więc timer nie może wejść między usunięcie starego
+           * właściciela a jawną próbę człowieka. */
+          /* Odczyt wyniku nalezal do poprzedniej proby. Nowa proba sama poprosi o swoj
+           * wynik po zejsciu; zachowanie starego odczytu mogloby nadpisac jej Busy. */
+          refreshAfterChecking.delete(slug);
+          void performRetry(slug, retry);
+          return;
+        }
+      }
+
+      const refreshEpoch = refreshAfterChecking.get(slug);
+      if (refreshEpoch === undefined) return;
+      refreshAfterChecking.delete(slug);
+      const current = configuredNow(slug);
+      if (refreshEpoch === generation && current !== null) {
+        void pollOne(slug, refreshEpoch, true);
       }
     };
 
@@ -357,6 +469,7 @@ export function createTriggersStore(
               /* The accepted workflow was frozen in the claim. The config file may have changed
                * meanwhile, so the row's current workflowName is not authoritative for receipt. */
               workflow: choiceFor(choices, result.workflow)?.name ?? result.workflow,
+              workspace: result.workspace ?? null,
               receiptAt: result.receiptAt,
             },
             epoch,
@@ -370,25 +483,21 @@ export function createTriggersStore(
           }
         }
       } catch (error) {
-        refuse(slug, error, `Loadout could not check ${slug}.`, epoch, completionReceipt);
+        refuse(slug, error, `Loadout could not check ${slug}.`, epoch, {
+          includeDisabled: completionReceipt,
+        });
       } finally {
-        checking.delete(slug);
-        const refreshEpoch = refreshAfterChecking.get(slug);
-        if (refreshEpoch !== undefined) {
-          refreshAfterChecking.delete(slug);
-          const current = configuredNow(slug);
-          if (refreshEpoch === generation && current !== null) {
-            void pollOne(slug, refreshEpoch, true);
-          }
-        }
+        finishChecking(slug);
       }
     };
 
     const poll = async (epoch: number, onlyDue = false): Promise<void> => {
-      const enabled = get().triggers.filter(
-        (trigger): trigger is ConfiguredTriggerView =>
-          trigger.problem === undefined && trigger.enabled,
-      );
+      const enabled = get()
+        .triggers.filter(
+          (trigger): trigger is ConfiguredTriggerView =>
+            trigger.problem === undefined && trigger.enabled,
+        )
+        .filter((trigger): trigger is ConfiguredTriggerView => trigger.workspace !== null);
       const now = clock.now();
       const due = onlyDue
         ? enabled.filter((trigger) => {
@@ -452,7 +561,9 @@ export function createTriggersStore(
 
       toggle: async (slug, enabled) => {
         const before = configuredNow(slug);
-        if (before === null) return;
+        /* A legacy trigger may still be enabled on disk. It must remain possible to turn that
+         * unsafe state off; only turning it back on waits for an explicit workspace repair. */
+        if (before === null || (before.workspace === null && enabled)) return;
         try {
           const saved = await io.setTriggerEnabled(slug, enabled);
           libraryMutation += 1;
@@ -493,6 +604,23 @@ export function createTriggersStore(
         }
       },
 
+      runAgain: async (slug) => {
+        const before = configuredNow(slug);
+        const canRetry =
+          before?.enabled === true &&
+          before.workspace !== null &&
+          (before.status.kind === 'accepted' ||
+            (before.status.kind === 'refused' && before.status.retryable === true));
+        if (!canRetry) return;
+
+        const intent = { epoch: generation, startingStatus: before.status } satisfies RetryIntent;
+        if (checking.has(slug)) {
+          if (!retrying.has(slug) && !retryIntents.has(slug)) retryIntents.set(slug, intent);
+          return;
+        }
+        await performRetry(slug, intent);
+      },
+
       create: async (draft) => {
         try {
           const saved = await io.createTrigger(draft);
@@ -515,12 +643,23 @@ export function createTriggersStore(
       },
 
       update: async (expected, draft) => {
+        const startingStatus = configuredNow(expected.slug)?.status ?? null;
         try {
           const saved = await io.updateTrigger(expected.slug, expected, draft);
           libraryMutation += 1;
           set((state) => ({
             triggers: state.triggers.map((trigger) =>
-              trigger.slug === expected.slug ? viewOf(saved, choices, trigger) : trigger,
+              trigger.slug === expected.slug
+                ? viewOf(
+                    saved,
+                    choices,
+                    /* 2026-08-21: Save usuwa wyłącznie odmowę, z którą wystartował. Nowy wynik
+                     * Retry/Start może przyjść podczas await i jest wtedy nowszą prawdą. */
+                    trigger.problem === undefined && trigger.status === startingStatus
+                      ? afterConfirmedUpdate(trigger)
+                      : trigger,
+                  )
+                : trigger,
             ),
             said: null,
           }));
@@ -616,6 +755,7 @@ const DISK: TriggerIo = {
   listTriggers: triggerIo.listTriggers,
   setTriggerEnabled: triggerIo.setTriggerEnabled,
   checkTrigger: triggerIo.checkTrigger,
+  retryTrigger: triggerIo.retryTrigger,
   createTrigger: triggerIo.createTrigger,
   updateTrigger: triggerIo.updateTrigger,
   deleteTrigger: triggerIo.deleteTrigger,

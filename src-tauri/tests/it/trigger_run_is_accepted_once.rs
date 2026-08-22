@@ -12,7 +12,8 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Barrier, Mutex, PoisonError};
+use std::thread;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,6 +22,7 @@ use loadout_lib::commands::run::{
     TriggerRunReport, run_triggered_workflow_inner, run_workflow_inner,
 };
 use loadout_lib::commands::triggers::{self, DeliveryState, TriggerDelivery, TriggerPoll};
+use loadout_lib::commands::workspaces;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
@@ -225,6 +227,227 @@ fn an_accepted_receipt_does_not_hide_later_issues() -> Result<(), Box<dyn Error>
     assert_eq!(
         issue_ids(&pending_deliveries_on_disk(bench.home.path(), "mine")?),
         vec!["issue-b"]
+    );
+    Ok(())
+}
+
+#[test]
+fn retry_returns_an_existing_pending_without_changing_one_byte() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let pending = bench.one_delivery()?;
+    let ledger_file = trigger_ledger_path(bench.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+
+    let retried = triggers::retry(bench.home.path(), "mine", CREATED + 100)?;
+
+    assert_eq!(
+        retried, pending,
+        "retry replaced an already actionable claim"
+    );
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "idempotent retry rewrote or reminted an existing Pending"
+    );
+    Ok(())
+}
+
+#[test]
+fn retry_appends_a_fresh_attempt_without_rewriting_the_accepted_run() -> Result<(), Box<dyn Error>>
+{
+    let bench = Bench::new()?;
+    let accepted = bench.one_delivery()?;
+    let run_file = accept_fixture_delivery(&bench, &accepted, CREATED + 10)?;
+    let accepted_state = delivery_state_on_disk(bench.home.path(), &accepted.claim)?;
+    let run_before = fs::read(&run_file)?;
+
+    let retried = triggers::retry(bench.home.path(), "mine", CREATED + 100)?;
+
+    assert_eq!(
+        retried.issue, accepted.issue,
+        "retry changed the Linear issue"
+    );
+    assert_eq!(
+        retried.claim.workflow, accepted.claim.workflow,
+        "retry used current window/config state instead of the accepted workflow"
+    );
+    assert_eq!(retried.created_at, CREATED + 100);
+    assert_ne!(retried.claim.delivery_id, accepted.claim.delivery_id);
+    assert_ne!(retried.claim.run_id, accepted.claim.run_id);
+    for id in [&retried.claim.delivery_id, &retried.claim.run_id] {
+        assert_eq!(
+            Uuid::parse_str(id)?.get_version(),
+            Some(Version::SortRand),
+            "retry id is not UUID v7"
+        );
+    }
+    assert_eq!(
+        delivery_state_on_disk(bench.home.path(), &accepted.claim)?,
+        accepted_state,
+        "retry changed the original Accepted receipt"
+    );
+    assert_eq!(
+        fs::read(&run_file)?,
+        run_before,
+        "retry rewrote the original run.json"
+    );
+    assert_eq!(
+        delivery_state_on_disk(bench.home.path(), &retried.claim)?,
+        DeliveryState::Pending
+    );
+    Ok(())
+}
+
+#[test]
+fn concurrent_retry_calls_share_one_new_pending_attempt() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let accepted = bench.one_delivery()?;
+    let _ = accept_fixture_delivery(&bench, &accepted, CREATED + 10)?;
+    let gate = Arc::new(Barrier::new(3));
+    let home = bench.home.path().to_path_buf();
+    let first_gate = Arc::clone(&gate);
+    let first = thread::spawn(move || {
+        first_gate.wait();
+        triggers::retry(&home, "mine", CREATED + 100)
+    });
+    let home = bench.home.path().to_path_buf();
+    let second_gate = Arc::clone(&gate);
+    let second = thread::spawn(move || {
+        second_gate.wait();
+        triggers::retry(&home, "mine", CREATED + 100)
+    });
+
+    gate.wait();
+    let first = first.join().map_err(|_| "first retry thread panicked")??;
+    let second = second
+        .join()
+        .map_err(|_| "second retry thread panicked")??;
+
+    assert_eq!(
+        first, second,
+        "double retry minted one Pending per click instead of returning the first"
+    );
+    assert_eq!(
+        pending_deliveries_on_disk(bench.home.path(), "mine")?,
+        vec![first],
+        "concurrent retry left more than one actionable attempt"
+    );
+    assert_eq!(
+        ledger_on_disk(bench.home.path(), "mine")?.deliveries.len(),
+        2,
+        "the ledger should contain one immutable Accepted and one new Pending"
+    );
+    Ok(())
+}
+
+#[test]
+fn retry_refusals_leave_the_ledger_byte_identical() -> Result<(), Box<dyn Error>> {
+    let nothing = Bench::new()?;
+    let absent_ledger = trigger_ledger_path(nothing.home.path(), "mine");
+    assert!(matches!(
+        triggers::retry(nothing.home.path(), "mine", CREATED + 100),
+        Err(triggers::TriggerError::NothingToRetry)
+    ));
+    assert!(
+        !absent_ledger.exists(),
+        "a refusal with no accepted run created an empty ledger"
+    );
+
+    // Start posiadajacy claim (`Bound`) ma pierwszenstwo przed Run again.
+    let bound = Bench::new()?;
+    let delivery = bound.one_delivery()?;
+    let run_file = bound.project.path().join(".loadout/runs/bound/run.json");
+    triggers::bind_delivery(bound.home.path(), &delivery.claim, &run_file)?;
+    let ledger_file = trigger_ledger_path(bound.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+    let refused = triggers::retry(bound.home.path(), "mine", CREATED + 100);
+    assert!(matches!(
+        refused,
+        Err(triggers::TriggerError::RetryRunStarting)
+    ));
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "Bound refusal changed ledger"
+    );
+
+    // Wylaczona konfiguracja odmawia przed wybijaniem nowej proby.
+    let disabled = Bench::new()?;
+    let delivery = disabled.one_delivery()?;
+    let _ = accept_fixture_delivery(&disabled, &delivery, CREATED + 10)?;
+    triggers::set_enabled(disabled.home.path(), "mine", false)?;
+    let ledger_file = trigger_ledger_path(disabled.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+    let refused = triggers::retry(disabled.home.path(), "mine", CREATED + 100);
+    assert!(matches!(
+        refused,
+        Err(triggers::TriggerError::RetryDisabled)
+    ));
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "disabled refusal changed ledger"
+    );
+
+    // Ponowienie zachowuje zamrozony workflow; jego brak nie moze zostawic martwego Pending.
+    let missing_workflow = Bench::new()?;
+    let delivery = missing_workflow.one_delivery()?;
+    let _ = accept_fixture_delivery(&missing_workflow, &delivery, CREATED + 10)?;
+    fs::remove_file(missing_workflow.home.path().join("workflows/ship-it.json"))?;
+    let ledger_file = trigger_ledger_path(missing_workflow.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+    let refused = triggers::retry(missing_workflow.home.path(), "mine", CREATED + 100);
+    assert!(matches!(
+        refused,
+        Err(triggers::TriggerError::RetryMissingWorkflow)
+    ));
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "missing-workflow refusal changed ledger"
+    );
+
+    // Brak i uszkodzenie configu sa rozstrzygane przed ledgerem, a blad nie odbija sekretu.
+    let missing_config = Bench::new()?;
+    let delivery = missing_config.one_delivery()?;
+    let _ = accept_fixture_delivery(&missing_config, &delivery, CREATED + 10)?;
+    fs::remove_file(missing_config.home.path().join("triggers/mine.json"))?;
+    let ledger_file = trigger_ledger_path(missing_config.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+    let refused = triggers::retry(missing_config.home.path(), "mine", CREATED + 100);
+    assert!(matches!(
+        refused,
+        Err(triggers::TriggerError::MissingConfig)
+    ));
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "missing config changed ledger"
+    );
+
+    let broken_config = Bench::new()?;
+    let delivery = broken_config.one_delivery()?;
+    let _ = accept_fixture_delivery(&broken_config, &delivery, CREATED + 10)?;
+    fs::write(
+        broken_config.home.path().join("triggers/mine.json"),
+        format!(r#"{{"schema":1,"api_key":"{KEY}","broken": "#),
+    )?;
+    let ledger_file = trigger_ledger_path(broken_config.home.path(), "mine");
+    let before = fs::read(&ledger_file)?;
+    let refused = triggers::retry(broken_config.home.path(), "mine", CREATED + 100);
+    let Err(error) = refused else {
+        return Err("broken config unexpectedly created a retry".into());
+    };
+    assert!(matches!(error, triggers::TriggerError::InvalidConfig(_)));
+    let said = format!("{error:?}\n{error}");
+    assert!(
+        !said.contains(KEY),
+        "retry error/debug reflected the saved Linear key"
+    );
+    assert_eq!(
+        fs::read(&ledger_file)?,
+        before,
+        "broken config changed ledger"
     );
     Ok(())
 }
@@ -1655,6 +1878,27 @@ fn accepted_run_json(delivery: &TriggerDelivery) -> Value {
     })
 }
 
+fn accept_fixture_delivery(
+    bench: &Bench,
+    delivery: &TriggerDelivery,
+    accepted_at: i64,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let run_file = bench
+        .project
+        .path()
+        .join(".loadout/runs")
+        .join(&delivery.claim.run_id)
+        .join("run.json");
+    triggers::bind_delivery(bench.home.path(), &delivery.claim, &run_file)?;
+    fs::create_dir_all(run_file.parent().ok_or("run.json has no parent")?)?;
+    fs::write(
+        &run_file,
+        serde_json::to_vec_pretty(&accepted_run_json(delivery))?,
+    )?;
+    triggers::accept_delivery(bench.home.path(), &delivery.claim, &run_file, accepted_at)?;
+    Ok(run_file)
+}
+
 fn run_dirs(project: &Path) -> Result<usize, Box<dyn Error>> {
     let path = project.join(".loadout/runs");
     match fs::read_dir(path) {
@@ -1676,10 +1920,13 @@ struct LedgerRecordView {
 }
 
 fn ledger_on_disk(home: &Path, slug: &str) -> Result<LedgerView, Box<dyn Error>> {
-    let path = home
-        .join(triggers::TRIGGERS_DIR)
-        .join(format!(".{slug}.ledger.json"));
+    let path = trigger_ledger_path(home, slug);
     Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn trigger_ledger_path(home: &Path, slug: &str) -> PathBuf {
+    home.join(triggers::TRIGGERS_DIR)
+        .join(format!(".{slug}.ledger.json"))
 }
 
 fn pending_deliveries_on_disk(
@@ -1760,13 +2007,19 @@ impl Bench {
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;
         fs::create_dir_all(project.path().join(".loadout"))?;
+        let workspace = project
+            .path()
+            .to_str()
+            .ok_or("test workspace is not UTF-8")?;
+        workspaces::save_workspace_inner(home.path(), "Trigger tests", workspace)?;
         fs::write(home.path().join("agents/witness.md"), AGENT)?;
         fs::write(home.path().join("workflows/ship-it.json"), WORKFLOW)?;
         fs::write(
             home.path().join("triggers/mine.json"),
             serde_json::to_vec_pretty(&json!({
                 "schema": 1, "source": "linear", "enabled": true,
-                "workflow": "ship-it.json", "condition": "assigned-to-me", "api_key": KEY
+                "workflow": "ship-it.json", "workspace": workspace,
+                "condition": "assigned-to-me", "api_key": KEY
             }))?,
         )?;
         Ok(Self { home, project })

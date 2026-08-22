@@ -111,6 +111,23 @@ pub struct Inherited {
     flags: Vec<String>,
     /// Tekst doklejany do promptu kroku. Pusty, kiedy nie było czego odziedziczyć.
     text: String,
+    /// Uporządkowane, bezpieczne fakty o materiałach, które naprawdę weszły do vendora.
+    sources: Vec<InheritedSource>,
+}
+
+/// Zamknięty rodzaj odziedziczonego materiału do manifestu wejścia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InheritedSourceKind {
+    Skill,
+    Learning,
+}
+
+/// Pochodzenie odziedziczonego materiału bez jego treści.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritedSource {
+    pub kind: InheritedSourceKind,
+    pub reference: String,
+    pub bytes: usize,
 }
 
 impl Inherited {
@@ -122,6 +139,12 @@ impl Inherited {
         // Puste znaczy „nie było czego odziedziczyć" i po tej stronie granicy nie ma nikogo,
         // kto by z tego zrobił flagę bez wartości.
         &self.flags
+    }
+
+    /// Fakty w tej samej kolejności, w której dziedziczenie składa wybrane materiały.
+    #[must_use]
+    pub fn sources(&self) -> &[InheritedSource] {
+        &self.sources
     }
 
     /// Ten sam krok, ale z odziedziczonym tekstem w prompcie — i **nigdzie indziej**.
@@ -181,6 +204,7 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     // z którego nic nie wyszło, po prostu nie wchodzi na tę listę. Nagłówek nad pustką uczy
     // model, że ta sekcja bywa pusta, i kosztuje długość za nic.
     let mut blocks: Vec<String> = Vec::new();
+    let mut text_sources = Vec::new();
 
     if let Some(role) = &chosen.learnings {
         // WYCINA `scan::recurring_patterns`, NIE MY. Naiwne `text.find("## Recurring patterns")`
@@ -192,7 +216,14 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
         if !rules.is_empty() {
             // Reszta pliku — u gospodarza do 73 KB `## Run journal` — nie wchodzi do budżetu
             // tokenów ani razu, i to jest cała różnica między wstrzykiwaczem a wklejeniem pliku.
-            blocks.push(format!("{PATTERNS_HEADING}\n\n{rules}"));
+            let bytes = rules.len();
+            let block = format!("{PATTERNS_HEADING}\n\n{rules}");
+            text_sources.push(InheritedSource {
+                kind: InheritedSourceKind::Learning,
+                reference: format!(".claude/{LEARNINGS_DIR}/{role}.md"),
+                bytes,
+            });
+            blocks.push(block);
         }
     }
 
@@ -210,7 +241,14 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
         let file = host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
         let body = scan::agent_body(&file).trim();
         if !body.is_empty() {
-            blocks.push(format!("{SUBAGENT_HEADING}\n\n{body}"));
+            let bytes = body.len();
+            let block = format!("{SUBAGENT_HEADING}\n\n{body}");
+            text_sources.push(InheritedSource {
+                kind: InheritedSourceKind::Learning,
+                reference: format!(".claude/{SUBAGENTS_DIR}/{role}.md"),
+                bytes,
+            });
+            blocks.push(block);
         }
     }
 
@@ -222,12 +260,35 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     // czyli dokładnie ta cicha zieleń, przed którą stoi całe to zadanie.
     let rewritten = rewrite::plugin_dir(project, &chosen.skills, &run_dir.join(PLUGIN_DIR))?;
 
+    let mut sources = Vec::with_capacity(rewritten.names.len() + text_sources.len());
+    for name in &rewritten.names {
+        let relative = PathBuf::from(PLUGIN_DIR)
+            .join("skills")
+            .join(name)
+            .join("SKILL.md");
+        let metadata = fs::symlink_metadata(run_dir.join(&relative))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "an inherited skill output is not a real regular file",
+            )
+            .into());
+        }
+        sources.push(InheritedSource {
+            kind: InheritedSourceKind::Skill,
+            reference: relative.to_string_lossy().into_owned(),
+            bytes: usize::try_from(metadata.len()).map_err(io::Error::other)?,
+        });
+    }
+    sources.extend(text_sources);
+
     Ok(Inherited {
         // Fragment **dwuelementowy albo pusty, nigdy jednoelementowy** — rozstrzyga to
         // `rewrite::plugin_argv` po `names`, czyli po tym, co NAPRAWDĘ pojechało, a nie po tym,
         // o co poproszono.
         flags: rewrite::plugin_argv(&rewritten),
         text,
+        sources,
     })
 }
 

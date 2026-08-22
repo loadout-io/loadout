@@ -19,6 +19,7 @@ const DRAFT: TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: '/project',
   pollEveryMinutes: 5,
   apiKey: KEY,
 };
@@ -27,6 +28,7 @@ const EXPECTED: TriggerSnapshot = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
+  workspace: '/project',
   enabled: true,
   pollEveryMinutes: 5,
   hasApiKey: true,
@@ -71,7 +73,7 @@ const EDGES: readonly Edge[] = [
   },
 ];
 
-const LEGACY = new Set(['listTriggers', 'setTriggerEnabled', 'checkTrigger']);
+const NON_EDITOR = new Set(['listTriggers', 'setTriggerEnabled', 'checkTrigger', 'retryTrigger']);
 const known = readFileSync(GOLDEN, 'utf8')
   .split('\n')
   .map((line) => line.trim())
@@ -85,7 +87,7 @@ describe('every Linear editor action crosses its one named Rust edge', () => {
     const editorExports = Object.entries(io)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
-      .filter((name) => !LEGACY.has(name))
+      .filter((name) => !NON_EDITOR.has(name))
       .sort();
     expect(EDGES.map((edge) => edge.exported).sort()).toEqual(editorExports);
   });

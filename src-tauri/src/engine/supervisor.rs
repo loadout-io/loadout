@@ -60,6 +60,7 @@
 
 use std::fmt;
 use std::io;
+use std::path::{Component, Path};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,321 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
+
+/// Sposób otwarcia istniejącego prywatnego artefaktu przez dowiedzioną ścieżkę katalogów.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateFileAccess {
+    Read,
+    Append,
+    CreateAppend,
+}
+
+/// Otwiera istniejący prywatny plik bez śledzenia symlinków na żadnym poziomie ścieżki.
+///
+/// API jest neutralne wobec platformy; `openat`/`O_NOFOLLOW` i kontrola właściciela mieszkają
+/// wyłącznie tutaj, zgodnie z niezmiennikiem 3. Wołający dostaje już sprawdzony uchwyt i nie
+/// wykonuje rozdzielonego `metadata(path) -> open(path)`, w którym katalog może się podmienić.
+#[cfg(unix)]
+pub fn open_private_file(
+    anchor: &Path,
+    relative: &Path,
+    access: PrivateFileAccess,
+) -> io::Result<std::fs::File> {
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+
+    let access_flags = match access {
+        PrivateFileAccess::Read => OFlag::O_RDONLY,
+        PrivateFileAccess::Append => OFlag::O_WRONLY | OFlag::O_APPEND,
+        PrivateFileAccess::CreateAppend => {
+            OFlag::O_WRONLY | OFlag::O_APPEND | OFlag::O_CREAT | OFlag::O_EXCL
+        }
+    } | OFlag::O_NOFOLLOW
+        | OFlag::O_CLOEXEC;
+    let (directory, file_name) = private_parent(anchor, relative)?;
+    let file = openat(
+        &directory,
+        Path::new(&file_name),
+        access_flags,
+        if access == PrivateFileAccess::CreateAppend {
+            Mode::from_bits_truncate(0o600)
+        } else {
+            Mode::empty()
+        },
+    )
+    .map_err(io::Error::from)?;
+    validate_private_fd(&file)?;
+    Ok(std::fs::File::from(file))
+}
+
+/// Publikuje mały prywatny dokument atomowo przez ten sam dowiedziony deskryptor katalogu.
+///
+/// To jest druga połowa [`open_private_file`]: samo sprawdzenie istniejącego pliku przez fd nie
+/// wystarcza, jeżeli późniejszy `rename(path, path)` ponownie rozwiązuje ścieżkę. Tutaj zarówno
+/// plik tymczasowy, jak i nazwa docelowa są operacjami `*at` na jednym otwartym katalogu. Zmiana
+/// któregoś rodzica na symlink po otwarciu nie może więc przekierować prywatnych bajtów.
+pub struct PrivateFilePublisher {
+    #[cfg(unix)]
+    directory: std::os::fd::OwnedFd,
+    #[cfg(unix)]
+    file_name: std::ffi::OsString,
+}
+
+impl fmt::Debug for PrivateFilePublisher {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Nazwa docelowa może pochodzić z prywatnej tożsamości rozmowy; sam fakt zachowania
+        // deskryptora wystarcza do diagnostyki i nie wypuszcza ścieżki do zwykłego logu.
+        formatter
+            .debug_struct("PrivateFilePublisher")
+            .field("directory_held", &true)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PrivateFilePublisher {
+    /// Dowodzi całej ścieżki rodziców i zachowuje deskryptor ostatniego katalogu.
+    ///
+    /// Rozdzielenie `open` od [`Self::publish`] jest celowe i daje testowi awarii możliwość
+    /// podmiany nazwy rodzica pomiędzy tymi operacjami. Produkcja korzysta z dokładnie tego
+    /// samego obiektu co produkcyjny zapis evidence, więc oracle zabija powrót do ścieżkowego
+    /// `metadata -> rename`, a nie wyłącznie testową kopię reguły.
+    #[cfg(unix)]
+    pub fn open(anchor: &Path, relative: &Path) -> io::Result<Self> {
+        let (directory, file_name) = private_parent(anchor, relative)?;
+        Ok(Self {
+            directory,
+            file_name,
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn open(_anchor: &Path, _relative: &Path) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    /// Zapisuje i publikuje względem zachowanego katalogu, bez ponownego rozwiązania ścieżki.
+    #[cfg(unix)]
+    pub fn publish(self, bytes: &[u8], replace: bool) -> io::Result<()> {
+        use std::io::Write as _;
+
+        use nix::errno::Errno;
+        use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+        use nix::sys::stat::{Mode, fstatat};
+        use nix::unistd::{UnlinkatFlags, fsync, linkat, unlinkat};
+
+        let Self {
+            directory,
+            file_name,
+        } = self;
+        let mut guard_name = file_name.clone();
+        guard_name.push(".writing");
+        match fstatat(
+            &directory,
+            Path::new(&guard_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "an evidence writing guard already exists",
+                ));
+            }
+            Err(Errno::ENOENT) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+
+        if replace {
+            let existing = openat(
+                &directory,
+                Path::new(&file_name),
+                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?;
+            validate_private_fd(&existing)?;
+        }
+
+        let temporary_name = format!(".loadout-writing-{}", uuid::Uuid::now_v7());
+        let temporary = openat(
+            &directory,
+            temporary_name.as_str(),
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(io::Error::from)?;
+        validate_private_fd(&temporary)?;
+
+        let written = (|| -> io::Result<()> {
+            let mut file = std::fs::File::from(temporary);
+            file.write_all(bytes)?;
+            file.flush()?;
+            file.sync_all()?;
+            drop(file);
+            if replace {
+                renameat(
+                    &directory,
+                    temporary_name.as_str(),
+                    &directory,
+                    Path::new(&file_name),
+                )
+                .map_err(io::Error::from)?;
+            } else {
+                // `linkat` is the portable no-clobber publication primitive. A plain `renameat`
+                // would silently replace a document that belongs to another conversation attempt.
+                linkat(
+                    &directory,
+                    temporary_name.as_str(),
+                    &directory,
+                    Path::new(&file_name),
+                    AtFlags::empty(),
+                )
+                .map_err(io::Error::from)?;
+                unlinkat(
+                    &directory,
+                    temporary_name.as_str(),
+                    UnlinkatFlags::NoRemoveDir,
+                )
+                .map_err(io::Error::from)?;
+            }
+            fsync(&directory).map_err(io::Error::from)
+        })();
+
+        // Po udanym `renameat` nazwa tymczasowa już nie istnieje. Po błędzie sprzątamy wyłącznie
+        // losową nazwę, którą sami utworzyliśmy, nadal względem tego samego deskryptora katalogu.
+        let _ = unlinkat(
+            &directory,
+            temporary_name.as_str(),
+            UnlinkatFlags::NoRemoveDir,
+        );
+        written
+    }
+
+    #[cfg(windows)]
+    pub fn publish(self, _bytes: &[u8], _replace: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private no-follow file publication is not implemented on Windows",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn private_parent(
+    anchor: &Path,
+    relative: &Path,
+) -> io::Result<(std::os::fd::OwnedFd, std::ffi::OsString)> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+
+    let parts = relative
+        .components()
+        .map(|part| match part {
+            Component::Normal(name) => Ok(name.to_owned()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a private evidence path is not relative and plain",
+            )),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let (file_name, parents) = parts
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty private file path"))?;
+
+    let directory_flags =
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    // 2026-08-21: `open(anchor, O_NOFOLLOW)` chroni tylko ostatni komponent. Evidence ma
+    // absolutny korzeń workspace'u, więc zaczynamy od `/` i otwieramy KAŻDY katalog przez
+    // poprzedni deskryptor. Symlink pośrodku `anchor` nie może przekierować prywatnych bajtów
+    // do sąsiedniego projektu.
+    let anchor = private_anchor_path(anchor);
+    let mut anchor_parts = anchor.components();
+    if !matches!(anchor_parts.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a private evidence anchor is not absolute",
+        ));
+    }
+    let mut directory =
+        open(Path::new("/"), directory_flags, Mode::empty()).map_err(io::Error::from)?;
+    for component in anchor_parts {
+        let Component::Normal(parent) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a private evidence anchor is not plain",
+            ));
+        };
+        directory = openat(
+            &directory,
+            Path::new(parent),
+            directory_flags,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    for parent in parents {
+        directory = openat(
+            &directory,
+            Path::new(parent),
+            directory_flags,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    Ok((directory, file_name.clone()))
+}
+
+#[cfg(target_os = "macos")]
+fn private_anchor_path(anchor: &Path) -> std::path::PathBuf {
+    // 2026-08-21: macOS dostarcza `/var` i `/tmp` jako stałe aliasy do `/private/*`.
+    // TempDir i część workspace'ów przychodzą w tej publicznej pisowni. Normalizujemy tylko
+    // te dwa systemowe aliasy, zanim zaczniemy deskryptorowy spacer; ogólne `canonicalize`
+    // zaakceptowałoby natomiast dowolny symlink zasadzony przez workspace.
+    for (alias, real) in [("/var", "/private/var"), ("/tmp", "/private/tmp")] {
+        if let Ok(suffix) = anchor.strip_prefix(alias) {
+            return Path::new(real).join(suffix);
+        }
+    }
+    anchor.to_path_buf()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn private_anchor_path(anchor: &Path) -> std::path::PathBuf {
+    anchor.to_path_buf()
+}
+
+#[cfg(unix)]
+fn validate_private_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
+    use nix::sys::stat::{SFlag, fstat};
+    use nix::unistd::geteuid;
+
+    let stat = fstat(file).map_err(io::Error::from)?;
+    let kind = SFlag::from_bits_truncate(stat.st_mode);
+    if !kind.contains(SFlag::S_IFREG)
+        || stat.st_mode & 0o777 != 0o600
+        || stat.st_uid != geteuid().as_raw()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "an existing private evidence file is not owner-only",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn open_private_file(
+    _anchor: &Path,
+    _relative: &Path,
+    _access: PrivateFileAccess,
+) -> io::Result<std::fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private no-follow file opening is not implemented on Windows",
+    ))
+}
 
 /// Jedyne nazwy zmiennych środowiskowych, które przechodzą do dziecka. Wszystko poza tą listą
 /// znika przez `env_clear()` (niezmiennik 9).

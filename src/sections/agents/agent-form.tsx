@@ -59,34 +59,6 @@ export const VENDORS: ReadonlyArray<Choice<Vendor>> = [
   { value: 'codex', label: 'Codex' },
 ];
 
-/* Którzy vendorzy MAJĄ na tej maszynie sterownik, który cokolwiek uruchomi.
- *
- * ZMIERZONE 2026-08-18: `src-tauri/src/lib.rs:288` daje Codeksowi `Absent::new("codex", "T-10")`,
- * a `Absent::start` robi `bail!`. Formularz oferował Codeksa jako równorzędny wybór i dowiedzieć
- * się prawdy można było WYŁĄCZNIE nieudanym biegiem — po tym, jak człowiek zbudował workflow
- * wokół agenta, który nie ma czym pracować.
- *
- * WYBÓR: pozycja ZOSTAJE na liście, nieklikalna, z powodem w brzmieniu. Zdjęcie jej z listy
- * miałoby jedną wadę, której nie da się naprawić na ekranie: agent zapisany wcześniej z
- * `runsWith: 'codex'` pokazywałby wtedy w tym polu Claude Code, czyli ekran KŁAMAŁBY o tym,
- * co leży w pliku, i pierwszy zapis po cichu podmieniłby wartość. Pozycja wygaszona pokazuje
- * prawdę i nie pozwala jej wybrać nikomu nowemu.
- *
- * Ta tabela ma zniknąć razem z T-10 (sterownik Codeksa). Do tego dnia jest jedynym miejscem,
- * w którym stoi odpowiedź „czy da się na tym uruchomić krok" (niezmiennik 13). */
-const HAS_A_DRIVER: Readonly<Record<Vendor, boolean>> = {
-  'claude-code': true,
-  codex: false,
-};
-
-/** Dopisek w pozycji, której nie da się wybrać. Krótki, bo mieszka w `<option>`. */
-const NOT_HERE_YET = ' — not on this machine yet';
-
-/** Zdanie pod polem, kiedy agent zapisany wcześniej wskazuje na aplikację, której tu nie ma. */
-const NOTHING_TO_RUN_ON =
-  'Codex is not set up on this machine yet, so a step handed to this agent will not run. ' +
-  'Pick Claude Code.';
-
 const THINKING: ReadonlyArray<Choice<Thinking>> = [
   { value: 'quick', label: 'Quick' },
   { value: 'balanced', label: 'Balanced' },
@@ -256,16 +228,11 @@ export function AgentForm({
           }
         >
           {VENDORS.map((option) => (
-            <option key={option.value} value={option.value} disabled={!HAS_A_DRIVER[option.value]}>
-              {HAS_A_DRIVER[option.value] ? option.label : option.label + NOT_HERE_YET}
+            <option key={option.value} value={option.value}>
+              {option.label}
             </option>
           ))}
         </select>
-        {HAS_A_DRIVER[value.runsWith] ? null : (
-          <p data-no-driver className="text-body text-attend">
-            {NOTHING_TO_RUN_ON}
-          </p>
-        )}
       </div>
 
       <div className={ROW}>

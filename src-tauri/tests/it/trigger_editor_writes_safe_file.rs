@@ -12,6 +12,7 @@ use std::time::Duration;
 use loadout_lib::commands::triggers::{
     self, EditorStage, Secret, Source, TriggerDraft, TriggerError, TriggerSnapshot,
 };
+use loadout_lib::commands::workspaces;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use uuid::{Uuid, Version};
@@ -44,7 +45,13 @@ fn home_with_workflow() -> Result<TempDir, Box<dyn Error>> {
     let home = TempDir::new()?;
     fs::create_dir_all(home.path().join("workflows"))?;
     fs::write(home.path().join("workflows/linear.json"), WORKFLOW)?;
+    let workspace = workspace();
+    workspaces::save_workspace_inner(home.path(), "Trigger tests", &workspace)?;
     Ok(home)
+}
+
+fn workspace() -> String {
+    env!("CARGO_MANIFEST_DIR").to_owned()
 }
 
 fn draft(key: Option<&str>, cadence: u32) -> TriggerDraft {
@@ -52,6 +59,7 @@ fn draft(key: Option<&str>, cadence: u32) -> TriggerDraft {
         source: "linear".to_owned(),
         condition: "assigned-to-me".to_owned(),
         workflow: "linear.json".to_owned(),
+        workspace: workspace(),
         poll_every_minutes: cadence,
         api_key: key.map(Secret::new),
     }
@@ -63,6 +71,7 @@ fn snapshot(slug: &str, cadence: u32) -> TriggerSnapshot {
         source: Source::Linear,
         condition: "assigned-to-me".to_owned(),
         workflow: "linear.json".to_owned(),
+        workspace: Some(workspace()),
         enabled: true,
         poll_every_minutes: cadence,
         key_saved: true,
@@ -119,6 +128,7 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
     assert_eq!(entry.source, Some(Source::Linear));
     assert_eq!(entry.condition.as_deref(), Some("assigned-to-me"));
     assert_eq!(entry.workflow.as_deref(), Some("linear.json"));
+    assert_eq!(entry.workspace.as_deref(), Some(workspace().as_str()));
     assert_eq!(entry.enabled, Some(true));
     assert_eq!(entry.poll_every_minutes, Some(5));
     assert_eq!(entry.key_saved, Some(true));
@@ -136,6 +146,7 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
             "source": "linear",
             "enabled": true,
             "workflow": "linear.json",
+            "workspace": workspace(),
             "condition": "assigned-to-me",
             "poll_every_minutes": 5,
             "api_key": KEY,
@@ -454,6 +465,7 @@ fn edit_preserves_a_fresh_manual_key_and_refuses_schema_change() -> Result<(), B
         "source": "linear",
         "enabled": true,
         "workflow": "linear.json",
+        "workspace": workspace(),
         "condition": "assigned-to-me",
         "poll_every_minutes": 15,
         "api_key": KEY,

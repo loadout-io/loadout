@@ -301,8 +301,8 @@ describe('"used in 3 workflows" is counted from the workflow files, or not shown
   });
 });
 
-describe('the form does not offer an agent app this machine cannot run', () => {
-  it('leaves Codex on the list but makes it unpickable, with the reason in the wording', () => {
+describe('the form offers every agent app the runtime can drive', () => {
+  it('offers Codex as a pickable agent app', () => {
     const markup = renderToStaticMarkup(
       <AgentForm
         value={agent()}
@@ -314,30 +314,25 @@ describe('the form does not offer an agent app this machine cannot run', () => {
     );
 
     const codex = /<option value="codex"([^>]*)>([^<]*)</.exec(markup);
-    expect(codex, 'Codex stays visible: an agent saved earlier may already point at it').not.toBe(
-      null,
-    );
+    expect(codex, 'Codex is missing even though the runtime has a real CodexDriver').not.toBe(null);
     expect(
       /\bdisabled\b/.test(codex?.[1] ?? ''),
-      'and it cannot be picked. `src-tauri/src/lib.rs:288` hands Codex an Absent driver whose ' +
-        'start bails, so the only way to learn the truth was a failed run — after a workflow had ' +
-        'been built around the agent',
-    ).toBe(true);
-    expect(
-      codex?.[2] ?? '',
-      'the reason is IN the wording. A greyed-out row with no reason is the same silence as a ' +
-        'greyed-out Save with no reason, and that one cost the whole agents folder',
-    ).toContain('not on this machine');
+      'the runtime maps Codex to CodexDriver, so greying it out would make the form deny a ' +
+        'capability the application really has',
+    ).toBe(false);
+    expect(codex?.[2] ?? '', 'a runnable agent app is named without the old warning suffix').toBe(
+      'Codex',
+    );
 
     const claude = /<option value="claude-code"([^>]*)>/.exec(markup);
     expect(
       /\bdisabled\b/.test(claude?.[1] ?? ''),
-      'and the app that DOES work here is pickable. Without this line the assertion above also ' +
+      'Claude Code remains pickable. Without this line the assertion above also ' +
         'passes for a form that greyed out both of them',
     ).toBe(false);
   });
 
-  it('says why a saved Codex agent will not run, and only for that agent', () => {
+  it('does not show the retired no-driver warning for either runnable app', () => {
     const of = (value: Agent): string =>
       renderToStaticMarkup(
         <AgentForm
@@ -351,16 +346,16 @@ describe('the form does not offer an agent app this machine cannot run', () => {
 
     expect(
       of(agent({ runsWith: 'codex' })),
-      'an agent already saved against Codex has to say, in the panel, that a step handed to it ' +
-        'will not run',
-    ).toContain('data-no-driver');
+      'the runtime has a real CodexDriver, so warning that the step will not run is a lie',
+    ).not.toContain('data-no-driver');
     expect(
       of(agent({ runsWith: 'claude-code' })),
-      'and the sentence is absent for the app that works. A permanently rendered note is an ' +
-        'interface that lies in both directions at once',
+      'the retired warning stays absent for Claude Code too',
     ).not.toContain('data-no-driver');
   });
+});
 
+describe('the form explains why Save is blocked', () => {
   it('says WHICH field is missing before it says nothing at all', () => {
     const blocked = (over: Partial<Agent>): string =>
       renderToStaticMarkup(

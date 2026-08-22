@@ -25,12 +25,14 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use loadout_lib::engine::limits::{Dispatch, Limiter, Run};
 use loadout_lib::engine::step::StepState;
 use loadout_lib::workspace::{Registry, WorkspaceId};
+use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
 /// Ile miejsc ma pula w przypadku właściwym.
@@ -77,11 +79,20 @@ async fn one_blocking_step(
     registry: Arc<Registry>,
     id: WorkspaceId,
     at_once: usize,
+    first_wave: Arc<Barrier>,
+    arrivals: Arc<AtomicUsize>,
 ) -> anyhow::Result<Span> {
     let run = Run::new(registry.slots(&id)?, &[StepState::Ready]);
     match run.dispatch().await {
         Dispatch::Granted(slot) => {
             let entered = Instant::now();
+            // 2026-08-21: pełna bramka uruchamia setki testów równolegle i potrafiła nie
+            // zapollować trzeciego gotowego future przez całe 300 ms. Pierwsza fala czeka
+            // więc, aż wszystkie miejsca faktycznie są zajęte; nadal mierzymy prawdziwe
+            // permit-y, a nie uprzejmość planisty systemowego pod obciążeniem.
+            if arrivals.fetch_add(1, Ordering::Relaxed) < at_once {
+                first_wave.wait().await;
+            }
             tokio::time::sleep(STEP).await;
             let left = Instant::now();
             // Zwolnienie siedzi w `Drop`, więc nazywamy je wprost: gdyby slot ginął dopiero
@@ -105,13 +116,21 @@ async fn steps_in_three_workspaces(at_once: usize) -> anyhow::Result<Vec<Span>> 
     // per karta, przeszedłby ten sam kod testu — dlatego liczby niżej, a nie kształt tutaj,
     // są tym, co rozstrzyga.
     let registry = Arc::new(Registry::new(Limiter::new(at_once)));
+    let first_wave = Arc::new(Barrier::new(at_once));
+    let arrivals = Arc::new(AtomicUsize::new(0));
 
     let mut running: JoinSet<anyhow::Result<Span>> = JoinSet::new();
     for n in 0..WORKSPACES {
         let path: &Path = &root.path().join(format!("project-{n}"));
         std::fs::create_dir_all(path)?;
         let id = registry.open(path)?;
-        running.spawn(one_blocking_step(Arc::clone(&registry), id, at_once));
+        running.spawn(one_blocking_step(
+            Arc::clone(&registry),
+            id,
+            at_once,
+            Arc::clone(&first_wave),
+            Arc::clone(&arrivals),
+        ));
     }
 
     let mut spans = Vec::with_capacity(WORKSPACES);

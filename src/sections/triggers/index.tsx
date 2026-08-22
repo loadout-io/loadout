@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { useTriggers } from '../../state/triggers';
 import type { TriggersStore } from '../../state/triggers';
+import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import { sectionEntry } from '../../ui/sections';
 import type { Section } from '../../ui/sections';
 import { TriggerRow } from './row';
@@ -52,7 +53,7 @@ export function DefaultCreateControl({ onCreate }: TriggerCreateControlProps): R
 
 export interface TriggersScreenProps {
   readonly store?: TriggersStore;
-  /** A test seam for proving that the visible switch and the store share one handler. */
+  /** A test seam for proving that visible row controls and the store share real handlers. */
   readonly row?: ComponentType<TriggerRowProps>;
   /** The real screen owns the form; a probe may observe the handlers it receives. */
   readonly form?: ComponentType<TriggerFormProps>;
@@ -70,6 +71,11 @@ export default function TriggersScreen({
   createControl: CreateControl = DefaultCreateControl,
 }: TriggersScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  const workspaceState = useSyncExternalStore(
+    useWorkspaces.subscribe,
+    useWorkspaces.getState,
+    useWorkspaces.getState,
+  );
   const [ownEditor, setOwnEditor] = useState<TriggerEditorState>({
     opened: null,
     confirmingDelete: false,
@@ -107,16 +113,21 @@ export default function TriggersScreen({
 
   const toggle = (slug: string, enabled: boolean): Promise<void> =>
     store.getState().toggle(slug, enabled);
+  const runAgain = (slug: string): Promise<void> => store.getState().runAgain(slug);
   const empty = sectionEntry('triggers' as Section).empty;
 
   const openCreate = (): void => {
     store.getState().resetEditorFeedback();
+    /* 2026-08-21: migawka powstaje teraz, nie przy Save. Przełączenie bocznego menu w trakcie
+     * edycji nie może po cichu zmienić targetu, który nadal widać w kontrolce Workspace. */
+    const workspace = activeWorkspace()?.folder ?? '';
     replaceEditor({
       mode: 'create',
       value: {
         connector: '',
         apiKey: '',
         workflow: state.workflows[0]?.path ?? '',
+        workspace,
         pollEveryMinutes: 1,
       },
     });
@@ -132,6 +143,7 @@ export default function TriggersScreen({
         connector: 'linear',
         apiKey: '',
         workflow: trigger.workflow,
+        workspace: trigger.workspace ?? '',
         pollEveryMinutes: trigger.pollEveryMinutes,
       },
       expected: {
@@ -139,6 +151,7 @@ export default function TriggersScreen({
         source: trigger.source,
         condition: trigger.condition,
         workflow: trigger.workflow,
+        workspace: trigger.workspace,
         enabled: trigger.enabled,
         pollEveryMinutes: trigger.pollEveryMinutes,
         hasApiKey: trigger.hasApiKey,
@@ -150,6 +163,7 @@ export default function TriggersScreen({
     source: value.connector,
     condition: 'assigned-to-me',
     workflow: value.workflow,
+    workspace: value.workspace,
     pollEveryMinutes: value.pollEveryMinutes,
     apiKey: value.apiKey.trim() === '' ? null : value.apiKey,
   });
@@ -253,7 +267,14 @@ export default function TriggersScreen({
           ) : (
             <ul className="overflow-hidden rounded-md border border-line bg-panel">
               {state.triggers.map((trigger) => (
-                <Row key={trigger.slug} trigger={trigger} onToggle={toggle} onOpen={openSaved} />
+                <Row
+                  key={trigger.slug}
+                  trigger={trigger}
+                  workspaces={workspaceState.all}
+                  onToggle={toggle}
+                  onRunAgain={runAgain}
+                  onOpen={openSaved}
+                />
               ))}
             </ul>
           )}
@@ -268,6 +289,7 @@ export default function TriggersScreen({
               mode={opened.mode}
               value={opened.value}
               workflows={state.workflows}
+              workspaces={workspaceState.all}
               hasSavedKey={opened.mode === 'edit' ? opened.expected.hasApiKey : false}
               refusal={editor.state.refusal ?? null}
               connection={state.connection}

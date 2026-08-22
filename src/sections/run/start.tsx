@@ -46,7 +46,8 @@ import type { FeedView } from './feed/model';
 import { continueRun, stop } from './io';
 import { useRun } from '../../state/run';
 
-const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg disabled:opacity-40';
+const PRIMARY =
+  'h-9 whitespace-nowrap rounded-sm bg-accent px-4 text-ui text-bg disabled:opacity-40';
 const DANGER = 'h-7 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 /** Kolor `--attend` odpowiada na jedno pytanie: co czeka na MOJĄ decyzję [DESIGN §3]. */
 const ATTEND = 'h-7 rounded-sm border border-attend-edge px-3 text-ui text-attend';
@@ -108,6 +109,58 @@ export interface StartProps {
    * jej niczego nie zmienia w oknie. Pole znika w dniu, w którym `index.tsx` da się dotknąć.
    */
   running?: boolean;
+}
+
+/**
+ * Widoczna nazwa i wyjasnienie recznego uruchomienia workflow.
+ *
+ * 2026-08-21 — samo `Start` stalo bezposrednio obok wyboru lidera, chociaz lider nie mial
+ * z tym przyciskiem nic wspolnego. Klikniecie po zakonczonej pracy uruchomilo caly pierwszy
+ * workflow od poczatku z pustym zadaniem i wygladalo jak restart rozmowy. Nazwa workflow jest
+ * wiec czescia kontrolki; tooltip dopowiada granice nowego biegu zamiast obiecywac wznowienie.
+ */
+function runActionFor(choice: Choice | null): {
+  readonly label: string;
+  readonly title: string;
+} {
+  if (choice === null) {
+    return {
+      label: 'Run workflow',
+      title: 'Add steps to a workflow before starting a run.',
+    };
+  }
+  return {
+    label: `Run ${choice.name}`,
+    title: `Starts a new run of the complete ${choice.name} workflow from the beginning.`,
+  };
+}
+
+interface WorkflowRunButtonProps {
+  readonly choice: Choice | null;
+  readonly disabled: boolean;
+  readonly onRun: () => void;
+}
+
+/** Prawdziwa kontrolka recznego biegu; [`Start`] montuje ja na stale w pasku pracy. */
+export function WorkflowRunButton({
+  choice,
+  disabled,
+  onRun,
+}: WorkflowRunButtonProps): ReactElement {
+  const action = runActionFor(choice);
+  return (
+    <button
+      type="button"
+      className={PRIMARY}
+      data-workflow-run="manual"
+      data-workflow={choice?.path ?? ''}
+      title={action.title}
+      disabled={disabled}
+      onClick={onRun}
+    >
+      {action.label}
+    </button>
+  );
 }
 
 export function Start({ onSaid }: StartProps): ReactElement {
@@ -212,7 +265,8 @@ export function Start({ onSaid }: StartProps): ReactElement {
    * plik WYBIERAJĄ, są dwie i obie zostają — `/run <workflow> <co zbudować>` w wierszu wejścia
    * i zielony `Run` w edytorze workflow (przez `./requested-launch`). Jest to zawężenie i jest
    * zapisane tutaj, a nie przemilczane. */
-  const chosen = firstRunnable(choices)?.path ?? '';
+  const runnable = firstRunnable(choices);
+  const chosen = runnable?.path ?? '';
 
   async function go(): Promise<void> {
     setSaid(null);
@@ -327,14 +381,7 @@ export function Start({ onSaid }: StartProps): ReactElement {
           Stop
         </button>
       ) : (
-        <button
-          type="button"
-          className={PRIMARY}
-          disabled={chosen === ''}
-          onClick={() => void go()}
-        >
-          Start
-        </button>
+        <WorkflowRunButton choice={runnable} disabled={chosen === ''} onRun={() => void go()} />
       )}
 
       {/* Limit siedzi obok Startu, a nie w ustawieniach: to decyzja podejmowana przy każdym

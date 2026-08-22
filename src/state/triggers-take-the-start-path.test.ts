@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Choice, Listed } from '../sections/run/choices';
-import { GONE_FROM_DISK, launchRun, NOTHING_TO_RUN, NO_FOLDER } from '../sections/run/launch';
+import {
+  GONE_FROM_DISK,
+  launchRun,
+  NOTHING_TO_RUN,
+  NO_FOLDER,
+  TRIGGER_NO_WORKSPACE,
+} from '../sections/run/launch';
 import { start } from '../sections/run/io';
 import type {
   TriggerClaim,
@@ -41,6 +47,7 @@ const CLAIM: TriggerClaim = {
   deliveryId: 'delivery-7',
   workflow: 'analysis.json',
   runId: '0198ca82-ded0-7000-8000-000000000042',
+  workspace: '/trigger-project',
 };
 const DELIVERY: TriggerDelivery = { claim: CLAIM, issue: ISSUE, createdAt: 1_787_278_329_700 };
 const TASK = 'LIN-42: Fix the timeout handoff\n\nThe completed analysis must reach the next step.';
@@ -68,11 +75,18 @@ const CLOCK: TriggerClock = {
   clearInterval: () => undefined,
 };
 
-const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const REDACTED = {
+  workspace: CLAIM.workspace,
+  pollEveryMinutes: 1 as const,
+  hasApiKey: true as const,
+};
 const EDITOR_IO: Pick<
   TriggerIo,
-  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
 > = {
+  retryTrigger: async () => {
+    throw new Error('not used');
+  },
   createTrigger: async () => {
     throw new Error('not used');
   },
@@ -159,7 +173,69 @@ describe('a trigger takes the same launch path as Start', () => {
     expect(launched).toHaveBeenCalledWith(CHOICE, 4, TASK, CLAIM);
   });
 
-  it('launchRun forwards a trigger delivery reference to the existing run_workflow invocation', async () => {
+  it('keeps one Run again intent while a background check owns the trigger', async () => {
+    const check = deferred<TriggerPoll>();
+    const retried: TriggerDelivery = {
+      ...DELIVERY,
+      claim: {
+        ...CLAIM,
+        deliveryId: 'retry-delivery-8',
+        runId: '0198ca82-ded0-7000-8000-000000000080',
+      },
+      createdAt: DELIVERY.createdAt + 20_000,
+    };
+    const retryTrigger = vi.fn(async () => retried);
+    const launched = vi.fn<TriggerRunPath['launchRun']>(
+      () => new Promise<string | null>(() => undefined),
+    );
+    const io: TriggerIo = {
+      ...triggerIo(),
+      checkTrigger: () => check.promise,
+      retryTrigger,
+    };
+    const store = createTriggersStore(io, CLOCK, {
+      listWorkflows: async () => [LISTED],
+      launchRun: launched,
+      atOnce: () => 4,
+    });
+    store.setState({
+      triggers: [
+        {
+          ...view(),
+          status: {
+            kind: 'accepted',
+            workflow: 'Analysis',
+            workspace: CLAIM.workspace,
+            receiptAt: DELIVERY.createdAt + 10_000,
+          },
+        },
+      ],
+    });
+
+    const background = store.getState().tick();
+    await store.getState().runAgain(CLAIM.slug);
+    await store.getState().runAgain(CLAIM.slug);
+    expect(
+      retryTrigger,
+      'the click must wait for the check which already owns this slug',
+    ).not.toHaveBeenCalled();
+
+    check.resolve({
+      status: 'accepted',
+      workflow: CLAIM.workflow,
+      workspace: CLAIM.workspace,
+      receiptAt: DELIVERY.createdAt + 10_000,
+    });
+    await background;
+    await vi.waitFor(() => {
+      expect(retryTrigger).toHaveBeenCalledTimes(1);
+      expect(launched).toHaveBeenCalledTimes(1);
+    });
+    expect(retryTrigger).toHaveBeenCalledWith(CLAIM.slug);
+    expect(launched).toHaveBeenCalledWith(CHOICE, 4, TASK, retried.claim);
+  });
+
+  it('uses the workspace frozen in a trigger delivery instead of the active side-menu scope', async () => {
     useWorkspaces.setState({
       all: [{ id: '/project', name: 'Project', folder: '/project' }],
       activeId: '/project',
@@ -173,11 +249,24 @@ describe('a trigger takes the same launch path as Start', () => {
       expect.objectContaining({
         fileName: 'analysis.json',
         howManyAtOnce: 4,
-        folder: '/project',
+        folder: CLAIM.workspace,
         task: TASK,
         claim: CLAIM,
       }),
     );
+  });
+
+  it('refuses a legacy delivery before IPC instead of borrowing the active workspace', async () => {
+    useWorkspaces.setState({
+      all: [{ id: '/project', name: 'Project', folder: '/project' }],
+      activeId: '/project',
+      said: null,
+    });
+
+    expect(await launchRun(CHOICE, 4, TASK, { ...CLAIM, workspace: null })).toBe(
+      TRIGGER_NO_WORKSPACE,
+    );
+    expect(invoked).not.toHaveBeenCalled();
   });
 
   it('keeps pending visible until Rust returns its later durable acceptance time', async () => {
@@ -191,7 +280,12 @@ describe('a trigger takes the same launch path as Start', () => {
         polls += 1;
         return polls === 1
           ? { status: 'pending' as const, delivery: DELIVERY }
-          : { status: 'accepted' as const, workflow: CLAIM.workflow, receiptAt: acceptedAt };
+          : {
+              status: 'accepted' as const,
+              workflow: CLAIM.workflow,
+              workspace: CLAIM.workspace,
+              receiptAt: acceptedAt,
+            };
       },
     };
     const runEnded = deferred<string | null>();
@@ -215,6 +309,7 @@ describe('a trigger takes the same launch path as Start', () => {
       expect(store.getState().triggers[0]?.status).toEqual({
         kind: 'accepted',
         workflow: 'Analysis',
+        workspace: CLAIM.workspace,
         receiptAt: acceptedAt,
       });
     });
@@ -238,6 +333,7 @@ describe('a trigger takes the same launch path as Start', () => {
         return Promise.resolve({
           status: 'accepted',
           workflow: CLAIM.workflow,
+          workspace: CLAIM.workspace,
           receiptAt: acceptedAt,
         });
       },
@@ -264,6 +360,7 @@ describe('a trigger takes the same launch path as Start', () => {
       expect(store.getState().triggers[0]?.status).toEqual({
         kind: 'accepted',
         workflow: 'Analysis',
+        workspace: CLAIM.workspace,
         receiptAt: acceptedAt,
       });
     });
@@ -294,6 +391,7 @@ describe('a trigger takes the same launch path as Start', () => {
         return Promise.resolve({
           status: 'accepted',
           workflow: CLAIM.workflow,
+          workspace: CLAIM.workspace,
           receiptAt: acceptedAt,
         });
       },
@@ -320,6 +418,7 @@ describe('a trigger takes the same launch path as Start', () => {
       expect(store.getState().triggers[0]?.status).toEqual({
         kind: 'accepted',
         workflow: 'Analysis',
+        workspace: CLAIM.workspace,
         receiptAt: acceptedAt,
       });
     });
@@ -367,6 +466,7 @@ describe('a trigger takes the same launch path as Start', () => {
         expect(store.getState().triggers[0]?.status).toEqual({
           kind: 'refused',
           sentence: refusal,
+          retryable: true,
         });
       });
       expect(store.getState().triggers[0]?.enabled).toBe(false);

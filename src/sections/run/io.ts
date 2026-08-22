@@ -34,6 +34,7 @@ import { wireChannel } from '../../ipc/run';
  * samo z drugiej strony. */
 import { runFor } from '../../state/run';
 import type { Step } from '../../state/run';
+import type { ConversationImage } from './entry/images';
 import { feedFor } from './feed/live';
 import type { TriggerClaim } from '../triggers/io';
 
@@ -490,19 +491,41 @@ export function openChat(
  *   `null` jest po tamtej stronie **odmową nazywającą następny ruch**, nigdy cichym powrotem do
  *   zaszytego vendora: rozmowa, która idzie, płaci i odpowiada nie tym agentem, którego człowiek
  *   wybrał, nie ma ani jednego sygnału, po którym dałoby się to zauważyć.
+ * @param images obrazy w kolejności podglądów, już bez nazw plików. Pusta tablica jedzie jawnie:
+ *   Tauri dopasowuje argumenty przed wejściem do komendy, więc „brak obrazów" i brak klucza to
+ *   nie są dwa zapisy tego samego wywołania.
  */
 export function sayToOrchestrator(
   text: string,
   folder: string | null = null,
   terminal: string | null = null,
   lead: string | null = null,
+  images: readonly ConversationImage[] = [],
 ): Promise<void> {
   return invoke<void>('say_to_orchestrator', {
     terminal: terminalOf(terminal, folder),
     folder,
     lead,
     text,
+    images,
   });
+}
+
+/** Licznikowy paragon kopiowania; raport nigdy nie wraca do JavaScriptu. */
+export interface DiagnosticsReceipt {
+  readonly runs: number;
+  readonly conversations: number;
+  readonly artifacts: number;
+}
+
+/**
+ * Każe Rustowi zbudować allowlistowany raport aktywnego workspace i zapisać go do schowka.
+ *
+ * Folder jest jedynym zakresem. `null` zostaje jawne, żeby Rust mógł odmówić bez pożyczania
+ * katalogu procesu; przycisk nie ma prawa skopiować danych sąsiedniego projektu.
+ */
+export function copyDiagnostics(folder: string | null): Promise<DiagnosticsReceipt> {
+  return invoke<DiagnosticsReceipt>('copy_diagnostics', { folder });
 }
 
 /**

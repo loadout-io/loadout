@@ -226,6 +226,12 @@ export function WorkflowEditor({
             <p className="text-muted">Pick a step to see what it was given.</p>
           ) : (
             <PanelForStep
+              /* KLUCZ NA IDENTYFIKATORZE KROKU. Panel niesie stan WIDOKU (rozwinięta lista
+                 wyboru agenta i wpisane w niej szukanie), a bez klucza React trzymałby ten sam
+                 egzemplarz przy przeskoku na inny kafelek: zaznaczenie świeżego kroku po kroku
+                 z agentem dostawałoby listę zwiniętą, czyli inny panel niż ten sam krok
+                 zaznaczony jako pierwszy. */
+              key={open.id}
               step={open}
               agents={agents}
               skills={skills}

@@ -1,10 +1,13 @@
 import type { ReactElement } from 'react';
 
 import type { TriggerVisibleStatus, TriggerView } from '../../state/triggers';
+import type { TriggerWorkspaceOption } from './form';
 
 export interface TriggerRowProps {
   readonly trigger: TriggerView;
+  readonly workspaces: readonly TriggerWorkspaceOption[];
   readonly onToggle: (slug: string, enabled: boolean) => Promise<void>;
+  readonly onRunAgain: (slug: string) => Promise<void>;
   readonly onOpen: (slug: string) => void;
 }
 
@@ -22,21 +25,34 @@ function utcStartTime(milliseconds: number): { readonly label: string; readonly 
   return { label: `${iso.slice(0, 19).replace('T', ' ')} UTC`, iso };
 }
 
-function says(status: TriggerVisibleStatus): SaidStatus {
+function workspaceName(
+  folder: string | null,
+  workspaces: readonly TriggerWorkspaceOption[],
+): string {
+  if (folder === null) return 'an unspecified workspace';
+  return workspaces.find((workspace) => workspace.folder === folder)?.name ?? folder;
+}
+
+function says(
+  status: TriggerVisibleStatus,
+  workspaces: readonly TriggerWorkspaceOption[],
+): SaidStatus {
   if (status.kind === 'unchecked') return { sentence: 'Not checked yet.' };
   if (status.kind === 'armed') {
     return { sentence: 'Watching for new issues. Nothing has started yet.' };
   }
   if (status.kind === 'busy') {
+    const workspace = status.delivery.claim.workspace;
     return {
-      sentence: `${status.delivery.issue.identifier} is saved while Loadout handles the run.`,
+      sentence: `${status.delivery.issue.identifier} is saved for ${workspaceName(workspace, workspaces)} while Loadout handles the run.`,
     };
   }
   if (status.kind === 'refused') return { sentence: status.sentence };
+  if (status.retryRefusal !== undefined) return { sentence: status.retryRefusal };
 
   const started = utcStartTime(status.receiptAt);
   return {
-    sentence: `Started ${status.workflow} at ${started.label}.`,
+    sentence: `Started ${status.workflow} in ${workspaceName(status.workspace, workspaces)} at ${started.label}.`,
     machineTime: started.iso,
   };
 }
@@ -57,8 +73,14 @@ function cadenceName(minutes: number): string {
   return `Every ${String(minutes)} minutes`;
 }
 
-/** One library row: at most four visible facts and one switch, with no invented broken config. */
-export function TriggerRow({ trigger, onToggle, onOpen }: TriggerRowProps): ReactElement {
+/** One library row: at most four visible facts and bounded controls, with no invented broken config. */
+export function TriggerRow({
+  trigger,
+  workspaces,
+  onToggle,
+  onRunAgain,
+  onOpen,
+}: TriggerRowProps): ReactElement {
   if (trigger.problem !== undefined) {
     return (
       <li
@@ -75,8 +97,33 @@ export function TriggerRow({ trigger, onToggle, onOpen }: TriggerRowProps): Reac
     );
   }
 
-  const status = says(trigger.status);
+  const status = says(trigger.status, workspaces);
+  const statusWorkspace =
+    trigger.status.kind === 'busy'
+      ? trigger.status.delivery.claim.workspace
+      : trigger.status.kind === 'accepted'
+        ? trigger.status.workspace
+        : null;
   const workflow = trigger.workflowName ?? `Workflow ${trigger.workflow} is missing.`;
+  const workspace =
+    trigger.workspace === null
+      ? null
+      : (workspaces.find((one) => one.folder === trigger.workspace) ?? null);
+  const missingWorkspace = workspace === null;
+  const workspaceLabel = workspace?.name ?? 'Workspace needs attention';
+  const workspaceStatus =
+    trigger.workspace === null
+      ? 'Choose a workspace in Edit before this trigger can run.'
+      : 'That workspace is no longer available. Choose another one in Edit before this trigger can run.';
+  const toggleBlocked = missingWorkspace && !trigger.enabled;
+  const retryLabel =
+    !trigger.enabled || missingWorkspace
+      ? null
+      : trigger.status.kind === 'accepted'
+        ? 'Run again'
+        : trigger.status.kind === 'refused' && trigger.status.retryable === true
+          ? 'Retry'
+          : null;
   return (
     <li
       data-trigger-row={trigger.slug}
@@ -97,27 +144,53 @@ export function TriggerRow({ trigger, onToggle, onOpen }: TriggerRowProps): Reac
         <span data-trigger-text className="truncate text-body text-ink">
           {conditionName(trigger.condition)}
         </span>
-        <span data-trigger-text className="truncate text-body text-muted">
-          {`${workflow} · ${cadenceName(trigger.pollEveryMinutes)}`}
+        <span
+          data-trigger-text
+          title={workspace?.folder ?? trigger.workspace ?? workspaceStatus}
+          className="truncate text-body text-muted"
+        >
+          {`${workflow} · ${workspaceLabel} · ${cadenceName(trigger.pollEveryMinutes)}`}
         </span>
       </button>
       <div className="flex items-center gap-3">
-        <span
-          data-trigger-text
-          data-trigger-status
-          className="max-w-96 text-right text-label text-muted"
-        >
-          {status.sentence}
-        </span>
+        {retryLabel === null ? (
+          <span
+            data-trigger-text
+            data-trigger-status
+            title={statusWorkspace ?? undefined}
+            className="max-w-96 text-right text-label text-muted"
+          >
+            {missingWorkspace ? workspaceStatus : status.sentence}
+          </span>
+        ) : (
+          <button
+            type="button"
+            data-trigger-text
+            data-trigger-status
+            data-trigger-run-again
+            title={statusWorkspace ?? undefined}
+            className="max-w-96 rounded-sm border border-line-strong bg-raised px-2 py-1 text-right text-label text-ink"
+            onClick={() => {
+              void onRunAgain(trigger.slug);
+            }}
+          >
+            {`${status.sentence} · ${retryLabel}`}
+          </button>
+        )}
         {status.machineTime === undefined ? null : (
           <time aria-hidden dateTime={status.machineTime} />
         )}
         <button
           type="button"
           data-trigger-toggle
+          disabled={toggleBlocked}
           aria-pressed={trigger.enabled}
-          aria-label={`${trigger.enabled ? 'Turn off' : 'Turn on'} ${trigger.slug}`}
-          className="flex h-5 w-9 items-center rounded-pill border border-line-strong bg-raised px-0.5"
+          aria-label={
+            toggleBlocked
+              ? `Choose a workspace before changing ${trigger.slug}`
+              : `${trigger.enabled ? 'Turn off' : 'Turn on'} ${trigger.slug}`
+          }
+          className={`flex h-5 w-9 items-center rounded-pill border border-line-strong bg-raised px-0.5 ${toggleBlocked ? 'opacity-50' : ''}`}
           onClick={() => {
             void onToggle(trigger.slug, !trigger.enabled);
           }}

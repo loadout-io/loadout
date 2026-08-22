@@ -11,6 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use loadout_lib::commands::triggers::{self, Secret, Source, Trigger, TriggerError};
+use loadout_lib::commands::workspaces;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -25,6 +26,8 @@ fn write_saved_trigger(home: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
+    let workspace = home.to_str().ok_or("test workspace is not UTF-8")?;
+    workspaces::save_workspace_inner(home, "Trigger tests", workspace)?;
     let dir = home.join(triggers::TRIGGERS_DIR);
     fs::create_dir_all(&dir)?;
     fs::write(
@@ -34,6 +37,7 @@ fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
             "source": "linear",
             "enabled": true,
             "workflow": "linear.json",
+            "workspace": workspace,
             "condition": "assigned-to-me",
             "poll_every_minutes": 5,
             "api_key": KEY,
@@ -164,6 +168,7 @@ fn probe_and_watcher_share_the_stdin_only_curl_policy() {
         source: Source::Linear,
         enabled: true,
         workflow: "linear.json".to_owned(),
+        workspace: Some("/work/loadout".to_owned()),
         condition: "assigned-to-me".to_owned(),
         poll_every_minutes: 1,
         api_key: key.clone(),

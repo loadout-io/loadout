@@ -61,6 +61,10 @@ pub struct Trigger {
     pub source: Source,
     pub enabled: bool,
     pub workflow: String,
+    /// Workspace jest opcjonalny wyłącznie na granicy odczytu plików sprzed 2026-08-21.
+    /// Każdy nowy zapis niesie `Some`, a brak nigdy nie może zostać domyślnie przypisany.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     pub condition: String,
     #[serde(default = "default_poll_every_minutes")]
     pub poll_every_minutes: u32,
@@ -79,6 +83,7 @@ pub struct TriggerDraft {
     pub source: String,
     pub condition: String,
     pub workflow: String,
+    pub workspace: String,
     pub poll_every_minutes: u32,
     pub api_key: Option<Secret>,
 }
@@ -92,6 +97,7 @@ impl fmt::Debug for TriggerDraft {
             .field("source", &source.unwrap_or("<redacted>"))
             .field("condition", &condition.unwrap_or("<redacted>"))
             .field("workflow", &"<selected>")
+            .field("workspace", &"<selected>")
             .field("poll_every_minutes", &self.poll_every_minutes)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish()
@@ -106,6 +112,7 @@ pub struct TriggerSnapshot {
     pub source: Source,
     pub condition: String,
     pub workflow: String,
+    pub workspace: Option<String>,
     pub enabled: bool,
     pub poll_every_minutes: u32,
     #[serde(rename = "hasApiKey")]
@@ -141,6 +148,10 @@ pub struct TriggerEntry {
     /// Prawdziwy identyfikator workflow z konfiguracji.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
+    /// Folder wybrany dla triggera. Brak oznacza stary plik wymagający jawnej edycji albo
+    /// uszkodzony wpis, dla którego biblioteka nie zmyśla pól konfiguracji.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// Czy zegar ma pytac ten trigger.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -168,6 +179,9 @@ pub struct TriggerClaim {
     pub delivery_id: String,
     /// Workflow zamrozony z konfiguracji w chwili dostawy.
     pub workflow: String,
+    /// Workspace zamrożony razem z dostawą. `None` czyta stare ledgery, ale nie uruchamia pracy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// UUID v7 przyszlego biegu, przydzielony przed pokazaniem dostawy oknu.
     pub run_id: String,
 }
@@ -207,6 +221,8 @@ pub enum TriggerPoll {
     Accepted {
         /// Workflow, który trwale przyjął sprawę.
         workflow: String,
+        /// Workspace zapisany w przyjętej dostawie; `null` występuje tylko w starym ledgerze.
+        workspace: Option<String>,
         /// Czas receipt zapisany w ledgerze, nie czas ponownego montażu okna.
         receipt_at: i64,
     },
@@ -302,6 +318,18 @@ pub enum TriggerError {
     MissingConfig,
     #[error("Choose an existing workflow before saving this trigger.")]
     MissingWorkflow,
+    #[error("Choose a workspace before saving this trigger.")]
+    MissingWorkspace,
+    #[error("Choose a workspace from Loadout before saving this trigger.")]
+    WorkspaceNotRegistered,
+    #[error(
+        "This trigger's workspace folder is not there. Restore it or choose another workspace."
+    )]
+    WorkspaceFolderMissing,
+    #[error("Loadout could not read the workspace list: {0}")]
+    ReadWorkspaces(String),
+    #[error("This trigger belongs to another workspace. Open its workspace and try again.")]
+    WorkspaceMismatch,
     #[error("Choose how often to check Linear: 1, 5, 15 or 60 minutes.")]
     InvalidCadence,
     #[error("This trigger condition is not available. Choose issues assigned to you.")]
@@ -328,6 +356,14 @@ pub enum TriggerError {
     WriteLedger(io::Error),
     #[error("This trigger delivery is no longer available. Check the trigger again.")]
     InvalidClaim,
+    #[error("Turn this trigger on before starting its work again.")]
+    RetryDisabled,
+    #[error("A run from this trigger is already starting. Wait for it to start, then try again.")]
+    RetryRunStarting,
+    #[error("This trigger has no earlier run to start again.")]
+    NothingToRetry,
+    #[error("The workflow used by the earlier run no longer exists. Restore it, then try again.")]
+    RetryMissingWorkflow,
     #[error("Loadout could not read the run receipt: {0}")]
     ReadRun(io::Error),
     #[error("Loadout could not finish saving this run safely: {0}")]
@@ -395,6 +431,7 @@ where
                 source: None,
                 condition: None,
                 workflow: None,
+                workspace: None,
                 enabled: None,
                 poll_every_minutes: None,
                 key_saved: None,
@@ -410,6 +447,7 @@ where
                 source: Some(trigger.source),
                 condition: Some(trigger.condition),
                 workflow: Some(trigger.workflow),
+                workspace: trigger.workspace,
                 enabled: Some(trigger.enabled),
                 poll_every_minutes: Some(trigger.poll_every_minutes),
                 key_saved: Some(true),
@@ -420,6 +458,7 @@ where
                 source: None,
                 condition: None,
                 workflow: None,
+                workspace: None,
                 enabled: None,
                 poll_every_minutes: None,
                 key_saved: None,
@@ -702,6 +741,11 @@ where
     // rename nie zalezal od uniksowej semantyki otwartego pliku docelowego.
     drop(original);
     let mut trigger = parse_trigger(&snapshot)?;
+    if enabled {
+        // 2026-08-21: stare pliki bez workspace wolno wyłączyć i naprawić, ale ponowne
+        // włączenie nie może odtworzyć dawnego błędu, w którym okno wybierało bieżący projekt.
+        require_registered_workspace(home, trigger.workspace.as_deref())?;
+    }
     trigger.enabled = enabled;
     let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
     match replace_atomically(
@@ -721,6 +765,7 @@ where
         source: Some(trigger.source),
         condition: Some(trigger.condition),
         workflow: Some(trigger.workflow),
+        workspace: trigger.workspace,
         enabled: Some(trigger.enabled),
         poll_every_minutes: Some(trigger.poll_every_minutes),
         key_saved: Some(true),
@@ -958,6 +1003,7 @@ fn trigger_from_draft(
         source,
         condition,
         workflow,
+        workspace,
         poll_every_minutes,
         api_key,
     } = draft;
@@ -980,11 +1026,15 @@ fn trigger_from_draft(
     // czy wybrana nazwa istnieje i nie wychodzi przez `../` poza katalog workflow.
     super::workflows::load_workflow_inner(home, &workflow)
         .map_err(|_| TriggerError::MissingWorkflow)?;
+    // 2026-08-21: konfiguracja jest globalna, ale praca nie. Dokładny folder z rejestru
+    // zapisujemy przed publikacją configu, zamiast zgadywać aktywną kartę przy późniejszym ticku.
+    let workspace = require_registered_workspace(home, Some(&workspace))?;
     Ok(Trigger {
         schema,
         source: Source::Linear,
         enabled,
         workflow,
+        workspace: Some(workspace.to_string_lossy().into_owned()),
         condition,
         poll_every_minutes,
         api_key,
@@ -1018,6 +1068,7 @@ fn snapshot_for(slug: &str, trigger: &Trigger) -> TriggerSnapshot {
         source: trigger.source.clone(),
         condition: trigger.condition.clone(),
         workflow: trigger.workflow.clone(),
+        workspace: trigger.workspace.clone(),
         enabled: trigger.enabled,
         poll_every_minutes: trigger.poll_every_minutes,
         key_saved: true,
@@ -1030,6 +1081,7 @@ fn entry_for(slug: &str, trigger: &Trigger) -> TriggerEntry {
         source: Some(trigger.source.clone()),
         condition: Some(trigger.condition.clone()),
         workflow: Some(trigger.workflow.clone()),
+        workspace: trigger.workspace.clone(),
         enabled: Some(trigger.enabled),
         poll_every_minutes: Some(trigger.poll_every_minutes),
         key_saved: Some(true),
@@ -1078,7 +1130,28 @@ where
     let ledger_lock = ledger_lock_for(home, slug)?;
     let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let trigger = load(home, slug)?;
+    // Odmowa stoi przed odczytem i pierwszym możliwym zapisem ledgera oraz przed fetcherem.
+    // Stary config bez workspace pozostaje widoczny w bibliotece, ale nigdy nie wybiera projektu
+    // z chwilowego stanu webviewa (incydent 2026-08-21).
+    require_registered_workspace(home, trigger.workspace.as_deref())?;
     let mut ledger = read_ledger(home, slug)?;
+    let explicit_workspace = trigger
+        .workspace
+        .as_deref()
+        .ok_or(TriggerError::MissingWorkspace)?;
+    let hydrated = hydrate_legacy_pending(&mut ledger, explicit_workspace);
+    if hydrated {
+        // 2026-08-21: to jedyna dozwolona migracja claimu — człowiek właśnie zapisał
+        // konkretny workspace w configu. Zachowujemy delivery/run ID, nie fetchujemy Linear
+        // i nie dotykamy Bound/Accepted, bo te stany mogły już wejść do innego projektu.
+        write_ledger(home, slug, &ledger)?;
+        return Ok(poll_fallback(&ledger));
+    }
+    for pending in pending_deliveries(&ledger) {
+        // Config może już wskazywać B, lecz wcześniejszy Pending nadal należy do A. Zanim
+        // watcher dotknie kursora albo fetchera, każdy taki zamrożony autorytet musi być żywy.
+        require_registered_workspace(home, pending.delivery.claim.workspace.as_deref())?;
+    }
     // 2026-08-21, T-65: poll zna tylko `home`, nie zaufany root projektu. Bound pozostaje
     // lokalnym Pending; jedyne pogodzenie `run.json` robi droga Startu po dowodzie sciezki.
     // Inaczej symlink w zapisanym run_file pozwolilby samemu watcherowi zaakceptowac obcy plik.
@@ -1145,6 +1218,7 @@ where
                         slug: slug.to_owned(),
                         delivery_id: Uuid::now_v7().to_string(),
                         workflow: trigger.workflow.clone(),
+                        workspace: trigger.workspace.clone(),
                         run_id: Uuid::now_v7().to_string(),
                     },
                     issue,
@@ -1168,6 +1242,19 @@ where
         write_ledger(home, slug, &ledger)?;
     }
     Ok(poll_fallback(&ledger))
+}
+
+fn hydrate_legacy_pending(ledger: &mut Ledger, workspace: &str) -> bool {
+    let mut changed = false;
+    for record in &mut ledger.deliveries {
+        if matches!(&record.state, DeliveryState::Pending)
+            && record.delivery.claim.workspace.is_none()
+        {
+            record.delivery.claim.workspace = Some(workspace.to_owned());
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Prawdziwa krawedz watchera z wstrzyknietym wykonaniem procesu do deterministycznego testu.
@@ -1195,6 +1282,108 @@ pub fn poll(home: &Path, slug: &str, created_at: i64) -> Result<TriggerPoll, Tri
         }
         Ok(output.stdout)
     })
+}
+
+/// Przygotowuje jawne "Run again" bez przepisywania receipt poprzedniego biegu.
+///
+/// 2026-08-21: zwykle odpytywanie nie moze ponownie dostarczyc raz zobaczonego issue, bo
+/// `seen_ids` jest ochrona dokladnie-raz. Ponowienie jest wiec nowa, jawna proba w tym samym
+/// ledgerze: kopiuje issue i zamrozony workflow z najnowszego `Accepted`, ale wybija nowe
+/// identyfikatory dostawy i biegu. Oryginalny `Accepted` oraz jego `run.json` pozostaja
+/// niezmienne i nadal sa prawda o pierwszej probie.
+///
+/// Istniejacy `Pending` wraca bez zmian, zeby podwojne klikniecie nie wybijalo dwoch biegow.
+/// `Bound` jest odmowa, bo w tym stanie droga Startu juz posiada probe i nie wolno podstawic
+/// jej drugiego uchwytu pod nogi.
+pub fn retry(home: &Path, slug: &str, created_at: i64) -> Result<TriggerDelivery, TriggerError> {
+    // Ta sama kolejnosc co Delete: config -> ledger. Inaczej Delete trzymajacy config i
+    // czekajacy na ledger zakleszczylby sie z Retry trzymajacym ledger i czytajacym config;
+    // bez config-locka Disable moglby tez wejsc miedzy walidacje a dopisanie Pending.
+    let _config_guard = config_guard();
+    let ledger_lock = ledger_lock_for(home, slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // Loader jest ta sama granica, ktora zasila biblioteke: brak, zly ksztalt i sekret
+    // o niepoprawnej postaci odmawiaja zanim dotkniemy ledgeru. Samego `Trigger` nie
+    // formatujemy ani nie zwracamy, wiec sekret nie trafia do bledu ani IPC.
+    let trigger = load(home, slug)?;
+    if !trigger.enabled {
+        return Err(TriggerError::RetryDisabled);
+    }
+
+    let mut ledger = read_ledger(home, slug)?;
+    if ledger
+        .deliveries
+        .iter()
+        .any(|record| matches!(&record.state, DeliveryState::Bound { .. }))
+    {
+        return Err(TriggerError::RetryRunStarting);
+    }
+
+    if let Some(pending) = ledger
+        .deliveries
+        .iter()
+        .find(|record| matches!(&record.state, DeliveryState::Pending))
+        .map(|record| record.delivery.clone())
+    {
+        require_registered_workspace(home, pending.claim.workspace.as_deref())?;
+        require_retry_workflow(home, &pending.claim.workflow)?;
+        return Ok(pending);
+    }
+
+    let accepted = ledger
+        .deliveries
+        .iter()
+        .enumerate()
+        .filter_map(|(position, record)| match &record.state {
+            DeliveryState::Accepted { accepted_at, .. } => {
+                Some(((*accepted_at, position), record.delivery.clone()))
+            }
+            DeliveryState::Pending | DeliveryState::Bound { .. } | DeliveryState::Cancelled => None,
+        })
+        .max_by_key(|(order, _)| *order)
+        .map(|(_, delivery)| delivery)
+        .ok_or(TriggerError::NothingToRetry)?;
+    // 2026-08-21: pierwsze dostawy powstały przed polem workspace. Jawny Save naprawia config,
+    // ale historycznego Accepted nie wolno przepisać. Tylko dla takiej legacy dostawy nowa,
+    // jawnie wywołana próba bierze zweryfikowany target z configu; zwykłe Accepted nadal
+    // zachowuje swój pierwotnie zamrożony workspace mimo późniejszych edycji.
+    let retry_workspace = if let Some(workspace) = accepted.claim.workspace.clone() {
+        require_registered_workspace(home, Some(&workspace))?;
+        workspace
+    } else {
+        let workspace = trigger
+            .workspace
+            .clone()
+            .ok_or(TriggerError::MissingWorkspace)?;
+        require_registered_workspace(home, Some(&workspace))?;
+        workspace
+    };
+    require_retry_workflow(home, &accepted.claim.workflow)?;
+
+    let delivery = TriggerDelivery {
+        claim: TriggerClaim {
+            slug: slug.to_owned(),
+            delivery_id: Uuid::now_v7().to_string(),
+            workflow: accepted.claim.workflow,
+            workspace: Some(retry_workspace),
+            run_id: Uuid::now_v7().to_string(),
+        },
+        issue: accepted.issue,
+        created_at,
+    };
+    ledger.deliveries.push(DeliveryRecord {
+        delivery: delivery.clone(),
+        state: DeliveryState::Pending,
+    });
+    write_ledger(home, slug, &ledger)?;
+    Ok(delivery)
+}
+
+fn require_retry_workflow(home: &Path, workflow: &str) -> Result<(), TriggerError> {
+    super::workflows::load_workflow_inner(home, workflow)
+        .map(|_| ())
+        .map_err(|_| TriggerError::RetryMissingWorkflow)
 }
 
 /// Wiaze pending z dokladnym przyszlym `run.json`; ponowienie tego samego wiazania jest
@@ -1300,6 +1489,43 @@ pub fn claimed_delivery(
         return Err(TriggerError::InvalidClaim);
     }
     Ok(record.delivery.clone())
+}
+
+/// Odtwarza workspace wyłącznie z dokładnej dostawy w ledgerze i sprawdza jego stan teraz.
+///
+/// 2026-08-21: aktywny workspace webviewa okazał się stanem prezentacji, nie autorytetem —
+/// zmiana przełącznika między tickiem a Startem kierowała gotową pracę do innego repo. Claim
+/// niesie więc tylko kopię do porównania, a ten odczyt ledgera pozostaje źródłem prawdy.
+pub fn claimed_workspace(home: &Path, claim: &TriggerClaim) -> Result<PathBuf, TriggerError> {
+    let delivery = claimed_delivery(home, claim)?;
+    require_registered_workspace(home, delivery.claim.workspace.as_deref())
+}
+
+/// Sprawdza, że workspace został jawnie wybrany, nadal jest zarejestrowany i istnieje.
+/// Zwrócona ścieżka zachowuje dokładny zapis rejestru; nie kanonizujemy jej do innego aliasu,
+/// bo ten sam tekst jest trwałym identyfikatorem [`super::workspaces::WorkspaceWire`].
+fn require_registered_workspace(
+    home: &Path,
+    workspace: Option<&str>,
+) -> Result<PathBuf, TriggerError> {
+    let workspace = workspace
+        .filter(|value| !value.is_empty())
+        .ok_or(TriggerError::MissingWorkspace)?;
+    let path = PathBuf::from(workspace);
+    if !path.is_absolute() {
+        return Err(TriggerError::WorkspaceNotRegistered);
+    }
+    let registered = super::workspaces::list_workspaces_inner(home)
+        .map_err(|error| TriggerError::ReadWorkspaces(error.to_string()))?
+        .into_iter()
+        .any(|entry| entry.id == workspace && entry.folder == workspace);
+    if !registered {
+        return Err(TriggerError::WorkspaceNotRegistered);
+    }
+    if !path.is_dir() {
+        return Err(TriggerError::WorkspaceFolderMissing);
+    }
+    Ok(path)
 }
 
 const LEDGER_SCHEMA: u32 = 1;
@@ -1566,14 +1792,17 @@ fn accepted_poll(ledger: &Ledger) -> Option<TriggerPoll> {
         .deliveries
         .iter()
         .filter_map(|record| match &record.state {
-            DeliveryState::Accepted { accepted_at, .. } => {
-                Some((*accepted_at, record.delivery.claim.workflow.as_str()))
-            }
+            DeliveryState::Accepted { accepted_at, .. } => Some((
+                *accepted_at,
+                record.delivery.claim.workflow.as_str(),
+                record.delivery.claim.workspace.as_deref(),
+            )),
             DeliveryState::Pending | DeliveryState::Bound { .. } | DeliveryState::Cancelled => None,
         })
-        .max_by_key(|(accepted_at, _)| *accepted_at)
-        .map(|(receipt_at, workflow)| TriggerPoll::Accepted {
+        .max_by_key(|(accepted_at, _, _)| *accepted_at)
+        .map(|(receipt_at, workflow, workspace)| TriggerPoll::Accepted {
             workflow: workflow.to_owned(),
+            workspace: workspace.map(str::to_owned),
             receipt_at,
         })
 }
@@ -1696,6 +1925,8 @@ struct TriggerWire {
     source: String,
     enabled: bool,
     workflow: String,
+    #[serde(default)]
+    workspace: Option<String>,
     condition: String,
     #[serde(default = "default_poll_every_minutes")]
     poll_every_minutes: u32,
@@ -1793,6 +2024,7 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
         source,
         enabled: wire.enabled,
         workflow: wire.workflow,
+        workspace: wire.workspace,
         condition,
         poll_every_minutes: wire.poll_every_minutes,
         api_key: Secret::new(api_key),

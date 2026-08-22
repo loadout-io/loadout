@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use loadout_lib::commands::triggers::{self, Source};
+use loadout_lib::commands::workspaces;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -24,10 +25,12 @@ const SECRET: &str = "lin_api_1234567890123456789012345678901234567890";
 fn accepted_poll_uses_the_frontend_wire_names() -> Result<(), Box<dyn Error>> {
     let wire = serde_json::to_value(triggers::TriggerPoll::Accepted {
         workflow: "ship-it.json".to_owned(),
+        workspace: Some("/work/ship-it".to_owned()),
         receipt_at: 17,
     })?;
     assert_eq!(wire["status"], "accepted");
     assert_eq!(wire["workflow"], "ship-it.json");
+    assert_eq!(wire["workspace"], "/work/ship-it");
     assert_eq!(wire["receiptAt"], 17);
     assert!(
         wire.get("receipt_at").is_none(),
@@ -43,6 +46,7 @@ fn boxed_pending_keeps_the_same_frontend_object() -> Result<(), Box<dyn Error>> 
             slug: "mine".to_owned(),
             delivery_id: "delivery-1".to_owned(),
             workflow: "ship-it.json".to_owned(),
+            workspace: Some("/work/ship-it".to_owned()),
             run_id: "run-1".to_owned(),
         },
         issue: triggers::Issue {
@@ -220,7 +224,14 @@ fn switching_is_atomic_and_preserves_every_other_byte_of_meaning() -> Result<(),
     let after_bytes = fs::read(&path)?;
     let after: Value = serde_json::from_slice(&after_bytes)?;
     assert_eq!(after["enabled"], json!(false));
-    for key in ["schema", "source", "workflow", "condition", "api_key"] {
+    for key in [
+        "schema",
+        "source",
+        "workflow",
+        "workspace",
+        "condition",
+        "api_key",
+    ] {
         assert_eq!(
             after[key], before[key],
             "switching `enabled` changed the unrelated field {key}"
@@ -359,6 +370,12 @@ fn two_app_toggles_are_serialized_around_the_snapshot() -> Result<(), Box<dyn Er
 }
 
 fn write_trigger(path: &Path, enabled: bool, workflow: &str) -> Result<(), Box<dyn Error>> {
+    let home = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("trigger fixture has no home")?;
+    let workspace = home.to_str().ok_or("test workspace is not UTF-8")?;
+    workspaces::save_workspace_inner(home, "Trigger tests", workspace)?;
     fs::write(
         path,
         serde_json::to_vec_pretty(&json!({
@@ -366,6 +383,7 @@ fn write_trigger(path: &Path, enabled: bool, workflow: &str) -> Result<(), Box<d
             "source": "linear",
             "enabled": enabled,
             "workflow": workflow,
+            "workspace": workspace,
             "condition": "assigned-to-me",
             "api_key": SECRET
         }))?,

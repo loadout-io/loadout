@@ -1,10 +1,11 @@
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTriggersStore } from '../../state/triggers';
 import type { TriggerClock, TriggerRunPath, TriggerView } from '../../state/triggers';
-import type { TriggerEntry, TriggerIo } from './io';
+import { useWorkspaces } from '../../state/workspaces';
+import type { TriggerDelivery, TriggerEntry, TriggerIo } from './io';
 import TriggersScreen from './index';
 import { TriggerRow } from './row';
 import type { TriggerRowProps } from './row';
@@ -15,11 +16,18 @@ const CLOCK: TriggerClock = {
   clearInterval: () => undefined,
 };
 
-const REDACTED = { pollEveryMinutes: 1 as const, hasApiKey: true as const };
+const REDACTED = {
+  workspace: '/project',
+  pollEveryMinutes: 1 as const,
+  hasApiKey: true as const,
+};
 const EDITOR_IO: Pick<
   TriggerIo,
-  'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
 > = {
+  retryTrigger: async () => {
+    throw new Error('not used');
+  },
   createTrigger: async () => {
     throw new Error('not used');
   },
@@ -114,6 +122,12 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+function directTextCarriers(markup: string): readonly string[] {
+  return [...markup.matchAll(/<([a-z][a-z0-9]*)\b[^>]*>([^<]+)<\/\1>/g)]
+    .map((match) => match[2]?.trim() ?? '')
+    .filter((text) => text !== '');
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -130,6 +144,14 @@ function deferred<T>(): {
   };
 }
 
+beforeEach(() => {
+  useWorkspaces.setState({
+    all: [{ id: '/project', name: 'Project', folder: '/project' }],
+    activeId: '/project',
+    said: null,
+  });
+});
+
 describe('the real Triggers screen explains and controls its library', () => {
   it('shows distinct sources, conditions, real workflow names and a missing workflow', () => {
     const markup = renderToStaticMarkup(<TriggersScreen store={seeded()} />);
@@ -139,6 +161,8 @@ describe('the real Triggers screen explains and controls its library', () => {
     expect(markup).toContain('Analysis');
     expect(markup).toContain('Repair');
     expect(markup).toContain('retired.json');
+    expect(markup).toContain('Analysis · Project · Every minute');
+    expect(markup).toContain('title="/project"');
     for (const trigger of LIBRARY.filter((entry) => entry.problem === undefined)) {
       expect(row(markup, trigger.slug)).not.toBe('');
     }
@@ -158,10 +182,274 @@ describe('the real Triggers screen explains and controls its library', () => {
     const markup = renderToStaticMarkup(<TriggersScreen store={seeded()} />);
     for (const trigger of LIBRARY.filter((entry) => entry.problem === undefined)) {
       const one = row(markup, trigger.slug);
-      expect(occurrences(one, 'data-trigger-text')).toBeLessThanOrEqual(4);
+      const carriers = directTextCarriers(one);
+      expect(carriers).toHaveLength(4);
+      expect(occurrences(one, 'data-trigger-text')).toBe(carriers.length);
       expect(occurrences(one, 'data-trigger-toggle')).toBe(1);
+      expect(occurrences(one, 'data-trigger-run-again')).toBe(0);
       expect(one).toMatch(/<(?:button|input)\b/);
     }
+  });
+
+  it('keeps a legacy row editable and turn-off-able, but cannot arm or retry it', async () => {
+    const legacy = {
+      slug: 'legacy-linear',
+      source: 'Linear',
+      condition: 'Assigned to you',
+      workflow: 'analysis.json',
+      workflowName: 'Analysis',
+      workspace: null,
+      enabled: true,
+      pollEveryMinutes: 1 as const,
+      hasApiKey: true,
+      status: { kind: 'armed' as const },
+    } satisfies TriggerView;
+    const saved = vi.fn(async (_slug: string, enabled: boolean) => ({
+      slug: legacy.slug,
+      source: legacy.source,
+      condition: legacy.condition,
+      workflow: legacy.workflow,
+      enabled,
+      ...REDACTED,
+      workspace: null,
+    }));
+    const store = createTriggersStore(ioWith(saved), CLOCK, RUN);
+    store.setState({ triggers: [legacy] });
+    const handlers = new Map<string, TriggerRowProps['onToggle']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onToggle);
+      return <TriggerRow {...props} />;
+    }
+
+    const enabledMarkup = renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
+    const enabledRow = row(enabledMarkup, legacy.slug);
+    expect(enabledRow).toContain('Choose a workspace in Edit before this trigger can run.');
+    expect(enabledRow).toContain('data-trigger-open');
+    expect(enabledRow).not.toContain('data-trigger-run-again');
+    expect(enabledRow).toMatch(/data-trigger-toggle(?![^>]*disabled)/);
+
+    await handlers.get(legacy.slug)?.(legacy.slug, false);
+    expect(saved).toHaveBeenCalledTimes(1);
+    const disabledRow = row(
+      renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
+      legacy.slug,
+    );
+    expect(disabledRow).toMatch(/data-trigger-toggle[^>]*disabled/);
+
+    await handlers.get(legacy.slug)?.(legacy.slug, true);
+    expect(saved, 'a missing target must not be armed again').toHaveBeenCalledTimes(1);
+  });
+
+  it('runs an accepted delivery again through the visible handler, once, with Rust returned identity', async () => {
+    const delivery: TriggerDelivery = {
+      claim: {
+        slug: 'assigned-to-me',
+        deliveryId: 'retry-delivery-2',
+        workflow: 'analysis.json',
+        runId: '0198ca82-ded0-7000-8000-000000000075',
+        workspace: '/project',
+      },
+      issue: {
+        id: 'linear-issue-id',
+        identifier: 'LIN-42',
+        title: 'Repair the trigger',
+        url: 'https://linear.example/LIN-42',
+        body: 'Use the saved issue body.',
+        updatedAt: '2026-08-21T02:00:00.000Z',
+      },
+      createdAt: 1_787_278_400_000,
+    };
+    const returned = deferred<TriggerDelivery>();
+    const retryTrigger = vi.fn(() => returned.promise);
+    const launched = vi.fn<TriggerRunPath['launchRun']>(
+      () => new Promise<string | null>(() => undefined),
+    );
+    const io: TriggerIo = { ...ioWith(), retryTrigger };
+    const store = createTriggersStore(io, CLOCK, {
+      listWorkflows: async () => [
+        {
+          path: 'analysis.json',
+          workflow: {
+            format: 1,
+            id: 'workflow-id',
+            name: 'Analysis',
+            steps: [{ kind: 'checkpoint', id: 'analyse', name: 'Analysis', at: { x: 0, y: 0 } }],
+            links: [],
+          },
+        },
+      ],
+      launchRun: launched,
+      atOnce: () => 4,
+    });
+    store.setState({
+      triggers: [
+        {
+          slug: 'assigned-to-me',
+          source: 'Linear',
+          condition: 'Assigned to you',
+          workflow: 'analysis.json',
+          workflowName: 'Analysis',
+          enabled: true,
+          ...REDACTED,
+          status: {
+            kind: 'accepted',
+            workflow: 'Analysis',
+            workspace: '/project',
+            receiptAt: 1_787_278_329_700,
+          },
+        },
+      ],
+    });
+
+    const handlers = new Map<string, TriggerRowProps['onRunAgain']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onRunAgain);
+      return <TriggerRow {...props} />;
+    }
+    const markup = renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
+    const acceptedRow = row(markup, 'assigned-to-me');
+    expect(directTextCarriers(acceptedRow)).toHaveLength(4);
+    expect(occurrences(acceptedRow, 'data-trigger-text')).toBe(4);
+    expect(acceptedRow).toContain('data-trigger-run-again');
+    expect(acceptedRow).toContain(
+      'Started Analysis in Project at 2026-08-21 02:12:09 UTC. · Run again',
+    );
+
+    const runAgain = handlers.get('assigned-to-me');
+    expect(runAgain, 'the visible row never received the Run again handler').toBeDefined();
+    const first = runAgain?.('assigned-to-me') ?? Promise.resolve();
+    const overlapping = runAgain?.('assigned-to-me') ?? Promise.resolve();
+    expect(retryTrigger).toHaveBeenCalledTimes(1);
+    expect(retryTrigger).toHaveBeenCalledWith('assigned-to-me');
+
+    returned.resolve(delivery);
+    await Promise.all([first, overlapping]);
+    expect(launched).toHaveBeenCalledTimes(1);
+    expect(launched).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'analysis.json', name: 'Analysis' }),
+      4,
+      'LIN-42: Repair the trigger\n\nUse the saved issue body.',
+      delivery.claim,
+    );
+  });
+
+  it('keeps the accepted workspace frozen when the current trigger is edited to another one', () => {
+    useWorkspaces.setState({
+      all: [
+        { id: '/archive-project', name: 'Archive project', folder: '/archive-project' },
+        { id: '/current-project', name: 'Current project', folder: '/current-project' },
+      ],
+      activeId: '/current-project',
+      said: null,
+    });
+    const store = createTriggersStore(ioWith(), CLOCK, RUN);
+    store.setState({
+      triggers: [
+        {
+          slug: 'edited-after-run',
+          source: 'Linear',
+          condition: 'Assigned to you',
+          workflow: 'analysis.json',
+          workflowName: 'Analysis',
+          enabled: true,
+          ...REDACTED,
+          workspace: '/current-project',
+          status: {
+            kind: 'accepted',
+            workflow: 'Analysis',
+            workspace: '/archive-project',
+            receiptAt: Date.UTC(2026, 7, 21, 2, 12, 9, 700),
+          },
+        },
+      ],
+    });
+
+    const visible = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'edited-after-run');
+    expect(visible).toContain('Analysis · Current project · Every minute');
+    expect(visible).toContain(
+      'Started Analysis in Archive project at 2026-08-21 02:12:09 UTC. · Run again',
+    );
+    expect(visible).toMatch(/data-trigger-status[^>]*title="\/archive-project"/);
+    expect(directTextCarriers(visible)).toHaveLength(4);
+    expect(visible).not.toContain('Started Analysis in Current project');
+  });
+
+  it('offers Retry only for a refusal from the launch path', () => {
+    const store = seeded();
+    const configured = LIBRARY[0];
+    expect(configured?.problem).toBeUndefined();
+    if (configured === undefined || configured.problem !== undefined) {
+      throw new Error('the retry fixture must be a configured trigger');
+    }
+    store.setState({
+      triggers: [
+        {
+          ...configured,
+          status: {
+            kind: 'refused',
+            sentence: 'Loadout could not start that trigger.',
+            retryable: true,
+          },
+        },
+      ],
+    });
+    const retryable = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
+    expect(retryable).toContain('Loadout could not start that trigger.');
+    expect(retryable).toContain('data-trigger-run-again');
+    expect(retryable).toContain('Loadout could not start that trigger. · Retry');
+
+    store.setState({
+      triggers: [
+        {
+          ...configured,
+          status: { kind: 'refused', sentence: 'Linear could not be reached.' },
+        },
+      ],
+    });
+    const unrelated = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
+    expect(unrelated).not.toContain('data-trigger-run-again');
+  });
+
+  it('keeps Run again visible when Rust says the accepted run is still active', async () => {
+    const refusal = 'That trigger run is still active.';
+    const store = seeded({
+      ...ioWith(),
+      retryTrigger: async () => {
+        throw refusal;
+      },
+    });
+    const configured = LIBRARY[0];
+    expect(configured?.problem).toBeUndefined();
+    if (configured === undefined || configured.problem !== undefined) {
+      throw new Error('the retry fixture must be a configured trigger');
+    }
+    store.setState({
+      triggers: [
+        {
+          ...configured,
+          status: {
+            kind: 'accepted',
+            workflow: 'Analysis',
+            workspace: '/project',
+            receiptAt: 1_787_278_329_700,
+          },
+        },
+      ],
+    });
+
+    const handlers = new Map<string, TriggerRowProps['onRunAgain']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onRunAgain);
+      return <TriggerRow {...props} />;
+    }
+    renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
+    const runAgain = handlers.get('assigned-to-me');
+    expect(runAgain, 'the accepted row never received the Run again handler').toBeDefined();
+    await runAgain?.('assigned-to-me');
+    const visible = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
+    expect(visible).toContain(refusal);
+    expect(visible).toContain('data-trigger-run-again');
+    expect(visible).toContain(`${refusal} · Run again`);
   });
 
   it('uses the visible toggle handler and changes state only after disk confirmation', async () => {

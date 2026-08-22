@@ -39,6 +39,8 @@ use crate::workflow::file::LoadError;
 pub mod agents;
 /// Rozmowa z orchestratorem — i jedyne miejsce, które NIE umie uruchomić biegu.
 pub mod chat;
+/// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
+pub mod diagnostics;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod handoffs;
 pub mod isolate;
