@@ -30,7 +30,11 @@
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem, a `?` w tej samej
 // linii zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `panic` z tego samego powodu: `unwrap_or_else(|| panic!(…))` i `else { panic!(…) }` NIOSĄ tu
+// zdanie, po którym poznaje się, czego zabrakło. Bez nich zostaje bezimienne „unwrap on a None",
+// czyli komunikat, który nie mówi ani czego szukano, ani gdzie.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -29,7 +29,12 @@
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` w tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `too_many_lines` — cztery punkty pierwszego testu (notatka agenta, notatka niczyja, brak tej
+// samej treści w instrukcjach, ścieżka spoza korzenia) sądzą JEDEN preview jednego repo i dwie
+// notatki wyjęte z niego po nazwie. Cięcie po granicy funkcji znaczyłoby cztery fikstury i cztery
+// skany zamiast jednego, a każdy z nich odpowiadałby na pytanie o inny obiekt niż pozostałe.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::error::Error;
 use std::fs;
