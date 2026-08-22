@@ -174,6 +174,18 @@ impl std::fmt::Display for NoteId {
 pub struct Note {
     pub id: NoteId,
     pub scope: Scope,
+    /// Czyja to wiedza — nazwa agenta z front-mattera, `None` dla notatki niczyjej.
+    ///
+    /// 2026-08-22 (T-80): [`Scope::ThisAgent`] istnieje od T-17 i do dziś nie umiał powiedzieć,
+    /// **którego** agenta dotyczy — filtrowanie po agencie nie miało po czym filtrować, więc
+    /// trzeci zakres nie wchodził do żadnego promptu (`commands::run::what_the_agents_know`).
+    /// Pole jest `Option`, bo notatka o zakresie `everywhere` albo `this-project` nie ma
+    /// właściciela i nie ma udawać, że ma.
+    ///
+    /// Wartość jest tym, co w pliku napisał **człowiek** (`agent: backend-dev`), a nie
+    /// identyfikatorem z biblioteki: plik jest prawdą (niezmiennik 4), a uuid w pliku, który
+    /// człowiek otwiera w edytorze, jest polem, którego nie da się ani napisać, ani przeczytać.
+    pub agent: Option<String>,
     pub kind: Kind,
     /// Zdanie, po którym człowiek poznaje notatkę na liście. Nie jedzie do promptu.
     pub title: String,
@@ -435,9 +447,19 @@ pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
     block
 }
 
+/// Zapisuje kandydatkę **niczyją** — całą treść ma [`record_candidate_for`].
+///
+/// Podpis zostaje nietknięty, bo pinują go kryteria zadań, których ta gałąź nie posiada
+/// (`AGENTS.md` §7): pole dołożone do [`NoteDraft`] wywróciłoby każdy literał tej struktury
+/// w cudzych plikach testowych, czyli zamieniłoby kryterium tego zadania w czerwień dwóch
+/// innych. Nazwa agenta jedzie więc osobnym argumentem, o jedną funkcję niżej.
+pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
+    record_candidate_for(root, draft, None)
+}
+
 /// Zapisuje kandydatkę jako plik i oddaje ją odczytaną z powrotem.
 ///
-/// Trzy rzeczy, które robi i które są całą jej treścią:
+/// Cztery rzeczy, które robi i które są całą jej treścią:
 /// 1. **Odmawia bez uzasadnienia** ([`Error::NoBecause`]) — i odmawia **przed** pierwszym
 ///    zapisem, więc listing katalogu `notes/` przed i po jest identyczny. Walidacja po
 ///    zapisie zostawia plik, którego nikt nie chciał, i wygląda w teście tak samo.
@@ -446,7 +468,21 @@ pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
 /// 3. **Ta sama kandydatka to ten sam plik.** Znormalizowany `title` daje nazwę pliku, więc
 ///    drugie zgłoszenie podbija `occurrences` i przesuwa `modified`, a `status` zostaje
 ///    nietknięty — auto-promocja przy drugim wystąpieniu [T6 §5.3] jest świadomie nieobecna.
-pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
+/// 4. **Zapisuje, czyja jest ta notatka** (2026-08-22, T-80). `agent` ma trzy stany, nie dwa:
+///    - `Some(nazwa)` — notatka należy do tego agenta i jego nazwa ląduje we front-matterze;
+///    - `None` przy zakresie innym niż [`Scope::ThisAgent`] — notatka jest niczyja i tak ma być;
+///    - `None` przy [`Scope::ThisAgent`] — **odmowa zapisu**. Nie cicha degradacja do zakresu
+///      projektu: notatka, która miała jechać do jednego agenta, a pojechała do wszystkich
+///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
+///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
+pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
+    // SZKIELET T-80. Dwie nowe drogi — zapis nazwy agenta i odmowa dla notatki, która nie ma
+    // czyja być — nie mają jeszcze ciała. Stara droga (notatka niczyja, zakres inny niż
+    // `this-agent`) biegnie niżej nietknięta, bo pinują ją kryteria spoza tego zadania.
+    if agent.is_some() || draft.scope == Scope::ThisAgent {
+        todo!("T-80: a note has to be able to say whose it is, and to refuse when it cannot")
+    }
+
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
     // dopisanie go do pliku byłoby o jedno słowo od prawdy — a to jest dokładnie ta zmiana,
@@ -632,6 +668,10 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
                 .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
         ),
         scope: scope_from(front.get("scope").unwrap_or_default()),
+        // SZKIELET T-80. Klucz agenta stoi w pliku i wraca na dysk (niezmiennik 5 niesie go
+        // przez `extra`), ale skan go jeszcze nie CZYTA — i dopóki go nie czyta, notatka
+        // `this-agent` nie umie powiedzieć, czyja jest. Wypełnia to implementacja T-80.
+        agent: None,
         kind: kind_from(front.get("kind").unwrap_or_default()),
         title: front.get("title").unwrap_or_default().to_owned(),
         because: front.get("because").unwrap_or_default().to_owned(),

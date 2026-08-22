@@ -53,6 +53,20 @@ export interface Note {
   /** W ilu osobnych zgłoszeniach ta kandydatka się pojawiła. Sygnał, nigdy decyzja. */
   occurrences: number;
   modified: string;
+  /**
+   * Czyja to wiedza — nazwa agenta z pliku notatki.
+   *
+   * Nieobecne znaczy „niczyja", i to jest jedyna poprawna odpowiedź dla notatki o zakresie
+   * `everywhere` albo `this-project`. Wiersz, który dla braku właściciela pisze myślnik albo
+   * „unassigned", odpowiada na pytanie, którego nikt nie zadał — a człowiek czyta to jako
+   * fakt o notatce.
+   */
+  agent?: string;
+  /**
+   * Z jakiego projektu ta notatka przyszła. Nieobecne znaczy „stąd" — notatka napisana tutaj
+   * nie ma pochodzenia do pokazania.
+   */
+  from?: string;
 }
 
 /**

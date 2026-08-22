@@ -42,6 +42,11 @@ fn from_inspection(inspection: Inspection) -> ImportPreview {
         skills: adapted.skills,
         connections: adapted.connections,
         workflows,
+        // SZKIELET T-80. Pamięć projektu jest tu jeszcze pustą listą: pozycje rodzaju
+        // `Memory` idą przez adapter jako wybór do rozstrzygnięcia i nie stają się notatkami.
+        // Wypełnia to implementacja T-80 — czyta pliki wskazane przez indeks pamięci i składa
+        // z nich `MemoryNote`.
+        notes: Vec::new(),
         report: CompatibilityReport {
             mappings: adapted.mappings,
         },

@@ -46,6 +46,8 @@ fn note(id: &str, sentinel: &str, status: Status, occurrences: u32, modified: &s
     Note {
         id: NoteId(id.to_owned()),
         scope: Scope::ThisProject,
+        // Notatka projektu jest niczyja: właściciela ma wyłącznie zakres `this-agent` (T-80).
+        agent: None,
         kind: Kind::Fact,
         title: format!("what {id} is about"),
         because: format!("run 7f3a step 2 reproduced it, and {id} is where it was written down"),
