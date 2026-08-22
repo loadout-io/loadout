@@ -176,7 +176,7 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
             },
             note.agent.as_deref(),
             &crate::memory::notes::Origin {
-                from: project_name(&draft.root),
+                from: super::project_name(&draft.root),
                 source: note.source.clone(),
                 source_hash: note.source_hash.clone(),
                 app: app_word(note.app).to_owned(),
@@ -345,14 +345,6 @@ fn note_target(title: &str) -> PathBuf {
     let root = crate::commands::memory::notes_root(Path::new(""));
     root.join("notes")
         .join(format!("{}.md", crate::memory::slugify(title)))
-}
-
-/// Nazwa projektu, z którego przyjechał ten import — ostatni człon jego ścieżki.
-fn project_name(root: &Path) -> String {
-    root.file_name().map_or_else(
-        || root.to_string_lossy().into_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    )
 }
 
 /// Słowo zakresu z drafu na typ notatki. Nieznane czyta się jako zakres projektu — ten sam

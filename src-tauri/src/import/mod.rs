@@ -169,6 +169,19 @@ impl MigrationDraft {
     }
 }
 
+/// Jak nazywa się projekt, z którego przyjechał ten import — ostatni człon jego ścieżki.
+///
+/// Stoi tutaj, a nie w [`adapters`] i [`apply`] osobno, bo obie odpowiedzi lądują w JEDNEJ
+/// notatce: `from:` mówi, skąd zdanie przyjechało, a uzasadnienie zastępcze mówi, gdzie tam
+/// stało. Dwie kopie tego rachunku rozjechałyby się w pliku, który czyta człowiek, i wyglądałoby
+/// to jak dwa projekty (niezmiennik 13).
+pub(crate) fn project_name(root: &std::path::Path) -> String {
+    root.file_name().map_or_else(
+        || root.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportPreview {

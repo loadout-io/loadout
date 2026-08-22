@@ -211,7 +211,7 @@ fn adapt_memory(inspection: &Inspection, file: &InspectedFile, output: &mut Adap
     let root = &inspection.snapshot.root;
     let owner = memory_owner(&file.item.path);
     let directory = file.item.path.parent().unwrap_or(Path::new(""));
-    let project = project_name(root);
+    let project = super::project_name(root);
 
     let mut made = 0_usize;
     let mut skipped: Vec<String> = Vec::new();
@@ -314,13 +314,6 @@ fn memory_owner(path: &Path) -> Option<String> {
         && parts[1] == "agent-memory"
         && parts[3] == "MEMORY.md")
         .then(|| parts[2].clone())
-}
-
-fn project_name(root: &Path) -> String {
-    root.file_name().map_or_else(
-        || root.to_string_lossy().into_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    )
 }
 
 /// Jedna strona pamięci na notatkę — albo `None`, kiedy nie ma tam ani jednego zdania.
