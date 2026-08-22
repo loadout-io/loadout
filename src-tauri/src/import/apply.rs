@@ -86,6 +86,10 @@ fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
             PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)))
         }),
     );
+    // Nazwa pliku notatki jest funkcją jej tytułu (`memory::slugify`), więc dwie strony pamięci
+    // o tym samym tytule wskazują jeden plik. Bez tej linii druga po cichu podbiłaby licznik
+    // wystąpień pierwszej i zniknęłaby jako osobne zdanie.
+    targets.extend(draft.notes.iter().map(|note| note_target(&note.title)));
 
     let mut unique = BTreeSet::new();
     for target in targets {
@@ -147,6 +151,39 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
         let relative = PathBuf::from("connections").join(format!("{}.json", connection.id));
         write_json(&stage.join(&relative), connection)?;
         written.push(relative);
+    }
+
+    // Pamięć cudzego projektu jako PLIKI NOTATEK (2026-08-22, T-80). Draft jest wartością
+    // w pamięci; pytanie brzmi „czy w bibliotece leży notatka", a na to odpowiada wyłącznie
+    // dysk (niezmiennik 4). Zegar stoi jeden na cały import: dwie notatki przywiezione jednym
+    // kliknięciem, które różnią się o sekundę, czytają się jak dwa zdarzenia.
+    let at = crate::commands::now_utc();
+    for note in &draft.notes {
+        let written_note = crate::memory::notes::record_imported(
+            &crate::commands::memory::notes_root(stage),
+            crate::memory::notes::NoteDraft {
+                title: note.title.clone(),
+                rule: note.rule.clone(),
+                because: note.because.clone(),
+                scope: scope_from_word(&note.scope),
+                // Rodzaj zdania rozstrzyga człowiek, nie zgadywanie po treści: `fact` jest tym,
+                // czym jest zdanie, które ktoś zapisał jako prawdę o swoim projekcie.
+                kind: crate::memory::notes::Kind::Fact,
+                // Czytane i wyrzucane przez pisarza notatek — import przywozi zdanie, nie zgodę
+                // na nie (ARCHITECTURE §2 pyt. 5).
+                status: crate::memory::notes::Status::Suggested,
+                at: at.clone(),
+            },
+            note.agent.as_deref(),
+            &crate::memory::notes::Origin {
+                from: project_name(&draft.root),
+                source: note.source.clone(),
+                source_hash: note.source_hash.clone(),
+                app: app_word(note.app).to_owned(),
+            },
+        )
+        .map_err(|error| ImportError::Save(error.to_string()))?;
+        written.push(relative(stage, &written_note.path)?);
     }
 
     for workflow in &draft.workflows {
@@ -296,6 +333,52 @@ fn save_error(error: std::io::Error) -> ImportError {
     let detail = error.to_string();
     drop(error);
     ImportError::Save(detail)
+}
+
+/// Gdzie w bibliotece wyląduje notatka o tym tytule.
+///
+/// Ta sama nazwa katalogu, co [`crate::commands::memory::notes_root`], i ta sama nazwa pliku,
+/// co [`crate::memory::notes::record_imported`] — obie policzone ich własnymi funkcjami. Druga
+/// odpowiedź na pytanie „gdzie leży notatka" rozjechałaby się z pierwszą przy pierwszej zmianie
+/// któregokolwiek z nich, a rozjazd byłoby widać dopiero jako import, który nie odmówił nadpisania.
+fn note_target(title: &str) -> PathBuf {
+    let root = crate::commands::memory::notes_root(Path::new(""));
+    root.join("notes")
+        .join(format!("{}.md", crate::memory::slugify(title)))
+}
+
+/// Nazwa projektu, z którego przyjechał ten import — ostatni człon jego ścieżki.
+fn project_name(root: &Path) -> String {
+    root.file_name().map_or_else(
+        || root.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Słowo zakresu z drafu na typ notatki. Nieznane czyta się jako zakres projektu — ten sam
+/// kierunek błędu, co w `memory::notes::scope_from`: nigdy szerzej, niż napisano.
+fn scope_from_word(word: &str) -> crate::memory::notes::Scope {
+    match word {
+        "everywhere" => crate::memory::notes::Scope::Everywhere,
+        "this-agent" => crate::memory::notes::Scope::ThisAgent,
+        _ => crate::memory::notes::Scope::ThisProject,
+    }
+}
+
+/// Z czyjego katalogu wzięliśmy to zdanie — słowem, nie numerem wariantu.
+///
+/// Wypisane, a nie wzięte z `serde`: ta wartość ląduje w pliku, który czyta człowiek w edytorze,
+/// więc przemianowanie wariantu w Ruście nie ma prawa zmienić tego, co stoi w notatkach, które
+/// już leżą na dysku.
+const fn app_word(app: super::SourceKind) -> &'static str {
+    match app {
+        super::SourceKind::Claude => "claude",
+        super::SourceKind::Codex => "codex",
+        super::SourceKind::AgentSkills => "agent-skills",
+        super::SourceKind::Rulesync => "rulesync",
+        super::SourceKind::OpenStandard => "open-standard",
+        super::SourceKind::Unknown => "unknown",
+    }
 }
 
 fn slug(value: &str) -> String {

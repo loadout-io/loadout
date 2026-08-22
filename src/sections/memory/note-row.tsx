@@ -100,12 +100,13 @@ export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement 
           {waiting ? 'Suggested' : 'In use'}
         </span>
         <span className="text-label text-muted">{lengthLabel(note.length)}</span>
-        {note.agent === undefined ? null : (
+        {/* Pytamy o WARTOŚĆ, nie o obecność klucza: Rust przysyła `agent: null` dla notatki
+            niczyjej (`NoteWire`), a `note.agent === undefined` wypisałoby wtedy słowo `null`
+            w miejscu właściciela — czyli dokładnie tę zmyśloną odpowiedź, której tu nie ma. */}
+        {note.agent ? (
           <span className="text-label text-muted">{ownerLabel(note.agent)}</span>
-        )}
-        {note.from === undefined ? null : (
-          <span className="text-label text-muted">{originLabel(note.from)}</span>
-        )}
+        ) : null}
+        {note.from ? <span className="text-label text-muted">{originLabel(note.from)}</span> : null}
       </div>
 
       {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania. */}

@@ -64,8 +64,12 @@ const HEADING: &str = "What you know";
 /// Klucze, które ta wersja rozumie. Wszystko poza nimi jedzie do [`Note::extra`] i wraca
 /// na dysk nietknięte — plik od nowszego Loadouta nie ma prawa stracić pola przy zapisie,
 /// którego to pole nie dotyczyło (niezmiennik 5).
-const KNOWN: [&str; 10] = [
+const KNOWN: [&str; 11] = [
     "scope",
+    // 2026-08-22 (T-80): z jakiego projektu ta notatka przyjechała. W kontrakcie, bo czyta to
+    // ekran (`src/sections/memory/note-row.tsx`) — a to samo zdanie przywiezione z dwóch
+    // projektów bez tej linii wygląda jak dwa fakty.
+    "from",
     // 2026-08-22 (T-80): czyja jest ta notatka. Klucz dołożony do kontraktu, a nie zostawiony
     // w [`Note::extra`] — odpowiedź na pytanie „czyja to wiedza" nie ma prawa mieszkać w worku
     // rzeczy, których ta wersja nie rozumie, bo wtedy każdy czytelnik musi wiedzieć, że akurat
@@ -191,6 +195,9 @@ pub struct Note {
     /// identyfikatorem z biblioteki: plik jest prawdą (niezmiennik 4), a uuid w pliku, który
     /// człowiek otwiera w edytorze, jest polem, którego nie da się ani napisać, ani przeczytać.
     pub agent: Option<String>,
+    /// Z jakiego projektu ta notatka przyjechała. `None` znaczy „stąd" — zdanie napisane w tym
+    /// Loadoucie nie ma pochodzenia do pokazania i nie ma go udawać (2026-08-22, T-80).
+    pub from: Option<String>,
     pub kind: Kind,
     /// Zdanie, po którym człowiek poznaje notatkę na liście. Nie jedzie do promptu.
     pub title: String,
@@ -495,6 +502,51 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
+    record(root, draft, agent, None)
+}
+
+/// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
+///
+/// Cztery pola, bo tyle trzeba, żeby zdanie dało się później sprawdzić i wycofać [T6 §5.1]:
+/// notatka bez pochodzenia jest zdaniem, o którym nie wiadomo, czy projekt, z którego przyszło,
+/// dalej tak uważa. Nazwy pól są nazwami kluczy we front-matterze i to jest jedyne miejsce
+/// w drzewie, w którym te słowa stoją wypisane — format notatki ma jednego pisarza.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// Projekt, z którego to przyjechało. **Jedyne z czterech, które widzi człowiek** — resztę
+    /// czyta ktoś, kto pyta „czy tamten projekt dalej tak uważa".
+    pub from: String,
+    /// Plik w tamtym projekcie, ścieżką względną wobec jego korzenia.
+    pub source: PathBuf,
+    /// Odcisk tamtego pliku w chwili skanu.
+    pub source_hash: String,
+    /// Z czyjego katalogu to wzięliśmy — dwie aplikacje trzymają pamięć w dwóch miejscach
+    /// i to samo zdanie potrafi stać w obu.
+    pub app: String,
+}
+
+/// Zapisuje notatkę **przywiezioną z cudzego projektu**, z całym pochodzeniem.
+///
+/// Osobne wejście, a nie czwarty argument [`record_candidate_for`]: tamten podpis pinuje
+/// kryterium AC-1 tego zadania, a notatka zgłoszona przez agenta w biegu pochodzenia nie ma
+/// i mieć nie będzie. Cała reszta zachowania jest ta sama — łącznie z tym, że notatka powstaje
+/// jako [`Status::Suggested`]: import jest przywiezieniem zdania, nie zgodą na nie
+/// (ARCHITECTURE §2 pyt. 5).
+pub fn record_imported(
+    root: &Path,
+    draft: NoteDraft,
+    agent: Option<&str>,
+    origin: &Origin,
+) -> Result<Note> {
+    record(root, draft, agent, Some(origin))
+}
+
+fn record(
+    root: &Path,
+    draft: NoteDraft,
+    agent: Option<&str>,
+    origin: Option<&Origin>,
+) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
     // dopisanie go do pliku byłoby o jedno słowo od prawdy — a to jest dokładnie ta zmiana,
@@ -553,6 +605,15 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
             if let Some(name) = owner.filter(|_| front.get("agent").is_none()) {
                 front.set("agent", &one_line(name));
             }
+            // Ta sama reguła dla pochodzenia: dopisujemy brakujące, nie przepisujemy cudzego.
+            // Notatka, która leży w bibliotece i już mówi, skąd jest, mówi to o PIERWSZYM
+            // projekcie, który ją przywiózł — a drugi import tego nie unieważnia.
+            if let Some(origin) = origin {
+                add_missing(&mut front, "from", &origin.from);
+                add_missing(&mut front, "source", &origin.source.to_string_lossy());
+                add_missing(&mut front, "source_hash", &origin.source_hash);
+                add_missing(&mut front, "app", &origin.app);
+            }
             write_note(&path, &front, &raw[body_at..])?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -566,6 +627,15 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
             // pole, które w połowie plików znaczy „nie wiem", a w połowie „nikt", nie znaczy nic.
             if let Some(name) = owner {
                 front.set("agent", &one_line(name));
+            }
+            // Pochodzenie stoi zaraz za właścicielem, bo odpowiada na to samo pytanie z drugiej
+            // strony: kto tego używa i skąd to wzięliśmy. Notatka napisana tutaj nie dostaje ani
+            // jednego z tych kluczy — pusty `from:` znaczyłby „przyjechała znikąd".
+            if let Some(origin) = origin {
+                front.set("from", &one_line(&origin.from));
+                front.set("source", &one_line(&origin.source.to_string_lossy()));
+                front.set("source_hash", &one_line(&origin.source_hash));
+                front.set("app", &one_line(&origin.app));
             }
             front.set("kind", kind_word(&kind));
             front.set("title", &one_line(&title));
@@ -713,6 +783,11 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(ToOwned::to_owned),
+        from: front
+            .get("from")
+            .map(str::trim)
+            .filter(|project| !project.is_empty())
+            .map(ToOwned::to_owned),
         kind: kind_from(front.get("kind").unwrap_or_default()),
         title: front.get("title").unwrap_or_default().to_owned(),
         because: front.get("because").unwrap_or_default().to_owned(),
@@ -735,6 +810,13 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
         rule,
         path: path.to_owned(),
         extra,
+    }
+}
+
+/// Dopisuje klucz, którego w pliku jeszcze nie ma, i nie rusza tego, który już tam stoi.
+fn add_missing(front: &mut FrontMatter, key: &str, value: &str) {
+    if front.get(key).is_none() {
+        front.set(key, &one_line(value));
     }
 }
 

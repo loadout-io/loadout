@@ -60,13 +60,18 @@ export interface Note {
    * `everywhere` albo `this-project`. Wiersz, który dla braku właściciela pisze myślnik albo
    * „unassigned", odpowiada na pytanie, którego nikt nie zadał — a człowiek czyta to jako
    * fakt o notatce.
+   *
+   * `null` stoi tu obok braku, bo Rust przysyła KLUCZ z pustą wartością (`NoteWire::agent`):
+   * zbiór kluczy drutu jest porównywany z tym interfejsem co do jednego, więc klucz pomijany
+   * dla części notatek znaczyłby, że lustro zgadza się tylko czasem. Wiersz sprawdza wartość,
+   * nie obecność klucza — i dlatego oba zapisy „nikt" prowadzą do tego samego pustego miejsca.
    */
-  agent?: string;
+  agent?: string | null;
   /**
-   * Z jakiego projektu ta notatka przyszła. Nieobecne znaczy „stąd" — notatka napisana tutaj
-   * nie ma pochodzenia do pokazania.
+   * Z jakiego projektu ta notatka przyszła. Puste znaczy „stąd" — notatka napisana tutaj
+   * nie ma pochodzenia do pokazania. `null` z tego samego powodu, co wyżej.
    */
-  from?: string;
+  from?: string | null;
 }
 
 /**
