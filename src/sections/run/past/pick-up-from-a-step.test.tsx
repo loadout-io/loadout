@@ -40,6 +40,15 @@ const SHIP: PastRunRow = {
   said: null,
 };
 
+/* IDENTYFIKATOR KROKU JEST TU CELOWO INNY NIŻ KLUCZ KAFELKA, i to jest treść tego pliku,
+ * nie ozdoba fikstury. `run.json` nadaje każdemu krokowi własny UUID przy planowaniu, a plik
+ * workflow zna go pod kluczem `s_…`. Dopóki fikstura miała jedno i to samo w obu polach,
+ * kryterium nie odróżniało implementacji podającej dalej `id` od podającej `tile` — i przepuściło
+ * defekt, który właściciel zobaczył na ekranie 2026-08-23: *„01a02b3c-… is not a step in that
+ * workflow any more"* o kroku stojącym na płótnie. */
+const PLAN_RAN = '01a02b3c-15f5-7f13-a86f-f2f856e4d771';
+const BUILD_RAN = '01a02b3c-15f5-7f13-a86f-f2f856e4d772';
+
 /** Bieg, który PADŁ NA DRUGIM KROKU — czyli ten kształt, o który właściciel zapytał. */
 const OPENED: PastRun = {
   folder: SHIP.folder,
@@ -48,7 +57,8 @@ const OPENED: PastRun = {
   state: SHIP.state,
   steps: [
     {
-      id: 's_plan',
+      id: PLAN_RAN,
+      tile: 's_plan',
       name: 'Plan',
       agent: 'claude',
       state: 'succeeded',
@@ -58,7 +68,8 @@ const OPENED: PastRun = {
       lines: [],
     },
     {
-      id: 's_build',
+      id: BUILD_RAN,
+      tile: 's_build',
       name: 'Build',
       agent: 'claude',
       state: 'failed',
@@ -148,7 +159,14 @@ describe('a run in the history can be carried on from any of its steps', () => {
         withTheRun,
         'each button has to carry the key of ITS step. Without that the markup cannot tell one ' +
           'from another, and this criterion would pass for two buttons wired to the same step.',
-      ).toContain('data-pick-up="' + step.id + '"');
+      ).toContain('data-pick-up="' + step.tile + '"');
+      expect(
+        withTheRun.includes('data-pick-up="' + step.id + '"'),
+        'and it has to be the key from the WORKFLOW FILE, not the id this run gave the step. ' +
+          'That is the defect off the owner\u2019s screen: the run id reached the other side, ' +
+          'which looks a step up by its file key, and refused by naming a UUID nobody has ever ' +
+          'seen — about a tile sitting right there on the canvas.',
+      ).toBe(false);
     }
     expect(
       withTheRun.split(PICK_UP_HERE).length - 1,
@@ -172,9 +190,14 @@ describe('a run in the history can be carried on from any of its steps', () => {
     ).toBe(SHIP.folder);
     expect(
       args?.['step'],
-      'and the step to pick up at. An empty one would restart the whole graph, which is the ' +
-        'forty-eight minutes nobody wants to pay twice.',
+      'and the step to pick up at, BY ITS KEY IN THE WORKFLOW FILE. An empty one would restart ' +
+        'the whole graph — the forty-eight minutes nobody wants to pay twice — and the id this ' +
+        'run gave the step is a name the workflow has never heard of.',
     ).toBe('s_build');
+    expect(
+      args?.['step'],
+      'said the other way round, because this is the one that was actually wrong on screen',
+    ).not.toBe(BUILD_RAN);
     expect(
       args?.['folder'],
       'the scope comes from the list this run was read from, not from whatever the side menu ' +

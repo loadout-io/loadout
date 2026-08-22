@@ -638,7 +638,11 @@ export interface PastRunRow {
 
 /** Krok otwartego biegu. Lustro `commands::history::PastStepWire`. */
 export interface PastStep {
+  /** Identyfikator kroku w TYM biegu. Unikalny w biegu i tylko w nim — nie wskazuje kafelka. */
   readonly id: string;
+  /** Klucz kafelka z pliku workflow. Tym wznawia się bieg od tego miejsca; pusty znaczy, że
+   * `run.json` nie mówi, z którego kafelka ten krok powstał. */
+  readonly tile: string;
   readonly name: string;
   readonly agent: string;
   readonly state: string;

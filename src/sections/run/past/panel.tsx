@@ -196,17 +196,28 @@ function Step({
         {/* KONTYNUACJA STOI PRZY KROKU, a nie w nagłówku biegu, bo to jest wybór KROKU:
             „od którego miejsca ciągniemy dalej". Jeden przycisk nad całym biegiem musiałby ten
             krok zgadnąć — a zgadnięcie źle znaczy albo powtórzenie pracy, która się udała, albo
-            pominięcie tej, która nie. Powód całej tej drogi stoi przy `./pick-up.ts`. */}
-        <button
-          type="button"
-          data-pick-up={step.id}
-          onClick={() => {
-            pickUpFrom(step.id);
-          }}
-          className={QUIET}
-        >
-          {PICK_UP_HERE}
-        </button>
+            pominięcie tej, która nie. Powód całej tej drogi stoi przy `./pick-up.ts`.
+
+            `step.tile`, NIE `step.id` — i to jest naprawa ze zrzutu właściciela z 2026-08-23.
+            `id` jest identyfikatorem kroku W TYM BIEGU (UUID nadany przy planowaniu), a wznowienie
+            szuka kroku po kluczu Z PLIKU: przycisk odmawiał zdaniem-zagadką *„01a02b3c-… is not a
+            step in that workflow any more"* o kroku, który stoi na płótnie.
+
+            Pusty klucz znaczy, że `run.json` tego biegu nie mówi, z którego kafelka ten krok
+            powstał — wtedy nie ma czego wskazać, więc przycisku nie ma. Kontrolka, która na pewno
+            odmówi, jest kontrolką bez skutku (niezmiennik 16). */}
+        {step.tile === '' ? null : (
+          <button
+            type="button"
+            data-pick-up={step.tile}
+            onClick={() => {
+              pickUpFrom(step.tile);
+            }}
+            className={QUIET}
+          >
+            {PICK_UP_HERE}
+          </button>
+        )}
       </h4>
 
       <div className="py-[7px]">

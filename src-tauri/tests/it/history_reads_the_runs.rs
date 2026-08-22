@@ -407,6 +407,91 @@ fn opening_a_run_gives_its_steps_and_what_they_passed_on() {
     );
 }
 
+/* 2026-08-23 — KROK NIESIE DWA IDENTYFIKATORY I ONE NIE SĄ TYM SAMYM.
+ *
+ * Ze zrzutu właściciela: „Pick up here" odmawiało zdaniem *„01a02b3c-… is not a step in that
+ * workflow any more"* — o kroku, który stoi na płótnie i nigdzie się nie ruszył. Przyczyna:
+ * dalej szedł `id`, czyli UUID nadany krokowi PRZY PLANOWANIU, a wznowienie szuka kroku po
+ * kluczu Z PLIKU workflow. Historia znała wtedy tylko jeden z tych dwóch.
+ *
+ * SŁABĄ WERSJĄ jest sprawdzenie samego `tile`: przechodzi ją implementacja, która nadpisuje nim
+ * `id` — a wtedy plik strumienia (`logs/agent-<id>.jsonl`) przestaje się nazywać tak, jak leży
+ * na dysku, i każdy krok gaśnie na „nic nie zostało zapisane". Dlatego sądzone są OBA POLA
+ * i osobno to, że się RÓŻNIĄ.
+ */
+#[test]
+fn a_step_says_both_which_run_it_was_and_which_tile_it_came_from() {
+    let root = tempfile::tempdir().unwrap();
+    let project = project_with_four_runs(root.path());
+
+    let opened = read_run_inner(&project, NEWEST).expect("that run is right there on disk");
+    let build = opened
+        .steps
+        .iter()
+        .find(|one| one.name == BUILDER)
+        .expect("the second step is there");
+
+    assert_eq!(
+        build.tile, "build",
+        "the key from the workflow file is what a person points at when they carry on from this \
+         step — and without it the screen has nothing to point with but the run's own id, which \
+         the workflow has never heard of"
+    );
+    assert_eq!(
+        build.id, "0198a1f2-3b4c-7d5e-8f60-00000000000b",
+        "and the id this run gave the step stays exactly as the file wrote it: the saved stream \
+         is named after it, so overwriting it with the tile key makes every step say that nothing \
+         of what it said was kept"
+    );
+    assert_ne!(
+        build.id, build.tile,
+        "two names for one step, and this is the assertion that keeps them two. One field doing \
+         both jobs is precisely the shape that put a UUID in front of the owner"
+    );
+}
+
+/* I DRUGA RUNDA PĘTLI JEST TYM SAMYM KAFELKIEM.
+ *
+ * `run.json` nazywa węzeł `build#2`, bo baza wymaga `UNIQUE (run_id, node_key)`. Klucz kafelka
+ * jest w nim bez sufiksu — inaczej wznowienie od drugiej rundy szukałoby w pliku workflow kroku
+ * o nazwie, której nikt nigdy nie napisał, i odmówiło tak samo, jak przed tą naprawą.
+ */
+#[test]
+fn a_later_round_of_a_loop_still_points_at_the_tile_it_came_from() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("ledger-ui");
+    let dir = project.join(".loadout").join("runs").join(NEWEST);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("run.json"),
+        r#"{
+  "id": "0198a1f2-3b4c-7d5e-8f60-000000000004",
+  "workflow_id": "ship-a-feature.json",
+  "title": "Ship a feature",
+  "status": "succeeded",
+  "steps": [
+    {
+      "id": "0198a1f2-3b4c-7d5e-8f60-00000000000d",
+      "node_key": "build#2",
+      "name": "Build",
+      "agent": "claude",
+      "status": "succeeded"
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let opened = read_run_inner(&project, NEWEST).expect("that run is right there on disk");
+    let round = opened.steps.first().expect("the run has one step");
+
+    assert_eq!(
+        round.tile, "build",
+        "the round number belongs to the run, not to the canvas. Carrying it into the key would \
+         send the resume looking for a tile called \"build#2\", which nobody ever drew"
+    );
+}
+
 #[test]
 fn a_name_that_is_not_one_run_in_this_folder_is_refused_by_name() {
     let root = tempfile::tempdir().unwrap();

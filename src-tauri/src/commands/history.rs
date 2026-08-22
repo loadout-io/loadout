@@ -130,7 +130,22 @@ pub struct PastRunWire {
 #[serde(rename_all = "camelCase")]
 pub struct PastStepWire {
     /// Identyfikator kroku z `run.json` — po nim nazywa się plik jego strumienia.
+    ///
+    /// Jest UNIKALNY W BIEGU i tylko w nim: nadaje go planista przy starcie. Do wskazania
+    /// kafelka **nie służy** — od tego jest [`PastStepWire::tile`].
     pub id: String,
+    /// Klucz kafelka Z PLIKU workflow — po nim wznawia się bieg od tego miejsca.
+    ///
+    /// 2026-08-23 — POLE POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA. „Pick up here" podawał dalej
+    /// `id`, czyli UUID nadany przy planowaniu, a wznowienie szuka kroku po kluczu z pliku —
+    /// więc odmawiało zdaniem *„01a02b3c-… is not a step in that workflow any more"* o kroku,
+    /// który stoi na płótnie i nigdzie się nie ruszył. Dwa identyfikatory jednego kroku muszą
+    /// jechać jako DWA POLA: jedno pole robiące dwie rzeczy jest dokładnie tym, co ten defekt
+    /// pokazał.
+    ///
+    /// Pusty znaczy „ten `run.json` nie mówi, z którego kafelka ten krok powstał" — wtedy nie ma
+    /// czego wskazać i okno nie rysuje przycisku (`past/panel.tsx`).
+    pub tile: String,
     /// Nazwa kafelka. Ta sama, którą człowiek widzi na płótnie i w podpisie każdej linii.
     pub name: String,
     /// Nazwa agenta, który go wykonał.
@@ -210,6 +225,9 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
             .iter()
             .map(|step| PastStepWire {
                 id: step.id.clone(),
+                /* Rundy pętli mają wspólny kafelek i różne klucze węzła (`build#2`), więc sufiks
+                 * zdejmuje ta sama warstwa, która go nadała. */
+                tile: crate::commands::run::tile_key_of(&step.node_key).to_owned(),
                 name: step.name.clone(),
                 agent: step.agent.clone(),
                 state: step.status.clone(),
@@ -255,6 +273,9 @@ struct Description {
 struct StepDescription {
     #[serde(default)]
     id: String,
+    /// Klucz węzła: klucz kafelka z pliku, a dla dalszych rund pętli z sufiksem `#N`.
+    #[serde(default)]
+    node_key: String,
     #[serde(default)]
     name: String,
     #[serde(default)]

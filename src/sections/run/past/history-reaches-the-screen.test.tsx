@@ -86,7 +86,8 @@ const OPENED: PastRun = {
   state: SHIP.state,
   steps: [
     {
-      id: 's_plan',
+      id: '01a02b3c-15f5-7f13-a86f-f2f856e4d771',
+      tile: 's_plan',
       name: 'Plan',
       agent: 'claude',
       state: 'succeeded',
@@ -96,7 +97,8 @@ const OPENED: PastRun = {
       lines: [],
     },
     {
-      id: 's_build',
+      id: '01a02b3c-15f5-7f13-a86f-f2f856e4d772',
+      tile: 's_build',
       name: 'Build',
       agent: 'claude',
       state: 'failed',

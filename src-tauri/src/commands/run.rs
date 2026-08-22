@@ -1613,6 +1613,21 @@ fn node_key_for(tile_key: &str, turn: u8) -> String {
     format!("{tile_key}#{turn}")
 }
 
+/// Klucz kafelka z klucza węzła — odwrotność [`node_key_for`].
+///
+/// **Tutaj, a nie u wołającego**, i to jest jedyny powód, dla którego ta funkcja istnieje:
+/// sufit rundy (`#N`) jest kształtem wymyślonym o dwie linie wyżej, więc jego rozbieranie
+/// gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13). Historia
+/// czyta `run.json` i musi wiedzieć, o KTÓRY kafelek chodzi, żeby dało się od niego wznowić.
+///
+/// 2026-08-23 — POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: „Pick up here" podawał `id` kroku
+/// z `run.json`, czyli UUID nadany przy planowaniu, a wznowienie szuka po kluczu Z PLIKU. Skutek
+/// był zdaniem-zagadką: *„01a02b3c-… is not a step in that workflow any more"* — o kroku, który
+/// stoi na płótnie i nigdzie się nie ruszył.
+pub(crate) fn tile_key_of(node_key: &str) -> &str {
+    node_key.split_once('#').map_or(node_key, |(tile, _)| tile)
+}
+
 /// Jeden węzeł rozwiniętego grafu → jeden krok planu.
 ///
 /// `node` jest numerem tego węzła w [`Setup::unrolled`], a nie pozycją kroku w pliku: rundy pętli
