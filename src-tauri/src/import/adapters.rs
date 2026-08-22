@@ -29,9 +29,10 @@ pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
         mappings: Vec::new(),
     };
     let mut colours = 0_usize;
+    let mut seen = BTreeMap::new();
 
     for file in &inspection.files {
-        adapt_one(inspection, file, &mut output, &mut colours);
+        adapt_one(inspection, file, &mut output, &mut colours, &mut seen);
     }
 
     output
@@ -54,11 +55,27 @@ fn adapt_one(
     file: &InspectedFile,
     output: &mut AdapterOutput,
     colours: &mut usize,
+    seen: &mut BTreeMap<(super::ItemKind, String), String>,
 ) {
     use super::ItemKind::{
         Agent as AgentItem, Connection as ConnectionItem, Hook, Memory, Rule, Skill, Unknown,
         Workflow,
     };
+    let key = (file.item.kind, file.item.name.to_ascii_lowercase());
+    if matches!(file.item.kind, Hook | Memory | Rule | Workflow)
+        && seen
+            .get(&key)
+            .is_some_and(|content| normalized(content) == normalized(&file.content))
+    {
+        output.mappings.push(mapping(
+            file,
+            Compatibility::Adjusted,
+            "This is another app's copy of the same project behavior.",
+        ));
+        return;
+    }
+    seen.entry(key).or_insert_with(|| file.content.clone());
+
     match file.item.kind {
         AgentItem => adapt_agent(file, output, colours),
         Skill => adapt_skill(inspection, file, output),
@@ -89,9 +106,34 @@ fn adapt_one(
 
 fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut usize) {
     match agent(file, colour(*colours)) {
-        Ok((agent, compatibility, message)) => {
+        Ok((mut agent, compatibility, message)) => {
+            if let Some(existing) = output
+                .agents
+                .iter_mut()
+                .find(|existing| existing.name.eq_ignore_ascii_case(&agent.name))
+            {
+                let same = normalized(&existing.instructions) == normalized(&agent.instructions);
+                merge_names(&mut existing.skills, &agent.skills);
+                merge_names(&mut existing.connections, &agent.connections);
+                output.mappings.push(mapping(
+                    file,
+                    if same {
+                        Compatibility::Adjusted
+                    } else {
+                        Compatibility::NeedsChoice
+                    },
+                    if same {
+                        "This is another app's copy of the same native agent."
+                    } else {
+                        "This app's copy differs from the native agent. Let an agent compare the two versions."
+                    },
+                ));
+                return;
+            }
             *colours += 1;
             output.mappings.push(mapping(file, compatibility, &message));
+            agent.skills.sort();
+            agent.connections.sort();
             output.agents.push(agent);
         }
         Err(message) => output
@@ -103,6 +145,27 @@ fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut u
 fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut AdapterOutput) {
     match skill(inspection, file) {
         Ok((skill, compatibility @ (Compatibility::Exact | Compatibility::Adjusted))) => {
+            if let Some(existing) = output
+                .skills
+                .iter()
+                .find(|existing| existing.name.eq_ignore_ascii_case(&skill.name))
+            {
+                let same = same_skill_bundle(&existing.source_dir, &skill.source_dir);
+                output.mappings.push(mapping(
+                    file,
+                    if same {
+                        Compatibility::Adjusted
+                    } else {
+                        Compatibility::NeedsChoice
+                    },
+                    if same {
+                        "This is another app's copy of the same portable skill."
+                    } else {
+                        "This skill has different copies. Let an agent compare them before import."
+                    },
+                ));
+                return;
+            }
             let message = if compatibility == Compatibility::Exact {
                 "This complete skill bundle can be imported."
             } else {
@@ -120,6 +183,49 @@ fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut Adapt
             .mappings
             .push(mapping(file, Compatibility::Unsupported, &message)),
     }
+}
+
+fn normalized(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn merge_names(existing: &mut Vec<String>, additional: &[String]) {
+    for name in additional {
+        if !existing.iter().any(|one| one.eq_ignore_ascii_case(name)) {
+            existing.push(name.clone());
+        }
+    }
+    existing.sort();
+}
+
+fn same_skill_bundle(left: &std::path::Path, right: &std::path::Path) -> bool {
+    fn files(root: &std::path::Path) -> Option<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut found = BTreeMap::new();
+        while let Some(directory) = pending.pop() {
+            let mut entries: Vec<_> = std::fs::read_dir(&directory).ok()?.flatten().collect();
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let path = entry.path();
+                let kind = entry.file_type().ok()?;
+                if kind.is_symlink() {
+                    return None;
+                }
+                if kind.is_dir() {
+                    pending.push(path);
+                } else if kind.is_file() {
+                    found.insert(
+                        path.strip_prefix(root).ok()?.to_path_buf(),
+                        std::fs::read(path).ok()?,
+                    );
+                }
+            }
+        }
+        Some(found)
+    }
+    files(left)
+        .zip(files(right))
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn adapt_connections(file: &InspectedFile, output: &mut AdapterOutput) {
@@ -195,6 +301,7 @@ fn agent(
     match file.item.source {
         SourceKind::Claude => claude_agent(file, color),
         SourceKind::Codex => codex_agent(file, color),
+        SourceKind::Rulesync | SourceKind::AgentSkills => rulesync_agent(file, color),
         _ => Err("This agent format is not supported.".to_owned()),
     }
 }
@@ -222,6 +329,30 @@ fn claude_agent(
         ],
         "Claude agent",
     )?;
+    claude_agent_from_fields(file, fields, body, fallback_color, Vec::new())
+}
+
+fn rulesync_agent(
+    file: &InspectedFile,
+    fallback_color: Color,
+) -> std::result::Result<(Agent, Compatibility, String), String> {
+    let (root, body) = markdown_frontmatter(&file.content)?;
+    let mut fields = nested_yaml_fields(&file.content, "claudecode");
+    for key in ["name", "description"] {
+        if let Some(value) = root.get(key) {
+            fields.insert(key.to_owned(), value.clone());
+        }
+    }
+    claude_agent_from_fields(file, fields, body, fallback_color, vec!["target app"])
+}
+
+fn claude_agent_from_fields(
+    file: &InspectedFile,
+    fields: BTreeMap<String, String>,
+    body: &str,
+    fallback_color: Color,
+    mut choices: Vec<&'static str>,
+) -> std::result::Result<(Agent, Compatibility, String), String> {
     let name = fields
         .get("name")
         .cloned()
@@ -246,7 +377,6 @@ fn claude_agent(
         .collect();
     let skills = list_field(fields.get("skills"));
     let connections = nested_names(&file.content, "mcpServers");
-    let mut choices = Vec::new();
     if fields.contains_key("memory") {
         choices.push("project memory");
     }
@@ -434,8 +564,43 @@ fn connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, 
             connections,
             issues: Vec::new(),
         }),
+        SourceKind::Rulesync | SourceKind::AgentSkills => rulesync_connections(file),
         _ => Err("This connection format is not supported.".to_owned()),
     }
+}
+
+fn rulesync_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, String> {
+    let json = jsonc_to_json(&file.content)?;
+    let document: Value = serde_json::from_str(&json)
+        .map_err(|error| format!("This Rulesync connection file is not valid JSONC: {error}"))?;
+    let servers = document
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "This file does not contain project connections.".to_owned())?;
+    let mut connections = Vec::new();
+    let mut issues = Vec::new();
+    for (name, server) in servers {
+        if name == "$schema" {
+            continue;
+        }
+        match claude_connection(file, name, server) {
+            Ok(connection) => connections.push(connection),
+            Err(issue) => issues.push(issue),
+        }
+    }
+    if document.as_object().is_some_and(|root| {
+        root.keys()
+            .any(|key| key != "$schema" && key != "mcpServers")
+    }) {
+        issues.push(
+            "Tool-specific connection overrides need a choice before they can be reproduced."
+                .to_owned(),
+        );
+    }
+    Ok(AdaptedConnections {
+        connections,
+        issues,
+    })
 }
 
 fn claude_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, String> {
@@ -605,7 +770,7 @@ fn markdown_frontmatter(
             continue;
         };
         let raw = value.trim();
-        if raw == ">" || raw == "|" {
+        if [">", ">-", "|", "|-"].contains(&raw) {
             let mut parts = Vec::new();
             while index < lines.len() && (lines[index].starts_with(' ') || lines[index].is_empty())
             {
@@ -617,7 +782,7 @@ fn markdown_frontmatter(
             }
             fields.insert(
                 key.trim().to_owned(),
-                if raw == ">" {
+                if raw.starts_with('>') {
                     parts.join(" ")
                 } else {
                     parts.join("\n")
@@ -628,6 +793,114 @@ fn markdown_frontmatter(
         }
     }
     Ok((fields, rest[end + 4..].trim_start_matches('\n')))
+}
+
+fn nested_yaml_fields(content: &str, section: &str) -> BTreeMap<String, String> {
+    let Some(front) = frontmatter_text(content) else {
+        return BTreeMap::new();
+    };
+    let mut fields = BTreeMap::new();
+    let mut inside = false;
+    for line in front.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            inside = line.trim() == format!("{section}:");
+            continue;
+        }
+        if !inside || indent != 2 {
+            continue;
+        }
+        if let Some((key, value)) = line.trim().split_once(':') {
+            fields.insert(key.trim().to_owned(), unquote(value.trim()));
+        }
+    }
+    fields
+}
+
+fn frontmatter_text(content: &str) -> Option<&str> {
+    let rest = content.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    Some(&rest[..end])
+}
+
+fn jsonc_to_json(content: &str) -> std::result::Result<String, String> {
+    let mut without_comments = String::with_capacity(content.len());
+    let mut characters = content.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(character) = characters.next() {
+        if in_string {
+            without_comments.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            without_comments.push(character);
+        } else if character == '/' && characters.peek() == Some(&'/') {
+            characters.next();
+            for next in characters.by_ref() {
+                if next == '\n' {
+                    without_comments.push('\n');
+                    break;
+                }
+            }
+        } else if character == '/' && characters.peek() == Some(&'*') {
+            characters.next();
+            let mut previous = '\0';
+            for next in characters.by_ref() {
+                if previous == '*' && next == '/' {
+                    break;
+                }
+                previous = next;
+            }
+        } else {
+            without_comments.push(character);
+        }
+    }
+    if in_string {
+        return Err("This Rulesync connection file has an unfinished string.".to_owned());
+    }
+
+    let mut out = String::with_capacity(without_comments.len());
+    let mut chars = without_comments.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(character) = chars.next() {
+        if in_string {
+            out.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            out.push(character);
+        } else if character == ',' {
+            let mut lookahead = chars.clone();
+            if lookahead
+                .find(|next| !next.is_whitespace())
+                .is_some_and(|next| next == '}' || next == ']')
+            {
+                continue;
+            }
+            out.push(character);
+        } else {
+            out.push(character);
+        }
+    }
+    Ok(out)
 }
 
 fn flat_toml(content: &str) -> BTreeMap<String, String> {

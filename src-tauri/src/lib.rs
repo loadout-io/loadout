@@ -16,8 +16,8 @@ use tauri::Manager;
 
 use crate::commands::Drivers;
 use crate::engine::drivers::AgentDriver;
-use crate::engine::drivers::absent::Absent;
 use crate::engine::drivers::claude::ClaudeDriver;
+use crate::engine::drivers::codex::CodexDriver;
 use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
@@ -290,11 +290,10 @@ pub fn run() {
             })?;
 
             /* Fabryka sterowników. Funkcja, nie mapa — trzeci vendor ma wejść bez wydania
-             * Loadouta (`commands/mod.rs`). Dla Codeksa oddajemy sterownik, który ODMAWIA
-             * z nazwą zadania: `ClaudeDriver` w tym miejscu wykonałby krok i skłamał o tym,
-             * kto go wykonał, a `SessionRef::vendor` zapisuje tę odpowiedź do bazy. */
+             * Loadouta (`commands/mod.rs`). Oba istniejące adaptery muszą być żywe także dla
+             * analizy importu; atrapą Codeksa aplikacja pokazywała wybór, który zawsze odmawiał. */
             let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
-            let codex: Arc<dyn AgentDriver> = Arc::new(Absent::new("codex", "T-10"));
+            let codex: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
             let drivers: Drivers = Arc::new(move |vendor| match vendor {
                 Vendor::ClaudeCode => Arc::clone(&claude),
                 Vendor::Codex => Arc::clone(&codex),
@@ -370,6 +369,7 @@ pub fn run() {
                 if let Err(error) = commands::run::stop_before_closing(&state.deps()).await {
                     tracing::error!("closing anyway: the run could not be stopped: {error}");
                 }
+                state.stop_import_analysis();
                 /* Rozmowa z orchestratorem też jest procesem — po zamknięciu okna przeszłaby pod
                  * PID 1 i pracowała dalej, a odzyskiwanie po niej nie posprząta, bo rozmowa nie ma
                  * wpisu w indeksie biegów. */

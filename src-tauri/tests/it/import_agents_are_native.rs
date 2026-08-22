@@ -86,3 +86,34 @@ fn a_real_claude_role_is_visible_even_when_one_behavior_needs_a_choice()
     assert!(!preview.draft.runnable());
     Ok(())
 }
+
+#[test]
+fn a_rulesync_subagent_becomes_a_native_agent_draft() -> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    std::fs::create_dir_all(repo.path().join(".rulesync/subagents"))?;
+    std::fs::write(
+        repo.path().join(".rulesync/subagents/planner.md"),
+        r#"---
+name: planner
+targets: ["*"]
+description: >
+  Plans implementation work.
+claudecode:
+  model: opus
+  tools: ["Read", "Grep"]
+  permissionMode: plan
+  skills: ["ship-task"]
+---
+Read the request and produce an evidence-backed plan.
+"#,
+    )?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    assert_eq!(preview.draft.agents.len(), 1);
+    let agent = &preview.draft.agents[0];
+    assert_eq!(agent.name, "planner");
+    assert_eq!(agent.model, "opus");
+    assert_eq!(agent.skills, vec!["ship-task"]);
+    assert!(agent.instructions.contains("evidence-backed plan"));
+    Ok(())
+}

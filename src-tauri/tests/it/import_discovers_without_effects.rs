@@ -91,3 +91,42 @@ fn run_evidence_is_not_mistaken_for_project_configuration() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn open_standards_and_rulesync_are_part_of_the_inventory() -> Result<(), Box<dyn std::error::Error>>
+{
+    let repo = tempfile::tempdir()?;
+    std::fs::create_dir_all(repo.path().join(".rulesync/rules"))?;
+    std::fs::create_dir_all(repo.path().join(".rulesync/commands"))?;
+    std::fs::create_dir_all(repo.path().join(".rulesync/checks"))?;
+    std::fs::write(repo.path().join("AGENTS.md"), "Keep checks deterministic.")?;
+    std::fs::write(repo.path().join("CLAUDE.md"), "Use the project skills.")?;
+    std::fs::write(
+        repo.path().join(".rulesync/rules/angular.md"),
+        "---\ntargets: [\"*\"]\n---\nUse standalone components.",
+    )?;
+    std::fs::write(
+        repo.path().join(".rulesync/commands/review.md"),
+        "---\ndescription: Review the change\n---\nReview $ARGUMENTS.",
+    )?;
+    std::fs::write(
+        repo.path().join(".rulesync/checks/security.md"),
+        "---\nseverity: high\n---\nCheck authentication boundaries.",
+    )?;
+
+    let inspection = loadout_lib::import::discover::scan(repo.path())?;
+    let paths: Vec<_> = inspection
+        .snapshot
+        .items
+        .iter()
+        .map(|item| item.path.as_path())
+        .collect();
+
+    assert_eq!(paths.len(), 5);
+    assert!(paths.contains(&std::path::Path::new("AGENTS.md")));
+    assert!(paths.contains(&std::path::Path::new("CLAUDE.md")));
+    assert!(paths.contains(&std::path::Path::new(".rulesync/rules/angular.md")));
+    assert!(paths.contains(&std::path::Path::new(".rulesync/commands/review.md")));
+    assert!(paths.contains(&std::path::Path::new(".rulesync/checks/security.md")));
+    Ok(())
+}

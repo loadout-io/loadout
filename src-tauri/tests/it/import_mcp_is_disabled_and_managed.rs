@@ -133,3 +133,30 @@ fn one_unsafe_server_does_not_hide_the_safe_connections() -> Result<(), Box<dyn 
     assert!(!preview.draft.runnable());
     Ok(())
 }
+
+#[test]
+fn rulesync_jsonc_connections_are_imported_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    std::fs::create_dir_all(repo.path().join(".rulesync"))?;
+    std::fs::write(
+        repo.path().join(".rulesync/mcp.jsonc"),
+        r#"{
+          // Rulesync permits comments and trailing commas.
+          "mcpServers": {
+            "docs": {
+              "type": "stdio",
+              "command": "npx",
+              "args": ["-y", "@example/docs"],
+              "env": {},
+            },
+          },
+        }"#,
+    )?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    assert_eq!(preview.draft.connections.len(), 1);
+    assert_eq!(preview.draft.connections[0].name, "docs");
+    assert!(!preview.draft.connections[0].enabled);
+    Ok(())
+}

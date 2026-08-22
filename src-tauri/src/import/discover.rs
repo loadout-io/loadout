@@ -24,29 +24,7 @@ pub struct Inspection {
 
 /// Skanuje wyłącznie katalogi konfiguracji. Kod projektu nie jest wejściem importera.
 pub fn scan(root: &Path) -> Result<Inspection> {
-    let selected = root.canonicalize().map_err(|error| ImportError::Inspect {
-        path: root.to_path_buf(),
-        detail: error.to_string(),
-    })?;
-    // Człowiek często wskazuje widoczny katalog `.claude`, nie jego rodzica. Import nadal
-    // dotyczy repo: inaczej szukalibyśmy `.claude/.claude` i uczciwy projekt wyglądałby jak
-    // pusta konfiguracja. `.codex` i `.agents` mają dokładnie tę samą pułapkę.
-    let root = if selected
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| [".claude", ".codex", ".agents"].contains(&name))
-    {
-        selected.parent().unwrap_or(&selected).to_path_buf()
-    } else {
-        selected
-    };
-    if !root.is_dir() {
-        return Err(ImportError::Inspect {
-            path: root,
-            detail: "That workspace is not a folder.".to_owned(),
-        });
-    }
-
+    let root = canonical_root(root)?;
     let candidates = configuration_files(&root)?;
     let mut files = inspect_files(&root, &candidates)?;
 
@@ -84,17 +62,197 @@ pub fn scan(root: &Path) -> Result<Inspection> {
     })
 }
 
+fn canonical_root(root: &Path) -> Result<PathBuf> {
+    let selected = root.canonicalize().map_err(|error| ImportError::Inspect {
+        path: root.to_path_buf(),
+        detail: error.to_string(),
+    })?;
+    // Człowiek często wskazuje widoczny katalog `.claude`, nie jego rodzica. Import nadal
+    // dotyczy repo: inaczej szukalibyśmy `.claude/.claude` i uczciwy projekt wyglądałby jak
+    // pusta konfiguracja. `.codex` i `.agents` mają dokładnie tę samą pułapkę.
+    let root = if selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| [".claude", ".codex", ".agents", ".rulesync"].contains(&name))
+    {
+        selected.parent().unwrap_or(&selected).to_path_buf()
+    } else {
+        selected
+    };
+    if !root.is_dir() {
+        return Err(ImportError::Inspect {
+            path: root,
+            detail: "That workspace is not a folder.".to_owned(),
+        });
+    }
+
+    Ok(root)
+}
+
+/// Buduje odkażoną, ograniczoną kopię setupu dla jawnie uruchomionej analizy modelu.
+/// Agent nigdy nie dostaje ścieżki do prawdziwego repo ani plików spoza katalogów konfiguracji.
+pub fn copy_for_analysis(root: &Path, destination: &Path) -> Result<PathBuf> {
+    let root = canonical_root(root)?;
+    let mut candidates = Vec::new();
+    for relative in [".claude", ".codex", ".agents", ".rulesync"] {
+        let path = root.join(relative);
+        if path.exists() {
+            walk(&root, &path, &mut candidates)?;
+        }
+    }
+    for relative in [".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
+        let path = root.join(relative);
+        if path.exists() {
+            candidates.push(path);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > COUNT_CAP {
+        return Err(ImportError::Inspect {
+            path: root,
+            detail: format!("This setup has more than {COUNT_CAP} configuration files."),
+        });
+    }
+    let mut total = 0_u64;
+    for source in candidates {
+        let relative = source
+            .strip_prefix(&root)
+            .map_err(|_| ImportError::Inspect {
+                path: source.clone(),
+                detail: "A configuration path leaves the workspace.".to_owned(),
+            })?;
+        let metadata = fs::symlink_metadata(&source).map_err(|error| ImportError::Inspect {
+            path: relative.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        if metadata.len() > FILE_CAP {
+            return Err(ImportError::Inspect {
+                path: relative.to_path_buf(),
+                detail: format!("This configuration file is larger than {FILE_CAP} bytes."),
+            });
+        }
+        total = total.saturating_add(metadata.len());
+        if total > TOTAL_CAP {
+            return Err(ImportError::Inspect {
+                path: root,
+                detail: format!("This setup is larger than {TOTAL_CAP} bytes."),
+            });
+        }
+        let Ok(content) = fs::read_to_string(&source) else {
+            // Binaria w bundle mogą być potrzebne runtime'owi skilla, ale nie są tekstem do
+            // analizy semantyki. Nie wysyłamy ich do vendora i nie udajemy, że je przeczytał.
+            continue;
+        };
+        let target = destination.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| ImportError::Inspect {
+                path: relative.to_path_buf(),
+                detail: error.to_string(),
+            })?;
+        }
+        fs::write(&target, redact_secrets(&content)).map_err(|error| ImportError::Inspect {
+            path: relative.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+    }
+    Ok(root)
+}
+
+/// Agent może zaproponować wyłącznie komendę, która już stoi dosłownie w pliku setupu.
+/// To odcina prompt injection od wymyślenia nowego polecenia, które wykona się dopiero przy Run.
+#[must_use]
+pub fn command_has_evidence(root: &Path, evidence: &Path, command: &str) -> bool {
+    let Ok(root) = canonical_root(root) else {
+        return false;
+    };
+    if evidence.is_absolute()
+        || !evidence.starts_with(".claude")
+            && !evidence.starts_with(".codex")
+            && !evidence.starts_with(".agents")
+            && !evidence.starts_with(".rulesync")
+            && evidence != Path::new("AGENTS.md")
+            && evidence != Path::new("CLAUDE.md")
+            && evidence != Path::new("CLAUDE.local.md")
+    {
+        return false;
+    }
+    let path = root.join(evidence);
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    if !canonical.starts_with(&root) {
+        return false;
+    }
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > FILE_CAP {
+        return false;
+    }
+    fs::read_to_string(path)
+        .is_ok_and(|content| !command.trim().is_empty() && content.contains(command.trim()))
+}
+
+fn redact_secrets(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let looks_sensitive = [
+                "api_key",
+                "apikey",
+                "secret",
+                "password",
+                "authorization",
+                "access_token",
+                "refresh_token",
+                "private_key",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+                || ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+                    .iter()
+                    .any(|prefix| lower.contains(prefix));
+            if !looks_sensitive {
+                return line.to_owned();
+            }
+            if let Some((key, _)) = line.split_once(':') {
+                return format!("{key}: \"<redacted>\"");
+            }
+            if let Some((key, _)) = line.split_once('=') {
+                return format!("{key}=\"<redacted>\"");
+            }
+            "<redacted sensitive line>".to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn configuration_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut candidates = Vec::new();
-    for relative in [".claude", ".codex", ".agents"] {
+    for relative in [".claude", ".codex", ".rulesync"] {
         let path = root.join(relative);
         if path.exists() {
             walk(root, &path, &mut candidates)?;
         }
     }
+    let agents = root.join(".agents");
+    if agents.exists() {
+        walk_agents(root, &agents, &mut candidates)?;
+    }
     let mcp = root.join(".mcp.json");
     if mcp.exists() {
         candidates.push(mcp);
+    }
+    for relative in ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
+        let path = root.join(relative);
+        if path.exists() {
+            candidates.push(path);
+        }
     }
     candidates.sort();
     candidates.dedup();
@@ -118,6 +276,58 @@ fn configuration_files(root: &Path) -> Result<Vec<PathBuf>> {
         });
     }
     Ok(candidates)
+}
+
+fn walk_agents(root: &Path, agents: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(agents)
+        .map_err(|error| ImportError::Inspect {
+            path: agents.to_path_buf(),
+            detail: error.to_string(),
+        })?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| ImportError::Inspect {
+            path: agents.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        if ["agents", "skills", "rules", "commands", "checks", "hooks"]
+            .iter()
+            .any(|known| name == *known)
+            || path.is_file()
+        {
+            walk(root, &path, out)?;
+        } else if let Some(representative) = representative_file(root, &path)? {
+            // Niestandardowy harness jest jednym źródłem semantycznym. Lista każdego skryptu,
+            // schematu i promptu osobno w Murmur dawała 30 identycznych odmów i ukrywała fakt,
+            // że wszystkie razem opisują jeden system, który ma przeanalizować agent.
+            out.push(representative);
+        }
+    }
+    Ok(())
+}
+
+fn representative_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>> {
+    let mut files = Vec::new();
+    walk(root, directory, &mut files)?;
+    files.sort_by_key(|path| {
+        let preferred = path.file_name().is_none_or(|name| {
+            ![
+                "config.json",
+                "config.jsonc",
+                "config.toml",
+                "manifest.json",
+            ]
+            .iter()
+            .any(|candidate| name == *candidate)
+        });
+        (preferred, path.clone())
+    });
+    Ok(files
+        .into_iter()
+        .find(|path| !is_documentation(path.strip_prefix(root).unwrap_or(path))))
 }
 
 fn inspect_files(root: &Path, candidates: &[PathBuf]) -> Result<Vec<InspectedFile>> {
@@ -153,7 +363,7 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
             content: String::new(),
         }));
     }
-    if !metadata.is_file() || is_skill_bundle_child(relative) {
+    if !metadata.is_file() || is_skill_bundle_child(relative) || is_documentation(relative) {
         return Ok(None);
     }
     if metadata.len() > FILE_CAP {
@@ -188,6 +398,12 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
         },
         content,
     }))
+}
+
+fn is_documentation(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        name.eq_ignore_ascii_case("README.md") || name.eq_ignore_ascii_case("README")
+    })
 }
 
 fn is_skill_bundle_child(path: &Path) -> bool {
@@ -257,6 +473,8 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
             ".claude/tmp",
             ".claude/plans",
             ".claude/d2c",
+            ".claude/worktrees",
+            ".codex/traces",
         ]
         .iter()
         .any(|generated| relative.starts_with(generated))
@@ -313,7 +531,17 @@ fn source_of(path: &Path) -> SourceKind {
         Some(".claude") => SourceKind::Claude,
         Some(".codex") => SourceKind::Codex,
         Some(".agents") => SourceKind::AgentSkills,
+        Some(".rulesync") => SourceKind::Rulesync,
         _ if path == Path::new(".mcp.json") => SourceKind::Claude,
+        _ if [
+            Path::new("AGENTS.md"),
+            Path::new("CLAUDE.md"),
+            Path::new("CLAUDE.local.md"),
+        ]
+        .contains(&path) =>
+        {
+            SourceKind::OpenStandard
+        }
         _ => SourceKind::Unknown,
     }
 }
@@ -322,17 +550,42 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
     let text = path.to_string_lossy();
     if text.starts_with(".claude/agents/") && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".codex/agents/") && path.extension().is_some_and(|ext| ext == "toml")
+        || text.starts_with(".rulesync/subagents/")
+            && path.extension().is_some_and(|ext| ext == "md")
+        || text.starts_with(".agents/agents/") && path.extension().is_some_and(|ext| ext == "md")
     {
         return (ItemKind::Agent, "An agent definition was found.".to_owned());
     }
-    if text.starts_with(".claude/workflows/") && path.extension().is_some_and(|ext| ext == "js") {
+    if text.starts_with(".claude/workflows/") && path.extension().is_some_and(|ext| ext == "js")
+        || text.starts_with(".rulesync/commands/")
+            && path.extension().is_some_and(|ext| ext == "md")
+        || text.starts_with(".agents/commands/") && path.extension().is_some_and(|ext| ext == "md")
+    {
         return (
             ItemKind::Workflow,
             "A project workflow definition was found.".to_owned(),
         );
     }
+    if text.starts_with(".agents/")
+        && ![
+            ".agents/agents/",
+            ".agents/skills/",
+            ".agents/rules/",
+            ".agents/commands/",
+            ".agents/checks/",
+            ".agents/hooks/",
+        ]
+        .iter()
+        .any(|known| text.starts_with(known))
+    {
+        return (
+            ItemKind::Workflow,
+            "A custom project automation bundle was found for agent analysis.".to_owned(),
+        );
+    }
     if text.starts_with(".claude/commands/") && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".claude/lib/")
+        || text.starts_with(".codex/lib/")
     {
         return (
             ItemKind::Workflow,
@@ -348,6 +601,10 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
         );
     }
     if path == Path::new(".mcp.json")
+        || path == Path::new(".rulesync/mcp.json")
+        || path == Path::new(".rulesync/mcp.jsonc")
+        || path == Path::new(".agents/mcp.json")
+        || path == Path::new(".agents/mcp.jsonc")
         || path == Path::new(".codex/config.toml") && content.contains("mcp_servers")
     {
         return (
@@ -355,10 +612,17 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
             "Project tool connections were found and will stay off until approved.".to_owned(),
         );
     }
-    if text.starts_with(".claude/settings") && content.contains("hooks") {
+    if text.starts_with(".claude/settings") && content.contains("hooks")
+        || path == Path::new(".codex/hooks.json")
+        || path == Path::new(".rulesync/hooks.json")
+        || path == Path::new(".rulesync/hooks.jsonc")
+    {
         return (ItemKind::Hook, "A project hook was found.".to_owned());
     }
-    if text.starts_with(".claude/hooks/") {
+    if text.starts_with(".claude/hooks/")
+        || text.starts_with(".codex/hooks/")
+        || text.starts_with(".agents/hooks/")
+    {
         return (
             ItemKind::Hook,
             "A project hook script was found.".to_owned(),
@@ -367,13 +631,29 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
     if text.starts_with(".claude/agent-memory/")
         && path.file_name().is_some_and(|name| name == "MEMORY.md")
         || text.starts_with(".claude/learnings/") && path.extension().is_some_and(|ext| ext == "md")
+        || text.starts_with(".codex/learnings/") && path.extension().is_some_and(|ext| ext == "md")
     {
         return (
             ItemKind::Memory,
             "Project guidance for an agent was found.".to_owned(),
         );
     }
-    if text.starts_with(".claude/rules/") || text.starts_with(".claude/automation/") {
+    if text.starts_with(".claude/rules/")
+        || text.starts_with(".claude/automation/")
+        || text.starts_with(".codex/rules/")
+        || text.starts_with(".agents/rules/")
+        || text.starts_with(".agents/checks/")
+        || text.starts_with(".rulesync/rules/")
+        || text.starts_with(".rulesync/checks/")
+        || path == Path::new(".rulesync/permissions.json")
+        || path == Path::new(".rulesync/permissions.jsonc")
+        || path == Path::new(".codex/config.toml")
+        || path == Path::new(".claude/settings.json")
+        || path == Path::new(".claude/settings.local.json")
+        || path == Path::new("AGENTS.md")
+        || path == Path::new("CLAUDE.md")
+        || path == Path::new("CLAUDE.local.md")
+    {
         return (ItemKind::Rule, "A project rule was found.".to_owned());
     }
     (
@@ -390,6 +670,14 @@ fn looks_like_workflow(content: &str) -> bool {
 }
 
 fn display_name(path: &Path, kind: ItemKind) -> String {
+    if path.starts_with(".agents")
+        && let Some(area) = path.components().nth(1)
+        && !["agents", "skills", "rules", "commands", "checks", "hooks"]
+            .iter()
+            .any(|known| area.as_os_str() == *known)
+    {
+        return area.as_os_str().to_string_lossy().into_owned();
+    }
     let name = match kind {
         ItemKind::Skill | ItemKind::Memory
             if path
