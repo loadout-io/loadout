@@ -345,6 +345,20 @@ pub enum Error {
     /// W tym korzeniu nie ma notatki o tym identyfikatorze.
     #[error("nothing here has the id {0}")]
     NoSuchNote(NoteId),
+
+    /// SZKIELET T-80: droga, której to zadanie jeszcze nie napisało.
+    ///
+    /// Wariant istnieje z powodu mechanicznego, nie produktowego. `clippy::todo` i
+    /// `clippy::panic` są w tym repo `deny` (`Cargo.toml`), a `#[allow(...)]` w `src/`
+    /// przewraca `checks/quick-suppressions.sh` — więc szkielet musi **wrócić**, a nie
+    /// spanikować. Zdanie jest ROZMYŚLNIE nie tym, którego żąda kryterium: odmowa ma nazwać
+    /// brakujące pole słowem, którym nazywa je plik, a to zdanie nie nazywa niczego i nie ma
+    /// prawa go nazwać. Implementacja, która ten wariant tu zostawi, dalej pada — i to jest
+    /// cała jego rola.
+    ///
+    /// Znika razem z ciałem [`record_candidate_for`].
+    #[error("Loadout cannot save this note yet.")]
+    NotWrittenYet,
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -480,7 +494,7 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
     // czyja być — nie mają jeszcze ciała. Stara droga (notatka niczyja, zakres inny niż
     // `this-agent`) biegnie niżej nietknięta, bo pinują ją kryteria spoza tego zadania.
     if agent.is_some() || draft.scope == Scope::ThisAgent {
-        todo!("T-80: a note has to be able to say whose it is, and to refuse when it cannot")
+        return Err(Error::NotWrittenYet);
     }
 
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
