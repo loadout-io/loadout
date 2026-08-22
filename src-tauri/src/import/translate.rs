@@ -68,16 +68,44 @@ pub fn with_analysis(
         .snapshot
         .items
         .iter()
-        .map(|item| (item.id.as_str(), item))
+        .cloned()
+        .map(|item| (item.id.clone(), item))
         .collect();
     let mut covered = BTreeSet::new();
+    apply_analyzed_agents(&mut preview, &analysis, &items, &mut covered)?;
+    apply_analyzed_workflows(&mut preview, &analysis, &items, &mut covered)?;
 
+    for mapping in &mut preview.draft.report.mappings {
+        if covered.contains(mapping.item_id.as_str()) && mapping.compatibility.blocks() {
+            mapping.compatibility = Compatibility::Adjusted;
+            "An agent converted this project behavior into the native draft shown below."
+                .clone_into(&mut mapping.message);
+        }
+    }
+    preview
+        .draft
+        .agents
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    preview
+        .draft
+        .workflows
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    preview.analysis = Some(analysis);
+    Ok(preview)
+}
+
+fn apply_analyzed_agents(
+    preview: &mut ImportPreview,
+    analysis: &SemanticAnalysis,
+    items: &BTreeMap<String, super::SourceItem>,
+    covered: &mut BTreeSet<String>,
+) -> Result<()> {
     for proposed in &analysis.agents {
         validate_text("agent name", &proposed.name)?;
         validate_text("agent purpose", &proposed.summary)?;
         validate_text("agent instructions", &proposed.instructions)?;
         cover_sources(
-            &items,
+            items,
             &proposed.source_items,
             &[
                 ItemKind::Agent,
@@ -85,7 +113,7 @@ pub fn with_analysis(
                 ItemKind::Rule,
                 ItemKind::Unknown,
             ],
-            &mut covered,
+            covered,
         )?;
         let unknown_skill = proposed.skills.iter().find(|name| {
             !preview
@@ -133,11 +161,19 @@ pub fn with_analysis(
             });
         }
     }
+    Ok(())
+}
 
+fn apply_analyzed_workflows(
+    preview: &mut ImportPreview,
+    analysis: &SemanticAnalysis,
+    items: &BTreeMap<String, super::SourceItem>,
+    covered: &mut BTreeSet<String>,
+) -> Result<()> {
     for proposed in &analysis.workflows {
         validate_text("workflow name", &proposed.name)?;
         cover_sources(
-            &items,
+            items,
             &proposed.source_items,
             &[
                 ItemKind::Workflow,
@@ -145,7 +181,7 @@ pub fn with_analysis(
                 ItemKind::Rule,
                 ItemKind::Unknown,
             ],
-            &mut covered,
+            covered,
         )?;
         let workflow = analyzed_workflow(proposed, &preview.draft.agents, &preview.draft.root)?;
         let problems: Vec<_> = crate::workflow::check::check_to_run(&workflow)
@@ -171,25 +207,7 @@ pub fn with_analysis(
         }
         preview.draft.workflows.push(workflow);
     }
-
-    for mapping in &mut preview.draft.report.mappings {
-        if covered.contains(mapping.item_id.as_str()) && mapping.compatibility.blocks() {
-            mapping.compatibility = Compatibility::Adjusted;
-            mapping.message =
-                "An agent converted this project behavior into the native draft shown below."
-                    .to_owned();
-        }
-    }
-    preview
-        .draft
-        .agents
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    preview
-        .draft
-        .workflows
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    preview.analysis = Some(analysis);
-    Ok(preview)
+    Ok(())
 }
 
 fn validate_text(label: &str, text: &str) -> Result<()> {
@@ -201,8 +219,8 @@ fn validate_text(label: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn cover_sources<'a>(
-    items: &BTreeMap<&'a str, &'a super::SourceItem>,
+fn cover_sources(
+    items: &BTreeMap<String, super::SourceItem>,
     source_items: &[String],
     allowed: &[ItemKind],
     covered: &mut BTreeSet<String>,
@@ -226,7 +244,7 @@ fn cover_sources<'a>(
         }
         if !covered.insert(id.clone()) {
             return Err(ImportError::Analyze(format!(
-                "{} was claimed by more than one analyzed item.",
+                "{} was associated with more than one analyzed item.",
                 item.path.display()
             )));
         }
@@ -247,92 +265,7 @@ fn analyzed_workflow(
     }
     let mut steps = Vec::with_capacity(proposed.steps.len());
     for (index, proposed_step) in proposed.steps.iter().enumerate() {
-        let at = point((index as f64) * 288.0, 0.0);
-        let step = match proposed_step {
-            AnalyzedStep::Agent {
-                id,
-                name,
-                agent,
-                instructions,
-                skills,
-                folder,
-            } => {
-                let saved = agents
-                    .iter()
-                    .find(|saved| saved.name.eq_ignore_ascii_case(agent))
-                    .ok_or_else(|| {
-                        ImportError::Analyze(format!(
-                            "The analyzed step {name} refers to agent {agent}, which is not in the draft."
-                        ))
-                    })?;
-                let unknown_skill = skills.iter().find(|skill| {
-                    !saved
-                        .skills
-                        .iter()
-                        .any(|known| known.eq_ignore_ascii_case(skill))
-                });
-                if let Some(skill) = unknown_skill {
-                    return Err(ImportError::Analyze(format!(
-                        "The analyzed step {name} asks agent {agent} for skill {skill}, which that agent does not have."
-                    )));
-                }
-                Step::Agent(AgentStep {
-                    id: id.clone(),
-                    name: name.clone(),
-                    agent: saved.id.to_string(),
-                    overrides: Map::new(),
-                    vendor_options: BTreeMap::new(),
-                    copies: 1,
-                    instructions: instructions.clone(),
-                    skills: if skills.is_empty() {
-                        Skills::default()
-                    } else {
-                        Skills::Only(skills.clone())
-                    },
-                    folder: folder.into(),
-                    handover: Handover::Plain(PlainNotes::Notes),
-                    at,
-                    extra: Map::new(),
-                })
-            }
-            AnalyzedStep::Check {
-                id,
-                name,
-                command,
-                proof,
-                evidence,
-                folder,
-            } => {
-                if !super::discover::command_has_evidence(root, evidence, command) {
-                    return Err(ImportError::Analyze(format!(
-                        "The analyzed check {name} does not quote a command from {}.",
-                        evidence.display()
-                    )));
-                }
-                let mut extra = Map::new();
-                extra.insert(
-                    "sourceFile".to_owned(),
-                    Value::String(evidence.to_string_lossy().into_owned()),
-                );
-                Step::Check(CheckStep {
-                    id: id.clone(),
-                    name: name.clone(),
-                    command: command.clone(),
-                    proof: proof.clone(),
-                    folder: folder.into(),
-                    at,
-                    extra,
-                })
-            }
-            AnalyzedStep::Checkpoint { id, name, question } => Step::Checkpoint(CheckpointStep {
-                id: id.clone(),
-                name: name.clone(),
-                question: Some(question.clone()),
-                at,
-                extra: Map::new(),
-            }),
-        };
-        steps.push(step);
+        steps.push(analyzed_step(proposed_step, index, agents, root)?);
     }
     let links = proposed
         .links
@@ -368,6 +301,102 @@ fn analyzed_workflow(
         links,
         extra,
     })
+}
+
+fn analyzed_step(
+    proposed: &AnalyzedStep,
+    index: usize,
+    agents: &[Agent],
+    root: &Path,
+) -> Result<Step> {
+    let column = u32::try_from(index).map_err(|_| {
+        ImportError::Analyze("The analyzed workflow has too many steps to display.".to_owned())
+    })?;
+    let at = point(f64::from(column) * 288.0, 0.0);
+    match proposed {
+        AnalyzedStep::Agent {
+            id,
+            name,
+            agent,
+            instructions,
+            skills,
+            folder,
+        } => {
+            let saved = agents
+                .iter()
+                .find(|saved| saved.name.eq_ignore_ascii_case(agent))
+                .ok_or_else(|| {
+                    ImportError::Analyze(format!(
+                        "The analyzed step {name} refers to agent {agent}, which is not in the draft."
+                    ))
+                })?;
+            let unknown_skill = skills.iter().find(|skill| {
+                !saved
+                    .skills
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(skill))
+            });
+            if let Some(skill) = unknown_skill {
+                return Err(ImportError::Analyze(format!(
+                    "The analyzed step {name} asks agent {agent} for skill {skill}, which that agent does not have."
+                )));
+            }
+            Ok(Step::Agent(AgentStep {
+                id: id.clone(),
+                name: name.clone(),
+                agent: saved.id.to_string(),
+                overrides: Map::new(),
+                vendor_options: BTreeMap::new(),
+                copies: 1,
+                instructions: instructions.clone(),
+                skills: if skills.is_empty() {
+                    Skills::default()
+                } else {
+                    Skills::Only(skills.clone())
+                },
+                folder: folder.into(),
+                handover: Handover::Plain(PlainNotes::Notes),
+                at,
+                extra: Map::new(),
+            }))
+        }
+        AnalyzedStep::Check {
+            id,
+            name,
+            command,
+            proof,
+            evidence,
+            folder,
+        } => {
+            if !super::discover::command_has_evidence(root, evidence, command) {
+                return Err(ImportError::Analyze(format!(
+                    "The analyzed check {name} does not quote a command from {}.",
+                    evidence.display()
+                )));
+            }
+            let mut extra = Map::new();
+            extra.insert(
+                "sourceFile".to_owned(),
+                Value::String(evidence.to_string_lossy().into_owned()),
+            );
+            Ok(Step::Check(CheckStep {
+                id: id.clone(),
+                name: name.clone(),
+                command: command.clone(),
+                proof: proof.clone(),
+                folder: folder.into(),
+                at,
+                extra,
+            }))
+        }
+        AnalyzedStep::Checkpoint { id, name, question } => Ok(Step::Checkpoint(CheckpointStep {
+            id: id.clone(),
+            name: name.clone(),
+            question: Some(question.clone()),
+            at,
+            extra: Map::new(),
+        })),
+    }
 }
 
 impl From<&AnalyzedFolder> for Folder {

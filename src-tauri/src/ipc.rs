@@ -1110,7 +1110,11 @@ pub fn new_id() -> String {
 
 /// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
 #[tauri::command]
-pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::ImportPreview, String> {
+pub async fn scan_setup(
+    state: State<'_, AppState>,
+    workspace: std::path::PathBuf,
+) -> Result<crate::import::ImportPreview, String> {
+    state.analyzing.clear();
     let result = commands::import::scan_setup_inner(&workspace);
     drop(workspace);
     result.map_err(|error| error.to_string())
@@ -1125,7 +1129,7 @@ pub async fn analyze_setup(
     commands::import::analyze_setup_inner(&state.drivers, &state.analyzing, &request)
         .await
         .map(|outcome| match outcome {
-            commands::import::AnalysisOutcome::Converted(preview) => Some(preview),
+            commands::import::AnalysisOutcome::Converted(preview) => Some(*preview),
             commands::import::AnalysisOutcome::Cancelled => None,
         })
         .map_err(|error| error.to_string())
@@ -1140,10 +1144,22 @@ pub async fn stop_setup_analysis(state: State<'_, AppState>) -> Result<(), Strin
 
 /// Zapisuje ponownie zweryfikowaną migawkę do biblioteki Loadouta.
 #[tauri::command]
-pub fn apply_setup(
+pub async fn apply_setup(
+    state: State<'_, AppState>,
     request: commands::import::ApplySetup,
 ) -> Result<crate::import::apply::ImportReceipt, String> {
-    let result = commands::import::apply_setup_inner(&crate::loadout_dir(), &request);
+    let analysis = state.analyzing.latest_for(&request.workspace);
+    let result = match analysis.as_ref() {
+        Some(analysis) => commands::import::apply_setup_with_analysis(
+            &crate::loadout_dir(),
+            &request,
+            Some(analysis),
+        ),
+        None => commands::import::apply_setup_inner(&crate::loadout_dir(), &request),
+    };
+    if result.is_ok() {
+        state.analyzing.clear();
+    }
     drop(request);
     result.map_err(|error| error.to_string())
 }

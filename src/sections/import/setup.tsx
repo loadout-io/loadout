@@ -71,7 +71,6 @@ export interface ApplyRequest {
   expectedSourceHashes: Record<string, string>;
   enableConnections: string[];
   leaveOut: string[];
-  analysis?: ImportPreview['analysis'];
 }
 
 export interface ImportReceipt {
@@ -242,7 +241,6 @@ export function ImportSetup({
         expectedSourceHashes: preview.draft.sourceHashes,
         enableConnections: enabled,
         leaveOut,
-        analysis: preview.analysis,
       })
       .then((saved) => {
         setSaved(saved);
@@ -491,9 +489,10 @@ export function ImportSetup({
             )}
             {preview.analysis === undefined ? null : (
               <section className="rounded-md border border-line bg-well p-3">
-                <h3 className="text-subhead text-ink">
+                <h3 className="text-subhead text-ink">Review analyzed routine</h3>
+                <p className="text-note text-muted">
                   {`Analyzed with ${preview.analysis.vendor === 'codex' ? 'Codex' : 'Claude'}`}
-                </h3>
+                </p>
                 {preview.draft.workflows.length === 0 ? (
                   <p className="text-note text-muted">No complete routine was added.</p>
                 ) : (

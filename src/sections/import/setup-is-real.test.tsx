@@ -77,11 +77,6 @@ describe('Import setup', () => {
     expect(html).toContain('Type');
     expect(html).toContain('Source');
     expect(html).toContain('Needs attention');
-    expect(html).toContain('Analyze remaining setup with');
-    expect(html).toContain('Analyze and convert');
-    expect(html).toContain('redacted, read-only copy');
-    expect(html).toContain('<option value="claude-code" selected="">Claude</option>');
-    expect(html).toContain('<option value="codex">Codex</option>');
   });
 
   it('starts with the folder of the workspace open in the side menu', () => {

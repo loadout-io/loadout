@@ -21,7 +21,7 @@ use crate::import::{
 use crate::library::agents::Vendor;
 
 const EVENT_QUEUE: usize = 256;
-const ANALYSIS_LIMIT: Duration = Duration::from_secs(15 * 60);
+const ANALYSIS_LIMIT: Duration = Duration::from_mins(15);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -34,6 +34,14 @@ pub struct AnalyzeSetup {
 pub struct Analyzing {
     /// `std::sync::Mutex` i nigdy trzymany przez `await`: w środku jest wyłącznie token.
     active: Mutex<Option<CancellationToken>>,
+    /// Ostatni zwalidowany wynik. Zamek obejmuje tylko klon wartości, nigdy `await`.
+    accepted: Mutex<Option<AcceptedAnalysis>>,
+}
+
+#[derive(Debug, Clone)]
+struct AcceptedAnalysis {
+    workspace: PathBuf,
+    analysis: SemanticAnalysis,
 }
 
 impl Analyzing {
@@ -66,6 +74,27 @@ impl Analyzing {
     fn release(&self) {
         *self.active.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
+
+    pub fn clear(&self) {
+        *self.accepted.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn remember(&self, workspace: &Path, analysis: SemanticAnalysis) {
+        *self.accepted.lock().unwrap_or_else(PoisonError::into_inner) = Some(AcceptedAnalysis {
+            workspace: workspace.to_path_buf(),
+            analysis,
+        });
+    }
+
+    #[must_use]
+    pub fn latest_for(&self, workspace: &Path) -> Option<SemanticAnalysis> {
+        self.accepted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|accepted| accepted.workspace == workspace)
+            .map(|accepted| accepted.analysis.clone())
+    }
 }
 
 struct AnalysisClaim<'a> {
@@ -81,7 +110,7 @@ impl Drop for AnalysisClaim<'_> {
 
 #[derive(Debug)]
 pub enum AnalysisOutcome {
-    Converted(ImportPreview),
+    Converted(Box<ImportPreview>),
     Cancelled,
 }
 
@@ -94,9 +123,6 @@ pub struct ApplySetup {
     /// Elementy `needs_choice`, które człowiek jawnie postanowił zostawić poza migracją.
     #[serde(default)]
     pub leave_out: Vec<String>,
-    /// Oryginalny, typowany wynik analizy. Apply skanuje repo ponownie i waliduje go od zera.
-    #[serde(default)]
-    pub analysis: Option<SemanticAnalysis>,
 }
 
 pub fn scan_setup_inner(workspace: &Path) -> Result<ImportPreview> {
@@ -144,6 +170,11 @@ pub async fn analyze_setup_inner(
         }
     };
     let _ = drain.await;
+    if let Ok(AnalysisOutcome::Converted(preview)) = &converted
+        && let Some(analysis) = preview.analysis.clone()
+    {
+        analyzing.remember(&request.workspace, analysis);
+    }
     converted
 }
 
@@ -210,6 +241,7 @@ async fn finish_analysis(
                 workflows: proposed.workflows,
             };
             crate::import::translate::with_analysis(preview, analysis)
+                .map(Box::new)
                 .map(AnalysisOutcome::Converted)
         }
     }
@@ -333,11 +365,20 @@ fn failed_analysis(reason: &FinishReason) -> String {
 
 /// Jeszcze raz czyta repo i akceptuje z webviewa wyłącznie wybór włączenia znanych połączeń.
 pub fn apply_setup_inner(home: &Path, request: &ApplySetup) -> Result<ImportReceipt> {
+    apply_setup_with_analysis(home, request, None)
+}
+
+/// Produkcyjna ścieżka może dołączyć wyłącznie analizę zachowaną po stronie Rusta.
+pub fn apply_setup_with_analysis(
+    home: &Path,
+    request: &ApplySetup,
+    analysis: Option<&SemanticAnalysis>,
+) -> Result<ImportReceipt> {
     let mut preview = crate::import::translate::preview(&request.workspace)?;
     if preview.draft.source_hashes != request.expected_source_hashes {
         return Err(ImportError::Changed);
     }
-    if let Some(analysis) = &request.analysis {
+    if let Some(analysis) = analysis {
         preview = crate::import::translate::with_analysis(preview, analysis.clone())?;
     }
     let requested: BTreeSet<&str> = request
