@@ -104,3 +104,32 @@ async fn project_mcp_becomes_a_disabled_managed_connection()
     );
     Ok(())
 }
+
+#[test]
+fn one_unsafe_server_does_not_hide_the_safe_connections() -> Result<(), Box<dyn std::error::Error>>
+{
+    use loadout_lib::import::Compatibility;
+
+    let repo = tempfile::tempdir()?;
+    std::fs::write(
+        repo.path().join(".mcp.json"),
+        r#"{"mcpServers":{"browser":{"command":"npx","args":["playwright-mcp"]},"docs":{"url":"https://docs.example.test/mcp"},"local-design":{"type":"http","url":"http://127.0.0.1:3845/mcp"}}}"#,
+    )?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+
+    assert_eq!(preview.draft.connections.len(), 2);
+    assert!(
+        preview
+            .draft
+            .connections
+            .iter()
+            .all(|connection| !connection.enabled)
+    );
+    assert!(preview.draft.report.mappings.iter().any(|mapping| {
+        mapping.compatibility == Compatibility::NeedsChoice
+            && mapping.message.contains("local-design must use HTTPS")
+    }));
+    assert!(!preview.draft.runnable());
+    Ok(())
+}

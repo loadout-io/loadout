@@ -56,91 +56,28 @@ fn adapt_one(
     colours: &mut usize,
 ) {
     use super::ItemKind::{
-        Agent as AgentItem, Connection as ConnectionItem, Hook, Skill, Unknown, Workflow,
+        Agent as AgentItem, Connection as ConnectionItem, Hook, Memory, Rule, Skill, Unknown,
+        Workflow,
     };
     match file.item.kind {
-        AgentItem => match agent(file, colour(*colours)) {
-            Ok(agent) => {
-                *colours += 1;
-                output.mappings.push(mapping(
-                    file,
-                    Compatibility::Exact,
-                    "This agent will become a native Loadout agent.",
-                ));
-                output.agents.push(agent);
-            }
-            Err(message) => {
-                output
-                    .mappings
-                    .push(mapping(file, Compatibility::Unsupported, &message));
-            }
-        },
-        Skill => match skill(inspection, file) {
-            Ok((skill, Compatibility::Exact)) => {
-                output.mappings.push(mapping(
-                    file,
-                    Compatibility::Exact,
-                    "This complete skill bundle can be imported.",
-                ));
-                output.skills.push(skill);
-            }
-            Ok((skill, Compatibility::Adjusted)) => {
-                output.mappings.push(mapping(
-                    file,
-                    Compatibility::Adjusted,
-                    "This skill was normalized and reviewed before import.",
-                ));
-                output.skills.push(skill);
-            }
-            Ok((_skill, compatibility)) => output.mappings.push(mapping(
-                file,
-                compatibility,
-                "This skill contains instructions that must be resolved before import.",
-            )),
-            Err(message) => {
-                output
-                    .mappings
-                    .push(mapping(file, Compatibility::Unsupported, &message));
-            }
-        },
-        ConnectionItem => {
-            let parsed = connections(file);
-            match parsed {
-                Ok(mut connections) => {
-                    output.mappings.push(mapping(
-                        file,
-                        Compatibility::Adjusted,
-                        "These project connections will be imported switched off.",
-                    ));
-                    output.connections.append(&mut connections);
-                }
-                Err(message) => {
-                    output
-                        .mappings
-                        .push(mapping(file, Compatibility::Unsupported, &message));
-                }
-            }
-        }
-        Workflow => {
-            let known = knows_ship_ui(&file.content);
-            output.mappings.push(mapping(
-                file,
-                if known {
-                    Compatibility::Adjusted
-                } else {
-                    Compatibility::NeedsChoice
-                },
-                if known {
-                    "This coordinating skill will become a visible Ship UI workflow."
-                } else {
-                    "Choose how this coordinating skill should be represented as a workflow."
-                },
-            ));
-        }
+        AgentItem => adapt_agent(file, output, colours),
+        Skill => adapt_skill(inspection, file, output),
+        ConnectionItem => adapt_connections(file, output),
+        Workflow => adapt_workflow(file, output),
         Hook => output.mappings.push(mapping(
             file,
             Compatibility::NeedsChoice,
             "This project hook will not run automatically. Choose a check or leave it out.",
+        )),
+        Memory => output.mappings.push(mapping(
+            file,
+            Compatibility::NeedsChoice,
+            "Choose whether to turn this project guidance into Loadout Memory.",
+        )),
+        Rule => output.mappings.push(mapping(
+            file,
+            Compatibility::NeedsChoice,
+            "Choose whether to turn this project rule into agent instructions or a check.",
         )),
         Unknown => output.mappings.push(mapping(
             file,
@@ -148,6 +85,89 @@ fn adapt_one(
             "Loadout cannot reproduce this project setting yet.",
         )),
     }
+}
+
+fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut usize) {
+    match agent(file, colour(*colours)) {
+        Ok((agent, compatibility, message)) => {
+            *colours += 1;
+            output.mappings.push(mapping(file, compatibility, &message));
+            output.agents.push(agent);
+        }
+        Err(message) => output
+            .mappings
+            .push(mapping(file, Compatibility::Unsupported, &message)),
+    }
+}
+
+fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut AdapterOutput) {
+    match skill(inspection, file) {
+        Ok((skill, compatibility @ (Compatibility::Exact | Compatibility::Adjusted))) => {
+            let message = if compatibility == Compatibility::Exact {
+                "This complete skill bundle can be imported."
+            } else {
+                "This skill was normalized and reviewed before import."
+            };
+            output.mappings.push(mapping(file, compatibility, message));
+            output.skills.push(skill);
+        }
+        Ok((_skill, compatibility)) => output.mappings.push(mapping(
+            file,
+            compatibility,
+            "This skill contains instructions that must be resolved before import.",
+        )),
+        Err(message) => output
+            .mappings
+            .push(mapping(file, Compatibility::Unsupported, &message)),
+    }
+}
+
+fn adapt_connections(file: &InspectedFile, output: &mut AdapterOutput) {
+    match connections(file) {
+        Ok(mut parsed) => {
+            let compatibility = if parsed.issues.is_empty() {
+                Compatibility::Adjusted
+            } else if parsed.connections.is_empty() {
+                Compatibility::Unsupported
+            } else {
+                Compatibility::NeedsChoice
+            };
+            let message = if parsed.issues.is_empty() {
+                "These project connections will be imported switched off.".to_owned()
+            } else {
+                parsed.issues.join(" ")
+            };
+            output.mappings.push(mapping(file, compatibility, &message));
+            output.connections.append(&mut parsed.connections);
+        }
+        Err(message) => output
+            .mappings
+            .push(mapping(file, Compatibility::Unsupported, &message)),
+    }
+}
+
+fn adapt_workflow(file: &InspectedFile, output: &mut AdapterOutput) {
+    // Jawny plik workflow jest programem vendora, więc samo znalezienie znanych nazw ról nie
+    // dowodzi, że umieliśmy odtworzyć jego graf. Znany szablon musi pochodzić z bundle skilla.
+    let known = file
+        .item
+        .path
+        .file_name()
+        .is_some_and(|name| name == "SKILL.md")
+        && knows_ship_ui(&file.content);
+    output.mappings.push(mapping(
+        file,
+        if known {
+            Compatibility::Adjusted
+        } else {
+            Compatibility::NeedsChoice
+        },
+        if known {
+            "This coordinating skill will become a visible Ship UI workflow."
+        } else {
+            "Choose how this coordinating skill should be represented as a workflow."
+        },
+    ));
 }
 
 fn mapping(file: &InspectedFile, compatibility: Compatibility, message: &str) -> Mapping {
@@ -168,7 +188,10 @@ fn colour(index: usize) -> Color {
     ][index % 5]
 }
 
-fn agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent, String> {
+fn agent(
+    file: &InspectedFile,
+    color: Color,
+) -> std::result::Result<(Agent, Compatibility, String), String> {
     match file.item.source {
         SourceKind::Claude => claude_agent(file, color),
         SourceKind::Codex => codex_agent(file, color),
@@ -176,7 +199,10 @@ fn agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent, Strin
     }
 }
 
-fn claude_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent, String> {
+fn claude_agent(
+    file: &InspectedFile,
+    fallback_color: Color,
+) -> std::result::Result<(Agent, Compatibility, String), String> {
     let (fields, body) = markdown_frontmatter(&file.content)?;
     reject_unknown_fields(
         &fields,
@@ -186,8 +212,13 @@ fn claude_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent
             "model",
             "permissionMode",
             "tools",
+            "disallowedTools",
             "skills",
             "mcpServers",
+            "maxTurns",
+            "memory",
+            "color",
+            "type",
         ],
         "Claude agent",
     )?;
@@ -208,10 +239,27 @@ fn claude_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent
         Some("acceptEdits" | "auto") => FileAccess::AskFirst,
         _ => FileAccess::LookOnly,
     };
-    let tools = list_field(fields.get("tools"));
+    let denied_tools = list_field(fields.get("disallowedTools"));
+    let tools: Vec<_> = list_field(fields.get("tools"))
+        .into_iter()
+        .filter(|tool| !denied_tools.contains(tool))
+        .collect();
     let skills = list_field(fields.get("skills"));
     let connections = nested_names(&file.content, "mcpServers");
-    Ok(Agent {
+    let mut choices = Vec::new();
+    if fields.contains_key("memory") {
+        choices.push("project memory");
+    }
+    if fields.contains_key("maxTurns") {
+        choices.push("turn limit");
+    }
+    if fields.contains_key("type") {
+        choices.push("agent type");
+    }
+    let color = fields
+        .get("color")
+        .map_or(fallback_color, |value| claude_color(value, fallback_color));
+    let agent = Agent {
         schema: SCHEMA,
         id: Uuid::now_v7(),
         name,
@@ -238,10 +286,29 @@ fn claude_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent
         connections,
         write_results_to: String::new(),
         vendor_options: VendorOptions::new(),
-    })
+    };
+    if choices.is_empty() {
+        Ok((
+            agent,
+            Compatibility::Exact,
+            "This agent will become a native Loadout agent.".to_owned(),
+        ))
+    } else {
+        Ok((
+            agent,
+            Compatibility::NeedsChoice,
+            format!(
+                "Choose how to reproduce this agent's {}.",
+                choices.join(" and ")
+            ),
+        ))
+    }
 }
 
-fn codex_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent, String> {
+fn codex_agent(
+    file: &InspectedFile,
+    color: Color,
+) -> std::result::Result<(Agent, Compatibility, String), String> {
     let fields = flat_toml(&file.content);
     reject_unknown_fields(
         &fields,
@@ -274,30 +341,45 @@ fn codex_agent(file: &InspectedFile, color: Color) -> std::result::Result<Agent,
         Some("workspace-write") => FileAccess::AskFirst,
         _ => FileAccess::LookOnly,
     };
-    Ok(Agent {
-        schema: SCHEMA,
-        id: Uuid::now_v7(),
-        name,
-        summary: fields
-            .get("description")
-            .cloned()
-            .unwrap_or_else(|| "Imported project role".to_owned()),
-        color,
-        instructions,
-        runs_with: Vendor::Codex,
-        model: fields
-            .get("model")
-            .cloned()
-            .unwrap_or_else(|| "gpt-5.6-sol".to_owned()),
-        thinking,
-        file_access,
-        give_up_after_minutes: 20,
-        tools: Tools::Everything,
-        skills: Vec::new(),
-        connections: nested_toml_tables(&file.content, "mcp_servers"),
-        write_results_to: String::new(),
-        vendor_options: VendorOptions::new(),
-    })
+    Ok((
+        Agent {
+            schema: SCHEMA,
+            id: Uuid::now_v7(),
+            name,
+            summary: fields
+                .get("description")
+                .cloned()
+                .unwrap_or_else(|| "Imported project role".to_owned()),
+            color,
+            instructions,
+            runs_with: Vendor::Codex,
+            model: fields
+                .get("model")
+                .cloned()
+                .unwrap_or_else(|| "gpt-5.6-sol".to_owned()),
+            thinking,
+            file_access,
+            give_up_after_minutes: 20,
+            tools: Tools::Everything,
+            skills: Vec::new(),
+            connections: nested_toml_tables(&file.content, "mcp_servers"),
+            write_results_to: String::new(),
+            vendor_options: VendorOptions::new(),
+        },
+        Compatibility::Exact,
+        "This agent will become a native Loadout agent.".to_owned(),
+    ))
+}
+
+fn claude_color(value: &str, fallback: Color) -> Color {
+    match value.to_ascii_lowercase().as_str() {
+        "purple" => Color::Plum,
+        "red" | "pink" => Color::Rose,
+        "green" => Color::Moss,
+        "yellow" | "orange" => Color::Clay,
+        "blue" | "cyan" => Color::Slate,
+        _ => fallback,
+    }
 }
 
 fn reject_unknown_fields(
@@ -340,15 +422,23 @@ fn skill(
     ))
 }
 
-fn connections(file: &InspectedFile) -> std::result::Result<Vec<Connection>, String> {
+struct AdaptedConnections {
+    connections: Vec<Connection>,
+    issues: Vec<String>,
+}
+
+fn connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, String> {
     match file.item.source {
         SourceKind::Claude => claude_connections(file),
-        SourceKind::Codex => codex_connections(file),
+        SourceKind::Codex => codex_connections(file).map(|connections| AdaptedConnections {
+            connections,
+            issues: Vec::new(),
+        }),
         _ => Err("This connection format is not supported.".to_owned()),
     }
 }
 
-fn claude_connections(file: &InspectedFile) -> std::result::Result<Vec<Connection>, String> {
+fn claude_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, String> {
     let document: Value = serde_json::from_str(&file.content)
         .map_err(|error| format!("This project connection file is not valid JSON: {error}"))?;
     let servers = document
@@ -356,68 +446,83 @@ fn claude_connections(file: &InspectedFile) -> std::result::Result<Vec<Connectio
         .and_then(Value::as_object)
         .ok_or_else(|| "This file does not contain project connections.".to_owned())?;
     let mut out = Vec::new();
+    let mut issues = Vec::new();
     for (name, server) in servers {
-        let object = server
-            .as_object()
-            .ok_or_else(|| format!("Connection {name} is not an object."))?;
-        let transport = if let Some(url) = object.get("url").and_then(Value::as_str) {
-            if !url.starts_with("https://") {
-                return Err(format!("Connection {name} must use HTTPS."));
-            }
-            let token_environment = object
-                .get("bearerTokenEnvVar")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if token_environment
-                .as_deref()
-                .is_some_and(|name| !environment_name(name))
-            {
-                return Err(format!(
-                    "Connection {name} must name an environment variable instead of storing a token."
-                ));
-            }
-            Transport::Http {
-                url: url.to_owned(),
-                token_environment,
-            }
-        } else {
-            let command = object
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("Connection {name} has no command or HTTPS URL."))?;
-            let args = string_array(object.get("args"))?;
-            let mut environment = Vec::new();
-            if let Some(env) = object.get("env").and_then(Value::as_object) {
-                for (key, value) in env {
-                    let Some(value) = value.as_str() else {
-                        return Err(format!(
-                            "Connection {name} has a non-text environment value."
-                        ));
-                    };
-                    if value != format!("${{{key}}}") && value != format!("${key}") {
-                        return Err(format!(
-                            "Connection {name} contains a literal secret. Replace it with an environment reference."
-                        ));
-                    }
-                    environment.push(key.clone());
-                }
-            }
-            environment.sort();
-            Transport::Stdio {
-                command: command.to_owned(),
-                args,
-                environment,
-            }
-        };
-        out.push(Connection::imported(
-            slug(name),
-            name.clone(),
-            transport,
-            file.item.path.clone(),
-            file.item.hash.clone(),
-        ));
+        match claude_connection(file, name, server) {
+            Ok(connection) => out.push(connection),
+            Err(issue) => issues.push(issue),
+        }
     }
-    Ok(out)
+    Ok(AdaptedConnections {
+        connections: out,
+        issues,
+    })
+}
+
+fn claude_connection(
+    file: &InspectedFile,
+    name: &str,
+    server: &Value,
+) -> std::result::Result<Connection, String> {
+    let object = server
+        .as_object()
+        .ok_or_else(|| format!("Connection {name} is not an object."))?;
+    let transport = if let Some(url) = object.get("url").and_then(Value::as_str) {
+        if !url.starts_with("https://") {
+            return Err(format!("Connection {name} must use HTTPS."));
+        }
+        let token_environment = object
+            .get("bearerTokenEnvVar")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if token_environment
+            .as_deref()
+            .is_some_and(|name| !environment_name(name))
+        {
+            return Err(format!(
+                "Connection {name} must name an environment variable instead of storing a token."
+            ));
+        }
+        Transport::Http {
+            url: url.to_owned(),
+            token_environment,
+        }
+    } else {
+        let command = object
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Connection {name} has no command or HTTPS URL."))?;
+        let args = string_array(object.get("args"))?;
+        let mut environment = Vec::new();
+        if let Some(env) = object.get("env").and_then(Value::as_object) {
+            for (key, value) in env {
+                let Some(value) = value.as_str() else {
+                    return Err(format!(
+                        "Connection {name} has a non-text environment value."
+                    ));
+                };
+                if value != format!("${{{key}}}") && value != format!("${key}") {
+                    return Err(format!(
+                        "Connection {name} contains a literal secret. Replace it with an environment reference."
+                    ));
+                }
+                environment.push(key.clone());
+            }
+        }
+        environment.sort();
+        Transport::Stdio {
+            command: command.to_owned(),
+            args,
+            environment,
+        }
+    };
+    Ok(Connection::imported(
+        slug(name),
+        name.to_owned(),
+        transport,
+        file.item.path.clone(),
+        file.item.hash.clone(),
+    ))
 }
 
 fn codex_connections(file: &InspectedFile) -> std::result::Result<Vec<Connection>, String> {
@@ -488,12 +593,38 @@ fn markdown_frontmatter(
         return Err("This agent has an unfinished front matter block.".to_owned());
     };
     let mut fields = BTreeMap::new();
-    for line in rest[..end].lines() {
+    let lines: Vec<_> = rest[..end].lines().collect();
+    let mut index = 0_usize;
+    while index < lines.len() {
+        let line = lines[index];
+        index += 1;
         if line.starts_with(' ') || line.trim().is_empty() {
             continue;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            fields.insert(key.trim().to_owned(), unquote(value.trim()));
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let raw = value.trim();
+        if raw == ">" || raw == "|" {
+            let mut parts = Vec::new();
+            while index < lines.len() && (lines[index].starts_with(' ') || lines[index].is_empty())
+            {
+                let next = lines[index].trim();
+                if !next.is_empty() {
+                    parts.push(next);
+                }
+                index += 1;
+            }
+            fields.insert(
+                key.trim().to_owned(),
+                if raw == ">" {
+                    parts.join(" ")
+                } else {
+                    parts.join("\n")
+                },
+            );
+        } else {
+            fields.insert(key.trim().to_owned(), unquote(raw));
         }
     }
     Ok((fields, rest[end + 4..].trim_start_matches('\n')))
@@ -651,4 +782,21 @@ pub(crate) fn knows_ship_ui(content: &str) -> bool {
     ["frontend-dev", "design-qa", "code-reviewer"]
         .iter()
         .all(|role| content.contains(role))
+        && check_command(content).is_some()
+}
+
+pub(crate) fn check_command(source: &str) -> Option<String> {
+    for (index, piece) in source.split('`').enumerate() {
+        if index % 2 == 0 {
+            continue;
+        }
+        let command = piece.trim();
+        if command.starts_with("./")
+            && (command.contains("verify") || command.contains("test") || command.contains("ci"))
+            && !command.contains('\n')
+        {
+            return Some(command.to_owned());
+        }
+    }
+    None
 }

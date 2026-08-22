@@ -51,12 +51,12 @@ pub fn apply_setup_inner(home: &Path, request: &ApplySetup) -> Result<ImportRece
         .report
         .mappings
         .iter()
-        .filter(|mapping| mapping.compatibility == Compatibility::NeedsChoice)
+        .filter(|mapping| mapping.compatibility.blocks())
         .map(|mapping| mapping.item_id.as_str())
         .collect();
     if !leave_out.is_subset(&resolvable) {
         return Err(ImportError::Save(
-            "The import tried to resolve an item that was not waiting for a choice in the latest Scan."
+            "The import tried to leave out an item that was not unresolved in the latest Scan."
                 .to_owned(),
         ));
     }

@@ -34,6 +34,8 @@ pub enum ItemKind {
     Connection,
     Workflow,
     Hook,
+    Memory,
+    Rule,
     Unknown,
 }
 

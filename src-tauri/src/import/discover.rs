@@ -24,10 +24,22 @@ pub struct Inspection {
 
 /// Skanuje wyłącznie katalogi konfiguracji. Kod projektu nie jest wejściem importera.
 pub fn scan(root: &Path) -> Result<Inspection> {
-    let root = root.canonicalize().map_err(|error| ImportError::Inspect {
+    let selected = root.canonicalize().map_err(|error| ImportError::Inspect {
         path: root.to_path_buf(),
         detail: error.to_string(),
     })?;
+    // Człowiek często wskazuje widoczny katalog `.claude`, nie jego rodzica. Import nadal
+    // dotyczy repo: inaczej szukalibyśmy `.claude/.claude` i uczciwy projekt wyglądałby jak
+    // pusta konfiguracja. `.codex` i `.agents` mają dokładnie tę samą pułapkę.
+    let root = if selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| [".claude", ".codex", ".agents"].contains(&name))
+    {
+        selected.parent().unwrap_or(&selected).to_path_buf()
+    } else {
+        selected
+    };
     if !root.is_dir() {
         return Err(ImportError::Inspect {
             path: root,
@@ -135,7 +147,7 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
                 kind: ItemKind::Unknown,
                 path: relative.to_path_buf(),
                 hash: "symlink".to_owned(),
-                name: display_name(relative),
+                name: display_name(relative, ItemKind::Unknown),
                 summary: "This configuration is a link and was not followed.".to_owned(),
             },
             content: String::new(),
@@ -158,7 +170,7 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
         path: relative.to_path_buf(),
         detail: "Configuration files must be UTF-8 text.".to_owned(),
     })?;
-    let hash = if relative.file_name().is_some_and(|name| name == "SKILL.md") {
+    let hash = if is_bundle_entry(relative) {
         bundle_hash(root, relative, candidates)?
     } else {
         content_hash(&bytes)
@@ -171,7 +183,7 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
             kind,
             path: relative.to_path_buf(),
             hash,
-            name: display_name(relative),
+            name: display_name(relative, kind),
             summary,
         },
         content,
@@ -180,10 +192,27 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
 
 fn is_skill_bundle_child(path: &Path) -> bool {
     let components: Vec<_> = path.components().collect();
-    components
+    let skill_child = components
         .iter()
         .position(|part| part.as_os_str() == "skills")
-        .is_some_and(|index| components.len() > index + 3)
+        .is_some_and(|index| {
+            components.len() > index + 2 && path.file_name().is_some_and(|name| name != "SKILL.md")
+        });
+    let memory_child = components
+        .first()
+        .is_some_and(|part| part.as_os_str() == ".claude")
+        && components
+            .get(1)
+            .is_some_and(|part| part.as_os_str() == "agent-memory")
+        && components.len() >= 4
+        && path.file_name().is_some_and(|name| name != "MEMORY.md");
+    skill_child || memory_child
+}
+
+fn is_bundle_entry(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "SKILL.md")
+        || path.file_name().is_some_and(|name| name == "MEMORY.md")
+            && path.starts_with(".claude/agent-memory")
 }
 
 fn bundle_hash(root: &Path, skill_file: &Path, candidates: &[PathBuf]) -> Result<String> {
@@ -219,6 +248,21 @@ fn bundle_hash(root: &Path, skill_file: &Path, candidates: &[PathBuf]) -> Result
 }
 
 fn walk(root: &Path, at: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    // `traces` jest wyjściem wykonanych workflow (zrzuty, filmy, logi), nie konfiguracją,
+    // która steruje następnym biegiem. Czytanie go jako setupu w realnym URC mieszało setki
+    // binarnych artefaktów z trzynastoma agentami i kończyło skan na pierwszym PNG.
+    if at.strip_prefix(root).is_ok_and(|relative| {
+        [
+            ".claude/traces",
+            ".claude/tmp",
+            ".claude/plans",
+            ".claude/d2c",
+        ]
+        .iter()
+        .any(|generated| relative.starts_with(generated))
+    }) {
+        return Ok(());
+    }
     let metadata = fs::symlink_metadata(at).map_err(|error| ImportError::Inspect {
         path: at.to_path_buf(),
         detail: error.to_string(),
@@ -281,6 +325,20 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
     {
         return (ItemKind::Agent, "An agent definition was found.".to_owned());
     }
+    if text.starts_with(".claude/workflows/") && path.extension().is_some_and(|ext| ext == "js") {
+        return (
+            ItemKind::Workflow,
+            "A project workflow definition was found.".to_owned(),
+        );
+    }
+    if text.starts_with(".claude/commands/") && path.extension().is_some_and(|ext| ext == "md")
+        || text.starts_with(".claude/lib/")
+    {
+        return (
+            ItemKind::Workflow,
+            "A procedural project routine was found.".to_owned(),
+        );
+    }
     if path.file_name().is_some_and(|name| name == "SKILL.md")
         && (text.contains("/skills/") || text.starts_with(".agents/skills/"))
     {
@@ -300,6 +358,24 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
     if text.starts_with(".claude/settings") && content.contains("hooks") {
         return (ItemKind::Hook, "A project hook was found.".to_owned());
     }
+    if text.starts_with(".claude/hooks/") {
+        return (
+            ItemKind::Hook,
+            "A project hook script was found.".to_owned(),
+        );
+    }
+    if text.starts_with(".claude/agent-memory/")
+        && path.file_name().is_some_and(|name| name == "MEMORY.md")
+        || text.starts_with(".claude/learnings/") && path.extension().is_some_and(|ext| ext == "md")
+    {
+        return (
+            ItemKind::Memory,
+            "Project guidance for an agent was found.".to_owned(),
+        );
+    }
+    if text.starts_with(".claude/rules/") || text.starts_with(".claude/automation/") {
+        return (ItemKind::Rule, "A project rule was found.".to_owned());
+    }
     (
         ItemKind::Unknown,
         "Loadout does not recognize this project setting yet.".to_owned(),
@@ -313,11 +389,18 @@ fn looks_like_workflow(content: &str) -> bool {
         || lower.contains("agent(")
 }
 
-fn display_name(path: &Path) -> String {
-    path.parent()
-        .and_then(Path::file_name)
-        .or_else(|| path.file_stem())
-        .and_then(|name| name.to_str())
+fn display_name(path: &Path, kind: ItemKind) -> String {
+    let name = match kind {
+        ItemKind::Skill | ItemKind::Memory
+            if path
+                .file_name()
+                .is_some_and(|name| name == "MEMORY.md" || name == "SKILL.md") =>
+        {
+            path.parent().and_then(Path::file_name)
+        }
+        _ => path.file_stem(),
+    };
+    name.and_then(|name| name.to_str())
         .unwrap_or("Project setting")
         .to_owned()
 }

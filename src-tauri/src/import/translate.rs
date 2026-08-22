@@ -14,7 +14,7 @@ use crate::workflow::{
 
 pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidence as Evidence};
 
-use super::adapters::{adapt, knows_ship_ui};
+use super::adapters::{adapt, check_command, knows_ship_ui};
 use super::discover::{Inspection, scan};
 use super::{
     ADAPTER_VERSION, CompatibilityReport, ImportPreview, ItemKind, MigrationDraft, Result,
@@ -199,22 +199,6 @@ fn find_agent<'a>(agents: &'a [Agent], wanted: &str) -> Option<&'a Agent> {
                 .replace(' ', "-")
                 .contains(wanted)
     })
-}
-
-fn check_command(source: &str) -> Option<String> {
-    for (index, piece) in source.split('`').enumerate() {
-        if index % 2 == 0 {
-            continue;
-        }
-        let command = piece.trim();
-        if command.starts_with("./")
-            && (command.contains("verify") || command.contains("test") || command.contains("ci"))
-            && !command.contains('\n')
-        {
-            return Some(command.to_owned());
-        }
-    }
-    None
 }
 
 fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str, at: Point) -> AgentStep {

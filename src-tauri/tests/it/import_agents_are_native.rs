@@ -50,3 +50,39 @@ fn both_vendor_agents_translate_to_native_agents() -> Result<(), Box<dyn std::er
     }));
     Ok(())
 }
+
+#[test]
+fn a_real_claude_role_is_visible_even_when_one_behavior_needs_a_choice()
+-> Result<(), Box<dyn std::error::Error>> {
+    use loadout_lib::import::Compatibility;
+    use loadout_lib::library::agents::{Color, Tools};
+
+    let repo = tempfile::tempdir()?;
+    std::fs::create_dir_all(repo.path().join(".claude/agents"))?;
+    std::fs::write(
+        repo.path().join(".claude/agents/frontend-dev.md"),
+        "---\nname: frontend-dev\ndescription: >\n  Senior Angular developer.\n  Builds the project interface.\ntools: Read, Write, Bash\ndisallowedTools: Bash\nmodel: opus\nmaxTurns: 35\npermissionMode: acceptEdits\nmemory: project\ncolor: green\nskills: design-system-reference\n---\nBuild production-grade Angular features.",
+    )?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+
+    let agent = preview.draft.agents.first().ok_or("agent disappeared")?;
+    assert_eq!(agent.name, "frontend-dev");
+    assert_eq!(
+        agent.summary,
+        "Senior Angular developer. Builds the project interface."
+    );
+    assert_eq!(agent.color, Color::Moss);
+    assert_eq!(
+        agent.tools,
+        Tools::Only(vec!["Read".into(), "Write".into()])
+    );
+    assert_eq!(agent.skills, vec!["design-system-reference"]);
+    assert!(preview.draft.report.mappings.iter().any(|mapping| {
+        mapping.compatibility == Compatibility::NeedsChoice
+            && mapping.message.contains("project memory")
+            && mapping.message.contains("turn limit")
+    }));
+    assert!(!preview.draft.runnable());
+    Ok(())
+}

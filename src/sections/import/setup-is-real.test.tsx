@@ -28,6 +28,7 @@ describe('Import setup', () => {
         items: [
           { id: 'agent', path: '.claude/agents/build.md', name: 'build', summary: 'Agent' },
           { id: 'hook', path: '.claude/settings.json', name: 'settings', summary: 'Hook' },
+          { id: 'unknown', path: '.claude/future.json', name: 'future', summary: 'Unknown' },
         ],
       },
       draft: {
@@ -43,6 +44,11 @@ describe('Import setup', () => {
               itemId: 'hook',
               compatibility: 'needs_choice',
               message: 'Choose how to reproduce this hook.',
+            },
+            {
+              itemId: 'unknown',
+              compatibility: 'unsupported',
+              message: 'This setting is not supported.',
             },
           ],
         },
@@ -64,7 +70,9 @@ describe('Import setup', () => {
     expect(html).toContain('Connections stay off unless you enable them');
     expect(html).toContain('disabled=""');
     expect(html).toContain('Choose how to reproduce this hook.');
-    expect(html).toContain('Leave this behavior out of the imported setup');
+    expect(html).toContain('Import without this behavior');
+    expect(html).toContain('Leave this item out of the import');
+    expect(html).toContain('Leave out all unresolved items');
   });
 
   it('starts with the folder of the workspace open in the side menu', () => {
@@ -80,5 +88,30 @@ describe('Import setup', () => {
     );
 
     expect(html).toContain(`value="${folder}"`);
+  });
+
+  it('does not offer an empty import as ready', () => {
+    const preview: ImportPreview = {
+      snapshot: { root: '/project', items: [] },
+      draft: {
+        sourceHashes: {},
+        agents: [],
+        skills: [],
+        connections: [],
+        workflows: [],
+        report: { mappings: [] },
+      },
+    };
+
+    const html = renderToStaticMarkup(
+      <ImportSetup
+        initialPreview={preview}
+        onClose={() => undefined}
+        onImported={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('No setup files were found in this project.');
+    expect(html).not.toContain('Ready to import.');
   });
 });

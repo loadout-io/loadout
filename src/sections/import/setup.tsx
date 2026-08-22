@@ -78,8 +78,8 @@ const STATUS: Readonly<Record<Compatibility, string>> = {
 function blockers(preview: ImportPreview, leaveOut: readonly string[]): number {
   return preview.draft.report.mappings.filter(
     (mapping) =>
-      mapping.compatibility === 'unsupported' ||
-      (mapping.compatibility === 'needs_choice' && !leaveOut.includes(mapping.itemId)),
+      (mapping.compatibility === 'unsupported' || mapping.compatibility === 'needs_choice') &&
+      !leaveOut.includes(mapping.itemId),
   ).length;
 }
 
@@ -102,6 +102,14 @@ export function ImportSetup({
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const blocked = preview === null ? 0 : blockers(preview, leaveOut);
+  const hasItems = preview !== null && preview.snapshot.items.length > 0;
+  const unresolved =
+    preview?.draft.report.mappings
+      .filter(
+        (mapping) =>
+          mapping.compatibility === 'unsupported' || mapping.compatibility === 'needs_choice',
+      )
+      .map((mapping) => mapping.itemId) ?? [];
 
   const scan = (event: FormEvent): void => {
     event.preventDefault();
@@ -125,7 +133,7 @@ export function ImportSetup({
   };
 
   const apply = (): void => {
-    if (preview === null || blocked > 0) return;
+    if (preview === null || !hasItems || blocked > 0) return;
     setBusy(true);
     setRefusal(null);
     void io
@@ -237,7 +245,8 @@ export function ImportSetup({
                     </div>
                     <p className="font-mono text-meta text-muted">{item.path}</p>
                     <p className="text-note text-body">{mapping?.message ?? item.summary}</p>
-                    {mapping?.compatibility === 'needs_choice' ? (
+                    {mapping?.compatibility === 'needs_choice' ||
+                    mapping?.compatibility === 'unsupported' ? (
                       <label className="mt-2 flex items-center gap-2 text-body text-ink">
                         <input
                           type="checkbox"
@@ -250,7 +259,9 @@ export function ImportSetup({
                             );
                           }}
                         />
-                        Leave this behavior out of the imported setup
+                        {mapping.compatibility === 'unsupported'
+                          ? 'Leave this item out of the import'
+                          : 'Import without this behavior'}
                       </label>
                     ) : null}
                   </li>
@@ -281,14 +292,28 @@ export function ImportSetup({
               </fieldset>
             )}
             <div className="flex items-center gap-3 border-t border-line pt-3">
+              {unresolved.length === 0 ? null : (
+                <button
+                  type="button"
+                  className={BUTTON}
+                  disabled={unresolved.every((id) => leaveOut.includes(id))}
+                  onClick={() => {
+                    setLeaveOut(unresolved);
+                  }}
+                >
+                  Leave out all unresolved items
+                </button>
+              )}
               <p className="text-note text-muted">
-                {blocked === 0
-                  ? 'Ready to import.'
-                  : `${String(blocked)} item(s) must be resolved before import.`}
+                {!hasItems
+                  ? 'No setup files were found in this project.'
+                  : blocked === 0
+                    ? 'Ready to import.'
+                    : `${String(blocked)} item(s) must be resolved before import.`}
               </p>
               <button
                 type="button"
-                disabled={busy || blocked > 0}
+                disabled={busy || !hasItems || blocked > 0}
                 className={`ml-auto ${PRIMARY}`}
                 onClick={apply}
               >
