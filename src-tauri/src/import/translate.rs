@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::library::agents::Agent;
+use crate::library::agents::{Agent, Color, SCHEMA, Thinking, Tools, Vendor, VendorOptions};
 use crate::workflow::{
     AgentStep, CheckStep, CheckpointStep, Folder, Handover, Link, PlainNotes, Point, Skills, Step,
     WorkflowFile,
@@ -17,7 +17,9 @@ pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidenc
 use super::adapters::{adapt, check_command, knows_ship_ui};
 use super::discover::{Inspection, scan};
 use super::{
-    ADAPTER_VERSION, CompatibilityReport, ImportPreview, ItemKind, MigrationDraft, Result,
+    ADAPTER_VERSION, AnalyzedFolder, AnalyzedStep, AnalyzedWorkflow, Compatibility,
+    CompatibilityReport, ImportError, ImportPreview, ItemKind, MigrationDraft, Result,
+    SemanticAnalysis,
 };
 
 /// Pełny Scan: odczyt i translacja w jednym backendowym przebiegu, zanim dane trafią do okna.
@@ -49,6 +51,391 @@ fn from_inspection(inspection: Inspection) -> ImportPreview {
     ImportPreview {
         snapshot: inspection.snapshot,
         draft,
+        analysis: None,
+    }
+}
+
+/// Dokłada do deterministycznej migawki wyłącznie te propozycje modelu, które przechodzą
+/// zamknięty schemat i natywny walidator workflow. Model nie rozstrzyga własnej poprawności.
+pub fn with_analysis(
+    mut preview: ImportPreview,
+    analysis: SemanticAnalysis,
+) -> Result<ImportPreview> {
+    if analysis.source_hashes != preview.draft.source_hashes {
+        return Err(ImportError::Changed);
+    }
+    let items: BTreeMap<_, _> = preview
+        .snapshot
+        .items
+        .iter()
+        .cloned()
+        .map(|item| (item.id.clone(), item))
+        .collect();
+    let mut covered = BTreeSet::new();
+    apply_analyzed_agents(&mut preview, &analysis, &items, &mut covered)?;
+    apply_analyzed_workflows(&mut preview, &analysis, &items, &mut covered)?;
+
+    for mapping in &mut preview.draft.report.mappings {
+        if covered.contains(mapping.item_id.as_str()) && mapping.compatibility.blocks() {
+            mapping.compatibility = Compatibility::Adjusted;
+            "An agent converted this project behavior into the native draft shown below."
+                .clone_into(&mut mapping.message);
+        }
+    }
+    preview
+        .draft
+        .agents
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    preview
+        .draft
+        .workflows
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    preview.analysis = Some(analysis);
+    Ok(preview)
+}
+
+fn apply_analyzed_agents(
+    preview: &mut ImportPreview,
+    analysis: &SemanticAnalysis,
+    items: &BTreeMap<String, super::SourceItem>,
+    covered: &mut BTreeSet<String>,
+) -> Result<()> {
+    for proposed in &analysis.agents {
+        validate_text("agent name", &proposed.name)?;
+        validate_text("agent purpose", &proposed.summary)?;
+        validate_text("agent instructions", &proposed.instructions)?;
+        cover_sources(
+            items,
+            &proposed.source_items,
+            &[
+                ItemKind::Agent,
+                ItemKind::Memory,
+                ItemKind::Rule,
+                ItemKind::Unknown,
+            ],
+            covered,
+        )?;
+        let unknown_skill = proposed.skills.iter().find(|name| {
+            !preview
+                .draft
+                .skills
+                .iter()
+                .any(|skill| skill.name.eq_ignore_ascii_case(name))
+        });
+        if let Some(name) = unknown_skill {
+            return Err(ImportError::Analyze(format!(
+                "The analyzed agent {} refers to skill {name}, which was not found by Scan.",
+                proposed.name
+            )));
+        }
+        if let Some(existing) = preview
+            .draft
+            .agents
+            .iter_mut()
+            .find(|agent| agent.name.eq_ignore_ascii_case(&proposed.name))
+        {
+            if !existing.instructions.contains(proposed.instructions.trim()) {
+                existing.instructions.push_str("\n\n");
+                existing.instructions.push_str(proposed.instructions.trim());
+            }
+            merge_names(&mut existing.skills, &proposed.skills);
+        } else {
+            let colour = colour(preview.draft.agents.len());
+            preview.draft.agents.push(Agent {
+                schema: SCHEMA,
+                id: Uuid::now_v7(),
+                name: proposed.name.trim().to_owned(),
+                summary: proposed.summary.trim().to_owned(),
+                color: colour,
+                instructions: proposed.instructions.trim().to_owned(),
+                runs_with: analysis.vendor,
+                model: default_model(analysis.vendor).to_owned(),
+                thinking: Thinking::Balanced,
+                file_access: proposed.file_access,
+                give_up_after_minutes: 20,
+                tools: Tools::Everything,
+                skills: proposed.skills.clone(),
+                connections: Vec::new(),
+                write_results_to: String::new(),
+                vendor_options: VendorOptions::new(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn apply_analyzed_workflows(
+    preview: &mut ImportPreview,
+    analysis: &SemanticAnalysis,
+    items: &BTreeMap<String, super::SourceItem>,
+    covered: &mut BTreeSet<String>,
+) -> Result<()> {
+    for proposed in &analysis.workflows {
+        validate_text("workflow name", &proposed.name)?;
+        cover_sources(
+            items,
+            &proposed.source_items,
+            &[
+                ItemKind::Workflow,
+                ItemKind::Hook,
+                ItemKind::Rule,
+                ItemKind::Unknown,
+            ],
+            covered,
+        )?;
+        let workflow = analyzed_workflow(proposed, &preview.draft.agents, &preview.draft.root)?;
+        let problems: Vec<_> = crate::workflow::check::check_to_run(&workflow)
+            .into_iter()
+            .filter(|note| note.level == crate::workflow::check::Level::Problem)
+            .collect();
+        if let Some(problem) = problems.first() {
+            return Err(ImportError::Analyze(format!(
+                "The analyzed workflow {} is not runnable: {}",
+                proposed.name, problem.message
+            )));
+        }
+        if preview
+            .draft
+            .workflows
+            .iter()
+            .any(|existing| existing.name.eq_ignore_ascii_case(&workflow.name))
+        {
+            return Err(ImportError::Analyze(format!(
+                "The analysis produced another workflow named {}.",
+                workflow.name
+            )));
+        }
+        preview.draft.workflows.push(workflow);
+    }
+    Ok(())
+}
+
+fn validate_text(label: &str, text: &str) -> Result<()> {
+    if text.trim().is_empty() || text.len() > 32_768 {
+        return Err(ImportError::Analyze(format!(
+            "The analysis returned an invalid {label}."
+        )));
+    }
+    Ok(())
+}
+
+fn cover_sources(
+    items: &BTreeMap<String, super::SourceItem>,
+    source_items: &[String],
+    allowed: &[ItemKind],
+    covered: &mut BTreeSet<String>,
+) -> Result<()> {
+    if source_items.is_empty() {
+        return Err(ImportError::Analyze(
+            "Every analyzed item must name the Scan items it reproduces.".to_owned(),
+        ));
+    }
+    for id in source_items {
+        let item = items.get(id.as_str()).ok_or_else(|| {
+            ImportError::Analyze(
+                "The analysis refers to a setup item that is not in this Scan.".to_owned(),
+            )
+        })?;
+        if !allowed.contains(&item.kind) {
+            return Err(ImportError::Analyze(format!(
+                "{} cannot be reproduced by this kind of analyzed item.",
+                item.path.display()
+            )));
+        }
+        let first_use = covered.insert(id.clone());
+        // Reguła albo pamięć projektowa może uczciwie zasilać kilka agentów. Pliki opisujące
+        // konkretny agent/workflow są wyłączne, bo ich podwójne przypisanie udawałoby dwie
+        // niezależne semantyki z jednego źródła.
+        if !first_use && !matches!(item.kind, ItemKind::Memory | ItemKind::Rule) {
+            return Err(ImportError::Analyze(format!(
+                "{} was associated with more than one analyzed item.",
+                item.path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn analyzed_workflow(
+    proposed: &AnalyzedWorkflow,
+    agents: &[Agent],
+    root: &Path,
+) -> Result<WorkflowFile> {
+    if proposed.steps.is_empty() {
+        return Err(ImportError::Analyze(format!(
+            "The analyzed workflow {} has no steps.",
+            proposed.name
+        )));
+    }
+    let mut steps = Vec::with_capacity(proposed.steps.len());
+    for (index, proposed_step) in proposed.steps.iter().enumerate() {
+        steps.push(analyzed_step(proposed_step, index, agents, root)?);
+    }
+    let links = proposed
+        .links
+        .iter()
+        .map(|link| Link {
+            from: link.from.clone(),
+            to: link.to.clone(),
+            max_turns: link.max_turns,
+        })
+        .collect();
+    let mut extra = Map::new();
+    extra.insert(
+        "importedBy".to_owned(),
+        Value::String(format!("loadout-agent-analysis-v{ADAPTER_VERSION}")),
+    );
+    extra.insert(
+        "sourceItems".to_owned(),
+        Value::Array(
+            proposed
+                .source_items
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    Ok(WorkflowFile {
+        format: 1,
+        id: Uuid::now_v7().to_string(),
+        name: proposed.name.trim().to_owned(),
+        description: proposed.description.clone(),
+        steps,
+        links,
+        extra,
+    })
+}
+
+fn analyzed_step(
+    proposed: &AnalyzedStep,
+    index: usize,
+    agents: &[Agent],
+    root: &Path,
+) -> Result<Step> {
+    let column = u32::try_from(index).map_err(|_| {
+        ImportError::Analyze("The analyzed workflow has too many steps to display.".to_owned())
+    })?;
+    let at = point(f64::from(column) * 288.0, 0.0);
+    match proposed {
+        AnalyzedStep::Agent {
+            id,
+            name,
+            agent,
+            instructions,
+            skills,
+            folder,
+        } => {
+            let saved = agents
+                .iter()
+                .find(|saved| saved.name.eq_ignore_ascii_case(agent))
+                .ok_or_else(|| {
+                    ImportError::Analyze(format!(
+                        "The analyzed step {name} refers to agent {agent}, which is not in the draft."
+                    ))
+                })?;
+            let unknown_skill = skills.iter().find(|skill| {
+                !saved
+                    .skills
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(skill))
+            });
+            if let Some(skill) = unknown_skill {
+                return Err(ImportError::Analyze(format!(
+                    "The analyzed step {name} asks agent {agent} for skill {skill}, which that agent does not have."
+                )));
+            }
+            Ok(Step::Agent(AgentStep {
+                id: id.clone(),
+                name: name.clone(),
+                agent: saved.id.to_string(),
+                overrides: Map::new(),
+                vendor_options: BTreeMap::new(),
+                copies: 1,
+                instructions: instructions.clone(),
+                skills: if skills.is_empty() {
+                    Skills::default()
+                } else {
+                    Skills::Only(skills.clone())
+                },
+                folder: folder.into(),
+                handover: Handover::Plain(PlainNotes::Notes),
+                at,
+                extra: Map::new(),
+            }))
+        }
+        AnalyzedStep::Check {
+            id,
+            name,
+            command,
+            proof,
+            evidence,
+            folder,
+        } => {
+            if !super::discover::command_has_evidence(root, evidence, command) {
+                return Err(ImportError::Analyze(format!(
+                    "The analyzed check {name} does not quote a command from {}.",
+                    evidence.display()
+                )));
+            }
+            let mut extra = Map::new();
+            extra.insert(
+                "sourceFile".to_owned(),
+                Value::String(evidence.to_string_lossy().into_owned()),
+            );
+            Ok(Step::Check(CheckStep {
+                id: id.clone(),
+                name: name.clone(),
+                command: command.clone(),
+                proof: proof.clone(),
+                folder: folder.into(),
+                at,
+                extra,
+            }))
+        }
+        AnalyzedStep::Checkpoint { id, name, question } => Ok(Step::Checkpoint(CheckpointStep {
+            id: id.clone(),
+            name: name.clone(),
+            question: Some(question.clone()),
+            at,
+            extra: Map::new(),
+        })),
+    }
+}
+
+impl From<&AnalyzedFolder> for Folder {
+    fn from(value: &AnalyzedFolder) -> Self {
+        match value {
+            AnalyzedFolder::Project => Self::Project,
+            AnalyzedFolder::FreshCopy => Self::FreshCopy,
+            AnalyzedFolder::SameCopy => Self::SameCopy,
+        }
+    }
+}
+
+fn merge_names(existing: &mut Vec<String>, additional: &[String]) {
+    for name in additional {
+        if !existing.iter().any(|one| one.eq_ignore_ascii_case(name)) {
+            existing.push(name.clone());
+        }
+    }
+    existing.sort();
+}
+
+fn colour(index: usize) -> Color {
+    match index % 5 {
+        0 => Color::Slate,
+        1 => Color::Plum,
+        2 => Color::Clay,
+        3 => Color::Moss,
+        _ => Color::Rose,
+    }
+}
+
+fn default_model(vendor: Vendor) -> &'static str {
+    match vendor {
+        Vendor::ClaudeCode => "sonnet",
+        Vendor::Codex => "gpt-5.6-sol",
     }
 }
 
