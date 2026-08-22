@@ -35,6 +35,19 @@ nie) · `src-tauri/src/inherit/rewrite.rs` (`plugin_dir`, `plugin_argv`) · `src
 - **Agent:** `rust-core`
 - **Druga opinia:** inny vendor niż pisarz (D3).
 
+## Zanim napiszesz pierwszą specyfikację — dwie rzeczy o celu `it`
+
+1. **Adresowanie.** Kryterium woła `cargo test --test it <modul>::`, nigdy
+   `cargo test --test <modul>`. Cel `it` jest jeden i zbiorczy.
+2. **Wpis `mod`.** Nowy plik wymaga linii `mod <nazwa>;` w `src-tauri/tests/it/main.rs`. Bez niej
+   plik kompiluje się do niczego i nie uruchamia ani jednego testu — czyli **wygląda jak zestaw,
+   który przeszedł**, a bramka melduje „exit 0 but no evidence of execution" i czyta to jako defekt
+   KONTRAKTU, nie implementacji. Dlatego `main.rs` jest w OWNS tego zadania.
+
+   Zmierzone 2026-08-22 na pierwszym biegu T-79: faza kontraktu napisała dwie specyfikacje po
+   kilkanaście kilobajtów i nie dopisała ani jednego `mod`. Runda naprawcza powtórzyła ten sam
+   błąd, bo widziała ten sam komunikat i nie wiedziała, co on znaczy. Bieg skończył się niczym.
+
 ## AC-1 Krok dostaje dokładnie te skille, które wynikają z agenta i nadpisania
 check: cargo test --test it skills_reach_the_step::
 expect: (\d+) passed
