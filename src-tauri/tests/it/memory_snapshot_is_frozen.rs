@@ -146,6 +146,23 @@ fn rule_worth(units: usize, sentinel: &str) -> String {
     rule
 }
 
+/// Odcisk zdania, policzony TUTAJ, z reguły, którą ten bieg naprawdę niósł.
+///
+/// FNV-1a, szesnaście znaków szesnastkowo — to jest odpowiedź, którą zrzut ma podać, wyprowadzona
+/// z fikstury zamiast przepisana z implementacji. Bez tej funkcji jedyne, co da się o odcisku
+/// powiedzieć, to że nie jest pusty — a napis „nie jest pusty" spełnia też odcisk policzony na
+/// końcu biegu z pliku, który w międzyczasie ktoś przepisał, czyli dokładnie ten przypadek,
+/// przeciw któremu stoi całe to kryterium. Stała wklejona z jednego przebiegu pasowałaby do obu
+/// tak samo dobrze, bo nie mówi, Z CZEGO powstała.
+fn fingerprint_of(rule: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in rule.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn note_file(scope: &str, agent: Option<&str>, title: &str, rule: &str) -> String {
     let owner = agent.map_or_else(String::new, |name| format!("agent: {name}\n"));
     format!(
@@ -319,6 +336,33 @@ async fn a_note_edited_mid_run_does_not_change_what_the_next_step_is_told()
         "the record has no fingerprint of the note. A name on its own answers \"what did the \
          model know\" with \"some note called that\" — and that note has changed since, exactly \
          as it changed during this run. The record reads: {owned:?}"
+    );
+
+    // I ten odcisk jest odciskiem ZDANIA SPRZED EDYCJI. Sam „niepusty napis" jest prawdą także
+    // o odcisku policzonym na końcu, z pliku, który w międzyczasie ktoś przepisał — a wtedy
+    // zrzut opisuje wiedzę, której ten bieg nigdy nie dostał. Obie wartości są tu policzone
+    // z fikstury, więc ta para rozróżnia dwie odpowiedzi, a nie sprawdza kształtu jednej.
+    let stood_at_the_start = fingerprint_of(&rule_worth(WORTH_BEFORE, BEFORE));
+    let typed_mid_run = fingerprint_of(&rule_worth(WORTH_AFTER, AFTER));
+    assert_ne!(
+        stood_at_the_start, typed_mid_run,
+        "the two versions of this note share a fingerprint, so nothing below can tell them \
+         apart. This is the fixture failing, not the code"
+    );
+    assert_eq!(
+        owned.get("hash").and_then(Json::as_str),
+        Some(stood_at_the_start.as_str()),
+        "the fingerprint in the record is not the fingerprint of the sentence this run carried. \
+         What belongs here is the rule as it stood when the first process started; a value taken \
+         from the note as it reads now says the model was told something it was never told, and \
+         it says it in the one file that is supposed to settle that question. The record reads: \
+         {owned:?}"
+    );
+    assert_ne!(
+        owned.get("hash").and_then(Json::as_str),
+        Some(typed_mid_run.as_str()),
+        "the record carries the fingerprint of the sentence somebody typed into the note WHILE \
+         the run was going. No step of this run ever saw that sentence. The record reads: {owned:?}"
     );
     assert_eq!(
         owned.get("bytes").and_then(Json::as_u64),
