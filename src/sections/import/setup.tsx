@@ -1,5 +1,5 @@
 import type { FormEvent, ReactElement } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { why } from '../../ipc/why';
 import { activeWorkspace } from '../../state/workspaces';
 import * as Disk from './io';
@@ -167,6 +167,7 @@ export function ImportSetup({
   const [leaveOut, setLeaveOut] = useState<string[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [analysisVendor, setAnalysisVendor] = useState<AnalysisVendor>('claude-code');
+  const [analysisSeconds, setAnalysisSeconds] = useState(0);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const [inventoryView, setInventoryView] = useState<InventoryView>('all');
@@ -188,6 +189,16 @@ export function ImportSetup({
       const ready = compatibility === 'exact' || compatibility === 'adjusted';
       return inventoryView === 'all' || (inventoryView === 'ready' ? ready : !ready);
     }) ?? [];
+
+  useEffect(() => {
+    if (busy !== 'analyze') return undefined;
+    const timer = window.setInterval(() => {
+      setAnalysisSeconds((seconds) => seconds + 1);
+    }, 1_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [busy]);
 
   const scan = (event: FormEvent): void => {
     event.preventDefault();
@@ -211,8 +222,9 @@ export function ImportSetup({
   };
 
   const analyze = (): void => {
-    if (preview === null || io.analyzeSetup === undefined || blocked === 0) return;
+    if (preview === null || io.analyzeSetup === undefined) return;
     setBusy('analyze');
+    setAnalysisSeconds(0);
     setRefusal(null);
     setSaved(null);
     void io
@@ -315,46 +327,50 @@ export function ImportSetup({
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-4 gap-2 border-y border-line py-3 text-center">
-              <span>
-                <b className="block text-heading text-ink">{preview.draft.agents.length}</b>
-                <small className="text-muted">Agents</small>
-              </span>
-              <span>
-                <b className="block text-heading text-ink">{preview.draft.skills.length}</b>
-                <small className="text-muted">Skills</small>
-              </span>
-              <span>
-                <b className="block text-heading text-ink">{preview.draft.connections.length}</b>
-                <small className="text-muted">Connections</small>
-              </span>
-              <span>
-                <b className="block text-heading text-ink">{preview.draft.workflows.length}</b>
-                <small className="text-muted">Workflows</small>
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-label text-muted">Show</span>
-              {(
-                [
-                  ['all', 'All'],
-                  ['ready', 'Ready'],
-                  ['attention', 'Needs attention'],
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={inventoryView === value ? PRIMARY : BUTTON}
-                  onClick={() => {
-                    setInventoryView(value);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {blocked === 0 ? null : (
+            {preview.analysis === undefined ? null : (
+              <div className="grid grid-cols-4 gap-2 border-y border-line py-3 text-center">
+                <span>
+                  <b className="block text-heading text-ink">{preview.draft.agents.length}</b>
+                  <small className="text-muted">Agents</small>
+                </span>
+                <span>
+                  <b className="block text-heading text-ink">{preview.draft.skills.length}</b>
+                  <small className="text-muted">Skills</small>
+                </span>
+                <span>
+                  <b className="block text-heading text-ink">{preview.draft.connections.length}</b>
+                  <small className="text-muted">Connections</small>
+                </span>
+                <span>
+                  <b className="block text-heading text-ink">{preview.draft.workflows.length}</b>
+                  <small className="text-muted">Workflows</small>
+                </span>
+              </div>
+            )}
+            {preview.analysis === undefined ? null : (
+              <div className="flex items-center gap-2">
+                <span className="text-label text-muted">Show</span>
+                {(
+                  [
+                    ['all', 'All'],
+                    ['ready', 'Ready'],
+                    ['attention', 'Needs attention'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={inventoryView === value ? PRIMARY : BUTTON}
+                    onClick={() => {
+                      setInventoryView(value);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {preview.analysis !== undefined && blocked === 0 ? null : (
               <section className="rounded-md border border-line bg-well p-3">
                 <div className="flex flex-wrap items-end gap-2">
                   <label className="flex flex-col gap-1 text-label text-muted">
@@ -367,7 +383,7 @@ export function ImportSetup({
                       }}
                       className="h-8 rounded-sm border border-line bg-panel px-3 text-body text-ink"
                     >
-                      <option value="claude-code">Claude</option>
+                      <option value="claude-code">Claude · Sonnet · high effort</option>
                       <option value="codex">Codex</option>
                     </select>
                   </label>
@@ -396,75 +412,86 @@ export function ImportSetup({
                     result is checked before it can be imported.
                   </p>
                 </div>
+                {busy === 'analyze' ? (
+                  <p role="status" className="mt-3 text-body text-ink">
+                    {`Analyzing setup in parallel… ${String(analysisSeconds)}s`}
+                  </p>
+                ) : preview.analysis === undefined ? (
+                  <p className="mt-3 text-note text-muted">
+                    Raw scan results stay hidden until the analysis is ready to review.
+                  </p>
+                ) : null}
               </section>
             )}
-            <div className="min-h-0 overflow-auto rounded-md border border-line">
-              <table className="w-full table-fixed border-collapse text-left">
-                <thead className="sticky top-0 bg-panel text-label text-muted">
-                  <tr>
-                    <th className="w-2/5 px-3 py-2 font-normal">Item</th>
-                    <th className="w-24 px-3 py-2 font-normal">Type</th>
-                    <th className="w-28 px-3 py-2 font-normal">Source</th>
-                    <th className="w-36 px-3 py-2 font-normal">Status</th>
-                    <th className="w-24 px-3 py-2 font-normal">Include</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleItems.map((item) => {
-                    const mapping = mappings.get(item.id);
-                    const unresolvedItem =
-                      mapping?.compatibility === 'needs_choice' ||
-                      mapping?.compatibility === 'unsupported';
-                    return (
-                      <tr key={item.id} className="border-t border-line align-top">
-                        <td className="px-3 py-2">
-                          <b className="block truncate text-body text-ink">{item.name}</b>
-                          <span className="block truncate font-mono text-meta text-muted">
-                            {item.path}
-                          </span>
-                          <span className="block text-note text-body">
-                            {mapping?.message ?? item.summary}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-body text-ink">{kindLabel(item)}</td>
-                        <td className="px-3 py-2 text-body text-muted">{sourceLabel(item)}</td>
-                        <td className="px-3 py-2 text-body text-muted">
-                          {mapping === undefined
-                            ? "Can't be reproduced"
-                            : STATUS[mapping.compatibility]}
-                        </td>
-                        <td className="px-3 py-2">
-                          {unresolvedItem ? (
-                            <label className="flex items-center gap-2 text-body text-ink">
-                              <input
-                                type="checkbox"
-                                aria-label={
-                                  mapping.compatibility === 'unsupported'
-                                    ? 'Leave this item out of the import'
-                                    : 'Import without this behavior'
-                                }
-                                checked={leaveOut.includes(item.id)}
-                                onChange={(event) => {
-                                  setLeaveOut((now) =>
-                                    event.target.checked
-                                      ? [...now, item.id]
-                                      : now.filter((id) => id !== item.id),
-                                  );
-                                }}
-                              />
-                              Skip
-                            </label>
-                          ) : (
-                            <span className="text-body text-muted">Yes</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {preview.draft.connections.length === 0 ? null : (
+            {preview.analysis === undefined ? null : (
+              <div className="min-h-0 overflow-auto rounded-md border border-line">
+                <table className="w-full table-fixed border-collapse text-left">
+                  <thead className="sticky top-0 bg-panel text-label text-muted">
+                    <tr>
+                      <th className="w-2/5 px-3 py-2 font-normal">Item</th>
+                      <th className="w-24 px-3 py-2 font-normal">Type</th>
+                      <th className="w-28 px-3 py-2 font-normal">Source</th>
+                      <th className="w-36 px-3 py-2 font-normal">Status</th>
+                      <th className="w-24 px-3 py-2 font-normal">Include</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleItems.map((item) => {
+                      const mapping = mappings.get(item.id);
+                      const unresolvedItem =
+                        mapping?.compatibility === 'needs_choice' ||
+                        mapping?.compatibility === 'unsupported';
+                      return (
+                        <tr key={item.id} className="border-t border-line align-top">
+                          <td className="px-3 py-2">
+                            <b className="block truncate text-body text-ink">{item.name}</b>
+                            <span className="block truncate font-mono text-meta text-muted">
+                              {item.path}
+                            </span>
+                            <span className="block text-note text-body">
+                              {mapping?.message ?? item.summary}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-body text-ink">{kindLabel(item)}</td>
+                          <td className="px-3 py-2 text-body text-muted">{sourceLabel(item)}</td>
+                          <td className="px-3 py-2 text-body text-muted">
+                            {mapping === undefined
+                              ? "Can't be reproduced"
+                              : STATUS[mapping.compatibility]}
+                          </td>
+                          <td className="px-3 py-2">
+                            {unresolvedItem ? (
+                              <label className="flex items-center gap-2 text-body text-ink">
+                                <input
+                                  type="checkbox"
+                                  aria-label={
+                                    mapping.compatibility === 'unsupported'
+                                      ? 'Leave this item out of the import'
+                                      : 'Import without this behavior'
+                                  }
+                                  checked={leaveOut.includes(item.id)}
+                                  onChange={(event) => {
+                                    setLeaveOut((now) =>
+                                      event.target.checked
+                                        ? [...now, item.id]
+                                        : now.filter((id) => id !== item.id),
+                                    );
+                                  }}
+                                />
+                                Skip
+                              </label>
+                            ) : (
+                              <span className="text-body text-muted">Yes</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {preview.analysis === undefined || preview.draft.connections.length === 0 ? null : (
               <fieldset className="flex flex-col gap-2 border-t border-line pt-3">
                 <legend className="text-subhead text-ink">
                   Connections stay off unless you enable them
@@ -521,35 +548,37 @@ export function ImportSetup({
                 )}
               </section>
             )}
-            <div className="flex items-center gap-3 border-t border-line pt-3">
-              {unresolved.length === 0 ? null : (
+            {preview.analysis === undefined ? null : (
+              <div className="flex items-center gap-3 border-t border-line pt-3">
+                {unresolved.length === 0 ? null : (
+                  <button
+                    type="button"
+                    className={BUTTON}
+                    disabled={unresolved.every((id) => leaveOut.includes(id))}
+                    onClick={() => {
+                      setLeaveOut(unresolved);
+                    }}
+                  >
+                    Leave out all unresolved items
+                  </button>
+                )}
+                <p className="text-note text-muted">
+                  {!hasItems
+                    ? 'No setup files were found in this project.'
+                    : blocked === 0
+                      ? 'Ready to import.'
+                      : `${String(blocked)} item(s) must be resolved before import.`}
+                </p>
                 <button
                   type="button"
-                  className={BUTTON}
-                  disabled={unresolved.every((id) => leaveOut.includes(id))}
-                  onClick={() => {
-                    setLeaveOut(unresolved);
-                  }}
+                  disabled={busy !== null || !hasItems || blocked > 0}
+                  className={`ml-auto ${PRIMARY}`}
+                  onClick={apply}
                 >
-                  Leave out all unresolved items
+                  Import
                 </button>
-              )}
-              <p className="text-note text-muted">
-                {!hasItems
-                  ? 'No setup files were found in this project.'
-                  : blocked === 0
-                    ? 'Ready to import.'
-                    : `${String(blocked)} item(s) must be resolved before import.`}
-              </p>
-              <button
-                type="button"
-                disabled={busy !== null || !hasItems || blocked > 0}
-                className={`ml-auto ${PRIMARY}`}
-                onClick={apply}
-              >
-                Import
-              </button>
-            </div>
+              </div>
+            )}
           </>
         )}
       </section>

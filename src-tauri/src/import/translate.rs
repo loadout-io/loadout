@@ -242,7 +242,11 @@ fn cover_sources(
                 item.path.display()
             )));
         }
-        if !covered.insert(id.clone()) {
+        let first_use = covered.insert(id.clone());
+        // Reguła albo pamięć projektowa może uczciwie zasilać kilka agentów. Pliki opisujące
+        // konkretny agent/workflow są wyłączne, bo ich podwójne przypisanie udawałoby dwie
+        // niezależne semantyki z jednego źródła.
+        if !first_use && !matches!(item.kind, ItemKind::Memory | ItemKind::Rule) {
             return Err(ImportError::Analyze(format!(
                 "{} was associated with more than one analyzed item.",
                 item.path.display()

@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{DiscoverySnapshot, ImportError, ItemKind, Result, SourceItem, SourceKind};
+use super::{
+    DiscoverySnapshot, ImportError, ImportPreview, ItemKind, Result, SourceItem, SourceKind,
+};
 
 const FILE_CAP: u64 = 1_048_576;
 const TOTAL_CAP: u64 = 8_388_608;
@@ -89,20 +91,23 @@ fn canonical_root(root: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Buduje odkażoną, ograniczoną kopię setupu dla jawnie uruchomionej analizy modelu.
-/// Agent nigdy nie dostaje ścieżki do prawdziwego repo ani plików spoza katalogów konfiguracji.
-pub fn copy_for_analysis(root: &Path, destination: &Path) -> Result<PathBuf> {
+/// Buduje jeden odkażony, ograniczony pakiet setupu dla jawnej analizy modelu.
+/// Jedna koperta usuwa dziesiątki powolnych tur `Read`; nadal idzie wyłącznie przez stdin.
+pub fn packet_for_analysis(
+    root: &Path,
+    preview: &ImportPreview,
+    selected: &BTreeSet<String>,
+) -> Result<String> {
     let root = canonical_root(root)?;
     let mut candidates = Vec::new();
-    for relative in [".claude", ".codex", ".agents", ".rulesync"] {
-        let path = root.join(relative);
-        if path.exists() {
-            walk(&root, &path, &mut candidates)?;
+    for item in &preview.snapshot.items {
+        if !selected.contains(item.id.as_str()) {
+            continue;
         }
-    }
-    for relative in [".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
-        let path = root.join(relative);
-        if path.exists() {
+        let path = root.join(&item.path);
+        if let Some(bundle) = analysis_bundle(&root, &item.path) {
+            walk(&root, &bundle, &mut candidates)?;
+        } else if path.exists() {
             candidates.push(path);
         }
     }
@@ -115,6 +120,7 @@ pub fn copy_for_analysis(root: &Path, destination: &Path) -> Result<PathBuf> {
         });
     }
     let mut total = 0_u64;
+    let mut packet = String::new();
     for source in candidates {
         let relative = source
             .strip_prefix(&root)
@@ -147,19 +153,31 @@ pub fn copy_for_analysis(root: &Path, destination: &Path) -> Result<PathBuf> {
             // analizy semantyki. Nie wysyłamy ich do vendora i nie udajemy, że je przeczytał.
             continue;
         };
-        let target = destination.join(relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| ImportError::Inspect {
-                path: relative.to_path_buf(),
-                detail: error.to_string(),
-            })?;
-        }
-        fs::write(&target, redact_secrets(&content)).map_err(|error| ImportError::Inspect {
-            path: relative.to_path_buf(),
-            detail: error.to_string(),
-        })?;
+        packet.push_str("\n===== BEGIN ");
+        packet.push_str(&relative.to_string_lossy());
+        packet.push_str(" =====\n");
+        packet.push_str(&redact_secrets(&content));
+        packet.push_str("\n===== END ");
+        packet.push_str(&relative.to_string_lossy());
+        packet.push_str(" =====\n");
     }
-    Ok(root)
+    Ok(packet)
+}
+
+fn analysis_bundle(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let parts: Vec<_> = relative.components().collect();
+    if parts.len() >= 3
+        && parts[0].as_os_str() == ".agents"
+        && !["agents", "skills", "rules", "commands", "checks", "hooks"]
+            .iter()
+            .any(|known| parts[1].as_os_str() == *known)
+    {
+        return Some(root.join(parts[0].as_os_str()).join(parts[1].as_os_str()));
+    }
+    relative
+        .ancestors()
+        .find(|ancestor| root.join(ancestor).join("SKILL.md").is_file())
+        .map(|bundle| root.join(bundle))
 }
 
 /// Agent może zaproponować wyłącznie komendę, która już stoi dosłownie w pliku setupu.

@@ -10,8 +10,8 @@ use loadout_lib::commands::import::{
     apply_setup_with_analysis,
 };
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome, Policy,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::import::{
@@ -75,12 +75,21 @@ impl AgentDriver for FakeAnalysisDriver {
         spec: RunSpec,
         _events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        let copied = std::fs::read_to_string(spec.cwd.join(".agents/harness/config.json"))?;
-        assert!(!copied.contains("sk-do-not-copy"));
+        assert!(!spec.prompt.contains("sk-do-not-copy"));
+        assert!(spec.prompt.contains("<redacted>"));
+        assert!(spec.prompt.contains("./verify.sh quick"));
         assert!(spec.cwd.join("LOADOUT-INVENTORY.json").is_file());
         *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(spec);
         Ok(Box::new(FakeAnalysisTurn {
             response: self.response.clone(),
+        }))
+    }
+
+    fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        assert_eq!(configuration.arguments, ["--effort", "high"]);
+        Some(Arc::new(Self {
+            response: self.response.clone(),
+            seen: Arc::clone(&self.seen),
         }))
     }
 }
@@ -133,7 +142,9 @@ impl AgentHandle for FakeAnalysisTurn {
 async fn analysis_runs_once_over_a_redacted_read_only_copy()
 -> Result<(), Box<dyn std::error::Error>> {
     let (repo, preview, harness) = fixture()?;
-    let response = serde_json::json!({
+    let response = format!(
+        "```json\n{}\n```\nConverted from the supplied setup.",
+        serde_json::json!({
         "agents": [],
         "workflows": [{
             "name": "Project checks",
@@ -150,8 +161,8 @@ async fn analysis_runs_once_over_a_redacted_read_only_copy()
             }],
             "links": []
         }]
-    })
-    .to_string();
+        })
+    );
     let seen = Arc::new(Mutex::new(None));
     let fake: Arc<dyn AgentDriver> = Arc::new(FakeAnalysisDriver {
         response,
@@ -178,6 +189,7 @@ async fn analysis_runs_once_over_a_redacted_read_only_copy()
         .clone()
         .ok_or("the driver did not receive a RunSpec")?;
     assert_eq!(spec.policy, Policy::ReadOnly);
+    assert_eq!(spec.model.as_deref(), Some("sonnet"));
     assert!(spec.extra_dirs.is_empty());
     assert_ne!(spec.cwd, repo.path());
     let retained = analyzing
