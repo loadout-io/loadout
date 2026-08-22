@@ -11,9 +11,16 @@
 //! **Słabą wersją tego kryterium jest `assert!(!seen.is_empty())` na kroku bez nadpisania.**
 //! Przechodzi dla implementacji, która wpycha każdemu krokowi całą bibliotekę — czyli dla tej,
 //! która łamie obie reguły naraz: `[]` na kroku przestaje cokolwiek znaczyć, a umiejętność,
-//! której nikt nie wybrał, dojeżdża do agenta razem z resztą. Rozróżniają to trzy kroki jednego
-//! biegu, sądzone **równością zbiorów**, plus czwarta umiejętność zasiana w bibliotece i nie
+//! której nikt nie wybrał, dojeżdża do agenta razem z resztą. Rozróżnia to sześć kroków jednego
+//! biegu, sądzonych **równością zbiorów**, plus trzecia umiejętność zasiana w bibliotece i nie
 //! przypisana nikomu.
+//!
+//! **DRUGĄ SŁABĄ WERSJĄ JEST SĄDZENIE SAMYCH NADPISAŃ.** Wybór na kroku ma dwa źródła —
+//! `Overrides::skills` (patch panelu kroku) i `AgentStep::skills` (pole pliku workflow, `"all"`
+//! albo lista, T3 §3.1) — i implementacja czytająca tylko pierwsze przechodzi każdy przypadek
+//! z nadpisaniem. Człowiek, który zawęził umiejętności w pliku workflow, dostaje wtedy agenta
+//! znającego wszystko, co ma agent, i nic tego nie mówi. Dlatego trzy z sześciu kroków niżej
+//! **nie mają nadpisania w ogóle**.
 //!
 //! DLACZEGO ZBIÓR CZYTAMY Z DYSKU, A NIE Z POLA `StepSkills`. Bo pole odpowiada na pytanie „co
 //! policzyliśmy", a to kryterium pyta „co dostał proces". Dubler patrzy więc w obie półki, do
@@ -98,12 +105,21 @@ connections: []
 Do the work.
 ";
 
-/// Trzy kroki jednego agenta, trzy różne odpowiedzi na pytanie „co ten krok umie".
+/// Sześć kroków jednego agenta, sześć odpowiedzi na pytanie „co ten krok umie".
 ///
 /// Brak klucza `skills` w `overrides` to co innego niż `[]`, i to jest cała semantyka RFC 7396,
 /// którą `library::agents::resolve` już ma: brak klucza znaczy „weź to, co ma agent", a pusta
 /// lista znaczy „żadnych". Plik, w którym oba wyglądałyby tak samo, nie umiałby o tym nic
 /// powiedzieć.
+///
+/// TRZY OSTATNIE KROKI NIE MAJĄ NADPISANIA W OGÓLE i to jest druga połowa tej semantyki.
+/// `AgentStep::skills` jest polem PLIKU workflow (`"all"` albo lista, T3 §3.1) — starszym od
+/// `Overrides::skills`, o tym samym znaczeniu i do 2026-08-22 też bez czytelnika. Kryterium
+/// sądzące wyłącznie nadpisania nie umie odróżnić implementacji, która to pole czyta, od tej,
+/// która je ignoruje: obie dają dla `overrides` ten sam wynik, a dla człowieka, który zapisał
+/// wybór w pliku workflow, jedna z nich milczy. Krok szósty pyta o KOLEJNOŚĆ tych dwóch źródeł:
+/// nadpisanie jest różnicą wobec agenta, więc wygrywa — odwrotna kolejność znaczyłaby, że
+/// wartość domyślna jednego pola kasuje jawny wybór drugiego.
 ///
 /// Każdy krok na WŁASNEJ KOPII — powód w nagłówku pliku.
 const WORKFLOW: &str = r#"{
@@ -140,11 +156,57 @@ const WORKFLOW: &str = r#"{
       "instructions": "subset of what the agent has",
       "folder": { "use": "fresh-copy" },
       "at": { "x": 480, "y": 0 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_file_all",
+      "name": "File all",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "skills": "all",
+      "instructions": "file-all is what this workflow file says",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 720, "y": 0 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_file_list",
+      "name": "File list",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "skills": ["alpha"],
+      "instructions": "file-list is what this workflow file says",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 960, "y": 0 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_override_wins",
+      "name": "Override wins",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": { "skills": ["beta"] },
+      "skills": ["alpha"],
+      "instructions": "override-wins over what the file says",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 1200, "y": 0 }
     }
   ],
   "links": []
 }
 "#;
+
+/// Instrukcja kroku → nazwa kroku. Krok rozpoznajemy po treści zadania, bo `RunSpec` nie niesie
+/// nazwy kroku, a instrukcja jest tym, co ten krok naprawdę dostał (niezmiennik 9 — jedzie tam
+/// jako dane). Tablica, a nie łańcuch `if`-ów: przy sześciu krokach gałąź `else` cichcem
+/// przypisywałaby cudzy zbiór krokowi, którego nikt nie rozpoznał.
+const STEPS: [(&str, &str); 6] = [
+    ("inherits", "Inherits"),
+    ("none", "None"),
+    ("subset", "Subset"),
+    ("file-all", "File all"),
+    ("file-list", "File list"),
+    ("override-wins", "Override wins"),
+];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
@@ -180,26 +242,24 @@ async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
 
     assert_eq!(
         report.steps,
-        vec![
-            StepState::Succeeded,
-            StepState::Succeeded,
-            StepState::Succeeded
-        ],
-        "all three steps have to finish, or the assertions below are true of steps that never \
+        vec![StepState::Succeeded; STEPS.len()],
+        "all {} steps have to finish, or the assertions below are true of steps that never \
          ran. They ended as {:?}",
+        STEPS.len(),
         report.steps
     );
 
     let looked = seen.snapshot();
+    let mut named = STEPS
+        .iter()
+        .map(|(_, name)| (*name).to_owned())
+        .collect::<Vec<_>>();
+    named.sort();
     assert_eq!(
-        looked.keys().collect::<Vec<_>>(),
-        vec![
-            &"Inherits".to_owned(),
-            &"None".to_owned(),
-            &"Subset".to_owned()
-        ],
-        "all three steps have to reach the driver under their own names, or this test is \
-         measuring one step three times. It saw: {:?}",
+        looked.keys().cloned().collect::<Vec<_>>(),
+        named,
+        "every step has to reach the driver under its own name, or this test is measuring one \
+         step several times. It saw: {:?}",
         looked.keys().collect::<Vec<_>>()
     );
 
@@ -238,7 +298,46 @@ async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
         looked.get("Subset")
     );
 
-    // (d) NIC SPOZA WYBORU. Zasiane w bibliotece, przypisane nikomu — i to jest ta asercja,
+    // (d) `"skills": "all"` W PLIKU WORKFLOW, BEZ NADPISANIA = WSZYSTKO, CO MA AGENT. To pole
+    //     jest starsze od nadpisań i ma tę samą semantykę; przeczytane jako pusta lista
+    //     zabierałoby umiejętności każdemu krokowi, który nigdy niczego nie zawężał — czyli
+    //     KAŻDEMU krokowi zapisanemu przed tym zadaniem, bo `"all"` jest tam wartością domyślną.
+    assert_eq!(
+        looked.get("File all").cloned().unwrap_or_default(),
+        set(&[ALPHA, BETA]),
+        "this step says \"all\" in the workflow file and overrides nothing, so it takes what its \
+         agent has - both of them. It reached the driver with {:?}",
+        looked.get("File all")
+    );
+
+    // (e) LISTA W PLIKU WORKFLOW, BEZ NADPISANIA = PODZBIÓR. TA asercja jest jedyną, która widzi
+    //     implementację czytającą wyłącznie nadpisania: dla kroku bez nadpisania taka
+    //     implementacja oddaje wszystko, co ma agent, i milczy o wyborze, który człowiek zapisał
+    //     w pliku workflow. Z zewnątrz wygląda to jak agent, który po prostu nie sięgnął po
+    //     {BETA}.
+    assert_eq!(
+        looked.get("File list").cloned().unwrap_or_default(),
+        set(&[ALPHA]),
+        "this step narrows its agent down to one skill in the workflow file itself, without any \
+         override. {BETA} is on the agent and is not on that list, so it must not be within \
+         reach: a step that quietly knows more than the file says is a step whose permissions no \
+         screen describes. It reached the driver with {:?}",
+        looked.get("File list")
+    );
+
+    // (f) DWA ŹRÓDŁA, JEDNO ROZSTRZYGA. Nadpisanie jest RÓŻNICĄ wobec agenta, więc wygrywa
+    //     z polem pliku; odwrotna kolejność znaczyłaby, że starsze pole kasuje wybór zrobiony
+    //     na panelu kroku, a człowiek widzi wtedy na ekranie jedno, a agent dostaje drugie.
+    assert_eq!(
+        looked.get("Override wins").cloned().unwrap_or_default(),
+        set(&[BETA]),
+        "this step has {ALPHA} in the workflow file and {BETA} in its override. The override is \
+         the difference against the agent, so it decides; the other way round the panel would \
+         show one choice and the process would get the other. It reached the driver with {:?}",
+        looked.get("Override wins")
+    );
+
+    // (g) NIC SPOZA WYBORU. Zasiane w bibliotece, przypisane nikomu — i to jest ta asercja,
     //     której nie przechodzi implementacja podająca agentowi zawartość `~/.loadout/skills/`.
     for (step, reachable) in &looked {
         assert!(
@@ -360,16 +459,15 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        // Krok rozpoznajemy po treści zadania: `RunSpec` nie niesie nazwy kroku, a instrukcja
-        // jest tym, co ten krok naprawdę dostał (niezmiennik 9 — jedzie tam jako dane).
-        let step = if spec.prompt.starts_with("inherits") {
-            "Inherits"
-        } else if spec.prompt.starts_with("none") {
-            "None"
-        } else {
-            "Subset"
-        };
-        self.seen.record(step, within_reach(&spec.cwd, &self.flags));
+        // Krok rozpoznajemy po treści zadania (powód przy [`STEPS`]). Zadanie, którego nie ma
+        // w tablicy, ląduje pod SWOJĄ TREŚCIĄ, nie pod cudzą nazwą: asercja o nazwach kroków ma
+        // wtedy paść i pokazać, czego test nie rozpoznał.
+        let step = STEPS
+            .iter()
+            .find(|(instruction, _)| spec.prompt.starts_with(instruction))
+            .map_or_else(|| spec.prompt.clone(), |(_, name)| (*name).to_owned());
+        self.seen
+            .record(&step, within_reach(&spec.cwd, &self.flags));
 
         let session = SessionRef {
             vendor: VENDOR,
