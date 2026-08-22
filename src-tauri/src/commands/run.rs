@@ -126,7 +126,7 @@
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -840,6 +840,9 @@ struct Plan {
     the_loop: Option<Loop>,
     /// Kroki w kolejności z pliku workflow. Ta kolejność jest kontraktem `RunReport::steps`.
     steps: Vec<Planned>,
+    /// Co ten bieg wiedział, kiedy ruszał. Policzone RAZ, tutaj, z notatek zamrożonych przed
+    /// pierwszym procesem — zrzut przepisany na końcu opisywałby pliki, jakimi są PO biegu.
+    memory: Vec<MemoryRecord>,
     /// Milisekundy epoki: kiedy ten bieg powstał.
     created_at: i64,
     /// Zrodlo triggera; brak pola w JSON zachowuje doslownie ksztalt recznego biegu.
@@ -1149,6 +1152,7 @@ fn plan_run_with_identity(
         steps[child].depends_on.push(keys[parent].clone());
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
 
     Ok(Plan {
         id,
@@ -1162,6 +1166,7 @@ fn plan_run_with_identity(
         concurrency: request.how_many_at_once,
         the_loop,
         steps,
+        memory,
         created_at,
         trigger_origin,
         // Pytamy system RAZ, tutaj: ten bieg ma nosić jedną odpowiedź przez całe życie.
@@ -1299,6 +1304,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .enumerate()
         .map(|(node, step)| plan_step(step, node, 0, &setup))
         .collect::<Result<Vec<Planned>, RunError>>()?;
+    // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
+    // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
     let graph = serde_json::to_value(&file)?;
 
     Ok(Plan {
@@ -1317,6 +1325,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         concurrency: ask.how_many_at_once,
         the_loop: None,
         steps,
+        memory,
         created_at,
         trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
@@ -1459,6 +1468,61 @@ fn what_this_step_knows(known: &Known, agent: &str, home: &Path) -> (String, Vec
     );
 
     (text, sources)
+}
+
+/// Jedna notatka w zrzucie biegu: **czym była**, nie co mówiła.
+///
+/// 2026-08-22 (T-80). `run.json` jest prawdą o biegu (niezmiennik 4), więc notatka, która
+/// pojechała w promptcie i nie zostawiła tu śladu, jest faktem o biegu, którego nikt później
+/// nie odtworzy. Trzy pola to dokładnie tyle, ile trzeba, żeby odpowiedzieć na pytanie „co model
+/// wtedy wiedział": sama nazwa odpowiada „jakaś notatka o tej nazwie", a ta zmieniła się od
+/// tamtej pory dokładnie tak, jak zmienia się w trakcie biegu.
+///
+/// Kopii treści tu nie ma i nie będzie: `run.json` jest rachunkiem z pamięci, nie jej kopią.
+#[derive(Debug, Clone, Serialize)]
+struct MemoryRecord {
+    /// Która notatka — ścieżka **względem korzenia danych**. Absolutna byłaby faktem o tym
+    /// laptopie, nie o biegu.
+    reference: String,
+    /// Odcisk zdania, które pojechało do modelu. Liczony z `rule`, bo `rule` jest jedyną częścią
+    /// notatki, która tam jedzie — odcisk całego pliku zmieniałby się od poprawki w `because`,
+    /// czyli mówiłby „model wiedział co innego" o biegu, w którym model dostał to samo.
+    hash: String,
+    /// Ile bajtów miało to zdanie w chwili startu. Ta liczba i odcisk odpowiadają na to samo
+    /// pytanie dwiema drogami, więc zrzut przepisany po biegu rozjeżdża się z sobą samym.
+    bytes: usize,
+}
+
+/// Co ten bieg wiedział, kiedy ruszał — z rachunku KROKÓW, nie z katalogu notatek.
+///
+/// Liczone z tego, co naprawdę wjechało w prompty (`ContextKind::MemoryNote`), a nie z całego
+/// zamrożonego zbioru: notatka, która nie zmieściła się w suficie swojego zakresu, nie dojechała
+/// do modelu i nie ma prawa stać w rachunku tak, jakby dojechała. Notatka, która pojawiła się
+/// w katalogu po starcie, nie jest tu w ogóle — zbiór jest zamrożony przed pierwszym procesem.
+fn what_this_run_knew(known: &Known, steps: &[Planned], home: &Path) -> Vec<MemoryRecord> {
+    let carried: BTreeSet<&str> = steps
+        .iter()
+        .filter_map(|step| match &step.job {
+            Job::Agent(job) => Some(job),
+            Job::Ask { .. } | Job::Check(_) => None,
+        })
+        .flat_map(|job| job.context.iter())
+        .filter(|source| source.kind == ContextKind::MemoryNote)
+        .map(|source| source.reference.as_str())
+        .collect();
+
+    known
+        .notes
+        .iter()
+        .filter_map(|note| {
+            let reference = note.path.strip_prefix(home).ok()?.to_string_lossy();
+            carried.contains(reference.as_ref()).then(|| MemoryRecord {
+                hash: fingerprint(note.rule.as_bytes()),
+                bytes: note.rule.len(),
+                reference: reference.into_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Zadanie kroku, poprzedzone tym, co wiadomo.
@@ -3767,6 +3831,9 @@ impl Live {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            // Prosto z planu, przy KAŻDYM zrzucie ta sama wartość: policzona przed pierwszym
+            // procesem i od tej chwili nietknięta.
+            memory: &self.plan.memory,
             steps,
         }
     }
@@ -5076,6 +5143,13 @@ struct RunFile<'a> {
     error: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     route_decisions: Vec<RouteDecision>,
+    /// Co ten bieg wiedział przy starcie — odwołanie, odcisk i liczba bajtów na notatkę.
+    ///
+    /// Brak pola znaczy „ten bieg nie wiedział nic", i to jest prawda o biegu ruszonym na
+    /// maszynie bez ani jednej notatki w użyciu. Pusta lista wpisana na siłę mówiłaby to samo
+    /// jednym kluczem więcej w każdym `run.json` w historii.
+    #[serde(skip_serializing_if = "<[MemoryRecord]>::is_empty")]
+    memory: &'a [MemoryRecord],
     steps: Vec<StepEntry<'a>>,
 }
 
