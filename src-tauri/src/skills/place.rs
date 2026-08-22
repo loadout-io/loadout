@@ -183,6 +183,22 @@ impl StepSkills {
     }
 }
 
+/// Treść `SKILL.md` → front-matter i ciało, permisywnie (niezmiennik 5).
+///
+/// Stoi tutaj, przy [`validate_strict`], bo tylko razem odpowiadają na pytanie „czy ten plik
+/// jest umiejętnością" — a to jest dokładnie to pytanie, które [`StepSkills::for_the_step`]
+/// musi zadać każdej wybranej pozycji, zanim uzna ją za dojechaną. `SKILL.md`, którego nie da
+/// się przeczytać, jest tą samą odmową co nazwa spoza biblioteki ([`Why::Unusable`]):
+/// z zewnątrz agent bez umiejętności i agent z umiejętnością nie do odczytania odpowiadają
+/// identycznie.
+///
+/// [`Why::Unusable`]: super::Why::Unusable
+#[must_use]
+pub fn read_doc(_text: &str) -> SkillDoc {
+    // Szkielet T-79 — powód i termin ważności stoją przy `for_the_step` wyżej.
+    todo!()
+}
+
 /// Dwa katalogi docelowe dla danego zakresu — same korzenie, bez `<name>`.
 ///
 /// `project = None` przy [`Scope::Project`] daje ścieżki względne, czyli „tutaj": tak samo
