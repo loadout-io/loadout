@@ -1,212 +1,43 @@
-# T-75 — Import istniejącego setupu: agenci, skille, MCP i workflow stają się natywnym grafem Loadouta
+# T-76 — Agent rozumie niestandardowy setup i proponuje natywny graf
 
-Właściciel chce móc otworzyć dowolne repozytorium i zobaczyć, co jego obecny harness naprawdę
-konfiguruje: role, umiejętności, połączenia MCP, kolejność, równoległość, przekazania, bramki oraz
-ograniczone decyzje. Wspierana semantyka ma zostać przepisana do natywnych plików Loadouta.
-Nieznana nie może zniknąć ani zostać odgadnięta — pozostaje blockerem widocznym przed Save i Run.
+Deterministyczny skan T-75 zostaje pierwszą warstwą dla Claude, Codex, Agent Skills i RuleSync.
+Kiedy po nim zostają elementy nierozpoznane, człowiek może jawnie poprosić Claude albo Codex
+o analizę odkażonej kopii samych plików setupu. Model zwraca zamknięty draft danych; Rust wiąże
+go z hashami źródła, waliduje i dopiero wtedy pokazuje jako agentów oraz workflow do importu.
 
-Pierwsze adaptery to Claude Code, Codex i wspólny format Agent Skills. Claude i Codex nie są
-uruchamiane podczas skanowania. Skrypty, hooki i serwery MCP także nie startują. Projektowe MCP
-jest dziedziczone jako wyłączony draft `Connection`; dopiero jawne zatwierdzenie człowieka pozwala
-Loadoutowi zbudować własną konfigurację vendora i wystartować lokalny proces pod supervisorem.
-Wartości sekretów nigdy nie są kopiowane, zapisywane w argv ani zwracane do webviewa.
+Analiza niczego nie zapisuje, nie uruchamia skryptów, hooków ani Connections i nie czyta kodu
+projektu. Niepokryte zachowania pozostają widoczne jako nierozwiązane. Komenda kroku Check jest
+dopuszczona wyłącznie wtedy, gdy stoi dosłownie w wskazanym pliku setupu i ma dowód licznika.
+Import ponownie skanuje repo i waliduje oryginalny wynik analizy zamiast ufać webviewowi.
 
-## Rozstrzygnięcia właściciela
-
-1. „Dowolne repo” oznacza, że skan zawsze kończy się raportem, także gdy niczego nie rozpoznaje.
-   Nie oznacza automatycznego wykonania dowolnego programu znalezionego w repo.
-2. Każdy znaleziony element ma stan `exact`, `adjusted`, `needs_choice` albo `unsupported`.
-   `needs_choice` i `unsupported` blokują zapis uruchamialnego workflow.
-3. Import jest migawką z provenance: względna ścieżka, hash pliku i nazwa adaptera. Zmiana źródła
-   nie mutuje biblioteki; następny skan pokazuje różnicę.
-4. Agent i skill stają się natywnymi plikami biblioteki. Bundle skilla zachowuje `SKILL.md`,
-   `scripts/`, `references/` i `assets/`, ale niczego z nich nie wykonuje podczas importu.
-5. Projektowe MCP staje się natywną `Connection`. Zachowujemy command/args albo HTTPS URL,
-   wymagane NAZWY zmiennych i provenance. Wartości środowiska są niedozwolone w migawce.
-6. Ukryta delegacja vendora jest rozwijana do widocznych kroków i przekazań Loadouta. Import nie
-   włącza `Task`, `Agent`, `SendMessage` ani vendorowego subagenta jako procesu poza grafem.
-7. Warunek jest metadanymi krawędzi, nie czwartym kafelkiem. Źródłem może być tylko wynik Check,
-   jawny wybór Checkpoint albo enumerowane pole typed handoff. Brak wartości zatrzymuje bieg.
-8. Pod-workflow jest rozwijany przed zapisem do namespacowanych ID. Silnik nadal wykonuje zwykły
-   graf i nie zna pojęcia recenzji, importu ani `ship-task` (D6, D7, niezmiennik 27).
-9. AI wolno użyć wyłącznie do przygotowania nieruchamialnego draftu proceduralnego skilla.
-   Deterministyczne inventory musi pokryć każdą dyrektywę albo zostawić blocker.
-10. Interfejs jest po angielsku. Widoczne stany: `Exact`, `Adjusted`, `Needs a choice`,
-    `Can't be reproduced`. Nie używa słów adapter, AST, MCP transport ani provenance.
-
-## Red-before-green
-
-Przed `./verify.sh before` wszystkie nowe moduły i komponenty istnieją jako szkielety. Rustowe
-funkcje kończą się `todo!()`, frontend renderuje pusty fragment albo odmawia `not implemented`.
-Każdy test zbiera się i pada na asercji zachowania, nie na braku importu lub celu testowego.
-
-## AC-1 Skan dowolnego repo jest tylko do odczytu i zawsze daje kompletne inventory
-check: cargo test --test it import_discovers_without_effects::
+## AC-1 Claude i Codex zwracają tylko zwalidowany draft związany ze źródłem
+check: cargo test --test it import_agent_analysis::
 expect: (\d+) passed
 
-Fikstury Claude, Codex, repo mieszane, puste i nierozpoznane dowodzą: deterministycznej kolejności,
-względnych ścieżek i hashy; limitów liczby/rozmiaru; odmowy symlinka uciekającego z root; braku
-procesów i zapisów; wykrycia agentów, całych bundle skilli, projektowego MCP, hooków i wskazówek
-workflow. Nieznany plik konfiguracji jest wpisem `unsupported`, nie sukcesem przez pominięcie.
+Fake driver dowodzi read-only `RunSpec`, odkażonego katalogu roboczego, odbioru pełnego JSON,
+anulowania z dowodem śmierci i odrzucenia: obcego item id, zmienionego hasha, wymyślonej komendy,
+nieistniejącego agenta/skilla oraz grafu, którego natywny walidator nie dopuści do Run.
 
-## AC-2 Raport zgodności nie gubi ani jednej semantyki źródła
-check: cargo test --test it import_reports_every_source_semantic::
+## AC-2 Prawdziwy modal uruchamia, zatrzymuje i pokazuje analizę przed importem
+check: npx --no-install vitest run src/sections/import/analysis-is-real.test.tsx
 expect: (\d+) passed
 
-Każdy wpis inventory ma dokładnie jeden wynik zgodności i czytelne angielskie zdanie. Nieznane pole,
-hook, brakujący skill, sekret wpisany literalnie oraz dowolny warunek trafiają do nazwanych blockerów.
-Raport z blockerem nie produkuje runnable draft. Kolejność jest stabilna, a Debug/Display/serde nie
-ujawniają secret-shaped wartości.
-
-## AC-3 Claude i Codex stają się natywnymi agentami bez ukrytej delegacji
-check: cargo test --test it import_agents_are_native::
-expect: (\d+) passed
-
-Claude `.claude/agents/*.md` i Codex `.codex/agents/*.toml` mapują nazwę, opis, instrukcję, model,
-myślenie, dostęp do plików, narzędzia, skille i Connections na `AgentFile`. Każdy dostaje nowe UUID
-i provenance. Nieznane bezpieczne opcje zostają w vendorOptions; opcje kolidujące z polityką są
-blockerem. Pola uruchamiające vendorowe subagenty nie wchodzą do runtime config.
-
-## AC-4 Skill jest importowany jako kompletny, sprawdzony bundle
-check: cargo test --test it import_skill_bundle_is_complete::
-expect: (\d+) passed
-
-Import przechodzi przez istniejący `skills::ingest::review`, zachowuje dozwolone pliki i bajty,
-odrzuca ucieczkę ścieżką, limity i sekrety, nie wykonuje skryptu i zapisuje atomowo. Dwa skille o tej
-samej nazwie dają konflikt do wyboru, nie nadpisanie. Źródło pozostaje nietknięte.
-
-## AC-5 Projektowe MCP wraca jako wyłączona Connection zarządzana przez Loadout
-check: cargo test --test it import_mcp_is_disabled_and_managed::
-expect: (\d+) passed
-
-Fikstury Claude i Codex obejmują STDIO i HTTPS. Draft zachowuje nazwę, command/args albo HTTPS URL,
-nazwy wymaganych zmiennych i provenance, ale `enabled == false` i nie zawiera wartości sekretów.
-Literalny sekret jest blockerem. Scan/apply nie startuje procesu ani sieci. Po jawnej akceptacji
-Loadout tworzy własny config vendora; STDIO idzie przez `env_clear`, allowlistę i supervisorową grupę.
-Nie jest nigdy ładowane całe project settings ani hooki.
-
-## AC-6 Workflow deklaratywny zachowuje kolejność, równoległość, fan-in i bounded repair
-check: cargo test --test it import_workflow_is_runnable_only_when_complete::
-expect: (\d+) passed
-
-Translator buduje wyłącznie istniejące kroki Agent/Checkpoint/Check, typed handoffs i links. Fixture
-`ship-ui` dowodzi plan → checkpoint → implementacja → check → design QA → review → bounded repair →
-final check oraz równoległych niezależnych gałęzi. `.claude/tmp` jest jawną adaptacją do handoffu.
-Workflow z unresolved item nie daje się zapisać ani uruchomić.
-
-## AC-7 Ograniczony warunek wybiera jedną zapisaną gałąź i zostawia dowód
-check: cargo test --test it conditional_edges_choose_one_branch::
-expect: (\d+) passed
-
-Warunki Check pass/fail, wybór Checkpoint i enum typed handoff działają bez dowolnego wyrażenia.
-Dokładnie jedna zgodna gałąź staje się ready; brak, dwie zgodne albo nieznana wartość zatrzymują bieg
-przed agentem. Wybrana krawędź i wartość są zapisane w zdarzeniu/receipt. Zwykły workflow bez `when`
-zachowuje dotychczasową semantykę.
-
-## AC-8 Pod-workflow rozwija się deterministycznie, bez czwartego rodzaju kafelka
-check: cargo test --test it imported_subworkflow_is_flattened::
-expect: (\d+) passed
-
-Dwa użycia tego samego szablonu dostają różne namespacowane ID, a wejścia/wyjścia łączą się z grafem
-rodzica. Rekursja, brak pliku i kolizja są blockerem. Zapisany `WorkflowFile` zawiera wyłącznie trzy
-istniejące rodzaje kroku i zwykłe linki z provenance.
-
-## AC-9 Import jest atomowy i nie nadpisuje zmian źródła ani biblioteki
-check: cargo test --test it import_apply_is_atomic::
-expect: (\d+) passed
-
-Apply z zatwierdzonym draftem zapisuje agentów, skille, Connections i workflow przez staging + rename.
-Awaria zasadzona po każdym etapie zostawia poprzednie drzewo bajt w bajt. Konflikt istniejącego UUID,
-nazwy albo świeższego source hash odmawia przed pierwszą mutacją. Receipt wiąże source hashes, wersję
-adaptera i hash docelowego workflow; nie zawiera instrukcji, promptów ani sekretów.
-
-## AC-10 Prawdziwy ekran prowadzi od repo do zatwierdzonego importu
-check: npx --no-install vitest run src/sections/import/setup-is-real.test.tsx
-expect: (\d+) passed
-
-Prawdziwy ekran Agents ma jedną akcję `Import setup`. Człowiek wybiera workspace, uruchamia Scan,
-widzi cztery statusy, wszystkie blockery i osobne wyłączone Connections. Save jest nieaktywne przy
-blockerze. Zmiana wyboru rozwiązuje `Needs a choice`; Save woła dokładnie jedną komendę IPC i dopiero
-po sukcesie dysku odświeża bibliotekę. Odmowa stoi na ekranie. Żadna kontrolka nie uruchamia MCP.
-
-## AC-11 UI pokazuje warunki i rozwinięte relacje zapisane w danych
-check: npx --no-install vitest run src/sections/workflows/canvas/imported-conditions-are-visible.test.tsx
-expect: (\d+) passed
-
-Canvas renderuje angielską etykietę warunku na prawdziwej krawędzi, pochodzenie za kliknięciem i
-namespacowane kroki rozwiniętego pod-workflow. Nie rysuje relacji, których nie ma w `WorkflowFile`.
-Nieznana wartość i blocker mają zdanie widoczne na produkcyjnej ścieżce, nie tylko wartość helpera.
-
-## AC-12 IPC ma jedną granicę Scan/Apply, a produkt dowodzi pionowego importu URC
-check: cargo test --test it import_setup_product_path::
-expect: (\d+) passed
-
-Scan i Apply przechodzą przez jawne komendy Tauri, złotą listę oraz typy drutu. Fixture podobna do
-URC importuje agentów frontend-dev/design-qa/code-reviewer, bundle design-system, wyłączony
-Playwright MCP i workflow Ship UI. Fake driver dowodzi właściwego promptu/skilli/handoffów oraz braku
-ukrytej sesji. Scan nic nie zmienia; Apply daje receipt i ponowne listy zwracają natywne obiekty.
-
-## Świadomie poza zakresem
-
-- automatyczne wykonywanie dowolnego skryptu/hooka jako workflow;
-- kopiowanie wartości sekretów albo globalnej konfiguracji użytkownika;
-- automatyczne włączanie Connections;
-- dowolne wyrażenia, JavaScript albo shell w warunkach;
-- automatyczne uruchomienie draftu przygotowanego przez model;
-- Jira/Slack/Linear jako źródła workflow — ich triggery pozostają osobną biblioteką.
+Na ekranie wybiera się Claude/Codex, widać informację o redacted read-only copy, Stop naprawdę
+woła osobną komendę, a wynik pokazuje nazwy workflow, kroki i dokładne komendy Check. Import jest
+nieaktywny, dopóki coś nadal jest nierozwiązane; Apply niesie analizę i backend sprawdza ją od nowa.
 
 <!-- OWNS
-docs/PLAN.md
-docs/STATUS.md
-tasks/T-75.md
-src-tauri/Cargo.toml
+tasks/T-76.md
+src-tauri/commands.golden.txt
 src-tauri/src/lib.rs
 src-tauri/src/ipc.rs
-src-tauri/commands.golden.txt
-src-tauri/src/commands/mod.rs
 src-tauri/src/commands/import.rs
 src-tauri/src/import/mod.rs
 src-tauri/src/import/discover.rs
-src-tauri/src/import/adapters.rs
 src-tauri/src/import/translate.rs
-src-tauri/src/import/apply.rs
-src-tauri/src/connections/mod.rs
-src-tauri/src/connections/runtime.rs
-src-tauri/src/library/agents.rs
-src-tauri/src/skills/mod.rs
-src-tauri/src/skills/ingest.rs
-src-tauri/src/skills/place.rs
-src-tauri/src/workflow/mod.rs
-src-tauri/src/workflow/file.rs
-src-tauri/src/workflow/check.rs
-src-tauri/src/workflow/unroll.rs
-src-tauri/src/engine/dag.rs
-src-tauri/src/engine/scheduler.rs
-src-tauri/src/engine/supervisor.rs
-src-tauri/src/engine/drivers/mod.rs
-src-tauri/src/engine/drivers/claude.rs
-src-tauri/src/engine/drivers/codex.rs
-src-tauri/src/commands/run.rs
 src-tauri/tests/it/main.rs
-src-tauri/tests/it/import_discovers_without_effects.rs
-src-tauri/tests/it/import_reports_every_source_semantic.rs
-src-tauri/tests/it/import_agents_are_native.rs
-src-tauri/tests/it/import_skill_bundle_is_complete.rs
-src-tauri/tests/it/import_mcp_is_disabled_and_managed.rs
-src-tauri/tests/it/import_workflow_is_runnable_only_when_complete.rs
-src-tauri/tests/it/conditional_edges_choose_one_branch.rs
-src-tauri/tests/it/imported_subworkflow_is_flattened.rs
-src-tauri/tests/it/import_apply_is_atomic.rs
-src-tauri/tests/it/import_setup_product_path.rs
-src/sections/agents/index.tsx
-src/sections/import/index.tsx
+src-tauri/tests/it/import_agent_analysis.rs
 src/sections/import/io.ts
 src/sections/import/setup.tsx
-src/sections/import/setup-is-real.test.tsx
-src/sections/workflows/canvas/map.ts
-src/sections/workflows/canvas/canvas.tsx
-src/sections/workflows/canvas/react-flow-tokens.css
-src/sections/workflows/canvas/imported-conditions-are-visible.test.tsx
-src/ipc/types.ts
-src/sections/commands-wired.test.ts
+src/sections/import/analysis-is-real.test.tsx
 -->
