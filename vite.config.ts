@@ -27,7 +27,15 @@ export default defineConfig({
     watch: {
       // Rust przeładowuje się sam przez cargo-watch; podglądanie target/
       // to tysiące zdarzeń na sekundę i zamrożony dev server.
-      ignored: ['**/src-tauri/**', '**/target/**', '**/.loadout/**', '**/runs/**'],
+      //
+      // `.claude/**` DOSZŁO 2026-08-23, po tym jak zabiło żywy dev server. Narzędzia sesji
+      // zakładają `.claude/worktrees/<nazwa>` jako PEŁNY checkout repo i trzymają go obok przez
+      // całą pracę. Zmierzone w dzienniku: pojawienie się takiego katalogu kazało Vite
+      // przeładować stronę na `.claude/worktrees/…/index.html`, potem na makietę z `docs/`,
+      // potem wyczyścić cache po „zmienionym tsconfigu" — i okno straciło IPC („custom protocol
+      // failed"), a proces zszedł. Ta sama przyczyna i to samo lekarstwo, co przy `test.exclude`
+      // niżej; brakowało tylko drugiej połowy.
+      ignored: ['**/src-tauri/**', '**/target/**', '**/.loadout/**', '**/runs/**', '**/.claude/**'],
     },
   },
 
