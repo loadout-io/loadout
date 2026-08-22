@@ -1,0 +1,113 @@
+# T-80 — Natywna pamięć per agent
+
+`.claude/agent-memory/` i `.claude/learnings/` są dziś **wklejane w instrukcje agenta**:
+`translate.rs:112` uznaje pozycję rodzaju `Memory` za „pokrytą", kiedy model wymieni ją
+w `sourceItems` propozycji agenta, a jej treść ląduje w `AnalyzedAgent.instructions`.
+`MigrationDraft` nie ma w ogóle pola na pamięć, więc `apply.rs` nie zapisuje do `memory/`
+ani jednego pliku. Skutek jest podwójny: wiedza jednego agenta jedzie w **stałej** instrukcji
+w każdym jego promptcie, a ta sama treść potrafi wejść drugi raz przez learnings.
+
+Druga połowa tej samej luki jest po stronie biegu. `what_the_agents_know()`
+(`commands/run.rs:1299`) składa blok z dwóch zakresów i **pomija `Scope::ThisAgent`** —
+komentarz nazywa to zgłoszeniem, nie przeoczeniem: blok jest liczony raz na bieg, a filtrowanie
+po agencie wymaga tożsamości agenta w chwili liczenia, czyli trzeciego bloku liczonego per krok.
+Sufit `Scope::ThisAgent::cap()` = 800 stoi w kodzie od T-17 i nigdy nikogo nie ograniczył.
+
+**Czego plan nie wiedział:** `Note` nie ma pola wskazującego agenta, a lista `KNOWN`
+w `memory/notes.rs` zna dziewięć kluczy i żaden nim nie jest. Notatka `this-agent` nie umie dziś
+powiedzieć, **czyja jest**. To jest pierwsza rzecz do zrobienia i jest addytywna: nieznane klucze
+front-mattera wracają na dysk przez `Note::extra`, więc plik zapisany starszą wersją nie traci pola.
+
+**Zakres mieszka we front-matterze, nie w katalogu** — to jest istniejąca reguła `notes.rs`
+i zadanie jej nie zmienia. Nowe pliki lądują pod korzeniem notatek biblioteki; położenie nie
+ustala ani zakresu, ani właściciela.
+
+**Read first:** `src-tauri/src/memory/notes.rs` (nagłówek `Scope` — dlaczego zakres jest w pliku,
+a nie w katalogu; `Scope::cap`) · `src-tauri/src/commands/run.rs` (`what_the_agents_know`,
+`with_what_we_know`) · `docs/ARCHITECTURE.md` §8 · `AGENTS.md` niezmienniki 4, 5, 29.
+
+## Kto to robi
+
+- **Agent:** `rust-core`
+- **Druga opinia:** inny vendor niż pisarz (D3).
+
+## Zanim napiszesz pierwszą specyfikację — dwie rzeczy o celu `it`
+
+1. **Adresowanie.** Kryterium woła `cargo test --test it <modul>::`, nigdy
+   `cargo test --test <modul>`. Cel `it` jest jeden i zbiorczy.
+2. **Wpis `mod`.** Nowy plik wymaga linii `mod <nazwa>;` w `src-tauri/tests/it/main.rs`. Bez niej
+   plik kompiluje się do niczego i nie uruchamia ani jednego testu — czyli **wygląda jak zestaw,
+   który przeszedł**, a bramka melduje „exit 0 but no evidence of execution" i czyta to jako defekt
+   KONTRAKTU, nie implementacji. Dlatego `main.rs` jest w OWNS tego zadania.
+
+   Zmierzone 2026-08-22 na pierwszym biegu T-79: faza kontraktu napisała dwie specyfikacje po
+   kilkanaście kilobajtów i nie dopisała ani jednego `mod`. Runda naprawcza powtórzyła ten sam
+   błąd, bo widziała ten sam komunikat i nie wiedziała, co on znaczy. Bieg skończył się niczym.
+
+## AC-1 Notatka umie powiedzieć, czyja jest
+check: cargo test --test it memory_note_names_its_agent::
+expect: (\d+) passed
+
+Front-matter zna klucz wskazujący agenta; skan go czyta, zapis odtwarza, a klucze spoza znanej
+listy nadal wracają na dysk nietknięte. Notatka o zakresie `this-agent` **bez** nazwy agenta jest
+odmową zapisu ze zdaniem nazywającym brakujące pole — nie cichą degradacją do zakresu projektu.
+[Jeżeli wolisz degradację zamiast odmowy, to jest miejsce na zmianę tego zdania.]
+
+## AC-2 Do promptu wchodzi wyłącznie pamięć tego agenta
+check: cargo test --test it memory_reaches_only_its_agent::
+expect: (\d+) passed
+
+Blok jest liczony per krok, z tożsamości efektywnego agenta. Krok agenta `backend-dev` dostaje
+swoją notatkę **dokładnie raz**, krok `frontend-dev` nie dostaje jej wcale, a oba dostają zakresy
+`everywhere` i `this-project`. Każdy zakres liczy się przeciw własnemu sufitowi; trzeci blok
+dolicza się do dwóch pozostałych, a nie zamiast nich.
+
+## AC-3 Zaimportowana pamięć jest notatką, nie akapitem w instrukcji
+check: cargo test --test it import_memory_becomes_notes::
+expect: (\d+) passed
+
+Pozycje rodzaju `Memory` stają się osobnymi plikami notatek z zachowaną ścieżką źródłową, hashem
+źródła, zakresem, właścicielem i dostawcą. Ta sama treść **nie stoi drugi raz** w instrukcjach
+agenta — kryterium porównuje instrukcje z regułą notatki i wymaga, żeby się nie zawierały.
+Indeks `MEMORY.md` może wskazywać pliki względne, ale odczyt nie wychodzi poza dozwolony korzeń
+i nie wciąga całego repozytorium: ścieżka wyprowadzająca poza korzeń jest pominięta i nazwana.
+
+## AC-4 Bieg pamięta to, co wiedział przy starcie
+check: cargo test --test it memory_snapshot_is_frozen::
+expect: (\d+) passed
+
+Zbiór notatek jest zamrażany przed startem pierwszego procesu; edycja pliku notatki w trakcie
+biegu nie zmienia tego, co dostają kolejne kroki. Zrzut biegu zapisuje odwołania, hashe i liczby
+bajtów — tyle, żeby dało się później powiedzieć, co model wtedy wiedział.
+
+## AC-5 Ekran Pamięć mówi, skąd notatka przyszła i czyja jest
+check: npx --no-install vitest run src/sections/memory/imported-notes-say-where-they-came-from.test.tsx
+expect: (\d+) passed
+
+W prawdziwym markupie wiersz notatki niesie projekt źródłowy i właściciela, kiedy notatka ma
+zakres agenta. Notatka bez właściciela nie udaje, że go ma.
+
+<!-- OWNS
+tasks/T-80.md
+src-tauri/src/memory/mod.rs
+src-tauri/src/memory/notes.rs
+src-tauri/src/commands/memory.rs
+src-tauri/src/commands/run.rs
+src-tauri/src/import/mod.rs
+src-tauri/src/import/translate.rs
+src-tauri/src/import/adapters.rs
+src-tauri/src/import/apply.rs
+src-tauri/tests/it/main.rs
+src-tauri/tests/it/memory_note_names_its_agent.rs
+src-tauri/tests/it/memory_reaches_only_its_agent.rs
+src-tauri/tests/it/import_memory_becomes_notes.rs
+src-tauri/tests/it/memory_snapshot_is_frozen.rs
+src-tauri/tests/it/memory_notes_files.rs
+src-tauri/tests/it/memory_notes_budget.rs
+src-tauri/tests/it/memory_notes_injection.rs
+src/sections/memory/index.tsx
+src/sections/memory/io.ts
+src/sections/memory/note-row.tsx
+src/sections/memory/imported-notes-say-where-they-came-from.test.tsx
+src/state/memory.ts
+-->
