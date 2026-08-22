@@ -329,7 +329,7 @@ fn claude_agent(
         ],
         "Claude agent",
     )?;
-    claude_agent_from_fields(file, &fields, body, fallback_color, Vec::new())
+    claude_agent_from_fields(file, fields, body, fallback_color, Vec::new())
 }
 
 fn rulesync_agent(
@@ -343,12 +343,12 @@ fn rulesync_agent(
             fields.insert(key.to_owned(), value.clone());
         }
     }
-    claude_agent_from_fields(file, &fields, body, fallback_color, vec!["target app"])
+    claude_agent_from_fields(file, fields, body, fallback_color, vec!["target app"])
 }
 
 fn claude_agent_from_fields(
     file: &InspectedFile,
-    fields: &BTreeMap<String, String>,
+    fields: BTreeMap<String, String>,
     body: &str,
     fallback_color: Color,
     mut choices: Vec<&'static str>,

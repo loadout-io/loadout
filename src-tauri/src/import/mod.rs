@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::connections::Connection;
-use crate::library::agents::Agent;
+use crate::library::agents::{Agent, FileAccess, Vendor};
 use crate::workflow::WorkflowFile;
 
 pub mod adapters;
@@ -133,6 +133,98 @@ impl MigrationDraft {
 pub struct ImportPreview {
     pub snapshot: DiscoverySnapshot,
     pub draft: MigrationDraft,
+    /// Wypełnione dopiero po jawnym uruchomieniu analizy przez człowieka.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<SemanticAnalysis>,
+}
+
+/// Zamknięty wynik jednej analizy modelu. To jest propozycja danych, nie program do wykonania.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticAnalysis {
+    pub vendor: Vendor,
+    pub source_hashes: BTreeMap<PathBuf, String>,
+    #[serde(default)]
+    pub agents: Vec<AnalyzedAgent>,
+    #[serde(default)]
+    pub workflows: Vec<AnalyzedWorkflow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalyzedAgent {
+    pub name: String,
+    pub summary: String,
+    pub instructions: String,
+    #[serde(default)]
+    pub file_access: FileAccess,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    pub source_items: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalyzedWorkflow {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub source_items: Vec<String>,
+    pub steps: Vec<AnalyzedStep>,
+    pub links: Vec<AnalyzedLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AnalyzedStep {
+    Agent {
+        id: String,
+        name: String,
+        agent: String,
+        #[serde(default)]
+        instructions: String,
+        #[serde(default)]
+        skills: Vec<String>,
+        #[serde(default)]
+        folder: AnalyzedFolder,
+    },
+    Check {
+        id: String,
+        name: String,
+        command: String,
+        proof: String,
+        /// Plik setupu, w którym ta dokładna komenda już istnieje.
+        evidence: PathBuf,
+        #[serde(default)]
+        folder: AnalyzedFolder,
+    },
+    Checkpoint {
+        id: String,
+        name: String,
+        question: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnalyzedFolder {
+    #[default]
+    Project,
+    FreshCopy,
+    SameCopy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalyzedLink {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub max_turns: Option<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -145,6 +237,8 @@ pub enum ImportError {
     Changed,
     #[error("Loadout could not save the imported setup: {0}")]
     Save(String),
+    #[error("Loadout could not analyze this setup: {0}")]
+    Analyze(String),
 }
 
 pub type Result<T> = std::result::Result<T, ImportError>;

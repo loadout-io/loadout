@@ -89,6 +89,149 @@ fn canonical_root(root: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
+/// Buduje odkażoną, ograniczoną kopię setupu dla jawnie uruchomionej analizy modelu.
+/// Agent nigdy nie dostaje ścieżki do prawdziwego repo ani plików spoza katalogów konfiguracji.
+pub fn copy_for_analysis(root: &Path, destination: &Path) -> Result<PathBuf> {
+    let root = canonical_root(root)?;
+    let mut candidates = Vec::new();
+    for relative in [".claude", ".codex", ".agents", ".rulesync"] {
+        let path = root.join(relative);
+        if path.exists() {
+            walk(&root, &path, &mut candidates)?;
+        }
+    }
+    for relative in [".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
+        let path = root.join(relative);
+        if path.exists() {
+            candidates.push(path);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > COUNT_CAP {
+        return Err(ImportError::Inspect {
+            path: root,
+            detail: format!("This setup has more than {COUNT_CAP} configuration files."),
+        });
+    }
+    let mut total = 0_u64;
+    for source in candidates {
+        let relative = source
+            .strip_prefix(&root)
+            .map_err(|_| ImportError::Inspect {
+                path: source.clone(),
+                detail: "A configuration path leaves the workspace.".to_owned(),
+            })?;
+        let metadata = fs::symlink_metadata(&source).map_err(|error| ImportError::Inspect {
+            path: relative.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        if metadata.len() > FILE_CAP {
+            return Err(ImportError::Inspect {
+                path: relative.to_path_buf(),
+                detail: format!("This configuration file is larger than {FILE_CAP} bytes."),
+            });
+        }
+        total = total.saturating_add(metadata.len());
+        if total > TOTAL_CAP {
+            return Err(ImportError::Inspect {
+                path: root,
+                detail: format!("This setup is larger than {TOTAL_CAP} bytes."),
+            });
+        }
+        let Ok(content) = fs::read_to_string(&source) else {
+            // Binaria w bundle mogą być potrzebne runtime'owi skilla, ale nie są tekstem do
+            // analizy semantyki. Nie wysyłamy ich do vendora i nie udajemy, że je przeczytał.
+            continue;
+        };
+        let target = destination.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| ImportError::Inspect {
+                path: relative.to_path_buf(),
+                detail: error.to_string(),
+            })?;
+        }
+        fs::write(&target, redact_secrets(&content)).map_err(|error| ImportError::Inspect {
+            path: relative.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+    }
+    Ok(root)
+}
+
+/// Agent może zaproponować wyłącznie komendę, która już stoi dosłownie w pliku setupu.
+/// To odcina prompt injection od wymyślenia nowego polecenia, które wykona się dopiero przy Run.
+#[must_use]
+pub fn command_has_evidence(root: &Path, evidence: &Path, command: &str) -> bool {
+    let Ok(root) = canonical_root(root) else {
+        return false;
+    };
+    if evidence.is_absolute()
+        || !evidence.starts_with(".claude")
+            && !evidence.starts_with(".codex")
+            && !evidence.starts_with(".agents")
+            && !evidence.starts_with(".rulesync")
+            && evidence != Path::new("AGENTS.md")
+            && evidence != Path::new("CLAUDE.md")
+            && evidence != Path::new("CLAUDE.local.md")
+    {
+        return false;
+    }
+    let path = root.join(evidence);
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    if !canonical.starts_with(&root) {
+        return false;
+    }
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > FILE_CAP {
+        return false;
+    }
+    fs::read_to_string(path)
+        .is_ok_and(|content| !command.trim().is_empty() && content.contains(command.trim()))
+}
+
+fn redact_secrets(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let looks_sensitive = [
+                "api_key",
+                "apikey",
+                "secret",
+                "password",
+                "authorization",
+                "access_token",
+                "refresh_token",
+                "private_key",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+                || ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+                    .iter()
+                    .any(|prefix| lower.contains(prefix));
+            if !looks_sensitive {
+                return line.to_owned();
+            }
+            if let Some((key, _)) = line.split_once(':') {
+                return format!("{key}: \"<redacted>\"");
+            }
+            if let Some((key, _)) = line.split_once('=') {
+                return format!("{key}=\"<redacted>\"");
+            }
+            "<redacted sensitive line>".to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn configuration_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut candidates = Vec::new();
     for relative in [".claude", ".codex", ".rulesync"] {

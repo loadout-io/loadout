@@ -51,6 +51,19 @@ export interface ImportPreview {
     }>;
     report: { mappings: Mapping[] };
   };
+  analysis?: {
+    vendor: AnalysisVendor;
+    sourceHashes: Record<string, string>;
+    agents: unknown[];
+    workflows: unknown[];
+  };
+}
+
+export type AnalysisVendor = 'claude-code' | 'codex';
+
+export interface AnalysisRequest {
+  workspace: string;
+  vendor: AnalysisVendor;
 }
 
 export interface ApplyRequest {
@@ -58,6 +71,7 @@ export interface ApplyRequest {
   expectedSourceHashes: Record<string, string>;
   enableConnections: string[];
   leaveOut: string[];
+  analysis?: ImportPreview['analysis'];
 }
 
 export interface ImportReceipt {
@@ -69,6 +83,8 @@ export interface ImportReceipt {
 export interface ImportIo {
   scanSetup(workspace: string): Promise<ImportPreview>;
   applySetup(request: ApplyRequest): Promise<ImportReceipt>;
+  analyzeSetup?(request: AnalysisRequest): Promise<ImportPreview | null>;
+  stopSetupAnalysis?(): Promise<void>;
 }
 
 export interface ImportSetupProps {
@@ -112,6 +128,7 @@ const KINDS: Readonly<Record<ItemKind, string>> = {
 };
 
 type InventoryView = 'all' | 'ready' | 'attention';
+type Busy = 'scan' | 'analyze' | 'apply' | null;
 
 function sourceLabel(item: SourceItem): string {
   if (item.source !== undefined) return SOURCES[item.source];
@@ -149,7 +166,8 @@ export function ImportSetup({
   const [preview, setPreview] = useState<ImportPreview | null>(initialPreview ?? null);
   const [enabled, setEnabled] = useState<string[]>([]);
   const [leaveOut, setLeaveOut] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<Busy>(null);
+  const [analysisVendor, setAnalysisVendor] = useState<AnalysisVendor>('claude-code');
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const [inventoryView, setInventoryView] = useState<InventoryView>('all');
@@ -175,7 +193,7 @@ export function ImportSetup({
   const scan = (event: FormEvent): void => {
     event.preventDefault();
     if (workspace.trim() === '') return;
-    setBusy(true);
+    setBusy('scan');
     setRefusal(null);
     setSaved(null);
     void io
@@ -189,13 +207,34 @@ export function ImportSetup({
         setRefusal(why(error, 'Loadout could not inspect that folder.'));
       })
       .finally(() => {
-        setBusy(false);
+        setBusy(null);
+      });
+  };
+
+  const analyze = (): void => {
+    if (preview === null || io.analyzeSetup === undefined || blocked === 0) return;
+    setBusy('analyze');
+    setRefusal(null);
+    setSaved(null);
+    void io
+      .analyzeSetup({ workspace: preview.snapshot.root, vendor: analysisVendor })
+      .then((next) => {
+        if (next !== null) {
+          setPreview(next);
+          setLeaveOut([]);
+        }
+      })
+      .catch((error: unknown) => {
+        setRefusal(why(error, 'Loadout could not analyze that setup.'));
+      })
+      .finally(() => {
+        setBusy(null);
       });
   };
 
   const apply = (): void => {
     if (preview === null || !hasItems || blocked > 0) return;
-    setBusy(true);
+    setBusy('apply');
     setRefusal(null);
     void io
       .applySetup({
@@ -203,6 +242,7 @@ export function ImportSetup({
         expectedSourceHashes: preview.draft.sourceHashes,
         enableConnections: enabled,
         leaveOut,
+        analysis: preview.analysis,
       })
       .then((saved) => {
         setSaved(saved);
@@ -212,7 +252,7 @@ export function ImportSetup({
         setRefusal(why(error, 'Loadout could not save that setup.'));
       })
       .finally(() => {
-        setBusy(false);
+        setBusy(null);
       });
   };
 
@@ -250,7 +290,11 @@ export function ImportSetup({
               className="h-9 rounded-sm border border-line bg-well px-3 text-body text-ink"
             />
           </label>
-          <button type="submit" disabled={busy || workspace.trim() === ''} className={PRIMARY}>
+          <button
+            type="submit"
+            disabled={busy !== null || workspace.trim() === ''}
+            className={PRIMARY}
+          >
             Scan
           </button>
         </form>
@@ -312,6 +356,50 @@ export function ImportSetup({
                 </button>
               ))}
             </div>
+            {blocked === 0 ? null : (
+              <section className="rounded-md border border-line bg-well p-3">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="flex flex-col gap-1 text-label text-muted">
+                    Analyze remaining setup with
+                    <select
+                      value={analysisVendor}
+                      disabled={busy !== null}
+                      onChange={(event) => {
+                        setAnalysisVendor(event.target.value as AnalysisVendor);
+                      }}
+                      className="h-8 rounded-sm border border-line bg-panel px-3 text-body text-ink"
+                    >
+                      <option value="claude-code">Claude</option>
+                      <option value="codex">Codex</option>
+                    </select>
+                  </label>
+                  {busy === 'analyze' ? (
+                    <button
+                      type="button"
+                      className={BUTTON}
+                      onClick={() => {
+                        void io.stopSetupAnalysis?.();
+                      }}
+                    >
+                      Stop analysis
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className={PRIMARY}
+                      disabled={io.analyzeSetup === undefined || busy !== null}
+                      onClick={analyze}
+                    >
+                      Analyze and convert
+                    </button>
+                  )}
+                  <p className="min-w-64 flex-1 text-note text-muted">
+                    Sends a redacted, read-only copy of setup files to the selected service. The
+                    result is checked before it can be imported.
+                  </p>
+                </div>
+              </section>
+            )}
             <div className="min-h-0 overflow-auto rounded-md border border-line">
               <table className="w-full table-fixed border-collapse text-left">
                 <thead className="sticky top-0 bg-panel text-label text-muted">
@@ -401,6 +489,39 @@ export function ImportSetup({
                 ))}
               </fieldset>
             )}
+            {preview.analysis === undefined ? null : (
+              <section className="rounded-md border border-line bg-well p-3">
+                <h3 className="text-subhead text-ink">
+                  {`Analyzed with ${preview.analysis.vendor === 'codex' ? 'Codex' : 'Claude'}`}
+                </h3>
+                {preview.draft.workflows.length === 0 ? (
+                  <p className="text-note text-muted">No complete routine was added.</p>
+                ) : (
+                  <ul className="mt-2 grid gap-2">
+                    {preview.draft.workflows.map((workflow) => (
+                      <li key={workflow.id} className="rounded-sm border border-line bg-panel p-2">
+                        <b className="text-body text-ink">{workflow.name}</b>
+                        <span className="ml-2 text-note text-muted">
+                          {`${String(workflow.steps?.length ?? 0)} steps`}
+                        </span>
+                        <ul className="mt-1 flex flex-wrap gap-1">
+                          {workflow.steps?.map((step) => (
+                            <li
+                              key={step.id}
+                              className="rounded-pill border border-line px-2 py-0.5 text-note text-body"
+                            >
+                              {step.command === undefined
+                                ? step.name
+                                : `${step.name}: ${step.command}`}
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
             <div className="flex items-center gap-3 border-t border-line pt-3">
               {unresolved.length === 0 ? null : (
                 <button
@@ -423,7 +544,7 @@ export function ImportSetup({
               </p>
               <button
                 type="button"
-                disabled={busy || !hasItems || blocked > 0}
+                disabled={busy !== null || !hasItems || blocked > 0}
                 className={`ml-auto ${PRIMARY}`}
                 onClick={apply}
               >
