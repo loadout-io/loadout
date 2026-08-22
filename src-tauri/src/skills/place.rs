@@ -24,8 +24,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DESTINATION_DIRS, Error, NON_SPEC_FIELDS, RESERVED_DIR_NAME, Result, Roots, SPEC_FIELDS, Scope,
-    Skill, SkillDoc,
+    DESTINATION_DIRS, Error, Missing, NON_SPEC_FIELDS, RESERVED_DIR_NAME, Result, Roots,
+    SPEC_FIELDS, Scope, Skill, SkillDoc, StepSkills,
 };
 
 /// Nazwa pliku umiejętności. Jedna u wszystkich sześciu vendorów [T5 §2.2] — zmienna, żeby
@@ -107,6 +107,80 @@ pub enum Discovery {
     /// Nie wiadomo — i to nie jest błąd (niezmiennik 5). Brak CLI, zdarzenie o nieznanym
     /// kształcie, nowa wersja vendora: żadne z tego nie może zaświecić się na czerwono.
     Unknown(&'static str),
+}
+
+// ── Umiejętności jednego kroku ─────────────────────────────────────────────────────────────
+//
+// Zachowanie stoi tutaj, a typ w `skills/mod.rs`, dokładnie jak reszta tego modułu: tamten plik
+// trzyma dane, ten trzyma reguły. Funkcje wiążące, nie wolne funkcje modułu, i to nie jest
+// kwestia gustu — obie odpowiadają na pytanie o KONKRETNY zbiór umiejętności, więc zbiór jest
+// ich pierwszym argumentem, a `StepSkills::for_the_step` jest jedynym sposobem, żeby taki zbiór
+// w ogóle powstał. Ten sam kształt, z tego samego powodu, stoi przy
+// `engine::drivers::ValidatedImages::validate`.
+
+impl StepSkills {
+    /// Efektywny zbiór umiejętności jednego kroku: agent, zawężony nadpisaniem kroku.
+    ///
+    /// `data` to korzeń danych aplikacji (`~/.loadout`), czyli ten sam, który [`Roots::data`]
+    /// wskazuje przy instalacji — kanoniczna kopia leży pod `<data>/skills/<nazwa>/`. Pytamy
+    /// **biblioteki**, a nie katalogów vendorów, i to jest cała treść tego argumentu: katalogi
+    /// vendorów bywają cudze (człowiek mógł napisać tam własną umiejętność ręcznie), a bieg ma
+    /// podać agentowi wyłącznie to, co Loadout naprawdę posiada.
+    ///
+    /// `agent` to `Agent.skills` z definicji efektywnej, `step` to `Overrides.skills` tego
+    /// kroku: `None` znaczy „brak klucza", czyli **weź to, co ma agent** — dokładnie tak, jak
+    /// czyta to `library::agents::resolve` (RFC 7396). `Some(&[])` to co innego i musi być czym
+    /// innym: człowiek, który wyczyścił listę na kroku, powiedział „żadnych".
+    ///
+    /// `step_name` wchodzi tu wyłącznie po to, żeby odmowa miała czym nazwać kafelek. Zdanie bez
+    /// nazwy kroku zostawia człowieka z przeszukiwaniem workflow (niezmiennik 29).
+    ///
+    /// # Odmowa pada TUTAJ, przy budowie zadania
+    ///
+    /// Niezmiennik 12: odmowa najpóźniej przy Starcie, nigdy w trakcie biegu. Alternatywa —
+    /// przycięcie listy i jazda dalej — jest najdroższą wersją tej wady: agent, któremu po cichu
+    /// zabrano umiejętność, wygląda dokładnie jak agent, który „nie umiał".
+    pub fn for_the_step(
+        _data: &Path,
+        _agent: &[String],
+        _step: Option<&[String]>,
+        _step_name: &str,
+    ) -> std::result::Result<Self, Missing> {
+        // 2026-08-22 — SZKIELET T-79. Ciało jest `todo!()`, więc kryteria padają w czasie
+        // wykonania, a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego
+        // (AGENTS.md §2a p. 5). `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby to nie
+        // przeżyło do pełnej bramki, a podkreślenia przy nazwach parametrów są częścią tej samej
+        // tymczasowości — implementacja zdejmuje je razem z `todo!()`.
+        todo!()
+    }
+
+    /// Kładzie te umiejętności w katalogu roboczym kroku, pod `.agents/skills/<nazwa>/`.
+    ///
+    /// PIĘCIU Z SZEŚCIU VENDORÓW CZYTA TĘ PÓŁKĘ i żaden z nich nie umie przyjąć jej ścieżki
+    /// argumentem [T5 §3.1] — więc dla nich „agent ma umiejętność" znaczy dosłownie „plik leży
+    /// w jego katalogu roboczym". To jest druga droga tego zadania; pierwszą, katalog pluginu
+    /// podany argumentem, składa [`crate::inherit::Rewritten::from_the_library`].
+    ///
+    /// `ours` mówi, czy ten katalog roboczy założył Loadout ([`Folder::FreshCopy`] daje `true`,
+    /// folder projektu i folder wskazany ręcznie dają `false`). Krok pracujący w folderze
+    /// człowieka jest **odmową** ([`Why::WouldWriteIntoYourFolder`]), nie cichym zapisem: katalog
+    /// dopisany do cudzego repozytorium jest zmianą, o której jego właściciel dowiaduje się
+    /// z `git status`, a po biegu zostaje tam na zawsze.
+    ///
+    /// Oddaje ścieżki, które naprawdę powstały — to samo pytanie i ta sama odpowiedź, co przy
+    /// [`Discovery::NotSeen::looked_in`]: bez nich zgłoszenie „vendor tego nie widzi" nie ma czym
+    /// nazwać miejsca, w które pisaliśmy.
+    ///
+    /// [`Folder::FreshCopy`]: crate::workflow::file::Folder::FreshCopy
+    pub fn into_the_step_folder(
+        &self,
+        _cwd: &Path,
+        _ours: bool,
+        _step_name: &str,
+    ) -> std::result::Result<Vec<PathBuf>, Missing> {
+        // Szkielet T-79 — powód i termin ważności stoją przy `for_the_step` wyżej.
+        todo!()
+    }
 }
 
 /// Dwa katalogi docelowe dla danego zakresu — same korzenie, bez `<name>`.
