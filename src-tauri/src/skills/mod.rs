@@ -26,7 +26,23 @@ pub mod place;
 /// Kolejność jest kolejnością zapisu i kolejnością w [`place::destinations`]. Nie ma znaczenia
 /// dla vendorów; ma znaczenie dla `git diff` planu instalacji, który człowiek czyta przed
 /// naciśnięciem przycisku.
-pub const DESTINATION_DIRS: [&str; 2] = [".claude/skills", ".agents/skills"];
+pub const DESTINATION_DIRS: [&str; 2] = [SHELF_CLAUDE_READS, SHELF_THE_OTHER_FIVE_READ];
+
+/// Półka Claude Code. Osobna nazwa, bo osobno pyta o nią bieg.
+///
+/// 2026-08-22 (T-79) — rozbicie tablicy na dwie nazwane stałe nie dokłada ani jednego napisu:
+/// tablica składa się z nich, więc `.agents/skills` dalej stoi w repo **raz**. Powodem jest
+/// [`StepSkills::into_the_step_folder`], które pyta o JEDNĄ z tych dwóch półek — a indeks
+/// (`DESTINATION_DIRS[1]`) byłby odwołaniem, które po przestawieniu tablicy dalej się kompiluje
+/// i wskazuje na drugiego vendora.
+pub const SHELF_CLAUDE_READS: &str = ".claude/skills";
+
+/// Półka, do której zaglądają Codex, Cursor, Gemini CLI, opencode i Amp [T5 §3.1].
+///
+/// Dla tych pięciu **nie ma drugiego kanału**: żaden z nich nie umie przyjąć ścieżki katalogu
+/// umiejętności argumentem, więc „agent ma umiejętność" znaczy dla nich dosłownie „plik leży
+/// w jego katalogu roboczym".
+pub const SHELF_THE_OTHER_FIVE_READ: &str = ".agents/skills";
 
 /// Vendorzy, których te dwa katalogi obsługują. Lista jest tu po to, żeby UI („Installed for
 /// 6 tools") liczyło z tego samego miejsca, z którego bierze się zapis — a nie z osobnej stałej,
@@ -284,6 +300,17 @@ pub enum Error {
     /// zgadnięty korzeń zapisuje umiejętność w losowym miejscu i nikt się o tym nie dowie.
     #[error("there is no open project, so a project skill has no place to go")]
     NoProjectRoot,
+
+    /// Umiejętność, której ten krok nie dostanie ([`Missing`]).
+    ///
+    /// PRZEZROCZYSTY, bo [`Missing`] jest już zdaniem napisanym dla człowieka — a zdanie
+    /// nadpisane drugim zdaniem o tej samej odmowie to dwa miejsca, w których mieszka jedna
+    /// odpowiedź (niezmiennik 13). Wariant istnieje po to, żeby rozmieszczanie umiejętności
+    /// kroku miało JEDEN typ błędu na dwa różne stany: odmowę (ta pozycja nie dojedzie) i awarię
+    /// dysku ([`Error::Io`]). Bez niego awaria dysku musiałaby udawać jedną z czterech przyczyn
+    /// z [`Why`], czyli kłamać o tym, co się stało.
+    #[error(transparent)]
+    Refused(#[from] Missing),
 }
 
 /// Skrót modułu. Drugi parametr z domyślną wartością, bo `validate_strict` zwraca listę

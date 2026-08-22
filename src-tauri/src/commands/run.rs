@@ -157,10 +157,12 @@ use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::GroupProof;
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
+use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
 use crate::memory::handoff::{self, Kind, MetaDraft};
+use crate::skills::StepSkills;
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::{
@@ -176,6 +178,17 @@ const PROJECT_DIR: &str = ".loadout";
 
 /// Katalog biegów pod [`PROJECT_DIR`].
 const RUNS_DIR: &str = "runs";
+
+/// Katalog, pod którym stają katalogi pluginu z umiejętnościami **kroków** — po jednym na krok.
+///
+/// PO JEDNYM NA KROK, bo zbiór umiejętności jest własnością kroku, nie biegu: trzy kroki jednego
+/// agenta mogą mieć trzy różne zbiory, a jeden wspólny katalog dałby każdemu z nich sumę
+/// wszystkich — czyli odznaczenie na kroku przestałoby cokolwiek znaczyć.
+///
+/// **Pod katalogiem biegu**, bo katalog pluginu jest wyjściem builda (niezmiennik 4) i ma zniknąć
+/// razem z biegiem. `$TMPDIR` zostawiałby artefakt biegu poza biegiem (`docs/ARCHITECTURE.md` §8),
+/// a katalog roboczy kroku bywa folderem człowieka.
+const STEP_SKILLS_DIR: &str = "skills";
 
 /// Opis biegu: bieg, jego kroki i migawki. To jest **prawda** (niezmiennik 4).
 const RUN_FILE: &str = "run.json";
@@ -523,7 +536,7 @@ struct TriggerAcceptance {
 /// kodu, a nie zdaniem w komentarzu.
 async fn the_planned_run(
     deps: &RunDeps<'_>,
-    plan: Plan,
+    mut plan: Plan,
     lines: LineSink,
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
@@ -539,6 +552,10 @@ async fn the_planned_run(
     // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
     // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
     let inherited = what_the_host_lends(deps.project, &plan.dir)?;
+    // Umiejętności kroków lądują TU, obok dziedziczenia i z tego samego powodu: obie drogi piszą,
+    // a piszą pod katalog biegu, który dopiero co powstał. Przed `Live::new`, bo odmowa („ten krok
+    // pracuje w twoim folderze") ma paść, zanim ruszy pierwszy proces (niezmiennik 12).
+    hand_the_skills_to_the_steps(&mut plan)?;
     let live = Arc::new(Live::new(
         plan,
         inherited,
@@ -970,6 +987,20 @@ struct AgentJob {
     tools: Option<Vec<String>>,
     /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
     connections: Vec<crate::connections::Connection>,
+    /// Umiejętności, które ten krok naprawdę dostanie — policzone z efektywnego agenta.
+    ///
+    /// Policzone **przy planowaniu**, z tego samego powodu, z którego stoją tu narzędzia: nazwa,
+    /// której krok nie może dostać, jest odmową, a niezmiennik 12 mówi „najpóźniej przy Starcie,
+    /// nigdy w trakcie biegu". Krok, który liczyłby to sam, odmawiałby po tym, jak pierwszy agent
+    /// został już opłacony.
+    skills: StepSkills,
+    /// `["--plugin-dir", <katalog>]` dla umiejętności TEGO kroku — albo nic.
+    ///
+    /// Puste przy planowaniu i wypełniane dopiero przez [`hand_the_skills_to_the_steps`]: ścieżka
+    /// wskazuje katalog pod katalogiem biegu, a ten w chwili planowania jeszcze nie istnieje
+    /// (plan jest czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć przy
+    /// wznowieniu).
+    plugin_flags: Vec<String>,
     /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
@@ -1075,6 +1106,7 @@ fn plan_run_with_identity(
     let setup = Setup {
         library: deps.home.join(AGENTS_DIR),
         connections: deps.home.join("connections"),
+        data: deps.home,
         knows: what_the_agents_know(deps.home),
         is_ask: false,
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
@@ -1243,6 +1275,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     let setup = Setup {
         library,
         connections: deps.home.join("connections"),
+        data: deps.home,
         knows: what_the_agents_know(deps.home),
         is_ask: true,
         /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
@@ -1411,6 +1444,13 @@ struct Setup<'a> {
     library: PathBuf,
     /// `~/.loadout/connections` — wyłącznie natywne, jawnie zatwierdzone pliki.
     connections: PathBuf,
+    /// `~/.loadout` — korzeń danych aplikacji, pod którym leżą kanoniczne kopie umiejętności
+    /// (`skills/<nazwa>/`). Ten sam korzeń, który przy instalacji wskazuje `skills::Roots::data`.
+    ///
+    /// Pytamy **biblioteki**, a nie katalogów vendorów: te bywają cudze (człowiek mógł napisać
+    /// tam własną umiejętność ręcznie), a bieg ma podać agentowi wyłącznie to, co Loadout
+    /// naprawdę posiada.
+    data: &'a Path,
     /// Co agent WIE, zanim przeczyta swoje zadanie — notatki, które człowiek dopuścił do użytku.
     ///
     /// Liczone RAZ, przy planowaniu, nie przy każdym kroku: ten sam bieg ma nieść jedną
@@ -1527,6 +1567,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     // pojechać z inną polityką, niż ta, którą przepuszczono jego narzędzia.
     let policy = policy_of(effective.file_access);
     let tools = what_this_step_may_use(&effective, policy, step)?;
+    let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
             |error| {
@@ -1597,6 +1638,10 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         policy,
         tools,
         connections,
+        skills,
+        // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
+        // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
+        plugin_flags: Vec::new(),
         // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
         // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
         // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
@@ -1649,6 +1694,57 @@ fn what_this_step_may_use(
             message: no_such_tools(&agent.name, &refused),
         })),
     }
+}
+
+/// Po które umiejętności ten krok może sięgnąć — albo odmowa, jeśli którejś nie może dostać.
+///
+/// # 2026-08-22 (T-79) — DO TEGO DNIA `agent.skills` NIE MIAŁO TU ANI JEDNEGO CZYTELNIKA
+///
+/// `Agent.skills` jest polem formularza agenta od T-11, `~/.loadout/skills/<nazwa>/` kanoniczną
+/// kopią od T-18 — i poza modułem importu **nikt tych pól nie czytał**. Człowiek zaznaczał
+/// umiejętność, ekran to przyjmował, dysk zapisywał, a proces agenta nie dostawał ani jednego
+/// bajtu. Nikt się o tym nie dowiadywał, bo „agent nie zna tej umiejętności" jest z zewnątrz
+/// nieodróżnialne od „model nie uznał, że warto po nią sięgnąć" — to jest ta sama martwa
+/// kontrolka (niezmiennik 16) schowana o warstwę głębiej, którą niezmiennik 29 nazywa wprost.
+///
+/// # Dwa źródła wyboru na kroku i tylko jedno rozstrzyga
+///
+/// Nadpisanie (`Overrides::skills`, patch RFC 7396) wygrywa, bo to ono jest **różnicą wobec
+/// agenta**: brak klucza znaczy „weź to, co ma agent", `[]` znaczy „żadnych", lista znaczy
+/// podzbiór — dokładnie tak, jak czyta resztę definicji `library::agents::resolve`. Pole pliku
+/// workflow (`AgentStep::skills`, `"all"` albo lista) odpowiada dopiero wtedy, gdy patcha nie ma:
+/// jest starsze, ma tę samą semantykę i do tego dnia też nie miało czytelnika. Odwrotna kolejność
+/// znaczyłaby, że wartość domyślna jednego pola (`"all"`) kasuje jawny wybór drugiego.
+///
+/// # Odmowa pada TUTAJ, przy budowie zadania
+///
+/// Niezmiennik 12: najpóźniej przy Starcie, nigdy w trakcie biegu. Alternatywa — przyciąć listę
+/// i jechać dalej — jest najdroższą wersją tej wady: człowiek zaznacza pięć umiejętności, agent
+/// dostaje trzy, nic nie pada i nikt się o tym nie dowiaduje.
+fn what_this_step_may_reach(
+    data: &Path,
+    saved: &Agent,
+    overrides: &Overrides,
+    step: &AgentStep,
+) -> Result<StepSkills, RunError> {
+    let picked = overrides.skills.clone().or_else(|| match &step.skills {
+        Skills::Every(_) => None,
+        Skills::Only(names) => Some(names.clone()),
+    });
+    StepSkills::for_the_step(data, &saved.skills, picked.as_deref(), &step.name).map_err(
+        |missing| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                // Kropka ląduje na kafelku TEGO kroku: to jego lista umiejętności, a odmowa bez
+                // wskazania kafelka zostawia człowieka ze szukaniem, którego agenta dotyczy.
+                step_id: Some(step.id.clone()),
+                // ZDANIE CO DO SŁOWA Z `skills::Missing`. Własne brzmienie byłoby drugą kopią jednej
+                // odmowy, a druga kopia jest zawsze tą nieaktualną (niezmiennik 23) — tym bardziej
+                // że to samo zdanie czyta potem ekran pracy.
+                message: missing.to_string(),
+            })
+        },
+    )
 }
 
 /// Zdanie o narzędziach, których ten agent nie dostanie — i o tym, co z tym zrobić.
@@ -2956,6 +3052,70 @@ fn what_the_host_lends(project: &Path, run_dir: &Path) -> Result<Inherited, RunE
     })
 }
 
+/// Kładzie umiejętności każdego kroku tam, gdzie vendorzy naprawdę zaglądają — **obiema drogami**.
+///
+/// DWIE PÓŁKI, BO VENDORZY MAJĄ DWIE. Claude Code przyjmuje katalog umiejętności wyłącznie
+/// argumentem (`--plugin-dir`, [S1 §3]); pozostałych pięciu nie umie go przyjąć w ogóle i czyta
+/// `.agents/skills/` w katalogu roboczym kroku [T5 §3.1]. Kładziemy więc obie i nie pytamy, który
+/// vendor to jest: warunek nazywający vendora w tym miejscu jest dokładnie tym drugim zestawem
+/// reguł, przez który w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23).
+///
+/// PO JEDNYM KATALOGU PLUGINU NA KROK ([`STEP_SKILLS_DIR`]), bo zbiór jest własnością kroku.
+///
+/// ODMOWA PADA TUTAJ, PRZED PIERWSZYM PROCESEM. Krok, który potrzebuje umiejętności i pracuje
+/// wprost w folderze człowieka, nie ma gdzie postawić półki — a dopisanie jej do cudzego
+/// repozytorium jest zmianą, o której właściciel dowiaduje się z `git status` i która zostaje
+/// tam po biegu na zawsze (`docs/ARCHITECTURE.md` §8). Odmowa zabiera cały bieg, więc nie ma
+/// stanu, w którym część kroków ruszyła bez tego, co człowiek zaznaczył.
+fn hand_the_skills_to_the_steps(plan: &mut Plan) -> Result<(), RunError> {
+    // Kopia ścieżki, nie pożyczka: `plan.steps` bierzemy niżej mutowalnie.
+    let run_dir = plan.dir.clone();
+    for step in &mut plan.steps {
+        // Trzy napisy zdjęte z kroku ZANIM pożyczymy jego zadanie mutowalnie: nazwa dla odmowy,
+        // klucz węzła dla katalogu, klucz kafelka dla kropki na płótnie.
+        let name = step.name.clone();
+        let node_key = step.node_key.clone();
+        let tile_key = step.tile_key.clone();
+        let Job::Agent(job) = &mut step.job else {
+            continue;
+        };
+        if job.skills.names.is_empty() {
+            continue;
+        }
+
+        // NASZ, CZYLI POD KATALOGIEM BIEGU. `AgentJob::ours` odpowiada na inne pytanie — „czy ten
+        // krok ma ten katalog założyć" — i dla `same-copy` daje `false` mimo że drzewo jest nasze
+        // (założył je krok przed nim). Tamta odpowiedź w tym miejscu odmawiałaby krokowi, który
+        // w folderze człowieka nie pracuje.
+        let ours = job.cwd.starts_with(&run_dir);
+        job.skills
+            .into_the_step_folder(&job.cwd, ours, &name)
+            .map_err(|refusal| refused_by_the_skills(&refusal, tile_key))?;
+
+        let into = run_dir.join(STEP_SKILLS_DIR).join(&node_key);
+        let carried = rewrite::plugin_dir_from_the_library(&job.skills, &into)
+            .map_err(|error| RunError::Io(io::Error::other(error)))?;
+        job.plugin_flags = rewrite::plugin_argv(&carried);
+    }
+    Ok(())
+}
+
+/// Odmowa rozmieszczania → odmowa biegu, ze zdaniem co do słowa tym, które napisał `skills`.
+///
+/// Dwa stany, dwa warianty: awaria dysku jest awarią i jedzie przezroczystym [`RunError::Io`],
+/// a odmowa jest zdaniem dla człowieka i jedzie [`RunError::Refused`], czyli z kropką na kafelku
+/// tego kroku.
+fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> RunError {
+    match refusal {
+        crate::skills::Error::Refused(missing) => RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: Some(tile_key),
+            message: missing.to_string(),
+        }),
+        other => RunError::Io(io::Error::other(other.to_string())),
+    }
+}
+
 // ── ŻYWY BIEG ──────────────────────────────────────────────────────────────────────────────
 
 /// Bieg w trakcie: plan (niezmienny) plus księga (zmienna), plus to, czym mówi do świata.
@@ -3721,20 +3881,37 @@ impl Live {
     fn carrying_what_we_inherited(
         &self,
         driver: &Arc<dyn AgentDriver>,
+        of_the_step: &[String],
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
-        let flags = self.inherited.flags();
-        if flags.is_empty() {
-            // Nic nie odziedziczono, więc nie ma czego nieść i nie ma o co pytać: ten sam
-            // sterownik, bez klonowania czegokolwiek poza licznikiem.
+        let from_the_host = self.inherited.flags();
+        if from_the_host.is_empty() && of_the_step.is_empty() {
+            // Nic do niesienia i nie ma o co pytać: ten sam sterownik, bez klonowania czegokolwiek
+            // poza licznikiem.
             return Ok(Arc::clone(driver));
         }
-        driver.inheriting(flags).ok_or_else(|| {
-            anyhow::anyhow!(
+        // JEDEN FRAGMENT, DWA ŹRÓDŁA. Adapter dostaje gotową listę i dalej nie wie, czym jest
+        // umiejętność ani skąd przyszła (niezmiennik 23) — a katalog gospodarza i katalog kroku
+        // to dwa różne katalogi, więc jadą jako dwie pary `--plugin-dir <ścieżka>`.
+        let mut flags = from_the_host.to_vec();
+        flags.extend_from_slice(of_the_step);
+
+        match driver.inheriting(&flags) {
+            Some(carrying) => Ok(carrying),
+            // MATERIAŁ GOSPODARZA MA TYLKO TĘ JEDNĄ DROGĘ, więc vendor, który jej nie zna, nie
+            // dostanie go w ogóle — i wtedy krok nie rusza. Cicha alternatywa daje bieg, w którym
+            // człowiek zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
+            None if !from_the_host.is_empty() => Err(anyhow::anyhow!(
                 "this agent app cannot be handed the skills you brought in from this project. \
                  Loadout stopped the step instead of starting it without them: an agent that \
                  quietly knows less than you picked answers as though there was nothing to know."
-            )
-        })
+            )),
+            // UMIEJĘTNOŚCI TEGO KROKU MAJĄ DRUGĄ DROGĘ i już nią dojechały: leżą w katalogu
+            // roboczym pod `.agents/skills/` ([`hand_the_skills_to_the_steps`]), a odmowa
+            // rozmieszczenia zabrała cały bieg kilkadziesiąt linii wcześniej. Flaga jest tu
+            // dodatkiem dla jedynego vendora, który ją czyta — nie jedynym kanałem — więc jej
+            // brak nie zabiera krokowi niczego i nie ma o czym milczeć.
+            None => Ok(Arc::clone(driver)),
+        }
     }
 
     /// Składa bezpieczny manifest dokładnie w kolejności, w której powstał finalny prompt.
@@ -3870,7 +4047,7 @@ impl Live {
                     )
                 })?
             };
-            let driver = self.carrying_what_we_inherited(&driver)?;
+            let driver = self.carrying_what_we_inherited(&driver, &job.plugin_flags)?;
             /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH TRZECH OPAKOWAN JEST
              * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
              * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     DESTINATION_DIRS, Error, Missing, NON_SPEC_FIELDS, RESERVED_DIR_NAME, Result, Roots,
-    SPEC_FIELDS, Scope, Skill, SkillDoc, StepSkills,
+    SHELF_THE_OTHER_FIVE_READ, SPEC_FIELDS, Scope, Skill, SkillDoc, StepSkills, Why,
 };
 
 /// Nazwa pliku umiejętności. Jedna u wszystkich sześciu vendorów [T5 §2.2] — zmienna, żeby
@@ -141,17 +141,69 @@ impl StepSkills {
     /// przycięcie listy i jazda dalej — jest najdroższą wersją tej wady: agent, któremu po cichu
     /// zabrano umiejętność, wygląda dokładnie jak agent, który „nie umiał".
     pub fn for_the_step(
-        _data: &Path,
-        _agent: &[String],
-        _step: Option<&[String]>,
-        _step_name: &str,
+        data: &Path,
+        agent: &[String],
+        step: Option<&[String]>,
+        step_name: &str,
     ) -> std::result::Result<Self, Missing> {
-        // 2026-08-22 — SZKIELET T-79. Ciało jest `todo!()`, więc kryteria padają w czasie
-        // wykonania, a nie na kompilacji: test, który się nie zbudował, nie uruchomił niczego
-        // (AGENTS.md §2a p. 5). `clippy::todo = deny` w `Cargo.toml` pilnuje, żeby to nie
-        // przeżyło do pełnej bramki, a podkreślenia przy nazwach parametrów są częścią tej samej
-        // tymczasowości — implementacja zdejmuje je razem z `todo!()`.
-        todo!()
+        let refuse = |skill: &str, why: Why| Missing {
+            step: step_name.to_owned(),
+            skill: skill.to_owned(),
+            why,
+        };
+
+        // KROK ZAWĘŻA, NIGDY NIE POSZERZA, i to pytanie stoi PIERWSZE — przed biblioteką. Nazwa
+        // zapisana w bibliotece, ale nieprzypisana temu agentowi, jest odmową o innej naprawie
+        // (dopisz ją agentowi) niż nazwa, której nie ma nigdzie (zapisz ją). Odwrotna kolejność
+        // odpowiadałaby na drugie pytanie wtedy, gdy człowiek zadał pierwsze.
+        if let Some(picked) = step
+            && let Some(extra) = picked
+                .iter()
+                .find(|want| !agent.iter().any(|has| has == *want))
+        {
+            return Err(refuse(extra, Why::NotOnTheAgent));
+        }
+
+        // KOLEJNOŚĆ Z DEFINICJI AGENTA, nie z listy kroku: to ta pierwsza stoi na ekranie agenta
+        // i to w niej człowiek te nazwy widzi. Bez powtórzeń, bo agent zapisany ręcznie z tą samą
+        // nazwą dwa razy nie znaczy „dwie umiejętności" — a `--plugin-dir` i tak zobaczyłby jeden
+        // katalog.
+        let mut names: Vec<String> = Vec::new();
+        for name in agent {
+            let wanted = step.is_none_or(|picked| picked.iter().any(|want| want == name));
+            if wanted && !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+
+        let mut dirs = Vec::with_capacity(names.len());
+        for name in &names {
+            // Nazwa z definicji WYZNACZA CZYTANĄ ŚCIEŻKĘ, a definicję agenta człowiek pisze
+            // ręcznie: `..` albo `a/b` w tym polu znaczyłoby odczyt poza biblioteką. Pytamy
+            // [`is_slug`], czyli tą samą regułą, którą [`validate_strict`] wymusza na każdej
+            // zapisanej umiejętności — nazwa, która jej nie spełnia, nie może w bibliotece leżeć.
+            if !is_slug(name) {
+                return Err(refuse(name, Why::NotInTheLibrary));
+            }
+            let dir = data.join(SKILLS_DIR).join(name);
+            // DWA RÓŻNE STANY, DWA RÓŻNE ZDANIA. Katalogu nie ma → tej umiejętności po prostu nie
+            // zapisano. Katalog jest, a pliku nie da się przeczytać albo nie przechodzi
+            // walidatora → jest, tylko nie jest umiejętnością; te dwie rzeczy naprawia się
+            // inaczej. `symlink_metadata`, nie `exists()`: dowiązanie w tym miejscu też jest
+            // czymś, co tam stoi.
+            if fs::symlink_metadata(&dir).is_err() {
+                return Err(refuse(name, Why::NotInTheLibrary));
+            }
+            let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
+                return Err(refuse(name, Why::Unusable));
+            };
+            if validate_strict(name, &read_doc(&text)).is_err() {
+                return Err(refuse(name, Why::Unusable));
+            }
+            dirs.push(dir);
+        }
+
+        Ok(Self { names, dirs })
     }
 
     /// Kładzie te umiejętności w katalogu roboczym kroku, pod `.agents/skills/<nazwa>/`.
@@ -161,11 +213,17 @@ impl StepSkills {
     /// w jego katalogu roboczym". To jest druga droga tego zadania; pierwszą, katalog pluginu
     /// podany argumentem, składa [`crate::inherit::Rewritten::from_the_library`].
     ///
-    /// `ours` mówi, czy ten katalog roboczy założył Loadout ([`Folder::FreshCopy`] daje `true`,
-    /// folder projektu i folder wskazany ręcznie dają `false`). Krok pracujący w folderze
-    /// człowieka jest **odmową** ([`Why::WouldWriteIntoYourFolder`]), nie cichym zapisem: katalog
-    /// dopisany do cudzego repozytorium jest zmianą, o której jego właściciel dowiaduje się
-    /// z `git status`, a po biegu zostaje tam na zawsze.
+    /// `ours` mówi, czy ten katalog roboczy jest NASZ — czyli czy leży pod katalogiem tego biegu.
+    /// [`Folder::FreshCopy`] daje `true`; folder projektu i folder wskazany ręcznie dają `false`.
+    /// Krok pracujący w folderze człowieka jest **odmową** ([`Why::WouldWriteIntoYourFolder`]),
+    /// nie cichym zapisem: katalog dopisany do cudzego repozytorium jest zmianą, o której jego
+    /// właściciel dowiaduje się z `git status`, a po biegu zostaje tam na zawsze.
+    ///
+    /// 2026-08-22 (T-79) — PYTANIE BRZMI „CZY LEŻY POD BIEGIEM", A NIE „CZY TEN KROK GO ZAŁOŻYŁ",
+    /// i różnica jest widoczna dokładnie raz: krok `same-copy` pracuje w drzewie, które założył
+    /// krok przed nim (`commands::run::where_it_works` daje mu `ours: false`, bo katalogu NIE
+    /// zakłada). To drzewo leży pod katalogiem biegu i jest nasze — odmowa dla niego byłaby
+    /// odmową o folderze człowieka wystawioną krokowi, który w folderze człowieka nie pracuje.
     ///
     /// Oddaje ścieżki, które naprawdę powstały — to samo pytanie i ta sama odpowiedź, co przy
     /// [`Discovery::NotSeen::looked_in`]: bez nich zgłoszenie „vendor tego nie widzi" nie ma czym
@@ -174,13 +232,77 @@ impl StepSkills {
     /// [`Folder::FreshCopy`]: crate::workflow::file::Folder::FreshCopy
     pub fn into_the_step_folder(
         &self,
-        _cwd: &Path,
-        _ours: bool,
-        _step_name: &str,
-    ) -> std::result::Result<Vec<PathBuf>, Missing> {
-        // Szkielet T-79 — powód i termin ważności stoją przy `for_the_step` wyżej.
-        todo!()
+        cwd: &Path,
+        ours: bool,
+        step_name: &str,
+    ) -> Result<Vec<PathBuf>> {
+        // Pusty zbiór nie ma czego położyć i **nie zakłada półki**: katalog `.agents/skills/`
+        // stojący pusto w drzewie kroku jest tym samym fałszywym zielonym ptaszkiem, co plugin
+        // ładujący się z zerem umiejętności. To jest też jedyny powód, dla którego krok bez
+        // umiejętności pracujący w folderze człowieka nie ma o co odmawiać.
+        if self.names.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !ours {
+            return Err(Missing {
+                step: step_name.to_owned(),
+                // PIERWSZA Z LISTY, nie wszystkie: odmowa ma nazwać jedną rzecz do odznaczenia.
+                // Człowiek, który zdejmie ją i naciśnie Start, usłyszy o następnej — a lista
+                // pięciu nazw w jednym zdaniu nie mówi, od której zacząć.
+                skill: self.names[0].clone(),
+                why: Why::WouldWriteIntoYourFolder {
+                    folder: cwd.to_path_buf(),
+                },
+            }
+            .into());
+        }
+
+        let mut wrote = Vec::with_capacity(self.names.len());
+        for (name, source) in self.names.iter().zip(&self.dirs) {
+            let landing = cwd.join(SHELF_THE_OTHER_FIVE_READ).join(name);
+            copy_the_skill(source, &landing)?;
+            wrote.push(landing);
+        }
+        Ok(wrote)
     }
+}
+
+/// Kopiuje kanoniczną umiejętność — **całą** — do wskazanego katalogu.
+///
+/// CAŁĄ, czyli razem z `scripts/`, `references/` i `assets/` [T5 §2.2]. Umiejętność, której
+/// `SKILL.md` każe uruchomić `scripts/check.sh`, a skryptu przy niej nie ma, jest umiejętnością
+/// zepsutą w sposób nieodróżnialny z zewnątrz od „model nie uznał, że warto po nią sięgnąć" —
+/// czyli dokładnie tą cichą porażką, przed którą stoi całe to zadanie.
+///
+/// `fs::copy`, nie `write(read(..))`: copy zachowuje uprawnienia, czyli bit wykonywalności
+/// `scripts/run.sh`. Zapis samych bajtów gubi go po cichu i skrypt przestaje się dać uruchomić
+/// dopiero u użytkownika (ten sam powód stoi przy [`apply`]). Kopiujemy TU treść, którą Loadout
+/// **posiada** — dla umiejętności, którą Loadout tylko cytuje, obowiązuje zasada odwrotna
+/// i mieszka przy [`crate::inherit::rewrite::plugin_dir`].
+///
+/// Iteracyjnie, nie rekurencyjnie: głębokie drzewo nie ma prawa przepełnić stosu (ta sama
+/// zasada, co przy obchodach w `workflow::check`). Dowiązania **pomijamy** — zapisujemy wyłącznie
+/// to, co sami postanowiliśmy zapisać, a dowiązanie wskazuje poza katalog, który kopiujemy
+/// (niezmienniki 3 i 4).
+pub fn copy_the_skill(from: &Path, into: &Path) -> std::io::Result<()> {
+    let mut stack = vec![(from.to_path_buf(), into.to_path_buf())];
+    while let Some((source, target)) = stack.pop() {
+        fs::create_dir_all(&target)?;
+        for entry in fs::read_dir(&source)? {
+            let entry = entry?;
+            let path = entry.path();
+            let landing = target.join(entry.file_name());
+            // `symlink_metadata`, nie `metadata`: `metadata` przechodzi dowiązanie na wylot
+            // i skopiowałoby treść pliku, który leży gdzie indziej.
+            let kind = fs::symlink_metadata(&path)?;
+            if kind.is_dir() {
+                stack.push((path, landing));
+            } else if kind.is_file() {
+                fs::copy(&path, &landing)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Treść `SKILL.md` → front-matter i ciało, permisywnie (niezmiennik 5).
@@ -192,11 +314,73 @@ impl StepSkills {
 /// z zewnątrz agent bez umiejętności i agent z umiejętnością nie do odczytania odpowiadają
 /// identycznie.
 ///
+/// Nieznany klucz **nie jest błędem** (niezmiennik 5): ląduje w polach dokumentu, a decyzję
+/// o nim podejmuje dopiero [`validate_strict`] albo [`emit`]. Front-matter bez zamknięcia nie
+/// jest front-matterem — `---` w pierwszej linii pliku, który nigdy się nie domyka, to pozioma
+/// kreska, a nie nagłówek.
+///
 /// [`Why::Unusable`]: super::Why::Unusable
 #[must_use]
-pub fn read_doc(_text: &str) -> SkillDoc {
-    // Szkielet T-79 — powód i termin ważności stoją przy `for_the_step` wyżej.
-    todo!()
+pub fn read_doc(text: &str) -> SkillDoc {
+    let whole = || SkillDoc {
+        fields: Vec::new(),
+        body: text.to_owned(),
+    };
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return whole();
+    };
+
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut consumed = 0usize;
+    let mut closed = false;
+
+    for line in rest.split_inclusive('\n') {
+        consumed += line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        if content.trim_end() == "---" {
+            closed = true;
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            // Wcięcie to ciąg dalszy poprzedniego klucza (`metadata:` i jego pary). Surowy tekst
+            // wystarczy: walidator pyta o obecność pola, a emiter i tak pisze mapę po swojemu.
+            if let Some((_, value)) = fields.last_mut() {
+                value.push('\n');
+                value.push_str(content);
+            }
+        } else if let Some((key, value)) = content.split_once(':') {
+            fields.push((key.trim().to_owned(), unquote(value.trim())));
+        }
+    }
+
+    if closed {
+        SkillDoc {
+            fields,
+            body: rest[consumed..].to_owned(),
+        }
+    } else {
+        whole()
+    }
+}
+
+/// Wartość YAML-a bez cudzysłowu, jeśli w cudzysłowie przyszła. Lustro [`scalar`], które cytuje
+/// przy zapisie.
+///
+/// Bez tego `name: "pdf"` nie zgadza się z nazwą katalogu `pdf`, a `description: "a: b"` wraca
+/// z cudzysłowami w środku pola i po drugim „Update" umiejętność ma tytuł w trzech warstwach
+/// znaków cytowania.
+fn unquote(value: &str) -> String {
+    for quote in ['"', '\''] {
+        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return value[1..value.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+        }
+    }
+    value.to_owned()
 }
 
 /// Dwa katalogi docelowe dla danego zakresu — same korzenie, bez `<name>`.
