@@ -112,8 +112,6 @@
       "Write(package-lock.json)",
       "Edit(Cargo.toml)",
       "Write(Cargo.toml)",
-      "Edit(Cargo.lock)",
-      "Write(Cargo.lock)",
       "Edit(rust-toolchain.toml)",
       "Write(rust-toolchain.toml)",
       "Edit(tsconfig*.json)",
