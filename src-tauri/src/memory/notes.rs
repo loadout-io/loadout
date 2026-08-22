@@ -64,8 +64,13 @@ const HEADING: &str = "What you know";
 /// Klucze, które ta wersja rozumie. Wszystko poza nimi jedzie do [`Note::extra`] i wraca
 /// na dysk nietknięte — plik od nowszego Loadouta nie ma prawa stracić pola przy zapisie,
 /// którego to pole nie dotyczyło (niezmiennik 5).
-const KNOWN: [&str; 9] = [
+const KNOWN: [&str; 10] = [
     "scope",
+    // 2026-08-22 (T-80): czyja jest ta notatka. Klucz dołożony do kontraktu, a nie zostawiony
+    // w [`Note::extra`] — odpowiedź na pytanie „czyja to wiedza" nie ma prawa mieszkać w worku
+    // rzeczy, których ta wersja nie rozumie, bo wtedy każdy czytelnik musi wiedzieć, że akurat
+    // tego jednego klucza ma tam szukać.
+    "agent",
     "kind",
     "title",
     "rule",
@@ -346,19 +351,19 @@ pub enum Error {
     #[error("nothing here has the id {0}")]
     NoSuchNote(NoteId),
 
-    /// SZKIELET T-80: droga, której to zadanie jeszcze nie napisało.
+    /// Notatka o zakresie [`Scope::ThisAgent`], która nie umie powiedzieć, czyja jest.
     ///
-    /// Wariant istnieje z powodu mechanicznego, nie produktowego. `clippy::todo` i
-    /// `clippy::panic` są w tym repo `deny` (`Cargo.toml`), a `#[allow(...)]` w `src/`
-    /// przewraca `checks/quick-suppressions.sh` — więc szkielet musi **wrócić**, a nie
-    /// spanikować. Zdanie jest ROZMYŚLNIE nie tym, którego żąda kryterium: odmowa ma nazwać
-    /// brakujące pole słowem, którym nazywa je plik, a to zdanie nie nazywa niczego i nie ma
-    /// prawa go nazwać. Implementacja, która ten wariant tu zostawi, dalej pada — i to jest
-    /// cała jego rola.
+    /// Odmowa, nie cicha degradacja do [`Scope::ThisProject`] (2026-08-22, T-80). Notatka, która
+    /// miała jechać do jednego agenta, a pojechała do wszystkich kroków w projekcie, wygląda na
+    /// ekranie identycznie jak zapisana i różni się wyłącznie tym, do ilu promptów wchodzi.
+    /// Ten sam kierunek błędu, co przy [`scope_from`]: schodzimy do węższego zakresu, nigdy do
+    /// szerszego — a tutaj węższego już nie ma, więc zostaje odmowa.
     ///
-    /// Znika razem z ciałem [`record_candidate_for`].
-    #[error("Loadout cannot save this note yet.")]
-    NotWrittenYet,
+    /// Zdanie nazywa brakującą rzecz słowem, którym nazywa ją plik (`agent:`), i pyta o nią
+    /// wprost: człowiek, któremu powiedziano wyłącznie „nie udało się zapisać", klika drugi raz
+    /// (niezmiennik 14).
+    #[error("This note is for one agent. Which agent is it for?")]
+    NoAgentNamed,
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -490,13 +495,6 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
-    // SZKIELET T-80. Dwie nowe drogi — zapis nazwy agenta i odmowa dla notatki, która nie ma
-    // czyja być — nie mają jeszcze ciała. Stara droga (notatka niczyja, zakres inny niż
-    // `this-agent`) biegnie niżej nietknięta, bo pinują ją kryteria spoza tego zadania.
-    if agent.is_some() || draft.scope == Scope::ThisAgent {
-        return Err(Error::NotWrittenYet);
-    }
-
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
     // dopisanie go do pliku byłoby o jedno słowo od prawdy — a to jest dokładnie ta zmiana,
@@ -518,6 +516,17 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
         return Err(Error::NoBecause);
     }
 
+    // Nazwa z samych białych znaków to nie jest nazwa: `agent: ` w pliku wraca ze skanu jako
+    // `None`, więc przepuszczona tutaj dałaby notatkę, która przy zapisie ma właściciela,
+    // a przy odczycie nie ma. Jedno miejsce, jedna odpowiedź.
+    let owner = agent.map(str::trim).filter(|name| !name.is_empty());
+
+    // Też PRZED dotknięciem dysku i z tego samego powodu, co `because`. Nie ma trzeciej
+    // odpowiedzi: albo notatka mówi, czyja jest, albo jej nie ma.
+    if scope == Scope::ThisAgent && owner.is_none() {
+        return Err(Error::NoAgentNamed);
+    }
+
     let id = NoteId(super::slugify(&title));
     let dir = root.join(NOTES_DIR);
     let path = dir.join(format!("{id}.md"));
@@ -536,6 +545,14 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
                 .unwrap_or(1);
             front.set("occurrences", &seen.saturating_add(1).to_string());
             front.set("modified", &one_line(&at));
+            // Właściciela DOPISUJEMY, nigdy nie nadpisujemy (2026-08-22, T-80). Plik mógł przejść
+            // przez ręce człowieka, a zgłoszenie agenta nie ma prawa przepisać cudzej redakcji —
+            // dokładnie ta sama reguła, która wyżej trzyma `rule` i `because` nietknięte. Bez tej
+            // linii notatka zapisana kiedyś bez właściciela nie miałaby go nigdy dostać; z
+            // nadpisaniem drugie zgłoszenie po cichu przenosiłoby notatkę między agentami.
+            if let Some(name) = owner.filter(|_| front.get("agent").is_none()) {
+                front.set("agent", &one_line(name));
+            }
             write_note(&path, &front, &raw[body_at..])?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -544,6 +561,12 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
             // Kolejność kluczy jest kontraktem [T6 §10.2] i jest tą samą, którą czyta człowiek
             // w edytorze: czym to jest, o czym to jest, co z tego wynika, skąd to wiemy.
             front.set("scope", scope_word(scope));
+            // Właściciel stoi tuż pod zakresem, bo to jest jedna para: zakres mówi, jak daleko
+            // ta notatka sięga, a ta linia — do kogo. Notatka niczyja nie dostaje pustego klucza:
+            // pole, które w połowie plików znaczy „nie wiem", a w połowie „nikt", nie znaczy nic.
+            if let Some(name) = owner {
+                front.set("agent", &one_line(name));
+            }
             front.set("kind", kind_word(&kind));
             front.set("title", &one_line(&title));
             front.set("rule", &one_line(&rule));
@@ -682,10 +705,14 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
                 .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
         ),
         scope: scope_from(front.get("scope").unwrap_or_default()),
-        // SZKIELET T-80. Klucz agenta stoi w pliku i wraca na dysk (niezmiennik 5 niesie go
-        // przez `extra`), ale skan go jeszcze nie CZYTA — i dopóki go nie czyta, notatka
-        // `this-agent` nie umie powiedzieć, czyja jest. Wypełnia to implementacja T-80.
-        agent: None,
+        // Brak klucza i klucz pusty to jedna odpowiedź: „niczyja". Dwie różne odpowiedzi na to
+        // samo pytanie znaczyłyby, że `agent: ` (bez wartości) opisuje agenta o pustej nazwie —
+        // czyli kogoś, kogo żaden krok nigdy nie będzie się nazywał.
+        agent: front
+            .get("agent")
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned),
         kind: kind_from(front.get("kind").unwrap_or_default()),
         title: front.get("title").unwrap_or_default().to_owned(),
         because: front.get("because").unwrap_or_default().to_owned(),
