@@ -102,8 +102,14 @@ export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement 
         <span className="text-label text-muted">{lengthLabel(note.length)}</span>
         {/* Pytamy o WARTOŚĆ, nie o obecność klucza: Rust przysyła `agent: null` dla notatki
             niczyjej (`NoteWire`), a `note.agent === undefined` wypisałoby wtedy słowo `null`
-            w miejscu właściciela — czyli dokładnie tę zmyśloną odpowiedź, której tu nie ma. */}
-        {note.agent ? (
+            w miejscu właściciela — czyli dokładnie tę zmyśloną odpowiedź, której tu nie ma.
+
+            I pytamy NAJPIERW o zakres. Nazwa agenta w pliku notatki, której zakres sięga całego
+            projektu, jest śladem po autorze, a nie odpowiedzią na pytanie „do kogo to dojedzie":
+            taka notatka jedzie do KAŻDEGO kroku. Wiersz, który wypisuje wtedy „Only backend-dev",
+            mówi o zasięgu coś, co jest nieprawdą — a człowiek czyta to jako fakt o notatce
+            i zostawia w użyciu zdanie, o którym myśli, że dotyczy jednego agenta. */}
+        {note.scope === 'this-agent' && note.agent ? (
           <span className="text-label text-muted">{ownerLabel(note.agent)}</span>
         ) : null}
         {note.from ? <span className="text-label text-muted">{originLabel(note.from)}</span> : null}

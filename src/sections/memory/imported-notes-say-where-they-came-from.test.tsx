@@ -33,6 +33,7 @@ const CAME_FROM = 'acme-checkout';
 
 const OWNED_RULE = 'Drain the queue in one place, or two runs put the same job through twice.';
 const NOBODYS_RULE = 'An unresolved tenant comes back as 401, not 400.';
+const WIDE_RULE = 'Migrations run before the app boots, never alongside it.';
 const REASON = 'run 7f3a step 2 reproduced it in auth.e2e.spec.ts:88';
 
 /** Wyróżniająca się liczba: przypadkowe trafienie w klasę albo w rok byłoby fałszywą zielenią. */
@@ -76,6 +77,28 @@ function nobodysNote(): Note {
   };
 }
 
+/* Notatka, która NOSI nazwę agenta i mimo to dojeżdża wszędzie w tym projekcie.
+ *
+ * Tak wygląda plik, w którym człowiek dopisał `agent:` i zostawił `scope: this-project` — albo
+ * import, który zapamiętał, z czyjego katalogu wziął zdanie, a zasięgu mu nie zawęził. Wiersz
+ * pytający o samą OBECNOŚĆ nazwy wypisze tu właściciela i powie o zasięgu nieprawdę: to zdanie
+ * jedzie do każdego kroku, nie do jednego. */
+function wideNote(): Note {
+  return {
+    id: 'migrations-run-before-the-app-boots',
+    title: 'Migrations run before the app boots',
+    rule: WIDE_RULE,
+    because: REASON,
+    status: 'in-use',
+    scope: 'this-project',
+    length: LENGTH,
+    occurrences: 1,
+    modified: MODIFIED,
+    agent: OWNER,
+    from: CAME_FROM,
+  };
+}
+
 function noop(): void {
   /* sterowany wiersz: w statycznym renderze nic tego nie woła */
 }
@@ -112,6 +135,24 @@ describe('a note row says whose knowledge it is and which project it came from',
       'and it says where this came from. The same sentence can be carried over from two ' +
         'projects, and a row that never shows the origin reads the second copy as a second ' +
         'fact — after which nobody can tell which of the two they are about to retire',
+    ).toContain(CAME_FROM);
+  });
+
+  it('keeps the owner off a note that reaches the whole project, name in the file or not', () => {
+    const html = markup(wideNote());
+
+    expect(html, 'the row shows the sentence this note carries').toContain(WIDE_RULE);
+    expect(
+      html,
+      'this note reaches every step in the project, and the row said it belongs to one agent. ' +
+        'The name in the file is a trace of who wrote the sentence down; the reach is what the ' +
+        'scope says. A row that reads the name instead tells a person the smaller of the two ' +
+        'facts, and they keep a sentence in use believing it changes one agent',
+    ).not.toContain(OWNER);
+    expect(
+      html,
+      'and where it was carried over from is true of this note whatever its reach is, so the ' +
+        'row above is not simply rendering nothing',
     ).toContain(CAME_FROM);
   });
 
