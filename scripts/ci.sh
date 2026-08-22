@@ -601,7 +601,7 @@ io.open(sys.argv[2], "w", encoding="utf-8").write(
 EXTRACT
 
   # $1 = 0: bieg dopiero się zaczyna, więc chcemy BIEŻĄCEGO kontraktu razem z oracle'em
-  WT="$wt" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 0 'w tescie'" >/dev/null
+  WT="$wt" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 0 'w tescie'" >/dev/null
   if [ "$(cat "$wt/harness/gate.py")" != "new oracle" ]; then
     echo "gałąź po odświeżeniu NADAL sądzi się starą bramką" >&2
     rm -rf "$sandbox"; return 1
@@ -611,6 +611,13 @@ EXTRACT
     rm -rf "$sandbox"; return 1
   fi
 
+  # ID JEST CZESCIA WYWOLANIA, NIE OZDOBA. `refresh_harness_from_trunk` mrozi `tasks/$ID.md`,
+  # wiec bez `ID` mrozi `tasks/.md`, czyli nic — i robi to CICHO, bo `git diff --quiet` na
+  # nieistniejacej sciezce jest prawda. Strazik wolal ja bez `ID` od caf976c (2026-08-16),
+  # ktory zawezil zamrozenie z calego `tasks/` do wlasnego pliku zadania i tknal wylacznie
+  # ship-task.sh. Zmierzone 2026-08-22: bez ID kontrakt na galezi to `contract v2`, z ID
+  # `contract v1`; oracle w obu wypadkach `new oracle`. Mechanizm produkcyjny byl sprawny
+  # przez caly ten czas — nieaktualne bylo to wywolanie.
   # $1 = 1: kontrakt ZAMROŻONY (N-08). Bieg nie może zmieniać warunków własnego zaliczenia,
   # więc `tasks/` ma wrócić do wersji gałęzi, a oracle ma mimo to zostać nowy.
   #
@@ -621,7 +628,7 @@ EXTRACT
   wt2="$sandbox/wt-frozen"
   $g branch task-T-99f main~1
   $g worktree add -q "$wt2" task-T-99f
-  WT="$wt2" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
+  WT="$wt2" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
   if [ "$(cat "$wt2/harness/gate.py")" != "new oracle" ]; then
     echo "zamrożony kontrakt zablokował odświeżenie ORACLE'a, a miał zamrozić tylko tasks/" >&2
     rm -rf "$sandbox"; return 1
