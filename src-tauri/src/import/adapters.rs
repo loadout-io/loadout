@@ -361,20 +361,40 @@ fn memory_note(
     })
 }
 
-/// Zdanie, które pojedzie do modelu: pierwszy wiersz, który nie jest nagłówkiem, spisem treści
-/// ani uzasadnieniem.
+/// Zdanie, które pojedzie do modelu: pierwszy wiersz, który nie jest nagłówkiem, wpisem spisu
+/// treści ani uzasadnieniem.
+///
+/// WYPUNKTOWANIE JEST ZDANIEM, bez swojego znaku. Odrzucanie każdego wiersza zaczynającego się
+/// od `- ` odrzucało razem z wpisami spisu treści całą stronę pisaną tak, jak ludzie naprawdę
+/// piszą `learnings/`: nagłówek i lista. Taki plik wracał ze skanu jako pozycja pamięci, z której
+/// nie powstawała ANI JEDNA notatka — czyli wiedza projektu ginęła po drodze i mówił o tym
+/// wyłącznie licznik zero w raporcie. Znak wypunktowania jedzie w koszcie długości i nic nie
+/// znaczy dla modelu, więc zdaniem notatki jest tekst PO nim.
 fn sentence_of(content: &str) -> Option<String> {
-    content
-        .lines()
-        .map(str::trim)
-        .find(|line| {
-            !line.is_empty()
-                && !line.starts_with('#')
-                && !line.starts_with("- ")
-                && !line.starts_with("* ")
-                && reason_in(line).is_none()
-        })
-        .map(ToOwned::to_owned)
+    content.lines().find_map(|line| rule_in(line.trim()))
+}
+
+/// Wiersz sprowadzony do zdania notatki — albo `None`, kiedy zdaniem nie jest.
+fn rule_in(line: &str) -> Option<String> {
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let text = ["- ", "* "]
+        .iter()
+        .find_map(|marker| line.strip_prefix(marker))
+        .unwrap_or(line)
+        .trim();
+    if text.is_empty() || reason_in(text).is_some() || is_index_entry(text) {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// `[tytuł](plik.md) — zajawka`, czyli wiersz SPISU TREŚCI. Regułą notatki jest zdanie, które
+/// stoi w pliku wskazanym takim wpisem, a nie sam wpis: tekst odnośnika jest tytułem cudzej
+/// strony, a zajawka obok niego opisuje ją z zewnątrz.
+fn is_index_entry(text: &str) -> bool {
+    text.starts_with('[') && text.contains("](")
 }
 
 /// Dlaczego to jest prawda: wiersz po `Why:` albo `Because:`.

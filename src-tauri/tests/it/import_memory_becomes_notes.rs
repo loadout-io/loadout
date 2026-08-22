@@ -66,6 +66,27 @@ const INDEX: &str = "# What backend-dev learned here\n\
                      - [The queue is drained in one place](queue.md) — one drain, one place\n\
                      - [Somebody else's repository](../../../../outside/secret.md) — not ours\n";
 
+/// Zdanie z pierwszego punktu strony pisanej listą — dokładnie w tej postaci, w jakiej ma stać
+/// w notatce: bez znaku wypunktowania i bez spacji po nim.
+const BULLET_RULE: &str =
+    "MOOSE-THE-RELEASE-BRANCH-IS-CUT-ON-FRIDAY, and the tag follows on Monday.";
+
+/// Strona pamięci, na której nie ma ani jednego zdania POZA wypunktowaniem.
+///
+/// Tak wygląda `learnings/` pisane przez ludzi: nagłówek i lista. Import, który uznaje każdy
+/// wiersz zaczynający się od myślnika za wpis spisu treści, wraca z takiej strony bez notatki —
+/// a wtedy jedynym miejscem, w które ta wiedza może trafić, są instrukcje agenta.
+fn bullet_page() -> String {
+    format!(
+        "# What this project keeps relearning\n\
+         \n\
+         - {BULLET_RULE}\n\
+         - The staging copy is restored from last night's dump, never from the live one.\n\
+         \n\
+         Why: two releases went out mid-week and both had to be taken back\n"
+    )
+}
+
 fn memory_page(sentinel: &str, title: &str, why: &str) -> String {
     format!(
         "# {title}\n\
@@ -132,6 +153,7 @@ impl Repo {
                 "auth.e2e.spec.ts:88 reproduced it on the second try",
             ),
         )?;
+        fs::write(root.join(".claude/learnings/release.md"), bullet_page())?;
         fs::write(
             home.path().join("outside").join(FORBIDDEN_FILE),
             memory_page(
@@ -307,6 +329,37 @@ fn another_apps_memory_arrives_as_notes_that_say_where_they_came_from() -> Resul
         "and it points back at the file it came from"
     );
 
+    // ── (b') PAMIĘĆ ZAPISANA W PUNKTACH JEST TAKĄ SAMĄ PAMIĘCIĄ ──────────────────────────
+    // Nagłówek i lista to sposób, w jaki `learnings/` pisze większość ludzi. Strona, z której
+    // nie powstaje notatka, wygląda w raporcie identycznie jak strona, na której nic nie było —
+    // a jej treść zostaje tam, gdzie stała: w instrukcjach agenta albo nigdzie.
+    let listed = note_carrying(&preview, BULLET_RULE).ok_or_else(|| {
+        format!(
+            "a memory page written the way people actually write them — a heading and a list — \
+             reached no note at all. Every line of it starts with a bullet, and a bullet is how \
+             somebody writes down a thing they learned, not how they write a table of contents. \
+             The notes that did come back read: {:?}",
+            preview
+                .draft
+                .notes
+                .iter()
+                .map(|note| note.rule.clone())
+                .collect::<Vec<_>>()
+        )
+    })?;
+    assert_eq!(
+        listed.rule, BULLET_RULE,
+        "the note kept the bullet's own marker in the sentence that goes to the model. That \
+         character means nothing to a model, it is paid for in the length this note is charged, \
+         and it is the first thing a person notices when they read back what the import made \
+         of their memory"
+    );
+    assert_eq!(
+        listed.agent, None,
+        "the learnings folder belongs to nobody, and this note came back owned by {:?}",
+        listed.agent
+    );
+
     // ── (c) TA SAMA TREŚĆ NIE STOI DRUGI RAZ W INSTRUKCJACH ──────────────────────────────
     for agent in &preview.draft.agents {
         assert!(
@@ -317,7 +370,7 @@ fn another_apps_memory_arrives_as_notes_that_say_where_they_came_from() -> Resul
             agent.name,
             agent.instructions
         );
-        for sentinel in [QUEUE, TENANT] {
+        for sentinel in [QUEUE, TENANT, BULLET_RULE] {
             assert!(
                 !agent.instructions.contains(sentinel),
                 "the memory folder's text was pasted into {}'s instructions verbatim. The \
@@ -394,7 +447,7 @@ fn imported_memory_lands_in_the_library_as_note_files() -> Result<(), Box<dyn Er
     let landed = scan_notes(&root)
         .map_err(|error| format!("{} could not be read back: {error}", root.display()))?;
 
-    for sentinel in [QUEUE, TENANT] {
+    for sentinel in [QUEUE, TENANT, BULLET_RULE] {
         assert!(
             landed.iter().any(|note| note.rule.contains(sentinel)),
             "the imported memory is not a note file in the library. A draft that holds the \
