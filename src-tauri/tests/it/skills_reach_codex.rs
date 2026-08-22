@@ -28,6 +28,16 @@
 //! to migawka całego drzewa projektu, robiona przed biegiem i po nim, ze ścieżkami — nie
 //! z licznikiem.
 //!
+//! **TRZECIĄ SŁABĄ WERSJĄ JEST MIGAWKA SAMYCH ŚCIEŻEK.** Zbiór nazw odpowiada wyłącznie na
+//! pytanie „czy czegoś przybyło albo ubyło" i milczy o wszystkim, co dzieje się w plikach, które
+//! już tam były: dopisanie `.agents/skills/` do **istniejącego** `.gitignore`, nadpisanie cudzego
+//! `SKILL.md` naszą kopią, zdjęcie bitu wykonywalności ze skryptu przy kopiowaniu tam i z powrotem.
+//! Każda z tych trzech zmian zostaje w repozytorium człowieka po biegu i każda wychodzi dopiero
+//! w `git status` — czyli są dokładnie tym, czego to kryterium zabrania, a zbiór ścieżek pokazuje
+//! je jako brak różnicy. Dlatego migawka niesie **rodzaj wpisu, jego treść co do bajtu i jego
+//! prawa** — a katalogi są w niej osobnymi wpisami, bo pusty katalog dopisany do cudzego drzewa
+//! też w nim zostaje.
+//!
 //! [`Why::WouldWriteIntoYourFolder`]: loadout_lib::skills::Why::WouldWriteIntoYourFolder
 
 // Powód przy tej samej linii w `skills_reach_the_step.rs`.
@@ -36,6 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -170,9 +181,17 @@ async fn a_step_with_its_own_copy_reaches_the_skills_through_its_working_directo
          narrowing on every step meaningless"
     );
 
-    // (b) I ANI JEDNEGO NASZEGO PLIKU W DRZEWIE CZŁOWIEKA. Migawka ścieżkami, nie licznikiem:
-    //     „tyle samo plików" przechodzi dla biegu, który jeden podmienił.
+    // (b) I ANI JEDNEGO NASZEGO PLIKU W DRZEWIE CZŁOWIEKA. Migawka rodzajem, treścią i prawami,
+    //     nie licznikiem i nie samą ścieżką: „tyle samo plików" przechodzi dla biegu, który jeden
+    //     podmienił, a „te same ścieżki" — dla biegu, który dopisał się do cudzego pliku.
     let after = bench.human_files();
+    let moved = difference(&before, &after);
+    assert!(
+        moved.is_empty(),
+        "the step worked on its own copy, and your project changed anyway: {moved:?}. Loadout \
+         writes into its own run directory and nowhere else (docs/ARCHITECTURE.md section 8); \
+         what it leaves in a folder of yours stays there after the run and shows up in git status"
+    );
     assert_eq!(
         after,
         before,
@@ -200,6 +219,14 @@ async fn a_step_working_in_your_folder_either_takes_a_copy_or_says_why_not()
     // TA ASERCJA STOI PIERWSZA I DOTYCZY OBU DRÓG. Odmowa, która zdążyła coś napisać, jest gorsza
     // niż cichy zapis: człowiek czyta „nic nie zrobiłem" i ma w drzewie katalog, którego nie zna.
     let after = bench.human_files();
+    let moved = difference(&before, &after);
+    assert!(
+        moved.is_empty(),
+        "your project changed during this run: {moved:?}. Loadout writes into its own run \
+         directory and nowhere else (docs/ARCHITECTURE.md section 8): anything it leaves in \
+         somebody's repository outlives the run and turns up in git status - and a file it \
+         rewrote in place turns up there just the same as one it added"
+    );
     assert_eq!(
         after,
         before,
@@ -267,12 +294,71 @@ fn set(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
 }
 
-/// Co jest w jednym zbiorze, a nie ma w drugim — w obie strony, bo obie są wadą.
-fn difference(before: &BTreeSet<PathBuf>, after: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
-    let mut moved = after.difference(before).cloned().collect::<Vec<_>>();
-    moved.extend(before.difference(after).cloned());
-    moved.sort();
-    moved
+/// Drzewo człowieka tak, jak zostawiłby je `git status`: ścieżka względna → co pod nią stoi.
+type Tree = BTreeMap<PathBuf, Entry>;
+
+/// Jeden wpis drzewa — WSZYSTKO, co po biegu ma być takie samo.
+///
+/// Nie sama ścieżka: plik nadpisany w miejscu, katalog zamieniony w dowiązanie i skrypt, który
+/// stracił bit wykonywalności, mają tę samą ścieżkę przed biegiem i po nim. Prawa trzymamy
+/// obcięte do bitów uprawnień, bo reszta trybu niesie rodzaj wpisu, a ten stoi już w wariancie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    /// Katalog. Pusty katalog dopisany do cudzego drzewa też w nim zostaje.
+    Dir { mode: u32 },
+    /// Zwykły plik, co do bajtu. `None` znaczy „nie dało się przeczytać" — inny stan niż plik
+    /// pusty i **nie** powód, żeby przerwać pomiar (AGENTS.md §2a p. 5).
+    File { mode: u32, bytes: Option<Vec<u8>> },
+    /// Dowiązanie, po celu: podmieniony cel jest zmianą, której rozmiar ani prawa nie widzą.
+    Link { target: PathBuf },
+}
+
+/// Co się między dwiema migawkami zmieniło — po ludzku, bo to zdanie ląduje w komunikacie.
+///
+/// Trzy rodzaje różnic, nie jeden: dopisane, zabrane i **zmienione na miejscu**. To ostatnie jest
+/// całym powodem, dla którego migawka niesie coś więcej niż ścieżki.
+fn difference(before: &Tree, after: &Tree) -> Vec<String> {
+    let mut said = Vec::new();
+    for (path, was) in before {
+        match after.get(path) {
+            None => said.push(format!("gone: {}", path.display())),
+            Some(now) if now != was => {
+                said.push(format!("changed {}: {}", how(was, now), path.display()));
+            }
+            Some(_) => {}
+        }
+    }
+    said.extend(
+        after
+            .keys()
+            .filter(|path| !before.contains_key(*path))
+            .map(|path| format!("added: {}", path.display())),
+    );
+    said.sort();
+    said
+}
+
+/// Czym różnią się dwa wpisy pod jedną ścieżką.
+fn how(was: &Entry, now: &Entry) -> &'static str {
+    match (was, now) {
+        (
+            Entry::File {
+                mode: before,
+                bytes: had,
+            },
+            Entry::File {
+                mode: after,
+                bytes: has,
+            },
+        ) => match (had == has, before == after) {
+            (false, false) => "contents and permissions of",
+            (false, true) => "contents of",
+            _ => "permissions of",
+        },
+        (Entry::Dir { .. }, Entry::Dir { .. }) => "permissions of",
+        (Entry::Link { .. }, Entry::Link { .. }) => "the target of",
+        _ => "what kind of thing sits at",
+    }
 }
 
 /// Nazwy katalogów umiejętności leżących pod `<dir>` — pusto, kiedy tej półki nie ma.
@@ -290,14 +376,14 @@ fn skills_under(dir: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// Wszystkie pliki pod `root`, ścieżkami względnymi, z pominięciem `skip` na pierwszym poziomie.
-fn files_under(root: &Path, skip: &str) -> BTreeSet<PathBuf> {
-    let mut found = BTreeSet::new();
+/// Całe drzewo pod `root`, ścieżkami względnymi, z pominięciem `skip` na pierwszym poziomie.
+fn tree_under(root: &Path, skip: &str) -> Tree {
+    let mut found = Tree::new();
     walk(root, Path::new(""), skip, &mut found);
     found
 }
 
-fn walk(dir: &Path, prefix: &Path, skip: &str, found: &mut BTreeSet<PathBuf>) {
+fn walk(dir: &Path, prefix: &Path, skip: &str, found: &mut Tree) {
     let Ok(listing) = fs::read_dir(dir) else {
         return;
     };
@@ -311,10 +397,25 @@ fn walk(dir: &Path, prefix: &Path, skip: &str, found: &mut BTreeSet<PathBuf>) {
         let Ok(kind) = fs::symlink_metadata(entry.path()) else {
             continue;
         };
+        let mode = kind.permissions().mode() & 0o7777;
         if kind.is_dir() {
+            found.insert(relative.clone(), Entry::Dir { mode });
             walk(&entry.path(), &relative, skip, found);
+        } else if kind.is_symlink() {
+            found.insert(
+                relative,
+                Entry::Link {
+                    target: fs::read_link(entry.path()).unwrap_or_default(),
+                },
+            );
         } else {
-            found.insert(relative);
+            found.insert(
+                relative,
+                Entry::File {
+                    mode,
+                    bytes: fs::read(entry.path()).ok(),
+                },
+            );
         }
     }
 }
@@ -487,6 +588,16 @@ impl Bench {
         fs::write(project.path().join("notes.txt"), "written by the human")?;
         fs::create_dir_all(project.path().join("src"))?;
         fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")?;
+        // PLIK, DO KTÓREGO KUSI DOPISAĆ SIĘ PO CICHU. Implementacja kładąca półkę w cudzym
+        // drzewie i „sprzątająca po sobie" wpisem w `.gitignore` zostawia zmianę, której zbiór
+        // ścieżek nie widzi — a właściciel repozytorium widzi ją w pierwszym `git diff`.
+        fs::write(project.path().join(".gitignore"), "target/\n")?;
+        // SKRYPT Z BITEM WYKONYWALNOŚCI. Kopia tam i z powrotem przez `write(read(..))` gubi ten
+        // bit po cichu (powód w całości przy `skills::place::copy_the_skill`), a plik o tej samej
+        // ścieżce i tej samej treści przestaje dać się uruchomić.
+        let script = project.path().join("src").join("run.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
 
         let bench = Self { home, project };
         fs::write(bench.home.path().join("agents").join("hand.md"), HAND)?;
@@ -506,8 +617,8 @@ impl Bench {
 
     /// Drzewo człowieka **bez** `.loadout/`. Ten jeden katalog jest nasz i wolno nam do niego
     /// pisać — cała reszta tego folderu nie jest i nie wolno.
-    fn human_files(&self) -> BTreeSet<PathBuf> {
-        files_under(self.project.path(), ".loadout")
+    fn human_files(&self) -> Tree {
+        tree_under(self.project.path(), ".loadout")
     }
 
     fn db(&self) -> PathBuf {
