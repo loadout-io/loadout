@@ -204,7 +204,7 @@ async fn four_loose_steps(how_many_at_once: usize) -> Result<Measured, Box<dyn E
         workflow,
         how_many_at_once,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

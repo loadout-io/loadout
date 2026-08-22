@@ -108,7 +108,7 @@ async fn a_copy_that_cannot_be_made_stops_the_run_and_says_why() -> Result<(), B
         workflow: bench.workflow("no-copy", WORKFLOW)?,
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

@@ -161,7 +161,7 @@ async fn the_loop_stops_at_the_first_pass() -> Result<(), Box<dyn Error>> {
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 
@@ -220,7 +220,7 @@ async fn the_work_after_the_loop_never_starts_when_the_tries_run_out() -> Result
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

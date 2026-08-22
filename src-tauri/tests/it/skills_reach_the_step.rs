@@ -238,7 +238,7 @@ async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
         workflow,
         how_many_at_once: 3,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

@@ -89,7 +89,7 @@ async fn the_graph_walks_past_a_command_that_never_finishes() -> Result<(), Box<
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

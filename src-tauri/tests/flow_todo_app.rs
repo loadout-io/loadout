@@ -139,7 +139,7 @@ async fn six_agents_build_a_todo_list() -> Result<(), Box<dyn Error>> {
         workflow: path,
         how_many_at_once: AT_ONCE,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

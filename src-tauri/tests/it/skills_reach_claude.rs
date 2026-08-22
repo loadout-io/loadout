@@ -851,7 +851,7 @@ impl Bench {
             workflow: path,
             how_many_at_once: 2,
             task: None,
-            only: None,
+            part: None,
             handoffs_from: None,
         };
 

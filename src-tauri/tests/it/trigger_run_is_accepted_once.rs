@@ -540,7 +540,7 @@ async fn an_authentic_claim_cannot_start_a_different_workflow() -> Result<(), Bo
         workflow: other,
         how_many_at_once: 1,
         task: Some("forged task".to_owned()),
-        only: None,
+        part: None,
         handoffs_from: None,
     };
     let (sink, _source) = line_channel(QUEUE_CAP);
@@ -630,7 +630,7 @@ async fn a_refused_workflow_stays_pending_and_starts_nothing() -> Result<(), Box
         workflow: invalid,
         how_many_at_once: 1,
         task: Some("LOAD-1: Do the work".to_owned()),
-        only: None,
+        part: None,
         handoffs_from: None,
     };
     let (sink, _source) = line_channel(QUEUE_CAP);
@@ -2049,7 +2049,7 @@ impl Bench {
             workflow: self.home.path().join("workflows/ship-it.json"),
             how_many_at_once: 1,
             task: Some("LOAD-1: Do the work\n\nbody".to_owned()),
-            only: None,
+            part: None,
             handoffs_from: None,
         }
     }

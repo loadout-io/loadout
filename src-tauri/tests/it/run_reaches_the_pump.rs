@@ -242,7 +242,7 @@ async fn three_hundred_lines() -> Result<(RunReport, PumpStats, Vec<Json>), Box<
         workflow,
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

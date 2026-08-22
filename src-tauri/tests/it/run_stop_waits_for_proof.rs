@@ -174,7 +174,7 @@ async fn stop_comes_back_only_after_the_group_is_proved_dead() -> Result<(), Box
         workflow,
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

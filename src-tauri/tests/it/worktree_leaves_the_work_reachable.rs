@@ -108,7 +108,7 @@ async fn the_work_lands_on_a_branch_and_an_idle_step_leaves_nothing() -> Result<
         workflow: bench.workflow("reachable", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

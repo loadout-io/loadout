@@ -1103,7 +1103,7 @@ fn run_request(
         how_many_at_once,
         task,
         // Zwykły bieg to całe workflow i puste wejście: przekazania powstają w nim samym.
-        only: None,
+        part: None,
         handoffs_from: None,
     })
 }
@@ -1645,6 +1645,39 @@ pub async fn rerun_step(
     run_workflow_in_project(&state, &project, &again.request, None, pump_into(lines)).await?;
     // Zdanie o zmienionym pliku wraca WOŁAJĄCEMU, a nie leci w strumień: strumień należy do
     // biegu, a to jest fakt o tym, co ten bieg w ogóle uruchomił.
+    Ok(again.said)
+}
+
+/// Wznawia wskazany bieg z historii od wskazanego kroku — on i wszystko po nim.
+///
+/// 2026-08-23, pytanie właściciela nad ekranem historii: „a z history możemy kontynuować?".
+/// Powód i różnica wobec [`rerun_step`] stoją przy [`commands::rerun::onward`]; tutaj zostaje
+/// sama krawędź.
+///
+/// NAZWA NIE BRZMI `continue_run`, bo tamta jest zajęta przez odpowiedź na punkt kontrolny —
+/// czyli „idź dalej w BIEGU, który stoi". Ta zaczyna nowy bieg z wejściem starego i dwie
+/// komendy o jednej nazwie byłyby parą, którą ktoś kiedyś zamieni miejscami.
+///
+/// `run` jest NAZWĄ KATALOGU, dokładnie tą, którą historia rysuje w wierszu — a nie ścieżką:
+/// ścieżka przysłana z okna byłaby drogą do czytania przekazań spoza tego workspace'a.
+#[tauri::command]
+pub async fn resume_run(
+    state: State<'_, AppState>,
+    run: &str,
+    step: &str,
+    how_many_at_once: usize,
+    folder: Option<String>,
+    lines: Channel<Vec<Line>>,
+) -> Result<Option<String>, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let again =
+        commands::rerun::onward(&crate::loadout_dir(), &project, run, step, how_many_at_once)
+            .map_err(|error| {
+                let said = error.to_string();
+                refused(&said);
+                said
+            })?;
+    run_workflow_in_project(&state, &project, &again.request, None, pump_into(lines)).await?;
     Ok(again.said)
 }
 
@@ -2230,6 +2263,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         review_skill,
         run_agent,
         rerun_step,
+        resume_run,
         run_workflow,
         save_agent,
         save_workflow,

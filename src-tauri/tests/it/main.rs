@@ -57,6 +57,7 @@ mod claude_unknown_events;
 mod close_stops_the_run;
 mod conditional_edges_choose_one_branch;
 mod connection_tools_are_approved;
+mod continue_from_a_past_run;
 mod driver_claude_policy_surface;
 mod driver_claude_settings_file;
 mod driver_claude_tool_surface;

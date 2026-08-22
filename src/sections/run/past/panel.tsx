@@ -25,6 +25,7 @@ import type { PastHandoff, PastRun, PastRunRow, PastStep } from '../io';
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
+import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
 import { backToTheList, closeHistory, pastNow, subscribeToPast } from './store';
 
@@ -192,6 +193,20 @@ function Step({
         </span>
         <StateWord state={step.state} />
         <span className="ml-auto font-mono text-mono text-muted">{costText(step.costUsd)}</span>
+        {/* KONTYNUACJA STOI PRZY KROKU, a nie w nagłówku biegu, bo to jest wybór KROKU:
+            „od którego miejsca ciągniemy dalej". Jeden przycisk nad całym biegiem musiałby ten
+            krok zgadnąć — a zgadnięcie źle znaczy albo powtórzenie pracy, która się udała, albo
+            pominięcie tej, która nie. Powód całej tej drogi stoi przy `./pick-up.ts`. */}
+        <button
+          type="button"
+          data-pick-up={step.id}
+          onClick={() => {
+            pickUpFrom(step.id);
+          }}
+          className={QUIET}
+        >
+          {PICK_UP_HERE}
+        </button>
       </h4>
 
       <div className="py-[7px]">

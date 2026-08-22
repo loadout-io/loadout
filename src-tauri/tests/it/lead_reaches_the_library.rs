@@ -367,7 +367,7 @@ async fn plan_then_build() -> Result<(RunReport, Arc<Watch>, Bench), Box<dyn Err
         workflow: bench.workflow.clone(),
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

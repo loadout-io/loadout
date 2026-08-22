@@ -745,7 +745,7 @@ async fn workflow_trigger_and_ask_leave_both_vendor_streams_and_rebuild_exactly(
         workflow,
         how_many_at_once: 1,
         task: Some(PRIVATE_TASK.to_owned()),
-        only: None,
+        part: None,
         handoffs_from: None,
     };
     let reports = run_product_doors(&deps, &request, home.path()).await?;

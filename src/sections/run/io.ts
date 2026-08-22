@@ -445,6 +445,57 @@ export function rerunStep(
 }
 
 /**
+ * Wznów wskazany bieg z historii od wskazanego kroku — on i wszystko, co graf stawia po nim.
+ *
+ * 2026-08-23, pytanie właściciela nad ekranem historii: „a z history możemy kontynuować?".
+ * Różnica wobec [`rerunStep`] jest z życia, nie z symetrii: bieg, który padł na siódmym kroku
+ * z dziesięciu, ma sześć skończonych, których nikt nie chce powtarzać, i trzy, które nigdy nie
+ * ruszyły. Tamta krawędź powtarza JEDEN kafelek, ta wznawia RESZTĘ GRAFU.
+ *
+ * `run` jest nazwą katalogu — dokładnie tą, którą historia rysuje w wierszu. Ścieżki tu nie ma
+ * i być nie może: bieg czyta przekazania z katalogu, który dostanie, a ścieżka z okna byłaby
+ * drogą do czytania cudzych.
+ *
+ * Nazwy pliku workflow NIE podajemy: wiersz historii mówi, co biegło, a nie w którym pliku ten
+ * graf dziś leży — plik można było przemianować. Rust idzie po identyfikatorze zapisanym
+ * w `run.json` (`commands::rerun::onward`).
+ *
+ * Oddaje zdanie do pokazania, kiedy dzisiejszy plik różni się od tego, który wtedy biegł.
+ */
+export function resumeRun(
+  run: string,
+  step: string,
+  howManyAtOnce: number,
+  folder: string | null = null,
+): Promise<string | null> {
+  /* TEN SAM KANAŁ, CO PRZY STARCIE — wznowienie jest zwykłym biegiem i jego linie mają trafić
+   * dokładnie tam, gdzie trafiają wszystkie inne. */
+  const session = runFor(folder);
+  const view = feedFor(folder ?? '');
+  let stamp = 0;
+  const lines = new Channel<unknown[]>();
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => {
+      stamp += 1;
+      return { ...line, id: stamp, at };
+    });
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
+  });
+
+  return invoke<string | null>('resume_run', {
+    run,
+    step,
+    howManyAtOnce,
+    /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
+     * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
+    folder,
+    lines,
+  });
+}
+
+/**
  * Powiedz coś agentowi, który pracuje — kolejna tura w jego żywej sesji.
  *
  * 2026-08-18 — POWSTAŁO ZE ZGŁOSZENIA WŁAŚCICIELA: „dalej nie działa pisanie do agenta przez

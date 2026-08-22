@@ -162,7 +162,7 @@ async fn a_circle_is_refused_before_anything_starts() -> Result<(), Box<dyn Erro
         workflow: workflow.clone(),
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 
@@ -226,7 +226,7 @@ async fn a_warning_alone_does_not_stop_the_run() -> Result<(), Box<dyn Error>> {
         workflow: workflow.clone(),
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

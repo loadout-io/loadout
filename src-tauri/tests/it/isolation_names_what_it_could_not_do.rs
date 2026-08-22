@@ -108,7 +108,7 @@ async fn a_repo_with_no_commits_stops_the_run_with_a_sentence() -> Result<(), Bo
         workflow: bench.workflow("no-isolation", WORKFLOW)?,
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

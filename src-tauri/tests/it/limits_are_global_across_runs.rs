@@ -304,7 +304,7 @@ impl Lane {
             workflow: self.workflow.clone(),
             how_many_at_once,
             task: None,
-            only: None,
+            part: None,
             handoffs_from: None,
         }
     }

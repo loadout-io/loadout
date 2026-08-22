@@ -138,7 +138,7 @@ async fn a_saved_agent_a_saved_workflow_and_a_run_that_actually_ran() -> Result<
         workflow: saved,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

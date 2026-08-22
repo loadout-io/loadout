@@ -269,7 +269,7 @@ async fn one_run(
         workflow: workflow.to_path_buf(),
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

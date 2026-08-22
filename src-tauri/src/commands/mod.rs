@@ -551,6 +551,35 @@ impl GoOn {
     }
 }
 
+/// Którą część grafu bieg ma wykonać.
+///
+/// # Dlaczego JEDNO pole z dwoma odpowiedziami, a nie dwa pola
+///
+/// Bo to jest jedno pytanie („co z tego grafu ma pobiec") i dwie odpowiedzi, które się WYKLUCZAJĄ.
+/// Dwa pola obok siebie dałyby stan, w którym oba są wypełnione — a wtedy ktoś musi wybrać, które
+/// wygrywa, i ten wybór żyje w kodzie zamiast w typie. Ta sama reguła i ten sam powód, co przy
+/// [`RunControl`]: para tego samego kształtu z dwoma znaczeniami jest parą, którą prędzej czy
+/// później ktoś zamieni miejscami.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// Dokładnie te kroki i nic poza nimi, po kluczu kafelka.
+    ///
+    /// **Wymienione kroki nie mają między sobą zależności.** Bieg złożony z jednego kroku nie ma
+    /// po czym iść, a jego wejście przychodzi z przekazań poprzedniego biegu
+    /// ([`RunRequest::handoffs_from`]) — czyli z tego samego miejsca, z którego przyszło za
+    /// pierwszym razem. To jest „uruchom ten kafelek jeszcze raz".
+    Just(Vec<String>),
+    /// Ten krok i **wszystko, co graf stawia po nim**, ze strzałkami między nimi.
+    ///
+    /// 2026-08-23, pytanie właściciela nad ekranem historii: „a z history możemy kontynuować?".
+    /// Bieg, który padł na siódmym kroku z dziesięciu, ma sześć skończonych kroków, których nikt
+    /// nie chce powtarzać, i trzy, które nigdy nie ruszyły. [`Part::Just`] tego nie wyraża
+    /// i wyrazić nie może: ona ZDEJMUJE strzałki, bo powtarzany kafelek nie ma po czym iść —
+    /// a tutaj kroki po wskazanym mają iść po nim i po sobie nawzajem, dokładnie tak, jak
+    /// narysował je człowiek.
+    Onward(String),
+}
+
 /// Żądanie z interfejsu: co uruchomić i ile naraz.
 #[derive(Debug, Clone)]
 pub struct RunRequest {
@@ -581,16 +610,12 @@ pub struct RunRequest {
     /// promptem uczyłby model, że ta sekcja bywa pusta, i kosztowałby długość za nic — ten sam
     /// powód stoi przy [`run::with_what_we_know`].
     pub task: Option<String>,
-    /// Kroki, które ten bieg ma wykonać — po kluczu kafelka. `None` znaczy „wszystkie".
+    /// Która CZĘŚĆ grafu ma pobiec. `None` znaczy „cały".
     ///
     /// 2026-08-23 — POLE POWSTAŁO DLA PONOWNEGO ODPALENIA KROKU, na prośbę właściciela po biegu,
     /// który kosztował 48 minut i padł na ostatnim sprawdzeniu z powodu środowiskowego. Bez tego
     /// jedynym sposobem poprawienia jednego kroku było puszczenie całej dziesiątki od zera.
-    ///
-    /// **Wymienione kroki nie mają między sobą zależności.** Bieg złożony z jednego kroku nie ma
-    /// po czym iść, a jego wejście przychodzi z przekazań poprzedniego biegu ([`RunRequest::
-    /// handoffs_from`]) — czyli z tego samego miejsca, z którego przyszło za pierwszym razem.
-    pub only: Option<Vec<String>>,
+    pub part: Option<Part>,
     /// Katalog biegu, z którego ten bieg przejmuje przekazania na wejściu.
     ///
     /// Kopia, nie wskazanie: bieg pisze wyłącznie do swojego katalogu (`ARCHITECTURE` §8), a

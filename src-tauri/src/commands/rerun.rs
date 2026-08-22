@@ -18,6 +18,18 @@
 //! a jego prompt składa się z instrukcji i indeksu przekazań poprzedników. Bez nich dostałby to
 //! samo zadanie z pustym kontekstem i pracował od zera nad czymś, co reszta grafu już zrobiła.
 //!
+//! # Dwa czasowniki, nie jeden
+//!
+//! 2026-08-23, pytanie właściciela nad ekranem historii: „a z history możemy kontynuować?".
+//! [`again`] powtarza JEDEN kafelek ostatniego biegu tego workflow; [`onward`] wznawia
+//! WSKAZANY bieg od wskazanego kroku i puszcza wszystko, co graf stawia po nim. Różnica jest
+//! z życia, nie z symetrii: bieg, który padł na siódmym kroku z dziesięciu, ma sześć kroków
+//! skończonych, których nikt nie chce powtarzać, i trzy, które nigdy nie ruszyły.
+//!
+//! [`again`] tego nie wyraża i wyrazić nie może — ona ZDEJMUJE strzałki, bo powtarzany kafelek
+//! nie ma po czym iść (`commands::Part::Just`). Powód, dla którego strzałki wracają w drugim
+//! czasowniku, stoi przy `commands::Part::Onward`.
+//!
 //! **Bierzemy DZISIEJSZY plik workflow, nie migawkę z `run.json`** — i mówimy o tym wprost, gdy
 //! te dwa się różnią. Powód jest z życia: krok powtarza się zwykle po to, żeby zadziałała
 //! poprawka, którą człowiek właśnie zrobił w agencie albo w kroku. Migawka dawałaby wierne
@@ -31,7 +43,7 @@ use serde::Deserialize;
 
 use crate::workflow::WorkflowFile;
 
-use super::RunRequest;
+use super::{Part, RunRequest};
 
 /// `run.json` w tylu polach, ile potrzebuje powtórzenie — reszta pliku jest tu nieciekawa.
 ///
@@ -64,6 +76,11 @@ pub enum Trouble {
     NoSuchStep(String),
     #[error("This workflow has not run in this workspace yet, so there is no step to run again.")]
     NoRun,
+    #[error(
+        "Loadout could not find that run in this workspace any more. Open the list again to see \
+         what is there."
+    )]
+    NoSuchRun,
 }
 
 /// Co powtórzenie ma uruchomić — i czy plik zdążył się od tamtego biegu zmienić.
@@ -130,7 +147,7 @@ pub fn again(
             how_many_at_once,
             // Zadanie biegu przychodzi z przekazań, nie stąd: powtarzamy krok, a nie polecenie.
             task: None,
-            only: Some(vec![step.to_owned()]),
+            part: Some(Part::Just(vec![step.to_owned()])),
             handoffs_from: Some(run_dir),
         },
         said,
@@ -156,5 +173,91 @@ fn newest_run_of(project: &Path, workflow_id: &str) -> Option<PathBuf> {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Finished>(&bytes).ok())
             .is_some_and(|one| one.workflow_id == workflow_id)
+    })
+}
+
+/// Wznawia wskazany bieg od wskazanego kroku: on i **wszystko, co graf stawia po nim**.
+///
+/// `run` to nazwa katalogu biegu — dokładnie to, czym historia nazywa wiersz na ekranie
+/// (`commands::history::RunWire::folder`). Nazwa, nie ścieżka: okno nie ma prawa podać ścieżki
+/// spoza `.loadout/runs`, bo bieg pisze wyłącznie do swojego katalogu (`ARCHITECTURE` §8),
+/// a katalog wzięty z zewnątrz byłby drogą do czytania cudzych przekazań.
+///
+/// **Plik workflow znajdujemy PO BIEGU, nie po nazwie z okna.** Wiersz historii mówi, co
+/// biegło; nie mówi, w którym pliku ten graf dziś leży, bo plik można było przemianować.
+/// Idziemy więc przez `workflow_id` z `run.json` do dzisiejszej biblioteki — a kiedy tego
+/// workflow już w niej nie ma, odmawiamy zamiast zgadywać.
+pub fn onward(
+    home: &Path,
+    project: &Path,
+    run: &str,
+    step: &str,
+    how_many_at_once: usize,
+) -> Result<Again, Trouble> {
+    let run_dir = one_run_named(project, run).ok_or(Trouble::NoSuchRun)?;
+    let bytes = fs::read(run_dir.join("run.json"))
+        .map_err(|error| Trouble::Unreadable(error.to_string()))?;
+    let finished: Finished =
+        serde_json::from_slice(&bytes).map_err(|error| Trouble::Unreadable(error.to_string()))?;
+    let (path, today) = in_the_library(home, &finished.workflow_id).ok_or(Trouble::NoWorkflow)?;
+    let Some(named) = today.steps.iter().find(|one| one.id() == step) else {
+        return Err(Trouble::NoSuchStep(step.to_owned()));
+    };
+
+    // RÓŻNICĘ MÓWIMY, NIE UKRYWAMY — ten sam powód, co przy [`again`], i o tyle mocniejszy, że
+    // wznowienie dotyczy WIĘKSZEJ części grafu: człowiek ma wiedzieć, że ruszy dzisiejszy plik.
+    let said = (today != finished.workflow_snapshot).then(|| {
+        format!(
+            "This picks up from \"{}\" using the workflow as it is now, and that is not the same \
+             file the first run used.",
+            named.name(),
+        )
+    });
+
+    Ok(Again {
+        request: RunRequest {
+            workflow: path,
+            how_many_at_once,
+            // Zadanie przychodzi z przekazań poprzedniego biegu, nie stąd: wznawiamy pracę,
+            // a nie zaczynamy nowej.
+            task: None,
+            part: Some(Part::Onward(step.to_owned())),
+            handoffs_from: Some(run_dir),
+        },
+        said,
+    })
+}
+
+/// Katalog biegu o tej nazwie — **tylko** wtedy, gdy leży tam, gdzie leżą biegi.
+///
+/// `file_name()`, nie sklejenie ścieżek: `..` w nazwie przysłanej z okna wyprowadziłoby ten
+/// odczyt poza projekt.
+fn one_run_named(project: &Path, run: &str) -> Option<PathBuf> {
+    if Path::new(run).file_name().is_none_or(|one| one != run) {
+        return None;
+    }
+    let dir = project.join(".loadout/runs").join(run);
+    dir.is_dir().then_some(dir)
+}
+
+/// Dzisiejszy plik tego workflow w bibliotece — ścieżka i treść.
+///
+/// Po identyfikatorze, nie po nazwie pliku: nazwa jest sluggiem tytułu i zmienia się razem
+/// z nim, a identyfikator jest tym, czym bieg zapamiętał, skąd przyszedł.
+fn in_the_library(home: &Path, workflow_id: &str) -> Option<(PathBuf, WorkflowFile)> {
+    let mut names: Vec<PathBuf> = fs::read_dir(home.join("workflows"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|one| one == "json"))
+        .collect();
+    // Porządek jest ustalony, żeby dwa pliki o jednym identyfikatorze (plik i jego kopia obok)
+    // dawały ZA KAŻDYM RAZEM ten sam wynik — `read_dir` nie obiecuje kolejności.
+    names.sort();
+    names.into_iter().find_map(|path| {
+        let file: WorkflowFile = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+        (file.id == workflow_id).then_some((path, file))
     })
 }

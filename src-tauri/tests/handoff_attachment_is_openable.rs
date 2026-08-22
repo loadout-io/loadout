@@ -235,7 +235,7 @@ async fn scout_then_open() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Erro
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

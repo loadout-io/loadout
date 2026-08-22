@@ -179,7 +179,7 @@ async fn a_provider_limit_pauses_the_run_and_it_comes_back_on_its_own() -> Resul
         // o więcej niż długość tury, jest pauza biegu.
         how_many_at_once: 1,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

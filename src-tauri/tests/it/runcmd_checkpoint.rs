@@ -137,7 +137,7 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
         workflow,
         how_many_at_once: 3,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 
@@ -233,7 +233,7 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
         workflow,
         how_many_at_once: 3,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

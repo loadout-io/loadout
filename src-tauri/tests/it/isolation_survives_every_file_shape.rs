@@ -270,7 +270,7 @@ fn run_in_its_own_thread(
                 workflow: setup.workflow,
                 how_many_at_once: 1,
                 task: None,
-                only: None,
+                part: None,
                 handoffs_from: None,
             };
             let recorder = Delivered::default();

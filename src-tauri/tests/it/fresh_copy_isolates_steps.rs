@@ -130,7 +130,7 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
         workflow: bench.workflow("fresh-copy", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

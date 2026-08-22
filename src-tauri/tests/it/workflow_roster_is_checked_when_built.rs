@@ -15,6 +15,10 @@
 //! a to są dwa różne miejsca zapisu i dwie różne konsekwencje. Dlatego każde kryterium sądzi
 //! TREŚĆ zdania i KSZTAŁT naprawy.
 
+// `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem. `checks/full-clippy.sh`
+// biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use loadout_lib::library::agents::{Agent, Color, FileAccess, Thinking, Tools, Vendor};
 use loadout_lib::workflow::WorkflowFile;
 use loadout_lib::workflow::check::Level;

@@ -148,7 +148,7 @@ async fn the_loop_closes_on_what_the_command_did() -> Result<(), Box<dyn Error>>
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 
@@ -239,7 +239,7 @@ async fn work_that_never_passes_runs_out_of_tries_and_stops() -> Result<(), Box<
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

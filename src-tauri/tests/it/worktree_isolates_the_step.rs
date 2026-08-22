@@ -115,7 +115,7 @@ async fn each_step_works_in_its_own_git_tree() -> Result<(), Box<dyn Error>> {
         workflow: bench.workflow("worktree-isolation", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

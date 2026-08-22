@@ -367,6 +367,15 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'run',
+    what: 'resumeRun',
+    command: 'resume_run',
+    /* Nazwa KATALOGU biegu i klucz kafelka. Nazwy pliku workflow tu nie ma i być nie może:
+     * wiersz historii mówi, co biegło, a nie w którym pliku ten graf dziś leży. */
+    given: ['20260823T090000__wf_ship', 's_9'],
+    call: () => run.resumeRun('20260823T090000__wf_ship', 's_9', 3, null),
+  },
+  {
+    where: 'run',
     what: 'continueRun',
     command: 'continue_run',
     given: ['ship it'],

@@ -175,7 +175,7 @@ async fn a_chain_of_three_steps_works_in_one_tree() -> Result<(), Box<dyn Error>
         // biegną razem.
         how_many_at_once: 3,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

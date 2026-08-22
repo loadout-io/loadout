@@ -355,7 +355,7 @@ async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Json)>, Bench), B
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

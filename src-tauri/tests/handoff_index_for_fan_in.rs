@@ -337,7 +337,7 @@ async fn two_reads_then_a_merge() -> Result<(RunReport, Arc<Seen>, Bench), Box<d
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

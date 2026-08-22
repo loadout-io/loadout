@@ -126,7 +126,7 @@ async fn stopping_a_run_cancels_it_and_kills_what_was_alive() -> Result<(), Box<
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

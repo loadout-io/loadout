@@ -316,7 +316,7 @@ async fn scout_then_decide() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Er
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

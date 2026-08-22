@@ -95,7 +95,7 @@ async fn a_check_step_runs_without_ever_asking_for_an_agent() -> Result<(), Box<
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

@@ -402,7 +402,7 @@ async fn look_then_decide() -> Result<(RunReport, Bench), Box<dyn Error>> {
         workflow,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

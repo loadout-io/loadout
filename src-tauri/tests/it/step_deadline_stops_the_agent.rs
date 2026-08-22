@@ -108,7 +108,7 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
         workflow: bench.workflow("deadline", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
-        only: None,
+        part: None,
         handoffs_from: None,
     };
 

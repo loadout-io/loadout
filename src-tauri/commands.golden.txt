@@ -43,6 +43,7 @@ open_chat
 put_note_to_use
 read_run
 rerun_step
+resume_run
 retry_trigger
 review_skill
 run_agent

@@ -143,7 +143,7 @@ use uuid::Uuid;
 
 use super::isolate;
 use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
-use super::{Outcome, RunControl, RunDeps, RunError, RunReport, RunRequest};
+use super::{Outcome, Part, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
 use crate::engine::drivers::claude::tool_surface;
@@ -165,6 +165,7 @@ use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::skills::StepSkills;
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
+use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
     AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence, Skills, Step,
     WorkflowFile,
@@ -1189,20 +1190,16 @@ fn plan_run_with_identity(
          * schodzi z sędziego rundy pierwszej, a nie z kroku, który stoi przed pętlą. */
         unrolled: &unrolled,
     };
+    let wanted = which_nodes(&unrolled, &file, request.part.as_ref());
+    /* Gdzie każdy węzeł rozwinięcia wylądował w wycinku. `None` znaczy „nie wszedł" i to jest
+     * jedyne miejsce, w którym numeracja wycinka spotyka się z numeracją grafu. */
+    let mut place: Vec<Option<StepId>> = vec![None; unrolled.nodes.len()];
     let mut steps = Vec::with_capacity(unrolled.nodes.len());
     for (index, node) in unrolled.nodes.iter().enumerate() {
         let Some(step) = file.steps.get(node.step) else {
             continue;
         };
-        /* BIEG WYCINKOWY: wchodzą wyłącznie wymienione kroki i tylko ich PIERWSZA runda.
-         *
-         * Powtarzanie rund pętli przy ponownym odpaleniu jednego kroku byłoby powtórzeniem
-         * czegoś, o co nikt nie prosił — człowiek wskazał kafelek, nie pętlę. Strzałki takiego
-         * biegu są puste (niżej), więc każdy wymieniony krok startuje od razu, a jego wejście
-         * przychodzi z przekazań poprzedniego biegu. */
-        if let Some(only) = &request.only
-            && (node.turn != 0 || !only.iter().any(|want| want == step.id()))
-        {
+        if !wanted[index] {
             continue;
         }
         /* Numer pętli bierze się z ciał policzonych przez `unroll`, a nie z drugiego obchodu
@@ -1211,16 +1208,37 @@ fn plan_run_with_identity(
             .loops
             .iter()
             .position(|one| one.body.contains(&node.step));
+        /* `index` zostaje NUMEREM WĘZŁA ROZWINIĘCIA, a nie pozycją w `steps`, i to jest wymóg:
+         * `where_it_works` pyta nim `trees_before` o poprzedników w grafie. Pozycja w wycinku
+         * wskazywałaby cudzy węzeł, czyli cudze drzewo robocze. */
+        place[index] = Some(steps.len());
         steps.push(plan_step(step, index, node.turn, in_loop, &setup)?);
     }
-    /* Bieg wycinkowy nie ma strzałek: „po czym idzie ten krok" jest pytaniem o graf, a graf
-     * przy powtórzeniu jednego kafelka nie ma zastosowania — poprzednicy już przebiegli i ich
-     * wynik leży w przekazaniach. Zostawienie strzałek dałoby krok czekający w nieskończoność
-     * na rodzica, którego w tym biegu nie ma. */
-    let arrows: Vec<(StepId, StepId)> = if request.only.is_some() {
+    /* STRZAŁKI ZALEŻĄ OD TEGO, O KTÓRY WYCINEK CHODZI, i to jest cała różnica między dwoma
+     * rodzajami powtórzenia.
+     *
+     * `Just` ich NIE MA: „po czym idzie ten krok" jest pytaniem o graf, a graf przy powtórzeniu
+     * jednego kafelka nie ma zastosowania — poprzednicy już przebiegli i ich wynik leży
+     * w przekazaniach. Zostawienie strzałek dałoby krok czekający w nieskończoność na rodzica,
+     * którego w tym biegu nie ma.
+     *
+     * `Onward` je ZOSTAWIA, przenumerowane na pozycje w wycinku. Tam kroki po wskazanym mają iść
+     * po sobie nawzajem dokładnie tak, jak narysował je człowiek — inaczej „kontynuuj od tego
+     * miejsca" wypuściłoby całą resztę grafu naraz, bez ani jednej zależności.
+     *
+     * `filter_map` po OBU końcach, nie po jednym: strzałka wchodząca do wycinka z zewnątrz
+     * (czyli od kroku, który już przebiegł) nie ma prawa zostać — to jest ten sam rodzaj
+     * czekania na nieobecnego rodzica. */
+    let arrows: Vec<(StepId, StepId)> = if matches!(request.part, Some(Part::Just(_))) {
         Vec::new()
     } else {
-        unrolled.arrows.clone()
+        unrolled
+            .arrows
+            .iter()
+            .filter_map(|(from, to)| {
+                Some((*place.get(*from)?.as_ref()?, *place.get(*to)?.as_ref()?))
+            })
+            .collect()
     };
     /* Pętle z ROZWINIĘCIA, nie z pliku, i ta różnica jest treścią: `unroll` odrzuca powrót,
      * którego ciało przecina cudze (plik z takim powrotem odmawia `check_to_run` kilka linii
@@ -1682,6 +1700,62 @@ fn plan_step(
 }
 
 /// Krok agenta: konfiguracja efektywna, sterownik, katalog roboczy.
+/// Które węzły rozwinięcia wchodzą do tego biegu.
+///
+/// Jedna funkcja na oba rodzaje wycinka, bo to jest jedno pytanie zadane dwa razy inaczej —
+/// a dwa warunki rozsypane po pętli planowania byłyby dwoma miejscami, w których wolno je
+/// rozstrzygnąć niezgodnie (niezmiennik 13).
+///
+/// # Dlaczego `Onward` liczy się na ROZWINIĘTYM grafie, a nie na pliku
+///
+/// Bo rundy pętli są węzłami, a nie krokami. Krok wskazany wewnątrz pętli ma iść ze swoimi
+/// rundami: stożek policzony na pliku dałby jeden węzeł na krok i po cichu wykasowałby powtórki,
+/// czyli zamieniłby pętlę w prostą — a bieg wyglądałby na udany, robiąc coś innego, niż narysował
+/// człowiek.
+fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) -> Vec<bool> {
+    let Some(part) = part else {
+        return vec![true; unrolled.nodes.len()];
+    };
+    let id_of = |node: &unroll::Node| file.steps.get(node.step).map(Step::id);
+    match part {
+        /* TYLKO PIERWSZA RUNDA. Powtarzanie rund pętli przy ponownym odpaleniu jednego kroku
+         * byłoby powtórzeniem czegoś, o co nikt nie prosił — człowiek wskazał kafelek, nie
+         * pętlę. */
+        Part::Just(ids) => unrolled
+            .nodes
+            .iter()
+            .map(|node| {
+                node.turn == 0 && id_of(node).is_some_and(|id| ids.iter().any(|want| want == id))
+            })
+            .collect(),
+        Part::Onward(from) => {
+            let mut wanted = vec![false; unrolled.nodes.len()];
+            for (index, node) in unrolled.nodes.iter().enumerate() {
+                if id_of(node) == Some(from.as_str()) {
+                    wanted[index] = true;
+                }
+            }
+            /* Domknięcie przechodnie przez powtarzany obchód, nie przez rekurencję: graf jest
+             * mały (dziesiątki węzłów), a pętla bez stosu nie ma jak przepełnić stosu na pliku
+             * przysłanym z zewnątrz. Kończy się, bo każdy obchód albo dokłada węzeł, albo jest
+             * ostatni, a węzłów jest skończenie wiele. */
+            loop {
+                let mut grew = false;
+                for (from_node, to_node) in &unrolled.arrows {
+                    if wanted.get(*from_node) == Some(&true) && wanted.get(*to_node) == Some(&false)
+                    {
+                        wanted[*to_node] = true;
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    return wanted;
+                }
+            }
+        }
+    }
+}
+
 fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
     let saved = find_agent(&setup.library, &step.agent, &step.name)?;
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
