@@ -62,8 +62,8 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Policy, Probe,
-    RunSpec, SessionRef, Tokens, ValidatedImages,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
+    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
 };
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
@@ -148,6 +148,8 @@ pub struct CodexDriver {
     binary: PathBuf,
     /// Prywatny target dowodow gotowy dla jednej logicznej sesji.
     evidence: Option<EvidenceTarget>,
+    /// Konfiguracja Connections jednego kroku; Debug pokazuje tylko nazwy środowiska.
+    configuration: DriverConfiguration,
 }
 
 impl fmt::Debug for CodexDriver {
@@ -176,6 +178,7 @@ impl CodexDriver {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
             evidence: None,
+            configuration: DriverConfiguration::default(),
         }
     }
 
@@ -186,7 +189,14 @@ impl CodexDriver {
         Self {
             binary,
             evidence: None,
+            configuration: DriverConfiguration::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_configuration(mut self, configuration: DriverConfiguration) -> Self {
+        self.configuration = configuration;
+        self
     }
 
     /// Startuje sesję i oddaje **konkretny** uchwyt.
@@ -214,7 +224,8 @@ impl CodexDriver {
             None => None,
         };
         let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
-        let argv = build_exec_argv(&spec);
+        let mut argv = self.configuration.arguments.clone();
+        argv.extend(build_exec_argv(&spec));
 
         // Wznowienie zna swoją tożsamość, ZANIM padnie pierwsza linia: dostało ją od tego, kto
         // je zamówił. Pierwsza tura nie zna jej wcale i to jest uczciwe — sesja Codeksa
@@ -241,6 +252,7 @@ impl CodexDriver {
             stdout_evidence,
             stderr_evidence,
             evidence_target: self.evidence.clone(),
+            configuration: self.configuration.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -276,6 +288,7 @@ impl CodexDriver {
             outcome: Some(outcome),
             drained: Some(drained),
             stderr_task: Some(stderr_task),
+            configuration: self.configuration.clone(),
         })
     }
 }
@@ -310,6 +323,7 @@ struct Turn {
     /// Wspólny bezpiecznik kompletu; błędy odczytu i kanałów są utratą dowodu nawet wtedy,
     /// gdy sam deskryptor pliku nadal przyjmuje bajty.
     evidence_target: Option<EvidenceTarget>,
+    configuration: DriverConfiguration,
 }
 
 type StartedTurn = (
@@ -365,7 +379,11 @@ impl Turn {
         // `Write`, nie `Keep`: po prompcie deskryptor się ZAMYKA, bo to zamknięcie jest tym
         // EOF-em, na który `codex exec` czeka. `Keep` zostawiłby proces wiszący na wejściu,
         // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
-        let mut process = supervisor::spawn(command, StdinPlan::Write(self.prompt))?;
+        let mut process = supervisor::spawn_with_environment(
+            command,
+            StdinPlan::Write(self.prompt),
+            &self.configuration.environment,
+        )?;
 
         let Some(stdout) = process.stdout() else {
             mark_evidence_incomplete(self.evidence_target.as_ref());
@@ -2447,6 +2465,8 @@ pub struct CodexHandle {
     /// Osobny czytelnik stderr; `JoinHandle` jest jedynym dowodem, ze bajty zostaly doslane i
     /// zsynchronizowane przed oddaniem wyniku wyzej.
     stderr_task: Option<JoinHandle<()>>,
+    /// Te same Connections muszą wrócić w każdej świeżej turze `codex exec resume`.
+    configuration: DriverConfiguration,
 }
 
 impl fmt::Debug for CodexHandle {
@@ -2591,10 +2611,12 @@ impl AgentHandle for CodexHandle {
         let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
 
         self.number += 1;
+        let mut argv = self.configuration.arguments.clone();
+        argv.extend(resume_argv(&thread, &self.cwd));
         let turn = Turn {
             binary: self.binary.clone(),
             cwd: self.cwd.clone(),
-            argv: resume_argv(&thread, &self.cwd),
+            argv,
             prompt: text,
             events: self.events.clone(),
             threads: Arc::clone(&self.threads),
@@ -2603,6 +2625,7 @@ impl AgentHandle for CodexHandle {
             stdout_evidence,
             stderr_evidence,
             evidence_target: self.evidence.clone(),
+            configuration: self.configuration.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -2684,6 +2707,12 @@ impl AgentHandle for CodexHandle {
 impl AgentDriver for CodexDriver {
     fn id(&self) -> &'static str {
         VENDOR
+    }
+
+    fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(
+            self.clone().with_configuration(configuration.clone()),
+        ))
     }
 
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
@@ -2771,8 +2800,8 @@ mod stop_proof_tests {
 
     use super::{
         AgentHandle, AppClient, AppServerInput, AppServerState, CodexConversationHandle,
-        CodexDriver, CodexHandle, GroupProof, Turn, app_server_actor, proof_allows_cleanup,
-        remember_thread, stop_startup_process,
+        CodexDriver, CodexHandle, DriverConfiguration, GroupProof, Turn, app_server_actor,
+        proof_allows_cleanup, remember_thread, stop_startup_process,
     };
     use crate::engine::supervisor::{self, StdinPlan, Supervised};
     use crate::evidence::{EvidenceTarget, SafeInputManifest};
@@ -2823,6 +2852,7 @@ mod stop_proof_tests {
             cwd: PathBuf::from("/private/workspace"),
             events,
             evidence: Some(evidence),
+            configuration: DriverConfiguration::default(),
             threads: Arc::new(Mutex::new(vec!["vendor-thread".to_owned()])),
             cancelled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             number: 1,
@@ -3111,6 +3141,7 @@ mod stop_proof_tests {
             stdout_evidence: None,
             stderr_evidence: None,
             evidence_target: None,
+            configuration: DriverConfiguration::default(),
         };
         let turn_debug = format!("{turn:?}");
 
@@ -3126,6 +3157,7 @@ mod stop_proof_tests {
             outcome: None,
             drained: None,
             stderr_task: None,
+            configuration: DriverConfiguration::default(),
         };
         let handle_debug = format!("{handle:?}");
         let driver_debug = format!("{:?}", CodexDriver::with_binary(PathBuf::from(BINARY)));

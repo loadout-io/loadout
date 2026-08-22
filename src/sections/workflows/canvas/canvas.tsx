@@ -44,7 +44,7 @@ import type { Note, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
 import { addStep, isValidConnection, onConnect, onConnectEnd } from './connect';
 import type { CanvasNode } from './map';
-import { onNodeDragStop, toCanvas, toFile } from './map';
+import { importedConditionLabel, onNodeDragStop, toCanvas, toFile } from './map';
 import { RunBar, focusNote } from './problems';
 import { StepTile } from './tile';
 import { tidyUp } from './tidy';
@@ -85,6 +85,36 @@ function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null 
   const step = file?.steps.find((one) => one.id === id);
   if (file === null || step === undefined) return null;
 
+  const imported = step as unknown as {
+    id: string;
+    name: string;
+    kind: string;
+    command?: string;
+  };
+  if (imported.kind === 'check') {
+    return (
+      <>
+        <Handle type="target" position={Position.Top} />
+        <div
+          data-step={step.id}
+          className={`w-61.5 rounded-md border bg-raised p-3 text-body ${selected ? 'border-accent' : 'border-line-strong'}`}
+        >
+          <div className="flex items-center gap-2">
+            <span aria-hidden className="text-muted">
+              ⠿
+            </span>
+            <b className="min-w-0 flex-1 truncate text-heading text-ink">{step.name}</b>
+            <span className="text-label text-muted">checks project</span>
+          </div>
+          <p className="mt-1 line-clamp-2 font-mono text-note text-ink">
+            {imported.command ?? 'No command configured'}
+          </p>
+        </div>
+        <Handle type="source" position={Position.Bottom} />
+      </>
+    );
+  }
+
   /* `undefined` znaczy „ten krok nie nazywa nikogo z biblioteki" i kafelek nie rysuje wtedy
    * chipu. Krok agenta z pustym `agent` (tak wychodzi z `＋ Add step`) trafia tu też — i to
    * jest poprawne: brak chipu jest tym, jak widać z płótna, że kroku nie da się jeszcze
@@ -112,7 +142,7 @@ function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null 
  *
  * Poza komponentem, bo React Flow przy każdej nowej referencji `nodeTypes` przemontowuje
  * wszystkie kafelki — czyli gubi zaznaczenie i przerywa przeciąganie. */
-const NODE_TYPES = { agent: CanvasTile, checkpoint: CanvasTile };
+const NODE_TYPES = { agent: CanvasTile, checkpoint: CanvasTile, check: CanvasTile };
 
 export interface WorkflowCanvasProps {
   /** Otwarty dokument. Płótno go nie trzyma — pokazuje. */
@@ -192,7 +222,13 @@ function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
      * jego obrazem i nie mają prawa istnieć poza tą funkcją. */
     arrows: view.edges.map((arrow) =>
       arrow.maxTurns === undefined
-        ? { ...arrow, markerEnd: ARROW }
+        ? {
+            ...arrow,
+            markerEnd: ARROW,
+            ...(arrow.condition === undefined
+              ? {}
+              : { label: importedConditionLabel(arrow.condition) }),
+          }
         : {
             ...arrow,
             markerEnd: ARROW,

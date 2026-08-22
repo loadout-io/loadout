@@ -18,6 +18,7 @@
 //! Jedyna dziura w implementacji siedzi w `claude.rs`, w kolejnej turze tej samej sesji,
 //! i jest opisana tam, przy [`AgentDriver::start`].
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,6 +124,31 @@ impl std::fmt::Debug for RunSpec {
             .field("tools", &self.tools.as_ref().map(Vec::len))
             .field("extra_dirs", &self.extra_dirs.len())
             .field("resuming", &self.resume.is_some())
+            .finish()
+    }
+}
+
+/// Vendorowe argumenty i jawnie rozwiązane środowisko zatwierdzonych Connections.
+/// Własny `Debug` celowo nie pokazuje wartości sekretów.
+#[derive(Clone, Default)]
+pub struct DriverConfiguration {
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, OsString)>,
+}
+
+impl std::fmt::Debug for DriverConfiguration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DriverConfiguration")
+            .field("arguments", &self.arguments)
+            .field(
+                "environment_names",
+                &self
+                    .environment
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -572,6 +598,11 @@ pub trait AgentDriver: Send + Sync {
     /// `Option` uniemozliwia produkcji ciche uruchomienie vendora bez dowodow. Implementacje
     /// wejda w Phase 2; domyslne `None` utrzymuje istniejace duble kompilowalne w honest-red.
     fn with_evidence(&self, _target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Klon sterownika skonfigurowany dla zatwierdzonych Connections tego jednego kroku.
+    fn configured(&self, _configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
         None
     }
 }

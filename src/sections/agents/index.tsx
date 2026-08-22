@@ -34,6 +34,7 @@ import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Agent, AgentsIo, Color, FileAccess, Thinking } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
+import { ImportSetup } from '../import';
 import { AgentForm, VENDORS } from './agent-form';
 import * as Disk from './io';
 import { readUsage, usageSays, usedIn } from './usage';
@@ -205,6 +206,7 @@ export default function AgentsScreen({
   const [expanded, setExpanded] = useState(false);
   /* O co pytamy przed usunięciem. `null` znaczy, że o nic — jedno miejsce na to pytanie. */
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   /* Ile workflow nazywa którego agenta, przeczytane z dysku. `null` znaczy „NIE WIEM", i to jest
    * różnica, która decyduje o tym, czy wiersz `used in …` się w ogóle rysuje: `{}` znaczy
    * „policzone i zero". UI nie rysuje relacji, których nie ma w danych (niezmiennik 17),
@@ -277,6 +279,16 @@ export default function AgentsScreen({
       <header className="flex h-13 items-center gap-3 border-b border-line bg-panel px-4">
         <h1 className="text-title text-ink">Agents</h1>
 
+        <button
+          type="button"
+          className={`ml-auto ${QUIET}`}
+          onClick={() => {
+            setImporting(true);
+          }}
+        >
+          Import setup
+        </button>
+
         {/* Licznik i przycisk w nagłówku żyją tylko wtedy, gdy jest co liczyć. Przy zerze to
             samo mówi zaproszenie niżej, a `0 saved` obok `No agents yet.` to ten sam fakt
             w dwóch miejscach (niezmiennik 13) — i druga kontrolka dodawania na ekranie,
@@ -285,7 +297,7 @@ export default function AgentsScreen({
         {empty ? null : (
           <>
             <span className="font-mono text-mono text-muted">{`${String(state.agents.length)} saved`}</span>
-            <button data-create type="button" className={`ml-auto ${PRIMARY}`} onClick={startDraft}>
+            <button data-create type="button" className={PRIMARY} onClick={startDraft}>
               ＋ Create
             </button>
           </>
@@ -478,6 +490,17 @@ export default function AgentsScreen({
           </aside>
         )}
       </div>
+      {importing ? (
+        <ImportSetup
+          onClose={() => {
+            setImporting(false);
+          }}
+          onImported={() => {
+            setImporting(false);
+            void store.getState().load();
+          }}
+        />
+      ) : null}
     </section>
   );
 }

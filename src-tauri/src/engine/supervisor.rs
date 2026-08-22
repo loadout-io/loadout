@@ -58,6 +58,7 @@
 //! zabezpieczenie czasem startu przed ponownym użyciem PID-u (T-20 — my dajemy [`reap_group`],
 //! decyzję *czy wolno* podejmuje odzyskiwanie).
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Component, Path};
@@ -804,7 +805,17 @@ fn means_empty_group(answer: &io::Result<()>) -> bool {
 ///
 /// Cooldown po nieudanym spawnie — ochrona przed burzą restartów — wszedłby dokładnie tutaj,
 /// wokół gałęzi błędu. Nie w v1: bez pętli ponawiania nie ma czego tłumić.
-pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
+pub fn spawn(command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
+    spawn_with_environment(command, stdin, &[])
+}
+
+/// Wariant dla jawnie zatwierdzonych Connections. Nazwy i wartości są rozstrzygnięte przez
+/// backend tuż przed startem; wartości nie trafiają do argv, pliku ani webviewa.
+pub fn spawn_with_environment(
+    mut command: Command,
+    stdin: StdinPlan,
+    environment: &[(String, OsString)],
+) -> io::Result<Supervised> {
     // Prompt i sekrety wchodzą wyłącznie tędy (niezmiennik 9). `Null` to `/dev/null`, czyli EOF
     // natychmiast — bez tego `claude` czeka ~3 s na każdym kroku [T1 §4.6].
     let (plan, prompt) = match stdin {
@@ -823,6 +834,9 @@ pub fn spawn(mut command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
+    }
+    for (name, value) in environment {
+        command.env(name, value);
     }
 
     let mut wrapped = into_own_group(command);

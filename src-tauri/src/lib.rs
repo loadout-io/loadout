@@ -34,6 +34,12 @@ pub mod engine;
 /// Dziedziczenie wiedzy repo gospodarza: tekst, nigdy maszyneria. Wypelnia T-54.
 pub mod inherit;
 
+/// Import setupow repo do natywnych agentow, skilli, polaczen i workflow. Wypelnia T-75.
+pub mod import;
+
+/// Polaczenia narzedziowe zarzadzane przez Loadout. Wypelnia T-75.
+pub mod connections;
+
 /// Granica z oknem: pompa sklejajaca i kanal do webviewa. Wypelnia T-07.
 pub mod ipc;
 
@@ -289,7 +295,10 @@ pub fn run() {
             /* Fabryka sterowników. Funkcja, nie mapa — trzeci vendor ma wejść bez wydania
              * Loadouta (`commands/mod.rs`). Każde ramię oddaje własny adapter, bo
              * `SessionRef::vendor` zapisuje tę odpowiedź do bazy i podstawienie innego
-             * sterownika skłamałoby o tym, kto wykonał krok. */
+             * sterownika skłamałoby o tym, kto wykonał krok.
+             *
+             * Oba istniejące adaptery muszą być żywe także dla analizy importu: atrapą Codeksa
+             * aplikacja pokazywała wybór, który zawsze odmawiał. */
             let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
             let codex: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
             let drivers: Drivers = Arc::new(move |vendor| match vendor {

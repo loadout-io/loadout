@@ -43,6 +43,7 @@ pub mod chat;
 pub mod diagnostics;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod handoffs;
+pub mod import;
 pub mod isolate;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.
 pub mod memory;

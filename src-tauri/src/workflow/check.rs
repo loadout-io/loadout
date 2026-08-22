@@ -20,12 +20,12 @@
 //! wektorów z gotowej listy strzałek to cztery wiersze, nie drugi algorytm.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::{Folder, Link, Step, WorkflowFile};
+use super::{Condition, ConditionalLink, Folder, Link, Step, WorkflowFile};
 use crate::engine::dag::{Dag, DagError};
 
 /// Flagi, które Loadout ustawia sam dla `claude` — przelotka nie ma prawa ich podać.
@@ -203,6 +203,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
     a_check_without_a_proof(&steps, &mut notes);
+    conditional_routes(workflow, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
     // STRZAŁKI BEZ POWROTÓW, nie wszystkie, i to jest ta sama lista, po której liczy się koło.
@@ -213,6 +214,72 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_folder_two_steps(&steps, &arrows, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
+}
+
+fn conditional_routes(workflow: &WorkflowFile, notes: &mut Vec<Note>) {
+    let Some(value) = workflow.extra.get("linkConditions") else {
+        return;
+    };
+    let Ok(routes) = serde_json::from_value::<Vec<ConditionalLink>>(value.clone()) else {
+        notes.push(problem(
+            None,
+            "The saved route conditions cannot be read. Remove them or open this workflow in a newer Loadout."
+                .to_owned(),
+        ));
+        return;
+    };
+    for route in &routes {
+        let connected = workflow
+            .links
+            .iter()
+            .any(|link| link.from == route.from && link.to == route.to && !link.is_a_way_back());
+        if !connected {
+            notes.push(problem(
+                Some(&route.from),
+                "A route condition points to a connection that is not in this workflow.".to_owned(),
+            ));
+            continue;
+        }
+        let source = workflow.steps.iter().find(|step| match step {
+            Step::Agent(step) => step.id == route.from,
+            Step::Checkpoint(step) => step.id == route.from,
+            Step::Check(step) => step.id == route.from,
+        });
+        let compatible = matches!(
+            (source, &route.when),
+            (Some(Step::Check(_)), Condition::Check { .. })
+                | (Some(Step::Checkpoint(_)), Condition::Checkpoint { .. })
+                | (Some(Step::Agent(_)), Condition::Handoff { .. })
+        );
+        if !compatible {
+            notes.push(problem(
+                Some(&route.from),
+                "This route asks for a result that its step cannot produce.".to_owned(),
+            ));
+        }
+    }
+
+    let sources: BTreeSet<&str> = routes.iter().map(|route| route.from.as_str()).collect();
+    for source in sources {
+        for link in workflow
+            .links
+            .iter()
+            .filter(|link| link.from == source && !link.is_a_way_back())
+        {
+            let count = routes
+                .iter()
+                .filter(|route| route.from == link.from && route.to == link.to)
+                .count();
+            if count != 1 {
+                notes.push(problem(
+                    Some(source),
+                    "Every next step after a conditional result needs exactly one visible condition."
+                        .to_owned(),
+                ));
+                return;
+            }
+        }
+    }
 }
 
 /// To, co reguły czytają z kroku, niezależnie od jego rodzaju.
