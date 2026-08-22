@@ -39,7 +39,14 @@
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `too_many_lines` z tego samego powodu i **wyłącznie dodane**, nie w miejsce niczego: sześć
+// punktów tego kryterium (a–f) mierzy JEDNĄ drogę i musi stać w jednym `#[test]` — rozbite na
+// osobne zestawy dałyby w warstwie `before` obraz „w połowie zielony", co nagłówek tego pliku
+// nazywa wprost. Cięcie po granicy funkcji rozdzieliłoby przypadek pozytywny od kontroli przeciw
+// pustemu przejściu, czyli zdjęłoby dokładnie tę asercję, która odróżnia sterownik stawiający
+// flagę zawsze.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::collections::BTreeSet;
 use std::error::Error;
