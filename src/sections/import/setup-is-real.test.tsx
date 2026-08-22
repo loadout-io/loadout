@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import AgentsScreen from '../agents';
 import { createAgentsStore } from '../../state/agents';
+import { useWorkspaces } from '../../state/workspaces';
 import { ImportSetup, type ImportPreview } from './setup';
 
 describe('Import setup', () => {
+  afterEach(() => {
+    useWorkspaces.setState({ all: [], activeId: null, said: null });
+  });
+
   it('is reachable from the real Agents screen', () => {
     const store = createAgentsStore({
       list: async () => [],
@@ -60,5 +65,20 @@ describe('Import setup', () => {
     expect(html).toContain('disabled=""');
     expect(html).toContain('Choose how to reproduce this hook.');
     expect(html).toContain('Leave this behavior out of the imported setup');
+  });
+
+  it('starts with the folder of the workspace open in the side menu', () => {
+    const folder = '/Users/somebody/Projects/Current';
+    useWorkspaces.setState({
+      all: [{ id: folder, name: 'Current', folder }],
+      activeId: folder,
+      said: null,
+    });
+
+    const html = renderToStaticMarkup(
+      <ImportSetup onClose={() => undefined} onImported={() => undefined} />,
+    );
+
+    expect(html).toContain(`value="${folder}"`);
   });
 });

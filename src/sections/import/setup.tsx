@@ -1,6 +1,7 @@
 import type { FormEvent, ReactElement } from 'react';
 import { useState } from 'react';
 import { why } from '../../ipc/why';
+import { activeWorkspace } from '../../state/workspaces';
 import * as Disk from './io';
 
 export type Compatibility = 'exact' | 'adjusted' | 'needs_choice' | 'unsupported';
@@ -88,7 +89,12 @@ export function ImportSetup({
   io = Disk,
   initialPreview,
 }: ImportSetupProps): ReactElement {
-  const [workspace, setWorkspace] = useState(initialPreview?.snapshot.root ?? '');
+  /* Import dotyczy projektu otwartego w bocznym menu, więc zaczyna od tego samego, jedynego
+   * źródła prawdy co Run i Skills. Puste pole zostaje wyłącznie wtedy, gdy człowiek nie wybrał
+   * jeszcze żadnego workspace; wpisanie ścieżki ręcznie nadal pozwala zeskanować inny projekt. */
+  const [workspace, setWorkspace] = useState(
+    initialPreview?.snapshot.root ?? activeWorkspace()?.folder ?? '',
+  );
   const [preview, setPreview] = useState<ImportPreview | null>(initialPreview ?? null);
   const [enabled, setEnabled] = useState<string[]>([]);
   const [leaveOut, setLeaveOut] = useState<string[]>([]);
