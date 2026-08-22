@@ -463,8 +463,6 @@ pub struct AppState {
     /// zawiesiłby Stop na czas pisania przez model — czyli dokładnie wtedy, kiedy Stop jest
     /// do czegokolwiek potrzebny.
     drafting: commands::skills::Drafting,
-    /// Osobny token analizy importu; zamek w środku nigdy nie przechodzi przez `await`.
-    analyzing: commands::import::Analyzing,
     /// Rzeczy, które człowiek uruchomił komendą — i których Loadout jest właścicielem.
     ///
     /// **Jedna lista na aplikację, nie jedna na zakres**, i powód stoi w całości przy
@@ -580,14 +578,8 @@ impl AppState {
             live: Mutex::new(idle),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
-            analyzing: commands::import::Analyzing::new(),
             started: commands::processes::Processes::new(),
         }
-    }
-
-    /// Zamknięcie okna przerywa także płatną analizę, zanim proces przejdzie pod PID 1.
-    pub(crate) fn stop_import_analysis(&self) {
-        self.analyzing.stop();
     }
 
     /// Kończy **wszystko**, co człowiek uruchomił komendą, i oddaje po jednym dowodzie na rzecz.
@@ -1172,56 +1164,18 @@ pub fn new_id() -> String {
 
 /// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
 #[tauri::command]
-pub async fn scan_setup(
-    state: State<'_, AppState>,
-    workspace: std::path::PathBuf,
-) -> Result<crate::import::ImportPreview, String> {
-    state.analyzing.clear();
+pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::ImportPreview, String> {
     let result = commands::import::scan_setup_inner(&workspace);
     drop(workspace);
     result.map_err(|error| error.to_string())
 }
 
-/// Analizuje odkażoną kopię setupu wybranym vendorem i zwraca wyłącznie zwalidowany draft.
-#[tauri::command]
-pub async fn analyze_setup(
-    state: State<'_, AppState>,
-    request: commands::import::AnalyzeSetup,
-) -> Result<Option<crate::import::ImportPreview>, String> {
-    commands::import::analyze_setup_inner(&state.drivers, &state.analyzing, &request)
-        .await
-        .map(|outcome| match outcome {
-            commands::import::AnalysisOutcome::Converted(preview) => Some(*preview),
-            commands::import::AnalysisOutcome::Cancelled => None,
-        })
-        .map_err(|error| error.to_string())
-}
-
-/// Stop dotyczy tylko analizy importu, nie biegu ani draftu umiejętności.
-#[tauri::command]
-pub async fn stop_setup_analysis(state: State<'_, AppState>) -> Result<(), String> {
-    state.analyzing.stop();
-    Ok(())
-}
-
 /// Zapisuje ponownie zweryfikowaną migawkę do biblioteki Loadouta.
 #[tauri::command]
-pub async fn apply_setup(
-    state: State<'_, AppState>,
+pub fn apply_setup(
     request: commands::import::ApplySetup,
 ) -> Result<crate::import::apply::ImportReceipt, String> {
-    let analysis = state.analyzing.latest_for(&request.workspace);
-    let result = match analysis.as_ref() {
-        Some(analysis) => commands::import::apply_setup_with_analysis(
-            &crate::loadout_dir(),
-            &request,
-            Some(analysis),
-        ),
-        None => commands::import::apply_setup_inner(&crate::loadout_dir(), &request),
-    };
-    if result.is_ok() {
-        state.analyzing.clear();
-    }
+    let result = commands::import::apply_setup_inner(&crate::loadout_dir(), &request);
     drop(request);
     result.map_err(|error| error.to_string())
 }
@@ -2156,7 +2110,6 @@ pub async fn list_processes(
 /// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
-        analyze_setup,
         apply_setup,
         author_skill,
         check_trigger,
@@ -2199,7 +2152,6 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         stop_draft,
         stop_process,
         stop_run,
-        stop_setup_analysis,
         stop_using_note,
         test_linear_connection,
         update_trigger
