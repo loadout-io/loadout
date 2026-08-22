@@ -395,7 +395,7 @@ async fn the_plugin_directory_lands_in_this_run_and_its_path_reaches_the_claude_
 
 /// Sufit na prawdziwą sesję: model i sieć, nie atrapa. Regresja ma się objawić czerwienią,
 /// a nie zawieszeniem.
-const LIVE: Duration = Duration::from_secs(180);
+const LIVE: Duration = Duration::from_mins(3);
 
 /// Ile miejsca mają kanały. Z zapasem: pełny kanał zatrzymuje pętlę czytającą, a zatrzymana
 /// pętla wygląda dokładnie jak zawieszony agent.
