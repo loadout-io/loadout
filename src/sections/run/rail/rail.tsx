@@ -141,9 +141,17 @@ export function Rail({ cards }: RailProps): ReactElement {
     <>
       <aside
         data-rail
-        className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-l border-line bg-panel"
+        /* OBA RZĘDY MAJĄ WŁASNY SUFIT, i to jest naprawa zgłoszona ze zrzutu właściciela:
+         * „jak dużo step to nam wyjebuje UI" (2026-08-22). Rząd pierwszy stał na `auto`, więc
+         * rósł z każdą rzeczą uruchomioną komendą i spychał listę agentów poza okno — a rząd
+         * drugi umiał się przewijać dopiero wtedy, gdy cokolwiek zostało mu z wysokości.
+         *
+         * `minmax(0,auto)` zamiast `auto` daje pierwszemu rzędowi prawo się SKURCZYĆ, a
+         * `overflow-hidden` na kolumnie odbiera jej prawo do przerośnięcia własnego toru.
+         * Od tej pary obie sekcje przewijają się osobno i żadna nie wypycha drugiej. */
+        className="grid min-h-0 grid-rows-[minmax(0,auto)_minmax(0,1fr)] overflow-hidden border-l border-line bg-panel"
       >
-        <div className="grid">
+        <div className="grid min-h-0 overflow-auto">
           {/* RZECZY URUCHOMIONE KOMENDĄ STOJĄ NAD AGENTAMI, we własnej grupie, i to jest cała
               różnica, którą ta kolumna ma pokazać: jedno Loadout prowadzi, drugie człowiek kazał
               uruchomić, a „stop" pod każdym znaczy co innego. Kolor kwadratu ich NIE rozróżnia —
@@ -176,7 +184,15 @@ export function Rail({ cards }: RailProps): ReactElement {
             rozciąga się na całą wysokość kolumny. */}
         <div className="grid content-start gap-[6px] overflow-auto px-[10px] pb-3">
           {groups.agents.map((card) => (
-            <span key={card.id} data-agent={card.id} className="grid">
+            <span
+              key={card.id}
+              data-agent={card.id}
+              /* Dwie kolumny, kiedy krok da się powtórzyć — ta sama para, co przy rzeczach
+                 uruchomionych komendą. Przycisk NIE może stać wewnątrz kafelka: kafelek sam
+                 jest przyciskiem, a przycisk w przycisku to znacznik, którego przeglądarka
+                 nie ma prawa narysować poprawnie. */
+              className="grid"
+            >
               {/* Cała powierzchnia kafelka jest przyciskiem — kliknięcie w imię, w kwadrat
                   i w zdanie robi to samo, bo wszystkie trzy odpowiadają na jedno pytanie
                   („pokaż mi tego agenta"). `text-left`, bo przycisk domyślnie centruje tekst,

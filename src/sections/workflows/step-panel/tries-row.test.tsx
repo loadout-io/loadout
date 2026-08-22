@@ -74,6 +74,7 @@ function markup(wayBack: number | null): string {
       onEdit={noop}
       onEditStep={noop}
       onEditCheckpoint={noop}
+      onEditServe={noop}
       onReset={noop}
       onChooseSkills={noop}
       wayBack={wayBack}

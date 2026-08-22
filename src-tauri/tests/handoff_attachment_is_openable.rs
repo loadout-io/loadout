@@ -228,12 +228,15 @@ async fn scout_then_open() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Erro
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // Linie tego kryterium nie interesują: sądzi ono `RunSpec`, który przeszedł do sterownika.

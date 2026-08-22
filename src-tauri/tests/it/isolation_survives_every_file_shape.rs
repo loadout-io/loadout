@@ -263,12 +263,15 @@ fn run_in_its_own_thread(
                 project: &setup.project,
                 store: &store,
                 drivers: fake_drivers(setup.seen),
+                processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
                 control: RunControl::new(),
             };
             let request = RunRequest {
                 workflow: setup.workflow,
                 how_many_at_once: 1,
                 task: None,
+                only: None,
+                handoffs_from: None,
             };
             let recorder = Delivered::default();
             let (sink, source) = line_channel(QUEUE_CAP);

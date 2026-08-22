@@ -1,11 +1,13 @@
 //! Małe adaptery formatów źródłowych. Polityka zgodności mieszka w [`translate`](super::translate).
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::connections::{Connection, Transport};
+use crate::connections::{Connection, Origin, Transport};
 use crate::library::agents::{
     Agent, Color, FileAccess, SCHEMA, Thinking, Tools, Vendor, VendorOptions,
 };
@@ -131,7 +133,17 @@ fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut u
                 return;
             }
             *colours += 1;
+            /* SERWERY Z NAGŁÓWKA TEGO AGENTA WCHODZĄ RAZEM Z NIM. Bez tej linii agent lądował
+             * w bibliotece z nazwą połączenia, którego w niej nie było — i przewracał bieg dopiero
+             * przy Starcie. Powód w całości stoi przy `servers_in_the_agent`. */
+            let mut mine = servers_in_the_agent(file);
+            let message = if mine.issues.is_empty() {
+                message
+            } else {
+                format!("{message} {}", mine.issues.join(" "))
+            };
             output.mappings.push(mapping(file, compatibility, &message));
+            take_connections(&mut output.connections, &mut mine.connections);
             agent.skills.sort();
             agent.connections.sort();
             output.agents.push(agent);
@@ -244,11 +256,28 @@ fn adapt_connections(file: &InspectedFile, output: &mut AdapterOutput) {
                 parsed.issues.join(" ")
             };
             output.mappings.push(mapping(file, compatibility, &message));
-            output.connections.append(&mut parsed.connections);
+            take_connections(&mut output.connections, &mut parsed.connections);
         }
         Err(message) => output
             .mappings
             .push(mapping(file, Compatibility::Unsupported, &message)),
+    }
+}
+
+/// Dokłada połączenia, których jeszcze nie ma — po NAZWIE, bo to ona jest tożsamością.
+///
+/// Ten sam serwer bywa opisany dwa razy: raz w `.mcp.json` projektu, raz w nagłówku agenta,
+/// który go używa. Dwa wpisy o jednej nazwie dałyby w bibliotece dwa pliki i człowieka, który
+/// włącza jeden, a bieg czyta drugi. Wygrywa PIERWSZY napotkany — bo importer idzie po plikach
+/// w kolejności skanu, a ta jest stabilna.
+pub(super) fn take_connections(into: &mut Vec<Connection>, found: &mut Vec<Connection>) {
+    for connection in found.drain(..) {
+        if !into
+            .iter()
+            .any(|have| have.name.eq_ignore_ascii_case(&connection.name))
+        {
+            into.push(connection);
+        }
     }
 }
 
@@ -552,8 +581,8 @@ fn skill(
     ))
 }
 
-struct AdaptedConnections {
-    connections: Vec<Connection>,
+pub(super) struct AdaptedConnections {
+    pub(super) connections: Vec<Connection>,
     issues: Vec<String>,
 }
 
@@ -583,7 +612,7 @@ fn rulesync_connections(file: &InspectedFile) -> std::result::Result<AdaptedConn
         if name == "$schema" {
             continue;
         }
-        match claude_connection(file, name, server) {
+        match claude_connection(&file.item.path, &file.item.hash, name, server) {
             Ok(connection) => connections.push(connection),
             Err(issue) => issues.push(issue),
         }
@@ -603,6 +632,228 @@ fn rulesync_connections(file: &InspectedFile) -> std::result::Result<AdaptedConn
     })
 }
 
+/// Czy ten adres wolno wpuścić bez HTTPS.
+///
+/// **Pętla zwrotna tak, wszystko inne nie**, i to jest cała treść tej funkcji (T-81, AC-2).
+/// Reguła `starts_with("https://")` broniła przed sekretem lecącym po sieci bez szyfrowania —
+/// a ruch, który nie wychodzi z maszyny, tej ochrony nie potrzebuje, bo nie ma go gdzie podsłuchać.
+///
+/// 2026-08-22 — KOSZT TEJ ODMOWY BYŁ PRAWDZIWY, nie teoretyczny. Figma instaluje swój serwer
+/// Dev Mode jako `http://127.0.0.1:3845/mcp`; import wyrzucał go z każdego skanu, a właściciel
+/// dostawał przy biegu `Connection figma does not exist in the Loadout library.` — zdanie
+/// o skutku, którego przyczyna stała dwa ekrany wcześniej.
+///
+/// Nazwa hosta, nie prefiks napisu: `http://127.0.0.1.evil.test/` zaczyna się od `http://127.0.0.1`
+/// i pętlą zwrotną nie jest. Dlatego host jest wycinany do najbliższego `/`, `:` albo `?`
+/// i porównywany W CAŁOŚCI.
+fn is_loopback(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Port odcinamy TYLKO wtedy, gdy naprawdę jest portem: `[::1]` niesie dwukropki w samym
+    // adresie i bez tego warunku zostałby przycięty do `[:`.
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|one| one.is_ascii_digit()) => {
+            host
+        }
+        _ => authority,
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+/// Serwery narzędziowe zadeklarowane WPROST W NAGŁÓWKU AGENTA — jako gotowe połączenia.
+///
+/// 2026-08-22 — TO ZAMYKA CICHĄ DZIURĘ W IMPORCIE, zgłoszoną zdaniem „jak dziedziczymy agentów
+/// i skille, to tak samo wszystko MCP, żeby nie było niespodzianek". Do tego dnia z takiego bloku
+/// brane były wyłącznie NAZWY (do `Agent::connections`), a transport przepadał. Agent lądował
+/// więc w bibliotece z nazwą połączenia, którego w niej nie było, i przewracał się dopiero przy
+/// Starcie zdaniem `Connection <nazwa> does not exist in the Loadout library.` — o kroku, którego
+/// człowiek w tej chwili nie oglądał.
+///
+/// Reguły bezpieczeństwa są POŻYCZONE, nie przepisane: blok zamienia się na ten sam kształt JSON,
+/// który niesie `.mcp.json`, i idzie przez [`claude_connection`]. Dzięki temu HTTPS-albo-pętla-
+/// zwrotna, zakaz wartości sekretów i wszystko inne obowiązuje tu co do znaku, a nowa reguła
+/// dopisana tam obowiązuje tu od razu.
+///
+/// Czytanie jest wcięciowe, nie parserem YAML — ta sama technika i to samo zastrzeżenie, co przy
+/// [`nested_names`]: prawdziwy parser należy do reszty T-81. Do tego czasu lepiej wnieść serwer
+/// czytelny z dwóch poziomów wcięcia niż zgubić go w całości.
+fn servers_in_the_agent(file: &InspectedFile) -> AdaptedConnections {
+    let mut connections = Vec::new();
+    let mut issues = Vec::new();
+    let mut inside = false;
+    let mut level: Option<usize> = None;
+    let mut open: Option<(String, Map<String, Value>)> = None;
+
+    let close = |open: Option<(String, Map<String, Value>)>,
+                 connections: &mut Vec<Connection>,
+                 issues: &mut Vec<String>| {
+        let Some((name, fields)) = open else { return };
+        match claude_connection(
+            &file.item.path,
+            &file.item.hash,
+            &name,
+            &Value::Object(fields),
+        ) {
+            Ok(connection) => connections.push(connection),
+            Err(issue) => issues.push(issue),
+        }
+    };
+
+    for line in file.content.lines() {
+        if line.trim() == "mcpServers:" {
+            inside = true;
+            continue;
+        }
+        if !inside || line.trim().is_empty() {
+            continue;
+        }
+        let spaces = line.len() - line.trim_start().len();
+        if spaces == 0 {
+            break;
+        }
+        let first = *level.get_or_insert(spaces);
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if spaces == first {
+            close(open.take(), &mut connections, &mut issues);
+            open = Some((key.to_owned(), Map::new()));
+            continue;
+        }
+        let Some((_, fields)) = open.as_mut() else {
+            continue;
+        };
+        /* `args` jest w nagłówku tablicą w zapisie wbudowanym, a `env`/`headers` schodzą jeszcze
+         * głębiej i są odmową w tym samym brzmieniu, co przy Codeksie: wartość sekretu w pliku
+         * projektu nie ma prawa wjechać do biblioteki, także w bloku agenta. */
+        if key == "args" {
+            fields.insert(
+                key.to_owned(),
+                Value::Array(
+                    parse_array(Some(&value.to_owned()))
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        } else if value.is_empty() {
+            issues.push(format!(
+                "Connection {} contains inline environment or header values. Replace them with \
+                 environment references.",
+                open.as_ref().map_or("", |(name, _)| name.as_str())
+            ));
+        } else {
+            fields.insert(key.to_owned(), Value::String(unquote(value)));
+        }
+    }
+    close(open.take(), &mut connections, &mut issues);
+
+    AdaptedConnections {
+        connections,
+        issues,
+    }
+}
+
+/// Serwery z TWOJEJ konfiguracji Claude Code — dwa zakresy, których plik projektu nie zna.
+///
+/// 2026-08-22 — ZGŁOSZENIE WŁAŚCICIELA: „chodzi mi o to, żeby tego typu MCP też sobie
+/// importować". Claude Code ma trzy zakresy, a import czytał jeden:
+///
+/// | zakres | gdzie | kto to widzi |
+/// |---|---|---|
+/// | project | `.mcp.json` | cały zespół |
+/// | local | `~/.claude.json` → `projects["<katalog>"]` | tylko ty, w tym projekcie |
+/// | user | `~/.claude.json` → `mcpServers` | tylko ty, wszędzie |
+///
+/// `linear-server`, na którym stoi całe `ship-task` w repo właściciela, siedział w LOKALNYM.
+/// Dlatego nie było go w `.mcp.json`, import go nie widział, a bieg odmawiał startu na kroku,
+/// który miał przeczytać ticket.
+///
+/// **CZYTAMY DWA KLUCZE I NIC WIĘCEJ.** `~/.claude.json` niesie u właściciela 231 projektów
+/// z historią rozmów i sporo prywatnego stanu; wchodzimy po `mcpServers`, wychodzimy. Reszta
+/// pliku nie ma prawa dotknąć ani draftu, ani odcisków źródeł.
+///
+/// **`projects` dopasowane po ŚCIEŻCE SKANOWANEGO KATALOGU**, nie „weź wszystkie": import
+/// zostaje projektowy, więc skan `urc-monorepo` daje serwery `urc-monorepo`, a nie wszystkich
+/// 231 pozycji z tamtego pliku.
+///
+/// Reguły bezpieczeństwa są POŻYCZONE od [`claude_connection`]: HTTPS-albo-pętla-zwrotna, zakaz
+/// wartości sekretów, wszystko obowiązuje tu co do znaku. Serwer z twojego pliku nie jest
+/// bezpieczniejszy od serwera z repo tylko dlatego, że jest twój.
+pub(super) fn personal_connections(home: &Path, root: &Path) -> AdaptedConnections {
+    let mut connections = Vec::new();
+    let mut issues = Vec::new();
+
+    let path = home.join(".claude.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return AdaptedConnections {
+            connections,
+            issues,
+        };
+    };
+    let Ok(document) = serde_json::from_str::<Value>(&text) else {
+        issues.push(
+            "Your own Claude Code settings are not valid JSON, so Loadout left them alone."
+                .to_owned(),
+        );
+        return AdaptedConnections {
+            connections,
+            issues,
+        };
+    };
+
+    // Kolejność: NAJPIERW ten projekt, potem „wszędzie". Przy tej samej nazwie w obu zakresach
+    // wygrywa węższy — bo to on opisuje serwer, którego ten projekt naprawdę używa.
+    /* KLUCZ DOPASOWANY PO ŚCIEŻCE KANONICZNEJ, nie po napisie. macOS podaje `/var/folders/…`
+     * i `/private/var/folders/…` jako dwie nazwy jednego katalogu, a `~/.claude.json` niesie tę,
+     * którą akurat miał terminal. Porównanie napisów gubi wtedy cały zakres lokalny i wygląda
+     * dokładnie jak „nie masz tam żadnych serwerów". */
+    let wanted = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let here = document
+        .get("projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| {
+            projects.iter().find_map(|(key, value)| {
+                let key_path = Path::new(key);
+                let same = fs::canonicalize(key_path)
+                    .map_or_else(|_| key_path == root, |canonical| canonical == wanted);
+                same.then_some(value)
+            })
+        })
+        .and_then(|project| project.get("mcpServers"));
+    let everywhere = document.get("mcpServers");
+
+    for (servers, origin) in [
+        (here, Origin::YoursHere),
+        (everywhere, Origin::YoursEverywhere),
+    ] {
+        let Some(servers) = servers.and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, server) in servers {
+            /* Pusty odcisk i ścieżka bez katalogu domowego: `source_hash` służy wykrywaniu zmiany
+             * w plikach PROJEKTU między Scanem a Importem, a te dwa zakresy do `source_hashes`
+             * nie wchodzą. Ścieżka jest etykietą dla człowieka, nie kluczem — twojego katalogu
+             * domowego nie ma po co wpisywać do pliku połączenia. */
+            match claude_connection(Path::new(".claude.json"), "", name, server) {
+                Ok(mut connection) => {
+                    connection.origin = origin;
+                    connections.push(connection);
+                }
+                Err(issue) => issues.push(issue),
+            }
+        }
+    }
+
+    AdaptedConnections {
+        connections,
+        issues,
+    }
+}
+
 fn claude_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnections, String> {
     let document: Value = serde_json::from_str(&file.content)
         .map_err(|error| format!("This project connection file is not valid JSON: {error}"))?;
@@ -613,7 +864,7 @@ fn claude_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnec
     let mut out = Vec::new();
     let mut issues = Vec::new();
     for (name, server) in servers {
-        match claude_connection(file, name, server) {
+        match claude_connection(&file.item.path, &file.item.hash, name, server) {
             Ok(connection) => out.push(connection),
             Err(issue) => issues.push(issue),
         }
@@ -625,7 +876,8 @@ fn claude_connections(file: &InspectedFile) -> std::result::Result<AdaptedConnec
 }
 
 fn claude_connection(
-    file: &InspectedFile,
+    source: &Path,
+    hash: &str,
     name: &str,
     server: &Value,
 ) -> std::result::Result<Connection, String> {
@@ -633,8 +885,10 @@ fn claude_connection(
         .as_object()
         .ok_or_else(|| format!("Connection {name} is not an object."))?;
     let transport = if let Some(url) = object.get("url").and_then(Value::as_str) {
-        if !url.starts_with("https://") {
-            return Err(format!("Connection {name} must use HTTPS."));
+        if !url.starts_with("https://") && !is_loopback(url) {
+            return Err(format!(
+                "Connection {name} must use HTTPS, or run on this machine."
+            ));
         }
         let token_environment = object
             .get("bearerTokenEnvVar")
@@ -685,8 +939,8 @@ fn claude_connection(
         slug(name),
         name.to_owned(),
         transport,
-        file.item.path.clone(),
-        file.item.hash.clone(),
+        source.to_path_buf(),
+        hash.to_owned(),
     ))
 }
 
@@ -703,8 +957,10 @@ fn codex_connections(file: &InspectedFile) -> std::result::Result<Vec<Connection
             ));
         }
         let transport = if let Some(url) = fields.get("url") {
-            if !url.starts_with("https://") {
-                return Err(format!("Connection {name} must use HTTPS."));
+            if !url.starts_with("https://") && !is_loopback(url) {
+                return Err(format!(
+                    "Connection {name} must use HTTPS, or run on this machine."
+                ));
             }
             let token_environment = fields.get("bearer_token_env_var").cloned();
             if token_environment
@@ -964,26 +1220,61 @@ fn nested_toml_tables(content: &str, prefix: &str) -> Vec<String> {
     toml_tables(content, prefix).into_keys().collect()
 }
 
+/// Nazwy z PIERWSZEGO poziomu zagnieżdżenia pod `key:` w nagłówku pliku agenta.
+///
+/// 2026-08-22 — POZIOM, NIE CZARNA LISTA, i to jest naprawa wady zgłoszonej z ekranu (T-81,
+/// pierwsza połowa). Do tego dnia ta funkcja brała KAŻDY klucz wcięty o co najmniej dwie spacje,
+/// odejmując cztery nazwy wypisane z ręki (`command`, `args`, `env`, `url`). Serwer opisany tak:
+///
+/// ```yaml
+/// mcpServers:
+///   figma:
+///     type: http
+///     url: http://127.0.0.1:3845/mcp
+/// ```
+///
+/// dawał więc DWA połączenia: `figma` i `type` — bo `type` nie stało na tamtej liście.
+/// Nie była to kosmetyka: `connections::runtime::selected()` odmawia startu przy nieznanej
+/// nazwie, więc **zaimportowany agent z zagnieżdżonym blokiem `mcpServers` nie dawał się
+/// uruchomić w ogóle**, a zdanie, które człowiek widział, mówiło o połączeniu `type`, którego
+/// nikt nigdy nie napisał.
+///
+/// Czarna lista jest naprawą objawu i przegrywa z każdym kluczem, którego jeszcze nikt nie
+/// napotkał (`headers`, `timeout`, `disabled`…). Poziom wcięcia jest tym, co naprawdę odróżnia
+/// nazwę serwera od jego pola. Prawdziwy parser YAML należy do reszty T-81 i tej funkcji nie
+/// zastępuje niniejsza poprawka — zmniejsza tylko szkodę do czasu, aż tamten wejdzie.
 fn nested_names(content: &str, key: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut inside = false;
+    // Wcięcie pierwszego dziecka. Ustala je PIERWSZY niepusty wiersz po `key:`, bo YAML nie
+    // narzuca dwóch spacji — pliki z czterema są równie poprawne.
+    let mut level: Option<usize> = None;
     for line in content.lines() {
         if line.trim() == format!("{key}:") {
             inside = true;
             continue;
         }
-        if inside {
-            let spaces = line.len() - line.trim_start().len();
-            if spaces == 0 && !line.trim().is_empty() {
-                break;
-            }
-            if spaces >= 2
-                && let Some((name, _)) = line.trim().split_once(':')
-                && !name.is_empty()
-                && !["command", "args", "env", "url"].contains(&name)
-            {
-                names.push(name.to_owned());
-            }
+        if !inside {
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let spaces = line.len() - line.trim_start().len();
+        if spaces == 0 {
+            break;
+        }
+        let first = *level.get_or_insert(spaces);
+        if spaces != first {
+            // Głębiej: to pole serwera (`type`, `url`, `headers`…), nie jego nazwa. Płycej niż
+            // pierwsze dziecko przy niezerowym wcięciu nie powinno się zdarzyć, ale gdyby plik
+            // był poprawiony ręcznie, wolimy pominąć niż zmyślić nazwę.
+            continue;
+        }
+        if let Some((name, _)) = line.trim().split_once(':')
+            && !name.is_empty()
+        {
+            names.push(name.to_owned());
         }
     }
     names.sort();

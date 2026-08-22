@@ -101,12 +101,15 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow("deadline", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

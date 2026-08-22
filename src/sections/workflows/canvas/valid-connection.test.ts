@@ -10,10 +10,15 @@
  * `docs/superpowers/specs/2026-08-19-petla-z-limitem-tur-design.md`.
  *
  * TRZY ODMOWY ZOSTAJĄ i są w tym pliku sądzone: pętla własna, ta sama strzałka drugi raz oraz
- * DRUGI powrót. Ostatnia jest nowa i jest w chwili gestu z premedytacją: Rust daje na drugi
- * powrót `Problem`, czyli po narysowaniu plik przestałby się zapisywać. Płótno, które pozwala
- * narysować rzecz blokującą zapis, kasuje pracę po cichu; płótno, które mówi „nie" od razu,
- * kosztuje jeden nieudany gest.
+ * powrót PRZECINAJĄCY cudzą pętlę. Ostatnia jest w chwili gestu z premedytacją: Rust daje na
+ * pętle o wspólnym kroku `Problem`, czyli po narysowaniu plik przestałby się zapisywać. Płótno,
+ * które pozwala narysować rzecz blokującą zapis, kasuje pracę po cichu; płótno, które mówi
+ * „nie" od razu, kosztuje jeden nieudany gest.
+ *
+ * 2026-08-22 — GRANICA PRZESUNIĘTA, na prośbę właściciela. Do tego dnia odmawialiśmy KAŻDEGO
+ * drugiego powrotu, a graf z dwiema gałęziami — front i backend, każda z własnym sprawdzeniem —
+ * potrzebuje dwóch pętli, które nie mają ze sobą nic wspólnego. Pętle rozłączne rozwijają się
+ * niezależnie (`workflow::unroll`), więc dziś lądują; przecinające się dalej nie.
  *
  * SŁABA WERSJA tego kryterium to pojedyncze `expect(isValidConnection(...)).toBe(false)`.
  * Przechodzi dla `() => false`, czyli dla płótna, na którym nie da się narysować ani jednej
@@ -116,20 +121,58 @@ describe('an arrow that would close a circle lands as a way back, and says nothi
     ).toBe(true);
   });
 
-  it('turns down a SECOND way back, in the gesture rather than at save time', () => {
+  it('turns down a way back that would CROSS the one already there', () => {
     const doc = file();
     const withALoop = onConnect({ source: 'c', target: 'a' }, doc);
 
     expect(
       isValidConnection({ source: 'b', target: 'a' }, withALoop),
-      'Rust refuses a file with two ways back, so drawing the second one would leave a workflow ' +
-        'that cannot be saved. A canvas that allows the gesture loses work silently; one that ' +
-        'says no costs a single failed drag.',
+      'the loop already drawn repeats a, b and c; this one would repeat a and b, so the two ' +
+        'share steps and neither one can say which round leaves for the work after it. Rust ' +
+        'refuses that file, so drawing it would leave a workflow that cannot be saved. A canvas ' +
+        'that allows the gesture loses work silently; one that says no costs a single failed drag.',
     ).toBe(false);
     expect(
       onConnect({ source: 'b', target: 'a' }, withALoop).links,
       'and the refused one is not half-added',
     ).toEqual(withALoop.links);
+  });
+
+  it('lands a SECOND loop when the two do not share a single step', () => {
+    /* Kształt z ekranu właściciela: jeden plan, dwie gałęzie, każda ze swoim sprawdzeniem. */
+    const twoBranches: WorkflowFile = {
+      ...file(),
+      steps: [
+        step('plan', 'Plan', 24),
+        step('front', 'Front', 168),
+        step('design', 'Figma check', 312),
+        step('back', 'Backend', 168),
+        step('checked', 'Backend check', 312),
+      ],
+      links: [
+        { from: 'plan', to: 'front' },
+        { from: 'front', to: 'design' },
+        { from: 'plan', to: 'back' },
+        { from: 'back', to: 'checked' },
+      ],
+    };
+    const frontLoops = onConnect({ source: 'design', target: 'front' }, twoBranches);
+
+    expect(
+      isValidConnection({ source: 'checked', target: 'back' }, frontLoops),
+      'one branch repeats Front and Figma check, the other repeats Backend and Backend check. ' +
+        'They share nothing, so each one unrolls on its own and the old blanket refusal was ' +
+        'making the owner throw away one of the two branches',
+    ).toBe(true);
+
+    const bothLoop = onConnect({ source: 'checked', target: 'back' }, frontLoops);
+    expect(
+      bothLoop.links.filter((link) => link.max_turns !== undefined),
+      'and both really land, each carrying its own limit',
+    ).toEqual([
+      { from: 'design', to: 'front', max_turns: TURNS_BY_DEFAULT },
+      { from: 'checked', to: 'back', max_turns: TURNS_BY_DEFAULT },
+    ]);
   });
 
   it('lands the closing arrow WITH a limit, and an ordinary one without', () => {

@@ -100,12 +100,15 @@ async fn the_step_sees_what_the_human_sees_and_hears_what_it_did_not_get()
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow("carry-uncommitted", WORKFLOW)?,
         how_many_at_once: 1,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

@@ -134,6 +134,18 @@ impl std::fmt::Debug for RunSpec {
 pub struct DriverConfiguration {
     pub arguments: Vec<String>,
     pub environment: Vec<(String, OsString)>,
+    /// Nazwy serwerów, które ten krok naprawdę dostał.
+    ///
+    /// 2026-08-22 — POLE JEST NOWE i bez niego zatwierdzone połączenie nie da się użyć.
+    /// Zmierzone na biegu właściciela: serwer `figma` zameldował się jako `connected`, CLI
+    /// zarejestrowało **32** jego narzędzia, agent zawołał `get_design_context` i dostał
+    /// `permission_denied` — bo `--allowedTools` niesie wyłącznie czasowniki plikowe z dialu,
+    /// a `--permission-mode dontAsk` odrzuca resztę bez pytania. Połączenie, które się łączy
+    /// i którego nie wolno użyć, jest kontrolką bez skutku (niezmiennik 16).
+    ///
+    /// Same nazwy, nie narzędzia: konkretne `mcp__<serwer>__<narzędzie>` poznaje się dopiero
+    /// po połączeniu, a argv powstaje wcześniej. Adapter składa z nich wzorzec zakresowy.
+    pub servers: Vec<String>,
 }
 
 impl std::fmt::Debug for DriverConfiguration {
@@ -149,6 +161,7 @@ impl std::fmt::Debug for DriverConfiguration {
                     .map(|(name, _)| name)
                     .collect::<Vec<_>>(),
             )
+            .field("servers", &self.servers)
             .finish()
     }
 }

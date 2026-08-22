@@ -91,7 +91,11 @@ const DROP = { at: { x: 241.4, y: 95.2 } };
 describe('letting go of an arrow over empty canvas builds the step and wires it in one go', () => {
   it('adds exactly one step, on the grid, with exactly one arrow into it', () => {
     const before = file();
-    const after = onConnectEnd(DROP, { isValid: false, fromNode: { id: 's_plan' } }, before);
+    const after = onConnectEnd(
+      DROP,
+      { isValid: false, overTile: false, fromNode: { id: 's_plan' } },
+      before,
+    );
 
     expect(
       after.steps,
@@ -121,7 +125,11 @@ describe('letting go of an arrow over empty canvas builds the step and wires it 
 
   it('adds nothing at all when the arrow lands on a tile that is already there', () => {
     const before = file();
-    const after = onConnectEnd(DROP, { isValid: true, fromNode: { id: 's_plan' } }, before);
+    const after = onConnectEnd(
+      DROP,
+      { isValid: true, overTile: true, fromNode: { id: 's_plan' } },
+      before,
+    );
 
     expect(
       after.steps,
@@ -133,11 +141,28 @@ describe('letting go of an arrow over empty canvas builds the step and wires it 
     );
   });
 
+  it('adds nothing when the arrow is let go over a tile but misses its handle', () => {
+    const before = file();
+    const after = onConnectEnd(
+      DROP,
+      { isValid: false, overTile: true, fromNode: { id: 's_plan' } },
+      before,
+    );
+
+    expect(
+      after,
+      'this is the gesture that drew a loop: from the check, sideways and up, onto the step ' +
+        'the work goes back to. Miss the handle by a few pixels and the old code read it as ' +
+        '"dropped on empty canvas" and minted a step nobody asked for. Deleting that ghost then ' +
+        'left an arrow pointing at a step that is not in the workflow',
+    ).toBe(before);
+  });
+
   it('leaves the document it was handed exactly as it found it', () => {
     const before = file();
     const untouched = structuredClone(before);
 
-    onConnectEnd(DROP, { isValid: false, fromNode: { id: 's_plan' } }, before);
+    onConnectEnd(DROP, { isValid: false, overTile: false, fromNode: { id: 's_plan' } }, before);
 
     expect(
       before,
@@ -154,7 +179,11 @@ describe('letting go of an arrow over empty canvas builds the step and wires it 
         'below would also pass for a footer written into the component by hand',
     ).toContain('first step');
 
-    const after = onConnectEnd(DROP, { isValid: false, fromNode: { id: 's_plan' } }, before);
+    const after = onConnectEnd(
+      DROP,
+      { isValid: false, overTile: false, fromNode: { id: 's_plan' } },
+      before,
+    );
     const fresh = only(added(before, after));
 
     expect(

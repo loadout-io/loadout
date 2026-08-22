@@ -86,6 +86,7 @@ async fn closing_with_nothing_running_does_not_wait_for_anything() {
         drivers: idle_drivers(),
         // Uchwyt, którym NIKT nigdy nie uruchomił biegu — czyli stan aplikacji tuż po starcie
         // i najczęstszy stan w chwili zamykania okna.
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
 
@@ -125,6 +126,7 @@ async fn closing_mid_run_waits_until_the_run_is_really_down() {
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: control.clone(),
     };
 

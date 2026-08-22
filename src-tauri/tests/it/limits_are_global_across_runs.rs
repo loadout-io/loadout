@@ -294,6 +294,7 @@ impl Lane {
             drivers: fake_drivers(Arc::clone(watch), STEP),
             // Własny uchwyt Stop/Continue na bieg. Wspólny byłby drugim wspólnym stanem obok
             // puli, a wtedy nie dałoby się powiedzieć, który z nich ograniczył kroki.
+            processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
             control: RunControl::new(),
         }
     }
@@ -303,6 +304,8 @@ impl Lane {
             workflow: self.workflow.clone(),
             how_many_at_once,
             task: None,
+            only: None,
+            handoffs_from: None,
         }
     }
 }

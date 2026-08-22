@@ -123,12 +123,15 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow("fresh-copy", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

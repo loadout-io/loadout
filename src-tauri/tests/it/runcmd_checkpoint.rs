@@ -130,12 +130,15 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 3,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let (sink, drain) = the_pump_seam();
@@ -223,12 +226,15 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 3,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let (sink, drain) = the_pump_seam();

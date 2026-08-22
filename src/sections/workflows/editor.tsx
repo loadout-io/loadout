@@ -213,6 +213,11 @@ export function WorkflowEditor({
               onRun(path);
             }}
             onOpenPanel={setOpenStepId}
+            /* AUTO-FIX. Biblioteka jedzie argumentem, tą samą drogą co przy `editStep`:
+               magazyn dokumentu jej nie trzyma i trzymać nie powinien. */
+            onApplyFix={(fix) => {
+              void state.applyFix(fix, agents);
+            }}
           />
         </div>
 
@@ -286,6 +291,16 @@ export function WorkflowEditor({
                       : link,
                   ),
                 });
+              }}
+              onEditServe={(fields) => {
+                /* Ta sama droga dla kafelka „uruchom i zostaw". Jego `command` jest jedynym
+                 * powodem, dla którego ten kafelek w ogóle coś podnosi — pole, które nie dojeżdża
+                 * do pliku, daje kafelek odmawiający w środku biegu. */
+                state.commit(
+                  withStep(state.document, open.id, (step) =>
+                    step.kind === 'serve' ? { ...step, ...fields } : step,
+                  ),
+                );
               }}
               onEditCheckpoint={(fields) => {
                 /* Ta sama droga dla punktu kontrolnego. Jego `question` jest jedynym powodem,

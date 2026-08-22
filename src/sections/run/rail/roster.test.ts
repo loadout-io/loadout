@@ -95,3 +95,45 @@ describe('the list of agents is built from what happened, not from what was plan
     ).toBe('stopped');
   });
 });
+
+/* 2026-08-22 — KAFELEK, KTÓRY SKOŃCZYŁ, NIE MÓWI „working".
+ *
+ * Zgłoszenie ze zrzutu właściciela: każdy kafelek skończonego biegu pokazywał `Done · 26 turns
+ * · 6m 27s · $2.33` i pod spodem `working`. Stan brał się wyłącznie ze stanu kroku w planie,
+ * a kiedy ten do szyny nie dojeżdżał, jedyne, co jej zostawało, to domysł — i domyślała się
+ * pracy, nad agentem, który skończył kwadrans wcześniej.
+ *
+ * SŁABĄ WERSJĄ jest sprawdzenie samego `done`. Przechodzi ją implementacja, która każde
+ * zakończenie nazywa sukcesem — czyli maluje na zielono krok, który padł. Dlatego niżej stoją
+ * wszystkie trzy zakończenia.
+ */
+describe('a tile that has finished says so, whatever the plan still thinks', () => {
+  const ENDINGS = [
+    ['well', 'done'],
+    ['badly', 'failed'],
+    ['stopped', 'stopped'],
+  ] as const;
+
+  for (const [ended, expected] of ENDINGS) {
+    it(`reads ${ended} off the stream, not off a stale plan state`, () => {
+      const feed = createFeed(sealedScroller());
+      feed.appendLines([
+        line.read(1, 0, 'Forge', 'src/parser.rs'),
+        line.done(2, 100, 'Forge', 'Done · 26 turns', ended),
+      ]);
+
+      const cards = roster({
+        view: feed.view,
+        /* Plan mówi „running" i jest nieaktualny: linia `done` jest dowodem końca, bo składa ją
+         * silnik dokładnie wtedy, gdy tura wróciła. */
+        agents: [{ id: 'Forge', name: 'Forge', role: 'writes code', step: 'running' }],
+      });
+
+      expect(
+        cards[0]?.status,
+        'the stream carries the proof that this agent finished; a tile that keeps saying it ' +
+          'works is the screen contradicting its own line one row above',
+      ).toBe(expected);
+    });
+  }
+});

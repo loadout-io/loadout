@@ -137,7 +137,15 @@ export { runTabs as workspaces } from './tabs/store';
  * a kafelek pustego slotu po prostu nie rysuje.
  */
 function factsOf(steps: readonly Step[]): readonly AgentFacts[] {
-  return steps.map((step) => ({ id: step.name, name: step.name, role: '', step: step.state }));
+  return steps.map((step) => ({
+    id: step.name,
+    name: step.name,
+    role: '',
+    step: step.state,
+    /* Identyfikator jedzie obok nazwy: po nazwie rozpoznaje agenta strumień, a po kluczu
+     * kafelka powtarza się krok (`io.rerunStep`). */
+    stepId: step.id,
+  }));
 }
 
 /**

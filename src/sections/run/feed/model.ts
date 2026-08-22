@@ -89,6 +89,14 @@ export interface HistoryRow {
   readonly metric: string;
   /** Ostatnie 20 linii wyjścia; niepuste tylko dla `ran`, które padło [T2 §7.3 reguła 3]. */
   readonly output: readonly string[];
+  /**
+   * Tylko na wierszu `done`: jak agent skończył — lustro `engine::line::Ended`.
+   *
+   * 2026-08-22 — niesie to szyna agentów, żeby kafelek nie musiał zgadywać stanu ani czytać go
+   * ze zdania. `Done` / `Didn't work` / `Stopped` są prozą dla człowieka i wolno je przepisać;
+   * ta wartość jest decyzją, która za nimi stoi.
+   */
+  readonly ended?: 'well' | 'badly' | 'stopped';
   /** Numer, o który poprosi panel szczegółów. Sam panel jest poza tym zadaniem. */
   readonly detailId: number | null;
   /**
@@ -423,6 +431,9 @@ function rowFor(line: FeedLine): HistoryRow {
     output: broke && line.kind === 'ran' ? line.detail.slice(-OUTPUT_LINES) : [],
     detailId: detailOf(line),
     command: commandOf(line),
+    /* Klucz jedzie TYLKO z linii, która go niesie: dopisanie `ended: undefined` do każdego
+     * wiersza dałoby pole, którego znaczenie jest „nie wiem", tam gdzie nie ma o czym mówić. */
+    ...(line.kind === 'done' ? { ended: line.ended } : {}),
   };
 }
 

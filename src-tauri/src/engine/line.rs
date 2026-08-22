@@ -364,7 +364,32 @@ pub enum Line {
         /// Koszt tury. `None`, kiedy vendor go nie podał: zero jest liczbą i sumuje się
         /// w rachunek, którego nikt nie zamawiał.
         cost_usd: Option<f64>,
+        /// Jak się skończyło — **osobnym polem, nie do wyczytania z `text`**.
+        ///
+        /// 2026-08-22 — POLE JEST NOWE i powstało z wady widocznej na zrzucie właściciela:
+        /// kafelek agenta pokazywał `Done · 26 turns · 6m 27s · $2.33` i pod spodem `working`.
+        /// Szyna zna stan kroku wyłącznie z linii `StepState`, a kiedy ten stan do niej nie
+        /// dojedzie, jedyne, co jej zostawało, to zgadywać — i zgadywała „pracuje", nad
+        /// agentem, który skończył kilkanaście minut wcześniej.
+        ///
+        /// Wyczytanie tego z `text` byłoby parsowaniem prozy po stronie okna: `Done`,
+        /// `Didn't work` i `Stopped` są zdaniami dla człowieka i wolno je zmienić, nie pytając
+        /// nikogo o zgodę. Enum z drutu na ekran nie trafia (niezmiennik 14) — trafia decyzja,
+        /// którą on niesie.
+        ended: Ended,
     },
+}
+
+/// Czym skończyła się praca agenta — trzy stany, te same trzy, które rozróżnia [`done_line`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ended {
+    /// Skończył i wyszło.
+    Well,
+    /// Skończył i nie wyszło.
+    Badly,
+    /// Zatrzymany przez człowieka. Anulowanie jest wartością, nie błędem (niezmiennik 7).
+    Stopped,
 }
 
 impl Line {
@@ -1223,12 +1248,20 @@ fn file_name(path: &str) -> &str {
 /// w `0.14836290000000002`, a suma biegu byłaby wtedy krzywa na zawsze i bez śladu.
 fn done_line(agent: &str, outcome: &Outcome) -> Line {
     let duration_ms = u64::try_from(outcome.took.as_millis()).unwrap_or(u64::MAX);
-    let head = match (&outcome.reason, outcome.ok) {
+    let ended = match (&outcome.reason, outcome.ok) {
         // Anulowanie jest wartością, nie błędem (niezmiennik 7). Krok, który ktoś zatrzymał
         // celowo, nie ma prawa czytać się jak krok, który się zepsuł.
-        (FinishReason::Cancelled, _) => "Stopped",
-        (_, true) => "Done",
-        (_, false) => "Didn't work",
+        (FinishReason::Cancelled, _) => Ended::Stopped,
+        (_, true) => Ended::Well,
+        (_, false) => Ended::Badly,
+    };
+    // ZDANIE I DECYZJA POWSTAJĄ Z JEDNEGO ROZSTRZYGNIĘCIA. Dwa `match`e na te same trzy stany
+    // rozjechałyby się przy pierwszej zmianie brzmienia — a wtedy kafelek mówiłby co innego niż
+    // wiersz strumienia obok niego.
+    let head = match ended {
+        Ended::Stopped => "Stopped",
+        Ended::Well => "Done",
+        Ended::Badly => "Didn't work",
     };
 
     let turns = outcome.turns;
@@ -1249,6 +1282,7 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
         turns,
         duration_ms,
         cost_usd: outcome.cost_usd,
+        ended,
     }
 }
 

@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 
 pub mod check;
 pub mod file;
+pub mod roster;
 pub mod unroll;
 
 /// Skok siatki płótna w pikselach [T3 §8.2 reguła 1].
@@ -88,6 +89,37 @@ pub enum Step {
     Agent(AgentStep),
     Checkpoint(CheckpointStep),
     Check(CheckStep),
+    /// Uruchom i zostaw — proces, który **przeżywa swój krok**.
+    Serve(ServeStep),
+}
+
+impl Step {
+    /// Nazwa kroku, tak jak stoi na kafelku — to ona jedzie do człowieka, nigdy identyfikator
+    /// (niezmiennik 14).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Agent(one) => one.name.as_str(),
+            Self::Checkpoint(one) => one.name.as_str(),
+            Self::Check(one) => one.name.as_str(),
+            Self::Serve(one) => one.name.as_str(),
+        }
+    }
+
+    /// Identyfikator kroku, niezależnie od jego rodzaju.
+    ///
+    /// 2026-08-22 — JEDNO MIEJSCE ZAMIAST TRZECH. Ten sam rozjazd po rodzajach był dotąd
+    /// przepisany w `unroll::key_of` i wołany w kilku innych, a każda kopia jest kopią, którą
+    /// czwarty wariant kroku zostawi po cichu nieaktualną.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Agent(one) => one.id.as_str(),
+            Self::Checkpoint(one) => one.id.as_str(),
+            Self::Check(one) => one.id.as_str(),
+            Self::Serve(one) => one.id.as_str(),
+        }
+    }
 }
 
 /// Krok, który uruchamia agenta.
@@ -207,6 +239,48 @@ pub struct CheckStep {
     pub proof: String,
     /// Gdzie ta komenda biegnie. `cargo test` pisze po `target/`, więc to **nie** jest krok
     /// tylko do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta.
+    #[serde(default)]
+    pub folder: Folder,
+    /// Jak [`AgentStep::at`].
+    #[serde(default)]
+    pub at: Point,
+    /// Jak [`AgentStep::extra`].
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Krok, który **uruchamia coś i zostawia to żywe** — dev server, watcher, cokolwiek, co reszta
+/// biegu ma zastać działające.
+///
+/// 2026-08-23 — POWSTAŁ ZE ZMIERZONEJ PORAŻKI. Bieg właściciela: `design-qa` mierzy computed
+/// style na ŻYWEJ aplikacji, a `Front` uczciwie odpalił jej serwer i napisał następnemu krokowi
+/// adres — `http://127.0.0.1:4202`. Sekundę później krok się skończył, Loadout zabił jego grupę
+/// procesów razem z dowodem śmierci (niezmiennik 6), a sprawdzający zastał ciszę. Trzy rundy
+/// pętli, `qualityScore 0`, i zdanie, które sam napisał: *„this is an orchestration-level
+/// problem, not something design-qa can fix by retrying"*. Miał rację.
+///
+/// Zderzyły się wtedy dwie POPRAWNE reguły: proces poboczny nie ma prawa przeżyć kroku, a
+/// weryfikacja przez pomiar wymaga, żeby przeżył. Ten kafelek jest rozstrzygnięciem: proces
+/// należy do **rejestru rzeczy uruchomionych** (`commands::processes`), nie do kroku — więc żyje
+/// dalej, stoi w liście po prawej ze swoim „Stop", i dalej ma dowód śmierci, tylko żądany przez
+/// człowieka albo przez zamknięcie okna, a nie przez koniec jednego kafelka.
+///
+/// **Krok kończy się, gdy proces WSTANIE**, nie gdy zejdzie — inaczej graf zatrzymałby się na
+/// nim na zawsze, a to jest dokładnie ta wada, którą niezmiennik 6 miał wykluczyć.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeStep {
+    pub id: String,
+    /// Nazwa widoczna na kafelku — „Start the app".
+    pub name: String,
+    /// Wiersz powłoki, dosłownie jak wpisał go człowiek: `npx nx serve urc-portal --port 4202`.
+    ///
+    /// `#[serde(default)]` z tego samego powodu, co przy [`CheckStep::command`]: plik poprawiony
+    /// ręcznie ma się WCZYTAĆ i dostać uwagę przy kafelku, a nie odbić się o serde.
+    #[serde(default)]
+    pub command: String,
+    /// Gdzie ta komenda biegnie. Serwer dev podaje kod ze SWOJEGO drzewa, więc dla weryfikacji
+    /// w kopii kroku ten wybór jest treścią, nie szczegółem.
     #[serde(default)]
     pub folder: Folder,
     /// Jak [`AgentStep::at`].

@@ -132,12 +132,15 @@ async fn six_agents_build_a_todo_list() -> Result<(), Box<dyn Error>> {
         project: &bench.project,
         store: &store,
         drivers: real_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: path,
         how_many_at_once: AT_ONCE,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let seen = Delivered::default();

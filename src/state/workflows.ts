@@ -28,7 +28,7 @@
 import { create } from 'zustand';
 import { why } from '../ipc/why';
 import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
-import type { Agent } from './agents';
+import type { Agent, FileAccess } from './agents';
 
 /** Waga uwagi z walidatora Rusta. `Problem` blokuje Run, `Warning` nie blokuje niczego. */
 export type Level = 'problem' | 'warning';
@@ -36,11 +36,22 @@ export type Level = 'problem' | 'warning';
 /** Jedna uwaga o jednym defekcie — lustro `workflow::check::Note`.
  *
  * `message` idzie WPROST na ekran: to jest gotowe angielskie zdanie, nie klucz i nie kod. */
+/** Naprawa, którą Loadout umie wykonać sam — lustro `workflow::roster::Fix`.
+ *
+ * Wariant istnieje wyłącznie tam, gdzie naprawa jest JEDNOZNACZNA. Uwaga bez `fix` to uwaga,
+ * której naprawę wybiera człowiek — i tak zostaje wszystko, co walidator liczy z samego pliku:
+ * kształt grafu poprawia się przeciągnięciem strzałki, nie przyciskiem. */
+export type Fix =
+  | { kind: 'widenFileAccess'; step: string; to: FileAccess; from: FileAccess }
+  | { kind: 'dropTools'; agent: string; agentName: string; tools: string[] };
+
 export interface Note {
   level: Level;
   /** Krok, na którym ląduje kropka. `null`, kiedy uwaga dotyczy całego pliku. */
   stepId: string | null;
   message: string;
+  /** Naprawa jednym kliknięciem, o ile Loadout wie, co dokładnie przestawić. */
+  fix?: Fix;
 }
 
 /** Pozycja kafelka. Zapisywana zawsze jako całkowita wielokrotność [`GRID`]. */
@@ -144,8 +155,33 @@ export interface CheckpointStep {
   at: Point;
 }
 
-/** Dwa rodzaje kafelka. To jest cała lista i ma taka zostać (D6, TASK.md rozstrzygnięcie 1). */
-export type Step = AgentStep | CheckpointStep;
+/** Krok, który uruchamia polecenie i **idzie dalej, nie czekając na jego koniec**.
+ *
+ * 2026-08-23, prośba właściciela wprost („uruchom i zostaw"), po jego biegu na `urc-monorepo`.
+ * Zderzają się tam dwie POPRAWNE reguły: proces poboczny nie ma prawa przeżyć swojego kroku
+ * (niezmiennik 6), a sprawdzenie żywej aplikacji wymaga, żeby przeżył. Do tego dnia jedynym
+ * kafelkiem, który cokolwiek uruchamiał, był „sprawdź" — a ten CZEKA na koniec komendy, więc
+ * `npm run dev` wisiał w nim do limitu i meldował porażkę. Kafelek agenta nie jest tu odpowiedzią
+ * z tego samego powodu: agent, któremu każe się odpalić serwer, siedzi w nim całą swoją turę.
+ *
+ * D6 („nie powtarzamy funkcji vendorów") tego nie dotyczy: żaden vendor nie ma czegoś takiego.
+ * Właścicielem procesu jest tu Loadout — on go podnosi i on go ubija na koniec biegu.
+ */
+export interface ServeStep {
+  kind: 'serve';
+  id: string;
+  name: string;
+  /** Wiersz powłoki, jedna linia. Pusty znaczy „jeszcze niewypełniony" i bieg wtedy odmówi. */
+  command: string;
+  folder: Folder;
+  at: Point;
+}
+
+/** Trzy rodzaje kafelka, które edytor umie POSTAWIĆ.
+ *
+ * Czwarty rodzaj — `check` — przychodzi wyłącznie z zaimportowanych plików: płótno go rysuje
+ * (`canvas.tsx`), ale nie ma przycisku, który by go stawiał, więc nie ma go w tej unii. */
+export type Step = AgentStep | CheckpointStep | ServeStep;
 
 export interface WorkflowFile {
   format: 1;
@@ -209,6 +245,14 @@ export interface WorkflowState {
   /** `Reset` przy jednym wierszu: kasuje jeden klucz patcha i tylko jeden. */
   resetRow: (stepId: string, field: OverridableField) => void;
   chooseSkills: (stepId: string, choice: SkillChoice) => void;
+  /** Wykonuje naprawę z uwagi i odświeża listę uwag.
+   *
+   * 2026-08-22 — TO JEST CAŁY AUTO-FIX. Dwa warianty trafiają w dwa różne miejsca i dlatego
+   * `Fix` jest unią, a nie jednym kształtem: dial jest nadpisaniem KROKU (naprawa dotyczy tego
+   * kafelka i nie rusza tej samej roli w pięciu innych workflow), a lista narzędzi należy do
+   * AGENTA. Biblioteka przychodzi argumentem, tą samą drogą co przy `editStep`: magazyn
+   * dokumentu jej nie trzyma i trzymać nie powinien. */
+  applyFix: (fix: Fix, agents: readonly Agent[]) => Promise<void>;
 }
 
 /** Ile ciszy po ostatniej zmianie czekamy z autosave'em [T3 §9, „MVP ships" punkt 6].
@@ -333,6 +377,39 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
 
     resetRow: (stepId: string, field: OverridableField) => {
       get().commit(withAgentStep(get().document, stepId, (step) => withoutOverride(step, field)));
+    },
+
+    applyFix: async (fix: Fix, agents: readonly Agent[]) => {
+      if (fix.kind === 'widenFileAccess') {
+        const step = get().document.steps.find((one) => one.id === fix.step);
+        const agent =
+          step?.kind === 'agent' ? agents.find((one) => one.id === step.agent) : undefined;
+        /* Krok albo agent zniknął między policzeniem uwagi a kliknięciem — naprawa milknie,
+         * bo nie ma czego przestawić. Następny `recheck` powie prawdę o nowym stanie. */
+        if (agent === undefined) return;
+        /* WARTOŚĆ EFEKTYWNA, nie patch: różnicę wobec agenta liczy `applyPanelEdit`, więc dial
+         * równy temu, co agent ma sam, kasuje nadpisanie zamiast zapisywać je drugi raz. */
+        get().editStep(fix.step, agent, { fileAccess: fix.to });
+        await get().recheck();
+        return;
+      }
+
+      const agent = agents.find((one) => one.id === fix.agent);
+      if (agent === undefined) return;
+      const tools =
+        agent.tools === 'everything'
+          ? 'everything'
+          : { only: agent.tools.only.filter((name) => !fix.tools.includes(name)) };
+      /* JEDYNA droga tego magazynu do pliku agenta (`WorkflowIo.saveAgent`, nagłówek pliku).
+       * Odmowa zapisu jedzie tą samą ścieżką co odmowa zapisu dokumentu: zdanie na ekranie,
+       * plik nietknięty. */
+      try {
+        await io.saveAgent({ ...agent, tools });
+      } catch (error: unknown) {
+        set({ couldNotSave: why(error, COULD_NOT_SAVE) });
+        return;
+      }
+      await get().recheck();
     },
 
     chooseSkills: (stepId: string, choice: SkillChoice) => {

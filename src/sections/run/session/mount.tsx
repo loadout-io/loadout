@@ -33,6 +33,7 @@ import { useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
 
 import { useRun } from '../../../state/run';
+import { runStepAgain } from '../rail/again';
 import type { Step } from '../../../state/run';
 import { runFeed } from '../feed/live';
 import type { FeedView } from '../feed/model';
@@ -46,6 +47,8 @@ import { Session } from './session';
 export interface AgentScreenProps {
   /** Kafelki listy agentów — jedno źródło nazwy, roli, koloru i stanu (niezmiennik 13). */
   readonly cards: readonly RailCard[];
+  /** Zdanie dla czlowieka po powtorzeniu kroku. Brak propsu = ten ekran nie umie go pokazac. */
+  readonly onSaid?: (text: string) => void;
 }
 
 /* Ta sama migawka dla okna i dla renderu serwerowego. Model nie ma stanu „po stronie serwera":
@@ -76,7 +79,7 @@ function stepsOf(steps: readonly Step[], agent: string): readonly StepBrief[] {
  * zakresu ekran cudzego agenta gaśnie sam. Identyfikator zostaje zapamiętany, żeby powrót do
  * tamtego folderu wrócił do tego samego agenta — sesji się nie traci.
  */
-export function AgentScreen({ cards }: AgentScreenProps): ReactElement | null {
+export function AgentScreen({ cards, onSaid }: AgentScreenProps): ReactElement | null {
   const opened = useSyncExternalStore(subscribeToOpenAgent, openedAgent, openedAgent);
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
   const run = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
@@ -95,5 +98,23 @@ export function AgentScreen({ cards }: AgentScreenProps): ReactElement | null {
     },
   );
 
-  return <Session card={card} sections={sections} onBack={closeAgent} onToggle={runFeed.toggle} />;
+  /* Powtórzenie dostaje wyłącznie krok, który JEST w grafie: pod-agent rozpuszczony w trakcie
+   * biegu nie ma czego powtórzyć, więc jego ekran nie dostaje przycisku. */
+  const step = card.stepId;
+
+  return (
+    <Session
+      card={card}
+      sections={sections}
+      onBack={closeAgent}
+      onToggle={runFeed.toggle}
+      {...(step === null || step === undefined || onSaid === undefined
+        ? {}
+        : {
+            onRunAgain: () => {
+              runStepAgain(step, onSaid ?? ((): void => undefined));
+            },
+          })}
+    />
+  );
 }

@@ -844,12 +844,15 @@ impl Bench {
             project: self.project.path(),
             store: &store,
             drivers: recording_drivers(Arc::clone(&handed)),
+            processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
             control: RunControl::new(),
         };
         let request = RunRequest {
             workflow: path,
             how_many_at_once: 2,
             task: None,
+            only: None,
+            handoffs_from: None,
         };
 
         let (sink, source) = line_channel(QUEUE_CAP);

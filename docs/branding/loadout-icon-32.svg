@@ -1,36 +1,44 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <!-- RYSUNEK NA 32 px (i na 16@2x). To NIE jest rysunek pelny przeskalowany.
 
-       Co sie zmienia i dlaczego:
-         * KRAWEDZIE GRUBSZE: 71 zamiast 44. Przy 32 px krawedz 44 mierzy 1,4 piksela i cztery
-           takie zlewaja sie w plame.
-         * WEZLY JEDNA BARWA (#dfdcff), bez gradientu. Gradient na wezle o 2,8 piksela to jeden
-           piksel szarosci, ktory tylko zamula ksztalt.
-         * BEZ SHEENU I BEZ KRAWEDZI WEWNETRZNEJ: obie operuja na 0,1 piksela.
-         * TEMAT WIEKSZY: 79% szerokosci plotna przy 10% marginesu, bo im mniejsza ikona, tym
-           mniej wolno jej marnowac na puste pole.
+       Co sie zmienia wzgledem pelnego i dlaczego:
+         * KRAWEDZIE GRUBSZE: 66 zamiast 56. Przy 32 px krawedz 56 mierzy 1,75 piksela
+           i cztery takie zlewaja sie w plame.
+         * TEMAT JEDNA BARWA (#dfd8ff), bez gradientu. Modelowanie wezla o 5,3 piksela
+           srednicy to jeden piksel szarosci, ktory tylko zamula ksztalt.
+         * BEZ SHEENU, BEZ CIENIA DOLNEGO, BEZ POSWIATY, BEZ KRAWEDZI WEWNETRZNEJ: wszystkie
+           cztery operuja tu na dziesiatych czesciach piksela.
+         * ZNAK MNIEJSZY, NIE WIEKSZY: 74% szerokosci plotna wobec 79% w rysunku pelnym.
+           Odruch "mniejsza ikona, wiecej znaku" jest tu zly i zostal zmierzony 2026-08-22:
+           przy wezle o promieniu 100 kropka mierzy 6,3 px na kafli 32 px, czyli piata czesc
+           jego szerokosci, dotyka krawedzi i romb zamyka sie w plame. Margines jest przy tym
+           rozmiarze jedyna rzecza, ktora trzyma ksztalt w ryzach.
 
        TLO JEST DOKLADNIE TO SAMO, co w rysunku pelnym - te same trzy przystanki. Ikona, ktora
-       zmienia barwe razem z rozmiarem, jest w Docku i na pasku menu dwiema roznymi ikonami. -->
+       zmienia barwe razem z rozmiarem, jest w Docku i na pasku menu dwiema roznymi ikonami.
+
+       PROPORCJA ROMBU 580 x 482 to te same 1,20 : 1, co w rysunku pelnym i w `loadout-mark.svg`.
+       Stosunek srednicy wezla do grubosci linii wychodzi 2,5 : 1 - ponizej 2,4 : 1 wezel czyta
+       sie jako zgrubienie linii i caly znak zamyka sie w pierscien. -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="34%" r="80%">
-      <stop offset="0%" stop-color="#4a44c8"/>
-      <stop offset="55%" stop-color="#2a2486"/>
-      <stop offset="100%" stop-color="#171240"/>
+    <radialGradient id="bg" cx="50%" cy="30%" r="88%">
+      <stop offset="0%" stop-color="#6244de"/>
+      <stop offset="52%" stop-color="#4629c9"/>
+      <stop offset="100%" stop-color="#261573"/>
     </radialGradient>
     <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#sq)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
-    <g fill="none" stroke="#bdb6ff" stroke-width="71" stroke-linecap="round">
-      <path d="M204 512 L512 351"/>
-      <path d="M204 512 L512 673"/>
-      <path d="M512 351 L820 512"/>
-      <path d="M512 673 L820 512"/>
+    <g fill="none" stroke="#dfd8ff" stroke-width="66" stroke-linecap="round">
+      <path d="M214 512 L504 271"/>
+      <path d="M214 512 L504 753"/>
+      <path d="M504 271 L794 512"/>
+      <path d="M504 753 L794 512"/>
     </g>
-    <circle cx="204" cy="512" r="90" fill="#dfdcff"/>
-    <circle cx="512" cy="351" r="90" fill="#dfdcff"/>
-    <circle cx="512" cy="673" r="90" fill="#dfdcff"/>
-    <circle cx="820" cy="512" r="99" fill="#dfdcff"/>
+    <circle cx="214" cy="512" r="84" fill="#dfd8ff"/>
+    <circle cx="504" cy="271" r="84" fill="#dfd8ff"/>
+    <circle cx="504" cy="753" r="84" fill="#dfd8ff"/>
+    <circle cx="794" cy="512" r="92" fill="#dfd8ff"/>
   </g>
 </svg>

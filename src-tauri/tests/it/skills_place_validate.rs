@@ -265,3 +265,57 @@ fn a_refused_skill_leaves_neither_destination_behind() {
         }
     }
 }
+
+/// 2026-08-22 — REGUŁA WYDAWNICZA NIE MA PRAWA WYWRACAĆ BIEGU.
+///
+/// Bieg właściciela stanął na zdaniu „its SKILL.md could not be read as a skill" dla pliku,
+/// który jest całkowicie poprawną umiejętnością Claude Code — miał tylko `user-invocable: false`
+/// w nagłówku. Krok pytał `validate_strict`, a ta odpowiada na pytanie „czy wolno nam to
+/// ZAPISAĆ", nie „czy da się tego UŻYĆ". W bibliotece właściciela dwanaście z czternastu
+/// zaimportowanych umiejętności niosło takie pole, więc każda wywracała bieg przy pierwszym
+/// sięgnięciu po nią.
+#[test]
+fn a_vendor_field_does_not_stop_the_run_but_still_stops_a_publish() {
+    let with_a_vendor_field = doc(&[
+        ("name", "design-system-reference"),
+        ("description", DESCRIPTION),
+        ("user-invocable", "false"),
+    ]);
+
+    assert_eq!(
+        place::validate_usable("design-system-reference", &with_a_vendor_field),
+        Ok(()),
+        "an unknown key is not an error when we are READING somebody else's file (invariant 5); \
+         the import copies SKILL.md byte for byte on purpose, so refusing here made the two \
+         halves of the product disagree about the same file"
+    );
+    assert!(
+        place::validate_strict("design-system-reference", &with_a_vendor_field).is_err(),
+        "and the publishing rule stays exactly as strict: what Loadout writes itself carries \
+         spec fields only"
+    );
+}
+
+/// Czego „da się użyć" nie przepuszcza — bo inaczej byłoby zgodą na wszystko.
+#[test]
+fn a_file_that_is_not_a_skill_is_still_turned_down_at_the_step() {
+    for (cause, document, dir_name) in [
+        ("no description at all", doc(&[("name", "pdf")]), "pdf"),
+        (
+            "a name that disagrees with its folder",
+            named("totally-different"),
+            "name-mismatch",
+        ),
+        (
+            "the folder Claude Code skips in silence",
+            named("synced"),
+            "synced",
+        ),
+    ] {
+        assert!(
+            place::validate_usable(dir_name, &document).is_err(),
+            "`{cause}` was accepted as usable. Each one of these installs cleanly and then does \
+             not work, which is the failure this whole rule exists to prevent"
+        );
+    }
+}

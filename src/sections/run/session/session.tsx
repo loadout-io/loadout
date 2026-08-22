@@ -41,6 +41,18 @@ export interface SessionProps {
   readonly onBack: () => void;
   /** Rozwinięcie wiersza transkryptu — ten sam handler, co w strumieniu głównym. */
   readonly onToggle: (rowId: number) => void;
+  /**
+   * Powtórzenie tego kroku. Brak propsu znaczy „ten ekran nie umie tego uruchomić" i wtedy
+   * przycisku nie ma wcale (niezmiennik 16).
+   *
+   * 2026-08-23 — kontrolka stoi TUTAJ, a nie na kafelku w liście agentów, i to nie jest wybór
+   * estetyczny: kafelek ma cztery wiersze tekstu i sześć pól, a te dwie liczby są mierzone
+   * (`rail/card.test.ts`, `rail-shows-agents.test.tsx`) i wynikają z sufitu gęstości
+   * z `docs/ARCHITECTURE.md` §7. Piąty napis w wierszu listy łamie układ przy czwartym agencie.
+   * Ekran otwartego agenta jest zresztą właściwszym miejscem: człowiek klika „powtórz" wtedy,
+   * gdy patrzy na to, co ten krok zrobił.
+   */
+  readonly onRunAgain?: () => void;
 }
 
 /** `button-quiet` z DESIGN §6, ta sama fraza co w strumieniu (`feed/feed.tsx`). */
@@ -84,7 +96,13 @@ function Facts({ section }: { section: Section }): ReactElement {
   );
 }
 
-export function Session({ card, sections, onBack, onToggle }: SessionProps): ReactElement {
+export function Session({
+  card,
+  sections,
+  onBack,
+  onToggle,
+  onRunAgain,
+}: SessionProps): ReactElement {
   return (
     /* `fixed inset-0`, bo ten ekran ZAKRYWA widok pracy, zamiast go przestawiać: bieg pod nim
      * idzie dalej, strumień dalej przyjmuje linie, a powrót nie kosztuje ani jednego odczytu.
@@ -98,6 +116,14 @@ export function Session({ card, sections, onBack, onToggle }: SessionProps): Rea
         <button type="button" aria-label="Back to the run" onClick={onBack} className={QUIET}>
           ←
         </button>
+
+        {/* Napis mówi, CO SIĘ STANIE, i mówi o KROKU: powtarza się kafelek grafu, nie rola,
+            która bywa w kilku miejscach naraz. */}
+        {onRunAgain === undefined ? null : (
+          <button type="button" data-run-again onClick={onRunAgain} className={QUIET}>
+            Run this step again
+          </button>
+        )}
 
         {/* Kwadrat tożsamości — ta sama mapa agent→kolor, z której żyje kafelek i podpis
             w strumieniu (`rail/colour.ts`). `aria-hidden`, bo to nazwa jeszcze raz, skrócona

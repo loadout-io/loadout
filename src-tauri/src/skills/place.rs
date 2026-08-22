@@ -197,7 +197,11 @@ impl StepSkills {
             let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
                 return Err(refuse(name, Why::Unusable));
             };
-            if validate_strict(name, &read_doc(&text)).is_err() {
+            // PYTAMY „CZY TO JEST UMIEJĘTNOŚĆ", NIE „CZY TRZYMA SIĘ SPECYFIKACJI". Powód
+            // w całości stoi przy [`validate_usable`]: reguła wydawnicza w tym miejscu wywracała
+            // bieg na pliku, który jest poprawną umiejętnością Claude Code i różni się od
+            // specyfikacji jednym polem w nagłówku (niezmiennik 5).
+            if validate_usable(name, &read_doc(&text)).is_err() {
                 return Err(refuse(name, Why::Unusable));
             }
             dirs.push(dir);
@@ -413,24 +417,86 @@ pub fn destinations(scope: Scope, home: &Path, project: Option<&Path>) -> [PathB
 pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>> {
     /// Limity ze specyfikacji [T5 §2.3]. Stoją tutaj, przy jedynej funkcji, która ich używa;
     /// druga kopia „dla podglądu w UI" jest tym, jak jeden z nich zostaje na starej wartości.
-    const NAME_MAX: usize = 64;
     const DESCRIPTION_MAX: usize = 1024;
     const COMPATIBILITY_MAX: usize = 500;
+
+    let mut said = validate_usable(dir_name, doc).err().unwrap_or_default();
+
+    if field(doc, "description").is_some_and(|value| value.chars().count() > DESCRIPTION_MAX) {
+        said.push(format!(
+            "Skill description must be {DESCRIPTION_MAX} characters or less"
+        ));
+    }
+    if field(doc, "compatibility").is_some_and(|value| value.chars().count() > COMPATIBILITY_MAX) {
+        said.push(format!(
+            "Skill compatibility must be {COMPATIBILITY_MAX} characters or less"
+        ));
+    }
+
+    // Zbiór, nie lista: to samo pole wpisane dwa razy jest jedną przyczyną. Posortowany, bo
+    // komunikat ma być ten sam niezależnie od kolejności pól w pliku, który go wywołał.
+    let unexpected: BTreeSet<&str> = doc
+        .fields
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .filter(|key| !SPEC_FIELDS.contains(key))
+        .collect();
+    if !unexpected.is_empty() {
+        let named: Vec<&str> = unexpected.into_iter().collect();
+        said.push(format!(
+            "Unexpected fields in frontmatter: {}. Only [{}] are allowed.",
+            named.join(", "),
+            allowed_list()
+        ));
+    }
+
+    if said.is_empty() { Ok(()) } else { Err(said) }
+}
+
+/// Wartość pola front-mattera, o ile w ogóle coś niesie.
+///
+/// Puste i samo z białych znaków znaczy „nie ma go": pole `description:` bez treści jest tym
+/// samym brakiem, co pole niewpisane wcale, i naprawia się je tym samym ruchem.
+fn field<'a>(doc: &'a SkillDoc, key: &str) -> Option<&'a str> {
+    doc.fields
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// Czy ten plik **jest umiejętnością** — pytanie węższe niż „czy trzyma się specyfikacji".
+///
+/// 2026-08-22 — TA FUNKCJA POWSTAŁA Z ODMOWY, KTÓREJ NIKT NIE ROZUMIAŁ. Bieg właściciela stanął
+/// na zdaniu „its SKILL.md could not be read as a skill" dla pliku, który był całkowicie
+/// poprawną umiejętnością Claude Code — miał tylko w nagłówku `user-invocable: false`, czyli
+/// pole spoza specyfikacji `agentskills`. Krok pytał [`validate_strict`], a ta reguła jest
+/// regułą **wydawniczą**: mówi, co Loadout wolno ZAPISAĆ, nie co wolno mu PRZECZYTAĆ.
+///
+/// Skala była na to jednoznaczna: w bibliotece właściciela **dwanaście z czternastu**
+/// zaimportowanych umiejętności niosło takie pole (`argument-hint`, `when_to_use`, `model`,
+/// `disable-model-invocation`, `user-invocable`), więc każda z nich wywracała bieg w chwili,
+/// w której jakiś agent po nią sięgnął. Import kopiuje `SKILL.md` bajt w bajt z rozmysłem
+/// (`import::apply`: „import jest migawką"), więc obie połowy produktu były wewnętrznie
+/// spójne i sprzeczne ze sobą.
+///
+/// Niezmiennik 5 rozstrzyga to wprost i [`read_doc`] powtarza to w swoim nagłówku: **nieznany
+/// klucz nie jest błędem**. Zostaje więc to, bez czego pliku naprawdę nie da się użyć: brak
+/// nazwy albo opisu, nazwa niezgodna z katalogiem (umiejętność miałaby wtedy dwie nazwy,
+/// zależnie od tego, kto pyta) i katalog zarezerwowany, który Claude Code pomija w ciszy.
+/// Limity długości i lista dozwolonych pól zostają przy [`validate_strict`], bo pilnują tego,
+/// co piszemy sami — i tam nadal obowiązują co do znaku.
+pub fn validate_usable(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>> {
+    /// Limit ze specyfikacji [T5 §2.3].
+    const NAME_MAX: usize = 64;
 
     /// Słowa zastrzeżone w `name`. Nie ma ich w specyfikacji agentskills.io, są w dokumentacji
     /// platformy Anthropic — i kosztują jedno porównanie, więc egzekwujemy [T5 §2.3].
     const RESERVED_WORDS: [&str; 2] = ["anthropic", "claude"];
 
     let mut said = Vec::new();
-    let field = |key: &str| {
-        doc.fields
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
-            .filter(|value| !value.trim().is_empty())
-    };
 
-    match field("name") {
+    match field(doc, "name") {
         // Nazwy nie ma wcale — reszta reguł o nazwie nie ma o czym mówić, a jedna przyczyna
         // to jedno zdanie (nie osiem zdań o jednym brakującym polu).
         None => said.push("Missing required field in frontmatter: name".to_owned()),
@@ -467,18 +533,8 @@ pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>
         }
     }
 
-    if field("description").is_none() {
+    if field(doc, "description").is_none() {
         said.push("Missing required field in frontmatter: description".to_owned());
-    }
-    if field("description").is_some_and(|value| value.chars().count() > DESCRIPTION_MAX) {
-        said.push(format!(
-            "Skill description must be {DESCRIPTION_MAX} characters or less"
-        ));
-    }
-    if field("compatibility").is_some_and(|value| value.chars().count() > COMPATIBILITY_MAX) {
-        said.push(format!(
-            "Skill compatibility must be {COMPATIBILITY_MAX} characters or less"
-        ));
     }
 
     // Umiejętność napisana w folderze o tej nazwie jest poprawna, zainstalowana i niewidoczna
@@ -488,23 +544,6 @@ pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>
         said.push(format!(
             "Directory name '{dir_name}' is reserved: Claude Code skips a skill written in a \
              folder called '{RESERVED_DIR_NAME}'"
-        ));
-    }
-
-    // Zbiór, nie lista: to samo pole wpisane dwa razy jest jedną przyczyną. Posortowany, bo
-    // komunikat ma być ten sam niezależnie od kolejności pól w pliku, który go wywołał.
-    let unexpected: BTreeSet<&str> = doc
-        .fields
-        .iter()
-        .map(|(key, _)| key.as_str())
-        .filter(|key| !SPEC_FIELDS.contains(key))
-        .collect();
-    if !unexpected.is_empty() {
-        let named: Vec<&str> = unexpected.into_iter().collect();
-        said.push(format!(
-            "Unexpected fields in frontmatter: {}. Only [{}] are allowed.",
-            named.join(", "),
-            allowed_list()
         ));
     }
 

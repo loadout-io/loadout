@@ -738,12 +738,15 @@ async fn workflow_trigger_and_ask_leave_both_vendor_streams_and_rebuild_exactly(
         project: workspace.path(),
         store: &store,
         drivers,
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 1,
         task: Some(PRIVATE_TASK.to_owned()),
+        only: None,
+        handoffs_from: None,
     };
     let reports = run_product_doors(&deps, &request, home.path()).await?;
     assert_product_evidence(&reports)?;
@@ -1070,6 +1073,7 @@ async fn poisoned_evidence_turns_an_apparent_success_into_a_failed_product_run()
             started,
             FakeProofs::default(),
         ),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let (lines, _source) = line_channel(QUEUE_CAP);
@@ -1121,6 +1125,7 @@ async fn an_actual_dead_group_proof_is_persisted_on_the_cancelled_product_step()
             Arc::clone(&started),
             FakeProofs::default(),
         ),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: control.clone(),
     };
     let (lines, _source) = line_channel(QUEUE_CAP);
@@ -1168,6 +1173,7 @@ async fn an_alive_cancel_proof_keeps_the_handle_owned_until_a_retry_proves_dead(
             Arc::clone(&started),
             proofs.clone(),
         ),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: control.clone(),
     };
     let (lines, _source) = line_channel(QUEUE_CAP);

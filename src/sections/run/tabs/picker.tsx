@@ -46,7 +46,7 @@ export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProp
     <div
       role="dialog"
       aria-label={'Close ' + pending.name}
-      className="flex flex-col gap-3 rounded-md border border-line bg-panel p-4"
+      className="flex flex-col gap-3 rounded-md border border-line bg-overlay p-4"
     >
       <p data-close-confirm className="text-body text-ink">
         {question(pending)}

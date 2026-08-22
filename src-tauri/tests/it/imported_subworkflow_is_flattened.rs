@@ -26,7 +26,9 @@ fn subworkflow_is_flattened_before_save() -> Result<(), Box<dyn std::error::Erro
     assert_ne!(first.id, second.id);
     let first_step = match &first.steps[0] {
         Step::Checkpoint(step) => step,
-        Step::Agent(_) | Step::Check(_) => return Err("the imported step changed kind".into()),
+        Step::Agent(_) | Step::Check(_) | Step::Serve(_) => {
+            return Err("the imported step changed kind".into());
+        }
     };
     assert_eq!(first_step.id, "left.ask");
     assert_eq!(first.links[0].from, "outside");

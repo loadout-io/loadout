@@ -21,8 +21,19 @@ import { line } from '../feed/fixtures/lines';
 import type { AgentInRun, AgentStatus } from './card';
 import { railCard } from './card';
 
-/** Komplet kluczy kafelka. Literał, nie import: import z modułu sprawdzałby sam siebie. */
-const KEYS = ['id', 'name', 'role', 'say', 'square', 'status'];
+/** Komplet kluczy kafelka. Literał, nie import: import z modułu sprawdzałby sam siebie.
+ *
+ * 2026-08-23 — DOSZEDŁ `stepId` I TO NIE JEST ROZLUŹNIENIE TEJ REGUŁY. Sufit z `ARCHITECTURE`
+ * §7 mówi o SLOTACH TEKSTU na kafelku, a nie o liczbie pól w strukturze; liczba pól była tylko
+ * jego tanim przybliżeniem, dopóki każde pole coś rysowało. `stepId` nie rysuje nic — jest
+ * kluczem kafelka z pliku workflow, po którym ekran otwartego agenta powtarza ten krok
+ * (`rail/again.ts`), i nie ma jak wyciec na listę.
+ *
+ * Regułę, o którą tu naprawdę chodzi, pilnuje dalej i bez zmian kryterium obok
+ * (`rail-shows-agents.test.tsx`): kafelek pokazuje cztery wiersze tekstu i ani jednego więcej,
+ * mierzone na markupie. Gdyby ktoś dołożył piąty napis, tamto padnie — i to ono jest tu
+ * wyrocznią, nie ta lista. */
+const KEYS = ['id', 'name', 'role', 'say', 'square', 'status', 'stepId'];
 
 const A = 'Forge';
 
@@ -68,7 +79,7 @@ const SCENES: readonly (readonly [AgentStatus, readonly FeedLine[]])[] = [
 ];
 
 describe('the agent card carries four slots of text and not one more', () => {
-  it('has exactly six fields in every one of the six states an agent can be in', () => {
+  it('carries the same fields in every one of the six states an agent can be in', () => {
     for (const [status, lines] of SCENES) {
       const card = railCard(agentWith(status, lines));
 
@@ -76,8 +87,9 @@ describe('the agent card carries four slots of text and not one more', () => {
         Object.keys(card).sort(),
         'the full sorted key set, compared with a literal, for the state "' +
           status +
-          '". A weaker check on one field lets a fifth slot in — a metadata row under the ' +
-          'state looks fine on one agent and breaks the layout at four',
+          '". A weaker check on one field lets a fifth TEXT slot in — a metadata row under ' +
+          'the state looks fine on one agent and breaks the layout at four. The rendered rule ' +
+          'is measured next door, on the markup; this list only keeps the shape honest',
       ).toEqual(KEYS);
     }
   });

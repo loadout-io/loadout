@@ -38,6 +38,7 @@ import type { Agent } from '../../state/agents';
 import type { WorkflowFile } from '../../state/workflows';
 import { useSectionStore } from '../../ui/shell/section-store';
 import { why } from '../../ipc/why';
+import { healed } from './canvas/map';
 import { WorkflowEditor } from './editor';
 
 /** Magazyn listy workflow — dokładnie ten, który oddaje `createWorkflowListStore`. */
@@ -211,7 +212,12 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
                 );
                 return;
               }
-              setOpen({ path, document });
+              /* LECZENIE PRZY OTWARCIU, tą samą drogą i z tego samego powodu, co straż wyżej:
+               * plik na dysku bywa poprawiony ręcznie, zmergowany gitem albo zapisany przez
+               * build sprzed naprawy z 2026-08-22 — a wtedy niesie strzałkę w krok, którego
+               * w nim nie ma. Bez tej linii uwaga o niej wisi na ekranie, dopóki człowiek
+               * czegoś nie skasuje, choć to nie on ją narysował. */
+              setOpen({ path, document: healed(document) });
             })
             .catch((error: unknown) => {
               setSaid(why(error, 'Loadout could not open ' + path + '.'));

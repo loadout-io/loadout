@@ -75,6 +75,7 @@ function markup(folder: Folder): string {
       onEdit={noop}
       onEditStep={noop}
       onEditCheckpoint={noop}
+      onEditServe={noop}
       onReset={noop}
       onChooseSkills={noop}
       /* Ten krok nie ma powrotu, więc wiersza liczby rund w nim nie ma — a to jest dokładnie

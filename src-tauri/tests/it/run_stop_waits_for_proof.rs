@@ -167,12 +167,15 @@ async fn stop_comes_back_only_after_the_group_is_proved_dead() -> Result<(), Box
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(script, ready.clone(), Arc::clone(&started)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 1,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Recorder::default();

@@ -197,12 +197,15 @@ async fn four_loose_steps(how_many_at_once: usize) -> Result<Measured, Box<dyn E
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch), STEP),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się

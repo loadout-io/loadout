@@ -67,11 +67,13 @@ import type {
   Folder,
   OverridableField,
   Overrides,
+  ServeStep,
   SkillChoice,
   Step,
 } from '../../../state/workflows';
 import { SKILL_SUBSETTING } from './capabilities';
 import { CheckpointPanel } from './checkpoint-panel';
+import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
 import { SkillsRow } from './skills-row';
 
@@ -82,6 +84,11 @@ export type AgentStepFields = Partial<
 
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
 export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>>;
+
+/** Oba pola kafelka „uruchom i zostaw" — z tego samego powodu, co wyżej. `folder` tu nie stoi:
+ * ten kafelek podnosi serwer na TYM kodzie, który leży w projekcie, i własna kopia byłaby
+ * serwerem podającym cudzą pracę. */
+export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command'>>;
 
 /* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
  *
@@ -901,6 +908,7 @@ export interface PanelForStepProps {
   onEdit: (agent: Agent, edit: Overrides) => void;
   onEditStep: (fields: AgentStepFields) => void;
   onEditCheckpoint: (fields: CheckpointFields) => void;
+  onEditServe: (fields: ServeFields) => void;
   onReset: (field: OverridableField) => void;
   onChooseSkills: (choice: SkillChoice) => void;
   /**
@@ -936,6 +944,7 @@ export function PanelForStep({
   onEdit,
   onEditStep,
   onEditCheckpoint,
+  onEditServe,
   onReset,
   onChooseSkills,
   wayBack,
@@ -945,6 +954,14 @@ export function PanelForStep({
     return (
       <div data-step-panel className="flex flex-col gap-3">
         <CheckpointPanel step={step} onEditStep={onEditCheckpoint} />
+      </div>
+    );
+  }
+
+  if (step.kind === 'serve') {
+    return (
+      <div data-step-panel className="flex flex-col gap-3">
+        <ServePanel step={step} onEditStep={onEditServe} />
       </div>
     );
   }

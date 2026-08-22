@@ -42,11 +42,10 @@ fn load() -> Result<WorkflowFile, Box<dyn Error>> {
 }
 
 fn id(step: &Step) -> &str {
-    match step {
-        Step::Agent(agent) => &agent.id,
-        Step::Checkpoint(checkpoint) => &checkpoint.id,
-        Step::Check(check) => &check.id,
-    }
+    // 2026-08-23 — jedno miejsce zamiast ramienia na rodzaj: `Step::id()` na bibliotece.
+    // Cztery kopie tej listy w czterech plikach obok znaczyły, że każdy nowy rodzaj kafelka
+    // wywracał kompilację testów harnessu, a nie dokładał ani jednej asercji.
+    step.id()
 }
 
 /// Domknięcie przechodnie strzałek: `reach[a][b]` znaczy „`b` biegnie kiedyś po `a`".

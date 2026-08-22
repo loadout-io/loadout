@@ -88,12 +88,15 @@ async fn a_check_step_runs_without_ever_asking_for_an_agent() -> Result<(), Box<
         project: bench.project.path(),
         store: &store,
         drivers: counting_drivers(Arc::clone(&watch), Arc::clone(&handed_out)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let report = one_run(&deps, &request).await??;

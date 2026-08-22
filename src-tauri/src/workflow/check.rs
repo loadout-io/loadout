@@ -108,6 +108,20 @@ pub struct Note {
     pub level: Level,
     pub step_id: Option<String>,
     pub message: String,
+    /// Naprawa, którą Loadout umie wykonać sam — o ile jest jednoznaczna.
+    ///
+    /// 2026-08-22 — POLE JEST NOWE i niesie cały auto-fix. `None` znaczy „tę naprawę wybiera
+    /// człowiek", i tak zostaje dla wszystkiego, co liczy `check` z samego pliku: kształt grafu
+    /// naprawia się przeciągnięciem strzałki, a nie przyciskiem. Wypełnia je `workflow::roster`,
+    /// który jako jedyny wie, co dokładnie trzeba przestawić.
+    ///
+    /// `skip_serializing_if`: uwaga bez naprawy ma jechać na drut w tym samym kształcie, co
+    /// przed dołożeniem tego pola.
+    /// `Box`, nie wartość wprost: `Note` jedzie w `RunError::Refused`, a `clippy::result_large_err`
+    /// (deny w bramce) mierzy rozmiar wariantu błędu. Naprawa jest tu rzadkością — pole wskaźnika
+    /// kosztuje osiem bajtów zawsze, treść tylko wtedy, gdy naprawa istnieje.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Box<super::roster::Fix>>,
 }
 
 /// Wszystko, co da się powiedzieć o pliku bez uruchamiania go.
@@ -199,10 +213,10 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
-    two_ways_back(&workflow.links, &mut notes);
+    loops_that_cross(&workflow.links, &steps, &position, &forward, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
-    a_check_without_a_proof(&steps, &mut notes);
+    a_command_step_left_empty(&steps, &mut notes);
     conditional_routes(workflow, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
@@ -244,6 +258,7 @@ fn conditional_routes(workflow: &WorkflowFile, notes: &mut Vec<Note>) {
             Step::Agent(step) => step.id == route.from,
             Step::Checkpoint(step) => step.id == route.from,
             Step::Check(step) => step.id == route.from,
+            Step::Serve(step) => step.id == route.from,
         });
         let compatible = matches!(
             (source, &route.when),
@@ -366,6 +381,21 @@ fn facts(step: &Step) -> Facts<'_> {
             command: Some(&check.command),
             proof: Some(&check.proof),
         },
+        /* `proof: None` I TO JEST TREŚĆ, nie przeoczenie. Krok „sprawdź" bez dowodu jest odmową
+         * (niezmiennik 19: kod wyjścia to nie dowód), bo jego zadaniem jest ORZEC. Ten kafelek
+         * niczego nie orzeka — ma coś podnieść i zostawić żywe — a żądanie od niego wzorca
+         * dowodu byłoby polem, którego nie da się sensownie wypełnić. */
+        Step::Serve(serve) => Facts {
+            id: &serve.id,
+            name: &serve.name,
+            copies: 1,
+            folder: Some(&serve.folder),
+            passthrough: None,
+            instructions: None,
+            agent: None,
+            command: Some(&serve.command),
+            proof: None,
+        },
     }
 }
 
@@ -375,6 +405,7 @@ fn problem(step_id: Option<&str>, message: String) -> Note {
         level: Level::Problem,
         step_id: step_id.map(String::from),
         message,
+        fix: None,
     }
 }
 
@@ -384,6 +415,7 @@ fn warning(step_id: Option<&str>, message: String) -> Note {
         level: Level::Warning,
         step_id: step_id.map(String::from),
         message,
+        fix: None,
     }
 }
 
@@ -524,7 +556,7 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
     }
 }
 
-/// Krok „sprawdź", który nie mówi, co uruchomić albo po czym poznać, że to ruszyło.
+/// Kafelek z komendą, którego pola stoją puste — „sprawdź" albo „uruchom i zostaw".
 ///
 /// PROBLEM, NIE OSTRZEŻENIE, i to jest inaczej niż przy [`a_step_without_an_agent`]. Różnica jest
 /// realna: kafelek bez agenta czeka na wybór z listy, którą człowiek zaraz zobaczy, a krok
@@ -542,14 +574,20 @@ fn a_step_without_a_task(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>)
 /// żeby człowiek szukał tego, co widzi, a nie nazwy z pliku (niezmiennik 13). Ani jedno nie
 /// niesie słowa „regex" ani nazwy kodu wyjścia: to zdanie czyta ktoś, kto właśnie dodał kafelek,
 /// a nie ktoś, kto zna nasz schemat (niezmiennik 14).
-fn a_check_without_a_proof(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
+fn a_command_step_left_empty(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
     for step in steps {
         // `Some("")`, nie `None`: krok agenta i kafelek kontrolny komendy nie mają i nie mają
         // mieć, a krok sprawdzający z pustym polem to krok, którego nikt jeszcze nie wypełnił.
-        let (Some(command), Some(proof)) = (step.command, step.proof) else {
-            continue;
-        };
-        if command.trim().is_empty() {
+        //
+        // 2026-08-23 — DWA WARUNKI, NIE JEDNA PARA. Do tego dnia obie połowy stały za wspólnym
+        // `let (Some(command), Some(proof)) = … else continue`, więc kafelek „uruchom i zostaw"
+        // — który komendę ma, a dowodu CELOWO nie ma (`facts`) — wypadał z tej reguły w całości.
+        // Pusty kafelek zapisywał się bez słowa i odmawiał dopiero w środku biegu, po tym jak
+        // człowiek odczekał swoje na krokach przed nim.
+        if step
+            .command
+            .is_some_and(|command| command.trim().is_empty())
+        {
             notes.push(problem(
                 Some(step.id),
                 format!(
@@ -559,7 +597,7 @@ fn a_check_without_a_proof(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                 ),
             ));
         }
-        if proof.trim().is_empty() {
+        if step.proof.is_some_and(|proof| proof.trim().is_empty()) {
             notes.push(problem(
                 Some(step.id),
                 format!(
@@ -573,25 +611,65 @@ fn a_check_without_a_proof(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
     }
 }
 
-/// Więcej niż jeden powrót w jednym pliku.
+/// Dwie pętle, które dzielą choć jeden krok.
 ///
-/// ODMOWA, NIE DOMYSŁ, i to jest granica przyznana wprost. Dwie pętle w jednym grafie mogą być
-/// zagnieżdżone, rozłączne albo przecinać się ciałami — a każdy z tych trzech przypadków znaczy
-/// coś innego dla kolejności rund i dla tego, która runda wychodzi na zewnątrz.
-/// `workflow::unroll` rozwija **jedną** pętlę i mówi o tym w swoim nagłówku; gdyby ta reguła nie
-/// istniała, drugi powrót byłby po cichu ignorowany, a bieg wyglądałby na udany, robiąc coś
-/// innego, niż narysował człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która
-/// mówi, czego jeszcze nie umiemy.
-fn two_ways_back(links: &[Link], notes: &mut Vec<Note>) {
-    if links.iter().filter(|link| link.is_a_way_back()).count() < 2 {
-        return;
+/// ODMOWA, NIE DOMYSŁ, i to jest granica przyznana wprost — tylko że od 2026-08-22 biegnie tam,
+/// gdzie naprawdę leży. Do tego dnia odmawialiśmy KAŻDEGO drugiego powrotu, bo `workflow::unroll`
+/// rozwijał jedną pętlę. Kosztowało to kształt, o który poprosił właściciel i który jest zwykłym
+/// dniem pracy: jeden plan, dwie gałęzie (front i backend), każda ze swoim sprawdzeniem i swoją
+/// poprawką. Te dwie pętle nie mają ze sobą nic wspólnego, rozwijają się niezależnie i odmowa
+/// kazała wyrzucić jedną z gałęzi.
+///
+/// Czego dalej nie umiemy i dlatego odmawiamy: pętli ZAGNIEŻDŻONYCH i PRZECINAJĄCYCH SIĘ. Dla
+/// kroku należącego do dwóch pętli naraz nie wiadomo ani ile razy ma się powtórzyć, ani która
+/// jego runda wychodzi na zewnątrz. Gdyby tej reguły nie było, `unroll` musiałby jedną z pętli
+/// po cichu porzucić, a bieg wyglądałby na udany, robiąc coś innego, niż narysował człowiek.
+/// Cicha zmiana znaczenia grafu jest gorsza od odmowy, która mówi, czego jeszcze nie umiemy.
+fn loops_that_cross(
+    links: &[Link],
+    steps: &[Facts<'_>],
+    position: &BTreeMap<&str, usize>,
+    forward: &[(usize, usize)],
+    notes: &mut Vec<Note>,
+) {
+    // Ciało liczy `workflow::unroll`, ta sama funkcja, która potem rozwija bieg. Druga definicja
+    // słowa „wspólny krok" rozjechałaby się przy pierwszej poprawce, a rozjazd znaczyłby, że ta
+    // reguła wpuszcza plik, którego rozwinięcie nie rozumie.
+    let bodies: Vec<(usize, BTreeSet<usize>)> = links
+        .iter()
+        .filter_map(|link| {
+            link.max_turns?;
+            let judge = *position.get(link.from.as_str())?;
+            let entry = *position.get(link.to.as_str())?;
+            Some((
+                judge,
+                crate::workflow::unroll::body_of(judge, entry, forward),
+            ))
+        })
+        .collect();
+
+    // Krok po nazwie, nie po identyfikatorze: `s_c` nie jest niczym, co użytkownik widzi.
+    let name_of = |judge: usize| steps.get(judge).map_or("a step", |step| step.name);
+
+    for (at, (judge, body)) in bodies.iter().enumerate() {
+        for (earlier, other) in bodies.iter().take(at) {
+            if body.is_disjoint(other) {
+                continue;
+            }
+            // JEDNA uwaga, nie po jednej na parę: człowiek ma tu do zrobienia jedną rzecz —
+            // rozdzielić te pętle — a trzy zdania o tym samym czyta się jak trzy usterki.
+            notes.push(problem(
+                steps.get(*judge).map(|step| step.id),
+                format!(
+                    "\"{}\" and \"{}\" send the work back over the same steps. Loadout runs loops \
+                     side by side, never one inside another. Keep one of them, or move them apart.",
+                    name_of(*judge),
+                    name_of(*earlier)
+                ),
+            ));
+            return;
+        }
     }
-    notes.push(problem(
-        None,
-        "This workflow has more than one way back. Loadout can run one loop at a time, so keep \
-         one and remove the others."
-            .to_owned(),
-    ));
 }
 
 /// Liczba rund powrotu poza zakresem 1–[`MOST_TURNS`].
@@ -1017,16 +1095,23 @@ fn not_connected(first: &str, others: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Granica pętli przyznana wprost: JEDEN powrót na plik.
+    //! Granica pętli przyznana wprost: pętle ROZŁĄCZNE wolno, pętle o wspólnym kroku nie.
     //!
     //! # Dlaczego to jest odmowa, a nie ostrzeżenie
     //!
-    //! `workflow::unroll` rozwija jedną pętlę. Dwa powroty w jednym grafie mogą być zagnieżdżone,
-    //! rozłączne albo przecinać się ciałami, a każdy z tych trzech przypadków znaczy co innego dla
-    //! kolejności rund i dla tego, która runda wychodzi na zewnątrz. Bez tej reguły drugi powrót
-    //! byłby po cichu ignorowany i bieg wyglądałby na udany, robiąc coś innego, niż narysował
-    //! człowiek. Cicha zmiana znaczenia grafu jest gorsza od odmowy, która mówi, czego jeszcze
-    //! nie umiemy.
+    //! `workflow::unroll` rozwija pętle rozłączne — każdy krok należy do najwyżej jednej z nich,
+    //! więc „która to runda" ma jedną odpowiedź. Dla kroku wspólnego dwóm pętlom takiej odpowiedzi
+    //! nie ma: nie wiadomo ani ile razy ma się powtórzyć, ani która jego runda wychodzi na
+    //! zewnątrz. Bez tej reguły `unroll` musiałby jedną z pętli po cichu porzucić i bieg
+    //! wyglądałby na udany, robiąc coś innego, niż narysował człowiek. Cicha zmiana znaczenia
+    //! grafu jest gorsza od odmowy, która mówi, czego jeszcze nie umiemy.
+    //!
+    //! # Co się zmieniło 2026-08-22
+    //!
+    //! Do tego dnia odmawiany był KAŻDY drugi powrót. Kosztowało to kształt, o który poprosił
+    //! właściciel i który jest zwykłym dniem pracy: jeden plan, dwie gałęzie, każda ze swoim
+    //! sprawdzeniem i swoją poprawką. Kryterium `two_loops_side_by_side_are_fine` niżej pilnuje,
+    //! żeby ta odmowa nie wróciła — bez niego regres wygląda dokładnie jak ostrożność.
     //!
     //! # Dlaczego kryterium stoi TUTAJ, a nie w `tests/it/`
     //!
@@ -1077,6 +1162,69 @@ mod tests {
             .collect()
     }
 
+    /// Plik z jednym krokiem — takim, jaki podaje wołający.
+    fn one(only: &Value) -> Result<WorkflowFile, serde_json::Error> {
+        serde_json::from_value(json!({
+            "format": 1,
+            "id": "wf",
+            "name": "Test",
+            "steps": [only.clone()],
+            "links": []
+        }))
+    }
+
+    /* 2026-08-23 — KAFELEK „URUCHOM I ZOSTAW" Z PUSTYM POLEM.
+     *
+     * Do tego dnia obie połowy [`a_command_step_left_empty`] stały za wspólnym
+     * `let (Some(command), Some(proof)) = … else continue`, a ten kafelek dowodu CELOWO nie ma
+     * (`facts`) — więc wypadał z reguły w całości. Pusty zapisywał się bez słowa i odmawiał
+     * dopiero w środku biegu, po tym jak człowiek odczekał swoje na krokach przed nim.
+     *
+     * SŁABĄ WERSJĄ jest sam pierwszy przypadek: przechodzi go implementacja, która żąda od tego
+     * kafelka także DOWODU — czyli pola, którego nie da się na nim sensownie wypełnić i którego
+     * panel nie ma. Rozstrzyga drugi przypadek, w drugą stronę. */
+    #[test]
+    fn a_started_command_left_empty_is_refused_by_name() -> Result<(), serde_json::Error> {
+        let empty = one(&json!({
+            "kind": "serve",
+            "id": "s_serve",
+            "name": "Start the app",
+            "command": "   ",
+            "folder": { "use": "project" }
+        }))?;
+
+        assert_eq!(
+            problems(&empty),
+            vec![
+                "\"Start the app\" does not say what to run, so there would be nothing to start. \
+                 Write it in \"Command to run\" on the step."
+                    .to_owned()
+            ],
+            "an empty tile is one sentence naming the field the person has to fill, and it has to \
+             arrive at Save — not in the middle of a run that already cost twenty minutes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_started_command_is_never_asked_for_a_proof() -> Result<(), serde_json::Error> {
+        let filled = one(&json!({
+            "kind": "serve",
+            "id": "s_serve",
+            "name": "Start the app",
+            "command": "npm run dev",
+            "folder": { "use": "project" }
+        }))?;
+
+        assert!(
+            problems(&filled).is_empty(),
+            "this tile does not judge anything — it starts something and walks on — so there is \
+             no output for a proof to match and no field on its panel to write one in. Got: {:?}",
+            problems(&filled)
+        );
+        Ok(())
+    }
+
     #[test]
     fn one_way_back_is_fine() -> Result<(), serde_json::Error> {
         let one = file(&[
@@ -1095,22 +1243,60 @@ mod tests {
     }
 
     #[test]
-    fn two_ways_back_are_refused_by_name() -> Result<(), serde_json::Error> {
-        let two = file(&[
+    fn two_loops_over_the_same_step_are_refused_by_name() -> Result<(), serde_json::Error> {
+        // `s_b → s_a` powtarza a i b; `s_c → s_b` powtarza b i c. Wspólne jest b.
+        let crossing = file(&[
             json!({ "from": "s_a", "to": "s_b" }),
             json!({ "from": "s_b", "to": "s_c" }),
             json!({ "from": "s_b", "to": "s_a", "max_turns": 3 }),
             json!({ "from": "s_c", "to": "s_b", "max_turns": 2 }),
         ])?;
 
-        let said = problems(&two);
+        let said = problems(&crossing);
 
         assert!(
             said.iter()
-                .any(|one| one.contains("more than one way back")),
+                .any(|one| one.contains("send the work back over the same steps")),
             "the refusal has to say WHAT is wrong and what to do about it. A note about a circle \
              here would mean this rule is not running at all and the criterion is passing over \
              nothing. Got: {said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|one| one.contains("s_c") && one.contains("s_b")),
+            "and it has to name BOTH steps the work goes back from — one name leaves the reader \
+             hunting for the other half of the pair. Got: {said:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_loops_side_by_side_are_fine() -> Result<(), serde_json::Error> {
+        /* Kształt z ekranu właściciela: jeden plan, dwie gałęzie, każda ze swoim sprawdzeniem
+         * i swoją drogą powrotną. Ani jeden krok nie należy do obu pętli. */
+        let branches: WorkflowFile = serde_json::from_value(json!({
+            "format": 1,
+            "id": "wf",
+            "name": "Test",
+            "steps": [
+                step("s_plan"), step("s_front"), step("s_design"),
+                step("s_back"), step("s_checked")
+            ],
+            "links": [
+                { "from": "s_plan", "to": "s_front" },
+                { "from": "s_front", "to": "s_design" },
+                { "from": "s_plan", "to": "s_back" },
+                { "from": "s_back", "to": "s_checked" },
+                { "from": "s_design", "to": "s_front", "max_turns": 3 },
+                { "from": "s_checked", "to": "s_back", "max_turns": 2 }
+            ]
+        }))?;
+
+        assert!(
+            problems(&branches).is_empty(),
+            "two loops that share no step unroll on their own, and refusing them made the owner \
+             throw away one of the two branches. Got: {:?}",
+            problems(&branches)
         );
         Ok(())
     }

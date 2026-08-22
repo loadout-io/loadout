@@ -423,11 +423,7 @@ pub fn tool_surface(policy: Policy, wanted: Option<&[String]>) -> ToolSurface {
     // odmowy: `--tools` zna wyłącznie nazwy, składnia zakresowa należy do `--allowedTools`
     // (powód stoi przy [`tools_for`]). Wpisane w formularzu `Task(*)` nie ma więc żadnego sufitu
     // i wraca odmową, zamiast przejść jako `Task` w przebraniu.
-    let above: Vec<String> = wanted
-        .iter()
-        .filter(|name| !within_reach(policy, name))
-        .cloned()
-        .collect();
+    let above = beyond(policy, wanted);
     if !above.is_empty() {
         return ToolSurface {
             refused: Some(ToolsRefused::AbovePolicy {
@@ -500,6 +496,64 @@ fn bare_name(entry: &str) -> &str {
 /// Czego ta furtka NIE otwiera: `Task`, `Workflow` i pozostałych sześciu ścieżek startu procesu.
 /// Powód stoi przy [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
 const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
+
+/// Zdanie o narzędziach, których ten agent nie dostanie — i o tym, co z tym zrobić.
+///
+/// Dwie naprawy, nie jedna, i to jest cała treść tej funkcji: skreślić narzędzie albo poszerzyć
+/// dostęp do plików. Odmowa nazywająca tylko jedną z nich zostawia połowę ludzi przy instrukcji,
+/// która w ich przypadku nie może zadziałać — a odmowa, która nie nazywa ani narzędzia, ani dialu,
+/// uczy, że lista narzędzi „nie działa".
+#[must_use]
+pub fn no_such_tools(agent: &str, refused: &ToolsRefused) -> String {
+    match refused {
+        ToolsRefused::NothingChosen => format!(
+            "{agent} has no tools left on its list, so it could not read a single file. Pick at \
+             least one tool for it, or set it back to using everything."
+        ),
+        ToolsRefused::AbovePolicy { policy, tools } => {
+            let named = tools.join(", ");
+            format!(
+                "{agent} is set to {} and asks for {named}. Either take {named} off its tool \
+                 list, or give it wider access to files.",
+                on_screen(*policy)
+            )
+        }
+    }
+}
+
+/// Polityka tak, jak brzmi w formularzu agenta.
+///
+/// Bez tego zdanie o odmowie nazywałoby wariant z drutu (`ReadOnly`), a człowiek szukałby w oknie
+/// napisu, którego tam nie ma (niezmiennik 14). Trzy pozycje, te same trzy słowa co na ekranie.
+///
+/// Kotwicą są brzmienia dialu, a nie ta funkcja: `Look only` / `Ask first` / `Work freely` stoją
+/// w `src/sections/agents/agent-form.tsx`, `src/sections/agents/index.tsx` i
+/// `src/sections/workflows/step-panel/panel.tsx`. Kiedy tam się zmienią, TO MIEJSCE jest błędne —
+/// nie odwrotnie, bo tamte trzy człowiek czyta, a tego zdania szuka dopiero po odmowie.
+#[must_use]
+pub const fn on_screen(policy: Policy) -> &'static str {
+    match policy {
+        Policy::ReadOnly => "look only",
+        Policy::EditInFolder => "ask first",
+        Policy::Unrestricted => "work freely",
+    }
+}
+
+/// Czego ta polityka NIE da z listy, o którą poproszono — nazwy w kolejności z listy.
+///
+/// Jedno miejsce z odpowiedzią na pytanie „co jest ponad dialem". Pyta o to sterownik, kiedy
+/// składa `--tools`, i pyta walidator workflow (`workflow::roster`), kiedy chce powiedzieć
+/// człowiekowi PRZY BUDOWANIU, że ten krok odmówi startu. Dwie kopie tego filtra rozjechałyby
+/// się przy pierwszej zmianie sufitu, a rozjazd znaczyłby ekran, który mówi „gotowe" nad
+/// workflow, którego Start odrzuca.
+#[must_use]
+pub fn beyond(policy: Policy, wanted: &[String]) -> Vec<String> {
+    wanted
+        .iter()
+        .filter(|name| !within_reach(policy, name))
+        .cloned()
+        .collect()
+}
 
 /// Czy o to narzędzie wolno poprosić przy tej polityce: sufit [`tools_for`] plus furtka [`WEB`].
 fn within_reach(policy: Policy, name: &str) -> bool {
@@ -942,7 +996,36 @@ impl ClaudeDriver {
         command
             .arg("--permission-mode")
             .arg(permission_flags(spec.policy).0);
-        if let Some(approved) = &surface.approved {
+        /* NARZĘDZIA ZATWIERDZONEGO POŁĄCZENIA IDĄ BEZ PYTANIA (2026-08-22).
+         *
+         * Dial odpowiada na pytanie „co agent może zrobić z PLIKAMI". `mcp__figma__get_design_context`
+         * nie jest czasownikiem plikowym i żadna pozycja dialu go nie obejmuje — o tym, czy wolno
+         * go użyć, człowiek zdecydował, WŁĄCZAJĄC połączenie w imporcie. To jest ta sama zgoda,
+         * tylko wyrażona gdzie indziej, i jedyna, jaka dla serwera narzędziowego istnieje.
+         *
+         * Zmierzone, zanim ta linia powstała: `figma` łączyło się poprawnie, CLI rejestrowało 32
+         * jego narzędzia, a każde wywołanie wracało jako `permission_denied` przy
+         * `--permission-mode dontAsk`. Bieg kosztował 20 minut i padł na kroku, który nie miał
+         * czego sprawdzić.
+         *
+         * WZORZEC ZAKRESOWY NA SERWER, nie lista narzędzi: `mcp__<serwer>` znaczy dla CLI „wszystko
+         * z tego serwera", a konkretnych nazw nie da się tu wypisać, bo poznaje się je dopiero po
+         * połączeniu — argv powstaje wcześniej. Zakres jest przy tym dokładnie tak szeroki, jak
+         * zgoda, której dotyczy: człowiek włączył SERWER, nie pojedyncze jego narzędzie.
+         *
+         * Czego ta linia NIE otwiera: ani jednego czasownika plikowego. `Bash`, `Write` i `Edit`
+         * dalej wybiera wyłącznie dial. */
+        let approved = surface.approved.as_ref().map(|approved| {
+            let mut all = approved.clone();
+            all.extend(
+                self.configuration
+                    .servers
+                    .iter()
+                    .map(|server| format!("mcp__{server}")),
+            );
+            all
+        });
+        if let Some(approved) = &approved {
             command.arg("--allowedTools").arg(approved.join(","));
         }
 

@@ -101,12 +101,15 @@ async fn the_work_lands_on_a_branch_and_an_idle_step_leaves_nothing() -> Result<
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow("reachable", WORKFLOW)?,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

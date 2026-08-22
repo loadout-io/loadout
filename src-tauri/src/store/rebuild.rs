@@ -49,7 +49,10 @@ const RUN_FILE: &str = "run.json";
 const LOGS_DIR: &str = "logs";
 
 /// Pliki przekazań między krokami. Front-matter pisze Loadout, nie agent [T6 §10.2].
-const HANDOFFS_DIR: &str = "handoffs";
+/// `pub(crate)`, bo pyta o tę nazwę także ponowne odpalenie kroku (`commands::run`), które
+/// przenosi przekazania poprzedniego biegu. Druga stała z tym samym napisem rozjechałaby się
+/// przy pierwszej zmianie układu katalogu biegu.
+pub(crate) const HANDOFFS_DIR: &str = "handoffs";
 
 /// Poziom, na którym ląduje surowa linia strumienia. Jeden z trzech dozwolonych przez `CHECK`.
 const LEVEL_RAW: &str = "raw";

@@ -346,6 +346,7 @@ async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Json)>, Bench), B
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(TURN),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     // Limit dwóch naraz jest tu z rozmysłem: gdyby strzałka nie znaczyła „po", nic w tym biegu nie
@@ -354,6 +355,8 @@ async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Json)>, Bench), B
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się

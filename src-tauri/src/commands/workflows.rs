@@ -150,9 +150,51 @@ pub fn delete_workflow_inner(home: &Path, file_name: &str) -> Result<(), io::Err
 ///
 /// `impl Borrow<WorkflowFile>` z tego samego powodu, co przy [`save_workflow_inner`].
 #[must_use]
-pub fn check_workflow_inner(workflow: impl Borrow<WorkflowFile>) -> Vec<Note> {
-    // Przelotka i nic więcej. Drugi walidator, dopisany tutaj „bo front potrzebuje jeszcze
-    // jednej uwagi", byłby drugim miejscem, w którym mieszka odpowiedź na pytanie „co jest nie
-    // tak z tym plikiem", i jedno z dwóch zawsze byłoby nieaktualne (niezmiennik 13).
-    crate::workflow::check::check(workflow.borrow())
+pub fn check_workflow_inner(home: &Path, workflow: impl Borrow<WorkflowFile>) -> Vec<Note> {
+    let file = workflow.borrow();
+    // Przelotka i nic więcej. Drugi walidator reguł o SAMYM PLIKU, dopisany tutaj „bo front
+    // potrzebuje jeszcze jednej uwagi", byłby drugim miejscem, w którym mieszka odpowiedź na
+    // pytanie „co jest nie tak z tym plikiem", i jedno z dwóch zawsze byłoby nieaktualne
+    // (niezmiennik 13).
+    let mut notes = crate::workflow::check::check(file);
+
+    /* DRUGA LISTA, o BIBLIOTECE, i dlatego doklejana tutaj, a nie w `check`.
+     *
+     * 2026-08-22 — powód stoi w całości w nagłówku `workflow::roster`: trzy odmowy pod rząd,
+     * wszystkie po naciśnięciu Start, wszystkie policzalne wcześniej. `check` musi zostać czystą
+     * funkcją nad plikiem, bo woła ją zapis, a plik ma się zapisać także wtedy, gdy ktoś właśnie
+     * skasował agenta. Sklejenie obu list należy więc do komendy okna — jednego miejsca, które
+     * ma i plik, i bibliotekę.
+     *
+     * Biblioteka nie do odczytania NIE ZABIERA uwag o pliku: człowiek dostaje wtedy to, co
+     * dało się policzyć, zamiast pustej listy sugerującej, że wszystko jest w porządku. */
+    let agents = crate::commands::agents::list_agents_inner(home).unwrap_or_default();
+    let connections =
+        crate::connections::runtime::all(&home.join("connections")).unwrap_or_default();
+    let skills = saved_skill_names(home);
+    notes.extend(crate::workflow::roster::check_the_roster(
+        file,
+        &agents,
+        &connections,
+        &skills,
+    ));
+    notes
+}
+
+/// Nazwy katalogów w `~/.loadout/skills` — tyle, ile walidator obsady potrzebuje.
+///
+/// Sama nazwa, bez czytania `SKILL.md`: „czy ta nazwa w ogóle coś znaczy" jest innym pytaniem niż
+/// „czy ten plik jest umiejętnością", a na to drugie odpowiada `skills::place::validate_usable`
+/// w chwili, w której krok po nią sięga.
+fn saved_skill_names(home: &Path) -> Vec<String> {
+    let Ok(listing) = std::fs::read_dir(home.join("skills")) else {
+        return Vec::new();
+    };
+    listing
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            entry.file_type().ok()?.is_dir().then_some(())?;
+            entry.file_name().into_string().ok()
+        })
+        .collect()
 }

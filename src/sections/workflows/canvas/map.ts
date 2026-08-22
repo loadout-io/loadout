@@ -160,7 +160,20 @@ function eachArrowOnce(links: readonly Link[]): Link[] {
 }
 
 export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowFile {
-  const conditions = edges.flatMap((edge) =>
+  /* STRZAŁKA BEZ OBU KOŃCÓW NIE JEDZIE DO PLIKU.
+   *
+   * 2026-08-22 — NAPRAWA ZGŁOSZONA Z EKRANU WŁAŚCICIELA: `"Backend check" points at a step that
+   * is not in this workflow (s_11)`. Krawędzie i kafelki są na płótnie DWOMA stanami Reacta,
+   * a `applyNodeChanges` nie rusza krawędzi — więc kafelek skasowany razem ze swoimi strzałkami
+   * zostawiał je w `arrows` i ten mapper spokojnie zapisywał je do pliku. Walidator Rusta
+   * (`check.rs`) meldował potem uwagę o kroku, którego człowiek nigdy nie widział.
+   *
+   * Zwężenie stoi TUTAJ, a nie tylko w miejscu kasowania, bo mapper jest jedyną drogą z płótna
+   * do pliku: dopóki filtr jest w nim, żadna przyszła ścieżka kasowania nie ma jak wyprodukować
+   * strzałki celującej w nic. */
+  const standing = new Set(nodes.map((node) => node.id));
+  const real = edges.filter((edge) => standing.has(edge.source) && standing.has(edge.target));
+  const conditions = real.flatMap((edge) =>
     edge.condition === undefined
       ? []
       : [{ from: edge.source, to: edge.target, when: edge.condition }],
@@ -173,7 +186,7 @@ export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdg
      * strzałki wpisałoby do pliku pole, którego tam nie było, i przepisało każdy istniejący
      * workflow przy pierwszym zapisie (T3 §8.2). */
     links: eachArrowOnce(
-      edges.map((edge) =>
+      real.map((edge) =>
         edge.maxTurns === undefined
           ? { from: edge.source, to: edge.target }
           : { from: edge.source, to: edge.target, max_turns: edge.maxTurns },
@@ -181,6 +194,67 @@ export function toFile(prev: WorkflowFile, nodes: CanvasNode[], edges: CanvasEdg
     ),
   };
   if (conditions.length === 0) delete next.linkConditions;
+  else next.linkConditions = conditions;
+  return next;
+}
+
+/** Skasowanie kafelków i strzałek — JEDNYM zapisem, liczonym z pliku.
+ *
+ * 2026-08-22 — NAPRAWA DRUGIEGO ZGŁOSZENIA WŁAŚCICIELA: „usunę kafelek, niby OK, ale po wyjściu
+ * i wejściu w workflow dalej tam jest". Kasowanie klawiszem przechodzi w React Flow przez
+ * `deleteElements`, a ten wysyła DWA zdarzenia — `onNodesChange` i `onEdgesChange` — w jednej
+ * paczce Reacta. Każdy z tamtych dwóch handlerów składał wtedy CAŁY dokument ze swojej świeżej
+ * połowy i cudzej nieświeżej:
+ *
+ *   `onNodesChange` liczył plik z nowych kafelków i STARYCH strzałek → strzałki w nic,
+ *   `onEdgesChange` liczył plik z nowych strzałek i STARYCH kafelków → **kasowany krok wracał**.
+ *
+ * Wygrywał ten drugi, bo szedł jako ostatni, i to jest dokładnie to, co człowiek widział: na
+ * ekranie kafelka nie ma (lokalny stan płótna go stracił), a na dysku leży plik z kafelkiem.
+ * Odświeżenie ekranu wczytywało plik i kafelek wracał.
+ *
+ * Dlatego kasowanie ma odtąd JEDNO wejście (`onDelete` w `canvas.tsx`) i liczy się z `file`,
+ * czyli z dokumentu, a nie z dwóch stanów Reacta, których świeżość zależy od kolejności paczki.
+ * Strzałki wiszące na skasowanym kroku znikają razem z nim — bez tego plik dostawał uwagę
+ * o strzałce celującej w krok, którego nie ma. */
+export function deleteFrom(
+  gone: { steps?: readonly string[]; arrows?: readonly { from: string; to: string }[] },
+  file: WorkflowFile,
+): WorkflowFile {
+  const dead = new Set(gone.steps ?? []);
+  const cut = new Set((gone.arrows ?? []).map((arrow) => `${arrow.from}->${arrow.to}`));
+  return healed({
+    ...file,
+    steps: file.steps.filter((step) => !dead.has(step.id)),
+    links: file.links.filter((link) => !cut.has(`${link.from}->${link.to}`)),
+  });
+}
+
+/** Dokument bez strzałek, których koniec nie istnieje.
+ *
+ * 2026-08-22 — TO LECZY PLIKI, KTÓRE JUŻ LEŻĄ NA DYSKU. Właściciel dostał na ekranie uwagę
+ * `"Backend check" points at a step that is not in this workflow (s_11)`: ślad po kafelku-widmie
+ * z `onConnectEnd`, który dało się skasować, ale strzałka po nim zostawała. Zwężenie w `toFile`
+ * broni przed powstaniem takiego pliku, `toCanvas` nie rysuje takiej strzałki — a ta funkcja
+ * zdejmuje ją z dokumentu, żeby uwaga zniknęła bez proszenia człowieka o edycję pliku ręcznie.
+ *
+ * ODDAJE TEN SAM OBIEKT, kiedy nie ma czego leczyć, i to jest umowa, na której stoi płótno:
+ * porównanie po referencji rozstrzyga, czy cokolwiek się zmieniło (`canvas.tsx`, `changed`).
+ * Nowy obiekt przy każdym otwarciu pliku zapisywałby dokument, którego nikt nie tknął. */
+export function healed(file: WorkflowFile): WorkflowFile {
+  const standing = new Set(file.steps.map((step) => step.id));
+  const stays = (link: { from: string; to: string }): boolean =>
+    standing.has(link.from) && standing.has(link.to);
+
+  const links = file.links.filter(stays);
+  /* Warunek na strzałce, której nie ma, jest wpisem o czymś, czego plik nie zawiera — a to
+   * `check::check_to_run` czyta i pyta o krok, którego nikt nie widzi. */
+  const before = (file as ImportedWorkflow).linkConditions;
+  const conditions = before?.filter(stays);
+  if (links.length === file.links.length && conditions?.length === before?.length) return file;
+
+  const next: ImportedWorkflow = { ...file, links };
+  if (conditions === undefined || conditions.length === 0) delete next.linkConditions;
   else next.linkConditions = conditions;
   return next;
 }
@@ -204,18 +278,28 @@ export function toCanvas(file: WorkflowFile): {
     /* Klucz tylko wtedy, gdy plik go niesie — `exactOptionalPropertyTypes` tego pilnuje i ma
      * rację: krawędź z `maxTurns: undefined` wróciłaby przez `toFile` jako strzałka z pustym
      * polem, a stąd do przepisania każdego workflow przy pierwszym zapisie jest jeden krok. */
-    edges: eachArrowOnce(file.links).map((link) => {
-      const condition = (file as ImportedWorkflow).linkConditions?.find(
-        (candidate) => candidate.from === link.from && candidate.to === link.to,
-      )?.when;
-      return {
-        id: `${link.from}->${link.to}`,
-        source: link.from,
-        target: link.to,
-        ...(link.max_turns === undefined ? {} : { maxTurns: link.max_turns }),
-        ...(condition === undefined ? {} : { condition }),
-      };
-    }),
+    /* STRZAŁKA BEZ OBU KOŃCÓW NIE JEST RYSOWANA. `toCanvas` leczy pliki, które JUŻ leżą na dysku
+     * — poprawione ręcznie, zmergowane gitem albo zapisane przed naprawą z 2026-08-22 — a `toFile`
+     * pilnuje, żeby płótno nigdy takiego pliku nie wyprodukowało. Ta sama para stron i ten sam
+     * powód, co przy `eachArrowOnce` niżej: jedna z nich wystarczyłaby do zieleni testu i zostawiła
+     * drugą połowę awarii. Krawędź celująca w nic wywraca w React Flow rysowanie linii. */
+    edges: eachArrowOnce(file.links)
+      .filter((link) => {
+        const standing = new Set(file.steps.map((step) => step.id));
+        return standing.has(link.from) && standing.has(link.to);
+      })
+      .map((link) => {
+        const condition = (file as ImportedWorkflow).linkConditions?.find(
+          (candidate) => candidate.from === link.from && candidate.to === link.to,
+        )?.when;
+        return {
+          id: `${link.from}->${link.to}`,
+          source: link.from,
+          target: link.to,
+          ...(link.max_turns === undefined ? {} : { maxTurns: link.max_turns }),
+          ...(condition === undefined ? {} : { condition }),
+        };
+      }),
   };
 }
 

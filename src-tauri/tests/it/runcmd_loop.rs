@@ -154,12 +154,15 @@ async fn the_loop_stops_at_the_first_pass() -> Result<(), Box<dyn Error>> {
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let report = one_run(&deps, &request).await??;
@@ -210,12 +213,15 @@ async fn the_work_after_the_loop_never_starts_when_the_tries_run_out() -> Result
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let report = one_run(&deps, &request).await??;

@@ -477,7 +477,9 @@ pub struct AppState {
     ///
     /// W środku siedzi `std::sync::Mutex` i nigdy nie jest trzymany przez `await`
     /// (niezmiennik 8) — powód i kształt przy [`commands::processes::Processes`].
-    started: commands::processes::Processes,
+    /// Rejestr rzeczy, które mają zostać żywe. `Arc`, bo sięga po niego także bieg:
+    /// kafelek „uruchom i zostaw" oddaje mu proces, zamiast trzymać go przy kroku.
+    started: std::sync::Arc<commands::processes::Processes>,
 }
 
 /// Jednorazowe pozwolenie Rusta na odpytanie triggera.
@@ -578,7 +580,7 @@ impl AppState {
             live: Mutex::new(idle),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
-            started: commands::processes::Processes::new(),
+            started: std::sync::Arc::new(commands::processes::Processes::new()),
         }
     }
 
@@ -789,6 +791,7 @@ impl AppState {
     /// katalog musi przyjechać z żądaniem, a nie ze stałej sprzed wyboru.
     fn deps_in<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
         RunDeps {
+            processes: std::sync::Arc::clone(&self.started),
             home: self.home.as_path(),
             project,
             store: &self.store,
@@ -1099,6 +1102,9 @@ fn run_request(
         workflow: home.join(WORKFLOWS_DIR).join(file_name),
         how_many_at_once,
         task,
+        // Zwykły bieg to całe workflow i puste wejście: przekazania powstają w nim samym.
+        only: None,
+        handoffs_from: None,
     })
 }
 
@@ -1165,7 +1171,7 @@ pub fn new_id() -> String {
 /// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
 #[tauri::command]
 pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::ImportPreview, String> {
-    let result = commands::import::scan_setup_inner(&workspace);
+    let result = commands::import::scan_setup_inner(&crate::your_home(), &workspace);
     drop(workspace);
     result.map_err(|error| error.to_string())
 }
@@ -1175,7 +1181,8 @@ pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::Import
 pub fn apply_setup(
     request: commands::import::ApplySetup,
 ) -> Result<crate::import::apply::ImportReceipt, String> {
-    let result = commands::import::apply_setup_inner(&crate::loadout_dir(), &request);
+    let result =
+        commands::import::apply_setup_inner(&crate::loadout_dir(), &crate::your_home(), &request);
     drop(request);
     result.map_err(|error| error.to_string())
 }
@@ -1228,7 +1235,7 @@ pub fn delete_workflow(file_name: &str) -> Result<(), String> {
 #[must_use]
 #[tauri::command]
 pub fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
-    commands::workflows::check_workflow_inner(workflow)
+    commands::workflows::check_workflow_inner(&crate::loadout_dir(), workflow)
 }
 
 /// Adres → pobrana i przejrzana umiejętność.
@@ -1559,6 +1566,42 @@ pub async fn run_workflow_from_window(
         state.project_for(folder).inspect_err(refused)?
     };
     run_workflow_in_project(state, &project, &request, claim, lines).await
+}
+
+/// Powtarza JEDEN krok skończonego biegu — jako nowy bieg, z wejściem tamtego.
+///
+/// 2026-08-23, prośba właściciela: „możemy zrobić restart/re-run danego kroku dowolnego agenta,
+/// tego teraz nie ma". Powód i trzy rozstrzygnięcia stoją w całości przy [`commands::rerun`];
+/// tutaj zostaje sama krawędź: złóż żądanie, powiedz człowiekowi, jeżeli plik zdążył się
+/// zmienić, i puść to tą samą drogą, którą idzie zwykły bieg.
+#[tauri::command]
+pub async fn rerun_step(
+    state: State<'_, AppState>,
+    file_name: &str,
+    step: &str,
+    how_many_at_once: usize,
+    folder: Option<String>,
+    lines: Channel<Vec<Line>>,
+) -> Result<Option<String>, String> {
+    // Projekt PRZED żądaniem: bieg, którego krok powtarzamy, leży w katalogu tego workspace'a,
+    // więc bez niego nie ma gdzie go szukać.
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let again = commands::rerun::again(
+        &crate::loadout_dir(),
+        &project,
+        file_name,
+        step,
+        how_many_at_once,
+    )
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })?;
+    run_workflow_in_project(&state, &project, &again.request, None, pump_into(lines)).await?;
+    // Zdanie o zmienionym pliku wraca WOŁAJĄCEMU, a nie leci w strumień: strumień należy do
+    // biegu, a to jest fakt o tym, co ten bieg w ogóle uruchomił.
+    Ok(again.said)
 }
 
 /// Jedna produkcyjna krawędź wykonania: ręczna bez claimu i triggerowa z trwałym claimem.
@@ -2140,6 +2183,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         retry_trigger,
         review_skill,
         run_agent,
+        rerun_step,
         run_workflow,
         save_agent,
         save_workflow,

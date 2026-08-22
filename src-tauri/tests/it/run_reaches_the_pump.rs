@@ -235,12 +235,15 @@ async fn three_hundred_lines() -> Result<(RunReport, PumpStats, Vec<Json>), Box<
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(LINES),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 1,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // Prawdziwy szew: bieg pisze do `LineSink`, pompa czyta z `LineSource` i wypycha paczki

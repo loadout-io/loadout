@@ -199,6 +199,7 @@ fn sample(kind: LineKind) -> Line {
             turns: 2,
             duration_ms: 6_200,
             cost_usd: Some(0.15),
+            ended: loadout_lib::engine::line::Ended::Well,
         },
     }
 }

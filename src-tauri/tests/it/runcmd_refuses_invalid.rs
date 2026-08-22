@@ -155,12 +155,15 @@ async fn a_circle_is_refused_before_anything_starts() -> Result<(), Box<dyn Erro
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: workflow.clone(),
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let refusal = match one_run(&deps, &request).await? {
@@ -216,12 +219,15 @@ async fn a_warning_alone_does_not_stop_the_run() -> Result<(), Box<dyn Error>> {
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: workflow.clone(),
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // Fikstura ma nieść ostrzeżenie i ANI JEDNEGO problemu — inaczej ten test mówiłby o czymś

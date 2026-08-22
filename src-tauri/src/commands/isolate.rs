@@ -226,6 +226,38 @@ pub fn finish(project: &Path, dest: &Path, branch: &str, message: &str) -> Kept 
     Kept::Nothing
 }
 
+/// Czy w tym drzewie **cokolwiek się wydarzyło** — niezacommitowana zmiana albo commit ponad bazą.
+///
+/// 2026-08-22 — POWSTAŁO DLA PĘTLI, na prośbę właściciela: „jak backend nie ma czego
+/// implementować, to żeby bez sensu się nie odbijać". Sędzia pętli, który uczciwie mówi „nie ma
+/// czego sprawdzać", nie ma dziś jak tego powiedzieć — jedynym wyjściem z pętli jest werdykt
+/// `pass`, więc odbija się tyle razy, ile ma tur, i pada. Kara za uczciwość, płacona prawdziwymi
+/// procesami i prawdziwymi tokenami.
+///
+/// **Pytamy gita, nie agenta**, i to jest cały wybór tej funkcji. Deklaracja „nic nie zmieniłem"
+/// jest tym, co agent powiedział; diff jest tym, co się stało — a na tej różnicy stoi cały ten
+/// produkt (`docs/research/projects/00-SYNTHESIS.md` §2.1). Modelowi nie da się tego ograć.
+///
+/// **Dwa pytania, nie jedno.** Sama `status --porcelain` wystarcza tylko dopóki krok niczego nie
+/// zacommitował — a implementer, który commituje swoją pracę na własną gałąź, zostawia drzewo
+/// czyste i pracę zrobioną. Zmierzone na biegu właściciela: `Front` zacommitował `605fa3e5`
+/// i `status` był po nim pusty.
+///
+/// **Wątpliwość znaczy „wydarzyło się".** Kiedy git nie odpowiada, oddajemy `true`, bo pominięta
+/// weryfikacja jest droższa od jednej niepotrzebnej rundy: pierwsze przepuszcza pracę, której
+/// nikt nie sprawdził, drugie kosztuje minutę.
+#[must_use]
+pub fn touched(project: &Path, dest: &Path) -> bool {
+    if git(dest, &["status", "--porcelain"]).is_ok_and(|said| !said.trim().is_empty()) {
+        return true;
+    }
+    let Ok(base) = git(project, &["rev-parse", "HEAD"]) else {
+        return true;
+    };
+    let range = format!("{}..HEAD", base.trim());
+    git(dest, &["rev-list", "--count", &range]).map_or(true, |said| said.trim() != "0")
+}
+
 /// Kopiuje drzewo projektu do katalogu roboczego kroku — **każdy kształt pliku przeżywa**.
 ///
 /// Trzy reguły i każda ma zmierzony powód:

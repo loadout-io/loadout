@@ -1,4 +1,4 @@
-/* Płótno: React Flow, dwa rodzaje kafelka i cztery przyciski, z których każdy ma handler.
+/* Płótno: React Flow, dwa rodzaje kafelka i pięć przycisków, z których każdy ma handler.
  *
  * Ten plik jest MONTAŻEM, nie logiką: wszystko, co decyduje, mieszka w czystych funkcjach obok
  * (`connect.ts`, `map.ts`, `tidy.ts`, `problems.tsx`) i tam jest sprawdzane. Powód jest
@@ -40,11 +40,10 @@ import './react-flow-tokens.css';
 import type { ReactElement } from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { Agent } from '../../../state/agents';
-import type { Note, Step, WorkflowFile } from '../../../state/workflows';
+import type { Fix, Note, Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
-import { addStep, isValidConnection, onConnect, onConnectEnd } from './connect';
-import type { CanvasNode } from './map';
-import { importedConditionLabel, onNodeDragStop, toCanvas, toFile } from './map';
+import { addLoop, addStep, isValidConnection, onConnect, onConnectEnd } from './connect';
+import { deleteFrom, importedConditionLabel, onNodeDragStop, toCanvas } from './map';
 import { RunBar, focusNote } from './problems';
 import { StepTile } from './tile';
 import { tidyUp } from './tidy';
@@ -136,13 +135,23 @@ function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null 
   );
 }
 
-/* Dwa rodzaje kafelka. Tylko dwa — trzeci wymaga prawdziwej skargi użytkownika, nie hipotezy
- * [T3 §10 ryzyko 6]. Oba rysuje ta sama karta, bo różnica między nimi jest w danych (punkt
- * kontrolny nie ma agenta ani kopii), a nie w kształcie kafelka.
+/* Cztery rodzaje kafelka, jedna karta. Różnica między nimi jest w DANYCH (punkt kontrolny nie
+ * ma agenta ani kopii, „uruchom i zostaw" ma komendę zamiast zadania), a nie w kształcie kafelka
+ * — a `check` przychodzi wyłącznie z zaimportowanych plików i nie ma przycisku, który by go
+ * stawiał, więc rysuje go osobna gałąź wyżej.
+ *
+ * Trzeci rodzaj wymagał prawdziwej skargi użytkownika, nie hipotezy [T3 §10 ryzyko 6] — i taką
+ * dostał: „uruchom i zostaw", 2026-08-23, po biegu, w którym sprawdzenie frontu nie miało jak
+ * podnieść serwera dev.
  *
  * Poza komponentem, bo React Flow przy każdej nowej referencji `nodeTypes` przemontowuje
  * wszystkie kafelki — czyli gubi zaznaczenie i przerywa przeciąganie. */
-const NODE_TYPES = { agent: CanvasTile, checkpoint: CanvasTile, check: CanvasTile };
+const NODE_TYPES = {
+  agent: CanvasTile,
+  checkpoint: CanvasTile,
+  check: CanvasTile,
+  serve: CanvasTile,
+};
 
 export interface WorkflowCanvasProps {
   /** Otwarty dokument. Płótno go nie trzyma — pokazuje. */
@@ -156,6 +165,8 @@ export interface WorkflowCanvasProps {
   onRun: () => void;
   /** Otwiera panel kroku. Panel mieszka w ekranie obok płótna (makieta 536-570). */
   onOpenPanel: (stepId: string) => void;
+  /** Wykonuje naprawę, którą niesie uwaga. Płótno jej nie liczy i nie wie, czego dotyczy. */
+  onApplyFix?: (fix: Fix) => void;
 }
 
 const BUTTON = 'h-8 rounded-sm border border-line bg-raised px-3 text-ui text-ink';
@@ -167,14 +178,6 @@ function pointerAt(event: MouseEvent | TouchEvent): { x: number; y: number } {
 
   const touch = event.changedTouches[0];
   return touch === undefined ? { x: 0, y: 0 } : { x: touch.clientX, y: touch.clientY };
-}
-
-/** Kafelek React Flow → tyle, ile czyta mapper.
- *
- * `selected`, `dragging` i `measured` nie są tu przepisywane: mapper i tak je kasuje, ale
- * najtańszym sposobem, żeby nie dojechały do pliku, jest ich nie podawać. */
-function asCanvasNode(node: StepNode): CanvasNode {
-  return { id: node.id, position: node.position, data: node.data.step };
 }
 
 /** Grot strzałki, z makiety (`<marker id="ar">`, `docs/mockup/index.html:558`).
@@ -250,6 +253,7 @@ function Canvas({
   onChange,
   onRun,
   onOpenPanel,
+  onApplyFix,
 }: WorkflowCanvasProps): ReactElement {
   const { screenToFlowPosition, fitView } = useReactFlow();
   const view = useMemo(() => viewOf(file), [file]);
@@ -270,29 +274,23 @@ function Canvas({
     setArrows(view.arrows);
   }, [view]);
 
-  const tilesChanged = useCallback(
-    (changes: TileChanges) => {
-      const next = applyNodeChanges(changes, tiles);
-      setTiles(next);
-      /* Skasowanie kafelka jest decyzją i musi dojść do pliku. Zaznaczenie, najechanie
-       * i zmierzone wymiary decyzją nie są i plik ich nie zobaczy. */
-      if (changes.some((one) => one.type === 'remove')) {
-        onChange(toFile(file, next.map(asCanvasNode), arrows));
-      }
-    },
-    [tiles, arrows, file, onChange],
-  );
+  /* KASOWANIE NIE WYCHODZI STĄD, i to jest naprawa, nie uproszczenie (2026-08-22).
+   *
+   * Do tego dnia obie te funkcje składały przy `remove` CAŁY dokument — każda ze swojej świeżej
+   * połowy i cudzej nieświeżej, bo React Flow kasuje kafelek razem z jego strzałkami i wysyła
+   * `onNodesChange` oraz `onEdgesChange` w JEDNEJ paczce Reacta. Ta druga wygrywała i wpisywała
+   * do pliku kafelek, którego człowiek właśnie się pozbył: na ekranie znikał, po ponownym
+   * wejściu w workflow wracał. Powód w całości stoi przy `map.ts`, `deleteFrom`.
+   *
+   * Tutaj zostaje wyłącznie widok — płynność przeciągania. Decyzję zapisuje `onDelete`, jednym
+   * wywołaniem, policzonym z dokumentu. */
+  const tilesChanged = useCallback((changes: TileChanges) => {
+    setTiles((now) => applyNodeChanges(changes, now));
+  }, []);
 
-  const arrowsChanged = useCallback(
-    (changes: ArrowChanges) => {
-      const next = applyEdgeChanges(changes, arrows);
-      setArrows(next);
-      if (changes.some((one) => one.type === 'remove')) {
-        onChange(toFile(file, tiles.map(asCanvasNode), next));
-      }
-    },
-    [tiles, arrows, file, onChange],
-  );
+  const arrowsChanged = useCallback((changes: ArrowChanges) => {
+    setArrows((now) => applyEdgeChanges(changes, now));
+  }, []);
 
   /* Zapisuje TYLKO wtedy, kiedy dokument naprawdę się zmienił.
    *
@@ -328,6 +326,56 @@ function Canvas({
     },
     [file, onChange, onOpenPanel],
   );
+
+  /* TRYB „Add loop": dwa kliknięcia zamiast jednego przeciągnięcia przez pół płótna.
+   *
+   * 2026-08-22 — ZGŁOSZENIE WŁAŚCICIELA. Powrót ciągnie się z dolnej kropki sędziego na GÓRNĄ
+   * kropkę kroku, do którego wraca praca — w bok i do góry, obok innych kafelków. Kto minie tę
+   * kropkę, dostawał kafelek-widmo (`connect.ts`, `onConnectEnd`), a po jego skasowaniu uwagę
+   * o strzałce celującej w krok, którego nie ma. Gest przez pół płótna nie może być jedynym
+   * wejściem do funkcji, na której stoi kształt „implementer → sprawdzenie → poprawka".
+   *
+   * Stan jest TRZYCZĘŚCIOWY i każda część odpowiada na inne pytanie: czy tryb trwa, kto już
+   * został wskazany, i co ostatnio odmówiono. Bez trzeciej człowiek klika drugi kafelek, nic
+   * się nie dzieje i nie ma jak zgadnąć dlaczego (niezmiennik 29 — odmowa ma być ZDANIEM
+   * tam, gdzie człowiek ją widzi, a nie wartością zwróconą przez funkcję). */
+  const [pickingLoop, setPickingLoop] = useState(false);
+  const [sendingBack, setSendingBack] = useState<string | null>(null);
+  const [loopSaid, setLoopSaid] = useState<string | null>(null);
+
+  const leaveLoopMode = useCallback(() => {
+    setPickingLoop(false);
+    setSendingBack(null);
+    setLoopSaid(null);
+  }, []);
+
+  const pickForLoop = useCallback(
+    (id: string) => {
+      if (sendingBack === null) {
+        setSendingBack(id);
+        setLoopSaid(null);
+        return;
+      }
+      const made = addLoop(sendingBack, id, file);
+      if (made.refused !== null) {
+        /* Pierwszy wskazany kafelek ZOSTAJE. Odmowa dotyczy pary, więc skasowanie obu wyborów
+         * kazałoby zacząć od początku po każdej pomyłce w drugim kliknięciu. */
+        setLoopSaid(made.refused);
+        return;
+      }
+      onChange(made.file);
+      leaveLoopMode();
+    },
+    [sendingBack, file, onChange, leaveLoopMode],
+  );
+
+  /* Zdanie trybu pętli: co człowiek ma teraz zrobić albo dlaczego się nie da. Nazwa kroku,
+   * nigdy jego identyfikator (niezmiennik 14). */
+  const loopHint =
+    loopSaid ??
+    (sendingBack === null
+      ? 'Pick the step that checks the work.'
+      : `Now pick the step that "${file.steps.find((step) => step.id === sendingBack)?.name ?? ''}" should send the work back to.`);
 
   return (
     <Library.Provider value={agents}>
@@ -367,6 +415,25 @@ function Canvas({
                       isValid: connection.isValid ?? false,
                       fromNode:
                         connection.fromNode === null ? null : { id: connection.fromNode.id },
+                      /* Kafelek POD WSKAŹNIKIEM w chwili puszczenia, także wtedy, gdy to nie był
+                       * uchwyt. React Flow liczy to sam i tylko on może — trafienie w korpus
+                       * kafelka zależy od zmierzonej wysokości karty, której `connect.ts` nie
+                       * widzi. Bez tego pola nieudany gest robił kafelek-widmo. */
+                      overTile: connection.toNode !== null,
+                    },
+                    file,
+                  ),
+                );
+              }}
+              /* JEDYNE WEJŚCIE KASOWANIA. `deleteElements` woła to raz, z kompletną listą
+               * kafelków I strzałek, więc dokument liczy się z jednego stanu zamiast z dwóch
+               * połówek o różnej świeżości (powód w całości stoi przy `map.ts`, `deleteFrom`). */
+              onDelete={({ nodes, edges }) => {
+                onChange(
+                  deleteFrom(
+                    {
+                      steps: nodes.map((node) => node.id),
+                      arrows: edges.map((edge) => ({ from: edge.source, to: edge.target })),
                     },
                     file,
                   ),
@@ -376,14 +443,37 @@ function Canvas({
                 onChange(onNodeDragStop({ id: node.id, position: node.position }, file));
               }}
               onNodeClick={(_event, node) => {
+                /* W trybie pętli kliknięcie WSKAZUJE, a nie otwiera panelu: panel zasłoniłby
+                 * połowę płótna dokładnie wtedy, gdy człowiek szuka drugiego kafelka. */
+                if (pickingLoop) {
+                  pickForLoop(node.id);
+                  return;
+                }
                 onOpenPanel(node.id);
               }}
             >
               <Background gap={GRID} />
+              {pickingLoop ? (
+                <Panel position="top-left">
+                  <div
+                    data-loop-hint
+                    className="flex items-center gap-3 rounded-sm border border-line bg-panel px-3 py-2"
+                  >
+                    <p className="text-body text-ink">{loopHint}</p>
+                    {/* Wyjście z trybu. Tryb bez wyjścia jest pułapką: człowiek, który rozmyślił
+                        się po pierwszym kliknięciu, nie ma innego sposobu, żeby wrócić do
+                        otwierania paneli kliknięciem w kafelek. */}
+                    <button type="button" className={BUTTON} onClick={leaveLoopMode}>
+                      Cancel
+                    </button>
+                  </div>
+                </Panel>
+              ) : null}
               <Panel position="top-right">
                 <RunBar
                   notes={notes}
                   onRun={onRun}
+                  {...(onApplyFix === undefined ? {} : { onApplyFix })}
                   onFocusNote={(note) => {
                     focusNote(note, { fitView, openPanel: onOpenPanel });
                   }}
@@ -392,9 +482,9 @@ function Canvas({
             </ReactFlow>
           </div>
 
-          {/* Dokładnie dwa przyciski tworzące (makieta 528-529). „Tidy up" stoi obok nich, a nie
-            w nagłówku ekranu: układ jest własnością płótna, a nagłówek należy do ekranu, który
-            to płótno montuje. */}
+          {/* Przyciski tworzące (makieta 528-529 rysuje dwa; „Add loop" doszedł 2026-08-22).
+            „Tidy up" stoi obok nich, a nie w nagłówku ekranu: układ jest własnością płótna,
+            a nagłówek należy do ekranu, który to płótno montuje. */}
           <div className="flex gap-2">
             <button
               type="button"
@@ -413,6 +503,32 @@ function Canvas({
               }}
             >
               ＋ Add a checkpoint
+            </button>
+            {/* KAFELEK, KTÓRY COŚ PODNOSI I IDZIE DALEJ. Doszedł 2026-08-23, na prośbę
+                właściciela, i stoi obok dwóch pozostałych, bo stawia to samo co one — kafelek.
+                Nie ma go w makiecie: makieta powstała, zanim ten kształt był potrzebny. */}
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                add('serve');
+              }}
+            >
+              ＋ Start something
+            </button>
+            {/* PĘTLA MA WŁASNY PRZYCISK od 2026-08-22, na prośbę właściciela. Stoi obok dwóch
+                tworzących, bo tworzy to samo co one — kawałek grafu — tylko że strzałkę zamiast
+                kafelka. Nie ma go w makiecie: makieta powstała przed pętlą. */}
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                setPickingLoop(true);
+                setSendingBack(null);
+                setLoopSaid(null);
+              }}
+            >
+              ＋ Add loop
             </button>
             <button
               type="button"

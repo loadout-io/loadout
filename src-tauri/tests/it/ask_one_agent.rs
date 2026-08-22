@@ -406,6 +406,7 @@ impl Bench {
             project: self.project.path(),
             store,
             drivers: fake_drivers(Arc::clone(watch), TURN),
+            processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
             control: RunControl::new(),
         };
         let ask = AskRequest {

@@ -51,6 +51,7 @@ pub mod memory;
 pub mod mint;
 /// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
 pub mod processes;
+pub mod rerun;
 pub mod run;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
 pub mod skills;
@@ -121,6 +122,11 @@ pub struct RunDeps<'a> {
     pub store: &'a Store,
     /// Fabryka sterowników. Uchwyt, nie pożyczka — patrz [`Drivers`].
     pub drivers: Drivers,
+    /// Rejestr rzeczy, które mają zostać żywe po swoim kroku.
+    ///
+    /// 2026-08-23 — doszedł dla kafelka „uruchom i zostaw". Uchwyt, nie pożyczka: bieg żyje
+    /// dłużej niż wywołanie, które go zaczęło, a proces ma przeżyć jeszcze dłużej niż bieg.
+    pub processes: std::sync::Arc<processes::Processes>,
     /// Uchwyt do tego biegu: Stop i Continue sięgają nim do środka.
     ///
     /// 2026-08-16 — `TASK.md` wymienia w tym miejscu `CancellationToken` i on tu jest, wewnątrz
@@ -573,6 +579,22 @@ pub struct RunRequest {
     /// promptem uczyłby model, że ta sekcja bywa pusta, i kosztowałby długość za nic — ten sam
     /// powód stoi przy [`run::with_what_we_know`].
     pub task: Option<String>,
+    /// Kroki, które ten bieg ma wykonać — po kluczu kafelka. `None` znaczy „wszystkie".
+    ///
+    /// 2026-08-23 — POLE POWSTAŁO DLA PONOWNEGO ODPALENIA KROKU, na prośbę właściciela po biegu,
+    /// który kosztował 48 minut i padł na ostatnim sprawdzeniu z powodu środowiskowego. Bez tego
+    /// jedynym sposobem poprawienia jednego kroku było puszczenie całej dziesiątki od zera.
+    ///
+    /// **Wymienione kroki nie mają między sobą zależności.** Bieg złożony z jednego kroku nie ma
+    /// po czym iść, a jego wejście przychodzi z przekazań poprzedniego biegu ([`RunRequest::
+    /// handoffs_from`]) — czyli z tego samego miejsca, z którego przyszło za pierwszym razem.
+    pub only: Option<Vec<String>>,
+    /// Katalog biegu, z którego ten bieg przejmuje przekazania na wejściu.
+    ///
+    /// Kopia, nie wskazanie: bieg pisze wyłącznie do swojego katalogu (`ARCHITECTURE` §8), a
+    /// skończony `run.json` jest historią i nie ma prawa się zmienić dlatego, że ktoś powtórzył
+    /// jeden krok. Ponowne odpalenie jest więc **nowym biegiem**, a nie dopisaniem do starego.
+    pub handoffs_from: Option<PathBuf>,
 }
 
 /// Czym skończył się bieg.

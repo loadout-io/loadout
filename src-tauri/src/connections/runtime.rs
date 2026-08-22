@@ -109,21 +109,32 @@ fn codex_config(connections: &[Connection]) -> String {
 
 /// Rozwiązuje nazwy z definicji agenta do zatwierdzonych plików biblioteki. Biegnie podczas
 /// planowania, więc brak albo wyłączone połączenie zatrzymuje cały bieg przed pierwszym procesem.
-pub fn selected(root: &Path, names: &[String]) -> Result<Vec<Connection>, RuntimeError> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut available = Vec::new();
+/// Wszystkie zatwierdzone połączenia z biblioteki, w kolejności katalogu.
+///
+/// `pub`, bo pyta o to także walidator workflow (`workflow::roster`) — chce powiedzieć przy
+/// BUDOWANIU, że krok nazywa połączenie, którego nie ma albo które jest wyłączone, zamiast
+/// zostawiać to odmowie Startu. Jedna funkcja czytająca ten katalog, nie dwie: druga rozjechałaby
+/// się przy pierwszej zmianie kształtu pliku.
+pub fn all(root: &Path) -> Result<Vec<Connection>, RuntimeError> {
+    let mut out = Vec::new();
     if root.is_dir() {
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             if entry.file_type()?.is_file() && entry.path().extension() == Some(OsStr::new("json"))
             {
                 let bytes = fs::read(entry.path())?;
-                available.push(serde_json::from_slice::<Connection>(&bytes)?);
+                out.push(serde_json::from_slice::<Connection>(&bytes)?);
             }
         }
     }
+    Ok(out)
+}
+
+pub fn selected(root: &Path, names: &[String]) -> Result<Vec<Connection>, RuntimeError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let available = all(root)?;
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for wanted in names {
@@ -193,6 +204,9 @@ where
     Ok(DriverConfiguration {
         arguments,
         environment,
+        // Kolejność z `selected()`, czyli po nazwie — argv ma być tym samym napisem przy tym
+        // samym zestawie połączeń, żeby dwa identyczne biegi dały się porównać.
+        servers: connections.iter().map(|one| one.name.clone()).collect(),
     })
 }
 

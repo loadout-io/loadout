@@ -48,6 +48,14 @@ export interface AgentFacts {
    * rozpuszczony w trakcie biegu nie stoi na żadnym kroku i nigdy nie będzie.
    */
   readonly step: StepState | null;
+  /**
+   * Klucz kafelka z pliku workflow — po nim powtarza się ten krok.
+   *
+   * 2026-08-23 — `id` tej struktury niesie NAZWĘ (bo po nazwie rozpoznaje agenta strumień),
+   * a komenda potrzebuje identyfikatora. Dwa różne fakty, dwa pola. `undefined` dla pod-agenta
+   * rozpuszczonego w trakcie biegu: nie ma go w grafie, więc nie ma czego powtarzać.
+   */
+  readonly stepId?: string;
 }
 
 export interface RosterInput {
@@ -87,10 +95,41 @@ const OF_STEP: Readonly<Record<StepState, AgentStatus>> = {
  * `null` znaczy „nie ma go w planie", czyli pod-agent rozpuszczony w trakcie biegu. Nadał
  * coś, więc pracuje; nic w strumieniu nie mówi, żeby przestał.
  */
-function statusOf(step: StepState | null, waitsOnYou: boolean): AgentStatus {
+function statusOf(
+  step: StepState | null,
+  waitsOnYou: boolean,
+  lines: readonly Utterance[],
+): AgentStatus {
   if (waitsOnYou) return 'needs you';
+
+  /* STRUMIEŃ BIJE PLAN, KIEDY MÓWI, ŻE JUŻ PO WSZYSTKIM.
+   *
+   * 2026-08-22 — ZGŁOSZENIE ZE ZRZUTU WŁAŚCICIELA: kafelek pokazywał `Done · 26 turns · 6m 27s
+   * · $2.33` i pod spodem `working`, i tak wyglądał KAŻDY kafelek skończonego biegu. Stan brał
+   * się wyłącznie ze stanu kroku w planie, a kiedy ten do szyny nie dojechał, jedyne, co jej
+   * zostawało, to domysł — i domyślała się „pracuje", nad agentem, który skończył kwadrans
+   * wcześniej. Dwa źródła jednego faktu na jednym kafelku (niezmiennik 13).
+   *
+   * Linia `done` jest **dowodem końca**: składa ją silnik dokładnie wtedy, gdy tura wróciła.
+   * Jej pole `ended` mówi JAK się skończyło — osobnym słowem, nigdy do wyczytania ze zdania,
+   * bo `Done` / `Didn't work` / `Stopped` są prozą dla człowieka i wolno je przepisać. */
+  const finish = lastFinish(lines);
+  if (finish !== null) return finish;
+
   if (step === null) return 'working';
   return OF_STEP[step];
+}
+
+/** Stan z ostatniej linii `done` tego kafelka, albo `null`, jeśli agent jeszcze nie skończył. */
+function lastFinish(lines: readonly Utterance[]): AgentStatus | null {
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    const one = lines[at];
+    if (one?.kind !== 'done') continue;
+    if (one.ended === 'well') return 'done';
+    if (one.ended === 'badly') return 'failed';
+    return 'stopped';
+  }
+  return null;
 }
 
 /**
@@ -137,7 +176,12 @@ export function roster(state: RosterInput): readonly RailCard[] {
     /* Etykieta wiersza, nie tekst linii: kafelek ma powiedzieć to samo, co strumień, więc
      * sklejona grupa mówi „Read 6 files" w obu miejscach albo w żadnym (kryterium 4 tego
      * samego zadania, tylko o jeden ekran wyżej). */
-    utterances.push({ kind: row.kind, text: row.label });
+    utterances.push({
+      kind: row.kind,
+      text: row.label,
+      /* `ended` jedzie dalej TYLKO z linii, która je niesie — kafelek nie ma go skąd zgadnąć. */
+      ...(row.ended === undefined ? {} : { ended: row.ended }),
+    });
     if (row.kind === 'asked' && !answered.has(row.id)) waitingOnYou.add(row.agent);
   }
 
@@ -153,7 +197,8 @@ export function roster(state: RosterInput): readonly RailCard[] {
          * w danych nie ma (niezmiennik 17). */
         name: facts?.name ?? id,
         role: facts?.role ?? '',
-        status: statusOf(facts?.step ?? null, waitingOnYou.has(id)),
+        status: statusOf(facts?.step ?? null, waitingOnYou.has(id), lines),
+        stepId: facts?.stepId ?? null,
         lines,
       }),
     );

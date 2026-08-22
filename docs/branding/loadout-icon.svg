@@ -1,74 +1,91 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <!-- RYSUNEK PELNY: 1024, 512, 256 i 128 px.
 
-       PRZEPIS jest 1:1 z murmur-icon.svg z repo obok - squircle rx=232 na plotnie 1024, radialne
-       tlo, sheen zanikajacy na 34% wysokosci, temat wysrodkowany, ostra krawedz wewnetrzna
-       w bieli 10%. Dwie nasze aplikacje maja w Docku wygladac na rodzenstwo, i to jest decyzja D1.
+       PRZEPIS zostaje 1:1 z murmur-icon.svg z repo obok - squircle rx=232 na plotnie 1024,
+       radialne tlo, sheen przy 10%, ostra krawedz wewnetrzna w bieli przy 10%. Dwie nasze
+       aplikacje maja w Docku wygladac na rodzenstwo, i to jest decyzja D1.
 
-       PALETA I GEOMETRIA TEMATU ZMIENIONE 2026-08-19 po zgloszeniu wlasciciela ze zrzutem Docka.
-       Poprzednia wersja mierzyla sie tak: temat 66% szerokosci i 39% wysokosci plotna, wezly
-       z gradientem do #e6e2ff i czystej bieli, najjasniejszy przystanek tla o luminancji 0,019,
-       kontrast temat-tlo 15,2 : 1. Tyle kontrastu jest w porzadku, kiedy temat wypelnia kafle
-       w calosci - czarno-biala ikona obok w Docku tak wlasnie wyglada. Przy temacie zajmujacym
-       dwie trzecie kafli ten sam kontrast ODCZEPIA go od tla i cztery jasne plamki przestaja byc
-       jedna forma. Stad trzy zmiany naraz, bo zadna z nich osobno nie wystarcza:
+       PRZERYSOWANE 2026-08-22 po drugim zgloszeniu wlasciciela ze zrzutem Docka. Pierwsze
+       (2026-08-19) brzmialo "ikonka brzydka z bialymi elementami jest" i zostalo naprawione
+       PRZEZ ZGASZENIE TEMATU - stad AC-1 z T-51. Drugie zgloszenie dotyczy tej wlasnie wersji,
+       wiec przyczyna nie byla w barwie tematu i gaszenie jej nie moglo pomoc. Zmierzone: temat
+       nie byl JEDNA FORMA, tylko czterema kropkami na drutach, i to jest wspolna przyczyna obu
+       zgloszen. Kropki na ciemnym tle czytaja sie jako okruchy swiatla; te same kropki w barwie
+       bliskiej tlu czytaja sie jako mgla. Cztery zmiany, wszystkie w ksztalcie i wadze:
 
-         1. TLO JEST PRAWDZIWYM INDYGO (#4a44c8 -> #2a2486 -> #171240), a nie prawie-czernia.
-            Kafla ma czytac sie jako barwa, nie jako dziura miedzy ikonami.
-         2. TEMAT JEST WIEKSZY o 15%: 76% szerokosci i 45% wysokosci plotna, przy 12% marginesu.
-         3. TEMAT NIE MA PRAWIE-BIELI. Najjasniejsza barwa to #dfdcff; sheen i krawedz wewnetrzna
-            zostaja biale, bo dzialaja przy 10% i sa warstwami tla, nie tematem.
+         1. ROMB MIAL INNA PROPORCJE NIZ ZNAK W APLIKACJI. Ikona: 634 x 322, czyli 1,97 : 1;
+            `loadout-mark.svg`: 16,6 x 13,8, czyli 1,20 : 1. To byly dwa rysunki tej samej
+            rzeczy (niezmiennik 13). Teraz oba maja 1,20 : 1, a plaski romb, ktory zlewal sie
+            w soczewke, jest rombem.
+         2. KRAWEDZIE BYLY ZA CIENKIE. 44 na 1024 to 5,5 px przy 128 px - drut, nie glif.
+            Teraz 56, przy stosunku srednicy wezla do linii 3,1 : 1 wprost ze znaku. Wezly
+            i krawedzie maja jedna wage, wiec czytaja sie jako jeden rysunek.
+         3. `glow` ROZJASNIAL TLO DOKLADNIE POD ZNAKIEM. Poswiata siedziala na srodku kafli,
+            czyli tam, gdzie lezy caly temat, i zabierala mu kontrast lokalny. Teraz jest
+            wysrodkowana na WEZLE SYNTEZY: kafla jest oswietlona przez wynik grafu, co jest
+            jedyna rzecza, ktora ten znak ma do powiedzenia.
+         4. TLO SCHODZILO DO #171240, czyli do prawie czerni. Miedzy Slackiem a WebStormem taki
+            kafel czyta sie jako dziura, a nie jako barwa. Nowy zakres jest ciasniejszy i mocniej
+            nasycony: #6244de -> #4629c9 -> #261573.
 
-       Kontrast wychodzi 5,4 : 1, czyli w pasmie 3-9. Dol pasma to prog WCAG dla grafiki
-       nietekstowej: ponizej znak ginie przy 16 px.
+       TEMAT STOI NA SUFICIE Z AC-1 T-51 I ANI PIKSELA WYZEJ. `#dfd8ff` to najjasniejsza barwa,
+       ktorej to kryterium nie uznaje za prawie-biel (223 na kanale czerwonym, prog to 224).
+       Kontrast do najjasniejszego punktu tla wychodzi 4,5 : 1, do srodka kafli 6,4 : 1,
+       do naroznika 10,8 : 1. Najciemniejszy punkt tematu do najjasniejszego punktu tla: 3,3 : 1.
 
-       Przy 32 i 16 px ten rysunek sie MYDLI: cztery krawedzie po 44 jednostki zlewaja sie
-       w plame, a sheen i krawedz wewnetrzna operuja na 0,1 piksela. Dlatego istnieja dwa osobne
-       pliki, a nie jeden przeskalowany. -->
+       Przy 32 i 16 px ten rysunek sie MYDLI: sheen, poswiata i krawedz wewnetrzna operuja tam
+       na dziesiatych czesciach piksela. Dlatego istnieja dwa osobne pliki. -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="34%" r="80%">
-      <stop offset="0%" stop-color="#4a44c8"/>
-      <stop offset="55%" stop-color="#2a2486"/>
-      <stop offset="100%" stop-color="#171240"/>
+    <radialGradient id="bg" cx="50%" cy="30%" r="88%">
+      <stop offset="0%" stop-color="#6244de"/>
+      <stop offset="52%" stop-color="#4629c9"/>
+      <stop offset="100%" stop-color="#261573"/>
     </radialGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
-      <stop offset="34%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="36%" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#8f8cff" stop-opacity="0.38"/>
-      <stop offset="100%" stop-color="#8f8cff" stop-opacity="0"/>
+    <linearGradient id="floor" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#150a45" stop-opacity="0.26"/>
+      <stop offset="42%" stop-color="#150a45" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="79.7%" cy="50%" r="40%">
+      <stop offset="0%" stop-color="#c9b8ff" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="#c9b8ff" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#d5d1ff"/>
-      <stop offset="100%" stop-color="#b3adff"/>
+      <stop offset="0%" stop-color="#dfd8ff"/>
+      <stop offset="100%" stop-color="#c9beff"/>
     </linearGradient>
     <radialGradient id="node" cx="38%" cy="30%" r="82%">
-      <stop offset="0%" stop-color="#dfdcff"/>
-      <stop offset="46%" stop-color="#bdb6ff"/>
-      <stop offset="100%" stop-color="#9c93ff"/>
+      <stop offset="0%" stop-color="#dfd8ff"/>
+      <stop offset="46%" stop-color="#d6ccff"/>
+      <stop offset="100%" stop-color="#c2b6ff"/>
     </radialGradient>
     <radialGradient id="nodeout" cx="38%" cy="30%" r="82%">
-      <stop offset="0%" stop-color="#dfdcff"/>
-      <stop offset="52%" stop-color="#c9c3ff"/>
-      <stop offset="100%" stop-color="#a8a0ff"/>
+      <stop offset="0%" stop-color="#dfd8ff"/>
+      <stop offset="52%" stop-color="#dad2ff"/>
+      <stop offset="100%" stop-color="#cdc2ff"/>
     </radialGradient>
     <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#sq)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#floor)"/>
     <rect width="1024" height="1024" fill="url(#sheen)"/>
-    <circle cx="512" cy="512" r="380" fill="url(#glow)"/>
-    <g fill="none" stroke="url(#edge)" stroke-width="44" stroke-linecap="round">
-      <path d="M195 512 L512 351"/>
-      <path d="M195 512 L512 673"/>
-      <path d="M512 351 L829 512"/>
-      <path d="M512 673 L829 512"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
+    <!-- Romb 624 x 518, czyli 1,20 : 1 - proporcja `loadout-mark.svg`. Caly zespol jest
+         przesuniety o 8 w lewo, bo wezel syntezy jest wiekszy i przeciaga srodek masy. -->
+    <g fill="none" stroke="url(#edge)" stroke-width="56" stroke-linecap="round">
+      <path d="M192 512 L504 253"/>
+      <path d="M192 512 L504 771"/>
+      <path d="M504 253 L816 512"/>
+      <path d="M504 771 L816 512"/>
     </g>
-    <circle cx="195" cy="512" r="69" fill="url(#node)"/>
-    <circle cx="512" cy="351" r="69" fill="url(#node)"/>
-    <circle cx="512" cy="673" r="69" fill="url(#node)"/>
-    <circle cx="829" cy="512" r="76" fill="url(#nodeout)"/>
+    <circle cx="192" cy="512" r="88" fill="url(#node)"/>
+    <circle cx="504" cy="253" r="88" fill="url(#node)"/>
+    <circle cx="504" cy="771" r="88" fill="url(#node)"/>
+    <circle cx="816" cy="512" r="97" fill="url(#nodeout)"/>
   </g>
   <rect x="1.5" y="1.5" width="1021" height="1021" rx="231" ry="231" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="3"/>
 </svg>

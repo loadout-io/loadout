@@ -395,12 +395,15 @@ async fn look_then_decide() -> Result<(RunReport, Bench), Box<dyn Error>> {
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // Linie tego kryterium nie interesują: sądzi ono plik na dysku, nie ekran. Odbiornik zostaje

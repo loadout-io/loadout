@@ -11,7 +11,8 @@
  * kroku w blokadę uruchomienia — a to jest workflow, który wolno uruchomić.
  */
 import type { ReactElement } from 'react';
-import type { Note } from '../../../state/workflows';
+import type { Fix, Note } from '../../../state/workflows';
+import type { FileAccess } from '../../../state/agents';
 
 export interface RunBarProps {
   /** Uwagi z ostatniego sprawdzenia. Pusta lista znaczy „nie ma nic do poprawienia". */
@@ -19,6 +20,8 @@ export interface RunBarProps {
   onRun: () => void;
   /** Kliknięcie uwagi przesuwa płótno na winny krok i otwiera jego panel. */
   onFocusNote: (note: Note) => void;
+  /** Wykonuje naprawę, którą niesie uwaga. Brak propsu znaczy „ten ekran nie umie naprawiać". */
+  onApplyFix?: (fix: Fix) => void;
 }
 
 /** Co [`focusNote`] woła. Obie funkcje przychodzą z płótna — `fitView` z `useReactFlow()`,
@@ -36,6 +39,36 @@ const RUN = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
 const RUN_OFF = 'h-9 rounded-sm bg-raised px-4 text-ui text-muted';
 
 /** Kropka wagi: problem świeci kolorem awarii, ostrzeżenie kolorem „wymaga ciebie". */
+/** Przycisk naprawy: drugorzędny, przy zdaniu, którego dotyczy. */
+const FIX = 'h-6 shrink-0 rounded-sm border border-line px-2 text-label text-body';
+
+/** Uwagi, które Loadout umie naprawić sam. */
+function fixable(notes: Note[]): Note[] {
+  return notes.filter((note) => note.fix !== undefined);
+}
+
+/** Napis na przycisku mówi, CO SIĘ STANIE, a nie „Fix" — człowiek ma wiedzieć, na co się zgadza.
+ *
+ * Dial nazywa pozycję, na którą przechodzi, bo to jest zmiana uprawnień i nie ma prawa odbyć się
+ * pod ogólnikiem. Lista narzędzi nazywa agenta, bo naprawa dotyczy roli używanej też gdzie
+ * indziej — a to jest jedyna różnica między tymi dwiema naprawami, którą człowiek musi widzieć
+ * PRZED kliknięciem. */
+function fixLabel(fix: Fix): string {
+  if (fix.kind === 'widenFileAccess') return `Set this step to ${DIAL[fix.to]}`;
+  return `Take them off ${fix.agentName}`;
+}
+
+/** Trzy pozycje dialu tak, jak brzmią w formularzu agenta (`agents/agent-form.tsx`).
+ *
+ * Kotwicą są tamte trzy napisy, nie ta stała: człowiek czyta je na ekranie agenta, a to zdanie
+ * widzi dopiero na przycisku naprawy. Ten sam podział i ten sam powód, co przy `on_screen`
+ * w Ruście. */
+const DIAL: Record<FileAccess, string> = {
+  'look-only': 'Look only',
+  'ask-first': 'Ask first',
+  'work-freely': 'Work freely',
+};
+
 const DOT: Record<Note['level'], string> = {
   problem: 'text-fail',
   warning: 'text-attend',
@@ -49,7 +82,7 @@ function howMany(notes: Note[]): string {
   return `${String(notes.length)} ${notes.length === 1 ? 'thing' : 'things'} to fix`;
 }
 
-export function RunBar({ notes, onRun, onFocusNote }: RunBarProps): ReactElement {
+export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): ReactElement {
   /* Blokuje WYŁĄCZNIE `problem`. Pasek, który liczy wszystkie uwagi i przy każdej gasi Run,
    * zamienia ostrzeżenie o niepodłączonym kroku w zamek bez klucza — a taki workflow wolno
    * uruchomić. Podpowiedź jest samą uwagą, słowo w słowo z walidatora: „Fix the errors first"
@@ -62,18 +95,52 @@ export function RunBar({ notes, onRun, onFocusNote }: RunBarProps): ReactElement
         <div className="flex flex-col gap-1">
           <span className="text-label text-muted">{howMany(notes)}</span>
           {notes.map((note) => (
-            <button
+            <div
               key={`${note.level}:${note.stepId ?? ''}:${note.message}`}
+              className="flex items-baseline gap-2"
+            >
+              <button
+                type="button"
+                className="flex items-baseline gap-2 text-left text-body text-ink"
+                onClick={() => {
+                  onFocusNote(note);
+                }}
+              >
+                <span className={DOT[note.level]}>●</span>
+                {note.message}
+              </button>
+              {/* PRZYCISK ISTNIEJE TYLKO TAM, GDZIE NAPRAWA JEST JEDNOZNACZNA (niezmiennik 16:
+                  kontrolka bez skutku nie wchodzi do repo). Uwagę o kształcie grafu naprawia się
+                  przeciągnięciem strzałki i takiej uwagi ten przycisk nie dostaje. */}
+              {note.fix === undefined || onApplyFix === undefined ? null : (
+                <button
+                  type="button"
+                  data-fix
+                  className={FIX}
+                  onClick={() => {
+                    onApplyFix(note.fix as Fix);
+                  }}
+                >
+                  {fixLabel(note.fix)}
+                </button>
+              )}
+            </div>
+          ))}
+          {/* Jedno kliknięcie na wszystkie, kiedy jest co zbierać. Pięć naprawialnych uwag to
+              dziś pięć kliknięć, a każda z nich jest tą samą decyzją: „zrób to, co i tak bym
+              zrobił ręcznie". */}
+          {onApplyFix === undefined || fixable(notes).length < 2 ? null : (
+            <button
               type="button"
-              className="flex items-baseline gap-2 text-left text-body text-ink"
+              data-fix-all
+              className={`${FIX} self-start`}
               onClick={() => {
-                onFocusNote(note);
+                for (const note of fixable(notes)) onApplyFix(note.fix as Fix);
               }}
             >
-              <span className={DOT[note.level]}>●</span>
-              {note.message}
+              {`Fix all ${String(fixable(notes).length)}`}
             </button>
-          ))}
+          )}
         </div>
       ) : null}
 

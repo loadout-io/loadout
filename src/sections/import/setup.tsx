@@ -25,10 +25,17 @@ export interface Mapping {
   message: string;
 }
 
+/** Skąd połączenie się wzięło — lustro `connections::Origin`.
+ *
+ * Brak pola znaczy „plik projektu": tak wygląda każde połączenie zapisane przed 2026-08-22
+ * i tak samo rozstrzyga to serde po stronie Rusta. */
+export type ConnectionOrigin = 'project' | 'yours-here' | 'yours-everywhere';
+
 export interface ImportedConnection {
   id: string;
   name: string;
   enabled: boolean;
+  origin?: ConnectionOrigin;
 }
 
 export interface ImportPreview {
@@ -78,10 +85,32 @@ export interface ImportSetupProps {
   initialPreview?: ImportPreview;
 }
 
+/* OKNO MODALA JEST NIEPRZEJRZYSTE, i to jest naprawa, nie preferencja (2026-08-22).
+ *
+ * Do tego dnia stało tu `bg-panel`, a `--color-panel` to `rgba(255,255,255,0.045)` — bielą-alfa
+ * podnosi się powierzchnię LEŻĄCĄ NA TLE APLIKACJI, nie zasłania nią cudzej treści. Nad ekranem
+ * Agentów, przy tle za modalem na 72%, ekran spod spodu przebijał przez okno: nazwy agentów
+ * i ich opisy nachodziły na wiersze importu i nie dało się tego czytać (zrzut właściciela).
+ *
+ * `--overlay` (`#1b1b24`) jest tokenem, który DESIGN §6 wymienia przy `modal` wprost, ze słowem
+ * „nieprzejrzysty" w nawiasie — więc to nie jest nowy kolor ani odstępstwo od makiety, tylko
+ * użycie tego, co makieta na to miejsce przewidziała. Ta sama pomyłka stała w czterech modalach
+ * naraz i wszystkie cztery są poprawione razem: jedna klasa, jedna przyczyna. */
 const BACKDROP = 'fixed inset-0 z-20 flex items-center justify-center bg-bg/72 p-6';
 const WINDOW =
-  'flex max-h-full w-full max-w-240 flex-col gap-4 overflow-auto rounded-lg border border-line-strong bg-panel p-6';
+  'flex max-h-full w-full max-w-240 flex-col gap-4 overflow-auto rounded-lg border border-line-strong bg-overlay p-6';
 const BUTTON = 'h-8 rounded-sm border border-line px-3 text-ui text-body';
+const ORIGIN = 'text-label text-muted';
+
+/** Zdanie o pochodzeniu połączenia — mówi, KTO JE WIDZI, nie w którym pliku leży.
+ *
+ * Ścieżka pliku odpowiadałaby na to samo pytanie okrężnie i tylko komuś, kto zna trzy zakresy
+ * Claude Code na pamięć. „Just you" kontra „in the project" rozstrzyga to jednym spojrzeniem. */
+function whereFrom(origin: ConnectionOrigin | undefined): string {
+  if (origin === 'yours-here') return 'just you, in this project';
+  if (origin === 'yours-everywhere') return 'just you, everywhere';
+  return 'in the project';
+}
 const PRIMARY = 'h-8 rounded-sm bg-accent px-3 text-ui text-bg';
 
 const STATUS: Readonly<Record<Compatibility, string>> = {
@@ -134,6 +163,16 @@ function blockers(preview: ImportPreview, leaveOut: readonly string[]): number {
   ).length;
 }
 
+/** Pozycje, których Loadout nie umie wnieść: nieobsługiwane i te, które wymagają wyboru. */
+function unresolvedIn(preview: ImportPreview): string[] {
+  return preview.draft.report.mappings
+    .filter(
+      (mapping) =>
+        mapping.compatibility === 'unsupported' || mapping.compatibility === 'needs_choice',
+    )
+    .map((mapping) => mapping.itemId);
+}
+
 export function ImportSetup({
   onClose,
   onImported,
@@ -148,20 +187,31 @@ export function ImportSetup({
   );
   const [preview, setPreview] = useState<ImportPreview | null>(initialPreview ?? null);
   const [enabled, setEnabled] = useState<string[]>([]);
-  const [leaveOut, setLeaveOut] = useState<string[]>([]);
+  /* POZYCJE NIE DO WNIESIENIA SĄ POMINIĘTE OD RAZU, a nie po 68 kliknięciach.
+   *
+   * 2026-08-22 — ZGŁOSZENIE WŁAŚCICIELA: „trzeba kliknąć każdy element po kolei, żeby
+   * zaimportować, bo inne, których nie da się zaimportować, wtedy nas blokują". Miał rację i to
+   * nie było drobiazgiem: jedynym rozstrzygnięciem, jakie ten ekran w ogóle oferuje dla pozycji
+   * `needs_choice`, jest „Skip" — więc żądanie wyboru było żądaniem kliknięcia jedynej możliwej
+   * odpowiedzi, raz na pozycję. Przy 68 pozycjach import po prostu nie odbywał się nigdy.
+   *
+   * Domyślne pominięcie NIE UKRYWA niczego: każda taka pozycja stoi w tabeli z powodem i ze
+   * swoim zaznaczonym „Skip", a stopka mówi, ile ich jest. Człowiek, który chce jedną z nich
+   * wnieść mimo wszystko, odznacza jej pole — i wtedy dopiero import czeka na rozstrzygnięcie,
+   * bo o to właśnie poprosił. */
+  const [leaveOut, setLeaveOut] = useState<string[]>(
+    initialPreview === undefined ? [] : unresolvedIn(initialPreview),
+  );
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const [inventoryView, setInventoryView] = useState<InventoryView>('all');
   const blocked = preview === null ? 0 : blockers(preview, leaveOut);
   const hasItems = preview !== null && preview.snapshot.items.length > 0;
-  const unresolved =
-    preview?.draft.report.mappings
-      .filter(
-        (mapping) =>
-          mapping.compatibility === 'unsupported' || mapping.compatibility === 'needs_choice',
-      )
-      .map((mapping) => mapping.itemId) ?? [];
+  const unresolved = preview === null ? [] : unresolvedIn(preview);
+  /* Ile pozycji naprawdę zostanie poza importem — liczone z listy pominięć, nie z `unresolved`:
+   * człowiek mógł którąś odznaczyć i wtedy ona już nie „zostaje poza", tylko blokuje. */
+  const leftOut = unresolved.filter((id) => leaveOut.includes(id)).length;
   const mappings = new Map(
     preview?.draft.report.mappings.map((mapping) => [mapping.itemId, mapping]) ?? [],
   );
@@ -183,7 +233,9 @@ export function ImportSetup({
       .then((next) => {
         setPreview(next);
         setEnabled([]);
-        setLeaveOut([]);
+        /* Świeży skan wraca z domyślnym pominięciem, tak samo jak pierwsze otwarcie: inaczej
+         * jedno kliknięcie „Scan" cofałoby ekran do stanu, w którym import jest zablokowany. */
+        setLeaveOut(unresolvedIn(next));
       })
       .catch((error: unknown) => {
         setRefusal(why(error, 'Loadout could not inspect that folder.'));
@@ -380,8 +432,23 @@ export function ImportSetup({
             </div>
             {preview.draft.connections.length === 0 ? null : (
               <fieldset className="flex flex-col gap-2 border-t border-line pt-3">
-                <legend className="text-subhead text-ink">
+                <legend className="flex w-full items-center gap-3 text-subhead text-ink">
                   Connections stay off unless you enable them
+                  {/* JEDNO KLIKNIĘCIE ZAMIAST N, i to jest cała treść tego przycisku (2026-08-22).
+                      Projekt z siedmioma serwerami to dziś siedem ptaszków, a każdy z nich jest tą
+                      samą decyzją. Przycisk NIE zmienia reguły — nadal to człowiek włącza, nadal
+                      widzi każdą pozycję z osobna i nadal może odznaczyć. */}
+                  <button
+                    type="button"
+                    data-enable-all
+                    className={`${BUTTON} ml-auto`}
+                    disabled={enabled.length === preview.draft.connections.length}
+                    onClick={() => {
+                      setEnabled(preview.draft.connections.map((one) => one.id));
+                    }}
+                  >
+                    Turn them all on
+                  </button>
                 </legend>
                 {preview.draft.connections.map((connection) => (
                   <label key={connection.id} className="flex items-center gap-2 text-body text-ink">
@@ -397,6 +464,11 @@ export function ImportSetup({
                       }}
                     />
                     {connection.name}
+                    {/* SKĄD TO JEST, przy nazwie i po cichu. Człowiek stojący nad tą listą pyta
+                        o jedno: czy to ustawienie zespołu, czy moje własne — a od 2026-08-22 na
+                        liście stoją obie rodzaje naraz. Bez tego zdania `linear-server` z twojej
+                        prywatnej konfiguracji wygląda identycznie jak `context7` z repo. */}
+                    <span className={ORIGIN}>{whereFrom(connection.origin)}</span>
                   </label>
                 ))}
               </fieldset>
@@ -417,9 +489,11 @@ export function ImportSetup({
               <p className="text-note text-muted">
                 {!hasItems
                   ? 'No setup files were found in this project.'
-                  : blocked === 0
-                    ? 'Ready to import.'
-                    : `${String(blocked)} item(s) must be resolved before import.`}
+                  : blocked > 0
+                    ? `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
+                    : leftOut === 0
+                      ? 'Ready to import.'
+                      : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
               </p>
               <button
                 type="button"

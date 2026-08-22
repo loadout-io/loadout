@@ -12,7 +12,13 @@ describe('Imported workflow conditions', () => {
       format: 1,
       id: 'imported',
       name: 'Imported',
-      steps: [],
+      /* Oba kroki MUSZĄ tu stać: od 2026-08-22 mapper nie rysuje strzałki, której koniec nie
+         istnieje (leczenie plików z wiszącą strzałką, `map.ts`). Dokument z samą strzałką i bez
+         kroków nie jest zresztą niczym, co mogłoby wyjść z importu. */
+      steps: [
+        { kind: 'checkpoint', id: 'check', name: 'Check', at: { x: 24, y: 24 } },
+        { kind: 'checkpoint', id: 'ship', name: 'Ship', at: { x: 24, y: 168 } },
+      ],
       links: [{ from: 'check', to: 'ship' }],
       linkConditions: [{ from: 'check', to: 'ship', when: { source: 'check', outcome: 'passed' } }],
     } as WorkflowFile;

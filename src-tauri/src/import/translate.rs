@@ -14,7 +14,7 @@ use crate::workflow::{
 
 pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidence as Evidence};
 
-use super::adapters::{adapt, check_command, knows_ship_ui};
+use super::adapters::{self, adapt, check_command, knows_ship_ui, take_connections};
 use super::discover::{Inspection, scan};
 use super::{
     ADAPTER_VERSION, CompatibilityReport, ImportPreview, ItemKind, MigrationDraft, Result,
@@ -23,11 +23,32 @@ use super::{
 /// Pełny Scan: odczyt i translacja w jednym backendowym przebiegu, zanim dane trafią do okna.
 pub fn preview(root: &Path) -> Result<ImportPreview> {
     let inspection = scan(root)?;
-    Ok(from_inspection(inspection))
+    Ok(from_inspection(inspection, None))
 }
 
-fn from_inspection(inspection: Inspection) -> ImportPreview {
-    let adapted = adapt(&inspection);
+/// Ten sam Scan, plus **twoje własne** zakresy MCP z `~/.claude.json`.
+///
+/// 2026-08-22 — osobne wejście, a nie zmieniona [`preview`], i to jest wybór na rzecz kryteriów:
+/// zestawy w `tests/it/` sądzą import na katalogu tymczasowym i nie mają prawa czytać konfiguracji
+/// człowieka, który akurat uruchomił testy. Produkt woła tę funkcję, testy tamtą — a różnica
+/// między nimi jest jednym argumentem, nie drugą ścieżką kodu.
+pub fn preview_with_personal(root: &Path, home: &Path) -> Result<ImportPreview> {
+    let inspection = scan(root)?;
+    Ok(from_inspection(inspection, Some(home)))
+}
+
+fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview {
+    let mut adapted = adapt(&inspection);
+
+    /* TWOJE ZAKRESY DOCHODZĄ PO PROJEKTOWYCH, więc przy powtórzonej nazwie wygrywa plik projektu.
+     * To jest ta sama reguła, co przy dwóch opisach jednego serwera w repo (`take_connections`),
+     * i ten sam powód: dwa wpisy pod jedną nazwą dałyby w bibliotece dwa pliki, a człowiek
+     * włączyłby jeden, podczas gdy bieg czyta drugi. */
+    if let Some(home) = home {
+        let mut mine = adapters::personal_connections(home, &inspection.snapshot.root);
+        take_connections(&mut adapted.connections, &mut mine.connections);
+    }
+    let adapted = adapted;
     let source_hashes = inspection
         .snapshot
         .items
@@ -254,6 +275,7 @@ pub fn flatten(template: &WorkflowFile, namespace: &str) -> WorkflowFile {
                 Step::Agent(step) => step.id = rename(&step.id),
                 Step::Checkpoint(step) => step.id = rename(&step.id),
                 Step::Check(step) => step.id = rename(&step.id),
+                Step::Serve(step) => step.id = rename(&step.id),
             }
             step
         })
@@ -288,5 +310,6 @@ fn step_id(step: &Step) -> &str {
         Step::Agent(step) => &step.id,
         Step::Checkpoint(step) => &step.id,
         Step::Check(step) => &step.id,
+        Step::Serve(step) => &step.id,
     }
 }

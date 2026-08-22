@@ -141,12 +141,15 @@ async fn the_loop_closes_on_what_the_command_did() -> Result<(), Box<dyn Error>>
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let report = one_run(&deps, &request).await??;
@@ -229,12 +232,15 @@ async fn work_that_never_passes_runs_out_of_tries_and_stops() -> Result<(), Box<
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let report = one_run(&deps, &request).await??;

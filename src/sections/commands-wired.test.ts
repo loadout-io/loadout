@@ -358,6 +358,15 @@ const WIRES: readonly Wire[] = [
   { where: 'run', what: 'stop', command: 'stop_run', given: [], call: () => run.stop() },
   {
     where: 'run',
+    what: 'rerunStep',
+    command: 'rerun_step',
+    /* Nazwa pliku i klucz kafelka — bez nich Rust nie wie ani KTÓRE workflow, ani KTÓRY krok
+     * powtórzyć, a `folder` musi jechać także jako `null` (Tauri dopasowuje po nazwie). */
+    given: [FILE_NAME, 's_9'],
+    call: () => run.rerunStep(FILE_NAME, 's_9', 3, null),
+  },
+  {
+    where: 'run',
     what: 'continueRun',
     command: 'continue_run',
     given: ['ship it'],

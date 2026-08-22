@@ -1,17 +1,17 @@
-# Jedyna lista nazw komend Loadouta, jedna nazwa w wierszu.
 #
-# Czytają ją OBA testy rejestracji i to jest jedyny powód, dla którego wolno jej istnieć
-# (niezmiennik 21 — nie piszemy artefaktu, którego żaden skrypt nie czyta):
+#
+#
 #
 #   src-tauri/tests/ipc_commands_registered.rs   ten zbiór RÓWNA SIĘ zbiorowi z generate_handler!
 #   src/sections/commands-wired.test.ts          każda krawędź sekcji woła nazwę z tego pliku
-#
-# Lista, którą czyta tylko człowiek, rozjeżdża się w tydzień i nikt tego nie zauważa, bo
-# komenda niezarejestrowana nie krzyczy: funkcja istnieje, `invoke` na nią nie trafia, i tyle.
-#
-# Wiersz pusty i wiersz zaczynający się od `#` są pomijane. Reszta to nazwa komendy, znak
-# w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
+# (niezmiennik 21 — nie piszemy artefaktu, którego żaden skrypt nie czyta):
 # (pierwszy argument `invoke`). Kolejność alfabetyczna, żeby dopisanie nazwy było jednym
+# Czytają ją OBA testy rejestracji i to jest jedyny powód, dla którego wolno jej istnieć
+# Jedyna lista nazw komend Loadouta, jedna nazwa w wierszu.
+# Lista, którą czyta tylko człowiek, rozjeżdża się w tydzień i nikt tego nie zauważa, bo
+# Wiersz pusty i wiersz zaczynający się od `#` są pomijane. Reszta to nazwa komendy, znak
+# komenda niezarejestrowana nie krzyczy: funkcja istnieje, `invoke` na nią nie trafia, i tyle.
+# w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
 # wierszem diffu, a nie przesunięciem całego pliku.
 apply_setup
 author_skill
@@ -40,6 +40,7 @@ load_workflow
 new_id
 open_chat
 put_note_to_use
+rerun_step
 retry_trigger
 review_skill
 run_agent
@@ -47,9 +48,9 @@ run_workflow
 save_agent
 save_workflow
 save_workspace
-scan_setup
 say_to_agent
 say_to_orchestrator
+scan_setup
 set_trigger_enabled
 start_process
 stop_draft

@@ -150,6 +150,16 @@ pub fn install_panic_hook() {
 
 /// Katalog użytkownika Loadouta. Pliki są prawdą, a dziennik leży obok nich
 /// (`docs/ARCHITECTURE.md` §8).
+/// Katalog domowy CZŁOWIEKA — nie biblioteka Loadouta.
+///
+/// Import czyta stąd `~/.claude.json`, żeby serwery MCP zapisane `claude mcp add` w zakresie
+/// lokalnym albo użytkownika też trafiły na listę połączeń. Osobna funkcja obok
+/// [`loadout_dir`], bo pomylenie tych dwóch znaczy szukanie cudzej konfiguracji w naszym
+/// katalogu albo pisanie naszych plików do czyjegoś.
+fn your_home() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
 fn loadout_dir() -> PathBuf {
     // HOME zamiast osobnej zależności na katalogi: to jedyne miejsce w repo, które o to pyta.
     std::env::var_os("HOME").map_or_else(
@@ -380,6 +390,20 @@ pub fn run() {
                  * PID 1 i pracowała dalej, a odzyskiwanie po niej nie posprząta, bo rozmowa nie ma
                  * wpisu w indeksie biegów. */
                 state.close_chat().await;
+                /* 2026-08-23 — TRZECIA LINIA, ZGŁOSZONA WE WŁASNYM NAGŁÓWKU
+                 * (`AppState::close_started`) i nieobsadzona, bo tamto zadanie nie miało tego
+                 * pliku w swoim zakresie. Bez niej `npm run dev` podniesiony przez `/start`
+                 * albo przez kafelek „uruchom i zostaw" przeżywa zamknięcie okna, przechodzi
+                 * pod PID 1 i trzyma port — a odzyskiwanie po nim nie posprząta, bo nie ma go
+                 * w indeksie biegów. Rzecz, której Loadout jest właścicielem, ma umrzeć
+                 * z Loadoutem (niezmiennik 6). */
+                for proof in state.close_started().await {
+                    if matches!(proof, engine::supervisor::GroupProof::Alive) {
+                        tracing::error!(
+                            "something Loadout started was still alive after the full stop; look                              for it in Activity Monitor"
+                        );
+                    }
+                }
                 let _ = window.destroy();
             });
         })

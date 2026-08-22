@@ -208,7 +208,7 @@ export function start(
    * karty ubija jedyny bieg". `stop_run` nie bierze identyfikatora, więc jedyne, co okno może
    * zrobić uczciwie, to nie wołać go dla karty, do której ten bieg nie należy — a do tego
    * musi wiedzieć, gdzie on idzie. Wie, bo sam ten folder tu wysyła (patrz `invoke` niżej). */
-  session.getState().nowRunning(what.name, what.steps, folder);
+  session.getState().nowRunning(what.name, what.steps, folder, workflow);
 
   const run = invoke<void>('run_workflow', {
     fileName: workflow,
@@ -392,6 +392,55 @@ export function closeTerminal(terminal: string): Promise<void> {
  */
 export function continueRun(answer: string | null = null): Promise<void> {
   return invoke<void>('continue_run', { answer });
+}
+
+/**
+ * Powtarza JEDEN krok ostatniego biegu tego workflow — jako nowy bieg, z wejściem tamtego.
+ *
+ * 2026-08-23 — ZE ZGŁOSZENIA WŁAŚCICIELA: „możemy zrobić restart/re-run danego kroku dowolnego
+ * agenta, tego teraz nie ma". Powód jest z rachunku: jego bieg trwał 48 minut i padł na ostatnim
+ * sprawdzeniu z przyczyny środowiskowej, a jedynym sposobem poprawienia tego jednego kroku było
+ * puszczenie całej dziesiątki od zera.
+ *
+ * Katalogu biegu NIE podajemy: powstaje w środku planowania i okno nigdy go nie poznaje, więc
+ * proszenie go o tę ścieżkę byłoby proszeniem o rzecz, której nie ma. Rust znajduje najnowszy
+ * bieg tego workflow w tym workspace sam (`commands::rerun`).
+ *
+ * Oddaje zdanie do pokazania, kiedy dzisiejszy plik workflow różni się od tego, który wtedy
+ * biegł — albo `null`, kiedy graf jest ten sam. „To samo jeszcze raz" i „to samo z twoją
+ * poprawką" nie mogą wyglądać identycznie.
+ */
+export function rerunStep(
+  fileName: string,
+  step: string,
+  howManyAtOnce: number,
+  folder: string | null = null,
+): Promise<string | null> {
+  /* TEN SAM KANAŁ, CO PRZY STARCIE: powtórzenie kroku jest zwykłym biegiem i jego linie mają
+   * trafić dokładnie tam, gdzie trafiają wszystkie inne — do strumienia i do sesji tej karty. */
+  const session = runFor(folder);
+  const view = feedFor(folder ?? '');
+  let stamp = 0;
+  const lines = new Channel<unknown[]>();
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => {
+      stamp += 1;
+      return { ...line, id: stamp, at };
+    });
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
+  });
+
+  return invoke<string | null>('rerun_step', {
+    fileName,
+    step,
+    howManyAtOnce,
+    /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
+     * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
+    folder,
+    lines,
+  });
 }
 
 /**

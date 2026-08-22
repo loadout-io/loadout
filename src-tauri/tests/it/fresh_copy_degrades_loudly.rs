@@ -101,12 +101,15 @@ async fn a_copy_that_cannot_be_made_stops_the_run_and_says_why() -> Result<(), B
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&started)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow("no-copy", WORKFLOW)?,
         how_many_at_once: 1,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

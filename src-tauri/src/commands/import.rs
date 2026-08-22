@@ -19,13 +19,23 @@ pub struct ApplySetup {
     pub leave_out: Vec<String>,
 }
 
-pub fn scan_setup_inner(workspace: &Path) -> Result<ImportPreview> {
-    crate::import::translate::preview(workspace)
+pub fn scan_setup_inner(home: &Path, workspace: &Path) -> Result<ImportPreview> {
+    // Katalog domowy CZŁOWIEKA, nie biblioteka Loadouta: stąd czytamy `~/.claude.json`, żeby
+    // serwery zapisane `claude mcp add --scope local|user` też trafiły na listę.
+    crate::import::translate::preview_with_personal(workspace, home)
 }
 
 /// Jeszcze raz czyta repo i akceptuje z webviewa wyłącznie wybór włączenia znanych połączeń.
-pub fn apply_setup_inner(home: &Path, request: &ApplySetup) -> Result<ImportReceipt> {
-    let mut preview = crate::import::translate::preview(&request.workspace)?;
+pub fn apply_setup_inner(
+    home: &Path,
+    personal: &Path,
+    request: &ApplySetup,
+) -> Result<ImportReceipt> {
+    /* TEN SAM WIDOK, CO PRZY SCANIE. Gdyby tu stała `preview()` bez twoich zakresów, włączenie
+     * `linear-server` wracałoby jako „The import requested a connection that was not in the
+     * latest Scan." — czyli odmowa dla pozycji, którą ekran właśnie pokazał. */
+    let mut preview =
+        crate::import::translate::preview_with_personal(&request.workspace, personal)?;
     if preview.draft.source_hashes != request.expected_source_hashes {
         return Err(ImportError::Changed);
     }

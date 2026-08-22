@@ -102,7 +102,7 @@ fn a_workflow_saved_by_the_command_loads_back_field_for_field() -> Result<(), Bo
 fn the_check_command_stays_quiet_about_a_plain_chain() -> Result<(), Box<dyn Error>> {
     let plan = a_plain_chain()?;
 
-    let notes = check_workflow_inner(&plan);
+    let notes = check_workflow_inner(TempDir::new()?.path(), &plan);
 
     assert!(
         notes.is_empty(),
@@ -124,7 +124,7 @@ fn a_workflow_that_points_back_at_itself_comes_back_with_the_validator_s_note()
         &[("plan", "build"), ("build", "ship"), ("ship", "plan")],
     )?;
 
-    let notes = check_workflow_inner(&circle);
+    let notes = check_workflow_inner(TempDir::new()?.path(), &circle);
     let problems: Vec<&Note> = notes
         .iter()
         .filter(|note| note.level == Level::Problem)

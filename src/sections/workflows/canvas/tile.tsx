@@ -105,9 +105,14 @@ function copiesOf(step: Step): string | null {
   return step.kind === 'agent' && step.copies > 1 ? `×${String(step.copies)}` : null;
 }
 
-/** Jedno zdanie o tym, co ten kafelek robi. Punkt kontrolny pyta, krok pracuje. */
+/** Jedno zdanie o tym, co ten kafelek robi. Punkt kontrolny pyta, krok pracuje.
+ *
+ * Kafelek „uruchom i zostaw" pokazuje SWOJĄ KOMENDĘ, bo ona jest jedynym zdaniem, które napisał
+ * o nim człowiek — dokładnie tak samo, jak pytanie jest jedynym zdaniem punktu kontrolnego. */
 function saysWhat(step: Step): string {
-  return step.kind === 'agent' ? step.instructions : (step.question ?? '');
+  if (step.kind === 'agent') return step.instructions;
+  if (step.kind === 'serve') return step.command;
+  return step.question ?? '';
 }
 
 export function StepTile({
@@ -138,6 +143,12 @@ export function StepTile({
         {step.kind === 'checkpoint' ? (
           <span className="shrink-0 text-label text-muted">asks you</span>
         ) : null}
+        {/* Ten podpis jest jedynym miejscem, w którym z płótna widać RÓŻNICĘ między tym kafelkiem
+            a krokiem „sprawdź": tamten czeka na koniec komendy, ten idzie dalej i zostawia ją
+            żywą. Bez niego dwa kafelki z wierszem powłoki wyglądają identycznie. */}
+        {step.kind === 'serve' ? (
+          <span className="shrink-0 text-label text-muted">leaves it running</span>
+        ) : null}
         {agent === undefined ? null : (
           <span className="flex shrink-0 items-center gap-1 font-mono text-label text-muted">
             <i className={`block size-2.75 ${IDENTITY[agent.color]}`} />
@@ -148,7 +159,11 @@ export function StepTile({
 
       {/* Dwie linie, obcięte. Czwarta linia tekstu na kafelku jest błędem projektowym,
           nie ciasnotą (DESIGN §6), a `line-clamp` jest jedynym miejscem, w którym to widać. */}
-      <p className="mt-1 line-clamp-2 text-body text-ink">{saysWhat(step)}</p>
+      <p
+        className={`mt-1 line-clamp-2 text-ink ${step.kind === 'serve' ? 'font-mono text-note' : 'text-body'}`}
+      >
+        {saysWhat(step)}
+      </p>
 
       {/* Stopka NAD linią (`.node .bot`: `padding-top:7px; border-top:1px solid var(--line)`)
           i w kroju maszynowym, bo to są wartości wyliczone, nie zdania. */}

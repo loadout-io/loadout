@@ -366,6 +366,8 @@ async fn an_ask_beside_a_file_run(
         workflow,
         how_many_at_once: at_once,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
     let (ask_sink, ask_drain) = the_pump_seam();
     let (file_sink, file_drain) = the_pump_seam();
@@ -493,6 +495,7 @@ impl Bench {
             drivers: fake_drivers(Arc::clone(watch), hold),
             // Własny uchwyt Stop/Continue na bieg. Wspólny byłby drugim wspólnym stanem obok
             // puli, a wtedy nie dałoby się powiedzieć, który z nich ograniczył kroki.
+            processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
             control: RunControl::new(),
         }
     }

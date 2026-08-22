@@ -128,8 +128,24 @@ export const line = {
     return { kind: 'problem', agent, text, resetsAt: null, id, at };
   },
 
-  done(id: number, at: number, agent: string, text: string): FeedLine {
-    return { kind: 'done', agent, text, turns: 2, durationMs: 252_000, costUsd: 0.31, id, at };
+  done(
+    id: number,
+    at: number,
+    agent: string,
+    text: string,
+    ended: 'well' | 'badly' | 'stopped' = 'well',
+  ): FeedLine {
+    return {
+      kind: 'done',
+      agent,
+      text,
+      turns: 2,
+      durationMs: 252_000,
+      costUsd: 0.31,
+      ended,
+      id,
+      at,
+    };
   },
 
   /**

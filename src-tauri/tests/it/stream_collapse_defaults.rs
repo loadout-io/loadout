@@ -123,6 +123,7 @@ fn open_by_default() -> Vec<Line> {
             turns: 2,
             duration_ms: 6_220,
             cost_usd: Some(0.148_362_900_000_000_02),
+            ended: loadout_lib::engine::line::Ended::Well,
         },
     ]
 }

@@ -1,28 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- RYSUNEK NA 16 px. Sylwetka rombu i cztery kropki, jedna barwa.
+  <!-- RYSUNEK NA 16 px. Sylwetka rombu i cztery kropki, dwie barwy i nic wiecej.
 
-       TLO JEST PLASKIE I JEST NAJJASNIEJSZYM PRZYSTANKIEM KAFLI (#4a44c8). Przy 16 px gradient
+       TLO JEST PLASKIE I JEST NAJJASNIEJSZYM PRZYSTANKIEM KAFLI (#6244de). Przy 16 px gradient
        to jeden piksel szarosci: kosztuje bajty, nie zmienia nic, a najmniejsza ikona ma czytac
        sie jako BARWA - na pasku menu i w przelaczniku aplikacji jest kropka koloru, nie rysunkiem.
+       Temat na tym tle daje 4,5 : 1.
 
-       Krawedz 96 na 1024, czyli 1,5 piksela przy 16 px. Wezly 104 i 112, czyli 3,2 i 3,5 piksela:
-       ponizej tego cztery kropki zlewaja sie z liniami w jeden pierscien. Geometria jest tu
-       CIASNIEJSZA niz w dwoch wiekszych rysunkach (72% szerokosci wobec 76 i 79), bo przy 16 px
-       margines jest jedyna rzecza, ktora trzyma ksztalt w ryzach. -->
+       Krawedz 92 na 1024, czyli 1,44 piksela przy 16 px. Wezly 118 i 128, czyli 1,84 i 2,0
+       piksela promienia: stosunek srednicy wezla do linii wychodzi 2,6 : 1, a ponizej 2,4 : 1
+       wezel czyta sie jako zgrubienie linii i caly znak zamyka sie w pierscien.
+
+       Geometria jest tu CIASNIEJSZA niz w dwoch wiekszych rysunkach (76% szerokosci wobec 79),
+       bo przy 16 px margines jest jedyna rzecza, ktora trzyma ksztalt w ryzach.
+       Proporcja rombu 536 x 446 to dalej 1,20 : 1. -->
   <defs>
     <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#sq)">
-    <rect width="1024" height="1024" fill="#4a44c8"/>
-    <g fill="none" stroke="#dfdcff" stroke-width="96" stroke-linecap="round">
-      <path d="M252 512 L512 376"/>
-      <path d="M252 512 L512 648"/>
-      <path d="M512 376 L772 512"/>
-      <path d="M512 648 L772 512"/>
+    <rect width="1024" height="1024" fill="#6244de"/>
+    <g fill="none" stroke="#dfd8ff" stroke-width="92" stroke-linecap="round">
+      <path d="M236 512 L504 289"/>
+      <path d="M236 512 L504 735"/>
+      <path d="M504 289 L772 512"/>
+      <path d="M504 735 L772 512"/>
     </g>
-    <circle cx="252" cy="512" r="104" fill="#dfdcff"/>
-    <circle cx="512" cy="376" r="104" fill="#dfdcff"/>
-    <circle cx="512" cy="648" r="104" fill="#dfdcff"/>
-    <circle cx="772" cy="512" r="112" fill="#dfdcff"/>
+    <circle cx="236" cy="512" r="118" fill="#dfd8ff"/>
+    <circle cx="504" cy="289" r="118" fill="#dfd8ff"/>
+    <circle cx="504" cy="735" r="118" fill="#dfd8ff"/>
+    <circle cx="772" cy="512" r="128" fill="#dfd8ff"/>
   </g>
 </svg>

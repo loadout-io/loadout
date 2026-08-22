@@ -215,7 +215,7 @@ export function WorkflowList({
           data-confirm-delete
           className="fixed inset-0 z-10 flex items-center justify-center bg-bg/72 p-6"
         >
-          <div className="flex w-full max-w-160 flex-col gap-4 rounded-lg border border-line-strong bg-panel p-6">
+          <div className="flex w-full max-w-160 flex-col gap-4 rounded-lg border border-line-strong bg-overlay p-6">
             {/* Jedno zdanie, jeden węzeł tekstowy: nazywa workflow po imieniu, mówi, co
              * znika, i mówi, co zostaje. Bieg, który się odbył, nie zależy od pliku — i to
              * jest właśnie to, czego człowiek nie wie, stojąc nad tym pytaniem. */}

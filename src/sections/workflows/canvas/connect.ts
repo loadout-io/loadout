@@ -27,6 +27,22 @@ export interface Connection {
 export interface ConnectionEnd {
   isValid: boolean;
   fromNode: { id: string } | null;
+  /**
+   * Czy wskaźnik puszczono NAD ISTNIEJĄCYM KAFELKIEM — `toNode` z `FinalConnectionState`.
+   *
+   * 2026-08-22 — TO JEST NAPRAWA ZGŁOSZONA PRZEZ WŁAŚCICIELA, a nie zabezpieczenie na zapas.
+   * `isValid` mówi wyłącznie „upuszczono na UCHWYCIE, i wolno tam było". Powrót ciągnie się
+   * z dolnej kropki sędziego na GÓRNĄ kropkę kroku, do którego wraca praca — czyli w bok
+   * i do góry, przez pół płótna. Kto minie tę kropkę o kilka pikseli i puści nad korpusem
+   * kafelka, dostawał `isValid: false` i tę funkcję, która robiła mu WTEDY NOWY KROK: dokładnie
+   * ten kafelek-widmo, na który właściciel zgłosił „nowy step się robi, jak próbuję tak zrobić".
+   *
+   * Widmo nie kończyło się na jednym zbędnym kafelku. Skasowanie go zostawiało strzałkę, która
+   * już nie miała gdzie celować, a walidator meldował z tego `"Backend check" points at a step
+   * that is not in this workflow (s_11)` — uwagę o kroku, którego człowiek nigdy nie chciał.
+   * Drugą połowę tej samej awarii zamyka `toFile` (`./map.ts`).
+   */
+  overTile: boolean;
 }
 
 /** Zdarzenie wskaźnika obcięte do jedynej rzeczy, której potrzebujemy: punktu upuszczenia
@@ -61,13 +77,77 @@ export function isValidConnection(connection: Connection, file: WorkflowFile): b
    * a plik niesie obie. „Już jest" wygląda dla użytkownika tak samo jak „narysowano". */
   if (file.links.some((link) => link.from === source && link.to === target)) return false;
 
-  /* DRUGI POWRÓT ODMAWIAMY TUTAJ, w chwili gestu. Rust daje na niego `Problem`
-   * (`check::two_ways_back`), czyli po narysowaniu plik przestałby się zapisywać — a płótno,
-   * które pozwala narysować rzecz blokującą zapis, jest gorsze od takiego, które mówi „nie"
-   * od razu: pierwsze kasuje pracę po cichu, drugie kosztuje jeden nieudany gest. */
-  if (wouldCloseACircle(source, target, file) && file.links.some(isAWayBack)) return false;
+  /* POWRÓT PRZECINAJĄCY CUDZĄ PĘTLĘ ODMAWIAMY TUTAJ, w chwili gestu. Rust daje na niego
+   * `Problem` (`check::loops_that_cross`), czyli po narysowaniu plik przestałby się zapisywać —
+   * a płótno, które pozwala narysować rzecz blokującą zapis, jest gorsze od takiego, które mówi
+   * „nie" od razu: pierwsze kasuje pracę po cichu, drugie kosztuje jeden nieudany gest.
+   *
+   * 2026-08-22 — DO TEGO DNIA ODMAWIALIŚMY KAŻDEGO DRUGIEGO POWROTU, i było to za szerokie.
+   * Graf z dwiema gałęziami (front i backend), z których każda ma własne sprawdzenie, potrzebuje
+   * dwóch pętli, które nie mają ze sobą nic wspólnego — a odmowa kazała wybrać jedną gałąź.
+   * Granica biegnie dziś tam, gdzie naprawdę leży: pętle ROZŁĄCZNE rozwijają się niezależnie
+   * (`workflow::unroll`), a przecinające się i zagnieżdżone dalej nie, bo dla nich nie wiadomo,
+   * która runda wychodzi na zewnątrz. */
+  if (wouldCloseACircle(source, target, file)) {
+    const body = loopBody(source, target, file);
+    const crossed = file.links
+      .filter(isAWayBack)
+      .some((link) => shareAStep(body, loopBody(link.from, link.to, file)));
+    if (crossed) return false;
+  }
 
   return true;
+}
+
+/** Czy te dwa ciała pętli mają choć jeden wspólny krok. */
+function shareAStep(one: ReadonlySet<string>, other: ReadonlySet<string>): boolean {
+  for (const id of one) {
+    if (other.has(id)) return true;
+  }
+  return false;
+}
+
+/** Kroki, do których da się dojść W PRZÓD od `start`, wliczając `start`.
+ *
+ * Powroty się nie liczą — kolejność pracy wyznaczają strzałki BEZ powrotów, bo tylko one znaczą
+ * „po". Ta sama reguła i ten sam powód, co przy liczeniu rzędów w `tidy.ts` i przy `forward`
+ * w walidatorze Rusta. */
+function ahead(start: string, file: WorkflowFile): Set<string> {
+  const seen = new Set<string>();
+  const stack = [start];
+  for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+    if (seen.has(at)) continue;
+    seen.add(at);
+    for (const link of file.links) {
+      if (!isAWayBack(link) && link.from === at) stack.push(link.to);
+    }
+  }
+  return seen;
+}
+
+/** Kroki, z których da się dojść do `goal`, wliczając `goal`. Lustro [`ahead`]. */
+function behind(goal: string, file: WorkflowFile): Set<string> {
+  const seen = new Set<string>();
+  const stack = [goal];
+  for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+    if (seen.has(at)) continue;
+    seen.add(at);
+    for (const link of file.links) {
+      if (!isAWayBack(link) && link.to === at) stack.push(link.from);
+    }
+  }
+  return seen;
+}
+
+/** Ciało pętli domkniętej powrotem `judge → entry`: kroki, które ta pętla powtarza.
+ *
+ * Dokładnie ta sama definicja, co po stronie Rusta (`workflow::unroll`): krok należy do ciała,
+ * jeżeli da się do niego dojść w przód z `entry` I da się z niego dojść do `judge`. Oba końce
+ * powrotu należą do ciała. Dwie definicje tego zbioru rozjechałyby się przy pierwszej poprawce,
+ * a rozjazd znaczyłby, że płótno przepuszcza plik, którego Rust odmawia. */
+export function loopBody(judge: string, entry: string, file: WorkflowFile): Set<string> {
+  const back = behind(judge, file);
+  return new Set([...ahead(entry, file)].filter((id) => back.has(id)));
 }
 
 /** Czy ta krawędź jest POWROTEM — czyli czy wolno jej domknąć koło. Lustro `Link::is_a_way_back`. */
@@ -119,11 +199,89 @@ export function onConnect(connection: Connection, file: WorkflowFile): WorkflowF
   return { ...file, links: [...file.links, link] };
 }
 
+/** Nazwa kroku, tak jak stoi na kafelku. To ona jedzie w zdaniu do człowieka — `s_4` jest
+ * identyfikatorem z pliku i na ekranie nie ma czego szukać (niezmiennik 14). */
+function named(id: string, file: WorkflowFile): string {
+  return file.steps.find((step) => step.id === id)?.name ?? id;
+}
+
+/** Wynik przycisku „Add loop": dokument albo zdanie, dlaczego tej pętli nie da się zrobić. */
+export interface LoopAdded {
+  file: WorkflowFile;
+  /** Zdanie dla człowieka. `null` znaczy „powstała". */
+  refused: string | null;
+}
+
+/** Pętla zrobiona WSKAZANIEM DWÓCH KAFELKÓW, a nie pociągnięciem strzałki przez pół płótna.
+ *
+ * 2026-08-22 — ZGŁOSZENIE WŁAŚCICIELA. Powrót dawał się dotąd narysować wyłącznie gestem z dolnej
+ * kropki sędziego na górną kropkę kroku, do którego wraca praca — czyli w bok i do góry, obok
+ * dwóch innych kafelków. Kto minął kropkę, dostawał kafelek-widmo (`onConnectEnd`), a po jego
+ * skasowaniu — uwagę o strzałce celującej w krok, którego nie ma. Gest, który tak łatwo kończy
+ * się czymś innym, niż chciał człowiek, nie jest jedynym wejściem do funkcji, na której stoi
+ * cały kształt „implementer → sprawdzenie → poprawka".
+ *
+ * `judge` to krok, z którego powrót WYCHODZI — ten, który orzeka. `entry` to krok, do którego
+ * wraca praca. Ta sama para i ta sama kolejność, co w `Link { from, to }`, żeby nie było dwóch
+ * odpowiedzi na pytanie, który koniec jest który.
+ *
+ * ODMOWA JEST ZDANIEM, NIE CISZĄ, i to jest różnica wobec `isValidConnection`. Tam człowiek
+ * ciągnie strzałkę i widzi, że nie łapie; tutaj klika dwa kafelki i bez zdania nie wiedziałby,
+ * czy pętla powstała, czy nie. */
+export function addLoop(judge: string, entry: string, file: WorkflowFile): LoopAdded {
+  if (judge === entry) {
+    return { file, refused: 'Pick two different steps.' };
+  }
+  if (file.links.some((link) => isAWayBack(link) && link.from === judge)) {
+    return { file, refused: `"${named(judge, file)}" already sends the work back.` };
+  }
+  /* Powrót ma dokąd wracać tylko wtedy, gdy sędzia naprawdę biegnie PO tamtym kroku. Bez tego
+   * warunku dwa kliknięcia w przypadkowe kafelki dałyby strzałkę, którą walidator Rusta i tak
+   * odrzuci jako nieoznaczone koło — czyli plik, który przestaje się zapisywać. */
+  if (!ahead(entry, file).has(judge)) {
+    return {
+      file,
+      refused: `"${named(judge, file)}" does not run after "${named(entry, file)}", so there is nothing to send the work back to.`,
+    };
+  }
+  const body = loopBody(judge, entry, file);
+  if (
+    file.links
+      .filter(isAWayBack)
+      .some((link) => shareAStep(body, loopBody(link.from, link.to, file)))
+  ) {
+    return {
+      file,
+      refused:
+        'This loop would cross another one. Loadout runs loops side by side, never one inside another.',
+    };
+  }
+
+  /* Strzałka `judge → entry` MOŻE JUŻ ISTNIEĆ jako zwykłe „po" — wtedy ją podnosimy, zamiast
+   * dokładać drugą o tym samym znaczeniu. Dwie strzałki między tą samą parą kroków dają na
+   * płótnie jeden identyfikator krawędzi i React gubi jedną z nich (`map.ts`, `eachArrowOnce`). */
+  const standing = file.links.some((link) => link.from === judge && link.to === entry);
+  return {
+    file: {
+      ...file,
+      links: standing
+        ? file.links.map((link) =>
+            link.from === judge && link.to === entry
+              ? { ...link, max_turns: TURNS_BY_DEFAULT }
+              : link,
+          )
+        : [...file.links, { from: judge, to: entry, max_turns: TURNS_BY_DEFAULT }],
+    },
+    refused: null,
+  };
+}
+
 /** Upuszczenie końca strzałki.
  *
- * Na PUSTYM płótnie (`isValid: false`) powstaje jeden krok rodzaju `agent` w przyciągniętym
- * punkcie upuszczenia i jedna strzałka do niego — „utwórz i połącz jednym ruchem"
- * [T3 §9, „MVP ships" punkt 2]. Nad istniejącym kafelkiem (`isValid: true`) nie powstaje nic.
+ * Na PUSTYM płótnie powstaje jeden krok rodzaju `agent` w przyciągniętym punkcie upuszczenia
+ * i jedna strzałka do niego — „utwórz i połącz jednym ruchem" [T3 §9, „MVP ships" punkt 2].
+ * „Puste" znaczy od 2026-08-22 dwie rzeczy naraz: ani uchwyt (`isValid`), ani korpus cudzego
+ * kafelka (`overTile`). Nad kafelkiem nie powstaje NIC.
  *
  * Identyfikator nowego kroku wyprowadzamy z dokumentu, a nie z zegara ani z losowości: funkcja
  * ma być czysta, a plik ma się dać porównać gitem po dwóch takich samych gestach. */
@@ -132,10 +290,10 @@ export function onConnectEnd(
   connection: ConnectionEnd,
   file: WorkflowFile,
 ): WorkflowFile {
-  /* Upuszczenie nad istniejącym kafelkiem albo strzałka znikąd: nie powstaje NIC. Strzałkę
-   * rysuje w tym wypadku `onConnect`, a krok dorobiony tutaj byłby kafelkiem-widmem przy
-   * każdym udanym połączeniu. */
-  if (connection.isValid || connection.fromNode === null) return file;
+  /* Upuszczenie nad istniejącym kafelkiem — na uchwycie albo obok niego, na korpusie — albo
+   * strzałka znikąd: nie powstaje NIC. Udane połączenie rysuje `onConnect`, a nieudane jest
+   * gestem, który się nie udał, i tyle. Krok dorobiony tutaj byłby kafelkiem-widmem. */
+  if (connection.isValid || connection.overTile || connection.fromNode === null) return file;
 
   const step = freshStep('agent', freshId(file), snap(event.at));
   return {
@@ -221,6 +379,17 @@ export function addStep(
 
 export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
   if (kind === 'checkpoint') return { kind, id, name: 'Ask me first', at };
+  /* Pusta komenda, nie przykład w rodzaju `npm run dev`. Wypełniacz wygląda na płótnie dokładnie
+   * tak samo jak decyzja człowieka — a ten kafelek URUCHAMIA to, co w nim stoi. */
+  if (kind === 'serve')
+    return {
+      kind,
+      id,
+      name: 'Start and leave running',
+      command: '',
+      folder: { use: 'project' },
+      at,
+    };
 
   return {
     kind,

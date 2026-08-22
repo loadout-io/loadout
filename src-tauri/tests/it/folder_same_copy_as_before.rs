@@ -165,6 +165,7 @@ async fn a_chain_of_three_steps_works_in_one_tree() -> Result<(), Box<dyn Error>
         project: &project,
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
@@ -174,6 +175,8 @@ async fn a_chain_of_three_steps_works_in_one_tree() -> Result<(), Box<dyn Error>
         // biegną razem.
         how_many_at_once: 3,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let recorder = Delivered::default();

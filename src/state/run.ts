@@ -112,6 +112,14 @@ export interface RunState {
    */
   readonly workflow: string;
   /**
+   * Nazwa PLIKU workflow, którym ten bieg poszedł — `''`, kiedy nic nie biegnie.
+   *
+   * 2026-08-23 — doszła dla ponownego odpalenia kroku: `workflow` niesie nazwę widoczną dla
+   * człowieka, a komenda potrzebuje pliku. Dwa różne fakty, dwa pola — zgadywanie nazwy pliku
+   * z tytułu byłoby drugim miejscem z odpowiedzią „gdzie to leży" (T3 §8.3).
+   */
+  readonly fileName: string;
+  /**
    * Folder, w którym pracuje ten bieg — albo `null`, kiedy nic nie biegnie i kiedy człowiek
    * nie wskazał żadnego.
    *
@@ -153,7 +161,12 @@ export interface RunState {
    * (`stop-becomes-reachable.test.tsx` przez `start()`), a jego brak znaczy dokładnie to,
    * co znaczy `null` po drugiej stronie granicy: „człowiek nie wskazał folderu".
    */
-  nowRunning: (workflow: string, steps: readonly Step[], folder?: string | null) => void;
+  nowRunning: (
+    workflow: string,
+    steps: readonly Step[],
+    folder?: string | null,
+    fileName?: string,
+  ) => void;
 
   /** Zapisuje odpowiedź człowieka. */
   answer: (questionId: number, option: string) => void;
@@ -243,6 +256,7 @@ export function createRunStore(): RunStore {
     agents: [],
     steps: [],
     workflow: '',
+    fileName: '',
     folder: null,
     answers: [],
 
@@ -280,12 +294,17 @@ export function createRunStore(): RunStore {
       return batch;
     },
 
-    nowRunning(workflow: string, steps: readonly Step[], folder: string | null = null): void {
+    nowRunning(
+      workflow: string,
+      steps: readonly Step[],
+      folder: string | null = null,
+      fileName = '',
+    ): void {
       /* Podstawienie, nie doklejanie: plan biegu przychodzi z grafu w całości i drugi bieg
        * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
        * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
        * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
-      set({ workflow, steps, folder });
+      set({ workflow, steps, folder, fileName });
     },
 
     answer(questionId: number, option: string): void {

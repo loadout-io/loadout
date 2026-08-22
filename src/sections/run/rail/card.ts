@@ -51,6 +51,14 @@ export interface RailCard {
   /** Nazwa tokenu tożsamości. Nigdy token stanu, nawet dla agenta `failed`. */
   readonly square: string;
   readonly status: AgentStatus;
+  /**
+   * Klucz kafelka z pliku workflow — po nim powtarza się ten krok.
+   *
+   * `null` dla agenta, którego w grafie nie ma: pod-agent rozpuszczony w trakcie biegu nie ma
+   * czego powtórzyć, więc jego kafelek nie dostaje przycisku (niezmiennik 16 — kontrolka bez
+   * skutku nie wchodzi do repo).
+   */
+  readonly stepId: string | null;
 }
 
 /**
@@ -68,6 +76,8 @@ export interface AgentInRun {
   readonly name: string;
   readonly role: string;
   readonly status: AgentStatus;
+  /** Klucz kafelka z pliku workflow, albo `null` dla agenta, którego w grafie nie ma. */
+  readonly stepId?: string | null;
   /** Wszystko, co ten agent nadał, w kolejności napłynięcia. */
   readonly lines: readonly Utterance[];
 }
@@ -88,5 +98,6 @@ export function railCard(agent: AgentInRun): RailCard {
     /* Z `id`, nie z `name`: podpis w strumieniu jest tym, co się nie zmienia. */
     square: identityToken(agent.id),
     status: agent.status,
+    stepId: agent.stepId ?? null,
   };
 }

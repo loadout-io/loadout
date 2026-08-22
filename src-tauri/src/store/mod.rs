@@ -46,7 +46,7 @@ pub mod migrate;
 /// Katalog biegu → wiersze indeksu. Prywatny, bo jest drogą wejścia do [`Store::rebuild_from`],
 /// a nie osobnym API: gdyby ktoś mógł go wywołać z pominięciem [`Store`], mógłby też ominąć
 /// jedyne miejsce, które te wiersze niesie do pisarza.
-mod rebuild;
+pub(crate) mod rebuild;
 pub mod schema;
 pub mod writer;
 

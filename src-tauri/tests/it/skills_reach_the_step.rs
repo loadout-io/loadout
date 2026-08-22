@@ -231,12 +231,15 @@ async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 3,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let (sink, source) = line_channel(QUEUE_CAP);

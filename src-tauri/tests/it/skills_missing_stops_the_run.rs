@@ -320,12 +320,15 @@ async fn one_run(
         project: bench.project.path(),
         store: &store,
         drivers: counting_drivers(Arc::clone(&started)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow,
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     let (sink, source) = line_channel(QUEUE_CAP);

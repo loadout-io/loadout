@@ -262,12 +262,15 @@ async fn one_run(
         project: bench.project.path(),
         store,
         drivers: fake_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: workflow.to_path_buf(),
         how_many_at_once: 1,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // 2026-08-17 (T-30) — bieg oddaje linie POJEDYNCZO do `LineSink`, a sklejaniem zajmuje się

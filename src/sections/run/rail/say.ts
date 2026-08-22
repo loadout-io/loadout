@@ -90,6 +90,8 @@ export function authorityOf(kind: Kind): Who {
 export interface Utterance {
   readonly kind: Kind;
   readonly text?: string;
+  /** Tylko na linii `done`: jak agent skończył. Kafelek czyta stąd swój stan, nigdy ze zdania. */
+  readonly ended?: 'well' | 'badly' | 'stopped';
 }
 
 /**

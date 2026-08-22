@@ -360,12 +360,15 @@ async fn plan_then_build() -> Result<(RunReport, Arc<Watch>, Bench), Box<dyn Err
         project: bench.project.path(),
         store: &store,
         drivers,
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
     let request = RunRequest {
         workflow: bench.workflow.clone(),
         how_many_at_once: 2,
         task: None,
+        only: None,
+        handoffs_from: None,
     };
 
     // Linie tego kryterium nie interesują: sądzi ono `RunSpec`, który przeszedł do sterownika.

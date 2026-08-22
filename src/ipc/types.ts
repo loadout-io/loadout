@@ -94,6 +94,8 @@ export type Line =
       turns: number;
       durationMs: number;
       costUsd: number | null;
+      /** Jak się skończyło — lustro `engine::line::Ended`. Okno NIE czyta tego z `text`. */
+      ended: 'well' | 'badly' | 'stopped';
     };
 
 /** Czy jedna wartość z drutu ma kształt, którego lustro się po niej spodziewa. */
@@ -151,7 +153,7 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],
   ['problem', { agent: str, text: str, resetsAt: maybeNum }],
-  ['done', { agent: str, text: str, turns: num, durationMs: num, costUsd: maybeNum }],
+  ['done', { agent: str, text: str, turns: num, durationMs: num, costUsd: maybeNum, ended: str }],
 ]);
 
 /**
