@@ -4,6 +4,93 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-22, 15:13 — T-75 w main, T-76 cofnięte pomiarem, cztery defekty harnessu, osiem nowych kontraktów
+
+Właściciel polecił zacommitować zastaną pracę, wyładować gałęzie importu i zacząć budowę
+domknięcia importu setupu. Wykonane wszystko poza wyładowaniem T-76, które **cofnięte**.
+
+**Zastana praca T-34 zacommitowana bez pętli.** 62 pliki (+7939/-793) leżały na main
+niezacommitowane: dowody biegu, allowlistowany raport diagnostyczny i obrazy wklejane do
+rozmowy Lead. Powstały bezpośrednio na trunku — bez worktree, bez czerwonego `before`, bez
+drugiej opinii. Nie da się tego odtworzyć wstecz, więc jest to zapisane w commicie `800ebc3`
+zamiast udawać zwykłą drogę. Jedyny dowód jest zewnętrzny wobec kryteriów T-34: pełna bramka
+zielona. **Nikt nie sprawdził, że sześć kryteriów T-34 jest czerwonych bez implementacji** —
+czyli nie wiadomo, czy cokolwiek mierzą. To zostaje otwarte.
+
+**T-75 wylądowane** (`9564616`). Cztery konflikty, wszystkie tego samego kształtu: T-34 i T-75
+dokładają do tych samych typów dwa równoległe, dyn-safe szwy z domyślnym `None` —
+`with_evidence` i `configured`. Rozwiązane sumą. Jedno miejsce wymagało decyzji: w
+`commands/run.rs` oba opakowania oddają KLON sterownika, więc kolejność (Connections →
+dziedziczenie → dowody) jest wymuszona i milcząca; odwrócenie kompiluje się i cicho gubi
+`--mcp-config` albo plik dowodu. Powód stoi w komentarzu przy tych liniach.
+
+**Dwie wady, których git nie zgłosił jako konflikt.** `lib.rs:299` — automatyczny merge skleił
+dwa ogony jednego komentarza blokowego i plik przestał się parsować, z meldunkiem
+„Auto-merging". Trzy literały struktur w testach `codex.rs` bez nowego pola (E0063). Obie
+znalazł dopiero `cargo check --all-targets --keep-going`; bez `--keep-going` druga wyszłaby
+po naprawie pierwszej.
+
+**T-76 wylądowane i cofnięte** (`bdc622b`, revert `7e77548`). Bramka po merge'u czerwona:
+`full-test` 15/1, dwa testy z `setup-is-real.test.tsx`. Przyczyna to kolizja kontraktów, nie
+wada merge'a: T-75 AC-10 obiecuje „człowiek uruchamia Scan, widzi cztery statusy, wszystkie
+blockery", a T-76 zamknął całą tabelę za `preview.analysis === undefined ? null :`. Kryterium
+T-75 uruchomione NA GAŁĘZI T-76 daje `2 failed | 2 passed` — regresja przyjechała z gałęzią,
+a bramka gałęzi jej nie zobaczyła, bo tam biegł tylko `verify.sh quick`.
+
+>>> T-76 WYMAGA RUNDY NAPRAWCZEJ: tabela ma być widoczna po Scan, a sekcja analizy ma się do
+niej DOKŁADAĆ. I uwaga przy ponownym lądowaniu: git uznaje T-76 za wmergowany, więc samo
+`./integrate.sh T-76` wciągnie wyłącznie commity po reverke i cicho cofnie resztę. Najpierw
+`git revert 7e77548`, dopiero potem merge. <<<
+
+## Cztery defekty harnessu znalezione po drodze
+
+1. **`quick-permissions` wychodziło 2 na czystym main** — `T-75 owns AGENTS.md, but
+   Edit(AGENTS.md) forbids it`. Deklaracja była martwa (zero plików przez dwanaście commitów
+   gałęzi), zdjęta w `a8818ce`. `integrate.sh` ma jawną obronę przed lądowaniem na kodzie 2,
+   więc T-75 i tak by nie weszło — z komunikatem wyglądającym na winę gałęzi.
+
+2. **Strażnik N-08 był czerwony od 2026-08-16** (`abe8f02`). Wołał
+   `refresh_harness_from_trunk` bez `ID`, a ta funkcja mrozi `tasks/$ID.md` — przy pustym `ID`
+   mroziła `tasks/.md`, czyli nic, i to cicho, bo `git diff --quiet` na nieistniejącej ścieżce
+   jest prawdą. Zmierzone na wyekstrahowanej funkcji: bez ID `contract v2`, z ID `contract v1`,
+   oracle `new oracle` w obu. Mechanizm produkcyjny był sprawny; nieaktualne było wywołanie.
+   Skąd: `caf976c` zawęził zamrożenie do własnego pliku zadania i tknął wyłącznie ship-task.sh.
+
+3. **Strażniki biegną wyłącznie w `scripts/ci.sh`, a `integrate.sh` woła `verify.sh`.** Bramka
+   gałęzi i bramka lądowania ich nie znają, więc każde lądowanie przechodziło ponad czerwienią,
+   której żadna z nich nie widzi. To jest decyzja o tym, gdzie mają mieszkać strażniki —
+   **czeka na człowieka**.
+
+4. **`quick-scope` ma strażnika, który pudłuje, i cztery sprawdzenia nie mają go wcale.**
+   Po naprawie N-08 bramka doszła wreszcie do etapu guards: 10 strzeliło poprawnie, 1 spudłował,
+   4 bez strażnika (`before-spec-owns`, `quick-invoke-args`, `quick-tests-listed`,
+   `quick-wired`). Pudło: po zdjęciu zasadzonego naruszenia `quick-scope` nadal świeci przez
+   `.claude/settings.local.json` i `.claude/worktrees/` — nieśledzone, sprzed tej sesji.
+   **Łatwa naprawa jest oszustwem i nie została wykonana**: dopisanie ich do `GENERATED`
+   oślepia sprawdzenie na plik, który NADAJE UPRAWNIENIA (`allow: Bash(ps -eo pid,command)`),
+   czyli osiąga od drugiej strony dokładnie to, przed czym broni wyłączony `.gitignore`.
+   Właściwa naprawa: strażnik ma dowodzić, że sprawdzenie REAGUJE na zasadzone naruszenie,
+   a nie że jest zielone w tym środowisku. To zmiana w `harness/guards.sh` dotykająca
+   wszystkich jedenastu strażników — **czeka na człowieka**.
+
+Piąte, drobniejsze: `integrate.sh` umie rozwiązać konflikt TREŚCI `TASK.md`, ale nie
+SKASOWANIA — a skasowanie robi sam, trzydzieści linii niżej. Każde lądowanie po tym, w którym
+TASK.md zniknął z trunka, trafi w `error: path 'TASK.md' does not have our version`.
+
+## Osiem kontraktów na domknięcie importu (`c05bb6b`)
+
+T-77 ekran importu jako sekcja paska · T-78 typowany model i receipt · T-79 skille docierają
+do vendora · T-80 pamięć per agent · T-81 MCP: parsery i pętla zwrotna · T-82 rekonstrukcja
+workflow · T-83 reimport i naprawa · T-84 tabela Skills.
+
+Trzy rzeczy zmierzone w kodzie, które zmieniły podział wobec planu właściciela:
+`connections::runtime` już odmawia startu dla wyłączonego połączenia (dwa kryteria z planu
+byłyby zielone w `before`); `RunSpec` nie ma `Default` i konstruuje go 31 plików, więc nowe
+pole to fala, a nie linia; siódma sekcja paska kosztuje pięć plików powłoki, z czego trzy są
+cudzymi kryteriami.
+
+Stan na teraz: main zielony (15/0, 92,71 s), T-77 biegnie przez `ship-task.sh`.
+
 ## 2026-08-21, 13:57 — T-74 w main i uruchomione; Linear ma pełną drogę konfiguracji
 
 Właściciel odrzucił ręczne tworzenie JSON-u po T-65 i polecił zbudować najpierw prawdziwy
