@@ -369,7 +369,6 @@ pub fn run() {
                 if let Err(error) = commands::run::stop_before_closing(&state.deps()).await {
                     tracing::error!("closing anyway: the run could not be stopped: {error}");
                 }
-                state.stop_import_analysis();
                 /* Rozmowa z orchestratorem też jest procesem — po zamknięciu okna przeszłaby pod
                  * PID 1 i pracowała dalej, a odzyskiwanie po niej nie posprząta, bo rozmowa nie ma
                  * wpisu w indeksie biegów. */

@@ -16,7 +16,6 @@ fn scan_and_apply_cross_the_real_product_seam() -> Result<(), Box<dyn std::error
             expected_source_hashes: preview.draft.source_hashes,
             enable_connections: vec![],
             leave_out: vec![],
-            analysis: None,
         },
     )?;
     assert!(
@@ -58,7 +57,6 @@ fn an_explicit_leave_out_choice_crosses_ipc_and_unblocks_apply()
             expected_source_hashes: preview.draft.source_hashes,
             enable_connections: vec![],
             leave_out: vec![choice],
-            analysis: None,
         },
     )?;
     assert_eq!(
@@ -101,7 +99,6 @@ fn an_explicit_skip_keeps_an_unknown_setting_from_blocking_compatible_items()
             expected_source_hashes: preview.draft.source_hashes,
             enable_connections: vec![],
             leave_out: vec![unknown],
-            analysis: None,
         },
     )?;
 
