@@ -35,6 +35,31 @@
 //! manifestem. Nazwa wzięta z katalogu biegu zmieniałaby się co bieg i żaden ekran nie mógłby
 //! pokazać jej dwa razy tak samo — dlatego punkt (e) pyta o manifest i o to, czy jego nazwa jest
 //! niezależna od biegu.
+//!
+//! # Czego punkt (e) NIE dowodzi i skąd bierze się drugi test w tym pliku
+//!
+//! Punkt (e) składa nazwy, którymi sesja **ogłosi się**, z półki na dysku i z przedrostka
+//! z manifestu. Oba te źródła są prawdziwe i żadne z nich nie jest listą wpisaną przez test —
+//! ale żadne z nich nie jest też **odpowiedzią vendora**. Reguła „katalog musi mieć poziom
+//! `skills/`" jest zmierzona [S1 §2, M3 vs M3a], czyli jest naszą wiedzą o Claude Code z jednego
+//! dnia i jednej wersji CLI; zdanie „a więc te nazwy się zarejestrują" wypowiada tu nasz model
+//! vendora, nie sam vendor. Vendor, który jutro przestanie wczytywać ten układ, przechodzi
+//! wszystkie sześć punktów niżej i rejestruje zero umiejętności — czyli dokładnie ten fałszywy
+//! zielony ptaszek, przed którym stoi całe to zadanie.
+//!
+//! Odpowiedź vendora czyta więc [`claude_itself_announces_exactly_the_skills_this_run_placed`]:
+//! uruchamia PRAWDZIWE Claude Code z tym samym fragmentem argv, bierze linię `system`/`init`
+//! z transkryptu tego biegu i przepuszcza ją przez [`place::discovery_from_init`] — czyli przez
+//! tę samą regułę, którą Loadout czyta zdarzenia inicjujące wszędzie indziej (T-18), a nie przez
+//! `init.contains(nazwa)` napisane na miejscu.
+//!
+//! **Ten test jest `#[ignore]`, bo sięga do konta i do sieci**, a kryterium padające razem
+//! z `Wi-Fi` nie jest czerwienią kodu (ten sam powód i ten sam kształt, co `flow_skill.rs`).
+//! Linia `check:` tego kryterium nie podaje `--include-ignored` i **nie da się jej stąd zmienić**:
+//! `TASK.md` jest wyrocznią. To znaczy dokładnie tyle, że w bramce zostaje dowód z dysku
+//! i manifestu, a dowód od vendora przechodzi się ręcznie — `cargo test --test it
+//! skills_reach_claude:: -- --ignored` — po każdej zmianie w `inherit::rewrite` i po każdej
+//! podbitej wersji CLI. Jest to zapisane tutaj, a nie przemilczane.
 
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
@@ -66,6 +91,8 @@ use loadout_lib::engine::drivers::{
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
+use loadout_lib::skills::place;
+use loadout_lib::skills::place::Discovery;
 use loadout_lib::store::Store;
 use tauri::ipc::Channel;
 use tempfile::TempDir;
@@ -364,6 +391,149 @@ async fn the_plugin_directory_lands_in_this_run_and_its_path_reaches_the_claude_
     );
 
     Ok(())
+}
+
+/// Sufit na prawdziwą sesję: model i sieć, nie atrapa. Regresja ma się objawić czerwienią,
+/// a nie zawieszeniem.
+const LIVE: Duration = Duration::from_secs(180);
+
+/// Ile miejsca mają kanały. Z zapasem: pełny kanał zatrzymuje pętlę czytającą, a zatrzymana
+/// pętla wygląda dokładnie jak zawieszony agent.
+const CHANNEL: usize = 256;
+
+/// Krok, którego strumień zapisujemy — po jego identyfikatorze nazywa się plik transkryptu.
+const LIVE_STEP: &str = "01996500-0000-7000-8000-0000000000e3";
+
+/// Zadanie tury: najtańsze, jakie da się zadać. To kryterium pyta o zdarzenie INICJUJĄCE, więc
+/// treść odpowiedzi nie ma tu głosu, a każde dłuższe zadanie kosztuje pieniądze bez powodu.
+const CHEAP: &str = "Reply with the single word: ok";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "uruchamia prawdziwe Claude Code (konto, siec, koszt); wolaj z --ignored"]
+async fn claude_itself_announces_exactly_the_skills_this_run_placed() -> Result<(), Box<dyn Error>>
+{
+    // Katalog pluginu buduje PRAWDZIWY BIEG, tak samo jak w teście wyżej: to jest ta ścieżka,
+    // którą naprawdę dostanie proces, i nic w tym pliku jej nie zmyśla.
+    let bench = Bench::new()?;
+    let (report, flags) = bench
+        .one_run(&workflow_file(CARRIES, "{}"), CARRIES)
+        .await?;
+    let plugin = value_after(&flags, PLUGIN_FLAG)
+        .ok_or("the run built no plugin directory, so there is nothing to ask Claude about")?;
+    let shelf = plugin.join(SKILLS_LEVEL);
+    let manifest = plugin.join(MANIFEST);
+    let text = fs::read_to_string(&manifest)
+        .map_err(|error| format!("the plugin has no manifest at {manifest:?}: {error}"))?;
+    let pinned = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| value.get("name")?.as_str().map(str::to_owned))
+        .ok_or_else(|| format!("{manifest:?} does not name the plugin: {text:?}"))?;
+    // Miejsca, w które pisaliśmy — to jest cała treść zgłoszenia „vendor tego nie widzi"
+    // (`Discovery::NotSeen::looked_in`), więc jadą tam prawdziwe ścieżki, nie pusta lista.
+    let wrote = [ALPHA, BETA]
+        .iter()
+        .map(|name| shelf.join(name))
+        .collect::<Vec<_>>();
+
+    // ── Prawdziwe CLI, ten sam fragment argv ──────────────────────────────────────────────
+    let driver = ClaudeDriver::new();
+    let probe = tokio::time::timeout(LIVE, driver.probe()).await??;
+    assert!(
+        probe.found,
+        "this oracle asks Claude Code itself and there is no claude on PATH. It is deliberately \
+         #[ignore]d for exactly that reason - install the CLI, log in, and run it again; it \
+         reported {probe:?}"
+    );
+
+    let logs = report.dir.join("logs");
+    fs::create_dir_all(&logs)?;
+    let (lines_tx, _lines) = mpsc::channel(CHANNEL);
+    let (events_tx, mut events) = mpsc::channel(CHANNEL);
+    let live = driver.with_inherited(flags).with_transcript(
+        loadout_lib::engine::drivers::claude::Transcript {
+            run_dir: report.dir.clone(),
+            step: LIVE_STEP.to_owned(),
+            agent: "Scribe".to_owned(),
+            lines: lines_tx,
+        },
+    );
+
+    let mut handle: Box<dyn AgentHandle> = tokio::time::timeout(
+        LIVE,
+        live.start(cheap_turn(bench.project.path()), events_tx),
+    )
+    .await??;
+    let _ = tokio::time::timeout(LIVE, handle.wait()).await??;
+    // Koniec sesji, nie koniec tury: bez tego czasownika skończony krok zostawia żywy proces
+    // [T1 §2], a pętla czytająca nigdy nie dojdzie do końca strumienia.
+    let _ = tokio::time::timeout(LIVE, handle.close()).await??;
+    tokio::time::timeout(LIVE, async { while events.recv().await.is_some() {} }).await?;
+
+    // ── To, co powiedział vendor ──────────────────────────────────────────────────────────
+    let transcript = logs.join(format!("agent-{LIVE_STEP}.jsonl"));
+    // Brak pliku czytamy jako pustkę celowo: ma paść asercja o zdarzeniu, a nie błąd wejścia-
+    // wyjścia, który bramka słusznie czyta jako fałszywą czerwień (AGENTS.md §2a p. 5).
+    let stream = fs::read_to_string(&transcript).unwrap_or_default();
+    let init = stream
+        .lines()
+        .find(|line| is_init(line))
+        .unwrap_or_default();
+    assert!(
+        !init.is_empty(),
+        "the session left no system/init event in {transcript:?}, so there is no answer from the \
+         vendor to read. Without it this test can only repeat what we put on disk, which is what \
+         the six points above already do. The transcript holds {} line(s)",
+        stream.lines().count()
+    );
+
+    // ROZSTRZYGA `discovery_from_init`, NIE `init.contains(nazwa)`: nazwa umiejętności potrafi
+    // stać w `cwd` i w nazwie serwera narzędzi, nie będąc w żadnej z dwóch tablic zdarzenia —
+    // a wtedy szukanie po całej linii mówi „widzi" i to jest ten sam fałszywy zielony ptaszek.
+    for name in [ALPHA, BETA] {
+        let announced = format!("{pinned}:{name}");
+        assert_eq!(
+            place::discovery_from_init(&announced, init, &wrote),
+            Discovery::Seen,
+            "this run put {name} in the directory it hands Claude, and the session that really \
+             started does not announce it as {announced:?}. A plugin directory that loads and \
+             registers nothing looks exactly like a healthy one from the outside (S1 section 2, \
+             run M3: 54 -> 54). The event was: {init}"
+        );
+    }
+
+    // …i ANI JEDNEJ NAZWY WIĘCEJ. Zasiana w bibliotece, nieprzypisana nikomu — implementacja
+    // podająca vendorowi całą bibliotekę wykłada się dopiero tutaj, i to ustami vendora.
+    let stranger = format!("{pinned}:{GAMMA}");
+    assert_eq!(
+        place::discovery_from_init(&stranger, init, &wrote),
+        Discovery::NotSeen {
+            looked_in: wrote.clone()
+        },
+        "{GAMMA} sits in the library and nobody ever asked for it, and the session announces it \
+         anyway. Handing an agent the whole shelf makes every narrowing on every step \
+         meaningless. The event was: {init}"
+    );
+
+    Ok(())
+}
+
+/// Czy ta linia jest zdarzeniem inicjującym sesję.
+///
+/// Po dwóch polach, nie po `contains("init")`: słowo `init` potrafi stać w treści dowolnej
+/// wiadomości, a wtedy przez werdykt szłaby linia, która o umiejętnościach nie mówi nic.
+fn is_init(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|event| {
+        event.get("type").and_then(serde_json::Value::as_str) == Some("system")
+            && event.get("subtype").and_then(serde_json::Value::as_str) == Some("init")
+    })
+}
+
+/// Jedna tania tura prawdziwego CLI.
+fn cheap_turn(cwd: &Path) -> RunSpec {
+    RunSpec {
+        prompt: CHEAP.to_owned(),
+        ..spec(cwd)
+    }
 }
 
 // ── pomiary ────────────────────────────────────────────────────────────────────────────────
