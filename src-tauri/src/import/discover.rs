@@ -457,6 +457,15 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
             "A complete skill bundle was found.".to_owned(),
         );
     }
+    classify_project_support(path, content, &text).unwrap_or_else(|| {
+        (
+            ItemKind::Unknown,
+            "Loadout does not recognize this project setting yet.".to_owned(),
+        )
+    })
+}
+
+fn classify_project_support(path: &Path, content: &str, text: &str) -> Option<(ItemKind, String)> {
     if path == Path::new(".mcp.json")
         || path == Path::new(".rulesync/mcp.json")
         || path == Path::new(".rulesync/mcp.jsonc")
@@ -464,36 +473,36 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
         || path == Path::new(".agents/mcp.jsonc")
         || path == Path::new(".codex/config.toml") && content.contains("mcp_servers")
     {
-        return (
+        return Some((
             ItemKind::Connection,
             "Project tool connections were found and will stay off until approved.".to_owned(),
-        );
+        ));
     }
     if text.starts_with(".claude/settings") && content.contains("hooks")
         || path == Path::new(".codex/hooks.json")
         || path == Path::new(".rulesync/hooks.json")
         || path == Path::new(".rulesync/hooks.jsonc")
     {
-        return (ItemKind::Hook, "A project hook was found.".to_owned());
+        return Some((ItemKind::Hook, "A project hook was found.".to_owned()));
     }
     if text.starts_with(".claude/hooks/")
         || text.starts_with(".codex/hooks/")
         || text.starts_with(".agents/hooks/")
     {
-        return (
+        return Some((
             ItemKind::Hook,
             "A project hook script was found.".to_owned(),
-        );
+        ));
     }
     if text.starts_with(".claude/agent-memory/")
         && path.file_name().is_some_and(|name| name == "MEMORY.md")
         || text.starts_with(".claude/learnings/") && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".codex/learnings/") && path.extension().is_some_and(|ext| ext == "md")
     {
-        return (
+        return Some((
             ItemKind::Memory,
             "Project guidance for an agent was found.".to_owned(),
-        );
+        ));
     }
     if text.starts_with(".claude/rules/")
         || text.starts_with(".claude/automation/")
@@ -511,12 +520,9 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
         || path == Path::new("CLAUDE.md")
         || path == Path::new("CLAUDE.local.md")
     {
-        return (ItemKind::Rule, "A project rule was found.".to_owned());
+        return Some((ItemKind::Rule, "A project rule was found.".to_owned()));
     }
-    (
-        ItemKind::Unknown,
-        "Loadout does not recognize this project setting yet.".to_owned(),
-    )
+    None
 }
 
 fn looks_like_workflow(content: &str) -> bool {
