@@ -44,6 +44,7 @@ import type { FeedLine, Step } from '../../state/run';
 import { useRun } from '../../state/run';
 import { useWorkspaces } from '../../state/workspaces';
 import { addresseeOf } from './addressee';
+import { saidOf } from './entry/echo';
 import type { WindowLine } from './entry/echo';
 import { IMAGE_SEND_FAILED, IMAGES_TO_LEAD_ONLY } from './entry/images';
 import type { ConversationImage } from './entry/images';
@@ -488,6 +489,36 @@ export default function Run(): ReactElement {
   }
 
   /**
+   * Zdanie o biegu, którego nie udało się zacząć → DO STRUMIENIA, nie do slotu pod paskiem.
+   *
+   * 2026-08-22 (T-79) — CO TU BYŁO I DLACZEGO TO BYŁO ZA MAŁO. Stało tu `onSaid={setSaid}`, więc
+   * odmowa startu lądowała w `useState` tego ekranu (`data-screen-said`). Stan renderu ginie
+   * razem z komponentem, a `src/App.tsx` montuje dokładnie jedną sekcję: wyjście do Agentów
+   * i powrót zostawiało bieg, który się nie zaczął, i ekran, który o tym milczy. Odmowa
+   * o umiejętności, której krok nie mógł dostać, jest dokładnie tym zdaniem, którego nie wolno
+   * zgubić — bez niego „agent nie zna tej umiejętności" wygląda z zewnątrz identycznie jak
+   * „model nie uznał, że warto po nią sięgnąć" (niezmiennik 29).
+   *
+   * DO STRUMIENIA, A NIE DO OBU MIEJSC. Model widoku żyje na poziomie modułu (`./feed/live`), bo
+   * bieg trwa dłużej niż ekran — więc wiersz przeżywa wyjście do innej sekcji, a `data-screen
+   * -said` nie. Postawienie zdania w obu miejscach dałoby dwa żywe regiony na jeden fakt
+   * (niezmiennik 13), z których jeden znika przy pierwszym przejściu między sekcjami. Slot pod
+   * paskiem zostaje przy dwóch faktach, które o biegu nie mówią: przy folderze i przy Stopie.
+   *
+   * TĄ SAMĄ DROGĄ, CO ODPOWIEDZI WIERSZA WEJŚCIA (`./entry/entry.tsx` woła `onShowInStream
+   * (saidOf(…))`): rozmowa z Loadoutem jest JEDNĄ historią, a nie dwiema połówkami w dwóch
+   * miejscach ekranu.
+   *
+   * `null` znaczy „nie ma o czym mówić" i jest normalnym stanem — kontrolka startu czyści nim
+   * poprzednią odpowiedź, zanim spróbuje jeszcze raz. Historii się nie czyści: wiersz, który
+   * już stanął, opisuje to, co się naprawdę wydarzyło.
+   */
+  function sayWhatDidNotStart(sentence: string | null): void {
+    if (sentence === null) return;
+    showInStream(saidOf(sentence));
+  }
+
+  /**
    * Kliknięcie w kolumnę strumienia oddaje kursor polu — chyba że celowało w kontrolkę.
    *
    * DRUGA POŁOWA WADY „kursor nie stoi w polu" (zgłoszenie właściciela 2026-08-20). Pole, które
@@ -580,7 +611,7 @@ export default function Run(): ReactElement {
                     ekranu. W fazie `before` komponent jest pustym szkieletem: prawdziwy mount
                     istnieje, a kryterium pada na braku kontrolki, nie brakującym imporcie. */}
                 <Diagnostics folder={folder} />
-                <Start running={running} onSaid={setSaid} />
+                <Start running={running} onSaid={sayWhatDidNotStart} />
               </div>
             }
           />
