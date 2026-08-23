@@ -160,13 +160,24 @@ async fn a_saved_agent_a_saved_workflow_and_a_run_that_actually_ran() -> Result<
     // To jest asercja, której brak przepuszczał najdroższy defekt frontu: pola „What to do" nie
     // było w panelu świeżego kroku, więc oba workflow właściciela miały `"instructions": ""`.
     // Bieg z pustym promptem kończy się `Ok` i wygląda dokładnie jak bieg udany.
+    //
+    // 2026-08-23 (T-86) — RÓWNOŚĆ CAŁEGO PROMPTU PRZESTAŁA BYĆ TYM PYTANIEM. Od T-86 każdy krok
+    // agenta dostaje na końcu promptu stały blok o tym, co oddaje dalej i ile ma czasu, więc
+    // prompt nie JEST już instrukcją — instrukcja stoi na jego początku. Zdanie tej asercji
+    // zostaje słowo w słowo, bo jest nadal prawdziwe; zmienia się wyłącznie forma.
+    //
+    // Trzy warunki naraz, nie jedno `contains`. Samo `contains` przepuszcza prompt, w którym
+    // zdanie człowieka jest doklejone na końcu albo stoi dwa razy — czyli dokładnie ten defekt,
+    // po którym tę asercję napisano. `len() == 1` mówi „raz dojechało", `starts_with` — „dojechało
+    // pierwsze, przed naszym blokiem", a liczba wystąpień — „dokładnie raz, nie w dwóch kopiach".
     let prompts = seen.prompts();
-    assert_eq!(
-        prompts,
-        vec![WHAT_TO_DO.to_owned()],
+    assert!(
+        prompts.len() == 1
+            && prompts[0].starts_with(WHAT_TO_DO)
+            && prompts[0].matches(WHAT_TO_DO).count() == 1,
         "the step's instructions have to reach the driver, once, word for word. Anything else \
          means the field a person types into is decoration: a run with an empty prompt finishes \
-         Ok and looks exactly like a run that worked."
+         Ok and looks exactly like a run that worked. What the driver was told: {prompts:#?}"
     );
 
     // ── (e) STAN KROKU WRÓCIŁ DO OKNA, i to w obu przejściach ───────────────────────────────

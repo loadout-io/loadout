@@ -116,11 +116,13 @@
 //!
 //! # Czego ta warstwa świadomie NIE robi
 //!
-//! - **Nie tee'uje surowego strumienia do `logs/agent-<id>.jsonl`.** `AgentDriver` oddaje już
-//!   zdarzenie neutralne, a surowe bajty widzi wyłącznie `stream::pump` (T-05) — i to on ma
-//!   `tee`, tylko nie ma dziś skąd wziąć ścieżki, bo `RunSpec` jej nie niesie. Katalog `logs/`
-//!   powstaje mimo to, bo `store::rebuild` czyta go po nazwie; dopóki nikt tam nie pisze,
-//!   transkrypt biegu żyje w liniach, a nie w plikach. Szew należy do T-07 (`ARCHITECTURE` §4).
+//! - **Sama nie ogląda surowego strumienia.** `AgentDriver` oddaje już zdarzenie neutralne, więc
+//!   surowych bajtów ta warstwa nie widzi ani jednego. NIE ZNACZY TO, ŻE NIKT ICH NIE ZAPISUJE:
+//!   od T-34 `logs/agent-<id>.jsonl` powstaje w każdym biegu i pisze go [`crate::evidence`],
+//!   któremu ta warstwa daje wyłącznie katalog biegu i identyfikator kroku
+//!   ([`Live::evidence_for_agent`]). Do 2026-08-23 stało tu zdanie odwrotne — „katalog `logs/`
+//!   powstaje, ale nikt tam nie pisze" — i było nieprawdą w każdym biegu właściciela, czyli
+//!   uczyło następnego pisarza szukać szwu, który już istnieje.
 //! - **Nie rozwija `copies`** [T3 §4.4]. Krok z `copies: 3` biegnie tu jako jedna sesja:
 //!   rozwinięcie zmienia liczbę węzłów grafu, a `RunReport::steps` jest kontraktem „jeden wpis
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
@@ -282,6 +284,60 @@ were given is good enough to build on, or `outcome: fail` when it has to be done
 nothing else on that line, and write it last — anything after it is read instead of it. If \
 you leave the line out, this is taken as `fail` and the work goes round again, so say what \
 you mean even when the answer is obvious.";
+
+/// Blok, którym kończy się prompt **każdego** kroku agenta — i którego do 2026-08-23 nie
+/// dostawał żaden.
+///
+/// Loadout ma wobec agenta trzy konkretne oczekiwania i nie mówił mu ani jednego. Ostatnia
+/// wypowiedź tury JEST przekazaniem ([`Live::hand_over`]), `memory::handoff::reshape` dopisuje
+/// brakujące nagłówki, a wyników nie zapisuje się do plików, bo robi to Loadout.
+///
+/// ZMIERZONE, NIE PRZECZUTE. W biegu `20260823-145648` **sześć** kroków Claude'a zaczyna
+/// podsumowanie od „*Write access is disabled in this session, so I can't create the handoff
+/// file — the findings are below*". Agent palił tury na próbę zapisania pliku wyników, bo tak
+/// każą mu instrukcje gospodarza, a dial `look-only` to blokuje. Gdyby wiedział, że jego
+/// odpowiedź **jest** tym, co przekazuje dalej, nie próbowałby wcale.
+///
+/// TRZY NAGŁÓWKI SŁOWO W SŁOWO Z `memory::handoff`. `heading_at` przyjmuje wiersz, który jest
+/// DOKŁADNIE `## <nazwa>`, i tylko komplet trzech we właściwej kolejności przechodzi nietknięty.
+/// Prośba o `## Findings` albo o nagłówek z dopiskiem w tym samym wierszu byłaby umową, której
+/// nasza własna strona nie podpisała — i każda tura płaciłaby za naprawę kształtu, który agent
+/// oddał dokładnie tak, jak go poproszono.
+///
+/// BEZ WIERSZA O WYNIKU. Ten blok dostają wszyscy, a o wynik wolno poprosić wyłącznie sędziego
+/// pętli ([`Live::ask_for_an_outcome`]): prośba skierowana do kroku, którego odpowiedzi nikt nie
+/// sądzi, jest poleceniem bez skutku (niezmiennik 16) i uczy model pisać ten wiersz wszędzie.
+///
+/// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak [`HANDOFF_INDEX_OPENS`] i
+/// [`OUTCOME_ASKED_FOR`] obok (decyzja D5, niezmiennik 14): agent czyta „what this step passes
+/// on", nigdy „handoff".
+const HOW_TO_ANSWER: &str = "\
+Your last message is what this step passes on. The step after yours reads it and nothing else, \
+so leave nothing worth keeping outside it.
+
+Write it under these three headings, each one alone on its line and in this order:
+
+## Answer
+what the step after yours needs to know.
+
+## Evidence
+`file:line`, or a link, for every claim above.
+
+## Open
+what you could not settle.
+
+Do not write your results to a file. Loadout files your last message for you, and a file you \
+write yourself is read by nobody.";
+
+/// Zdanie, którym blok mówi, że ten krok nie ma limitu czasu.
+///
+/// `0` w `giveUpAfterMinutes` znaczy „bez limitu" (`library::agents::Agent`), więc podstawienie
+/// tej liczby dałoby „you have 0 minutes for this step" — polecenie, po którym nie ma nic
+/// sensownego do zrobienia, i wygląda ono w kodzie dokładnie tak samo jak każde inne. Milczenie
+/// też nie jest tą samą odpowiedzią: agent, któremu nie powiedziano nic, budżetuje pod limit,
+/// którego się domyśla, i domyśla się nisko.
+const NO_TIME_LIMIT: &str =
+    "There is no time limit on this step, so take the time the work really needs.";
 
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
@@ -1180,7 +1236,7 @@ struct AgentJob {
     /// (plan jest czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć przy
     /// wznowieniu).
     plugin_flags: Vec<String>,
-    /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
+    /// Po ilu minutach bez końca tury odbieramy krokowi robotę. `Duration::MAX` znaczy „nigdy".
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
     /// ANI JEDNEGO CZYTELNIKA: zaklinowany agent wisiał do ręcznego Stopu. Według taksonomii
@@ -1188,6 +1244,16 @@ struct AgentJob {
     /// długo, jak długo nikt nie patrzy. `ARCHITECTURE.md` §11 zapowiada właśnie tę ochronę
     /// zamiast `--max-turns`.
     give_up_after: Duration,
+    /// Ten sam limit, **liczbą minut i nietknięty** — dokładnie tak, jak stoi w definicji
+    /// efektywnej (agent plus nadpisanie kroku).
+    ///
+    /// 2026-08-23 (T-86) — osobne pole obok [`AgentJob::give_up_after`], a nie liczba wyjęta
+    /// z tamtego `Duration`, bo tamto pole niesie już naszą decyzję o zabijaniu i przy braku
+    /// limitu stoi w nim `Duration::MAX`. Zdanie zbudowane z tamtej wartości mówiłoby agentowi
+    /// bez limitu o pięciuset osiemdziesięciu czterech tysiącach lat.
+    ///
+    /// `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`).
+    minutes: u32,
     /// Migawka konfiguracji **efektywnej**, zamrożona w chwili startu [T4 §5.2 p. 3].
     effective: Value,
 }
@@ -2132,10 +2198,18 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
         plugin_flags: Vec::new(),
-        // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
-        // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
-        // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
-        give_up_after: Duration::from_secs(u64::from(effective.give_up_after_minutes.max(1)) * 60),
+        // `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`), więc jedzie
+        // tu jako `Duration::MAX` — tym samym kształtem, którym `Live::one_turn` opisuje każdy
+        // inny krok bez terminu (`Job::Ask | Job::Check | Job::Serve`). Do 2026-08-23 stało tu
+        // `.max(1)`, czyli JEDNA minuta: krok bez limitu ginął po sześćdziesięciu sekundach,
+        // a odkąd blok z T-86 mówi mu wprost „there is no time limit on this step", ta minuta
+        // była już nie tylko zaskoczeniem, ale i naszym własnym kłamstwem w prompcie.
+        give_up_after: match effective.give_up_after_minutes {
+            0 => Duration::MAX,
+            minutes => Duration::from_secs(u64::from(minutes) * 60),
+        },
+        // Ta sama liczba, nietknięta — to ją dostaje agent (`Live::how_long_this_step_has`).
+        minutes: effective.give_up_after_minutes,
         effective: serde_json::to_value(&effective)?,
     })
 }
@@ -3763,6 +3837,13 @@ struct StepRun {
     summary: Option<String>,
     /// Powód, jeśli coś poszło nie tak.
     error: Option<String>,
+    /// Nagłówki, których agent nie napisał, a `memory::handoff::reshape` je za niego wstawił.
+    ///
+    /// Pusta lista znaczy, że odpowiedź przyszła w umówionym kształcie — i to jest odpowiedź,
+    /// a nie brak odpowiedzi (powód przy [`StepEntry::repaired`]).
+    repaired: Vec<String>,
+    /// Czy odpowiedź nie zmieściła się w `BODY_CAP` i część leży w `attachments/`.
+    truncated: bool,
 }
 
 /// Stan **biegu**: pięć wartości z `CHECK` przy tabeli `runs` w `store::schema`.
@@ -3852,6 +3933,8 @@ impl Live {
                 cached_tokens: None,
                 summary: None,
                 error: None,
+                repaired: Vec::new(),
+                truncated: false,
             })
             .collect();
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
@@ -4378,6 +4461,8 @@ impl Live {
                     // agenta, tylko odpala polecenie i idzie dalej.
                     Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
                 },
+                repaired: &run.repaired,
+                truncated: run.truncated,
             })
             .collect();
 
@@ -4730,7 +4815,7 @@ impl Live {
             reads,
             context,
             extra_dirs,
-        } = match self.prompt_for(id, &job.prompt, &job.context) {
+        } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
             Err(_error) => {
                 let text = "Loadout could not prove the context files for this agent, so it did \
@@ -5249,7 +5334,8 @@ impl Live {
         report
     }
 
-    /// Prompt kroku: jego **własna instrukcja** plus indeks przekazań poprzedników.
+    /// Prompt kroku: jego **własna instrukcja**, indeks przekazań poprzedników i umowa o tym,
+    /// jak odpowiedzieć.
     ///
     /// Instrukcja stoi pierwsza i jest w prompcie zawsze. Prompt złożony z samych cudzych wyników
     /// oddaje agentowi pracę wszystkich pozostałych i ani jednego zdania o tym, co ma z nią
@@ -5258,11 +5344,25 @@ impl Live {
     /// Indeks jest **listą ścieżek**, nigdy treścią (D6 punkt 5, nagłówek modułu). Krok bez
     /// poprzedników dostaje swoją instrukcję i nic więcej: pusty nagłówek „steps before this one"
     /// nad zerem wpisów jest zdaniem o niczym, a agent przeczyta go jako zgubione wejście.
+    ///
+    /// Umowa ([`HOW_TO_ANSWER`]) stoi **na końcu i za indeksem**, i to jest treść, nie kosmetyka:
+    /// indeks jest listą materiałów, a umowa mówi, co oddać. Umowa przeczytana przed listą czyta
+    /// się jak podpis pod pierwszą jej pozycją.
+    ///
+    /// # Dlaczego indeks jest w `if`, a nie w gałęzi z własnym `return`
+    ///
+    /// 2026-08-23 (T-86) — do tego dnia krok bez poprzedników wychodził stąd `return`em zaraz za
+    /// `handed.is_empty()`. Każde zdanie doklejane do promptu trzeba więc było dopisać w DWÓCH
+    /// miejscach, a implementacja, która dopisała je w jednym, zostawiała połowę biegu bez ani
+    /// jednego słowa — i nikt by tego nie zobaczył, bo prompt kroku nie trafia na żaden ekran.
+    /// Jedna droga wyjścia jest tu jedyną strukturą, w której „każdy krok dostaje to samo" jest
+    /// prawdą z budowy, a nie z uwagi piszącego.
     fn prompt_for(
         &self,
         id: StepId,
         instructions: &str,
         planned_context: &[ContextSource],
+        minutes: u32,
     ) -> anyhow::Result<Told> {
         let handed = self.handed_before(id);
         let mut told = Told {
@@ -5271,14 +5371,54 @@ impl Live {
             context: planned_context.to_vec(),
             extra_dirs: Vec::new(),
         };
-        if handed.is_empty() {
-            self.ask_for_an_outcome(id, &mut told);
-            return Ok(told);
+        if !handed.is_empty() {
+            self.index_of_what_came_before(&handed, &mut told)?;
         }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(HOW_TO_ANSWER);
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(&Self::how_long_this_step_has(minutes));
+        self.ask_for_an_outcome(id, &mut told);
+        Ok(told)
+    }
 
+    /// Zdanie, którym blok nazywa limit czasu **tego** kroku.
+    ///
+    /// # Limit, o którym wie wyłącznie ten, kto zabija, jest karą, a nie ograniczeniem
+    ///
+    /// `give_up_after` odbiera krokowi robotę po czasie (`Live::one_turn` → [`Ended::Overdue`])
+    /// i do 2026-08-23 nie wchodził do promptu ani jedną literą. Agent planował
+    /// sześćdziesięciominutową robotę w kroku, który ma dziesięć minut, i ginął w połowie bez
+    /// jednego zdania w tym, co przekazuje dalej — czyli bieg płacił za całą turę i nie dostawał
+    /// z niej nic.
+    ///
+    /// # Liczba jest z definicji EFEKTYWNEJ, czyli po nadpisaniu na kroku
+    ///
+    /// Nie z samej definicji agenta: dla kroku, który niczego nie zawęża, obie odpowiadają tak
+    /// samo, więc rozjazd nie ma jak się pokazać — a człowiek, który zawęził czas na panelu
+    /// kroku, dostawałby agenta planującego pracę na trzy razy dłużej, niż mu wolno.
+    ///
+    /// Skojarzona, nie metoda na `&self`: odpowiedź zależy wyłącznie od argumentu, a `self`
+    /// w podpisie sugerowałby, że gdzieś w biegu stoi drugie źródło tej liczby.
+    fn how_long_this_step_has(minutes: u32) -> String {
+        if minutes == 0 {
+            return NO_TIME_LIMIT.to_owned();
+        }
+        format!(
+            "You have {minutes} minutes for this step. When the time is up the step is stopped \
+             where it stands and nothing of it reaches the step after yours, so plan the work to \
+             fit and answer while you still can."
+        )
+    }
+
+    /// Lista ścieżek do tego, co zostawili poprzednicy tego kroku — plus prawo ich otwarcia.
+    ///
+    /// Wołana wyłącznie wtedy, gdy jest co wymienić: nagłówek nad zerem wpisów jest zdaniem
+    /// o niczym (powód przy [`Live::prompt_for`]).
+    fn index_of_what_came_before(&self, handed: &[Handed], told: &mut Told) -> anyhow::Result<()> {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_OPENS);
-        for hand in &handed {
+        for hand in handed {
             // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
             // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
             // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
@@ -5331,9 +5471,7 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
-        told.prompt.push('\n');
-        self.ask_for_an_outcome(id, &mut told);
-        Ok(told)
+        Ok(())
     }
 
     /// Dokłada zdanie o wyniku — **tylko sędziemu pętli**.
@@ -5456,17 +5594,32 @@ impl Live {
 
         match handoff::write_handoff(&self.plan.dir, draft, said) {
             Ok(written) => {
-                if !written.repaired.is_empty() || written.truncated {
-                    // Licznik, który warto oglądać [T6 §11.1]: ile tur nie oddało umówionego
-                    // kształtu i Loadout musiał go dopisać.
-                    tracing::debug!(
-                        run = %self.plan.id,
-                        step = id,
-                        repaired = written.repaired.len(),
-                        truncated = written.truncated,
-                        "the body of this handoff had to be reshaped"
-                    );
-                }
+                // 2026-08-23 (T-86) — DO TEGO DNIA STAŁO TU `tracing::debug!` I TYLE.
+                //
+                // Licznik, który warto oglądać [T6 §11.1], szedł na poziom, którego aplikacja
+                // nie ma włączonego — czyli nie widział go nikt (niezmiennik 21). Teraz jedzie
+                // do `run.json`, bo to jedyny zapis biegu, który przeżywa skasowanie
+                // `loadout.db` (niezmiennik 4).
+                //
+                // Zapisujemy BEZWARUNKOWO, także kształt umówiony: `update` jest jedyną drogą
+                // do księgi, a warunek postawiony tutaj zostawiałby w niej wartość z poprzedniej
+                // rundy pętli. Klucze znikają dopiero przy serializacji ([`StepEntry::repaired`]),
+                // czyli w miejscu, które o długość pliku naprawdę pyta.
+                //
+                // I dla KAŻDEGO kroku, który cokolwiek oddaje — także dla wyjścia komendy i dla
+                // zdania człowieka z kafelka kontrolnego. Zawężenie do kroków agenta byłoby
+                // warunkiem, o który nie prosi żadne kryterium, i chowałoby prawdziwy fakt:
+                // następny krok dostaje wskaźnik na plik, który `reshape()` przepisał, niezależnie
+                // od tego, kto ten tekst napisał.
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.repaired = written
+                        .repaired
+                        .iter()
+                        .map(|section| section.name().to_owned())
+                        .collect();
+                    step.truncated = written.truncated;
+                });
                 self.filed(id, written.path);
             }
             Err(error) => tracing::error!(
@@ -5922,6 +6075,35 @@ struct StepEntry<'a> {
     /// Konfiguracja **efektywna**, zamrożona w chwili startu [T4 §5.2 p. 3]. `None` dla kafelka
     /// kontrolnego: on nie woła agenta, więc nie ma czego zamrażać.
     effective: Option<&'a Value>,
+    /// Nagłówki, które Loadout dopisał do odpowiedzi tego kroku, **po nazwie i w kolejności
+    /// dopisywania**.
+    ///
+    /// # 2026-08-23 (T-86) — do tego dnia ta liczba szła wyłącznie do `tracing::debug!`
+    ///
+    /// `memory::handoff::write_handoff` oddaje ją od początku i od początku jest prawdziwa,
+    /// tylko nie widział jej NIKT: aplikacja nie ma włączonego poziomu debug, a `run.json` jest
+    /// jedynym miejscem, które przeżywa skasowanie `loadout.db` (niezmiennik 4). Artefakt
+    /// liczony i nieczytany jest dokładnie tym, czego zabrania niezmiennik 21.
+    ///
+    /// Co to zmienia dla człowieka: „agent nie oddał umówionego kształtu" jest z zewnątrz
+    /// nieodróżnialne od „agent oddał kształt, a Loadout go zgubił", bo przekazanie na dysku ma
+    /// trzy nagłówki w OBU przypadkach — `reshape()` je dopisuje. Pierwsze naprawia się jednym
+    /// zdaniem w prompcie kroku, drugie jest wadą produktu.
+    ///
+    /// PO NAZWIE, NIE LICZBĄ: sama liczba odsyła człowieka do otwarcia pliku i porównania go
+    /// okiem z tym, co pamięta z odpowiedzi.
+    ///
+    /// BRAK KLUCZA, KIEDY NIE BYŁO CZEGO DOPISAĆ. Klucz mówiący „nic się nie stało" przy każdym
+    /// kroku każdego biegu jest długością zapłaconą za milczenie — i tą samą decyzją, którą
+    /// obok podjęto dla `death_proof`.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    repaired: &'a [String],
+    /// Czy odpowiedź tego kroku nie zmieściła się w limicie i część leży w `attachments/`.
+    ///
+    /// Niezależna od `repaired` i to nie jest szczegół: kształt bywa umówiony, a treść i tak
+    /// ucięta — następny krok nie zobaczy wtedy w pliku, na który go wskazano, całej odpowiedzi.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 // ── DROBIAZGI ──────────────────────────────────────────────────────────────────────────────
