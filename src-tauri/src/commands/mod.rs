@@ -662,6 +662,30 @@ pub struct RunReport {
 /// Każdy wariant jest osobnym zdaniem dla użytkownika, bo każdy naprawia się inaczej.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// Zamknięcie okna czekało na koniec biegu tyle, ile mu wolno, i się nie doczekało.
+    ///
+    /// Jedyny wariant tego wyliczenia, który mówi o CZASIE, a nie o tym, co się nie udało —
+    /// i ma swój własny powód. Reszta drogi zamykania jest ograniczona co do sekundy
+    /// (`engine::supervisor`: pięć sekund łaski, dwie na dowód po dziewiątce), więc czekanie
+    /// dłuższe niż [`crate::commands::run::HOW_LONG_CLOSING_MAY_WAIT`] nie jest schodzeniem,
+    /// które się przeciąga — jest zaciętym zadaniem, które nie zejdzie już nigdy.
+    ///
+    /// Bez sufitu okno wisi WTEDY: `prevent_close` jest już podniesione, `destroy()` czeka za
+    /// tym wywołaniem, więc człowiek zostaje z aplikacją, której nie da się zamknąć, i jedynym
+    /// wyjściem jest ubicie jej z zewnątrz — czyli dokładnie ta droga, która zostawia sieroty.
+    ///
+    /// Zdanie mówi też, co się z tym stanie, bo inaczej byłoby samym niepokojem: sprzątanie po
+    /// zamkniętym oknie biegnie przy następnym starcie i naprawdę biegnie
+    /// ([`crate::ipc::AppState::settle_everything_left_behind`]).
+    #[error(
+        "Loadout waited {seconds} seconds for this run to come to a stop and it did not, so the \
+         window is closing anyway. Anything it left behind is written off, and its agents are \
+         stopped, the next time you open Loadout."
+    )]
+    StillGoingAtClose {
+        /// Ile na nie czekano, w sekundach — to samo, co widzi człowiek.
+        seconds: u64,
+    },
     /// Trwały ledger triggera odmówił związania albo akceptacji biegu.
     ///
     /// Własny wariant zachowuje zdanie z rdzenia triggerów i nie udaje błędu `SQLite`: pliki są

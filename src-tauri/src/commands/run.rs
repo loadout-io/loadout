@@ -732,8 +732,31 @@ pub async fn stop_before_closing(deps: &RunDeps<'_>) -> Result<Outcome, RunError
         // o biegu, którego nie ma — a `Done` mówi prawdę: nic nie zostało niedokończone.
         return Ok(Outcome::Done);
     }
-    stop_run_inner(deps).await
+    /* SUFIT, i jest tu dla przypadku, którego `is_working` nie łapie. Nagłówek wyżej nazywa
+     * czekanie bez końca jako ryzyko i gasi je pytaniem „czy w ogóle coś biegnie" — a to gasi
+     * połowę: bieg, który JEST w trakcie i którego zadanie się zacięło, dalej czeka w
+     * nieskończoność. `prevent_close` jest już wtedy podniesione, więc człowiek zostaje z oknem,
+     * którego nie da się zamknąć, i sięga po jedyne wyjście, jakie mu zostało — ubicie aplikacji
+     * z zewnątrz, czyli dokładnie tę drogę, która zostawia sieroty.
+     *
+     * Sufit stoi WYSOKO NAD uczciwym najgorszym przypadkiem, i tak ma być: schodzenie agentów
+     * jest ograniczone co do sekundy (`engine::supervisor::DEFAULT_GRACE` plus dowód po
+     * dziewiątce), a kroki schodzą równolegle. Trzydzieści sekund nie skraca ani jednego
+     * uczciwego zamknięcia — odróżnia schodzenie od zacięcia. */
+    match tokio::time::timeout(HOW_LONG_CLOSING_MAY_WAIT, stop_run_inner(deps)).await {
+        Ok(stopped) => stopped,
+        Err(_) => Err(RunError::StillGoingAtClose {
+            seconds: HOW_LONG_CLOSING_MAY_WAIT.as_secs(),
+        }),
+    }
 }
+
+/// Ile zamknięcie okna czeka na koniec biegu, zanim uzna, że to już nie schodzenie.
+///
+/// Powód dla tej liczby stoi w ciele [`stop_before_closing`]. W skrócie: uczciwe schodzenie
+/// mieści się w kilku sekundach i jest ograniczone przez [`crate::engine::supervisor`], więc ta
+/// wartość nie skraca niczego, co naprawdę schodzi.
+pub const HOW_LONG_CLOSING_MAY_WAIT: Duration = Duration::from_secs(30);
 
 /// Puszcza bieg dalej z punktu kontrolnego (T3 §6.1 reguła 5).
 ///

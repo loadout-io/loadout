@@ -174,3 +174,70 @@ async fn closing_mid_run_waits_until_the_run_is_really_down() {
          history has to say so"
     );
 }
+
+/* TRZECIE KRYTERIUM: bieg, ktory nie zejdzie NIGDY, nie zabiera czlowiekowi okna.
+ *
+ * Pierwsze kryterium tego pliku gasi czekanie bez konca pytaniem „czy w ogole cos biegnie" —
+ * i gasi polowe. Druga polowa to bieg, ktory JEST w trakcie i ktorego zadanie sie zacielo:
+ * `is_working()` mowi wtedy „tak", `wait_until_settled()` nie wraca, a `prevent_close` jest juz
+ * podniesione. Czlowiek zostaje z oknem, ktorego nie da sie zamknac, i siega po jedyne wyjscie,
+ * jakie mu zostalo — ubicie aplikacji z zewnatrz, czyli dokladnie te droge, ktora zostawia
+ * sieroty. Zamowienie wlasciciela 2026-08-23: „zrob cos aby nie bylo takich sytuacji ze jakis
+ * proces wisi".
+ *
+ * SLABA WERSJA: `assert!(closing.await.is_err())`. Przechodzi ja implementacja, ktora poddaje sie
+ * po 200 ms — czyli ta, ktora przerywa UCZCIWE schodzenie agentow i zostawia je zywe w przypadku,
+ * ktory dzialal. Dlatego nizej stoi obustronne ograniczenie: sufit ma byc wysoko nad tym, ile
+ * trwa schodzenie (`supervisor::DEFAULT_GRACE` plus dowod po dziewiatce), i ma w ogole istniec.
+ *
+ * Zegar jest zatrzymany, wiec to kryterium nie czeka ani jednej prawdziwej sekundy, a mierzy
+ * dokladnie te, ktore uplynelyby.
+ */
+#[tokio::test(start_paused = true)]
+async fn a_run_that_will_never_come_down_still_lets_the_window_close() {
+    let bench = Bench::new();
+    let store = Store::open(&bench.home.path().join("loadout.db")).expect("a store");
+    let control = RunControl::new();
+    // Bieg w trakcie, ktorego `settle()` nie padnie nigdy: zacięte zadanie kroku wyglada
+    // stad dokladnie tak.
+    control.begin();
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: idle_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: control.clone(),
+    };
+
+    let started = tokio::time::Instant::now();
+    let refused = stop_before_closing(&deps)
+        .await
+        .expect_err("a run that never comes down cannot be reported as stopped");
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= loadout_lib::engine::supervisor::DEFAULT_GRACE * 2,
+        "closing gave up after {waited:?}, which is inside the window agents are given to come \
+         down on their own (SIGTERM, then the proof after SIGKILL). A ceiling this low does not \
+         catch a stuck task - it cuts short the ordinary shutdown that was working, and leaves \
+         the agents of a healthy run alive"
+    );
+    assert!(
+        waited <= loadout_lib::commands::run::HOW_LONG_CLOSING_MAY_WAIT,
+        "closing waited {waited:?}, past its own ceiling. With prevent_close already raised, \
+         every second past it is a second in which the window cannot be closed at all"
+    );
+
+    let said = refused.to_string();
+    assert!(
+        said.contains("30 seconds"),
+        "the sentence has to say how long it waited, because that is the one number that tells \
+         a person this was a ceiling and not a crash. It said: {said}"
+    );
+    assert!(
+        said.contains("next time you open Loadout"),
+        "and it has to say what happens to what was left behind, or it is nothing but alarm. \
+         It said: {said}"
+    );
+}
