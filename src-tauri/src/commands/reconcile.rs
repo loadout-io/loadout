@@ -49,6 +49,14 @@ const RUNS_DIR: &str = ".loadout/runs";
 const STEP_CUT_OFF: &str =
     "Loadout closed while this step was still running, so the step was cut off with it.";
 
+/// Zdanie dla biegu, który stał na pytaniu, kiedy okno zniknęło.
+///
+/// WŁASNE, a nie to samo, co dla kroku uciętego w pracy, i różnica jest dla człowieka całą
+/// treścią: tam agent pracował i został przerwany, tu **nic nie pracowało** — bieg czekał na
+/// odpowiedź, której nie było już komu podać.
+const RUN_LEFT_ON_A_QUESTION: &str = "Loadout closed while this run was waiting for your answer, so there was nobody left to \
+     carry it on. Start it again to pick the work up.";
+
 /// Co uzgodnienie zastało i co z tym zrobiło — do dziennika, nie na ekran.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Reconciled {
@@ -92,8 +100,20 @@ pub fn with_reaper(
     reap: &mut dyn FnMut(i32) -> recovery::ReapOutcome,
 ) -> Reconciled {
     let (rows, where_they_live) = rows_from_files(project);
+    /* PUSTA LISTA NIE KOŃCZY TEGO PRZEBIEGU, i kryterium złapało tu prawdziwy błąd. „Nie ma
+     * czego dobijać" nie znaczy „nie ma czego sprzątać": folder, w którym stoi wyłącznie bieg
+     * zaparkowany na pytaniu, ma zero kroków w `running` — czyli dokładnie ten przypadek, dla
+     * którego `settle_the_parked` powstało, i dokładnie ten, który wychodził stąd nietknięty.
+     *
+     * Wyjście wcześniej byłoby też DRUGIM miejscem wołania tego samego sprzątania, a drugie
+     * miejsce jest tym, którego kryterium nie sądzi (mutacja jednego z nich nie zapala niczego).
+     * Jeden przebieg do końca, jedno wołanie. */
+    let parked = settle_the_parked(project);
     if rows.is_empty() {
-        return Reconciled::default();
+        return Reconciled {
+            runs: parked,
+            ..Reconciled::default()
+        };
     }
 
     let machine = Machine {
@@ -122,7 +142,90 @@ pub fn with_reaper(
             done.steps += steps.len();
         }
     }
+    done.runs += parked;
     done
+}
+
+/// Biegi, które stały na PYTANIU, kiedy okno zniknęło.
+///
+/// # Po co to jest osobno
+///
+/// Bo przebieg wyżej ich nie widzi i nie ma jak: pyta o kroki stojące w `running`, żeby mieć co
+/// dobić, a bieg zaparkowany na punkcie kontrolnym **nie ma ani jednego takiego kroku**. Nic nie
+/// pracuje, nic nie pali pieniędzy — i właśnie dlatego stoi tak w nieskończoność. Zmierzone
+/// u właściciela 2026-08-23: bieg `20260819-160548` czekał na odpowiedź **czwarty dzień**, przez
+/// kilkanaście restartów aplikacji, i żadne sprzątanie go nie dotykało.
+///
+/// # Dlaczego to jest porzucenie, a nie cierpliwość
+///
+/// Pytanie punktu kontrolnego żyje WYŁĄCZNIE w żywym strumieniu okna (`feed/model.ts`: `waiting`
+/// bierze się z linii, która przyjechała na drucie). Okno, które zniknęło, zabrało je ze sobą —
+/// a `continue_run` nie bierze identyfikatora biegu, więc nie ma czym w ten bieg wycelować.
+/// Zostaje więc bieg, na który nie da się odpowiedzieć ŻADNĄ drogą. Nazwanie tego „pauzą" jest
+/// obietnicą, której nie ma jak dotrzymać.
+///
+/// # Dlaczego wolno to zrobić bez pytania o rozruch maszyny
+///
+/// Bo tu nie ma do kogo strzelać. Strażnik `boot_id` broni niewinnych procesów przed sygnałem
+/// (`recovery::decide`), a ten przebieg nie wysyła ani jednego sygnału — przepisuje jedno słowo
+/// w pliku. Warunkiem jest za to CHWILA: sprzątanie biegnie, zanim to okno cokolwiek uruchomi
+/// (`ipc::AppState::settle_everything_left_behind`), więc każda pauza zastana w tym momencie
+/// należy do kogoś, kogo już nie ma.
+///
+/// Kroków nie ruszamy. Żaden z nich nie pracował, a `pending` mówi o nich prawdę: nie zaczęły się
+/// i już się nie zaczną. Zdanie o tym niesie bieg, bo to jego dotyczy.
+fn settle_the_parked(project: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(project.join(RUNS_DIR)) else {
+        return 0;
+    };
+    let mut settled = 0;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Some(run) = read_run(&dir) else { continue };
+        if run.get("status").and_then(Value::as_str) != Some("paused") {
+            continue;
+        }
+        /* Bieg z krokiem w `running` należy do przebiegu wyżej — ten ma co dobić, więc musi
+         * przejść przez strażnika rozruchu maszyny. Tutaj wchodzą tylko te, przy których nie ma
+         * ani jednego żywego kroku. */
+        let anything_working = run
+            .get("steps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| {
+                steps
+                    .iter()
+                    .any(|one| one.get("status").and_then(Value::as_str) == Some("running"))
+            });
+        if anything_working {
+            continue;
+        }
+        if write_back_with_reason(&dir, recovery::RUN_INTERRUPTED, RUN_LEFT_ON_A_QUESTION) {
+            settled += 1;
+        }
+    }
+    settled
+}
+
+/// Jak [`write_back`], ale zapisuje też zdanie na samym biegu i nie tyka kroków.
+fn write_back_with_reason(dir: &Path, run_status: &str, why: &str) -> bool {
+    let Some(mut run) = read_run(dir) else {
+        return false;
+    };
+    let at = crate::commands::run::now_ms();
+    let Some(map) = run.as_object_mut() else {
+        return false;
+    };
+    map.insert("status".to_owned(), Value::String(run_status.to_owned()));
+    if map.get("ended_at").is_none_or(Value::is_null) {
+        map.insert("ended_at".to_owned(), Value::from(at));
+    }
+    if map.get("error").is_none_or(Value::is_null) {
+        map.insert("error".to_owned(), Value::String(why.to_owned()));
+    }
+    let Ok(text) = serde_json::to_string_pretty(&run) else {
+        return false;
+    };
+    std::fs::write(dir.join(RUN_FILE), text + "\n").is_ok()
 }
 
 /// Wiersze do rozstrzygnięcia, przeczytane z plików biegów tego folderu.

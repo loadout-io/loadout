@@ -362,3 +362,88 @@ async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+/* CZWARTE KRYTERIUM: bieg zaparkowany na PYTANIU tez jest porzucony.
+ *
+ * Zmierzone u wlasciciela 2026-08-23: bieg `20260819-160548` stal w `paused` **czwarty dzien**,
+ * przez kilkanascie restartow aplikacji, i zadne sprzatanie go nie dotykalo. Przebieg dla biegow
+ * uciętych w pracy nie ma jak go zobaczyc: pyta o kroki stojace w `running`, zeby miec co dobic,
+ * a bieg czekajacy na czlowieka nie ma ani jednego takiego kroku.
+ *
+ * DLACZEGO TO JEST PORZUCENIE, A NIE CIERPLIWOSC: pytanie punktu kontrolnego zyje wylacznie
+ * w zywym strumieniu okna, a `continue_run` nie bierze identyfikatora biegu — wiec po zniknieciu
+ * okna nie ma ZADNEJ drogi, zeby na ten bieg odpowiedziec. Nazywanie tego pauza jest obietnica,
+ * ktorej nie ma jak dotrzymac.
+ *
+ * FOLDER Z SAMA PAUZA, i to nie jest wymyslony przypadek — to jest dokladnie folder wlasciciela.
+ * Ten uklad zlapal prawdziwy blad w pierwszej wersji naprawy: „nie ma czego dobijac" konczylo
+ * caly przebieg wczesniej, wiec bieg zaparkowany wychodzil z niego nietkniety. Fikstura bez ani
+ * jednego kroku w `running` jest jedyna, ktora te roznice widzi.
+ */
+#[test]
+fn a_run_left_standing_on_a_question_is_written_off_too() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let project = root.path();
+    const PARKED: &str = "20260819-160548__01a01ac5-8a29-7f02-adef-2f12a67416a1";
+
+    put(
+        project,
+        PARKED,
+        &a_run("paused", "pending", "a-boot-that-is-over"),
+    )?;
+    put(project, CLOSED, FINISHED)?;
+    let before = fs::read_to_string(
+        project
+            .join(".loadout")
+            .join("runs")
+            .join(CLOSED)
+            .join("run.json"),
+    )?;
+
+    let mut asked: Vec<i32> = Vec::new();
+    let done = with_reaper(project, &mut |pgid| {
+        asked.push(pgid);
+        ReapOutcome::ProvenDead
+    });
+
+    assert!(
+        asked.is_empty(),
+        "a signal was sent while settling a run in which nothing was working. Every number here \
+         belongs to some process on this machine, and none of them belongs to this run: {asked:?}"
+    );
+
+    let settled = read(project, PARKED)?;
+    assert_eq!(
+        settled["status"].as_str(),
+        Some("interrupted"),
+        "a run that was waiting for an answer still says it is paused. Nothing is working in it \
+         and the question it was standing on went away with the window that drew it, so there is \
+         no way left to answer it - it would sit there for ever"
+    );
+    let said = settled["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("waiting for your answer"),
+        "the run says it was interrupted and does not say what happened to it. \"Interrupted\" \
+         alone reads like a crash; this one was waiting for a person. It said: {said}"
+    );
+    assert_eq!(
+        done.runs, 1,
+        "the tally is wrong, so the log line under it would misreport what was left over"
+    );
+
+    /* I TA SAMA POPRZECZKA, CO WYZEJ: bieg zamkniety normalnie jest nietkniety bajt w bajt.
+     * Przebieg, ktory przepisuje kazdy plik, zamienia historie tego, co sie udalo, w historie
+     * przerwan — a ten przebieg czyta KAZDY katalog w folderze, wiec pyta o to od nowa. */
+    let after = fs::read_to_string(
+        project
+            .join(".loadout")
+            .join("runs")
+            .join(CLOSED)
+            .join("run.json"),
+    )?;
+    assert_eq!(
+        after, before,
+        "a run that finished on its own was rewritten by the pass that settles parked runs"
+    );
+    Ok(())
+}
