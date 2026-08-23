@@ -53,6 +53,8 @@ pub mod memory;
 pub mod mint;
 /// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
 pub mod processes;
+/// Uzgodnienie biegów z plikami przy otwarciu folderu — po awarii aplikacji.
+pub mod reconcile;
 pub mod rerun;
 pub mod run;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.

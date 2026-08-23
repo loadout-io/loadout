@@ -5722,7 +5722,7 @@ struct StepEntry<'a> {
 
 /// Milisekundy epoki. Zegar przestawiony wstecz daje zero zamiast liczby ujemnej: kolumna
 /// `created_at` sortuje historię i data sprzed epoki wywróciłaby tę kolejność.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

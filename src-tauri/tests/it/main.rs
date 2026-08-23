@@ -168,6 +168,7 @@ mod runcmd_loop;
 mod runcmd_parallel;
 mod runcmd_refuses_invalid;
 mod runcmd_snapshot;
+mod runs_left_over_are_reconciled;
 mod say_to_agent_refusals;
 mod serve_step_does_not_block_the_graph;
 mod skeleton_group_death;

@@ -482,6 +482,38 @@ fn open_store(folder: &Path) -> Result<Arc<Store>> {
         path: project.clone(),
         source,
     })?;
+    /* UZGODNIENIE Z PLIKAMI, ZANIM KTOKOLWIEK ZAJRZY DO TEGO FOLDERU.
+     *
+     * 2026-08-23 — zamowienie wlasciciela: „zrob cos aby nie bylo takich sytuacji ze jakis proces
+     * wisi". Bieg, ktory zginal razem z aplikacja, zostawal w swoim `run.json` na zawsze jako
+     * `running`; zmierzone u niego trzy takie naraz, siedem grup procesow dawno martwych.
+     *
+     * TUTAJ, a nie przy starcie okna, i to jest cala tresc tego miejsca: `lib::recover_from_last_time`
+     * czyta baze biblioteki, a biegi folderu maja WLASNY indeks i wlasne pliki — wiec tamta droga
+     * nie widziala ich nigdy. Ta widzi, bo folder wlasnie sie otwiera i wiemy, o ktory chodzi.
+     *
+     * RAZ NA FOLDER I SPOD ZAMKA: `open_store` wola sie wylacznie z `Registry::open` dla folderu,
+     * ktory karty jeszcze nie ma (patrz doc wyzej). To jedyna chwila, w ktorej nikt inny tych
+     * plikow nie trzyma — uzgodnienie w tle bilo by sie o nie z zywym biegiem.
+     *
+     * PRZED `Store::open`, zeby indeks otwieral sie nad plikami juz uczciwymi.
+     *
+     * NIE ODDAJE ODMOWY. Folder, ktorego biegow nie da sie uzgodnic, ma sie OTWORZYC — czlowiek,
+     * ktoremu nie wstaje projekt przez jeden uszkodzony plik starego biegu, traci znacznie
+     * wiecej niz jeden wiersz historii (niezmiennik 5). */
+    let done = crate::commands::reconcile::reconcile_runs(folder);
+    if done.runs > 0 || done.still_alive > 0 {
+        tracing::info!(
+            "opening {}: {} run(s) and {} step(s) left over from a closed window, \
+             {} group(s) proven dead, {} still alive",
+            folder.display(),
+            done.runs,
+            done.steps,
+            done.reaped,
+            done.still_alive,
+        );
+    }
+
     Ok(Arc::new(Store::open(&project.join(INDEX_FILE))?))
 }
 
