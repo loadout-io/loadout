@@ -26,11 +26,15 @@ istniał wyłącznie w Ruście i przychodził tylko z importu — czyli jedyny w
 **co się stało** zamiast **co agent powiedział** (D6, `00-SYNTHESIS` §2.1), nie miał jak trafić
 na płótno.
 
->>> **T-86 WYMAGA DECYZJI CZŁOWIEKA — i na nim stoi dziewięć kolejnych zadań fazy.** Gałąź
-`task-T-86` jest gotowa w `../loadout-task-T-86`, wszystkie trzy własne kryteria **zielone**,
-zakres nietknięty (7 plików, wszystkie w OWNS). Dwie rzeczy do rozstrzygnięcia, obie opisane
-niżej: kolizja z asercją z `product_path_end_to_end.rs` (plik T-34, spoza OWNS T-86) oraz
-fałszywa przesłanka w AC-2, którą znalazł recenzent Codeksa. <<<
+**T-86 w main** (`integrate.sh`, bramka 15/0 w 154 s). Stanął był na dwóch sprawach, obie
+rozstrzygnął właściciel tego samego wieczoru; opis obu niżej, bo mechanizm powtórzy się w tej
+fazie jeszcze nieraz. Zapłacone: jedna runda kontraktu i dwie implementacje, bo pierwszy bieg
+skończył się kodem 1 na czerwieni spoza własnego zakresu.
+
+**Wznowienie było certyfikowane, nie darmowe.** `ship-task.sh` sam orzekł, że kryteria
+przechodzą, a specyfikacje niosą komplet asercji z chwili, w której bramka udowodniła je
+czerwonymi — czyli „to działająca implementacja, nie rozluźniony kontrakt" — i przeszedł prosto
+do fazy implementacji. Drugi kontrakt nie został napisany ani opłacony.
 
 ### T-86, sprawa pierwsza: asercja równości kontra nowy blok
 
@@ -71,6 +75,14 @@ Trzy wyjścia, w kolejności, którą rekomenduję:
 Nie wybrałem sam, bo (a) rozluźnia asercję, którą napisano po prawdziwym incydencie, a §5 karty
 orchestratora zabrania mi rozluźniać oracle, żeby przepuścić własną falę.
 
+**Rozstrzygnięte: (a).** Poszerzenie zakresu, nigdy kryteriów, z dowodem mechanicznym w commicie
+`6398ea5`: `diff` linii `## AC-`, `check:` i `expect:` między kontraktem certyfikowanym na gałęzi
+a nowym dał **0 różnic** przy 9 liniach kryterialnych po obu stronach. W kontrakcie stoi wąski
+mandat i **wypisane wprost obejście, którego nie wolno zrobić** — gołe `contains()` bez
+`starts_with` i bez liczby wystąpień. Pisarz wykonał mandat co do joty: trzy warunki naraz
+(`len() == 1`, `starts_with`, `matches().count() == 1`), zdanie asercji nietknięte słowo w słowo,
+plus komentarz nazywający ten sam defekt, po którym asercję napisano.
+
 ### T-86, sprawa druga: `giveUpAfterMinutes: 0` nie znaczy „bez limitu"
 
 Znalazł to **recenzent Codeksa** (`gpt-5.6-sol`), na zielonych kryteriach — dokładnie ten
@@ -88,6 +100,18 @@ więc mieści się w zakresie, ale to zmiana zachowania poza literą kryterium),
 obiecywać brak limitu i prompt mówi prawdę o jednej minucie. Pierwsze jest lepsze dla produktu
 (pole „0" w formularzu agenta oznacza dla człowieka „bez limitu"), drugie mieści się w kontrakcie
 bez jego zmiany.
+
+**Rozstrzygnięte: silnik.** `plan_agent` daje dziś `0 => Duration::MAX`, a liczba minut jedzie do
+promptu **osobnym polem**, nie wyjęta z `Duration` — pisarz zauważył sam, że zdanie zbudowane
+z `Duration::MAX` obiecywałoby agentowi pięćset osiemdziesiąt cztery tysiące lat. AC-2 nie
+zmieniło się ani o słowo; zmieniło się to, czy jego zdanie jest prawdziwe.
+
+**Recenzent Codeksa zgłosił przy drugim biegu dwie dalsze uwagi i obie są o SILE WYROCZNI, nie
+o kodzie** — zapisuję je, bo są prawdziwe i nikt ich dziś nie egzekwuje: AC-2 dowodzi wyłącznie,
+że krok bez limitu przeżywa jedną wirtualną godzinę, więc implementacja zamieniająca zero na
+dowolny skończony limit powyżej godziny też by przeszła (zbudowana jest `Duration::MAX` —
+sprawdzone w kodzie, nie w teście); a AC-1 czyta blok jako „wszystko od pierwszego znacznika do
+końca promptu", więc nie wykryłaby tekstu doklejonego ZA blokiem.
 
 ## 2026-08-22, 18:20 — T-79 w main: skille docierają do vendora, potwierdzone przez vendora
 
