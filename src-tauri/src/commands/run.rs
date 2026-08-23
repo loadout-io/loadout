@@ -256,6 +256,51 @@ pub const REFLECTION_MODEL: &str = "haiku";
 /// minut nad tym, czego się nauczyła, kosztuje więcej niż krok, który to zrobił.
 pub const REFLECTION_MINUTES: u64 = 2;
 
+/// Ile kandydatek wolno zostawić po jednym biegu [T6 §5.3: „najwyżej trzy"].
+///
+/// Sufit JEST całym mechanizmem antyrozrostowym tego podsystemu. Pisarz, który bierze tyle, ile
+/// przyszło, zamienia sekcję w listę, której nikt nie czyta — a lista, której nikt nie czyta,
+/// czyni z bramki promocji rytuał [T6 §5.1]. Nieobsługiwana akrecja instrukcji jest samą
+/// chorobą, nie objawem (arXiv 2608.11095 na 1867 repozytoriach).
+const AT_MOST_KEPT: usize = 3;
+
+/// Ile znaków reguły wchodzi do tytułu, czyli do NAZWY PLIKU notatki.
+///
+/// Tytuł powstaje z reguły, bo model nie pisze osobnego: `record_candidate_for` robi z tytułu
+/// slug, a slug jest tożsamością notatki — więc to samo zdanie zgłoszone w dwóch biegach musi
+/// trafić w ten sam plik i tylko tak `occurrences` ma się z czego wziąć.
+///
+/// Sufit jest tu, bo reguła przychodzi od modelu, a nazwa pliku ma twardy limit systemowy
+/// (255 bajtów na macOS). Cięcie idzie po granicy słowa i jest deterministyczne: cięcie
+/// w środku znaku wielobajtowego panikuje, a cięcie zależne od czegokolwiek poza samą regułą
+/// dawałoby dwa pliki dla jednego zdania.
+const TITLE_CAP: usize = 120;
+
+/// O co pytamy w jedynej turze refleksji.
+///
+/// **Kształt odpowiedzi jest w prośbie**, bo to jedyne miejsce, w którym da się go poprosić:
+/// para `rule:` / `because:` na osobnych wierszach jest tym, co czyta [`worth_remembering`].
+/// Zdanie o `because` stoi tu wprost, bo bez niego para jest odrzucana po cichu i model nie ma
+/// jak się dowiedzieć, czego zabrakło („no because, no memory" [T6 §10.3]).
+///
+/// Prośba mówi też, czego NIE chcemy: podsumowania biegu. Refleksja, która streszcza to, co się
+/// przed chwilą stało, produkuje zdania prawdziwe wyłącznie o tym jednym biegu — a notatka jedzie
+/// do promptów, których jeszcze nie ma.
+const REFLECTION_ASK: &str = "\
+This run has finished. Its directory is your working directory: handoffs/ holds what each step \
+passed on, run.json holds what happened, logs/ holds the raw streams.
+
+Name at most three things worth remembering for the next run in this project. Fewer is better, \
+and none at all is a good answer when nothing here was surprising.
+
+Write each one as exactly two lines, and nothing else around them:
+
+rule: <one sentence, true beyond this run, that a later agent should act on>
+because: <where you saw it in this run>
+
+A rule without a `because:` line is dropped, so leave out anything you cannot ground. Do not \
+summarise the run, do not describe the workflow, and do not change any file.";
+
 /// Trwałe granice kompletności kopii, poza samymi worktree i ich roboczym diffem.
 const ISOLATION_MARKERS_DIR: &str = ".isolation";
 
@@ -751,6 +796,15 @@ async fn the_planned_run(
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
     // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
+    /* JEDNA TANIA REFLEKSJA, NA SAMYM KOŃCU I PO INDEKSIE.
+     *
+     * Po księdze, bo pyta o bieg skończony — a odpowiedź o biegu, który jeszcze trwa, jest
+     * odpowiedzią o czymś innym niż to, co człowiek później przeczyta. Po `close_the_trees`,
+     * bo katalog biegu ma być tym, który zostaje, a nie tym, który zaraz zniknie. I po
+     * `rebuild_from`, bo indeks jest tym, o co pyta okno: tura u vendora trwa do
+     * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
+     * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
+    what_this_run_taught_us(deps, &live.plan.id, &live.plan.dir).await;
 
     Ok(RunReport {
         id: live.plan.id.clone(),
@@ -762,6 +816,260 @@ async fn the_planned_run(
         },
         steps: outcome.states,
     })
+}
+
+/// Pyta model RAZ, czego ten bieg nauczył, i zostawia z tego najwyżej trzy kandydatki.
+///
+/// # Po co to istnieje (zmierzone 2026-08-23, po 23 biegach właściciela)
+///
+/// Podsystem pamięci był zbudowany od strony **czytnika** i nie miał pisarza w produkcie:
+/// `~/.loadout/memory/` nie istniało, tabela `memory` miała zero wierszy, a `record_candidate*`
+/// miało wołających wyłącznie w testach i w imporcie. Sekcja Pamięć rysowała trzy strefy nad
+/// pustym katalogiem, budżety pilnowały zera, wymuszony wybór nie miał czego wybierać. To jest
+/// niezmiennik 29 czytany od strony wejścia: mechanizm jest, ekran o nim mówi, nikt nigdy nic
+/// do niego nie napisał.
+///
+/// # Trzy rzeczy, które ta funkcja robi, i po jednym powodzie na każdą
+///
+/// 1. **Nie pyta biegu, po którym nic nie zostało.** Refleksja pracuje z katalogu biegu, a bieg
+///    bez ani jednego przekazania nie ma tam wyniku żadnego kroku — więc tura jest zapłacona za
+///    przeczytanie pustego folderu.
+/// 2. **Pyta dokładnie raz**, nie raz na krok. „Tania" przestaje być prawdą po cichu: katalog
+///    notatek wygląda tak samo, a różnica siedzi wyłącznie na rachunku.
+/// 3. **Nie przewraca biegu niczym, co się tu nie uda.** Bieg jest skończony i zapisany; jego
+///    wynik jest prawdziwy niezależnie od tego, czy vendor odpowiedział. Ta sama decyzja, co
+///    przy nieudanym zapisie przekazania ([`Live::hand_over`]) — z dziennikiem zamiast ciszy.
+async fn what_this_run_taught_us(deps: &RunDeps<'_>, run: &str, dir: &Path) {
+    // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
+    // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
+    // „przekazanie", a rozjazd widać dopiero na rachunku.
+    if handoff::scan_run_dir(dir).is_ok_and(|left| left.is_empty()) {
+        return;
+    }
+
+    let Some(said) = a_short_turn_about(deps, dir).await else {
+        return;
+    };
+
+    let (worth, without_reason) = worth_remembering(&said);
+    if without_reason > 0 {
+        // Policzona, nie zapisana [T6 §10.3]. Para bez uzasadnienia nie staje się plikiem, bo
+        // instrukcja bez uzasadnienia jest nieusuwalna: skasowanie kosztuje `O(2^|D|)`, trzeba
+        // bowiem od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1].
+        tracing::info!(
+            run = %run,
+            dropped = without_reason,
+            "this run proposed rules with no reason under them, and a rule nobody can ground is \
+             one nobody can retire either"
+        );
+    }
+
+    let root = super::memory::notes_root(deps.home);
+    let at = noticed_now();
+    for one in worth.into_iter().take(AT_MOST_KEPT) {
+        let draft = crate::memory::notes::NoteDraft {
+            // Tytuł JEST regułą, przyciętą do nazwy pliku: model nie pisze osobnego, a nazwa
+            // pliku jest tożsamością notatki — więc to samo zdanie z dwóch biegów trafia w ten
+            // sam plik i stąd bierze się `occurrences` (powód w całości przy [`TITLE_CAP`]).
+            title: title_from(&one.rule),
+            rule: one.rule,
+            because: one.because,
+            // Czego uczy jeden bieg, jest prawdą o TYM projekcie. `everywhere` wniosłoby to
+            // zdanie do każdego innego projektu na tej maszynie, a zakres, którego nikt nie
+            // wybrał, jest tym najszerszym, którego nikt nie zauważył.
+            scope: crate::memory::notes::Scope::ThisProject,
+            kind: crate::memory::notes::Kind::Rule,
+            // Czytane i wyrzucane przez `record_candidate*`; stoi tu jawnie, żeby było widać,
+            // że deklaracja zgłaszającego nie jest tą, która o czymkolwiek decyduje.
+            status: crate::memory::notes::Status::Suggested,
+            at: at.clone(),
+        };
+        if let Err(error) = crate::memory::notes::record_candidate_from_run(&root, draft, run) {
+            tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
+        }
+    }
+}
+
+/// Ta jedna tura: sterownik z fabryki, polityka tylko-do-odczytu, katalog biegu, jeden model.
+///
+/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie trzy drogi, na których jej nie ma:
+/// vendor nie wstał, tura padła, tura nie zmieściła się w limicie. Rozróżnianie ich w typie nic
+/// by tu nie dało — wołający ma w każdej z nich zrobić dokładnie to samo, czyli nic.
+async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
+    /* PRZEZ FABRYKĘ, tą samą, którą bierze sterownik każdy krok. Vendor jest jeden i wybrany:
+     * refleksja jest turą LOADOUTA, nie żadnego agenta z grafu, więc vendor wzięty z ostatniego
+     * kroku dawałby dwa różne rachunki i dwa różne zachowania za jedno pytanie. Ta sama stała
+     * rozstrzyga model ([`REFLECTION_MODEL`]) i to nie przypadek, że jest aliasem tego vendora. */
+    let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode);
+    let spec = RunSpec {
+        run_id: Uuid::now_v7(),
+        // Katalog biegu: to o niego pytamy. Gdziekolwiek indziej jest to tura poproszona
+        // o streszczenie czegoś, czego nie widzi.
+        cwd: dir.to_path_buf(),
+        prompt: REFLECTION_ASK.to_owned(),
+        model: Some(REFLECTION_MODEL.to_owned()),
+        system_append: None,
+        // Pyta, czego ten bieg nauczył, a nie o zmianę czegokolwiek: tura, której wolno pisać,
+        // jest turą mogącą poprawić pracę, którą właśnie streszcza, w katalogu, na który nikt
+        // już nie patrzy.
+        policy: Policy::ReadOnly,
+        reaches_the_web: false,
+        tools: None,
+        extra_dirs: Vec::new(),
+        resume: None,
+    };
+
+    let (events, mut inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
+    /* Odbiornik stoi PRZED startem i istnieje wyłącznie po to, żeby vendor nie zatrzymał się na
+     * pełnym buforze: te zdarzenia nie mają czytelnika, bo bieg już zszedł z ekranu, a wiersze
+     * dosypane po jego końcu byłyby wierszami kroku, którego nikt nie zlecił. */
+    let drain = tokio::spawn(async move { while inbox.recv().await.is_some() {} });
+
+    let text = match driver.start(spec, events).await {
+        Ok(mut handle) => {
+            let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
+            let said = match tokio::time::timeout(limit, handle.wait()).await {
+                Ok(Ok(outcome)) if outcome.ok => Some(outcome.text),
+                Ok(Ok(outcome)) => {
+                    tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
+                    None
+                }
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "the reflection turn fell over");
+                    None
+                }
+                Err(_) => {
+                    /* Limit czasu zdejmuje GRUPĘ PROCESÓW, nie samo zadanie Rusta (niezmiennik
+                     * 10). Porzucony `wait` zostawiłby żywy proces vendora, który pali limit
+                     * w tle po biegu, na który nikt już nie patrzy — czyli błąd finansowy. */
+                    let proof = handle.cancel().await;
+                    tracing::debug!(
+                        ?proof,
+                        "the reflection turn ran out of time and was stopped"
+                    );
+                    None
+                }
+            };
+            let _ = handle.close().await;
+            said
+        }
+        Err(error) => {
+            tracing::debug!(%error, "no reflection turn could be started after this run");
+            None
+        }
+    };
+
+    // Nadajnik ginie razem z uchwytem, więc dopiero tutaj kolejka jest zamknięta i pętla wyżej
+    // ma jak się skończyć.
+    let _ = drain.await;
+    text
+}
+
+/// Chwila zgłoszenia kandydatki: ISO 8601 UTC **z milisekundami**.
+///
+/// Sekundy nie wystarczają, i to jest zmierzone, nie hipotetyczne: `modified` ma się przesunąć
+/// przy drugim zgłoszeniu tej samej reguły, bo to jedyny ślad, po którym człowiek pozna, że dwa
+/// biegi niezależnie powiedziały to samo. Dwa biegi bywają w jednej sekundzie i wtedy stempel
+/// o rozdzielczości sekundy mówi „nic się nie zmieniło" o pliku, który się właśnie zmienił.
+///
+/// Sekundę bierzemy z [`super::now_utc`], a ułamek z [`now_ms`] — czyli z zegara **tego biegu**,
+/// zamiast trzeciej drogi do `SystemTime`. To są dwa odczyty, więc na granicy sekundy ułamek
+/// może należeć do sąsiedniej: stempel jest wtedy o mniej niż sekundę wcześniejszy, niż był
+/// naprawdę. Kosztu nie ma, bo tego pola nie porządkuje ani jedna linia w drzewie — inaczej niż
+/// `last_used_at`, które zostaje przy sekundach dokładnie po to, żeby porównywało się poprawnie
+/// z każdą wartością wpisaną ręcznie (`memory::notes::Note::last_used_at`).
+fn noticed_now() -> String {
+    let second = super::now_utc();
+    let inside = now_ms().rem_euclid(1_000);
+    format!("{}.{inside:03}Z", second.trim_end_matches('Z'))
+}
+
+/// Jedna para `rule:` / `because:`, dokładnie tak, jak napisał ją model.
+struct Remembered {
+    rule: String,
+    because: String,
+}
+
+/// Pary z odpowiedzi modelu — i ile ich odpadło, bo nie miały uzasadnienia.
+///
+/// Czyta WIERSZAMI, a nie akapitami, i pary składa dopiero `because:`. Implementacja przerywająca
+/// pętlę na pierwszej złej parze gubi dobre pary stojące za nią tak samo jak taka, która nie
+/// sprawdza niczego — a te dwie wady różnią się dla człowieka wszystkim.
+///
+/// Wiersz, który nie zaczyna się żadnym z dwóch kluczy, jest **pomijany**: model prawie zawsze
+/// napisze zdanie wstępu, a odpowiedź odrzucona przez jedno takie zdanie jest turą zapłaconą
+/// za nic (ten sam kierunek, co niezmiennik 5 na drucie).
+fn worth_remembering(said: &str) -> (Vec<Remembered>, usize) {
+    let mut kept: Vec<Remembered> = Vec::new();
+    let mut without_reason = 0;
+    let mut pending: Option<String> = None;
+
+    for raw in said.lines() {
+        // Punktory i pogrubienia zdejmujemy z początku wiersza, bo model pisze listę wtedy, kiedy
+        // prosi się go o listę. Wiersz, który po tym nie zaczyna się kluczem, i tak przepada.
+        let line = raw.trim().trim_start_matches(['-', '*', '#', ' ']).trim();
+
+        if let Some(rule) = after_key(line, "rule:") {
+            // Poprzednia reguła, do której nie doszedł żaden `because:`, odpada dokładnie tutaj:
+            // to jest kształt, w którym brak uzasadnienia przychodzi najczęściej — nie pusta
+            // wartość, tylko wiersz, którego nie ma wcale.
+            if pending.take().is_some() {
+                without_reason += 1;
+            }
+            if rule.is_empty() {
+                without_reason += 1;
+            } else {
+                pending = Some(rule.to_owned());
+            }
+        } else if let Some(because) = after_key(line, "because:") {
+            match pending.take() {
+                // Obecność KLUCZA to nie jest obecność uzasadnienia. `because:` bez treści jest
+                // drugim kształtem, w którym to przychodzi od modelu, i odpada tak samo.
+                Some(rule) if !because.is_empty() => kept.push(Remembered {
+                    rule,
+                    because: because.to_owned(),
+                }),
+                Some(_) => without_reason += 1,
+                None => {}
+            }
+        }
+    }
+
+    // Reguła stojąca na samym końcu odpowiedzi, bez uzasadnienia pod nią.
+    if pending.is_some() {
+        without_reason += 1;
+    }
+    (kept, without_reason)
+}
+
+/// Treść wiersza za tym kluczem — albo `None`, kiedy wiersz nie jest tym kluczem.
+///
+/// Bez rozróżniania wielkości liter: „Rule:" i „rule:" to jedno i to samo zdanie modelu, a para
+/// odrzucona za wielką literę jest parą odrzuconą za nic.
+fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    if line.len() < key.len() || !line.is_char_boundary(key.len()) {
+        return None;
+    }
+    let (head, rest) = line.split_at(key.len());
+    head.eq_ignore_ascii_case(key).then_some(rest.trim())
+}
+
+/// Reguła przycięta do tytułu, czyli do nazwy pliku notatki (powód przy [`TITLE_CAP`]).
+///
+/// Cięcie idzie po granicy ZNAKU, a potem po granicy słowa: pierwsze dlatego, że wycinek
+/// w środku znaku wielobajtowego panikuje, a reguła przychodzi od modelu; drugie dlatego, że
+/// tytuł urwany w połowie słowa czyta się jak plik uszkodzony przy zapisie.
+fn title_from(rule: &str) -> String {
+    let trimmed = rule.trim();
+    if trimmed.chars().count() <= TITLE_CAP {
+        return trimmed.to_owned();
+    }
+    let cut = trimmed
+        .char_indices()
+        .nth(TITLE_CAP)
+        .map_or(trimmed.len(), |(at, _)| at);
+    let end = trimmed[..cut].rfind(char::is_whitespace).unwrap_or(cut);
+    trimmed[..end].to_owned()
 }
 
 /// Zatrzymuje bieg i **wraca dopiero z dowodem**, że nic po nim nie żyje.

@@ -200,6 +200,12 @@ async fn a_finished_run_leaves_at_most_three_candidates_each_carrying_its_reason
     // ── Trzy pary → trzy pliki ────────────────────────────────────────────────────────────
     let bench = Bench::new()?;
     bench.agent("backend", AGENT)?;
+    // Fikstura, nie asercja kryterium: krok, którego agenta nie ma w bibliotece, jest biegiem,
+    // który nigdy nie rusza — a wtedy wszystko niżej jest prawdą o biegu bez ani jednej tury.
+    assert!(
+        AGENT.contains(AGENT_ID) && WORKFLOW.contains(AGENT_ID),
+        "the fixture names {AGENT_ID} in only one of the two files that have to agree on it"
+    );
     let seen = Arc::new(Seen::default());
     let report = a_run_that_finished(&bench, &seen, answer_with(3), true).await?;
 

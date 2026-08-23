@@ -523,7 +523,23 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
-    record(root, draft, agent, None)
+    record(root, draft, agent, None, None)
+}
+
+/// Zapisuje kandydatkę, którą zgłosił **bieg** — z jego identyfikatorem w polu `from`.
+///
+/// 2026-08-23 (T-92). Osobne wejście, a nie czwarty argument [`record_candidate_for`] i nie pole
+/// w [`NoteDraft`]: tamten podpis i tamta struktura są konstruowane literałem w czterech plikach
+/// spoza tego zadania, więc dopisanie pola zamieniłoby to kryterium w czerwień trzech innych
+/// (`AGENTS.md` §7). Ten sam powód i ten sam kształt, co przy [`record_imported`].
+///
+/// **`from` niesie tu bieg, nie projekt**, i to jest jedyne miejsce w tym module, w którym tak
+/// jest. Powód: notatka zaproponowana po biegu jest zdaniem, którego nikt jeszcze nie sprawdził,
+/// a jedyną drogą do sprawdzenia jest transkrypt tego biegu. Roszczenie, do którego nie ma drogi
+/// powrotnej, jest roszczeniem, którego nie da się później wycofać [T6 §5.1] — a wycofanie jest
+/// całą różnicą między pamięcią a akrecją instrukcji.
+pub fn record_candidate_from_run(root: &Path, draft: NoteDraft, run: &str) -> Result<Note> {
+    record(root, draft, None, Some(run), None)
 }
 
 /// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
@@ -559,13 +575,14 @@ pub fn record_imported(
     agent: Option<&str>,
     origin: &Origin,
 ) -> Result<Note> {
-    record(root, draft, agent, Some(origin))
+    record(root, draft, agent, None, Some(origin))
 }
 
 fn record(
     root: &Path,
     draft: NoteDraft,
     agent: Option<&str>,
+    from: Option<&str>,
     origin: Option<&Origin>,
 ) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
@@ -626,6 +643,12 @@ fn record(
             if let Some(name) = owner.filter(|_| front.get("agent").is_none()) {
                 front.set("agent", &one_line(name));
             }
+            // Ta sama reguła dla biegu: notatka mówi o PIERWSZYM, który ją zgłosił. Drugie
+            // zgłoszenie podbija `occurrences` i to jest cały jego ślad — przepisanie `from`
+            // zabrałoby drogę powrotną do transkryptu, w którym to zdanie w ogóle powstało.
+            if let Some(run) = from {
+                add_missing(&mut front, "from", run);
+            }
             // Ta sama reguła dla pochodzenia: dopisujemy brakujące, nie przepisujemy cudzego.
             // Notatka, która leży w bibliotece i już mówi, skąd jest, mówi to o PIERWSZYM
             // projekcie, który ją przywiózł — a drugi import tego nie unieważnia.
@@ -648,6 +671,12 @@ fn record(
             // pole, które w połowie plików znaczy „nie wiem", a w połowie „nikt", nie znaczy nic.
             if let Some(name) = owner {
                 front.set("agent", &one_line(name));
+            }
+            // Bieg, który to zgłosił, stoi w tym samym miejscu i w tym samym kluczu co projekt,
+            // z którego notatka przyjechała: oba odpowiadają na pytanie „skąd to zdanie", a dwa
+            // klucze na jedno pytanie znaczyłyby, że czytelnik musi wiedzieć, którego szukać.
+            if let Some(run) = from {
+                front.set("from", &one_line(run));
             }
             // Pochodzenie stoi zaraz za właścicielem, bo odpowiada na to samo pytanie z drugiej
             // strony: kto tego używa i skąd to wzięliśmy. Notatka napisana tutaj nie dostaje ani
