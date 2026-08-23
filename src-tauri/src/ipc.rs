@@ -66,6 +66,7 @@ use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
 
 use crate::commands::{self, Drivers, RunControl, RunDeps, RunRequest};
 use crate::engine::drivers::{ImageInput, ValidatedImages};
+use crate::engine::limits::Limiter;
 use crate::engine::line::Line;
 use crate::library::agents::Agent;
 use crate::store::Store;
@@ -410,6 +411,18 @@ pub struct AppState {
     /// okno wstalo — a wszystko, co ta sesja sama uruchomi, jest juz po uzgodnieniu i nigdy
     /// przez nie nie przechodzi.
     reconciled: Mutex<std::collections::BTreeSet<PathBuf>>,
+    /// **Jedyna pula miejsc tej aplikacji** — „ile naraz" znaczy naraz (niezmiennik 11).
+    ///
+    /// Jedna na aplikację, nie jedna na bieg, i to jest różnica między szybszą pracą
+    /// a zamrożonym laptopem: trzy karty po trzech agentach to dziewięciu procesów po ~583 MB
+    /// szczytowego RSS (`docs/ARCHITECTURE.md` §6a, `[T7 §7.1, V]`). Do 2026-08-24 każdy bieg
+    /// zakładał sobie własną pulę (`Limiter::new(request.how_many_at_once)` w
+    /// `run_workflow_inner`), więc suwak na trzech znaczył `3 × liczba biegów`.
+    ///
+    /// Klon dzieli tę samą pulę i to jest cały mechanizm: [`AppState::begin_run`] wkłada klon
+    /// do świeżego uchwytu biegu, więc każdy bieg tej aplikacji bierze miejsca stąd,
+    /// którymikolwiek drzwiami wszedł.
+    slots: Limiter,
     /// Uchwyt do biegu, który idzie **teraz**.
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie tego
@@ -578,7 +591,18 @@ impl AppState {
     /// wieszający okno jest gorszy od przycisku, który nic nie robi.
     #[must_use]
     pub fn new(home: PathBuf, project: PathBuf, store: Store, drivers: Drivers) -> Self {
-        let idle = RunControl::new();
+        /* JEDYNE MIEJSCE, W KTÓRYM STOI LICZBA KROKÓW CIĘŻKICH, i stoi tu jedynka.
+         *
+         * Niezmiennik 26: dwa `cargo`/`rustc` naraz na tym Macu przypinają kompresor pamięci
+         * i zamrażają maszynę przy zerowym swapie. Krok „sprawdź" bierze więc miejsce z puli
+         * **i** to jedno miejsce ciężkie (`engine::limits::Weight::Heavy`), a kroki agenta
+         * biegną obok niego normalnie.
+         *
+         * Szerokość samej puli jest tymczasowa: „ile naraz" jest odpowiedzią człowieka udzieloną
+         * przy Starcie, więc ustawia ją pierwszy bieg (`commands::run::run_workflow_inner`).
+         * Wpisanie tu ósemki dałoby okno, w którym pula jest szersza niż suwak. */
+        let slots = Limiter::with_heavy(1, 1);
+        let idle = RunControl::sharing(slots.clone());
         idle.settle();
         Self {
             home,
@@ -586,6 +610,7 @@ impl AppState {
             store,
             drivers,
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
+            slots,
             live: Mutex::new(idle),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
@@ -900,7 +925,11 @@ impl AppState {
             // Ta jedna instrukcja jest i podmianą, i zamknięciem zapadki dla każdego następnego
             // startu: świeży uchwyt nie ma dowodu zejścia, a warunek wyżej pyta właśnie o dowód.
             // Powód w całości stoi w nagłówku tej metody.
-            *live = RunControl::new();
+            // Świeży uchwyt niosący KLON PULI APLIKACJI, nie własną pulę: to jest ta jedna
+            // linia, w której „jeden semafor na całą aplikację" przestaje być zdaniem
+            // w komentarzu (niezmiennik 11). `RunControl::new()` w tym miejscu zakładałby pulę
+            // na bieg, czyli dokładnie wadę, którą naprawia T-94.
+            *live = RunControl::sharing(self.slots.clone());
         }
         Ok(self.deps_in(project))
     }
@@ -1726,21 +1755,29 @@ pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceW
 /// stoi w pliku"; powód i sposób wpisania go w prompt kroku stoją przy [`RunRequest::task`]
 /// i [`commands::run`].
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kazdy argument jest osobna odpowiedzia czlowieka udzielona przy tym Starcie, \
+              a nie polem struktury do zwiniecia: literal RunRequest stoi w 55 plikach i nie \
+              ma Default, wiec nowe pole tam przewraca je wszystkie naraz (T-94)"
+)]
 pub async fn run_workflow(
     state: State<'_, AppState>,
     file_name: &str,
     how_many_at_once: usize,
     folder: Option<String>,
     task: Option<String>,
+    budget_usd: Option<f64>,
     claim: Option<commands::triggers::TriggerClaim>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    run_workflow_from_window(
+    from_the_window(
         &state,
         file_name,
         how_many_at_once,
         folder.as_deref(),
         task,
+        budget_usd,
         claim.as_ref(),
         pump_into(lines),
     )
@@ -1759,6 +1796,42 @@ pub async fn run_workflow_from_window(
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
+    // Bez sufitu wydatku, bo ta droga go nie zna. PODPIS ZOSTAJE, i to nie jest wygoda:
+    // `tests/it/trigger_workspace_is_authority.rs` — cudze kryterium — woła tę funkcję siedmioma
+    // argumentami, a T-94 tamtego pliku nie posiada (AGENTS.md §7). Sufit jedzie więc
+    // ARGUMENTEM przez [`from_the_window`], a nie polem `RunRequest`: literał tamtej struktury
+    // stoi w tym drzewie w 55 plikach i nie ma `Default`, więc jedno nowe pole przewróciłoby
+    // je wszystkie naraz.
+    from_the_window(
+        state,
+        file_name,
+        how_many_at_once,
+        folder,
+        task,
+        None,
+        claim,
+        lines,
+    )
+    .await
+}
+
+/// Ta sama krawędź, plus sufit wydatku tego biegu.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kazdy argument jest osobna odpowiedzia czlowieka udzielona przy tym Starcie; \
+              zwiniecie ich w strukture znaczy nowe pole w RunRequest, czyli 55 plikow poza \
+              tym zadaniem"
+)]
+async fn from_the_window(
+    state: &AppState,
+    file_name: &str,
+    how_many_at_once: usize,
+    folder: Option<&str>,
+    task: Option<String>,
+    budget_usd: Option<f64>,
+    claim: Option<&commands::triggers::TriggerClaim>,
+    lines: LineSink,
+) -> Result<(), String> {
     let request = state
         .request(file_name, how_many_at_once, task)
         .inspect_err(refused)?;
@@ -1769,7 +1842,7 @@ pub async fn run_workflow_from_window(
     } else {
         state.project_for(folder).inspect_err(refused)?
     };
-    run_workflow_in_project(state, &project, &request, claim, lines).await
+    run_workflow_in_project(state, &project, &request, budget_usd, claim, lines).await
 }
 
 /// Powtarza JEDEN krok skończonego biegu — jako nowy bieg, z wejściem tamtego.
@@ -1802,7 +1875,15 @@ pub async fn rerun_step(
         refused(&said);
         said
     })?;
-    run_workflow_in_project(&state, &project, &again.request, None, pump_into(lines)).await?;
+    run_workflow_in_project(
+        &state,
+        &project,
+        &again.request,
+        None,
+        None,
+        pump_into(lines),
+    )
+    .await?;
     // Zdanie o zmienionym pliku wraca WOŁAJĄCEMU, a nie leci w strumień: strumień należy do
     // biegu, a to jest fakt o tym, co ten bieg w ogóle uruchomił.
     Ok(again.said)
@@ -1837,7 +1918,15 @@ pub async fn resume_run(
                 refused(&said);
                 said
             })?;
-    run_workflow_in_project(&state, &project, &again.request, None, pump_into(lines)).await?;
+    run_workflow_in_project(
+        &state,
+        &project,
+        &again.request,
+        None,
+        None,
+        pump_into(lines),
+    )
+    .await?;
     Ok(again.said)
 }
 
@@ -1846,6 +1935,7 @@ async fn run_workflow_in_project(
     state: &AppState,
     project: &Path,
     request: &RunRequest,
+    budget_usd: Option<f64>,
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
@@ -1861,10 +1951,11 @@ async fn run_workflow_in_project(
         .await
         .map(|_| ())
     } else {
-        commands::run::run_workflow_inner(
+        commands::run::run_workflow_with_budget(
             &state.begin_run(project).inspect_err(refused)?,
             request,
             lines,
+            budget_usd,
         )
         .await
         .map(|_| ())
@@ -1894,6 +1985,7 @@ pub async fn run_agent(
     task: &str,
     how_many_at_once: usize,
     folder: Option<String>,
+    budget_usd: Option<f64>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
     let ask = commands::run::AskRequest {
@@ -1905,7 +1997,7 @@ pub async fn run_agent(
     // `begin_a_run`, nie `begin_run`: uchwyt żywego biegu nie ma prawa zniknąć pod Stopem
     // (powód w całości stoi przy tamtej metodzie).
     let deps = state.begin_a_run(project.as_path()).inspect_err(refused)?;
-    commands::run::run_agent_inner(&deps, &ask, pump_into(lines))
+    commands::run::run_agent_with_budget(&deps, &ask, pump_into(lines), budget_usd)
         .await
         .map(|_| ())
         .map_err(|error| {

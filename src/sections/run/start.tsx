@@ -32,7 +32,15 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { why } from '../../ipc/why';
 import { AtOnce } from './limits/at-once';
-import { atOnce as atOnceNow, setAtOnce, subscribeToAtOnce } from './limits/chosen';
+import { Budget } from './limits/budget';
+import {
+  atOnce as atOnceNow,
+  budgetUsd as budgetNow,
+  setAtOnce,
+  setBudgetUsd,
+  subscribeToAtOnce,
+  subscribeToBudget,
+} from './limits/chosen';
 import type { Choice } from './choices';
 import { choiceFor, firstRunnable, toChoices } from './choices';
 import { launchRun } from './launch';
@@ -68,6 +76,19 @@ export const TASK_LABEL = 'What should this run build?';
 
 /** Dlaczego pola nie da się teraz zmienić. Wygaszenie bez powodu jest zagadką. */
 const TASK_LOCKED = 'This run already started with what it was asked for. Stop it to change this.';
+
+/**
+ * Dlaczego żadnego z dwóch limitów nie da się zmienić w trakcie biegu.
+ *
+ * JEDNO ZDANIE NA DWIE KONTROLKI, bo powód jest jeden: bieg wystartował z liczbami, które miał,
+ * a żadna komenda nie zmienia ich w połowie. Dwa zdania o jednej przyczynie rozjechałyby się
+ * w dniu, w którym ktoś poprawi jedno z nich (niezmiennik 13).
+ *
+ * EKSPORTOWANE, żeby kryterium mogło je CZYTAĆ, a nie przepisywać — ten sam powód, co przy
+ * [`TASK_LABEL`]: napis przepisany do testu przestaje pilnować czegokolwiek w dniu, w którym
+ * ktoś zmieni brzmienie na ekranie i nie tknie kryterium.
+ */
+export const LIMIT_LOCKED = 'This run already started with its own limit. Stop it to change this.';
 
 /**
  * Uruchamia wybrany workflow z tym, co człowiek wpisał w pole zadania.
@@ -222,6 +243,11 @@ export function Start({ onSaid }: StartProps): ReactElement {
    * w zdaniu „N of M slots in use" — do 2026-08-18 dostawał tam zaszyte `atOnce={0}`, bo liczba
    * była zamknięta w `useState` tej kontrolki i nikt poza nią nie miał jak jej przeczytać. */
   const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
+
+  /* SUFIT WYDATKU MIESZKA W MODULE Z TEGO SAMEGO POWODU, CO LICZBA WYŻEJ: czyta go też krawędź
+   * startu (`./io.ts`), żeby ta sama kwota jechała każdą drogą — przyciskiem, `/run` i zielonym
+   * Run z edytora. Kopia zamknięta w tym komponencie kazałaby dwóm pozostałym drogom zgadywać. */
+  const budget = useSyncExternalStore(subscribeToBudget, budgetNow, budgetNow);
 
   /* CO TEN BIEG MA ZBUDOWAĆ — pole, którego przycisk Start nie miał przez cały swój żywot.
    *
@@ -463,13 +489,12 @@ export function Start({ onSaid }: StartProps): ReactElement {
           a biegło dalej trzech — `atOnce` czyta się tylko przy starcie, `Limiter::new` powstaje
           raz, i żadna z komend nie zmienia limitu w trakcie. Kontrolka, która przyjmuje zmianę
           i jej nie wykonuje, jest gorsza niż wygaszona (niezmiennik 16). */}
-      <AtOnce
-        value={atOnce}
-        onChange={setAtOnce}
-        disabled={
-          busy ? 'This run already started with its own limit. Stop it to change this.' : null
-        }
-      />
+      <AtOnce value={atOnce} onChange={setAtOnce} disabled={busy ? LIMIT_LOCKED : null} />
+
+      {/* DRUGA POŁOWA TEJ SAMEJ DECYZJI, w drugiej walucie: ile maszyny wolno zająć i ile
+          pieniędzy wolno wydać. Puste znaczy „bez limitu", a wygaszenie w trakcie biegu jedzie
+          TYM SAMYM zdaniem, co przy suwaku — powód jest jeden, więc i zdanie jest jedno. */}
+      <Budget value={budget} onChange={setBudgetUsd} disabled={busy ? LIMIT_LOCKED : null} />
     </div>
   );
 }

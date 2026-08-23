@@ -29,6 +29,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::drivers::AgentDriver;
+use crate::engine::limits::Limiter;
 use crate::engine::step::StepState;
 use crate::library::agents::{AgentError, Vendor};
 use crate::store::{Store, StoreError};
@@ -255,13 +256,52 @@ struct Signals {
     /// w jednym wyrażeniu, bo [`crate::ipc::LineSink`] jest klonowalny, a jego `send` jest
     /// synchroniczny i nie blokuje producenta.
     heard: Mutex<Option<crate::ipc::LineSink>>,
+    /// Wspólna pula miejsc **całej aplikacji** — „ile naraz" (niezmiennik 11).
+    ///
+    /// # Dlaczego pula jedzie TĘDY, a nie polem [`RunDeps`] (2026-08-24, T-94)
+    ///
+    /// Bo `RunDeps` jest strukturą, którą buduje się literałem, a literał `RunDeps { … }` stoi
+    /// w tym drzewie w **84 miejscach w 58 plikach** (zmierzone 2026-08-24), z czego wszystkie
+    /// poza `ipc.rs` leżą w plikach kryteriów cudzych zadań. Nowe pole przewróciłoby je co do jednego, a `AGENTS.md` §7
+    /// mówi, co wtedy zrobić: zatrzymać się, nie przepisywać cudzych plików. Ten uchwyt
+    /// powstaje wywołaniem ([`RunControl::new`]), więc dołożenie go tutaj nie zmienia ani
+    /// jednego wołającego.
+    ///
+    /// To nie jest obejście na jedno miejsce: uchwyt biegu jest DOKŁADNIE tą rzeczą, którą
+    /// aplikacja wręcza każdemu startowi ([`crate::ipc::AppState::begin_run`] wymienia go przy
+    /// każdym biegu). Klon [`Limiter`] dzieli tę samą pulę, więc wpisanie do świeżego uchwytu
+    /// klonu puli aplikacji znaczy, że **każdy** bieg tej aplikacji bierze miejsca z jednej puli,
+    /// którymikolwiek drzwiami wszedł. Bieg, który zakłada sobie pulę sam, jest nie do
+    /// odróżnienia od biegu, który robi po jednej na kartę — a wtedy dwie karty dają `2 × limit`
+    /// agentów po ~583 MB, czyli zamrożony laptop (`docs/ARCHITECTURE.md` §6a).
+    slots: Limiter,
 }
+
+/// Ile miejsc ma pula uchwytu, którego nikt jeszcze nie postawił przy żadnym żądaniu.
+///
+/// Jedno, nie osiem: uchwyt bez żądania nie zna liczby, którą wybrał człowiek, a pula
+/// zaczynająca szeroko wypuściłaby przy pierwszym biegu więcej agentów, niż stoi na suwaku.
+/// Pierwszy bieg podnosi ją do swojej liczby, zanim ruszy pierwszy krok.
+const UNTIL_THE_FIRST_START: usize = 1;
 
 impl RunControl {
     /// Świeży uchwyt: bieg jeszcze nie ruszył, nikt go nie zatrzymał i nikt nie powiedział
     /// „dalej".
     #[must_use]
     pub fn new() -> Self {
+        // Własna pula, bo ten uchwyt nie dostał cudzej. Liczba jest tymczasowa i nie jest
+        // wyborem: „ile naraz" przychodzi z żądaniem człowieka i ustawia ją pierwszy bieg
+        // (`run::run_workflow_inner`), a suwak przed pierwszym Startem nie mówi jeszcze nic.
+        Self::sharing(Limiter::new(UNTIL_THE_FIRST_START))
+    }
+
+    /// Świeży uchwyt biegu, który bierze miejsca z **cudzej** puli.
+    ///
+    /// Tędy, i tylko tędy, aplikacja wręcza biegowi swoją jedyną pulę
+    /// ([`crate::ipc::AppState::begin_run`]). Powód, dla którego pula mieszka w uchwycie biegu,
+    /// a nie w polu [`RunDeps`], stoi w całości przy [`Signals::slots`].
+    #[must_use]
+    pub fn sharing(slots: Limiter) -> Self {
         Self {
             inner: Arc::new(Signals {
                 cancel: CancellationToken::new(),
@@ -272,8 +312,15 @@ impl RunControl {
                 settled: CancellationToken::new(),
                 began: CancellationToken::new(),
                 heard: Mutex::new(None),
+                slots,
             }),
         }
+    }
+
+    /// Pula miejsc, z której ten bieg ma brać — klon, więc ta sama pula.
+    #[must_use]
+    pub fn slots(&self) -> Limiter {
+        self.inner.slots.clone()
     }
 
     /// Bieg wszedł do roboty. Woła to [`run::run_workflow_with_slots`], obok `settle()`.

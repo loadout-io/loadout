@@ -853,6 +853,32 @@ impl std::fmt::Debug for ClaudeDriver {
     }
 }
 
+/// Jak ten vendor nazywa sufit wydatku w argv. Zmierzone na `claude --help` 2.1.241.
+const BUDGET_FLAG: &str = "--max-budget-usd";
+
+/// Fragment argv, którym `claude` sam zatrzyma turę przekraczającą to, co zostało z budżetu.
+///
+/// Zmierzone 2026-08-23 na `claude --help` 2.1.241: `--max-budget-usd <amount>`, „only works
+/// with --print" — a Loadout woła z `-p`, więc flaga działa. To rozstrzyga spike S-2, który
+/// stał nierozstrzygnięty od T1.
+///
+/// **Nazwa flagi mieszka TUTAJ, w adapterze, a kwota przychodzi argumentem** (niezmiennik 23).
+/// Ile jeszcze zostało, wie wyłącznie księga biegu; jak się o to prosi tego vendora, wie
+/// wyłącznie ten plik. Wersja z literałem `"--max-budget-usd"` w `commands/run.rs` byłaby
+/// polityką vendora przepisaną do rdzenia — dokładnie tak umarło po cichu skanowanie sekretów
+/// w repo źródłowym.
+///
+/// Zaokrąglone w dół do centa, bo wysyłamy kwotę, której vendorowi wolno wydać: zaokrąglenie
+/// w górę oddawałoby mu pół centa ponad to, co człowiek postawił jako sufit.
+#[must_use]
+pub fn budget_argv(dollars: f64) -> Vec<String> {
+    // W dół, i to jest treść: `floor` na centach oddaje vendorowi tylko te pieniądze, które
+    // naprawdę zostały. `format!("{:.2}")` zaokrągla do NAJBLIŻSZEGO centa, więc przy reszcie
+    // 6,665 wypisałoby 6,67 — pół centa ponad sufit, który postawił człowiek.
+    let cents = (dollars.max(0.0) * 100.0).floor() / 100.0;
+    vec![BUDGET_FLAG.to_owned(), format!("{cents:.2}")]
+}
+
 impl Default for ClaudeDriver {
     fn default() -> Self {
         Self::new()
@@ -990,8 +1016,12 @@ impl ClaudeDriver {
     /// | `--permission-mode` + `--allowedTools` | z [`super::Policy`], jedną tabelą (niezmiennik 23) |
     /// | `--tools <lista>` | twarda biała lista **dostępności** z [`tools_for`]: czego na niej nie ma, tego proces nie ma pod ręką [2026-08-19] |
     ///
-    /// Czego tu **nie ma**: `--bare` (wywala subskrypcję [T1 §3.3]), `--max-turns`
-    /// i `--max-budget-usd` (spike S-2 nierozstrzygnięty [`docs/ARCHITECTURE.md` §11]).
+    /// Czego tu **nie ma**: `--bare` (wywala subskrypcję [T1 §3.3]) i `--max-turns`.
+    ///
+    /// `--max-budget-usd` **jest**, kiedy bieg ma sufit wydatku: wchodzi fragmentem argv przez
+    /// [`DriverConfiguration::arguments`], a składa go [`budget_argv`]. Spike S-2 rozstrzygnięty
+    /// pomiarem 2026-08-23 na `claude --help` 2.1.241: flaga istnieje i „only works with
+    /// --print", a Loadout woła z `-p`.
     #[must_use]
     pub fn command(&self, spec: &RunSpec) -> Command {
         let mut command = Command::new(&self.binary);
@@ -1161,9 +1191,13 @@ impl ClaudeDriver {
         //
         // Nie ma tu też `--bare` (nigdy nie czyta OAuth ani keychaina; na tej maszynie wywaliła
         // bieg na `Not logged in · Please run /login` z `terminal_reason:"api_error"`
-        // [T1 §3.3, ran]), ani `--max-turns` / `--max-budget-usd` — spike S-2 nie rozstrzygnął
-        // sprzeczności T1 vs T4, a sufit i tak egzekwuje limit czasu ściennego z T-03
-        // [`docs/ARCHITECTURE.md` §11].
+        // [T1 §3.3, ran]) ani `--max-turns`.
+        //
+        // 2026-08-23 — `--max-budget-usd` PRZESTAŁO BYĆ NA TEJ LIŚCIE. Spike S-2 rozstrzygnęło
+        // wywołanie `claude --help` 2.1.241: flaga istnieje, przyjmuje kwotę i „only works with
+        // --print", czyli działa dokładnie w tym trybie, w którym woła ją Loadout. Wchodzi
+        // fragmentem argv wyżej ([`budget_argv`], `configuration.arguments`), bo kwotę zna
+        // wyłącznie księga biegu, a nazwę flagi wyłącznie ten plik.
         command
     }
 }
