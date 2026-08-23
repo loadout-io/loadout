@@ -134,6 +134,32 @@ export function missingForSave(agent: Agent): string | null {
   if (!hasName && !hasInstructions) return 'Fill in Name and Instructions to save this agent.';
   if (!hasName) return 'Fill in Name to save this agent.';
   if (!hasInstructions) return 'Fill in Instructions to save this agent.';
+
+  /* WIERSZ PRZELOTKI Z NAZWĄ I BEZ WARTOŚCI JEDZIE TĄ SAMĄ DROGĄ, i to jest cały powód, dla
+   * którego stoi tutaj, a nie w kontrolce. Warunek ma już dwóch wołających — formularz wygasza
+   * Save i podpisuje powód, magazyn odmawia, bo jest jedyną krawędzią do dysku — więc trzecia
+   * kopia znaczyłaby przycisk, który budzi się przy wierszu bez wartości, i zapis, który go
+   * dalej nie przyjmuje (niezmiennik 13).
+   *
+   * DLACZEGO TO W OGÓLE JEST ODMOWĄ. Flaga oddana bez wartości połyka następny argument jako
+   * swój, więc komenda znaczy co innego, niż wygląda — a nic na ekranie by tego nie powiedziało.
+   *
+   * Czytamy OBIE nazwy aplikacji, nie tylko tę z `Runs with`: wpisy drugiej zostają w pliku
+   * (formularz je chowa, nie kasuje), a plik jest tym, co pojedzie do argv. */
+  const half = halfAPair(agent);
+  if (half !== null) {
+    return `Give ${half} a value in Extra options, or delete that line, to save this agent.`;
+  }
+  return null;
+}
+
+/** Nazwa wpisu przelotki, za którą nic nie stoi — albo `null`, kiedy każdy ma swoją wartość. */
+function halfAPair(agent: Agent): string | null {
+  for (const options of Object.values(agent.vendorOptions ?? {})) {
+    for (const [name, value] of Object.entries(options)) {
+      if (value.trim().length === 0) return name;
+    }
+  }
   return null;
 }
 

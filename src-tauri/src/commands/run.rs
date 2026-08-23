@@ -140,10 +140,20 @@
 //!   ([`Live::evidence_for_agent`]). Do 2026-08-23 stało tu zdanie odwrotne — „katalog `logs/`
 //!   powstaje, ale nikt tam nie pisze" — i było nieprawdą w każdym biegu właściciela, czyli
 //!   uczyło następnego pisarza szukać szwu, który już istnieje.
-//! - **Nie rozwija `copies`** [T3 §4.4]. Krok z `copies: 3` biegnie tu jako jedna sesja:
-//!   rozwinięcie zmienia liczbę węzłów grafu, a `RunReport::steps` jest kontraktem „jeden wpis
-//!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
+//!
+//! # Kopie kroku są węzłami grafu (2026-08-23, T-90)
+//!
+//! Do tego dnia stało tu zdanie odwrotne — „krok z `copies: 3` biegnie tu jako jedna sesja" —
+//! i było prawdą: człowiek ustawiał liczbę w wierszu „How many at once", walidator pilnował
+//! zakresu, plik ją zapisywał, a robota wykonywała się raz. Zmierzone na biegu właściciela: dwa
+//! kroki po `copies: 2` dały **22** kroki zamiast 28.
+//!
+//! Rozwinięcie robi [`crate::workflow::unroll`], tą samą drogą, którą rozwija rundy pętli: graf,
+//! który stąd schodzi do planisty, jest dalej bez cykli i ma tylko więcej węzłów. Trzy kopie
+//! dzielą KLUCZ KAFELKA — okno rysuje jedną kartę, bo człowiek narysował jeden kafelek — a różnią
+//! się kluczem węzła, katalogiem roboczym i podpisem („Build (2 of 3)"). `RunReport::steps` ma
+//! od teraz jeden wpis na WĘZEŁ, nie na krok pliku.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -191,8 +201,8 @@ use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
-    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence,
-    Skills, Step, WhenItFails, WorkflowFile,
+    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point,
+    RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
@@ -486,6 +496,57 @@ write yourself is read by nobody.";
 /// którego się domyśla, i domyśla się nisko.
 const NO_TIME_LIMIT: &str =
     "There is no time limit on this step, so take the time the work really needs.";
+
+/// Zdanie, którym blok „jak odpowiadać" prosi o umówione pola przekazania.
+///
+/// 2026-08-23 (T-90) — `Handover::Form { fields }` jest w schemacie kroku od T3 §3.1, czyta go
+/// import, ma nawet własne `required` — i jedynym użyciem w drzewie było `Handover::default()`.
+/// Człowiek opisywał, co ten krok ma oddać, plik to zapisywał, a agent nigdy się o tym nie
+/// dowiadywał. Wymaganie, o którym agent nie wie, jest karą, nie umową — dokładnie jak limit
+/// czasu, o którym do 2026-08-23 wiedział wyłącznie ten, kto zabija krok.
+///
+/// KSZTAŁT POKAZANY WPROST, bo agent kopiuje ten, który mu się pokaże, a nasz własny czytnik
+/// bierze **cały wiersz** zaczynający się nazwą i dwukropkiem ([`fields_said_in`]). Lista
+/// wypisana myślnikami wygląda w prompcie równie porządnie i jest dla tamtego czytnika
+/// niewidzialna — czyli byłaby umową, której jedna strona nie podpisała.
+const FIELDS_ASKED_FOR: &str = "\
+This step also has to hand these back. Put each one on a line of its own, starting with the name \
+and a colon, in the shape shown here:";
+
+/// I zdanie o tym, co się stanie bez pola oznaczonego jako potrzebne.
+///
+/// WPROST O SKUTKU, tak samo jak [`OUTCOME_ASKED_FOR`] obok i z tego samego powodu: prośbę „napisz
+/// wiersz X" bez powiedzenia, co się stanie bez niego, model traktuje jak formalność.
+const FIELDS_ARE_REQUIRED: &str = "\
+The ones marked as needed are not optional: an answer without them does not pass, and the step \
+after this one is left without the thing it was promised. The rest you may leave out when you \
+have nothing to put in them.";
+
+/// Znacznik, którym blok odróżnia pole wymagane od reszty.
+///
+/// Po angielsku i bez naszych słów z drutu (decyzja D5, niezmiennik 14): `required` jest kluczem
+/// w pliku, a nie słowem, którym mówi się do kogoś, kto właśnie dostał robotę.
+const FIELD_IS_NEEDED: &str = " (needed)";
+
+/// Etykieta, którą człowiek widzi nad polem ze ścieżką wyniku (`step-panel/panel.tsx`).
+///
+/// 2026-08-23 (T-90) — ODMOWA NAZYWA TO, CO STOI NA EKRANIE, nigdy klucza z pliku:
+/// `writeResultsTo` nie istnieje na żadnym ekranie (niezmiennik 14), a panel kroku ma dziewięć
+/// wierszy — odmowa bez nazwy pola wysyła człowieka szukać, który z nich zatrzymał bieg.
+const WRITE_RESULTS_TO: &str = "Write results to";
+
+/// Zdanie o kroku, którego plików kontekstu nie dało się udowodnić.
+///
+/// Stoi tu, przy pozostałych zdaniach tego modułu, a nie w środku gałęzi, która je wysyła: to jest
+/// tekst, który człowiek czyta na karcie kroku, więc czyta się go razem z resztą takich zdań.
+const CONTEXT_NOT_PROVEN: &str =
+    "Loadout could not prove the context files for this agent, so it did not start the step.";
+
+/// Zdanie, którym kończy się każda ścieżka wyniku wypadająca poza folder kroku.
+///
+/// Jedno na dwa pytania — o katalog nad plikiem i o sam plik ([`Live::room_for_the_answer`]) — bo
+/// człowiekowi wypada z tego ta sama poprawka: wskaż miejsce w folderze, który ten krok dostał.
+const LEADS_OUT_OF_THE_FOLDER: &str = "that path leads out of the folder this step works in";
 
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
@@ -1921,6 +1982,36 @@ struct AgentJob {
     cwd: PathBuf,
     /// Czy ten katalog jest nasz, czyli czy mamy go utworzyć.
     ours: bool,
+    /// Gdzie ten krok ma odłożyć swoją odpowiedź — **względem [`AgentJob::cwd`]**. `None` znaczy
+    /// „człowiek o żaden plik nie prosił" i wtedy nie powstaje nic.
+    ///
+    /// 2026-08-23 (T-90) — DO TEGO DNIA `writeResultsTo` NIE MIAŁO W CAŁYM DRZEWIE ANI JEDNEGO
+    /// CZYTELNIKA. Wiersz w panelu kroku przyjmował ścieżkę, plik ją zapisywał, i nie powstawało
+    /// nic — a pusty katalog wygląda dokładnie tak samo jak katalog, do którego agent nie miał
+    /// nic do napisania (niezmiennik 16).
+    ///
+    /// Względem folderu KROKU, nie projektu, i te dwa są tym samym wyłącznie dla kroków
+    /// `project`. Krok z własną kopią plików ma odłożyć wynik w NIEJ: pisanie z powrotem do
+    /// folderu człowieka jest dokładnie tym, czemu ta własna kopia zapobiega.
+    ///
+    /// Ścieżka wyprowadzająca poza ten folder jest odmową przy planowaniu ([`where_results_go`]),
+    /// więc do tego pola dochodzi wyłącznie ścieżka względna bez `..`. To, czego z napisu nie
+    /// widać — dowiązanie położone tam przez kogoś wcześniej — jest odmową o chwilę później,
+    /// ale wciąż przed startem kroku ([`Live::the_answer_has_somewhere_to_go`]).
+    write_results_to: Option<PathBuf>,
+    /// Pola, które ten krok ma oddać obok swojej odpowiedzi. Pusty wektor dla kroku bez
+    /// formularza — i to jest odpowiedź, nie brak: krok, o którego pola nikt nie prosił, nie ma
+    /// czego oddawać i nie wolno go o nic sądzić.
+    ///
+    /// 2026-08-23 (T-90) — DWA CZYTELNIKI, DWIE POŁOWY JEDNEJ UMOWY: blok „jak odpowiadać"
+    /// mówi agentowi, czego się od niego chce ([`Live::prompt_for`]), a wynik tury sprawdza, czy
+    /// to dostał ([`Live::missing_a_required_field`]). Sama prośba jest poleceniem bez skutku
+    /// (niezmiennik 16) i uczy model, że tych wierszy można nie pisać; samo wymaganie jest karą
+    /// za nieodgadnięcie.
+    ///
+    /// Zamrożone przy planowaniu, jak wszystko inne w tej strukturze: plik poprawiony w trakcie
+    /// biegu nie ma prawa zmienić zasad biegu, który już ruszył.
+    handover: Vec<HandoverField>,
     /// Planowana część promptu: notatki, zadanie biegu i instrukcja kafelka, już złożone.
     ///
     /// 2026-08-23 — KOMENTARZ MÓWIŁ „instrukcje kroku, dosłownie z pliku workflow" i przestał
@@ -1969,6 +2060,13 @@ struct AgentJob {
     thinking: Thinking,
     /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
     connections: Vec<crate::connections::Connection>,
+    /// Przelotka `vendorOptions` tego agenta, **już w kształcie argv jego aplikacji**.
+    ///
+    /// 2026-08-23 (T-90) — pole doszło, bo do tego dnia przelotka nie docierała do procesu ani
+    /// jedną flagą. Policzona **przy planowaniu**, dokładnie jak polityka i lista narzędzi obok:
+    /// wpis, którego krok nie ma prawa podać, jest odmową, a niezmiennik 12 mówi „najpóźniej
+    /// przy Starcie". Krok bez przelotki ma tu pustą listę i jego argv nie zmienia się o bajt.
+    passthrough: Vec<String>,
     /// Umiejętności, które ten krok naprawdę dostanie — policzone z efektywnego agenta.
     ///
     /// Policzone **przy planowaniu**, z tego samego powodu, z którego stoją tu narzędzia: nazwa,
@@ -2132,29 +2230,7 @@ fn plan_run_with_identity(
         unrolled: &unrolled,
     };
     let wanted = which_nodes(&unrolled, &file, request.part.as_ref());
-    /* Gdzie każdy węzeł rozwinięcia wylądował w wycinku. `None` znaczy „nie wszedł" i to jest
-     * jedyne miejsce, w którym numeracja wycinka spotyka się z numeracją grafu. */
-    let mut place: Vec<Option<StepId>> = vec![None; unrolled.nodes.len()];
-    let mut steps = Vec::with_capacity(unrolled.nodes.len());
-    for (index, node) in unrolled.nodes.iter().enumerate() {
-        let Some(step) = file.steps.get(node.step) else {
-            continue;
-        };
-        if !wanted[index] {
-            continue;
-        }
-        /* Numer pętli bierze się z ciał policzonych przez `unroll`, a nie z drugiego obchodu
-         * grafu tutaj: jedna definicja słowa „ten krok jest w tej pętli" (niezmiennik 13). */
-        let in_loop = unrolled
-            .loops
-            .iter()
-            .position(|one| one.body.contains(&node.step));
-        /* `index` zostaje NUMEREM WĘZŁA ROZWINIĘCIA, a nie pozycją w `steps`, i to jest wymóg:
-         * `where_it_works` pyta nim `trees_before` o poprzedników w grafie. Pozycja w wycinku
-         * wskazywałaby cudzy węzeł, czyli cudze drzewo robocze. */
-        place[index] = Some(steps.len());
-        steps.push(plan_step(step, index, node.turn, in_loop, &setup)?);
-    }
+    let (mut steps, place) = plan_the_nodes(&unrolled, &file, &wanted, &setup)?;
     /* STRZAŁKI ZALEŻĄ OD TEGO, O KTÓRY WYCINEK CHODZI, i to jest cała różnica między dwoma
      * rodzajami powtórzenia.
      *
@@ -2241,6 +2317,43 @@ fn plan_run_with_identity(
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
     })
+}
+
+/// Węzły rozwinięcia → kroki planu, plus mapa „gdzie każdy węzeł wylądował w wycinku".
+///
+/// Osobna funkcja, a nie pętla w [`plan_run_with_identity`]: to jest jedno zamknięte pytanie
+/// i jedyne miejsce, w którym numeracja wycinka spotyka się z numeracją grafu. `None` w mapie
+/// znaczy „ten węzeł nie wszedł do biegu".
+fn plan_the_nodes(
+    unrolled: &Unrolled,
+    file: &WorkflowFile,
+    wanted: &[bool],
+    setup: &Setup<'_>,
+) -> Result<(Vec<Planned>, Vec<Option<StepId>>), RunError> {
+    let mut place: Vec<Option<StepId>> = vec![None; unrolled.nodes.len()];
+    let mut steps = Vec::with_capacity(unrolled.nodes.len());
+    for (index, node) in unrolled.nodes.iter().enumerate() {
+        let Some(step) = file.steps.get(node.step) else {
+            continue;
+        };
+        if wanted.get(index) != Some(&true) {
+            continue;
+        }
+        /* Numer pętli bierze się z ciał policzonych przez `unroll`, a nie z drugiego obchodu
+         * grafu tutaj: jedna definicja słowa „ten krok jest w tej pętli" (niezmiennik 13). */
+        let in_loop = unrolled
+            .loops
+            .iter()
+            .position(|one| one.body.contains(&node.step));
+        /* `index` zostaje NUMEREM WĘZŁA ROZWINIĘCIA, a nie pozycją w `steps`, i to jest wymóg:
+         * `where_it_works` pyta nim `trees_before` o poprzedników w grafie. Pozycja w wycinku
+         * wskazywałaby cudzy węzeł, czyli cudze drzewo robocze. */
+        place[index] = Some(steps.len());
+        steps.push(plan_step(
+            step, index, node.turn, node.copy, in_loop, setup,
+        )?);
+    }
+    Ok((steps, place))
 }
 
 fn run_directory(project: &Path, id: &str, created_at: i64) -> PathBuf {
@@ -2377,7 +2490,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .steps
         .iter()
         .enumerate()
-        .map(|(node, step)| plan_step(step, node, 0, None, &setup))
+        // Runda zero i kopia zero: `/ask` jest jednym krokiem jednego agenta, więc nie ma tu ani
+        // pętli, ani liczby „ile naraz" na kafelku — pyta się jednego agenta jeden raz.
+        .map(|(node, step)| plan_step(step, node, 0, 0, None, &setup))
         .collect::<Result<Vec<Planned>, RunError>>()?;
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
@@ -2623,9 +2738,34 @@ fn with_what_we_know(knows: &str, task: &str) -> String {
 
 /// Znacznik, którym plik workflow wskazuje, GDZIE w promptcie kroku ma stanąć zadanie człowieka.
 ///
-/// Ta sama rodzina, co `{{copy}}` i `{{copies}}` [T3 §4.3] — plik już umie mówić o rzeczach,
-/// które powstają dopiero przy starcie.
+/// Ta sama rodzina, co [`COPY_MARK`] i [`COPIES_MARK`] [T3 §4.3] — plik już umie mówić
+/// o rzeczach, które powstają dopiero przy starcie.
 const TASK_MARK: &str = "{{task}}";
+
+/// Znacznik, w który wchodzi numer TEJ kopii, licząc od jedynki.
+const COPY_MARK: &str = "{{copy}}";
+
+/// I znacznik, w który wchodzi, ile ich jest razem.
+const COPIES_MARK: &str = "{{copies}}";
+
+/// Instrukcja kroku z podstawionymi numerami kopii [T3 §4.3].
+///
+/// 2026-08-23 (T-90) — DO TEGO DNIA NIE PODSTAWIAŁ ICH NIKT, w żadnym miejscu drzewa: człowiek
+/// pisał `{{copy}}` w instrukcji i agent dostawał te dwa nawiasy dosłownie.
+///
+/// Licząc od jedynki, jak [`name_for`] i z tego samego powodu: to jest liczba dla agenta, a „copy
+/// 0 of 3" nie znaczy dla niego nic.
+///
+/// Podstawiamy TAKŻE przy jednej kopii, i to jest odpowiedź, nie przeoczenie: krok biegnący raz
+/// jest kopią 1 z 1, a znacznik zostawiony nietknięty byłby tekstem, który nikt nigdy nie
+/// zamienił na liczbę — czyli kontrolką bez skutku schowaną w prompcie.
+///
+/// `{{copies}}` idzie pierwsze wyłącznie dla porządku czytania: dłuższy znacznik nie zawiera
+/// krótszego (`{{copy}}` wymaga `}}` zaraz po `copy`), więc kolejność nie zmienia wyniku.
+fn numbered(text: &str, copy: u8, copies: u8) -> String {
+    text.replace(COPIES_MARK, &copies.to_string())
+        .replace(COPY_MARK, &(copy + 1).to_string())
+}
 
 /// Nagłówek nad zadaniem, kiedy plik nie wskazał miejsca sam.
 ///
@@ -2708,48 +2848,103 @@ struct Setup<'a> {
     unrolled: &'a crate::workflow::unroll::Unrolled,
 }
 
-/// Klucz węzła: `id` kroku z pliku, a dla dalszych rund pętli ten sam klucz z numerem rundy.
+/// Klucz katalogu roboczego: `id` kroku z pliku, a dla dalszych kopii ten sam klucz z numerem
+/// kopii.
+///
+/// # RUNDY DZIELĄ FOLDER, KOPIE NIE — i to są dwie różne rzeczy z dwóch różnych powodów
+///
+/// Rundy pętli **muszą** pracować w jednym drzewie, bo inaczej runda 2 nie widzi poprawek rundy 1
+/// i pętla przestaje mieć sens w swoim jedynym zadaniu. Kopie są odwrotnie: biegną **równocześnie
+/// same ze sobą**, więc wspólne drzewo znaczyłoby trzy sesje piszące po tych samych ścieżkach —
+/// dokładnie ta kolizja, dla której `check::one_folder_two_steps` wymaga od kroku w kilku kopiach
+/// własnej kopii plików (niezmiennik 12).
+///
+/// Dlatego numer rundy tutaj NIE wchodzi, a numer kopii wchodzi. Kopia zerowa nie dostaje
+/// sufiksu: plik, w którym nikt nie prosił o kopie, daje dokładnie te ścieżki, które dawał
+/// przedtem.
+fn work_key_for(tile_key: &str, copy: u8) -> String {
+    if copy == 0 {
+        return tile_key.to_owned();
+    }
+    format!("{tile_key}~{}", copy + 1)
+}
+
+/// Klucz węzła: klucz katalogu roboczego, a dla dalszych rund pętli ten sam z numerem rundy.
 ///
 /// Runda zerowa NIE dostaje sufiksu, i to jest decyzja o wsteczności: plik bez pętli daje wtedy
 /// dokładnie te klucze, które dawał przedtem, więc `run.json` starych biegów i nowych da się
 /// porównać, a nikt, kto o pętli nie słyszał, nie widzi zmiany.
-fn node_key_for(tile_key: &str, turn: u8) -> String {
+///
+/// ZBUDOWANY NA [`work_key_for`], a nie sklejony obok niego: dwa klucze różnią się dokładnie
+/// jednym sufiksem i mają się nie rozjechać w dniu, w którym ktoś poprawi jeden z nich.
+///
+/// Klucze MUSZĄ się różnić między kopiami i między rundami, bo indeks biegu ma na nich
+/// `UNIQUE (run_id, node_key)` (`store::schema`): dwa węzły o jednym kluczu to bieg, który zapisze
+/// jeden i zgubi drugi — **po** zapłaceniu za oba (niezmiennik 4).
+fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
+    let key = work_key_for(tile_key, copy);
     if turn == 0 {
-        return tile_key.to_owned();
+        return key;
     }
-    format!("{tile_key}#{turn}")
+    format!("{key}#{turn}")
 }
 
 /// Klucz kafelka z klucza węzła — odwrotność [`node_key_for`].
 ///
 /// **Tutaj, a nie u wołającego**, i to jest jedyny powód, dla którego ta funkcja istnieje:
-/// sufit rundy (`#N`) jest kształtem wymyślonym o dwie linie wyżej, więc jego rozbieranie
-/// gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13). Historia
-/// czyta `run.json` i musi wiedzieć, o KTÓRY kafelek chodzi, żeby dało się od niego wznowić.
+/// sufiks rundy (`#N`) i sufiks kopii (`~N`) są kształtami wymyślonymi o kilka linii wyżej, więc
+/// ich rozbieranie gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13).
+/// Historia czyta `run.json` i musi wiedzieć, o KTÓRY kafelek chodzi, żeby dało się od niego
+/// wznowić.
 ///
 /// 2026-08-23 — POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: „Pick up here" podawał `id` kroku
 /// z `run.json`, czyli UUID nadany przy planowaniu, a wznowienie szuka po kluczu Z PLIKU. Skutek
 /// był zdaniem-zagadką: *„01a02b3c-… is not a step in that workflow any more"* — o kroku, który
 /// stoi na płótnie i nigdzie się nie ruszył.
 pub(crate) fn tile_key_of(node_key: &str) -> &str {
-    node_key.split_once('#').map_or(node_key, |(tile, _)| tile)
+    node_key
+        .find(['#', '~'])
+        .map_or(node_key, |at| &node_key[..at])
+}
+
+/// Podpis kopii: nazwa z kafelka plus „(2 of 3)".
+///
+/// 2026-08-23 (T-90) — KAŻDA KOPIA MÓWI, KTÓRA JEST, i to jest warunek czytelności ekranu, nie
+/// ozdoba: trzy wiersze pracy pod jedną nazwą to trzy wiersze, których człowiek nie umie
+/// rozróżnić. Ten sam podpis stoi w `run.json` i w indeksie przekazań następnego kroku, więc
+/// krok scalający wie, którą z trzech odpowiedzi właśnie czyta.
+///
+/// Licząc od jedynki, nie od zera: `copy` jest polem danych, a to jest zdanie dla człowieka
+/// i dla agenta — „copy 0 of 3" nie znaczy nic ani dla jednego, ani dla drugiego.
+///
+/// Krok biegnący raz zostaje pod swoją nazwą, co do bajtu: „(1 of 1)" byłoby dopiskiem na
+/// każdym kafelku każdego workflow na dysku.
+fn name_for(name: &str, copy: u8, copies: u8) -> String {
+    if copies <= 1 {
+        return name.to_owned();
+    }
+    format!("{name} ({} of {copies})", copy + 1)
 }
 
 /// Jeden węzeł rozwiniętego grafu → jeden krok planu.
 ///
 /// `node` jest numerem tego węzła w [`Setup::unrolled`], a nie pozycją kroku w pliku: rundy pętli
 /// mają wspólny krok i różne węzły, a „krok przede mną" jest pytaniem o węzeł.
+/// `copy` jest numerem kopii tego węzła — zero dla kroku biegnącego raz. Kopie ma wyłącznie krok
+/// agenta (`unroll::copies_of`), więc pozostałe trzy ramiona dostają tu zawsze zero i ich klucze
+/// nie zmieniają się o bajt.
 fn plan_step(
     step: &Step,
     node: usize,
     turn: u8,
+    copy: u8,
     in_loop: Option<usize>,
     setup: &Setup<'_>,
 ) -> Result<Planned, RunError> {
     match step {
         Step::Checkpoint(ask) => Ok(Planned {
             id: Uuid::now_v7().to_string(),
-            node_key: node_key_for(&ask.id, turn),
+            node_key: node_key_for(&ask.id, turn, copy),
             tile_key: ask.id.clone(),
             turn,
             in_loop,
@@ -2764,14 +2959,14 @@ fn plan_step(
             },
         }),
         Step::Agent(agent) => {
-            let job = plan_agent(agent, node, setup)?;
+            let job = plan_agent(agent, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&agent.id, turn),
+                node_key: node_key_for(&agent.id, turn, copy),
                 tile_key: agent.id.clone(),
                 turn,
                 in_loop,
-                name: agent.name.clone(),
+                name: name_for(&agent.name, copy, agent.copies),
                 when_it_fails: agent.when_it_fails,
                 depends_on: Vec::new(),
                 vendor: job.driver.id().to_owned(),
@@ -2779,10 +2974,10 @@ fn plan_step(
             })
         }
         Step::Check(check) => {
-            let spot = where_it_works(&check.folder, &check.id, &check.name, node, setup)?;
+            let spot = where_it_works(&check.folder, &check.id, &check.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&check.id, turn),
+                node_key: node_key_for(&check.id, turn, copy),
                 tile_key: check.id.clone(),
                 turn,
                 in_loop,
@@ -2805,10 +3000,10 @@ fn plan_step(
             })
         }
         Step::Serve(serve) => {
-            let spot = where_it_works(&serve.folder, &serve.id, &serve.name, node, setup)?;
+            let spot = where_it_works(&serve.folder, &serve.id, &serve.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&serve.id, turn),
+                node_key: node_key_for(&serve.id, turn, copy),
                 tile_key: serve.id.clone(),
                 turn,
                 in_loop,
@@ -2886,12 +3081,17 @@ fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) ->
     }
 }
 
-fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
+fn plan_agent(
+    step: &AgentStep,
+    node: usize,
+    copy: u8,
+    setup: &Setup<'_>,
+) -> Result<AgentJob, RunError> {
     let saved = find_agent(&setup.library, &step.agent, &step.name)?;
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
-    let effective = resolve(&saved, &overrides)?.agent;
+    let mut effective = resolve(&saved, &overrides)?.agent;
 
     // Polityka policzona RAZ i czytana dwa razy: raz jako dial kroku, raz jako sufit jego listy
     // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby
@@ -2903,6 +3103,40 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     // niżej, przy `borrowing_is_possible`.
     let driver = (setup.drivers)(effective.runs_with);
     let tools = what_this_step_may_use(&effective, policy, step, &driver)?;
+    /* PRZELOTKA JEST SĄDZONA, ZANIM RUSZY PIERWSZY PROCES (niezmiennik 12). Wpis podnoszący
+     * dial albo kolidujący z tym, co Loadout ustawia sam, zabiera CAŁY bieg — cicha alternatywa
+     * (wywalić wpis i jechać) uczy człowieka, że przelotka nie działa, więc wpisuje to samo
+     * jeszcze raz innym zapisem. Pierwsze zdanie z listy, bo `RunError` niesie jedną uwagę,
+     * a człowiek naprawia jeden wiersz naraz. */
+    if let Some(message) = crate::library::agents::passthrough_refused(&effective)
+        .into_iter()
+        .next()
+    {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka na kafelku TEGO kroku: to jego agent niesie ten wiersz, a odmowa bez
+            // wskazania kafelka zostawia człowieka ze szukaniem, którego to dotyczy.
+            step_id: Some(step.id.clone()),
+            message,
+            fix: None,
+        }));
+    }
+    /* PRZELOTKA MA DWA NOŚNIKI I OBA SĄ TEGO KROKU (T-90, 2026-08-24). `Overrides` nie niesie
+     * `vendorOptions` z rozmysłem — to nie jest pole, które się PODMIENIA, tylko mapa, którą się
+     * scala wpis po wpisie. Do tego dnia `AgentStep::vendor_options` nie miał w ścieżce biegu
+     * ani jednego czytelnika: człowiek wpisywał flagę na kafelku i proces jej nie widział.
+     *
+     * SCALENIE STOI ZA ODMOWĄ WYŻEJ, NIE PRZED NIĄ, i to jest cała treść tej kolejności.
+     * [`passthrough_refused`] pyta o DEFINICJĘ AGENTA i tak brzmi jego zdanie („delete it from
+     * this agent's … options"). Wpis z kafelka wpuszczony w tamto pytanie dostałby odmowę, która
+     * odsyła człowieka do formularza agenta po wiersz stojący na kafelku — a wiersze kafelka mają
+     * już swojego sędziego ze swoim zdaniem: `workflow::check::the_passthrough` biegnie w
+     * `check_to_run`, czyli zanim ten plan w ogóle powstanie, i mówi „remove it from this step's
+     * … options". Jeden nośnik, jedno zdanie, oba przed pierwszym procesem (niezmiennik 12). */
+    effective.vendor_options = crate::library::agents::passthrough_of_the_step(
+        &effective.vendor_options,
+        &step.vendor_options,
+    );
     let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
@@ -2916,16 +3150,23 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
             },
         )?;
 
-    let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
+    let write_results_to = where_results_go(&effective, step)?;
+
+    let spot = where_it_works(&step.folder, &step.id, &step.name, node, copy, setup)?;
+    /* KAŻDA KOPIA WIE, KTÓRA JEST. Trzy sesje z identycznym zdaniem robią tę samą robotę trzy
+     * razy, czyli są najdroższym możliwym sposobem na jedną odpowiedź — a podstawienie bez
+     * rozwinięcia (do 2026-08-23 nie było żadnego z dwojga) wpisywałoby w prompt liczbę, której
+     * nic po drugiej stronie nie odpowiada. */
+    let instructions = numbered(&step.instructions, copy, step.copies);
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
     let (knows, mut context) = what_this_step_knows(&setup.knows, &effective.name, setup.data);
     if setup.is_ask {
-        if !step.instructions.is_empty() {
+        if !instructions.is_empty() {
             context.push(ContextSource {
                 kind: ContextKind::RunTask,
                 reference: "ask/task".to_owned(),
-                bytes: step.instructions.len(),
+                bytes: instructions.len(),
             });
         }
     } else {
@@ -2936,7 +3177,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
                 bytes: setup.task.len(),
             });
         }
-        let instruction_bytes = step.instructions.replace(TASK_MARK, "").len();
+        let instruction_bytes = instructions.replace(TASK_MARK, "").len();
         if instruction_bytes > 0 {
             context.push(ContextSource {
                 kind: ContextKind::WorkflowStep,
@@ -2962,10 +3203,14 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         session: Uuid::now_v7(),
         cwd: spot.cwd,
         ours: spot.ours,
-        // Treść zadania. `{{copy}}` i `{{copies}}` podstawia dopiero rozwinięcie kroku na kopie
-        // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
-        // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
-        // nic po drugiej stronie nie odpowiada.
+        write_results_to,
+        // Formularz albo nic. `Handover::Plain` znaczy „oddaj to, co masz do powiedzenia,
+        // i tyle" — czyli dokładnie to, co robi każdy krok bez tego pola.
+        handover: match &step.handover {
+            Handover::Form { fields } => fields.clone(),
+            Handover::Plain(_) => Vec::new(),
+        },
+        // Treść zadania, z `{{copy}}` i `{{copies}}` już podstawionymi [T3 §4.3, §4.4].
         // Zadanie kroku POPRZEDZONE tym, co człowiek dopuścił do użytku (`what_the_agents_know`).
         // Bez człowieka blok jest pusty i prompt jest dokładnie zadaniem kroku —
         // `docs/ARCHITECTURE.md` §2 pytanie 5 obiecuje właśnie to.
@@ -2973,8 +3218,8 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // wyszło, dostaje blok „co wiadomo". Ta kolejność jest treścią: notatki są kontekstem
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
-        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &step.instructions)),
-        asked: step.instructions.clone(),
+        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &instructions)),
+        asked: instructions,
         context,
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
@@ -2989,6 +3234,11 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // skutku (niezmiennik 16).
         thinking: effective.thinking,
         connections,
+        // W kształcie TEJ aplikacji, policzonym raz: `--flaga wartość` dla Claude Code,
+        // `-c klucz=wartość` dla Codeksa. Klucz przelotki bierze się z vendora agenta, bo to
+        // plik agenta nazywa go tym słowem — nie z etykiety sterownika, którą w teście nosi
+        // dubler.
+        passthrough: crate::library::agents::vendor_argv(&effective, effective.runs_with.key()),
         skills,
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
@@ -3047,6 +3297,58 @@ fn what_was_frozen(agent: &Agent, driver: &Arc<dyn AgentDriver>) -> Result<Value
         );
     }
     Ok(frozen)
+}
+
+/// Gdzie ten krok ma odłożyć swoją odpowiedź — albo odmowa nazywająca pole, które ją zatrzymało.
+///
+/// # Odmowa pada PRZED startem, jak każda inna (niezmiennik 12)
+///
+/// Ścieżka bezwzględna albo wyprowadzająca poza folder kroku jest odmową **całego biegu**, tutaj,
+/// zanim ruszy pierwszy proces. Druga możliwa implementacja — spróbować zapisać i po cichu się
+/// poddać — jest najdroższą wersją tej wady: człowiek dostaje bieg bez wyniku i bez zdania,
+/// a folder, w który celował, wygląda tak samo jak folder, do którego agent nie miał nic do
+/// napisania.
+///
+/// # Co znaczy „wyprowadza"
+///
+/// Cokolwiek, co nie jest czystą ścieżką w dół: korzeń dysku, przedrostek dysku i `..`
+/// gdziekolwiek w środku. Dowiązanie założone po drodze przez kogoś innego prowadzi tam samo
+/// i tego z samego napisu wyliczyć się nie da — pyta o to jądro
+/// [`Live::the_answer_has_somewhere_to_go`], wciąż przed startem kroku, a potem raz jeszcze
+/// [`Live::file_the_answer`] tuż przed zapisem, bo między jednym a drugim stoi cała tura agenta.
+///
+/// Puste pole i pole z samych spacji to jeden fakt („nie proszę o żaden plik"), więc jedna
+/// odpowiedź: `None`.
+fn where_results_go(agent: &Agent, step: &AgentStep) -> Result<Option<PathBuf>, RunError> {
+    let Some(asked) = some_text(&agent.write_results_to) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(asked.trim());
+    let leaves = path.is_absolute()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+    if leaves {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka na kafelku TEGO kroku: to jego wiersz człowiek otworzy, żeby go poprawić.
+            step_id: Some(step.id.clone()),
+            message: format!(
+                "\"{}\" has {WRITE_RESULTS_TO} set to \"{}\", and that leads out of the folder \
+                 this step works in. Loadout stopped the run instead of starting it. Give it a \
+                 path inside that folder, or leave the row empty.",
+                step.name,
+                path.display()
+            ),
+            fix: None,
+        }));
+    }
+    Ok(Some(path))
 }
 
 /// Które narzędzia ten krok dostaje pod rękę — albo odmowa, jeśli prosi o coś ponad swój dial.
@@ -3292,14 +3594,17 @@ fn folder_and_key(step: &Step) -> Option<(&Folder, &str)> {
 /// byłoby dokładnie tą implementacją, przed którą ten wariant powstał: kafelek mówi „to samo
 /// drzewo", a krok pisze po prawdziwych plikach człowieka. Pada **przy planowaniu**, czyli zanim
 /// ruszy pierwszy proces i zanim powstanie katalog biegu (niezmiennik 12).
+/// `copy` jest numerem kopii tego węzła i wchodzi WYŁĄCZNIE do klucza katalogu roboczego:
+/// kropka odmowy dalej ląduje na kafelku, bo to jego wiersz człowiek otworzy.
 fn where_it_works(
     folder: &Folder,
     key: &str,
     name: &str,
     node: usize,
+    copy: u8,
     setup: &Setup<'_>,
 ) -> Result<Workspace, RunError> {
-    if let Some(spot) = workspace(folder, setup.project, setup.dir, key) {
+    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work_key_for(key, copy)) {
         return Ok(spot);
     }
 
@@ -3379,11 +3684,8 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
                 continue;
             };
             *first_time = true;
-            let step = setup
-                .unrolled
-                .nodes
-                .get(from)
-                .and_then(|one| setup.file.steps.get(one.step));
+            let node = setup.unrolled.nodes.get(from);
+            let step = node.and_then(|one| setup.file.steps.get(one.step));
             // Krok, którego nie ma w pliku, nie wyznacza drzewa i nie ma poprzedników do
             // odpytania — `unroll` numeruje węzły z tego samego pliku, więc to jest kształt
             // niemożliwy, a nie ścieżka, którą ktoś przejdzie.
@@ -3391,7 +3693,12 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
                 stack.push(from);
                 continue;
             };
-            match workspace(folder, setup.project, setup.dir, key) {
+            // NUMER KOPII TEGO WĘZŁA, nie kafelka: każda kopia ma własne drzewo, więc krok „to
+            // samo drzewo, w którym pracował krok przede mną", stojący za krokiem w trzech
+            // kopiach, widzi TRZY różne katalogi — i to jest odmowa u wołającego, a nie wybór
+            // pierwszego z brzegu.
+            let work = work_key_for(key, node.map_or(0, |one| one.copy));
+            match workspace(folder, setup.project, setup.dir, &work) {
                 Some(spot) if !found.contains(&spot.cwd) => found.push(spot.cwd),
                 Some(_) => {}
                 // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
@@ -3453,6 +3760,25 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Opt
 /// bo pod adresem `commands::run::policy_of` wołają go dwa kryteria (T-62 `ask_one_agent.rs`
 /// i T-63 `one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej, zero drugich tabel.
 pub use crate::library::agents::policy_of;
+
+/// Wiersze `klucz: wartość` z tego, co oddał krok.
+///
+/// JEDNA SKŁADNIA, DWA MECHANIZMY, i dlatego jedna funkcja (niezmiennik 13). Tę samą mapę czyta
+/// warunkowa droga za krokiem ([`Live::remember_handoff_evidence`], od T-42) i wymaganie pola
+/// przekazania ([`Live::missing_a_required_field`], od T-90). Dwie kopie tego rozbioru znaczyłyby,
+/// że jeden mechanizm widzi wiersz, którego drugi nie widzi — a człowiek zapisał w kafelku jeden
+/// kształt, nie dwa.
+///
+/// CAŁY WIERSZ, zaczynający się nazwą: `- risk — coś tam` i `patrz na risk: coś` w środku zdania
+/// **nie są** tym kształtem, i to jest cała treść tego rozbioru. Nazwa i wartość muszą być
+/// niepuste: `risk:` z pustką za dwukropkiem jest wierszem, który nic nie niesie.
+fn fields_said_in(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        .collect()
+}
 
 /// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
 fn some_text(text: &str) -> Option<String> {
@@ -5323,13 +5649,40 @@ impl Live {
         if !self.has_routes(id) {
             return;
         }
-        let fields: BTreeMap<String, String> = text
-            .lines()
-            .filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
-            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
-            .collect();
-        self.remember_evidence(id, RouteEvidence::Handoff(fields));
+        self.remember_evidence(id, RouteEvidence::Handoff(fields_said_in(text)));
+    }
+
+    /// Umówione pole, którego w odpowiedzi zabrakło — gotowe zdanie, albo `None`.
+    ///
+    /// # Prośba bez skutku jest poleceniem bez handlera (niezmiennik 16)
+    ///
+    /// Blok „jak odpowiadać" wymienia pola i mówi, w jakim kształcie mają wrócić
+    /// ([`FIELDS_ASKED_FOR`]). Bez tej drugiej połowy odpowiedź bez umówionego wiersza wygląda
+    /// dokładnie jak odpowiedź, w której akurat nie było co w niego wpisać — i model uczy się,
+    /// że tych wierszy można nie pisać wszędzie.
+    ///
+    /// PIERWSZE BRAKUJĄCE, nie wszystkie: zdanie nazywa jedno pole, bo człowiek czyta je na
+    /// karcie kroku i naprawia jedną rzecz naraz. Pola bez `required` wolno pominąć i to jest
+    /// cała różnica między formularzem a listą życzeń.
+    ///
+    /// Krok bez formularza nie ma czego oddawać, więc nie ma go za co sądzić: implementacja
+    /// wymagająca wiersza `klucz: wartość` od KAŻDEGO kroku zaczerwieniłaby połowę biegów,
+    /// o które nikt nie prosił.
+    fn missing_a_required_field(&self, id: StepId, said: &str) -> Option<String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return None;
+        };
+        let given = fields_said_in(said);
+        let missing = job
+            .handover
+            .iter()
+            .filter(|field| field.required == Some(true))
+            .find(|field| !given.contains_key(field.name.trim()))?;
+        Some(format!(
+            "This step was asked to hand back \"{}\" on a line of its own, and its answer has no \
+             such line.",
+            missing.name.trim()
+        ))
     }
 
     fn route_after(&self, id: StepId) -> scheduler::Route {
@@ -6208,6 +6561,14 @@ impl Live {
                 .arguments
                 .extend(crate::engine::drivers::claude::budget_argv(left));
         }
+
+        /* PRZELOTKA NA KOŃCU, i to jest wybór o wsteczności: krok, którego agent nie prosi
+         * o nic ponad, dostaje argv **co do bajtu** takie jak przedtem, bo ta lista jest wtedy
+         * pusta. Fragment jest już w kształcie tej aplikacji (`library::agents::vendor_argv`) —
+         * ta warstwa nie skleja komendy i nie zna ani jednej flagi vendora (niezmiennik 9). */
+        configuration
+            .arguments
+            .extend(job.passthrough.iter().cloned());
         Ok(configuration)
     }
 
@@ -6380,6 +6741,36 @@ impl Live {
         )
     }
 
+    /// Krok, który nie ruszył: zdanie na ekran, kurator domknięty, zwykła droga porażki.
+    ///
+    /// Zdanie jedzie tą samą kolejką, którą mówi agent — bo dla człowieka patrzącego na bieg to
+    /// jest to samo miejsce, w którym pojawiłaby się jego pierwsza linia.
+    ///
+    /// **Nadajnik ginie na obu końcach, i to jest warunek poprawności, nie higiena.** Na ścieżce
+    /// startu zabiera `events` sam `start`; tutaj nie zabiera go nikt, a `pump.await` kończy się
+    /// dopiero na zamkniętej kolejce. Nadawca, który przeżył krok, trzyma kurator otwarty — czyli
+    /// odmowa wyglądałaby jak agent zawieszony na zawsze.
+    ///
+    /// Wynik rozstrzyga [`Live::when_this_one_fails`], czyli to samo miejsce, co przy każdej innej
+    /// porażce: krok, który nie ruszył, jest krokiem, który nie przeszedł, a ustawienie „co, kiedy
+    /// ten nie przejdzie" nie ma powodu znaczyć tu czegoś innego (niezmiennik 21).
+    async fn never_started(
+        self: &Arc<Self>,
+        id: StepId,
+        why: String,
+        events: mpsc::Sender<DecodedEvent>,
+        ours: mpsc::Sender<DecodedEvent>,
+        pump: tokio::task::JoinHandle<()>,
+    ) -> StepReport {
+        let _ = ours
+            .send(AgentEvent::Notice { text: why.clone() }.into())
+            .await;
+        drop(events);
+        drop(ours);
+        let _ = pump.await;
+        self.when_this_one_fails(id, &why).await
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -6402,6 +6793,16 @@ impl Live {
         // trzyma kurator otwarty i `pump.await` niżej nie wróciłby nigdy.
         let ours = events.clone();
 
+        /* ZANIM RUSZY STEROWNIK: czy odpowiedź tego kroku ma dokąd pójść. Ścieżka wyprowadzająca
+         * poza folder kroku jest odmową PRZED startem (niezmiennik 12), a dowiązania nie widać
+         * z samego napisu, więc planista nie ma czego odrzucić — pytanie stoi więc tutaj, w
+         * ostatniej chwili, w której nie ruszył jeszcze ani jeden proces. Krok wraca zwykłą
+         * drogą porażki, bo to jest zwykła porażka: `run.json` dostaje zdanie nazywające pole,
+         * a ustawienie „co, kiedy ten nie przejdzie" działa tu tak samo, jak wszędzie indziej. */
+        if let Err(why) = Self::the_answer_has_somewhere_to_go(job) {
+            return self.never_started(id, why, events, ours, pump).await;
+        }
+
         // Prompt składamy TERAZ, a nie przy planowaniu: indeks przekazań ma co wymienić dopiero
         // wtedy, gdy poprzednicy zeszli, a przy planowaniu nie ruszył jeszcze nikt.
         let Told {
@@ -6412,9 +6813,7 @@ impl Live {
         } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
             Err(_error) => {
-                let text = "Loadout could not prove the context files for this agent, so it did \
-                            not start the step."
-                    .to_owned();
+                let text = CONTEXT_NOT_PROVEN.to_owned();
                 let _ = ours
                     .send(AgentEvent::Notice { text: text.clone() }.into())
                     .await;
@@ -6943,8 +7342,18 @@ impl Live {
                      *
                      * Werdykt czytamy PO zapisie przekazania, nie przed: plik z raportem testera
                      * ma istniec niezaleznie od tego, co postanowimy z biegiem. */
-                    match self.verdict_after(id, &turn.text) {
-                        Some(why) => self.when_this_one_fails(id, why).await,
+                    /* TRZY POWODY, DLA KTÓRYCH UDANA TURA MOŻE NIE PRZEJŚĆ, i wszystkie idą
+                     * jedną drogą. Kolejność jest treścią: kłopot z NASZYM zapisem wygrywa, bo
+                     * mówi o rzeczy, której człowiek nie naprawi poprawką promptu; potem to,
+                     * czego zabrakło w odpowiedzi; werdykt sędziego na końcu, bo dotyczy pracy,
+                     * a nie kroku. */
+                    let why = self
+                        .file_the_answer(id, &turn.text)
+                        .err()
+                        .or_else(|| self.missing_a_required_field(id, &turn.text))
+                        .or_else(|| self.verdict_after(id, &turn.text).map(str::to_owned));
+                    match why {
+                        Some(why) => self.when_this_one_fails(id, &why).await,
                         None => StepReport::Succeeded,
                     }
                 } else {
@@ -6999,10 +7408,52 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
+        self.ask_for_the_agreed_fields(id, &mut told);
         told.prompt.push_str("\n\n");
         told.prompt.push_str(&Self::how_long_this_step_has(minutes));
         self.ask_for_an_outcome(id, &mut told);
         Ok(told)
+    }
+
+    /// Dokłada listę umówionych pól — **tylko krokowi, który ma formularz**.
+    ///
+    /// Wewnątrz bloku „jak odpowiadać" i zaraz za nim, bo to jest ta sama rzecz: co ten krok ma
+    /// oddać. Nagłówek nad zerem pól byłby zdaniem o niczym, tak samo jak pusty indeks przekazań
+    /// (powód przy [`Live::prompt_for`]).
+    ///
+    /// OPIS Z PLIKU JEDZIE NIETKNIĘTY. Człowiek napisał go po to, żeby agent wypełnił pole
+    /// właściwą rzeczą; sama nazwa jest pytaniem, którego agent musi się domyślić.
+    ///
+    /// Warunek jest ten sam, którego używa [`Live::missing_a_required_field`] do sądzenia
+    /// odpowiedzi — jedna lista, dwie połowy jednej umowy (niezmiennik 13).
+    fn ask_for_the_agreed_fields(&self, id: StepId, told: &mut Told) {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return;
+        };
+        if job.handover.is_empty() {
+            return;
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(FIELDS_ASKED_FOR);
+        told.prompt.push('\n');
+        for field in &job.handover {
+            // `write!` do `String`, nie `push_str(&format!(…))` — ten sam powód, co przy indeksie
+            // przekazań (clippy `format_push_string`), i ten sam `let _`: zapis do `String` nie
+            // ma jak zawieść.
+            let _ = write!(
+                told.prompt,
+                "\n{}: {}{}",
+                field.name.trim(),
+                field.describe.trim(),
+                if field.required == Some(true) {
+                    FIELD_IS_NEEDED
+                } else {
+                    ""
+                }
+            );
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(FIELDS_ARE_REQUIRED);
     }
 
     /// Zdanie, którym blok nazywa limit czasu **tego** kroku.
@@ -7460,6 +7911,142 @@ impl Live {
                 "this step's result could not be handed over, so the next step is not told about it"
             ),
         }
+    }
+
+    /// Odpowiedź kroku → plik pod ścieżką, którą wskazał człowiek. `Ok(())`, kiedy nie wskazał.
+    ///
+    /// # Zapisuje LOADOUT, nie agent, i to jest cała treść tego szwu
+    ///
+    /// Blok „jak odpowiadać" mówi każdemu krokowi wprost: *„Do not write your results to a
+    /// file"* ([`HOW_TO_ANSWER`]). Gdyby tę ścieżkę miał obsłużyć agent, produkt kazałby mu
+    /// robić dokładnie to, czego przed chwilą zabronił — a krok z dialem „look only" nie umiałby
+    /// tego wykonać i spaliłby turę na próbie. Zmierzone na biegu `20260823-145648`: sześć kroków
+    /// Claude'a zaczyna podsumowanie od zdania o tym, że nie mogą utworzyć pliku.
+    ///
+    /// **Cała odpowiedź, co do bajtu**, nie podsumowanie: plik z jedną linią wygląda jak wynik
+    /// i nim nie jest, a nikt nie porównuje go z transkryptem, którego nikt nie trzyma.
+    ///
+    /// **To jest KOPIA, nie zamiana.** Przekazanie w `handoffs/` powstaje jak dotąd
+    /// ([`Live::hand_over`]) i to na nim stoi indeks następnego kroku — zapis, który by je
+    /// zastąpił, uciszyłby cały ruch między krokami, a bieg dalej wyglądałby na udany.
+    ///
+    /// # Nieudany zapis czyni krok NIEPRZESZŁYM — inaczej niż nieudane przekazanie
+    ///
+    /// Tamto ma drugą drogę do człowieka (wiersz na ekranie, podsumowanie kroku); tutaj plik
+    /// JEST tym, o co człowiek poprosił, i jego brak jest nieodróżnialny od agenta, który nie
+    /// miał nic do powiedzenia. Wraca więc zdaniem, a rozstrzyga je jedno miejsce, przez które
+    /// przechodzi każda porażka ([`Live::when_this_one_fails`]).
+    ///
+    /// # I PYTA O MIEJSCE DRUGI RAZ, choć zapytał już przed startem
+    ///
+    /// [`Live::the_answer_has_somewhere_to_go`] stawia to samo pytanie, zanim ruszy pierwszy
+    /// proces — i to tamto jest odmową, o którą prosi kryterium. To tutaj zostaje mimo niego,
+    /// bo między jednym a drugim stoi CAŁA tura agenta, który miał prawo pisać po tym samym
+    /// folderze. Sprawdzenie zdjęte stąd zamieniłoby odmowę w wyścig: dowiązanie podłożone
+    /// w tym oknie przepuściłoby zapis po drugiej stronie, a bieg wyglądałby na udany.
+    fn file_the_answer(&self, id: StepId, said: &str) -> Result<(), String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return Ok(());
+        };
+        let Some(under) = job.write_results_to.as_ref() else {
+            return Ok(());
+        };
+        Self::room_for_the_answer(&job.cwd, under)
+            .and_then(|path| fs::write(&path, said))
+            .map_err(|error| {
+                format!(
+                    "Loadout could not put this step's answer where {WRITE_RESULTS_TO} points \
+                     (\"{}\"): {error}",
+                    under.display()
+                )
+            })
+    }
+
+    /// Miejsce na odpowiedź: katalogi po drodze założone, ścieżka sprawdzona, plik jeszcze nie
+    /// zapisany.
+    ///
+    /// Oddaje ścieżkę, pod którą wolno pisać, albo błąd nazywający powód. Wołają to dwa miejsca
+    /// — [`Live::the_answer_has_somewhere_to_go`] przed startem kroku i [`Live::file_the_answer`]
+    /// tuż przed zapisem — i to jest jedna funkcja z rozmysłem: druga kopia tej decyzji
+    /// rozjechałaby się z pierwszą (niezmiennik 13), a rozjazd znaczyłby tu odmowę przed startem
+    /// dla jednych ścieżek i cichy zapis poza folderem dla innych.
+    fn room_for_the_answer(cwd: &Path, under: &Path) -> io::Result<PathBuf> {
+        let path = cwd.join(under);
+        let root = cwd.canonicalize()?;
+        if let Some(parent) = path.parent() {
+            // Katalogi po drodze zakłada Loadout: implementacja, która tego nie robi,
+            // wygląda jak zapis, który się nie udał i nic o tym nie powiedział.
+            fs::create_dir_all(parent)?;
+            /* DOWIĄZANIE PYTAMY JĄDRO, nie napis. `..` odmawia planista, ale katalog
+             * `results` mógł już wcześniej być dowiązaniem gdzie indziej — i wtedy ścieżka
+             * czysta co do znaków wyprowadza z folderu kroku tak samo skutecznie. */
+            if !parent.canonicalize()?.starts_with(&root) {
+                return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
+            }
+        }
+        /* I TO SAMO PYTANIE O OSTATNI CZŁON, bo katalog nad nim bywa czysty. `results/`
+         * leży dokładnie tam, gdzie ma leżeć, a `results/report.md` jest dowiązaniem do
+         * pliku człowieka poza folderem kroku — `fs::write` idzie po dowiązaniu i zapisuje
+         * TAM. Sprawdzenie samego katalogu przepuszcza więc dokładnie tę ucieczkę, przed
+         * którą stoi, i to bez ani jednego znaku `..` w ścieżce.
+         *
+         * `symlink_metadata`, nie `exists`: pytanie brzmi „czy coś tu już leży", a nie „czy
+         * po dowiązaniu coś jest" — i tylko ono odróżnia wolne miejsce od dowiązania
+         * wiszącego, po którym `fs::write` też pisze.
+         *
+         * DOWIĄZANIA NIE ZDEJMUJEMY. Skasowanie go i zapis w jego miejsce chroni cudzy plik
+         * i niszczy po cichu to, co człowiek sam sobie w tym folderze ustawił. */
+        match path.symlink_metadata() {
+            // Wolne miejsce: plik powstanie w katalogu, o który już zapytaliśmy wyżej.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(here) => {
+                let real = path.canonicalize().map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound && here.is_symlink() {
+                        io::Error::other(
+                            "that path is a link to something that is not there, so there is \
+                             no telling where the answer would land",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+                if !real.starts_with(&root) {
+                    return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
+                }
+            }
+        }
+        Ok(path)
+    }
+
+    /// Czy odpowiedź tego kroku ma dokąd pójść — pytanie postawione PRZED pierwszym procesem.
+    ///
+    /// # Odmowa jest przed startem, i to jest treść, nie kolejność
+    ///
+    /// Napis z `..` i ścieżkę bezwzględną odrzuca planista ([`where_results_go`]), patrząc na
+    /// same znaki. Dowiązania z napisu nie widać: `results/report.md` jest ścieżką czystą co do
+    /// znaków i wyprowadza z folderu kroku dokładnie tak samo skutecznie, kiedy ktoś położył tam
+    /// wcześniej link do cudzego pliku. To pytanie umie postawić tylko jądro i tylko na dysku —
+    /// więc stoi tutaj, w ostatniej chwili, w której nic jeszcze nie ruszyło.
+    ///
+    /// Zadane dopiero przy zapisie byłoby odmową PO turze, za którą człowiek zapłacił, i po
+    /// krokach, które zdążyły dotknąć jego plików — czyli dokładnie tym, czego zakazuje
+    /// niezmiennik 12.
+    ///
+    /// Krok bez wskazanej ścieżki nie prosi o żaden plik, więc nie ma tu czego sprawdzać.
+    fn the_answer_has_somewhere_to_go(job: &AgentJob) -> Result<(), String> {
+        let Some(under) = job.write_results_to.as_ref() else {
+            return Ok(());
+        };
+        Self::room_for_the_answer(&job.cwd, under)
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "Loadout did not start this step: {WRITE_RESULTS_TO} points at \"{}\", and \
+                     {error}.",
+                    under.display()
+                )
+            })
     }
 
     /// Kafelek kontrolny: bieg staje i pyta człowieka (T3 §6.1 reguła 5).
@@ -8120,7 +8707,7 @@ mod tests {
     //! dopisuje do promptu nagłówek nad pustką i każe za niego płacić długością. Rozstrzyga
     //! porównanie CO DO BAJTU w przypadku pustym.
 
-    use super::{TASK_MARK, node_key_for, with_the_task};
+    use super::{TASK_MARK, node_key_for, tile_key_of, with_the_task};
 
     /// Prompt kroku, taki jak w pliku workflow.
     const STEP: &str = "Write the tests first, then the code.";
@@ -8145,7 +8732,7 @@ mod tests {
     #[test]
     fn the_first_turn_keeps_the_key_the_file_gave_it() {
         assert_eq!(
-            node_key_for("s_test", 0),
+            node_key_for("s_test", 0, 0),
             "s_test",
             "a file with no loop has to plan exactly the keys it planned before, or no two run \
              records in this project can be compared with each other again"
@@ -8154,14 +8741,63 @@ mod tests {
 
     #[test]
     fn later_turns_get_keys_of_their_own() {
-        assert_eq!(node_key_for("s_test", 1), "s_test#1");
-        assert_eq!(node_key_for("s_test", 2), "s_test#2");
+        assert_eq!(node_key_for("s_test", 1, 0), "s_test#1");
+        assert_eq!(node_key_for("s_test", 2, 0), "s_test#2");
         assert_ne!(
-            node_key_for("s_test", 1),
-            node_key_for("s_test", 2),
+            node_key_for("s_test", 1, 0),
+            node_key_for("s_test", 2, 0),
             "the run index keys steps by this string and refuses a repeat, so two turns sharing \
              one key would fail the rebuild AFTER every agent has already been paid for"
         );
+    }
+
+    /* ── Kopia a runda ───────────────────────────────────────────────────────────────────────
+     *
+     * DODANE, nie w miejsce czegokolwiek (2026-08-23, T-90). Kopie i rundy są dwoma wymiarami
+     * jednego kafelka i mnożą się przez siebie, więc klucz musi rozróżniać obie osie naraz:
+     * kopia 2 rundy 1 i kopia 1 rundy 2 są dwoma różnymi węzłami, a jeden klucz dla obu to bieg,
+     * który zapisze jeden i zgubi drugi.
+     *
+     * Kopia ZEROWA nie dostaje sufiksu, dokładnie jak runda zerowa i z tego samego powodu:
+     * workflow, w którym nikt nie prosił o kopie, planuje klucze co do bajtu takie jak przedtem
+     * — łącznie z nazwą katalogu `work/<klucz>`, którą wznowienie potrafi odzyskać. */
+
+    #[test]
+    fn later_copies_get_keys_of_their_own() {
+        assert_eq!(
+            node_key_for("s_build", 0, 0),
+            "s_build",
+            "a step that runs once has to plan the key it planned before"
+        );
+        assert_eq!(node_key_for("s_build", 0, 1), "s_build~2");
+        assert_eq!(node_key_for("s_build", 0, 2), "s_build~3");
+    }
+
+    #[test]
+    fn a_copy_inside_a_loop_is_told_apart_on_both_axes() {
+        let keys = [
+            node_key_for("s_try", 0, 0),
+            node_key_for("s_try", 0, 1),
+            node_key_for("s_try", 1, 0),
+            node_key_for("s_try", 1, 1),
+        ];
+        let mut unique = keys.clone().to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "two copies over two turns are four nodes of one tile, and the run index keeps one \
+             row per key: {keys:?}"
+        );
+        for key in &keys {
+            assert_eq!(
+                tile_key_of(key),
+                "s_try",
+                "and every one of them still says which tile it belongs to — that is how the \
+                 window draws ONE card for them and how Pick up here finds the step again"
+            );
+        }
     }
 
     #[test]

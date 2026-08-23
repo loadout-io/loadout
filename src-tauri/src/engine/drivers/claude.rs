@@ -48,12 +48,15 @@
 //! [`stream::decode`] wyjmuje z tej samej linii drutu; bez niego zachowuje się dokładnie tak
 //! jak przedtem, bo sonda wersji nie ma katalogu biegu.
 //!
-//! **Wołającego produkcyjnego ta wartość wciąż nie ma i to jest pytanie do człowieka, nie
-//! przeoczenie.** Jej miejsce jest w [`RunSpec`] — wtedy dostaje ją każdy sterownik, także
-//! `CodexDriver` — ale `drivers/mod.rs` i `commands/run.rs` nie leżą w bloku OWNS T-34,
-//! a jeden wiersz poza tym blokiem jest pytaniem, nie cichym dopiskiem (`AGENTS.md` §7).
-//! Dopóki `commands::run` nie zawoła [`ClaudeDriver::with_transcript`], mechanizm jest
-//! kompletny i nieużywany.
+//! **`logs/agent-<id>.jsonl` POWSTAJE W KAŻDYM BIEGU i pisze go [`crate::evidence`]** — poprawione
+//! 2026-08-23 (T-90). Do tego dnia stało tu zdanie odwrotne: „mechanizm jest kompletny
+//! i nieużywany, dopóki `commands::run` nie zawoła [`ClaudeDriver::with_transcript`]". Przestało
+//! być prawdą w T-34, kiedy bieg zaczął podawać sterownikowi cel dowodów
+//! (`AgentDriver::with_evidence` ← `Live::evidence_for_agent`), i przez to uczyło każdego
+//! następnego pisarza szukać szwu, który już istnieje — a `store::rebuild` czyta ten plik od T-06.
+//!
+//! [`ClaudeDriver::with_transcript`] dalej nie ma produkcyjnego wołającego i to jest osobny,
+//! mniejszy fakt: to jest druga droga do tego samego pliku, wołana wyłącznie z testów.
 //!
 //! # Kanał stdinu żyje tak długo jak sesja (2026-08-16)
 //!

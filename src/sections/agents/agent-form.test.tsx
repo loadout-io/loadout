@@ -1,5 +1,5 @@
 /* Kryterium 5 dla T-11: formularz agenta to dziewięć wierszy, a `More settings` to dokładnie
- * trzy.
+ * tyle, ile ich naprawdę jest — dziś pięć.
  *
  * Słaba wersja tego kryterium to dziewięć osobnych `expect(html).toContain('Thinking')`.
  * Dziesiąte pole przechodzi wtedy bez mrugnięcia — a dokładnie o to tu pytamy. Przechodzi też
@@ -10,7 +10,7 @@
  * miesiącach: każde pole da się uzasadnić pojedynczo (`temperature`, `maxTurns`, `retries`,
  * `workingDir`), a suma to strona ustawień poprzedniego prototypu z 28 atrybutami, których nikt nie tyka.
  *
- * Druga asercja pyta, czy trzy schowane wiersze są POZA drzewem, a nie tylko poza wzrokiem.
+ * Druga asercja pyta, czy schowane wiersze są POZA drzewem, a nie tylko poza wzrokiem.
  * Kontrolka schowana `hidden`-em albo `display:none` dalej jest w HTML, dalej ma etykietę
  * i dalej rośnie — a na zrzucie ekranu wygląda identycznie jak wersja poprawna.
  *
@@ -38,8 +38,21 @@ const NINE = [
   'Give up after',
 ];
 
-/** Wiersze pod `More settings`. Powód czwartego stoi przy kryterium, które je liczy. */
-const THREE = ['Tools', 'Can it reach the web', 'Skills', 'Connections'];
+/* Wiersze pod `More settings`. Powód każdego dołożonego stoi przy kryterium, które je liczy.
+ *
+ * NAZWA NIE TRZYMA JUŻ LICZBY, I TO JEST NAPRAWA WADY, KTÓRA SIĘ ZDARZYŁA. Ta stała nazywała się
+ * `THREE` i trzymała cztery pozycje: wiersz „Can it reach the web" dołożono 2026-08-23, a nazwy
+ * nikt nie tknął — więc plik przez dobę mówił „trzy" w nazwie, „cztery" w treści i „trzy"
+ * w tekście kryterium w `tasks/T-11.md`. Liczba w nazwie nie jest asercją i niczego nie pilnuje;
+ * pilnuje jej równość całej tablicy niżej. Jedyne, co liczba w nazwie potrafi, to po cichu
+ * skłamać przy następnym wierszu — więc jej tu nie ma. */
+const MORE = [
+  'Tools',
+  'Can it reach the web',
+  'Skills',
+  'Connections',
+  'Extra options for Claude Code',
+];
 
 const FORGE: Agent = {
   schema: 1,
@@ -102,7 +115,7 @@ function buttonAttributes(html: string, label: string): string | null {
   return null;
 }
 
-describe('the agent form is nine rows, and More settings is exactly four', () => {
+describe('the agent form is nine rows, and More settings is exactly five', () => {
   it('reads out the nine labels of the mockup, in order, and no tenth one', () => {
     expect(
       labelsOf(markupOf(FORGE, false)),
@@ -126,15 +139,33 @@ describe('the agent form is nine rows, and More settings is exactly four', () =>
    *
    * `Can it reach the web` stoi PO `Tools`, bo obie odpowiadają na „czym ten agent dysponuje",
    * a przed `Skills` i `Connections`, które mówią o rzeczach z biblioteki. */
-  it('adds exactly the four collapsed rows when More settings is open', () => {
+  /* 2026-08-24 — PIĄTY WIERSZ, I TO ROZSTRZYGA DECYZJA STOJĄCA NAD TYM KRYTERIUM.
+   *
+   * `Extra options for <aplikacja>` wchodzi z T-90, razem z chwilą, w której przelotka
+   * `vendorOptions` przestaje być martwym polem w pliku i naprawdę dojeżdża do argv obu
+   * aplikacji. Skarga jest ta sama, co przy czwartym wierszu, tylko ostrzejsza: ustawienie,
+   * które działa, a nie ma kontrolki, to ustawienie, którego dla człowieka nie ma — do dziś
+   * dało się je podać wyłącznie edycją pliku agenta na dysku.
+   *
+   * Dlaczego liczba wierszy nie unieważnia tego wiersza: D6 jest decyzją ZABLOKOWANĄ i mówi
+   * wprost, gdzie ta przelotka ma stać — „wymaga wpisania jednej linii w formularzu agenta,
+   * tego samego dnia, w którym vendor ją ogłosi". Kryterium liczące wiersze stoi w hierarchii
+   * niżej niż decyzja wskazująca to konkretne miejsce; odwrotna kolejność znaczyłaby, że licznik
+   * z jednego zadania przewraca decyzję człowieka.
+   *
+   * Sufit gęstości z `docs/ARCHITECTURE.md` §7 zostaje nietknięty i to jest sprawdzalne wyżej:
+   * pierwsza asercja tego pliku dalej wymaga DZIEWIĘCIU wierszy w formularzu zamkniętym.
+   * Piąty wiersz mieszka pod zwiniętym `More settings`, czyli tam, gdzie makieta pozwala. */
+  it('adds exactly the five collapsed rows when More settings is open', () => {
     expect(
       labelsOf(markupOf(FORGE, true)),
-      'open, the form is the same nine rows plus exactly Tools, the web, Skills and Connections, ' +
-        'in that order. Thirteen labels, not twelve and not fourteen',
-    ).toEqual([...NINE, ...THREE]);
+      'open, the form is the same nine rows plus exactly Tools, the web, Skills, Connections ' +
+        'and the extra options of the app it runs with, in that order. Fourteen labels, not ' +
+        'thirteen and not fifteen',
+    ).toEqual([...NINE, ...MORE]);
   });
 
-  it('leaves the three collapsed rows out of the tree, not merely out of sight', () => {
+  it('leaves the collapsed rows out of the tree, not merely out of sight', () => {
     const html = markupOf(FORGE, false);
 
     expect(

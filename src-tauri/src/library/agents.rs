@@ -947,3 +947,136 @@ pub fn vendor_args_filtered(agent: &Agent, vendor: &str) -> Passthrough {
 pub fn vendor_args(agent: &Agent, vendor: &str) -> Vec<String> {
     vendor_args_filtered(agent, vendor).args
 }
+
+/// Przelotka agenta **scalona z przelotką kafelka** — to, z czym ten krok naprawdę pojedzie.
+///
+/// # 2026-08-24 (T-90) — drugi nośnik tej samej przelotki nie miał czytelnika
+///
+/// `AgentStep::vendor_options` jest w schemacie kroku od T3 §6b, `workflow::check` sprawdza go
+/// przy zapisie i przy Starcie, a `commands::run::plan_agent` czytał wyłącznie przelotkę
+/// DEFINICJI AGENTA. Człowiek dopisywał flagę na kafelku, plik ją zapisywał, walidator ją
+/// przepuszczał — i proces jej nie widział. To jest ta sama martwa kontrolka, którą całe to
+/// zadanie zdejmuje (niezmiennik 16), o jeden nośnik dalej, i widać ją równie źle: „vendor
+/// zignorował flagę" jest z zewnątrz nieodróżnialne od „Loadout jej nie wysłał".
+///
+/// # Scalanie po WPISIE, nie po vendorze
+///
+/// To jest cała treść tej funkcji. Podmiana całej mapy jednego vendora znaczyłaby, że kafelek
+/// dopisujący jedną flagę kasuje wszystkie pozostałe flagi swojego agenta — czyli że „ten jeden
+/// krok chce dodatkowo X" po cichu znaczy „i zapomnij, co agent miał ustawione". To ta sama
+/// algebra, którą nad resztą pól robi [`resolve`] (RFC 7396): brak klucza znaczy „dziedzicz",
+/// klucz obecny znaczy „u mnie tak".
+///
+/// Filtr polityki stoi **za** tym scaleniem, nie przed: pytanie „czy ta flaga podnosi dial"
+/// dotyczy wartości, z którą krok naprawdę pojedzie, a nie tej, którą nadpisał.
+#[must_use]
+pub fn passthrough_of_the_step(agent: &VendorOptions, step: &VendorOptions) -> VendorOptions {
+    let mut merged = agent.clone();
+    for (vendor, options) in step {
+        let mine = merged.entry(vendor.clone()).or_default();
+        for (flag, value) in options {
+            mine.insert(flag.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+/// Przelotka tego agenta jako **gotowy fragment argv**, w kształcie, którym mówi TEN vendor.
+///
+/// 2026-08-23 (T-90) — DO TEGO DNIA [`vendor_args_filtered`] NIE MIAŁO W ŚCIEŻCE BIEGU ANI
+/// JEDNEGO WOŁAJĄCEGO. Człowiek dopisywał flagę, plik ją zapisywał, walidator ją przepuszczał,
+/// a proces jej nie widział — a „vendor zignorował flagę" jest z zewnątrz nieodróżnialne od
+/// „Loadout jej nie wysłał", więc nikt się o tym nie dowiadywał (niezmiennik 16).
+///
+/// # Dwa kształty, bo dwie aplikacje przyjmują to inaczej
+///
+/// Claude Code bierze parę `--flaga wartość`; Codex bierze `-c klucz=wartość` i bierze to jako
+/// opcję **globalną**, czyli przed podkomendą (`engine::drivers::codex::exec_argv`). Jeden
+/// kształt dla obu przechodzi każde sprawdzenie zadane jednemu z nich i wywala drugiego przy
+/// pierwszym prawdziwym biegu.
+///
+/// Ta funkcja stoi obok filtra, a nie w adapterze, z tego samego powodu, co cała reszta
+/// polityki przelotki: adapter dostaje gotową listę i dalej nie wie, skąd przyszła
+/// (niezmiennik 23). Fragment jedzie do sterownika przez `DriverConfiguration::arguments` —
+/// tym samym szwem, którym jadą zatwierdzone Connections.
+///
+/// Wpisy odrzucone przez politykę **nie wypadają tu po cichu**: bieg pyta najpierw
+/// [`passthrough_refused`] i przy niepustej odpowiedzi w ogóle nie startuje.
+#[must_use]
+pub fn vendor_argv(agent: &Agent, vendor: &str) -> Vec<String> {
+    let handed = vendor_args_filtered(agent, vendor).args;
+    if vendor != Vendor::Codex.key() {
+        return handed;
+    }
+    // Pary `klucz, wartość` z filtra → `-c klucz=wartość`. `chunks(2)` po liście, którą filtr
+    // buduje parami, więc niepełnej pary tu nie ma — a gdyby jakimś cudem była, wpis bez
+    // wartości odpada, bo `-c klucz=` znaczy u tego vendora „ustaw to na pustkę".
+    handed
+        .chunks(2)
+        .filter_map(|pair| Some((pair.first()?, pair.get(1)?)))
+        .flat_map(|(key, value)| ["-c".to_owned(), format!("{key}={value}")])
+        .collect()
+}
+
+/// Wpisy przelotki tego agenta, których Loadout nie poda **żadnemu** vendorowi — po jednym
+/// gotowym zdaniu na wpis. Pusty wektor znaczy „cała przelotka dojedzie tam, gdzie ma".
+///
+/// # Odmowa startu, nigdy ciche pominięcie (D6)
+///
+/// Ciche pominięcie uczy człowieka, że przelotka nie działa — więc wpisuje to samo jeszcze raz,
+/// innym zapisem — zamiast tego, że została zablokowana. Zdanie nazywa **wiersz do skasowania**,
+/// bo bez tego odmowa jest samym niepokojem.
+///
+/// # Dlaczego czytamy WSZYSTKIE nazwy vendorów, a nie tylko tę, którą agent biegnie
+///
+/// Bo „czym ten agent biegnie" zmienia się jednym kliknięciem w formularzu, a przelotka drugiej
+/// aplikacji zostaje w pliku (tak ją trzyma sekcja Agents, z rozmysłem). Wpis podnoszący dial,
+/// schowany pod nazwą aplikacji, którą akurat nie biegniemy, byłby więc odmową odroczoną do dnia,
+/// w którym ktoś przestawi jeden wiersz — i wtedy nikt już nie pamięta, skąd się wzięła.
+///
+/// Obie reguły są te same, które przy zapisie kroku workflow czyta `workflow::check`, i czytają
+/// tę samą listę (niezmiennik 23). Różni się wyłącznie PODMIOT: tam pyta się o kafelek, tu
+/// o definicję agenta.
+#[must_use]
+pub fn passthrough_refused(agent: &Agent) -> Vec<String> {
+    let mut said = Vec::new();
+    for (vendor, options) in &agent.vendor_options {
+        for (flag, value) in options {
+            let app = crate::workflow::check::vendor_name(vendor);
+            if let Some(raise) = FORBIDDEN_ESCALATIONS
+                .iter()
+                .copied()
+                .find(|raise| flag.contains(raise) || value.contains(raise))
+            {
+                said.push(format!(
+                    "\"{}\" has {flag} in its {app} options, and {raise} raises what an agent may \
+                     do with your files. That is set on one dial and nowhere else, so Loadout \
+                     stopped the run instead of starting it. Delete that line.",
+                    agent.name
+                ));
+            } else if crate::workflow::check::reserved(vendor).contains(&flag.as_str()) {
+                said.push(format!(
+                    "Loadout sets {flag} itself, so \"{}\" cannot set it too. Delete it from this \
+                     agent's {app} options.",
+                    agent.name
+                ));
+            }
+        }
+    }
+    said
+}
+
+impl Vendor {
+    /// Nazwa, którą ten vendor nazywa się w przelotce `vendorOptions` i w kluczu konfiguracji.
+    ///
+    /// `claude`, nie `claude-code`: tak nazywa go plik agenta w przelotce, tak pyta o niego
+    /// `workflow::check::reserved` i tak przedstawia się sterownik (`AgentDriver::id`). Druga
+    /// pisownia dałaby przelotkę, która zapisuje się na ekranie i nie dojeżdża do nikogo.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}

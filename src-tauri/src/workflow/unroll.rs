@@ -50,12 +50,23 @@ use super::WorkflowFile;
 /// Jeden węzeł rozwiniętego grafu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node {
-    /// Pozycja kroku w pliku workflow. Rundy tego samego kroku mają tę samą wartość — i to jest
-    /// warunek właściciela „nie ma być widać, że spawnujemy nowych agentów" zapisany w danych:
-    /// nazwa, agent i wszystko inne bierze się z JEDNEGO kroku pliku.
+    /// Pozycja kroku w pliku workflow. Rundy i kopie tego samego kroku mają tę samą wartość —
+    /// i to jest warunek właściciela „nie ma być widać, że spawnujemy nowych agentów" zapisany
+    /// w danych: nazwa, agent i wszystko inne bierze się z JEDNEGO kroku pliku.
     pub step: usize,
     /// Która runda pętli, licząc od zera. `0` dla kroku spoza jakiejkolwiek pętli.
     pub turn: u8,
+    /// Która kopia tego kroku, licząc od zera. `0` dla kroku biegnącego raz.
+    ///
+    /// 2026-08-23 (T-90) — POLE JEST NOWE i przed nim `copies` nie zmieniało biegu ani o jotę.
+    /// Człowiek ustawiał liczbę w wierszu „How many at once", walidator pilnował zakresu 1–8,
+    /// plik ją zapisywał — i robota wykonywała się raz. Zmierzone na biegu właściciela: dwa
+    /// kroki po `copies: 2` dały **22** kroki zamiast 28.
+    ///
+    /// KOPIE MNOŻĄ SIĘ PRZEZ RUNDY, a nie zastępują ich: dwie kopie w pętli o dwóch rundach to
+    /// cztery tury tego kroku. Implementacja, która rozwija jedno zamiast drugiego, oddaje dwie
+    /// i wygląda w raporcie jak bieg, który się udał.
+    pub copy: u8,
 }
 
 /// Jedna pętla pliku, policzona raz i oddana dalej.
@@ -228,21 +239,25 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
         })
         .collect();
 
-    if ways_back.is_empty() {
-        return Unrolled {
-            nodes: (0..file.steps.len())
-                .map(|step| Node { step, turn: 0 })
-                .collect(),
-            arrows: forward,
-            loops: Vec::new(),
-        };
-    }
-
+    /* JEDNA DROGA DLA PLIKU Z PĘTLĄ I BEZ NIEJ (2026-08-23, T-90). Do tego dnia plik bez ani
+     * jednego powrotu wychodził stąd skrótem: jeden węzeł na krok, strzałki przepisane wprost.
+     * Skrót przestał być prawdziwy w chwili, w której krok bez pętli też potrafi mieć więcej niż
+     * jeden węzeł — a druga kopia rozwijania kopii, wpisana w tamtą gałąź, byłaby dwoma
+     * miejscami, w których wolno policzyć „ile ich jest" inaczej (niezmiennik 13).
+     *
+     * Wstecznina stoi bez zmian i dowodzi jej `a_file_with_no_way_back_comes_out_unchanged`:
+     * przy pustej liście powrotów `loop_of` odpowiada wszędzie `None`, więc każdy krok dostaje
+     * rundę zero, a strzałka biegnie z rundy zero do rundy zero. Jedyna różnica wobec skrótu to
+     * pominięcie strzałki powtórzonej w pliku, i to jest naprawa: dwie identyczne krawędzie
+     * podnosiły stopień wejściowy o dwa i krok czekał na rodzica, który zszedł raz. */
     let loops = disjoint_loops(&ways_back, &forward);
+    // Ile kopii ma każdy krok, policzone raz: pytanie stoi w pętli po strzałkach, czyli
+    // w miejscu, w którym liczy się je tyle razy, ile jest par.
+    let copies: Vec<u8> = file.steps.iter().map(copies_of).collect();
 
     let mut nodes: Vec<Node> = Vec::new();
-    // Numer węzła dla (krok, runda). Kroki spoza ciała mają jeden węzeł i rundę zero.
-    let mut number = std::collections::BTreeMap::<(usize, u8), usize>::new();
+    // Numer węzła dla (krok, runda, kopia). Kroki spoza ciała mają rundę zero.
+    let mut number = std::collections::BTreeMap::<(usize, u8, u8), usize>::new();
 
     // KOLEJNOŚĆ WĘZŁÓW JEST KOLEJNOŚCIĄ Z PLIKU, a rundy tego samego kroku idą jedna za drugą.
     //
@@ -258,61 +273,62 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
     // w kolejności z pliku workflow" przy liczeniu indeksu przekazań dla kroku syntezy. Ostatnie
     // jest najgorsze: krok z trzema wejściami dostawałby je w innej kolejności, niż mówi graf,
     // i nikt by tego nie zauważył, bo prompt dalej wygląda poprawnie.
-    for step in 0..file.steps.len() {
-        if let Some(which) = loop_of(step, &loops) {
-            for turn in 0..loops[which].turns {
-                number.insert((step, turn), nodes.len());
-                nodes.push(Node { step, turn });
+    //
+    // KOPIE JEDNEJ RUNDY IDĄ JEDNA ZA DRUGĄ, wewnątrz rundy, i to jest ta sama zasada zastosowana
+    // o szczebel niżej: numer węzła jest prefiksem nazwy pliku przekazania, więc `ls handoffs/`
+    // ma pokazać kopie tej samej próby obok siebie, a nie przeplecione z próbą następną.
+    for (step, &how_many) in copies.iter().enumerate() {
+        let turns = loop_of(step, &loops).map_or(1, |which| loops[which].turns);
+        for turn in 0..turns {
+            for copy in 0..how_many {
+                number.insert((step, turn, copy), nodes.len());
+                nodes.push(Node { step, turn, copy });
             }
-        } else {
-            number.insert((step, 0), nodes.len());
-            nodes.push(Node { step, turn: 0 });
         }
     }
 
     let mut arrows: Vec<(usize, usize)> = Vec::new();
-    let mut push = |from: usize, to: usize| {
-        if !arrows.contains(&(from, to)) {
-            arrows.push((from, to));
-        }
-    };
     for &(from, to) in &forward {
         let same_loop = loop_of(from, &loops)
             .zip(loop_of(to, &loops))
             .is_some_and(|(one, other)| one == other);
-        if same_loop {
-            // Wewnątrz JEDNEJ pętli: ta sama strzałka w każdej jej rundzie.
-            let turns = loop_of(from, &loops).map_or(1, |which| loops[which].turns);
-            for turn in 0..turns {
-                if let (Some(&a), Some(&b)) = (number.get(&(from, turn)), number.get(&(to, turn))) {
-                    push(a, b);
-                }
-            }
-            continue;
-        }
-        /* Wszystko inne jednym wyrażeniem, bo wszystko inne znaczy to samo dla KSZTAŁTU:
+        /* Które rundy nadawcy łączą się z którymi rundami odbiorcy — jedna para na strzałkę
+         * w grafie rozwiniętym.
+         *
+         * Wewnątrz JEDNEJ pętli: ta sama strzałka w każdej jej rundzie, z rundy k do rundy k.
+         * Wszystko inne jednym wyrażeniem, bo wszystko inne znaczy to samo dla KSZTAŁTU:
          * wychodzimy rundą, po której nadawca jest skończony, i celujemy w rundę PIERWSZĄ
          * odbiorcy, bo każda pętla zaczyna się raz. Cztery przypadki, które się tu zbiegają:
          * z pętli na zewnątrz, z zewnątrz do pętli, z pętli do INNEJ pętli i całkiem poza
          * pętlami. Rozpisane na osobne ramiona miałyby identyczne wnętrza, a `match_same_arms`
          * (pedantic, bramka biegnie `-D warnings`) tego nie przepuszcza. */
-        if let (Some(&a), Some(&b)) = (
-            number.get(&(from, leaves_at(from, &loops))),
-            number.get(&(to, 0)),
-        ) {
-            push(a, b);
+        let rounds: Vec<(u8, u8)> = if same_loop {
+            let turns = loop_of(from, &loops).map_or(1, |which| loops[which].turns);
+            (0..turns).map(|turn| (turn, turn)).collect()
+        } else {
+            vec![(leaves_at(from, &loops), 0)]
+        };
+        for (from_turn, to_turn) in rounds {
+            every_copy(
+                &mut arrows,
+                &number,
+                (from, from_turn),
+                (to, to_turn),
+                &copies,
+            );
         }
     }
     // Powrót: sędzia rundy k prowadzi do wejścia rundy k+1. To jest cała pętla, wypisana wprost,
     // i każda z pętli pliku dostaje własny komplet tych strzałek.
     for one in &loops {
         for turn in 0..one.turns.saturating_sub(1) {
-            if let (Some(&a), Some(&b)) = (
-                number.get(&(one.judge, turn)),
-                number.get(&(one.entry, turn + 1)),
-            ) {
-                push(a, b);
-            }
+            every_copy(
+                &mut arrows,
+                &number,
+                (one.judge, turn),
+                (one.entry, turn + 1),
+                &copies,
+            );
         }
     }
 
@@ -320,6 +336,50 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
         nodes,
         arrows,
         loops,
+    }
+}
+
+/// Jedna strzałka z pliku → strzałka od KAŻDEJ kopii nadawcy do KAŻDEJ kopii odbiorcy.
+///
+/// 2026-08-23 (T-90) — pełny iloczyn, i to jest treść, nie wygoda. Krok scalający, który widzi
+/// wynik jednej z trzech kopii, jest gorszy niż brak kopii: kosztuje trzy razy tyle i oddaje
+/// tyle samo. W drugą stronę tak samo — kopia, która nie widzi pracy kroku przed sobą, zaczyna
+/// od pustej kartki.
+///
+/// Strzałka powtórzona nie wchodzi drugi raz: dwie identyczne krawędzie podnoszą stopień
+/// wejściowy o dwa, a rodzic schodzi raz — czyli krok czekałby na zawsze.
+fn every_copy(
+    arrows: &mut Vec<(usize, usize)>,
+    number: &std::collections::BTreeMap<(usize, u8, u8), usize>,
+    from: (usize, u8),
+    to: (usize, u8),
+    copies: &[u8],
+) {
+    let (from_step, from_turn) = from;
+    let (to_step, to_turn) = to;
+    for one in 0..copies.get(from_step).copied().unwrap_or(1) {
+        for other in 0..copies.get(to_step).copied().unwrap_or(1) {
+            if let (Some(&a), Some(&b)) = (
+                number.get(&(from_step, from_turn, one)),
+                number.get(&(to_step, to_turn, other)),
+            ) && !arrows.contains(&(a, b))
+            {
+                arrows.push((a, b));
+            }
+        }
+    }
+}
+
+/// Ile kopii tego kroku biegnie naraz. Jedna dla każdego rodzaju kroku poza agentem.
+///
+/// Wyczerpujący `match` bez gałęzi domyślnej: piąty rodzaj kroku nie skompiluje się bez decyzji,
+/// czy wolno go zwielokrotnić. Zero kopii jest kształtem, którego odmawia walidator
+/// (`check::copies_out_of_range`) — a gdyby taki plik mimo wszystko tu dotarł, jedna kopia jest
+/// jedyną odpowiedzią, która nie kasuje kroku po cichu z grafu.
+fn copies_of(step: &super::Step) -> u8 {
+    match step {
+        super::Step::Agent(one) => one.copies.max(1),
+        super::Step::Checkpoint(_) | super::Step::Check(_) | super::Step::Serve(_) => 1,
     }
 }
 
@@ -492,7 +552,18 @@ mod tests {
 
         assert_eq!(
             unrolled.nodes,
-            vec![Node { step: 0, turn: 0 }, Node { step: 1, turn: 0 }],
+            vec![
+                Node {
+                    step: 0,
+                    turn: 0,
+                    copy: 0
+                },
+                Node {
+                    step: 1,
+                    turn: 0,
+                    copy: 0
+                }
+            ],
             "this function is on the path of EVERY run, so a file without a loop has to come out \
              shaped exactly as it went in — otherwise adding loops changes the run for everybody \
              who never asked for one"
@@ -537,16 +608,22 @@ mod tests {
 
         assert_eq!(
             unrolled.nodes,
-            vec![
-                Node { step: 0, turn: 0 },
-                Node { step: 1, turn: 0 },
-                Node { step: 1, turn: 1 },
-                Node { step: 1, turn: 2 },
-                Node { step: 2, turn: 0 },
-                Node { step: 2, turn: 1 },
-                Node { step: 2, turn: 2 },
-                Node { step: 3, turn: 0 },
-            ],
+            [
+                (0, 0),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+                (3, 0)
+            ]
+            .map(|(step, turn)| Node {
+                step,
+                turn,
+                copy: 0
+            })
+            .to_vec(),
             "steps in file order, and the turns of one step next to each other. The node number is \
              the prefix of the handoff file name, so this order IS what `ls handoffs/` shows and \
              what a merging step reads its inputs in."
