@@ -138,6 +138,17 @@ export type OverridableField =
  * `{}` dla kroku nietkniętego — i to `{}` niesie informację, więc nie znika przy zapisie. */
 export type Overrides = Partial<Pick<Agent, OverridableField>>;
 
+/** Co ma się stać z robotą, kiedy ten krok nie przejdzie.
+ *
+ * 2026-08-23, zamówienie właściciela wprost: „workflows zawsze ma mieć opcje kontynuacji a nie
+ * ślepe punkty". Do tego dnia każda porażka kasowała cały stożek potomków — bez zdania i bez
+ * wyboru. Lustro `workflow::WhenItFails` z Rusta, wartość w wartość.
+ *
+ * BRAK POLA ZNACZY `stop`, czyli dokładnie to, co robił każdy krok wcześniej — i dlatego pole
+ * jest opcjonalne: plik zapisany przed tą zmianą ma się wczytać bez zmiany zachowania, a plik
+ * zapisany po niej nie ma nosić `"stop"` w każdym kroku. */
+export type WhenItFails = 'stop' | 'carry-on' | 'ask-me';
+
 /** Krok, który uruchamia agenta.
  *
  * Vendora ani modelu tu nie ma: krok nazywa AGENTA, a vendor, model i narzędzia mieszkają
@@ -158,6 +169,8 @@ export interface AgentStep {
   skills: Skills;
   folder: Folder;
   handover: Handover;
+  /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `stop`. */
+  whenItFails?: WhenItFails;
   at: Point;
 }
 

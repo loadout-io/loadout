@@ -70,6 +70,7 @@ import type {
   ServeStep,
   SkillChoice,
   Step,
+  WhenItFails,
 } from '../../../state/workflows';
 import { SKILL_SUBSETTING } from './capabilities';
 import { CheckpointPanel } from './checkpoint-panel';
@@ -79,7 +80,7 @@ import { SkillsRow } from './skills-row';
 
 /** Pola, które należą do samego KROKU agenta, a nie do agenta (patrz nagłówek pliku). */
 export type AgentStepFields = Partial<
-  Pick<AgentStep, 'name' | 'instructions' | 'copies' | 'folder'>
+  Pick<AgentStep, 'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails'>
 >;
 
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
@@ -593,6 +594,50 @@ function CopiesRow({
  * WIERSZA NIE MA, GDY Z KROKU NIE WYCHODZI POWRÓT. Pole „ile rund" przy kroku bez pętli jest
  * kontrolką bez skutku (niezmiennik 16) — i to gorszego rodzaju, bo wyglądałoby na ustawienie,
  * które czeka na włączenie gdzie indziej. */
+/** Co się dzieje z robotą, kiedy ten krok nie przejdzie.
+ *
+ * 2026-08-23, zamówienie właściciela: „workflows zawsze ma mieć opcje kontynuacji a nie ślepe
+ * punkty". Do tego dnia każdy nieudany krok kasował cały stożek potomków — i nie było gdzie
+ * powiedzieć, że ma być inaczej.
+ *
+ * STOI PRZY KAŻDYM KROKU AGENTA, nie tylko przy sędzim pętli. Krok, który padł zwyczajnie, był
+ * dokładnie tym samym ślepym punktem, co sędzia po wyczerpaniu prób — a kontrolka pokazana
+ * tylko przy jednym z nich kazałaby zgadywać, czemu drugi jej nie ma.
+ *
+ * `select`, nie trzy przyciski: to jest wybór jednej z trzech wykluczających się odpowiedzi,
+ * czyli dokładnie to, do czego lista służy — i ten sam kształt, co pozostałe pola tego panelu. */
+function WhenItFailsRow({
+  value,
+  onEditStep,
+}: {
+  value: WhenItFails | undefined;
+  onEditStep: (fields: AgentStepFields) => void;
+}): ReactElement {
+  return (
+    <div className={ROW}>
+      <label htmlFor="step-when-it-fails" className={LABEL}>
+        If this step does not pass
+      </label>
+      <select
+        id="step-when-it-fails"
+        className={FIELD}
+        value={value ?? 'stop'}
+        onChange={(event) => {
+          onEditStep({ whenItFails: event.target.value as WhenItFails });
+        }}
+      >
+        <option value="stop">Stop here</option>
+        <option value="carry-on">Carry on anyway</option>
+        <option value="ask-me">Ask me what to do</option>
+      </select>
+      <span className={FROM_AGENT}>
+        Carrying on hands the work to the steps after it even though it did not pass, and they are
+        told so.
+      </span>
+    </div>
+  );
+}
+
 function TriesRow({
   value,
   onEditWayBack,
@@ -1004,6 +1049,11 @@ export function PanelForStep({
 
       {/* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */}
       {wayBack === null ? null : <TriesRow value={wayBack} onEditWayBack={onEditWayBack} />}
+
+      {/* I co się dzieje, kiedy próby się skończą — albo kiedy krok padnie z każdego innego
+          powodu. Stoi przy każdym kroku agenta, bo ślepy punkt jest ten sam niezależnie od tego,
+          dlaczego krok nie przeszedł. */}
+      <WhenItFailsRow value={step.whenItFails} onEditStep={onEditStep} />
 
       {/* Wiersz Skills, zamontowany PO SIEDMIU wierszach i poza `StepPanel` — patrz nagłówek.
           Przy pustej liście nie powstaje wcale: kiedy w katalogach agentów nie leży ani jedna
