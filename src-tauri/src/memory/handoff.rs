@@ -59,7 +59,14 @@ pub enum Section {
 const SECTIONS: [Section; 3] = [Section::Answer, Section::Evidence, Section::Open];
 
 impl Section {
-    const fn name(self) -> &'static str {
+    /// Nazwa sekcji — ta sama w nagłówku pliku, w prompcie kroku i w `run.json`.
+    ///
+    /// 2026-08-23 — `pub` z tego samego powodu, co [`Kind::name`]: `commands::run` zapisuje
+    /// w `run.json`, które sekcje musiał dopisać za agenta. Druga kopia tej tabeli byłaby drugim
+    /// miejscem, w którym mieszka odpowiedź na pytanie „jak ta sekcja się nazywa" — i przy
+    /// pierwszej zmianie nazwy plik biegu mówiłby co innego niż plik przekazania.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Answer => "Answer",
             Self::Evidence => "Evidence",

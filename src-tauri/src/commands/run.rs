@@ -3833,6 +3833,13 @@ struct StepRun {
     summary: Option<String>,
     /// Powód, jeśli coś poszło nie tak.
     error: Option<String>,
+    /// Nagłówki, których agent nie napisał, a `memory::handoff::reshape` je za niego wstawił.
+    ///
+    /// Pusta lista znaczy, że odpowiedź przyszła w umówionym kształcie — i to jest odpowiedź,
+    /// a nie brak odpowiedzi (powód przy [`StepEntry::repaired`]).
+    repaired: Vec<String>,
+    /// Czy odpowiedź nie zmieściła się w `BODY_CAP` i część leży w `attachments/`.
+    truncated: bool,
 }
 
 /// Stan **biegu**: pięć wartości z `CHECK` przy tabeli `runs` w `store::schema`.
@@ -3922,6 +3929,8 @@ impl Live {
                 cached_tokens: None,
                 summary: None,
                 error: None,
+                repaired: Vec::new(),
+                truncated: false,
             })
             .collect();
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
@@ -4448,6 +4457,8 @@ impl Live {
                     // agenta, tylko odpala polecenie i idzie dalej.
                     Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
                 },
+                repaired: &run.repaired,
+                truncated: run.truncated,
             })
             .collect();
 
@@ -5579,17 +5590,26 @@ impl Live {
 
         match handoff::write_handoff(&self.plan.dir, draft, said) {
             Ok(written) => {
-                if !written.repaired.is_empty() || written.truncated {
-                    // Licznik, który warto oglądać [T6 §11.1]: ile tur nie oddało umówionego
-                    // kształtu i Loadout musiał go dopisać.
-                    tracing::debug!(
-                        run = %self.plan.id,
-                        step = id,
-                        repaired = written.repaired.len(),
-                        truncated = written.truncated,
-                        "the body of this handoff had to be reshaped"
-                    );
-                }
+                // 2026-08-23 (T-86) — DO TEGO DNIA STAŁO TU `tracing::debug!` I TYLE.
+                //
+                // Licznik, który warto oglądać [T6 §11.1], szedł na poziom, którego aplikacja
+                // nie ma włączonego — czyli nie widział go nikt (niezmiennik 21). Teraz jedzie
+                // do `run.json`, bo to jedyny zapis biegu, który przeżywa skasowanie
+                // `loadout.db` (niezmiennik 4).
+                //
+                // Zapisujemy BEZWARUNKOWO, także kształt umówiony: `update` jest jedyną drogą
+                // do księgi, a warunek postawiony tutaj zostawiałby w niej wartość z poprzedniej
+                // rundy pętli. Klucze znikają dopiero przy serializacji ([`StepEntry::repaired`]),
+                // czyli w miejscu, które o długość pliku naprawdę pyta.
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.repaired = written
+                        .repaired
+                        .iter()
+                        .map(|section| section.name().to_owned())
+                        .collect();
+                    step.truncated = written.truncated;
+                });
                 self.filed(id, written.path);
             }
             Err(error) => tracing::error!(
@@ -6045,6 +6065,35 @@ struct StepEntry<'a> {
     /// Konfiguracja **efektywna**, zamrożona w chwili startu [T4 §5.2 p. 3]. `None` dla kafelka
     /// kontrolnego: on nie woła agenta, więc nie ma czego zamrażać.
     effective: Option<&'a Value>,
+    /// Nagłówki, które Loadout dopisał do odpowiedzi tego kroku, **po nazwie i w kolejności
+    /// dopisywania**.
+    ///
+    /// # 2026-08-23 (T-86) — do tego dnia ta liczba szła wyłącznie do `tracing::debug!`
+    ///
+    /// `memory::handoff::write_handoff` oddaje ją od początku i od początku jest prawdziwa,
+    /// tylko nie widział jej NIKT: aplikacja nie ma włączonego poziomu debug, a `run.json` jest
+    /// jedynym miejscem, które przeżywa skasowanie `loadout.db` (niezmiennik 4). Artefakt
+    /// liczony i nieczytany jest dokładnie tym, czego zabrania niezmiennik 21.
+    ///
+    /// Co to zmienia dla człowieka: „agent nie oddał umówionego kształtu" jest z zewnątrz
+    /// nieodróżnialne od „agent oddał kształt, a Loadout go zgubił", bo przekazanie na dysku ma
+    /// trzy nagłówki w OBU przypadkach — `reshape()` je dopisuje. Pierwsze naprawia się jednym
+    /// zdaniem w prompcie kroku, drugie jest wadą produktu.
+    ///
+    /// PO NAZWIE, NIE LICZBĄ: sama liczba odsyła człowieka do otwarcia pliku i porównania go
+    /// okiem z tym, co pamięta z odpowiedzi.
+    ///
+    /// BRAK KLUCZA, KIEDY NIE BYŁO CZEGO DOPISAĆ. Klucz mówiący „nic się nie stało" przy każdym
+    /// kroku każdego biegu jest długością zapłaconą za milczenie — i tą samą decyzją, którą
+    /// obok podjęto dla `death_proof`.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    repaired: &'a [String],
+    /// Czy odpowiedź tego kroku nie zmieściła się w limicie i część leży w `attachments/`.
+    ///
+    /// Niezależna od `repaired` i to nie jest szczegół: kształt bywa umówiony, a treść i tak
+    /// ucięta — następny krok nie zobaczy wtedy w pliku, na który go wskazano, całej odpowiedzi.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 // ── DROBIAZGI ──────────────────────────────────────────────────────────────────────────────
