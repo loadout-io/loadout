@@ -285,6 +285,50 @@ nothing else on that line, and write it last — anything after it is read inste
 you leave the line out, this is taken as `fail` and the work goes round again, so say what \
 you mean even when the answer is obvious.";
 
+/// Blok, którym kończy się prompt **każdego** kroku agenta — i którego do 2026-08-23 nie
+/// dostawał żaden.
+///
+/// Loadout ma wobec agenta trzy konkretne oczekiwania i nie mówił mu ani jednego. Ostatnia
+/// wypowiedź tury JEST przekazaniem ([`Live::hand_over`]), `memory::handoff::reshape` dopisuje
+/// brakujące nagłówki, a wyników nie zapisuje się do plików, bo robi to Loadout.
+///
+/// ZMIERZONE, NIE PRZECZUTE. W biegu `20260823-145648` **sześć** kroków Claude'a zaczyna
+/// podsumowanie od „*Write access is disabled in this session, so I can't create the handoff
+/// file — the findings are below*". Agent palił tury na próbę zapisania pliku wyników, bo tak
+/// każą mu instrukcje gospodarza, a dial `look-only` to blokuje. Gdyby wiedział, że jego
+/// odpowiedź **jest** tym, co przekazuje dalej, nie próbowałby wcale.
+///
+/// TRZY NAGŁÓWKI SŁOWO W SŁOWO Z `memory::handoff`. `heading_at` przyjmuje wiersz, który jest
+/// DOKŁADNIE `## <nazwa>`, i tylko komplet trzech we właściwej kolejności przechodzi nietknięty.
+/// Prośba o `## Findings` albo o nagłówek z dopiskiem w tym samym wierszu byłaby umową, której
+/// nasza własna strona nie podpisała — i każda tura płaciłaby za naprawę kształtu, który agent
+/// oddał dokładnie tak, jak go poproszono.
+///
+/// BEZ WIERSZA O WYNIKU. Ten blok dostają wszyscy, a o wynik wolno poprosić wyłącznie sędziego
+/// pętli ([`Live::ask_for_an_outcome`]): prośba skierowana do kroku, którego odpowiedzi nikt nie
+/// sądzi, jest poleceniem bez skutku (niezmiennik 16) i uczy model pisać ten wiersz wszędzie.
+///
+/// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak [`HANDOFF_INDEX_OPENS`] i
+/// [`OUTCOME_ASKED_FOR`] obok (decyzja D5, niezmiennik 14): agent czyta „what this step passes
+/// on", nigdy „handoff".
+const HOW_TO_ANSWER: &str = "\
+Your last message is what this step passes on. The step after yours reads it and nothing else, \
+so leave nothing worth keeping outside it.
+
+Write it under these three headings, each one alone on its line and in this order:
+
+## Answer
+what the step after yours needs to know.
+
+## Evidence
+`file:line`, or a link, for every claim above.
+
+## Open
+what you could not settle.
+
+Do not write your results to a file. Loadout files your last message for you, and a file you \
+write yourself is read by nobody.";
+
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
@@ -5251,7 +5295,8 @@ impl Live {
         report
     }
 
-    /// Prompt kroku: jego **własna instrukcja** plus indeks przekazań poprzedników.
+    /// Prompt kroku: jego **własna instrukcja**, indeks przekazań poprzedników i umowa o tym,
+    /// jak odpowiedzieć.
     ///
     /// Instrukcja stoi pierwsza i jest w prompcie zawsze. Prompt złożony z samych cudzych wyników
     /// oddaje agentowi pracę wszystkich pozostałych i ani jednego zdania o tym, co ma z nią
@@ -5260,6 +5305,19 @@ impl Live {
     /// Indeks jest **listą ścieżek**, nigdy treścią (D6 punkt 5, nagłówek modułu). Krok bez
     /// poprzedników dostaje swoją instrukcję i nic więcej: pusty nagłówek „steps before this one"
     /// nad zerem wpisów jest zdaniem o niczym, a agent przeczyta go jako zgubione wejście.
+    ///
+    /// Umowa ([`HOW_TO_ANSWER`]) stoi **na końcu i za indeksem**, i to jest treść, nie kosmetyka:
+    /// indeks jest listą materiałów, a umowa mówi, co oddać. Umowa przeczytana przed listą czyta
+    /// się jak podpis pod pierwszą jej pozycją.
+    ///
+    /// # Dlaczego indeks jest w `if`, a nie w gałęzi z własnym `return`
+    ///
+    /// 2026-08-23 (T-86) — do tego dnia krok bez poprzedników wychodził stąd `return`em zaraz za
+    /// `handed.is_empty()`. Każde zdanie doklejane do promptu trzeba więc było dopisać w DWÓCH
+    /// miejscach, a implementacja, która dopisała je w jednym, zostawiała połowę biegu bez ani
+    /// jednego słowa — i nikt by tego nie zobaczył, bo prompt kroku nie trafia na żaden ekran.
+    /// Jedna droga wyjścia jest tu jedyną strukturą, w której „każdy krok dostaje to samo" jest
+    /// prawdą z budowy, a nie z uwagi piszącego.
     fn prompt_for(
         &self,
         id: StepId,
@@ -5273,14 +5331,23 @@ impl Live {
             context: planned_context.to_vec(),
             extra_dirs: Vec::new(),
         };
-        if handed.is_empty() {
-            self.ask_for_an_outcome(id, &mut told);
-            return Ok(told);
+        if !handed.is_empty() {
+            self.index_of_what_came_before(&handed, &mut told)?;
         }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(HOW_TO_ANSWER);
+        self.ask_for_an_outcome(id, &mut told);
+        Ok(told)
+    }
 
+    /// Lista ścieżek do tego, co zostawili poprzednicy tego kroku — plus prawo ich otwarcia.
+    ///
+    /// Wołana wyłącznie wtedy, gdy jest co wymienić: nagłówek nad zerem wpisów jest zdaniem
+    /// o niczym (powód przy [`Live::prompt_for`]).
+    fn index_of_what_came_before(&self, handed: &[Handed], told: &mut Told) -> anyhow::Result<()> {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_OPENS);
-        for hand in &handed {
+        for hand in handed {
             // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
             // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
             // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
@@ -5333,9 +5400,7 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
-        told.prompt.push('\n');
-        self.ask_for_an_outcome(id, &mut told);
-        Ok(told)
+        Ok(())
     }
 
     /// Dokłada zdanie o wyniku — **tylko sędziemu pętli**.
