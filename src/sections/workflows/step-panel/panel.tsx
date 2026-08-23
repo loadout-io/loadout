@@ -85,10 +85,11 @@ export type AgentStepFields = Partial<
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
 export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>>;
 
-/** Oba pola kafelka „uruchom i zostaw" — z tego samego powodu, co wyżej. `folder` tu nie stoi:
- * ten kafelek podnosi serwer na TYM kodzie, który leży w projekcie, i własna kopia byłaby
- * serwerem podającym cudzą pracę. */
-export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command'>>;
+/** Trzy pola kafelka „uruchom i zostaw" — z tego samego powodu, co wyżej.
+ *
+ * `folder` DOSZŁO 2026-08-23, po pierwszym prawdziwym użyciu: dla serwera to nie jest szczegół,
+ * tylko treść. Powód w całości stoi przy `WHERE` w `./serve-panel.tsx`. */
+export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command' | 'folder'>>;
 
 /* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
  *

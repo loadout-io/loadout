@@ -380,14 +380,22 @@ export function addStep(
 export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
   if (kind === 'checkpoint') return { kind, id, name: 'Ask me first', at };
   /* Pusta komenda, nie przykład w rodzaju `npm run dev`. Wypełniacz wygląda na płótnie dokładnie
-   * tak samo jak decyzja człowieka — a ten kafelek URUCHAMIA to, co w nim stoi. */
+   * tak samo jak decyzja człowieka — a ten kafelek URUCHAMIA to, co w nim stoi.
+   *
+   * `same-copy`, NIE `project`, i to jest wybór między dwoma rodzajami pomyłki. 2026-08-23,
+   * po pierwszym prawdziwym użyciu: ten kafelek stawia się prawie zawsze po kroku, który właśnie
+   * napisał kod, żeby krok po nim miał na co patrzeć. Serwer w folderze projektu podaje wtedy
+   * kod BEZ tej pracy — a strona, która się otwiera i pokazuje starą wersję, wygląda na
+   * działającą i nikt tego nie zgłosi. Postawiony bez poprzednika `same-copy` jest natomiast
+   * czerwoną kropką na płótnie, jeszcze przed Startem (`check::nothing_before`). Głośna pomyłka
+   * bije cichą. */
   if (kind === 'serve')
     return {
       kind,
       id,
       name: 'Start and leave running',
       command: '',
-      folder: { use: 'project' },
+      folder: { use: 'same-copy' },
       at,
     };
 

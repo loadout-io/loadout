@@ -153,9 +153,11 @@ describe('a tile that starts something and walks on can be filled in', () => {
     ).toBe('');
     expect(
       step.folder,
-      'the project folder, not a fresh copy: a server started in a copy of the tree serves code ' +
-        'nobody is looking at',
-    ).toEqual({ use: 'project' });
+      'the same copy as the step before it, because that is where the code somebody just wrote ' +
+        'lives. A server in the project folder serves the version WITHOUT that work — and a page ' +
+        'that opens and shows the old version looks like it works, so nobody reports it. Placed ' +
+        'with nothing before it, this value is a red dot on the canvas before Run.',
+    ).toEqual({ use: 'same-copy' });
   });
 
   it('gets its own panel the moment it is picked, with the field for what to run', () => {
@@ -186,6 +188,11 @@ describe('a tile that starts something and walks on can be filled in', () => {
       'and no field for a proof: this tile judges nothing, so there is no output for a proof to ' +
         'match. Asking for one would be a field nobody can fill.',
     ).not.toContain('id="step-proof"');
+    expect(
+      markup,
+      'and it has to say WHERE it runs. For a server that is not a detail: the wrong answer ' +
+        'serves code without the work the step before it just wrote, and looks fine doing it.',
+    ).toContain('name="serve-where"');
   });
 
   it('what somebody types into that field comes back in the file the canvas hands over', async () => {

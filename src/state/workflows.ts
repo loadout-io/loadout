@@ -87,7 +87,20 @@ export interface Link {
   max_turns?: number;
 }
 
-export type Folder = { use: 'project' } | { use: 'fresh-copy' } | { use: 'pick'; path: string };
+/** Gdzie krok pracuje. Lustro `workflow::Folder`.
+ *
+ * 2026-08-23 — `same-copy` DOSZŁO DO TEJ UNII, choć w pliku istniało od dawna: plik workflow
+ * z tą wartością przechodził przez okno jako klucz, którego okno nie zna (niezmiennik 5), więc
+ * żadna kontrolka nie umiała go ustawić ani pokazać. Wypłynęło na kafelku „uruchom i zostaw",
+ * gdzie ta wartość jest CAŁYM sensem kroku: serwer podnoszony w folderze projektu podaje kod
+ * BEZ pracy, którą krok przed nim właśnie napisał — a strona, która się otwiera i pokazuje starą
+ * wersję, wygląda na działającą. */
+export type Folder =
+  | { use: 'project' }
+  | { use: 'fresh-copy' }
+  /** To samo drzewo, w którym pracował krok przede mną. */
+  | { use: 'same-copy' }
+  | { use: 'pick'; path: string };
 
 /** `'all'` albo lista nazw. Lustro `workflow::Skills`. */
 export type Skills = 'all' | string[];
