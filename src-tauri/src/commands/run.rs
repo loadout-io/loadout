@@ -2994,7 +2994,15 @@ fn plan_agent(
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
-    let effective = resolve(&saved, &overrides)?.agent;
+    let mut effective = resolve(&saved, &overrides)?.agent;
+    /* PRZELOTKA MA DWA NOŚNIKI I OBA SĄ TEGO KROKU (T-90, 2026-08-24). `Overrides` nie niesie
+     * `vendorOptions` z rozmysłem — to nie jest pole, które się PODMIENIA, tylko mapa, którą się
+     * scala wpis po wpisie — więc scalenie stoi tutaj, jedną linią, obok złożenia reszty pól.
+     * Do tego dnia `AgentStep::vendor_options` nie miał w ścieżce biegu żadnego czytelnika. */
+    effective.vendor_options = crate::library::agents::passthrough_of_the_step(
+        &effective.vendor_options,
+        &step.vendor_options,
+    );
 
     // Polityka policzona RAZ i czytana dwa razy: raz jako dial kroku, raz jako sufit jego listy
     // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby

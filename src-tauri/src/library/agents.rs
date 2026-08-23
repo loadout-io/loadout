@@ -948,6 +948,39 @@ pub fn vendor_args(agent: &Agent, vendor: &str) -> Vec<String> {
     vendor_args_filtered(agent, vendor).args
 }
 
+/// Przelotka agenta **scalona z przelotką kafelka** — to, z czym ten krok naprawdę pojedzie.
+///
+/// # 2026-08-24 (T-90) — drugi nośnik tej samej przelotki nie miał czytelnika
+///
+/// `AgentStep::vendor_options` jest w schemacie kroku od T3 §6b, `workflow::check` sprawdza go
+/// przy zapisie i przy Starcie, a `commands::run::plan_agent` czytał wyłącznie przelotkę
+/// DEFINICJI AGENTA. Człowiek dopisywał flagę na kafelku, plik ją zapisywał, walidator ją
+/// przepuszczał — i proces jej nie widział. To jest ta sama martwa kontrolka, którą całe to
+/// zadanie zdejmuje (niezmiennik 16), o jeden nośnik dalej, i widać ją równie źle: „vendor
+/// zignorował flagę" jest z zewnątrz nieodróżnialne od „Loadout jej nie wysłał".
+///
+/// # Scalanie po WPISIE, nie po vendorze
+///
+/// To jest cała treść tej funkcji. Podmiana całej mapy jednego vendora znaczyłaby, że kafelek
+/// dopisujący jedną flagę kasuje wszystkie pozostałe flagi swojego agenta — czyli że „ten jeden
+/// krok chce dodatkowo X" po cichu znaczy „i zapomnij, co agent miał ustawione". To ta sama
+/// algebra, którą nad resztą pól robi [`resolve`] (RFC 7396): brak klucza znaczy „dziedzicz",
+/// klucz obecny znaczy „u mnie tak".
+///
+/// Filtr polityki stoi **za** tym scaleniem, nie przed: pytanie „czy ta flaga podnosi dial"
+/// dotyczy wartości, z którą krok naprawdę pojedzie, a nie tej, którą nadpisał.
+#[must_use]
+pub fn passthrough_of_the_step(agent: &VendorOptions, step: &VendorOptions) -> VendorOptions {
+    let mut merged = agent.clone();
+    for (vendor, options) in step {
+        let mine = merged.entry(vendor.clone()).or_default();
+        for (flag, value) in options {
+            mine.insert(flag.clone(), value.clone());
+        }
+    }
+    merged
+}
+
 /// Przelotka tego agenta jako **gotowy fragment argv**, w kształcie, którym mówi TEN vendor.
 ///
 /// 2026-08-23 (T-90) — DO TEGO DNIA [`vendor_args_filtered`] NIE MIAŁO W ŚCIEŻCE BIEGU ANI

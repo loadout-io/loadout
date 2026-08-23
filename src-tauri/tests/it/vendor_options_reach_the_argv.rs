@@ -79,6 +79,17 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const CLAUDE_FLAG: &str = "--fallback-model";
 const CLAUDE_VALUE: &str = "sonnet";
 
+/// Druga flaga tego samego agenta — ta, której kafelek NIE tyka.
+///
+/// Istnieje po to, żeby dało się odróżnić scalenie od podmiany. Kafelek dopisujący jedną flagę
+/// nie ma prawa skasować pozostałych flag swojego agenta, a implementacja, która podmienia całą
+/// mapę vendora, wygląda w argv identycznie, dopóki agent ma dokładnie jeden wpis.
+const CLAUDE_KEPT: &str = "--add-dir";
+const CLAUDE_KEPT_VALUE: &str = "shared";
+
+/// Wartość, którą kafelek wpisuje pod [`CLAUDE_FLAG`] — inna niż ta z definicji agenta.
+const TILE_VALUE: &str = "haiku";
+
 /// Wpis przelotki Codeksa. Klucz konfiguracji, bo tym kształtem mówi ten vendor.
 const CODEX_KEY: &str = "model_verbosity";
 const CODEX_VALUE: &str = "high";
@@ -114,15 +125,23 @@ Do the work.
     )
 }
 
-/// Trzy kroki w łańcuchu: jeden bez przelotki, jeden z przelotką Claude'a, jeden z Codeksa.
+/// Pięć kroków w łańcuchu: jeden bez przelotki, jeden z przelotką Claude'a, jeden z Codeksa,
+/// jeden z przelotką **kafelka** i jeden, w którym kafelek nadpisuje wpis swojego agenta.
 ///
-/// Łańcuch, a nie trzy luźne kafelki: kroki, które mogą biec równocześnie i celują w te same
-/// pliki, są odmową przed pierwszym procesem (niezmiennik 12). `fresh-copy` załatwia to samo
-/// i przy okazji daje każdemu krokowi własne drzewo.
+/// Łańcuch, a nie luźne kafelki: kroki, które mogą biec równocześnie i celują w te same pliki,
+/// są odmową przed pierwszym procesem (niezmiennik 12). `fresh-copy` załatwia to samo i przy
+/// okazji daje każdemu krokowi własne drzewo.
+///
+/// 2026-08-24 — DWA OSTATNIE KROKI DOPISANE, i to jest połowa kryterium, której tu nie było.
+/// Przelotka ma **dwa** nośniki (`Agent.vendor_options` i `AgentStep.vendor_options`) i TASK.md
+/// mówi o pierwszym „scalonym z nadpisaniem kroku". Każda fikstura tego pliku miała
+/// `"overrides": {}` i ani jednego kroku z własną przelotką w biegu, więc implementacja czytająca
+/// wyłącznie definicję agenta — czyli ta, która stała w drzewie — przechodziła komplet, a wpis
+/// z kafelka nie docierał do procesu w ogóle.
 const WORKFLOW: &str = r#"{
   "format": 1,
   "id": "wf_vendor_options_reach_the_argv",
-  "name": "One plain step and two with a passthrough",
+  "name": "One plain step and four with a passthrough",
   "steps": [
     {
       "kind": "agent",
@@ -153,11 +172,35 @@ const WORKFLOW: &str = r#"{
       "instructions": "codie: do the work.",
       "folder": { "use": "fresh-copy" },
       "at": { "x": 0, "y": 480 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_tiled",
+      "name": "Tiled",
+      "agent": "01990000-0000-7000-8000-00000000091a",
+      "overrides": {},
+      "vendorOptions": { "claude": { "--fallback-model": "haiku" } },
+      "instructions": "tiled: do the work.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 0, "y": 720 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_both",
+      "name": "Both",
+      "agent": "01990000-0000-7000-8000-00000000091b",
+      "overrides": {},
+      "vendorOptions": { "claude": { "--fallback-model": "haiku" } },
+      "instructions": "both: do the work.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 0, "y": 960 }
     }
   ],
   "links": [
     { "from": "s_plain", "to": "s_claude" },
-    { "from": "s_claude", "to": "s_codex" }
+    { "from": "s_claude", "to": "s_codex" },
+    { "from": "s_codex", "to": "s_tiled" },
+    { "from": "s_tiled", "to": "s_both" }
   ]
 }
 "#;
@@ -200,7 +243,9 @@ async fn the_passthrough_of_both_vendors_reaches_the_argv() -> Result<(), Box<dy
             "01990000-0000-7000-8000-00000000091b",
             "Claudine",
             "claude-code",
-            &format!(r#"{{"claude": {{"{CLAUDE_FLAG}": "{CLAUDE_VALUE}"}}}}"#),
+            &format!(
+                r#"{{"claude": {{"{CLAUDE_FLAG}": "{CLAUDE_VALUE}", "{CLAUDE_KEPT}": "{CLAUDE_KEPT_VALUE}"}}}}"#
+            ),
         ),
     )?;
     let codie = bench.agent(
@@ -223,8 +268,8 @@ async fn the_passthrough_of_both_vendors_reaches_the_argv() -> Result<(), Box<dy
     let labels: Vec<&str> = steps.iter().map(|one| one.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["plain", "claudine", "codie"],
-        "all three steps have to reach their agent app for the fragments below to mean anything; \
+        vec!["plain", "claudine", "codie", "tiled", "both"],
+        "all five steps have to reach their agent app for the fragments below to mean anything; \
          the run entered {labels:?}"
     );
 
@@ -290,6 +335,45 @@ async fn the_passthrough_of_both_vendors_reaches_the_argv() -> Result<(), Box<dy
         "the command built for a step with no extra settings differs from the command built with \
          no fragment at all, so this task changed the command line of every step that asked for \
          nothing"
+    );
+
+    // ── (e) PRZELOTKA STOJĄCA NA KAFELKU TEŻ DOCIERA ────────────────────────────────────────
+    //
+    // 2026-08-24 — DOPISANE, i to jest drugi z dwóch nośników, które TASK.md wymienia w jednym
+    // wierszu swojej tabeli. Krok niżej biegnie agentem, którego przelotka jest PUSTA, a wpis
+    // stoi wyłącznie na kafelku — więc jedyną drogą, którą ta para może dojść do komendy, jest
+    // ta, której do dziś nie było.
+    let tiled_fragment = fragment_of(&steps, "tiled");
+    assert!(
+        pair_stands_in(&tiled_fragment, CLAUDE_FLAG, TILE_VALUE),
+        "an extra setting written on the step itself never reached the app that ran it: the \
+         fragment it carried was {tiled_fragment:?}. Its agent asks for nothing extra, so this \
+         line has exactly one way to arrive — and a line a person writes, a file keeps and a \
+         checker approves, which the run then does not send, is a control with nothing behind it \
+         (invariant 16)"
+    );
+
+    // ── (f) A KIEDY MÓWIĄ OBA, WYGRYWA KAFELEK — I NIE KASUJE RESZTY ────────────────────────
+    //
+    // Dwie asercje, bo dwie różne implementacje przechodzą po jednej z nich. Kolejność „agent
+    // wygrywa" znaczy, że wiersz wpisany na kafelku nie robi nic — to jest ta sama martwa
+    // kontrolka. Podmiana CAŁEJ mapy vendora znaczy, że dopisanie jednego wiersza kasuje
+    // wszystkie pozostałe wiersze agenta — cicha strata, o której człowiek dowiaduje się dopiero
+    // z zachowania procesu.
+    let both_fragment = fragment_of(&steps, "both");
+    assert!(
+        pair_stands_in(&both_fragment, CLAUDE_FLAG, TILE_VALUE)
+            && !pair_stands_in(&both_fragment, CLAUDE_FLAG, CLAUDE_VALUE),
+        "a step and its agent both set {CLAUDE_FLAG}, and the command came out as \
+         {both_fragment:?}. The one written on the step has to win: it is the more specific of \
+         the two, and if it loses, writing it there does nothing at all"
+    );
+    assert!(
+        pair_stands_in(&both_fragment, CLAUDE_KEPT, CLAUDE_KEPT_VALUE),
+        "the step wrote one extra setting and its agent's other one disappeared: {both_fragment:?}. \
+         These are merged entry by entry, exactly like every other field a step overrides — \
+         swapping the whole map would mean \"this step also wants X\" quietly means \"and forget \
+         what the agent had\""
     );
     Ok(())
 }
