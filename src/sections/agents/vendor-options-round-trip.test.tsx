@@ -184,6 +184,33 @@ function ioThatRecords(saved: Agent[]): AgentsIo {
   };
 }
 
+/* Atrapa, która ZACHOWUJE SIĘ JAK DYSK: `save` odkłada plik, `list` oddaje to, co na nim leży.
+ *
+ * 2026-08-24 — DODANA, i bez niej „podróż w obie strony" odbywała się w całości w pamięci tego
+ * pliku: `typed()` oddaje obiekt, a `shown()` renderuje TEN SAM obiekt, więc obie strony podróży
+ * to jedna wartość, która nigdzie nie pojechała. Atrapa obok (`ioThatRecords`) oddaje z `list`
+ * pustą listę i jej `save` nie jest wołany ani razu po udanej drodze — tamta służy wyłącznie
+ * odmowie. TASK.md mówi „wraca na ekran PO PONOWNYM OTWARCIU", a otwarcie na nowo czyta plik.
+ *
+ * Kopiuje przy obu krawędziach z rozmysłem: atrapa oddająca tę samą referencję, którą przyjęła,
+ * przechodzi każdą asercję poniżej także wtedy, gdy zapis nie zapisał niczego. */
+function diskThatKeeps(files: Agent[]): AgentsIo {
+  return {
+    list: async () => files.map((one) => structuredClone(one)),
+    newId: async () => '019897b4-8f3a-7c21-9d44-0b6a1e2c5f78',
+    save: async (agent: Agent) => {
+      const at = files.findIndex((one) => one.id === agent.id);
+      const copy = structuredClone(agent);
+      if (at === -1) files.push(copy);
+      else files[at] = copy;
+    },
+    remove: async (id: string) => {
+      const at = files.findIndex((one) => one.id === id);
+      if (at !== -1) files.splice(at, 1);
+    },
+  };
+}
+
 describe('the extra-options row writes into the agent file and comes back from it', () => {
   it('stands in More settings, named for the app this agent runs with', () => {
     const claude = plain(markupOf(FORGE));
@@ -235,6 +262,55 @@ describe('the extra-options row writes into the agent file and comes back from i
         'other on its first real run',
     ).toEqual({ codex: CODEX_KEPT });
     expect(linesOf(shown(codex)), 'and the same lines come back for it too').toEqual(CODEX_LINES);
+  });
+
+  it('carries the lines to the disk and shows them again when the agent is reopened', async () => {
+    const disk: Agent[] = [];
+    const store = createAgentsStore(diskThatKeeps(disk));
+    const went = await store.getState().save(typed(FORGE, CLAUDE_TEXT));
+
+    expect(
+      went,
+      'the store is the only edge to the disk, and an agent whose only change is these lines has ' +
+        'to go through it. Every other question in this file is about a value passed from one ' +
+        'function to the next, and a value that never leaves the screen is not a saved setting',
+    ).toBe(true);
+    expect(
+      disk[0]?.vendorOptions,
+      'the lines have to reach the file itself. The reader on the other side opens that file and ' +
+        'nothing else: a passthrough that lives in the screen and not on disk reaches nobody',
+    ).toEqual({ claude: CLAUDE_KEPT });
+
+    /* PONOWNE OTWARCIE, i to jest ta połowa zdania z TASK.md, której nie było: nowy magazyn,
+     * ten sam plik. Wszystko powyżej przechodzi też dla formularza, który trzyma wpisany tekst
+     * we własnym stanie i gubi go przy pierwszym przeładowaniu okna. */
+    const reopened = createAgentsStore(diskThatKeeps(disk));
+    await reopened.getState().load();
+    const back = reopened.getState().agents.find((one) => one.id === FORGE.id);
+    expect(
+      back,
+      'the agent has to come back from the file at all, or there is nothing to reopen',
+    ).toBeDefined();
+    if (back === undefined) return;
+
+    expect(
+      linesOf(shown(back)),
+      'and reopening it puts the same lines, in the same order, back into the box the person ' +
+        'typed them into. An empty box over a file that has them is how a person learns to ' +
+        'write a setting twice',
+    ).toEqual(CLAUDE_LINES);
+
+    /* I NA EKRANIE, nie tylko we właściwości kontrolki (niezmiennik 29). Wartość zwrócona przez
+     * komponent dowodzi, że mechanizm jest; markup dowodzi, że człowiek to widzi. */
+    const html = renderToStaticMarkup(
+      <AgentForm value={back} expanded onChange={noop} onToggleMore={noop} onSave={noop} />,
+    );
+    for (const line of CLAUDE_LINES) {
+      expect(
+        plain(html),
+        'and the line stands in the open form, where the person looks for it: "' + line + '"',
+      ).toContain(line);
+    }
   });
 
   it('will not save a line that has no value, and says which line', async () => {
