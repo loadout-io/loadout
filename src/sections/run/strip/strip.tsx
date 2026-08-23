@@ -43,6 +43,7 @@
  * zaczyna bieg wierszem wejścia (`/plan · /run`), czyli TĄ SAMĄ krawędzią ekranu — więc jest to
  * jej własna logika, nie ucieczka od niej. Rozbieżność zgłoszona.
  */
+import { useEffect, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Block, Strip as StripModel } from './model';
 
@@ -100,6 +101,39 @@ const BLOCK: Readonly<Record<Block['state'], string>> = {
  * dokładnie tyle, ile wiemy: ten krok już się nie wydarzy. */
 const ENDED = 'border-dashed';
 
+/* I KROK, KTÓRY PADŁ — bo on JEST odpowiedzią na „co poszło źle", więc `--fail` należy mu się
+ * dokładnie tak, jak nie należy się dwóm pozostałym. Zdanie nad `ENDED` mówiło „nie wolno mu dać
+ * koloru błędu: pominięty krok nie jest zepsuty" i miało rację o pominiętym i o zatrzymanym —
+ * a o tym trzecim nie miało. Zwijało przez to trzy różne fakty w jeden pusty obrys.
+ *
+ * Skarga właściciela 2026-08-23, dosłownie: „nie wiadomo które jak chodzą w sumie". Zmierzone:
+ * `pending`, `ready`, `failed`, `cancelled` i `skipped` — pięć z siedmiu stanów — dawały na pasku
+ * ten sam obrys, a `failed` różnił się od `pending` wyłącznie kreską przerywaną o grubości
+ * jednego piksela na pasku wysokim na osiem. */
+const BROKE = 'h-2 w-full rounded-pill border-2 border-dashed border-fail-edge';
+
+/**
+ * Klasy jednego bloku — JEDNA funkcja, bo inaczej stany nakładają się na siebie klasami.
+ *
+ * Krok, który padł, nie dostaje `BLOCK.todo`: obie wersje niosłyby wtedy `border` i `border-2`
+ * naraz, a o tym, która wygra, decyduje kolejność w arkuszu, nie w atrybucie. Jeden stan, jeden
+ * komplet klas.
+ *
+ * RÓŻNICA JEST GEOMETRYCZNA, NIE TYLKO BARWNA, i to jest wymóg, nie ozdoba.
+ * `live-and-fail-never-share-a-form` mówi wprost: „te dwa odcienie dzieli 13 stopni i stoją
+ * w sąsiednich wierszach, więc jedyne, co je odróżnia, to forma — a forma, która znaczy oba,
+ * nie znaczy żadnego". Pierwsza wersja tej naprawy dawała krokowi, który padł, sam kolor przy
+ * tej samej formie i to kryterium ją odrzuciło. Zgadza się: obrys podwójnej grubości niesie tę
+ * wiadomość także wtedy, gdy koloru nie widać.
+ *
+ * Kapsuła zostaje. Promień mówi o ROLI (`pill` = odczyt, `sm` = kontrolka, DESIGN), a segment
+ * paska jest odczytem niezależnie od tego, jak się skończył.
+ */
+function blockClasses(block: Block): string {
+  if (block.wentWrong) return BROKE;
+  return `h-2 w-full rounded-pill ${BLOCK[block.state]} ${block.ended ? ENDED : ''}`;
+}
+
 /** Etykieta bloku: akcent tylko pod krokiem, który biegnie (makieta `.blk[data-s="now"] em`). */
 const LABEL: Readonly<Record<Block['state'], string>> = {
   done: 'text-muted',
@@ -120,6 +154,31 @@ const LABEL: Readonly<Record<Block['state'], string>> = {
 export const STRIP_HEIGHT = 52;
 
 export function Strip({ strip, heading, controls }: StripProps): ReactElement {
+  /* BIEGNĄCY KROK MA BYĆ WIDOCZNY, a przy dwudziestu kilku krokach nie jest.
+   *
+   * Torek zwęża się do połowy paska i przewija w środku (patrz komentarz przy `data-blocks`),
+   * więc krok, który właśnie pracuje, potrafi stać poza wycinkiem — a to jest dokładnie ta jedna
+   * rzecz, po którą człowiek na ten pasek patrzy. Zgłoszenie właściciela 2026-08-23: „nie
+   * wiadomo które jak chodzą w sumie".
+   *
+   * BEZ RUCHU: `behavior` zostaje domyślne, czyli natychmiastowe. Sufit z ARCHITECTURE §7 to DWA
+   * animujące się regiony na całą aplikację i oba są zajęte — kropka żywej karty (`tabs/tab.tsx`)
+   * i strefa TERAZ (`feed/now.tsx`). Płynne przewijanie byłoby trzecim.
+   *
+   * `block: 'nearest'` pilnuje, żeby ruszyło TYLKO w poziomie: bez tego przeglądarka ma prawo
+   * poruszyć także stroną, a pasek stoi u jej góry i nie ma dokąd jechać.
+   *
+   * PIERWSZY biegnący, kiedy biegnie ich kilku. Bieg równoległy jest zwykłym biegiem
+   * (niezmiennik 11), a wybieranie „ważniejszego" z trzech byłoby relacją, której w danych nie
+   * ma (niezmiennik 17) — więc bierzemy ten najwcześniejszy w grafie i nie udajemy, że to sąd.
+   */
+  const track = useRef<HTMLDivElement>(null);
+  const runningAt = strip.blocks.findIndex((block) => block.state === 'now');
+  useEffect(() => {
+    if (runningAt < 0) return;
+    track.current?.children[runningAt]?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }, [runningAt]);
+
   return (
     <div
       data-strip
@@ -143,6 +202,7 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
           Nagłówek biegu, kontrolki i chip z kosztem zostają na ekranie niezależnie od tego,
           ile kroków ma graf. */}
       <div
+        ref={track}
         data-blocks
         className="glass flex min-w-0 max-w-[50%] items-end gap-2 overflow-x-auto rounded-pill px-2 py-[5px]"
       >
@@ -151,10 +211,7 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
             key={block.id}
             className="grid min-w-[38px] shrink-0 gap-[5px] justify-items-stretch"
           >
-            <span
-              data-block={block.state}
-              className={`h-2 w-full rounded-pill ${BLOCK[block.state]} ${block.ended ? ENDED : ''}`}
-            />
+            <span data-block={block.state} className={blockClasses(block)} />
             {/* Mono 11 bez wersalików — etykieta kroku jest jego nazwą, a nie nazwą pola,
                 więc nie `text-label` (ten stopień jest w tym repo wersalikami). */}
             <span

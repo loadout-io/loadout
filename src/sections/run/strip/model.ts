@@ -25,6 +25,26 @@ export interface Block {
   readonly state: BlockState;
   /** Krok się skończył, ale nie sukcesem. Blok zostaje `todo` i mówi to osobno. */
   readonly ended: boolean;
+  /**
+   * Ten krok jest odpowiedzią na pytanie „co poszło źle" — w odróżnieniu od kroku, którego
+   * człowiek zatrzymał, i od kroku pominiętego.
+   *
+   * 2026-08-23 — POWSTAŁO ZE SKARGI: „nie wiadomo które jak chodzą". Do dziś pięć z siedmiu
+   * stanów kroku wyglądało na pasku IDENTYCZNIE — `pending`, `ready`, `failed`, `cancelled`
+   * i `skipped` dawały ten sam pusty obrys, a jedyną różnicą była kreska przerywana na pasku
+   * wysokim na 8 px.
+   *
+   * Osobne od `ended`, a nie zamiast niego, bo to są dwa różne fakty. `ended` mówi „ten krok
+   * już się nie wydarzy" i dotyczy całej trójki. To pole mówi „i to jest miejsce, w którym coś
+   * padło" — a zatrzymanie przez człowieka nie jest awarią (niezmiennik 7), więc kolor błędu
+   * mu się nie należy.
+   *
+   * `engine::scheduler` trzyma dokładnie tę samą różnicę od dawna: maluje stożek osobno przez
+   * `UpstreamFailed` i `UpstreamCancelled`, i mówi wprost dlaczego — „bez rozróżnienia na powód
+   * wszystko poniżej anulowanego kroku meldowałoby `Skipped` i UI tłumaczyłoby świadomy Stop
+   * jako cudzą awarię". Pasek zwijał tę różnicę z powrotem.
+   */
+  readonly wentWrong: boolean;
 }
 
 export interface Strip {
@@ -61,6 +81,9 @@ const BLOCK: Readonly<Record<StepState, BlockState>> = {
   cancelled: 'todo',
   skipped: 'todo',
 };
+
+/** Krok, który padł — jedyny z trójki `ENDED`, który odpowiada na „co poszło źle". */
+const WENT_WRONG: ReadonlySet<StepState> = new Set<StepState>(['failed']);
 
 /**
  * Kroki, które się skończyły, ale nie sukcesem.
@@ -179,6 +202,7 @@ export function stripFor(workflow: string, steps: readonly Step[], spend = ''): 
      * przechodzi każdy bieg sekwencyjny i kłamie w pierwszym równoległym. */
     state: BLOCK[step.state],
     ended: ENDED.has(step.state),
+    wentWrong: WENT_WRONG.has(step.state),
   }));
 
   return { blocks, caption: captionFor(workflow, blocks), spend };

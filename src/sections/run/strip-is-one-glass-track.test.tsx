@@ -21,6 +21,7 @@ function stripOf(names: readonly string[], nowAt: number): StripView {
       name,
       state: at < nowAt ? 'done' : at === nowAt ? 'now' : 'todo',
       ended: false,
+      wentWrong: false,
     })),
     caption: 'step ' + String(nowAt + 1) + ' of ' + String(names.length),
     spend: '',
