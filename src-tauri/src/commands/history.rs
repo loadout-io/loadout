@@ -47,7 +47,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::handoffs::{HandoffWire, handoffs_of_run, run_dirs};
+use crate::engine::drivers::DecodedEvent;
 use crate::engine::drivers::claude::ClaudeDecoder;
+use crate::engine::drivers::codex::CodexDecoder;
 use crate::engine::line::{Curator, Line, Seen};
 use crate::engine::stream::{Decoded, decode};
 
@@ -245,7 +247,14 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
                 cost_usd: step.cost_usd,
-                lines: recorded_lines(&dir, &step.id, &step.name),
+                lines: recorded_lines(
+                    &dir,
+                    &step.id,
+                    &step.name,
+                    step.effective
+                        .as_ref()
+                        .map_or("", |one| one.runs_with.as_str()),
+                ),
             })
             .collect(),
         None => Vec::new(),
@@ -306,6 +315,25 @@ struct StepDescription {
     error: Option<String>,
     #[serde(default)]
     cost_usd: Option<f64>,
+    /// Migawka agenta, z której bierzemy JEDNO pole: czym ten krok był prowadzony.
+    ///
+    /// `None` dla kroków bez agenta (kafelek kontrolny, „sprawdź", „uruchom i zostaw") i dla
+    /// plików sprzed wprowadzenia migawki. Oba znaczą „czytaj jak dotąd", czyli Claude'em.
+    #[serde(default)]
+    effective: Option<EffectiveAgent>,
+}
+
+/// To jedno pole migawki agenta, którego potrzebuje odczyt transkryptu.
+///
+/// Osobna, minimalna struktura zamiast `library::agents::Agent`: tamten typ ma kilkanaście pól
+/// i własną ewolucję, a tutaj interesuje nas wyłącznie, którym dekoderem czytać plik. Czytanie
+/// całego agenta wiązałoby historię ze zmianami w bibliotece, które jej nie dotyczą.
+#[derive(Debug, Deserialize)]
+struct EffectiveAgent {
+    /// `claude-code` albo `codex` — nazwa z `library::agents::Vendor`, w camelCase jak reszta
+    /// migawki.
+    #[serde(default, rename = "runsWith")]
+    runs_with: String,
 }
 
 /// Wiersz listy dla jednego katalogu biegu.
@@ -431,17 +459,73 @@ fn when_of(folder: &str) -> String {
 ///
 /// Pliku, którego nie ma, nie ma i tyle: krok anulowany albo pominięty nie zdążył nic nadać.
 ///
-/// Dekoder jest dziś jeden, Claude'owy, i to jest **zapisane ograniczenie**: `stream::decode`
-/// zna kształt strumienia Claude'a, więc transkrypt kroku prowadzonego Codexem przejdzie tędy
-/// jako zero wierszy. To ta sama granica, którą ma dziś żywa pompa (`engine::stream::pump`) —
-/// nie druga, gorsza.
-fn recorded_lines(run_dir: &Path, step: &str, agent: &str) -> Vec<Line> {
+/// Dekoder dobrany do vendora — bo strumienie są dwa i nie mają wspólnego kształtu.
+///
+/// Claude nadaje linie `system` / `assistant` / `result`, Codex `thread.started` /
+/// `item.completed`. Żaden z tych zbiorów nie zawiera drugiego, więc dekoder użyty do cudzego
+/// pliku nie myli się po trochu — oddaje ZERO wierszy, czyli ekran, który wygląda jak brak
+/// danych.
+///
+/// Enum, a nie obiekt traitu: warianty są dwa i zamknięte, a `stream::decode` przyjmuje
+/// `&mut ClaudeDecoder` konkretnie, więc nie ma czego opakować.
+enum Transcript {
+    Claude(ClaudeDecoder),
+    Codex(CodexDecoder),
+}
+
+impl Transcript {
+    /// Nazwy są tymi z `library::agents::Vendor`, jak w migawce kroku.
+    ///
+    /// Cokolwiek innego — pusty napis, krok bez agenta, plik sprzed migawki, vendor dołożony
+    /// kiedyś w przyszłości — czyta się Claude'em, czyli dokładnie tak, jak czytało się do
+    /// 2026-08-23. Nowy vendor bez wpisu tutaj jest więc regresją WIDOCZNĄ (pusty transkrypt),
+    /// a nie cichą zmianą treści.
+    fn for_vendor(vendor: &str) -> Self {
+        if vendor == "codex" {
+            return Self::Codex(CodexDecoder::new());
+        }
+        Self::Claude(ClaudeDecoder::new())
+    }
+
+    /// Zdarzenia z jednej linii. Pusty wektor jest normalną odpowiedzią, nie awarią.
+    ///
+    /// Linia nieczytelna znika po cichu i to jest ta sama umowa, co przy `Decoded::Unrecognised`
+    /// (niezmiennik 5): vendorzy dokładają typy zdarzeń co tydzień, a jedna nieznana linia ma
+    /// kosztować jeden wiersz, nie cały transkrypt.
+    fn read(&mut self, line: &str) -> Vec<DecodedEvent> {
+        match self {
+            Self::Claude(one) => match decode(one, line) {
+                Decoded::Events(events) => events,
+                Decoded::Unrecognised => Vec::new(),
+            },
+            // `From<AgentEvent>` dokłada `tool: None` — Codex niesie narzędzie w samym
+            // zdarzeniu, więc kuracja nie potrzebuje tu nic ponad nie.
+            Self::Codex(one) => one.push(line).into_iter().map(DecodedEvent::from).collect(),
+        }
+    }
+}
+
+/// 2026-08-23 — DEKODER DOBIERANY DO VENDORA. Do dziś stało tu na sztywno `ClaudeDecoder`
+/// i było to opisane jako „zapisane ograniczenie": transkrypt kroku prowadzonego Codexem
+/// przechodził tędy jako **zero wierszy**.
+///
+/// Ograniczenie było prawdziwe i przestało być potrzebne: `CodexDecoder` istnieje od T-10
+/// i ma dokładnie ten szew — `push(&str) -> Vec<AgentEvent>`. Nikt go tu po prostu nie
+/// podłączył.
+///
+/// ZMIERZONE NA BIEGU WŁAŚCICIELA `20260823-011240`: siedem kroków codeksa pokazywało w historii
+/// „Nothing of what this step said was kept on disk", podczas gdy ich transkrypty leżały na
+/// dysku i ważyły od 17 do 61 kB. Dziewięć kroków Claude'a z tego samego biegu wyświetlało się
+/// w całości. Wzór był bez jednego wyjątku, więc połowa historii tego biegu była niewidoczna.
+///
+/// Nieznany albo pusty vendor czyta się Claude'em — dokładnie tak, jak czytał się do dziś.
+fn recorded_lines(run_dir: &Path, step: &str, agent: &str, vendor: &str) -> Vec<Line> {
     let path = run_dir.join(LOGS_DIR).join(format!("agent-{step}.jsonl"));
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
 
-    let mut decoder = ClaudeDecoder::new();
+    let mut decoder = Transcript::for_vendor(vendor);
     let mut curator = Curator::new();
     let mut out = Vec::new();
     for raw in text.lines() {
@@ -451,15 +535,13 @@ fn recorded_lines(run_dir: &Path, step: &str, agent: &str) -> Vec<Line> {
         }
         // Linia, której nie da się przeczytać, jest jedną linią mniej — nigdy końcem odczytu
         // (niezmiennik 5). Vendorzy dokładają typy zdarzeń co tydzień, po cichu.
-        if let Decoded::Events(events) = decode(&mut decoder, line) {
-            for one in events {
-                out.extend(curator.observe(Seen {
-                    agent,
-                    at_ms: 0,
-                    event: &one.event,
-                    tool: one.tool.as_ref(),
-                }));
-            }
+        for one in decoder.read(line) {
+            out.extend(curator.observe(Seen {
+                agent,
+                at_ms: 0,
+                event: &one.event,
+                tool: one.tool.as_ref(),
+            }));
         }
     }
     // Ostatnia grupa sklejania nie wyszłaby bez tego nigdy — czyli człowiek zobaczyłby o wiersz

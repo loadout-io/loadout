@@ -602,3 +602,134 @@ async fn the_saved_stream_reads_back_as_the_rows_the_live_view_showed() {
          belong to somebody else."
     );
 }
+
+/* 2026-08-23 — POŁOWA HISTORII BYŁA NIEWIDOCZNA, I TO DOKŁADNIE TA CODEXOWA.
+ *
+ * `recorded_lines` miało zaszyty `ClaudeDecoder`. Strumień Codeksa nadaje `thread.started`,
+ * `turn.started` i `item.completed`; żadnego z tych typów nie ma w `KNOWN_TYPES` Claude'a, więc
+ * plik przechodził dekoderem jako ZERO wierszy — a ekran mówi wtedy „Nothing of what this step
+ * said was kept on disk", czyli że plik nie istnieje. Istniał.
+ *
+ * Zmierzone na biegu właściciela `20260823-011240`: siedem kroków Codeksa z transkryptami po
+ * 17–61 kB pokazywało pustkę, dziewięć kroków Claude'a z tego samego biegu wyświetlało się
+ * w całości. Wzór był bez jednego wyjątku.
+ *
+ * SŁABĄ WERSJĄ TEGO KRYTERIUM jest „krok codeksa ma niepustą listę wierszy". Przechodzi ją
+ * implementacja, która czyta WSZYSTKO oboma dekoderami po kolei i bierze, co wyjdzie — a wtedy
+ * nowy vendor po cichu miesza się z cudzym. Dlatego oba kroki niżej dostają DOKŁADNIE TE SAME
+ * BAJTY i różnią się wyłącznie tym, czym są prowadzone. Codexowy ma je przeczytać, claude'owy
+ * ma na nich zamilknąć — i to milczenie jest tu asercją, nie ubocznym skutkiem.
+ */
+
+/// Transkrypt Codeksa, wypisany literalnie — kształt z prawdziwego biegu.
+const CODEX_TRANSCRIPT: &str = concat!(
+    r#"{"type":"thread.started","thread_id":"01a02c3b-5e64-7c91-b199-5e88d6188fb5"}"#,
+    "\n",
+    r#"{"type":"turn.started"}"#,
+    "\n",
+    r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"SPRAWDZILEM-RANKING"}}"#,
+    "\n",
+);
+
+/// Bieg o dwóch krokach: ten sam plik strumienia, dwa różne vendory w migawce.
+const TWO_VENDORS: &str = r#"{
+  "id": "0198a1f2-3b4c-7d5e-8f60-000000000009",
+  "workflow_id": "deep-research.json",
+  "workflow_hash": "0123456789abcdef",
+  "workflow_snapshot": {"format": 1},
+  "title": "Deep research",
+  "status": "succeeded",
+  "concurrency": 3,
+  "created_at": 1755373684000,
+  "started_at": 1755373685000,
+  "ended_at": 1755373991000,
+  "error": null,
+  "steps": [
+    {
+      "id": "0198a1f2-3b4c-7d5e-8f60-0000000000c1",
+      "node_key": "check",
+      "name": "Verification 1",
+      "agent": "codex",
+      "kind": "agent",
+      "depends_on": [],
+      "status": "succeeded",
+      "attempt": 0,
+      "cost_usd": null,
+      "summary": "Looked it over.",
+      "error": null,
+      "effective": {"runsWith": "codex"}
+    },
+    {
+      "id": "0198a1f2-3b4c-7d5e-8f60-0000000000c2",
+      "node_key": "write",
+      "name": "Write it up",
+      "agent": "claude",
+      "kind": "agent",
+      "depends_on": ["check"],
+      "status": "succeeded",
+      "attempt": 0,
+      "cost_usd": 0.5,
+      "summary": "Wrote it up.",
+      "error": null,
+      "effective": {"runsWith": "claude-code"}
+    }
+  ]
+}"#;
+
+#[test]
+fn a_step_run_by_codex_shows_what_it_said() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("urc-monorepo");
+    let folder = "20260823-011240__0198a1f2-3b4c-7d5e-8f60-000000000009";
+    let dir = project.join(".loadout").join("runs").join(folder);
+    std::fs::create_dir_all(dir.join("logs")).unwrap();
+    std::fs::write(dir.join("run.json"), TWO_VENDORS).unwrap();
+    // TE SAME BAJTY pod oba kroki. Jedyną różnicą jest vendor w migawce.
+    for step in [
+        "0198a1f2-3b4c-7d5e-8f60-0000000000c1",
+        "0198a1f2-3b4c-7d5e-8f60-0000000000c2",
+    ] {
+        std::fs::write(
+            dir.join("logs").join(format!("agent-{step}.jsonl")),
+            CODEX_TRANSCRIPT,
+        )
+        .unwrap();
+    }
+
+    let opened = read_run_inner(&project, folder).expect("that run is right there on disk");
+    let by_codex = opened
+        .steps
+        .iter()
+        .find(|one| one.name == "Verification 1")
+        .expect("the run has a step run by codex");
+    let by_claude = opened
+        .steps
+        .iter()
+        .find(|one| one.name == "Write it up")
+        .expect("the run has a step run by claude");
+
+    assert!(
+        !by_codex.lines.is_empty(),
+        "a step run by codex shows nothing of what it said, so the screen tells the person the \
+         file was never kept - while the file sits right there. That is half of a mixed run \
+         going invisible, and the half that is invisible is not the same half every time"
+    );
+    assert!(
+        by_codex
+            .lines
+            .iter()
+            .any(|one| format!("{one:?}").contains("SPRAWDZILEM-RANKING")),
+        "the lines came back, but not the thing the agent actually said. It produced: {:?}",
+        by_codex.lines
+    );
+    /* I DRUGA STRONA. Ten sam plik pod krokiem claude'owym ma dać PUSTO — inaczej „dobieramy
+     * dekoder do vendora" znaczy w praktyce „próbujemy każdym po kolei", a wtedy pole vendora
+     * niczego nie rozstrzyga i to kryterium świeci nad funkcją, która go nie czyta. */
+    assert!(
+        by_claude.lines.is_empty(),
+        "the very same bytes were read for a step that is not run by codex. The decoder is \
+         supposed to be chosen by what the step was run with, not tried until something sticks. \
+         It produced: {:?}",
+        by_claude.lines
+    );
+}
