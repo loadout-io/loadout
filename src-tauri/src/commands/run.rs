@@ -818,6 +818,7 @@ async fn the_planned_run(
      * `rebuild_from`, bo indeks jest tym, o co pyta okno: tura u vendora trwa do
      * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
      * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
+    what_the_steps_wrote_down(deps, &live.plan);
     what_this_run_taught_us(deps, &live.plan.id, &live.plan.dir).await;
 
     Ok(RunReport {
@@ -859,6 +860,119 @@ fn stamp_what_this_run_carried(home: &Path, carried: &[MemoryRecord]) {
             );
         }
     }
+}
+
+/// To, co kroki zapisały w swojej auto-pamięci, staje się kandydatkami tych agentów.
+///
+/// # Druga połowa przekierowania (2026-08-23, T-92)
+///
+/// Pierwsza połowa siedzi w [`Live::with_its_own_settings`]: krok pisze do `mem/<krok>` pod
+/// katalogiem biegu, zamiast do `~/.claude/projects/<projekt>/memory/`. Sama zamieniłaby katalog
+/// dzielony z sesjami człowieka na katalog **zapomniany**: nikt by tam nie zajrzał, a agent dalej
+/// nie miałby jak zabrać ze sobą niczego, czego się nauczył. Ta funkcja jest drugą połową i bez
+/// niej pierwsza jest tylko sprzątaniem.
+///
+/// Trzy decyzje, każda z powodem:
+///
+/// - **`MEMORY.md` nie jest notatką.** Claude Code pisze ten plik sam, jako spis pozostałych, więc
+///   jest listą tytułów, a nie wiedzą. Kandydatka bez treści kosztuje człowieka dokładnie ten sam
+///   przegląd, co prawdziwa.
+/// - **Zakres „ten agent", nie „ten projekt".** To jest zdanie, które JEDEN agent napisał sam
+///   sobie: `this-project` wwiózłby nawyk jednego agenta do promptu każdego innego. Dlatego
+///   notatka niesie też jego nazwę — bez niej trzeci zakres nie ma po czym filtrować i nie wchodzi
+///   do żadnego promptu (T-80).
+/// - **Po całym biegu, nie po każdej turze.** Kroki idą równolegle i bywają rundami jednej pętli
+///   dzielącymi ten sam kafelek, więc „po turze" znaczyłoby czytanie tego samego katalogu tyle
+///   razy, ile rund. Katalog jest kompletny dopiero wtedy, kiedy zszedł ostatni krok.
+fn what_the_steps_wrote_down(deps: &RunDeps<'_>, plan: &Plan) {
+    let root = super::memory::notes_root(deps.home);
+    let at = noticed_now();
+    // Rundy jednej pętli dzielą kafelek, więc dzielą katalog pamięci — i mają go dać jeden raz.
+    let mut done: BTreeSet<&str> = BTreeSet::new();
+
+    for step in &plan.steps {
+        let Job::Agent(job) = &step.job else {
+            continue;
+        };
+        if !done.insert(step.tile_key.as_str()) {
+            continue;
+        }
+        let dir = plan.dir.join(STEP_MEMORY_DIR).join(&step.tile_key);
+        for path in what_this_step_left_in(&dir) {
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(rule) = what_the_agent_wrote(&text) else {
+                continue;
+            };
+            let draft = crate::memory::notes::NoteDraft {
+                title: title_from(&rule),
+                rule,
+                // POCHODZENIE JEST UZASADNIENIEM, bo innego tu nie ma: agent pisał to sobie,
+                // nie nam, więc nikt nie poprosił go o „dlaczego". Zdanie mówi to, co jest
+                // prawdą i co da się sprawdzić — kto, przy czym i w którym biegu — a bez drogi
+                // powrotnej do tury roszczenia nie da się później wycofać [T6 §5.1].
+                because: format!(
+                    "{} left this in its own notes while working on \"{}\" in run {}.",
+                    job.agent_name, step.name, plan.id
+                ),
+                scope: crate::memory::notes::Scope::ThisAgent,
+                kind: crate::memory::notes::Kind::Fact,
+                status: crate::memory::notes::Status::Suggested,
+                at: at.clone(),
+            };
+            if let Err(error) =
+                crate::memory::notes::record_candidate_for(&root, draft, Some(&job.agent_name))
+            {
+                tracing::warn!(
+                    step = %step.tile_key,
+                    %error,
+                    "this step wrote something down for itself and it could not be kept"
+                );
+            }
+        }
+    }
+}
+
+/// Pliki tematyczne z katalogu auto-pamięci jednego kroku, po nazwie — bez indeksu.
+///
+/// Płasko i wyłącznie `.md`, dokładnie jak `memory::notes::scan_notes` czyta swój katalog:
+/// spacer po drzewie zwróciłby to, co CLI trzyma tam obok, jako kolejne zdania agenta.
+fn what_this_step_left_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        // Krok, który niczego nie zapisał, ma zero plików, a nie błąd: to jest stan normalny
+        // i najczęstszy — vendor bez auto-pamięci nie zakłada nawet katalogu.
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension().is_some_and(|ext| ext == "md")
+                && !path
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("MEMORY.md"))
+        })
+        .collect();
+    // Kolejność nazw, nie kolejność systemu plików: dwa biegi tego samego kroku mają zostawić
+    // kandydatki w tej samej kolejności, bo inaczej lista przestawia się sama między odczytami.
+    found.sort();
+    found
+}
+
+/// Pierwsze zdanie, które agent naprawdę napisał w tym pliku.
+///
+/// Nagłówek markdown i front-matter są ramą, którą CLI stawia samo — reguła złożona z nich mówi
+/// „# Queue" i nie niesie ani jednego faktu. Bierzemy pierwszy wiersz, który nie jest ramą, bo
+/// plik auto-pamięci jest krótki i pisany od najważniejszego zdania.
+fn what_the_agent_wrote(text: &str) -> Option<String> {
+    let body = crate::memory::FrontMatter::split(text).map_or(0, |(_, at)| at);
+    text.get(body..)?
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && *line != "---")
+        .map(ToOwned::to_owned)
 }
 
 /// Pyta model RAZ, czego ten bieg nauczył, i zostawia z tego najwyżej trzy kandydatki.
@@ -1553,6 +1667,14 @@ enum Ended {
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
     driver: Arc<dyn AgentDriver>,
+    /// Nazwa agenta z BIBLIOTEKI — ta, którą człowiek widzi i pisze (`Backend Dev`).
+    ///
+    /// 2026-08-23 (T-92): notatka o zakresie „ten agent" musi umieć powiedzieć, **którego**
+    /// agenta dotyczy, bo bez tego trzeci zakres nie wchodzi do żadnego promptu (T-80).
+    /// Nazwa efektywna, czyli po nadpisaniu kroku, i nazwa z biblioteki, nie nazwa kafelka:
+    /// `Planned::name` jest etykietą tego jednego pola na płótnie, a plik notatki pisze
+    /// człowiek i zna z niego agenta, nie kafelek.
+    agent_name: String,
     /// Identyfikator sesji przydzielony **z góry**, przed startem procesu [T7 §6.2]. Dzięki
     /// temu wiadomo, pod jakim numerem zapisać krok, zanim vendor cokolwiek powie.
     session: Uuid,
@@ -2554,6 +2676,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
         // wtedy, gdy krok nigdy nie ruszył.
         driver: (setup.drivers)(effective.runs_with),
+        agent_name: effective.name.clone(),
         session: Uuid::now_v7(),
         cwd: spot.cwd,
         ours: spot.ours,
@@ -5188,6 +5311,79 @@ impl Live {
         }
     }
 
+    /// Sterownik tego kroku z **jego własnym plikiem ustawień** — albo odmowa.
+    ///
+    /// # Co ten plik naprawdę robi (zmierzone 2026-08-23, T-92)
+    ///
+    /// Niesie dwie rzeczy naraz, bo `--settings` wskazuje jeden dokument i drugiego nośnika
+    /// po prostu nie ma:
+    ///
+    /// 1. **Auto-pamięć tego kroku wraca do biegu.** W `system/init` każdego kroku Claude'a
+    ///    `memory_paths.auto` wskazywał `~/.claude/projects/<projekt>/memory/`, czyli katalog,
+    ///    który człowiek dzieli ze swoimi sesjami interaktywnymi. Krok Loadouta pisał tam bez
+    ///    pytania i bez śladu w biegu: nikt tego nie widział, nikt nie kurował, a zdanie napisane
+    ///    przez agenta w cudzym biegu wracało potem do promptu człowieka jako jego własna
+    ///    notatka. [T6 §10.4] nazywa przekierowanie tego katalogu per bieg „najlepszym leverem
+    ///    znalezionym w researchu".
+    /// 2. **Odmowy gospodarza zaczynają obowiązywać.** `--setting-sources ""` odcina
+    ///    `.claude/settings.json` projektu w całości — razem z tym, co gospodarz naprawdę chciał
+    ///    ZABRONIĆ. Wraca to wyłącznie jako tekst, przepisany przez [`super::super::engine::drivers::host::deny_rules`],
+    ///    i wchodzi do tego samego pliku.
+    ///
+    /// **Per KROK, nie per bieg**, i klucz jest ten sam, którym bieg nazywa `work/<krok>`: dwa
+    /// kroki jednego biegu bywają dwoma różnymi agentami, a jeden katalog pamięci na obu daje
+    /// notatkę, o której nie wiadomo, czyja jest.
+    ///
+    /// Odmowa działa jak przy dowodach: `None` od produkcyjnego sterownika znaczy „nie udało się
+    /// napisać pliku", a krok bez tego pliku pisze pamięć do katalogu człowieka i nie egzekwuje
+    /// ani jednej odmowy gospodarza — więc nie rusza. Dubel silnika, który tego szwu nie ma,
+    /// zostaje użyteczny do testowania planisty.
+    fn with_its_own_settings(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+        driver: &Arc<dyn AgentDriver>,
+    ) -> anyhow::Result<Arc<dyn AgentDriver>> {
+        let wanted = crate::engine::drivers::StepSettings {
+            dir: self.plan.dir.clone(),
+            memory: self.step_memory_dir(id),
+            // Z KATALOGU ROBOCZEGO KROKU, nie z katalogu projektu biegu: krok pracujący we
+            // własnej kopii plików ma tam swoją kopię `.claude/`, a odmowy czyta się z tego
+            // repo, w którym agent naprawdę stoi.
+            deny: crate::engine::drivers::host::deny_rules(&job.cwd),
+        };
+        match driver.with_settings(&wanted) {
+            Some(carrying) => {
+                // Katalog zakłada TA warstwa, nie sterownik: układ katalogów biegu jest jej
+                // wiedzą (`docs/ARCHITECTURE.md` §8), a sterownik, który wybiera sobie miejsce,
+                // wybiera `$TMPDIR` — czyli artefakt biegu poza biegiem. I dopiero TERAZ, kiedy
+                // wiadomo, że ktoś tam napisze: pusty `mem/<krok>` w biegu vendora, który tego
+                // pliku nie umie wczytać, jest katalogiem bez ani jednego czytelnika
+                // (niezmiennik 21).
+                fs::create_dir_all(&wanted.memory)?;
+                Ok(carrying)
+            }
+            None if driver.id() == "claude" => Err(anyhow::anyhow!(
+                "this agent app could not be given its own settings file, so Loadout did not \
+                 start the step: without it the step writes what it learns into the folder you \
+                 share with your own sessions, and forbids less than this project asked for."
+            )),
+            None => Ok(Arc::clone(driver)),
+        }
+    }
+
+    /// `<katalog biegu>/mem/<krok>` — dokąd ten krok pisze swoją auto-pamięć.
+    ///
+    /// Klucz KAFELKA, ten sam, którym nazywa się `work/<krok>`: rundy jednej pętli dzielą kafelek,
+    /// więc dzielą też pamięć — i to jest właściwa odpowiedź, bo to dalej ten sam agent robiący
+    /// tę samą robotę drugi raz.
+    fn step_memory_dir(&self, id: StepId) -> PathBuf {
+        self.plan
+            .dir
+            .join(STEP_MEMORY_DIR)
+            .join(&self.plan.steps[id].tile_key)
+    }
+
     /// Składa bezpieczny manifest dokładnie w kolejności, w której powstał finalny prompt.
     fn evidence_for_agent(
         &self,
@@ -5324,13 +5520,14 @@ impl Live {
                 }
             };
             let driver = self.carrying_what_we_inherited(&driver, &job.plugin_flags)?;
-            /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH TRZECH OPAKOWAN JEST
+            /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH OPAKOWAN JEST
              * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
              * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.
              * Connections ida pierwsze, bo `configured` startuje od `job.driver`; dziedziczenie
              * drugie; dowody ostatnie, bo tylko wtedy nadajnik dowodow siedzi na sterowniku,
              * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
              * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
+            let driver = self.with_its_own_settings(id, job, &driver)?;
             match driver.with_evidence(target) {
                 Some(driver) => Ok(driver),
                 /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
