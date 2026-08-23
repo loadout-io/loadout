@@ -1275,6 +1275,27 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
         // który w tym drzewie jest `deny`.
         let _ = write!(text, " · ${cost:.2}");
     }
+    /* POWÓD PORAŻKI, czyli druga rzecz, którą to zdanie ma powiedzieć.
+     *
+     * Do 2026-08-23 `match` wyżej czytał z `reason` WYŁĄCZNIE wariant `Cancelled` — po to, by
+     * odróżnić świadomy Stop od awarii. `Failed(why)` wpadał w `(_, false)`, a `why` nie było
+     * czytane nigdy i przez nikogo. Na ekranie stawało więc `Didn't work · 15 turns · 203.4s`
+     * i to było wszystko, co człowiek dostawał o kroku, który padł.
+     *
+     * Że to jest do naprawienia tutaj, dowodzi sąsiad: sterownik Codeksa emituje powód osobnym
+     * `Notice` (`drivers/codex.rs`), więc jego porażki miały zdanie, a Claude'a nie — ta sama
+     * awaria czytała się inaczej zależnie od vendora, czyli dokładnie ten rozjazd, przed którym
+     * broni niezmiennik 23.
+     *
+     * PIERWSZY WIERSZ I SUFIT, bo `why` bywa zrzutem stosu. Wiersz strumienia rozciągnięty na
+     * ekran przewijany w bok jest wierszem, którego nikt nie przeczyta — a reszta i tak leży
+     * w `logs/`, dokąd ten skrót ma wysłać, nie zastąpić.
+     */
+    if let FinishReason::Failed(why) = &outcome.reason
+        && let Some(said) = shortened(why)
+    {
+        let _ = write!(text, " — {said}");
+    }
 
     Line::Done {
         agent: agent.to_owned(),
@@ -1284,6 +1305,24 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
         cost_usd: outcome.cost_usd,
         ended,
     }
+}
+
+/// Pierwszy niepusty wiersz powodu, przycięty do jednego wiersza ekranu.
+///
+/// `None`, kiedy powód jest pusty albo z samych odstępów: myślnik bez zdania za nim jest
+/// gorszy niż jego brak, bo wygląda na uciętą treść.
+fn shortened(why: &str) -> Option<String> {
+    /// Ile znaków powodu wchodzi do wiersza strumienia. Reszta zostaje w `logs/`.
+    const MOST: usize = 160;
+
+    let said = why.lines().map(str::trim).find(|one| !one.is_empty())?;
+    if said.chars().count() <= MOST {
+        return Some(said.to_owned());
+    }
+    // Po ZNAKACH, nie po bajtach: `&said[..MOST]` panikuje w środku znaku wielobajtowego,
+    // a powody przychodzą od vendora, więc mogą być w dowolnym języku.
+    let cut: String = said.chars().take(MOST).collect();
+    Some(format!("{}…", cut.trim_end()))
 }
 
 /// `6.2s` do minuty, `4m 12s` powyżej.

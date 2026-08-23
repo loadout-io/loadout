@@ -150,7 +150,9 @@ use crate::engine::drivers::claude::tool_surface;
 use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
-use crate::engine::drivers::{AgentDriver, AgentEvent, AgentHandle, DecodedEvent, Policy, RunSpec};
+use crate::engine::drivers::{
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec,
+};
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
@@ -3808,7 +3810,27 @@ impl Live {
             self.settle(which, step.turn);
             return false;
         }
-        step.turn + 1 >= the_loop.turns
+        if step.turn + 1 < the_loop.turns {
+            return false;
+        }
+        /* 2026-08-23 — I POWÓD, BO BEZ NIEGO TEN KROK BYŁ CZERWONY BEZ ANI JEDNEGO ZDANIA.
+         *
+         * Do dziś `error` zostawało `null`, a jedynym śladem było `summary` ucięte do 240
+         * bajtów — które przy sędzim piszącym prozą zaczynało się słowem „PASS". Człowiek
+         * dostawał więc czerwony krok, którego podsumowanie mówi, że przeszedł.
+         *
+         * DWA ZDANIA, NIE JEDNO. Dla biegu „nie przepuścił" i „nic nie powiedział" są tym samym
+         * — i tak zostaje. Dla człowieka to robota do poprawki kontra zepsuty kontrakt, czyli
+         * dwie różne czynności. Jedno zdanie na oba stany kazałoby mu zgadywać, którą wykonać.
+         */
+        let why = if crate::memory::handoff::said_an_outcome(said) {
+            "The tester did not pass this work, and there were no tries left."
+        } else {
+            "The tester never said whether this work passed, so it counts as not passed. Its \
+             answer has to end with a line saying `outcome: pass` or `outcome: fail`."
+        };
+        self.update(|book| book.steps[id].error = Some(why.to_owned()));
+        true
     }
 
     /// Czy ciało tej pętli zostawiło cokolwiek do sprawdzenia.
@@ -4864,6 +4886,22 @@ impl Live {
                              step was not accepted as complete."
                                 .to_owned(),
                         );
+                    } else if !ok
+                        && let FinishReason::Failed(said) = &turn.reason
+                        && let Some(short) = one_line(said, SUMMARY_LIMIT)
+                    {
+                        /* 2026-08-23 — POWÓD PORAŻKI DOJEŻDŻA WRESZCIE DO PLIKU.
+                         *
+                         * `FinishReason::Failed(why)` powstawał w sterowniku Claude'a i nie
+                         * czytał go NIKT: `engine::line::done_line` sięgał do `reason` tylko po
+                         * `Cancelled`, a tutaj `error` ustawiało się wyłącznie przy kłopocie
+                         * z zapisem dowodów. `run.json` miał więc `"error": null` przy każdym
+                         * kroku, który padł — także w biegach, za które właściciel zapłacił.
+                         *
+                         * Kolejność warunków jest treścią: kłopot z NASZYM zapisem wygrywa
+                         * z powodem agenta, bo mówi o rzeczy, której człowiek nie naprawi
+                         * poprawką promptu. */
+                        step.error = Some(short);
                     }
                 });
                 if ok {

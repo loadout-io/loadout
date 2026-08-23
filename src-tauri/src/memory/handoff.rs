@@ -207,6 +207,23 @@ pub fn verdict_in(body: &str) -> Verdict {
         .unwrap_or_default()
 }
 
+/// Czy sędzia w ogóle się wypowiedział — bez pytania o to, JAK.
+///
+/// OSOBNO OD [`verdict_in`], i to jest cała treść tej funkcji. Dla sterowania biegiem „nie
+/// przepuścił" i „nic nie powiedział" są tym samym i tak zostaje (powód stoi przy [`Verdict`]).
+/// DLA CZŁOWIEKA to dwie zupełnie różne historie: pierwsza to robota do poprawki, druga to
+/// zepsuty kontrakt — i to właśnie ta druga przewróciła osiem biegów właściciela, w których
+/// wiersz `outcome:` nie padł ani razu na 80 przekazaniach.
+///
+/// Znacznik czytany jest tym samym warunkiem, co w [`verdict_in`] (`VERDICT_MARK` na początku
+/// przyciętego wiersza): dwa różne pytania o tę samą rzecz rozjechałyby się przy pierwszej
+/// poprawce brzmienia, a rozjazd znaczyłby tu „powiedział, ale mówimy, że nie".
+#[must_use]
+pub fn said_an_outcome(body: &str) -> bool {
+    body.lines()
+        .any(|line| line.trim().to_ascii_lowercase().starts_with(VERDICT_MARK))
+}
+
 /// Co podaje wołający. Siedem pól — reszta front-mattera jest wyliczana przez Loadout
 /// i wołający nie ma jak jej podać, właśnie o to chodzi.
 #[derive(Debug, Clone, PartialEq, Eq)]

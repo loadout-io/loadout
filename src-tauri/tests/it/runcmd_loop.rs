@@ -32,7 +32,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -324,6 +324,12 @@ struct Watch {
     seen: Mutex<Vec<String>>,
     /// W której rundzie sędziego (licząc od jedynki) werdykt ma brzmieć `pass`.
     passing_on: usize,
+    /// Czy sędzia w ogóle zapisuje wiersz wyniku.
+    ///
+    /// `false` odtwarza to, co robili WSZYSCY prawdziwi sędziowie właściciela: piszą prozą
+    /// „PASS, przyjąć" i nie zostawiają wiersza, który Loadout umie przeczytać. Na 80 jego
+    /// przekazaniach wiersz `outcome:` nie padł ani razu.
+    says_how_it_went: bool,
 }
 
 impl Watch {
@@ -331,6 +337,16 @@ impl Watch {
         Self {
             seen: Mutex::new(Vec::new()),
             passing_on: turn,
+            says_how_it_went: true,
+        }
+    }
+
+    /// Sędzia, który pracuje i nie zapisuje wyniku tam, gdzie go czytamy.
+    fn never_saying_how_it_went() -> Self {
+        Self {
+            seen: Mutex::new(Vec::new()),
+            passing_on: usize::MAX,
+            says_how_it_went: false,
         }
     }
 
@@ -346,6 +362,9 @@ impl Watch {
             return "Done.".to_owned();
         }
         let turn = seen.iter().filter(|one| one.contains(JUDGE_PROMPT)).count();
+        if !self.says_how_it_went {
+            return format!("I looked at try {turn}. A few things read better now.");
+        }
         if turn >= self.passing_on {
             return "All green.\n\nOUTCOME: PASS".to_owned();
         }
@@ -569,6 +588,95 @@ async fn the_tester_is_told_how_to_say_how_it_went() -> Result<(), Box<dyn Error
     assert!(
         plain > 0,
         "the fixture is wrong if neither the step inside the loop nor the one after it ever ran"
+    );
+    Ok(())
+}
+
+/* 2026-08-23 — CZERWONY KROK BEZ ANI JEDNEGO ZDANIA.
+ *
+ * Do dziś krok, którego sędzia nie przepuścił po ostatniej próbie, dostawał `"error": null`
+ * w `run.json`. Jedynym śladem było `summary` ucięte do 240 bajtów — a że sędziowie piszą
+ * prozą, potrafiło zaczynać się słowem „PASS". Właściciel dostawał więc czerwony krok, którego
+ * podsumowanie mówi, że przeszedł, i wiersz „Done" pod spodem.
+ *
+ * DWA STANY, DWA ZDANIA, i to jest cała treść tego kryterium. Dla biegu „nie przepuścił"
+ * i „nic nie powiedział" są tym samym — `Verdict::default()` jest `Fail` i tak zostaje. Dla
+ * człowieka to robota do poprawki kontra zepsuty kontrakt: pierwsza to popraw prompt kroku,
+ * druga to popraw sędziego. Jedno zdanie na oba stany kazałoby zgadywać, którą czynność wykonać.
+ *
+ * SŁABĄ WERSJĄ jest `assert!(error.is_some())`. Przechodzi ją implementacja z jednym zdaniem na
+ * oba stany — czyli dokładnie ta, której to kryterium ma zabronić. Dlatego niżej stoi
+ * porównanie DWÓCH biegów i asercja, że ich zdania są RÓŻNE.
+ */
+
+/// Powody wpisane do `run.json` przy krokach, które padły.
+fn why_the_steps_failed(dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let text = std::fs::read_to_string(dir.join("run.json"))?;
+    let described: serde_json::Value = serde_json::from_str(&text)?;
+    let steps = described["steps"]
+        .as_array()
+        .ok_or("run.json has no steps array")?;
+    Ok(steps
+        .iter()
+        .filter(|one| one["status"] == "failed")
+        .filter_map(|one| one["error"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// Puszcza pętlę, której sędzia nigdy nie przepuszcza, i oddaje powody z `run.json`.
+async fn why_it_ended(watch: Watch) -> Result<(Vec<String>, PathBuf), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", LOOP_FILE)?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::new(watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let report = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 2,
+            task: None,
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+    let why = why_the_steps_failed(&report.dir)?;
+    Ok((why, report.dir))
+}
+
+#[tokio::test]
+async fn a_step_the_tester_stopped_says_which_way_it_stopped() -> Result<(), Box<dyn Error>> {
+    // Sędzia MÓWI, że nie przeszło — i mówi to tak, jak umiemy przeczytać.
+    let (spoke, _kept) = why_it_ended(Watch::passing_on_turn(usize::MAX)).await?;
+    // Sędzia pracuje i nie zostawia wiersza wyniku — to robili wszyscy prawdziwi sędziowie.
+    let (silent, _also) = why_it_ended(Watch::never_saying_how_it_went()).await?;
+
+    let said = spoke.first().ok_or(
+        "a run whose tester never passed the work left no reason at all in run.json. That is          the defect: a red step with nothing to read, and a summary that can begin with the          word PASS because the tester wrote prose",
+    )?;
+    let quiet = silent
+        .first()
+        .ok_or("and the same for a tester that never said how it went")?;
+
+    assert_ne!(
+        said, quiet,
+        "both runs got the same sentence, so the human cannot tell work that was turned down          from a tester that never answered. Those are two different things to go and fix: one          is the step's prompt, the other is the tester itself. The sentence was {said:?}"
+    );
+    assert!(
+        quiet.contains("never said"),
+        "a tester that answered nothing has to be named as answering nothing. Anything else          sends the human to reread work that was never judged. It said {quiet:?}"
+    );
+    assert!(
+        quiet.contains("outcome: pass") || quiet.contains("outcome: fail"),
+        "and it has to name the line we actually read, because that is the one thing the human          can change. It said {quiet:?}"
     );
     Ok(())
 }
