@@ -141,6 +141,31 @@ export function nothingLikeThat(want: string, rows: readonly PastRunRow[]): stri
 const NAMED_AT_MOST = 5;
 
 /**
+ * Który z tych biegów IDZIE — albo `null`, kiedy żaden.
+ *
+ * # Po co to istnieje
+ *
+ * Żeby okno, które dopiero wstało, mogło odnaleźć bieg pracujący od wcześniej. Pamięć okna
+ * o żywym biegu jest ulotna: przeładowanie strony zeruje magazyny, a bieg po tamtej stronie
+ * pracuje dalej — i wtedy ekran nie ma ani paska, ani Stopu nad czymś, co kosztuje pieniądze
+ * (zgłoszenie właściciela 2026-08-23).
+ *
+ * # Dlaczego to jest funkcja, a nie `rows.find` w komponencie
+ *
+ * Bo to jest jedyne zdanie, które odróżnia bieg PRACUJĄCY od biegu, który tylko tak wygląda —
+ * a takich słów na drucie jest więcej niż jedno. `interrupted` niesie bieg porzucony przez
+ * zamknięte okno; `paused` niesie bieg stojący na pytaniu, który dalej trzyma uchwyt. Warunek
+ * wpisany w komponent nie ma jak być osądzony, bo to repo nie ma jsdom.
+ *
+ * PIERWSZY, nie „jedyny": `list_runs` oddaje od najnowszego, a Loadout prowadzi jeden bieg
+ * naraz — więc drugi wiersz ze słowem `running` znaczyłby, że coś już poszło nie tak, i nie
+ * jest to miejsce, żeby o tym decydować.
+ */
+export function theOneThatIsGoing(rows: readonly PastRunRow[]): PastRunRow | null {
+  return rows.find((row) => row.state === 'running') ?? null;
+}
+
+/**
  * `/history [słowo]` z wiersza wejścia: pokazuje historię TEGO folderu.
  *
  * Oddaje zdanie na ekran albo `null`, kiedy panel się otworzył — czyli dokładnie ten sam

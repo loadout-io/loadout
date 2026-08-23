@@ -41,7 +41,7 @@ import type { MouseEvent, ReactElement } from 'react';
 import { why } from '../../ipc/why';
 import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
-import { useRun } from '../../state/run';
+import { runFor, useRun } from '../../state/run';
 import { useWorkspaces } from '../../state/workspaces';
 import { addresseeOf } from './addressee';
 import { saidOf } from './entry/echo';
@@ -56,7 +56,8 @@ import { Entry } from './entry/entry';
 import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
-import { openChat, sayToAgent, sayToOrchestrator, stop } from './io';
+import { theOneThatIsGoing } from './history-command';
+import { listRuns, openChat, readRun, sayToAgent, sayToOrchestrator, stop } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
 import { lead } from './lead';
@@ -330,6 +331,62 @@ export default function Run(): ReactElement {
        * gdy człowiek do niej napisze — a wtedy przyjdzie z `say_to_orchestrator`. */
     });
   }, [folder, onTop]);
+
+  /* BIEG, KTÓRY IDZIE, KIEDY TO OKNO DOPIERO WSTAJE.
+   *
+   * # Po co to istnieje
+   *
+   * Zgłoszenie właściciela 2026-08-23: odmowa „A run is already going… Press Stop first", a pod
+   * nią `/stop` → „Nothing is running." Zdanie ze Stopu naprawił Rust — on jeden wie, czy coś
+   * idzie — ale samo pytanie „skąd okno ma to wiedzieć" zostało bez odpowiedzi. Pamięć okna
+   * o żywym biegu jest ULOTNA: przeładowanie strony zeruje magazyny i moduł, a bieg po tamtej
+   * stronie pracuje dalej. Człowiek widzi wtedy ekran bez paska i bez Stopu nad czymś, co
+   * kosztuje pieniądze.
+   *
+   * # Skąd bierzemy odpowiedź
+   *
+   * Z historii tego zakresu, bez ani jednej nowej krawędzi: `list_runs` podaje `state`, a bieg
+   * ze słowem `running` w SWOIM katalogu jest tym, który idzie. Biegi porzucone przez zamknięte
+   * okno nie są tu pomyłką, bo sprzątanie przy starcie przepisuje je na `interrupted`, zanim
+   * to okno cokolwiek zamówi (`ipc::AppState::settle_everything_left_behind`).
+   *
+   * # Czego to NIE robi i dlaczego
+   *
+   * Nie podaje kroków. Strumień linii należy do wywołania, które ten bieg zaczęło, i po
+   * przeładowaniu nie da się do niego wrócić — pasek narysowany z migawki `run.json` stałby
+   * w miejscu i wyglądałby jak bieg, który utknął. Pusta lista kroków jest tu tą samą decyzją,
+   * co przy wznowieniu z historii (`io.ts`, `asARun`): lepiej nie rysować bloków, niż rysować
+   * takie, które nie mówią prawdy (niezmiennik 17).
+   *
+   * Zdanie w strumieniu mówi to wprost, bo bez niego brak linii nad pracującym biegiem czyta się
+   * jak bieg, który nic nie robi. */
+  useEffect(() => {
+    let alive = true;
+    if (useRun.getState().workflow !== '') return undefined;
+    listRuns(folder)
+      .then(async (rows) => {
+        const going = theOneThatIsGoing(rows);
+        if (!alive || going === null) return;
+        if (runFor(folder).getState().workflow !== '') return;
+        const opened = await readRun(folder, going.folder);
+        if (!alive || runFor(folder).getState().workflow !== '') return;
+        runFor(folder).getState().nowRunning(opened.title, [], folder, opened.workflowFile);
+        showInStream(
+          saidOf(
+            `"${opened.title}" was already going when this window opened, so the lines from ` +
+              'before are not here. Stop reaches it.',
+          ),
+        );
+      })
+      .catch(() => {
+        /* Świadomie bez zdania na ekranie: nieczytelna historia mówi o sobie sama, kiedy
+         * człowiek o nią poprosi (`/history`), a dwa zdania o jednym fakcie to dwa miejsca
+         * prawdy. Okno bez tej odpowiedzi zachowuje się jak dotąd. */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [folder]);
 
   const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
   useEffect(() => {
