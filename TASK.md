@@ -31,6 +31,29 @@ wymaga `fresh-copy`) · `src-tauri/src/workflow/mod.rs` (`Handover`, `HandoverFi
 - **Agent:** `rust-core` na AC-1…AC-4, potem `frontend` na AC-5 — jeden worktree, jedna bramka.
 - **Druga opinia:** inny vendor niż pisarz (D3).
 
+## Poszerzenie zakresu — 2026-08-24, rozstrzyga D6, nie liczba wierszy
+
+Piąty wiersz pod „More settings" przewraca `src/sections/agents/agent-form.test.tsx`, czyli
+kryterium T-11, które liczy wiersze formularza. Plik dochodzi do OWNS z mandatem **na listę
+i nazwę stałej, nigdy na kształt asercji**: dopisujesz nowy wiersz tam, gdzie wyliczone są
+pozostałe, i poprawiasz nazwę stałej, która dziś **kłamie** — nazywa się `THREE` i trzyma
+cztery pozycje. Asercje zostają w tej samej formie: dziewięć wierszy zamkniętego formularza
+i dokładnie tyle wierszy pod „More settings", ile ich naprawdę jest.
+
+**Dlaczego to nie jest decyzja człowieka, choć rusza cudze kryterium.** D6 — decyzja
+**zablokowana**, stojąca nad `AGENTS.md` i nad plikami zadań — mówi wprost, gdzie ta przelotka
+ma być: „wymaga wpisania jednej linii **w formularzu agenta**, tego samego dnia, w którym vendor
+ją ogłosi". Kryterium liczące wiersze nie może unieważnić decyzji wskazującej to konkretne
+miejsce; hierarchia jest odwrotna.
+
+**A to kryterium już raz zdryfowało po cichu** i to jest drugi powód: jego tekst w `tasks/T-11.md`
+mówi „dokładnie **trzy**", jego własny test asertuje **cztery**, a stała nazywa się `THREE`.
+Ktoś dołożył wiersz „Can it reach the web" i nie tknął ani nazwy stałej, ani tekstu kryterium.
+Makieta nie wylicza tych wierszy wcale — podaje **zasadę** („pole wchodzi tylko wtedy, gdy
+zauważyłbyś jego brak w pierwszej godzinie") i etykietę przycisku. Zasada zostaje spełniona:
+przelotka siedzi pod zwiniętym „More settings", a nie w dziewięciu wierszach widocznych
+domyślnie, więc sufit gęstości z `ARCHITECTURE.md` §7 nie jest tknięty.
+
 ## AC-1 Krok z `copies: 3` biegnie jako trzy nakładające się w czasie sesje
 check: cargo test --test it copies_run_side_by_side::
 expect: (\d+) passed
@@ -115,5 +138,6 @@ src-tauri/tests/it/required_fields_are_required.rs
 src/sections/agents/more-settings.tsx
 src/sections/agents/agent-form.tsx
 src/sections/agents/vendor-options-round-trip.test.tsx
+src/sections/agents/agent-form.test.tsx
 src/state/agents.ts
 -->
