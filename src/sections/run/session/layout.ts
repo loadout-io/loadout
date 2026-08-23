@@ -86,6 +86,18 @@ export interface Handoff {
   readonly file: string;
   readonly summary: string;
   readonly detailId: number | null;
+  /**
+   * Ile ten plik waży, gotowe do przeczytania (`2.5 KB`). Nieobecne znaczy „nie wiemy".
+   *
+   * 2026-08-23 — POLE DOSZŁO, BO LICZBA JEST NA DRUCIE. Nagłówek `./session.tsx` wymieniał
+   * trzecią kolumnę makiety (`.sz`) wśród rzeczy, których NIE rysujemy, i miał rację w dniu,
+   * w którym to pisano: rozmiaru nie było skąd wziąć, a `—` w tej samej siatce i tym samym
+   * krojem, co prawdziwa liczba, jest wierszem zastępczym nie do odróżnienia od wiersza
+   * z wartością (niezmiennik 17). `HandoffWire::bytes` jest MIERZONE przy odczycie, więc
+   * dziś to jest fakt — i jedyna uczciwa odpowiedź na pytanie, czy poprzednik zostawił
+   * research, czy dwa zdania. Opcjonalne, bo wołający bez pomiaru ma nie pisać zera.
+   */
+  readonly size?: string;
 }
 
 /** Zmieniona ścieżka. Fakt z dysku — to jest cała różnica wobec `agent said`. */
@@ -143,6 +155,17 @@ function row(kind: RowKind, label: string, value: string, detailId: number | nul
 }
 
 /**
+ * Kilka faktów w jednym wierszu — bez separatora po tym, którego nie ma.
+ *
+ * `a + ' · ' + b` dla pustego `b` daje wiersz kończący się kropką i spacją: dokładnie ten
+ * wiersz zastępczy, przed którym stoi nagłówek tego pliku, tylko bez słowa, które by go
+ * zdradziło. Fakt, którego nie mamy, nie zostawia po sobie nawet kreski.
+ */
+function parts(...values: readonly (string | undefined)[]): string {
+  return values.filter((one) => one !== undefined && one !== '').join(' · ');
+}
+
+/**
  * Co ten agent dostał: krok, przekazania do niego, notatki w użyciu, wskazane pliki.
  *
  * Kolejność jest kolejnością z makiety (linie 509–517). Wiersza, dla którego nie ma wartości,
@@ -173,13 +196,18 @@ function givenRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[
       row(
         'handoff',
         'From ' + handoff.from,
-        handoff.file + ' · ' + handoff.summary,
+        parts(handoff.file, handoff.summary, handoff.size),
         handoff.detailId,
       ),
     );
   }
   for (const note of run.notes) {
-    if (note.agent !== agent.id) continue;
+    /* PUSTY WŁAŚCICIEL ZNACZY „KAŻDEMU", i to nie jest rozluźnienie filtra. Notatka o zakresie
+     * `everywhere` albo `this-project` nie należy do żadnego agenta i wjeżdża w prompt KAŻDEGO
+     * kroku (`commands::run::what_this_run_knew`), więc jest faktem o każdym z nich. Odsianie
+     * jej tutaj dawałoby blok, który o połowie tego, co model wiedział, milczy — a milczy
+     * dokładnie tak samo, jak blok agenta, któremu naprawdę nic nie dano. */
+    if (note.agent !== '' && note.agent !== agent.id) continue;
     rows.push(row('note', 'Note', note.text + ' — in use', note.detailId));
   }
   for (const step of steps) {
@@ -214,7 +242,19 @@ function producedRows(agent: SessionAgent, run: SessionInput): readonly SectionR
   }
   for (const handoff of run.handoffs) {
     if (handoff.from !== agent.id) continue;
-    rows.push(row('handoff', 'Handoff', handoff.file + ' · ' + handoff.summary, handoff.detailId));
+    /* „Passed on", nie „Handoff": etykieta stoi na ekranie, a nazwa mechanizmu z dokumentacji
+     * nie jest słowem, którym człowiek o tym myśli (niezmiennik 14). Do 2026-08-23 ta linia
+     * nie renderowała się ANI RAZU — `mount.tsx` podawał `handoffs: []` na sztywno — więc
+     * dzień, w którym blok zaczyna mówić prawdę, jest pierwszym dniem, w którym ta etykieta
+     * kogokolwiek obchodzi. */
+    rows.push(
+      row(
+        'handoff',
+        'Passed on',
+        parts(handoff.file, handoff.summary, handoff.size),
+        handoff.detailId,
+      ),
+    );
   }
   return rows;
 }
