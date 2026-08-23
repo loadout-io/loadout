@@ -980,7 +980,13 @@ async fn the_planned_run(
      * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
      * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
     what_the_steps_wrote_down(deps, &live.plan);
-    what_this_run_taught_us(deps, &live.plan, &outcome.states).await;
+    /* 2026-08-24, przy scalaniu T-92 z T-94: STANY POPRAWIONE, nie surowe z planisty.
+     * `name_what_the_budget_stopped` wyżej przepisuje krok zatrzymany sufitem z `cancelled`
+     * na `skipped`, a refleksja pyta o bieg tak, jak człowiek przeczyta go później — więc
+     * ma dostać to samo, co księga, nie to, co planista zameldował przed tłumaczeniem.
+     * Git scalił oba zadania BEZ konfliktu i dopiero kompilator pokazał, że jedno przenosi
+     * wektor, który drugie pożycza. */
+    what_this_run_taught_us(deps, &live.plan, &states).await;
 
     Ok(RunReport {
         id: live.plan.id.clone(),
