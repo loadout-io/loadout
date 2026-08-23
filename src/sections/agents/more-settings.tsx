@@ -1,4 +1,4 @@
-/* Cztery wiersze pod `More settings`: Tools, sieć, Skills, Connections.
+/* Pięć wierszy pod `More settings`: Tools, sieć, Skills, Connections, przelotka do aplikacji.
  *
  * Były trzy i „ani jeden więcej", bo czwarty wiersz jest zawsze obroniony sam z siebie i tak
  * powstaje strona ustawień, której nikt nie wypełnia. Poprzeczka stoi w jednym miejscu (T3 §10,
