@@ -432,7 +432,40 @@ pub async fn run_workflow_inner(
     request: &RunRequest,
     lines: LineSink,
 ) -> Result<RunReport, RunError> {
-    run_workflow_with_slots(deps, request, lines, Limiter::new(request.how_many_at_once)).await
+    run_workflow_with_budget(deps, request, lines, None).await
+}
+
+/// Ten sam bieg, z **sufitem wydatku** — albo bez niego, kiedy człowiek żadnego nie postawił.
+///
+/// Sufit jedzie ARGUMENTEM, nie polem [`RunRequest`], i to nie jest szczegół stylu. Zmierzone
+/// 2026-08-24: literał tamtej struktury stoi w tym drzewie w **55 plikach**, a typ nie ma
+/// `Default` — jedno nowe pole przewraca każdy z nich naraz, w tym pliki kryteriów, których to
+/// zadanie nie posiada (`AGENTS.md` §7). Argument psuje wyłącznie prawdziwych wołających,
+/// a tych jest kilku.
+pub async fn run_workflow_with_budget(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow(deps, request, lines, slots, budget_usd).await
+}
+
+/// Pula miejsc, z której ma brać TEN bieg — jedna na całą aplikację, nie jedna na bieg.
+///
+/// Uchwyt przychodzi z [`RunDeps`], czyli z tego, co aplikacja wręczyła temu biegowi
+/// ([`crate::ipc::AppState::begin_run`]). Do 2026-08-24 stało tu `Limiter::new(…)` i to była
+/// wada, nie wygoda: dwa biegi dawały `2 × limit` agentów po ~583 MB, czyli zamrożony laptop
+/// zamiast szybszej pracy (`docs/ARCHITECTURE.md` §6a, niezmiennik 11).
+///
+/// **Suwak przestawia wspólny limit właśnie tutaj**, a nie zakłada drugiej puli obok. W dół nic
+/// nie ginie: nadmiar schodzi dopiero przy zwalnianiu miejsc (`engine::limits::Pool::take_back`),
+/// więc obniżenie liczby nie dotyka ani jednego kroku, który już pracuje.
+fn the_pool_of_this_application(deps: &RunDeps<'_>, how_many_at_once: usize) -> Limiter {
+    let slots = deps.control.slots();
+    slots.set_at_once(how_many_at_once);
+    slots
 }
 
 /// Wynik Startu niosącego trwały claim triggera.
@@ -459,14 +492,8 @@ pub async fn run_triggered_workflow_inner(
 ) -> Result<TriggerRunReport, RunError> {
     deps.control.begin();
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_triggered_run(
-        deps,
-        request,
-        claim,
-        lines,
-        Limiter::new(request.how_many_at_once),
-    )
-    .await;
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    let report = the_whole_triggered_run(deps, request, claim, lines, slots).await;
     deps.control.lines_go_quiet();
     deps.control.settle();
     report
@@ -501,6 +528,17 @@ pub async fn run_workflow_with_slots(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
+    the_whole_workflow(deps, request, lines, slots, None).await
+}
+
+/// Jedno ciało obu dróg wyżej: pula podana argumentem, sufit wydatku podany argumentem.
+async fn the_whole_workflow(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    slots: Limiter,
+    budget_usd: Option<f64>,
+) -> Result<RunReport, RunError> {
     /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
      * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
      * a `is_working()` czyta oba znaczniki i odpowie wtedy „nie ma czego zatrzymywać". Zapalenie
@@ -512,7 +550,7 @@ pub async fn run_workflow_with_slots(
      * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
      * producentów naraz. */
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_run(deps, request, lines, slots).await;
+    let report = the_whole_run(deps, request, lines, slots, budget_usd).await;
     /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
      * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
      * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
@@ -568,7 +606,21 @@ pub async fn run_agent_inner(
     ask: &AskRequest,
     lines: LineSink,
 ) -> Result<RunReport, RunError> {
-    run_agent_with_slots(deps, ask, lines, Limiter::new(ask.how_many_at_once)).await
+    run_agent_with_budget(deps, ask, lines, None).await
+}
+
+/// Ten sam bieg jednokrokowy, z sufitem wydatku — albo bez niego.
+///
+/// `/ask` jest zwykłym biegiem, więc obowiązuje go ten sam sufit i ta sama pula. Bieg
+/// jednokrokowy z własnym limitem byłby drugą odpowiedzią na pytanie „ile wolno wydać".
+pub async fn run_agent_with_budget(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, ask.how_many_at_once);
+    the_whole_single_agent(deps, ask, lines, slots, budget_usd).await
 }
 
 /// Ten sam bieg jednokrokowy, tylko miejsce bierze ze **wspólnej puli aplikacji**.
@@ -588,13 +640,24 @@ pub async fn run_agent_with_slots(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
+    the_whole_single_agent(deps, ask, lines, slots, None).await
+}
+
+/// Jedno ciało obu dróg wyżej — dokładnie jak [`the_whole_workflow`] przy biegu z pliku.
+async fn the_whole_single_agent(
+    deps: &RunDeps<'_>,
+    ask: &AskRequest,
+    lines: LineSink,
+    slots: Limiter,
+    budget_usd: Option<f64>,
+) -> Result<RunReport, RunError> {
     // Kolejność i powód każdej z tych czterech linii stoją przy `run_workflow_with_slots`.
     // Ta sama czwórka, nie jej wariant: uchwyt biegu odpowiada na pytanie „czy jest co
     // zatrzymywać" tak samo dla obu rodzajów biegu, bo Stop nie wie, którym z nich jest ten,
     // który idzie.
     deps.control.begin();
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_ask(deps, ask, lines, slots).await;
+    let report = the_whole_ask(deps, ask, lines, slots, budget_usd).await;
     deps.control.lines_go_quiet();
     deps.control.settle();
     report
@@ -607,8 +670,17 @@ async fn the_whole_run(
     request: &RunRequest,
     lines: LineSink,
     slots: Limiter,
+    budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(deps, plan_run(deps, request)?, lines, slots, None).await
+    the_planned_run(
+        deps,
+        plan_run(deps, request)?,
+        lines,
+        slots,
+        None,
+        budget_usd,
+    )
+    .await
 }
 
 /// Claim triggera przechodzi przez ten sam plan i wykonanie, a ledger oplata tylko dwie
@@ -660,7 +732,7 @@ async fn the_whole_triggered_run(
         home: deps.home.to_path_buf(),
         claim: claim.clone(),
     };
-    match the_planned_run(deps, plan, lines, slots, Some(acceptance)).await {
+    match the_planned_run(deps, plan, lines, slots, Some(acceptance), None).await {
         Ok(report) => Ok(TriggerRunReport::Ran(report)),
         Err(error) if !run_file.exists() => {
             triggers::release_delivery(deps.home, claim)?;
@@ -681,8 +753,9 @@ async fn the_whole_ask(
     ask: &AskRequest,
     lines: LineSink,
     slots: Limiter,
+    budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots, None).await
+    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots, None, budget_usd).await
 }
 
 struct TriggerAcceptance {
@@ -702,6 +775,7 @@ async fn the_planned_run(
     lines: LineSink,
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
+    budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
     // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
     // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
@@ -734,6 +808,7 @@ async fn the_planned_run(
         deps.control.clone(),
         slots,
         std::sync::Arc::clone(&deps.processes),
+        budget_usd,
     ));
     // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
     // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
@@ -786,7 +861,14 @@ async fn the_planned_run(
     )
     .await;
 
-    live.close_the_book(&outcome.states, outcome.cancelled);
+    /* KROK ZATRZYMANY PRZEZ SUFIT CZYTA SIĘ JAKO POMINIĘTY, NIE JAKO ANULOWANY, i różnica jest
+     * dla człowieka całą treścią: `cancelled` znaczy „nacisnąłeś Stop". Planista widzi wyłącznie
+     * `StepReport` i ósmego wariantu nie dostanie — `steps.status` ma w bazie `CHECK` na siedmiu
+     * nazwach, a niezmiennik 25 zabrania przepisywania tabel — więc tłumaczenie stoi tutaj,
+     * w jednym miejscu, przed księgą i przed raportem naraz. */
+    let mut states = outcome.states;
+    live.name_what_the_budget_stopped(&mut states);
+    live.close_the_book(&states, outcome.cancelled);
     // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
     // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
     close_the_trees(deps.project, &isolated, &live);
@@ -802,7 +884,7 @@ async fn the_planned_run(
         } else {
             Outcome::Done
         },
-        steps: outcome.states,
+        steps: states,
     })
 }
 
@@ -4127,6 +4209,19 @@ struct Live {
     /// klonem cudzej puli, nigdy własną: pula zakładana per bieg jest nie do odróżnienia od
     /// tej, przez którą dwie karty dają `2 × limit` agentów naraz (niezmiennik 11).
     gate: limits::Run,
+    /// Ile wolno wydać na ten bieg — albo `None`, kiedy człowiek nie postawił sufitu.
+    ///
+    /// Liczy się suma `cost_usd` kroków, które SIĘ SKOŃCZYŁY: tylko one mają cenę, a krok
+    /// w połowie tury nie wie jeszcze, ile będzie kosztował. Krok, którego vendor ceny nie
+    /// podaje (Codex), liczy się jako zero — i to jest zapisane w zdaniu pomocy przy kontrolce,
+    /// bo inaczej sufit byłby obietnicą, której produkt nie może dotrzymać.
+    budget_usd: Option<f64>,
+    /// Kroki, których nie ruszyliśmy, bo sufit był już przekroczony — po jednym bicie na krok.
+    ///
+    /// Osobne pole, a nie odczyt z księgi, bo stany końcowe kroków wpisuje na końcu planista
+    /// ([`Live::close_the_book`]) i przykryłby to, co zapisał tu bieg. `std::sync::Mutex`
+    /// i nigdy trzymany przez `await` (niezmiennik 8).
+    stopped_by_the_budget: Mutex<Vec<bool>>,
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
@@ -4366,6 +4461,7 @@ impl Live {
         control: RunControl,
         slots: Limiter,
         processes: std::sync::Arc<crate::commands::processes::Processes>,
+        budget_usd: Option<f64>,
     ) -> Self {
         // Kopia stanów kroków, którą dostaje limit dostawcy, jest **martwa z rozmysłem**:
         // `engine::limits::Run` ma pełny dostęp do statusów i podejść dokładnie po to, żeby
@@ -4394,6 +4490,7 @@ impl Live {
                 truncated: false,
             })
             .collect();
+        let stopped_by_the_budget = Mutex::new(vec![false; plan.steps.len()]);
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         let did_not_pass = Mutex::new(vec![false; plan.steps.len()]);
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
@@ -4412,6 +4509,8 @@ impl Live {
             lines,
             control,
             gate,
+            budget_usd,
+            stopped_by_the_budget,
             began: Instant::now(),
             handoffs,
             did_not_pass,
@@ -5037,6 +5136,12 @@ impl Live {
             // Prosto z planu, przy KAŻDYM zrzucie ta sama wartość: policzona przed pierwszym
             // procesem i od tej chwili nietknięta.
             memory: &self.plan.memory,
+            /* SUFIT I WYDATEK IDĄ PARĄ ALBO NIE IDĄ WCALE. Bieg, którego nikt nie ograniczył,
+             * nie ma o sufcie nic do powiedzenia, a klucz mówiący „bez sufitu" przy każdym biegu
+             * w historii jest długością zapłaconą za milczenie — ta sama decyzja, co przy
+             * `death_proof` i `repaired` obok. */
+            budget_usd: self.budget_usd,
+            spent_usd: self.budget_usd.map(|_| spent_in(book)),
             steps,
         }
     }
@@ -5113,21 +5218,40 @@ impl Live {
         }
 
         let _slot = match &self.plan.steps[id].job {
-            // Krok „sprawdź" bierze miejsce razem z krokami agenta, i to jest wybór z powodem:
-            // `./verify.sh full` odpala `cargo`, `cargo` odpala `rustc`, a to jest ta sama waga
-            // na maszynie, przed którą stoi niezmiennik 11. Pytanie do człowieka nie waży nic
-            // i miejsca nie bierze — to jest cała różnica między tymi dwoma ramionami.
+            // Krok „sprawdź" bierze miejsce z puli **i** jedno miejsce ciężkie ([`weight_of`]),
+            // więc dwa takie kroki nigdy nie idą obok siebie, choćby pula miała ich osiem.
+            // Pytanie do człowieka nie waży nic i miejsca nie bierze wcale — to jest cała
+            // różnica między tymi dwoma ramionami.
             /* KAFELEK „URUCHOM I ZOSTAW" NIE BIERZE MIEJSCA, i to jest decyzja, nie pominięcie.
              * Pula odpowiada na pytanie „ilu agentów naraz" (niezmiennik 11), a ten krok żadnego
              * nie woła — trwa tyle, co `spawn`. Miejsce trzymane przez serwer, który żyje cały
              * bieg, wyjęłoby z puli jedno na stałe i zagłodziło kroki, które naprawdę pracują. */
             Job::Agent(_) | Job::Check(_) => {
-                let Some(slot) = self.a_slot_for_this_step(&cancel).await else {
+                /* SUFIT WYDATKU PYTANY DWA RAZY, i oba pytania są konieczne.
+                 *
+                 * Przed kolejką, żeby krok, dla którego pieniędzy już nie ma, nie stał po zasób
+                 * wart ~583 MB i nie blokował nikogo. Po kolejce, bo pieniądze wydaje się
+                 * WŁAŚNIE wtedy, kiedy ten krok czeka: kroki, które trzymały miejsca, kończą
+                 * tury i dopisują swoje ceny do księgi. Samo pierwsze pytanie przepuszczałoby
+                 * każdy krok, który stanął w kolejce, zanim ktokolwiek zdążył zapłacić. */
+                if let Some(said) = self.the_budget_is_spent() {
+                    return self.the_budget_stops_this_one(id, said);
+                }
+                let Some(slot) = self
+                    .a_slot_for_this_step(&cancel, weight_of(&self.plan.steps[id].job))
+                    .await
+                else {
                     // Stop, zanim ten krok w ogóle ruszył: `cancelled`, nie `skipped` — nikt
                     // wyżej nie padł, człowiek zatrzymał bieg [T7 §9.3]. Księga zostaje bez
                     // chwili startu, bo startu nie było, a stan końcowy dopisze planista.
                     return StepReport::Cancelled;
                 };
+                if let Some(said) = self.the_budget_is_spent() {
+                    // Miejsce oddajemy OD RAZU, nie na końcu kroku: krok, który nie ruszy,
+                    // nie ma prawa trzymać miejsca potrzebnego komuś, kto jeszcze może biec.
+                    drop(slot);
+                    return self.the_budget_stops_this_one(id, said);
+                }
                 Some(slot)
             }
             // Kafelek kontrolny miejsca NIE bierze i to jest wybór, nie przeoczenie: pula liczy
@@ -5209,7 +5333,68 @@ impl Live {
     /// miejsce siedzi już w środku [`limits::Run::dispatch`]. Bieg, który po odmowie zaczeka na
     /// miejsce w puli, trzymałby zasób potrzebny komuś, kto może biec, i zajmował go przez całe
     /// pięciogodzinne okno limitu.
-    async fn a_slot_for_this_step(&self, cancel: &CancellationToken) -> Option<limits::Slot> {
+    /// Ile ten bieg zdążył wydać: suma cen tur, które SIĘ SKOŃCZYŁY.
+    ///
+    /// Krok w połowie tury nie wie jeszcze, ile będzie kosztował, a krok, którego vendor ceny
+    /// nie podaje, liczy się jako zero — obie te rzeczy mówi zdanie pomocy przy kontrolce sufitu,
+    /// bo obie są widoczne dla człowieka jako różnica między rachunkiem a tą liczbą.
+    fn spent_so_far(&self) -> f64 {
+        spent_in(&self.book.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Ile jeszcze wolno wydać — `None`, kiedy nikt nie postawił sufitu.
+    ///
+    /// Nigdy poniżej zera: kwota ujemna oddana vendorowi jest albo błędem składni przy starcie,
+    /// albo — gorzej — argumentem, który znaczy wtedy co innego.
+    fn what_is_left_of_the_budget(&self) -> Option<f64> {
+        self.budget_usd
+            .map(|budget| (budget - self.spent_so_far()).max(0.0))
+    }
+
+    /// Zdanie o przekroczonym sufcie, albo `None`, kiedy pieniądze jeszcze są.
+    ///
+    /// Zdanie powstaje TUTAJ, razem z decyzją, i niesie obie liczby: bez nich pominięty krok jest
+    /// nie do odróżnienia od kroku pominiętego przez cudzą porażkę, a bieg kończący się rzędem
+    /// pustych wierszy jest tym ślepym punktem, dla którego to repo powstało.
+    fn the_budget_is_spent(&self) -> Option<String> {
+        let budget = self.budget_usd?;
+        let spent = self.spent_so_far();
+        (spent >= budget).then(|| {
+            format!(
+                "Skipped: this run had spent ${spent:.2} of the ${budget:.2} it was allowed, so \
+                 nothing new was started. Steps already working were left to finish."
+            )
+        })
+    }
+
+    /// Krok, którego nie ruszamy, bo pieniądze się skończyły.
+    ///
+    /// `StepReport::Cancelled`, a nie `Failed`: nic się nie zepsuło i nikt nie zawiódł — bieg
+    /// doszedł do postawionej mu granicy. Stan `skipped` i to zdanie wpisuje księdze
+    /// [`Live::close_the_book`], bo dopiero tam znane są stany końcowe od planisty.
+    fn the_budget_stops_this_one(&self, id: StepId, said: String) -> StepReport {
+        if let Some(row) = self
+            .stopped_by_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            *row = true;
+        }
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.status = StepState::Skipped;
+            let _ = step.error.get_or_insert(said);
+        });
+        self.announce(id, StepState::Skipped);
+        StepReport::Cancelled
+    }
+
+    async fn a_slot_for_this_step(
+        &self,
+        cancel: &CancellationToken,
+        weight: limits::Weight,
+    ) -> Option<limits::Slot> {
         // Czy ten krok kiedykolwiek odbił się od limitu. Tylko taki krok ma prawo ogłosić, że
         // bieg rusza dalej: inaczej każdy zwykły krok pisałby `running` po biegu, który stoi
         // z zupełnie innego powodu.
@@ -5221,7 +5406,7 @@ impl Live {
                 // linijce.
                 biased;
                 () = cancel.cancelled() => return None,
-                asked = self.gate.dispatch() => asked,
+                asked = self.gate.dispatch_as(weight) => asked,
             };
             match asked {
                 limits::Dispatch::Granted(slot) => {
@@ -5291,6 +5476,28 @@ impl Live {
         configuration
             .arguments
             .extend(job.driver.effort_argv(effort_level(job.thinking)));
+        /* SUFIT WYDATKU JEDZIE TĄ SAMĄ RURĄ, i po tym samym co wyżej: to jest „gotowy fragment
+         * argv tego jednego kroku".
+         *
+         * PO CO, SKORO SUFIT PILNUJE JUŻ BIEG. Bo bieg liczy tury SKOŃCZONE: sumę zna po fakcie,
+         * a tura, która sama jedna przebije resztę, jest już wtedy opłacona. Vendor, któremu
+         * powiemy, ile mu wolno, zatrzyma ją od środka.
+         *
+         * PYTAMY KROK, CZYM JEST — dokładnie tak samo, jak przy zatwierdzonych Connections dwie
+         * linie wyżej (`connections::runtime::for_driver` bierze `driver.id()`). Nazwa flagi
+         * mieszka w adapterze tego jednego vendora (niezmiennik 23), a decyzja „ile jeszcze
+         * wolno" tutaj, w rdzeniu.
+         *
+         * 2026-08-24 — CZYSTSZY SZEW WYMAGAŁBY METODY W `engine/drivers/mod.rs` (obok
+         * `effort_argv`), a tamten plik nie należy do T-94 (`AGENTS.md` §7). Zgłoszone,
+         * nie rozstrzygnięte tutaj. */
+        if let Some(left) = self.what_is_left_of_the_budget()
+            && job.driver.id() == crate::engine::drivers::claude::VENDOR
+        {
+            configuration
+                .arguments
+                .extend(crate::engine::drivers::claude::budget_argv(left));
+        }
         Ok(configuration)
     }
 
@@ -6541,6 +6748,24 @@ impl Live {
         send_batch(&self.lines, vec![line]);
     }
 
+    /// Przepisuje stany kroków, których nie ruszył sufit wydatku: `cancelled` → `skipped`.
+    ///
+    /// Planista nie ma jak tego powiedzieć: `StepReport` zna trzy zakończenia i żadne z nich nie
+    /// znaczy „bieg doszedł do postawionej mu granicy". Krok zatrzymany przez sufit wraca stąd
+    /// jako anulowany, bo tylko ten wariant maluje stożek za nim pominięciami zamiast porażkami —
+    /// a `cancelled` na ekranie znaczy „nacisnąłeś Stop", czego nikt nie zrobił.
+    fn name_what_the_budget_stopped(&self, states: &mut [StepState]) {
+        let stopped = self
+            .stopped_by_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (state, &by_the_budget) in states.iter_mut().zip(stopped.iter()) {
+            if by_the_budget {
+                *state = StepState::Skipped;
+            }
+        }
+    }
+
     /// Zamyka księgę stanami **od planisty**.
     ///
     /// Stany bierzemy stamtąd, a nie z tego, co zapisały same kroki, bo tylko planista wie
@@ -6557,6 +6782,12 @@ impl Live {
          * ksiegi, a przepchniecie do niej ksiegi zamienialoby planiste w cos, co pisze po dysku.
          * Tu mamy komplet stanow koncowych i graf, wiec przodek liczy sie raz i na pewno. */
         let blamed = self.who_stopped_them(states);
+        /* SUFIT WYDATKU MA OSTATNIE SŁOWO NAD KAŻDYM NIEWYJAŚNIONYM POMINIĘCIEM, i to jest ta
+         * sama zasada, co przy `blamed` obok: krok pominięty bez powodu jest ślepym punktem.
+         * Kroki zatrzymane wprost przez sufit mają już swoje zdanie z chwili decyzji (niesie
+         * kwotę sprzed sekundy, nie z końca biegu); ich potomkowie nie mają żadnego, bo nad nimi
+         * nie stoi ani krok, który padł, ani krok zatrzymany przez człowieka. */
+        let over_the_budget = self.the_budget_is_spent();
         self.update(|book| {
             for (row, &state) in book.steps.iter_mut().zip(states) {
                 row.status = state;
@@ -6564,6 +6795,15 @@ impl Live {
             for (at_step, why) in &blamed {
                 if let Some(row) = book.steps.get_mut(*at_step) {
                     let _ = row.error.get_or_insert(why.clone());
+                }
+            }
+            if let Some(said) = &over_the_budget {
+                for row in book
+                    .steps
+                    .iter_mut()
+                    .filter(|row| row.status == StepState::Skipped)
+                {
+                    let _ = row.error.get_or_insert(said.clone());
                 }
             }
             book.status = if cancelled {
@@ -6831,6 +7071,40 @@ fn ends(
     out
 }
 
+/// Ile ta księga wydała: suma cen tur, które SIĘ SKOŃCZYŁY.
+///
+/// Wolna funkcja, nie metoda, bo pyta o to dwóch: [`Live::spent_so_far`] spod własnego zamka
+/// i [`Live::run_file`], któremu księgę podano już otwartą. Metoda biorąca zamek drugi raz
+/// zakleszczyłaby zrzut na dysk — a `std::sync::Mutex` nie jest wejściowalny ponownie.
+fn spent_in(book: &Book) -> f64 {
+    book.steps
+        .iter()
+        .filter(|step| step.ended_at.is_some())
+        .filter_map(|step| step.cost_usd)
+        .sum()
+}
+
+/// Ile miejsca bierze krok tego rodzaju.
+///
+/// # Dlaczego „sprawdź" jest ciężkie, a agent nie (niezmiennik 26)
+///
+/// Bo `./verify.sh full` odpala `cargo`, `cargo` odpala `rustc`, a dwa równoległe linki
+/// przypinają kompresor pamięci macOS i zamrażają maszynę przy zerowym swapie. Agent to
+/// rozmowa: bierze pamięć, ale nie bierze całej maszyny.
+///
+/// **Rodzaj kroku, nie jego nazwa ani rola** (niezmiennik 27). `if step.name == "check"` byłoby
+/// etapem zaszytym w silniku; tu pytamy o to, czym ten krok JEST — kafelkiem z komendą albo
+/// kafelkiem z agentem — i tę odpowiedź niesie sam graf.
+fn weight_of(job: &Job) -> limits::Weight {
+    match job {
+        Job::Check(_) => limits::Weight::Heavy,
+        // Kafelek kontrolny i „uruchom i zostaw" nie proszą tędy o miejsce w ogóle
+        // ([`Live::step`]), więc odpowiedź dla nich nie ma czytelnika i jest tą samą, co dla
+        // rozmowy.
+        Job::Agent(_) | Job::Ask { .. } | Job::Serve(_) => limits::Weight::Ordinary,
+    }
+}
+
 // ── KSZTAŁT `run.json` ─────────────────────────────────────────────────────────────────────
 
 /// `run.json`, tak jak ląduje na dysku.
@@ -6877,6 +7151,18 @@ struct RunFile<'a> {
     /// jednym kluczem więcej w każdym `run.json` w historii.
     #[serde(skip_serializing_if = "<[MemoryRecord]>::is_empty")]
     memory: &'a [MemoryRecord],
+    /// Ile wolno było wydać na ten bieg. Brak klucza znaczy „nikt nie postawił sufitu".
+    ///
+    /// Na dysku, a nie tylko w pamięci, bo pliki są prawdą (niezmiennik 4): sufit, który znika
+    /// razem z oknem, nie umie wyjaśnić po fakcie, dlaczego trzy kroki zostały pominięte.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_usd: Option<f64>,
+    /// Ile ten bieg naprawdę wydał — suma cen tur, które się skończyły.
+    ///
+    /// Idzie w parze z polem wyżej i tylko z nim: bez sufitu nie ma z czym tej liczby zestawić,
+    /// a chip na pasku biegu liczy sobie tę samą sumę z linii, które sam dostał.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spent_usd: Option<f64>,
     steps: Vec<StepEntry<'a>>,
 }
 

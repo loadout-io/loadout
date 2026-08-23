@@ -166,7 +166,7 @@ function tookText(ms: number): string {
  * cenniku (albo tryb, w którym go nie ma) oddaje `null`. `$0.00` przy biegu, który kosztował
  * nieznane pieniądze, jest gorsze niż brak liczby.
  */
-export function spendFor(lines: readonly FeedLine[]): string {
+export function spendFor(lines: readonly FeedLine[], budgetUsd: number | null = null): string {
   let ms = 0;
   let cost = 0;
   let turns = 0;
@@ -181,7 +181,23 @@ export function spendFor(lines: readonly FeedLine[]): string {
     }
   }
   if (turns === 0) return '';
-  return priced ? tookText(ms) + ' · $' + cost.toFixed(2) : tookText(ms);
+  if (!priced) return tookText(ms);
+  return tookText(ms) + ' · $' + cost.toFixed(2) + outOf(budgetUsd);
+}
+
+/**
+ * ` of $20` — druga połowa chipu, kiedy ten bieg ma sufit wydatku.
+ *
+ * Pusto, kiedy sufitu nie ma, i to jest cała reguła: liczba „z ilu" wpisana biegowi, którego
+ * nikt nie ograniczył, byłaby limitem wymyślonym przez ekran.
+ *
+ * Sufit bez groszy, kiedy jest okrągły: człowiek wpisał `20`, więc `$20` jest tym, co postawił.
+ * `$20.00` obok `$3.41` czyta się jak druga wartość zmierzona, a to jest jego decyzja.
+ */
+function outOf(budgetUsd: number | null): string {
+  if (budgetUsd === null) return '';
+  const ceiling = Number.isInteger(budgetUsd) ? String(budgetUsd) : budgetUsd.toFixed(2);
+  return ' of $' + ceiling;
 }
 
 /**

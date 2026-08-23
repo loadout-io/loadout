@@ -16,6 +16,13 @@
 //!   agentach to dziewięciu agentów po ~583 MB [T7 ryzyko 3] — na 16 GB to zamrożony laptop,
 //!   a nie szybsza praca. Limit liczony per bieg wygląda identycznie do chwili, w której ktoś
 //!   otworzy trzecią kartę.
+//!
+//!   2026-08-24 (T-94) — **ŻYWA PULA PRZENIOSŁA SIĘ DO `AppState`**, a [`Registry::slots`]
+//!   dalej nie ma produkcyjnego wołającego. Aplikacja trzyma jeden [`crate::engine::limits::
+//!   Limiter`] i wkłada jego klon do uchwytu każdego biegu (`ipc::AppState::begin_run`), więc
+//!   własność opisana wyżej jest od tego dnia egzekwowana — tylko nie tędy. Co zrobić z tym
+//!   rejestrem, jest decyzją człowieka, nie tego zadania: jeden fakt ma mieć jeden dom
+//!   (niezmiennik 13), a dziś ma dwa domy, z których zamieszkany jest jeden.
 //! - **Drugie otwarcie tego samego folderu oddaje TEN SAM magazyn** (niezmiennik 2).
 //!   `Store::open` nie ma żadnej obrony przed drugim otwarciem tej samej bazy i świadomie jej
 //!   nie dostaje — decyzja człowieka z 2026-08-16 brzmi, że gwarancja mieszka w rejestrze

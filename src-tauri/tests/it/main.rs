@@ -30,6 +30,7 @@
 
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
+mod a_run_stops_at_its_budget;
 mod a_skill_list_says_what_each_one_is_for;
 mod again_carries_what_the_step_had;
 mod agent_tools_keep_the_ceiling;
@@ -51,10 +52,12 @@ mod check_step_has_no_agent;
 mod check_step_process_group;
 mod check_step_schema;
 mod check_step_verdict;
+mod checks_take_the_heavy_slot;
 mod claude_argv_policy;
 mod claude_argv_transport;
 mod claude_cancel_escalation;
 mod claude_completion;
+mod claude_gets_the_remaining_budget;
 mod claude_rate_limit;
 mod claude_session_process;
 mod claude_unknown_events;
@@ -253,6 +256,7 @@ mod trigger_never_fires_twice;
 mod trigger_reads_the_answer;
 mod trigger_run_is_accepted_once;
 mod trigger_workspace_is_authority;
+mod two_folders_share_one_pool;
 mod workflow_check_cycles;
 mod workflow_check_ids;
 mod workflow_check_islands;

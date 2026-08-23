@@ -37,6 +37,7 @@ import type { Step } from '../../state/run';
 import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { feedFor } from './feed/live';
+import { budgetUsd as chosenBudget } from './limits/chosen';
 import type { TriggerClaim } from '../triggers/io';
 
 /**
@@ -148,6 +149,21 @@ export function start(
   task: string | null = null,
   /** Durable trigger delivery; every ordinary Start carries an explicit null. */
   claim: TriggerClaim | null = null,
+  /**
+   * Sufit wydatku tego biegu w dolarach, albo `null` — „bez limitu".
+   *
+   * OSTATNI I OPCJONALNY, bo dwa cudze kryteria (`start-invokes.test.tsx`,
+   * `start-args-complete.test.tsx`) wołają tę krawędź dwoma argumentami i nie wolno ich tknąć.
+   * Klucz na drucie jedzie mimo to ZAWSZE, także jako `null`: Tauri dopasowuje argumenty po
+   * nazwie i deserializuje je przed wejściem w ciało komendy, więc brakujący klucz nie jest
+   * mniejszym wywołaniem — jest odrzuconym.
+   *
+   * DOMYŚLNIE Z WYBORU CZŁOWIEKA, nie ze stałej: sufit jest faktem CAŁEJ aplikacji, tak samo jak
+   * „ile naraz" (`./limits/chosen`), i tak samo ma jechać każdą drogą startu — przyciskiem,
+   * `/run` i zielonym Run z edytora. Podanie go osobno w każdej z nich byłoby czwartą kopią tej
+   * samej decyzji, a rozjechałaby się ta droga, o której ktoś zapomni (niezmiennik 23).
+   */
+  budgetUsd: number | null = chosenBudget(),
 ): Promise<void> {
   if (going !== null) {
     /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego
@@ -232,6 +248,10 @@ export function start(
      * kliknięciu, zdaniem, którego człowiek nie zobaczy. `Option<String>` przyjmuje `null`
      * i znaczy „biegnij tym, co stoi w pliku". */
     task,
+    /* Ten sam powód, co przy `task` i `folder`: sufit wydatku jedzie kluczem także wtedy, gdy
+     * nikt go nie postawił. `null` znaczy „bez limitu"; pominięcie klucza znaczy „odrzuć to
+     * wywołanie". */
+    budgetUsd,
     /* Present even for a manual Start. Tauri matches arguments by name before entering Rust,
      * so omitting this optional Rust value is not equivalent to sending `null`. */
     claim,
@@ -303,6 +323,9 @@ export function ask(
   task: string,
   howManyAtOnce: number,
   folder: string | null = null,
+  /** Sufit wydatku tego biegu, albo `null`. Ten sam sufit i tą samą drogą, co przy biegu
+   * z pliku: `/ask` jest zwykłym biegiem, więc obowiązuje go ta sama kwota. */
+  budgetUsd: number | null = chosenBudget(),
 ): Promise<void> {
   /* TE DZIESIĘĆ LINII SĄ TRZECIĄ KOPIĄ (`start`, `openChat`, tutaj) I TO JEST ZGŁOSZENIE, NIE
    * WYGODA. Wyciągnięcie ich do jednej funkcji jest oczywiste i należy do właściciela tego
@@ -340,6 +363,7 @@ export function ask(
     task,
     howManyAtOnce,
     folder,
+    budgetUsd,
     lines,
   }).finally(() => {
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na

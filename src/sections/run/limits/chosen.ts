@@ -39,3 +39,34 @@ export function subscribeToAtOnce(listener: () => void): () => void {
     listeners.delete(listener);
   };
 }
+
+/* SUFIT WYDATKU JEDNEGO BIEGU — jeden fakt, jeden dom (niezmiennik 13), dokładnie jak liczba
+ * wyżej. Dwóch czytelników: kontrolka („co człowiek wpisał") i pasek biegu („z ilu"), więc
+ * `useState` w kontrolce zmuszałby paska do zgadywania.
+ *
+ * `null` znaczy „bez limitu" i jest wartością domyślną: bieg, którego nikt nie ograniczył,
+ * ma biec do końca, a nie stanąć na liczbie, której nikt nie wpisał.
+ */
+
+let budget: number | null = null;
+const budgetListeners = new Set<() => void>();
+
+/** Sufit wydatku tego biegu w dolarach, albo `null`, kiedy człowiek żadnego nie postawił. */
+export function budgetUsd(): number | null {
+  return budget;
+}
+
+/** Zapisuje sufit. `null` znaczy „bez limitu"; kontrolka pilnuje, że liczba jest dodatnia. */
+export function setBudgetUsd(dollars: number | null): void {
+  if (dollars === budget) return;
+  budget = dollars;
+  for (const listener of budgetListeners) listener();
+}
+
+/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+export function subscribeToBudget(listener: () => void): () => void {
+  budgetListeners.add(listener);
+  return () => {
+    budgetListeners.delete(listener);
+  };
+}
