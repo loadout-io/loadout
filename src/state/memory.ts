@@ -20,6 +20,7 @@
  */
 import { create } from 'zustand';
 import {
+  discardNote,
   listHandoffs,
   listNotes,
   putToUse,
@@ -155,6 +156,14 @@ export interface MemoryState {
   use: (id: string) => Promise<void>;
   /** „Stop using" — notatka zostaje na liście i przestaje wchodzić do promptu. */
   stopUsing: (id: string) => Promise<void>;
+  /**
+   * „Discard" — kandydatka schodzi z listy.
+   *
+   * Druga z dwóch decyzji, które człowiek może podjąć wobec zdania zaproponowanego przez agenta,
+   * i do 2026-08-23 jedyną było „tak". Znika stąd wyłącznie wiersz: plik notatki odchodzi do
+   * `discarded/` po tamtej stronie granicy, bo nic w pamięci nie jest twardo usuwane [T6 §5.3].
+   */
+  discard: (id: string) => Promise<void>;
   /** Zamyka wymuszony wybór, niczego nie zmieniając. */
   cancel: () => void;
 }
@@ -163,6 +172,7 @@ export interface MemoryState {
  * jak zepsuty przycisk, a człowiek, który nie wie, czego się od niego chce, klika drugi raz. */
 const COULD_NOT_USE = 'Loadout could not put that note to use.';
 const COULD_NOT_STOP = 'Loadout could not stop using that note.';
+const COULD_NOT_DISCARD = 'Loadout could not throw that note away.';
 const COULD_NOT_READ = 'Loadout could not read the notes on this machine.';
 const COULD_NOT_READ_PASSED = 'Loadout could not read what agents passed to each other.';
 
@@ -259,6 +269,26 @@ export const useMemory = create<MemoryState>()((set, get) => ({
       set({ notes: replace(get().notes, fresh), message: null, choice: null });
     } catch (refusal) {
       set({ message: why(refusal, COULD_NOT_STOP), choice: null });
+    }
+  },
+
+  discard: async (id: string) => {
+    try {
+      /* Komenda, odpowiedź, DOPIERO POTEM stan — ta sama kolejność, co wyżej, i ten sam powód.
+       * Wiersz zdjęty przed odpowiedzią znika także wtedy, gdy Rust odmówił, a wtedy notatka
+       * dalej leży w katalogu i wróci przy następnym wejściu w sekcję: ekran mówiłby wtedy co
+       * innego niż pliki, czyli łamałby niezmiennik 4 w jedynym miejscu, w którym człowiek może
+       * to zobaczyć. Optymistyczne zdjęcie kosztuje tu więcej niż gdzie indziej, bo cofnięcia
+       * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
+      await discardNote({ id });
+      /* Filtr, nie podmiana: `replace` z reszty tego pliku zastępuje notatkę jej świeżym
+       * odczytem, a tej notatki nie ma już czego odczytać. */
+      set({ notes: get().notes.filter((one) => one.id !== id), message: null });
+    } catch (refusal) {
+      /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
+       * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
+       * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
+      set({ message: why(refusal, COULD_NOT_DISCARD) });
     }
   },
 

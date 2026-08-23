@@ -32,13 +32,13 @@
  * więc przełącznik nie miałby czego przestawić ani w trzeciej strefie. Wraca w tym samym
  * commicie, w którym pojawia się filtrowanie po zakresie.
  *
- * ZGŁOSZENIE DLA CZŁOWIEKA (zmierzone 2026-08-16). `tasks/T-26.md` chce, żeby notatka
+ * ZGŁOSZENIE Z 2026-08-16 ZAMKNIĘTE 2026-08-23 (T-92). `tasks/T-26.md` chciał, żeby notatka
  * zaproponowana niosła „swoje DWIE akcje" (makieta: `Use it` i `Discard`,
- * `docs/mockup/index.html:757`). `NoteRow` renderuje dokładnie JEDNĄ — `Use this` przy
- * `suggested`, `Stop using` przy `in-use` — i tak zamraża to kryterium 6 z T-17. Drugiej nie
- * ma czym obsłużyć: `MemoryState` zna `use`, `stopUsing` i `cancel`, i ani jednego odrzucenia
- * kandydatki. Domknięcie wymaga `discard` w `src/state/memory.ts` i drugiego przycisku
- * w `note-row.tsx` — oba pliki są poza blokiem OWNS tego zadania (AGENTS.md §7).
+ * `docs/mockup/index.html:757`), a `NoteRow` renderował dokładnie JEDNĄ, bo drugiej nie było
+ * czym obsłużyć: `MemoryState` znał `use`, `stopUsing` i `cancel`, i ani jednego odrzucenia
+ * kandydatki. Oba brakujące pliki leżały wtedy poza blokiem OWNS tamtego zadania (AGENTS.md §7)
+ * i leżą w bloku tego. `Discard` dostaje WYŁĄCZNIE strefa „Waiting for you": notatka, która już
+ * jedzie do promptu, wychodzi z niego osobną decyzją, a dopiero potem można ją odrzucić.
  *
  * O migawce serwerowej zustanda i o tym, dlaczego magazyn czyta się tu przez
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
@@ -124,6 +124,9 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
   const stopUsing = (id: string): void => {
     void store.getState().stopUsing(id);
   };
+  const discard = (id: string): void => {
+    void store.getState().discard(id);
+  };
 
   return (
     <section className="flex h-full flex-col">
@@ -173,8 +176,17 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
                   An agent suggested these. They stay out of every prompt until you say yes.
                 </p>
                 <ul className="flex flex-col">
+                  {/* Handler „Discard" dostaje WYŁĄCZNIE ta strefa. Wiersz sam też pyta o stan
+                      notatki, i to nie jest podwójna robota: wiersz broni się przed każdym
+                      wołającym, a ekran mówi, w którym miejscu ta decyzja w ogóle istnieje. */}
                   {waiting.map((note) => (
-                    <NoteRow key={note.id} note={note} onUse={use} onStopUse={stopUsing} />
+                    <NoteRow
+                      key={note.id}
+                      note={note}
+                      onUse={use}
+                      onStopUse={stopUsing}
+                      onDiscard={discard}
+                    />
                   ))}
                 </ul>
               </section>

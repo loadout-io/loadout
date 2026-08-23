@@ -82,7 +82,7 @@ use uuid::Uuid;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
-    Policy, Probe, RunSpec, SessionRef, ToAgent, Tokens, ValidatedImages, Voice,
+    Policy, Probe, RunSpec, SessionRef, StepSettings, ToAgent, Tokens, ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -696,6 +696,39 @@ struct DenyOnly<'a> {
     deny: &'a [String],
 }
 
+/// Dokument JEDNEGO KROKU: to samo `deny`, plus przekierowana auto-pamięć (2026-08-23, T-92).
+///
+/// # Dlaczego to jest drugi typ, a nie trzecie pole w [`SettingsDocument`]
+///
+/// Tamten kształt — dokładnie jeden klucz `permissions` — jest **zamrożony kryterium spoza tego
+/// zadania** (T-53 AC-3, `driver_claude_settings_file.rs`: `top == vec!["permissions"]`).
+/// Dopisanie pola tam przewróciłoby tamto kryterium przy pierwszej kompilacji. Dwa typy i dwa
+/// wejścia są tą samą odpowiedzią, którą `memory::notes` daje na to samo pytanie przy
+/// `record_candidate_for` / `record_imported`: podpis, który coś pinuje, zostaje nietknięty,
+/// a nowa potrzeba dostaje własne drzwi.
+///
+/// # Dlaczego auto-pamięć jedzie TYM SAMYM plikiem, co odmowy
+///
+/// Bo plik jest jeden: `--settings` wskazuje jeden dokument, więc drugi nośnik po prostu nie
+/// istnieje. Zmierzone 2026-08-23 w `system/init` każdego kroku: `memory_paths.auto` wskazywał
+/// `~/.claude/projects/<projekt>/memory/`, czyli katalog dzielony z sesjami interaktywnymi
+/// człowieka. [T6 §10.4] nazywa przekierowanie go per bieg „najlepszym leverem znalezionym
+/// w researchu" i ma na myśli dokładnie te dwa klucze.
+///
+/// Trzy pola i ani jedno więcej — z tego samego powodu, co przy [`SettingsDocument`]: do
+/// struktury nie da się dopisać `env` ani `hooks` **przez pomyłkę**.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepDocument<'a> {
+    /// Dokąd ten krok ma pisać swoją auto-pamięć. Ścieżka przychodzi gotowa z warstwy, która zna
+    /// układ katalogów biegu — ten plik miejsca sobie nie wybiera.
+    auto_memory_directory: &'a Path,
+    /// Zawsze `true`. Przekierowanie katalogu przy wyłączonej funkcji jest krokiem, który nie
+    /// pisze nigdzie; brak klucza jest krokiem, który pisze tam, gdzie pisał zawsze.
+    auto_memory_enabled: bool,
+    permissions: DenyOnly<'a>,
+}
+
 impl RunSettings {
     /// Zapisuje plik ustawień biegu w **podanym** katalogu i oddaje uchwyt do niego.
     ///
@@ -715,6 +748,48 @@ impl RunSettings {
         };
         let text = serde_json::to_string_pretty(&document)
             .context("the rewritten deny rules could not be turned into a settings document")?;
+
+        std::fs::write(&path, text).with_context(|| {
+            format!(
+                "the run settings file could not be written at {}",
+                path.display()
+            )
+        })?;
+
+        Ok(Self { path })
+    }
+
+    /// Zapisuje plik ustawień JEDNEGO KROKU: odmowy gospodarza plus jego własna auto-pamięć.
+    ///
+    /// Osobne wejście obok [`RunSettings::write`], nie jego rozszerzenie — powód w całości stoi
+    /// przy [`StepDocument`].
+    ///
+    /// **Nazwa pliku niesie krok**, i to nie jest ozdoba: dokument jest per krok, a kroki jednego
+    /// biegu idą RÓWNOLEGLE (niezmiennik 11). Jedna nazwa dla wszystkich znaczyłaby, że krok,
+    /// który wstaje sekundę później, nadpisuje plik, którego proces poprzednika jeszcze nie
+    /// zdążył wczytać — i tamten krok pisałby swoją pamięć do katalogu cudzego kroku. Klucz
+    /// bierzemy z ostatniego członu ścieżki pamięci, bo to ten sam klucz, którym bieg nazywa
+    /// `work/<krok>` i `mem/<krok>`: jest już nazwą katalogu w tym biegu, więc jest nazwą,
+    /// którą ten system plików przyjmuje.
+    ///
+    /// Katalogu pamięci **nie zakłada** i miejsca sobie **nie wybiera**, dokładnie jak
+    /// [`RunSettings::write`]: układ katalogów biegu zna warstwa wyżej.
+    pub fn for_step(settings: &StepSettings) -> anyhow::Result<Self> {
+        let step = settings.memory.file_name().map_or_else(
+            || std::borrow::Cow::Borrowed("step"),
+            |name| name.to_string_lossy(),
+        );
+        let path = settings.dir.join(format!("claude-settings-{step}.json"));
+
+        let document = StepDocument {
+            auto_memory_directory: &settings.memory,
+            auto_memory_enabled: true,
+            permissions: DenyOnly {
+                deny: &settings.deny,
+            },
+        };
+        let text = serde_json::to_string_pretty(&document)
+            .context("this step's settings could not be turned into a settings document")?;
 
         std::fs::write(&path, text).with_context(|| {
             format!(
@@ -845,31 +920,22 @@ impl ClaudeDriver {
     /// nie ma tu nowego pola w [`RunSpec`]: tę strukturę konstruuje literałem trzynaście plików
     /// spoza tego zadania, a nowe pole wywróciłoby kompilację ich wszystkich.
     ///
-    /// # Wołacza produkcyjnego ten szew nie ma i to jest pytanie do człowieka (T-53)
+    /// # Wołacz (2026-08-23, T-92) — od T-53 do tego dnia tego szwu nie wołało NIC
     ///
-    /// Kształt jest ten sam co przy [`ClaudeDriver::with_transcript`] z T-34: mechanizm jest
-    /// kompletny i **nieużywany**, dopóki człowiek go nie zepnie. Wołaczem jest `commands/run.rs`,
-    /// a on **nie leży w bloku OWNS T-53** — jeden wiersz poza tym blokiem jest pytaniem, nie
-    /// cichym dopiskiem (`AGENTS.md` §7).
+    /// Kształt był ten sam, co przy [`ClaudeDriver::with_transcript`] z T-34: mechanizm
+    /// kompletny i **nieużywany**, bo budowniczy żyje na konkretnym typie, a bieg trzyma
+    /// `Arc<dyn AgentDriver>` — fabryka z `lib.rs` wydaje sterownik raz na aplikację, więc
+    /// w `commands/run.rs` konkretny typ jest już zgubiony. Komentarz stojący tu wcześniej
+    /// nazywał to pytaniem do człowieka i wskazywał dwie drogi: fabrykę wołaną per bieg albo
+    /// metodę na traicie. Wybrana została druga, bo jest tą samą, którą dostały
+    /// [`AgentDriver::inheriting`] i [`AgentDriver::with_evidence`].
     ///
-    /// Proponowane miejsce: `plan_agent` w `commands/run.rs`. Tam, i tylko tam, znane są
-    /// **naraz** obie ścieżki — katalog roboczy kroku (`cwd` policzone przez `workspace`; dla
-    /// `Folder::Project` to `setup.project`, a dla `fresh-copy` kopia pod katalogiem biegu) oraz
-    /// katalog biegu (`setup.dir`, ten sam, który dostaje `lay_out_the_run_dir`). Trzy wiersze,
-    /// w tej kolejności:
-    ///
-    /// 1. `let deny = super::host::deny_rules(&cwd);`
-    /// 2. `let settings = RunSettings::write(setup.dir, &deny)?;` — katalog biegu, nigdy
-    ///    `$TMPDIR` (`docs/ARCHITECTURE.md` §8); zapis idzie **przed** startem procesu, bo
-    ///    `--settings` bez pliku zabija CLI dopiero w produkcji (niezmiennik 21).
-    /// 3. `.with_settings(settings)` na sterowniku, **zanim** ktokolwiek zawoła
-    ///    [`ClaudeDriver::command`] — flaga wchodzi do argv wyłącznie stąd.
-    ///
-    /// Otwarte pytanie tej propozycji i drugi powód, dla którego decyzja należy do człowieka:
-    /// fabryka z `lib.rs` oddaje `Arc<dyn AgentDriver>` raz na aplikację, więc w `plan_agent`
-    /// konkretny typ jest już zgubiony, a ten budowniczy żyje na [`ClaudeDriver`], nie na
-    /// traicie. Wpięcie potrzebuje **albo** fabryki wołanej per bieg, **albo** tej samej
-    /// odpowiedzi, której T-34 nie dostało dla transkryptu. Obie zmieniają plik spoza OWNS.
+    /// Droga jest dziś taka: `Live::run_agent` składa [`super::StepSettings`] (katalog biegu,
+    /// katalog auto-pamięci tego kroku, odmowy z `super::host::deny_rules`) i woła
+    /// [`AgentDriver::with_settings`] tuż obok pozostałych opakowań sterownika. Ten budowniczy
+    /// jest ostatnim ogniwem tamtej drogi i **nie jest** jej wejściem: plik pisze
+    /// [`RunSettings::for_step`], zanim ruszy proces, bo `--settings` bez pliku pod podaną
+    /// ścieżką zabija CLI dopiero w produkcji (niezmiennik 21).
     #[must_use]
     pub fn with_settings(mut self, settings: RunSettings) -> Self {
         self.settings = Some(settings);
@@ -2493,6 +2559,23 @@ impl AgentDriver for ClaudeDriver {
         ))
     }
 
+    /// Turę Loadouta ten sterownik **bierze**, i to jest cała treść tej odpowiedzi.
+    ///
+    /// Refleksja po biegu jest jedną tanią turą u jednego vendora ([T6 §5.3]), a którego —
+    /// rozstrzyga `commands::run::REFLECTION_MODEL`, alias tego adaptera. Reszta kształtu tej
+    /// tury (polityka tylko-do-odczytu, katalog biegu, model, limit czasu) jedzie w `RunSpec`,
+    /// bo to są fakty o pytaniu, a nie o vendorze.
+    ///
+    /// Nowy sterownik, nie klon `self`, i to jest różnica, nie ozdoba: przenosi się **wyłącznie
+    /// binarka**, czyli jedyny fakt o tym, co uruchomić. Transkrypt, target dowodów, obrazy,
+    /// plik ustawień kroku, dziedziczone flagi i Connections zostają po tamtej stronie —
+    /// o skończony bieg pyta Loadout, a nie żaden agent z grafu, więc tura niosąca wyposażenie
+    /// ostatniego kafelka byłaby turą podpisaną cudzym nazwiskiem. Wpisywałaby się przy tym do
+    /// cudzego transkryptu, którego bieg właśnie domknął.
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self::with_binary(self.binary.clone())))
+    }
+
     /// `--effort <poziom>` — cała wiedza tego adaptera o szczeblu „ile myśleć".
     ///
     /// Zmierzone 2026-08-23 na 2.1.241: `--effort <level>` przyjmuje `low, medium, high, xhigh,
@@ -2620,6 +2703,35 @@ impl AgentDriver for ClaudeDriver {
 
     fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
         Some(Arc::new(self.clone().carrying_evidence(target)))
+    }
+
+    /// Ten sterownik plik ustawień **ma** i to jest jego flaga — więc pisze go i bierze.
+    ///
+    /// 2026-08-23 (T-92) — TO JEST WOŁACZ, KTÓREGO SZUKAŁO T-53. Budowniczy na konkretnym typie
+    /// był kompletny od tamtego zadania i nieosiągalny z biegu, bo bieg trzyma
+    /// `Arc<dyn AgentDriver>`. Ta metoda jest dokładnie tą samą odpowiedzią, którą dostały
+    /// [`AgentDriver::inheriting`] i [`AgentDriver::with_evidence`].
+    ///
+    /// Klon, nie mutacja pola, i to jest ten sam powód, co przy nich: dokument jest per KROK,
+    /// a sterownik bywa jeden na całą aplikację, więc nadpisanie pola przepięłoby ścieżkę
+    /// `--settings` krokowi, który akurat trwa.
+    ///
+    /// Nieudany zapis to `Some(Err(…))`, nie panika, nie `None` i nie cichy sterownik bez pliku.
+    /// Wołający czyta to jako odmowę i **nie startuje kroku** (`commands::run`), bo `--settings`
+    /// bez pliku pod podaną ścieżką zabija CLI, a krok bez tej flagi w argv pisze pamięć do
+    /// katalogu człowieka i nie egzekwuje ani jednej odmowy gospodarza.
+    ///
+    /// `Some`, ZAWSZE — także wtedy, kiedy zapis padł. `None` znaczy w tym szwie „nie mam gdzie
+    /// tego przyjąć", a ten sterownik ma: mylenie tych dwóch odpowiedzi kosztowało pierwszą rundę
+    /// T-92 rozróżnianie ich po `driver.id()` u wołającego (powód w całości przy
+    /// [`AgentDriver::with_settings`]).
+    fn with_settings(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
+        Some(RunSettings::for_step(settings).map(|written| {
+            Arc::new(Self::with_settings(self.clone(), written)) as Arc<dyn AgentDriver>
+        }))
     }
 }
 

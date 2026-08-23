@@ -6,33 +6,34 @@
 //! „no because, no memory", budżet zakresu liczony z plików i wymuszony wybór zamiast cichego
 //! przycięcia. Ta warstwa nie powtarza ani jednej z tych reguł.
 //!
-//! # Czego rdzeń nie ma i co z tego wynika
+//! # Dług z 2026-08-16 spłacony 2026-08-23 (T-92)
 //!
-//! 2026-08-16 — `memory::notes` ma [`promote`] i **nie ma funkcji odwrotnej**. Sekcja Pamięć
-//! ma przycisk `Stop using` od T-17 (`src/sections/memory/note-row.tsx`), magazyn ma `stopUsing`,
-//! a po stronie Rusta nie ma czego zawołać. `src-tauri/src/memory/` nie jest w bloku OWNS tego
-//! zadania, więc dopisanie tam `demote` byłoby pytaniem do człowieka (`AGENTS.md` §7), nie cichą
-//! poprawką w cudzym pliku — i dlatego odstawienie stoi TUTAJ, w [`stop_using_note_inner`].
+//! Do tego dnia stało tu ciało odstawienia notatki, bo `memory::notes` miało [`promote`] i nie
+//! miało funkcji odwrotnej, a `src-tauri/src/memory/` leżało poza blokiem OWNS tamtego zadania
+//! (`AGENTS.md` §7). Nagłówek nazywał to długiem wprost i wskazywał termin: „przy pierwszej
+//! okazji ma się przenieść do `memory::notes` obok [`promote`], żeby oba kierunki jednego
+//! przełącznika mieszkały w jednym pliku" (niezmiennik 23).
 //!
-//! Ta funkcja jest jedynym miejscem w tym module, które zna słowo `suggested` i kształt zapisu
-//! notatki. To jest dług, nie wzorzec: przy pierwszej okazji ma się przenieść do `memory::notes`
-//! obok [`promote`], żeby oba kierunki jednego przełącznika mieszkały w jednym pliku
-//! (niezmiennik 23). Powód, dla którego to nie boli dzisiaj, jest wąski: format pliku należy
-//! w całości do [`FrontMatter`], a odczyt idzie wyłącznie przez [`scan_notes`] — więc kopią jest
-//! JEDNO słowo i nic poza nim.
+//! Tą okazją jest `memory::notes::discard`: trzecie wejście, które musi wiedzieć, co znaczy
+//! „ta notatka nie wchodzi do promptu". Cena rozdzielenia była wąska, dopóki kopia była jedna —
+//! trzecia kopia tej wiedzy to już nie kopia, tylko drugi zestaw reguł. Od tej chwili wszystkie
+//! trzy funkcje stoją w jednym pliku, a ta warstwa jest tym, czym miała być: skorupą, która
+//! zamienia identyfikator na [`NoteId`], a błąd na zdanie dla okna.
 
 use std::path::Path;
 
 use serde::Serialize;
 
-use crate::memory::FrontMatter;
-use crate::memory::notes::{Actor, Error, Note, NoteId, Scope, Status, promote, scan_notes};
+use crate::memory::notes::{
+    Actor, Error, Note, NoteId, Scope, Status, discard, promote, scan_notes, stop_using,
+};
 
-/// Wartość `status:` dla notatki, która przestała wchodzić do promptu.
+/// Wartość `status:` dla notatki, która przestała wchodzić do promptu — **na drucie**.
 ///
 /// Słowo z pliku, nie z ekranu: na dysku stoi `suggested`, a człowiek widzi `Suggested`
-/// (`memory::notes::Status`). Drugie miejsce w drzewie, w którym ten napis stoi wypisany —
-/// pierwsze jest prywatne w `memory::notes`. Powód stoi w nagłówku modułu.
+/// (`memory::notes::Status`). Stoi tu wyłącznie dlatego, że [`NoteWire`] jest lustrem dla okna
+/// i musi nazwać stan tym samym napisem, którym nazywa go plik — zapisu notatki ta warstwa nie
+/// zna od 2026-08-23 (patrz nagłówek modułu).
 const SUGGESTED: &str = "suggested";
 
 /// Notatka tak, jak widzi ją okno.
@@ -160,17 +161,6 @@ pub fn notes_root(library: &Path) -> std::path::PathBuf {
     library.join("memory")
 }
 
-/// Notatka o tym identyfikatorze, odczytana z dysku.
-///
-/// Przez [`scan_notes`], nie przez własny odczyt: czytnik notatek jest jeden i ma zostać jeden.
-/// Wraca też `path`, więc ta warstwa nie musi znać nazwy katalogu, w którym leżą notatki.
-fn on_disk(root: &Path, id: &NoteId) -> Result<Note, Error> {
-    scan_notes(root)?
-        .into_iter()
-        .find(|note| &note.id == id)
-        .ok_or_else(|| Error::NoSuchNote(id.clone()))
-}
-
 /// Wszystkie notatki z dysku, w kolejności, którą oddaje skaner.
 ///
 /// 2026-08-18 — jedyna droga, którą sekcja Pamięć dowiaduje się, co leży w plikach. Do tego dnia
@@ -200,49 +190,38 @@ pub fn put_note_to_use_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire
     Ok(NoteWire::from(&note))
 }
 
+/// „Discard": kandydatka odchodzi do `<korzeń>/discarded/` i znika z listy.
+///
+/// 2026-08-23 (T-92) — do dziś pamięć miała **jedno** wejście dla decyzji człowieka i było nim
+/// „tak". Makieta rysuje przy kandydatce dwie akcje (`docs/mockup/index.html:757`), sekcja
+/// renderowała jedną, a `MemoryState` znało `use`, `stopUsing` i `cancel` — czyli człowiek,
+/// któremu agent zaproponował zdanie nieprawdziwe, nie miał ani jednej drogi, żeby to
+/// powiedzieć. Kandydatki zostawały na liście na zawsze, a lista, z której nic nie schodzi,
+/// przestaje być czytana.
+///
+/// `at` podaje wołający, tak jak przy [`put_note_to_use_inner`]: to jest chwila, w której
+/// **człowiek** kliknął, a `memory::notes` nie ma zegara i mieć nie będzie.
+///
+/// Cała polityka mieszka w [`discard`] (odmowa dla notatki w użyciu, przeniesienie zamiast
+/// skasowania, wyłącznie [`Actor::You`]). Ta warstwa nie powtarza ani jednej z tych reguł.
+pub fn discard_note_inner(root: &Path, id: &str, at: &str) -> Result<(), NoteRefusal> {
+    discard(
+        root,
+        &NoteId(id.to_owned()),
+        Actor::You { at: at.to_owned() },
+    )?;
+    Ok(())
+}
+
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
 ///
 /// Odstawienie nie ma budżetu do sprawdzenia i nie ma czego odmówić: zbiór w użyciu tylko
 /// maleje. Nie ma tu też pytania o [`Actor`] — reguła „tylko człowiek" broni WEJŚCIA do promptu
 /// (ARCHITECTURE §2 pyt. 5), a wyjście z niego nie jest uprawnieniem, którego trzeba pilnować.
 ///
-/// Powód, dla którego ta funkcja stoi tutaj, a nie obok [`promote`], jest w nagłówku modułu.
+/// Cała polityka mieszka od 2026-08-23 w [`stop_using`], obok [`promote`] i [`discard`]
+/// (nagłówek modułu). Ta warstwa zamienia identyfikator na [`NoteId`], a notatkę na drut.
 pub fn stop_using_note_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire, NoteRefusal> {
-    let id = NoteId(id.to_owned());
-    let note = on_disk(root, &id)?;
-
-    // Notatka, która już nie jest w użyciu: plik zostaje NIETKNIĘTY. Stempel `modified` za
-    // kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta notatka ostatnio
-    // się zmieniła — a to pole czyta człowiek, żeby wiedzieć, co jest świeże. Ta sama decyzja
-    // stoi po drugiej stronie przełącznika, w `promote`.
-    if note.status == Status::Suggested {
-        return Ok(NoteWire::from(&note));
-    }
-
-    let raw = std::fs::read_to_string(&note.path).map_err(Error::Io)?;
-    let (mut front, body_at) = FrontMatter::split(&raw).map_err(Error::Memory)?;
-
-    // Dwie linie w pliku i ani jedna więcej. Złożenie front-mattera od nowa z tego, co ta
-    // funkcja wie, przepisałoby pola, o które nikt jej nie pytał — razem z kluczami, których ta
-    // wersja Loadouta nie zna (niezmiennik 5).
-    front.set("status", SUGGESTED);
-    // Data w jednej linii: wartość front-mattera nie ma prawa nieść znaku końca wiersza, bo
-    // rozcięłaby nagłówek na dwa. `promote` robi to samo swoim prywatnym `one_line`.
-    front.set(
-        "modified",
-        &at.split_whitespace().collect::<Vec<_>>().join(" "),
-    );
-
-    let mut out = front.render();
-    let body = &raw[body_at..];
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(body);
-    }
-    std::fs::write(&note.path, out).map_err(Error::Io)?;
-
-    // Wracamy z tym, co LEŻY NA DYSKU, a nie z tym, co przed chwilą złożyliśmy w pamięci —
-    // wołający dostaje wtedy dokładnie to, co przeczyta następny skan, i nie ma jak zobaczyć
-    // notatki, której zapis po cichu nie doszedł. Ta sama reguła stoi na końcu `promote`.
-    Ok(NoteWire::from(&on_disk(root, &id)?))
+    let note = stop_using(root, &NoteId(id.to_owned()), at)?;
+    Ok(NoteWire::from(&note))
 }

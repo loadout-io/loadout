@@ -56,6 +56,14 @@ use super::FrontMatter;
 /// Katalog notatek wewnątrz korzenia. Jedna nazwa, w jednym miejscu.
 const NOTES_DIR: &str = "notes";
 
+/// Dokąd odchodzi notatka, której człowiek nie chciał (2026-08-23, T-92).
+///
+/// **Nic nie jest twardo usuwane** [T6 §5.3]: zdanie skasowane z dysku jest zdaniem, którego
+/// nikt nie umie ani odzyskać, ani wytłumaczyć następnemu, kto zaproponuje je drugi raz.
+/// Katalog stoi obok [`NOTES_DIR`], a nie w nim, bo [`scan_notes`] czyta płasko i wyłącznie
+/// `.md` — odrzucona notatka zostawiona wśród notatek wróciłaby ze skanu jako kandydatka.
+pub const DISCARDED_DIR: &str = "discarded";
+
 /// Nagłówek bloku — te same trzy słowa, które człowiek widzi w sekcji Pamięć
 /// [`00-SYNTHESIS` §2.2]. Prompt i ekran mówią o tym samym zbiorze tym samym zdaniem,
 /// więc pytanie „co model o tym wie" ma jedną odpowiedź, nie dwie.
@@ -228,8 +236,16 @@ pub struct Note {
     /// `None` sortuje się przed każdą datą i to jest właściwy kierunek: notatka nieużyta
     /// nigdy jest „najdawniej użyta" i schodzi z listy pierwsza.
     ///
-    /// Pole zapisuje krok składania promptu (T-15), nie ten moduł: [`what_you_know`] nie
-    /// widzi dysku i o to chodzi.
+    /// **W SEKUNDACH, nigdy drobniej** — i to nie jest gust. To pole jest jedynym, które ten
+    /// moduł porządkuje leksykograficznie ([`promote`]), a `2026-08-23T10:00:00.500Z` sortuje
+    /// się PRZED `2026-08-23T10:00:00Z`, bo `.` stoi w ASCII przed `Z`. Ułamek dopisany do
+    /// części wartości odwracałby więc kolejność względem każdej wartości wpisanej ręcznie
+    /// albo przywiezionej z importu — czyli dokładnie tam, gdzie ta kolejność jest treścią.
+    ///
+    /// Pisze je [`mark_used`], wołane przez bieg w chwili, w której prompty z tym zdaniem są
+    /// już złożone i bieg rusza (`commands::run`). Nie ten moduł i nie [`what_you_know`]:
+    /// funkcja składająca blok nie widzi dysku i o to chodzi — inaczej samo pytanie „co model
+    /// o tym wie" zmieniałoby odpowiedź na następne.
     pub last_used_at: Option<String>,
     /// Ile jednostek długości ta notatka zabiera z budżetu zakresu.
     ///
@@ -371,6 +387,19 @@ pub enum Error {
     /// (niezmiennik 14).
     #[error("This note is for one agent. Which agent is it for?")]
     NoAgentNamed,
+
+    /// Odrzucenie notatki, która wchodzi do promptu (2026-08-23, T-92).
+    ///
+    /// Odmowa, nie ciche odstawienie po drodze. „Odrzuć" i „przestań używać" to dwie różne
+    /// decyzje człowieka i mają zostać dwiema: notatka, która najpierw sama wyszła z promptu,
+    /// a potem zniknęła z listy, znika w jednym kliknięciu z miejsca, w którym człowiek jej
+    /// właśnie szukał — a on prosił o jedno.
+    ///
+    /// Zdanie mówi, CO ZROBIĆ, a nie czego nie wolno: „nie można odrzucić notatki w użyciu"
+    /// zostawia człowieka przed przyciskiem, który odmawia, i bez drugiego, który by pomógł
+    /// (niezmiennik 14).
+    #[error("This note is in use. Stop using it first.")]
+    StillInUse,
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -502,7 +531,23 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
-    record(root, draft, agent, None)
+    record(root, draft, agent, None, None)
+}
+
+/// Zapisuje kandydatkę, którą zgłosił **bieg** — z jego identyfikatorem w polu `from`.
+///
+/// 2026-08-23 (T-92). Osobne wejście, a nie czwarty argument [`record_candidate_for`] i nie pole
+/// w [`NoteDraft`]: tamten podpis i tamta struktura są konstruowane literałem w czterech plikach
+/// spoza tego zadania, więc dopisanie pola zamieniłoby to kryterium w czerwień trzech innych
+/// (`AGENTS.md` §7). Ten sam powód i ten sam kształt, co przy [`record_imported`].
+///
+/// **`from` niesie tu bieg, nie projekt**, i to jest jedyne miejsce w tym module, w którym tak
+/// jest. Powód: notatka zaproponowana po biegu jest zdaniem, którego nikt jeszcze nie sprawdził,
+/// a jedyną drogą do sprawdzenia jest transkrypt tego biegu. Roszczenie, do którego nie ma drogi
+/// powrotnej, jest roszczeniem, którego nie da się później wycofać [T6 §5.1] — a wycofanie jest
+/// całą różnicą między pamięcią a akrecją instrukcji.
+pub fn record_candidate_from_run(root: &Path, draft: NoteDraft, run: &str) -> Result<Note> {
+    record(root, draft, None, Some(run), None)
 }
 
 /// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
@@ -538,13 +583,14 @@ pub fn record_imported(
     agent: Option<&str>,
     origin: &Origin,
 ) -> Result<Note> {
-    record(root, draft, agent, Some(origin))
+    record(root, draft, agent, None, Some(origin))
 }
 
 fn record(
     root: &Path,
     draft: NoteDraft,
     agent: Option<&str>,
+    from: Option<&str>,
     origin: Option<&Origin>,
 ) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
@@ -605,6 +651,12 @@ fn record(
             if let Some(name) = owner.filter(|_| front.get("agent").is_none()) {
                 front.set("agent", &one_line(name));
             }
+            // Ta sama reguła dla biegu: notatka mówi o PIERWSZYM, który ją zgłosił. Drugie
+            // zgłoszenie podbija `occurrences` i to jest cały jego ślad — przepisanie `from`
+            // zabrałoby drogę powrotną do transkryptu, w którym to zdanie w ogóle powstało.
+            if let Some(run) = from {
+                add_missing(&mut front, "from", run);
+            }
             // Ta sama reguła dla pochodzenia: dopisujemy brakujące, nie przepisujemy cudzego.
             // Notatka, która leży w bibliotece i już mówi, skąd jest, mówi to o PIERWSZYM
             // projekcie, który ją przywiózł — a drugi import tego nie unieważnia.
@@ -627,6 +679,12 @@ fn record(
             // pole, które w połowie plików znaczy „nie wiem", a w połowie „nikt", nie znaczy nic.
             if let Some(name) = owner {
                 front.set("agent", &one_line(name));
+            }
+            // Bieg, który to zgłosił, stoi w tym samym miejscu i w tym samym kluczu co projekt,
+            // z którego notatka przyjechała: oba odpowiadają na pytanie „skąd to zdanie", a dwa
+            // klucze na jedno pytanie znaczyłyby, że czytelnik musi wiedzieć, którego szukać.
+            if let Some(run) = from {
+                front.set("from", &one_line(run));
             }
             // Pochodzenie stoi zaraz za właścicielem, bo odpowiada na to samo pytanie z drugiej
             // strony: kto tego używa i skąd to wzięliśmy. Notatka napisana tutaj nie dostaje ani
@@ -680,13 +738,7 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
     };
 
     let path = root.join(NOTES_DIR).join(format!("{id}.md"));
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NoSuchNote(id.clone()));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let raw = read_or_missing(&path, id)?;
     let (mut front, body_at) = FrontMatter::split(&raw)?;
     let note = note_from(&path, &front);
 
@@ -740,6 +792,153 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
     front.set("modified", &one_line(&at));
     write_note(&path, &front, &raw[body_at..])?;
     read_note(&path)
+}
+
+/// Odstawia notatkę: zostaje na liście i przestaje wchodzić do promptu.
+///
+/// 2026-08-23 (T-92) — DRUGI KIERUNEK JEDNEGO PRZEŁĄCZNIKA WRACA OBOK PIERWSZEGO. Od T-17 do
+/// dziś mieszkał w `commands::memory::stop_using_note_inner`, a nagłówek tamtego modułu nazywał
+/// to długiem wprost: „przy pierwszej okazji ma się przenieść do `memory::notes` obok
+/// [`promote`], żeby oba kierunki jednego przełącznika mieszkały w jednym pliku" (niezmiennik
+/// 23). Cena tamtego rozdzielenia była wąska i mierzalna — słowo `suggested` stało wypisane
+/// w dwóch plikach — ale rosła: [`discard`] jest trzecim wejściem, które musi wiedzieć, co
+/// znaczy „ta notatka nie wchodzi do promptu", i trzecia kopia tej wiedzy to już nie kopia,
+/// tylko drugi zestaw reguł.
+///
+/// Nie pyta o [`Actor`] i to jest ta sama decyzja, co w warstwie komend: reguła „tylko człowiek"
+/// broni WEJŚCIA do promptu (ARCHITECTURE §2 pyt. 5), a wyjście z niego nie jest uprawnieniem,
+/// którego trzeba pilnować. Budżetu też nie sprawdza — zbiór w użyciu tylko maleje.
+///
+/// Notatka, która już nie jest w użyciu, zostaje **nietknięta**: stempel `modified` za
+/// kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta notatka ostatnio się
+/// zmieniła. Ta sama decyzja stoi po drugiej stronie przełącznika, w [`promote`].
+pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
+    let path = root.join(NOTES_DIR).join(format!("{id}.md"));
+    let raw = read_or_missing(&path, id)?;
+    let (mut front, body_at) = FrontMatter::split(&raw)?;
+    let note = note_from(&path, &front);
+
+    // Notatka, która już nie jest w użyciu: plik zostaje NIETKNIĘTY, i to jest ta sama decyzja,
+    // co po drugiej stronie przełącznika ([`promote`] przy notatce już `in-use`).
+    if note.status == Status::Suggested {
+        return Ok(note);
+    }
+
+    // Dwie linie w pliku i ani jedna więcej — dokładnie jak w [`promote`]. Złożenie
+    // front-mattera od nowa przepisałoby klucze, o które nikt tej funkcji nie pytał, razem
+    // z tymi, których ta wersja Loadouta nie zna (niezmiennik 5).
+    front.set("status", "suggested");
+    front.set("modified", &one_line(at));
+    write_note(&path, &front, &raw[body_at..])?;
+    read_note(&path)
+}
+
+/// Stempluje `last_used_at`: **ta notatka właśnie weszła do promptu**.
+///
+/// # Po co to istnieje (zmierzone 2026-08-23, T-92)
+///
+/// Pole jest w kontrakcie od T-17 i jego opis mówił, że „zapisuje je krok składania promptu
+/// (T-15)". **Nie zapisywał.** Po 23 biegach właściciela każda notatka w tym repo dalej twierdziła,
+/// że nie była użyta nigdy — wartość szła na dysk raz, jako `null`, i nie ruszała się z miejsca.
+///
+/// Skutek ma jednego adresata i nie jest kosmetyczny. Kiedy zakres jest pełny, [`promote`] odmawia
+/// i pokazuje człowiekowi wymuszony wybór „najdawniej użyte pierwsze" [T6 §5.3]. Ta lista sortuje
+/// się po tym polu — a skoro wszędzie stało `null`, sortowała się po identyfikatorze, czyli po
+/// NAZWIE PLIKU. Człowiekowi, który ma zdecydować, co przestaje docierać do modelu, pokazywaliśmy
+/// zdania ułożone alfabetycznie i mówiliśmy, że są ułożone po tym, jak dawno były potrzebne.
+///
+/// # Ścieżką, nie identyfikatorem
+///
+/// Jedyna funkcja w tym module, która tak robi, i powód jest wąski: wołający — bieg — trzyma
+/// rachunek z tego, co naprawdę pojechało w promptach, a w rachunku stoją ŚCIEŻKI (`run.json`,
+/// `MemoryRecord::reference`). Droga przez identyfikator znaczyłaby rozłożenie ścieżki na nazwę
+/// pliku po to, żeby złożyć z niej z powrotem tę samą ścieżkę — czyli drugie miejsce, w którym
+/// mieszka odpowiedź na pytanie, gdzie leży ten plik.
+///
+/// **Jedna linia w pliku i ani jedna więcej**, jak przy zmianie `status` w [`promote`].
+/// `modified` zostaje NIETKNIĘTE: wejście do promptu nie jest zmianą treści ani stanu notatki,
+/// a to pole czyta człowiek, żeby wiedzieć, co ktoś ostatnio poprawiał.
+///
+/// Zwraca `()`, a nie odczytaną notatkę — jedyne wyłamanie z reguły „wracamy z tym, co leży na
+/// dysku", i też z powodu: tej wartości nie ma kto przeczytać. Bieg stempluje i idzie dalej,
+/// więc odczyt po zapisie byłby odczytem dla nikogo (niezmiennik 21).
+pub fn mark_used(path: &Path, at: &str) -> Result<()> {
+    let raw = fs::read_to_string(path)?;
+    let (mut front, body_at) = FrontMatter::split(&raw)?;
+    front.set("last_used_at", &one_line(at));
+    write_note(path, &front, &raw[body_at..])
+}
+
+/// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
+///
+/// Cztery rzeczy, które robi i które są całą jej treścią:
+/// 1. **Wyłącznie [`Actor::You`]** ([`Error::OnlyYouCanDoThat`]). Kurator jest jeden i jest nim
+///    człowiek — ta sama reguła, która trzyma [`promote`], czytana od drugiej strony. Agent,
+///    który umie skasować cudzą notatkę, umie skasować tę, która opisuje jego własny błąd.
+/// 2. **Notatka `in-use` to odmowa** ([`Error::StillInUse`]), nie ciche odstawienie po drodze.
+/// 3. **Przeniesienie, nigdy `remove_file`** [T6 §5.3]. Nazwa pliku w `discarded/` niesie datę
+///    podaną przez wołającego, bo ten moduł nie ma zegara (patrz nagłówek pliku) — i dlatego
+///    dwie odrzucone kandydatki o tym samym tytule nie nadpisują się nawzajem.
+/// 4. **Odmowy padają PRZED pierwszym zapisem.** Implementacja, która przenosi plik i dopiero
+///    potem zwraca błąd, przechodzi każde `assert!(… .is_err())` i zostawia człowieka bez
+///    notatki, o której powiedziano mu, że jej nie ruszono. Ta sama kolejność co w [`promote`].
+///
+/// Zwraca ścieżkę, pod którą notatka teraz leży: bez niej „nic nie jest twardo usuwane" jest
+/// zdaniem w komentarzu, a nie czymś, co wołający umie pokazać człowiekowi.
+pub fn discard(root: &Path, id: &NoteId, by: Actor) -> Result<PathBuf> {
+    // 1. Wyłącznie człowiek — pierwsza linia, więc żadne inne wywołanie nie zdąży ruszyć pliku.
+    let Actor::You { at } = by else {
+        return Err(Error::OnlyYouCanDoThat);
+    };
+
+    let path = root.join(NOTES_DIR).join(format!("{id}.md"));
+    let raw = read_or_missing(&path, id)?;
+    let (front, _) = FrontMatter::split(&raw)?;
+
+    // 2. …i dopiero potem odmowa dla notatki, która wchodzi do promptu. Też PRZED pierwszym
+    //    zapisem: implementacja, która przenosi plik i zwraca błąd po fakcie, przechodzi każde
+    //    `assert!(… .is_err())` i zostawia człowieka bez notatki, o której powiedziano mu, że
+    //    jej nie ruszono.
+    if note_from(&path, &front).status == Status::InUse {
+        return Err(Error::StillInUse);
+    }
+
+    let gone = root.join(DISCARDED_DIR);
+    fs::create_dir_all(&gone)?;
+    // 3. Przeniesienie, nigdy `remove_file` [T6 §5.3]. Nazwa niesie moment podany przez
+    //    wołającego, bo ten moduł nie ma zegara — bez niego druga odrzucona kandydatka o tym
+    //    samym tytule nadpisuje pierwszą, czyli „nic nie jest usuwane" przestaje być prawdą
+    //    przy drugim kliknięciu, a nie przy pierwszym.
+    let landing = gone.join(format!("{id}__{}.md", file_safe(&at)));
+    fs::rename(&path, &landing)?;
+    Ok(landing)
+}
+
+/// Treść pliku notatki spod tej ścieżki — albo [`Error::NoSuchNote`].
+///
+/// Brak pliku jest tu odpowiedzią o notatce, nie o dysku: „nothing here has the id …" mówi
+/// człowiekowi, czego szukał, a `No such file or directory` mówi mu o katalogu, którego nigdy
+/// nie widział (niezmiennik 14).
+fn read_or_missing(path: &Path, id: &NoteId) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(Error::NoSuchNote(id.clone()))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Chwila z [`Actor::You`] w kształcie, który na pewno przeżyje jako **człon nazwy pliku**.
+///
+/// Lista dozwolonych, nigdy zakazanych — ten sam wybór, co w [`super::slugify`] i z tego samego
+/// powodu. Dwukropki z ISO 8601 są tu jedyną rzeczą, która naprawdę przepada: w Finderze
+/// wyświetlają się jako ukośniki, więc nazwa z nimi jest nazwą, której człowiek nie umie
+/// przepisać. Data zostaje czytelna, bo po niej ten plik się znajduje.
+fn file_safe(at: &str) -> String {
+    at.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
 }
 
 // ── odczyt i zapis pliku ──────────────────────────────────────────────────────────────────

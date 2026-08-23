@@ -35,6 +35,19 @@ export interface NoteRowProps {
   onUse: (id: string) => void;
   /** „Stop using". Ta sama reguła. */
   onStopUse: (id: string) => void;
+  /**
+   * „Discard" — druga decyzja, którą człowiek może podjąć wobec KANDYDATKI (2026-08-23, T-92).
+   *
+   * OPCJONALNY, i to nie jest wygoda dla wołających. `note-row.test.tsx` z T-17 leży poza blokiem
+   * OWNS tego zadania (`AGENTS.md` §7) i montuje ten wiersz bez tego propsa — wymagany zabrałby
+   * cudzemu kryterium kompilację, a kryterium, które przestało się kompilować, niczego nie
+   * uruchomiło.
+   *
+   * Brak handlera znaczy **brak przycisku**, nigdy przycisk, który nic nie robi: kontrolka bez
+   * handlera nie wchodzi do repo (niezmiennik 16), a odmowa na kliknięcie jest z zewnątrz
+   * nieodróżnialna od zepsutej aplikacji.
+   */
+  onDiscard?: (id: string) => void;
 }
 
 /* `chip` z DESIGN §6: wysokość 20px, `--t-label`, obrys `{stan}-edge`, tło `{stan}-wash`.
@@ -87,7 +100,7 @@ function originLabel(from: string): string {
   return 'From ' + from;
 }
 
-export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement {
+export function NoteRow({ note, onUse, onStopUse, onDiscard }: NoteRowProps): ReactElement {
   /* Jedno pytanie zadane RAZ. Trzy osobne `note.status === 'suggested'` w trzech gałęziach to
    * trzy miejsca, w których wiersz odpowiada na to samo — i pierwsze, które ktoś zmieni,
    * rozjedzie się z dwoma pozostałymi bez śladu w typach. */
@@ -138,6 +151,27 @@ export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement 
         >
           {waiting ? 'Use this' : 'Stop using'}
         </button>
+
+        {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
+            do promptu, jest drugim pytaniem w ubraniu pierwszego: znika w jednym kliknięciu
+            z miejsca, w którym człowiek jej szukał, a on prosił o jedno. Najpierw „Stop using",
+            potem decyzja, czy to zdanie ma odejść.
+
+            Warunek pyta też o handler, bo wiersz montuje się i bez niego (patrz `onDiscard`):
+            przycisk narysowany bez handlera odmawia każdemu kliknięciu, a to jest z zewnątrz
+            nieodróżnialne od zepsutej aplikacji (niezmiennik 16). */}
+        {waiting && onDiscard ? (
+          <button
+            type="button"
+            data-drop={note.id}
+            className={ACT}
+            onClick={() => {
+              onDiscard(note.id);
+            }}
+          >
+            Discard
+          </button>
+        ) : null}
       </div>
     </li>
   );
