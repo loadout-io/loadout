@@ -35,6 +35,7 @@ use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -276,4 +277,171 @@ impl Bench {
     fn db(&self) -> PathBuf {
         self.project.path().join(".loadout").join("loadout.db")
     }
+}
+
+/* 2026-08-23 — I DRUGA POŁOWA TEJ NAPRAWY, CZYLI TA, KTÓREJ BRAKOWAŁO.
+ *
+ * Wznowienie ma zacząć od PRACY poprzedniego biegu, nie od czystego `HEAD` — i to jest defekt
+ * zmierzony na `urc-monorepo`: krok „Front" dostał pusty checkout i zaczął przepisywać 164 pliki,
+ * które poprzedni bieg zacommitował jedną gałąź obok.
+ *
+ * Naprawa ma dwa kawałki i tylko jeden był sprawdzony. `isolate::make_from` sądzi
+ * `resume_starts_from_the_work_that_was_done.rs`: podaj punkt startu, a drzewo go dostanie.
+ * Czego nikt nie sądził, to KTO TEN PUNKT LICZY — `commands::run::where_it_left_off` czyta
+ * `run.json` poprzedniego biegu, składa nazwę gałęzi i sprawdza, czy istnieje.
+ *
+ * SŁABĄ WERSJĄ jest więc każde z tamtych dwóch kryteriów osobno: gdyby ta funkcja zawsze oddawała
+ * `None` — literówka w nazwie pliku, inny klucz w JSON-ie, `seeded_from`, które nie dojeżdża —
+ * OBA zostają zielone, a wznowienie po cichu wraca do `HEAD`. Kryterium świecące nad martwą
+ * funkcją jest dokładnie tą klasą wady, dla której to repo powstało.
+ *
+ * Dlatego niżej biegnie PRAWDZIWY bieg, potem PRAWDZIWE wznowienie, a wyrocznią jest licznik
+ * w pliku: krok dopisuje do niego linię, więc drzewo odbite od gałęzi poprzedniego biegu daje
+ * DWIE, a odbite od `HEAD` — jedną. Jedna liczba, dwa nierozróżnialne inaczej stany.
+ */
+
+/// Krok, który DOPISUJE linię do pliku w swoim drzewie roboczym.
+///
+/// Dopisuje, nie nadpisuje, i to jest cała wyrocznia: liczba linii mówi, ILE RAZY ten krok
+/// pobiegł nad tym samym drzewem — a to jest dokładnie pytanie „czy wznowienie widziało
+/// poprzednią pracę".
+const APPENDS: &str = r#"#!/bin/sh
+printf 'one more\n' >> THE-WORK.md
+echo "1 passed"
+exit 0
+"#;
+
+/// Krok PO nim: pracuje w tej samej kopii i **nic w niej nie zmienia**.
+///
+/// Nie dopisuje, bo licznik ma mierzyć jeden krok, nie dwa. Sprawdza za to, że praca poprzednika
+/// jest na miejscu — bez tego bieg przeszedłby także nad drzewem, w którym nic nie ma.
+const LOOKS: &str = r#"#!/bin/sh
+test -f THE-WORK.md || exit 1
+echo "1 passed"
+exit 0
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    a_repo_with_one_commit(bench.project.path())?;
+    let appends = bench.script("appends.sh", APPENDS)?;
+    let looks = bench.script("looks.sh", LOOKS)?;
+    let workflow = bench.workflow("build-then-look", &build_then_look(&appends, &looks))?;
+    let store = Store::open(&bench.db())?;
+    let processes = Arc::new(Processes::new());
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: no_drivers(),
+        processes: Arc::clone(&processes),
+        control: RunControl::new(),
+    };
+
+    // ── PIERWSZY BIEG. Zostawia `THE-WORK.md` z jedną linią, na własnej gałęzi ─────────────
+    let first = one_run(
+        &deps,
+        &RunRequest {
+            workflow: workflow.clone(),
+            how_many_at_once: 1,
+            task: None,
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+    assert_eq!(
+        lines_of(&first.dir.join("work/s_build/THE-WORK.md")),
+        1,
+        "the fixture is wrong if the first run does not leave exactly one line behind"
+    );
+
+    // ── WZNOWIENIE OD TEGO SAMEGO KROKU ───────────────────────────────────────────────────
+    let folder = first
+        .dir
+        .file_name()
+        .and_then(|one| one.to_str())
+        .ok_or("the run directory has no name")?;
+    let again = rerun::onward(
+        bench.home.path(),
+        bench.project.path(),
+        folder,
+        "s_build",
+        1,
+    )?;
+    let second = one_run(&deps, &again.request).await??;
+
+    assert_eq!(
+        lines_of(&second.dir.join("work/s_build/THE-WORK.md")),
+        2,
+        "the picked-up step opened a tree that does not carry what it wrote last time. One line \
+         means it started from HEAD — a clean checkout — and did its work over again from \
+         nothing. That is the owner's defect exactly, and it survives BOTH of the other two \
+         criteria: one of them proves that `make_from` honours a starting point it is handed, \
+         the other proves which steps run. Neither asks who works out the starting point."
+    );
+    Ok(())
+}
+
+/// Ile linii ma ten plik. `0`, kiedy pliku nie ma — czyli „krok niczego nie zostawił".
+fn lines_of(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
+/// Projekt, który JEST repozytorium gita — bez tego nie ma gałęzi, więc nie ma czego wznawiać.
+fn a_repo_with_one_commit(at: &Path) -> Result<(), Box<dyn Error>> {
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "test@example.test"],
+        vec!["config", "user.name", "Test"],
+    ] {
+        Command::new("git").args(args).current_dir(at).status()?;
+    }
+    fs::write(at.join("README.md"), "one\n")?;
+    Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(at)
+        .status()?;
+    Command::new("git")
+        .args(["commit", "--quiet", "-m", "first"])
+        .current_dir(at)
+        .status()?;
+    Ok(())
+}
+
+/// Krok pracujący we własnej kopii, a po nim sprawdzenie w tej samej kopii.
+fn build_then_look(appends: &Path, looks: &Path) -> String {
+    format!(
+        r#"{{
+  "format": 1,
+  "id": "wf_build_then_look",
+  "name": "Build, then look",
+  "steps": [
+    {{
+      "kind": "check",
+      "id": "s_build",
+      "name": "Build",
+      "command": "{appends}",
+      "proof": "(\\d+) passed",
+      "folder": {{ "use": "fresh-copy" }},
+      "at": {{ "x": 24, "y": 24 }}
+    }},
+    {{
+      "kind": "check",
+      "id": "s_look",
+      "name": "Look",
+      "command": "{looks}",
+      "proof": "(\\d+) passed",
+      "folder": {{ "use": "same-copy" }},
+      "at": {{ "x": 24, "y": 168 }}
+    }}
+  ],
+  "links": [{{ "from": "s_build", "to": "s_look" }}]
+}}"#,
+        appends = appends.display(),
+        looks = looks.display(),
+    )
 }

@@ -1,0 +1,16 @@
+# Czego `tauri dev` NIE ma pilnować.
+#
+# POWSTAŁO Z POMIARU, NIE Z PRZECZUCIA. 2026-08-23: edycja pliku w `tests/` przebudowała
+# aplikację i zabiła właścicielowi dwa żywe biegi — najpierw `20260823-010034`, potem
+# `20260823-010248`. Oba stoją do dziś w historii jako „running", bo agenci zginęli razem
+# z procesem, a odzyskiwanie nie przepisało ich plików.
+#
+# Testy integracyjne nie wchodzą do binarki okna. Ich zmiana nie może więc znaczyć
+# „zbuduj od nowa i zabij wszystko, co biegnie" — a bez tego pliku znaczy dokładnie to,
+# bo obserwator bierze cały `src-tauri` i nie ma listy wyjątków.
+tests/
+
+# Artefakty biegu: pisane przez aplikację w trakcie jej własnej pracy. Bez tej pozycji
+# aplikacja przebudowuje się od własnego zapisu.
+runs/
+logs/
