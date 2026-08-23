@@ -4288,7 +4288,7 @@ impl Live {
 
         match chosen {
             WhenItFails::Stop => StepReport::Failed,
-            WhenItFails::CarryOn => StepReport::FailedAndCarriedOn,
+            WhenItFails::CarryOn => self.and_still_hands_something_on(id),
             /* PYTAMY TA SAMA DROGA, CO KAFELEK KONTROLNY. `wait_for_a_person` bierze `StepId`,
              * a nie rodzaj kroku, wiec parkowania biegu nie trzeba pisac drugi raz — a odpowiedz
              * czlowieka staje sie przekazaniem tego kroku, czyli dociera do nastepnego.
@@ -4301,11 +4301,59 @@ impl Live {
                     .wait_for_a_person(id, Some(&self.what_now(id, why)))
                     .await
                 {
-                    StepReport::Succeeded => StepReport::FailedAndCarriedOn,
+                    StepReport::Succeeded => self.and_still_hands_something_on(id),
                     other => other,
                 }
             }
         }
+    }
+
+    /// Krok nie przeszedl, a robota jedzie dalej — wiec zostawia po sobie plik i jest w indeksie
+    /// nastepnego kroku oznaczony jako to, czym jest.
+    ///
+    /// 2026-08-23 (T-87) — CICHA LUKA W INDEKSIE JEST GORSZA NIZ ZLA WIADOMOSC. Nastepny krok
+    /// czyta przekazania swoich rodzicow i nic wiecej, wiec krok, ktory padl i kazal jechac dalej,
+    /// znikal z jego indeksu bez sladu — a brak wiersza wyglada dokladnie tak samo jak galaz,
+    /// ktorej nigdy nie bylo. Agent budowal na materiale, ktorego nikt nie przyjal, i nie mial
+    /// jak sie o tym dowiedziec.
+    ///
+    /// `Stop` tedy NIE chodzi, i to jest jedyny wyjatek: za nim nie biegnie nic, wiec nie ma komu
+    /// tego pliku przeczytac (niezmiennik 21).
+    fn and_still_hands_something_on(&self, id: StepId) -> StepReport {
+        if let Some(slot) = self
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            *slot = true;
+        }
+        self.hand_on_its_last_words(id);
+        StepReport::FailedAndCarriedOn
+    }
+
+    /// Przekazanie z tym, co ten krok zdazyl powiedziec — moze byc puste.
+    ///
+    /// NIC NIE NADPISUJEMY. Krok, ktory zdazyl oddac wynik i dopiero potem nie przeszedl — sedzia
+    /// po wyczerpaniu prob, komenda, ktora wystartowala i padla, czlowiek, ktory odpowiedzial na
+    /// pytanie — ma juz plik z prawdziwa trescia. Drugi zapis zamienilby ja na pustke.
+    ///
+    /// Puste ciało jest tu ODPOWIEDZIA, nie brakiem: agent, ktoremu tura przewrocila sie
+    /// w polowie, nie powiedzial nic i to wlasnie ma stanac w indeksie nastepnego kroku.
+    fn hand_on_its_last_words(&self, id: StepId) {
+        let already = self
+            .handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(Option::is_some);
+        if already {
+            return;
+        }
+        // Jednolinijkowe podsumowanie jest wszystkim, co po takim kroku zostaje: wyjscie komendy,
+        // ktora nie wystartowala, nie istnieje, a tura, ktora wrocila bledem, nie ma tekstu.
+        let last_words = self.book().steps[id].summary.clone().unwrap_or_default();
+        self.hand_over(id, &last_words, &[]);
     }
 
     /// Pytanie, ktore staje na ekranie, kiedy krok nie przeszedl, a czlowiek chcial byc pytany.
@@ -5081,7 +5129,14 @@ impl Live {
                 // podmiotu wysyła człowieka szukać wady w agencie, którego tu nie ma.
                 let text = format!("Loadout could not start this check: {error}");
                 self.update(|book| book.steps[id].error = Some(text));
-                return StepReport::Failed;
+                /* 2026-08-23 (T-87) — I TA DROGA TEZ IDZIE PRZEZ JEDNO MIEJSCE. Do tego dnia
+                 * wracalo stad gole `StepReport::Failed`, wiec ustawienie czlowieka „jedz dalej
+                 * mimo wszystko" bylo na tej sciezce martwe: literowka w nazwie katalogu zabierala
+                 * ze soba caly stozek za krokiem, cicho i bez wyboru. Powod jest juz w ksiedze
+                 * i mowi wiecej, wiec `get_or_insert` tam go nie tknie. */
+                return self
+                    .when_this_one_fails(id, "This check could not be started.")
+                    .await;
             }
         };
 
@@ -5181,7 +5236,10 @@ impl Live {
                         )
                     });
                 });
-                StepReport::Failed
+                // Ta sama droga, co kazda inna porazka (T-87 AC-5): krok, ktory nie zdazyl, tez
+                // byl slepym punktem — jedna wolna komenda konczyla caly bieg.
+                self.when_this_one_fails(id, "This check ran out of time.")
+                    .await
             }
         }
     }
@@ -5346,7 +5404,12 @@ impl Live {
                     step.death_proof = matches!(proof, GroupProof::Dead { .. });
                     step.error = Some(error.to_string());
                 });
-                StepReport::Failed
+                // Tura, ktora wrocila bledem, jest porazka jak kazda inna i idzie tam, gdzie
+                // rozstrzyga sie kazda (T-87 AC-5). Do 2026-08-23 wracalo stad gole
+                // `StepReport::Failed`, wiec awaria aplikacji agenta kasowala caly stozek za
+                // krokiem — takze wtedy, gdy czlowiek prosil, zeby jechac dalej.
+                self.when_this_one_fails(id, "This step's agent stopped in the middle of its turn.")
+                    .await
             }
             Ended::Turn(Ok(turn)) => {
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
