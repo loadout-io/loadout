@@ -1069,6 +1069,11 @@ fn what_the_agent_wrote(text: &str) -> Option<String> {
 /// 4. **Nie przewraca biegu niczym, co się tu nie uda.** Bieg jest skończony i zapisany; jego
 ///    wynik jest prawdziwy niezależnie od tego, czy vendor odpowiedział. Ta sama decyzja, co
 ///    przy nieudanym zapisie przekazania ([`Live::hand_over`]) — z dziennikiem zamiast ciszy.
+/// 5. **Pyta WŁASNYM SZWEM** ([`crate::engine::drivers::AgentDriver::reflecting`]), a nie
+///    sterownikiem, którym jadą kroki. Sterownik, który tego szwu nie podaje, nie ma jak zobaczyć
+///    tury, o którą nie prosił żaden kafelek — a to jest jedyny powód, dla którego dołożenie tej
+///    tury nie przestawiło ani jednej z 26 specyfikacji liczących wywołania sterownika. Cała
+///    cena tej decyzji stoi przy tamtej metodzie.
 async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[StepState]) {
     // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
     let a_model_worked =
@@ -1130,17 +1135,29 @@ async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[Step
     }
 }
 
-/// Ta jedna tura: sterownik z fabryki, polityka tylko-do-odczytu, katalog biegu, jeden model.
+/// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
 ///
-/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie trzy drogi, na których jej nie ma:
-/// vendor nie wstał, tura padła, tura nie zmieściła się w limicie. Rozróżnianie ich w typie nic
-/// by tu nie dało — wołający ma w każdej z nich zrobić dokładnie to samo, czyli nic.
+/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie cztery drogi, na których jej nie ma:
+/// ten vendor tury Loadouta nie bierze, vendor nie wstał, tura padła, tura nie zmieściła się
+/// w limicie. Rozróżnianie ich w typie nic by tu nie dało — wołający ma w każdej z nich zrobić
+/// dokładnie to samo, czyli nic.
 async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
-    /* PRZEZ FABRYKĘ, tą samą, którą bierze sterownik każdy krok. Vendor jest jeden i wybrany:
-     * refleksja jest turą LOADOUTA, nie żadnego agenta z grafu, więc vendor wzięty z ostatniego
-     * kroku dawałby dwa różne rachunki i dwa różne zachowania za jedno pytanie. Ta sama stała
-     * rozstrzyga model ([`REFLECTION_MODEL`]) i to nie przypadek, że jest aliasem tego vendora. */
-    let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode);
+    /* WŁASNYM SZWEM, NIE STEROWNIKIEM KROKÓW ([`AgentDriver::reflecting`], gdzie stoi cała cena
+     * tej decyzji). Vendor jest jeden i wybrany: refleksja jest turą LOADOUTA, nie żadnego agenta
+     * z grafu, więc vendor wzięty z ostatniego kroku dawałby dwa różne rachunki i dwa różne
+     * zachowania za jedno pytanie. Ta sama stała rozstrzyga model ([`REFLECTION_MODEL`]) i to nie
+     * przypadek, że jest aliasem tego vendora.
+     *
+     * Fabryka mówi tu WYŁĄCZNIE, który to vendor; czy on tę turę bierze i czym ją weźmie,
+     * rozstrzyga szew. Sterownik, który go nie podaje — a nie podaje go żadna atrapa — nie ma
+     * jak zobaczyć tury, o którą nie prosił żaden krok. */
+    let Some(driver) = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()
+    else {
+        tracing::debug!(
+            "this vendor does not take Loadout's own turn, so nobody was asked what this run taught us"
+        );
+        return None;
+    };
     let spec = RunSpec {
         run_id: Uuid::now_v7(),
         // Katalog biegu: to o niego pytamy. Gdziekolwiek indziej jest to tura poproszona

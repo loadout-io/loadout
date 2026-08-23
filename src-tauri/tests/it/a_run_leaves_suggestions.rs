@@ -69,12 +69,14 @@ use async_trait::async_trait;
 use loadout_lib::commands::memory::notes_root;
 use loadout_lib::commands::run::{REFLECTION_MODEL, run_workflow_inner};
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
+use loadout_lib::engine::drivers::claude::ClaudeDriver;
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
     Policy, Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
+use loadout_lib::library::agents::Vendor;
 use loadout_lib::memory::notes::{Note, Scope, Status, scan_notes};
 use loadout_lib::store::Store;
 use tauri::ipc::Channel;
@@ -118,6 +120,11 @@ Do the work.
 ";
 
 /// Jeden krok, jeden agent, własna kopia plików.
+///
+/// `whenItFails: stop` jest tu FIKSTURĄ, nie preferencją: od T-87 domyślne `carry-on` każe
+/// krokowi, który padł, oddać dalej to, co zdążył powiedzieć (`Live::hand_on_its_last_words`) —
+/// czyli zostawić plik w `handoffs/`. Scenariusz „bieg, po którym nie zostało nic" wymaga
+/// jedynej drogi porażki, za którą nie biegnie nikt, więc nie ma komu tego pliku przeczytać.
 const WORKFLOW: &str = r#"{
   "format": 1,
   "id": "wf_run_leaves_suggestions",
@@ -131,6 +138,53 @@ const WORKFLOW: &str = r#"{
       "overrides": {},
       "instructions": "IBEX-STEP-ONE look at the queue and say what it is doing.",
       "folder": { "use": "fresh-copy" },
+      "whenItFails": "stop",
+      "at": { "x": 0, "y": 0 }
+    }
+  ],
+  "links": []
+}
+"#;
+
+const CODEX_AGENT_ID: &str = "01990000-0000-7000-8000-0000000000d4";
+
+/// Ten sam agent, tylko u **drugiego** vendora.
+///
+/// Istnieje po to, żeby „bieg poprosił fabrykę o Claude'a" dało się odróżnić od „bieg poprosił
+/// fabrykę o vendora swojego kafelka": w grafie niżej nazwa Claude'a nie pada ani razu.
+const CODEX_AGENT: &str = "---
+schema: 1
+id: 01990000-0000-7000-8000-0000000000d4
+name: Hand
+summary: Does the work
+color: moss
+runsWith: codex
+model: opus
+thinking: balanced
+fileAccess: work-freely
+giveUpAfterMinutes: 20
+writeResultsTo: \"\"
+tools: everything
+skills: []
+connections: []
+---
+Do the work.
+";
+
+const CODEX_WORKFLOW: &str = r#"{
+  "format": 1,
+  "id": "wf_run_leaves_suggestions_codex",
+  "name": "One step on the other vendor",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_one",
+      "name": "Hand",
+      "agent": "01990000-0000-7000-8000-0000000000d4",
+      "overrides": {},
+      "instructions": "IBEX-STEP-ONE look at the queue and say what it is doing.",
+      "folder": { "use": "fresh-copy" },
+      "whenItFails": "stop",
       "at": { "x": 0, "y": 0 }
     }
   ],
@@ -175,6 +229,17 @@ async fn a_run_that_finished(
     reflection_says: String,
     step_succeeds: bool,
 ) -> Result<RunReport, Box<dyn Error>> {
+    a_run_driven_by(bench, seen, reflection_says, step_succeeds, true).await
+}
+
+/// To samo, tylko z jawną odpowiedzią na pytanie „czy ten sterownik bierze turę Loadouta".
+async fn a_run_driven_by(
+    bench: &Bench,
+    seen: &Arc<Seen>,
+    reflection_says: String,
+    step_succeeds: bool,
+    takes_loadouts_turn: bool,
+) -> Result<RunReport, Box<dyn Error>> {
     let workflow = bench.workflow("run-leaves-suggestions", WORKFLOW)?;
     let store = Store::open(&bench.db())?;
 
@@ -182,7 +247,12 @@ async fn a_run_that_finished(
         home: bench.home.path(),
         project: bench.project.path(),
         store: &store,
-        drivers: fake_drivers(Arc::clone(seen), reflection_says, step_succeeds),
+        drivers: fake_drivers(
+            Arc::clone(seen),
+            reflection_says,
+            step_succeeds,
+            takes_loadouts_turn,
+        ),
         processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
@@ -464,6 +534,135 @@ async fn a_run_that_handed_nothing_on_is_never_asked() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// DRUGA POŁOWA TEGO KRYTERIUM, i to nie jest jego ozdoba.
+///
+/// Wszystko wyżej jest prawdą o szwie, który tura refleksji dostaje **od testu**. Szew
+/// z domyślnym `None`, którego produkcja nigdy nie podaje, jest funkcją wyglądającą na gotową
+/// i niebiegnącą ani razu — czyli dokładnie tym kształtem awarii, który to zadanie naprawia po
+/// stronie pamięci. Ten podsystem ma już sześć takich szwów i to jest cały powód, dla którego
+/// `~/.loadout/memory/` nie istniało po 23 biegach.
+///
+/// Ten test sądzi więc trzy rzeczy, których tamte dwa nie widzą:
+///
+/// 1. **Szew jest opt-in.** Sterownik, który go nie podaje — czyli każdy inny dubel w tym
+///    drzewie — nie widzi tury, o którą nie prosił żaden kafelek. To jest cena zapłacona
+///    świadomie: pierwsza wersja brała sterownik z fabryki i przewróciła 26 cudzych
+///    specyfikacji, z których każda liczy albo enumeruje wywołania sterownika.
+/// 2. **Bieg pyta o vendora, którego wybrał Loadout, a nie o tego z ostatniego kafelka.**
+///    Graf niżej biegnie na Codeksie i nie nazywa Claude'a ani razu — więc pytanie o niego
+///    mogło paść wyłącznie z tury refleksji. Gdyby padło o Codeksa, produkcja dostałaby `None`
+///    i mechanizm byłby martwy przy zielonych asercjach wyżej.
+/// 3. **Sterownik, którym Loadout jedzie naprawdę, ten szew podaje.** `ClaudeDriver` jest tym,
+///    co fabryka z `lib.rs` wydaje dla [`Vendor::ClaudeCode`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_turn_rides_a_seam_the_shipping_driver_supplies() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", CODEX_AGENT)?;
+    // Fikstura, nie asercja kryterium — ten sam powód, co przy [`AGENT_ID`] wyżej.
+    assert!(
+        CODEX_AGENT.contains(CODEX_AGENT_ID) && CODEX_WORKFLOW.contains(CODEX_AGENT_ID),
+        "the fixture names {CODEX_AGENT_ID} in only one of the two files that have to agree on it"
+    );
+    assert!(
+        !CODEX_WORKFLOW.contains(AGENT_ID),
+        "the graph names the Claude agent after all, so asking the factory for that vendor no \
+         longer tells the reflection apart from the step"
+    );
+    let seen = Arc::new(Seen::default());
+    let report = a_run_on_codex(&bench, &seen, answer_with(3)).await?;
+
+    assert_eq!(
+        report.steps,
+        vec![StepState::Succeeded; 1],
+        "the step has to finish and hand something on, or the run below is never a candidate for \
+         a reflection at all and every assertion here is true of nothing. It ended as {:?}",
+        report.steps
+    );
+    assert!(
+        handoffs_in(&report.dir) > 0,
+        "this run left nothing in handoffs/, so it is the run that is never asked anyway and the \
+         silence below says nothing about the seam"
+    );
+
+    assert_eq!(
+        seen.reflections().len(),
+        0,
+        "a driver that does not supply the seam was asked for a reflection {} time(s). Every \
+         other double in this tree is exactly this driver — it says nothing about \
+         `AgentDriver::reflecting` and takes the default `None` — so a turn reaching it here is a \
+         turn reaching all of them, and 26 green specs that count driver calls go red for a \
+         behaviour their product never asked for",
+        seen.reflections().len()
+    );
+    assert!(
+        notes_left(&bench).is_empty(),
+        "a run whose driver never took Loadout's turn left notes behind anyway: {:?}. They can \
+         only have come from somewhere that is not the model's answer",
+        notes_left(&bench)
+            .iter()
+            .map(|note| note.rule.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let vendors = seen.vendors_asked_for();
+    assert!(
+        vendors.contains(&Vendor::ClaudeCode),
+        "this run asked the factory for {vendors:?} and never for {:?}. The only step in the \
+         graph runs on the other vendor, so that is the one the run asks for on its behalf — and \
+         a reflection asking for the step's vendor is one that gets `None` from the driver \
+         Loadout actually ships, on every run whose last tile was not Claude's",
+        Vendor::ClaudeCode
+    );
+
+    // ── I sterownik, którym Loadout jedzie naprawdę ────────────────────────────────────────
+    let shipping: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
+    assert!(
+        shipping.reflecting().is_some(),
+        "the driver `lib.rs` hands out for {:?} does not take Loadout's own turn. Everything \
+         above then describes a seam nothing in the product ever supplies: memory keeps its \
+         reader, its budgets and its forced choice, and still has no writer — which is the state \
+         this task exists to end",
+        Vendor::ClaudeCode
+    );
+
+    Ok(())
+}
+
+/// Bieg, w którym jedyny kafelek jedzie **drugim** vendorem.
+async fn a_run_on_codex(
+    bench: &Bench,
+    seen: &Arc<Seen>,
+    reflection_says: String,
+) -> Result<RunReport, Box<dyn Error>> {
+    let workflow = bench.workflow("run-leaves-suggestions-codex", CODEX_WORKFLOW)?;
+    let store = Store::open(&bench.db())?;
+
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        // `false`: ten dubel szwu NIE podaje, czyli wygląda jak każdy inny dubel w tym drzewie.
+        drivers: fake_drivers(Arc::clone(seen), reflection_says, true, false),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow,
+        how_many_at_once: 1,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    let report = tokio::time::timeout(PATIENCE, run_workflow_inner(&deps, &request, sink))
+        .await
+        .map_err(|_| format!("the run did not come back within {PATIENCE:?}"))??;
+    let _ = tokio::time::timeout(PATIENCE, pump).await;
+    Ok(report)
+}
+
 /// Ile plików leży w `handoffs/` tego biegu. Brak katalogu to zero, nie błąd.
 fn handoffs_in(run_dir: &std::path::Path) -> usize {
     fs::read_dir(run_dir.join("handoffs")).map_or(0, |entries| {
@@ -485,48 +684,85 @@ struct Asked {
 }
 
 #[derive(Debug, Default)]
-struct Seen(Mutex<Vec<Asked>>);
+struct Seen {
+    turns: Mutex<Vec<Asked>>,
+    /// O którego vendora poprosił bieg fabrykę. Refleksja jest turą Loadouta, więc vendor jest
+    /// jeden i wybrany — a wybrany przez kogo innego niż fabryka byłby dwoma rachunkami za jedno
+    /// pytanie.
+    vendors: Mutex<Vec<Vendor>>,
+}
 
 impl Seen {
     /// **Synchroniczne z rozmysłem** (niezmiennik 8): guard powstaje i ginie w jednym
     /// wywołaniu, więc nie ma wyrażenia, w którym dożyłby do `await`.
     fn record(&self, asked: Asked) {
-        self.lock().push(asked);
+        Self::lock(&self.turns).push(asked);
     }
 
     fn reflections(&self) -> Vec<Asked> {
-        self.lock().clone()
+        Self::lock(&self.turns).clone()
     }
 
-    fn lock(&self) -> MutexGuard<'_, Vec<Asked>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    fn record_vendor(&self, vendor: Vendor) {
+        Self::lock(&self.vendors).push(vendor);
+    }
+
+    fn vendors_asked_for(&self) -> Vec<Vendor> {
+        Self::lock(&self.vendors).clone()
+    }
+
+    fn lock<T>(what: &Mutex<Vec<T>>) -> MutexGuard<'_, Vec<T>> {
+        what.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 // ── dubler ─────────────────────────────────────────────────────────────────────────────────
 
-fn fake_drivers(seen: Arc<Seen>, reflection_says: String, step_succeeds: bool) -> Drivers {
+fn fake_drivers(
+    seen: Arc<Seen>,
+    reflection_says: String,
+    step_succeeds: bool,
+    takes_loadouts_turn: bool,
+) -> Drivers {
     let driver: Arc<dyn AgentDriver> = Arc::new(Fake {
-        seen,
+        seen: Arc::clone(&seen),
         reflection_says,
         step_succeeds,
+        takes_loadouts_turn,
     });
-    Arc::new(move |_vendor| Arc::clone(&driver))
+    Arc::new(move |vendor| {
+        seen.record_vendor(vendor);
+        Arc::clone(&driver)
+    })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Fake {
     seen: Arc<Seen>,
     /// Co model odpowiada, kiedy zapytać go, czego ten bieg nauczył.
     reflection_says: String,
     /// Czy krok grafu ma się udać. Nieudany krok nie zostawia przekazania.
     step_succeeds: bool,
+    /// Czy ten dubel **podaje szew** tury Loadouta. `false` jest tu wartością, nie brakiem: tak
+    /// wygląda każdy inny dubel w tym drzewie i dlatego żaden z nich tej tury nie widzi.
+    takes_loadouts_turn: bool,
 }
 
 #[async_trait]
 impl AgentDriver for Fake {
     fn id(&self) -> &'static str {
         VENDOR
+    }
+
+    /// Szew tury Loadouta — opt-in, dokładnie jak w produkcji.
+    ///
+    /// Domyślna implementacja na traicie oddaje `None`, więc dubel milczący o tej metodzie nie ma
+    /// jak zobaczyć tury, o którą nie prosił żaden krok grafu. To NIE jest wygoda testu: pierwsza
+    /// wersja tego mechanizmu brała sterownik prosto z fabryki i przewróciła 26 cudzych
+    /// specyfikacji, z których każda liczy albo enumeruje wywołania sterownika.
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        self.takes_loadouts_turn
+            .then(|| Arc::new(self.clone()) as Arc<dyn AgentDriver>)
     }
 
     async fn probe(&self) -> anyhow::Result<Probe> {

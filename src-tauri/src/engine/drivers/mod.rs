@@ -696,6 +696,39 @@ pub trait AgentDriver: Send + Sync {
         None
     }
 
+    /// Ten sam sterownik, kiedy wolno mu wziąć turę **Loadouta** — albo `None`, kiedy ten vendor
+    /// takiej tury nie bierze.
+    ///
+    /// Tura Loadouta to jedyna tura biegu, o którą nie prosi żaden kafelek grafu: po
+    /// `close_the_book` pytamy raz, czego ten bieg nauczył, i z odpowiedzi zostają kandydatki
+    /// do pamięci (`commands::run::what_this_run_taught_us`, T6 §5.3). Krok jej nie zlecił,
+    /// człowiek jej nie narysował — więc nie ma jej po co przepuszczać przez tę samą drogę,
+    /// którą jadą kroki.
+    ///
+    /// # Dlaczego to jest OSOBNY szew, a nie po prostu sterownik z fabryki (2026-08-23, T-92)
+    ///
+    /// **Zmierzone, nie przewidziane.** Pierwsza wersja tego mechanizmu brała sterownik prosto
+    /// z fabryki `commands::Drivers` — tej samej, którą podstawia KAŻDY test integracyjny. Bieg
+    /// dostawał wtedy jedno wywołanie sterownika więcej, niż zlecił graf, i **26 zielonych
+    /// specyfikacji poszło na czerwono**: te, które liczą sesje („the driver closed 4 window(s)
+    /// out of 2"), te, które enumerują prompty, i te, w których dubel trzyma jedno pole na `spec`,
+    /// więc tura refleksji nadpisywała to, co zapisał krok. Żadna z nich nie była wadą produktu
+    /// i żadnej nie wolno było poprawić: one pilnują, żeby bieg nie uruchomił więcej procesów,
+    /// niż miał — czyli klasy błędu, która pali pieniądze.
+    ///
+    /// Domyślne `None` załatwia to strukturalnie, a nie umową: dubel, który tej metody nie
+    /// implementuje, nie ma jak zobaczyć tury, o którą nie prosił. To jest dokładnie ta sama
+    /// odpowiedź, co przy [`AgentDriver::inheriting`], [`AgentDriver::with_evidence`]
+    /// i [`AgentDriver::with_settings`], i z tego samego powodu (niezmiennik 23).
+    ///
+    /// **Cena jest nazwana i pilnowana kryterium.** Szew z domyślnym `None`, którego produkcja
+    /// nie podaje, to funkcja wyglądająca na gotową i niebiegnąca nigdy — czyli ten sam kształt
+    /// awarii, który T-92 naprawia po stronie pamięci. Dlatego AC-1 dowodzi obu połów: że przy
+    /// podanym szwie kandydatki powstają, i że `ClaudeDriver` ten szew podaje.
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
     /// Jak TEN vendor nazywa w argv poziom wysiłku — pusto, kiedy takiej flagi nie zna.
     ///
     /// # Co tu jest polityką, a co adapterem (niezmiennik 23)

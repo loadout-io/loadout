@@ -2559,6 +2559,23 @@ impl AgentDriver for ClaudeDriver {
         ))
     }
 
+    /// Turę Loadouta ten sterownik **bierze**, i to jest cała treść tej odpowiedzi.
+    ///
+    /// Refleksja po biegu jest jedną tanią turą u jednego vendora ([T6 §5.3]), a którego —
+    /// rozstrzyga `commands::run::REFLECTION_MODEL`, alias tego adaptera. Reszta kształtu tej
+    /// tury (polityka tylko-do-odczytu, katalog biegu, model, limit czasu) jedzie w `RunSpec`,
+    /// bo to są fakty o pytaniu, a nie o vendorze.
+    ///
+    /// Nowy sterownik, nie klon `self`, i to jest różnica, nie ozdoba: przenosi się **wyłącznie
+    /// binarka**, czyli jedyny fakt o tym, co uruchomić. Transkrypt, target dowodów, obrazy,
+    /// plik ustawień kroku, dziedziczone flagi i Connections zostają po tamtej stronie —
+    /// o skończony bieg pyta Loadout, a nie żaden agent z grafu, więc tura niosąca wyposażenie
+    /// ostatniego kafelka byłaby turą podpisaną cudzym nazwiskiem. Wpisywałaby się przy tym do
+    /// cudzego transkryptu, którego bieg właśnie domknął.
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self::with_binary(self.binary.clone())))
+    }
+
     /// `--effort <poziom>` — cała wiedza tego adaptera o szczeblu „ile myśleć".
     ///
     /// Zmierzone 2026-08-23 na 2.1.241: `--effort <level>` przyjmuje `low, medium, high, xhigh,

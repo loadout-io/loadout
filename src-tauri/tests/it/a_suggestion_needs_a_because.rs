@@ -301,7 +301,7 @@ fn fake_drivers(reflection_says: String) -> Drivers {
     Arc::new(move |_vendor| Arc::clone(&driver))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Fake {
     reflection_says: String,
 }
@@ -310,6 +310,15 @@ struct Fake {
 impl AgentDriver for Fake {
     fn id(&self) -> &'static str {
         VENDOR
+    }
+
+    /// Ten dubel turę Loadouta **bierze** — inaczej refleksja nie miałaby tu kogo zapytać.
+    ///
+    /// Szew jest opt-in i domyślnie oddaje `None` (`AgentDriver::reflecting`), więc dubel, który
+    /// go nie podaje, nie widzi tury, o którą nie prosił żaden krok. To jest cały powód, dla
+    /// którego ta tura nie przestawiła ani jednej cudzej specyfikacji liczącej wywołania.
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(self.clone()))
     }
 
     async fn probe(&self) -> anyhow::Result<Probe> {
