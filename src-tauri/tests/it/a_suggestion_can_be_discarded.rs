@@ -44,7 +44,9 @@
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` w tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// `clippy::panic` z tego samego powodu: `--all-targets` sądzi też ten plik, a odmowa w złym
+// kształcie ma powiedzieć, CO przyjechało zamiast oczekiwanego wariantu.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::error::Error as StdError;
 use std::fs;

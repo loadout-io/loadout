@@ -819,7 +819,7 @@ async fn the_planned_run(
      * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
      * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
     what_the_steps_wrote_down(deps, &live.plan);
-    what_this_run_taught_us(deps, &live.plan.id, &live.plan.dir).await;
+    what_this_run_taught_us(deps, &live.plan, &outcome.states).await;
 
     Ok(RunReport {
         id: live.plan.id.clone(),
@@ -988,22 +988,37 @@ fn what_the_agent_wrote(text: &str) -> Option<String> {
 ///
 /// # Trzy rzeczy, które ta funkcja robi, i po jednym powodzie na każdą
 ///
-/// 1. **Nie pyta biegu, po którym nic nie zostało.** Refleksja pracuje z katalogu biegu, a bieg
+/// 1. **Nie pyta biegu, w którym nie pracował żaden model.** Workflow z samych kafelków
+///    „sprawdź", „uruchom i zostaw" i pytań do człowieka nie wołał vendora ani razu — a tura
+///    refleksji wstawiłaby do niego jedno wywołanie, którego nie ma się o co oprzeć i za które
+///    ktoś zapłaci. To jest ta sama granica, którą trzyma `run_check`: krok bez vendora nie ma
+///    powodu prosić fabrykę o sterownik.
+/// 2. **Nie pyta biegu, po którym nic nie zostało.** Refleksja pracuje z katalogu biegu, a bieg
 ///    bez ani jednego przekazania nie ma tam wyniku żadnego kroku — więc tura jest zapłacona za
 ///    przeczytanie pustego folderu.
-/// 2. **Pyta dokładnie raz**, nie raz na krok. „Tania" przestaje być prawdą po cichu: katalog
+/// 3. **Pyta dokładnie raz**, nie raz na krok. „Tania" przestaje być prawdą po cichu: katalog
 ///    notatek wygląda tak samo, a różnica siedzi wyłącznie na rachunku.
-/// 3. **Nie przewraca biegu niczym, co się tu nie uda.** Bieg jest skończony i zapisany; jego
+/// 4. **Nie przewraca biegu niczym, co się tu nie uda.** Bieg jest skończony i zapisany; jego
 ///    wynik jest prawdziwy niezależnie od tego, czy vendor odpowiedział. Ta sama decyzja, co
 ///    przy nieudanym zapisie przekazania ([`Live::hand_over`]) — z dziennikiem zamiast ciszy.
-async fn what_this_run_taught_us(deps: &RunDeps<'_>, run: &str, dir: &Path) {
-    // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
-    // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
-    // „przekazanie", a rozjazd widać dopiero na rachunku.
-    if handoff::scan_run_dir(dir).is_ok_and(|left| left.is_empty()) {
+async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[StepState]) {
+    // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
+    let a_model_worked =
+        plan.steps.iter().zip(states).any(|(step, state)| {
+            matches!(step.job, Job::Agent(_)) && *state == StepState::Succeeded
+        });
+    if !a_model_worked {
         return;
     }
 
+    // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
+    // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
+    // „przekazanie", a rozjazd widać dopiero na rachunku.
+    if handoff::scan_run_dir(&plan.dir).is_ok_and(|left| left.is_empty()) {
+        return;
+    }
+
+    let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
     let Some(said) = a_short_turn_about(deps, dir).await else {
         return;
     };

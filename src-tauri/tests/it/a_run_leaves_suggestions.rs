@@ -48,7 +48,16 @@
 // jedną ławkę, jednego dublera i jeden zestaw asercji o kształcie notatki. Cięcie po granicy
 // funkcji znaczyłoby trzy kopie tych asercji albo stan dzielony między testami, które cargo
 // uruchamia równolegle.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+//
+// `clippy::format_push_string` — `answer_with` skleja odpowiedź modelu pętlą `push_str`. Ten sam
+// powód, co przy poprzednim: przepisanie jej na `write!` byłoby przepisaniem fikstury, a fikstura
+// jest kontraktem, przeciw któremu ta gałąź jest sądzona.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::format_push_string,
+    clippy::too_many_lines
+)]
 
 use std::error::Error;
 use std::fs;

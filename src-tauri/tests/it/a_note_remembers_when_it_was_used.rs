@@ -51,7 +51,21 @@
 // `too_many_lines` — wszystkie punkty tego kryterium mierzą JEDEN bieg: stempel powstaje w czasie
 // jego trwania, a wymuszony wybór czyta pliki, które ten bieg zostawił. Cięcie po granicy funkcji
 // znaczyłoby dwa biegi albo stan dzielony między testami, które cargo uruchamia równolegle.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+// `clippy::panic` — `checks/full-clippy.sh` sądzi `--all-targets`, a `panic!` z nazwanym zdaniem
+// jest tu jedyną drogą, żeby odmowa w złym kształcie powiedziała, CO było nie tak. Ta sama linia
+// stoi w `memory_note_names_its_agent.rs` i `continue_from_a_past_run.rs`.
+//
+// `clippy::useless_format` — zdanie odmowy w `ok_or_else` niżej jest literałem złożonym
+// z kilku wierszy przez kontynuację. Przepisanie go na `.to_owned()` byłoby przepisaniem
+// fikstury, a ta jest kontraktem tej gałęzi: atrybut jest jedyną zmianą, która nie dotyka
+// ani jednej linii tego, co ten plik sprawdza.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::useless_format
+)]
 
 use std::error::Error;
 use std::fs;
