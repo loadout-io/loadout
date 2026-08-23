@@ -42,6 +42,8 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useSyncExternalStore } from 'react';
+import { saidOf } from '../entry/echo';
+import { runFeed } from '../feed/live';
 import { AgentScreen } from '../session/mount';
 import { openAgent } from '../session/open';
 import type { RailCard } from './card';
@@ -89,6 +91,26 @@ const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 export interface RailProps {
   /** Kafelki, już policzone przez `roster()`. Pusta lista znaczy „nikt jeszcze nic nie nadał". */
   readonly cards: readonly RailCard[];
+}
+
+/**
+ * Zdanie, którym Rust odpowiada na powtórzenie kroku → DO STRUMIENIA, nie do slotu obok.
+ *
+ * Odpowiedź przychodzi wtedy i tylko wtedy, gdy dzisiejszy plik workflow różni się od tego,
+ * który wtedy biegł: „to samo jeszcze raz" i „to samo z twoją poprawką" nie mogą wyglądać
+ * identycznie. Zdanie bez miejsca do wylądowania jest ciszą, a cisza po naciśnięciu wygląda
+ * dokładnie jak przycisk, który nic nie robi (niezmiennik 16).
+ *
+ * DO STRUMIENIA, bo rozmowa z Loadoutem jest JEDNĄ historią — tą samą drogą idzie odmowa startu
+ * (`../index.tsx`) i echo wiersza wejścia (`../entry/entry.tsx`). Wiersz w `useState` tego
+ * komponentu ginąłby przy pierwszym wyjściu do innej sekcji, a bieg trwa dłużej niż ekran.
+ *
+ * FUNKCJA MODUŁOWA, nie domknięcie w komponencie, i to jest ten sam powód, co przy `../session
+ * /open.ts`: to repo nie ma jsdom, więc handler zamknięty w komponencie byłby kodem, którego
+ * żadne kryterium nie umie dotknąć.
+ */
+export function sayAfterRunningAgain(said: string): void {
+  runFeed.appendLines([saidOf(said)]);
 }
 
 /**
@@ -241,8 +263,14 @@ export function Rail({ cards }: RailProps): ReactElement {
       {/* Ekran jednego agenta. Rysuje się WYŁĄCZNIE wtedy, gdy któryś jest otwarty, i stoi tu
           — obok listy, nie w niej — bo zakrywa całe okno, a nie kolumnę. Miejsce docelowe to
           rząd w siatce ekranu pracy; tamten plik nie należy do tego zadania i kształt propsów
-          jest zgłoszony. */}
-      <AgentScreen cards={cards} />
+          jest zgłoszony.
+
+          `onSaid` DOSZŁO 2026-08-23 i jest całą naprawą „Run this step again". Ekran agenta
+          rysuje ten przycisk wyłącznie wtedy, gdy ma dokąd oddać odpowiedź — a tu, w jedynym
+          miejscu montażu, propsu nie było. Cała droga pod spodem (`rerun_step`, `../io.ts`,
+          `./again.ts`, przycisk w `../session/session.tsx`) miała wołających wyłącznie
+          w testach: mechanizm działa, kiedy go zawołać, i nikt go nie wołał (niezmiennik 29). */}
+      <AgentScreen cards={cards} onSaid={sayAfterRunningAgain} />
 
       {/* Wyjście jednej rzeczy uruchomionej komendą. Ten sam kształt, co ekran agenta, i z tego
           samego powodu: zakrywa całe okno, a nie kolumnę — a rzecz pod nim biegnie dalej. */}
