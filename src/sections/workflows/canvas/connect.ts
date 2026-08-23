@@ -399,8 +399,13 @@ export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
       at,
     };
 
+  /* `kind: 'agent'` NA SZTYWNO, a nie z argumentu, i to jest szkielet, nie uproszczenie:
+   * rodzaj `check` wszedł już do unii `Step`, ale własnej gałęzi tutaj jeszcze nie ma, więc
+   * `freshStep('check', …)` oddaje dziś krok agenta. Gałąź dostawia faza implementacji T-89
+   * — do tego czasu kompilator ma mówić prawdę o tym, co ta funkcja naprawdę produkuje,
+   * zamiast obiecywać rodzaj, którego nie umie zbudować. */
   return {
-    kind,
+    kind: 'agent',
     id,
     name: 'New step',
     agent: '',

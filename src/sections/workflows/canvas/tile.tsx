@@ -112,6 +112,11 @@ function copiesOf(step: Step): string | null {
 function saysWhat(step: Step): string {
   if (step.kind === 'agent') return step.instructions;
   if (step.kind === 'serve') return step.command;
+  /* Kafelek „sprawdź" rysuje dziś WŁASNA gałąź w `canvas.tsx` i to ona pokazuje jego komendę,
+   * więc do tej karty jeszcze nie dochodzi. Która z dwóch kart zostanie, rozstrzyga faza
+   * implementacji T-89; do tego czasu pusty napis jest jedyną odpowiedzią, która o niczym
+   * nie kłamie. */
+  if (step.kind === 'check') return '';
   return step.question ?? '';
 }
 

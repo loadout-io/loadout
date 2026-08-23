@@ -73,6 +73,8 @@ import type {
   WhenItFails,
 } from '../../../state/workflows';
 import { SKILL_SUBSETTING } from './capabilities';
+import type { CheckFields } from './check-panel';
+import { CheckPanel } from './check-panel';
 import { CheckpointPanel } from './checkpoint-panel';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
@@ -955,6 +957,17 @@ export interface PanelForStepProps {
   onEditStep: (fields: AgentStepFields) => void;
   onEditCheckpoint: (fields: CheckpointFields) => void;
   onEditServe: (fields: ServeFields) => void;
+  /**
+   * Zmiana pola kafelka „sprawdź". Brak propsu znaczy „ten ekran sprawdzenia nie edytuje".
+   *
+   * OPCJONALNY, i to jest decyzja o kształcie, nie niedbałość. Trzy kryteria spoza tego zadania
+   * (`tries-row`, `fresh-copy-row`, `when-it-fails-row`) montują `PanelForStep` z kompletem
+   * propsów, więc nowy OBOWIĄZKOWY wywróciłby je na typach — czyli kazałby dopisać wiersz
+   * w trzech plikach, których to zadanie nie posiada. Dokładanie addytywne zostawia je
+   * nietknięte i nic nie kosztuje: ten prop czyta wyłącznie gałąź kroku `check`, a żaden
+   * z tamtych trzech takiego kroku nie renderuje.
+   */
+  onEditCheck?: (fields: CheckFields) => void;
   onReset: (field: OverridableField) => void;
   onChooseSkills: (choice: SkillChoice) => void;
   /**
@@ -968,7 +981,13 @@ export interface PanelForStepProps {
   onEditWayBack: (turns: number) => void;
 }
 
-/** Jaki panel dostaje zaznaczony kafelek. Trzy odpowiedzi i ani jednego „nic".
+/** Droga powrotna dla ekranu, który sprawdzenia nie edytuje — patrz `onEditCheck` wyżej.
+ *
+ * Nie jest to kontrolka bez skutku (niezmiennik 16): ekran, który tego propsu nie podaje, nie
+ * renderuje ani jednego kafelka `check`, więc nie ma czym w to kliknąć. */
+const nowhereToWrite = (): void => undefined;
+
+/** Jaki panel dostaje zaznaczony kafelek. Cztery odpowiedzi i ani jednego „nic".
  *
  * Kafelek bez panelu jest kafelkiem, którego nie da się skonfigurować — a płótno pozwala
  * postawić go jednym kliknięciem. Dlatego ta funkcja jest CAŁKOWITA: nie ma wejścia, dla
@@ -991,6 +1010,7 @@ export function PanelForStep({
   onEditStep,
   onEditCheckpoint,
   onEditServe,
+  onEditCheck,
   onReset,
   onChooseSkills,
   wayBack,
@@ -1000,6 +1020,14 @@ export function PanelForStep({
     return (
       <div data-step-panel className="flex flex-col gap-3">
         <CheckpointPanel step={step} onEditStep={onEditCheckpoint} />
+      </div>
+    );
+  }
+
+  if (step.kind === 'check') {
+    return (
+      <div data-step-panel className="flex flex-col gap-3">
+        <CheckPanel step={step} onEditStep={onEditCheck ?? nowhereToWrite} />
       </div>
     );
   }
