@@ -209,11 +209,47 @@ export interface ServeStep {
   at: Point;
 }
 
-/** Trzy rodzaje kafelka, które edytor umie POSTAWIĆ.
+/** Krok, który uruchamia komendę należącą do Loadouta i SAM wystawia wynik — z kodu wyjścia
+ * plus dowodu w wyjściu, a nie ze zdania agenta [D6, „Trzeci rodzaj: sprawdź"].
  *
- * Czwarty rodzaj — `check` — przychodzi wyłącznie z zaimportowanych plików: płótno go rysuje
- * (`canvas.tsx`), ale nie ma przycisku, który by go stawiał, więc nie ma go w tej unii. */
-export type Step = AgentStep | CheckpointStep | ServeStep;
+ * Lustro `workflow::CheckStep` z Rusta, pole w pole. Tamta strona ma to w całości od T-23:
+ * walidator odmawia zapisu bez `proof` (`check::a_command_step_left_empty`), sterownik liczy
+ * `passed = kod wyjścia 0 ORAZ wyjście pasuje do wzorca`, a wynik jedzie do tras warunkowych
+ * i do pętli.
+ *
+ * 2026-08-23 — POLA WCHODZĄ DO TEJ UNII, choć w plikach istniały od dawna. Do tego dnia okno
+ * pomijało ten rodzaj świadomie („przychodzi wyłącznie z zaimportowanych plików"), więc każdy
+ * kafelek sprawdzenia jechał przez okno jako klucz, którego okno nie zna (niezmiennik 5):
+ * płótno go rysowało, ale `proof` nie dało się wpisać nigdzie, a klik w kafelek wpadał
+ * w „wybierz agenta". Skutek jest większy, niż wygląda — bez tego kafelka KAŻDA pętla, jaką
+ * człowiek zbuduje, jest pętlą „co agent powiedział", a rozróżnienie z `00-SYNTHESIS.md` §2.1
+ * nie ma na płótnie żadnego nośnika. */
+export interface CheckStep {
+  kind: 'check';
+  id: string;
+  name: string;
+  /** Wiersz powłoki, jedna linia. Pusty znaczy „jeszcze niewypełniony" i zapis wtedy odmawia. */
+  command: string;
+  /**
+   * Po czym poznać, że komenda naprawdę pobiegła: zwykły tekst z JEDNYM metaznakiem — `(\d+)`
+   * znaczy „co najmniej jedna cyfra". Ta sama notacja, którą człowiek pisze w linii `expect:`
+   * naszej własnej bramki (`AGENTS.md` §2a punkt 4) — jedna notacja, jedno znaczenie.
+   *
+   * Pusty jest ODMOWĄ ZAPISU po stronie Rusta, i to jest niezmiennik 19: bez dowodu werdykt
+   * liczyłby się z samego kodu wyjścia, a suita, która nie uruchomiła ani jednego testu,
+   * wychodzi zerem.
+   */
+  proof: string;
+  /** Gdzie ta komenda biegnie. `cargo test` pisze po `target/`, więc to NIE jest krok tylko
+   * do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta. */
+  folder: Folder;
+  /** Co zrobić z robotą, kiedy to sprawdzenie nie przejdzie. Brak znaczy `carry-on`. */
+  whenItFails?: WhenItFails;
+  at: Point;
+}
+
+/** Cztery rodzaje kafelka, które edytor zna. */
+export type Step = AgentStep | CheckpointStep | CheckStep | ServeStep;
 
 export interface WorkflowFile {
   format: 1;
