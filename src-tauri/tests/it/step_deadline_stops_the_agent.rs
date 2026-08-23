@@ -42,6 +42,12 @@ const VENDOR: &str = "claude-code";
 const GIVE_UP_MINUTES: u32 = 2;
 
 /// Dwa kroki połączone strzałką: pierwszy się zaklinuje, drugi ma NIE WISIEĆ.
+/* `whenItFails: stop` na zaciętym kroku stoi tu JAWNIE i nie jest ozdobą. Odkąd domyślną
+ * wartością jest `carry-on` (decyzja właściciela 2026-08-23), krok po przekroczeniu czasu
+ * wypuszcza to, co po nim — czyli `After` też by ruszył, też zawisł i też został ubity.
+ * Kryterium niżej liczy wywołania `cancel()` i żąda dokładnie jednego; bez tej linii mierzyłoby
+ * dwa zacięcia zamiast jednego, a różnica „ubite raz" kontra „ubite dwa razy" przestałaby cokolwiek
+ * znaczyć. Ten plik sądzi termin kroku, nie trasowanie po porażce. */
 const WORKFLOW: &str = r#"{
   "format": 1,
   "id": "wf_deadline",
@@ -54,6 +60,7 @@ const WORKFLOW: &str = r#"{
       "agent": "01990000-0000-7000-8000-0000000000a1",
       "overrides": {},
       "instructions": "hang forever",
+      "whenItFails": "stop",
       "at": { "x": 0, "y": 0 }
     },
     {

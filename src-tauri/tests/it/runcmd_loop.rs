@@ -207,7 +207,7 @@ async fn the_work_after_the_loop_never_starts_when_the_tries_run_out() -> Result
 {
     let bench = Bench::new()?;
     bench.agent("hand", HAND_FILE)?;
-    let workflow = bench.workflow("loop", LOOP_FILE)?;
+    let workflow = bench.workflow("loop", &loop_that_stops())?;
     let store = Store::open(&bench.db())?;
     // Sędzia nie przepuszcza nigdy: `passing_on_turn` większe niż liczba rund w pliku.
     let watch = Arc::new(Watch::passing_on_turn(99));
@@ -798,6 +798,24 @@ async fn a_handoff_is_titled_by_what_its_own_step_was_asked() -> Result<(), Box<
  * produkt powstal. Dlatego drugi punkt pyta o STAN sedziego i wymaga czerwieni.
  */
 
+/// Ten sam plik co `LOOP_FILE`, ale tester ma ZATRZYMAC robote, kiedy nie przepuszcza.
+///
+/// JAWNIE, odkad `WhenItFails::CarryOn` jest domyslne (decyzja wlasciciela 2026-08-23).
+/// Kryteria ponizej sadza zatrzymywanie stozka, wiec musza o nie poprosic — plik bez tego pola
+/// znaczy dzis dokladnie odwrotnosc tego, o co pytaja.
+fn loop_that_stops() -> String {
+    let marked = LOOP_FILE.replace(
+        r#""instructions": "Run the suite and say whether it passed.","#,
+        "\"instructions\": \"Run the suite and say whether it passed.\",\n      \
+         \"whenItFails\": \"stop\",",
+    );
+    assert_ne!(
+        marked, LOOP_FILE,
+        "the fixture did not actually mark the tester"
+    );
+    marked
+}
+
 /// Ten sam plik co `LOOP_FILE`, ale tester ma jechac dalej mimo nieprzepuszczenia.
 fn loop_that_carries_on() -> String {
     let marked = LOOP_FILE.replace(
@@ -938,8 +956,12 @@ async fn a_step_set_to_carry_on_lets_the_work_through_and_still_reads_red()
 
 #[tokio::test]
 async fn a_skipped_step_says_which_step_stopped_it() -> Result<(), Box<dyn Error>> {
-    // Plik BEZ ustawienia, czyli dokladnie tak, jak wygladaja wszystkie istniejace workflow.
-    let (states, reasons) = what_a_never_passing_run_left(LOOP_FILE).await?;
+    /* Plik, ktory O ZATRZYMANIE PROSI. Do 2026-08-23 stalo tu `LOOP_FILE` z komentarzem „bez
+     * ustawienia, czyli tak, jak wygladaja wszystkie istniejace workflow" — i tamto bylo sluszne,
+     * dopoki domyslna byla `Stop`. Po decyzji wlasciciela („carry on powinno byc domyslnie") plik
+     * bez ustawienia nie pomija juz niczego, wiec kryterium o zdaniu przy pominietym kroku
+     * musialoby sadzic pusty zbior. Pominiecie jest dzis wyborem i tak jest tu zapisane. */
+    let (states, reasons) = what_a_never_passing_run_left(&loop_that_stops()).await?;
     assert!(
         states.iter().any(|(_, state)| state == "skipped"),
         "the fixture is wrong if nothing was skipped; the point below would be about an empty \
@@ -961,6 +983,49 @@ async fn a_skipped_step_says_which_step_stopped_it() -> Result<(), Box<dyn Error
         "the skipped step has a reason, but it does not name the step that stopped it - so the \
          person still has to walk the graph themselves to find out. It said: {:?}",
         after.1
+    );
+    Ok(())
+}
+
+/* DOMYSLNOSC, i to jest osobne kryterium od tego wyzej z rozmyslem.
+ *
+ * Tamto sadzi, ze `carry-on` DZIALA, kiedy ktos o nia poprosi. To sadzi, ze jest DOMYSLNA —
+ * czyli decyzje wlasciciela z 2026-08-23: „wiesz co to w sumie carry on powinno byc domyslnie".
+ * Bez osobnego kryterium ta decyzja zyje wylacznie w `#[default]` i w komentarzu, a odwrocenie
+ * jej z powrotem na `Stop` nie zapala niczego: kazde kryterium, ktore o ustawienie prosi jawnie,
+ * przechodzi tak samo.
+ *
+ * Plik jest tu CELOWO bez tego klucza — dokladnie tak, jak wygladaja wszystkie zapisane workflow
+ * wlasciciela. Dopoki domyslna byla `Stop`, ten sam plik dawal pominiety stozek i to samo
+ * kryterium z ta sama fikstura mowiloby dokladnie odwrotnie.
+ */
+#[tokio::test]
+async fn a_step_that_was_never_asked_carries_the_work_on_anyway() -> Result<(), Box<dyn Error>> {
+    let (states, _) = what_a_never_passing_run_left(LOOP_FILE).await?;
+
+    assert!(
+        !states.iter().any(|(_, state)| state == "skipped"),
+        "a workflow that says nothing about failure still lost the work after the red step. That \
+         is the blind alley this setting exists to remove, and leaving it as the default leaves \
+         it in every file anybody already saved. It read: {states:?}"
+    );
+    let ship = states
+        .iter()
+        .find(|(name, _)| name == "Ship")
+        .ok_or("the fixture has no step named Ship")?;
+    assert_eq!(
+        ship.1, "succeeded",
+        "the step after the loop did not run at all. Carrying on has to hand the work over, not \
+         merely refrain from painting the cone red"
+    );
+
+    /* I DRUGA POLOWA, bez ktorej pierwsza jest gorsza od niczego: sedzia, ktory nie przepuscil,
+     * ZOSTAJE CZERWONY. Domyslne przepuszczanie, ktore melduje sukces, zamienia kazdy zapisany
+     * workflow w bieg, ktory konczy sie na zielono niezaleznie od tego, co sie w nim stalo. */
+    assert!(
+        states.iter().any(|(_, state)| state == "failed"),
+        "nothing in this run reads red, so carrying on was implemented as passing. The person \
+         would see a green run over work the tester never let through. It read: {states:?}"
     );
     Ok(())
 }

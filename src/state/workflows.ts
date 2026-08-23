@@ -144,9 +144,13 @@ export type Overrides = Partial<Pick<Agent, OverridableField>>;
  * ślepe punkty". Do tego dnia każda porażka kasowała cały stożek potomków — bez zdania i bez
  * wyboru. Lustro `workflow::WhenItFails` z Rusta, wartość w wartość.
  *
- * BRAK POLA ZNACZY `stop`, czyli dokładnie to, co robił każdy krok wcześniej — i dlatego pole
- * jest opcjonalne: plik zapisany przed tą zmianą ma się wczytać bez zmiany zachowania, a plik
- * zapisany po niej nie ma nosić `"stop"` w każdym kroku. */
+ * BRAK POLA ZNACZY `carry-on` — decyzja właściciela z tego samego dnia, o jeden krok dalej niż
+ * samo pole: „wiesz co to w sumie carry on powinno być domyślnie". Pierwsza wersja miała tu
+ * `stop`, żeby pliki zapisane wcześniej biegły identycznie; to było prawdziwe i nie o to chodziło
+ * — zgodność wsteczna zachowywała dokładnie ten stan, który był awarią. Powód, dla którego
+ * przepuszczanie wolno postawić domyślnym, stoi przy `WhenItFails` w Ruście: krok zostaje
+ * czerwony, a następny dowiaduje się, że materiał nie przeszedł. Pole zostaje opcjonalne, więc
+ * plik zapisany po tej zmianie nie nosi `"carry-on"` w każdym kroku. */
 export type WhenItFails = 'stop' | 'carry-on' | 'ask-me';
 
 /** Krok, który uruchamia agenta.
@@ -169,7 +173,7 @@ export interface AgentStep {
   skills: Skills;
   folder: Folder;
   handover: Handover;
-  /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `stop`. */
+  /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
   whenItFails?: WhenItFails;
   at: Point;
 }

@@ -192,7 +192,7 @@ pub struct AgentStep {
     /// KAŻDEGO pliku przepisałoby przy pierwszym zapisie wszystkie istniejące workflow, a nie
     /// niesie ani jednej informacji ponad swój brak. `overrides: {}` zostaje, bo tam pusta mapa
     /// znaczy „ten kafelek nie jest nadpisany" — tu domyślna wartość nie znaczy nic.
-    #[serde(default, skip_serializing_if = "WhenItFails::is_stop")]
+    #[serde(default, skip_serializing_if = "WhenItFails::is_the_default")]
     pub when_it_fails: WhenItFails,
     /// Brak klucza znaczy `{"x":0,"y":0}`: plik poprawiony ręcznie ma się wczytać, a nie odmówić
     /// z powodu pozycji, którą płótno i tak umie ustawić.
@@ -268,7 +268,7 @@ pub struct CheckStep {
     pub folder: Folder,
     /// Jak [`AgentStep::when_it_fails`], razem z tym, że przy zapisie znika, gdy jest domyślne.
     /// Komenda, która nie przeszła, jest ślepym punktem dokładnie tak samo jak agent.
-    #[serde(default, skip_serializing_if = "WhenItFails::is_stop")]
+    #[serde(default, skip_serializing_if = "WhenItFails::is_the_default")]
     pub when_it_fails: WhenItFails,
     /// Jak [`AgentStep::at`].
     #[serde(default)]
@@ -412,15 +412,31 @@ pub enum PlainNotes {
 /// sędziego, który wyczerpał próby, a nie krok, który padł zwyczajnie. Ślepy punkt jest tym
 /// samym ślepym punktem niezależnie od tego, dlaczego krok nie przeszedł.
 ///
-/// `Stop` JEST DOMYŚLNE i to jest warunek, nie uprzejmość: każdy plik workflow zapisany przed
-/// tą zmianą biegnie po niej co do kroku tak samo.
+/// `CarryOn` JEST DOMYŚLNE — DECYZJA WŁAŚCICIELA 2026-08-23, tego samego dnia i o jeden krok
+/// dalej niż samo pole: „wiesz co to w sumie carry on powinno być domyślnie".
+///
+/// Pierwsza wersja miała tu `Stop`, z uzasadnieniem „każdy plik zapisany przed tą zmianą biegnie
+/// po niej co do kroku tak samo". To uzasadnienie było prawdziwe i **nie o to chodziło**:
+/// zgodność wsteczna zachowywała dokładnie ten stan, który był awarią. Żaden z zapisanych plików
+/// właściciela nie ma tego pola, więc domyślna `Stop` znaczyła „nic się dla ciebie nie zmienia" —
+/// czyli ślepy punkt zostaje wszędzie tam, gdzie już był.
+///
+/// Kontynuacja jest bezpieczna do postawienia domyślną WYŁĄCZNIE dlatego, że nie jest cicha:
+/// krok zostaje czerwony, a następny dostaje zdanie o tym, że materiał nie przeszedł
+/// (`Live::when_this_one_fails`). Domyślne przepuszczanie, które by o tym milczało, byłoby
+/// gorsze od domyślnego zatrzymania — synteza budowałaby na odrzuconej robocie, a bieg
+/// meldowałby sukces.
+///
+/// NIE `AskMe`, choć to ona zachowuje oba dobra naraz. Biegi startują też wtedy, kiedy nikt nie
+/// patrzy — z wyzwalaczy i z rytmu (`commands::triggers`) — a domyślne pytanie parkowałoby je
+/// do rana. Domyślna wartość musi być bezpieczna dla biegu bez człowieka przy ekranie.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WhenItFails {
     /// Nic po tym kroku się nie wydarzy. Tak zachowywał się każdy krok do 2026-08-23.
-    #[default]
     Stop,
     /// Robota jedzie dalej mimo wszystko — a krok i tak zostaje czerwony.
+    #[default]
     ///
     /// Następny krok **musi się dowiedzieć**, że dostaje materiał, który nie przeszedł: bez tego
     /// synteza buduje na odrzuconej robocie i nikt tego nie widzi.
@@ -437,8 +453,8 @@ impl WhenItFails {
     ///
     /// Bierze referencję, bo tego żąda `skip_serializing_if`, choć typ jest `Copy`.
     #[must_use]
-    pub const fn is_stop(&self) -> bool {
-        matches!(self, Self::Stop)
+    pub const fn is_the_default(&self) -> bool {
+        matches!(self, Self::CarryOn)
     }
 }
 

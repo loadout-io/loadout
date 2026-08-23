@@ -621,7 +621,7 @@ function WhenItFailsRow({
       <select
         id="step-when-it-fails"
         className={FIELD}
-        value={value ?? 'stop'}
+        value={value ?? 'carry-on'}
         onChange={(event) => {
           onEditStep({ whenItFails: event.target.value as WhenItFails });
         }}
@@ -631,8 +631,8 @@ function WhenItFailsRow({
         <option value="ask-me">Ask me what to do</option>
       </select>
       <span className={FROM_AGENT}>
-        Carrying on hands the work to the steps after it even though it did not pass, and they are
-        told so.
+        Carrying on is what a step does unless you say otherwise: the work goes to the steps after
+        it even though it did not pass, and they are told so.
       </span>
     </div>
   );

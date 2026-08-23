@@ -19,8 +19,10 @@
  * 1. **Wartości** są dokładnie te, które przyjmuje `workflow::WhenItFails` w Ruście. Lista, która
  *    wysyła `"carryOn"` do enuma znającego `"carry-on"`, wygląda na ekranie poprawnie i wywraca
  *    zapis pliku — a to jest ta rodzina wad, przed którą stoi `quick-invoke-args` przy komendach.
- * 2. **Brak pola czyta się jako `stop`.** Każdy istniejący plik workflow nie ma tego klucza;
- *    kontrolka pokazująca przy nim cokolwiek innego kłamie o tym, co ten krok zrobi.
+ * 2. **Brak pola czyta się jako `carry-on`.** Żaden istniejący plik workflow nie ma tego klucza,
+ *    a od decyzji właściciela z 2026-08-23 („carry on powinno być domyślnie") każdy z nich jedzie
+ *    dalej. Kontrolka pokazująca przy nim `stop` kłamie o tym, co ten krok zrobi — i kłamie
+ *    w najgorszą stronę, bo człowiek czyta ją jako obietnicę, że bieg się zatrzyma.
  * 3. **Kontrolka stoi przy KAŻDYM kroku agenta**, nie tylko przy sędzim pętli. Krok, który padł
  *    zwyczajnie, jest tym samym ślepym punktem — a kontrolka tylko przy jednym z nich kazałaby
  *    zgadywać, czemu drugi jej nie ma.
@@ -105,6 +107,19 @@ function offered(html: string): string[] {
   return [...chooser(html).matchAll(/<option value="([^"]*)"/g)].map((hit) => hit[1] ?? '');
 }
 
+/** Wartość pozycji ZAZNACZONEJ, albo pusty napis, kiedy żadna nią nie jest.
+ *
+ * 2026-08-23 — TA FUNKCJA POWSTAŁA, BO DWA KRYTERIA NIŻEJ BYŁY ŚLEPE. Stało w nich
+ * `/value="stop"/.test(chooser(html))`, co wygląda na pytanie o wybór, a jest pytaniem o to, czy
+ * lista W OGÓLE ZAWIERA taką pozycję — a zawiera zawsze, bo to jedna z trzech stałych opcji.
+ * Wykryła to mutacja: podmiana domyślnej wartości kontrolki na drugą stronę nie zapaliła ani
+ * jednego z nich. `renderToStaticMarkup` nie stawia `value` na `<select>`; zaznaczenie React
+ * zapisuje jako `selected=""` na jednej z pozycji i tylko tam da się je zobaczyć. */
+function chosen(html: string): string {
+  const marked = /<option value="([^"]*)"[^>]*\bselected\b/.exec(chooser(html));
+  return marked?.[1] ?? '';
+}
+
 describe('every agent step says what happens to the work if it does not pass', () => {
   it('offers exactly the three answers the file format accepts', () => {
     expect(
@@ -115,22 +130,22 @@ describe('every agent step says what happens to the work if it does not pass', (
     ).toEqual(['stop', 'carry-on', 'ask-me']);
   });
 
-  it('reads a step with no such key as stopping, because that is what it does', () => {
+  it('reads a step with no such key as carrying on, because that is what it does', () => {
     expect(
-      /value="stop"/.test(chooser(markup())),
-      'a step saved before this setting existed has no such key, and every one of them stops ' +
-        'the work after it. Showing anything else there tells the person their run will carry ' +
-        'on when it will not. It drew: ' +
+      chosen(markup()),
+      'no saved workflow carries this key, and since the default became carry-on every one of ' +
+        'them hands its work on. Drawing "Stop here" there promises the person a run that will ' +
+        'halt on a red step, and it will not. It drew: ' +
         JSON.stringify(chooser(markup())),
-    ).toBe(true);
+    ).toBe('carry-on');
   });
 
   it('shows what was chosen when the step carries one', () => {
     expect(
-      /value="ask-me"/.test(chooser(markup('ask-me'))),
+      chosen(markup('ask-me')),
       'the control does not show the choice the file already holds, so opening a step and ' +
         'closing it would quietly reset what it does',
-    ).toBe(true);
+    ).toBe('ask-me');
   });
 
   it('stands on a step with no way back at all', () => {
