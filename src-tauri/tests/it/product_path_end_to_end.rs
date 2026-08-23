@@ -290,6 +290,7 @@ fn one_step_for(agent: &Agent, task: &str) -> WorkflowFile {
             copies: 1,
             instructions: task.to_owned(),
             skills: loadout_lib::workflow::Skills::default(),
+            borrow: loadout_lib::workflow::Borrow::default(),
             folder: loadout_lib::workflow::Folder::default(),
             handover: loadout_lib::workflow::Handover::default(),
             when_it_fails: loadout_lib::workflow::WhenItFails::Stop,

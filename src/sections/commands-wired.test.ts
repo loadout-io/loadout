@@ -230,6 +230,13 @@ const WIRES: readonly Wire[] = [
     call: () => workflows.check(WORKFLOW),
   },
   {
+    where: 'workflows',
+    what: 'listHostMaterial',
+    command: 'list_host_material',
+    given: [FOLDER],
+    call: () => workflows.listHostMaterial(FOLDER),
+  },
+  {
     where: 'skills',
     what: 'readLink',
     command: 'review_skill',

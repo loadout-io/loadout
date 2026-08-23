@@ -239,6 +239,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str, at: Point
         copies: 1,
         instructions: instructions.to_owned(),
         skills: Skills::default(),
+        borrow: crate::workflow::Borrow::default(),
         folder: Folder::SameCopy,
         handover: Handover::Plain(PlainNotes::Notes),
         when_it_fails: WhenItFails::Stop,

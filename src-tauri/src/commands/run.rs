@@ -191,8 +191,8 @@ use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
-    AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence, Skills, Step,
-    WhenItFails, WorkflowFile,
+    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence,
+    Skills, Step, WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
@@ -214,6 +214,16 @@ const RUNS_DIR: &str = "runs";
 /// razem z biegiem. `$TMPDIR` zostawiałby artefakt biegu poza biegiem (`docs/ARCHITECTURE.md` §8),
 /// a katalog roboczy kroku bywa folderem człowieka.
 const STEP_SKILLS_DIR: &str = "skills";
+
+/// Katalog, pod którym stoi to, co **kroki** pożyczyły z repozytorium gospodarza — po jednym
+/// podkatalogu na krok.
+///
+/// PO JEDNYM NA KROK z dokładnie tego samego powodu, co przy [`STEP_SKILLS_DIR`]: wybór
+/// „pożycz to z tego repozytorium" jest własnością kafelka, a jeden wspólny katalog dałby
+/// każdemu krokowi sumę wszystkich wyborów — czyli odznaczenie na kafelku przestałoby cokolwiek
+/// znaczyć. Do 2026-08-23 stał tu jeden katalog `plugin/` na cały bieg i było to bez znaczenia
+/// tylko dlatego, że wybór był zawsze pusty.
+const BORROWED_DIR: &str = "borrowed";
 
 /// Opis biegu: bieg, jego kroki i migawki. To jest **prawda** (niezmiennik 4).
 const RUN_FILE: &str = "run.json";
@@ -720,16 +730,17 @@ async fn the_planned_run(
     // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
     // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
-    // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
+    // Pożyczki kroków stoją TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
     // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
-    let inherited = what_the_host_lends(deps.project, &plan.dir)?;
-    // Umiejętności kroków lądują TU, obok dziedziczenia i z tego samego powodu: obie drogi piszą,
+    // Odmowa za nazwę, której u gospodarza nie ma, padła już przy planowaniu
+    // ([`borrowing_is_possible`]), czyli zanim ten katalog w ogóle istniał.
+    bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
+    // Umiejętności kroków lądują TU, obok pożyczek i z tego samego powodu: obie drogi piszą,
     // a piszą pod katalog biegu, który dopiero co powstał. Przed `Live::new`, bo odmowa („ten krok
     // pracuje w twoim folderze") ma paść, zanim ruszy pierwszy proces (niezmiennik 12).
     hand_the_skills_to_the_steps(&mut plan)?;
     let live = Arc::new(Live::new(
         plan,
-        inherited,
         lines,
         deps.control.clone(),
         slots,
@@ -1353,6 +1364,19 @@ struct AgentJob {
     /// (plan jest czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć przy
     /// wznowieniu).
     plugin_flags: Vec<String>,
+    /// Nazwy, które ten kafelek pożyczył z repozytorium gospodarza — dosłownie z pliku workflow.
+    ///
+    /// Sprawdzone przy PLANOWANIU ([`borrowing_is_possible`]), przepisane dopiero po powstaniu
+    /// katalogu biegu ([`bring_in_what_each_step_borrowed`]). Dwa pola, a nie jedno, bo to są
+    /// dwa różne fakty: o co poproszono i co z tego naprawdę przyszło — a przy jednym polu
+    /// „nie znaleziono" byłoby nie do odróżnienia od „nie proszono".
+    borrows: Chosen,
+    /// …i to, co naprawdę przyszło: fragment argv plus tekst do promptu.
+    ///
+    /// Puste przy planowaniu i wypełniane dopiero przez [`bring_in_what_each_step_borrowed`],
+    /// z tego samego powodu, co [`AgentJob::plugin_flags`]: plan jest czystym rachunkiem, a to
+    /// pole stoi na katalogu, którego w chwili planowania jeszcze nie ma.
+    borrowed: Inherited,
     /// Po ilu minutach bez końca tury odbieramy krokowi robotę. `Duration::MAX` znaczy „nigdy".
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
@@ -1683,6 +1707,11 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
              * nie da się potem wyjaśnić (niezmiennik 4). */
             instructions: ask.task.clone(),
             skills: Skills::default(),
+            /* NIC NIE POŻYCZAMY, i to jest ta sama odpowiedź, co przy `overrides` wyżej: wybór
+             * „weź to z tego repozytorium" jest własnością kafelka, a `/ask` kafelka nie ma.
+             * Domyślne, czyli puste — pełne `.claude/` w folderze, który ktoś otworzył, nie
+             * jest zgodą. */
+            borrow: Borrow::default(),
             /* FOLDER PRACY, nie własna kopia. `/ask` jest najczęstszą czynnością dnia, a własna
              * kopia znaczy gałąź i drzewo robocze na każde zdanie — czyli cenę, którą płaci się
              * za ochronę przed kolizją, której przy jednym kroku nie ma z czym mieć
@@ -2293,11 +2322,17 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         }
     }
 
+    // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
+    // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
+    // wtedy, gdy krok nigdy nie ruszył. Wyjęta ponad literał struktury, bo pytanie „czy ten
+    // program w ogóle umie przyjąć katalog pluginu" zadajemy właśnie jej — i zadajemy je
+    // ZANIM powstanie katalog biegu.
+    let driver = (setup.drivers)(effective.runs_with);
+    let borrows = what_this_step_borrows(&step.borrow);
+    borrowing_is_possible(setup.project, &driver, &borrows, step)?;
+
     Ok(AgentJob {
-        // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
-        // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
-        // wtedy, gdy krok nigdy nie ruszył.
-        driver: (setup.drivers)(effective.runs_with),
+        driver,
         session: Uuid::now_v7(),
         cwd: spot.cwd,
         ours: spot.ours,
@@ -2332,6 +2367,10 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
         plugin_flags: Vec::new(),
+        borrows,
+        // Z tego samego powodu, co `plugin_flags` wyżej: wypełnia to
+        // [`bring_in_what_each_step_borrowed`], kiedy katalog biegu już stoi.
+        borrowed: Inherited::default(),
         // `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`), więc jedzie
         // tu jako `Duration::MAX` — tym samym kształtem, którym `Live::one_turn` opisuje każdy
         // inny krok bez terminu (`Job::Ask | Job::Check | Job::Serve`). Do 2026-08-23 stało tu
@@ -4001,35 +4040,117 @@ fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     }
 }
 
-/// Co ten bieg bierze z repozytorium, w którym pracuje: katalog pluginu z wybranymi
-/// umiejętnościami (jedzie argv) i tekst z learnings oraz podagenta (jedzie promptem).
+/// Co ten kafelek pożycza z repozytorium gospodarza — przełożone z kształtu pliku na pytanie.
 ///
-/// # Dlaczego dziś oddaje zawsze pusto — i czyja to decyzja
+/// Jedno przełożenie, w jednym miejscu: [`Borrow`] jest kształtem pliku na dysku, który ma się
+/// otwierać także za rok, a [`Chosen`] jest pytaniem zadawanym cudzemu katalogowi. Rozpisanie
+/// tego drugi raz gdziekolwiek indziej dałoby dwa znaczenia jednego wyboru (niezmiennik 23).
+fn what_this_step_borrows(borrow: &Borrow) -> Chosen {
+    Chosen {
+        skills: borrow.skills.clone(),
+        learnings: borrow.learnings.clone(),
+        // `agent` w pliku, `subagent` w pytaniu: klucz pliku nazywa półkę, z której pochodzi
+        // (`<projekt>/.claude/agents/`), a nazwa w środku odróżnia go od agenta Loadouta.
+        subagent: borrow.agent.clone(),
+    }
+}
+
+/// Czy to, co kafelek pożyczył, da się w ogóle dowieźć — **zanim powstanie katalog biegu**.
 ///
-/// `Chosen` jest tu **stałą pustą**, bo wybór człowieka nie ma dziś nośnika: nazwy zaznaczonych
-/// pozycji musiałyby przyjść razem z naciśnięciem Start, czyli polem w [`RunRequest`] — a ten
-/// typ mieszka w `commands/mod.rs`, który **nie leży w bloku OWNS** T-57 (`AGENTS.md` §7).
-/// Zbudowanie sobie w zamian własnego źródła prawdy (plik pod `~/.loadout/`, którego nikt nie
-/// zapisuje) byłoby czytaniem artefaktu, którego nie pisze żaden skrypt — czyli niezmiennikiem
-/// 21 złamanym od drugiej strony.
+/// # Dwa pytania, dwie odpowiedzi, obie przed pierwszym procesem (niezmiennik 12)
 ///
-/// **To nie jest wołający na pokaz.** Pusty wybór jest stanem domyślnym z AC-4 i biegnie tu tę
-/// samą drogą, którą pojedzie wybór niepusty: katalog biegu, prompt każdego kroku i argv
-/// sterownika są już spięte i sądzone czterema kryteriami. Brakuje **jednej** rzeczy — pola,
-/// którym ekran powie, co człowiek zaznaczył. Do tego czasu bieg zachowuje się dokładnie tak,
-/// jak obiecuje AC-4: pełne `.claude/` w cudzym repozytorium nie jest zgodą.
+/// **Czy ta nazwa jest u gospodarza.** Cicha alternatywa jest najdroższą wersją tej wady:
+/// człowiek zaznacza rolę, agent nie dostaje ani jednej jej reguły, nic nie pada — bo „agent
+/// nie zna tych reguł" jest z zewnątrz nieodróżnialne od „model nie uznał, że warto po nie
+/// sięgnąć". Odpowiada [`wire::nothing_is_missing`], czyli ta sama funkcja, którą u siebie
+/// woła `wire::from_the_host`: jedno miejsce, jedna definicja słowa „znalezione".
 ///
-/// Liczone RAZ na bieg, nie per krok, dokładnie jak [`Setup::knows`] i z tego samego powodu:
-/// dwa kroki jednego biegu mają czytać ten sam kontekst, a różnicy nie widać nigdzie poza
-/// rachunkiem za długość.
-fn what_the_host_lends(project: &Path, run_dir: &Path) -> Result<Inherited, RunError> {
-    wire::from_the_host(project, run_dir, &Chosen::default()).map_err(|error| {
-        /* `RunError` nie ma wariantu na dziedziczenie, a `commands/mod.rs` nie leży w bloku OWNS
-         * tego zadania. `Io` jest wariantem PRZEZROCZYSTYM, więc niesie zdanie odmowy co do
-         * słowa — a to zdanie jest tu całą treścią: „Loadout was told to bring in the skill
-         * \"x\" …" wymienia pozycję, której zabrakło, i po to zostało napisane. */
-        RunError::Io(io::Error::other(error))
+/// **Czy ten program umie przyjąć katalog pluginu.** Umiejętność ma dokładnie jedną drogę do
+/// procesu — ścieżkę katalogu w argv — więc vendor, który tej drogi nie zna, nie dostanie jej
+/// wcale. Pytamy o to [`AgentDriver::inheriting`] pustym fragmentem, a nie nazwą vendora:
+/// nazwa w tym miejscu byłaby drugim zestawem reguł po stronie rdzenia, czyli dokładnie tym,
+/// jak w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23). Vendor nazywa
+/// **zdanie odmowy** i tylko ono — po to, żeby człowiek wiedział, czy odznaczyć umiejętność,
+/// czy przełączyć program.
+///
+/// Sam tekst do promptu żadnej drogi vendora nie potrzebuje: jedzie stdinem, który przyjmuje
+/// każdy. Krok pożyczający wyłącznie plik roli albo opis podagenta rusza więc u każdego.
+fn borrowing_is_possible(
+    project: &Path,
+    driver: &Arc<dyn AgentDriver>,
+    borrows: &Chosen,
+    step: &AgentStep,
+) -> Result<(), RunError> {
+    if borrows.is_nothing() {
+        // Pusty wybór nie ma czego nie znaleźć — i nie zaglądamy wtedy do cudzego `.claude/`
+        // ani razu. Folder bez tego katalogu jest normalnym stanem cudzego repozytorium
+        // (niezmiennik 5), nie powodem do odmowy.
+        return Ok(());
+    }
+
+    if !borrows.skills.is_empty() && driver.inheriting(&[]).is_none() {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to jego wybór i jego agent.
+            step_id: Some(step.id.clone()),
+            message: format!(
+                "This step borrows a skill from this project, and {} has no way to be handed \
+                 one. Loadout stopped the run instead of starting the step without it: an agent \
+                 that quietly knows less than you picked answers as though there was nothing to \
+                 know. Either untick the skill on this step or give it an agent that runs on a \
+                 different app.",
+                crate::workflow::check::vendor_name(driver.id())
+            ),
+            fix: None,
+        }));
+    }
+
+    wire::nothing_is_missing(project, borrows).map_err(|error| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: Some(step.id.clone()),
+            /* Zdanie co do słowa to, które napisał `inherit`: wymienia i pozycję, i folder,
+             * w którym jej nie było. Przepisane tutaj byłoby drugą kopią jednego zdania,
+             * a druga kopia jest zawsze tą nieaktualną (niezmiennik 23). */
+            message: error.to_string(),
+            fix: None,
+        })
     })
+}
+
+/// Zbiera to, co KAŻDY krok pożyczył, do katalogu tego kroku — po powstaniu katalogu biegu.
+///
+/// Stoi TU, a nie w `plan_agent`, i to jest ta sama granica, która trzyma
+/// [`hand_the_skills_to_the_steps`] w tym samym miejscu: plan jest czystym rachunkiem, a to
+/// jest zapis — i to zapis pod katalog biegu, który dopiero co powstał. Odmowa padła
+/// wcześniej ([`borrowing_is_possible`]), więc tutaj zostaje wyłącznie awaria dysku i stan,
+/// w którym ktoś skasował plik między planowaniem a startem.
+fn bring_in_what_each_step_borrowed(plan: &mut Plan, project: &Path) -> Result<(), RunError> {
+    // Kopia ścieżki, nie pożyczka: `plan.steps` bierzemy niżej mutowalnie.
+    let run_dir = plan.dir.clone();
+    for step in &mut plan.steps {
+        // Klucz kafelka zdjęty ZANIM pożyczymy zadanie mutowalnie — na niego ląduje kropka.
+        let tile_key = step.tile_key.clone();
+        let node_key = step.node_key.clone();
+        let Job::Agent(job) = &mut step.job else {
+            continue;
+        };
+        if job.borrows.is_nothing() {
+            // Krok bez wyboru nie dotyka cudzego katalogu i nie zakłada sobie własnego:
+            // katalog, który powstał, prędzej czy później zostanie komuś podany.
+            continue;
+        }
+        let under = run_dir.join(BORROWED_DIR).join(&node_key);
+        job.borrowed = wire::from_the_host(project, &under, &job.borrows).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: Some(tile_key),
+                message: error.to_string(),
+                fix: None,
+            })
+        })?;
+    }
+    Ok(())
 }
 
 /// Kładzie umiejętności każdego kroku tam, gdzie vendorzy naprawdę zaglądają — **obiema drogami**.
@@ -4103,13 +4224,6 @@ fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> Ru
 struct Live {
     /// Wszystko, co rozstrzygnięto przed startem.
     plan: Plan,
-    /// Co ten bieg wziął z repozytorium gospodarza: fragment argv i tekst do promptu.
-    ///
-    /// Jedna wartość na bieg, policzona raz ([`what_the_host_lends`]), bo katalog pluginu jest
-    /// jeden i jego ścieżka nie ma prawa różnić się między krokami. Trzyma to `Live`, a nie
-    /// [`Plan`], dokładnie z tego powodu, dla którego stoi obok: `Plan` powstaje **przed**
-    /// katalogiem biegu, a dziedziczenie do tego katalogu pisze.
-    inherited: Inherited,
     /// Stan, który zmienia się w trakcie. Zamek jest `std::sync::Mutex`, a każde jego wzięcie
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
@@ -4361,7 +4475,6 @@ impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
     fn new(
         plan: Plan,
-        inherited: Inherited,
         lines: LineSink,
         control: RunControl,
         slots: Limiter,
@@ -4401,7 +4514,6 @@ impl Live {
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         Self {
             plan,
-            inherited,
             book: Mutex::new(Book {
                 status: RunState::Running,
                 asking: false,
@@ -5306,12 +5418,16 @@ impl Live {
     /// i odpowiedzią bez nich: „agent nie zna umiejętności" jest z zewnątrz nieodróżnialne od
     /// „model nie uznał, że warto jej użyć". Zdanie odmowy jedzie tą samą drogą, co nieudany
     /// start procesu — wierszem na ekranie kroku i polem `error` w `run.json`.
+    ///
+    /// Skojarzona, nie metoda na `&self`, i to jest zdanie o tym zadaniu: do 2026-08-23 czytała
+    /// stąd `Live::inherited`, czyli JEDEN wybór na cały bieg. Odkąd wybór jest własnością
+    /// kafelka, odpowiedź zależy wyłącznie od argumentów — a `self` w podpisie sugerowałby, że
+    /// gdzieś w biegu stoi drugie źródło tego, co ten krok pożyczył.
     fn carrying_what_we_inherited(
-        &self,
         driver: &Arc<dyn AgentDriver>,
+        from_the_host: &[String],
         of_the_step: &[String],
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
-        let from_the_host = self.inherited.flags();
         if from_the_host.is_empty() && of_the_step.is_empty() {
             // Nic do niesienia i nie ma o co pytać: ten sam sterownik, bez klonowania czegokolwiek
             // poza licznikiem.
@@ -5348,9 +5464,9 @@ impl Live {
         id: StepId,
         prompt_bytes: usize,
         context: Vec<ContextSource>,
+        borrowed: &Inherited,
     ) -> EvidenceTarget {
-        let mut inherited_context = self
-            .inherited
+        let mut inherited_context = borrowed
             .sources()
             .iter()
             .map(|source| ContextSource {
@@ -5425,7 +5541,7 @@ impl Live {
         // i do każdej następnej rundy pętli — więc cudze reguły rosłyby o kopię na rundę.
         // `applied_to` rozstrzyga też, że `system_append` wraca nietknięty: treść w tym polu
         // staje się `--append-system-prompt`, czyli argumentem widocznym w `ps` (niezmiennik 9).
-        let spec = self.inherited.applied_to(RunSpec {
+        let spec = job.borrowed.applied_to(RunSpec {
             run_id: job.session,
             cwd: job.cwd.clone(),
             // Instrukcja i indeks jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani
@@ -5457,7 +5573,7 @@ impl Live {
         // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
         // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
-        let target = self.evidence_for_agent(id, spec.prompt.len(), context);
+        let target = self.evidence_for_agent(id, spec.prompt.len(), context, &job.borrowed);
         let evidence = target.clone();
         let configured = (|| -> anyhow::Result<Arc<dyn AgentDriver>> {
             let configuration = self.vendor_arguments_for(id, job)?;
@@ -5478,7 +5594,8 @@ impl Live {
                     None => Arc::clone(&job.driver),
                 }
             };
-            let driver = self.carrying_what_we_inherited(&driver, &job.plugin_flags)?;
+            let driver =
+                Self::carrying_what_we_inherited(&driver, job.borrowed.flags(), &job.plugin_flags)?;
             /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH TRZECH OPAKOWAN JEST
              * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
              * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.
