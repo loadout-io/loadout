@@ -320,9 +320,9 @@ export function freshId(file: WorkflowFile): string {
   }
 }
 
-/** Świeży krok jednego z dwóch rodzajów — i jedyne miejsce, w którym powstaje nowy krok.
+/** Świeży krok jednego z czterech rodzajów — i jedyne miejsce, w którym powstaje nowy krok.
  *
- * Upuszczenie strzałki i oba przyciski płótna wołają TĘ funkcję. Druga lista wartości
+ * Upuszczenie strzałki i wszystkie przyciski płótna wołają TĘ funkcję. Druga lista wartości
  * domyślnych, wpisana przy przycisku, rozjechałaby się z tą przy pierwszym polu dopisanym do
  * schematu — i rozjechałaby się po cichu, bo krok z brakującym polem wygląda jak każdy inny.
  *
@@ -399,11 +399,33 @@ export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
       at,
     };
 
-  /* `kind: 'agent'` NA SZTYWNO, a nie z argumentu, i to jest szkielet, nie uproszczenie:
-   * rodzaj `check` wszedł już do unii `Step`, ale własnej gałęzi tutaj jeszcze nie ma, więc
-   * `freshStep('check', …)` oddaje dziś krok agenta. Gałąź dostawia faza implementacji T-89
-   * — do tego czasu kompilator ma mówić prawdę o tym, co ta funkcja naprawdę produkuje,
-   * zamiast obiecywać rodzaj, którego nie umie zbudować. */
+  /* KAFELEK „SPRAWDŹ" WYCHODZI PUSTY, i to jest cała jego treść w tej funkcji.
+   *
+   * Pusta komenda i pusty wzorzec z tego samego powodu, co przy „uruchom i zostaw": wypełniacz
+   * (`npm test`, `(\d+) passed`) wygląda na płótnie dokładnie tak samo jak decyzja człowieka,
+   * a ten kafelek URUCHAMIA to, co w nim stoi, i orzeka z tego, co znajdzie w wyjściu. Pusty
+   * wzorzec jest przy tym ODMOWĄ ZAPISU po stronie Rusta (`check::a_command_step_left_empty`),
+   * czyli głośną pomyłką z nazwą pola — a nie kafelkiem, który po cichu przepuszcza wszystko.
+   *
+   * `same-copy`, NIE `project`: sprawdzenie stawia się prawie zawsze PO kroku, który właśnie
+   * coś napisał, i ma patrzeć na tę pracę. To samo rozstrzygnięcie i ten sam powód, co przy
+   * kafelku „uruchom i zostaw" wyżej.
+   *
+   * `whenItFails: 'stop'` STOI TU JAWNIE, choć pole jest opcjonalne. Brak klucza znaczy
+   * `carry-on` (`state/workflows.ts`), a bieg, który po sprawdzeniu mówiącym „nie" oddaje pracę
+   * dalej, kończy dokładnie tam, gdzie skończyłby bez sprawdzenia — czyli kafelek bez skutku. */
+  if (kind === 'check')
+    return {
+      kind,
+      id,
+      name: 'Run a check',
+      command: '',
+      proof: '',
+      folder: { use: 'same-copy' },
+      whenItFails: 'stop',
+      at,
+    };
+
   return {
     kind: 'agent',
     id,
