@@ -1874,10 +1874,30 @@ fn refused(said: &String) {
 /// jedną odpowiedź — `Cancelled` — bo bieg z anulowanym tokenem melduje anulowanie także wtedy,
 /// gdy ostatni krok zdążył się udać.
 #[tauri::command]
-pub async fn stop_run(state: State<'_, AppState>) -> Result<(), String> {
-    commands::run::stop_run_inner(&state.deps())
+pub async fn stop_run(state: State<'_, AppState>) -> Result<bool, String> {
+    let deps = state.deps();
+    /* CZY JEST CO ZATRZYMYWAĆ — PYTANIE ODPOWIADANE TUTAJ, I TO JEST CAŁA TA ZMIANA.
+     *
+     * Zgłoszenie właściciela 2026-08-23, cztery wiersze pod rząd: odmowa „A run is already
+     * going… Press Stop first", potem `/stop` → **„Nothing is running."**, potem `/run` →
+     * ta sama odmowa, potem `/stop` → to samo zdanie. Bieg pracował przez cały ten czas.
+     *
+     * Zdanie „nic nie biegnie" mówiło do dziś OKNO, z własnej pamięci: `workflow !== ''`
+     * w sesji zakresu. Ta pamięć jest ulotna i bywa nieprawdziwa — gubi ją przeładowanie
+     * strony, a do dziś kasował ją także każdy odmówiony start. Zapadka biegu jest natomiast
+     * JEDNA NA APLIKACJĘ i mieszka tutaj, więc dwie odpowiedzi na jedno pytanie mogły się
+     * rozjechać — i rozjechały się dokładnie tam, gdzie boli: człowiek dostawał odmowę, która
+     * każe nacisnąć Stop, i Stop, który twierdzi, że nie ma czego zatrzymywać.
+     *
+     * Okno pyta teraz zamiast zgadywać (niezmiennik 13). `false` znaczy „nie było czego
+     * zatrzymać" i JEST odpowiedzią, nie błędem: naciśnięcie Stopu nad pustym ekranem nie jest
+     * pomyłką człowieka.
+     *
+     * Samo pytanie mieszka w rdzeniu ([`commands::run::stop_if_anything_is_going`]), razem
+     * z drugim powodem, dla którego jest konieczne: bez niego Stop nad pustym ekranem wieszałby
+     * aplikację. Tutaj zostaje wyłącznie transport (niezmienniki 1 i 23). */
+    commands::run::stop_if_anything_is_going(&deps)
         .await
-        .map(|_| ())
         .map_err(|error| {
             let said = error.to_string();
             refused(&said);

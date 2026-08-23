@@ -175,6 +175,21 @@ export const HINT =
 export const NOTHING_RUNS = 'Nothing is running.';
 
 /**
+ * Co Stop mówi po powrocie. `null` znaczy: nie ma nic do powiedzenia, bieg zszedł.
+ *
+ * FUNKCJA, A NIE `if` W OBSŁUDZE ENTERA, z tego samego powodu, co `../addressee.ts`: to jest
+ * jedyna reguła, która pilnuje, żeby zdanie „nic nie biegnie" padało WYŁĄCZNIE wtedy, gdy
+ * powiedział to Rust. Do 2026-08-23 mówiło je okno z własnej pamięci (`workflow !== ''`
+ * w sesji zakresu) — a ta pamięć jest ulotna i gubi ją przeładowanie strony. Skutek zmierzony
+ * u właściciela: `/stop` odpowiadało „Nothing is running." nad biegiem pracującym czterdzieści
+ * minut, tuż pod odmową, która kazała nacisnąć Stop. Nie zostawało nic, czym dało się ten bieg
+ * dosięgnąć.
+ */
+export function whatStopSaid(stopped: boolean): string | null {
+  return stopped ? null : NOTHING_RUNS;
+}
+
+/**
  * Zdanie pod polem: DO KOGO pójdzie to, co człowiek pisze.
  *
  * # Po co to istnieje
@@ -464,7 +479,7 @@ export interface EntryProps {
    * `null`, a nie osobne pole `running`: „czy jest co zatrzymywać" i „czym to zatrzymać" to
    * jeden fakt, a dwa pola obok siebie dają stan, w którym mówią co innego.
    */
-  readonly onStopRun: (() => void) | null;
+  readonly onStopRun: (() => Promise<boolean>) | null;
   /**
    * Wiersz, który to pole właśnie złożyło — do dopisania w strumieniu.
    *
@@ -736,7 +751,13 @@ export function Entry({
         showTheAnswer(NOTHING_RUNS);
         return;
       }
-      onStopRun();
+      /* PYTAMY, ZAMIAST ZGADYWAĆ. Do 2026-08-23 ten wiersz odpowiadał „nic nie biegnie" z pamięci
+       * okna — a wtedy `/stop` twierdziło to nad biegiem, który pracował czterdzieści minut,
+       * i nie zostawało już nic, czym dało się go dosięgnąć. Powód w całości stoi przy `stop_run`
+       * w `src-tauri/src/ipc.rs`. */
+      void onStopRun().then((stopped) => {
+        showTheAnswer(whatStopSaid(stopped));
+      });
       return;
     }
     /* PROZA NIE ODBIJA SIĘ OD WIERSZA.

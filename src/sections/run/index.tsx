@@ -550,12 +550,26 @@ export default function Run(): ReactElement {
     field.current?.focus();
   }
 
-  /** Zatrzymanie z wiersza wejścia. `null`, kiedy nic nie biegnie — wtedy nie ma czego zatrzymać. */
-  function stopRun(): void {
+  /**
+   * Zatrzymanie z wiersza wejścia. Oddaje to, co odpowiedział Rust: `false` znaczy „nie było
+   * czego zatrzymać".
+   *
+   * WOŁANE ZAWSZE, także wtedy, gdy to okno nic o biegu nie wie — i to jest cała naprawa
+   * zgłoszenia właściciela z 2026-08-23 („Nothing is running." nad biegiem, który pracował).
+   * Pamięć okna o żywym biegu jest ulotna: gubi ją przeładowanie strony. Zapadka biegu jest
+   * jedna na aplikację i mieszka po tamtej stronie, więc pytamy JĄ (niezmiennik 13).
+   *
+   * Błąd oddaje `true`: zdanie o nim stoi już na ekranie, a doklejenie do niego „Nothing is
+   * running." byłoby drugą, sprzeczną odpowiedzią na tę samą próbę.
+   */
+  async function stopRun(): Promise<boolean> {
     setSaid(null);
-    stop().catch((error: unknown) => {
+    try {
+      return await stop();
+    } catch (error: unknown) {
       setSaid(why(error, 'Loadout could not stop the run.'));
-    });
+      return true;
+    }
   }
 
   return (
@@ -696,7 +710,10 @@ export default function Run(): ReactElement {
                  zamknięcia są składane raz, wyżej, w `entryKey`. */
               key={entryKey}
               onOpenFolder={openFolder}
-              onStopRun={running ? stopRun : null}
+              /* BEZ WARUNKU `running`. Do 2026-08-23 stało tu `running ? stopRun : null`, czyli
+                 wiersz odpowiadał z pamięci okna — a ta pamięć bywa nieprawdziwa i wtedy `/stop`
+                 mówiło „Nothing is running." nad pracującym biegiem. Odpowiada Rust. */
+              onStopRun={stopRun}
               onSayToAgent={sayIt}
               /* `/run` idzie WPROST do polityki startu, bez przechodzenia przez ten komponent:
                  `startFromLine` czyta katalog workflow, rozbiera linię i woła `launchRun` z tym

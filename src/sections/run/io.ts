@@ -357,8 +357,12 @@ export function ask(
  * wraca po `kill(-pgid, 0) == ESRCH`, nie po wysłaniu sygnału (niezmiennik 6). Ekran, który
  * powie „zatrzymane" wcześniej, kłamie o agencie, który dalej pisze i dalej płaci.
  */
-export function stop(): Promise<void> {
-  return invoke<void>('stop_run');
+export function stop(): Promise<boolean> {
+  /* ODDAJE ODPOWIEDŹ, NIE NIC. `false` znaczy „nie było czego zatrzymać" i przychodzi z Rusta,
+   * bo tam mieszka jedyna zapadka biegu na całą aplikację. Okno miało tę odpowiedź u siebie
+   * (`workflow !== ''` w sesji zakresu) i bywała nieprawdziwa: gubi ją przeładowanie strony.
+   * Powód w całości stoi przy `stop_run` w `src-tauri/src/ipc.rs`. */
+  return invoke<boolean>('stop_run');
 }
 
 /**

@@ -32,7 +32,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use loadout_lib::commands::run::stop_before_closing;
+use loadout_lib::commands::run::{stop_before_closing, stop_if_anything_is_going};
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps};
 use loadout_lib::engine::drivers::AgentDriver;
 use loadout_lib::engine::drivers::absent::Absent;
@@ -239,5 +239,93 @@ async fn a_run_that_will_never_come_down_still_lets_the_window_close() {
         said.contains("next time you open Loadout"),
         "and it has to say what happens to what was left behind, or it is nothing but alarm. \
          It said: {said}"
+    );
+}
+
+/* CZWARTE KRYTERIUM: Stop naciśnięty nad pustym ekranem ODPOWIADA, zamiast wieszać albo kłamać.
+ *
+ * Zgłoszenie właściciela 2026-08-23, cztery wiersze pod rząd: odmowa „A run is already going…
+ * Press Stop first", potem `/stop` → „Nothing is running.", i jeszcze raz to samo. Bieg pracował
+ * czterdzieści minut. Zdanie „nic nie biegnie" mówiło OKNO, z własnej pamięci — a ta pamięć jest
+ * ulotna i gubi ją przeładowanie strony. Zapadka biegu jest jedna na aplikację i mieszka po tej
+ * stronie, więc to ona ma na to pytanie odpowiadać (niezmiennik 13).
+ *
+ * DWA PUNKTY, I ŻADEN NIE WYSTARCZA SAM. Pierwszy: nad uchwytem, którego nikt nie wziął, odpowiedź
+ * ma PRZYJŚĆ — `stop_run_inner` czeka na dowód śmierci grupy procesów, a dowód zapala bieg, który
+ * przez siebie przeszedł, więc bez zapory Stop nad pustym ekranem wieszałby aplikację. Drugi:
+ * odpowiedź ma brzmieć `false`, czyli „nie było czego zatrzymać". Implementacja oddająca `true`
+ * przechodzi punkt pierwszy i zostawia człowieka ze zdaniem o biegu, którego nie było.
+ */
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_over_an_empty_screen_answers_instead_of_waiting() {
+    let bench = Bench::new();
+    let store = Store::open(&bench.home.path().join("loadout.db")).expect("a store");
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: idle_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        // Uchwyt, ktorego nikt nie wzial: stan aplikacji tuz po starcie i najczestszy stan
+        // w chwili, w ktorej czlowiek naciska Stop, bo nie wie, czy cos jeszcze idzie.
+        control: RunControl::new(),
+    };
+
+    let answered = tokio::time::timeout(PATIENCE, stop_if_anything_is_going(&deps))
+        .await
+        .expect(
+            "Stop pressed with nothing running never came back. It waits for a proof that only a \
+             real run can give, so the screen stays on \"stopping\" for ever and the person is \
+             left pressing a control that cannot answer.",
+        )
+        .expect("there was nothing to stop, so there was nothing that could fail");
+
+    assert!(
+        !answered,
+        "Stop reported that it stopped a run. There was none: the window would then say the run \
+         was stopped, and the person has no way left to tell that apart from the case that \
+         matters - a run that really is working somewhere else"
+    );
+}
+
+/* PIATE: nad biegiem, ktory idzie, ta sama droga oddaje `true` i CZEKA NA DOWOD.
+ *
+ * Bez tego punktu naprawa powyzej ma trywialna implementacje — „zawsze oddawaj `false`" —
+ * ktora przechodzi tamte dwa punkty i nie zatrzymuje niczego.
+ */
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_over_a_working_run_waits_for_it_and_says_so() {
+    let bench = Bench::new();
+    let store = Store::open(&bench.home.path().join("loadout.db")).expect("a store");
+    let control = RunControl::new();
+    control.begin();
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: idle_drivers(),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: control.clone(),
+    };
+
+    let mut stopping = std::pin::pin!(stop_if_anything_is_going(&deps));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(120), &mut stopping)
+            .await
+            .is_err(),
+        "Stop came back while the run was still up. It has to wait for the proof that the group \
+         of processes is down, or the screen says \"stopped\" over an agent that is still \
+         writing and still being paid for"
+    );
+
+    control.settle();
+    let answered = tokio::time::timeout(PATIENCE, &mut stopping)
+        .await
+        .expect("the run went down, so Stop had to come back")
+        .expect("stopping a run that went down cleanly is not a failure");
+    assert!(
+        answered,
+        "Stop reported there was nothing to stop, over a run it had just stopped. Answering \
+         `false` for every case passes the criterion above and stops nothing"
     );
 }

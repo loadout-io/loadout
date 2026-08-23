@@ -701,6 +701,36 @@ pub async fn stop_run_inner(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
     Ok(Outcome::Cancelled)
 }
 
+/// Stop naciśnięty przez człowieka: zatrzymuje bieg, jeśli jakikolwiek idzie.
+///
+/// Oddaje `false`, kiedy nie było czego zatrzymywać, i **to jest odpowiedź, nie błąd**:
+/// naciśnięcie Stopu nad pustym ekranem nie jest pomyłką.
+///
+/// # Po co to istnieje osobno od [`stop_run_inner`]
+///
+/// Zgłoszenie właściciela 2026-08-23, cztery wiersze pod rząd w jednym terminalu: odmowa
+/// „A run is already going… Press Stop first", potem `/stop` → **„Nothing is running."**,
+/// potem to samo jeszcze raz. Bieg pracował przez cały ten czas.
+///
+/// Zdanie „nic nie biegnie" mówiło do tego dnia OKNO, z własnej pamięci. Ta pamięć jest ulotna —
+/// gubi ją przeładowanie strony — a zapadka biegu jest JEDNA NA APLIKACJĘ i mieszka po tej
+/// stronie. Dwie odpowiedzi na jedno pytanie rozjechały się dokładnie tam, gdzie boli: odmowa
+/// każe nacisnąć Stop, a Stop twierdzi, że nie ma czego zatrzymywać (niezmiennik 13).
+///
+/// # Dlaczego to pytanie jest konieczne, a nie uprzejme
+///
+/// [`stop_run_inner`] czeka na dowód śmierci grupy procesów, a dowód zapala bieg, który przez
+/// siebie przeszedł. Zawołane na uchwycie, którego nikt nie wziął, czekałoby **bez końca** —
+/// czyli Stop nad pustym ekranem wieszałby aplikację. To samo pytanie i z tego samego powodu
+/// stoi w [`stop_before_closing`]; różnica jest taka, że tam kończy się zamknięciem okna,
+/// a tutaj zdaniem dla człowieka.
+pub async fn stop_if_anything_is_going(deps: &RunDeps<'_>) -> Result<bool, RunError> {
+    if !deps.control.is_working() {
+        return Ok(false);
+    }
+    stop_run_inner(deps).await.map(|_| true)
+}
+
 /// Okno się zamyka: zatrzymuje bieg **z dowodem**, jeśli jest co zatrzymywać.
 ///
 /// # Po co to istnieje
