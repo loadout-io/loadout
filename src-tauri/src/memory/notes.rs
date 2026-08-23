@@ -701,13 +701,7 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
     };
 
     let path = root.join(NOTES_DIR).join(format!("{id}.md"));
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NoSuchNote(id.clone()));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let raw = read_or_missing(&path, id)?;
     let (mut front, body_at) = FrontMatter::split(&raw)?;
     let note = note_from(&path, &front);
 
@@ -782,9 +776,24 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
 /// kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta notatka ostatnio się
 /// zmieniła. Ta sama decyzja stoi po drugiej stronie przełącznika, w [`promote`].
 pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
-    todo!(
-        "T-92: przenieś tu ciało `commands::memory::stop_using_note_inner` (root={root:?}, id={id}, at={at})"
-    )
+    let path = root.join(NOTES_DIR).join(format!("{id}.md"));
+    let raw = read_or_missing(&path, id)?;
+    let (mut front, body_at) = FrontMatter::split(&raw)?;
+    let note = note_from(&path, &front);
+
+    // Notatka, która już nie jest w użyciu: plik zostaje NIETKNIĘTY, i to jest ta sama decyzja,
+    // co po drugiej stronie przełącznika ([`promote`] przy notatce już `in-use`).
+    if note.status == Status::Suggested {
+        return Ok(note);
+    }
+
+    // Dwie linie w pliku i ani jedna więcej — dokładnie jak w [`promote`]. Złożenie
+    // front-mattera od nowa przepisałoby klucze, o które nikt tej funkcji nie pytał, razem
+    // z tymi, których ta wersja Loadouta nie zna (niezmiennik 5).
+    front.set("status", "suggested");
+    front.set("modified", &one_line(at));
+    write_note(&path, &front, &raw[body_at..])?;
+    read_note(&path)
 }
 
 /// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
@@ -804,7 +813,59 @@ pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
 /// Zwraca ścieżkę, pod którą notatka teraz leży: bez niej „nic nie jest twardo usuwane" jest
 /// zdaniem w komentarzu, a nie czymś, co wołający umie pokazać człowiekowi.
 pub fn discard(root: &Path, id: &NoteId, by: Actor) -> Result<PathBuf> {
-    todo!("T-92: przenieś notatkę do <root>/discarded/ (root={root:?}, id={id}, by={by:?})")
+    // 1. Wyłącznie człowiek — pierwsza linia, więc żadne inne wywołanie nie zdąży ruszyć pliku.
+    let Actor::You { at } = by else {
+        return Err(Error::OnlyYouCanDoThat);
+    };
+
+    let path = root.join(NOTES_DIR).join(format!("{id}.md"));
+    let raw = read_or_missing(&path, id)?;
+    let (front, _) = FrontMatter::split(&raw)?;
+
+    // 2. …i dopiero potem odmowa dla notatki, która wchodzi do promptu. Też PRZED pierwszym
+    //    zapisem: implementacja, która przenosi plik i zwraca błąd po fakcie, przechodzi każde
+    //    `assert!(… .is_err())` i zostawia człowieka bez notatki, o której powiedziano mu, że
+    //    jej nie ruszono.
+    if note_from(&path, &front).status == Status::InUse {
+        return Err(Error::StillInUse);
+    }
+
+    let gone = root.join(DISCARDED_DIR);
+    fs::create_dir_all(&gone)?;
+    // 3. Przeniesienie, nigdy `remove_file` [T6 §5.3]. Nazwa niesie moment podany przez
+    //    wołającego, bo ten moduł nie ma zegara — bez niego druga odrzucona kandydatka o tym
+    //    samym tytule nadpisuje pierwszą, czyli „nic nie jest usuwane" przestaje być prawdą
+    //    przy drugim kliknięciu, a nie przy pierwszym.
+    let landing = gone.join(format!("{id}__{}.md", file_safe(&at)));
+    fs::rename(&path, &landing)?;
+    Ok(landing)
+}
+
+/// Treść pliku notatki spod tej ścieżki — albo [`Error::NoSuchNote`].
+///
+/// Brak pliku jest tu odpowiedzią o notatce, nie o dysku: „nothing here has the id …" mówi
+/// człowiekowi, czego szukał, a `No such file or directory` mówi mu o katalogu, którego nigdy
+/// nie widział (niezmiennik 14).
+fn read_or_missing(path: &Path, id: &NoteId) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(Error::NoSuchNote(id.clone()))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Chwila z [`Actor::You`] w kształcie, który na pewno przeżyje jako **człon nazwy pliku**.
+///
+/// Lista dozwolonych, nigdy zakazanych — ten sam wybór, co w [`super::slugify`] i z tego samego
+/// powodu. Dwukropki z ISO 8601 są tu jedyną rzeczą, która naprawdę przepada: w Finderze
+/// wyświetlają się jako ukośniki, więc nazwa z nimi jest nazwą, której człowiek nie umie
+/// przepisać. Data zostaje czytelna, bo po niej ten plik się znajduje.
+fn file_safe(at: &str) -> String {
+    at.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
 }
 
 // ── odczyt i zapis pliku ──────────────────────────────────────────────────────────────────
