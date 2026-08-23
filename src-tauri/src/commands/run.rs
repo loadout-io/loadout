@@ -406,6 +406,13 @@ write yourself is read by nobody.";
 const NO_TIME_LIMIT: &str =
     "There is no time limit on this step, so take the time the work really needs.";
 
+/// Etykieta, którą człowiek widzi nad polem ze ścieżką wyniku (`step-panel/panel.tsx`).
+///
+/// 2026-08-23 (T-90) — ODMOWA NAZYWA TO, CO STOI NA EKRANIE, nigdy klucza z pliku:
+/// `writeResultsTo` nie istnieje na żadnym ekranie (niezmiennik 14), a panel kroku ma dziewięć
+/// wierszy — odmowa bez nazwy pola wysyła człowieka szukać, który z nich zatrzymał bieg.
+const WRITE_RESULTS_TO: &str = "Write results to";
+
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
@@ -1291,6 +1298,21 @@ struct AgentJob {
     cwd: PathBuf,
     /// Czy ten katalog jest nasz, czyli czy mamy go utworzyć.
     ours: bool,
+    /// Gdzie ten krok ma odłożyć swoją odpowiedź — **względem [`AgentJob::cwd`]**. `None` znaczy
+    /// „człowiek o żaden plik nie prosił" i wtedy nie powstaje nic.
+    ///
+    /// 2026-08-23 (T-90) — DO TEGO DNIA `writeResultsTo` NIE MIAŁO W CAŁYM DRZEWIE ANI JEDNEGO
+    /// CZYTELNIKA. Wiersz w panelu kroku przyjmował ścieżkę, plik ją zapisywał, i nie powstawało
+    /// nic — a pusty katalog wygląda dokładnie tak samo jak katalog, do którego agent nie miał
+    /// nic do napisania (niezmiennik 16).
+    ///
+    /// Względem folderu KROKU, nie projektu, i te dwa są tym samym wyłącznie dla kroków
+    /// `project`. Krok z własną kopią plików ma odłożyć wynik w NIEJ: pisanie z powrotem do
+    /// folderu człowieka jest dokładnie tym, czemu ta własna kopia zapobiega.
+    ///
+    /// Ścieżka wyprowadzająca poza ten folder jest odmową przy planowaniu ([`where_results_go`]),
+    /// więc do tego pola dochodzi wyłącznie ścieżka względna bez `..`.
+    write_results_to: Option<PathBuf>,
     /// Planowana część promptu: notatki, zadanie biegu i instrukcja kafelka, już złożone.
     ///
     /// 2026-08-23 — KOMENTARZ MÓWIŁ „instrukcje kroku, dosłownie z pliku workflow" i przestał
@@ -2288,6 +2310,8 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
             },
         )?;
 
+    let write_results_to = where_results_go(&effective, step)?;
+
     let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
@@ -2326,6 +2350,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         session: Uuid::now_v7(),
         cwd: spot.cwd,
         ours: spot.ours,
+        write_results_to,
         // Treść zadania. `{{copy}}` i `{{copies}}` podstawia dopiero rozwinięcie kroku na kopie
         // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
         // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
@@ -2376,6 +2401,57 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         minutes: effective.give_up_after_minutes,
         effective: serde_json::to_value(&effective)?,
     })
+}
+
+/// Gdzie ten krok ma odłożyć swoją odpowiedź — albo odmowa nazywająca pole, które ją zatrzymało.
+///
+/// # Odmowa pada PRZED startem, jak każda inna (niezmiennik 12)
+///
+/// Ścieżka bezwzględna albo wyprowadzająca poza folder kroku jest odmową **całego biegu**, tutaj,
+/// zanim ruszy pierwszy proces. Druga możliwa implementacja — spróbować zapisać i po cichu się
+/// poddać — jest najdroższą wersją tej wady: człowiek dostaje bieg bez wyniku i bez zdania,
+/// a folder, w który celował, wygląda tak samo jak folder, do którego agent nie miał nic do
+/// napisania.
+///
+/// # Co znaczy „wyprowadza"
+///
+/// Cokolwiek, co nie jest czystą ścieżką w dół: korzeń dysku, przedrostek dysku i `..`
+/// gdziekolwiek w środku. Dowiązanie założone po drodze przez kogoś innego prowadzi tam samo
+/// i tego z samego napisu wyliczyć się nie da — pyta o to jądro [`Live::file_the_answer`],
+/// w chwili, w której katalog już istnieje.
+///
+/// Puste pole i pole z samych spacji to jeden fakt („nie proszę o żaden plik"), więc jedna
+/// odpowiedź: `None`.
+fn where_results_go(agent: &Agent, step: &AgentStep) -> Result<Option<PathBuf>, RunError> {
+    let Some(asked) = some_text(&agent.write_results_to) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(asked.trim());
+    let leaves = path.is_absolute()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+    if leaves {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka na kafelku TEGO kroku: to jego wiersz człowiek otworzy, żeby go poprawić.
+            step_id: Some(step.id.clone()),
+            message: format!(
+                "\"{}\" has {WRITE_RESULTS_TO} set to \"{}\", and that leads out of the folder \
+                 this step works in. Loadout stopped the run instead of starting it. Give it a \
+                 path inside that folder, or leave the row empty.",
+                step.name,
+                path.display()
+            ),
+            fix: None,
+        }));
+    }
+    Ok(Some(path))
 }
 
 /// Które narzędzia ten krok dostaje pod rękę — albo odmowa, jeśli prosi o coś ponad swój dial.
@@ -5972,8 +6048,17 @@ impl Live {
                      *
                      * Werdykt czytamy PO zapisie przekazania, nie przed: plik z raportem testera
                      * ma istniec niezaleznie od tego, co postanowimy z biegiem. */
-                    match self.verdict_after(id, &turn.text) {
-                        Some(why) => self.when_this_one_fails(id, why).await,
+                    /* TRZY POWODY, DLA KTÓRYCH UDANA TURA MOŻE NIE PRZEJŚĆ, i wszystkie idą
+                     * jedną drogą. Kolejność jest treścią: kłopot z NASZYM zapisem wygrywa, bo
+                     * mówi o rzeczy, której człowiek nie naprawi poprawką promptu; potem to,
+                     * czego zabrakło w odpowiedzi; werdykt sędziego na końcu, bo dotyczy pracy,
+                     * a nie kroku. */
+                    let why = self
+                        .file_the_answer(id, &turn.text)
+                        .err()
+                        .or_else(|| self.verdict_after(id, &turn.text).map(str::to_owned));
+                    match why {
+                        Some(why) => self.when_this_one_fails(id, &why).await,
                         None => StepReport::Succeeded,
                     }
                 } else {
@@ -6489,6 +6574,65 @@ impl Live {
                 "this step's result could not be handed over, so the next step is not told about it"
             ),
         }
+    }
+
+    /// Odpowiedź kroku → plik pod ścieżką, którą wskazał człowiek. `Ok(())`, kiedy nie wskazał.
+    ///
+    /// # Zapisuje LOADOUT, nie agent, i to jest cała treść tego szwu
+    ///
+    /// Blok „jak odpowiadać" mówi każdemu krokowi wprost: *„Do not write your results to a
+    /// file"* ([`HOW_TO_ANSWER`]). Gdyby tę ścieżkę miał obsłużyć agent, produkt kazałby mu
+    /// robić dokładnie to, czego przed chwilą zabronił — a krok z dialem „look only" nie umiałby
+    /// tego wykonać i spaliłby turę na próbie. Zmierzone na biegu `20260823-145648`: sześć kroków
+    /// Claude'a zaczyna podsumowanie od zdania o tym, że nie mogą utworzyć pliku.
+    ///
+    /// **Cała odpowiedź, co do bajtu**, nie podsumowanie: plik z jedną linią wygląda jak wynik
+    /// i nim nie jest, a nikt nie porównuje go z transkryptem, którego nikt nie trzyma.
+    ///
+    /// **To jest KOPIA, nie zamiana.** Przekazanie w `handoffs/` powstaje jak dotąd
+    /// ([`Live::hand_over`]) i to na nim stoi indeks następnego kroku — zapis, który by je
+    /// zastąpił, uciszyłby cały ruch między krokami, a bieg dalej wyglądałby na udany.
+    ///
+    /// # Nieudany zapis czyni krok NIEPRZESZŁYM — inaczej niż nieudane przekazanie
+    ///
+    /// Tamto ma drugą drogę do człowieka (wiersz na ekranie, podsumowanie kroku); tutaj plik
+    /// JEST tym, o co człowiek poprosił, i jego brak jest nieodróżnialny od agenta, który nie
+    /// miał nic do powiedzenia. Wraca więc zdaniem, a rozstrzyga je jedno miejsce, przez które
+    /// przechodzi każda porażka ([`Live::when_this_one_fails`]).
+    fn file_the_answer(&self, id: StepId, said: &str) -> Result<(), String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return Ok(());
+        };
+        let Some(under) = job.write_results_to.as_ref() else {
+            return Ok(());
+        };
+        let path = job.cwd.join(under);
+        let written = (|| -> io::Result<()> {
+            if let Some(parent) = path.parent() {
+                // Katalogi po drodze zakłada Loadout: implementacja, która tego nie robi,
+                // wygląda jak zapis, który się nie udał i nic o tym nie powiedział.
+                fs::create_dir_all(parent)?;
+                /* DOWIĄZANIE PYTAMY JĄDRO, nie napis. `..` odmawia planista, ale katalog
+                 * `results` mógł już wcześniej być dowiązaniem gdzie indziej — i wtedy ścieżka
+                 * czysta co do znaków wyprowadza z folderu kroku tak samo skutecznie. Pytanie da
+                 * się postawić dopiero teraz, bo dopiero teraz ten katalog istnieje. */
+                let real = parent.canonicalize()?;
+                let root = job.cwd.canonicalize()?;
+                if !real.starts_with(&root) {
+                    return Err(io::Error::other(
+                        "that path leads out of the folder this step works in",
+                    ));
+                }
+            }
+            fs::write(&path, said)
+        })();
+        written.map_err(|error| {
+            format!(
+                "Loadout could not put this step's answer where {WRITE_RESULTS_TO} points \
+                 (\"{}\"): {error}",
+                under.display()
+            )
+        })
     }
 
     /// Kafelek kontrolny: bieg staje i pyta człowieka (T3 §6.1 reguła 5).
