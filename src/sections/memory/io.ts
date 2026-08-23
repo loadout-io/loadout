@@ -47,6 +47,25 @@ export function stopUsing(args: { id: string }): Promise<Note> {
 }
 
 /**
+ * „Discard": kandydatka schodzi z listy i odchodzi do `discarded/`.
+ *
+ * 2026-08-23 (T-92) — DRUGA DECYZJA, KTÓREJ CZŁOWIEK DO DZIŚ NIE MIAŁ. Makieta rysuje przy
+ * kandydatce dwie akcje (`docs/mockup/index.html:757`), a sekcja miała jedną: „tak". Człowiek,
+ * któremu agent zaproponował zdanie nieprawdziwe, nie miał ani jednej drogi, żeby to powiedzieć,
+ * więc lista rosła monotonicznie — a lista, z której nic nie schodzi, przestaje być czytana
+ * i czyni z bramki promocji rytuał [T6 §5.1]. Odkąd kandydatek przybywa po KAŻDYM biegu (AC-1),
+ * przestało to być brakiem wygody i stało się brakiem, który rośnie sam.
+ *
+ * Wraca `void`, nie notatka — inaczej niż [`putToUse`] i [`stopUsing`]. Tamte dwie zmieniają
+ * stan notatki, więc oddają jej świeży odczyt z dysku; ta zabiera ją z katalogu, więc nie ma
+ * czego odczytać, a wiersz ma zniknąć. Odmowa („ta notatka jest w użyciu") przyjeżdża jako
+ * odrzucenie obietnicy.
+ */
+export function discardNote(args: { id: string }): Promise<void> {
+  return invoke<void>('discard_note', args);
+}
+
+/**
  * Co agenci przekazali sobie po drodze — pliki, które leżą w katalogach biegów.
  *
  * 2026-08-18 — trzecia strefa ekranu Pamięć („What agents passed to each other",

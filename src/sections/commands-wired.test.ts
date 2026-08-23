@@ -268,6 +268,16 @@ const WIRES: readonly Wire[] = [
    * `listNotes` i `listSkills` powstały po to, żeby Pamięć i Umiejętności czytały z dysku —
    * bez tych dwóch wierszy byłyby funkcjami, których nikt nigdy nie zobaczył docierających
    * do Rusta, a zapisana umiejętność ginęła po restarcie (niezmiennik 4). */
+  /* 2026-08-23 (T-92) — TRZECIA KRAWĘDŹ PAMIĘCI, dopisana, nic nie usunięte. `discardNote` jest
+   * drugą decyzją człowieka wobec kandydatki i do tego dnia sekcja nie miała żadnej poza „tak".
+   * Bez tego wiersza byłaby funkcją, której nikt nigdy nie zobaczył docierającej do Rusta. */
+  {
+    where: 'memory',
+    what: 'discardNote',
+    command: 'discard_note',
+    given: [{ id: 'note-to-throw-away' }],
+    call: () => memory.discardNote({ id: 'note-to-throw-away' }),
+  },
   {
     where: 'memory',
     what: 'listNotes',
