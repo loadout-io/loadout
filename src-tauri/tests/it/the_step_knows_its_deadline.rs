@@ -31,6 +31,17 @@
 //! zrobienia — a wygląda dokładnie tak samo w kodzie, który liczbę tylko podstawia. Dlatego trzeci
 //! krok ławki nadpisuje limit na zero i kryterium pyta o **brak liczby** i o zdanie wprost.
 //!
+//! # SŁABA WERSJA numer trzy: „powiedzieliśmy mu, że nie ma limitu"
+//!
+//! Zdanie w prompcie jest obietnicą, a obietnicy dotrzymuje ZEGAR BIEGU, nie tekst. Do 2026-08-23
+//! `plan_agent` zamieniał zero na `Duration::from_secs(0.max(1) * 60)`, czyli na JEDNĄ minutę:
+//! krok, któremu Loadout właśnie napisał „there is no time limit on this step", ginął po
+//! sześćdziesięciu sekundach z komunikatem o przekroczonym limicie. Pierwszy test w tym pliku
+//! przechodzi taką implementację bez mrugnięcia — sądzi wyłącznie napis. Drugi
+//! (`the_step_with_no_limit_is_never_stopped_by_one`) prowadzi bieg, w którym tura trwa
+//! **godzinę**, i pyta o to, czego napis nie widzi: że `Live::one_turn` nie ma jak wybrać
+//! `Ended::Overdue`.
+//!
 //! # Czego to kryterium NIE rozstrzyga
 //!
 //! Gdzie dokładnie wewnątrz bloku stoi to zdanie. Sądzi, że agent dostaje właściwą liczbę i że
@@ -53,6 +64,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -63,6 +75,7 @@ use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
     Probe, RunSpec, SessionRef, Tokens,
 };
+use loadout_lib::engine::step::StepState;
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::store::Store;
 use tauri::ipc::Channel;
@@ -189,7 +202,11 @@ async fn each_step_is_told_the_minutes_its_own_definition_gives_it() -> Result<(
         home: bench.home.path(),
         project: bench.project.path(),
         store: &store,
-        drivers: fake_drivers(Arc::clone(&seen)),
+        drivers: fake_drivers(
+            Arc::clone(&seen),
+            Duration::ZERO,
+            Arc::new(AtomicUsize::new(0)),
+        ),
         processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
@@ -304,6 +321,119 @@ async fn each_step_is_told_the_minutes_its_own_definition_gives_it() -> Result<(
     Ok(())
 }
 
+// ── (e) ZEGAR TEŻ MUSI WIEDZIEĆ, ŻE LIMITU NIE MA ──────────────────────────────────────────
+
+/// Jak długo trwa tura w biegu bez limitu. Godzina, a nie dwie minuty, i to z dwóch powodów:
+/// jest dłuższa od JEDNEJ minuty, na którą `plan_agent` zamieniał zero do 2026-08-23, i dłuższa
+/// od DWUDZIESTU minut z definicji agenta — więc żaden cichy powrót do „jakiejś liczby" nie
+/// przejdzie tędy niezauważony.
+const A_LONG_TURN: Duration = Duration::from_hours(1);
+
+/// Ile czekamy na ten bieg. Zegar jest zatrzymany (`start_paused`), więc to też są minuty
+/// wirtualne — liczba stoi wyżej niż `A_LONG_TURN`, żeby to nie ona rozstrzygała wynik.
+const VIRTUAL_PATIENCE: Duration = Duration::from_hours(24);
+
+/// Jeden krok, którego nadpisanie mówi „bez limitu". Bez strzałek i bez sąsiadów: mierzona jest
+/// jedna decyzja `Live::one_turn`, a każdy dodatkowy krok byłby drugim źródłem `cancel()`.
+const NO_LIMIT_WORKFLOW: &str = r#"{
+  "format": 1,
+  "id": "wf_no_deadline_at_all",
+  "name": "One step with no limit",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_unlimited",
+      "name": "Unlimited",
+      "agent": "01990000-0000-7000-8000-0000000000e2",
+      "overrides": { "giveUpAfterMinutes": 0 },
+      "instructions": "unlimited: take as long as the work takes.",
+      "at": { "x": 0, "y": 0 }
+    }
+  ],
+  "links": []
+}
+"#;
+
+/// „Bez limitu" znaczy bez limitu także dla zegara, nie tylko dla zdania w prompcie.
+///
+/// **Słaba asercja, którą ten test zastępuje:** `without.contains("no time limit")` wyżej. Ona
+/// sądzi napis, a napis jest obietnicą Loadoutu wobec agenta — dotrzymuje jej `Live::one_turn`.
+/// Implementacja, która pisze „there is no time limit on this step" i ubija krok po sześćdziesięciu
+/// sekundach, przechodzi tamtą asercję i jest gorsza niż milczenie: agent rozplanował robotę na
+/// obietnicę, którą sam bieg złamał, i nie oddał z niej nic.
+///
+/// Zegar jest zatrzymany (`start_paused`, jak w `step_deadline_stops_the_agent`): prawdziwa
+/// godzina w suicie jest niewykonalna, a limit liczony w minutach nie schodzi niżej bez zmiany
+/// jednostki w definicji agenta.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn the_step_with_no_limit_is_never_stopped_by_one() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND)?;
+    let workflow = bench.workflow("no-deadline-at-all", NO_LIMIT_WORKFLOW)?;
+    let store = Store::open(&bench.db())?;
+    let seen = Arc::new(Seen::default());
+    let cancels = Arc::new(AtomicUsize::new(0));
+
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::clone(&seen), A_LONG_TURN, Arc::clone(&cancels)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow,
+        how_many_at_once: 2,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    let report = tokio::time::timeout(VIRTUAL_PATIENCE, run_workflow_inner(&deps, &request, sink))
+        .await
+        .map_err(|_| format!("the run did not come back within {VIRTUAL_PATIENCE:?}"))??;
+    let _ = tokio::time::timeout(VIRTUAL_PATIENCE, pump).await;
+
+    // (e1) Krok skończył SWOJĄ turę. `Failed` tutaj znaczy, że limit go uprzedził.
+    assert_eq!(
+        report.steps[0],
+        StepState::Succeeded,
+        "a step whose limit is 0 has no limit at all (library::agents), so a turn of {A_LONG_TURN:?} \
+         has to end as its own work finishing. It ended as {:?} — which means something in the run \
+         decided the step had run out of a time it was told it did not have",
+        report.steps[0]
+    );
+
+    // (e2) DOWÓD, że to nie był limit: nikt nie zawołał `cancel()`. Ta asercja odróżnia
+    //      `Duration::MAX` od „jakiejś dużej liczby dobranej na oko" tylko razem z (e1), ale
+    //      odróżnia `Ended::Overdue` od każdej innej drogi wyjścia sama — po limicie krok schodzi
+    //      przez sterownik (`stop_overdue_agent` → `prove_agent_dead`), nie przez zdjęcie zadania.
+    assert_eq!(
+        cancels.load(Ordering::Relaxed),
+        0,
+        "the driver was told to cancel {} time(s) in a run where nobody pressed Stop and no step \
+         has a limit. The only thing left that cancels is the deadline",
+        cancels.load(Ordering::Relaxed)
+    );
+
+    // (e3) I nie ma po nim zdania o przekroczonym limicie w tym, co czyta ekran i odzyskiwanie.
+    let why: Option<String> = store.reader()?.query_row(
+        "SELECT error FROM steps WHERE run_id = ?1 AND node_key = 's_unlimited'",
+        [&report.id],
+        |row| row.get::<_, Option<String>>(0),
+    )?;
+    assert_eq!(
+        why, None,
+        "the step that was promised no limit carries a reason for having ended badly. Loadout \
+         wrote that sentence itself, one line after telling the agent the opposite"
+    );
+
+    Ok(())
+}
+
 /// Każda liczba minut nazwana w tym prompcie, w kolejności wystąpień.
 ///
 /// Bez wyrażeń regularnych — `regex` nie jest zależnością tego drzewa, a `Cargo.toml` nie należy
@@ -354,14 +484,25 @@ impl Seen {
 
 // ── dubler ─────────────────────────────────────────────────────────────────────────────────
 
-fn fake_drivers(seen: Arc<Seen>) -> Drivers {
-    let driver: Arc<dyn AgentDriver> = Arc::new(Fake { seen });
+/// Dubler, którego tura trwa `hold` i który liczy każde `cancel()`, jakie na nim wylądowało.
+///
+/// `hold` jest `Duration::ZERO` dla kryterium o tekście promptu — tam tura ma zejść od razu, bo
+/// mierzone jest to, co dojechało do `start()`, a nie ile trwało. Dla kryterium o zegarze jest
+/// godziną: to jedyny sposób, żeby limit MIAŁ SZANSĘ wygrać `tokio::select!` w `Live::one_turn`.
+fn fake_drivers(seen: Arc<Seen>, hold: Duration, cancels: Arc<AtomicUsize>) -> Drivers {
+    let driver: Arc<dyn AgentDriver> = Arc::new(Fake {
+        seen,
+        hold,
+        cancels,
+    });
     Arc::new(move |_vendor| Arc::clone(&driver))
 }
 
 #[derive(Debug)]
 struct Fake {
     seen: Arc<Seen>,
+    hold: Duration,
+    cancels: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -406,7 +547,12 @@ impl AgentDriver for Fake {
             )
             .await;
 
-        Ok(Box::new(Turn { events, session }))
+        Ok(Box::new(Turn {
+            events,
+            session,
+            hold: self.hold,
+            cancels: Arc::clone(&self.cancels),
+        }))
     }
 }
 
@@ -414,6 +560,8 @@ impl AgentDriver for Fake {
 struct Turn {
     events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
+    hold: Duration,
+    cancels: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -431,6 +579,10 @@ impl AgentHandle for Turn {
     }
 
     async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
+        // Tura, która NAPRAWDĘ trwa. Dopóki tu śpimy, `Live::one_turn` czeka na dwie rzeczy
+        // naraz — na nas i na swój limit — więc dopiero ten sen czyni pytanie „czy limit może
+        // wygrać" pytaniem o cokolwiek.
+        tokio::time::sleep(self.hold).await;
         let outcome = TurnOutcome {
             ok: true,
             reason: FinishReason::Completed,
@@ -450,6 +602,7 @@ impl AgentHandle for Turn {
     }
 
     async fn cancel(&mut self) -> loadout_lib::engine::supervisor::GroupProof {
+        self.cancels.fetch_add(1, Ordering::Relaxed);
         loadout_lib::engine::supervisor::GroupProof::Dead { status: None }
     }
 

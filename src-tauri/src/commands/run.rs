@@ -1236,7 +1236,7 @@ struct AgentJob {
     /// (plan jest czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć przy
     /// wznowieniu).
     plugin_flags: Vec<String>,
-    /// Po ilu minutach bez końca tury odbieramy krokowi robotę.
+    /// Po ilu minutach bez końca tury odbieramy krokowi robotę. `Duration::MAX` znaczy „nigdy".
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
     /// ANI JEDNEGO CZYTELNIKA: zaklinowany agent wisiał do ręcznego Stopu. Według taksonomii
@@ -1248,10 +1248,9 @@ struct AgentJob {
     /// efektywnej (agent plus nadpisanie kroku).
     ///
     /// 2026-08-23 (T-86) — osobne pole obok [`AgentJob::give_up_after`], a nie liczba wyjęta
-    /// z tamtego `Duration`, bo tamto pole niesie już naszą decyzję o zabijaniu: `0` jedzie
-    /// w nim jako minuta (`.max(1)`), żeby krok bez limitu nie ginął w chwili startu. Zdanie
-    /// zbudowane z tamtej wartości mówiłoby agentowi bez limitu, że ma jedną minutę — czyli
-    /// dokładnie tę nieprawdę, przed którą ma go chronić.
+    /// z tamtego `Duration`, bo tamto pole niesie już naszą decyzję o zabijaniu i przy braku
+    /// limitu stoi w nim `Duration::MAX`. Zdanie zbudowane z tamtej wartości mówiłoby agentowi
+    /// bez limitu o pięciuset osiemdziesięciu czterech tysiącach lat.
     ///
     /// `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`).
     minutes: u32,
@@ -2199,12 +2198,17 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
         plugin_flags: Vec::new(),
-        // Minuty z definicji agenta. Zero znaczyłoby „poddaj się natychmiast", więc traktujemy
-        // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
-        // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
-        give_up_after: Duration::from_secs(u64::from(effective.give_up_after_minutes.max(1)) * 60),
-        // Bez `.max(1)`: to jest liczba, którą człowiek wpisał, i to ją dostaje agent
-        // (`Live::how_long_this_step_has`).
+        // `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`), więc jedzie
+        // tu jako `Duration::MAX` — tym samym kształtem, którym `Live::one_turn` opisuje każdy
+        // inny krok bez terminu (`Job::Ask | Job::Check | Job::Serve`). Do 2026-08-23 stało tu
+        // `.max(1)`, czyli JEDNA minuta: krok bez limitu ginął po sześćdziesięciu sekundach,
+        // a odkąd blok z T-86 mówi mu wprost „there is no time limit on this step", ta minuta
+        // była już nie tylko zaskoczeniem, ale i naszym własnym kłamstwem w prompcie.
+        give_up_after: match effective.give_up_after_minutes {
+            0 => Duration::MAX,
+            minutes => Duration::from_secs(u64::from(minutes) * 60),
+        },
+        // Ta sama liczba, nietknięta — to ją dostaje agent (`Live::how_long_this_step_has`).
         minutes: effective.give_up_after_minutes,
         effective: serde_json::to_value(&effective)?,
     })
