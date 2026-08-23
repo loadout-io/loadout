@@ -4,6 +4,91 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-23, 20:45 — faza 6 ruszyła: T-89 w main, T-86 stoi na kolizji, trunk był czerwony od rana
+
+Plan fazy i mapa 38 znalezisk: [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md).
+Dwanaście kontraktów T-86…T-97 wylądowało jako `7206f4b` (wyjątek właściciela, AGENTS.md §2).
+Fala 1 = T-86 + T-89 równolegle, cross-vendor (`--reviewer codex`, kredyty wróciły).
+
+**Trunk był czerwony w warstwie `full` od `905ef9e`, i nikt tego nie widział.** `quick-clippy`
+biegnie `--lib`, a `--all-targets` jest dopiero w `full-clippy`, więc trunk pokazywał 13/0 na
+quick i przewracał każde zadanie, które doszło do pełnej bramki. Zmierzone: **oba** zadania fali 1
+dostały tę samą czerwień w `runs_left_over_are_reconciled.rs:387` — pliku, którego żadne z nich nie
+posiada (`git log <baza>..<gałąź> -- <plik>` pusty dla obu). Kosztowało to dwie rundy recenzji
+i dwie rundy naprawcze. Naprawione osobnym commitem `4fcab5c` (stała przed instrukcjami);
+`clippy --all-targets clean over 68 Rust files`. **Wniosek dla pętli: commit wchodzący na main
+poza `integrate.sh` nie przechodzi warstwy `full` i trunk może być czerwony przy zielonym quick.**
+
+**T-89 w main** (`integrate.sh`, bramka 15/0 w 45,8 s). Kafelek „sprawdź" da się wreszcie postawić
+z płótna: przycisk, własny panel (komenda, wzorzec przejścia, folder, co po porażce), czerwona
+kropka przy braku wzorca, plus dowód po prawdziwym kliknięciu w `e2e/`. Do dziś ten rodzaj kroku
+istniał wyłącznie w Ruście i przychodził tylko z importu — czyli jedyny węzeł, który mówi
+**co się stało** zamiast **co agent powiedział** (D6, `00-SYNTHESIS` §2.1), nie miał jak trafić
+na płótno.
+
+>>> **T-86 WYMAGA DECYZJI CZŁOWIEKA — i na nim stoi dziewięć kolejnych zadań fazy.** Gałąź
+`task-T-86` jest gotowa w `../loadout-task-T-86`, wszystkie trzy własne kryteria **zielone**,
+zakres nietknięty (7 plików, wszystkie w OWNS). Dwie rzeczy do rozstrzygnięcia, obie opisane
+niżej: kolizja z asercją z `product_path_end_to_end.rs` (plik T-34, spoza OWNS T-86) oraz
+fałszywa przesłanka w AC-2, którą znalazł recenzent Codeksa. <<<
+
+### T-86, sprawa pierwsza: asercja równości kontra nowy blok
+
+`product_path_end_to_end.rs:164` żąda, żeby prompt kroku był **równy** instrukcji, słowo w słowo:
+
+```rust
+assert_eq!(prompts, vec![WHAT_TO_DO.to_owned()],
+    "the step's instructions have to reach the driver, once, word for word. …");
+```
+
+T-86 AC-1 żąda, żeby prompt **każdego** kroku agenta kończył się blokiem mówiącym, że ostatnia
+wypowiedź jest tym, co krok przekazuje dalej. Oba zdania nie mogą być prawdziwe naraz.
+
+Co jest ważne przy tej decyzji, i co sprawdziłem, zamiast zgadywać:
+
+1. **Żadne kryterium nie woła tego pliku.** `grep "check:" tasks/*.md` nie wymienia go ani razu —
+   to test regresyjny żyjący w scalonym celu `it`, sądzony wyłącznie przez `full-test`.
+   Kolizja jest więc między **kryterium T-86** a **asercją bez kryterium**, nie między dwoma
+   kryteriami.
+2. **Zdanie, które ta asercja niesie, jest po T-86 nadal prawdziwe.** Instrukcja człowieka
+   dociera do sterownika dosłownie i dokładnie raz — stoi na początku promptu, przed blokiem.
+   Nieprawdziwa robi się wyłącznie **forma** asercji (równość całego promptu), nie jej treść.
+3. **Defekt, który ta asercja złapała, zostaje złapany po każdej możliwej zmianie:** pusty
+   `instructions` dalej daje prompt bez zdania człowieka.
+
+Trzy wyjścia, w kolejności, którą rekomenduję:
+
+- **(a)** Zamienić równość na „zawiera dosłownie, dokładnie raz, na początku" — zdanie asercji
+  zostaje bez zmiany, defekt pustego promptu dalej czerwony. Wymaga dopisania
+  `src-tauri/tests/it/product_path_end_to_end.rs` do OWNS T-86 z **wąskim mandatem** (skill §5c
+  pozwala poszerzyć uprawnienia, nigdy kryteria; porównanie linii `## AC-`/`check:`/`expect:`
+  przed i po jest wtedy obowiązkowe).
+- **(b)** Zostawić asercję i zwęzić AC-1 do „krok, który ma następnika" — słabsze, bo krok
+  końcowy też oddaje przekazanie, a to on najczęściej niesie wynik całego biegu.
+- **(c)** Uznać, że blok nie wchodzi do promptu, tylko do `--append-system-prompt` — nie działa
+  u Codeksa, który nie ma takiej flagi i dostaje system prompt doklejony do stdin.
+
+Nie wybrałem sam, bo (a) rozluźnia asercję, którą napisano po prawdziwym incydencie, a §5 karty
+orchestratora zabrania mi rozluźniać oracle, żeby przepuścić własną falę.
+
+### T-86, sprawa druga: `giveUpAfterMinutes: 0` nie znaczy „bez limitu"
+
+Znalazł to **recenzent Codeksa** (`gpt-5.6-sol`), na zielonych kryteriach — dokładnie ten
+mechanizm, dla którego D3 wymaga cross-vendora:
+
+> AC-2's assertion accepts a false promise: `giveUpAfterMinutes: 0` is described to the agent as
+> having no time limit, but the execution timer converts it to one minute with `.max(1)`.
+
+Ma rację i to jest **defekt kontraktu, który napisałem**, nie implementacji. `plan_agent` liczy
+`give_up_after_minutes.max(1) * 60`, więc `0` to dziś **jedna minuta**, a nie brak limitu.
+Prompt mówiący „nie masz limitu" przy kroku ubijanym po 60 s jest gorszy niż brak zdania.
+
+Dwa wyjścia: albo silnik zaczyna traktować `0` jako brak limitu (`run.rs` **jest** w OWNS T-86,
+więc mieści się w zakresie, ale to zmiana zachowania poza literą kryterium), albo AC-2 przestaje
+obiecywać brak limitu i prompt mówi prawdę o jednej minucie. Pierwsze jest lepsze dla produktu
+(pole „0" w formularzu agenta oznacza dla człowieka „bez limitu"), drugie mieści się w kontrakcie
+bez jego zmiany.
+
 ## 2026-08-22, 18:20 — T-79 w main: skille docierają do vendora, potwierdzone przez vendora
 
 `131d214`. Bramka gałęzi 20/0, bramka trunka po lądowaniu 15/0 w 110 s.
