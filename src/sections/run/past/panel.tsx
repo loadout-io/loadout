@@ -21,13 +21,13 @@ import type { ReactElement } from 'react';
 import { useState, useSyncExternalStore } from 'react';
 
 import { costText, openOneRun, stateWord } from '../history-command';
-import type { PastHandoff, PastRun, PastRunRow, PastStep } from '../io';
+import type { PastBranch, PastHandoff, PastRun, PastRunRow, PastStep } from '../io';
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
 import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
-import { backToTheList, closeHistory, pastNow, subscribeToPast } from './store';
+import { backToTheList, closeHistory, forgetTheBranches, pastNow, subscribeToPast } from './store';
 
 /** Nazwa tego ekranu. Jedno słowo, to samo, którym człowiek go wywołał (`/history`). */
 export const HEADING = 'History';
@@ -40,6 +40,21 @@ export const PASSED_ON = 'What the steps passed on';
 
 /** Co stoi zamiast listy przekazań, kiedy żaden krok niczego nie oddał. */
 export const PASSED_NOTHING = 'No step passed anything on in this run.';
+
+/** Nagłówek listy gałęzi — po ludzku, nie nazwą polecenia gita (niezmiennik 14). */
+export const BRANCHES_LEFT = 'Branches this run left';
+
+/** Napis na kontrolce, która je zdejmuje. */
+export const FORGET_THE_BRANCHES = 'Forget the branches';
+
+/**
+ * Co stoi tam, gdzie stała lista gałęzi.
+ *
+ * JEDNO ZDANIE NA DWA STANY, i to jest wybór: bieg, po którym nie zostało nic, i bieg, którego
+ * gałęzie właśnie zdjęto, są dla patrzącego tym samym faktem — nie ma tu żadnej gałęzi. Dwa
+ * zdania o jednym stanie to dwa miejsca, w których mieszka jedna odpowiedź (niezmiennik 13).
+ */
+export const NO_BRANCHES_LEFT = 'No branches left';
 
 /** `button-quiet` z DESIGN §6, ta sama fraza co na ekranie agenta (`../session/session.tsx`). */
 const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
@@ -150,7 +165,71 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
           ))
         )}
       </section>
+
+      <Branches run={run} />
     </div>
+  );
+}
+
+/**
+ * Co ten bieg zostawił w repozytorium — i jedno wyjście z tego stanu.
+ *
+ * PO CO TO JEST NA EKRANIE. Katalog roboczy kroku znika zaraz po biegu, bo praca jest osiągalna
+ * z gałęzi. Gałęzie zostawały natomiast na zawsze: nic ich nie listowało i nic nie umiało ich
+ * zdjąć poza ręcznym poleceniem gita na każdą z osobna, a po tygodniu pracy jest ich
+ * kilkadziesiąt.
+ *
+ * NAZWA I KROK, bo dopiero razem coś znaczą: nazwy gałęzi jednego biegu różnią się ostatnim
+ * członem i czyta się je jak jedną kolumnę tego samego napisu.
+ *
+ * KONTROLKI NIE MA, KIEDY NIE MA CZEGO ZDEJMOWAĆ. Przycisk, który umie odpowiedzieć wyłącznie
+ * „nie było czego", jest przyciskiem bez skutku (niezmiennik 16).
+ */
+function Branches({ run }: { run: PastRun }): ReactElement {
+  const branches: readonly PastBranch[] = run.branches ?? [];
+  return (
+    <section data-branches className="mt-4">
+      <h4 className="border-b border-line px-[18px] py-[9px] font-mono text-eyebrow text-muted">
+        {BRANCHES_LEFT}
+      </h4>
+      {branches.length === 0 ? (
+        <p data-empty className="px-[18px] py-2 text-body text-muted">
+          {NO_BRANCHES_LEFT}
+        </p>
+      ) : (
+        <>
+          {branches.map((branch) => (
+            <Branch key={branch.name} branch={branch} />
+          ))}
+          <div className="px-[18px] py-2">
+            <button
+              type="button"
+              data-forget-branches
+              onClick={() => {
+                void forgetTheBranches();
+              }}
+              className={QUIET}
+            >
+              {FORGET_THE_BRANCHES}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Jedna gałąź: jak się nazywa i który krok ją zostawił. */
+function Branch({ branch }: { branch: PastBranch }): ReactElement {
+  return (
+    <p
+      data-branch={branch.name}
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 px-[18px] py-[5px]"
+    >
+      {/* Nazwa jest wartością maszynową — do przepisania znak w znak, więc mono (DESIGN §4). */}
+      <span className="min-w-0 truncate font-mono text-mono text-ink">{branch.name}</span>
+      <span className="font-mono text-mono whitespace-nowrap text-muted">{branch.step}</span>
+    </p>
   );
 }
 

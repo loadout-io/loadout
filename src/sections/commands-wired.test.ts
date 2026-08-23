@@ -462,6 +462,19 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
     call: () => run.readRun(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
   },
+  /* 2026-08-23 (T-95) — TRZECIA KRAWĘDŹ HISTORII, dopisana, nic nie usunięte i żaden istniejący
+   * wiersz nie przepisany. Bez niej pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
+   * `forgetRunBranches`. Ta krawędź waży więcej niż odczyt: po drugiej stronie granicy KASUJE —
+   * a nazwa komendy sklejona ze zmiennej albo klucz, którego Rust nie ma, robiłyby z niej
+   * przycisk, który nic nie zdejmuje i nic o tym nie mówi. */
+  {
+    where: 'run',
+    what: 'forgetRunBranches',
+    command: 'forget_run_branches',
+    given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
+    call: () =>
+      run.forgetRunBranches(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',

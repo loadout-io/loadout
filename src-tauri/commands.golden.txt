@@ -27,6 +27,7 @@ delete_trigger
 delete_workflow
 delete_workspace
 draft_skill
+forget_run_branches
 install_skill
 list_agents
 list_handoffs

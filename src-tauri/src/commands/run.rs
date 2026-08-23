@@ -721,7 +721,7 @@ async fn the_planned_run(
     live.close_the_book(&outcome.states, outcome.cancelled);
     // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
     // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
-    close_the_trees(deps.project, &isolated, &live.plan.title);
+    close_the_trees(deps.project, &isolated, &live);
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
     // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
@@ -2629,7 +2629,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
     let mut made: Vec<Isolated> = Vec::new();
-    for step in &plan.steps {
+    for (at, step) in plan.steps.iter().enumerate() {
         // Krok „sprawdź" dostaje własne drzewo tą samą drogą, co krok agenta, i to jest wymóg,
         // nie symetria: `cargo test` pisze po `target/`, więc „to tylko sprawdzenie" jest
         // nieprawdą, a obietnica z ARCHITECTURE §2 p. 4 jest jedna dla wszystkich kroków.
@@ -2667,6 +2667,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
             })?;
             made.push(Isolated {
                 step: step.name.clone(),
+                at,
                 cwd: cwd.clone(),
                 branch: match done.how {
                     isolate::How::Tree { branch } => Some(branch),
@@ -3545,6 +3546,11 @@ fn git_for_recovery(at: &Path, args: &[&str]) -> Result<String, isolate::Trouble
 struct Isolated {
     /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
     step: String,
+    /// Pozycja tego kroku w księdze biegu.
+    ///
+    /// Po niej, a nie po nazwie: zdanie o pracy, której nie dało się zapisać, ma trafić do
+    /// wiersza TEGO kroku w `run.json`, a dwa kafelki wolno nazwać tak samo.
+    at: StepId,
     /// Katalog roboczy kroku.
     cwd: PathBuf,
     /// Gałąź, jeśli to jest drzewo gita. `None` dla folderu, który repozytorium nie jest.
@@ -3627,18 +3633,46 @@ fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
     Ok(())
 }
 
-/// Zamyka drzewa po biegu: praca ląduje na gałęzi, a po kroku, który nic nie zmienił, nie
-/// zostaje ani gałąź, ani wpis w `git worktree list`.
-fn close_the_trees(project: &Path, made: &[Isolated], title: &str) {
+/// Zamyka drzewa po biegu: praca ląduje na gałęzi, a katalog, w którym powstała, znika.
+///
+/// Po kroku, który nic nie zmienił, nie zostaje ani gałąź, ani katalog — jak dotąd. Po kroku,
+/// który zmienił cokolwiek, zostaje sama gałąź: praca jest z niej osiągalna w całości, a katalog
+/// dokładał do tego wyłącznie kopię repozytorium na dysku (T-95).
+///
+/// **Katalog kopii plikowej nie jest sprzątany nigdy** i to jest cała treść warunku na `branch`:
+/// projekt bez repozytorium gałęzi nie ma, więc tam katalog **jest** pracą, a nie jej kopią.
+///
+/// Kiedy zapis na gałąź się nie uda, katalog zostaje — a zdanie o tym idzie do wiersza tego
+/// kroku w `run.json`. Bez niego bieg wygląda na udany, a jedyna kopia czyjejś pracy leży poza
+/// gitem, w katalogu, którego nikt nie szuka.
+fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
         let Some(branch) = &one.branch else { continue };
         let kept = isolate::finish(
             project,
             &one.cwd,
             branch,
-            &format!("{}: {}", title, one.step),
+            &format!("{}: {}", live.plan.title, one.step),
         );
-        tracing::debug!(step = %one.step, ?kept, "the step's tree was closed");
+        match kept {
+            isolate::Kept::LeftInPlace { branch, why } => {
+                tracing::warn!(step = %one.step, branch, "this step's work is not on its branch, so its folder stays");
+                let at = one.at;
+                live.update(move |book| {
+                    let Some(row) = book.steps.get_mut(at) else {
+                        return;
+                    };
+                    // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten
+                    // powód jest tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie
+                    // w takim razie leży to, co agent zdążył zrobić.
+                    row.error = Some(match row.error.take() {
+                        Some(said) => format!("{said} {why}"),
+                        None => why,
+                    });
+                });
+            }
+            kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
+        }
     }
 }
 
