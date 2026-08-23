@@ -54,8 +54,8 @@ pub enum Vendor {
     Codex,
 }
 
-/// Ile agent ma myśleć. Cztery szczeble, tłumaczone niżej na `--effort`
-/// i `model_reasoning_effort` — nazwy vendorów nigdy nie docierają na ekran (niezmiennik 14).
+/// Ile agent ma myśleć. Cztery szczeble, tłumaczone przez [`effort_level`] na poziom, którym
+/// mówią obaj vendorzy — nazwy vendorów nigdy nie docierają na ekran (niezmiennik 14).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Thinking {
@@ -64,6 +64,39 @@ pub enum Thinking {
     Balanced,
     Deep,
     Deepest,
+}
+
+/// Cztery szczeble po ludzku → poziom wysiłku, którym mówią OBAJ vendorzy.
+///
+/// # Ta tabela jest jedna i stoi tutaj, przy szczeblu (2026-08-23, T-91)
+///
+/// Do tego dnia `Thinking` nie miało w drzewie ani jednego czytelnika poza importem: doc przy
+/// enumie obiecywał tłumaczenie „niżej na `--effort` i `model_reasoning_effort`", a `grep` po
+/// całym drzewie znajdował te dwa napisy WYŁĄCZNIE w `import/adapters.rs`, przy **czytaniu**
+/// cudzej konfiguracji Codeksa. Planer właściciela, zapisany na `deepest`, biegał na domyślnym
+/// wysiłku od pierwszego dnia — i nie dało się tego zobaczyć, klikając (niezmiennik 16).
+///
+/// JEDNA tabela dla obu vendorów, bo poziomy nazywają się u nich tak samo; różni się wyłącznie
+/// SPOSÓB podania, a ten jest wiedzą adaptera (`AgentDriver::effort_argv`): Claude Code bierze
+/// `--effort <poziom>`, Codex `-c model_reasoning_effort=<poziom>`. Rozpisanie tego odwzorowania
+/// osobno w każdym adapterze dałoby dwie kopie, które dziś odpowiadają tak samo i rozjeżdżają
+/// się w dniu, w którym ktoś przeceluje jedno ramię — a wtedy krok i rozmowa tego samego agenta
+/// myślą inaczej i nic tego nie mówi (niezmiennik 23; mierzy to `one_table_for_thinking.rs`).
+///
+/// Stoi przy szczeblu, a nie w module biegu, z tego samego powodu, co [`policy_of`]: rozmowa
+/// (`commands::chat`) **nie ma prawa** zależeć od `commands::run`, bo brak tej zależności jest
+/// jedynym mechanizmem, którym lider nie może zacząć biegu.
+///
+/// Czego tu NIE MA: `max` Claude'a. U nas są cztery szczeble, u vendora pięć poziomów, a piąty
+/// jest poza tabelą do decyzji człowieka — przelotka `vendor_options` pozwala go wpisać ręcznie.
+#[must_use]
+pub const fn effort_level(thinking: Thinking) -> &'static str {
+    match thinking {
+        Thinking::Quick => "low",
+        Thinking::Balanced => "medium",
+        Thinking::Deep => "high",
+        Thinking::Deepest => "xhigh",
+    }
 }
 
 /// Co agent może zrobić z plikami. Trzypozycyjny dial bezpieczeństwa, jedyny, jaki widzi
@@ -197,6 +230,12 @@ pub struct Agent {
     pub instructions: String,
     pub runs_with: Vendor,
     pub model: String,
+    /// Który szczebel „ile myśleć" ma ten agent.
+    ///
+    /// 2026-08-23 — DO TEGO DNIA TO POLE NIE MIAŁO ANI JEDNEGO CZYTELNIKA i doc przy nim mówił
+    /// nieprawdę. Tłumaczenie leży w [`effort_level`] (jedna tabela dla obu vendorów), a nazwę
+    /// flagi dokłada adapter (`engine::drivers::AgentDriver::effort_argv`). Bieg czyta to pole
+    /// w `commands::run`, rozmowa przez `commands::chat::Lead::effort`.
     pub thinking: Thinking,
     pub file_access: FileAccess,
     /// `0` znaczy „bez limitu". Nigdy `None` — patrz reguła 3 w nagłówku modułu.

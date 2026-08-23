@@ -9,7 +9,6 @@
  * decyduje, mieszka obok niego w czystych funkcjach — inaczej „co dokładnie robi ten przycisk"
  * nie da się zapytać bez przeglądarki, której to repo nie ma.
  */
-import { activeWorkspace } from '../../../state/workspaces';
 import { useRun } from '../../../state/run';
 import { atOnce as atOnceNow } from '../limits/chosen';
 import { rerunStep } from '../io';
@@ -31,7 +30,13 @@ export function runStepAgain(step: string, say: (text: string) => void): void {
     say(NO_FILE);
     return;
   }
-  void rerunStep(run.fileName, step, atOnceNow(), activeWorkspace()?.folder ?? null)
+  /* FOLDER BIERZEMY Z BIEGU, nie z bocznego menu, i to jest poprawka z 2026-08-23. Oba pola
+   * odpowiadają na to samo pytanie tylko dopóty, dopóki człowiek nie przełączy zakresu —
+   * a przełączenie NIE ZATRZYMUJE biegu (`state/run.ts`, akapit o sesjach per zakres), więc
+   * powtórzenie kroku szłoby wtedy w katalog, w którym ten bieg nigdy nie pracował. Jedno pole,
+   * jedna odpowiedź: `RunState.folder` zapisało okno, kiedy samo wysyłało ten folder do
+   * `run_workflow` (niezmiennik 13). */
+  void rerunStep(run.fileName, step, atOnceNow(), run.folder)
     .then((said) => {
       /* Zdanie przychodzi TYLKO wtedy, gdy dzisiejszy plik różni się od tego, który wtedy biegł.
        * „To samo jeszcze raz" nie potrzebuje komentarza; „to samo z twoją poprawką" potrzebuje. */

@@ -119,8 +119,19 @@ export function Session({
 
         {/* Napis mówi, CO SIĘ STANIE, i mówi o KROKU: powtarza się kafelek grafu, nie rola,
             która bywa w kilku miejscach naraz. */}
+        {/* KLUCZ KROKU STOI W ATRYBUCIE, i to nie jest ozdoba dla testu: przycisk bez niego
+            wygląda w markupie identycznie przy każdym agencie, więc „ta kontrolka powtarza TEN
+            krok" nie da się odróżnić od „ta kontrolka powtarza jakiś krok". Powtórzenie nie tego
+            kroku kosztuje dokładnie te minuty, dla których cała ta ścieżka powstała. Kafelek
+            niesie klucz z pliku workflow (`rail/card.ts`), a przycisk rysuje się wyłącznie
+            wtedy, gdy ten klucz jest — więc `??` nie ma tu ani jednego przebiegu. */}
         {onRunAgain === undefined ? null : (
-          <button type="button" data-run-again onClick={onRunAgain} className={QUIET}>
+          <button
+            type="button"
+            data-run-again={card.stepId ?? ''}
+            onClick={onRunAgain}
+            className={QUIET}
+          >
             Run this step again
           </button>
         )}

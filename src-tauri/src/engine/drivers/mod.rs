@@ -634,6 +634,28 @@ pub trait AgentDriver: Send + Sync {
     fn configured(&self, _configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
         None
     }
+
+    /// Jak TEN vendor nazywa w argv poziom wysiłku — pusto, kiedy takiej flagi nie zna.
+    ///
+    /// # Co tu jest polityką, a co adapterem (niezmiennik 23)
+    ///
+    /// Polityką jest sam POZIOM i mieszka w jednej tabeli przy szczeblu
+    /// (`library::agents::effort_level`): cztery szczeble z formularza → `low | medium | high |
+    /// xhigh`. Adapterem jest wyłącznie SPOSÓB podania, bo tylko on różni vendorów — Claude Code
+    /// bierze `--effort <poziom>`, Codex `-c model_reasoning_effort=<poziom>` jako opcję
+    /// GLOBALNĄ, czyli przed podkomendą.
+    ///
+    /// `&str`, nie wariant z `library/`: ten plik jest granicą, za którą nie ma ani jednego
+    /// vendora i nie ma też definicji agenta. Enum biblioteki w tym podpisie odwróciłby strzałkę
+    /// zależności dokładnie tak, jak opisuje to komentarz przy [`RunSpec::tools`].
+    ///
+    /// Pusto domyślnie, a nie `todo!()`: trait ma dalej dać się zaimplementować bez wiedzy
+    /// o wysiłku, więc atrapy silnika i `absent` nie zmieniają ani jednej linii. Wołający czyta
+    /// pustkę jako „ten vendor nie ma czym tego przyjąć" i wtedy nie dokłada niczego do argv —
+    /// flaga z pustą wartością połknęłaby następny argument jako swój.
+    fn effort_argv(&self, _level: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Żywa sesja jednego agenta.
