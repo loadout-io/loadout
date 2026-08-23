@@ -41,6 +41,7 @@ function jarvis(): Agent {
     giveUpAfterMinutes: 20,
     writeResultsTo: '',
     tools: { only: ['Read', 'Bash', 'mcp__playwright'] },
+    reachesTheWeb: false,
     skills: [],
     connections: ['playwright'],
   };

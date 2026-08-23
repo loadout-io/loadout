@@ -52,6 +52,7 @@ function draft(): Agent {
     fileAccess: 'work-freely',
     giveUpAfterMinutes: 20,
     tools: { only: ['Read', 'Edit'] },
+    reachesTheWeb: false,
     skills: ['rust-tauri'],
     connections: ['github'],
     writeResultsTo: 'handoffs/build.md',

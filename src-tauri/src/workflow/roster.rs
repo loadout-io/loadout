@@ -37,8 +37,8 @@ use crate::connections::Connection;
 use crate::engine::drivers::claude::{ToolsRefused, beyond, no_such_tools};
 use crate::library::agents::{Agent, FileAccess, Tools, policy_of, resolve};
 
-use super::WorkflowFile;
 use super::check::{Level, Note};
+use super::{AgentStep, WorkflowFile};
 
 /// Naprawa, którą Loadout umie wykonać sam.
 ///
@@ -74,6 +74,13 @@ pub enum Fix {
         agent_name: String,
         tools: Vec<String>,
     },
+    /// Daj TEMU KROKOWI własną kopię plików.
+    ///
+    /// 2026-08-23 — POWSTAŁO Z BIEGU WŁAŚCICIELA. Odmowa „ta umiejętność potrzebuje własnej
+    /// kopii" istniała wyłącznie przy Starcie (`skills::place`), więc płótno o niej milczało,
+    /// a bieg odmawiał po tym, jak założył sześć drzew roboczych. Naprawa jest jednoznaczna
+    /// i dotyczy jednego kafelka: ten krok ma pracować w swojej kopii.
+    GiveItAFreshCopy { step: String },
 }
 
 /// Uwagi, których nie da się policzyć z samego pliku.
@@ -139,6 +146,7 @@ pub fn check_the_roster(
 
         tools_fit_the_dial(&one.id, saved, &effective, &mut notes);
         named_things_exist(&one.id, &effective, connections, skills, &mut notes);
+        a_skill_needs_a_copy(one, &effective, &mut notes);
     }
 
     notes
@@ -278,4 +286,51 @@ fn named_things_exist(
             ));
         }
     }
+}
+
+/// Krok z umiejętnością, który pracuje wprost w folderze człowieka.
+///
+/// # Po co to istnieje
+///
+/// 2026-08-23, zmierzone na biegu właściciela. Start odmówił zdaniem *„Design was set to use the
+/// skill playwright-cli, and this step works straight inside /Users/…/urc-monorepo, and Loadout
+/// writes nothing into a folder of yours"* — i to jest odmowa POPRAWNA
+/// (`skills::place`, `Why::WouldWriteIntoYourFolder`): kopia umiejętności musi gdzieś stanąć,
+/// a Loadout obiecuje pisać wyłącznie do własnego katalogu biegu.
+///
+/// Czego nie było, to lustra tej odmowy przy BUDOWANIU. Płótno milczało, człowiek nacisnął Run,
+/// bieg założył sześć drzew roboczych i dopiero wtedy powiedział „nie". Warunek jest w całości
+/// w pliku — krok ma umiejętności ∧ folder nie jest własną kopią — więc nie było ku temu żadnego
+/// powodu poza tym, że nikt tej reguły nie dopisał.
+///
+/// # Dlaczego po EFEKTYWNYCH umiejętnościach, a nie po `step.skills`
+///
+/// Bo `Skills::All` znaczy „wszystko, co ma agent", a to jest lista w bibliotece. Krok, który
+/// niczego nie zawęża, dostaje umiejętności agenta — i to on odmówi przy Starcie, nie agent.
+///
+/// # Dlaczego `is_own_copy`, a nie porównanie z `Folder::Project`
+///
+/// Bo odmowa przy Starcie pyta o `ours` — czy ten katalog jest NASZ — a nasz jest wyłącznie
+/// wtedy, gdy bieg go założył. `Pick { path }` i `SameCopy` też są folderami człowieka albo
+/// cudzym drzewem: pierwszy jest katalogiem, który wskazał ręcznie, drugi należy do kroku przed
+/// nim. Jedno pytanie, jedna odpowiedź (niezmiennik 13).
+fn a_skill_needs_a_copy(step: &AgentStep, effective: &Agent, notes: &mut Vec<Note>) {
+    if effective.skills.is_empty() || step.folder.is_own_copy() {
+        return;
+    }
+    // PIERWSZA Z LISTY, nie wszystkie — ta sama reguła i ten sam powód, co w odmowie przy
+    // Starcie: zdanie ma nazwać jedną rzecz, a nie wyliczankę pięciu nazw.
+    let named = &effective.skills[0];
+    notes.push(note(
+        &step.id,
+        format!(
+            "\"{}\" uses the skill \"{named}\", and it works straight inside your project \
+             folder. Loadout writes nothing into a folder of yours, so it has nowhere to put the \
+             skill. Give the step its own copy of your files, or take the skill off it.",
+            step.name
+        ),
+        Some(Fix::GiveItAFreshCopy {
+            step: step.id.clone(),
+        }),
+    ));
 }

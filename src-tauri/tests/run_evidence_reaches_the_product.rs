@@ -1035,6 +1035,7 @@ async fn codex_follow_up_process_appends_instead_of_truncating_the_first_turn()
                 prompt: "first private turn".to_owned(),
                 model: None,
                 system_append: None,
+                reaches_the_web: false,
                 policy: Policy::ReadOnly,
                 tools: None,
                 extra_dirs: Vec::new(),

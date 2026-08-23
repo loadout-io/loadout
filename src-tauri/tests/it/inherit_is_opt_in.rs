@@ -114,6 +114,7 @@ fn spec(cwd: &Path) -> RunSpec {
         prompt: format!("{STEP_MARKER}: rename the widget."),
         model: None,
         system_append: Some("Answer in English.".to_owned()),
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

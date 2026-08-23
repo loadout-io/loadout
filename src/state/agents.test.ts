@@ -31,6 +31,7 @@ function forge(): Agent {
     fileAccess: 'work-freely',
     giveUpAfterMinutes: 20,
     tools: 'everything',
+    reachesTheWeb: false,
     skills: ['rust-tauri'],
     connections: [],
     writeResultsTo: 'handoffs/build.md',

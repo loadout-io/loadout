@@ -77,6 +77,21 @@ pub struct RunSpec {
     /// Co agentowi wolno zrobić z plikami, po ludzku. Tłumaczenie na flagi jest jedną tabelą
     /// w adapterze (niezmiennik 23).
     pub policy: Policy,
+    /// Czy ten krok może sięgnąć do internetu.
+    ///
+    /// **Osobno od [`RunSpec::policy`], i to jest cała treść tego pola.** Dial mówi o PLIKACH
+    /// („look only" znaczy „nie zmienia plików"), a nie o tym, czy agent widzi świat — więc sieć
+    /// wpuszczona w dial dawałaby wybór między „widzi świat i może zepsuć pliki" a „nie zepsuje
+    /// niczego i nie widzi nic". To jest dokładnie ta sama granica, którą postawiło T-63.
+    ///
+    /// **Jedno pole dla obu vendorów**, choć każdy realizuje je czym innym: Claude dwoma
+    /// czasownikami w `--tools`/`--allowedTools`, Codex ustawieniem piaskownicy
+    /// (`sandbox_workspace_write.network_access`). Nazwa narzędzia w tym miejscu byłaby faktem,
+    /// którego jeden z dwóch adapterów nie umie wypowiedzieć.
+    ///
+    /// 2026-08-23 — z pytania właściciela „czemu dostępu do neta nie mają?". Do tego dnia dla
+    /// Codeksa nie było ŻADNEJ drogi: `network_access` nie wychodziło z tej skrzyni ani razu.
+    pub reaches_the_web: bool,
     /// Które narzędzia ten krok ma mieć pod ręką — albo `None`, czyli „tyle, ile daje polityka".
     ///
     /// 2026-08-20 (T-63) — DO DZIŚ TEGO POLA NIE BYŁO, a `Agent.tools` (`library::agents::Tools`)
@@ -121,6 +136,7 @@ impl std::fmt::Debug for RunSpec {
             )
             .field("model", &self.model.as_ref().map(|_| "<configured>"))
             .field("policy", &self.policy)
+            .field("reaches_the_web", &self.reaches_the_web)
             .field("tools", &self.tools.as_ref().map(Vec::len))
             .field("extra_dirs", &self.extra_dirs.len())
             .field("resuming", &self.resume.is_some())

@@ -39,6 +39,7 @@ fn spec(resume: Option<SessionRef>) -> RunSpec {
         prompt: format!("summarise this repository -- {PROMPT_MARK}"),
         model: None,
         system_append: None,
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

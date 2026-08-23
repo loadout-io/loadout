@@ -193,6 +193,33 @@ pub struct Agent {
     /// `0` znaczy „bez limitu". Nigdy `None` — patrz reguła 3 w nagłówku modułu.
     pub give_up_after_minutes: u32,
     pub tools: Tools,
+    /// Czy ten agent może sięgnąć do internetu.
+    ///
+    /// # Po co to jest OSOBNYM polem, a nie pozycją na liście narzędzi
+    ///
+    /// Bo to jest jedyny kształt, którym umieją mówić OBAJ vendorzy. U Claude'a sieć to dwa
+    /// czasowniki (`WebFetch`, `WebSearch`) i lista narzędzi jest ich naturalnym miejscem;
+    /// Codex nie ma listy narzędzi wcale — u niego sieć jest ustawieniem PIASKOWNICY
+    /// (`sandbox_workspace_write.network_access`). Nazwa narzędzia wpisana w formularz byłaby
+    /// więc kontrolką działającą u jednego z dwóch, a u drugiego wygaszoną (`capabilities.ts`:
+    /// `tools` jest przy Codeksie `unavailable`).
+    ///
+    /// 2026-08-23 — POWSTAŁO Z PYTANIA WŁAŚCICIELA: „czemu dostępu do neta nie mają?". Zmierzone
+    /// w jego bibliotece: 18 agentów, ani jeden z siecią. Agenci claude'owi mieli `everything`,
+    /// co znaczy „to, co daje dial", a sieć jest w tabeli dopiero przy `Unrestricted`; agenci
+    /// codexowi — `codex-reaserch`, `planner`, `riczi`, czyli dokładnie ci od researchu — nie
+    /// mieli jak jej dostać w ogóle, bo `network_access` nie było wysyłane nigdy.
+    ///
+    /// # Dlaczego to nie jest czwarty stopień dialu
+    ///
+    /// Bo dial mówi o PLIKACH („look only" znaczy „nie zmienia plików"), a nie o tym, czy agent
+    /// widzi świat. Cała treść T-63: „lider do researchu, który nie może zepsuć repo". Sieć
+    /// wpuszczona w dial dawałaby wybór między „widzi świat i może zepsuć pliki" a „nie zepsuje
+    /// niczego i nie widzi nic".
+    ///
+    /// `#[serde(default)]` — każdy zapisany agent czyta się dalej i nie dostaje sieci po cichu.
+    #[serde(default)]
+    pub reaches_the_web: bool,
     pub skills: Vec<String>,
     /// Nazwy serwerów narzędziowych. W interfejsie: `Connections`.
     pub connections: Vec<String>,
@@ -230,6 +257,7 @@ impl Agent {
             file_access: FileAccess::WorkFreely,
             give_up_after_minutes: 20,
             tools: Tools::Everything,
+            reaches_the_web: false,
             skills: Vec::new(),
             connections: Vec::new(),
             write_results_to: "handoffs/build.md".to_string(),

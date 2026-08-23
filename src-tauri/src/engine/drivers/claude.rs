@@ -1015,8 +1015,29 @@ impl ClaudeDriver {
          *
          * Czego ta linia NIE otwiera: ani jednego czasownika plikowego. `Bash`, `Write` i `Edit`
          * dalej wybiera wyłącznie dial. */
+        /* SIEĆ WCHODZI DO OBU KOLUMN NARAZ, i to jest ta sama para, co przy serwerach wyżej:
+         * dostępność bez zatwierdzenia jest przy `--permission-mode dontAsk` bezużyteczna —
+         * agent pyta, nikt nie odpowiada, i z zewnątrz wygląda to jak narzędzie, które zawsze
+         * odmawia. Nazwy tylko wtedy, kiedy ich jeszcze nie ma: agent, który wypisał `WebSearch`
+         * na swojej liście, ma je już obiema drogami, a duplikat w argv jest szumem, przez który
+         * nie widać, skąd ta zgoda przyszła.
+         *
+         * 2026-08-23 — z pytania właściciela „czemu dostępu do neta nie mają?". Do tego dnia
+         * jedyną drogą było WYPISANIE tych dwóch nazw w liście narzędzi agenta. Zmierzone w jego
+         * bibliotece: żaden z 18 agentów tego nie zrobił, bo `everything` znaczy „to, co daje
+         * dial", a sieć jest w tabeli dopiero przy `Unrestricted`. Kontrolka, do której nikt nie
+         * trafia, jest kontrolką, której nie ma. */
+        let web: Vec<String> = if spec.reaches_the_web {
+            WEB.iter()
+                .filter(|name| !surface.available.iter().any(|have| have == *name))
+                .map(|name| (*name).to_owned())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let approved = surface.approved.as_ref().map(|approved| {
             let mut all = approved.clone();
+            all.extend(web.iter().cloned());
             all.extend(
                 self.configuration
                     .servers
@@ -1040,7 +1061,13 @@ impl ClaudeDriver {
         // droga do tej flagi, więc `Agent.tools` z formularza nie miało w silniku ani jednego
         // czytelnika. Teraz jedzie tu powierzchnia kroku: dla agenta domyślnego jest nią sufit
         // polityki, znak w znak jak przedtem, a dla agenta z własną listą — ta lista.
-        command.arg("--tools").arg(surface.available.join(","));
+        let available: Vec<String> = surface
+            .available
+            .iter()
+            .cloned()
+            .chain(web.iter().cloned())
+            .collect();
+        command.arg("--tools").arg(available.join(","));
 
         if let Some(model) = &spec.model {
             command.arg("--model").arg(model);

@@ -1717,6 +1717,11 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
          * `Unrestricted`: rozmowa nie ma powodu dotykać niczego poza folderem, w którym
          * człowiek pracuje. Uruchomienia biegu to nie dotyczy i nie ma jak dotyczyć — biegi
          * zaczyna komenda, a tej nie ma w żadnym narzędziu, które ten proces widzi. */
+        /* BEZ SIECI, i to jest ta sama decyzja, co przy dialu obok: zaszyty lider nie ma
+         * zapisanej definicji, w której człowiek mógłby to wybrać, więc jedyną uczciwą wartością
+         * jest ta, o którą nikt nie prosił. Lider WSKAZANY bierze to ze swojej definicji
+         * (`spec_for`). */
+        reaches_the_web: false,
         policy: Policy::EditInFolder,
         tools: None,
         extra_dirs: Vec::new(),
@@ -1748,6 +1753,9 @@ fn spec_for(lead: &Lead, cwd: PathBuf, first: &str, reaches: Vec<PathBuf>) -> Ru
         model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
         system_append: Some(lead.brief()),
         policy: lead.policy(),
+        /* Z DEFINICJI AGENTA, tą samą drogą co dial. Rozmowa z liderem do researchu, która nie
+         * widzi świata, jest tą samą połową kontrolki, co krok biegu bez sieci. */
+        reaches_the_web: lead.agent.reaches_the_web,
         /* 2026-08-20 (T-63) — LISTA NARZĘDZI LIDERA WCIĄŻ TU NIE DOJEŻDŻA I JEST TO ZGŁOSZENIE,
          * NIE PRZEOCZENIE. Bieg kroku bierze ją od tego dnia z definicji agenta
          * (`commands::run::what_this_step_may_use`), więc `Agent.tools` przestało być martwą

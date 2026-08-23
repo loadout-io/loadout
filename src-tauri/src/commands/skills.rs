@@ -1144,6 +1144,10 @@ pub async fn draft_skill_inner(
         // z definicji wygląda poprawnie do chwili, w której ktoś prosi o umiejętność swojego
         // najmocniejszego agenta.
         policy: Policy::ReadOnly,
+        /* Sieci NIE MA i to jest decyzja: ta rozmowa prosi o umiejętność, a odpowiedź wraca
+         * strumieniem. Agent, który przy okazji poszedłby do internetu, robiłby coś, o co nikt
+         * w tym oknie nie prosił. */
+        reaches_the_web: false,
         tools: None,
         // Nic poza katalogiem roboczym: umiejętność pisze się z jednego zdania, więc nie ma tu
         // czego czytać. Odnośnik do pliku, którego agentowi nie wolno otworzyć, jest odnośnikiem

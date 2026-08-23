@@ -234,6 +234,7 @@ impl Bench {
             prompt: PROMPT.to_owned(),
             model: None,
             system_append: None,
+            reaches_the_web: false,
             policy: Policy::ReadOnly,
             tools: None,
             extra_dirs: Vec::new(),

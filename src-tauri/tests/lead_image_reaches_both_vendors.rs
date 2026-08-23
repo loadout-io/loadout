@@ -113,6 +113,7 @@ fn spec(cwd: &Path, prompt: &str) -> RunSpec {
         prompt: prompt.to_owned(),
         model: None,
         system_append: None,
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

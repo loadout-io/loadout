@@ -61,6 +61,7 @@ const FORGE: Agent = {
   fileAccess: 'look-only',
   giveUpAfterMinutes: 10,
   tools: 'everything',
+  reachesTheWeb: false,
   skills: [],
   connections: [],
   writeResultsTo: '',

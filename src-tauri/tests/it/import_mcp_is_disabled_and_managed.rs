@@ -87,6 +87,7 @@ async fn project_mcp_becomes_a_disabled_managed_connection()
                 prompt: "test connection environment".to_owned(),
                 model: None,
                 system_append: None,
+                reaches_the_web: false,
                 policy: Policy::ReadOnly,
                 tools: None,
                 extra_dirs: Vec::new(),

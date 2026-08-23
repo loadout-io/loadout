@@ -25,7 +25,7 @@ use serde_json::Value;
 /// Piętnaście kluczy, po posortowaniu: jedenaście z T4 §3.1 (razem z ukrytym `id`),
 /// trzy z §3.2 i `schema`. (T4 pisze „eleven fields, nine visible" — to liczy samą tabelę
 /// §3.1; arytmetyka raportu jest luźna, liczba kluczy nie jest.)
-const KEYS: [&str; 15] = [
+const KEYS: [&str; 16] = [
     "color",
     "connections",
     "fileAccess",
@@ -34,6 +34,7 @@ const KEYS: [&str; 15] = [
     "instructions",
     "model",
     "name",
+    "reachesTheWeb",
     "runsWith",
     "schema",
     "skills",
@@ -64,7 +65,7 @@ fn underscored(value: &Value, path: &str, found: &mut Vec<String>) {
 }
 
 #[test]
-fn a_saved_agent_carries_exactly_these_fifteen_keys() -> Result<(), Box<dyn Error>> {
+fn a_saved_agent_carries_exactly_these_sixteen_keys() -> Result<(), Box<dyn Error>> {
     let wire = serde_json::to_value(Agent::example())?;
     let object = wire
         .as_object()
@@ -75,8 +76,8 @@ fn a_saved_agent_carries_exactly_these_fifteen_keys() -> Result<(), Box<dyn Erro
 
     assert_eq!(
         keys, KEYS,
-        "a saved agent has to carry these fifteen keys and no others. A sixteenth one is how \
-         the form starts growing towards the settings page nobody fills in; a missing one is a \
+        "a saved agent has to carry these sixteen keys and no others. A seventeenth one is how the \
+         form starts growing towards the settings page nobody fills in; a missing one is a \
          setting the user set and Loadout dropped"
     );
     Ok(())

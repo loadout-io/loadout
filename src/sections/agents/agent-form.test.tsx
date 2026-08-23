@@ -38,7 +38,8 @@ const NINE = [
   'Give up after',
 ];
 
-const THREE = ['Tools', 'Skills', 'Connections'];
+/** Wiersze pod `More settings`. Powód czwartego stoi przy kryterium, które je liczy. */
+const THREE = ['Tools', 'Can it reach the web', 'Skills', 'Connections'];
 
 const FORGE: Agent = {
   schema: 1,
@@ -53,6 +54,7 @@ const FORGE: Agent = {
   fileAccess: 'work-freely',
   giveUpAfterMinutes: 20,
   tools: 'everything',
+  reachesTheWeb: false,
   skills: [],
   connections: [],
   writeResultsTo: 'handoffs/build.md',
@@ -100,7 +102,7 @@ function buttonAttributes(html: string, label: string): string | null {
   return null;
 }
 
-describe('the agent form is nine rows, and More settings is exactly three', () => {
+describe('the agent form is nine rows, and More settings is exactly four', () => {
   it('reads out the nine labels of the mockup, in order, and no tenth one', () => {
     expect(
       labelsOf(markupOf(FORGE, false)),
@@ -109,11 +111,26 @@ describe('the agent form is nine rows, and More settings is exactly three', () =
     ).toEqual(NINE);
   });
 
-  it('adds exactly the three collapsed rows when More settings is open', () => {
+  /* 2026-08-23 — CZWARTY WIERSZ, I TO JEST ZMIANA KONTRAKTU, NIE JEGO ZŁAMANIE.
+   *
+   * Ten plik mówił „trzy i ani jeden więcej", a `more-settings.tsx` powtarzał to w nagłówku —
+   * bo czwarty wiersz jest zawsze obroniony sam z siebie i tak powstaje strona ustawień, której
+   * nikt nie wypełnia. Poprzeczkę repo stawia w jednym miejscu (T3 §10, ryzyko 6): nowy element
+   * wymaga PRAWDZIWEJ SKARGI, nie hipotezy.
+   *
+   * Skarga jest i jest zmierzona. Właściciel, 2026-08-23: „czemu dostępu do neta nie mają?".
+   * W jego bibliotece: 18 agentów, ani jeden z siecią, i żaden z nich nie mógł jej dostać z tego
+   * formularza — u Claude'a trzeba było WIEDZIEĆ, żeby wpisać `WebFetch, WebSearch` w pole Tools,
+   * a u Codeksa to pole jest wygaszone, więc nie było jak w ogóle. Wiersz nie dokłada nowej
+   * możliwości: odsłania tę, która istniała i do której nikt nie trafiał.
+   *
+   * `Can it reach the web` stoi PO `Tools`, bo obie odpowiadają na „czym ten agent dysponuje",
+   * a przed `Skills` i `Connections`, które mówią o rzeczach z biblioteki. */
+  it('adds exactly the four collapsed rows when More settings is open', () => {
     expect(
       labelsOf(markupOf(FORGE, true)),
-      'open, the form is the same nine rows plus exactly Tools, Skills and Connections, in ' +
-        'that order. Thirteen labels, not twelve and not fourteen',
+      'open, the form is the same nine rows plus exactly Tools, the web, Skills and Connections, ' +
+        'in that order. Thirteen labels, not twelve and not fourteen',
     ).toEqual([...NINE, ...THREE]);
   });
 

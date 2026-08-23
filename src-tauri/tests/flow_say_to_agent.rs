@@ -71,6 +71,7 @@ async fn a_second_turn_sent_by_voice_reaches_the_model() -> Result<(), Box<dyn E
         ),
         // Tylko czytanie: ta sesja nie ma powodu dotykać dysku, a im mniej wolno, tym mniej
         // rzeczy może pójść inaczej niż mierzymy.
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

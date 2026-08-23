@@ -117,6 +117,7 @@ fn argv(policy: Policy, tools: Option<Vec<String>>) -> Vec<String> {
         system_append: None,
         policy,
         tools,
+        reaches_the_web: false,
         extra_dirs: Vec::new(),
         resume: None,
     };

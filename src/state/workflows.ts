@@ -43,7 +43,9 @@ export type Level = 'problem' | 'warning';
  * kształt grafu poprawia się przeciągnięciem strzałki, nie przyciskiem. */
 export type Fix =
   | { kind: 'widenFileAccess'; step: string; to: FileAccess; from: FileAccess }
-  | { kind: 'dropTools'; agent: string; agentName: string; tools: string[] };
+  | { kind: 'dropTools'; agent: string; agentName: string; tools: string[] }
+  /** Ten krok ma pracować we własnej kopii plików. Lustro `roster::Fix::GiveItAFreshCopy`. */
+  | { kind: 'giveItAFreshCopy'; step: string };
 
 export interface Note {
   level: Level;
@@ -403,6 +405,22 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
         /* WARTOŚĆ EFEKTYWNA, nie patch: różnicę wobec agenta liczy `applyPanelEdit`, więc dial
          * równy temu, co agent ma sam, kasuje nadpisanie zamiast zapisywać je drugi raz. */
         get().editStep(fix.step, agent, { fileAccess: fix.to });
+        await get().recheck();
+        return;
+      }
+
+      if (fix.kind === 'giveItAFreshCopy') {
+        /* PROSTO NA DOKUMENT, bez `editStep`: `folder` należy do KROKU, nie do agenta, więc nie
+         * przechodzi przez nadpisania i nie potrzebuje biblioteki. Ta sama droga, którą ustawia
+         * je wiersz „fresh copy" w panelu kroku. */
+        get().commit({
+          ...get().document,
+          steps: get().document.steps.map((one) =>
+            one.id === fix.step && one.kind === 'agent'
+              ? { ...one, folder: { use: 'fresh-copy' as const } }
+              : one,
+          ),
+        });
         await get().recheck();
         return;
       }

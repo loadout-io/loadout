@@ -38,6 +38,7 @@ function jarvis(): Agent {
     giveUpAfterMinutes: 20,
     writeResultsTo: '',
     tools: 'everything',
+    reachesTheWeb: false,
     skills: [],
     connections: [],
   };

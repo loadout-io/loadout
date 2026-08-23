@@ -1546,6 +1546,25 @@ fn first_turn_argv(spec: &RunSpec) -> Vec<String> {
     argv.push("-s".to_owned());
     argv.push(sandbox_mode(spec.policy).to_owned());
 
+    /* SIEĆ JEST TU USTAWIENIEM PIASKOWNICY, NIE NAZWĄ NARZĘDZIA, i to jest cała różnica między
+     * tym adapterem a claude'owym. Codex nie ma listy narzędzi — u niego dostęp do internetu
+     * wisi przy `workspace-write` jako `network_access`, domyślnie WYŁĄCZONY.
+     *
+     * 2026-08-23 — z pytania właściciela „czemu dostępu do neta nie mają?". Do tego dnia ta
+     * skrzynia nie wysyłała `network_access` ANI RAZU (sprawdzone gerpem po całym drzewie Rusta),
+     * więc agent codexowy do researchu — `codex-reaserch`, `planner`, `riczi` — nie miał jak
+     * dostać sieci inaczej niż przez `danger-full-access`, czyli zdejmując całą piaskownicę.
+     * Wybór między „widzi świat i może zepsuć wszystko" a „nie zepsuje niczego i nie widzi nic"
+     * jest dokładnie tym, co T-63 usunęło po stronie Claude'a.
+     *
+     * TYLKO PRZY `workspace-write`. Przy `read-only` ten klucz nie ma zastosowania (Codex go
+     * tam nie czyta), a przy `danger-full-access` sieć jest już otwarta i dopisanie go byłoby
+     * drugim zdaniem o tym samym. */
+    if spec.reaches_the_web && matches!(spec.policy, Policy::EditInFolder) {
+        argv.push("-c".to_owned());
+        argv.push("sandbox_workspace_write.network_access=true".to_owned());
+    }
+
     // Myślnik na końcu jest tym, co każe czytać prompt ze stdinu [T1 §6.1]. Bez niego trzeba by
     // go podać argumentem — czyli złamać niezmiennik 9 dokładnie tak, jak podpowiada T1 §8.4.
     argv.push("-".to_owned());

@@ -58,6 +58,7 @@ fn spec(policy: Policy) -> RunSpec {
         model: None,
         system_append: None,
         policy,
+        reaches_the_web: false,
         tools: None,
         extra_dirs: Vec::new(),
         resume: None,

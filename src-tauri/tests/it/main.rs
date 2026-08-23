@@ -217,6 +217,7 @@ mod supervisor_group_death;
 mod supervisor_pipe_eof;
 mod supervisor_term_then_kill;
 mod supervisor_timeout_kills;
+mod the_web_switch_reaches_both_vendors;
 mod trigger_busy_does_not_poll;
 mod trigger_connection_test_has_no_effect;
 mod trigger_editor_deletes_safely;

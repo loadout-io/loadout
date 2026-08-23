@@ -39,6 +39,7 @@ function riczi(): Agent {
     giveUpAfterMinutes: 20,
     writeResultsTo: '',
     tools: 'everything',
+    reachesTheWeb: false,
     skills: [],
     connections: [],
   };

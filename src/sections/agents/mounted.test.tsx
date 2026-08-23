@@ -62,6 +62,7 @@ function agent(id: string, name: string, runsWith: Vendor, model: string): Agent
     fileAccess: 'look-only',
     giveUpAfterMinutes: 10,
     tools: 'everything',
+    reachesTheWeb: false,
     skills: [],
     connections: [],
     writeResultsTo: '',

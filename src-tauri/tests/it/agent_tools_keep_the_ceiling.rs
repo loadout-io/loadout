@@ -89,6 +89,7 @@ fn argv_for(agent: &Agent, available: Vec<String>) -> Vec<String> {
         prompt: "rename the widget".to_owned(),
         model: None,
         system_append: None,
+        reaches_the_web: false,
         policy: policy_of(agent.file_access),
         tools: Some(available),
         extra_dirs: Vec::new(),

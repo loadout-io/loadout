@@ -113,6 +113,7 @@ const AGENT: Agent = {
   fileAccess: 'work-freely',
   giveUpAfterMinutes: 20,
   tools: 'everything',
+  reachesTheWeb: false,
   skills: [],
   connections: [],
   writeResultsTo: 'notes.md',

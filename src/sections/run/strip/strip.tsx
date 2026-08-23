@@ -131,9 +131,26 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
       {/* JEDEN SZKLANY TOREK, nie cztery luzne znaczki. Kapsula jest ksztaltem, ktory ten
           jezyk powtarza, a pasek jest jedynym miejscem, gdzie go pokazuje w chrome. `data-blocks`
           niesie tylko ten kontener — po nim kryterium pyta o material i promien. */}
-      <div data-blocks className="glass flex shrink-0 items-end gap-2 rounded-pill px-2 py-[5px]">
+      {/* 2026-08-23 — TOREK NIE MA PRAWA ROSNĄĆ BEZ KOŃCA. Zgłoszenie właściciela ze zrzutu:
+          „za dużo miejsca zajmuje jak dużo steps i nie widać agents". Bloki stały tu z `shrink-0`
+          i bez przewijania, a każdy ma co najmniej 38 px — więc bieg o dwudziestu kilku krokach
+          robił z paska wstęgę szerszą niż okno. Nie kończyło się to przyciętym paskiem: `flex`
+          bez `overflow` wypycha RODZICA, więc cała strona dostawała poziomy pasek przewijania,
+          a kolumna agentów wyjeżdżała poza prawą krawędź.
+
+          Torek zwęża się więc do połowy paska i przewija się W ŚRODKU (`overflow-x-auto`,
+          `min-w-0` — bez tego drugiego element `flex` nie schodzi poniżej swojej treści).
+          Nagłówek biegu, kontrolki i chip z kosztem zostają na ekranie niezależnie od tego,
+          ile kroków ma graf. */}
+      <div
+        data-blocks
+        className="glass flex min-w-0 max-w-[50%] items-end gap-2 overflow-x-auto rounded-pill px-2 py-[5px]"
+      >
         {strip.blocks.map((block) => (
-          <span key={block.id} className="grid min-w-[38px] gap-[5px] justify-items-stretch">
+          <span
+            key={block.id}
+            className="grid min-w-[38px] shrink-0 gap-[5px] justify-items-stretch"
+          >
             <span
               data-block={block.state}
               className={`h-2 w-full rounded-pill ${BLOCK[block.state]} ${block.ended ? ENDED : ''}`}

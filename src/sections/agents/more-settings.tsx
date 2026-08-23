@@ -1,4 +1,11 @@
-/* Trzy wiersze pod `More settings`: Tools, Skills, Connections. Trzy i ani jeden więcej.
+/* Cztery wiersze pod `More settings`: Tools, sieć, Skills, Connections.
+ *
+ * Były trzy i „ani jeden więcej", bo czwarty wiersz jest zawsze obroniony sam z siebie i tak
+ * powstaje strona ustawień, której nikt nie wypełnia. Poprzeczka stoi w jednym miejscu (T3 §10,
+ * ryzyko 6): nowy element wymaga PRAWDZIWEJ SKARGI. Skarga jest, 2026-08-23: „czemu dostępu do
+ * neta nie mają?" — w bibliotece właściciela 18 agentów i ani jeden z siecią, bo z tego
+ * formularza nie dało się jej dać. Ten wiersz nie dokłada możliwości; odsłania tę, do której
+ * nikt nie trafiał. Powód całego pola stoi przy `Agent::reaches_the_web` w Ruście.
  *
  * Przy Codeksie `Tools` jest wygaszone i pod spodem stoi jedno zdanie. Bez ikony ostrzeżenia,
  * bez modala, bez czerwieni [T4 §8.1]: to nie jest błąd użytkownika ani awaria, tylko fakt
@@ -86,10 +93,15 @@ function toolsText(tools: Tools): string {
   return tools === 'everything' ? '' : tools.only.join(', ');
 }
 
+/** Zdanie pod przełącznikiem sieci. Odpowiada na jedyne pytanie, które w tym miejscu pada. */
+const WEB_IS_NOT_ABOUT_FILES =
+  'Reading and searching the web only. What it may do with your files stays exactly as set above.';
+
 export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactElement {
   const tools = capability('tools', value.runsWith);
   const skills = capability('skills', value.runsWith);
   const connections = capability('connections', value.runsWith);
+  const web = capability('reachesTheWeb', value.runsWith);
 
   return (
     <div className="flex flex-col gap-3 border-t border-line pt-3">
@@ -108,6 +120,39 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
           onChange={(event) => onChange({ ...value, tools: toolsFrom(event.target.value) })}
         />
         {tools === 'unavailable' ? <p className={NOTE}>{CODEX_HAS_NO_TOOL_LIST}</p> : null}
+      </div>
+
+      {/* SIEĆ MA WŁASNY WIERSZ, i to jest cała treść tej kontrolki.
+       *
+       * 2026-08-23 — z pytania właściciela „czemu dostępu do neta nie mają?". Zmierzone w jego
+       * bibliotece: 18 agentów, ani jeden z siecią. U Claude'a dało się ją dostać, WPISUJĄC
+       * `WebFetch, WebSearch` w pole wyżej — i nikt tego nie zrobił, bo nic o tym nie mówi;
+       * u Codeksa to pole jest wygaszone, więc nie dało się w ogóle.
+       *
+       * Zdanie pod przełącznikiem mówi, czego on NIE robi, bo to jest jedyne, o co człowiek
+       * pyta w tym miejscu: „czy przez to zacznie mi ruszać pliki". Nie zacznie — dial mówi
+       * o plikach, ten przełącznik o świecie. */}
+      <div className={ROW}>
+        <label htmlFor="agent-web" className={LABEL}>
+          Can it reach the web
+        </label>
+        {/* LISTA WYBORU, nie przełącznik, i nie z upodobania: wiersz obok — dial dostępu do
+            plików — jest `<select>` z klasą domu, a dwa pytania o uprawnienia, zadane dwiema
+            różnymi kontrolkami, czytają się jak dwie różne rangi decyzji. Jeden kształt na
+            jedną robotę, we wszystkich pięciu sekcjach. */}
+        <select
+          id="agent-web"
+          data-field="reachesTheWeb"
+          className={fieldClass(web)}
+          value={value.reachesTheWeb ? 'yes' : 'no'}
+          onChange={(event) => {
+            onChange({ ...value, reachesTheWeb: event.target.value === 'yes' });
+          }}
+        >
+          <option value="no">No</option>
+          <option value="yes">Read and search the web</option>
+        </select>
+        <p className={NOTE}>{WEB_IS_NOT_ABOUT_FILES}</p>
       </div>
 
       <div className={ROW}>

@@ -153,6 +153,7 @@ fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
         prompt: "fix the parser".to_owned(),
         model: None,
         system_append: None,
+        reaches_the_web: false,
         policy: Policy::EditInFolder,
         tools: None,
         extra_dirs: Vec::new(),

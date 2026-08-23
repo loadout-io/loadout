@@ -142,6 +142,7 @@ fn spec(cwd: &Path) -> RunSpec {
         // `ReadOnly` świadomie: `bypassPermissions` z fikstury jest zarazem legalną wartością
         // naszej własnej flagi `--permission-mode`, więc przemiatanie argv po tym napisie
         // sądziłoby politykę biegu zamiast dziedziczenia.
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

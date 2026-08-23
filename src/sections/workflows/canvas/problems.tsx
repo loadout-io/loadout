@@ -11,6 +11,7 @@
  * kroku w blokadę uruchomienia — a to jest workflow, który wolno uruchomić.
  */
 import type { ReactElement } from 'react';
+import { useState } from 'react';
 import type { Fix, Note } from '../../../state/workflows';
 import type { FileAccess } from '../../../state/agents';
 
@@ -55,6 +56,7 @@ function fixable(notes: Note[]): Note[] {
  * PRZED kliknięciem. */
 function fixLabel(fix: Fix): string {
   if (fix.kind === 'widenFileAccess') return `Set this step to ${DIAL[fix.to]}`;
+  if (fix.kind === 'giveItAFreshCopy') return 'Give it its own copy';
   return `Take them off ${fix.agentName}`;
 }
 
@@ -74,6 +76,32 @@ const DOT: Record<Note['level'], string> = {
   warning: 'text-attend',
 };
 
+/** Ile uwag widać, zanim człowiek poprosi o resztę.
+ *
+ * 2026-08-23 — ZGŁOSZENIE WŁAŚCICIELA: „ogarnij ten UI z errorami bo mi zalewa ekran". Ten pasek
+ * rysował KAŻDĄ uwagę, a jedna reguła — dwa kroki bez strzałki w jednym folderze — zgłasza się
+ * PER PARĘ, więc dziesięć nienazwanych kafelków daje czterdzieści pięć zdań. Płótna spod nich
+ * nie było widać, a Run stał na dole listy.
+ *
+ * Trzy, a nie pięć czy dziesięć: tyle mieści się nad przyciskiem bez spychania go z ekranu przy
+ * najniższym oknie, jakie ten produkt obsługuje. */
+const AT_FIRST = 3;
+
+/** Problemy przed ostrzeżeniami — bo tylko problem blokuje Run.
+ *
+ * Kiedy widać trzy z czterdziestu, to MUSZĄ być te trzy, które zatrzymują bieg. Lista w kolejności
+ * walidatora pokazywałaby czasem trzy ostrzeżenia i chowała pod „pokaż wszystkie" jedyną rzecz,
+ * przez którą nic nie rusza.
+ *
+ * `toSorted`, nie `sort`: `notes` przychodzi propsem i posortowanie go w miejscu zmieniałoby
+ * tablicę należącą do wołającego. Sortowanie jest STABILNE, więc uwagi tej samej wagi zostają
+ * w kolejności, w której zgłosił je walidator — a to jest kolejność kroków w pliku. */
+function worstFirst(notes: Note[]): Note[] {
+  return notes.toSorted(
+    (one, other) => Number(other.level === 'problem') - Number(one.level === 'problem'),
+  );
+}
+
 /** „2 things to fix" — jedno zdanie, policzone z listy uwag i z niczego innego.
  *
  * Liczba pojedyncza nie jest kosmetyką: „1 things to fix" czyta się jak usterka narzędzia,
@@ -83,6 +111,13 @@ function howMany(notes: Note[]): string {
 }
 
 export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): ReactElement {
+  /* Zwinięte na starcie i przy KAŻDYM nowym sprawdzeniu — nie zapamiętujemy rozwinięcia między
+   * dokumentami. Człowiek, który rozwinął czterdzieści uwag w jednym workflow i przeszedł do
+   * drugiego, dostawałby tam czterdzieści cudzych. */
+  const [showAll, setShowAll] = useState(false);
+  const sorted = worstFirst(notes);
+  const shown = showAll ? sorted : sorted.slice(0, AT_FIRST);
+  const hidden = sorted.length - shown.length;
   /* Blokuje WYŁĄCZNIE `problem`. Pasek, który liczy wszystkie uwagi i przy każdej gasi Run,
    * zamienia ostrzeżenie o niepodłączonym kroku w zamek bez klucza — a taki workflow wolno
    * uruchomić. Podpowiedź jest samą uwagą, słowo w słowo z walidatora: „Fix the errors first"
@@ -104,7 +139,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
 
               Uwagi przychodzą z jednego wywołania walidatora i lista nie jest sortowana ani
               filtrowana w miejscu, więc pozycja jest tu stabilna między renderami. */}
-          {notes.map((note, at) => (
+          {shown.map((note, at) => (
             <div
               key={`${String(at)}:${note.level}:${note.stepId ?? ''}`}
               className="flex items-baseline gap-2"
@@ -136,6 +171,22 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
               )}
             </div>
           ))}
+          {/* RESZTA NA ŻĄDANIE. Liczba stoi na przycisku, bo „Show all" nie mówi, na ile się
+              zgadzasz — a przy czterdziestu uwagach to jest różnica między rzutem oka a stroną
+              tekstu. Wracając, przycisk mówi, do ilu wraca, żeby ta droga nie była jednokierunkowa. */}
+          {hidden > 0 || showAll ? (
+            <button
+              type="button"
+              data-show-all-notes
+              className="self-start text-left text-label text-muted underline"
+              onClick={() => {
+                setShowAll(!showAll);
+              }}
+            >
+              {showAll ? `Show fewer` : `Show ${String(hidden)} more`}
+            </button>
+          ) : null}
+
           {/* Jedno kliknięcie na wszystkie, kiedy jest co zbierać. Pięć naprawialnych uwag to
               dziś pięć kliknięć, a każda z nich jest tą samą decyzją: „zrób to, co i tak bym
               zrobił ręcznie". */}

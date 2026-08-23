@@ -37,6 +37,7 @@ fn template() -> Result<Agent, Box<dyn Error>> {
         file_access: FileAccess::LookOnly,
         give_up_after_minutes: 15,
         tools: Tools::Everything,
+        reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
         write_results_to: "memory/research.md".to_string(),

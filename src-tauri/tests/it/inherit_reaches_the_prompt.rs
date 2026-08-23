@@ -157,6 +157,7 @@ fn spec(cwd: &Path) -> RunSpec {
         // Prompt systemowy agenta — czyli KONFIGURACJA, nie treść. Stoi tu niepusty po to, żeby
         // punkt (d) miał co porównać: pole, które po dziedziczeniu ma być co do bajtu tym samym.
         system_append: Some(format!("{SYSTEM_MARKER}: answer in English.")),
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

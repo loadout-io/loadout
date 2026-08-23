@@ -287,6 +287,7 @@ fn definition(
         runs_with: Vendor::ClaudeCode,
         file_access: access,
         instructions: says.to_owned(),
+        reaches_the_web: false,
         write_results_to: String::new(),
         ..Agent::example()
     })

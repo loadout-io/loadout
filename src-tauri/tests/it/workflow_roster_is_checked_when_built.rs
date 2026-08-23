@@ -40,6 +40,7 @@ fn agent(id: Uuid, name: &str, access: FileAccess, tools: Tools) -> Agent {
         file_access: access,
         give_up_after_minutes: 20,
         tools,
+        reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
         write_results_to: String::new(),

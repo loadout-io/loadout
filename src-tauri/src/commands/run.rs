@@ -1041,6 +1041,8 @@ struct AgentJob {
     /// Prompt systemowy agenta. To jest konfiguracja agenta, nie treść zadania.
     system_append: Option<String>,
     /// Co agentowi wolno zrobić z plikami — po ludzku, w trzech wariantach.
+    /// Czy ten krok sięga do internetu — wybór agenta, policzony raz przy planowaniu.
+    reaches_the_web: bool,
     policy: Policy,
     /// Które narzędzia ten krok ma pod ręką — albo `None`, czyli „tyle, ile daje polityka".
     ///
@@ -1853,6 +1855,8 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
         system_append: some_text(&effective.instructions),
         policy,
+        // Wybór agenta, nie kroku (D6: „wszystko, co vendor wprowadzi, konfigurujemy per agent").
+        reaches_the_web: effective.reaches_the_web,
         tools,
         connections,
         skills,
@@ -4403,6 +4407,10 @@ impl Live {
             model: job.model.clone(),
             system_append: job.system_append.clone(),
             policy: job.policy,
+            /* Wybór AGENTA, przeniesiony bez interpretacji — tak samo jak `tools` niżej i z tego
+             * samego powodu: krok, który liczyłby to sam, mógłby odpowiedzieć inaczej niż to,
+             * co człowiek widzi w formularzu (niezmiennik 13). */
+            reaches_the_web: job.reaches_the_web,
             // Lista z definicji agenta, przepuszczona przez sufit jego dialu **przy planowaniu**
             // (`what_this_step_may_use`). Tu jest już tylko przeniesieniem: krok, który liczyłby to
             // sam, mógłby odmówić w połowie biegu (niezmiennik 12).

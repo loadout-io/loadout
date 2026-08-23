@@ -50,6 +50,7 @@ function agent(over: Partial<Agent> = {}): Agent {
     fileAccess: 'work-freely',
     giveUpAfterMinutes: 20,
     tools: 'everything',
+    reachesTheWeb: false,
     skills: [],
     connections: [],
     writeResultsTo: '',

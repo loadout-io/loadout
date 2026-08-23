@@ -67,6 +67,7 @@ fn forge() -> Result<Agent, Box<dyn Error>> {
         file_access: FileAccess::WorkFreely,
         give_up_after_minutes: 20,
         tools: Tools::Everything,
+        reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
         write_results_to: "handoffs/build.md".to_string(),

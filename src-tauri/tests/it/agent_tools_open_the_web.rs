@@ -97,6 +97,7 @@ fn argv_for(agent: &Agent) -> Vec<String> {
         model: None,
         system_append: None,
         policy,
+        reaches_the_web: false,
         tools: Some(surface.available),
         extra_dirs: Vec::new(),
         resume: None,

@@ -202,6 +202,7 @@ fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
         prompt: "start a long job".to_owned(),
         model: None,
         system_append: None,
+        reaches_the_web: false,
         policy: Policy::ReadOnly,
         tools: None,
         extra_dirs: Vec::new(),

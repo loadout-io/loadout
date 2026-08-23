@@ -344,6 +344,7 @@ fn definition(access: FileAccess) -> Result<Agent, Box<dyn Error>> {
         runs_with: Vendor::ClaudeCode,
         file_access: access,
         instructions: INSTRUCTIONS.to_owned(),
+        reaches_the_web: false,
         write_results_to: String::new(),
         ..Agent::example()
     })

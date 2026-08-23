@@ -25,6 +25,7 @@ export type CapabilityField =
   | 'fileAccess'
   | 'giveUpAfterMinutes'
   | 'tools'
+  | 'reachesTheWeb'
   | 'skills'
   | 'connections';
 
@@ -43,6 +44,11 @@ const CAPABILITIES: Record<CapabilityField, Record<Vendor, Capability>> = {
   fileAccess: { 'claude-code': 'approximate', codex: 'approximate' },
   giveUpAfterMinutes: { 'claude-code': 'native', codex: 'native' },
   tools: { 'claude-code': 'native', codex: 'unavailable' },
+  /* NATIVE U OBU, i to jest cały powód, dla którego sieć jest osobnym polem, a nie pozycją na
+   * liście narzędzi: `tools` jest u Codeksa `unavailable`, więc kontrolka „wpisz WebSearch"
+   * działałaby dla połowy agentów i milczała dla drugiej. Dostęp do internetu umieją wyrazić
+   * obaj — Claude dwoma czasownikami, Codex ustawieniem piaskownicy. */
+  reachesTheWeb: { 'claude-code': 'native', codex: 'native' },
   skills: { 'claude-code': 'native', codex: 'approximate' },
   connections: { 'claude-code': 'native', codex: 'native' },
 };

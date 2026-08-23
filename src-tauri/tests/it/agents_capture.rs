@@ -40,6 +40,7 @@ fn forge() -> Result<Agent, Box<dyn Error>> {
         file_access: FileAccess::WorkFreely,
         give_up_after_minutes: 20,
         tools: Tools::Everything,
+        reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
         write_results_to: "handoffs/build.md".to_string(),
@@ -122,6 +123,7 @@ fn an_empty_value_on_the_wire_is_refused_and_the_message_names_the_setting()
 fn nothing_is_ever_written_as_an_absence() -> Result<(), Box<dyn Error>> {
     let agent = Agent {
         give_up_after_minutes: 0,
+        reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
         tools: Tools::Everything,

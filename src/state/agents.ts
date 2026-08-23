@@ -57,6 +57,13 @@ export interface Agent {
   /** `0` znaczy „bez limitu". Nigdy `null` — w RFC 7396 `null` kasuje klucz. */
   giveUpAfterMinutes: number;
   tools: Tools;
+  /** Czy ten agent może sięgnąć do internetu.
+   *
+   * OSOBNE POLE, nie pozycja na liście narzędzi, i to jest jedyny kształt, którym umieją mówić
+   * OBAJ vendorzy: u Claude'a sieć to dwa czasowniki (`WebFetch`, `WebSearch`), a Codex nie ma
+   * listy narzędzi wcale — u niego jest to ustawienie piaskownicy. Powód w całości stoi przy
+   * `Agent::reaches_the_web` w `library/agents.rs`. */
+  reachesTheWeb: boolean;
   skills: string[];
   /** Etykieta: `Connections`. */
   connections: string[];
