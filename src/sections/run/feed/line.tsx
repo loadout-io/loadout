@@ -157,7 +157,26 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
             {row.agent}
           </span>
         )}
-        {row.label}
+        {/* ZDANIE AGENTA ZACHOWUJE SWOJE WIERSZE.
+            2026-08-23, zgłoszenie właściciela o czytelności strumienia: „ten tekst niech też
+            będzie jakoś fajnie i ładnie formatowany aby było to przyjemniejsze".
+
+            Model przepuszcza tekst agenta NIETKNIĘTY (`feed/model.ts`, `sentence`), więc jego
+            przełamania dojeżdżały aż tutaj i ginęły dopiero w CSS: domyślne `white-space`
+            zamienia każdy przełam w spację, a akapit wypunktowany przez agenta sklejał się
+            w jeden blok bez ani jednej przerwy. To nie jest brak renderera markdown — to była
+            utrata rzeczy, którą model faktycznie napisał.
+
+            `pre-line`, nie `pre`: zwija ciągi spacji (więc wcięcia z modelu nie robią schodów
+            w wąskiej kolumnie) i zostawia przełamania. Zawijanie długich wierszy zostaje, bo
+            `pre` odbierałoby je i wypychało kolumnę w bok.
+
+            `break-words` dla adresów i ścieżek bez spacji: bez tego jedno długie słowo rozpycha
+            kolumnę strumienia i wypycha kolumnę agentów poza krawędź okna.
+
+            WŁASNY ELEMENT, nie klasa na rodzicu: rodzic niesie też podpis „kto mówi", a ten ma
+            zostać w jednym wierszu z początkiem zdania. */}
+        <span className="whitespace-pre-line break-words">{row.label}</span>
       </span>
 
       {/* Prawa kolumna: albo kontrolka startu propozycji, albo liczba, którą ta czynność
