@@ -94,6 +94,13 @@ export type Line =
       turns: number;
       durationMs: number;
       costUsd: number | null;
+      /* Trzy liczniki tej tury, przepisane z drutu. Vendor, który nie podaje kwoty, podaje
+       * przynajmniej te — i to z nich pasek składa `12k tokens` tam, gdzie nie ma czego wyliczyć
+       * w dolarach. Zero znaczy „nic nie zgłoszono", bo tyle właśnie niesie `Tokens` po tamtej
+       * stronie; pustkę na ekranie rozstrzyga suma, nie brak pola. */
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
       /** Jak się skończyło — lustro `engine::line::Ended`. Okno NIE czyta tego z `text`. */
       ended: 'well' | 'badly' | 'stopped';
     };
@@ -153,7 +160,20 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],
   ['problem', { agent: str, text: str, resetsAt: maybeNum }],
-  ['done', { agent: str, text: str, turns: num, durationMs: num, costUsd: maybeNum, ended: str }],
+  [
+    'done',
+    {
+      agent: str,
+      text: str,
+      turns: num,
+      durationMs: num,
+      costUsd: maybeNum,
+      inputTokens: num,
+      outputTokens: num,
+      cachedTokens: num,
+      ended: str,
+    },
+  ],
 ]);
 
 /**

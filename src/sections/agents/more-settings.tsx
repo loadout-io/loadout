@@ -25,7 +25,7 @@
 import type { ReactElement } from 'react';
 import type { Agent, Tools } from '../../state/agents';
 import type { Capability } from './capabilities';
-import { capability } from './capabilities';
+import { capability, webIsOutOfReach } from './capabilities';
 
 export interface MoreSettingsProps {
   value: Agent;
@@ -97,11 +97,24 @@ function toolsText(tools: Tools): string {
 const WEB_IS_NOT_ABOUT_FILES =
   'Reading and searching the web only. What it may do with your files stays exactly as set above.';
 
+/* Drugie zdanie pod tym samym przełącznikiem — i tylko wtedy, gdy jest nieprawdą, że włączenie
+ * go coś da. Bez ikony ostrzeżenia, bez czerwieni, tak jak zdanie przy `Tools` [T4 §8.1]: to
+ * jest fakt o drugiej aplikacji, nie pomyłka człowieka.
+ *
+ * KTÓRY TO PRZYPADEK, MÓWI TABELA (`capabilities.ts`), nie ten plik. Warunek po nazwie vendora
+ * postawiony tutaj byłby drugą kopią polityki, a druga kopia zawsze w końcu mówi co innego
+ * (niezmiennik 23). */
+const WEB_NEEDS_WRITE_ACCESS =
+  'Codex only reaches the web when it can change files, so this agent will not get it.';
+
 export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactElement {
   const tools = capability('tools', value.runsWith);
   const skills = capability('skills', value.runsWith);
   const connections = capability('connections', value.runsWith);
   const web = capability('reachesTheWeb', value.runsWith);
+  /* Tylko kiedy człowiek o sieć POPROSIŁ: zdanie odbierające coś, czego nikt nie chciał,
+   * jest szumem, a szum uczy przewijać wzrokiem każdą uwagę w tym formularzu. */
+  const webWontReach = value.reachesTheWeb && webIsOutOfReach(value.runsWith, value.fileAccess);
 
   return (
     <div className="flex flex-col gap-3 border-t border-line pt-3">
@@ -153,6 +166,7 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
           <option value="yes">Read and search the web</option>
         </select>
         <p className={NOTE}>{WEB_IS_NOT_ABOUT_FILES}</p>
+        {webWontReach ? <p className={NOTE}>{WEB_NEEDS_WRITE_ACCESS}</p> : null}
       </div>
 
       <div className={ROW}>

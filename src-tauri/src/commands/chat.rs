@@ -1443,7 +1443,12 @@ impl Threads {
         /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
          * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
          * jednej gałęzi: actor dostaje jedną wartość z pliku i zachowuje kolejność tur. */
-        let driver = thinking_as_the_step_does(drivers(lead.agent.runs_with), lead);
+        let driver = as_the_step_is_configured(
+            drivers(lead.agent.runs_with),
+            lead,
+            library.as_deref(),
+            &terminal.folder,
+        )?;
         thread
             .say_with_images(
                 driver,
@@ -1547,32 +1552,113 @@ async fn read_along(
     }
 }
 
-/// Startuje sesję z pierwszym zdaniem, ale jeszcze nie uruchamia czytnika odpowiedzi.
+/// Sterownik rozmowy niosący to, co ten lider naprawdę dostaje — tym samym szwem, co krok biegu.
 ///
-/// Sterownik rozmowy niosący szczebel „ile myśleć" tego lidera — tym samym szwem, co krok biegu.
+/// # 2026-08-24 (T-97) — TĄ SAMĄ DROGĄ JADĄ ZATWIERDZONE CONNECTIONS
+///
+/// Do tego dnia ta funkcja składała fragment **wyłącznie** ze szczebla „ile myśleć", więc lider,
+/// którego agent ma `connections: ["x"]`, rozmawiał bez ani jednego serwera — u obu vendorów.
+/// Człowiek zatwierdził połączenie w imporcie, ekran je pokazuje przy agencie, a rozmowa go nie
+/// miała: „lider nie umie tego zrobić" jest z zewnątrz nieodróżnialne od „lider nie chciał".
+///
+/// # Kolejność jest ta sama, co w `Live::run_agent`, i jest WYMUSZONA
+///
+/// Connections → dziedziczenie → dowody. Każde opakowanie oddaje **klon** sterownika, więc
+/// opakowanie założone wcześniej ginie, jeśli późniejsze klonuje sterownik sprzed niego.
+/// Connections idą pierwsze, bo `configured` startuje od sterownika prosto z fabryki; dowody
+/// ostatnie ([`begin_thread`]), bo tylko wtedy nadajnik dowodów siedzi na sterowniku, który
+/// naprawdę pójdzie do `start_conversation`. Odwrócenie jest niewidoczne: wszystko się
+/// kompiluje, rozmowa rusza, a znika albo `--mcp-config`, albo plik dowodu.
 ///
 /// # Dlaczego to jest opakowanie, a nie pole w [`RunSpec`]
 ///
 /// `RunSpec` nie ma `Default` i konstruuje go w tym drzewie ponad trzydzieści miejsc, więc nowe
 /// pole w literale byłoby trzydziestoma plikami zmienionymi po to, żeby dowieźć jedną flagę.
 /// `DriverConfiguration.arguments` jest już kanałem na „gotowy fragment argv tej jednej sesji" —
-/// tędy jadą zatwierdzone Connections i tędy jedzie to.
+/// tędy jadą zatwierdzone Connections i tędy jedzie szczebel.
 ///
-/// Sterownik bez tego szwu oddaje siebie samego i to jest poprawna odpowiedź, nie awaria: pusty
-/// fragment znaczy „ten vendor nie ma czym tego przyjąć", a `configured`, które odpowiedziało
-/// `None`, to atrapa spoza produkcyjnej fabryki. Odmowa rozmowy z powodu USTAWIENIA (nie zgody
-/// człowieka, jak przy Connections) byłaby liderem, który nie chce rozmawiać, bo ktoś przesunął
-/// suwak.
-fn thinking_as_the_step_does(driver: Arc<dyn AgentDriver>, lead: &Lead) -> Arc<dyn AgentDriver> {
-    let arguments = driver.effort_argv(lead.effort());
-    if arguments.is_empty() {
-        return driver;
+/// # Dwie odmowy o różnej wadze, i to jest cała treść typu zwrotnego
+///
+/// Nierozwiązane połączenie jest **odmową**: to jest zgoda człowieka wyrażona w imporcie, więc
+/// rozmowa, która by go nie dostała, ma nie ruszyć — tak samo jak krok biegu. Sterownik bez szwu
+/// `configured` odmową **nie jest**: oddaje siebie samego i to jest poprawna odpowiedź atrapy
+/// spoza produkcyjnej fabryki. Odmowa rozmowy z powodu USTAWIENIA (szczebla, nie zgody) byłaby
+/// liderem, który nie chce rozmawiać, bo ktoś przesunął suwak.
+fn as_the_step_is_configured(
+    driver: Arc<dyn AgentDriver>,
+    lead: &Lead,
+    library: Option<&Path>,
+    folder: &Path,
+) -> Result<Arc<dyn AgentDriver>, ChatError> {
+    let mut configuration = connections_of(lead, library, folder, driver.id())?;
+    configuration
+        .arguments
+        .extend(driver.effort_argv(lead.effort()));
+    if configuration.arguments.is_empty() {
+        // Nic do niesienia i nie ma o co pytać: rozmowa bez połączeń i bez szczebla startuje
+        // dokładnie tak, jak startowała — co do bajtu.
+        return Ok(driver);
     }
-    let configuration = DriverConfiguration {
-        arguments,
-        ..DriverConfiguration::default()
+    match driver.configured(&configuration) {
+        Some(configured) => Ok(configured),
+        // ZATWIERDZONE POŁĄCZENIE MA TYLKO TĘ JEDNĄ DROGĘ, więc vendor, który jej nie zna, nie
+        // dostanie go wcale — i wtedy rozmowa nie rusza. Sam szczebel takiej wagi nie ma.
+        None if !lead.agent.connections.is_empty() => Err(ChatError::CouldNotStart(
+            "this agent app cannot use the approved Connections. Loadout stopped the \
+             conversation instead of starting it without them."
+                .to_owned(),
+        )),
+        None => Ok(driver),
+    }
+}
+
+/// Katalog zatwierdzonych połączeń w bibliotece — ta sama nazwa, którą czyta bieg
+/// (`commands::run`, `deps.home.join("connections")`).
+const CONNECTIONS: &str = "connections";
+
+/// Jedyny katalog w folderze człowieka, który należy do nas (`docs/ARCHITECTURE.md` §8).
+const OURS: &str = ".loadout";
+
+/// Fragment argv z zatwierdzonych Connections tego lidera — albo pusty, kiedy żadnych nie ma.
+///
+/// Katalog pliku serwerów stoi pod `<folder>/.loadout/`, czyli w JEDYNYM miejscu tego folderu,
+/// które należy do nas (`docs/ARCHITECTURE.md` §8) — nigdy w drzewie człowieka. Po identyfikatorze
+/// agenta, nie po terminalu: dwie karty tego samego lidera opisują ten sam zestaw serwerów, więc
+/// drugi plik byłby drugą kopią jednego faktu.
+///
+/// Rozwiązywanie nazw i skład argv idą przez `connections::runtime`, tak samo jak w biegu
+/// (niezmiennik 23): druga kopia którejkolwiek z tych dwóch rzeczy rozjechałaby się przy pierwszej
+/// zmianie kształtu pliku i rozjechałaby się po cichu.
+fn connections_of(
+    lead: &Lead,
+    library: Option<&Path>,
+    folder: &Path,
+    vendor: &str,
+) -> Result<DriverConfiguration, ChatError> {
+    if lead.agent.connections.is_empty() {
+        return Ok(DriverConfiguration::default());
+    }
+    let Some(library) = library else {
+        return Err(ChatError::CouldNotStart(
+            "this agent needs Connections from your library, and Loadout does not know where \
+             your library is."
+                .to_owned(),
+        ));
     };
-    driver.configured(&configuration).unwrap_or(driver)
+    let chosen =
+        crate::connections::runtime::selected(&library.join(CONNECTIONS), &lead.agent.connections)
+            .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
+
+    crate::connections::runtime::for_driver(
+        &folder
+            .join(OURS)
+            .join(CONNECTIONS)
+            .join(lead.agent.id.to_string()),
+        vendor,
+        &chosen,
+        |name| std::env::var_os(name),
+    )
+    .map_err(|error| ChatError::CouldNotStart(error.to_string()))
 }
 
 /// Wolna funkcja, nie metoda, i powód jest twardy: `&Chat` nie jest `Send`, bo uchwyt sesji jest

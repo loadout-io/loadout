@@ -18,12 +18,12 @@
 //!
 //! # Czego ten plik świadomie NIE robi
 //!
-//! **Nie wypełnia [`super::DecodedEvent::tool`]** — jedzie tam `None`. Fakty o czynności buduje
-//! `stream::decode` z tej samej linii drutu, a `stream.rs` należy do T-05 i leży poza blokiem
-//! OWNS tego zadania. Skutek jest wąski i zgłoszony: transkrypt kroku Codeksa pokaże prozę
-//! agenta, ale nie wiersze `read`, `edit` ani `ran`. To jest ta sama awaria, którą u Claude'a
-//! zmierzono 2026-08-18, i domyka ją `decode_codex` w tamtym pliku, nie tutaj — druga tabela
-//! nazw z drutu po tej stronie byłaby drugą implementacją kuracji (niezmienniki 15 i 23).
+//! **Nie buduje faktów o czynności** — robi to `stream::decode_codex` z tej samej linii drutu
+//! i stamtąd jadą one do kuratora (T-97, 2026-08-24). Druga tabela nazw z drutu po tej stronie
+//! byłaby drugą implementacją kuracji (niezmienniki 15 i 23), więc ten plik zostaje tabelą
+//! „co znaczy które zdarzenie" i niczym więcej. Do 2026-08-24 nie robił tego **nikt** i skutek
+//! był dokładnie taki, jak zapowiadał ten akapit: transkrypt kroku Codeksa pokazywał prozę
+//! agenta i ani jednego wiersza `read`, `edit` czy `ran`.
 //!
 //! **Nie zapisuje surowego strumienia na dysk.** `logs/agent-<krok>.jsonl` czyta `store::rebuild`
 //! (T-06), więc bez tego zapisu skasowanie `loadout.db` zabiera zdarzenia kroków Codeksa
@@ -65,6 +65,7 @@ use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
     Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
 };
+use crate::engine::stream;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
 
@@ -1355,7 +1356,11 @@ impl CodexDriver {
 
         let mut command = Command::new(&self.binary);
         command.current_dir(&spec.cwd);
-        command.args(["app-server", "--listen", "stdio://"]);
+        // ZATWIERDZONE CONNECTIONS JADĄ TAKŻE TĘDY (2026-08-24, T-97). Do tego dnia ta droga nie
+        // doklejała `configuration.arguments` **wcale**, więc lider rozmawiający przez App Server
+        // nie dostawał ani jednego serwera — a przez `exec` dostawał. Ten sam agent odpowiadał
+        // inaczej zależnie od tego, którą drogą go zawołano, i nic tego nie mówiło.
+        command.args(app_server_argv(&self.configuration));
         let mut process = match supervisor::spawn(command, StdinPlan::Keep(String::new())) {
             Ok(process) => process,
             Err(error) => {
@@ -1679,6 +1684,36 @@ pub fn exec_argv(configuration: &DriverConfiguration, spec: &RunSpec) -> Vec<Str
     argv.extend(build_exec_argv(spec));
     argv
 }
+
+/// Pełne argv App Servera: opcje globalne z konfiguracji, potem linia podkomendy.
+///
+/// # Dlaczego opcje stoją PRZED podkomendą (2026-08-24, T-97)
+///
+/// Z tego samego powodu, z którego stoją przed `exec` (patrz [`EFFORT_KEY`]): `-c` jest opcją
+/// **globalną** `codex`, a nie opcją podkomendy. Postawiona za `app-server` jest czytana jako
+/// jego argument — czyli w najlepszym razie odrzucana, a w gorszym połykana w ciszy, i wtedy
+/// lider rozmawia bez ani jednego zatwierdzonego serwera, a nic tego nie mówi.
+///
+/// Wysiłek tędy nie jedzie i to nie jest przeoczenie: `ThreadStartParams` App Servera nie ma
+/// pola o wysiłku (zmierzone na codex-cli 0.148.0, powód w całości przy `thread/start`), a `-c`
+/// dla wysiłku na tej drodze byłoby zgadywaniem, którego to zadanie nie kupuje. Connections mają
+/// tu inną pozycję: bez nich zatwierdzone przez człowieka połączenie nie dojeżdża **wcale**.
+///
+/// Istnieje jako funkcja, a nie trzy linie w [`CodexDriver::start_app_conversation`], z tego
+/// samego powodu co [`exec_argv`]: kolejność jest tym, czego dotyczy kryterium, a policzona
+/// w miejscu startu procesu dałaby się sprawdzić wyłącznie przez uruchomienie prawdziwej binarki.
+#[must_use]
+pub fn app_server_argv(configuration: &DriverConfiguration) -> Vec<String> {
+    let mut argv = without_the_effort(&configuration.arguments);
+    argv.extend(APP_SERVER.iter().copied().map(str::to_owned));
+    argv
+}
+
+/// Linia podkomendy App Servera — dokładnie ta, którą ta droga składała przed T-97.
+///
+/// Stała, a nie trzy literały w miejscu użycia: to jest argv, którego „co do bajtu jak dziś"
+/// wymaga kryterium, więc ma jedno miejsce, w którym da się je przeczytać.
+const APP_SERVER: [&str; 3] = ["app-server", "--listen", "stdio://"];
 
 /// Pełne argv tury wznowienia — bez powtórzonego wysiłku, z zachowanymi Connections.
 #[must_use]
@@ -2439,11 +2474,20 @@ async fn pump(input: PumpInput) {
         // Bajtowa identyczność nie jest tu wymaganiem, bo tee na dysk należy do T-05 i ten
         // sterownik go nie ma (patrz nagłówek pliku).
         let line = String::from_utf8_lossy(&buffer);
-        let produced = decoder.push(&line);
+        // ZDARZENIA I FAKTY O CZYNNOŚCI Z JEDNEJ LINII I JEDNYM WYWOŁANIEM (2026-08-24, T-97).
+        // Do tego dnia stało tu `decoder.push(&line)`, a `tool` jechało dalej jako `None`:
+        // kurator nie miał z czego wybrać wariantu wiersza, więc transkrypt kroku Codeksa był
+        // samą prozą — ani jednego `Ran`, `Edited` czy `Searched`. Tabela nazw z drutu została
+        // po tamtej stronie (`stream::decode_codex`), bo druga jej kopia tutaj byłaby drugą
+        // implementacją kuracji (niezmienniki 15 i 23).
+        let produced = match stream::decode_codex(&mut decoder, &line) {
+            stream::Decoded::Events(events) => events,
+            stream::Decoded::Unrecognised => Vec::new(),
+        };
         remember_thread(&decoder, &mut seen, &threads);
 
-        for event in produced {
-            emit(event, began, &events, &mut told, evidence_target.as_ref()).await;
+        for decoded in produced {
+            emit(decoded, began, &events, &mut told, evidence_target.as_ref()).await;
         }
     }
 
@@ -2456,7 +2500,15 @@ async fn pump(input: PumpInput) {
         .clone();
     let stopped_by_a_person = cancelled.load(Ordering::SeqCst) == number;
     for event in decoder.end_of_stream(stopped_by_a_person, &said) {
-        emit(event, began, &events, &mut told, evidence_target.as_ref()).await;
+        // Koniec strumienia nie opisuje żadnej czynności, więc nie ma tu czego przypinać.
+        emit(
+            event.into(),
+            began,
+            &events,
+            &mut told,
+            evidence_target.as_ref(),
+        )
+        .await;
     }
 
     if decoder.dropped() > 0 {
@@ -2521,14 +2573,14 @@ fn remember_thread(
 /// Ta kolejność jest jedyną obroną przed wolnym konsumentem: kanał zdarzeń z pełnym buforem
 /// zatrzymuje wysyłkę, a wynik tury, który utknął za nim, wygląda jak zawieszony agent.
 async fn emit(
-    event: AgentEvent,
+    decoded: DecodedEvent,
     began: Instant,
     events: &mpsc::Sender<DecodedEvent>,
     told: &mut Option<oneshot::Sender<Outcome>>,
     evidence_target: Option<&EvidenceTarget>,
 ) {
-    let mut event = event;
-    if let AgentEvent::Finished(outcome) = &mut event {
+    let mut decoded = decoded;
+    if let AgentEvent::Finished(outcome) = &mut decoded.event {
         // Czas mierzony przez nas, bo vendor go nie podaje (powód przy starcie zegara w [`pump`]).
         // Warunek, a nie przypisanie wprost: gdyby `turn.completed` kiedyś zaczęło nieść własną
         // liczbę, dekoder ją tu położy, a to jest liczba VENDORA — nadpisanie jej naszą byłoby
@@ -2542,12 +2594,10 @@ async fn emit(
             mark_evidence_incomplete(evidence_target);
         }
     }
-    // Fakt o narzędziu jedzie tu jako `None` i to jest ZGŁOSZONA dziura, nie przeoczenie:
-    // buduje go `stream::decode` z tej samej linii drutu, a `stream.rs` należy do T-05 i leży
-    // poza blokiem OWNS tego zadania. Skutek jest wąski i nazwany: transkrypt kroku Codeksa
-    // pokaże prozę agenta, ale nie wiersze `read`, `edit` ani `ran` — dokładnie ta sama awaria,
+    // FAKT O CZYNNOŚCI JEDZIE DALEJ, nie ginie tutaj. Bez niego `Curator::tool_start` oddaje
+    // pustkę i wiersze `read`, `search`, `edit`, `ran` nie powstają nigdy — ta sama awaria,
     // którą u Claude'a zmierzono 2026-08-18 i naprawiono przez [`DecodedEvent`].
-    if events.send(event.into()).await.is_err() {
+    if events.send(decoded).await.is_err() {
         mark_evidence_incomplete(evidence_target);
     }
 }
@@ -2943,6 +2993,19 @@ impl AgentDriver for CodexDriver {
         let mut configured = self.clone();
         configured.evidence = Some(target);
         Some(Arc::new(configured))
+    }
+
+    /* NIE ZAWĘŻA, I TO JEST FAKT O TYM CLI, NIE NASZE USTĘPSTWO (2026-08-24, T-97).
+     *
+     * Codex nie ma odpowiednika `--tools`: to, po co agent może sięgnąć, wynika u niego wyłącznie
+     * z trybu piaskownicy — dokładnie tego, co składa [`build_exec_argv`] z `spec.policy`.
+     * `library::agents::CAPABILITIES` mówi o tym polu `Unavailable` od T-11, formularz agenta
+     * wygasza je przy tym vendorze, a `spec.tools` nie czyta w tym pliku ani jedna linia.
+     *
+     * Do tego dnia `commands::run` sądziło mimo to listę takiego agenta przeciw suficie Claude'a
+     * i potrafiło odmówić CAŁEGO biegu o wpis, którego ten adapter i tak nigdy nie zobaczy. */
+    fn narrows_its_tools(&self) -> bool {
+        false
     }
 }
 

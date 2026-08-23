@@ -105,6 +105,9 @@
     "turns": 2,
     "durationMs": 6200,
     "costUsd": 0.15,
+    "inputTokens": 4,
+    "outputTokens": 336,
+    "cachedTokens": 65403,
     "ended": "well"
   }
 ]

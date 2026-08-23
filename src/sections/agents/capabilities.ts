@@ -13,7 +13,7 @@
  * (`ts-rs` albo `specta` — T4 §7.2), obie kopie stoją obok siebie z tym samym datowanym
  * źródłem: T4 §6.3, zweryfikowane 2026-08-15 przez `--help` obu aplikacji.
  */
-import type { Vendor } from '../../state/agents';
+import type { FileAccess, Vendor } from '../../state/agents';
 
 export type Capability = 'native' | 'approximate' | 'unavailable';
 
@@ -55,4 +55,33 @@ const CAPABILITIES: Record<CapabilityField, Record<Vendor, Capability>> = {
 
 export function capability(field: CapabilityField, vendor: Vendor): Capability {
   return CAPABILITIES[field][vendor];
+}
+
+/* Na których pozycjach diala TA aplikacja naprawdę sięga do sieci.
+ *
+ * `null` znaczy „na każdej" i jest osobną wartością, nie listą trzech: lista wymieniająca
+ * wszystkie pozycje przestałaby być prawdziwa w dniu, w którym dojdzie czwarta, i nikt by tego
+ * nie zauważył — bo wyglądałaby dokładnie tak samo jak dziś.
+ *
+ * TABELA, A NIE `if vendor === 'codex'` W FORMULARZU, i to jest ten sam powód, dla którego stoi
+ * tu `CAPABILITIES` (niezmiennik 23). `reachesTheWeb` jest u obu `native` i to jest prawda: obaj
+ * umieją wyrazić dostęp do sieci. Ta tabela odpowiada na drugie, węższe pytanie — CZYM go
+ * wyrażają. Claude dwoma czasownikami, więc dostaje je na każdym dialu. Codex ustawieniem
+ * piaskownicy (`network_access`), a ta otwiera się dopiero przy `workspace-write`, czyli przy
+ * „ask first" i „work freely" [T4 §6.3; `engine/drivers/codex.rs`, `build_exec_argv`].
+ *
+ * Zmierzone 2026-08-23 w bibliotece właściciela: 18 agentów, ani jeden z siecią. Agent Codeksa
+ * na „look only" z włączonym przełącznikiem sieci nie ma sieci — i do tego dnia nic mu tego nie
+ * mówiło, więc z zewnątrz wyglądał jak agent, który nie chciał poszukać. */
+const WEB_NEEDS_THESE_DIALS: Record<Vendor, readonly FileAccess[] | null> = {
+  'claude-code': null,
+  codex: ['ask-first', 'work-freely'],
+};
+
+/**
+ * Czy ta aplikacja na tej pozycji diala do sieci NIE sięgnie, choćby przełącznik był włączony.
+ */
+export function webIsOutOfReach(vendor: Vendor, fileAccess: FileAccess): boolean {
+  const dials = WEB_NEEDS_THESE_DIALS[vendor];
+  return dials !== null && !dials.includes(fileAccess);
 }

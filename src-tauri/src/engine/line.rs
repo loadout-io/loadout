@@ -364,6 +364,24 @@ pub enum Line {
         /// Koszt tury. `None`, kiedy vendor go nie podał: zero jest liczbą i sumuje się
         /// w rachunek, którego nikt nie zamawiał.
         cost_usd: Option<f64>,
+        /// Świeże wejście tej tury — **przepisane z drutu**, nie policzone.
+        ///
+        /// 2026-08-24 (T-97) — TRZY POLA SĄ NOWE i powstały z kroku, który nie miał na ekranie
+        /// ani jednej cyfry. `Outcome::tokens` niesie te liczby od T-06, a wiersz zamykający je
+        /// wyrzucał: u Claude'a nie było tego widać, bo obok stał koszt, ale Codex kwoty nie
+        /// podaje (`cost_usd` zostaje `None` i ma zostać), więc jego kroki pokazywały pustkę
+        /// i liczyły się jako zero w każdym podsumowaniu.
+        ///
+        /// Zero, a nie `Option`, i to jest wybór za źródłem: [`Outcome::tokens`] jest
+        /// [`super::drivers::Tokens`] z trzema `u64`, więc `Option` tutaj wymyślałby rozróżnienie,
+        /// którego drut nie niesie. Pustkę na ekranie rozstrzyga suma: bieg, w którym wszystkie
+        /// trzy są zerem, nie ma czego pokazać i nie pokazuje nic.
+        input_tokens: u64,
+        /// Wyjście modelu w tej turze — przepisane, nie policzone.
+        output_tokens: u64,
+        /// Wejście przeczytane z cache'u. To ta liczba mówi, czy izolacja kontekstu działa
+        /// [T1 §3.3, korekta 4].
+        cached_tokens: u64,
         /// Jak się skończyło — **osobnym polem, nie do wyczytania z `text`**.
         ///
         /// 2026-08-22 — POLE JEST NOWE i powstało z wady widocznej na zrzucie właściciela:
@@ -848,11 +866,12 @@ impl Curator {
             //
             // - `Started` (`system/init`) to 9 929 bajtów i 42% strumienia [T7 §4.3]. Widać po
             //   nim dokładnie jedno: kropka agenta robi się aktywna (`ARCHITECTURE` §6).
-            // - `FileEdit` przychodzi od sterownika Claude **razem** z `ToolEnd` tego samego
-            //   wywołania, a wiersz `edit` powstał już na `ToolStart` (to on niesie pełną
-            //   ścieżkę). Drugi wiersz z tego samego faktu podwaja KAŻDĄ zmianę pliku
-            //   w widoku. Czytelnika ten wariant ma w T-06, w indeksie zmienionych plików.
-            AgentEvent::Started { .. } | AgentEvent::FileEdit { .. } => Vec::new(),
+            AgentEvent::Started { .. } => Vec::new(),
+            // `FileEdit` przychodzi od sterownika Claude **razem** z `ToolEnd` tego samego
+            // wywołania, a wiersz `edit` powstał już na `ToolStart` (to on niesie pełną ścieżkę).
+            // Drugi wiersz z tego samego faktu podwajałby KAŻDĄ zmianę pliku w widoku.
+            // Czytelnika ten wariant ma w T-06, w indeksie zmienionych plików.
+            AgentEvent::FileEdit { path } => self.file_edit(seen, path),
             AgentEvent::Said { text } => {
                 let line = Line::Note {
                     agent: seen.agent.to_owned(),
@@ -957,6 +976,38 @@ impl Curator {
         }
     }
 
+    /// Zmiana pliku ogłoszona **bez** zapowiedzi czynności — czyli jedyny kanał, jaki ma Codex.
+    ///
+    /// # 2026-08-24 (T-97) — DLACZEGO TA GAŁĄŹ ISTNIEJE, SKORO OBOK STOI „ŚWIADOMIE NIEBĘDĄCE
+    /// WIERSZEM"
+    ///
+    /// Bo to są dwa różne strumienie mówiące tym samym zdarzeniem dwie różne rzeczy, a odróżnia
+    /// je **obecność faktu o czynności**, nie nazwa vendora (niezmiennik 23 — nazwa vendora
+    /// w kuratorze byłaby trzecią kopią polityki).
+    ///
+    /// * **Claude** wypuszcza `FileEdit` obok `ToolEnd` tego samego wywołania, a wiersz `edit`
+    ///   powstał już na `ToolStart`. `stream::decode` przypina [`Tool`] wyłącznie do
+    ///   `ToolStart`/`ToolEnd`, więc tutaj `seen.tool` jest `None` i wiersza nie ma — dokładnie
+    ///   jak przed tą zmianą, bo drugi wiersz podwajałby każdą zmianę pliku.
+    /// * **Codex** nie ogłasza zmiany pliku jako czynności w ogóle: `item.completed` typu
+    ///   `file_change` daje po jednym `FileEdit` na plik i **żadnego** `ToolStart`. Do tego dnia
+    ///   kończyło się to tutaj ciszą, więc krok, który przepisał trzy pliki, wyglądał jak krok,
+    ///   który tylko o nich opowiedział.
+    ///
+    /// Grupa jedzie po ŚCIEŻCE jako identyfikatorze, bo drugiej strony tej czynności nie ma —
+    /// `tool_end` nigdy po nią nie przyjdzie, a dwie zmiany tego samego pliku w jednym oknie
+    /// mają się zwinąć w jeden wiersz z licznikiem, tak samo jak u sąsiada.
+    fn file_edit(&mut self, seen: Seen<'_>, path: &std::path::Path) -> Vec<Line> {
+        let Some(Tool::Started {
+            action: Action::Edit,
+            target,
+        }) = seen.tool
+        else {
+            return Vec::new();
+        };
+        self.coalesce(seen, LineKind::Edit, &path.display().to_string(), target)
+    }
+
     /// Wynik czynności. **Nigdy nie tworzy własnego wiersza** [T2 §9.3] — domyka ten, który
     /// już stoi, albo dokłada do niego fakty.
     fn tool_end(&mut self, seen: Seen<'_>, id: &str, ok: bool, summary: &str) -> Vec<Line> {
@@ -1005,6 +1056,26 @@ impl Curator {
                 if group.kind == LineKind::Search {
                     group.matches += matches;
                     group.detail_id = group.detail_id.or(minted);
+                    /* TEMAT DOKŁADANY Z LINII, KTÓRA GO ZNA (2026-08-24, T-97).
+                     *
+                     * Claude nazywa szukanie w chwili startu i ta gałąź go nie dotyczy — jego
+                     * temat nigdy nie jest pusty, bo `action_of` bez niego nie oddaje faktu.
+                     * Codex nazywa je **dopiero na końcu**: `item.started` typu `web_search`
+                     * niesie `query: ""` (zmierzone na `codex-stream-live.jsonl`). Bez tych
+                     * czterech linii jego wiersz brzmiałby „Searched" i nie mówił, czego —
+                     * czyli byłby wierszem, po którym trzeba otworzyć surowy strumień.
+                     *
+                     * Uzupełniamy WYŁĄCZNIE puste miejsce: nadpisanie tematu, który już stoi,
+                     * zamieniłoby wynik szukania w jego treść. */
+                    if let Some(slot) = group
+                        .ids
+                        .iter()
+                        .position(|open| open == id)
+                        .and_then(|at| group.targets.get_mut(at))
+                        && slot.is_empty()
+                    {
+                        *slot = one_line(output);
+                    }
                 }
             }
             return Vec::new();
@@ -1303,6 +1374,12 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
         turns,
         duration_ms,
         cost_usd: outcome.cost_usd,
+        // PRZEPISANE, NIE POLICZONE — tak samo jak `turns` i `duration_ms` obok. Vendor bez
+        // cennika (Codex) podaje wyłącznie te trzy liczby, więc to one są jedynym, co ten krok
+        // ma do powiedzenia o swoim rozmiarze.
+        input_tokens: outcome.tokens.input,
+        output_tokens: outcome.tokens.output,
+        cached_tokens: outcome.tokens.cached,
         ended,
     }
 }
