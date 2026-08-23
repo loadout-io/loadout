@@ -80,6 +80,15 @@ const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
 
 /**
+ * Co stoi w kafelku umiejętności, której `SKILL.md` nie ma pola `description`.
+ *
+ * ZDANIE, NIE PUSTKA. Pusty prostokąt w miejscu opisu czyta się jak awaria wczytywania —
+ * człowiek wraca na tę sekcję i czeka, aż „się doładuje". Zdanie mówi, że to nie my zgubiliśmy
+ * treść, tylko że jej tam nie ma, i mówi, gdzie ją dopisać.
+ */
+const NO_SUMMARY = 'This one does not say what it is for. Its SKILL.md has no description.';
+
+/**
  * Gdzie to wyląduje — zdanie czytane PRZED naciśnięciem „Add this skill", nie po.
  *
  * Ta sekcja jest jedynym miejscem w Loadoucie, które pisze poza własną bibliotekę: cel to
@@ -573,39 +582,55 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             )}
 
             {/* Dwie kolumny, jak w makiecie (`docs/mockup/index.html`, `.grid.two`).
-                Opisu w kafelku NIE MA, bo `InstalledWire` nie niesie ani `summary`, ani
-                `description` — zdanie dopisane tutaj byłoby zmyślone (niezmiennik 17).
-                Zgłoszone człowiekowi razem z polem per katalog. */}
+                2026-08-23 — OPIS JEST. Stało tu „opisu w kafelku NIE MA, bo `InstalledWire` nie
+                niesie ani `summary`, ani `description`… Zgłoszone człowiekowi" — i to była
+                prawda: siatka gołych nazw katalogów, po której nie dało się poznać, co
+                którakolwiek z nich robi. `list_skills` czyta teraz `description` z `SKILL.md`
+                jednym czytnikiem front-mattera, a kafelek składa się jak kafelek agenta:
+                nazwa i znacznik, zdanie o tym, po co to jest, akcja pod kreską. */}
             {state.installed.length === 0 ? null : (
               <ul className="mx-auto grid max-w-160 grid-cols-2 gap-3">
                 {state.installed.map((skill) => (
                   <li
                     key={skill.name}
                     data-skill={skill.name}
-                    className="flex flex-col gap-3 rounded-md border border-line bg-panel p-3"
+                    className="flex flex-col gap-2 rounded-md border border-line bg-panel p-3"
                   >
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-heading text-ink">{skill.name}</h2>
+                    <div className="flex items-start gap-2">
+                      {/* `text-subhead`, nie `text-heading`: ten stopień należy do nagłówka
+                          panelu, a to jest tytuł kafelka — ta sama drabinka, co w Agents
+                          i w Workflows (`src/styles/theme.css`). */}
+                      <h2 className="min-w-0 text-subhead break-words text-ink">{skill.name}</h2>
                       {/* Znacznik pochodzenia jest TRWAŁY i przeżywa instalację [T5 §5.4]:
                           gasnący po zapisie mówiłby o umiejętności z sieci to samo, co
                           o napisanej ręcznie. */}
                       {skill.fromTheInternet ? (
-                        <span className={`ml-auto ${CHIP_QUIET}`}>From the internet</span>
+                        <span className={`ml-auto shrink-0 ${CHIP_QUIET}`}>From the internet</span>
                       ) : null}
                     </div>
+
+                    {/* PO CO TO JEST — drugie piętro kafelka, dokładnie tam, gdzie stoi
+                        w kafelku agenta i w makiecie. Umiejętność, której plik tego nie mówi,
+                        dostaje zdanie o tym, że nie mówi: pusty prostokąt czyta się jak awaria
+                        wczytywania, a nie jak brak opisu (niezmiennik 17 od drugiej strony). */}
+                    <p className="line-clamp-2 text-note text-muted">
+                      {skill.summary === '' ? NO_SUMMARY : skill.summary}
+                    </p>
                     {/* Jedyna droga powrotna z katalogów narzędzi agentowych. Magazyn po
                         udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz znika dopiero
                         wtedy, gdy pliku naprawdę już tam nie ma (`src/state/skills.ts`). */}
-                    <button
-                      type="button"
-                      data-remove={skill.name}
-                      className={`mr-auto ${DANGER}`}
-                      onClick={() => {
-                        void store.getState().remove(skill.name);
-                      }}
-                    >
-                      Remove
-                    </button>
+                    <div className="mt-auto flex items-center border-t border-line pt-2">
+                      <button
+                        type="button"
+                        data-remove={skill.name}
+                        className={`mr-auto ${DANGER}`}
+                        onClick={() => {
+                          void store.getState().remove(skill.name);
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>

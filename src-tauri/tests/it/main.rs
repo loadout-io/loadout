@@ -28,6 +28,7 @@
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
+mod a_skill_list_says_what_each_one_is_for;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
 mod agent_tools_reach_the_argv;

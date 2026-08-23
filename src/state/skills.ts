@@ -157,6 +157,14 @@ export interface InstalledSkill {
    * czyli nic.
    */
   fromTheInternet: boolean;
+  /**
+   * Po co ta umiejętność jest — pole `description` z jej `SKILL.md`, zwinięte do jednego wiersza.
+   *
+   * Pusty napis znaczy „ten plik nie mówi, po co jest", i to jest fakt o pliku, a nie brak
+   * odpowiedzi. Kafelek pokazuje go zdaniem, nie pustką: pusty prostokąt czyta się jak awaria
+   * wczytywania, a nie jak umiejętność bez opisu.
+   */
+  summary: string;
 }
 
 export interface SkillsState {
@@ -447,7 +455,14 @@ export const useSkills = create<SkillsState>()((set, get) => ({
        * zgadzać co do znaku (niezmiennik 13). */
       installed: [
         ...installed.filter((one) => one.name !== pending.name),
-        { name: pending.name, fromTheInternet: pending.fromTheInternet },
+        /* Opis bierzemy z tego, co właśnie zainstalowaliśmy: `Import` już go niesie, a wiersz
+         * wstawiony bez niego pokazywałby przez chwilę „ta umiejętność nie mówi, po co jest"
+         * o umiejętności, której opis człowiek przed sekundą czytał na karcie przeglądu. */
+        {
+          name: pending.name,
+          fromTheInternet: pending.fromTheInternet,
+          summary: pending.summary,
+        },
       ],
     });
   },

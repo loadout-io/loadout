@@ -112,8 +112,8 @@ const ON_DISK_NOTES: readonly Note[] = [
 ];
 
 const ON_DISK_SKILLS: readonly InstalledSkill[] = [
-  { name: 'pdf', fromTheInternet: true },
-  { name: 'release-notes', fromTheInternet: false },
+  { name: 'pdf', fromTheInternet: true, summary: 'Reads a PDF and pulls out its text' },
+  { name: 'release-notes', fromTheInternet: false, summary: 'Writes release notes from commits' },
 ];
 
 /** Świeży magazyn, ten sam kształt, w którym okno startuje. */

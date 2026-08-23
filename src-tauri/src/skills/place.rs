@@ -457,7 +457,13 @@ pub fn validate_strict(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>
 ///
 /// Puste i samo z białych znaków znaczy „nie ma go": pole `description:` bez treści jest tym
 /// samym brakiem, co pole niewpisane wcale, i naprawia się je tym samym ruchem.
-fn field<'a>(doc: &'a SkillDoc, key: &str) -> Option<&'a str> {
+///
+/// PUBLICZNA od 2026-08-23, żeby lista umiejętności miała czym opisać kafelek. Drugi czytnik
+/// front-mattera napisany po stronie `commands::skills` byłby trzecią kopią tej samej reguły
+/// (`read_doc` już raz ją zdublował) — a kopia, która nie wie o cudzysłowach, pokazywałaby
+/// człowiekowi opis w apostrofach.
+#[must_use]
+pub fn field<'a>(doc: &'a SkillDoc, key: &str) -> Option<&'a str> {
     doc.fields
         .iter()
         .find(|(name, _)| name == key)

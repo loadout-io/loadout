@@ -56,7 +56,11 @@ const PENDING: Import = {
   fromTheInternet: true,
 };
 
-const PLACED: InstalledSkill = { name: 'exact-diff', fromTheInternet: true };
+const PLACED: InstalledSkill = {
+  name: 'exact-diff',
+  fromTheInternet: true,
+  summary: 'Shows the change as it really is',
+};
 
 /** Kazdy element z lista klas, razem z nazwa swojego elementu. */
 function elements(markup: string): readonly (readonly [string, string])[] {

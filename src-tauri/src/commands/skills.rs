@@ -269,6 +269,17 @@ pub struct InstalledWire {
     pub name: String,
     /// Czy przyszła z sieci. Znacznik jest trwały i przeżywa instalację [T5 §5.4].
     pub from_the_internet: bool,
+    /// Po co ta umiejętność jest — pole `description` z jej `SKILL.md`, w jednym wierszu.
+    ///
+    /// 2026-08-23 — DO DZIŚ KAFELEK NIE MIAŁ CO POWIEDZIEĆ. Lista niosła nazwę katalogu i nic
+    /// poza tym, więc sekcja Umiejętności była siatką gołych napisów: żeby dowiedzieć się, co
+    /// dana umiejętność robi, trzeba było otworzyć plik poza aplikacją. Makieta ma w kafelku
+    /// zdanie opisu od początku (`docs/mockup/index.html`, panel `skills`) i nie dało się go
+    /// zbudować, bo dane kończyły się na tej granicy.
+    ///
+    /// PUSTY NAPIS, NIE `Option`: „ta umiejętność nie mówi, po co jest" jest faktem o pliku,
+    /// a nie brakiem odpowiedzi — i kafelek ma go pokazać tak samo uczciwie jak każdy inny.
+    pub summary: String,
 }
 
 /// Co leży w katalogach agentów — odczytane z DYSKU, bez ani jednego bajtu pamięci procesu.
@@ -321,12 +332,37 @@ pub struct InstalledWire {
 /// i niewidoczna na liście jest umiejętnością, której człowiek nie ma jak zabrać — a ta sekcja
 /// pisze do żywej konfiguracji jego narzędzi agentowych. `None` znaczy „nie ma otwartego
 /// projektu" i wtedy widać wyłącznie korzeń globalny.
+/// Zdanie „po co to jest" z `SKILL.md` tej umiejętności — albo pusty napis.
+///
+/// Czyta JEDNYM czytnikiem front-mattera (`place::read_doc` + `place::field`), a nie własnym
+/// `split(':')`: pole `description: "a: b"` rozjeżdża każdy ręcznie napisany rozbiór, a trzecia
+/// kopia tej reguły byłaby tą, która o cudzysłowach nie wie (niezmiennik 13).
+///
+/// Nieczytelny plik daje pusty napis, nie odmowę: lista, która pada przez jeden uszkodzony
+/// `SKILL.md`, zabiera człowiekowi także te umiejętności, z którymi wszystko jest w porządku
+/// (niezmiennik 5).
+///
+/// Białe znaki zwijane do pojedynczych spacji: `description` bywa w YAML-u złamany na dwa
+/// wiersze, a kafelek ma jeden.
+fn summary_of(dir: Option<&PathBuf>) -> String {
+    let Some(dir) = dir else { return String::new() };
+    let Ok(text) = std::fs::read_to_string(dir.join(SKILL_FILE)) else {
+        return String::new();
+    };
+    let doc = crate::skills::place::read_doc(&text);
+    crate::skills::place::field(&doc, "description")
+        .map(|one| one.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+}
+
 pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<InstalledWire>, Error> {
     let roots = roots_for(library, project);
     // Zbiór, nie wektor: ta sama umiejętność stoi w OBU katalogach docelowych, bo instalacja
     // pisze w oba. Lista z powtórzeniem pokazałaby człowiekowi dwa wiersze o jednym pliku
     // i policzyłaby go dwa razy w liczniku nad sekcją.
     let mut names: BTreeSet<String> = BTreeSet::new();
+    // Gdzie leży plik każdej z nich — wyłącznie po to, żeby przeczytać z niego opis.
+    let mut where_found: BTreeMap<String, PathBuf> = BTreeMap::new();
 
     // OBA KORZENIE, KIEDY PROJEKT JEST OTWARTY, i to jest połowa tej funkcji. Lista odpowiada
     // na pytanie „co widzi agent pracujący TUTAJ", a agent zagląda w oba drzewa — więc korzeń
@@ -366,7 +402,15 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
             // leżą pliki vendorów i `.DS_Store`, a wiersz „umiejętność .DS_Store" jest
             // dokładnie tym rodzajem śmiecia, przez który człowiek przestaje czytać listę.
             if entry.path().join(SKILL_FILE).is_file() {
-                names.insert(entry.file_name().to_string_lossy().into_owned());
+                let name = entry.file_name().to_string_lossy().into_owned();
+                /* Pierwszy katalog wygrywa i to jest celowe: ta sama umiejętność stoi w obu
+                 * drzewach vendorów, bo instalacja pisze w oba z JEDNEGO źródła — więc opis
+                 * jest ten sam, a odczyt z każdego po kolei byłby N otwarciami tego samego
+                 * zdania. */
+                where_found
+                    .entry(name.clone())
+                    .or_insert_with(|| entry.path());
+                names.insert(name);
             }
         }
     }
@@ -390,6 +434,7 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
                     .join(SKILL_FILE)
                     .is_file()
             }),
+            summary: summary_of(where_found.get(&name)),
             name,
         })
         .collect())

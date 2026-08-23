@@ -209,15 +209,15 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
   it('asks Rust by name and then rereads the folders instead of trusting itself', async () => {
     useSkills.setState({
       installed: [
-        { name: 'pdf', fromTheInternet: true },
-        { name: 'rust-tauri', fromTheInternet: false },
+        { name: 'pdf', fromTheInternet: true, summary: 'Reads a PDF' },
+        { name: 'rust-tauri', fromTheInternet: false, summary: '' },
       ],
     });
     /* Dysk mówi, że `pdf` DALEJ tam leży — bo instalacja pisze do dwóch katalogów i sprzątnięty
      * został jeden. Magazyn, który filtruje lokalnie, pokaże tu jeden wiersz i skłamie. */
     listSkills.mockResolvedValue([
-      { name: 'pdf', fromTheInternet: true },
-      { name: 'rust-tauri', fromTheInternet: false },
+      { name: 'pdf', fromTheInternet: true, summary: 'Reads a PDF' },
+      { name: 'rust-tauri', fromTheInternet: false, summary: '' },
     ]);
 
     await useSkills.getState().remove('pdf');
@@ -243,7 +243,9 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
   });
 
   it('drops the row when the folders really no longer hold it', async () => {
-    useSkills.setState({ installed: [{ name: 'pdf', fromTheInternet: true }] });
+    useSkills.setState({
+      installed: [{ name: 'pdf', fromTheInternet: true, summary: 'Reads a PDF' }],
+    });
     listSkills.mockResolvedValue([]);
 
     await useSkills.getState().remove('pdf');
@@ -257,7 +259,9 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
   });
 
   it('says what Rust said when it refuses, and leaves the list where it was', async () => {
-    useSkills.setState({ installed: [{ name: 'pdf', fromTheInternet: true }] });
+    useSkills.setState({
+      installed: [{ name: 'pdf', fromTheInternet: true, summary: 'Reads a PDF' }],
+    });
     /* Tauri odrzuca NAPISEM, nie `Error` (`src/ipc/why.ts`) — i to jest kształt, na którym
      * siedem miejsc w tym repo miało warunek zawsze fałszywy. */
     removeFromDisk.mockRejectedValue('pdf is not in any of the folders Loadout writes to.');

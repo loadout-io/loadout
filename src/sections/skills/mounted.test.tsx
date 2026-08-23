@@ -39,7 +39,11 @@ import SkillsScreen from './index';
 const NO_SKILLS_YET = 'No skills yet.';
 
 /** Umiejętność, która już leży w katalogach vendorów. */
-const PLACED = { name: 'pdf', fromTheInternet: false };
+const PLACED = {
+  name: 'pdf',
+  fromTheInternet: false,
+  summary: 'Reads a PDF and pulls out its text',
+};
 
 /** Umiejętność wciągnięta z linku, z jedną linią, której człowiek jeszcze nie przeczytał. */
 const WAITING: Import = {
@@ -163,7 +167,9 @@ describe('the skills section mounts for real, tells the truth and has a way back
   });
 
   it('gives every skill on disk its own way back off this machine', () => {
-    useSkills.setState({ installed: [PLACED, { name: 'rust-tauri', fromTheInternet: false }] });
+    useSkills.setState({
+      installed: [PLACED, { name: 'rust-tauri', fromTheInternet: false, summary: '' }],
+    });
 
     const markup = renderToStaticMarkup(<SkillsScreen store={useSkills} />);
 
