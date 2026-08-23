@@ -18,7 +18,9 @@
  * i wybór wiersza muszą pytać o TEN zakres, z którego lista powstała, także wtedy, gdy człowiek
  * przełączył boczne menu, zanim kliknął.
  */
+import { why } from '../../../ipc/why';
 import type { PastRun, PastRunRow } from '../io';
+import { forgetRunBranches } from '../io';
 
 /** Co widać: nic, lista albo jeden otwarty bieg. */
 export interface PastState {
@@ -97,6 +99,45 @@ export function subscribeToPast(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Co powiedzieć, kiedy Rust nie dał rady zdjąć gałęzi tego biegu. */
+export const COULD_NOT_FORGET = 'Loadout could not take the branches of this run away.';
+
+/**
+ * „Forget the branches" — zdejmuje gałęzie, które otwarty bieg zostawił w repozytorium.
+ *
+ * TUTAJ, A NIE W KOMPONENCIE, i to jest ten sam powód, dla którego tutaj mieszka cały ten
+ * magazyn: to repo nie ma jsdom, więc `onClick` nie odpala się w żadnym kryterium. Polityka
+ * zamknięta w handlerze byłaby kodem, którego nic nie sądzi — czyli rodziną, z której biorą się
+ * kontrolki bez skutku (niezmiennik 16). Kryterium woła dokładnie to, co woła przycisk.
+ *
+ * ZAKRES Z MAGAZYNU, nie z `activeWorkspace()`: ten bieg przyszedł z konkretnego folderu, więc
+ * pytanie o jego gałęzie idzie do tego samego folderu, także wtedy, gdy człowiek przełączył
+ * boczne menu, zanim nacisnął.
+ *
+ * LISTA PUSTOSZEJE DOPIERO PO ODPOWIEDZI. Wyczyszczenie jej od razu pokazywałoby „nie ma już
+ * gałęzi" nad repozytorium, w którym wszystkie stoją — a odmowa przychodzi właśnie wtedy, gdy
+ * któraś jest w tej chwili otwarta do pracy.
+ *
+ * Odmowa zostawia listę TAKĄ, JAKA BYŁA. Rust odmawia w całości, więc nie ma stanu pośredniego
+ * do pokazania; gdyby git odmówił po drodze, panel zgadza się znowu po ponownym otwarciu biegu,
+ * bo prawdą są pliki (niezmiennik 4).
+ */
+export async function forgetTheBranches(): Promise<void> {
+  const run = now.opened;
+  if (run === null) return;
+  try {
+    await forgetRunBranches(now.folder, run.folder);
+  } catch (error: unknown) {
+    sayInHistory(why(error, COULD_NOT_FORGET));
+    return;
+  }
+  // Ten sam bieg, co przed pytaniem: człowiek mógł w międzyczasie wrócić do listy i otworzyć
+  // inny, a wtedy odpowiedź o gałęziach tamtego biegu nie ma prawa przepisać tego, co widać.
+  if (now.opened !== run) return;
+  now = { ...now, opened: { ...run, branches: [] }, said: null };
+  publish();
 }
 
 function publish(): void {

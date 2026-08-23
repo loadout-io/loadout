@@ -225,7 +225,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     // którego prowadzi WYŁĄCZNIE powrót, w rundzie pierwszej dalej nie ma nikogo przed sobą —
     // a to jest dokładnie ta runda, która ruszy jako pierwsza.
     nothing_before_it(&steps, &forward, &mut notes);
-    one_folder_two_steps(&steps, &arrows, when, &mut notes);
+    one_folder_two_steps(&steps, &arrows, &forward, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
 }
@@ -884,6 +884,7 @@ fn nothing_before_it(steps: &[Facts<'_>], forward: &[(usize, usize)], notes: &mu
 fn one_folder_two_steps(
     steps: &[Facts<'_>],
     arrows: &[(usize, usize)],
+    forward: &[(usize, usize)],
     when: When,
     notes: &mut Vec<Note>,
 ) {
@@ -906,12 +907,18 @@ fn one_folder_two_steps(
     }
 
     let reach = reachable(steps.len(), arrows);
+    // Gdzie każdy krok pracuje, policzone RAZ. Odpowiedź dla `same-copy` wymaga obchodu grafu
+    // wstecz, a pytanie o nią stoi w pętli po parach — czyli w miejscu, w którym liczy się je
+    // kwadratowo razy.
+    let spots: Vec<Option<Spot<'_>>> = (0..steps.len())
+        .map(|index| spot_of(index, steps, forward))
+        .collect();
     for (first, one) in steps.iter().enumerate() {
         for (second, other) in steps.iter().enumerate().skip(first + 1) {
             if reach[first][second] || reach[second][first] {
                 continue;
             }
-            let (Some(mine), Some(theirs)) = (one.folder, other.folder) else {
+            let (Some(mine), Some(theirs)) = (spots[first], spots[second]) else {
                 continue;
             };
             if !the_same_files(mine, theirs) {
@@ -922,7 +929,7 @@ fn one_folder_two_steps(
                  copy.",
                 one.name,
                 other.name,
-                place(mine, theirs)
+                place(mine, theirs, steps)
             );
             // Zdanie jest to samo w obu wagach: człowiek ma przeczytać przy zapisie dokładnie
             // to, co zatrzyma mu Start, a nie dwa opisy jednej kolizji.
@@ -934,44 +941,145 @@ fn one_folder_two_steps(
     }
 }
 
-/// Czy dwa foldery to te same pliki.
-fn the_same_files(one: &Folder, other: &Folder) -> bool {
+/// Gdzie krok NAPRAWDĘ pracuje — po rozwiązaniu „to samo drzewo, co krok przede mną".
+///
+/// 2026-08-23 (T-95) — TEN TYP JEST CAŁĄ NAPRAWĄ. Do tego dnia reguła o kolizji porównywała
+/// [`Folder`], a `Folder::SameCopy` folderu nie nazywa: „to samo drzewo, co krok przede mną"
+/// jest zdaniem o GRAFIE. Para dwóch takich kroków wpadała więc do reguły i wychodziła z niej
+/// bez uwagi — a to jest dokładnie kolizja z niezmiennika 12, tylko widoczna o jeden obchód
+/// dalej: dwa kroki po jednej `fresh-copy`, bez strzałki między sobą, dostają JEDEN katalog
+/// i piszą po sobie nawzajem, oba kończąc się sukcesem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spot<'a> {
+    /// Folder projektu, w którym biegnie workflow.
+    Project,
+    /// Folder wskazany ręcznie.
+    Picked(&'a str),
+    /// Kopia, którą bieg zakłada dla kroku o tej pozycji. Dwa kroki są w niej razem wtedy
+    /// i tylko wtedy, gdy schodzą do TEGO SAMEGO kroku, który ją nazwał.
+    OwnCopy(usize),
+}
+
+/// Folder, który krok nazywa SAM — albo `None`, kiedy nie nazywa go wcale.
+///
+/// `None` dla `same-copy` i to jest ta sama odpowiedź, którą daje `commands::run::workspace`:
+/// tutaj wchodzi jeden krok, a odpowiedź wymaga strzałek.
+fn named_spot(folder: &Folder, index: usize) -> Option<Spot<'_>> {
+    match folder {
+        Folder::Project => Some(Spot::Project),
+        Folder::Pick { path } => Some(Spot::Picked(path)),
+        Folder::FreshCopy => Some(Spot::OwnCopy(index)),
+        Folder::SameCopy => None,
+    }
+}
+
+/// Gdzie pracuje krok o tej pozycji — z odpowiedzią także dla tego, który sam jej nie zna.
+///
+/// TĄ SAMĄ REGUŁĄ, CO BIEG (`commands::run::trees_before`), i to jest jedyny powód, dla którego
+/// wolno ją tu napisać drugi raz: druga reguła na to samo pytanie rozjechałaby się przy pierwszej
+/// poprawce jednej z nich, a rozjazd znaczy walidator mówiący co innego niż bieg, który za
+/// sekundę ruszy.
+///
+/// `None`, kiedy odpowiedzi nie ma: kafelek kontrolny nie pracuje w żadnym folderze, a krok
+/// „to samo drzewo", przed którym nie stoi nikt albo stoją poprzednicy z RÓŻNYCH drzew, nie ma
+/// z czego jej wyliczyć. Obie te sytuacje mają już własne odmowy ([`nothing_before_it`]
+/// i `commands::run::where_it_works`), więc tutaj są milczeniem, a nie zgadywaniem.
+fn spot_of<'a>(index: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]) -> Option<Spot<'a>> {
+    let folder = steps.get(index)?.folder?;
+    if let Some(named) = named_spot(folder, index) {
+        return Some(named);
+    }
+    let mut before = spots_before(index, steps, forward);
+    (before.len() == 1).then(|| before.remove(0))
+}
+
+/// W jakich miejscach pracują kroki PRZED tym — bez powtórzeń.
+///
+/// Obchód idzie po strzałkach wstecz, ze zbiorem odwiedzonych: fan-in bywa diamentem, więc bez
+/// niego ten sam krok liczyłby się dwa razy i zwykłe rozwidlenie wyglądałoby jak dwa różne
+/// miejsca. Iteracyjny, nie rekurencyjny — łańcuch dwudziestu kroków nie ma prawa przepełnić
+/// stosu (ta sama zasada, co przy [`reachable`]).
+///
+/// Mija po drodze dwa rodzaje kroków, które miejsca nie wyznaczają: kafelek kontrolny (nie
+/// dotyka plików) i kolejny krok „to samo drzewo" (jego odpowiedź jest tym samym pytaniem,
+/// zadanym dalej). Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
+///
+/// STRZAŁKI BEZ POWROTÓW, bo powrót wchodzi do kroku dopiero w rundzie drugiej
+/// (`workflow::unroll`) — ta sama lista, na której [`nothing_before_it`] rozstrzyga, czy przed
+/// krokiem ktokolwiek stoi. Dwie różne listy dawałyby krok, przed którym „nikogo nie ma"
+/// i który jednocześnie ma z czego wyliczyć swoje drzewo.
+fn spots_before<'a>(node: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]) -> Vec<Spot<'a>> {
+    let mut seen = vec![false; steps.len()];
+    // Ten krok od razu jako odwiedzony: strzałka do siebie samego jest kształtem, którego bieg
+    // odmawia, ale obchód nie ma prawa się o nią zapętlić, gdyby jednak w pliku stała.
+    if let Some(mine) = seen.get_mut(node) {
+        *mine = true;
+    }
+    let mut stack = vec![node];
+    let mut found: Vec<Spot<'a>> = Vec::new();
+    while let Some(at) = stack.pop() {
+        for &(from, to) in forward {
+            if to != at {
+                continue;
+            }
+            let Some(first_time) = seen.get_mut(from).filter(|been| !**been) else {
+                continue;
+            };
+            *first_time = true;
+            let Some(folder) = steps.get(from).and_then(|step| step.folder) else {
+                stack.push(from);
+                continue;
+            };
+            match named_spot(folder, from) {
+                Some(spot) if !found.contains(&spot) => found.push(spot),
+                Some(_) => {}
+                // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
+                None => stack.push(from),
+            }
+        }
+    }
+    found
+}
+
+/// Czy dwa miejsca to te same pliki.
+fn the_same_files(one: Spot<'_>, other: Spot<'_>) -> bool {
     match (one, other) {
-        (Folder::Project, Folder::Project) => true,
-        (Folder::Pick { path: mine }, Folder::Pick { path: theirs }) => {
+        (Spot::Project, Spot::Project) => true,
+        (Spot::Picked(mine), Spot::Picked(theirs)) => {
             // Po SEGMENTACH, nie po znakach: `/Users/x/api2` zaczyna się tak samo jak
             // `/Users/x/api`, a jest zupełnie innym folderem. `Path::starts_with` jest jedyną
             // wersją tego porównania, która o tym wie — `str::starts_with` wysyła użytkownika
             // do naprawiania czegoś, co nie jest zepsute.
             Path::new(mine).starts_with(theirs) || Path::new(theirs).starts_with(mine)
         }
-        // `fresh-copy` nie koliduje z niczym — to jest cała obietnica izolacji z ARCHITECTURE
-        // §2 punkt 4. `project` kontra `pick` też nie: 2026-08-16 — w pliku workflow nie ma
-        // ścieżki projektu, bo projekt wybiera się przy uruchomieniu, więc porównanie ich tutaj
-        // byłoby zgadywaniem. Tę parę widzi dopiero bieg (T-15), który zna oba katalogi.
-        //
-        // 2026-08-20 (T-56) — `same-copy` WPADA TU BEZ ODPOWIEDZI I TO JEST PRZYZNANE WPROST,
-        // a nie przeoczone. Dwa kroki „to samo drzewo" schodzące z JEDNEGO poprzednika pracują
-        // w jednym katalogu i mogą biec równocześnie: to jest kolizja z niezmiennika 12, której
-        // ta funkcja nie zgłasza. Dwa schodzące z RÓŻNYCH drzew kolizją nie są. Rozróżnia je
-        // wyłącznie graf, a tutaj wchodzi para folderów i nic więcej — więc `true` odmawiałoby
-        // zwykłemu rozwidleniu, a `false` jest brakiem odpowiedzi, nie odpowiedzią „nie koliduje".
-        // Żadne kryterium tego nie sądzi (TASK.md, „Świadomie poza zakresem"): to jest luka
-        // w wyroczni, zgłoszona właścicielowi, a nie defekt do cichego załatania regułą, której
-        // nikt nie mierzy.
+        // Dwie RÓŻNE własne kopie nie kolidują z niczym — to jest cała obietnica izolacji
+        // z ARCHITECTURE §2 punkt 4. Jedna i ta sama kopia koliduje, i to jest jedyna rzecz,
+        // która się tu 2026-08-23 zmieniła.
+        (Spot::OwnCopy(mine), Spot::OwnCopy(theirs)) => mine == theirs,
+        // `project` kontra `pick` nie koliduje: 2026-08-16 — w pliku workflow nie ma ścieżki
+        // projektu, bo projekt wybiera się przy uruchomieniu, więc porównanie ich tutaj byłoby
+        // zgadywaniem. Tę parę widzi dopiero bieg (T-15), który zna oba katalogi.
         _ => false,
     }
 }
 
 /// Druga połowa zdania o kolizji: gdzie te dwa kroki się spotykają.
-fn place(one: &Folder, other: &Folder) -> String {
+fn place(one: Spot<'_>, other: Spot<'_>, steps: &[Facts<'_>]) -> String {
     match (one, other) {
-        (Folder::Pick { path: mine }, Folder::Pick { path: theirs }) if mine == theirs => {
+        (Spot::Picked(mine), Spot::Picked(theirs)) if mine == theirs => {
             format!("both work in {mine}")
         }
-        (Folder::Pick { .. }, Folder::Pick { .. }) => {
+        (Spot::Picked(..), Spot::Picked(..)) => {
             "one of their folders is inside the other".to_owned()
         }
+        // NAZWĄ KROKU, KTÓRY TĘ KOPIĘ NAZWAŁ, nie kluczem z pliku (niezmiennik 14): człowiek
+        // widzi na płótnie nazwy, a klucza `s_make` nie ma tam ani razu. Zdanie „both work in
+        // the project folder" byłoby tu nieprawdą — ci dwaj pracują w kopii, którą założył bieg,
+        // i wysłanie człowieka do plików projektu każe mu szukać nie tam.
+        (Spot::OwnCopy(owner), _) => match steps.get(owner) {
+            Some(step) => format!("both work in the copy made for \"{}\"", step.name),
+            None => "both work in the same copy".to_owned(),
+        },
         _ => "both work in the project folder".to_owned(),
     }
 }

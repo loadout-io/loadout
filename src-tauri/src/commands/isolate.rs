@@ -223,48 +223,123 @@ pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Resul
 /// Co zostało po kroku.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kept {
-    /// Praca jest i siedzi na tej gałęzi.
+    /// Praca jest, siedzi na tej gałęzi — i tylko na niej. Katalog, w którym powstała, jest
+    /// sprzątnięty.
     OnABranch(String),
+    /// Pracy nie dało się zapisać na gałąź, więc katalog z nią **zostaje**.
+    ///
+    /// Zdanie jest tu, a nie u wołającego, bo tylko ten moduł wie, co dokładnie odmówiło —
+    /// i tylko on zna ścieżkę, pod którą ta praca leży. Wołający ma je zapisać tam, gdzie
+    /// człowiek czyta o biegu.
+    LeftInPlace {
+        /// Gałąź, na którą ta praca miała trafić.
+        branch: String,
+        /// Jedno zdanie dla człowieka: co się nie udało i gdzie w takim razie leży jego praca.
+        why: String,
+    },
     /// Krok nic nie zmienił, więc nie zostało nic.
     Nothing,
 }
 
-/// Zamyka drzewo kroku: commit, kiedy jest co zapisać, sprzątanie, kiedy nie ma.
+/// Zamyka drzewo kroku: commit i sprzątanie, kiedy jest co zapisać, samo sprzątanie, kiedy nie ma.
 ///
 /// **Krok, który nic nie zmienił, nie ma prawa zostawić gałęzi.** Po tygodniu biegów `git
 /// branch` byłby nie do przeczytania, a gałęzie niosące pracę ginęłyby wśród pustych.
+///
+/// # 2026-08-23 (T-95) — KATALOG ZNIKA TAKŻE PO KROKU, KTÓRY COŚ ZMIENIŁ
+///
+/// Do tego dnia drzewo z pracą zostawało na dysku razem z pełnym checkoutem repozytorium.
+/// Zmierzone u właściciela: dziesięć biegów na jednym monorepo zostawiło kilkadziesiąt
+/// katalogów `work/s_*`, każdy z osobną kopią całego drzewa, dla zadania, które tego
+/// repozytorium nie dotykało — bo „look only" nie znaczy „nie zapisze zrzutu ekranu", a jeden
+/// nowy plik to już zmiana.
+///
+/// Obietnica z T-52 brzmi: praca jest po biegu **osiągalna z gita**, i gałąź spełnia ją
+/// w całości. Katalog nie dokłada do niej nic poza miejscem na dysku i wpisem w rejestrze gita.
+/// Wznowienie też na tym nie traci: punkt startu bierze się z GAŁĘZI, nie z katalogu
+/// (`commands::run::where_it_left_off`).
+///
+/// **Sprzątamy dopiero PO udanym zapisie i nigdy przed nim.** Kolejność jest tu całą treścią:
+/// katalog skasowany przed commitem, który się nie uda, jest jedyną operacją w tym module,
+/// która umie stracić czyjąś robotę.
 pub fn finish(project: &Path, dest: &Path, branch: &str, message: &str) -> Kept {
     let dirty = git(dest, &["status", "--porcelain"]).is_ok_and(|said| !said.trim().is_empty());
 
     if dirty {
-        // `add -A` bierze też pliki nowe: praca agenta to zwykle nowy plik, a commit bez nich
-        // byłby gałęzią, która niczego nie niesie.
-        if git(dest, &["add", "-A"]).is_ok()
-            && git(dest, &["commit", "--quiet", "--no-verify", "-m", message]).is_ok()
-        {
-            return Kept::OnABranch(branch.to_owned());
+        if let Err(said) = save(dest, message) {
+            // Commit się nie udał: drzewo zostaje na dysku razem z pracą, a bieg ma o tym
+            // powiedzieć. Cicha strata jest tu najgorszym możliwym kształtem: bieg wygląda na
+            // udany, a jedyna kopia pracy leży poza gitem, w katalogu, którego nikt nie szuka.
+            tracing::warn!(
+                branch,
+                said,
+                "the step's work could not be saved on its branch; leaving the folder in place"
+            );
+            return Kept::LeftInPlace {
+                branch: branch.to_owned(),
+                why: could_not_save(branch, dest, &said),
+            };
         }
-        // Commit się nie udał: drzewo zostaje na dysku razem z pracą. Sprzątanie w tym miejscu
-        // byłoby jedyną operacją w tym module, która umie stracić czyjąś robotę.
-        tracing::warn!(
-            branch,
-            "the step's work could not be committed; leaving the tree in place"
-        );
+        // Praca jest na gałęzi, więc w katalogu nie ma już niczego, czego git nie zna.
+        // Zdejmujemy go RĘKAMI GITA, nie `remove_dir_all`: samo skasowanie plików zostawia wpis
+        // w rejestrze drzew, a taki wpis odmawia potem założenia drzewa pod tą samą ścieżką.
+        // Błąd tylko logujemy — praca jest już bezpieczna, a nieusunięty katalog nie jest
+        // powodem, żeby zepsuć wynik biegu.
+        if let Err(said) = remove_tree(project, dest) {
+            tracing::debug!(
+                said,
+                "the work folder could not be removed after the commit"
+            );
+        }
         return Kept::OnABranch(branch.to_owned());
     }
 
     // Nic się nie zmieniło — zdejmujemy drzewo i gałąź. Błędy tu tylko logujemy: bieg jest już
     // po wszystkim, a nieusunięty katalog nie jest powodem, żeby zepsuć jego wynik.
-    if let Err(said) = git(
-        project,
-        &["worktree", "remove", "--force", &dest.display().to_string()],
-    ) {
-        tracing::debug!(said, "the empty work tree could not be removed");
+    if let Err(said) = remove_tree(project, dest) {
+        tracing::debug!(said, "the empty work folder could not be removed");
     }
     if let Err(said) = git(project, &["branch", "-D", branch]) {
         tracing::debug!(said, "the empty branch could not be removed");
     }
     Kept::Nothing
+}
+
+/// Zapisuje wszystko, co jest w drzewie, jako commit na jego gałęzi.
+///
+/// `add -A` bierze też pliki nowe: praca agenta to zwykle nowy plik, a commit bez nich byłby
+/// gałęzią, która niczego nie niesie.
+fn save(dest: &Path, message: &str) -> Result<(), String> {
+    git(dest, &["add", "-A"])?;
+    git(dest, &["commit", "--quiet", "--no-verify", "-m", message])?;
+    Ok(())
+}
+
+/// Zdejmuje drzewo robocze razem z jego wpisem w rejestrze.
+///
+/// `--force`, bo katalog kroku niesie też to, czego git nie śledzi — wynik builda, cache
+/// pakietów — a bez tej flagi `worktree remove` odmawia na pierwszym takim pliku. Praca, o którą
+/// tu chodzi, jest w tym momencie już na gałęzi; reszta jest odtwarzalna jedną komendą.
+fn remove_tree(project: &Path, dest: &Path) -> Result<(), String> {
+    git(
+        project,
+        &["worktree", "remove", "--force", &dest.display().to_string()],
+    )
+    .map(|_| ())
+}
+
+/// Zdanie o pracy, która nie doszła na gałąź — **ze ścieżką**.
+///
+/// Ścieżka jest treścią, nie ozdobą: bez niej człowiek dowiaduje się, że coś poszło nie tak,
+/// i musi sam znaleźć katalog wśród kilkudziesięciu innych. Powód od gita bierzemy pierwszym
+/// wierszem, bo `git` odpowiada tu akapitem, a reszta akapitu mówi to samo dłużej.
+fn could_not_save(branch: &str, dest: &Path, said: &str) -> String {
+    let first = said.lines().next().unwrap_or("").trim();
+    format!(
+        "Loadout could not put this step's work on the branch \"{branch}\" ({first}), so the \
+         folder it worked in was left exactly as it is: {}",
+        dest.display()
+    )
 }
 
 /// Czy w tym drzewie **cokolwiek się wydarzyło** — niezacommitowana zmiana albo commit ponad bazą.
@@ -339,6 +414,67 @@ pub fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Gałęzie, których nazwa zaczyna się od tego przedrostka.
+///
+/// 2026-08-23 (T-95) — PO CO TO ISTNIEJE. Po sprzątaniu katalogów po biegu zostaje sama gałąź,
+/// i to jest dobra strona umowy. Zła jest taka, że gałęzie zostają na ZAWSZE: nic ich nie
+/// listuje, nic nie umie ich zdjąć poza ręcznym `git branch -D` na każdą z osobna. Historia
+/// biegu pyta tędy o swoje własne.
+///
+/// `--format=%(refname:short)`, a nie gołe `git branch --list`: to drugie maluje gwiazdkę przy
+/// gałęzi wyjętej do pracy i wcina resztę, więc czytanie jego wyjścia zaczyna się od zdejmowania
+/// ozdób, których nie ma w żadnej nazwie.
+///
+/// Pusta lista, kiedy git nie odpowiada — pytanie „co ten bieg zostawił" nie ma prawa przewrócić
+/// odczytu historii (niezmiennik 5).
+#[must_use]
+pub fn branches_under(project: &Path, prefix: &str) -> Vec<String> {
+    let pattern = format!("{prefix}*");
+    git(
+        project,
+        &["branch", "--list", &pattern, "--format=%(refname:short)"],
+    )
+    .map(|said| {
+        said.lines()
+            .map(str::trim)
+            // Wzorzec gita jest globem, a nasz przedrostek napisem: warunek sprawdzamy jeszcze
+            // raz u siebie, żeby ta funkcja oddawała dokładnie to, co obiecuje jej nazwa.
+            .filter(|line| line.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Gałęzie wyjęte W TEJ CHWILI do pracy w jakimkolwiek drzewie tego repozytorium.
+///
+/// Czytane z `--porcelain`, bo tam każdy fakt stoi w osobnym wierszu o stałym kształcie
+/// (`branch refs/heads/<nazwa>`). Zwykłe `worktree list` skleja ścieżkę, skrót commita i nazwę
+/// gałęzi w jeden wiersz do czytania okiem.
+///
+/// Pusta lista, kiedy git nie odpowiada, i tu jest to wybór ostrożny w złą stronę — dlatego
+/// wołający ma tę odpowiedź traktować jako „nie wiem o nikim", a nie jako zgodę.
+#[must_use]
+pub fn branches_in_use(project: &Path) -> Vec<String> {
+    git(project, &["worktree", "list", "--porcelain"])
+        .map(|said| {
+            said.lines()
+                .filter_map(|line| line.trim().strip_prefix("branch refs/heads/"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Zdejmuje gałąź. Niesie zdanie gita, bo ono jest konkretniejsze niż nasze.
+///
+/// `-D`, nie `-d`: gałąź biegu nigdy nie jest wmergowana nigdzie, więc `-d` odmawiałby każdej
+/// i przycisk „zapomnij o nich" nie zdejmowałby ani jednej. Kto tego naciska, wie, że praca
+/// zniknie — i po to nacisnął.
+pub fn drop_branch(project: &Path, branch: &str) -> Result<(), String> {
+    git(project, &["branch", "-D", branch]).map(|_| ())
 }
 
 /// Nazwa gałęzi dla kroku: `loadout/<bieg>/<krok>`.
