@@ -182,6 +182,56 @@ const WORKFLOW: &str = r#"{
 }
 "#;
 
+/// Ten sam formularz, ta sama brakująca odpowiedź — i `whenItFails: stop` na kroku.
+///
+/// 2026-08-24 — DRUGA ŁAWKA, bo pierwsza nie umiała odróżnić dwóch implementacji. Wszystkie trzy
+/// kroki wyżej są domyślne (`carry-on`), więc bieg jedzie dalej niezależnie od tego, KTÓRĄ drogą
+/// krok został uznany za nieprzeszły. Implementacja, która maluje krok na czerwono obok
+/// [`Live::when_this_one_fails`] — własnym `StepReport`, z pominięciem ustawienia „co zrobić,
+/// kiedy ten krok nie przejdzie" — przechodzi tamtą ławkę w komplecie, a tutaj przewraca
+/// jedyną rzecz, o którą człowiek naprawdę prosił: żeby po nieudanym kroku nic dalej nie ruszyło.
+///
+/// To jest dokładnie ta połowa zdania z TASK.md, której nikt nie mierzył: „czyni krok
+/// nieprzeszłym **przez `when_this_one_fails`**". Brak pola ma być zwykłą porażką kroku, a nie
+/// nowym, drugim rodzajem porażki z własnymi zasadami.
+const STOPS: &str = r#"{
+  "format": 1,
+  "id": "wf_required_fields_stop_the_run",
+  "name": "A missing field on a step set to stop",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_halt",
+      "name": "Halt",
+      "agent": "01990000-0000-7000-8000-00000000093a",
+      "overrides": {},
+      "whenItFails": "stop",
+      "instructions": "halt: do the work and say what you found.",
+      "handover": {
+        "fields": [
+          {
+            "name": "risk",
+            "describe": "the biggest thing that could still go wrong",
+            "required": true
+          }
+        ]
+      },
+      "at": { "x": 0, "y": 0 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_after",
+      "name": "After",
+      "agent": "01990000-0000-7000-8000-00000000093a",
+      "overrides": {},
+      "instructions": "after: build on what came before.",
+      "at": { "x": 0, "y": 240 }
+    }
+  ],
+  "links": [{ "from": "s_halt", "to": "s_after" }]
+}
+"#;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_missing_required_field_makes_the_step_not_pass() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
@@ -269,6 +319,53 @@ async fn a_missing_required_field_makes_the_step_not_pass() -> Result<(), Box<dy
         Some(StepState::Succeeded),
         "a step with no form at all was judged against fields nobody asked it for. The run ended \
          as {:?}",
+        report.steps
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_field_goes_the_same_road_as_every_other_failure() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let hand = bench.agent("scout", HAND_FILE)?;
+    let workflow = bench.workflow("required-fields-stop", STOPS)?;
+    the_fixture_can_run(&workflow, &[&hand])?;
+
+    let seen = Arc::new(Seen::default());
+    let report = run_it(&bench, workflow, Arc::clone(&seen)).await?;
+    let prompts = seen.snapshot();
+    assert!(
+        prompts.contains_key("halt"),
+        "the step with the form never reached the agent app, so nothing below is about a run that \
+         happened. It entered for {:?}",
+        prompts.keys().collect::<Vec<&String>>()
+    );
+
+    let states = by_name(&report)?;
+    assert_eq!(
+        states.get("Halt").map(|one| one.0),
+        Some(StepState::Failed),
+        "the step answered without the field its form requires and was taken as done, even on a \
+         step set to stop everything if it does not pass. The run ended as {:?}",
+        report.steps
+    );
+
+    // Sedno tej ławki: „nie przeszedł" ma znaczyć to samo, co przy każdej innej porażce kroku.
+    // Człowiek ustawił „nic po tym kroku się nie wydarzy", i to jest jedyne, o co tu prosił.
+    assert!(
+        !prompts.contains_key("after"),
+        "the step after it was started anyway. \"Stop\" is the whole content of that setting: a \
+         missing field that marks the step red and lets the work carry on regardless is a second \
+         kind of failure with its own rules, and the one setting a person has for this does not \
+         reach it. The run entered for {:?}",
+        prompts.keys().collect::<Vec<&String>>()
+    );
+    assert_ne!(
+        states.get("After").map(|one| one.0),
+        Some(StepState::Succeeded),
+        "and the run's own record says the step after it passed. Whatever a reader takes from \
+         that record, it must not be that work was done on top of an answer that never came. \
+         The run ended as {:?}",
         report.steps
     );
     Ok(())
