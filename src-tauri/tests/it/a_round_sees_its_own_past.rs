@@ -26,6 +26,18 @@
 //! „Aside" stoi obok pętli i ma jednego poprzednika. Ma dostać dokładnie to, co dostaje dziś —
 //! jedną pozycję. Implementacja, która „na wszelki wypadek" dokłada każdemu krokowi wszystko,
 //! przechodzi obie asercje o pętli i przewraca się na tej jednej.
+//!
+//! # DRUGA ŁAWKA: PĘTLA ZA PĘTLĄ
+//!
+//! Wejściem pętli bywa inna pętla, i wtedy „to, co dostała runda pierwsza" ma DWIE różne
+//! odpowiedzi. Runda pierwsza pyta o wejście przez to samo miejsce, co każdy krok za pętlą
+//! (`Live::handed_before` → `leaving_a_loop` → `what_that_loop_produced`), więc dostaje to, co
+//! tamta pętla naprawdę wyprodukowała. Runda druga liczyła to sama, po literalnym rodzicu
+//! z grafu — a literalnym rodzicem jest runda OSTATNIA tamtej pętli, czyli węzeł, który po
+//! werdykcie `pass` nie biegnie wcale i nie zostawia pliku.
+//!
+//! Skutek jest dokładnie odwrotny do tego, po co ta pętla jest: runda druga, która ma poprawiać,
+//! widzi mniej niż runda pierwsza, która zaczynała. Druga ławka niżej sądzi ten jeden fakt.
 
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
@@ -66,19 +78,37 @@ const TRIES: usize = 3;
 
 /// Początek instrukcji każdego kroku — po nim, i tylko po nim, dubler poznaje, kto pyta.
 /// `RunSpec` nie niesie nazwy kroku (niezmiennik 9), a instrukcja jest tym, co ten krok dostał.
-const ASKED: [(&str, &str); 5] = [
+const ASKED: [(&str, &str); 9] = [
     ("plan:", "Plan"),
     ("work:", "Work"),
     ("test:", "Tester"),
     ("ship:", "Ship"),
     ("aside:", "Aside"),
+    ("early-work:", "Early"),
+    ("early-test:", "Early check"),
+    ("late-work:", "Late"),
+    ("late-test:", "Late check"),
 ];
 
-/// Nazwy kafelków w tej ławce — te same, które stoją w pliku workflow niżej.
-const NAMES: [&str; 5] = ["Plan", "Work", "Tester", "Aside", "Ship"];
+/// Nazwy kafelków w obu ławkach — te same, które stoją w plikach workflow niżej.
+const NAMES: [&str; 9] = [
+    "Plan",
+    "Work",
+    "Tester",
+    "Aside",
+    "Ship",
+    "Early check",
+    "Early",
+    "Late check",
+    "Late",
+];
 
 /// Kafelek, który stoi obok pętli i niczego z niej nie widzi. Kontrola tego kryterium.
 const ASIDE: &str = "Aside";
+
+/// W której próbie sędzia danej gałęzi mówi „przeszło". Sędzia spoza tej listy nie przepuszcza
+/// nigdy — wszystkie jego rundy mają naprawdę pobiec.
+const PASSES_ON: [(&str, usize); 1] = [("Early check", 1)];
 
 const HAND_FILE: &str = "---
 schema: 1
@@ -166,6 +196,78 @@ const LOOP_FILE: &str = r#"{
     { "from": "s_work", "to": "s_test" },
     { "from": "s_test", "to": "s_ship" },
     { "from": "s_test", "to": "s_work", "max_turns": 3 }
+  ]
+}"#;
+
+/// Dwie pętle jedna za drugą: `plan → early → early check`, powrót do dwóch rund, a za nim
+/// `late → late check` z własnym powrotem.
+///
+/// Sędzia pierwszej pętli przepuszcza w rundzie PIERWSZEJ, więc jej runda ostatnia nie biegnie
+/// wcale i nie zostawia pliku — a to ona jest literalnym rodzicem wejścia drugiej pętli.
+/// Ta pierwsza pętla jest więc wejściem, którego nie da się przeczytać z samego grafu.
+const TWO_LOOPS_IN_A_ROW: &str = r#"{
+  "format": 1,
+  "id": "wf_loop_after_a_loop",
+  "name": "A loop whose input is a loop",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_plan",
+      "name": "Plan",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "instructions": "plan: say what to build.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 24, "y": 24 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_early_work",
+      "name": "Early",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "instructions": "early-work: do the first part.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 24, "y": 168 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_early_test",
+      "name": "Early check",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "instructions": "early-test: say whether the first part is good enough.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 24, "y": 312 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_late_work",
+      "name": "Late",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "instructions": "late-work: build on the first part.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 24, "y": 456 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_late_test",
+      "name": "Late check",
+      "agent": "01990000-0000-7000-8000-0000000000d1",
+      "overrides": {},
+      "instructions": "late-test: say whether the second part is good enough.",
+      "folder": { "use": "fresh-copy" },
+      "at": { "x": 24, "y": 600 }
+    }
+  ],
+  "links": [
+    { "from": "s_plan", "to": "s_early_work" },
+    { "from": "s_early_work", "to": "s_early_test" },
+    { "from": "s_early_test", "to": "s_early_work", "max_turns": 2 },
+    { "from": "s_early_test", "to": "s_late_work" },
+    { "from": "s_late_work", "to": "s_late_test" },
+    { "from": "s_late_test", "to": "s_late_work", "max_turns": 2 }
   ]
 }"#;
 
@@ -262,6 +364,83 @@ async fn a_later_try_is_given_the_input_of_the_loop_and_everything_it_already_di
          above, and it hands this one work from a branch it has no business reading. The \
          prompt was: {:?}",
         aside[0]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_try_of_the_second_loop_still_sees_what_the_first_one_left()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("two-in-a-row", TWO_LOOPS_IN_A_ROW)?;
+    let store = Store::open(&bench.db())?;
+    let watch = Arc::new(Watch::default());
+
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow,
+        how_many_at_once: 2,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    let report = tokio::time::timeout(PATIENCE, run_workflow_inner(&deps, &request, sink))
+        .await
+        .map_err(|_| format!("the run did not come back within {PATIENCE:?}"))??;
+    let _ = tokio::time::timeout(PATIENCE, pump).await;
+
+    let seen = watch.seen();
+    let early = prompts_of("Early", &seen);
+    let late = prompts_of("Late", &seen);
+    assert_eq!(
+        (early.len(), late.len()),
+        (1, 2),
+        "the bench is only a bench if the first part passed on its first try — its last try must \
+         never run — while the second part really tried twice. The run ended as {:?} and the \
+         driver was asked by: {:?}",
+        report.steps,
+        watch.who()
+    );
+
+    let wrote = who_wrote_what(&report.dir)?;
+
+    // ── KONTROLA: PIERWSZA PRÓBA DRUGIEJ PĘTLI ───────────────────────────────────────────────
+    assert_eq!(
+        named(&files_listed(&late[0]), &wrote),
+        vec!["Early try 1", "Early check try 1"],
+        "the first try of the second part was not given what the first part really ended on. \
+         Every point below is about the try AFTER this one, so a bench that is already wrong \
+         here measures nothing. The prompt was: {:?}",
+        late[0]
+    );
+
+    // ── DRUGA PRÓBA WIDZI TO SAMO WEJŚCIE, NIE MNIEJ ─────────────────────────────────────────
+    assert_eq!(
+        named(&files_listed(&late[1]), &wrote),
+        vec![
+            "Early try 1",
+            "Early check try 1",
+            "Late try 1",
+            "Late check try 1"
+        ],
+        "the second try of the second part lost the work it was given to build on. It reads its \
+         input straight off the arrow, and the step on the other end of that arrow is the LAST \
+         try of the first part — the one that never ran, because the first part passed early and \
+         the tries after a pass are skipped. So the try that is supposed to be fixing something \
+         is handed less than the try that started from nothing, which is the exact opposite of \
+         what trying again is for. The prompt was: {:?}",
+        late[1]
     );
     Ok(())
 }
@@ -363,11 +542,18 @@ impl Watch {
             "## Answer\n{who} try {try_number} is done.\n\n## Evidence\nnotes.txt:1\n\n## Open\n\
              nothing.\n"
         );
-        if who == "Tester" {
-            // Nigdy nie przepuszcza: wszystkie trzy rundy mają naprawdę pobiec.
+        if who == "Tester" || who == "Late check" {
+            // Nigdy nie przepuszcza: wszystkie rundy mają naprawdę pobiec.
             return format!("{body}\noutcome: fail\n");
         }
-        body
+        let Some((_, passes_on)) = PASSES_ON.iter().find(|(name, _)| *name == who) else {
+            return body;
+        };
+        if try_number >= *passes_on {
+            format!("{body}\noutcome: pass\n")
+        } else {
+            format!("{body}\noutcome: fail\n")
+        }
     }
 
     fn seen(&self) -> Vec<(String, String)> {

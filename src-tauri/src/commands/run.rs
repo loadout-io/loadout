@@ -5788,7 +5788,7 @@ impl Live {
                 None => wanted.push(parent),
             }
         }
-        wanted.extend(self.what_this_try_already_knows(id));
+        wanted.extend(self.what_this_try_already_knows(id, &filed));
         wanted.sort_unstable();
         wanted.dedup();
 
@@ -5855,7 +5855,18 @@ impl Live {
     ///
     /// Pusta lista dla kroku spoza pętli i dla rundy zerowej. Numery kroków, nie ścieżki: filtr
     /// „a czy ten krok cokolwiek oddał" stoi jeden, w [`Live::handed_before`].
-    fn what_this_try_already_knows(&self, id: StepId) -> Vec<StepId> {
+    ///
+    /// WEJŚCIE PĘTLI ROZWIĄZUJEMY TĄ SAMĄ DROGĄ, CO [`Live::handed_before`] — czyli przez
+    /// [`Live::leaving_a_loop`], nie po literalnym rodzicu z grafu. Pętla poprzedzająca oddaje
+    /// dalej rundą OSTATNIĄ (`workflow::unroll`), a ta po werdykcie `pass` nie biegnie wcale, więc
+    /// runda pierwsza kolejnej pętli dostawała wejście przez [`Live::what_that_loop_produced`],
+    /// a jej runda druga — literalny węzeł bez pliku, czyli **nic**. Ten sam fakt liczony dwoma
+    /// drogami odpowiadałby dwiema różnymi listami (niezmiennik 13), a różnicę widać dopiero
+    /// w drugiej rundzie drugiej pętli — czyli tam, gdzie nikt nie patrzy.
+    ///
+    /// Dlatego ta funkcja bierze `filed`: „ostatnie WYPRODUKOWANE przekazanie" jest pytaniem
+    /// o pliki, a migawkę robi wywołujący, pod jednym zamkiem i bez `await` (niezmiennik 8).
+    fn what_this_try_already_knows(&self, id: StepId, filed: &[Option<PathBuf>]) -> Vec<StepId> {
         let Some(step) = self.plan.steps.get(id) else {
             return Vec::new();
         };
@@ -5871,22 +5882,27 @@ impl Live {
 
         // Wejście pętli: to, co dostała jej PIERWSZA runda. Liczone z grafu, a nie zapamiętane
         // przy tamtym kroku, bo pętla zaczyna się raz i jej wejście się nie zmienia.
-        let mut knows: Vec<StepId> = self
-            .node_of(&the_loop.entry, 0)
-            .map(|entry| {
-                ends(&self.plan.arrows, |&(parent, child)| {
-                    (child == entry).then_some(parent)
-                })
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|&parent| {
-                self.plan
+        let mut knows: Vec<StepId> = Vec::new();
+        if let Some(entry) = self.node_of(&the_loop.entry, 0) {
+            for parent in ends(&self.plan.arrows, |&(parent, child)| {
+                (child == entry).then_some(parent)
+            }) {
+                // Powrót od sędziego TEJ pętli nie jest jej wejściem — własne rundy dokłada
+                // pętla niżej, i to one niosą numer próby.
+                let from_this_loop = self
+                    .plan
                     .steps
                     .get(parent)
-                    .is_some_and(|before| before.in_loop != Some(which))
-            })
-            .collect();
+                    .is_some_and(|before| before.in_loop == Some(which));
+                if from_this_loop {
+                    continue;
+                }
+                match self.leaving_a_loop(parent, entry) {
+                    Some(other) => knows.extend(self.what_that_loop_produced(other, filed)),
+                    None => knows.push(parent),
+                }
+            }
+        }
 
         // Własne poprzednie odpowiedzi i poprzednie werdykty sędziego — WSZYSTKIE, nie sama
         // ostatnia. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę w całości,
