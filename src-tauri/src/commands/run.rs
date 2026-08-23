@@ -114,6 +114,15 @@
 //! workflow mają dać ten sam prompt, a to, który agent odpowiedział szybciej, zmienia się
 //! z biegu na bieg.
 //!
+//! **Runda pętli nie jest krokiem, który zaczyna od zera** (2026-08-23, T-87). „Krok przede mną"
+//! liczone samą strzałką daje rundzie k+1 jedno zdanie krytyki i nic poza tym — ani planu, od
+//! którego pętla ruszyła, ani własnej odpowiedzi, którą ta runda ma poprawić. Dlatego indeks
+//! rundy niesie też wejście pętli, wszystkie jej wcześniejsze próby i wszystkie wcześniejsze
+//! werdykty sędziego, a każdy wiersz mówi, CZYM jest plik, który wskazuje ([`Live::handed_before`],
+//! [`WhatItIs`]). Symetrycznie w drugą stronę: krok ZA pętlą dostaje ostatnie **wyprodukowane**
+//! przekazanie każdego kroku jej ciała, bo strzałka na zewnątrz wychodzi z rundy ostatniej —
+//! a ta, przy pętli, która przeszła wcześniej, nie biegnie wcale.
+//!
 //! # Czego ta warstwa świadomie NIE robi
 //!
 //! - **Sama nie ogląda surowego strumienia.** `AgentDriver` oddaje już zdarzenie neutralne, więc
