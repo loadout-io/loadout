@@ -178,6 +178,20 @@ pub struct AgentStep {
     pub instructions: String,
     #[serde(default)]
     pub skills: Skills,
+    /// Co ten kafelek pożycza z repozytorium, w którym pracuje bieg — i **domyślnie nic**.
+    ///
+    /// WŁASNOŚĆ KROKU, NIE BIEGU, i to jest cała treść tego pola. „Pożycz rolę `backend-dev`
+    /// z tego repozytorium" jest własnością kafelka dokładnie tak samo, jak wybór agenta:
+    /// dwa kafelki jednego biegu mogą chcieć dwóch różnych rzeczy, a jedno pole na bieg
+    /// zamieniłoby ten wybór w przełącznik „to repozytorium: tak albo nie".
+    ///
+    /// PRZY ZAPISIE ZNIKA, GDY JEST PUSTE — ten sam powód, co przy [`AgentStep::vendor_options`]:
+    /// `"borrow": {{}}` dopisane do KAŻDEGO kroku KAŻDEGO pliku przepisałoby przy pierwszym
+    /// zapisie wszystkie istniejące workflow, a nie niesie ani jednej informacji ponad swój brak.
+    /// `#[serde(default)]` z drugiej strony: plik zapisany, zanim to pole istniało, ma się
+    /// wczytać bez jednej zmiany.
+    #[serde(default, skip_serializing_if = "Borrow::is_nothing")]
+    pub borrow: Borrow,
     #[serde(default)]
     pub folder: Folder,
     /// Zostaje w schemacie bez kontrolki w UI: czyta je T-16, a edytor pól formularza jest
@@ -211,6 +225,48 @@ pub struct AgentStep {
 /// to krok, który nigdy nie biegnie.
 fn one_copy() -> u8 {
     1
+}
+
+/// Co ten kafelek bierze z repozytorium, w którym pracuje bieg.
+///
+/// Trzy pola, bo to są trzy różne rzeczy o dwóch różnych drogach do procesu: umiejętności jadą
+/// katalogiem pluginu w argv, a plik roli i opis podagenta — tekstem w prompcie. Jedna wspólna
+/// lista nazw zlepiłaby je w jedno i pierwsza pomyłka wsadziłaby treść do argv, którą widzi `ps`
+/// każdego użytkownika maszyny (niezmiennik 9).
+///
+/// TE SAME TRZY POLA CO `inherit::wire::Chosen`, i to nie jest duplikat przez nieuwagę: tamten
+/// typ jest pytaniem zadawanym cudzemu repozytorium, a ten jest **kształtem pliku na dysku**,
+/// który ma się otwierać także za rok. Ten sam podział stoi w tym module przy [`Skills`] wobec
+/// `crate::skills`, i z tego samego powodu — jedno przełożenie mieszka w `commands::run`.
+///
+/// Klucz podagenta nazywa się `agent`, a nie `subagent`, bo tak nazywa się półka, z której
+/// pochodzi (`<projekt>/.claude/agents/`). Nazwa w pliku ma odpowiadać temu, co człowiek widzi
+/// w cudzym repozytorium, a nie temu, jak my o tym mówimy w środku.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Borrow {
+    /// Nazwy katalogów spod `<projekt>/.claude/skills/`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// Nazwa pliku roli spod `<projekt>/.claude/learnings/`, bez rozszerzenia. Do promptu
+    /// wchodzi z niego **wyłącznie** sekcja `## Recurring patterns`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learnings: Option<String>,
+    /// Nazwa podagenta spod `<projekt>/.claude/agents/`, bez rozszerzenia. Do promptu wchodzi
+    /// z niego **wyłącznie ciało**; front-matter jest granicą maszynerii.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+impl Borrow {
+    /// Czy ten kafelek nie pożycza niczego.
+    ///
+    /// Bierze referencję, bo tego żąda `skip_serializing_if` — ta sama linia, z tego samego
+    /// powodu, stoi przy [`WhenItFails::is_the_default`].
+    #[must_use]
+    pub fn is_nothing(&self) -> bool {
+        self.skills.is_empty() && self.learnings.is_none() && self.agent.is_none()
+    }
 }
 
 /// Krok, który zatrzymuje bieg i pyta człowieka [T3 §6.1 punkt 5].

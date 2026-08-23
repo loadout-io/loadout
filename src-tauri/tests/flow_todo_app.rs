@@ -391,6 +391,7 @@ fn todo_workflow(lead: &Agent, scout: &Agent, builder: &Agent, checker: &Agent) 
                     copies: 1,
                     instructions: one.task.to_owned(),
                     skills: loadout_lib::workflow::Skills::default(),
+                    borrow: loadout_lib::workflow::Borrow::default(),
                     folder: one.folder.clone(),
                     handover: loadout_lib::workflow::Handover::default(),
                     // Domyślne „Stop", czyli to, co robił ten graf, zanim pole istniało:

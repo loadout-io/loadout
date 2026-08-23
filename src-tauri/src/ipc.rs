@@ -1407,6 +1407,27 @@ pub fn list_skills(folder: Option<&str>) -> Result<Vec<commands::skills::Install
         .map_err(|error| error.to_string())
 }
 
+/// Co folder, w którym pracuje ten workspace, ma do pożyczenia krokom.
+///
+/// # Po co ta komenda w ogóle jest
+///
+/// `AgentStep::borrow` niesie NAZWY, a nazwy trzeba skądś wziąć. Wiersz wyboru, który zna je
+/// tylko z pamięci człowieka, każe mu wpisywać je ręcznie i milczy o literówce aż do odmowy
+/// przy Starcie. Ta lista jest jedynym miejscem, w którym okno dowiaduje się, co w tym folderze
+/// naprawdę leży — a bez niej wiersz „Borrow from this project" byłby kontrolką bez źródła
+/// danych (niezmiennik 16).
+///
+/// Ten sam sąd nad folderem, co przy [`list_skills`] i przy Starcie biegu ([`project_folder`]).
+/// Brak wskazanego folderu to pusta odpowiedź, nie odmowa: człowiek, który nie otworzył jeszcze
+/// żadnego projektu, ma zobaczyć wiersz, którego nie ma, a nie zdanie o błędzie.
+#[tauri::command]
+pub fn list_host_material(folder: Option<&str>) -> Result<crate::inherit::Lendable, String> {
+    let Some(project) = project_folder(folder)? else {
+        return Ok(crate::inherit::Lendable::default());
+    };
+    crate::inherit::scan::what_this_project_can_lend(&project).map_err(|error| error.to_string())
+}
+
 /// Zdejmuje umiejętność z katalogów agentów.
 ///
 /// 2026-08-18 — bez tej komendy sekcja Umiejętności umiała tylko dokładać. Lista z
@@ -1638,6 +1659,17 @@ pub fn stop_using_note(
 ) -> Result<commands::memory::NoteWire, commands::memory::NoteRefusal> {
     let root = commands::memory::notes_root(&crate::loadout_dir());
     commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
+}
+
+/// „Discard": kandydatka odchodzi do `discarded/` i schodzi z listy.
+///
+/// 2026-08-23 (T-92) — druga akcja kandydatki, którą makieta rysuje od początku i której do
+/// dziś nie było czym obsłużyć. Bez niej lista rośnie monotonicznie i to jest dokładnie ta
+/// nieobsługiwana akrecja instrukcji, którą [T6 §5.1] nazywa samą chorobą.
+#[tauri::command]
+pub fn discard_note(id: &str) -> Result<(), commands::memory::NoteRefusal> {
+    let root = commands::memory::notes_root(&crate::loadout_dir());
+    commands::memory::discard_note_inner(&root, id, &commands::now_utc())
 }
 
 /// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.
@@ -2391,11 +2423,13 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         delete_trigger,
         delete_workflow,
         delete_workspace,
+        discard_note,
         draft_skill,
         forget_run_branches,
         install_skill,
         list_agents,
         list_handoffs,
+        list_host_material,
         list_notes,
         list_processes,
         list_runs,

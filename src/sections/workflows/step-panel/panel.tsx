@@ -78,11 +78,12 @@ import { CheckPanel } from './check-panel';
 import { CheckpointPanel } from './checkpoint-panel';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
+import { BorrowRowForThisProject, nothingBorrowed } from './borrow-row';
 import { SkillsRow } from './skills-row';
 
 /** Pola, które należą do samego KROKU agenta, a nie do agenta (patrz nagłówek pliku). */
 export type AgentStepFields = Partial<
-  Pick<AgentStep, 'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails'>
+  Pick<AgentStep, 'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails' | 'borrow'>
 >;
 
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
@@ -1097,6 +1098,21 @@ export function PanelForStep({
           onChoose={onChooseSkills}
         />
       )}
+
+      {/* Co ten kafelek bierze z repozytorium, w którym pracuje bieg. Jedzie tą samą drogą, co
+          nazwa i instrukcje — `onEditStep`, czyli `commit`, czyli autosave — bo `borrow` jest
+          polem samego KROKU, a nie nadpisaniem agenta. Wiersz sam rozstrzyga, czy w ogóle
+          powstać: przy folderze bez `.claude/` i kroku, który nic nie pożycza, nie ma go wcale
+          (niezmiennik 16). */}
+      <BorrowRowForThisProject
+        value={step.borrow ?? {}}
+        onChoose={(borrow) => {
+          /* Pusty wybór jedzie jako BRAK KLUCZA, nie `{}`: `JSON.stringify` zdejmuje pole
+             o wartości `undefined`, więc krok, z którego wszystko odznaczono, wraca do kształtu
+             pliku sprzed tego zadania — co do bajtu. */
+          onEditStep({ borrow: nothingBorrowed(borrow) ? undefined : borrow });
+        }}
+      />
     </div>
   );
 }

@@ -802,11 +802,14 @@ pub fn reserved(vendor: &str) -> &'static [&'static str] {
 
 /// Nazwa vendora tak, jak nazywa go użytkownik. Klucz z pliku (`claude`) na ekran nie idzie.
 ///
-/// `pub` z tego samego powodu, co [`reserved`] obok: odmowa przelotki pada w dwóch miejscach —
-/// przy zapisie kroku i przy starcie biegu z definicji agenta — a człowiek ma przeczytać
-/// w obu tę samą nazwę aplikacji (niezmiennik 14).
+/// `pub(crate)`, bo tę samą odpowiedź musi znać każda odmowa nazywająca program po imieniu,
+/// a jest ich dziś troje i wszystkie siedzą w tej skrzyni: zapis kroku z przelotką, start biegu
+/// z definicji agenta (T-90) oraz krok, który pożyczył umiejętność programowi nieumiejącemu
+/// przyjąć katalogu pluginu (`commands::run`, T-93). Druga tabela nazw obok tej rozjechałaby się
+/// przy pierwszym nowym vendorze i nikt by tego nie zauważył, bo dziś odpowiadają tak samo
+/// (niezmienniki 13 i 14).
 #[must_use]
-pub fn vendor_name(vendor: &str) -> &str {
+pub(crate) fn vendor_name(vendor: &str) -> &str {
     match vendor {
         "claude" => "Claude Code",
         "codex" => "Codex",

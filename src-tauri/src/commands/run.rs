@@ -201,8 +201,7 @@ use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
-    AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point,
-    RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
+    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point, RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
@@ -224,6 +223,16 @@ const RUNS_DIR: &str = "runs";
 /// razem z biegiem. `$TMPDIR` zostawiałby artefakt biegu poza biegiem (`docs/ARCHITECTURE.md` §8),
 /// a katalog roboczy kroku bywa folderem człowieka.
 const STEP_SKILLS_DIR: &str = "skills";
+
+/// Katalog, pod którym stoi to, co **kroki** pożyczyły z repozytorium gospodarza — po jednym
+/// podkatalogu na krok.
+///
+/// PO JEDNYM NA KROK z dokładnie tego samego powodu, co przy [`STEP_SKILLS_DIR`]: wybór
+/// „pożycz to z tego repozytorium" jest własnością kafelka, a jeden wspólny katalog dałby
+/// każdemu krokowi sumę wszystkich wyborów — czyli odznaczenie na kafelku przestałoby cokolwiek
+/// znaczyć. Do 2026-08-23 stał tu jeden katalog `plugin/` na cały bieg i było to bez znaczenia
+/// tylko dlatego, że wybór był zawsze pusty.
+const BORROWED_DIR: &str = "borrowed";
 
 /// Opis biegu: bieg, jego kroki i migawki. To jest **prawda** (niezmiennik 4).
 const RUN_FILE: &str = "run.json";
@@ -256,6 +265,77 @@ const NOTHING_CHANGED: &str = "Nothing to check: the step before this one change
 
 /// Katalog, pod którym powstają własne kopie plików dla kroków `fresh-copy`.
 const WORK_DIR: &str = "work";
+
+/// Katalog, pod którym leży auto-pamięć kroków TEGO biegu: `<katalog biegu>/mem/<krok>`.
+///
+/// 2026-08-23 (T-92) — powstał po to, żeby auto-pamięć Claude Code przestała pisać do
+/// `~/.claude/projects/<projekt>/memory/`, czyli do katalogu, który człowiek dzieli ze swoimi
+/// sesjami interaktywnymi [T6 §10.4]. Pod katalogiem biegu, bo to jest **wyjście biegu**
+/// (niezmiennik 4) i ma dać się przeczytać po fakcie razem z resztą jego historii.
+///
+/// `pub`, bo tę nazwę musi znać także kryterium, które sprawdza, gdzie krok naprawdę pisał —
+/// a literał `"mem"` powtórzony w teście jest drugim miejscem, w którym mieszka ta odpowiedź.
+pub const STEP_MEMORY_DIR: &str = "mem";
+
+/// Model tury refleksji. **Jedna stała i ani jedno miejsce więcej.**
+///
+/// Refleksja jest tania z założenia [T6 §5.3: „jedna tania refleksja po biegu"], a „tania"
+/// przestaje być prawdą dokładnie w chwili, w której model wybiera wołający: dwa wołania z dwoma
+/// modelami to dwa różne rachunki za tę samą rzecz, a różnicy nie widać nigdzie poza fakturą.
+/// Model biegu tu nie wchodzi z tego samego powodu — bieg opusem nie ma powodu myśleć opusem
+/// o tym, czego się nauczył.
+pub const REFLECTION_MODEL: &str = "haiku";
+
+/// Ile minut wolno turze refleksji. Jedna stała, z dokładnie tego samego powodu.
+///
+/// Krótko, bo to jest jedno pytanie o skończony bieg, a nie praca: tura, która myśli dziesięć
+/// minut nad tym, czego się nauczyła, kosztuje więcej niż krok, który to zrobił.
+pub const REFLECTION_MINUTES: u64 = 2;
+
+/// Ile kandydatek wolno zostawić po jednym biegu [T6 §5.3: „najwyżej trzy"].
+///
+/// Sufit JEST całym mechanizmem antyrozrostowym tego podsystemu. Pisarz, który bierze tyle, ile
+/// przyszło, zamienia sekcję w listę, której nikt nie czyta — a lista, której nikt nie czyta,
+/// czyni z bramki promocji rytuał [T6 §5.1]. Nieobsługiwana akrecja instrukcji jest samą
+/// chorobą, nie objawem (arXiv 2608.11095 na 1867 repozytoriach).
+const AT_MOST_KEPT: usize = 3;
+
+/// Ile znaków reguły wchodzi do tytułu, czyli do NAZWY PLIKU notatki.
+///
+/// Tytuł powstaje z reguły, bo model nie pisze osobnego: `record_candidate_for` robi z tytułu
+/// slug, a slug jest tożsamością notatki — więc to samo zdanie zgłoszone w dwóch biegach musi
+/// trafić w ten sam plik i tylko tak `occurrences` ma się z czego wziąć.
+///
+/// Sufit jest tu, bo reguła przychodzi od modelu, a nazwa pliku ma twardy limit systemowy
+/// (255 bajtów na macOS). Cięcie idzie po granicy słowa i jest deterministyczne: cięcie
+/// w środku znaku wielobajtowego panikuje, a cięcie zależne od czegokolwiek poza samą regułą
+/// dawałoby dwa pliki dla jednego zdania.
+const TITLE_CAP: usize = 120;
+
+/// O co pytamy w jedynej turze refleksji.
+///
+/// **Kształt odpowiedzi jest w prośbie**, bo to jedyne miejsce, w którym da się go poprosić:
+/// para `rule:` / `because:` na osobnych wierszach jest tym, co czyta [`worth_remembering`].
+/// Zdanie o `because` stoi tu wprost, bo bez niego para jest odrzucana po cichu i model nie ma
+/// jak się dowiedzieć, czego zabrakło („no because, no memory" [T6 §10.3]).
+///
+/// Prośba mówi też, czego NIE chcemy: podsumowania biegu. Refleksja, która streszcza to, co się
+/// przed chwilą stało, produkuje zdania prawdziwe wyłącznie o tym jednym biegu — a notatka jedzie
+/// do promptów, których jeszcze nie ma.
+const REFLECTION_ASK: &str = "\
+This run has finished. Its directory is your working directory: handoffs/ holds what each step \
+passed on, run.json holds what happened, logs/ holds the raw streams.
+
+Name at most three things worth remembering for the next run in this project. Fewer is better, \
+and none at all is a good answer when nothing here was surprising.
+
+Write each one as exactly two lines, and nothing else around them:
+
+rule: <one sentence, true beyond this run, that a later agent should act on>
+because: <where you saw it in this run>
+
+A rule without a `because:` line is dropped, so leave out anything you cannot ground. Do not \
+summarise the run, do not describe the workflow, and do not change any file.";
 
 /// Trwałe granice kompletności kopii, poza samymi worktree i ich roboczym diffem.
 const ISOLATION_MARKERS_DIR: &str = ".isolation";
@@ -774,16 +854,17 @@ async fn the_planned_run(
     // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
     // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
-    // Dziedziczenie stoi TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
+    // Pożyczki kroków stoją TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
     // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
-    let inherited = what_the_host_lends(deps.project, &plan.dir)?;
-    // Umiejętności kroków lądują TU, obok dziedziczenia i z tego samego powodu: obie drogi piszą,
+    // Odmowa za nazwę, której u gospodarza nie ma, padła już przy planowaniu
+    // ([`borrowing_is_possible`]), czyli zanim ten katalog w ogóle istniał.
+    bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
+    // Umiejętności kroków lądują TU, obok pożyczek i z tego samego powodu: obie drogi piszą,
     // a piszą pod katalog biegu, który dopiero co powstał. Przed `Live::new`, bo odmowa („ten krok
     // pracuje w twoim folderze") ma paść, zanim ruszy pierwszy proces (niezmiennik 12).
     hand_the_skills_to_the_steps(&mut plan)?;
     let live = Arc::new(Live::new(
         plan,
-        inherited,
         lines,
         deps.control.clone(),
         slots,
@@ -808,6 +889,20 @@ async fn the_planned_run(
         }
         triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
     }
+    /* STEMPEL „TA NOTATKA WESZŁA DO PROMPTU" — tutaj, i to jest najwcześniejsze uczciwe miejsce.
+     *
+     * Nie w `add_block`, choć to tam wiadomo, co się w bloku zmieściło: tamta funkcja biegnie
+     * w PLANOWANIU, a planowanie jest czystym rachunkiem i nie dotyka dysku (ten sam powód
+     * trzyma `hand_the_skills_to_the_steps` poza `plan_step`). Plan bywa policzony dla biegu,
+     * który zaraz odmówi — a notatka twierdząca, że była użyta w biegu, którego nie było,
+     * jest gorsza niż `null`, bo `null` przynajmniej nie kłamie.
+     *
+     * Tutaj bieg ma już katalog i pierwszy zapis księgi, a jeszcze nie ruszył żaden proces.
+     * Rachunek bierzemy z `plan.memory` — czyli z tego samego zestawienia, które ląduje
+     * w `run.json` i które liczy WYŁĄCZNIE notatki naprawdę wklejone w prompty (`Block::used`,
+     * nigdy `Block::dropped`). Drugie przejście po notatkach byłoby drugą odpowiedzią na
+     * pytanie, co ten bieg wiedział. */
+    stamp_what_this_run_carried(deps.home, &live.plan.memory);
 
     let run_step = {
         let live = Arc::clone(&live);
@@ -847,6 +942,16 @@ async fn the_planned_run(
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
     // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
+    /* JEDNA TANIA REFLEKSJA, NA SAMYM KOŃCU I PO INDEKSIE.
+     *
+     * Po księdze, bo pyta o bieg skończony — a odpowiedź o biegu, który jeszcze trwa, jest
+     * odpowiedzią o czymś innym niż to, co człowiek później przeczyta. Po `close_the_trees`,
+     * bo katalog biegu ma być tym, który zostaje, a nie tym, który zaraz zniknie. I po
+     * `rebuild_from`, bo indeks jest tym, o co pyta okno: tura u vendora trwa do
+     * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
+     * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
+    what_the_steps_wrote_down(deps, &live.plan);
+    what_this_run_taught_us(deps, &live.plan, &outcome.states).await;
 
     Ok(RunReport {
         id: live.plan.id.clone(),
@@ -858,6 +963,434 @@ async fn the_planned_run(
         },
         steps: outcome.states,
     })
+}
+
+/// Zapisuje w każdej niesionej notatce, że **właśnie weszła do promptu**.
+///
+/// Jeden odczyt zegara na cały bieg, nie jeden na notatkę: dwie notatki, które pojechały tym
+/// samym promptem, były potrzebne w tej samej chwili, a dwa stemple o milisekundę od siebie
+/// ustawiałyby je w wymuszonym wyborze w kolejności, której nic nie odpowiada.
+///
+/// Nieudany zapis **nie przewraca biegu** — ta sama decyzja, co przy zrzucie `run.json` w locie
+/// ([`Live::update`]) i przy przekazaniu ([`Live::hand_over`]): bieg za chwilę rusza, a jego
+/// wynik jest prawdziwy niezależnie od tego, czy stempel doszedł. Cena stoi w dzienniku wprost,
+/// bo bez niej jest to notatka, która wygląda na nieużytą i schodzi z listy pierwsza.
+fn stamp_what_this_run_carried(home: &Path, carried: &[MemoryRecord]) {
+    if carried.is_empty() {
+        return;
+    }
+    let at = super::now_utc();
+    for record in carried {
+        // Ścieżka jest WZGLĘDNA WOBEC KORZENIA DANYCH i taka stoi w `run.json` (absolutna byłaby
+        // faktem o tym laptopie, nie o biegu), więc korzeń dokłada się dokładnie tutaj.
+        let path = home.join(&record.reference);
+        if let Err(error) = crate::memory::notes::mark_used(&path, &at) {
+            tracing::debug!(
+                note = %record.reference,
+                %error,
+                "this note went into a prompt and could not be stamped, so it will look unused"
+            );
+        }
+    }
+}
+
+/// To, co kroki zapisały w swojej auto-pamięci, staje się kandydatkami tych agentów.
+///
+/// # Druga połowa przekierowania (2026-08-23, T-92)
+///
+/// Pierwsza połowa siedzi w [`Live::with_its_own_settings`]: krok pisze do `mem/<krok>` pod
+/// katalogiem biegu, zamiast do `~/.claude/projects/<projekt>/memory/`. Sama zamieniłaby katalog
+/// dzielony z sesjami człowieka na katalog **zapomniany**: nikt by tam nie zajrzał, a agent dalej
+/// nie miałby jak zabrać ze sobą niczego, czego się nauczył. Ta funkcja jest drugą połową i bez
+/// niej pierwsza jest tylko sprzątaniem.
+///
+/// Trzy decyzje, każda z powodem:
+///
+/// - **`MEMORY.md` nie jest notatką.** Claude Code pisze ten plik sam, jako spis pozostałych, więc
+///   jest listą tytułów, a nie wiedzą. Kandydatka bez treści kosztuje człowieka dokładnie ten sam
+///   przegląd, co prawdziwa.
+/// - **Zakres „ten agent", nie „ten projekt".** To jest zdanie, które JEDEN agent napisał sam
+///   sobie: `this-project` wwiózłby nawyk jednego agenta do promptu każdego innego. Dlatego
+///   notatka niesie też jego nazwę — bez niej trzeci zakres nie ma po czym filtrować i nie wchodzi
+///   do żadnego promptu (T-80).
+/// - **Po całym biegu, nie po każdej turze.** Kroki idą równolegle i bywają rundami jednej pętli
+///   dzielącymi ten sam kafelek, więc „po turze" znaczyłoby czytanie tego samego katalogu tyle
+///   razy, ile rund. Katalog jest kompletny dopiero wtedy, kiedy zszedł ostatni krok.
+fn what_the_steps_wrote_down(deps: &RunDeps<'_>, plan: &Plan) {
+    let root = super::memory::notes_root(deps.home);
+    let at = noticed_now();
+    // Rundy jednej pętli dzielą kafelek, więc dzielą katalog pamięci — i mają go dać jeden raz.
+    let mut done: BTreeSet<&str> = BTreeSet::new();
+
+    for step in &plan.steps {
+        let Job::Agent(job) = &step.job else {
+            continue;
+        };
+        if !done.insert(step.tile_key.as_str()) {
+            continue;
+        }
+        let dir = plan.dir.join(STEP_MEMORY_DIR).join(&step.tile_key);
+        for path in what_this_step_left_in(&dir) {
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(rule) = what_the_agent_wrote(&text) else {
+                continue;
+            };
+            let draft = crate::memory::notes::NoteDraft {
+                title: title_from(&rule),
+                rule,
+                // POCHODZENIE JEST UZASADNIENIEM, bo innego tu nie ma: agent pisał to sobie,
+                // nie nam, więc nikt nie poprosił go o „dlaczego". Zdanie mówi to, co jest
+                // prawdą i co da się sprawdzić — kto, przy czym i w którym biegu — a bez drogi
+                // powrotnej do tury roszczenia nie da się później wycofać [T6 §5.1].
+                because: format!(
+                    "{} left this in its own notes while working on \"{}\" in run {}.",
+                    job.agent_name, step.name, plan.id
+                ),
+                scope: crate::memory::notes::Scope::ThisAgent,
+                kind: crate::memory::notes::Kind::Fact,
+                status: crate::memory::notes::Status::Suggested,
+                at: at.clone(),
+            };
+            if let Err(error) =
+                crate::memory::notes::record_candidate_for(&root, draft, Some(&job.agent_name))
+            {
+                tracing::warn!(
+                    step = %step.tile_key,
+                    %error,
+                    "this step wrote something down for itself and it could not be kept"
+                );
+            }
+        }
+    }
+}
+
+/// Pliki tematyczne z katalogu auto-pamięci jednego kroku, po nazwie — bez indeksu.
+///
+/// Płasko i wyłącznie `.md`, dokładnie jak `memory::notes::scan_notes` czyta swój katalog:
+/// spacer po drzewie zwróciłby to, co CLI trzyma tam obok, jako kolejne zdania agenta.
+fn what_this_step_left_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        // Krok, który niczego nie zapisał, ma zero plików, a nie błąd: to jest stan normalny
+        // i najczęstszy — vendor bez auto-pamięci nie zakłada nawet katalogu.
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension().is_some_and(|ext| ext == "md")
+                && !path
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("MEMORY.md"))
+        })
+        .collect();
+    // Kolejność nazw, nie kolejność systemu plików: dwa biegi tego samego kroku mają zostawić
+    // kandydatki w tej samej kolejności, bo inaczej lista przestawia się sama między odczytami.
+    found.sort();
+    found
+}
+
+/// Pierwsze zdanie, które agent naprawdę napisał w tym pliku.
+///
+/// Nagłówek markdown i front-matter są ramą, którą CLI stawia samo — reguła złożona z nich mówi
+/// „# Queue" i nie niesie ani jednego faktu. Bierzemy pierwszy wiersz, który nie jest ramą, bo
+/// plik auto-pamięci jest krótki i pisany od najważniejszego zdania.
+fn what_the_agent_wrote(text: &str) -> Option<String> {
+    let body = crate::memory::FrontMatter::split(text).map_or(0, |(_, at)| at);
+    text.get(body..)?
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && *line != "---")
+        .map(ToOwned::to_owned)
+}
+
+/// Pyta model RAZ, czego ten bieg nauczył, i zostawia z tego najwyżej trzy kandydatki.
+///
+/// # Po co to istnieje (zmierzone 2026-08-23, po 23 biegach właściciela)
+///
+/// Podsystem pamięci był zbudowany od strony **czytnika** i nie miał pisarza w produkcie:
+/// `~/.loadout/memory/` nie istniało, tabela `memory` miała zero wierszy, a `record_candidate*`
+/// miało wołających wyłącznie w testach i w imporcie. Sekcja Pamięć rysowała trzy strefy nad
+/// pustym katalogiem, budżety pilnowały zera, wymuszony wybór nie miał czego wybierać. To jest
+/// niezmiennik 29 czytany od strony wejścia: mechanizm jest, ekran o nim mówi, nikt nigdy nic
+/// do niego nie napisał.
+///
+/// # Trzy rzeczy, które ta funkcja robi, i po jednym powodzie na każdą
+///
+/// 1. **Nie pyta biegu, w którym nie pracował żaden model.** Workflow z samych kafelków
+///    „sprawdź", „uruchom i zostaw" i pytań do człowieka nie wołał vendora ani razu — a tura
+///    refleksji wstawiłaby do niego jedno wywołanie, którego nie ma się o co oprzeć i za które
+///    ktoś zapłaci. To jest ta sama granica, którą trzyma `run_check`: krok bez vendora nie ma
+///    powodu prosić fabrykę o sterownik.
+/// 2. **Nie pyta biegu, po którym nic nie zostało.** Refleksja pracuje z katalogu biegu, a bieg
+///    bez ani jednego przekazania nie ma tam wyniku żadnego kroku — więc tura jest zapłacona za
+///    przeczytanie pustego folderu.
+/// 3. **Pyta dokładnie raz**, nie raz na krok. „Tania" przestaje być prawdą po cichu: katalog
+///    notatek wygląda tak samo, a różnica siedzi wyłącznie na rachunku.
+/// 4. **Nie przewraca biegu niczym, co się tu nie uda.** Bieg jest skończony i zapisany; jego
+///    wynik jest prawdziwy niezależnie od tego, czy vendor odpowiedział. Ta sama decyzja, co
+///    przy nieudanym zapisie przekazania ([`Live::hand_over`]) — z dziennikiem zamiast ciszy.
+/// 5. **Pyta WŁASNYM SZWEM** ([`crate::engine::drivers::AgentDriver::reflecting`]), a nie
+///    sterownikiem, którym jadą kroki. Sterownik, który tego szwu nie podaje, nie ma jak zobaczyć
+///    tury, o którą nie prosił żaden kafelek — a to jest jedyny powód, dla którego dołożenie tej
+///    tury nie przestawiło ani jednej z 26 specyfikacji liczących wywołania sterownika. Cała
+///    cena tej decyzji stoi przy tamtej metodzie.
+async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[StepState]) {
+    // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
+    let a_model_worked =
+        plan.steps.iter().zip(states).any(|(step, state)| {
+            matches!(step.job, Job::Agent(_)) && *state == StepState::Succeeded
+        });
+    if !a_model_worked {
+        return;
+    }
+
+    // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
+    // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
+    // „przekazanie", a rozjazd widać dopiero na rachunku.
+    if handoff::scan_run_dir(&plan.dir).is_ok_and(|left| left.is_empty()) {
+        return;
+    }
+
+    let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
+    let Some(said) = a_short_turn_about(deps, dir).await else {
+        return;
+    };
+
+    let (worth, without_reason) = worth_remembering(&said);
+    if without_reason > 0 {
+        // Policzona, nie zapisana [T6 §10.3]. Para bez uzasadnienia nie staje się plikiem, bo
+        // instrukcja bez uzasadnienia jest nieusuwalna: skasowanie kosztuje `O(2^|D|)`, trzeba
+        // bowiem od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1].
+        tracing::info!(
+            run = %run,
+            dropped = without_reason,
+            "this run proposed rules with no reason under them, and a rule nobody can ground is \
+             one nobody can retire either"
+        );
+    }
+
+    let root = super::memory::notes_root(deps.home);
+    let at = noticed_now();
+    for one in worth.into_iter().take(AT_MOST_KEPT) {
+        let draft = crate::memory::notes::NoteDraft {
+            // Tytuł JEST regułą, przyciętą do nazwy pliku: model nie pisze osobnego, a nazwa
+            // pliku jest tożsamością notatki — więc to samo zdanie z dwóch biegów trafia w ten
+            // sam plik i stąd bierze się `occurrences` (powód w całości przy [`TITLE_CAP`]).
+            title: title_from(&one.rule),
+            rule: one.rule,
+            because: one.because,
+            // Czego uczy jeden bieg, jest prawdą o TYM projekcie. `everywhere` wniosłoby to
+            // zdanie do każdego innego projektu na tej maszynie, a zakres, którego nikt nie
+            // wybrał, jest tym najszerszym, którego nikt nie zauważył.
+            scope: crate::memory::notes::Scope::ThisProject,
+            kind: crate::memory::notes::Kind::Rule,
+            // Czytane i wyrzucane przez `record_candidate*`; stoi tu jawnie, żeby było widać,
+            // że deklaracja zgłaszającego nie jest tą, która o czymkolwiek decyduje.
+            status: crate::memory::notes::Status::Suggested,
+            at: at.clone(),
+        };
+        if let Err(error) = crate::memory::notes::record_candidate_from_run(&root, draft, run) {
+            tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
+        }
+    }
+}
+
+/// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
+///
+/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie cztery drogi, na których jej nie ma:
+/// ten vendor tury Loadouta nie bierze, vendor nie wstał, tura padła, tura nie zmieściła się
+/// w limicie. Rozróżnianie ich w typie nic by tu nie dało — wołający ma w każdej z nich zrobić
+/// dokładnie to samo, czyli nic.
+async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
+    /* WŁASNYM SZWEM, NIE STEROWNIKIEM KROKÓW ([`AgentDriver::reflecting`], gdzie stoi cała cena
+     * tej decyzji). Vendor jest jeden i wybrany: refleksja jest turą LOADOUTA, nie żadnego agenta
+     * z grafu, więc vendor wzięty z ostatniego kroku dawałby dwa różne rachunki i dwa różne
+     * zachowania za jedno pytanie. Ta sama stała rozstrzyga model ([`REFLECTION_MODEL`]) i to nie
+     * przypadek, że jest aliasem tego vendora.
+     *
+     * Fabryka mówi tu WYŁĄCZNIE, który to vendor; czy on tę turę bierze i czym ją weźmie,
+     * rozstrzyga szew. Sterownik, który go nie podaje — a nie podaje go żadna atrapa — nie ma
+     * jak zobaczyć tury, o którą nie prosił żaden krok. */
+    let Some(driver) = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()
+    else {
+        tracing::debug!(
+            "this vendor does not take Loadout's own turn, so nobody was asked what this run taught us"
+        );
+        return None;
+    };
+    let spec = RunSpec {
+        run_id: Uuid::now_v7(),
+        // Katalog biegu: to o niego pytamy. Gdziekolwiek indziej jest to tura poproszona
+        // o streszczenie czegoś, czego nie widzi.
+        cwd: dir.to_path_buf(),
+        prompt: REFLECTION_ASK.to_owned(),
+        model: Some(REFLECTION_MODEL.to_owned()),
+        system_append: None,
+        // Pyta, czego ten bieg nauczył, a nie o zmianę czegokolwiek: tura, której wolno pisać,
+        // jest turą mogącą poprawić pracę, którą właśnie streszcza, w katalogu, na który nikt
+        // już nie patrzy.
+        policy: Policy::ReadOnly,
+        reaches_the_web: false,
+        tools: None,
+        extra_dirs: Vec::new(),
+        resume: None,
+    };
+
+    let (events, mut inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
+    /* Odbiornik stoi PRZED startem i istnieje wyłącznie po to, żeby vendor nie zatrzymał się na
+     * pełnym buforze: te zdarzenia nie mają czytelnika, bo bieg już zszedł z ekranu, a wiersze
+     * dosypane po jego końcu byłyby wierszami kroku, którego nikt nie zlecił. */
+    let drain = tokio::spawn(async move { while inbox.recv().await.is_some() {} });
+
+    let text = match driver.start(spec, events).await {
+        Ok(mut handle) => {
+            let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
+            let said = match tokio::time::timeout(limit, handle.wait()).await {
+                Ok(Ok(outcome)) if outcome.ok => Some(outcome.text),
+                Ok(Ok(outcome)) => {
+                    tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
+                    None
+                }
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "the reflection turn fell over");
+                    None
+                }
+                Err(_) => {
+                    /* Limit czasu zdejmuje GRUPĘ PROCESÓW, nie samo zadanie Rusta (niezmiennik
+                     * 10). Porzucony `wait` zostawiłby żywy proces vendora, który pali limit
+                     * w tle po biegu, na który nikt już nie patrzy — czyli błąd finansowy. */
+                    let proof = handle.cancel().await;
+                    tracing::debug!(
+                        ?proof,
+                        "the reflection turn ran out of time and was stopped"
+                    );
+                    None
+                }
+            };
+            let _ = handle.close().await;
+            said
+        }
+        Err(error) => {
+            tracing::debug!(%error, "no reflection turn could be started after this run");
+            None
+        }
+    };
+
+    // Nadajnik ginie razem z uchwytem, więc dopiero tutaj kolejka jest zamknięta i pętla wyżej
+    // ma jak się skończyć.
+    let _ = drain.await;
+    text
+}
+
+/// Chwila zgłoszenia kandydatki: ISO 8601 UTC **z milisekundami**.
+///
+/// Sekundy nie wystarczają, i to jest zmierzone, nie hipotetyczne: `modified` ma się przesunąć
+/// przy drugim zgłoszeniu tej samej reguły, bo to jedyny ślad, po którym człowiek pozna, że dwa
+/// biegi niezależnie powiedziały to samo. Dwa biegi bywają w jednej sekundzie i wtedy stempel
+/// o rozdzielczości sekundy mówi „nic się nie zmieniło" o pliku, który się właśnie zmienił.
+///
+/// Sekundę bierzemy z [`super::now_utc`], a ułamek z [`now_ms`] — czyli z zegara **tego biegu**,
+/// zamiast trzeciej drogi do `SystemTime`. To są dwa odczyty, więc na granicy sekundy ułamek
+/// może należeć do sąsiedniej: stempel jest wtedy o mniej niż sekundę wcześniejszy, niż był
+/// naprawdę. Kosztu nie ma, bo tego pola nie porządkuje ani jedna linia w drzewie — inaczej niż
+/// `last_used_at`, które zostaje przy sekundach dokładnie po to, żeby porównywało się poprawnie
+/// z każdą wartością wpisaną ręcznie (`memory::notes::Note::last_used_at`).
+fn noticed_now() -> String {
+    let second = super::now_utc();
+    let inside = now_ms().rem_euclid(1_000);
+    format!("{}.{inside:03}Z", second.trim_end_matches('Z'))
+}
+
+/// Jedna para `rule:` / `because:`, dokładnie tak, jak napisał ją model.
+struct Remembered {
+    rule: String,
+    because: String,
+}
+
+/// Pary z odpowiedzi modelu — i ile ich odpadło, bo nie miały uzasadnienia.
+///
+/// Czyta WIERSZAMI, a nie akapitami, i pary składa dopiero `because:`. Implementacja przerywająca
+/// pętlę na pierwszej złej parze gubi dobre pary stojące za nią tak samo jak taka, która nie
+/// sprawdza niczego — a te dwie wady różnią się dla człowieka wszystkim.
+///
+/// Wiersz, który nie zaczyna się żadnym z dwóch kluczy, jest **pomijany**: model prawie zawsze
+/// napisze zdanie wstępu, a odpowiedź odrzucona przez jedno takie zdanie jest turą zapłaconą
+/// za nic (ten sam kierunek, co niezmiennik 5 na drucie).
+fn worth_remembering(said: &str) -> (Vec<Remembered>, usize) {
+    let mut kept: Vec<Remembered> = Vec::new();
+    let mut without_reason = 0;
+    let mut pending: Option<String> = None;
+
+    for raw in said.lines() {
+        // Punktory i pogrubienia zdejmujemy z początku wiersza, bo model pisze listę wtedy, kiedy
+        // prosi się go o listę. Wiersz, który po tym nie zaczyna się kluczem, i tak przepada.
+        let line = raw.trim().trim_start_matches(['-', '*', '#', ' ']).trim();
+
+        if let Some(rule) = after_key(line, "rule:") {
+            // Poprzednia reguła, do której nie doszedł żaden `because:`, odpada dokładnie tutaj:
+            // to jest kształt, w którym brak uzasadnienia przychodzi najczęściej — nie pusta
+            // wartość, tylko wiersz, którego nie ma wcale.
+            if pending.take().is_some() {
+                without_reason += 1;
+            }
+            if rule.is_empty() {
+                without_reason += 1;
+            } else {
+                pending = Some(rule.to_owned());
+            }
+        } else if let Some(because) = after_key(line, "because:") {
+            match pending.take() {
+                // Obecność KLUCZA to nie jest obecność uzasadnienia. `because:` bez treści jest
+                // drugim kształtem, w którym to przychodzi od modelu, i odpada tak samo.
+                Some(rule) if !because.is_empty() => kept.push(Remembered {
+                    rule,
+                    because: because.to_owned(),
+                }),
+                Some(_) => without_reason += 1,
+                None => {}
+            }
+        }
+    }
+
+    // Reguła stojąca na samym końcu odpowiedzi, bez uzasadnienia pod nią.
+    if pending.is_some() {
+        without_reason += 1;
+    }
+    (kept, without_reason)
+}
+
+/// Treść wiersza za tym kluczem — albo `None`, kiedy wiersz nie jest tym kluczem.
+///
+/// Bez rozróżniania wielkości liter: „Rule:" i „rule:" to jedno i to samo zdanie modelu, a para
+/// odrzucona za wielką literę jest parą odrzuconą za nic.
+fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    if line.len() < key.len() || !line.is_char_boundary(key.len()) {
+        return None;
+    }
+    let (head, rest) = line.split_at(key.len());
+    head.eq_ignore_ascii_case(key).then_some(rest.trim())
+}
+
+/// Reguła przycięta do tytułu, czyli do nazwy pliku notatki (powód przy [`TITLE_CAP`]).
+///
+/// Cięcie idzie po granicy ZNAKU, a potem po granicy słowa: pierwsze dlatego, że wycinek
+/// w środku znaku wielobajtowego panikuje, a reguła przychodzi od modelu; drugie dlatego, że
+/// tytuł urwany w połowie słowa czyta się jak plik uszkodzony przy zapisie.
+fn title_from(rule: &str) -> String {
+    let trimmed = rule.trim();
+    if trimmed.chars().count() <= TITLE_CAP {
+        return trimmed.to_owned();
+    }
+    let cut = trimmed
+        .char_indices()
+        .nth(TITLE_CAP)
+        .map_or(trimmed.len(), |(at, _)| at);
+    let end = trimmed[..cut].rfind(char::is_whitespace).unwrap_or(cut);
+    trimmed[..end].to_owned()
 }
 
 /// Zatrzymuje bieg i **wraca dopiero z dowodem**, że nic po nim nie żyje.
@@ -1338,6 +1871,14 @@ enum Turned {
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
     driver: Arc<dyn AgentDriver>,
+    /// Nazwa agenta z BIBLIOTEKI — ta, którą człowiek widzi i pisze (`Backend Dev`).
+    ///
+    /// 2026-08-23 (T-92): notatka o zakresie „ten agent" musi umieć powiedzieć, **którego**
+    /// agenta dotyczy, bo bez tego trzeci zakres nie wchodzi do żadnego promptu (T-80).
+    /// Nazwa efektywna, czyli po nadpisaniu kroku, i nazwa z biblioteki, nie nazwa kafelka:
+    /// `Planned::name` jest etykietą tego jednego pola na płótnie, a plik notatki pisze
+    /// człowiek i zna z niego agenta, nie kafelek.
+    agent_name: String,
     /// Identyfikator sesji przydzielony **z góry**, przed startem procesu [T7 §6.2]. Dzięki
     /// temu wiadomo, pod jakim numerem zapisać krok, zanim vendor cokolwiek powie.
     session: Uuid,
@@ -1442,6 +1983,19 @@ struct AgentJob {
     /// (plan jest czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć przy
     /// wznowieniu).
     plugin_flags: Vec<String>,
+    /// Nazwy, które ten kafelek pożyczył z repozytorium gospodarza — dosłownie z pliku workflow.
+    ///
+    /// Sprawdzone przy PLANOWANIU ([`borrowing_is_possible`]), przepisane dopiero po powstaniu
+    /// katalogu biegu ([`bring_in_what_each_step_borrowed`]). Dwa pola, a nie jedno, bo to są
+    /// dwa różne fakty: o co poproszono i co z tego naprawdę przyszło — a przy jednym polu
+    /// „nie znaleziono" byłoby nie do odróżnienia od „nie proszono".
+    borrows: Chosen,
+    /// …i to, co naprawdę przyszło: fragment argv plus tekst do promptu.
+    ///
+    /// Puste przy planowaniu i wypełniane dopiero przez [`bring_in_what_each_step_borrowed`],
+    /// z tego samego powodu, co [`AgentJob::plugin_flags`]: plan jest czystym rachunkiem, a to
+    /// pole stoi na katalogu, którego w chwili planowania jeszcze nie ma.
+    borrowed: Inherited,
     /// Po ilu minutach bez końca tury odbieramy krokowi robotę. `Duration::MAX` znaczy „nigdy".
     ///
     /// 2026-08-17 (T-35) — do tego dnia `give_up_after_minutes` z definicji agenta NIE MIAŁO
@@ -1787,6 +2341,11 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
              * nie da się potem wyjaśnić (niezmiennik 4). */
             instructions: ask.task.clone(),
             skills: Skills::default(),
+            /* NIC NIE POŻYCZAMY, i to jest ta sama odpowiedź, co przy `overrides` wyżej: wybór
+             * „weź to z tego repozytorium" jest własnością kafelka, a `/ask` kafelka nie ma.
+             * Domyślne, czyli puste — pełne `.claude/` w folderze, który ktoś otworzył, nie
+             * jest zgodą. */
+            borrow: Borrow::default(),
             /* FOLDER PRACY, nie własna kopia. `/ask` jest najczęstszą czynnością dnia, a własna
              * kopia znaczy gałąź i drzewo robocze na każde zdanie — czyli cenę, którą płaci się
              * za ochronę przed kolizją, której przy jednym kroku nie ma z czym mieć
@@ -2509,11 +3068,18 @@ fn plan_agent(
         }
     }
 
+    // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
+    // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
+    // wtedy, gdy krok nigdy nie ruszył. Wyjęta ponad literał struktury, bo pytanie „czy ten
+    // program w ogóle umie przyjąć katalog pluginu" zadajemy właśnie jej — i zadajemy je
+    // ZANIM powstanie katalog biegu.
+    let driver = (setup.drivers)(effective.runs_with);
+    let borrows = what_this_step_borrows(&step.borrow);
+    borrowing_is_possible(setup.project, &driver, &borrows, step)?;
+
     Ok(AgentJob {
-        // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
-        // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
-        // wtedy, gdy krok nigdy nie ruszył.
-        driver: (setup.drivers)(effective.runs_with),
+        driver,
+        agent_name: effective.name.clone(),
         session: Uuid::now_v7(),
         cwd: spot.cwd,
         ours: spot.ours,
@@ -2557,6 +3123,10 @@ fn plan_agent(
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
         plugin_flags: Vec::new(),
+        borrows,
+        // Z tego samego powodu, co `plugin_flags` wyżej: wypełnia to
+        // [`bring_in_what_each_step_borrowed`], kiedy katalog biegu już stoi.
+        borrowed: Inherited::default(),
         // `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`), więc jedzie
         // tu jako `Duration::MAX` — tym samym kształtem, którym `Live::one_turn` opisuje każdy
         // inny krok bez terminu (`Job::Ask | Job::Check | Job::Serve`). Do 2026-08-23 stało tu
@@ -4301,35 +4871,117 @@ fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     }
 }
 
-/// Co ten bieg bierze z repozytorium, w którym pracuje: katalog pluginu z wybranymi
-/// umiejętnościami (jedzie argv) i tekst z learnings oraz podagenta (jedzie promptem).
+/// Co ten kafelek pożycza z repozytorium gospodarza — przełożone z kształtu pliku na pytanie.
 ///
-/// # Dlaczego dziś oddaje zawsze pusto — i czyja to decyzja
+/// Jedno przełożenie, w jednym miejscu: [`Borrow`] jest kształtem pliku na dysku, który ma się
+/// otwierać także za rok, a [`Chosen`] jest pytaniem zadawanym cudzemu katalogowi. Rozpisanie
+/// tego drugi raz gdziekolwiek indziej dałoby dwa znaczenia jednego wyboru (niezmiennik 23).
+fn what_this_step_borrows(borrow: &Borrow) -> Chosen {
+    Chosen {
+        skills: borrow.skills.clone(),
+        learnings: borrow.learnings.clone(),
+        // `agent` w pliku, `subagent` w pytaniu: klucz pliku nazywa półkę, z której pochodzi
+        // (`<projekt>/.claude/agents/`), a nazwa w środku odróżnia go od agenta Loadouta.
+        subagent: borrow.agent.clone(),
+    }
+}
+
+/// Czy to, co kafelek pożyczył, da się w ogóle dowieźć — **zanim powstanie katalog biegu**.
 ///
-/// `Chosen` jest tu **stałą pustą**, bo wybór człowieka nie ma dziś nośnika: nazwy zaznaczonych
-/// pozycji musiałyby przyjść razem z naciśnięciem Start, czyli polem w [`RunRequest`] — a ten
-/// typ mieszka w `commands/mod.rs`, który **nie leży w bloku OWNS** T-57 (`AGENTS.md` §7).
-/// Zbudowanie sobie w zamian własnego źródła prawdy (plik pod `~/.loadout/`, którego nikt nie
-/// zapisuje) byłoby czytaniem artefaktu, którego nie pisze żaden skrypt — czyli niezmiennikiem
-/// 21 złamanym od drugiej strony.
+/// # Dwa pytania, dwie odpowiedzi, obie przed pierwszym procesem (niezmiennik 12)
 ///
-/// **To nie jest wołający na pokaz.** Pusty wybór jest stanem domyślnym z AC-4 i biegnie tu tę
-/// samą drogą, którą pojedzie wybór niepusty: katalog biegu, prompt każdego kroku i argv
-/// sterownika są już spięte i sądzone czterema kryteriami. Brakuje **jednej** rzeczy — pola,
-/// którym ekran powie, co człowiek zaznaczył. Do tego czasu bieg zachowuje się dokładnie tak,
-/// jak obiecuje AC-4: pełne `.claude/` w cudzym repozytorium nie jest zgodą.
+/// **Czy ta nazwa jest u gospodarza.** Cicha alternatywa jest najdroższą wersją tej wady:
+/// człowiek zaznacza rolę, agent nie dostaje ani jednej jej reguły, nic nie pada — bo „agent
+/// nie zna tych reguł" jest z zewnątrz nieodróżnialne od „model nie uznał, że warto po nie
+/// sięgnąć". Odpowiada [`wire::nothing_is_missing`], czyli ta sama funkcja, którą u siebie
+/// woła `wire::from_the_host`: jedno miejsce, jedna definicja słowa „znalezione".
 ///
-/// Liczone RAZ na bieg, nie per krok, dokładnie jak [`Setup::knows`] i z tego samego powodu:
-/// dwa kroki jednego biegu mają czytać ten sam kontekst, a różnicy nie widać nigdzie poza
-/// rachunkiem za długość.
-fn what_the_host_lends(project: &Path, run_dir: &Path) -> Result<Inherited, RunError> {
-    wire::from_the_host(project, run_dir, &Chosen::default()).map_err(|error| {
-        /* `RunError` nie ma wariantu na dziedziczenie, a `commands/mod.rs` nie leży w bloku OWNS
-         * tego zadania. `Io` jest wariantem PRZEZROCZYSTYM, więc niesie zdanie odmowy co do
-         * słowa — a to zdanie jest tu całą treścią: „Loadout was told to bring in the skill
-         * \"x\" …" wymienia pozycję, której zabrakło, i po to zostało napisane. */
-        RunError::Io(io::Error::other(error))
+/// **Czy ten program umie przyjąć katalog pluginu.** Umiejętność ma dokładnie jedną drogę do
+/// procesu — ścieżkę katalogu w argv — więc vendor, który tej drogi nie zna, nie dostanie jej
+/// wcale. Pytamy o to [`AgentDriver::inheriting`] pustym fragmentem, a nie nazwą vendora:
+/// nazwa w tym miejscu byłaby drugim zestawem reguł po stronie rdzenia, czyli dokładnie tym,
+/// jak w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23). Vendor nazywa
+/// **zdanie odmowy** i tylko ono — po to, żeby człowiek wiedział, czy odznaczyć umiejętność,
+/// czy przełączyć program.
+///
+/// Sam tekst do promptu żadnej drogi vendora nie potrzebuje: jedzie stdinem, który przyjmuje
+/// każdy. Krok pożyczający wyłącznie plik roli albo opis podagenta rusza więc u każdego.
+fn borrowing_is_possible(
+    project: &Path,
+    driver: &Arc<dyn AgentDriver>,
+    borrows: &Chosen,
+    step: &AgentStep,
+) -> Result<(), RunError> {
+    if borrows.is_nothing() {
+        // Pusty wybór nie ma czego nie znaleźć — i nie zaglądamy wtedy do cudzego `.claude/`
+        // ani razu. Folder bez tego katalogu jest normalnym stanem cudzego repozytorium
+        // (niezmiennik 5), nie powodem do odmowy.
+        return Ok(());
+    }
+
+    if !borrows.skills.is_empty() && driver.inheriting(&[]).is_none() {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to jego wybór i jego agent.
+            step_id: Some(step.id.clone()),
+            message: format!(
+                "This step borrows a skill from this project, and {} has no way to be handed \
+                 one. Loadout stopped the run instead of starting the step without it: an agent \
+                 that quietly knows less than you picked answers as though there was nothing to \
+                 know. Either untick the skill on this step or give it an agent that runs on a \
+                 different app.",
+                crate::workflow::check::vendor_name(driver.id())
+            ),
+            fix: None,
+        }));
+    }
+
+    wire::nothing_is_missing(project, borrows).map_err(|error| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: Some(step.id.clone()),
+            /* Zdanie co do słowa to, które napisał `inherit`: wymienia i pozycję, i folder,
+             * w którym jej nie było. Przepisane tutaj byłoby drugą kopią jednego zdania,
+             * a druga kopia jest zawsze tą nieaktualną (niezmiennik 23). */
+            message: error.to_string(),
+            fix: None,
+        })
     })
+}
+
+/// Zbiera to, co KAŻDY krok pożyczył, do katalogu tego kroku — po powstaniu katalogu biegu.
+///
+/// Stoi TU, a nie w `plan_agent`, i to jest ta sama granica, która trzyma
+/// [`hand_the_skills_to_the_steps`] w tym samym miejscu: plan jest czystym rachunkiem, a to
+/// jest zapis — i to zapis pod katalog biegu, który dopiero co powstał. Odmowa padła
+/// wcześniej ([`borrowing_is_possible`]), więc tutaj zostaje wyłącznie awaria dysku i stan,
+/// w którym ktoś skasował plik między planowaniem a startem.
+fn bring_in_what_each_step_borrowed(plan: &mut Plan, project: &Path) -> Result<(), RunError> {
+    // Kopia ścieżki, nie pożyczka: `plan.steps` bierzemy niżej mutowalnie.
+    let run_dir = plan.dir.clone();
+    for step in &mut plan.steps {
+        // Klucz kafelka zdjęty ZANIM pożyczymy zadanie mutowalnie — na niego ląduje kropka.
+        let tile_key = step.tile_key.clone();
+        let node_key = step.node_key.clone();
+        let Job::Agent(job) = &mut step.job else {
+            continue;
+        };
+        if job.borrows.is_nothing() {
+            // Krok bez wyboru nie dotyka cudzego katalogu i nie zakłada sobie własnego:
+            // katalog, który powstał, prędzej czy później zostanie komuś podany.
+            continue;
+        }
+        let under = run_dir.join(BORROWED_DIR).join(&node_key);
+        job.borrowed = wire::from_the_host(project, &under, &job.borrows).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: Some(tile_key),
+                message: error.to_string(),
+                fix: None,
+            })
+        })?;
+    }
+    Ok(())
 }
 
 /// Kładzie umiejętności każdego kroku tam, gdzie vendorzy naprawdę zaglądają — **obiema drogami**.
@@ -4403,13 +5055,6 @@ fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> Ru
 struct Live {
     /// Wszystko, co rozstrzygnięto przed startem.
     plan: Plan,
-    /// Co ten bieg wziął z repozytorium gospodarza: fragment argv i tekst do promptu.
-    ///
-    /// Jedna wartość na bieg, policzona raz ([`what_the_host_lends`]), bo katalog pluginu jest
-    /// jeden i jego ścieżka nie ma prawa różnić się między krokami. Trzyma to `Live`, a nie
-    /// [`Plan`], dokładnie z tego powodu, dla którego stoi obok: `Plan` powstaje **przed**
-    /// katalogiem biegu, a dziedziczenie do tego katalogu pisze.
-    inherited: Inherited,
     /// Stan, który zmienia się w trakcie. Zamek jest `std::sync::Mutex`, a każde jego wzięcie
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
@@ -4661,7 +5306,6 @@ impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
     fn new(
         plan: Plan,
-        inherited: Inherited,
         lines: LineSink,
         control: RunControl,
         slots: Limiter,
@@ -4701,7 +5345,6 @@ impl Live {
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         Self {
             plan,
-            inherited,
             book: Mutex::new(Book {
                 status: RunState::Running,
                 asking: false,
@@ -5640,12 +6283,16 @@ impl Live {
     /// i odpowiedzią bez nich: „agent nie zna umiejętności" jest z zewnątrz nieodróżnialne od
     /// „model nie uznał, że warto jej użyć". Zdanie odmowy jedzie tą samą drogą, co nieudany
     /// start procesu — wierszem na ekranie kroku i polem `error` w `run.json`.
+    ///
+    /// Skojarzona, nie metoda na `&self`, i to jest zdanie o tym zadaniu: do 2026-08-23 czytała
+    /// stąd `Live::inherited`, czyli JEDEN wybór na cały bieg. Odkąd wybór jest własnością
+    /// kafelka, odpowiedź zależy wyłącznie od argumentów — a `self` w podpisie sugerowałby, że
+    /// gdzieś w biegu stoi drugie źródło tego, co ten krok pożyczył.
     fn carrying_what_we_inherited(
-        &self,
         driver: &Arc<dyn AgentDriver>,
+        from_the_host: &[String],
         of_the_step: &[String],
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
-        let from_the_host = self.inherited.flags();
         if from_the_host.is_empty() && of_the_step.is_empty() {
             // Nic do niesienia i nie ma o co pytać: ten sam sterownik, bez klonowania czegokolwiek
             // poza licznikiem.
@@ -5676,15 +6323,100 @@ impl Live {
         }
     }
 
+    /// Sterownik tego kroku z **jego własnym plikiem ustawień** — albo odmowa.
+    ///
+    /// # Co ten plik naprawdę robi (zmierzone 2026-08-23, T-92)
+    ///
+    /// Niesie dwie rzeczy naraz, bo `--settings` wskazuje jeden dokument i drugiego nośnika
+    /// po prostu nie ma:
+    ///
+    /// 1. **Auto-pamięć tego kroku wraca do biegu.** W `system/init` każdego kroku Claude'a
+    ///    `memory_paths.auto` wskazywał `~/.claude/projects/<projekt>/memory/`, czyli katalog,
+    ///    który człowiek dzieli ze swoimi sesjami interaktywnymi. Krok Loadouta pisał tam bez
+    ///    pytania i bez śladu w biegu: nikt tego nie widział, nikt nie kurował, a zdanie napisane
+    ///    przez agenta w cudzym biegu wracało potem do promptu człowieka jako jego własna
+    ///    notatka. [T6 §10.4] nazywa przekierowanie tego katalogu per bieg „najlepszym leverem
+    ///    znalezionym w researchu".
+    /// 2. **Odmowy gospodarza zaczynają obowiązywać.** `--setting-sources ""` odcina
+    ///    `.claude/settings.json` projektu w całości — razem z tym, co gospodarz naprawdę chciał
+    ///    ZABRONIĆ. Wraca to wyłącznie jako tekst, przepisany przez [`super::super::engine::drivers::host::deny_rules`],
+    ///    i wchodzi do tego samego pliku.
+    ///
+    /// **Per KROK, nie per bieg**, i klucz jest ten sam, którym bieg nazywa `work/<krok>`: dwa
+    /// kroki jednego biegu bywają dwoma różnymi agentami, a jeden katalog pamięci na obu daje
+    /// notatkę, o której nie wiadomo, czyja jest.
+    ///
+    /// # Odmowa czyta się z TYPU, nie z nazwy vendora (poprawione 2026-08-23, druga runda T-92)
+    ///
+    /// `Some(Err(…))` znaczy „ten sterownik plik bierze i nie udało się go napisać" — krok wtedy
+    /// **nie rusza**, bo bez tego pliku pisze pamięć do katalogu człowieka i nie egzekwuje ani
+    /// jednej odmowy gospodarza. `None` znaczy „ten vendor nie ma gdzie tego przyjąć" i krok
+    /// rusza normalnie: tak odpowiada Codex i tak odpowiada każdy dubel silnika, który o tym
+    /// szwie nic nie wie.
+    ///
+    /// Pierwsza runda miała tu `None if driver.id() == "claude"`, czyli to samo rozróżnienie
+    /// zgadywane po etykiecie vendora. Zmierzone: odmawiało startu każdemu dublerowi podającemu
+    /// się za `"claude"`, który tej metody nie implementuje — a `product_path_end_to_end`,
+    /// wyrocznia całej drogi produktu, jest właśnie takim dublerem i poszła na czerwono przy
+    /// sześciu zielonych kryteriach. Wyrocznia stoi poza blokiem `OWNS` tego zadania i nie ona
+    /// była tu wadą.
+    fn with_its_own_settings(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+        driver: &Arc<dyn AgentDriver>,
+    ) -> anyhow::Result<Arc<dyn AgentDriver>> {
+        let wanted = crate::engine::drivers::StepSettings {
+            dir: self.plan.dir.clone(),
+            memory: self.step_memory_dir(id),
+            // Z KATALOGU ROBOCZEGO KROKU, nie z katalogu projektu biegu: krok pracujący we
+            // własnej kopii plików ma tam swoją kopię `.claude/`, a odmowy czyta się z tego
+            // repo, w którym agent naprawdę stoi.
+            deny: crate::engine::drivers::host::deny_rules(&job.cwd),
+        };
+        match driver.with_settings(&wanted) {
+            Some(Ok(carrying)) => {
+                // Katalog zakłada TA warstwa, nie sterownik: układ katalogów biegu jest jej
+                // wiedzą (`docs/ARCHITECTURE.md` §8), a sterownik, który wybiera sobie miejsce,
+                // wybiera `$TMPDIR` — czyli artefakt biegu poza biegiem. I dopiero TERAZ, kiedy
+                // wiadomo, że ktoś tam napisze: pusty `mem/<krok>` w biegu vendora, który tego
+                // pliku nie umie wczytać, jest katalogiem bez ani jednego czytelnika
+                // (niezmiennik 21).
+                fs::create_dir_all(&wanted.memory)?;
+                Ok(carrying)
+            }
+            // Powód od sterownika zostaje W ŁAŃCUCHU, pod zdaniem dla człowieka: „nie udało się
+            // napisać pliku" bez ścieżki i bez błędu systemu jest odmową, której nikt nie naprawi.
+            Some(Err(error)) => Err(error.context(
+                "this agent app could not be given its own settings file, so Loadout did not \
+                 start the step: without it the step writes what it learns into the folder you \
+                 share with your own sessions, and forbids less than this project asked for.",
+            )),
+            None => Ok(Arc::clone(driver)),
+        }
+    }
+
+    /// `<katalog biegu>/mem/<krok>` — dokąd ten krok pisze swoją auto-pamięć.
+    ///
+    /// Klucz KAFELKA, ten sam, którym nazywa się `work/<krok>`: rundy jednej pętli dzielą kafelek,
+    /// więc dzielą też pamięć — i to jest właściwa odpowiedź, bo to dalej ten sam agent robiący
+    /// tę samą robotę drugi raz.
+    fn step_memory_dir(&self, id: StepId) -> PathBuf {
+        self.plan
+            .dir
+            .join(STEP_MEMORY_DIR)
+            .join(&self.plan.steps[id].tile_key)
+    }
+
     /// Składa bezpieczny manifest dokładnie w kolejności, w której powstał finalny prompt.
     fn evidence_for_agent(
         &self,
         id: StepId,
         prompt_bytes: usize,
         context: Vec<ContextSource>,
+        borrowed: &Inherited,
     ) -> EvidenceTarget {
-        let mut inherited_context = self
-            .inherited
+        let mut inherited_context = borrowed
             .sources()
             .iter()
             .map(|source| ContextSource {
@@ -5759,7 +6491,7 @@ impl Live {
         // i do każdej następnej rundy pętli — więc cudze reguły rosłyby o kopię na rundę.
         // `applied_to` rozstrzyga też, że `system_append` wraca nietknięty: treść w tym polu
         // staje się `--append-system-prompt`, czyli argumentem widocznym w `ps` (niezmiennik 9).
-        let spec = self.inherited.applied_to(RunSpec {
+        let spec = job.borrowed.applied_to(RunSpec {
             run_id: job.session,
             cwd: job.cwd.clone(),
             // Instrukcja i indeks jadą jako DANE. Ta warstwa nie skleja komendy i nie zna ani
@@ -5791,7 +6523,7 @@ impl Live {
         // możliwości nie ma i to jest cała treść tych czterech linii. Sterownik, który po cichu
         // zignorowałby przyniesioną ścieżkę katalogu pluginu, dałby bieg, w którym człowiek
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
-        let target = self.evidence_for_agent(id, spec.prompt.len(), context);
+        let target = self.evidence_for_agent(id, spec.prompt.len(), context, &job.borrowed);
         let evidence = target.clone();
         let configured = (|| -> anyhow::Result<Arc<dyn AgentDriver>> {
             let configuration = self.vendor_arguments_for(id, job)?;
@@ -5812,14 +6544,16 @@ impl Live {
                     None => Arc::clone(&job.driver),
                 }
             };
-            let driver = self.carrying_what_we_inherited(&driver, &job.plugin_flags)?;
-            /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH TRZECH OPAKOWAN JEST
+            let driver =
+                Self::carrying_what_we_inherited(&driver, job.borrowed.flags(), &job.plugin_flags)?;
+            /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH OPAKOWAN JEST
              * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
              * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.
              * Connections ida pierwsze, bo `configured` startuje od `job.driver`; dziedziczenie
              * drugie; dowody ostatnie, bo tylko wtedy nadajnik dowodow siedzi na sterowniku,
              * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
              * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
+            let driver = self.with_its_own_settings(id, job, &driver)?;
             match driver.with_evidence(target) {
                 Some(driver) => Ok(driver),
                 /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do

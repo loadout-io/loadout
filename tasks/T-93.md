@@ -32,6 +32,34 @@ przechodzić).
 - **Agent:** `rust-core` na AC-1, AC-2, potem `frontend` na AC-3 — jeden worktree, jedna bramka.
 - **Druga opinia:** inny vendor niż pisarz (D3).
 
+## Poszerzenie zakresu — 2026-08-23, dwa przeoczenia w moim bloku OWNS
+
+Oba są mechaniczne i oba zgłosił pisarz zamiast obejścia; drugi raz w tej fazie, więc zapisuję
+je razem z powodem.
+
+**1. Nowe pole w `AgentStep` przewraca KAŻDY literał tej struktury.** Jest ich pięć: dwa w twoim
+OWNS, trzy poza nim. Do OWNS dochodzą więc `src-tauri/src/import/translate.rs`,
+`src-tauri/tests/flow_todo_app.rs` i `src-tauri/tests/it/product_path_end_to_end.rs`
+z mandatem **na jedną linię każdy**: dopisujesz tam wyłącznie inicjalizator nowego pola
+wartością domyślną i **nic poza tym** — ani asercji, ani fikstury, ani innego pola.
+Żaden z tych trzech plików nie jest niczyim kryterium (`grep "check:" tasks/*.md` ich nie zna),
+ale `product_path_end_to_end.rs` niesie asercję promptu chronioną mandatem T-86, a
+`flow_todo_app.rs` jest wyrocznią całego przepływu — ich treści nie tykasz.
+
+`AgentStep` nie może dostać `Default` (`copies: 0` to krok, który nigdy nie biegnie), a trzymanie
+wyboru w `#[serde(flatten)] extra` jest wykluczone: to pole ma w komentarzu napisane, że niesie
+klucze, których **ta** wersja nie zna, więc wybór człowieka byłby tam kłamstwem, a nazwa klucza
+przeniosłaby się do literału napisowego w `run.rs`.
+
+**2. `src-tauri/commands.golden.txt` dochodzi do OWNS**, bo bez niego AC-3 domyka się w kółko
+i każde wyjście jest czerwone: rejestracja bez wiersza w goldenie to czerwień
+(`ipc_commands_registered.rs` asertuje równość zbiorów), wiersz w lustrze bez goldena to
+czerwień, a rezygnacja z komendy to wiersz „Borrow from this project" bez źródła danych, czyli
+martwa kontrolka zakazana wprost przez samo AC-3. Ten sam plik mają w OWNS wszystkie zadania,
+które kiedykolwiek dokładały komendę.
+
+Kryteria bez zmian — dochodzą wyłącznie ścieżki.
+
 ## AC-1 Krok z wyborem dostaje to, co wybrał, i nic więcej
 check: cargo test --test it a_step_borrows_from_the_host::
 expect: (\d+) passed
@@ -74,6 +102,10 @@ src-tauri/src/workflow/check.rs
 src-tauri/src/commands/run.rs
 src-tauri/src/commands/mod.rs
 src-tauri/src/ipc.rs
+src-tauri/commands.golden.txt
+src-tauri/src/import/translate.rs
+src-tauri/tests/flow_todo_app.rs
+src-tauri/tests/it/product_path_end_to_end.rs
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/a_step_borrows_from_the_host.rs
 src-tauri/tests/it/borrowing_what_is_not_there_refuses.rs

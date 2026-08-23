@@ -20,6 +20,8 @@
 
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 /// Pisanie do siebie: katalog pluginu biegu i fragment argv z `--plugin-dir`.
 pub mod rewrite;
 
@@ -43,6 +45,31 @@ pub struct HostSkill {
     pub name: String,
     /// Pierwszy wiersz `SKILL.md`, dosłownie. Dla pliku z front-matterem jest to `---`.
     pub first_line: String,
+}
+
+/// Co ten folder ma do pożyczenia — trzy półki `<projekt>/.claude/`, same nazwy.
+///
+/// SAME NAZWY, ANI JEDNEGO BAJTU TREŚCI, i to jest cały powód, dla którego ten typ istnieje
+/// obok [`HostSkill`]. Ta lista jedzie na ekran wyboru, a ekran wyboru odpowiada na pytanie
+/// „co MOŻNA stąd wziąć"; treść czyta dopiero bieg, i to wyłącznie tę, którą człowiek zaznaczył.
+/// Wysłanie treści na ekran byłoby wciągnięciem cudzego, nieaudytowanego tekstu do okna, zanim
+/// ktokolwiek się na to zgodził.
+///
+/// Trzy listy, a nie jedna, bo to są trzy różne rzeczy o dwóch różnych drogach do procesu —
+/// dokładnie ten sam podział, co w [`wire::Chosen`]. Jedna wspólna lista nazw zlepiłaby je
+/// w jedno i pierwszy wybór trafiłby na niewłaściwą półkę.
+///
+/// Pusty wynik jest NORMALNĄ odpowiedzią o cudzym repozytorium, nie awarią (niezmiennik 5):
+/// większość folderów nie ma `.claude/` w ogóle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lendable {
+    /// Nazwy katalogów spod `.claude/skills/`, posortowane.
+    pub skills: Vec<String>,
+    /// Nazwy plików ról spod `.claude/learnings/`, bez rozszerzenia, posortowane.
+    pub learnings: Vec<String>,
+    /// Nazwy podagentów spod `.claude/agents/`, bez rozszerzenia, posortowane.
+    pub subagents: Vec<String>,
 }
 
 /// Co powstało po przepisaniu: katalog pluginu biegu i nazwy, które do niego weszły.
@@ -78,18 +105,23 @@ pub enum Error {
     /// bo „agent nie zna tej umiejętności" jest z zewnątrz nieodróżnialne od „model nie
     /// uznał, że warto jej użyć". Ta sama cicha porażka, przed którą stoi całe to zadanie.
     ///
-    /// Komunikat **wymienia nazwę**: odmowa, która nie mówi, której pozycji dotyczy,
-    /// zamienia jedno odznaczenie w przeszukiwanie listy.
+    /// Komunikat **wymienia nazwę I FOLDER**: odmowa, która nie mówi, której pozycji dotyczy,
+    /// zamienia jedno odznaczenie w przeszukiwanie listy — a odmowa bez folderu zostawia
+    /// człowieka z pytaniem, o który z jego projektów chodzi. Ta sama rola bywa w jednym
+    /// repozytorium i nie ma jej w drugim, a wybór jedzie z kafelka, który folderu nie zna.
     #[error(
-        "Loadout was told to bring in the {what} \"{name}\", and this project does not have \
-         one by that name. Nothing was copied and the run stopped here: leaving it out \
-         quietly would give the agent less than you picked, and no screen would say so."
+        "Loadout was told to bring in the {what} \"{name}\", and the project in {} does not \
+         have one by that name. Nothing was copied and the run stopped here: leaving it out \
+         quietly would give the agent less than you picked, and no screen would say so.",
+        .folder.display()
     )]
     NotInTheHost {
         /// Czego dotyczy nazwa, po ludzku: `skill`, `learnings file`, `subagent`.
         what: &'static str,
         /// Nazwa, którą podał człowiek — dosłownie tak, jak ją podał.
         name: String,
+        /// Korzeń repozytorium, w którym szukaliśmy.
+        folder: PathBuf,
     },
 }
 

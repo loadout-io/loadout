@@ -18,7 +18,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Note, WorkflowFile } from '../../state/workflows';
+import type { HostMaterial, Note, WorkflowFile } from '../../state/workflows';
 import type { WorkflowEntry } from './list/store';
 
 /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
@@ -53,4 +53,20 @@ export function remove(path: string): Promise<void> {
  */
 export function check(workflow: WorkflowFile): Promise<Note[]> {
   return invoke<Note[]>('check_workflow', { workflow });
+}
+
+/**
+ * Co folder tego workspace ma do pożyczenia krokom: skille, role z learnings, podagenci.
+ *
+ * Same nazwy, ani jednego bajtu treści — cudze repozytorium to tekst, którego nikt nie
+ * audytował, a wiersz wyboru odpowiada na pytanie „co da się stąd wziąć". Treść czyta dopiero
+ * bieg i wyłącznie tę, którą człowiek zaznaczył.
+ *
+ * `= null`, a nie `folder?: string`, i to nie jest kwestia stylu — powód w całości stoi przy
+ * `listSkills` w `src/sections/skills/io.ts`: `JSON.stringify` zdejmuje klucz o wartości
+ * `undefined`, a Tauri dopasowuje argumenty PO NAZWIE, więc brakujący klucz jest odrzuconym
+ * wywołaniem, nie mniejszym.
+ */
+export function listHostMaterial(folder: string | null = null): Promise<HostMaterial> {
+  return invoke<HostMaterial>('list_host_material', { folder });
 }

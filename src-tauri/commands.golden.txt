@@ -26,11 +26,13 @@ delete_skill
 delete_trigger
 delete_workflow
 delete_workspace
+discard_note
 draft_skill
 forget_run_branches
 install_skill
 list_agents
 list_handoffs
+list_host_material
 list_notes
 list_processes
 list_runs
