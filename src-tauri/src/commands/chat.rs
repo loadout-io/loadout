@@ -37,8 +37,8 @@ use uuid::Uuid;
 
 use super::Drivers;
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec, ToAgent,
-    ValidatedImages, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
+    RunSpec, ToAgent, ValidatedImages, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
@@ -47,7 +47,7 @@ use crate::evidence::{
     SafeInputManifest, TurnCounters,
 };
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, policy_of};
+use crate::library::agents::{Agent, effort_level, policy_of};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -537,6 +537,18 @@ impl Lead {
     #[must_use]
     pub fn policy(&self) -> Policy {
         policy_of(self.agent.file_access)
+    }
+
+    /// Ile ten lider ma myśleć — **tą samą tabelą**, którą czyta krok biegu
+    /// ([`crate::library::agents::effort_level`]).
+    ///
+    /// Ten sam powód, co przy [`Lead::policy`] linię wyżej: tabela stoi przy szczeblu, a nie
+    /// w module biegu, bo rozmowa nie ma prawa zależeć od `commands::run`. Druga kopia, choćby
+    /// dziś odpowiadała tak samo, rozjeżdża się w dniu, w którym ktoś przeceluje jedno ramię —
+    /// i wtedy lider myśli inaczej niż krok tego samego agenta, a nic tego nie mówi.
+    #[must_use]
+    pub fn effort(&self) -> &'static str {
+        effort_level(self.agent.thinking)
     }
 
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
@@ -1431,7 +1443,7 @@ impl Threads {
         /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
          * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
          * jednej gałęzi: actor dostaje jedną wartość z pliku i zachowuje kolejność tur. */
-        let driver = drivers(lead.agent.runs_with);
+        let driver = thinking_as_the_step_does(drivers(lead.agent.runs_with), lead);
         thread
             .say_with_images(
                 driver,
@@ -1537,6 +1549,32 @@ async fn read_along(
 
 /// Startuje sesję z pierwszym zdaniem, ale jeszcze nie uruchamia czytnika odpowiedzi.
 ///
+/// Sterownik rozmowy niosący szczebel „ile myśleć" tego lidera — tym samym szwem, co krok biegu.
+///
+/// # Dlaczego to jest opakowanie, a nie pole w [`RunSpec`]
+///
+/// `RunSpec` nie ma `Default` i konstruuje go w tym drzewie ponad trzydzieści miejsc, więc nowe
+/// pole w literale byłoby trzydziestoma plikami zmienionymi po to, żeby dowieźć jedną flagę.
+/// `DriverConfiguration.arguments` jest już kanałem na „gotowy fragment argv tej jednej sesji" —
+/// tędy jadą zatwierdzone Connections i tędy jedzie to.
+///
+/// Sterownik bez tego szwu oddaje siebie samego i to jest poprawna odpowiedź, nie awaria: pusty
+/// fragment znaczy „ten vendor nie ma czym tego przyjąć", a `configured`, które odpowiedziało
+/// `None`, to atrapa spoza produkcyjnej fabryki. Odmowa rozmowy z powodu USTAWIENIA (nie zgody
+/// człowieka, jak przy Connections) byłaby liderem, który nie chce rozmawiać, bo ktoś przesunął
+/// suwak.
+fn thinking_as_the_step_does(driver: Arc<dyn AgentDriver>, lead: &Lead) -> Arc<dyn AgentDriver> {
+    let arguments = driver.effort_argv(lead.effort());
+    if arguments.is_empty() {
+        return driver;
+    }
+    let configuration = DriverConfiguration {
+        arguments,
+        ..DriverConfiguration::default()
+    };
+    driver.configured(&configuration).unwrap_or(driver)
+}
+
 /// Wolna funkcja, nie metoda, i powód jest twardy: `&Chat` nie jest `Send`, bo uchwyt sesji jest
 /// `Send` ale nie `Sync`, a `&T: Send` wymaga `T: Sync`. Pożyczka `self` przeżywająca `await`
 /// uczyniłaby całą komendę nie-`Send`, czego Tauri nie przyjmuje.

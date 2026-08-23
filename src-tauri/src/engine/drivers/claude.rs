@@ -141,6 +141,13 @@ const TRANSPORT: [&str; 6] = [
 /// w tym miejscu przechodzi każde sprawdzenie pytające o obecność flagi i nie izoluje niczego.
 const LEAN_CONTEXT: [&str; 3] = ["--strict-mcp-config", "--setting-sources", ""];
 
+/// Flaga, którą to CLI przyjmuje poziom wysiłku. Zmierzone 2026-08-23 na 2.1.241:
+/// `--effort <level>` z wartościami `low, medium, high, xhigh, max`.
+///
+/// Stoi jako stała, a nie literał w [`AgentDriver::effort_argv`], bo nazwa flagi jest FAKTEM
+/// O VENDORZE i ma być czytelna razem z resztą wiersza — tak samo jak [`TRANSPORT`] wyżej.
+const EFFORT: &str = "--effort";
+
 /// `subtype` linii `system`, która ogłasza sesję, model, narzędzia i zdolności [T1 §4.1].
 const INIT: &str = "init";
 
@@ -2484,6 +2491,19 @@ impl AgentDriver for ClaudeDriver {
         Some(Arc::new(
             self.clone().with_configuration(configuration.clone()),
         ))
+    }
+
+    /// `--effort <poziom>` — cała wiedza tego adaptera o szczeblu „ile myśleć".
+    ///
+    /// Zmierzone 2026-08-23 na 2.1.241: `--effort <level>` przyjmuje `low, medium, high, xhigh,
+    /// max`. Poziom przychodzi gotowy z jedynej tabeli (`library::agents::effort_level`), więc
+    /// tu nie ma ani jednego `match` — dopisanie go byłoby drugą kopią tamtej tabeli, czyli
+    /// dokładnie tym, przed czym stoi niezmiennik 23.
+    ///
+    /// Para „flaga, wartość" i nic poza tym: flaga bez wartości połknęłaby następny argument
+    /// jako swój, a to jest ta sama pomyłka, którą przy `--plugin-dir` opisuje `command`.
+    fn effort_argv(&self, level: &str) -> Vec<String> {
+        vec![EFFORT.to_owned(), level.to_owned()]
     }
 
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
