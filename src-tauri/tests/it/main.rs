@@ -28,7 +28,11 @@
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
+mod a_note_remembers_when_it_was_used;
+mod a_run_leaves_suggestions;
 mod a_skill_list_says_what_each_one_is_for;
+mod a_suggestion_can_be_discarded;
+mod a_suggestion_needs_a_because;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
 mod agent_tools_reach_the_argv;
@@ -52,6 +56,7 @@ mod claude_argv_policy;
 mod claude_argv_transport;
 mod claude_cancel_escalation;
 mod claude_completion;
+mod claude_memory_stays_in_the_run;
 mod claude_rate_limit;
 mod claude_session_process;
 mod claude_unknown_events;
