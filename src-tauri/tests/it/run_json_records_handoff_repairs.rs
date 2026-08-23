@@ -53,7 +53,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,7 +80,7 @@ const VENDOR: &str = "fake";
 
 /// Ile czekamy na bieg, zanim uznamy go za zawieszony. Bieg, który wisi, jest dla bramki
 /// „nie uruchomiło się" (rc 124), a nie czerwienią — więc limit stoi tutaj, w teście.
-const PATIENCE: Duration = Duration::from_secs(60);
+const PATIENCE: Duration = Duration::from_mins(1);
 
 /// Trzy nagłówki, o które prosi umowa — po nazwie, małymi literami.
 const THE_THREE: [&str; 3] = ["answer", "evidence", "open"];
@@ -361,7 +361,7 @@ fn forget_the_record(run: &mut Value) {
 ///
 /// Świeżej, bo bieg zapisał już swoje wiersze do własnej bazy, a `UNIQUE (run_id, node_key)`
 /// odmówiłby drugiego wstawienia tego samego biegu — i wyglądałoby to jak wada odbudowy.
-async fn rebuild_and_read(db: &PathBuf, run_dir: &PathBuf) -> Result<Vec<String>, Box<dyn Error>> {
+async fn rebuild_and_read(db: &Path, run_dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let store = Store::open(db)?;
     store.rebuild_from(run_dir).await?;
     let rows = {

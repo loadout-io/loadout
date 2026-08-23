@@ -41,7 +41,13 @@
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//
+// `too_many_lines` **wyłącznie dodane**, nie w miejsce niczego, i z tego samego powodu, co
+// w dwóch pozostałych plikach tego zadania: cztery punkty tego kryterium mierzą JEDEN bieg
+// trzech kroków, dzielących jedną ławkę i jedną migawkę tego, co zobaczył dubler. Cięcie po
+// granicy funkcji znaczyłoby trzy osobne biegi albo stan dzielony między testami, które cargo
+// uruchamia równolegle.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -69,7 +75,7 @@ const VENDOR: &str = "fake";
 
 /// Ile czekamy na bieg, zanim uznamy go za zawieszony. Bieg, który wisi, jest dla bramki
 /// „nie uruchomiło się" (rc 124), a nie czerwienią — więc limit stoi tutaj, w teście.
-const PATIENCE: Duration = Duration::from_secs(60);
+const PATIENCE: Duration = Duration::from_mins(1);
 
 /// Zdanie, po którym poznajemy blok z AC-1. Bez niego nie ma czego pytać o limit.
 const OPENS: &str = "Your last message";

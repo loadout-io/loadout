@@ -70,6 +70,7 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -95,7 +96,7 @@ const VENDOR: &str = "fake";
 
 /// Ile czekamy na bieg, zanim uznamy go za zawieszony. Bieg, który wisi, jest dla bramki
 /// „nie uruchomiło się" (rc 124), a nie czerwienią — więc limit stoi tutaj, w teście.
-const PATIENCE: Duration = Duration::from_secs(60);
+const PATIENCE: Duration = Duration::from_mins(1);
 
 /// Zdanie, po którym poznajemy początek bloku. Wszystko od niego do końca promptu jest blokiem.
 ///
@@ -319,10 +320,13 @@ async fn every_agent_step_ends_its_prompt_with_the_same_block() -> Result<(), Bo
 
     // I to samo pytanie zadane naszemu zapisowi, nie naszej pamięci o nim.
     let scratch = TempDir::new()?;
-    let body = asked_for
-        .iter()
-        .map(|name| format!("## {name}\nwhat this step found.\n\n"))
-        .collect::<String>();
+    let mut body = String::new();
+    for name in &asked_for {
+        // `write!` do `String`, nie `map(format!).collect()`: ten drugi alokuje bufor pośredni na
+        // każdą sekcję (clippy `format_collect`), a zapis do `String` nie ma jak zawieść — błąd
+        // może zwrócić wyłącznie sam formatter.
+        let _ = write!(body, "## {name}\nwhat this step found.\n\n");
+    }
     let written = handoff::write_handoff(scratch.path(), draft(), &body)?;
     assert!(
         written.repaired.is_empty() && !written.truncated,
