@@ -94,9 +94,19 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
       {notes.length > 0 ? (
         <div className="flex flex-col gap-1">
           <span className="text-label text-muted">{howMany(notes)}</span>
-          {notes.map((note) => (
+          {/* KLUCZ Z POZYCJI, NIE Z TREŚCI — naprawa z 2026-08-23, z konsoli okna właściciela:
+              „Encountered two children with the same key, `warning:s_3:"New step" and "New step"
+              can run at the same time…`". Walidator zgłasza tę regułę PER PARĘ kroków, a zdanie
+              nazywa je po nazwie i kropkuje na pierwszym z pary — więc trzy nienazwane kafelki
+              („New step") dają trzy uwagi identyczne co do bajtu. React ostrzega wprost, że przy
+              zdublowanym kluczu może wiersz POMINĄĆ, a uwaga, której nie widać, jest gorsza od
+              tej, która się powtarza.
+
+              Uwagi przychodzą z jednego wywołania walidatora i lista nie jest sortowana ani
+              filtrowana w miejscu, więc pozycja jest tu stabilna między renderami. */}
+          {notes.map((note, at) => (
             <div
-              key={`${note.level}:${note.stepId ?? ''}:${note.message}`}
+              key={`${String(at)}:${note.level}:${note.stepId ?? ''}`}
               className="flex items-baseline gap-2"
             >
               <button

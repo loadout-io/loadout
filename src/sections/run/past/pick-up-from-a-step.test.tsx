@@ -55,6 +55,7 @@ const OPENED: PastRun = {
   when: SHIP.when,
   title: SHIP.title,
   state: SHIP.state,
+  workflowFile: 'ship-a-feature.json',
   steps: [
     {
       id: PLAN_RAN,

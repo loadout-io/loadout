@@ -117,7 +117,48 @@ pub fn is_a_repo(project: &Path) -> bool {
 ///
 /// `dest` jeszcze nie istnieje — `git worktree add` wymaga, żeby nie istniał, a kopia i tak
 /// zakłada go sama.
+/// Czy w tym repozytorium jest coś, co ta nazwa wskazuje.
+///
+/// Pytanie zadane PRZED `git worktree add`: nieistniejący punkt startu odmawia całego biegu,
+/// a gałąź po skasowanym biegu znika w normalnym trybie pracy. `^{commit}` żąda commitu, więc
+/// nazwa wskazująca na drzewo albo na tag adnotowany nie przejdzie tu jako punkt startu.
+#[must_use]
+pub fn names_a_commit(project: &Path, name: &str) -> bool {
+    git(
+        project,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{name}^{{commit}}"),
+        ],
+    )
+    .is_ok()
+}
+
 pub fn make(project: &Path, dest: &Path, branch: &str) -> Result<Made, Trouble> {
+    make_from(project, dest, branch, "HEAD")
+}
+
+/// To samo, ale drzewo odbija się od WSKAZANEGO punktu, nie od `HEAD`.
+///
+/// # Po co to istnieje
+///
+/// 2026-08-23, zmierzone na biegu właściciela. Wznowienie z historii niesie przekazania
+/// poprzedniego biegu, a **nie niosło jego pracy**: świeża kopia powstawała z `HEAD`, więc krok
+/// „Front" dostawał czysty checkout i przepisywał od zera 164 pliki, które poprzedni bieg
+/// zacommitował na swojej gałęzi — a sędzia obok orzekał na pustym drzewie i pisał „nie mam czego
+/// porównywać". Praca poprzedniego biegu leży na `loadout/<tamten bieg>/<kafelek>` i to jest
+/// punkt, od którego wznowienie ma zacząć.
+///
+/// # Niescommitowana praca człowieka DALEJ jedzie z nim, i dalej liczona od `HEAD`
+///
+/// Bo to jest różnica względem tego, co człowiek ma u siebie, a nie względem cudzej gałęzi.
+/// Kiedy jego zmiany dotykają tych samych plików, co poprzedni bieg, `git apply` ODMAWIA —
+/// i to jest poprawne zachowanie: cicha trójstronna scalanka zostawiłaby w drzewie znaczniki
+/// konfliktu, na których agent pracowałby jak na kodzie. Odmowa jest głośna i zatrzymuje bieg
+/// przed pierwszym procesem.
+pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Result<Made, Trouble> {
     if !is_a_repo(project) {
         copy_tree(project, dest).map_err(Trouble::Copying)?;
         return Ok(Made {
@@ -141,7 +182,7 @@ pub fn make(project: &Path, dest: &Path, branch: &str) -> Result<Made, Trouble> 
             "-b",
             branch,
             &dest.display().to_string(),
-            "HEAD",
+            from,
         ],
     )
     .map_err(Trouble::Git)?;

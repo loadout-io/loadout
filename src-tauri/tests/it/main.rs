@@ -155,6 +155,7 @@ mod recovery_records_boot_time;
 mod recovery_runs_at_startup;
 mod recovery_status_table;
 mod recovery_unreadable_rows;
+mod resume_starts_from_the_work_that_was_done;
 mod run_commands_registered;
 mod run_reaches_the_pump;
 mod run_stop_waits_for_proof;

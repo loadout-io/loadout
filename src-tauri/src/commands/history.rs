@@ -40,9 +40,11 @@
 //!   historia czytana z indeksu znikałaby po jego skasowaniu, czyli dokładnie wtedy, kiedy
 //!   niezmiennik 4 obiecuje, że nic nie ginie.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::handoffs::{HandoffWire, handoffs_of_run, run_dirs};
 use crate::engine::drivers::claude::ClaudeDecoder;
@@ -117,6 +119,15 @@ pub struct PastRunWire {
     pub title: String,
     /// Słowo z drutu; tłumaczy je okno.
     pub state: String,
+    /// Nazwa DZISIEJSZEGO pliku workflow, z którego ten bieg pochodzi — albo pusta, kiedy tego
+    /// workflow nie ma już w bibliotece.
+    ///
+    /// 2026-08-23 — POLE POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: `/stop` odpowiedziało
+    /// „Nothing is running." nad pracującym agentem. Bieg wznowiony z historii nie meldował się
+    /// oknu, bo okno nie miało czym go nazwać — a „czy coś biegnie" to w całej aplikacji nazwa
+    /// pliku (`state/run.ts`). Szukane po IDENTYFIKATORZE z `run.json`, nie po nazwie: nazwa
+    /// pliku jest sluggiem tytułu i zmienia się razem z nim.
+    pub workflow_file: String,
     /// Kroki w kolejności z `run.json`, czyli w kolejności z grafu.
     pub steps: Vec<PastStepWire>,
     /// Co kroki oddały sobie nawzajem — te same pliki, które pokazuje sekcja przekazań.
@@ -245,6 +256,10 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         when: head.when,
         title: head.title,
         state: head.state,
+        workflow_file: read_description(&dir)
+            .map(|file| file.workflow_id)
+            .and_then(|id| file_named(&id))
+            .unwrap_or_default(),
         steps,
         // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
         // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
@@ -260,6 +275,9 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
 /// z tego samego powodu — plik po ręcznej edycji zostaje wierszem, a nie znika.
 #[derive(Debug, Deserialize)]
 struct Description {
+    /// Identyfikator workflow, z którego ten bieg poszedł.
+    #[serde(default)]
+    workflow_id: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -448,4 +466,28 @@ fn recorded_lines(run_dir: &Path, step: &str, agent: &str) -> Vec<Line> {
     // mniej, niż się wydarzyło. Najgorszy rodzaj zgubienia, bo cichy.
     out.extend(curator.flush());
     out
+}
+
+/// Nazwa pliku, pod którą ten workflow leży dziś w bibliotece.
+///
+/// Po identyfikatorze, nie po nazwie: nazwa pliku jest sluggiem tytułu i zmienia się razem z nim,
+/// a identyfikator jest tym, czym bieg zapamiętał, skąd przyszedł. Porządek jest ustalony, żeby
+/// dwa pliki o jednym identyfikatorze dawały za każdym razem ten sam wynik — `read_dir` nie
+/// obiecuje kolejności.
+fn file_named(workflow_id: &str) -> Option<String> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(crate::loadout_dir().join("workflows"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|one| one == "json"))
+        .collect();
+    paths.sort();
+    paths.into_iter().find_map(|path| {
+        let named: Value = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+        (named.get("id")?.as_str()? == workflow_id)
+            .then(|| path.file_name()?.to_str().map(str::to_owned))
+            .flatten()
+    })
 }

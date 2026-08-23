@@ -64,7 +64,11 @@ export interface WhatIsRunning {
  * Agentów. Zapadka trzymana w komponencie znika razem z ekranem sekcji, a wtedy powrót do
  * Pracy i kliknięcie Start startują drugi bieg tego samego workflow.
  */
-let going: Promise<void> | null = null;
+/* `unknown`, nie `void`, od 2026-08-23: zapadkę biorą teraz także wznowienie i powtórzenie
+ * kroku, a te oddają zdanie o zmienionym pliku. Zapadka nigdy nie czyta tej wartości — pilnuje
+ * wyłącznie tego, czy bieg jeszcze trwa — więc typ ma o niej milczeć, zamiast wymuszać rzutowanie
+ * u każdego wołającego. */
+let going: Promise<unknown> | null = null;
 
 /**
  * Co powiedzieć drugiemu naciśnięciu Run, kiedy pierwszy bieg jeszcze nie wrócił.
@@ -417,31 +421,17 @@ export function rerunStep(
   howManyAtOnce: number,
   folder: string | null = null,
 ): Promise<string | null> {
-  /* TEN SAM KANAŁ, CO PRZY STARCIE: powtórzenie kroku jest zwykłym biegiem i jego linie mają
-   * trafić dokładnie tam, gdzie trafiają wszystkie inne — do strumienia i do sesji tej karty. */
-  const session = runFor(folder);
-  const view = feedFor(folder ?? '');
-  let stamp = 0;
-  const lines = new Channel<unknown[]>();
-  wireChannel(lines, (batch) => {
-    const at = Date.now();
-    const stamped = batch.map((line) => {
-      stamp += 1;
-      return { ...line, id: stamp, at };
-    });
-    view.appendLines(stamped);
-    session.getState().appendLines(stamped);
-  });
-
-  return invoke<string | null>('rerun_step', {
-    fileName,
-    step,
-    howManyAtOnce,
-    /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
-     * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
-    folder,
-    lines,
-  });
+  return asARun(fileName, fileName, folder, (lines) =>
+    invoke<string | null>('rerun_step', {
+      fileName,
+      step,
+      howManyAtOnce,
+      /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
+       * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
+      folder,
+      lines,
+    }),
+  );
 }
 
 /**
@@ -467,9 +457,53 @@ export function resumeRun(
   step: string,
   howManyAtOnce: number,
   folder: string | null = null,
+  /** Nazwa dla paska — tytuł biegu, który wznawiamy. */
+  name = '',
+  /** Plik workflow, jeżeli okno go zna. Patrz [`asARun`]. */
+  fileName = '',
 ): Promise<string | null> {
-  /* TEN SAM KANAŁ, CO PRZY STARCIE — wznowienie jest zwykłym biegiem i jego linie mają trafić
-   * dokładnie tam, gdzie trafiają wszystkie inne. */
+  return asARun(name, fileName, folder, (lines) =>
+    invoke<string | null>('resume_run', {
+      run,
+      step,
+      howManyAtOnce,
+      /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
+       * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
+      folder,
+      lines,
+    }),
+  );
+}
+
+/**
+ * Bieg, który NIE zaczyna się od Startu — a poza tym jest biegiem jak każdy inny.
+ *
+ * 2026-08-23 — POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: nacisnął `/stop` nad pracującym
+ * agentem i dostał **„Nothing is running."**, a krok pracował dalej. Przyczyna: `rerunStep`
+ * i `resumeRun` wpinały kanał linii i nic poza tym. Nie mówiły magazynowi, że bieg ruszył —
+ * a „czy coś biegnie" to w całej aplikacji dokładnie `workflow !== ''` (`state/run.ts`), z czego
+ * żyje przycisk Stop, `/stop` w wierszu i pasek żywych biegów. Bieg, którego nie da się
+ * zatrzymać, jest gorszy od biegu, który padnie.
+ *
+ * Nie brały też ZAPADKI, więc drugi bieg dało się na nie położyć — czyli dwa biegi w jednym
+ * folderze, dokładnie to, przed czym stoi niezmiennik 12.
+ *
+ * Jedna funkcja na obie drogi, i to jest ten sam powód, dla którego stoi w tym pliku: „co robi
+ * okno, kiedy bieg rusza" jest jednym faktem, a trzy kopie tego faktu rozjechały się już raz.
+ * Start ma własne ciało tylko dlatego, że wysyła inne argumenty i ma inne zdanie odmowy.
+ *
+ * @param name nazwa dla paska — ta, którą człowiek zobaczy nad blokami kroków.
+ * @param fileName plik workflow, albo `''`, kiedy okno go nie zna. Puste znaczy, że „uruchom ten
+ *   krok jeszcze raz" odmówi przy tym biegu po nazwie, zamiast zgadywać plik.
+ */
+function asARun(
+  name: string,
+  fileName: string,
+  folder: string | null,
+  send: (lines: Channel<unknown[]>) => Promise<string | null>,
+): Promise<string | null> {
+  if (going !== null) return Promise.reject(ONE_RUN_AT_A_TIME);
+
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
   let stamp = 0;
@@ -484,15 +518,20 @@ export function resumeRun(
     session.getState().appendLines(stamped);
   });
 
-  return invoke<string | null>('resume_run', {
-    run,
-    step,
-    howManyAtOnce,
-    /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
-     * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
-    folder,
-    lines,
+  /* PRZED `invoke`, nie po nim — ten sam powód, co przy Starcie: komenda po tamtej stronie trwa
+   * tyle, co bieg, więc zapis po jej powrocie ogłaszałby start w chwili, w której bieg się
+   * właśnie skończył. Kroków nie podajemy: przy wznowieniu okno nie wie z góry, które węzły
+   * wejdą do wycinka, a wypełniacz byłby paskiem rysującym bloki, których nie ma
+   * (niezmiennik 17). Nadejdą ze strumienia. */
+  session.getState().nowRunning(name, [], folder, fileName);
+
+  const run = send(lines).finally(() => {
+    going = null;
+    session.getState().nowRunning('', [], null);
+    view.runEnded();
   });
+  going = run;
+  return run;
 }
 
 /**
@@ -665,6 +704,8 @@ export interface PastHandoff {
 
 /** Otwarty bieg z historii. Lustro `commands::history::PastRunWire`. */
 export interface PastRun {
+  /** Nazwa dzisiejszego pliku workflow tego biegu — pusta, kiedy nie ma go już w bibliotece. */
+  readonly workflowFile: string;
   readonly folder: string;
   readonly when: string;
   readonly title: string;

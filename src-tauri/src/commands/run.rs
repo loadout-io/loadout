@@ -2287,14 +2287,23 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
             && !made.iter().any(|one| one.cwd == *cwd)
         {
             let branch = isolate::branch_for(&plan.id, &step.tile_key);
+            /* SKĄD ODBIJA SIĘ TO DRZEWO. Przy zwykłym biegu z `HEAD`; przy wznowieniu z gałęzi,
+             * na której TEN KAFELEK skończył poprzednio. Powód stoi przy [`where_it_left_off`]
+             * i jest z pomiaru, nie z symetrii. */
+            let from = where_it_left_off(project, plan.seeded_from.as_deref(), &step.tile_key);
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
-            let done = make_or_recover_tree(project, &plan.dir, cwd, &branch).map_err(|why| {
-                RunError::NoFreshCopy {
-                    step: step.name.clone(),
-                    why: why.to_string(),
-                }
+            let done = make_or_recover_tree(
+                project,
+                &plan.dir,
+                cwd,
+                &branch,
+                from.as_deref().unwrap_or("HEAD"),
+            )
+            .map_err(|why| RunError::NoFreshCopy {
+                step: step.name.clone(),
+                why: why.to_string(),
             })?;
             made.push(Isolated {
                 step: step.name.clone(),
@@ -2315,20 +2324,54 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
 /// W tym oknie sterownik jeszcze nie ruszyl, wiec katalog kopii nie niesie pracy agenta.
 /// Worktree gita juz niesie natomiast naniesiony diff czlowieka: jego nie wolno skasowac ani
 /// nakladac drugi raz, dlatego wraca tylko po dowodzie oczekiwanej galezi.
+/// Gałąź, na której ten kafelek skończył w poprzednim biegu — albo `None`.
+///
+/// # Po co to istnieje
+///
+/// 2026-08-23, zmierzone na biegu właściciela na `urc-monorepo`. Wznowienie z historii niosło
+/// przekazania poprzedniego biegu i **nie niosło jego pracy**: świeża kopia powstawała z `HEAD`,
+/// więc krok „Front" dostał czysty checkout i zaczął od zera pisać 164 pliki, które poprzedni
+/// bieg zacommitował na `loadout/01a02b3c…/s_6` jako `21ad1c94`. Sędzia obok, pracujący w tej
+/// samej kopii, orzekał na pustym drzewie i napisał uczciwie: *„Brak katalogu `.claude/tmp/`
+/// z artefaktami zadania — nie mam czego porównywać"*.
+///
+/// # Po KAFELKU, nie po nazwie gałęzi z tamtego biegu
+///
+/// Bo kafelek jest tym, co przeżywa bieg. `branch_for` składa nazwę z identyfikatora biegu
+/// i klucza kafelka, więc pytanie „gdzie ten kafelek skończył ostatnio" ma dokładnie jedną
+/// odpowiedź, a składamy ją tą samą funkcją, która tamtą nazwę nadała (niezmiennik 13).
+///
+/// `None`, kiedy czegokolwiek brakuje — nie ma poprzedniego biegu, nie da się przeczytać jego
+/// `run.json`, albo gałąź została skasowana. Wtedy drzewo odbija się od `HEAD`, czyli robi to,
+/// co robiło zawsze. Cichy powrót jest tu poprawny: „nie było czego przenieść" i „przeniesiono"
+/// dają to samo drzewo, kiedy poprzedni bieg tego kafelka nie tknął.
+fn where_it_left_off(project: &Path, previous: Option<&Path>, tile: &str) -> Option<String> {
+    let bytes = fs::read(previous?.join(RUN_FILE)).ok()?;
+    let described: Value = serde_json::from_slice(&bytes).ok()?;
+    let branch = isolate::branch_for(described.get("id")?.as_str()?, tile);
+    // Sprawdzamy, ŻE ISTNIEJE, zanim ją podamy: `git worktree add` z nieistniejącym punktem
+    // startu odmawia całemu biegowi, a brak gałęzi po skasowanym biegu jest zwykłym stanem.
+    isolate::names_a_commit(project, &branch).then_some(branch)
+}
+
 fn make_or_recover_tree(
     project: &Path,
     run_dir: &Path,
     cwd: &Path,
     branch: &str,
+    from: &str,
 ) -> Result<isolate::Made, isolate::Trouble> {
     // Walidacja stoi przed `exists`, `make` i `remove_dir_all`: inaczej niebezpieczny klucz
     // albo symlink przodka moze wskazac ofiare poza biegiem, zanim cleanup zobaczy cel.
     let marker_path = prove_generated_work_path(project, run_dir, cwd)?;
     let marker = read_isolation_marker(&marker_path)?;
     if !isolate::is_a_repo(project) {
+        /* Kopia plikowa punktu startu nie zna i znać nie może: bez gita nie ma gałęzi, na której
+         * poprzedni bieg mógłby cokolwiek zostawić. Wznowienie w projekcie bez repozytorium
+         * dostaje więc to, co dostawało zawsze — kopię tego, co leży w projekcie. */
         return make_or_recover_file_copy(project, cwd, branch, marker.is_some());
     }
-    make_or_recover_git_tree(project, cwd, branch, &marker_path, marker.as_ref())
+    make_or_recover_git_tree(project, cwd, branch, from, &marker_path, marker.as_ref())
 }
 
 fn prove_run_candidate(project: &Path, run_dir: &Path) -> Result<(), isolate::Trouble> {
@@ -2623,6 +2666,7 @@ fn make_or_recover_git_tree(
     project: &Path,
     cwd: &Path,
     branch: &str,
+    from: &str,
     marker_path: &Path,
     marker: Option<&IsolationMarker>,
 ) -> Result<isolate::Made, isolate::Trouble> {
@@ -2723,7 +2767,7 @@ fn make_or_recover_git_tree(
         }
     }
 
-    let made = isolate::make(project, cwd, branch)?;
+    let made = isolate::make_from(project, cwd, branch, from)?;
     if matches!(&made.how, isolate::How::Tree { .. }) {
         let head = branch_oid(project, branch)?;
         // Dopiero caly `isolate::make` (worktree, dirty diff i lista brakow) moze wystawic

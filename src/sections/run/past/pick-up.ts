@@ -44,7 +44,17 @@ export function pickUpFrom(step: string): void {
   }
   const { folder, opened } = past;
   closeHistory();
-  void resumeRun(opened.folder, step, atOnceNow(), folder)
+  /* NAZWA I PLIK JADĄ RAZEM Z ŻĄDANIEM, bo bez nich okno nie umie powiedzieć, że coś biegnie —
+   * a to jest defekt ze zrzutu właściciela: `/stop` nad pracującym agentem odpowiedziało
+   * „Nothing is running." Powód w całości stoi przy `asARun` w `../io.ts`. */
+  void resumeRun(
+    opened.folder,
+    step,
+    atOnceNow(),
+    folder,
+    opened.title === '' ? opened.when : opened.title,
+    opened.workflowFile,
+  )
     .then((said) => {
       /* Zdanie przychodzi TYLKO wtedy, gdy dzisiejszy plik różni się od tego, który wtedy biegł.
        * Panel jest już zamknięty, więc idzie tam, gdzie idą odpowiedzi ekranu pracy. */
