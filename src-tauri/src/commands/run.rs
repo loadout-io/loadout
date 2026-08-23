@@ -201,7 +201,8 @@ use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
-    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point, RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
+    AgentStep, Borrow, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point,
+    RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
