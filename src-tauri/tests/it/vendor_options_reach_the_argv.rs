@@ -430,6 +430,59 @@ async fn a_flag_loadout_sets_itself_stops_the_run_and_names_it() -> Result<(), B
     Ok(())
 }
 
+/// 2026-08-24 — TA ŁAWKA POWSTAŁA RAZEM ZE ŚCIEŻKĄ, KTÓREJ PILNUJE.
+///
+/// Do tego dnia przelotka kafelka nie docierała do argv, więc jej odmowa była sprawdzana tam,
+/// gdzie kosztowała najmniej: na czystym wywołaniu walidatora, niżej w tym pliku. Odkąd wpis
+/// z kafelka naprawdę jedzie do komendy, samo „walidator ma o tym zdanie" przestaje wystarczać —
+/// to jest dokładnie ta różnica, o której mówi niezmiennik 29: zwrócona wartość dowodzi, że
+/// mechanizm istnieje, a zatrzymany bieg dowodzi, że produkt działa.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flag_on_the_step_itself_stops_the_run_and_names_it() -> Result<(), Box<dyn Error>> {
+    for named in [RAISES_THE_DIAL, CLAUDE_SETS_ITSELF] {
+        let bench = Bench::new()?;
+        let only = bench.agent(
+            "only",
+            &agent_file(
+                "01990000-0000-7000-8000-00000000091d",
+                "Only",
+                "claude-code",
+                "{}",
+            ),
+        )?;
+        // Przesłanka, jak w każdej innej ławce tego pliku: agent, którego pliku nie da się
+        // wczytać, odmawia biegu w każdej implementacji i nie mierzyłby niczego.
+        read_agent_file(&only).map_err(|error| format!("{}: {error}", only.display()))?;
+        let workflow = bench.workflow("one-step-tiled", &step_with_options("claude", named))?;
+
+        let seen = Arc::new(Seen::default());
+        let outcome = run_it(&bench, workflow, Arc::clone(&seen)).await?;
+        let said = match outcome {
+            Ok(report) => format!(
+                "nothing — the run went ahead and ended as {:?}",
+                report.steps
+            ),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(
+            said.contains(named),
+            "a step writing {named} into its own extra settings started anyway, or was stopped \
+             without being told what stopped it. Those lines now reach the command line, so \
+             whichever side loses this clash loses quietly — and a refusal that does not name \
+             the line leaves the person with nothing to delete. Loadout said: {said:?}"
+        );
+        let entered = seen.snapshot();
+        assert!(
+            entered.is_empty(),
+            "the refusal for {named} came after {} agent(s) had already been started. A refusal \
+             is due at the Start at the latest, never mid-run (invariant 12)",
+            entered.len()
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn the_two_names_loadout_now_sets_itself_are_refused_when_a_step_writes_them()
 -> Result<(), Box<dyn Error>> {

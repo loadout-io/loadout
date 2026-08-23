@@ -2995,14 +2995,6 @@ fn plan_agent(
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
     let mut effective = resolve(&saved, &overrides)?.agent;
-    /* PRZELOTKA MA DWA NOŚNIKI I OBA SĄ TEGO KROKU (T-90, 2026-08-24). `Overrides` nie niesie
-     * `vendorOptions` z rozmysłem — to nie jest pole, które się PODMIENIA, tylko mapa, którą się
-     * scala wpis po wpisie — więc scalenie stoi tutaj, jedną linią, obok złożenia reszty pól.
-     * Do tego dnia `AgentStep::vendor_options` nie miał w ścieżce biegu żadnego czytelnika. */
-    effective.vendor_options = crate::library::agents::passthrough_of_the_step(
-        &effective.vendor_options,
-        &step.vendor_options,
-    );
 
     // Polityka policzona RAZ i czytana dwa razy: raz jako dial kroku, raz jako sufit jego listy
     // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby
@@ -3027,6 +3019,22 @@ fn plan_agent(
             fix: None,
         }));
     }
+    /* PRZELOTKA MA DWA NOŚNIKI I OBA SĄ TEGO KROKU (T-90, 2026-08-24). `Overrides` nie niesie
+     * `vendorOptions` z rozmysłem — to nie jest pole, które się PODMIENIA, tylko mapa, którą się
+     * scala wpis po wpisie. Do tego dnia `AgentStep::vendor_options` nie miał w ścieżce biegu
+     * ani jednego czytelnika: człowiek wpisywał flagę na kafelku i proces jej nie widział.
+     *
+     * SCALENIE STOI ZA ODMOWĄ WYŻEJ, NIE PRZED NIĄ, i to jest cała treść tej kolejności.
+     * [`passthrough_refused`] pyta o DEFINICJĘ AGENTA i tak brzmi jego zdanie („delete it from
+     * this agent's … options"). Wpis z kafelka wpuszczony w tamto pytanie dostałby odmowę, która
+     * odsyła człowieka do formularza agenta po wiersz stojący na kafelku — a wiersze kafelka mają
+     * już swojego sędziego ze swoim zdaniem: `workflow::check::the_passthrough` biegnie w
+     * `check_to_run`, czyli zanim ten plan w ogóle powstanie, i mówi „remove it from this step's
+     * … options". Jeden nośnik, jedno zdanie, oba przed pierwszym procesem (niezmiennik 12). */
+    effective.vendor_options = crate::library::agents::passthrough_of_the_step(
+        &effective.vendor_options,
+        &step.vendor_options,
+    );
     let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
