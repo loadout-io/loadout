@@ -336,6 +336,42 @@ async fn three_copies_of_one_step_share_a_window_and_hand_on_three_answers()
          silently thrown away",
         keys.len()
     );
+
+    // ── (g) I KAŻDA KOPIA DOSTAŁA WŁASNE PLIKI ──────────────────────────────────────────────
+    //
+    // 2026-08-24 — DOPISANE, NIE W MIEJSCE CZEGOKOLWIEK, i to jest największa dziura, jaką to
+    // kryterium miało. Wszystko powyżej sądzi klucze, podpisy, prompty i okna — czyli rzeczy,
+    // które implementacja rozwijająca trzy kopie do JEDNEGO katalogu oddaje co do joty. Taka
+    // implementacja przechodziła komplet, a jest złamaniem niezmiennika 12 w najczystszej
+    // postaci: trzy sesje piszące równocześnie po tych samych ścieżkach nadpisują się nawzajem
+    // w środku biegu, czyli tam, gdzie odmowa nie ma już prawa paść. Odmowa przy zapisie tego
+    // nie łapie — dla walidatora to jeden krok z `fresh-copy`, więc plik jest poprawny; kolizja
+    // rodzi się dopiero w rozwinięciu, o którym walidator nic nie wie.
+    //
+    // Katalog, nie klucz: klucz jest napisem, który wystarczy zróżnicować, a katalog trzeba
+    // NAPRAWDĘ założyć i wypełnić. Dlatego pytamy też o `notes.txt` — pusta kopia to defekt,
+    // który T-33 już raz naprawiał, i jest gorszy od kolizji, bo agent nie widzi plików, które
+    // ma zmienić.
+    let folders = ran.watch.folders("build");
+    let separate: BTreeSet<&Path> = folders.iter().map(PathBuf::as_path).collect();
+    assert_eq!(
+        separate.len(),
+        COPIES,
+        "the {COPIES} copies worked in {} folder(s): {folders:?}. Copies of one step run at the \
+         same time as each other, so sharing a folder means they overwrite each other's work \
+         half way through — and no refusal can save them, because refusals are only allowed to \
+         happen before the first process starts (invariant 12)",
+        separate.len()
+    );
+    for folder in &separate {
+        assert!(
+            folder.join("notes.txt").is_file(),
+            "the copy working in {} was handed a folder without the person's files in it. \"Its \
+             own copy of your files\" is the promise, and an empty folder keeps the letter of it \
+             while breaking the whole point: the agent cannot change what it cannot see",
+            folder.display()
+        );
+    }
     Ok(())
 }
 
@@ -542,6 +578,8 @@ struct Entered {
     label: String,
     /// Prompt, który naprawdę dojechał do sterownika.
     prompt: String,
+    /// Katalog roboczy, w którym ta kopia naprawdę stanęła.
+    folder: PathBuf,
     from: Instant,
     to: Option<Instant>,
 }
@@ -559,11 +597,12 @@ struct Watch {
 impl Watch {
     /// **Synchroniczne z rozmysłem** (niezmiennik 8): guard powstaje i ginie w jednym wywołaniu,
     /// więc nie ma wyrażenia, w którym dożyłby do `await`.
-    fn entered(&self, prompt: &str) -> usize {
+    fn entered(&self, prompt: &str, folder: &Path) -> usize {
         let mut seen = self.lock();
         seen.push(Entered {
             label: label_of(prompt),
             prompt: prompt.to_owned(),
+            folder: folder.to_path_buf(),
             from: Instant::now(),
             to: None,
         });
@@ -594,6 +633,15 @@ impl Watch {
             .iter()
             .filter(|one| one.label == label)
             .map(|one| one.prompt.clone())
+            .collect()
+    }
+
+    /// Katalogi robocze kroków o tej etykiecie, w kolejności wejścia do sterownika.
+    fn folders(&self, label: &str) -> Vec<PathBuf> {
+        self.lock()
+            .iter()
+            .filter(|one| one.label == label)
+            .map(|one| one.folder.clone())
             .collect()
     }
 
@@ -672,7 +720,7 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        let at = self.watch.entered(&spec.prompt);
+        let at = self.watch.entered(&spec.prompt, &spec.cwd);
         let session = SessionRef {
             vendor: VENDOR,
             id: spec.run_id.to_string(),
