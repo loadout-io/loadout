@@ -269,9 +269,13 @@ fn a_note_in_use_is_refused_in_the_words_a_person_reads() -> Result<(), Box<dyn 
         "a note in use was moved into {DISCARDED_DIR}/ despite the refusal. The refusal then \
          describes the world for exactly as long as nobody looks at the folder"
     );
+    // Porządek jest ten, który `scan_notes` ma opisany w kontrakcie: identyfikator rosnąco,
+    // niezależnie od kolejności zapisu i od kolejności, w jakiej system plików oddaje wpisy.
+    // AC-4 pyta o równość bajtową dwóch skanów, więc to nie jest szczegół tej asercji do
+    // poprawienia po drugiej stronie — `prompts-…` stoi przed `the-tenant-…`.
     assert_eq!(
         scanned(root.path()),
-        vec![CANDIDATE.to_owned(), IN_USE.to_owned()],
+        vec![IN_USE.to_owned(), CANDIDATE.to_owned()],
         "the list lost a note that was refused. Both are still there: the refusal is an answer, \
          not a half-done job"
     );
@@ -294,9 +298,10 @@ fn only_a_person_throws_a_note_away() -> Result<(), Box<dyn StdError>> {
         );
     }
 
+    // Identyfikator rosnąco — kontrakt `scan_notes`, ten sam co wyżej.
     assert_eq!(
         scanned(root.path()),
-        vec![CANDIDATE.to_owned(), IN_USE.to_owned()],
+        vec![IN_USE.to_owned(), CANDIDATE.to_owned()],
         "a refused discard took a note off the list anyway"
     );
     assert!(
