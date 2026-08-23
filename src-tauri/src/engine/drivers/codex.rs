@@ -224,8 +224,7 @@ impl CodexDriver {
             None => None,
         };
         let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
-        let mut argv = self.configuration.arguments.clone();
-        argv.extend(build_exec_argv(&spec));
+        let argv = exec_argv(&self.configuration, &spec);
         // Wyjete TU, a nie przy `Turn`: `spec.prompt` idzie tam przeniesieniem, wiec
         // pozyczka `spec.system_append` w tym samym wyrazeniu nie ma prawa istniec.
         // `take()` zamiast `clone()` — instrukcje agenta bywaja akapitami.
@@ -1231,8 +1230,23 @@ impl CodexConversationHandle {
                 Value::String(instructions),
             );
         }
-        // `cwd` celowo nie ma w JSON-ie. `command.current_dir` daje agentowi folder, a jawne
-        // pole cwd w App Serverze 0.148 potrafi zapisac zaufanie projektu pod `.codex`.
+        /* SZCZEBLA „ILE MYSLEC" TU NIE MA I JEST TO ZGLOSZENIE, NIE PRZEOCZENIE (2026-08-23,
+         * T-91). Krok biegu dostaje go jako `-c model_reasoning_effort=<poziom>` przed `exec`;
+         * ta droga to App Server, a jego protokol takiego pola NIE MA. Zmierzone na codex-cli
+         * 0.148.0, `codex app-server generate-json-schema --experimental`: `ThreadStartParams`
+         * ma 25 pol (`model`, `sandbox`, `approvalPolicy`, `developerInstructions`, …) i ani
+         * jednego o wysilku — jedyne wystapienie slowa „effort" w calym pliku stoi w opisie
+         * DEPRECATED-owanego `multiAgentMode`.
+         *
+         * Zostaja dwie drogi i obie sa zgadywaniem, ktorego to zadanie nie kupuje: nietypowana
+         * mapa `config` (`additionalProperties: true`, wiec schemat nie powie, czy klucz jest
+         * plaski) albo `-c` w argv samego `app-server`, gdzie `--help` przyjmuje go w INNYM
+         * miejscu linii niz przed `exec`. Niepoznany klucz w `thread/start` jest odmowa startu
+         * watku, czyli liderem, ktory przestaje rozmawiac — a zadne kryterium tego nie sadzi.
+         * Do rozstrzygniecia przez czlowieka, na zywym watku.
+         *
+         * `cwd` celowo nie ma w JSON-ie. `command.current_dir` daje agentowi folder, a jawne
+         * pole cwd w App Serverze 0.148 potrafi zapisac zaufanie projektu pod `.codex`. */
         let result = self
             .client
             .request("thread/start", Value::Object(params), false)
@@ -1636,6 +1650,81 @@ fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
         "--ignore-user-config".to_owned(),
         "-".to_owned(),
     ]
+}
+
+/// Klucz konfiguracji, którym Codex przyjmuje poziom wysiłku.
+///
+/// Zmierzone 2026-08-23 na tej maszynie: `-c model_reasoning_effort=<minimal|low|medium|high|
+/// xhigh>` jest opcją GLOBALNĄ `codex`, nie podkomendy `exec`. Podany po `exec` CLI odrzuca —
+/// tak samo, jak odrzucało `-C` postawione po `resume` (patrz [`resume_argv`]).
+///
+/// Ten sam klucz czyta importer, w drugą stronę (`import::adapters`).
+const EFFORT_KEY: &str = "model_reasoning_effort";
+
+/// Pełne argv jednej tury `exec`: opcje globalne z konfiguracji, potem linia podkomendy.
+///
+/// Istnieje jako funkcja, a nie dwie linie w [`CodexDriver::start_session`], bo dokładnie ten
+/// skład — „konfiguracja, potem `exec`" — jest tym, czego dotyczy kryterium o kolejności.
+/// Sklejenie liczone w miejscu startu procesu dałoby się sprawdzić wyłącznie przez uruchomienie
+/// prawdziwej binarki.
+#[must_use]
+pub fn exec_argv(configuration: &DriverConfiguration, spec: &RunSpec) -> Vec<String> {
+    // Wznowienie przychodzi tędy także wtedy, gdy startuje je świeży sterownik (`spec.resume`),
+    // więc wysiłek odpada w OBU drogach do `exec resume`, a nie tylko w [`CodexHandle::send`].
+    let mut argv = if spec.resume.is_some() {
+        without_the_effort(&configuration.arguments)
+    } else {
+        configuration.arguments.clone()
+    };
+    argv.extend(build_exec_argv(spec));
+    argv
+}
+
+/// Pełne argv tury wznowienia — bez powtórzonego wysiłku, z zachowanymi Connections.
+#[must_use]
+pub fn exec_resume_argv(
+    configuration: &DriverConfiguration,
+    thread: &str,
+    cwd: &Path,
+) -> Vec<String> {
+    let mut argv = without_the_effort(&configuration.arguments);
+    argv.extend(resume_argv(thread, cwd));
+    argv
+}
+
+/// Opcje globalne bez ustawienia wysiłku — czyli to, co jedzie w turze wznawiającej.
+///
+/// # Dlaczego wysiłek odpada, a Connections zostają
+///
+/// `codex exec resume` wraca do wątku, który wysiłek już MA: dostał go przy pierwszej turze
+/// i Codex trzyma go po swojej stronie. Powtórzenie jest w najlepszym razie drugim zdaniem
+/// o tym samym, a w najgorszym przestawia rozmowę w połowie. Connections są odwrotnie: każda
+/// tura to ŚWIEŻY PROCES, więc serwer niepodany drugi raz po prostu nie istnieje dla drugiej
+/// tury — i to jest powód, dla którego ta funkcja odejmuje jeden konkretny klucz, a nie
+/// wszystkie `-c`. Implementacja kasująca całą rodzinę przechodzi każde sprawdzenie pytające
+/// o brak wysiłku i po cichu zabiera rozmowie zatwierdzone połączenia.
+fn without_the_effort(arguments: &[String]) -> Vec<String> {
+    let prefix = format!("{EFFORT_KEY}=");
+    let mut out = Vec::with_capacity(arguments.len());
+    let mut skip_value = false;
+    for (at, argument) in arguments.iter().enumerate() {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        // Para, nie sam klucz: `-c` bez wartości połknęłoby następny argument jako swój, więc
+        // odjęcie połowy pary jest gorsze niż jej zostawienie.
+        if argument == "-c"
+            && arguments
+                .get(at + 1)
+                .is_some_and(|value| value.starts_with(&prefix))
+        {
+            skip_value = true;
+            continue;
+        }
+        out.push(argument.clone());
+    }
+    out
 }
 
 /// Cała tabela tłumaczenia polityki na piaskownicę — **jedna, w adapterze** (niezmiennik 23).
@@ -2674,8 +2763,7 @@ impl AgentHandle for CodexHandle {
         let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
 
         self.number += 1;
-        let mut argv = self.configuration.arguments.clone();
-        argv.extend(resume_argv(&thread, &self.cwd));
+        let argv = exec_resume_argv(&self.configuration, &thread, &self.cwd);
         let turn = Turn {
             binary: self.binary.clone(),
             cwd: self.cwd.clone(),
@@ -2776,6 +2864,17 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(
             self.clone().with_configuration(configuration.clone()),
         ))
+    }
+
+    /// `-c model_reasoning_effort=<poziom>` — cała wiedza tego adaptera o szczeblu „ile myśleć".
+    ///
+    /// Poziom przychodzi gotowy z jedynej tabeli (`library::agents::effort_level`), więc tu nie
+    /// ma ani jednego `match`: dopisanie go byłoby drugą kopią tamtej tabeli (niezmiennik 23).
+    ///
+    /// Para `-c KLUCZ=WARTOŚĆ` jedzie do argv PRZED `exec` — o to dba [`exec_argv`], bo tam
+    /// mieszka kolejność. Tutaj powstaje sama para i nic poza nią.
+    fn effort_argv(&self, level: &str) -> Vec<String> {
+        vec!["-c".to_owned(), format!("{EFFORT_KEY}={level}")]
     }
 
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:

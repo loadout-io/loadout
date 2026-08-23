@@ -153,7 +153,8 @@ use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
+    RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
@@ -164,7 +165,9 @@ use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManif
 use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, Overrides, Tools, read_agent_file, resolve};
+use crate::library::agents::{
+    Agent, Overrides, Thinking, Tools, effort_level, read_agent_file, resolve,
+};
 use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::skills::StepSkills;
 use crate::workflow::check::{Level, Note, check_to_run};
@@ -1220,6 +1223,12 @@ struct AgentJob {
     /// z tego samego powodu, z którego stoi tu polityka: krok, który miałby to policzyć sam,
     /// mógłby odmówić w połowie biegu, a niezmiennik 12 mówi „najpóźniej przy Starcie".
     tools: Option<Vec<String>>,
+    /// Który szczebel „ile myśleć" ma ten krok — z definicji efektywnej, czyli po nadpisaniu.
+    ///
+    /// Szczebel, nie gotowa flaga: nazwę flagi zna wyłącznie adapter
+    /// (`AgentDriver::effort_argv`), a ta warstwa nie skleja komendy i nie zna ani jednej flagi
+    /// vendora (niezmiennik 9). Policzone przy planowaniu, tak samo jak polityka i narzędzia.
+    thinking: Thinking,
     /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
     connections: Vec<crate::connections::Connection>,
     /// Umiejętności, które ten krok naprawdę dostanie — policzone z efektywnego agenta.
@@ -2193,6 +2202,10 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // Wybór agenta, nie kroku (D6: „wszystko, co vendor wprowadzi, konfigurujemy per agent").
         reaches_the_web: effective.reaches_the_web,
         tools,
+        // Z definicji EFEKTYWNEJ, czyli po złożeniu z nadpisaniem kroku: wiersz „ile myśleć"
+        // w panelu kroku ma wygrywać z tym, co stoi w bibliotece — inaczej jest kontrolką bez
+        // skutku (niezmiennik 16).
+        thinking: effective.thinking,
         connections,
         skills,
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
@@ -4707,6 +4720,49 @@ impl Live {
         }
     }
 
+    /// Vendorowy fragment argv tego kroku: zatwierdzone Connections plus szczebel „ile myśleć".
+    ///
+    /// # Dlaczego szczebel jedzie TĘDY, a nie polem [`RunSpec`] (2026-08-23, T-91)
+    ///
+    /// `RunSpec` nie ma `Default` i konstruuje go w tym drzewie ponad trzydzieści miejsc, więc
+    /// nowe pole w literale byłoby trzydziestoma plikami zmienionymi po to, żeby dowieźć jedną
+    /// flagę. [`DriverConfiguration::arguments`] jest już kanałem na „gotowy fragment argv tego
+    /// jednego kroku" — tędy jadą zatwierdzone Connections i tędy jedzie to.
+    ///
+    /// PO połączeniach, nie przed: kolejność opcji globalnych nie zmienia u żadnego z vendorów
+    /// znaczenia, ale kolejność STAŁA znaczy, że dwa identyczne biegi dają ten sam napis w `ps` —
+    /// a to jest jedyny sposób, żeby dało się je porównać.
+    ///
+    /// Ta warstwa nie zna ani jednej flagi vendora (niezmiennik 9): pyta adapter
+    /// ([`AgentDriver::effort_argv`]) o parę gotową do wklejenia, a o sam poziom — jedyną tabelę
+    /// przy szczeblu. Pusto znaczy „ten vendor nie ma czym tego przyjąć" (atrapy silnika,
+    /// `absent`) i wtedy do argv nie idzie ani jeden bajt więcej.
+    fn vendor_arguments_for(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+    ) -> anyhow::Result<DriverConfiguration> {
+        let mut configuration = if job.connections.is_empty() {
+            DriverConfiguration::default()
+        } else {
+            let directory = self
+                .plan
+                .dir
+                .join("connections")
+                .join(&self.plan.steps[id].node_key);
+            crate::connections::runtime::for_driver(
+                &directory,
+                job.driver.id(),
+                &job.connections,
+                |name| std::env::var_os(name),
+            )?
+        };
+        configuration
+            .arguments
+            .extend(job.driver.effort_argv(effort_level(job.thinking)));
+        Ok(configuration)
+    }
+
     /// Sterownik tego kroku, niosący fragment argv, który ten bieg odziedziczył — albo odmowa.
     ///
     /// Fragment niesie nazwę flagi **jednego** vendora (`--plugin-dir`), więc sterownik, który
@@ -4872,25 +4928,23 @@ impl Live {
         let target = self.evidence_for_agent(id, spec.prompt.len(), context);
         let evidence = target.clone();
         let configured = (|| -> anyhow::Result<Arc<dyn AgentDriver>> {
-            let driver = if job.connections.is_empty() {
+            let configuration = self.vendor_arguments_for(id, job)?;
+            let driver = if configuration.arguments.is_empty() {
                 Arc::clone(&job.driver)
             } else {
-                let directory = self
-                    .plan
-                    .dir
-                    .join("connections")
-                    .join(&self.plan.steps[id].node_key);
-                let configuration = crate::connections::runtime::for_driver(
-                    &directory,
-                    job.driver.id(),
-                    &job.connections,
-                    |name| std::env::var_os(name),
-                )?;
-                job.driver.configured(&configuration).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
-                    )
-                })?
+                match job.driver.configured(&configuration) {
+                    Some(driver) => driver,
+                    /* Zatwierdzone polaczenie jest zgoda czlowieka wyrazona w imporcie, wiec
+                     * krok, ktory ich nie dostanie, NIE RUSZA. Sam szczebel tej wagi nie ma:
+                     * jest ustawieniem, nie zgoda, a stary dubel silnika bez tego szwu ma dalej
+                     * dac sie uzyc do testowania planisty. */
+                    None if !job.connections.is_empty() => {
+                        return Err(anyhow::anyhow!(
+                            "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
+                        ));
+                    }
+                    None => Arc::clone(&job.driver),
+                }
             };
             let driver = self.carrying_what_we_inherited(&driver, &job.plugin_flags)?;
             /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH TRZECH OPAKOWAN JEST
