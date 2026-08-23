@@ -4,6 +4,73 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 00:40 — faza 6: dziewięć zadań w trunku, tryb szybki się sprawdził
+
+Kolejność lądowań po pierwszym wpisie: T-91, T-96, T-95, T-88, T-93, T-92. Trunk zielony po
+każdym (`integrate.sh`, pełna bramka 15/0). Zostały T-90, T-94, T-97.
+
+**Co realnie dostał produkt.** Pętla pamięta swoje rundy i oddaje dalej to, co przeszło (T-87).
+Wznowienie niesie przekazania poprzedniego biegu razem z załącznikami (T-88). Poziom myślenia
+dociera wreszcie do obu vendorów — `--effort` u Claude'a, `-c model_reasoning_effort` u Codeksa
+(T-91). Katalog roboczy znika po biegu, praca zostaje na gałęzi, a historia umie te gałęzie zdjąć
+(T-95). Krok pożycza z repo gospodarza to, co człowiek zaznaczył, i wybór jest własnością kafelka
+(T-93). Ekran agenta przestał kłamać o tym, co dostał, a powtórzenie kroku ma wreszcie drogę
+na ekran (T-96). **Pamięć ma producenta** — jedna tura refleksji po biegu, najwyżej trzy
+kandydatki, każda z uzasadnieniem; auto-pamięć Claude'a pisze do katalogu biegu zamiast do
+wspólnego katalogu projektu (T-92).
+
+### Tryb szybki: co zdjęte, co zostaje
+
+Właściciel zdjął pętlę zadaniową dla prostych zadań. Zdjęte: faza kontraktu jako osobne płatne
+wywołanie, druga opinia i runda naprawcza. **Zostaje dowód** — własny worktree, kontrakt
+zamrożony jako pierwszy commit gałęzi, `./verify.sh before` czerwony NA ASERCJI przed
+implementacją, pełna bramka przed lądowaniem i druga pełna bramka na trunku po merge'u.
+Tak wylądowały T-91, T-96, T-95 i T-93; recenzenta zostawiono przy zadaniach ruszających silnik.
+
+### Trzy rzeczy, które ta faza kosztowała i których nie było w planie
+
+1. **Trunk był czerwony w warstwie `full` od `905ef9e`** i przewrócił oba zadania pierwszej fali,
+   zanim ktokolwiek napisał linijkę. `quick-clippy` jest `--lib`, `full-clippy` `--all-targets`,
+   więc quick świecił 13/0. Naprawione `4fcab5c`.
+2. **Nowe pole w strukturze przewraca każdy jej literał** — trzy razy z rzędu zadanie stanęło
+   na tym samym. Zmierzone: `AgentStep` ma pięć literałów, `RunRequest` **55** i nie ma `Default`,
+   `Line::Done` pięć (wszystkie w kryteriach T-05, T-07, T-10). Od T-94 liczę to **gerpem przed
+   odpaleniem biegu**, nie po czerwonej bramce.
+3. **`commands.golden.txt` musi być w OWNS każdego zadania dokładającego komendę** — trzy
+   przeoczenia tego samego kształtu (T-93, T-95, T-92). Rejestracja bez wiersza to czerwień,
+   wiersz bez rejestracji to martwa kontrolka.
+
+### Cztery decyzje właściciela, wszystkie z dowodem mechanicznym
+
+Każde poszerzenie zakresu szło z porównaniem linii `## AC-`, `check:` i `expect:` przed i po —
+za każdym razem 0 różnic. Rozstrzygnięcia: asercja równości promptu zamieniona na „zawiera raz,
+na początku" (T-86); zero minut znaczy w silniku brak limitu, nie jedną minutę (T-86, znalazł
+recenzent Codeksa na zielonych kryteriach); obserwacja w cudzym instrumencie przeniesiona tam,
+gdzie fakt nadal jest — treść z gałęzi, rejestracja drzewa w trakcie kroku (T-95, kryterium T-65);
+refleksja jedzie własnym szwem z domyślnym `None`, nie fabryką sterowników (T-92).
+
+**Ta ostatnia była jedyną zmianą TREŚCI kryterium w całej fazie** i warto wiedzieć dlaczego:
+moje AC-1 kazało wołać fabrykę sterowników, czyli tę samą, którą podstawiają wszystkie testy —
+28 testów w 20 plikach zobaczyło jedno wywołanie więcej. Tych liczb nie wolno było podnieść:
+pilnują, żeby bieg nie odpalił więcej procesów, niż miał.
+
+### Znaleziska, które zostają otwarte
+
+- **Kryterium, które liczy elementy, dryfuje po cichu.** `agent-form.test.tsx` (kryterium T-11)
+  ma stałą nazwaną `THREE` trzymającą **cztery** pozycje, a tekst kryterium mówi „dokładnie trzy".
+  Ktoś dołożył wiersz i nie tknął ani nazwy, ani tekstu. Nota dopisana do `tasks/T-11.md`.
+- **`--settings` nie jest flagą zarezerwowaną**, a od T-92 Loadout ustawia ją sam (przekierowanie
+  auto-pamięci). `agents_vendor_args_filtered.rs` używa jej wprost jako przykładu flagi
+  **niezarezerwowanej**, więc dopisanie jej do listy zmienia przesłankę tamtego testu —
+  **to jest decyzja, nie poprawka.**
+- **T-94 spaliło 81 tur i $12,06 w fazie kontraktu, nie pisząc ani jednego pliku** (`error_max_turns`).
+  Zadanie o pięciu kryteriach dotykające `AppState`, `limits`, argv i frontu nie mieści się
+  w budżecie tur jednej fazy kontraktowej. Przeniesione do trybu szybkiego, gdzie specyfikacja
+  i implementacja dzielą jeden kontekst.
+- Trzy uwagi recenzenta o **sile wyroczni**, nie o kodzie: AC-5 z T-87 nie przechodzi gałęzią
+  „zapytaj mnie"; AC-1 z T-92 nie sprawdza limitu czasu refleksji (sam limit i zdejmowanie grupy
+  procesów są w kodzie i sprawdziłem je); AC-2 z T-92 nie sprawdza licznika odrzuconych par.
+
 ## 2026-08-23, 20:45 — faza 6 ruszyła: T-89 w main, T-86 stoi na kolizji, trunk był czerwony od rana
 
 Plan fazy i mapa 38 znalezisk: [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md).
