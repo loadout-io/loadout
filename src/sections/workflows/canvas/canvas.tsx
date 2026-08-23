@@ -84,36 +84,6 @@ function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null 
   const step = file?.steps.find((one) => one.id === id);
   if (file === null || step === undefined) return null;
 
-  const imported = step as unknown as {
-    id: string;
-    name: string;
-    kind: string;
-    command?: string;
-  };
-  if (imported.kind === 'check') {
-    return (
-      <>
-        <Handle type="target" position={Position.Top} />
-        <div
-          data-step={step.id}
-          className={`w-61.5 rounded-md border bg-raised p-3 text-body ${selected ? 'border-accent' : 'border-line-strong'}`}
-        >
-          <div className="flex items-center gap-2">
-            <span aria-hidden className="text-muted">
-              ⠿
-            </span>
-            <b className="min-w-0 flex-1 truncate text-heading text-ink">{step.name}</b>
-            <span className="text-label text-muted">checks project</span>
-          </div>
-          <p className="mt-1 line-clamp-2 font-mono text-note text-ink">
-            {imported.command ?? 'No command configured'}
-          </p>
-        </div>
-        <Handle type="source" position={Position.Bottom} />
-      </>
-    );
-  }
-
   /* `undefined` znaczy „ten krok nie nazywa nikogo z biblioteki" i kafelek nie rysuje wtedy
    * chipu. Krok agenta z pustym `agent` (tak wychodzi z `＋ Add step`) trafia tu też — i to
    * jest poprawne: brak chipu jest tym, jak widać z płótna, że kroku nie da się jeszcze
@@ -136,9 +106,14 @@ function CanvasTile({ id, selected }: NodeProps<StepNode>): ReactElement | null 
 }
 
 /* Cztery rodzaje kafelka, jedna karta. Różnica między nimi jest w DANYCH (punkt kontrolny nie
- * ma agenta ani kopii, „uruchom i zostaw" ma komendę zamiast zadania), a nie w kształcie kafelka
- * — a `check` przychodzi wyłącznie z zaimportowanych plików i nie ma przycisku, który by go
- * stawiał, więc rysuje go osobna gałąź wyżej.
+ * ma agenta ani kopii, „uruchom i zostaw" oraz „sprawdź" mają komendę zamiast zadania), a nie
+ * w kształcie kafelka.
+ *
+ * 2026-08-23 — DRUGIEJ KARTY TU JUŻ NIE MA. `check` miał do tego dnia własną gałąź w tym pliku,
+ * bo przyjeżdżał wyłącznie z zaimportowanych plików i nie było przycisku, który by go stawiał.
+ * Odkąd przycisk jest, kafelek stawiany ręcznie i kafelek z importu są tym samym kafelkiem —
+ * a dwie karty dla jednego rodzaju kroku to dwa miejsca, w których mieszka odpowiedź na pytanie
+ * „jak to wygląda" (niezmiennik 13), i tylko jedno z nich jest sądzone przez kryteria `tile.tsx`.
  *
  * Trzeci rodzaj wymagał prawdziwej skargi użytkownika, nie hipotezy [T3 §10 ryzyko 6] — i taką
  * dostał: „uruchom i zostaw", 2026-08-23, po biegu, w którym sprawdzenie frontu nie miało jak
@@ -515,6 +490,20 @@ function Canvas({
               }}
             >
               ＋ Start something
+            </button>
+            {/* KAFELEK, KTÓRY SAM WYSTAWIA WYNIK. Doszedł 2026-08-23 i jest trzecim rodzajem
+                z D6 („sprawdź"): Rust miał go w całości od T-23, płótno umiało go narysować,
+                a postawić go nie dało się wcale. Dopóki tego przycisku nie było, KAŻDA pętla,
+                jaką człowiek zbuduje, była pętlą „co agent powiedział" — a rozróżnienie, dla
+                którego ten produkt istnieje, nie miało na płótnie żadnego nośnika. */}
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => {
+                add('check');
+              }}
+            >
+              ＋ Run a check
             </button>
             {/* PĘTLA MA WŁASNY PRZYCISK od 2026-08-22, na prośbę właściciela. Stoi obok dwóch
                 tworzących, bo tworzy to samo co one — kawałek grafu — tylko że strzałkę zamiast

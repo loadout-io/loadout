@@ -108,16 +108,26 @@ function copiesOf(step: Step): string | null {
 /** Jedno zdanie o tym, co ten kafelek robi. Punkt kontrolny pyta, krok pracuje.
  *
  * Kafelek „uruchom i zostaw" pokazuje SWOJĄ KOMENDĘ, bo ona jest jedynym zdaniem, które napisał
- * o nim człowiek — dokładnie tak samo, jak pytanie jest jedynym zdaniem punktu kontrolnego. */
+ * o nim człowiek — dokładnie tak samo, jak pytanie jest jedynym zdaniem punktu kontrolnego.
+ *
+ * 2026-08-23 — KAFELEK „SPRAWDŹ" DOSZEDŁ DO TEJ KARTY i tym samym została jedna karta zamiast
+ * dwóch. Do tego dnia rysowała go własna gałąź w `canvas.tsx`, z chipem „checks project"
+ * i z wypełniaczem „No command configured" pod nim — a oba zdania mówiły nieprawdę o kafelku
+ * postawionym przyciskiem: ten pracuje w kopii kroku przed sobą, nie w projekcie, a o pustej
+ * komendzie mówi walidator, jednym zdaniem, na pasku uwag (niezmiennik 13). Pusta komenda
+ * zostaje więc pustą linią, a czerwona kropka przy niej jest jedynym, co o tym mówi. */
 function saysWhat(step: Step): string {
   if (step.kind === 'agent') return step.instructions;
-  if (step.kind === 'serve') return step.command;
-  /* Kafelek „sprawdź" rysuje dziś WŁASNA gałąź w `canvas.tsx` i to ona pokazuje jego komendę,
-   * więc do tej karty jeszcze nie dochodzi. Która z dwóch kart zostanie, rozstrzyga faza
-   * implementacji T-89; do tego czasu pusty napis jest jedyną odpowiedzią, która o niczym
-   * nie kłamie. */
-  if (step.kind === 'check') return '';
+  if (step.kind === 'serve' || step.kind === 'check') return step.command;
   return step.question ?? '';
+}
+
+/** Czy to, co kafelek mówi o sobie, jest WIERSZEM POWŁOKI, a nie zdaniem po angielsku.
+ *
+ * Krój maszynowy jest tu znaczeniem: komenda ma się czytać jak coś, co zostanie wykonane
+ * dosłownie, ze spacjami i myślnikami w tych miejscach, w których je wpisano. */
+function showsACommand(step: Step): boolean {
+  return step.kind === 'serve' || step.kind === 'check';
 }
 
 export function StepTile({
@@ -154,6 +164,13 @@ export function StepTile({
         {step.kind === 'serve' ? (
           <span className="shrink-0 text-label text-muted">leaves it running</span>
         ) : null}
+        {/* Druga połowa tej samej różnicy. Ten kafelek CZEKA na koniec komendy i sam orzeka
+            wynik — z tego, czy komenda wróciła bez błędu, i z tego, czy w wyjściu stoi wzorzec.
+            Bez tego podpisu dwa kafelki z wierszem powłoki wyglądają na płótnie identycznie,
+            a różnią się jedyną rzeczą, przez którą pętla weryfikacyjna w ogóle ma sens. */}
+        {step.kind === 'check' ? (
+          <span className="shrink-0 text-label text-muted">runs a check</span>
+        ) : null}
         {agent === undefined ? null : (
           <span className="flex shrink-0 items-center gap-1 font-mono text-label text-muted">
             <i className={`block size-2.75 ${IDENTITY[agent.color]}`} />
@@ -165,7 +182,7 @@ export function StepTile({
       {/* Dwie linie, obcięte. Czwarta linia tekstu na kafelku jest błędem projektowym,
           nie ciasnotą (DESIGN §6), a `line-clamp` jest jedynym miejscem, w którym to widać. */}
       <p
-        className={`mt-1 line-clamp-2 text-ink ${step.kind === 'serve' ? 'font-mono text-note' : 'text-body'}`}
+        className={`mt-1 line-clamp-2 text-ink ${showsACommand(step) ? 'font-mono text-note' : 'text-body'}`}
       >
         {saysWhat(step)}
       </p>
