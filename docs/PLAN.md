@@ -125,6 +125,28 @@ uruchamiające jeden plik testowy. Przejazd recenzencki nie ma takiego kształtu
 w ten format oznaczałoby wymyślenie kryteriów, których jedynym czytelnikiem jest licznik,
 czyli niezmiennik 21. Zobowiązanie mieszka tutaj i jest sprawdzalne oczami.
 
+## 6b. Faza 6 — kontekst, pętle, learningi (dopisane 2026-08-23)
+
+Analiza 23 biegów właściciela (0 zakończonych `succeeded`) i audyt kodu pokazały, że silnik
+jest poprawny, a warstwa nad nim — kontrakt z agentem, kontekst między krokami, pętla uczenia —
+jest w połowie nieistniejąca. Plan wykonawczy, mapa znalezisk i kolejność fal są
+w [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md); tutaj tylko kolejność zależności.
+
+| ID | Zadanie | Zależy od | Uwaga |
+|---|---|---|---|
+| **T-86** | Każdy krok agenta wie, jak oddać wynik i ile ma czasu | T-80 | Kontrakt Loadout↔agent wypowiedziany w prompcie |
+| **T-89** | Kafelek „sprawdź" da się postawić i ustawić z płótna | — | Jedyny węzeł „co się stało"; równolegle z T-86 |
+| **T-87** | Pętla pamięta swoje rundy, fan-in dostaje to, co przeszło | T-86 | Opcja B: nowa sesja, pełny kontekst pętli |
+| **T-88** | „Pick up here" niesie przekazania poprzedniego biegu | T-87 | |
+| **T-90** | Cztery martwe pola kroku dostają skutek | T-88 | `copies`, `vendorOptions`, `writeResultsTo`, `handover` |
+| **T-96** | Sesja agenta mówi prawdę o tym, co dostał | T-88 | Front; równolegle z T-90 |
+| **T-91** | Poziom myślenia dociera do obu vendorów | T-90 | `--effort` i `model_reasoning_effort` istnieją (zmierzone) |
+| **T-92** | Learningi mają producenta | T-91 | Refleksja po biegu z T6 §5.3; auto-pamięć Claude'a w biegu |
+| **T-93** | Dziedziczenie z repo gospodarza ma nośnik | T-92 | `borrow` na kroku |
+| **T-94** | Jedna pula na aplikację, budżet biegu, ciężki slot | T-93 | S-2 rozstrzygnięte: `--max-budget-usd` istnieje |
+| **T-95** | Po biegu nie zostają kopie ani gałęzie bez pracy | T-94 | |
+| **T-97** | Codex na równi z Claude'em | T-95 | Kuracja, sieć, narzędzia, tokeny, Lead |
+
 ## 7. Linia cięcia
 
 | Zdolność | Kiedy | Powód |
