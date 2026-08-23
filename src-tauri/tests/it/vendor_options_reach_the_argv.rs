@@ -251,27 +251,27 @@ async fn the_passthrough_of_both_vendors_reaches_the_argv() -> Result<(), Box<dy
     // ── (c) I FRAGMENT NAPRAWDĘ STAJE SIĘ ARGUMENTAMI ───────────────────────────────────────
     // Gotowa komenda, nie napis w pliku: selftest w repo źródłowym asertował obecność flagi
     // w skrypcie, przechodził NA KOMENTARZU, a żywa flaga brzmiała inaczej [raport 06 §2].
-    let claude_argv = claude_argv(&claude_fragment);
+    let claude_command = claude_argv(&claude_fragment);
     assert!(
-        pair_stands_in(&claude_argv, CLAUDE_FLAG, CLAUDE_VALUE),
+        pair_stands_in(&claude_command, CLAUDE_FLAG, CLAUDE_VALUE),
         "the fragment reaches the driver and does not become arguments: the command came out as \
-         {claude_argv:?}. A key without its value beside it is worse than nothing — the next \
+         {claude_command:?}. A key without its value beside it is worse than nothing — the next \
          argument is swallowed as its value"
     );
-    let codex_argv = codex_argv(&codex_fragment);
-    let exec_at = codex_argv.iter().position(|one| one == "exec");
-    let key_at = codex_argv
+    let codex_command = codex_argv(&codex_fragment);
+    let exec_at = codex_command.iter().position(|one| one == "exec");
+    let key_at = codex_command
         .iter()
         .position(|one| one == &format!("{CODEX_KEY}={CODEX_VALUE}"));
     assert!(
-        pair_stands_in(&codex_argv, "-c", &format!("{CODEX_KEY}={CODEX_VALUE}")),
+        pair_stands_in(&codex_command, "-c", &format!("{CODEX_KEY}={CODEX_VALUE}")),
         "the other app's fragment does not become arguments either: the command came out as \
-         {codex_argv:?}"
+         {codex_command:?}"
     );
     assert!(
         matches!((key_at, exec_at), (Some(key), Some(exec)) if key < exec),
-        "the extra setting stands after the subcommand in {codex_argv:?}. This app takes it as a \
-         global option only: given later it is refused outright, and the whole turn ends before \
+        "the extra setting stands after the subcommand in {codex_command:?}. This app takes it as \
+         a global option only: given later it is refused outright, and the whole turn ends before \
          the work reaches it — measured the same way for the working directory on 0.148.0"
     );
 
