@@ -40,6 +40,11 @@ const DEAD_GROUP: i32 = 33559;
 /// Klucz, którego ta wersja nie zna. Ma przeżyć zapis.
 const STRANGER: &str = "something-a-newer-build-wrote";
 
+/* Ten sam bieg w obu kryteriach: identyfikator jest stala modulu, bo clippy
+ * (`items_after_statements`) slusznie zauwaza, ze `const` w srodku ciala i tak istnieje
+ * od poczatku zakresu, wiec udawanie, ze powstaje w tamtym miejscu, jest mylace. */
+const OURS: &str = "20260823-114500__01a02c22-346e-73c2-9555-83670e3f93e4";
+
 fn a_run(status: &str, step_status: &str, boot: &str) -> String {
     format!(
         r#"{{
@@ -258,7 +263,6 @@ async fn opening_a_folder_settles_what_the_last_window_left() -> Result<(), Box<
     );
 
     /* DRUGI PUNKT: bieg, ktory zaczal sie PO otwarciu folderu, jest bezpieczny. */
-    const OURS: &str = "20260823-114500__01a02c22-346e-73c2-9555-83670e3f93e4";
     put(
         project,
         OURS,
@@ -341,7 +345,6 @@ async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dy
     );
 
     /* DRUGI PUNKT: zapadka zasiana, wiec bieg tej sesji w tamtym folderze jest bezpieczny. */
-    const OURS: &str = "20260823-114500__01a02c22-346e-73c2-9555-83670e3f93e4";
     put(
         elsewhere.path(),
         OURS,

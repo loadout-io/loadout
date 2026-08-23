@@ -386,9 +386,7 @@ async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<()
 
 /// Ile linii ma ten plik. `0`, kiedy pliku nie ma — czyli „krok niczego nie zostawił".
 fn lines_of(path: &Path) -> usize {
-    fs::read_to_string(path)
-        .map(|text| text.lines().count())
-        .unwrap_or(0)
+    fs::read_to_string(path).map_or(0, |text| text.lines().count())
 }
 
 /// Projekt, który JEST repozytorium gita — bez tego nie ma gałęzi, więc nie ma czego wznawiać.
