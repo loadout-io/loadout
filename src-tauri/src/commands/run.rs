@@ -329,6 +329,16 @@ what you could not settle.
 Do not write your results to a file. Loadout files your last message for you, and a file you \
 write yourself is read by nobody.";
 
+/// Zdanie, którym blok mówi, że ten krok nie ma limitu czasu.
+///
+/// `0` w `giveUpAfterMinutes` znaczy „bez limitu" (`library::agents::Agent`), więc podstawienie
+/// tej liczby dałoby „you have 0 minutes for this step" — polecenie, po którym nie ma nic
+/// sensownego do zrobienia, i wygląda ono w kodzie dokładnie tak samo jak każde inne. Milczenie
+/// też nie jest tą samą odpowiedzią: agent, któremu nie powiedziano nic, budżetuje pod limit,
+/// którego się domyśla, i domyśla się nisko.
+const NO_TIME_LIMIT: &str =
+    "There is no time limit on this step, so take the time the work really needs.";
+
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
@@ -1234,6 +1244,17 @@ struct AgentJob {
     /// długo, jak długo nikt nie patrzy. `ARCHITECTURE.md` §11 zapowiada właśnie tę ochronę
     /// zamiast `--max-turns`.
     give_up_after: Duration,
+    /// Ten sam limit, **liczbą minut i nietknięty** — dokładnie tak, jak stoi w definicji
+    /// efektywnej (agent plus nadpisanie kroku).
+    ///
+    /// 2026-08-23 (T-86) — osobne pole obok [`AgentJob::give_up_after`], a nie liczba wyjęta
+    /// z tamtego `Duration`, bo tamto pole niesie już naszą decyzję o zabijaniu: `0` jedzie
+    /// w nim jako minuta (`.max(1)`), żeby krok bez limitu nie ginął w chwili startu. Zdanie
+    /// zbudowane z tamtej wartości mówiłoby agentowi bez limitu, że ma jedną minutę — czyli
+    /// dokładnie tę nieprawdę, przed którą ma go chronić.
+    ///
+    /// `0` znaczy „bez limitu" (`library::agents::Agent::give_up_after_minutes`).
+    minutes: u32,
     /// Migawka konfiguracji **efektywnej**, zamrożona w chwili startu [T4 §5.2 p. 3].
     effective: Value,
 }
@@ -2182,6 +2203,9 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // je jak brak zdania i zostawiamy domyślne dwadzieścia minut z `library::agents`:
         // limit, który ubija każdy krok w chwili startu, jest gorszy niż brak limitu.
         give_up_after: Duration::from_secs(u64::from(effective.give_up_after_minutes.max(1)) * 60),
+        // Bez `.max(1)`: to jest liczba, którą człowiek wpisał, i to ją dostaje agent
+        // (`Live::how_long_this_step_has`).
+        minutes: effective.give_up_after_minutes,
         effective: serde_json::to_value(&effective)?,
     })
 }
@@ -4776,7 +4800,7 @@ impl Live {
             reads,
             context,
             extra_dirs,
-        } = match self.prompt_for(id, &job.prompt, &job.context) {
+        } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
             Err(_error) => {
                 let text = "Loadout could not prove the context files for this agent, so it did \
@@ -5323,6 +5347,7 @@ impl Live {
         id: StepId,
         instructions: &str,
         planned_context: &[ContextSource],
+        minutes: u32,
     ) -> anyhow::Result<Told> {
         let handed = self.handed_before(id);
         let mut told = Told {
@@ -5336,8 +5361,39 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(&Self::how_long_this_step_has(minutes));
         self.ask_for_an_outcome(id, &mut told);
         Ok(told)
+    }
+
+    /// Zdanie, którym blok nazywa limit czasu **tego** kroku.
+    ///
+    /// # Limit, o którym wie wyłącznie ten, kto zabija, jest karą, a nie ograniczeniem
+    ///
+    /// `give_up_after` odbiera krokowi robotę po czasie (`Live::one_turn` → [`Ended::Overdue`])
+    /// i do 2026-08-23 nie wchodził do promptu ani jedną literą. Agent planował
+    /// sześćdziesięciominutową robotę w kroku, który ma dziesięć minut, i ginął w połowie bez
+    /// jednego zdania w tym, co przekazuje dalej — czyli bieg płacił za całą turę i nie dostawał
+    /// z niej nic.
+    ///
+    /// # Liczba jest z definicji EFEKTYWNEJ, czyli po nadpisaniu na kroku
+    ///
+    /// Nie z samej definicji agenta: dla kroku, który niczego nie zawęża, obie odpowiadają tak
+    /// samo, więc rozjazd nie ma jak się pokazać — a człowiek, który zawęził czas na panelu
+    /// kroku, dostawałby agenta planującego pracę na trzy razy dłużej, niż mu wolno.
+    ///
+    /// Skojarzona, nie metoda na `&self`: odpowiedź zależy wyłącznie od argumentu, a `self`
+    /// w podpisie sugerowałby, że gdzieś w biegu stoi drugie źródło tej liczby.
+    fn how_long_this_step_has(minutes: u32) -> String {
+        if minutes == 0 {
+            return NO_TIME_LIMIT.to_owned();
+        }
+        format!(
+            "You have {minutes} minutes for this step. When the time is up the step is stopped \
+             where it stands and nothing of it reaches the step after yours, so plan the work to \
+             fit and answer while you still can."
+        )
     }
 
     /// Lista ścieżek do tego, co zostawili poprzednicy tego kroku — plus prawo ich otwarcia.
