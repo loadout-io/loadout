@@ -454,6 +454,12 @@ const FIELD_IS_NEEDED: &str = " (needed)";
 /// wierszy — odmowa bez nazwy pola wysyła człowieka szukać, który z nich zatrzymał bieg.
 const WRITE_RESULTS_TO: &str = "Write results to";
 
+/// Zdanie, którym kończy się każda ścieżka wyniku wypadająca poza folder kroku.
+///
+/// Jedno na dwa pytania — o katalog nad plikiem i o sam plik ([`Live::file_the_answer`]) — bo
+/// człowiekowi wypada z tego ta sama poprawka: wskaż miejsce w folderze, który ten krok dostał.
+const LEADS_OUT_OF_THE_FOLDER: &str = "that path leads out of the folder this step works in";
+
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
@@ -6866,6 +6872,7 @@ impl Live {
         };
         let path = job.cwd.join(under);
         let written = (|| -> io::Result<()> {
+            let root = job.cwd.canonicalize()?;
             if let Some(parent) = path.parent() {
                 // Katalogi po drodze zakłada Loadout: implementacja, która tego nie robi,
                 // wygląda jak zapis, który się nie udał i nic o tym nie powiedział.
@@ -6874,12 +6881,37 @@ impl Live {
                  * `results` mógł już wcześniej być dowiązaniem gdzie indziej — i wtedy ścieżka
                  * czysta co do znaków wyprowadza z folderu kroku tak samo skutecznie. Pytanie da
                  * się postawić dopiero teraz, bo dopiero teraz ten katalog istnieje. */
-                let real = parent.canonicalize()?;
-                let root = job.cwd.canonicalize()?;
-                if !real.starts_with(&root) {
-                    return Err(io::Error::other(
-                        "that path leads out of the folder this step works in",
-                    ));
+                if !parent.canonicalize()?.starts_with(&root) {
+                    return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
+                }
+            }
+            /* I TO SAMO PYTANIE O OSTATNI CZŁON, bo katalog nad nim bywa czysty. `results/`
+             * leży dokładnie tam, gdzie ma leżeć, a `results/report.md` jest dowiązaniem do
+             * pliku człowieka poza folderem kroku — `fs::write` idzie po dowiązaniu i zapisuje
+             * TAM. Sprawdzenie samego katalogu przepuszcza więc dokładnie tę ucieczkę, przed
+             * którą stoi, i to bez ani jednego znaku `..` w ścieżce.
+             *
+             * `symlink_metadata`, nie `exists`: pytanie brzmi „czy coś tu już leży", a nie „czy
+             * po dowiązaniu coś jest" — i tylko ono odróżnia wolne miejsce od dowiązania
+             * wiszącego, po którym `fs::write` też pisze. */
+            match path.symlink_metadata() {
+                // Wolne miejsce: plik powstanie w katalogu, o który już zapytaliśmy wyżej.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+                Ok(here) => {
+                    let real = path.canonicalize().map_err(|error| {
+                        if error.kind() == io::ErrorKind::NotFound && here.is_symlink() {
+                            io::Error::other(
+                                "that path is a link to something that is not there, so there is \
+                                 no telling where the answer would land",
+                            )
+                        } else {
+                            error
+                        }
+                    })?;
+                    if !real.starts_with(&root) {
+                        return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
+                    }
                 }
             }
             fs::write(&path, said)

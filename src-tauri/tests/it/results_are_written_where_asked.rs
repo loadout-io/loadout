@@ -30,6 +30,15 @@
 //! zdania. Ścieżka wyprowadzająca poza folder jest odmową **przed startem**, więc mierzymy
 //! jedno i drugie: zdanie nazywające pole ORAZ to, że nie ruszył ani jeden agent.
 //!
+//! # I czwarta, którą widać dopiero na dysku: ucieczka bez ani jednego `..`
+//!
+//! Ścieżkę `..` i ścieżkę bezwzględną odrzuca planista, patrząc na napis. Dowiązania z napisu nie
+//! widać: `results/report.md` jest ścieżką czystą co do znaków i wyprowadza z folderu kroku
+//! dokładnie tak samo skutecznie, kiedy ktoś położył tam wcześniej link do cudzego pliku. Pytanie
+//! o to trzeba postawić jądru, i to tuż przed zapisem — bo dopiero wtedy ten plik istnieje.
+//! Implementacja pytająca wyłącznie o katalog NAD plikiem przechodzi każdą asercję powyżej i
+//! nadpisuje plik, którego nikt nie wskazał.
+//!
 //! # I przekazanie zostaje przekazaniem
 //!
 //! Plik pod wskazaną ścieżką jest KOPIĄ, nie zamianą: indeks następnego kroku stoi na
@@ -54,6 +63,7 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -191,6 +201,36 @@ const ONE_STEP: &str = r#"{
   "links": []
 }
 "#;
+
+/// Jeden krok w folderze projektu — ławka dla ścieżki, którą ktoś wcześniej podmienił na
+/// dowiązanie.
+///
+/// Bez `fresh-copy`, i to jest treść: kopia plików powstaje w chwili startu, więc dowiązanie
+/// położone przed biegiem trzeba położyć w folderze, w którym ten krok naprawdę pracuje.
+/// `whenItFails: stop` stoi tu po to, żeby stan końcowy kroku miał jedną możliwą wartość.
+const LINKED: &str = r#"{
+  "format": 1,
+  "id": "wf_a_link_that_leads_out",
+  "name": "One step whose result path was quietly turned into a link",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_linked",
+      "name": "Linked",
+      "agent": "01990000-0000-7000-8000-00000000092d",
+      "overrides": {},
+      "instructions": "linked: do the work and say what you found.",
+      "whenItFails": "stop",
+      "at": { "x": 0, "y": 0 }
+    }
+  ],
+  "links": []
+}
+"#;
+
+/// Treść pliku, który leży poza folderem kroku i na który wskazuje dowiązanie. Po biegu ma być
+/// co do bajtu taka sama — a `SAID` jest od niej różne, więc podmiana widać natychmiast.
+const SOMEBODY_ELSES: &str = "written by somebody who is not in this run\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_answer_lands_under_the_path_the_person_typed() -> Result<(), Box<dyn Error>> {
@@ -339,6 +379,105 @@ async fn a_path_that_leads_out_of_the_folder_stops_the_run_before_it_starts()
         absolute.display()
     );
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_at_the_end_of_the_path_does_not_carry_the_answer_out_of_the_folder()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+
+    // Cudzy plik, poza folderem kroku, z treścią, którą po biegu da się rozpoznać.
+    let elsewhere = bench.home.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere)?;
+    let theirs = elsewhere.join("theirs.md");
+    fs::write(&theirs, SOMEBODY_ELSES)?;
+
+    /* ŚCIEŻKA CZYSTA CO DO ZNAKÓW, KTÓRA WYPROWADZA. `results/` leży dokładnie tam, gdzie ma
+     * leżeć — pod folderem kroku — a ostatni człon jest dowiązaniem do pliku powyżej. Napis nie
+     * ma w sobie ani jednego `..`, więc planista nie ma czego odrzucić, a `fs::write` idzie po
+     * dowiązaniu i zapisuje po drugiej stronie. */
+    let linked = bench.project.path().join(ASKED_FOR);
+    fs::create_dir_all(linked.parent().expect("that path has a parent"))?;
+    symlink(&theirs, &linked)?;
+
+    let only = bench.agent(
+        "linked",
+        &agent_file("01990000-0000-7000-8000-00000000092d", "Linked", ASKED_FOR),
+    )?;
+    let workflow = bench.workflow("a-link-that-leads-out", LINKED)?;
+    the_fixture_can_run(&workflow, &[&only])?;
+
+    let seen = Arc::new(Seen::default());
+    let report = run_it(&bench, workflow, Arc::clone(&seen))
+        .await?
+        .map_err(|error| {
+            format!("this fixture asks for nothing the planner can see, so it runs: {error}")
+        })?;
+
+    // ── (a) CUDZY PLIK JEST NIETKNIĘTY ────────────────────────────────────────────────────────
+    // Pierwsza asercja, bo jest jedyną, która mówi o szkodzie. Reszta mówi o tym, jak Loadout
+    // się z niej wytłumaczył.
+    assert_eq!(
+        fs::read_to_string(&theirs)?,
+        SOMEBODY_ELSES,
+        "the run wrote this step's answer into {}, which lies outside the folder the step was \
+         given. Nothing in \"{ASKED_FOR}\" says so: the escape is in a link somebody left behind, \
+         and asking only about the folder above the file walks straight through it",
+        theirs.display()
+    );
+
+    // ── (b) I DOWIĄZANIE ZOSTAŁO DOWIĄZANIEM ─────────────────────────────────────────────────
+    // Kasowanie linku i zapis w jego miejsce chroni cudzy plik i niszczy to, co człowiek sam
+    // sobie w tym folderze ustawił — a robi to po cichu, bo bieg wygląda wtedy na udany.
+    assert!(
+        fs::symlink_metadata(&linked)?.file_type().is_symlink(),
+        "the link at \"{ASKED_FOR}\" is gone: the run replaced it instead of refusing to follow \
+         it. A refusal does not get to tidy up a person's folder on the way out"
+    );
+
+    // ── (c) KROK NIE PRZESZEDŁ ────────────────────────────────────────────────────────────────
+    // Zapis JEST tym, o co człowiek poprosił: bieg, który go nie zrobił i mimo to zieleni się na
+    // ekranie, kłamie dokładnie w miejscu, w którym ktoś na niego patrzy.
+    assert_eq!(
+        report.steps,
+        vec![StepState::Failed],
+        "the step whose answer had nowhere to go ended as {:?}. A run that could not do the one \
+         thing the person asked for must not come back looking like it did",
+        report.steps
+    );
+    assert_eq!(
+        seen.labels(),
+        vec!["linked"],
+        "the agent never ran, so this test measured the planner and not the write it is about"
+    );
+
+    // ── (d) ZE ZDANIEM, KTÓRE NAZYWA POLE ────────────────────────────────────────────────────
+    let why = why_it_failed(&report)?;
+    assert!(
+        why.contains(FIELD_ON_SCREEN),
+        "the step's own record says it failed because of {why:?} — which does not name the \
+         setting that stopped it. The step panel has nine rows, and a person told only that \
+         something could not be written gets to guess which one"
+    );
+    Ok(())
+}
+
+/// Powód porażki jedynego kroku biegu, prosto z `run.json`.
+///
+/// Z pliku, nie z raportu: powód jest tym, co człowiek czyta na karcie kroku, a `run.json` jest
+/// jedynym zapisem biegu, który przeżywa skasowanie indeksu (niezmiennik 4).
+fn why_it_failed(report: &RunReport) -> Result<String, Box<dyn Error>> {
+    let text = fs::read_to_string(report.dir.join("run.json"))?;
+    let run: serde_json::Value = serde_json::from_str(&text)?;
+    let why = run
+        .get("steps")
+        .and_then(|steps| steps.get(0))
+        .and_then(|step| step.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or(
+            "the run's own record gives this step no reason at all, so nothing reached the card",
+        )?;
+    Ok(why.to_owned())
 }
 
 /// Ścieżki plików o tej nazwie, gdziekolwiek pod tym katalogiem.
