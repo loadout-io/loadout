@@ -321,3 +321,54 @@ describe('typing /history puts what really ran on the screen', () => {
     ).toBe(true);
   });
 });
+
+/* 2026-08-23 — HISTORIA BIEGU BYŁA ŚCIANĄ, NIE LISTĄ.
+ *
+ * Zgłoszenie właściciela, dosłownie: „ten UI od razu ogarnij bo mnie wkurwia".
+ *
+ * Panel rysował KAŻDY krok w całości, jeden pod drugim. Jego bieg `20260823-011240` ma 22 kroki,
+ * a jeden z nich niósł w strumieniu wypowiedź agenta długości raportu — więc otwarcie historii
+ * dawało kilkadziesiąt ekranów przewijania, w których nagłówki kroków (jedyna rzecz, po którą
+ * człowiek tam wchodzi) dzieliły tysiące wierszy.
+ *
+ * SUFIT, NIE CIĘCIE — i to jest treść tego kryterium, nie jego forma. Ekran, który ROZWIĄZUJE
+ * ten problem skracaniem tekstu, popełnia dokładnie tę wadę, o którą ten sam panel został
+ * oskarżony przy krokach codeksa: człowiek nie odróżnia „nie mieści się" od „nie zapisano".
+ * Dlatego drugi punkt sprawdza, że wszystko, co było w dokumencie, dalej w nim jest.
+ */
+describe('an opened run reads as a list of steps, not as one wall', () => {
+  /** Blok treści kroku — ten, w którym stoi strumień i przekazania. */
+  const bodies = [
+    ...withTheRun.matchAll(/<div class="([^"]*(?:max-h|overflow-y)[^"]*)"[^>]*>/g),
+  ].map((hit) => hit[1] ?? '');
+
+  it('gives every step a ceiling of its own instead of letting it push the page', () => {
+    const bounded = bodies.filter((one) => /\bmax-h-/.test(one) && /\boverflow-y-auto\b/.test(one));
+    expect(
+      bounded.length,
+      'no part of an opened run has a height of its own, so one step that said a lot buries ' +
+        'every step after it. The headings are the only thing a person came here for, and they ' +
+        'end up thousands of lines apart. It drew: ' +
+        JSON.stringify(bodies),
+    ).toBeGreaterThan(0);
+    expect(
+      bounded.every((one) => /\boverscroll-contain\b/.test(one)),
+      'a bounded step scrolls the whole run list once it reaches its end, which throws the ' +
+        'person out of the place they were reading. It drew: ' +
+        JSON.stringify(bounded),
+    ).toBe(true);
+  });
+
+  it('keeps every word it had, because a ceiling is not a cut', () => {
+    for (const kept of [SUMMARY, HANDED, 'Read 3 files']) {
+      expect(
+        withTheRun,
+        'bounding the height must not take anything out of the document. A screen that ' +
+          'shortens text instead of bounding it makes "too long to show" look exactly like ' +
+          '"never kept" — the very fault this panel was just found guilty of elsewhere. ' +
+          'It lost: ' +
+          kept,
+      ).toContain(kept);
+    }
+  });
+});

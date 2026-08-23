@@ -220,7 +220,23 @@ function Step({
         )}
       </h4>
 
-      <div className="py-[7px]">
+      {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
+          Zgłoszenie właściciela 2026-08-23: „ten UI od razu ogarnij bo mnie wkurwia".
+
+          Do dziś panel rysował KAŻDY krok w całości, jeden pod drugim. Bieg `20260823-011240`
+          to 22 kroki, a jeden z nich niósł w strumieniu wypowiedź agenta długości raportu —
+          więc otwarcie historii dawało kilkadziesiąt ekranów przewijania, w których nie dało
+          się znaleźć niczego. Nagłówki kroków, po które człowiek tu przychodzi, były od siebie
+          oddalone o tysiące wierszy.
+
+          SUFIT, NIE CIĘCIE. Nie skracamy ani jednego zdania: cały tekst zostaje w dokumencie,
+          tylko przestaje rozpychać stronę. To jest różnica między „nie mieści się na ekranie"
+          a „zostało utracone" — a ta druga rzecz jest dokładnie tym, o co ten ekran właśnie
+          został oskarżony przy krokach codeksa.
+
+          `overscroll-contain`: dojechanie do końca kroku nie ma prawa pociągnąć całej listy
+          biegu. Bez tego przewijanie jednego kroku wyrzuca człowieka z miejsca, którego szukał. */}
+      <div className="max-h-96 overflow-y-auto overscroll-contain py-[7px]">
         {step.summary === '' ? null : (
           <p data-step-said className="px-[18px] py-[3px] text-body text-ink">
             {step.summary}

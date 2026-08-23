@@ -1063,13 +1063,28 @@ struct AgentJob {
     cwd: PathBuf,
     /// Czy ten katalog jest nasz, czyli czy mamy go utworzyć.
     ours: bool,
-    /// Instrukcje kroku, dosłownie z pliku workflow.
+    /// Planowana część promptu: notatki, zadanie biegu i instrukcja kafelka, już złożone.
     ///
-    /// To jeszcze **nie** jest prompt: prompt składa [`Live::prompt_for`] w chwili startu kroku,
-    /// z tej instrukcji i z indeksu przekazań poprzedników. Przy planowaniu nie zszedł jeszcze
+    /// 2026-08-23 — KOMENTARZ MÓWIŁ „instrukcje kroku, dosłownie z pliku workflow" i przestał
+    /// być prawdą, odkąd `plan_step` składa tu blok „co wiadomo" i nagłówek zadania biegu.
+    /// Kosztowało to tytuły WSZYSTKICH przekazań: `title_of` czytało to pole, więc od chwili,
+    /// w której bieg zaczął nosić zadanie, każdy tytuł zaczynał się tym samym nagłówkiem.
+    /// Zmierzone na biegu `20260823-011240`: 19 przekazań, 19 identycznych tytułów, lista
+    /// „co kroki sobie przekazały" nie do przejrzenia. Surowa instrukcja stoi teraz obok,
+    /// w [`AgentJob::asked`].
+    ///
+    /// To jeszcze **nie** jest cały prompt: indeks przekazań poprzedników dokłada
+    /// [`Live::prompt_for`] w chwili startu kroku. Przy planowaniu nie zszedł jeszcze
     /// nikt, więc indeksu nie ma tu z czego zbudować. Jedno i drugie jedzie do sterownika jako
     /// **dane** i wychodzi stdinem (niezmiennik 9).
     prompt: String,
+    /// O co poproszono TEN kafelek — dosłownie z pliku workflow, bez ani jednego naszego bajtu.
+    ///
+    /// Jedyne zdanie o tym kroku, które napisał człowiek, więc jedyne, które nadaje się na tytuł
+    /// przekazania. Osobne pole, a nie ponowne składanie z `prompt`: rozbieranie własnego
+    /// wyniku, żeby wyjąć z niego to, co się przed chwilą włożyło, rozjeżdża się przy pierwszym
+    /// nowym bloku dokładanym do promptu — i tak właśnie powstał defekt, który to naprawia.
+    asked: String,
     /// Dokładne źródła planowanej części promptu, bez treści. Przekazania dopisuje
     /// [`Live::prompt_for`] dopiero wtedy, gdy naprawdę istnieją.
     context: Vec<ContextSource>,
@@ -1890,6 +1905,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
             &setup.knows.text,
             &with_the_task(&setup.task, &step.instructions),
         ),
+        asked: step.instructions.clone(),
         context,
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
@@ -5429,7 +5445,7 @@ fn summary_of(text: &str) -> Option<String> {
 /// swoją nazwą — ona też jest zdaniem, które napisał człowiek.
 fn title_of(step: &Planned) -> String {
     match &step.job {
-        Job::Agent(job) => one_line(&job.prompt, TITLE_LIMIT),
+        Job::Agent(job) => one_line(&job.asked, TITLE_LIMIT),
         Job::Ask { question } => question
             .as_deref()
             .and_then(|question| one_line(question, TITLE_LIMIT)),

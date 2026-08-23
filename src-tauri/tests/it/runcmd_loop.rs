@@ -680,3 +680,106 @@ async fn a_step_the_tester_stopped_says_which_way_it_stopped() -> Result<(), Box
     );
     Ok(())
 }
+
+/* 2026-08-23 — DZIEWIĘTNAŚCIE PRZEKAZAŃ, DZIEWIĘTNAŚCIE IDENTYCZNYCH TYTUŁÓW.
+ *
+ * `title_of` czytało `AgentJob::prompt`, którego komentarz twierdził „instrukcje kroku,
+ * dosłownie z pliku workflow". Przestało to być prawdą, odkąd `plan_step` składa w tym polu blok
+ * „co wiadomo" i nagłówek zadania biegu — więc od chwili, w której bieg zaczął nosić zadanie,
+ * KAŻDY tytuł zaczynał się tym samym zdaniem.
+ *
+ * Zmierzone na biegu właściciela `20260823-011240`: lista „co kroki sobie przekazały" to
+ * dwadzieścia wierszy, z których każdy czyta się „What the person asked for, for this whole run:
+ * zrób analizę i reaserch…". Nie da się z niej wybrać niczego.
+ *
+ * SŁABĄ WERSJĄ jest „tytuł jest niepusty". Przechodzi ją dokładnie ten defekt. Rozróżnia je
+ * pytanie o DWA różne kafelki naraz plus asercja, że w tytule nie ma zadania biegu — bo to
+ * zadanie było jedyną treścią wszystkich dziewiętnastu.
+ */
+
+/// Zadanie biegu — brzmi inaczej niż każda instrukcja w pliku, i o to chodzi.
+const WHOLE_RUN_ASKED: &str = "compare the districts and pick one to live in";
+
+/// Pary `from` → `title` z front-matterów przekazań tego biegu.
+fn titles_of(dir: &Path) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir.join("handoffs")) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let text = std::fs::read_to_string(entry.path())?;
+        let field = |key: &str| -> String {
+            text.lines()
+                .find_map(|line| line.strip_prefix(key))
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        };
+        out.push((field("from:"), field("title:")));
+    }
+    Ok(out)
+}
+
+#[tokio::test]
+async fn a_handoff_is_titled_by_what_its_own_step_was_asked() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", LOOP_FILE)?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::new(Watch::passing_on_turn(1))),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let report = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 2,
+            // Z ZADANIEM, bo bez niego ten defekt nie istnieje: nagłówek doklejał się do promptu
+            // wyłącznie wtedy, gdy bieg miał o co poproszony.
+            task: Some(WHOLE_RUN_ASKED.to_owned()),
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+
+    let titled = titles_of(&report.dir)?;
+    assert!(
+        titled.len() >= 2,
+        "the run left fewer than two handoffs, so asking whether their titles differ would be a \
+         question about one thing. It left: {titled:?}"
+    );
+    for (from, title) in &titled {
+        assert!(
+            !title.contains(WHOLE_RUN_ASKED),
+            "the handoff from {from:?} is titled with what the WHOLE RUN was asked for. Every \
+             step of a run shares that sentence, so every title comes out the same and the list \
+             of what was passed along cannot be read at all. It said: {title:?}"
+        );
+    }
+    let distinct: std::collections::BTreeSet<&str> =
+        titled.iter().map(|(_, title)| title.as_str()).collect();
+    assert!(
+        distinct.len() >= 2,
+        "every handoff in this run carries the same title, even though its steps were asked for \
+         different things. Rounds of one loop SHOULD share a title - they share an instruction - \
+         but two different tiles must not. They said: {distinct:?}"
+    );
+    /* I POZYTYWNIE: tytuł ma nieść zdanie SWOJEGO kafelka, nie cudze i nie nasze. */
+    let tester = titled
+        .iter()
+        .find(|(from, _)| from == "Tester")
+        .ok_or("the tester left no handoff at all")?;
+    assert!(
+        tester.1.contains("Run the suite"),
+        "the tester's handoff is titled with something other than what the tester was asked to \
+         do. That sentence is the only one about this step a person actually wrote. It said: {:?}",
+        tester.1
+    );
+    Ok(())
+}
