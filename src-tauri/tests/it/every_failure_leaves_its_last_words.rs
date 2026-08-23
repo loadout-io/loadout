@@ -76,6 +76,10 @@ const AFTER: &str = "After";
 /// przyjętego od odrzuconego — a to jest jedyny powód, dla którego on tam jest.
 const DID_NOT_PASS: &str = "did not pass";
 
+/// To, co agent zdążył powiedzieć, zanim jego tura się przewróciła. Zdanie jest rozpoznawalne
+/// z rozmysłu: ma je napisać AGENT, więc nie może dać się pomylić z niczym, co pisze Loadout.
+const LAST_WORDS: &str = "I got as far as reading the notes and writing down two of them.";
+
 const HAND_FILE: &str = "---
 schema: 1
 id: 01990000-0000-7000-8000-0000000000d5
@@ -205,7 +209,24 @@ async fn an_agent_whose_turn_broke_leaves_its_last_words() -> Result<(), Box<dyn
         "an agent turn that came back with an error goes past `when_this_one_fails` entirely, so \
          the person's choice to carry on is dead on this path — the steps after it are painted \
          over in silence",
-    )
+    )?;
+
+    /* DRUGA POŁOWA: WIERSZ W INDEKSIE MA PROWADZIĆ DO CZEGOŚ. Krok, który padł, oddaje dalej
+     * „to, co zdążył powiedzieć" — a jedynym miejscem, w którym te słowa istniały, była kolejka
+     * zdarzeń idąca na ekran. Plik pusty przechodzi każdą asercję wyżej i nie mówi następnemu
+     * agentowi ani słowa o tym, jak daleko doszedł ten przed nim. */
+    let seen = watch.seen();
+    let told = prompts_of(AFTER, &seen);
+    let path = the_file_it_was_given(&told[0])?;
+    let handed = fs::read_to_string(&path)?;
+    assert!(
+        handed.contains(LAST_WORDS),
+        "the step that fell over handed on a file without a word of what its agent had already \
+         said. The prose reached the screen and stopped there: nothing on this path keeps it, so \
+         the next step opens the path in its index and finds a heading over nothing. The file \
+         {path:?} read: {handed:?}"
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -439,6 +460,15 @@ fn the_reason_for(dir: &Path, name: &str) -> Result<String, Box<dyn Error>> {
         .to_owned())
 }
 
+/// Ścieżka pliku, który ten prompt wymienia w indeksie — pierwszego z brzegu.
+fn the_file_it_was_given(prompt: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let named = prompt
+        .split_whitespace()
+        .find(|word| word.contains("handoffs/"))
+        .ok_or("the step after the failure was given no file at all")?;
+    Ok(PathBuf::from(named.trim_end_matches([',', ';', ':', ')'])))
+}
+
 /// Wiersze indeksu tego promptu — po jednym na wymieniony plik.
 fn index_rows(prompt: &str) -> Vec<String> {
     prompt
@@ -574,6 +604,19 @@ impl AgentHandle for Turn {
 
     async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
         if self.breaks {
+            /* AGENT ZDĄŻYŁ COŚ POWIEDZIEĆ, i dopiero potem jego aplikacja odeszła. Tak wygląda
+             * prawdziwa awaria w środku tury: proza już poszła zdarzeniami, a wyniku nie ma
+             * i nie będzie. Tura, która milczy do końca, nie odróżniłaby pliku z ostatnimi
+             * słowami od pliku pustego. */
+            let _ = self
+                .events
+                .send(
+                    (AgentEvent::Said {
+                        text: LAST_WORDS.to_owned(),
+                    })
+                    .into(),
+                )
+                .await;
             // Ta sama forma, jaką ma prawdziwa awaria sterownika: tury nie ma, jest błąd.
             anyhow::bail!("the agent app went away in the middle of the turn");
         }

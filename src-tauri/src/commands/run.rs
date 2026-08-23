@@ -1226,6 +1226,22 @@ enum Ended {
     Overdue,
 }
 
+/// Co zostało po turze: gotowy wynik albo porażka, którą wolno rozstrzygnąć dopiero PO tym, jak
+/// zdarzenia tej tury przejdą przez kuratora.
+///
+/// 2026-08-23 (T-87) — TEN TYP ISTNIEJE DLA JEDNEJ KOLEJNOŚCI. Krok, którego tura wróciła błędem,
+/// oddaje dalej to, co zdążył powiedzieć ([`Live::hand_on_its_last_words`]), a jego proza jedzie
+/// tą samą kolejką, co wiersze na ekran. Rozstrzygnięcie porażki w środku [`Live::one_turn`]
+/// wyprzedzało tę kolejkę: plik powstawał, zanim ostatnie zdanie agenta z niej wyszło, i raz na
+/// jakiś czas wychodził pusty. Wyścigu, którego wynik zależy od tego, kto akurat był szybszy,
+/// nie da się ani przetestować, ani powtórzyć.
+enum Turned {
+    /// Tura skończyła się i jej wynik jest znany.
+    Settled(StepReport),
+    /// Tura wróciła błędem. W środku zdanie, które ma zobaczyć człowiek.
+    Broke(&'static str),
+}
+
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
@@ -3855,6 +3871,19 @@ struct Live {
     /// rozstrzyga o każdej porażce. Osobny zamek, jak [`Live::handoffs`] obok, i z tego samego
     /// powodu: to nie jest stan, który jedzie do `run.json`.
     did_not_pass: Mutex<Vec<bool>>,
+    /// Proza, którą krok zdążył powiedzieć w swojej turze — po jednej pozycji na krok, sklejona
+    /// w kolejności, w jakiej padła. Pusty napis znaczy „ten krok nie powiedział jeszcze nic".
+    ///
+    /// 2026-08-23 (T-87) — TO JEST JEDYNA KOPIA TEGO TEKSTU PO STRONIE BIEGU. `AgentEvent::Said`
+    /// dociera wyłącznie do kuracji ([`forward`]), czyli na ekran, a `StepRun::summary` powstaje
+    /// dopiero z UDANEJ tury. Krok, którego tura wróciła błędem, nie miał więc ani jednego
+    /// nośnika dla tego, co zdążył napisać — i zostawiał po sobie pusty plik, choć powiedział
+    /// pół strony.
+    ///
+    /// Pisze [`forward`], czyta [`Live::hand_on_its_last_words`]. Osobny zamek, jak
+    /// [`Live::handoffs`] obok, i z tego samego powodu: to nie jest stan, który jedzie do
+    /// `run.json` — jego trwałym śladem jest plik przekazania.
+    said_so_far: Mutex<Vec<String>>,
     /// Runda, w której pętla się DOMKNĘŁA — po jednej pozycji na pętlę planu, w tej samej
     /// kolejności co [`Plan::loops`]. `None` na pozycji znaczy „ta pętla jeszcze nie przeszła".
     ///
@@ -4066,6 +4095,7 @@ impl Live {
             .collect();
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         let did_not_pass = Mutex::new(vec![false; plan.steps.len()]);
+        let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
         let settled_at = Mutex::new(vec![None; plan.loops.len()]);
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         Self {
@@ -4084,6 +4114,7 @@ impl Live {
             began: Instant::now(),
             handoffs,
             did_not_pass,
+            said_so_far,
             settled_at,
             route_evidence,
             route_decisions: Mutex::new(Vec::new()),
@@ -4372,10 +4403,45 @@ impl Live {
         if already {
             return;
         }
-        // Jednolinijkowe podsumowanie jest wszystkim, co po takim kroku zostaje: wyjscie komendy,
-        // ktora nie wystartowala, nie istnieje, a tura, ktora wrocila bledem, nie ma tekstu.
-        let last_words = self.book().steps[id].summary.clone().unwrap_or_default();
+        /* PROZA AGENTA WYGRYWA Z PODSUMOWANIEM, i to jest cala roznica miedzy plikiem, ktory
+         * ratuje ture, a plikiem, ktory ja tylko odnotowuje. `StepRun::summary` powstaje
+         * z UDANEGO wyniku (`one_turn`), wiec tura, ktora wrocila bledem, nie ma go wcale —
+         * a agent zdazyl w niej powiedziec, co zrobil i na czym stanal. Ten tekst zbiera
+         * [`Live::said_so_far`], po zdarzeniu na blok.
+         *
+         * Podsumowanie zostaje dla krokow, ktore nie mowia proza: komenda, ktora nie wystartowala,
+         * nie powiedziala ani slowa, a jej jedno zdanie jest wszystkim, co po niej zostaje. */
+        let last_words = self
+            .what_it_managed_to_say(id)
+            .unwrap_or_else(|| self.book().steps[id].summary.clone().unwrap_or_default());
         self.hand_over(id, &last_words, &[]);
+    }
+
+    /// To, co ten krok zdazyl powiedziec proza. `None`, kiedy nie powiedzial nic.
+    ///
+    /// Zamek powstaje i ginie w jednym wyrazeniu, bez `await` w srodku (niezmiennik 8).
+    fn what_it_managed_to_say(&self, id: StepId) -> Option<String> {
+        self.said_so_far
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .filter(|said| !said.trim().is_empty())
+            .cloned()
+    }
+
+    /// Dopisuje blok prozy do tego, co ten krok zdazyl powiedziec.
+    fn also_said(&self, id: StepId, text: &str) {
+        if let Some(said) = self
+            .said_so_far
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            if !said.is_empty() {
+                said.push('\n');
+            }
+            said.push_str(text);
+        }
     }
 
     /// Pytanie, ktore staje na ekranie, kiedy krok nie przeszedl, a czlowiek chcial byc pytany.
@@ -5022,6 +5088,7 @@ impl Live {
             Arc::clone(self),
             inbox,
             self.plan.steps[id].name.clone(),
+            id,
         ));
         // Własny klon nadawcy zostaje po to, żeby o nieudanym starcie dało się powiedzieć tą samą
         // drogą, którą mówi agent. Musi zginąć na OBU gałęziach — nadawca, który przeżył krok,
@@ -5142,7 +5209,7 @@ impl Live {
             }
         };
 
-        let report = match started {
+        let turned = match started {
             Ok(handle) => {
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
@@ -5156,7 +5223,7 @@ impl Live {
                     .await;
                 drop(ours);
                 self.update(|book| book.steps[id].error = Some(text));
-                StepReport::Failed
+                Turned::Settled(StepReport::Failed)
             }
         };
 
@@ -5164,7 +5231,13 @@ impl Live {
         // następny. Bez tego strzałka „po" przestaje znaczyć „po" na ekranie, choć w silniku
         // dalej znaczy.
         let _ = pump.await;
-        report
+        match turned {
+            Turned::Settled(report) => report,
+            /* DOPIERO TERAZ, bo dopiero teraz wiadomo, co ten krok zdążył powiedzieć: proza
+             * agenta jedzie tą samą kolejką, którą właśnie domknęliśmy, a to ona jest ciałem
+             * przekazania, jakie zostawia po sobie krok jadący dalej mimo porażki (T-87 AC-5). */
+            Turned::Broke(why) => self.when_this_one_fails(id, why).await,
+        }
     }
 
     /// Krok „sprawdź": nasza komenda, nasz werdykt, zero sesji agenta.
@@ -5379,6 +5452,9 @@ impl Live {
     ///
     /// `reads` jest listą tego, co Loadout wstrzyknął w prompt tej tury ([`Live::prompt_for`]),
     /// i jedzie prosto do front-mattera przekazania, które z niej powstanie.
+    ///
+    /// Tura, która wróciła BŁĘDEM, wraca stąd jako [`Turned::Broke`] i rozstrzyga się piętro
+    /// wyżej — powód stoi przy tamtym typie.
     async fn one_turn(
         &self,
         id: StepId,
@@ -5386,7 +5462,7 @@ impl Live {
         cancel: &CancellationToken,
         reads: &[String],
         evidence: &EvidenceTarget,
-    ) -> StepReport {
+    ) -> Turned {
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
         // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
         if let Some(group) = handle.group() {
@@ -5455,11 +5531,13 @@ impl Live {
             // o trzy linijki tańszy — i jest błędem, przed którym stoi niezmiennik 10: anuluje
             // ZADANIE RUSTA, a proces systemowy zostaje żywy i pali limit u dostawcy do końca
             // świata. Dlatego tutaj wołamy `cancel()` i pytamy o DOWÓD zejścia grupy.
-            Ended::Overdue => self.stop_overdue_agent(id, handle.as_mut(), limit).await,
+            Ended::Overdue => {
+                Turned::Settled(self.stop_overdue_agent(id, handle.as_mut(), limit).await)
+            }
             // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
             // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
             // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
-            Ended::Stopped => self.stop_cancelled_agent(id, handle.as_mut()).await,
+            Ended::Stopped => Turned::Settled(self.stop_cancelled_agent(id, handle.as_mut()).await),
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
                 self.update(|book| {
@@ -5471,10 +5549,13 @@ impl Live {
                 // rozstrzyga sie kazda (T-87 AC-5). Do 2026-08-23 wracalo stad gole
                 // `StepReport::Failed`, wiec awaria aplikacji agenta kasowala caly stozek za
                 // krokiem — takze wtedy, gdy czlowiek prosil, zeby jechac dalej.
-                self.when_this_one_fails(id, "This step's agent stopped in the middle of its turn.")
-                    .await
+                //
+                // Rozstrzyga to `run_agent`, po opadnieciu kolejki zdarzen: przekazanie tego
+                // kroku niesie proze, ktora agent zdazyl powiedziec, a ona plynie ta wlasnie
+                // kolejka ([`Turned`]).
+                Turned::Broke("This step's agent stopped in the middle of its turn.")
             }
-            Ended::Turn(Ok(turn)) => {
+            Ended::Turn(Ok(turn)) => Turned::Settled({
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
                 // w nieskończoność, więc krok bez tego zostawia żywy proces [T1 §2, §4.6].
                 let closed = handle.close().await;
@@ -5561,7 +5642,7 @@ impl Live {
                     self.when_this_one_fails(id, "This step did not finish what it was given.")
                         .await
                 }
-            }
+            }),
         };
         self.control.step_went_quiet(&self.plan.steps[id].name);
         report
@@ -6268,7 +6349,12 @@ fn run_stands_or_moves(book: &mut Book, paused_by_the_provider: bool) {
 /// „widać banner" a „bieg umie się wznowić o właściwej godzinie". `AgentEvent::RateLimit`
 /// docierał tu i zostawał wierszem na ekranie, a wysyłka szła dalej, jakby nic nie zaszło —
 /// czyli następny agent dostawał odmowę, a okno limitu paliło się na odmowach.
-async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<DecodedEvent>, agent: String) {
+async fn forward(
+    live: Arc<Live>,
+    mut inbox: mpsc::Receiver<DecodedEvent>,
+    agent: String,
+    id: StepId,
+) {
     let mut curator = Curator::new();
     /* Czy okno już wie, że ten agent myśli. Powód, dla którego to jest tu, a nie w kuratorze,
      * stoi przy wysyłce niżej. */
@@ -6290,6 +6376,15 @@ async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<DecodedEvent>, agent
         } = &event
         {
             live.the_provider_said_wait(status, *resets_at);
+        }
+        /* 2026-08-23 (T-87) — PROZA KROKU ZOSTAJE TAKŻE POZA EKRANEM. Do tego dnia `Said` szedł
+         * wyłącznie do kuracji, a jedynym trwałym śladem tury było `StepRun::summary` pisane
+         * z UDANEGO wyniku. Krok, którego tura wróciła błędem, oddawał więc następnemu krokowi
+         * plik pusty — mimo że agent zdążył napisać, co zrobił i na czym stanął. Tutaj, bo tędy
+         * przechodzi KAŻDE zdarzenie kroku, i przed kuracją, bo kuracja skleja wiersze i nie
+         * jest zobowiązana zachować całego tekstu. */
+        if let AgentEvent::Said { text } = &event {
+            live.also_said(id, text);
         }
         let at_ms = u64::try_from(live.began.elapsed().as_millis()).unwrap_or(u64::MAX);
         let seen = Seen {
