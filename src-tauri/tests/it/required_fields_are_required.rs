@@ -45,7 +45,18 @@
 // `expect()`/`unwrap()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
+//
+// `type_complexity` DODANE 2026-08-23, nie w miejsce czegokolwiek: `by_name` oddaje stan i powód
+// każdego kroku po jego nazwie, czyli `BTreeMap<String, (StepState, Option<String>)>`, i obie
+// połowy pary są sądzone niżej — stan przy kroku, który nie przeszedł, i zdanie, które nazywa
+// brakujące pole. Alias typu w pliku kryterium nazwałby tę parę drugi raz i schowałby przed
+// czytelnikiem dokładnie to, co ten plik mierzy.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
 
 use std::collections::BTreeMap;
 use std::error::Error;

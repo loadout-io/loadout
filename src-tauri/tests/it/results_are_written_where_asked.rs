@@ -39,7 +39,17 @@
 // `expect()`/`unwrap()` w teście: panika w teście JEST jego wynikiem, a `?` na tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
 // `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
+//
+// `similar_names` DODANE 2026-08-23, nie w miejsce czegokolwiek: `filer` to agent, który odkłada
+// wynik, a `filed` to plik, który po nim został — dwie różne rzeczy, których nazwy różnią się
+// jedną literą, bo mówią o tej samej czynności z dwóch stron. Przezwanie któregokolwiek z nich na
+// coś odleglejszego zaciemniłoby komunikat asercji, który je wymienia.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::similar_names
+)]
 
 use std::collections::BTreeSet;
 use std::error::Error;
