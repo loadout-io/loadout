@@ -582,6 +582,18 @@ fn safe_run_state(value: &str) -> &'static str {
         "succeeded" => "succeeded",
         "failed" => "failed",
         "cancelled" | "canceled" => "cancelled",
+        /* 2026-08-23 — BEZ TEJ LINII TRZY BIEGI WŁAŚCICIELA MELDOWAŁY SIĘ JAKO `unknown`.
+         *
+         * `interrupted` pisze odzyskiwanie po biegu, który zginął razem z oknem, i pisze je
+         * od dawna — do tego dnia tylko do bazy biblioteki, której `run.json` nigdy nie widział,
+         * więc luka nie miała jak wyjść. Odkąd sprzątanie przepisuje pliki
+         * (`ipc::AppState::settle_everything_left_behind`), ten status trafia na wejście tej
+         * funkcji i wypada tu na `_`.
+         *
+         * To jest gorsze niż brak zdania: `unknown` plus `complete: false` czyta się jako „nie
+         * wiadomo, co z tym biegiem, może jeszcze trwa" — czyli DOKŁADNIE ten stan, który
+         * sprzątanie właśnie rozstrzygnęło. */
+        "interrupted" => "interrupted",
         _ => "unknown",
     }
 }
@@ -640,7 +652,13 @@ fn safe_conversation_failure(failure: Option<&str>, state: &str) -> Option<&'sta
 }
 
 fn is_terminal_run(value: &str) -> bool {
-    matches!(value, "succeeded" | "failed" | "cancelled" | "canceled")
+    // `interrupted` JEST końcem, i to nie jest drobiazg nazewniczy: bieg przerwany razem z oknem
+    // nikogo już nie ma, kto by go prowadził. Bez niego odczyt mówi `complete: false` o biegu,
+    // po którym właśnie posprzątano, i podsuwa czekanie zamiast odpowiedzi.
+    matches!(
+        value,
+        "succeeded" | "failed" | "cancelled" | "canceled" | "interrupted"
+    )
 }
 
 fn safe_failure_kind(

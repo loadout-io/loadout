@@ -484,3 +484,58 @@ fn rust_copies_the_report_but_returns_only_a_receipt_and_fixed_errors() -> Resul
     assert_eq!(said, "Loadout could not collect diagnostics.");
     Ok(())
 }
+
+/* KRYTERIUM NA JEDEN STATUS, i to nie jest drobiazg nazewniczy.
+ *
+ * Zgloszenie wlasciciela 2026-08-23: odczyt diagnostyczny pokazal trzy jego biegi jako
+ * `"state": "unknown", "complete": false` — te same trzy, po ktorych sprzatanie wlasnie
+ * posprzatalo i ktore niosly w plikach zdanie o tym, ze zginely razem z oknem. `unknown` plus
+ * „niedokonczony" czyta sie jako „nie wiadomo, moze jeszcze trwa": dokladnie ten stan, ktory
+ * zostal rozstrzygniety.
+ *
+ * `interrupted` pisze `recovery` od dawna (`RUN_INTERRUPTED`), ale pisalo je WYLACZNIE do bazy
+ * biblioteki, ktorej ten odczyt nie czyta. Luka istniala i nie miala jak wyjsc, dopoki sprzatanie
+ * nie zaczelo przepisywac `run.json`.
+ *
+ * SLABA WERSJA: sprawdzenie samego napisu. Przechodzi ja implementacja, ktora przepuszcza status
+ * dalej, ale zostawia `complete: false` — czyli dalej mowi „poczekaj" o biegu, ktorego nikt nie
+ * prowadzi. Oba punkty stoja nizej razem, bo razem sa jedna odpowiedzia.
+ */
+#[test]
+fn a_run_cut_off_with_the_window_is_reported_as_over() -> Result<(), Box<dyn Error>> {
+    let active = tempfile::tempdir()?;
+    let cut_off = active.path().join(".loadout/runs/run-0199-interrupted");
+    write(
+        &cut_off.join("run.json"),
+        serde_json::to_vec_pretty(&json!({
+            "status": "interrupted", "created_at": 1_777_777_777_300_i64,
+            "started_at": 1_777_777_777_301_i64, "ended_at": 1_777_777_777_302_i64,
+            "steps": [{
+                "id": "step-0199-interrupted", "status": "failed", "agent": "claude",
+                "error": "Loadout closed while this step was still running."
+            }]
+        }))?,
+    )?;
+
+    let report = support_report(active.path())?;
+    let described: Value = serde_json::from_str(report.text())?;
+    let run = described["runs"]
+        .as_array()
+        .and_then(|all| all.first())
+        .ok_or("the report carries no runs at all")?;
+
+    assert_eq!(
+        run["state"].as_str(),
+        Some("interrupted"),
+        "a run that was cut off with the window is reported as `unknown`. The person reading \
+         this receipt cannot tell it apart from a run whose file this build cannot parse, and \
+         the two call for opposite actions"
+    );
+    assert_eq!(
+        run["complete"].as_bool(),
+        Some(true),
+        "the run is reported as still going. Nobody is carrying it and nobody ever will: saying \
+         otherwise asks the person to wait for an answer that has already been given"
+    );
+    Ok(())
+}
