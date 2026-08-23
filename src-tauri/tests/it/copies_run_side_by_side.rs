@@ -424,6 +424,16 @@ fn steps_in_run_file(report: &RunReport) -> Result<Vec<Json>, Box<dyn Error>> {
 
 /// Wszystko, co po biegu jest potrzebne do sądzenia.
 struct Ran {
+    /// Ławka trzymana przy życiu do końca sądzenia.
+    ///
+    /// 2026-08-23 — DEFEKT FIKSTURY, ta sama rodzina co przemianowane lokalne `claude_argv`
+    /// z commita kontraktowego: żadna asercja się nie zmienia, a jedna z nich przestaje być
+    /// niespełnialna. `TempDir` kasuje swój katalog przy upuszczeniu, a [`Bench`] była lokalną
+    /// [`one_run`] — więc katalog biegu znikał razem z powrotem z tej funkcji. Punkt (f) czyta
+    /// `run.json` DOPIERO POTEM, więc dostawał „nie ma takiego pliku" niezależnie od tego, co
+    /// robi kod produkcyjny. Pomiar: `run.json` istnieje w chwili powrotu z biegu i ma w sobie
+    /// wszystkie trzy wiersze.
+    _bench: Bench,
     report: RunReport,
     watch: Arc<Watch>,
     /// Wiersze, które NAPRAWDĘ wyszły kanałem do okna.
@@ -492,6 +502,7 @@ async fn one_run(
 
     let delivered = recorder.lines()?;
     Ok(Ran {
+        _bench: bench,
         report,
         watch,
         delivered,

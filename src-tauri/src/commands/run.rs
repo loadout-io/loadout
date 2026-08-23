@@ -140,10 +140,20 @@
 //!   ([`Live::evidence_for_agent`]). Do 2026-08-23 stało tu zdanie odwrotne — „katalog `logs/`
 //!   powstaje, ale nikt tam nie pisze" — i było nieprawdą w każdym biegu właściciela, czyli
 //!   uczyło następnego pisarza szukać szwu, który już istnieje.
-//! - **Nie rozwija `copies`** [T3 §4.4]. Krok z `copies: 3` biegnie tu jako jedna sesja:
-//!   rozwinięcie zmienia liczbę węzłów grafu, a `RunReport::steps` jest kontraktem „jeden wpis
-//!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
+//!
+//! # Kopie kroku są węzłami grafu (2026-08-23, T-90)
+//!
+//! Do tego dnia stało tu zdanie odwrotne — „krok z `copies: 3` biegnie tu jako jedna sesja" —
+//! i było prawdą: człowiek ustawiał liczbę w wierszu „How many at once", walidator pilnował
+//! zakresu, plik ją zapisywał, a robota wykonywała się raz. Zmierzone na biegu właściciela: dwa
+//! kroki po `copies: 2` dały **22** kroki zamiast 28.
+//!
+//! Rozwinięcie robi [`crate::workflow::unroll`], tą samą drogą, którą rozwija rundy pętli: graf,
+//! który stąd schodzi do planisty, jest dalej bez cykli i ma tylko więcej węzłów. Trzy kopie
+//! dzielą KLUCZ KAFELKA — okno rysuje jedną kartę, bo człowiek narysował jeden kafelek — a różnią
+//! się kluczem węzła, katalogiem roboczym i podpisem („Build (2 of 3)"). `RunReport::steps` ma
+//! od teraz jeden wpis na WĘZEŁ, nie na krok pliku.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -1562,29 +1572,7 @@ fn plan_run_with_identity(
         unrolled: &unrolled,
     };
     let wanted = which_nodes(&unrolled, &file, request.part.as_ref());
-    /* Gdzie każdy węzeł rozwinięcia wylądował w wycinku. `None` znaczy „nie wszedł" i to jest
-     * jedyne miejsce, w którym numeracja wycinka spotyka się z numeracją grafu. */
-    let mut place: Vec<Option<StepId>> = vec![None; unrolled.nodes.len()];
-    let mut steps = Vec::with_capacity(unrolled.nodes.len());
-    for (index, node) in unrolled.nodes.iter().enumerate() {
-        let Some(step) = file.steps.get(node.step) else {
-            continue;
-        };
-        if !wanted[index] {
-            continue;
-        }
-        /* Numer pętli bierze się z ciał policzonych przez `unroll`, a nie z drugiego obchodu
-         * grafu tutaj: jedna definicja słowa „ten krok jest w tej pętli" (niezmiennik 13). */
-        let in_loop = unrolled
-            .loops
-            .iter()
-            .position(|one| one.body.contains(&node.step));
-        /* `index` zostaje NUMEREM WĘZŁA ROZWINIĘCIA, a nie pozycją w `steps`, i to jest wymóg:
-         * `where_it_works` pyta nim `trees_before` o poprzedników w grafie. Pozycja w wycinku
-         * wskazywałaby cudzy węzeł, czyli cudze drzewo robocze. */
-        place[index] = Some(steps.len());
-        steps.push(plan_step(step, index, node.turn, in_loop, &setup)?);
-    }
+    let (mut steps, place) = plan_the_nodes(&unrolled, &file, &wanted, &setup)?;
     /* STRZAŁKI ZALEŻĄ OD TEGO, O KTÓRY WYCINEK CHODZI, i to jest cała różnica między dwoma
      * rodzajami powtórzenia.
      *
@@ -1671,6 +1659,43 @@ fn plan_run_with_identity(
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
     })
+}
+
+/// Węzły rozwinięcia → kroki planu, plus mapa „gdzie każdy węzeł wylądował w wycinku".
+///
+/// Osobna funkcja, a nie pętla w [`plan_run_with_identity`]: to jest jedno zamknięte pytanie
+/// i jedyne miejsce, w którym numeracja wycinka spotyka się z numeracją grafu. `None` w mapie
+/// znaczy „ten węzeł nie wszedł do biegu".
+fn plan_the_nodes(
+    unrolled: &Unrolled,
+    file: &WorkflowFile,
+    wanted: &[bool],
+    setup: &Setup<'_>,
+) -> Result<(Vec<Planned>, Vec<Option<StepId>>), RunError> {
+    let mut place: Vec<Option<StepId>> = vec![None; unrolled.nodes.len()];
+    let mut steps = Vec::with_capacity(unrolled.nodes.len());
+    for (index, node) in unrolled.nodes.iter().enumerate() {
+        let Some(step) = file.steps.get(node.step) else {
+            continue;
+        };
+        if wanted.get(index) != Some(&true) {
+            continue;
+        }
+        /* Numer pętli bierze się z ciał policzonych przez `unroll`, a nie z drugiego obchodu
+         * grafu tutaj: jedna definicja słowa „ten krok jest w tej pętli" (niezmiennik 13). */
+        let in_loop = unrolled
+            .loops
+            .iter()
+            .position(|one| one.body.contains(&node.step));
+        /* `index` zostaje NUMEREM WĘZŁA ROZWINIĘCIA, a nie pozycją w `steps`, i to jest wymóg:
+         * `where_it_works` pyta nim `trees_before` o poprzedników w grafie. Pozycja w wycinku
+         * wskazywałaby cudzy węzeł, czyli cudze drzewo robocze. */
+        place[index] = Some(steps.len());
+        steps.push(plan_step(
+            step, index, node.turn, node.copy, in_loop, setup,
+        )?);
+    }
+    Ok((steps, place))
 }
 
 fn run_directory(project: &Path, id: &str, created_at: i64) -> PathBuf {
@@ -1802,7 +1827,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .steps
         .iter()
         .enumerate()
-        .map(|(node, step)| plan_step(step, node, 0, None, &setup))
+        // Runda zero i kopia zero: `/ask` jest jednym krokiem jednego agenta, więc nie ma tu ani
+        // pętli, ani liczby „ile naraz" na kafelku — pyta się jednego agenta jeden raz.
+        .map(|(node, step)| plan_step(step, node, 0, 0, None, &setup))
         .collect::<Result<Vec<Planned>, RunError>>()?;
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
@@ -2048,9 +2075,34 @@ fn with_what_we_know(knows: &str, task: &str) -> String {
 
 /// Znacznik, którym plik workflow wskazuje, GDZIE w promptcie kroku ma stanąć zadanie człowieka.
 ///
-/// Ta sama rodzina, co `{{copy}}` i `{{copies}}` [T3 §4.3] — plik już umie mówić o rzeczach,
-/// które powstają dopiero przy starcie.
+/// Ta sama rodzina, co [`COPY_MARK`] i [`COPIES_MARK`] [T3 §4.3] — plik już umie mówić
+/// o rzeczach, które powstają dopiero przy starcie.
 const TASK_MARK: &str = "{{task}}";
+
+/// Znacznik, w który wchodzi numer TEJ kopii, licząc od jedynki.
+const COPY_MARK: &str = "{{copy}}";
+
+/// I znacznik, w który wchodzi, ile ich jest razem.
+const COPIES_MARK: &str = "{{copies}}";
+
+/// Instrukcja kroku z podstawionymi numerami kopii [T3 §4.3].
+///
+/// 2026-08-23 (T-90) — DO TEGO DNIA NIE PODSTAWIAŁ ICH NIKT, w żadnym miejscu drzewa: człowiek
+/// pisał `{{copy}}` w instrukcji i agent dostawał te dwa nawiasy dosłownie.
+///
+/// Licząc od jedynki, jak [`name_for`] i z tego samego powodu: to jest liczba dla agenta, a „copy
+/// 0 of 3" nie znaczy dla niego nic.
+///
+/// Podstawiamy TAKŻE przy jednej kopii, i to jest odpowiedź, nie przeoczenie: krok biegnący raz
+/// jest kopią 1 z 1, a znacznik zostawiony nietknięty byłby tekstem, który nikt nigdy nie
+/// zamienił na liczbę — czyli kontrolką bez skutku schowaną w prompcie.
+///
+/// `{{copies}}` idzie pierwsze wyłącznie dla porządku czytania: dłuższy znacznik nie zawiera
+/// krótszego (`{{copy}}` wymaga `}}` zaraz po `copy`), więc kolejność nie zmienia wyniku.
+fn numbered(text: &str, copy: u8, copies: u8) -> String {
+    text.replace(COPIES_MARK, &copies.to_string())
+        .replace(COPY_MARK, &(copy + 1).to_string())
+}
 
 /// Nagłówek nad zadaniem, kiedy plik nie wskazał miejsca sam.
 ///
@@ -2133,48 +2185,103 @@ struct Setup<'a> {
     unrolled: &'a crate::workflow::unroll::Unrolled,
 }
 
-/// Klucz węzła: `id` kroku z pliku, a dla dalszych rund pętli ten sam klucz z numerem rundy.
+/// Klucz katalogu roboczego: `id` kroku z pliku, a dla dalszych kopii ten sam klucz z numerem
+/// kopii.
+///
+/// # RUNDY DZIELĄ FOLDER, KOPIE NIE — i to są dwie różne rzeczy z dwóch różnych powodów
+///
+/// Rundy pętli **muszą** pracować w jednym drzewie, bo inaczej runda 2 nie widzi poprawek rundy 1
+/// i pętla przestaje mieć sens w swoim jedynym zadaniu. Kopie są odwrotnie: biegną **równocześnie
+/// same ze sobą**, więc wspólne drzewo znaczyłoby trzy sesje piszące po tych samych ścieżkach —
+/// dokładnie ta kolizja, dla której `check::one_folder_two_steps` wymaga od kroku w kilku kopiach
+/// własnej kopii plików (niezmiennik 12).
+///
+/// Dlatego numer rundy tutaj NIE wchodzi, a numer kopii wchodzi. Kopia zerowa nie dostaje
+/// sufiksu: plik, w którym nikt nie prosił o kopie, daje dokładnie te ścieżki, które dawał
+/// przedtem.
+fn work_key_for(tile_key: &str, copy: u8) -> String {
+    if copy == 0 {
+        return tile_key.to_owned();
+    }
+    format!("{tile_key}~{}", copy + 1)
+}
+
+/// Klucz węzła: klucz katalogu roboczego, a dla dalszych rund pętli ten sam z numerem rundy.
 ///
 /// Runda zerowa NIE dostaje sufiksu, i to jest decyzja o wsteczności: plik bez pętli daje wtedy
 /// dokładnie te klucze, które dawał przedtem, więc `run.json` starych biegów i nowych da się
 /// porównać, a nikt, kto o pętli nie słyszał, nie widzi zmiany.
-fn node_key_for(tile_key: &str, turn: u8) -> String {
+///
+/// ZBUDOWANY NA [`work_key_for`], a nie sklejony obok niego: dwa klucze różnią się dokładnie
+/// jednym sufiksem i mają się nie rozjechać w dniu, w którym ktoś poprawi jeden z nich.
+///
+/// Klucze MUSZĄ się różnić między kopiami i między rundami, bo indeks biegu ma na nich
+/// `UNIQUE (run_id, node_key)` (`store::schema`): dwa węzły o jednym kluczu to bieg, który zapisze
+/// jeden i zgubi drugi — **po** zapłaceniu za oba (niezmiennik 4).
+fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
+    let key = work_key_for(tile_key, copy);
     if turn == 0 {
-        return tile_key.to_owned();
+        return key;
     }
-    format!("{tile_key}#{turn}")
+    format!("{key}#{turn}")
 }
 
 /// Klucz kafelka z klucza węzła — odwrotność [`node_key_for`].
 ///
 /// **Tutaj, a nie u wołającego**, i to jest jedyny powód, dla którego ta funkcja istnieje:
-/// sufit rundy (`#N`) jest kształtem wymyślonym o dwie linie wyżej, więc jego rozbieranie
-/// gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13). Historia
-/// czyta `run.json` i musi wiedzieć, o KTÓRY kafelek chodzi, żeby dało się od niego wznowić.
+/// sufiks rundy (`#N`) i sufiks kopii (`~N`) są kształtami wymyślonymi o kilka linii wyżej, więc
+/// ich rozbieranie gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13).
+/// Historia czyta `run.json` i musi wiedzieć, o KTÓRY kafelek chodzi, żeby dało się od niego
+/// wznowić.
 ///
 /// 2026-08-23 — POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: „Pick up here" podawał `id` kroku
 /// z `run.json`, czyli UUID nadany przy planowaniu, a wznowienie szuka po kluczu Z PLIKU. Skutek
 /// był zdaniem-zagadką: *„01a02b3c-… is not a step in that workflow any more"* — o kroku, który
 /// stoi na płótnie i nigdzie się nie ruszył.
 pub(crate) fn tile_key_of(node_key: &str) -> &str {
-    node_key.split_once('#').map_or(node_key, |(tile, _)| tile)
+    node_key
+        .find(['#', '~'])
+        .map_or(node_key, |at| &node_key[..at])
+}
+
+/// Podpis kopii: nazwa z kafelka plus „(2 of 3)".
+///
+/// 2026-08-23 (T-90) — KAŻDA KOPIA MÓWI, KTÓRA JEST, i to jest warunek czytelności ekranu, nie
+/// ozdoba: trzy wiersze pracy pod jedną nazwą to trzy wiersze, których człowiek nie umie
+/// rozróżnić. Ten sam podpis stoi w `run.json` i w indeksie przekazań następnego kroku, więc
+/// krok scalający wie, którą z trzech odpowiedzi właśnie czyta.
+///
+/// Licząc od jedynki, nie od zera: `copy` jest polem danych, a to jest zdanie dla człowieka
+/// i dla agenta — „copy 0 of 3" nie znaczy nic ani dla jednego, ani dla drugiego.
+///
+/// Krok biegnący raz zostaje pod swoją nazwą, co do bajtu: „(1 of 1)" byłoby dopiskiem na
+/// każdym kafelku każdego workflow na dysku.
+fn name_for(name: &str, copy: u8, copies: u8) -> String {
+    if copies <= 1 {
+        return name.to_owned();
+    }
+    format!("{name} ({} of {copies})", copy + 1)
 }
 
 /// Jeden węzeł rozwiniętego grafu → jeden krok planu.
 ///
 /// `node` jest numerem tego węzła w [`Setup::unrolled`], a nie pozycją kroku w pliku: rundy pętli
 /// mają wspólny krok i różne węzły, a „krok przede mną" jest pytaniem o węzeł.
+/// `copy` jest numerem kopii tego węzła — zero dla kroku biegnącego raz. Kopie ma wyłącznie krok
+/// agenta (`unroll::copies_of`), więc pozostałe trzy ramiona dostają tu zawsze zero i ich klucze
+/// nie zmieniają się o bajt.
 fn plan_step(
     step: &Step,
     node: usize,
     turn: u8,
+    copy: u8,
     in_loop: Option<usize>,
     setup: &Setup<'_>,
 ) -> Result<Planned, RunError> {
     match step {
         Step::Checkpoint(ask) => Ok(Planned {
             id: Uuid::now_v7().to_string(),
-            node_key: node_key_for(&ask.id, turn),
+            node_key: node_key_for(&ask.id, turn, copy),
             tile_key: ask.id.clone(),
             turn,
             in_loop,
@@ -2189,14 +2296,14 @@ fn plan_step(
             },
         }),
         Step::Agent(agent) => {
-            let job = plan_agent(agent, node, setup)?;
+            let job = plan_agent(agent, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&agent.id, turn),
+                node_key: node_key_for(&agent.id, turn, copy),
                 tile_key: agent.id.clone(),
                 turn,
                 in_loop,
-                name: agent.name.clone(),
+                name: name_for(&agent.name, copy, agent.copies),
                 when_it_fails: agent.when_it_fails,
                 depends_on: Vec::new(),
                 vendor: job.driver.id().to_owned(),
@@ -2204,10 +2311,10 @@ fn plan_step(
             })
         }
         Step::Check(check) => {
-            let spot = where_it_works(&check.folder, &check.id, &check.name, node, setup)?;
+            let spot = where_it_works(&check.folder, &check.id, &check.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&check.id, turn),
+                node_key: node_key_for(&check.id, turn, copy),
                 tile_key: check.id.clone(),
                 turn,
                 in_loop,
@@ -2230,10 +2337,10 @@ fn plan_step(
             })
         }
         Step::Serve(serve) => {
-            let spot = where_it_works(&serve.folder, &serve.id, &serve.name, node, setup)?;
+            let spot = where_it_works(&serve.folder, &serve.id, &serve.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
-                node_key: node_key_for(&serve.id, turn),
+                node_key: node_key_for(&serve.id, turn, copy),
                 tile_key: serve.id.clone(),
                 turn,
                 in_loop,
@@ -2311,7 +2418,12 @@ fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) ->
     }
 }
 
-fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJob, RunError> {
+fn plan_agent(
+    step: &AgentStep,
+    node: usize,
+    copy: u8,
+    setup: &Setup<'_>,
+) -> Result<AgentJob, RunError> {
     let saved = find_agent(&setup.library, &step.agent, &step.name)?;
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
@@ -2356,16 +2468,21 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
 
     let write_results_to = where_results_go(&effective, step)?;
 
-    let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
+    let spot = where_it_works(&step.folder, &step.id, &step.name, node, copy, setup)?;
+    /* KAŻDA KOPIA WIE, KTÓRA JEST. Trzy sesje z identycznym zdaniem robią tę samą robotę trzy
+     * razy, czyli są najdroższym możliwym sposobem na jedną odpowiedź — a podstawienie bez
+     * rozwinięcia (do 2026-08-23 nie było żadnego z dwojga) wpisywałoby w prompt liczbę, której
+     * nic po drugiej stronie nie odpowiada. */
+    let instructions = numbered(&step.instructions, copy, step.copies);
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
     let (knows, mut context) = what_this_step_knows(&setup.knows, &effective.name, setup.data);
     if setup.is_ask {
-        if !step.instructions.is_empty() {
+        if !instructions.is_empty() {
             context.push(ContextSource {
                 kind: ContextKind::RunTask,
                 reference: "ask/task".to_owned(),
-                bytes: step.instructions.len(),
+                bytes: instructions.len(),
             });
         }
     } else {
@@ -2376,7 +2493,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
                 bytes: setup.task.len(),
             });
         }
-        let instruction_bytes = step.instructions.replace(TASK_MARK, "").len();
+        let instruction_bytes = instructions.replace(TASK_MARK, "").len();
         if instruction_bytes > 0 {
             context.push(ContextSource {
                 kind: ContextKind::WorkflowStep,
@@ -2401,10 +2518,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
             Handover::Form { fields } => fields.clone(),
             Handover::Plain(_) => Vec::new(),
         },
-        // Treść zadania. `{{copy}}` i `{{copies}}` podstawia dopiero rozwinięcie kroku na kopie
-        // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
-        // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
-        // nic po drugiej stronie nie odpowiada.
+        // Treść zadania, z `{{copy}}` i `{{copies}}` już podstawionymi [T3 §4.3, §4.4].
         // Zadanie kroku POPRZEDZONE tym, co człowiek dopuścił do użytku (`what_the_agents_know`).
         // Bez człowieka blok jest pusty i prompt jest dokładnie zadaniem kroku —
         // `docs/ARCHITECTURE.md` §2 pytanie 5 obiecuje właśnie to.
@@ -2412,8 +2526,8 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // wyszło, dostaje blok „co wiadomo". Ta kolejność jest treścią: notatki są kontekstem
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
-        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &step.instructions)),
-        asked: step.instructions.clone(),
+        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &instructions)),
+        asked: instructions,
         context,
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
@@ -2729,14 +2843,17 @@ fn folder_and_key(step: &Step) -> Option<(&Folder, &str)> {
 /// byłoby dokładnie tą implementacją, przed którą ten wariant powstał: kafelek mówi „to samo
 /// drzewo", a krok pisze po prawdziwych plikach człowieka. Pada **przy planowaniu**, czyli zanim
 /// ruszy pierwszy proces i zanim powstanie katalog biegu (niezmiennik 12).
+/// `copy` jest numerem kopii tego węzła i wchodzi WYŁĄCZNIE do klucza katalogu roboczego:
+/// kropka odmowy dalej ląduje na kafelku, bo to jego wiersz człowiek otworzy.
 fn where_it_works(
     folder: &Folder,
     key: &str,
     name: &str,
     node: usize,
+    copy: u8,
     setup: &Setup<'_>,
 ) -> Result<Workspace, RunError> {
-    if let Some(spot) = workspace(folder, setup.project, setup.dir, key) {
+    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work_key_for(key, copy)) {
         return Ok(spot);
     }
 
@@ -2816,11 +2933,8 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
                 continue;
             };
             *first_time = true;
-            let step = setup
-                .unrolled
-                .nodes
-                .get(from)
-                .and_then(|one| setup.file.steps.get(one.step));
+            let node = setup.unrolled.nodes.get(from);
+            let step = node.and_then(|one| setup.file.steps.get(one.step));
             // Krok, którego nie ma w pliku, nie wyznacza drzewa i nie ma poprzedników do
             // odpytania — `unroll` numeruje węzły z tego samego pliku, więc to jest kształt
             // niemożliwy, a nie ścieżka, którą ktoś przejdzie.
@@ -2828,7 +2942,12 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
                 stack.push(from);
                 continue;
             };
-            match workspace(folder, setup.project, setup.dir, key) {
+            // NUMER KOPII TEGO WĘZŁA, nie kafelka: każda kopia ma własne drzewo, więc krok „to
+            // samo drzewo, w którym pracował krok przede mną", stojący za krokiem w trzech
+            // kopiach, widzi TRZY różne katalogi — i to jest odmowa u wołającego, a nie wybór
+            // pierwszego z brzegu.
+            let work = work_key_for(key, node.map_or(0, |one| one.copy));
+            match workspace(folder, setup.project, setup.dir, &work) {
                 Some(spot) if !found.contains(&spot.cwd) => found.push(spot.cwd),
                 Some(_) => {}
                 // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
@@ -7353,7 +7472,7 @@ mod tests {
     //! dopisuje do promptu nagłówek nad pustką i każe za niego płacić długością. Rozstrzyga
     //! porównanie CO DO BAJTU w przypadku pustym.
 
-    use super::{TASK_MARK, node_key_for, with_the_task};
+    use super::{TASK_MARK, node_key_for, tile_key_of, with_the_task};
 
     /// Prompt kroku, taki jak w pliku workflow.
     const STEP: &str = "Write the tests first, then the code.";
@@ -7378,7 +7497,7 @@ mod tests {
     #[test]
     fn the_first_turn_keeps_the_key_the_file_gave_it() {
         assert_eq!(
-            node_key_for("s_test", 0),
+            node_key_for("s_test", 0, 0),
             "s_test",
             "a file with no loop has to plan exactly the keys it planned before, or no two run \
              records in this project can be compared with each other again"
@@ -7387,14 +7506,63 @@ mod tests {
 
     #[test]
     fn later_turns_get_keys_of_their_own() {
-        assert_eq!(node_key_for("s_test", 1), "s_test#1");
-        assert_eq!(node_key_for("s_test", 2), "s_test#2");
+        assert_eq!(node_key_for("s_test", 1, 0), "s_test#1");
+        assert_eq!(node_key_for("s_test", 2, 0), "s_test#2");
         assert_ne!(
-            node_key_for("s_test", 1),
-            node_key_for("s_test", 2),
+            node_key_for("s_test", 1, 0),
+            node_key_for("s_test", 2, 0),
             "the run index keys steps by this string and refuses a repeat, so two turns sharing \
              one key would fail the rebuild AFTER every agent has already been paid for"
         );
+    }
+
+    /* ── Kopia a runda ───────────────────────────────────────────────────────────────────────
+     *
+     * DODANE, nie w miejsce czegokolwiek (2026-08-23, T-90). Kopie i rundy są dwoma wymiarami
+     * jednego kafelka i mnożą się przez siebie, więc klucz musi rozróżniać obie osie naraz:
+     * kopia 2 rundy 1 i kopia 1 rundy 2 są dwoma różnymi węzłami, a jeden klucz dla obu to bieg,
+     * który zapisze jeden i zgubi drugi.
+     *
+     * Kopia ZEROWA nie dostaje sufiksu, dokładnie jak runda zerowa i z tego samego powodu:
+     * workflow, w którym nikt nie prosił o kopie, planuje klucze co do bajtu takie jak przedtem
+     * — łącznie z nazwą katalogu `work/<klucz>`, którą wznowienie potrafi odzyskać. */
+
+    #[test]
+    fn later_copies_get_keys_of_their_own() {
+        assert_eq!(
+            node_key_for("s_build", 0, 0),
+            "s_build",
+            "a step that runs once has to plan the key it planned before"
+        );
+        assert_eq!(node_key_for("s_build", 0, 1), "s_build~2");
+        assert_eq!(node_key_for("s_build", 0, 2), "s_build~3");
+    }
+
+    #[test]
+    fn a_copy_inside_a_loop_is_told_apart_on_both_axes() {
+        let keys = [
+            node_key_for("s_try", 0, 0),
+            node_key_for("s_try", 0, 1),
+            node_key_for("s_try", 1, 0),
+            node_key_for("s_try", 1, 1),
+        ];
+        let mut unique = keys.clone().to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "two copies over two turns are four nodes of one tile, and the run index keeps one \
+             row per key: {keys:?}"
+        );
+        for key in &keys {
+            assert_eq!(
+                tile_key_of(key),
+                "s_try",
+                "and every one of them still says which tile it belongs to — that is how the \
+                 window draws ONE card for them and how Pick up here finds the step again"
+            );
+        }
     }
 
     #[test]
