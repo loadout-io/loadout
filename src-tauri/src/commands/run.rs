@@ -757,6 +757,20 @@ async fn the_planned_run(
         }
         triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
     }
+    /* STEMPEL „TA NOTATKA WESZŁA DO PROMPTU" — tutaj, i to jest najwcześniejsze uczciwe miejsce.
+     *
+     * Nie w `add_block`, choć to tam wiadomo, co się w bloku zmieściło: tamta funkcja biegnie
+     * w PLANOWANIU, a planowanie jest czystym rachunkiem i nie dotyka dysku (ten sam powód
+     * trzyma `hand_the_skills_to_the_steps` poza `plan_step`). Plan bywa policzony dla biegu,
+     * który zaraz odmówi — a notatka twierdząca, że była użyta w biegu, którego nie było,
+     * jest gorsza niż `null`, bo `null` przynajmniej nie kłamie.
+     *
+     * Tutaj bieg ma już katalog i pierwszy zapis księgi, a jeszcze nie ruszył żaden proces.
+     * Rachunek bierzemy z `plan.memory` — czyli z tego samego zestawienia, które ląduje
+     * w `run.json` i które liczy WYŁĄCZNIE notatki naprawdę wklejone w prompty (`Block::used`,
+     * nigdy `Block::dropped`). Drugie przejście po notatkach byłoby drugą odpowiedzią na
+     * pytanie, co ten bieg wiedział. */
+    stamp_what_this_run_carried(deps.home, &live.plan.memory);
 
     let run_step = {
         let live = Arc::clone(&live);
@@ -816,6 +830,35 @@ async fn the_planned_run(
         },
         steps: outcome.states,
     })
+}
+
+/// Zapisuje w każdej niesionej notatce, że **właśnie weszła do promptu**.
+///
+/// Jeden odczyt zegara na cały bieg, nie jeden na notatkę: dwie notatki, które pojechały tym
+/// samym promptem, były potrzebne w tej samej chwili, a dwa stemple o milisekundę od siebie
+/// ustawiałyby je w wymuszonym wyborze w kolejności, której nic nie odpowiada.
+///
+/// Nieudany zapis **nie przewraca biegu** — ta sama decyzja, co przy zrzucie `run.json` w locie
+/// ([`Live::update`]) i przy przekazaniu ([`Live::hand_over`]): bieg za chwilę rusza, a jego
+/// wynik jest prawdziwy niezależnie od tego, czy stempel doszedł. Cena stoi w dzienniku wprost,
+/// bo bez niej jest to notatka, która wygląda na nieużytą i schodzi z listy pierwsza.
+fn stamp_what_this_run_carried(home: &Path, carried: &[MemoryRecord]) {
+    if carried.is_empty() {
+        return;
+    }
+    let at = super::now_utc();
+    for record in carried {
+        // Ścieżka jest WZGLĘDNA WOBEC KORZENIA DANYCH i taka stoi w `run.json` (absolutna byłaby
+        // faktem o tym laptopie, nie o biegu), więc korzeń dokłada się dokładnie tutaj.
+        let path = home.join(&record.reference);
+        if let Err(error) = crate::memory::notes::mark_used(&path, &at) {
+            tracing::debug!(
+                note = %record.reference,
+                %error,
+                "this note went into a prompt and could not be stamped, so it will look unused"
+            );
+        }
+    }
 }
 
 /// Pyta model RAZ, czego ten bieg nauczył, i zostawia z tego najwyżej trzy kandydatki.

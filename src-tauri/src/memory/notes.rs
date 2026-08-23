@@ -236,8 +236,16 @@ pub struct Note {
     /// `None` sortuje się przed każdą datą i to jest właściwy kierunek: notatka nieużyta
     /// nigdy jest „najdawniej użyta" i schodzi z listy pierwsza.
     ///
-    /// Pole zapisuje krok składania promptu (T-15), nie ten moduł: [`what_you_know`] nie
-    /// widzi dysku i o to chodzi.
+    /// **W SEKUNDACH, nigdy drobniej** — i to nie jest gust. To pole jest jedynym, które ten
+    /// moduł porządkuje leksykograficznie ([`promote`]), a `2026-08-23T10:00:00.500Z` sortuje
+    /// się PRZED `2026-08-23T10:00:00Z`, bo `.` stoi w ASCII przed `Z`. Ułamek dopisany do
+    /// części wartości odwracałby więc kolejność względem każdej wartości wpisanej ręcznie
+    /// albo przywiezionej z importu — czyli dokładnie tam, gdzie ta kolejność jest treścią.
+    ///
+    /// Pisze je [`mark_used`], wołane przez bieg w chwili, w której prompty z tym zdaniem są
+    /// już złożone i bieg rusza (`commands::run`). Nie ten moduł i nie [`what_you_know`]:
+    /// funkcja składająca blok nie widzi dysku i o to chodzi — inaczej samo pytanie „co model
+    /// o tym wie" zmieniałoby odpowiedź na następne.
     pub last_used_at: Option<String>,
     /// Ile jednostek długości ta notatka zabiera z budżetu zakresu.
     ///
@@ -823,6 +831,42 @@ pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
     front.set("modified", &one_line(at));
     write_note(&path, &front, &raw[body_at..])?;
     read_note(&path)
+}
+
+/// Stempluje `last_used_at`: **ta notatka właśnie weszła do promptu**.
+///
+/// # Po co to istnieje (zmierzone 2026-08-23, T-92)
+///
+/// Pole jest w kontrakcie od T-17 i jego opis mówił, że „zapisuje je krok składania promptu
+/// (T-15)". **Nie zapisywał.** Po 23 biegach właściciela każda notatka w tym repo dalej twierdziła,
+/// że nie była użyta nigdy — wartość szła na dysk raz, jako `null`, i nie ruszała się z miejsca.
+///
+/// Skutek ma jednego adresata i nie jest kosmetyczny. Kiedy zakres jest pełny, [`promote`] odmawia
+/// i pokazuje człowiekowi wymuszony wybór „najdawniej użyte pierwsze" [T6 §5.3]. Ta lista sortuje
+/// się po tym polu — a skoro wszędzie stało `null`, sortowała się po identyfikatorze, czyli po
+/// NAZWIE PLIKU. Człowiekowi, który ma zdecydować, co przestaje docierać do modelu, pokazywaliśmy
+/// zdania ułożone alfabetycznie i mówiliśmy, że są ułożone po tym, jak dawno były potrzebne.
+///
+/// # Ścieżką, nie identyfikatorem
+///
+/// Jedyna funkcja w tym module, która tak robi, i powód jest wąski: wołający — bieg — trzyma
+/// rachunek z tego, co naprawdę pojechało w promptach, a w rachunku stoją ŚCIEŻKI (`run.json`,
+/// `MemoryRecord::reference`). Droga przez identyfikator znaczyłaby rozłożenie ścieżki na nazwę
+/// pliku po to, żeby złożyć z niej z powrotem tę samą ścieżkę — czyli drugie miejsce, w którym
+/// mieszka odpowiedź na pytanie, gdzie leży ten plik.
+///
+/// **Jedna linia w pliku i ani jedna więcej**, jak przy zmianie `status` w [`promote`].
+/// `modified` zostaje NIETKNIĘTE: wejście do promptu nie jest zmianą treści ani stanu notatki,
+/// a to pole czyta człowiek, żeby wiedzieć, co ktoś ostatnio poprawiał.
+///
+/// Zwraca `()`, a nie odczytaną notatkę — jedyne wyłamanie z reguły „wracamy z tym, co leży na
+/// dysku", i też z powodu: tej wartości nie ma kto przeczytać. Bieg stempluje i idzie dalej,
+/// więc odczyt po zapisie byłby odczytem dla nikogo (niezmiennik 21).
+pub fn mark_used(path: &Path, at: &str) -> Result<()> {
+    let raw = fs::read_to_string(path)?;
+    let (mut front, body_at) = FrontMatter::split(&raw)?;
+    front.set("last_used_at", &one_line(at));
+    write_note(path, &front, &raw[body_at..])
 }
 
 /// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
