@@ -786,7 +786,12 @@ fn reserved(vendor: &str) -> &'static [&'static str] {
 }
 
 /// Nazwa vendora tak, jak nazywa go użytkownik. Klucz z pliku (`claude`) na ekran nie idzie.
-fn vendor_name(vendor: &str) -> &str {
+///
+/// `pub(crate)` od 2026-08-23: tę samą odpowiedź musi znać odmowa biegu, kiedy krok pożyczył
+/// umiejętność programowi, który nie umie przyjąć katalogu pluginu (`commands::run`). Druga
+/// tabela nazw obok tej rozjechałaby się przy pierwszym vendorze i nikt by tego nie zauważył,
+/// bo obie odpowiadają dziś tak samo (niezmiennik 13).
+pub(crate) fn vendor_name(vendor: &str) -> &str {
     match vendor {
         "claude" => "Claude Code",
         "codex" => "Codex",

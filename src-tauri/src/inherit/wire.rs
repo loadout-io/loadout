@@ -28,6 +28,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use super::{Error, Result, rewrite, scan};
+// Powód tego importu — jedna definicja półek gospodarza — stoi przy stałych w `scan`.
+use super::scan::{HOST_DIR, LEARNINGS_DIR, SUBAGENTS_DIR};
 use crate::engine::drivers::RunSpec;
 
 /// Podkatalog katalogu biegu, w którym staje katalog pluginu.
@@ -37,21 +39,6 @@ use crate::engine::drivers::RunSpec;
 /// artefakt biegu poza biegiem (`docs/ARCHITECTURE.md` §8), a `.claude/` gospodarza łamałoby
 /// jedyną obietnicę, jaką temu repozytorium złożyliśmy: czytamy je i niczego w nim nie ruszamy.
 const PLUGIN_DIR: &str = "plugin";
-
-/// Katalog, w którym cudze repozytorium trzyma to, co bierzemy.
-///
-/// Ścieżkę do umiejętności wydaje [`scan::skill_file`] i ta stała nie jest jego kopią: tamta
-/// funkcja odpowiada na pytanie „gdzie leży `SKILL.md` tej umiejętności", a tu składamy dwie
-/// **inne** półki tego samego katalogu. Nazwy plików ról i podagentów nie mają odpowiednika po
-/// stronie [`scan`], bo [`scan::recurring_patterns`] i [`scan::agent_body`] są funkcjami nad
-/// **tekstem** — plik czyta ten, kto wie, którą pozycję wybrał człowiek, czyli ten plik.
-const HOST_DIR: &str = ".claude";
-
-/// Półka z plikami ról: `<projekt>/.claude/learnings/<rola>.md`.
-const LEARNINGS_DIR: &str = "learnings";
-
-/// Półka z podagentami: `<projekt>/.claude/agents/<rola>.md`.
-const SUBAGENTS_DIR: &str = "agents";
 
 /// Czego dotyczy odmowa — po ludzku, bo to zdanie czyta człowiek ([`Error::NotInTheHost`]).
 const A_SKILL: &str = "skill";
@@ -93,6 +80,17 @@ pub struct Chosen {
     /// Nazwa podagenta spod `<projekt>/.claude/agents/`, bez rozszerzenia. Do promptu wchodzi
     /// z niego **wyłącznie ciało**; front-matter jest granicą maszynerii.
     pub subagent: Option<String>,
+}
+
+impl Chosen {
+    /// Czy nie wybrano niczego.
+    ///
+    /// Pytanie zadawane PRZED dotknięciem cudzego katalogu: bieg bez wyboru nie ma powodu
+    /// czytać `.claude/` gospodarza ani zakładać sobie katalogu pod katalogiem biegu.
+    #[must_use]
+    pub fn is_nothing(&self) -> bool {
+        self.skills.is_empty() && self.learnings.is_none() && self.subagent.is_none()
+    }
 }
 
 /// Co ten bieg odziedziczył: gotowy fragment argv i gotowy tekst do promptu.
@@ -198,7 +196,7 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     // i dopiero na drugiej pozycji odmówił, zostawia katalog pluginu w kształcie, którego nikt
     // nie zamawiał — a katalog, który powstał, prędzej czy później zostanie komuś podany. Ta
     // kolejność jest jedynym powodem, dla którego cały ten blok stoi przed `plugin_dir`.
-    every_name_is_really_there(project, &chosen.skills)?;
+    nothing_is_missing(project, chosen)?;
 
     // Bloki, nie jeden rosnący napis: każdy z nich ma własny nagłówek i własny powód, a blok,
     // z którego nic nie wyszło, po prostu nie wchodzi na tę listę. Nagłówek nad pustką uczy
@@ -292,6 +290,33 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     })
 }
 
+/// Czy wszystko, co człowiek zaznaczył, naprawdę leży u gospodarza — **bez zapisu**.
+///
+/// # Dlaczego to jest osobna, publiczna funkcja
+///
+/// Odmowa ma paść, ZANIM powstanie katalog biegu (niezmiennik 12: najpóźniej przy Starcie,
+/// nigdy w trakcie). [`from_the_host`] tego nie umie, i nie z niedbałości: żeby cokolwiek
+/// przepisać, potrzebuje katalogu, do którego pisze — a ten powstaje po planowaniu. Planista
+/// woła więc **tę** funkcję, a `from_the_host` woła ją u siebie jako pierwszą linię, więc
+/// odpowiedź jest jedna i mieszka w jednym miejscu (niezmiennik 23). Drugi warunek dopisany
+/// przy zapisie byłby drugą definicją słowa „znalezione".
+///
+/// Pusty wybór nie ma czego nie znaleźć i nie czyta cudzego katalogu ani razu: brak `.claude/`
+/// jest normalnym stanem cudzego repozytorium, nie błędem (niezmiennik 5).
+pub fn nothing_is_missing(project: &Path, chosen: &Chosen) -> Result<()> {
+    every_name_is_really_there(project, &chosen.skills)?;
+    if let Some(role) = &chosen.learnings {
+        // Wynik odrzucamy: pytanie brzmi „czy ten plik jest", a jego treść czyta ten, kto
+        // naprawdę składa prompt. Drugi odczyt kosztuje jedno `read` i jest ceną za to, że
+        // planowanie nie zapisuje ani jednego bajtu.
+        host_text(project, LEARNINGS_DIR, A_LEARNINGS_FILE, role)?;
+    }
+    if let Some(role) = &chosen.subagent {
+        host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
+    }
+    Ok(())
+}
+
 /// Odmawia, jeśli człowiek wybrał umiejętność, której skan u gospodarza nie znalazł.
 ///
 /// ODMOWA, NIE POMINIĘCIE, i to jest cały powód, dla którego ta funkcja istnieje osobno od
@@ -319,6 +344,7 @@ fn every_name_is_really_there(project: &Path, selected: &[String]) -> Result<()>
             return Err(Error::NotInTheHost {
                 what: A_SKILL,
                 name: name.clone(),
+                folder: project.to_path_buf(),
             });
         }
     }
@@ -345,6 +371,7 @@ fn host_text(project: &Path, shelf: &str, what: &'static str, name: &str) -> Res
     let missing = || Error::NotInTheHost {
         what,
         name: name.to_owned(),
+        folder: project.to_path_buf(),
     };
     let path = one_file_named(name)
         .map(|file| project.join(HOST_DIR).join(shelf).join(file))

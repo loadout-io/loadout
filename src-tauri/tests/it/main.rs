@@ -31,6 +31,7 @@
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
 mod a_skill_list_says_what_each_one_is_for;
+mod a_step_borrows_from_the_host;
 mod again_carries_what_the_step_had;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
@@ -44,6 +45,7 @@ mod agents_vendor_options;
 mod agents_wire_shape;
 mod ask_one_agent;
 mod ask_respects_the_pool;
+mod borrowing_what_is_not_there_refuses;
 mod brief_matches_the_policy;
 mod chat_never_starts_a_run;
 mod check_step_closes_the_loop;

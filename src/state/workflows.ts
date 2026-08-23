@@ -110,6 +110,30 @@ export type Skills = 'all' | string[];
 /** Co kontrolka Skills umie zapisać. `'none'` istnieje tylko w trybie `all-or-none`. */
 export type SkillChoice = 'all' | 'none' | { only: string[] };
 
+/** Co kafelek bierze z repozytorium, w którym pracuje bieg — trzy półki `<projekt>/.claude/`.
+ *
+ * Ten sam kształt, co `AgentStep::borrow` po stronie Rusta, klucz w klucz. Pole nieobecne znaczy
+ * „nie pożyczam", a nie „pożyczam nic": plik zapisany, zanim ten wiersz istniał, ma się otworzyć
+ * bez jednej zmiany, a pusty obiekt dopisany do każdego kroku przepisałby przy pierwszym zapisie
+ * wszystkie workflow, jakie leżą na dysku.
+ *
+ * `agent`, nie `subagent`, bo tak nazywa się półka, z której pochodzi (`.claude/agents/`). */
+export interface Borrow {
+  skills?: string[] | undefined;
+  learnings?: string | undefined;
+  agent?: string | undefined;
+}
+
+/** Co komenda `list_host_material` znalazła w folderze aktywnego workspace.
+ *
+ * Trzy listy nazw i ani jednego bajtu treści: wiersz wyboru pokazuje, co MOŻNA wziąć, a treść
+ * czyta dopiero bieg. Pusty wynik jest normalną odpowiedzią o cudzym repozytorium, nie awarią. */
+export interface HostMaterial {
+  skills: string[];
+  learnings: string[];
+  subagents: string[];
+}
+
 export interface HandoverField {
   name: string;
   describe: string;
@@ -171,6 +195,14 @@ export interface AgentStep {
   /** Prompt kroku, zwykły tekst. To NIE jest `Overrides.instructions`, które dotyczy agenta. */
   instructions: string;
   skills: Skills;
+  /** Co ten kafelek pożycza z repozytorium, w którym pracuje bieg. Brak klucza znaczy „nic".
+   *
+   * `| undefined` JAWNIE, bo `exactOptionalPropertyTypes` odróżnia „klucza nie ma" od „klucz
+   * jest i niesie `undefined`" — a odznaczenie ostatniego pola musi umieć podać to drugie:
+   * `JSON.stringify` zdejmuje wtedy klucz i plik wraca do kształtu sprzed tego pola, co do
+   * bajtu. Bez tego jedyną drogą byłoby zapisanie `{}`, czyli wiersza szumu w każdym kroku,
+   * który kiedykolwiek czegoś dotknął. */
+  borrow?: Borrow | undefined;
   folder: Folder;
   handover: Handover;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */

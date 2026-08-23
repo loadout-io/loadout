@@ -27,7 +27,7 @@ use std::fs;
 use std::io::{self, BufRead as _, BufReader, Read as _};
 use std::path::{Component, Path, PathBuf};
 
-use super::{HostSkill, Result};
+use super::{HostSkill, Lendable, Result};
 use crate::skills::ingest;
 
 /// Nazwa pliku, po której poznaje się umiejętność w cudzym repozytorium.
@@ -42,14 +42,34 @@ const PATTERNS_HEADING: &str = "## Recurring patterns";
 /// Początek każdego wiersza, który kończy sekcję: nagłówek tego samego poziomu.
 const HEADING_MARK: &str = "## ";
 
-/// `<projekt>/.claude/skills` — kształt gospodarza, zapisany **raz**.
+/// Katalog, w którym cudze repozytorium trzyma to, co da się z niego pożyczyć.
 ///
-/// Te dwa segmenty są jedyną wiedzą tego repo o tym, gdzie cudze repozytorium trzyma
-/// umiejętności. Drugi taki `join` gdziekolwiek indziej byłby drugą definicją tego samego
-/// pojęcia (niezmiennik 23), więc ścieżkę do konkretnego pliku wydaje [`skill_file`], a nie
-/// składa ją u siebie ten, kto jej potrzebuje.
+/// Ten napis stoi w tym repo RAZ. Do 2026-08-23 miał dwie kopie — tę i drugą w `wire.rs` —
+/// i przez cały ten czas obie odpowiadały tak samo, więc rozjazd nie miał jak się pokazać;
+/// dzień, w którym jedna z nich by się zmieniła, byłby dniem, w którym ekran wyboru pokazuje
+/// półkę, z której bieg nie czyta (niezmiennik 23).
+pub(super) const HOST_DIR: &str = ".claude";
+
+/// Półka z umiejętnościami: `<projekt>/.claude/skills/<nazwa>/SKILL.md`.
+pub(super) const SKILLS_DIR: &str = "skills";
+
+/// Półka z plikami ról: `<projekt>/.claude/learnings/<rola>.md`.
+pub(super) const LEARNINGS_DIR: &str = "learnings";
+
+/// Półka z podagentami: `<projekt>/.claude/agents/<rola>.md`.
+pub(super) const SUBAGENTS_DIR: &str = "agents";
+
+/// `<projekt>/.claude/<półka>` — kształt gospodarza, składany **w jednym miejscu**.
+///
+/// Ścieżkę do konkretnego pliku wydaje [`skill_file`], a nie składa jej u siebie ten, kto jej
+/// potrzebuje: drugi taki `join` gdziekolwiek indziej byłby drugą definicją tego samego pojęcia
+/// (niezmiennik 23).
+pub(super) fn shelf(project: &Path, name: &str) -> PathBuf {
+    project.join(HOST_DIR).join(name)
+}
+
 fn skills_root(project: &Path) -> PathBuf {
-    project.join(".claude").join("skills")
+    shelf(project, SKILLS_DIR)
 }
 
 /// `SKILL.md` wybranej umiejętności u gospodarza — albo `None`, gdy `name` nie jest nazwą
@@ -253,4 +273,74 @@ pub fn agent_body(text: &str) -> &str {
     // nigdy się nie domyka, to pozioma kreska. Cięcie na niej zjadłoby pierwszy akapit
     // podagenta bez jednego słowa. Lustro reguły `skills::ingest::parse_doc`.
     text
+}
+
+/// Co ten folder ma do pożyczenia — trzy półki naraz, same nazwy, zero zapisu.
+///
+/// # Dlaczego to jest jedna funkcja, a nie trzy wołania z okna
+///
+/// Ekran wyboru zadaje JEDNO pytanie („co da się stąd wziąć") i ma dostać jedną odpowiedź.
+/// Trzy komendy znaczyłyby trzy stany ładowania, trzy sposoby, na które wiersz bywa w połowie
+/// wypełniony, i trzy okazje, żeby pokazać człowiekowi półkę z poprzedniego folderu.
+///
+/// **Nazwy, ani jednego bajtu treści.** Cudze repozytorium to tekst, którego nikt nie
+/// audytował; do okna wchodzi więc lista nazw, a treść czyta dopiero bieg — i wyłącznie tę,
+/// którą człowiek zaznaczył ([`super::wire::from_the_host`]).
+///
+/// **Brak półki to pusta lista i `Ok`, nie błąd** (niezmiennik 5): większość folderów nie ma
+/// `.claude/` w ogóle, a wiersz wyboru, który przy takim folderze odmawia, jest nie do użycia
+/// w każdym repozytorium, które nigdy nie widziało Claude Code. Katalog NIECZYTELNY to co
+/// innego i jedzie jako błąd — pozycje tam są, a na ekranie ich nie widać.
+pub fn what_this_project_can_lend(project: &Path) -> Result<Lendable> {
+    Ok(Lendable {
+        // Pytamy `skills`, a nie systemu plików: to ta funkcja wyznacza, co jest umiejętnością
+        // (katalog bez `SKILL.md` nie ma wpisu), i ta sama odpowiedź musi rozstrzygać przy
+        // odmowie w `wire::nothing_is_missing`. Drugi warunek tutaj byłby drugą definicją
+        // słowa „znalezione" (niezmiennik 23).
+        skills: skills(project)?.into_iter().map(|one| one.name).collect(),
+        learnings: markdown_names(project, LEARNINGS_DIR)?,
+        subagents: markdown_names(project, SUBAGENTS_DIR)?,
+    })
+}
+
+/// Nazwy plików `*.md` leżących wprost na jednej półce, bez rozszerzenia, posortowane.
+///
+/// POSORTOWANE, bo kolejność z systemu plików nie jest ustalona, a tę listę czyta człowiek:
+/// lista, która przestawia się przy każdym otwarciu, jest listą, w której nie da się niczego
+/// znaleźć dwa razy. Ta sama decyzja, z tego samego powodu, stoi w [`skills`].
+///
+/// WPROST NA PÓŁCE, bez schodzenia w podkatalogi: nazwa z tej listy wraca do nas polem `borrow`
+/// i wyznacza czytaną ścieżkę, a `wire::one_file_named` przyjmuje wyłącznie nazwę **jednego**
+/// segmentu. Pozycja, której nie dałoby się potem pożyczyć, jest na ekranie wyboru obietnicą
+/// bez pokrycia (niezmiennik 16).
+///
+/// Dowiązania odpadają razem z resztą: `file_type()` z `read_dir` nie idzie za dowiązaniem,
+/// a dowiązanie prowadzi poza wybrane repozytorium — czyli do pliku, którego człowiek nie
+/// wybierał. Ta sama decyzja, z tego samego powodu, stoi w [`skills`].
+fn markdown_names(project: &Path, shelf_name: &str) -> Result<Vec<String>> {
+    let listing = match fs::read_dir(shelf(project, shelf_name)) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+
+    let mut found = Vec::new();
+    for entry in listing {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|kind| kind != "md") {
+            continue;
+        }
+        // `file_stem`, nie ręczne obcinanie: `borrow.learnings` niesie nazwę BEZ rozszerzenia,
+        // a `wire::host_text` dokłada `.md` z powrotem. Nazwa obcięta tu inaczej niż tam
+        // wskazywałaby plik, którego człowiek nie zaznaczył — bez jednego słowa o podmianie.
+        if let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) {
+            found.push(name.to_owned());
+        }
+    }
+    found.sort();
+    Ok(found)
 }
