@@ -31,6 +31,42 @@ testy nie mogą tego robić przez powłokę z `sh -c` · `AGENTS.md` niezmiennik
 - **Agent:** `rust-core` na AC-1, AC-3, potem `frontend` na AC-2 — jeden worktree, jedna bramka.
 - **Druga opinia:** inny vendor niż pisarz (D3).
 
+## Poszerzenie zakresu — 2026-08-23, przeoczenie w bloku OWNS
+
+`src-tauri/commands.golden.txt` dochodzi do OWNS, bo bez niego **AC-2 jest niewykonalne**, a nie
+trudne. Nowa komenda musi tam mieć wiersz: `ipc_commands_registered.rs` asertuje RÓWNOŚĆ ZBIORÓW
+między tym plikiem a `generate_handler!`, więc rejestracja bez wiersza jest czerwienią, a wiersz
+bez rejestracji — martwą kontrolką (niezmiennik 16). Ten sam plik mają w OWNS wszystkie zadania,
+które kiedykolwiek dokładały komendę (T-27, T-29, T-30, T-34, T-38, T-40, T-41, T-42, T-43, T-44);
+jego brak tutaj był moim przeoczeniem przy pisaniu kontraktu, nie decyzją. Kryteria bez zmian —
+dochodzi wyłącznie ścieżka.
+
+### Dwa cudze pliki testowe — mandat na MIEJSCE ODCZYTU, nigdy na zdanie
+
+*Decyzja właściciela 2026-08-23, po pierwszym biegu tego zadania.*
+
+Sprzątanie z AC-1 przewraca trzy asercje w dwóch plikach, których to zadanie nie miało:
+`trigger_run_is_accepted_once.rs` (**kryterium wylądowanego T-65**, ścieżka triggerów) oraz
+`continue_from_a_past_run.rs` (test regresyjny, żadne kryterium go nie woła). Obie sprawy mają
+ten sam kształt i to jest powód, dla którego wolno je ruszyć:
+
+**Zdania tych asercji zostają prawdziwe.** „retry preserved HEAD but lost the human's dirty
+tracked content" mówi o tym, co ponowienie **włożyło** do drzewa — a to leży teraz na gałęzi.
+„retry registered zero or two worktrees" mówi o tym, że rejestracja w trakcie biegu była
+**dokładnie jedna** — i nadal jest. Nieprawdziwe robi się wyłącznie **miejsce i chwila
+obserwacji**: oba instrumenty czytają katalog PO biegu, żeby wnioskować o tym, co działo się
+W TRAKCIE, a AC-1 kasuje ten katalog z założenia.
+
+Wolno ci więc **wyłącznie przenieść obserwację tam, gdzie fakt nadal jest**: treść pliku czytać
+z gałęzi (`git show <gałąź>:<ścieżka>`), a rejestrację drzewa liczyć w chwili, w której drzewo
+jeszcze stoi. **Każde zdanie asercji zostaje słowo w słowo.**
+
+Czego NIE WOLNO, bo każde z tego przechodzi bramkę i kasuje sens tamtych kryteriów:
+skasować asercji; zamienić `assert_eq!(count, 1)` na porównanie, które przechodzi także przy
+zerze i przy dwóch; zmienić komunikat asercji; „naprawić" test przez wyłączenie sprzątania
+w tamtym scenariuszu. Reszta obu plików jest cudza — nie dopisuj tam asercji i nie tykaj
+pozostałych testów.
+
 ## AC-1 Po biegu praca jest na gałęzi, a katalogu roboczego nie ma
 check: cargo test --test it finished_runs_leave_no_work_trees::
 expect: (\d+) passed
@@ -76,9 +112,12 @@ src-tauri/src/commands/history.rs
 src-tauri/src/commands/mod.rs
 src-tauri/src/workflow/check.rs
 src-tauri/src/ipc.rs
+src-tauri/commands.golden.txt
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/finished_runs_leave_no_work_trees.rs
 src-tauri/tests/it/same_copy_pairs_are_judged.rs
+src-tauri/tests/it/trigger_run_is_accepted_once.rs
+src-tauri/tests/it/continue_from_a_past_run.rs
 src/sections/commands-wired.test.ts
 src/ipc/run.ts
 src/sections/run/io.ts
