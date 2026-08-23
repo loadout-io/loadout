@@ -63,6 +63,9 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         skills: adapted.skills,
         connections: adapted.connections,
         workflows,
+        // Pamięć projektu jako notatki (2026-08-22, T-80). Składa je adapter, bo to on czyta
+        // katalogi vendorów — tutaj mieszka wyłącznie polityka zgodności.
+        notes: adapted.notes,
         report: CompatibilityReport {
             mappings: adapted.mappings,
         },

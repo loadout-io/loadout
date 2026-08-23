@@ -58,6 +58,13 @@ pub struct NoteWire {
     pub status: String,
     /// `everywhere`, `this-project` albo `this-agent`.
     pub scope: String,
+    /// Czyja to wiedza. `null` znaczy „niczyja" i **jedzie na drut jako `null`**, a nie jako
+    /// brak klucza (2026-08-22, T-80): zbiór kluczy tego typu jest porównywany z `Note`
+    /// w `src/state/memory.ts` co do jednego (`ipc_read_paths`), a klucz, który raz jest,
+    /// a raz go nie ma, znaczy tam, że okno i Rust zgadzają się tylko dla części notatek.
+    pub agent: Option<String>,
+    /// Z jakiego projektu ta notatka przyjechała; `null` znaczy „napisano ją tutaj".
+    pub from: Option<String>,
     /// Ile ta notatka zabiera z budżetu zakresu. Na ekranie to słowo brzmi `length`
     /// (`DESIGN.md` §8), więc pole nazywa się tak samo — tłumaczenie w komponencie byłoby
     /// drugim miejscem, w którym mieszka nazwa tej liczby.
@@ -84,6 +91,8 @@ impl From<&Note> for NoteWire {
                 Scope::ThisAgent => "this-agent",
             }
             .to_owned(),
+            agent: note.agent.clone(),
+            from: note.from.clone(),
             length: note.est_tokens,
             occurrences: note.occurrences,
             modified: note.modified.clone(),

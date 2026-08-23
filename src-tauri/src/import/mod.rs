@@ -109,6 +109,44 @@ pub struct SkillDraft {
     pub source_hash: String,
 }
 
+/// Jedna notatka wyjęta z pamięci cudzego projektu.
+///
+/// 2026-08-22 (T-80) — PO CO TO ISTNIEJE. `.claude/agent-memory/` i `.claude/learnings/` były
+/// dotąd pozycjami rodzaju [`ItemKind::Memory`], czyli **wyborem do rozstrzygnięcia**, i nic
+/// poza tym: [`MigrationDraft`] nie miał pola na pamięć, więc `apply` nie zapisywał do
+/// `memory/notes/` ani jednego pliku. Wiedza jednego agenta jechała wtedy w **stałej**
+/// instrukcji w każdym jego promptcie, a ta sama treść potrafiła wejść drugi raz przez
+/// learnings.
+///
+/// Pola są tym, co trzeba wiedzieć, żeby później powiedzieć **skąd to jest**: notatka bez
+/// pochodzenia jest zdaniem, którego nie da się ani sprawdzić, ani wycofać [T6 §5.1].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryNote {
+    /// Plik, z którego to przyszło — ścieżka **względna** wobec korzenia importu. Absolutna
+    /// ścieżka gospodarza nie jest faktem o notatce, tylko o maszynie, na której skanowano.
+    pub source: PathBuf,
+    /// Odcisk tamtego pliku w chwili skanu — ten sam, który niesie [`SourceItem::hash`].
+    pub source_hash: String,
+    /// Z czyjego katalogu to wzięliśmy.
+    pub app: SourceKind,
+    /// Czyja to wiedza. `None` znaczy „niczyja" i nie ma udawać, że czyjaś.
+    pub agent: Option<String>,
+    /// Zakres, słowem z pliku notatki: `everywhere`, `this-project` albo `this-agent`.
+    ///
+    /// Słowo, nie `memory::notes::Scope`: import składa **plik**, a plik jest prawdą
+    /// (niezmiennik 4). Drugi typ na tę samą wartość rozjechałby się przy pierwszej zmianie
+    /// któregoś z nich.
+    pub scope: String,
+    /// Zdanie, które pojedzie do promptu — jedyna część notatki, która tam jedzie.
+    pub rule: String,
+    /// Nazwa, po której człowiek pozna to na liście.
+    pub title: String,
+    /// Dlaczego to jest prawda. „No because, no memory" [T6 §10.3] obowiązuje też notatkę,
+    /// której nikt tutaj nie napisał ręcznie.
+    pub because: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationDraft {
@@ -118,6 +156,9 @@ pub struct MigrationDraft {
     pub skills: Vec<SkillDraft>,
     pub connections: Vec<Connection>,
     pub workflows: Vec<WorkflowFile>,
+    /// Pamięć projektu jako notatki, nie jako akapity w instrukcjach agenta.
+    #[serde(default)]
+    pub notes: Vec<MemoryNote>,
     pub report: CompatibilityReport,
 }
 
@@ -126,6 +167,19 @@ impl MigrationDraft {
     pub fn runnable(&self) -> bool {
         self.report.blockers() == 0
     }
+}
+
+/// Jak nazywa się projekt, z którego przyjechał ten import — ostatni człon jego ścieżki.
+///
+/// Stoi tutaj, a nie w [`adapters`] i [`apply`] osobno, bo obie odpowiedzi lądują w JEDNEJ
+/// notatce: `from:` mówi, skąd zdanie przyjechało, a uzasadnienie zastępcze mówi, gdzie tam
+/// stało. Dwie kopie tego rachunku rozjechałyby się w pliku, który czyta człowiek, i wyglądałoby
+/// to jak dwa projekty (niezmiennik 13).
+pub(crate) fn project_name(root: &std::path::Path) -> String {
+    root.file_name().map_or_else(
+        || root.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

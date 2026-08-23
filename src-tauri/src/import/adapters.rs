@@ -14,12 +14,13 @@ use crate::library::agents::{
 use crate::skills::ingest::{Verdict, from_folder};
 
 use super::discover::{InspectedFile, Inspection};
-use super::{Compatibility, Mapping, SkillDraft, SourceKind};
+use super::{Compatibility, Mapping, MemoryNote, SkillDraft, SourceKind};
 
 pub(crate) struct AdapterOutput {
     pub agents: Vec<Agent>,
     pub skills: Vec<SkillDraft>,
     pub connections: Vec<Connection>,
+    pub notes: Vec<MemoryNote>,
     pub mappings: Vec<Mapping>,
 }
 
@@ -28,6 +29,7 @@ pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
         agents: Vec::new(),
         skills: Vec::new(),
         connections: Vec::new(),
+        notes: Vec::new(),
         mappings: Vec::new(),
     };
     let mut colours = 0_usize;
@@ -46,6 +48,9 @@ pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
     output
         .connections
         .sort_by(|left, right| left.name.cmp(&right.name));
+    output
+        .notes
+        .sort_by(|left, right| left.source.cmp(&right.source));
     output
         .mappings
         .sort_by(|left, right| left.item_id.cmp(&right.item_id));
@@ -88,11 +93,7 @@ fn adapt_one(
             Compatibility::NeedsChoice,
             "This project hook will not run automatically. Choose a check or leave it out.",
         )),
-        Memory => output.mappings.push(mapping(
-            file,
-            Compatibility::NeedsChoice,
-            "Choose whether to turn this project guidance into Loadout Memory.",
-        )),
+        Memory => adapt_memory(inspection, file, output),
         Rule => output.mappings.push(mapping(
             file,
             Compatibility::NeedsChoice,
@@ -195,6 +196,310 @@ fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut Adapt
             .mappings
             .push(mapping(file, Compatibility::Unsupported, &message)),
     }
+}
+
+// ── pamięć projektu ────────────────────────────────────────────────────────────────────────
+//
+// 2026-08-22 (T-80). Do tego dnia `.claude/agent-memory/` i `.claude/learnings/` były wyłącznie
+// wyborem do rozstrzygnięcia: pozycja rodzaju `Memory` szła do raportu jako `NeedsChoice`
+// i nic z niej nie powstawało. Jedyne miejsce, w które ta wiedza mogła trafić, to instrukcje
+// agenta — gdzie jedzie w KAŻDYM jego promptcie, nie liczy się przeciw żadnemu sufitowi, nie da
+// się jej odstawić po jednym zdaniu i potrafi wejść drugi raz drugą drogą (przez learnings).
+
+/// Ile plików wskazanych przez jeden indeks pamięci wolno przeczytać.
+///
+/// Sufit jest tu po to, żeby indeks nie był poleceniem „przeczytaj to repozytorium": plik pisał
+/// ktoś inny, a każdy odnośnik w nim jest ścieżką jego wyboru. Przekroczenie jest NAZWANE
+/// w raporcie, nie ucięte w ciszy — ucięcie w ciszy wygląda na ekranie identycznie jak
+/// „więcej tam nie było".
+const LINKED_CAP: usize = 64;
+
+/// Ile bajtów wolno mieć jednej stronie pamięci. Z notatki jedzie do promptu JEDNO zdanie,
+/// więc plik większy od tego jest czymś innym niż notatką.
+const PAGE_CAP: u64 = 65_536;
+
+fn adapt_memory(inspection: &Inspection, file: &InspectedFile, output: &mut AdapterOutput) {
+    let root = &inspection.snapshot.root;
+    let owner = memory_owner(&file.item.path);
+    let directory = file.item.path.parent().unwrap_or(Path::new(""));
+    let project = super::project_name(root);
+
+    let mut made = 0_usize;
+    let mut skipped: Vec<String> = Vec::new();
+    let links = index_links(&file.content);
+
+    if links.is_empty() {
+        // Płaski plik pamięci — notatką jest on sam. Tak wygląda `learnings/<temat>.md`
+        // i tak wygląda `MEMORY.md`, w którym ktoś napisał prozę zamiast spisu treści.
+        if let Some(note) = memory_note(
+            file,
+            &file.item.path,
+            &file.content,
+            owner.as_deref(),
+            None,
+            &project,
+        ) {
+            output.notes.push(note);
+            made += 1;
+        }
+    } else {
+        for (index, (text, target)) in links.iter().enumerate() {
+            if index >= LINKED_CAP {
+                skipped.push(target.clone());
+                continue;
+            }
+            // Odnośnik do sieci albo do czegoś, co nie jest stroną pamięci, nie jest tu
+            // pominięciem wartym zdania: indeks pamięci normalnie takie niesie.
+            if !points_at_a_page(target) {
+                continue;
+            }
+            let Some(relative) = under_root(directory, target) else {
+                // `../../../../` też jest ścieżką względną — i prowadzi do repozytorium obok.
+                skipped.push(target.clone());
+                continue;
+            };
+            let Some(content) = read_page(root, &relative) else {
+                skipped.push(target.clone());
+                continue;
+            };
+            if let Some(note) = memory_note(
+                file,
+                &relative,
+                &content,
+                owner.as_deref(),
+                Some(text),
+                &project,
+            ) {
+                output.notes.push(note);
+                made += 1;
+            }
+        }
+    }
+
+    output.mappings.push(mapping(
+        file,
+        memory_verdict(made),
+        &memory_message(made, &skipped),
+    ));
+}
+
+/// Czym to się skończyło. Zero notatek zostaje pytaniem do człowieka — bo nią dalej jest:
+/// pamięć, której nie umieliśmy przeczytać, nie stała się niczym, co da się włączyć.
+const fn memory_verdict(made: usize) -> Compatibility {
+    if made == 0 {
+        Compatibility::NeedsChoice
+    } else {
+        Compatibility::Adjusted
+    }
+}
+
+fn memory_message(made: usize, skipped: &[String]) -> String {
+    let mut message = match made {
+        0 => "Loadout found nothing here it could keep as memory. Choose what to do with it."
+            .to_owned(),
+        1 => "This project memory becomes 1 note, switched off until you use it.".to_owned(),
+        many => format!("This project memory becomes {many} notes, switched off until you use it."),
+    };
+    if !skipped.is_empty() {
+        // Pominięcie w ciszy wygląda dokładnie jak „przeczytano i nic tam nie było", więc
+        // człowiek, który poprosił o ten import, nie wie, czy jego pamięć przyjechała.
+        message.push_str(" Loadout did not read ");
+        message.push_str(&skipped.join(", "));
+        message.push_str(", because it is not part of this project.");
+    }
+    message
+}
+
+/// Czyja to pamięć: nazwa katalogu w `.claude/agent-memory/<agent>/MEMORY.md`.
+///
+/// Wszystko inne — `learnings/`, plik luzem — jest pamięcią projektu i nie należy do nikogo.
+/// Notatka z nazwą agenta, którego nie ma, dociera do zera kroków; notatka bez nazwy dociera
+/// do wszystkich. Zgadywanie właściciela z treści byłoby wyborem między tymi dwoma błędami.
+fn memory_owner(path: &Path) -> Option<String> {
+    let parts: Vec<String> = path
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    (parts.len() == 4
+        && parts[0] == ".claude"
+        && parts[1] == "agent-memory"
+        && parts[3] == "MEMORY.md")
+        .then(|| parts[2].clone())
+}
+
+/// Jedna strona pamięci na notatkę — albo `None`, kiedy nie ma tam ani jednego zdania.
+fn memory_note(
+    file: &InspectedFile,
+    source: &Path,
+    content: &str,
+    owner: Option<&str>,
+    linked_as: Option<&str>,
+    project: &str,
+) -> Option<MemoryNote> {
+    let rule = sentence_of(content)?;
+    let title = heading_of(content)
+        .or_else(|| linked_as.map(str::to_owned))
+        .or_else(|| {
+            source
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })?;
+    Some(MemoryNote {
+        source: source.to_path_buf(),
+        // Odcisk POZYCJI SKANU, nie tej strony: `MEMORY.md` niesie odcisk całego swojego
+        // katalogu (`discover::bundle_hash`), a pliki obok niego nie są osobnymi pozycjami.
+        // Własny odcisk liczony tutaj odpowiadałby na pytanie „czy ten plik się zmienił"
+        // wartością, której nie da się porównać z niczym w migawce.
+        source_hash: file.item.hash.clone(),
+        app: file.item.source,
+        agent: owner.map(str::to_owned),
+        // Zakres idzie za właścicielem i tylko za nim. Notatka z nazwą agenta i zasięgiem całego
+        // projektu jedzie do większej liczby promptów, niż ktokolwiek się zgodził.
+        scope: if owner.is_some() {
+            "this-agent"
+        } else {
+            "this-project"
+        }
+        .to_owned(),
+        rule,
+        title,
+        because: reason_of(content).unwrap_or_else(|| {
+            // „No because, no memory" [T6 §10.3] obowiązuje też zdanie, którego nikt tutaj nie
+            // napisał. Kiedy strona nie mówi dlaczego, uzasadnieniem jest miejsce, w którym to
+            // stało — bo to jest jedyna rzecz, którą da się później sprawdzić.
+            format!("{project} keeps this in {}.", source.display())
+        }),
+    })
+}
+
+/// Zdanie, które pojedzie do modelu: pierwszy wiersz, który nie jest nagłówkiem, wpisem spisu
+/// treści ani uzasadnieniem.
+///
+/// WYPUNKTOWANIE JEST ZDANIEM, bez swojego znaku. Odrzucanie każdego wiersza zaczynającego się
+/// od `- ` odrzucało razem z wpisami spisu treści całą stronę pisaną tak, jak ludzie naprawdę
+/// piszą `learnings/`: nagłówek i lista. Taki plik wracał ze skanu jako pozycja pamięci, z której
+/// nie powstawała ANI JEDNA notatka — czyli wiedza projektu ginęła po drodze i mówił o tym
+/// wyłącznie licznik zero w raporcie. Znak wypunktowania jedzie w koszcie długości i nic nie
+/// znaczy dla modelu, więc zdaniem notatki jest tekst PO nim.
+fn sentence_of(content: &str) -> Option<String> {
+    content.lines().find_map(|line| rule_in(line.trim()))
+}
+
+/// Wiersz sprowadzony do zdania notatki — albo `None`, kiedy zdaniem nie jest.
+fn rule_in(line: &str) -> Option<String> {
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let text = ["- ", "* "]
+        .iter()
+        .find_map(|marker| line.strip_prefix(marker))
+        .unwrap_or(line)
+        .trim();
+    if text.is_empty() || reason_in(text).is_some() || is_index_entry(text) {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// `[tytuł](plik.md) — zajawka`, czyli wiersz SPISU TREŚCI. Regułą notatki jest zdanie, które
+/// stoi w pliku wskazanym takim wpisem, a nie sam wpis: tekst odnośnika jest tytułem cudzej
+/// strony, a zajawka obok niego opisuje ją z zewnątrz.
+fn is_index_entry(text: &str) -> bool {
+    text.starts_with('[') && text.contains("](")
+}
+
+/// Dlaczego to jest prawda: wiersz po `Why:` albo `Because:`.
+fn reason_of(content: &str) -> Option<String> {
+    content.lines().find_map(reason_in)
+}
+
+fn reason_in(line: &str) -> Option<String> {
+    let line = line.trim();
+    for opener in ["Why:", "why:", "Because:", "because:"] {
+        if let Some(rest) = line.strip_prefix(opener) {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return Some(rest.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn heading_of(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let title = line.trim().trim_start_matches('#').trim();
+        (line.trim_start().starts_with('#') && !title.is_empty()).then(|| title.to_owned())
+    })
+}
+
+/// `[tekst](cel)` w kolejności, w jakiej stoją w pliku.
+fn index_links(content: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let mut rest = line;
+        while let Some(open) = rest.find('[') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find("](") else {
+                break;
+            };
+            let tail = &after[close + 2..];
+            let Some(end) = tail.find(')') else {
+                break;
+            };
+            out.push((after[..close].to_owned(), tail[..end].trim().to_owned()));
+            rest = &tail[end + 1..];
+        }
+    }
+    out
+}
+
+fn points_at_a_page(target: &str) -> bool {
+    !target.contains("://")
+        && !target.starts_with('#')
+        && std::path::Path::new(target)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+/// Cel odnośnika sprowadzony do korzenia importu — albo `None`, kiedy z niego wychodzi.
+///
+/// Liczone na TEKŚCIE ścieżki, przed dotknięciem dysku: `canonicalize` odpowiada na to pytanie
+/// dopiero wtedy, gdy plik istnieje, a odpowiedź „nie ma takiego pliku" i „ten plik jest cudzy"
+/// muszą się różnić. Lista dozwolonych, nie zakazanych (`memory::slugify` stoi na tym samym):
+/// `replace("../", "")` przechodzi na `....//`, a tutaj nie ma czego omijać — każde wyjście
+/// ponad korzeń kończy się pustym stosem i odmową.
+fn under_root(directory: &Path, target: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+
+    let mut parts: Vec<std::ffi::OsString> = directory
+        .iter()
+        .map(std::ffi::OsStr::to_os_string)
+        .collect();
+    for component in Path::new(target).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::Normal(part) => parts.push(part.to_os_string()),
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(parts.iter().collect())
+}
+
+/// Treść strony pamięci — albo `None`, kiedy tego pliku nie wolno albo nie da się przeczytać.
+///
+/// `symlink_metadata`, nie `metadata`: dowiązanie wskazuje, gdzie chce, a sprawdzenie ścieżki
+/// wyżej liczy tekst. Dowiązanie nie jest tu plikiem, więc odpada razem z katalogiem.
+fn read_page(root: &Path, relative: &Path) -> Option<String> {
+    let path = root.join(relative);
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > PAGE_CAP {
+        return None;
+    }
+    std::fs::read_to_string(&path).ok()
 }
 
 fn normalized(text: &str) -> String {

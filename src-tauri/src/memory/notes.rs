@@ -64,8 +64,17 @@ const HEADING: &str = "What you know";
 /// Klucze, które ta wersja rozumie. Wszystko poza nimi jedzie do [`Note::extra`] i wraca
 /// na dysk nietknięte — plik od nowszego Loadouta nie ma prawa stracić pola przy zapisie,
 /// którego to pole nie dotyczyło (niezmiennik 5).
-const KNOWN: [&str; 9] = [
+const KNOWN: [&str; 11] = [
     "scope",
+    // 2026-08-22 (T-80): z jakiego projektu ta notatka przyjechała. W kontrakcie, bo czyta to
+    // ekran (`src/sections/memory/note-row.tsx`) — a to samo zdanie przywiezione z dwóch
+    // projektów bez tej linii wygląda jak dwa fakty.
+    "from",
+    // 2026-08-22 (T-80): czyja jest ta notatka. Klucz dołożony do kontraktu, a nie zostawiony
+    // w [`Note::extra`] — odpowiedź na pytanie „czyja to wiedza" nie ma prawa mieszkać w worku
+    // rzeczy, których ta wersja nie rozumie, bo wtedy każdy czytelnik musi wiedzieć, że akurat
+    // tego jednego klucza ma tam szukać.
+    "agent",
     "kind",
     "title",
     "rule",
@@ -174,6 +183,21 @@ impl std::fmt::Display for NoteId {
 pub struct Note {
     pub id: NoteId,
     pub scope: Scope,
+    /// Czyja to wiedza — nazwa agenta z front-mattera, `None` dla notatki niczyjej.
+    ///
+    /// 2026-08-22 (T-80): [`Scope::ThisAgent`] istnieje od T-17 i do dziś nie umiał powiedzieć,
+    /// **którego** agenta dotyczy — filtrowanie po agencie nie miało po czym filtrować, więc
+    /// trzeci zakres nie wchodził do żadnego promptu (`commands::run::what_the_agents_know`).
+    /// Pole jest `Option`, bo notatka o zakresie `everywhere` albo `this-project` nie ma
+    /// właściciela i nie ma udawać, że ma.
+    ///
+    /// Wartość jest tym, co w pliku napisał **człowiek** (`agent: backend-dev`), a nie
+    /// identyfikatorem z biblioteki: plik jest prawdą (niezmiennik 4), a uuid w pliku, który
+    /// człowiek otwiera w edytorze, jest polem, którego nie da się ani napisać, ani przeczytać.
+    pub agent: Option<String>,
+    /// Z jakiego projektu ta notatka przyjechała. `None` znaczy „stąd" — zdanie napisane w tym
+    /// Loadoucie nie ma pochodzenia do pokazania i nie ma go udawać (2026-08-22, T-80).
+    pub from: Option<String>,
     pub kind: Kind,
     /// Zdanie, po którym człowiek poznaje notatkę na liście. Nie jedzie do promptu.
     pub title: String,
@@ -333,6 +357,20 @@ pub enum Error {
     /// W tym korzeniu nie ma notatki o tym identyfikatorze.
     #[error("nothing here has the id {0}")]
     NoSuchNote(NoteId),
+
+    /// Notatka o zakresie [`Scope::ThisAgent`], która nie umie powiedzieć, czyja jest.
+    ///
+    /// Odmowa, nie cicha degradacja do [`Scope::ThisProject`] (2026-08-22, T-80). Notatka, która
+    /// miała jechać do jednego agenta, a pojechała do wszystkich kroków w projekcie, wygląda na
+    /// ekranie identycznie jak zapisana i różni się wyłącznie tym, do ilu promptów wchodzi.
+    /// Ten sam kierunek błędu, co przy [`scope_from`]: schodzimy do węższego zakresu, nigdy do
+    /// szerszego — a tutaj węższego już nie ma, więc zostaje odmowa.
+    ///
+    /// Zdanie nazywa brakującą rzecz słowem, którym nazywa ją plik (`agent:`), i pyta o nią
+    /// wprost: człowiek, któremu powiedziano wyłącznie „nie udało się zapisać", klika drugi raz
+    /// (niezmiennik 14).
+    #[error("This note is for one agent. Which agent is it for?")]
+    NoAgentNamed,
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -435,9 +473,19 @@ pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
     block
 }
 
+/// Zapisuje kandydatkę **niczyją** — całą treść ma [`record_candidate_for`].
+///
+/// Podpis zostaje nietknięty, bo pinują go kryteria zadań, których ta gałąź nie posiada
+/// (`AGENTS.md` §7): pole dołożone do [`NoteDraft`] wywróciłoby każdy literał tej struktury
+/// w cudzych plikach testowych, czyli zamieniłoby kryterium tego zadania w czerwień dwóch
+/// innych. Nazwa agenta jedzie więc osobnym argumentem, o jedną funkcję niżej.
+pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
+    record_candidate_for(root, draft, None)
+}
+
 /// Zapisuje kandydatkę jako plik i oddaje ją odczytaną z powrotem.
 ///
-/// Trzy rzeczy, które robi i które są całą jej treścią:
+/// Cztery rzeczy, które robi i które są całą jej treścią:
 /// 1. **Odmawia bez uzasadnienia** ([`Error::NoBecause`]) — i odmawia **przed** pierwszym
 ///    zapisem, więc listing katalogu `notes/` przed i po jest identyczny. Walidacja po
 ///    zapisie zostawia plik, którego nikt nie chciał, i wygląda w teście tak samo.
@@ -446,7 +494,59 @@ pub fn what_you_know(notes: &[Note], budget: Budget) -> Block {
 /// 3. **Ta sama kandydatka to ten sam plik.** Znormalizowany `title` daje nazwę pliku, więc
 ///    drugie zgłoszenie podbija `occurrences` i przesuwa `modified`, a `status` zostaje
 ///    nietknięty — auto-promocja przy drugim wystąpieniu [T6 §5.3] jest świadomie nieobecna.
-pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
+/// 4. **Zapisuje, czyja jest ta notatka** (2026-08-22, T-80). `agent` ma trzy stany, nie dwa:
+///    - `Some(nazwa)` — notatka należy do tego agenta i jego nazwa ląduje we front-matterze;
+///    - `None` przy zakresie innym niż [`Scope::ThisAgent`] — notatka jest niczyja i tak ma być;
+///    - `None` przy [`Scope::ThisAgent`] — **odmowa zapisu**. Nie cicha degradacja do zakresu
+///      projektu: notatka, która miała jechać do jednego agenta, a pojechała do wszystkich
+///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
+///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
+pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
+    record(root, draft, agent, None)
+}
+
+/// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
+///
+/// Cztery pola, bo tyle trzeba, żeby zdanie dało się później sprawdzić i wycofać [T6 §5.1]:
+/// notatka bez pochodzenia jest zdaniem, o którym nie wiadomo, czy projekt, z którego przyszło,
+/// dalej tak uważa. Nazwy pól są nazwami kluczy we front-matterze i to jest jedyne miejsce
+/// w drzewie, w którym te słowa stoją wypisane — format notatki ma jednego pisarza.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// Projekt, z którego to przyjechało. **Jedyne z czterech, które widzi człowiek** — resztę
+    /// czyta ktoś, kto pyta „czy tamten projekt dalej tak uważa".
+    pub from: String,
+    /// Plik w tamtym projekcie, ścieżką względną wobec jego korzenia.
+    pub source: PathBuf,
+    /// Odcisk tamtego pliku w chwili skanu.
+    pub source_hash: String,
+    /// Z czyjego katalogu to wzięliśmy — dwie aplikacje trzymają pamięć w dwóch miejscach
+    /// i to samo zdanie potrafi stać w obu.
+    pub app: String,
+}
+
+/// Zapisuje notatkę **przywiezioną z cudzego projektu**, z całym pochodzeniem.
+///
+/// Osobne wejście, a nie czwarty argument [`record_candidate_for`]: tamten podpis pinuje
+/// kryterium AC-1 tego zadania, a notatka zgłoszona przez agenta w biegu pochodzenia nie ma
+/// i mieć nie będzie. Cała reszta zachowania jest ta sama — łącznie z tym, że notatka powstaje
+/// jako [`Status::Suggested`]: import jest przywiezieniem zdania, nie zgodą na nie
+/// (ARCHITECTURE §2 pyt. 5).
+pub fn record_imported(
+    root: &Path,
+    draft: NoteDraft,
+    agent: Option<&str>,
+    origin: &Origin,
+) -> Result<Note> {
+    record(root, draft, agent, Some(origin))
+}
+
+fn record(
+    root: &Path,
+    draft: NoteDraft,
+    agent: Option<&str>,
+    origin: Option<&Origin>,
+) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
     // dopisanie go do pliku byłoby o jedno słowo od prawdy — a to jest dokładnie ta zmiana,
@@ -468,6 +568,17 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
         return Err(Error::NoBecause);
     }
 
+    // Nazwa z samych białych znaków to nie jest nazwa: `agent: ` w pliku wraca ze skanu jako
+    // `None`, więc przepuszczona tutaj dałaby notatkę, która przy zapisie ma właściciela,
+    // a przy odczycie nie ma. Jedno miejsce, jedna odpowiedź.
+    let owner = agent.map(str::trim).filter(|name| !name.is_empty());
+
+    // Też PRZED dotknięciem dysku i z tego samego powodu, co `because`. Nie ma trzeciej
+    // odpowiedzi: albo notatka mówi, czyja jest, albo jej nie ma.
+    if scope == Scope::ThisAgent && owner.is_none() {
+        return Err(Error::NoAgentNamed);
+    }
+
     let id = NoteId(super::slugify(&title));
     let dir = root.join(NOTES_DIR);
     let path = dir.join(format!("{id}.md"));
@@ -486,6 +597,23 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
                 .unwrap_or(1);
             front.set("occurrences", &seen.saturating_add(1).to_string());
             front.set("modified", &one_line(&at));
+            // Właściciela DOPISUJEMY, nigdy nie nadpisujemy (2026-08-22, T-80). Plik mógł przejść
+            // przez ręce człowieka, a zgłoszenie agenta nie ma prawa przepisać cudzej redakcji —
+            // dokładnie ta sama reguła, która wyżej trzyma `rule` i `because` nietknięte. Bez tej
+            // linii notatka zapisana kiedyś bez właściciela nie miałaby go nigdy dostać; z
+            // nadpisaniem drugie zgłoszenie po cichu przenosiłoby notatkę między agentami.
+            if let Some(name) = owner.filter(|_| front.get("agent").is_none()) {
+                front.set("agent", &one_line(name));
+            }
+            // Ta sama reguła dla pochodzenia: dopisujemy brakujące, nie przepisujemy cudzego.
+            // Notatka, która leży w bibliotece i już mówi, skąd jest, mówi to o PIERWSZYM
+            // projekcie, który ją przywiózł — a drugi import tego nie unieważnia.
+            if let Some(origin) = origin {
+                add_missing(&mut front, "from", &origin.from);
+                add_missing(&mut front, "source", &origin.source.to_string_lossy());
+                add_missing(&mut front, "source_hash", &origin.source_hash);
+                add_missing(&mut front, "app", &origin.app);
+            }
             write_note(&path, &front, &raw[body_at..])?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -494,6 +622,21 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
             // Kolejność kluczy jest kontraktem [T6 §10.2] i jest tą samą, którą czyta człowiek
             // w edytorze: czym to jest, o czym to jest, co z tego wynika, skąd to wiemy.
             front.set("scope", scope_word(scope));
+            // Właściciel stoi tuż pod zakresem, bo to jest jedna para: zakres mówi, jak daleko
+            // ta notatka sięga, a ta linia — do kogo. Notatka niczyja nie dostaje pustego klucza:
+            // pole, które w połowie plików znaczy „nie wiem", a w połowie „nikt", nie znaczy nic.
+            if let Some(name) = owner {
+                front.set("agent", &one_line(name));
+            }
+            // Pochodzenie stoi zaraz za właścicielem, bo odpowiada na to samo pytanie z drugiej
+            // strony: kto tego używa i skąd to wzięliśmy. Notatka napisana tutaj nie dostaje ani
+            // jednego z tych kluczy — pusty `from:` znaczyłby „przyjechała znikąd".
+            if let Some(origin) = origin {
+                front.set("from", &one_line(&origin.from));
+                front.set("source", &one_line(&origin.source.to_string_lossy()));
+                front.set("source_hash", &one_line(&origin.source_hash));
+                front.set("app", &one_line(&origin.app));
+            }
             front.set("kind", kind_word(&kind));
             front.set("title", &one_line(&title));
             front.set("rule", &one_line(&rule));
@@ -632,6 +775,19 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
                 .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
         ),
         scope: scope_from(front.get("scope").unwrap_or_default()),
+        // Brak klucza i klucz pusty to jedna odpowiedź: „niczyja". Dwie różne odpowiedzi na to
+        // samo pytanie znaczyłyby, że `agent: ` (bez wartości) opisuje agenta o pustej nazwie —
+        // czyli kogoś, kogo żaden krok nigdy nie będzie się nazywał.
+        agent: front
+            .get("agent")
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned),
+        from: front
+            .get("from")
+            .map(str::trim)
+            .filter(|project| !project.is_empty())
+            .map(ToOwned::to_owned),
         kind: kind_from(front.get("kind").unwrap_or_default()),
         title: front.get("title").unwrap_or_default().to_owned(),
         because: front.get("because").unwrap_or_default().to_owned(),
@@ -654,6 +810,13 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
         rule,
         path: path.to_owned(),
         extra,
+    }
+}
+
+/// Dopisuje klucz, którego w pliku jeszcze nie ma, i nie rusza tego, który już tam stoi.
+fn add_missing(front: &mut FrontMatter, key: &str, value: &str) {
+    if front.get(key).is_none() {
+        front.set(key, &one_line(value));
     }
 }
 

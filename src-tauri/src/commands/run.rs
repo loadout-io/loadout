@@ -126,7 +126,7 @@
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -930,6 +930,9 @@ struct Plan {
     /// z `dir` przez trzy `parent()` byłoby drugim miejscem z odpowiedzią na „gdzie jest projekt",
     /// zależnym od kształtu ścieżki biegu.
     project: PathBuf,
+    /// Co ten bieg wiedział, kiedy ruszał. Policzone RAZ, tutaj, z notatek zamrożonych przed
+    /// pierwszym procesem — zrzut przepisany na końcu opisywałby pliki, jakimi są PO biegu.
+    memory: Vec<MemoryRecord>,
     /// Milisekundy epoki: kiedy ten bieg powstał.
     created_at: i64,
     /// Zrodlo triggera; brak pola w JSON zachowuje doslownie ksztalt recznego biegu.
@@ -1344,6 +1347,7 @@ fn plan_run_with_identity(
         steps[child].depends_on.push(keys[parent].clone());
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
 
     // Związane PRZED planem: `setup` pożycza `dir`, a `dir` jedzie do planu przeniesieniem.
     let asked_for = setup.task.clone();
@@ -1362,6 +1366,7 @@ fn plan_run_with_identity(
         seeded_from: request.handoffs_from.clone(),
         project: deps.project.to_path_buf(),
         steps,
+        memory,
         created_at,
         trigger_origin,
         // Pytamy system RAZ, tutaj: ten bieg ma nosić jedną odpowiedź przez całe życie.
@@ -1502,6 +1507,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .enumerate()
         .map(|(node, step)| plan_step(step, node, 0, None, &setup))
         .collect::<Result<Vec<Planned>, RunError>>()?;
+    // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
+    // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
     let graph = serde_json::to_value(&file)?;
 
     Ok(Plan {
@@ -1523,6 +1531,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         seeded_from: None,
         project: deps.project.to_path_buf(),
         steps,
+        memory,
         created_at,
         trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
@@ -1543,15 +1552,27 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
 /// zadaniem. Każdy zakres ma własny sufit długości (`Scope::cap`), więc dwa wywołania nie są
 /// obejściem budżetu: to jest budżet policzony tak, jak go zaprojektowano [T6 §5.3].
 ///
-/// `Scope::ThisAgent` NIE wchodzi i to jest zgłoszenie, nie przeoczenie: filtrowanie po agencie
-/// wymaga tożsamości agenta w chwili liczenia bloku, a blok liczymy raz na bieg, nie raz na krok.
-/// Zrobienie tego dobrze znaczy policzyć trzeci blok per krok — osobna zmiana.
+/// 2026-08-22 (T-80) — TRZECI ZAKRES WCHODZI, I WCHODZI PER KROK. Do tego dnia `Scope::ThisAgent`
+/// nie docierał do nikogo: filtrowanie po agencie wymaga tożsamości agenta w chwili liczenia bloku,
+/// a blok był liczony raz na bieg. Człowiek przestawiał notatkę agenta na „in use", widział ją na
+/// ekranie i żaden krok nigdy się o niej nie dowiadywał — mechanizm istniał, ekran o nim mówił,
+/// odbiorcy nie było (niezmiennik 29). Sufit `Scope::ThisAgent::cap()` = 800 stał w kodzie od T-17
+/// i nigdy nikogo nie ograniczył.
+///
+/// Dlatego [`Known`] niesie też **zbiór notatek**, a nie sam gotowy tekst: trzeci blok składa
+/// [`what_this_step_knows`] dla każdego kroku osobno, ale zawsze z TEGO SAMEGO, raz odczytanego
+/// zbioru. Odczyt katalogu przy starcie kroku dałby dwóm krokom jednego biegu dwie różne
+/// odpowiedzi na pytanie „co model o tym wiedział", gdyby ktoś w międzyczasie poprawił zdanie —
+/// a różnicy nie widać nigdzie poza rachunkiem za długość.
 ///
 /// **Odczyt, który się nie udał, nie zabiera biegu** (niezmiennik 5): katalog pamięci na świeżej
 /// maszynie nie istnieje i to jest stan normalny. Wtedy agent po prostu nic nie wie.
 struct Known {
     text: String,
     sources: Vec<ContextSource>,
+    /// Notatki odczytane RAZ, zanim ruszył pierwszy proces. Zamrożone: od tej chwili bieg ma
+    /// jedną odpowiedź na pytanie, co wiedział.
+    notes: Vec<crate::memory::notes::Note>,
 }
 
 fn what_the_agents_know(home: &Path) -> Known {
@@ -1561,6 +1582,7 @@ fn what_the_agents_know(home: &Path) -> Known {
         return Known {
             text: String::new(),
             sources: Vec::new(),
+            notes: Vec::new(),
         };
     };
     let mut text = String::new();
@@ -1569,30 +1591,148 @@ fn what_the_agents_know(home: &Path) -> Known {
         crate::memory::notes::Scope::Everywhere,
         crate::memory::notes::Scope::ThisProject,
     ] {
-        let block =
-            crate::memory::notes::what_you_know(&notes, crate::memory::notes::Budget::of(scope));
-        if block.text.is_empty() {
-            continue;
-        }
-        if !text.is_empty() {
-            text.push_str("\n\n");
-        }
-        text.push_str(&block.text);
-        for id in &block.used {
-            let Some(note) = notes.iter().find(|note| &note.id == id) else {
-                continue;
-            };
-            let Ok(relative) = note.path.strip_prefix(home) else {
-                continue;
-            };
-            sources.push(ContextSource {
-                kind: ContextKind::MemoryNote,
-                reference: relative.to_string_lossy().into_owned(),
-                bytes: note.rule.len(),
-            });
-        }
+        add_block(&mut text, &mut sources, &notes, scope, home);
     }
-    Known { text, sources }
+    Known {
+        text,
+        sources,
+        notes,
+    }
+}
+
+/// Dokleja blok jednego zakresu do tego, co już wiadomo — i dopisuje rachunek z niego.
+///
+/// Jedno miejsce na oba użycia (dwa zakresy wspólne dla biegu i trzeci, liczony per krok), bo
+/// druga kopia tej pętli byłaby drugim miejscem, w którym mieszka odpowiedź na pytanie „jak
+/// wygląda blok pamięci w promptcie" (niezmiennik 13). Budżet bierze się z zakresu, więc każdy
+/// zakres liczy się przeciw WŁASNEMU sufitowi [T6 §5.3]: trzeci blok dolicza się do dwóch
+/// pozostałych, a nie zamiast nich.
+fn add_block(
+    text: &mut String,
+    sources: &mut Vec<ContextSource>,
+    notes: &[crate::memory::notes::Note],
+    scope: crate::memory::notes::Scope,
+    home: &Path,
+) {
+    let block = crate::memory::notes::what_you_know(notes, crate::memory::notes::Budget::of(scope));
+    if block.text.is_empty() {
+        return;
+    }
+    if !text.is_empty() {
+        text.push_str("\n\n");
+    }
+    text.push_str(&block.text);
+    for id in &block.used {
+        let Some(note) = notes.iter().find(|note| &note.id == id) else {
+            continue;
+        };
+        let Ok(relative) = note.path.strip_prefix(home) else {
+            continue;
+        };
+        sources.push(ContextSource {
+            kind: ContextKind::MemoryNote,
+            reference: relative.to_string_lossy().into_owned(),
+            bytes: note.rule.len(),
+        });
+    }
+}
+
+/// Co wie krok TEGO agenta: dwa zakresy wspólne dla biegu plus jego własny, trzeci.
+///
+/// Zbiór notatek jest zamrożony w [`Known::notes`], więc ta funkcja niczego nie czyta z dysku —
+/// dwa kroki jednego biegu dostają dwie różne odpowiedzi tylko wtedy, kiedy różnią się agentem.
+///
+/// TOŻSAMOŚĆ IDZIE PRZEZ [`crate::memory::slugify`], bo plik notatki pisze **człowiek**
+/// (`agent: backend-dev`), a agent w bibliotece nazywa się `Backend Dev`. Identyfikator z
+/// biblioteki w tym polu byłby wartością, której człowiek nie umie ani napisać, ani przeczytać
+/// w edytorze (niezmiennik 4: plik jest prawdą). Ta sama normalizacja robi z tytułu notatki
+/// nazwę jej pliku, więc nie ma tu drugiej odpowiedzi na pytanie „czy te dwie nazwy to jedna".
+///
+/// Blok agenta stoi NA KOŃCU, tuż nad zadaniem: od najszerszego tła do najbliższego kontekstu,
+/// czyli tak, jak to czyta model.
+fn what_this_step_knows(known: &Known, agent: &str, home: &Path) -> (String, Vec<ContextSource>) {
+    let mut text = known.text.clone();
+    let mut sources = known.sources.clone();
+
+    let whose = crate::memory::slugify(agent);
+    let mine: Vec<crate::memory::notes::Note> = known
+        .notes
+        .iter()
+        .filter(|note| {
+            note.agent
+                .as_deref()
+                .is_some_and(|owner| crate::memory::slugify(owner) == whose)
+        })
+        .cloned()
+        .collect();
+    add_block(
+        &mut text,
+        &mut sources,
+        &mine,
+        crate::memory::notes::Scope::ThisAgent,
+        home,
+    );
+
+    (text, sources)
+}
+
+/// Jedna notatka w zrzucie biegu: **czym była**, nie co mówiła.
+///
+/// 2026-08-22 (T-80). `run.json` jest prawdą o biegu (niezmiennik 4), więc notatka, która
+/// pojechała w promptcie i nie zostawiła tu śladu, jest faktem o biegu, którego nikt później
+/// nie odtworzy. Trzy pola to dokładnie tyle, ile trzeba, żeby odpowiedzieć na pytanie „co model
+/// wtedy wiedział": sama nazwa odpowiada „jakaś notatka o tej nazwie", a ta zmieniła się od
+/// tamtej pory dokładnie tak, jak zmienia się w trakcie biegu.
+///
+/// Kopii treści tu nie ma i nie będzie: `run.json` jest rachunkiem z pamięci, nie jej kopią.
+#[derive(Debug, Clone, Serialize)]
+struct MemoryRecord {
+    /// Która notatka — ścieżka **względem korzenia danych**. Absolutna byłaby faktem o tym
+    /// laptopie, nie o biegu.
+    reference: String,
+    /// Odcisk zdania, które pojechało do modelu. Liczony z `rule`, bo `rule` jest jedyną częścią
+    /// notatki, która tam jedzie — odcisk całego pliku zmieniałby się od poprawki w `because`,
+    /// czyli mówiłby „model wiedział co innego" o biegu, w którym model dostał to samo.
+    hash: String,
+    /// Ile bajtów miało to zdanie w chwili startu. Ta liczba i odcisk odpowiadają na to samo
+    /// pytanie dwiema drogami, więc zrzut przepisany po biegu rozjeżdża się z sobą samym.
+    bytes: usize,
+}
+
+/// Co ten bieg wiedział, kiedy ruszał — z rachunku KROKÓW, nie z katalogu notatek.
+///
+/// Liczone z tego, co naprawdę wjechało w prompty (`ContextKind::MemoryNote`), a nie z całego
+/// zamrożonego zbioru: notatka, która nie zmieściła się w suficie swojego zakresu, nie dojechała
+/// do modelu i nie ma prawa stać w rachunku tak, jakby dojechała. Notatka, która pojawiła się
+/// w katalogu po starcie, nie jest tu w ogóle — zbiór jest zamrożony przed pierwszym procesem.
+fn what_this_run_knew(known: &Known, steps: &[Planned], home: &Path) -> Vec<MemoryRecord> {
+    let carried: BTreeSet<&str> = steps
+        .iter()
+        .filter_map(|step| match &step.job {
+            Job::Agent(job) => Some(job),
+            /* `Serve` dokłada się do tego ramienia, a nie dostaje własnego: `ServeJob` niesie
+             * `command`, `cwd` i `ours` — ani promptu, ani kontekstu. Krok „uruchom i zostaw"
+             * nie wwozi do modelu żadnej notatki, więc nie ma czego policzyć. Osobne ramię
+             * z tym samym ciałem paliłoby `match_same_arms`. */
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
+        })
+        .flat_map(|job| job.context.iter())
+        .filter(|source| source.kind == ContextKind::MemoryNote)
+        .map(|source| source.reference.as_str())
+        .collect();
+
+    known
+        .notes
+        .iter()
+        .filter_map(|note| {
+            let reference = note.path.strip_prefix(home).ok()?.to_string_lossy();
+            carried.contains(reference.as_ref()).then(|| MemoryRecord {
+                hash: fingerprint(note.rule.as_bytes()),
+                bytes: note.rule.len(),
+                reference: reference.into_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Zadanie kroku, poprzedzone tym, co wiadomo.
@@ -1659,10 +1799,14 @@ struct Setup<'a> {
     data: &'a Path,
     /// Co agent WIE, zanim przeczyta swoje zadanie — notatki, które człowiek dopuścił do użytku.
     ///
-    /// Liczone RAZ, przy planowaniu, nie przy każdym kroku: ten sam bieg ma nieść jedną
+    /// **Czytane** RAZ, przy planowaniu, nie przy każdym kroku: ten sam bieg ma nieść jedną
     /// odpowiedź na pytanie „co wiadomo". Odczyt per krok dałby dwóm krokom tego samego biegu
     /// dwa różne konteksty, gdyby ktoś w międzyczasie dopuścił notatkę — a różnicy nie widać
     /// nigdzie poza rachunkiem za długość.
+    ///
+    /// Per krok SKŁADANY jest wyłącznie trzeci blok ([`what_this_step_knows`]), i to z tego
+    /// samego, zamrożonego zbioru: pamięć jednego agenta nie ma jak być własnością biegu, bo
+    /// dwa kroki biegu bywają dwoma różnymi agentami (2026-08-22, T-80).
     knows: Known,
     /// `/ask` ma jedno źródło `RunTask`; zwykły workflow ma osobne zadanie biegu i instrukcję.
     is_ask: bool,
@@ -1894,7 +2038,9 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         )?;
 
     let spot = where_it_works(&step.folder, &step.id, &step.name, node, setup)?;
-    let mut context = setup.knows.sources.clone();
+    // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
+    // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
+    let (knows, mut context) = what_this_step_knows(&setup.knows, &effective.name, setup.data);
     if setup.is_ask {
         if !step.instructions.is_empty() {
             context.push(ContextSource {
@@ -1940,10 +2086,7 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // wyszło, dostaje blok „co wiadomo". Ta kolejność jest treścią: notatki są kontekstem
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
-        prompt: with_what_we_know(
-            &setup.knows.text,
-            &with_the_task(&setup.task, &step.instructions),
-        ),
+        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &step.instructions)),
         asked: step.instructions.clone(),
         context,
         model: some_text(&effective.model),
@@ -4232,6 +4375,9 @@ impl Live {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            // Prosto z planu, przy KAŻDYM zrzucie ta sama wartość: policzona przed pierwszym
+            // procesem i od tej chwili nietknięta.
+            memory: &self.plan.memory,
             steps,
         }
     }
@@ -5704,6 +5850,13 @@ struct RunFile<'a> {
     error: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     route_decisions: Vec<RouteDecision>,
+    /// Co ten bieg wiedział przy starcie — odwołanie, odcisk i liczba bajtów na notatkę.
+    ///
+    /// Brak pola znaczy „ten bieg nie wiedział nic", i to jest prawda o biegu ruszonym na
+    /// maszynie bez ani jednej notatki w użyciu. Pusta lista wpisana na siłę mówiłaby to samo
+    /// jednym kluczem więcej w każdym `run.json` w historii.
+    #[serde(skip_serializing_if = "<[MemoryRecord]>::is_empty")]
+    memory: &'a [MemoryRecord],
     steps: Vec<StepEntry<'a>>,
 }
 

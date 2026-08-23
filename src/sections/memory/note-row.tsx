@@ -64,6 +64,29 @@ export function lengthLabel(length: number): string {
   return 'Length ' + String(length);
 }
 
+/* Czyja to wiedza i skąd przyjechała — dwa fakty, które do 2026-08-22 (T-80) nie miały na
+ * ekranie ani jednego miejsca.
+ *
+ * OBA WIERSZE POWSTAJĄ WYŁĄCZNIE Z POLA NOTATKI. Notatka niczyja nie dostaje myślnika ani słowa
+ * w rodzaju „unassigned": to jest odpowiedź na pytanie, którego nikt nie zadał, a człowiek czyta
+ * ją jako fakt o notatce (niezmiennik 13 — jeden żywy region na fakt, i ani jeden na fakt,
+ * którego nie ma). Wiersz, który wypisuje ostatnią nazwę, jaką widział, wygląda poprawnie na
+ * notatce jednego agenta i kłamie o każdej innej.
+ *
+ * „Only", bo to jest CAŁA treść zakresu jednego agenta: ta notatka nie dociera do reszty kroków.
+ * Samo `backend-dev` obok `Length 137` jest nazwą bez zdania — człowiek nie ma jak zgadnąć,
+ * czy to autor, czy adresat. */
+function ownerLabel(agent: string): string {
+  return 'Only ' + agent;
+}
+
+/* Skąd ta notatka przyjechała. To samo zdanie może zostać przywiezione z dwóch projektów,
+ * a wiersz, który nigdy nie pokazuje pochodzenia, czyta drugą kopię jako drugi fakt — i wtedy
+ * nikt nie umie powiedzieć, którą z dwóch właśnie odstawia. */
+function originLabel(from: string): string {
+  return 'From ' + from;
+}
+
 export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement {
   /* Jedno pytanie zadane RAZ. Trzy osobne `note.status === 'suggested'` w trzech gałęziach to
    * trzy miejsca, w których wiersz odpowiada na to samo — i pierwsze, które ktoś zmieni,
@@ -77,6 +100,19 @@ export function NoteRow({ note, onUse, onStopUse }: NoteRowProps): ReactElement 
           {waiting ? 'Suggested' : 'In use'}
         </span>
         <span className="text-label text-muted">{lengthLabel(note.length)}</span>
+        {/* Pytamy o WARTOŚĆ, nie o obecność klucza: Rust przysyła `agent: null` dla notatki
+            niczyjej (`NoteWire`), a `note.agent === undefined` wypisałoby wtedy słowo `null`
+            w miejscu właściciela — czyli dokładnie tę zmyśloną odpowiedź, której tu nie ma.
+
+            I pytamy NAJPIERW o zakres. Nazwa agenta w pliku notatki, której zakres sięga całego
+            projektu, jest śladem po autorze, a nie odpowiedzią na pytanie „do kogo to dojedzie":
+            taka notatka jedzie do KAŻDEGO kroku. Wiersz, który wypisuje wtedy „Only backend-dev",
+            mówi o zasięgu coś, co jest nieprawdą — a człowiek czyta to jako fakt o notatce
+            i zostawia w użyciu zdanie, o którym myśli, że dotyczy jednego agenta. */}
+        {note.scope === 'this-agent' && note.agent ? (
+          <span className="text-label text-muted">{ownerLabel(note.agent)}</span>
+        ) : null}
+        {note.from ? <span className="text-label text-muted">{originLabel(note.from)}</span> : null}
       </div>
 
       {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania. */}
