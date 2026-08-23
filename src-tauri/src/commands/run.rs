@@ -253,6 +253,34 @@ const HANDOFF_INDEX_OPENS: &str = "Steps before this one left what they found in
 const HANDOFF_INDEX_CLOSES: &str =
     "Read the ones you need; their contents were not copied into this prompt.";
 
+/// Zdanie, którym sędzia pętli dostaje SWÓJ JEDYNY KANAŁ na wynik — i którego do 2026-08-23
+/// nie dostawał wcale.
+///
+/// `memory::handoff::verdict_in` czyta wynik z całego wiersza `outcome: pass`, a jego własny
+/// komentarz twierdzi: „Sędzia dostaje w prompcie zdanie o tym, jak zapisać werdykt". To zdanie
+/// nigdy nie istniało. Kod stał na kontrakcie, którego druga strona nie została napisana.
+///
+/// ZMIERZONE, NIE PRZECZUTE. Na 80 przekazaniach z ośmiu biegów właściciela wiersz `outcome:`
+/// nie pada ANI RAZU. Brak znacznika czyta się jako `Fail` (`Verdict::default()`), więc każda
+/// pętla przepalała komplet rund, a jej ostatnia runda dostawała `Failed` — i cały stożek za
+/// pętlą schodził jako `Skipped`. W biegu `20260823-011240` sędzia napisał wprost
+/// „## Werdykt: **PASS** … przyjąć", a `run.json` zapisał ten krok jako `failed`; pod nim
+/// zginęły `Syntezę`, `Design` i `Implementation`, czyli cały produkt biegu.
+///
+/// DLACZEGO WPROST O SKUTKU BRAKU. Zdanie „napisz wiersz X" bez powiedzenia, co się stanie bez
+/// niego, model traktuje jak formalność. Tu brak wiersza jest decyzją — i to najkosztowniejszą
+/// z możliwych — więc jest nazwany.
+///
+/// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak `HANDOFF_INDEX_OPENS` obok (decyzja D5,
+/// niezmiennik 14): „verdict", „loop" i „judge" nie znaczą nic dla kogoś, kto właśnie dostał
+/// robotę do sprawdzenia.
+const OUTCOME_ASKED_FOR: &str = "\
+End your answer with a line of its own that says exactly `outcome: pass` when the work you \
+were given is good enough to build on, or `outcome: fail` when it has to be done again. Put \
+nothing else on that line, and write it last — anything after it is read instead of it. If \
+you leave the line out, this is taken as `fail` and the work goes round again, so say what \
+you mean even when the answer is obvious.";
+
 /// Uruchamia workflow z pliku i oddaje jego linie pompie — **linia po linii**.
 ///
 /// Kolejność: wczytaj → sprawdź → katalog biegu → migawka → planista → sterowniki → linie.
@@ -4897,6 +4925,7 @@ impl Live {
             extra_dirs: Vec::new(),
         };
         if handed.is_empty() {
+            self.ask_for_an_outcome(id, &mut told);
             return Ok(told);
         }
 
@@ -4956,7 +4985,26 @@ impl Live {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
         told.prompt.push('\n');
+        self.ask_for_an_outcome(id, &mut told);
         Ok(told)
+    }
+
+    /// Dokłada zdanie o wyniku — **tylko sędziemu pętli**.
+    ///
+    /// Warunek jest ten sam, którego używa [`Live::verdict_after`] do czytania wyniku
+    /// (`judging`), i to jest cała poprawność tego szwu: gdyby pytał inaczej, istniałby krok
+    /// proszony o wiersz, którego nikt nie czyta, albo — gorzej — krok czytany bez pytania.
+    /// Jedno pytanie, jedna odpowiedź, jeden warunek (niezmiennik 13).
+    ///
+    /// Zwykły krok nie dostaje ani bajtu więcej: prośba o wynik skierowana do kogoś, kto nie
+    /// jest sędzią, jest poleceniem bez skutku, czyli tym samym, co kontrolka bez handlera.
+    fn ask_for_an_outcome(&self, id: StepId, told: &mut Told) {
+        if self.judging(&self.plan.steps[id]).is_none() {
+            return;
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(OUTCOME_ASKED_FOR);
+        told.prompt.push('\n');
     }
 
     /// Przekazania kroków, po których idzie ten krok — **w kolejności z grafu**.

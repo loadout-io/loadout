@@ -46,6 +46,7 @@ use loadout_lib::engine::drivers::{
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
+use loadout_lib::memory::handoff;
 use loadout_lib::store::Store;
 use tauri::ipc::Channel;
 use tempfile::TempDir;
@@ -61,6 +62,9 @@ const JUDGE_PROMPT: &str = "Run the suite and say whether it passed.";
 
 /// Prompt kroku ZA pętlą. Jego pojawienie się u dublera znaczy „praca pojechała dalej".
 const AFTER_PROMPT: &str = "Ship it.";
+
+/// Instrukcja implementera. Ten krok jest CIAŁEM pętli, nie jej sędzią.
+const WORK_PROMPT: &str = "Make the change.";
 
 const HAND_FILE: &str = "---
 schema: 1
@@ -460,4 +464,111 @@ impl AgentHandle for Turn {
     async fn close(&mut self) -> anyhow::Result<Option<i32>> {
         Ok(Some(0))
     }
+}
+
+/* 2026-08-23 — KONTRAKT, KTÓREGO DRUGA POŁOWA NIGDY NIE POWSTAŁA.
+ *
+ * `memory::handoff::verdict_in` czyta wynik sędziego z całego wiersza `outcome: pass`, a jego
+ * własny komentarz twierdzi: „Sędzia dostaje w prompcie zdanie o tym, jak zapisać werdykt".
+ * Nie dostawał. Na 80 przekazaniach z ośmiu prawdziwych biegów wiersz `outcome:` nie padł ANI
+ * RAZU, więc każda pętla przepalała komplet rund i kończyła się `Failed` — także wtedy, gdy
+ * sędzia napisał prozą „## Werdykt: **PASS** … przyjąć". Pod taką pętlą schodził cały stożek.
+ *
+ * DLACZEGO DWA ISTNIEJĄCE KRYTERIA TEGO NIE ŁAPAŁY. Bo `Watch::entered` oddaje `OUTCOME: PASS`
+ * SAM Z SIEBIE. Fikstura znała kontrakt, którego produkt nikomu nie mówił — i to jest ta klasa
+ * wady, w której test jest zielony dokładnie dlatego, że nie pyta o produkt. Oba tamte kryteria
+ * zostają zielone, gdy `ask_for_an_outcome` skasować co do bajtu.
+ *
+ * DLATEGO NIŻEJ NIE MA ASERCJI „prompt zawiera napis". Wiersz WYJĘTY Z PROMPTU jedzie do
+ * NASZEGO parsera. Jeżeli poprosimy sędziego o cokolwiek, czego `verdict_in` nie przyjmie,
+ * kryterium pada — dwie połowy kontraktu spotykają się w jednym miejscu i nie mają jak się
+ * rozjechać po cichu.
+ */
+
+/// Wyjmuje wiersz, o który prompt prosi w odwrotnych apostrofach — albo `None`, gdy nie prosi.
+///
+/// Odwrotne apostrofy są tu wymogiem, nie ozdobą: bez nich `prompt.contains("outcome: pass")`
+/// trafiałby także w zdanie „napisz outcome: pass na końcu", czyli w opowieść o wierszu zamiast
+/// w sam wiersz. Parser czyta CAŁY wiersz, więc kryterium musi pytać o dokładnie tę rzecz.
+fn asked_of_the_judge(prompt: &str, which: &str) -> Option<String> {
+    let wanted = format!("outcome: {which}");
+    prompt.contains(&format!("`{wanted}`")).then_some(wanted)
+}
+
+#[tokio::test]
+async fn the_tester_is_told_how_to_say_how_it_went() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", LOOP_FILE)?;
+    let store = Store::open(&bench.db())?;
+    let watch = Arc::new(Watch::passing_on_turn(2));
+
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow,
+        how_many_at_once: 2,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+    one_run(&deps, &request).await??;
+
+    let seen = watch.seen();
+    let judged: Vec<&String> = seen
+        .iter()
+        .filter(|one| one.contains(JUDGE_PROMPT))
+        .collect();
+    assert!(
+        !judged.is_empty(),
+        "the fixture is wrong if the tester never started; the driver saw {seen:?}"
+    );
+
+    for prompt in &judged {
+        let pass = asked_of_the_judge(prompt, "pass").ok_or(
+            "the tester was never told how to say the work is good enough to build on, so the              only thing it can do is guess — and a guess is read as fail",
+        )?;
+        let fail = asked_of_the_judge(prompt, "fail")
+            .ok_or("and it was never told how to send the work back either")?;
+
+        assert_eq!(
+            handoff::verdict_in(&pass),
+            handoff::Verdict::Pass,
+            "we ask the tester for a line our own reader does not accept. That is how a whole              run dies quietly: the tester answers exactly as asked, we read nothing, and              nothing is what we call fail. We asked for: {pass:?}"
+        );
+        /* `pass` PRZED `fail` i oczekiwany `Fail`. Sama asercja `verdict_in(fail) == Fail`
+         * przeszłaby dla PUSTEGO napisu — `Fail` jest wartością domyślną — czyli także wtedy,
+         * gdy parser tego wiersza w ogóle nie widzi. Postawiony za `pass` musi go przebić,
+         * a to potrafi wyłącznie wiersz naprawdę przeczytany. */
+        assert_eq!(
+            handoff::verdict_in(&format!("{pass}\n{fail}")),
+            handoff::Verdict::Fail,
+            "the last word has to win, so the line we hand the tester for sending work back              must actually be read — not merely fall through to the default. We asked for:              {fail:?}"
+        );
+    }
+
+    /* I DRUGA STRONA, bez której powyższe przeszłoby dla promptu doklejanego wszystkim.
+     * Prośba o wynik skierowana do kroku, którego wyniku nikt nie czyta, jest poleceniem bez
+     * skutku — tym samym, co kontrolka bez handlera (niezmiennik 16). */
+    let mut plain = 0_usize;
+    for prompt in &seen {
+        if prompt.contains(WORK_PROMPT) || prompt.contains(AFTER_PROMPT) {
+            plain += 1;
+            assert!(
+                !prompt.contains("outcome:"),
+                "a step nobody judges was asked to hand down an outcome. Its answer is read by                  no one, so the sentence is an order with no effect — and it teaches the model                  to write a line that means nothing here. The prompt was: {prompt:?}"
+            );
+        }
+    }
+    assert!(
+        plain > 0,
+        "the fixture is wrong if neither the step inside the loop nor the one after it ever ran"
+    );
+    Ok(())
 }
