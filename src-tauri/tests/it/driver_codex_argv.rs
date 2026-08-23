@@ -47,6 +47,13 @@ const PROMPT: &str = "MARKER-9f3c-do-not-leak";
 /// także przeciek przycięty albo sklejony z czymś innym.
 const MARKER: &str = "MARKER-9f3c";
 
+/// Instrukcje agenta — to, co odróżnia researchera od planisty. Brzmią inaczej niż prompt,
+/// żeby dało się powiedzieć, KTÓRE z dwojga dojechało.
+const ORDERS: &str = "ORDERS-4b1e-verify-every-claim-yourself";
+
+/// Fragment instrukcji szukany w argv — krótszy niż całość, żeby złapać też przeciek ucięty.
+const ORDERS_MARKER: &str = "ORDERS-4b1e";
+
 /// Flaga, która wyłącza **cały** dial uprawnień naraz. Nie jest czwartym stopniem polityki,
 /// tylko jej obejściem, więc nie ma prawa pojawić się w żadnym wariancie [T1 §6.1].
 const BYPASS: &str = "--dangerously-bypass-approvals-and-sandbox";
@@ -263,6 +270,72 @@ async fn the_prompt_never_rides_in_argv_and_arrives_whole_on_stdin() -> Result<(
          stdin is what makes codex exec print 'Reading additional input from stdin...' and wait \
          forever. It received {:?}",
         String::from_utf8_lossy(&written)
+    );
+
+    Ok(())
+}
+
+/* 2026-08-23 — AGENT CODEXOWY BIEGŁ BEZ SWOJEJ ROLI, I ROBIŁ TO ZAWSZE.
+ *
+ * `RunSpec::system_append` niesie instrukcje agenta. `claude.rs:1079` oddaje je flagą
+ * `--append-system-prompt`. `codex exec` takiej flagi nie ma, a jedyne miejsce w `codex.rs`,
+ * które kiedykolwiek czytało to pole, to `handshake()` — czyli App Server, czyli czat
+ * z liderem. Ścieżka biegu nie czytała ich nigdy, więc `codex-reaserch`, `planner` i `riczi`
+ * dostawały ten sam prompt co dowolny inny agent: samą robotę kroku, bez roli.
+ *
+ * SŁABĄ WERSJĄ TEGO KRYTERIUM jest `assert!(stdin.contains(ORDERS))`. Przechodzi ją adapter,
+ * który instrukcje dokłada, ale przy okazji GUBI prompt — i przechodzi ją też taki, który
+ * wsadza je w argv, czyli łamie niezmiennik 9 dokładnie tam, gdzie brat obok tego pilnuje.
+ * Dlatego niżej stoją cztery pytania: czy dojechały, czy dojechał TAKŻE prompt, czy NIE ma
+ * ich w argumentach, i czy stoją PRZED robotą.
+ *
+ * Kolejność nie jest kosmetyką. Rola jest najogólniejszą rzeczą w tym prompcie i model czyta
+ * od ogółu do szczegółu — ten sam porządek składa `commands::run::plan_step` dla notatek,
+ * zadania biegu i roboty kroku.
+ */
+#[tokio::test]
+async fn the_agents_own_instructions_reach_codex_on_stdin() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let binary = write_script(dir.path(), "codex", RECORDS)?;
+    let told = RunSpec {
+        system_append: Some(ORDERS.to_owned()),
+        ..spec(dir.path(), Policy::EditInFolder)
+    };
+
+    // ── Połowa pierwsza: czysta funkcja argv nie ma prawa ich tknąć ───────────────────────
+    let argv = build_exec_argv(&told);
+    assert!(
+        argv.iter().all(|arg| !arg.contains(ORDERS_MARKER)),
+        "the agent's own instructions reached argv. They are as private as the task itself —          `ps aux` shows argv to every user of this machine — so the flag Claude gets is not          a licence to do the same here. It produced {argv:?}"
+    );
+
+    // ── Połowa druga: prawdziwy proces ────────────────────────────────────────────────────
+    let (tx, _rx) = mpsc::channel(CHANNEL);
+    let driver = CodexDriver::with_binary(binary);
+    let mut handle: Box<dyn AgentHandle> = timeout(LIMIT, driver.start(told, tx)).await??;
+    let _ended = timeout(LIMIT, handle.wait()).await?;
+    drop(handle);
+
+    let recorded = String::from_utf8(bytes_of(&dir.path().join("argv.log"))?)?;
+    assert!(
+        !recorded.is_empty(),
+        "the dummy binary recorded no arguments at all, so no process was launched - and every          assertion below would then be true about nothing"
+    );
+    assert!(
+        recorded.lines().all(|arg| !arg.contains(ORDERS_MARKER)),
+        "the instructions reached the real command line of the real process. The dummy was          called with {recorded:?}"
+    );
+
+    let written = String::from_utf8(bytes_of(&dir.path().join("stdin.log"))?)?;
+    let orders_at = written.find(ORDERS).ok_or(
+        "the agent's own instructions never reached codex at all. This is the whole defect:          what makes one agent a researcher and another a planner is dropped on the floor, and          the run still looks like it worked - just generic. `codex exec` has no flag for them,          so this prompt is their only road",
+    )?;
+    let work_at = written.find(PROMPT).ok_or(
+        "the instructions arrived and the work did not. An adapter that swaps one for the          other is worse than the defect it replaces",
+    )?;
+    assert!(
+        orders_at < work_at,
+        "the role has to stand above the work, because that is the order a model reads in and          the order `plan_step` already builds: what is known, then what was asked, then what          to do now. It sent {written:?}"
     );
 
     Ok(())

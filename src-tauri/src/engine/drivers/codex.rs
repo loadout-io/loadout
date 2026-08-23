@@ -214,7 +214,7 @@ impl CodexDriver {
     /// przyjmuje [T1 §6.4].
     pub async fn start_session(
         &self,
-        spec: RunSpec,
+        mut spec: RunSpec,
         tx: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<CodexHandle> {
         // Dowody otwieramy PRZED spawnem. Nieudany zapis manifestu nie moze dac procesu, ktory
@@ -226,6 +226,10 @@ impl CodexDriver {
         let (stdout_evidence, stderr_evidence) = split_evidence(evidence);
         let mut argv = self.configuration.arguments.clone();
         argv.extend(build_exec_argv(&spec));
+        // Wyjete TU, a nie przy `Turn`: `spec.prompt` idzie tam przeniesieniem, wiec
+        // pozyczka `spec.system_append` w tym samym wyrazeniu nie ma prawa istniec.
+        // `take()` zamiast `clone()` — instrukcje agenta bywaja akapitami.
+        let instructions = spec.system_append.take();
 
         // Wznowienie zna swoją tożsamość, ZANIM padnie pierwsza linia: dostało ją od tego, kto
         // je zamówił. Pierwsza tura nie zna jej wcale i to jest uczciwe — sesja Codeksa
@@ -244,7 +248,7 @@ impl CodexDriver {
             binary: self.binary.clone(),
             cwd: spec.cwd.clone(),
             argv,
-            prompt: spec.prompt,
+            prompt: after_the_standing_orders(instructions.as_deref(), spec.prompt),
             events: tx.clone(),
             threads: Arc::clone(&threads),
             number: FIRST_TURN,
@@ -1523,6 +1527,46 @@ pub fn build_exec_argv(spec: &RunSpec) -> Vec<String> {
 }
 
 /// Linia pierwszej tury, w kolejności z T1 §8.4.
+/// Nagłówek, pod którym instrukcje agenta wchodzą do promptu Codeksa.
+///
+/// Po angielsku i bez naszych słów z drutu, jak wszystko, co czyta agent (decyzja D5,
+/// niezmiennik 14).
+const STANDING_ORDERS_OPEN: &str =
+    "Who you are and how you work. This holds for everything below and does not change:";
+
+/// Instrukcje agenta, potem robota — czyli prompt pierwszej tury `codex exec`.
+///
+/// DLACZEGO TO MUSI TU BYĆ. `RunSpec::system_append` niesie instrukcje agenta, czyli to, co
+/// odróżnia researchera od planisty. `claude.rs` oddaje je flagą `--append-system-prompt`.
+/// `codex exec` TAKIEJ FLAGI NIE MA, a jedyne miejsce w tym pliku, które kiedykolwiek czytało
+/// to pole, to `handshake()` — App Server, czyli czat z liderem. Ścieżka biegu nie czytała ich
+/// nigdy, więc każdy agent codexowy w każdym workflow biegł bez swojej roli.
+///
+/// ZMIERZONE 2026-08-23, trzema odczytami: `first_turn_argv` nie dotyka `system_append` ani
+/// razu; `grep system_append` po całym drzewie daje w tym pliku jedno trafienie i jest nim
+/// `handshake`; nic w drzewie Rusta nie zapisuje instrukcji na dysk dla Codeksa (żadnego
+/// `AGENTS.md` w drzewie roboczym kroku).
+///
+/// STDIN, NIE ARGV — i to nie jest ustępstwo. Niezmiennik 9 zabrania treści w argumentach, bo
+/// `ps` pokazuje je każdemu użytkownikowi maszyny. Instrukcje podane tą drogą są więc BARDZIEJ
+/// prywatne niż flaga, którą dostaje Claude, a nie mniej.
+///
+/// NA GÓRZE, bo w tym porządku czyta model i w tym porządku składa prompt
+/// `commands::run::plan_step`: notatki, zadanie biegu, robota kroku — od najogólniejszego do
+/// najkonkretniejszego. Rola agenta stoi nad tym wszystkim.
+///
+/// TYLKO PIERWSZA TURA. `codex exec resume` wraca do tego samego wątku, więc instrukcje wysłane
+/// raz zostają w rozmowie; powtórzenie ich przy każdej turze byłoby drugim zdaniem o tym samym.
+///
+/// BEZ INSTRUKCJI ODDAJE PROMPT CO DO BAJTU: agent bez własnych instrukcji ma dostać dokładnie
+/// to, co dostawał, więc `None` nie dokłada ani jednego znaku.
+fn after_the_standing_orders(instructions: Option<&str>, prompt: String) -> String {
+    let Some(orders) = instructions.map(str::trim).filter(|one| !one.is_empty()) else {
+        return prompt;
+    };
+    format!("{STANDING_ORDERS_OPEN}\n\n{orders}\n\n---\n\n{prompt}")
+}
+
 fn first_turn_argv(spec: &RunSpec) -> Vec<String> {
     let mut argv = vec![
         "exec".to_owned(),
