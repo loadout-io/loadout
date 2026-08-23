@@ -31,6 +31,7 @@
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
 mod a_skill_list_says_what_each_one_is_for;
+mod again_carries_what_the_step_had;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
 mod agent_tools_reach_the_argv;
@@ -167,6 +168,8 @@ mod recovery_records_boot_time;
 mod recovery_runs_at_startup;
 mod recovery_status_table;
 mod recovery_unreadable_rows;
+mod resume_carries_the_attachments;
+mod resume_carries_the_earlier_handoffs;
 mod resume_starts_from_the_work_that_was_done;
 mod run_commands_registered;
 mod run_json_records_handoff_repairs;
