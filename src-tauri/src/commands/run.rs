@@ -1339,6 +1339,13 @@ struct AgentJob {
     thinking: Thinking,
     /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
     connections: Vec<crate::connections::Connection>,
+    /// Przelotka `vendorOptions` tego agenta, **już w kształcie argv jego aplikacji**.
+    ///
+    /// 2026-08-23 (T-90) — pole doszło, bo do tego dnia przelotka nie docierała do procesu ani
+    /// jedną flagą. Policzona **przy planowaniu**, dokładnie jak polityka i lista narzędzi obok:
+    /// wpis, którego krok nie ma prawa podać, jest odmową, a niezmiennik 12 mówi „najpóźniej
+    /// przy Starcie". Krok bez przelotki ma tu pustą listę i jego argv nie zmienia się o bajt.
+    passthrough: Vec<String>,
     /// Umiejętności, które ten krok naprawdę dostanie — policzone z efektywnego agenta.
     ///
     /// Policzone **przy planowaniu**, z tego samego powodu, z którego stoją tu narzędzia: nazwa,
@@ -2250,6 +2257,24 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     // pojechać z inną polityką, niż ta, którą przepuszczono jego narzędzia.
     let policy = policy_of(effective.file_access);
     let tools = what_this_step_may_use(&effective, policy, step)?;
+    /* PRZELOTKA JEST SĄDZONA, ZANIM RUSZY PIERWSZY PROCES (niezmiennik 12). Wpis podnoszący
+     * dial albo kolidujący z tym, co Loadout ustawia sam, zabiera CAŁY bieg — cicha alternatywa
+     * (wywalić wpis i jechać) uczy człowieka, że przelotka nie działa, więc wpisuje to samo
+     * jeszcze raz innym zapisem. Pierwsze zdanie z listy, bo `RunError` niesie jedną uwagę,
+     * a człowiek naprawia jeden wiersz naraz. */
+    if let Some(message) = crate::library::agents::passthrough_refused(&effective)
+        .into_iter()
+        .next()
+    {
+        return Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka na kafelku TEGO kroku: to jego agent niesie ten wiersz, a odmowa bez
+            // wskazania kafelka zostawia człowieka ze szukaniem, którego to dotyczy.
+            step_id: Some(step.id.clone()),
+            message,
+            fix: None,
+        }));
+    }
     let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
@@ -2328,6 +2353,11 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         // skutku (niezmiennik 16).
         thinking: effective.thinking,
         connections,
+        // W kształcie TEJ aplikacji, policzonym raz: `--flaga wartość` dla Claude Code,
+        // `-c klucz=wartość` dla Codeksa. Klucz przelotki bierze się z vendora agenta, bo to
+        // plik agenta nazywa go tym słowem — nie z etykiety sterownika, którą w teście nosi
+        // dubler.
+        passthrough: crate::library::agents::vendor_argv(&effective, effective.runs_with.key()),
         skills,
         // Ścieżka katalogu pluginu tego kroku dopiero powstanie: plan nie dotyka dysku, a katalog
         // biegu jeszcze nie istnieje. Wypełnia to [`hand_the_skills_to_the_steps`].
@@ -5291,6 +5321,13 @@ impl Live {
         configuration
             .arguments
             .extend(job.driver.effort_argv(effort_level(job.thinking)));
+        /* PRZELOTKA NA KOŃCU, i to jest wybór o wsteczności: krok, którego agent nie prosi
+         * o nic ponad, dostaje argv **co do bajtu** takie jak przedtem, bo ta lista jest wtedy
+         * pusta. Fragment jest już w kształcie tej aplikacji (`library::agents::vendor_argv`) —
+         * ta warstwa nie skleja komendy i nie zna ani jednej flagi vendora (niezmiennik 9). */
+        configuration
+            .arguments
+            .extend(job.passthrough.iter().cloned());
         Ok(configuration)
     }
 

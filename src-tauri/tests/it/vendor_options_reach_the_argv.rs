@@ -486,9 +486,20 @@ fn codex_argv(arguments: &[String]) -> Vec<String> {
     exec_argv(&configured, &spec())
 }
 
+/// Sesja tej ławki, **stała**, a nie świeża przy każdym wywołaniu.
+///
+/// 2026-08-23 — DEFEKT FIKSTURY, ta sama rodzina co przemianowane lokalne `claude_argv`
+/// z commita kontraktowego: żadna asercja się nie zmienia, a jedna z nich przestaje być
+/// niespełnialna. Punkt (d) niżej porównuje CAŁE argv zbudowane z pustego fragmentu z argv
+/// zbudowanym bez fragmentu — a `--session-id` bierze się z tego pola. Dwa wywołania
+/// [`spec`] dawały dwa różne identyfikatory, więc te dwie listy różniły się zawsze,
+/// niezależnie od tego, co robi kod produkcyjny. Wartość stała zdejmuje jedyną różnicę,
+/// której to porównanie nie miało mierzyć, i zostawia dokładnie tę, którą miało.
+const SESSION: Uuid = Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0910);
+
 fn spec() -> RunSpec {
     RunSpec {
-        run_id: Uuid::now_v7(),
+        run_id: SESSION,
         cwd: PathBuf::from("."),
         prompt: "rename the widget".to_owned(),
         model: None,

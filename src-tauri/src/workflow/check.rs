@@ -35,7 +35,14 @@ use crate::engine::dag::{Dag, DagError};
 /// to `engine::drivers::claude` (`TRANSPORT` + `LEAN_CONTEXT` + `--session-id`, dziś prywatne).
 /// Ten plik nie ma tamtego w swoim bloku OWNS, więc scalenie list jest pytaniem do człowieka
 /// (AGENTS.md §7), a nie cichym dopiskiem w cudzym pliku.
-pub const RESERVED_CLAUDE: [&str; 7] = [
+///
+/// 2026-08-23 (T-90) — `--effort` dochodzi jako ósma pozycja. Od T-91 ustawia ją sam Loadout
+/// z pola „ile myśleć" (`library::agents::effort_level` → `AgentDriver::effort_argv`), więc
+/// przelotka podająca ją drugi raz znaczy dwie strony piszące jedną rzecz. Do tego zadania
+/// kolizja nie miała skutku, bo przelotka nie dojeżdżała do argv w ogóle; z chwilą, w której
+/// dojeżdża, brak tej pozycji jest cichą wygraną jednej ze stron — dokładnie tym, czego
+/// zakazuje D6. Zgłosił to pisarz T-91 zamiast dopisać linię w cudzym pliku.
+pub const RESERVED_CLAUDE: [&str; 8] = [
     "--session-id",
     "--output-format",
     "--input-format",
@@ -43,10 +50,12 @@ pub const RESERVED_CLAUDE: [&str; 7] = [
     "--permission-mode",
     "--strict-mcp-config",
     "--setting-sources",
+    "--effort",
 ];
 
-/// To samo dla `codex`: `-C` (katalog roboczy), `-s` (piaskownica), `--json` (strumień zdarzeń).
-pub const RESERVED_CODEX: [&str; 3] = ["-C", "-s", "--json"];
+/// To samo dla `codex`: `-C` (katalog roboczy), `-s` (piaskownica), `--json` (strumień zdarzeń)
+/// i `model_reasoning_effort` — powód czwartej pozycji stoi przy [`RESERVED_CLAUDE`].
+pub const RESERVED_CODEX: [&str; 4] = ["-C", "-s", "--json", "model_reasoning_effort"];
 
 /// Podniesienia, których przelotka nie przepuszcza — **ani w nazwie flagi, ani w jej wartości**.
 ///
@@ -777,7 +786,13 @@ fn the_passthrough(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
 
 /// Flagi zarezerwowane dla tego vendora. Vendor spoza listy nie ma żadnych — przelotka istnieje
 /// właśnie po to, żeby nowy vendor nie wymagał wydania Loadouta.
-fn reserved(vendor: &str) -> &'static [&'static str] {
+///
+/// `pub` od 2026-08-23 (T-90), bo pyta o to samo także przelotka DEFINICJI AGENTA
+/// (`library::agents::passthrough_refused`). Krok workflow i plik agenta to dwa nośniki tej
+/// samej przelotki, a lista jest jedna i mieszka tutaj (niezmiennik 23): druga kopia po tamtej
+/// stronie rozjechałaby się w dniu, w którym ktoś dopisze pozycję tylko do jednej z nich.
+#[must_use]
+pub fn reserved(vendor: &str) -> &'static [&'static str] {
     match vendor {
         "claude" => &RESERVED_CLAUDE,
         "codex" => &RESERVED_CODEX,
@@ -786,7 +801,12 @@ fn reserved(vendor: &str) -> &'static [&'static str] {
 }
 
 /// Nazwa vendora tak, jak nazywa go użytkownik. Klucz z pliku (`claude`) na ekran nie idzie.
-fn vendor_name(vendor: &str) -> &str {
+///
+/// `pub` z tego samego powodu, co [`reserved`] obok: odmowa przelotki pada w dwóch miejscach —
+/// przy zapisie kroku i przy starcie biegu z definicji agenta — a człowiek ma przeczytać
+/// w obu tę samą nazwę aplikacji (niezmiennik 14).
+#[must_use]
+pub fn vendor_name(vendor: &str) -> &str {
     match vendor {
         "claude" => "Claude Code",
         "codex" => "Codex",
