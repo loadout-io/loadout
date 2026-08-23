@@ -302,6 +302,18 @@ export function WorkflowEditor({
                   ),
                 );
               }}
+              onEditCheck={(fields) => {
+                /* Ta sama droga dla kafelka „sprawdź". Jego dwa pola tekstowe są całą treścią
+                 * tego kroku, a wzorzec do tego ODMOWĄ ZAPISU po stronie Rusta, dopóki jest
+                 * pusty (`check::a_command_step_left_empty`): pole, które nie dojeżdża do pliku,
+                 * daje workflow, który przestaje się zapisywać, i człowieka szukającego przyczyny
+                 * w kafelku, który na ekranie wygląda na wypełniony. */
+                state.commit(
+                  withStep(state.document, open.id, (step) =>
+                    step.kind === 'check' ? { ...step, ...fields } : step,
+                  ),
+                );
+              }}
               onEditCheckpoint={(fields) => {
                 /* Ta sama droga dla punktu kontrolnego. Jego `question` jest jedynym powodem,
                  * dla którego bieg ma się na nim o cokolwiek zapytać — pole, które nie dojeżdża

@@ -382,9 +382,13 @@ async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dy
  */
 #[test]
 fn a_run_left_standing_on_a_question_is_written_off_too() -> Result<(), Box<dyn Error>> {
+    // Stala PRZED instrukcjami: `items_after_statements` (clippy pedantic) czyta pozycje
+    // deklaracji doslownie, a element istnieje od poczatku zakresu niezaleznie od tego, gdzie
+    // go napisano. 2026-08-23: ta jedna linia trzymala trunk na czerwono w warstwie `full`.
+    const PARKED: &str = "20260819-160548__01a01ac5-8a29-7f02-adef-2f12a67416a1";
+
     let root = tempfile::tempdir()?;
     let project = root.path();
-    const PARKED: &str = "20260819-160548__01a01ac5-8a29-7f02-adef-2f12a67416a1";
 
     put(
         project,
