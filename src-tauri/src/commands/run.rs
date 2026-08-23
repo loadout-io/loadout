@@ -116,11 +116,13 @@
 //!
 //! # Czego ta warstwa świadomie NIE robi
 //!
-//! - **Nie tee'uje surowego strumienia do `logs/agent-<id>.jsonl`.** `AgentDriver` oddaje już
-//!   zdarzenie neutralne, a surowe bajty widzi wyłącznie `stream::pump` (T-05) — i to on ma
-//!   `tee`, tylko nie ma dziś skąd wziąć ścieżki, bo `RunSpec` jej nie niesie. Katalog `logs/`
-//!   powstaje mimo to, bo `store::rebuild` czyta go po nazwie; dopóki nikt tam nie pisze,
-//!   transkrypt biegu żyje w liniach, a nie w plikach. Szew należy do T-07 (`ARCHITECTURE` §4).
+//! - **Sama nie ogląda surowego strumienia.** `AgentDriver` oddaje już zdarzenie neutralne, więc
+//!   surowych bajtów ta warstwa nie widzi ani jednego. NIE ZNACZY TO, ŻE NIKT ICH NIE ZAPISUJE:
+//!   od T-34 `logs/agent-<id>.jsonl` powstaje w każdym biegu i pisze go [`crate::evidence`],
+//!   któremu ta warstwa daje wyłącznie katalog biegu i identyfikator kroku
+//!   ([`Live::evidence_for_agent`]). Do 2026-08-23 stało tu zdanie odwrotne — „katalog `logs/`
+//!   powstaje, ale nikt tam nie pisze" — i było nieprawdą w każdym biegu właściciela, czyli
+//!   uczyło następnego pisarza szukać szwu, który już istnieje.
 //! - **Nie rozwija `copies`** [T3 §4.4]. Krok z `copies: 3` biegnie tu jako jedna sesja:
 //!   rozwinięcie zmienia liczbę węzłów grafu, a `RunReport::steps` jest kontraktem „jeden wpis
 //!   na krok pliku". To jest zadanie dla tego, kto zrobi też własne kopie plików.
