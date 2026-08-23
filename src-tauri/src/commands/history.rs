@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::handoffs::{HandoffWire, handoffs_of_run, run_dirs};
+use super::isolate;
 use crate::engine::drivers::DecodedEvent;
 use crate::engine::drivers::claude::ClaudeDecoder;
 use crate::engine::drivers::codex::CodexDecoder;
@@ -134,8 +135,30 @@ pub struct PastRunWire {
     pub steps: Vec<PastStepWire>,
     /// Co kroki oddały sobie nawzajem — te same pliki, które pokazuje sekcja przekazań.
     pub handoffs: Vec<HandoffWire>,
+    /// Gałęzie, które ten bieg zostawił w repozytorium projektu.
+    ///
+    /// Pusta lista dla biegu, po którym nie została ani jedna — i to jest zwykły stan: krok,
+    /// który nic nie zmienił, gałęzi nie zostawia (`commands::isolate::finish`).
+    pub branches: Vec<BranchWire>,
     /// Uczciwe zdanie, kiedy opisu nie dało się przeczytać.
     pub said: Option<String>,
+}
+
+/// Jedna gałąź zostawiona przez bieg.
+///
+/// DWA POLA, BO CZŁOWIEK POTRZEBUJE OBU. Nazwa jest tym, co wpisze w gita; krok jest tym, po
+/// czym pozna, o którą pracę chodzi — gałęzie jednego biegu różnią się ostatnim członem i czyta
+/// się je jak jedną kolumnę tego samego napisu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchWire {
+    /// Pełna nazwa: `loadout/<bieg>/<kafelek>`. Ta sama, którą składa `isolate::branch_for`.
+    pub name: String,
+    /// Nazwa kroku, który ją zostawił — ta z kafelka, nie klucz z pliku (niezmiennik 14).
+    ///
+    /// Pusta, kiedy `run.json` tego kroku już nie zna: gałąź zostaje wtedy nazwana samą sobą,
+    /// bo istnieje naprawdę i człowiek ma prawo ją zdjąć.
+    pub step: String,
 }
 
 /// Krok otwartego biegu.
@@ -173,12 +196,17 @@ pub struct PastStepWire {
     pub cost_usd: Option<f64>,
     /// Zapisany strumień tego kroku, przepuszczony przez TĘ SAMĄ kurację, co żywy bieg.
     ///
-    /// Pusty jest dziś stanem normalnym i **zapisanym długiem**, nie usterką tego pliku:
-    /// `commands::run` nie woła `ClaudeDriver::with_transcript`, więc `logs/agent-<krok>.jsonl`
-    /// nie powstaje po żadnym prawdziwym biegu (zapisane w nagłówku `commands/run.rs`, akapit
-    /// „Czego ta warstwa świadomie NIE robi"). Odczyt jest napisany i sprawdzony, żeby w dniu,
-    /// w którym ktoś ten szew zepnie, historia zaczęła nieść transkrypt bez ani jednej zmiany
-    /// tutaj — a do tego dnia widok mówi wprost, że zapisu nie ma.
+    /// 2026-08-23 (T-95) — POPRAWIONY AKAPIT, BO POPRZEDNI BYŁ NIEPRAWDĄ. Stało tu, że
+    /// „`commands::run` nie woła `ClaudeDriver::with_transcript`, więc `logs/agent-<krok>.jsonl`
+    /// nie powstaje po żadnym prawdziwym biegu". Powstaje: od T-34 pisze go [`crate::evidence`],
+    /// któremu bieg daje katalog i identyfikator kroku, i dzieje się to w KAŻDYM biegu — mówi
+    /// to wprost nagłówek `commands/run.rs`. Ten sam zapis widziano na biegu właściciela
+    /// `20260823-011240`, gdzie pliki kroków ważyły od 17 do 61 kB.
+    ///
+    /// Pusty jest więc dalej normalną odpowiedzią, ale z innego powodu: krok anulowany albo
+    /// pominięty nie zdążył nic nadać, a po kroku bez agenta nie ma czego zapisywać. Zdanie
+    /// odwrotne kosztowało tyle, ile kosztują wszystkie: uczyło następnego czytelnika szukać
+    /// szwu, który już istnieje.
     pub lines: Vec<Line>,
 }
 
@@ -196,6 +224,26 @@ pub enum HistoryError {
     /// Katalogu o tej nazwie w tym projekcie nie ma.
     #[error("There is no run called \"{asked}\" in this folder.")]
     NoSuchRun { asked: String },
+
+    /// Ktoś na tej gałęzi w tej chwili pracuje.
+    ///
+    /// ODMOWA JEST CAŁOŚCIOWA i to jest treść tego wariantu: kiedy jedna z gałęzi biegu jest
+    /// wyjęta do pracy, nie znika ani jedna. Połowa zdjęta i połowa nie byłaby stanem, o którym
+    /// człowiek dowiaduje się dopiero z `git branch` — a zdjęcie komuś gałęzi spod ręki jest
+    /// jedyną rzeczą, którą ta droga mogłaby zepsuć nieodwracalnie.
+    #[error(
+        "\"{branch}\" is checked out in another folder right now, so Loadout left every branch \
+         of this run alone. Finish there, then try again."
+    )]
+    BranchIsOpen { branch: String },
+
+    /// Git odmówił zdjęcia gałęzi z powodu, którego nie umiemy przewidzieć.
+    ///
+    /// Niesiemy jego własne zdanie, bo jest konkretniejsze niż nasze. Gałęzie zdjęte przed tą
+    /// zniknęły naprawdę; lista w panelu zgadza się znowu po ponownym otwarciu biegu, bo to
+    /// pliki są prawdą (niezmiennik 4).
+    #[error("Loadout could not take \"{branch}\" away: {said}")]
+    CouldNotForget { branch: String, said: String },
 }
 
 /// Wszystkie biegi TEGO projektu, od najnowszego. Projekt bez `runs/` daje pustą listę.
@@ -214,25 +262,11 @@ pub fn list_runs_inner(project: &Path) -> Vec<RunWire> {
 /// `run` jest nazwą katalogu z [`RunWire::folder`]. Sprawdzamy ją, zanim dotkniemy dysku
 /// (patrz [`HistoryError::NotOneName`]), bo przyjeżdża z okna.
 pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryError> {
-    let asked = run.trim();
-    if !is_one_name(asked) {
-        return Err(HistoryError::NotOneName {
-            asked: asked.to_owned(),
-        });
-    }
-
-    // Katalog bierzemy z LISTY, nie ze sklejenia ścieżki: lista jest tym samym zbiorem, który
-    // widzi człowiek, więc nie da się poprosić o katalog, którego nie było na ekranie. Sklejenie
-    // przechodziłoby także dla katalogu, który nie jest biegiem.
-    let dir = run_dirs(project)
-        .into_iter()
-        .find(|path| file_name(path) == asked)
-        .ok_or_else(|| HistoryError::NoSuchRun {
-            asked: asked.to_owned(),
-        })?;
+    let dir = one_run_dir(project, run)?;
 
     let head = summary(&dir);
-    let steps = match read_description(&dir) {
+    let described = read_description(&dir);
+    let steps = match &described {
         Some(file) => file
             .steps
             .iter()
@@ -259,13 +293,18 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
             .collect(),
         None => Vec::new(),
     };
+    // PO KROKACH, bo gałąź nazywa się kluczem kafelka, a człowiek czyta nazwy. Przed budową
+    // struktury, bo `steps` idzie do niej przez przeniesienie.
+    let branches = described
+        .as_ref()
+        .map_or_else(Vec::new, |file| branches_of_run(project, &file.id, &steps));
 
     Ok(PastRunWire {
         folder: head.folder,
         when: head.when,
         title: head.title,
         state: head.state,
-        workflow_file: read_description(&dir)
+        workflow_file: described
             .map(|file| file.workflow_id)
             .and_then(|id| file_named(&id))
             .unwrap_or_default(),
@@ -273,8 +312,111 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
         // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
         handoffs: handoffs_of_run(project, &dir),
+        branches,
         said: head.said,
     })
+}
+
+/// Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego. Oddaje nazwy tych, których
+/// już nie ma.
+///
+/// # 2026-08-23 (T-95) — druga połowa sprzątania po biegu
+///
+/// Katalog roboczy kroku znika zaraz po biegu, bo praca jest osiągalna z gałęzi
+/// (`commands::isolate::finish`). Gałęzie zostawały natomiast na zawsze i nic nie umiało ich
+/// zdjąć poza ręcznym `git branch -D` na każdą z osobna — a po tygodniu pracy `git branch`
+/// przestaje być do przeczytania i gałąź niosąca coś ważnego ginie wśród kilkudziesięciu.
+///
+/// # PRZEDROSTEK JEST CAŁĄ ZAPORĄ, i składa go ta sama funkcja, która nadaje nazwy
+///
+/// `isolate::branch_for(id, "")` daje `loadout/<bieg>/`, więc „które gałęzie są tego biegu" ma
+/// jedną odpowiedź i nie da się jej rozjechać z nazywaniem (niezmiennik 13). Napis sklejony tu
+/// z palca byłby drugą regułą na to samo pytanie — a ta droga KASUJE, więc pomyłka w niej
+/// zdejmuje cudzą gałąź.
+///
+/// # Bieg, którego opisu nie da się przeczytać, nie zdejmuje niczego
+///
+/// Bez `run.json` nie ma identyfikatora, a bez identyfikatora nie ma przedrostka. Zgadywanie
+/// z nazwy katalogu byłoby drugim źródłem prawdy o tym, jak nazywa się gałąź tego biegu.
+pub fn forget_run_branches_inner(project: &Path, run: &str) -> Result<Vec<String>, HistoryError> {
+    let dir = one_run_dir(project, run)?;
+    let Some(prefix) = read_description(&dir).and_then(|file| run_prefix(&file.id)) else {
+        return Ok(Vec::new());
+    };
+
+    let mine = isolate::branches_under(project, &prefix);
+    // PYTAMY, ZANIM ZDEJMIEMY COKOLWIEK. Sprawdzanie po drodze zostawiłoby stan, w którym część
+    // gałęzi zniknęła, a odmowa mówi o jednej — czyli człowiek czyta „nic nie ruszyłem" nad
+    // repozytorium, w którym coś już zniknęło.
+    let in_use = isolate::branches_in_use(project);
+    if let Some(busy) = mine.iter().find(|name| in_use.contains(name)) {
+        return Err(HistoryError::BranchIsOpen {
+            branch: busy.clone(),
+        });
+    }
+
+    let mut gone = Vec::new();
+    for name in mine {
+        isolate::drop_branch(project, &name).map_err(|said| HistoryError::CouldNotForget {
+            branch: name.clone(),
+            said,
+        })?;
+        gone.push(name);
+    }
+    Ok(gone)
+}
+
+/// Przedrostek gałęzi tego biegu, albo `None` dla biegu bez identyfikatora.
+///
+/// `None`, a nie `"loadout//"`: pusty człon środkowy dawałby wzorzec pasujący do gałęzi
+/// KAŻDEGO biegu, czyli przycisk „zapomnij o gałęziach tego biegu" zdejmowałby wszystkie.
+fn run_prefix(run_id: &str) -> Option<String> {
+    (!run_id.trim().is_empty()).then(|| isolate::branch_for(run_id, ""))
+}
+
+/// Gałęzie tego biegu, nazwane krokiem, który je zostawił.
+///
+/// Krok bierzemy z kroków biegu, bo w nazwie gałęzi stoi KLUCZ kafelka, a klucza nie ma na
+/// ekranie (niezmiennik 14). Pusty, kiedy `run.json` tego kroku już nie zna: gałąź istnieje
+/// naprawdę i człowiek ma prawo ją zobaczyć także wtedy, gdy nie umiemy jej podpisać.
+fn branches_of_run(project: &Path, run_id: &str, steps: &[PastStepWire]) -> Vec<BranchWire> {
+    let Some(prefix) = run_prefix(run_id) else {
+        return Vec::new();
+    };
+    isolate::branches_under(project, &prefix)
+        .into_iter()
+        .map(|name| {
+            let tile = name.strip_prefix(&prefix).unwrap_or_default();
+            let step = steps
+                .iter()
+                .find(|one| one.tile == tile)
+                .map(|one| one.name.clone())
+                .unwrap_or_default();
+            BranchWire { name, step }
+        })
+        .collect()
+}
+
+/// Katalog JEDNEGO biegu tego projektu, po nazwie z okna.
+///
+/// Zapora na wędrówkę po ścieżkach stoi tutaj, w jednym miejscu dla obu wołających: nazwa
+/// przyjeżdża z okna, a okno rysuje ją z tego, co ktoś wpisał w wiersz wejścia. Katalog bierzemy
+/// z LISTY, nie ze sklejenia ścieżki — lista jest tym samym zbiorem, który widzi człowiek, więc
+/// nie da się poprosić o katalog, którego nie było na ekranie. Sklejenie przechodziłoby także
+/// dla katalogu, który biegiem nie jest.
+fn one_run_dir(project: &Path, run: &str) -> Result<PathBuf, HistoryError> {
+    let asked = run.trim();
+    if !is_one_name(asked) {
+        return Err(HistoryError::NotOneName {
+            asked: asked.to_owned(),
+        });
+    }
+    run_dirs(project)
+        .into_iter()
+        .find(|path| file_name(path) == asked)
+        .ok_or_else(|| HistoryError::NoSuchRun {
+            asked: asked.to_owned(),
+        })
 }
 
 /// Opis biegu z `run.json` — dokładnie te pola, które ktoś czyta.
@@ -284,6 +426,9 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
 /// z tego samego powodu — plik po ręcznej edycji zostaje wierszem, a nie znika.
 #[derive(Debug, Deserialize)]
 struct Description {
+    /// Identyfikator TEGO biegu. Z niego składa się przedrostek jego gałęzi.
+    #[serde(default)]
+    id: String,
     /// Identyfikator workflow, z którego ten bieg poszedł.
     #[serde(default)]
     workflow_id: String,
@@ -572,4 +717,196 @@ fn file_named(workflow_id: &str) -> Option<String> {
             .then(|| path.file_name()?.to_str().map(str::to_owned))
             .flatten()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Zdejmowanie gałęzi biegu — jedyna droga w tym module, która KASUJE.
+    //!
+    //! # Dlaczego kryterium stoi TUTAJ, a nie w `tests/it/`
+    //!
+    //! Bo kryterium tego zadania sądzi ekran (`branches-can-be-dropped.test.tsx`), a granica
+    //! jest po tamtej stronie atrapą: ani jedna asercja tam nie dotyka prawdziwego
+    //! repozytorium. Reguła „tylko gałęzie TEGO biegu" i całościowa odmowa są natomiast
+    //! jedynymi rzeczami, które ta droga potrafi zepsuć nieodwracalnie. Wzorzec „kryterium przy
+    //! regule" jest w repo (`workflow::check`, `commands::run`, `memory::handoff`).
+    //!
+    //! # Słaba wersja
+    //!
+    //! `assert_eq!(gone.len(), 2)`. Przechodzi ją implementacja zdejmująca każdą gałąź
+    //! `loadout/*`, czyli kasująca pracę cudzych biegów jednym naciśnięciem. Rozstrzyga to, że
+    //! fikstura ma gałąź drugiego biegu i gałąź spoza Loadouta, a obie mają przeżyć.
+
+    use std::error::Error;
+    use std::path::Path;
+    use std::process::Command;
+
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::{HistoryError, RUN_FILE, forget_run_branches_inner, fs};
+
+    const RUN: &str = "0198a1f2-3b4c-7d5e-8f60-000000000004";
+    const OTHER_RUN: &str = "0198a1f2-3b4c-7d5e-8f60-000000000009";
+    const MINE: &str = "a-branch-of-my-own";
+
+    fn git(at: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(["-c", "user.name=Loadout Test"])
+            .args(["-c", "user.email=test@loadout.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()?;
+        if !out.status.success() {
+            return Err(format!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Nazwa katalogu tego biegu — ta sama, którą składa `commands::run::stamp`.
+    fn folder_of(run: &str) -> String {
+        format!("20260823-011240__{run}")
+    }
+
+    /// Repozytorium z czterema gałęziami: dwie tego biegu, jedna cudzego, jedna człowieka.
+    fn a_project_with_branches() -> Result<TempDir, Box<dyn Error>> {
+        let project = TempDir::new()?;
+        let at = project.path();
+        git(at, &["init", "--quiet"])?;
+        fs::write(at.join("README.md"), "one\n")?;
+        git(at, &["add", "-A"])?;
+        git(at, &["commit", "--quiet", "-m", "the first commit"])?;
+        for branch in [
+            format!("loadout/{RUN}/s_build"),
+            format!("loadout/{RUN}/s_docs"),
+            format!("loadout/{OTHER_RUN}/s_build"),
+            MINE.to_owned(),
+        ] {
+            git(at, &["branch", &branch, "HEAD"])?;
+        }
+        let dir = at.join(".loadout").join("runs").join(folder_of(RUN));
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join(RUN_FILE),
+            serde_json::to_string(&json!({ "id": RUN, "steps": [] }))?,
+        )?;
+        Ok(project)
+    }
+
+    fn branches(at: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+        Ok(git(at, &["branch", "--format=%(refname:short)"])?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
+    #[test]
+    fn it_takes_away_only_the_branches_of_that_run() -> Result<(), Box<dyn Error>> {
+        let project = a_project_with_branches()?;
+        let at = project.path();
+
+        let gone = forget_run_branches_inner(at, &folder_of(RUN))?;
+        assert_eq!(
+            gone,
+            vec![
+                format!("loadout/{RUN}/s_build"),
+                format!("loadout/{RUN}/s_docs")
+            ],
+            "the answer has to name what is no longer there, because that is the only way the \
+             screen can say what happened without asking again"
+        );
+
+        let left = branches(at)?;
+        assert!(
+            !left
+                .iter()
+                .any(|name| name.starts_with(&format!("loadout/{RUN}/"))),
+            "the branches of this run are still there, so pressing the control did nothing at \
+             all. Left: {left:?}"
+        );
+        assert!(
+            left.contains(&format!("loadout/{OTHER_RUN}/s_build")),
+            "another run's branch went away with this one. One press would then take the work \
+             of every run in this folder. Left: {left:?}"
+        );
+        assert!(
+            left.contains(&MINE.to_owned()),
+            "a branch nobody made with Loadout went away. Left: {left:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_branch_open_somewhere_leaves_every_branch_alone() -> Result<(), Box<dyn Error>> {
+        let project = a_project_with_branches()?;
+        let at = project.path();
+        let busy = format!("loadout/{RUN}/s_docs");
+        let side = at.join("side");
+        git(
+            at,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                &side.display().to_string(),
+                &busy,
+            ],
+        )?;
+
+        let refused = forget_run_branches_inner(at, &folder_of(RUN));
+        let Err(HistoryError::BranchIsOpen { branch }) = refused else {
+            return Err(format!(
+                "taking away a branch somebody is working on is the one move here that cannot be \
+                 undone, and it was not turned down: {refused:?}"
+            )
+            .into());
+        };
+        assert_eq!(
+            branch, busy,
+            "the refusal has to name the branch that is open"
+        );
+
+        let left = branches(at)?;
+        assert!(
+            left.contains(&format!("loadout/{RUN}/s_build")),
+            "the refusal was not whole: one branch of this run went away before the open one \
+             stopped it. Half gone and half not is a state a person only finds out about from \
+             `git branch`. Left: {left:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_with_no_record_takes_nothing_away() -> Result<(), Box<dyn Error>> {
+        let project = a_project_with_branches()?;
+        let at = project.path();
+        fs::remove_file(
+            at.join(".loadout")
+                .join("runs")
+                .join(folder_of(RUN))
+                .join(RUN_FILE),
+        )?;
+
+        let gone = forget_run_branches_inner(at, &folder_of(RUN))?;
+        assert!(
+            gone.is_empty(),
+            "without the run's record there is no run identifier, and without it there is no way \
+             to tell this run's branches from anybody else's. Guessing from the folder name \
+             would be a second answer to how a branch of this run is named. Took: {gone:?}"
+        );
+        assert_eq!(
+            branches(at)?.len(),
+            5,
+            "nothing may go away over a run whose record could not be read"
+        );
+        Ok(())
+    }
 }

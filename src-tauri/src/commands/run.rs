@@ -114,6 +114,23 @@
 //! workflow mają dać ten sam prompt, a to, który agent odpowiedział szybciej, zmienia się
 //! z biegu na bieg.
 //!
+//! **Runda pętli nie jest krokiem, który zaczyna od zera** (2026-08-23, T-87). „Krok przede mną"
+//! liczone samą strzałką daje rundzie k+1 jedno zdanie krytyki i nic poza tym — ani planu, od
+//! którego pętla ruszyła, ani własnej odpowiedzi, którą ta runda ma poprawić. Dlatego indeks
+//! rundy niesie też wejście pętli, wszystkie jej wcześniejsze próby i wszystkie wcześniejsze
+//! werdykty sędziego, a każdy wiersz mówi, CZYM jest plik, który wskazuje ([`Live::handed_before`],
+//! [`WhatItIs`]). Symetrycznie w drugą stronę: krok ZA pętlą dostaje ostatnie **wyprodukowane**
+//! przekazanie każdego kroku jej ciała, bo strzałka na zewnątrz wychodzi z rundy ostatniej —
+//! a ta, przy pętli, która przeszła wcześniej, nie biegnie wcale.
+//!
+//! **Wznowienie niesie przekazania biegu, od którego ruszyło** (2026-08-23, T-88). Skopiowanie
+//! plików do katalogu nowego biegu ([`seed_the_handoffs`]) nie jest przekazaniem ich dalej:
+//! indeks powstaje z [`Live::handoffs`], czyli z tego, co oddały kroki TEGO biegu, a wycinek
+//! zostawia tylko strzałki z obydwoma końcami w środku — więc krok na czele wycinka nie miał ani
+//! jednego poprzednika i indeksu nie dostawał wcale. Co przejmuje który krok, rozstrzyga
+//! [`what_the_run_before_left`]; wiersz indeksu mówi wprost, że plik jest z tamtego biegu, a pełne
+//! teksty odłożone obok (`attachments/`) jadą razem z plikami, które je wołają.
+//!
 //! # Czego ta warstwa świadomie NIE robi
 //!
 //! - **Sama nie ogląda surowego strumienia.** `AgentDriver` oddaje już zdarzenie neutralne, więc
@@ -330,6 +347,53 @@ const HANDOFF_INDEX_OPENS: &str = "Steps before this one left what they found in
 /// nie otworzy pliku, uzna brak cytatu za brak materiału.
 const HANDOFF_INDEX_CLOSES: &str =
     "Read the ones you need; their contents were not copied into this prompt.";
+
+/// Domyślna etykieta wiersza indeksu: plik zostawił krok, po którym ten krok idzie po strzałce.
+///
+/// 2026-08-23 (T-87) — ZAMKNIĘTA LISTA ETYKIET ZACZYNA SIĘ TUTAJ i ma dokładnie sześć pozycji
+/// (szósta doszła w T-88, dla plików przejętych po poprzednim biegu).
+/// Do tego dnia wiersz indeksu niósł nazwę kafelka i ścieżkę, i tyle. Od chwili, w której runda
+/// trzecia pętli dostaje pięć pozycji — z których trzy pochodzą od dwóch kafelków — sama nazwa
+/// przestaje cokolwiek rozróżniać: dwa wiersze `- Work: …` pod rząd nie mówią, który plik jest
+/// próbą odrzuconą, a który tą przed nią. A to jest cała różnica między „popraw to, co zostało
+/// odrzucone" a „przeczytaj cokolwiek".
+///
+/// STAŁE, NIE ZDANIE SKŁADANE PRZY WIERSZU. Etykieta pisana per wiersz rośnie z każdą gałęzią
+/// kodu, który ją składa, i dwa biegi tego samego pliku czytają się inaczej — czyli przestaje
+/// być etykietą, a staje się kolejnym akapitem promptu.
+///
+/// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak [`HANDOFF_INDEX_OPENS`] wyżej (decyzja D5,
+/// niezmiennik 14): „handoff", „verdict", „judge" i „loop" nie znaczą nic dla kogoś, kto właśnie
+/// dostał robotę do zrobienia.
+const IS_WHAT_THE_STEP_BEFORE_LEFT: &str = "what the step before left";
+
+/// To samo, kiedy tamten krok **nie przeszedł**, a robota pojechała dalej mimo to.
+///
+/// Bez tego zdania następny agent buduje na materiale, którego nikt nie przyjął, i nie ma jak się
+/// o tym dowiedzieć — a cicha luka w indeksie wygląda dokładnie tak samo jak gałąź, której nigdy
+/// nie było (T-87 AC-5).
+const IS_WHAT_A_STEP_THAT_FAILED_LEFT: &str = "the step before did not pass; this is what it said";
+
+/// Etykieta wejścia pętli: plik, który dostała jej pierwsza runda.
+const IS_WHAT_YOU_STARTED_WITH: &str = "what you were given at the start";
+
+/// Początek etykiety wcześniejszej rundy TEGO kroku. Ogon dopisuje [`WhatItIs::said`].
+const IS_YOUR_OWN_EARLIER_ANSWER: &str = "your own earlier answer";
+
+/// Początek etykiety wcześniejszej rundy sędziego. „Tester", bo tak nazywa go człowiek — nasze
+/// słowo („judge") nie znaczy nic po drugiej stronie promptu.
+const IS_WHAT_THE_TESTER_SAID: &str = "what the tester said last time";
+
+/// Etykieta pliku PRZEJĘTEGO PO POPRZEDNIM BIEGU — tym, od którego ten bieg wznowiono.
+///
+/// 2026-08-23 (T-88) — bez niej wiersz przejęty stoi w indeksie obok wierszy z tego biegu
+/// i wygląda tak samo. To są dwie różne rzeczy: praca, która właśnie powstała obok, i praca
+/// sprzed godziny, po której ktoś zdążył poprawić agenta albo instrukcję. Agent, który tego nie
+/// wie, czyta odpowiedź na nieaktualne pytanie jak świeży materiał.
+///
+/// „earlier run", nie nazwa katalogu ani znacznik czasu: wiersz indeksu ma mówić, CZYM ten plik
+/// jest, a `20260823-145648__01a0…` nie mówi nic nikomu (niezmiennik 14).
+const IS_WHAT_AN_EARLIER_RUN_LEFT: &str = "what an earlier run left here";
 
 /// Zdanie, którym sędzia pętli dostaje SWÓJ JEDYNY KANAŁ na wynik — i którego do 2026-08-23
 /// nie dostawał wcale.
@@ -720,6 +784,10 @@ async fn the_planned_run(
     // że ktoś powtórzył kafelek (niezmiennik 4). Przed `Live::new`, bo prompt kroku czyta
     // indeks przekazań w chwili startu.
     seed_the_handoffs(&plan)?;
+    /* I DOPIERO TERAZ INDEKS, bo dopiero teraz kopie istnieją. Sama kopia nie jest przekazaniem
+     * dalej: prompt kroku wymienia to, co oddały kroki TEGO biegu, więc bez tej linii pliki
+     * leżą w katalogu i nie zna ich ani jeden agent (T-88, powód przy `Plan::carried`). */
+    plan.carried = what_the_run_before_left(&plan);
     // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
     // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
@@ -806,7 +874,7 @@ async fn the_planned_run(
     live.close_the_book(&outcome.states, outcome.cancelled);
     // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
     // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
-    close_the_trees(deps.project, &isolated, &live.plan.title);
+    close_the_trees(deps.project, &isolated, &live);
     // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
     // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
@@ -1518,6 +1586,20 @@ struct Plan {
     /// 2026-08-23 — nosi to ponowne odpalenie kroku: krok powtórzony sam jeden nie ma po czym
     /// iść, więc jego wejście musi przyjechać z biegu, w którym poprzednicy naprawdę pracowali.
     seeded_from: Option<PathBuf>,
+    /// Co każdy krok przejmuje po tamtym biegu — po jednej pozycji na krok, pusto dla zwykłego.
+    ///
+    /// 2026-08-23 (T-88) — SAMO SKOPIOWANIE PLIKÓW NIE JEST PRZEKAZANIEM ICH DALEJ.
+    /// [`seed_the_handoffs`] kładzie je w katalogu nowego biegu od 2026-08-23, ale indeks promptu
+    /// powstaje z [`Live::handoffs`], czyli **wyłącznie** z tego, co oddały kroki TEGO biegu —
+    /// więc zasiane pliki nie trafiały do żadnego promptu. Do tego wycinek zostawia tylko
+    /// strzałki z obydwoma końcami w środku, więc krok na czele wycinka nie ma ani jednego
+    /// poprzednika i indeksu nie dostawał wcale.
+    ///
+    /// Liczone RAZ, przy starcie biegu ([`what_the_run_before_left`]), a nie przy każdym
+    /// prompcie: odpowiedź zależy od plików tamtego biegu i od grafu, jak biegł — a jedno i drugie
+    /// jest już zamknięte. Liczenie per krok byłoby tą samą odpowiedzią wyliczaną tyle razy, ile
+    /// jest kroków, i tyloma miejscami, w których wolno ją wyliczyć inaczej (niezmiennik 13).
+    carried: Vec<Vec<Carried>>,
     /// Korzeń projektu — katalog, w którym pracują agenci tego biegu.
     ///
     /// 2026-08-22 — pole doszło dla pętli: żeby zapytać gita, czy ciało pętli cokolwiek zmieniło,
@@ -1564,6 +1646,16 @@ struct Loop {
     entry: String,
     /// Ile rund ma pętla. Ostatnia runda to `turns - 1`.
     turns: u8,
+    /// Klucze kafelków, które ta pętla powtarza, **w kolejności z pliku**. Oba końce powrotu
+    /// należą do ciała.
+    ///
+    /// 2026-08-23 (T-87) — POLE DOSZŁO DLA KROKU ZA PĘTLĄ. Strzałka z pętli na zewnątrz wychodzi
+    /// z rundy OSTATNIEJ (`workflow::unroll`), a runda ostatnia pętli, która przeszła wcześniej,
+    /// nie biegnie wcale — więc fan-in wisiał na węźle, który z definicji nic nie napisał.
+    /// Odpowiedź na „co ta pętla wyprodukowała" jest pytaniem o CAŁE jej ciało, nie o jeden
+    /// węzeł, i liczenie go drugi raz z grafu tutaj byłoby drugą definicją słowa „ciało pętli"
+    /// (niezmiennik 13) — dlatego jedzie gotowe z [`crate::workflow::unroll`].
+    body: Vec<String>,
 }
 
 /// Jeden krok, rozpisany przed startem.
@@ -1676,6 +1768,22 @@ enum Ended {
     Stopped,
     /// Krok przekroczył swój limit czasu.
     Overdue,
+}
+
+/// Co zostało po turze: gotowy wynik albo porażka, którą wolno rozstrzygnąć dopiero PO tym, jak
+/// zdarzenia tej tury przejdą przez kuratora.
+///
+/// 2026-08-23 (T-87) — TEN TYP ISTNIEJE DLA JEDNEJ KOLEJNOŚCI. Krok, którego tura wróciła błędem,
+/// oddaje dalej to, co zdążył powiedzieć ([`Live::hand_on_its_last_words`]), a jego proza jedzie
+/// tą samą kolejką, co wiersze na ekran. Rozstrzygnięcie porażki w środku [`Live::one_turn`]
+/// wyprzedzało tę kolejkę: plik powstawał, zanim ostatnie zdanie agenta z niej wyszło, i raz na
+/// jakiś czas wychodził pusty. Wyścigu, którego wynik zależy od tego, kto akurat był szybszy,
+/// nie da się ani przetestować, ani powtórzyć.
+enum Turned {
+    /// Tura skończyła się i jej wynik jest znany.
+    Settled(StepReport),
+    /// Tura wróciła błędem. W środku zdanie, które ma zobaczyć człowiek.
+    Broke(&'static str),
 }
 
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
@@ -1956,6 +2064,13 @@ fn plan_run_with_identity(
                 judge: file.steps.get(one.judge)?.id().to_owned(),
                 entry: file.steps.get(one.entry)?.id().to_owned(),
                 turns: one.turns,
+                // `BTreeSet` chodzi rosnąco, więc ciało wychodzi stąd w kolejności z pliku — tej
+                // samej, w której `unroll` emituje węzły i w której czyta się `ls handoffs/`.
+                body: one
+                    .body
+                    .iter()
+                    .filter_map(|&at| file.steps.get(at).map(|step| step.id().to_owned()))
+                    .collect(),
             })
         })
         .collect();
@@ -1983,6 +2098,10 @@ fn plan_run_with_identity(
         task: asked_for,
         loops,
         seeded_from: request.handoffs_from.clone(),
+        // Pusto AŻ DO CHWILI, W KTÓREJ KATALOG BIEGU ISTNIEJE: ścieżki w tym wektorze
+        // prowadzą do KOPII, a kopii jeszcze nie ma — plan nie dotyka dysku ani razu.
+        // Wypełnia go `the_planned_run` zaraz po `seed_the_handoffs`.
+        carried: Vec::new(),
         project: deps.project.to_path_buf(),
         steps,
         memory,
@@ -2148,6 +2267,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         task: ask.task.clone(),
         loops: Vec::new(),
         seeded_from: None,
+        // Bieg jednokrokowy nie wznawia niczego, więc nie ma po czym przejmować.
+        carried: Vec::new(),
         project: deps.project.to_path_buf(),
         steps,
         memory,
@@ -3144,7 +3265,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
     let mut made: Vec<Isolated> = Vec::new();
-    for step in &plan.steps {
+    for (at, step) in plan.steps.iter().enumerate() {
         // Krok „sprawdź" dostaje własne drzewo tą samą drogą, co krok agenta, i to jest wymóg,
         // nie symetria: `cargo test` pisze po `target/`, więc „to tylko sprawdzenie" jest
         // nieprawdą, a obietnica z ARCHITECTURE §2 p. 4 jest jedna dla wszystkich kroków.
@@ -3182,6 +3303,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
             })?;
             made.push(Isolated {
                 step: step.name.clone(),
+                at,
                 cwd: cwd.clone(),
                 branch: match done.how {
                     isolate::How::Tree { branch } => Some(branch),
@@ -4060,6 +4182,11 @@ fn git_for_recovery(at: &Path, args: &[&str]) -> Result<String, isolate::Trouble
 struct Isolated {
     /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
     step: String,
+    /// Pozycja tego kroku w księdze biegu.
+    ///
+    /// Po niej, a nie po nazwie: zdanie o pracy, której nie dało się zapisać, ma trafić do
+    /// wiersza TEGO kroku w `run.json`, a dwa kafelki wolno nazwać tak samo.
+    at: StepId,
     /// Katalog roboczy kroku.
     cwd: PathBuf,
     /// Gałąź, jeśli to jest drzewo gita. `None` dla folderu, który repozytorium nie jest.
@@ -4123,16 +4250,45 @@ fn say_what_was_left_behind(lines: &LineSink, made: &[Isolated]) {
 /// (`memory::handoff`), a wejście w głąb wciągałoby tu cokolwiek, co ktoś tam kiedyś położy.
 /// Brak katalogu źródłowego nie jest awarią — to bieg, po którym nie zostało ani jedno
 /// przekazanie, i taki też ma być powtórzony.
+///
+/// # 2026-08-23 (T-88) — ZAŁĄCZNIK JEDZIE Z PLIKIEM, KTÓRY GO WOŁA
+///
+/// `memory::handoff` tnie ciało na `BODY_CAP`, odkłada ORYGINAŁ do `attachments/` i wstawia
+/// w ciało wiersz `Moved to attachments/<nazwa>__full.md`. Ten wiersz składa Loadout, nie agent,
+/// i jest liczony **od katalogu biegu** — więc bez tej drugiej kopii wznowiony krok dostawał od
+/// NAS odnośnik, którego nie da się otworzyć, czyli kontrolkę bez handlera (niezmiennik 16).
+///
+/// Zmierzone na biegu `20260819-223942` w wersji tego samego defektu o warstwę wyżej: krok
+/// dostał trzy takie wskaźniki, nie otworzył żadnego, napisał, że pełnego tekstu „nie ma",
+/// i wyliczył cały dowód drugi raz wprost z repozytorium — 9 z 10 minut swojego limitu.
+///
+/// `attachments/` jest SIOSTRĄ `handoffs/`, nie jego podkatalogiem, więc kopiuje się osobno —
+/// i tak samo cicho, kiedy go nie ma: katalog powstaje wyłącznie po biegu, w którym coś nie
+/// zmieściło się w pliku, czyli w większości biegów nie powstaje wcale.
 fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
     let Some(from) = &plan.seeded_from else {
         return Ok(());
     };
-    let source = from.join(crate::store::rebuild::HANDOFFS_DIR);
-    let Ok(listing) = fs::read_dir(&source) else {
+    copy_the_files_in(
+        &from.join(crate::store::rebuild::HANDOFFS_DIR),
+        &plan.dir.join(crate::store::rebuild::HANDOFFS_DIR),
+    )?;
+    copy_the_files_in(
+        &from.join(handoff::ATTACHMENTS_DIR),
+        &plan.dir.join(handoff::ATTACHMENTS_DIR),
+    )
+}
+
+/// Pliki z pierwszego poziomu jednego katalogu do drugiego. Brak źródła nie jest awarią.
+///
+/// Katalog docelowy powstaje dopiero, kiedy jest co do niego włożyć: pusty `attachments/`
+/// w katalogu biegu jest odpowiedzią „coś tu nie zmieściło się w pliku" postawioną nad niczym,
+/// a `Live::index_of_what_came_before` czyta jego ISTNIENIE jako właśnie to pytanie.
+fn copy_the_files_in(source: &Path, into: &Path) -> io::Result<()> {
+    let Ok(listing) = fs::read_dir(source) else {
         return Ok(());
     };
-    let into = plan.dir.join(crate::store::rebuild::HANDOFFS_DIR);
-    fs::create_dir_all(&into)?;
+    fs::create_dir_all(into)?;
     for entry in listing {
         let entry = entry?;
         if entry.file_type()?.is_file() {
@@ -4142,18 +4298,221 @@ fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
     Ok(())
 }
 
-/// Zamyka drzewa po biegu: praca ląduje na gałęzi, a po kroku, który nic nie zmienił, nie
-/// zostaje ani gałąź, ani wpis w `git worktree list`.
-fn close_the_trees(project: &Path, made: &[Isolated], title: &str) {
+/// `run.json` poprzedniego biegu w tylu polach, ile potrzebuje przejęcie jego przekazań.
+///
+/// Własny, wąski kształt zamiast pełnego lustra [`RunFile`] — ten sam powód, co przy
+/// `rerun::Finished`: tamten plik rośnie z każdym zadaniem, a to pytanie dotyczy dwóch rzeczy
+/// i nie ma powodu przewracać się na trzeciej, której nie zna (niezmiennik 5).
+#[derive(Debug, Deserialize)]
+struct RunBefore {
+    /// Graf, **jak biegł**. Po nim, nie po dzisiejszym pliku: pytamy o to, co wtedy stało przed
+    /// czym — a plik mógł się od tamtej pory zmienić i to jest zwykły powód, dla którego ktoś
+    /// w ogóle wznawia (`rerun`, „bierzemy DZISIEJSZY plik workflow").
+    workflow_snapshot: WorkflowFile,
+    /// Kroki tamtego biegu w kolejności ich numerów — po niej przekazanie wskazuje swój kafelek.
+    #[serde(default)]
+    steps: Vec<StepBefore>,
+}
+
+/// Krok tamtego biegu w jednym polu: kluczu węzła, z którego wychodzi klucz kafelka.
+#[derive(Debug, Deserialize)]
+struct StepBefore {
+    #[serde(default)]
+    node_key: String,
+}
+
+/// Co każdy krok tego biegu przejmuje po biegu, od którego go wznowiono — po jednej liście
+/// na krok.
+///
+/// # Dwa pytania, jedna odpowiedź na kafelek
+///
+/// **„Co ten kafelek wtedy dostał"** odpowiada `reads:` z jego własnego przekazania: to jest
+/// zapis tego, co Loadout NAPRAWDĘ wstrzyknął w tamten prompt ([`Told::reads`]), a nie tego,
+/// co dziś wynika z grafu. Powtórzony kafelek ma dostać dokładnie to samo wejście — inaczej
+/// „czy moja poprawka zmieniła wynik" jest pytaniem, w którym zmieniły się dwie rzeczy naraz.
+///
+/// **„Co się wydarzyło przede mną"** odpowiadają strzałki migawki, kiedy tamtego zapisu nie ma:
+/// krok, który padł, oddaje dalej ostatnie zdanie i **nic nie przeczytał**
+/// ([`Live::hand_on_its_last_words`] podaje puste `reads`), a krok, który nigdy nie ruszył, nie
+/// zostawia pliku wcale. To jest dokładnie ten krok, od którego ktoś wznawia — i ma dostać
+/// wszystko, na czym miał budować, aż do korzenia grafu.
+///
+/// # Dlaczego chód w górę zatrzymuje się na kafelku, który biegnie
+///
+/// Kafelek powtarzany w tym biegu odda swoją NOWĄ pracę własną strzałką. Wpisanie obok niej
+/// starej kopii byłoby tym samym krokiem mówiącym w jednym indeksie dwie różne rzeczy, a dalsza
+/// wspinaczka ponad niego dokładałaby krokom za nim materiał, który i tak przyjedzie do nich
+/// jego świeżym przekazaniem.
+fn what_the_run_before_left(plan: &Plan) -> Vec<Vec<Carried>> {
+    let mut carried: Vec<Vec<Carried>> = vec![Vec::new(); plan.steps.len()];
+    let Some(before) = plan.seeded_from.as_deref() else {
+        return carried;
+    };
+    let Some(described) = fs::read(before.join(RUN_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RunBefore>(&bytes).ok())
+    else {
+        // Bieg, którego pliku nie da się przeczytać, nie ma jak powiedzieć, czyj jest który
+        // plik — a zgadywanie po nazwie byłoby drugą definicją numeracji kroków (niezmiennik 13).
+        return carried;
+    };
+    let Ok(left) = handoff::scan_run_dir(before) else {
+        return carried;
+    };
+
+    // Numer kroku tamtego biegu → klucz kafelka. Numer, nie nazwa: nazwy wolno powtórzyć na
+    // dwóch kafelkach, a numerem przekazanie podpisuje się samo (`MetaDraft::step`).
+    let tiles: Vec<&str> = described
+        .steps
+        .iter()
+        .map(|step| tile_key_of(&step.node_key))
+        .collect();
+
+    // Nazwa pliku → kto go napisał; i klucz kafelka → jego OSTATNI plik. Rundy jednej pętli
+    // piszą po kolei, więc „ostatni" jest tym o najwyższym numerze kroku.
+    let mut whose: BTreeMap<&str, (&str, &handoff::Handoff)> = BTreeMap::new();
+    let mut newest: BTreeMap<&str, (u32, &str)> = BTreeMap::new();
+    for one in &left {
+        let Some(tile) = usize::try_from(one.meta.step)
+            .ok()
+            .and_then(|at| tiles.get(at).copied())
+        else {
+            continue;
+        };
+        let Some(name) = one.path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        whose.insert(name, (tile, one));
+        if newest
+            .get(tile)
+            .is_none_or(|(had, _)| *had <= one.meta.step)
+        {
+            newest.insert(tile, (one.meta.step, name));
+        }
+    }
+
+    let running: BTreeSet<&str> = plan
+        .steps
+        .iter()
+        .map(|step| step.tile_key.as_str())
+        .collect();
+
+    for (at, step) in plan.steps.iter().enumerate() {
+        let wanted: Vec<&str> = match newest
+            .get(step.tile_key.as_str())
+            .and_then(|(_, name)| whose.get(name))
+        {
+            Some((_, had)) if !had.meta.reads.is_empty() => had
+                .meta
+                .reads
+                .iter()
+                .filter_map(|read| Path::new(read).file_name()?.to_str())
+                .collect(),
+            _ => stood_before(&described.workflow_snapshot, &step.tile_key, &running)
+                .into_iter()
+                .filter_map(|tile| newest.get(tile).map(|(_, name)| *name))
+                .collect(),
+        };
+        carried[at] = wanted
+            .into_iter()
+            .filter_map(|name| {
+                let (tile, had) = whose.get(name)?;
+                if running.contains(tile) {
+                    return None;
+                }
+                let path = plan
+                    .dir
+                    .join(crate::store::rebuild::HANDOFFS_DIR)
+                    .join(name);
+                // Wskazujemy WYŁĄCZNIE to, co naprawdę leży w tym katalogu: wiersz indeksu ze
+                // ścieżką bez pliku po drugiej stronie przewraca `prompt_for` i zabiera krok.
+                path.is_file().then(|| Carried {
+                    from: had.meta.from.clone(),
+                    path,
+                })
+            })
+            .collect();
+    }
+    carried
+}
+
+/// Kafelki, które w TAMTYM grafie stały przed tym — i których ten bieg nie powtarza.
+///
+/// Chód w górę po strzałkach, przechodni: krok wznowiony po środku łańcucha ma dostać nie tylko
+/// swojego bezpośredniego poprzednika, ale wszystko, na czym tamten stał. Zatrzymuje się na
+/// kafelku, który biegnie w tym biegu — powód stoi przy [`what_the_run_before_left`].
+///
+/// Kolejność wynikowa jest **kolejnością z pliku**, tą samą, którą trzyma indeks tego biegu
+/// ([`Live::handed_before`]) i prefiks nazwy pliku przekazania. Kolejność obchodu grafu zależy
+/// od tego, w którą stronę wyszło się z rozgałęzienia, i przy dwóch gałęziach przestaje być
+/// powtarzalna.
+///
+/// Strzałka powrotna pętli jest tu zwykłą strzałką: runda poprawiająca stała po sędzim i jego
+/// zdanie jest częścią tego, na czym stanęła. Zbiór odwiedzonych domyka koło.
+fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str>) -> Vec<&'a str> {
+    let mut found: BTreeSet<usize> = BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::from([tile]);
+    let mut walking: Vec<&str> = vec![tile];
+    while let Some(here) = walking.pop() {
+        for link in &graph.links {
+            if link.to != here || !seen.insert(link.from.as_str()) {
+                continue;
+            }
+            if running.contains(link.from.as_str()) {
+                continue;
+            }
+            if let Some(at) = graph.steps.iter().position(|one| one.id() == link.from) {
+                found.insert(at);
+            }
+            walking.push(link.from.as_str());
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|at| graph.steps.get(at).map(Step::id))
+        .collect()
+}
+
+/// Zamyka drzewa po biegu: praca ląduje na gałęzi, a katalog, w którym powstała, znika.
+///
+/// Po kroku, który nic nie zmienił, nie zostaje ani gałąź, ani katalog — jak dotąd. Po kroku,
+/// który zmienił cokolwiek, zostaje sama gałąź: praca jest z niej osiągalna w całości, a katalog
+/// dokładał do tego wyłącznie kopię repozytorium na dysku (T-95).
+///
+/// **Katalog kopii plikowej nie jest sprzątany nigdy** i to jest cała treść warunku na `branch`:
+/// projekt bez repozytorium gałęzi nie ma, więc tam katalog **jest** pracą, a nie jej kopią.
+///
+/// Kiedy zapis na gałąź się nie uda, katalog zostaje — a zdanie o tym idzie do wiersza tego
+/// kroku w `run.json`. Bez niego bieg wygląda na udany, a jedyna kopia czyjejś pracy leży poza
+/// gitem, w katalogu, którego nikt nie szuka.
+fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
         let Some(branch) = &one.branch else { continue };
         let kept = isolate::finish(
             project,
             &one.cwd,
             branch,
-            &format!("{}: {}", title, one.step),
+            &format!("{}: {}", live.plan.title, one.step),
         );
-        tracing::debug!(step = %one.step, ?kept, "the step's tree was closed");
+        match kept {
+            isolate::Kept::LeftInPlace { branch, why } => {
+                tracing::warn!(step = %one.step, branch, "this step's work is not on its branch, so its folder stays");
+                let at = one.at;
+                live.update(move |book| {
+                    let Some(row) = book.steps.get_mut(at) else {
+                        return;
+                    };
+                    // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten
+                    // powód jest tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie
+                    // w takim razie leży to, co agent zdążył zrobić.
+                    row.error = Some(match row.error.take() {
+                        Some(said) => format!("{said} {why}"),
+                        None => why,
+                    });
+                });
+            }
+            kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
+        }
     }
 }
 
@@ -4298,6 +4657,30 @@ struct Live {
     /// **Nie przechodzi przez `await`** (niezmiennik 8): oba wywołania, które go biorą
     /// ([`Live::filed`], [`Live::handed_before`]), oddają go w tym samym wyrażeniu.
     handoffs: Mutex<Vec<Option<PathBuf>>>,
+    /// Kroki, które NIE przeszły, a mimo to przepuściły robotę dalej — po jednej pozycji na krok.
+    ///
+    /// 2026-08-23 (T-87) — jedyny czytelnik jest jeden: etykieta wiersza w indeksie następnego
+    /// kroku ([`WhatItIs::StepThatFailed`]). Bez tego pola krok stojący za `carry-on` dostaje plik
+    /// nie do odróżnienia od materiału, który ktoś przyjął — a agent, który tego nie wie, buduje
+    /// na odrzuconej robocie i nazywa to wynikiem.
+    ///
+    /// Zapisuje wyłącznie [`Live::when_this_one_fails`], czyli to samo jedno miejsce, które
+    /// rozstrzyga o każdej porażce. Osobny zamek, jak [`Live::handoffs`] obok, i z tego samego
+    /// powodu: to nie jest stan, który jedzie do `run.json`.
+    did_not_pass: Mutex<Vec<bool>>,
+    /// Proza, którą krok zdążył powiedzieć w swojej turze — po jednej pozycji na krok, sklejona
+    /// w kolejności, w jakiej padła. Pusty napis znaczy „ten krok nie powiedział jeszcze nic".
+    ///
+    /// 2026-08-23 (T-87) — TO JEST JEDYNA KOPIA TEGO TEKSTU PO STRONIE BIEGU. `AgentEvent::Said`
+    /// dociera wyłącznie do kuracji ([`forward`]), czyli na ekran, a `StepRun::summary` powstaje
+    /// dopiero z UDANEJ tury. Krok, którego tura wróciła błędem, nie miał więc ani jednego
+    /// nośnika dla tego, co zdążył napisać — i zostawiał po sobie pusty plik, choć powiedział
+    /// pół strony.
+    ///
+    /// Pisze [`forward`], czyta [`Live::hand_on_its_last_words`]. Osobny zamek, jak
+    /// [`Live::handoffs`] obok, i z tego samego powodu: to nie jest stan, który jedzie do
+    /// `run.json` — jego trwałym śladem jest plik przekazania.
+    said_so_far: Mutex<Vec<String>>,
     /// Runda, w której pętla się DOMKNĘŁA — po jednej pozycji na pętlę planu, w tej samej
     /// kolejności co [`Plan::loops`]. `None` na pozycji znaczy „ta pętla jeszcze nie przeszła".
     ///
@@ -4405,6 +4788,67 @@ struct Handed {
     /// `work/<krok>`, więc ścieżka względna katalogu biegu nie rozwiązałaby się z miejsca,
     /// w którym agent naprawdę stoi.
     path: PathBuf,
+    /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
+    /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
+    what: WhatItIs,
+}
+
+/// Czym jest plik wymieniony w indeksie — z punktu widzenia kroku, który ten indeks czyta.
+///
+/// Zamknięta lista, bo etykieta jest po to, żeby ROZRÓŻNIAĆ: nazwa kafelka i ścieżka mówią, skąd
+/// plik pochodzi, a to jest za mało, kiedy dwa wiersze jednego indeksu przychodzą od tego samego
+/// kroku z dwóch różnych rund.
+///
+/// Numer próby liczy się od jedynki, a nie od zera: `turn` jest polem danych, a to jest zdanie
+/// dla człowieka i dla agenta — „try 0 of 3" nie znaczy nic ani dla jednego, ani dla drugiego.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhatItIs {
+    /// Krok, po którym ten krok idzie po strzałce.
+    StepBefore,
+    /// To samo, tylko tamten krok nie przeszedł i przepuścił robotę dalej.
+    StepThatFailed,
+    /// Wejście pętli: to, co dostała jej pierwsza runda.
+    WhatYouStartedWith,
+    /// Wcześniejsza runda TEGO kroku.
+    YourOwnTry { which: u8, of: u8 },
+    /// Wcześniejsza runda sędziego tej pętli.
+    WhatTheTesterSaid { which: u8, of: u8 },
+    /// Plik przejęty po biegu, od którego ten bieg wznowiono.
+    FromAnEarlierRun,
+}
+
+impl WhatItIs {
+    /// Zdanie, które staje w wierszu indeksu.
+    fn said(self) -> String {
+        match self {
+            Self::StepBefore => IS_WHAT_THE_STEP_BEFORE_LEFT.to_owned(),
+            Self::StepThatFailed => IS_WHAT_A_STEP_THAT_FAILED_LEFT.to_owned(),
+            Self::WhatYouStartedWith => IS_WHAT_YOU_STARTED_WITH.to_owned(),
+            Self::YourOwnTry { which, of } => {
+                format!("{IS_YOUR_OWN_EARLIER_ANSWER}, try {which} of {of}")
+            }
+            Self::WhatTheTesterSaid { which, of } => {
+                format!("{IS_WHAT_THE_TESTER_SAID}, try {which} of {of}")
+            }
+            Self::FromAnEarlierRun => IS_WHAT_AN_EARLIER_RUN_LEFT.to_owned(),
+        }
+    }
+}
+
+/// Jeden plik, który zostawił POPRZEDNI bieg — już skopiowany do katalogu tego biegu.
+///
+/// Osobny typ od [`Handed`], bo odpowiada na inne pytanie: `Handed` powstaje z numeru kroku
+/// TEGO biegu ([`Live::filed`]), a tutaj żaden krok tego biegu nie ma numeru, pod którym można
+/// by ten plik znaleźć. Sklejenie obu w jeden wektor po `StepId` znaczyłoby, że przejęty plik
+/// musi udawać krok, którego w tym biegu nie ma.
+#[derive(Debug, Clone)]
+struct Carried {
+    /// Nazwa kroku, który go napisał — dosłownie ta z jego front-mattera, czyli ta, którą tamten
+    /// bieg pokazywał na ekranie.
+    from: String,
+    /// Kopia w katalogu **tego** biegu. Skończony bieg jest historią i nie ma prawa się zmienić
+    /// dlatego, że ktoś go wznowił (niezmiennik 4), więc prompt nigdy nie wskazuje w jego katalog.
+    path: PathBuf,
 }
 
 /// Co krok dostaje na wejściu: prompt, ślad po tym, co do niego wstrzyknięto, i katalogi,
@@ -4466,6 +4910,8 @@ impl Live {
             })
             .collect();
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
+        let did_not_pass = Mutex::new(vec![false; plan.steps.len()]);
+        let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
         let settled_at = Mutex::new(vec![None; plan.loops.len()]);
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         Self {
@@ -4483,6 +4929,8 @@ impl Live {
             gate,
             began: Instant::now(),
             handoffs,
+            did_not_pass,
+            said_so_far,
             settled_at,
             route_evidence,
             route_decisions: Mutex::new(Vec::new()),
@@ -4709,7 +5157,7 @@ impl Live {
 
         match chosen {
             WhenItFails::Stop => StepReport::Failed,
-            WhenItFails::CarryOn => StepReport::FailedAndCarriedOn,
+            WhenItFails::CarryOn => self.and_still_hands_something_on(id),
             /* PYTAMY TA SAMA DROGA, CO KAFELEK KONTROLNY. `wait_for_a_person` bierze `StepId`,
              * a nie rodzaj kroku, wiec parkowania biegu nie trzeba pisac drugi raz — a odpowiedz
              * czlowieka staje sie przekazaniem tego kroku, czyli dociera do nastepnego.
@@ -4722,10 +5170,93 @@ impl Live {
                     .wait_for_a_person(id, Some(&self.what_now(id, why)))
                     .await
                 {
-                    StepReport::Succeeded => StepReport::FailedAndCarriedOn,
+                    StepReport::Succeeded => self.and_still_hands_something_on(id),
                     other => other,
                 }
             }
+        }
+    }
+
+    /// Krok nie przeszedl, a robota jedzie dalej — wiec zostawia po sobie plik i jest w indeksie
+    /// nastepnego kroku oznaczony jako to, czym jest.
+    ///
+    /// 2026-08-23 (T-87) — CICHA LUKA W INDEKSIE JEST GORSZA NIZ ZLA WIADOMOSC. Nastepny krok
+    /// czyta przekazania swoich rodzicow i nic wiecej, wiec krok, ktory padl i kazal jechac dalej,
+    /// znikal z jego indeksu bez sladu — a brak wiersza wyglada dokladnie tak samo jak galaz,
+    /// ktorej nigdy nie bylo. Agent budowal na materiale, ktorego nikt nie przyjal, i nie mial
+    /// jak sie o tym dowiedziec.
+    ///
+    /// `Stop` tedy NIE chodzi, i to jest jedyny wyjatek: za nim nie biegnie nic, wiec nie ma komu
+    /// tego pliku przeczytac (niezmiennik 21).
+    fn and_still_hands_something_on(&self, id: StepId) -> StepReport {
+        if let Some(slot) = self
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            *slot = true;
+        }
+        self.hand_on_its_last_words(id);
+        StepReport::FailedAndCarriedOn
+    }
+
+    /// Przekazanie z tym, co ten krok zdazyl powiedziec — moze byc puste.
+    ///
+    /// NIC NIE NADPISUJEMY. Krok, ktory zdazyl oddac wynik i dopiero potem nie przeszedl — sedzia
+    /// po wyczerpaniu prob, komenda, ktora wystartowala i padla, czlowiek, ktory odpowiedzial na
+    /// pytanie — ma juz plik z prawdziwa trescia. Drugi zapis zamienilby ja na pustke.
+    ///
+    /// Puste ciało jest tu ODPOWIEDZIA, nie brakiem: agent, ktoremu tura przewrocila sie
+    /// w polowie, nie powiedzial nic i to wlasnie ma stanac w indeksie nastepnego kroku.
+    fn hand_on_its_last_words(&self, id: StepId) {
+        let already = self
+            .handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(Option::is_some);
+        if already {
+            return;
+        }
+        /* PROZA AGENTA WYGRYWA Z PODSUMOWANIEM, i to jest cala roznica miedzy plikiem, ktory
+         * ratuje ture, a plikiem, ktory ja tylko odnotowuje. `StepRun::summary` powstaje
+         * z UDANEGO wyniku (`one_turn`), wiec tura, ktora wrocila bledem, nie ma go wcale —
+         * a agent zdazyl w niej powiedziec, co zrobil i na czym stanal. Ten tekst zbiera
+         * [`Live::said_so_far`], po zdarzeniu na blok.
+         *
+         * Podsumowanie zostaje dla krokow, ktore nie mowia proza: komenda, ktora nie wystartowala,
+         * nie powiedziala ani slowa, a jej jedno zdanie jest wszystkim, co po niej zostaje. */
+        let last_words = self
+            .what_it_managed_to_say(id)
+            .unwrap_or_else(|| self.book().steps[id].summary.clone().unwrap_or_default());
+        self.hand_over(id, &last_words, &[]);
+    }
+
+    /// To, co ten krok zdazyl powiedziec proza. `None`, kiedy nie powiedzial nic.
+    ///
+    /// Zamek powstaje i ginie w jednym wyrazeniu, bez `await` w srodku (niezmiennik 8).
+    fn what_it_managed_to_say(&self, id: StepId) -> Option<String> {
+        self.said_so_far
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .filter(|said| !said.trim().is_empty())
+            .cloned()
+    }
+
+    /// Dopisuje blok prozy do tego, co ten krok zdazyl powiedziec.
+    fn also_said(&self, id: StepId, text: &str) {
+        if let Some(said) = self
+            .said_so_far
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            if !said.is_empty() {
+                said.push('\n');
+            }
+            said.push_str(text);
         }
     }
 
@@ -5446,6 +5977,7 @@ impl Live {
             Arc::clone(self),
             inbox,
             self.plan.steps[id].name.clone(),
+            id,
         ));
         // Własny klon nadawcy zostaje po to, żeby o nieudanym starcie dało się powiedzieć tą samą
         // drogą, którą mówi agent. Musi zginąć na OBU gałęziach — nadawca, który przeżył krok,
@@ -5567,7 +6099,7 @@ impl Live {
             }
         };
 
-        let report = match started {
+        let turned = match started {
             Ok(handle) => {
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
@@ -5581,7 +6113,7 @@ impl Live {
                     .await;
                 drop(ours);
                 self.update(|book| book.steps[id].error = Some(text));
-                StepReport::Failed
+                Turned::Settled(StepReport::Failed)
             }
         };
 
@@ -5589,7 +6121,13 @@ impl Live {
         // następny. Bez tego strzałka „po" przestaje znaczyć „po" na ekranie, choć w silniku
         // dalej znaczy.
         let _ = pump.await;
-        report
+        match turned {
+            Turned::Settled(report) => report,
+            /* DOPIERO TERAZ, bo dopiero teraz wiadomo, co ten krok zdążył powiedzieć: proza
+             * agenta jedzie tą samą kolejką, którą właśnie domknęliśmy, a to ona jest ciałem
+             * przekazania, jakie zostawia po sobie krok jadący dalej mimo porażki (T-87 AC-5). */
+            Turned::Broke(why) => self.when_this_one_fails(id, why).await,
+        }
     }
 
     /// Krok „sprawdź": nasza komenda, nasz werdykt, zero sesji agenta.
@@ -5617,7 +6155,14 @@ impl Live {
                 // podmiotu wysyła człowieka szukać wady w agencie, którego tu nie ma.
                 let text = format!("Loadout could not start this check: {error}");
                 self.update(|book| book.steps[id].error = Some(text));
-                return StepReport::Failed;
+                /* 2026-08-23 (T-87) — I TA DROGA TEZ IDZIE PRZEZ JEDNO MIEJSCE. Do tego dnia
+                 * wracalo stad gole `StepReport::Failed`, wiec ustawienie czlowieka „jedz dalej
+                 * mimo wszystko" bylo na tej sciezce martwe: literowka w nazwie katalogu zabierala
+                 * ze soba caly stozek za krokiem, cicho i bez wyboru. Powod jest juz w ksiedze
+                 * i mowi wiecej, wiec `get_or_insert` tam go nie tknie. */
+                return self
+                    .when_this_one_fails(id, "This check could not be started.")
+                    .await;
             }
         };
 
@@ -5717,7 +6262,10 @@ impl Live {
                         )
                     });
                 });
-                StepReport::Failed
+                // Ta sama droga, co kazda inna porazka (T-87 AC-5): krok, ktory nie zdazyl, tez
+                // byl slepym punktem — jedna wolna komenda konczyla caly bieg.
+                self.when_this_one_fails(id, "This check ran out of time.")
+                    .await
             }
         }
     }
@@ -5794,6 +6342,9 @@ impl Live {
     ///
     /// `reads` jest listą tego, co Loadout wstrzyknął w prompt tej tury ([`Live::prompt_for`]),
     /// i jedzie prosto do front-mattera przekazania, które z niej powstanie.
+    ///
+    /// Tura, która wróciła BŁĘDEM, wraca stąd jako [`Turned::Broke`] i rozstrzyga się piętro
+    /// wyżej — powód stoi przy tamtym typie.
     async fn one_turn(
         &self,
         id: StepId,
@@ -5801,7 +6352,7 @@ impl Live {
         cancel: &CancellationToken,
         reads: &[String],
         evidence: &EvidenceTarget,
-    ) -> StepReport {
+    ) -> Turned {
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
         // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
         if let Some(group) = handle.group() {
@@ -5870,11 +6421,13 @@ impl Live {
             // o trzy linijki tańszy — i jest błędem, przed którym stoi niezmiennik 10: anuluje
             // ZADANIE RUSTA, a proces systemowy zostaje żywy i pali limit u dostawcy do końca
             // świata. Dlatego tutaj wołamy `cancel()` i pytamy o DOWÓD zejścia grupy.
-            Ended::Overdue => self.stop_overdue_agent(id, handle.as_mut(), limit).await,
+            Ended::Overdue => {
+                Turned::Settled(self.stop_overdue_agent(id, handle.as_mut(), limit).await)
+            }
             // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
             // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
             // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
-            Ended::Stopped => self.stop_cancelled_agent(id, handle.as_mut()).await,
+            Ended::Stopped => Turned::Settled(self.stop_cancelled_agent(id, handle.as_mut()).await),
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
                 self.update(|book| {
@@ -5882,9 +6435,17 @@ impl Live {
                     step.death_proof = matches!(proof, GroupProof::Dead { .. });
                     step.error = Some(error.to_string());
                 });
-                StepReport::Failed
+                // Tura, ktora wrocila bledem, jest porazka jak kazda inna i idzie tam, gdzie
+                // rozstrzyga sie kazda (T-87 AC-5). Do 2026-08-23 wracalo stad gole
+                // `StepReport::Failed`, wiec awaria aplikacji agenta kasowala caly stozek za
+                // krokiem — takze wtedy, gdy czlowiek prosil, zeby jechac dalej.
+                //
+                // Rozstrzyga to `run_agent`, po opadnieciu kolejki zdarzen: przekazanie tego
+                // kroku niesie proze, ktora agent zdazyl powiedziec, a ona plynie ta wlasnie
+                // kolejka ([`Turned`]).
+                Turned::Broke("This step's agent stopped in the middle of its turn.")
             }
-            Ended::Turn(Ok(turn)) => {
+            Ended::Turn(Ok(turn)) => Turned::Settled({
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
                 // w nieskończoność, więc krok bez tego zostawia żywy proces [T1 §2, §4.6].
                 let closed = handle.close().await;
@@ -5971,7 +6532,7 @@ impl Live {
                     self.when_this_one_fails(id, "This step did not finish what it was given.")
                         .await
                 }
-            }
+            }),
         };
         self.control.step_went_quiet(&self.plan.steps[id].name);
         report
@@ -6067,7 +6628,16 @@ impl Live {
             // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
             // zwrócić tylko sam formatter — więc wynik idzie do `let _`, a nie do `expect()`,
             // który w tym drzewie jest `warn`, czyli pod `-D warnings` też fatalny.
-            let _ = write!(told.prompt, "\n- {}: {}", hand.from, hand.path.display());
+            // ETYKIETA STOI W TYM SAMYM WIERSZU, CO ŚCIEŻKA, i to jest wymóg, nie układ: odnośnik
+            // i to, czym on jest, czytane z dwóch osobnych list są dwiema listami do zestawienia
+            // w głowie — a agent, który tego nie zrobi, otwiera wszystkie pliki po kolei.
+            let _ = write!(
+                told.prompt,
+                "\n- {}: {} ({})",
+                hand.from,
+                hand.path.display(),
+                hand.what.said()
+            );
             told.reads.push(self.filed_as(&hand.path));
             let metadata = fs::symlink_metadata(&hand.path)?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -6147,29 +6717,228 @@ impl Live {
     ///
     /// Poprzednik, który nic nie oddał, **wypada z listy**: kafelek kontrolny nie oddaje nigdy,
     /// a wpis bez pliku byłby ścieżką, której agent nie ma jak otworzyć.
+    ///
+    /// # 2026-08-23 (T-87): runda pętli nie jest krokiem, który zaczyna od zera
+    ///
+    /// Do tego dnia ta funkcja brała WYŁĄCZNIE bezpośrednich poprzedników po strzałce, a jedynym
+    /// poprzednikiem rundy k+1 kroku roboczego jest powrót od sędziego. Agent poprawiający dostawał
+    /// więc jedno zdanie krytyki i **nic więcej**: ani planu, od którego zaczął, ani własnej
+    /// poprzedniej odpowiedzi, którą miał poprawić. Zmierzone w biegu `20260823-145648`: `s_2#1`
+    /// dostał tylko `12__verification-1`, a `s_2#2` tylko `13__verification-1` — w czterech biegach
+    /// dwie z trzech pętli nie zbiegły się ani razu, dziewięć rund i zero przejść. Trudno się
+    /// dziwić: każda runda zaczynała od pustej kartki.
+    ///
+    /// Krok spoza pętli i runda ZEROWA dostają dokładnie to, co dostawały: pierwsza runda nie ma
+    /// czego pamiętać, a dokładanie jej odnośnika do pliku, którego jeszcze nie ma, byłoby
+    /// ścieżką bez pliku po drugiej stronie.
+    ///
+    /// SORTOWANIE PO NUMERZE KROKU JEST SORTOWANIEM PO (POZYCJA W PLIKU, RUNDA) — `unroll` emituje
+    /// węzły w kolejności z pliku, a rundy jednego kroku jedna za drugą. Dzięki temu kolejność
+    /// indeksu nie zależy od tego, kto skończył pierwszy, i czyta się tak samo jak `ls handoffs/`.
     fn handed_before(&self, id: StepId) -> Vec<Handed> {
-        let before = ends(&self.plan.arrows, |&(parent, child)| {
-            (child == id).then_some(parent)
-        });
-        // Zamek żyje w jednym wyrażeniu i nie ma w nim ani jednego `await` (niezmiennik 8).
-        let filed: Vec<Option<PathBuf>> = {
-            let handoffs = self.handoffs.lock().unwrap_or_else(PoisonError::into_inner);
-            before
-                .iter()
-                .map(|&step| handoffs.get(step).cloned().flatten())
-                .collect()
-        };
+        // Migawka pod jednym zamkiem, bez ani jednego `await` w środku (niezmiennik 8). Kopia
+        // całego wektora, a nie zamek trzymany przez resztę funkcji: `what_that_loop_produced`
+        // pyta o te same przekazania, a `std::sync::Mutex` nie jest wznawialny.
+        let filed: Vec<Option<PathBuf>> = self
+            .handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let unpassed: Vec<bool> = self
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
 
-        before
+        let mut wanted: Vec<StepId> = Vec::new();
+        for parent in ends(&self.plan.arrows, |&(parent, child)| {
+            (child == id).then_some(parent)
+        }) {
+            match self.leaving_a_loop(parent, id) {
+                Some(which) => wanted.extend(self.what_that_loop_produced(which, &filed)),
+                None => wanted.push(parent),
+            }
+        }
+        wanted.extend(self.what_this_try_already_knows(id, &filed));
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        /* PRZEJĘTE PO POPRZEDNIM BIEGU STOI PIERWSZE, i to jest kolejność w czasie, nie gust:
+         * tamten bieg wydarzył się wcześniej w całości. Wiersz „what an earlier run left here"
+         * wmieszany między świeże czytałby się jak jeszcze jedna gałąź tego biegu. */
+        let mut index: Vec<Handed> = self
+            .plan
+            .carried
+            .get(id)
             .into_iter()
-            .zip(filed)
-            .filter_map(|(step, path)| {
-                Some(Handed {
-                    from: self.plan.steps.get(step)?.name.clone(),
-                    path: path?,
-                })
+            .flatten()
+            .map(|one| Handed {
+                from: one.from.clone(),
+                path: one.path.clone(),
+                what: WhatItIs::FromAnEarlierRun,
+            })
+            .collect();
+        index.extend(wanted.into_iter().filter_map(|step| {
+            Some(Handed {
+                from: self.plan.steps.get(step)?.name.clone(),
+                path: filed.get(step).cloned().flatten()?,
+                what: self.what_it_is(id, step, &unpassed),
+            })
+        }));
+        index
+    }
+
+    /// Numer pętli, z której WYCHODZI ta strzałka. `None`, kiedy nie wychodzi z żadnej.
+    ///
+    /// Strzałka wewnątrz jednej pętli — z rundy k do rundy k tego samego ciała — nie wychodzi
+    /// nigdzie, więc krok, który ją czyta, dostaje zwykłego poprzednika.
+    fn leaving_a_loop(&self, parent: StepId, child: StepId) -> Option<usize> {
+        let which = self.plan.steps.get(parent)?.in_loop?;
+        (self.plan.steps.get(child)?.in_loop != Some(which)).then_some(which)
+    }
+
+    /// Ostatnie przekazanie, jakie NAPRAWDĘ wyprodukował każdy krok tej pętli.
+    ///
+    /// 2026-08-23 (T-87) — TO JEST NAPRAWA FAN-INU, ZMIERZONA NA BIEGU WŁAŚCICIELA. Strzałka
+    /// z pętli na zewnątrz wychodzi z rundy OSTATNIEJ (`workflow::unroll`), a rundy po tej,
+    /// w której padł werdykt `pass`, są pomijane bez sterownika ([`Live::already_settled`])
+    /// i nie oddają nic. Krok za pętlą wisiał więc na węźle, który z definicji nie napisał ani
+    /// słowa: w biegu `20260823-145648` synteza z TRZEMA strzałkami wchodzącymi dostała dwa
+    /// pliki, obie krytyki negatywne, i **zero** z gałęzi, które przeszły. Design
+    /// i Implementation tego biegu powstały na syntezie, która widziała same odmowy.
+    ///
+    /// „Ostatnie wyprodukowane", nie „ostatnia runda": to jest cała różnica między gałęzią, która
+    /// przeszła w rundzie pierwszej, a tą, która przepaliła wszystkie trzy.
+    ///
+    /// CAŁE CIAŁO, nie sam sędzia: pętla oddaje dalej robotę **i** to, co o niej orzeczono.
+    /// Sam werdykt bez pracy jest recenzją bez recenzowanego, a sama praca bez werdyktu nie mówi,
+    /// czy ktokolwiek ją przyjął.
+    fn what_that_loop_produced(&self, which: usize, filed: &[Option<PathBuf>]) -> Vec<StepId> {
+        let Some(the_loop) = self.plan.loops.get(which) else {
+            return Vec::new();
+        };
+        the_loop
+            .body
+            .iter()
+            .filter_map(|tile| {
+                self.plan
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(at, step)| {
+                        &step.tile_key == tile && filed.get(*at).is_some_and(Option::is_some)
+                    })
+                    .map(|(at, _)| at)
+                    .next_back()
             })
             .collect()
+    }
+
+    /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, własne wcześniejsze
+    /// odpowiedzi i wcześniejsze werdykty sędziego.
+    ///
+    /// Pusta lista dla kroku spoza pętli i dla rundy zerowej. Numery kroków, nie ścieżki: filtr
+    /// „a czy ten krok cokolwiek oddał" stoi jeden, w [`Live::handed_before`].
+    ///
+    /// WEJŚCIE PĘTLI ROZWIĄZUJEMY TĄ SAMĄ DROGĄ, CO [`Live::handed_before`] — czyli przez
+    /// [`Live::leaving_a_loop`], nie po literalnym rodzicu z grafu. Pętla poprzedzająca oddaje
+    /// dalej rundą OSTATNIĄ (`workflow::unroll`), a ta po werdykcie `pass` nie biegnie wcale, więc
+    /// runda pierwsza kolejnej pętli dostawała wejście przez [`Live::what_that_loop_produced`],
+    /// a jej runda druga — literalny węzeł bez pliku, czyli **nic**. Ten sam fakt liczony dwoma
+    /// drogami odpowiadałby dwiema różnymi listami (niezmiennik 13), a różnicę widać dopiero
+    /// w drugiej rundzie drugiej pętli — czyli tam, gdzie nikt nie patrzy.
+    ///
+    /// Dlatego ta funkcja bierze `filed`: „ostatnie WYPRODUKOWANE przekazanie" jest pytaniem
+    /// o pliki, a migawkę robi wywołujący, pod jednym zamkiem i bez `await` (niezmiennik 8).
+    fn what_this_try_already_knows(&self, id: StepId, filed: &[Option<PathBuf>]) -> Vec<StepId> {
+        let Some(step) = self.plan.steps.get(id) else {
+            return Vec::new();
+        };
+        let Some(which) = step.in_loop else {
+            return Vec::new();
+        };
+        let Some(the_loop) = self.plan.loops.get(which) else {
+            return Vec::new();
+        };
+        if step.turn == 0 {
+            return Vec::new();
+        }
+
+        // Wejście pętli: to, co dostała jej PIERWSZA runda. Liczone z grafu, a nie zapamiętane
+        // przy tamtym kroku, bo pętla zaczyna się raz i jej wejście się nie zmienia.
+        let mut knows: Vec<StepId> = Vec::new();
+        if let Some(entry) = self.node_of(&the_loop.entry, 0) {
+            for parent in ends(&self.plan.arrows, |&(parent, child)| {
+                (child == entry).then_some(parent)
+            }) {
+                // Powrót od sędziego TEJ pętli nie jest jej wejściem — własne rundy dokłada
+                // pętla niżej, i to one niosą numer próby.
+                let from_this_loop = self
+                    .plan
+                    .steps
+                    .get(parent)
+                    .is_some_and(|before| before.in_loop == Some(which));
+                if from_this_loop {
+                    continue;
+                }
+                match self.leaving_a_loop(parent, entry) {
+                    Some(other) => knows.extend(self.what_that_loop_produced(other, filed)),
+                    None => knows.push(parent),
+                }
+            }
+        }
+
+        // Własne poprzednie odpowiedzi i poprzednie werdykty sędziego — WSZYSTKIE, nie sama
+        // ostatnia. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę w całości,
+        // więc agent powtarza błąd, który sędzia raz już odrzucił.
+        for turn in 0..step.turn {
+            knows.extend(self.node_of(&step.tile_key, turn));
+            knows.extend(self.node_of(&the_loop.judge, turn));
+        }
+        knows
+    }
+
+    /// Numer węzła po kluczu kafelka i rundzie. `None`, kiedy tej rundy nie ma w tym wycinku.
+    fn node_of(&self, tile: &str, turn: u8) -> Option<StepId> {
+        self.plan
+            .steps
+            .iter()
+            .position(|step| step.tile_key == tile && step.turn == turn)
+    }
+
+    /// Czym jest plik `from` dla kroku `id` — jedno miejsce z odpowiedzią na to pytanie.
+    ///
+    /// Kolejność warunków jest treścią. „Nie przeszedł" wygrywa ze wszystkim: materiał, którego
+    /// nikt nie przyjął, ma być rozpoznawalny niezależnie od tego, skąd przyszedł. Potem pytamy
+    /// o pętlę, i tylko dla rund POZA pierwszą — runda zerowa czyta swoich poprzedników dokładnie
+    /// tak, jak każdy krok spoza pętli.
+    fn what_it_is(&self, id: StepId, from: StepId, unpassed: &[bool]) -> WhatItIs {
+        if unpassed.get(from).copied().unwrap_or(false) {
+            return WhatItIs::StepThatFailed;
+        }
+        let (Some(step), Some(before)) = (self.plan.steps.get(id), self.plan.steps.get(from))
+        else {
+            return WhatItIs::StepBefore;
+        };
+        let Some(the_loop) = step.in_loop.and_then(|which| self.plan.loops.get(which)) else {
+            return WhatItIs::StepBefore;
+        };
+        if step.turn == 0 {
+            return WhatItIs::StepBefore;
+        }
+        // Numer próby od jedynki: `turn` jest polem danych, a to jest zdanie dla czytającego.
+        let which = before.turn.saturating_add(1);
+        let of = the_loop.turns;
+        if before.tile_key == step.tile_key {
+            return WhatItIs::YourOwnTry { which, of };
+        }
+        if before.tile_key == the_loop.judge {
+            return WhatItIs::WhatTheTesterSaid { which, of };
+        }
+        if before.in_loop != step.in_loop {
+            return WhatItIs::WhatYouStartedWith;
+        }
+        WhatItIs::StepBefore
     }
 
     /// Ścieżka przekazania widziana **z katalogu biegu**, czyli tak, jak zapisuje ją plik.
@@ -6483,7 +7252,12 @@ fn run_stands_or_moves(book: &mut Book, paused_by_the_provider: bool) {
 /// „widać banner" a „bieg umie się wznowić o właściwej godzinie". `AgentEvent::RateLimit`
 /// docierał tu i zostawał wierszem na ekranie, a wysyłka szła dalej, jakby nic nie zaszło —
 /// czyli następny agent dostawał odmowę, a okno limitu paliło się na odmowach.
-async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<DecodedEvent>, agent: String) {
+async fn forward(
+    live: Arc<Live>,
+    mut inbox: mpsc::Receiver<DecodedEvent>,
+    agent: String,
+    id: StepId,
+) {
     let mut curator = Curator::new();
     /* Czy okno już wie, że ten agent myśli. Powód, dla którego to jest tu, a nie w kuratorze,
      * stoi przy wysyłce niżej. */
@@ -6505,6 +7279,15 @@ async fn forward(live: Arc<Live>, mut inbox: mpsc::Receiver<DecodedEvent>, agent
         } = &event
         {
             live.the_provider_said_wait(status, *resets_at);
+        }
+        /* 2026-08-23 (T-87) — PROZA KROKU ZOSTAJE TAKŻE POZA EKRANEM. Do tego dnia `Said` szedł
+         * wyłącznie do kuracji, a jedynym trwałym śladem tury było `StepRun::summary` pisane
+         * z UDANEGO wyniku. Krok, którego tura wróciła błędem, oddawał więc następnemu krokowi
+         * plik pusty — mimo że agent zdążył napisać, co zrobił i na czym stanął. Tutaj, bo tędy
+         * przechodzi KAŻDE zdarzenie kroku, i przed kuracją, bo kuracja skleja wiersze i nie
+         * jest zobowiązana zachować całego tekstu. */
+        if let AgentEvent::Said { text } = &event {
+            live.also_said(id, text);
         }
         let at_ms = u64::try_from(live.began.elapsed().as_millis()).unwrap_or(u64::MAX);
         let seen = Seen {

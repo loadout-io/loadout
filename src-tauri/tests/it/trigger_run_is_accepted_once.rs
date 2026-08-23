@@ -934,6 +934,8 @@ async fn crash_after_worktree_add_rebuilds_the_dirty_human_diff_before_the_drive
         Arc::clone(&seen_problem),
         Some("the human's dirty source".to_owned()),
     );
+    let trees = Arc::new(Mutex::new(None));
+    let drivers = watching_the_trees(bench.project.path(), drivers, Arc::clone(&trees));
     let store = Store::open(&bench.db())?;
     let deps = bench.deps(&store, drivers);
     let (sink, _source) = line_channel(QUEUE_CAP);
@@ -955,12 +957,12 @@ async fn crash_after_worktree_add_rebuilds_the_dirty_human_diff_before_the_drive
         return Err(problem.into());
     }
     assert_eq!(
-        fs::read_to_string(copy.join("source.txt"))?,
+        from_the_branch(bench.project.path(), &branch, "source.txt")?,
         "the human's dirty source",
         "retry preserved HEAD but lost the human's dirty tracked content"
     );
-    let worktrees = git(bench.project.path(), &["worktree", "list", "--porcelain"])?;
-    let named_copy = format!("worktree {}", fs::canonicalize(&copy)?.display());
+    let worktrees = seen_trees(&trees)?;
+    let named_copy = format!("worktree {}", canonical_at(&copy)?.display());
     assert_eq!(
         worktrees.lines().filter(|line| *line == named_copy).count(),
         1,
@@ -1281,8 +1283,16 @@ async fn recovery_recognizes_one_stale_admin_entry_without_a_synthetic_marker()
     );
 
     let starts = Arc::new(AtomicUsize::new(0));
+    let trees = Arc::new(Mutex::new(None));
     let store = Store::open(&bench.db())?;
-    let deps = bench.deps(&store, counting_drivers(Arc::clone(&starts)));
+    let deps = bench.deps(
+        &store,
+        watching_the_trees(
+            bench.project.path(),
+            counting_drivers(Arc::clone(&starts)),
+            Arc::clone(&trees),
+        ),
+    );
     let (sink, _source) = line_channel(QUEUE_CAP);
     let report =
         run_triggered_workflow_inner(&deps, &bench.request(), &delivery.claim, sink).await?;
@@ -1295,11 +1305,11 @@ async fn recovery_recognizes_one_stale_admin_entry_without_a_synthetic_marker()
     assert_eq!(run_dirs(bench.project.path())?, 1);
     assert_eq!(starts.load(Ordering::Acquire), 1);
     assert_eq!(
-        fs::read_to_string(copy.join("source.txt"))?,
+        from_the_branch(bench.project.path(), &branch, "source.txt")?,
         "the human's recovered source"
     );
-    let worktrees = git(bench.project.path(), &["worktree", "list", "--porcelain"])?;
-    let named_copy = format!("worktree {}", fs::canonicalize(&copy)?.display());
+    let worktrees = seen_trees(&trees)?;
+    let named_copy = format!("worktree {}", canonical_at(&copy)?.display());
     assert_eq!(
         worktrees.lines().filter(|line| *line == named_copy).count(),
         1,
@@ -2250,6 +2260,87 @@ fn counting_drivers_with_text(starts: Arc<AtomicUsize>, text: String) -> Drivers
 
 fn no_agents() -> Drivers {
     counting_drivers(Arc::new(AtomicUsize::new(0)))
+}
+
+/* 2026-08-23 (T-95) — TRZY NARZĘDZIA, KTÓRE PRZENOSZĄ CHWILĘ I MIEJSCE ODCZYTU.
+ *
+ * Katalog roboczy kroku po biegu nie istnieje: praca jest w całości na gałęzi, a katalog nie
+ * dokładał do niej nic poza kopią repozytorium na dysku (`commands::isolate::finish`). Oba
+ * poniższe kryteria pytały o to samo, co dzisiaj, tylko czytały odpowiedź z katalogu PO biegu.
+ * Odpowiedzi nadal są — treść pliku na gałęzi, a rejestracja drzewa w chwili, w której to drzewo
+ * jeszcze stoi, czyli kiedy krok w nim pracuje. Zdania asercji zostają co do słowa.
+ */
+
+/// Sterownik, który po drodze notuje, co git wie o drzewach roboczych — i oddaje robotę dalej.
+///
+/// Opakowanie, nie podmiana: `start` pyta gita, zapisuje odpowiedź i woła sterownik, który
+/// dostał. Dubler, który sam by odpowiadał, mierzyłby siebie zamiast biegu.
+struct WhileItStands {
+    inner: Arc<dyn AgentDriver>,
+    project: PathBuf,
+    trees: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl AgentDriver for WhileItStands {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    async fn probe(&self) -> anyhow::Result<Probe> {
+        self.inner.probe().await
+    }
+
+    async fn start(
+        &self,
+        spec: RunSpec,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let seen = git(&self.project, &["worktree", "list", "--porcelain"])
+            .ok()
+            .unwrap_or_default();
+        *self.trees.lock().unwrap_or_else(PoisonError::into_inner) = Some(seen);
+        self.inner.start(spec, tx).await
+    }
+}
+
+/// Ten sam zestaw sterowników, tylko z notatką o drzewach roboczych zdjętą w trakcie kroku.
+fn watching_the_trees(
+    project: &Path,
+    inner: Drivers,
+    trees: Arc<Mutex<Option<String>>>,
+) -> Drivers {
+    let project = project.to_path_buf();
+    Arc::new(move |vendor| {
+        let watching: Arc<dyn AgentDriver> = Arc::new(WhileItStands {
+            inner: inner(vendor),
+            project: project.clone(),
+            trees: Arc::clone(&trees),
+        });
+        watching
+    })
+}
+
+/// Co git wiedział o drzewach roboczych, kiedy krok w swoim pracował.
+fn seen_trees(trees: &Mutex<Option<String>>) -> Result<String, Box<dyn Error>> {
+    let seen = trees.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    Ok(seen.ok_or("the step never reached the driver, so nothing looked at the list")?)
+}
+
+/// Kanoniczna ścieżka do czegoś, czego już nie ma: kanoniczny rodzic plus nazwa.
+///
+/// `fs::canonicalize` żąda istniejącej ścieżki, a katalog kroku po biegu zniknął. Rodzic
+/// (`work/`) stoi dalej, a ostatni człon jest zwykłą nazwą, więc wynik jest co do znaku tym
+/// samym napisem, który ta funkcja oddawała, kiedy katalog jeszcze był.
+fn canonical_at(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let parent = path.parent().ok_or("this path has no parent")?;
+    let name = path.file_name().ok_or("this path has no name")?;
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
+/// Treść pliku tak, jak leży NA GAŁĘZI. Odpowiada także po sprzątnięciu katalogu roboczego.
+fn from_the_branch(project: &Path, branch: &str, path: &str) -> Result<String, Box<dyn Error>> {
+    git(project, &["show", &format!("{branch}:{path}")])
 }
 
 fn git(at: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {

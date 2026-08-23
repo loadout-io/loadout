@@ -752,6 +752,20 @@ export interface PastHandoff {
   readonly kind: string;
 }
 
+/**
+ * Gałąź, którą ten bieg zostawił. Lustro `commands::history::BranchWire`.
+ *
+ * DWA POLA, BO CZŁOWIEK POTRZEBUJE OBU. Nazwa jest tym, co wpisze w gita, żeby znaleźć pracę;
+ * krok jest tym, po czym pozna, o którą pracę chodzi — nazwy gałęzi jednego biegu różnią się
+ * ostatnim członem i czyta się je jak jedną kolumnę tego samego napisu.
+ */
+export interface PastBranch {
+  /** Pełna nazwa gałęzi: `loadout/<bieg>/<kafelek>`. */
+  readonly name: string;
+  /** Nazwa kroku, który ją zostawił — ta z kafelka. Pusta, kiedy `run.json` już go nie zna. */
+  readonly step: string;
+}
+
 /** Otwarty bieg z historii. Lustro `commands::history::PastRunWire`. */
 export interface PastRun {
   /** Nazwa dzisiejszego pliku workflow tego biegu — pusta, kiedy nie ma go już w bibliotece. */
@@ -762,6 +776,15 @@ export interface PastRun {
   readonly state: string;
   readonly steps: readonly PastStep[];
   readonly handoffs: readonly PastHandoff[];
+  /**
+   * Gałęzie, które ten bieg zostawił w repozytorium projektu.
+   *
+   * KLUCZ OPCJONALNY, choć dzisiejszy Rust wysyła go zawsze, i to jest niezmiennik 5 postawiony
+   * na granicy: opis przysłany przez Loadouta, który o gałęziach jeszcze nie wie, ma się dać
+   * przeczytać, a nie wywrócić panel historii. Brak klucza czyta się jak pusta lista — czyli
+   * „ten bieg nic nie zostawił", co jest prawdą także wtedy, gdy nikt nie umiał zapytać.
+   */
+  readonly branches?: readonly PastBranch[];
   readonly said: string | null;
 }
 
@@ -789,6 +812,20 @@ export function listRuns(folder: string | null): Promise<readonly PastRunRow[]> 
  */
 export function readRun(folder: string | null, run: string): Promise<PastRun> {
   return invoke<PastRun>('read_run', { folder, run });
+}
+
+/**
+ * Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego.
+ *
+ * Oddaje nazwy tych, których już nie ma. Rust odmawia całości, kiedy którakolwiek z nich jest
+ * w tej chwili otwarta do pracy w innym folderze: zdjęcie jej spod czyjejś ręki jest jedyną
+ * rzeczą, którą ta droga mogłaby zepsuć nieodwracalnie.
+ *
+ * @param folder zakres, w którym ten bieg leży — ta sama ścieżka, którą dostało [`readRun`].
+ * @param run nazwa katalogu z `PastRunRow.folder`.
+ */
+export function forgetRunBranches(folder: string | null, run: string): Promise<readonly string[]> {
+  return invoke<readonly string[]>('forget_run_branches', { folder, run });
 }
 
 /** Licznikowy paragon kopiowania; raport nigdy nie wraca do JavaScriptu. */

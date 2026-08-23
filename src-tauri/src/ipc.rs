@@ -1584,6 +1584,33 @@ pub async fn read_run(
     })
 }
 
+/// Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego.
+///
+/// 2026-08-23 (T-95) — POWSTAŁO Z DRUGIEJ POŁOWY SPRZĄTANIA. Katalog roboczy kroku znika po
+/// biegu, bo praca jest osiągalna z gałęzi; gałęzie zostawały natomiast na zawsze i nic nie
+/// umiało ich zdjąć poza ręcznym `git branch -D` na każdą z osobna. Po tygodniu pracy `git
+/// branch` przestaje być do przeczytania.
+///
+/// Zakres jedzie argumentem, jak w [`list_runs`] i [`read_run`] — „gdzie pracujemy" ma w całej
+/// aplikacji jedną odpowiedź (niezmiennik 13).
+///
+/// Odmowa jest CAŁOŚCIOWA: kiedy którakolwiek z tych gałęzi jest w tej chwili otwarta do pracy
+/// w innym folderze, nie znika ani jedna. Połowa zdjęta i połowa nie byłaby stanem, o którym
+/// człowiek dowiaduje się dopiero z `git branch`.
+#[tauri::command]
+pub async fn forget_run_branches(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run: String,
+) -> Result<Vec<String>, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::history::forget_run_branches_inner(&project, &run).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -2377,6 +2404,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         delete_workspace,
         discard_note,
         draft_skill,
+        forget_run_branches,
         install_skill,
         list_agents,
         list_handoffs,

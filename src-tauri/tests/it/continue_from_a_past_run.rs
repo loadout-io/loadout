@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use loadout_lib::commands::processes::Processes;
 use loadout_lib::commands::run::run_workflow_inner;
-use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest, rerun};
+use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest, isolate, rerun};
 use loadout_lib::engine::drivers::AgentDriver;
 use loadout_lib::engine::step::StepState;
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
@@ -352,7 +352,11 @@ async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<()
     )
     .await??;
     assert_eq!(
-        lines_of(&first.dir.join("work/s_build/THE-WORK.md")),
+        lines_of(
+            bench.project.path(),
+            &isolate::branch_for(&first.id, "s_build"),
+            "THE-WORK.md"
+        ),
         1,
         "the fixture is wrong if the first run does not leave exactly one line behind"
     );
@@ -373,7 +377,11 @@ async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<()
     let second = one_run(&deps, &again.request).await??;
 
     assert_eq!(
-        lines_of(&second.dir.join("work/s_build/THE-WORK.md")),
+        lines_of(
+            bench.project.path(),
+            &isolate::branch_for(&second.id, "s_build"),
+            "THE-WORK.md"
+        ),
         2,
         "the picked-up step opened a tree that does not carry what it wrote last time. One line \
          means it started from HEAD — a clean checkout — and did its work over again from \
@@ -384,9 +392,26 @@ async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<()
     Ok(())
 }
 
-/// Ile linii ma ten plik. `0`, kiedy pliku nie ma — czyli „krok niczego nie zostawił".
-fn lines_of(path: &Path) -> usize {
-    fs::read_to_string(path).map_or(0, |text| text.lines().count())
+/// Ile linii ma ten plik NA GAŁĘZI, którą bieg po sobie zostawił. `0`, kiedy nie ma gałęzi albo
+/// nie ma na niej tego pliku — czyli „krok niczego nie zostawił".
+///
+/// 2026-08-23 (T-95) — CZYTAMY Z GITA, NIE Z KATALOGU ROBOCZEGO. Do tego dnia ten instrument
+/// otwierał `work/s_build/THE-WORK.md` pod katalogiem biegu; od T-95 tego katalogu po biegu nie
+/// ma, bo praca jest w całości na gałęzi (`commands::isolate::finish`) i katalog nie dokładał do
+/// niej nic poza kopią repozytorium na dysku. Pytanie zostaje dokładnie to samo — ile razy ten
+/// krok pobiegł nad tym samym drzewem — zmienia się wyłącznie miejsce, w którym odpowiedź nadal
+/// jest.
+fn lines_of(project: &Path, branch: &str, path: &str) -> usize {
+    Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["show", &format!("{branch}:{path}")])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map_or(0, |out| {
+            String::from_utf8_lossy(&out.stdout).lines().count()
+        })
 }
 
 /// Projekt, który JEST repozytorium gita — bez tego nie ma gałęzi, więc nie ma czego wznawiać.

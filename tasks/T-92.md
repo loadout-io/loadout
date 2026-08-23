@@ -44,17 +44,49 @@ z domyślnym `None`) · `src-tauri/src/ipc.rs` (`put_note_to_use` — wzór kome
 - **Agent:** `rust-core` na AC-1…AC-5, potem `frontend` na AC-6 — jeden worktree, jedna bramka.
 - **Druga opinia:** inny vendor niż pisarz (D3).
 
+## Zmiana kryterium AC-1 i poszerzenie OWNS — decyzja właściciela 2026-08-23
+
+*To jest jedyna w tej fazie zmiana **treści kryterium**, więc jest opisana wprost.*
+
+Pierwszy bieg dał pięć z sześciu kryteriów zielonych i **28 padających testów w 20 plikach**.
+Przyczyna była jedna i leżała w tekście AC-1, nie w implementacji: kazał on uruchamiać turę
+refleksji „przez fabrykę sterowników" — czyli tę samą, którą podstawiają wszystkie testy.
+Każdy bieg dostawał wtedy jedno wywołanie sterownika więcej, a każda asercja licząca sesje to
+widziała; decydująca mówi wprost: „the driver closed 4 window(s) out of 2".
+
+Te liczby nie są przypadkowe i dlatego NIE podnosimy ich o jeden: pilnują, żeby bieg nie
+uruchomił więcej procesów, niż miał — czyli klasy błędu, która pali pieniądze. Poprawienie
+dwudziestu wyroczni, żeby przepuścić jedno zadanie, jest dokładnie tym, czego zabrania §5
+karty orchestratora.
+
+Refleksja jedzie więc **własnym szwem z domyślnym `None`**, wzorem `with_evidence`
+i `inheriting`: żaden istniejący test go nie ustawia, więc żaden nie widzi zmiany.
+Cena tej decyzji jest nazwana w drugiej połowie AC-1 — szew, którego produkcja nie podaje,
+byłby wpięciem w martwy kod, więc kryterium ma dowieść także wołającego.
+
+`src-tauri/commands.golden.txt` dochodzi do OWNS z tego samego powodu, co w T-93 i T-95:
+`discard_note` bez wiersza w goldenie to czerwień (`ipc_commands_registered.rs` asertuje
+równość zbiorów), a bez rejestracji — martwa kontrolka. Trzecie przeoczenie tego samego
+kształtu w tej fazie.
+
 ## AC-1 Po biegu zostają najwyżej trzy kandydatki, każda z powodem
 check: cargo test --test it a_run_leaves_suggestions::
 expect: (\d+) passed
 
 Po `close_the_book` biegu, który ma co najmniej jedno przekazanie, Loadout uruchamia **jedną**
-krótką turę refleksji (przez fabrykę sterowników, polityka tylko-do-odczytu, `cwd` = katalog
-biegu, model z jednej stałej, limit czasu z jednej stałej) z prośbą o najwyżej trzy rzeczy
-warte zapamiętania, każda jako wiersz `rule:` i wiersz `because:`. Każda poprawna para staje
-się notatką `suggested` o zakresie `this-project`, z `from` = id biegu. Notatka powstaje przez
-`record_candidate_for`, nigdy z `status: in-use`. Bieg bez przekazań nie woła refleksji wcale.
-Na `FakeDriver`: trzy pary → trzy pliki; cztery pary → trzy pliki; zero → zero.
+krótką turę refleksji — **własnym szwem, nie fabryką sterowników kroków**: pole typu
+`Option<…>` z domyślnym `None`, tak jak `with_evidence` i `inheriting` (polityka
+tylko-do-odczytu, `cwd` = katalog biegu, model z jednej stałej, limit czasu z jednej stałej).
+Prośba dotyczy najwyżej trzech rzeczy wartych zapamiętania, każda jako wiersz `rule:` i wiersz
+`because:`. Każda poprawna para staje się notatką `suggested` o zakresie `this-project`,
+z `from` = id biegu. Notatka powstaje przez `record_candidate_for`, nigdy z `status: in-use`.
+Bieg bez przekazań nie woła refleksji wcale. Na atrapie szwu: trzy pary → trzy pliki;
+cztery pary → trzy pliki; zero → zero.
+
+**Kryterium dowodzi OBU POŁÓW, i to jest jego druga połowa, nie ozdoba:** że przy podanym
+szwie kandydatki powstają, **oraz że droga produkcyjna ten szew podaje**. Szew z domyślnym
+`None`, którego nikt nie ustawia, to funkcja wyglądająca na gotową i niebiegnąca nigdy —
+czyli dokładnie ten kształt awarii, który to zadanie ma naprawić po stronie pamięci.
 
 ## AC-2 Kandydatka bez powodu nie powstaje, a powtórzenie nie tworzy drugiej
 check: cargo test --test it a_suggestion_needs_a_because::
@@ -120,6 +152,7 @@ src-tauri/src/engine/drivers/mod.rs
 src-tauri/src/engine/drivers/claude.rs
 src-tauri/src/engine/drivers/codex.rs
 src-tauri/src/ipc.rs
+src-tauri/commands.golden.txt
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/a_run_leaves_suggestions.rs
 src-tauri/tests/it/a_suggestion_needs_a_because.rs
