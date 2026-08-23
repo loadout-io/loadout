@@ -5897,10 +5897,20 @@ impl Live {
     /// kroki jednego biegu bywają dwoma różnymi agentami, a jeden katalog pamięci na obu daje
     /// notatkę, o której nie wiadomo, czyja jest.
     ///
-    /// Odmowa działa jak przy dowodach: `None` od produkcyjnego sterownika znaczy „nie udało się
-    /// napisać pliku", a krok bez tego pliku pisze pamięć do katalogu człowieka i nie egzekwuje
-    /// ani jednej odmowy gospodarza — więc nie rusza. Dubel silnika, który tego szwu nie ma,
-    /// zostaje użyteczny do testowania planisty.
+    /// # Odmowa czyta się z TYPU, nie z nazwy vendora (poprawione 2026-08-23, druga runda T-92)
+    ///
+    /// `Some(Err(…))` znaczy „ten sterownik plik bierze i nie udało się go napisać" — krok wtedy
+    /// **nie rusza**, bo bez tego pliku pisze pamięć do katalogu człowieka i nie egzekwuje ani
+    /// jednej odmowy gospodarza. `None` znaczy „ten vendor nie ma gdzie tego przyjąć" i krok
+    /// rusza normalnie: tak odpowiada Codex i tak odpowiada każdy dubel silnika, który o tym
+    /// szwie nic nie wie.
+    ///
+    /// Pierwsza runda miała tu `None if driver.id() == "claude"`, czyli to samo rozróżnienie
+    /// zgadywane po etykiecie vendora. Zmierzone: odmawiało startu każdemu dublerowi podającemu
+    /// się za `"claude"`, który tej metody nie implementuje — a `product_path_end_to_end`,
+    /// wyrocznia całej drogi produktu, jest właśnie takim dublerem i poszła na czerwono przy
+    /// sześciu zielonych kryteriach. Wyrocznia stoi poza blokiem `OWNS` tego zadania i nie ona
+    /// była tu wadą.
     fn with_its_own_settings(
         &self,
         id: StepId,
@@ -5916,7 +5926,7 @@ impl Live {
             deny: crate::engine::drivers::host::deny_rules(&job.cwd),
         };
         match driver.with_settings(&wanted) {
-            Some(carrying) => {
+            Some(Ok(carrying)) => {
                 // Katalog zakłada TA warstwa, nie sterownik: układ katalogów biegu jest jej
                 // wiedzą (`docs/ARCHITECTURE.md` §8), a sterownik, który wybiera sobie miejsce,
                 // wybiera `$TMPDIR` — czyli artefakt biegu poza biegiem. I dopiero TERAZ, kiedy
@@ -5926,10 +5936,12 @@ impl Live {
                 fs::create_dir_all(&wanted.memory)?;
                 Ok(carrying)
             }
-            None if driver.id() == "claude" => Err(anyhow::anyhow!(
+            // Powód od sterownika zostaje W ŁAŃCUCHU, pod zdaniem dla człowieka: „nie udało się
+            // napisać pliku" bez ścieżki i bez błędu systemu jest odmową, której nikt nie naprawi.
+            Some(Err(error)) => Err(error.context(
                 "this agent app could not be given its own settings file, so Loadout did not \
                  start the step: without it the step writes what it learns into the folder you \
-                 share with your own sessions, and forbids less than this project asked for."
+                 share with your own sessions, and forbids less than this project asked for.",
             )),
             None => Ok(Arc::clone(driver)),
         }

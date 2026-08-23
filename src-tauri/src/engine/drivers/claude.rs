@@ -2716,18 +2716,22 @@ impl AgentDriver for ClaudeDriver {
     /// a sterownik bywa jeden na całą aplikację, więc nadpisanie pola przepięłoby ścieżkę
     /// `--settings` krokowi, który akurat trwa.
     ///
-    /// Nieudany zapis to `None`, nie panika i nie cichy sterownik bez pliku. Wołający czyta to
-    /// jako odmowę i **nie startuje kroku** (`commands::run`), bo `--settings` bez pliku pod
-    /// podaną ścieżką zabija CLI, a `--settings` bez flagi w argv jest krokiem, który pisze
-    /// pamięć do katalogu człowieka i nie egzekwuje ani jednej odmowy gospodarza.
-    fn with_settings(&self, settings: &StepSettings) -> Option<Arc<dyn AgentDriver>> {
-        match RunSettings::for_step(settings) {
-            Ok(written) => Some(Arc::new(Self::with_settings(self.clone(), written))),
-            Err(error) => {
-                tracing::warn!(%error, "this step could not be given its own settings file");
-                None
-            }
-        }
+    /// Nieudany zapis to `Some(Err(…))`, nie panika, nie `None` i nie cichy sterownik bez pliku.
+    /// Wołający czyta to jako odmowę i **nie startuje kroku** (`commands::run`), bo `--settings`
+    /// bez pliku pod podaną ścieżką zabija CLI, a krok bez tej flagi w argv pisze pamięć do
+    /// katalogu człowieka i nie egzekwuje ani jednej odmowy gospodarza.
+    ///
+    /// `Some`, ZAWSZE — także wtedy, kiedy zapis padł. `None` znaczy w tym szwie „nie mam gdzie
+    /// tego przyjąć", a ten sterownik ma: mylenie tych dwóch odpowiedzi kosztowało pierwszą rundę
+    /// T-92 rozróżnianie ich po `driver.id()` u wołającego (powód w całości przy
+    /// [`AgentDriver::with_settings`]).
+    fn with_settings(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
+        Some(RunSettings::for_step(settings).map(|written| {
+            Arc::new(Self::with_settings(self.clone(), written)) as Arc<dyn AgentDriver>
+        }))
     }
 }
 

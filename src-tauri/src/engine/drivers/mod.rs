@@ -687,7 +687,30 @@ pub trait AgentDriver: Send + Sync {
     /// vendor, który nie umie wczytać naszego pliku, **nie może** dostać jego ścieżki, a wołający
     /// ma o tym wiedzieć. `None` znaczy „ten vendor nie ma gdzie tego przyjąć" — Codex zwraca
     /// właśnie to i nie dostaje nic.
-    fn with_settings(&self, _settings: &StepSettings) -> Option<Arc<dyn AgentDriver>> {
+    ///
+    /// # Dlaczego `Option<Result<…>>`, a nie samo `Option` (2026-08-23, T-92, druga runda)
+    ///
+    /// Bo to są DWIE różne odpowiedzi i wołający robi po nich dwie różne rzeczy:
+    ///
+    /// - `None` — „nie mam gdzie tego przyjąć". Krok rusza bez pliku, bo ten vendor i tak by go
+    ///   nie wczytał. Tak odpowiada Codex, tak odpowiada domyślna implementacja i tak odpowiada
+    ///   każda atrapa, która o tym szwie nic nie wie.
+    /// - `Some(Err(…))` — „biorę i **nie udało się**". Krok NIE rusza. Bez tego pliku pisze to,
+    ///   czego się uczy, do katalogu, który człowiek dzieli ze swoimi sesjami [T6 §10.4],
+    ///   i zabrania sobie mniej, niż ten projekt kazał (`host::deny_rules`) — czyli cicho traci
+    ///   dokładnie to, po co ten szew powstał.
+    ///
+    /// **Pierwsza runda tego zadania spłaszczyła te dwie odpowiedzi do jednego `None`** i musiała
+    /// je z powrotem rozdzielić po nazwie vendora: `None if driver.id() == "claude"` znaczyło
+    /// „skoro to Claude, to `None` może być tylko awarią zapisu". Zmierzone: to zdanie odmawia
+    /// startu każdemu dublerowi, który podaje się za `"claude"` i o tym szwie nie wie — a takich
+    /// jest w drzewie trzy. Jeden z nich (`product_path_end_to_end`) sądzi całą drogę produktu
+    /// i poszedł przez to na czerwono przy zielonych kryteriach. Rozróżnienie w TYPIE nie da się
+    /// tak pomylić i nie kosztuje żadnej atrapy ani jednej linii.
+    fn with_settings(
+        &self,
+        _settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
         None
     }
 

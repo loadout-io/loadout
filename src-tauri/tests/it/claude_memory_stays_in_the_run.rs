@@ -208,8 +208,11 @@ fn the_settings_file_points_this_step_at_its_own_memory_directory() -> Result<()
     // `Arc<dyn AgentDriver>` raz na aplikację, więc konkretny typ jest w kroku już zgubiony
     // i budowniczy z T-53 jest stamtąd nieosiągalny.
     let driver: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
+    // `Some(Ok(_))`, nie samo `is_some()`: `None` znaczy w tym szwie „nie mam gdzie tego
+    // przyjąć", a `Some(Err(_))` — „biorę i nie udało się". Pierwsza runda T-92 miała tu jedno
+    // `None` na obie te odpowiedzi i wołający rozróżniał je po nazwie vendora.
     assert!(
-        driver.with_settings(&step).is_some(),
+        matches!(driver.with_settings(&step), Some(Ok(_))),
         "the claude driver has no way to take a settings file through the trait. The builder on \
          the concrete type has been complete and unreachable since T-53: a run holds \
          `Arc<dyn AgentDriver>`, so without this seam every step keeps writing its memory into \
@@ -531,12 +534,19 @@ impl AgentDriver for Fake {
     }
 
     /// Klon z własnym katalogiem — dokładnie ten kształt, który ma `ClaudeDriver::inheriting`.
-    fn with_settings(&self, settings: &StepSettings) -> Option<Arc<dyn AgentDriver>> {
+    ///
+    /// `Some(Ok(…))`, bo ten dubel plik ustawień **bierze i bierze go z powodzeniem**. `None`
+    /// znaczyłoby „nie mam gdzie tego przyjąć" i krok pojechałby bez pliku, a `Some(Err(…))` —
+    /// „biorę i nie udało się", czyli odmowę startu.
+    fn with_settings(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
         self.seen.record(settings.clone());
-        Some(Arc::new(Self {
+        Some(Ok(Arc::new(Self {
             seen: Arc::clone(&self.seen),
             memory: Some(settings.memory.clone()),
-        }))
+        })))
     }
 
     async fn start(
