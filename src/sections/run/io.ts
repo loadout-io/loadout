@@ -32,7 +32,7 @@ import { wireChannel } from '../../ipc/run';
  * przepisywałaby linie biegu z zakresu A do sesji zakresu B w chwili przełączenia, i wyglądałoby
  * to na ekranie jak dwa pomieszane biegi. Nagłówki `./feed/live` i `../../state/run` mówią to
  * samo z drugiej strony. */
-import { runFor } from '../../state/run';
+import { runFor, type RunStore } from '../../state/run';
 import type { Step } from '../../state/run';
 import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
@@ -213,6 +213,7 @@ export function start(
    * karty ubija jedyny bieg". `stop_run` nie bierze identyfikatora, więc jedyne, co okno może
    * zrobić uczciwie, to nie wołać go dla karty, do której ten bieg nie należy — a do tego
    * musi wiedzieć, gdzie on idzie. Wie, bo sam ten folder tu wysyła (patrz `invoke` niżej). */
+  const putBack = whatWasRunning(session);
   session.getState().nowRunning(what.name, what.steps, folder, workflow);
 
   const run = invoke<void>('run_workflow', {
@@ -239,8 +240,11 @@ export function start(
     going = null;
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
      * zawsze i jest kontrolką bez roboty (niezmiennik 16), a pasek loadoutu opisuje bieg,
-     * którego nie ma. `finally`, nie `then`: odmowa jest zejściem tak samo jak koniec. */
-    session.getState().nowRunning('', [], null);
+     * którego nie ma. `finally`, nie `then`: odmowa jest zejściem tak samo jak koniec.
+     *
+     * ODTWARZAMY, nie zerujemy — powód w całości stoi przy [`whatWasRunning`]. Dla startu,
+     * który naprawdę ruszył, to jest to samo zerowanie, co wcześniej. */
+    putBack();
     /* Bieg zszedł, więc nie stoi już na niczyim pytaniu: kontrolka „dalej" ma zniknąć razem
      * z nim, także wtedy, gdy człowiek odpowiedział na punkt kontrolny i biegu nie puścił.
      * Bez tej linii zostawałaby na ekranie po biegu, którego nie ma (niezmiennik 16).
@@ -326,6 +330,7 @@ export function ask(
    * do bloków po tym kluczu (`state/run.ts`, `withStepStates`), a po tamtej stronie ten sam
    * klucz nosi kafelek jednokrokowego planu (`commands::run::plan_ask`). Uuid kroku powstaje
    * w Ruście, więc okno nigdy go nie widziało — pasek stałby na „waiting" do końca biegu. */
+  const putBack = whatWasRunning(session);
   session
     .getState()
     .nowRunning(who.name, [{ id: who.id, name: who.name, state: 'pending' }], folder);
@@ -340,7 +345,7 @@ export function ask(
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
      * zawsze i jest kontrolką bez roboty (niezmiennik 16). Powód w całości stoi przy [`start`],
      * razem z tym, dlaczego to jest `finally`, a nie `then`. */
-    session.getState().nowRunning('', [], null);
+    putBack();
     view.runEnded();
   });
 }
@@ -476,6 +481,45 @@ export function resumeRun(
 }
 
 /**
+ * Co zrobić z paskiem żywego biegu, kiedy start, który go nadpisał, **nigdy nie ruszył**.
+ *
+ * # Po co to istnieje
+ *
+ * Zgłoszenie właściciela 2026-08-23, zrzut ekranu z dwoma zdaniami pod rząd: Loadout odmawia
+ * („A run is already going… Press Stop first"), a zaraz pod spodem `/stop` odpowiada
+ * **„Nothing is running."** — o biegu, który w tej chwili pracował już czterdzieści minut.
+ * Odmowa nazywa następny ruch, a ten ruch nie istnieje: z tego wiersza nie dało się już
+ * zatrzymać niczego.
+ *
+ * PRZYCZYNA NIE JEST W STOPIE. Każdy start pisze do sesji „teraz biegnie to" **przed** `invoke`,
+ * bo komenda po tamtej stronie trwa tyle, co bieg. `/ask` nie ma przy tym zapadki `going`
+ * i ma jej nie mieć (powód stoi przy [`askOneAgent`]) — więc dochodzi do Rusta, dostaje odmowę,
+ * a jego `finally` woła `nowRunning('', [], null)`. Zdanie „bieg zszedł" jest wtedy prawdziwe
+ * o biegu, który nie ruszył, i **fałszywe o tym, który pracuje**: obu dotyczy jeden wpis
+ * w jednej sesji zakresu. Od tej chwili okno uważa, że nic nie biegnie, a Stop znika.
+ *
+ * # Dlaczego ODTWORZENIE, a nie „nie kasuj przy odmowie"
+ *
+ * Bo `finally` nie odróżnia odmowy od porażki w połowie biegu, a rozdzielanie tego na
+ * `then`/`catch` dawałoby dwie drogi do jednej odpowiedzi. Odtworzenie jest poprawne w OBU
+ * przypadkach i nie wymaga tego rozróżnienia: jeżeli ten start naprawdę ruszył, to Rust go
+ * wpuścił, czyli przed nim nie biegło nic — a wtedy „odtwórz stan sprzed" znaczy dokładnie
+ * tyle samo, co „wyczyść". Różnicę widać wyłącznie tam, gdzie coś już szło.
+ */
+function whatWasRunning(session: RunStore): () => void {
+  const before = session.getState();
+  const kept = {
+    workflow: before.workflow,
+    steps: before.steps,
+    folder: before.folder,
+    fileName: before.fileName,
+  };
+  return () => {
+    session.getState().nowRunning(kept.workflow, kept.steps, kept.folder, kept.fileName);
+  };
+}
+
+/**
  * Bieg, który NIE zaczyna się od Startu — a poza tym jest biegiem jak każdy inny.
  *
  * 2026-08-23 — POWSTAŁO Z DEFEKTU ZE ZRZUTU WŁAŚCICIELA: nacisnął `/stop` nad pracującym
@@ -523,11 +567,13 @@ function asARun(
    * właśnie skończył. Kroków nie podajemy: przy wznowieniu okno nie wie z góry, które węzły
    * wejdą do wycinka, a wypełniacz byłby paskiem rysującym bloki, których nie ma
    * (niezmiennik 17). Nadejdą ze strumienia. */
+  const putBack = whatWasRunning(session);
   session.getState().nowRunning(name, [], folder, fileName);
 
   const run = send(lines).finally(() => {
     going = null;
-    session.getState().nowRunning('', [], null);
+    // Odtworzenie, nie zerowanie; powód stoi przy [`whatWasRunning`].
+    putBack();
     view.runEnded();
   });
   going = run;
