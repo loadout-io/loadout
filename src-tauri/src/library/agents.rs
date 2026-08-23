@@ -165,6 +165,15 @@ pub enum Color {
 /// w każdym `git diff`.
 pub type VendorOptions = BTreeMap<String, BTreeMap<String, String>>;
 
+/// Domyślna wartość [`Agent::reaches_the_web`] — powód stoi przy tym polu.
+///
+/// Funkcja, a nie `#[serde(default)]`, bo `bool` domyśla się `false`. Bez niej ta domyślna
+/// obowiązywałaby wyłącznie nowych agentów, a każdy plik zapisany wcześniej czytałby się
+/// z siecią wyłączoną.
+pub(crate) const fn reaching_the_web() -> bool {
+    true
+}
+
 /// Zapisany agent. Piętnaście kluczy na drucie i ani jednego z podkreśleniem.
 ///
 /// `deny_unknown_fields` jest tu jedyną obroną przed defektem zmierzonym w T4 §9:
@@ -217,8 +226,24 @@ pub struct Agent {
     /// wpuszczona w dial dawałaby wybór między „widzi świat i może zepsuć pliki" a „nie zepsuje
     /// niczego i nie widzi nic".
     ///
-    /// `#[serde(default)]` — każdy zapisany agent czyta się dalej i nie dostaje sieci po cichu.
-    #[serde(default)]
+    /// # Domyślnie WŁĄCZONE — rozstrzygnięcie właściciela z 2026-08-23
+    ///
+    /// Pole weszło z domyślną `false` i z powodem: sieć włączona bez pytania jest poszerzeniem
+    /// uprawnień, o które nikt nie prosił. Właściciel to rozstrzygnął w drugą stronę tego samego
+    /// dnia — „niech to będzie true by default" — i rozstrzygnięcie stoi na jego liczbach:
+    /// w bibliotece 18 agentów, ani jeden z siecią, bo do wyłączonej domyślnej trzeba było
+    /// TRAFIĆ, a nikt nie trafiał. Kontrolka, której nikt nie znajduje, jest kontrolką, której
+    /// nie ma — a agent do researchu bez internetu jest droższą pomyłką niż weryfikator, który
+    /// przy okazji może coś doczytać.
+    ///
+    /// **Dial to zostaje nietknięty.** Sieć nie daje ani jednego czasownika plikowego: „look
+    /// only" dalej znaczy „nie zmienia plików", u obu vendorów, i tego pilnują kryteria.
+    ///
+    /// `default = "reaching_the_web"`, a nie `#[serde(default)]`: `bool` domyśla się `false`,
+    /// więc bez tej funkcji każdy plik zapisany przed tą zmianą czytałby się z siecią wyłączoną
+    /// — czyli domyślna obowiązywałaby wyłącznie nowych agentów, a stara biblioteka zostałaby
+    /// tam, gdzie była. To byłyby dwie różne odpowiedzi na jedno pytanie (niezmiennik 13).
+    #[serde(default = "reaching_the_web")]
     pub reaches_the_web: bool,
     pub skills: Vec<String>,
     /// Nazwy serwerów narzędziowych. W interfejsie: `Connections`.
@@ -257,7 +282,7 @@ impl Agent {
             file_access: FileAccess::WorkFreely,
             give_up_after_minutes: 20,
             tools: Tools::Everything,
-            reaches_the_web: false,
+            reaches_the_web: reaching_the_web(),
             skills: Vec::new(),
             connections: Vec::new(),
             write_results_to: "handoffs/build.md".to_string(),

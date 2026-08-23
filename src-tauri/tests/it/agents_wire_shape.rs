@@ -147,3 +147,45 @@ fn the_three_enums_spell_their_values_the_way_the_frontend_reads_them() -> Resul
     );
     Ok(())
 }
+
+/* 2026-08-23 — DOMYŚLNA SIECI JEST WŁĄCZONA, TAKŻE DLA PLIKÓW ZAPISANYCH WCZEŚNIEJ.
+ *
+ * Rozstrzygnięcie właściciela („niech to będzie true by default") stoi na jego liczbach:
+ * 18 zapisanych agentów, ani jeden z siecią, bo do wyłączonej domyślnej trzeba było TRAFIĆ.
+ *
+ * SŁABĄ WERSJĄ jest sprawdzenie nowo zbudowanego agenta. Przechodzi ją `#[serde(default)]` na
+ * `bool`, czyli `false` — a wtedy domyślna obowiązuje wyłącznie agentów utworzonych po tej
+ * zmianie, a cała istniejąca biblioteka zostaje tam, gdzie była. To są dwie różne odpowiedzi
+ * na jedno pytanie. Dlatego sądzony jest PLIK BEZ TEGO KLUCZA, wypisany tu literalnie.
+ */
+#[test]
+fn an_agent_saved_before_this_key_existed_reads_back_with_the_web_on() -> Result<(), Box<dyn Error>>
+{
+    let older = r#"{
+      "schema": 1,
+      "id": "0198a1f2-3b4c-7d5e-8f60-000000000001",
+      "name": "Scout",
+      "summary": "Looks things up",
+      "color": "clay",
+      "instructions": "Find out how this works.",
+      "runsWith": "claude-code",
+      "model": "sonnet",
+      "thinking": "balanced",
+      "fileAccess": "look-only",
+      "giveUpAfterMinutes": 20,
+      "tools": "everything",
+      "skills": [],
+      "connections": [],
+      "writeResultsTo": ""
+    }"#;
+
+    let read: Agent = serde_json::from_str(older)?;
+
+    assert!(
+        read.reaches_the_web,
+        "an agent saved before this key existed has to come back with the web on. Reading it as \
+         off would mean the default holds for new agents only, and every agent the person \
+         already has stays behind — one question with two answers"
+    );
+    Ok(())
+}

@@ -441,7 +441,7 @@ fn claude_agent_from_fields(
         } else {
             Tools::Only(tools)
         },
-        reaches_the_web: false,
+        reaches_the_web: crate::library::agents::reaching_the_web(),
         skills,
         connections,
         write_results_to: String::new(),
@@ -521,7 +521,7 @@ fn codex_agent(
             file_access,
             give_up_after_minutes: 20,
             tools: Tools::Everything,
-            reaches_the_web: false,
+            reaches_the_web: crate::library::agents::reaching_the_web(),
             skills: Vec::new(),
             connections: nested_toml_tables(&file.content, "mcp_servers"),
             write_results_to: String::new(),

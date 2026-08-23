@@ -23,8 +23,13 @@
 //!
 //! # I DRUGA STRONA, bez której to kryterium zazieleniłoby wpuszczenie sieci na stałe
 //!
-//! Agent BEZ tego wyboru dostaje dokładnie to, co dostawał przedtem: żadnego `WebFetch`, żadnego
-//! `network_access`. Sieć włączona domyślnie jest zmianą uprawnień, o którą nikt nie prosił.
+//! Agent, któremu człowiek sieć **wyłączył**, ma jej naprawdę nie dostać: ani `WebFetch`, ani
+//! `network_access`. Bez tej połowy przechodzi implementacja, która pole czyta i ignoruje —
+//! a wtedy przełącznik jest napisem, i to napisem o uprawnieniach.
+//!
+//! Domyślna jest od 2026-08-23 WŁĄCZONA (rozstrzygnięcie właściciela, powód stoi przy
+//! `Agent::reaches_the_web`), więc „bez wyboru" i „z wyborem na tak" to dziś ten sam stan —
+//! rozróżnialny jest wyłącznie stan wyłączony i on jest tu sądzony.
 
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
@@ -132,13 +137,13 @@ fn codex_gets_network_access_in_its_sandbox() {
 }
 
 #[test]
-fn an_agent_without_the_switch_gets_what_it_always_got() -> Result<(), Box<dyn Error>> {
+fn an_agent_with_the_switch_off_reaches_nothing() -> Result<(), Box<dyn Error>> {
     let claude = claude_argv(&spec(Policy::ReadOnly, false));
     let available = after(&claude, "--tools").ok_or("--tools is missing")?;
     assert!(
         !available.contains("Web"),
-        "the web arrived without anybody asking for it. Switched on by default it is a change of \
-         permissions nobody chose. Got: {available}"
+        "the person switched this off and the web came anyway. A control whose value the driver \
+         does not read is a label, and this one is a label about permissions. Got: {available}"
     );
 
     let codex = build_exec_argv(&spec(Policy::EditInFolder, false));

@@ -174,7 +174,11 @@ function blankAgent(): Agent {
     fileAccess: 'look-only',
     giveUpAfterMinutes: 10,
     tools: 'everything',
-    reachesTheWeb: false,
+    /* WŁĄCZONA, i to jest rozstrzygnięcie właściciela z 2026-08-23, nie wypełniacz. Powód stoi
+     * przy `Agent::reaches_the_web` w Ruście: do wyłączonej domyślnej trzeba było TRAFIĆ,
+     * a w jego bibliotece nie trafił nikt — 18 agentów, ani jeden z siecią. Dial zostaje przy
+     * tym najwęższy z trzech: sieć nie daje ani jednego czasownika plikowego. */
+    reachesTheWeb: true,
     skills: [],
     connections: [],
     writeResultsTo: '',
