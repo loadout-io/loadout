@@ -38,9 +38,33 @@
 //!
 //! Polityka „co znaczy które zdarzenie" zostaje w sterowniku, a nie jest tu przepisana
 //! (niezmiennik 23): dwa mapowania Claude'a w dwóch plikach rozjechałyby się przy pierwszej
-//! zmianie u vendora, a rozjechałyby się po cichu. T-10 dokłada `decode_codex` o tym samym
-//! zwrocie ([`Decoded`]) i nie tyka ani kuratora, ani tej pętli — to jest test, czy ten szew
-//! jest abstrakcją, czy fikcją.
+//! zmianie u vendora, a rozjechałyby się po cichu.
+//!
+//! # `decode_codex` — bliźniak, i dlaczego czekał do 2026-08-24 (T-97)
+//!
+//! Do tego dnia stało tu zdanie „T-10 dokłada `decode_codex` o tym samym zwrocie". T-10 go nie
+//! dołożyło i nie mogło: `CodexDriver` wypuszczał [`DecodedEvent`] z `tool: None`, więc kurator
+//! nie miał z czego wybrać wariantu wiersza i krok Codeksa pokazywał **wyłącznie prozę** — ani
+//! jednego `Read`, `Edit` czy `Ran`, choć jego strumień je niesie.
+//!
+//! Brakowało jednej rzeczy i nie był nią kod: **przechwytu**. `codex-stream.jsonl` ze spike'u S-3
+//! jest kopertą awaryjną (`thread.started`, `turn.started`, `error`, `turn.failed`) — tamten bieg
+//! wpadł w limit konta, zanim agent cokolwiek zrobił, więc nie ma w nim ANI JEDNEGO `item.*`.
+//! Dekoder napisany pod same kształty z dokumentacji byłby przetestowany wobec naszych przekonań,
+//! a nie wobec tego, co Codex naprawdę wypisuje — dokładnie ta cicha porażka, przed którą
+//! ostrzega S-3. Plik został więc **nietknięty**: kryterium tamtego spike'u sprawdza właśnie
+//! wariant „zablokowany" i asertuje, że nie ma w nim `item.completed`.
+//!
+//! Żywy strumień wszedł **obok**, jako `docs/research/fixtures/codex-stream-live.jsonl` — 11 linii
+//! z prawdziwego `codex exec --json`, i to on jest wejściem tego dekodera.
+//!
+//! Czego w nim nie ma i nie będzie: `reasoning`. Zmierzone 2026-08-24 na `codex-cli 0.148.0`
+//! trzema drogami — sześć prawdziwych biegów, sonda z siecią i sonda z
+//! `model_reasoning_effort=high` plus `model_reasoning_summary=detailed` — **ten typ nie pada
+//! w trybie `exec` ani razu**; tabela w `ARCHITECTURE.md` §6 wymienia go za raportem T2 i ta
+//! pozycja się zestarzała. Odwzorowanie istnieje mimo to i sądzi je linia podana dekoderowi
+//! wprost (`codex_steps_show_their_actions`), żeby zadziałało w dniu, w którym vendor je włączy;
+//! dopisanie go do złotego pliku byłoby wymyśleniem biegu, który się nie zdarzył.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -52,6 +76,7 @@ use tokio::sync::mpsc;
 
 use super::drivers::AgentEvent;
 use super::drivers::claude::ClaudeDecoder;
+use super::drivers::codex::CodexDecoder;
 use super::line::{Action, Curator, Line, Seen, Tool};
 
 /// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
@@ -303,6 +328,195 @@ pub fn decode(claude: &mut ClaudeDecoder, line: &str) -> Decoded {
         .collect();
 
     Decoded::Events(events)
+}
+
+/// Linia drutu Codeksa → zdarzenia gotowe dla kuratora.
+///
+/// Bliźniak [`decode`] i **drugi dekoder przed tym samym kuratorem**, nigdy drugi kurator:
+/// reguły zwijania, wybór wariantu wiersza i licznik zostają jedną maszyną w [`Curator`]
+/// (niezmiennik 15). Tutaj dochodzi wyłącznie to, czego [`AgentEvent`] świadomie nie niesie —
+/// rodzina czynności, **pełna** ścieżka i **pełne** wyjście [T1 §8.2].
+///
+/// # Dlaczego to stoi tu, a nie w `drivers/codex.rs`
+///
+/// Bo tam byłaby druga implementacja kuracji (niezmienniki 15 i 23), a sterownik ma zostać
+/// tabelą „co znaczy które zdarzenie" i niczym więcej. Nagłówek `codex.rs` zgłaszał tę dziurę
+/// od T-10 wprost: „transkrypt kroku Codeksa pokaże prozę agenta, ale nie wiersze `read`, `edit`
+/// ani `ran`". To jest jej domknięcie.
+///
+/// # Parowanie idzie po `id` czynności, z TEJ SAMEJ linii
+///
+/// Codex opisuje jedną czynność dwiema liniami (`item.started`, potem `item.completed`) i obie
+/// niosą jej `id`. Fakt zbudowany z innej linii niż zdarzenie rozjechałby się na pierwszej turze,
+/// w której dwie czynności są w locie naraz — a przy Codeksie są, bo komenda i szukanie potrafią
+/// iść równolegle.
+pub fn decode_codex(codex: &mut CodexDecoder, line: &str) -> Decoded {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return Decoded::Unrecognised;
+    };
+
+    let facts = codex_facts(&value);
+    let events = codex
+        .push(line)
+        .into_iter()
+        .map(|event| {
+            let tool = match &event {
+                AgentEvent::ToolStart { id, .. } | AgentEvent::ToolEnd { id, .. } => {
+                    facts.get(id).cloned()
+                }
+                // ZMIANA PLIKU NIE MA U CODEKSA `id` CZYNNOŚCI, bo nie jest u niego czynnością:
+                // `item.completed` typu `file_change` daje po jednym `FileEdit` na plik i ani
+                // jednego `ToolStart`. Kluczem jest więc ścieżka — jedyna wartość, którą niosą
+                // i zdarzenie, i ta sama linia drutu.
+                AgentEvent::FileEdit { path } => facts.get(&path.display().to_string()).cloned(),
+                _ => None,
+            };
+            DecodedEvent { event, tool }
+        })
+        .collect();
+
+    Decoded::Events(events)
+}
+
+/// Fakty o czynnościach z jednej linii Codeksa, po identyfikatorze czynności (albo po ścieżce).
+///
+/// To jest cała różnica między [`AgentEvent`] a tym, czego potrzebuje kuracja — ta sama, którą
+/// po stronie Claude'a wypełnia [`tool_facts`]: zdarzenie niesie etykietę po ludzku i `id`,
+/// a wiersz potrzebuje **rodziny** czynności (`Ran` to nie `Edit`), **pełnej ścieżki** i **pełnego
+/// wyjścia** (bez niego reguła 3 nie ma z czego wziąć dwudziestu linii).
+///
+/// Pusta mapa jest normalną odpowiedzią: `thread.started`, `turn.started` i `turn.completed`
+/// nie opisują żadnej czynności.
+fn codex_facts(value: &Value) -> HashMap<String, Tool> {
+    let mut facts = HashMap::new();
+    let Some(item) = value.get("item") else {
+        return facts;
+    };
+    // Zapowiedź czy wynik — rozstrzyga typ LINII, nie pole `status` w środku: `status` bywa
+    // nieobecny, a wtedy fakt „skończone" nie do odróżnienia od „ruszyło".
+    let began = value.get("type").and_then(Value::as_str) == Some("item.started");
+
+    match item.get("type").and_then(Value::as_str) {
+        Some("command_execution") => {
+            let Some(id) = text_at(item, "id") else {
+                return facts;
+            };
+            if began {
+                if let Some(command) = text_at(item, "command") {
+                    facts.insert(
+                        id,
+                        Tool::Started {
+                            action: Action::Ran,
+                            target: command,
+                        },
+                    );
+                }
+            } else {
+                // PEŁNE wyjście, nieprzycięte: przycinanie jest kuracją i dzieje się w
+                // [`Curator`], a reguła 3 potrzebuje OSTATNICH dwudziestu linii — czyli tych,
+                // które każde skrócenie po drodze zabiera jako pierwsze.
+                facts.insert(
+                    id,
+                    Tool::Ended {
+                        output: text_at(item, "aggregated_output").unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        Some("web_search") => {
+            let Some(id) = text_at(item, "id") else {
+                return facts;
+            };
+            /* ZAPYTANIE PRZYCHODZI O LINIĘ ZA PÓŹNO, i to jest zmierzony fakt o tym vendorze
+             * (`codex-stream-live.jsonl`, 2026-08-24): `item.started` typu `web_search` niesie
+             * `query: ""`, a prawdziwe zapytanie stoi dopiero w `item.completed`.
+             *
+             * Zapowiedź zakłada więc fakt **z pustym tematem** i to jest celowe: wiersz otwiera
+             * wyłącznie `Curator::tool_start`, więc zapowiedź bez faktu znaczyłaby brak wiersza
+             * w ogóle — szukanie zniknęłoby z transkryptu, choć się odbyło. Temat dokłada
+             * `Curator::tool_end` z linii, która go zna. */
+            let query = text_at(item, "query");
+            if began {
+                facts.insert(
+                    id,
+                    Tool::Started {
+                        action: Action::Search,
+                        target: query.unwrap_or_default(),
+                    },
+                );
+            } else {
+                facts.insert(
+                    id,
+                    Tool::Ended {
+                        output: query.unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        Some("mcp_tool_call") => {
+            let Some(id) = text_at(item, "id") else {
+                return facts;
+            };
+            // Serwer narzędzi jedzie jako `Ran`, tak samo jak u Claude'a `mcp__<serwer>__<nazwa>`
+            // (patrz [`action_of`]): to jest czynność w cudzej aplikacji, nie czytanie pliku.
+            let label = [text_at(item, "server"), text_at(item, "tool")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if began {
+                if !label.is_empty() {
+                    facts.insert(
+                        id,
+                        Tool::Started {
+                            action: Action::Ran,
+                            target: label,
+                        },
+                    );
+                }
+            } else {
+                facts.insert(id, Tool::Ended { output: label });
+            }
+        }
+        Some("file_change") if !began => {
+            // Po jednym fakcie na PLIK, nie jednym na czynność: `changes[]` bywa listą, a jeden
+            // wiersz na całą listę powiedziałby człowiekowi, że zmienił się jeden plik, podczas
+            // gdy zmieniły się trzy. Klucz jest ścieżką, bo tym samym kluczem szuka wyżej
+            // `FileEdit` — u tego vendora zmiana pliku nie ma `id` czynności.
+            for change in item
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                if let Some(path) = text_at(change, "path") {
+                    facts.insert(
+                        path.clone(),
+                        Tool::Started {
+                            action: Action::Edit,
+                            target: path,
+                        },
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+
+    facts
+}
+
+/// Niepusty napis spod klucza — albo nic.
+///
+/// Pusty napis jest tu tym samym, co brak pola: `query: ""` w zapowiedzi szukania niesie tyle
+/// samo treści, co jego nieobecność, a wiersz zbudowany na nim byłby wierszem bez tematu.
+fn text_at(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 /// Bloki treści wiadomości, jeśli linia w ogóle je niesie.

@@ -2278,7 +2278,12 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
     // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby
     // pojechać z inną polityką, niż ta, którą przepuszczono jego narzędzia.
     let policy = policy_of(effective.file_access);
-    let tools = what_this_step_may_use(&effective, policy, step)?;
+    // FABRYKA WOŁANA TUTAJ, a nie tuż przed literałem struktury: od 2026-08-24 to adapter
+    // odpowiada, czy ten vendor w ogóle zawęża narzędzia, więc sterownik musi istnieć, zanim
+    // padnie pytanie o sufit. Nadal **raz na krok, przy planowaniu** — powód bez zmian stoi
+    // niżej, przy `borrowing_is_possible`.
+    let driver = (setup.drivers)(effective.runs_with);
+    let tools = what_this_step_may_use(&effective, policy, step, &driver)?;
     let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
@@ -2322,14 +2327,15 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         }
     }
 
-    // Fabryka wołana **raz, przy planowaniu**, a nie w kroku: etykieta vendora stoi
-    // w `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo wracać, także
-    // wtedy, gdy krok nigdy nie ruszył. Wyjęta ponad literał struktury, bo pytanie „czy ten
-    // program w ogóle umie przyjąć katalog pluginu" zadajemy właśnie jej — i zadajemy je
-    // ZANIM powstanie katalog biegu.
-    let driver = (setup.drivers)(effective.runs_with);
+    // Sterownik stoi już wyżej (przy suficie narzędzi) i jest **jeden na krok**: etykieta
+    // vendora idzie do `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo
+    // wracać, także wtedy, gdy krok nigdy nie ruszył. Pytanie „czy ten program w ogóle umie
+    // przyjąć katalog pluginu" zadajemy tej samej instancji i ZANIM powstanie katalog biegu.
     let borrows = what_this_step_borrows(&step.borrow);
     borrowing_is_possible(setup.project, &driver, &borrows, step)?;
+    // Policzone, ZANIM sterownik wejdzie do struktury: `Arc` idzie tam przez przeniesienie,
+    // a klon tylko po to, żeby zadać jedno pytanie, byłby drugim uchwytem do niczego.
+    let frozen = what_was_frozen(&effective, &driver)?;
 
     Ok(AgentJob {
         driver,
@@ -2383,8 +2389,44 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         },
         // Ta sama liczba, nietknięta — to ją dostaje agent (`Live::how_long_this_step_has`).
         minutes: effective.give_up_after_minutes,
-        effective: serde_json::to_value(&effective)?,
+        effective: frozen,
     })
+}
+
+/// Zdanie dla człowieka, którego lista narzędzi nie miała u tego vendora czego zawęzić.
+///
+/// Brzmi jak zdanie z formularza agenta (`src/sections/agents/more-settings.tsx`) i to jest
+/// świadome: ten sam fakt powiedziany dwoma różnymi zdaniami czyta się jak dwa różne fakty.
+const NOTHING_TO_NARROW: &str = "Codex doesn't take a list of tools, so this agent's list was left out. What it may reach is \
+     set by 'Can change files'.";
+
+/// Migawka konfiguracji efektywnej — plus jedno zdanie, kiedy bieg czegoś z niej nie użył.
+///
+/// # Po co zdanie ląduje W MIGAWCE, a nie obok niej
+///
+/// `run.json` jest jedyną rzeczą, która przeżywa skasowanie indeksu (niezmiennik 4), a migawka
+/// jest w nim tym miejscem, które odpowiada na pytanie „z czym ten krok naprawdę pojechał".
+/// Ustawienie, które ekran przyjął, a bieg pominął, jest bez tego zdania kontrolką bez skutku
+/// (niezmiennik 16) — z tą różnicą, że schowaną o warstwę głębiej niż martwy przycisk, bo
+/// „agent nie użył narzędzia" jest z zewnątrz nieodróżnialne od „agent uznał, że nie warto".
+///
+/// Klucz dopisany **po serializacji**, a nie pole w [`Agent`]: definicja agenta na dysku opisuje
+/// wybór człowieka, a to jest zdanie o jednym biegu. Pole w tamtym typie wróciłoby do biblioteki
+/// przy pierwszym zapisie i zostało tam na zawsze.
+fn what_was_frozen(agent: &Agent, driver: &Arc<dyn AgentDriver>) -> Result<Value, RunError> {
+    let mut frozen = serde_json::to_value(agent)?;
+    // Tylko wtedy, gdy człowiek naprawdę coś wpisał: „wszystkie narzędzia" u vendora bez listy
+    // to nie jest pominięcie, tylko zgodność, i zdanie o niej byłoby szumem w każdym biegu.
+    if !driver.narrows_its_tools()
+        && matches!(agent.tools, Tools::Only(_))
+        && let Some(fields) = frozen.as_object_mut()
+    {
+        fields.insert(
+            "toolsNote".to_owned(),
+            Value::String(NOTHING_TO_NARROW.to_owned()),
+        );
+    }
+    Ok(frozen)
 }
 
 /// Które narzędzia ten krok dostaje pod rękę — albo odmowa, jeśli prosi o coś ponad swój dial.
@@ -2406,11 +2448,29 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
 /// więc nie ma stanu, w którym część kroków ruszyła z listą, której nikt nie przepuścił.
 /// Alternatywa — przycięcie listy i jazda dalej — jest najdroższą wersją tej wady: agent, któremu
 /// po cichu zabrano narzędzie, wygląda dokładnie jak agent, który „nie umiał".
+///
+/// # 2026-08-24 (T-97) — SUFIT JEST PYTANIEM DO VENDORA, NIE STAŁĄ CLAUDE'A
+///
+/// Do tego dnia ta funkcja przepuszczała listę **każdego** agenta przez `claude::tool_surface`,
+/// bo innego sufitu w tym drzewie nie było. Dla Claude'a to jest poprawne i tak zostaje. Dla
+/// Codeksa nie: jego adapter `spec.tools` nie czyta ani razu, `CAPABILITIES` mówi o tym polu
+/// `Unavailable` — a mimo to `Read, Bash` wpisane agentowi Codeksa na dialu „look only"
+/// zabierało CAŁY bieg, o ustawienie, które u tego vendora nie robi nic.
+///
+/// Odpowiada więc adapter, o siebie ([`AgentDriver::narrows_its_tools`]), a polityka „lista
+/// wybiera spośród diala, nigdy ponad" zostaje tutaj, w jednym miejscu (niezmiennik 23). Druga
+/// tabela nazw narzędzi per vendor jest dokładnie tym, czego ten niezmiennik zabrania.
 fn what_this_step_may_use(
     agent: &Agent,
     policy: Policy,
     step: &AgentStep,
+    driver: &Arc<dyn AgentDriver>,
 ) -> Result<Option<Vec<String>>, RunError> {
+    // PYTANIE PADA PRZED WSZYSTKIM INNYM, także przed pustą listą: „wyczyszczona lista jest
+    // odmową" jest zdaniem o `--tools`, a vendor bez tej flagi nie ma czego wyczyścić.
+    if !driver.narrows_its_tools() {
+        return Ok(None);
+    }
     let wanted = match &agent.tools {
         // „Wszystkie narzędzia" jedzie do sterownika jako `None`, czyli „nie zawężaj". To jest
         // DOKŁADNIE dzisiejsze argv — sufit polityki — i dlatego ta gałąź nie woła niczego:

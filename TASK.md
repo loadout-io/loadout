@@ -57,17 +57,38 @@ porównania, dopisać do fikstury pola, którego drut nie niesie, ani odwrotnie.
 `StepEntry` w `run.json` ma pola `input_tokens`, `output_tokens` i `cached_tokens` **od T-06**
 — Codex ich po prostu nigdy nie wypełniał. Ta połowa AC-4 nie wymaga ani jednego nowego pola.
 
+**Dopisane 2026-08-24, po zgłoszeniu pisarza:** `src/sections/run/feed/fixtures/lines.ts` też
+dochodzi do OWNS, na trzy mechaniczne linie. Łańcuch jest wymuszony, nie wybrany: pola tokenowe
+na `Line::Done` → trzy klucze w `src/ipc/line-wire.golden.json` → `src/ipc/types.ts` musi je
+odbić, bo `types.test.ts` porównuje ZBIORY kluczy z goldenem → TypeScript wymaga tych pól
+w literale `done` w tamtej fiksturze. Poszerzenie wyżej wyliczyło tylko literały rustowe.
+
 ## AC-1 Krok Codeksa pokazuje, co zrobił, nie tylko co powiedział
 check: cargo test --test it codex_steps_show_their_actions::
 expect: (\d+) passed
 
-Złoty plik `codex-stream.jsonl` przepuszczony przez kurację daje te same rodzaje linii, co
-strumień Claude'a dla tych samych czynności: `command_execution` → `ran` (z `exit_code`),
-`file_change` → `edit` (ścieżka, rodzaj), `web_search` → `search`, `reasoning` → slot myślenia
-(nigdy historia), `agent_message` → proza, nieznany typ → porzucony bez przewracania biegu
-(niezmiennik 5). Reguły zwijania (okno 2 s, licznik) są te same — kryterium nie dopisuje drugiego
-kuratora, tylko drugi dekoder przed tym samym. Jeśli złoty plik nie ma któregoś rodzaju —
-**stój i zgłoś** z nazwą brakującego zdarzenia, nie zmyślaj fixture'a.
+Złoty plik **`docs/research/fixtures/codex-stream-live.jsonl`** przepuszczony przez kurację daje
+te same rodzaje linii, co strumień Claude'a dla tych samych czynności: `command_execution` → `ran`
+(z `exit_code`), `file_change` → `edit` (ścieżka, rodzaj), `web_search` → `search`,
+`agent_message` → proza, nieznany typ → porzucony bez przewracania biegu (niezmiennik 5).
+Reguły zwijania (okno 2 s, licznik) są te same — kryterium nie dopisuje drugiego kuratora, tylko
+drugi dekoder przed tym samym.
+
+**Który to plik i dlaczego nie ten stary** (rozstrzygnięte 2026-08-24 po pierwszym biegu tego
+zadania). `codex-stream.jsonl` z S-3 ma **cztery linie i ani jednego z tych rodzajów**: to jest
+koperta biegu, który padł na wyczerpanych kredytach (`thread.started`, `turn.started`, `error`,
+`turn.failed`). Nie wolno go podmienić — kryterium S-3 sprawdza właśnie ten wariant „zablokowany"
+i asertuje, że nie ma w nim ani jednego `item.completed`. Żywy strumień wchodzi więc **obok**,
+jako drugi plik, nagrany prawdziwym `codex exec --json` (11 linii).
+
+**`reasoning` dowodzisz osobną asercją, nie fiksturą, i to jest zmierzony fakt o vendorze.**
+Sprawdzone trzema drogami 2026-08-24 na `codex-cli 0.148.0`: sześć prawdziwych biegów Codeksa
+u właściciela, sonda z siecią i sonda z `model_reasoning_effort=high` **plus**
+`model_reasoning_summary=detailed` — **`reasoning` nie pada w trybie `exec` ani razu**.
+Tabela w `ARCHITECTURE.md` §6 wymienia go za raportem T2 i ta pozycja się zestarzała.
+Odwzorowanie ma więc istnieć i być sprawdzone linią podaną dekoderowi wprost (zwykły test
+jednostkowy), żeby zadziałało, gdyby vendor kiedyś zaczął je wysyłać — ale fikstury pod nie
+**nie wolno dopisywać**.
 
 ## AC-2 Agent Codex „look-only" z siecią słyszy, że sieci nie dostanie
 check: npx --no-install vitest run src/sections/agents/codex-web-needs-write-access.test.tsx
@@ -129,6 +150,8 @@ src-tauri/tests/it/ipc_line_wire_golden.rs
 src-tauri/tests/it/stream_closing_lines.rs
 src-tauri/tests/it/stream_collapse_defaults.rs
 src-tauri/tests/it/stream_curation_fixture.rs
+docs/research/fixtures/codex-stream-live.jsonl
+src/sections/run/feed/fixtures/lines.ts
 src-tauri/tests/it/codex_steps_show_their_actions.rs
 src-tauri/tests/it/codex_tools_never_refuse_the_run.rs
 src-tauri/tests/it/codex_steps_report_their_tokens.rs

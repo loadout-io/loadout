@@ -32,7 +32,12 @@ use super::supervisor::{GroupId, GroupProof};
 use crate::evidence::EvidenceTarget;
 
 /// Vendor, ktory jest w typie, ale nie ma jeszcze adaptera. Fabryka `Drivers` jest funkcja
-/// totalna, wiec musi czyms odpowiedziec takze dla `Vendor::Codex` -- do czasu T-10.
+/// totalna, wiec musi czyms odpowiedziec takze wtedy, gdy pytanie padnie o vendora bez adaptera.
+///
+/// 2026-08-24 — KOMENTARZ MOWIL „do czasu T-10" i przestal byc prawda w dniu, w ktorym T-10
+/// wyladowalo: `Vendor::Codex` ma [`codex::CodexDriver`] i fabryka wydaje go naprawde. Ten modul
+/// zostaje jako **odpowiedz dla trzeciego vendora**, ktory wejdzie w typ przed swoim adapterem —
+/// czyli po to, po co powstal, tylko bez daty waznosci, ktora juz minela.
 pub mod absent;
 pub mod claude;
 pub mod codex;
@@ -655,6 +660,31 @@ pub trait AgentDriver: Send + Sync {
     /// flaga z pustą wartością połknęłaby następny argument jako swój.
     fn effort_argv(&self, _level: &str) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Czy TEN vendor w ogóle umie zawęzić agentowi listę narzędzi.
+    ///
+    /// # Po co to stoi na traicie (2026-08-24, T-97)
+    ///
+    /// Do tego dnia sufit listy narzędzi był **stałą jednego adaptera**: `commands::run`
+    /// przepuszczało `Tools::Only([…])` każdego agenta przez `claude::tool_surface`, bo innego
+    /// sufitu nie było. Dla Claude'a to jest poprawne i ma zostać — jego lista naprawdę wybiera
+    /// spośród tego, co daje dial, i przekroczenie sufitu naprawdę jest odmową
+    /// (`DECISIONS-LOCKED.md` D6). Dla Codeksa nie: `CAPABILITIES` mówi o tym polu
+    /// `Unavailable`, adapter listy nie czyta ani razu — a mimo to potrafiła ona **zabrać cały
+    /// bieg**, o ustawienie, które dla tego vendora nie robi nic.
+    ///
+    /// To jest niezmiennik 23 w jednym zdaniu: polityka („lista wybiera spośród diala, nigdy
+    /// ponad") zostaje w rdzeniu, a adapter odpowiada wyłącznie na pytanie **o siebie**. Druga
+    /// tabela nazw narzędzi per vendor jest tym, czego ten niezmiennik zabrania.
+    ///
+    /// `true` domyślnie, i to jest wybór w stronę odmowy: vendor, o którym nic nie wiadomo,
+    /// jest sądzony jak dziś. Domyślne `false` znaczyłoby, że każda atrapa i każdy adapter
+    /// dopisany w przyszłości po cichu przepuszcza listę ponad dialem bezpieczeństwa — czyli
+    /// że pole `tools` staje się drugą drogą do uprawnień w chwili, w której ktoś zapomni
+    /// nadpisać jedną metodę.
+    fn narrows_its_tools(&self) -> bool {
+        true
     }
 }
 

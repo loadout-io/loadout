@@ -82,6 +82,9 @@ fn structure_samples() -> Vec<Line> {
             turns: TURNS,
             duration_ms: DURATION_MS,
             cost_usd: Some(0.148_362_900_000_000_02),
+            input_tokens: 4,
+            output_tokens: 336,
+            cached_tokens: 65_403,
             ended: loadout_lib::engine::line::Ended::Well,
         },
     ]
