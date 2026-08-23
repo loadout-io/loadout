@@ -230,6 +230,32 @@ const NOTHING_CHANGED: &str = "Nothing to check: the step before this one change
 /// Katalog, pod którym powstają własne kopie plików dla kroków `fresh-copy`.
 const WORK_DIR: &str = "work";
 
+/// Katalog, pod którym leży auto-pamięć kroków TEGO biegu: `<katalog biegu>/mem/<krok>`.
+///
+/// 2026-08-23 (T-92) — powstał po to, żeby auto-pamięć Claude Code przestała pisać do
+/// `~/.claude/projects/<projekt>/memory/`, czyli do katalogu, który człowiek dzieli ze swoimi
+/// sesjami interaktywnymi [T6 §10.4]. Pod katalogiem biegu, bo to jest **wyjście biegu**
+/// (niezmiennik 4) i ma dać się przeczytać po fakcie razem z resztą jego historii.
+///
+/// `pub`, bo tę nazwę musi znać także kryterium, które sprawdza, gdzie krok naprawdę pisał —
+/// a literał `"mem"` powtórzony w teście jest drugim miejscem, w którym mieszka ta odpowiedź.
+pub const STEP_MEMORY_DIR: &str = "mem";
+
+/// Model tury refleksji. **Jedna stała i ani jedno miejsce więcej.**
+///
+/// Refleksja jest tania z założenia [T6 §5.3: „jedna tania refleksja po biegu"], a „tania"
+/// przestaje być prawdą dokładnie w chwili, w której model wybiera wołający: dwa wołania z dwoma
+/// modelami to dwa różne rachunki za tę samą rzecz, a różnicy nie widać nigdzie poza fakturą.
+/// Model biegu tu nie wchodzi z tego samego powodu — bieg opusem nie ma powodu myśleć opusem
+/// o tym, czego się nauczył.
+pub const REFLECTION_MODEL: &str = "haiku";
+
+/// Ile minut wolno turze refleksji. Jedna stała, z dokładnie tego samego powodu.
+///
+/// Krótko, bo to jest jedno pytanie o skończony bieg, a nie praca: tura, która myśli dziesięć
+/// minut nad tym, czego się nauczyła, kosztuje więcej niż krok, który to zrobił.
+pub const REFLECTION_MINUTES: u64 = 2;
+
 /// Trwałe granice kompletności kopii, poza samymi worktree i ich roboczym diffem.
 const ISOLATION_MARKERS_DIR: &str = ".isolation";
 

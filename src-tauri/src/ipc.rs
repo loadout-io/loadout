@@ -1613,6 +1613,17 @@ pub fn stop_using_note(
     commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
 }
 
+/// „Discard": kandydatka odchodzi do `discarded/` i schodzi z listy.
+///
+/// 2026-08-23 (T-92) — druga akcja kandydatki, którą makieta rysuje od początku i której do
+/// dziś nie było czym obsłużyć. Bez niej lista rośnie monotonicznie i to jest dokładnie ta
+/// nieobsługiwana akrecja instrukcji, którą [T6 §5.1] nazywa samą chorobą.
+#[tauri::command]
+pub fn discard_note(id: &str) -> Result<(), commands::memory::NoteRefusal> {
+    let root = commands::memory::notes_root(&crate::loadout_dir());
+    commands::memory::discard_note_inner(&root, id, &commands::now_utc())
+}
+
 /// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.
 ///
 /// 2026-08-18 — TRZY KOMENDY, KTÓRE ZASTĄPIŁY SYSTEMOWE OKNO PRZY KAŻDYM BIEGU. Folder pracy
@@ -2364,6 +2375,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         delete_trigger,
         delete_workflow,
         delete_workspace,
+        discard_note,
         draft_skill,
         install_skill,
         list_agents,

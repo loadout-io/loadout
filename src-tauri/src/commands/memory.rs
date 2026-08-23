@@ -26,7 +26,9 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::memory::FrontMatter;
-use crate::memory::notes::{Actor, Error, Note, NoteId, Scope, Status, promote, scan_notes};
+use crate::memory::notes::{
+    Actor, Error, Note, NoteId, Scope, Status, discard, promote, scan_notes,
+};
 
 /// Wartość `status:` dla notatki, która przestała wchodzić do promptu.
 ///
@@ -198,6 +200,29 @@ pub fn put_note_to_use_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire
         Actor::You { at: at.to_owned() },
     )?;
     Ok(NoteWire::from(&note))
+}
+
+/// „Discard": kandydatka odchodzi do `<korzeń>/discarded/` i znika z listy.
+///
+/// 2026-08-23 (T-92) — do dziś pamięć miała **jedno** wejście dla decyzji człowieka i było nim
+/// „tak". Makieta rysuje przy kandydatce dwie akcje (`docs/mockup/index.html:757`), sekcja
+/// renderowała jedną, a `MemoryState` znało `use`, `stopUsing` i `cancel` — czyli człowiek,
+/// któremu agent zaproponował zdanie nieprawdziwe, nie miał ani jednej drogi, żeby to
+/// powiedzieć. Kandydatki zostawały na liście na zawsze, a lista, z której nic nie schodzi,
+/// przestaje być czytana.
+///
+/// `at` podaje wołający, tak jak przy [`put_note_to_use_inner`]: to jest chwila, w której
+/// **człowiek** kliknął, a `memory::notes` nie ma zegara i mieć nie będzie.
+///
+/// Cała polityka mieszka w [`discard`] (odmowa dla notatki w użyciu, przeniesienie zamiast
+/// skasowania, wyłącznie [`Actor::You`]). Ta warstwa nie powtarza ani jednej z tych reguł.
+pub fn discard_note_inner(root: &Path, id: &str, at: &str) -> Result<(), NoteRefusal> {
+    discard(
+        root,
+        &NoteId(id.to_owned()),
+        Actor::You { at: at.to_owned() },
+    )?;
+    Ok(())
 }
 
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.

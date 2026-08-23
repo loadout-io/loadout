@@ -56,6 +56,14 @@ use super::FrontMatter;
 /// Katalog notatek wewnątrz korzenia. Jedna nazwa, w jednym miejscu.
 const NOTES_DIR: &str = "notes";
 
+/// Dokąd odchodzi notatka, której człowiek nie chciał (2026-08-23, T-92).
+///
+/// **Nic nie jest twardo usuwane** [T6 §5.3]: zdanie skasowane z dysku jest zdaniem, którego
+/// nikt nie umie ani odzyskać, ani wytłumaczyć następnemu, kto zaproponuje je drugi raz.
+/// Katalog stoi obok [`NOTES_DIR`], a nie w nim, bo [`scan_notes`] czyta płasko i wyłącznie
+/// `.md` — odrzucona notatka zostawiona wśród notatek wróciłaby ze skanu jako kandydatka.
+pub const DISCARDED_DIR: &str = "discarded";
+
 /// Nagłówek bloku — te same trzy słowa, które człowiek widzi w sekcji Pamięć
 /// [`00-SYNTHESIS` §2.2]. Prompt i ekran mówią o tym samym zbiorze tym samym zdaniem,
 /// więc pytanie „co model o tym wie" ma jedną odpowiedź, nie dwie.
@@ -371,6 +379,19 @@ pub enum Error {
     /// (niezmiennik 14).
     #[error("This note is for one agent. Which agent is it for?")]
     NoAgentNamed,
+
+    /// Odrzucenie notatki, która wchodzi do promptu (2026-08-23, T-92).
+    ///
+    /// Odmowa, nie ciche odstawienie po drodze. „Odrzuć" i „przestań używać" to dwie różne
+    /// decyzje człowieka i mają zostać dwiema: notatka, która najpierw sama wyszła z promptu,
+    /// a potem zniknęła z listy, znika w jednym kliknięciu z miejsca, w którym człowiek jej
+    /// właśnie szukał — a on prosił o jedno.
+    ///
+    /// Zdanie mówi, CO ZROBIĆ, a nie czego nie wolno: „nie można odrzucić notatki w użyciu"
+    /// zostawia człowieka przed przyciskiem, który odmawia, i bez drugiego, który by pomógł
+    /// (niezmiennik 14).
+    #[error("This note is in use. Stop using it first.")]
+    StillInUse,
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -740,6 +761,50 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
     front.set("modified", &one_line(&at));
     write_note(&path, &front, &raw[body_at..])?;
     read_note(&path)
+}
+
+/// Odstawia notatkę: zostaje na liście i przestaje wchodzić do promptu.
+///
+/// 2026-08-23 (T-92) — DRUGI KIERUNEK JEDNEGO PRZEŁĄCZNIKA WRACA OBOK PIERWSZEGO. Od T-17 do
+/// dziś mieszkał w `commands::memory::stop_using_note_inner`, a nagłówek tamtego modułu nazywał
+/// to długiem wprost: „przy pierwszej okazji ma się przenieść do `memory::notes` obok
+/// [`promote`], żeby oba kierunki jednego przełącznika mieszkały w jednym pliku" (niezmiennik
+/// 23). Cena tamtego rozdzielenia była wąska i mierzalna — słowo `suggested` stało wypisane
+/// w dwóch plikach — ale rosła: [`discard`] jest trzecim wejściem, które musi wiedzieć, co
+/// znaczy „ta notatka nie wchodzi do promptu", i trzecia kopia tej wiedzy to już nie kopia,
+/// tylko drugi zestaw reguł.
+///
+/// Nie pyta o [`Actor`] i to jest ta sama decyzja, co w warstwie komend: reguła „tylko człowiek"
+/// broni WEJŚCIA do promptu (ARCHITECTURE §2 pyt. 5), a wyjście z niego nie jest uprawnieniem,
+/// którego trzeba pilnować. Budżetu też nie sprawdza — zbiór w użyciu tylko maleje.
+///
+/// Notatka, która już nie jest w użyciu, zostaje **nietknięta**: stempel `modified` za
+/// kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta notatka ostatnio się
+/// zmieniła. Ta sama decyzja stoi po drugiej stronie przełącznika, w [`promote`].
+pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
+    todo!(
+        "T-92: przenieś tu ciało `commands::memory::stop_using_note_inner` (root={root:?}, id={id}, at={at})"
+    )
+}
+
+/// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
+///
+/// Cztery rzeczy, które robi i które są całą jej treścią:
+/// 1. **Wyłącznie [`Actor::You`]** ([`Error::OnlyYouCanDoThat`]). Kurator jest jeden i jest nim
+///    człowiek — ta sama reguła, która trzyma [`promote`], czytana od drugiej strony. Agent,
+///    który umie skasować cudzą notatkę, umie skasować tę, która opisuje jego własny błąd.
+/// 2. **Notatka `in-use` to odmowa** ([`Error::StillInUse`]), nie ciche odstawienie po drodze.
+/// 3. **Przeniesienie, nigdy `remove_file`** [T6 §5.3]. Nazwa pliku w `discarded/` niesie datę
+///    podaną przez wołającego, bo ten moduł nie ma zegara (patrz nagłówek pliku) — i dlatego
+///    dwie odrzucone kandydatki o tym samym tytule nie nadpisują się nawzajem.
+/// 4. **Odmowy padają PRZED pierwszym zapisem.** Implementacja, która przenosi plik i dopiero
+///    potem zwraca błąd, przechodzi każde `assert!(… .is_err())` i zostawia człowieka bez
+///    notatki, o której powiedziano mu, że jej nie ruszono. Ta sama kolejność co w [`promote`].
+///
+/// Zwraca ścieżkę, pod którą notatka teraz leży: bez niej „nic nie jest twardo usuwane" jest
+/// zdaniem w komentarzu, a nie czymś, co wołający umie pokazać człowiekowi.
+pub fn discard(root: &Path, id: &NoteId, by: Actor) -> Result<PathBuf> {
+    todo!("T-92: przenieś notatkę do <root>/discarded/ (root={root:?}, id={id}, by={by:?})")
 }
 
 // ── odczyt i zapis pliku ──────────────────────────────────────────────────────────────────

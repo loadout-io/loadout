@@ -540,6 +540,41 @@ pub enum ImageError {
     WrongMagic,
 }
 
+/// Czego ten JEDEN krok potrzebuje w swoim pliku ustawień — opis, nie dokument.
+///
+/// 2026-08-23 (T-92). Trzy pola, bo tyle wystarcza, żeby ten typ nie znał ani jednego vendora
+/// (nagłówek modułu): mówi, gdzie plik ma powstać, dokąd ma iść auto-pamięć tego kroku i czego
+/// gospodarz zabronił. Nazwy kluczy, liczba kluczy i nazwa flagi zostają w adapterze
+/// (niezmiennik 23) — inaczej `permissions.deny` i `autoMemoryDirectory` stałyby wypisane
+/// w dwóch plikach, a rozjazd między nimi widać dopiero na rachunku za bieg.
+///
+/// # Dlaczego auto-pamięć w ogóle tu jest
+///
+/// Zmierzone 2026-08-23 w `system/init` każdego kroku Claude'a: `memory_paths.auto` wskazuje
+/// `~/.claude/projects/<projekt>/memory/` — czyli katalog, który człowiek **dzieli ze swoimi
+/// sesjami interaktywnymi**. Krok Loadouta pisze tam bez pytania i bez śladu w biegu: nikt tego
+/// nie widzi, nikt tego nie kuruje, a zdanie napisane przez agenta w cudzym biegu wraca potem
+/// do promptu człowieka jako jego własna notatka. [T6 §10.4] nazywa przekierowanie tego katalogu
+/// per bieg „najlepszym leverem znalezionym w researchu" i ma na myśli dokładnie te dwa pola.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepSettings {
+    /// Katalog, w którym plik ma powstać — katalog **biegu** (`docs/ARCHITECTURE.md` §8).
+    ///
+    /// Podaje go warstwa, która zna układ katalogów; sterownik miejsca sobie nie wybiera, bo
+    /// wymyślone miejsce jest `$TMPDIR`, czyli artefaktem biegu poza biegiem.
+    pub dir: PathBuf,
+    /// Dokąd ma iść auto-pamięć tego kroku: `<katalog biegu>/mem/<krok>`.
+    ///
+    /// Per KROK, nie per bieg: dwa kroki jednego biegu bywają dwoma różnymi agentami, a wtedy
+    /// jeden katalog na oba daje notatkę, o której nie wiadomo, czyja jest.
+    pub memory: PathBuf,
+    /// Reguły `deny` przepisane z repo gospodarza (`super::host::deny_rules`), w jego kolejności.
+    ///
+    /// Jadą tym samym plikiem, bo plik jest jeden: `--settings` wskazuje jeden dokument, więc
+    /// drugi nośnik odmów po prostu nie istnieje.
+    pub deny: Vec<String>,
+}
+
 /// Sterownik jednego vendora. Dwie implementacje od pierwszego dnia (decyzja D3): ta jest
 /// pierwszą z dwóch, `CodexDriver` z T-10 jest testem, czy ten trait jest abstrakcją.
 #[async_trait]
@@ -627,6 +662,32 @@ pub trait AgentDriver: Send + Sync {
     /// `Option` uniemozliwia produkcji ciche uruchomienie vendora bez dowodow. Implementacje
     /// wejda w Phase 2; domyslne `None` utrzymuje istniejace duble kompilowalne w honest-red.
     fn with_evidence(&self, _target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Ten sam sterownik, tylko z **własnym plikiem ustawień** tego kroku — albo `None`, kiedy
+    /// ten vendor takiego pliku nie ma.
+    ///
+    /// # Po co to istnieje na TRAICIE, a nie na typie (2026-08-23, T-92)
+    ///
+    /// `claude::ClaudeDriver::with_settings` istnieje od T-53 i **nigdy nie miało wołającego**:
+    /// budowniczy żyje na konkretnym typie, a bieg trzyma `Arc<dyn AgentDriver>`, bo fabryka
+    /// z `lib.rs` wydaje sterownik raz na aplikację. Komentarz przy tamtym budowniczym opisuje
+    /// tę dziurę i mówi wprost, że jej zamknięcie wymaga „albo fabryki wołanej per bieg, albo
+    /// tej samej odpowiedzi, której T-34 nie dostało dla transkryptu". Ta odpowiedź jest tutaj
+    /// i jest dokładnie tą samą, którą dostały [`AgentDriver::inheriting`]
+    /// i [`AgentDriver::with_evidence`]: metoda na traicie z domyślnym `None`.
+    ///
+    /// **Argument opisuje potrzebę, nie plik.** [`StepSettings`] nie wie, jak nazywa się flaga
+    /// vendora, ile kluczy ma dokument ani gdzie w nim stoją — wie tylko, gdzie ten krok pracuje
+    /// i czego mu nie wolno. Gdyby wjechał tu gotowy `claude::RunSettings`, ten plik znałby
+    /// vendora, a to jest jedyna rzecz, której nagłówek tego modułu zabrania.
+    ///
+    /// `Option`, a nie ciche „przyjąłem", z tego samego powodu co przy [`AgentDriver::inheriting`]:
+    /// vendor, który nie umie wczytać naszego pliku, **nie może** dostać jego ścieżki, a wołający
+    /// ma o tym wiedzieć. `None` znaczy „ten vendor nie ma gdzie tego przyjąć" — Codex zwraca
+    /// właśnie to i nie dostaje nic.
+    fn with_settings(&self, _settings: &StepSettings) -> Option<Arc<dyn AgentDriver>> {
         None
     }
 
