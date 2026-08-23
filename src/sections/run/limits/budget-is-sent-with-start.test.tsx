@@ -82,6 +82,13 @@ function turnCosting(costUsd: number | null): Parameters<typeof spendFor>[0][num
     durationMs: 252_000,
     costUsd,
     ended: 'well',
+    /* 2026-08-24, przy scalaniu T-97: pola tokenowe doszły do wiersza „koniec tury" i są
+     * wymagane, bo `Tokens` po stronie Rusta niesie trzy liczby, nie opcje — zero znaczy
+     * „nic nie zgłoszono". Ten literał ma być tym, co NAPRAWDĘ przychodzi z drutu, więc
+     * idzie za jego kształtem. Sam test mierzy koszt i nie pyta o tokeny. */
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
     id: 1,
     at: 0,
   };
