@@ -287,6 +287,13 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
 ///
 /// Czekanie oddajemy osobno, bo stoi w `join!` dokładnie tam, gdzie stało osuszanie kanału:
 /// pompa kończy się sama, kiedy zniknie ostatni nadajnik, a ten ginie razem z powrotem biegu.
+/// Slowo w instrukcji kroku, po ktorym dubler konczy ture PORAZKA.
+///
+/// Dubler tego pliku konczyl do 2026-08-23 kazda ture sukcesem, bo zadne kryterium tutaj nie
+/// potrzebowalo porazki. Kryterium `ask-me` potrzebuje: bez kroku, ktory naprawde nie przeszedl,
+/// nie da sie sprawdzic, czy bieg staje i pyta.
+const FAILS_ON: &str = "THIS-ONE-DOES-NOT-PASS";
+
 fn the_pump_seam() -> (LineSink, impl Future<Output = ()>) {
     let (sink, source) = line_channel(QUEUE_CAP);
     let pump = spawn_pump(source, Channel::new(|_| Ok(())));
@@ -519,7 +526,11 @@ impl AgentDriver for Fake {
             )
             .await;
 
-        Ok(Box::new(Turn { events, session }))
+        Ok(Box::new(Turn {
+            events,
+            session,
+            fails: spec.prompt.contains(FAILS_ON),
+        }))
     }
 }
 
@@ -528,6 +539,8 @@ impl AgentDriver for Fake {
 struct Turn {
     events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
+    /// Czy ta tura ma skonczyc sie porazka — czytane z promptu przy starcie.
+    fails: bool,
 }
 
 #[async_trait]
@@ -546,8 +559,12 @@ impl AgentHandle for Turn {
 
     async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
         let outcome = TurnOutcome {
-            ok: true,
-            reason: FinishReason::Completed,
+            ok: !self.fails,
+            reason: if self.fails {
+                FinishReason::Failed("the fixture was told to fail this one".to_owned())
+            } else {
+                FinishReason::Completed
+            },
             text: String::new(),
             cost_usd: None,
             tokens: Tokens::default(),
@@ -569,4 +586,121 @@ impl AgentHandle for Turn {
     async fn close(&mut self) -> anyhow::Result<Option<i32>> {
         Ok(Some(0))
     }
+}
+
+/* 2026-08-23 — KROK, KTORY NIE PRZESZEDL, MOZE ZAPYTAC CZLOWIEKA.
+ *
+ * Zamowienie wlasciciela: „kafelek kontrolny gdzie moge zadecydowac czy ma przejsc z wynikiem do
+ * kolejnego kroku np syntezy czy zapytac mnie co dalej". Do tego dnia nieudany krok kasowal caly
+ * stozek potomkow — bez zdania i bez wyboru.
+ *
+ * SLABA WERSJA to „bieg sie zatrzymal". Przechodzi ja implementacja, ktora pyta i leci dalej
+ * niezaleznie od odpowiedzi — czyli kontrolka bez skutku (niezmiennik 16). Rozroznia je punkt,
+ * ze krok ZA nieudanym pobiegl DOPIERO PO odpowiedzi, sprawdzony po obu stronach tej chwili.
+ *
+ * DRUGI PUNKT jest rownie wazny: krok, ktory nie przeszedl, ma zostac CZERWONY takze wtedy, gdy
+ * czlowiek kazal jechac dalej. Zielony blok nad robota, ktorej nikt nie przepuscil, jest ta jedna
+ * rzecza, dla ktorej zapobiegania ten produkt powstal.
+ */
+
+/// Dwa kroki: pierwszy nie przechodzi i ma o to zapytac, drugi stoi za nim.
+const ASK_WHEN_IT_FAILS: &str = r#"{
+  "format": 1,
+  "id": "01990000-0000-7000-8000-0000000000d1",
+  "name": "Ask when it fails",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_try",
+      "name": "Try it",
+      "agent": "01990000-0000-7000-8000-00000000ab01",
+      "overrides": {},
+      "instructions": "THIS-ONE-DOES-NOT-PASS",
+      "whenItFails": "ask-me",
+      "at": { "x": 0, "y": 0 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_after",
+      "name": "After it",
+      "agent": "01990000-0000-7000-8000-00000000ab01",
+      "overrides": {},
+      "instructions": "PICK-IT-UP-FROM-HERE",
+      "at": { "x": 480, "y": 0 }
+    }
+  ],
+  "links": [{ "from": "s_try", "to": "s_after" }]
+}
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_set_to_ask_stops_the_run_and_the_answer_lets_it_through()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let hand = bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("ask-when-it-fails", ASK_WHEN_IT_FAILS)?;
+    the_fixture_can_run(&workflow, &[&hand])?;
+    let store = Store::open(&bench.db())?;
+    let watch = Arc::new(Watch::default());
+
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow,
+        how_many_at_once: 3,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+
+    let (sink, drain) = the_pump_seam();
+    let answer = async {
+        let _paused = wait_until_paused(bench.project.path()).await?;
+        /* PRZED ODPOWIEDZIA nastepny krok nie ma prawa byc uruchomiony. Bez tego punktu
+         * kryterium przechodzi implementacja, ktora pyta i leci dalej, nie czekajac. */
+        assert_eq!(
+            watch.times("PICK-IT-UP-FROM-HERE"),
+            0,
+            "the step after the failed one started before anybody answered, so the question is \
+             a control with no effect: it appears, and the run does what it would have done \
+             anyway. The driver saw: {:?}",
+            watch.lock().clone()
+        );
+        continue_run_inner(&deps, Some("carry on, ignore the third point".to_owned())).await?;
+        Ok::<(), Box<dyn Error>>(())
+    };
+
+    let (ran, answered, ()) = tokio::time::timeout(PATIENCE.saturating_mul(3), async {
+        tokio::join!(run_workflow_inner(&deps, &request, sink), answer, drain)
+    })
+    .await
+    .map_err(|_| {
+        "the run never came back. A step set to ask has to STOP the run and wait - a run that \
+         sails past the question has no question"
+            .to_owned()
+    })?;
+    answered?;
+    let report = ran?;
+
+    assert_eq!(
+        watch.times("PICK-IT-UP-FROM-HERE"),
+        1,
+        "the step after the failed one never ran, even though the person answered and said carry \
+         on. That is the dead end the whole setting exists to remove. The driver saw: {:?}",
+        watch.lock().clone()
+    );
+    assert_eq!(
+        report.steps.first().copied(),
+        Some(StepState::Failed),
+        "the step that did not pass came back as something other than failed. Carrying on is a \
+         decision about the work AFTER it, never a claim that it succeeded - and a filled block \
+         over work nobody passed is the one lie this product exists to prevent"
+    );
+    Ok(())
 }
