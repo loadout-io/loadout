@@ -191,8 +191,8 @@ use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
-    AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence, Skills, Step,
-    WhenItFails, WorkflowFile,
+    AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, HandoverField, Point,
+    RouteEvidence, Skills, Step, WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
@@ -405,6 +405,37 @@ write yourself is read by nobody.";
 /// którego się domyśla, i domyśla się nisko.
 const NO_TIME_LIMIT: &str =
     "There is no time limit on this step, so take the time the work really needs.";
+
+/// Zdanie, którym blok „jak odpowiadać" prosi o umówione pola przekazania.
+///
+/// 2026-08-23 (T-90) — `Handover::Form { fields }` jest w schemacie kroku od T3 §3.1, czyta go
+/// import, ma nawet własne `required` — i jedynym użyciem w drzewie było `Handover::default()`.
+/// Człowiek opisywał, co ten krok ma oddać, plik to zapisywał, a agent nigdy się o tym nie
+/// dowiadywał. Wymaganie, o którym agent nie wie, jest karą, nie umową — dokładnie jak limit
+/// czasu, o którym do 2026-08-23 wiedział wyłącznie ten, kto zabija krok.
+///
+/// KSZTAŁT POKAZANY WPROST, bo agent kopiuje ten, który mu się pokaże, a nasz własny czytnik
+/// bierze **cały wiersz** zaczynający się nazwą i dwukropkiem ([`fields_said_in`]). Lista
+/// wypisana myślnikami wygląda w prompcie równie porządnie i jest dla tamtego czytnika
+/// niewidzialna — czyli byłaby umową, której jedna strona nie podpisała.
+const FIELDS_ASKED_FOR: &str = "\
+This step also has to hand these back. Put each one on a line of its own, starting with the name \
+and a colon, in the shape shown here:";
+
+/// I zdanie o tym, co się stanie bez pola oznaczonego jako potrzebne.
+///
+/// WPROST O SKUTKU, tak samo jak [`OUTCOME_ASKED_FOR`] obok i z tego samego powodu: prośbę „napisz
+/// wiersz X" bez powiedzenia, co się stanie bez niego, model traktuje jak formalność.
+const FIELDS_ARE_REQUIRED: &str = "\
+The ones marked as needed are not optional: an answer without them does not pass, and the step \
+after this one is left without the thing it was promised. The rest you may leave out when you \
+have nothing to put in them.";
+
+/// Znacznik, którym blok odróżnia pole wymagane od reszty.
+///
+/// Po angielsku i bez naszych słów z drutu (decyzja D5, niezmiennik 14): `required` jest kluczem
+/// w pliku, a nie słowem, którym mówi się do kogoś, kto właśnie dostał robotę.
+const FIELD_IS_NEEDED: &str = " (needed)";
 
 /// Etykieta, którą człowiek widzi nad polem ze ścieżką wyniku (`step-panel/panel.tsx`).
 ///
@@ -1313,6 +1344,19 @@ struct AgentJob {
     /// Ścieżka wyprowadzająca poza ten folder jest odmową przy planowaniu ([`where_results_go`]),
     /// więc do tego pola dochodzi wyłącznie ścieżka względna bez `..`.
     write_results_to: Option<PathBuf>,
+    /// Pola, które ten krok ma oddać obok swojej odpowiedzi. Pusty wektor dla kroku bez
+    /// formularza — i to jest odpowiedź, nie brak: krok, o którego pola nikt nie prosił, nie ma
+    /// czego oddawać i nie wolno go o nic sądzić.
+    ///
+    /// 2026-08-23 (T-90) — DWA CZYTELNIKI, DWIE POŁOWY JEDNEJ UMOWY: blok „jak odpowiadać"
+    /// mówi agentowi, czego się od niego chce ([`Live::prompt_for`]), a wynik tury sprawdza, czy
+    /// to dostał ([`Live::missing_a_required_field`]). Sama prośba jest poleceniem bez skutku
+    /// (niezmiennik 16) i uczy model, że tych wierszy można nie pisać; samo wymaganie jest karą
+    /// za nieodgadnięcie.
+    ///
+    /// Zamrożone przy planowaniu, jak wszystko inne w tej strukturze: plik poprawiony w trakcie
+    /// biegu nie ma prawa zmienić zasad biegu, który już ruszył.
+    handover: Vec<HandoverField>,
     /// Planowana część promptu: notatki, zadanie biegu i instrukcja kafelka, już złożone.
     ///
     /// 2026-08-23 — KOMENTARZ MÓWIŁ „instrukcje kroku, dosłownie z pliku workflow" i przestał
@@ -2351,6 +2395,12 @@ fn plan_agent(step: &AgentStep, node: usize, setup: &Setup<'_>) -> Result<AgentJ
         cwd: spot.cwd,
         ours: spot.ours,
         write_results_to,
+        // Formularz albo nic. `Handover::Plain` znaczy „oddaj to, co masz do powiedzenia,
+        // i tyle" — czyli dokładnie to, co robi każdy krok bez tego pola.
+        handover: match &step.handover {
+            Handover::Form { fields } => fields.clone(),
+            Handover::Plain(_) => Vec::new(),
+        },
         // Treść zadania. `{{copy}}` i `{{copies}}` podstawia dopiero rozwinięcie kroku na kopie
         // [T3 §4.3, §4.4] — tego rozwinięcia w tym zadaniu nie ma i `copies > 1` biegnie tu
         // jako jedna sesja. Podstawienie bez rozwinięcia wpisywałoby w prompt liczbę, której
@@ -2840,6 +2890,25 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Opt
 /// bo pod adresem `commands::run::policy_of` wołają go dwa kryteria (T-62 `ask_one_agent.rs`
 /// i T-63 `one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej, zero drugich tabel.
 pub use crate::library::agents::policy_of;
+
+/// Wiersze `klucz: wartość` z tego, co oddał krok.
+///
+/// JEDNA SKŁADNIA, DWA MECHANIZMY, i dlatego jedna funkcja (niezmiennik 13). Tę samą mapę czyta
+/// warunkowa droga za krokiem ([`Live::remember_handoff_evidence`], od T-42) i wymaganie pola
+/// przekazania ([`Live::missing_a_required_field`], od T-90). Dwie kopie tego rozbioru znaczyłyby,
+/// że jeden mechanizm widzi wiersz, którego drugi nie widzi — a człowiek zapisał w kafelku jeden
+/// kształt, nie dwa.
+///
+/// CAŁY WIERSZ, zaczynający się nazwą: `- risk — coś tam` i `patrz na risk: coś` w środku zdania
+/// **nie są** tym kształtem, i to jest cała treść tego rozbioru. Nazwa i wartość muszą być
+/// niepuste: `risk:` z pustką za dwukropkiem jest wierszem, który nic nie niesie.
+fn fields_said_in(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        .collect()
+}
 
 /// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
 fn some_text(text: &str) -> Option<String> {
@@ -4620,13 +4689,40 @@ impl Live {
         if !self.has_routes(id) {
             return;
         }
-        let fields: BTreeMap<String, String> = text
-            .lines()
-            .filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
-            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
-            .collect();
-        self.remember_evidence(id, RouteEvidence::Handoff(fields));
+        self.remember_evidence(id, RouteEvidence::Handoff(fields_said_in(text)));
+    }
+
+    /// Umówione pole, którego w odpowiedzi zabrakło — gotowe zdanie, albo `None`.
+    ///
+    /// # Prośba bez skutku jest poleceniem bez handlera (niezmiennik 16)
+    ///
+    /// Blok „jak odpowiadać" wymienia pola i mówi, w jakim kształcie mają wrócić
+    /// ([`FIELDS_ASKED_FOR`]). Bez tej drugiej połowy odpowiedź bez umówionego wiersza wygląda
+    /// dokładnie jak odpowiedź, w której akurat nie było co w niego wpisać — i model uczy się,
+    /// że tych wierszy można nie pisać wszędzie.
+    ///
+    /// PIERWSZE BRAKUJĄCE, nie wszystkie: zdanie nazywa jedno pole, bo człowiek czyta je na
+    /// karcie kroku i naprawia jedną rzecz naraz. Pola bez `required` wolno pominąć i to jest
+    /// cała różnica między formularzem a listą życzeń.
+    ///
+    /// Krok bez formularza nie ma czego oddawać, więc nie ma go za co sądzić: implementacja
+    /// wymagająca wiersza `klucz: wartość` od KAŻDEGO kroku zaczerwieniłaby połowę biegów,
+    /// o które nikt nie prosił.
+    fn missing_a_required_field(&self, id: StepId, said: &str) -> Option<String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return None;
+        };
+        let given = fields_said_in(said);
+        let missing = job
+            .handover
+            .iter()
+            .filter(|field| field.required == Some(true))
+            .find(|field| !given.contains_key(field.name.trim()))?;
+        Some(format!(
+            "This step was asked to hand back \"{}\" on a line of its own, and its answer has no \
+             such line.",
+            missing.name.trim()
+        ))
     }
 
     fn route_after(&self, id: StepId) -> scheduler::Route {
@@ -6056,6 +6152,7 @@ impl Live {
                     let why = self
                         .file_the_answer(id, &turn.text)
                         .err()
+                        .or_else(|| self.missing_a_required_field(id, &turn.text))
                         .or_else(|| self.verdict_after(id, &turn.text).map(str::to_owned));
                     match why {
                         Some(why) => self.when_this_one_fails(id, &why).await,
@@ -6113,10 +6210,52 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
+        self.ask_for_the_agreed_fields(id, &mut told);
         told.prompt.push_str("\n\n");
         told.prompt.push_str(&Self::how_long_this_step_has(minutes));
         self.ask_for_an_outcome(id, &mut told);
         Ok(told)
+    }
+
+    /// Dokłada listę umówionych pól — **tylko krokowi, który ma formularz**.
+    ///
+    /// Wewnątrz bloku „jak odpowiadać" i zaraz za nim, bo to jest ta sama rzecz: co ten krok ma
+    /// oddać. Nagłówek nad zerem pól byłby zdaniem o niczym, tak samo jak pusty indeks przekazań
+    /// (powód przy [`Live::prompt_for`]).
+    ///
+    /// OPIS Z PLIKU JEDZIE NIETKNIĘTY. Człowiek napisał go po to, żeby agent wypełnił pole
+    /// właściwą rzeczą; sama nazwa jest pytaniem, którego agent musi się domyślić.
+    ///
+    /// Warunek jest ten sam, którego używa [`Live::missing_a_required_field`] do sądzenia
+    /// odpowiedzi — jedna lista, dwie połowy jednej umowy (niezmiennik 13).
+    fn ask_for_the_agreed_fields(&self, id: StepId, told: &mut Told) {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return;
+        };
+        if job.handover.is_empty() {
+            return;
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(FIELDS_ASKED_FOR);
+        told.prompt.push('\n');
+        for field in &job.handover {
+            // `write!` do `String`, nie `push_str(&format!(…))` — ten sam powód, co przy indeksie
+            // przekazań (clippy `format_push_string`), i ten sam `let _`: zapis do `String` nie
+            // ma jak zawieść.
+            let _ = write!(
+                told.prompt,
+                "\n{}: {}{}",
+                field.name.trim(),
+                field.describe.trim(),
+                if field.required == Some(true) {
+                    FIELD_IS_NEEDED
+                } else {
+                    ""
+                }
+            );
+        }
+        told.prompt.push_str("\n\n");
+        told.prompt.push_str(FIELDS_ARE_REQUIRED);
     }
 
     /// Zdanie, którym blok nazywa limit czasu **tego** kroku.
