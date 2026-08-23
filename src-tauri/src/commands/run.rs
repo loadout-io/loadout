@@ -5601,6 +5601,12 @@ impl Live {
                 // do księgi, a warunek postawiony tutaj zostawiałby w niej wartość z poprzedniej
                 // rundy pętli. Klucze znikają dopiero przy serializacji ([`StepEntry::repaired`]),
                 // czyli w miejscu, które o długość pliku naprawdę pyta.
+                //
+                // I dla KAŻDEGO kroku, który cokolwiek oddaje — także dla wyjścia komendy i dla
+                // zdania człowieka z kafelka kontrolnego. Zawężenie do kroków agenta byłoby
+                // warunkiem, o który nie prosi żadne kryterium, i chowałoby prawdziwy fakt:
+                // następny krok dostaje wskaźnik na plik, który `reshape()` przepisał, niezależnie
+                // od tego, kto ten tekst napisał.
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.repaired = written
