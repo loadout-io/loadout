@@ -402,6 +402,14 @@ pub struct AppState {
     store: Store,
     /// Fabryka sterowników vendorów.
     drivers: Drivers,
+    /// Foldery, ktorych biegi ta sesja juz uzgodnila z tym, co naprawde zyje na maszynie.
+    ///
+    /// 2026-08-23 — RAZ NA FOLDER NA SESJE, i oba slowa sa tu wazne. „Raz", bo uzgodnienie
+    /// czyta i przepisuje pliki biegow; wolane przy kazdej komendzie bilo by sie o nie z zywym
+    /// biegiem. „Na sesje", bo bieg ubity razem z oknem poznaje sie po tym, ze zginal ZANIM to
+    /// okno wstalo — a wszystko, co ta sesja sama uruchomi, jest juz po uzgodnieniu i nigdy
+    /// przez nie nie przechodzi.
+    reconciled: Mutex<std::collections::BTreeSet<PathBuf>>,
     /// Uchwyt do biegu, który idzie **teraz**.
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie tego
@@ -577,6 +585,7 @@ impl AppState {
             project,
             store,
             drivers,
+            reconciled: Mutex::new(std::collections::BTreeSet::new()),
             live: Mutex::new(idle),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
@@ -972,11 +981,88 @@ impl AppState {
     /// o systemie plików zamiast o folderze.
     ///
     /// Każda odmowa mówi, co zrobić (DESIGN §8). Zdanie „os error 2" nie mówi nic.
-    fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
+    /// PUBLICZNE, bo to jest szew, który kryterium ma prawo dotknąć —
+    /// `tests/it/runs_left_over_are_reconciled.rs`. Powód stoi przy
+    /// [`Self::settle_what_the_last_window_left`]: naprawa raz już wylądowała w kodzie bez
+    /// wołających i wyglądała na zrobioną. Kryterium wołające tę metodę pilnuje, że nie
+    /// wyląduje tam drugi raz.
+    pub fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
         // Brak wyboru jest wartością, nie błędem: dopóki nikt nie otworzył karty, biegniemy
         // tam, gdzie aplikacja wstała. Sam FOLDER sprawdza [`project_folder`] i to jest jedyne
         // miejsce, w którym te trzy zdania odmowy mieszkają.
-        Ok(project_folder(folder)?.unwrap_or_else(|| self.project.clone()))
+        let project = project_folder(folder)?.unwrap_or_else(|| self.project.clone());
+        self.settle_what_the_last_window_left(&project);
+        Ok(project)
+    }
+
+    /// Sprząta po poprzednim oknie we **wszystkich** znanych folderach, raz, przy starcie.
+    ///
+    /// Wołane raz, z `lib.rs`, ZANIM okno dostanie ten stan — i oba warunki są tu potrzebne.
+    /// „Zanim": w tym momencie ta sesja nie prowadzi jeszcze ani jednego biegu, więc wszystko,
+    /// co stoi w `running`, zostawił ktoś inny. „Wszystkich": sierota w folderze, do którego
+    /// dziś nie zaglądasz, dalej pali limit dostawcy i dalej trzyma port — a naprawa oparta
+    /// wyłącznie na [`Self::project_for`] czeka z nią do dnia, w którym człowiek akurat kliknie
+    /// ten workspace. Zmierzone u właściciela 2026-08-23: uzgodnienie ruszyło przy starcie dla
+    /// folderu, który był otwarty, a trzy zombie w sąsiednim projekcie stały dalej.
+    ///
+    /// Skutek uboczny jest tu równie ważny, co sprzątanie: każdy dotknięty folder wchodzi do
+    /// zapadki, więc pierwsze późniejsze dotknięcie GO NIE POWTÓRZY. Bez tego bieg uruchomiony
+    /// przez tę sesję w folderze, którego okno nie dotknęło od startu, trafiłby na uzgodnienie
+    /// w trakcie własnej pracy — i zostałby spisany na straty jako porzucony przez kogoś innego.
+    ///
+    /// Nieczytelna lista workspace'ów **nie zabiera okna** (niezmiennik 5): zdanie idzie do
+    /// dziennika, a folder, pod którym to okno stoi, jest uzgadniany tak czy owak.
+    pub fn settle_everything_left_behind(&self, home: &std::path::Path) {
+        let mut folders = vec![self.project.clone()];
+        match crate::commands::workspaces::list_workspaces_inner(home) {
+            Ok(known) => folders.extend(known.into_iter().map(|one| PathBuf::from(one.folder))),
+            Err(error) => tracing::error!(
+                "the list of workspaces could not be read, so only the open folder was settled \
+                 after the last window: {error}"
+            ),
+        }
+        for folder in folders {
+            self.settle_what_the_last_window_left(&folder);
+        }
+    }
+
+    /// Uzgadnia biegi tego folderu z tym, co naprawde zyje — przy PIERWSZYM dotknieciu w tej sesji.
+    ///
+    /// TUTAJ, A NIE PRZY STARCIE OKNA, i to jest naprawa zmierzona, nie przeczucie. Do 2026-08-23
+    /// odzyskiwanie po awarii czytalo baze BIBLIOTEKI (`lib::recover_from_last_time`), a biegi
+    /// folderu maja wlasny indeks i wlasne pliki — wiec tamta droga nie widziala ich nigdy.
+    /// Zmierzone u wlasciciela: biblioteka miala 19 biegow i ani jednego `running`, a trzy jego
+    /// zombie nie byly w niej wcale.
+    ///
+    /// NIE PRZY OTWARCIU FOLDERU PRZEZ `workspace::Registry`, choc tam pasowaloby najladniej:
+    /// ten rejestr NIE MA ANI JEDNEGO WOLAJACEGO w calym drzewie. Naprawa wpieta w niego byla
+    /// wpieta w martwy kod — sprawdzone gerpem po `Registry::open`, zero trafien poza definicja.
+    /// `project_for` jest droga zywa: przechodzi przez nia kazda komenda dotykajaca projektu.
+    ///
+    /// Folder, ktorego nie da sie uzgodnic, dalej jest folderem, z ktorym mozna pracowac: wynik
+    /// idzie do dziennika, nigdy w odmowe komendy (niezmiennik 5).
+    fn settle_what_the_last_window_left(&self, project: &std::path::Path) {
+        {
+            let mut seen = self
+                .reconciled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !seen.insert(project.to_path_buf()) {
+                return;
+            }
+        }
+        let done = crate::commands::reconcile::reconcile_runs(project);
+        if done.runs > 0 || done.still_alive > 0 {
+            tracing::info!(
+                "{}: {} run(s) and {} step(s) were left over by a closed window, \
+                 {} group(s) proven dead, {} still alive",
+                project.display(),
+                done.runs,
+                done.steps,
+                done.reaped,
+                done.still_alive,
+            );
+        }
     }
 
     /// Nazwa pliku z okna → żądanie biegu.

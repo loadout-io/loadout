@@ -348,12 +348,17 @@ pub fn run() {
                 }
             }
 
-            app.manage(ipc::AppState::new(
-                home.clone(),
-                project.clone(),
-                store,
-                drivers,
-            ));
+            let state = ipc::AppState::new(home.clone(), project.clone(), store, drivers);
+            /* Drugie sprzątanie, i NIE jest to powtórka tego wyżej. Tamto czyta bazę biblioteki
+             * i pisze do bazy; biegi mieszkają w plikach, w katalogu KAŻDEGO projektu z osobna,
+             * i tamta droga nie widziała ich nigdy — zmierzone 2026-08-23: biblioteka miała 19
+             * biegów i ani jednego `running`, a trzy zombie właściciela nie były w niej wcale.
+             *
+             * Kolejność jest wiążąca: przed `manage`, czyli zanim okno zdąży cokolwiek zamówić.
+             * Powód stoi przy `settle_everything_left_behind` — to jedyny moment, w którym
+             * „biegnie" na pewno znaczy „po kimś innym". */
+            state.settle_everything_left_behind(&home);
+            app.manage(state);
             Ok(())
         })
         // Pierwsza w kolejności i tak ma zostać: druga kopia Loadouta to drugi zestaw agentów

@@ -393,6 +393,9 @@ fn todo_workflow(lead: &Agent, scout: &Agent, builder: &Agent, checker: &Agent) 
                     skills: loadout_lib::workflow::Skills::default(),
                     folder: one.folder.clone(),
                     handover: loadout_lib::workflow::Handover::default(),
+                    // Domyślne „Stop", czyli to, co robił ten graf, zanim pole istniało:
+                    // krok, który nie przeszedł, zatrzymuje to, co po nim.
+                    when_it_fails: loadout_lib::workflow::WhenItFails::default(),
                     at: loadout_lib::workflow::Point::default(),
                     extra: serde_json::Map::new(),
                 })

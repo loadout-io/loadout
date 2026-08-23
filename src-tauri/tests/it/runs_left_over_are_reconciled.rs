@@ -25,9 +25,13 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 
+use loadout_lib::commands::Drivers;
 use loadout_lib::commands::reconcile::with_reaper;
+use loadout_lib::engine::drivers::AgentDriver;
 use loadout_lib::engine::supervisor::machine_booted_at;
+use loadout_lib::ipc::AppState;
 use loadout_lib::recovery::ReapOutcome;
+use loadout_lib::store::Store;
 use serde_json::Value;
 
 /// Grupa procesów, o którą fikstura każe zapytać. Nikt jej nie zabija — domykacz jest podstawiony.
@@ -189,6 +193,169 @@ fn a_run_left_running_by_a_closed_window_is_written_off() -> Result<(), Box<dyn 
         after, before,
         "a run that finished on its own was rewritten too. Reconciling is for runs nobody is \
          carrying any more - not for every file in the folder"
+    );
+    Ok(())
+}
+
+/// Sterownik, ktorego to kryterium nie wola. Musi istniec, bo [`AppState`] go trzyma.
+fn no_drivers() -> Drivers {
+    std::sync::Arc::new(|_vendor| -> std::sync::Arc<dyn AgentDriver> {
+        unreachable!("asking a folder for its path never starts an agent")
+    })
+}
+
+/* DRUGIE KRYTERIUM, I PILNUJE MIEJSCA WOLANIA, NIE MECHANIZMU.
+ *
+ * Mechanizm powyzej byl zielony i naprawa i tak nie dzialala: wpieta byla w
+ * `workspace::Registry::open_store`, a `Registry` NIE MA ANI JEDNEGO WOLAJACEGO w calym drzewie.
+ * Zmierzone u wlasciciela 2026-08-23: po restarcie aplikacji trzy zombie stalo dalej w `running`,
+ * a linia dziennika nie padla ani razu. Kryterium na sam mechanizm nie odroznia kodu wpietego
+ * od kodu, ktory tylko wyglada na wpiety.
+ *
+ * Dlatego to kryterium wola SZEW, przez ktory idzie kazda komenda dotykajaca projektu —
+ * `AppState::project_for` (czternascie miejsc w `ipc.rs`) — i pyta o skutek uboczny. Przeniesienie
+ * uzgodnienia gdzie indziej jest wolne; przeniesienie go tam, gdzie nikt nie zaglada, jest tu
+ * czerwone.
+ *
+ * DRUGI PUNKT jest wazniejszy od pierwszego i opisuje ryzyko, ktore ta naprawa sama tworzy:
+ * uzgodnienie ZABIJA grupy procesow. Wolane przy kazdej komendzie, przewrociloby biegi ZYWE —
+ * te, ktore ta sesja wlasnie prowadzi. Stad „raz na folder": bieg ubity razem z oknem poznaje sie
+ * po tym, ze zginal ZANIM to okno wstalo. Nizej stoi wlasnie to: plik, ktory pojawil sie PO
+ * pierwszym dotknieciu folderu, jest po drugim dotknieciu nietkniety bajt w bajt.
+ */
+#[tokio::test]
+async fn opening_a_folder_settles_what_the_last_window_left() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let home = tempfile::tempdir()?;
+    let project = root.path();
+    // INNY rozruch maszyny niz ten: „maszyna wstala od nowa" znaczy „nie ma czego zabijac",
+    // wiec kryterium przechodzi cala droge, nie wysylajac ani jednego sygnalu.
+    put(
+        project,
+        LEFT_OVER,
+        &a_run("running", "running", "a-boot-that-is-over"),
+    )?;
+
+    let state = AppState::new(
+        home.path().to_path_buf(),
+        project.to_path_buf(),
+        Store::open(&home.path().join("index.db"))?,
+        no_drivers(),
+    );
+
+    let asked = state
+        .project_for(None)
+        .map_err(|said| format!("the window could not even name its own folder: {said}"))?;
+    assert_eq!(asked, project, "project_for handed back the wrong folder");
+
+    let settled = read(project, LEFT_OVER)?;
+    assert_eq!(
+        settled["status"].as_str(),
+        Some("interrupted"),
+        "a run left behind by a window that is gone still reads as work in progress after the \
+         new window has opened its folder. The mechanism for this exists and is proven by the \
+         criterion above - what this one asks is whether anything ever calls it"
+    );
+
+    /* DRUGI PUNKT: bieg, ktory zaczal sie PO otwarciu folderu, jest bezpieczny. */
+    const OURS: &str = "20260823-114500__01a02c22-346e-73c2-9555-83670e3f93e4";
+    put(
+        project,
+        OURS,
+        &a_run("running", "running", "a-boot-that-is-over"),
+    )?;
+    let before = fs::read_to_string(
+        project
+            .join(".loadout")
+            .join("runs")
+            .join(OURS)
+            .join("run.json"),
+    )?;
+
+    let _ = state.project_for(None);
+    let _ = state.project_for(Some(project.to_string_lossy().as_ref()));
+
+    let after = fs::read_to_string(
+        project
+            .join(".loadout")
+            .join("runs")
+            .join(OURS)
+            .join("run.json"),
+    )?;
+    assert_eq!(
+        after, before,
+        "a run that this window started was written off as abandoned. Settling happens ONCE per \
+         folder, at the first touch, because that is the only moment at which everything still \
+         running was started by somebody else. Called on every command, this would shoot the run \
+         the user is watching"
+    );
+    Ok(())
+}
+
+/* TRZECIE KRYTERIUM: folder, ktorego to okno NIE ma otwartego, tez zostaje posprzatany.
+ *
+ * Sierota w projekcie, do ktorego dzis nie zagladasz, pali limit dostawcy tak samo jak ta
+ * w projekcie otwartym — a naprawa oparta wylacznie na pierwszym dotknieciu czeka z nia do dnia,
+ * w ktorym czlowiek akurat kliknie ten workspace. Zmierzone u wlasciciela 2026-08-23:
+ * uzgodnienie ruszylo przy starcie dla folderu otwartego (4 biegi, 20 krokow), a trzy zombie
+ * w sasiednim projekcie staly dalej w `running`.
+ *
+ * DRUGI PUNKT pilnuje skutku ubocznego, bez ktorego ta naprawa jest gorsza od jej braku:
+ * sprzatniety folder ma wejsc do zapadki. Inaczej bieg, ktory ta sesja uruchomi w folderze
+ * nieotwartym od startu, trafi na uzgodnienie w trakcie WLASNEJ pracy — i zostanie spisany
+ * na straty jako porzucony przez kogos innego.
+ */
+#[tokio::test]
+async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let open = tempfile::tempdir()?;
+    let elsewhere = tempfile::tempdir()?;
+    put(
+        elsewhere.path(),
+        LEFT_OVER,
+        &a_run("running", "running", "a-boot-that-is-over"),
+    )?;
+    fs::write(
+        home.path().join("workspaces.json"),
+        serde_json::to_string(&serde_json::json!([{
+            "id": elsewhere.path().to_string_lossy(),
+            "name": "The one nobody clicked",
+            "folder": elsewhere.path().to_string_lossy(),
+        }]))?,
+    )?;
+
+    let state = AppState::new(
+        home.path().to_path_buf(),
+        open.path().to_path_buf(),
+        Store::open(&home.path().join("index.db"))?,
+        no_drivers(),
+    );
+    state.settle_everything_left_behind(home.path());
+
+    assert_eq!(
+        read(elsewhere.path(), LEFT_OVER)?["status"].as_str(),
+        Some("interrupted"),
+        "the window opened on one project and left a run in another one reading as work in \
+         progress. Nobody is carrying it, and its agents are still counted against the limit \
+         of the account that pays for them"
+    );
+
+    /* DRUGI PUNKT: zapadka zasiana, wiec bieg tej sesji w tamtym folderze jest bezpieczny. */
+    const OURS: &str = "20260823-114500__01a02c22-346e-73c2-9555-83670e3f93e4";
+    put(
+        elsewhere.path(),
+        OURS,
+        &a_run("running", "running", "a-boot-that-is-over"),
+    )?;
+    let before = read(elsewhere.path(), OURS)?;
+    let _ = state.project_for(Some(elsewhere.path().to_string_lossy().as_ref()));
+
+    assert_eq!(
+        read(elsewhere.path(), OURS)?,
+        before,
+        "settling at start-up did not put that folder in the latch, so the first command naming \
+         it settled it a SECOND time - by then this session was running there, and its own run \
+         was written off as somebody else's leftovers"
     );
     Ok(())
 }
