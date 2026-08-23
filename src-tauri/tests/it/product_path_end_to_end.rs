@@ -281,6 +281,7 @@ fn one_step_for(agent: &Agent, task: &str) -> WorkflowFile {
             skills: loadout_lib::workflow::Skills::default(),
             folder: loadout_lib::workflow::Folder::default(),
             handover: loadout_lib::workflow::Handover::default(),
+            when_it_fails: loadout_lib::workflow::WhenItFails::Stop,
             at: loadout_lib::workflow::Point::default(),
             extra: serde_json::Map::new(),
         })],

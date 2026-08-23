@@ -96,6 +96,21 @@ pub enum Step {
 impl Step {
     /// Nazwa kroku, tak jak stoi na kafelku — to ona jedzie do człowieka, nigdy identyfikator
     /// (niezmiennik 14).
+    /// Co zrobić z robotą, kiedy ten krok nie przejdzie.
+    ///
+    /// Kafelek kontrolny i „uruchom i zostaw" oddają [`WhenItFails::Stop`] i to jest treść, nie
+    /// zaniedbanie: pierwszy JEST pytaniem do człowieka (drugie pytanie po nim byłoby tym samym
+    /// pytaniem dwa razy), a drugi nie orzeka o niczyjej robocie — odmawia przy starcie albo
+    /// stawia proces i schodzi z drogi.
+    #[must_use]
+    pub const fn when_it_fails(&self) -> WhenItFails {
+        match self {
+            Self::Agent(one) => one.when_it_fails,
+            Self::Check(one) => one.when_it_fails,
+            Self::Checkpoint(_) | Self::Serve(_) => WhenItFails::Stop,
+        }
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
@@ -169,6 +184,16 @@ pub struct AgentStep {
     /// odłożony (T3 §7.1).
     #[serde(default)]
     pub handover: Handover,
+    /// Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak klucza znaczy [`WhenItFails::Stop`],
+    /// czyli dokładnie to, co robił każdy krok do 2026-08-23.
+    ///
+    /// PRZY ZAPISIE ZNIKA, GDY JEST DOMYŚLNE — ten sam powód, co przy [`AgentStep::vendor_options`]
+    /// i dokładnie z tego samego pomiaru: `"whenItFails": "stop"` dopisane do KAŻDEGO kroku
+    /// KAŻDEGO pliku przepisałoby przy pierwszym zapisie wszystkie istniejące workflow, a nie
+    /// niesie ani jednej informacji ponad swój brak. `overrides: {}` zostaje, bo tam pusta mapa
+    /// znaczy „ten kafelek nie jest nadpisany" — tu domyślna wartość nie znaczy nic.
+    #[serde(default, skip_serializing_if = "WhenItFails::is_stop")]
+    pub when_it_fails: WhenItFails,
     /// Brak klucza znaczy `{"x":0,"y":0}`: plik poprawiony ręcznie ma się wczytać, a nie odmówić
     /// z powodu pozycji, którą płótno i tak umie ustawić.
     #[serde(default)]
@@ -241,6 +266,10 @@ pub struct CheckStep {
     /// tylko do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta.
     #[serde(default)]
     pub folder: Folder,
+    /// Jak [`AgentStep::when_it_fails`], razem z tym, że przy zapisie znika, gdy jest domyślne.
+    /// Komenda, która nie przeszła, jest ślepym punktem dokładnie tak samo jak agent.
+    #[serde(default, skip_serializing_if = "WhenItFails::is_stop")]
+    pub when_it_fails: WhenItFails,
     /// Jak [`AgentStep::at`].
     #[serde(default)]
     pub at: Point,
@@ -365,6 +394,52 @@ impl Default for Skills {
 pub enum PlainNotes {
     #[default]
     Notes,
+}
+
+/// Co ma się stać z robotą, kiedy **ten krok nie przejdzie**.
+///
+/// 2026-08-23 — ZAMÓWIENIE WŁAŚCICIELA, dosłownie: „workflows zawsze ma mieć opcje kontynuacji
+/// a nie ślepe punkty".
+///
+/// CO BYŁO. Krok, który padł, zabierał ze sobą CAŁY stożek potomków
+/// (`engine::scheduler`, `mark_cone`) — bezwarunkowo i bez zdania. Bieg właściciela
+/// `20260823-092142`: sędzia `Verification 1` trzy razy odesłał research do poprawki, trzy razy
+/// go nie przepuścił, i tym samym skasował `Syntezę`, `Design` i `Implementation` — mimo że
+/// dwie pozostałe weryfikacje przeszły. Nie było jak powiedzieć, co ma się stać zamiast tego.
+///
+/// NA KROKU, NIE NA STRZAŁCE POWROTU. Pierwsza wersja tego projektu kładła to pole na powrocie
+/// pętli, bo tam mieszka `max_turns`. To byłoby węższe niż zamówienie: pokrywałoby wyłącznie
+/// sędziego, który wyczerpał próby, a nie krok, który padł zwyczajnie. Ślepy punkt jest tym
+/// samym ślepym punktem niezależnie od tego, dlaczego krok nie przeszedł.
+///
+/// `Stop` JEST DOMYŚLNE i to jest warunek, nie uprzejmość: każdy plik workflow zapisany przed
+/// tą zmianą biegnie po niej co do kroku tak samo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WhenItFails {
+    /// Nic po tym kroku się nie wydarzy. Tak zachowywał się każdy krok do 2026-08-23.
+    #[default]
+    Stop,
+    /// Robota jedzie dalej mimo wszystko — a krok i tak zostaje czerwony.
+    ///
+    /// Następny krok **musi się dowiedzieć**, że dostaje materiał, który nie przeszedł: bez tego
+    /// synteza buduje na odrzuconej robocie i nikt tego nie widzi.
+    CarryOn,
+    /// Bieg staje i pyta człowieka, co dalej.
+    ///
+    /// Tą samą drogą, którą pyta kafelek kontrolny (`Live::wait_for_a_person`) — mechanizm
+    /// parkowania biegu bierze `StepId`, a nie rodzaj kroku, więc nie trzeba go pisać drugi raz.
+    AskMe,
+}
+
+impl WhenItFails {
+    /// Czy to jest wartość domyślna — czyli czy przy zapisie ma zniknąć z pliku.
+    ///
+    /// Bierze referencję, bo tego żąda `skip_serializing_if`, choć typ jest `Copy`.
+    #[must_use]
+    pub const fn is_stop(&self) -> bool {
+        matches!(self, Self::Stop)
+    }
 }
 
 /// Co krok przekazuje dalej [T3 §3.1].

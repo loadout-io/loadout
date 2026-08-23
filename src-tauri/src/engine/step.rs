@@ -103,8 +103,22 @@ pub enum StepEvent {
 pub enum StepReport {
     /// Krok doszedł do końca i się udał.
     Succeeded,
-    /// Krok doszedł do końca i się nie udał.
+    /// Krok doszedł do końca i się nie udał. **Nic po nim się nie wydarzy.**
     Failed,
+    /// Krok się nie udał, ale robota po nim ma jechać dalej.
+    ///
+    /// 2026-08-23 — POWSTAŁ Z ROZDZIELENIA DWÓCH ZDAŃ, KTÓRE [`StepReport::Failed`] MÓWIŁ NARAZ:
+    /// „ten krok nie przeszedł" i „nic po nim się nie wydarzy". Do dziś nie dało się mieć
+    /// pierwszego bez drugiego, więc każdy nieudany krok był ślepym punktem — a bieg właściciela
+    /// `20260823-092142` stracił przez to `Syntezę`, `Design` i `Implementation`, mimo że dwie
+    /// z trzech weryfikacji przeszły.
+    ///
+    /// KROK ZOSTAJE CZERWONY. Ten wariant NIE jest sukcesem i nie ma prawa się nim czytać:
+    /// wypełniony blok na pasku obiecuje, że krok się udał. Zmienia się wyłącznie to, co dzieje
+    /// się z jego potomkami — planista nie maluje stożka.
+    ///
+    /// Wybiera to człowiek, per krok (`workflow::WhenItFails`), i nigdy nie jest to domyślne.
+    FailedAndCarriedOn,
     /// Krok zobaczył anulowanie w środku i zwinął się sam.
     Cancelled,
 }

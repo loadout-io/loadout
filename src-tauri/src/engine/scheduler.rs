@@ -38,6 +38,30 @@ pub struct Outcome {
     pub cancelled: bool,
 }
 
+/// Dzieci, które po udanym kroku dostają drogę — albo `None`, kiedy trasy nie wolno przyjąć.
+///
+/// `None` znaczy dokładnie dwie rzeczy i obie kończą się tak samo: trasa jest zablokowana
+/// (`Route::Blocked` — brak wartości, wartość nieznana albo więcej niż jedna zgodna droga), albo
+/// wskazuje dziecko, którego w grafie nie ma. Druga z nich jest obroną przed trasą wskazującą
+/// **poza** zapisane strzałki: bez niej warunek w pliku mógłby wypuścić krok, którego nikt na
+/// płótnie nie połączył.
+///
+/// Osobna funkcja od 2026-08-23, i to nie jest kosmetyka: `execute_routed` przekroczyło sufit
+/// stu wierszy, kiedy doszedł czwarty wariant raportu. Wyciągnięty jest ten kawałek, bo daje
+/// się nazwać jednym zdaniem — a wyciąganie po to, żeby zmieścić się w liczbie, kawałka bez
+/// nazwy dałoby funkcję, której nikt nie umie zawołać świadomie.
+fn chosen_children(children: &[Vec<StepId>], id: StepId, route: Route) -> Option<Vec<StepId>> {
+    let selected = match route {
+        Route::All => children[id].clone(),
+        Route::Only(selected) => selected,
+        Route::Blocked => return None,
+    };
+    selected
+        .iter()
+        .all(|child| children[id].contains(child))
+        .then_some(selected)
+}
+
 /// Które zapisane dzieci naprawdę wynikają z wartości wyprodukowanej przez krok.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
@@ -191,22 +215,13 @@ where
         let mut guard = lock(&states);
         match report {
             StepReport::Succeeded => {
-                let route = route_after(id, StepReport::Succeeded);
-                if route == Route::Blocked {
+                let Some(selected) =
+                    chosen_children(children, id, route_after(id, StepReport::Succeeded))
+                else {
                     guard[id] = StepState::Failed;
                     mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
                     continue;
-                }
-                let selected = match route {
-                    Route::All => children[id].clone(),
-                    Route::Only(selected) => selected,
-                    Route::Blocked => Vec::new(),
                 };
-                if selected.iter().any(|child| !children[id].contains(child)) {
-                    guard[id] = StepState::Failed;
-                    mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
-                    continue;
-                }
                 guard[id] = StepState::Succeeded;
                 release_children(
                     children,
@@ -221,6 +236,33 @@ where
             StepReport::Failed => {
                 guard[id] = StepState::Failed;
                 mark_cone(children, &mut guard, id, StepEvent::UpstreamFailed);
+            }
+            /* KROK CZERWONY, POTOMKOWIE ŻYWI — i to jest CAŁA różnica wobec gałęzi wyżej.
+             *
+             * `Failed` mówił do 2026-08-23 dwie rzeczy naraz: „ten krok nie przeszedł" oraz „nic
+             * po nim się nie wydarzy". Nie dało się mieć pierwszego bez drugiego, więc każdy
+             * nieudany krok był ślepym punktem grafu. Ten wariant rozdziela je: stan zostaje
+             * `Failed`, bo krok naprawdę nie przeszedł i pasek ma o tym mówić, a stopień wejściowy
+             * potomkom zdejmuje ten sam `release_children`, co po sukcesie.
+             *
+             * `route_after` NIE jest tu pytany, i to jest rozstrzygnięcie: warunkowe drogi
+             * odpowiadają na pytanie „którą wartość krok wyprodukował", a krok, który nie
+             * przeszedł, nie wyprodukował żadnej. Wszystkie dzieci dostają drogę, tak jak przy
+             * `Route::All` — człowiek powiedział „jedź dalej", nie „wybierz gałąź". */
+            StepReport::FailedAndCarriedOn => {
+                guard[id] = StepState::Failed;
+                // WSZYSTKIE dzieci, bez pytania `route_after`: warunkowe drogi odpowiadają na
+                // pytanie „którą wartość krok wyprodukował", a krok, który nie przeszedł, nie
+                // wyprodukował żadnej. Klonu nie ma — `release_children` bierze wycinek.
+                release_children(
+                    children,
+                    &mut remaining,
+                    &mut activated,
+                    &mut guard,
+                    &mut ready,
+                    id,
+                    &children[id],
+                );
             }
             StepReport::Cancelled => {
                 guard[id] = StepState::Cancelled;

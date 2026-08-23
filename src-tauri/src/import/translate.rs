@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::library::agents::Agent;
 use crate::workflow::{
     AgentStep, CheckStep, CheckpointStep, Folder, Handover, Link, PlainNotes, Point, Skills, Step,
-    WorkflowFile,
+    WhenItFails, WorkflowFile,
 };
 
 pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidence as Evidence};
@@ -133,6 +133,9 @@ fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
             command: command.clone(),
             proof: proof.clone(),
             folder: Folder::SameCopy,
+            // Import nie zgaduje polityki: przeniesiona konfiguracja zachowuje się tak,
+            // jak zachowywał się każdy krok do 2026-08-23.
+            when_it_fails: WhenItFails::Stop,
             at: point(864.0, 0.0),
             extra: Map::new(),
         }),
@@ -144,6 +147,7 @@ fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
         command,
         proof,
         folder: Folder::SameCopy,
+        when_it_fails: WhenItFails::Stop,
         at: point(1440.0, 0.0),
         extra: Map::new(),
     }));
@@ -234,6 +238,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str, at: Point
         skills: Skills::default(),
         folder: Folder::SameCopy,
         handover: Handover::Plain(PlainNotes::Notes),
+        when_it_fails: WhenItFails::Stop,
         at,
         extra: Map::new(),
     }

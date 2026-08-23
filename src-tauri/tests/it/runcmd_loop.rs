@@ -783,3 +783,184 @@ async fn a_handoff_is_titled_by_what_its_own_step_was_asked() -> Result<(), Box<
     );
     Ok(())
 }
+
+/* 2026-08-23 — ZAMOWIENIE WLASCICIELA: „workflows zawsze ma miec opcje kontynuacji a nie slepe
+ * punkty".
+ *
+ * Do dzis kazda porazka konczyla sie identycznie: `StepReport::Failed`, po ktorym planista
+ * malowal caly stozek potomkow na `skipped` — bez zdania i bez wyboru. Bieg wlasciciela
+ * `20260823-092142` stracil przez to `Synteze`, `Design` i `Implementation`, mimo ze dwie
+ * z trzech weryfikacji przeszly.
+ *
+ * SLABA WERSJA TEGO KRYTERIUM to „krok za petla pobiegl". Przechodzi ja implementacja, ktora
+ * przy `carry-on` melduje krok jako UDANY — a wtedy pasek pokazuje wypelniony blok nad robota,
+ * ktorej tester nie przepuscil, czyli klamie o dokladnie tej jednej rzeczy, dla ktorej ten
+ * produkt powstal. Dlatego drugi punkt pyta o STAN sedziego i wymaga czerwieni.
+ */
+
+/// Ten sam plik co `LOOP_FILE`, ale tester ma jechac dalej mimo nieprzepuszczenia.
+fn loop_that_carries_on() -> String {
+    let marked = LOOP_FILE.replace(
+        r#""instructions": "Run the suite and say whether it passed.","#,
+        "\"instructions\": \"Run the suite and say whether it passed.\",\n      \
+         \"whenItFails\": \"carry-on\",",
+    );
+    assert_ne!(
+        marked, LOOP_FILE,
+        "the fixture did not actually mark the tester"
+    );
+    marked
+}
+
+/// Stany krokow z `run.json`, po nazwie kafelka.
+fn states_of(dir: &Path) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let text = std::fs::read_to_string(dir.join("run.json"))?;
+    let described: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(described["steps"]
+        .as_array()
+        .ok_or("run.json has no steps")?
+        .iter()
+        .map(|one| {
+            (
+                one["name"].as_str().unwrap_or_default().to_owned(),
+                one["status"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect())
+}
+
+/// Powody zapisane przy krokach, po nazwie kafelka.
+fn reasons_of(dir: &Path) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let text = std::fs::read_to_string(dir.join("run.json"))?;
+    let described: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(described["steps"]
+        .as_array()
+        .ok_or("run.json has no steps")?
+        .iter()
+        .filter_map(|one| {
+            Some((
+                one["name"].as_str()?.to_owned(),
+                one["error"].as_str()?.to_owned(),
+            ))
+        })
+        .collect())
+}
+
+/// Puszcza plik, ktorego tester NIGDY nie przepuszcza, i oddaje to, co zostalo w `run.json`.
+///
+/// Czyta plik W SRODKU, a nie oddaje sciezki: `Bench` trzyma katalogi tymczasowe i kasuje je,
+/// wychodzac z tej funkcji — sciezka oddana na zewnatrz wskazuje wtedy na nic.
+async fn what_a_never_passing_run_left(
+    file: &str,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", file)?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::new(Watch::passing_on_turn(usize::MAX))),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let report = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 2,
+            task: None,
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+    Ok((states_of(&report.dir)?, reasons_of(&report.dir)?))
+}
+
+#[tokio::test]
+async fn a_step_set_to_carry_on_lets_the_work_through_and_still_reads_red()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", &loop_that_carries_on())?;
+    let store = Store::open(&bench.db())?;
+    let watch = Arc::new(Watch::passing_on_turn(usize::MAX));
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::clone(&watch)),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let report = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 2,
+            task: None,
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+
+    assert_eq!(
+        watch.times(AFTER_PROMPT),
+        1,
+        "the tester never passed and the step after the loop was set to carry on, so it has to \
+         run exactly once. Zero means the dead end is still there; more than once means the loop \
+         let it through on every round. The driver saw: {:?}",
+        watch.seen()
+    );
+
+    let states = states_of(&report.dir)?;
+    let tester: Vec<&str> = states
+        .iter()
+        .filter(|(name, _)| name == "Tester")
+        .map(|(_, state)| state.as_str())
+        .collect();
+    assert!(
+        tester.contains(&"failed"),
+        "the tester never passed the work, so it has to read as failed even though the run \
+         carried on. A filled block promises the step worked - and that promise over work a \
+         tester turned down is the one lie this whole product exists to prevent. It read: \
+         {tester:?}"
+    );
+    assert!(
+        !states.iter().any(|(_, state)| state == "skipped"),
+        "something was still skipped even though the work was set to carry on. It read: {states:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_skipped_step_says_which_step_stopped_it() -> Result<(), Box<dyn Error>> {
+    // Plik BEZ ustawienia, czyli dokladnie tak, jak wygladaja wszystkie istniejace workflow.
+    let (states, reasons) = what_a_never_passing_run_left(LOOP_FILE).await?;
+    assert!(
+        states.iter().any(|(_, state)| state == "skipped"),
+        "the fixture is wrong if nothing was skipped; the point below would be about an empty \
+         set. It read: {states:?}"
+    );
+
+    let after = reasons
+        .iter()
+        .find(|(name, _)| name == "Ship")
+        .ok_or_else(|| {
+            format!(
+                "the step after the loop was skipped and left no reason at all in run.json. That \
+                 is the dead end the owner asked about: three empty rows and not one sentence \
+                 about what killed them. The file said: {reasons:?}"
+            )
+        })?;
+    assert!(
+        after.1.contains("Tester"),
+        "the skipped step has a reason, but it does not name the step that stopped it - so the \
+         person still has to walk the graph themselves to find out. It said: {:?}",
+        after.1
+    );
+    Ok(())
+}

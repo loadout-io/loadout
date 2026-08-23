@@ -170,7 +170,7 @@ use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
 use crate::workflow::{
     AgentStep, CheckOutcome, ConditionalLink, Folder, Handover, Point, RouteEvidence, Skills, Step,
-    WorkflowFile,
+    WhenItFails, WorkflowFile,
 };
 
 /// Biblioteka agentów pod katalogiem domowym Loadouta (`docs/ARCHITECTURE.md` §8).
@@ -983,6 +983,11 @@ struct Planned {
     /// Nazwa z kafelka. To ona jedzie na ekran jako etykieta wiersza — identyfikator kroku
     /// ani uuid agenta nie mają tam czego szukać (niezmiennik 14).
     name: String,
+    /// Co zrobic z robota, kiedy ten krok nie przejdzie — wybor czlowieka z pliku workflow.
+    ///
+    /// Zamrozone przy planowaniu, jak wszystko inne w tej strukturze: plik poprawiony w trakcie
+    /// biegu nie ma prawa zmienic zasad biegu, ktory juz ruszyl.
+    when_it_fails: WhenItFails,
     /// Klucze węzłów, po których ten krok idzie.
     depends_on: Vec<String>,
     /// Etykieta vendora, którym poszedł ten krok. Pusta dla kafelka kontrolnego: nie woła
@@ -1432,6 +1437,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
              * (niezmiennik 12 mówi o DWÓCH krokach). */
             folder: Folder::Project,
             handover: Handover::default(),
+            /* `/ask` to jeden kafelek i ani jednej strzałki: nie ma stożka, który mógłby zginąć,
+             * ani następnego kroku, do którego można by cokolwiek przepuścić. */
+            when_it_fails: crate::workflow::WhenItFails::Stop,
             at: Point::default(),
             extra: Map::new(),
         })],
@@ -1705,6 +1713,9 @@ fn plan_step(
             turn,
             in_loop,
             name: ask.name.clone(),
+            // Kafelek kontrolny JEST pytaniem do czlowieka; drugie pytanie po nim byloby tym
+            // samym pytaniem dwa razy.
+            when_it_fails: WhenItFails::Stop,
             depends_on: Vec::new(),
             vendor: String::new(),
             job: Job::Ask {
@@ -1720,6 +1731,7 @@ fn plan_step(
                 turn,
                 in_loop,
                 name: agent.name.clone(),
+                when_it_fails: agent.when_it_fails,
                 depends_on: Vec::new(),
                 vendor: job.driver.id().to_owned(),
                 job: Job::Agent(Box::new(job)),
@@ -1734,6 +1746,7 @@ fn plan_step(
                 turn,
                 in_loop,
                 name: check.name.clone(),
+                when_it_fails: check.when_it_fails,
                 depends_on: Vec::new(),
                 /* PUSTA ETYKIETA VENDORA, i to nie jest brak wartości do wypełnienia.
                  * Ten krok nie woła żadnego vendora, więc `"local"` albo `"loadout"` byłoby
@@ -1759,6 +1772,9 @@ fn plan_step(
                 turn,
                 in_loop,
                 name: serve.name.clone(),
+                // Uruchom-i-zostaw nie orzeka o niczyjej robocie: odmawia przy starcie albo
+                // stawia proces i schodzi z drogi.
+                when_it_fails: WhenItFails::Stop,
                 depends_on: Vec::new(),
                 // Pusta etykieta vendora - z tego samego powodu, co przy kafelku sprawdzajacym.
                 vendor: String::new(),
@@ -3828,17 +3844,15 @@ impl Live {
     /// `Failed`, żeby stożek za pętlą został `Skipped` i praca nie pojechała dalej na czymś, co
     /// nie przeszło. To jest cała treść limitu tur: bez tego wyczerpanie prób wyglądałoby jak
     /// sukces.
-    fn verdict_after(&self, id: StepId, said: &str) -> bool {
+    fn verdict_after(&self, id: StepId, said: &str) -> Option<&'static str> {
         let step = &self.plan.steps[id];
-        let Some((which, the_loop)) = self.judging(step) else {
-            return false;
-        };
+        let (which, the_loop) = self.judging(step)?;
         if crate::memory::handoff::verdict_in(said) == crate::memory::handoff::Verdict::Pass {
             self.settle(which, step.turn);
-            return false;
+            return None;
         }
         if step.turn + 1 < the_loop.turns {
-            return false;
+            return None;
         }
         /* 2026-08-23 — I POWÓD, BO BEZ NIEGO TEN KROK BYŁ CZERWONY BEZ ANI JEDNEGO ZDANIA.
          *
@@ -3856,8 +3870,69 @@ impl Live {
             "The tester never said whether this work passed, so it counts as not passed. Its \
              answer has to end with a line saying `outcome: pass` or `outcome: fail`."
         };
-        self.update(|book| book.steps[id].error = Some(why.to_owned()));
-        true
+        Some(why)
+    }
+
+    /// Co dzieje sie z biegiem, kiedy TEN krok nie przeszedl — jedno miejsce dla kazdej porazki.
+    ///
+    /// 2026-08-23 — ZAMOWIENIE WLASCICIELA: „workflows zawsze ma miec opcje kontynuacji a nie
+    /// slepe punkty". Do dzis kazda porazka konczyla sie tak samo — `StepReport::Failed`, po
+    /// ktorym planista malowal caly stozek potomkow na `skipped`, bez zdania i bez wyboru.
+    ///
+    /// JEDNA FUNKCJA NA WSZYSTKIE DROGI PORAZKI, i to jest cala jej tresc. Sedzia po wyczerpaniu
+    /// prob, agent ktory sie przewrocil i komenda ktora nie przeszla roznily sie tylko tym,
+    /// KTORE zdanie zapisza — a co do skutku byly jednym slepym punktem. Druga kopia tej decyzji
+    /// przy ktorejkolwiek z nich rozjechalaby sie z pierwsza (niezmiennik 13).
+    ///
+    /// POWOD ZAPISUJEMY ZAWSZE, takze przy `Stop`: krok czerwony bez zdania jest tym, na co
+    /// wlasciciel patrzyl przez cale wczoraj. `get_or_insert` nie nadpisuje powodu, ktory ktos
+    /// zapisal wczesniej i wie wiecej — na przyklad o niekompletnym dowodzie.
+    async fn when_this_one_fails(&self, id: StepId, why: &str) -> StepReport {
+        let chosen = self.plan.steps[id].when_it_fails;
+        let said = match chosen {
+            WhenItFails::Stop => why.to_owned(),
+            WhenItFails::CarryOn => {
+                format!("{why} The steps after it were set to carry on anyway.")
+            }
+            WhenItFails::AskMe => format!("{why} You were asked what to do next."),
+        };
+        self.update(|book| {
+            let _ = book.steps[id].error.get_or_insert(said);
+        });
+
+        match chosen {
+            WhenItFails::Stop => StepReport::Failed,
+            WhenItFails::CarryOn => StepReport::FailedAndCarriedOn,
+            /* PYTAMY TA SAMA DROGA, CO KAFELEK KONTROLNY. `wait_for_a_person` bierze `StepId`,
+             * a nie rodzaj kroku, wiec parkowania biegu nie trzeba pisac drugi raz — a odpowiedz
+             * czlowieka staje sie przekazaniem tego kroku, czyli dociera do nastepnego.
+             *
+             * Odpowiedz znaczy „jedz dalej", a NIE „to sie udalo": krok zostaje czerwony, bo
+             * naprawde nie przeszedl. Stop w tym miejscu zostaje anulowaniem — to jest ta sama
+             * odpowiedz, ktora Stop znaczy wszedzie indziej w tej aplikacji. */
+            WhenItFails::AskMe => {
+                match self
+                    .wait_for_a_person(id, Some(&self.what_now(id, why)))
+                    .await
+                {
+                    StepReport::Succeeded => StepReport::FailedAndCarriedOn,
+                    other => other,
+                }
+            }
+        }
+    }
+
+    /// Pytanie, ktore staje na ekranie, kiedy krok nie przeszedl, a czlowiek chcial byc pytany.
+    ///
+    /// Niesie CZTERY rzeczy, bo bez ktorejkolwiek nie da sie odpowiedziec: ktory krok, co sie
+    /// z nim stalo, co to znaczy dla reszty biegu i obie drogi wyjscia nazwane wprost. Zdanie
+    /// „a step failed, continue?" jest pytaniem, na ktore mozna odpowiedziec tylko zgadujac.
+    fn what_now(&self, id: StepId, why: &str) -> String {
+        format!(
+            "\"{}\" did not pass. {why}\n\nAnswer here and the steps after it will run anyway — \
+             whatever you write goes to them as this step's notes. To stop instead, press Stop.",
+            self.plan.steps[id].name,
+        )
     }
 
     /// Czy ciało tej pętli zostawiło cokolwiek do sprawdzenia.
@@ -4259,7 +4334,9 @@ impl Live {
 
         let ended = match report {
             StepReport::Succeeded => StepState::Succeeded,
-            StepReport::Failed => StepState::Failed,
+            // Oba warianty porażki dają ten sam STAN. Różnią się wyłącznie tym, co planista
+            // robi z potomkami — a stan mówi o tym kroku, nie o jego stożku.
+            StepReport::Failed | StepReport::FailedAndCarriedOn => StepState::Failed,
             StepReport::Cancelled => StepState::Cancelled,
         };
         self.update(|book| {
@@ -4665,7 +4742,8 @@ impl Live {
                  * i „runda padła, próbujemy dalej" mieszka więc w tamtej funkcji i nigdzie
                  * indziej. */
                 if self.verdict_of_a_check(id, report.passed) {
-                    StepReport::Failed
+                    self.when_this_one_fails(id, "The checks it runs did not pass.")
+                        .await
                 } else {
                     StepReport::Succeeded
                 }
@@ -4748,7 +4826,11 @@ impl Live {
                 limit.as_secs() / 60
             ));
         });
-        StepReport::Failed
+        // Powod jest juz zapisany wyzej i mowi wiecej niz zdanie ponizej, wiec `get_or_insert`
+        // go nie tknie. Ustawienie czlowieka rozstrzyga jednak tak samo, jak przy kazdej innej
+        // porazce: krok, ktory nie zdazyl, tez byl slepym punktem.
+        self.when_this_one_fails(id, "This step ran out of time.")
+            .await
     }
 
     /// Kończy krok po Stopie i nie myli wysłanego sygnału z dowodem martwej grupy.
@@ -4954,13 +5036,13 @@ impl Live {
                      *
                      * Werdykt czytamy PO zapisie przekazania, nie przed: plik z raportem testera
                      * ma istniec niezaleznie od tego, co postanowimy z biegiem. */
-                    if self.verdict_after(id, &turn.text) {
-                        StepReport::Failed
-                    } else {
-                        StepReport::Succeeded
+                    match self.verdict_after(id, &turn.text) {
+                        Some(why) => self.when_this_one_fails(id, why).await,
+                        None => StepReport::Succeeded,
                     }
                 } else {
-                    StepReport::Failed
+                    self.when_this_one_fails(id, "This step did not finish what it was given.")
+                        .await
                 }
             }
         };
@@ -5291,9 +5373,23 @@ impl Live {
     /// tu swój powód (`skipped` kontra `cancelled`) i to jest różnica, o którą UI pyta pierwsze.
     fn close_the_book(&self, states: &[StepState], cancelled: bool) {
         let at = now_ms();
+        /* 2026-08-23 — POMINIETY KROK MOWI, PRZEZ KOGO. Zamowienie wlasciciela brzmialo
+         * „zadnych slepych punktow", a najciemniejszym z nich byl krok `skipped` z `error: null`:
+         * jego bieg konczyl sie trzema pustymi wierszami i ani jednym zdaniem o tym, co je
+         * skasowalo. W biegu `20260823-011240` bylo tak z `Synteza`, `Design` i `Implementation`.
+         *
+         * Liczone TUTAJ, po planiscie, a nie w `mark_cone`: tamta funkcja jest czysta i nie zna
+         * ksiegi, a przepchniecie do niej ksiegi zamienialoby planiste w cos, co pisze po dysku.
+         * Tu mamy komplet stanow koncowych i graf, wiec przodek liczy sie raz i na pewno. */
+        let blamed = self.who_stopped_them(states);
         self.update(|book| {
             for (row, &state) in book.steps.iter_mut().zip(states) {
                 row.status = state;
+            }
+            for (at_step, why) in &blamed {
+                if let Some(row) = book.steps.get_mut(*at_step) {
+                    let _ = row.error.get_or_insert(why.clone());
+                }
             }
             book.status = if cancelled {
                 RunState::Cancelled
@@ -5304,6 +5400,59 @@ impl Live {
             };
             book.ended_at = Some(at);
         });
+    }
+
+    /// Dla kazdego pominietego kroku: zdanie o tym, KTORY krok go skasowal.
+    ///
+    /// Idzie w gore po strzalkach do NAJBLIZSZEGO przodka, ktory nie przeszedl. Najblizszego,
+    /// bo to on jest ta rzecza, ktora czlowiek moze poprawic — wskazanie korzenia lancucha
+    /// kazaloby mu samemu odtwarzac droge przez graf.
+    ///
+    /// Anulowanie ma WLASNE zdanie i to nie jest kosmetyka (niezmiennik 7): krok pominiety, bo
+    /// ktos nacisnal Stop, nie ma prawa czytac sie jak krok pominiety przez cudza porazke.
+    fn who_stopped_them(&self, states: &[StepState]) -> Vec<(StepId, String)> {
+        let mut out = Vec::new();
+        for (id, &state) in states.iter().enumerate() {
+            if state != StepState::Skipped {
+                continue;
+            }
+            let mut seen = vec![false; states.len()];
+            let mut stack = vec![id];
+            while let Some(here) = stack.pop() {
+                if std::mem::replace(&mut seen[here], true) {
+                    continue;
+                }
+                for &(from, to) in &self.plan.arrows {
+                    if to != here {
+                        continue;
+                    }
+                    match states.get(from) {
+                        Some(StepState::Failed) => {
+                            out.push((
+                                id,
+                                format!(
+                                    "Skipped: \"{}\" did not pass, and nothing after it was set \
+                                     to carry on.",
+                                    self.plan.steps[from].name,
+                                ),
+                            ));
+                            stack.clear();
+                            break;
+                        }
+                        Some(StepState::Cancelled) => {
+                            out.push((
+                                id,
+                                format!("Skipped: \"{}\" was stopped.", self.plan.steps[from].name),
+                            ));
+                            stack.clear();
+                            break;
+                        }
+                        Some(_) | None => stack.push(from),
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
