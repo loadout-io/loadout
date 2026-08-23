@@ -35,7 +35,9 @@
 //! Ścieżkę `..` i ścieżkę bezwzględną odrzuca planista, patrząc na napis. Dowiązania z napisu nie
 //! widać: `results/report.md` jest ścieżką czystą co do znaków i wyprowadza z folderu kroku
 //! dokładnie tak samo skutecznie, kiedy ktoś położył tam wcześniej link do cudzego pliku. Pytanie
-//! o to trzeba postawić jądru, i to tuż przed zapisem — bo dopiero wtedy ten plik istnieje.
+//! o to trzeba postawić jądru, bo z napisu nie wynika — ale postawić je trzeba **przed startem**,
+//! razem z tamtymi dwoma. Link leży na dysku, zanim bieg się zacznie, więc nie ma na co czekać,
+//! a odmowa po turze jest odmową po pieniądzach i po plikach (niezmiennik 12).
 //! Implementacja pytająca wyłącznie o katalog NAD plikiem przechodzi każdą asercję powyżej i
 //! nadpisuje plik, którego nikt nie wskazał.
 //!
@@ -445,10 +447,14 @@ async fn a_link_at_the_end_of_the_path_does_not_carry_the_answer_out_of_the_fold
          thing the person asked for must not come back looking like it did",
         report.steps
     );
-    assert_eq!(
-        seen.labels(),
-        vec!["linked"],
-        "the agent never ran, so this test measured the planner and not the write it is about"
+    assert!(
+        seen.labels().is_empty(),
+        "the link at \"{ASKED_FOR}\" was refused only after {} agent(s) had already started. \
+         A path that leads out of the folder this step works in is a refusal at the Start at the \
+         latest, never mid-run (invariant 12): a step stopped after its turn has already been \
+         paid for and has already touched files. The link is on disk before the run begins, so \
+         there is nothing to wait for",
+        seen.labels().len()
     );
 
     // ── (d) ZE ZDANIEM, KTÓRE NAZYWA POLE ────────────────────────────────────────────────────

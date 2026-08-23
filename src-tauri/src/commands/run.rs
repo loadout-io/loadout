@@ -535,9 +535,16 @@ const FIELD_IS_NEEDED: &str = " (needed)";
 /// wierszy — odmowa bez nazwy pola wysyła człowieka szukać, który z nich zatrzymał bieg.
 const WRITE_RESULTS_TO: &str = "Write results to";
 
+/// Zdanie o kroku, którego plików kontekstu nie dało się udowodnić.
+///
+/// Stoi tu, przy pozostałych zdaniach tego modułu, a nie w środku gałęzi, która je wysyła: to jest
+/// tekst, który człowiek czyta na karcie kroku, więc czyta się go razem z resztą takich zdań.
+const CONTEXT_NOT_PROVEN: &str =
+    "Loadout could not prove the context files for this agent, so it did not start the step.";
+
 /// Zdanie, którym kończy się każda ścieżka wyniku wypadająca poza folder kroku.
 ///
-/// Jedno na dwa pytania — o katalog nad plikiem i o sam plik ([`Live::file_the_answer`]) — bo
+/// Jedno na dwa pytania — o katalog nad plikiem i o sam plik ([`Live::room_for_the_answer`]) — bo
 /// człowiekowi wypada z tego ta sama poprawka: wskaż miejsce w folderze, który ten krok dostał.
 const LEADS_OUT_OF_THE_FOLDER: &str = "that path leads out of the folder this step works in";
 
@@ -1900,7 +1907,9 @@ struct AgentJob {
     /// folderu człowieka jest dokładnie tym, czemu ta własna kopia zapobiega.
     ///
     /// Ścieżka wyprowadzająca poza ten folder jest odmową przy planowaniu ([`where_results_go`]),
-    /// więc do tego pola dochodzi wyłącznie ścieżka względna bez `..`.
+    /// więc do tego pola dochodzi wyłącznie ścieżka względna bez `..`. To, czego z napisu nie
+    /// widać — dowiązanie położone tam przez kogoś wcześniej — jest odmową o chwilę później,
+    /// ale wciąż przed startem kroku ([`Live::the_answer_has_somewhere_to_go`]).
     write_results_to: Option<PathBuf>,
     /// Pola, które ten krok ma oddać obok swojej odpowiedzi. Pusty wektor dla kroku bez
     /// formularza — i to jest odpowiedź, nie brak: krok, o którego pola nikt nie prosił, nie ma
@@ -3174,8 +3183,9 @@ fn plan_agent(
 ///
 /// Cokolwiek, co nie jest czystą ścieżką w dół: korzeń dysku, przedrostek dysku i `..`
 /// gdziekolwiek w środku. Dowiązanie założone po drodze przez kogoś innego prowadzi tam samo
-/// i tego z samego napisu wyliczyć się nie da — pyta o to jądro [`Live::file_the_answer`],
-/// w chwili, w której katalog już istnieje.
+/// i tego z samego napisu wyliczyć się nie da — pyta o to jądro
+/// [`Live::the_answer_has_somewhere_to_go`], wciąż przed startem kroku, a potem raz jeszcze
+/// [`Live::file_the_answer`] tuż przed zapisem, bo między jednym a drugim stoi cała tura agenta.
 ///
 /// Puste pole i pole z samych spacji to jeden fakt („nie proszę o żaden plik"), więc jedna
 /// odpowiedź: `None`.
@@ -6457,6 +6467,36 @@ impl Live {
         )
     }
 
+    /// Krok, który nie ruszył: zdanie na ekran, kurator domknięty, zwykła droga porażki.
+    ///
+    /// Zdanie jedzie tą samą kolejką, którą mówi agent — bo dla człowieka patrzącego na bieg to
+    /// jest to samo miejsce, w którym pojawiłaby się jego pierwsza linia.
+    ///
+    /// **Nadajnik ginie na obu końcach, i to jest warunek poprawności, nie higiena.** Na ścieżce
+    /// startu zabiera `events` sam `start`; tutaj nie zabiera go nikt, a `pump.await` kończy się
+    /// dopiero na zamkniętej kolejce. Nadawca, który przeżył krok, trzyma kurator otwarty — czyli
+    /// odmowa wyglądałaby jak agent zawieszony na zawsze.
+    ///
+    /// Wynik rozstrzyga [`Live::when_this_one_fails`], czyli to samo miejsce, co przy każdej innej
+    /// porażce: krok, który nie ruszył, jest krokiem, który nie przeszedł, a ustawienie „co, kiedy
+    /// ten nie przejdzie" nie ma powodu znaczyć tu czegoś innego (niezmiennik 21).
+    async fn never_started(
+        self: &Arc<Self>,
+        id: StepId,
+        why: String,
+        events: mpsc::Sender<DecodedEvent>,
+        ours: mpsc::Sender<DecodedEvent>,
+        pump: tokio::task::JoinHandle<()>,
+    ) -> StepReport {
+        let _ = ours
+            .send(AgentEvent::Notice { text: why.clone() }.into())
+            .await;
+        drop(events);
+        drop(ours);
+        let _ = pump.await;
+        self.when_this_one_fails(id, &why).await
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -6479,6 +6519,16 @@ impl Live {
         // trzyma kurator otwarty i `pump.await` niżej nie wróciłby nigdy.
         let ours = events.clone();
 
+        /* ZANIM RUSZY STEROWNIK: czy odpowiedź tego kroku ma dokąd pójść. Ścieżka wyprowadzająca
+         * poza folder kroku jest odmową PRZED startem (niezmiennik 12), a dowiązania nie widać
+         * z samego napisu, więc planista nie ma czego odrzucić — pytanie stoi więc tutaj, w
+         * ostatniej chwili, w której nie ruszył jeszcze ani jeden proces. Krok wraca zwykłą
+         * drogą porażki, bo to jest zwykła porażka: `run.json` dostaje zdanie nazywające pole,
+         * a ustawienie „co, kiedy ten nie przejdzie" działa tu tak samo, jak wszędzie indziej. */
+        if let Err(why) = Self::the_answer_has_somewhere_to_go(job) {
+            return self.never_started(id, why, events, ours, pump).await;
+        }
+
         // Prompt składamy TERAZ, a nie przy planowaniu: indeks przekazań ma co wymienić dopiero
         // wtedy, gdy poprzednicy zeszli, a przy planowaniu nie ruszył jeszcze nikt.
         let Told {
@@ -6489,9 +6539,7 @@ impl Live {
         } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
             Err(_error) => {
-                let text = "Loadout could not prove the context files for this agent, so it did \
-                            not start the step."
-                    .to_owned();
+                let text = CONTEXT_NOT_PROVEN.to_owned();
                 let _ = ours
                     .send(AgentEvent::Notice { text: text.clone() }.into())
                     .await;
@@ -7614,6 +7662,14 @@ impl Live {
     /// JEST tym, o co człowiek poprosił, i jego brak jest nieodróżnialny od agenta, który nie
     /// miał nic do powiedzenia. Wraca więc zdaniem, a rozstrzyga je jedno miejsce, przez które
     /// przechodzi każda porażka ([`Live::when_this_one_fails`]).
+    ///
+    /// # I PYTA O MIEJSCE DRUGI RAZ, choć zapytał już przed startem
+    ///
+    /// [`Live::the_answer_has_somewhere_to_go`] stawia to samo pytanie, zanim ruszy pierwszy
+    /// proces — i to tamto jest odmową, o którą prosi kryterium. To tutaj zostaje mimo niego,
+    /// bo między jednym a drugim stoi CAŁA tura agenta, który miał prawo pisać po tym samym
+    /// folderze. Sprawdzenie zdjęte stąd zamieniłoby odmowę w wyścig: dowiązanie podłożone
+    /// w tym oknie przepuściłoby zapis po drugiej stronie, a bieg wyglądałby na udany.
     fn file_the_answer(&self, id: StepId, said: &str) -> Result<(), String> {
         let Job::Agent(job) = &self.plan.steps[id].job else {
             return Ok(());
@@ -7621,59 +7677,102 @@ impl Live {
         let Some(under) = job.write_results_to.as_ref() else {
             return Ok(());
         };
-        let path = job.cwd.join(under);
-        let written = (|| -> io::Result<()> {
-            let root = job.cwd.canonicalize()?;
-            if let Some(parent) = path.parent() {
-                // Katalogi po drodze zakłada Loadout: implementacja, która tego nie robi,
-                // wygląda jak zapis, który się nie udał i nic o tym nie powiedział.
-                fs::create_dir_all(parent)?;
-                /* DOWIĄZANIE PYTAMY JĄDRO, nie napis. `..` odmawia planista, ale katalog
-                 * `results` mógł już wcześniej być dowiązaniem gdzie indziej — i wtedy ścieżka
-                 * czysta co do znaków wyprowadza z folderu kroku tak samo skutecznie. Pytanie da
-                 * się postawić dopiero teraz, bo dopiero teraz ten katalog istnieje. */
-                if !parent.canonicalize()?.starts_with(&root) {
+        Self::room_for_the_answer(&job.cwd, under)
+            .and_then(|path| fs::write(&path, said))
+            .map_err(|error| {
+                format!(
+                    "Loadout could not put this step's answer where {WRITE_RESULTS_TO} points \
+                     (\"{}\"): {error}",
+                    under.display()
+                )
+            })
+    }
+
+    /// Miejsce na odpowiedź: katalogi po drodze założone, ścieżka sprawdzona, plik jeszcze nie
+    /// zapisany.
+    ///
+    /// Oddaje ścieżkę, pod którą wolno pisać, albo błąd nazywający powód. Wołają to dwa miejsca
+    /// — [`Live::the_answer_has_somewhere_to_go`] przed startem kroku i [`Live::file_the_answer`]
+    /// tuż przed zapisem — i to jest jedna funkcja z rozmysłem: druga kopia tej decyzji
+    /// rozjechałaby się z pierwszą (niezmiennik 13), a rozjazd znaczyłby tu odmowę przed startem
+    /// dla jednych ścieżek i cichy zapis poza folderem dla innych.
+    fn room_for_the_answer(cwd: &Path, under: &Path) -> io::Result<PathBuf> {
+        let path = cwd.join(under);
+        let root = cwd.canonicalize()?;
+        if let Some(parent) = path.parent() {
+            // Katalogi po drodze zakłada Loadout: implementacja, która tego nie robi,
+            // wygląda jak zapis, który się nie udał i nic o tym nie powiedział.
+            fs::create_dir_all(parent)?;
+            /* DOWIĄZANIE PYTAMY JĄDRO, nie napis. `..` odmawia planista, ale katalog
+             * `results` mógł już wcześniej być dowiązaniem gdzie indziej — i wtedy ścieżka
+             * czysta co do znaków wyprowadza z folderu kroku tak samo skutecznie. */
+            if !parent.canonicalize()?.starts_with(&root) {
+                return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
+            }
+        }
+        /* I TO SAMO PYTANIE O OSTATNI CZŁON, bo katalog nad nim bywa czysty. `results/`
+         * leży dokładnie tam, gdzie ma leżeć, a `results/report.md` jest dowiązaniem do
+         * pliku człowieka poza folderem kroku — `fs::write` idzie po dowiązaniu i zapisuje
+         * TAM. Sprawdzenie samego katalogu przepuszcza więc dokładnie tę ucieczkę, przed
+         * którą stoi, i to bez ani jednego znaku `..` w ścieżce.
+         *
+         * `symlink_metadata`, nie `exists`: pytanie brzmi „czy coś tu już leży", a nie „czy
+         * po dowiązaniu coś jest" — i tylko ono odróżnia wolne miejsce od dowiązania
+         * wiszącego, po którym `fs::write` też pisze.
+         *
+         * DOWIĄZANIA NIE ZDEJMUJEMY. Skasowanie go i zapis w jego miejsce chroni cudzy plik
+         * i niszczy po cichu to, co człowiek sam sobie w tym folderze ustawił. */
+        match path.symlink_metadata() {
+            // Wolne miejsce: plik powstanie w katalogu, o który już zapytaliśmy wyżej.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(here) => {
+                let real = path.canonicalize().map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound && here.is_symlink() {
+                        io::Error::other(
+                            "that path is a link to something that is not there, so there is \
+                             no telling where the answer would land",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+                if !real.starts_with(&root) {
                     return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
                 }
             }
-            /* I TO SAMO PYTANIE O OSTATNI CZŁON, bo katalog nad nim bywa czysty. `results/`
-             * leży dokładnie tam, gdzie ma leżeć, a `results/report.md` jest dowiązaniem do
-             * pliku człowieka poza folderem kroku — `fs::write` idzie po dowiązaniu i zapisuje
-             * TAM. Sprawdzenie samego katalogu przepuszcza więc dokładnie tę ucieczkę, przed
-             * którą stoi, i to bez ani jednego znaku `..` w ścieżce.
-             *
-             * `symlink_metadata`, nie `exists`: pytanie brzmi „czy coś tu już leży", a nie „czy
-             * po dowiązaniu coś jest" — i tylko ono odróżnia wolne miejsce od dowiązania
-             * wiszącego, po którym `fs::write` też pisze. */
-            match path.symlink_metadata() {
-                // Wolne miejsce: plik powstanie w katalogu, o który już zapytaliśmy wyżej.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-                Ok(here) => {
-                    let real = path.canonicalize().map_err(|error| {
-                        if error.kind() == io::ErrorKind::NotFound && here.is_symlink() {
-                            io::Error::other(
-                                "that path is a link to something that is not there, so there is \
-                                 no telling where the answer would land",
-                            )
-                        } else {
-                            error
-                        }
-                    })?;
-                    if !real.starts_with(&root) {
-                        return Err(io::Error::other(LEADS_OUT_OF_THE_FOLDER));
-                    }
-                }
-            }
-            fs::write(&path, said)
-        })();
-        written.map_err(|error| {
-            format!(
-                "Loadout could not put this step's answer where {WRITE_RESULTS_TO} points \
-                 (\"{}\"): {error}",
-                under.display()
-            )
-        })
+        }
+        Ok(path)
+    }
+
+    /// Czy odpowiedź tego kroku ma dokąd pójść — pytanie postawione PRZED pierwszym procesem.
+    ///
+    /// # Odmowa jest przed startem, i to jest treść, nie kolejność
+    ///
+    /// Napis z `..` i ścieżkę bezwzględną odrzuca planista ([`where_results_go`]), patrząc na
+    /// same znaki. Dowiązania z napisu nie widać: `results/report.md` jest ścieżką czystą co do
+    /// znaków i wyprowadza z folderu kroku dokładnie tak samo skutecznie, kiedy ktoś położył tam
+    /// wcześniej link do cudzego pliku. To pytanie umie postawić tylko jądro i tylko na dysku —
+    /// więc stoi tutaj, w ostatniej chwili, w której nic jeszcze nie ruszyło.
+    ///
+    /// Zadane dopiero przy zapisie byłoby odmową PO turze, za którą człowiek zapłacił, i po
+    /// krokach, które zdążyły dotknąć jego plików — czyli dokładnie tym, czego zakazuje
+    /// niezmiennik 12.
+    ///
+    /// Krok bez wskazanej ścieżki nie prosi o żaden plik, więc nie ma tu czego sprawdzać.
+    fn the_answer_has_somewhere_to_go(job: &AgentJob) -> Result<(), String> {
+        let Some(under) = job.write_results_to.as_ref() else {
+            return Ok(());
+        };
+        Self::room_for_the_answer(&job.cwd, under)
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "Loadout did not start this step: {WRITE_RESULTS_TO} points at \"{}\", and \
+                     {error}.",
+                    under.display()
+                )
+            })
     }
 
     /// Kafelek kontrolny: bieg staje i pyta człowieka (T3 §6.1 reguła 5).
