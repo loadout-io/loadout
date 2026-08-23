@@ -55,8 +55,21 @@ function live(tags: readonly string[]): readonly string[] {
 const buttons = controls('button');
 const fields = [...controls('input'), ...controls('select'), ...controls('textarea')];
 
-/** Zachęta z wiersza wejścia — zdanie, które czyta się na pustym ekranie. */
-const invitation = /<input[^>]*placeholder="([^"]*)"/.exec(markup)?.[1] ?? '';
+/**
+ * Zachęta z WIERSZA WEJŚCIA — zdanie, które czyta się na pustym ekranie.
+ *
+ * 2026-08-23 — SZUKANE W WIERSZU WEJŚCIA, nie „pierwszym polem w dokumencie". Ta druga wersja
+ * była skrótem prawdziwym dokładnie tak długo, jak długo wiersz wejścia był jedynym polem
+ * z podpowiedzią. Kiedy grupa startowa dostała pole „co ten bieg ma zbudować", skrót zaczął
+ * czytać CUDZE zdanie i żądać od niego nazwy komendy — czyli sądzić rzecz, o której to
+ * kryterium nigdy nie mówiło. Komentarz nad tą stałą od początku mówił „z wiersza wejścia";
+ * teraz mówi to także kod.
+ *
+ * Kotwicą jest `data-entry`, czyli ten sam znacznik, po którym wiersz wejścia rozpoznaje reszta
+ * kryteriów tego ekranu.
+ */
+const entryRow = /<form[^>]*\bdata-entry\b[\s\S]*?<\/form>/.exec(markup)?.[0] ?? '';
+const invitation = /<input[^>]*placeholder="([^"]*)"/.exec(entryRow)?.[1] ?? '';
 
 describe('an empty run screen invites, and the EXCUSED list is back to empty', () => {
   it('carries at least one control a person can actually use', () => {

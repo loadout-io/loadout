@@ -877,6 +877,13 @@ struct Plan {
     routes: Vec<PlannedRoute>,
     /// Ile kroków ma naprawdę działać naraz — prosto z żądania.
     concurrency: usize,
+    /// O co poproszono TEN bieg. Pusty napis znaczy „nic nie kazano".
+    ///
+    /// Trzymane w planie, żeby dojechało do `run.json`: do 2026-08-23 zdanie definiujące cały
+    /// bieg nie istniało w ŻADNYM pliku, więc po jego końcu nie dało się odpowiedzieć na
+    /// pytanie „co ten bieg miał zbudować" inaczej niż zgadując z promptów kroków. Niezmiennik
+    /// 4 mówi, że prawdą są pliki — a najważniejszego faktu w nich nie było.
+    task: String,
     /// Pętle tego biegu: kto orzeka i ile razy wolno próbować, po jednej pozycji na powrót.
     ///
     /// Klucz KAFELKA, nie węzła: sędzia jest jeden na wszystkie rundy swojej pętli.
@@ -1295,6 +1302,8 @@ fn plan_run_with_identity(
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
 
+    // Związane PRZED planem: `setup` pożycza `dir`, a `dir` jedzie do planu przeniesieniem.
+    let asked_for = setup.task.clone();
     Ok(Plan {
         id,
         dir,
@@ -1305,6 +1314,7 @@ fn plan_run_with_identity(
         arrows,
         routes,
         concurrency: request.how_many_at_once,
+        task: asked_for,
         loops,
         seeded_from: request.handoffs_from.clone(),
         project: deps.project.to_path_buf(),
@@ -1462,6 +1472,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         arrows: Vec::new(),
         routes: Vec::new(),
         concurrency: ask.how_many_at_once,
+        task: ask.task.clone(),
         loops: Vec::new(),
         seeded_from: None,
         project: deps.project.to_path_buf(),
@@ -4089,6 +4100,7 @@ impl Live {
             workflow_hash: &self.plan.hash,
             workflow_snapshot: &self.plan.graph,
             title: &self.plan.title,
+            task: &self.plan.task,
             status: book.status,
             concurrency: self.plan.concurrency,
             created_at: self.plan.created_at,
@@ -5483,6 +5495,12 @@ struct RunFile<'a> {
     /// biegów stojących w historii [T7 §5.4].
     workflow_snapshot: &'a Value,
     title: &'a str,
+    /// O co poproszono ten bieg — dosłownie to, co człowiek wpisał.
+    ///
+    /// PUSTY NAPIS, NIE BRAK POLA. „Nic nie kazano" jest odpowiedzią, a nie brakiem odpowiedzi:
+    /// bieg puszczony bez zadania i bieg z pliku sprzed tej zmiany wyglądałyby wtedy identycznie,
+    /// a to są dwie różne historie. Czytelnicy starych plików biorą `#[serde(default)]`.
+    task: &'a str,
     status: RunState,
     concurrency: usize,
     created_at: i64,

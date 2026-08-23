@@ -445,3 +445,85 @@ fn build_then_look(appends: &Path, looks: &Path) -> String {
         looks = looks.display(),
     )
 }
+
+/* 2026-08-23 — RZECZ DEFINIUJĄCA CAŁY BIEG NIE ISTNIAŁA W ŻADNYM PLIKU.
+ *
+ * `RunFile` niósł `title`, `workflow_hash`, migawkę grafu i dwadzieścia pól o krokach — i ani
+ * jednego bajtu o tym, o co człowiek poprosił. Zadanie żyło wyłącznie w `Setup.task`, czyli
+ * w pamięci procesu, i znikało razem z nim. Po końcu biegu na pytanie „co to miało zbudować"
+ * nie dało się odpowiedzieć inaczej niż zgadując z promptów kroków — a niezmiennik 4 mówi, że
+ * prawdą są pliki.
+ *
+ * Kosztowało to konkretnie: jedenastu agentów szukających przyczyny nieudanego biegu zgadywało
+ * mechanizm, bo nie miało czym sprawdzić, czy tamten bieg w ogóle dostał temat.
+ *
+ * DRUGA POŁOWA JEST TU NIEODŁĄCZNA. Pole zapisane i nieczytane byłoby martwym bajtem. Czyta je
+ * powtórzenie: do dziś `rerun::again` i `rerun::onward` ustawiały `task: None` ze zdaniem
+ * „zadanie przychodzi z przekazań". Nie przychodziło — nagłówek „What the person asked for"
+ * bierze się WYŁĄCZNIE z `Setup.task`, więc powtórzony krok budował coś innego niż krok
+ * pierwotny i nie miał jak o tym wiedzieć.
+ *
+ * SŁABĄ WERSJĄ jest sprawdzenie samego `run.json`. Przechodzi ją zapis, którego nikt nie czyta.
+ */
+
+/// Zadanie brzmiące inaczej niż cokolwiek w pliku workflow — inaczej nie wiadomo, co dojechało.
+const ASKED_FOR: &str = "compare the districts and say which one to live in";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_run_file_records_what_was_asked_and_a_pick_up_carries_it() -> Result<(), Box<dyn Error>>
+{
+    let bench = Bench::new()?;
+    a_repo_with_one_commit(bench.project.path())?;
+    let appends = bench.script("appends.sh", APPENDS)?;
+    let looks = bench.script("looks.sh", LOOKS)?;
+    let workflow = bench.workflow("build-then-look", &build_then_look(&appends, &looks))?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: no_drivers(),
+        processes: Arc::new(Processes::new()),
+        control: RunControl::new(),
+    };
+
+    let first = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 1,
+            task: Some(ASKED_FOR.to_owned()),
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+
+    let described: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(first.dir.join("run.json"))?)?;
+    assert_eq!(
+        described["task"].as_str(),
+        Some(ASKED_FOR),
+        "run.json has to carry what the person asked for. Without it the one thing that defines          a whole run lives only in memory, and the moment the app closes nobody can say what          that run was even for. The file said {:?}",
+        described["task"]
+    );
+
+    let folder = first
+        .dir
+        .file_name()
+        .and_then(|one| one.to_str())
+        .ok_or("the run directory has no name")?;
+    let again = rerun::onward(
+        bench.home.path(),
+        bench.project.path(),
+        folder,
+        "s_build",
+        1,
+    )?;
+    assert_eq!(
+        again.request.task.as_deref(),
+        Some(ASKED_FOR),
+        "picking a run back up has to carry what it was asked for. Without it the step reruns          with no heading saying what the whole run is about, so it builds something else than          it built the first time - and the file that would have told us sits right there"
+    );
+    Ok(())
+}

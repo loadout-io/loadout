@@ -58,6 +58,42 @@ const ATTEND = 'h-7 rounded-sm border border-attend-edge px-3 text-ui text-atten
 const FIELD = 'field';
 
 /**
+ * Nazwa pola zadania. Pytanie, nie rzeczownik — tak brzmi cała reszta ekranów tej aplikacji.
+ *
+ * EKSPORTOWANA, żeby kryterium mogło ją CZYTAĆ, a nie przepisywać — ten sam powód, dla którego
+ * `LEAD_LABEL` mieszka w `./lead`. Napis przepisany do testu przestaje pilnować czegokolwiek
+ * w dniu, w którym ktoś zmieni brzmienie na ekranie i nie tknie kryterium.
+ */
+export const TASK_LABEL = 'What should this run build?';
+
+/** Dlaczego pola nie da się teraz zmienić. Wygaszenie bez powodu jest zagadką. */
+const TASK_LOCKED = 'This run already started with what it was asked for. Stop it to change this.';
+
+/**
+ * Uruchamia wybrany workflow z tym, co człowiek wpisał w pole zadania.
+ *
+ * FUNKCJA, A NIE CIAŁO HANDLERA, i to jest ten sam powód, dla którego istnieje `./launch`:
+ * to repo nie ma jsdom, więc kliknięcia nie da się odpalić w kryterium, a `renderToStaticMarkup`
+ * nie uruchamia efektów. Polityka zamknięta w `onClick` jest kodem, którego żadne kryterium nie
+ * umie dotknąć — a dokładnie tam mieszkał defekt, który to naprawia: przycisk wołał `launchRun`
+ * DWOMA argumentami i gubił trzeci, czyli całe zadanie. Kryterium woła teraz to, co woła
+ * przycisk.
+ *
+ * PRZYCINA I ZAMIENIA PUSTE NA `null`. Zadanie z samych spacji i brak zadania to jeden fakt
+ * („nic nie kazano"); dwa różne prompty za jeden fakt dałyby dwie różne odpowiedzi na pytanie,
+ * co ten bieg buduje. Rust przycina to samo u siebie i to jest celowe — krawędź ma być prawdziwa
+ * niezależnie od tego, kto ją woła.
+ */
+export function startWhatIsChosen(
+  choices: readonly Choice[],
+  chosen: string,
+  atOnce: number,
+  task: string,
+): Promise<string | null> {
+  return launchRun(choiceFor(choices, chosen), atOnce, task.trim() || null);
+}
+
+/**
  * Migawka magazynu biegu — TA SAMA dla okna i dla renderu statycznego.
  *
  * DLACZEGO NIE `useRun((state) => state.workflow)`. Wiązanie zustanda podaje `useSyncExternal
@@ -187,6 +223,21 @@ export function Start({ onSaid }: StartProps): ReactElement {
    * była zamknięta w `useState` tej kontrolki i nikt poza nią nie miał jak jej przeczytać. */
   const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
 
+  /* CO TEN BIEG MA ZBUDOWAĆ — pole, którego przycisk Start nie miał przez cały swój żywot.
+   *
+   * `launchRun` przyjmuje zadanie TRZECIM argumentem od dawna, a `/run <workflow> <zadanie>`
+   * je podaje (`run-command.ts`). Przycisk wołał tę samą funkcję DWOMA argumentami, więc do
+   * `Setup.task` szedł pusty napis, a `with_the_task` przy pustym zadaniu oddaje prompt kroku
+   * co do bajtu — bez nagłówka „What the person asked for". Bieg ruszał wtedy na pustce.
+   *
+   * Zmierzone na biegu `20260823-010248`: manifest pierwszego kroku bez pozycji `run/task`,
+   * agent odpowiedział „Please send the research prompt or topic you want analyzed" (207 tokenów
+   * wyjścia), Loadout uznał to za sukces i puścił za nim cały graf 22 kroków.
+   *
+   * STAN LOKALNY, nie moduł: w odróżnieniu od „ile naraz" tej wartości nie czyta nikt poza
+   * przyciskiem obok. Druga kopia w module byłaby drugim miejscem do wyzerowania. */
+  const [task, setTask] = useState('');
+
   const workflow = useSyncExternalStore(useRun.subscribe, runningWorkflow, runningWorkflow);
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
 
@@ -274,7 +325,11 @@ export function Start({ onSaid }: StartProps): ReactElement {
      * przycisk Start tutaj i zielony `Run` w edytorze workflow (przez `./requested`). Dwie kopie
      * czterech decyzji — który plik, ile naraz, w jakim folderze, co powiedzieć przy odmowie —
      * rozjechałyby się na tej o folderze (niezmiennik 23). */
-    setSaid(await launchRun(choiceFor(choices, chosen), atOnce));
+    /* PRZYCIĘTE, i pusty napis staje się `null`. Zadanie z samych spacji i brak zadania to
+     * jeden fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
+     * na pytanie, co ten bieg buduje. Rust przycina to samo po swojej stronie i to jest
+     * celowe: krawędź ma być prawdziwa niezależnie od tego, kto ją woła. */
+    setSaid(await startWhatIsChosen(choices, chosen, atOnce, task));
   }
 
   /* ŻĄDANIE Z EDYTORA WORKFLOW. Zielony `Run` w edytorze wołał do 2026-08-18 samo przejście na
@@ -375,6 +430,23 @@ export function Start({ onSaid }: StartProps): ReactElement {
           Continue
         </button>
       ) : null}
+
+      {/* WYGASZONE W TRAKCIE BIEGU, z tego samego powodu, co limit obok: zadanie czyta się
+          WYŁĄCZNIE przy starcie, więc pole przyjmujące zmianę w trakcie obiecywałoby, że bieg
+          nagle buduje co innego (niezmiennik 16). Tekst zostaje na ekranie i to jest treść:
+          w trakcie biegu mówi, o co poproszono, a po nim daje puścić to samo jeszcze raz. */}
+      <input
+        type="text"
+        aria-label={TASK_LABEL}
+        placeholder={TASK_LABEL}
+        className={FIELD + ' w-44 min-w-0'}
+        value={task}
+        disabled={busy}
+        title={busy ? TASK_LOCKED : undefined}
+        onChange={(event) => {
+          setTask(event.target.value);
+        }}
+      />
 
       {busy ? (
         <button type="button" className={DANGER} onClick={() => void halt()}>

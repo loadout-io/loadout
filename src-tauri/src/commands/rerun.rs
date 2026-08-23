@@ -56,6 +56,12 @@ struct Finished {
     workflow_id: String,
     /// Graf, jak biegł. Czytany wyłącznie po to, żeby powiedzieć, czy dziś jest inny.
     workflow_snapshot: WorkflowFile,
+    /// O co poproszono TAMTEN bieg.
+    ///
+    /// `default`, bo biegi sprzed 2026-08-23 tego pola nie mają — a brak pola ma znaczyć „nic
+    /// nie kazano", nie „nie da się odczytać". Niezmiennik 5: czytamy najżyczliwiej, jak się da.
+    #[serde(default)]
+    task: String,
 }
 
 /// Czym powtórzenie umie odmówić. Każdy wariant naprawia się inaczej, więc każdy jest osobnym
@@ -145,8 +151,14 @@ pub fn again(
         request: RunRequest {
             workflow: path,
             how_many_at_once,
-            // Zadanie biegu przychodzi z przekazań, nie stąd: powtarzamy krok, a nie polecenie.
-            task: None,
+            /* ZADANIE TAMTEGO BIEGU, ODCZYTANE Z JEGO PLIKU.
+             *
+             * Stało tu `None` ze zdaniem „zadanie przychodzi z przekazań". Nie przychodziło:
+             * `Part::Just` zeruje strzałki, więc powtórzony krok nie dostaje nawet indeksu
+             * przekazań — a nagłówek „What the person asked for" bierze się WYŁĄCZNIE
+             * z `Setup.task`. Powtórzony krok budował więc coś innego niż krok pierwotny
+             * i nie miał jak o tym wiedzieć. */
+            task: (!finished.task.is_empty()).then(|| finished.task.clone()),
             part: Some(Part::Just(vec![step.to_owned()])),
             handoffs_from: Some(run_dir),
         },
@@ -218,9 +230,10 @@ pub fn onward(
         request: RunRequest {
             workflow: path,
             how_many_at_once,
-            // Zadanie przychodzi z przekazań poprzedniego biegu, nie stąd: wznawiamy pracę,
-            // a nie zaczynamy nowej.
-            task: None,
+            /* Ten sam powód, co przy powtórzeniu jednego kroku: nagłówek „What the person
+             * asked for" bierze się z `Setup.task`, a nie z przekazań. Wznowienie bez niego
+             * kontynuuje robotę, o której nie wie, po co powstała. */
+            task: (!finished.task.is_empty()).then(|| finished.task.clone()),
             part: Some(Part::Onward(step.to_owned())),
             handoffs_from: Some(run_dir),
         },
