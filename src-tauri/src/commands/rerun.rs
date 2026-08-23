@@ -18,6 +18,15 @@
 //! a jego prompt składa się z instrukcji i indeksu przekazań poprzedników. Bez nich dostałby to
 //! samo zadanie z pustym kontekstem i pracował od zera nad czymś, co reszta grafu już zrobiła.
 //!
+//! 2026-08-23 (T-88) — DO TEGO DNIA TO ZDANIE MIAŁO NAPISANĄ TYLKO JEDNĄ STRONĘ.
+//! `commands::run::seed_the_handoffs` kopiował pliki tamtego biegu do katalogu nowego i na tym
+//! kontrakt się urywał: indeks promptu powstaje z tego, co oddały kroki TEGO biegu, więc kopie
+//! nie trafiały do żadnego promptu, a `Part::Just` zdejmuje strzałki, czyli powtórzony krok nie
+//! miał nawet po kim ich szukać. Dopisuje drugą stronę `commands::run::what_the_run_before_left`,
+//! i to ona rozstrzyga różnicę między dwoma czasownikami: powtórzenie dostaje DOKŁADNIE to, co
+//! ten kafelek miał wtedy (`reads:` z jego przekazania), a wznowienie — wszystko, co zostawili
+//! ci, którzy stali przed nim.
+//!
 //! # Dwa czasowniki, nie jeden
 //!
 //! 2026-08-23, pytanie właściciela nad ekranem historii: „a z history możemy kontynuować?".

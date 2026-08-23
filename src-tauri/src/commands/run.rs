@@ -123,6 +123,14 @@
 //! przekazanie każdego kroku jej ciała, bo strzałka na zewnątrz wychodzi z rundy ostatniej —
 //! a ta, przy pętli, która przeszła wcześniej, nie biegnie wcale.
 //!
+//! **Wznowienie niesie przekazania biegu, od którego ruszyło** (2026-08-23, T-88). Skopiowanie
+//! plików do katalogu nowego biegu ([`seed_the_handoffs`]) nie jest przekazaniem ich dalej:
+//! indeks powstaje z [`Live::handoffs`], czyli z tego, co oddały kroki TEGO biegu, a wycinek
+//! zostawia tylko strzałki z obydwoma końcami w środku — więc krok na czele wycinka nie miał ani
+//! jednego poprzednika i indeksu nie dostawał wcale. Co przejmuje który krok, rozstrzyga
+//! [`what_the_run_before_left`]; wiersz indeksu mówi wprost, że plik jest z tamtego biegu, a pełne
+//! teksty odłożone obok (`attachments/`) jadą razem z plikami, które je wołają.
+//!
 //! # Czego ta warstwa świadomie NIE robi
 //!
 //! - **Sama nie ogląda surowego strumienia.** `AgentDriver` oddaje już zdarzenie neutralne, więc
@@ -271,7 +279,8 @@ const HANDOFF_INDEX_CLOSES: &str =
 
 /// Domyślna etykieta wiersza indeksu: plik zostawił krok, po którym ten krok idzie po strzałce.
 ///
-/// 2026-08-23 (T-87) — ZAMKNIĘTA LISTA ETYKIET ZACZYNA SIĘ TUTAJ i ma dokładnie pięć pozycji.
+/// 2026-08-23 (T-87) — ZAMKNIĘTA LISTA ETYKIET ZACZYNA SIĘ TUTAJ i ma dokładnie sześć pozycji
+/// (szósta doszła w T-88, dla plików przejętych po poprzednim biegu).
 /// Do tego dnia wiersz indeksu niósł nazwę kafelka i ścieżkę, i tyle. Od chwili, w której runda
 /// trzecia pętli dostaje pięć pozycji — z których trzy pochodzą od dwóch kafelków — sama nazwa
 /// przestaje cokolwiek rozróżniać: dwa wiersze `- Work: …` pod rząd nie mówią, który plik jest
@@ -303,6 +312,17 @@ const IS_YOUR_OWN_EARLIER_ANSWER: &str = "your own earlier answer";
 /// Początek etykiety wcześniejszej rundy sędziego. „Tester", bo tak nazywa go człowiek — nasze
 /// słowo („judge") nie znaczy nic po drugiej stronie promptu.
 const IS_WHAT_THE_TESTER_SAID: &str = "what the tester said last time";
+
+/// Etykieta pliku PRZEJĘTEGO PO POPRZEDNIM BIEGU — tym, od którego ten bieg wznowiono.
+///
+/// 2026-08-23 (T-88) — bez niej wiersz przejęty stoi w indeksie obok wierszy z tego biegu
+/// i wygląda tak samo. To są dwie różne rzeczy: praca, która właśnie powstała obok, i praca
+/// sprzed godziny, po której ktoś zdążył poprawić agenta albo instrukcję. Agent, który tego nie
+/// wie, czyta odpowiedź na nieaktualne pytanie jak świeży materiał.
+///
+/// „earlier run", nie nazwa katalogu ani znacznik czasu: wiersz indeksu ma mówić, CZYM ten plik
+/// jest, a `20260823-145648__01a0…` nie mówi nic nikomu (niezmiennik 14).
+const IS_WHAT_AN_EARLIER_RUN_LEFT: &str = "what an earlier run left here";
 
 /// Zdanie, którym sędzia pętli dostaje SWÓJ JEDYNY KANAŁ na wynik — i którego do 2026-08-23
 /// nie dostawał wcale.
@@ -693,6 +713,10 @@ async fn the_planned_run(
     // że ktoś powtórzył kafelek (niezmiennik 4). Przed `Live::new`, bo prompt kroku czyta
     // indeks przekazań w chwili startu.
     seed_the_handoffs(&plan)?;
+    /* I DOPIERO TERAZ INDEKS, bo dopiero teraz kopie istnieją. Sama kopia nie jest przekazaniem
+     * dalej: prompt kroku wymienia to, co oddały kroki TEGO biegu, więc bez tej linii pliki
+     * leżą w katalogu i nie zna ich ani jeden agent (T-88, powód przy `Plan::carried`). */
+    plan.carried = what_the_run_before_left(&plan);
     // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
     // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
@@ -1056,6 +1080,20 @@ struct Plan {
     /// 2026-08-23 — nosi to ponowne odpalenie kroku: krok powtórzony sam jeden nie ma po czym
     /// iść, więc jego wejście musi przyjechać z biegu, w którym poprzednicy naprawdę pracowali.
     seeded_from: Option<PathBuf>,
+    /// Co każdy krok przejmuje po tamtym biegu — po jednej pozycji na krok, pusto dla zwykłego.
+    ///
+    /// 2026-08-23 (T-88) — SAMO SKOPIOWANIE PLIKÓW NIE JEST PRZEKAZANIEM ICH DALEJ.
+    /// [`seed_the_handoffs`] kładzie je w katalogu nowego biegu od 2026-08-23, ale indeks promptu
+    /// powstaje z [`Live::handoffs`], czyli **wyłącznie** z tego, co oddały kroki TEGO biegu —
+    /// więc zasiane pliki nie trafiały do żadnego promptu. Do tego wycinek zostawia tylko
+    /// strzałki z obydwoma końcami w środku, więc krok na czele wycinka nie ma ani jednego
+    /// poprzednika i indeksu nie dostawał wcale.
+    ///
+    /// Liczone RAZ, przy starcie biegu ([`what_the_run_before_left`]), a nie przy każdym
+    /// prompcie: odpowiedź zależy od plików tamtego biegu i od grafu, jak biegł — a jedno i drugie
+    /// jest już zamknięte. Liczenie per krok byłoby tą samą odpowiedzią wyliczaną tyle razy, ile
+    /// jest kroków, i tyloma miejscami, w których wolno ją wyliczyć inaczej (niezmiennik 13).
+    carried: Vec<Vec<Carried>>,
     /// Korzeń projektu — katalog, w którym pracują agenci tego biegu.
     ///
     /// 2026-08-22 — pole doszło dla pętli: żeby zapytać gita, czy ciało pętli cokolwiek zmieniło,
@@ -1546,6 +1584,10 @@ fn plan_run_with_identity(
         task: asked_for,
         loops,
         seeded_from: request.handoffs_from.clone(),
+        // Pusto AŻ DO CHWILI, W KTÓREJ KATALOG BIEGU ISTNIEJE: ścieżki w tym wektorze
+        // prowadzą do KOPII, a kopii jeszcze nie ma — plan nie dotyka dysku ani razu.
+        // Wypełnia go `the_planned_run` zaraz po `seed_the_handoffs`.
+        carried: Vec::new(),
         project: deps.project.to_path_buf(),
         steps,
         memory,
@@ -1711,6 +1753,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         task: ask.task.clone(),
         loops: Vec::new(),
         seeded_from: None,
+        // Bieg jednokrokowy nie wznawia niczego, więc nie ma po czym przejmować.
+        carried: Vec::new(),
         project: deps.project.to_path_buf(),
         steps,
         memory,
@@ -3685,16 +3729,45 @@ fn say_what_was_left_behind(lines: &LineSink, made: &[Isolated]) {
 /// (`memory::handoff`), a wejście w głąb wciągałoby tu cokolwiek, co ktoś tam kiedyś położy.
 /// Brak katalogu źródłowego nie jest awarią — to bieg, po którym nie zostało ani jedno
 /// przekazanie, i taki też ma być powtórzony.
+///
+/// # 2026-08-23 (T-88) — ZAŁĄCZNIK JEDZIE Z PLIKIEM, KTÓRY GO WOŁA
+///
+/// `memory::handoff` tnie ciało na `BODY_CAP`, odkłada ORYGINAŁ do `attachments/` i wstawia
+/// w ciało wiersz `Moved to attachments/<nazwa>__full.md`. Ten wiersz składa Loadout, nie agent,
+/// i jest liczony **od katalogu biegu** — więc bez tej drugiej kopii wznowiony krok dostawał od
+/// NAS odnośnik, którego nie da się otworzyć, czyli kontrolkę bez handlera (niezmiennik 16).
+///
+/// Zmierzone na biegu `20260819-223942` w wersji tego samego defektu o warstwę wyżej: krok
+/// dostał trzy takie wskaźniki, nie otworzył żadnego, napisał, że pełnego tekstu „nie ma",
+/// i wyliczył cały dowód drugi raz wprost z repozytorium — 9 z 10 minut swojego limitu.
+///
+/// `attachments/` jest SIOSTRĄ `handoffs/`, nie jego podkatalogiem, więc kopiuje się osobno —
+/// i tak samo cicho, kiedy go nie ma: katalog powstaje wyłącznie po biegu, w którym coś nie
+/// zmieściło się w pliku, czyli w większości biegów nie powstaje wcale.
 fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
     let Some(from) = &plan.seeded_from else {
         return Ok(());
     };
-    let source = from.join(crate::store::rebuild::HANDOFFS_DIR);
-    let Ok(listing) = fs::read_dir(&source) else {
+    copy_the_files_in(
+        &from.join(crate::store::rebuild::HANDOFFS_DIR),
+        &plan.dir.join(crate::store::rebuild::HANDOFFS_DIR),
+    )?;
+    copy_the_files_in(
+        &from.join(handoff::ATTACHMENTS_DIR),
+        &plan.dir.join(handoff::ATTACHMENTS_DIR),
+    )
+}
+
+/// Pliki z pierwszego poziomu jednego katalogu do drugiego. Brak źródła nie jest awarią.
+///
+/// Katalog docelowy powstaje dopiero, kiedy jest co do niego włożyć: pusty `attachments/`
+/// w katalogu biegu jest odpowiedzią „coś tu nie zmieściło się w pliku" postawioną nad niczym,
+/// a `Live::index_of_what_came_before` czyta jego ISTNIENIE jako właśnie to pytanie.
+fn copy_the_files_in(source: &Path, into: &Path) -> io::Result<()> {
+    let Ok(listing) = fs::read_dir(source) else {
         return Ok(());
     };
-    let into = plan.dir.join(crate::store::rebuild::HANDOFFS_DIR);
-    fs::create_dir_all(&into)?;
+    fs::create_dir_all(into)?;
     for entry in listing {
         let entry = entry?;
         if entry.file_type()?.is_file() {
@@ -3702,6 +3775,181 @@ fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `run.json` poprzedniego biegu w tylu polach, ile potrzebuje przejęcie jego przekazań.
+///
+/// Własny, wąski kształt zamiast pełnego lustra [`RunFile`] — ten sam powód, co przy
+/// `rerun::Finished`: tamten plik rośnie z każdym zadaniem, a to pytanie dotyczy dwóch rzeczy
+/// i nie ma powodu przewracać się na trzeciej, której nie zna (niezmiennik 5).
+#[derive(Debug, Deserialize)]
+struct RunBefore {
+    /// Graf, **jak biegł**. Po nim, nie po dzisiejszym pliku: pytamy o to, co wtedy stało przed
+    /// czym — a plik mógł się od tamtej pory zmienić i to jest zwykły powód, dla którego ktoś
+    /// w ogóle wznawia (`rerun`, „bierzemy DZISIEJSZY plik workflow").
+    workflow_snapshot: WorkflowFile,
+    /// Kroki tamtego biegu w kolejności ich numerów — po niej przekazanie wskazuje swój kafelek.
+    #[serde(default)]
+    steps: Vec<StepBefore>,
+}
+
+/// Krok tamtego biegu w jednym polu: kluczu węzła, z którego wychodzi klucz kafelka.
+#[derive(Debug, Deserialize)]
+struct StepBefore {
+    #[serde(default)]
+    node_key: String,
+}
+
+/// Co każdy krok tego biegu przejmuje po biegu, od którego go wznowiono — po jednej liście
+/// na krok.
+///
+/// # Dwa pytania, jedna odpowiedź na kafelek
+///
+/// **„Co ten kafelek wtedy dostał"** odpowiada `reads:` z jego własnego przekazania: to jest
+/// zapis tego, co Loadout NAPRAWDĘ wstrzyknął w tamten prompt ([`Told::reads`]), a nie tego,
+/// co dziś wynika z grafu. Powtórzony kafelek ma dostać dokładnie to samo wejście — inaczej
+/// „czy moja poprawka zmieniła wynik" jest pytaniem, w którym zmieniły się dwie rzeczy naraz.
+///
+/// **„Co się wydarzyło przede mną"** odpowiadają strzałki migawki, kiedy tamtego zapisu nie ma:
+/// krok, który padł, oddaje dalej ostatnie zdanie i **nic nie przeczytał**
+/// ([`Live::hand_on_its_last_words`] podaje puste `reads`), a krok, który nigdy nie ruszył, nie
+/// zostawia pliku wcale. To jest dokładnie ten krok, od którego ktoś wznawia — i ma dostać
+/// wszystko, na czym miał budować, aż do korzenia grafu.
+///
+/// # Dlaczego chód w górę zatrzymuje się na kafelku, który biegnie
+///
+/// Kafelek powtarzany w tym biegu odda swoją NOWĄ pracę własną strzałką. Wpisanie obok niej
+/// starej kopii byłoby tym samym krokiem mówiącym w jednym indeksie dwie różne rzeczy, a dalsza
+/// wspinaczka ponad niego dokładałaby krokom za nim materiał, który i tak przyjedzie do nich
+/// jego świeżym przekazaniem.
+fn what_the_run_before_left(plan: &Plan) -> Vec<Vec<Carried>> {
+    let mut carried: Vec<Vec<Carried>> = vec![Vec::new(); plan.steps.len()];
+    let Some(before) = plan.seeded_from.as_deref() else {
+        return carried;
+    };
+    let Some(described) = fs::read(before.join(RUN_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RunBefore>(&bytes).ok())
+    else {
+        // Bieg, którego pliku nie da się przeczytać, nie ma jak powiedzieć, czyj jest który
+        // plik — a zgadywanie po nazwie byłoby drugą definicją numeracji kroków (niezmiennik 13).
+        return carried;
+    };
+    let Ok(left) = handoff::scan_run_dir(before) else {
+        return carried;
+    };
+
+    // Numer kroku tamtego biegu → klucz kafelka. Numer, nie nazwa: nazwy wolno powtórzyć na
+    // dwóch kafelkach, a numerem przekazanie podpisuje się samo (`MetaDraft::step`).
+    let tiles: Vec<&str> = described
+        .steps
+        .iter()
+        .map(|step| tile_key_of(&step.node_key))
+        .collect();
+
+    // Nazwa pliku → kto go napisał; i klucz kafelka → jego OSTATNI plik. Rundy jednej pętli
+    // piszą po kolei, więc „ostatni" jest tym o najwyższym numerze kroku.
+    let mut whose: BTreeMap<&str, (&str, &handoff::Handoff)> = BTreeMap::new();
+    let mut newest: BTreeMap<&str, (u32, &str)> = BTreeMap::new();
+    for one in &left {
+        let Some(tile) = usize::try_from(one.meta.step)
+            .ok()
+            .and_then(|at| tiles.get(at).copied())
+        else {
+            continue;
+        };
+        let Some(name) = one.path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        whose.insert(name, (tile, one));
+        if newest
+            .get(tile)
+            .is_none_or(|(had, _)| *had <= one.meta.step)
+        {
+            newest.insert(tile, (one.meta.step, name));
+        }
+    }
+
+    let running: BTreeSet<&str> = plan
+        .steps
+        .iter()
+        .map(|step| step.tile_key.as_str())
+        .collect();
+
+    for (at, step) in plan.steps.iter().enumerate() {
+        let wanted: Vec<&str> = match newest
+            .get(step.tile_key.as_str())
+            .and_then(|(_, name)| whose.get(name))
+        {
+            Some((_, had)) if !had.meta.reads.is_empty() => had
+                .meta
+                .reads
+                .iter()
+                .filter_map(|read| Path::new(read).file_name()?.to_str())
+                .collect(),
+            _ => stood_before(&described.workflow_snapshot, &step.tile_key, &running)
+                .into_iter()
+                .filter_map(|tile| newest.get(tile).map(|(_, name)| *name))
+                .collect(),
+        };
+        carried[at] = wanted
+            .into_iter()
+            .filter_map(|name| {
+                let (tile, had) = whose.get(name)?;
+                if running.contains(tile) {
+                    return None;
+                }
+                let path = plan
+                    .dir
+                    .join(crate::store::rebuild::HANDOFFS_DIR)
+                    .join(name);
+                // Wskazujemy WYŁĄCZNIE to, co naprawdę leży w tym katalogu: wiersz indeksu ze
+                // ścieżką bez pliku po drugiej stronie przewraca `prompt_for` i zabiera krok.
+                path.is_file().then(|| Carried {
+                    from: had.meta.from.clone(),
+                    path,
+                })
+            })
+            .collect();
+    }
+    carried
+}
+
+/// Kafelki, które w TAMTYM grafie stały przed tym — i których ten bieg nie powtarza.
+///
+/// Chód w górę po strzałkach, przechodni: krok wznowiony po środku łańcucha ma dostać nie tylko
+/// swojego bezpośredniego poprzednika, ale wszystko, na czym tamten stał. Zatrzymuje się na
+/// kafelku, który biegnie w tym biegu — powód stoi przy [`what_the_run_before_left`].
+///
+/// Kolejność wynikowa jest **kolejnością z pliku**, tą samą, którą trzyma indeks tego biegu
+/// ([`Live::handed_before`]) i prefiks nazwy pliku przekazania. Kolejność obchodu grafu zależy
+/// od tego, w którą stronę wyszło się z rozgałęzienia, i przy dwóch gałęziach przestaje być
+/// powtarzalna.
+///
+/// Strzałka powrotna pętli jest tu zwykłą strzałką: runda poprawiająca stała po sędzim i jego
+/// zdanie jest częścią tego, na czym stanęła. Zbiór odwiedzonych domyka koło.
+fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str>) -> Vec<&'a str> {
+    let mut found: BTreeSet<usize> = BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::from([tile]);
+    let mut walking: Vec<&str> = vec![tile];
+    while let Some(here) = walking.pop() {
+        for link in &graph.links {
+            if link.to != here || !seen.insert(link.from.as_str()) {
+                continue;
+            }
+            if running.contains(link.from.as_str()) {
+                continue;
+            }
+            if let Some(at) = graph.steps.iter().position(|one| one.id() == link.from) {
+                found.insert(at);
+            }
+            walking.push(link.from.as_str());
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|at| graph.steps.get(at).map(Step::id))
+        .collect()
 }
 
 /// Zamyka drzewa po biegu: praca ląduje na gałęzi, a po kroku, który nic nie zmienił, nie
@@ -4016,6 +4264,8 @@ enum WhatItIs {
     YourOwnTry { which: u8, of: u8 },
     /// Wcześniejsza runda sędziego tej pętli.
     WhatTheTesterSaid { which: u8, of: u8 },
+    /// Plik przejęty po biegu, od którego ten bieg wznowiono.
+    FromAnEarlierRun,
 }
 
 impl WhatItIs {
@@ -4031,8 +4281,25 @@ impl WhatItIs {
             Self::WhatTheTesterSaid { which, of } => {
                 format!("{IS_WHAT_THE_TESTER_SAID}, try {which} of {of}")
             }
+            Self::FromAnEarlierRun => IS_WHAT_AN_EARLIER_RUN_LEFT.to_owned(),
         }
     }
+}
+
+/// Jeden plik, który zostawił POPRZEDNI bieg — już skopiowany do katalogu tego biegu.
+///
+/// Osobny typ od [`Handed`], bo odpowiada na inne pytanie: `Handed` powstaje z numeru kroku
+/// TEGO biegu ([`Live::filed`]), a tutaj żaden krok tego biegu nie ma numeru, pod którym można
+/// by ten plik znaleźć. Sklejenie obu w jeden wektor po `StepId` znaczyłoby, że przejęty plik
+/// musi udawać krok, którego w tym biegu nie ma.
+#[derive(Debug, Clone)]
+struct Carried {
+    /// Nazwa kroku, który go napisał — dosłownie ta z jego front-mattera, czyli ta, którą tamten
+    /// bieg pokazywał na ekranie.
+    from: String,
+    /// Kopia w katalogu **tego** biegu. Skończony bieg jest historią i nie ma prawa się zmienić
+    /// dlatego, że ktoś go wznowił (niezmiennik 4), więc prompt nigdy nie wskazuje w jego katalog.
+    path: PathBuf,
 }
 
 /// Co krok dostaje na wejściu: prompt, ślad po tym, co do niego wstrzyknięto, i katalogi,
@@ -5873,16 +6140,29 @@ impl Live {
         wanted.sort_unstable();
         wanted.dedup();
 
-        wanted
+        /* PRZEJĘTE PO POPRZEDNIM BIEGU STOI PIERWSZE, i to jest kolejność w czasie, nie gust:
+         * tamten bieg wydarzył się wcześniej w całości. Wiersz „what an earlier run left here"
+         * wmieszany między świeże czytałby się jak jeszcze jedna gałąź tego biegu. */
+        let mut index: Vec<Handed> = self
+            .plan
+            .carried
+            .get(id)
             .into_iter()
-            .filter_map(|step| {
-                Some(Handed {
-                    from: self.plan.steps.get(step)?.name.clone(),
-                    path: filed.get(step).cloned().flatten()?,
-                    what: self.what_it_is(id, step, &unpassed),
-                })
+            .flatten()
+            .map(|one| Handed {
+                from: one.from.clone(),
+                path: one.path.clone(),
+                what: WhatItIs::FromAnEarlierRun,
             })
-            .collect()
+            .collect();
+        index.extend(wanted.into_iter().filter_map(|step| {
+            Some(Handed {
+                from: self.plan.steps.get(step)?.name.clone(),
+                path: filed.get(step).cloned().flatten()?,
+                what: self.what_it_is(id, step, &unpassed),
+            })
+        }));
+        index
     }
 
     /// Numer pętli, z której WYCHODZI ta strzałka. `None`, kiedy nie wychodzi z żadnej.
