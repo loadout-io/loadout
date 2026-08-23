@@ -1429,14 +1429,29 @@ pub async fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
 /// litery.
 ///
 /// Katalog projektu bierzemy ze stanu, nie z `crate::loadout_dir()`: biegi leżą pod
-/// `<projekt>/.loadout/runs/`, a nie w bibliotece. Dlatego ta jedna komenda odczytu ma `State`,
-/// choć nie dotyka żywego biegu.
+/// `<projekt>/.loadout/runs/`, a nie w bibliotece.
+///
+/// 2026-08-23 — ZAKRES Z OKNA, i to jest naprawa, nie rozszerzenie. Ta komenda czytała
+/// `state.project`, czyli pole ustawiane RAZ przy starcie na `LOADOUT_PROJECT` albo na
+/// `~/.loadout/workspace` (`lib.rs`). Pierwsze nie jest w tym repo ustawiane nigdzie, drugie
+/// nie istnieje na dysku — a `run_dirs` na nieistniejącym katalogu oddaje pustą listę BEZ
+/// błędu. Trzecia strefa sekcji Pamięć pokazywała więc „Nothing yet…" i nawet nie zapalała
+/// odmowy, podczas gdy w folderze wybranym w bocznym menu leżało ponad sto prawdziwych plików.
+///
+/// `folder` przyjeżdża z okna dokładnie tak, jak w [`list_runs`] i [`copy_diagnostics`], i z tego
+/// samego powodu: „gdzie pracujemy" ma w całej aplikacji jedną odpowiedź (niezmiennik 13),
+/// a jest nią zakres wybrany w bocznym menu. `None` zostaje jawne, żeby to Rust wziął swoją
+/// domyślną, zamiast żeby okno podstawiało drugą.
+///
+/// Sam komentarz w `src/sections/memory/io.ts` zgłaszał to jako lukę czekającą na człowieka:
+/// „`list_handoffs` nie przyjmuje w tej fali zakresu… Zgłoszone człowiekowi".
 #[tauri::command]
 pub async fn list_handoffs(
     state: State<'_, AppState>,
+    folder: Option<String>,
 ) -> Result<Vec<commands::handoffs::HandoffWire>, String> {
-    commands::handoffs::list_handoffs_inner(state.project.as_path())
-        .map_err(|error| error.to_string())
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::handoffs::list_handoffs_inner(&project).map_err(|error| error.to_string())
 }
 
 /// Co ten projekt do tej pory uruchomił — biegi leżące w JEGO katalogu, od najnowszego.

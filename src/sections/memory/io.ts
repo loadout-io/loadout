@@ -55,11 +55,19 @@ export function stopUsing(args: { id: string }): Promise<Note> {
  * each other lands here" (`src/ui/sections.tsx`). Pliki powstawały (`memory::handoff`), a okno
  * nie miało jak o nie zapytać, więc obietnica z rejestru nie miała pokrycia na żadnym ekranie.
  *
- * Bez argumentów, i to jest ZNANA LUKA, nie decyzja: `list_handoffs` nie przyjmuje w tej fali
- * zakresu, więc lista może objąć więcej niż jeden bieg, a przełącznika „This project /
- * Everywhere" z makiety NIE BUDUJEMY — kontrolka bez skutku jest gorsza niż jej brak
- * (niezmiennik 16). Zgłoszone człowiekowi.
+ * 2026-08-23 — LUKA ZAMKNIĘTA. Do dziś ta krawędź szła bez argumentu, a Rust czytał wtedy pole
+ * ustawiane raz przy starcie na katalog, który na tej maszynie NIE ISTNIEJE. Lista wracała pusta
+ * i bez odmowy, więc strefa mówiła „Nothing yet…" nad folderem, w którym leżało ponad sto
+ * prawdziwych plików.
+ *
+ * FOLDER JEST JEDYNYM ZAKRESEM — ta sama umowa, co w `listRuns` (`sections/run/io.ts`) i ten sam
+ * powód: „gdzie pracujemy" ma w całej aplikacji jedną odpowiedź (niezmiennik 13), a jest nią
+ * zakres z bocznego menu. `null` zostaje jawne, żeby Rust wziął swoją domyślną, zamiast żeby
+ * okno podstawiało drugą — druga odpowiedź na to pytanie jest tą, która się rozjedzie.
+ *
+ * Przełącznika „This project / Everywhere" z makiety dalej NIE BUDUJEMY: nie ma za nim danych
+ * po tamtej stronie granicy, a kontrolka bez skutku jest gorsza niż jej brak (niezmiennik 16).
  */
-export function listHandoffs(): Promise<Handoff[]> {
-  return invoke<Handoff[]>('list_handoffs');
+export function listHandoffs(folder: string | null): Promise<Handoff[]> {
+  return invoke<Handoff[]>('list_handoffs', { folder });
 }

@@ -77,6 +77,7 @@ mod engine_step_states;
 mod folder_same_copy_as_before;
 mod fresh_copy_degrades_loudly;
 mod fresh_copy_isolates_steps;
+mod handoffs_are_scoped_to_one_folder;
 mod harness_workflow_chain;
 mod harness_workflow_findings_match_doc;
 mod harness_workflow_sequential;

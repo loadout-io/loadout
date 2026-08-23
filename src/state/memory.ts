@@ -26,6 +26,8 @@ import {
   stopUsing as stopUsingOnDisk,
 } from '../sections/memory/io';
 import { why } from '../ipc/why';
+/* Zakres, w którym pracujemy — jedna odpowiedź na całą aplikację (niezmiennik 13). */
+import { activeWorkspace } from './workspaces';
 
 /** Dwa stany i ani jeden trzeci [ARCHITECTURE §2 pyt. 5]. Słowo jest to samo, co w pliku. */
 export type NoteStatus = 'suggested' | 'in-use';
@@ -200,7 +202,11 @@ export const useMemory = create<MemoryState>()((set, get) => ({
 
     try {
       /* Ta sama reguła podmiany całej listy i ten sam powód. */
-      set({ passed: await listHandoffs(), passedProblem: null });
+      /* ZAKRES BIERZEMY W CHWILI ODCZYTU, nie przy tworzeniu magazynu: człowiek przełącza
+       * projekt w bocznym menu, a ta lista ma pokazywać ten, na który właśnie patrzy.
+       * `null` znaczy „weź swoją domyślną" i jedzie jawnie, żeby okno nie miało drugiej
+       * odpowiedzi na pytanie, gdzie pracujemy. */
+      set({ passed: await listHandoffs(activeWorkspace()?.folder ?? null), passedProblem: null });
     } catch (refusal) {
       set({ passed: [], passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
     }
