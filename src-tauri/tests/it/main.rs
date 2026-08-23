@@ -28,6 +28,8 @@
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
+mod a_passed_loop_reaches_the_next_step;
+mod a_round_sees_its_own_past;
 mod a_skill_list_says_what_each_one_is_for;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
@@ -75,6 +77,7 @@ mod engine_dag_construction;
 mod engine_order;
 mod engine_overlap;
 mod engine_step_states;
+mod every_failure_leaves_its_last_words;
 mod every_step_is_told_how_to_answer;
 mod folder_same_copy_as_before;
 mod fresh_copy_degrades_loudly;
@@ -227,7 +230,9 @@ mod supervisor_group_death;
 mod supervisor_pipe_eof;
 mod supervisor_term_then_kill;
 mod supervisor_timeout_kills;
+mod the_index_says_what_each_file_is;
 mod the_step_knows_its_deadline;
+mod the_tester_remembers_what_it_said;
 mod the_web_switch_reaches_both_vendors;
 mod thinking_reaches_claude;
 mod thinking_reaches_codex;
