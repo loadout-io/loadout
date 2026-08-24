@@ -314,6 +314,29 @@ impl Handoff {
     pub fn bytes_mismatch(&self) -> bool {
         self.meta.bytes != self.actual_bytes
     }
+
+    /// Pełna kopia wskazana przez to przekazanie — w katalogu tego samego biegu.
+    ///
+    /// 2026-08-24 (T-114) — trwały wiersz zostaje względny, więc przeniesienie całego katalogu
+    /// biegu nie psuje pliku. Bezwzględny adres składa dopiero czytelnik promptu z bieżącego
+    /// położenia przekazania; nazwa musi zgadzać się z tą, którą nadał [`write_inner`].
+    #[must_use]
+    pub fn attachment(&self) -> Option<PathBuf> {
+        let stem = self.path.file_stem()?.to_str()?;
+        let name = format!("{stem}__full.md");
+        let pointer = format!("Moved to {ATTACHMENTS_DIR}/{name}");
+        let run_dir = self.path.parent()?.parent()?;
+        self.body
+            .lines()
+            .any(|line| line == pointer)
+            .then(|| run_dir.join(ATTACHMENTS_DIR).join(name))
+    }
+
+    /// Czy po normalizacji wszystkie trzy sekcje są faktycznie puste.
+    #[must_use]
+    pub fn left_nothing(&self) -> bool {
+        sections_are_empty(&self.body)
+    }
 }
 
 /// Co powstało na dysku i co z tego wynika dla kroku.
@@ -328,6 +351,8 @@ pub struct Written {
     /// przyszło w umówionym kształcie — i to jest licznik, który warto oglądać [T6 §11.1].
     pub repaired: Vec<Section>,
     pub truncated: bool,
+    /// `true`, kiedy znormalizowane sekcje nie niosą ani jednego znaku treści.
+    pub left_nothing: bool,
 }
 
 /// Składa front-matter, naprawia sekcje, pilnuje limitu i zapisuje plik w `run_dir/handoffs/`.
@@ -449,6 +474,7 @@ fn write_inner(
 
     let normalized = normalize(agent_body);
     let (shaped, repaired) = reshape(&normalized);
+    let left_nothing = sections_are_empty(&shaped);
     let (body, truncated) = cap(&shaped, &pointer);
 
     let attachment = if truncated {
@@ -474,6 +500,7 @@ fn write_inner(
         attachment,
         repaired,
         truncated,
+        left_nothing,
     })
 }
 
@@ -768,6 +795,51 @@ fn split_sections(body: &str) -> Option<(&str, Vec<&str>)> {
     Some((&body[..at[0]], contents))
 }
 
+/// Pustka po normalizacji, nie brak bajtów w surowej odpowiedzi.
+///
+/// Proza przed pierwszym nagłówkiem też jest treścią: [`reshape`] przypisuje ją do Answer, więc
+/// pominięcie preambuły nazwałoby odpowiedź z tekstem pustą tylko dlatego, że agent dopisał
+/// później trzy puste nagłówki (T-114, 2026-08-24).
+fn sections_are_empty(body: &str) -> bool {
+    split_sections(body).is_some_and(|(preamble, contents)| {
+        preamble.trim().is_empty() && contents.iter().all(|content| content.trim().is_empty())
+    })
+}
+
+/// Ostatnia jawna decyzja sędziego pętli, jeśli odpowiedź ją zawiera.
+///
+/// Cały wiersz i tylko dwie wartości: `outcome:` w prozie albo nieznana wartość nie może stać
+/// się decyzją przez przypadek. `trim` dopuszcza jedynie wcięcie i końcowe spacje samego wiersza.
+fn last_decision(body: &str) -> Option<&str> {
+    body.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| matches!(*line, "outcome: pass" | "outcome: fail"))
+}
+
+/// Zachowuje wskazaną decyzję dokładnie raz w już uciętym ciele.
+fn keep_decision_once(body: &mut String, decision: &str) {
+    let mut seen = false;
+    let mut kept = String::with_capacity(body.len());
+    for line in body.split_inclusive('\n') {
+        if line.trim() == decision {
+            if seen {
+                continue;
+            }
+            seen = true;
+        }
+        kept.push_str(line);
+    }
+    if !seen {
+        if !kept.ends_with('\n') {
+            kept.push('\n');
+        }
+        kept.push_str(decision);
+        kept.push('\n');
+    }
+    *body = kept;
+}
+
 /// Cięcie do [`BODY_CAP`] po granicy sekcji; wewnątrz sekcji — po granicy wiersza.
 ///
 /// 2026-08-16, [T6 §11.2]: jednostką cięcia jest **sekcja**, bo ciało ucięte w połowie zdania
@@ -794,14 +866,30 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
         .collect();
     let line = pointer.len() + 1;
     let costs: Vec<usize> = heads.iter().map(|head| head.len() + line).collect();
+    // 2026-08-24 (T-114) — werdykt zwykle stoi na końcu odpowiedzi, czyli dokładnie tam, gdzie
+    // cięcie 8 KB go usuwało. Rezerwujemy jego jeden wiersz przed doborem treści sekcji.
+    let decision = last_decision(body);
+    let content_cap = BODY_CAP.saturating_sub(decision.map_or(0, |said| said.len() + 1));
 
-    let mut out = String::from(preamble);
-    let mut truncated = false;
-    let mut kept = false;
+    // 2026-08-24 (T-114, naprawa po drugiej opinii) — poprawnie ułożone ciało może mieć
+    // prozę przed `## Answer`, bo [`reshape`] zostawia taki kształt bez zmian. Preambuła jest
+    // treścią, więc dostaje ten sam budżet co sekcje; wcześniej sama mogła przekroczyć limit,
+    // zanim dopisaliśmy obowiązkowe nagłówki, wskaźniki i zarezerwowany werdykt.
+    let minimum_sections: usize = costs.iter().sum();
+    let preamble_budget = content_cap.saturating_sub(minimum_sections);
+    let preamble_end = if preamble.len() <= preamble_budget {
+        preamble.len()
+    } else {
+        last_line_boundary(preamble, preamble_budget)
+    };
+    let preamble_truncated = preamble_end < preamble.len();
+    let mut out = String::from(&preamble[..preamble_end]);
+    let mut truncated = preamble_truncated;
+    let mut kept = !out.trim().is_empty();
 
     for (index, (head, content)) in heads.iter().zip(contents.iter()).enumerate() {
         let rest: usize = costs.iter().skip(index + 1).sum();
-        if out.len() + head.len() + content.len() + rest <= BODY_CAP {
+        if !preamble_truncated && out.len() + head.len() + content.len() + rest <= content_cap {
             out.push_str(head);
             out.push_str(content);
             kept = kept || !content.trim().is_empty();
@@ -811,7 +899,7 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
         truncated = true;
         out.push_str(head);
         if !kept {
-            let room = BODY_CAP.saturating_sub(out.len() + line + rest);
+            let room = content_cap.saturating_sub(out.len() + line + rest);
             let budget = room.min(BODY_CAP / SECTIONS.len());
             out.push_str(&content[..last_line_boundary(content, budget)]);
         }
@@ -825,6 +913,10 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
             out.push('\n');
         }
         break;
+    }
+
+    if let Some(decision) = decision {
+        keep_decision_once(&mut out, decision);
     }
 
     (out, truncated)

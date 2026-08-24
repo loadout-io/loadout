@@ -477,13 +477,20 @@ pub fn drop_branch(project: &Path, branch: &str) -> Result<(), String> {
     git(project, &["branch", "-D", branch]).map(|_| ())
 }
 
-/// Nazwa gałęzi dla kroku: `loadout/<bieg>/<krok>`.
+/// Nazwa gałęzi dla katalogu pracy: `loadout/<bieg>/<krok>`.
 ///
 /// Wymienia i bieg, i krok, bo człowiek czytający `git branch` dzień później nie ma z czego
 /// odtworzyć ani jednego, ani drugiego.
+///
+/// 2026-08-24 (T-114) — klucz drugiej kopii ma wewnętrzny separator `~`, którego Git nie
+/// dopuszcza w refie. Ref koduje ten sam numer separatorem `-`: `s_2~2` staje się `s_2-2`,
+/// a pierwsza kopia `s_2` zostaje co do bajta bez zmian.
 #[must_use]
-pub fn branch_for(run: &str, step: &str) -> String {
-    format!("loadout/{run}/{step}")
+pub fn branch_for(run: &str, work_key: &str) -> String {
+    format!(
+        "loadout/{run}/{}",
+        crate::workflow::check::work_branch_tail(work_key)
+    )
 }
 
 /// Wołanie gita z tożsamością podaną na miejscu.
