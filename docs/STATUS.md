@@ -4,6 +4,15 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 17:53 — właściciel zatwierdził zastępcze T-112
+
+Jawne „ok” właściciela na rekomendowany task zastępczy uruchamia wyjątek authoringu wyłącznie
+dla kontraktu i dokumentacji. **T-112** zastępuje zamknięte T-99 i nie bierze z jego gałęzi
+commitów ani speców. Rozstrzygnięcia są trzy: ref drugiej kopii to poprawne dla Gita `s_2-2`,
+trwały handoff zachowuje względny i przenośny wskaźnik, natomiast zmontowany prompt odbiorcy
+dostaje bezwzględny adres kopii z bieżącego biegu; sędzią pętli jest źródło strzałki powrotnej.
+Pięć nowych ścieżek wyroczni jest globalnie unikalnych. T-112 musi wylądować przed T-100.
+
 ## 2026-08-24, 17:31 — T-99 ZAMKNIĘTE, sprzeczne wyrocznie i dwa błędy kontraktu
 
 **T-99 · czerwone / ZAMKNIĘTE · 1 h 04 min 26 s · co najmniej $35,23 widoczne.** Kontrakt

@@ -1,13 +1,14 @@
-# Prompt orchestratora — faza 7 (T-98…T-111; T-105 i T-110 zamknięte)
+# Prompt orchestratora — faza 7 (T-98…T-112; T-105, T-110 i T-99 zamknięte)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma czternaście numerów:
-T-98…T-111, ponieważ niewykonalne T-105 i pierwsze zastępstwo T-110 zostały zamknięte bez
-lądowania, a ich cel przejęło T-111. Każdą zieloną gałąź lądujesz osobno na `main`.
+**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma piętnaście numerów:
+T-98…T-112, ponieważ niewykonalne T-105, pierwsze zastępstwo T-110 i sprzeczne T-99 zostały
+zamknięte bez lądowania. Ich cele przejęły odpowiednio T-111 i T-112. Każdą zieloną gałąź
+lądujesz osobno na `main`.
 
 ---
 
@@ -22,7 +23,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-111.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105 i T-110 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-112.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110 i T-99 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -82,6 +83,13 @@ speców z gałęzi T-110: ma nowe ścieżki, obejmuje obie stare pełne fikstury
 semantykę nakładki na oficjalnym źródle OpenAI. Przed commitem wyłącznie `task-spine.py`;
 gałęzi T-105/T-110 nie wznawiać.
 
+Piąty commit kontraktowy zapisuje `T-99 ZAMKNIĘTE` po drugiej czerwieni, dwóch sprzecznych
+wyroczniach i dwóch błędach tekstu kryteriów oraz dodaje `tasks/T-112.md`. T-112 zachowuje
+względny wskaźnik w trwałym handoffie, a bezwzględny adres daje w promcie bieżącego odbiorcy;
+poprawny ref drugiej kopii kończy się `-2`, a sędzią jest źródło powrotu. Ma pięć nowych,
+globalnie unikalnych ścieżek testów. Przed commitem wyłącznie `task-spine.py`; gałęzi T-99
+nie wznawiać ani nie przenosić z niej commitów.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -90,7 +98,8 @@ Kolizje pierwotnych jedenastu zadań policzono **mechanicznie** 2026-08-24 (por�
 `<!-- OWNS -->`, z pominięciem `tasks/` i `tests/it/main.rs`). Wynik: **jedyną parą bez ani
 jednego wspólnego pliku była T-98 ∥ T-105.** T-98 wylądowało, T-105 zostało zamknięte po
 drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. T-111 idzie
-samo przed T-99. Dodane po żywym biegu T-109 ma
+samo i już wylądowało. T-99 zamknięto po drugiej czerwieni; T-112 zastępuje je przed T-100.
+Dodane po żywym biegu T-109 ma
 zależność semantyczną od T-103 i idzie po nim. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
@@ -98,9 +107,10 @@ zależność semantyczną od T-103 i idzie po nim. Cała reszta dzieli `commands
 |---|---|---|
 | 1a ∥ 1b | **WYKONANE:** T-98 w trunku; T-105 **ZAMKNIĘTE**, nie wznawiaj | AC-3 T-105 wymagało flagi odrzucanej przez App Server |
 | 1c | **WYKONANE:** T-110 **ZAMKNIĘTE**, nie wznawiaj | pełna bramka wymagała fikstury App Servera spoza OWNS |
-| 1d | `./ship-task.sh T-111 --agent codex --reviewer claude` | pełne zastępstwo T-105/T-110; musi poprzedzić T-102 |
-| 2 | `./ship-task.sh T-99 --agent claude --reviewer codex` | `workflow/check.rs` po T-98 |
-| 3 | `./ship-task.sh T-100 --agent claude --reviewer codex` | `run.rs`, `memory/handoff.rs` po T-99 |
+| 1d | **WYKONANE:** T-111 w trunku | pełne zastępstwo T-105/T-110; poprzedza T-102 |
+| 2 | **ZAMKNIĘTE:** T-99, nie wznawiaj | sprzeczny wskaźnik i dwa błędy tekstu kryteriów |
+| 2b | `./ship-task.sh T-112 --agent claude --reviewer codex` | pełne zastępstwo T-99; dzieli `run.rs` i `handoff.rs` z T-100 |
+| 3 | `./ship-task.sh T-100 --agent claude --reviewer codex` | `run.rs`, `memory/handoff.rs` po T-112 |
 | 4 | `./ship-task.sh T-101 --agent codex --reviewer claude` | `run.rs` po T-100 |
 | 5 | `./ship-task.sh T-102 --agent claude --reviewer codex` | `run.rs` po T-101 **i** `codex.rs` po T-111 |
 | 6 | `./ship-task.sh T-103 --agent claude --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-102 |

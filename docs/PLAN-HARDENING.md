@@ -45,6 +45,13 @@ spoza OWNS. T-111 zachowuje AC-1/AC-2 i wyłącza każdy efektywny serwer osobn�
 nakładką `mcp_servers.<id>.enabled=false` w `thread/start`, po bezpiecznym `config/read`;
 obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 
+T-99 zostało **ZAMKNIĘTE** bez lądowania po drugiej czerwieni. AC-2 wymagało bezwzględnego
+wskaźnika w trwałym handoffie, podczas gdy istniejące `memory_handoff_cap.rs` poza OWNS
+asertuje dokładnie względną wartość; po wznowieniu bezwzględny zapis wskazywałby ponadto
+stary bieg. Recenzent wykrył też niemożliwy ref z `~` w AC-1 i pomylenie celu ze źródłem
+strzałki powrotnej w AC-4. Zastępcze T-112 rozdziela przenośny zapis od chwilowego promptu,
+używa poprawnego refa `s_2-2` i nazywa sędzią `link.from`.
+
 ---
 
 ## 2. Mapa: każde znalezisko ma adres
@@ -53,9 +60,9 @@ obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 |---|---|---|
 | H1 | `RESERVED_CLAUDE` bez `--settings --add-dir --mcp-config --plugin-dir --tools --allowedTools --disallowedTools --append-system-prompt --max-budget-usd --resume --continue --agents --permission-prompt-tool`; `RESERVED_CODEX` bez `sandbox_mode`, `sandbox_workspace_write.*`, `approval_policy`, `mcp_servers.*`, `model_provider(s)`; filtr eskalacji = trzy podciągi | **T-98** |
 | H2 | Kolizja przelotki z `--max-budget-usd` (dług T-94) | **T-98** |
-| H3 | K1: `copies>1` + `fresh-copy` w repo gitowym nie startuje — gałąź z `tile_key` (`run.rs:3815`), katalog z `work_key_for` | **T-99** AC-1 |
-| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **T-99** AC-2, **T-102** (zdanie dla Codeksa), pomiar w **T-107** |
-| H5 | K4/K11: pusta udana odpowiedź = przekazanie z trzema pustymi sekcjami, bez sygnału w indeksie | **T-99** AC-3 |
+| H3 | K1: `copies>1` + `fresh-copy` w repo gitowym nie startuje — gałąź z `tile_key` (`run.rs:3815`), katalog z `work_key_for` | **T-112** AC-1 (T-99 zamknięte) |
+| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **T-112** AC-2, **T-102** (zdanie dla Codeksa), pomiar w **T-107** |
+| H5 | K4/K11: pusta udana odpowiedź = przekazanie z trzema pustymi sekcjami, bez sygnału w indeksie | **T-112** AC-4 |
 | H6 | Werdykt = jedna literalna linia prozy; zmierzone 21× fail / 3× pass; „PASS" w nagłówku = fail | **T-100** |
 | H7 | K3: sędzia nie widzi wcześniejszych prób implementera (`run.rs:7764-7767`) | **T-100** |
 | H8 | Sędzia nieostatniej rundy z „fail" zapisany `succeeded` — brak nośnika dla UI | **T-100** (nośnik w run.json), ekran w backlogu §7 |
@@ -73,12 +80,12 @@ obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
 | H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-108** |
-| H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-99** AC-4 (walidator: zakaz) |
+| H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-112** AC-5 (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
 | H26 | Docs: ARCHITECTURE §4/§5/§6b/§8 rozjechane z kodem | **§5** po ostatnim lądowaniu |
 | H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-102** |
-| H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-99** AC-2 |
+| H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-112** AC-3 |
 | H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-109** |
 
 ---
@@ -88,8 +95,8 @@ obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 | ID | Tytuł | Zależy od | Dotyka `commands/run.rs` | Kryteriów (szac.) |
 |---|---|---|---|---|
 | T-98 | Przelotka nie sięga ponad dial: pełne listy i filtr po kluczach | — | nie | 4 |
-| T-99 | Kopie dostają własne gałęzie, załączniki własną ścieżkę, pustka etykietę | T-98 (wspólny `workflow/check.rs`) | tak | 4 |
-| T-100 | Werdykt jest polem, sędzia widzi próby | T-99 | tak | 4 |
+| T-99 | **ZAMKNIĘTE:** sprzeczny wskaźnik i dwa błędy tekstu kryteriów | — | tak | 4 |
+| T-100 | Werdykt jest polem, sędzia widzi próby | T-112 | tak | 4 |
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | Wydatki są analityką: koszt obu vendorów policzony i pokazany | T-101, T-111 (wspólny `codex.rs`) | tak | 4 |
 | T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-102 | tak | 5 |
@@ -101,6 +108,7 @@ obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 | T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-103 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
+| T-112 | Przenośny handoff dostaje żywy adres, kopie i sędzia jednoznaczny kontrakt | T-98 (zastępuje T-99) | tak | 5 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -114,15 +122,22 @@ który dziś używa `--settings` jako przykładu flagi NIEzarezerwowanej — da�
 - Kolizja z `--max-budget-usd` w `FORBIDDEN_ESCALATIONS` (H2).
 - OWNS: `library/agents.rs`, `workflow/check.rs`, testy; bez `run.rs`.
 
-**T-99 — kopie, załączniki, pustka.**
-- AC-1: gałąź z `work_key` (`loadout/<bieg>/s_2~2`); test `copies: 2` + `fresh-copy`
-  w prawdziwym repo gitowym (fikstura fresh-copy, niezmiennik 12).
-- AC-2: wskaźnik w uciętym ciele ze ścieżką bezwzględną (`handoff.rs:448`),
-  `HANDOFF_INDEX_CLOSES` nazywa katalog załączników wprost, a końcowe `outcome:` przeżywa
-  limit 8 KB dokładnie raz (H28).
-- AC-3: puste ciało → dopisek do etykiety w indeksie następnego kroku (zamknięta lista,
-  słownictwo z istniejącej rodziny).
-- AC-4: walidator odmawia `copies>1` na kafelku-sędzi (H23).
+**T-99 — ZAMKNIĘTE, bez lądowania.** Po jedynej naprawie 4/4 AC było zielone, lecz pełna
+bramka wymagała zmiany `memory_handoff_cap.rs` spoza OWNS. Stara wyrocznia przypina względny
+wskaźnik w trwałym pliku, a AC-2 wymagało w tej samej linii ścieżki bezwzględnej. AC-1 żądało
+refa z niedozwolonym przez Git `~`; AC-4 nazywało sędzią cel zamiast źródła powrotu. Gałąź
+jest dowodem, nie źródłem commitów.
+
+**T-112 — kopie, żywy adres załącznika, decyzja, pustka i sędzia (zastępstwo T-99).**
+- AC-1: katalog drugiej kopii zachowuje `s_2~2`, ale dokładny poprawny ref to
+  `loadout/<bieg>/s_2-2`; prawdziwe repo, równoległość i wznowienie własnej kopii.
+- AC-2: trwały wskaźnik zostaje względny i przenośny; zmontowany prompt konkretnego odbiorcy
+  podaje bezwzględny, otwieralny adres pełnej kopii w katalogu bieżącego biegu, także po
+  wznowieniu i usunięciu starego katalogu.
+- AC-3: ostatnie `outcome:` przeżywa limit dokładnie raz, bez syntezy decyzji.
+- AC-4: puste ciało → stały dopisek w prawdziwym indeksie następnego kroku.
+- AC-5: walidator odmawia `copies>1` na źródle strzałki powrotnej (`link.from`); cel powrotu
+  i zwykłe kroki mogą mieć kopie.
 
 **T-100 — werdykt i pamięć sędziego.**
 - Werdykt drogą pól (`FIELDS_ASKED_FOR`, T-90 AC-4): sędzia dostaje automatycznie wymagane
@@ -238,18 +253,19 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-111 teraz, przed T-99**: zastępuje zamknięte T-105 i T-110 oraz musi wyprzedzić T-102
-  przez wspólny `codex.rs`. Nie wznawiać starych gałęzi ani nie przenosić ich testów.
+- **T-111 wylądowało; T-99 zamknięte; T-112 teraz, przed T-100**: T-112 zastępuje T-99.
+  Nie wznawiać starej gałęzi ani nie przenosić jej testów lub commitów.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-99 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
+  `T-112 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
 - **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
-  zastępstwo T-110 zostały zamknięte; T-111 idzie teraz samo przed łańcuchem. Wszystko dalej
+  zastępstwo T-110 oraz T-99 zostały zamknięte; T-111 wylądowało, a T-112 idzie teraz samo
+  przed łańcuchem. Wszystko dalej
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
-  T-99 po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
+  T-112 po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
   **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-103);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
@@ -305,7 +321,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 1. **`RunSpec`/`AgentJob` bez `Default`** — nowe pola wyłącznie szwem addytywnym
    (`with_*` / `Option` + `#[serde(default)]`), inaczej `quick-scope` pali 30+ plików.
 2. **Słownictwo**: `quick-vocabulary` skanuje tekst widoczny i komunikaty asercji — bez
-   `handoff/verdict/judge/loop/session/gate/node/DAG`; nowe etykiety (T-99 AC-3) z istniejącej
+   `handoff/verdict/judge/loop/session/gate/node/DAG`; nowe etykiety (T-112 AC-4) z istniejącej
    rodziny („what it passed on", „try N of M").
 3. **Lustro drutu porównuje ZBIÓR kluczy** — nowe pole w `NoteWire`/`Line`/`run.json` widoczne
    z frontu ciągnie wiersz w `commands-wired.test.ts`/golden; czerwień często dopiero w full.
@@ -314,7 +330,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 5. **Backticki w backtickach w `///` palą clippy** (zmierzone przy sondzie leada) — cytaty
    błędów vendora w zwykłych `//`.
 6. **Fikstury równoległości**: dwa kroki bez strzałki w folderze projektu = Problem
-   z niezmiennika 12; test K1 (T-99) na `fresh-copy`.
+   z niezmiennika 12; test K1 (T-112) na `fresh-copy`.
 7. **`before` czerwone NA ASERCJI**: Rust — `todo!()` + linia `mod` w `tests/it/main.rs`;
    TS — szkielet importowalny padający na `expect`.
 8. **Wyrocznie `--ignored` kosztują prawdziwe pieniądze** — bramka sądzi ich istnienie
