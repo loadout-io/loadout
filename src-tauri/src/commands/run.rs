@@ -400,6 +400,9 @@ const IS_WHAT_YOU_STARTED_WITH: &str = "what you were given at the start";
 /// Początek etykiety wcześniejszej rundy TEGO kroku. Ogon dopisuje [`WhatItIs::said`].
 const IS_YOUR_OWN_EARLIER_ANSWER: &str = "your own earlier answer";
 
+/// Etykieta wcześniejszej próby pracy, którą sędzia porównuje z bieżącą.
+const IS_AN_EARLIER_TRY_OF_THE_WORK: &str = "an earlier answer from the work you are checking";
+
 /// Początek etykiety wcześniejszej rundy sędziego. „Tester", bo tak nazywa go człowiek — nasze
 /// słowo („judge") nie znaczy nic po drugiej stronie promptu.
 const IS_WHAT_THE_TESTER_SAID: &str = "what the tester said last time";
@@ -5357,6 +5360,9 @@ struct Book {
 struct StepRun {
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
+    /// Co sędzia powiedział o tej rundzie. `None` dla kroków poza sędzią i rund, które nie
+    /// ruszyły; stan kroku pozostaje osobnym faktem.
+    round_outcome: Option<handoff::Verdict>,
     /// Kiedy krok ruszył.
     started_at: Option<i64>,
     /// Kiedy się skończył.
@@ -5455,6 +5461,8 @@ enum WhatItIs {
     WhatYouStartedWith,
     /// Wcześniejsza runda TEGO kroku.
     YourOwnTry { which: u8, of: u8 },
+    /// Wcześniejsza próba pracy, którą ocenia sędzia tej pętli.
+    EarlierTryOfTheWork { which: u8, of: u8 },
     /// Wcześniejsza runda sędziego tej pętli.
     WhatTheTesterSaid { which: u8, of: u8 },
     /// Plik przejęty po biegu, od którego ten bieg wznowiono.
@@ -5470,6 +5478,9 @@ impl WhatItIs {
             Self::WhatYouStartedWith => IS_WHAT_YOU_STARTED_WITH.to_owned(),
             Self::YourOwnTry { which, of } => {
                 format!("{IS_YOUR_OWN_EARLIER_ANSWER}, try {which} of {of}")
+            }
+            Self::EarlierTryOfTheWork { which, of } => {
+                format!("{IS_AN_EARLIER_TRY_OF_THE_WORK}, try {which} of {of}")
             }
             Self::WhatTheTesterSaid { which, of } => {
                 format!("{IS_WHAT_THE_TESTER_SAID}, try {which} of {of}")
@@ -5538,6 +5549,7 @@ impl Live {
             .iter()
             .map(|_| StepRun {
                 status: StepState::Pending,
+                round_outcome: None,
                 started_at: None,
                 ended_at: None,
                 pid: None,
@@ -5777,7 +5789,12 @@ impl Live {
     fn verdict_after(&self, id: StepId, said: &str) -> Option<&'static str> {
         let step = &self.plan.steps[id];
         let (which, the_loop) = self.judging(step)?;
-        if crate::memory::handoff::verdict_in(said) == crate::memory::handoff::Verdict::Pass {
+        let verdict = crate::memory::handoff::verdict_in(said);
+        // 2026-08-25 (T-100) — zapisujemy to samo rozstrzygnięcie, którym sterujemy pętlą,
+        // zanim którakolwiek gałąź wróci. Osobne parsowanie dla `run.json` mogłoby pokazać
+        // odmowę i jednocześnie domknąć rundę albo odwrotnie (niezmiennik 13).
+        self.update(|book| book.steps[id].round_outcome = Some(verdict));
+        if verdict == crate::memory::handoff::Verdict::Pass {
             self.settle(which, step.turn);
             return None;
         }
@@ -6164,6 +6181,7 @@ impl Live {
                 },
                 depends_on: &planned.depends_on,
                 status: run.status,
+                round_outcome: run.round_outcome,
                 // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
                 // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
                 attempt: 0,
@@ -7436,14 +7454,17 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
-        self.ask_for_the_agreed_fields(id, &mut told);
         told.prompt.push_str("\n\n");
         told.prompt.push_str(&Self::how_long_this_step_has(minutes));
+        // Pola specyficzne dla kafelka stoją za wspólnym blokiem odpowiedzi i czasu. Dzięki
+        // temu każdy agent dostaje ten sam kontrakt bajt w bajt, a sędzia dopiero po nim swój
+        // wymagany nośnik wyniku (T-86 AC-1, T-100 AC-1).
+        self.ask_for_the_agreed_fields(id, &mut told);
         self.ask_for_an_outcome(id, &mut told);
         Ok(told)
     }
 
-    /// Dokłada listę umówionych pól — **tylko krokowi, który ma formularz**.
+    /// Dokłada listę umówionych pól oraz wymagany wynik sędziego pętli.
     ///
     /// Wewnątrz bloku „jak odpowiadać" i zaraz za nim, bo to jest ta sama rzecz: co ten krok ma
     /// oddać. Nagłówek nad zerem pól byłby zdaniem o niczym, tak samo jak pusty indeks przekazań
@@ -7452,19 +7473,26 @@ impl Live {
     /// OPIS Z PLIKU JEDZIE NIETKNIĘTY. Człowiek napisał go po to, żeby agent wypełnił pole
     /// właściwą rzeczą; sama nazwa jest pytaniem, którego agent musi się domyślić.
     ///
-    /// Warunek jest ten sam, którego używa [`Live::missing_a_required_field`] do sądzenia
-    /// odpowiedzi — jedna lista, dwie połowy jednej umowy (niezmiennik 13).
+    /// Warunek pola `outcome` jest ten sam, którego używa [`Live::verdict_after`] do sądzenia
+    /// odpowiedzi. Zwykły krok go nie dostaje, a sędzia dostaje je także bez formularza — jedna
+    /// lista, dwie połowy jednej umowy (niezmiennik 13).
     fn ask_for_the_agreed_fields(&self, id: StepId, told: &mut Told) {
         let Job::Agent(job) = &self.plan.steps[id].job else {
             return;
         };
-        if job.handover.is_empty() {
+        let asks_for_outcome = self.judging(&self.plan.steps[id]).is_some();
+        if job.handover.is_empty() && !asks_for_outcome {
             return;
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(FIELDS_ASKED_FOR);
         told.prompt.push('\n');
-        for field in &job.handover {
+        for field in job.handover.iter().filter(|field| {
+            // 2026-08-25 (T-100) — wynik pętli jest polem Loadout, nie drugim formularzem
+            // człowieka. Jedna automatyczna linia zapobiega dwóm sprzecznym umowom o tym samym
+            // kluczu, kiedy starszy workflow miał już własne pole nazwane `outcome`.
+            !asks_for_outcome || !field.name.trim().eq_ignore_ascii_case("outcome")
+        }) {
             // `write!` do `String`, nie `push_str(&format!(…))` — ten sam powód, co przy indeksie
             // przekazań (clippy `format_push_string`), i ten sam `let _`: zapis do `String` nie
             // ma jak zawieść.
@@ -7479,6 +7507,11 @@ impl Live {
                     ""
                 }
             );
+        }
+        if asks_for_outcome {
+            // `pass` i `fail` stoją w pokazanym kształcie odpowiedzi: model nie musi zgadywać
+            // ani dozwolonych wartości, ani tego, że to pole jest wymagane w każdej rundzie.
+            let _ = write!(told.prompt, "\noutcome: pass or fail{FIELD_IS_NEEDED}");
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(FIELDS_ARE_REQUIRED);
@@ -7757,8 +7790,8 @@ impl Live {
             .collect()
     }
 
-    /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, własne wcześniejsze
-    /// odpowiedzi i wcześniejsze werdykty sędziego.
+    /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, wcześniejsze próby pracy,
+    /// własne wcześniejsze odpowiedzi i wcześniejsze werdykty sędziego.
     ///
     /// Pusta lista dla kroku spoza pętli i dla rundy zerowej. Numery kroków, nie ścieżki: filtr
     /// „a czy ten krok cokolwiek oddał" stoi jeden, w [`Live::handed_before`].
@@ -7815,11 +7848,16 @@ impl Live {
             }
         }
 
-        // Własne poprzednie odpowiedzi i poprzednie werdykty sędziego — WSZYSTKIE, nie sama
-        // ostatnia. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę w całości,
-        // więc agent powtarza błąd, który sędzia raz już odrzucił.
+        // Sędzia dostaje KAŻDĄ wcześniejszą próbę kroku, do którego wraca pętla, a pozostali
+        // dostają własne wcześniejsze odpowiedzi. Obie strony dostają wszystkie wcześniejsze
+        // werdykty sędziego. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę
+        // w całości, więc nie da się odróżnić poprawki od tego samego błędu opisanego inaczej.
         for turn in 0..step.turn {
-            knows.extend(self.node_of(&step.tile_key, turn));
+            if step.tile_key == the_loop.judge {
+                knows.extend(self.node_of(&the_loop.entry, turn));
+            } else {
+                knows.extend(self.node_of(&step.tile_key, turn));
+            }
             knows.extend(self.node_of(&the_loop.judge, turn));
         }
         knows
@@ -7858,6 +7896,12 @@ impl Live {
         let of = the_loop.turns;
         if before.tile_key == step.tile_key {
             return WhatItIs::YourOwnTry { which, of };
+        }
+        if step.tile_key == the_loop.judge
+            && before.tile_key == the_loop.entry
+            && before.turn < step.turn
+        {
+            return WhatItIs::EarlierTryOfTheWork { which, of };
         }
         if before.tile_key == the_loop.judge {
             return WhatItIs::WhatTheTesterSaid { which, of };
@@ -8622,6 +8666,10 @@ struct StepEntry<'a> {
     kind: &'static str,
     depends_on: &'a [String],
     status: StepState,
+    /// Rozstrzygnięcie sędziego tej rundy. Brak klucza znaczy, że ten węzeł nie był sędzią albo
+    /// nie ruszył; stare pliki bez pola zachowują właśnie tę wartość domyślną.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    round_outcome: Option<handoff::Verdict>,
     attempt: u32,
     agent_session_id: Option<String>,
     pid: Option<i32>,

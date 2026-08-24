@@ -167,7 +167,8 @@ impl Status {
 /// werdyktu i werdykt odmowny prowadzą do tego samego — jeszcze jedna runda albo koniec biegu.
 /// Trzeci wariant zmuszałby każdego wołającego do wybrania, co z nim zrobić, a jedyna bezpieczna
 /// odpowiedź jest tą, którą daje `Fail`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     /// Sędzia napisał, że robota przeszła. Pętla się domyka.
     Pass,
@@ -190,28 +191,69 @@ const VERDICT_MARK: &str = "outcome:";
 /// (spec §3) — jego jedynym kanałem jest ciało. Wyjątek jest jednym wierszem o sztywnym
 /// kształcie, a nie furtką: nic innego z ciała nie jedzie do żadnego pola.
 ///
-/// DECYDUJE OSTATNI ZNACZNIK. Sędzia dostaje w prompcie zdanie o tym, jak zapisać werdykt,
-/// a modele powtarzają instrukcję, zanim zaczną pracować („napiszę OUTCOME: PASS, jeśli testy
-/// przejdą"). Pierwsze wystąpienie jest więc echem polecenia, nie sądem; wniosek stoi na końcu.
+/// UMÓWIONE POLE WYGRYWA Z LINIĄ PROZY. Od T-100 sędzia dostaje pole `outcome`, czytane z
+/// całej odpowiedzi tym samym kształtem `klucz: wartość`, co pozostałe pola przekazania. Ten
+/// mocniejszy nośnik rozstrzyga także wtedy, gdy stary fallback na końcu odpowiedzi mówi co
+/// innego. Przy braku pola zostaje dokładnie dotychczasowa reguła: decyduje ostatni znacznik,
+/// bo modele powtarzają instrukcję, zanim zaczną pracować („napiszę OUTCOME: PASS, jeśli testy
+/// przejdą"), a wniosek stawiają na końcu.
 ///
 /// ZNACZNIK MUSI BYĆ CAŁYM WIERSZEM. Szukanie go w tekście przez `contains` zamyka pętlę na
 /// zdaniu „once the tests are green I will write OUTCOME: PASS" — czyli nad czerwonymi testami,
 /// na obietnicy werdyktu wziętej za werdykt.
 #[must_use]
 pub fn verdict_in(body: &str) -> Verdict {
+    // 2026-08-25 (T-100) — pole jest jawną odpowiedzią na umowę z promptu, a końcowy wiersz
+    // tylko zgodnościowym zapasem. Ta kolejność jest polityką: odwrócenie jej ponownie
+    // uzależniłoby bieg od jednej literalnej linii prozy i zgubiło ustrukturyzowany werdykt.
+    outcome_field_in(body).unwrap_or_else(|| fallback_verdict_in(body))
+}
+
+/// Umówione pole `outcome` z całej odpowiedzi, jeśli sędzia je podał.
+fn outcome_field_in(body: &str) -> Option<Verdict> {
+    let mut last_matching = None;
+    let mut last_agreed = None;
+    for line in body.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || value.is_empty() || !name.eq_ignore_ascii_case("outcome") {
+            continue;
+        }
+        let verdict = verdict_from(value);
+        last_matching = Some(verdict);
+        // 2026-08-25 (T-100 repair) — prompt pokazuje dokładnie małe `outcome`; ten kanoniczny
+        // klucz odróżnia umówione pole od starszego, niewrażliwego na wielkość liter znacznika.
+        // Bez tej preferencji późniejszy fallback ponownie nadpisywałby mocniejszy nośnik.
+        if name == "outcome" {
+            last_agreed = Some(verdict);
+        }
+    }
+    last_agreed.or(last_matching)
+}
+
+/// Zgodnościowy wiersz `outcome: …` z prozy; jak dotąd rozstrzyga ostatni.
+fn fallback_verdict_in(body: &str) -> Verdict {
     body.lines()
-        .filter_map(|line| {
-            let line = line.trim().to_ascii_lowercase();
-            let rest = line.strip_prefix(VERDICT_MARK)?;
-            match rest.trim() {
-                "pass" => Some(Verdict::Pass),
-                // Wiersz, który zaczyna się znacznikiem i mówi coś innego, jest werdyktem
-                // odmownym, nie brakiem werdyktu: sędzia się wypowiedział, tylko nie przepuścił.
-                _ => Some(Verdict::Fail),
-            }
-        })
+        .filter_map(verdict_on_line)
         .next_back()
         .unwrap_or_default()
+}
+
+fn verdict_on_line(line: &str) -> Option<Verdict> {
+    let line = line.trim().to_ascii_lowercase();
+    let rest = line.strip_prefix(VERDICT_MARK)?;
+    Some(verdict_from(rest))
+}
+
+fn verdict_from(value: &str) -> Verdict {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "pass" => Verdict::Pass,
+        // Wiersz, który zaczyna się znacznikiem i mówi coś innego, jest werdyktem odmownym,
+        // nie brakiem werdyktu: sędzia się wypowiedział, tylko nie przepuścił.
+        _ => Verdict::Fail,
+    }
 }
 
 /// Czy sędzia w ogóle się wypowiedział — bez pytania o to, JAK.
