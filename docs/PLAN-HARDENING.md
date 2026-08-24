@@ -56,7 +56,10 @@ T-112 także zostało **ZAMKNIĘTE** bez lądowania. Formalna bramka była zielo
 nie obejmowało kolizji `step~2` z literalnym `step-2`, a oba klucze kodowały się do tego
 samego refa. Co ważniejsze, cały certyfikat `before` był fałszywy: wspólny target `it` nie
 kompilował się przez E0308 w specu AC-3, a harness uznał to za czerwień zachowania. Faza stoi
-przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego.
+przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego. Właściciel
+autoryzował oba kroki: commit `5604c3d` odrzuca każdą diagnostykę kompilatora Rusta jako
+fałszywe `before`, a **T-113** zastępuje T-99/T-112 i dodaje widoczną odmowę kolizji
+zakodowanych refów przed pierwszym spawnem.
 
 ---
 
@@ -66,9 +69,9 @@ przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego.
 |---|---|---|
 | H1 | `RESERVED_CLAUDE` bez `--settings --add-dir --mcp-config --plugin-dir --tools --allowedTools --disallowedTools --append-system-prompt --max-budget-usd --resume --continue --agents --permission-prompt-tool`; `RESERVED_CODEX` bez `sandbox_mode`, `sandbox_workspace_write.*`, `approval_policy`, `mcp_servers.*`, `model_provider(s)`; filtr eskalacji = trzy podciągi | **T-98** |
 | H2 | Kolizja przelotki z `--max-budget-usd` (dług T-94) | **T-98** |
-| H3 | K1: `copies>1` + `fresh-copy` w repo gitowym nie startuje — gałąź z `tile_key` (`run.rs:3815`), katalog z `work_key_for` | **zastępstwo oczekuje** (T-99/T-112 zamknięte) |
-| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **zastępstwo oczekuje**, **T-102** (zdanie dla Codeksa), pomiar w **T-107** |
-| H5 | K4/K11: pusta udana odpowiedź = przekazanie z trzema pustymi sekcjami, bez sygnału w indeksie | **zastępstwo oczekuje** |
+| H3 | K1: `copies>1` + `fresh-copy` w repo gitowym nie startuje — gałąź z `tile_key` (`run.rs:3815`), katalog z `work_key_for` | **T-113** (T-99/T-112 zamknięte) |
+| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **T-113**, **T-102** (zdanie dla Codeksa), pomiar w **T-107** |
+| H5 | K4/K11: pusta udana odpowiedź = przekazanie z trzema pustymi sekcjami, bez sygnału w indeksie | **T-113** |
 | H6 | Werdykt = jedna literalna linia prozy; zmierzone 21× fail / 3× pass; „PASS" w nagłówku = fail | **T-100** |
 | H7 | K3: sędzia nie widzi wcześniejszych prób implementera (`run.rs:7764-7767`) | **T-100** |
 | H8 | Sędzia nieostatniej rundy z „fail" zapisany `succeeded` — brak nośnika dla UI | **T-100** (nośnik w run.json), ekran w backlogu §7 |
@@ -86,12 +89,12 @@ przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego.
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
 | H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-108** |
-| H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **zastępstwo oczekuje** (walidator: zakaz źródła strzałki powrotnej) |
+| H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-113** (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
 | H26 | Docs: ARCHITECTURE §4/§5/§6b/§8 rozjechane z kodem | **§5** po ostatnim lądowaniu |
 | H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-102** |
-| H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **zastępstwo oczekuje** |
+| H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-113** |
 | H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-109** |
 
 ---
@@ -102,7 +105,7 @@ przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego.
 |---|---|---|---|---|
 | T-98 | Przelotka nie sięga ponad dial: pełne listy i filtr po kluczach | — | nie | 4 |
 | T-99 | **ZAMKNIĘTE:** sprzeczny wskaźnik i dwa błędy tekstu kryteriów | — | tak | 4 |
-| T-100 | Werdykt jest polem, sędzia widzi próby | zastępstwo T-112 | tak | 4 |
+| T-100 | Werdykt jest polem, sędzia widzi próby | T-113 | tak | 4 |
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | Wydatki są analityką: koszt obu vendorów policzony i pokazany | T-101, T-111 (wspólny `codex.rs`) | tak | 4 |
 | T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-102 | tak | 5 |
@@ -115,6 +118,7 @@ przed T-100 do czasu osobnej naprawy harnessu i nowego kontraktu zastępczego.
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
+| T-113 | Kopie: poprawne i niekolizyjne refy; przenośne przekazanie nie gubi decyzji | — (zastępuje T-99/T-112) | tak | 6 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -137,7 +141,7 @@ jest dowodem, nie źródłem commitów.
 **T-112 — ZAMKNIĘTE, bez lądowania.** Formalna bramka 21/21 nie jest dowodem: wszystkie
 `before` padły na E0308 we wspólnym targetcie, a AC-1 pomijało zaakceptowany plik, w którym
 `s_2~2` i literalne `s_2-2` wybierają ten sam ref. Poniższy zakres pozostaje mapą dla nowego,
-globalnie unikalnego kontraktu dopiero po naprawie harnessu:
+globalnie unikalnego kontraktu po naprawie harnessu:
 - AC-1: katalog drugiej kopii zachowuje `s_2~2`, ale dokładny poprawny ref to
   `loadout/<bieg>/s_2-2`; prawdziwe repo, równoległość i wznowienie własnej kopii.
 - AC-2: trwały wskaźnik zostaje względny i przenośny; zmontowany prompt konkretnego odbiorcy
@@ -147,6 +151,17 @@ globalnie unikalnego kontraktu dopiero po naprawie harnessu:
 - AC-4: puste ciało → stały dopisek w prawdziwym indeksie następnego kroku.
 - AC-5: walidator odmawia `copies>1` na źródle strzałki powrotnej (`link.from`); cel powrotu
   i zwykłe kroki mogą mieć kopie.
+
+**T-113 — pełne zastępstwo T-99/T-112.** Startuje z trunka po `5604c3d`; stare gałęzie są
+dowodem, nigdy źródłem commitów lub speców.
+- Zachowuje pięć rozstrzygnięć T-112, ale każde ma nową, globalnie unikalną ścieżkę testu.
+- Dodatkowe AC liczy wszystkie planowane klucze `fresh-copy` tym samym kodowaniem, którego
+  używa tworzenie gałęzi. Kolizja `s_2~2` z literalnym `s_2-2` jest ostrzeżeniem przy zapisie
+  i Problemem przy Starcie; widoczne angielskie zdanie nazywa obie prace oraz wspólną gałąź.
+- Odmowa pada przez prawdziwą komendę przed katalogiem biegu, drzewem Gita i pierwszym
+  wywołaniem sterownika. Hash, losowy sufiks i zmiana nazw niekolizyjnych refów są zakazane.
+- OWNS pozostaje w `run.rs`, `isolate.rs`, `handoff.rs`, `check.rs` i sześciu nowych specach;
+  znalezisko historii refów w `commands/history.rs` zostaje zapisane poza tym zadaniem.
 
 **T-100 — werdykt i pamięć sędziego.**
 - Werdykt drogą pól (`FIELDS_ASKED_FOR`, T-90 AC-4): sędzia dostaje automatycznie wymagane
@@ -262,20 +277,20 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-111 wylądowało; T-99 i T-112 zamknięte; STOP przed T-100.** Nie wznawiać starych
-  gałęzi ani nie przenosić ich testów lub commitów. Najpierw osobna naprawa fałszywego
-  certyfikatu `before`, potem nowy kontrakt z widoczną odmową kolizji zakodowanych refów.
+- **T-111 wylądowało; T-99 i T-112 zamknięte; T-113 jest następne.** Nie wznawiać starych
+  gałęzi ani nie przenosić ich testów lub commitów. Fałszywy certyfikat `before` naprawił
+  osobny commit `5604c3d`; T-113 niesie nowe specy i widoczną odmowę kolizji refów.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `nowe zastępstwo → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
+  `T-113 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
 - **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
-  zastępstwo T-110, T-99 oraz T-112 zostały zamknięte; T-111 wylądowało, a nowe zastępstwo
-  oczekuje na zgodę i naprawę harnessu. Wszystko dalej
+  zastępstwo T-110, T-99 oraz T-112 zostały zamknięte; T-111 wylądowało, harness naprawił
+  `5604c3d`, a T-113 ma zgodę właściciela. Wszystko dalej
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
-  nowe zastępstwo po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
+  T-113 po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
   **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-103);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu

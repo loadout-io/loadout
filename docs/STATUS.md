@@ -4,6 +4,30 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 20:30 — oracle `before` naprawiony; T-113 ma zgodę i nowy kontrakt
+
+Właściciel jawnie autoryzował osobną naprawę harnessu oraz T-113. Commit **`5604c3d`**
+zamyka wadę z biegu T-112: `NOT_A_REAL_RED` rozpoznaje każdą numerowaną diagnostykę
+kompilatora Rusta oraz końcowe `could not compile`, więc E0308 we wspólnym targetcie nie może
+już udawać czerwonego zachowania. Automatyczny selftest pyta funkcję werdyktu, nie tekst regexu:
+reprezentatywny E0308 musi dostać „did not RUN”, a runtime'owa panika testu nadal certyfikuje
+uczciwe `before`. Nie rozluźniono kryterium ani żadnego istniejącego wyjątku.
+
+Składnia obu plików przeszła, nowy selftest przeszedł dwukrotnie, a pełne pasy Rust i Web były
+zielone. Końcowy `harness/guards.sh` na czystym commicie ujawnił osobny, istniejący stan własnej
+księgi: **11 strażników zadziałało, 1 (`quick-scope`) chybił, 4 odkryte checki nie mają funkcji
+guard** (`before-spec-owns`, `quick-invoke-args`, `quick-tests-listed`, `quick-wired`). Tego
+wyniku nie zamaskowano ani nie dopisano wyjątków do commita naprawiającego `before`; wymaga
+osobnego rozstrzygnięcia harnessu.
+
+Nowe **T-113** jest pełnym zastępstwem T-99/T-112 z sześcioma globalnie unikalnymi ścieżkami
+speców. Zachowuje poprawne refy kopii, żywy adres załącznika, końcowe `outcome:`, sygnał pustej
+odpowiedzi i jednoznacznego sędziego. Dodane kryterium liczy planowane klucze `fresh-copy`
+tym samym kodowaniem co Git i wymaga widocznej odmowy kolizji `s_2~2` z literalnym `s_2-2`
+przez prawdziwy Start — przed katalogiem biegu, drzewem roboczym i pierwszym procesem. Hashowanie
+lub losowe przemianowanie nie jest dopuszczonym obejściem. T-99/T-112 pozostają tylko dowodem;
+T-100 czeka na wylądowanie T-113.
+
 ## 2026-08-24, 19:04 — T-112 ZAMKNIĘTE bez lądowania; zielona bramka była nieważna
 
 **T-112 · formalnie zielone 21/21, lecz ZAMKNIĘTE / NIEWYLĄDOWANE · 1 h 09 min 09 s ·
