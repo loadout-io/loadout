@@ -1814,6 +1814,12 @@ struct RouteDecision {
     evidence: RouteEvidence,
 }
 
+/// Wybrana droga razem z trwałym paragonem, jeżeli wybór naprawdę zawęził graf.
+struct ChosenRoute {
+    route: scheduler::Route,
+    decision: Option<RouteDecision>,
+}
+
 /// Jedna pętla tego biegu: kto orzeka i ile razy wolno próbować.
 struct Loop {
     /// Klucz kafelka kroku, z którego wychodzi powrót. To on pisze werdykt.
@@ -5725,7 +5731,14 @@ impl Live {
         ))
     }
 
-    fn route_after(&self, id: StepId) -> scheduler::Route {
+    /// Liczy drogę po kroku bez zapisu do księgi ani listy decyzji.
+    ///
+    /// 2026-08-25 (T-101) — TEN RACHUNEK MUSI DAĆ SIĘ ZROBIĆ PRZED ZIELONĄ LINIĄ KROKU.
+    /// Gdy odmowa powstawała dopiero w callbacku planisty, krok zdążył już ogłosić sukces,
+    /// a planista po cichu zapisywał porażkę i omijał `whenItFails`. Czysty rachunek pozwala
+    /// [`Live::finish_this_step`] najpierw rozstrzygnąć odmowę wspólną polityką, a prawidłową
+    /// drogę planista zapisuje później dokładnie raz.
+    fn chosen_route_after(&self, id: StepId) -> Result<ChosenRoute, String> {
         let relevant: Vec<&PlannedRoute> = self
             .plan
             .routes
@@ -5733,7 +5746,10 @@ impl Live {
             .filter(|route| route.from == id)
             .collect();
         if relevant.is_empty() {
-            return scheduler::Route::All;
+            return Ok(ChosenRoute {
+                route: scheduler::Route::All,
+                decision: None,
+            });
         }
         let evidence = self
             .route_evidence
@@ -5749,30 +5765,50 @@ impl Live {
             evidence.as_ref(),
         ) {
             Ok(Some(selected)) => selected,
-            Ok(None) => return scheduler::Route::All,
-            Err(error) => return self.refuse_route(id, &error.to_string()),
+            Ok(None) => {
+                return Ok(ChosenRoute {
+                    route: scheduler::Route::All,
+                    decision: None,
+                });
+            }
+            Err(error) => return Err(error.to_string()),
         };
         let Some(route) = relevant
             .into_iter()
             .find(|route| route.link.to == selected.to)
         else {
-            return self.refuse_route(id, "The selected next step is not in this run.");
+            return Err("The selected next step is not in this run.".to_owned());
         };
         let Some(evidence) = evidence else {
-            return self.refuse_route(
-                id,
-                "This step did not produce the value needed to choose what runs next.",
+            return Err(
+                "This step did not produce the value needed to choose what runs next.".to_owned(),
             );
         };
-        self.route_decisions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(RouteDecision {
+        Ok(ChosenRoute {
+            route: scheduler::Route::Only(vec![route.to]),
+            decision: Some(RouteDecision {
                 step_id: self.plan.steps[id].tile_key.clone(),
                 to: self.plan.steps[route.to].tile_key.clone(),
                 evidence,
-            });
-        scheduler::Route::Only(vec![route.to])
+            }),
+        })
+    }
+
+    /// Oddaje planiście wyłącznie prawidłową drogę i zapisuje jej trwały paragon.
+    fn route_after(&self, id: StepId) -> scheduler::Route {
+        let chosen = match self.chosen_route_after(id) {
+            Ok(chosen) => chosen,
+            // Obrona przed zmianą dowodu między końcem kroku a callbackiem planisty. W zwykłym
+            // biegu odmowę przejął wcześniej `finish_this_step`, więc ta gałąź nie jest polityką.
+            Err(message) => return self.refuse_route(id, &message),
+        };
+        if let Some(decision) = chosen.decision {
+            self.route_decisions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(decision);
+        }
+        chosen.route
     }
 
     fn refuse_route(&self, id: StepId, message: &str) -> scheduler::Route {
@@ -6304,26 +6340,20 @@ impl Live {
             self.settle(which, self.plan.steps[id].turn);
             self.update(|book| {
                 let step = &mut book.steps[id];
-                step.status = StepState::Succeeded;
                 step.started_at = Some(at);
-                step.ended_at = Some(at);
                 step.summary = Some(NOTHING_CHANGED.to_owned());
             });
-            self.announce(id, StepState::Succeeded);
-            return StepReport::Succeeded;
+            return self.finish_this_step(id, StepReport::Succeeded).await;
         }
 
         if self.already_settled(id) {
             let at = now_ms();
             self.update(|book| {
                 let step = &mut book.steps[id];
-                step.status = StepState::Succeeded;
                 step.started_at = Some(at);
-                step.ended_at = Some(at);
                 step.summary = Some(NOT_NEEDED.to_owned());
             });
-            self.announce(id, StepState::Succeeded);
-            return StepReport::Succeeded;
+            return self.finish_this_step(id, StepReport::Succeeded).await;
         }
 
         let _slot = match &self.plan.steps[id].job {
@@ -6391,6 +6421,30 @@ impl Live {
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
             Job::Check(job) => self.run_check(id, job, &cancel).await,
             Job::Serve(job) => self.start_and_leave(id, job),
+        };
+
+        self.finish_this_step(id, report).await
+    }
+
+    /// Domyka krok dopiero po rozstrzygnięciu, czy jego udany wynik ma jedną prawidłową drogę.
+    ///
+    /// 2026-08-25 (T-101) — `Route::Blocked` rozstrzygane w schedulerze było za późno: krok
+    /// zdążył zapisać i wysłać `succeeded`, a dopiero potem księga kończyła z `failed`. Tutaj
+    /// odmowa przechodzi przez [`Live::when_this_one_fails`] PRZED jednym zapisem i jedną linią
+    /// stanu, więc polityka kroku oraz to, co widzi człowiek, mają ten sam wynik.
+    async fn finish_this_step(&self, id: StepId, report: StepReport) -> StepReport {
+        let report = if report == StepReport::Succeeded {
+            match self.chosen_route_after(id) {
+                Ok(_) => report,
+                Err(why) => {
+                    // Dokładny istniejący powód wygrywa z dopiskiem polityki, tak samo jak przy
+                    // innych odmowach startu. `when_this_one_fails` wybiera skutek, nie treść.
+                    self.update(|book| book.steps[id].error = Some(why.clone()));
+                    self.when_this_one_fails(id, &why).await
+                }
+            }
+        } else {
+            report
         };
 
         let ended = match report {
