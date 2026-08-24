@@ -39,6 +39,7 @@ const APPROVED_ARGS_OVERRIDE: &str = r#"mcp_servers."loadout.\"approved-t111".ar
 
 const CONFIG_CURATED: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{"notion-private-t111":{"command":"private-notion"},"team.\"private-t111":{"url":"https://private.invalid"},"loadout.\"approved-t111":{"command":"private-shadow"}}},"origins":{}}}"#;
 const CONFIG_EMPTY: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{}},"origins":{}}}"#;
+const CONFIG_NO_MCP_KEY: &str = r#"{"id":%s,"result":{"config":{},"origins":{}}}"#;
 const CONFIG_ERROR: &str =
     r#"{"id":%s,"error":{"code":-32111,"message":"private configuration unavailable"}}"#;
 const CONFIG_MISSING: &str = r#"{"id":%s,"result":{"origins":{}}}"#;
@@ -363,6 +364,43 @@ async fn no_private_servers_leave_app_server_argv_byte_exact() -> Result<(), Box
     assert!(
         calls.iter().any(|call| method(call) == Some("config/read")),
         "the byte-exact control skipped the safety read entirely: {calls:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absent_private_server_key_keeps_the_approved_connection_enabled()
+-> Result<(), Box<dyn Error>> {
+    let fixture = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir()?;
+    let configuration = runtime::for_driver(
+        workspace.path(),
+        "codex",
+        &[approved_connection()],
+        |name| (name == ENVIRONMENT_NAME).then(|| OsString::from(ENVIRONMENT_SECRET)),
+    )?;
+    let binary = executable(fixture.path(), CONFIG_NO_MCP_KEY)?;
+    let driver = CodexDriver::with_binary(binary).with_configuration(configuration);
+    let (events, _inbox) = mpsc::channel(CHANNEL);
+    let mut handle: Box<dyn AgentHandle> = timeout(
+        LIMIT,
+        driver.start_conversation(spec(workspace.path()), ValidatedImages::default(), events),
+    )
+    .await??;
+    let proof = timeout(LIMIT, handle.cancel()).await?;
+    assert!(matches!(proof, GroupProof::Dead { .. }));
+
+    let calls = calls(fixture.path())?;
+    let config = calls
+        .iter()
+        .find(|call| method(call) == Some("thread/start"))
+        .and_then(|call| call.pointer("/params/config"))
+        .and_then(Value::as_object)
+        .ok_or("config without an MCP key was refused before thread/start")?;
+    assert_eq!(
+        config,
+        &serde_json::Map::from_iter([(APPROVED_OVERLAY.to_owned(), Value::Bool(true))]),
+        "an absent private-server key must produce only the approved Connection overlay"
     );
     Ok(())
 }

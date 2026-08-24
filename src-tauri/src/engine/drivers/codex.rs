@@ -1007,10 +1007,13 @@ fn curated_mcp_overrides(
         .get("config")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("The Codex App Server returned no effective configuration."))?;
-    let private_servers = config
-        .get("mcp_servers")
-        .and_then(Value::as_object)
-        .ok_or_else(|| anyhow!("The Codex App Server returned an invalid MCP server list."))?;
+    let empty_private_servers = serde_json::Map::new();
+    let private_servers = match config.get("mcp_servers") {
+        None | Some(Value::Null) => &empty_private_servers,
+        Some(value) => value
+            .as_object()
+            .ok_or_else(|| anyhow!("The Codex App Server returned an invalid MCP server list."))?,
+    };
 
     let approved = approved_servers
         .iter()
