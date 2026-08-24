@@ -25,6 +25,8 @@ const CHANNEL: usize = 32;
 const CALLS: &str = "stdin.jsonl";
 const PRIVATE_PLAIN: &str = "notion-private-t111";
 const PRIVATE_TRICKY: &str = r#"team."private-t111"#;
+const PRIVATE_CONTROL: &str = "control-\u{0001}-t111";
+const PRIVATE_CONTROL_ESCAPED: &str = r"control-\u0001-t111";
 const APPROVED: &str = r#"loadout."approved-t111"#;
 const APPROVED_COMMAND: &str = "approved-command-t111";
 const ENVIRONMENT_NAME: &str = "T111_CONNECTION_ENV";
@@ -32,12 +34,13 @@ const ENVIRONMENT_SECRET: &str = "PRIVATE_CONNECTION_VALUE_T111";
 
 const PLAIN_OVERLAY: &str = "mcp_servers.notion-private-t111.enabled";
 const TRICKY_OVERLAY: &str = r#"mcp_servers."team.\"private-t111".enabled"#;
+const CONTROL_OVERLAY: &str = r#"mcp_servers."control-\u0001-t111".enabled"#;
 const APPROVED_OVERLAY: &str = r#"mcp_servers."loadout.\"approved-t111".enabled"#;
 const APPROVED_COMMAND_OVERRIDE: &str =
     r#"mcp_servers."loadout.\"approved-t111".command="approved-command-t111""#;
 const APPROVED_ARGS_OVERRIDE: &str = r#"mcp_servers."loadout.\"approved-t111".args=["--stdio"]"#;
 
-const CONFIG_CURATED: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{"notion-private-t111":{"command":"private-notion"},"team.\"private-t111":{"url":"https://private.invalid"},"loadout.\"approved-t111":{"command":"private-shadow"}}},"origins":{}}}"#;
+const CONFIG_CURATED: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{"notion-private-t111":{"command":"private-notion"},"team.\"private-t111":{"url":"https://private.invalid"},"control-\u0001-t111":{"url":"https://control.invalid"},"loadout.\"approved-t111":{"command":"private-shadow"}}},"origins":{}}}"#;
 const CONFIG_EMPTY: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{}},"origins":{}}}"#;
 const CONFIG_NO_MCP_KEY: &str = r#"{"id":%s,"result":{"config":{},"origins":{}}}"#;
 const CONFIG_ERROR: &str =
@@ -248,6 +251,7 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
     let mut expected = serde_json::Map::new();
     expected.insert(PLAIN_OVERLAY.to_owned(), Value::Bool(false));
     expected.insert(TRICKY_OVERLAY.to_owned(), Value::Bool(false));
+    expected.insert(CONTROL_OVERLAY.to_owned(), Value::Bool(false));
     expected.insert(APPROVED_OVERLAY.to_owned(), Value::Bool(true));
     assert_eq!(
         config, &expected,
@@ -282,10 +286,16 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
         TRICKY_OVERLAY.contains(&escaped_private_tricky),
         "the escaped private id must be the spelling exercised by the tricky overlay"
     );
+    assert!(
+        CONTROL_OVERLAY.contains(PRIVATE_CONTROL_ESCAPED),
+        "the escaped control id must be the spelling exercised by the control overlay"
+    );
     for private in [
         PRIVATE_PLAIN,
         PRIVATE_TRICKY,
         escaped_private_tricky.as_str(),
+        PRIVATE_CONTROL,
+        PRIVATE_CONTROL_ESCAPED,
         ENVIRONMENT_SECRET,
     ] {
         assert!(
@@ -419,6 +429,55 @@ async fn absent_private_server_key_keeps_the_approved_connection_enabled()
         config,
         &serde_json::Map::from_iter([(APPROVED_OVERLAY.to_owned(), Value::Bool(true))]),
         "an absent private-server key must produce only the approved Connection overlay"
+    );
+    Ok(())
+}
+
+#[test]
+fn connection_control_characters_are_escaped_on_both_codex_configuration_paths()
+-> Result<(), Box<dyn Error>> {
+    const NAME: &str = "control\nserver";
+    const URL: &str = "https://tools.invalid/\u{0001}\t";
+    const TOKEN_ENVIRONMENT: &str = "TOKEN\r\u{007f}NAME";
+    const TOKEN_VALUE: &str = "resolved-control-value-t111";
+
+    let mut connection = Connection::imported(
+        "control-t111".to_owned(),
+        NAME.to_owned(),
+        Transport::Http {
+            url: URL.to_owned(),
+            token_environment: Some(TOKEN_ENVIRONMENT.to_owned()),
+        },
+        PathBuf::from("control-connection-t111.json"),
+        "control-source-hash-t111".to_owned(),
+    );
+    connection.enabled = true;
+
+    let generated = runtime::for_connections(&[connection.clone()]);
+    assert_eq!(
+        generated.codex,
+        "[mcp_servers.\"control\\nserver\"]\nurl = \"https://tools.invalid/\\u0001\\t\"\nbearer_token_env_var = \"TOKEN\\r\\u007FNAME\"\n\n",
+        "the generated Codex document carried raw TOML control characters"
+    );
+
+    let workspace = tempfile::tempdir()?;
+    let configuration = runtime::for_driver(workspace.path(), "codex", &[connection], |name| {
+        (name == TOKEN_ENVIRONMENT).then(|| OsString::from(TOKEN_VALUE))
+    })?;
+    assert_eq!(
+        configuration.arguments,
+        [
+            "-c",
+            "mcp_servers.\"control\\nserver\".url=\"https://tools.invalid/\\u0001\\t\"",
+            "-c",
+            "mcp_servers.\"control\\nserver\".bearer_token_env_var=\"TOKEN\\r\\u007FNAME\"",
+        ],
+        "the per-process Codex overrides dropped or corrupted a control-bearing pair"
+    );
+    assert_eq!(
+        configuration.environment,
+        [(TOKEN_ENVIRONMENT.to_owned(), OsString::from(TOKEN_VALUE))],
+        "escaping the public env name must not drop its resolved value"
     );
     Ok(())
 }

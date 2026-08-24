@@ -238,7 +238,28 @@ fn codex_overrides(connections: &[Connection]) -> Vec<String> {
 }
 
 fn quoted(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut out = String::with_capacity(value.len().saturating_add(2));
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            // TOML basic strings reject raw control bytes. Keeping every key/value and escaping
+            // the uncommon controls prevents a private server from staying enabled merely
+            // because its identifier could not be represented. (2026-08-24, T-111)
+            other if other.is_control() => {
+                let _ = write!(out, "\\u{:04X}", u32::from(other));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn array(values: &[String]) -> String {
