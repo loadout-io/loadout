@@ -167,7 +167,8 @@ impl Status {
 /// werdyktu i werdykt odmowny prowadzą do tego samego — jeszcze jedna runda albo koniec biegu.
 /// Trzeci wariant zmuszałby każdego wołającego do wybrania, co z nim zrobić, a jedyna bezpieczna
 /// odpowiedź jest tą, którą daje `Fail`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     /// Sędzia napisał, że robota przeszła. Pętla się domyka.
     Pass,

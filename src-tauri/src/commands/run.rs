@@ -5360,6 +5360,9 @@ struct Book {
 struct StepRun {
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
+    /// Co sędzia powiedział o tej rundzie. `None` dla kroków poza sędzią i rund, które nie
+    /// ruszyły; stan kroku pozostaje osobnym faktem.
+    round_outcome: Option<handoff::Verdict>,
     /// Kiedy krok ruszył.
     started_at: Option<i64>,
     /// Kiedy się skończył.
@@ -5546,6 +5549,7 @@ impl Live {
             .iter()
             .map(|_| StepRun {
                 status: StepState::Pending,
+                round_outcome: None,
                 started_at: None,
                 ended_at: None,
                 pid: None,
@@ -5785,7 +5789,12 @@ impl Live {
     fn verdict_after(&self, id: StepId, said: &str) -> Option<&'static str> {
         let step = &self.plan.steps[id];
         let (which, the_loop) = self.judging(step)?;
-        if crate::memory::handoff::verdict_in(said) == crate::memory::handoff::Verdict::Pass {
+        let verdict = crate::memory::handoff::verdict_in(said);
+        // 2026-08-25 (T-100) — zapisujemy to samo rozstrzygnięcie, którym sterujemy pętlą,
+        // zanim którakolwiek gałąź wróci. Osobne parsowanie dla `run.json` mogłoby pokazać
+        // odmowę i jednocześnie domknąć rundę albo odwrotnie (niezmiennik 13).
+        self.update(|book| book.steps[id].round_outcome = Some(verdict));
+        if verdict == crate::memory::handoff::Verdict::Pass {
             self.settle(which, step.turn);
             return None;
         }
@@ -6172,6 +6181,7 @@ impl Live {
                 },
                 depends_on: &planned.depends_on,
                 status: run.status,
+                round_outcome: run.round_outcome,
                 // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
                 // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
                 attempt: 0,
@@ -8653,6 +8663,10 @@ struct StepEntry<'a> {
     kind: &'static str,
     depends_on: &'a [String],
     status: StepState,
+    /// Rozstrzygnięcie sędziego tej rundy. Brak klucza znaczy, że ten węzeł nie był sędzią albo
+    /// nie ruszył; stare pliki bez pola zachowują właśnie tę wartość domyślną.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    round_outcome: Option<handoff::Verdict>,
     attempt: u32,
     agent_session_id: Option<String>,
     pid: Option<i32>,
