@@ -4963,9 +4963,20 @@ fn what_the_run_before_left(plan: &Plan) -> Vec<Vec<Carried>> {
                     .join(name);
                 // Wskazujemy WYŁĄCZNIE to, co naprawdę leży w tym katalogu: wiersz indeksu ze
                 // ścieżką bez pliku po drugiej stronie przewraca `prompt_for` i zabiera krok.
-                path.is_file().then(|| Carried {
+                if !path.is_file() {
+                    return None;
+                }
+                // Czytamy KOPIĘ z nowego biegu, nie rekord źródłowy: jego względny wskaźnik
+                // rozwiązuje się wtedy do `attachments/` obok tej kopii i nie może zachować
+                // adresu starego biegu (T-114, 2026-08-24).
+                let attachment = handoff::read_handoff(&path)
+                    .ok()
+                    .and_then(|copied| copied.attachment())
+                    .filter(|full| full.is_file());
+                Some(Carried {
                     from: had.meta.from.clone(),
                     path,
+                    attachment,
                 })
             })
             .collect();
@@ -5270,9 +5281,10 @@ struct Live {
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
-    /// Gdzie leży przekazanie każdego kroku — po jednym wpisie na krok, w kolejności z pliku
-    /// workflow. `None` znaczy „ten krok jeszcze nic nie oddał": kafelek kontrolny nie oddaje
-    /// nigdy, a krok anulowany albo padnięty nie ma czego przekazać.
+    /// Gdzie leży przekazanie każdego kroku i jego pełna kopia, jeśli powstała — po jednym
+    /// wpisie na krok, w kolejności z pliku workflow. `None` znaczy „ten krok jeszcze nic nie
+    /// oddał": kafelek kontrolny nie oddaje nigdy, a krok anulowany albo padnięty nie ma czego
+    /// przekazać.
     ///
     /// Zamek osobny od [`Live::book`] z rozmysłem: to nie jest stan, który jedzie do `run.json`.
     /// Ścieżka przekazania **jest** w plikach — nazwa pliku otwiera się numerem kroku — więc
@@ -5281,7 +5293,7 @@ struct Live {
     ///
     /// **Nie przechodzi przez `await`** (niezmiennik 8): oba wywołania, które go biorą
     /// ([`Live::filed`], [`Live::handed_before`]), oddają go w tym samym wyrażeniu.
-    handoffs: Mutex<Vec<Option<PathBuf>>>,
+    handoffs: Mutex<Vec<Option<handoff::Written>>>,
     /// Kroki, które NIE przeszły, a mimo to przepuściły robotę dalej — po jednej pozycji na krok.
     ///
     /// 2026-08-23 (T-87) — jedyny czytelnik jest jeden: etykieta wiersza w indeksie następnego
@@ -5413,6 +5425,11 @@ struct Handed {
     /// `work/<krok>`, więc ścieżka względna katalogu biegu nie rozwiązałaby się z miejsca,
     /// w którym agent naprawdę stoi.
     path: PathBuf,
+    /// Pełna kopia tej samej odpowiedzi, kiedy ciało przekazania zostało ucięte.
+    ///
+    /// Nie trafia do trwałego pliku: prompt składa bezwzględny adres z kopii bieżącego biegu,
+    /// więc przeniesienie lub wznowienie nie zostawia w nim starego katalogu.
+    attachment: Option<PathBuf>,
     /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
     /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
     what: WhatItIs,
@@ -5474,6 +5491,8 @@ struct Carried {
     /// Kopia w katalogu **tego** biegu. Skończony bieg jest historią i nie ma prawa się zmienić
     /// dlatego, że ktoś go wznowił (niezmiennik 4), więc prompt nigdy nie wskazuje w jego katalog.
     path: PathBuf,
+    /// Pełna kopia pod katalogiem bieżącego biegu, nigdy adresem biegu źródłowego.
+    attachment: Option<PathBuf>,
 }
 
 /// Co krok dostaje na wejściu: prompt, ślad po tym, co do niego wstrzyknięto, i katalogi,
@@ -7508,12 +7527,22 @@ impl Live {
             // ETYKIETA STOI W TYM SAMYM WIERSZU, CO ŚCIEŻKA, i to jest wymóg, nie układ: odnośnik
             // i to, czym on jest, czytane z dwóch osobnych list są dwiema listami do zestawienia
             // w głowie — a agent, który tego nie zrobi, otwiera wszystkie pliki po kolei.
+            let mut label = hand.what.said();
+            if let Some(full) = &hand.attachment {
+                let metadata = fs::symlink_metadata(full)?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    anyhow::bail!("a full handoff context source is not a real regular file");
+                }
+                // Dopisek jest chwilową pomocą promptu, nie częścią przenośnego przekazania.
+                // Stoi wewnątrz tej samej etykiety relacji, żeby zwykły następnik i wznowienie
+                // zachowały swoje prawdziwe, różne pochodzenie (T-114, 2026-08-24).
+                let _ = write!(label, "; full text: {}", full.display());
+            }
             let _ = write!(
                 told.prompt,
-                "\n- {}: {} ({})",
+                "\n- {}: {} ({label})",
                 hand.from,
-                hand.path.display(),
-                hand.what.said()
+                hand.path.display()
             );
             told.reads.push(self.filed_as(&hand.path));
             let metadata = fs::symlink_metadata(&hand.path)?;
@@ -7616,7 +7645,7 @@ impl Live {
         // Migawka pod jednym zamkiem, bez ani jednego `await` w środku (niezmiennik 8). Kopia
         // całego wektora, a nie zamek trzymany przez resztę funkcji: `what_that_loop_produced`
         // pyta o te same przekazania, a `std::sync::Mutex` nie jest wznawialny.
-        let filed: Vec<Option<PathBuf>> = self
+        let filed: Vec<Option<handoff::Written>> = self
             .handoffs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -7652,13 +7681,16 @@ impl Live {
             .map(|one| Handed {
                 from: one.from.clone(),
                 path: one.path.clone(),
+                attachment: one.attachment.clone(),
                 what: WhatItIs::FromAnEarlierRun,
             })
             .collect();
         index.extend(wanted.into_iter().filter_map(|step| {
+            let written = filed.get(step)?.as_ref()?;
             Some(Handed {
                 from: self.plan.steps.get(step)?.name.clone(),
-                path: filed.get(step).cloned().flatten()?,
+                path: written.path.clone(),
+                attachment: written.attachment.clone(),
                 what: self.what_it_is(id, step, &unpassed),
             })
         }));
@@ -7690,7 +7722,11 @@ impl Live {
     /// CAŁE CIAŁO, nie sam sędzia: pętla oddaje dalej robotę **i** to, co o niej orzeczono.
     /// Sam werdykt bez pracy jest recenzją bez recenzowanego, a sama praca bez werdyktu nie mówi,
     /// czy ktokolwiek ją przyjął.
-    fn what_that_loop_produced(&self, which: usize, filed: &[Option<PathBuf>]) -> Vec<StepId> {
+    fn what_that_loop_produced(
+        &self,
+        which: usize,
+        filed: &[Option<handoff::Written>],
+    ) -> Vec<StepId> {
         let Some(the_loop) = self.plan.loops.get(which) else {
             return Vec::new();
         };
@@ -7727,7 +7763,11 @@ impl Live {
     ///
     /// Dlatego ta funkcja bierze `filed`: „ostatnie WYPRODUKOWANE przekazanie" jest pytaniem
     /// o pliki, a migawkę robi wywołujący, pod jednym zamkiem i bez `await` (niezmiennik 8).
-    fn what_this_try_already_knows(&self, id: StepId, filed: &[Option<PathBuf>]) -> Vec<StepId> {
+    fn what_this_try_already_knows(
+        &self,
+        id: StepId,
+        filed: &[Option<handoff::Written>],
+    ) -> Vec<StepId> {
         let Some(step) = self.plan.steps.get(id) else {
             return Vec::new();
         };
@@ -7830,17 +7870,17 @@ impl Live {
             .to_string()
     }
 
-    /// Odnotowuje, gdzie leży przekazanie tego kroku.
+    /// Odnotowuje, gdzie leży przekazanie tego kroku i jego pełna kopia, jeśli powstała.
     ///
     /// Zamek powstaje i ginie w jednym wyrażeniu, bez `await` w środku (niezmiennik 8).
-    fn filed(&self, id: StepId, path: PathBuf) {
+    fn filed(&self, id: StepId, written: handoff::Written) {
         if let Some(slot) = self
             .handoffs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get_mut(id)
         {
-            *slot = Some(path);
+            *slot = Some(written);
         }
     }
 
@@ -7909,7 +7949,7 @@ impl Live {
                         .collect();
                     step.truncated = written.truncated;
                 });
-                self.filed(id, written.path);
+                self.filed(id, written);
             }
             Err(error) => tracing::error!(
                 run = %self.plan.id,

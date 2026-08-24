@@ -314,6 +314,23 @@ impl Handoff {
     pub fn bytes_mismatch(&self) -> bool {
         self.meta.bytes != self.actual_bytes
     }
+
+    /// Pełna kopia wskazana przez to przekazanie — w katalogu tego samego biegu.
+    ///
+    /// 2026-08-24 (T-114) — trwały wiersz zostaje względny, więc przeniesienie całego katalogu
+    /// biegu nie psuje pliku. Bezwzględny adres składa dopiero czytelnik promptu z bieżącego
+    /// położenia przekazania; nazwa musi zgadzać się z tą, którą nadał [`write_inner`].
+    #[must_use]
+    pub fn attachment(&self) -> Option<PathBuf> {
+        let stem = self.path.file_stem()?.to_str()?;
+        let name = format!("{stem}__full.md");
+        let pointer = format!("Moved to {ATTACHMENTS_DIR}/{name}");
+        let run_dir = self.path.parent()?.parent()?;
+        self.body
+            .lines()
+            .any(|line| line == pointer)
+            .then(|| run_dir.join(ATTACHMENTS_DIR).join(name))
+    }
 }
 
 /// Co powstało na dysku i co z tego wynika dla kroku.
