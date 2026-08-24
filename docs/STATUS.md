@@ -4,6 +4,32 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 00:09 — T-114 w trunku
+
+**T-114 · zielone · 42 min 32 s biegu harnessu · $0,00 widoczne.** Zapisane tury kontraktu
+i implementacji Codeksa zużyły łącznie co najmniej **25,54 mln tokenów wejścia i 68,7 tys.
+wyjścia**; osobna recenzja oraz plan i wykonanie naprawy nie zapisały kompletnego użycia ani
+wyceny. Wymuszone `before` uczciwie certyfikowało sześć runtime-red speców, a końcowa bramka
+gałęzi przeszła dwukrotnie **22/22** (44,11 s i 39,29 s).
+
+Kopie `fresh-copy` mają osobne poprawne refy, a kolizja zakodowanych ogonów jest widocznym
+ostrzeżeniem przy zapisie i Problemem przy Starcie przed katalogiem biegu, worktree i spawnem.
+Prompt podaje otwieralny adres pełnej kopii bieżącego biegu, zachowując prawdziwą etykietę
+zwykłego poprzednika albo pliku przeniesionego z wcześniejszego biegu. Ostatnie `outcome:`
+przeżywa limit dokładnie raz, pusta udana odpowiedź jest nazwana, a tylko źródło strzałki
+powrotnej musi mieć jedną kopię.
+
+Recenzent samego vendora (osobny model gpt-5.5) znalazł rzeczywistą lukę: rozdęta preambuła
+przed `## Answer` nie dzieliła budżetu 8 KB z nagłówkami, wskaźnikami i końcową decyzją.
+Jedyna naprawa dodała mocną regresję wymagającą limitu, wszystkich nagłówków, wskaźnika,
+jednej decyzji i pełnej kopii bajt w bajt (`43c3a4c`). Pierwsza oficjalna bramka miała
+niezależny timeout gotowości starego E2E; `e2e/harness.ts` poza OWNS pozostał nietknięty,
+a dwa następne pełne przebiegi były zielone.
+
+`integrate.sh` wylądował wyłącznie `task-T-114` jako **`50ad074`**. Pełna bramka main przed
+merge'em przeszła **16/16 w 127,84 s**, a po merge'u **16/16 w 160,77 s**. Drzewo jest czyste,
+`TASK.md` nie przeżył lądowania. Następne jest T-100, przez Codex + Codex.
+
 ## 2026-08-24, 21:24 — właściciel zatwierdził T-114 i Codex + Codex
 
 Jawne „ok” właściciela uruchamia wyjątek authoringu dla **T-114**, pełnego zastępstwa
