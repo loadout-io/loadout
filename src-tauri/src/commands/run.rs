@@ -2889,6 +2889,14 @@ fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
     format!("{key}#{turn}")
 }
 
+/// Klucz katalogu pracy z klucza węzła — bez sufiksu rundy, ale z tożsamością kopii.
+///
+/// 2026-08-24 (T-114) — gałąź i źródło wznowienia muszą pytać o tę samą kopię, którą nazywa
+/// katalog `work/`. Obcięcie także `~N` sprowadzałoby wszystkie kopie do gałęzi pierwszej.
+fn work_key_of(node_key: &str) -> &str {
+    node_key.find('#').map_or(node_key, |at| &node_key[..at])
+}
+
 /// Klucz kafelka z klucza węzła — odwrotność [`node_key_for`].
 ///
 /// **Tutaj, a nie u wołającego**, i to jest jedyny powód, dla którego ta funkcja istnieje:
@@ -3812,11 +3820,12 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
         if let Some(cwd) = fresh
             && !made.iter().any(|one| one.cwd == *cwd)
         {
-            let branch = isolate::branch_for(&plan.id, &step.tile_key);
+            let work_key = work_key_of(&step.node_key);
+            let branch = isolate::branch_for(&plan.id, work_key);
             /* SKĄD ODBIJA SIĘ TO DRZEWO. Przy zwykłym biegu z `HEAD`; przy wznowieniu z gałęzi,
              * na której TEN KAFELEK skończył poprzednio. Powód stoi przy [`where_it_left_off`]
              * i jest z pomiaru, nie z symetrii. */
-            let from = where_it_left_off(project, plan.seeded_from.as_deref(), &step.tile_key);
+            let from = where_it_left_off(project, plan.seeded_from.as_deref(), work_key);
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
@@ -3851,7 +3860,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
 /// W tym oknie sterownik jeszcze nie ruszyl, wiec katalog kopii nie niesie pracy agenta.
 /// Worktree gita juz niesie natomiast naniesiony diff czlowieka: jego nie wolno skasowac ani
 /// nakladac drugi raz, dlatego wraca tylko po dowodzie oczekiwanej galezi.
-/// Gałąź, na której ten kafelek skończył w poprzednim biegu — albo `None`.
+/// Gałąź, na której ta kopia kafelka skończyła w poprzednim biegu — albo `None`.
 ///
 /// # Po co to istnieje
 ///
@@ -3862,20 +3871,21 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
 /// samej kopii, orzekał na pustym drzewie i napisał uczciwie: *„Brak katalogu `.claude/tmp/`
 /// z artefaktami zadania — nie mam czego porównywać"*.
 ///
-/// # Po KAFELKU, nie po nazwie gałęzi z tamtego biegu
+/// # Po KLUCZU PRACY, nie po nazwie gałęzi z tamtego biegu
 ///
-/// Bo kafelek jest tym, co przeżywa bieg. `branch_for` składa nazwę z identyfikatora biegu
-/// i klucza kafelka, więc pytanie „gdzie ten kafelek skończył ostatnio" ma dokładnie jedną
-/// odpowiedź, a składamy ją tą samą funkcją, która tamtą nazwę nadała (niezmiennik 13).
+/// Bo klucz pracy jest tym, co rozróżnia równoległe kopie jednego kafelka. `branch_for` składa
+/// nazwę z identyfikatora biegu i tego klucza, więc pytanie „gdzie ta kopia skończyła ostatnio"
+/// ma dokładnie jedną odpowiedź, a składamy ją tą samą funkcją, która tamtą nazwę nadała
+/// (niezmiennik 13).
 ///
 /// `None`, kiedy czegokolwiek brakuje — nie ma poprzedniego biegu, nie da się przeczytać jego
 /// `run.json`, albo gałąź została skasowana. Wtedy drzewo odbija się od `HEAD`, czyli robi to,
 /// co robiło zawsze. Cichy powrót jest tu poprawny: „nie było czego przenieść" i „przeniesiono"
 /// dają to samo drzewo, kiedy poprzedni bieg tego kafelka nie tknął.
-fn where_it_left_off(project: &Path, previous: Option<&Path>, tile: &str) -> Option<String> {
+fn where_it_left_off(project: &Path, previous: Option<&Path>, work_key: &str) -> Option<String> {
     let bytes = fs::read(previous?.join(RUN_FILE)).ok()?;
     let described: Value = serde_json::from_slice(&bytes).ok()?;
-    let branch = isolate::branch_for(described.get("id")?.as_str()?, tile);
+    let branch = isolate::branch_for(described.get("id")?.as_str()?, work_key);
     // Sprawdzamy, ŻE ISTNIEJE, zanim ją podamy: `git worktree add` z nieistniejącym punktem
     // startu odmawia całemu biegowi, a brak gałęzi po skasowanym biegu jest zwykłym stanem.
     isolate::names_a_commit(project, &branch).then_some(branch)
