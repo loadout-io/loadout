@@ -7454,9 +7454,12 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
-        self.ask_for_the_agreed_fields(id, &mut told);
         told.prompt.push_str("\n\n");
         told.prompt.push_str(&Self::how_long_this_step_has(minutes));
+        // Pola specyficzne dla kafelka stoją za wspólnym blokiem odpowiedzi i czasu. Dzięki
+        // temu każdy agent dostaje ten sam kontrakt bajt w bajt, a sędzia dopiero po nim swój
+        // wymagany nośnik wyniku (T-86 AC-1, T-100 AC-1).
+        self.ask_for_the_agreed_fields(id, &mut told);
         self.ask_for_an_outcome(id, &mut told);
         Ok(told)
     }
