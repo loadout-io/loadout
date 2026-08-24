@@ -278,8 +278,12 @@ NOT_A_REAL_RED = re.compile(
     r"bootstrap_check_in|browserType\.launch|Failed to launch|browser could not launch|"
     r"Executable doesn't exist|Target page, context or browser has been closed|"
     r"Host system is missing dependencies|"
-    # Rust: import, którego nie ma, i cargo bez celu. Kompilacja padła = nic nie biegło.
-    r"error\[E0432\]|error\[E0433\]|unresolved import|"
+    # Rust: KAŻDY błąd kompilatora znaczy, że test nie doszedł do runtime. Lista dwóch
+    # kodów importu przepuściła 2026-08-24 E0308 (`mismatched types`) i scertyfikowała
+    # pięć kryteriów T-112 na jednym zepsutym pliku. `could not compile` domyka też
+    # diagnostyki bez numerowanego kodu, np. błędy składni; panika testu nie ma żadnego
+    # z tych podpisów i nadal jest uczciwą czerwienią.
+    r"(?:^|\n)error\[E\d+\]|could not compile|unresolved import|"
     r"no targets specified|error: no bin target|could not find `Cargo.toml`|"
     r"error: no test target|the following required arguments were not provided|"
     # Workspace, który się nie parsuje albo nie ma zadeklarowanej biblioteki: cargo nigdy nie

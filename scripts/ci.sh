@@ -297,6 +297,7 @@ guards_lane() {
   task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
+  rust_compile_failure_never_certifies_before
   hung_check_reads_as_red_not_as_a_slow_gate
   spec_assertions_may_grow_never_shrink
   branch_is_judged_by_the_trunks_oracle
@@ -436,6 +437,51 @@ cargo_lock_reclaims_dead_owner() {
     return 1
   fi
   echo "cargo lock: zamek po martwym właścicielu odzyskany"
+}
+
+# ── kod Rusta, który się nie kompiluje, nie jest dowodem czerwonego zachowania ─────────
+# Incydent 2026-08-24: wspólny cel `it` nie skompilował się przez E0308 w jednym pliku,
+# więc każde z pięciu kryteriów T-112 dostało ten sam niezerowy kod. Oracle znał tylko
+# E0432/E0433 i wszystkie pięć nazwał „red for the right reason”. Mierzymy tu WERDYKT,
+# nie obecność regexu, oraz chronimy drugą stronę granicy: prawdziwa panika testu nadal
+# musi certyfikować brak zachowania.
+rust_compile_failure_never_certifies_before() {
+  python3 - <<'PY' || return 1
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("gate", "harness/gate.py")
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+
+compile_failure = {
+    "kind": "acceptance",
+    "rc": 101,
+    "rc_raw": 101,
+    "reason": "error[E0308]: mismatched types",
+    "full": """error[E0308]: mismatched types
+  --> tests/it/a_contract.rs:12:9
+error: could not compile `loadout` (test \"it\") due to 1 previous error
+""",
+}
+ok, note = gate.verdict("before", compile_failure)
+if ok or "did not RUN" not in note:
+    raise SystemExit("E0308 compilation failure certified the before oracle")
+
+runtime_failure = {
+    "kind": "acceptance",
+    "rc": 101,
+    "rc_raw": 101,
+    "reason": "thread 'the_test' panicked at assertion failed",
+    "full": """running 1 test
+thread 'the_test' panicked at assertion failed
+test result: FAILED. 0 passed; 1 failed; 0 ignored
+""",
+}
+ok, note = gate.verdict("before", runtime_failure)
+if not ok or note:
+    raise SystemExit("runtime assertion failure stopped certifying the before oracle")
+PY
+  echo "gate: błąd kompilacji nie certyfikuje before, panika testu nadal tak"
 }
 
 # ── zawieszone kryterium ma się czytać jako CZERWONE, nie jako wolna bramka ───

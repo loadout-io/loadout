@@ -61,6 +61,8 @@ kryteria przy szerokości ≤ 2), pilnuje limitu na SPRAWDZENIE (`start_new_sess
 SIGTERM→SIGKILL, jeden wydrukowany retry), egzekwuje regułę dowodu (`DEFAULT_EXPECT`) i
 `NOT_A_REAL_RED`, w `before` ODWRACA wyłącznie kryteria, i zapisuje paragon.
 `CHECK_TIMEOUT_OVERRIDE` (zimne cargo) mieszka tutaj, w oracle'u — bieg nie podnosi sobie limitu.
+Każda diagnostyka kompilatora Rusta jest `NOT_A_REAL_RED`: test musi dojść do runtime i paść
+na zachowaniu, nie zatrzymać wspólny cel integracyjny przed pierwszą asercją.
 
 **`harness/snapshot.sh`** — `git stash create` → `refs/snapshots/<epoch>`, bufor pierścieniowy 40.
 Nie dotyka drzewa, indeksu ani stasha. Odzysk: `git checkout refs/snapshots/<ts> -- <plik>`.
