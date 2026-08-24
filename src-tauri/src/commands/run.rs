@@ -2863,10 +2863,7 @@ struct Setup<'a> {
 /// sufiksu: plik, w którym nikt nie prosił o kopie, daje dokładnie te ścieżki, które dawał
 /// przedtem.
 fn work_key_for(tile_key: &str, copy: u8) -> String {
-    if copy == 0 {
-        return tile_key.to_owned();
-    }
-    format!("{tile_key}~{}", copy + 1)
+    crate::workflow::check::work_key_for(tile_key, copy)
 }
 
 /// Klucz węzła: klucz katalogu roboczego, a dla dalszych rund pętli ten sam z numerem rundy.

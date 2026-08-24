@@ -178,6 +178,27 @@ const MOST_COPIES: u8 = 8;
 /// powodu stoi w schemacie, a nie w głowie użytkownika.
 const MOST_TURNS: u8 = 10;
 
+/// Klucz katalogu pracy jednej kopii kroku.
+///
+/// 2026-08-24 (T-114) — planista biegu i walidator kolizji muszą kodować kopię identycznie.
+/// Jedna funkcja zapobiega sytuacji, w której Start rezerwuje inny ref niż ten sprawdzony tutaj.
+#[must_use]
+pub(crate) fn work_key_for(tile_key: &str, copy: u8) -> String {
+    if copy == 0 {
+        return tile_key.to_owned();
+    }
+    format!("{tile_key}~{}", copy + 1)
+}
+
+/// Ogon refa Gita dla klucza pracy.
+///
+/// `~` rozróżnia kopie w katalogu biegu, ale Git nie dopuszcza go w nazwie refa. Zamiana jest
+/// jawna i wspólna dla walidatora oraz adaptera Gita, żeby oba odpowiadały na to samo pytanie.
+#[must_use]
+pub(crate) fn work_branch_tail(work_key: &str) -> String {
+    work_key.replace('~', "-")
+}
+
 /// Waga uwagi. `Problem` blokuje Run i zapis, `Warning` nie blokuje niczego.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +325,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_id_two_steps(&steps, &mut notes);
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
+    colliding_work_branches(&steps, when, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
     loops_that_cross(&workflow.links, &steps, &position, &forward, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
@@ -821,6 +843,42 @@ fn copies_out_of_range(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                     step.name, step.copies
                 ),
             ));
+        }
+    }
+}
+
+/// Dwie planowane własne kopie, które po kodowaniu wybrałyby ten sam ref Gita.
+///
+/// 2026-08-24 (T-114) — katalogi `s_2~2` i `s_2-2` są różne, ale oba kodują się jako ref
+/// `s_2-2`. Przy zapisie to ostrzeżenie, bo luźny szkic ma pozostać zapisywalny; przy Starcie
+/// ten sam fakt jest problemem, zanim powstanie katalog biegu albo pierwszy proces.
+fn colliding_work_branches(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note>) {
+    let mut reserved: BTreeMap<String, usize> = BTreeMap::new();
+    let mut reported: BTreeSet<(usize, usize, String)> = BTreeSet::new();
+    for (index, step) in steps.iter().enumerate() {
+        if !step.folder.is_some_and(Folder::is_own_copy) {
+            continue;
+        }
+        for copy in 0..step.copies {
+            let branch = work_branch_tail(&work_key_for(step.id, copy));
+            let Some(&other) = reserved.get(&branch) else {
+                reserved.insert(branch, index);
+                continue;
+            };
+            if other == index || !reported.insert((other, index, branch.clone())) {
+                continue;
+            }
+            let Some(first) = steps.get(other) else {
+                continue;
+            };
+            let message = format!(
+                "\"{}\" and \"{}\" would use the same work branch \"{branch}\". Rename one of them before starting.",
+                first.name, step.name
+            );
+            notes.push(match when {
+                When::Saving => warning(Some(first.id), message),
+                When::Running => problem(Some(first.id), message),
+            });
         }
     }
 }

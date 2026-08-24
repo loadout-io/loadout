@@ -487,7 +487,10 @@ pub fn drop_branch(project: &Path, branch: &str) -> Result<(), String> {
 /// a pierwsza kopia `s_2` zostaje co do bajta bez zmian.
 #[must_use]
 pub fn branch_for(run: &str, work_key: &str) -> String {
-    format!("loadout/{run}/{}", work_key.replace('~', "-"))
+    format!(
+        "loadout/{run}/{}",
+        crate::workflow::check::work_branch_tail(work_key)
+    )
 }
 
 /// Wołanie gita z tożsamością podaną na miejscu.
