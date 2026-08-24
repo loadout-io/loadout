@@ -81,6 +81,9 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       printf '{"id":%s,"result":{}}\n' "${id:-1}"
       ;;
+    *'"method":"config/read"'*)
+      printf '{"id":%s,"result":{"config":{"mcp_servers":{}},"origins":{}}}\n' "${id:-2}"
+      ;;
     *'"method":"thread/start"'*)
       printf '{"id":%s,"result":{"thread":{"id":"thread-image","ephemeral":true,"path":null}}}\n' "${id:-2}"
       ;;
