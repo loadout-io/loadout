@@ -1045,8 +1045,9 @@ async fn the_planned_run(
      * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
     what_the_steps_wrote_down(deps, &live.plan);
     /* 2026-08-24, przy scalaniu T-92 z T-94: STANY POPRAWIONE, nie surowe z planisty.
-     * `name_what_the_budget_stopped` wyżej przepisuje krok zatrzymany sufitem z `cancelled`
-     * na `skipped`, a refleksja pyta o bieg tak, jak człowiek przeczyta go później — więc
+     * `name_what_the_budget_stopped` wyżej przepisuje budżetową porażkę rozstrzygniętą przez
+     * `whenItFails` na `skipped`, a refleksja pyta o bieg tak, jak człowiek przeczyta go
+     * później — więc
      * ma dostać to samo, co księga, nie to, co planista zameldował przed tłumaczeniem.
      * Git scalił oba zadania BEZ konfliktu i dopiero kompilator pokazał, że jedno przenosi
      * wektor, który drugie pożycza. */
@@ -5281,12 +5282,14 @@ struct Live {
     /// podaje (Codex), liczy się jako zero — i to jest zapisane w zdaniu pomocy przy kontrolce,
     /// bo inaczej sufit byłby obietnicą, której produkt nie może dotrzymać.
     budget_usd: Option<f64>,
-    /// Kroki, których nie ruszyliśmy, bo sufit był już przekroczony — po jednym bicie na krok.
+    /// Kroki, których nie ruszyliśmy, bo sufit był już przekroczony — dokładne zdanie na krok.
     ///
+    /// Zdanie, nie bit, bo równoległy krok może dopisać koszt po pierwszej odmowie. Potomek ma
+    /// dostać ten sam powód, który dostał zatrzymany rodzic, a nie późniejszy rachunek końcowy.
     /// Osobne pole, a nie odczyt z księgi, bo stany końcowe kroków wpisuje na końcu planista
     /// ([`Live::close_the_book`]) i przykryłby to, co zapisał tu bieg. `std::sync::Mutex`
     /// i nigdy trzymany przez `await` (niezmiennik 8).
-    stopped_by_the_budget: Mutex<Vec<bool>>,
+    stopped_by_the_budget: Mutex<Vec<Option<String>>>,
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
@@ -5573,7 +5576,7 @@ impl Live {
                 truncated: false,
             })
             .collect();
-        let stopped_by_the_budget = Mutex::new(vec![false; plan.steps.len()]);
+        let stopped_by_the_budget = Mutex::new(vec![None; plan.steps.len()]);
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         let did_not_pass = Mutex::new(vec![false; plan.steps.len()]);
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
@@ -6373,8 +6376,8 @@ impl Live {
                  * WŁAŚNIE wtedy, kiedy ten krok czeka: kroki, które trzymały miejsca, kończą
                  * tury i dopisują swoje ceny do księgi. Samo pierwsze pytanie przepuszczałoby
                  * każdy krok, który stanął w kolejce, zanim ktokolwiek zdążył zapłacić. */
-                if let Some(said) = self.the_budget_is_spent() {
-                    return self.the_budget_stops_this_one(id, said);
+                if let Some(said) = self.the_budget_is_spent(id) {
+                    return self.the_budget_stops_this_one(id, said).await;
                 }
                 let Some(slot) = self
                     .a_slot_for_this_step(&cancel, weight_of(&self.plan.steps[id].job))
@@ -6385,11 +6388,11 @@ impl Live {
                     // chwili startu, bo startu nie było, a stan końcowy dopisze planista.
                     return StepReport::Cancelled;
                 };
-                if let Some(said) = self.the_budget_is_spent() {
+                if let Some(said) = self.the_budget_is_spent(id) {
                     // Miejsce oddajemy OD RAZU, nie na końcu kroku: krok, który nie ruszy,
                     // nie ma prawa trzymać miejsca potrzebnego komuś, kto jeszcze może biec.
                     drop(slot);
-                    return self.the_budget_stops_this_one(id, said);
+                    return self.the_budget_stops_this_one(id, said).await;
                 }
                 Some(slot)
             }
@@ -6509,7 +6512,10 @@ impl Live {
     ///
     /// Nigdy poniżej zera: kwota ujemna oddana vendorowi jest albo błędem składni przy starcie,
     /// albo — gorzej — argumentem, który znaczy wtedy co innego.
-    fn what_is_left_of_the_budget(&self) -> Option<f64> {
+    fn what_is_left_of_the_budget(&self, id: StepId) -> Option<f64> {
+        if self.carries_on_past_the_budget(id) {
+            return None;
+        }
         self.budget_usd
             .map(|budget| (budget - self.spent_so_far()).max(0.0))
     }
@@ -6519,7 +6525,10 @@ impl Live {
     /// Zdanie powstaje TUTAJ, razem z decyzją, i niesie obie liczby: bez nich pominięty krok jest
     /// nie do odróżnienia od kroku pominiętego przez cudzą porażkę, a bieg kończący się rzędem
     /// pustych wierszy jest tym ślepym punktem, dla którego to repo powstało.
-    fn the_budget_is_spent(&self) -> Option<String> {
+    fn the_budget_is_spent(&self, id: StepId) -> Option<String> {
+        if self.carries_on_past_the_budget(id) {
+            return None;
+        }
         let budget = self.budget_usd?;
         let spent = self.spent_so_far();
         (spent >= budget).then(|| {
@@ -6530,27 +6539,74 @@ impl Live {
         })
     }
 
+    /// Czy ten krok stoi w stożku, któremu człowiek jawnie kazał jechać mimo sufitu.
+    ///
+    /// 2026-08-25 (T-101) — WYJĄTEK JEST STOŻKIEM, NIE WYŁĄCZNIKIEM CAŁEGO BIEGU. Sam fakt
+    /// przekroczenia dalej zatrzymuje nowe kroki (T-94). Dopiero budżetowa odmowa, która przeszła
+    /// przez `when_this_one_fails` i zapaliła `did_not_pass`, oznacza jawne `carry-on` albo
+    /// odpowiedź człowieka na `ask-me`; wtedy kroki po NIEJ mają naprawdę wystartować. Gałąź
+    /// równoległa, która nie leży pod tą decyzją, nadal pyta o sufit jak wcześniej.
+    ///
+    /// Liczone z dwóch istniejących faktów, bez trzeciej flagi, która mogłaby się z nimi rozjechać:
+    /// dokładne zdanie w `stopped_by_the_budget` mówi, że korzeń zatrzymał sufit, a `did_not_pass`
+    /// mówi, że wspólna polityka puściła jego pracę dalej.
+    fn carries_on_past_the_budget(&self, id: StepId) -> bool {
+        let stopped: Vec<bool> = self
+            .stopped_by_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(Option::is_some)
+            .collect();
+        let carried = self
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let mut seen = vec![false; self.plan.steps.len()];
+        let mut stack: Vec<StepId> = stopped
+            .iter()
+            .zip(carried.iter())
+            .enumerate()
+            .filter_map(|(root, (&by_budget, &carried_on))| {
+                (by_budget && carried_on).then_some(root)
+            })
+            .collect();
+        while let Some(from) = stack.pop() {
+            for &(parent, child) in &self.plan.arrows {
+                if parent != from || std::mem::replace(&mut seen[child], true) {
+                    continue;
+                }
+                if child == id {
+                    return true;
+                }
+                stack.push(child);
+            }
+        }
+        false
+    }
+
     /// Krok, którego nie ruszamy, bo pieniądze się skończyły.
     ///
-    /// `StepReport::Cancelled`, a nie `Failed`: nic się nie zepsuło i nikt nie zawiódł — bieg
-    /// doszedł do postawionej mu granicy. Stan `skipped` i to zdanie wpisuje księdze
-    /// [`Live::close_the_book`], bo dopiero tam znane są stany końcowe od planisty.
-    fn the_budget_stops_this_one(&self, id: StepId, said: String) -> StepReport {
+    /// To nie jest Stop człowieka: skutek wybiera `whenItFails`, a stan końcowy tłumaczy na
+    /// `skipped` [`Live::name_what_the_budget_stopped`]. Dzięki temu `carry-on` naprawdę puszcza
+    /// pracę dalej, `ask-me` naprawdę pyta, a raport nie nazywa sufitu anulowaniem.
+    async fn the_budget_stops_this_one(&self, id: StepId, said: String) -> StepReport {
         if let Some(row) = self
             .stopped_by_the_budget
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get_mut(id)
         {
-            *row = true;
+            *row = Some(said.clone());
         }
         self.update(|book| {
             let step = &mut book.steps[id];
             step.status = StepState::Skipped;
-            let _ = step.error.get_or_insert(said);
+            let _ = step.error.get_or_insert(said.clone());
         });
         self.announce(id, StepState::Skipped);
-        StepReport::Cancelled
+        self.when_this_one_fails(id, &said).await
     }
 
     async fn a_slot_for_this_step(
@@ -6654,7 +6710,7 @@ impl Live {
          * 2026-08-24 — CZYSTSZY SZEW WYMAGAŁBY METODY W `engine/drivers/mod.rs` (obok
          * `effort_argv`), a tamten plik nie należy do T-94 (`AGENTS.md` §7). Zgłoszone,
          * nie rozstrzygnięte tutaj. */
-        if let Some(left) = self.what_is_left_of_the_budget()
+        if let Some(left) = self.what_is_left_of_the_budget(id)
             && job.driver.id() == crate::engine::drivers::claude::VENDOR
         {
             configuration
@@ -8288,19 +8344,42 @@ impl Live {
         send_batch(&self.lines, vec![line]);
     }
 
-    /// Przepisuje stany kroków, których nie ruszył sufit wydatku: `cancelled` → `skipped`.
+    /// Nazywa kroki zatrzymane sufitem i ich pominięty stożek stanem `skipped`.
     ///
-    /// Planista nie ma jak tego powiedzieć: `StepReport` zna trzy zakończenia i żadne z nich nie
-    /// znaczy „bieg doszedł do postawionej mu granicy". Krok zatrzymany przez sufit wraca stąd
-    /// jako anulowany, bo tylko ten wariant maluje stożek za nim pominięciami zamiast porażkami —
-    /// a `cancelled` na ekranie znaczy „nacisnąłeś Stop", czego nikt nie zrobił.
+    /// Planista widzi porażkę, bo to ona pozwala `whenItFails` rozstrzygnąć, czy stożek ma stanąć
+    /// czy jechać dalej. Dla człowieka ta porażka nie jest jednak awarią agenta ani Stopem — jest
+    /// postawioną wcześniej granicą. Tłumaczenie stoi tutaj, po planiście i przed jednym zapisem
+    /// księgi, a dokładne zdanie rodzica idzie wyłącznie przez jego faktycznie pominięte dzieci.
     fn name_what_the_budget_stopped(&self, states: &mut [StepState]) {
-        let stopped = self
+        let mut stopped = self
             .stopped_by_the_budget
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        for (state, &by_the_budget) in states.iter_mut().zip(stopped.iter()) {
-            if by_the_budget {
+        let roots: Vec<(StepId, String)> = stopped
+            .iter()
+            .enumerate()
+            .filter_map(|(id, why)| why.clone().map(|why| (id, why)))
+            .collect();
+        for (root, why) in roots {
+            let mut stack = vec![root];
+            while let Some(from) = stack.pop() {
+                for &(parent, child) in &self.plan.arrows {
+                    if parent != from || states.get(child) != Some(&StepState::Skipped) {
+                        continue;
+                    }
+                    let Some(slot) = stopped.get_mut(child) else {
+                        continue;
+                    };
+                    if slot.is_some() {
+                        continue;
+                    }
+                    *slot = Some(why.clone());
+                    stack.push(child);
+                }
+            }
+        }
+        for (state, why) in states.iter_mut().zip(stopped.iter()) {
+            if why.is_some() {
                 *state = StepState::Skipped;
             }
         }
@@ -8322,28 +8401,29 @@ impl Live {
          * ksiegi, a przepchniecie do niej ksiegi zamienialoby planiste w cos, co pisze po dysku.
          * Tu mamy komplet stanow koncowych i graf, wiec przodek liczy sie raz i na pewno. */
         let blamed = self.who_stopped_them(states);
-        /* SUFIT WYDATKU MA OSTATNIE SŁOWO NAD KAŻDYM NIEWYJAŚNIONYM POMINIĘCIEM, i to jest ta
-         * sama zasada, co przy `blamed` obok: krok pominięty bez powodu jest ślepym punktem.
-         * Kroki zatrzymane wprost przez sufit mają już swoje zdanie z chwili decyzji (niesie
-         * kwotę sprzed sekundy, nie z końca biegu); ich potomkowie nie mają żadnego, bo nad nimi
-         * nie stoi ani krok, który padł, ani krok zatrzymany przez człowieka. */
-        let over_the_budget = self.the_budget_is_spent();
+        /* SUFIT WYDATKU PISZE PRZED OGÓLNYM OBWINIANIEM. Krok zatrzymany wprost ma już zdanie
+         * z chwili decyzji, a `name_what_the_budget_stopped` skopiowało je tylko do jego
+         * pominiętego stożka. Odwrotna kolejność wstawiałaby tam ogólne „poprzednik nie
+         * przeszedł", po czym `get_or_insert` nie pozwoliłby już powiedzieć prawdy o budżecie. */
+        let stopped_by_the_budget = self
+            .stopped_by_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         self.update(|book| {
             for (row, &state) in book.steps.iter_mut().zip(states) {
                 row.status = state;
             }
-            for (at_step, why) in &blamed {
-                if let Some(row) = book.steps.get_mut(*at_step) {
+            for (row, why) in book.steps.iter_mut().zip(stopped_by_the_budget.iter()) {
+                if row.status == StepState::Skipped
+                    && let Some(why) = why
+                {
                     let _ = row.error.get_or_insert(why.clone());
                 }
             }
-            if let Some(said) = &over_the_budget {
-                for row in book
-                    .steps
-                    .iter_mut()
-                    .filter(|row| row.status == StepState::Skipped)
-                {
-                    let _ = row.error.get_or_insert(said.clone());
+            for (at_step, why) in &blamed {
+                if let Some(row) = book.steps.get_mut(*at_step) {
+                    let _ = row.error.get_or_insert(why.clone());
                 }
             }
             book.status = if cancelled {
