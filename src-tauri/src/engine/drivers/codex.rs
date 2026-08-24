@@ -42,7 +42,7 @@
 //!
 //! Nie ma tu też ani jednego `tauri::*` (niezmiennik 1): sterownik nie wie, że istnieje okno.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -988,6 +988,53 @@ fn fail_pending_app_requests(
     }
 }
 
+fn rejected_app_request(method: &str, error: &Value) -> anyhow::Error {
+    let code = error
+        .get("code")
+        .map_or_else(|| "unknown".to_owned(), Value::to_string);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("The vendor gave no reason.");
+    anyhow!("The Codex App Server rejected its {method} request with code {code}: {message}")
+}
+
+fn curated_mcp_overrides(
+    effective: &Value,
+    approved_servers: &[String],
+) -> anyhow::Result<serde_json::Map<String, Value>> {
+    let config = effective
+        .get("config")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("The Codex App Server returned no effective configuration."))?;
+    let empty_private_servers = serde_json::Map::new();
+    let private_servers = match config.get("mcp_servers") {
+        None | Some(Value::Null) => &empty_private_servers,
+        Some(value) => value
+            .as_object()
+            .ok_or_else(|| anyhow!("The Codex App Server returned an invalid MCP server list."))?,
+    };
+
+    let approved = approved_servers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let all_servers = private_servers
+        .keys()
+        .map(String::as_str)
+        .chain(approved.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut overrides = serde_json::Map::new();
+    for server in all_servers {
+        let key = format!(
+            "mcp_servers.{}.enabled",
+            crate::connections::runtime::toml_key(server)
+        );
+        overrides.insert(key, Value::Bool(approved.contains(server)));
+    }
+    Ok(overrides)
+}
+
 async fn app_server_actor<Output>(input: AppServerInput<Output>)
 where
     Output: AsyncRead + Unpin,
@@ -1043,8 +1090,10 @@ where
 
                 if let Some(id) = parsed.get("id").and_then(Value::as_u64) {
                     if let Some(request) = pending.remove(&id) {
-                        let answer = if parsed.get("error").is_some_and(|error| !error.is_null()) {
-                            Err(anyhow!("The Codex App Server rejected its {} request.", request.method))
+                        let answer = if let Some(error) =
+                            parsed.get("error").filter(|error| !error.is_null())
+                        {
+                            Err(rejected_app_request(request.method, error))
                         } else {
                             Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
                         };
@@ -1112,11 +1161,7 @@ async fn emit_app(
 }
 
 fn app_server_sandbox(policy: Policy) -> &'static str {
-    match policy {
-        Policy::ReadOnly => "readOnly",
-        Policy::EditInFolder => "workspaceWrite",
-        Policy::Unrestricted => "dangerFullAccess",
-    }
+    sandbox_mode(policy)
 }
 
 fn app_turn_input(text: &str, images: &ValidatedImages) -> anyhow::Result<Vec<Value>> {
@@ -1191,7 +1236,12 @@ impl fmt::Debug for CodexConversationHandle {
 }
 
 impl CodexConversationHandle {
-    async fn handshake(&mut self, spec: RunSpec, images: ValidatedImages) -> anyhow::Result<()> {
+    async fn handshake(
+        &mut self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        approved_servers: &[String],
+    ) -> anyhow::Result<()> {
         if spec.resume.is_some() {
             anyhow::bail!("An ephemeral Codex Lead conversation cannot resume a persisted thread.");
         }
@@ -1212,6 +1262,15 @@ impl CodexConversationHandle {
             .await?;
         self.client.notify("initialized", json!({})).await?;
 
+        // T-111 (2026-08-24): argv może dodać zatwierdzone Connections, ale nie potrafi wyłączyć
+        // prywatnych serwerów użytkownika bez poznania ich nazw. Odczyt i nakładka zostają na
+        // JSON-RPC stdin, żeby żadna prywatna nazwa nie trafiła do argv ani dowodów.
+        let effective = self
+            .client
+            .request("config/read", json!({ "includeLayers": false }), false)
+            .await?;
+        let mcp_overrides = curated_mcp_overrides(&effective, approved_servers)?;
+
         let mut params = serde_json::Map::new();
         params.insert("ephemeral".to_owned(), Value::Bool(true));
         params.insert(
@@ -1230,6 +1289,9 @@ impl CodexConversationHandle {
                 "developerInstructions".to_owned(),
                 Value::String(instructions),
             );
+        }
+        if !mcp_overrides.is_empty() {
+            params.insert("config".to_owned(), Value::Object(mcp_overrides));
         }
         /* SZCZEBLA „ILE MYSLEC" TU NIE MA I JEST TO ZGLOSZENIE, NIE PRZEOCZENIE (2026-08-23,
          * T-91). Krok biegu dostaje go jako `-c model_reasoning_effort=<poziom>` przed `exec`;
@@ -1361,7 +1423,11 @@ impl CodexDriver {
         // nie dostawał ani jednego serwera — a przez `exec` dostawał. Ten sam agent odpowiadał
         // inaczej zależnie od tego, którą drogą go zawołano, i nic tego nie mówiło.
         command.args(app_server_argv(&self.configuration));
-        let mut process = match supervisor::spawn(command, StdinPlan::Keep(String::new())) {
+        let mut process = match supervisor::spawn_with_environment(
+            command,
+            StdinPlan::Keep(String::new()),
+            &self.configuration.environment,
+        ) {
             Ok(process) => process,
             Err(error) => {
                 mark_evidence_incomplete(self.evidence.as_ref());
@@ -1420,7 +1486,10 @@ impl CodexDriver {
             stderr_task: Some(stderr_task),
         };
 
-        if let Err(error) = handle.handshake(spec, images).await {
+        if let Err(error) = handle
+            .handshake(spec, images, &self.configuration.servers)
+            .await
+        {
             mark_evidence_incomplete(handle.evidence.as_ref());
             handle.force_stop_after_failed_start().await;
             return Err(error);
