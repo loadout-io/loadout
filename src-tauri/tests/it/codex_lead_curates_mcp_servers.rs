@@ -188,40 +188,7 @@ fn process_is_alive(pid: u32) -> Result<bool, Box<dyn Error>> {
         .success())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn private_servers_are_false_and_the_approved_connection_is_true()
--> Result<(), Box<dyn Error>> {
-    let fixture = tempfile::tempdir()?;
-    let workspace = tempfile::tempdir()?;
-    let configuration = runtime::for_driver(
-        workspace.path(),
-        "codex",
-        &[approved_connection()],
-        |name| (name == ENVIRONMENT_NAME).then(|| OsString::from(ENVIRONMENT_SECRET)),
-    )?;
-    assert_eq!(configuration.servers, [APPROVED]);
-
-    let target = evidence_target(workspace.path());
-    let evidence_root = target.root().to_path_buf();
-    let binary = executable(fixture.path(), CONFIG_CURATED)?;
-    let base: Arc<dyn AgentDriver> =
-        Arc::new(CodexDriver::with_binary(binary).with_configuration(configuration));
-    let driver = base
-        .with_evidence(target)
-        .ok_or("Codex has no production evidence seam")?;
-    let (events, _inbox) = mpsc::channel(CHANNEL);
-    let mut handle: Box<dyn AgentHandle> = timeout(
-        LIMIT,
-        driver.start_conversation(spec(workspace.path()), ValidatedImages::default(), events),
-    )
-    .await??;
-    let proof = timeout(LIMIT, handle.cancel()).await?;
-    assert!(
-        matches!(proof, GroupProof::Dead { .. }),
-        "the curated App Server remained alive after Stop: {proof:?}"
-    );
-
-    let calls = calls(fixture.path())?;
+fn assert_protocol_calls(calls: &[Value]) -> Result<(), Box<dyn Error>> {
     let initialized = calls
         .iter()
         .position(|call| method(call) == Some("initialized"))
@@ -257,8 +224,14 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
         config, &expected,
         "private servers and the approved Connection were not curated exactly once: {config:?}"
     );
+    Ok(())
+}
 
-    let argv = fs::read_to_string(fixture.path().join("argv.log"))?
+fn assert_private_data_stayed_private(
+    fixture: &Path,
+    evidence_root: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let argv = fs::read_to_string(fixture.join("argv.log"))?
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -276,7 +249,7 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
         "the Connection and thread overlay did not share one TOML-key encoding"
     );
     assert_eq!(
-        fs::read_to_string(fixture.path().join("environment.log"))?.trim(),
+        fs::read_to_string(fixture.join("environment.log"))?.trim(),
         "present",
         "the App Server process did not receive the approved Connection environment name"
     );
@@ -303,10 +276,49 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
             "private configuration escaped into argv through {private:?}: {argv:?}"
         );
         assert!(
-            !private_tree_contains(&evidence_root, private.as_bytes())?,
+            !private_tree_contains(evidence_root, private.as_bytes())?,
             "private configuration escaped into evidence through {private:?}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn private_servers_are_false_and_the_approved_connection_is_true()
+-> Result<(), Box<dyn Error>> {
+    let fixture = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir()?;
+    let configuration = runtime::for_driver(
+        workspace.path(),
+        "codex",
+        &[approved_connection()],
+        |name| (name == ENVIRONMENT_NAME).then(|| OsString::from(ENVIRONMENT_SECRET)),
+    )?;
+    assert_eq!(configuration.servers, [APPROVED]);
+
+    let target = evidence_target(workspace.path());
+    let evidence_root = target.root().to_path_buf();
+    let binary = executable(fixture.path(), CONFIG_CURATED)?;
+    let base: Arc<dyn AgentDriver> =
+        Arc::new(CodexDriver::with_binary(binary).with_configuration(configuration));
+    let driver = base
+        .with_evidence(target)
+        .ok_or("Codex has no production evidence seam")?;
+    let (events, _inbox) = mpsc::channel(CHANNEL);
+    let mut handle: Box<dyn AgentHandle> = timeout(
+        LIMIT,
+        driver.start_conversation(spec(workspace.path()), ValidatedImages::default(), events),
+    )
+    .await??;
+    let proof = timeout(LIMIT, handle.cancel()).await?;
+    assert!(
+        matches!(proof, GroupProof::Dead { .. }),
+        "the curated App Server remained alive after Stop: {proof:?}"
+    );
+
+    let calls = calls(fixture.path())?;
+    assert_protocol_calls(&calls)?;
+    assert_private_data_stayed_private(fixture.path(), &evidence_root)?;
     Ok(())
 }
 
