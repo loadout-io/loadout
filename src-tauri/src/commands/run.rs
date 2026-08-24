@@ -7443,7 +7443,7 @@ impl Live {
         Ok(told)
     }
 
-    /// Dokłada listę umówionych pól — **tylko krokowi, który ma formularz**.
+    /// Dokłada listę umówionych pól oraz wymagany wynik sędziego pętli.
     ///
     /// Wewnątrz bloku „jak odpowiadać" i zaraz za nim, bo to jest ta sama rzecz: co ten krok ma
     /// oddać. Nagłówek nad zerem pól byłby zdaniem o niczym, tak samo jak pusty indeks przekazań
@@ -7452,19 +7452,26 @@ impl Live {
     /// OPIS Z PLIKU JEDZIE NIETKNIĘTY. Człowiek napisał go po to, żeby agent wypełnił pole
     /// właściwą rzeczą; sama nazwa jest pytaniem, którego agent musi się domyślić.
     ///
-    /// Warunek jest ten sam, którego używa [`Live::missing_a_required_field`] do sądzenia
-    /// odpowiedzi — jedna lista, dwie połowy jednej umowy (niezmiennik 13).
+    /// Warunek pola `outcome` jest ten sam, którego używa [`Live::verdict_after`] do sądzenia
+    /// odpowiedzi. Zwykły krok go nie dostaje, a sędzia dostaje je także bez formularza — jedna
+    /// lista, dwie połowy jednej umowy (niezmiennik 13).
     fn ask_for_the_agreed_fields(&self, id: StepId, told: &mut Told) {
         let Job::Agent(job) = &self.plan.steps[id].job else {
             return;
         };
-        if job.handover.is_empty() {
+        let asks_for_outcome = self.judging(&self.plan.steps[id]).is_some();
+        if job.handover.is_empty() && !asks_for_outcome {
             return;
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(FIELDS_ASKED_FOR);
         told.prompt.push('\n');
-        for field in &job.handover {
+        for field in job.handover.iter().filter(|field| {
+            // 2026-08-25 (T-100) — wynik pętli jest polem Loadout, nie drugim formularzem
+            // człowieka. Jedna automatyczna linia zapobiega dwóm sprzecznym umowom o tym samym
+            // kluczu, kiedy starszy workflow miał już własne pole nazwane `outcome`.
+            !asks_for_outcome || !field.name.trim().eq_ignore_ascii_case("outcome")
+        }) {
             // `write!` do `String`, nie `push_str(&format!(…))` — ten sam powód, co przy indeksie
             // przekazań (clippy `format_push_string`), i ten sam `let _`: zapis do `String` nie
             // ma jak zawieść.
@@ -7479,6 +7486,11 @@ impl Live {
                     ""
                 }
             );
+        }
+        if asks_for_outcome {
+            // `pass` i `fail` stoją w pokazanym kształcie odpowiedzi: model nie musi zgadywać
+            // ani dozwolonych wartości, ani tego, że to pole jest wymagane w każdej rundzie.
+            let _ = write!(told.prompt, "\noutcome: pass or fail{FIELD_IS_NEEDED}");
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(FIELDS_ARE_REQUIRED);
