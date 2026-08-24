@@ -4,6 +4,39 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 19:04 — T-112 ZAMKNIĘTE bez lądowania; zielona bramka była nieważna
+
+**T-112 · formalnie zielone 21/21, lecz ZAMKNIĘTE / NIEWYLĄDOWANE · 1 h 09 min 09 s ·
+co najmniej $34,78 widoczne.** Kontrakt Claude'a kosztował **$14,52** i doszedł do limitu
+81 tur; implementacja kosztowała **$20,25** w 139 turach. Recenzja Codeksa i wykonanie
+naprawy przez Claude'a nie zapisały osobnej ceny. Końcowa bramka przy czystym drzewie miała
+21/21 w 36,76 s, a jedyna runda naprawcza mechanicznie rozbiła 102-liniowy test bez zmiany
+asercji (`0234a26`). Gałąź nie została wylądowana mimo kodu 0.
+
+Pierwszy powód jest kontraktowy. `branch_for(run, "s_2~2") → s_2-2` oraz gwarancja, że
+prawidłowy klucz `s_2-2` przechodzi niezmieniony, wybierają ten sam ref. Loadout akceptuje
+ręcznie zapisane identyfikatory bez ograniczenia znaków; workflow z `s_2` w dwóch kopiach i
+osobnym `s_2-2` zapisuje się, przechodzi `check_to_run` i odmawia dopiero podczas drugiego
+`git worktree add -b` — po rozpoczęciu pracy, wbrew niezmiennikowi 12. Zielone AC-1 nie ćwiczy
+tej kolizji. Uczciwe wyjście wymaga nowego kontraktu: rekomendowana jest widoczna odmowa
+kolizji zakodowanych refów przed pierwszym procesem, zamiast zmiany istniejących nazw gałęzi.
+
+Drugi powód unieważnia cały paragon `before`. Kontraktowy test AC-3 destrukturyzował
+3-elementowy wynik jako dwie wartości. Między commitem kontraktu `cabbfc4` a implementacją
+`6820eec` agent musiał poprawić dokładnie dwa takie miejsca. Każde z pięciu AC kompiluje wspólny
+target `it`, więc wszystkie wymuszone `before` padły na ten sam E0308, nie na brak zachowania.
+Harness nie rozpoznał podpisu błędu kompilacji i błędnie wypisał „red for the right reason”.
+To defekt warstwy zaufania: dopóki nie powstanie osobny, autoryzowany commit harnessu z
+selftestem, następny kontrakt Rust może dostać ten sam fałszywy certyfikat.
+
+Dodatkowe znalezisko spoza OWNS: `commands/history.rs::branches_of_run` dopasowuje ogon refa
+do `tile_key`, więc nową gałąź drugiej kopii `s_2-2` pokaże bez etykiety kroku. Jest to mniejsza
+resztka produktu, nie powód do cichego rozszerzenia T-112.
+
+Gałąź `task-T-112` pozostaje niewylądowana na `0234a26`; trunk nie dostał kodu produkcyjnego.
+Faza 7 zatrzymuje się przed T-100. Potrzebna jest jawna zgoda właściciela na osobną naprawę
+harnessu oraz na nowy kontrakt zastępczy z walidacją kolizji refów.
+
 ## 2026-08-24, 17:53 — właściciel zatwierdził zastępcze T-112
 
 Jawne „ok” właściciela na rekomendowany task zastępczy uruchamia wyjątek authoringu wyłącznie
