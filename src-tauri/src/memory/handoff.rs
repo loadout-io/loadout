@@ -871,13 +871,25 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
     let decision = last_decision(body);
     let content_cap = BODY_CAP.saturating_sub(decision.map_or(0, |said| said.len() + 1));
 
-    let mut out = String::from(preamble);
-    let mut truncated = false;
-    let mut kept = false;
+    // 2026-08-24 (T-114, naprawa po drugiej opinii) — poprawnie ułożone ciało może mieć
+    // prozę przed `## Answer`, bo [`reshape`] zostawia taki kształt bez zmian. Preambuła jest
+    // treścią, więc dostaje ten sam budżet co sekcje; wcześniej sama mogła przekroczyć limit,
+    // zanim dopisaliśmy obowiązkowe nagłówki, wskaźniki i zarezerwowany werdykt.
+    let minimum_sections: usize = costs.iter().sum();
+    let preamble_budget = content_cap.saturating_sub(minimum_sections);
+    let preamble_end = if preamble.len() <= preamble_budget {
+        preamble.len()
+    } else {
+        last_line_boundary(preamble, preamble_budget)
+    };
+    let preamble_truncated = preamble_end < preamble.len();
+    let mut out = String::from(&preamble[..preamble_end]);
+    let mut truncated = preamble_truncated;
+    let mut kept = !out.trim().is_empty();
 
     for (index, (head, content)) in heads.iter().zip(contents.iter()).enumerate() {
         let rest: usize = costs.iter().skip(index + 1).sum();
-        if out.len() + head.len() + content.len() + rest <= content_cap {
+        if !preamble_truncated && out.len() + head.len() + content.len() + rest <= content_cap {
             out.push_str(head);
             out.push_str(content);
             kept = kept || !content.trim().is_empty();

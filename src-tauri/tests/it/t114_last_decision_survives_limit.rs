@@ -72,6 +72,60 @@ fn an_already_kept_last_decision_is_not_appended_again() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn an_oversized_preamble_shares_the_cap_with_sections_and_the_decision()
+-> Result<(), Box<dyn Error>> {
+    let run = tempfile::tempdir()?;
+    let preamble_line = "preamble evidence that must end only on its line boundary\n";
+    let original = format!(
+        "{}## Answer\nKept answer.\n\n## Evidence\nReceipt.\n\n## Open\noutcome: fail\n",
+        preamble_line.repeat(180)
+    );
+    let written = handoff::write_handoff(run.path(), draft(4), &original)?;
+    let body = handoff::read_handoff(&written.path)?.body;
+
+    assert!(written.truncated, "the preamble alone crosses the body cap");
+    assert!(
+        body.len() <= handoff::BODY_CAP,
+        "the preamble must share the byte budget with section headers, pointers, and the final decision"
+    );
+    assert_eq!(
+        body.lines()
+            .filter(|line| line.trim() == "outcome: fail")
+            .count(),
+        1,
+        "trimming the preamble must still preserve the last decision exactly once"
+    );
+    for heading in ["## Answer", "## Evidence", "## Open"] {
+        assert_eq!(
+            body.lines().filter(|line| *line == heading).count(),
+            1,
+            "trimming the preamble must preserve the required {heading} header"
+        );
+    }
+    assert!(
+        body.lines()
+            .any(|line| line.starts_with("Moved to attachments/")),
+        "a cut preamble must leave a visible pointer to the full copy"
+    );
+    let attachment = written.attachment.ok_or("a cut body has no full copy")?;
+    assert_eq!(fs::read(&attachment)?, original.as_bytes());
+
+    let kept_preamble = body
+        .split("## Answer\n")
+        .next()
+        .ok_or("the cut body has no preamble boundary")?;
+    assert!(
+        kept_preamble.is_empty()
+            || (kept_preamble.ends_with('\n')
+                && kept_preamble
+                    .lines()
+                    .all(|line| line == preamble_line.trim_end())),
+        "the preamble must be dropped or cut only after a complete line"
+    );
+    Ok(())
+}
+
+#[test]
 fn no_decision_is_invented_and_a_short_body_is_untouched() -> Result<(), Box<dyn Error>> {
     let long_run = tempfile::tempdir()?;
     let without = oversized("", "not a decision");
