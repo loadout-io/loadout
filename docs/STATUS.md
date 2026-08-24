@@ -4,6 +4,27 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 14:04 — T-105 ZAMKNIĘTE, cel przejmuje T-110
+
+**T-105 · czerwone / ZAMKNIĘTE · 14 min ostatniego przebiegu · $0,00 widoczne.** Kontrakt
+Codeksa zużył łącznie 7,29 mln tokenów wejścia i 26,4 tys. wyjścia w fazie specyfikacji oraz
+jednej naprawy; księga nie wycenia Codeksa. AC-1 i AC-2 dostały uczciwe czerwone testy, lecz
+AC-3 po dwóch wymuszonych `before` nadal miało exit 0 bez dowodu wykonania. Gałąź nie została
+wylądowana.
+
+Powód nie jest brakiem pracy agenta. Wymagane `--ignore-user-config` działa w `codex exec`,
+ale zainstalowany `codex-cli 0.149.1` odrzuca je przed i po `app-server`; pomoc App Servera
+tej flagi nie wystawia. Dodanie asercji na argv zazieleniłoby atrapę i zepsuło prawdziwego
+leada — byłoby oszustwem. Również `-c 'mcp_servers={}'` nie jest zastępstwem: pusta tabela
+scala się niedestrukcyjnie, więc istniejące serwery pozostają włączone.
+
+Właścicielska zgoda na pełne domknięcie fazy została użyta wyłącznie do authoringu nowego,
+globalnie unikalnego `T-110`, bez łatania T-105. T-110 zachowuje dwa działające cele i przed
+`thread/start` pobiera efektywną konfigurację przez `config/read`, po czym dla każdego
+znalezionego serwera ustawia osobne `mcp_servers.<id>.enabled=false` w konfiguracji wątku.
+Błąd odmawia startu; nie ma cichego powrotu do prywatnych MCP. T-110 musi wylądować przed
+T-102 i jest następnym biegiem.
+
 ## 2026-08-24, 13:36 — faza 7: T-98 w trunku, pierwszy żywy bieg zmienił mapę
 
 **T-98 · zielone · 1 h 52 min 26 s · $28,58 widoczne.** Przelotka obu vendorów nie może już
