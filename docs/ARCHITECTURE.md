@@ -2,6 +2,12 @@
 
 2026-08-15 · v1 · źródła: `docs/research/` (15 raportów), `docs/DECISIONS-LOCKED.md`
 
+> **Uzgodnione z kodem 2026-08-24, po fazie 6** (`docs/PLAN-AGENTS-CONTEXT.md`). Ten dokument
+> opisywał w kilku miejscach zamiar, nie stan: `INDEX.md` przekazań, `memory/agents/<slug>.md`,
+> globalny semafor, `attempt += 1`, dwa rodzaje kafelka i nierozstrzygnięty spike S-2. Każde
+> z tych miejsc jest niżej poprawione **z datą**, a nie po cichu — nieaktualna architektura
+> uczy następnego czytelnika nieprawdy o systemie, który ma przed oczami.
+
 Notacja cytowań: `[T1 §8.3]` = raport tematyczny, `[R06 §10]` = raport z rekonesansu repo,
 `[ran]` = zweryfikowane uruchomieniem na tej maszynie.
 
@@ -103,6 +109,10 @@ supervisor: spawn w grupie procesów, zapisz pid+pgid do bazy
      │  claude -p --output-format stream-json --input-format stream-json --verbose
      │         --session-id <uuid> --strict-mcp-config --setting-sources ""
      │         --permission-mode <z polityki> --allowedTools <z polityki>
+     │         --effort <z pola „thinking">                       (T-91)
+     │         --settings <plik>  — przekierowanie auto-pamięci    (T-92)
+     │         --max-budget-usd <reszta budżetu biegu>             (T-94)
+     │         --plugin-dir <skille>  --mcp-config <połączenia>  --add-dir <przekazania>
      ▼
 stdout: NDJSON, linia po linii
      │
@@ -162,6 +172,21 @@ Siedem stanów. `paused` jest stanem **biegu**, nigdy kroku — to usuwa całą 
 **Pułapka, którą trzeba pokryć testem:** `tokio::time::timeout` wokół kroku anuluje zadanie Rusta,
 **nie proces systemowy**. Każda ścieżka limitu czasu musi przejść przez eskalację zabijania w supervisorze [T7 §10.8].
 
+### Czego ta tabela nie mówi, a kod robi (uzupełnione 2026-08-24)
+
+- **`attempt += 1` i „nowy `session_id`" w ostatnim wierszu nie istnieją.** Ponowienie kroku
+  wewnątrz biegu nie jest zbudowane; `run.json` ma `attempt: 0` na sztywno. Powtórzenie to
+  **osobny bieg** (`commands/rerun.rs`), a mechanizmem „spróbuj jeszcze raz" wewnątrz grafu jest
+  pętla `max_turns`, rozwinięta na literalne rundy **przed** biegiem (`workflow/unroll.rs`).
+- **`FailedAndCarriedOn`** (T-87) — krok jest `failed`, ale jego potomkowie **ruszają**. To jest
+  ustawienie „co, kiedy ten nie przejdzie" z D7, a nie ósmy stan.
+- **Trasa zablokowana** — krok, który zameldował sukces, dostaje `Failed`, kiedy żaden warunek
+  krawędzi wychodzącej nie pasuje (`Route::Blocked`). Tabela nie zna tego wyzwalacza.
+- **`settle_leftovers`** — po pętli planisty każdy krok wciąż `ready`/`running` schodzi jako
+  `failed`, a `pending` jako `skipped` albo `cancelled`. To domknięcie, nie przejście.
+- **Sufit budżetu** (T-94) — krok zatrzymany sufitem czyta się jako `skipped`, nigdy `cancelled`:
+  na ekranie „cancelled" znaczy „nacisnąłeś Stop".
+
 ---
 
 ## 6. Kuracja: zdarzenie → linia
@@ -177,6 +202,13 @@ lądują w tym samym enumie `AgentEvent`, więc reguły zwijania niżej są wsp�
 |---|---|
 | `system/init` | *nic* — kropka agenta robi się aktywna |
 | `thinking`, `thinking_tokens` | *nic w strumieniu* — stały slot na dole, nadpisywany |
+
+> **Codex nie wysyła `reasoning` w trybie `exec`.** Zmierzone 2026-08-24 na `codex-cli 0.148.0`
+> trzema drogami: sześć prawdziwych biegów, sonda z siecią i sonda z `model_reasoning_effort=high`
+> **plus** `model_reasoning_summary=detailed` — ani razu. Pozycja `reasoning` w taksonomii wyżej
+> pochodzi z raportu T2 i zestarzała się. Odwzorowanie na slot myślenia istnieje i jest sprawdzone
+> (T-97), żeby zadziałało, gdyby vendor zaczął je wysyłać; dziś slot przy krokach Codeksa jest
+> pusty **z powodu vendora, nie z powodu wady**.
 | blok `text` | proza agenta, maks. 3 linie, dalej „więcej" |
 | `tool_use` Read/Grep/Glob | `Przeczytał 6 plików` — sklejone w oknie 2 s |
 | `tool_use` Edit/Write | `Zmienił src/auth.rs  +12 −4` → klik otwiera panel zmian |
@@ -253,6 +285,9 @@ agentów na jednej maszynie. Przy ~583 MB na agenta [T7 ryzyko 3] to jest zamro�
 szybsza praca.
 
 Więc: **jeden semafor na całą aplikację**, dzielony przez wszystkie biegi we wszystkich kartach.
+*Prawdziwe od 2026-08-24 (T-94): `AppState` trzyma jeden `Limiter`, a każdy świeży uchwyt biegu
+dostaje jego klon. Do tego dnia pula powstawała **na każdy bieg osobno**, więc dwie karty dawały
+`2 × limit` agentów naraz — i to była wada, nie wygoda.*
 Kiedy karta czeka na wolne miejsce, ma to powiedzieć — „czeka na wolne miejsce (2 z 3 zajęte
 w innych folderach)" — a nie milczeć i wyglądać na zawieszoną. Milczące czekanie jest nieodróżnialne
 od zepsucia i to jest dokładnie ten rodzaj cichej porażki, którego ten dokument pilnuje.
@@ -293,8 +328,11 @@ zachowuje się inaczej niż czytający jedno i użytkownik musi to widzieć bez 
 
 **Orchestrator dostaje indeks, nie treść.** Wrzucenie czterech pełnych raportów do promptu
 orchestratora to najprostsza droga do przepełnienia kontekstu i do rachunku, którego nikt się nie
-spodziewał. Dostaje `INDEX.md` przekazań — tytuł, autor, rozmiar, `est_tokens` — i czyta pełny plik
-wtedy, kiedy zdecyduje. To ta sama dyscyplina, co progresywne ujawnianie w umiejętnościach.
+spodziewał. Dostaje **indeks w prompcie** — po jednym wierszu na przekazanie: kto je zostawił,
+ścieżka i **etykieta roli** („co dostałeś na starcie", „twoja poprzednia odpowiedź, próba 1 z 3",
+„co powiedział sprawdzający ostatnim razem") — i czyta pełny plik wtedy, kiedy zdecyduje.
+*Poprawione 2026-08-24: osobny plik `INDEX.md` nie powstaje i nie powstawał nigdy; indeks żyje
+w prompcie kroku (`Live::handed_before`, T-87).* To ta sama dyscyplina, co progresywne ujawnianie w umiejętnościach.
 
 ### Przelotka na opcje vendora
 
@@ -323,7 +361,9 @@ Dwie reguły walidacji — obie **przy zapisie**, nie w trakcie biegu (należą 
 
 ### Co z tego wynika dla planu
 
-Liczba rodzajów kafelka zostaje **dwa** niezależnie od tego, ile funkcji dowiozą vendorzy. Nowa
+Liczba rodzajów kafelka zostaje **stała** niezależnie od tego, ile funkcji dowiozą vendorzy —
+dziś są **trzy** (krok, punkt kontrolny, sprawdzenie; trzeci dopisany decyzją człowieka
+2026-08-20, `DECISIONS-LOCKED.md` §D6) plus `serve` jako rodzaj **sterownika**, nie etapu. Nowa
 funkcja Claude'a to nowe pole w kreatorze agenta albo wpis w przelotce — nigdy nowy typ węzła.
 To jest jedyna reguła, która utrzyma płótno czytelne przez rok.
 
@@ -425,9 +465,9 @@ usunięcia którejś z tych dwóch.
   skills/<slug>/SKILL.md             # kanoniczna umiejętność
   triggers/<slug>.json               # konfiguracja; sekret nie przekracza granicy IPC
   triggers/.*                        # kursory i trwałe ledgery dostaw, niewidoczne w bibliotece
-  memory/INDEX.md                    # generowany, limit 200 linii / 25 KB
-  memory/notes/<slug>.md
-  memory/agents/<slug>.md            # pamięć podróżująca z agentem
+  memory/notes/<slug>.md             # jedna notatka, jeden plik; ZAKRES JEST WE FRONT-MATTERZE,
+                                     # nie w katalogu (`memory/notes.rs`)
+  memory/discarded/<slug>.md         # odrzucona ręką człowieka; nic nie ginie twardo (T-92)
 
 <repo>/.loadout/                     # projektowe, bezpieczne do commitowania
   memory/…
@@ -435,7 +475,11 @@ usunięcia którejś z tych dwóch.
     run.json                         # workflow, kroki, status, sumy; opcjonalne redagowane pochodzenie
     handoffs/01__orchestrator__brief.md
              02__research-auth__findings.md      ← to widzisz w UI jako „co przekazał"
-    logs/agent-<id>.jsonl            # surowe, nierenderowane domyślnie
+    attachments/02__…__full.md       # ogon przekazania powyżej 8 KB
+    logs/agent-<id>.jsonl            # surowe, nierenderowane domyślnie (pisze `evidence.rs`)
+    mem/<krok>/                      # auto-pamięć Claude'a, przekierowana z katalogu domowego (T-92)
+    work/<krok>/                     # kopia plików kroku — ZNIKA po biegu, praca zostaje
+                                     # na gałęzi `loadout/<bieg>/<kafelek>` (T-95)
   loadout.db                         # indeks SQLite — DO SKASOWANIA BEZ STRATY
 ```
 
@@ -498,6 +542,13 @@ w Tauri), `tauri-plugin-sql` (przecieka SQL do UI), Temporal/Restate (wymagają 
 **T1 twierdzi, że `--max-turns` istnieje** (sonda: flaga bez wartości zwraca `option '--x <y>' argument missing`,
 a nie `unknown option`) `[ran]`.
 **T4 twierdzi, że `--max-turns` nie istnieje jako flaga CLI** (sprawdzone w `--help`).
+
+> **ROZSTRZYGNIĘTE 2026-08-23 pomiarem, `claude --help` 2.1.241.** Istnieją i są używane:
+> `--effort <low|medium|high|xhigh|max>` (T-91 wozi tam pole `thinking`) oraz
+> `--max-budget-usd <kwota>`, działające wyłącznie z `--print`, czyli w trybie, w którym
+> Loadout i tak biegnie (T-94 wozi tam resztę budżetu biegu). `--max-turns` pozostaje
+> niesprawdzone i nieużywane — limit czasu ściennego dalej jest tym, co egzekwuje Loadout.
+> Spike `S-2` jest tym samym zamknięty; akapit niżej zostaje jako zapis, czym była ta niepewność.
 
 Metoda T1 jest mocniejsza, ale to nie jest rozstrzygnięte. **Nie budujemy na tym.**
 Limit czasu ściennego, który egzekwuje sam Loadout zabiciem procesu, działa u każdego dostawcy

@@ -4,6 +4,73 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 01:40 — FAZA 6 ZAMKNIĘTA: dwanaście z dwunastu w trunku
+
+Wszystkie zadania `T-86`…`T-97` wylądowały, bramka trunka zielona po każdym. Plan i mapa
+znalezisk: `docs/PLAN-AGENTS-CONTEXT.md`. `ARCHITECTURE.md` uzgodniony z kodem tego samego dnia.
+
+### Liczniki, z realnych danych
+
+| | |
+|---|---|
+| Zadania | **12 z 12**, 47 kryteriów |
+| Commity fazy | 105, w tym 12 lądowań |
+| Koszt z transkryptów `ship-task` (6 zadań) | **$168,61** |
+| Tryb szybki (6 zadań) | koszt w sesji orchestratora, nieliczony osobno |
+| Decyzje oddane człowiekowi | **4** — i wszystkie cztery były prawdziwymi rozwidleniami |
+| Rundy naprawcze / restarty | 5 (T-86, T-90 ×2, T-92 ×2, T-94) |
+| Konflikty scalania rozwiązane ręcznie | 6 |
+| Defekty złapane dopiero **pełną bramką na trunku** | **3** |
+
+### Trzy rzeczy, które ta faza udowodniła o samym harnessie
+
+1. **Brak konfliktu w gicie nie znaczy poprawności.** Trzy razy scalenie dwóch zielonych gałęzi
+   dało drzewo, które się nie kompilowało albo nie przechodziło typów: przeniesiony wektor
+   pożyczony osiemnaście linii niżej (T-92 × T-94), funkcja bez klamry zamykającej, bo git
+   przyciął hunk na sygnaturze (T-90 × T-97), literał linii bez pól, które właśnie doszły do
+   drutu (T-94 × T-97). **Jedynym świadkiem był kompilator i pełna bramka po ręcznym scaleniu.**
+   Wniosek operacyjny: po każdym ręcznym rozwiązaniu konfliktu `cargo check --all-targets
+   --keep-going`, a potem `./verify.sh full` — nigdy sam commit.
+2. **`TASK.md` przeżywa ręczne scalenie.** `integrate.sh` kasuje go tylko na własnej ścieżce
+   commita. Zostawiony sprawia, że każdy nowy worktree rodzi się z cudzym kontraktem, a
+   `ship-task.sh` odmawia startu. Zdejmowany trzy razy w tej fazie.
+3. **Zadanie o pięciu kryteriach dotykające czterech warstw nie mieści się w fazie kontraktu.**
+   T-94 spaliło 81 tur i $12,06, nie napisawszy ani jednego pliku (`error_max_turns`). To samo
+   zadanie w trybie szybkim, gdzie specyfikacja i implementacja dzielą jeden kontekst, przeszło
+   za pierwszym podejściem. **Nie jest to wada modelu, tylko kształtu wywołania.**
+
+### Cross-vendor zarobił na siebie trzy razy
+
+Recenzent Codeksa zgłosił łącznie 12 uwag na zielonych kryteriach. Dwie były prawdziwymi
+defektami kontraktu (`giveUpAfterMinutes: 0` obiecywane jako brak limitu przy silniku robiącym
+`.max(1)`; AC-3 z T-90 rzekomo sprawdzające odmowę po turze agenta), sześć dotyczyło **siły
+wyroczni**, a cztery obaliłem czytając kod. **Ani jednej nie przyjąłem na słowo** — każda
+kosztowała 3–5 minut sprawdzenia i to jest właściwa cena.
+
+### Co zostaje otwarte dla człowieka
+
+- **`--settings` nie jest flagą zarezerwowaną**, a od T-92 Loadout ustawia ją sam.
+  `agents_vendor_args_filtered.rs` używa jej wprost jako przykładu flagi **nie**zarezerwowanej,
+  więc dopisanie jej do listy zmienia przesłankę tamtego testu — **decyzja, nie poprawka.**
+- **Trzy długi z T-94, wszystkie po jednej linii w cudzym pliku:** kolizja przelotki
+  z `--max-budget-usd` (jedna pozycja w `FORBIDDEN_ESCALATIONS`); pasek `$3.41 of $20` jest
+  **liczony i nigdy nie pokazany**, bo `index.tsx` woła `stripFor` bez trzeciego argumentu;
+  szew sterownika na flagę budżetu obok `effort_argv`.
+- **Chip `12k tokens` jest niebudowalny**: słowo „tokens" jest zakazane przez sprawdzacz
+  słownictwa, a `checks/` jest poza zasięgiem biegu. Pisarz T-97 cofnął zmianę zamiast walczyć
+  z bramką — słusznie.
+- **Kryterium, które liczy elementy, dryfuje po cichu.** `agent-form.test.tsx` miał stałą
+  `THREE` z czterema pozycjami. Nota w `tasks/T-11.md`.
+- **Pamięć per projekt** (`<repo>/.loadout/memory/`) dalej nie istnieje — zostaje globalnie,
+  zgodnie z domyślną decyzją z planu §6.
+
+### Czego ta faza NIE dowiodła
+
+Ani jedno kryterium nie uruchomiło prawdziwego biegu z prawdziwymi agentami. Wszystkie dowody
+stoją na `FakeDriver`, złotych plikach i `renderToStaticMarkup`. **Pierwszy prawdziwy bieg
+workflow po tej fazie jest testem, którego bramka nie umie zrobić** — i to jest najbliższa
+rzecz do zrobienia, zanim dołoży się cokolwiek nowego.
+
 ## 2026-08-24, 00:40 — faza 6: dziewięć zadań w trunku, tryb szybki się sprawdził
 
 Kolejność lądowań po pierwszym wpisie: T-91, T-96, T-95, T-88, T-93, T-92. Trunk zielony po
