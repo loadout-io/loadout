@@ -67,7 +67,7 @@ całości. Wartości nadal są skanowane o trzy dotychczasowe literały — wart
 `danger-full-access` w dowolnym kluczu pozostaje odmową (kontrola).
 
 ## AC-4 Stara wyrocznia stoi na nowej przesłance
-check: cargo test --test it agents_vendor_args_filtered::
+check: cargo test --test it vendor_args_keep_their_filtering::
 expect: (\d+) passed
 
 `agents_vendor_args_filtered.rs` po zmianie przykładu (mandat D-1 wyżej) przechodzi
@@ -86,6 +86,7 @@ src-tauri/src/library/agents.rs
 src-tauri/tests/it/main.rs
 src-tauri/tests/it/agents_vendor_args_filtered.rs
 src-tauri/tests/it/workflow_reserved_flags.rs
+src-tauri/tests/it/vendor_args_keep_their_filtering.rs
 src-tauri/tests/it/reserved_flags_cover_what_loadout_sets.rs
 src-tauri/tests/it/codex_config_keys_are_reserved.rs
 src-tauri/tests/it/escalations_match_by_key.rs
