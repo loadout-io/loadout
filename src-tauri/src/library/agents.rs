@@ -34,7 +34,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::engine::drivers::Policy;
-use crate::workflow::check::FORBIDDEN_ESCALATIONS;
+use crate::workflow::check::{escalation_in, is_reserved};
 
 /// Wersja formatu, w którym zapisujemy agenta. Jedna liczba i na razie jedna wartość —
 /// migracja „na przyszłość" jest w `AGENTS.md` na liście zakazanych, a przy `schema < CURRENT`
@@ -886,6 +886,13 @@ pub struct Passthrough {
 /// Lista podniesień jest ta sama, którą przy zapisie workflow czyta `workflow::check` — jedna
 /// lista, jedno miejsce (niezmiennik 23). Druga kopia rozjechałaby się w dniu, w którym ktoś
 /// dopisze flagę tylko do jednej z nich, i dokładnie tak powstała ta dziura.
+///
+/// # Czego ta funkcja świadomie NIE filtruje (2026-08-24, T-98)
+///
+/// Kolizji z listą zarezerwowaną. Ta odmowa jest **twardsza** i pada wyżej: bieg pyta najpierw
+/// [`passthrough_refused`] i przy niepustej odpowiedzi w ogóle nie startuje, więc wpis z tamtej
+/// listy nie ma jak dojść do argv tą drogą. Ciche wycięcie go tutaj dałoby drugą odpowiedź na
+/// to samo pytanie — bieg, który rusza z połową przelotki i nie mówi o tym ani słowa.
 #[must_use]
 pub fn vendor_args_filtered(agent: &Agent, vendor: &str) -> Passthrough {
     let Some(options) = agent.vendor_options.get(vendor) else {
@@ -899,23 +906,19 @@ pub fn vendor_args_filtered(agent: &Agent, vendor: &str) -> Passthrough {
         refused: Vec::new(),
     };
     for (flag, value) in options {
-        // JEDNA lista i JEDNA reguła — te same, które przy zapisie kroku workflow czyta
-        // `workflow::check::the_passthrough`. Podniesienie liczy się tak samo, kiedy stoi
-        // w nazwie flagi, jak wtedy, kiedy stoi w jej wartości, i obie połówki są konieczne:
-        // sama nazwa przepuszcza `--sandbox danger-full-access` (`--sandbox` nie jest
-        // zarezerwowane, a dial omija dokładnie tak samo skutecznie jak `-s`), a sama wartość
-        // przepuszcza wiersz, którym otwiera się TASK.md — flagę, która JEST podniesieniem
-        // i stoi z pustą wartością.
-        if let Some(raise) = FORBIDDEN_ESCALATIONS
-            .iter()
-            .copied()
-            .find(|raise| flag.contains(raise) || value.contains(raise))
-        {
+        // JEDNA reguła, nie druga kopia tej samej pętli — ta sama funkcja, którą przy zapisie
+        // kroku workflow woła `workflow::check::the_passthrough`. Podniesienie liczy się tak
+        // samo, kiedy stoi w nazwie flagi, jak wtedy, kiedy stoi w jej wartości, i obie połówki
+        // są konieczne: sama nazwa przepuszcza `--sandbox danger-full-access` (`--sandbox` nie
+        // jest zarezerwowane, a dial omija dokładnie tak samo skutecznie jak `-s`), a sama
+        // wartość przepuszcza wiersz, którym otwiera się TASK.md T-36 — flagę, która JEST
+        // podniesieniem i stoi z pustą wartością.
+        if let Some(raise) = escalation_in(flag, value) {
             // Odmowa z nazwą, nie cisza. Cicha odmowa uczy użytkownika, że przelotka nie
             // działa — zamiast tego, że została zablokowana — więc wpisuje to samo jeszcze raz,
             // innym zapisem. Stąd dwa pola: `flag` to wiersz do skasowania, `escalation` to
-            // powód, bez którego `--settings` (samo w sobie legalne) czyta się jak awaria
-            // Loadouta.
+            // powód, bez którego `--verbose-tool-output` (samo w sobie legalne) czyta się jak
+            // awaria Loadouta.
             handed.refused.push(Refusal {
                 flag: flag.clone(),
                 escalation: raise.to_string(),
@@ -1043,18 +1046,14 @@ pub fn passthrough_refused(agent: &Agent) -> Vec<String> {
     for (vendor, options) in &agent.vendor_options {
         for (flag, value) in options {
             let app = crate::workflow::check::vendor_name(vendor);
-            if let Some(raise) = FORBIDDEN_ESCALATIONS
-                .iter()
-                .copied()
-                .find(|raise| flag.contains(raise) || value.contains(raise))
-            {
+            if let Some(raise) = escalation_in(flag, value) {
                 said.push(format!(
                     "\"{}\" has {flag} in its {app} options, and {raise} raises what an agent may \
                      do with your files. That is set on one dial and nowhere else, so Loadout \
                      stopped the run instead of starting it. Delete that line.",
                     agent.name
                 ));
-            } else if crate::workflow::check::reserved(vendor).contains(&flag.as_str()) {
+            } else if is_reserved(vendor, flag) {
                 said.push(format!(
                     "Loadout sets {flag} itself, so \"{}\" cannot set it too. Delete it from this \
                      agent's {app} options.",
