@@ -64,6 +64,19 @@ nothing.
 OUTCOME: fail
 ";
 
+const FIELD_OUTSIDE_ANSWER_FALLBACK_FAIL: &str = "## Answer
+The work is good enough.
+
+## Evidence
+notes.txt:1
+outcome: pass
+
+## Open
+nothing.
+
+OUTCOME: fail
+";
+
 const NO_OUTCOME: &str = "## Answer
 The work still has a problem.
 
@@ -132,6 +145,27 @@ async fn the_field_wins_and_the_old_line_still_works() -> Result<(), Box<dyn Err
         field_pass.calls_for("after").len(),
         1,
         "the work after a field-level pass never ran; the conflicting fallback line won"
+    );
+
+    // Pola przekazania nie należą do sekcji `Answer`: wspólny nośnik czyta `klucz: wartość`
+    // z całego ciała. Późniejszy fallback ma pozostać tylko zapasem, nie nadpisać pola.
+    let field_outside_answer = run_fixture(
+        "field-outside-answer",
+        LOOP,
+        Script::new(&[("tester", &[FIELD_OUTSIDE_ANSWER_FALLBACK_FAIL])]),
+    )
+    .await?;
+    assert_eq!(
+        field_outside_answer.calls_for("tester").len(),
+        1,
+        "`outcome: pass` outside `## Answer` was not read by the shared field carrier. The calls \
+         were: {:?}",
+        field_outside_answer.calls
+    );
+    assert_eq!(
+        field_outside_answer.calls_for("after").len(),
+        1,
+        "the fallback line overrode the agreed outcome field outside `## Answer`"
     );
 
     // Brak obu nośników w rundzie nieostatniej nadal znaczy fail. W ostatniej rundzie pole
