@@ -270,6 +270,18 @@ PY
   PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} .claude/settings.json )
 }
 
+guard_quick_worktree_trust_race() {
+  # Prawdziwe naruszenie: helper konczy sie sukcesem, ale nie zapisuje zaufania.
+  # Check ma oceniac wynik dwunastu rownoleglych wywolan, nie obecność blokady.
+  python3 - <<'PY'
+from pathlib import Path
+
+path = Path('harness/trust-workspace.py')
+path.write_text('#!/usr/bin/env python3\nraise SystemExit(0)\n')
+PY
+  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} harness/trust-workspace.py )
+}
+
 guard_quick_tokens() {
   # Obie połowy checks/quick-tokens.sh. Połowa 2 (literał w komponencie) jest tą,
   # która dziś jeszcze nic nie ogląda — src/ nie ma ani jednego .tsx — więc plant

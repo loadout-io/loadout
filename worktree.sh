@@ -166,29 +166,14 @@ fi
 # Nieufany workspace CICHO wyrzuca każdy wpis permissions.allow: notatka idzie na
 # stderr, bieg leci dalej, a headless agent przepala cały budżet na odmowach
 # zapisu, których nikt nie zatwierdzi. Wygląda to jak błąd rozumowania modelu,
-# a jest błędem setupu. Piszemy atomowo, bo to konfiguracja użytkownika.
-if [ -f "$HOME/.claude.json" ]; then
-  python3 - "$DEST" <<'PY' || echo "note: could not mark the workspace trusted for claude" >&2
-import json, os, sys
-p = os.path.expanduser("~/.claude.json")
-with open(p) as fh:
-    d = json.load(fh)
-for path in {sys.argv[1], os.path.realpath(sys.argv[1])}:
-    d.setdefault("projects", {}).setdefault(path, {})["hasTrustDialogAccepted"] = True
-tmp = p + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(d, fh, indent=2)
-os.replace(tmp, p)
-PY
-fi
-
-# Codex trzyma to samo w ~/.codex/config.toml jako [projects."<ścieżka>"].
-# Dopisujemy tylko wtedy, gdy ścieżki tam jeszcze nie ma — powtórzona tabela
-# to błąd parsowania TOML, czyli zepsuta konfiguracja użytkownika.
-CODEX_CFG="${CODEX_HOME:-$HOME/.codex}/config.toml"
-if [ -f "$CODEX_CFG" ] && ! grep -qF "[projects.\"$DEST\"]" "$CODEX_CFG"; then
-  printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$DEST" >> "$CODEX_CFG"
-fi
+# a jest błędem setupu.
+#
+# 2026-08-24: T-98 i T-105 wystartowały równolegle. Wspólny `.claude.json.tmp`
+# zniknął między zapisem a os.replace, a dwa check-then-append splotły sekcje
+# config.toml tak, że oba wywołania Codeksa odmówiły przed pierwszą turą. Jeden
+# helper trzyma blokadę na stabilnym pliku obok konfiguracji i podmienia ją atomowo.
+python3 "$ROOT/harness/trust-workspace.py" "$DEST" \
+  || echo "note: could not mark the workspace trusted for both vendors" >&2
 
 echo "port $PORT (read it from $GITDIR/loadout-port)" >&2
 echo "$DEST"
