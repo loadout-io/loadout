@@ -4,6 +4,37 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 15:25 — T-110 ZAMKNIĘTE, pełny zakres przejmuje T-111
+
+**T-110 · czerwone / ZAMKNIĘTE · około 1 h 11 min do kontrolowanego przerwania · koszt
+widoczny: brak kwoty w paragonie.** Dwie tury Codeksa zużyły łącznie **14,47 mln tokenów
+wejścia i 51,4 tys. wyjścia**; artefakty recenzji i naprawy Claude'a nie zapisały kwoty.
+Kontrakt uczciwie certyfikował 3 AC, implementacja dostała jedną opinię cross-vendor i dokładnie
+jedną rundę naprawczą. Po niej AC-1/AC-2/AC-3 były zielone, a pełna bramka doszła do starego
+`lead_evidence_is_durable.rs` i nie skończyła się w swoim suficie: jego atrapa App Servera nie
+odpowiadała na nowe `config/read`. Proces testu i jego grupa zostały zatrzymane po rozpoznaniu
+dokładnych pgid; ponowna sonda drzewa procesów była pusta. Gałąź nie została wylądowana.
+
+To jest wynik granicy, nie zaproszenie do poprawienia speca. Sam kontrakt wskazał przed
+implementacją, że ta pełna fikstura wymaga zmiany, ale pliku nie było w OWNS. Po jednej rundzie
+naprawy kryteria zadania przeszły, lecz produktowa suita zawisła dokładnie na tym brakującym
+ogniwie. Zgodnie z regułą fazy „wykonalne tylko plikiem spoza OWNS = ZAMKNIĘTE” T-110 nie jest
+wznawiane i żaden jego commit nie trafia do main.
+
+Recenzent zgłosił pięć uwag. Utratę zatwierdzonych Connections naprawił jeszcze bieg, ale nie
+wylądowała z zamkniętą gałęzią. Dwie uwagi o semantyce nakładki rozstrzygnęły później źródła
+OpenAI: `ThreadStartParams.config` jest mapą, `config/read` ma oficjalny parametr i kształt,
+a `ConfigManager::load_with_cli_overrides` konwertuje pary żądania do TOML i dokłada je po
+nakładkach CLI; `mcp_servers.<id>.enabled=false` jest oficjalnym przełącznikiem. Uwaga o obrazie
+nie jest defektem: T-34 świadomie nie pokazuje arbitralnego błędu vendora przy załączniku i ma
+na to żywe E2E; pełna treść pozostaje dla wiadomości tekstowej. Rozjazd web-dialu jest osobnym,
+niezweryfikowanym znaleziskiem i nie został ukryty w tym zadaniu.
+
+Właścicielski wyjątek authoringu tworzy **T-111** z nowymi, globalnie unikalnymi ścieżkami.
+Obejmuje oba stare serwery-atrapy, autorytatywną listę Connections i wspólny encoder klucza,
+więc nie powtarza granicy T-110. T-111 jest następnym i ostatnim zastępstwem przed T-99;
+T-105 ani T-110 nie wolno wznawiać.
+
 ## 2026-08-24, 14:04 — T-105 ZAMKNIĘTE, cel przejmuje T-110
 
 **T-105 · czerwone / ZAMKNIĘTE · 14 min ostatniego przebiegu · $0,00 widoczne.** Kontrakt

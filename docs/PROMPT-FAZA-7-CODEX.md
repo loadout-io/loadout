@@ -1,13 +1,13 @@
-# Prompt orchestratora — faza 7 (T-98…T-110; T-105 zamknięte)
+# Prompt orchestratora — faza 7 (T-98…T-111; T-105 i T-110 zamknięte)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma trzynaście numerów:
-T-98…T-110, ponieważ niewykonalne T-105 zostało zamknięte bez lądowania, a jego cel przejęło
-T-110. Każdą zieloną gałąź lądujesz osobno na `main`.
+**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma czternaście numerów:
+T-98…T-111, ponieważ niewykonalne T-105 i pierwsze zastępstwo T-110 zostały zamknięte bez
+lądowania, a ich cel przejęło T-111. Każdą zieloną gałąź lądujesz osobno na `main`.
 
 ---
 
@@ -22,7 +22,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-110.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105 jest historycznym zamknięciem |
+| `tasks/T-98.md` … `tasks/T-111.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105 i T-110 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -76,6 +76,12 @@ Trzeci commit kontraktowy zapisuje drugą czerwień T-105, stan `T-105 ZAMKNIĘT
 unikalne ścieżki testów. Przed commitem ponownie uruchom wyłącznie `task-spine.py`, nie bramkę
 produktu.
 
+Czwarty commit kontraktowy zapisuje `T-110 ZAMKNIĘTE` po pełnej bramce zawieszonej na
+fiksturze App Servera spoza OWNS i dodaje `tasks/T-111.md`. T-111 nie przenosi commitów ani
+speców z gałęzi T-110: ma nowe ścieżki, obejmuje obie stare pełne fikstury protokołu i opiera
+semantykę nakładki na oficjalnym źródle OpenAI. Przed commitem wyłącznie `task-spine.py`;
+gałęzi T-105/T-110 nie wznawiać.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -83,18 +89,20 @@ produktu.
 Kolizje pierwotnych jedenastu zadań policzono **mechanicznie** 2026-08-24 (porównanie bloków
 `<!-- OWNS -->`, z pominięciem `tasks/` i `tests/it/main.rs`). Wynik: **jedyną parą bez ani
 jednego wspólnego pliku była T-98 ∥ T-105.** T-98 wylądowało, T-105 zostało zamknięte po
-drugiej czerwieni, a zastępcze T-110 idzie samo przed T-99. Dodane po żywym biegu T-109 ma
+drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. T-111 idzie
+samo przed T-99. Dodane po żywym biegu T-109 ma
 zależność semantyczną od T-103 i idzie po nim. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
 | 1a ∥ 1b | **WYKONANE:** T-98 w trunku; T-105 **ZAMKNIĘTE**, nie wznawiaj | AC-3 T-105 wymagało flagi odrzucanej przez App Server |
-| 1c | `./ship-task.sh T-110 --agent codex --reviewer claude` | uczciwe zastępstwo T-105; musi poprzedzić T-102 |
+| 1c | **WYKONANE:** T-110 **ZAMKNIĘTE**, nie wznawiaj | pełna bramka wymagała fikstury App Servera spoza OWNS |
+| 1d | `./ship-task.sh T-111 --agent codex --reviewer claude` | pełne zastępstwo T-105/T-110; musi poprzedzić T-102 |
 | 2 | `./ship-task.sh T-99 --agent claude --reviewer codex` | `workflow/check.rs` po T-98 |
 | 3 | `./ship-task.sh T-100 --agent claude --reviewer codex` | `run.rs`, `memory/handoff.rs` po T-99 |
 | 4 | `./ship-task.sh T-101 --agent codex --reviewer claude` | `run.rs` po T-100 |
-| 5 | `./ship-task.sh T-102 --agent claude --reviewer codex` | `run.rs` po T-101 **i** `codex.rs` po T-110 |
+| 5 | `./ship-task.sh T-102 --agent claude --reviewer codex` | `run.rs` po T-101 **i** `codex.rs` po T-111 |
 | 6 | `./ship-task.sh T-103 --agent claude --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-102 |
 | 7 | `./ship-task.sh T-109 --agent claude --reviewer codex` | `claude.rs` po T-103; izolacja obejmuje też refleksję |
 | 8 | `./ship-task.sh T-104 --agent claude --reviewer codex` | `run.rs`, `memory/notes.rs` po T-103 |
@@ -109,7 +117,7 @@ kredytów, limit), recenzja kończy się zerem z notatką — to fakt o świecie
 **Historycznie przy rundzie 1 (dwa zadania naraz) obowiązywało `LOADOUT_CARGO_LOCK_WAIT=2400`.** Domyślne 300 s
 jest dobre dla biegu szeregowego, gdzie pięciominutowe czekanie znaczy „coś wisi"; przy dwóch
 zadaniach rustowych kolejkowanie na muteksie cargo jest oczekiwane, a nie objawem — bez
-podniesienia sufitu drugi w kolejce dostaje `exit 2` i fałszywą czerwień. Od T-110 dalszy bieg
+podniesienia sufitu drugi w kolejce dostaje `exit 2` i fałszywą czerwień. Od T-111 dalszy bieg
 jest szeregowy; nie ustawiaj tej wartości bez równoległych zadań.
 
 **Stackowanie (opcjonalne, tylko gdy chcesz ścisnąć czas):** `FROM=<gałąź> ./worktree.sh …`
@@ -210,12 +218,13 @@ Pełna lista w `docs/PLAN-HARDENING.md` §8. Te trafiają najczęściej:
    istnieje i się kompiluje; sam płatny przebieg to decyzja człowieka po lądowaniu.
 
 Jedna rzecz o stanie produktu, żebyś nie zdiagnozował jej drugi raz: **lead na agentach Codeksa
-jest dziś zepsuty i naprawia to T-110.** Poprawka (`app_server_sandbox` ma mówić
+jest dziś zepsuty i naprawia to T-111.** Poprawka (`app_server_sandbox` ma mówić
 `read-only` / `workspace-write` / `danger-full-access`, bo `codex-cli 0.148.0` odrzuca camelCase
 przez `-32600: unknown variant`) była zmierzona na żywym `thread/start` i **świadomie cofnięta
 z drzewa**, żeby przeszła pętlą jak każda inna zmiana. T-105 jest zamkniętym dowodem, że
-`--ignore-user-config` nie działa w App Serverze; T-110 nie używa też fałszywego
-`mcp_servers={}`, tylko wyłącza każdy efektywny wpis przez konfigurację `thread/start`.
+`--ignore-user-config` nie działa w App Serverze; T-110 jest zamkniętym dowodem granicy OWNS.
+T-111 nie używa fałszywego `mcp_servers={}`: prywatne wpisy wyłącza, a jawne Connections
+włącza przez źródłowo potwierdzoną konfigurację `thread/start`.
 
 ---
 

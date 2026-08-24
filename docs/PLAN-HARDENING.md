@@ -29,7 +29,7 @@ bez rozszerzania zadań.
    koło pamięci, ale ujawnił wspólny zapis `~/.claude.json`, utratę `outcome:` przy cięciu 8 KB
    i pusty wynik martwego kroku w indeksie. Faza 7 zamyka je przed wyrocznią T-107.
 
-**Lead na Codeksie ma zmierzoną naprawę, która idzie przez zastępcze T-110:**
+**Lead na Codeksie ma zmierzoną naprawę, która idzie przez zastępcze T-111:**
 `app_server_sandbox` (`codex.rs:1114-1120`) wysyła `readOnly/workspaceWrite/dangerFullAccess`,
 a `codex-cli 0.148.0` odrzuca je z `-32600: unknown variant …, expected one of `read-only`,
 `workspace-write`, `danger-full-access``. Zmierzone 2026-08-24 na żywym `thread/start`:
@@ -39,9 +39,11 @@ chwilowo w drzewie roboczym właściciela i została COFNIĘTA na rzecz pętli �
 Pierwotne T-105 zostało **ZAMKNIĘTE** po drugiej czerwieni kontraktu: wymagane w AC-3
 `--ignore-user-config` istnieje dla `codex exec`, ale `codex app-server` 0.149.1 odrzuca je
 przed i po subkomendzie. Pozorny zamiennik `-c 'mcp_servers={}'` także jest nieuczciwy —
-pusta tabela scala się niedestrukcyjnie i nie usuwa istniejących wpisów. T-110 zachowuje
-AC-1/AC-2 i wyłącza każdy efektywny serwer osobną, wspieraną nakładką
-`mcp_servers.<id>.enabled=false` w `thread/start`, po bezpiecznym `config/read`.
+pusta tabela scala się niedestrukcyjnie i nie usuwa istniejących wpisów. T-110 zostało
+**ZAMKNIĘTE** bez lądowania, gdy pełna bramka po naprawie zawisła na fiksturze protokołu
+spoza OWNS. T-111 zachowuje AC-1/AC-2 i wyłącza każdy efektywny serwer osobną, wspieraną
+nakładką `mcp_servers.<id>.enabled=false` w `thread/start`, po bezpiecznym `config/read`;
+obejmuje wszystkie pełne fikstury i zachowuje jawnie zatwierdzone Connections.
 
 ---
 
@@ -67,8 +69,8 @@ AC-1/AC-2 i wyłącza każdy efektywny serwer osobną, wspieraną nakładką
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
-| H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-110** (T-105 zamknięte) |
-| H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-110** (D-4 = TAK; per-serwer `enabled=false`) |
+| H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
+| H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
 | H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-108** |
 | H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-99** AC-4 (walidator: zakaz) |
@@ -89,7 +91,7 @@ AC-1/AC-2 i wyłącza każdy efektywny serwer osobną, wspieraną nakładką
 | T-99 | Kopie dostają własne gałęzie, załączniki własną ścieżkę, pustka etykietę | T-98 (wspólny `workflow/check.rs`) | tak | 4 |
 | T-100 | Werdykt jest polem, sędzia widzi próby | T-99 | tak | 4 |
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
-| T-102 | Wydatki są analityką: koszt obu vendorów policzony i pokazany | T-101, T-110 (wspólny `codex.rs`) | tak | 4 |
+| T-102 | Wydatki są analityką: koszt obu vendorów policzony i pokazany | T-101, T-111 (wspólny `codex.rs`) | tak | 4 |
 | T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-102 | tak | 5 |
 | T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-103 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
@@ -97,7 +99,8 @@ AC-1/AC-2 i wyłącza każdy efektywny serwer osobną, wspieraną nakładką
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
 | T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-103 | nie | 3 |
-| T-110 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone per wątek | — (zastępuje T-105) | nie | 3 |
+| T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
+| T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -172,20 +175,30 @@ który dziś używa `--settings` jako przykładu flagi NIEzarezerwowanej — da�
 **T-105 — ZAMKNIĘTE, bez lądowania.** AC-1 i AC-2 dostały uczciwe czerwone specy, lecz
 AC-3 wymagało flagi odrzucanej przez prawdziwy App Server. Dodanie asercji na nieobsługiwane
 argv byłoby zazielenieniem fikstury kosztem zepsucia produktu. Kontraktu nie łatamy; zastępuje
-go nowy, globalnie unikalny T-110.
+go nowy, globalnie unikalny kontrakt.
 
-**T-110 — lead na Codeksie (D-4 = TAK; zastępstwo T-105).**
+**T-110 — ZAMKNIĘTE, bez lądowania.** Mechanizm konfiguracji per wątek był właściwy i po
+jednej rundzie naprawy wszystkie trzy AC były zielone. Pełna suita zawisła jednak na
+`lead_evidence_is_durable.rs`, którego App Server nie odpowiadał na nowe `config/read`; plik
+leżał poza OWNS T-110. Reguła fazy zabrania rozszerzenia własności po biegu. Gałąź zostaje
+dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami speców.
+
+**T-111 — lead na Codeksie (D-4 = TAK; zastępstwo T-105/T-110).**
 - AC-1: `app_server_sandbox` wysyła `read-only` / `workspace-write` / `danger-full-access`
   i wiąże drogę App Servera z `exec` jedną tabelą.
 - AC-2: `app_server_actor` dokleja dynamiczne `error.code` + `error.message` vendora do
-  zdarzenia, które dostaje okno; kontrola sukcesu pozostaje zielona.
+  odmowy, którą dostaje okno dla wiadomości tekstowej; kontrola sukcesu pozostaje zielona.
+  Bezpieczna, stała odmowa dla szkicu z obrazem zostaje zgodnie z T-34.
 - AC-3: po `initialize`, przed `thread/start`, `config/read` daje identyfikatory efektywnych
-  `mcp_servers`; każde żądanie wątku dostaje bezpiecznie zakodowany wpis
-  `mcp_servers.<id>.enabled=false`. Błąd lub zły kształt konfiguracji odmawia startu zamiast
-  wracać do prywatnych narzędzi. Test ma kontrolę, nazwę z kropką/cudzysłowem i znacznik
-  symulowanego startu MCP — nie szuka stringa w źródle.
-- OWNS: `engine/drivers/codex.rs`, `lead_image_reaches_both_vendors.rs`, unikalne testy;
-  bez `run.rs`. Musi wylądować przed T-102.
+  `mcp_servers`; prywatne dostają bezpiecznie zakodowane `enabled=false`, a nazwy z
+  `DriverConfiguration.servers` jawne `enabled=true`. Środowisko zatwierdzonego Connection
+  dociera do procesu App Servera przez supervisor. Błąd lub zły kształt konfiguracji odmawia
+  przed `thread/start` zamiast wracać do prywatnych narzędzi.
+- Wyrocznia jest przywiązana do źródeł OpenAI: request overrides z
+  `ThreadStartParams.config` są konwertowane JSON→TOML i dokładane po CLI; referencja definiuje
+  `mcp_servers.<id>.enabled`. Wszystkie stare pełne fikstury odpowiadają na nowy krok protokołu.
+- OWNS: `engine/drivers/codex.rs`, współdzielony encoder klucza, runtime Connections, obie
+  pełne fikstury App Servera i unikalne testy; bez `run.rs`. Musi wylądować przed T-102.
 - Pułapka słownictwa: treść błędu vendora wchodzi do zdania w RUNTIME (interpolacja), nie
   jako literał w kodzie — literały zdania trzymać w dzisiejszej rodzinie.
 
@@ -225,17 +238,18 @@ go nowy, globalnie unikalny T-110.
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-110 teraz, przed T-99**: zastępuje zamknięte T-105 i musi wyprzedzić T-102 przez
-  wspólny `codex.rs`. Nie wznawiać gałęzi T-105 ani nie przenosić jej testów.
+- **T-111 teraz, przed T-99**: zastępuje zamknięte T-105 i T-110 oraz musi wyprzedzić T-102
+  przez wspólny `codex.rs`. Nie wznawiać starych gałęzi ani nie przenosić ich testów.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
   `T-99 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
 - **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
-  bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 zostało
-  zamknięte; zastępcze T-110 idzie teraz samo przed łańcuchem. Wszystko dalej dzieli `run.rs`,
+  bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
+  zastępstwo T-110 zostały zamknięte; T-111 idzie teraz samo przed łańcuchem. Wszystko dalej
+  dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
-  T-99 po T-98 (`workflow/check.rs`), T-102 po T-110 (`codex.rs`),
+  T-99 po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
   **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-103);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
@@ -269,7 +283,7 @@ go nowy, globalnie unikalny T-110.
 | D-1 | `--settings` (i reszta list) na flagi zarezerwowane; zmiana przesłanki `agents_vendor_args_filtered.rs` | **TAK** — test dostaje inny przykład flagi wolnej |
 | D-2 | Pamięć per projekt (`<repo>/.loadout/memory/`) | **TAK** |
 | D-3 | Refleksja domyślnie włączona, wyłączalna; nie biegnie po anulowanym | **TAK** |
-| D-4 | Lead Codeksa bez prywatnych MCP | **TAK** — T-105 zamknięte, bo App Server nie przyjmuje `--ignore-user-config`; T-110 wyłącza każdy efektywny `mcp_servers.<id>` w konfiguracji `thread/start`; połączenia jawnie przez Connections |
+| D-4 | Lead Codeksa bez prywatnych MCP | **TAK** — T-105 zamknięte, bo App Server nie przyjmuje `--ignore-user-config`; T-110 zamknięte na fiksturze poza OWNS; T-111 wyłącza prywatne `mcp_servers.<id>` i jawnie włącza zatwierdzone Connections w konfiguracji `thread/start` |
 | D-5 | Budżet | **ŁAGODNIE** — wydatki to analityka (właściciel na subskrypcjach obu vendorów): koszty policzone i pokazane u obu vendorów, twardy stop TYLKO przy jawnie ustawionej kwocie, wzór ×N bez zmian, miękkość w docs |
 | D-6 | Martwa maszyneria | **wg rekomendacji** — usunąć tabelę `memory` i `RecoveryPlan.ask`; zostawić `supersede()`/`Kind` i `Absent` z poprawionymi nagłówkami |
 | D-7 | Tryb wykonania fazy | **wszystko pełną pętlą zadaniową, bez fal** — wcześniejszy podział na tryby (szybki/wprost) cofnięty decyzją właściciela 2026-08-24 |
