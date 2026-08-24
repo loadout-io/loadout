@@ -5430,6 +5430,8 @@ struct Handed {
     /// Nie trafia do trwałego pliku: prompt składa bezwzględny adres z kopii bieżącego biegu,
     /// więc przeniesienie lub wznowienie nie zostawia w nim starego katalogu.
     attachment: Option<PathBuf>,
+    /// Udany poprzednik zapisał poprawne przekazanie, ale żadna jego sekcja nie niesie treści.
+    left_nothing: bool,
     /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
     /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
     what: WhatItIs,
@@ -7528,6 +7530,9 @@ impl Live {
             // i to, czym on jest, czytane z dwóch osobnych list są dwiema listami do zestawienia
             // w głowie — a agent, który tego nie zrobi, otwiera wszystkie pliki po kolei.
             let mut label = hand.what.said();
+            if hand.left_nothing {
+                label.push_str("; left nothing");
+            }
             if let Some(full) = &hand.attachment {
                 let metadata = fs::symlink_metadata(full)?;
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -7682,15 +7687,20 @@ impl Live {
                 from: one.from.clone(),
                 path: one.path.clone(),
                 attachment: one.attachment.clone(),
+                // `run.json` starszego biegu nie jest tu wczytany ze stanem każdego kroku.
+                // Bez dowodu sukcesu nie nazywamy przejętej pustki udanym wynikiem.
+                left_nothing: false,
                 what: WhatItIs::FromAnEarlierRun,
             })
             .collect();
         index.extend(wanted.into_iter().filter_map(|step| {
             let written = filed.get(step)?.as_ref()?;
+            let succeeded = !unpassed.get(step).copied().unwrap_or(false);
             Some(Handed {
                 from: self.plan.steps.get(step)?.name.clone(),
                 path: written.path.clone(),
                 attachment: written.attachment.clone(),
+                left_nothing: succeeded && written.left_nothing,
                 what: self.what_it_is(id, step, &unpassed),
             })
         }));

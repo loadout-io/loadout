@@ -331,6 +331,12 @@ impl Handoff {
             .any(|line| line == pointer)
             .then(|| run_dir.join(ATTACHMENTS_DIR).join(name))
     }
+
+    /// Czy po normalizacji wszystkie trzy sekcje są faktycznie puste.
+    #[must_use]
+    pub fn left_nothing(&self) -> bool {
+        sections_are_empty(&self.body)
+    }
 }
 
 /// Co powstało na dysku i co z tego wynika dla kroku.
@@ -345,6 +351,8 @@ pub struct Written {
     /// przyszło w umówionym kształcie — i to jest licznik, który warto oglądać [T6 §11.1].
     pub repaired: Vec<Section>,
     pub truncated: bool,
+    /// `true`, kiedy znormalizowane sekcje nie niosą ani jednego znaku treści.
+    pub left_nothing: bool,
 }
 
 /// Składa front-matter, naprawia sekcje, pilnuje limitu i zapisuje plik w `run_dir/handoffs/`.
@@ -466,6 +474,7 @@ fn write_inner(
 
     let normalized = normalize(agent_body);
     let (shaped, repaired) = reshape(&normalized);
+    let left_nothing = sections_are_empty(&shaped);
     let (body, truncated) = cap(&shaped, &pointer);
 
     let attachment = if truncated {
@@ -491,6 +500,7 @@ fn write_inner(
         attachment,
         repaired,
         truncated,
+        left_nothing,
     })
 }
 
@@ -783,6 +793,17 @@ fn split_sections(body: &str) -> Option<(&str, Vec<&str>)> {
         contents.push(&body[after..end]);
     }
     Some((&body[..at[0]], contents))
+}
+
+/// Pustka po normalizacji, nie brak bajtów w surowej odpowiedzi.
+///
+/// Proza przed pierwszym nagłówkiem też jest treścią: [`reshape`] przypisuje ją do Answer, więc
+/// pominięcie preambuły nazwałoby odpowiedź z tekstem pustą tylko dlatego, że agent dopisał
+/// później trzy puste nagłówki (T-114, 2026-08-24).
+fn sections_are_empty(body: &str) -> bool {
+    split_sections(body).is_some_and(|(preamble, contents)| {
+        preamble.trim().is_empty() && contents.iter().all(|content| content.trim().is_empty())
+    })
 }
 
 /// Ostatnia jawna decyzja sędziego pętli, jeśli odpowiedź ją zawiera.
