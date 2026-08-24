@@ -277,7 +277,17 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
         "the App Server process did not receive the approved Connection environment name"
     );
 
-    for private in [PRIVATE_PLAIN, PRIVATE_TRICKY, ENVIRONMENT_SECRET] {
+    let escaped_private_tricky = PRIVATE_TRICKY.replace('"', "\\\"");
+    assert!(
+        TRICKY_OVERLAY.contains(&escaped_private_tricky),
+        "the escaped private id must be the spelling exercised by the tricky overlay"
+    );
+    for private in [
+        PRIVATE_PLAIN,
+        PRIVATE_TRICKY,
+        escaped_private_tricky.as_str(),
+        ENVIRONMENT_SECRET,
+    ] {
         assert!(
             !argv.iter().any(|argument| argument.contains(private)),
             "private configuration escaped into argv through {private:?}: {argv:?}"
