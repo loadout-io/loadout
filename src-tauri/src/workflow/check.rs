@@ -327,6 +327,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     copies_out_of_range(&steps, &mut notes);
     colliding_work_branches(&steps, when, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
+    loop_judges_run_once(&workflow.links, &steps, &position, &mut notes);
     loops_that_cross(&workflow.links, &steps, &position, &forward, &mut notes);
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
@@ -819,6 +820,40 @@ fn turns_out_of_range(
                  {MOST_TURNS}."
             ),
         ));
+    }
+}
+
+/// Źródło strzałki powrotnej wydaje jeden werdykt, więc nie może biec w kilku kopiach.
+///
+/// 2026-08-24 (T-114) — sędzią jest `link.from`, który zamyka pętlę; `link.to` jest jej
+/// wejściem i może legalnie mieć kilka kopii. Zbiór po id źródła sprawia, że dwie strzałki
+/// powrotne od tego samego sędziego dają człowiekowi jedno zdanie, nie dwa.
+fn loop_judges_run_once(
+    links: &[Link],
+    steps: &[Facts<'_>],
+    position: &BTreeMap<&str, usize>,
+    notes: &mut Vec<Note>,
+) {
+    let mut judged: BTreeSet<&str> = BTreeSet::new();
+    for link in links.iter().filter(|link| link.is_a_way_back()) {
+        if !judged.insert(link.from.as_str()) {
+            continue;
+        }
+        let Some(step) = position
+            .get(link.from.as_str())
+            .and_then(|at| steps.get(*at))
+        else {
+            continue;
+        };
+        if step.copies > 1 {
+            notes.push(problem(
+                Some(step.id),
+                format!(
+                    "\"{}\" closes a loop, so it can only run once at a time.",
+                    step.name
+                ),
+            ));
+        }
     }
 }
 
