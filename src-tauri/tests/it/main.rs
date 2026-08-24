@@ -28,6 +28,7 @@
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
+mod a_blocked_way_out_takes_the_chosen_path;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
@@ -79,6 +80,7 @@ mod codex_steps_show_their_actions;
 mod codex_tools_never_refuse_the_run;
 mod conditional_edges_choose_one_branch;
 mod connection_tools_are_approved;
+mod context_failures_take_the_chosen_path;
 mod continue_from_a_past_run;
 mod copies_run_side_by_side;
 mod driver_claude_policy_surface;
@@ -99,6 +101,7 @@ mod engine_overlap;
 mod engine_step_states;
 mod escalations_match_by_key;
 mod every_failure_leaves_its_last_words;
+mod every_failure_shares_one_door;
 mod every_step_is_told_how_to_answer;
 mod finished_runs_leave_no_work_trees;
 mod folder_same_copy_as_before;
@@ -237,6 +240,7 @@ mod skills_scope_two_roots;
 mod started_process_is_ours;
 mod started_processes_die_with_the_window;
 mod step_deadline_stops_the_agent;
+mod steps_below_a_spent_budget_say_so;
 mod store_append_only;
 mod store_batch_atomic;
 mod store_disposable;
