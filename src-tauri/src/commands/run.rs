@@ -400,6 +400,9 @@ const IS_WHAT_YOU_STARTED_WITH: &str = "what you were given at the start";
 /// Początek etykiety wcześniejszej rundy TEGO kroku. Ogon dopisuje [`WhatItIs::said`].
 const IS_YOUR_OWN_EARLIER_ANSWER: &str = "your own earlier answer";
 
+/// Etykieta wcześniejszej próby pracy, którą sędzia porównuje z bieżącą.
+const IS_AN_EARLIER_TRY_OF_THE_WORK: &str = "an earlier answer from the work you are checking";
+
 /// Początek etykiety wcześniejszej rundy sędziego. „Tester", bo tak nazywa go człowiek — nasze
 /// słowo („judge") nie znaczy nic po drugiej stronie promptu.
 const IS_WHAT_THE_TESTER_SAID: &str = "what the tester said last time";
@@ -5455,6 +5458,8 @@ enum WhatItIs {
     WhatYouStartedWith,
     /// Wcześniejsza runda TEGO kroku.
     YourOwnTry { which: u8, of: u8 },
+    /// Wcześniejsza próba pracy, którą ocenia sędzia tej pętli.
+    EarlierTryOfTheWork { which: u8, of: u8 },
     /// Wcześniejsza runda sędziego tej pętli.
     WhatTheTesterSaid { which: u8, of: u8 },
     /// Plik przejęty po biegu, od którego ten bieg wznowiono.
@@ -5470,6 +5475,9 @@ impl WhatItIs {
             Self::WhatYouStartedWith => IS_WHAT_YOU_STARTED_WITH.to_owned(),
             Self::YourOwnTry { which, of } => {
                 format!("{IS_YOUR_OWN_EARLIER_ANSWER}, try {which} of {of}")
+            }
+            Self::EarlierTryOfTheWork { which, of } => {
+                format!("{IS_AN_EARLIER_TRY_OF_THE_WORK}, try {which} of {of}")
             }
             Self::WhatTheTesterSaid { which, of } => {
                 format!("{IS_WHAT_THE_TESTER_SAID}, try {which} of {of}")
@@ -7769,8 +7777,8 @@ impl Live {
             .collect()
     }
 
-    /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, własne wcześniejsze
-    /// odpowiedzi i wcześniejsze werdykty sędziego.
+    /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, wcześniejsze próby pracy,
+    /// własne wcześniejsze odpowiedzi i wcześniejsze werdykty sędziego.
     ///
     /// Pusta lista dla kroku spoza pętli i dla rundy zerowej. Numery kroków, nie ścieżki: filtr
     /// „a czy ten krok cokolwiek oddał" stoi jeden, w [`Live::handed_before`].
@@ -7827,11 +7835,16 @@ impl Live {
             }
         }
 
-        // Własne poprzednie odpowiedzi i poprzednie werdykty sędziego — WSZYSTKIE, nie sama
-        // ostatnia. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę w całości,
-        // więc agent powtarza błąd, który sędzia raz już odrzucił.
+        // Sędzia dostaje KAŻDĄ wcześniejszą próbę kroku, do którego wraca pętla, a pozostali
+        // dostają własne wcześniejsze odpowiedzi. Obie strony dostają wszystkie wcześniejsze
+        // werdykty sędziego. Implementacja niosąca tylko rundę tuż przed tą gubi pierwszą próbę
+        // w całości, więc nie da się odróżnić poprawki od tego samego błędu opisanego inaczej.
         for turn in 0..step.turn {
-            knows.extend(self.node_of(&step.tile_key, turn));
+            if step.tile_key == the_loop.judge {
+                knows.extend(self.node_of(&the_loop.entry, turn));
+            } else {
+                knows.extend(self.node_of(&step.tile_key, turn));
+            }
             knows.extend(self.node_of(&the_loop.judge, turn));
         }
         knows
@@ -7870,6 +7883,12 @@ impl Live {
         let of = the_loop.turns;
         if before.tile_key == step.tile_key {
             return WhatItIs::YourOwnTry { which, of };
+        }
+        if step.tile_key == the_loop.judge
+            && before.tile_key == the_loop.entry
+            && before.turn < step.turn
+        {
+            return WhatItIs::EarlierTryOfTheWork { which, of };
         }
         if before.tile_key == the_loop.judge {
             return WhatItIs::WhatTheTesterSaid { which, of };
