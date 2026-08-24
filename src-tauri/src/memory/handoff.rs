@@ -785,6 +785,40 @@ fn split_sections(body: &str) -> Option<(&str, Vec<&str>)> {
     Some((&body[..at[0]], contents))
 }
 
+/// Ostatnia jawna decyzja sędziego pętli, jeśli odpowiedź ją zawiera.
+///
+/// Cały wiersz i tylko dwie wartości: `outcome:` w prozie albo nieznana wartość nie może stać
+/// się decyzją przez przypadek. `trim` dopuszcza jedynie wcięcie i końcowe spacje samego wiersza.
+fn last_decision(body: &str) -> Option<&str> {
+    body.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| matches!(*line, "outcome: pass" | "outcome: fail"))
+}
+
+/// Zachowuje wskazaną decyzję dokładnie raz w już uciętym ciele.
+fn keep_decision_once(body: &mut String, decision: &str) {
+    let mut seen = false;
+    let mut kept = String::with_capacity(body.len());
+    for line in body.split_inclusive('\n') {
+        if line.trim() == decision {
+            if seen {
+                continue;
+            }
+            seen = true;
+        }
+        kept.push_str(line);
+    }
+    if !seen {
+        if !kept.ends_with('\n') {
+            kept.push('\n');
+        }
+        kept.push_str(decision);
+        kept.push('\n');
+    }
+    *body = kept;
+}
+
 /// Cięcie do [`BODY_CAP`] po granicy sekcji; wewnątrz sekcji — po granicy wiersza.
 ///
 /// 2026-08-16, [T6 §11.2]: jednostką cięcia jest **sekcja**, bo ciało ucięte w połowie zdania
@@ -811,6 +845,10 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
         .collect();
     let line = pointer.len() + 1;
     let costs: Vec<usize> = heads.iter().map(|head| head.len() + line).collect();
+    // 2026-08-24 (T-114) — werdykt zwykle stoi na końcu odpowiedzi, czyli dokładnie tam, gdzie
+    // cięcie 8 KB go usuwało. Rezerwujemy jego jeden wiersz przed doborem treści sekcji.
+    let decision = last_decision(body);
+    let content_cap = BODY_CAP.saturating_sub(decision.map_or(0, |said| said.len() + 1));
 
     let mut out = String::from(preamble);
     let mut truncated = false;
@@ -818,7 +856,7 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
 
     for (index, (head, content)) in heads.iter().zip(contents.iter()).enumerate() {
         let rest: usize = costs.iter().skip(index + 1).sum();
-        if out.len() + head.len() + content.len() + rest <= BODY_CAP {
+        if out.len() + head.len() + content.len() + rest <= content_cap {
             out.push_str(head);
             out.push_str(content);
             kept = kept || !content.trim().is_empty();
@@ -828,7 +866,7 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
         truncated = true;
         out.push_str(head);
         if !kept {
-            let room = BODY_CAP.saturating_sub(out.len() + line + rest);
+            let room = content_cap.saturating_sub(out.len() + line + rest);
             let budget = room.min(BODY_CAP / SECTIONS.len());
             out.push_str(&content[..last_line_boundary(content, budget)]);
         }
@@ -842,6 +880,10 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
             out.push('\n');
         }
         break;
+    }
+
+    if let Some(decision) = decision {
+        keep_decision_once(&mut out, decision);
     }
 
     (out, truncated)
