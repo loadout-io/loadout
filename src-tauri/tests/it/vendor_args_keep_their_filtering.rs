@@ -45,11 +45,6 @@ use loadout_lib::library::agents::{
 use loadout_lib::workflow::WorkflowFile;
 use loadout_lib::workflow::file::{SaveError, save};
 
-// AC-4 mówi o starej wyroczni, więc unikalny moduł kryterium naprawdę ją kompiluje i uruchamia.
-// Duplikowanie kilku jej asercji nie wystarczałoby: stary plik mógłby paść poza duplikatem.
-#[path = "agents_vendor_args_filtered.rs"]
-mod old_oracle;
-
 const VENDOR: &str = "claude";
 const STEP: &str = "Build";
 
@@ -169,6 +164,17 @@ fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 }
 
 // ── kryterium ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn the_old_oracle_runs_in_full() {
+    // AC-4 mówi o starej wyroczni. Wołamy jej pięć prawdziwych testów przez jeden moduł,
+    // zamiast ładować ten sam plik drugi raz (co full-clippy odrzuca jako duplicate_mod).
+    super::agents_vendor_args_filtered::claude_gets_the_harmless_flag_and_not_one_escalation();
+    super::agents_vendor_args_filtered::codex_gets_the_harmless_flag_and_not_one_escalation();
+    super::agents_vendor_args_filtered::the_refusal_says_which_line_to_delete_and_what_it_tried_to_raise();
+    super::agents_vendor_args_filtered::the_plain_argv_builder_is_filtered_too_not_only_its_talking_twin();
+    super::agents_vendor_args_filtered::the_example_this_file_leans_on_is_free_and_the_old_one_is_not();
+}
 
 #[test]
 fn the_flag_the_old_oracle_now_calls_free_really_is_free() -> Result<(), Box<dyn Error>> {

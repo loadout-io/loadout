@@ -131,7 +131,7 @@ fn nothing_raises_the_dial(args: &[String], vendor: &str) {
 }
 
 #[test]
-fn claude_gets_the_harmless_flag_and_not_one_escalation() {
+pub(crate) fn claude_gets_the_harmless_flag_and_not_one_escalation() {
     let handed: Passthrough = vendor_args_filtered(&agent_that_tries_to_raise_the_dial(), "claude");
 
     nothing_raises_the_dial(&handed.args, "Claude Code");
@@ -156,7 +156,7 @@ fn claude_gets_the_harmless_flag_and_not_one_escalation() {
 }
 
 #[test]
-fn codex_gets_the_harmless_flag_and_not_one_escalation() {
+pub(crate) fn codex_gets_the_harmless_flag_and_not_one_escalation() {
     let handed = vendor_args_filtered(&agent_that_tries_to_raise_the_dial(), "codex");
 
     nothing_raises_the_dial(&handed.args, "Codex");
@@ -177,7 +177,7 @@ fn codex_gets_the_harmless_flag_and_not_one_escalation() {
 }
 
 #[test]
-fn the_refusal_says_which_line_to_delete_and_what_it_tried_to_raise() {
+pub(crate) fn the_refusal_says_which_line_to_delete_and_what_it_tried_to_raise() {
     let agent = agent_that_tries_to_raise_the_dial();
 
     let claude = vendor_args_filtered(&agent, "claude");
@@ -233,7 +233,7 @@ fn the_refusal_says_which_line_to_delete_and_what_it_tried_to_raise() {
 }
 
 #[test]
-fn the_plain_argv_builder_is_filtered_too_not_only_its_talking_twin() {
+pub(crate) fn the_plain_argv_builder_is_filtered_too_not_only_its_talking_twin() {
     let agent = agent_that_tries_to_raise_the_dial();
 
     // `vendor_args` jest funkcją, którą TASK.md nazywa dziurą: to ona tłumaczy przelotkę prosto
@@ -286,7 +286,7 @@ fn agent_offering(flag: &str, value: &str) -> Agent {
 /// Ta sama funkcja odpowiada na obie połowy pytania — że nowy przykład jest wolny i że stary
 /// naprawdę zmienił stronę.
 #[test]
-fn the_example_this_file_leans_on_is_free_and_the_old_one_is_not() {
+pub(crate) fn the_example_this_file_leans_on_is_free_and_the_old_one_is_not() {
     let free = passthrough_refused(&agent_offering(CLAUDE_CARRIER, BYPASS));
     assert_eq!(
         free.len(),

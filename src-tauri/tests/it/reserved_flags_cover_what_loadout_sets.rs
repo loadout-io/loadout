@@ -224,14 +224,6 @@ impl Doors {
     fn names_on_plan(&self, flag: &str) -> bool {
         self.on_plan.iter().any(|said| said.contains(flag))
     }
-
-    fn all(&self) -> Vec<&str> {
-        self.on_save
-            .iter()
-            .chain(&self.on_plan)
-            .map(String::as_str)
-            .collect()
-    }
 }
 
 /// `{"claude": {"<flaga>": "<wartość>"}}` — kształt na drucie, wspólny dla obu nośników.
