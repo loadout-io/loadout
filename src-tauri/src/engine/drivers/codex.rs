@@ -1112,11 +1112,7 @@ async fn emit_app(
 }
 
 fn app_server_sandbox(policy: Policy) -> &'static str {
-    match policy {
-        Policy::ReadOnly => "readOnly",
-        Policy::EditInFolder => "workspaceWrite",
-        Policy::Unrestricted => "dangerFullAccess",
-    }
+    sandbox_mode(policy)
 }
 
 fn app_turn_input(text: &str, images: &ValidatedImages) -> anyhow::Result<Vec<Value>> {
