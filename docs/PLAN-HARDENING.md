@@ -1,12 +1,12 @@
 # Plan: twardnienie agentów, pętli i pamięci — faza 7
 
-2026-08-24 · analiza + weryfikacja właściciela w trunku · decyzje D-1…D-6 rozstrzygnięte
+2026-08-24 · analiza + weryfikacja właściciela w trunku + pierwszy żywy bieg · decyzje D-1…D-6 rozstrzygnięte
 2026-08-24 (§6) · **decyzja wykonawcza właściciela: KAŻDE zadanie idzie pełną pętlą zadaniową
 (`ship-task.sh`, cross-vendor domyślnie, D3); bez fal — kolejność wynika wyłącznie
 z zależności, równolegle wolno wszystko, co nie dzieli OWNS** · czytaj po
 `docs/PLAN-AGENTS-CONTEXT.md`, przed `tasks/T-98.md`
 
-Źródła: pełna analiza architektury (4 raporty z kodu + 31 prawdziwych biegów), zweryfikowana
+Źródła: pełna analiza architektury (4 raporty z kodu + 32 prawdziwe biegi), zweryfikowana
 przez właściciela w obecnym trunku (9 z 10 najostrzejszych twierdzeń potwierdzone, K2
 skorygowane, przelotka podniesiona do P0). Prawdą o zadaniu jest `tasks/<ID>.md`; tu jest
 dlaczego, w jakiej kolejności i gdzie są pułapki. Znalezisko spoza mapy → `docs/STATUS.md`,
@@ -25,8 +25,9 @@ bez rozszerzania zadań.
 4. Pętla learningów jest wpięta end-to-end, ale nie zadziała w praktyce: pamięć wyłącznie
    globalna, odrzucone notatki wracają, refleksja nieaudytowalna i sama wycieka auto-pamięcią,
    koszt Codeksa niewidzialny.
-5. Ani jedno kryterium fazy 6 nie uruchomiło prawdziwego biegu — faza 7 kończy się wyrocznią
-   na żywych agentach (T-107).
+5. Pierwszy prawdziwy bieg po fazie 6 potwierdził historię rund, fan-in, pola `outcome` i pełne
+   koło pamięci, ale ujawnił wspólny zapis `~/.claude.json`, utratę `outcome:` przy cięciu 8 KB
+   i pusty wynik martwego kroku w indeksie. Faza 7 zamyka je przed wyrocznią T-107.
 
 **Lead na Codeksie ma zmierzoną, gotową naprawę, która CZEKA na swoją pętlę (T-105):**
 `app_server_sandbox` (`codex.rs:1114-1120`) wysyła `readOnly/workspaceWrite/dangerFullAccess`,
@@ -68,6 +69,8 @@ chwilowo w drzewie roboczym właściciela i została COFNIĘTA na rzecz pętli �
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
 | H26 | Docs: ARCHITECTURE §4/§5/§6b/§8 rozjechane z kodem | **§5** po ostatnim lądowaniu |
 | H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-102** |
+| H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-99** AC-2 |
+| H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-109** |
 
 ---
 
@@ -86,6 +89,7 @@ chwilowo w drzewie roboczym właściciela i została COFNIĘTA na rzecz pętli �
 | T-106 | Zatrzymanie ma sufit i eskalację | T-102 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
+| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-103 | nie | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -102,8 +106,9 @@ który dziś używa `--settings` jako przykładu flagi NIEzarezerwowanej — da�
 **T-99 — kopie, załączniki, pustka.**
 - AC-1: gałąź z `work_key` (`loadout/<bieg>/s_2~2`); test `copies: 2` + `fresh-copy`
   w prawdziwym repo gitowym (fikstura fresh-copy, niezmiennik 12).
-- AC-2: wskaźnik w uciętym ciele ze ścieżką bezwzględną (`handoff.rs:448`);
-  `HANDOFF_INDEX_CLOSES` nazywa katalog załączników wprost.
+- AC-2: wskaźnik w uciętym ciele ze ścieżką bezwzględną (`handoff.rs:448`),
+  `HANDOFF_INDEX_CLOSES` nazywa katalog załączników wprost, a końcowe `outcome:` przeżywa
+  limit 8 KB dokładnie raz (H28).
 - AC-3: puste ciało → dopisek do etykiety w indeksie następnego kroku (zamknięta lista,
   słownictwo z istniejącej rodziny).
 - AC-4: walidator odmawia `copies>1` na kafelku-sędzi (H23).
@@ -191,12 +196,23 @@ który dziś używa `--settings` jako przykładu flagi NIEzarezerwowanej — da�
 - Zostawić z poprawionym nagłówkiem: `supersede()`/`Kind` (wraca przy `/correct`),
   sterownik `Absent` (trzeci vendor).
 
+**T-109 — prywatny stan Claude'a.**
+- `RunSettings::for_step` zakłada `<bieg>/claude/<work-key>` i niesie tę ścieżkę do
+  `ClaudeDriver::command`; komenda ustawia `CLAUDE_CONFIG_DIR` per krok.
+- Nie kopiuje stanu ani poświadczeń gospodarza. Na macOS poświadczenia pozostają w Keychain;
+  `HOME` zostaje przepuszczony, lecz `~/.claude.json` nie jest już celem zapisu procesu kroku.
+- Dwa procesy-atrapy muszą realnie nałożyć się w czasie i zapisać dwa odrębne znaczniki;
+  nieużywalny katalog odmawia przed spawnem zamiast wracać do wspólnego `HOME`.
+- T-107 mierzy na prawdziwym CLI, że odcisk i istnienie `~/.claude.json` nie zmieniły się.
+
 ---
 
 ## 4. Kolejność — z zależności, nie z fal
 
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
   `T-99 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
+- **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
+  przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): jedyną parą
   bez ani jednego wspólnego pliku jest **T-98 ∥ T-105**. Wszystko inne dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
@@ -217,7 +233,8 @@ który dziś używa `--settings` jako przykładu flagi NIEzarezerwowanej — da�
 
 - ARCHITECTURE §6b: sześć angielskich etykiet indeksu zamiast trzech polskich cytatów.
 - §8: `attachments/` trzyma CAŁĄ znormalizowaną kopię (nie „ogon"); dopisać, że silnik pisze
-  wyłącznie `findings`; dopisać drugi korzeń pamięci (po T-104).
+  wyłącznie `findings`; dopisać drugi korzeń pamięci (po T-104) i prywatny
+  `claude/<work-key>` (po T-109).
 - §4: argv uzupełnić o `--add-dir` (przekazania + załączniki), `--tools`,
   `--append-system-prompt`, `--model`.
 - §5: wiersz o suficie `prove_agent_dead` (po T-106).

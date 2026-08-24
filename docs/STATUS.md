@@ -4,6 +4,58 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 13:36 — faza 7: T-98 w trunku, pierwszy żywy bieg zmienił mapę
+
+**T-98 · zielone · 1 h 52 min 26 s · $28,58 widoczne.** Przelotka obu vendorów nie może już
+nadpisać transportu, polityki, połączeń, modelu ani limitu wydatku ustawianych przez Loadout;
+podniesienia uprawnień są rozpoznawane po kluczu i wartości w obu drogach — przy zapisie oraz
+przy Starcie. Po ręcznym domknięciu integracji pełna bramka trunka przeszła **16/0 w 57,64 s**,
+a `TASK.md` nie przeżył lądowania (`3700831`, poprawka integracyjna `e175860`).
+
+Próg $25 został przekroczony z konkretnych powodów. Pierwszy start wykrył zduplikowaną globalnie
+ścieżkę wyroczni AC-4. Drugi ujawnił wyścig dwóch `worktree.sh`: równoległe zapisy uszkodziły
+zarówno `~/.codex/config.toml`, jak i tymczasowy plik `~/.claude.json`. Naprawa harnessu używa
+teraz jednej blokady, unikalnych plików tymczasowych i atomowej publikacji dla obu konfiguracji
+(`465ec3e`, strażnik zarejestrowany w `6e78c7b`). Recenzent zgłosił cztery słuszne uwagi o sile
+wyroczni; wszystkie cztery zostały zamknięte testami zachowania. Pełny clippy po merge'u złapał
+jeszcze podwójne włączenie starego modułu T-36 — dlatego ostatni dowód był wykonany po ręcznej
+poprawce integracyjnej, nie przed nią.
+
+Otwarte znaleziska z T-98, poza jego kontraktem: rodzina `sandbox_workspace_write.*` rezerwuje
+dziś tylko `network_access`, a nie np. `writable_roots`; goły klucz `mcp_servers` nie wpada pod
+prefiks `mcp_servers.`; zdanie odmowy limitu wydatku mówi o uprawnieniach do plików. Zostają
+tu jako fakty do osobnego kontraktu, nie jako ciche rozszerzenie wylądowanego zadania.
+
+### Pierwszy prawdziwy bieg po fazie 6
+
+Bieg `20260824-091300__01a0330b-6690-7eb2-a156-5613c14d0c9d` trwał **97,5 min**, wykonał
+28 kroków przy trzech naraz i zakończył 26 sukcesami oraz dwiema porażkami. Widoczny koszt
+Claude'a to **$26,86**; 15 kroków Codeksa zużyło 45,2 mln tokenów wejścia i 218 tys. wyjścia,
+ale stara księga pokazała dla nich $0. Raport produktu powstał i przeszedł własne testy.
+
+Żywy przebieg potwierdził obietnice fazy 6, których atrapy nie mogły dowieść: runda trzecia
+dostała własne wcześniejsze próby i oba werdykty, fan-in dostał sześć przekazań, wszystkie
+osiem tur sprawdzających wystawiło `outcome:`, kopie pracowały osobno, a pamięć przeszła pełne
+koło produkcja → promocja człowieka → konsumpcja → `last_used_at`.
+
+Jednocześnie dał trzy nowe dowody, włączone do fazy 7 przed następnym biegiem:
+
+1. **N1 → T-109.** Sześć równoległych procesów Claude'a dzieliło `HOME` i zapisywało ten sam
+   `~/.claude.json`. Jeden z nich dostał błąd parsowania JSON i padł po 273 ms z kodem 1;
+   CLI zrobiło kopię i odbudowało plik, więc późniejsze kroki ruszyły. Ten `processExit` nadał
+   całemu biegowi stan `failed`, mimo że nie był porażką pracy agenta. Kroki dostaną prywatny
+   katalog stanu bez utraty równoległości; gospodarz nie może być ich wspólnym plikiem zapisu.
+2. **N2 → T-99 AC-2.** W 20 z 28 przekazań pełna kopia była w `attachments/`. Limit 8 KB
+   systematycznie usuwał końcową linię `outcome:` z pliku czytanego przez syntezę, chociaż
+   silnik rozstrzygnął ją z surowej odpowiedzi. Ucięta kopia ma zachować tę jedną linię
+   dokładnie raz, niezależnie od jej położenia, obok bezwzględnego adresu pełnej kopii.
+3. **N3 → T-99 AC-3.** Martwy krok wszedł do następnych rund jako 434-bajtowe przekazanie
+   z trzema pustymi nagłówkami. To żywe potwierdzenie istniejącego kryterium „left nothing",
+   nie nowy zakres.
+
+Druga porażka biegu była prawdziwym wynikiem: sprawdzający ostatniej rundy nie przepuścił pracy.
+Mechanizm zadziałał, lecz `carry-on` pozwolił iść dalej; naprawę tej klasy prowadzą T-100/T-101.
+
 ## 2026-08-24, 01:40 — FAZA 6 ZAMKNIĘTA: dwanaście z dwunastu w trunku
 
 Wszystkie zadania `T-86`…`T-97` wylądowały, bramka trunka zielona po każdym. Plan i mapa

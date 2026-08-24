@@ -1,11 +1,11 @@
-# Prompt orchestratora — faza 7 (T-98…T-108)
+# Prompt orchestratora — faza 7 (T-98…T-109)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**wszystkie jedenaście zadań fazy 7** — T-98…T-108 — w kolejności z §4 tego pliku, lądując
+**wszystkie dwanaście zadań fazy 7** — T-98…T-109 — w kolejności z §4 tego pliku, lądując
 je po jednym na `main`.
 
 ---
@@ -21,7 +21,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-108.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan |
+| `tasks/T-98.md` … `tasks/T-109.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -44,14 +44,13 @@ najchętniej ten, który by go zdemaskował. Dlatego:
 
 ## 3. Krok 0 — commit, zanim odpalisz pierwsze zadanie
 
-W drzewie leżą niezacommitowane: `docs/PLAN-HARDENING.md` i jedenaście `tasks/T-*.md`.
+Pierwotny krok 0 (`cd355db`) objął plan i jedenaście zadań T-98…T-108. Po pierwszym żywym
+biegu właściciel dołączył N1/N2: T-99 AC-2 zostało wzmocnione, a T-109 dostało osobny kontrakt.
+Ten dopisek także musi być zacommitowany przed kolejnym `ship-task.sh`.
 **Bez commita pętla nie ruszy**: `integrate.sh` odmawia na brudnym drzewie, a worktree zadania
 rodzi się z HEAD, więc bez commita nie zobaczy ani planu, ani własnego kontraktu.
 
-Zweryfikowane przed oddaniem ci tego pliku (możesz powtórzyć, ale nie musisz):
-`python3 harness/task-spine.py` → rc 0 · `./verify.sh quick` → 13 sprawdzeń, 0 czerwonych.
-
-Zrób jeden commit, treść po polsku, wzorem `git log`:
+Pierwotny commit ma paragon poniżej i **już istnieje**; nie odtwarzaj go:
 
 ```
 docs+tasks: faza 7 — twardnienie agentów, pętli i pamięci (T-98…T-108)
@@ -66,15 +65,19 @@ Decyzje D-1…D-7 rozstrzygnięte przez właściciela 2026-08-24 (PLAN-HARDENING
 task-spine rc=0, verify.sh quick 13/0.
 ```
 
-Nie dopisuj do commita niczego poza tymi dwunastoma plikami.
+Drugi commit kontraktowy po żywym biegu obejmuje wyłącznie `docs/STATUS.md`, ten prompt,
+`docs/PLAN-HARDENING.md`, wzmocnione `tasks/T-99.md` i `tasks/T-107.md` oraz nowe
+`tasks/T-109.md`. Przed nim `python3 harness/task-spine.py` ma oddać rc 0. Nie uruchamiaj
+bramki produktu dla samej zmiany kontraktów.
 
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
 
-Kolizje policzone **mechanicznie** 2026-08-24 (porównanie bloków `<!-- OWNS -->` wszystkich
-jedenastu zadań, z pominięciem `tasks/` i `tests/it/main.rs`). Wynik: **jedyną parą bez ani
-jednego wspólnego pliku jest T-98 ∥ T-105.** Cała reszta dzieli `commands/run.rs`,
+Kolizje pierwotnych jedenastu zadań policzono **mechanicznie** 2026-08-24 (porównanie bloków
+`<!-- OWNS -->`, z pominięciem `tasks/` i `tests/it/main.rs`). Wynik: **jedyną parą bez ani
+jednego wspólnego pliku jest T-98 ∥ T-105.** Dodane po żywym biegu T-109 ma zależność
+semantyczną od T-103 i idzie po nim, bez nowej fali. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
@@ -85,10 +88,11 @@ jednego wspólnego pliku jest T-98 ∥ T-105.** Cała reszta dzieli `commands/ru
 | 4 | `./ship-task.sh T-101 --agent codex --reviewer claude` | `run.rs` po T-100 |
 | 5 | `./ship-task.sh T-102 --agent claude --reviewer codex` | `run.rs` po T-101 **i** `codex.rs` po T-105 |
 | 6 | `./ship-task.sh T-103 --agent claude --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-102 |
-| 7 | `./ship-task.sh T-104 --agent claude --reviewer codex` | `run.rs`, `memory/notes.rs` po T-103 |
-| 8 | `./ship-task.sh T-106 --agent codex --reviewer claude` | `run.rs` po T-104 |
-| 9 | `./ship-task.sh T-108 --agent codex --reviewer claude` | `recovery.rs` po T-106, `notes.rs` po T-104 |
-| 10 | `./ship-task.sh T-107 --agent claude --reviewer codex` | sądzi zachowanie z T-100 i T-103; musi być ostatnie |
+| 7 | `./ship-task.sh T-109 --agent claude --reviewer codex` | `claude.rs` po T-103; izolacja obejmuje też refleksję |
+| 8 | `./ship-task.sh T-104 --agent claude --reviewer codex` | `run.rs`, `memory/notes.rs` po T-103 |
+| 9 | `./ship-task.sh T-106 --agent codex --reviewer claude` | `run.rs` po T-104 |
+| 10 | `./ship-task.sh T-108 --agent codex --reviewer claude` | `recovery.rs` po T-106, `notes.rs` po T-104 |
+| 11 | `./ship-task.sh T-107 --agent claude --reviewer codex` | sądzi zachowanie z T-100, T-103 i T-109; musi być ostatnie |
 
 Pary vendorów są **sugestią, nie kontraktem** — wolno je zamienić, byle każde zadanie miało
 recenzenta **innego vendora** niż pisarz (D3). Jeśli któryś vendor jest niedostępny (brak
@@ -248,5 +252,6 @@ z transkryptów w `runs/<ID>/`), nie z przeczucia.
 
 Na koniec fazy, po T-107 w trunku, wykonaj §5 planu (uzgodnienie `docs/ARCHITECTURE.md` z kodem:
 §4 argv, §5 sufit `prove_agent_dead`, §6b etykiety indeksu, §8 attachments + drugi korzeń
-pamięci, zdanie o miękkim suficie budżetu z D-5) i dopisz do `docs/STATUS.md` akapit z licznikami:
+pamięci + prywatny stan Claude'a, zdanie o miękkim suficie budżetu z D-5) i dopisz do
+`docs/STATUS.md` akapit z licznikami:
 ile zadań, ile rund naprawczych, ile zamknięć „stój i zgłoś", koszt.
