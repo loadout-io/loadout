@@ -4,6 +4,32 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 16:25 — T-111 w trunku
+
+**T-111 · zielone · 41 min 56 s biegu harnessu + jawnie zatwierdzone domknięcie testowe ·
+koszt widoczny: brak wyceny.** Zapisane etapy kontraktu i implementacji Codeksa zużyły łącznie
+**13,32 mln tokenów wejścia i 41,7 tys. wyjścia**; artefakty naprawy i recenzji Claude'a nie
+zapisały kompletnej ceny. Lead Codeksa czyta teraz efektywną konfigurację przed `thread/start`,
+wyłącza prywatne MCP w konfiguracji wątku, ponownie włącza wyłącznie zatwierdzone Connections
+i odmawia startu, gdy konfiguracji nie da się bezpiecznie zinterpretować. Ten sam encoder klucza
+TOML obsługuje identyfikatory z cudzysłowem i znakami sterującymi, a dane prywatnych serwerów
+nie trafiają do argv ani evidence.
+
+Recenzent cross-vendor zgłosił pięć uwag. Cztery zakończyły się poprawkami: brak lub `null`
+`mcp_servers` oznacza pustą kolekcję, wyrocznia wykrywa też escaped identyfikator, odmowa zatruwa
+evidence, a encoder ucieka znaki sterujące. Piątą — czy nakładka per-thread odpowiada żywej
+semantyce App Servera — rozstrzygnęły oficjalne typy protokołu i implementacja `ConfigManager`:
+mapa `ThreadStartParams.config` jest konwertowana do par TOML i dokładana po nakładkach CLI,
+a `mcp_servers.<id>.enabled` jest oficjalnym przełącznikiem. Nie przyjęto jej ani nie odrzucono
+na intuicję.
+
+Po jedynej rundzie naprawczej pełna bramka była czerwona wyłącznie dlatego, że nowy test miał
+112 linii przy limicie clippy 100. Zgodnie z osobną zgodą właściciela mechanicznie rozbito jego
+niezmienione asercje na helpery (`5bee49a`), bez dotknięcia produkcji lub kryteriów. Pełna bramka
+gałęzi przeszła **19/19 w 49,35 s**, a `integrate.sh` zakończył lądowanie `6926cb3` pełną bramką
+trunka **16/16 w 154,37 s**. Drzewo jest czyste i `TASK.md` nie przeżył lądowania. T-105 i T-110
+pozostają zamknięte; następnym zadaniem jest T-99.
+
 ## 2026-08-24, 15:25 — T-110 ZAMKNIĘTE, pełny zakres przejmuje T-111
 
 **T-110 · czerwone / ZAMKNIĘTE · około 1 h 11 min do kontrolowanego przerwania · koszt
