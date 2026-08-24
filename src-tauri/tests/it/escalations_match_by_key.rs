@@ -58,6 +58,9 @@ const OVER_THE_TOP: &str = "999";
 /// Podniesienie zapisane jako nazwa flagi — pozycja, którą lista ma dziś.
 const SKIP_PERMISSIONS: &str = "--dangerously-skip-permissions";
 
+/// Podniesienie używane przez tryb uprawnień Claude'a — trzecia historyczna pozycja listy.
+const BYPASS_PERMISSIONS: &str = "bypassPermissions";
+
 /// Podniesienie zapisane jako wartość — druga połowa reguły, ta, która zostaje podciągiem.
 const FULL_ACCESS: &str = "danger-full-access";
 
@@ -221,16 +224,22 @@ fn a_raise_carried_in_the_value_stays_a_refusal_whatever_the_key_is_called()
     // Kontrola przepisania reguły. Filtr, który przestawi się na same klucze, przechodzi każde
     // pytanie zadane o nazwy i przepuszcza całą rodzinę „niewinna flaga, groźna wartość" —
     // a to jest połowa, przez którą ta dziura powstała.
-    let doors = what_loadout_says("claude", CARRIER, FULL_ACCESS)?;
-
-    assert!(
-        doors.names(FULL_ACCESS),
-        "`{CARRIER} {FULL_ACCESS}` went through: {:?}. That key is on no list of ours and it does \
-         not have to be — what an agent may do with your files is set on one dial (D6), and a \
-         value can walk past it just as well as a name. A rule that reads only keys passes every \
-         question asked about names and misses this whole family",
-        doors.all()
-    );
+    for raise in [FULL_ACCESS, BYPASS_PERMISSIONS, SKIP_PERMISSIONS] {
+        let doors = what_loadout_says("claude", CARRIER, raise)?;
+        let on_save = doors
+            .on_save
+            .as_deref()
+            .is_some_and(|said| said.contains(raise));
+        let on_plan = doors.on_plan.iter().any(|said| said.contains(raise));
+        assert!(
+            on_save && on_plan,
+            "`{CARRIER} {raise}` was accepted through at least one way of carrying extra \
+             settings: {:?}. That key is on no list of ours and does not have to be — what an \
+             agent may do with your files is set on one dial, and a value can walk past it just \
+             as well as a name",
+            doors.all()
+        );
+    }
 
     // I ta sama wartość zapisana z drugiej strony — jako klucz przed `=`. To jest ten sam wiersz
     // w innym zapisie, a przepisanie reguły z podciągu na równość zamyka go albo otwiera, i różni

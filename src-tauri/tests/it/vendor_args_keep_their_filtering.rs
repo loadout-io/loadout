@@ -45,6 +45,11 @@ use loadout_lib::library::agents::{
 use loadout_lib::workflow::WorkflowFile;
 use loadout_lib::workflow::file::{SaveError, save};
 
+// AC-4 mówi o starej wyroczni, więc unikalny moduł kryterium naprawdę ją kompiluje i uruchamia.
+// Duplikowanie kilku jej asercji nie wystarczałoby: stary plik mógłby paść poza duplikatem.
+#[path = "agents_vendor_args_filtered.rs"]
+mod old_oracle;
+
 const VENDOR: &str = "claude";
 const STEP: &str = "Build";
 

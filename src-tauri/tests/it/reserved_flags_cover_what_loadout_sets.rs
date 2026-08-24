@@ -215,12 +215,14 @@ struct Doors {
 }
 
 impl Doors {
-    /// Czy któreś z tych zdań nazywa wiersz do skasowania.
-    fn name(&self, flag: &str) -> bool {
+    fn names_on_save(&self, flag: &str) -> bool {
         self.on_save
-            .iter()
-            .chain(&self.on_plan)
-            .any(|said| said.contains(flag))
+            .as_deref()
+            .is_some_and(|said| said.contains(flag))
+    }
+
+    fn names_on_plan(&self, flag: &str) -> bool {
+        self.on_plan.iter().any(|said| said.contains(flag))
     }
 
     fn all(&self) -> Vec<&str> {
@@ -320,14 +322,19 @@ fn every_flag_the_command_builder_sets_is_refused_in_the_passthrough() -> Result
     for flag in &flags {
         let doors = what_loadout_says(flag, HARMLESS)?;
         assert!(
-            doors.name(flag),
-            "Loadout hands the agent app `{flag}` itself, and a passthrough writing the same \
-             thing was let through: {:?}. Two sides now set one argument and whichever loses, \
-             loses quietly — `--output-format` given twice is a run whose event stream is \
-             suddenly not an event stream, and nobody is told why. The reserved list is judged \
-             here against the command that is really built, so a flag added to the driver \
-             without a line on that list shows up as this failure",
-            doors.all()
+            doors.names_on_save(flag),
+            "Loadout hands the agent app `{flag}` itself, but a step writing the same thing \
+             saves without naming the line to delete: {:?}. The reserved list is judged here \
+             against the command that is really built, so a flag added to the driver without \
+             a line on that list shows up as this failure",
+            doors.on_save
+        );
+        assert!(
+            doors.names_on_plan(flag),
+            "Loadout hands the agent app `{flag}` itself, but an agent definition writing the \
+             same thing reaches Start or is refused without naming the line: {:?}. Both ways \
+             of carrying extra settings must close independently",
+            doors.on_plan
         );
     }
     Ok(())
@@ -342,10 +349,7 @@ fn the_names_this_task_lists_are_refused_at_the_save_and_at_the_plan() -> Result
         // Dwoje drzwi z osobna, bo przelotka ma dwa nośniki i jedna lista ma zamykać oba naraz.
         // Wpis zamknięty tylko po jednej stronie jest tą samą dziurą o jeden plik dalej: kafelek
         // odmawia, a ten sam wiersz w `~/.loadout/agents/*.json` przechodzi.
-        let named_on_save = doors
-            .on_save
-            .as_deref()
-            .is_some_and(|said| said.contains(flag));
+        let named_on_save = doors.names_on_save(flag);
         assert!(
             named_on_save,
             "a step writing `{flag}` into its extra settings saves without a word, or is refused \
@@ -355,7 +359,7 @@ fn the_names_this_task_lists_are_refused_at_the_save_and_at_the_plan() -> Result
             doors.on_save
         );
 
-        let named_on_plan = doors.on_plan.iter().any(|said| said.contains(flag));
+        let named_on_plan = doors.names_on_plan(flag);
         assert!(
             named_on_plan,
             "the same line inside an agent definition starts the run anyway, or stops it without \

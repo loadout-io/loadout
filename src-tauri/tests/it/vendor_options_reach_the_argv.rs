@@ -84,8 +84,8 @@ const CLAUDE_VALUE: &str = "sonnet";
 /// Istnieje po to, żeby dało się odróżnić scalenie od podmiany. Kafelek dopisujący jedną flagę
 /// nie ma prawa skasować pozostałych flag swojego agenta, a implementacja, która podmienia całą
 /// mapę vendora, wygląda w argv identycznie, dopóki agent ma dokładnie jeden wpis.
-const CLAUDE_KEPT: &str = "--add-dir";
-const CLAUDE_KEPT_VALUE: &str = "shared";
+const CLAUDE_KEPT: &str = "--verbose-tool-output";
+const CLAUDE_KEPT_VALUE: &str = "on";
 
 /// Wartość, którą kafelek wpisuje pod [`CLAUDE_FLAG`] — inna niż ta z definicji agenta.
 const TILE_VALUE: &str = "haiku";

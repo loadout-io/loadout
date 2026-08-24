@@ -212,25 +212,30 @@ fn a_key_that_raises_what_the_agent_may_do_is_refused_and_named() -> Result<(), 
 #[test]
 fn the_family_is_closed_by_its_prefix_not_by_the_one_name_we_thought_of()
 -> Result<(), Box<dyn Error>> {
-    // Cztery klucze tej samej rodziny, z RÓŻNYMI nazwami w środku. Lista równościowa zamyka
-    // dokładnie te nazwy, które ktoś zdążył wpisać — a nazwę wpisuje człowiek, więc jest ich
-    // nieskończenie wiele. To jest jedyna asercja tego pliku, której nie da się przejść
-    // dopisaniem pozycji.
-    for key in [
-        "mcp_servers.anything.command",
-        "mcp_servers.anything.args",
-        "model_providers.anything.base_url",
-        "model_providers.anything.env_key",
-    ] {
-        let doors = what_loadout_says(key, "whatever")?;
-        assert!(
-            doors.all().iter().any(|said| said.contains(key)),
-            "`{key}` went through. It belongs to a family whose middle part is typed by the \
-             person, so no list of exact names can ever close it — one of them starts a process \
-             of the agent's choosing beside the approved connections, the other sends the whole \
-             conversation, prompt included, to an address of its choosing. It read: {:?}",
-            doors.all()
-        );
+    // Nazwy w środku powstają mechanicznie w czasie testu. Kilkadziesiąt różnych członów
+    // odróżnia prawdziwą regułę prefiksową od listy dokładnych przykładów zaszytych pod test.
+    for number in 0..16 {
+        let name = format!("loadout_t98_{number:02x}");
+        for key in [
+            format!("mcp_servers.{name}.command"),
+            format!("mcp_servers.{name}.args"),
+            format!("model_providers.{name}.base_url"),
+            format!("model_providers.{name}.env_key"),
+        ] {
+            let doors = what_loadout_says(&key, "whatever")?;
+            let on_save = doors
+                .on_save
+                .as_deref()
+                .is_some_and(|said| said.contains(&key));
+            let on_plan = doors.on_plan.iter().any(|said| said.contains(&key));
+            assert!(
+                on_save && on_plan,
+                "`{key}` was accepted through at least one way of carrying extra settings. Its \
+                 middle part is chosen by the person, so a list of exact names cannot close the \
+                 family. Loadout said: {:?}",
+                doors.all()
+            );
+        }
     }
     Ok(())
 }
