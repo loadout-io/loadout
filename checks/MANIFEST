@@ -23,6 +23,7 @@ quick-tokens
 quick-types
 quick-vocabulary
 quick-wired
+quick-worktree-trust-race
 
 full-clippy
 full-test
