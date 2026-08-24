@@ -12,7 +12,9 @@ use super::every_failure_shares_one_door::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn carry_on_reaches_the_next_step_with_the_same_refusal() -> Result<(), Box<dyn Error>> {
-    let result = Bench::new()?
+    // `prompt` wskazuje plik pod katalogiem ławki, więc ławka musi przeżyć jego odczyt.
+    let bench = Bench::new()?;
+    let result = bench
         .run(
             "context-carry-on",
             &context_workflow("carry-on"),

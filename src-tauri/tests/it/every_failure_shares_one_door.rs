@@ -367,8 +367,10 @@ async fn intervene(
         if let Some(run_file) = current_run_file(project)? {
             let should_act = match intervention {
                 Intervention::ContinueWhenPaused => {
+                    // `asking` jest prywatnym faktem `RunControl` i celowo nie ma jego drugiej
+                    // kopii w `run.json`. Ten dubel nie emituje limitu dostawcy, więc jedyny
+                    // możliwy stan `paused` pochodzi z pytania, na które test ma odpowiedzieć.
                     run_file.get("status").and_then(Value::as_str) == Some("paused")
-                        && run_file.get("asking").and_then(Value::as_bool) == Some(true)
                 }
                 Intervention::StopWhenRunning(name) => {
                     status(&run_file, name).is_ok_and(|state| state == "running")
@@ -597,7 +599,10 @@ async fn remove_source_handoff(project: &Path) -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn carry_on_from_each_side_door_leaves_a_failed_handoff() -> Result<(), Box<dyn Error>> {
-    let context = Bench::new()?
+    // Każdy prompt niżej wskazuje plik pod katalogiem swojej ławki. Nazwane ławki trzymają te
+    // katalogi przy życiu aż do asercji, zamiast kasować je na końcu wyrażenia z `.run()`.
+    let context_bench = Bench::new()?;
+    let context = context_bench
         .run(
             "one-door-context",
             &context_workflow("carry-on"),
@@ -611,7 +616,8 @@ async fn carry_on_from_each_side_door_leaves_a_failed_handoff() -> Result<(), Bo
         .ok_or("the step after the context failure never ran")?;
     let _possibly_empty = failed_handoff_in(&prompt)?;
 
-    let route = Bench::new()?
+    let route_bench = Bench::new()?;
+    let route = route_bench
         .run(
             "one-door-route",
             &route_workflow("carry-on", false),
@@ -630,7 +636,8 @@ async fn carry_on_from_each_side_door_leaves_a_failed_handoff() -> Result<(), Bo
          {handed:?}"
     );
 
-    let budget = Bench::new()?
+    let budget_bench = Bench::new()?;
+    let budget = budget_bench
         .run(
             "one-door-budget",
             &budget_workflow("carry-on"),

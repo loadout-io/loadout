@@ -6860,14 +6860,11 @@ impl Live {
             Ok(told) => told,
             Err(_error) => {
                 let text = CONTEXT_NOT_PROVEN.to_owned();
-                let _ = ours
-                    .send(AgentEvent::Notice { text: text.clone() }.into())
-                    .await;
-                drop(events);
-                drop(ours);
-                self.update(|book| book.steps[id].error = Some(text));
-                let _ = pump.await;
-                return StepReport::Failed;
+                // 2026-08-25 (T-101) — TEN SAM POWÓD, ALE JEDNE DRZWI PORAŻKI. Zapis przed
+                // `never_started` zachowuje dokładny tekst odmowy; wspólne domknięcie dopiero
+                // potem pyta `whenItFails`, więc `carry-on` i `ask-me` nie są tu martwe.
+                self.update(|book| book.steps[id].error = Some(text.clone()));
+                return self.never_started(id, text, events, ours, pump).await;
             }
         };
 
