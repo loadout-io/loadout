@@ -190,28 +190,59 @@ const VERDICT_MARK: &str = "outcome:";
 /// (spec §3) — jego jedynym kanałem jest ciało. Wyjątek jest jednym wierszem o sztywnym
 /// kształcie, a nie furtką: nic innego z ciała nie jedzie do żadnego pola.
 ///
-/// DECYDUJE OSTATNI ZNACZNIK. Sędzia dostaje w prompcie zdanie o tym, jak zapisać werdykt,
-/// a modele powtarzają instrukcję, zanim zaczną pracować („napiszę OUTCOME: PASS, jeśli testy
-/// przejdą"). Pierwsze wystąpienie jest więc echem polecenia, nie sądem; wniosek stoi na końcu.
+/// POLE W `## Answer` WYGRYWA Z LINIĄ PROZY. Od T-100 sędzia dostaje umówione pole `outcome`,
+/// więc ten mocniejszy nośnik rozstrzyga także wtedy, gdy stary fallback na końcu odpowiedzi
+/// mówi co innego. Przy braku pola zostaje dokładnie dotychczasowa reguła: decyduje ostatni
+/// znacznik, bo modele powtarzają instrukcję, zanim zaczną pracować („napiszę OUTCOME: PASS,
+/// jeśli testy przejdą"), a wniosek stawiają na końcu.
 ///
 /// ZNACZNIK MUSI BYĆ CAŁYM WIERSZEM. Szukanie go w tekście przez `contains` zamyka pętlę na
 /// zdaniu „once the tests are green I will write OUTCOME: PASS" — czyli nad czerwonymi testami,
 /// na obietnicy werdyktu wziętej za werdykt.
 #[must_use]
 pub fn verdict_in(body: &str) -> Verdict {
+    // 2026-08-25 (T-100) — pole jest jawną odpowiedzią na umowę z promptu, a końcowy wiersz
+    // tylko zgodnościowym zapasem. Ta kolejność jest polityką: odwrócenie jej ponownie
+    // uzależniłoby bieg od jednej literalnej linii prozy i zgubiło ustrukturyzowany werdykt.
+    outcome_field_in(body).unwrap_or_else(|| fallback_verdict_in(body))
+}
+
+/// Umówione pole `outcome` z sekcji odpowiedzi, jeśli sędzia je podał.
+fn outcome_field_in(body: &str) -> Option<Verdict> {
+    let answer = heading_at(body, "Answer")?;
+    let content = body[answer..]
+        .find('\n')
+        .map_or(body.len(), |offset| answer + offset + 1);
+    let end = [heading_at(body, "Evidence"), heading_at(body, "Open")]
+        .into_iter()
+        .flatten()
+        .filter(|at| *at > content)
+        .min()
+        .unwrap_or(body.len());
+
+    body[content..end]
+        .lines()
+        .filter_map(verdict_on_line)
+        .next_back()
+}
+
+/// Zgodnościowy wiersz `outcome: …` z prozy; jak dotąd rozstrzyga ostatni.
+fn fallback_verdict_in(body: &str) -> Verdict {
     body.lines()
-        .filter_map(|line| {
-            let line = line.trim().to_ascii_lowercase();
-            let rest = line.strip_prefix(VERDICT_MARK)?;
-            match rest.trim() {
-                "pass" => Some(Verdict::Pass),
-                // Wiersz, który zaczyna się znacznikiem i mówi coś innego, jest werdyktem
-                // odmownym, nie brakiem werdyktu: sędzia się wypowiedział, tylko nie przepuścił.
-                _ => Some(Verdict::Fail),
-            }
-        })
+        .filter_map(verdict_on_line)
         .next_back()
         .unwrap_or_default()
+}
+
+fn verdict_on_line(line: &str) -> Option<Verdict> {
+    let line = line.trim().to_ascii_lowercase();
+    let rest = line.strip_prefix(VERDICT_MARK)?;
+    match rest.trim() {
+        "pass" => Some(Verdict::Pass),
+        // Wiersz, który zaczyna się znacznikiem i mówi coś innego, jest werdyktem odmownym,
+        // nie brakiem werdyktu: sędzia się wypowiedział, tylko nie przepuścił.
+        _ => Some(Verdict::Fail),
+    }
 }
 
 /// Czy sędzia w ogóle się wypowiedział — bez pytania o to, JAK.
