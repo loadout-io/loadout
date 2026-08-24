@@ -988,6 +988,17 @@ fn fail_pending_app_requests(
     }
 }
 
+fn rejected_app_request(method: &str, error: &Value) -> anyhow::Error {
+    let code = error
+        .get("code")
+        .map_or_else(|| "unknown".to_owned(), Value::to_string);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("The vendor gave no reason.");
+    anyhow!("The Codex App Server rejected its {method} request with code {code}: {message}")
+}
+
 async fn app_server_actor<Output>(input: AppServerInput<Output>)
 where
     Output: AsyncRead + Unpin,
@@ -1043,8 +1054,10 @@ where
 
                 if let Some(id) = parsed.get("id").and_then(Value::as_u64) {
                     if let Some(request) = pending.remove(&id) {
-                        let answer = if parsed.get("error").is_some_and(|error| !error.is_null()) {
-                            Err(anyhow!("The Codex App Server rejected its {} request.", request.method))
+                        let answer = if let Some(error) =
+                            parsed.get("error").filter(|error| !error.is_null())
+                        {
+                            Err(rejected_app_request(request.method, error))
                         } else {
                             Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
                         };
