@@ -4,6 +4,31 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 01:44 — T-101 w trunku
+
+**T-101 · zielone · 47 min 38 s biegu harnessu · $0,00 widoczne.** Etapy Codeksa nie
+zapisały kompletnej wyceny ani księgi użycia, więc to wyłącznie koszt widoczny. Enforced
+`before` uczciwie certyfikowało wszystkie cztery AC jako runtime-red. Pierwsza tura
+implementacji nie zostawiła zmian i pierwsza bramka miała **15/20**: czerwone były cztery AC
+oraz agregujący je `full-test`.
+
+Planista naprawy potwierdził trzy rzeczywiste boczne drzwi omijające wspólną politykę porażki.
+Jedyna runda naprawy skierowała odmowę kontekstu (`bfeeec9`), zablokowaną trasę (`0fc04c5`)
+i sufit budżetu (`b5bf409`) przez `when_this_one_fails`. W rezultacie ustawienia `carry-on`,
+`ask-me` i `stop` działają na tych ścieżkach tak samo jak na zwykłej porażce, strumień zgadza
+się z książką, potomkowie zatrzymani budżetem mówią o budżecie zamiast o Stopie człowieka,
+a `carry-on` przekazuje prawdziwe ostatnie słowa.
+
+Recenzent tego samego vendora na osobnym modelu gpt-5.5 zgłosił tylko niską uwagę o braku
+zielonego paragonu przed naprawą. Pierwsza pełna bramka po naprawie miała **19/20**: wszystkie
+AC były zielone, a stary test `trigger_editor_writes_safe_file` spoza OWNS dostał przejściowy
+`RecvError`/timeout w cleanupie. Końcowa bramka Harnessu, bez żadnej zmiany kodu lub testu,
+przeszła **20/20 w 43,07 s**; flake nie został zamaskowany ani naprawiony w tym zadaniu.
+
+`integrate.sh` wylądował wyłącznie `task-T-101` jako **`73ec11c`**. Pełna bramka main przed
+merge'em przeszła **16/16 w 88,81 s**, a po merge'u **16/16 w 171,25 s**. Drzewo jest czyste,
+`TASK.md` nie przeżył lądowania. Następne jest T-102, przez Codex + Codex.
+
 ## 2026-08-25, 00:50 — T-100 w trunku
 
 **T-100 · zielone · 36 min 18 s biegu harnessu · $0,00 widoczne.** Etapy Codeksa nie
