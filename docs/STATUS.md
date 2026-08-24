@@ -4,6 +4,39 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 17:31 — T-99 ZAMKNIĘTE, sprzeczne wyrocznie i dwa błędy kontraktu
+
+**T-99 · czerwone / ZAMKNIĘTE · 1 h 04 min 26 s · co najmniej $35,23 widoczne.** Kontrakt
+Claude'a kosztował **$13,50** i doszedł do limitu 81 tur; implementacja kosztowała **$21,72**
+w 156 turach. Recenzja Codeksa i wykonanie naprawy przez Claude'a nie zapisały osobnej ceny.
+Mimo niezerowego wyjścia fazy kontraktu wymuszone `before` uczciwie certyfikowało wszystkie
+cztery AC jako czerwone z właściwego powodu.
+
+Pierwsza pełna bramka była czerwona na AC-2, tych samych dwóch przypadkach w `full-test` oraz
+pięciu lintach w nowych testach. Jedyna runda naprawcza poprawiła linty bez suppressions
+(`225ee2e`) i zapisała bezwzględny wskaźnik pełnej kopii (`777c041`). Ostatnia bramka przy
+czystym drzewie miała **19/20 w 14,51 s**: AC-1/AC-2/AC-3/AC-4, clippy i wszystkie szybkie
+sprawdzenia były zielone, lecz `full-test` nadal miał dokładnie dwie porażki.
+
+To nie jest zaproszenie do ręcznej naprawy. `src-tauri/tests/it/memory_handoff_cap.rs`, którego
+nie ma w OWNS T-99, asertuje dokładną relatywną linię `Moved to attachments/<name>`. AC-2
+asertuje dla tej samej linii ścieżkę bezwzględną i otwieralną z dowolnego katalogu. Jedna
+wartość nie może spełnić obu równości. Istniejący zielony test wznowienia dodatkowo staje się
+fałszywy: `new_run.join(absolute_path)` ignoruje `new_run` i sprawdza plik starego biegu.
+Naprawa wymagałaby pliku spoza OWNS oraz decyzji, co bezwzględny adres ma znaczyć po usunięciu
+poprzedniego biegu. Zgodnie z regułą fazy nie rozszerzono OWNS i nie osłabiono żadnej wyroczni.
+
+Recenzent wykrył też dwa niezależne błędy tekstu zadania. AC-1 wymaga dokładnej gałęzi
+`loadout/<run>/s_2~2`, ale Git zabrania `~` w refach; produkcja poprawnie koduje ją jako
+`s_2-2`, a zielony test sprawdza tylko różność i prefiks, więc nie certyfikuje literalnego AC.
+AC-4 mówi o **celu** strzałki powrotnej (`link.to`), podczas gdy opis zadania, model pętli,
+produkcja i test wskazują kafelek zamykający pętlę (`link.from`); wymuszenie celu zakazałoby
+legalnych wielokrotnych wejść do pętli. Zielone AC nie naprawiają tych sprzeczności.
+
+Gałąź `task-T-99` pozostaje niewylądowana na `777c041`; trunk nie dostał żadnej jej zmiany.
+Faza 7 zatrzymuje się tutaj zgodnie z regułą drugiej czerwieni i nierozstrzygniętych uwag
+recenzenta. T-100 nie został rozpoczęty.
+
 ## 2026-08-24, 16:25 — T-111 w trunku
 
 **T-111 · zielone · 41 min 56 s biegu harnessu + jawnie zatwierdzone domknięcie testowe ·
