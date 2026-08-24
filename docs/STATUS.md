@@ -4,6 +4,26 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 00:50 — T-100 w trunku
+
+**T-100 · zielone · 36 min 18 s biegu harnessu · $0,00 widoczne.** Etapy Codeksa nie
+zapisały kompletnej wyceny ani księgi użycia, więc `$0,00` oznacza wyłącznie koszt widoczny,
+nie oszacowanie ceny. Wymuszone `before` uczciwie certyfikowało cztery kryteria jako runtime-red.
+Pierwsza pełna bramka gałęzi przeszła **20/20 w 42,83 s**, a dwie pełne bramki po jedynej
+rundzie naprawy przeszły **20/20 w 42,60 s** i **20/20 w 37,23 s**.
+
+Tester pętli dostaje wymagane pole `outcome`; ustrukturyzowana wartość rozstrzyga przed
+zgodnościową linią prozy, tester widzi wszystkie wcześniejsze próby implementera, a `run.json`
+addytywnie zapisuje wynik każdej rundy. Recenzent tego samego vendora na osobnym modelu gpt-5.5
+znalazł rzeczywistą lukę mimo zielonej bramki: parser pola czytał je tylko wewnątrz
+`## Answer`, choć wspólny nośnik `key: value` nie ma takiego ograniczenia. Jedyna naprawa
+rozszerzyła odczyt na całe ciało i dodała regresję, w której kanoniczne `outcome: pass` poza
+Answer wygrywa ze sprzecznym późniejszym markerem (`aacd038`).
+
+`integrate.sh` wylądował wyłącznie `task-T-100` jako **`18e0cd3`**. Pełna bramka main przed
+merge'em przeszła **16/16 w 88,58 s**, a po merge'u **16/16 w 162,37 s**. Drzewo jest czyste,
+`TASK.md` nie przeżył lądowania. Następne jest T-101, przez Codex + Codex.
+
 ## 2026-08-25, 00:09 — T-114 w trunku
 
 **T-114 · zielone · 42 min 32 s biegu harnessu · $0,00 widoczne.** Zapisane tury kontraktu
