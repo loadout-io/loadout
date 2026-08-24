@@ -4,6 +4,18 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 21:24 — właściciel zatwierdził T-114 i Codex + Codex
+
+Jawne „ok” właściciela uruchamia wyjątek authoringu dla **T-114**, pełnego zastępstwa
+zamkniętych T-99/T-112/T-113. Nowy kontrakt startuje z `main`, ma sześć globalnie unikalnych
+ścieżek i nie przenosi starej implementacji. Poprawione AC-3 osobno wymaga etykiety zwykłego
+poprzednika oraz prawdziwej etykiety pliku przeniesionego z wcześniejszego biegu; obie ścieżki
+muszą wskazywać pełną kopię pod katalogiem bieżącego biegu. T-114 musi wylądować przed T-100.
+
+Właściciel jawnie polecił używać dalej **Codex + Codex**, ponieważ kończy się budżet Claude'a.
+Recenzja pozostaje osobnym wywołaniem Harnessu, w roli tylko do odczytu i na innym modelu;
+ograniczenie samego vendora ma być raportowane, ale nie zastępowane Claude'em bez nowej decyzji.
+
 ## 2026-08-24, 21:21 — T-113 czerwone po naprawie; błędny spec AC-3 wymaga decyzji człowieka
 
 **T-113 · czerwone / NIEWYLĄDOWANE · 47 min 12 s od pierwszego startu · $0,00 widoczne.**
