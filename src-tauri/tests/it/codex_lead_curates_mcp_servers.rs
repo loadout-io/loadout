@@ -304,7 +304,11 @@ async fn invalid_config_is_refused(config_response: &str) -> Result<(), Box<dyn 
     let fixture = tempfile::tempdir()?;
     let workspace = tempfile::tempdir()?;
     let binary = executable(fixture.path(), config_response)?;
-    let driver = CodexDriver::with_binary(binary);
+    let target = evidence_target(workspace.path());
+    let base: Arc<dyn AgentDriver> = Arc::new(CodexDriver::with_binary(binary));
+    let driver = base
+        .with_evidence(target.clone())
+        .ok_or("Codex has no production evidence seam")?;
     let (events, _inbox) = mpsc::channel(CHANNEL);
     let started = timeout(
         LIMIT,
@@ -336,6 +340,10 @@ async fn invalid_config_is_refused(config_response: &str) -> Result<(), Box<dyn 
     assert!(
         !process_is_alive(pid)?,
         "failed config/read left App Server pid {pid} alive"
+    );
+    assert!(
+        !target.is_healthy(),
+        "failed config/read left its conversation evidence eligible for completion"
     );
     Ok(())
 }
