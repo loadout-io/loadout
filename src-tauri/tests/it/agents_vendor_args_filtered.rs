@@ -36,12 +36,24 @@
 use std::collections::BTreeMap;
 
 use loadout_lib::library::agents::{
-    Agent, Passthrough, VendorOptions, vendor_args, vendor_args_filtered,
+    Agent, Passthrough, VendorOptions, passthrough_refused, vendor_args, vendor_args_filtered,
 };
 
-/// Podniesienie zapisane jako **wartość** zwykłej flagi. `--settings` nie jest zarezerwowane,
-/// więc łapie je wyłącznie reguła, która czyta wartość.
-const CLAUDE_CARRIER: &str = "--settings";
+/// Podniesienie zapisane jako **wartość** zwykłej flagi. Nośnik nie jest zarezerwowany, więc
+/// łapie to wyłącznie reguła, która czyta wartość.
+///
+/// 2026-08-24 (T-98, mandat właściciela D-1) — **NOŚNIKIEM BYŁO TU `--settings` I PRZESTAŁO
+/// NIM BYĆ.** Od T-92 tę flagę ustawia Loadout sam: to nią jedzie plik z przepisanymi regułami
+/// `deny` gospodarza, więc T-98 dopisało ją do listy zarezerwowanych. Przesłanka tego pliku
+/// zmieniła się przez to świadomie, a nie jego wynik — trzy asercje niżej są co do jednej te
+/// same, tylko wartość niosą pod flagą, której Loadout nie ustawia i nie ustawi.
+///
+/// Nowy nośnik jest wybrany tak, żeby przewracał filtr dopasowujący po POCZĄTKU napisu:
+/// `--verbose` JEST zarezerwowane (bez niego CLI odmawia startu), a `--verbose-tool-output`
+/// jest inną flagą tej samej aplikacji. Gdyby okazał się kiedyś zarezerwowany, ten plik
+/// przestałby mierzyć filtr i zacząłby mierzyć listę — pilnuje tego osobno
+/// `the_example_this_file_leans_on_is_free_and_the_old_one_is_not` na dole.
+const CLAUDE_CARRIER: &str = "--verbose-tool-output";
 const BYPASS: &str = "bypassPermissions";
 
 /// Podniesienie zapisane jako **nazwa** flagi, z pustą wartością. To jest dokładnie ten wiersz
@@ -55,6 +67,14 @@ const FULL_ACCESS: &str = "danger-full-access";
 
 /// Trzy podniesienia, po nazwie — te same trzy, które wymienia D6 i TASK.md.
 const ESCALATIONS: [&str; 3] = [BYPASS, SKIP_PERMISSIONS, FULL_ACCESS];
+
+/// Flaga, którą Loadout ustawia sam od T-92 — nośnik przepisanych reguł `deny` gospodarza.
+/// Do T-98 stała w tym pliku jako [`CLAUDE_CARRIER`], czyli jako przykład flagi WOLNEJ.
+const SETTINGS: &str = "--settings";
+/// Ścieżka, którą przelotka podstawiłaby zamiast pliku napisanego przez Loadouta. Niewinna
+/// z rozmysłu: gdyby niosła podniesienie, odmowę tłumaczyłaby reguła o dialu i pozycja na
+/// liście zarezerwowanych mogłaby nie istnieć.
+const SETTINGS_VALUE: &str = "mine.json";
 
 /// Flaga, o której Loadout nigdy nie słyszał i której nie ma prawa tknąć. Bez niej przelotka
 /// przestaje istnieć, a kryterium przechodzi implementacja odrzucająca wszystko.
@@ -236,5 +256,64 @@ fn the_plain_argv_builder_is_filtered_too_not_only_its_talking_twin() {
         vendor_args_filtered(&agent, "claude").args,
         "the two entry points disagree about the same passthrough. Two filters are two answers, \
          and the older one is always the one still wired up"
+    );
+}
+
+/// Agent, którego przelotka niesie dokładnie jeden wpis Claude'a.
+fn agent_offering(flag: &str, value: &str) -> Agent {
+    let mut flags = BTreeMap::new();
+    flags.insert(flag.to_string(), value.to_string());
+
+    let mut options = VendorOptions::new();
+    options.insert("claude".to_string(), flags);
+
+    Agent {
+        vendor_options: options,
+        ..Agent::example()
+    }
+}
+
+/// 2026-08-24 (T-98, mandat właściciela D-1) — STRAŻNIK PRZESŁANKI, NIE CZWARTA ASERCJA O FILTRZE.
+///
+/// Trzy testy wyżej stoją na jednym założeniu: że [`CLAUDE_CARRIER`] jest flagą, której Loadout
+/// nie ustawia. Kiedy to założenie przestaje być prawdziwe — a właśnie przestało być prawdziwe
+/// dla `--settings`, którym ten plik posługiwał się do dziś — tamte trzy **nie pękają**. Zaczynają
+/// mierzyć listę zarezerwowanych zamiast filtra podniesień, cicho, i naprawia się to zwykle
+/// osłabieniem asercji.
+///
+/// Dlatego przesłanka ma tu własny test i pyta o nią tam, gdzie odmowa jest widoczna dla
+/// człowieka: [`passthrough_refused`] jest zdaniem, którym bieg odmawia startu (niezmiennik 29).
+/// Ta sama funkcja odpowiada na obie połowy pytania — że nowy przykład jest wolny i że stary
+/// naprawdę zmienił stronę.
+#[test]
+fn the_example_this_file_leans_on_is_free_and_the_old_one_is_not() {
+    let free = passthrough_refused(&agent_offering(CLAUDE_CARRIER, BYPASS));
+    assert_eq!(
+        free.len(),
+        1,
+        "`{CLAUDE_CARRIER}` carrying `{BYPASS}` has to be refused exactly once, for the value it \
+         carries. Two refusals mean the flag NAME is now ours to set as well — and then the three \
+         tests above stopped measuring the filter and started measuring the list, without saying \
+         a word. Loadout said: {free:?}"
+    );
+
+    let harmless = passthrough_refused(&agent_offering(CLAUDE_CARRIER, "on"));
+    assert!(
+        harmless.is_empty(),
+        "`{CLAUDE_CARRIER}` with a harmless value is refused: {harmless:?}. It begins with \
+         `--verbose`, which IS ours to set, and is a different argument of the same app — a rule \
+         matching by the start of the text kills it. The passthrough exists so that an argument \
+         announced this morning is usable this afternoon, without a release of Loadout (D6)"
+    );
+
+    // I druga połowa mandatu D-1: flaga, która była tu przykładem WOLNYM, jest teraz odmową —
+    // po samej nazwie, z wartością, w której nie ma czego podnosić. Loadout pisze ten plik raz
+    // na bieg i to z niego biorą się przepisane reguły `deny` gospodarza; przelotka wskazująca
+    // inny plik podmienia je w całości, po cichu, a wszystko dalej wygląda tak samo jak zwykle.
+    let settings = passthrough_refused(&agent_offering(SETTINGS, SETTINGS_VALUE));
+    assert!(
+        settings.iter().any(|one| one.contains(SETTINGS)),
+        "`{SETTINGS} {SETTINGS_VALUE}` starts the run anyway, or stops it without naming the line \
+         to delete: {settings:?}"
     );
 }

@@ -42,20 +42,88 @@ use crate::engine::dag::{Dag, DagError};
 /// kolizja nie miała skutku, bo przelotka nie dojeżdżała do argv w ogóle; z chwilą, w której
 /// dojeżdża, brak tej pozycji jest cichą wygraną jednej ze stron — dokładnie tym, czego
 /// zakazuje D6. Zgłosił to pisarz T-91 zamiast dopisać linię w cudzym pliku.
-pub const RESERVED_CLAUDE: [&str; 8] = [
-    "--session-id",
+///
+/// 2026-08-24 (T-98) — **ZDANIE WYŻEJ O „BRAKU SKUTKU" JEST JUŻ NIEAKTUALNE I DLATEGO TA LISTA
+/// UROSŁA Z OŚMIU DO DWUDZIESTU TRZECH.** Od T-90 przelotka dojeżdża do argv naprawdę
+/// (`library::agents::vendor_argv` → `DriverConfiguration::arguments`), a `ClaudeDriver::command`
+/// składa dwa razy tyle nazw, ile ta lista miała. Każda brakująca była więc cichą wygraną jednej
+/// ze stron, i za każdą stoi konkretna strata: `--settings <własny plik>` podmienia nośnik,
+/// którym T-92 wnosi przepisane reguły `deny` gospodarza; `--tools` rozszerza twardą listę
+/// dostępności; `--model` przestawia model spod ręki człowieka, który wybrał inny w formularzu;
+/// `--mcp-config` i `--plugin-dir` wskazują cudzy plik zamiast tego, który Loadout napisał
+/// w katalogu biegu; `--max-budget-usd` odpowiada drugi raz na pytanie „ile to może wydać".
+///
+/// `--continue`, `--agents`, `--disallowedTools` i `--permission-prompt-tool` Loadout ustawia
+/// sam dopiero potencjalnie — stoją tu dlatego, że przelotka może ich użyć **już teraz**,
+/// a każda z nich odpowiada na pytanie, na które w tym produkcie odpowiada formularz albo dial.
+///
+/// Dopasowanie idzie po KLUCZU, nie po podciągu (`is_reserved` niżej): `--verbose` jest nasze,
+/// a `--verbose-tool-output` jest inną flagą tej samej aplikacji i ma przechodzić. Filtr
+/// pytający `starts_with` zabijałby flagę ogłoszoną dziś rano, czyli dokładnie to, po co
+/// przelotka istnieje (D6).
+pub const RESERVED_CLAUDE: [&str; 23] = [
+    // ── czym JEST to wywołanie: transport i sesja ────────────────────────────────────────
+    "-p",
     "--output-format",
     "--input-format",
     "--verbose",
-    "--permission-mode",
+    "--session-id",
+    "--resume",
+    "--continue",
+    // ── izolacja kontekstu i nośniki, które piszemy sami w katalogu biegu ────────────────
     "--strict-mcp-config",
     "--setting-sources",
+    "--settings",
+    "--plugin-dir",
+    "--mcp-config",
+    "--agents",
+    "--add-dir",
+    // ── dial: co agent może zrobić z plikami i co ma pod ręką ───────────────────────────
+    "--permission-mode",
+    "--permission-prompt-tool",
+    "--allowedTools",
+    "--disallowedTools",
+    "--tools",
+    // ── to, co człowiek wybiera w formularzu agenta ─────────────────────────────────────
+    "--model",
     "--effort",
+    "--append-system-prompt",
+    // ── pieniądze: kwotę zna wyłącznie księga biegu ─────────────────────────────────────
+    "--max-budget-usd",
 ];
 
 /// To samo dla `codex`: `-C` (katalog roboczy), `-s` (piaskownica), `--json` (strumień zdarzeń)
 /// i `model_reasoning_effort` — powód czwartej pozycji stoi przy [`RESERVED_CLAUDE`].
-pub const RESERVED_CODEX: [&str; 4] = ["-C", "-s", "--json", "model_reasoning_effort"];
+///
+/// 2026-08-24 (T-98) — **SZEŚĆ POZYCJI DOCHODZI I DWIE Z NICH SĄ PREFIKSAMI RODZIN.** Ten vendor
+/// przyjmuje przelotką **całą swoją konfigurację** (`-c klucz=wartość`,
+/// `library::agents::vendor_argv`), więc „dodatkowe ustawienie" bywa u niego dialem ustawionym
+/// z boku. Zmierzone na trunku tego dnia — wszystkie przechodziły: `sandbox_mode=workspace-write`
+/// (podniesienie z „look only"; filtr podniesień zna tylko literał `danger-full-access`, a to
+/// jest inna wartość tego samego ustawienia), `sandbox_workspace_write.network_access=true`
+/// (sieć z pominięciem pola, które ją włącza), `approval_policy=never`,
+/// `mcp_servers.x.command=/bin/sh` (dowolny proces jako „serwer narzędziowy", obok listy
+/// zatwierdzonych Connections) oraz `model_provider` i `model_providers.custom.base_url=…`
+/// — czyli cały ruch, razem z promptem, pod cudzy adres.
+///
+/// **Kropka na końcu pozycji znaczy „cała rodzina"** (`is_reserved` niżej). `mcp_servers.*`
+/// i `model_providers.*` mają w środku nazwę, którą wpisuje CZŁOWIEK, więc lista równościowa
+/// musiałaby znać ją z góry — czyli nie istnieje. Pozostałe pozycje zostają równościowe, bo
+/// `model_verbosity` i `model_reasoning_summary` są zwykłymi ustawieniami tego vendora i mają
+/// przechodzić; `model_reasoning_effort` zostaje osobno, bo prefiks `model_provider` go nie łapie.
+pub const RESERVED_CODEX: [&str; 10] = [
+    "-C",
+    "-s",
+    "--json",
+    "model_reasoning_effort",
+    "sandbox_mode",
+    "sandbox_workspace_write.network_access",
+    "approval_policy",
+    "model_provider",
+    // Rodziny, nie nazwy: środek klucza wpisuje człowiek.
+    "mcp_servers.",
+    "model_providers.",
+];
 
 /// Podniesienia, których przelotka nie przepuszcza — **ani w nazwie flagi, ani w jej wartości**.
 ///
@@ -74,10 +142,25 @@ pub const RESERVED_CODEX: [&str; 4] = ["-C", "-s", "--json", "model_reasoning_ef
 /// obie przelotki: wiersz `"--dangerously-skip-permissions": ""` w `~/.loadout/agents/*.json`
 /// omijał dial całkowicie, a ten sam wiersz na kroku workflow zapisywał się bez uwagi.
 /// Obie reguły czytają `flag` i `value`, więc pozycja w kształcie nazwy działa bez zmiany w kodzie.
-pub const FORBIDDEN_ESCALATIONS: [&str; 3] = [
+///
+/// 2026-08-24 (T-98) — `--max-budget-usd` dochodzi jako czwarta pozycja i jest tu, a nie tylko
+/// na liście zarezerwowanych, z jednego powodu: [`reserved`] jest **per vendor** i dla aplikacji,
+/// o której Loadout jeszcze nie słyszał, oddaje pustą listę z rozmysłu (D6). Sufit wydatku
+/// podany przelotką pod cudzą nazwą vendora przechodziłby więc obok wszystkiego. Ta lista jest
+/// czytana dla KAŻDEJ nazwy aplikacji, więc pozycja tutaj to jedna reguła zamiast jednej kopii
+/// na vendora (niezmiennik 23). Dług opisany w `docs/STATUS.md` po T-94.
+///
+/// Dopasowanie po stronie NAZWY idzie po kluczu (`escalation_in` niżej), a po stronie WARTOŚCI
+/// zostaje podciągiem — i to nie jest niekonsekwencja, tylko dwie różne rzeczy. Nazwa flagi jest
+/// nazwą: `--max-budget-usd-warning` zaczyna się od pozycji z tej listy i **nią nie jest**,
+/// a odmowa mówiąca człowiekowi, że jego wiersz podnosi dial, kiedy nie podnosi, jest gorsza
+/// od braku odmowy. Wartość jest treścią: `--sandbox danger-full-access` omija dial tak samo
+/// skutecznie jak `-s`, a `--sandbox` nie jest i nie będzie na żadnej liście zarezerwowanych.
+pub const FORBIDDEN_ESCALATIONS: [&str; 4] = [
     "bypassPermissions",
     "--dangerously-skip-permissions",
     "danger-full-access",
+    "--max-budget-usd",
 ];
 
 /// Zdanie z uruchomienia w T3 §5.2.
@@ -754,11 +837,7 @@ fn the_passthrough(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
         };
         for (vendor, flags) in options {
             for (flag, value) in flags {
-                if let Some(raise) = FORBIDDEN_ESCALATIONS
-                    .iter()
-                    .copied()
-                    .find(|raise| flag.contains(raise) || value.contains(raise))
-                {
+                if let Some(raise) = escalation_in(flag, value) {
                     notes.push(problem(
                         Some(step.id),
                         format!(
@@ -768,7 +847,7 @@ fn the_passthrough(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                             vendor_name(vendor)
                         ),
                     ));
-                } else if reserved(vendor).contains(&flag.as_str()) {
+                } else if is_reserved(vendor, flag) {
                     notes.push(problem(
                         Some(step.id),
                         format!(
@@ -798,6 +877,67 @@ pub fn reserved(vendor: &str) -> &'static [&'static str] {
         "codex" => &RESERVED_CODEX,
         _ => &[],
     }
+}
+
+/// Klucz tego wpisu przelotki — czyli to, co stoi **przed** pierwszym `=`.
+///
+/// 2026-08-24 (T-98) — `--dangerously-skip-permissions=true` to ten sam wiersz, co
+/// `"--dangerously-skip-permissions": ""`, tylko zapisany inaczej, a człowiek, któremu raz
+/// odmówiono, pisze go drugi raz właśnie tak. Do tego dnia zamykał tę furtkę przypadkiem
+/// `contains`; odkąd dopasowanie idzie po nazwie, musi ją zamykać ktoś z premedytacją.
+///
+/// Ten sam kształt jest u drugiego vendora **normą, a nie wyjątkiem**: cała jego konfiguracja
+/// jedzie jako `-c klucz=wartość` (`library::agents::vendor_argv`).
+fn key_of(flag: &str) -> &str {
+    flag.split_once('=').map_or(flag, |(key, _)| key)
+}
+
+/// Czy ta pozycja listy zamyka ten klucz. Pozycja z kropką na końcu jest **prefiksem rodziny**,
+/// każda inna jest nazwą i porównuje się przez równość.
+///
+/// To rozróżnienie jest całą treścią „po kluczu, nie po podciągu". Rodzin jest dziś dwie
+/// (`mcp_servers.`, `model_providers.`) i obie mają w środku nazwę wpisywaną przez człowieka,
+/// więc listy równościowej dla nich nie da się napisać. Wszystko poza nimi zostaje nazwą, bo
+/// `--verbose` jest nasze, a `--verbose-tool-output` jest inną flagą tej samej aplikacji.
+fn covers(rule: &str, key: &str) -> bool {
+    if rule.ends_with('.') {
+        key.starts_with(rule)
+    } else {
+        key == rule
+    }
+}
+
+/// Czy ten wpis przelotki koliduje z czymś, co Loadout ustawia temu vendorowi sam.
+///
+/// Jedna reguła dla obu nośników przelotki — kroku workflow ([`the_passthrough`]) i definicji
+/// agenta (`library::agents::passthrough_refused`). Druga kopia reguły po tamtej stronie
+/// rozjechałaby się w dniu, w którym ktoś zmieni jedną z nich (niezmiennik 23), a rozjazd
+/// widać dopiero z zachowania procesu.
+#[must_use]
+pub(crate) fn is_reserved(vendor: &str, flag: &str) -> bool {
+    let key = key_of(flag);
+    reserved(vendor)
+        .iter()
+        .copied()
+        .any(|rule| covers(rule, key))
+}
+
+/// Podniesienie, przez które ten wpis przelotki odpada — albo `None`, kiedy nic nie podnosi.
+///
+/// **Niezależne od vendora**, bo dial jest jeden (D6) i bo [`reserved`] dla nieznanej nazwy
+/// aplikacji oddaje pustą listę z rozmysłu: gdyby ta reguła też była per vendor, wpis schowany
+/// pod nazwą aplikacji, której jeszcze nie wspieramy, przechodziłby obok wszystkiego.
+///
+/// Dwie połowy i obie są konieczne. Sama nazwa przepuszcza `--sandbox danger-full-access`
+/// (`--sandbox` nie jest zarezerwowane, a dial omija tak samo skutecznie jak `-s`); sama
+/// wartość przepuszcza flagę, która JEST podniesieniem i stoi z pustą wartością.
+#[must_use]
+pub(crate) fn escalation_in(flag: &str, value: &str) -> Option<&'static str> {
+    let key = key_of(flag);
+    FORBIDDEN_ESCALATIONS
+        .iter()
+        .copied()
+        .find(|raise| key == *raise || value.contains(raise))
 }
 
 /// Nazwa vendora tak, jak nazywa go użytkownik. Klucz z pliku (`claude`) na ekran nie idzie.
