@@ -252,7 +252,7 @@ fn array(values: &[String]) -> String {
     )
 }
 
-fn toml_key(value: &str) -> String {
+pub(crate) fn toml_key(value: &str) -> String {
     if value
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
