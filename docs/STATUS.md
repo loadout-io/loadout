@@ -4,6 +4,35 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-24, 21:21 — T-113 czerwone po naprawie; błędny spec AC-3 wymaga decyzji człowieka
+
+**T-113 · czerwone / NIEWYLĄDOWANE · 47 min 12 s od pierwszego startu · $0,00 widoczne.**
+Po przełączeniu właściciela na Codex + Codex kontrakt i implementacja zapisały łącznie co
+najmniej **22,86 mln tokenów wejścia i 69,0 tys. wyjścia**; recenzja oraz plan i wykonanie
+naprawy nie zapisały osobnej ceny ani kompletnego użycia. Wymuszone `before` uczciwie
+certyfikowało wszystkie sześć AC jako runtime-red. Implementacja pozostała w OWNS i kończy się
+na czystej gałęzi `task-T-113` w `9bd71fa`; trunk nie dostał żadnej jej zmiany.
+
+Pierwsza i druga pełna bramka po jedynej rundzie naprawczej miały **20/22**. Zielone są AC-1,
+AC-2, AC-4, AC-5 i AC-6, pełny clippy oraz wszystkie szybkie kontrole. Czerwone są wyłącznie
+AC-3 i agregujący tę samą porażkę `full-test`. Działający kod daje czytelnikowi bezwzględny,
+otwieralny adres pełnej kopii w katalogu bieżącego biegu, zachowuje względny wskaźnik na dysku,
+przenosi adres przy wznowieniu i nie tworzy attachmentu dla krótkiej odpowiedzi.
+
+Powód czerwieni jest w zamrożonym specu kontraktowym, nie w tym zachowaniu. Ten sam helper
+asercji wymaga po wznowieniu dokładnej etykiety `what the step before left`, choć istniejące
+wyrocznie i produkcyjny model pochodzenia wymagają wtedy `what an earlier run left here`.
+Zadanie wymaga dla wznowienia nowego adresu, nie fałszywej informacji o pochodzeniu. Obu
+dokładnych równości nie da się spełnić równocześnie. Uzależnienie etykiety od długości tekstu,
+przeklasyfikowanie przeniesionego pliku na zwykłego poprzednika albo zmiana speca po
+certyfikacji `before` byłyby oszustwem pod test.
+
+Recenzent zgłosił jedną niską uwagę proceduralną: czerwony paragon nie pozwala zweryfikować
+zmiany jako gotowej. Planista naprawy wskazał błędne kryterium i zalecił decyzję człowieka;
+wykonawca poprawnie zatrzymał się bez zmian i commita. Zgodnie z AGENTS.md §7 oraz regułą
+drugiej czerwieni faza 7 stoi przed T-100. T-113 nie wolno landować ani wznawiać bez jawnej
+decyzji, czy zastąpić błędny spec nowym kontraktem.
+
 ## 2026-08-24, 20:30 — oracle `before` naprawiony; T-113 ma zgodę i nowy kontrakt
 
 Właściciel jawnie autoryzował osobną naprawę harnessu oraz T-113. Commit **`5604c3d`**
