@@ -164,6 +164,8 @@ export function start(
    * samej decyzji, a rozjechałaby się ta droga, o której ktoś zapomni (niezmiennik 23).
    */
   budgetUsd: number | null = chosenBudget(),
+  /** Whether Loadout should take its private learning turn after this run. */
+  reflectionEnabled = true,
 ): Promise<void> {
   if (going !== null) {
     /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego
@@ -252,6 +254,8 @@ export function start(
      * nikt go nie postawił. `null` znaczy „bez limitu"; pominięcie klucza znaczy „odrzuć to
      * wywołanie". */
     budgetUsd,
+    /* Explicit even at the default: Tauri matches named arguments before entering Rust. */
+    reflectionEnabled,
     /* Present even for a manual Start. Tauri matches arguments by name before entering Rust,
      * so omitting this optional Rust value is not equivalent to sending `null`. */
     claim,

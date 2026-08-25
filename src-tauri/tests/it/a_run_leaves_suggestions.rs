@@ -765,6 +765,24 @@ impl AgentDriver for Fake {
             .then(|| Arc::new(self.clone()) as Arc<dyn AgentDriver>)
     }
 
+    fn with_settings(
+        &self,
+        _settings: &loadout_lib::engine::drivers::StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
+        Some(Ok(Arc::new(self.clone())))
+    }
+
+    fn with_evidence(
+        &self,
+        _target: loadout_lib::evidence::EvidenceTarget,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        (dollars > 0.0).then(|| Arc::new(self.clone()) as Arc<dyn AgentDriver>)
+    }
+
     async fn probe(&self) -> anyhow::Result<Probe> {
         Ok(Probe {
             found: true,

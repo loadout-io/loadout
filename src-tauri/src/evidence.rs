@@ -158,8 +158,15 @@ impl EvidenceTarget {
 
     /// Prywatne dowody refleksji pod katalogiem tego samego biegu.
     #[must_use]
-    pub fn reflection(_run_dir: PathBuf, _input: SafeInputManifest) -> Self {
-        todo!("T-126: give reflection its exact private evidence target")
+    pub fn reflection(run_dir: PathBuf, input: SafeInputManifest) -> Self {
+        Self {
+            anchor: run_dir.clone(),
+            root: run_dir,
+            identity: EvidenceIdentity::Reflection,
+            input,
+            healthy: Arc::new(AtomicBool::new(true)),
+            receipt: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// Prywatne dowody rozmowy pod workspace, nigdy w globalnej bibliotece i nigdy w `runs/`.
@@ -201,9 +208,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.jsonl")),
-            EvidenceIdentity::Reflection => {
-                todo!("T-126: name reflection stdout without pretending it is a workflow step")
-            }
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.jsonl"),
             EvidenceIdentity::LeadConversation { .. } => {
                 self.root.join(LOGS_DIR).join("lead.jsonl")
             }
@@ -218,9 +223,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.stderr.log")),
-            EvidenceIdentity::Reflection => {
-                todo!("T-126: name reflection stderr without pretending it is a workflow step")
-            }
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.stderr.log"),
             EvidenceIdentity::LeadConversation { .. } => {
                 self.root.join(LOGS_DIR).join("lead.stderr.log")
             }
@@ -235,9 +238,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.input.json")),
-            EvidenceIdentity::Reflection => {
-                todo!("T-126: name reflection input without pretending it is a workflow step")
-            }
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.input.json"),
             EvidenceIdentity::LeadConversation { .. } => self.root.join("input.json"),
         }
     }
@@ -613,7 +614,12 @@ impl EvidenceTarget {
                 require_plain_name(step_id)?;
             }
             EvidenceIdentity::Reflection => {
-                todo!("T-126: validate the reflection target under its run directory")
+                if self.root != self.anchor {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the reflection evidence root does not match its run directory",
+                    ));
+                }
             }
             EvidenceIdentity::LeadConversation { conversation_id } => {
                 let loadout = safe_child(&self.anchor, ".loadout")?;
