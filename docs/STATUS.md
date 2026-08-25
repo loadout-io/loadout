@@ -4,6 +4,25 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 21:24 — T-121 w trunku: dokładny i atomowy snapshot Store
+
+**T-121 · zielone · 25 min 24 s · $0,00 widoczne.** Dwie porównywalnie zapisane tury
+Codeksa zużyły co najmniej 5,33 mln tokenów wejścia i 37,2 tys. wyjścia; recenzja, plan i
+wykonanie naprawy nie mają wspólnego paragonu tokenów. Enforced `before` uczciwie
+certyfikowało oba nowe targety: 3/3 kontroli w 0,36 s.
+
+Pierwsza pełna bramka przeszła 18/18 w 45,35 s. Recenzent znalazł jednak dwie zasadne luki
+oracle: fixture exact-multiset nie zawierała dwóch identycznych eventów, a rollback był
+obserwowany dopiero po zwróceniu błędu. Jedyna naprawa była test-only: dodała identyczny
+duplikat pełnej krotki oraz współbieżnego czytelnika, który podczas zablokowanej wymiany może
+widzieć wyłącznie cały stary snapshot. Produkcyjna implementacja pozostała jednym jobem
+jedynego writera i jedną transakcją. Dwie końcowe bramki przeszły 18/18 w 39,26 s oraz
+44,02 s.
+
+`integrate.sh` wylądował wyłącznie `task-T-121` jako **`968d239`**. Pełna bramka `main`
+przed merge'em przeszła 16/16 w 92,93 s, a po merge'u 16/16 w 171,96 s. Trunk jest czysty,
+`TASK.md` nie przeżył lądowania. Następne jest T-122 przez Codex + Codex.
+
 ## 2026-08-25, 20:45 — T-120 ZAMKNIĘTE; niezależne cele rozdzielone na T-121…T-123
 
 **T-120 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 55 min 12 s · $0,00 widoczne.**

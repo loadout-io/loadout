@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-121 następne; dwanaście zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-122 następne; dwanaście zadań zamkniętych)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -22,6 +22,7 @@ logiczny klucz z fizycznym UUID evidence, naprawa dotknęła trzech tras Startu 
 pełna bramka wykryła dwa lity testów. T-120 doszło do 19/22, lecz miało wadliwy porządek
 eventów, brak `index.tsx` w `OWNS` oraz regresje dubli i zakresu auto-pamięci. Zamiast piątej
 tury cel rozdzielono na T-121 (Store), T-122 (H15) i T-123 (H14).
+T-121 wylądowało jako atomowy snapshot Store; następnym biegiem jest T-122.
 **Nie uruchamiaj T-109 ani T-104 przed wylądowaniem T-123.** Każdą zieloną gałąź lądujesz
 osobno na `main`.
 
@@ -195,8 +196,8 @@ osobny fix harnessu jest w trunku i musi poprzedzić T-100.
 Dodane po żywym biegu T-109 ma
 zależność semantyczną od gotowej refleksji i idzie po T-123. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
-T-114, T-100, T-101 i T-115 wylądowały. T-102, T-103, T-116, T-117, T-118, T-119 i T-120
-zamknięto bez lądowania; T-121 jest następnym biegiem.
+T-114, T-100, T-101, T-115 i T-121 wylądowały. T-102, T-103, T-116, T-117, T-118, T-119
+i T-120 zamknięto bez lądowania; T-122 jest następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
@@ -217,7 +218,7 @@ zamknięto bez lądowania; T-121 jest następnym biegiem.
 | 6d | **ZAMKNIĘTE:** T-118, nie ląduj i nie wznawiaj | 20/22; AC-4 przepisało historyczne nazwy sekcji zamiast kanonicznego formatu |
 | 6e | **ZAMKNIĘTE:** T-119, nie ląduj i nie wznawiaj | 17/22; logiczny klucz zamiast UUID, trzy pliki poza OWNS i dwa lity |
 | 6f | **ZAMKNIĘTE:** T-120, nie ląduj i nie wznawiaj | 19/22; wadliwy order eventów, `index.tsx` poza OWNS, regresje dubli/scope |
-| 6g | `./ship-task.sh T-121 --agent codex --reviewer codex` | wyłącznie atomowy Store; baza dla rachunku refleksji |
+| 6g | **WYKONANE:** T-121 w trunku | wyłącznie atomowy Store; baza dla rachunku refleksji |
 | 6h | `./ship-task.sh T-122 --agent codex --reviewer codex` | H15 osobno, zachowuje `ThisAgent` |
 | 6i | `./ship-task.sh T-123 --agent codex --reviewer codex` | H14 po T-121/T-122, z `index.tsx` i dwoma dublerami w OWNS |
 | 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-123; izolacja obejmuje też refleksję |

@@ -133,7 +133,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-118 | **ZAMKNIĘTE:** 20/22; AC-4 przepisało historyczne nagłówki zamiast kanonicznego formatu | T-115 | tak | 6 |
 | T-119 | **ZAMKNIĘTE:** 17/22; logiczny klucz zamiast UUID, trzy pliki poza OWNS i dwa lity | T-115 | tak | 6 |
 | T-120 | **ZAMKNIĘTE:** 19/22; wadliwy porządek eventów, `index.tsx` poza OWNS i regresje dubli/scope | T-115 | tak | 6 |
-| T-121 | Dokładny, idempotentny i atomowy snapshot czterech tabel Store | T-115 | nie | 2 |
+| T-121 | **WYLANDOWAŁO:** dokładny, idempotentny i atomowy snapshot czterech tabel Store | T-115 | nie | 2 |
 | T-122 | Auto-pamięć kroku: pełny Markdown, `ThisAgent` i atomowy writer | T-121 | tak | 2 |
 | T-123 | Refleksja prywatna, audytowalna i sterowana przez prawdziwy Run | T-121, T-122 | tak | 4 |
 
@@ -367,13 +367,14 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101 i T-115 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119 i T-120 są zamknięte, T-121 jest następne.**
+- **T-114, T-100, T-101, T-115 i T-121 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119 i T-120 są zamknięte, T-122 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
   Trzy niezależne domeny T-120 są teraz osobno lądowalne: T-121 Store, T-122 H15, T-123 H14.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
   `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 → T-123 → T-104 → T-106`.
-- **T-121 najpierw**, mimo rozłącznego `OWNS`: T-123 zapisuje rachunek do pliku, którego
-  ponowną, atomową indeksację gwarantuje T-121. Potem T-122 i T-123 szeregowo przez `run.rs`.
+- **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-123 zapisuje rachunek do pliku,
+  którego ponowną, atomową indeksację gwarantuje T-121. Teraz T-122 i T-123 idą szeregowo
+  przez `run.rs`.
 - **T-109 po T-123**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
