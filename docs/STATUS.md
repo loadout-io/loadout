@@ -4,6 +4,29 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 12:00 — T-115 w trunku po dwóch jawnie autoryzowanych poprawkach testowych
+
+**T-115 · zielone · 57 min 05 s właściwego biegu harnessu + ręczne domknięcie lintów ·
+$0,00 widoczne.** Etapy Codeksa nie zapisały kompletnej wyceny ani księgi użycia, więc to
+wyłącznie koszt widoczny. Mocne cztery AC pozostały bez zmian: nierówne kolumny cen są
+sprawdzane osobno dla Sol/Terra/Luna, ekran sumuje dwa różne koszty, nieznany model zachowuje
+tokeny bez `$0.00`, a Codex dostaje otwieralne pełne ścieżki handoffów.
+
+Po zielonej pierwszej bramce 20/20 recenzent znalazł dwa średnie defekty, które jedyna runda
+naprawy domknęła z regresjami: model dociera teraz także przez App Server do wspólnego dekodera
+cen (`9573327`), a uwaga o nieznanej cenie jest kojarzona po stabilnym kluczu kroku zamiast po
+nieunikalnej nazwie (`3396e6f`). Naprawa zostawiła jedynie deterministyczne lity we własnym
+nowym teście. Właściciel dwa razy jawnie dopuścił test-only domknięcie poza zakończonym grafem:
+przeniesienie stałej przed instrukcje (`0c79213`) i zamianę dwóch `assert!(false)` na
+równoważne `Result::Err` (`9c6635d`). Nie zmieniono produkcji, kryterium ani siły asercji.
+
+Po pierwszym ręcznym commicie `cargo check --all-targets --keep-going` był zielony, a pełna
+bramka miała 19/20 i ujawniła drugi lint. Po drugim commitcie `cargo check` znów był zielony,
+a pełna bramka przeszła **20/20 w 65,73 s**. `integrate.sh` wylądował wyłącznie
+`task-T-115` jako **`118c876`**: bramka main przed merge'em przeszła **16/16 w 90,33 s**,
+a po merge'u **16/16 w 171,77 s**. Drzewo jest czyste, `TASK.md` nie przeżył lądowania.
+Następne jest T-103, przez Codex + Codex.
+
 ## 2026-08-25, 11:08 — T-115 czerwone po naprawie; wyłącznie testowy lint wymaga decyzji
 
 **T-115 · czerwone / NIEWYLĄDOWANE · 57 min 05 s · $0,00 widoczne.** Etapy Codeksa nie
