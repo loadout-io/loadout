@@ -4,6 +4,21 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 15:29 — właściciel zatwierdził uczciwe zastępstwo T-116
+
+Po zamknięciu T-116 właściciel polecił kontynuować. Nowy kontrakt **T-117** startuje ze
+świeżego `main` i nie przenosi commitów, implementacji, speców ani testów z `task-T-116`.
+`OWNS` obejmuje teraz dokładnie brakującą drogę idempotentnej odbudowy przez
+`src-tauri/src/store/mod.rs` i jedynego pisarza w `src-tauri/src/store/writer.rs`.
+
+Sześć nowych, globalnie unikalnych wyroczni usuwa wadliwy setup zwykłego Markdownu i od
+początku zamyka cztery uwagi recenzenta: każdy błąd twardego opakowania musi zostawić
+`reflection.ran == false`; frontend woła prawdziwy `onChange` widocznego checkboxa; brak
+przekazania jest udanym pustym krokiem, nie krokiem `failed`; katalog dowodów odmawia także
+dodatkowych plików `reflection*`. Ponowny `Store::rebuild_from` tego samego biegu musi przejść
+dwa razy bez duplikatów, bez zmiany `run.json` i bez `INSERT OR IGNORE`. Operacyjna para
+pozostaje Codex + Codex na osobnych modelach. T-117 musi wylądować przed T-109 i T-104.
+
 ## 2026-08-25, 15:05 — T-116 ZAMKNIĘTE po drugiej czerwieni
 
 **T-116 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 02 min 43 s · $0,00 widoczne.**
