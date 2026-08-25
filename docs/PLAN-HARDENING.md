@@ -88,7 +88,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-123** (T-103/T-116/T-117/T-118/T-119/T-120 zamknięte) |
-| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-122** (T-103/T-116/T-117/T-118/T-119/T-120 zamknięte) |
+| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
@@ -116,7 +116,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-122, T-123 | tak (skan) | 5 |
+| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-124, T-123 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
@@ -134,8 +134,9 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-119 | **ZAMKNIĘTE:** 17/22; logiczny klucz zamiast UUID, trzy pliki poza OWNS i dwa lity | T-115 | tak | 6 |
 | T-120 | **ZAMKNIĘTE:** 19/22; wadliwy porządek eventów, `index.tsx` poza OWNS i regresje dubli/scope | T-115 | tak | 6 |
 | T-121 | **WYLANDOWAŁO:** dokładny, idempotentny i atomowy snapshot czterech tabel Store | T-115 | nie | 2 |
-| T-122 | Auto-pamięć kroku: pełny Markdown, `ThisAgent` i atomowy writer | T-121 | tak | 2 |
-| T-123 | Refleksja prywatna, audytowalna i sterowana przez prawdziwy Run | T-121, T-122 | tak | 4 |
+| T-122 | **ZAMKNIĘTE:** dwa kolejne lity helperów po jedynej naprawie; copy-over przechodziło wyrocznię | T-121 | tak | 2 |
+| T-123 | Refleksja prywatna, audytowalna i sterowana przez prawdziwy Run | T-121, T-124 | tak | 4 |
+| T-124 | Auto-pamięć kroku: pełny Markdown i dowiedziona atomowa podmiana | T-121 | tak | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -273,15 +274,26 @@ typy i wiring były zielone. Nie wznawiać ani nie przenosić kodu, commitów lu
 - Eventy porównywane jako dokładny multiset pełnych krotek z licznością, nie w kolejności
   inserta ani przez niepełne `ORDER BY`.
 
-**T-122 — H15 bez zmiany właściciela.**
+**T-122 — ZAMKNIĘTE, bez lądowania.** Oba AC oraz `full-test` były zielone, ale pierwsza
+bramka miała 17/18 przez infallible `draft() -> Result<_>`. Jedyna naprawa usunęła ten lint,
+po czym `full-clippy` odsłonił drugi taki sam defekt `fake_drivers() -> Result<_>` w drugim
+nowym teście. Końcowe ENOSPC było wtórne; wcześniejsza pełna suita przeszła. Recenzent
+wykazał ponadto, że temp-then-copy-over przechodzi AC-2. Nie wznawiać ani nie przenosić kodu,
+commitów, speców lub testów.
+
+**T-124 — H15 bez zmiany właściciela, następca T-122.**
 - `what_the_steps_wrote_down` zachowuje `ThisAgent + agent`; tylko osobna refleksja całego
   biegu jest `ThisProject`.
 - Pierwszy akapit, całe źródłowe body i `**Why:**` przechodzą przez właścicielski wariant API
   `memory::notes`; `run.rs` nie otwiera notatki drugi raz.
 - Jeden atomowy temp+persist w katalogu celu; awaria i udany retry porównują pełny listing
-  oraz stare/nowe bajty. Zamrożony test T-80 pozostaje zielony i poza `OWNS`.
+  oraz stare/nowe bajty. Osobny test podmienia plik tylko do odczytu przy zapisywalnym
+  katalogu, więc copy-over nie może udawać rename. Zamrożony test T-80 pozostaje zielony i
+  poza `OWNS`.
+- Fallible helpery testów zwracają `Result`, infallible helpery konkretny typ; pełny clippy
+  nie może odsłonić tej samej klasy defektu dopiero po pierwszym błędzie.
 
-**T-123 — H14 po wylądowaniu T-121/T-122.**
+**T-123 — H14 po wylądowaniu T-121/T-124.**
 - Prywatne ustawienia, `EvidenceTarget::reflection`, osobny sufit, addytywny rachunek w
   `run.json`, fizyczny UUID zwykłego evidence i brak fallbacku po awarii wrappera.
 - Dwa istniejące duble z `reflecting()` obowiązkowo przenoszą wszystkie twarde opakowania bez
@@ -367,14 +379,15 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115 i T-121 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119 i T-120 są zamknięte, T-122 jest następne.**
+- **T-114, T-100, T-101, T-115 i T-121 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119, T-120 i T-122 są zamknięte, T-124 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
-  Trzy niezależne domeny T-120 są teraz osobno lądowalne: T-121 Store, T-122 H15, T-123 H14.
+  Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
+  H15 po zamkniętym T-122, a T-123 obejmuje H14.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 → T-123 → T-104 → T-106`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 → T-104 → T-106`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-123 zapisuje rachunek do pliku,
-  którego ponowną, atomową indeksację gwarantuje T-121. Teraz T-122 i T-123 idą szeregowo
-  przez `run.rs`.
+  którego ponowną, atomową indeksację gwarantuje T-121. T-122 zamknięto; teraz T-124 i T-123
+  idą szeregowo przez `run.rs`.
 - **T-109 po T-123**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą

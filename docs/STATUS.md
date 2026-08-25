@@ -4,6 +4,35 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 22:08 — T-122 ZAMKNIĘTE; T-124 przejmuje H15 z mocniejszą wyrocznią
+
+**T-122 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 23 min 17 s · $0,00 widoczne.**
+Dwie porównywalnie zapisane tury Codeksa zużyły co najmniej 7,44 mln tokenów wejścia i
+38,3 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu tokenów.
+Enforced `before` uczciwie certyfikowało oba nowe targety: 3/3 kontroli w 0,39 s.
+
+Pierwsza pełna bramka miała **17/18** w 46,57 s. Oba AC, pełne testy, scope, format i typy
+były zielone; `full-clippy` odrzucił infallible `draft() -> Result<NoteDraft>` w nowym teście.
+Recenzent zgłosił jedną zasadną uwagę medium: AC-2 dowodziło błędu, retry, bajtów i listingu,
+ale mogło przepuścić temp-then-copy-over zamiast atomowego rename. Inspekcja bieżącej
+implementacji potwierdziła prawidłowe same-directory temp + `sync_all` + `persist`, lecz luka
+wyroczni pozostała prawdziwa.
+
+Jedyna naprawa usunęła pierwszy lint bez zmiany produkcji lub asercji, po czym pełny clippy
+odsłonił drugi taki sam defekt: infallible `fake_drivers() -> Result<Drivers>` w drugim nowym
+teście. Pierwsza bramka po naprawie miała 17/18 w 41,31 s i zielony `full-test`. Ostatnia,
+autorytatywna bramka miała **16/18** w 40,54 s: ten sam lint oraz wtórne `ENOSPC` frontendu.
+Brak miejsca nie zmienia diagnozy, bo wcześniejsza pełna suita przeszła; po jedynej rundzie
+nie ma piątej tury.
+
+Gałąź `task-T-122` jest czysta na `b8f01ca`, ale nie wolno jej lądować ani wznawiać. Usunięto
+wyłącznie odbudowywalne targety Cargo czystych, zakończonych worktree (31,0 GiB według Cargo);
+źródła, gałęzie i paragony zostały zachowane, a wolne miejsce wzrosło z 123 MiB do 23 GiB.
+Świeże **T-124** przejmuje cały H15 bez przenoszenia kodu/speców: fallible helpery mają
+`Result`, infallible konkretny typ, a osobna mutacja read-only target + writable parent
+odróżnia atomowy persist/rename od copy-over. T-123 zależy teraz od T-124. Operacyjnie dalej
+Codex + Codex.
+
 ## 2026-08-25, 21:24 — T-121 w trunku: dokładny i atomowy snapshot Store
 
 **T-121 · zielone · 25 min 24 s · $0,00 widoczne.** Dwie porównywalnie zapisane tury
