@@ -4,6 +4,23 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 17:08 — właściciel zatwierdził pełne zastępstwo T-117
+
+Po zamknięciu T-117 właściciel polecił kontynuować. Nowy kontrakt **T-118** startuje ze
+świeżego `main`; nie przenosi commitów, implementacji, speców ani testów z
+`task-T-117`. Ma sześć nowych, globalnie unikalnych ścieżek kryteriów i musi wylądować
+przed T-109 oraz T-104.
+
+Kontrakt zamyka wszystkie trzy wady pierwszej bramki T-117 i uwagę recenzenta. Tryb klona
+drivera ma być jawny, więc refleksji nie wolno rozpoznawać po tekście promptu, modelu,
+kolejności ani nazwie pliku; zwykły krok i refleksja zachowują równocześnie własne dowody.
+Wyrocznia frontendu przechodzi przez prawdziwy element `ReflectionToggle` znaleziony w
+drzewie zwróconym przez produkcyjny `Start`, a nie przez osobny helper lub setter. Udany
+pusty krok nadal zapisuje prawdziwy handoff `left_nothing`; dopiero refleksja rozpoznaje tę
+semantykę i nie uruchamia płatnego procesu. Zapis pełnego Markdownu pamięci ma należeć do
+`memory::notes` i być atomowy razem z front matter, bez ponownego otwierania pliku w
+`run.rs`. Operacyjna para pozostaje **Codex + Codex**.
+
 ## 2026-08-25, 16:43 — T-117 ZAMKNIĘTE: naprawę przerwał pełny dysk
 
 **T-117 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 04 min 13 s · $0,00
