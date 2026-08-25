@@ -4,6 +4,40 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 23:46 — T-123 ZAMKNIĘTE; T-125 przejmuje H14 z prawdziwym efektem przeglądarki
+
+**T-123 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 53 min 51 s · $0,00 widoczne.**
+Dwie porównywalnie zapisane tury Codeksa zużyły co najmniej 40,65 mln tokenów wejścia i
+91,7 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu tokenów.
+To jest wolumen, który przy płatnym cenniku zewnętrznym przekroczyłby próg ręcznej uwagi;
+bieżący harness raportuje jednak koszt widoczny $0,00, więc nie wolno dopisać zmyślonej kwoty.
+Enforced `before` uczciwie certyfikowało cztery nowe targety: 5/5 kontroli w 1,21 s.
+
+Pierwsza pełna bramka przeszła **20/20** w 49,48 s. Prywatna refleksja miała osobne evidence,
+ustawienia i budżet; zwykły krok zachował fizyczny UUID, rachunek był addytywny, puste
+przekazanie nie uruchamiało tury, a tryb klona — nie nazwa modelu — przydzielał limit.
+Recenzent znalazł jednak dwie zasadne luki medium. Stop był sprawdzany wyłącznie zanim zwykły
+krok skończy scheduler, więc nie dowodził anulowania już żywej refleksji. Frontendowy AC-2
+bezpośrednio wołał `requestRun()` i `launchRequested()`: `renderToStaticMarkup` nie uruchamia
+efektów, zatem jedyny produkcyjny konsument żądania edytora w
+`useSyncExternalStore`/`useEffect` pozostawał niewykonany mimo zielonego testu.
+
+Jedyna naprawa w commicie `98945a2` poprawiła pierwszy defekt: późny Stop anuluje
+`AgentHandle` prywatnej tury i nowy scenariusz AC-3 przeszedł 5/5. Nie wolno było uczciwie
+załatać drugiego bez efekt-capable przyrządu. Naprawa rozbudowała ponadto produkcyjne
+`a_short_turn_about` do 116 wierszy. Ostatnia, autorytatywna bramka miała **19/20** w 41,78 s:
+wszystkie AC, pełne testy, scope, format i typy były zielone, ale `full-clippy` odrzucił limit
+100 wierszy. Po jednej rundzie nie ma kolejnej tury ani ręcznej poprawki.
+
+Gałąź `task-T-123` jest czysta na `98945a2`, lecz nie wolno jej lądować ani wznawiać.
+Odbudowywalny target usunięto (5,1 GiB według Cargo); źródła, branch i paragony pozostały.
+Świeże **T-125** startuje z `main`, nie przenosi kodu/speców T-123 i przejmuje H14. Nowe AC-2
+używa istniejącego `e2e/harness.ts`, prawdziwego Chromium, widocznego checkboxa, Entera w
+`/run` oraz prawdziwego kliknięcia Run w edytorze; dopiero zamontowany efekt może wyemitować
+`run_workflow`. AC-3 czeka ze Stopem na żywy proces refleksji i dowodzi jego śmierci, a kontrakt
+od początku ogranicza dotknięte funkcje produkcyjne do 100 wierszy. T-109 i T-104 czekają na
+wylądowanie T-125; operacyjnie dalej Codex + Codex.
+
 ## 2026-08-25, 22:45 — T-124 w trunku: pełna auto-pamięć i trwały atomowy persist
 
 **T-124 · zielone · 24 min 12 s · $0,00 widoczne.** Dwie porównywalnie zapisane tury
