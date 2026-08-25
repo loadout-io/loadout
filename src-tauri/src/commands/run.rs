@@ -1051,14 +1051,9 @@ async fn the_planned_run(
         let live = Arc::clone(&live);
         move |id: StepId, _report: StepReport| live.route_after(id)
     };
-    let outcome = scheduler::execute_routed(
-        &dag,
-        dag.len(),
-        deps.control.cancel_token(),
-        run_step,
-        route_after,
-    )
-    .await;
+    let cancel = deps.control.cancel_token();
+    let outcome =
+        scheduler::execute_routed(&dag, dag.len(), cancel.clone(), run_step, route_after).await;
 
     /* KROK ZATRZYMANY PRZEZ SUFIT CZYTA SIĘ JAKO POMINIĘTY, NIE JAKO ANULOWANY, i różnica jest
      * dla człowieka całą treścią: `cancelled` znaczy „nacisnąłeś Stop". Planista widzi wyłącznie
@@ -1095,12 +1090,21 @@ async fn the_planned_run(
     } else {
         ReflectionReceipt::default()
     };
-    live.update(|book| book.reflection = reflection);
+    // Stop może przyjść już po schedulerze, kiedy żyje wyłącznie prywatna tura refleksji.
+    // Ten stan nadal jest anulowaniem całego biegu: bez ponownego odczytu tokena księga
+    // mówiłaby `succeeded`, choć Stop naprawdę zabił ostatnią grupę procesów tego biegu.
+    let cancelled = outcome.cancelled || cancel.is_cancelled();
+    live.update(|book| {
+        book.reflection = reflection;
+        if cancelled {
+            book.status = RunState::Cancelled;
+        }
+    });
 
     Ok(RunReport {
         id: live.plan.id.clone(),
         dir: live.plan.dir.clone(),
-        outcome: if outcome.cancelled {
+        outcome: if cancelled {
             Outcome::Cancelled
         } else {
             Outcome::Done
@@ -1325,7 +1329,12 @@ async fn what_this_run_taught_us(
     // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
     // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
     // „przekazanie", a rozjazd widać dopiero na rachunku.
-    if handoff::scan_run_dir(&plan.dir).is_ok_and(|left| left.is_empty()) {
+    let Ok(left) = handoff::scan_run_dir(&plan.dir) else {
+        // Refleksja nie może twierdzić, że przeczytała wynik, którego skaner produktu nie umie
+        // odczytać. Sam bieg pozostaje prawdziwy; prywatna tura po prostu się nie zaczyna.
+        return ReflectionReceipt::default();
+    };
+    if left.is_empty() || left.iter().all(handoff::Handoff::left_nothing) {
         return ReflectionReceipt::default();
     }
 
@@ -1393,6 +1402,49 @@ struct ReflectionTurn {
     cost_usd: Option<f64>,
 }
 
+enum ReflectionEnd {
+    Finished(anyhow::Result<DriverOutcome>),
+    Stopped,
+    TimedOut,
+}
+
+async fn wait_for_reflection(
+    handle: &mut dyn AgentHandle,
+    cancel: CancellationToken,
+) -> Option<ReflectionTurn> {
+    let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
+    let end = {
+        let waiting = handle.wait();
+        tokio::pin!(waiting);
+        tokio::select! {
+            outcome = &mut waiting => ReflectionEnd::Finished(outcome),
+            () = cancel.cancelled() => ReflectionEnd::Stopped,
+            () = tokio::time::sleep(limit) => ReflectionEnd::TimedOut,
+        }
+    };
+    match end {
+        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Some(ReflectionTurn {
+            text: outcome.text,
+            cost_usd: outcome.cost_usd,
+        }),
+        ReflectionEnd::Finished(Ok(outcome)) => {
+            tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
+            None
+        }
+        ReflectionEnd::Finished(Err(error)) => {
+            tracing::debug!(%error, "the reflection turn fell over");
+            None
+        }
+        ReflectionEnd::Stopped | ReflectionEnd::TimedOut => {
+            // Obie ścieżki przechodzą przez dowód śmierci prawdziwej grupy procesu. Samo
+            // porzucenie `wait` anulowałoby tylko future Rusta (niezmienniki 6 i 10).
+            let proof = handle.cancel().await;
+            tracing::debug!(?proof, "the reflection turn was stopped and reaped");
+            None
+        }
+    }
+}
+
 /// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
 ///
 /// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie cztery drogi, na których jej nie ma:
@@ -1436,32 +1488,7 @@ async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<Reflection
 
     let turn = match driver.start(spec, events).await {
         Ok(mut handle) => {
-            let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
-            let said = match tokio::time::timeout(limit, handle.wait()).await {
-                Ok(Ok(outcome)) if outcome.ok => Some(ReflectionTurn {
-                    text: outcome.text,
-                    cost_usd: outcome.cost_usd,
-                }),
-                Ok(Ok(outcome)) => {
-                    tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
-                    None
-                }
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "the reflection turn fell over");
-                    None
-                }
-                Err(_) => {
-                    /* Limit czasu zdejmuje GRUPĘ PROCESÓW, nie samo zadanie Rusta (niezmiennik
-                     * 10). Porzucony `wait` zostawiłby żywy proces vendora, który pali limit
-                     * w tle po biegu, na który nikt już nie patrzy — czyli błąd finansowy. */
-                    let proof = handle.cancel().await;
-                    tracing::debug!(
-                        ?proof,
-                        "the reflection turn ran out of time and was stopped"
-                    );
-                    None
-                }
-            };
+            let said = wait_for_reflection(handle.as_mut(), deps.control.cancel_token()).await;
             let _ = handle.close().await;
             said
         }
