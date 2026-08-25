@@ -4,6 +4,40 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 15:05 — T-116 ZAMKNIĘTE po drugiej czerwieni
+
+**T-116 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 02 min 43 s · $0,00 widoczne.**
+Etapy Codeksa nie zapisały kompletnej wyceny, więc to wyłącznie koszt widoczny. Enforced
+`before` uczciwie certyfikowało sześć nowych AC jako runtime-red. Pierwsza i druga pełna
+bramka miały **19/22**; końcowa trwała 19,97 s. Zielone były AC-1, AC-3, AC-4 i AC-5,
+pełny clippy, zakres, typy oraz wszystkie pozostałe szybkie kontrole. Czerwone pozostały
+AC-2, AC-6 i agregujący je `full-test`.
+
+AC-2 ujawniło kolejny rzeczywisty brak zakresu. Wyrocznia odbudowuje ten sam bieg ponownie,
+a `Store::rebuild_from` próbuje drugi raz wstawić ten sam `runs.id` i dostaje SQLite 1555
+`UNIQUE constraint failed: runs.id`. Planner naprawy uznał idempotentną odbudowę indeksu za
+defekt kodu i wskazał najmniejszą zmianę w `src-tauri/src/store/mod.rs`. Tego pliku nie ma w
+`OWNS` T-116; zmiana identyfikatora, przepisywanie `run.json` albo `INSERT OR IGNORE` bez
+rozstrzygnięcia zdarzeń byłyby obejściem pod test.
+
+AC-6 ma niezależny defekt zamrożonej wyroczni. Helper `body_of_text` woła
+`FrontMatter::split` na zwykłym pliku Markdown bez front matter i kończy się
+`NoFrontMatter { path: "" }`, choć produkcyjny kolektor poprawnie traktuje taki plik jako
+ciało od bajtu zero. Dodanie sztucznego front matter zmieniłoby przypadek, a poprawa helpera
+po certyfikacji `before` byłaby zmianą kryterium. Planner nazwał to wprost defektem testu;
+wykonawca zgodnie z regułą nie zrobił częściowej naprawy ani commita.
+
+Recenzent wskazał ponadto cztery nierozstrzygnięte luki oracle: brak asercji `ran:false` dla
+każdego brakującego wrappera, ominięcie prawdziwego handlera widocznego checkboxa, przypadek
+„bez handoffu” zbudowany z porażki zamiast udanego pustego wyniku oraz brak odmowy dodatkowych
+plików refleksji. Wszystkie uwagi są zasadne i muszą wejść do następnego kontraktu od początku.
+
+Gałąź `task-T-116` jest czysta na `af18576`; `quick-scope` było zielone, lecz gałęzi nie wolno
+lądować. `main` nie dostał jej kodu i pozostaje czysty. Faza 7 stoi przed T-109. Uczciwa
+kontynuacja wymaga kolejnego pełnego zastępstwa z `store/mod.rs` w `OWNS`, sześcioma nowymi
+ścieżkami testów, poprawną fiksturą Markdown przed `before` i czterema domkniętymi lukami
+recenzenta; nie wolno przenosić commitów, implementacji ani speców z `task-T-116`.
+
 ## 2026-08-25, 13:59 — właściciel zatwierdził pełne zastępstwo T-103
 
 Jawne „rób, masz pozwolenie na wszystko” właściciela uruchamia wyjątek authoringu dla
