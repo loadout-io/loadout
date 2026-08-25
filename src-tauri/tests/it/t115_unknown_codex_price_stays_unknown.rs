@@ -16,7 +16,9 @@ use std::time::Duration;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::codex::CodexDriver;
-use loadout_lib::engine::drivers::{AgentDriver, AgentHandle, Outcome, Policy, RunSpec, Tokens};
+use loadout_lib::engine::drivers::{
+    AgentDriver, AgentEvent, AgentHandle, Outcome, Policy, RunSpec, Tokens,
+};
 use loadout_lib::engine::line::{Curator, Line, LineKind, Seen};
 use loadout_lib::engine::step::StepState;
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
@@ -166,6 +168,69 @@ async fn the_serialized_final_row_names_the_model_whose_price_is_unknown()
     assert!(
         !text.contains("$0.00"),
         "a model with no known price must never look free: {text:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_display_name_cannot_move_unknown_price_between_steps() -> Result<(), Box<dyn Error>> {
+    const FIRST_MODEL: &str = "gpt-9.9-first";
+    const SECOND_MODEL: &str = "gpt-9.9-second";
+    const REPEATED_NAME: &str = "Repeated display name";
+
+    let (outcome, _) = adapter_outcome_and_visible_lines().await?;
+    let events = [
+        (
+            "step-first",
+            AgentEvent::Notice {
+                text: format!("The price for {FIRST_MODEL} is not known."),
+            },
+        ),
+        (
+            "step-second",
+            AgentEvent::Notice {
+                text: format!("The price for {SECOND_MODEL} is not known."),
+            },
+        ),
+        ("step-first", AgentEvent::Finished(outcome.clone())),
+        ("step-second", AgentEvent::Finished(outcome)),
+    ];
+    let mut curator = Curator::new();
+    let mut lines = Vec::new();
+    for (at_ms, (step_key, event)) in events.iter().enumerate() {
+        lines.extend(curator.observe_with_step_key(
+            Seen {
+                agent: REPEATED_NAME,
+                at_ms: u64::try_from(at_ms).unwrap_or_default(),
+                event,
+                tool: None,
+            },
+            Some(step_key),
+        ));
+    }
+    lines.extend(curator.flush());
+
+    let done_texts: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| match line {
+            Line::Done { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_texts.len(),
+        2,
+        "both steps with the repeated display name need a final row: {lines:?}"
+    );
+    assert!(
+        done_texts[0].contains(FIRST_MODEL) && !done_texts[0].contains(SECOND_MODEL),
+        "the first step received another step's price notice: {:?}",
+        done_texts[0]
+    );
+    assert!(
+        done_texts[1].contains(SECOND_MODEL) && !done_texts[1].contains(FIRST_MODEL),
+        "the second step received another step's price notice: {:?}",
+        done_texts[1]
     );
     Ok(())
 }

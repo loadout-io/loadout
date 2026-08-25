@@ -8551,6 +8551,10 @@ async fn forward(
     id: StepId,
 ) {
     let mut curator = Curator::new();
+    // 2026-08-25 (T-115) — NAZWA KROKU NIE JEST KLUCZEM. Dwa wezly moga miec ten sam tekst
+    // na ekranie; indeks planu pozostaje rozny i nie pozwala, by uwaga o nieznanej cenie
+    // jednego wezla zostala dopisana do koncowego wiersza drugiego.
+    let step_key = id.to_string();
     /* Czy okno już wie, że ten agent myśli. Powód, dla którego to jest tu, a nie w kuratorze,
      * stoi przy wysyłce niżej. */
     let mut told_it_thinks = false;
@@ -8588,7 +8592,7 @@ async fn forward(
             event: &event,
             tool: tool.as_ref(),
         };
-        let batch = curator.observe(seen);
+        let batch = curator.observe_with_step_key(seen, Some(&step_key));
 
         /* SLOT „Thinking…" DOSTAJE SWÓJ NOŚNIK — i to jest jedyne miejsce, w którym wolno mu
          * go dostać.

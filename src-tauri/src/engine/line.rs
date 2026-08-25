@@ -762,8 +762,8 @@ pub struct Curator {
     pending: Vec<Pending>,
     /// Stały slot na dole ekranu.
     status: Option<Status>,
-    /// Brak ceny czeka na końcowy wiersz TEGO SAMEGO agenta. Mapa, nie jedno pole, bo kurator
-    /// może dostać przeplecione zdarzenia dwóch równoległych kroków.
+    /// Brak ceny czeka na końcowy wiersz TEGO SAMEGO kroku. Mapa, nie jedno pole, bo kurator
+    /// może dostać przeplecione zdarzenia dwóch równoległych kroków o tej samej nazwie.
     unknown_prices: HashMap<String, String>,
     /// Skąd biorą się `detail_id`. Rośnie monotonicznie w obrębie jednego biegu.
     minted: u64,
@@ -834,6 +834,16 @@ impl Curator {
     /// Pusty wektor jest **normalną odpowiedzią**: tak wygląda myślenie, `init`, hak sesji
     /// i każde zdarzenie, które tylko dokłada się do otwartej grupy.
     pub fn observe(&mut self, seen: Seen<'_>) -> Vec<Line> {
+        self.observe_with_step_key(seen, None)
+    }
+
+    /// Wpuszcza zdarzenie z opcjonalnym, stabilnym kluczem kroku.
+    ///
+    /// Żywy bieg podaje indeks węzła, bo nazwa wyświetlana nie jest identyfikatorem i dwa
+    /// równoległe kroki mogą ją współdzielić. Odczyt starych transkryptów nie zna indeksu,
+    /// więc zachowuje dotychczasowe grupowanie po nazwie przez [`Self::observe`].
+    pub fn observe_with_step_key(&mut self, seen: Seen<'_>, step_key: Option<&str>) -> Vec<Line> {
+        let unknown_price_key = step_key.unwrap_or(seen.agent);
         match seen.event {
             // Reguła 5. Myślenie MUSI dojść — inaczej dół ekranu jest martwy, kiedy agent
             // pracuje — i nie ma prawa wejść do historii, bo wirtualizowana lista mierzy
@@ -891,7 +901,7 @@ impl Curator {
             AgentEvent::Notice { text } => {
                 if is_unknown_price_notice(text) {
                     self.unknown_prices
-                        .insert(seen.agent.to_owned(), text.to_owned());
+                        .insert(unknown_price_key.to_owned(), text.to_owned());
                     return Vec::new();
                 }
                 let line = Line::Problem {
@@ -902,7 +912,7 @@ impl Curator {
                 self.close_then(line)
             }
             AgentEvent::Finished(outcome) => {
-                let unknown_price = self.unknown_prices.remove(seen.agent);
+                let unknown_price = self.unknown_prices.remove(unknown_price_key);
                 let line = done_line(seen.agent, outcome, unknown_price.as_deref());
                 self.close_then(line)
             }
