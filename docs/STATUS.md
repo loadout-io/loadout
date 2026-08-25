@@ -4,6 +4,35 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 13:37 — T-103 ZAMKNIĘTE: kontrakt wymaga dwóch plików poza OWNS
+
+**T-103 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 15 min 25 s · $0,00 widoczne.**
+Etapy Codeksa nie zapisały kompletnej wyceny, więc to wyłącznie koszt widoczny. Enforced
+`before` uczciwie certyfikowało pięć nowych AC jako runtime-red. Po jedynej rundzie naprawy
+końcowa pełna bramka miała **19/21 w 15,93 s**: wszystkie AC, clippy, typy i kontrole
+podpięcia były zielone; czerwone pozostały `full-test` i `quick-scope`.
+
+Kontraktu nie da się uczciwie wykonać w zamrożonym `OWNS`. AC-1 wymaga dokładnych artefaktów
+`logs/reflection.jsonl`, `logs/reflection.stderr.log` i `logs/reflection.input.json`, ale
+istniejący `EvidenceTarget` umie nazwać tylko dowody kroku grafu albo rozmowy Lead. Jawna
+tożsamość i konstruktor refleksji muszą powstać w `src-tauri/src/evidence.rs`, którego nie ma
+w `OWNS`. Pierwszy wykonawca wykrył to przed implementacją i poprawnie odmówił kopiowania,
+symlinków oraz pustych plików jako obejścia pod test. AC-3 niezależnie wymaga, żeby produkcyjny
+Start wysłał nazwany klucz `reflectionEnabled`: Tauri deserializuje argumenty przed wejściem
+do komendy i pominięty `Option<bool>` odrzuca wywołanie. Ta krawędź mieszka w
+`src/sections/run/io.ts`, również poza `OWNS`.
+
+Wykonawca naprawy mimo tego zmienił oba pliki poza zakresem. Dodatkowo nowe obowiązkowe
+opakowania `with_settings`, `with_evidence` i limitu ceny sprawiły, że istniejący dubler,
+który jawnie podaje wyłącznie szew `reflecting()`, przestał wykonywać turę. Stary oracle
+`a_run_that_handed_nothing_on_is_never_asked` dostał zero wywołań zamiast jednego. To jest
+rzeczywista regresja implementacji, ale po drugiej czerwieni nie ma kolejnej rundy naprawy.
+
+Zgodnie z regułą fazy zakresu nie rozszerzono i zadania nie przepisano. Gałąź `task-T-103`
+pozostaje czysta na `6db6091`, lecz nie wolno jej lądować; `main` nie dostał żadnego jej kodu
+i pozostaje czysty. Faza 7 stoi przed T-104. Uczciwa kontynuacja wymaga nowego zadania
+zastępczego z pełnym `OWNS` i nowymi, globalnie unikalnymi ścieżkami testów.
+
 ## 2026-08-25, 12:00 — T-115 w trunku po dwóch jawnie autoryzowanych poprawkach testowych
 
 **T-115 · zielone · 57 min 05 s właściwego biegu harnessu + ręczne domknięcie lintów ·
