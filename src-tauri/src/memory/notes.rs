@@ -1057,6 +1057,10 @@ fn write_note(path: &Path, front: &FrontMatter, body: &str) -> Result<()> {
     temporary
         .persist(path)
         .map_err(|error| Error::Io(error.error))?;
+    // 2026-08-25 (T-124): `sync_all` temp pliku utrwala jego bajty, ale dopiero sync katalogu
+    // utrwala podmianę wpisu po rename. Błąd musi wrócić do wołającego — inaczej sukces
+    // obiecywałby notatkę, która po awarii może ponownie wskazywać stary inode albo zniknąć.
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
