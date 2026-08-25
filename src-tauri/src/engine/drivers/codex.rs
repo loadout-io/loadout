@@ -644,9 +644,9 @@ impl fmt::Debug for AppServerState {
 }
 
 impl AppServerState {
-    fn new() -> Self {
+    fn new(model: Option<String>) -> Self {
         Self {
-            decoder: CodexDecoder::new(),
+            decoder: CodexDecoder::for_model(model),
             active: false,
             cancelled: false,
             began: Instant::now(),
@@ -968,6 +968,7 @@ async fn handle_app_command(
 struct AppServerInput<Output> {
     stdin: ChildStdin,
     stdout: Output,
+    model: Option<String>,
     commands: mpsc::Receiver<AppCommand>,
     events: mpsc::Sender<DecodedEvent>,
     outcomes: mpsc::Sender<Outcome>,
@@ -1048,6 +1049,7 @@ where
     let AppServerInput {
         mut stdin,
         stdout,
+        model,
         mut commands,
         events,
         outcomes,
@@ -1058,7 +1060,7 @@ where
     let mut reader = BufReader::new(stdout);
     let mut buffer = Vec::with_capacity(8 * 1024);
     let mut pending: HashMap<u64, PendingAppRequest> = HashMap::new();
-    let mut state = AppServerState::new();
+    let mut state = AppServerState::new(model);
     let mut commands_open = true;
 
     loop {
@@ -1473,6 +1475,7 @@ impl CodexDriver {
         let reader_task = tokio::spawn(app_server_actor(AppServerInput {
             stdin,
             stdout,
+            model: spec.model.clone(),
             commands: commands_rx,
             events: tx,
             outcomes: outcomes_tx,
@@ -3157,6 +3160,69 @@ impl AgentDriver for CodexDriver {
 }
 
 #[cfg(test)]
+mod app_server_pricing_tests {
+    use serde_json::json;
+
+    use super::{AgentEvent, AppServerState, Tokens};
+
+    const TOKENS: Tokens = Tokens {
+        input: 10_000,
+        cached: 5_000,
+        output: 20_000,
+    };
+
+    fn completed_turn(model: &str) -> Vec<AgentEvent> {
+        let mut state = AppServerState::new(Some(model.to_owned()));
+        state.begin_turn();
+        state.notification(&json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": { "status": "completed" },
+                "usage": {
+                    "inputTokens": TOKENS.input,
+                    "cachedInputTokens": TOKENS.cached,
+                    "outputTokens": TOKENS.output
+                }
+            }
+        }))
+    }
+
+    #[test]
+    fn selected_model_reaches_app_server_pricing_and_unknown_notice() {
+        let priced = completed_turn("gpt-5.6-terra-2026-08-25");
+        let Some(AgentEvent::Finished(priced_outcome)) = priced.last() else {
+            assert!(
+                false,
+                "the priced App Server turn did not finish: {priced:?}"
+            );
+            return;
+        };
+        assert_eq!(priced.len(), 1, "a known price must not emit a warning");
+        assert_eq!(priced_outcome.tokens, TOKENS);
+        assert_eq!(priced_outcome.cost_usd, Some(0.261));
+
+        const UNKNOWN_MODEL: &str = "gpt-9.9-nebula";
+        let unknown = completed_turn(UNKNOWN_MODEL);
+        assert!(
+            matches!(
+                unknown.first(),
+                Some(AgentEvent::Notice { text }) if text.contains(UNKNOWN_MODEL)
+            ),
+            "the App Server turn did not name its unknown model: {unknown:?}"
+        );
+        let Some(AgentEvent::Finished(unknown_outcome)) = unknown.last() else {
+            assert!(
+                false,
+                "the unknown-price App Server turn did not finish: {unknown:?}"
+            );
+            return;
+        };
+        assert_eq!(unknown_outcome.tokens, TOKENS);
+        assert_eq!(unknown_outcome.cost_usd, None);
+    }
+}
+
+#[cfg(test)]
 mod stop_proof_tests {
     use std::io::{self, Write};
     use std::path::PathBuf;
@@ -3271,7 +3337,7 @@ mod stop_proof_tests {
     -> anyhow::Result<()> {
         let directory = TempDir::new()?;
         let evidence = target(&directory, "app-alive-then-dead");
-        let state = Arc::new(Mutex::new(AppServerState::new()));
+        let state = Arc::new(Mutex::new(AppServerState::new(None)));
         state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3384,6 +3450,7 @@ mod stop_proof_tests {
         app_server_actor(AppServerInput {
             stdin,
             stdout: FailingOutput,
+            model: None,
             commands: command_inbox,
             events,
             outcomes,
