@@ -285,6 +285,19 @@ pub enum AgentEvent {
     Finished(Outcome),
 }
 
+const UNKNOWN_PRICE_OPENS: &str = "The price for ";
+const UNKNOWN_PRICE_CLOSES: &str = " is not known.";
+
+pub(crate) fn unknown_price_notice(model: &str) -> String {
+    format!("{UNKNOWN_PRICE_OPENS}{model}{UNKNOWN_PRICE_CLOSES}")
+}
+
+pub(crate) fn is_unknown_price_notice(text: &str) -> bool {
+    text.starts_with(UNKNOWN_PRICE_OPENS)
+        && text.ends_with(UNKNOWN_PRICE_CLOSES)
+        && text.len() > UNKNOWN_PRICE_OPENS.len() + UNKNOWN_PRICE_CLOSES.len()
+}
+
 /// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
 ///
 /// # Dlaczego to jest ładunek KANAŁU, a nie sam [`AgentEvent`] (2026-08-18)

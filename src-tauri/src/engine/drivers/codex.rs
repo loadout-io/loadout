@@ -63,7 +63,7 @@ use tokio::time::timeout;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
-    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
+    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages, unknown_price_notice,
 };
 use crate::engine::stream;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
@@ -732,7 +732,7 @@ impl AppServerState {
             self.cumulative = total;
         }
         let used = token_delta(self.cumulative, self.baseline);
-        vec![self.decoder.finish_tokens(used)]
+        self.decoder.finish_tokens(used)
     }
 
     fn end_of_stream(&mut self, complaint: &str) -> Vec<AgentEvent> {
@@ -2173,7 +2173,7 @@ impl CodexDecoder {
             CodexLine::ItemCompleted { item } => {
                 item.map(|item| self.completed(item)).unwrap_or_default()
             }
-            CodexLine::TurnCompleted { usage } => vec![self.finish(usage.as_ref())],
+            CodexLine::TurnCompleted { usage } => self.finish(usage.as_ref()),
             CodexLine::TurnFailed { error } => self.failed(error.and_then(|error| error.message)),
             // Skarga nie kończy tury: obie linie niosą problem na ekran (T2 §9.3 mapuje obie na
             // `problem`), ale turę zamyka ta, która ją zamyka.
@@ -2289,7 +2289,7 @@ impl CodexDecoder {
     }
 
     /// `turn.completed` → koniec tury, która się udała.
-    fn finish(&mut self, usage: Option<&Usage>) -> AgentEvent {
+    fn finish(&mut self, usage: Option<&Usage>) -> Vec<AgentEvent> {
         self.finish_tokens(Tokens {
             input: usage.and_then(|usage| usage.input).unwrap_or_default(),
             output: usage.and_then(|usage| usage.output).unwrap_or_default(),
@@ -2299,18 +2299,27 @@ impl CodexDecoder {
 
     /// Wspolny koniec tury dla `exec` i App Servera. Ten drugi odejmuje kumulatywny licznik
     /// przed wywolaniem, dzieki czemu ekran nie dolicza poprzednich tur po raz drugi.
-    fn finish_tokens(&mut self, tokens: Tokens) -> AgentEvent {
+    fn finish_tokens(&mut self, tokens: Tokens) -> Vec<AgentEvent> {
         self.ended = true;
-        AgentEvent::Finished(Outcome {
+        let cost_usd = self
+            .model
+            .as_deref()
+            .and_then(|model| estimated_cost(model, tokens));
+        let mut events = Vec::with_capacity(2);
+        if cost_usd.is_none()
+            && let Some(model) = self.model.clone()
+        {
+            events.push(AgentEvent::Notice {
+                text: unknown_price_notice(&model),
+            });
+        }
+        events.push(AgentEvent::Finished(Outcome {
             ok: true,
             reason: FinishReason::Completed,
             text: self.said.clone(),
             // Kwota jest analitycznym szacunkiem z jednej tabeli, nie pomiarem vendora.
             // Nieznany model pozostaje `None`: zero wyglądałoby jak znana, darmowa tura.
-            cost_usd: self
-                .model
-                .as_deref()
-                .and_then(|model| estimated_cost(model, tokens)),
+            cost_usd,
             tokens,
             // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
             // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
@@ -2320,7 +2329,8 @@ impl CodexDecoder {
             // po co (2026-08-19).
             took: Duration::ZERO,
             session: self.session_ref(),
-        })
+        }));
+        events
     }
 
     /// `turn.failed` → uwaga **i** koniec tury.
