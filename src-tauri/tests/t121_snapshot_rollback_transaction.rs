@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use loadout_lib::store::{Result as StoreResult, Store};
 use rusqlite::Connection;
@@ -253,7 +254,7 @@ fn assert_late_refusal(outcome: StoreResult<()>) -> TestResult {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn late_artifact_failure_keeps_the_whole_old_snapshot_until_retry() -> TestResult {
     let directory = tempfile::tempdir()?;
     let run_dir = directory.path().join("runs").join("t121-rollback");
@@ -261,7 +262,7 @@ async fn late_artifact_failure_keeps_the_whole_old_snapshot_until_retry() -> Tes
     let expected_database = directory.path().join("expected.db");
     write_fixture(&run_dir, OLD_RUN, OLD_LOG, OLD_HANDOFF, "old handoff\n")?;
 
-    let store = Store::open(&database)?;
+    let store = Arc::new(Store::open(&database)?);
     store.rebuild_from(&run_dir).await?;
     let old_snapshot = read_snapshot(&store.reader()?)?;
 
@@ -277,7 +278,24 @@ async fn late_artifact_failure_keeps_the_whole_old_snapshot_until_retry() -> Tes
     assert_all_four_collections_changed(&old_snapshot, &expected_snapshot)?;
     install_late_artifact_trigger(&database)?;
 
-    assert_late_refusal(store.rebuild_from(&run_dir).await)?;
+    let rebuild_store = Arc::clone(&store);
+    let rebuild_run_dir = run_dir.clone();
+    let rebuild = tokio::spawn(async move { rebuild_store.rebuild_from(&rebuild_run_dir).await });
+    let mut snapshots_seen = 0_usize;
+    while !rebuild.is_finished() {
+        assert_eq!(
+            read_snapshot(&store.reader()?)?,
+            old_snapshot,
+            "a reader observed an empty or mixed snapshot while replacement was in flight"
+        );
+        snapshots_seen += 1;
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        snapshots_seen > 0,
+        "the rebuild completed before the concurrent reader could observe the database"
+    );
+    assert_late_refusal(rebuild.await?)?;
     assert_eq!(read_snapshot(&store.reader()?)?, old_snapshot);
     assert_eq!(source_snapshot(&run_dir)?, source_files);
 
@@ -289,6 +307,8 @@ async fn late_artifact_failure_keeps_the_whole_old_snapshot_until_retry() -> Tes
         source_files,
         "index replacement changed one or more authoritative source files"
     );
+    let store = Arc::try_unwrap(store)
+        .map_err(|_| "the concurrent rebuild kept an extra Store owner alive")?;
     store.close().await?;
     Ok(())
 }
