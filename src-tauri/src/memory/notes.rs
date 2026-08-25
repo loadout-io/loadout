@@ -49,9 +49,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::FrontMatter;
+use tempfile::NamedTempFile;
 
 /// Katalog notatek wewnątrz korzenia. Jedna nazwa, w jednym miejscu.
 const NOTES_DIR: &str = "notes";
@@ -531,21 +533,18 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
-    record(root, draft, agent, None, None)
+    record(root, draft, agent, None, None, None)
 }
 
 /// Zapisuje właścicielską kandydatkę razem z pełnym ciałem źródłowego Markdownu.
 ///
-/// Szkielet T-124 jest celowo wykonywalny i czerwony: targety akceptacyjne mają dojść do
-/// zachowania, którego jeszcze nie ma, zamiast zatrzymać się na brakującym symbolu podczas
-/// kompilacji. Implementacja zastąpi `todo!()` atomowym zapisem w katalogu celu.
 pub fn record_candidate_for_with_body(
-    _root: &Path,
-    _draft: NoteDraft,
-    _agent: &str,
-    _body: &str,
+    root: &Path,
+    draft: NoteDraft,
+    agent: &str,
+    body: &str,
 ) -> Result<Note> {
-    todo!("T-124 owner-aware full-body note write")
+    record(root, draft, Some(agent), None, None, Some(body))
 }
 
 /// Zapisuje kandydatkę, którą zgłosił **bieg** — z jego identyfikatorem w polu `from`.
@@ -561,7 +560,7 @@ pub fn record_candidate_for_with_body(
 /// powrotnej, jest roszczeniem, którego nie da się później wycofać [T6 §5.1] — a wycofanie jest
 /// całą różnicą między pamięcią a akrecją instrukcji.
 pub fn record_candidate_from_run(root: &Path, draft: NoteDraft, run: &str) -> Result<Note> {
-    record(root, draft, None, Some(run), None)
+    record(root, draft, None, Some(run), None, None)
 }
 
 /// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
@@ -597,7 +596,7 @@ pub fn record_imported(
     agent: Option<&str>,
     origin: &Origin,
 ) -> Result<Note> {
-    record(root, draft, agent, None, Some(origin))
+    record(root, draft, agent, None, Some(origin), None)
 }
 
 fn record(
@@ -606,6 +605,7 @@ fn record(
     agent: Option<&str>,
     from: Option<&str>,
     origin: Option<&Origin>,
+    body: Option<&str>,
 ) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
@@ -680,7 +680,7 @@ fn record(
                 add_missing(&mut front, "source_hash", &origin.source_hash);
                 add_missing(&mut front, "app", &origin.app);
             }
-            write_note(&path, &front, &raw[body_at..])?;
+            write_note(&path, &front, body.unwrap_or(&raw[body_at..]))?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(&dir)?;
@@ -719,7 +719,7 @@ fn record(
             front.set("occurrences", "1");
             front.set("modified", &one_line(&at));
             front.set("last_used_at", "null");
-            write_note(&path, &front, "")?;
+            write_note(&path, &front, body.unwrap_or_default())?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -1041,7 +1041,22 @@ fn write_note(path: &Path, front: &FrontMatter, body: &str) -> Result<()> {
         out.push('\n');
         out.push_str(body);
     }
-    fs::write(path, out)?;
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a note path must have a parent directory",
+        )
+    })?;
+    // 2026-08-25 (T-124): składamy kompletne bajty obok celu, bo zapis albo copy-over może
+    // zostawić prawidłowy front matter z uciętym ciałem. Temp w tym samym katalogu sprawia też,
+    // że `persist` jest podmianą jednego wpisu katalogowego, a nie kopiowaniem między dyskami.
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(out.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| Error::Io(error.error))?;
     Ok(())
 }
 

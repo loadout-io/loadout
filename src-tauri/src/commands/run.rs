@@ -1138,28 +1138,33 @@ fn what_the_steps_wrote_down(deps: &RunDeps<'_>, plan: &Plan) {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            let Some(rule) = what_the_agent_wrote(&text) else {
+            let Some(written) = what_the_agent_wrote(&text) else {
                 continue;
             };
             let draft = crate::memory::notes::NoteDraft {
-                title: title_from(&rule),
-                rule,
+                title: title_from(&written.rule),
+                rule: written.rule,
                 // POCHODZENIE JEST UZASADNIENIEM, bo innego tu nie ma: agent pisał to sobie,
                 // nie nam, więc nikt nie poprosił go o „dlaczego". Zdanie mówi to, co jest
                 // prawdą i co da się sprawdzić — kto, przy czym i w którym biegu — a bez drogi
                 // powrotnej do tury roszczenia nie da się później wycofać [T6 §5.1].
-                because: format!(
-                    "{} left this in its own notes while working on \"{}\" in run {}.",
-                    job.agent_name, step.name, plan.id
-                ),
+                because: written.because.unwrap_or_else(|| {
+                    format!(
+                        "{} left this in its own notes while working on \"{}\" in run {}.",
+                        job.agent_name, step.name, plan.id
+                    )
+                }),
                 scope: crate::memory::notes::Scope::ThisAgent,
                 kind: crate::memory::notes::Kind::Fact,
                 status: crate::memory::notes::Status::Suggested,
                 at: at.clone(),
             };
-            if let Err(error) =
-                crate::memory::notes::record_candidate_for(&root, draft, Some(&job.agent_name))
-            {
+            if let Err(error) = crate::memory::notes::record_candidate_for_with_body(
+                &root,
+                draft,
+                &job.agent_name,
+                &text,
+            ) {
                 tracing::warn!(
                     step = %step.tile_key,
                     %error,
@@ -1197,18 +1202,39 @@ fn what_this_step_left_in(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Pierwsze zdanie, które agent naprawdę napisał w tym pliku.
+/// Pierwszy akapit, który agent naprawdę napisał w tym pliku, oraz jawny powód, jeśli istnieje.
 ///
 /// Nagłówek markdown i front-matter są ramą, którą CLI stawia samo — reguła złożona z nich mówi
-/// „# Queue" i nie niesie ani jednego faktu. Bierzemy pierwszy wiersz, który nie jest ramą, bo
-/// plik auto-pamięci jest krótki i pisany od najważniejszego zdania.
-fn what_the_agent_wrote(text: &str) -> Option<String> {
+/// „# Queue" i nie niesie ani jednego faktu. Akapit może być zawinięty na kilka wierszy, więc
+/// regułę składamy aż do pustego wiersza; pełny, nietknięty Markdown jedzie osobno do pisarza.
+fn what_the_agent_wrote(text: &str) -> Option<AgentNote> {
     let body = crate::memory::FrontMatter::split(text).map_or(0, |(_, at)| at);
-    text.get(body..)?
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#') && *line != "---")
-        .map(ToOwned::to_owned)
+    let body = text.get(body..)?;
+    let mut paragraph = Vec::new();
+    for line in body.lines().map(str::trim) {
+        if paragraph.is_empty() {
+            if line.is_empty() || line.starts_with('#') || line == "---" {
+                continue;
+            }
+        } else if line.is_empty() {
+            break;
+        }
+        paragraph.push(line);
+    }
+    let rule = (!paragraph.is_empty()).then(|| paragraph.join(" "))?;
+    let because = body.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("**Why:**")
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .map(ToOwned::to_owned)
+    });
+    Some(AgentNote { rule, because })
+}
+
+struct AgentNote {
+    rule: String,
+    because: Option<String>,
 }
 
 /// Pyta model RAZ, czego ten bieg nauczył, i zostawia z tego najwyżej trzy kandydatki.
