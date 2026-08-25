@@ -4,6 +4,35 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 11:08 — T-115 czerwone po naprawie; wyłącznie testowy lint wymaga decyzji
+
+**T-115 · czerwone / NIEWYLĄDOWANE · 57 min 05 s · $0,00 widoczne.** Etapy Codeksa nie
+zapisały kompletnej wyceny ani księgi użycia, więc to wyłącznie koszt widoczny. Enforced
+`before` uczciwie certyfikowało cztery nowe AC jako runtime-red. Odczyt zamrożonych speców
+potwierdził, że naprawiają obie luki T-102: każdy znany model dostaje nierówne 10k/5k/20k,
+a prawdziwy ekran odróżnia sumę `$1.20` od obu operandów `$0.41` i `$0.79`.
+
+Pierwsza pełna bramka przeszła **20/20 w 42,39 s**. Recenzent tego samego vendora na osobnym
+modelu gpt-5.5 znalazł jednak dwa średnie defekty kodu: ścieżka App Servera nie niosła modelu
+do wspólnego dekodera ceny, a uwagi o nieznanej cenie były kojarzone po nieunikalnej nazwie
+agenta zamiast po stabilnym kluczu kroku. Jedyna runda naprawy przeniosła model przez App
+Server i dodała regresję (`9573327`) oraz przypisała uwagę do prawdziwego klucza kroku z
+regresją dwóch równoległych kroków o tej samej nazwie (`3396e6f`). Wszystkie AC i `full-test`
+są po naprawie zielone.
+
+Wykonawca naprawy wprowadził jedną deterministyczną czerwień wyłącznie w nowym teście:
+`const UNKNOWN_MODEL` w `codex.rs` stoi po instrukcjach i uruchamia
+`clippy::items_after_statements`. Dwie końcowe bramki miały przez to **19/20 w 45,26 s** i
+**19/20 w 40,88 s**; jedyną porażką był ten sam lint, bez porażki zachowania. Przesunięcie
+deklaracji przed instrukcje nie zmienia kryterium ani kodu produkcyjnego, lecz byłoby piątą,
+ręczną turą po zamknięciu grafu Harnessu. Zgodnie z AGENTS.md §7 orchestrator zatrzymał się
+zamiast robić ją po cichu.
+
+Gałąź `task-T-115` jest czysta na `3396e6f`; `main` nie dostał jej kodu. Faza 7 stoi przed
+T-103. Potrzebna jest jawna decyzja właściciela: dopuścić audytowalną, test-only poprawkę
+poza grafem, potem `cargo check --all-targets --keep-going` i pełną bramkę, albo zamknąć
+T-115 i pisać kolejne zastępstwo.
+
 ## 2026-08-25, 02:25 — właściciel zatwierdził pełne zastępstwo T-102
 
 Jawne „ok” właściciela uruchamia wyjątek authoringu dla **T-115**. Nowy kontrakt startuje
