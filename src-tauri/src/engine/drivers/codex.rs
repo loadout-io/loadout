@@ -3222,6 +3222,7 @@ mod stop_proof_tests {
         CodexHandle {
             binary: PathBuf::from("codex"),
             cwd: PathBuf::from("/private/workspace"),
+            model: None,
             events,
             evidence: Some(evidence),
             configuration: DriverConfiguration::default(),
