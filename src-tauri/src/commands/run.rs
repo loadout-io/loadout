@@ -180,8 +180,8 @@ use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
-    RunSpec,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason,
+    Outcome as DriverOutcome, Policy, RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
@@ -5390,6 +5390,9 @@ struct StepRun {
     death_proof: bool,
     /// Ile kosztował.
     cost_usd: Option<f64>,
+    /// `Some(true)` tylko dla kwoty policzonej z liczników Codeksa; brak oznacza pomiar albo
+    /// brak ceny i dzięki temu `run.json` nie nazywa nieznanej kwoty szacunkiem.
+    cost_estimate: Option<bool>,
     /// Rzeczywiste liczniki z terminalnego [`crate::engine::drivers::Outcome`]. `None` znaczy,
     /// że krok nie dostał wyniku agenta (np. Check albo odmowa przed startem), nie zero.
     turns: Option<u32>,
@@ -5407,6 +5410,15 @@ struct StepRun {
     repaired: Vec<String>,
     /// Czy odpowiedź nie zmieściła się w `BODY_CAP` i część leży w `attachments/`.
     truncated: bool,
+}
+
+fn record_turn(step: &mut StepRun, turn: &DriverOutcome, cost_is_estimate: bool) {
+    step.cost_usd = turn.cost_usd;
+    step.cost_estimate = (turn.cost_usd.is_some() && cost_is_estimate).then_some(true);
+    step.turns = Some(turn.turns);
+    step.input_tokens = Some(turn.tokens.input);
+    step.output_tokens = Some(turn.tokens.output);
+    step.cached_tokens = Some(turn.tokens.cached);
 }
 
 /// Stan **biegu**: pięć wartości z `CHECK` przy tabeli `runs` w `store::schema`.
@@ -5566,6 +5578,7 @@ impl Live {
                 exit_code: None,
                 death_proof: false,
                 cost_usd: None,
+                cost_estimate: None,
                 turns: None,
                 input_tokens: None,
                 output_tokens: None,
@@ -6238,6 +6251,7 @@ impl Live {
                 started_at: run.started_at,
                 ended_at: run.ended_at,
                 cost_usd: run.cost_usd,
+                cost_estimate: run.cost_estimate,
                 turns: run.turns,
                 input_tokens: run.input_tokens,
                 output_tokens: run.output_tokens,
@@ -7324,6 +7338,7 @@ impl Live {
         reads: &[String],
         evidence: &EvidenceTarget,
     ) -> Turned {
+        let cost_is_estimate = handle.session().vendor == "codex";
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
         // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
         if let Some(group) = handle.group() {
@@ -7440,11 +7455,7 @@ impl Live {
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.exit_code = code;
-                    step.cost_usd = turn.cost_usd;
-                    step.turns = Some(turn.turns);
-                    step.input_tokens = Some(turn.tokens.input);
-                    step.output_tokens = Some(turn.tokens.output);
-                    step.cached_tokens = Some(turn.tokens.cached);
+                    record_turn(step, &turn, cost_is_estimate);
                     step.summary = summary_of(&turn.text);
                     if !close_succeeded || !evidence_complete {
                         /* Surowy blad zapisu moze zawierac prywatna sciezke albo tekst vendora.
@@ -8813,6 +8824,8 @@ struct StepEntry<'a> {
     started_at: Option<i64>,
     ended_at: Option<i64>,
     cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_estimate: Option<bool>,
     turns: Option<u32>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,

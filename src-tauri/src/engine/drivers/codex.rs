@@ -249,6 +249,7 @@ impl CodexDriver {
             cwd: spec.cwd.clone(),
             argv,
             prompt: after_the_standing_orders(instructions.as_deref(), spec.prompt),
+            model: spec.model.clone(),
             events: tx.clone(),
             threads: Arc::clone(&threads),
             number: FIRST_TURN,
@@ -283,6 +284,7 @@ impl CodexDriver {
         Ok(CodexHandle {
             binary: self.binary.clone(),
             cwd: spec.cwd,
+            model: spec.model,
             events: tx,
             evidence: self.evidence.clone(),
             threads,
@@ -312,6 +314,8 @@ struct Turn {
     argv: Vec<String>,
     /// Treść tury. Jedzie stdinem (niezmiennik 9).
     prompt: String,
+    /// Model potrzebny po EOF do wyceny trzech liczników, których sam strumień nie nazywa.
+    model: Option<String>,
     /// Dokąd sypać zdarzeniami.
     events: mpsc::Sender<DecodedEvent>,
     /// Wspólna pamięć identyfikatorów wątku — jedna na sesję, nie na turę.
@@ -341,6 +345,7 @@ struct PumpInput {
     stdout: ChildStdout,
     events: mpsc::Sender<DecodedEvent>,
     outcome: oneshot::Sender<Outcome>,
+    model: Option<String>,
     threads: Arc<Mutex<Vec<String>>>,
     number: u64,
     cancelled: Arc<AtomicU64>,
@@ -423,6 +428,7 @@ impl Turn {
             stdout,
             events: self.events,
             outcome: tell,
+            model: self.model,
             threads: self.threads,
             number: self.number,
             cancelled: self.cancelled,
@@ -1940,10 +1946,51 @@ enum CodexLine {
     Unknown,
 }
 
+/// Jedyna tabela cen Codeksa. Stawki są w dolarach za milion tokenów i zachowują osobne
+/// kolumny wejścia, cache'u i wyjścia; zsumowana stawka zgubiłaby informację potrzebną do
+/// poprawnego policzenia prawdziwego użycia.
+const PRICES: &[CodexPrice] = &[
+    CodexPrice {
+        prefix: "gpt-5.6-sol",
+        input: 2.0,
+        cached: 0.4,
+        output: 21.0,
+    },
+    CodexPrice {
+        prefix: "gpt-5.6-terra",
+        input: 1.0,
+        cached: 0.2,
+        output: 12.5,
+    },
+    CodexPrice {
+        prefix: "gpt-5.6-luna",
+        input: 0.1,
+        cached: 0.02,
+        output: 1.25,
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct CodexPrice {
+    prefix: &'static str,
+    input: f64,
+    cached: f64,
+    output: f64,
+}
+
+fn estimated_cost(model: &str, tokens: Tokens) -> Option<f64> {
+    let price = PRICES
+        .iter()
+        .find(|price| model.starts_with(price.prefix))?;
+    // `From<u64> for f64` nie istnieje. Parsowanie dziesiętnego zapisu zachowuje pełny zakres
+    // licznika bez ryzykownego, wyciszanego rzutowania; dla każdego `u64` wynik jest skończony.
+    let input = tokens.input.to_string().parse::<f64>().ok()?;
+    let cached = tokens.cached.to_string().parse::<f64>().ok()?;
+    let output = tokens.output.to_string().parse::<f64>().ok()?;
+    Some((input * price.input + cached * price.cached + output * price.output) / 1_000_000.0)
+}
+
 /// Zużycie kontekstu z `turn.completed` [T1 §6.2].
-///
-/// Czego tu **nie ma**: `cost_usd`. Codex go nie podaje, a szacowanie z tokenów jest świadomie
-/// poza zakresem — cennik w kodzie byłby trzecim miejscem, w którym trzeba go aktualizować.
 #[derive(Debug, Deserialize)]
 struct Usage {
     #[serde(rename = "input_tokens", alias = "inputTokens")]
@@ -2046,6 +2093,8 @@ pub struct CodexDecoder {
     /// Ostatnia proza agenta, czyli to, co krok przekazuje dalej. Zbierana po drodze, bo
     /// `turn.completed` jej **nie powtarza** — inaczej niż linia `result` u Claude'a.
     said: String,
+    /// Model pochodzi z zamówienia tury; linia końcowa niesie liczniki, ale go nie powtarza.
+    model: Option<String>,
 }
 
 impl CodexDecoder {
@@ -2053,6 +2102,13 @@ impl CodexDecoder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn for_model(model: Option<String>) -> Self {
+        Self {
+            model,
+            ..Self::default()
+        }
     }
 
     /// Wpuszcza jedną linię strumienia i oddaje zdarzenia, które z niej wynikają.
@@ -2249,10 +2305,12 @@ impl CodexDecoder {
             ok: true,
             reason: FinishReason::Completed,
             text: self.said.clone(),
-            // `None`, nie zero, i to jest cała różnica: Codex kosztu nie podaje, a `Some(0.0)`
-            // wypisze na ekranie `$0.00` i nauczy człowieka, że Codex jest darmowy — po czym ta
-            // liczba zsumuje się w rachunek, którego nikt nie zamawiał.
-            cost_usd: None,
+            // Kwota jest analitycznym szacunkiem z jednej tabeli, nie pomiarem vendora.
+            // Nieznany model pozostaje `None`: zero wyglądałoby jak znana, darmowa tura.
+            cost_usd: self
+                .model
+                .as_deref()
+                .and_then(|model| estimated_cost(model, tokens)),
             tokens,
             // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
             // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
@@ -2498,6 +2556,7 @@ async fn pump(input: PumpInput) {
         stdout,
         events,
         outcome,
+        model,
         threads,
         number,
         cancelled,
@@ -2511,7 +2570,7 @@ async fn pump(input: PumpInput) {
     // na ekranie „0s" przy każdym kroku — to ta sama klasa kłamstwa co `$0.00` przy koszcie.
     let began = Instant::now();
     let mut reader = BufReader::new(stdout);
-    let mut decoder = CodexDecoder::new();
+    let mut decoder = CodexDecoder::for_model(model);
     let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut told = Some(outcome);
     let mut seen: Option<String> = None;
@@ -2693,6 +2752,8 @@ pub struct CodexHandle {
     binary: PathBuf,
     /// Katalog roboczy tej rozmowy. Kolejne tury dostają go z powrotem w `-C`.
     cwd: PathBuf,
+    /// Model tej rozmowy wraca przy każdej turze, bo każda ma osobne liczniki i koszt.
+    model: Option<String>,
     /// Kanał zdarzeń tej sesji. **Wszystkie** tury sypią w ten sam, bo z zewnątrz to jedna
     /// rozmowa — proces na turę jest szczegółem, który trait ma wchłonąć.
     events: mpsc::Sender<DecodedEvent>,
@@ -2888,6 +2949,7 @@ impl AgentHandle for CodexHandle {
             cwd: self.cwd.clone(),
             argv,
             prompt: text,
+            model: self.model.clone(),
             events: self.events.clone(),
             threads: Arc::clone(&self.threads),
             number: self.number,
@@ -3428,6 +3490,7 @@ mod stop_proof_tests {
                 FIRST_THREAD.to_owned(),
             ],
             prompt: "PRIVATE_PROMPT_SENTINEL".to_owned(),
+            model: Some(MODEL.to_owned()),
             events: events.clone(),
             threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
             number: 2,
@@ -3442,6 +3505,7 @@ mod stop_proof_tests {
         let handle = CodexHandle {
             binary: PathBuf::from(BINARY),
             cwd: PathBuf::from(WORKSPACE),
+            model: Some(MODEL.to_owned()),
             events,
             evidence: None,
             threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
