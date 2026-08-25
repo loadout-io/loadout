@@ -65,6 +65,18 @@ enum Rows {
     /// zapisujące do tej bazy jest zakleszczeniem, nie „czasem wolniej" (niezmiennik 2),
     /// a `checks/quick-boundary.sh` czyta konstruktory połączeń gerpem właśnie po to.
     Recovered(Vec<(String, String)>, Vec<(String, String, String)>),
+    /// Dokładny indeks jednego biegu: stary rodzic i wszystkie jego dzieci są zastępowane
+    /// razem. `Box` utrzymuje mały rozmiar każdego elementu ograniczonego kanału.
+    Snapshot(Box<RunSnapshot>),
+}
+
+/// Cztery kolekcje odtworzone z jednego katalogu biegu.
+#[derive(Debug)]
+struct RunSnapshot {
+    run: NewRun,
+    steps: Vec<NewStep>,
+    events: Vec<NewEvent>,
+    artifacts: Vec<NewArtifact>,
 }
 
 /// Zlecenie dla zadania pisarza.
@@ -120,6 +132,23 @@ impl Writer {
     /// nigdy pięćdziesiąt sześć sierot i dziura w transkrypcie, o której nikt nie wie.
     pub async fn append_events(&self, batch: Vec<NewEvent>) -> Result<()> {
         self.rows(Rows::Events(batch)).await
+    }
+
+    /// Zastępuje indeks jednego biegu dokładnym snapshotem wyczytanym z jego plików.
+    pub(crate) async fn replace_snapshot(
+        &self,
+        run: NewRun,
+        steps: Vec<NewStep>,
+        events: Vec<NewEvent>,
+        artifacts: Vec<NewArtifact>,
+    ) -> Result<()> {
+        self.rows(Rows::Snapshot(Box::new(RunSnapshot {
+            run,
+            steps,
+            events,
+            artifacts,
+        })))
+        .await
     }
 
     /// Wspólna droga wszystkich zapisów: wyślij, zaczekaj na odpowiedź, oddaj ją wołającemu.
@@ -252,7 +281,31 @@ fn write(conn: &mut Connection, rows: &Rows) -> Result<()> {
         Rows::Artifact(artifact) => insert_artifact(conn, artifact),
         Rows::Events(batch) => append_events(conn, batch),
         Rows::Recovered(runs, steps) => write_recovered(conn, runs, steps),
+        Rows::Snapshot(snapshot) => replace_snapshot(conn, snapshot),
     }
+}
+
+/// Wymienia cztery tabele indeksu biegu w jednej transakcji tego samego pisarza.
+fn replace_snapshot(conn: &mut Connection, snapshot: &RunSnapshot) -> Result<()> {
+    let transaction = conn.transaction()?;
+    // Usunięcie rodzica uruchamia kaskady dla kroków, zdarzeń i artefaktów. Dzieje się wewnątrz
+    // tej samej transakcji co inserty, więc błąd nawet ostatniego artefaktu przywraca całość.
+    transaction.execute("DELETE FROM runs WHERE id = ?1", [&snapshot.run.id])?;
+    insert_run(&transaction, &snapshot.run)?;
+    for step in &snapshot.steps {
+        insert_step(&transaction, step)?;
+    }
+    for batch in snapshot
+        .events
+        .chunks(super::rebuild::EVENTS_PER_TRANSACTION)
+    {
+        insert_events(&transaction, batch)?;
+    }
+    for artifact in &snapshot.artifacts {
+        insert_artifact(&transaction, artifact)?;
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Domyka biegi i kroki zastane po awarii aplikacji — JEDNĄ transakcją.
@@ -368,25 +421,29 @@ fn insert_artifact(conn: &Connection, artifact: &NewArtifact) -> Result<()> {
 /// sześć sierot nie zostaje w transkrypcie, a dziura w transkrypcie jest gorsza niż brak wsadu,
 /// bo nikt nie umie jej zobaczyć.
 fn append_events(conn: &mut Connection, batch: &[NewEvent]) -> Result<()> {
-    let rows = batch.len();
     let transaction = conn.transaction()?;
-    {
-        // `prepare_cached`, bo ta sama treść wraca przy każdym wsadzie przez cały bieg,
-        // a osiem producentów po 500 wysłań to 4000 przejść przez to miejsce (AC-5).
-        let mut statement = transaction.prepare_cached(INSERT_EVENT)?;
-        for event in batch {
-            statement
-                .execute(params![
-                    event.run_id,
-                    event.step_id,
-                    event.ts,
-                    event.kind,
-                    event.level,
-                    event.body,
-                ])
-                .map_err(|source| StoreError::Batch { rows, source })?;
-        }
-    }
+    insert_events(&transaction, batch)?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Wstawia zdarzenia przez podane połączenie albo otwartą już transakcję.
+fn insert_events(conn: &Connection, batch: &[NewEvent]) -> Result<()> {
+    let rows = batch.len();
+    // `prepare_cached`, bo ta sama treść wraca przy każdym wsadzie przez cały bieg,
+    // a osiem producentów po 500 wysłań to 4000 przejść przez to miejsce (AC-5).
+    let mut statement = conn.prepare_cached(INSERT_EVENT)?;
+    for event in batch {
+        statement
+            .execute(params![
+                event.run_id,
+                event.step_id,
+                event.ts,
+                event.kind,
+                event.level,
+                event.body,
+            ])
+            .map_err(|source| StoreError::Batch { rows, source })?;
+    }
     Ok(())
 }

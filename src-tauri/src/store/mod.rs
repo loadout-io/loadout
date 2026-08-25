@@ -340,21 +340,17 @@ impl Store {
             // znaczy „bardzo nie tak" i dla wołającego jest tym, czym każdy inny błąd odczytu.
             .map_err(|joined| StoreError::Io(std::io::Error::other(joined)))??;
 
-        // Kolejność jest wymuszona kluczami obcymi i nie jest kwestią gustu: `events.step_id`
-        // i `artifacts.step_id` wskazują na `steps`, a te na `runs`. Wysłanie zdarzeń przed
-        // krokami wróciłoby jako `FOREIGN KEY constraint failed` — przy `foreign_keys` ON,
-        // czyli zawsze, odkąd pragmy są kompletne.
-        self.writer.insert_run(indexed.run).await?;
-        for step in indexed.steps {
-            self.writer.insert_step(step).await?;
-        }
-        for batch in indexed.steps_events.chunks(rebuild::EVENTS_PER_TRANSACTION) {
-            self.writer.append_events(batch.to_vec()).await?;
-        }
-        for artifact in indexed.artifacts {
-            self.writer.insert_artifact(artifact).await?;
-        }
-        Ok(())
+        // 2026-08-25: odbudowa jest wymianą jednego materializowanego widoku, więc wszystkie
+        // cztery kolekcje jadą jednym zleceniem. Kilka zleceń pozwalało czytelnikowi zobaczyć
+        // pół starego i pół nowego biegu, a ponowienie zatrzymywało się już na kluczu `runs`.
+        self.writer
+            .replace_snapshot(
+                indexed.run,
+                indexed.steps,
+                indexed.steps_events,
+                indexed.artifacts,
+            )
+            .await
     }
 
     /// Zamyka kanał i **czeka**, aż pisarz dopisze wszystko, co dostał.
