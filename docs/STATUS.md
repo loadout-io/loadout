@@ -4,6 +4,38 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 02:24 — T-102 zielone, lecz NIEWYLĄDOWANE; dwie uwagi wyroczni zostały otwarte
+
+**T-102 · formalnie zielone 20/20, lecz NIEWYLĄDOWANE · 38 min 53 s · $0,00 widoczne.**
+Etapy Codeksa nie zapisały kompletnej wyceny ani księgi użycia, więc to wyłącznie koszt
+widoczny. Enforced `before` uczciwie certyfikowało wszystkie cztery AC jako runtime-red.
+Implementacja na czystej gałęzi `task-T-102` kończy się w `7a22629`: wycenia znane modele
+Codeksa jako szacunek, zachowuje same tokeny dla nieznanego modelu, pokazuje wydatki na pasku
+i wyjaśnia krokom Codeksa, że pliki handoffów leżą poza katalogiem pracy.
+
+Pierwsza pełna bramka miała **19/20**: wszystkie AC i `full-test` były zielone, a jedyną
+czerwienią był `clippy::doc_markdown` w komentarzu nowej wyroczni. Recenzent tego samego
+vendora na osobnym modelu gpt-5.5 znalazł jednak dwie niezależne luki asercji. Średnia uwaga:
+test tabeli daje Terra i Luna dokładnie po milionie tokenów wejścia, cache i wyjścia, więc
+zamiana stawek między kolumnami zachowuje tę samą sumę i nadal przechodzi. Niska uwaga: test
+prawdziwego ekranu zasila pasek jedną płatną linią, więc implementacja pokazująca pierwszy
+albo ostatni koszt zamiast sumy obu vendorów także przechodzi.
+
+Planista poprawnie zaproponował nierówne próbki per model oraz dwa płatne kroki na ekranie,
+ale nazwał je „criterion/test defect”. Wykonawca zinterpretował regułę zamrożonego oracle
+dosłownie: poprawił wyłącznie lint w `7a22629` i odmówił zmiany obu asercji. Dwie końcowe pełne
+bramki były przez to zielone **20/20 w 40,15 s** i **20/20 w 38,42 s**, lecz nie odpowiadają
+na drugą opinię. Odczyt pozostałych testów potwierdził, że żadna niezałączona wyrocznia nie
+zamyka luk: nierówne tokeny są sprawdzone tylko dla Sol, a wszystkie testy paska używają
+jednego płatnego wiersza.
+
+Gałęzi nie wylądowano mimo kodu 0, ponieważ zielone kryterium da się przejść dokładnie tymi
+dwoma błędnymi implementacjami. Zmiana zamrożonych speców po certyfikacji `before` albo druga
+runda naprawy łamałyby kontrakt Harnessu. `main` pozostaje czysty i bez kodu T-102; faza 7
+stoi przed T-103. Uczciwe wyjście to nowe zadanie zastępcze z nowymi globalnie unikalnymi
+ścieżkami testów, nierównymi tokenami dla każdego modelu i ekranową sumą co najmniej dwóch
+płatnych kroków.
+
 ## 2026-08-25, 01:44 — T-101 w trunku
 
 **T-101 · zielone · 47 min 38 s biegu harnessu · $0,00 widoczne.** Etapy Codeksa nie
