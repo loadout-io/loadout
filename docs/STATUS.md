@@ -4,6 +4,36 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 18:24 — T-118 ZAMKNIĘTE: druga czerwień na błędnej wyroczni AC-4
+
+**T-118 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 12 min 07 s · $0,00
+widoczne.** Dwie strukturalnie zapisane tury Codeksa zużyły co najmniej 30,66 mln tokenów
+wejścia i 92,9 tys. wyjścia; recenzja, plan i wykonanie naprawy nie zostawiły porównywalnego
+paragonu tokenów. Enforced `before` uczciwie certyfikowało sześć nowych, samodzielnych plików
+testowych: 7/7 kontroli, 1,29 s.
+
+Pierwsza pełna bramka miała **16/22** w 22,27 s. Zielone były AC-1, AC-2 i AC-5; czerwone
+wykazały niewpięty atomowy writer, martwy `ReflectionToggle`, brak semantycznego filtrowania
+`left_nothing` i regresje istniejących dubli refleksji. Recenzent znalazł dodatkowo cztery
+zasadne luki wyroczni: rebuild mógł być no-opem, test Startu nie obejmował `/run` i edytora,
+budżet można było przypisać do modelu zamiast trybu refleksji, a końcowe bajty notatki nie
+dowodziły atomowego zapisu. Planner przekazał wszystkie te punkty jedynej naprawie.
+
+Naprawa wzmocniła AC-2, AC-3, AC-5 i AC-6, podpięła produkcyjne drogi i usunęła wszystkie
+pierwotne czerwienie. Końcowa bramka na czystym `c3ff52f` miała **20/22** w 19,74 s:
+zielone były pełny clippy, wszystkie quick checks oraz AC-1, AC-2, AC-3, AC-5 i AC-6.
+`full-test` i AC-4 powtarzają ten sam pojedynczy defekt nowego testu.
+
+Wyrocznia AC-4 żąda dosłownie nagłówków `What changed / Decisions / Open questions`, choć
+autorytatywny, wylądowany format handoffu w `memory/handoff.rs` to
+`Answer / Evidence / Open`. Sam kontrakt T-118 wymagał trwałej nazwanej informacji i
+semantyki `left_nothing`, nie tych starych nazw. Zmiana produkcji pod błędną asercję byłaby
+oszustwem; zmiana autorytatywnego formatu wymagałaby pliku poza `OWNS`. Po zużyciu jedynej
+rundy nie wolno też ręcznie poprawić testu i ponowić bramki. Branch `task-T-118` pozostaje
+czysty i **nie może wylądować**; `main` nie dostał jego kodu. Kontynuacja wymaga decyzji
+właściciela o świeżym zastępstwie z nowymi globalnie unikalnymi wyroczniami opartymi o
+kanoniczne `Answer / Evidence / Open`.
+
 ## 2026-08-25, 17:08 — właściciel zatwierdził pełne zastępstwo T-117
 
 Po zamknięciu T-117 właściciel polecił kontynuować. Nowy kontrakt **T-118** startuje ze
