@@ -1,13 +1,13 @@
-# Prompt orchestratora — faza 7 (T-120 następne; jedenaście zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-121 następne; dwanaście zadań zamkniętych)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma dwadzieścia trzy numery:
-T-98…T-120, z których T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116, T-117,
-T-118 i T-119 zostały zamknięte bez lądowania.
+**czternaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma dwadzieścia sześć
+numerów: T-98…T-123, z których T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116,
+T-117, T-118, T-119 i T-120 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -19,8 +19,10 @@ zamknięto: pierwsza bramka miała 19/22, recenzent wykazał martwą wyrocznię 
 naprawa zginęła na `ENOSPC` przed zmianą. T-118 doszło do 20/22, ale jego AC-4 przepisało
 historyczne nazwy sekcji zamiast kanonicznego formatu. T-119 doszło do 17/22: AC-1 pomyliło
 logiczny klucz z fizycznym UUID evidence, naprawa dotknęła trzech tras Startu poza `OWNS`, a
-pełna bramka wykryła dwa lity testów. T-120 jest pełnym zastępstwem.
-**Nie uruchamiaj T-109 ani T-104 przed wylądowaniem T-120.** Każdą zieloną gałąź lądujesz
+pełna bramka wykryła dwa lity testów. T-120 doszło do 19/22, lecz miało wadliwy porządek
+eventów, brak `index.tsx` w `OWNS` oraz regresje dubli i zakresu auto-pamięci. Zamiast piątej
+tury cel rozdzielono na T-121 (Store), T-122 (H15) i T-123 (H14).
+**Nie uruchamiaj T-109 ani T-104 przed wylądowaniem T-123.** Każdą zieloną gałąź lądujesz
 osobno na `main`.
 
 ---
@@ -36,7 +38,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-120.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116, T-117, T-118 i T-119 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-123.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116, T-117, T-118, T-119 i T-120 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -171,6 +173,15 @@ rustowego. Wyrocznie od początku asertują domyślne zaznaczenie, nieobecność
 i pełne listingi katalogów. T-120 startuje z aktualnego `main`; nie przenosi niczego z
 `task-T-119`. Przed commitem uruchom wyłącznie `python3 harness/task-spine.py`.
 
+Piętnasty commit kontraktowy zapisuje `T-120 ZAMKNIĘTE`: końcowa bramka miała 19/22.
+AC-2 porównywało eventy w kolejności sprzecznej z własnym sortowaniem, prawdziwa droga `/run`
+wymagała `index.tsx` poza `OWNS`, a pełny test wykazał nieprzeniesione wrappery dwóch dubli i
+regresję `ThisAgent → ThisProject`. Dodaje trzy świeże, niezależnie lądowalne kontrakty bez
+przenoszenia kodu lub speców: `tasks/T-121.md` dla atomowego Store,
+`tasks/T-122.md` dla właścicielskiej auto-pamięci i `tasks/T-123.md` dla refleksji/UI.
+Kolejność T-121 → T-122 → T-123. Przed commitem uruchom wyłącznie
+`python3 harness/task-spine.py`, nie bramkę produktu.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -182,10 +193,10 @@ drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. 
 samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania; T-114 ma zgodę,
 osobny fix harnessu jest w trunku i musi poprzedzić T-100.
 Dodane po żywym biegu T-109 ma
-zależność semantyczną od gotowej refleksji i idzie po T-120. Cała reszta dzieli `commands/run.rs`,
+zależność semantyczną od gotowej refleksji i idzie po T-123. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
-T-114, T-100, T-101 i T-115 wylądowały. T-102, T-103, T-116, T-117, T-118 i T-119
-zamknięto bez lądowania; T-120 jest następnym biegiem.
+T-114, T-100, T-101 i T-115 wylądowały. T-102, T-103, T-116, T-117, T-118, T-119 i T-120
+zamknięto bez lądowania; T-121 jest następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
@@ -205,12 +216,15 @@ zamknięto bez lądowania; T-120 jest następnym biegiem.
 | 6c | **ZAMKNIĘTE:** T-117, nie ląduj i nie wznawiaj | pierwsza bramka 19/22; martwa wyrocznia handlera; naprawa utracona na ENOSPC |
 | 6d | **ZAMKNIĘTE:** T-118, nie ląduj i nie wznawiaj | 20/22; AC-4 przepisało historyczne nazwy sekcji zamiast kanonicznego formatu |
 | 6e | **ZAMKNIĘTE:** T-119, nie ląduj i nie wznawiaj | 17/22; logiczny klucz zamiast UUID, trzy pliki poza OWNS i dwa lity |
-| 6f | `./ship-task.sh T-120 --agent codex --reviewer codex` | pełne zastępstwo z fizycznym UUID i pełnym zakresem Startu |
-| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-120; izolacja obejmuje też refleksję |
-| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-120 |
+| 6f | **ZAMKNIĘTE:** T-120, nie ląduj i nie wznawiaj | 19/22; wadliwy order eventów, `index.tsx` poza OWNS, regresje dubli/scope |
+| 6g | `./ship-task.sh T-121 --agent codex --reviewer codex` | wyłącznie atomowy Store; baza dla rachunku refleksji |
+| 6h | `./ship-task.sh T-122 --agent codex --reviewer codex` | H15 osobno, zachowuje `ThisAgent` |
+| 6i | `./ship-task.sh T-123 --agent codex --reviewer codex` | H14 po T-121/T-122, z `index.tsx` i dwoma dublerami w OWNS |
+| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-123; izolacja obejmuje też refleksję |
+| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-122/T-123 |
 | 9 | `./ship-task.sh T-106 --agent codex --reviewer codex` | `run.rs` po T-104 |
 | 10 | `./ship-task.sh T-108 --agent codex --reviewer codex` | `recovery.rs` po T-106, `notes.rs` po T-104 |
-| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-120 i T-109; musi być ostatnie |
+| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-123 i T-109; musi być ostatnie |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

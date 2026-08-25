@@ -87,8 +87,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H11 | Potomkowie kroku zatrzymanego budżetem lądują `cancelled` bez powodu | **T-101** |
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
-| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-120** (T-103/T-116/T-117/T-118/T-119 zamknięte) |
-| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-120** (T-103/T-116/T-117/T-118/T-119 zamknięte) |
+| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-123** (T-103/T-116/T-117/T-118/T-119/T-120 zamknięte) |
+| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-122** (T-103/T-116/T-117/T-118/T-119/T-120 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
@@ -116,12 +116,12 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-120 | tak (skan) | 5 |
+| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-122, T-123 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
-| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-120 | nie | 3 |
+| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-123 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
@@ -132,7 +132,10 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-117 | **ZAMKNIĘTE:** pierwsza bramka 19/22, martwa wyrocznia handlera, naprawa utracona na ENOSPC | T-115 | tak | 6 |
 | T-118 | **ZAMKNIĘTE:** 20/22; AC-4 przepisało historyczne nagłówki zamiast kanonicznego formatu | T-115 | tak | 6 |
 | T-119 | **ZAMKNIĘTE:** 17/22; logiczny klucz zamiast UUID, trzy pliki poza OWNS i dwa lity | T-115 | tak | 6 |
-| T-120 | Refleksja z fizyczną tożsamością evidence i pełnym zakresem Startu | T-115 | tak | 6 |
+| T-120 | **ZAMKNIĘTE:** 19/22; wadliwy porządek eventów, `index.tsx` poza OWNS i regresje dubli/scope | T-115 | tak | 6 |
+| T-121 | Dokładny, idempotentny i atomowy snapshot czterech tabel Store | T-115 | nie | 2 |
+| T-122 | Auto-pamięć kroku: pełny Markdown, `ThisAgent` i atomowy writer | T-121 | tak | 2 |
+| T-123 | Refleksja prywatna, audytowalna i sterowana przez prawdziwy Run | T-121, T-122 | tak | 4 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -256,33 +259,36 @@ pełny clippy odrzucił 123-wierszową funkcję testową. Recenzent wykazał pon
 domyślnego zaznaczenia, brak jawnej nieobecności starego artefaktu i heurystyczne zgadywanie
 nazw tempów. Nie wznawiać ani nie przenosić commitów, implementacji, speców lub testów.
 
-**T-120 — pełne zastępstwo refleksji (D-3: domyślnie włączona, wyłączalna, nie po anulowanym).**
-- Sterownik refleksji przez `with_settings` (auto-pamięć do `<bieg>/mem/_reflection/` + deny
-  gospodarza) i `with_evidence` (`logs/reflection.jsonl` + `input.json`).
-- Wynik (ile par, ile odrzuconych bez powodu, koszt) w `run.json` (pole addytywne).
-- Sufit kosztu ze stałej na turę; nie biegnie po biegu anulowanym; przełącznik przy Starcie
-  (domyślnie włączona).
-- Przełącznik jest widoczny w prawdziwym panelu Startu; test wywołuje `Start`, znajduje
-  `ReflectionToggle` w zwróconym drzewie i dopiero z niego bierze `onChange`. Tym wyborem
-  uruchamia prawdziwy przycisk, `/run` oraz żądanie z edytora i sprawdza każdy payload;
-  wszystkie trzy produkcyjne trasy należą do `OWNS`, a stan domyślny jest asertowany przed
-  pierwszą zmianą.
-- Awarie ustawień, evidence i sufitu osobno zostawiają `ran: false`; dokładny katalog dowodów
-  odmawia także dodatkowego `reflection*`. Zwykły krok i refleksję test rozróżnia stanem klona,
-  nie podciągiem promptu.
-- `Store::rebuild_from` po zmianie źródłowego snapshotu zastępuje stare wiersze przez jedynego
-  pisarza i jedną transakcję; wymuszony błąd w połowie zostawia cały poprzedni snapshot,
-  a test wymaga jawnie nieobecności starego artefaktu.
-- Udany pusty krok zachowuje prawdziwy handoff `left_nothing`; test składa nazwy sekcji z
-  `Section::name()`, nigdy z przepisanej listy, i nie uruchamia płatnej refleksji.
-- Zwykły krok używający dokładnie modelu refleksji nie dostaje jej budżetu — tryb, nie model,
-  jest jedynym rozróżnieniem.
-- Zbiór z `mem/<kafelek>/`: `rule` = pierwszy akapit, `because` z `**Why:**`, a pełne ciało
-  zapisuje atomowo `memory::notes`; odmowa utworzenia pliku tymczasowego zostawia stare bajty
-  i dokładnie ten sam pełny listing, bez heurystyk nazw tempów.
-- Zwykłe evidence test wyprowadza z fizycznego UUID odczytanego z prawdziwego `run.json` i
-  utrzymuje zamrożony `run_evidence_reaches_the_product.rs`; nowe TS/TSX muszą przejść
-  formatter, a każda funkcja nowego testu rustowego ma najwyżej 90 wierszy.
+**T-120 — ZAMKNIĘTE, bez lądowania.** Końcowa bramka miała 19/22. AC-2 porównywało
+`ORDER BY body` z kolejnością wejściową; prawdziwy właściciel stanu `/run`, `index.tsx`, był
+poza `OWNS`; pełny test pokazał nieprzeniesione twarde opakowania dwóch dubli i niedozwolony
+awans auto-pamięci kroku z `ThisAgent` do `ThisProject`. AC-1 i AC-3…AC-6, clippy, format,
+typy i wiring były zielone. Nie wznawiać ani nie przenosić kodu, commitów lub speców.
+
+**T-121 — Store jako jeden snapshot.**
+- Wyłącznie `store/mod.rs` i `store/writer.rs`; jedno zlecenie jedynego pisarza, jedna
+  transakcja usuwająca stary rodzic i zapisująca wszystkie cztery kolekcje.
+- Zmienione źródła tego samego id zastępują wszystko, trzecia odbudowa jest idempotentna,
+  późny trigger artefaktu zostawia cały poprzedni snapshot.
+- Eventy porównywane jako dokładny multiset pełnych krotek z licznością, nie w kolejności
+  inserta ani przez niepełne `ORDER BY`.
+
+**T-122 — H15 bez zmiany właściciela.**
+- `what_the_steps_wrote_down` zachowuje `ThisAgent + agent`; tylko osobna refleksja całego
+  biegu jest `ThisProject`.
+- Pierwszy akapit, całe źródłowe body i `**Why:**` przechodzą przez właścicielski wariant API
+  `memory::notes`; `run.rs` nie otwiera notatki drugi raz.
+- Jeden atomowy temp+persist w katalogu celu; awaria i udany retry porównują pełny listing
+  oraz stare/nowe bajty. Zamrożony test T-80 pozostaje zielony i poza `OWNS`.
+
+**T-123 — H14 po wylądowaniu T-121/T-122.**
+- Prywatne ustawienia, `EvidenceTarget::reflection`, osobny sufit, addytywny rachunek w
+  `run.json`, fizyczny UUID zwykłego evidence i brak fallbacku po awarii wrappera.
+- Dwa istniejące duble z `reflecting()` obowiązkowo przenoszą wszystkie twarde opakowania bez
+  zmiany scenariuszy/asercji.
+- Wspólny stan mieszka w produkcyjnym `Run` (`index.tsx` w `OWNS`); stanowy test renderuje
+  ponownie prawdziwe drzewo i dopiero potem uruchamia przycisk, `/run` oraz żądanie edytora.
+- Stop, wyłączenie i `left_nothing` dają `ran:false`; tryb klona, nie model, przydziela budżet.
 
 **T-104 — pamięć (D-2 = TAK: drugi korzeń).**
 - `<repo>/.loadout/memory/` dla `this-project`: `notes_root` dostaje wariant projektowy,
@@ -361,13 +367,14 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101 i T-115 wylądowały; T-102, T-103, T-116, T-117, T-118 i T-119 są zamknięte, T-120 jest następne.**
+- **T-114, T-100, T-101 i T-115 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119 i T-120 są zamknięte, T-121 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
-  T-120 ma sześć nowych speców, fizyczny UUID evidence, pełny zakres trzech dróg Startu,
-  zmieniany snapshot i behawioralny dowód atomowego zapisu.
+  Trzy niezależne domeny T-120 są teraz osobno lądowalne: T-121 Store, T-122 H15, T-123 H14.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 (zamknięte) → T-116 (zamknięte) → T-117 (zamknięte) → T-118 (zamknięte) → T-119 (zamknięte) → T-120 → T-104 → T-106`.
-- **T-109 po T-120**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 → T-123 → T-104 → T-106`.
+- **T-121 najpierw**, mimo rozłącznego `OWNS`: T-123 zapisuje rachunek do pliku, którego
+  ponowną, atomową indeksację gwarantuje T-121. Potem T-122 i T-123 szeregowo przez `run.rs`.
+- **T-109 po T-123**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
@@ -376,7 +383,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
   T-114 po T-98 (`workflow/check.rs`), T-115 po T-111 (`codex.rs`),
-  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-120);
+  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-123);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
   (sprawdzone w fazie 5). `LOADOUT_CARGO_LOCK_WAIT=2400`, gdy równolegle biegnie więcej niż

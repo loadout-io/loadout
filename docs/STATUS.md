@@ -4,6 +4,42 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 20:45 — T-120 ZAMKNIĘTE; niezależne cele rozdzielone na T-121…T-123
+
+**T-120 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 55 min 12 s · $0,00 widoczne.**
+Dwie porównywalnie zapisane tury Codeksa zużyły co najmniej 26,27 mln tokenów wejścia i
+72,3 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu tokenów.
+Enforced `before` uczciwie certyfikowało sześć nowych targetów: 7/7 kontroli w 1,27 s.
+
+Pierwsza pełna bramka miała **15/22** w 48,96 s. Zielone były AC-1 i AC-5, cały scope,
+format, typy i granice. Czerwone pokazywały niewykonaną atomową wymianę Store, martwy toggle,
+brak semantycznego `left_nothing`, pozostawiony `todo!` atomowego writera, dwa test-only szwy
+oraz regresje istniejących dubli refleksji. Recenzent zgłosił trzy uwagi: low o czerwonym
+paragonie było wyłącznie findingiem procesu; medium o braku prawdziwego rerenderu checkboxa
+i medium o braku końcowych bajtów po udanym retry były zasadne. Planner uwzględnił obie.
+
+Naprawa wylądowała w czterech commitach gałęzi: atomowa wymiana snapshotu, prawdziwy stan
+Startu, semantyczne pominięcie pustego handoffu oraz atomowy writer pełnego Markdownu.
+Końcowa, autorytatywna bramka na czystym `bde6e8a` miała **19/22** w 17,19 s. Zielone były
+AC-1 i AC-3…AC-6, pełny clippy, format, typy, wiring i wszystkie pozostałe quick checks.
+
+Pozostałe trzy czerwienie rozstrzygają kontrakt, nie uzasadniają piątej tury. AC-2 sortowało
+odczytane eventy po `body`, ale expected zachowywało kolejność wejściową — poprawny dokładny
+snapshot przegrywał na odwróconych dwóch wierszach. `quick-scope` wykazało prawdziwego
+właściciela wspólnego stanu `/run`: `src/sections/run/index.tsx` było poza `OWNS`. `full-test`
+ujawniło dwa osobne problemy: dozwolone duble z `reflecting()` nie dostały wymaganych
+`with_settings`/`with_evidence`/budżetu, a auto-pamięć pojedynczego kroku została błędnie
+awansowana z zamrożonego `ThisAgent + agent` do `ThisProject`. Refleksja całego biegu jest
+projektowa; prywatna notatka jednego agenta nie.
+
+Gałęzi `task-T-120` nie wolno lądować ani wznawiać; `main` nie dostał jej kodu. Żeby kolejne
+zadanie nie mieszało trzech niezależnych domen w jednej rundzie naprawy, jawny mandat
+właściciela na cały plan rozdziela świeże zastępstwo: **T-121** ląduje atomowy Store z
+order-independent exact multiset, **T-122** zachowuje pełny Markdown i `ThisAgent` atomowo,
+a **T-123** ląduje prywatną refleksję, prawdziwy rerender i komplet tras z `index.tsx` w
+`OWNS`. Każde startuje ze świeżego trunka i nie przenosi kodu, commitów ani speców T-120.
+Kolejność: T-121 → T-122 → T-123 → T-109 → T-104; operacyjnie Codex + Codex.
+
 ## 2026-08-25, 19:43 — T-119 ZAMKNIĘTE: fizyczny UUID, zakres i higiena pełnej bramki
 
 **T-119 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 06 min 19 s · $0,00
