@@ -61,7 +61,12 @@ import { listRuns, openChat, readRun, sayToAgent, sayToOrchestrator, stop } from
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
 import { lead } from './lead';
-import { atOnce as atOnceNow, subscribeToAtOnce } from './limits/chosen';
+import {
+  atOnce as atOnceNow,
+  budgetUsd as budgetUsdNow,
+  subscribeToAtOnce,
+  subscribeToBudget,
+} from './limits/chosen';
 import { waitingWhere } from './limits/waiting';
 import { toChoices } from './choices';
 import type { Named } from './run-command';
@@ -79,7 +84,7 @@ import { Rail, RAIL_WIDTH } from './rail/rail';
  * Import idzie w tę stronę bez cyklu: przełącznik importuje `./folders`, a nie ten plik. */
 import { FIRST_INVITE } from '../../ui/shell/workspace-switcher';
 import { Start } from './start';
-import { stripFor } from './strip/model';
+import { spendFor, stripFor } from './strip/model';
 import { Strip } from './strip/strip';
 import { CloseConfirm } from './tabs/picker';
 import { TabBar } from './tabs/tab-bar';
@@ -197,8 +202,12 @@ export default function Run(): ReactElement {
   /* Ta sama liczba, którą pokazuje kontrolka startu — jeden fakt, jedno miejsce (niezmiennik 13).
    * Gdyby ekran trzymał własną kopię, pasek kart mówiłby „of 3", kiedy suwak stoi na 8. */
   const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
+  const budgetUsd = useSyncExternalStore(subscribeToBudget, budgetUsdNow, budgetUsdNow);
 
-  const strip = useMemo(() => stripFor(run.workflow, run.steps), [run.workflow, run.steps]);
+  const strip = useMemo(
+    () => stripFor(run.workflow, run.steps, spendFor(run.lines, budgetUsd)),
+    [budgetUsd, run.lines, run.steps, run.workflow],
+  );
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
 
   /* KTO SŁUCHA, czyli czyją nazwą można zaadresować zdanie z wiersza wejścia. Rozstrzygnięcie
