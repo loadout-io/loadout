@@ -954,81 +954,82 @@ struct TriggerAcceptance {
 /// kodu, a nie zdaniem w komentarzu.
 async fn the_planned_run(
     deps: &RunDeps<'_>,
-    mut plan: Plan,
+    plan: Plan,
     lines: LineSink,
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
 ) -> Result<RunReport, RunError> {
-    // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
-    // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
-    let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
+    let (live, isolated, dag) =
+        prepare_planned_run(deps, plan, lines, slots, acceptance, budget_usd)?;
+    let cancel = deps.control.cancel_token();
+    let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
+    finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
+}
 
+fn prepare_planned_run(
+    deps: &RunDeps<'_>,
+    mut plan: Plan,
+    lines: LineSink,
+    slots: Limiter,
+    acceptance: Option<TriggerAcceptance>,
+    budget_usd: Option<f64>,
+) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
+    let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
     let isolated = lay_out_the_run_dir(&plan, deps.project)?;
-    // PRZEKAZANIA POPRZEDNIKÓW, kiedy to jest powtórzenie jednego kroku. Kopia, nie dowiązanie
-    // i nie odczyt w miejscu: skończony bieg jest historią i nie ma prawa się zmienić dlatego,
-    // że ktoś powtórzył kafelek (niezmiennik 4). Przed `Live::new`, bo prompt kroku czyta
-    // indeks przekazań w chwili startu.
+    // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
+    // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
-    /* I DOPIERO TERAZ INDEKS, bo dopiero teraz kopie istnieją. Sama kopia nie jest przekazaniem
-     * dalej: prompt kroku wymienia to, co oddały kroki TEGO biegu, więc bez tej linii pliki
-     * leżą w katalogu i nie zna ich ani jeden agent (T-88, powód przy `Plan::carried`). */
     plan.carried = what_the_run_before_left(&plan);
-    // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
-    // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
-    // Pożyczki kroków stoją TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
-    // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
-    // Odmowa za nazwę, której u gospodarza nie ma, padła już przy planowaniu
-    // ([`borrowing_is_possible`]), czyli zanim ten katalog w ogóle istniał.
+    // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
     bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
-    // Umiejętności kroków lądują TU, obok pożyczek i z tego samego powodu: obie drogi piszą,
-    // a piszą pod katalog biegu, który dopiero co powstał. Przed `Live::new`, bo odmowa („ten krok
-    // pracuje w twoim folderze") ma paść, zanim ruszy pierwszy proces (niezmiennik 12).
     hand_the_skills_to_the_steps(&mut plan)?;
     let live = Arc::new(Live::new(
         plan,
         lines,
         deps.control.clone(),
         slots,
-        std::sync::Arc::clone(&deps.processes),
+        Arc::clone(&deps.processes),
         budget_usd,
     ));
-    // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
-    // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
-    // [`Live::update`].
+    // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     live.open_the_book()?;
-    // Ten rename jest granica dokladnie-jeden: ledger domykamy po atomowym pliku, lecz przed
-    // pierwszym sterownikiem. Po awarii oba pliki daja sie pogodzic bez SQLite (niezmiennik 4).
-    if let Some(acceptance) = acceptance {
-        let run_file = live.plan.dir.join(RUN_FILE);
-        // Atomowy rename chroni czytelnika przed polowa JSON-u, ale dopiero fsync pliku i
-        // katalogu czyni ten rename dowodem, ktory recovery moze przyjac po restarcie procesu.
-        if read_and_sync_run_file(deps.project, &run_file)?.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "the run file disappeared before it could be saved safely",
-            )
-            .into());
-        }
-        triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
-    }
-    /* STEMPEL „TA NOTATKA WESZŁA DO PROMPTU" — tutaj, i to jest najwcześniejsze uczciwe miejsce.
-     *
-     * Nie w `add_block`, choć to tam wiadomo, co się w bloku zmieściło: tamta funkcja biegnie
-     * w PLANOWANIU, a planowanie jest czystym rachunkiem i nie dotyka dysku (ten sam powód
-     * trzyma `hand_the_skills_to_the_steps` poza `plan_step`). Plan bywa policzony dla biegu,
-     * który zaraz odmówi — a notatka twierdząca, że była użyta w biegu, którego nie było,
-     * jest gorsza niż `null`, bo `null` przynajmniej nie kłamie.
-     *
-     * Tutaj bieg ma już katalog i pierwszy zapis księgi, a jeszcze nie ruszył żaden proces.
-     * Rachunek bierzemy z `plan.memory` — czyli z tego samego zestawienia, które ląduje
-     * w `run.json` i które liczy WYŁĄCZNIE notatki naprawdę wklejone w prompty (`Block::used`,
-     * nigdy `Block::dropped`). Drugie przejście po notatkach byłoby drugą odpowiedzią na
-     * pytanie, co ten bieg wiedział. */
+    accept_trigger_after_durable_run(deps.project, &live, acceptance)?;
+    // Stempel jest uczciwy dopiero po powstaniu biegu, lecz przed pierwszym procesem: bierze
+    // dokładnie zestaw notatek już zamrożony w `run.json`.
     stamp_what_this_run_carried(deps.home, &live.plan.memory);
+    Ok((live, isolated, dag))
+}
 
+fn accept_trigger_after_durable_run(
+    project: &Path,
+    live: &Live,
+    acceptance: Option<TriggerAcceptance>,
+) -> Result<(), RunError> {
+    let Some(acceptance) = acceptance else {
+        return Ok(());
+    };
+    let run_file = live.plan.dir.join(RUN_FILE);
+    // Sam atomowy rename nie wystarcza recovery: fsync pliku i katalogu jest dowodem trwałości.
+    if read_and_sync_run_file(project, &run_file)?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the run file disappeared before it could be saved safely",
+        )
+        .into());
+    }
+    triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
+    Ok(())
+}
+
+async fn run_planned_graph(
+    live: Arc<Live>,
+    dag: &Dag,
+    cancel: CancellationToken,
+) -> scheduler::Outcome {
     let run_step = {
         let live = Arc::clone(&live);
         move |id: StepId, cancel: CancellationToken| {
@@ -1036,63 +1037,37 @@ async fn the_planned_run(
             async move { live.step(id, cancel).await }
         }
     };
-    // 2026-08-17 (T-31) — semafor planisty ma tu NIC nie ograniczać, i to jest cała treść tego
-    // podpięcia. „Ile naraz" jest liczbą CAŁEJ APLIKACJI, więc miejsce bierze każdy krok
-    // osobno, ze wspólnej puli ([`Live::a_slot_for_this_step`]). Semafor zakładany per bieg
-    // odpowiadał poprawnie na pytanie o jeden bieg i nie odpowiadał w ogóle na to, które zadaje
-    // niezmiennik 11: dwie karty po dwa agenty to cztery agenty po ~583 MB, czyli zamrożony
-    // laptop, a nie szybsza praca (`docs/ARCHITECTURE.md` §6a).
-    //
-    // Tyle permitów, ile kroków — czyli tyle, ile trzeba, żeby ten semafor nie odmówił nigdy.
-    // Nie zmienia to niczego, przed czym broni `engine::scheduler`: permit wspólnej puli bierze
-    // dalej ZADANIE, nie pętla wysyłki, więc różnica między „w kolejce" a „działa" zostaje tam,
-    // gdzie była, a szerokość wysyłki dalej nie udaje równoległości.
     let route_after = {
         let live = Arc::clone(&live);
         move |id: StepId, _report: StepReport| live.route_after(id)
     };
-    let cancel = deps.control.cancel_token();
-    let outcome =
-        scheduler::execute_routed(&dag, dag.len(), cancel.clone(), run_step, route_after).await;
+    // Semafor planisty celowo nie ogranicza: każdy krok bierze permit ze wspólnej puli
+    // aplikacji w `Live::a_slot_for_this_step` (niezmiennik 11).
+    scheduler::execute_routed(dag, dag.len(), cancel, run_step, route_after).await
+}
 
-    /* KROK ZATRZYMANY PRZEZ SUFIT CZYTA SIĘ JAKO POMINIĘTY, NIE JAKO ANULOWANY, i różnica jest
-     * dla człowieka całą treścią: `cancelled` znaczy „nacisnąłeś Stop". Planista widzi wyłącznie
-     * `StepReport` i ósmego wariantu nie dostanie — `steps.status` ma w bazie `CHECK` na siedmiu
-     * nazwach, a niezmiennik 25 zabrania przepisywania tabel — więc tłumaczenie stoi tutaj,
-     * w jednym miejscu, przed księgą i przed raportem naraz. */
+async fn finish_planned_run(
+    deps: &RunDeps<'_>,
+    live: Arc<Live>,
+    isolated: Vec<Isolated>,
+    outcome: scheduler::Outcome,
+    cancel: CancellationToken,
+    reflection_enabled: bool,
+) -> Result<RunReport, RunError> {
+    // Sufit dostawcy znaczy `skipped`, a tylko token człowieka znaczy `cancelled`.
     let mut states = outcome.states;
     live.name_what_the_budget_stopped(&mut states);
     live.close_the_book(&states, outcome.cancelled);
-    // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
-    // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
     close_the_trees(deps.project, &isolated, &live);
-    // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
-    // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
-    /* JEDNA TANIA REFLEKSJA, NA SAMYM KOŃCU I PO INDEKSIE.
-     *
-     * Po księdze, bo pyta o bieg skończony — a odpowiedź o biegu, który jeszcze trwa, jest
-     * odpowiedzią o czymś innym niż to, co człowiek później przeczyta. Po `close_the_trees`,
-     * bo katalog biegu ma być tym, który zostaje, a nie tym, który zaraz zniknie. I po
-     * `rebuild_from`, bo indeks jest tym, o co pyta okno: tura u vendora trwa do
-     * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
-     * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
+    // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
     what_the_steps_wrote_down(deps, &live.plan);
-    /* 2026-08-24, przy scalaniu T-92 z T-94: STANY POPRAWIONE, nie surowe z planisty.
-     * `name_what_the_budget_stopped` wyżej przepisuje budżetową porażkę rozstrzygniętą przez
-     * `whenItFails` na `skipped`, a refleksja pyta o bieg tak, jak człowiek przeczyta go
-     * później — więc
-     * ma dostać to samo, co księga, nie to, co planista zameldował przed tłumaczeniem.
-     * Git scalił oba zadania BEZ konfliktu i dopiero kompilator pokazał, że jedno przenosi
-     * wektor, który drugie pożycza. */
     let reflection = if reflection_enabled {
         what_this_run_taught_us(deps, &live.plan, &states).await
     } else {
         ReflectionReceipt::default()
     };
-    // Stop może przyjść już po schedulerze, kiedy żyje wyłącznie prywatna tura refleksji.
-    // Ten stan nadal jest anulowaniem całego biegu: bez ponownego odczytu tokena księga
-    // mówiłaby `succeeded`, choć Stop naprawdę zabił ostatnią grupę procesów tego biegu.
+    // Stop po schedulerze nadal anuluje bieg, bo żyła wtedy prywatna grupa refleksji.
     let cancelled = outcome.cancelled || cancel.is_cancelled();
     live.update(|book| {
         book.reflection = reflection;
