@@ -1,18 +1,19 @@
-# Prompt orchestratora — faza 7 (T-115 następne; sześć zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-116 następne; siedem zadań zamkniętych)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma osiemnaście numerów:
-T-98…T-115, z których T-105, T-110, T-99, T-112, T-113 i T-102 zostały zamknięte bez lądowania.
+**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma dziewiętnaście numerów:
+T-98…T-116, z których T-105, T-110, T-99, T-112, T-113, T-102 i T-103 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
 zostało zamknięte po dwóch nierozstrzygniętych lukach wyroczni; T-115 jest jego pełnym
-zastępstwem. **Nie uruchamiaj T-103 przed wylądowaniem T-115.** Każdą zieloną gałąź lądujesz
-osobno na `main`.
+zastępstwem i wylądowało. T-103 zamknięto, bo jego kryteria wymagały `evidence.rs` i `io.ts`
+poza `OWNS`; T-116 jest pełnym zastępstwem. **Nie uruchamiaj T-109 ani T-104 przed
+wylądowaniem T-116.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
 ---
 
@@ -27,7 +28,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-115.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113 i T-102 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-116.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102 i T-103 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -120,6 +121,13 @@ płatnym krokiem nie dowodzi sumy obu vendorów. Dodaje `tasks/T-115.md` z czter
 z `task-T-102`; każdy znany model dostaje nierówne liczniki, a prawdziwy ekran co najmniej dwa
 różne koszty. Przed commitem uruchom wyłącznie `python3 harness/task-spine.py`.
 
+Dziesiąty commit kontraktowy zapisuje `T-103 ZAMKNIĘTE` po drugiej czerwieni: AC-1 wymagało
+jawnej tożsamości evidence w `src-tauri/src/evidence.rs`, AC-3 nazwanego argumentu w
+`src/sections/run/io.ts`, a obu plików brakowało w `OWNS`. Dodaje `tasks/T-116.md` z sześcioma
+nowymi ścieżkami, pełnym zakresem i widocznym przełącznikiem przy prawdziwym Starcie. T-116
+startuje z aktualnego `main`; nie przenosi commitów, implementacji ani testów z `task-T-103`.
+Przed commitem uruchom wyłącznie `python3 harness/task-spine.py`.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -131,9 +139,10 @@ drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. 
 samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania; T-114 ma zgodę,
 osobny fix harnessu jest w trunku i musi poprzedzić T-100.
 Dodane po żywym biegu T-109 ma
-zależność semantyczną od T-103 i idzie po nim. Cała reszta dzieli `commands/run.rs`,
+zależność semantyczną od T-116 i idzie po nim. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
-T-114, T-100 i T-101 wylądowały. T-102 zamknięto bez lądowania; T-115 jest następnym biegiem.
+T-114, T-100, T-101 i T-115 wylądowały. T-102 i T-103 zamknięto bez lądowania; T-116 jest
+następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
@@ -147,13 +156,14 @@ T-114, T-100 i T-101 wylądowały. T-102 zamknięto bez lądowania; T-115 jest n
 | 3 | **WYKONANE:** T-100 w trunku | po T-114 |
 | 4 | **WYKONANE:** T-101 w trunku | `run.rs` po T-100 |
 | 5 | **ZAMKNIĘTE:** T-102, nie ląduj i nie wznawiaj | zielone testy nie odróżniały kolumn cen ani sumy dwóch kroków |
-| 5b | `./ship-task.sh T-115 --agent codex --reviewer codex` | pełne zastępstwo T-102 z czterema nowymi specami |
-| 6 | `./ship-task.sh T-103 --agent codex --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-115 |
-| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-103; izolacja obejmuje też refleksję |
-| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-103 |
+| 5b | **WYKONANE:** T-115 w trunku | pełne zastępstwo T-102 z czterema nowymi specami |
+| 6 | **ZAMKNIĘTE:** T-103, nie ląduj i nie wznawiaj | evidence i argument Startu wymagały dwóch plików poza OWNS; naprawa zepsuła stare duble |
+| 6b | `./ship-task.sh T-116 --agent codex --reviewer codex` | pełne zastępstwo T-103 z sześcioma nowymi specami i pełnym OWNS |
+| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-116; izolacja obejmuje też refleksję |
+| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-116 |
 | 9 | `./ship-task.sh T-106 --agent codex --reviewer codex` | `run.rs` po T-104 |
 | 10 | `./ship-task.sh T-108 --agent codex --reviewer codex` | `recovery.rs` po T-106, `notes.rs` po T-104 |
-| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-103 i T-109; musi być ostatnie |
+| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-116 i T-109; musi być ostatnie |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

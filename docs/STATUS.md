@@ -4,6 +4,18 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 13:59 — właściciel zatwierdził pełne zastępstwo T-103
+
+Jawne „rób, masz pozwolenie na wszystko” właściciela uruchamia wyjątek authoringu dla
+**T-116**. Nowy kontrakt startuje z czystego `main`, nie przenosi commitów, implementacji ani
+speców z `task-T-103` i obejmuje oba brakujące pliki: `src-tauri/src/evidence.rs` oraz
+`src/sections/run/io.ts`. Ma sześć nowych globalnie unikalnych ścieżek testów.
+
+T-116 wzmacnia też dwie luki ujawnione przez drugą czerwień: prawdziwy panel Startu pokazuje
+działający, domyślnie włączony przełącznik refleksji, a oba istniejące opt-in duble zachowują
+swoje stare asercje po dołożeniu prywatnych ustawień, dowodów i sufitu ceny. Operacyjna para
+pozostaje Codex + Codex na osobnych modelach. T-116 musi wylądować przed T-109 i T-104.
+
 ## 2026-08-25, 13:37 — T-103 ZAMKNIĘTE: kontrakt wymaga dwóch plików poza OWNS
 
 **T-103 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 15 min 25 s · $0,00 widoczne.**

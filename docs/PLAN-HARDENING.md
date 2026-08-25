@@ -87,8 +87,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H11 | Potomkowie kroku zatrzymanego budżetem lądują `cancelled` bez powodu | **T-101** |
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
-| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-103** |
-| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-103** |
+| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-116** (T-103 zamknięte) |
+| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-116** (T-103 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
@@ -115,19 +115,20 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-100 | Werdykt jest polem, sędzia widzi próby | T-114 | tak | 4 |
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
-| T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-103 | tak (skan) | 5 |
+| T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
+| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-116 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
-| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-103 | nie | 3 |
+| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-116 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
 | T-113 | **ZAMKNIĘTE:** spec wznowienia fałszował etykietę pochodzenia | — | tak | 6 |
 | T-114 | Kopie: poprawne i niekolizyjne refy; prawdziwe pochodzenie i trwała decyzja | — (zastępuje T-99/T-112/T-113) | tak | 6 |
 | T-115 | Wydatki obu vendorów z rozróżnialnym cennikiem i prawdziwą sumą na ekranie | — (zastępuje T-102) | tak | 4 |
+| T-116 | Refleksja prywatna, audytowalna i naprawdę wyłączalna | T-115 | tak | 6 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -216,12 +217,19 @@ i ma cztery nowe, globalnie unikalne ścieżki wyroczni.
 - Kroki Codeksa dostają w indeksie przekazań zdanie, że pliki leżą poza cwd i czyta się je
   po ścieżce bezwzględnej (H4; pomiar skuteczności w T-107).
 
-**T-103 — refleksja (D-3: domyślnie włączona, wyłączalna, nie po anulowanym).**
+**T-103 — ZAMKNIĘTE, bez lądowania.** Dokładne `logs/reflection.*` wymagały jawnej
+tożsamości w `evidence.rs`, a nazwany argument Tauri wymagał `io.ts`; obu plików brakowało w
+`OWNS`. Jedyna naprawa dotknęła ich poza zakresem i wyłączyła dwa istniejące duble refleksji.
+Nie wznawiać gałęzi ani nie przenosić z niej commitów, implementacji lub speców.
+
+**T-116 — pełne zastępstwo refleksji (D-3: domyślnie włączona, wyłączalna, nie po anulowanym).**
 - Sterownik refleksji przez `with_settings` (auto-pamięć do `<bieg>/mem/_reflection/` + deny
   gospodarza) i `with_evidence` (`logs/reflection.jsonl` + `input.json`).
 - Wynik (ile par, ile odrzuconych bez powodu, koszt) w `run.json` (pole addytywne).
 - Sufit kosztu ze stałej na turę; nie biegnie po biegu anulowanym; przełącznik przy Starcie
   (domyślnie włączona).
+- Przełącznik jest widoczny w prawdziwym panelu Startu i każda droga Startu wysyła jego wybór;
+  dwa istniejące opt-in duble refleksji przeżywają nowe twarde opakowania bez osłabienia asercji.
 - Zbiór z `mem/<kafelek>/`: `rule` = pierwszy akapit, ciało pliku → ciało notatki,
   `because` z wiersza `**Why:**` gdy jest (format, który auto-pamięć realnie produkuje).
 
@@ -302,12 +310,13 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100 i T-101 wylądowały; T-102 jest zamknięte, T-115 jest następne.** Nie
-  wznawiać `task-T-102` ani nie przenosić jego testów, implementacji lub commitów. T-115 ma
-  cztery nowe specy i naprawia obie luki wyroczni znalezione przez recenzenta.
+- **T-114, T-100, T-101 i T-115 wylądowały; T-102 i T-103 są zamknięte, T-116 jest następne.**
+  Nie wznawiać `task-T-102` ani `task-T-103` i nie przenosić ich testów, implementacji lub
+  commitów. T-116 ma sześć nowych speców oraz pełny zakres dla evidence, argumentu Tauri i
+  widocznego przełącznika.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 → T-104 → T-106`.
-- **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 (zamknięte) → T-116 → T-104 → T-106`.
+- **T-109 po T-116**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
@@ -316,7 +325,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
   T-114 po T-98 (`workflow/check.rs`), T-115 po T-111 (`codex.rs`),
-  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-103);
+  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-116);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
   (sprawdzone w fazie 5). `LOADOUT_CARGO_LOCK_WAIT=2400`, gdy równolegle biegnie więcej niż
