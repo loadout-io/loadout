@@ -88,7 +88,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-123** (T-103/T-116/T-117/T-118/T-119/T-120 zamknięte) |
-| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
+| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
@@ -136,7 +136,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-121 | **WYLANDOWAŁO:** dokładny, idempotentny i atomowy snapshot czterech tabel Store | T-115 | nie | 2 |
 | T-122 | **ZAMKNIĘTE:** dwa kolejne lity helperów po jedynej naprawie; copy-over przechodziło wyrocznię | T-121 | tak | 2 |
 | T-123 | Refleksja prywatna, audytowalna i sterowana przez prawdziwy Run | T-121, T-124 | tak | 4 |
-| T-124 | Auto-pamięć kroku: pełny Markdown i dowiedziona atomowa podmiana | T-121 | tak | 3 |
+| T-124 | **WYLANDOWAŁO:** auto-pamięć kroku, pełny Markdown i trwały atomowy persist | T-121 | tak | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -281,7 +281,7 @@ nowym teście. Końcowe ENOSPC było wtórne; wcześniejsza pełna suita przesz�
 wykazał ponadto, że temp-then-copy-over przechodzi AC-2. Nie wznawiać ani nie przenosić kodu,
 commitów, speców lub testów.
 
-**T-124 — H15 bez zmiany właściciela, następca T-122.**
+**T-124 — WYLANDOWAŁO; H15 bez zmiany właściciela, następca T-122.**
 - `what_the_steps_wrote_down` zachowuje `ThisAgent + agent`; tylko osobna refleksja całego
   biegu jest `ThisProject`.
 - Pierwszy akapit, całe źródłowe body i `**Why:**` przechodzą przez właścicielski wariant API
@@ -379,7 +379,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115 i T-121 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119, T-120 i T-122 są zamknięte, T-124 jest następne.**
+- **T-114, T-100, T-101, T-115, T-121 i T-124 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119, T-120 i T-122 są zamknięte, T-123 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
   H15 po zamkniętym T-122, a T-123 obejmuje H14.

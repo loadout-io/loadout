@@ -4,6 +4,33 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 22:45 — T-124 w trunku: pełna auto-pamięć i trwały atomowy persist
+
+**T-124 · zielone · 24 min 12 s · $0,00 widoczne.** Dwie porównywalnie zapisane tury
+Codeksa zużyły co najmniej 6,93 mln tokenów wejścia i 41,3 tys. wyjścia; recenzja, plan i
+wykonanie naprawy nie mają wspólnego paragonu tokenów. Enforced `before` uczciwie
+certyfikowało trzy nowe targety: 4/4 kontroli w 0,57 s.
+
+Pierwsza pełna bramka przeszła 19/19 w 45,48 s. Auto-pamięć skończonego kroku zachowuje
+`ThisAgent`, nazwę właściciela, cały pierwszy akapit, dokładne źródłowe body i `Why`; writer
+składa front matter z body w jednym same-directory tempie, a błąd nie zmienia ani starego
+pliku, ani pełnego listingu. Read-only plik docelowy przy zapisywalnym katalogu dowodzi, że
+zwykły copy-over nie może udawać podmiany.
+
+Recenzent znalazł dwie zasadne granice. Medium: stan końcowy AC-3 nie obserwuje hipotetycznego
+mikro-okna `unlink → create`, choć bieżący kod naprawdę używa `NamedTempFile::persist` i nie
+ma jawnego remove. Low: `sync_all` tempa plus rename nie utrwala jeszcze wpisu katalogowego
+po crashu. Planner zaklasyfikował pierwsze jako ograniczenie wyroczni, nie defekt bieżącej
+implementacji; naprawa nie maskowała go grepem ani nową final-state asercją. Drugi problem
+naprawił commit `da7827f`: po udanym `persist` otwiera rodzica i propaguje `sync_all` katalogu.
+Dwie końcowe bramki przeszły 19/19 w 41,86 s oraz 39,85 s. Ograniczenie AC-3 pozostaje jawne:
+test odrzuca copy-over, ale sam nie jest pełnym dowodem braku chwilowego unlinku.
+
+`integrate.sh` wylądował wyłącznie `task-T-124` jako **`63f4246`**. Pełna bramka `main`
+przed merge'em przeszła 16/16 w 96,68 s, a po merge'u 16/16 w 176,61 s. Trunk jest czysty,
+`TASK.md` nie przeżył lądowania. Odbudowywalny target worktree usunięto (4,9 GiB według
+Cargo). Następne jest T-123 przez Codex + Codex.
+
 ## 2026-08-25, 22:08 — T-122 ZAMKNIĘTE; T-124 przejmuje H15 z mocniejszą wyrocznią
 
 **T-122 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 23 min 17 s · $0,00 widoczne.**
