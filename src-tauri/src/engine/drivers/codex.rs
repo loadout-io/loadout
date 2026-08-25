@@ -3136,6 +3136,12 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(configured))
     }
 
+    /// Codex nie ma odpowiednika `--add-dir`; pełne ścieżki zostają więc w prompcie,
+    /// a wspólny składacz dopowiada, że leżą poza katalogiem pracy kroku.
+    fn carries_extra_dirs(&self) -> bool {
+        false
+    }
+
     /* NIE ZAWĘŻA, I TO JEST FAKT O TYM CLI, NIE NASZE USTĘPSTWO (2026-08-24, T-97).
      *
      * Codex nie ma odpowiednika `--tools`: to, po co agent może sięgnąć, wynika u niego wyłącznie

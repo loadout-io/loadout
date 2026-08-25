@@ -368,6 +368,10 @@ const HANDOFF_INDEX_OPENS: &str = "Steps before this one left what they found in
 const HANDOFF_INDEX_CLOSES: &str =
     "Read the ones you need; their contents were not copied into this prompt.";
 
+/// Dopowiedzenie wyłącznie dla sterownika, który nie potrafi przenieść dodatkowego katalogu.
+const HANDOFF_PATHS_ARE_OUTSIDE: &str =
+    "These files are outside your working directory, so read them at the full paths shown.";
+
 /// Domyślna etykieta wiersza indeksu: plik zostawił krok, po którym ten krok idzie po strzałce.
 ///
 /// 2026-08-23 (T-87) — ZAMKNIĘTA LISTA ETYKIET ZACZYNA SIĘ TUTAJ i ma dokładnie sześć pozycji
@@ -7569,6 +7573,12 @@ impl Live {
         };
         if !handed.is_empty() {
             self.index_of_what_came_before(&handed, &mut told)?;
+            if let Job::Agent(job) = &self.plan.steps[id].job
+                && !job.driver.carries_extra_dirs()
+            {
+                told.prompt.push_str("\n\n");
+                told.prompt.push_str(HANDOFF_PATHS_ARE_OUTSIDE);
+            }
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
