@@ -4,6 +4,40 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 16:43 — T-117 ZAMKNIĘTE: naprawę przerwał pełny dysk
+
+**T-117 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 04 min 13 s · $0,00
+widoczne.** Cztery ukończone tury Codeksa zapisały co najmniej 33,73 mln tokenów wejścia
+i 109,2 tys. wyjścia; piąta, przerwana tura wykonawcza nie zdążyła zapisać paragonu. Enforced
+`before` uczciwie certyfikowało wszystkie sześć nowych AC jako runtime-red: 7/7 kontroli,
+1,38 s.
+
+Pierwsza pełna bramka miała **19/22** w 70,31 s. Zielone były AC-2…AC-6, pełny zakres, typy
+i wszystkie quick checks. AC-1 wykryło realną regresję: zwykły krok stracił dotychczasową
+ścieżkę `logs/agent-<step>.*`. `full-clippy` wykrył zakazane `panic!` w helperze nowego testu
+AC-6. `full-test` niosło oba problemy i regresję T-114 wprowadzoną przez T-117: udany pusty
+krok przestał zostawiać prawdziwy handoff `left_nothing`.
+
+Recenzent zgłosił dwie uwagi. Zasadna uwaga medium wykazała, że AC-3 woła handler z osobno
+wyeksportowanego `reflectionCheckbox()`, nie z kontrolki należącej do drzewa `Start`; martwy
+checkbox na ekranie mógłby więc przejść. Uwaga low o braku refleksji w SQLite nie zmienia
+kontraktu: prawdą jest blok w `run.json`, SQLite pozostaje odtwarzalnym indeksem, a wyrocznia
+już pilnuje bajtów pliku i stabilności wszystkich czterech tabel.
+
+Planner jedynej naprawy prawidłowo rozpisał trzy defekty kodu/testu oraz wzmocnienie AC-3.
+Wykonawca zaczął od odczytu kontraktu i źródeł, ale o 16:39 dysk osiągnął `ENOSPC`. Codex nie
+mógł zapisać własnego rollouta ani stdout i zakończył paniką `StorageFull` **przed pierwszą
+zmianą**. Końcowa próba bramki nie jest wynikiem produktu: nie mogła utworzyć heredoców,
+artefaktów Cargo, pliku Vitesta, `runs/.last.tmp` ani `assertions-now.tsv`. Branch pozostał
+czysty na `04d0801`; nie ma commita naprawy. Harness zużył jednak cztery tury i jawnie odmawia
+piątej, więc T-117 nie wolno wznawiać ani lądować.
+
+Po biegu `cargo clean` usunęło wyłącznie odbudowywalne cache `target/` z zamkniętych worktree
+T-117, T-116 i T-103 (raportowane łącznie 15,7 GiB); źródła i paragony pozostały. Wolne miejsce
+wzrosło ze 119 MiB do 12 GiB. `main` nie dostał kodu T-117 i pozostaje czysty. Uczciwa
+kontynuacja wymaga świeżego zastępstwa z nowymi globalnie unikalnymi specami; nie wolno
+przenosić commitów, implementacji ani testów z `task-T-117`.
+
 ## 2026-08-25, 15:29 — właściciel zatwierdził uczciwe zastępstwo T-116
 
 Po zamknięciu T-116 właściciel polecił kontynuować. Nowy kontrakt **T-117** startuje ze
