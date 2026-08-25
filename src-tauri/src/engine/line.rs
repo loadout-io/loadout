@@ -36,11 +36,12 @@
 //! stylów. Wiersz, którego tu nie ma, nie pojawi się nigdzie; wiersz, który tu jest, pojawi
 //! się zawsze.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::drivers::{AgentEvent, FinishReason, Outcome};
+use super::drivers::{AgentEvent, FinishReason, Outcome, is_unknown_price_notice};
 
 /// Rodzaj wiersza. Czternaście z [T2 §7.2] plus [`LineKind::StepState`].
 ///
@@ -761,6 +762,9 @@ pub struct Curator {
     pending: Vec<Pending>,
     /// Stały slot na dole ekranu.
     status: Option<Status>,
+    /// Brak ceny czeka na końcowy wiersz TEGO SAMEGO kroku. Mapa, nie jedno pole, bo kurator
+    /// może dostać przeplecione zdarzenia dwóch równoległych kroków o tej samej nazwie.
+    unknown_prices: HashMap<String, String>,
     /// Skąd biorą się `detail_id`. Rośnie monotonicznie w obrębie jednego biegu.
     minted: u64,
 }
@@ -830,6 +834,16 @@ impl Curator {
     /// Pusty wektor jest **normalną odpowiedzią**: tak wygląda myślenie, `init`, hak sesji
     /// i każde zdarzenie, które tylko dokłada się do otwartej grupy.
     pub fn observe(&mut self, seen: Seen<'_>) -> Vec<Line> {
+        self.observe_with_step_key(seen, None)
+    }
+
+    /// Wpuszcza zdarzenie z opcjonalnym, stabilnym kluczem kroku.
+    ///
+    /// Żywy bieg podaje indeks węzła, bo nazwa wyświetlana nie jest identyfikatorem i dwa
+    /// równoległe kroki mogą ją współdzielić. Odczyt starych transkryptów nie zna indeksu,
+    /// więc zachowuje dotychczasowe grupowanie po nazwie przez [`Self::observe`].
+    pub fn observe_with_step_key(&mut self, seen: Seen<'_>, step_key: Option<&str>) -> Vec<Line> {
+        let unknown_price_key = step_key.unwrap_or(seen.agent);
         match seen.event {
             // Reguła 5. Myślenie MUSI dojść — inaczej dół ekranu jest martwy, kiedy agent
             // pracuje — i nie ma prawa wejść do historii, bo wirtualizowana lista mierzy
@@ -885,6 +899,11 @@ impl Curator {
                 status, resets_at, ..
             } => self.rate_limit(seen, status, *resets_at),
             AgentEvent::Notice { text } => {
+                if is_unknown_price_notice(text) {
+                    self.unknown_prices
+                        .insert(unknown_price_key.to_owned(), text.to_owned());
+                    return Vec::new();
+                }
                 let line = Line::Problem {
                     agent: seen.agent.to_owned(),
                     text: one_line(text),
@@ -893,7 +912,8 @@ impl Curator {
                 self.close_then(line)
             }
             AgentEvent::Finished(outcome) => {
-                let line = done_line(seen.agent, outcome);
+                let unknown_price = self.unknown_prices.remove(unknown_price_key);
+                let line = done_line(seen.agent, outcome, unknown_price.as_deref());
                 self.close_then(line)
             }
         }
@@ -1317,7 +1337,7 @@ fn file_name(path: &str) -> &str {
 /// na tym polega różnica między formatowaniem a utratą. `cost_usd` przepisany co do bitu,
 /// bo `Line` jest jedyną rzeczą, którą dostaje widok: `$0,15` nie da się zamienić z powrotem
 /// w `0.14836290000000002`, a suma biegu byłaby wtedy krzywa na zawsze i bez śladu.
-fn done_line(agent: &str, outcome: &Outcome) -> Line {
+fn done_line(agent: &str, outcome: &Outcome, unknown_price: Option<&str>) -> Line {
     let duration_ms = u64::try_from(outcome.took.as_millis()).unwrap_or(u64::MAX);
     let ended = match (&outcome.reason, outcome.ok) {
         // Anulowanie jest wartością, nie błędem (niezmiennik 7). Krok, który ktoś zatrzymał
@@ -1345,6 +1365,9 @@ fn done_line(agent: &str, outcome: &Outcome) -> Line {
         // zwrócić tylko sam formatter — więc wynik idzie do `let _`, a nie do `unwrap()`,
         // który w tym drzewie jest `deny`.
         let _ = write!(text, " · ${cost:.2}");
+    }
+    if let Some(notice) = unknown_price {
+        let _ = write!(text, " · {notice}");
     }
     /* POWÓD PORAŻKI, czyli druga rzecz, którą to zdanie ma powiedzieć.
      *

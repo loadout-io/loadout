@@ -63,7 +63,7 @@ use tokio::time::timeout;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
-    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
+    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages, unknown_price_notice,
 };
 use crate::engine::stream;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
@@ -249,6 +249,7 @@ impl CodexDriver {
             cwd: spec.cwd.clone(),
             argv,
             prompt: after_the_standing_orders(instructions.as_deref(), spec.prompt),
+            model: spec.model.clone(),
             events: tx.clone(),
             threads: Arc::clone(&threads),
             number: FIRST_TURN,
@@ -283,6 +284,7 @@ impl CodexDriver {
         Ok(CodexHandle {
             binary: self.binary.clone(),
             cwd: spec.cwd,
+            model: spec.model,
             events: tx,
             evidence: self.evidence.clone(),
             threads,
@@ -312,6 +314,8 @@ struct Turn {
     argv: Vec<String>,
     /// Treść tury. Jedzie stdinem (niezmiennik 9).
     prompt: String,
+    /// Model potrzebny po EOF do wyceny trzech liczników, których sam strumień nie nazywa.
+    model: Option<String>,
     /// Dokąd sypać zdarzeniami.
     events: mpsc::Sender<DecodedEvent>,
     /// Wspólna pamięć identyfikatorów wątku — jedna na sesję, nie na turę.
@@ -341,6 +345,7 @@ struct PumpInput {
     stdout: ChildStdout,
     events: mpsc::Sender<DecodedEvent>,
     outcome: oneshot::Sender<Outcome>,
+    model: Option<String>,
     threads: Arc<Mutex<Vec<String>>>,
     number: u64,
     cancelled: Arc<AtomicU64>,
@@ -423,6 +428,7 @@ impl Turn {
             stdout,
             events: self.events,
             outcome: tell,
+            model: self.model,
             threads: self.threads,
             number: self.number,
             cancelled: self.cancelled,
@@ -638,9 +644,9 @@ impl fmt::Debug for AppServerState {
 }
 
 impl AppServerState {
-    fn new() -> Self {
+    fn new(model: Option<String>) -> Self {
         Self {
-            decoder: CodexDecoder::new(),
+            decoder: CodexDecoder::for_model(model),
             active: false,
             cancelled: false,
             began: Instant::now(),
@@ -726,7 +732,7 @@ impl AppServerState {
             self.cumulative = total;
         }
         let used = token_delta(self.cumulative, self.baseline);
-        vec![self.decoder.finish_tokens(used)]
+        self.decoder.finish_tokens(used)
     }
 
     fn end_of_stream(&mut self, complaint: &str) -> Vec<AgentEvent> {
@@ -962,6 +968,7 @@ async fn handle_app_command(
 struct AppServerInput<Output> {
     stdin: ChildStdin,
     stdout: Output,
+    model: Option<String>,
     commands: mpsc::Receiver<AppCommand>,
     events: mpsc::Sender<DecodedEvent>,
     outcomes: mpsc::Sender<Outcome>,
@@ -1042,6 +1049,7 @@ where
     let AppServerInput {
         mut stdin,
         stdout,
+        model,
         mut commands,
         events,
         outcomes,
@@ -1052,7 +1060,7 @@ where
     let mut reader = BufReader::new(stdout);
     let mut buffer = Vec::with_capacity(8 * 1024);
     let mut pending: HashMap<u64, PendingAppRequest> = HashMap::new();
-    let mut state = AppServerState::new();
+    let mut state = AppServerState::new(model);
     let mut commands_open = true;
 
     loop {
@@ -1467,6 +1475,7 @@ impl CodexDriver {
         let reader_task = tokio::spawn(app_server_actor(AppServerInput {
             stdin,
             stdout,
+            model: spec.model.clone(),
             commands: commands_rx,
             events: tx,
             outcomes: outcomes_tx,
@@ -1940,10 +1949,51 @@ enum CodexLine {
     Unknown,
 }
 
+/// Jedyna tabela cen Codeksa. Stawki są w dolarach za milion tokenów i zachowują osobne
+/// kolumny wejścia, cache'u i wyjścia; zsumowana stawka zgubiłaby informację potrzebną do
+/// poprawnego policzenia prawdziwego użycia.
+const PRICES: &[CodexPrice] = &[
+    CodexPrice {
+        prefix: "gpt-5.6-sol",
+        input: 2.0,
+        cached: 0.4,
+        output: 21.0,
+    },
+    CodexPrice {
+        prefix: "gpt-5.6-terra",
+        input: 1.0,
+        cached: 0.2,
+        output: 12.5,
+    },
+    CodexPrice {
+        prefix: "gpt-5.6-luna",
+        input: 0.1,
+        cached: 0.02,
+        output: 1.25,
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct CodexPrice {
+    prefix: &'static str,
+    input: f64,
+    cached: f64,
+    output: f64,
+}
+
+fn estimated_cost(model: &str, tokens: Tokens) -> Option<f64> {
+    let price = PRICES
+        .iter()
+        .find(|price| model.starts_with(price.prefix))?;
+    // `From<u64> for f64` nie istnieje. Parsowanie dziesiętnego zapisu zachowuje pełny zakres
+    // licznika bez ryzykownego, wyciszanego rzutowania; dla każdego `u64` wynik jest skończony.
+    let input = tokens.input.to_string().parse::<f64>().ok()?;
+    let cached = tokens.cached.to_string().parse::<f64>().ok()?;
+    let output = tokens.output.to_string().parse::<f64>().ok()?;
+    Some((input * price.input + cached * price.cached + output * price.output) / 1_000_000.0)
+}
+
 /// Zużycie kontekstu z `turn.completed` [T1 §6.2].
-///
-/// Czego tu **nie ma**: `cost_usd`. Codex go nie podaje, a szacowanie z tokenów jest świadomie
-/// poza zakresem — cennik w kodzie byłby trzecim miejscem, w którym trzeba go aktualizować.
 #[derive(Debug, Deserialize)]
 struct Usage {
     #[serde(rename = "input_tokens", alias = "inputTokens")]
@@ -2046,6 +2096,8 @@ pub struct CodexDecoder {
     /// Ostatnia proza agenta, czyli to, co krok przekazuje dalej. Zbierana po drodze, bo
     /// `turn.completed` jej **nie powtarza** — inaczej niż linia `result` u Claude'a.
     said: String,
+    /// Model pochodzi z zamówienia tury; linia końcowa niesie liczniki, ale go nie powtarza.
+    model: Option<String>,
 }
 
 impl CodexDecoder {
@@ -2053,6 +2105,13 @@ impl CodexDecoder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn for_model(model: Option<String>) -> Self {
+        Self {
+            model,
+            ..Self::default()
+        }
     }
 
     /// Wpuszcza jedną linię strumienia i oddaje zdarzenia, które z niej wynikają.
@@ -2117,7 +2176,7 @@ impl CodexDecoder {
             CodexLine::ItemCompleted { item } => {
                 item.map(|item| self.completed(item)).unwrap_or_default()
             }
-            CodexLine::TurnCompleted { usage } => vec![self.finish(usage.as_ref())],
+            CodexLine::TurnCompleted { usage } => self.finish(usage.as_ref()),
             CodexLine::TurnFailed { error } => self.failed(error.and_then(|error| error.message)),
             // Skarga nie kończy tury: obie linie niosą problem na ekran (T2 §9.3 mapuje obie na
             // `problem`), ale turę zamyka ta, która ją zamyka.
@@ -2233,7 +2292,7 @@ impl CodexDecoder {
     }
 
     /// `turn.completed` → koniec tury, która się udała.
-    fn finish(&mut self, usage: Option<&Usage>) -> AgentEvent {
+    fn finish(&mut self, usage: Option<&Usage>) -> Vec<AgentEvent> {
         self.finish_tokens(Tokens {
             input: usage.and_then(|usage| usage.input).unwrap_or_default(),
             output: usage.and_then(|usage| usage.output).unwrap_or_default(),
@@ -2243,16 +2302,27 @@ impl CodexDecoder {
 
     /// Wspolny koniec tury dla `exec` i App Servera. Ten drugi odejmuje kumulatywny licznik
     /// przed wywolaniem, dzieki czemu ekran nie dolicza poprzednich tur po raz drugi.
-    fn finish_tokens(&mut self, tokens: Tokens) -> AgentEvent {
+    fn finish_tokens(&mut self, tokens: Tokens) -> Vec<AgentEvent> {
         self.ended = true;
-        AgentEvent::Finished(Outcome {
+        let cost_usd = self
+            .model
+            .as_deref()
+            .and_then(|model| estimated_cost(model, tokens));
+        let mut events = Vec::with_capacity(2);
+        if cost_usd.is_none()
+            && let Some(model) = self.model.clone()
+        {
+            events.push(AgentEvent::Notice {
+                text: unknown_price_notice(&model),
+            });
+        }
+        events.push(AgentEvent::Finished(Outcome {
             ok: true,
             reason: FinishReason::Completed,
             text: self.said.clone(),
-            // `None`, nie zero, i to jest cała różnica: Codex kosztu nie podaje, a `Some(0.0)`
-            // wypisze na ekranie `$0.00` i nauczy człowieka, że Codex jest darmowy — po czym ta
-            // liczba zsumuje się w rachunek, którego nikt nie zamawiał.
-            cost_usd: None,
+            // Kwota jest analitycznym szacunkiem z jednej tabeli, nie pomiarem vendora.
+            // Nieznany model pozostaje `None`: zero wyglądałoby jak znana, darmowa tura.
+            cost_usd,
             tokens,
             // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
             // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
@@ -2262,7 +2332,8 @@ impl CodexDecoder {
             // po co (2026-08-19).
             took: Duration::ZERO,
             session: self.session_ref(),
-        })
+        }));
+        events
     }
 
     /// `turn.failed` → uwaga **i** koniec tury.
@@ -2498,6 +2569,7 @@ async fn pump(input: PumpInput) {
         stdout,
         events,
         outcome,
+        model,
         threads,
         number,
         cancelled,
@@ -2511,7 +2583,7 @@ async fn pump(input: PumpInput) {
     // na ekranie „0s" przy każdym kroku — to ta sama klasa kłamstwa co `$0.00` przy koszcie.
     let began = Instant::now();
     let mut reader = BufReader::new(stdout);
-    let mut decoder = CodexDecoder::new();
+    let mut decoder = CodexDecoder::for_model(model);
     let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut told = Some(outcome);
     let mut seen: Option<String> = None;
@@ -2693,6 +2765,8 @@ pub struct CodexHandle {
     binary: PathBuf,
     /// Katalog roboczy tej rozmowy. Kolejne tury dostają go z powrotem w `-C`.
     cwd: PathBuf,
+    /// Model tej rozmowy wraca przy każdej turze, bo każda ma osobne liczniki i koszt.
+    model: Option<String>,
     /// Kanał zdarzeń tej sesji. **Wszystkie** tury sypią w ten sam, bo z zewnątrz to jedna
     /// rozmowa — proces na turę jest szczegółem, który trait ma wchłonąć.
     events: mpsc::Sender<DecodedEvent>,
@@ -2888,6 +2962,7 @@ impl AgentHandle for CodexHandle {
             cwd: self.cwd.clone(),
             argv,
             prompt: text,
+            model: self.model.clone(),
             events: self.events.clone(),
             threads: Arc::clone(&self.threads),
             number: self.number,
@@ -3064,6 +3139,12 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(configured))
     }
 
+    /// Codex nie ma odpowiednika `--add-dir`; pełne ścieżki zostają więc w prompcie,
+    /// a wspólny składacz dopowiada, że leżą poza katalogiem pracy kroku.
+    fn carries_extra_dirs(&self) -> bool {
+        false
+    }
+
     /* NIE ZAWĘŻA, I TO JEST FAKT O TYM CLI, NIE NASZE USTĘPSTWO (2026-08-24, T-97).
      *
      * Codex nie ma odpowiednika `--tools`: to, po co agent może sięgnąć, wynika u niego wyłącznie
@@ -3075,6 +3156,67 @@ impl AgentDriver for CodexDriver {
      * i potrafiło odmówić CAŁEGO biegu o wpis, którego ten adapter i tak nigdy nie zobaczy. */
     fn narrows_its_tools(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod app_server_pricing_tests {
+    use serde_json::json;
+
+    use super::{AgentEvent, AppServerState, Tokens};
+
+    const TOKENS: Tokens = Tokens {
+        input: 10_000,
+        cached: 5_000,
+        output: 20_000,
+    };
+
+    fn completed_turn(model: &str) -> Vec<AgentEvent> {
+        let mut state = AppServerState::new(Some(model.to_owned()));
+        state.begin_turn();
+        state.notification(&json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": { "status": "completed" },
+                "usage": {
+                    "inputTokens": TOKENS.input,
+                    "cachedInputTokens": TOKENS.cached,
+                    "outputTokens": TOKENS.output
+                }
+            }
+        }))
+    }
+
+    #[test]
+    fn selected_model_reaches_app_server_pricing_and_unknown_notice() -> Result<(), String> {
+        const UNKNOWN_MODEL: &str = "gpt-9.9-nebula";
+
+        let priced = completed_turn("gpt-5.6-terra-2026-08-25");
+        let Some(AgentEvent::Finished(priced_outcome)) = priced.last() else {
+            return Err(format!(
+                "the priced App Server turn did not finish: {priced:?}"
+            ));
+        };
+        assert_eq!(priced.len(), 1, "a known price must not emit a warning");
+        assert_eq!(priced_outcome.tokens, TOKENS);
+        assert_eq!(priced_outcome.cost_usd, Some(0.261));
+
+        let unknown = completed_turn(UNKNOWN_MODEL);
+        assert!(
+            matches!(
+                unknown.first(),
+                Some(AgentEvent::Notice { text }) if text.contains(UNKNOWN_MODEL)
+            ),
+            "the App Server turn did not name its unknown model: {unknown:?}"
+        );
+        let Some(AgentEvent::Finished(unknown_outcome)) = unknown.last() else {
+            return Err(format!(
+                "the unknown-price App Server turn did not finish: {unknown:?}"
+            ));
+        };
+        assert_eq!(unknown_outcome.tokens, TOKENS);
+        assert_eq!(unknown_outcome.cost_usd, None);
+        Ok(())
     }
 }
 
@@ -3144,6 +3286,7 @@ mod stop_proof_tests {
         CodexHandle {
             binary: PathBuf::from("codex"),
             cwd: PathBuf::from("/private/workspace"),
+            model: None,
             events,
             evidence: Some(evidence),
             configuration: DriverConfiguration::default(),
@@ -3192,7 +3335,7 @@ mod stop_proof_tests {
     -> anyhow::Result<()> {
         let directory = TempDir::new()?;
         let evidence = target(&directory, "app-alive-then-dead");
-        let state = Arc::new(Mutex::new(AppServerState::new()));
+        let state = Arc::new(Mutex::new(AppServerState::new(None)));
         state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3305,6 +3448,7 @@ mod stop_proof_tests {
         app_server_actor(AppServerInput {
             stdin,
             stdout: FailingOutput,
+            model: None,
             commands: command_inbox,
             events,
             outcomes,
@@ -3428,6 +3572,7 @@ mod stop_proof_tests {
                 FIRST_THREAD.to_owned(),
             ],
             prompt: "PRIVATE_PROMPT_SENTINEL".to_owned(),
+            model: Some(MODEL.to_owned()),
             events: events.clone(),
             threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
             number: 2,
@@ -3442,6 +3587,7 @@ mod stop_proof_tests {
         let handle = CodexHandle {
             binary: PathBuf::from(BINARY),
             cwd: PathBuf::from(WORKSPACE),
+            model: Some(MODEL.to_owned()),
             events,
             evidence: None,
             threads: Arc::new(Mutex::new(vec![FIRST_THREAD.to_owned()])),
