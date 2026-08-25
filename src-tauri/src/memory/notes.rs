@@ -534,6 +534,20 @@ pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) 
     record(root, draft, agent, None, None)
 }
 
+/// Zapisuje właścicielską kandydatkę razem z pełnym ciałem źródłowego Markdownu.
+///
+/// Szkielet T-124 jest celowo wykonywalny i czerwony: targety akceptacyjne mają dojść do
+/// zachowania, którego jeszcze nie ma, zamiast zatrzymać się na brakującym symbolu podczas
+/// kompilacji. Implementacja zastąpi `todo!()` atomowym zapisem w katalogu celu.
+pub fn record_candidate_for_with_body(
+    _root: &Path,
+    _draft: NoteDraft,
+    _agent: &str,
+    _body: &str,
+) -> Result<Note> {
+    todo!("T-124 owner-aware full-body note write")
+}
+
 /// Zapisuje kandydatkę, którą zgłosił **bieg** — z jego identyfikatorem w polu `from`.
 ///
 /// 2026-08-23 (T-92). Osobne wejście, a nie czwarty argument [`record_candidate_for`] i nie pole
