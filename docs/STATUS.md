@@ -4,6 +4,36 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 00:57 — T-125 ZAMKNIĘTE; T-126 przejmuje H14 bez pięciosekundowej pułapki
+
+**T-125 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 01 min 49 s · $0,00
+widoczne.** Dwie porównywalnie zapisane tury Codeksa zużyły co najmniej 28,80 mln tokenów
+wejścia i 96,8 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu
+tokenów. Enforced `before` uczciwie certyfikowało cztery nowe targety: 5/5 kontroli w 11,30 s,
+a AC-2 padło dopiero po zamontowaniu prawdziwej aplikacji w Chromium.
+
+Pierwsza pełna bramka miała **16/20** w 27,11 s. AC-2 i AC-4 były zielone, ale pełny clippy
+odrzucił podobne nazwy, AC-1 nie znalazło oczekiwanej kandydatki, a AC-3 zakończyło się
+`ENOENT`. Recenzent znalazł cztery zasadne luki: exact-once wracało przed oknem na opóźniony
+duplikat, Stop ufał fikcyjnemu `Dead` bez supervisora, budżet można było rozpoznać po promptcie,
+a kompatybilność starego `run.json` sprawdzała tylko brak błędu.
+
+Jedyna naprawa w `6b72e1a` dodała okno obserwacji, neutralne prompty, supervisor-backed Stop
+i pełniejsze asercje historii. Autorytatywna bramka pozostała **15/20** w 60,14 s. AC-3 i
+AC-4 były zielone. AC-1 skanowało `<home>/memory/notes`, choć `scan_notes` samo dopisuje
+`notes/`, więc test czytał `notes/notes`; receipt produktu już miał `kept:1`,
+`dropped_without_reason:1` i koszt. Wszystkie sześć scen AC-2 czekało stałe 6 sekund przy
+domyślnym limicie Vitest 5 sekund. Pełny clippy znalazł ścisłe porównanie `f64`, a formatter
+złą kolejność importów. To są błędy wyroczni po jedynej rundzie, nie mandat do piątej tury.
+
+Gałąź `task-T-125` jest czysta na `6b72e1a`, lecz nie wolno jej lądować ani wznawiać.
+Świeże **T-126** startuje z `main`, nie przenosi kodu, commitów, speców ani testów T-125.
+Skanuje prawidłowy korzeń `<home>/memory`, polluje pierwsze IPC najwyżej 4 sekundy, potem
+obserwuje co najmniej 300 ms ciszy przy jawnym limicie testu ≥15 s, używa prawdziwego PGID i
+`ESRCH`, identycznych neutralnych promptów, tolerancji `f64` oraz zachowuje id, status i kroki
+starego biegu. T-109 i następca pamięci czekają na wylądowanie T-126; operacyjnie dalej
+Codex + Codex.
+
 ## 2026-08-25, 23:46 — T-123 ZAMKNIĘTE; T-125 przejmuje H14 z prawdziwym efektem przeglądarki
 
 **T-123 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 53 min 51 s · $0,00 widoczne.**

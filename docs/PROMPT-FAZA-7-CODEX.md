@@ -1,13 +1,13 @@
-# Prompt orchestratora — faza 7 (T-125 następne; czternaście zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-126 następne; piętnaście zadań zamkniętych)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**czternaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma dwadzieścia osiem
-numerów: T-98…T-125, z których T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116,
-T-117, T-118, T-119, T-120, T-122 i T-123 zostały zamknięte bez lądowania.
+**czternaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma dwadzieścia dziewięć
+numerów: T-98…T-126, z których T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116,
+T-117, T-118, T-119, T-120, T-122, T-123 i T-125 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -28,9 +28,11 @@ pełnym świeżym zastępstwem z deterministyczną mutacją atomowej podmiany.
 T-124 wylądowało z pełnym Markdownem, właścicielem, atomowym persist i fsync katalogu;
 T-123 następnie przeszło pierwszą bramkę 20/20, ale recenzent wykazał martwą wyrocznię efektu
 żądania edytora i brak późnego Stop. Jedyna naprawa domknęła Stop, lecz pełny clippy odrzucił
-116-wierszową funkcję; T-123 zamknięto 19/20. Świeże T-125 przejmuje H14 z prawdziwym
-browserowym oracle i jest następnym biegiem.
-**Nie uruchamiaj T-109 ani T-104 przed wylądowaniem T-125.** Każdą zieloną gałąź lądujesz
+116-wierszową funkcję; T-123 zamknięto 19/20. T-125 przejęło H14 z prawdziwym browserowym
+oracle, ale po naprawie pozostało 15/20: zły korzeń `scan_notes`, sześć sekund oczekiwania
+pod limitem pięciu sekund, `float_cmp` i format. Świeże T-126 przejmuje H14 bez tych wad i
+jest następnym biegiem.
+**Nie uruchamiaj T-109 ani T-104 przed wylądowaniem T-126.** Każdą zieloną gałąź lądujesz
 osobno na `main`.
 
 ---
@@ -46,7 +48,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-125.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116, T-117, T-118, T-119, T-120, T-122 i T-123 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-126.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -210,6 +212,15 @@ ogranicza dotknięte funkcje produkcyjne do 100 wierszy. T-125 startuje z aktual
 nie przenosi niczego z `task-T-123`. Przed commitem uruchom wyłącznie
 `python3 harness/task-spine.py`, nie bramkę produktu.
 
+Osiemnasty commit kontraktowy zapisuje `T-125 ZAMKNIĘTE`: enforced `before` było uczciwe,
+recenzent znalazł cztery prawdziwe luki, a po jedynej naprawie autorytatywna bramka miała
+15/20. AC-1 podawało `scan_notes` podwójny katalog `notes`, AC-2 czekało 6 sekund pod
+domyślnym limitem 5 sekund, pełny clippy znalazł `float_cmp`, a formatter importy. Dodaje
+`tasks/T-126.md` z czterema nowymi targetami, prawdziwym PGID/`ESRCH`, neutralnymi promptami,
+oknem obserwacji późnego duplikatu i pełną kontrolą starej historii. T-126 startuje z
+aktualnego `main` i nie przenosi niczego z `task-T-125`. Przed commitem uruchom wyłącznie
+`python3 harness/task-spine.py`, nie bramkę produktu.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -221,10 +232,10 @@ drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. 
 samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania; T-114 ma zgodę,
 osobny fix harnessu jest w trunku i musi poprzedzić T-100.
 Dodane po żywym biegu T-109 ma
-zależność semantyczną od gotowej refleksji i idzie po T-125. Cała reszta dzieli `commands/run.rs`,
+zależność semantyczną od gotowej refleksji i idzie po T-126. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 T-114, T-100, T-101, T-115, T-121 i T-124 wylądowały. T-102, T-103, T-116, T-117, T-118,
-T-119, T-120, T-122 i T-123 zamknięto bez lądowania; T-125 jest następnym biegiem.
+T-119, T-120, T-122, T-123 i T-125 zamknięto bez lądowania; T-126 jest następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
@@ -249,12 +260,13 @@ T-119, T-120, T-122 i T-123 zamknięto bez lądowania; T-125 jest następnym bie
 | 6h | **ZAMKNIĘTE:** T-122, nie ląduj i nie wznawiaj | drugi lint po jedynej naprawie; wyrocznia przepuszczała copy-over |
 | 6i | **WYKONANE:** T-124 w trunku | pełne zastępstwo H15 z deterministyczną atomową podmianą |
 | 6j | **ZAMKNIĘTE:** T-123, nie ląduj i nie wznawiaj | 19/20; martwa wyrocznia efektu i 116-wierszowa funkcja po naprawie |
-| 6k | `./ship-task.sh T-125 --agent codex --reviewer codex` | H14 po T-121/T-124, z browserowym oracle i późnym Stop |
-| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-125; izolacja obejmuje też refleksję |
-| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-124/T-125 |
+| 6k | **ZAMKNIĘTE:** T-125, nie ląduj i nie wznawiaj | 15/20; zły korzeń skanu, timeout 6 s/5 s, `float_cmp` i format |
+| 6l | `./ship-task.sh T-126 --agent codex --reviewer codex` | świeży H14 po T-121/T-124, bez kodu lub speców T-125 |
+| 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-126; izolacja obejmuje też refleksję |
+| 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-124/T-126; przed startem zastąpić stary kontrakt świeżym |
 | 9 | `./ship-task.sh T-106 --agent codex --reviewer codex` | `run.rs` po T-104 |
 | 10 | `./ship-task.sh T-108 --agent codex --reviewer codex` | `recovery.rs` po T-106, `notes.rs` po T-104 |
-| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-125 i T-109; musi być ostatnie |
+| 11 | `./ship-task.sh T-107 --agent codex --reviewer codex` | sądzi zachowanie z T-100, T-126 i T-109; musi być ostatnie; stary kontrakt wymaga świeżego następcy |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

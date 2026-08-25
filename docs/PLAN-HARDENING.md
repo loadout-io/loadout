@@ -87,7 +87,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H11 | Potomkowie kroku zatrzymanego budżetem lądują `cancelled` bez powodu | **T-101** |
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
-| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-125** (T-103/T-116/T-117/T-118/T-119/T-120/T-123 zamknięte) |
+| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
@@ -116,12 +116,12 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-124, T-125 | tak (skan) | 5 |
+| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-124, T-126 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
-| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-125 | nie | 3 |
+| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-126 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
@@ -137,7 +137,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-122 | **ZAMKNIĘTE:** dwa kolejne lity helperów po jedynej naprawie; copy-over przechodziło wyrocznię | T-121 | tak | 2 |
 | T-123 | **ZAMKNIĘTE:** 19/20 po naprawie; martwa wyrocznia efektu i 116-wierszowa funkcja | T-121, T-124 | tak | 4 |
 | T-124 | **WYLANDOWAŁO:** auto-pamięć kroku, pełny Markdown i trwały atomowy persist | T-121 | tak | 3 |
-| T-125 | Refleksja prywatna z późnym Stop i trzema drogami sprawdzonymi w Chromium | T-121, T-124 | tak | 4 |
+| T-125 | **ZAMKNIĘTE:** 15/20 po naprawie; zły korzeń skanu, timeout 6 s/5 s, `float_cmp` i format | T-121, T-124 | tak | 4 |
+| T-126 | Refleksja prywatna z fizycznym PGID, bieżącym budżetem i trzema stabilnymi drogami w Chromium | T-121, T-124 | tak | 4 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -314,6 +315,19 @@ commitów, implementacji, speców lub testów.
   dowodzi śmierci grupy. Wyłączenie i `left_nothing` także dają `ran:false`; tryb klona, nie
   model, przydziela budżet. Dotknięte funkcje produkcyjne mają najwyżej 100 wierszy.
 
+**T-125 — ZAMKNIĘTE, bez lądowania.** Po jedynej naprawie AC-3 i AC-4 były zielone, lecz
+autorytatywna bramka miała 15/20. AC-1 użyło `scan_notes(<home>/memory/notes)` zamiast
+`scan_notes(<home>/memory)`, wszystkie sześć scen AC-2 czekało 6 sekund pod pięciosekundowym
+limitem Vitest, pełny clippy znalazł ścisłe porównanie `f64`, a formatter kolejność importów.
+Gałąź zostaje dowodem, nie źródłem commitów, implementacji, speców lub testów.
+
+**T-126 — H14 po wylądowaniu T-121/T-124; świeży następca T-125.** Zachowuje mocniejsze
+uwagi recenzenta T-125, lecz ma cztery nowe targety. Skanuje korzeń pamięci bez podwójnego
+`notes`, obserwuje pierwsze IPC do 4 sekund i późne duplikaty przez co najmniej 300 ms pod
+jawnym limitem ≥15 s, dowodzi Stopu prawdziwym PGID i `ESRCH`, rozróżnia tryb stanem klona
+przy identycznych promptach, porównuje `f64` tolerancją i sprawdza zachowane pola starej
+historii. Nie przenosi niczego z zamkniętej gałęzi.
+
 **T-104 — pamięć (D-2 = TAK: drugi korzeń).**
 - `<repo>/.loadout/memory/` dla `this-project`: `notes_root` dostaje wariant projektowy,
   `what_the_agents_know` skanuje dwa korzenie, refleksja pisze kandydatki `this-project`
@@ -391,16 +405,16 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121 i T-124 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119, T-120, T-122 i T-123 są zamknięte, T-125 jest następne.**
+- **T-114, T-100, T-101, T-115, T-121 i T-124 wylądowały; T-102, T-103, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są zamknięte, T-126 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
-  H15 po zamkniętym T-122, a T-125 przejmuje H14 po zamkniętym T-123.
+  H15 po zamkniętym T-122, a T-126 przejmuje H14 po zamkniętych T-123 i T-125.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-104 → T-106`.
-- **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-125 zapisuje rachunek do pliku,
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-104 → T-106`.
+- **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
-  wylądowało, a teraz T-125 idzie samo przez `run.rs`.
-- **T-109 po T-125**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
+  wylądowało, T-125 zamknięto, a teraz T-126 idzie samo przez `run.rs`.
+- **T-109 po T-126**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
@@ -409,7 +423,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
   T-114 po T-98 (`workflow/check.rs`), T-115 po T-111 (`codex.rs`),
-  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-125);
+  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-126);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
   (sprawdzone w fazie 5). `LOADOUT_CARGO_LOCK_WAIT=2400`, gdy równolegle biegnie więcej niż
