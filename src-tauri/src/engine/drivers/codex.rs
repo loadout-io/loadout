@@ -3189,6 +3189,8 @@ mod app_server_pricing_tests {
 
     #[test]
     fn selected_model_reaches_app_server_pricing_and_unknown_notice() {
+        const UNKNOWN_MODEL: &str = "gpt-9.9-nebula";
+
         let priced = completed_turn("gpt-5.6-terra-2026-08-25");
         let Some(AgentEvent::Finished(priced_outcome)) = priced.last() else {
             assert!(
@@ -3201,7 +3203,6 @@ mod app_server_pricing_tests {
         assert_eq!(priced_outcome.tokens, TOKENS);
         assert_eq!(priced_outcome.cost_usd, Some(0.261));
 
-        const UNKNOWN_MODEL: &str = "gpt-9.9-nebula";
         let unknown = completed_turn(UNKNOWN_MODEL);
         assert!(
             matches!(
