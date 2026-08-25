@@ -779,6 +779,16 @@ pub trait AgentDriver: Send + Sync {
         Vec::new()
     }
 
+    /// Czy TEN vendor przenosi [`RunSpec::extra_dirs`] do katalogu pracy kroku.
+    ///
+    /// Sygnatura istnieje w fazie `before`, żeby kryterium T-115 mogło uruchomić prawdziwe
+    /// składanie promptu. Ciało jest celowo `todo!()`: wartość domyślna i jawna odpowiedź
+    /// Codeksa są zachowaniem implementacyjnym, więc szkielet nie może ich zgadnąć i przypadkiem
+    /// zazielenić kryterium.
+    fn carries_extra_dirs(&self) -> bool {
+        todo!("T-115 decides which drivers carry extra directories")
+    }
+
     /// Czy TEN vendor w ogóle umie zawęzić agentowi listę narzędzi.
     ///
     /// # Po co to stoi na traicie (2026-08-24, T-97)
