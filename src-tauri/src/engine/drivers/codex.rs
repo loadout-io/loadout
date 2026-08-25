@@ -3188,16 +3188,14 @@ mod app_server_pricing_tests {
     }
 
     #[test]
-    fn selected_model_reaches_app_server_pricing_and_unknown_notice() {
+    fn selected_model_reaches_app_server_pricing_and_unknown_notice() -> Result<(), String> {
         const UNKNOWN_MODEL: &str = "gpt-9.9-nebula";
 
         let priced = completed_turn("gpt-5.6-terra-2026-08-25");
         let Some(AgentEvent::Finished(priced_outcome)) = priced.last() else {
-            assert!(
-                false,
+            return Err(format!(
                 "the priced App Server turn did not finish: {priced:?}"
-            );
-            return;
+            ));
         };
         assert_eq!(priced.len(), 1, "a known price must not emit a warning");
         assert_eq!(priced_outcome.tokens, TOKENS);
@@ -3212,14 +3210,13 @@ mod app_server_pricing_tests {
             "the App Server turn did not name its unknown model: {unknown:?}"
         );
         let Some(AgentEvent::Finished(unknown_outcome)) = unknown.last() else {
-            assert!(
-                false,
+            return Err(format!(
                 "the unknown-price App Server turn did not finish: {unknown:?}"
-            );
-            return;
+            ));
         };
         assert_eq!(unknown_outcome.tokens, TOKENS);
         assert_eq!(unknown_outcome.cost_usd, None);
+        Ok(())
     }
 }
 
