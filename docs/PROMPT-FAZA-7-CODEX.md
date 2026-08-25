@@ -1,16 +1,18 @@
-# Prompt orchestratora — faza 7 (T-114 następne; pięć zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-115 następne; sześć zadań zamkniętych)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma siedemnaście numerów:
-T-98…T-114, z których T-105, T-110, T-99, T-112 i T-113 zostały zamknięte bez lądowania.
+**dwanaście lądowań fazy 7** w kolejności z §4 tego pliku. Rejestr ma osiemnaście numerów:
+T-98…T-115, z których T-105, T-110, T-99, T-112, T-113 i T-102 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
-pochodzenia wznowionego pliku. **Nie uruchamiaj T-100 przed wylądowaniem T-114.** Każdą
-zieloną gałąź lądujesz osobno na `main`.
+pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
+zostało zamknięte po dwóch nierozstrzygniętych lukach wyroczni; T-115 jest jego pełnym
+zastępstwem. **Nie uruchamiaj T-103 przed wylądowaniem T-115.** Każdą zieloną gałąź lądujesz
+osobno na `main`.
 
 ---
 
@@ -25,7 +27,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-114.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112 i T-113 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-115.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113 i T-102 są historycznymi zamknięciami |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -111,6 +113,13 @@ commitów ze starej gałęzi i ma sześć nowych ścieżek. AC-3 osobno asertuje
 (`what the step before left`) oraz plik przeniesiony ze starego biegu
 (`what an earlier run left here`); oba dostają adres pełnej kopii w bieżącym biegu.
 
+Dziewiąty commit kontraktowy zapisuje T-102 jako zielone, lecz niewylądowane: recenzent
+wykazał, że równe liczniki tokenów nie odróżniają kolumn cen Terra/Luna, a ekran z jednym
+płatnym krokiem nie dowodzi sumy obu vendorów. Dodaje `tasks/T-115.md` z czterema nowymi
+ścieżkami. T-115 startuje z aktualnego `main`, nie przenosi commitów, implementacji ani testów
+z `task-T-102`; każdy znany model dostaje nierówne liczniki, a prawdziwy ekran co najmniej dwa
+różne koszty. Przed commitem uruchom wyłącznie `python3 harness/task-spine.py`.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -124,20 +133,22 @@ osobny fix harnessu jest w trunku i musi poprzedzić T-100.
 Dodane po żywym biegu T-109 ma
 zależność semantyczną od T-103 i idzie po nim. Cała reszta dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
+T-114, T-100 i T-101 wylądowały. T-102 zamknięto bez lądowania; T-115 jest następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
 | 1a ∥ 1b | **WYKONANE:** T-98 w trunku; T-105 **ZAMKNIĘTE**, nie wznawiaj | AC-3 T-105 wymagało flagi odrzucanej przez App Server |
 | 1c | **WYKONANE:** T-110 **ZAMKNIĘTE**, nie wznawiaj | pełna bramka wymagała fikstury App Servera spoza OWNS |
-| 1d | **WYKONANE:** T-111 w trunku | pełne zastępstwo T-105/T-110; poprzedza T-102 |
+| 1d | **WYKONANE:** T-111 w trunku | pełne zastępstwo T-105/T-110; poprzedza T-115 |
 | 2 | **ZAMKNIĘTE:** T-99, nie wznawiaj | sprzeczny wskaźnik i dwa błędy tekstu kryteriów |
 | 2b | **ZAMKNIĘTE:** T-112, nie ląduj i nie wznawiaj | fałszywy certyfikat `before`; AC-1 pomija kolizję refów |
 | 2c | **ZAMKNIĘTE:** T-113, nie ląduj i nie wznawiaj | spec AC-3 fałszował pochodzenie po wznowieniu |
-| 2d | `./ship-task.sh T-114 --agent codex --reviewer codex` | pełne zastępstwo z sześcioma nowymi specami |
-| 3 | `./ship-task.sh T-100 --agent codex --reviewer codex` | dopiero po wylądowaniu T-114 |
-| 4 | `./ship-task.sh T-101 --agent codex --reviewer codex` | `run.rs` po T-100 |
-| 5 | `./ship-task.sh T-102 --agent codex --reviewer codex` | `run.rs` po T-101 **i** `codex.rs` po T-111 |
-| 6 | `./ship-task.sh T-103 --agent codex --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-102 |
+| 2d | **WYKONANE:** T-114 w trunku | pełne zastępstwo z sześcioma nowymi specami |
+| 3 | **WYKONANE:** T-100 w trunku | po T-114 |
+| 4 | **WYKONANE:** T-101 w trunku | `run.rs` po T-100 |
+| 5 | **ZAMKNIĘTE:** T-102, nie ląduj i nie wznawiaj | zielone testy nie odróżniały kolumn cen ani sumy dwóch kroków |
+| 5b | `./ship-task.sh T-115 --agent codex --reviewer codex` | pełne zastępstwo T-102 z czterema nowymi specami |
+| 6 | `./ship-task.sh T-103 --agent codex --reviewer codex` | `run.rs`, `drivers/mod.rs` po T-115 |
 | 7 | `./ship-task.sh T-109 --agent codex --reviewer codex` | `claude.rs` po T-103; izolacja obejmuje też refleksję |
 | 8 | `./ship-task.sh T-104 --agent codex --reviewer codex` | `run.rs`, `memory/notes.rs` po T-103 |
 | 9 | `./ship-task.sh T-106 --agent codex --reviewer codex` | `run.rs` po T-104 |

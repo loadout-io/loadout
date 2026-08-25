@@ -4,6 +4,15 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 02:25 — właściciel zatwierdził pełne zastępstwo T-102
+
+Jawne „ok” właściciela uruchamia wyjątek authoringu dla **T-115**. Nowy kontrakt startuje
+z czystego `main`, nie przenosi gałęzi, implementacji ani speców T-102 i ma cztery globalnie
+unikalne ścieżki testów. Cennik każdego znanego modelu dostaje nierówne liczniki 10k/5k/20k,
+więc zamiana wejścia, cache lub wyjścia jest czerwona; prawdziwy ekran dostaje co najmniej
+dwa niezerowe koszty różnych vendorów i musi pokazać ich sumę, nie jeden operand. T-115 musi
+wylądować przed T-103. Operacyjna para pozostaje Codex + Codex na osobnych modelach.
+
 ## 2026-08-25, 02:24 — T-102 zielone, lecz NIEWYLĄDOWANE; dwie uwagi wyroczni zostały otwarte
 
 **T-102 · formalnie zielone 20/20, lecz NIEWYLĄDOWANE · 38 min 53 s · $0,00 widoczne.**

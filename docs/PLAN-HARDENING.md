@@ -77,7 +77,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H1 | `RESERVED_CLAUDE` bez `--settings --add-dir --mcp-config --plugin-dir --tools --allowedTools --disallowedTools --append-system-prompt --max-budget-usd --resume --continue --agents --permission-prompt-tool`; `RESERVED_CODEX` bez `sandbox_mode`, `sandbox_workspace_write.*`, `approval_policy`, `mcp_servers.*`, `model_provider(s)`; filtr eskalacji = trzy podciągi | **T-98** |
 | H2 | Kolizja przelotki z `--max-budget-usd` (dług T-94) | **T-98** |
 | H3 | K1: `copies>1` + `fresh-copy` w repo gitowym nie startuje — gałąź z `tile_key` (`run.rs:3815`), katalog z `work_key_for` | **T-114** (T-99/T-112/T-113 zamknięte) |
-| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **T-114**, **T-102** (zdanie dla Codeksa), pomiar w **T-107** |
+| H4 | K2 (resztka): wskaźnik `Moved to attachments/…` względny wobec katalogu biegu, nierozwiązywalny z `work/<kafelek>`; Codex bez `--add-dir` w ogóle | **T-114**, **T-115** (T-102 zamknięte; zdanie dla Codeksa), pomiar w **T-107** |
 | H5 | K4/K11: pusta udana odpowiedź = przekazanie z trzema pustymi sekcjami, bez sygnału w indeksie | **T-114** |
 | H6 | Werdykt = jedna literalna linia prozy; zmierzone 21× fail / 3× pass; „PASS" w nagłówku = fail | **T-100** |
 | H7 | K3: sędzia nie widzi wcześniejszych prób implementera (`run.rs:7764-7767`) | **T-100** |
@@ -86,7 +86,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H10 | `CONTEXT_NOT_PROVEN` omija `when_this_one_fails` (dług po T-87 AC-5) | **T-101** |
 | H11 | Potomkowie kroku zatrzymanego budżetem lądują `cancelled` bez powodu | **T-101** |
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
-| H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-102** |
+| H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-103** |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-103** |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
@@ -100,7 +100,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
 | H26 | Docs: ARCHITECTURE §4/§5/§6b/§8 rozjechane z kodem | **§5** po ostatnim lądowaniu |
-| H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-102** |
+| H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-115** (T-102 zamknięte) |
 | H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-114** |
 | H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-109** |
 
@@ -114,11 +114,11 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-99 | **ZAMKNIĘTE:** sprzeczny wskaźnik i dwa błędy tekstu kryteriów | — | tak | 4 |
 | T-100 | Werdykt jest polem, sędzia widzi próby | T-114 | tak | 4 |
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
-| T-102 | Wydatki są analityką: koszt obu vendorów policzony i pokazany | T-101, T-111 (wspólny `codex.rs`) | tak | 4 |
-| T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-102 | tak | 5 |
+| T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
+| T-103 | Refleksja audytowalna, oszczędna i wyłączalna | T-115 | tak | 5 |
 | T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-103 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
-| T-106 | Zatrzymanie ma sufit i eskalację | T-102 | tak | 3 |
+| T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
 | T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-103 | nie | 3 |
@@ -127,6 +127,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
 | T-113 | **ZAMKNIĘTE:** spec wznowienia fałszował etykietę pochodzenia | — | tak | 6 |
 | T-114 | Kopie: poprawne i niekolizyjne refy; prawdziwe pochodzenie i trwała decyzja | — (zastępuje T-99/T-112/T-113) | tak | 6 |
+| T-115 | Wydatki obu vendorów z rozróżnialnym cennikiem i prawdziwą sumą na ekranie | — (zastępuje T-102) | tak | 4 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -194,12 +195,22 @@ są dowodem, nigdy źródłem commitów lub speców.
   (`run.rs:6438-6454`; kod ma dogonić własny komentarz z `run.rs:8139-8144`).
 - Testy z krokiem PONIŻEJ zatrzymanego (dzisiejsza fikstura go nie ma).
 
-**T-102 — wydatki jako analityka (kształt z D-5: łagodnie).**
+**T-102 — ZAMKNIĘTE, bez lądowania.** Formalna bramka była zielona 20/20, lecz równe
+liczniki wejścia/cache/wyjścia dla Terra i Luna nie wykrywały zamiany stawek, a ekranowa
+wyrocznia z jednym płatnym krokiem nie odróżniała sumy od pierwszej lub ostatniej kwoty.
+Jedyna naprawa poprawiła lint i odmówiła wzmocnienia zamrożonych speców. Gałąź jest dowodem,
+nie źródłem commitów, implementacji ani testów.
+
+**T-115 — pełne zastępstwo T-102 (kształt z D-5: łagodnie).** Startuje z aktualnego trunka
+i ma cztery nowe, globalnie unikalne ścieżki wyroczni.
 - Codex: `cost_usd` szacowany z tokenów po tabeli cen w jednej stałej (wejście/wyjście/cache,
   po prefiksie modelu; nieznany model → tokeny bez dolarów + zdanie w `run.json`). Szacunek
   oznaczony jako szacunek (osobne pole, nie udawany pomiar).
+- Każdy znany model dostaje nierówne 10k/5k/20k tokenów; test osobno wymaga Sol `$0.442`,
+  Terra `$0.261` i Luna `$0.0261`, więc zamiana kolumn nie zachowuje zieleni.
 - Pasek wydatków POKAZANY: `index.tsx` woła `stripFor` z trzecim argumentem (H27); bez
-  ustawionego budżetu pasek pokazuje samą sumę wydatków biegu.
+  ustawionego budżetu pasek pokazuje samą sumę wydatków biegu. Prawdziwy ekran dostaje co
+  najmniej dwa płatne kroki różnych vendorów i musi pokazać ich sumę, nie jeden z operandów.
 - Zachowanie budżetu bez zmian: twardy stop tylko gdy człowiek jawnie ustawił kwotę przy
   Starcie; wzoru ×N nie ruszamy, miękkość zapisana w docs (§5).
 - Kroki Codeksa dostają w indeksie przekazań zdanie, że pliki leżą poza cwd i czyta się je
@@ -251,7 +262,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   `ThreadStartParams.config` są konwertowane JSON→TOML i dokładane po CLI; referencja definiuje
   `mcp_servers.<id>.enabled`. Wszystkie stare pełne fikstury odpowiadają na nowy krok protokołu.
 - OWNS: `engine/drivers/codex.rs`, współdzielony encoder klucza, runtime Connections, obie
-  pełne fikstury App Servera i unikalne testy; bez `run.rs`. Musi wylądować przed T-102.
+  pełne fikstury App Servera i unikalne testy; bez `run.rs`. Musi wylądować przed T-115.
 - Pułapka słownictwa: treść błędu vendora wchodzi do zdania w RUNTIME (interpolacja), nie
   jako literał w kodzie — literały zdania trzymać w dzisiejszej rodzinie.
 
@@ -291,12 +302,11 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-111 wylądowało; T-99, T-112 i T-113 zamknięte; T-114 jest następne.** Nie wznawiać
-  starych gałęzi ani nie przenosić ich testów lub commitów. Fałszywy certyfikat `before`
-  naprawił osobny commit `5604c3d`; T-114 ma sześć nowych speców, w tym rozdzielone etykiety
-  pierwszej dostawy i wznowienia.
+- **T-114, T-100 i T-101 wylądowały; T-102 jest zamknięte, T-115 jest następne.** Nie
+  wznawiać `task-T-102` ani nie przenosić jego testów, implementacji lub commitów. T-115 ma
+  cztery nowe specy i naprawia obie luki wyroczni znalezione przez recenzenta.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 → T-103 → T-104 → T-106`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 → T-104 → T-106`.
 - **T-109 po T-103**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
@@ -305,7 +315,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   naprawił `5604c3d`, a T-114 ma zgodę właściciela. Wszystko dalej
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
-  T-114 po T-98 (`workflow/check.rs`), T-102 po T-111 (`codex.rs`),
+  T-114 po T-98 (`workflow/check.rs`), T-115 po T-111 (`codex.rs`),
   **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-103);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
