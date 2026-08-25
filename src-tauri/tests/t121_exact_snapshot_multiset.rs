@@ -22,7 +22,10 @@ const OLD_LOG: &str = concat!(
     r#"{"type":"alpha","message":"old-first"}"#,
     "\n",
 );
+// 2026-08-25: the repeated full line makes multiplicity observable, not just row identity.
 const NEW_LOG: &str = concat!(
+    r#"{"type":"zulu","message":"new-last"}"#,
+    "\n",
     r#"{"type":"zulu","message":"new-last"}"#,
     "\n",
     r#"{"type":"alpha","message":"new-first"}"#,
