@@ -601,6 +601,21 @@ pub async fn run_workflow_with_budget(
     the_whole_workflow(deps, request, lines, slots, budget_usd).await
 }
 
+/// Ten sam bieg z jawnym wyborem, czy po jego końcu Loadout bierze prywatną turę refleksji.
+///
+/// Sygnatura powstaje w fazie specyfikacji T-126, żeby kryteria kompilowały się i padały na
+/// brakującym zachowaniu. Stare wejścia zostają nietknięte: ich domyślne zachowanie i cudze
+/// kryteria nie mogą zależeć od nowego argumentu.
+pub async fn run_workflow_with_reflection(
+    _deps: &RunDeps<'_>,
+    _request: &RunRequest,
+    _lines: LineSink,
+    _budget_usd: Option<f64>,
+    _reflection_enabled: bool,
+) -> Result<RunReport, RunError> {
+    todo!("T-126: carry the reflection choice through the real run")
+}
+
 /// Pula miejsc, z której ma brać TEN bieg — jedna na całą aplikację, nie jedna na bieg.
 ///
 /// Uchwyt przychodzi z [`RunDeps`], czyli z tego, co aplikacja wręczyła temu biegowi
