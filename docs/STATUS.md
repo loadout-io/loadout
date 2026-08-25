@@ -4,6 +4,36 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 19:43 — T-119 ZAMKNIĘTE: fizyczny UUID, zakres i higiena pełnej bramki
+
+**T-119 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 06 min 19 s · $0,00
+widoczne.** Dwie porównywalnie zapisane części biegu zużyły co najmniej 21,12 mln tokenów
+wejścia i 78,8 tys. wyjścia; recenzja, plan i wykonanie naprawy nie zostawiły kompletnego,
+porównywalnego paragonu. Enforced `before` uczciwie certyfikowało sześć nowych targetów:
+7/7 kontroli w 1,29 s.
+
+Pierwsza pełna bramka miała **12/22** w 53,16 s: szkielety zachowania pozostały niewykonane.
+Recenzent znalazł trzy zasadne luki wyroczni: AC-3 nie dowodziło domyślnego zaznaczenia przed
+pierwszą zmianą, AC-2 wymagało nowego artefaktu bez jawnej nieobecności starego, a AC-6
+zgadywało nazwy plików tymczasowych zamiast porównać pełny listing katalogu. Planner poprawnie
+przeniósł te uwagi do jedynej naprawy, lecz wskazał też trzy produkcyjne trasy Startu poza
+zamrożonym `OWNS`; orchestrator jawnie ostrzegł, że nie wolno ich dotknąć.
+
+Naprawa doprowadziła AC-2…AC-6 do zieleni. Końcowa bramka na czystym `dcf0d5c` miała
+**17/22** w 20,70 s. AC-1 użyło logicznego klucza workflow `build` jako nazwy pliku evidence,
+choć wylądowany kontrakt `run_evidence_reaches_the_product.rs` używa fizycznego UUID kroku z
+`run.json`. Pełny clippy odrzucił 123-wierszową funkcję nowego testu, formatter odrzucił nowy
+test TS, a `quick-scope` wykazał zmiany `launch.ts`, `requested-launch.ts` i `run-command.ts`
+poza `OWNS`. `full-test` agregował błąd AC-1; pozostałe testy systemu były zielone.
+
+Gałęzi `task-T-119` nie wolno lądować ani wznawiać; `main` nie dostał jej kodu. Jawna zgoda
+właściciela na cały plan autoryzuje świeże **T-120** z sześcioma globalnie unikalnymi
+targetami. Nowy kontrakt wyprowadza oczekiwane evidence z fizycznego UUID w prawdziwym
+`run.json`, obejmuje wszystkie trzy trasy Startu w `OWNS`, wymaga formattera, ogranicza każdą
+funkcję nowego testu rustowego do 90 wierszy i od początku zamyka wszystkie trzy uwagi
+recenzenta. Nie przenosi commitów, implementacji, speców ani testów z T-119. T-120 musi
+wylądować przed T-109 i T-104; operacyjna para pozostaje Codex + Codex.
+
 ## 2026-08-25, 18:35 — właściciel zatwierdził cały pozostały plan i zastępstwo T-118
 
 Jawne „wykonaj cały plan, możesz modyfikować zadania, masz god mode” uruchamia wyjątek
