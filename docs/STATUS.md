@@ -4,6 +4,22 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-25, 18:35 — właściciel zatwierdził cały pozostały plan i zastępstwo T-118
+
+Jawne „wykonaj cały plan, możesz modyfikować zadania, masz god mode” uruchamia wyjątek
+authoringu dla **T-119** i wszystkich koniecznych świeżych zastępstw. Kod produkcyjny nadal
+idzie wyłącznie przez `ship-task.sh`, a każda zielona gałąź osobno przez `integrate.sh`.
+Operacyjna para pozostaje Codex + Codex.
+
+T-119 startuje z czystego `main` i nie przenosi commitów, implementacji, speców ani testów z
+`task-T-118`. Sześć nowych targetów wpisuje od początku cztery uwagi recenzenta T-118 oraz
+poprawia jego błędną wyrocznię: AC-2 zmienia snapshot i wymusza rollback w połowie wymiany;
+AC-3 używa handlera toggle'a znalezionego w prawdziwym drzewie `Start`, a następnie uruchamia
+przycisk, `/run` i żądanie edytora; AC-4 składa kanoniczne nagłówki wyłącznie przez
+`Section::name()`; AC-5 daje zwykłemu krokowi dokładnie model refleksji; AC-6 dowodzi
+atomowości przez awarię tworzenia pliku tymczasowego i nietknięte stare bajty. T-119 musi
+wylądować przed T-109 i T-104.
+
 ## 2026-08-25, 18:24 — T-118 ZAMKNIĘTE: druga czerwień na błędnej wyroczni AC-4
 
 **T-118 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 12 min 07 s · $0,00

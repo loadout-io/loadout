@@ -87,8 +87,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H11 | Potomkowie kroku zatrzymanego budżetem lądują `cancelled` bez powodu | **T-101** |
 | H12 | Budżet ×N przy równoległości | **rozbrojone przez D-5**: budżet jest analityką; miękkość ×N przy jawnie ustawionej kwocie zapisać w docs (§5), bez zmiany wzoru |
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
-| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-118** (T-103/T-116/T-117 zamknięte) |
-| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-118** (T-103/T-116/T-117 zamknięte) |
+| H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-119** (T-103/T-116/T-117/T-118 zamknięte) |
+| H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-119** (T-103/T-116/T-117/T-118 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
 | H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
@@ -116,12 +116,12 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-118 | tak (skan) | 5 |
+| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-119 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
-| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-118 | nie | 3 |
+| T-109 | Prywatny stan procesu Claude'a bez utraty równoległości | T-119 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
 | T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
@@ -130,7 +130,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-115 | Wydatki obu vendorów z rozróżnialnym cennikiem i prawdziwą sumą na ekranie | — (zastępuje T-102) | tak | 4 |
 | T-116 | **ZAMKNIĘTE:** idempotentny Store poza OWNS, wada setupu AC-6 i cztery luki wyroczni | T-115 | tak | 6 |
 | T-117 | **ZAMKNIĘTE:** pierwsza bramka 19/22, martwa wyrocznia handlera, naprawa utracona na ENOSPC | T-115 | tak | 6 |
-| T-118 | Refleksja prywatna, audytowalna i sterowana prawdziwą kontrolką Startu | T-115 | tak | 6 |
+| T-118 | **ZAMKNIĘTE:** 20/22; AC-4 przepisało historyczne nagłówki zamiast kanonicznego formatu | T-115 | tak | 6 |
+| T-119 | Refleksja prywatna, audytowalna i sądzona przez kanoniczny format handoffu | T-115 | tak | 6 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -239,24 +240,33 @@ z drzewa `Start`. Planner rozpisał poprawną naprawę, ale wykonawca zginął n
 pierwszą zmianą; branch został czysty, a Harness nie ma piątej tury. Nie wznawiać ani nie
 przenosić commitów, implementacji lub speców.
 
-**T-118 — pełne zastępstwo refleksji (D-3: domyślnie włączona, wyłączalna, nie po anulowanym).**
+**T-118 — ZAMKNIĘTE, bez lądowania.** Końcowa bramka miała 20/22; pełny clippy, wszystkie
+quick checks oraz AC-1, AC-2, AC-3, AC-5 i AC-6 były zielone. Jedyny nowy test AC-4 wymagał
+historycznych nagłówków `What changed / Decisions / Open questions`, choć właściciel formatu
+eksportuje `Answer / Evidence / Open`. Zmiana produkcji byłaby oracle-specific hackiem, a po
+jedynej naprawie nie wolno poprawić wyroczni ani ponowić bramki. Nie wznawiać ani nie
+przenosić commitów, implementacji lub speców.
+
+**T-119 — pełne zastępstwo refleksji (D-3: domyślnie włączona, wyłączalna, nie po anulowanym).**
 - Sterownik refleksji przez `with_settings` (auto-pamięć do `<bieg>/mem/_reflection/` + deny
   gospodarza) i `with_evidence` (`logs/reflection.jsonl` + `input.json`).
 - Wynik (ile par, ile odrzuconych bez powodu, koszt) w `run.json` (pole addytywne).
 - Sufit kosztu ze stałej na turę; nie biegnie po biegu anulowanym; przełącznik przy Starcie
   (domyślnie włączona).
 - Przełącznik jest widoczny w prawdziwym panelu Startu; test wywołuje `Start`, znajduje
-  `ReflectionToggle` w zwróconym drzewie i dopiero z niego bierze `onChange`. Osobny helper,
-  setter lub element zbudowany obok drzewa nie jest dowodem.
+  `ReflectionToggle` w zwróconym drzewie i dopiero z niego bierze `onChange`. Tym wyborem
+  uruchamia prawdziwy przycisk, `/run` oraz żądanie z edytora i sprawdza każdy payload.
 - Awarie ustawień, evidence i sufitu osobno zostawiają `ran: false`; dokładny katalog dowodów
   odmawia także dodatkowego `reflection*`. Zwykły krok i refleksję test rozróżnia stanem klona,
   nie podciągiem promptu.
-- `Store::rebuild_from` tego samego biegu jest idempotentne przez jedynego pisarza i jedną
-  transakcję, bez `INSERT OR IGNORE`, zmiany id ani przepisywania `run.json`.
-- Udany pusty krok zachowuje prawdziwy handoff `left_nothing` dla następnego czytelnika, ale
-  nie uruchamia płatnej refleksji.
+- `Store::rebuild_from` po zmianie źródłowego snapshotu zastępuje stare wiersze przez jedynego
+  pisarza i jedną transakcję; wymuszony błąd w połowie zostawia cały poprzedni snapshot.
+- Udany pusty krok zachowuje prawdziwy handoff `left_nothing`; test składa nazwy sekcji z
+  `Section::name()`, nigdy z przepisanej listy, i nie uruchamia płatnej refleksji.
+- Zwykły krok używający dokładnie modelu refleksji nie dostaje jej budżetu — tryb, nie model,
+  jest jedynym rozróżnieniem.
 - Zbiór z `mem/<kafelek>/`: `rule` = pierwszy akapit, `because` z `**Why:**`, a pełne ciało
-  zapisuje atomowo `memory::notes`; zwykły Markdown zaczyna ciało w bajcie zero.
+  zapisuje atomowo `memory::notes`; odmowa utworzenia pliku tymczasowego zostawia stare bajty.
 
 **T-104 — pamięć (D-2 = TAK: drugi korzeń).**
 - `<repo>/.loadout/memory/` dla `this-project`: `notes_root` dostaje wariant projektowy,
@@ -335,13 +345,13 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101 i T-115 wylądowały; T-102, T-103, T-116 i T-117 są zamknięte, T-118 jest następne.**
+- **T-114, T-100, T-101 i T-115 wylądowały; T-102, T-103, T-116, T-117 i T-118 są zamknięte, T-119 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
-  T-118 ma sześć nowych speców, prawdziwy element kontrolki z drzewa `Start`, poprawny
-  `left_nothing` oraz atomowy zapis ciała przez właściciela formatu notatek.
+  T-119 ma sześć nowych speców, kanoniczne sekcje z `Section::name()`, trzy drogi Startu,
+  zmieniany snapshot i behawioralny dowód atomowego zapisu.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 (zamknięte) → T-116 (zamknięte) → T-117 (zamknięte) → T-118 → T-104 → T-106`.
-- **T-109 po T-118**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103 (zamknięte) → T-116 (zamknięte) → T-117 (zamknięte) → T-118 (zamknięte) → T-119 → T-104 → T-106`.
+- **T-109 po T-119**, bo refleksja ma korzystać z gotowego szwu ustawień; potem może wejść
   przed T-104. Nie wolno go przesunąć za T-107, bo żywa wyrocznia sądzi właśnie ten zapis.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
@@ -350,7 +360,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
   dzieli `run.rs`,
   `check.rs`, `codex.rs`, `drivers/mod.rs` albo `recovery.rs` i idzie szeregowo:
   T-114 po T-98 (`workflow/check.rs`), T-115 po T-111 (`codex.rs`),
-  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-118);
+  **T-108 po T-106** (`recovery.rs`), T-107 na końcu (sądzi zachowanie z T-100 i T-119);
   **T-108** po T-104; **T-107** po wszystkim.
 - Przy zajętym trunku wolno stackować: `FROM=` dla bazy, `LOADOUT_TRUNK=` dla zakresu
   (sprawdzone w fazie 5). `LOADOUT_CARGO_LOCK_WAIT=2400`, gdy równolegle biegnie więcej niż
