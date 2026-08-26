@@ -1510,6 +1510,7 @@ fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriv
     let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()?;
     let settings = crate::engine::drivers::StepSettings {
         dir: dir.to_path_buf(),
+        work_key: String::new(),
         memory: dir.join(STEP_MEMORY_DIR).join("_reflection"),
         deny: crate::engine::drivers::host::deny_rules(deps.project),
     };
@@ -7018,6 +7019,7 @@ impl Live {
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
         let wanted = crate::engine::drivers::StepSettings {
             dir: self.plan.dir.clone(),
+            work_key: String::new(),
             memory: self.step_memory_dir(id),
             // Z KATALOGU ROBOCZEGO KROKU, nie z katalogu projektu biegu: krok pracujący we
             // własnej kopii plików ma tam swoją kopię `.claude/`, a odmowy czyta się z tego

@@ -560,9 +560,10 @@ pub enum ImageError {
 
 /// Czego ten JEDEN krok potrzebuje w swoim pliku ustawień — opis, nie dokument.
 ///
-/// 2026-08-23 (T-92). Trzy pola, bo tyle wystarcza, żeby ten typ nie znał ani jednego vendora
-/// (nagłówek modułu): mówi, gdzie plik ma powstać, dokąd ma iść auto-pamięć tego kroku i czego
-/// gospodarz zabronił. Nazwy kluczy, liczba kluczy i nazwa flagi zostają w adapterze
+/// 2026-08-26 (T-127). Cztery pola wystarczają, żeby ten typ nie znał ani jednego vendora
+/// (nagłówek modułu): mówi, gdzie plik ma powstać, jak nazywa się fizyczna praca, dokąd ma iść
+/// auto-pamięć tego kroku i czego gospodarz zabronił. Nazwy kluczy dokumentu i flag zostają
+/// w adapterze
 /// (niezmiennik 23) — inaczej `permissions.deny` i `autoMemoryDirectory` stałyby wypisane
 /// w dwóch plikach, a rozjazd między nimi widać dopiero na rachunku za bieg.
 ///
@@ -581,6 +582,10 @@ pub struct StepSettings {
     /// Podaje go warstwa, która zna układ katalogów; sterownik miejsca sobie nie wybiera, bo
     /// wymyślone miejsce jest `$TMPDIR`, czyli artefaktem biegu poza biegiem.
     pub dir: PathBuf,
+    /// Vendor-neutralny klucz fizycznej pracy w tym biegu.
+    ///
+    /// Szkielet T-127: adapter Claude'a zacznie używać go dopiero w fazie implementacji.
+    pub work_key: String,
     /// Dokąd ma iść auto-pamięć tego kroku: `<katalog biegu>/mem/<krok>`.
     ///
     /// Per KROK, nie per bieg: dwa kroki jednego biegu bywają dwoma różnymi agentami, a wtedy
@@ -697,8 +702,9 @@ pub trait AgentDriver: Send + Sync {
     /// i [`AgentDriver::with_evidence`]: metoda na traicie z domyślnym `None`.
     ///
     /// **Argument opisuje potrzebę, nie plik.** [`StepSettings`] nie wie, jak nazywa się flaga
-    /// vendora, ile kluczy ma dokument ani gdzie w nim stoją — wie tylko, gdzie ten krok pracuje
-    /// i czego mu nie wolno. Gdyby wjechał tu gotowy `claude::RunSettings`, ten plik znałby
+    /// vendora, ile kluczy ma dokument ani gdzie w nim stoją — wie tylko, gdzie ten krok pracuje,
+    /// jak nazywa się jego fizyczna praca i czego mu nie wolno. Gdyby wjechał tu gotowy
+    /// `claude::RunSettings`, ten plik znałby
     /// vendora, a to jest jedyna rzecz, której nagłówek tego modułu zabrania.
     ///
     /// `Option`, a nie ciche „przyjąłem", z tego samego powodu co przy [`AgentDriver::inheriting`]:
