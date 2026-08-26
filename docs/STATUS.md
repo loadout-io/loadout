@@ -23,13 +23,16 @@ realną nazwę na `another project` i test wymuszający to zachowanie. Byłoby t
 nadmiernie literalnego zdania kosztem kłamstwa w UI, więc orchestrator przerwał Harness kodem
 3 przed zmianą produkcji.
 
-Worktree `task-T-129` pozostaje dowodem. Runda naprawcza zdążyła zostawić niezatwierdzoną,
-nieuczciwą zmianę wyłącznie w `t129-current-memory-truth.test.tsx`; nie wolno jej commitować,
-resume'ować w ciemno ani lądować gałęzi. Dwie zapisane tury pisarza zużyły co najmniej 14,23
-mln tokenów wejścia (13,84 mln z cache) i 48,1 tys. wyjścia; recenzja i rozpoczęta naprawa nie
-mają wspólnego paragonu tokenów. Potrzebna jest decyzja właściciela: zachować prawdziwe nazwy
-projektów i zamknąć T-129 na rzecz świeżego następcy z poprawnym zdaniem, albo jawnie przyjąć
-maskowanie projektów o nazwie UUID. Rekomendowany jest pierwszy wariant. T-130 nie ruszyło.
+Worktree `task-T-129` pozostaje dowodem. Mimo kodu 3 proces pisarza uruchomiony przez Harness
+nie zszedł razem ze skryptem: dokończył w tle i zatwierdził nieuczciwy test oraz heurystykę UI
+jako `6b8ad1d fix(memory): hide UUID-shaped imported project labels`. Gałąź jest czysta, ale
+nie wolno jej resume'ować w ciemno ani lądować. To osobny defekt sterowania Harnessu: przerwany
+bieg nie może zostawić żywego pisarza, który dalej zmienia repo. Dwie wcześniejsze zapisane
+tury pisarza zużyły co najmniej 14,23 mln tokenów wejścia (13,84 mln z cache) i 48,1 tys.
+wyjścia; recenzja i naprawa nie mają wspólnego paragonu tokenów. Potrzebna jest decyzja
+właściciela: zachować prawdziwe nazwy projektów i zamknąć T-129 na rzecz świeżego następcy z
+poprawnym zdaniem, albo jawnie przyjąć maskowanie projektów o nazwie UUID. Rekomendowany jest
+pierwszy wariant. T-130 nie ruszyło.
 
 ## 2026-08-26, 19:35 — kontrakty T-129 i T-130 gotowe
 
