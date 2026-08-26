@@ -99,7 +99,9 @@ async fn stubborn_agent_stops_after_three_attempts_and_releases_the_next_start()
          ceiling, not a slow escalation (cancel calls: {})",
         fake.cancel_calls.load(Ordering::Acquire)
     );
-    let (stopped, ran) = finished.expect("the timeout assertion above checked this result");
+    let Ok((stopped, ran)) = finished else {
+        return Err("the timeout assertion above returned without a finished Stop".into());
+    };
     let stopped = stopped?;
     let report = ran?;
     tokio::time::timeout(PATIENCE, pump).await??;
@@ -197,7 +199,11 @@ fn assert_stubborn_receipt(bench: &Bench, report: &RunReport) -> Result<(), Box<
     match step.get("death_proof") {
         // `run.json` historically omits false booleans; both shapes mean exactly "not proved".
         None | Some(Value::Bool(false)) => {}
-        other => panic!("the stubborn agent was falsely recorded as dead: {other:?}"),
+        other => {
+            return Err(
+                format!("the stubborn agent was falsely recorded as dead: {other:?}").into(),
+            );
+        }
     }
     assert_eq!(
         step.get("error").and_then(Value::as_str),

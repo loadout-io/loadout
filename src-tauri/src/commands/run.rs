@@ -26,7 +26,9 @@
 //!    bo tylko ona wraca z `GroupProof`, a nie z „wysłałem sygnał".
 //! 2. **`Err(Cancelled)`.** Anulowanie jest wartością (niezmiennik 7, [`Outcome::Cancelled`]).
 //!    Krok po anulowaniu jest `cancelled`, jego potomkowie też — **nie `skipped`**, bo `skipped`
-//!    znaczy „ktoś wyżej padł" i UI kłamałoby o powodzie (`docs/ARCHITECTURE.md` §5).
+//!    znaczy „ktoś wyżej padł" i UI kłamałoby o powodzie (`docs/ARCHITECTURE.md` §5). Jedyny
+//!    wyjątek to agent, którego śmierci nie udało się dowieść po skończonej serii Stopu: cały
+//!    bieg dalej jest anulowany, ale krok jest `failed` z adresem grupy i jawnym powodem.
 //! 3. **Instrukcje kroku w argv.** Prompt jedzie wyłącznie stdinem (niezmiennik 9); ta warstwa
 //!    nie skleja komendy i nie zna ani jednej flagi vendora — wkłada instrukcje do
 //!    `RunSpec::prompt` jako dane i oddaje je sterownikowi.
@@ -1837,11 +1839,13 @@ fn title_from(rule: &str) -> String {
     trimmed[..end].to_owned()
 }
 
-/// Zatrzymuje bieg i **wraca dopiero z dowodem**, że nic po nim nie żyje.
+/// Zatrzymuje bieg i wraca po rozstrzygnięciu każdej należącej do niego grupy.
 ///
 /// Zwraca [`Outcome::Cancelled`] jako wartość, nigdy `Err` (niezmiennik 7). `Ok(())` zaraz po
 /// wysłaniu sygnału byłoby tym samym błędem, przed którym broni `GroupProof`: wołający
-/// przeczytałby „nie żyje" tam, gdzie napisano „wysłałem SIGTERM" (niezmiennik 6).
+/// przeczytałby „nie żyje" tam, gdzie napisano „wysłałem SIGTERM" (niezmiennik 6). Kiedy trzy
+/// pełne eskalacje nie dają dowodu, bieg zachowuje adres grupy i zapisuje krok jako porażkę;
+/// samo anulowanie pozostaje wartością całego biegu.
 ///
 /// **Warunek dla wołającego (T-07):** ten `RunControl` ma należeć do biegu, który ruszył albo
 /// już zszedł. Dowód zapala [`run_workflow_inner`] na każdej swojej drodze wyjścia, więc bieg
@@ -1849,9 +1853,9 @@ fn title_from(rule: &str) -> String {
 /// nie uruchomił, nie ma czego dowieść i czekanie na niego nie ma końca.
 pub async fn stop_run_inner(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
     deps.control.stop();
-    // Czekamy na bieg, a nie na siebie. Kroki schodzą po swoich grupach procesów same — tylko
-    // one wiedzą, co mają po sobie posprzątać — a `settle()` zapala się dopiero, kiedy
-    // `run_workflow_inner` naprawdę wróciło.
+    // Czekamy na bieg, a nie na siebie. Kroki rozstrzygają swoje grupy procesów same — tylko
+    // one znają uchwyt i adres do późniejszego sprzątania — a `settle()` zapala się dopiero,
+    // kiedy `run_workflow_inner` naprawdę wróciło.
     deps.control.wait_until_settled().await;
     // Bieg, którego token jest anulowany, melduje `cancelled` także wtedy, gdy ostatni krok
     // zdążył się udać (`scheduler::execute` czyta token na końcu). Dwa różne zdania o jednym
@@ -1945,6 +1949,17 @@ pub async fn stop_before_closing(deps: &RunDeps<'_>) -> Result<Outcome, RunError
 /// mieści się w kilku sekundach i jest ograniczone przez [`crate::engine::supervisor`], więc ta
 /// wartość nie skraca niczego, co naprawdę schodzi.
 pub const HOW_LONG_CLOSING_MAY_WAIT: Duration = Duration::from_secs(30);
+
+/// Ile pełnych eskalacji wykonuje żywy Stop, zanim odda aplikację człowiekowi z uczciwą odmową
+/// uznania procesu za martwy. Stała należy do produkcji: wołający nie może skrócić dowodu.
+const LIVE_STOP_ATTEMPTS: usize = 3;
+
+/// Odstęp między pełnymi eskalacjami, nigdy dodatkowe czekanie po ostatniej próbie.
+const LIVE_STOP_RETRY_PAUSE: Duration = Duration::from_secs(1);
+
+/// Jedno zdanie współdzielone przez trwały receipt i istniejący panel historii.
+const LIVE_STOP_SURVIVOR_ERROR: &str =
+    "This agent survived Loadout's three attempts to stop it and may still be running.";
 
 /// Puszcza bieg dalej z punktu kontrolnego (T3 §6.1 reguła 5).
 ///
@@ -7861,13 +7876,47 @@ impl Live {
 
     /// Kończy krok po Stopie i nie myli wysłanego sygnału z dowodem martwej grupy.
     async fn stop_cancelled_agent(&self, id: StepId, handle: &mut dyn AgentHandle) -> StepReport {
-        let proof = self.prove_agent_dead(handle).await;
+        let proof = self.prove_agent_dead_after_live_stop(handle).await;
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
             let step = &mut book.steps[id];
             step.death_proof = proven_dead;
+            if !proven_dead {
+                step.error = Some(LIVE_STOP_SURVIVOR_ERROR.to_owned());
+            }
         });
-        StepReport::Cancelled
+        if proven_dead {
+            StepReport::Cancelled
+        } else {
+            // 2026-08-27 — Stop całego biegu pozostaje anulowaniem, ale ten krok nie może być
+            // nazwany anulowanym: należąca do niego grupa nadal mogła żyć po pełnej eskalacji.
+            StepReport::Failed
+        }
+    }
+
+    /// Ponawia pełną eskalację Stopu, ale nie zamraża aplikacji na zawsze.
+    ///
+    /// 2026-08-27 — trzy próby są polityką produktu, nie parametrem wołającego. Każde
+    /// `cancel()` przechodzi przez pełne TERM → łaska → KILL → dowód supervisora; odstęp jest
+    /// tylko między próbami. Po ostatnim `Alive` uchwyt musi zostać zwolniony, żeby bieg mógł
+    /// zapalić `settled`, ale zapisane wcześniej `pid` i `pgid` pozostają jedynym adresem dla
+    /// cleanupu przy następnym starcie. `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
+    async fn prove_agent_dead_after_live_stop(&self, handle: &mut dyn AgentHandle) -> GroupProof {
+        for attempt in 1..=LIVE_STOP_ATTEMPTS {
+            let proof = handle.cancel().await;
+            if matches!(proof, GroupProof::Dead { .. }) {
+                return proof;
+            }
+            tracing::error!(
+                attempt,
+                attempts = LIVE_STOP_ATTEMPTS,
+                "an agent group is still alive after a full Stop escalation"
+            );
+            if attempt < LIVE_STOP_ATTEMPTS {
+                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
+            }
+        }
+        GroupProof::Alive
     }
 
     /// Zachowuje jedynego właściciela uchwytu aż supervisor dowiedzie `Dead`.
