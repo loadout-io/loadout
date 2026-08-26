@@ -4,6 +4,20 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 10:18 — T-136 przejmuje pełny zakres zamkniętego T-128
+
+Właściciel zatwierdził świeży kontrakt i przyszłe rutynowe decyzje wykonawcze fazy. **T-136**
+startuje z czystego `main`, ma dwa nowe standalone targety oraz od początku posiada oba stare
+pliki, które zamknęły T-128, i pozostałe fixture ujawnione przez pełną suitę. Po uczciwym
+`before` wolno mu wykorzystać wyłącznie dwa produkcyjne commity T-128; stare commity
+kontraktowe i testowe pozostają dowodem, nie wejściem.
+
+Nowy Rust oracle rozróżnia stemple projektu B od stanu pozostawionego przez A i przypina
+historyczne wyrocznie do właściwych fizycznych korzeni. Prawdziwy browserowy oracle klika
+Move, Use, Stop oraz Discard i wymaga, żeby usunięcie projektowego duplikatu nie usunęło
+bibliotecznej notatki o tym samym `id`. Operacyjnie bieg pozostaje Codex + Codex; następne
+T-129/T-130 czekają na wylądowanie pełnego adresu z T-136.
+
 ## 2026-08-26, 09:28 — T-128 ZAMKNIĘTE: dwa stare testy są poza OWNS
 
 **T-128 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 50 min 01 s Harnessu · $0,00

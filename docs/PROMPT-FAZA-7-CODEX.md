@@ -1,13 +1,14 @@
-# Prompt orchestratora — faza 7 (T-127 następne; szesnaście zadań zamkniętych)
+# Prompt orchestratora — faza 7 (T-136 następne; T-128 zamknięte na OWNS)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
 których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
-wszystkie pozostałe lądowania fazy 7 w kolejności z §4 tego pliku. Rejestr ma trzydzieści
-numerów: T-98…T-127, z których T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-109,
-T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 zostały zamknięte bez lądowania.
+wszystkie pozostałe lądowania fazy 7 w kolejności z §4 tego pliku. Historyczny rejestr
+T-98…T-128 oraz świeży następca T-136 obejmują zadania, z których T-105, T-110, T-99,
+T-112, T-113, T-102, T-103, T-109,
+T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125 i T-128 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -34,8 +35,10 @@ pod limitem pięciu sekund, `float_cmp` i format. Świeże T-126 przejęło H14 
 przeszło 20/20 i wylądowało. Recenzent wykazał ograniczenie AC-4: bieżący kod używa dokładnej
 stałej budżetu, lecz końcowy oracle musi jeszcze wykonać prawdziwy spawn refleksji.
 T-109 zamknięto bez uruchomienia: wszystkie checki są zabronionymi filtrami wspólnego targetu,
-a dwa wymagane pliki produkcyjne leżą poza OWNS. Świeże T-127 przejmuje wyłącznie H29 i jest
-następnym biegiem. **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
+a dwa wymagane pliki produkcyjne leżą poza OWNS. T-127 przejęło H29 i wylądowało. T-128
+przeszło własne AC, lecz zostało zamknięte, gdy pełna suita wymagała dwóch starych testów
+poza OWNS. Świeże T-136 posiada pełny zakres od początku i jest następnym biegiem.
+**Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
 ---
@@ -275,8 +278,9 @@ jest następnym biegiem.
 | 6k | **ZAMKNIĘTE:** T-125, nie ląduj i nie wznawiaj | 15/20; zły korzeń skanu, timeout 6 s/5 s, `float_cmp` i format |
 | 6l | **WYKONANE:** T-126 w trunku | świeży H14 po T-121/T-124; 20/20 i obie bramki integracyjne zielone |
 | 7 | **ZAMKNIĘTE:** T-109, nie uruchamiaj | trzy filtrowane checki i wymagane pliki poza OWNS |
-| 7b | `./ship-task.sh T-127 --agent codex --reviewer codex` | świeże H29 po T-126; kopie i refleksja dostają osobny stan |
-| 8 | świeży następca T-104 | pamięć po T-124/T-126/T-127; standalone checki i nowe OWNS |
+| 7b | **WYKONANE:** T-127 w trunku | świeże H29 po T-126; kopie i refleksja dostają osobny stan |
+| 8a | **ZAMKNIĘTE:** T-128, nie ląduj i nie wznawiaj | oba AC zielone, lecz dwa konieczne stare testy poza OWNS |
+| 8b | `./ship-task.sh T-136 --agent codex --reviewer codex` | pełny następca H16/H18 z nowymi targetami i wszystkimi starymi fixture w OWNS |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |

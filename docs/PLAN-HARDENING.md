@@ -89,9 +89,9 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
-| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-128** (T-104 zamknięte: filtrowane checki i brak pełnego adresu) |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po adresie T-128 |
-| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-128** (D-2 = TAK) |
+| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-136** (T-104/T-128 zamknięte: odpowiednio wadliwy kontrakt i stare fixture poza OWNS) |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po adresie T-136 |
+| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-136** (D-2 = TAK; T-128 zamknięte na zakresie starych fixture) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
@@ -140,7 +140,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-125 | **ZAMKNIĘTE:** 15/20 po naprawie; zły korzeń skanu, timeout 6 s/5 s, `float_cmp` i format | T-121, T-124 | tak | 4 |
 | T-126 | **WYLANDOWAŁO:** refleksja prywatna z fizycznym PGID, bieżącym budżetem i trzema stabilnymi drogami w Chromium | T-121, T-124 | tak | 4 |
 | T-127 | **WYLANDOWAŁO:** prywatny stan każdego procesu Claude'a, także kopii i refleksji | T-126 (zastępuje T-109) | tak | 3 |
-| T-128 | Dwa korzenie pamięci mają pełny adres i prawdziwe akcje | T-127 (pierwszy następca T-104) | tak | 2 |
+| T-128 | **ZAMKNIĘTE:** własne AC zielone, lecz dwa konieczne stare testy poza OWNS | T-127 (pierwszy następca T-104) | tak | 2 |
+| T-136 | Dwa korzenie pamięci domykają pełny produkt i stare wyrocznie | T-127 (pełny następca T-128) | tak | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -341,16 +342,22 @@ targetu `tests/it`, więc łamią globalnie unikalną ścieżkę z `AGENTS.md` �
 ponadto trzy osobne prawdy: fizyczny adres i mutacje, bieżący stan budżetu oraz zamrożony
 receipt biegu. Nie posiada `AppState::project_for`, konsumentów prawdziwego promptu ani
 regresji T-126, więc akcja Move mogłaby wylądować przed odczytem drugiego korzenia i kłamać
-człowiekowi. Zakres przejmują świeże T-128 → T-129 → T-130; niczego nie przenosi się ze starej
-gałęzi.
+człowiekowi. T-128 zamknięto na dwóch starych testach poza OWNS; zakres przejmują świeże
+T-136 → T-129 → T-130. Niczego nie przenosi się ze starej gałęzi T-104.
 
-**T-128 — dwa korzenie, pełny adres i prawdziwe akcje.** Biblioteka zachowuje `everywhere`
-i `this-agent`, projekt dostaje `this-project`, a legacy biblioteczne `this-project` pozostaje
-widoczne, lecz nie wchodzi do promptu przed trwałym Move. Każda mutacja używa
-`{ catalogFolder, place, id }`, zwraca pełny katalog tego samego folderu i nie może zostać
-przestawiona przez spóźnioną odpowiedź poprzedniego workspace. Tombstone tłumi dokładny slug,
-ale nie wygrywa z żywą notatką ani ręcznym importem. Dwa globalnie unikalne targety sądzą
-rzeczywisty workflow oraz prawdziwy ekran z taśmą Tauri.
+**T-128 — ZAMKNIĘTE, bez lądowania.** Oba nowe AC były zielone, lecz pełna suita ujawniła
+pięć historycznych fixture zakładających bibliotekę dla `this-project`. Po jawnie zatwierdzonej
+naprawie testów pełna bramka odmówiła dwóm koniecznym plikom poza `OWNS` i znalazła kolejny
+stary adres w należącym do zadania teście evidence. Gałąź oraz dwa produkcyjne commity są
+dowodem; kontraktowych i testowych commitów nie przenosić.
+
+**T-136 — dwa korzenie, pełny adres, prawdziwe akcje i pełna suita.** Świeży następca T-128
+posiada od początku wszystkie stare fixture wymagane przez przejście `this-project` do
+`<projekt>/.loadout/memory`. Po uczciwym `before` wolno wykorzystać wyłącznie dwa produkcyjne
+commity T-128; nowe targety są globalnie unikalne. Rustowy oracle rozróżnia stemple projektu B
+od stempli pozostawionych przez A i utrzymuje prawdziwe korzenie historycznych wyroczni.
+Browserowy oracle realnie klika Move, Use, Stop i Discard; po usunięciu projektowego duplikatu
+biblioteczny duplikat o tym samym id musi pozostać.
 
 **T-105 — ZAMKNIĘTE, bez lądowania.** AC-1 i AC-2 dostały uczciwe czerwone specy, lecz
 AC-3 wymagało flagi odrzucanej przez prawdziwy App Server. Dodanie asercji na nieobsługiwane
@@ -426,18 +433,18 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126 i T-127 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są zamknięte, T-128 jest następne.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126 i T-127 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125 i T-128 są zamknięte, T-136 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
   H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, T-127
-  domknęło H29 po niewykonalnym T-109, a T-128 przejmuje H16/H18 po T-104.
+  domknęło H29 po niewykonalnym T-109, a T-136 przejmuje H16/H18 po zamkniętych T-104/T-128.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-127 → T-128 → T-129 → T-130 → świeże zadania Stop/startup`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-127 → T-128 (zamknięte) → T-136 → T-129 → T-130 → świeże zadania Stop/startup`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
   wylądowało, T-125 zamknięto, a T-126 wylądowało samo przez `run.rs`.
-- **T-127 po T-126 wylądowało.** T-128 zastępuje pierwszą część zamkniętego T-104 i musi
-  zamrozić adres przed T-129; T-129 musi wylądować przed receiptem T-130. Wszystkie trzy
+- **T-127 po T-126 wylądowało.** T-128 zamknięto na dwóch starych testach poza OWNS; T-136
+  przejmuje pełny zakres i musi zamrozić adres przed T-129. T-129 musi wylądować przed receiptem T-130. Wszystkie trzy
   dzielą pamięć i `run.rs`, więc idą szeregowo.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
