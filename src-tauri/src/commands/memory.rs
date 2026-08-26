@@ -280,7 +280,7 @@ pub fn move_legacy_note_to_project_inner(
     let source = library_root.join("notes").join(format!("{id}.md"));
     let target = project_root.join("notes").join(format!("{id}.md"));
     let mut io = RealMoveIo;
-    match move_note_file_with_io(&source, &target, &mut io) {
+    match move_note_file_with_io(&mut io, &source, &target) {
         Ok(()) => Ok(list_note_catalog_inner(library_root, project_root)?),
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             Err(NoteRefusal::Said(

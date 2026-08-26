@@ -49,7 +49,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::FrontMatter;
@@ -411,25 +411,15 @@ pub enum Error {
 /// Skrót używany przez cały moduł notatek.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Plik tymczasowy przygotowany do publikacji przez [`MoveIo`].
-#[derive(Debug)]
-pub struct PendingMove(NamedTempFile);
-
-impl PendingMove {
-    /// Rzeczywista ścieżka pliku tymczasowego, potrzebna do dowodu jego położenia i tożsamości.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        self.0.path()
-    }
-}
-
 /// Port operacji trwałego Move. Kolejność pozostaje w jednym rdzeniu, a adapter wykonuje IO.
 pub trait MoveIo {
-    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> Result<PendingMove>;
-    fn sync_file(&mut self, pending: &PendingMove) -> Result<()>;
-    fn persist_noclobber(&mut self, pending: PendingMove, target: &Path) -> Result<()>;
-    fn sync_dir(&mut self, dir: &Path) -> Result<()>;
-    fn remove_file(&mut self, source: &Path) -> Result<()>;
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+    fn exists(&mut self, path: &Path) -> io::Result<bool>;
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf>;
+    fn sync_file(&mut self, path: &Path) -> io::Result<()>;
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> io::Result<()>;
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()>;
+    fn remove_file(&mut self, source: &Path) -> io::Result<()>;
 }
 
 /// Produkcyjny adapter trwałego Move. Ciała uzupełnia dopiero faza implementacji T-137.
@@ -437,49 +427,61 @@ pub trait MoveIo {
 pub struct RealMoveIo;
 
 impl MoveIo for RealMoveIo {
-    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> Result<PendingMove> {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    fn exists(&mut self, path: &Path) -> io::Result<bool> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
         fs::create_dir_all(target_dir)?;
         let mut pending = NamedTempFile::new_in(target_dir)?;
         pending.write_all(bytes)?;
-        Ok(PendingMove(pending))
+        let (_, path) = pending.keep().map_err(|error| error.error)?;
+        Ok(path)
     }
 
-    fn sync_file(&mut self, pending: &PendingMove) -> Result<()> {
-        pending.0.as_file().sync_all()?;
+    fn sync_file(&mut self, path: &Path) -> io::Result<()> {
+        fs::File::open(path)?.sync_all()?;
         Ok(())
     }
 
-    fn persist_noclobber(&mut self, pending: PendingMove, target: &Path) -> Result<()> {
-        pending
-            .0
-            .persist_noclobber(target)
-            .map_err(|error| Error::Io(error.error))?;
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> io::Result<()> {
+        // 2026-08-26 (T-138): stage i cel są w jednym katalogu, więc hard link publikuje
+        // kompletne bajty atomowo i z systemowym `AlreadyExists`, bez okna check-then-rename.
+        if let Err(error) = fs::hard_link(staged, target) {
+            let _ = fs::remove_file(staged);
+            return Err(error);
+        }
+        fs::remove_file(staged)?;
         Ok(())
     }
 
-    fn sync_dir(&mut self, dir: &Path) -> Result<()> {
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
         fs::File::open(dir)?.sync_all()?;
         Ok(())
     }
 
-    fn remove_file(&mut self, source: &Path) -> Result<()> {
+    fn remove_file(&mut self, source: &Path) -> io::Result<()> {
         fs::remove_file(source)?;
         Ok(())
     }
 }
 
 /// Jeden rdzeń protokołu Move, używany przez produkcję i obserwowalny przez testowy adapter.
-pub fn move_note_file_with_io<I: MoveIo>(source: &Path, target: &Path, io: &mut I) -> Result<()> {
-    match fs::symlink_metadata(target) {
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "the target note already exists",
-            )
-            .into());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+pub fn move_note_file_with_io(io: &mut dyn MoveIo, source: &Path, target: &Path) -> Result<()> {
+    if io.exists(target)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the target note already exists",
+        )
+        .into());
     }
 
     let source_dir = source.parent().ok_or_else(|| {
@@ -494,13 +496,14 @@ pub fn move_note_file_with_io<I: MoveIo>(source: &Path, target: &Path, io: &mut 
             "the target note must have a parent directory",
         )
     })?;
-    let bytes = fs::read(source)?;
+    let bytes = io.read(source)?;
     let pending = io.stage_in(target_dir, &bytes)?;
     io.sync_file(&pending)?;
-    io.persist_noclobber(pending, target)?;
+    io.persist_no_clobber(&pending, target)?;
     io.sync_dir(target_dir)?;
     io.remove_file(source)?;
-    io.sync_dir(source_dir)
+    io.sync_dir(source_dir)?;
+    Ok(())
 }
 
 /// Automatyczna refleksja projektu z uwzględnieniem tombstone'ów obu korzeni.
