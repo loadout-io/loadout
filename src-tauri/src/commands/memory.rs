@@ -93,17 +93,6 @@ pub struct NoteAddress {
     pub id: String,
 }
 
-/// Notatka katalogowa wraz z adresem, spłaszczona na drucie do `{ place, id, ... }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CatalogNoteWire {
-    /// Adres pozostaje osobnym typem dla rdzenia i testów zachowania. Na drucie te same dwa
-    /// pola niesie `note`, żeby płaski obiekt nie zawierał zduplikowanych kluczy JSON.
-    #[serde(skip)]
-    pub address: NoteAddress,
-    #[serde(flatten)]
-    pub note: NoteWire,
-}
-
 impl From<&Note> for NoteWire {
     fn from(note: &Note) -> Self {
         Self::at(note, NotePlace::Library)
@@ -134,18 +123,6 @@ impl NoteWire {
             length: note.est_tokens,
             occurrences: note.occurrences,
             modified: note.modified.clone(),
-        }
-    }
-}
-
-impl CatalogNoteWire {
-    fn at(note: &Note, place: NotePlace) -> Self {
-        Self {
-            address: NoteAddress {
-                place,
-                id: note.id.to_string(),
-            },
-            note: NoteWire::at(note, place),
         }
     }
 }
@@ -228,20 +205,20 @@ pub fn project_notes_root(project: &Path) -> std::path::PathBuf {
 pub fn list_note_catalog_inner(
     library_root: &Path,
     project_root: &Path,
-) -> Result<Vec<CatalogNoteWire>, Error> {
-    let mut catalog: Vec<CatalogNoteWire> = scan_notes(library_root)?
+) -> Result<Vec<NoteWire>, Error> {
+    let mut catalog: Vec<NoteWire> = scan_notes(library_root)?
         .iter()
-        .map(|note| CatalogNoteWire::at(note, NotePlace::Library))
+        .map(|note| NoteWire::at(note, NotePlace::Library))
         .collect();
     catalog.extend(
         scan_notes(project_root)?
             .iter()
-            .map(|note| CatalogNoteWire::at(note, NotePlace::Project)),
+            .map(|note| NoteWire::at(note, NotePlace::Project)),
     );
     // 2026-08-26 (T-128): kolejność pełnego adresu jest stabilna także wtedy, gdy oba korzenie
     // zawierają ten sam id. Sortowanie po samym id zostawiałoby kolejność bliźniaków decyzji
     // systemu plików, a katalog jest odpowiedzią, którą magazyn podmienia w całości.
-    catalog.sort_by(|left, right| left.address.cmp(&right.address));
+    catalog.sort_by(|left, right| (&left.place, &left.id).cmp(&(&right.place, &right.id)));
     Ok(catalog)
 }
 
@@ -251,7 +228,7 @@ pub fn put_note_to_use_at_inner(
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     let (root, id) = ordinary_action(library_root, project_root, address)?;
     promote(root, &id, Actor::You { at: at.to_owned() })?;
     Ok(list_note_catalog_inner(library_root, project_root)?)
@@ -263,7 +240,7 @@ pub fn stop_using_note_at_inner(
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     let (root, id) = ordinary_action(library_root, project_root, address)?;
     stop_using(root, &id, at)?;
     Ok(list_note_catalog_inner(library_root, project_root)?)
@@ -275,7 +252,7 @@ pub fn discard_note_at_inner(
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     let (root, id) = ordinary_action(library_root, project_root, address)?;
     discard(root, &id, Actor::You { at: at.to_owned() })?;
     Ok(list_note_catalog_inner(library_root, project_root)?)
@@ -286,7 +263,7 @@ pub fn move_legacy_note_to_project_inner(
     library_root: &Path,
     project_root: &Path,
     address: &NoteAddress,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     let id = valid_id(address)?;
     if address.place != NotePlace::Library {
         return Err(NoteRefusal::Said(
@@ -370,9 +347,9 @@ pub fn list_notes_inner(root: &Path) -> Result<Vec<NoteWire>, Error> {
 /// Pełny katalog biblioteki i wskazanego projektu.
 pub fn list_notes_for_project_inner(
     library_root: &Path,
-    project_root: &Path,
-) -> Result<Vec<CatalogNoteWire>, Error> {
-    list_note_catalog_inner(library_root, project_root)
+    catalog_folder: &Path,
+) -> Result<Vec<NoteWire>, Error> {
+    list_note_catalog_inner(library_root, &project_notes_root(catalog_folder))
 }
 
 /// „Use this": od tej chwili notatka wchodzi do promptu.
@@ -388,14 +365,29 @@ pub fn put_note_to_use_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire
     Ok(NoteWire::from(&note))
 }
 
-/// Adresowana odmiana „Use this", zwracająca świeży pełny katalog tego samego projektu.
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
 pub fn put_note_to_use_addressed_inner(
     library_root: &Path,
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     put_note_to_use_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn put_addressed_note_to_use_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    put_note_to_use_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
 }
 
 /// „Discard": kandydatka odchodzi do `<korzeń>/discarded/` i znika z listy.
@@ -421,14 +413,29 @@ pub fn discard_note_inner(root: &Path, id: &str, at: &str) -> Result<(), NoteRef
     Ok(())
 }
 
-/// Adresowana odmiana „Discard", zwracająca świeży pełny katalog tego samego projektu.
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
 pub fn discard_note_addressed_inner(
     library_root: &Path,
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     discard_note_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn discard_addressed_note_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    discard_note_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
 }
 
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
@@ -443,30 +450,46 @@ pub fn stop_using_note_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire
     let note = stop_using(root, &NoteId(id.to_owned()), at)?;
     Ok(NoteWire::from(&note))
 }
-/// Adresowana odmiana „Stop using", zwracająca świeży pełny katalog tego samego projektu.
+
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
 pub fn stop_using_note_addressed_inner(
     library_root: &Path,
     project_root: &Path,
     address: &NoteAddress,
     at: &str,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
+) -> Result<Vec<NoteWire>, NoteRefusal> {
     stop_using_note_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn stop_using_addressed_note_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    stop_using_note_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
 }
 
 /// Przenosi wcześniejszą notatkę projektową z biblioteki do projektu i oddaje pełny katalog.
 pub fn move_note_to_project_inner(
     library_root: &Path,
-    project_root: &Path,
+    catalog_folder: &Path,
     address: &NoteAddress,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
-    move_legacy_note_to_project_inner(library_root, project_root, address)
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    move_note_to_project_addressed_inner(library_root, &project_notes_root(catalog_folder), address)
 }
 
-/// Jawnie adresowana nazwa używana przez rdzeń i standalone oracle T-137.
+/// Adapter Move dla wołających, którzy mają już rozwiązany korzeń projektu.
 pub fn move_note_to_project_addressed_inner(
     library_root: &Path,
     project_root: &Path,
     address: &NoteAddress,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
-    move_note_to_project_inner(library_root, project_root, address)
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    move_legacy_note_to_project_inner(library_root, project_root, address)
 }

@@ -1670,13 +1670,12 @@ pub async fn forget_run_branches(
 pub async fn list_notes(
     state: State<'_, AppState>,
     catalog_folder: Option<String>,
-) -> Result<Vec<commands::memory::CatalogNoteWire>, String> {
+) -> Result<Vec<commands::memory::NoteWire>, String> {
     let project = state
         .project_for(catalog_folder.as_deref())
         .inspect_err(refused)?;
     let library_root = commands::memory::notes_root(&state.home);
-    let project_root = commands::memory::project_notes_root(&project);
-    commands::memory::list_notes_for_project_inner(&library_root, &project_root)
+    commands::memory::list_notes_for_project_inner(&library_root, &project)
         .map_err(|error| error.to_string())
 }
 
@@ -1687,16 +1686,15 @@ pub async fn put_note_to_use(
     catalog_folder: Option<String>,
     place: commands::memory::NotePlace,
     id: String,
-) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
         .map_err(commands::memory::NoteRefusal::Said)?;
     let library_root = commands::memory::notes_root(&state.home);
-    let project_root = commands::memory::project_notes_root(&project);
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::put_note_to_use_addressed_inner(
+    commands::memory::put_addressed_note_to_use_inner(
         &library_root,
-        &project_root,
+        &project,
         &address,
         &commands::now_utc(),
     )
@@ -1709,16 +1707,15 @@ pub async fn stop_using_note(
     catalog_folder: Option<String>,
     place: commands::memory::NotePlace,
     id: String,
-) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
         .map_err(commands::memory::NoteRefusal::Said)?;
     let library_root = commands::memory::notes_root(&state.home);
-    let project_root = commands::memory::project_notes_root(&project);
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::stop_using_note_addressed_inner(
+    commands::memory::stop_using_addressed_note_inner(
         &library_root,
-        &project_root,
+        &project,
         &address,
         &commands::now_utc(),
     )
@@ -1735,16 +1732,15 @@ pub async fn discard_note(
     catalog_folder: Option<String>,
     place: commands::memory::NotePlace,
     id: String,
-) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
         .map_err(commands::memory::NoteRefusal::Said)?;
     let library_root = commands::memory::notes_root(&state.home);
-    let project_root = commands::memory::project_notes_root(&project);
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::discard_note_addressed_inner(
+    commands::memory::discard_addressed_note_inner(
         &library_root,
-        &project_root,
+        &project,
         &address,
         &commands::now_utc(),
     )
@@ -1757,14 +1753,13 @@ pub async fn move_note_to_project(
     catalog_folder: Option<String>,
     place: commands::memory::NotePlace,
     id: String,
-) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
         .map_err(commands::memory::NoteRefusal::Said)?;
     let library_root = commands::memory::notes_root(&state.home);
-    let project_root = commands::memory::project_notes_root(&project);
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::move_note_to_project_addressed_inner(&library_root, &project_root, &address)
+    commands::memory::move_note_to_project_inner(&library_root, &project, &address)
 }
 
 /// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.

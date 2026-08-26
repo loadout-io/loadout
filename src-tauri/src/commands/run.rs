@@ -606,18 +606,39 @@ pub async fn run_workflow_inner(
     run_workflow_with_before_stamp(deps, request, lines, None).await
 }
 
-/// Jednorazowy szew T-137: po trwałym pierwszym `run.json`, bezpośrednio przed stemplem.
-pub type BeforeMemoryStamp = Box<dyn FnOnce(&str) -> Result<(), RunError> + Send>;
+/// Jednorazowy obserwator tekstu zamrożonego w planie przed produkcyjnym stemplem pamięci.
+pub type FrozenPromptHook = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Prawdziwy workflow z opcjonalnym, jednorazowym podglądem zamrożonego promptu przed stemplem.
+/// Acceptance wejście zachowujące tę samą drogę budżetu, refleksji i wykonania co zwykły Run.
+pub async fn run_workflow_with_snapshot_hook(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    after_prompt: Option<FrozenPromptHook>,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow(
+        deps,
+        request,
+        lines,
+        slots,
+        budget_usd,
+        reflection_enabled,
+        after_prompt,
+    )
+    .await
+}
+
+/// Zgodnościowy adapter poprzedniego szwu; zwykły Run prowadzi nim do wspólnego rdzenia.
 pub async fn run_workflow_with_before_stamp(
     deps: &RunDeps<'_>,
     request: &RunRequest,
     lines: LineSink,
-    before_stamp: Option<BeforeMemoryStamp>,
+    after_prompt: Option<FrozenPromptHook>,
 ) -> Result<RunReport, RunError> {
-    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    the_whole_workflow(deps, request, lines, slots, None, true, before_stamp).await
+    run_workflow_with_snapshot_hook(deps, request, lines, None, true, after_prompt).await
 }
 
 /// Ten sam bieg, z **sufitem wydatku** — albo bez niego, kiedy człowiek żadnego nie postawił.
@@ -749,7 +770,7 @@ async fn the_whole_workflow(
     slots: Limiter,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
-    before_stamp: Option<BeforeMemoryStamp>,
+    before_stamp: Option<FrozenPromptHook>,
 ) -> Result<RunReport, RunError> {
     /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
      * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
@@ -893,7 +914,7 @@ async fn the_whole_run(
     slots: Limiter,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
-    before_stamp: Option<BeforeMemoryStamp>,
+    before_stamp: Option<FrozenPromptHook>,
 ) -> Result<RunReport, RunError> {
     the_planned_run(
         deps,
@@ -1019,7 +1040,7 @@ struct PlannedRunOptions {
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
-    before_stamp: Option<BeforeMemoryStamp>,
+    before_stamp: Option<FrozenPromptHook>,
 }
 
 /// Rozpisany plan → katalog, kroki, indeks. **Jedna droga wykonania na oba rodzaje biegu.**
@@ -1064,7 +1085,7 @@ fn prepare_planned_run(
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
-    before_stamp: Option<BeforeMemoryStamp>,
+    before_stamp: Option<FrozenPromptHook>,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
     // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
@@ -1104,7 +1125,7 @@ fn prepare_planned_run(
         let frozen = live
             .prompt_for(id, &job.prompt, &job.context, job.minutes)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        before_stamp(&frozen.prompt)?;
+        before_stamp(&frozen.prompt);
     }
     // Stempel jest uczciwy dopiero po powstaniu biegu, lecz przed pierwszym procesem: bierze
     // dokładnie zestaw notatek już zamrożony w `run.json`.
