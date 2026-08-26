@@ -768,8 +768,32 @@ export interface PastStep {
   /** Powód, jeśli coś poszło nie tak. */
   readonly error: string;
   readonly costUsd: number | null;
+  /**
+   * Zamrożone notatki przypięte przez Rust do fizycznego UUID tego kroku.
+   *
+   * Opcjonalne wyłącznie dla zgodności ze starszym drutem i lokalnymi fixture'ami; dzisiejszy
+   * `read_run` wysyła zawsze listę, także pustą.
+   */
+  readonly memory?: readonly PastMemory[];
   /** Zapisany strumień tego kroku — te same wiersze, które widać było na żywo. */
   readonly lines: readonly Line[];
+}
+
+/** Jedna pozycja zamrożonego rachunku pamięci kroku. */
+export interface PastMemory {
+  readonly reference: string;
+  readonly hash: string;
+  readonly bytes: number;
+  readonly address: {
+    /** Surowa wartość drutu; ekran jej nie pokazuje ani nie wyprowadza z niej pochodzenia. */
+    readonly place: string;
+    readonly id: string;
+  };
+  /** Projekt importu i bieg refleksji są rozdzielonymi, niezgadywanymi faktami. */
+  readonly project: string | null;
+  readonly from: string | null;
+  /** `true` znaczy: pasowała do kroku, lecz ówczesny limit ją odłożył. */
+  readonly leftOut: boolean;
 }
 
 /** Przekazanie, tak jak widzi je okno. Lustro `commands::handoffs::HandoffWire`. */

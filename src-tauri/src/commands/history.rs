@@ -194,6 +194,9 @@ pub struct PastStepWire {
     pub error: String,
     /// Ile kosztował ten krok. `None` znaczy „nie podał", nie zero.
     pub cost_usd: Option<f64>,
+    /// Zamrożony receipt wyłącznie TEGO fizycznego kroku. Pusta lista jest jawna także dla
+    /// starych biegów, żeby granica TypeScript nie musiała zgadywać, czy pole zaginęło.
+    pub memory: Vec<PastMemoryWire>,
     /// Zapisany strumień tego kroku, przepuszczony przez TĘ SAMĄ kurację, co żywy bieg.
     ///
     /// 2026-08-23 (T-95) — POPRAWIONY AKAPIT, BO POPRZEDNI BYŁ NIEPRAWDĄ. Stało tu, że
@@ -208,6 +211,20 @@ pub struct PastStepWire {
     /// odwrotne kosztowało tyle, ile kosztują wszystkie: uczyło następnego czytelnika szukać
     /// szwu, który już istnieje.
     pub lines: Vec<Line>,
+}
+
+/// Jedna zamrożona notatka przypięta do fizycznego kroku z `run.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PastMemoryWire {
+    pub reference: String,
+    pub hash: String,
+    pub bytes: usize,
+    pub address: super::memory::NoteAddress,
+    pub project: Option<String>,
+    pub from: Option<String>,
+    /// `true` znaczy, że ówczesny limit odłożył notatkę; nie wolno przedstawiać jej jako wiedzy.
+    pub left_out: bool,
 }
 
 /// Czego okno nie dostało, bo nie dało się tego przeczytać.
@@ -281,6 +298,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
                 cost_usd: step.cost_usd,
+                memory: memory_for_step(&file.memory, &step.id),
                 lines: recorded_lines(
                     &dir,
                     &step.id,
@@ -438,6 +456,60 @@ struct Description {
     status: String,
     #[serde(default)]
     steps: Vec<StepDescription>,
+    /// Addytywny receipt T-130. Brak pola w starym pliku jest pustą listą, nie błędem historii.
+    #[serde(default)]
+    memory: Vec<MemoryDescription>,
+}
+
+/// Tolerancyjny kształt rekordu z `run.json`.
+///
+/// Adres jest opcjonalny wyłącznie podczas deserializacji: stary wpis bez niego pozostaje
+/// czytelny, lecz nie udaje notatki, którą da się bezpiecznie pokazać na ekranie.
+#[derive(Debug, Deserialize)]
+struct MemoryDescription {
+    #[serde(default)]
+    reference: String,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    bytes: usize,
+    #[serde(default)]
+    address: Option<super::memory::NoteAddress>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    recipients: Vec<String>,
+    #[serde(default, rename = "leftOutFor")]
+    left_out_for: Vec<String>,
+}
+
+fn memory_for_step(memory: &[MemoryDescription], step: &str) -> Vec<PastMemoryWire> {
+    memory
+        .iter()
+        .filter_map(|record| {
+            let delivered = record.recipients.iter().any(|recipient| recipient == step);
+            let left_out = record
+                .left_out_for
+                .iter()
+                .any(|recipient| recipient == step);
+            if !delivered && !left_out {
+                return None;
+            }
+            Some(PastMemoryWire {
+                reference: record.reference.clone(),
+                hash: record.hash.clone(),
+                bytes: record.bytes,
+                address: record.address.clone()?,
+                project: record.project.clone(),
+                from: record.from.clone(),
+                // Uszkodzony przyszły rekord z UUID na obu listach nie może twierdzić, że
+                // dostarczona notatka była wyłącznie pominięciem; dostarczenie wygrywa.
+                left_out: !delivered && left_out,
+            })
+        })
+        .collect()
 }
 
 /// Krok w `run.json`. Nazwy pól są tymi, które pisze `commands::run::StepEntry`.

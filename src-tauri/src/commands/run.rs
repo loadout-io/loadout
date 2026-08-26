@@ -1128,8 +1128,11 @@ fn prepare_planned_run(
         before_stamp(&frozen.prompt);
     }
     // Stempel jest uczciwy dopiero po powstaniu biegu, lecz przed pierwszym procesem: bierze
-    // dokładnie zestaw notatek już zamrożony w `run.json`.
-    stamp_what_this_run_carried(&live.plan.memory);
+    // dokładnie zestaw notatek już zamrożony w `run.json`. Księga jest właścicielem receipt,
+    // bo od T-130 dopisuje do niego fizycznych odbiorców podczas biegu.
+    let book = live.book();
+    stamp_what_this_run_carried(&book.memory);
+    drop(book);
     Ok((live, isolated, dag))
 }
 
@@ -1232,7 +1235,7 @@ fn stamp_what_this_run_carried(carried: &[MemoryRecord]) {
         return;
     }
     let at = super::now_utc();
-    for record in carried {
+    for record in carried.iter().filter(|record| record.carried) {
         // 2026-08-26 (T-128): stempel używa tej samej migawki, z której złożono prompt. Odczyt
         // ścieżki ponownie mógłby ostemplować ręczną redakcję, której model nigdy nie dostał.
         if let Err(error) =
@@ -1464,17 +1467,23 @@ async fn what_this_run_taught_us(
     let kept = keep_reflection_notes(deps, run, worth);
     Ok(ReflectionReceipt {
         ran: true,
-        kept,
+        kept: kept.kept,
+        discarded_again: kept.discarded_again,
         dropped_without_reason: without_reason,
         cost_usd: turn.cost_usd,
     })
 }
 
-fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) -> usize {
+fn keep_reflection_notes(
+    deps: &RunDeps<'_>,
+    run: &str,
+    worth: Vec<Remembered>,
+) -> KeptReflectionNotes {
     let library_root = super::memory::notes_root(deps.home);
     let project_root = super::memory::project_notes_root(deps.project);
     let at = noticed_now();
     let mut kept = 0;
+    let mut discarded_again = 0;
     for one in worth.into_iter().take(AT_MOST_KEPT) {
         let draft = crate::memory::notes::NoteDraft {
             // Tytuł JEST regułą, przyciętą do nazwy pliku: model nie pisze osobnego, a nazwa
@@ -1500,12 +1509,49 @@ fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) 
             run,
         ) {
             Ok(_) => kept += 1,
+            Err(crate::memory::notes::Error::PreviouslyDiscarded(_)) => {
+                discarded_again += 1;
+            }
             Err(error) => {
-                tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
+                warn_reflection_write_failed(run, &error);
             }
         }
     }
-    kept
+    KeptReflectionNotes {
+        kept,
+        discarded_again,
+    }
+}
+
+fn warn_reflection_write_failed(run: &str, error: &crate::memory::notes::Error) {
+    use tracing::callsite::Callsite as _;
+
+    // 2026-08-27 (T-133): dwa kończące się równolegle biegi mogą wywołać ten sam callsite z
+    // różnych dispatcherów. Bezpośrednia wysyłka do bieżącego dispatchera omija wyłącznie
+    // współdzielony cache zainteresowania; filtr aktywnego subscribera nadal rozstrzyga, czy
+    // zdarzenie zapisać. Dzięki temu błąd IO nie znika z diagnostyki pod obciążeniem.
+    let callsite = tracing::callsite! {
+        name: "reflection write failed",
+        kind: tracing::metadata::Kind::EVENT,
+        target: module_path!(),
+        level: tracing::Level::WARN,
+        fields: message, run, error,
+    };
+    let metadata = callsite.metadata();
+    tracing::Event::dispatch(
+        metadata,
+        &tracing::valueset!(
+            metadata.fields(),
+            message = "this run had something to remember and it could not be written down",
+            run = %run,
+            error = %error,
+        ),
+    );
+}
+
+struct KeptReflectionNotes {
+    kept: usize,
+    discarded_again: usize,
 }
 
 struct ReflectionTurn {
@@ -2345,6 +2391,9 @@ struct AgentJob {
     /// Dokładne źródła planowanej części promptu, bez treści. Przekazania dopisuje
     /// [`Live::prompt_for`] dopiero wtedy, gdy naprawdę istnieją.
     context: Vec<ContextSource>,
+    /// Dla każdej pasującej aktywnej notatki: weszła do planowanej części promptu albo została
+    /// odłożona przez limit. UUID fizycznego kroku dochodzi dopiero po udanym starcie procesu.
+    memory: Vec<MemoryDisposition>,
     /// Model z konfiguracji efektywnej.
     model: Option<String>,
     /// Prompt systemowy agenta. To jest konfiguracja agenta, nie treść zadania.
@@ -2867,6 +2916,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
 struct Known {
     text: String,
     sources: Vec<ContextSource>,
+    /// Rozstrzygnięcia wspólnych zakresów, zamrożone razem z tekstem promptu. UUID kroku
+    /// dochodzi do nich dopiero po udanym `AgentDriver::start`.
+    memory: Vec<MemoryDisposition>,
     /// Notatki odczytane RAZ, zanim ruszył pierwszy proces. Zamrożone: od tej chwili bieg ma
     /// jedną odpowiedź na pytanie, co wiedział.
     notes: Vec<crate::memory::notes::Note>,
@@ -2917,15 +2969,25 @@ fn what_the_agents_know(home: &Path, project: &Path) -> Known {
     }
     let mut text = String::new();
     let mut sources = Vec::new();
+    let mut memory = Vec::new();
     for scope in [
         crate::memory::notes::Scope::Everywhere,
         crate::memory::notes::Scope::ThisProject,
     ] {
-        add_block(&mut text, &mut sources, &notes, scope, home, project);
+        add_block(
+            &mut text,
+            &mut sources,
+            &mut memory,
+            &notes,
+            scope,
+            home,
+            project,
+        );
     }
     Known {
         text,
         sources,
+        memory,
         notes,
         snapshots,
     }
@@ -2941,19 +3003,19 @@ fn what_the_agents_know(home: &Path, project: &Path) -> Known {
 fn add_block(
     text: &mut String,
     sources: &mut Vec<ContextSource>,
+    memory: &mut Vec<MemoryDisposition>,
     notes: &[crate::memory::notes::Note],
     scope: crate::memory::notes::Scope,
     home: &Path,
     project: &Path,
 ) {
     let block = crate::memory::notes::what_you_know(notes, crate::memory::notes::Budget::of(scope));
-    if block.text.is_empty() {
-        return;
+    if !block.text.is_empty() {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&block.text);
     }
-    if !text.is_empty() {
-        text.push_str("\n\n");
-    }
-    text.push_str(&block.text);
     for id in &block.used {
         // `id` jest unikalne wyłącznie w jednym korzeniu. Zakres rozróżnia tu legalne bliźniaki:
         // biblioteczne `everywhere:same-address` i projektowe `this-project:same-address`
@@ -2967,10 +3029,32 @@ fn add_block(
         let Some(relative) = note_reference(&note.path, home, project) else {
             continue;
         };
+        let Some(address) = note_address(note, home, project) else {
+            continue;
+        };
         sources.push(ContextSource {
             kind: ContextKind::MemoryNote,
             reference: relative,
             bytes: note.rule.len(),
+        });
+        memory.push(MemoryDisposition {
+            address,
+            delivered: true,
+        });
+    }
+    for id in &block.dropped {
+        let Some(note) = notes
+            .iter()
+            .find(|note| note.scope == scope && &note.id == id)
+        else {
+            continue;
+        };
+        let Some(address) = note_address(note, home, project) else {
+            continue;
+        };
+        memory.push(MemoryDisposition {
+            address,
+            delivered: false,
         });
     }
 }
@@ -2980,6 +3064,30 @@ fn note_reference(path: &Path, home: &Path, project: &Path) -> Option<String> {
         .or_else(|_| path.strip_prefix(project))
         .ok()
         .map(|relative| relative.to_string_lossy().into_owned())
+}
+
+fn note_address(
+    note: &crate::memory::notes::Note,
+    home: &Path,
+    project: &Path,
+) -> Option<super::memory::NoteAddress> {
+    let place = if note.path.strip_prefix(home).is_ok() {
+        super::memory::NotePlace::Library
+    } else if note.path.strip_prefix(project).is_ok() {
+        super::memory::NotePlace::Project
+    } else {
+        return None;
+    };
+    Some(super::memory::NoteAddress {
+        place,
+        id: note.id.to_string(),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct MemoryDisposition {
+    address: super::memory::NoteAddress,
+    delivered: bool,
 }
 
 /// Co wie krok TEGO agenta: dwa zakresy wspólne dla biegu plus jego własny, trzeci.
@@ -3000,9 +3108,10 @@ fn what_this_step_knows(
     agent: &str,
     home: &Path,
     project: &Path,
-) -> (String, Vec<ContextSource>) {
+) -> (String, Vec<ContextSource>, Vec<MemoryDisposition>) {
     let mut text = known.text.clone();
     let mut sources = known.sources.clone();
+    let mut memory = known.memory.clone();
 
     let whose = crate::memory::slugify(agent);
     let mine: Vec<crate::memory::notes::Note> = known
@@ -3018,13 +3127,14 @@ fn what_this_step_knows(
     add_block(
         &mut text,
         &mut sources,
+        &mut memory,
         &mine,
         crate::memory::notes::Scope::ThisAgent,
         home,
         project,
     );
 
-    (text, sources)
+    (text, sources, memory)
 }
 
 /// Jedna notatka w zrzucie biegu: **czym była**, nie co mówiła.
@@ -3048,6 +3158,19 @@ struct MemoryRecord {
     /// Ile bajtów miało to zdanie w chwili startu. Ta liczba i odcisk odpowiadają na to samo
     /// pytanie dwiema drogami, więc zrzut przepisany po biegu rozjeżdża się z sobą samym.
     bytes: usize,
+    /// Pełny adres z T-131. Sam `id` nie rozróżnia legalnych bliźniaków w obu korzeniach.
+    address: super::memory::NoteAddress,
+    /// Pochodzenie jest typowane polem, nigdy rozpoznawane po kształcie wartości.
+    project: Option<String>,
+    from: Option<String>,
+    /// Fizyczne UUID kroków dopisane dopiero po udanym `AgentDriver::start`.
+    recipients: Vec<String>,
+    #[serde(rename = "leftOutFor")]
+    left_out_for: Vec<String>,
+    /// Czy którakolwiek planowana ścieżka naprawdę miała tę notatkę w promptcie. Tylko żywy
+    /// szczegół stempla; receipt rozróżnia to później przez listy odbiorców.
+    #[serde(skip)]
+    carried: bool,
     /// Fizyczny plik wyłącznie na czas żywego biegu; absolutna ścieżka nie trafia do receipt.
     #[serde(skip)]
     path: PathBuf,
@@ -3068,7 +3191,7 @@ fn what_this_run_knew(
     home: &Path,
     project: &Path,
 ) -> Vec<MemoryRecord> {
-    let carried: BTreeSet<&str> = steps
+    let dispositions: Vec<&MemoryDisposition> = steps
         .iter()
         .filter_map(|step| match &step.job {
             Job::Agent(job) => Some(job),
@@ -3078,26 +3201,41 @@ fn what_this_run_knew(
              * z tym samym ciałem paliłoby `match_same_arms`. */
             Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
         })
-        .flat_map(|job| job.context.iter())
-        .filter(|source| source.kind == ContextKind::MemoryNote)
-        .map(|source| source.reference.as_str())
+        .flat_map(|job| job.memory.iter())
         .collect();
 
-    known
+    let relevant: BTreeSet<&super::memory::NoteAddress> =
+        dispositions.iter().map(|one| &one.address).collect();
+    let carried: BTreeSet<&super::memory::NoteAddress> = dispositions
+        .iter()
+        .filter(|one| one.delivered)
+        .map(|one| &one.address)
+        .collect();
+
+    let mut records: Vec<MemoryRecord> = known
         .notes
         .iter()
         .filter_map(|note| {
+            let address = note_address(note, home, project)?;
             let reference = note_reference(&note.path, home, project)?;
             let snapshot = known.snapshots.get(&note.path)?;
-            carried.contains(reference.as_str()).then(|| MemoryRecord {
+            relevant.contains(&address).then(|| MemoryRecord {
                 hash: fingerprint(note.rule.as_bytes()),
                 bytes: note.rule.len(),
                 reference,
+                carried: carried.contains(&address),
+                address,
+                project: note.project.clone(),
+                from: note.from.clone(),
+                recipients: Vec::new(),
+                left_out_for: Vec::new(),
                 path: note.path.clone(),
                 snapshot: snapshot.clone(),
             })
         })
-        .collect()
+        .collect();
+    records.sort_by(|left, right| left.address.cmp(&right.address));
+    records
 }
 
 /// Zadanie kroku, poprzedzone tym, co wiadomo.
@@ -3541,7 +3679,7 @@ fn plan_agent(
     let instructions = numbered(&step.instructions, copy, step.copies);
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
-    let (knows, mut context) =
+    let (knows, mut context, memory) =
         what_this_step_knows(&setup.knows, &effective.name, setup.data, setup.project);
     if setup.is_ask {
         if !instructions.is_empty() {
@@ -3603,6 +3741,7 @@ fn plan_agent(
         prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &instructions)),
         asked: instructions,
         context,
+        memory,
         model: some_text(&effective.model),
         // Prompt systemowy agenta, nie treść zadania: treść zadania w tym polu byłaby
         // niezmiennikiem 9 złamanym po cichu, bo stąd wchodzi do argv.
@@ -5630,6 +5769,8 @@ fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> Ru
 struct ReflectionReceipt {
     ran: bool,
     kept: usize,
+    #[serde(rename = "discardedAgain")]
+    discarded_again: usize,
     dropped_without_reason: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
@@ -5743,6 +5884,8 @@ struct Book {
     ended_at: Option<i64>,
     /// Po jednym wpisie na krok, w kolejności z pliku workflow.
     steps: Vec<StepRun>,
+    /// Zamrożone fakty notatek plus listy fizycznych kroków dopisywane po udanym starcie.
+    memory: Vec<MemoryRecord>,
     /// Jedyny trwały fakt o prywatnej turze po biegu.
     reflection: ReflectionReceipt,
 }
@@ -5936,7 +6079,7 @@ struct Told {
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
     fn new(
-        plan: Plan,
+        mut plan: Plan,
         lines: LineSink,
         control: RunControl,
         slots: Limiter,
@@ -5978,6 +6121,9 @@ impl Live {
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
         let settled_at = Mutex::new(vec![None; plan.loops.len()]);
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
+        // Od tej chwili receipt jest częścią zmiennej księgi. Plan nie trzyma drugiej kopii,
+        // która mogłaby rozjechać się z listami odbiorców podczas równoległych startów.
+        let memory = std::mem::take(&mut plan.memory);
         Self {
             plan,
             book: Mutex::new(Book {
@@ -5986,6 +6132,7 @@ impl Live {
                 started_at: None,
                 ended_at: None,
                 steps,
+                memory,
                 reflection: ReflectionReceipt::default(),
             }),
             lines,
@@ -6679,9 +6826,9 @@ impl Live {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
-            // Prosto z planu, przy KAŻDYM zrzucie ta sama wartość: policzona przed pierwszym
-            // procesem i od tej chwili nietknięta.
-            memory: &self.plan.memory,
+            // Fakty notatki są zamrożone przed pierwszym procesem; tylko listy fizycznych UUID
+            // rosną w księdze, dokładnie na granicy udanego startu sterownika.
+            memory: &book.memory,
             /* SUFIT I WYDATEK IDĄ PARĄ ALBO NIE IDĄ WCALE. Bieg, którego nikt nie ograniczył,
              * nie ma o sufcie nic do powiedzenia, a klucz mówiący „bez sufitu" przy każdym biegu
              * w historii jest długością zapłaconą za milczenie — ta sama decyzja, co przy
@@ -7474,6 +7621,9 @@ impl Live {
 
         let turned = match started {
             Ok(handle) => {
+                // Uchwyt znaczy, że proces wstał i prompt dojechał przez stdin. Zapisujemy
+                // odbiorcę przed `wait`: późniejsza porażka tury nie cofa prawdziwej dostawy.
+                self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
             }
@@ -7501,6 +7651,34 @@ impl Live {
              * przekazania, jakie zostawia po sobie krok jadący dalej mimo porażki (T-87 AC-5). */
             Turned::Broke(why) => self.when_this_one_fails(id, why).await,
         }
+    }
+
+    fn record_memory_for_started_step(&self, id: StepId, memory: &[MemoryDisposition]) {
+        let step_id = self.plan.steps[id].id.clone();
+        self.update(|book| {
+            for disposition in memory {
+                let Some(record) = book
+                    .memory
+                    .iter_mut()
+                    .find(|record| record.address == disposition.address)
+                else {
+                    continue;
+                };
+                // Jedna notatka i jeden fizyczny krok należą dokładnie do jednej listy.
+                record.recipients.retain(|recipient| recipient != &step_id);
+                record
+                    .left_out_for
+                    .retain(|recipient| recipient != &step_id);
+                let recipients = if disposition.delivered {
+                    &mut record.recipients
+                } else {
+                    &mut record.left_out_for
+                };
+                recipients.push(step_id.clone());
+                recipients.sort();
+                recipients.dedup();
+            }
+        });
     }
 
     /// Krok „sprawdź": nasza komenda, nasz werdykt, zero sesji agenta.
