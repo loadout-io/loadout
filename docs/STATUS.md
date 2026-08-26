@@ -4,6 +4,34 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 00:32 — T-133 w trunku, próba IO refleksji jest obserwowalna
+
+**T-133 · zielone / WYLĄDOWANE · 24 min 38 s Harnessu + 2 min 23 s lądowania · $0,00
+raportowanego kosztu.** Enforced `before` uruchomiło dwa testy: kontrolny przeszedł, a drugi
+padł na brakującym `reflection.discardedAgain`, więc czerwień była zachowaniem, nie brakiem
+targetu albo kompilacji. Następnie zadanie selektywnie przejęło cztery dozwolone commity
+T-132, bez jego kontraktu, `TASK.md` ani całej gałęzi.
+
+Nowy target wykazał drugą, wcześniej niewidoczną granicę: warning niezależnego błędu IO
+znikał pod równoległymi dispatcherami przez współdzielony cache callsite'u, chociaż pojedynczy
+target przechodził. Dwa kolejne `quick` były czerwone; dopiero produkcyjna emisja do aktywnego
+dispatchera zachowała tę samą treść, UUID biegu i błąd oraz dała deterministyczne **15/15**.
+Nie serializowano testu i nie rozluźniono asercji. Commit implementacji to `8d71c2d`.
+
+Pierwsza pełna bramka hosta nie osądziła kodu, bo dysk miał 184 MiB wolnego i zakończyła się
+`No space left on device` przed recenzją. `cargo clean` usunął wyłącznie odtwarzalne `target/`
+pięciu starych worktree i odzyskał 28 GiB; źródła, gałęzie i paragony pozostały. Wznowiony
+Harness przeszedł **17/17 w 54,43 s**, a recenzent Codeks 5.5 odpowiedział `nothing to add`.
+`integrate.sh` wylądował tylko `task-T-133` jako merge **`dc8df68`**, usunął branchowy
+`TASK.md`; pełne bramki przed i po merge'u przeszły odpowiednio **16/16 w 43,16 s** oraz
+**16/16 w 93,97 s**. `main` jest czysty.
+
+Cztery zachowane paragony Codeksa pokazują co najmniej 8 268 763 tokeny wejścia (7 857 024
+z cache) i 44 494 wyjścia. Pierwsza tura implementacyjna straciła terminalny paragon przy
+wyczerpaniu dysku, więc są to liczniki dolne, nie pełny rachunek; Harness nie podał ceny
+dolarowej. Następne są świeże, rozdzielone zadania Stop/startup — stary T-106 nie będzie
+wznawiany.
+
 ## 2026-08-27, 00:05 — T-133 przejmuje receipt z obserwowalną próbą IO
 
 Na właścicielskie polecenie dalszej jazdy powstało **T-133**, pełny następca zamkniętego
