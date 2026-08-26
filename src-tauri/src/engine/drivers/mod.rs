@@ -19,6 +19,7 @@
 //! i jest opisana tam, przy [`AgentDriver::start`].
 
 use std::ffi::OsString;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -556,6 +557,50 @@ pub enum ImageError {
     Unsupported,
     #[error("The image contents do not match their file type.")]
     WrongMagic,
+}
+
+/// Rozpoznawalna kategoria odmowy przygotowania sterownika, niezależna od vendora.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DriverSetupFailure {
+    /// Proces nie ma bezpiecznego, prywatnego miejsca na swój stan.
+    PrivateState,
+}
+
+/// Zachowuje źródłowy błąd IO, a wołającemu pozwala wybrać jedno bezpieczne zdanie publiczne.
+#[derive(Debug)]
+pub(crate) struct DriverSetupError {
+    failure: DriverSetupFailure,
+    source: io::Error,
+}
+
+impl DriverSetupError {
+    pub(crate) fn private_state(source: io::Error) -> Self {
+        Self {
+            failure: DriverSetupFailure::PrivateState,
+            source,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn failure(&self) -> DriverSetupFailure {
+        self.failure
+    }
+}
+
+impl std::fmt::Display for DriverSetupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.failure {
+            DriverSetupFailure::PrivateState => {
+                formatter.write_str("the private process state directory could not be created")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DriverSetupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Czego ten JEDEN krok potrzebuje w swoim pliku ustawień — opis, nie dokument.

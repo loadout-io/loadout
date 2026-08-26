@@ -84,8 +84,9 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
-    Policy, Probe, RunSpec, SessionRef, StepSettings, ToAgent, Tokens, ValidatedImages, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, DriverSetupError,
+    FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, StepSettings, ToAgent, Tokens,
+    ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -793,12 +794,14 @@ impl RunSettings {
             .dir
             .join(PRIVATE_STATE_DIR)
             .join(&settings.work_key);
-        std::fs::create_dir_all(&private_state).with_context(|| {
-            format!(
-                "this agent's private state directory could not be created at {}",
-                private_state.display()
-            )
-        })?;
+        std::fs::create_dir_all(&private_state)
+            .map_err(DriverSetupError::private_state)
+            .with_context(|| {
+                format!(
+                    "this agent's private state directory could not be created at {}",
+                    private_state.display()
+                )
+            })?;
         let path = settings
             .dir
             .join(format!("claude-settings-{}.json", settings.work_key));
