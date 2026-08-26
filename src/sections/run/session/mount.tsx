@@ -174,6 +174,10 @@ function handoffsFor(agent: string, passed: readonly HandedOver[]): readonly Han
  * w żaden prompt (`memory::notes::what_you_know`), więc w bloku faktów o tym, co model dostał,
  * byłaby zdaniem, którego model nigdy nie przeczytał.
  *
+ * MIEJSCE I ZAKRES SĄ JEDNĄ GRANICĄ. Rust dopuszcza z biblioteki tylko `everywhere` oraz
+ * `this-agent`, a z projektu tylko `this-project`. Źle położona notatka zostaje w katalogu,
+ * ale nie jedzie w promptach, więc ten ekran także nie może jej pokazać.
+ *
  * WŁAŚCICIEL JEST TYLKO PRZY ZAKRESIE `this-agent`. Notatka `everywhere` i `this-project` jedzie
  * w promptach wszystkich kroków, a pole `agent` bywa przy niej wypełnione nazwą autora — użyte
  * jako filtr, schowałoby ją przed każdym agentem poza jednym. Nazwę zakresu jednego agenta
@@ -204,6 +208,9 @@ function notesFor(agent: string, known: readonly Note[]): readonly UsedNote[] {
       (note) =>
         note.status === 'in-use' &&
         note.leftOut !== true &&
+        ((note.place === 'library' &&
+          (note.scope === 'everywhere' || note.scope === 'this-agent')) ||
+          (note.place === 'project' && note.scope === 'this-project')) &&
         (note.scope !== 'this-agent' ||
           (note.agent !== null && note.agent !== undefined && agentKey(note.agent) === recipient)),
     )

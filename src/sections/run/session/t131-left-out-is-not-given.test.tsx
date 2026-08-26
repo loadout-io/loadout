@@ -40,6 +40,11 @@ const MINE = note('given-to-build', 'T131 Build-only note reached Build', {
   agent: BUILD,
   leftOut: false,
 });
+const PROJECT = note('given-to-project', 'T131 project note reached Build', {
+  place: 'project',
+  scope: 'this-project',
+  leftOut: false,
+});
 const CANDIDATE = note('not-approved', 'T131 suggested note stayed outside prompts', {
   status: 'suggested',
   leftOut: false,
@@ -52,8 +57,34 @@ const ANOTHER_AGENTS = note('given-to-check', 'T131 Check-only note stayed away 
 const LEFT_OUT = note('left-out', 'T131 length-limited note stayed outside prompts', {
   leftOut: true,
 });
+const LIBRARY_PROJECT_SCOPE = note(
+  'library-project-scope',
+  'T131 misplaced library project note stayed outside prompts',
+  {
+    scope: 'this-project',
+    leftOut: false,
+  },
+);
+const PROJECT_GLOBAL = note(
+  'project-global',
+  'T131 misplaced project global note stayed outside prompts',
+  {
+    place: 'project',
+    scope: 'everywhere',
+    leftOut: false,
+  },
+);
 
-const NOTES: readonly AcceptanceNote[] = [EVERYWHERE, MINE, CANDIDATE, ANOTHER_AGENTS, LEFT_OUT];
+const NOTES: readonly AcceptanceNote[] = [
+  EVERYWHERE,
+  MINE,
+  PROJECT,
+  CANDIDATE,
+  ANOTHER_AGENTS,
+  LEFT_OUT,
+  LIBRARY_PROJECT_SCOPE,
+  PROJECT_GLOBAL,
+];
 
 const { invoked } = vi.hoisted(() => ({
   invoked: vi.fn((command: string, _args?: unknown): Promise<unknown> => {
@@ -150,6 +181,7 @@ describe('the current Agent screen shows only notes the current prompt received'
   it('shows the admitted global note and this agent own admitted note', () => {
     expect(build).toContain(EVERYWHERE.rule + ' — in use');
     expect(build).toContain(MINE.rule + ' — in use');
+    expect(build).toContain(PROJECT.rule + ' — in use');
   });
 
   it('keeps a candidate and another agent private note off Build screen', () => {
@@ -159,6 +191,11 @@ describe('the current Agent screen shows only notes the current prompt received'
 
   it('keeps an in-use note left out by the current length limit off Build screen', () => {
     expect(build).not.toContain(LEFT_OUT.rule);
+  });
+
+  it('keeps notes with a place and scope pairing that Rust excludes off Build screen', () => {
+    expect(build).not.toContain(LIBRARY_PROJECT_SCOPE.rule);
+    expect(build).not.toContain(PROJECT_GLOBAL.rule);
   });
 
   it('control: the same left-out row remains visible in the real Memory catalog', () => {
