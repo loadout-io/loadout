@@ -4,6 +4,19 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 17:08 — T-139 przejmuje działający kod z lądowalnym oracle
+
+Właściciel polecił kontynuować po obowiązkowym postoju T-138. Świeże **T-139** startuje z
+czystego `main`, ma trzy nowe standalone targety i od początku wymaga funkcji testowych do 90
+linii. Dopiero po uczciwym `before` wolno mu zastosować siedem commitów produkcyjnych T-138;
+kontrakt, targety, pusty commit, naprawa testu i cała gałąź nie są wejściem.
+
+Pełne pokrycie T-138 pozostaje: realna refleksja z evidence, niekanoniczny snapshot, oba
+korzenie, exact prefix, trwały Move i cztery kliknięcia pełnego adresu. Nowa obowiązkowa scena
+sadzi tombstone wyłącznie w bibliotece i przez `record_project_candidate_from_run` dowodzi
+odmowy automatycznego zapisu do projektu; prefix-extra jest kontrolą negatywną. Operacyjnie
+bieg pozostaje Codex + Codex, a T-129/T-130 czekają na zielone lądowanie tego bloku.
+
 ## 2026-08-26, 16:56 — T-138 ZAMKNIĘTE: 18/19 po naprawie i niezałatana luka tombstone'a
 
 **T-138 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 44 min 11 s Harnessu · $0,00
