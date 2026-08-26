@@ -1510,7 +1510,7 @@ fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriv
     let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()?;
     let settings = crate::engine::drivers::StepSettings {
         dir: dir.to_path_buf(),
-        work_key: String::new(),
+        work_key: "_reflection".to_owned(),
         memory: dir.join(STEP_MEMORY_DIR).join("_reflection"),
         deny: crate::engine::drivers::host::deny_rules(deps.project),
     };
@@ -7019,7 +7019,9 @@ impl Live {
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
         let wanted = crate::engine::drivers::StepSettings {
             dir: self.plan.dir.clone(),
-            work_key: String::new(),
+            // Fizyczna praca, nie logiczny kafelek: kopie `s~2` mają wspólną pamięć kafelka,
+            // ale są równoległymi procesami i nie mogą współdzielić stanu Claude'a [T-127].
+            work_key: work_key_of(&self.plan.steps[id].node_key).to_owned(),
             memory: self.step_memory_dir(id),
             // Z KATALOGU ROBOCZEGO KROKU, nie z katalogu projektu biegu: krok pracujący we
             // własnej kopii plików ma tam swoją kopię `.claude/`, a odmowy czyta się z tego
