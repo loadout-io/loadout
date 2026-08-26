@@ -229,6 +229,7 @@ import os, re, sys
 
 root = sys.argv[1]
 carries = re.compile(r"\bassert\w*!|\bassert\b|\bexpect\(|\.toBe|\.toThrow|\.toEqual|\bdebug_assert")
+rust_fail_path = re.compile(r"\breturn\s+Err\s*\(")
 skip = {".git", "node_modules", "target", "dist", ".loadout", "refs"}
 
 for base, dirs, files in os.walk(root):
@@ -246,7 +247,14 @@ for base, dirs, files in os.walk(root):
             body = open(os.path.join(base, name), encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        n = sum(1 for line in body.split("\n") if carries.search(line))
+        # 2026-08-27, T-134: full-clippy wymusił zamianę `expect()` na jawną,
+        # warunkową ścieżkę błędu. To nadal asercja specyfikacji, nie jej ubytek.
+        n = sum(
+            1
+            for line in body.split("\n")
+            if carries.search(line)
+            or (name.endswith(".rs") and rust_fail_path.search(line))
+        )
         if n:
             print("%s\t%d" % (rel, n))
 FINGERPRINT

@@ -559,50 +559,66 @@ EXTRACT
 
   src="source '$fns'"
   mkdir -p "$wt/src-tauri/tests" "$wt/src-tauri/src"
-  # Trzy linie z asercją i jedna bez — plus PRODUKCYJNY plik, którego odcisk ma nie widzieć:
-  # tam asercji ubywa legalnie, bo szkielet znika razem z implementacją.
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\n' \
+  # Trzy makra, `expect` i warunkowy rustowy fail-path — plus PRODUKCYJNY plik, którego
+  # odcisk ma nie widzieć: tam asercji ubywa legalnie razem ze szkieletem.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nlet proof = maybe.expect("proof");\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\n' \
     > "$wt/src-tauri/tests/spec_one.rs"
-  printf 'assert!(internal);\nassert!(other);\n' > "$wt/src-tauri/src/thing.rs"
+  printf 'assert!(internal);\nreturn Err("production".into());\n' > "$wt/src-tauri/src/thing.rs"
 
   WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/a.tsv"
-  if [ "$(cat "$sandbox/a.tsv")" != "$(printf 'src-tauri/tests/spec_one.rs\t3')" ]; then
+  if [ "$(cat "$sandbox/a.tsv")" != "$(printf 'src-tauri/tests/spec_one.rs\t5')" ]; then
     echo "odcisk asercji nie mierzy tego, co ma mierzyć:" >&2
     sed 's/^/  /' "$sandbox/a.tsv" >&2
-    echo "  oczekiwano dokładnie: src-tauri/tests/spec_one.rs<TAB>3" >&2
-    echo "  (plik produkcyjny z dwiema asercjami NIE ma się tu pojawić)" >&2
+    echo "  oczekiwano dokładnie: src-tauri/tests/spec_one.rs<TAB>5" >&2
+    echo "  (plik produkcyjny z asercją i fail-pathem NIE ma się tu pojawić)" >&2
     rm -rf "$sandbox"; return 1
   fi
 
-  # (a) ubyło jednej asercji → strata musi być nazwana z pliku i obiema liczbami
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\n' > "$wt/src-tauri/tests/spec_one.rs"
+  # (a) usunięcie `expect` nadal jest stratą, nazwaną z pliku i obiema liczbami.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\n' > "$wt/src-tauri/tests/spec_one.rs"
   WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/b.tsv"
-  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/b.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 2'; then
-    echo "specyfikacja straciła asercję, a porównanie tego nie zgłosiło" >&2
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/b.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 4'; then
+    echo "specyfikacja straciła expect, a porównanie tego nie zgłosiło" >&2
     rm -rf "$sandbox"; return 1
   fi
 
-  # (b) przybyło → cisza. Bez tego strażnik przechodziłby także wtedy, gdyby porównanie
-  #     krzyczało zawsze, czyli gdyby nie mierzyło niczego.
-  printf 'assert_eq!(a, b);\nassert!(x);\nassert_ne!(c, d);\nassert!(more);\nassert!(yet);\n' \
-    > "$wt/src-tauri/tests/spec_one.rs"
+  # (b) usunięcie jawnego fail-path również jest stratą.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nlet proof = maybe.expect("proof");\n' > "$wt/src-tauri/tests/spec_one.rs"
   WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/c.tsv"
-  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/c.tsv'")" ]; then
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/c.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 4'; then
+    echo "specyfikacja straciła rustowy fail-path, a porównanie tego nie zgłosiło" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (c) zamiana `expect` na równoważny jawny fail-path zachowuje odcisk.
+  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\nif other.is_empty() {\n    return Err("missing other".into());\n}\n' > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/d.tsv"
+  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/d.tsv'")" ]; then
+    echo "równoważna zamiana expect na rustowy fail-path wygląda jak strata" >&2
+    rm -rf "$sandbox"; return 1
+  fi
+
+  # (d) przybyło → cisza. Bez tego strażnik przechodziłby także wtedy, gdyby porównanie
+  #     krzyczało zawsze, czyli gdyby nie mierzyło niczego.
+  printf 'assert_eq!(a, b);\nassert!(x);\nassert_ne!(c, d);\nassert!(more);\nassert!(yet);\nassert!(again);\n' \
+    > "$wt/src-tauri/tests/spec_one.rs"
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/e.tsv"
+  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/e.tsv'")" ]; then
     echo "specyfikacja ZYSKAŁA asercje, a porównanie zgłosiło stratę" >&2
     rm -rf "$sandbox"; return 1
   fi
 
-  # (c) skasowany plik to strata wszystkich jego asercji, a nie brak wpisu. Bez tego
+  # (e) skasowany plik to strata wszystkich jego asercji, a nie brak wpisu. Bez tego
   #     najprostsza droga na skróty — usuń specyfikację — byłaby niewidoczna.
   rm "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/d.tsv"
-  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/d.tsv'" | grep -q 'spec_one.rs: 3 assertion lines -> 0'; then
+  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/f.tsv"
+  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/f.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 0'; then
     echo "skasowana specyfikacja nie liczy się jako strata asercji" >&2
     rm -rf "$sandbox"; return 1
   fi
 
   rm -rf "$sandbox"
-  echo "specs: asercji może przybyć, ubyć nie może — odcisk widzi ubytek i skasowanie"
+  echo "specs: makra, expect i rustowy fail-path są chronione przed ubytkiem"
 }
 
 # ── gałąź ma być sądzona przez ORACLE Z TRUNKA, nie przez własną starą kopię ──
