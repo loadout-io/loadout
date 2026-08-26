@@ -200,6 +200,7 @@ fn the_settings_file_points_this_step_at_its_own_memory_directory() -> Result<()
     let wanted = run.path().join(STEP_MEMORY_DIR).join(STEP_ID);
     let step = StepSettings {
         dir: run.path().to_path_buf(),
+        work_key: STEP_ID.to_owned(),
         memory: wanted.clone(),
         deny: deny.clone(),
     };
@@ -294,6 +295,7 @@ fn codex_has_nowhere_to_take_a_settings_file() -> Result<(), Box<dyn Error>> {
     let run = TempDir::new()?;
     let step = StepSettings {
         dir: run.path().to_path_buf(),
+        work_key: STEP_ID.to_owned(),
         memory: run.path().join(STEP_MEMORY_DIR).join(STEP_ID),
         deny: vec![DENY_FIRST.to_owned()],
     };

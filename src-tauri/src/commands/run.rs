@@ -180,8 +180,8 @@ use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason,
-    Outcome as DriverOutcome, Policy, RunSpec,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, DriverSetupError,
+    DriverSetupFailure, FinishReason, Outcome as DriverOutcome, Policy, RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
@@ -554,6 +554,22 @@ const WRITE_RESULTS_TO: &str = "Write results to";
 /// tekst, który człowiek czyta na karcie kroku, więc czyta się go razem z resztą takich zdań.
 const CONTEXT_NOT_PROVEN: &str =
     "Loadout could not prove the context files for this agent, so it did not start the step.";
+
+const PRIVATE_STATE_NOT_READY: &str =
+    "Loadout could not create this agent's private state folder, so it did not start the step.";
+
+fn public_start_refusal(error: &anyhow::Error) -> String {
+    if error
+        .downcast_ref::<DriverSetupError>()
+        .is_some_and(|typed| typed.failure() == DriverSetupFailure::PrivateState)
+    {
+        // Pełny łańcuch z kontekstem ścieżki zostaje w diagnostyce; na ekran nie wolno
+        // wypuścić ani prywatnej ścieżki, ani surowego zdania systemu plików [T-127].
+        tracing::debug!(error = ?error, "the agent private state setup was refused");
+        return PRIVATE_STATE_NOT_READY.to_owned();
+    }
+    format!("Loadout could not start this agent: {error}")
+}
 
 /// Zdanie, którym kończy się każda ścieżka wyniku wypadająca poza folder kroku.
 ///
@@ -1510,6 +1526,7 @@ fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriv
     let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()?;
     let settings = crate::engine::drivers::StepSettings {
         dir: dir.to_path_buf(),
+        work_key: "_reflection".to_owned(),
         memory: dir.join(STEP_MEMORY_DIR).join("_reflection"),
         deny: crate::engine::drivers::host::deny_rules(deps.project),
     };
@@ -7018,6 +7035,9 @@ impl Live {
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
         let wanted = crate::engine::drivers::StepSettings {
             dir: self.plan.dir.clone(),
+            // Fizyczna praca, nie logiczny kafelek: kopie `s~2` mają wspólną pamięć kafelka,
+            // ale są równoległymi procesami i nie mogą współdzielić stanu Claude'a [T-127].
+            work_key: work_key_of(&self.plan.steps[id].node_key).to_owned(),
             memory: self.step_memory_dir(id),
             // Z KATALOGU ROBOCZEGO KROKU, nie z katalogu projektu biegu: krok pracujący we
             // własnej kopii plików ma tam swoją kopię `.claude/`, a odmowy czyta się z tego
@@ -7269,7 +7289,7 @@ impl Live {
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
             }
             Err(error) => {
-                let text = format!("Loadout could not start this agent: {error}");
+                let text = public_start_refusal(&error);
                 // `.into()` — `DecodedEvent::from(AgentEvent)` podstawia `tool: None`. Nieudany
                 // start nie jest czynnością narzędzia, więc brak faktu jest tu prawdą, nie luką.
                 let _ = ours
