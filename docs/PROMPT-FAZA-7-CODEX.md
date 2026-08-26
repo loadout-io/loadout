@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-129 zamknięte; T-131 następne, potem T-130)
+# Prompt orchestratora — faza 7 (T-131 w trunku; T-130 zamknięte; T-132 następne)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -45,10 +45,10 @@ wiązało legacy z widoczną strefą. T-138 naprawiło te granice i wszystkie AC
 pozostał lint 131-wierszowej funkcji oraz luka bibliotecznego tombstone'a. T-139 zachowało
 pokrycie, przeszło pierwszą bramkę 19/19, naprawiło uwagę recenzenta i po usunięciu presji
 dysku wylądowało przez `integrate.sh` z zielonym 16/16 przed i po merge'u. Właściciel następnie
-jawnie zamknął T-129 po błędnym kryterium UUID i utworzył T-131 jako jego pełnego następcę;
-T-130 rusza dopiero po zielonym lądowaniu T-131. T-131 sądzi bieżący katalog i widoczne
-etykiety, a T-130 zamrożony receipt rzeczywistych odbiorców. T-131 jest
-następne.
+jawnie zamknął T-129 po błędnym kryterium UUID i utworzył T-131 jako jego pełnego następcę.
+T-131 wylądowało zielono. T-130 zbudowało receipt, lecz mimo 19/19 zostało zamknięte bez
+lądowania: oracle nie sadził `AgentDriver::start -> Err`, a UI omijało prawdziwe kontrolki
+bezpośrednimi akcjami store. T-132 jest pełnym następcą z nowymi targetami i jest następne.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -65,7 +65,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-131.md` oraz historyczne T-136…T-139 | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
+| `tasks/T-98.md` … `tasks/T-132.md` oraz historyczne T-136…T-139 | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -283,6 +283,13 @@ przepina T-130 i uzgadnia plan, prompt oraz STATUS. T-131 ma trzy nowe targety i
 `before` może zastosować wyłącznie `dca0c89`, `7939635`, `d38cbde`; nigdy `6b8ad1d`, starych
 speców ani całej gałęzi T-129. Przed commitem wyłącznie `python3 harness/task-spine.py`.
 
+Najnowszy następca zamyka T-130 mimo zielonej bramki, bo recenzent wykazał dwie luki oracle,
+a jedyna naprawa pozostawiła je bez zmian. `tasks/T-132.md` zachowuje cały receipt T-130, lecz
+ma trzy nowe targety: kontrolowane `AgentDriver::start -> Err`, tolerancyjny drut historii i
+prawdziwy Chromium/React przez niezmieniony `e2e/harness.ts`, Enter `/history` oraz kliknięcie
+`data-history-row`. Dopiero po własnym uczciwym `before` wolno przejąć wyłącznie `442ce94`,
+`72dec4c` i `6663e2b`; nie `674b9e9`, starych targetów ani całej gałęzi T-130.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -292,10 +299,10 @@ Kolizje pierwotnych jedenastu zadań policzono **mechanicznie** 2026-08-24 (por�
 jednego wspólnego pliku była T-98 ∥ T-105.** T-98 wylądowało, T-105 zostało zamknięte po
 drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. T-111 idzie
 samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania, a T-114 wylądowało
-przed T-100. T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127 i T-139 są w trunku.
+przed T-100. T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-131 są w trunku.
 T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128,
-T-129, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix Harnessu `ba3d8be` jest w
-trunku; następny bieg to T-131, potem T-130. Pozostały łańcuch nadal dzieli `commands/run.rs`,
+T-129, T-130, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix Harnessu `ba3d8be`
+jest w trunku; następny bieg to T-132. Pozostały łańcuch nadal dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
@@ -331,8 +338,9 @@ trunku; następny bieg to T-131, potem T-130. Pozostały łańcuch nadal dzieli 
 | 8d | **ZAMKNIĘTE:** T-138, nie ląduj i nie wznawiaj | 18/19; drugi lint i brak biblioteka→projekt tombstone |
 | 8e | **WYŁĄDOWANE:** T-139 | pełny następca H16/H18; merge `0fb49a4`, 16/16 przed i po |
 | 8f | **ZAMKNIĘTE:** T-129, nie ląduj i nie wznawiaj | błędny zakaz UUID pozwalał maskować legalną nazwę projektu; przerwanie ujawniło sierotę Harnessu |
-| 8f2 | `./ship-task.sh T-131 --agent codex --reviewer codex` | pełny następca: bieżący limit/zasięg/pochodzenie bez heurystyki wartości |
-| 8g | `./ship-task.sh T-130 --agent codex --reviewer codex` | dopiero po lądowaniu T-131; receipt rzeczywistych odbiorców |
+| 8f2 | **WYŁĄDOWANE:** T-131 | bieżący limit/zasięg/pochodzenie bez heurystyki wartości; merge `4189789` |
+| 8g | **ZAMKNIĘTE:** T-130, nie ląduj i nie wznawiaj | 19/19, lecz dwa słabe oracle zostały bez naprawy |
+| 8h | `./ship-task.sh T-132 --agent codex --reviewer codex` | pełny następca T-130: `start -> Err` i prawdziwe kontrolki historii |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |

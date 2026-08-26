@@ -4,6 +4,20 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 23:29 — T-132 przejmuje receipt z mocnym oracle
+
+Na jawne właścicielskie polecenie kontynuacji z godmode powstało **T-132**, pełny następca
+zamkniętego T-130. Ma trzy nowe, globalnie unikalne targety. Rustowy workflow wymusza osobno
+udaną turę, porażkę po uchwycie, kontrolowane `AgentDriver::start -> Err` i krok pominięty
+przez graf; UUID dwóch ostatnich nie może pojawić się w `recipients` ani `leftOutFor`.
+Historyczny E2E używa niezmienionego `e2e/harness.ts`, wpisuje `/history`, naciska Enter i
+klika prawdziwy `data-history-row`; bezpośrednie akcje store i handlery są zakazane.
+
+Dopiero po własnym enforced `before` T-132 może selektywnie zastosować trzy commity
+produkcyjne T-130: `442ce94`, `72dec4c` i `6663e2b`. Nie przejmuje słabego kontraktu
+`674b9e9`, starych targetów ani całej gałęzi. Następne jedyne wejście to
+`./ship-task.sh T-132 --agent codex --reviewer codex`.
+
 ## 2026-08-26, 23:23 — T-130 WSTRZYMANE mimo zielonej bramki: dwa słabe oracle
 
 **T-130 · zielona bramka / WSTRZYMANE / NIEWYLĄDOWANE · 41 min 45 s · $0,00
