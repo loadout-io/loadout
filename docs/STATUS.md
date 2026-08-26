@@ -4,6 +4,29 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 17:55 — T-139 ZAMKNIĘTE: finalny timeout spoza OWNS po zielonej naprawie
+
+**T-139 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 34 min 49 s Harnessu · $0,00
+raportowanego kosztu.** Enforced `before` certyfikowało 3/3 prawdziwe czerwienie w 6,53 s.
+Pierwsza pełna bramka była zielona 19/19 w 51,48 s. Recenzent znalazł realny błąd: po
+przełączeniu B → C nadal widoczny wiersz B brał globalny folder C. Jedyna runda naprawcza
+związała cztery mutacje z `notesFolder`, dodała opóźnioną odpowiedź C i commit
+`c3e2096 fix(memory): bind actions to rendered catalog`.
+
+Ten commit przeszedł pełne 19/19 w 45,70 s podczas wykonania naprawy. Natychmiastowa końcowa
+bramka miała jednak 18/19: tylko istniejący
+`trigger_editor_writes_safe_file::recovery_waits_for_the_slug_that_owns_an_active_ledger_temp`
+zakończył się `cleanup oracle releases fetch: RecvError` oraz `Error: Timeout`. Wszystkie AC,
+Clippy, quick-checki i pozostała pełna suita były zielone. Wadliwy target leży poza `OWNS`
+T-139, więc kontraktu nie rozszerzono, testu nie poprawiono i bramki nie ponowiono „żeby
+sprawdzić”. Zgodnie z regułą wyniku spoza OWNS zadanie jest zamknięte, nie wylądowane.
+
+Gałąź `task-T-139`, czysty worktree i `runs/T-139/gate-final.json` pozostają dowodem związanym
+z commitem `c3e20969414199e8b8d3b806f9fe065eed2e4c73`. Zarejestrowane tury pisarza zużyły co
+najmniej 14 548 218 tokenów wejścia (13 962 240 z cache) i 56 391 wyjścia; Harness nie podał
+dolarowego kosztu Codeksa. Dalsze H16/H18 wymaga decyzji właściciela: jawnego lądowania przez
+`integrate.sh task-T-139` z jego własną pełną bramką albo świeżego następcy z nowymi targetami.
+
 ## 2026-08-26, 17:08 — T-139 przejmuje działający kod z lądowalnym oracle
 
 Właściciel polecił kontynuować po obowiązkowym postoju T-138. Świeże **T-139** startuje z
