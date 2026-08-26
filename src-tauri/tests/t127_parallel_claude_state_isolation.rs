@@ -196,6 +196,74 @@ async fn copies_overlap_and_reflection_uses_a_third_private_spawn() -> Result<()
     assert_eq!(fs::read(&bench.home_state)?, HOME_SENTINEL);
     assert_eq!(fs::read(bench.hostile.join("sentinel"))?, HOSTILE_SENTINEL);
     assert_eq!(names_in(&bench.hostile)?, vec!["sentinel"]);
+
+    later_round_keeps_copy_state_keys_stable().await?;
+    Ok(())
+}
+
+async fn later_round_keeps_copy_state_keys_stable() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::looped()?;
+    the_fixture_can_run(&bench.workflow, &bench.agent)?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: real_claude_factory(bench.binary.clone(), bench.fake_home.path(), &bench.hostile),
+        processes: Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+    let request = RunRequest {
+        workflow: bench.workflow.clone(),
+        how_many_at_once: 2,
+        task: None,
+        part: None,
+        handoffs_from: None,
+    };
+    let (sink, source) = line_channel(QUEUE_CAP);
+    let pump = spawn_pump(source, Channel::new(|_| Ok(())));
+    let report = tokio::time::timeout(
+        PATIENCE,
+        run_workflow_with_reflection(&deps, &request, sink, None, true),
+    )
+    .await
+    .map_err(|_| "the looped two-copy workflow did not reach its later round in time")??;
+    tokio::time::timeout(PATIENCE, pump).await??;
+
+    assert_eq!(report.outcome, Outcome::Done);
+    let run: Value = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
+    let node_keys = run
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|step| step.get("node_key").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    assert!(
+        node_keys.contains("s_parallel#1") && node_keys.contains("s_parallel~2#1"),
+        "the fixture never reached both copies in a later round: {node_keys:?}"
+    );
+
+    let expected = expected_states(&report.dir);
+    assert_eq!(state_dirs(&report.dir)?, expected);
+    let audited = audited_spawns(&bench.audit)?;
+    assert_eq!(
+        audited.len(),
+        5,
+        "two rounds of two copies plus reflection must start five Claude processes: {audited:?}"
+    );
+    assert_eq!(
+        audited
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect::<BTreeSet<_>>(),
+        expected,
+        "later-round #turn suffixes leaked into state paths, or copy suffixes were collapsed"
+    );
+    assert!(audited.iter().all(|entry| entry.existed));
+    assert_eq!(fs::read(&bench.home_state)?, HOME_SENTINEL);
+    assert_eq!(fs::read(bench.hostile.join("sentinel"))?, HOSTILE_SENTINEL);
+    assert_eq!(names_in(&bench.hostile)?, vec!["sentinel"]);
     Ok(())
 }
 
@@ -349,6 +417,64 @@ impl Bench {
             hostile,
             home_state,
         })
+    }
+
+    fn looped() -> Result<Self, Box<dyn Error>> {
+        let bench = Self::new()?;
+        let counter = bench.home.path().join("loop-rounds");
+        let checker = bench.home.path().join("loop-check");
+        fs::write(
+            &checker,
+            r#"#!/bin/sh
+counter=$1
+printf '%s\n' round >> "$counter"
+runs=$(wc -l < "$counter" | tr -d ' ')
+if [ "$runs" -ge 2 ]; then
+  printf '%s\n' 'test result: ok. 1 passed; 0 failed'
+  exit 0
+fi
+printf '%s\n' 'test result: FAILED. 0 passed; 1 failed'
+exit 1
+"#,
+        )?;
+        fs::set_permissions(&checker, fs::Permissions::from_mode(0o755))?;
+        let workflow = format!(
+            r#"{{
+  "format": 1,
+  "id": "wf_t127_parallel_state_later_round",
+  "name": "Parallel private state across rounds",
+  "steps": [
+    {{
+      "kind": "agent",
+      "id": "s_parallel",
+      "name": "Parallel",
+      "agent": "01990000-0000-7000-8000-000000000127",
+      "overrides": {{}},
+      "copies": 2,
+      "instructions": "Return a useful handoff for copy {{{{copy}}}} of {{{{copies}}}}.",
+      "folder": {{ "use": "fresh-copy" }},
+      "at": {{ "x": 0, "y": 0 }}
+    }},
+    {{
+      "kind": "check",
+      "id": "s_check",
+      "name": "Check both copies",
+      "command": "{} {}",
+      "proof": "(\\d+) passed",
+      "folder": {{ "use": "project" }},
+      "at": {{ "x": 0, "y": 180 }}
+    }}
+  ],
+  "links": [
+    {{ "from": "s_parallel", "to": "s_check" }},
+    {{ "from": "s_check", "to": "s_parallel", "max_turns": 2 }}
+  ]
+}}"#,
+            checker.display(),
+            counter.display()
+        );
+        fs::write(&bench.workflow, workflow)?;
+        Ok(bench)
     }
 
     fn db(&self) -> PathBuf {
