@@ -90,7 +90,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-139 wylądowało** (T-104/T-128/T-136/T-137/T-138 zamknięte) |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po wylądowanym adresie T-139 |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 zakontraktowane:** bieżący limit/zasięg/pochodzenie → **T-130 zakontraktowane:** zamrożeni odbiorcy po lądowaniu T-129 |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
@@ -349,6 +349,14 @@ człowiekowi. T-128 zamknięto na dwóch starych testach poza OWNS, a T-136 po c
 bramce i lukach oracle; T-137 zamknięto 17/19, T-138 18/19, a zakres przejmują świeże T-139 → T-129 → T-130. Niczego nie przenosi
 się ze starej gałęzi T-104.
 
+**T-129 i T-130 — KONTRAKTY UTWORZONE.** T-129 ma trzy standalone targety dla bieżącego
+katalogu, prawdziwego Memory UI i bieżącego ekranu agenta. Nie dotyka `run.rs`, historii ani
+Store. T-130 rusza dopiero po jego lądowaniu i ma trzy osobne targety dla rzeczywistych
+odbiorców zapisanych po udanym `AgentDriver::start`, tolerancyjnego odczytu historycznego oraz
+pełnego ekranu `/history`. Receipt zostaje w `run.json`; SQLite nie dostaje martwej kopii bez
+produkcyjnego zapytania. Oba kontrakty z góry posiadają historyczne wyrocznie, które zmiana
+kształtu lub tekstu może legalnie wymagać poprawić.
+
 **T-128 — ZAMKNIĘTE, bez lądowania.** Oba nowe AC były zielone, lecz pełna suita ujawniła
 pięć historycznych fixture zakładających bibliotekę dla `this-project`. Po jawnie zatwierdzonej
 naprawie testów pełna bramka odmówiła dwóm koniecznym plikom poza `OWNS` i znalazła kolejny
@@ -454,7 +462,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127 i T-139 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137 i T-138 są zamknięte. T-129 jest następne.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127 i T-139 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137 i T-138 są zamknięte. T-129 i T-130 mają świeże kontrakty; T-129 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów,
   Zamkniętych gałęzi nie wolno lądować ani przenosić w całości; T-139 stoi już w trunku.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
@@ -468,8 +476,8 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 - **T-127 po T-126 wylądowało.** T-128 zamknięto na dwóch starych testach poza OWNS, T-136
   po czerwonej bramce i lukach oracle, T-137 po 17/19, T-138 po 18/19 i luce tombstone'a,
   a T-139 wylądowało po zielonych bramkach integracji. T-129 musi wylądować przed receiptem
-  T-130. Wszystkie trzy
-  dzielą pamięć i `run.rs`, więc idą szeregowo.
+  T-130. T-129 świadomie nie posiada `run.rs`, ale jest semantycznym wejściem T-130: zamraża
+  kształt pochodzenia, który receipt ma potem zachować. Dlatego oba zadania idą szeregowo.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness

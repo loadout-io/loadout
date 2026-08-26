@@ -4,6 +4,23 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 19:35 — kontrakty T-129 i T-130 gotowe
+
+Na jawne polecenie właściciela powstały dwa świeże kontrakty po T-139, bez kodu
+produkcyjnego i bez uruchamiania bramki. **T-129** ma trzy globalnie unikalne targety i
+rozstrzyga wyłącznie bieżący katalog: `Block::dropped`, prawdziwy zasięg, rozdzielone
+pochodzenie projektu/biegu oraz widoczny ekran Memory i bieżącego agenta. Jego `OWNS`
+obejmuje z góry pięć historycznych wyroczni, które przy zmianie lustra lub tekstu muszą
+pozostać kompilowalne — to wprost eliminuje klasę zamknięcia T-128.
+
+**T-130** ma trzy inne, globalnie unikalne targety i rusza dopiero po wylądowaniu T-129.
+Zamraża pełny adres i pochodzenie, zapisuje `recipients` oraz `leftOutFor` po UUID dopiero po
+udanym starcie procesu, prowadzi receipt przez `run.json` do historii i prawdziwego ekranu
+oraz domyka licznik ponownie odrzuconych propozycji refleksji. Nie dodaje kopii do SQLite:
+historia czyta plik biegu bezpośrednio, więc kolumna bez produkcyjnego czytelnika byłaby
+martwym indeksem sprzecznym z niezmiennikiem 21. Operacyjnie oba biegi pozostają Codex +
+Codex; następne wejście Harnessu to T-129.
+
 ## 2026-08-26, 19:04 — T-139 w trunku po usunięciu presji dysku
 
 **T-139 · zielone / WYLĄDOWANE · 34 min 49 s Harnessu + 4 min 12 s lądowania · $0,00
