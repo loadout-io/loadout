@@ -118,6 +118,12 @@ const LOGS_DIR: &str = "logs";
 /// (`docs/ARCHITECTURE.md` §8), a nie w `$TMPDIR`.
 const RUN_SETTINGS_FILE: &str = "claude-settings.json";
 
+/// Prywatny stan procesów Claude'a należy do biegu, nie do `HOME` człowieka.
+const PRIVATE_STATE_DIR: &str = "claude";
+
+/// Oficjalny szew Claude Code, który przenosi stan procesu poza współdzielone `HOME`.
+const PRIVATE_STATE_ENV: &str = "CLAUDE_CONFIG_DIR";
+
 /// Wiersz transportu: cztery flagi, które decydują, **czym** jest to wywołanie.
 ///
 /// `--verbose` nie jest ozdobą — bez niej CLI odmawia startu, dosłownie:
@@ -668,6 +674,8 @@ impl Transcript {
 pub struct RunSettings {
     /// Gdzie ten plik leży. Ta sama ścieżka, która ma stanąć obok `--settings` w argv.
     path: PathBuf,
+    /// Prywatny katalog stanu tego procesu. `None` zachowuje stary, ogólny plik ustawień.
+    private_state: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for RunSettings {
@@ -759,7 +767,10 @@ impl RunSettings {
             )
         })?;
 
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            private_state: None,
+        })
     }
 
     /// Zapisuje plik ustawień JEDNEGO KROKU: odmowy gospodarza plus jego własna auto-pamięć.
@@ -771,18 +782,26 @@ impl RunSettings {
     /// biegu idą RÓWNOLEGLE (niezmiennik 11). Jedna nazwa dla wszystkich znaczyłaby, że krok,
     /// który wstaje sekundę później, nadpisuje plik, którego proces poprzednika jeszcze nie
     /// zdążył wczytać — i tamten krok pisałby swoją pamięć do katalogu cudzego kroku. Klucz
-    /// bierzemy z ostatniego członu ścieżki pamięci, bo to ten sam klucz, którym bieg nazywa
-    /// `work/<krok>` i `mem/<krok>`: jest już nazwą katalogu w tym biegu, więc jest nazwą,
-    /// którą ten system plików przyjmuje.
+    /// bierzemy z jawnego klucza fizycznej pracy. Nie wolno wyprowadzać jej z katalogu pamięci:
+    /// pamięć należy do logicznego kafelka, a dwie równoległe kopie tego kafelka są dwoma
+    /// procesami i muszą dostać dwa różne pliki oraz dwa różne katalogi stanu [T-127].
     ///
     /// Katalogu pamięci **nie zakłada** i miejsca sobie **nie wybiera**, dokładnie jak
     /// [`RunSettings::write`]: układ katalogów biegu zna warstwa wyżej.
     pub fn for_step(settings: &StepSettings) -> anyhow::Result<Self> {
-        let step = settings.memory.file_name().map_or_else(
-            || std::borrow::Cow::Borrowed("step"),
-            |name| name.to_string_lossy(),
-        );
-        let path = settings.dir.join(format!("claude-settings-{step}.json"));
+        let private_state = settings
+            .dir
+            .join(PRIVATE_STATE_DIR)
+            .join(&settings.work_key);
+        std::fs::create_dir_all(&private_state).with_context(|| {
+            format!(
+                "this agent's private state directory could not be created at {}",
+                private_state.display()
+            )
+        })?;
+        let path = settings
+            .dir
+            .join(format!("claude-settings-{}.json", settings.work_key));
 
         let document = StepDocument {
             auto_memory_directory: &settings.memory,
@@ -801,13 +820,20 @@ impl RunSettings {
             )
         })?;
 
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            private_state: Some(private_state),
+        })
     }
 
     /// Ścieżka zapisanego pliku — ta sama, którą dostaje `--settings`.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn private_state(&self) -> Option<&Path> {
+        self.private_state.as_deref()
     }
 }
 
@@ -889,6 +915,26 @@ impl Default for ClaudeDriver {
 }
 
 impl ClaudeDriver {
+    /// Connections są wejściem, ale prywatny katalog biegu jest ostatnim słowem adaptera.
+    /// Usunięcie wszystkich wcześniejszych wystąpień przed dopisaniem jednego zapobiega
+    /// zależności od tego, jak `Command` rozstrzygnie duplikaty tej samej nazwy [T-127].
+    fn environment_for_spawn(&self) -> Vec<(String, std::ffi::OsString)> {
+        let mut environment = self
+            .configuration
+            .environment
+            .iter()
+            .filter(|(name, _)| name != PRIVATE_STATE_ENV)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(private_state) = self.settings.as_ref().and_then(RunSettings::private_state) {
+            environment.push((
+                PRIVATE_STATE_ENV.to_owned(),
+                private_state.as_os_str().to_os_string(),
+            ));
+        }
+        environment
+    }
+
     /// Sterownik wołający `claude` z `PATH`.
     #[must_use]
     pub fn new() -> Self {
@@ -2824,13 +2870,14 @@ impl ClaudeDriver {
                 target.mark_incomplete();
             }
         })?;
+        let environment = self.environment_for_spawn();
         let mut process = supervisor::spawn_with_environment(
             self.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
             // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
             StdinPlan::Keep(format!("{envelope}\n")),
-            &self.configuration.environment,
+            &environment,
         )
         .inspect_err(|_error| {
             if let Some(target) = &self.evidence {
