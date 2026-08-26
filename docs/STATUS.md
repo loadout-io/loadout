@@ -4,6 +4,30 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 23:57 — T-132 WSTRZYMANE mimo zielonej bramki: nieudowodniona próba IO
+
+**T-132 · zielona bramka / WSTRZYMANE / NIEWYLĄDOWANE · 27 min 14 s · $0,00
+raportowanego kosztu.** Enforced `before` certyfikowało trzy prawdziwe czerwienie w 3,13 s.
+Mocniejszy fake naprawdę wywołuje `AgentDriver::start -> Err`, wiąże każdą próbę z fizycznym
+UUID i odróżnia ją od porażki po uchwycie oraz kroku pominiętego przez graf. Prawdziwy E2E
+wpisuje `/history`, naciska Enter, klika wyrenderowany wiersz i czyta zamrożony receipt spod
+właściwego kroku. Pierwsza hostowa bramka przeszła **19/19 w 52,78 s**.
+
+Recenzent znalazł jednak jedną zasadną lukę medium w AC-1. Fixture z góry tworzy katalog pod
+ścieżką trzeciej kandydatki refleksji, a końcowa asercja sprawdza tylko, że katalog istnieje.
+Implementacja, która przetworzyłaby jedynie dwie pierwsze kandydatki, nadal mogłaby zachować
+jedną notatkę, policzyć tombstone i przejść bez dowodu, że niezależna gałąź błędu IO została
+w ogóle wywołana. Plan naprawy poprawnie uznał to za wadę oracle, ale wykonawca nie zmienił
+testu ani produkcji. Bramka po rundzie naprawczej przeszła **19/19 w 46,68 s**, a końcowa
+**19/19 w 45,17 s**; zielony wynik nie odpowiada więc na uwagę recenzenta. `task-T-132`
+pozostaje czystym dowodem na `48a7fed` i nie wolno jej lądować.
+
+Pięć tur Codeksa zużyło 12 905 584 tokeny wejścia (12 281 728 z cache) i 59 275 wyjścia;
+Harness nie podał ceny dolarowej. Uczciwa kontynuacja wymaga świeżego, globalnie unikalnego
+targetu, który obserwuje faktyczną próbę trzeciego zapisu IO, a nie tylko stan fixture. Dopiero
+po własnym czerwonym `before` następca może selektywnie przejąć commity T-132; zielone testy
+T-132 ani cała gałąź nie są zgodą na lądowanie.
+
 ## 2026-08-26, 23:29 — T-132 przejmuje receipt z mocnym oracle
 
 Na jawne właścicielskie polecenie kontynuacji z godmode powstało **T-132**, pełny następca
