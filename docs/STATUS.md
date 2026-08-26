@@ -4,6 +4,37 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 16:56 — T-138 ZAMKNIĘTE: 18/19 po naprawie i niezałatana luka tombstone'a
+
+**T-138 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 44 min 11 s Harnessu · $0,00
+widoczne.** Dwie zapisane tury Codeksa zużyły 26,06 mln tokenów wejścia (25,54 mln z cache)
+i 80,1 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu tokenów.
+Enforced `before` certyfikowało wszystkie trzy nowe targety w 7,06 s.
+
+Implementacja przejęła pięć dozwolonych commitów T-137 i domknęła pełny workflow dwóch
+korzeni, działającą refleksję z wrapperami i evidence, bajtowy snapshot, trwały Move oraz
+adresowane akcje okna. Pierwsza pełna bramka miała **18/19** w 54,71 s: pełna suita i AC-1,
+AC-2, AC-3 przeszły, a `full-clippy` znalazł identyczne ramiona `match` w nowym oracle Move.
+
+Recenzent zgłosił jedną zasadną lukę medium. Oracle tombstone'a wołał drogę jednego korzenia,
+więc nie dowodził, że dokładny tombstone w bibliotece blokuje automatyczny zapis do korzenia
+projektu. Plan naprawy wskazał właściwą scenę przez `record_project_candidate_from_run`, lecz
+wykonawca uznał zmianę oracle za wymagającą decyzji człowieka i jej nie wykonał. Połączył tylko
+ramiona `match` w `b997767`; kolejna pełna bramka ujawniła drugi lint w tym samym nowym
+targetcie: funkcja snapshot/reflection ma 131 linii przy limicie 100.
+
+Końcowa bramka na czystym `b997767` ponownie miała **18/19** w 45,81 s. Wszystkie testy i
+trzy AC są zielone; jedyną formalną czerwienią jest `full-clippy`, ale luka bibliotecznego
+tombstone'a pozostaje prawdziwa niezależnie od wyniku bramki. Po jednej rundzie nie ma piątej
+tury, ręcznego refaktoru ani lądowania.
+
+Gałąź `task-T-138`, czysty worktree i `runs/T-138/` pozostają dowodem. Świeży następca musi
+mieć trzy nowe globalnie unikalne targety, od początku rozbić długą funkcję oracle i dodać
+wielokorzeniową scenę tombstone'a. Dopiero po własnym czerwonym `before` może jawnie przejąć
+produkcyjne commity T-138: `705f433`, `7d9bbc9`, `124cc46`, `6642567`, `5ceea68`, `d439a25`
+i `3dba18d`. Nie przenosi `f782ef9`, `330a49d`, `9e8ec91`, `b997767`, targetów T-138 ani
+całej gałęzi.
+
 ## 2026-08-26, 14:18 — T-138 przejmuje H16/H18 bez powtarzania implementacji
 
 Właściciel polecił przyspieszyć po obowiązkowym postoju T-137. Świeże **T-138** startuje z
