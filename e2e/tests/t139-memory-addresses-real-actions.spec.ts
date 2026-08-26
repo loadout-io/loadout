@@ -10,8 +10,10 @@ import { closeEverything, openApp } from '../harness';
 
 const A = '/Users/somebody/Projects/t139-a';
 const B = '/Users/somebody/Projects/t139-b';
+const C = '/Users/somebody/Projects/t139-c';
 const WORKSPACE_A = { id: A, name: 'T139 A', folder: A };
 const WORKSPACE_B = { id: B, name: 'T139 B', folder: B };
+const WORKSPACE_C = { id: C, name: 'T139 C', folder: C };
 const MEMORY = 'main[data-section="memory"]';
 const CALL_LIMIT = 4_000;
 const TEST_LIMIT = 20_000;
@@ -82,6 +84,7 @@ const MOVED_LEGACY = note(
 
 const CATALOG_A = [note('project', 'a-only', 'T139 stale A must never repaint B')];
 const CATALOG_B = [LEGACY, LIBRARY_DUPLICATE, PROJECT_DUPLICATE];
+const CATALOG_C = [note('project', 'c-only', 'T139 C must survive a late B mutation')];
 const AFTER_MOVE = [LIBRARY_DUPLICATE, PROJECT_DUPLICATE, MOVED_LEGACY];
 const AFTER_USE = [
   LIBRARY_DUPLICATE,
@@ -112,6 +115,19 @@ function addressedScene(): Readonly<Record<string, readonly TauriReply[]>> {
     put_note_to_use: [{ value: AFTER_USE }],
     stop_using_note: [{ value: AFTER_STOP }],
     discard_note: [{ value: AFTER_DISCARD }],
+  };
+}
+
+function changingWorkspaceScene(): Readonly<Record<string, readonly TauriReply[]>> {
+  return {
+    list_workspaces: copies([WORKSPACE_A, WORKSPACE_B, WORKSPACE_C]),
+    list_notes: [
+      { deferred: 'catalog-a' },
+      { deferred: 'catalog-b' },
+      { deferred: 'catalog-c' },
+    ],
+    list_handoffs: copies([]),
+    move_note_to_project: [{ deferred: 'move-from-b' }],
   };
 }
 
@@ -284,6 +300,37 @@ describe('Memory keeps two roots and four human actions observable', () => {
         await moveLegacyFromItsVisibleZone(app);
         await clickProjectDuplicateActions(app);
         await expectExactTape(app);
+      } finally {
+        await app.close();
+      }
+    },
+    TEST_LIMIT,
+  );
+
+  it(
+    'keeps a visible B row addressed to B while C loads and ignores its late mutation result',
+    async () => {
+      const app = await openMemory(changingWorkspaceScene());
+      try {
+        await settleBothCatalogs(app);
+
+        await app.page.locator('[data-workspace-open]').click();
+        await app.page.locator(`[data-workspace-pick="${C}"]`).click();
+        await waitForCalls(app, 'list_notes', 3);
+        await expectAddresses(app, ['library:legacy', 'library:same', 'project:same']);
+
+        await row(app, 'library:legacy')
+          .getByRole('button', { name: 'Move to this project', exact: true })
+          .click();
+        const moves = await waitForCalls(app, 'move_note_to_project', 1);
+        expect(moves.map((call) => call.args)).toEqual([
+          { catalogFolder: B, place: 'library', id: 'legacy' },
+        ]);
+
+        await app.settle('catalog-c', { value: CATALOG_C });
+        await expectAddresses(app, ['project:c-only']);
+        await app.settle('move-from-b', { value: AFTER_MOVE });
+        await expectAddresses(app, ['project:c-only']);
       } finally {
         await app.close();
       }

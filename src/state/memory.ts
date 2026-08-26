@@ -141,8 +141,10 @@ export interface Choice {
 
 export interface MemoryState {
   notes: Note[];
-  /** Folder zamrożony przy ostatnim odczycie katalogu; wszystkie kliknięcia używają jego. */
+  /** Folder wybrany do bieżącego odczytu; może wyprzedzać wciąż widoczne `notes`. */
   catalogFolder: string | null;
+  /** Folder, który wyprodukował widoczne `notes`; wszystkie kliknięcia używają jego. */
+  notesFolder: string | null;
   /** Rosnący numer odczytu, który odcina spóźnione odpowiedzi poprzedniego workspace'a. */
   generation: number;
   /**
@@ -217,6 +219,7 @@ function request(catalogFolder: string | null, address: NoteAddress) {
 export const useMemory = create<MemoryState>()((set, get) => ({
   notes: [],
   catalogFolder: null,
+  notesFolder: null,
   generation: 0,
   passed: [],
   message: null,
@@ -240,10 +243,12 @@ export const useMemory = create<MemoryState>()((set, get) => ({
         const notes = await listNotes(frozenFolder);
         // 2026-08-26 (T-128): odpowiedź A może wrócić po B. Numer odczytu jest jedyną
         // autoryzacją do podmiany katalogu; sama zgodność folderu nie odróżnia A1 od A2.
-        if (get().generation === generation) set({ notes, message: null });
+        if (get().generation === generation) {
+          set({ notes, notesFolder: frozenFolder, message: null });
+        }
       } catch (refusal) {
         if (get().generation === generation) {
-          set({ notes: [], message: why(refusal, COULD_NOT_READ) });
+          set({ notes: [], notesFolder: null, message: why(refusal, COULD_NOT_READ) });
         }
       }
     })();
@@ -263,17 +268,17 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   },
 
   use: async (address) => {
-    const { catalogFolder, generation } = get();
+    const { notesFolder, generation } = get();
     try {
       /* Komenda, odpowiedź, DOPIERO POTEM stan. Wiersz przestawiony przed odpowiedzią pokazuje
        * „In use" dla notatki, której plik dalej mówi `suggested` — czyli kłamie dokładnie o tym
        * jednym, o czym ta sekcja mówi: co wejdzie do promptu następnego agenta. */
-      const notes = await putToUse(request(catalogFolder, address));
-      if (get().generation === generation) {
+      const notes = await putToUse(request(notesFolder, address));
+      if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ notes, message: null, choice: null });
       }
     } catch (refusal) {
-      if (get().generation !== generation) return;
+      if (get().generation !== generation || get().notesFolder !== notesFolder) return;
       if (isMemoryFull(refusal)) {
         /* Lista do wymuszonego wyboru przychodzi Z ODMOWY i tylko stamtąd. Złożona tutaj
          * z tego, co sekcja akurat trzyma, byłaby drugą odpowiedzią na pytanie „co odstawić",
@@ -292,21 +297,21 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   },
 
   stopUsing: async (address) => {
-    const { catalogFolder, generation } = get();
+    const { notesFolder, generation } = get();
     try {
-      const notes = await stopUsingOnDisk(request(catalogFolder, address));
-      if (get().generation === generation) {
+      const notes = await stopUsingOnDisk(request(notesFolder, address));
+      if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ notes, message: null, choice: null });
       }
     } catch (refusal) {
-      if (get().generation === generation) {
+      if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ message: why(refusal, COULD_NOT_STOP), choice: null });
       }
     }
   },
 
   discard: async (address) => {
-    const { catalogFolder, generation } = get();
+    const { notesFolder, generation } = get();
     try {
       /* Komenda, odpowiedź, DOPIERO POTEM stan — ta sama kolejność, co wyżej, i ten sam powód.
        * Wiersz zdjęty przed odpowiedzią znika także wtedy, gdy Rust odmówił, a wtedy notatka
@@ -314,25 +319,29 @@ export const useMemory = create<MemoryState>()((set, get) => ({
        * innego niż pliki, czyli łamałby niezmiennik 4 w jedynym miejscu, w którym człowiek może
        * to zobaczyć. Optymistyczne zdjęcie kosztuje tu więcej niż gdzie indziej, bo cofnięcia
        * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
-      const notes = await discardNote(request(catalogFolder, address));
-      if (get().generation === generation) set({ notes, message: null });
+      const notes = await discardNote(request(notesFolder, address));
+      if (get().generation === generation && get().notesFolder === notesFolder) {
+        set({ notes, message: null });
+      }
     } catch (refusal) {
       /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
        * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
        * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
-      if (get().generation === generation) {
+      if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ message: why(refusal, COULD_NOT_DISCARD) });
       }
     }
   },
 
   moveToProject: async (address) => {
-    const { catalogFolder, generation } = get();
+    const { notesFolder, generation } = get();
     try {
-      const notes = await moveToProject(request(catalogFolder, address));
-      if (get().generation === generation) set({ notes, message: null, choice: null });
+      const notes = await moveToProject(request(notesFolder, address));
+      if (get().generation === generation && get().notesFolder === notesFolder) {
+        set({ notes, message: null, choice: null });
+      }
     } catch (refusal) {
-      if (get().generation === generation) {
+      if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ message: why(refusal, COULD_NOT_MOVE), choice: null });
       }
     }
