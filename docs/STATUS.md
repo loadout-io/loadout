@@ -4,6 +4,20 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 02:24 — T-109 ZAMKNIĘTE; T-127 przejmuje izolację stanu przed spawnem
+
+**T-109 · ZAMKNIĘTE / NIEURUCHOMIONE / NIEWYLĄDOWANE · $0,00.** Wszystkie trzy `check:`
+filtrują funkcje we wspólnym targecie `tests/it`, więc łamią globalnie unikalną ścieżkę
+`AGENTS.md` §2a i mogą zazielenić pusty wybór. Kontrakt wymaga ponadto zmian
+`commands/run.rs` oraz vendor-neutralnego `drivers/mod.rs` poza swoim `OWNS`. Nie wolno
+naprawiać go rozszerzeniem własności ani uruchamiać po to, żeby zobaczyć znaną wadę.
+
+Świeże **T-127** startuje z wylądowanego T-126 i ma trzy nowe standalone targety. Dodaje
+vendor-neutralny `work_key`, izoluje zwykłe kopie pod `<run>/claude/<work-key>`, refleksję pod
+`_reflection`, nadpisuje hostile `CLAUDE_CONFIG_DIR` po `env_clear` i dowodzi trzema
+prawdziwymi spawnami bez serializacji. Awaria przygotowania katalogu ma odmówić przed
+pierwszym procesem, pokazać dokładne zdanie człowiekowi i zapisać je w `run.json`.
+
 ## 2026-08-26, 02:16 — T-126 w trunku: prywatna refleksja, prawdziwy Stop i trwały receipt
 
 **T-126 · zielone · 1 godz. 12 min 08 s do końca lądowania · $0,00 widoczne.** Dwie
