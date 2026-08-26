@@ -4,6 +4,31 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 02:16 — T-126 w trunku: prywatna refleksja, prawdziwy Stop i trwały receipt
+
+**T-126 · zielone · 1 godz. 12 min 08 s do końca lądowania · $0,00 widoczne.** Dwie
+porównywalnie zapisane tury Codeksa zużyły łącznie co najmniej 38,75 mln tokenów wejścia
+(37,85 mln z cache) i 109,4 tys. wyjścia; recenzja, plan oraz wykonanie naprawy nie mają
+wspólnego paragonu tokenów. Enforced `before` uczciwie uruchomiło cztery standalone targety:
+5/5 kontroli w 4,61 s, czerwone na brakującym zachowaniu.
+
+Pierwsza pełna bramka przeszła **20/20** w 52,68 s. Refleksja dostała osobne evidence,
+ustawienia i receipt, wybór w UI doszedł trzema rzeczywistymi drogami, pusty handoff nie
+uruchamiał tury, późny Stop sprzątał prawdziwą grupę, a budżet należał do skonfigurowanego
+klona zamiast nazwy modelu. Recenzent znalazł dwie zasadne uwagi medium. Pierwsza była luką
+wyroczni AC-4: test dowodził stanu ręcznie złożonego klona, lecz nie wykonywał produkcyjnej
+funkcji `reflection_driver`; inspekcja potwierdziła bieżące
+`with_budget(REFLECTION_BUDGET_USD)` i wartość `0.08`, ale końcowy oracle fazy musi jeszcze
+zmierzyć tę prawdziwą ścieżkę. Druga była wadą kodu: wynik `GroupProof::Alive` był ignorowany.
+
+Jedyna naprawa w `4251ff6` rozróżnia `Dead` i `Alive`: bez `ESRCH` Stop nie udaje
+zakończenia, nie zamyka potencjalnie żywego uchwytu i nie zapisuje fikcyjnej refleksji ani
+kosztu. Dwie końcowe bramki gałęzi przeszły **20/20** w 52,44 s oraz 47,36 s.
+`integrate.sh` wylądował wyłącznie `task-T-126` jako **`b232a580`**; pełna bramka `main`
+przed merge'em przeszła 16/16 w 119,31 s, a po merge'u 16/16 w 237,02 s. Trunk jest czysty,
+`TASK.md` nie przeżył lądowania. T-109 pozostaje historycznym, niewykonalnym kontraktem;
+następne jest świeże T-127, które przejmuje wyłącznie izolację prywatnego stanu Claude'a.
+
 ## 2026-08-26, 00:57 — T-125 ZAMKNIĘTE; T-126 przejmuje H14 bez pięciosekundowej pułapki
 
 **T-125 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 01 min 49 s · $0,00
