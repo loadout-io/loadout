@@ -26,15 +26,15 @@
  * wyłączony przycisk jest sugestią, a nie mechanizmem.
  */
 import type { ReactElement } from 'react';
-import type { Note } from '../../state/memory';
+import type { Note, NoteAddress } from '../../state/memory';
 
 export interface NoteRowProps {
   note: Note;
   /** „Use this". Handler jest wymagany, bo kontrolka bez handlera nie wchodzi do repo
    * (niezmiennik 16) — a wiersz nie zna magazynu i nie ma jak zawołać go sam. */
-  onUse: (id: string) => void;
+  onUse: (address: NoteAddress) => void;
   /** „Stop using". Ta sama reguła. */
-  onStopUse: (id: string) => void;
+  onStopUse: (address: NoteAddress) => void;
   /**
    * „Discard" — druga decyzja, którą człowiek może podjąć wobec KANDYDATKI (2026-08-23, T-92).
    *
@@ -47,7 +47,9 @@ export interface NoteRowProps {
    * handlera nie wchodzi do repo (niezmiennik 16), a odmowa na kliknięcie jest z zewnątrz
    * nieodróżnialna od zepsutej aplikacji.
    */
-  onDiscard?: (id: string) => void;
+  onDiscard?: (address: NoteAddress) => void;
+  /** Jedyna akcja notatki projektowej, która nadal leży w bibliotece. */
+  onMove?: (address: NoteAddress) => void;
 }
 
 /* `chip` z DESIGN §6: wysokość 20px, `--t-label`, obrys `{stan}-edge`, tło `{stan}-wash`.
@@ -100,18 +102,26 @@ function originLabel(from: string): string {
   return 'From ' + from;
 }
 
-export function NoteRow({ note, onUse, onStopUse, onDiscard }: NoteRowProps): ReactElement {
+export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowProps): ReactElement {
   /* Jedno pytanie zadane RAZ. Trzy osobne `note.status === 'suggested'` w trzech gałęziach to
    * trzy miejsca, w których wiersz odpowiada na to samo — i pierwsze, które ktoś zmieni,
    * rozjedzie się z dwoma pozostałymi bez śladu w typach. */
   const waiting = note.status === 'suggested';
+  const address: NoteAddress = { place: note.place, id: note.id };
+  const legacy = note.place === 'library' && note.scope === 'this-project';
 
   return (
-    <li data-note={note.id} className="flex flex-col gap-1 border-b border-line px-2 py-3">
+    <li
+      data-note={note.id}
+      data-note-address={`${note.place}:${note.id}`}
+      className="flex flex-col gap-1 border-b border-line px-2 py-3"
+    >
       <div className="flex items-center gap-2">
-        <span data-state className={waiting ? CHIP_WAITING : CHIP_QUIET}>
-          {waiting ? 'Suggested' : 'In use'}
-        </span>
+        {legacy ? null : (
+          <span data-state className={waiting ? CHIP_WAITING : CHIP_QUIET}>
+            {waiting ? 'Suggested' : 'In use'}
+          </span>
+        )}
         <span className="text-label text-muted">{lengthLabel(note.length)}</span>
         {/* Pytamy o WARTOŚĆ, nie o obecność klucza: Rust przysyła `agent: null` dla notatki
             niczyjej (`NoteWire`), a `note.agent === undefined` wypisałoby wtedy słowo `null`
@@ -137,20 +147,35 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard }: NoteRowProps): Re
       <p className="text-body text-muted">{note.because}</p>
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          data-act={note.id}
-          className={ACT}
-          onClick={() => {
-            if (waiting) {
-              onUse(note.id);
-            } else {
-              onStopUse(note.id);
-            }
-          }}
-        >
-          {waiting ? 'Use this' : 'Stop using'}
-        </button>
+        {legacy ? (
+          onMove ? (
+            <button
+              type="button"
+              data-move={note.id}
+              className={ACT}
+              onClick={() => {
+                onMove(address);
+              }}
+            >
+              Move to this project
+            </button>
+          ) : null
+        ) : (
+          <button
+            type="button"
+            data-act={note.id}
+            className={ACT}
+            onClick={() => {
+              if (waiting) {
+                onUse(address);
+              } else {
+                onStopUse(address);
+              }
+            }}
+          >
+            {waiting ? 'Use this' : 'Stop using'}
+          </button>
+        )}
 
         {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
             do promptu, jest drugim pytaniem w ubraniu pierwszego: znika w jednym kliknięciu
@@ -160,13 +185,13 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard }: NoteRowProps): Re
             Warunek pyta też o handler, bo wiersz montuje się i bez niego (patrz `onDiscard`):
             przycisk narysowany bez handlera odmawia każdemu kliknięciu, a to jest z zewnątrz
             nieodróżnialne od zepsutej aplikacji (niezmiennik 16). */}
-        {waiting && onDiscard ? (
+        {!legacy && waiting && onDiscard ? (
           <button
             type="button"
             data-drop={note.id}
             className={ACT}
             onClick={() => {
-              onDiscard(note.id);
+              onDiscard(address);
             }}
           >
             Discard

@@ -49,7 +49,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::FrontMatter;
@@ -402,10 +402,127 @@ pub enum Error {
     /// (niezmiennik 14).
     #[error("This note is in use. Stop using it first.")]
     StillInUse,
+
+    /// Automatyczny zapis nie przywraca dokładnie tej notatki, którą człowiek odrzucił.
+    ///
+    /// 2026-08-26 (T-139): identyfikator jest częścią odmowy, bo zapis projektu sprawdza dwa
+    /// fizyczne korzenie i wołający musi wiedzieć, który dokładny tombstone zatrzymał zapis.
+    #[error("The note {0} was discarded before, so Loadout did not suggest it again.")]
+    PreviouslyDiscarded(NoteId),
 }
 
 /// Skrót używany przez cały moduł notatek.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Port operacji trwałego Move. Kolejność pozostaje w jednym rdzeniu, a adapter wykonuje IO.
+pub trait MoveIo {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+    fn exists(&mut self, path: &Path) -> io::Result<bool>;
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf>;
+    fn sync_file(&mut self, path: &Path) -> io::Result<()>;
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> io::Result<()>;
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()>;
+    fn remove_file(&mut self, source: &Path) -> io::Result<()>;
+}
+
+/// Produkcyjny adapter trwałego Move. Ciała uzupełnia dopiero faza implementacji T-137.
+#[derive(Debug, Default)]
+pub struct RealMoveIo;
+
+impl MoveIo for RealMoveIo {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    fn exists(&mut self, path: &Path) -> io::Result<bool> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+        fs::create_dir_all(target_dir)?;
+        let mut pending = NamedTempFile::new_in(target_dir)?;
+        pending.write_all(bytes)?;
+        let (_, path) = pending.keep().map_err(|error| error.error)?;
+        Ok(path)
+    }
+
+    fn sync_file(&mut self, path: &Path) -> io::Result<()> {
+        fs::File::open(path)?.sync_all()?;
+        Ok(())
+    }
+
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> io::Result<()> {
+        // 2026-08-26 (T-138): stage i cel są w jednym katalogu, więc hard link publikuje
+        // kompletne bajty atomowo i z systemowym `AlreadyExists`, bez okna check-then-rename.
+        if let Err(error) = fs::hard_link(staged, target) {
+            let _ = fs::remove_file(staged);
+            return Err(error);
+        }
+        fs::remove_file(staged)?;
+        Ok(())
+    }
+
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
+        fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    }
+
+    fn remove_file(&mut self, source: &Path) -> io::Result<()> {
+        fs::remove_file(source)?;
+        Ok(())
+    }
+}
+
+/// Jeden rdzeń protokołu Move, używany przez produkcję i obserwowalny przez testowy adapter.
+pub fn move_note_file_with_io(io: &mut dyn MoveIo, source: &Path, target: &Path) -> Result<()> {
+    if io.exists(target)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the target note already exists",
+        )
+        .into());
+    }
+
+    let source_dir = source.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the source note must have a parent directory",
+        )
+    })?;
+    let target_dir = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the target note must have a parent directory",
+        )
+    })?;
+    let bytes = io.read(source)?;
+    let pending = io.stage_in(target_dir, &bytes)?;
+    io.sync_file(&pending)?;
+    io.persist_no_clobber(&pending, target)?;
+    io.sync_dir(target_dir)?;
+    io.remove_file(source)?;
+    io.sync_dir(source_dir)?;
+    Ok(())
+}
+
+/// Automatyczna refleksja projektu z uwzględnieniem tombstone'ów obu korzeni.
+pub fn record_project_candidate_from_run(
+    library_root: &Path,
+    project_root: &Path,
+    draft: NoteDraft,
+    run: &str,
+) -> Result<Note> {
+    record_candidate_from_run_with_discarded_roots(
+        project_root,
+        &[project_root, library_root],
+        draft,
+        run,
+    )
+}
 
 /// Czyta `root/notes/*.md` bez bazy i bez zaufania do tego, kto te pliki pisał.
 ///
@@ -416,6 +533,23 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Jeden nieczytelny plik nie zabiera ze sobą całej listy (niezmiennik 5): ślad zostaje
 /// w dzienniku, bo cicha strata notatki jest gorsza niż głośna.
 pub fn scan_notes(root: &Path) -> Result<Vec<Note>> {
+    Ok(scan_note_snapshots(root)?
+        .into_iter()
+        .map(|snapshot| snapshot.note)
+        .collect())
+}
+
+/// Notatka i dokładne bajty, z których powstała, odczytane jako jedna migawka.
+///
+/// Bieg trzyma ten surowy tekst aż do stempla `last_used_at`. Ponowny odczyt po złożeniu
+/// promptu mógłby ostemplować inną redakcję niż ta, którą model faktycznie dostał; osobny skan
+/// dla `Note` i osobny dla bajtów miałby dokładnie tę samą szczelinę.
+pub(crate) struct NoteSnapshot {
+    pub note: Note,
+    pub raw: String,
+}
+
+pub(crate) fn scan_note_snapshots(root: &Path) -> Result<Vec<NoteSnapshot>> {
     let dir = root.join(NOTES_DIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -438,8 +572,8 @@ pub fn scan_notes(root: &Path) -> Result<Vec<Note>> {
 
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
-        match read_note(&path) {
-            Ok(note) => out.push(note),
+        match read_note_snapshot(&path) {
+            Ok(snapshot) => out.push(snapshot),
             // Niezmiennik 5: jeden nieczytelny plik nie zabiera ze sobą całej listy. Ślad
             // zostaje w dzienniku, bo cicha strata notatki jest gorsza niż głośna — a dziennik
             // jest jedynym miejscem, w którym wolno go zostawić: skan jest ODCZYTEM i plik
@@ -533,7 +667,7 @@ pub fn record_candidate(root: &Path, draft: NoteDraft) -> Result<Note> {
 ///      kroków w projekcie, jest dokładnie tym cichym rozszerzeniem zasięgu, przed którym stoi
 ///      [`scope_from`] („nie awansujemy notatki, której nie umiemy przeczytać").
 pub fn record_candidate_for(root: &Path, draft: NoteDraft, agent: Option<&str>) -> Result<Note> {
-    record(root, draft, agent, None, None, None)
+    record(root, draft, agent, None, None, None, true)
 }
 
 /// Zapisuje właścicielską kandydatkę razem z pełnym ciałem źródłowego Markdownu.
@@ -544,7 +678,7 @@ pub fn record_candidate_for_with_body(
     agent: &str,
     body: &str,
 ) -> Result<Note> {
-    record(root, draft, Some(agent), None, None, Some(body))
+    record(root, draft, Some(agent), None, None, Some(body), true)
 }
 
 /// Zapisuje kandydatkę, którą zgłosił **bieg** — z jego identyfikatorem w polu `from`.
@@ -560,7 +694,33 @@ pub fn record_candidate_for_with_body(
 /// powrotnej, jest roszczeniem, którego nie da się później wycofać [T6 §5.1] — a wycofanie jest
 /// całą różnicą między pamięcią a akrecją instrukcji.
 pub fn record_candidate_from_run(root: &Path, draft: NoteDraft, run: &str) -> Result<Note> {
-    record(root, draft, None, Some(run), None, None)
+    record(root, draft, None, Some(run), None, None, true)
+}
+
+/// Zapisuje automatyczną kandydatkę biegu, o ile żaden ze wskazanych fizycznych korzeni nie
+/// zawiera jej dokładnego tombstone'a.
+///
+/// Żywy plik w korzeniu docelowym wygrywa z wcześniejszym tombstonem: człowiek mógł notatkę
+/// jawnie przywrócić, a kolejne wystąpienie ma wtedy podbić `occurrences`.
+pub fn record_candidate_from_run_with_discarded_roots(
+    root: &Path,
+    discarded_roots: &[&Path],
+    draft: NoteDraft,
+    run: &str,
+) -> Result<Note> {
+    let id = NoteId(super::slugify(&draft.title));
+    let live = root.join(NOTES_DIR).join(format!("{id}.md"));
+    // 2026-08-26 (T-136): żywy plik jest prawdą nowszą niż tombstone. Starsze odrzucenie
+    // tłumi wyłącznie odrodzenie nieobecnej kandydatki, nigdy kolejne wystąpienie pliku,
+    // który człowiek później przywrócił albo przeniósł do projektu.
+    if !live.exists() {
+        for discarded_root in discarded_roots {
+            if was_discarded(discarded_root, &id)? {
+                return Err(Error::PreviouslyDiscarded(id));
+            }
+        }
+    }
+    record(root, draft, None, Some(run), None, None, true)
 }
 
 /// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).
@@ -596,7 +756,9 @@ pub fn record_imported(
     agent: Option<&str>,
     origin: &Origin,
 ) -> Result<Note> {
-    record(root, draft, agent, None, Some(origin), None)
+    // Import jest jawną czynnością człowieka, więc historyczna odmowa automatycznej
+    // kandydatki nie ma prawa jej tłumić.
+    record(root, draft, agent, None, Some(origin), None, false)
 }
 
 fn record(
@@ -606,6 +768,7 @@ fn record(
     from: Option<&str>,
     origin: Option<&Origin>,
     body: Option<&str>,
+    honor_discarded: bool,
 ) -> Result<Note> {
     // Draft rozbieramy na pola w pierwszej linii, bo dzięki temu deklarowany status ma jedno
     // widoczne miejsce, w którym jest czytany i wyrzucany. Gdyby stał dalej jako `draft.status`,
@@ -683,6 +846,12 @@ fn record(
             write_note(&path, &front, body.unwrap_or(&raw[body_at..]))?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // 2026-08-26 (T-128): dokładny separator `__` jest częścią formatu tombstone.
+            // `contains(id)` tłumiłby `retry-queue-safely` po odrzuceniu `retry-queue`, czyli
+            // rozciągał decyzję człowieka na zdanie, którego nigdy nie odrzucił.
+            if honor_discarded && was_discarded(root, &id)? {
+                return Err(Error::PreviouslyDiscarded(id));
+            }
             fs::create_dir_all(&dir)?;
             let mut front = FrontMatter::default();
             // Kolejność kluczy jest kontraktem [T6 §10.2] i jest tą samą, którą czyta człowiek
@@ -878,9 +1047,54 @@ pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
 /// więc odczyt po zapisie byłby odczytem dla nikogo (niezmiennik 21).
 pub fn mark_used(path: &Path, at: &str) -> Result<()> {
     let raw = fs::read_to_string(path)?;
-    let (mut front, body_at) = FrontMatter::split(&raw)?;
-    front.set("last_used_at", &one_line(at));
-    write_note(path, &front, &raw[body_at..])
+    mark_used_from_snapshot(path, &raw, at)
+}
+
+/// Stempluje dokładną migawkę, z której bieg złożył prompt, bez ponownego odczytu pliku.
+pub(crate) fn mark_used_from_snapshot(path: &Path, raw: &str, at: &str) -> Result<()> {
+    if !raw.starts_with("---\n") {
+        return Err(super::Error::NoFrontMatter {
+            path: path.to_owned(),
+        }
+        .into());
+    }
+
+    let mut line_start = 4;
+    while line_start < raw.len() {
+        let line_end = raw[line_start..]
+            .find('\n')
+            .map_or(raw.len(), |offset| line_start + offset);
+        let line = &raw[line_start..line_end];
+
+        if line.trim_end() == "---" {
+            break;
+        }
+        if line
+            .split_once(':')
+            .is_some_and(|(key, _)| key.trim() == "last_used_at")
+        {
+            // 2026-08-26 (T-137): bieg musi ostemplować dokładnie bajty, które wysłał do
+            // promptu. Renderowanie sparsowanego nagłówka kanonizowałoby każdy jego wiersz,
+            // w tym nieznane klucze, mimo że zmienia się wyłącznie ten jeden fakt.
+            let mut stamped = raw.to_owned();
+            stamped.replace_range(
+                line_start..line_end,
+                &format!("last_used_at: {}", one_line(at)),
+            );
+            return write_raw_note(path, &stamped);
+        }
+
+        if line_end == raw.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "the note snapshot has no last_used_at line",
+    )
+    .into())
 }
 
 /// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
@@ -959,9 +1173,34 @@ fn file_safe(at: &str) -> String {
 
 /// Notatka spod tej ścieżki. Tożsamością jest **nazwa pliku bez rozszerzenia**.
 fn read_note(path: &Path) -> Result<Note> {
+    Ok(read_note_snapshot(path)?.note)
+}
+
+fn read_note_snapshot(path: &Path) -> Result<NoteSnapshot> {
     let raw = fs::read_to_string(path)?;
     let (front, _) = FrontMatter::split(&raw)?;
-    Ok(note_from(path, &front))
+    Ok(NoteSnapshot {
+        note: note_from(path, &front),
+        raw,
+    })
+}
+
+/// Czy `discarded/` zawiera tombstone dokładnie tego sluga.
+fn was_discarded(root: &Path, id: &NoteId) -> Result<bool> {
+    let discarded = root.join(DISCARDED_DIR);
+    let entries = match fs::read_dir(discarded) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let prefix = format!("{id}__");
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Front-matter na notatkę. Nie zwraca [`Result`], bo **żadne** pole nie jest tu powodem do
@@ -1042,6 +1281,10 @@ fn write_note(path: &Path, front: &FrontMatter, body: &str) -> Result<()> {
         out.push_str(body);
     }
 
+    write_raw_note(path, &out)
+}
+
+fn write_raw_note(path: &Path, out: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

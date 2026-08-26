@@ -12,7 +12,13 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Handoff, Note } from '../../state/memory';
+import type { Handoff, Note, NoteAddress } from '../../state/memory';
+
+export interface CatalogRequest {
+  catalogFolder: string | null;
+}
+
+export interface AddressRequest extends CatalogRequest, NoteAddress {}
 
 /**
  * Wszystkie notatki, które leżą na dysku.
@@ -22,12 +28,11 @@ import type { Handoff, Note } from '../../state/memory';
  * nigdy nie pokazał. Ekran mówił więc co innego niż pliki, czyli łamał niezmiennik 4 w jedynym
  * miejscu, w którym człowiek może to zobaczyć.
  *
- * Bez argumentów: katalog notatek rozwiązuje Rust (`commands::memory::notes_root`). Ścieżka
- * podana z okna byłaby drugim miejscem, w którym mieszka odpowiedź na pytanie „gdzie leżą
- * notatki" — a to pytanie ma jedno miejsce.
+ * Folder katalogu wybiera zwalidowany projekt, ale ścieżki obu korzeni nadal rozwiązuje Rust.
+ * Okno nie wysyła ścieżki notatki ani korzenia pamięci.
  */
-export function listNotes(): Promise<Note[]> {
-  return invoke<Note[]>('list_notes');
+export function listNotes(catalogFolder: string | null): Promise<Note[]> {
+  return invoke<Note[]>('list_notes', { catalogFolder });
 }
 
 /**
@@ -37,13 +42,21 @@ export function listNotes(): Promise<Note[]> {
  * na to, co naprawdę leży na dysku, a nie na to, czego się spodziewał. Odmowa („zakres jest
  * pełny", „nie ma uzasadnienia") przyjeżdża jako odrzucenie obietnicy.
  */
-export function putToUse(args: { id: string }): Promise<Note> {
-  return invoke<Note>('put_note_to_use', args);
+export function putToUse(args: AddressRequest): Promise<Note[]> {
+  return invoke<Note[]>('put_note_to_use', {
+    catalogFolder: args.catalogFolder,
+    place: args.place,
+    id: args.id,
+  });
 }
 
 /** „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu. */
-export function stopUsing(args: { id: string }): Promise<Note> {
-  return invoke<Note>('stop_using_note', args);
+export function stopUsing(args: AddressRequest): Promise<Note[]> {
+  return invoke<Note[]>('stop_using_note', {
+    catalogFolder: args.catalogFolder,
+    place: args.place,
+    id: args.id,
+  });
 }
 
 /**
@@ -56,13 +69,24 @@ export function stopUsing(args: { id: string }): Promise<Note> {
  * i czyni z bramki promocji rytuał [T6 §5.1]. Odkąd kandydatek przybywa po KAŻDYM biegu (AC-1),
  * przestało to być brakiem wygody i stało się brakiem, który rośnie sam.
  *
- * Wraca `void`, nie notatka — inaczej niż [`putToUse`] i [`stopUsing`]. Tamte dwie zmieniają
- * stan notatki, więc oddają jej świeży odczyt z dysku; ta zabiera ją z katalogu, więc nie ma
- * czego odczytać, a wiersz ma zniknąć. Odmowa („ta notatka jest w użyciu") przyjeżdża jako
- * odrzucenie obietnicy.
+ * Wraca cały świeży katalog, tak jak pozostałe mutacje. Dzięki temu zniknięcie wiersza i każda
+ * równoległa zmiana innych plików mają jedno źródło prawdy: ponowny skan po stronie Rusta.
  */
-export function discardNote(args: { id: string }): Promise<void> {
-  return invoke<void>('discard_note', args);
+export function discardNote(args: AddressRequest): Promise<Note[]> {
+  return invoke<Note[]>('discard_note', {
+    catalogFolder: args.catalogFolder,
+    place: args.place,
+    id: args.id,
+  });
+}
+
+/** Wcześniejsza notatka projektowa staje się zwykłą notatką tego projektu. */
+export function moveToProject(args: AddressRequest): Promise<Note[]> {
+  return invoke<Note[]>('move_note_to_project', {
+    catalogFolder: args.catalogFolder,
+    place: args.place,
+    id: args.id,
+  });
 }
 
 /**

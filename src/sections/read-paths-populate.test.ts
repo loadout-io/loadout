@@ -94,6 +94,7 @@ const SKILLS_COMMAND = readCommandFor('skill');
  * tamtej stronie `ipc_read_paths.rs`, porównując je z tymi samymi plikami `src/state/*.ts`. */
 function note(id: string, title: string): Note {
   return {
+    place: 'project',
     id,
     title,
     rule: 'OKAPI-' + id + ' the files are the truth; the screen shows the files.',

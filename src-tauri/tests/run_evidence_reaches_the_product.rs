@@ -499,13 +499,22 @@ fn source(kind: &str, reference: &str, bytes: usize) -> Value {
     json!({ "kind": kind, "reference": reference, "bytes": bytes })
 }
 
-fn plant_memory(home: &Path) -> Result<(), Box<dyn Error>> {
-    let notes = home.join("memory/notes");
-    fs::create_dir_all(&notes)?;
-    for (name, scope, rule) in [
-        ("01-everywhere", "everywhere", MEMORY_EVERYWHERE),
-        ("02-project", "this-project", MEMORY_PROJECT),
+fn plant_memory(home: &Path, project: &Path) -> Result<(), Box<dyn Error>> {
+    for (notes, name, scope, rule) in [
+        (
+            home.join("memory/notes"),
+            "01-everywhere",
+            "everywhere",
+            MEMORY_EVERYWHERE,
+        ),
+        (
+            project.join(".loadout/memory/notes"),
+            "02-project",
+            "this-project",
+            MEMORY_PROJECT,
+        ),
     ] {
+        fs::create_dir_all(&notes)?;
         fs::write(
             notes.join(format!("{name}.md")),
             format!(
@@ -766,7 +775,7 @@ fn prepare_product_inputs(
     fs::create_dir_all(workspace.join(".loadout"))?;
     fs::write(home.join("agents/claude.md"), CLAUDE_AGENT)?;
     fs::write(home.join("agents/codex.md"), CODEX_AGENT)?;
-    plant_memory(home)?;
+    plant_memory(home, workspace)?;
     let workflow = home.join("workflows/evidence.json");
     fs::write(&workflow, WORKFLOW)?;
     let workspace_text = workspace.to_str().ok_or("workspace path is not UTF-8")?;
@@ -852,7 +861,7 @@ fn assert_product_evidence(reports: &[RunReport; 3]) -> Result<(), Box<dyn Error
             ),
             source(
                 "memoryNote",
-                "memory/notes/02-project.md",
+                ".loadout/memory/notes/02-project.md",
                 MEMORY_PROJECT.len(),
             ),
         ];
@@ -909,7 +918,7 @@ fn assert_product_evidence(reports: &[RunReport; 3]) -> Result<(), Box<dyn Error
             ),
             source(
                 "memoryNote",
-                "memory/notes/02-project.md",
+                ".loadout/memory/notes/02-project.md",
                 MEMORY_PROJECT.len(),
             ),
             source("runTask", "ask/task", PRIVATE_TASK.len()),

@@ -41,6 +41,7 @@ list_triggers
 list_workflows
 list_workspaces
 load_workflow
+move_note_to_project
 new_id
 open_chat
 put_note_to_use

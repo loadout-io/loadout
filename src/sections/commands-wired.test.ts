@@ -260,15 +260,15 @@ const WIRES: readonly Wire[] = [
     where: 'memory',
     what: 'putToUse',
     command: 'put_note_to_use',
-    given: [{ id: 'note-to-use' }],
-    call: () => memory.putToUse({ id: 'note-to-use' }),
+    given: [{ catalogFolder: FOLDER, place: 'project', id: 'note-to-use' }],
+    call: () => memory.putToUse({ catalogFolder: FOLDER, place: 'project', id: 'note-to-use' }),
   },
   {
     where: 'memory',
     what: 'stopUsing',
     command: 'stop_using_note',
-    given: [{ id: 'note-to-drop' }],
-    call: () => memory.stopUsing({ id: 'note-to-drop' }),
+    given: [{ catalogFolder: FOLDER, place: 'project', id: 'note-to-drop' }],
+    call: () => memory.stopUsing({ catalogFolder: FOLDER, place: 'project', id: 'note-to-drop' }),
   },
   /* 2026-08-18 (T-38 AC-5/AC-6) — DWIE NOWE KRAWĘDZIE ODCZYTU, DOPISANE, NIC NIE USUNIĘTE.
    * Ten plik złapał je, zanim zdążyły wjechać niezauważone, i to jest dokładnie jego zadanie:
@@ -282,15 +282,28 @@ const WIRES: readonly Wire[] = [
     where: 'memory',
     what: 'discardNote',
     command: 'discard_note',
-    given: [{ id: 'note-to-throw-away' }],
-    call: () => memory.discardNote({ id: 'note-to-throw-away' }),
+    given: [{ catalogFolder: FOLDER, place: 'project', id: 'note-to-throw-away' }],
+    call: () =>
+      memory.discardNote({
+        catalogFolder: FOLDER,
+        place: 'project',
+        id: 'note-to-throw-away',
+      }),
+  },
+  {
+    where: 'memory',
+    what: 'moveToProject',
+    command: 'move_note_to_project',
+    given: [{ catalogFolder: FOLDER, place: 'library', id: 'earlier-note' }],
+    call: () =>
+      memory.moveToProject({ catalogFolder: FOLDER, place: 'library', id: 'earlier-note' }),
   },
   {
     where: 'memory',
     what: 'listNotes',
     command: 'list_notes',
-    given: [],
-    call: () => memory.listNotes(),
+    given: [FOLDER],
+    call: () => memory.listNotes(FOLDER),
   },
   {
     where: 'skills',

@@ -22,10 +22,11 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::memory::notes::{
-    Actor, Error, Note, NoteId, Scope, Status, discard, promote, scan_notes, stop_using,
+    Actor, Error, Note, NoteId, RealMoveIo, Scope, Status, discard, move_note_file_with_io,
+    promote, scan_notes, stop_using,
 };
 
 /// Wartość `status:` dla notatki, która przestała wchodzić do promptu — **na drucie**.
@@ -49,6 +50,8 @@ const SUGGESTED: &str = "suggested";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteWire {
+    /// Fizyczny korzeń pliku; z `id` tworzy pełną tożsamość widoczną dla okna.
+    pub place: NotePlace,
     /// Nazwa pliku notatki bez rozszerzenia.
     pub id: String,
     pub title: String,
@@ -74,9 +77,32 @@ pub struct NoteWire {
     pub modified: String,
 }
 
+/// Fizyczne miejsce notatki. Legacy pozostaje notatką biblioteczną.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotePlace {
+    Library,
+    Project,
+}
+
+/// Pełna publiczna tożsamość notatki.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAddress {
+    pub place: NotePlace,
+    pub id: String,
+}
+
 impl From<&Note> for NoteWire {
     fn from(note: &Note) -> Self {
+        Self::at(note, NotePlace::Library)
+    }
+}
+
+impl NoteWire {
+    fn at(note: &Note, place: NotePlace) -> Self {
         Self {
+            place,
             id: note.id.to_string(),
             title: note.title.clone(),
             rule: note.rule.clone(),
@@ -145,6 +171,12 @@ impl From<Error> for NoteRefusal {
     }
 }
 
+impl From<std::io::Error> for NoteRefusal {
+    fn from(error: std::io::Error) -> Self {
+        Error::Io(error).into()
+    }
+}
+
 /// Korzeń pamięci wewnątrz biblioteki: `~/.loadout/memory/` (`docs/ARCHITECTURE.md` §8).
 ///
 /// [`scan_notes`] szuka plików w `<korzeń>/notes/`, więc korzeniem jest katalog **nad** nimi.
@@ -159,6 +191,141 @@ impl From<Error> for NoteRefusal {
 #[must_use]
 pub fn notes_root(library: &Path) -> std::path::PathBuf {
     library.join("memory")
+}
+
+/// Korzeń pamięci jednego zwalidowanego projektu.
+#[must_use]
+pub fn project_notes_root(project: &Path) -> std::path::PathBuf {
+    project.join(".loadout").join("memory")
+}
+
+/// Pełny katalog biblioteki i jednego projektu.
+///
+/// Oba skany używają jednego parsera, a miejsce jest dopinane dopiero w adapterze katalogu.
+pub fn list_note_catalog_inner(
+    library_root: &Path,
+    project_root: &Path,
+) -> Result<Vec<NoteWire>, Error> {
+    let mut catalog: Vec<NoteWire> = scan_notes(library_root)?
+        .iter()
+        .map(|note| NoteWire::at(note, NotePlace::Library))
+        .collect();
+    catalog.extend(
+        scan_notes(project_root)?
+            .iter()
+            .map(|note| NoteWire::at(note, NotePlace::Project)),
+    );
+    // 2026-08-26 (T-128): kolejność pełnego adresu jest stabilna także wtedy, gdy oba korzenie
+    // zawierają ten sam id. Sortowanie po samym id zostawiałoby kolejność bliźniaków decyzji
+    // systemu plików, a katalog jest odpowiedzią, którą magazyn podmienia w całości.
+    catalog.sort_by(|left, right| (&left.place, &left.id).cmp(&(&right.place, &right.id)));
+    Ok(catalog)
+}
+
+/// Adresowane „Use this”; po mutacji wraca ponownie wyliczony cały katalog.
+pub fn put_note_to_use_at_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    let (root, id) = ordinary_action(library_root, project_root, address)?;
+    promote(root, &id, Actor::You { at: at.to_owned() })?;
+    Ok(list_note_catalog_inner(library_root, project_root)?)
+}
+
+/// Adresowane „Stop using”; po mutacji wraca ponownie wyliczony cały katalog.
+pub fn stop_using_note_at_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    let (root, id) = ordinary_action(library_root, project_root, address)?;
+    stop_using(root, &id, at)?;
+    Ok(list_note_catalog_inner(library_root, project_root)?)
+}
+
+/// Adresowane „Discard”; po mutacji wraca ponownie wyliczony cały katalog.
+pub fn discard_note_at_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    let (root, id) = ordinary_action(library_root, project_root, address)?;
+    discard(root, &id, Actor::You { at: at.to_owned() })?;
+    Ok(list_note_catalog_inner(library_root, project_root)?)
+}
+
+/// Kopiuje wcześniejszą notatkę projektową z biblioteki do projektu bez nadpisania celu.
+pub fn move_legacy_note_to_project_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    let id = valid_id(address)?;
+    if address.place != NotePlace::Library {
+        return Err(NoteRefusal::Said(
+            "Only an earlier project note can be moved into this project.".to_owned(),
+        ));
+    }
+    let legacy = note_at(library_root, &id)?;
+    if legacy.scope != Scope::ThisProject {
+        return Err(NoteRefusal::Said(
+            "This note already belongs in the shared library, so it was not moved.".to_owned(),
+        ));
+    }
+
+    let source = library_root.join("notes").join(format!("{id}.md"));
+    let target = project_root.join("notes").join(format!("{id}.md"));
+    let mut io = RealMoveIo;
+    match move_note_file_with_io(&mut io, &source, &target) {
+        Ok(()) => Ok(list_note_catalog_inner(library_root, project_root)?),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(NoteRefusal::Said(
+                "This project already has a note with that name, so neither copy changed."
+                    .to_owned(),
+            ))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn valid_id(address: &NoteAddress) -> Result<NoteId, NoteRefusal> {
+    let normalized = crate::memory::slugify(&address.id);
+    if normalized.is_empty() || normalized != address.id {
+        return Err(NoteRefusal::Said(
+            "That note address is not valid, so no file changed.".to_owned(),
+        ));
+    }
+    Ok(NoteId(address.id.clone()))
+}
+
+fn note_at(root: &Path, id: &NoteId) -> Result<Note, NoteRefusal> {
+    scan_notes(root)?
+        .into_iter()
+        .find(|note| note.id == *id)
+        .ok_or_else(|| Error::NoSuchNote(id.clone()).into())
+}
+
+fn ordinary_action<'a>(
+    library_root: &'a Path,
+    project_root: &'a Path,
+    address: &NoteAddress,
+) -> Result<(&'a Path, NoteId), NoteRefusal> {
+    let id = valid_id(address)?;
+    let root = match address.place {
+        NotePlace::Library => library_root,
+        NotePlace::Project => project_root,
+    };
+    let note = note_at(root, &id)?;
+    if address.place == NotePlace::Library && note.scope == Scope::ThisProject {
+        return Err(NoteRefusal::Said(
+            "Move this earlier note into the project before changing how it is used.".to_owned(),
+        ));
+    }
+    Ok((root, id))
 }
 
 /// Wszystkie notatki z dysku, w kolejności, którą oddaje skaner.
@@ -177,6 +344,14 @@ pub fn list_notes_inner(root: &Path) -> Result<Vec<NoteWire>, Error> {
     Ok(scan_notes(root)?.iter().map(NoteWire::from).collect())
 }
 
+/// Pełny katalog biblioteki i wskazanego projektu.
+pub fn list_notes_for_project_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+) -> Result<Vec<NoteWire>, Error> {
+    list_note_catalog_inner(library_root, &project_notes_root(catalog_folder))
+}
+
 /// „Use this": od tej chwili notatka wchodzi do promptu.
 ///
 /// `at` podaje wołający, bo `memory::notes` nie ma zegara i mieć nie będzie — to jest chwila,
@@ -188,6 +363,31 @@ pub fn put_note_to_use_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire
         Actor::You { at: at.to_owned() },
     )?;
     Ok(NoteWire::from(&note))
+}
+
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
+pub fn put_note_to_use_addressed_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    put_note_to_use_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn put_addressed_note_to_use_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    put_note_to_use_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
 }
 
 /// „Discard": kandydatka odchodzi do `<korzeń>/discarded/` i znika z listy.
@@ -213,6 +413,31 @@ pub fn discard_note_inner(root: &Path, id: &str, at: &str) -> Result<(), NoteRef
     Ok(())
 }
 
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
+pub fn discard_note_addressed_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    discard_note_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn discard_addressed_note_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    discard_note_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
+}
+
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
 ///
 /// Odstawienie nie ma budżetu do sprawdzenia i nie ma czego odmówić: zbiór w użyciu tylko
@@ -224,4 +449,47 @@ pub fn discard_note_inner(root: &Path, id: &str, at: &str) -> Result<(), NoteRef
 pub fn stop_using_note_inner(root: &Path, id: &str, at: &str) -> Result<NoteWire, NoteRefusal> {
     let note = stop_using(root, &NoteId(id.to_owned()), at)?;
     Ok(NoteWire::from(&note))
+}
+
+/// Adapter adresowanej akcji dla wołających, którzy mają już rozwiązany korzeń projektu.
+pub fn stop_using_note_addressed_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    stop_using_note_at_inner(library_root, project_root, address, at)
+}
+
+/// Publiczna nazwa adresowanej akcji używana przez katalog i jego acceptance oracle.
+pub fn stop_using_addressed_note_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+    at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    stop_using_note_addressed_inner(
+        library_root,
+        &project_notes_root(catalog_folder),
+        address,
+        at,
+    )
+}
+
+/// Przenosi wcześniejszą notatkę projektową z biblioteki do projektu i oddaje pełny katalog.
+pub fn move_note_to_project_inner(
+    library_root: &Path,
+    catalog_folder: &Path,
+    address: &NoteAddress,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    move_note_to_project_addressed_inner(library_root, &project_notes_root(catalog_folder), address)
+}
+
+/// Adapter Move dla wołających, którzy mają już rozwiązany korzeń projektu.
+pub fn move_note_to_project_addressed_inner(
+    library_root: &Path,
+    project_root: &Path,
+    address: &NoteAddress,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    move_legacy_note_to_project_inner(library_root, project_root, address)
 }

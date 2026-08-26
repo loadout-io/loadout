@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use loadout_lib::commands::memory::project_notes_root;
 use loadout_lib::commands::run::{run_workflow_with_reflection, stop_run_inner};
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -118,6 +119,7 @@ async fn empty_successful_handoff_stays_successful_and_skips_reflection()
         .collect();
     assert_eq!(headings, expected);
     assert!(scan_notes(&bench.home.path().join("memory"))?.is_empty());
+    assert!(scan_notes(&project_notes_root(bench.project.path()))?.is_empty());
     assert_reflection_ran(&report, false)?;
     Ok(())
 }
@@ -150,6 +152,7 @@ async fn late_stop_waits_until_the_real_reflection_group_is_dead() -> Result<(),
     assert!(matches!(reap_group(group.pgid), GroupProof::Dead { .. }));
     assert_eq!(seen.reflections.load(Ordering::Acquire), 1);
     assert!(scan_notes(&bench.home.path().join("memory"))?.is_empty());
+    assert!(scan_notes(&project_notes_root(bench.project.path()))?.is_empty());
     assert_reflection_ran(&report, false)?;
     assert_no_reflection_cost(&report)?;
     Ok(())
@@ -576,7 +579,7 @@ impl Bench {
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;
         fs::create_dir_all(home.path().join("memory").join("notes"))?;
-        fs::create_dir_all(project.path().join(".loadout"))?;
+        fs::create_dir_all(project_notes_root(project.path()).join("notes"))?;
         fs::write(home.path().join("agents").join("builder.md"), AGENT)?;
         fs::write(home.path().join("workflows").join("t126.json"), workflow)?;
         let ready = project.path().join("reflection-ready");

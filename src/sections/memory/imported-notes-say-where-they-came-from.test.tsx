@@ -48,6 +48,7 @@ const NEVER_INVENTED = ['unassigned', 'unknown', 'nobody', 'everyone', 'anonymou
 /** Notatka jednego agenta, przywieziona z cudzego projektu. */
 function ownedNote(): Note {
   return {
+    place: 'library',
     id: 'the-queue-is-drained-in-one-place',
     title: 'The queue is drained in one place',
     rule: OWNED_RULE,
@@ -65,6 +66,7 @@ function ownedNote(): Note {
 /** Notatka, która nie należy do nikogo i nie ma udawać, że należy. */
 function nobodysNote(): Note {
   return {
+    place: 'project',
     id: 'the-tenant-is-resolved-before-the-guard',
     title: 'The tenant is resolved before the guard',
     rule: NOBODYS_RULE,
@@ -85,6 +87,7 @@ function nobodysNote(): Note {
  * jedzie do każdego kroku, nie do jednego. */
 function wideNote(): Note {
   return {
+    place: 'project',
     id: 'migrations-run-before-the-app-boots',
     title: 'Migrations run before the app boots',
     rule: WIDE_RULE,
