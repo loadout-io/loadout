@@ -403,9 +403,12 @@ pub enum Error {
     #[error("This note is in use. Stop using it first.")]
     StillInUse,
 
-    /// Automatyczny zapis nie przywraca zdania, które człowiek już odrzucił.
-    #[error("This note was discarded before, so Loadout did not suggest it again.")]
-    PreviouslyDiscarded,
+    /// Automatyczny zapis nie przywraca dokładnie tej notatki, którą człowiek odrzucił.
+    ///
+    /// 2026-08-26 (T-139): identyfikator jest częścią odmowy, bo zapis projektu sprawdza dwa
+    /// fizyczne korzenie i wołający musi wiedzieć, który dokładny tombstone zatrzymał zapis.
+    #[error("The note {0} was discarded before, so Loadout did not suggest it again.")]
+    PreviouslyDiscarded(NoteId),
 }
 
 /// Skrót używany przez cały moduł notatek.
@@ -713,7 +716,7 @@ pub fn record_candidate_from_run_with_discarded_roots(
     if !live.exists() {
         for discarded_root in discarded_roots {
             if was_discarded(discarded_root, &id)? {
-                return Err(Error::PreviouslyDiscarded);
+                return Err(Error::PreviouslyDiscarded(id));
             }
         }
     }
@@ -847,7 +850,7 @@ fn record(
             // `contains(id)` tłumiłby `retry-queue-safely` po odrzuceniu `retry-queue`, czyli
             // rozciągał decyzję człowieka na zdanie, którego nigdy nie odrzucił.
             if honor_discarded && was_discarded(root, &id)? {
-                return Err(Error::PreviouslyDiscarded);
+                return Err(Error::PreviouslyDiscarded(id));
             }
             fs::create_dir_all(&dir)?;
             let mut front = FrontMatter::default();
