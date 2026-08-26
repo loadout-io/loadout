@@ -437,34 +437,70 @@ pub trait MoveIo {
 pub struct RealMoveIo;
 
 impl MoveIo for RealMoveIo {
-    fn stage_in(&mut self, _target_dir: &Path, _bytes: &[u8]) -> Result<PendingMove> {
-        todo!("T-137 durable Move staging")
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> Result<PendingMove> {
+        fs::create_dir_all(target_dir)?;
+        let mut pending = NamedTempFile::new_in(target_dir)?;
+        pending.write_all(bytes)?;
+        Ok(PendingMove(pending))
     }
 
-    fn sync_file(&mut self, _pending: &PendingMove) -> Result<()> {
-        todo!("T-137 durable Move file sync")
+    fn sync_file(&mut self, pending: &PendingMove) -> Result<()> {
+        pending.0.as_file().sync_all()?;
+        Ok(())
     }
 
-    fn persist_noclobber(&mut self, _pending: PendingMove, _target: &Path) -> Result<()> {
-        todo!("T-137 durable Move publication")
+    fn persist_noclobber(&mut self, pending: PendingMove, target: &Path) -> Result<()> {
+        pending
+            .0
+            .persist_noclobber(target)
+            .map_err(|error| Error::Io(error.error))?;
+        Ok(())
     }
 
-    fn sync_dir(&mut self, _dir: &Path) -> Result<()> {
-        todo!("T-137 durable Move directory sync")
+    fn sync_dir(&mut self, dir: &Path) -> Result<()> {
+        fs::File::open(dir)?.sync_all()?;
+        Ok(())
     }
 
-    fn remove_file(&mut self, _source: &Path) -> Result<()> {
-        todo!("T-137 durable Move source removal")
+    fn remove_file(&mut self, source: &Path) -> Result<()> {
+        fs::remove_file(source)?;
+        Ok(())
     }
 }
 
 /// Jeden rdzeń protokołu Move, używany przez produkcję i obserwowalny przez testowy adapter.
-pub fn move_note_file_with_io<I: MoveIo>(
-    _source: &Path,
-    _target: &Path,
-    _io: &mut I,
-) -> Result<()> {
-    todo!("T-137 durable Move protocol")
+pub fn move_note_file_with_io<I: MoveIo>(source: &Path, target: &Path, io: &mut I) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the target note already exists",
+            )
+            .into());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let source_dir = source.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the source note must have a parent directory",
+        )
+    })?;
+    let target_dir = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the target note must have a parent directory",
+        )
+    })?;
+    let bytes = fs::read(source)?;
+    let pending = io.stage_in(target_dir, &bytes)?;
+    io.sync_file(&pending)?;
+    io.persist_noclobber(pending, target)?;
+    io.sync_dir(target_dir)?;
+    io.remove_file(source)?;
+    io.sync_dir(source_dir)
 }
 
 /// Automatyczna refleksja projektu z uwzględnieniem tombstone'ów obu korzeni.

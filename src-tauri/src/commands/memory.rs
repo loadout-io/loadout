@@ -20,15 +20,13 @@
 //! trzy funkcje stoją w jednym pliku, a ta warstwa jest tym, czym miała być: skorupą, która
 //! zamienia identyfikator na [`NoteId`], a błąd na zdanie dla okna.
 
-use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
 use crate::memory::notes::{
-    Actor, Error, Note, NoteId, Scope, Status, discard, promote, scan_notes, stop_using,
+    Actor, Error, Note, NoteId, RealMoveIo, Scope, Status, discard, move_note_file_with_io,
+    promote, scan_notes, stop_using,
 };
 
 /// Wartość `status:` dla notatki, która przestała wchodzić do promptu — **na drucie**.
@@ -284,9 +282,32 @@ pub fn move_legacy_note_to_project_inner(
     project_root: &Path,
     address: &NoteAddress,
 ) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
-    move_note_to_project_with_remover_inner(library_root, project_root, address, |source| {
-        fs::remove_file(source)
-    })
+    let id = valid_id(address)?;
+    if address.place != NotePlace::Library {
+        return Err(NoteRefusal::Said(
+            "Only an earlier project note can be moved into this project.".to_owned(),
+        ));
+    }
+    let legacy = note_at(library_root, &id)?;
+    if legacy.scope != Scope::ThisProject {
+        return Err(NoteRefusal::Said(
+            "This note already belongs in the shared library, so it was not moved.".to_owned(),
+        ));
+    }
+
+    let source = library_root.join("notes").join(format!("{id}.md"));
+    let target = project_root.join("notes").join(format!("{id}.md"));
+    let mut io = RealMoveIo;
+    match move_note_file_with_io(&source, &target, &mut io) {
+        Ok(()) => Ok(list_note_catalog_inner(library_root, project_root)?),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(NoteRefusal::Said(
+                "This project already has a note with that name, so neither copy changed."
+                    .to_owned(),
+            ))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn valid_id(address: &NoteAddress) -> Result<NoteId, NoteRefusal> {
@@ -443,71 +464,4 @@ pub fn move_note_to_project_addressed_inner(
     address: &NoteAddress,
 ) -> Result<Vec<CatalogNoteWire>, NoteRefusal> {
     move_note_to_project_inner(library_root, project_root, address)
-}
-
-/// Ten sam Move z wstrzykniętym ostatnim krokiem usuwania źródła.
-///
-/// Szew istnieje wyłącznie po to, by oracle mógł deterministycznie odmówić ostatniej operacji
-/// i dowieść, że pełny cel jest już wtedy opublikowany. Polityka kopiowania i publikacji nadal
-/// należy do tej funkcji; callback nie jest wyrocznią dla żadnego wcześniejszego kroku.
-pub fn move_note_to_project_with_remover_inner<F>(
-    library_root: &Path,
-    project_root: &Path,
-    address: &NoteAddress,
-    remove_source: F,
-) -> Result<Vec<CatalogNoteWire>, NoteRefusal>
-where
-    F: FnOnce(&Path) -> std::io::Result<()>,
-{
-    let id = valid_id(address)?;
-    if address.place != NotePlace::Library {
-        return Err(NoteRefusal::Said(
-            "Only an earlier project note can be moved into this project.".to_owned(),
-        ));
-    }
-    let legacy = note_at(library_root, &id)?;
-    if legacy.scope != Scope::ThisProject {
-        return Err(NoteRefusal::Said(
-            "This note already belongs in the shared library, so it was not moved.".to_owned(),
-        ));
-    }
-
-    let source_dir = library_root.join("notes");
-    let source = source_dir.join(format!("{id}.md"));
-    let target_dir = project_root.join("notes");
-    let target = target_dir.join(format!("{id}.md"));
-    match fs::symlink_metadata(&target) {
-        Ok(_) => {
-            return Err(NoteRefusal::Said(
-                "This project already has a note with that name, so neither copy changed."
-                    .to_owned(),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(Error::Io(error).into()),
-    }
-
-    let bytes = fs::read(&source)?;
-    fs::create_dir_all(&target_dir)?;
-    // 2026-08-26 (T-136): always-copy plus no-clobber makes the same promise on one volume
-    // and across volumes; publishing the temporary file never overwrites a project note.
-    let mut temporary = NamedTempFile::new_in(&target_dir)?;
-    temporary.write_all(&bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist_noclobber(&target).map_err(|error| {
-        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-            NoteRefusal::Said(
-                "This project already has a note with that name, so neither copy changed."
-                    .to_owned(),
-            )
-        } else {
-            Error::Io(error.error).into()
-        }
-    })?;
-    // The target is durable before the only destructive step. A failed unlink therefore
-    // leaves two complete copies, while a successful unlink is made durable in its directory.
-    fs::File::open(&target_dir)?.sync_all()?;
-    remove_source(&source)?;
-    fs::File::open(&source_dir)?.sync_all()?;
-    Ok(list_note_catalog_inner(library_root, project_root)?)
 }
