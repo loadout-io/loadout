@@ -21,7 +21,7 @@ import type { ReactElement } from 'react';
 import { useState, useSyncExternalStore } from 'react';
 
 import { costText, openOneRun, stateWord } from '../history-command';
-import type { PastBranch, PastHandoff, PastRun, PastRunRow, PastStep } from '../io';
+import type { PastBranch, PastHandoff, PastMemory, PastRun, PastRunRow, PastStep } from '../io';
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
@@ -55,6 +55,14 @@ export const FORGET_THE_BRANCHES = 'Forget the branches';
  * zdania o jednym stanie to dwa miejsca, w których mieszka jedna odpowiedź (niezmiennik 13).
  */
 export const NO_BRANCHES_LEFT = 'No branches left';
+
+/** Nagłówek zamrożonego rachunku pod każdym fizycznym krokiem. */
+export const WHAT_THIS_STEP_KNEW = 'What this step knew';
+
+/** Dostarczenie i pominięcie są rozłączne: odłożona notatka nie udaje wiedzy kroku. */
+export const GIVEN_TO_THIS_STEP = 'Given to this step';
+export const LEFT_OUT_FOR_LENGTH = "Left out because it exceeded this run's length limit.";
+export const NO_FROZEN_MEMORY = 'No frozen memory was recorded for this step.';
 
 /** `button-quiet` z DESIGN §6, ta sama fraza co na ekranie agenta (`../session/session.tsx`). */
 const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
@@ -299,6 +307,8 @@ function Step({
         )}
       </h4>
 
+      <StepMemory memory={step.memory ?? []} />
+
       {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
           Zgłoszenie właściciela 2026-08-23: „ten UI od razu ogarnij bo mnie wkurwia".
 
@@ -342,6 +352,53 @@ function Step({
         )}
       </div>
     </section>
+  );
+}
+
+/** Zamrożony receipt — wyłącznie z `PastStep`, nigdy z dzisiejszego katalogu pamięci. */
+function StepMemory({ memory }: { memory: readonly PastMemory[] }): ReactElement {
+  return (
+    <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
+      <h5 className="mb-1 font-mono text-eyebrow text-muted">{WHAT_THIS_STEP_KNEW}</h5>
+      {memory.length === 0 ? (
+        <p className="text-body text-muted">{NO_FROZEN_MEMORY}</p>
+      ) : (
+        <div className="grid gap-2">
+          {memory.map((record) => (
+            <MemoryRecord
+              key={`${record.address.place}:${record.address.id}:${record.leftOut ? 'left-out' : 'given'}`}
+              record={record}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MemoryRecord({ record }: { record: PastMemory }): ReactElement {
+  const origins = [
+    record.project === null ? null : 'Imported from ' + record.project,
+    record.from === null ? null : 'Suggested after run ' + record.from,
+  ].filter((one): one is string => one !== null);
+
+  return (
+    <div data-past-memory={record.reference}>
+      <div className="flex items-baseline gap-3">
+        <span className="min-w-0 truncate font-mono text-mono text-ink">{record.reference}</span>
+        <span className="ml-auto font-mono text-mono whitespace-nowrap text-muted">
+          {String(record.bytes) + ' bytes · ' + record.hash.slice(0, 8)}
+        </span>
+      </div>
+      <p className="text-label text-muted">
+        {record.leftOut ? LEFT_OUT_FOR_LENGTH : GIVEN_TO_THIS_STEP}
+      </p>
+      {origins.map((origin) => (
+        <p key={origin} className="text-label text-muted">
+          {origin}
+        </p>
+      ))}
+    </div>
   );
 }
 
