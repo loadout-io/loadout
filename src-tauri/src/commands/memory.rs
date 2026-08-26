@@ -50,6 +50,8 @@ const SUGGESTED: &str = "suggested";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteWire {
+    /// Fizyczny korzeń pliku; z `id` tworzy pełną tożsamość widoczną dla okna.
+    pub place: NotePlace,
     /// Nazwa pliku notatki bez rozszerzenia.
     pub id: String,
     pub title: String,
@@ -94,7 +96,9 @@ pub struct NoteAddress {
 /// Notatka katalogowa wraz z adresem, spłaszczona na drucie do `{ place, id, ... }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CatalogNoteWire {
-    #[serde(flatten)]
+    /// Adres pozostaje osobnym typem dla rdzenia i testów zachowania. Na drucie te same dwa
+    /// pola niesie `note`, żeby płaski obiekt nie zawierał zduplikowanych kluczy JSON.
+    #[serde(skip)]
     pub address: NoteAddress,
     #[serde(flatten)]
     pub note: NoteWire,
@@ -102,13 +106,14 @@ pub struct CatalogNoteWire {
 
 impl From<&Note> for NoteWire {
     fn from(note: &Note) -> Self {
-        Self::from_note(note)
+        Self::at(note, NotePlace::Library)
     }
 }
 
 impl NoteWire {
-    fn from_note(note: &Note) -> Self {
+    fn at(note: &Note, place: NotePlace) -> Self {
         Self {
+            place,
             id: note.id.to_string(),
             title: note.title.clone(),
             rule: note.rule.clone(),
@@ -140,7 +145,7 @@ impl CatalogNoteWire {
                 place,
                 id: note.id.to_string(),
             },
-            note: NoteWire::from_note(note),
+            note: NoteWire::at(note, place),
         }
     }
 }
