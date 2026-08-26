@@ -45,7 +45,9 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useSyncExternalStore } from 'react';
+import type { NoteAddress } from '../../state/memory';
 import { useMemory } from '../../state/memory';
+import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import { ForcedChoice } from './forced-choice';
 import { NoteRow } from './note-row';
 import { PassedRow } from './passed-row';
@@ -90,8 +92,17 @@ function counted(count: number, noun: string): string {
   return count === 1 ? '1 ' + noun : String(count) + ' ' + noun + 's';
 }
 
+function activeCatalogFolder(): string | null {
+  return activeWorkspace()?.folder ?? null;
+}
+
 export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  const catalogFolder = useSyncExternalStore(
+    useWorkspaces.subscribe,
+    activeCatalogFolder,
+    activeCatalogFolder,
+  );
 
   /* ODCZYT PRZY WEJŚCIU W SEKCJĘ — bez tego cała ścieżka odczytu jest martwa.
    *
@@ -106,26 +117,35 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
    * człowieka; drugie `catch` tutaj byłoby drugim miejscem, w którym mieszka ta sama decyzja.
    * Pusta tablica zależności: sekcja pyta RAZ na zamontowanie, a nie na każdy render. */
   useEffect(() => {
-    void store.getState().load();
-  }, [store]);
+    void store.getState().load(catalogFolder);
+  }, [catalogFolder, store]);
 
   /* Podział liczony ze stanu przy każdym renderze, a nie trzymany w dwóch tablicach: dwie
    * listy w magazynie rozjeżdżają się przy pierwszej promocji, która trafi tylko do jednej
    * z nich, i widać to dopiero wtedy, gdy notatka jest w obu strefach naraz. */
-  const waiting = state.notes.filter((note) => note.status === 'suggested');
-  const inUse = state.notes.filter((note) => note.status === 'in-use');
+  const legacy = state.notes.filter(
+    (note) => note.place === 'library' && note.scope === 'this-project',
+  );
+  const current = state.notes.filter(
+    (note) => !(note.place === 'library' && note.scope === 'this-project'),
+  );
+  const waiting = current.filter((note) => note.status === 'suggested');
+  const inUse = current.filter((note) => note.status === 'in-use');
 
   /* Obie akcje wołają magazyn, i tylko magazyn: to on rozmawia z dyskiem i to on decyduje,
    * czy notatka naprawdę zmieniła stan (`src/state/memory.ts` — komenda, odpowiedź, dopiero
    * potem stan). Wiersz ich nie zna, bo wiersz nie zna magazynu. */
-  const use = (id: string): void => {
-    void store.getState().use(id);
+  const use = (address: NoteAddress): void => {
+    void store.getState().use(address);
   };
-  const stopUsing = (id: string): void => {
-    void store.getState().stopUsing(id);
+  const stopUsing = (address: NoteAddress): void => {
+    void store.getState().stopUsing(address);
   };
-  const discard = (id: string): void => {
-    void store.getState().discard(id);
+  const discard = (address: NoteAddress): void => {
+    void store.getState().discard(address);
+  };
+  const moveToProject = (address: NoteAddress): void => {
+    void store.getState().moveToProject(address);
   };
 
   return (
@@ -166,6 +186,26 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
           </div>
         ) : (
           <div className="flex max-w-160 flex-col gap-6">
+            {legacy.length === 0 ? null : (
+              <section data-zone="earlier-project" className="flex flex-col gap-2">
+                <h2 className={ZONE_TITLE}>Earlier project notes</h2>
+                <p className={ZONE_LEAD}>
+                  Move these earlier notes into this project before putting them to use.
+                </p>
+                <ul className="flex flex-col">
+                  {legacy.map((note) => (
+                    <NoteRow
+                      key={`${note.place}:${note.id}`}
+                      note={note}
+                      onUse={use}
+                      onStopUse={stopUsing}
+                      onMove={moveToProject}
+                    />
+                  ))}
+                </ul>
+              </section>
+            )}
+
             {/* Strefa, która czegoś od człowieka chce, stoi PIERWSZA. Pusta strefa nie jest
                 rysowana: nagłówek nad niczym jest miejscem na ekranie oddanym za fakt, który
                 już mówi jego brak. */}
@@ -181,7 +221,7 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
                       wołającym, a ekran mówi, w którym miejscu ta decyzja w ogóle istnieje. */}
                   {waiting.map((note) => (
                     <NoteRow
-                      key={note.id}
+                      key={`${note.place}:${note.id}`}
                       note={note}
                       onUse={use}
                       onStopUse={stopUsing}
@@ -200,7 +240,12 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
                 </p>
                 <ul className="flex flex-col">
                   {inUse.map((note) => (
-                    <NoteRow key={note.id} note={note} onUse={use} onStopUse={stopUsing} />
+                    <NoteRow
+                      key={`${note.place}:${note.id}`}
+                      note={note}
+                      onUse={use}
+                      onStopUse={stopUsing}
+                    />
                   ))}
                 </ul>
               </section>

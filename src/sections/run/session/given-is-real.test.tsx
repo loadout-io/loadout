@@ -81,6 +81,7 @@ const FOR_CHECK: Handoff = {
 
 /** Notatka, która jedzie w promptcie tego jednego agenta. */
 const MINE: Note = {
+  place: 'library',
   id: 'n-state-machines',
   title: 'Small state machines',
   rule: 'Prefer small state machines over patterns for parsing',

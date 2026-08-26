@@ -41,6 +41,7 @@ const LENGTH = 137;
 
 function note(status: Note['status']): Note {
   return {
+    place: 'project',
     id: 'tenant-before-guard',
     title: 'The tenant is resolved before the guard',
     rule: RULE,

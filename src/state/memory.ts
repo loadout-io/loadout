@@ -23,6 +23,7 @@ import {
   discardNote,
   listHandoffs,
   listNotes,
+  moveToProject,
   putToUse,
   stopUsing as stopUsingOnDisk,
 } from '../sections/memory/io';
@@ -36,8 +37,19 @@ export type NoteStatus = 'suggested' | 'in-use';
 /** Trzy zakresy, które mają własny budżet [T6 §6]. */
 export type NoteScope = 'everywhere' | 'this-project' | 'this-agent';
 
+/** Fizyczny korzeń pliku. Legacy pozostaje notatką biblioteczną, nie trzecim miejscem. */
+export type NotePlace = 'library' | 'project';
+
+/** Pełna tożsamość notatki; sam `id` może legalnie wystąpić w obu korzeniach. */
+export interface NoteAddress {
+  place: NotePlace;
+  id: string;
+}
+
 /** Notatka tak, jak ją widzi sekcja. Lustro `notes::Note`, bez pól, których UI nie pokazuje. */
 export interface Note {
+  /** Fizyczny korzeń pliku; razem z `id` tworzy tożsamość wiersza i każdej akcji. */
+  place: NotePlace;
   id: string;
   title: string;
   /** Jedna linia — i jedyna część notatki, która trafia do promptu. */
@@ -122,13 +134,17 @@ export interface MemoryFull {
 /** Wymuszony wybór czekający na człowieka. `null` znaczy, że nic nie czeka (niezmiennik 13). */
 export interface Choice {
   /** Notatka, którą człowiek chciał wziąć do użytku. */
-  id: string;
+  address: NoteAddress;
   overBy: number;
   retire: string[];
 }
 
 export interface MemoryState {
   notes: Note[];
+  /** Folder zamrożony przy ostatnim odczycie katalogu; wszystkie kliknięcia używają jego. */
+  catalogFolder: string | null;
+  /** Rosnący numer odczytu, który odcina spóźnione odpowiedzi poprzedniego workspace'a. */
+  generation: number;
   /**
    * Co agenci przekazali sobie po drodze. Trzecia strefa ekranu, do 2026-08-18 nieodczytywana
    * przez nic.
@@ -151,11 +167,11 @@ export interface MemoryState {
    *
    * Do 2026-08-18 tej ścieżki nie było wcale i to jest cały powód, dla którego pole istnieje.
    */
-  load: () => Promise<void>;
+  load: (catalogFolder?: string | null) => Promise<void>;
   /** „Use this" — od tej chwili notatka wchodzi do promptu. Decyduje odpowiedź z Rusta. */
-  use: (id: string) => Promise<void>;
+  use: (address: NoteAddress) => Promise<void>;
   /** „Stop using" — notatka zostaje na liście i przestaje wchodzić do promptu. */
-  stopUsing: (id: string) => Promise<void>;
+  stopUsing: (address: NoteAddress) => Promise<void>;
   /**
    * „Discard" — kandydatka schodzi z listy.
    *
@@ -163,7 +179,9 @@ export interface MemoryState {
    * i do 2026-08-23 jedyną było „tak". Znika stąd wyłącznie wiersz: plik notatki odchodzi do
    * `discarded/` po tamtej stronie granicy, bo nic w pamięci nie jest twardo usuwane [T6 §5.3].
    */
-  discard: (id: string) => Promise<void>;
+  discard: (address: NoteAddress) => Promise<void>;
+  /** Jedyna akcja wcześniejszej notatki projektowej. */
+  moveToProject: (address: NoteAddress) => Promise<void>;
   /** Zamyka wymuszony wybór, niczego nie zmieniając. */
   cancel: () => void;
 }
@@ -173,6 +191,7 @@ export interface MemoryState {
 const COULD_NOT_USE = 'Loadout could not put that note to use.';
 const COULD_NOT_STOP = 'Loadout could not stop using that note.';
 const COULD_NOT_DISCARD = 'Loadout could not throw that note away.';
+const COULD_NOT_MOVE = 'Loadout could not move that note into this project.';
 const COULD_NOT_READ = 'Loadout could not read the notes on this machine.';
 const COULD_NOT_READ_PASSED = 'Loadout could not read what agents passed to each other.';
 
@@ -190,70 +209,79 @@ function isMemoryFull(refusal: unknown): refusal is MemoryFull {
   return typeof maybe.overBy === 'number' && Array.isArray(maybe.retire);
 }
 
-/**
- * Notatka odczytana z pliku po zapisie zastępuje tę, którą sekcja trzymała.
- *
- * Podmiana CAŁEGO obiektu, nie samego `status`: wraz ze statusem zmienia się `modified`, a przy
- * drugim zgłoszeniu także `occurrences`. Przepisanie jednego pola zostawiłoby wiersz, który
- * o jednej rzeczy mówi prawdę z dysku, a o reszcie to, co pamiętał sprzed zapisu.
- */
-function replace(notes: Note[], fresh: Note): Note[] {
-  return notes.map((one) => (one.id === fresh.id ? fresh : one));
+/** Pełny payload jednej mutacji, zawsze z folderem zamrożonym przez ostatni katalog. */
+function request(catalogFolder: string | null, address: NoteAddress) {
+  return { catalogFolder, place: address.place, id: address.id };
 }
 
 export const useMemory = create<MemoryState>()((set, get) => ({
   notes: [],
+  catalogFolder: null,
+  generation: 0,
   passed: [],
   message: null,
   passedProblem: null,
   choice: null,
 
-  load: async () => {
+  load: async (catalogFolder) => {
+    const frozenFolder =
+      catalogFolder === undefined ? (activeWorkspace()?.folder ?? null) : catalogFolder;
+    const generation = get().generation + 1;
+    set({ catalogFolder: frozenFolder, generation });
+
     /* DWA ODCZYTY, DWIE OSOBNE ODMOWY, i to nie jest ostrożność na zapas: notatki leżą
      * w `~/.loadout/memory/notes/`, a przekazania w katalogach biegów
      * (`<repo>/.loadout/runs/<…>/handoffs/`). Jeden `try` na oba znaczy, że katalog notatek,
      * którego nie da się przeczytać, zabiera z ekranu także przekazania — czyli awaria jednej
      * ścieżki pustoszy strefę, która ma swoje pliki w porządku. Awaria każdej z nich ma
      * kosztować dokładnie tyle, ile mówi (niezmiennik 5). */
-    try {
-      /* PODMIANA CAŁEJ LISTY, nigdy dopisanie. Wejście w sekcję drugi raz dokładałoby wtedy
-       * te same notatki jeszcze raz, a człowiek zobaczyłby każdą podwójnie i licznik nad
-       * sekcją policzyłby pliki dwa razy. Lista ma być odpowiedzią dysku, a nie sumą
-       * wszystkich odpowiedzi, jakich dysk kiedykolwiek udzielił. */
-      set({ notes: await listNotes(), message: null });
-    } catch (refusal) {
-      /* Odmowa NIE leci w górę: wywołujący to wejście w sekcję, a wyjątek stamtąd wywraca
-       * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — notatki sprzed odmowy są
-       * tym, co sekcja PAMIĘTA, a nie tym, co leży w plikach, i pokazanie ich byłoby dokładnie
-       * tym kłamstwem, przed którym stoi niezmiennik 4. */
-      set({ notes: [], message: why(refusal, COULD_NOT_READ) });
-    }
+    const notesRead = (async () => {
+      try {
+        const notes = await listNotes(frozenFolder);
+        // 2026-08-26 (T-128): odpowiedź A może wrócić po B. Numer odczytu jest jedyną
+        // autoryzacją do podmiany katalogu; sama zgodność folderu nie odróżnia A1 od A2.
+        if (get().generation === generation) set({ notes, message: null });
+      } catch (refusal) {
+        if (get().generation === generation) {
+          set({ notes: [], message: why(refusal, COULD_NOT_READ) });
+        }
+      }
+    })();
 
-    try {
-      /* Ta sama reguła podmiany całej listy i ten sam powód. */
-      /* ZAKRES BIERZEMY W CHWILI ODCZYTU, nie przy tworzeniu magazynu: człowiek przełącza
-       * projekt w bocznym menu, a ta lista ma pokazywać ten, na który właśnie patrzy.
-       * `null` znaczy „weź swoją domyślną" i jedzie jawnie, żeby okno nie miało drugiej
-       * odpowiedzi na pytanie, gdzie pracujemy. */
-      set({ passed: await listHandoffs(activeWorkspace()?.folder ?? null), passedProblem: null });
-    } catch (refusal) {
-      set({ passed: [], passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
-    }
+    const passedRead = (async () => {
+      try {
+        const passed = await listHandoffs(frozenFolder);
+        if (get().generation === generation) set({ passed, passedProblem: null });
+      } catch (refusal) {
+        if (get().generation === generation) {
+          set({ passed: [], passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
+        }
+      }
+    })();
+
+    await Promise.all([notesRead, passedRead]);
   },
 
-  use: async (id: string) => {
+  use: async (address) => {
+    const { catalogFolder, generation } = get();
     try {
       /* Komenda, odpowiedź, DOPIERO POTEM stan. Wiersz przestawiony przed odpowiedzią pokazuje
        * „In use" dla notatki, której plik dalej mówi `suggested` — czyli kłamie dokładnie o tym
        * jednym, o czym ta sekcja mówi: co wejdzie do promptu następnego agenta. */
-      const fresh = await putToUse({ id });
-      set({ notes: replace(get().notes, fresh), message: null, choice: null });
+      const notes = await putToUse(request(catalogFolder, address));
+      if (get().generation === generation) {
+        set({ notes, message: null, choice: null });
+      }
     } catch (refusal) {
+      if (get().generation !== generation) return;
       if (isMemoryFull(refusal)) {
         /* Lista do wymuszonego wyboru przychodzi Z ODMOWY i tylko stamtąd. Złożona tutaj
          * z tego, co sekcja akurat trzyma, byłaby drugą odpowiedzią na pytanie „co odstawić",
          * liczoną bez połowy plików i bez `last_used_at` (niezmiennik 13). */
-        set({ choice: { id, overBy: refusal.overBy, retire: refusal.retire }, message: null });
+        set({
+          choice: { address, overBy: refusal.overBy, retire: refusal.retire },
+          message: null,
+        });
         return;
       }
       /* Zwykła odmowa NIE otwiera okna: pytanie „które notatki odstawić" postawione komuś,
@@ -263,16 +291,22 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     }
   },
 
-  stopUsing: async (id: string) => {
+  stopUsing: async (address) => {
+    const { catalogFolder, generation } = get();
     try {
-      const fresh = await stopUsingOnDisk({ id });
-      set({ notes: replace(get().notes, fresh), message: null, choice: null });
+      const notes = await stopUsingOnDisk(request(catalogFolder, address));
+      if (get().generation === generation) {
+        set({ notes, message: null, choice: null });
+      }
     } catch (refusal) {
-      set({ message: why(refusal, COULD_NOT_STOP), choice: null });
+      if (get().generation === generation) {
+        set({ message: why(refusal, COULD_NOT_STOP), choice: null });
+      }
     }
   },
 
-  discard: async (id: string) => {
+  discard: async (address) => {
+    const { catalogFolder, generation } = get();
     try {
       /* Komenda, odpowiedź, DOPIERO POTEM stan — ta sama kolejność, co wyżej, i ten sam powód.
        * Wiersz zdjęty przed odpowiedzią znika także wtedy, gdy Rust odmówił, a wtedy notatka
@@ -280,15 +314,27 @@ export const useMemory = create<MemoryState>()((set, get) => ({
        * innego niż pliki, czyli łamałby niezmiennik 4 w jedynym miejscu, w którym człowiek może
        * to zobaczyć. Optymistyczne zdjęcie kosztuje tu więcej niż gdzie indziej, bo cofnięcia
        * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
-      await discardNote({ id });
-      /* Filtr, nie podmiana: `replace` z reszty tego pliku zastępuje notatkę jej świeżym
-       * odczytem, a tej notatki nie ma już czego odczytać. */
-      set({ notes: get().notes.filter((one) => one.id !== id), message: null });
+      const notes = await discardNote(request(catalogFolder, address));
+      if (get().generation === generation) set({ notes, message: null });
     } catch (refusal) {
       /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
        * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
        * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
-      set({ message: why(refusal, COULD_NOT_DISCARD) });
+      if (get().generation === generation) {
+        set({ message: why(refusal, COULD_NOT_DISCARD) });
+      }
+    }
+  },
+
+  moveToProject: async (address) => {
+    const { catalogFolder, generation } = get();
+    try {
+      const notes = await moveToProject(request(catalogFolder, address));
+      if (get().generation === generation) set({ notes, message: null, choice: null });
+    } catch (refusal) {
+      if (get().generation === generation) {
+        set({ message: why(refusal, COULD_NOT_MOVE), choice: null });
+      }
     }
   },
 

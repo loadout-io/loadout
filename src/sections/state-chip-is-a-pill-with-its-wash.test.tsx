@@ -33,6 +33,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STATES = ['live', 'fail', 'attend', 'accent', 'human'] as const;
 
 const WAITING: Note = {
+  place: 'project',
   id: 'n-1',
   title: 'Bundled SQLite has no textbook defaults',
   rule: 'Set foreign_keys and busy_timeout on every bare connection.',

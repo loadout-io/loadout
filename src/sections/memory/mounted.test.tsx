@@ -37,6 +37,7 @@ const NO_NOTES_YET = 'No notes yet.';
 
 /** Kandydatka: agent ją zaproponował, człowiek jeszcze nie powiedział „tak". */
 const WAITING: Note = {
+  place: 'project',
   id: 'n-1',
   title: 'Quote handling needs a state machine',
   rule: 'Prefer small state machines over regex',
@@ -50,6 +51,7 @@ const WAITING: Note = {
 
 /** Notatka w użyciu: wchodzi do promptu każdego agenta w tym projekcie. */
 const IN_USE: Note = {
+  place: 'project',
   id: 'n-2',
   title: 'Locks and waiting',
   rule: 'Never hold a lock across an await',

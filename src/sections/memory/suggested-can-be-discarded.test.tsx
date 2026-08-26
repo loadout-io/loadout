@@ -36,7 +36,7 @@ import type { ComponentProps, ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MemoryState, Note } from '../../state/memory';
+import type { MemoryState, Note, NoteAddress } from '../../state/memory';
 import { useMemory } from '../../state/memory';
 import MemoryScreen from './index';
 import { NoteRow } from './note-row';
@@ -63,6 +63,7 @@ const STOP = 'Stop using';
 
 /** Kandydatka: agent ją zaproponował, człowiek jeszcze nie powiedział „tak". */
 const WAITING: Note = {
+  place: 'project',
   id: 'n-1',
   title: 'Quote handling needs a state machine',
   rule: 'Prefer small state machines over hand-rolled scanning',
@@ -76,6 +77,7 @@ const WAITING: Note = {
 
 /** Notatka w użyciu: wchodzi do promptu każdego agenta w tym projekcie. */
 const IN_USE: Note = {
+  place: 'project',
   id: 'n-2',
   title: 'Locks and waiting',
   rule: 'Never hold a lock across an await',
@@ -94,7 +96,9 @@ function noop(): void {
 /* Wiersz z prop-em, którego dziś jeszcze nie deklaruje. Kontrolka bez handlera nie wchodzi do
  * repo (niezmiennik 16), więc przycisk „Discard" musi mieć swój — a `note-row.test.tsx` z T-17
  * leży poza blokiem OWNS tego zadania i nie ma prawa przestać się kompilować. */
-type RowProps = ComponentProps<typeof NoteRow> & { onDiscard: (id: string) => void };
+type RowProps = ComponentProps<typeof NoteRow> & {
+  onDiscard: (address: NoteAddress) => void;
+};
 const Row = NoteRow as (props: RowProps) => ReactElement;
 
 function markup(status: Note['status']): string {
@@ -138,8 +142,8 @@ function idsOnScreen(): string[] {
  * porażką z własnym zdaniem — a nie tym samym zdaniem, którym odmawia każde wywołanie czegoś,
  * czego nie ma.
  */
-function discardFrom(state: MemoryState): ((id: string) => Promise<void>) | undefined {
-  return (state as MemoryState & { discard?: (id: string) => Promise<void> }).discard;
+function discardFrom(state: MemoryState): ((address: NoteAddress) => Promise<void>) | undefined {
+  return state.discard;
 }
 
 beforeEach(() => {
@@ -221,14 +225,14 @@ describe('a suggested note can be thrown away, and one in use cannot be thrown a
         }),
     );
 
-    const pending = discard?.(WAITING.id);
+    const pending = discard?.({ place: WAITING.place, id: WAITING.id });
 
     expect(
       invoked.mock.calls,
       'one question asked, and it names the command and carries the note it is about. A row ' +
         'that takes itself off the list without asking is the same silent trimming this whole ' +
         'subsystem exists to refuse [T6 §5.3]',
-    ).toEqual([[COMMAND, { id: WAITING.id }]]);
+    ).toEqual([[COMMAND, { catalogFolder: null, place: WAITING.place, id: WAITING.id }]]);
     expect(
       idsOnScreen(),
       'the row is still there while the answer is on its way. The rest of this screen already ' +
@@ -236,7 +240,7 @@ describe('a suggested note can be thrown away, and one in use cannot be thrown a
         'lies about the one thing this section is about — what is on disk (invariant 4)',
     ).toEqual([WAITING.id, IN_USE.id]);
 
-    answer(undefined);
+    answer([IN_USE]);
     await pending;
 
     expect(

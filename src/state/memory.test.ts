@@ -26,6 +26,8 @@ import { useMemory } from './memory';
 vi.mock('../sections/memory/io', () => ({
   putToUse: vi.fn(),
   stopUsing: vi.fn(),
+  discardNote: vi.fn(),
+  moveToProject: vi.fn(),
   listNotes: vi.fn(),
   listHandoffs: vi.fn(),
 }));
@@ -41,6 +43,7 @@ const FLAKY = 'retry-the-flaky-suite';
 
 function note(id: string, status: Note['status']): Note {
   return {
+    place: 'project',
     id,
     title: 'The tenant is resolved before the guard',
     rule: 'An unresolved tenant comes back as 401, not 400.',
@@ -51,6 +54,10 @@ function note(id: string, status: Note['status']): Note {
     occurrences: 2,
     modified: '2026-08-16T10:31:02Z',
   };
+}
+
+function projectAddress(id: string) {
+  return { place: 'project' as const, id };
 }
 
 interface Deferred<T> {
@@ -98,10 +105,10 @@ beforeEach(() => {
 
 /** Pyta o notatkę i dostaje odmowę „zakres jest pełny". Dwa testy zaczynają się tak samo. */
 async function toldTheScopeIsFull(): Promise<MemoryFull> {
-  const answer = deferred<Note>();
+  const answer = deferred<Note[]>();
   putToUse.mockReturnValue(answer.promise);
 
-  const pending = useMemory.getState().use(TENANT);
+  const pending = useMemory.getState().use(projectAddress(TENANT));
   const full: MemoryFull = { overBy: 200, retire: [INDEX, FLAKY] };
   answer.reject(full);
   await pending;
@@ -111,16 +118,20 @@ async function toldTheScopeIsFull(): Promise<MemoryFull> {
 
 describe('nothing moves in the section until Rust says it moved on disk', () => {
   it('asks once, with the id, and shows the old state until the answer arrives', async () => {
-    const answer = deferred<Note>();
+    const answer = deferred<Note[]>();
     putToUse.mockReturnValue(answer.promise);
 
-    const pending = useMemory.getState().use(TENANT);
+    const pending = useMemory.getState().use(projectAddress(TENANT));
 
     expect(
       putToUse,
       'once, not twice: the same note written over itself would count as success both times',
     ).toHaveBeenCalledTimes(1);
-    expect(putToUse, 'and it says which note it is about').toHaveBeenCalledWith({ id: TENANT });
+    expect(putToUse, 'and it keeps the full address and frozen folder').toHaveBeenCalledWith({
+      catalogFolder: null,
+      place: 'project',
+      id: TENANT,
+    });
 
     expect(
       statusOf(TENANT),
@@ -129,7 +140,7 @@ describe('nothing moves in the section until Rust says it moved on disk', () => 
         'never catches up with what the person already read',
     ).toBe('suggested');
 
-    answer.resolve(note(TENANT, 'in-use'));
+    answer.resolve([note(TENANT, 'in-use'), note(INDEX, 'in-use')]);
     await pending;
 
     expect(
@@ -141,10 +152,10 @@ describe('nothing moves in the section until Rust says it moved on disk', () => 
   });
 
   it('leaves a refused note alone and says in a sentence what happened', async () => {
-    const answer = deferred<Note>();
+    const answer = deferred<Note[]>();
     putToUse.mockReturnValue(answer.promise);
 
-    const pending = useMemory.getState().use(TENANT);
+    const pending = useMemory.getState().use(projectAddress(TENANT));
     answer.reject(new Error('Every note needs a reason. Why is this true?'));
     await pending;
 
@@ -175,7 +186,11 @@ describe('nothing moves in the section until Rust says it moved on disk', () => 
       'the scope is full, so the person picks what to give up — the list comes from the ' +
         'refusal, least recently used first, and nobody rebuilds it here from what the section ' +
         'happens to hold',
-    ).toEqual({ id: TENANT, overBy: full.overBy, retire: full.retire });
+    ).toEqual({
+      address: projectAddress(TENANT),
+      overBy: full.overBy,
+      retire: full.retire,
+    });
 
     expect(
       asked(),

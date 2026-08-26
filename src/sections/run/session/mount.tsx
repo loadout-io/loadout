@@ -112,7 +112,7 @@ export async function readWhatWasGiven(folder: string | null): Promise<void> {
     passed = [];
   }
   try {
-    known = await listNotes();
+    known = await listNotes(folder);
   } catch {
     known = [];
   }

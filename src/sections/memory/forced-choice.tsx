@@ -17,7 +17,7 @@
  * miałby drugie zdanie o tym, czy wybór jest jeszcze otwarty.
  */
 import type { ReactElement } from 'react';
-import type { Choice, Note } from '../../state/memory';
+import type { Choice, Note, NoteAddress } from '../../state/memory';
 import { lengthLabel } from './note-row';
 
 export interface ForcedChoiceProps {
@@ -25,7 +25,7 @@ export interface ForcedChoiceProps {
   /** Notatki, które sekcja trzyma — po to, żeby lista mówiła zdaniami, a nie nazwami plików. */
   notes: Note[];
   /** „Stop using" na pozycji z listy. Kontrolka bez handlera nie wchodzi do repo (16). */
-  onStopUsing: (id: string) => void;
+  onStopUsing: (address: NoteAddress) => void;
   /** Zamknięcie bez zgody na cokolwiek. */
   onCancel: () => void;
 }
@@ -55,7 +55,7 @@ export function ForcedChoice({
         role="dialog"
         aria-modal="true"
         aria-labelledby="memory-is-full"
-        data-choice={choice.id}
+        data-choice={`${choice.address.place}:${choice.address.id}`}
         className={WINDOW}
       >
         <h2 id="memory-is-full" className="text-heading text-ink">
@@ -69,9 +69,13 @@ export function ForcedChoice({
                odmowa liczy się z WSZYSTKICH plików zakresu, a sekcja trzyma tylko to, co
                akurat pokazuje. Wycięcie takiej pozycji zabrałoby człowiekowi z listy właśnie
                tę, której odstawienie zwolniłoby najwięcej. */
-            const note = notes.find((one) => one.id === id);
+            const note = notes.find((one) => one.place === choice.address.place && one.id === id);
+            const address: NoteAddress = { place: choice.address.place, id };
             return (
-              <li key={id} className="flex items-center justify-between gap-2">
+              <li
+                key={`${address.place}:${address.id}`}
+                className="flex items-center justify-between gap-2"
+              >
                 <span className="text-body text-ink">{note?.rule ?? id}</span>
                 <span className="text-label text-muted">
                   {note === undefined ? '' : lengthLabel(note.length)}
@@ -81,7 +85,7 @@ export function ForcedChoice({
                   data-stop={id}
                   className={ACT}
                   onClick={() => {
-                    onStopUsing(id);
+                    onStopUsing(address);
                   }}
                 >
                   Stop using
