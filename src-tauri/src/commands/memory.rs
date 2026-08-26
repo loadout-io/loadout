@@ -20,13 +20,14 @@
 //! trzy funkcje stoją w jednym pliku, a ta warstwa jest tym, czym miała być: skorupą, która
 //! zamienia identyfikator na [`NoteId`], a błąd na zdanie dla okna.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::memory::notes::{
-    Actor, Error, Note, NoteId, RealMoveIo, Scope, Status, discard, move_note_file_with_io,
-    promote, scan_notes, stop_using,
+    Actor, Budget, Error, Note, NoteId, RealMoveIo, Scope, Status, discard, move_note_file_with_io,
+    promote, scan_notes, stop_using, what_you_know,
 };
 
 /// Wartość `status:` dla notatki, która przestała wchodzić do promptu — **na drucie**.
@@ -68,7 +69,11 @@ pub struct NoteWire {
     /// a raz go nie ma, znaczy tam, że okno i Rust zgadzają się tylko dla części notatek.
     pub agent: Option<String>,
     /// Z jakiego projektu ta notatka przyjechała; `null` znaczy „napisano ją tutaj".
+    pub project: Option<String>,
+    /// Bieg, który zaproponował regułę; `null` znaczy, że nie pochodzi z refleksji biegu.
     pub from: Option<String>,
+    /// Bieżący rachunek katalogu: aktywna notatka nie weszła do promptu przez limit zakresu.
+    pub left_out: bool,
     /// Ile ta notatka zabiera z budżetu zakresu. Na ekranie to słowo brzmi `length`
     /// (`DESIGN.md` §8), więc pole nazywa się tak samo — tłumaczenie w komponencie byłoby
     /// drugim miejscem, w którym mieszka nazwa tej liczby.
@@ -95,12 +100,12 @@ pub struct NoteAddress {
 
 impl From<&Note> for NoteWire {
     fn from(note: &Note) -> Self {
-        Self::at(note, NotePlace::Library)
+        Self::at(note, NotePlace::Library, false)
     }
 }
 
 impl NoteWire {
-    fn at(note: &Note, place: NotePlace) -> Self {
+    fn at(note: &Note, place: NotePlace, left_out: bool) -> Self {
         Self {
             place,
             id: note.id.to_string(),
@@ -119,7 +124,9 @@ impl NoteWire {
             }
             .to_owned(),
             agent: note.agent.clone(),
+            project: note.project.clone(),
             from: note.from.clone(),
+            left_out,
             length: note.est_tokens,
             occurrences: note.occurrences,
             modified: note.modified.clone(),
@@ -206,20 +213,52 @@ pub fn list_note_catalog_inner(
     library_root: &Path,
     project_root: &Path,
 ) -> Result<Vec<NoteWire>, Error> {
-    let mut catalog: Vec<NoteWire> = scan_notes(library_root)?
-        .iter()
-        .map(|note| NoteWire::at(note, NotePlace::Library))
-        .collect();
-    catalog.extend(
-        scan_notes(project_root)?
-            .iter()
-            .map(|note| NoteWire::at(note, NotePlace::Project)),
-    );
+    let library = scan_notes(library_root)?;
+    let project = scan_notes(project_root)?;
+    let mut catalog = catalog_rows(&library, NotePlace::Library);
+    catalog.extend(catalog_rows(&project, NotePlace::Project));
     // 2026-08-26 (T-128): kolejność pełnego adresu jest stabilna także wtedy, gdy oba korzenie
     // zawierają ten sam id. Sortowanie po samym id zostawiałoby kolejność bliźniaków decyzji
     // systemu plików, a katalog jest odpowiedzią, którą magazyn podmienia w całości.
     catalog.sort_by(|left, right| (&left.place, &left.id).cmp(&(&right.place, &right.id)));
     Ok(catalog)
+}
+
+/// Dopina rachunek budżetu do wierszy jednego fizycznego korzenia. Nielegalnie położone
+/// notatki pozostają widoczne, ale nie dostają fikcyjnego wyniku bloku, do którego nie należą.
+fn catalog_rows(notes: &[Note], place: NotePlace) -> Vec<NoteWire> {
+    let mut dropped = BTreeSet::new();
+    match place {
+        NotePlace::Library => {
+            dropped.extend(dropped_for(notes, Scope::Everywhere));
+
+            // 2026-08-26 (T-129): limit `this-agent` należy do znormalizowanego właściciela,
+            // tak samo jak produkcyjny prompt kroku. Jeden agent nie może wypchnąć reguł drugiego.
+            let mut by_owner: BTreeMap<String, Vec<Note>> = BTreeMap::new();
+            for note in notes.iter().filter(|note| note.scope == Scope::ThisAgent) {
+                let Some(owner) = note.agent.as_deref() else {
+                    continue;
+                };
+                by_owner
+                    .entry(crate::memory::slugify(owner))
+                    .or_default()
+                    .push(note.clone());
+            }
+            for owned in by_owner.values() {
+                dropped.extend(dropped_for(owned, Scope::ThisAgent));
+            }
+        }
+        NotePlace::Project => dropped.extend(dropped_for(notes, Scope::ThisProject)),
+    }
+
+    notes
+        .iter()
+        .map(|note| NoteWire::at(note, place, dropped.contains(&note.id)))
+        .collect()
+}
+
+fn dropped_for(notes: &[Note], scope: Scope) -> Vec<NoteId> {
+    what_you_know(notes, Budget::of(scope)).dropped
 }
 
 /// Adresowane „Use this”; po mutacji wraca ponownie wyliczony cały katalog.
