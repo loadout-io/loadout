@@ -4,6 +4,22 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 14:18 — T-138 przejmuje H16/H18 bez powtarzania implementacji
+
+Właściciel polecił przyspieszyć po obowiązkowym postoju T-137. Świeże **T-138** startuje z
+czystego `main` i ma trzy nowe standalone targety. Dopiero po uczciwym `before` wolno mu
+zastosować pięć commitów implementacyjnych T-137; jego kontrakt, specy i cała gałąź nie są
+wejściem.
+
+AC-1 prowadzi atrapę refleksji przez prawdziwe wrappery ustawień, evidence i budżetu, wymaga
+receipt oraz fizycznej notatki tylko we właściwym projekcie, a stempel porównuje na
+niekanonicznym front matterze bajt po bajcie po normalizacji wyłącznie `last_used_at`. AC-2
+uznaje wpis Move dopiero po udanym delegowaniu rzeczywistej operacji i wymaga, żeby odmowa nie
+udawała wykonanego fsync/publish/unlink. AC-3 przypina legacy do widocznej strefy
+`earlier-project`, wyklucza je z `suggested` i zachowuje prawdziwe kliknięcia Move, Use, Stop
+oraz Discard. Operacyjnie bieg pozostaje Codex + Codex; T-129/T-130 czekają na wylądowanie
+pełnego adresu z T-138.
+
 ## 2026-08-26, 14:05 — T-137 ZAMKNIĘTE: AC-1 zatrzymała wadliwa atrapa refleksji
 
 **T-137 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 55 min 36 s Harnessu · $0,00

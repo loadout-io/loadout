@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-137 następne; T-136 zamknięte po czerwonej bramce)
+# Prompt orchestratora — faza 7 (T-138 następne; T-137 zamknięte po czerwonej bramce)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -6,9 +6,9 @@ których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
 wszystkie pozostałe lądowania fazy 7 w kolejności z §4 tego pliku. Historyczny rejestr
-T-98…T-137 obejmuje zadania, z których T-105, T-110, T-99,
+T-98…T-138 obejmuje zadania, z których T-105, T-110, T-99,
 T-112, T-113, T-102, T-103, T-109,
-T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128 i T-136 zostały zamknięte bez lądowania.
+T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136 i T-137 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -38,8 +38,10 @@ T-109 zamknięto bez uruchomienia: wszystkie checki są zabronionymi filtrami ws
 a dwa wymagane pliki produkcyjne leżą poza OWNS. T-127 przejęło H29 i wylądowało. T-128
 przeszło własne AC, lecz zostało zamknięte, gdy pełna suita wymagała dwóch starych testów
 poza OWNS. T-136 posiadało pełny zakres, lecz po jedynej naprawie zostało 15/18: wadliwy
-oracle multizbioru, kolejny lint i trzy luki dowodu. Świeże T-137 mierzy snapshot promptu,
-pełny protokół Move oraz exact tombstone i jest następnym biegiem.
+oracle multizbioru, kolejny lint i trzy luki dowodu. T-137 przejęło zakres i po naprawie
+doszło do 17/19: produkcyjny stempel zachowuje bajty snapshotu, lecz atrapowy driver refleksji
+nie przechodził wrapperów, rejestrator Move zapisywał próby przed delegowaniem, a E2E nie
+wiązało legacy z widoczną strefą. Świeże T-138 naprawia te trzy wyrocznie i jest następnym biegiem.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -56,7 +58,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-127.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; T-105, T-110, T-99, T-112, T-113, T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są historycznymi zamknięciami |
+| `tasks/T-98.md` … `tasks/T-138.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -246,6 +248,15 @@ zastosować dokładnie trzy commity implementacyjne T-136 (`8cca95a`, `eb09306`,
 Nie przenosi jego kontraktu, speców, naprawy ani żadnego commita T-128. Przed commitem uruchom
 wyłącznie `python3 harness/task-spine.py`, nie bramkę produktu.
 
+Dwudziesty pierwszy commit kontraktowy zapisuje `T-137 ZAMKNIĘTE`: enforced `before` było
+uczciwe, AC-2 i AC-3 przeszły, a końcowa bramka po jedynej naprawie pozostała 17/19. Atrapa
+refleksji nie przechodziła wrapperów ustawień, evidence i budżetu; RecordingMoveIo zapisywało
+próby przed delegowaniem, a browserowy locator legacy był globalny. Dodaje `tasks/T-138.md`
+z trzema nowymi targetami. T-138 startuje z aktualnego `main`; dopiero po uczciwym `before`
+wolno mu zastosować dokładnie pięć commitów implementacyjnych T-137 (`452bc47`, `b649929`,
+`db56f0e`, `e772354`, `8345b02`). Nie przenosi kontraktu, speców ani całej gałęzi T-137.
+Przed commitem uruchom wyłącznie `python3 harness/task-spine.py`, nie bramkę produktu.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -292,7 +303,8 @@ jest następnym biegiem.
 | 7b | **WYKONANE:** T-127 w trunku | świeże H29 po T-126; kopie i refleksja dostają osobny stan |
 | 8a | **ZAMKNIĘTE:** T-128, nie ląduj i nie wznawiaj | oba AC zielone, lecz dwa konieczne stare testy poza OWNS |
 | 8b | **ZAMKNIĘTE:** T-136, nie ląduj i nie wznawiaj | 15/18 po naprawie; wadliwy multizbiór, lint i trzy luki oracle |
-| 8c | `./ship-task.sh T-137 --agent codex --reviewer codex` | pełny następca H16/H18 z obserwowalnym snapshotem, trwałym Move i prawdziwymi akcjami |
+| 8c | **ZAMKNIĘTE:** T-137, nie ląduj i nie wznawiaj | 17/19; niedziałająca atrapa refleksji i dwie martwe granice oracle |
+| 8d | `./ship-task.sh T-138 --agent codex --reviewer codex` | pełny następca H16/H18 z działającymi wyroczniami refleksji, Move i widocznej strefy |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
