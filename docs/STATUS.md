@@ -4,6 +4,25 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 22:01 — T-129 zamknięte, Harness naprawiony, T-131 gotowe
+
+**T-129 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 28 min 30 s · $0,00 raportowanego
+kosztu.** Właściciel przyjął rekomendację zachowania prawdziwych nazw projektów. Gałąź
+`task-T-129` pozostaje wyłącznie dowodem; nie wolno lądować ani wznawiać jej oraz commita
+`6b8ad1d`, który maskuje legalną nazwę projektu heurystyką UUID. Trzy wcześniejsze commity
+produkcyjne są dopuszczone do selektywnego użycia dopiero po uczciwym `before` następcy.
+
+Osobny commit `ba3d8be` naprawia defekt Harnessu ujawniony przez przerwanie T-129.
+`review.sh` i `repair.sh` używają jednej polityki aktywnego PGID: SIGTERM → łaska → SIGKILL →
+dowód ESRCH. Selftest na atrapach ignorujących TERM przeszedł trzy scenariusze: interrupt
+naprawy, interrupt recenzji oraz timeout; w każdym proces był martwy i nie pisał po wyjściu.
+
+**T-131 zakontraktowane.** Trzy nowe, globalnie unikalne targety zachowują cały prawdziwy
+zakres T-129 i dodają rozstrzygający przypadek: identyczny UUID jest legalną nazwą projektu
+oraz identyfikatorem biegu, a znaczenie wynika wyłącznie z pól `project`/`from`. T-130 zostało
+przepięte na zielone lądowanie T-131 i nadal nie ruszyło. Następne jedyne wejście to
+`./ship-task.sh T-131 --agent codex --reviewer codex`.
+
 ## 2026-08-26, 20:07 — T-129 WSTRZYMANE przed nieuczciwą naprawą
 
 **T-129 · czerwone / WSTRZYMANE / NIEWYLĄDOWANE · 28 min 30 s do przerwania · $0,00

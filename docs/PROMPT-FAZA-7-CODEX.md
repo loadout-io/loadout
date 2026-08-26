@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-129/T-130 zakontraktowane; T-129 następne)
+# Prompt orchestratora — faza 7 (T-129 zamknięte; T-131 następne, potem T-130)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -45,8 +45,9 @@ wiązało legacy z widoczną strefą. T-138 naprawiło te granice i wszystkie AC
 pozostał lint 131-wierszowej funkcji oraz luka bibliotecznego tombstone'a. T-139 zachowało
 pokrycie, przeszło pierwszą bramkę 19/19, naprawiło uwagę recenzenta i po usunięciu presji
 dysku wylądowało przez `integrate.sh` z zielonym 16/16 przed i po merge'u. Właściciel następnie
-jawnie utworzył kontrakty T-129 i T-130: pierwszy sądzi bieżący katalog i widoczne etykiety,
-drugi — dopiero po jego lądowaniu — zamrożony receipt rzeczywistych odbiorców. T-129 jest
+jawnie zamknął T-129 po błędnym kryterium UUID i utworzył T-131 jako jego pełnego następcę;
+T-130 rusza dopiero po zielonym lądowaniu T-131. T-131 sądzi bieżący katalog i widoczne
+etykiety, a T-130 zamrożony receipt rzeczywistych odbiorców. T-131 jest
 następne.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
@@ -64,7 +65,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-130.md` oraz historyczne T-136…T-139 | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
+| `tasks/T-98.md` … `tasks/T-131.md` oraz historyczne T-136…T-139 | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -274,6 +275,14 @@ wolno mu zastosować siedem commitów produkcyjnych T-138 (`705f433`, `7d9bbc9`,
 pustego commita ani naprawy testu T-138. Przed commitem uruchom wyłącznie
 `python3 harness/task-spine.py`, nie bramkę produktu.
 
+Najnowsza autoryzowana korekta ma ponownie dwa osobne commity. `ba3d8be` naprawia przerwanie
+Harnessu: aktywny PGID recenzenta lub naprawiacza przechodzi TERM → łaska → KILL, a powrót
+wymaga dokładnego ESRCH; selftest odtwarza dwa Ctrl-C i timeout na procesie ignorującym
+sygnały. Osobny commit kontraktowy zamyka T-129 bez lądowania, dodaje `tasks/T-131.md`,
+przepina T-130 i uzgadnia plan, prompt oraz STATUS. T-131 ma trzy nowe targety i po uczciwym
+`before` może zastosować wyłącznie `dca0c89`, `7939635`, `d38cbde`; nigdy `6b8ad1d`, starych
+speców ani całej gałęzi T-129. Przed commitem wyłącznie `python3 harness/task-spine.py`.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -282,14 +291,12 @@ Kolizje pierwotnych jedenastu zadań policzono **mechanicznie** 2026-08-24 (por�
 `<!-- OWNS -->`, z pominięciem `tasks/` i `tests/it/main.rs`). Wynik: **jedyną parą bez ani
 jednego wspólnego pliku była T-98 ∥ T-105.** T-98 wylądowało, T-105 zostało zamknięte po
 drugiej czerwieni, a pierwsze zastępstwo T-110 zamknięto na pliku spoza OWNS. T-111 idzie
-samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania; T-114 ma zgodę,
-osobny fix harnessu jest w trunku i musi poprzedzić T-100.
-Świeże T-127 zastępuje niewykonalne T-109, ma
-zależność semantyczną od gotowej refleksji i idzie po wylądowanym T-126. Cała reszta dzieli `commands/run.rs`,
+samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania, a T-114 wylądowało
+przed T-100. T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127 i T-139 są w trunku.
+T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128,
+T-129, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix Harnessu `ba3d8be` jest w
+trunku; następny bieg to T-131, potem T-130. Pozostały łańcuch nadal dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
-T-114, T-100, T-101, T-115, T-121, T-124 i T-126 wylądowały. T-102, T-103, T-109,
-T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 zamknięto bez lądowania; T-127
-jest następnym biegiem.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
 |---|---|---|
@@ -323,8 +330,9 @@ jest następnym biegiem.
 | 8c | **ZAMKNIĘTE:** T-137, nie ląduj i nie wznawiaj | 17/19; niedziałająca atrapa refleksji i dwie martwe granice oracle |
 | 8d | **ZAMKNIĘTE:** T-138, nie ląduj i nie wznawiaj | 18/19; drugi lint i brak biblioteka→projekt tombstone |
 | 8e | **WYŁĄDOWANE:** T-139 | pełny następca H16/H18; merge `0fb49a4`, 16/16 przed i po |
-| 8f | `./ship-task.sh T-129 --agent codex --reviewer codex` | bieżący limit, zasięg i pochodzenie po T-139 |
-| 8g | `./ship-task.sh T-130 --agent codex --reviewer codex` | dopiero po lądowaniu T-129; receipt rzeczywistych odbiorców |
+| 8f | **ZAMKNIĘTE:** T-129, nie ląduj i nie wznawiaj | błędny zakaz UUID pozwalał maskować legalną nazwę projektu; przerwanie ujawniło sierotę Harnessu |
+| 8f2 | `./ship-task.sh T-131 --agent codex --reviewer codex` | pełny następca: bieżący limit/zasięg/pochodzenie bez heurystyki wartości |
+| 8g | `./ship-task.sh T-130 --agent codex --reviewer codex` | dopiero po lądowaniu T-131; receipt rzeczywistych odbiorców |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
