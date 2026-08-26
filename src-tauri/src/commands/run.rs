@@ -1063,7 +1063,7 @@ async fn finish_planned_run(
     // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
     what_the_steps_wrote_down(deps, &live.plan);
     let reflection = if reflection_enabled {
-        what_this_run_taught_us(deps, &live.plan, &states).await
+        what_this_run_taught_us(deps, &live.plan, &states).await?
     } else {
         ReflectionReceipt::default()
     };
@@ -1291,14 +1291,14 @@ async fn what_this_run_taught_us(
     deps: &RunDeps<'_>,
     plan: &Plan,
     states: &[StepState],
-) -> ReflectionReceipt {
+) -> Result<ReflectionReceipt, RunError> {
     // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
     let a_model_worked =
         plan.steps.iter().zip(states).any(|(step, state)| {
             matches!(step.job, Job::Agent(_)) && *state == StepState::Succeeded
         });
     if !a_model_worked {
-        return ReflectionReceipt::default();
+        return Ok(ReflectionReceipt::default());
     }
 
     // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
@@ -1307,15 +1307,15 @@ async fn what_this_run_taught_us(
     let Ok(left) = handoff::scan_run_dir(&plan.dir) else {
         // Refleksja nie może twierdzić, że przeczytała wynik, którego skaner produktu nie umie
         // odczytać. Sam bieg pozostaje prawdziwy; prywatna tura po prostu się nie zaczyna.
-        return ReflectionReceipt::default();
+        return Ok(ReflectionReceipt::default());
     };
     if left.is_empty() || left.iter().all(handoff::Handoff::left_nothing) {
-        return ReflectionReceipt::default();
+        return Ok(ReflectionReceipt::default());
     }
 
     let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
-    let Some(turn) = a_short_turn_about(deps, dir).await else {
-        return ReflectionReceipt::default();
+    let Some(turn) = a_short_turn_about(deps, dir).await? else {
+        return Ok(ReflectionReceipt::default());
     };
 
     let (worth, without_reason) = worth_remembering(&turn.text);
@@ -1332,12 +1332,12 @@ async fn what_this_run_taught_us(
     }
 
     let kept = keep_reflection_notes(deps, run, worth);
-    ReflectionReceipt {
+    Ok(ReflectionReceipt {
         ran: true,
         kept,
         dropped_without_reason: without_reason,
         cost_usd: turn.cost_usd,
-    }
+    })
 }
 
 fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) -> usize {
@@ -1386,7 +1386,7 @@ enum ReflectionEnd {
 async fn wait_for_reflection(
     handle: &mut dyn AgentHandle,
     cancel: CancellationToken,
-) -> Option<ReflectionTurn> {
+) -> Result<Option<ReflectionTurn>, RunError> {
     let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
     let end = {
         let waiting = handle.wait();
@@ -1398,35 +1398,51 @@ async fn wait_for_reflection(
         }
     };
     match end {
-        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Some(ReflectionTurn {
+        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Ok(Some(ReflectionTurn {
             text: outcome.text,
             cost_usd: outcome.cost_usd,
-        }),
+        })),
         ReflectionEnd::Finished(Ok(outcome)) => {
             tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
-            None
+            Ok(None)
         }
         ReflectionEnd::Finished(Err(error)) => {
             tracing::debug!(%error, "the reflection turn fell over");
-            None
+            Ok(None)
         }
         ReflectionEnd::Stopped | ReflectionEnd::TimedOut => {
             // Obie ścieżki przechodzą przez dowód śmierci prawdziwej grupy procesu. Samo
             // porzucenie `wait` anulowałoby tylko future Rusta (niezmienniki 6 i 10).
-            let proof = handle.cancel().await;
-            tracing::debug!(?proof, "the reflection turn was stopped and reaped");
-            None
+            match handle.cancel().await {
+                GroupProof::Dead { .. } => {
+                    tracing::debug!("the reflection turn was stopped and proven dead");
+                    Ok(None)
+                }
+                GroupProof::Alive => {
+                    tracing::error!(
+                        "the reflection group is still alive after escalation; this run cannot \
+                         report a successful Stop"
+                    );
+                    Err(RunError::Io(io::Error::other(
+                        "Loadout could not make sure the agent stopped after learning from this \
+                         run, so it may still be running.",
+                    )))
+                }
+            }
         }
     }
 }
 
 /// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
 ///
-/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie cztery drogi, na których jej nie ma:
+/// `Ok(None)` znaczy „nie ma odpowiedzi" i obejmuje zwykłe drogi, na których jej nie ma:
 /// ten vendor tury Loadouta nie bierze, vendor nie wstał, tura padła, tura nie zmieściła się
-/// w limicie. Rozróżnianie ich w typie nic by tu nie dało — wołający ma w każdej z nich zrobić
-/// dokładnie to samo, czyli nic.
-async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<ReflectionTurn> {
+/// w limicie. Jedyny błąd to brak dowodu śmierci po Stopie: tego nie wolno spłaszczyć do braku
+/// odpowiedzi, bo proces może nadal pracować i naliczać koszt (niezmiennik 6).
+async fn a_short_turn_about(
+    deps: &RunDeps<'_>,
+    dir: &Path,
+) -> Result<Option<ReflectionTurn>, RunError> {
     /* WŁASNYM SZWEM, NIE STEROWNIKIEM KROKÓW ([`AgentDriver::reflecting`], gdzie stoi cała cena
      * tej decyzji). Vendor jest jeden i wybrany: refleksja jest turą LOADOUTA, nie żadnego agenta
      * z grafu, więc vendor wzięty z ostatniego kroku dawałby dwa różne rachunki i dwa różne
@@ -1436,7 +1452,9 @@ async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<Reflection
      * Fabryka mówi tu WYŁĄCZNIE, który to vendor; czy on tę turę bierze i czym ją weźmie,
      * rozstrzyga szew. Sterownik, który go nie podaje — a nie podaje go żadna atrapa — nie ma
      * jak zobaczyć tury, o którą nie prosił żaden krok. */
-    let driver = reflection_driver(deps, dir)?;
+    let Some(driver) = reflection_driver(deps, dir) else {
+        return Ok(None);
+    };
     let spec = RunSpec {
         run_id: Uuid::now_v7(),
         // Katalog biegu: to o niego pytamy. Gdziekolwiek indziej jest to tura poproszona
@@ -1464,17 +1482,26 @@ async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<Reflection
     let turn = match driver.start(spec, events).await {
         Ok(mut handle) => {
             let said = wait_for_reflection(handle.as_mut(), deps.control.cancel_token()).await;
-            let _ = handle.close().await;
+            // `close()` czeka na samodzielne wyjście procesu. Po `Alive` nie mamy prawa na nim
+            // zawisnąć ani zamienić braku dowodu w sukces; uchwyt schodzi dopiero z błędem wyżej.
+            if said.is_ok() {
+                let _ = handle.close().await;
+            }
             said
         }
         Err(error) => {
             tracing::debug!(%error, "no reflection turn could be started after this run");
-            None
+            Ok(None)
         }
     };
 
     // Nadajnik ginie razem z uchwytem, więc dopiero tutaj kolejka jest zamknięta i pętla wyżej
     // ma jak się skończyć.
+    if turn.is_err() {
+        // Nieudowodniona grupa może nadal trzymać nadajnik. Drenaż nie jest procesem vendora;
+        // kończymy tylko lokalnego czytelnika, żeby jawna odmowa mogła dojść do człowieka.
+        drain.abort();
+    }
     let _ = drain.await;
     turn
 }
@@ -9119,13 +9146,82 @@ mod tests {
     //! dopisuje do promptu nagłówek nad pustką i każe za niego płacić długością. Rozstrzyga
     //! porównanie CO DO BAJTU w przypadku pustym.
 
-    use super::{TASK_MARK, node_key_for, tile_key_of, with_the_task};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{TASK_MARK, node_key_for, tile_key_of, wait_for_reflection, with_the_task};
+    use crate::commands::RunError;
+    use crate::engine::drivers::{AgentHandle, Outcome as DriverOutcome, SessionRef};
+    use crate::engine::supervisor::{GroupId, GroupProof};
 
     /// Prompt kroku, taki jak w pliku workflow.
     const STEP: &str = "Write the tests first, then the code.";
 
     /// Zadanie z wiersza wejścia.
     const TASK: &str = "build a pretty todo list";
+
+    struct ReflectionWithoutDeathProof {
+        close_called: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl AgentHandle for ReflectionWithoutDeathProof {
+        fn session(&self) -> SessionRef {
+            SessionRef {
+                vendor: "test",
+                id: "reflection-without-death-proof".to_owned(),
+            }
+        }
+
+        fn group(&self) -> Option<GroupId> {
+            None
+        }
+
+        async fn send(&mut self, _text: String) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn wait(&mut self) -> anyhow::Result<DriverOutcome> {
+            std::future::pending().await
+        }
+
+        async fn cancel(&mut self) -> GroupProof {
+            GroupProof::Alive
+        }
+
+        async fn close(&mut self) -> anyhow::Result<Option<i32>> {
+            self.close_called.store(true, Ordering::Release);
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn reflection_stop_refuses_without_death_proof() {
+        let close_called = Arc::new(AtomicBool::new(false));
+        let mut handle = ReflectionWithoutDeathProof {
+            close_called: Arc::clone(&close_called),
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = wait_for_reflection(&mut handle, cancel).await;
+
+        assert!(matches!(
+            &result,
+            Err(RunError::Io(error))
+                if error.to_string()
+                    == "Loadout could not make sure the agent stopped after learning from this \
+                        run, so it may still be running."
+        ));
+        assert!(
+            !close_called.load(Ordering::Acquire),
+            "close waits for a process to exit by itself, so calling it after an unproven Stop \
+             would hide the refusal behind an unbounded wait"
+        );
+    }
 
     /* ── Klucz węzła a klucz kafelka ─────────────────────────────────────────────────────────
      *
