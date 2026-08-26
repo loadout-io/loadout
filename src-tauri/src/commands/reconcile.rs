@@ -122,6 +122,19 @@ pub fn with_reaper(
     };
     let plan = recovery::decide(&rows, &machine);
     let report = recovery::apply(&plan, reap);
+    // 2026-08-27: sam licznik `unproven` ukrywał finansowo istotną sierotę przed człowiekiem.
+    // Łączymy wynik domykacza z oryginalnym wierszem, bo tylko plik niesie oba identyfikatory,
+    // które pozwalają rozpoznać ocalały proces bez zgadywania po samym PGID.
+    let survivor_warnings: BTreeMap<String, String> = rows
+        .iter()
+        .filter_map(|row| {
+            let pgid = row.pgid?;
+            report
+                .unproven
+                .contains(&pgid)
+                .then(|| (row.step_id.clone(), survivor_warning(row.pid, pgid)))
+        })
+        .collect();
 
     let mut done = Reconciled {
         reaped: report.reaped.len(),
@@ -137,7 +150,7 @@ pub fn with_reaper(
             .iter()
             .map(|one| (one.step_id.as_str(), one.status.as_str()))
             .collect();
-        if write_back(dir, &change.status, &steps) {
+        if write_back(dir, &change.status, &steps, &survivor_warnings) {
             done.runs += 1;
             done.steps += steps.len();
         }
@@ -293,7 +306,12 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
 /// niesie migawkę grafu, przelotki vendorów i klucze, których ta wersja może nie znać. Przepisanie
 /// go przez typ tej wersji skasowałoby wszystko, czego typ nie ma — czyli dokładnie tę wadę,
 /// przed którą `AgentStep::extra` broni pliki workflow.
-fn write_back(dir: &Path, run_status: &str, steps: &[(&str, &str)]) -> bool {
+fn write_back(
+    dir: &Path,
+    run_status: &str,
+    steps: &[(&str, &str)],
+    survivor_warnings: &BTreeMap<String, String>,
+) -> bool {
     let Some(mut run) = read_run(dir) else {
         return false;
     };
@@ -310,8 +328,12 @@ fn write_back(dir: &Path, run_status: &str, steps: &[(&str, &str)]) -> bool {
             let Some(step) = row.as_object_mut() else {
                 continue;
             };
-            let id = step.get("id").and_then(Value::as_str).unwrap_or_default();
-            let Some((_, status)) = steps.iter().find(|(want, _)| *want == id) else {
+            let id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let Some((_, status)) = steps.iter().find(|(want, _)| *want == id.as_str()) else {
                 continue;
             };
             step.insert("status".to_owned(), Value::String((*status).to_owned()));
@@ -319,7 +341,11 @@ fn write_back(dir: &Path, run_status: &str, steps: &[(&str, &str)]) -> bool {
                 step.insert("ended_at".to_owned(), Value::from(at));
             }
             if step.get("error").is_none_or(Value::is_null) {
-                step.insert("error".to_owned(), Value::String(STEP_CUT_OFF.to_owned()));
+                let error = survivor_warnings
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| STEP_CUT_OFF.to_owned());
+                step.insert("error".to_owned(), Value::String(error));
             }
         }
     }
@@ -327,6 +353,22 @@ fn write_back(dir: &Path, run_status: &str, steps: &[(&str, &str)]) -> bool {
         return false;
     };
     std::fs::write(dir.join(RUN_FILE), text + "\n").is_ok()
+}
+
+/// Zdanie trafiające do `PastStepWire.error`, czyli jedynego błędu pokazywanego w historii.
+fn survivor_warning(leader_pid: Option<i32>, process_group_id: i32) -> String {
+    match leader_pid {
+        Some(leader_pid) => format!(
+            "This process survived Loadout's attempt to stop it. Inspect it manually: PID \
+             {leader_pid}; PGID {process_group_id}."
+        ),
+        // Starszy plik może nie mieć PID-u. Nie wymyślamy liczby, ale nadal pokazujemy PGID,
+        // który domykacz naprawdę sprawdził i po którym człowiek może rozpoznać grupę.
+        None => format!(
+            "This process group survived Loadout's attempt to stop it. Inspect it manually: \
+             PGID {process_group_id}."
+        ),
+    }
 }
 
 /// `run.json` tego katalogu, albo `None`. Nieczytelny plik jest jednym biegiem mniej.
