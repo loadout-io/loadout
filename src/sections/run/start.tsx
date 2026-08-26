@@ -110,8 +110,15 @@ export function startWhatIsChosen(
   chosen: string,
   atOnce: number,
   task: string,
+  reflectionEnabled = true,
 ): Promise<string | null> {
-  return launchRun(choiceFor(choices, chosen), atOnce, task.trim() || null);
+  return launchRun(
+    choiceFor(choices, chosen),
+    atOnce,
+    task.trim() || null,
+    null,
+    reflectionEnabled,
+  );
 }
 
 /**
@@ -166,6 +173,8 @@ export interface StartProps {
    * jej niczego nie zmienia w oknie. Pole znika w dniu, w którym `index.tsx` da się dotknąć.
    */
   running?: boolean;
+  /** The visible choice owned by the parent Run screen. */
+  reflectionEnabled?: boolean;
 }
 
 /**
@@ -220,7 +229,7 @@ export function WorkflowRunButton({
   );
 }
 
-export function Start({ onSaid }: StartProps): ReactElement {
+export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactElement {
   const [choices, setChoices] = useState<readonly Choice[]>([]);
   /* KIM JEST LIDER — jeden fakt, jeden dom (niezmiennik 13). W oknie mieszka WYŁĄCZNIE wskazanie,
    * czyli identyfikator zapisanego agenta; vendor, model i dial bezpieczeństwa czyta Rust z jego
@@ -355,7 +364,7 @@ export function Start({ onSaid }: StartProps): ReactElement {
      * jeden fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
      * na pytanie, co ten bieg buduje. Rust przycina to samo po swojej stronie i to jest
      * celowe: krawędź ma być prawdziwa niezależnie od tego, kto ją woła. */
-    setSaid(await startWhatIsChosen(choices, chosen, atOnce, task));
+    setSaid(await startWhatIsChosen(choices, chosen, atOnce, task, reflectionEnabled));
   }
 
   /* ŻĄDANIE Z EDYTORA WORKFLOW. Zielony `Run` w edytorze wołał do 2026-08-18 samo przejście na
@@ -375,8 +384,8 @@ export function Start({ onSaid }: StartProps): ReactElement {
   useEffect(() => {
     if (asked === null || choices.length === 0) return;
     setSaid(null);
-    void launchRequested(choices, atOnceNow()).then(setSaid);
-  }, [asked, choices]);
+    void launchRequested(choices, atOnceNow(), reflectionEnabled).then(setSaid);
+  }, [asked, choices, reflectionEnabled]);
 
   async function carryOn(): Promise<void> {
     setSaid(null);

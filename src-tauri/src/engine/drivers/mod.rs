@@ -737,6 +737,15 @@ pub trait AgentDriver: Send + Sync {
         None
     }
 
+    /// Ten sam sterownik z sufitem ceny należącym do tego klona.
+    ///
+    /// Domyślne `None` jest honest-red szkieletem T-126: wołający musi odmówić przed `start`,
+    /// zamiast uruchomić płatną turę bez twardego limitu. Konkretna flaga pozostaje własnością
+    /// adaptera (niezmiennik 23).
+    fn with_budget(&self, _dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
     /// Ten sam sterownik, kiedy wolno mu wziąć turę **Loadouta** — albo `None`, kiedy ten vendor
     /// takiej tury nie bierze.
     ///

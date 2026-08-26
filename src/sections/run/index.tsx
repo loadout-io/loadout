@@ -84,6 +84,8 @@ import { Rail, RAIL_WIDTH } from './rail/rail';
  * Import idzie w tę stronę bez cyklu: przełącznik importuje `./folders`, a nie ten plik. */
 import { FIRST_INVITE } from '../../ui/shell/workspace-switcher';
 import { Start } from './start';
+import { ReflectionToggle } from './reflection/toggle';
+import { reflectionForRequestedRun, rememberReflectionChoice } from './requested';
 import { spendFor, stripFor } from './strip/model';
 import { Strip } from './strip/strip';
 import { CloseConfirm } from './tabs/picker';
@@ -194,6 +196,18 @@ export default function Run(): ReactElement {
   /* Jedno miejsce na to, co Loadout odpowiedział o folderze albo o zatrzymaniu wywołanym
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
   const [said, setSaid] = useState<string | null>(null);
+
+  /* Wybór jest stanem TEGO zamontowanego ekranu. Krótkie przekazanie przy odmontowaniu jest
+   * potrzebne wyłącznie zielonemu Run w edytorze: tamten klik wraca do świeżej instancji tego
+   * komponentu, a pending request zamraża wartość widoczną przed wyjściem z ekranu. */
+  const [reflectionEnabled, setReflectionEnabled] = useState(reflectionForRequestedRun);
+  const reflectionAtUnmount = useRef(reflectionEnabled);
+  reflectionAtUnmount.current = reflectionEnabled;
+  useEffect(() => {
+    return () => {
+      rememberReflectionChoice(reflectionAtUnmount.current);
+    };
+  }, []);
 
   /* Uchwyt do pola wiersza wejścia — po to, żeby kliknięcie w strumień mogło mu ODDAĆ kursor.
    * Powód w całości przy `caretBackToTheField`. */
@@ -700,7 +714,16 @@ export default function Run(): ReactElement {
                     ekranu. W fazie `before` komponent jest pustym szkieletem: prawdziwy mount
                     istnieje, a kryterium pada na braku kontrolki, nie brakującym imporcie. */}
                 <Diagnostics folder={folder} />
-                <Start running={running} onSaid={sayWhatDidNotStart} />
+                <ReflectionToggle
+                  enabled={reflectionEnabled}
+                  disabled={running}
+                  onChange={setReflectionEnabled}
+                />
+                <Start
+                  running={running}
+                  reflectionEnabled={reflectionEnabled}
+                  onSaid={sayWhatDidNotStart}
+                />
               </div>
             }
           />
@@ -785,7 +808,7 @@ export default function Run(): ReactElement {
                  `startFromLine` czyta katalog workflow, rozbiera linię i woła `launchRun` z tym
                  samym limitem, który trzyma suwak obok Startu. Zdanie odmowy wraca do wiersza,
                  bo dotyczy tego, co człowiek właśnie napisał. */
-              onRunWorkflow={startFromLine}
+              onRunWorkflow={(rest) => startFromLine(rest, reflectionEnabled)}
               /* Kto pracuje, żeby wiersz mógł powiedzieć POD polem, gdzie pójdzie zdanie —
                  zamiast pozwolić człowiekowi wysłać je w ciemno. */
               talkingTo={listening}

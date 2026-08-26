@@ -37,11 +37,24 @@ export interface RunRequest {
    * i ekran Run nie miałby jak zauważyć, że człowiek poprosił znowu.
    */
   readonly nonce: number;
+  /** The visible choice frozen before the editor unmounted the Run screen. */
+  readonly reflectionEnabled: boolean;
 }
 
 let pending: RunRequest | null = null;
 let nonce = 0;
+let reflectionForNextRequest = true;
 const listeners = new Set<() => void>();
+
+/** Preserve the Run-owned choice only while a different screen carries the next request. */
+export function rememberReflectionChoice(enabled: boolean): void {
+  reflectionForNextRequest = enabled;
+}
+
+/** Seed a remounted Run from the pending editor request, otherwise use the product default. */
+export function reflectionForRequestedRun(): boolean {
+  return pending?.reflectionEnabled ?? true;
+}
 
 /**
  * Poproś o uruchomienie tego workflow i przejdź na ekran pracy.
@@ -52,7 +65,7 @@ const listeners = new Set<() => void>();
  */
 export function requestRun(path: string): void {
   nonce += 1;
-  pending = { path, nonce };
+  pending = { path, nonce, reflectionEnabled: reflectionForNextRequest };
   useSectionStore.getState().go('run');
   for (const listener of listeners) listener();
 }

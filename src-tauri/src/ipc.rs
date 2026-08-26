@@ -1768,6 +1768,7 @@ pub async fn run_workflow(
     folder: Option<String>,
     task: Option<String>,
     budget_usd: Option<f64>,
+    reflection_enabled: bool,
     claim: Option<commands::triggers::TriggerClaim>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
@@ -1778,6 +1779,7 @@ pub async fn run_workflow(
         folder.as_deref(),
         task,
         budget_usd,
+        reflection_enabled,
         claim.as_ref(),
         pump_into(lines),
     )
@@ -1809,6 +1811,7 @@ pub async fn run_workflow_from_window(
         folder,
         task,
         None,
+        true,
         claim,
         lines,
     )
@@ -1829,6 +1832,7 @@ async fn from_the_window(
     folder: Option<&str>,
     task: Option<String>,
     budget_usd: Option<f64>,
+    reflection_enabled: bool,
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
@@ -1842,7 +1846,16 @@ async fn from_the_window(
     } else {
         state.project_for(folder).inspect_err(refused)?
     };
-    run_workflow_in_project(state, &project, &request, budget_usd, claim, lines).await
+    run_workflow_in_project(
+        state,
+        &project,
+        &request,
+        budget_usd,
+        reflection_enabled,
+        claim,
+        lines,
+    )
+    .await
 }
 
 /// Powtarza JEDEN krok skończonego biegu — jako nowy bieg, z wejściem tamtego.
@@ -1880,6 +1893,7 @@ pub async fn rerun_step(
         &project,
         &again.request,
         None,
+        true,
         None,
         pump_into(lines),
     )
@@ -1923,6 +1937,7 @@ pub async fn resume_run(
         &project,
         &again.request,
         None,
+        true,
         None,
         pump_into(lines),
     )
@@ -1936,6 +1951,7 @@ async fn run_workflow_in_project(
     project: &Path,
     request: &RunRequest,
     budget_usd: Option<f64>,
+    reflection_enabled: bool,
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
@@ -1951,11 +1967,12 @@ async fn run_workflow_in_project(
         .await
         .map(|_| ())
     } else {
-        commands::run::run_workflow_with_budget(
+        commands::run::run_workflow_with_reflection(
             &state.begin_run(project).inspect_err(refused)?,
             request,
             lines,
             budget_usd,
+            reflection_enabled,
         )
         .await
         .map(|_| ())

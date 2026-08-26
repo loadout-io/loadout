@@ -36,6 +36,8 @@ pub struct EvidenceTarget {
 pub enum EvidenceIdentity {
     /// Jeden fizyczny krok biegu; jego stdout zachowuje nazwe czytana przez `store::rebuild`.
     WorkflowStep { step_id: String },
+    /// Jedna prywatna tura refleksji po biegu; nie jest i nie udaje kroku grafu.
+    Reflection,
     /// Rozmowa Lead, ktora nie jest i nie udaje workflow.
     LeadConversation { conversation_id: Uuid },
 }
@@ -154,6 +156,19 @@ impl EvidenceTarget {
         }
     }
 
+    /// Prywatne dowody refleksji pod katalogiem tego samego biegu.
+    #[must_use]
+    pub fn reflection(run_dir: PathBuf, input: SafeInputManifest) -> Self {
+        Self {
+            anchor: run_dir.clone(),
+            root: run_dir,
+            identity: EvidenceIdentity::Reflection,
+            input,
+            healthy: Arc::new(AtomicBool::new(true)),
+            receipt: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
     /// Prywatne dowody rozmowy pod workspace, nigdy w globalnej bibliotece i nigdy w `runs/`.
     #[must_use]
     pub fn lead(workspace: &Path, conversation_id: Uuid, input: SafeInputManifest) -> Self {
@@ -193,6 +208,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.jsonl")),
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.jsonl"),
             EvidenceIdentity::LeadConversation { .. } => {
                 self.root.join(LOGS_DIR).join("lead.jsonl")
             }
@@ -207,6 +223,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.stderr.log")),
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.stderr.log"),
             EvidenceIdentity::LeadConversation { .. } => {
                 self.root.join(LOGS_DIR).join("lead.stderr.log")
             }
@@ -221,6 +238,7 @@ impl EvidenceTarget {
                 .root
                 .join(LOGS_DIR)
                 .join(format!("agent-{step_id}.input.json")),
+            EvidenceIdentity::Reflection => self.root.join(LOGS_DIR).join("reflection.input.json"),
             EvidenceIdentity::LeadConversation { .. } => self.root.join("input.json"),
         }
     }
@@ -594,6 +612,14 @@ impl EvidenceTarget {
                     ));
                 }
                 require_plain_name(step_id)?;
+            }
+            EvidenceIdentity::Reflection => {
+                if self.root != self.anchor {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the reflection evidence root does not match its run directory",
+                    ));
+                }
             }
             EvidenceIdentity::LeadConversation { conversation_id } => {
                 let loadout = safe_child(&self.anchor, ".loadout")?;

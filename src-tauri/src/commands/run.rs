@@ -293,6 +293,12 @@ pub const REFLECTION_MODEL: &str = "haiku";
 /// minut nad tym, czego się nauczyła, kosztuje więcej niż krok, który to zrobił.
 pub const REFLECTION_MINUTES: u64 = 2;
 
+/// Twardy sufit jednej prywatnej tury Loadouta.
+///
+/// Stała, nie pochodna budżetu workflow: refleksja jest osobnym, krótkim pytaniem Loadouta,
+/// więc nie może odziedziczyć ani braku limitu, ani reszty limitu ustawionego dla kroków.
+pub const REFLECTION_BUDGET_USD: f64 = 0.08;
+
 /// Ile kandydatek wolno zostawić po jednym biegu [T6 §5.3: „najwyżej trzy"].
 ///
 /// Sufit JEST całym mechanizmem antyrozrostowym tego podsystemu. Pisarz, który bierze tyle, ile
@@ -598,7 +604,23 @@ pub async fn run_workflow_with_budget(
     budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    the_whole_workflow(deps, request, lines, slots, budget_usd).await
+    the_whole_workflow(deps, request, lines, slots, budget_usd, true).await
+}
+
+/// Ten sam bieg z jawnym wyborem, czy po jego końcu Loadout bierze prywatną turę refleksji.
+///
+/// Sygnatura powstaje w fazie specyfikacji T-126, żeby kryteria kompilowały się i padały na
+/// brakującym zachowaniu. Stare wejścia zostają nietknięte: ich domyślne zachowanie i cudze
+/// kryteria nie mogą zależeć od nowego argumentu.
+pub async fn run_workflow_with_reflection(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow(deps, request, lines, slots, budget_usd, reflection_enabled).await
 }
 
 /// Pula miejsc, z której ma brać TEN bieg — jedna na całą aplikację, nie jedna na bieg.
@@ -677,7 +699,7 @@ pub async fn run_workflow_with_slots(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    the_whole_workflow(deps, request, lines, slots, None).await
+    the_whole_workflow(deps, request, lines, slots, None, true).await
 }
 
 /// Jedno ciało obu dróg wyżej: pula podana argumentem, sufit wydatku podany argumentem.
@@ -687,6 +709,7 @@ async fn the_whole_workflow(
     lines: LineSink,
     slots: Limiter,
     budget_usd: Option<f64>,
+    reflection_enabled: bool,
 ) -> Result<RunReport, RunError> {
     /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
      * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
@@ -699,7 +722,7 @@ async fn the_whole_workflow(
      * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
      * producentów naraz. */
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_run(deps, request, lines, slots, budget_usd).await;
+    let report = the_whole_run(deps, request, lines, slots, budget_usd, reflection_enabled).await;
     /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
      * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
      * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
@@ -820,6 +843,7 @@ async fn the_whole_run(
     lines: LineSink,
     slots: Limiter,
     budget_usd: Option<f64>,
+    reflection_enabled: bool,
 ) -> Result<RunReport, RunError> {
     the_planned_run(
         deps,
@@ -828,6 +852,7 @@ async fn the_whole_run(
         slots,
         None,
         budget_usd,
+        reflection_enabled,
     )
     .await
 }
@@ -881,7 +906,7 @@ async fn the_whole_triggered_run(
         home: deps.home.to_path_buf(),
         claim: claim.clone(),
     };
-    match the_planned_run(deps, plan, lines, slots, Some(acceptance), None).await {
+    match the_planned_run(deps, plan, lines, slots, Some(acceptance), None, true).await {
         Ok(report) => Ok(TriggerRunReport::Ran(report)),
         Err(error) if !run_file.exists() => {
             triggers::release_delivery(deps.home, claim)?;
@@ -904,7 +929,16 @@ async fn the_whole_ask(
     slots: Limiter,
     budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(deps, plan_ask(deps, ask)?, lines, slots, None, budget_usd).await
+    the_planned_run(
+        deps,
+        plan_ask(deps, ask)?,
+        lines,
+        slots,
+        None,
+        budget_usd,
+        true,
+    )
+    .await
 }
 
 struct TriggerAcceptance {
@@ -920,80 +954,82 @@ struct TriggerAcceptance {
 /// kodu, a nie zdaniem w komentarzu.
 async fn the_planned_run(
     deps: &RunDeps<'_>,
+    plan: Plan,
+    lines: LineSink,
+    slots: Limiter,
+    acceptance: Option<TriggerAcceptance>,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+) -> Result<RunReport, RunError> {
+    let (live, isolated, dag) =
+        prepare_planned_run(deps, plan, lines, slots, acceptance, budget_usd)?;
+    let cancel = deps.control.cancel_token();
+    let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
+    finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
+}
+
+fn prepare_planned_run(
+    deps: &RunDeps<'_>,
     mut plan: Plan,
     lines: LineSink,
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
-) -> Result<RunReport, RunError> {
-    // Graf budujemy po walidatorze, ale przed katalogiem: `Dag::new` odmawia cyklu przy
-    // konstrukcji i jest ostatnią linią obrony, nie pierwszą (`engine::dag`).
+) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
-
     let isolated = lay_out_the_run_dir(&plan, deps.project)?;
-    // PRZEKAZANIA POPRZEDNIKÓW, kiedy to jest powtórzenie jednego kroku. Kopia, nie dowiązanie
-    // i nie odczyt w miejscu: skończony bieg jest historią i nie ma prawa się zmienić dlatego,
-    // że ktoś powtórzył kafelek (niezmiennik 4). Przed `Live::new`, bo prompt kroku czyta
-    // indeks przekazań w chwili startu.
+    // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
+    // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
-    /* I DOPIERO TERAZ INDEKS, bo dopiero teraz kopie istnieją. Sama kopia nie jest przekazaniem
-     * dalej: prompt kroku wymienia to, co oddały kroki TEGO biegu, więc bez tej linii pliki
-     * leżą w katalogu i nie zna ich ani jeden agent (T-88, powód przy `Plan::carried`). */
     plan.carried = what_the_run_before_left(&plan);
-    // PRZED `Live::new`, bo ten pochłania `lines`: człowiek ma usłyszeć o brakach
-    // zanim ruszy pierwszy agent, a nie po tym, jak zapłacił za jego turę.
     say_what_was_left_behind(&lines, &isolated);
-    // Pożyczki kroków stoją TU, a nie w `plan_run`: tamta funkcja nie dotyka dysku, a katalog
-    // pluginu jest zapisem — i musi lądować pod katalogiem biegu, który dopiero co powstał.
-    // Odmowa za nazwę, której u gospodarza nie ma, padła już przy planowaniu
-    // ([`borrowing_is_possible`]), czyli zanim ten katalog w ogóle istniał.
+    // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
     bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
-    // Umiejętności kroków lądują TU, obok pożyczek i z tego samego powodu: obie drogi piszą,
-    // a piszą pod katalog biegu, który dopiero co powstał. Przed `Live::new`, bo odmowa („ten krok
-    // pracuje w twoim folderze") ma paść, zanim ruszy pierwszy proces (niezmiennik 12).
     hand_the_skills_to_the_steps(&mut plan)?;
     let live = Arc::new(Live::new(
         plan,
         lines,
         deps.control.clone(),
         slots,
-        std::sync::Arc::clone(&deps.processes),
+        Arc::clone(&deps.processes),
         budget_usd,
     ));
-    // Pierwszy zrzut idzie z `?`: bieg, którego nie da się zapisać na dysk, nie ma prawa ruszyć,
-    // bo plikami stoi cała jego historia. Zrzuty w locie są już tylko logowane — patrz
-    // [`Live::update`].
+    // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     live.open_the_book()?;
-    // Ten rename jest granica dokladnie-jeden: ledger domykamy po atomowym pliku, lecz przed
-    // pierwszym sterownikiem. Po awarii oba pliki daja sie pogodzic bez SQLite (niezmiennik 4).
-    if let Some(acceptance) = acceptance {
-        let run_file = live.plan.dir.join(RUN_FILE);
-        // Atomowy rename chroni czytelnika przed polowa JSON-u, ale dopiero fsync pliku i
-        // katalogu czyni ten rename dowodem, ktory recovery moze przyjac po restarcie procesu.
-        if read_and_sync_run_file(deps.project, &run_file)?.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "the run file disappeared before it could be saved safely",
-            )
-            .into());
-        }
-        triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
-    }
-    /* STEMPEL „TA NOTATKA WESZŁA DO PROMPTU" — tutaj, i to jest najwcześniejsze uczciwe miejsce.
-     *
-     * Nie w `add_block`, choć to tam wiadomo, co się w bloku zmieściło: tamta funkcja biegnie
-     * w PLANOWANIU, a planowanie jest czystym rachunkiem i nie dotyka dysku (ten sam powód
-     * trzyma `hand_the_skills_to_the_steps` poza `plan_step`). Plan bywa policzony dla biegu,
-     * który zaraz odmówi — a notatka twierdząca, że była użyta w biegu, którego nie było,
-     * jest gorsza niż `null`, bo `null` przynajmniej nie kłamie.
-     *
-     * Tutaj bieg ma już katalog i pierwszy zapis księgi, a jeszcze nie ruszył żaden proces.
-     * Rachunek bierzemy z `plan.memory` — czyli z tego samego zestawienia, które ląduje
-     * w `run.json` i które liczy WYŁĄCZNIE notatki naprawdę wklejone w prompty (`Block::used`,
-     * nigdy `Block::dropped`). Drugie przejście po notatkach byłoby drugą odpowiedzią na
-     * pytanie, co ten bieg wiedział. */
+    accept_trigger_after_durable_run(deps.project, &live, acceptance)?;
+    // Stempel jest uczciwy dopiero po powstaniu biegu, lecz przed pierwszym procesem: bierze
+    // dokładnie zestaw notatek już zamrożony w `run.json`.
     stamp_what_this_run_carried(deps.home, &live.plan.memory);
+    Ok((live, isolated, dag))
+}
 
+fn accept_trigger_after_durable_run(
+    project: &Path,
+    live: &Live,
+    acceptance: Option<TriggerAcceptance>,
+) -> Result<(), RunError> {
+    let Some(acceptance) = acceptance else {
+        return Ok(());
+    };
+    let run_file = live.plan.dir.join(RUN_FILE);
+    // Sam atomowy rename nie wystarcza recovery: fsync pliku i katalogu jest dowodem trwałości.
+    if read_and_sync_run_file(project, &run_file)?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the run file disappeared before it could be saved safely",
+        )
+        .into());
+    }
+    triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
+    Ok(())
+}
+
+async fn run_planned_graph(
+    live: Arc<Live>,
+    dag: &Dag,
+    cancel: CancellationToken,
+) -> scheduler::Outcome {
     let run_step = {
         let live = Arc::clone(&live);
         move |id: StepId, cancel: CancellationToken| {
@@ -1001,66 +1037,49 @@ async fn the_planned_run(
             async move { live.step(id, cancel).await }
         }
     };
-    // 2026-08-17 (T-31) — semafor planisty ma tu NIC nie ograniczać, i to jest cała treść tego
-    // podpięcia. „Ile naraz" jest liczbą CAŁEJ APLIKACJI, więc miejsce bierze każdy krok
-    // osobno, ze wspólnej puli ([`Live::a_slot_for_this_step`]). Semafor zakładany per bieg
-    // odpowiadał poprawnie na pytanie o jeden bieg i nie odpowiadał w ogóle na to, które zadaje
-    // niezmiennik 11: dwie karty po dwa agenty to cztery agenty po ~583 MB, czyli zamrożony
-    // laptop, a nie szybsza praca (`docs/ARCHITECTURE.md` §6a).
-    //
-    // Tyle permitów, ile kroków — czyli tyle, ile trzeba, żeby ten semafor nie odmówił nigdy.
-    // Nie zmienia to niczego, przed czym broni `engine::scheduler`: permit wspólnej puli bierze
-    // dalej ZADANIE, nie pętla wysyłki, więc różnica między „w kolejce" a „działa" zostaje tam,
-    // gdzie była, a szerokość wysyłki dalej nie udaje równoległości.
     let route_after = {
         let live = Arc::clone(&live);
         move |id: StepId, _report: StepReport| live.route_after(id)
     };
-    let outcome = scheduler::execute_routed(
-        &dag,
-        dag.len(),
-        deps.control.cancel_token(),
-        run_step,
-        route_after,
-    )
-    .await;
+    // Semafor planisty celowo nie ogranicza: każdy krok bierze permit ze wspólnej puli
+    // aplikacji w `Live::a_slot_for_this_step` (niezmiennik 11).
+    scheduler::execute_routed(dag, dag.len(), cancel, run_step, route_after).await
+}
 
-    /* KROK ZATRZYMANY PRZEZ SUFIT CZYTA SIĘ JAKO POMINIĘTY, NIE JAKO ANULOWANY, i różnica jest
-     * dla człowieka całą treścią: `cancelled` znaczy „nacisnąłeś Stop". Planista widzi wyłącznie
-     * `StepReport` i ósmego wariantu nie dostanie — `steps.status` ma w bazie `CHECK` na siedmiu
-     * nazwach, a niezmiennik 25 zabrania przepisywania tabel — więc tłumaczenie stoi tutaj,
-     * w jednym miejscu, przed księgą i przed raportem naraz. */
+async fn finish_planned_run(
+    deps: &RunDeps<'_>,
+    live: Arc<Live>,
+    isolated: Vec<Isolated>,
+    outcome: scheduler::Outcome,
+    cancel: CancellationToken,
+    reflection_enabled: bool,
+) -> Result<RunReport, RunError> {
+    // Sufit dostawcy znaczy `skipped`, a tylko token człowieka znaczy `cancelled`.
     let mut states = outcome.states;
     live.name_what_the_budget_stopped(&mut states);
     live.close_the_book(&states, outcome.cancelled);
-    // Drzewa domykamy PO księdze, a przed odbudową indeksu: sprzątanie pustego drzewa
-    // kasuje katalog `work/<krok>`, więc odbudowa ma czytać stan już posprzątany.
     close_the_trees(deps.project, &isolated, &live);
-    // Indeks powstaje Z KATALOGU BIEGU, nigdy obok niego (niezmiennik 4): baza nie ma jak
-    // powiedzieć niczego, czego nie ma w plikach, bo czyta dokładnie te pliki.
     deps.store.rebuild_from(&live.plan.dir).await?;
-    /* JEDNA TANIA REFLEKSJA, NA SAMYM KOŃCU I PO INDEKSIE.
-     *
-     * Po księdze, bo pyta o bieg skończony — a odpowiedź o biegu, który jeszcze trwa, jest
-     * odpowiedzią o czymś innym niż to, co człowiek później przeczyta. Po `close_the_trees`,
-     * bo katalog biegu ma być tym, który zostaje, a nie tym, który zaraz zniknie. I po
-     * `rebuild_from`, bo indeks jest tym, o co pyta okno: tura u vendora trwa do
-     * [`REFLECTION_MINUTES`] minut, więc odwrotna kolejność trzymałaby skończony bieg poza
-     * listą przez cały ten czas, a awaria refleksji odbierałaby mu indeks w całości. */
+    // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
     what_the_steps_wrote_down(deps, &live.plan);
-    /* 2026-08-24, przy scalaniu T-92 z T-94: STANY POPRAWIONE, nie surowe z planisty.
-     * `name_what_the_budget_stopped` wyżej przepisuje budżetową porażkę rozstrzygniętą przez
-     * `whenItFails` na `skipped`, a refleksja pyta o bieg tak, jak człowiek przeczyta go
-     * później — więc
-     * ma dostać to samo, co księga, nie to, co planista zameldował przed tłumaczeniem.
-     * Git scalił oba zadania BEZ konfliktu i dopiero kompilator pokazał, że jedno przenosi
-     * wektor, który drugie pożycza. */
-    what_this_run_taught_us(deps, &live.plan, &states).await;
+    let reflection = if reflection_enabled {
+        what_this_run_taught_us(deps, &live.plan, &states).await?
+    } else {
+        ReflectionReceipt::default()
+    };
+    // Stop po schedulerze nadal anuluje bieg, bo żyła wtedy prywatna grupa refleksji.
+    let cancelled = outcome.cancelled || cancel.is_cancelled();
+    live.update(|book| {
+        book.reflection = reflection;
+        if cancelled {
+            book.status = RunState::Cancelled;
+        }
+    });
 
     Ok(RunReport {
         id: live.plan.id.clone(),
         dir: live.plan.dir.clone(),
-        outcome: if outcome.cancelled {
+        outcome: if cancelled {
             Outcome::Cancelled
         } else {
             Outcome::Done
@@ -1268,29 +1287,38 @@ struct AgentNote {
 ///    tury, o którą nie prosił żaden kafelek — a to jest jedyny powód, dla którego dołożenie tej
 ///    tury nie przestawiło ani jednej z 26 specyfikacji liczących wywołania sterownika. Cała
 ///    cena tej decyzji stoi przy tamtej metodzie.
-async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[StepState]) {
+async fn what_this_run_taught_us(
+    deps: &RunDeps<'_>,
+    plan: &Plan,
+    states: &[StepState],
+) -> Result<ReflectionReceipt, RunError> {
     // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
     let a_model_worked =
         plan.steps.iter().zip(states).any(|(step, state)| {
             matches!(step.job, Job::Agent(_)) && *state == StepState::Succeeded
         });
     if !a_model_worked {
-        return;
+        return Ok(ReflectionReceipt::default());
     }
 
     // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
     // reszta aplikacji (niezmiennik 23) — własne `read_dir` byłoby drugą definicją słowa
     // „przekazanie", a rozjazd widać dopiero na rachunku.
-    if handoff::scan_run_dir(&plan.dir).is_ok_and(|left| left.is_empty()) {
-        return;
+    let Ok(left) = handoff::scan_run_dir(&plan.dir) else {
+        // Refleksja nie może twierdzić, że przeczytała wynik, którego skaner produktu nie umie
+        // odczytać. Sam bieg pozostaje prawdziwy; prywatna tura po prostu się nie zaczyna.
+        return Ok(ReflectionReceipt::default());
+    };
+    if left.is_empty() || left.iter().all(handoff::Handoff::left_nothing) {
+        return Ok(ReflectionReceipt::default());
     }
 
     let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
-    let Some(said) = a_short_turn_about(deps, dir).await else {
-        return;
+    let Some(turn) = a_short_turn_about(deps, dir).await? else {
+        return Ok(ReflectionReceipt::default());
     };
 
-    let (worth, without_reason) = worth_remembering(&said);
+    let (worth, without_reason) = worth_remembering(&turn.text);
     if without_reason > 0 {
         // Policzona, nie zapisana [T6 §10.3]. Para bez uzasadnienia nie staje się plikiem, bo
         // instrukcja bez uzasadnienia jest nieusuwalna: skasowanie kosztuje `O(2^|D|)`, trzeba
@@ -1303,8 +1331,19 @@ async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[Step
         );
     }
 
+    let kept = keep_reflection_notes(deps, run, worth);
+    Ok(ReflectionReceipt {
+        ran: true,
+        kept,
+        dropped_without_reason: without_reason,
+        cost_usd: turn.cost_usd,
+    })
+}
+
+fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) -> usize {
     let root = super::memory::notes_root(deps.home);
     let at = noticed_now();
+    let mut kept = 0;
     for one in worth.into_iter().take(AT_MOST_KEPT) {
         let draft = crate::memory::notes::NoteDraft {
             // Tytuł JEST regułą, przyciętą do nazwy pliku: model nie pisze osobnego, a nazwa
@@ -1323,19 +1362,87 @@ async fn what_this_run_taught_us(deps: &RunDeps<'_>, plan: &Plan, states: &[Step
             status: crate::memory::notes::Status::Suggested,
             at: at.clone(),
         };
-        if let Err(error) = crate::memory::notes::record_candidate_from_run(&root, draft, run) {
-            tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
+        match crate::memory::notes::record_candidate_from_run(&root, draft, run) {
+            Ok(_) => kept += 1,
+            Err(error) => {
+                tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
+            }
+        }
+    }
+    kept
+}
+
+struct ReflectionTurn {
+    text: String,
+    cost_usd: Option<f64>,
+}
+
+enum ReflectionEnd {
+    Finished(anyhow::Result<DriverOutcome>),
+    Stopped,
+    TimedOut,
+}
+
+async fn wait_for_reflection(
+    handle: &mut dyn AgentHandle,
+    cancel: CancellationToken,
+) -> Result<Option<ReflectionTurn>, RunError> {
+    let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
+    let end = {
+        let waiting = handle.wait();
+        tokio::pin!(waiting);
+        tokio::select! {
+            outcome = &mut waiting => ReflectionEnd::Finished(outcome),
+            () = cancel.cancelled() => ReflectionEnd::Stopped,
+            () = tokio::time::sleep(limit) => ReflectionEnd::TimedOut,
+        }
+    };
+    match end {
+        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Ok(Some(ReflectionTurn {
+            text: outcome.text,
+            cost_usd: outcome.cost_usd,
+        })),
+        ReflectionEnd::Finished(Ok(outcome)) => {
+            tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
+            Ok(None)
+        }
+        ReflectionEnd::Finished(Err(error)) => {
+            tracing::debug!(%error, "the reflection turn fell over");
+            Ok(None)
+        }
+        ReflectionEnd::Stopped | ReflectionEnd::TimedOut => {
+            // Obie ścieżki przechodzą przez dowód śmierci prawdziwej grupy procesu. Samo
+            // porzucenie `wait` anulowałoby tylko future Rusta (niezmienniki 6 i 10).
+            match handle.cancel().await {
+                GroupProof::Dead { .. } => {
+                    tracing::debug!("the reflection turn was stopped and proven dead");
+                    Ok(None)
+                }
+                GroupProof::Alive => {
+                    tracing::error!(
+                        "the reflection group is still alive after escalation; this run cannot \
+                         report a successful Stop"
+                    );
+                    Err(RunError::Io(io::Error::other(
+                        "Loadout could not make sure the agent stopped after learning from this \
+                         run, so it may still be running.",
+                    )))
+                }
+            }
         }
     }
 }
 
 /// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
 ///
-/// `None` znaczy „nie ma odpowiedzi" i obejmuje wszystkie cztery drogi, na których jej nie ma:
+/// `Ok(None)` znaczy „nie ma odpowiedzi" i obejmuje zwykłe drogi, na których jej nie ma:
 /// ten vendor tury Loadouta nie bierze, vendor nie wstał, tura padła, tura nie zmieściła się
-/// w limicie. Rozróżnianie ich w typie nic by tu nie dało — wołający ma w każdej z nich zrobić
-/// dokładnie to samo, czyli nic.
-async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
+/// w limicie. Jedyny błąd to brak dowodu śmierci po Stopie: tego nie wolno spłaszczyć do braku
+/// odpowiedzi, bo proces może nadal pracować i naliczać koszt (niezmiennik 6).
+async fn a_short_turn_about(
+    deps: &RunDeps<'_>,
+    dir: &Path,
+) -> Result<Option<ReflectionTurn>, RunError> {
     /* WŁASNYM SZWEM, NIE STEROWNIKIEM KROKÓW ([`AgentDriver::reflecting`], gdzie stoi cała cena
      * tej decyzji). Vendor jest jeden i wybrany: refleksja jest turą LOADOUTA, nie żadnego agenta
      * z grafu, więc vendor wzięty z ostatniego kroku dawałby dwa różne rachunki i dwa różne
@@ -1345,12 +1452,8 @@ async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
      * Fabryka mówi tu WYŁĄCZNIE, który to vendor; czy on tę turę bierze i czym ją weźmie,
      * rozstrzyga szew. Sterownik, który go nie podaje — a nie podaje go żadna atrapa — nie ma
      * jak zobaczyć tury, o którą nie prosił żaden krok. */
-    let Some(driver) = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()
-    else {
-        tracing::debug!(
-            "this vendor does not take Loadout's own turn, so nobody was asked what this run taught us"
-        );
-        return None;
+    let Some(driver) = reflection_driver(deps, dir) else {
+        return Ok(None);
     };
     let spec = RunSpec {
         run_id: Uuid::now_v7(),
@@ -1376,44 +1479,72 @@ async fn a_short_turn_about(deps: &RunDeps<'_>, dir: &Path) -> Option<String> {
      * dosypane po jego końcu byłyby wierszami kroku, którego nikt nie zlecił. */
     let drain = tokio::spawn(async move { while inbox.recv().await.is_some() {} });
 
-    let text = match driver.start(spec, events).await {
+    let turn = match driver.start(spec, events).await {
         Ok(mut handle) => {
-            let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
-            let said = match tokio::time::timeout(limit, handle.wait()).await {
-                Ok(Ok(outcome)) if outcome.ok => Some(outcome.text),
-                Ok(Ok(outcome)) => {
-                    tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
-                    None
-                }
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "the reflection turn fell over");
-                    None
-                }
-                Err(_) => {
-                    /* Limit czasu zdejmuje GRUPĘ PROCESÓW, nie samo zadanie Rusta (niezmiennik
-                     * 10). Porzucony `wait` zostawiłby żywy proces vendora, który pali limit
-                     * w tle po biegu, na który nikt już nie patrzy — czyli błąd finansowy. */
-                    let proof = handle.cancel().await;
-                    tracing::debug!(
-                        ?proof,
-                        "the reflection turn ran out of time and was stopped"
-                    );
-                    None
-                }
-            };
-            let _ = handle.close().await;
+            let said = wait_for_reflection(handle.as_mut(), deps.control.cancel_token()).await;
+            // `close()` czeka na samodzielne wyjście procesu. Po `Alive` nie mamy prawa na nim
+            // zawisnąć ani zamienić braku dowodu w sukces; uchwyt schodzi dopiero z błędem wyżej.
+            if said.is_ok() {
+                let _ = handle.close().await;
+            }
             said
         }
         Err(error) => {
             tracing::debug!(%error, "no reflection turn could be started after this run");
-            None
+            Ok(None)
         }
     };
 
     // Nadajnik ginie razem z uchwytem, więc dopiero tutaj kolejka jest zamknięta i pętla wyżej
     // ma jak się skończyć.
+    if turn.is_err() {
+        // Nieudowodniona grupa może nadal trzymać nadajnik. Drenaż nie jest procesem vendora;
+        // kończymy tylko lokalnego czytelnika, żeby jawna odmowa mogła dojść do człowieka.
+        drain.abort();
+    }
     let _ = drain.await;
-    text
+    turn
+}
+
+fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriver>> {
+    let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()?;
+    let settings = crate::engine::drivers::StepSettings {
+        dir: dir.to_path_buf(),
+        memory: dir.join(STEP_MEMORY_DIR).join("_reflection"),
+        deny: crate::engine::drivers::host::deny_rules(deps.project),
+    };
+    let driver = match driver.with_settings(&settings) {
+        Some(Ok(driver)) => driver,
+        Some(Err(error)) => {
+            tracing::debug!(%error, "the reflection turn could not get its private settings");
+            return None;
+        }
+        None => {
+            tracing::debug!("the reflection turn has no private settings wrapper");
+            return None;
+        }
+    };
+    if let Err(error) = fs::create_dir_all(&settings.memory) {
+        tracing::debug!(%error, "the reflection memory directory could not be created");
+        return None;
+    }
+    let target = EvidenceTarget::reflection(
+        dir.to_path_buf(),
+        SafeInputManifest {
+            prompt_bytes: REFLECTION_ASK.len(),
+            context: Vec::new(),
+            images: Vec::new(),
+        },
+    );
+    let Some(driver) = driver.with_evidence(target) else {
+        tracing::debug!("the reflection turn has no private evidence wrapper");
+        return None;
+    };
+    let Some(driver) = driver.with_budget(REFLECTION_BUDGET_USD) else {
+        tracing::debug!("the reflection turn has no price ceiling wrapper");
+        return None;
+    };
+    Some(driver)
 }
 
 /// Chwila zgłoszenia kandydatki: ISO 8601 UTC **z milisekundami**.
@@ -5284,6 +5415,20 @@ fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> Ru
 
 // ── ŻYWY BIEG ──────────────────────────────────────────────────────────────────────────────
 
+/// Trwały rachunek prywatnej tury Loadouta.
+///
+/// `ran` znaczy, że tura zakończyła się użyteczną odpowiedzią. Odmowa któregokolwiek twardego
+/// opakowania, anulowanie i porażka vendora zostawiają wartość domyślną; sam zamiar startu nie
+/// może udawać wykonanego, opłaconego biegu.
+#[derive(Debug, Clone, Default, Serialize)]
+struct ReflectionReceipt {
+    ran: bool,
+    kept: usize,
+    dropped_without_reason: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_usd: Option<f64>,
+}
+
 /// Bieg w trakcie: plan (niezmienny) plus księga (zmienna), plus to, czym mówi do świata.
 struct Live {
     /// Wszystko, co rozstrzygnięto przed startem.
@@ -5392,6 +5537,8 @@ struct Book {
     ended_at: Option<i64>,
     /// Po jednym wpisie na krok, w kolejności z pliku workflow.
     steps: Vec<StepRun>,
+    /// Jedyny trwały fakt o prywatnej turze po biegu.
+    reflection: ReflectionReceipt,
 }
 
 /// Co bieg wie o jednym kroku.
@@ -5633,6 +5780,7 @@ impl Live {
                 started_at: None,
                 ended_at: None,
                 steps,
+                reflection: ReflectionReceipt::default(),
             }),
             lines,
             control,
@@ -6334,6 +6482,7 @@ impl Live {
              * `death_proof` i `repaired` obok. */
             budget_usd: self.budget_usd,
             spent_usd: self.budget_usd.map(|_| spent_in(book)),
+            reflection: &book.reflection,
             steps,
         }
     }
@@ -8834,6 +8983,7 @@ struct RunFile<'a> {
     /// a chip na pasku biegu liczy sobie tę samą sumę z linii, które sam dostał.
     #[serde(skip_serializing_if = "Option::is_none")]
     spent_usd: Option<f64>,
+    reflection: &'a ReflectionReceipt,
     steps: Vec<StepEntry<'a>>,
 }
 
@@ -8996,13 +9146,82 @@ mod tests {
     //! dopisuje do promptu nagłówek nad pustką i każe za niego płacić długością. Rozstrzyga
     //! porównanie CO DO BAJTU w przypadku pustym.
 
-    use super::{TASK_MARK, node_key_for, tile_key_of, with_the_task};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{TASK_MARK, node_key_for, tile_key_of, wait_for_reflection, with_the_task};
+    use crate::commands::RunError;
+    use crate::engine::drivers::{AgentHandle, Outcome as DriverOutcome, SessionRef};
+    use crate::engine::supervisor::{GroupId, GroupProof};
 
     /// Prompt kroku, taki jak w pliku workflow.
     const STEP: &str = "Write the tests first, then the code.";
 
     /// Zadanie z wiersza wejścia.
     const TASK: &str = "build a pretty todo list";
+
+    struct ReflectionWithoutDeathProof {
+        close_called: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl AgentHandle for ReflectionWithoutDeathProof {
+        fn session(&self) -> SessionRef {
+            SessionRef {
+                vendor: "test",
+                id: "reflection-without-death-proof".to_owned(),
+            }
+        }
+
+        fn group(&self) -> Option<GroupId> {
+            None
+        }
+
+        async fn send(&mut self, _text: String) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn wait(&mut self) -> anyhow::Result<DriverOutcome> {
+            std::future::pending().await
+        }
+
+        async fn cancel(&mut self) -> GroupProof {
+            GroupProof::Alive
+        }
+
+        async fn close(&mut self) -> anyhow::Result<Option<i32>> {
+            self.close_called.store(true, Ordering::Release);
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn reflection_stop_refuses_without_death_proof() {
+        let close_called = Arc::new(AtomicBool::new(false));
+        let mut handle = ReflectionWithoutDeathProof {
+            close_called: Arc::clone(&close_called),
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = wait_for_reflection(&mut handle, cancel).await;
+
+        assert!(matches!(
+            &result,
+            Err(RunError::Io(error))
+                if error.to_string()
+                    == "Loadout could not make sure the agent stopped after learning from this \
+                        run, so it may still be running."
+        ));
+        assert!(
+            !close_called.load(Ordering::Acquire),
+            "close waits for a process to exit by itself, so calling it after an unproven Stop \
+             would hide the refusal behind an unbounded wait"
+        );
+    }
 
     /* ── Klucz węzła a klucz kafelka ─────────────────────────────────────────────────────────
      *

@@ -1000,6 +1000,29 @@ impl ClaudeDriver {
         self
     }
 
+    /// Sterownik z jednym, własnym sufitem ceny tej konkretnej kopii.
+    ///
+    /// Kwota staje się gotowym fragmentem argv w vendorowej konfiguracji klona. Nie trafia do
+    /// modelu, promptu ani katalogu, więc dwa identyczne pytania mogą uczciwie mieć różne
+    /// limity. Poprzednią parę usuwamy przed dodaniem nowej: powtórne opakowanie zastępuje
+    /// wartość zamiast wypuszczać dwie konkurujące flagi do jednego procesu.
+    #[must_use]
+    fn with_price_ceiling(mut self, dollars: f64) -> Self {
+        let previous = std::mem::take(&mut self.configuration.arguments);
+        let mut arguments = Vec::with_capacity(previous.len() + 2);
+        let mut previous = previous.into_iter();
+        while let Some(argument) = previous.next() {
+            if argument == BUDGET_FLAG {
+                let _ = previous.next();
+            } else {
+                arguments.push(argument);
+            }
+        }
+        arguments.extend(budget_argv(dollars));
+        self.configuration.arguments = arguments;
+        self
+    }
+
     /// Buduje komendę jednej tury. **Promptu w niej nie ma i nigdy nie będzie**
     /// (niezmiennik 9): treść zadania jedzie kopertą na stdin, bo argumenty widzi `ps`
     /// każdego użytkownika maszyny.
@@ -2594,6 +2617,10 @@ impl AgentDriver for ClaudeDriver {
         Some(Arc::new(
             self.clone().with_configuration(configuration.clone()),
         ))
+    }
+
+    fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(self.clone().with_price_ceiling(dollars)))
     }
 
     /// Turę Loadouta ten sterownik **bierze**, i to jest cała treść tej odpowiedzi.

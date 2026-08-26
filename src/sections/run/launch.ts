@@ -60,6 +60,26 @@ export const TRIGGER_NO_WORKSPACE =
   'Nothing started: this trigger has no workspace. Open Triggers, choose where it should run, ' +
   'then save it.';
 
+async function startChosen(
+  choice: Choice,
+  atOnce: number,
+  folder: string,
+  task: string | null,
+  claim: TriggerClaim | null,
+  reflectionEnabled: boolean,
+): Promise<void> {
+  const what = { name: choice.name, steps: choice.steps };
+  if (claim === null && reflectionEnabled) {
+    await start(choice.path, atOnce, what, folder, task);
+    return;
+  }
+  if (claim !== null && reflectionEnabled) {
+    await start(choice.path, atOnce, what, folder, task, claim);
+    return;
+  }
+  await start(choice.path, atOnce, what, folder, task, claim, undefined, false);
+}
+
 /**
  * Uruchamia ten workflow i oddaje zdanie, które ma stanąć na ekranie — albo `null`, kiedy
  * wszystko poszło.
@@ -91,6 +111,8 @@ export async function launchRun(
   task: string | null = null,
   /** A durable trigger delivery, or null for every human-started run. */
   claim: TriggerClaim | null = null,
+  /** The current visible Learn from this run choice. */
+  reflectionEnabled = true,
 ): Promise<string | null> {
   if (choice === null) return GONE_FROM_DISK;
   /* Workflow bez kroków odmawia po stronie Rusta, i to zdaniem lepszym niż nasze — ale odmowa
@@ -116,18 +138,7 @@ export async function launchRun(
     /* Keep the five-argument manual call intact: older callers and its independent oracle own
      * that public seam. Only a trigger adds the sixth argument; `start` itself still sends an
      * explicit `claim: null` over IPC for the manual branch. */
-    if (claim === null) {
-      await start(choice.path, atOnce, { name: choice.name, steps: choice.steps }, folder, task);
-    } else {
-      await start(
-        choice.path,
-        atOnce,
-        { name: choice.name, steps: choice.steps },
-        folder,
-        task,
-        claim,
-      );
-    }
+    await startChosen(choice, atOnce, folder, task, claim, reflectionEnabled);
     return null;
   } catch (error: unknown) {
     return why(error, 'Loadout could not start that run.');

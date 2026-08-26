@@ -143,7 +143,10 @@ export function readRunLine(choices: readonly Choice[], rest: string): RunLine {
  * Katalog czytamy TERAZ, przy naciśnięciu, a nie z listy zapamiętanej przy renderze: plik jest
  * prawdą (niezmiennik 4), a człowiek mógł zapisać workflow w drugim oknie sekcji sekundę temu.
  */
-export async function startFromLine(rest: string): Promise<string | null> {
+export async function startFromLine(
+  rest: string,
+  reflectionEnabled = true,
+): Promise<string | null> {
   let choices: readonly Choice[];
   try {
     choices = toChoices(await list());
@@ -156,5 +159,5 @@ export async function startFromLine(rest: string): Promise<string | null> {
   /* Limit z modułu, nie z argumentu i nie ze stałej: jedna pula na okno (niezmiennik 11), a jej
    * wartość ustawia suwak obok Startu. Czytany w chwili naciśnięcia Enter, bo to wtedy jest
    * prawdziwy. */
-  return launchRun(read.go, atOnceNow(), read.task);
+  return launchRun(read.go, atOnceNow(), read.task, null, reflectionEnabled);
 }

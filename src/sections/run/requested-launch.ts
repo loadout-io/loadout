@@ -40,6 +40,7 @@ import { takeRequestedRun } from './requested';
 export async function launchRequested(
   choices: readonly Choice[],
   atOnce: number,
+  reflectionEnabled = true,
 ): Promise<string | null> {
   const taken = takeRequestedRun();
   /* Nikt o nic nie prosił — i to jest wartość, nie błąd. Ten moduł woła każdy render ekranu
@@ -47,5 +48,11 @@ export async function launchRequested(
   if (taken === null) return null;
   /* Który plik i co powiedzieć, kiedy go już nie ma, decyduje `./launch` — także wtedy, gdy
    * `choiceFor` oddaje `null`, bo katalog zmienił się między odczytem a kliknięciem. */
-  return launchRun(choiceFor(choices, taken.path), atOnce);
+  return launchRun(
+    choiceFor(choices, taken.path),
+    atOnce,
+    null,
+    null,
+    taken.reflectionEnabled ?? reflectionEnabled,
+  );
 }
