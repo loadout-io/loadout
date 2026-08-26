@@ -4,6 +4,30 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 23:23 — T-130 WSTRZYMANE mimo zielonej bramki: dwa słabe oracle
+
+**T-130 · zielona bramka / WSTRZYMANE / NIEWYLĄDOWANE · 41 min 45 s · $0,00
+raportowanego kosztu.** Enforced `before` certyfikowało trzy prawdziwe czerwienie w 1,42 s.
+Implementacja zapisała rzeczywistych odbiorców dopiero po `AgentDriver::start`, prowadzi
+zamrożony receipt przez `run.json` i odczyt historii, pokazuje go pod krokiem oraz liczy
+`discardedAgain`. Pierwsza bramka Harnessu przeszła **19/19 w 54,99 s**, a gałąź jest czysta
+na `6663e2b`; trzy commity produkcyjne to `442ce94`, `72dec4c` i `6663e2b`.
+
+Recenzent znalazł jednak dwie luki medium w nowych kryteriach. AC-1 nie sadzi
+`AgentDriver::start -> Err`, więc nie chroni granicy przed przyszłym przesunięciem zapisu
+odbiorcy przed uzyskaniem uchwytu. AC-3 otwiera historię bezpośrednimi akcjami store zamiast
+wysłaniem formularza i kliknięciem wyrenderowanego `data-history-row`, więc martwa kontrolka
+mogłaby przejść. Plan naprawy uznał oba problemy za wady oracle, a wykonawca nie zmienił ani
+testów, ani produkcji. Bramka po naprawie przeszła **19/19 w 41,77 s**, końcowa **19/19 w
+42,72 s**, ale Harness sam zaznaczył, że człowiek nadal musi rozstrzygnąć odpowiedź na review.
+Dlatego `task-T-130` nie wolno lądować mimo kodu 0.
+
+Pięć tur Codeksa zużyło 27 055 670 tokenów wejścia (26 399 360 z cache) i 83 524 wyjścia;
+Harness nie podał ceny dolarowej. Uczciwa kontynuacja wymaga świeżego zadania z nowymi,
+globalnie unikalnymi targetami: fake `start` zwracający kontrolowane `Err` oraz interakcja przez
+prawdziwe kontrolki historii. Dopiero po własnym czerwonym `before` wolno selektywnie przejąć
+trzy commity produkcyjne T-130; kontrakt, stare targety i cała gałąź nie są wejściem.
+
 ## 2026-08-26, 22:39 — T-131 w trunku, prawdziwe nazwy zachowane
 
 **T-131 · zielone / WYLĄDOWANE · 27 min 12 s Harnessu + 2 min 9 s lądowania · $0,00
