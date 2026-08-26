@@ -74,11 +74,12 @@ const HEADING: &str = "What you know";
 /// Klucze, które ta wersja rozumie. Wszystko poza nimi jedzie do [`Note::extra`] i wraca
 /// na dysk nietknięte — plik od nowszego Loadouta nie ma prawa stracić pola przy zapisie,
 /// którego to pole nie dotyczyło (niezmiennik 5).
-const KNOWN: [&str; 11] = [
+const KNOWN: [&str; 12] = [
     "scope",
-    // 2026-08-22 (T-80): z jakiego projektu ta notatka przyjechała. W kontrakcie, bo czyta to
-    // ekran (`src/sections/memory/note-row.tsx`) — a to samo zdanie przywiezione z dwóch
-    // projektów bez tej linii wygląda jak dwa fakty.
+    // 2026-08-26 (T-129): projekt importu i bieg, który zaproponował regułę, odpowiadają na
+    // dwa różne pytania. Osobne klucze nie zmuszają czytelnika do zgadywania po kształcie
+    // wartości, czy `from` jest nazwą projektu, czy identyfikatorem biegu.
+    "project",
     "from",
     // 2026-08-22 (T-80): czyja jest ta notatka. Klucz dołożony do kontraktu, a nie zostawiony
     // w [`Note::extra`] — odpowiedź na pytanie „czyja to wiedza" nie ma prawa mieszkać w worku
@@ -205,8 +206,9 @@ pub struct Note {
     /// identyfikatorem z biblioteki: plik jest prawdą (niezmiennik 4), a uuid w pliku, który
     /// człowiek otwiera w edytorze, jest polem, którego nie da się ani napisać, ani przeczytać.
     pub agent: Option<String>,
-    /// Z jakiego projektu ta notatka przyjechała. `None` znaczy „stąd" — zdanie napisane w tym
-    /// Loadoucie nie ma pochodzenia do pokazania i nie ma go udawać (2026-08-22, T-80).
+    /// Z jakiego projektu ta notatka przyjechała. `None` znaczy „stąd".
+    pub project: Option<String>,
+    /// Bieg, który zaproponował regułę. To nie jest adres ani nazwa importowanego projektu.
     pub from: Option<String>,
     pub kind: Kind,
     /// Zdanie, po którym człowiek poznaje notatkę na liście. Nie jedzie do promptu.
@@ -838,7 +840,12 @@ fn record(
             // Notatka, która leży w bibliotece i już mówi, skąd jest, mówi to o PIERWSZYM
             // projekcie, który ją przywiózł — a drugi import tego nie unieważnia.
             if let Some(origin) = origin {
-                add_missing(&mut front, "from", &origin.from);
+                // Stare importy miały komplet metadanych i nazwę projektu pod `from`. Nie
+                // przepisujemy ich przy zwykłym kolejnym zgłoszeniu: odczyt zgodnościowy poniżej
+                // rozpoznaje ten kształt, a brak migracji przy odczycie jest częścią kontraktu.
+                if !is_legacy_import(&front) {
+                    add_missing(&mut front, "project", &origin.from);
+                }
                 add_missing(&mut front, "source", &origin.source.to_string_lossy());
                 add_missing(&mut front, "source_hash", &origin.source_hash);
                 add_missing(&mut front, "app", &origin.app);
@@ -863,9 +870,8 @@ fn record(
             if let Some(name) = owner {
                 front.set("agent", &one_line(name));
             }
-            // Bieg, który to zgłosił, stoi w tym samym miejscu i w tym samym kluczu co projekt,
-            // z którego notatka przyjechała: oba odpowiadają na pytanie „skąd to zdanie", a dwa
-            // klucze na jedno pytanie znaczyłyby, że czytelnik musi wiedzieć, którego szukać.
+            // `from` jest wyłącznie biegiem, który zaproponował regułę. Nazwa projektu ma
+            // osobny klucz poniżej, bo człowiek widzi te dwa fakty jako dwa różne zdania.
             if let Some(run) = from {
                 front.set("from", &one_line(run));
             }
@@ -873,7 +879,7 @@ fn record(
             // strony: kto tego używa i skąd to wzięliśmy. Notatka napisana tutaj nie dostaje ani
             // jednego z tych kluczy — pusty `from:` znaczyłby „przyjechała znikąd".
             if let Some(origin) = origin {
-                front.set("from", &one_line(&origin.from));
+                front.set("project", &one_line(&origin.from));
                 front.set("source", &one_line(&origin.source.to_string_lossy()));
                 front.set("source_hash", &one_line(&origin.source_hash));
                 front.set("app", &one_line(&origin.app));
@@ -1209,6 +1215,18 @@ fn was_discarded(root: &Path, id: &NoteId) -> Result<bool> {
 /// ma nagłówka — i tę zgłasza [`FrontMatter::split`].
 fn note_from(path: &Path, front: &FrontMatter) -> Note {
     let rule = front.get("rule").unwrap_or_default().to_owned();
+    let project = value(front, "project").or_else(|| {
+        // 2026-08-26 (T-129): historyczny import miał nazwę projektu pod `from`, ale zawsze
+        // niósł komplet trzech pól dowodowych. Gołe `from` należy do kandydatki z biegu.
+        is_legacy_import(front)
+            .then(|| value(front, "from"))
+            .flatten()
+    });
+    let from = if project.is_some() && value(front, "project").is_none() {
+        None
+    } else {
+        value(front, "from")
+    };
     let extra = front
         .keys()
         .into_iter()
@@ -1235,11 +1253,8 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(ToOwned::to_owned),
-        from: front
-            .get("from")
-            .map(str::trim)
-            .filter(|project| !project.is_empty())
-            .map(ToOwned::to_owned),
+        project,
+        from,
         kind: kind_from(front.get("kind").unwrap_or_default()),
         title: front.get("title").unwrap_or_default().to_owned(),
         because: front.get("because").unwrap_or_default().to_owned(),
@@ -1263,6 +1278,25 @@ fn note_from(path: &Path, front: &FrontMatter) -> Note {
         path: path.to_owned(),
         extra,
     }
+}
+
+/// Niepusta wartość front matteru. Pusty klucz i brak klucza znaczą ten sam brak faktu.
+fn value(front: &FrontMatter, key: &str) -> Option<String> {
+    front
+        .get(key)
+        .map(str::trim)
+        .filter(|one| !one.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Kształt zapisywany przez importer sprzed T-129: nazwa projektu pod `from` oraz komplet
+/// dowodów źródłowych. Samo `from` jest kandydatką z biegu i nie wolno go tak przeklasyfikować.
+fn is_legacy_import(front: &FrontMatter) -> bool {
+    value(front, "project").is_none()
+        && value(front, "from").is_some()
+        && ["source", "source_hash", "app"]
+            .iter()
+            .all(|key| value(front, key).is_some())
 }
 
 /// Dopisuje klucz, którego w pliku jeszcze nie ma, i nie rusza tego, który już tam stoi.

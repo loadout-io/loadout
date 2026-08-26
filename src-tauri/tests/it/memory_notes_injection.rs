@@ -49,6 +49,8 @@ fn note(id: &str, sentinel: &str, status: Status, occurrences: u32, modified: &s
         // Notatka projektu jest niczyja: właściciela ma wyłącznie zakres `this-agent` (T-80).
         agent: None,
         // I napisano ją tutaj, więc nie ma projektu, z którego by przyjechała (T-80).
+        project: None,
+        // Nie zaproponował jej także żaden bieg.
         from: None,
         kind: Kind::Fact,
         title: format!("what {id} is about"),
