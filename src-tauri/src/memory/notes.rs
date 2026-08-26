@@ -49,7 +49,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::FrontMatter;
@@ -402,10 +402,64 @@ pub enum Error {
     /// (niezmiennik 14).
     #[error("This note is in use. Stop using it first.")]
     StillInUse,
+
+    /// Automatyczny zapis nie przywraca dokładnie tej notatki, którą człowiek odrzucił.
+    #[error("The note {0} was discarded before, so Loadout did not suggest it again.")]
+    PreviouslyDiscarded(NoteId),
 }
 
 /// Skrót używany przez cały moduł notatek.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Port trwałych operacji filesystemowych wykonywanych przez Move.
+pub trait MoveIo {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+    fn exists(&mut self, path: &Path) -> io::Result<bool>;
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf>;
+    fn sync_file(&mut self, path: &Path) -> io::Result<()>;
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> io::Result<()>;
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()>;
+    fn remove_file(&mut self, source: &Path) -> io::Result<()>;
+}
+
+/// Produkcyjny adapter IO. Implementacja pojawi się dopiero po czerwonym `before` T-139.
+#[derive(Debug, Default)]
+pub struct RealMoveIo;
+
+impl MoveIo for RealMoveIo {
+    fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+        todo!("T-139 Move read")
+    }
+
+    fn exists(&mut self, _path: &Path) -> io::Result<bool> {
+        todo!("T-139 Move exists")
+    }
+
+    fn stage_in(&mut self, _target_dir: &Path, _bytes: &[u8]) -> io::Result<PathBuf> {
+        todo!("T-139 Move stage")
+    }
+
+    fn sync_file(&mut self, _path: &Path) -> io::Result<()> {
+        todo!("T-139 Move file sync")
+    }
+
+    fn persist_no_clobber(&mut self, _staged: &Path, _target: &Path) -> io::Result<()> {
+        todo!("T-139 Move publish")
+    }
+
+    fn sync_dir(&mut self, _dir: &Path) -> io::Result<()> {
+        todo!("T-139 Move directory sync")
+    }
+
+    fn remove_file(&mut self, _source: &Path) -> io::Result<()> {
+        todo!("T-139 Move unlink")
+    }
+}
+
+/// Jeden rdzeń protokołu Move. Faza implementacji zastąpi ciało po czerwonym `before`.
+pub fn move_note_file_with_io(_io: &mut dyn MoveIo, _source: &Path, _target: &Path) -> Result<()> {
+    todo!("T-139 durable Move protocol")
+}
 
 /// Czyta `root/notes/*.md` bez bazy i bez zaufania do tego, kto te pliki pisał.
 ///
@@ -561,6 +615,16 @@ pub fn record_candidate_for_with_body(
 /// całą różnicą między pamięcią a akrecją instrukcji.
 pub fn record_candidate_from_run(root: &Path, draft: NoteDraft, run: &str) -> Result<Note> {
     record(root, draft, None, Some(run), None, None)
+}
+
+/// Refleksja zapisująca do projektu z odmową tombstone'a z dowolnego fizycznego korzenia.
+pub fn record_project_candidate_from_run(
+    _library_root: &Path,
+    _project_root: &Path,
+    _draft: NoteDraft,
+    _run: &str,
+) -> Result<Note> {
+    todo!("T-139 project candidate with two-root tombstone policy")
 }
 
 /// Skąd wzięła się notatka, której **nikt tutaj nie napisał** (2026-08-22, T-80).

@@ -606,6 +606,22 @@ pub async fn run_workflow_inner(
     run_workflow_with_budget(deps, request, lines, None).await
 }
 
+/// Jednorazowy obserwator tekstu zamrożonego w planie przed produkcyjnym stemplem pamięci.
+pub type FrozenPromptHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Acceptance wejście zachowujące produkcyjną drogę biegu po zastąpieniu skeletonu.
+pub async fn run_workflow_with_snapshot_hook(
+    _deps: &RunDeps<'_>,
+    _request: &RunRequest,
+    _lines: LineSink,
+    _budget_usd: Option<f64>,
+    _reflection_enabled: bool,
+    _after_prompt: Option<FrozenPromptHook>,
+) -> Result<RunReport, RunError> {
+    std::future::ready(()).await;
+    todo!("T-139 frozen prompt hook")
+}
+
 /// Ten sam bieg, z **sufitem wydatku** — albo bez niego, kiedy człowiek żadnego nie postawił.
 ///
 /// Sufit jedzie ARGUMENTEM, nie polem [`RunRequest`], i to nie jest szczegół stylu. Zmierzone

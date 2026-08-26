@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::memory::notes::{
     Actor, Error, Note, NoteId, Scope, Status, discard, promote, scan_notes, stop_using,
@@ -49,6 +49,8 @@ const SUGGESTED: &str = "suggested";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteWire {
+    /// Fizyczny korzeń pliku; razem z `id` tworzy publiczną tożsamość notatki.
+    pub place: NotePlace,
     /// Nazwa pliku notatki bez rozszerzenia.
     pub id: String,
     pub title: String,
@@ -74,9 +76,26 @@ pub struct NoteWire {
     pub modified: String,
 }
 
+/// Fizyczne miejsce notatki. Legacy nadal jest notatką biblioteczną.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotePlace {
+    Library,
+    Project,
+}
+
+/// Pełna publiczna tożsamość notatki.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAddress {
+    pub place: NotePlace,
+    pub id: String,
+}
+
 impl From<&Note> for NoteWire {
     fn from(note: &Note) -> Self {
         Self {
+            place: NotePlace::Library,
             id: note.id.to_string(),
             title: note.title.clone(),
             rule: note.rule.clone(),
@@ -159,6 +178,53 @@ impl From<Error> for NoteRefusal {
 #[must_use]
 pub fn notes_root(library: &Path) -> std::path::PathBuf {
     library.join("memory")
+}
+
+/// Pełny katalog biblioteki i wskazanego projektu.
+pub fn list_notes_for_project_inner(
+    _library_root: &Path,
+    _catalog_folder: &Path,
+) -> Result<Vec<NoteWire>, Error> {
+    todo!("T-139 two-root note catalog")
+}
+
+/// Adresowane „Use this” zwracające ponownie wyliczony katalog.
+pub fn put_addressed_note_to_use_inner(
+    _library_root: &Path,
+    _catalog_folder: &Path,
+    _address: &NoteAddress,
+    _at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    todo!("T-139 addressed Use")
+}
+
+/// Adresowane „Stop using” zwracające ponownie wyliczony katalog.
+pub fn stop_using_addressed_note_inner(
+    _library_root: &Path,
+    _catalog_folder: &Path,
+    _address: &NoteAddress,
+    _at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    todo!("T-139 addressed Stop")
+}
+
+/// Adresowane „Discard” zwracające ponownie wyliczony katalog.
+pub fn discard_addressed_note_inner(
+    _library_root: &Path,
+    _catalog_folder: &Path,
+    _address: &NoteAddress,
+    _at: &str,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    todo!("T-139 addressed Discard")
+}
+
+/// Filesystemowy Move legacy do wskazanego projektu.
+pub fn move_note_to_project_inner(
+    _library_root: &Path,
+    _catalog_folder: &Path,
+    _address: &NoteAddress,
+) -> Result<Vec<NoteWire>, NoteRefusal> {
+    todo!("T-139 addressed Move")
 }
 
 /// Wszystkie notatki z dysku, w kolejności, którą oddaje skaner.
