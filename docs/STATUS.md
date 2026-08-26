@@ -4,6 +4,33 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 20:07 — T-129 WSTRZYMANE przed nieuczciwą naprawą
+
+**T-129 · czerwone / WSTRZYMANE / NIEWYLĄDOWANE · 28 min 30 s do przerwania · $0,00
+raportowanego kosztu.** Enforced `before` certyfikowało wszystkie trzy nowe targety w 1,34 s.
+Implementacja rozdzieliła `project/from`, wylicza bieżące `leftOut`, pokazuje prawdziwy zasięg
+i wyklucza pominięte notatki z bieżącego panelu agenta. Gałąź ma trzy commity produkcyjne
+`dca0c89`, `7939635` i `d38cbde`; AC-1, AC-2, AC-3, Clippy, typy i wszystkie quick-checki
+przeszły.
+
+Pełna bramka implementera miała dwa razy 18/19 na niedostępnych w jego sandboxie testach
+grup procesów i `kern.boottime`. Następna bramka Harnessu miała również 18/19, lecz z innym
+podpisem poza `OWNS`: `copy-diagnostics-is-real` nie zobaczył nawet startowego
+`main[data-section]`. Recenzent zgłosił niski brak fixture projektu o nazwie wyglądającej jak
+UUID. Odczyt produkcji rozstrzyga tę niewiadomą: import używa surowego basename katalogu, więc
+UUID jest legalną nazwą projektu. Plan naprawy mimo to polecił heurystykę zamieniającą taką
+realną nazwę na `another project` i test wymuszający to zachowanie. Byłoby to zazielenienie
+nadmiernie literalnego zdania kosztem kłamstwa w UI, więc orchestrator przerwał Harness kodem
+3 przed zmianą produkcji.
+
+Worktree `task-T-129` pozostaje dowodem. Runda naprawcza zdążyła zostawić niezatwierdzoną,
+nieuczciwą zmianę wyłącznie w `t129-current-memory-truth.test.tsx`; nie wolno jej commitować,
+resume'ować w ciemno ani lądować gałęzi. Dwie zapisane tury pisarza zużyły co najmniej 14,23
+mln tokenów wejścia (13,84 mln z cache) i 48,1 tys. wyjścia; recenzja i rozpoczęta naprawa nie
+mają wspólnego paragonu tokenów. Potrzebna jest decyzja właściciela: zachować prawdziwe nazwy
+projektów i zamknąć T-129 na rzecz świeżego następcy z poprawnym zdaniem, albo jawnie przyjąć
+maskowanie projektów o nazwie UUID. Rekomendowany jest pierwszy wariant. T-130 nie ruszyło.
+
 ## 2026-08-26, 19:35 — kontrakty T-129 i T-130 gotowe
 
 Na jawne polecenie właściciela powstały dwa świeże kontrakty po T-139, bez kodu
