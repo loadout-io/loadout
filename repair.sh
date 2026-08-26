@@ -60,6 +60,36 @@ grep -qE '^##[[:space:]]+[A-Z]{2,8}-[0-9]+' TASK.md \
 [ -f runs/last.json ] || die2 "no gate receipt at runs/last.json -- run ./verify.sh full first"
 mkdir -p runs
 
+[ -f harness/process-group.sh ] || die2 "harness/process-group.sh is missing"
+# shellcheck source=harness/process-group.sh
+. harness/process-group.sh
+
+repair_interrupted() {
+  local rc=3
+  if loadout_agent_group_defer_interrupt; then return; fi
+  # Kolejny Ctrl-C nie moze zabic powloki w trakcie laski TERM i odtworzyc sieroty.
+  trap '' INT TERM
+  loadout_agent_group_stop || rc=2
+  if [ "$rc" = 3 ]; then
+    printf '\nrepair interrupted; active agent process group is dead\n' >&2
+  else
+    printf '\nrepair interrupted; process-group death was not proved\n' >&2
+  fi
+  exit "$rc"
+}
+trap repair_interrupted INT TERM
+
+repair_finish() {
+  local rc=$?
+  trap - EXIT
+  trap '' INT TERM
+  if [ -n "${LOADOUT_AGENT_GROUP_PID:-}" ]; then
+    loadout_agent_group_stop || rc=2
+  fi
+  exit "$rc"
+}
+trap repair_finish EXIT
+
 FAILED="$(python3 -c "
 import json
 d = json.load(open('runs/last.json'))
@@ -113,20 +143,16 @@ esac
 # Prompt zawsze STDIN-em (niezmiennik 9). Funkcja kończy się exec-em, więc $! to pid samego
 # CLI i stoper zdejmuje agenta, a nie powłokę, która go trzyma.
 run_boxed() {                       # run_boxed <budget> <funkcja>
-  local budget="$1" fn="$2" pid watcher rc=0
-  # `set -m` na czas startu daje zadaniu WŁASNĄ grupę procesów, więc stoper zabija całe
-  # drzewo, a nie samo CLI (niezmiennik 6). Podstawienie procesu, nie potok, żeby pid zadania
-  # był liderem grupy; stdin zostaje rurą, więc prompt nie ląduje w pliku (niezmiennik 9).
-  set -m
-  "$fn" < <(printf '%s\n' "$PROMPT") &
-  pid=$!
-  set +m
-  ( sleep "$budget"; kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-  watcher=$!
-  wait "$pid" 2>/dev/null || rc=$?
-  kill -TERM "$watcher" 2>/dev/null || true
-  wait "$watcher" 2>/dev/null || true
-  kill -KILL -"$pid" 2>/dev/null || true   # zamiatanie grupy: lider nie żyje, dzieci bywają żywe
+  local budget="$1" fn="$2" rc=0 started=0
+  # Wspolny rdzen zapisuje aktywny PGID PRZED wait, zeby pulapka INT/TERM mogla go sprzatnac.
+  # Podstawienie procesu, nie potok: prompt nadal idzie wylacznie przez stdin (niezmiennik 9).
+  loadout_agent_group_start "$fn" < <(printf '%s\n' "$PROMPT") || started=$?
+  if [ "$started" = 3 ]; then repair_interrupted; fi
+  [ "$started" = 0 ] || return "$started"
+  loadout_agent_group_wait "$budget" || rc=$?
+  if [ "$LOADOUT_AGENT_GROUP_PROOF_FAILED" = 1 ]; then
+    exit 2
+  fi
   return "$rc"
 }
 

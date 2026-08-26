@@ -75,12 +75,21 @@ fi
 [ -f runs/last.json ] || die2 "no gate receipt at runs/last.json -- run ./verify.sh full first;
   a second opinion on an ungated tree reviews the wrong thing"
 
+[ -f harness/process-group.sh ] || die2 "harness/process-group.sh is missing"
+# shellcheck source=harness/process-group.sh
+. harness/process-group.sh
+
 # Od tego miejsca "zawsze 0" jest strukturalne, nie deklaratywne. Powód: obcinanie diffu
 # wywracało skrypt SIGPIPE-em (rc=141) i awaria recenzji czytałaby się jak awaria bramki.
 # Nasza zła konfiguracja (kod 2) jest już za nami, więc nic poniżej nie ma prawa być czerwone.
 ALWAYS_ZERO=1
 finish() {
   local rc=$?
+  trap - EXIT
+  trap '' INT TERM
+  if [ -n "${LOADOUT_AGENT_GROUP_PID:-}" ]; then
+    loadout_agent_group_stop || { rc=2; ALWAYS_ZERO=0; }
+  fi
   if [ "${ALWAYS_ZERO:-0}" = 1 ] && [ "$rc" -ne 0 ]; then
     echo "review.sh hit an internal error (rc=$rc) -- advisory only, so this is not a red." >&2
     exit 0
@@ -88,6 +97,22 @@ finish() {
   exit "$rc"
 }
 trap finish EXIT
+
+review_interrupted() {
+  local rc=3
+  if loadout_agent_group_defer_interrupt; then return; fi
+  # Przerwanie nie jest niedostepnoscia recenzenta. Nie wolno pozwolic finish() zamienic 3 na 0.
+  ALWAYS_ZERO=0
+  trap '' INT TERM
+  loadout_agent_group_stop || rc=2
+  if [ "$rc" = 3 ]; then
+    printf '\nreview interrupted; active agent process group is dead\n' >&2
+  else
+    printf '\nreview interrupted; process-group death was not proved\n' >&2
+  fi
+  exit "$rc"
+}
+trap review_interrupted INT TERM
 
 mkdir -p runs
 RAW="runs/review.raw"; LOG="runs/review.log"; OUT="runs/review.json"
@@ -216,21 +241,20 @@ spawn_reviewer() {
 }
 
 echo "second opinion by $REVIEWER ($MODEL), ${BUDGET}s budget"
-# `set -m` na czas startu daje zadaniu WŁASNĄ grupę procesów, więc stoper zabija całe drzewo,
-# a nie samo CLI (niezmiennik 6: osierocony agent pali limit w tle — to błąd finansowy).
-# Podstawienie procesu zamiast potoku, żeby pid zadania był liderem grupy; stdin i tak jest
-# rurą, więc prompt nigdy nie ląduje w pliku tymczasowym (niezmiennik 9).
-set -m
-spawn_reviewer < <(printf '%s\n' "$PROMPT") &
-pid=$!
-set +m
-# macOS nie ma coreutils `timeout`, a recenzent, który wisi, blokuje bieg.
-( sleep "$BUDGET"; kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-watcher=$!
-rc=0; wait "$pid" 2>/dev/null || rc=$?
-kill -TERM "$watcher" 2>/dev/null || true
-wait "$watcher" 2>/dev/null || true
-kill -KILL -"$pid" 2>/dev/null || true    # zamiatanie grupy: lider nie żyje, dzieci bywają żywe
+# Wspolny rdzen daje recenzentowi osobny PGID, ogranicza czas i dowodzi ESRCH po kazdym
+# zakonczeniu. Podstawienie procesu utrzymuje prompt wylacznie na stdin (niezmienniki 6 i 9).
+started=0
+loadout_agent_group_start spawn_reviewer < <(printf '%s\n' "$PROMPT") || started=$?
+if [ "$started" = 3 ]; then review_interrupted; fi
+if [ "$started" != 0 ]; then
+  ALWAYS_ZERO=0
+  exit 2
+fi
+rc=0; loadout_agent_group_wait "$BUDGET" || rc=$?
+if [ "$LOADOUT_AGENT_GROUP_PROOF_FAILED" = 1 ]; then
+  ALWAYS_ZERO=0
+  exit 2
+fi
 
 # Walidacja PRZECIW plikowi schematu, nie przeciw kształtowi przepisanemu tutaj — inaczej
 # schemat i jego czytelnik rozjeżdżają się po cichu (niezmiennik 23).

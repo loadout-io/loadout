@@ -85,7 +85,9 @@ implementacja), bo inaczej `verify.sh before` nie jest egzekwowalne, tylko popro
 
 **`review.sh` / `repair.sh`** — druga opinia i DOKŁADNIE jedna runda poprawek. Domyślnie
 cross-vendor; przy same-vendor recenzent dostaje inny model i jawną rolę. Prompt zawsze STDIN-em
-(niezmiennik 9), agent w WŁASNEJ grupie procesów, zamiatanej po stoperze (niezmiennik 6).
+(niezmiennik 9), agent w WŁASNEJ grupie procesów. `harness/process-group.sh` jest jedyną polityką
+jej życia: timeout i INT/TERM robią SIGTERM → łaska → SIGKILL, a powrót wymaga dowodu ESRCH
+(niezmiennik 6). Dzięki temu przerwany `repair.sh` nie zostawia pisarza pod PID 1.
 `repair.sh` czyta `runs/last.json` (klucz `failed`) i `runs/review.json`, i kończy kodem bramki.
 
 **`integrate.sh`** — merge `--no-ff` po jednej gałęzi, pełna bramka po każdej. Konflikt na

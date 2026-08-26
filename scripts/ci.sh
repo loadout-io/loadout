@@ -294,6 +294,7 @@ guards_lane() {
   fi
   prompt_backticks
   pinned_scripts_find_the_repo
+  bash harness/process-group-selftest.sh
   task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
