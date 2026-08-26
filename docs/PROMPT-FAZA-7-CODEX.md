@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-136 następne; T-128 zamknięte na OWNS)
+# Prompt orchestratora — faza 7 (T-137 następne; T-136 zamknięte po czerwonej bramce)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -6,9 +6,9 @@ których odpalasz przez `./ship-task.sh`.
 
 Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić przez pętlę
 wszystkie pozostałe lądowania fazy 7 w kolejności z §4 tego pliku. Historyczny rejestr
-T-98…T-128 oraz świeży następca T-136 obejmują zadania, z których T-105, T-110, T-99,
+T-98…T-137 obejmuje zadania, z których T-105, T-110, T-99,
 T-112, T-113, T-102, T-103, T-109,
-T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125 i T-128 zostały zamknięte bez lądowania.
+T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128 i T-136 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -37,7 +37,9 @@ stałej budżetu, lecz końcowy oracle musi jeszcze wykonać prawdziwy spawn ref
 T-109 zamknięto bez uruchomienia: wszystkie checki są zabronionymi filtrami wspólnego targetu,
 a dwa wymagane pliki produkcyjne leżą poza OWNS. T-127 przejęło H29 i wylądowało. T-128
 przeszło własne AC, lecz zostało zamknięte, gdy pełna suita wymagała dwóch starych testów
-poza OWNS. Świeże T-136 posiada pełny zakres od początku i jest następnym biegiem.
+poza OWNS. T-136 posiadało pełny zakres, lecz po jedynej naprawie zostało 15/18: wadliwy
+oracle multizbioru, kolejny lint i trzy luki dowodu. Świeże T-137 mierzy snapshot promptu,
+pełny protokół Move oraz exact tombstone i jest następnym biegiem.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -235,6 +237,15 @@ targetami, vendor-neutralnym `work_key`, izolacją zwykłych kopii i `_reflectio
 spawnowaniem po `env_clear` oraz widoczną odmową przed spawnem. Przed commitem uruchom
 wyłącznie `python3 harness/task-spine.py`, nie bramkę produktu.
 
+Dwudziesty commit kontraktowy zapisuje `T-136 ZAMKNIĘTE`: końcowa bramka po jedynej naprawie
+miała 15/18. Oracle wymuszał kolejność zamiast multizbioru, pełny clippy znalazł nieużywane
+`&self`, a recenzent wykazał trzy nieobserwowalne granice: ponowny odczyt przy stemplu,
+pełny protokół trwałego Move i dokładny prefiks tombstone. Dodaje `tasks/T-137.md` z trzema
+nowymi targetami. T-137 startuje z aktualnego `main`; dopiero po uczciwym `before` wolno mu
+zastosować dokładnie trzy commity implementacyjne T-136 (`8cca95a`, `eb09306`, `33d84f3`).
+Nie przenosi jego kontraktu, speców, naprawy ani żadnego commita T-128. Przed commitem uruchom
+wyłącznie `python3 harness/task-spine.py`, nie bramkę produktu.
+
 ---
 
 ## 4. Kolejność — z bloków OWNS, nie z widzimisię
@@ -280,7 +291,8 @@ jest następnym biegiem.
 | 7 | **ZAMKNIĘTE:** T-109, nie uruchamiaj | trzy filtrowane checki i wymagane pliki poza OWNS |
 | 7b | **WYKONANE:** T-127 w trunku | świeże H29 po T-126; kopie i refleksja dostają osobny stan |
 | 8a | **ZAMKNIĘTE:** T-128, nie ląduj i nie wznawiaj | oba AC zielone, lecz dwa konieczne stare testy poza OWNS |
-| 8b | `./ship-task.sh T-136 --agent codex --reviewer codex` | pełny następca H16/H18 z nowymi targetami i wszystkimi starymi fixture w OWNS |
+| 8b | **ZAMKNIĘTE:** T-136, nie ląduj i nie wznawiaj | 15/18 po naprawie; wadliwy multizbiór, lint i trzy luki oracle |
+| 8c | `./ship-task.sh T-137 --agent codex --reviewer codex` | pełny następca H16/H18 z obserwowalnym snapshotem, trwałym Move i prawdziwymi akcjami |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |

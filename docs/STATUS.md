@@ -4,6 +4,21 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 12:52 — T-137 przejmuje H16/H18 z trzema obserwowalnymi wyroczniami
+
+Właściciel polecił kontynuować po obowiązkowym postoju T-136. Świeże **T-137** startuje z
+czystego `main` i ma trzy nowe standalone targety. Dopiero po uczciwym `before` wolno mu
+wykorzystać trzy commity implementacyjne T-136; jego kontrakt, specy i jedyna naprawa nie są
+wejściem.
+
+AC-1 porównuje literalny multizbiór adresów, zmienia niesioną notatkę po przechwyceniu
+`RunSpec.prompt`, lecz przed stemplem, i używa tombstone'a `similar-slug-extra__…` przeciw
+`similar-slug`. AC-2 wykonuje ten sam rdzeń Move przez produkcyjny adapter oraz modelujące IO,
+więc mierzy temp, zapis, oba fsync, no-clobber i unlink w kolejności zamiast ufać nazwom w
+źródle. AC-3 zachowuje prawdziwe kliknięcia Move, Use, Stop i Discard oraz pełne katalogi po
+każdej odpowiedzi. Operacyjnie bieg pozostaje Codex + Codex; T-129/T-130 czekają na
+wylądowanie pełnego adresu z T-137.
+
 ## 2026-08-26, 11:44 — T-136 ZAMKNIĘTE: czerwona bramka i trzy luki wyroczni AC-1
 
 **T-136 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 11 min 25 s Harnessu
