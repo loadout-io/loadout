@@ -4,6 +4,36 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 14:05 — T-137 ZAMKNIĘTE: AC-1 zatrzymała wadliwa atrapa refleksji
+
+**T-137 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 55 min 36 s Harnessu · $0,00
+widoczne.** Dwie zapisane tury Codeksa zużyły 27,12 mln tokenów wejścia (26,50 mln z cache)
+i 92,2 tys. wyjścia; recenzja, plan i wykonanie naprawy nie mają wspólnego paragonu tokenów.
+Enforced `before` certyfikowało trzy nowe standalone targety. Pierwsza bramka miała 17/19:
+AC-2 i AC-3 przeszły, a `full-test` oraz AC-1 zatrzymały się na tym samym teście snapshotu.
+
+Jedyna naprawa poprawiła prawdziwy defekt produkcji w `8345b02`: stempel `last_used_at`
+zastępuje teraz wyłącznie tę linię w bajtach zamrożonego snapshotu, bez ponownego odczytu i bez
+kanonizowania pozostałego front mattera. Końcowa bramka na czystym `8345b02` ponownie miała
+**17/19** w 23,72 s. Pada jednak wcześniej niż dowód stempla: testowy `FakeDriver` zwraca
+sterownik z `reflecting()`, ale nie implementuje wymaganych `with_settings`, `with_evidence`
+i `with_budget`. Produkcyjny `reflection_driver` słusznie odmawia tak nieopakowanej atrapie,
+więc notatka `T137-REFLECTION-A` nigdy nie powstaje i asercja katalogu projektu A jest czerwona.
+To wada oracle do naprawienia w świeżym zadaniu, nie powód do zmiany polityki produktu.
+
+Druga opinia pozostawiła jeszcze dwa zasadne braki dowodu. `RecordingMoveIo` zapisuje część
+operacji przed delegowaniem, więc ślad może opisywać próbę zamiast wykonanego fsync/unlink.
+Browserowy test znajduje legacy row globalnie, zamiast dowodzić, że stoi w strefie
+`earlier-project` i nie stoi w `suggested`. Naprawa bajtów usuwa produkcyjną część trzeciej uwagi
+o niekanonicznym front matterze, ale świeży oracle powinien użyć właśnie takiego fixture.
+
+Gałąź `task-T-137`, czysty worktree na `8345b02` i `runs/T-137/` pozostają dowodem; nic nie
+wylądowało. Po jednej rundzie nie ma piątej tury ani ręcznego łatania. Uczciwa kontynuacja to
+świeży następca z globalnie unikalnymi targetami: po własnym czerwonym `before` może jawnie
+przejąć wyłącznie commity implementacyjne T-137, lecz musi od zera postawić działający szew
+refleksji, ślad Move rejestrowany dopiero po sukcesie oraz locator legacy przywiązany do
+widocznej strefy.
+
 ## 2026-08-26, 12:52 — T-137 przejmuje H16/H18 z trzema obserwowalnymi wyroczniami
 
 Właściciel polecił kontynuować po obowiązkowym postoju T-136. Świeże **T-137** startuje z
