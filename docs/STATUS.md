@@ -4,6 +4,36 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 11:44 — T-136 ZAMKNIĘTE: czerwona bramka i trzy luki wyroczni AC-1
+
+**T-136 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 1 godz. 11 min 25 s Harnessu
+(1 godz. 21 min 27 s od pierwszego startu wraz z odzyskiwaniem miejsca) · $0,00 widoczne.**
+Dwie porównywalnie zapisane tury Codeksa zużyły co najmniej 27,36 mln tokenów wejścia
+(26,85 mln z cache) i 80,3 tys. wyjścia; niedokończona naprawa kontraktu, recenzja, plan oraz
+wykonanie naprawy nie mają wspólnego paragonu tokenów. Pierwszy start zatrzymał hostowy
+`ENOSPC`; po usunięciu wyłącznie odbudowywalnych cache bieg wznowił ten sam certyfikowany
+kontrakt i nie powtarzał `before`.
+
+Implementacja w `8cca95a`, `eb09306` i `33d84f3` domknęła produkcyjny adres dwóch korzeni,
+historyczne fixture oraz prawdziwe akcje okna. Pierwsza pełna bramka miała **15/18**:
+AC-2 przeszło, AC-1 odrzuciło kolejność katalogu, a full Clippy znalazł podobne nazwy w nowym
+teście. Druga opinia zgłosiła trzy zasadne luki AC-1: brak interleavingu zmieniającego notatkę
+między przechwyceniem promptu a stemplem, brak obserwowalnego dowodu temp/no-clobber/fsync
+w Move oraz tombstone, który nie rozróżnia dokładnego `<id>__` od dłuższego prefiksu.
+
+Plan naprawy poprawnie rozpoznał, że kontrakt wymaga multizbioru, podczas gdy oracle
+porównuje uporządkowany `Vec`; nie wolno naginać produkcyjnego sortowania do fixture.
+Wykonawca zmienił jednak tylko pierwszą nazwę w `2c2b389`. Końcowa bramka na czystym drzewie
+`f1b8d6b` ponownie miała **15/18** w 172,49 s: `full-clippy` znalazł nieużywane `&self`,
+`full-test` oraz AC-1 nadal padały na katalogu, a samodzielny AC-1 raz ujawnił też niestabilny
+scenariusz stempli. Po jednej rundzie nie ma piątej tury, ręcznego łatania ani lądowania.
+
+Gałąź `task-T-136`, worktree i `runs/T-136/` pozostają dowodem. Świeży następca musi startować
+z `main`, dostać nowe globalnie unikalne targety i dopiero po uczciwym `before` może jawnie
+przejąć trzy commity implementacyjne T-136. Musi porównywać literalny multizbiór, usunąć lint
+bez suppression oraz uczynić trzy uwagi recenzenta obserwowalnymi; samo zazielenienie obecnych
+dwóch błędów byłoby słabsze od kontraktu i nie może być podstawą integracji.
+
 ## 2026-08-26, 10:18 — T-136 przejmuje pełny zakres zamkniętego T-128
 
 Właściciel zatwierdził świeży kontrakt i przyszłe rutynowe decyzje wykonawcze fazy. **T-136**
