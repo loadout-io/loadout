@@ -4,6 +4,22 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 03:42 — T-104 ZAMKNIĘTE; T-128 przejmuje pełny adres dwóch korzeni
+
+**T-104 · ZAMKNIĘTE / NIEURUCHOMIONE / NIEWYLĄDOWANE · $0,00.** Cztery rustowe `check:`
+filtrują funkcje wspólnego targetu `tests/it`, więc nie mają globalnie unikalnej ścieżki i
+mogą zazielenić pusty wybór. Kontrakt nie posiada też `AppState::project_for`, pełnego adresu
+`{ place, id }`, konsumentów prawdziwego promptu ani regresji T-126. Uruchomienie go mimo
+znanej wady byłoby spaleniem `before`, nie pomiarem zachowania.
+
+Świeże **T-128** startuje z wylądowanego T-127 i ma dwa globalnie unikalne targety. Rozdziela
+bibliotekę (`everywhere`, `this-agent`) od `<projekt>/.loadout/memory` (`this-project`),
+adresuje każdą akcję przez zamrożone `{ catalogFolder, place, id }`, daje wcześniejszym
+bibliotecznym notatkom projektowym trwały Move przed użyciem i nie pozwala spóźnionej
+odpowiedzi poprzedniego workspace nadpisać ekranu. Ten sam runtime oracle dowodzi promptu,
+stempla, dokładnego tombstone i braku wycieku między dwoma projektami. T-129 i T-130 przejmą
+osobno bieżący stan budżetu/pochodzenia oraz zamrożony receipt rzeczywistych odbiorców.
+
 ## 2026-08-26, 03:17 — T-127 w trunku: prywatny stan każdego procesu Claude'a
 
 **T-127 · zielone · 47 min 30 s do końca lądowania · $0,00 widoczne.** Pięć tur Codeksa

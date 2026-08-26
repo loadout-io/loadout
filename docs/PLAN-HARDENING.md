@@ -89,9 +89,9 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
-| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-104** |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-104** |
-| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-104** (D-2 = TAK) |
+| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-128** (T-104 zamknięte: filtrowane checki i brak pełnego adresu) |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po adresie T-128 |
+| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-128** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
@@ -102,7 +102,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H26 | Docs: ARCHITECTURE §4/§5/§6b/§8 rozjechane z kodem | **§5** po ostatnim lądowaniu |
 | H27 | Pasek `$3.41 of $20` liczony i nigdy niepokazany (`index.tsx` woła `stripFor` bez trzeciego argumentu — dług T-94) | **T-115** (T-102 zamknięte) |
 | H28 | Żywy bieg: limit 8 KB usuwa końcowe `outcome:` z uciętej kopii (20/28 przekazań miało pełny załącznik), więc następny agent nie zna decyzji odczytanej przez silnik | **T-114** |
-| H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-127** (T-109 zamknięte: filtrowane checki i niepełne OWNS) |
+| H29 | Żywy bieg: sześć równoległych procesów Claude'a zapisuje wspólny `~/.claude.json`; jeden padł po 273 ms na uszkodzonym JSON-ie i nadał biegowi `processExit` | **T-127 wylądowało** (T-109 zamknięte) |
 
 ---
 
@@ -116,7 +116,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
-| T-104 | Pamięć: per projekt, odrzucone nie wraca, pominięte widać | T-124, T-126 | tak (skan) | 5 |
+| T-104 | **ZAMKNIĘTE:** cztery filtrowane checki, brak pełnego adresu i konsumentów prawdziwego promptu | T-124, T-126 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
@@ -139,7 +139,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-124 | **WYLANDOWAŁO:** auto-pamięć kroku, pełny Markdown i trwały atomowy persist | T-121 | tak | 3 |
 | T-125 | **ZAMKNIĘTE:** 15/20 po naprawie; zły korzeń skanu, timeout 6 s/5 s, `float_cmp` i format | T-121, T-124 | tak | 4 |
 | T-126 | **WYLANDOWAŁO:** refleksja prywatna z fizycznym PGID, bieżącym budżetem i trzema stabilnymi drogami w Chromium | T-121, T-124 | tak | 4 |
-| T-127 | Prywatny stan każdego procesu Claude'a, także kopii i refleksji | T-126 (zastępuje T-109) | tak | 3 |
+| T-127 | **WYLANDOWAŁO:** prywatny stan każdego procesu Claude'a, także kopii i refleksji | T-126 (zastępuje T-109) | tak | 3 |
+| T-128 | Dwa korzenie pamięci mają pełny adres i prawdziwe akcje | T-127 (pierwszy następca T-104) | tak | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -335,16 +336,21 @@ ograniczenie AC-4: bieżący kod używa dokładnego `REFLECTION_BUDGET_USD`, lec
 ręcznie złożony klon zamiast realnego `reflection_driver`; tę produkcyjną ścieżkę musi
 wykonać końcowy oracle fazy.
 
-**T-104 — pamięć (D-2 = TAK: drugi korzeń).**
-- `<repo>/.loadout/memory/` dla `this-project`: `notes_root` dostaje wariant projektowy,
-  `what_the_agents_know` skanuje dwa korzenie, refleksja pisze kandydatki `this-project`
-  pod korzeń projektu, ekran Pamięć pokazuje obie grupy z nazwą źródła.
-- `record()` sprawdza `discarded/` po slugu — trafienie = kandydatka nie powstaje, licznik
-  w `run.json` obok pól refleksji.
-- `Block::dropped` dojeżdża do UI (lustro drutu: nowy klucz w `NoteWire` = wiersz
-  w `commands-wired`/golden; czerwień widać w full-test).
-- `from` rozdzielone na `from` (id biegu) i `project` (nazwa) — wiersz pokazuje nazwę.
-- Etykieta ekranu mówi prawdę o zasięgu.
+**T-104 — ZAMKNIĘTE, bez uruchomienia.** Cztery rustowe `check:` filtrują funkcje wspólnego
+targetu `tests/it`, więc łamią globalnie unikalną ścieżkę z `AGENTS.md` §2a. Kontrakt miesza
+ponadto trzy osobne prawdy: fizyczny adres i mutacje, bieżący stan budżetu oraz zamrożony
+receipt biegu. Nie posiada `AppState::project_for`, konsumentów prawdziwego promptu ani
+regresji T-126, więc akcja Move mogłaby wylądować przed odczytem drugiego korzenia i kłamać
+człowiekowi. Zakres przejmują świeże T-128 → T-129 → T-130; niczego nie przenosi się ze starej
+gałęzi.
+
+**T-128 — dwa korzenie, pełny adres i prawdziwe akcje.** Biblioteka zachowuje `everywhere`
+i `this-agent`, projekt dostaje `this-project`, a legacy biblioteczne `this-project` pozostaje
+widoczne, lecz nie wchodzi do promptu przed trwałym Move. Każda mutacja używa
+`{ catalogFolder, place, id }`, zwraca pełny katalog tego samego folderu i nie może zostać
+przestawiona przez spóźnioną odpowiedź poprzedniego workspace. Tombstone tłumi dokładny slug,
+ale nie wygrywa z żywą notatką ani ręcznym importem. Dwa globalnie unikalne targety sądzą
+rzeczywisty workflow oraz prawdziwy ekran z taśmą Tauri.
 
 **T-105 — ZAMKNIĘTE, bez lądowania.** AC-1 i AC-2 dostały uczciwe czerwone specy, lecz
 AC-3 wymagało flagi odrzucanej przez prawdziwy App Server. Dodanie asercji na nieobsługiwane
@@ -403,7 +409,7 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 `tests/it`, a wymagane `commands/run.rs` i vendor-neutralne `drivers/mod.rs` są poza OWNS.
 Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla sprawdzenia”.
 
-**T-127 — prywatny stan Claude'a; świeży następca T-109.**
+**T-127 — WYLANDOWAŁO; prywatny stan Claude'a, następca T-109.**
 - `StepSettings` dostaje vendor-neutralny `work_key`; zwykłe kopie używają fizycznych kluczy
   `s` / `s~2`, a refleksja `_reflection`.
 - `RunSettings::for_step` zakłada `<bieg>/claude/<work-key>`, a finalne środowisko prawdziwego
@@ -413,23 +419,26 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 - Dwie kopie nakładają się w czasie, refleksja jest dokładnie trzecim izolowanym spawnem, a
   nieużywalny katalog daje widoczną odmowę i błąd w `run.json` przed pierwszym procesem.
 - Końcowy oracle mierzy prawdziwe CLI i odcisk gospodarza.
+- Gałąź przeszła 19/19 po jedynej naprawie dwóch luk dowodu, a obie bramki integracyjne
+  przeszły 16/16. W trunku jako `c5bcc5c`.
 
 ---
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124 i T-126 wylądowały; T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są zamknięte, T-127 jest następne.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126 i T-127 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123 i T-125 są zamknięte, T-128 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
-  H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, a T-127
-  przejmuje H29 po niewykonalnym T-109.
+  H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, T-127
+  domknęło H29 po niewykonalnym T-109, a T-128 przejmuje H16/H18 po T-104.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-127 → świeży następca T-104 → świeże zadania Stop/startup`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-127 → T-128 → T-129 → T-130 → świeże zadania Stop/startup`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
   wylądowało, T-125 zamknięto, a T-126 wylądowało samo przez `run.rs`.
-- **T-127 po T-126** zastępuje zamknięte T-109, bo refleksja korzysta już z gotowego szwu
-  ustawień. Musi wejść przed następcą T-104 i końcowym oracle, który sądzi ten zapis.
+- **T-127 po T-126 wylądowało.** T-128 zastępuje pierwszą część zamkniętego T-104 i musi
+  zamrozić adres przed T-129; T-129 musi wylądować przed receiptem T-130. Wszystkie trzy
+  dzielą pamięć i `run.rs`, więc idą szeregowo.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness
