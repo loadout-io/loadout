@@ -4,6 +4,24 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 22:39 — T-131 w trunku, prawdziwe nazwy zachowane
+
+**T-131 · zielone / WYLĄDOWANE · 27 min 12 s Harnessu + 2 min 9 s lądowania · $0,00
+raportowanego kosztu.** Enforced `before` certyfikowało trzy prawdziwe czerwienie w 1,57 s.
+Implementacja zachowała identyczny literal UUID jako legalną nazwę projektu w polu `project`
+i jako identyfikator biegu wyłącznie w polu `from`; nie przejęła heurystyki ani commita
+`6b8ad1d` z zamkniętego T-129. Katalog pokazuje bieżący `leftOut`, prawdziwy zasięg i typowane
+pochodzenie, a panel agenta nie nazywa pominiętej notatki wiedzą, którą dostał.
+
+Pierwsza bramka była zielona **19/19 w 54,68 s**. Recenzent znalazł zasadny brak zgodności
+filtra UI z rustową macierzą `place × scope`; jedyna runda naprawcza dodała tę samą granicę i
+dwa przypadki regresyjne w `286dd20`. Jeden istniejący test recovery raz zakończył się
+`RecvError`/timeoutem, po czym przewidziana grafem końcowa bramka przeszła **19/19 w 43,80 s**.
+`integrate.sh` wylądował wyłącznie `task-T-131` jako `4189789`, usunął branchowy `TASK.md`, a
+pełna bramka po merge'u przeszła **16/16 w 76,75 s**. Pięć tur Codeksa zużyło łącznie
+12 683 244 tokeny wejścia (12 185 344 z cache) i 55 046 wyjścia; Harness nie podał ceny
+dolarowej. T-130 jest następne po doprecyzowaniu własnego oracle historii.
+
 ## 2026-08-26, 22:01 — T-129 zamknięte, Harness naprawiony, T-131 gotowe
 
 **T-129 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 28 min 30 s · $0,00 raportowanego
