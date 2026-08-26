@@ -1071,35 +1071,71 @@ pub fn machine_booted_at() -> Option<String> {
 /// i oddaje `i32`. Wyjątek od `unsafe_code = "deny"` stoi w `checks/suppressions-allowlist.json`
 /// z pisemnym powodem, czyli przeszedł drogą, którą repo na to przewidziało.
 ///
-/// `SIGTERM`, nie `SIGKILL`: to jest sprzątanie po awarii aplikacji, a nie Stop naciśnięty przez
-/// człowieka. Agent, który jeszcze żyje, ma dostać szansę zamknąć pliki. Eskalacja do `KILL`
-/// należy do żywej ścieżki (`supervisor::stop`), gdzie jest okno łaski i uchwyt do obserwacji.
+/// Tak jak [`Supervised::stop`], sprzątanie prowadzi `SIGTERM`, daje grupie pełne okno łaski,
+/// a dopiero potem eskaluje do `SIGKILL`. Brak uchwytu dziecka zmienia sposób czekania, nie
+/// politykę: synchroniczna pętla pyta jądro sygnałem zerowym i ma te same jawne sufity.
 #[must_use]
 pub fn reap_group(pgid: i32) -> GroupProof {
-    // `killpg` woła się DWA razy z rozmysłem. Pierwszy sygnał to prośba; drugi, zerowy, to
-    // pytanie „czy ktoś tam jeszcze jest". Bez tego drugiego mielibyśmy wyłącznie informację,
-    // że sygnał wyszedł — a niezmiennik 6 mówi, że to nie jest dowód śmierci.
-    #[allow(unsafe_code)]
-    let sent = unsafe { libc::killpg(pgid, libc::SIGTERM) };
-    if sent != 0 {
-        // Sygnał nie poszedł. `ESRCH` znaczy „nie ma takiej grupy", czyli dowód. Cokolwiek
-        // innego — w praktyce `EPERM` — znaczy, że grupa ISTNIEJE i należy do kogoś innego:
-        // `pgid` został przewinięty i po drugiej stronie stoi niewinny proces.
-        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            GroupProof::Dead { status: None }
-        } else {
-            GroupProof::Alive
-        };
+    match signal_group(pgid, SIGNAL_TERM) {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => {
+            return GroupProof::Dead { status: None };
+        }
+        // 2026-08-27: `EPERM` może oznaczać PGID przewinięty do cudzej grupy. Bez wysłanego
+        // TERM-u nie mamy prawa próbować mocniejszego sygnału na tej samej liczbie.
+        Err(_) => return GroupProof::Alive,
     }
 
-    // Sygnał poszedł. Pytamy zerowym, czy grupa zeszła — bez czekania, bo odzyskiwanie biegnie
-    // przy starcie okna i nie ma prawa go wstrzymywać. Grupa, która jeszcze żyje, wraca jako
-    // `Alive` i człowiek zobaczy ją na liście „nie udało się potwierdzić".
+    match wait_for_group_to_disappear(pgid, DEFAULT_GRACE) {
+        Ok(true) => return GroupProof::Dead { status: None },
+        // Każdy błąd inny niż `ESRCH` przerywa eskalację. Szczególnie `EPERM` między sondami
+        // może znaczyć, że stara grupa zniknęła, a jej numer dostał już cudzy proces.
+        Err(_) => return GroupProof::Alive,
+        Ok(false) => {}
+    }
+
+    match signal_group(pgid, SIGNAL_KILL) {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => {
+            return GroupProof::Dead { status: None };
+        }
+        Err(_) => return GroupProof::Alive,
+    }
+
+    match wait_for_group_to_disappear(pgid, PROOF_AFTER_KILL) {
+        Ok(true) => GroupProof::Dead { status: None },
+        Ok(false) | Err(_) => GroupProof::Alive,
+    }
+}
+
+/// Wysyła sygnał do całej grupy i zachowuje dokładny `errno` dla decyzji dowodowej wyżej.
+fn signal_group(pgid: i32, signal: i32) -> io::Result<()> {
     #[allow(unsafe_code)]
-    let still = unsafe { libc::killpg(pgid, 0) };
-    if still != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-        GroupProof::Dead { status: None }
+    let sent = unsafe { libc::killpg(pgid, signal) };
+    if sent == 0 {
+        Ok(())
     } else {
-        GroupProof::Alive
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Czeka najwyżej `limit`, aż sygnał zerowy zwróci `ESRCH`.
+///
+/// `Ok(false)` znaczy wyłącznie „grupa odpowiadała przez cały limit". Inny błąd sondy jest
+/// zachowany jako `Err`, żeby wołający nie pomylił odmowy uprawnień z prawem do eskalacji.
+fn wait_for_group_to_disappear(pgid: i32, limit: Duration) -> io::Result<bool> {
+    let began = Instant::now();
+    loop {
+        match signal_group(pgid, 0) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => return Ok(true),
+            Err(error) => return Err(error),
+        }
+
+        let elapsed = began.elapsed();
+        if elapsed >= limit {
+            return Ok(false);
+        }
+        std::thread::sleep(PROOF_POLL.min(limit.saturating_sub(elapsed)));
     }
 }
