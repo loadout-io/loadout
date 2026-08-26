@@ -4,6 +4,24 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 03:17 — T-127 w trunku: prywatny stan każdego procesu Claude'a
+
+**T-127 · zielone · 47 min 30 s do końca lądowania · $0,00 widoczne.** Pięć tur Codeksa
+(kontrakt, implementacja, druga opinia, plan naprawy i wykonanie naprawy) zużyło łącznie
+co najmniej 16,73 mln tokenów wejścia (16,10 mln z cache) i 66,4 tys. wyjścia. Uczciwe
+`before` uruchomiło trzy samodzielne targety i padło na brakującym zachowaniu. Produkcja
+izoluje każdą kopię pod `<run>/claude/<work-key>`, refleksję pod `_reflection`, nadpisuje
+hostile `CLAUDE_CONFIG_DIR` po `env_clear` i odmawia widocznym zdaniem przed spawnem, gdy
+prywatnego katalogu nie da się przygotować; stan gospodarza pozostaje nietknięty.
+
+Pierwsza pełna bramka po implementacji miała zielone AC-1/2/3, ale globalny `full-test`
+dwukrotnie trafił w hostowe `Operation not permitted` i brak boot-time. Druga opinia zgłosiła
+dwie zasadne luki dowodu: brak późniejszej rundy tej samej kopii i brak jawnej ścieżki
+`AgentEvent::Notice` → `Line::Problem`. Jedyna naprawa domknęła je w `285d112` i `c1b5ab7`;
+dwa końcowe przebiegi gałęzi przeszły 19/19 w 43,00 s i 41,86 s. `integrate.sh` wylądował
+wyłącznie `task-T-127` jako **`c5bcc5c`**; bramki `main` przed i po merge'u przeszły 16/16
+w 115,57 s oraz 236,36 s. `TASK.md` nie przeżył lądowania, a trunk jest czysty.
+
 ## 2026-08-26, 02:24 — T-109 ZAMKNIĘTE; T-127 przejmuje izolację stanu przed spawnem
 
 **T-109 · ZAMKNIĘTE / NIEURUCHOMIONE / NIEWYLĄDOWANE · $0,00.** Wszystkie trzy `check:`
