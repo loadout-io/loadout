@@ -4,6 +4,33 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 01:20 — T-134 w trunku, Live Stop ma uczciwy sufit
+
+**T-134 · zielone / WYLĄDOWANE · 34 min 53 s Harnessu + 2 min 15 s lądowania ·
+$0,00 raportowanego kosztu.** Enforced `before` uruchomiło dwa testy, z których uporczywy
+`GroupProof::Alive` przekraczał 15-sekundowy limit po piętnastu próbach, więc czerwień była
+brakiem zachowania. Implementacja ogranicza żywy Stop do trzech pełnych prób, kończy krok
+jako `failed`, zachowuje PID/PGID oraz pozwala temu samemu `AppState` przyjąć i rzeczywiście
+ukończyć drugi Start. Kontrola `Dead` nadal kończy krok jako `cancelled` z dowodem.
+
+Pierwszy przebieg zatrzymała mechaniczna ochrona asercji: pełny clippy wymusił zamianę
+testowego `expect()` na warunkowe `return Err(...)`, którego odcisk nie liczył. Osobny commit
+Harnessu **`d3b96f5`** dodał tę rustową ścieżkę błędu do odcisku i wykonywany selftest; drugi
+Codeks dał `verdict: none`. To naprawa Harnessu, nie rozluźnienie T-134: ubytek `expect`,
+ubytek fail-path oraz skasowanie pliku nadal są czerwone.
+
+Hostowa bramka po wznowieniu przeszła **17/17 w 59,20 s**. Recenzent znalazł jedną zasadną
+uwagę medium: test dopuszczał brak `death_proof`, choć kontrakt wymagał jawnego `false`.
+Jedyna runda naprawcza usunęła `skip_serializing_if` i wzmocniła asercję; jej bramka oraz
+końcowa bramka przeszły odpowiednio **17/17 w 54,61 s** i **17/17 w 46,76 s**.
+`integrate.sh` wylądował tylko `task-T-134` jako merge **`13d49fc`**; pełne bramki przed i po
+merge'u przeszły **16/16 w 44,40 s** oraz **16/16 w 80,31 s**. `TASK.md` nie przeżył, `main`
+jest czysty.
+
+Zachowane paragony pokazują co najmniej 9 338 788 tokenów wejścia (9 014 016 z cache) i
+42 097 wyjścia. Review i repair nie zapisały osobnych liczników, więc jest to dolna granica;
+Harness nie podał ceny dolarowej. Następne jest T-135, wyłącznie startup cleanup.
+
 ## 2026-08-27, 00:40 — świeże kontrakty T-134 i T-135 zastępują T-106
 
 Na jawne polecenie właściciela powstały dwa rozdzielone, standalone zadania. **T-134** sądzi

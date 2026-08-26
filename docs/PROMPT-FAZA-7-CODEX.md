@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-133 w trunku; T-134 następne, potem T-135)
+# Prompt orchestratora — faza 7 (T-134 w trunku; T-135 następne)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -51,8 +51,8 @@ lądowania: oracle nie sadził `AgentDriver::start -> Err`, a UI omijało prawdz
 bezpośrednimi akcjami store. T-132 naprawiło obie granice i przeszło trzy hostowe bramki
 19/19, lecz recenzent wykazał, że jego fixture potwierdza stan katalogu zamiast faktycznej
 trzeciej próby IO refleksji. Jedyna naprawa nie zmieniła testu. T-133 jest pełnym następcą z
-obserwowalnym warningiem tej próby i wylądowało. T-134 jest świeżym następcą żywej części
-T-106, a T-135 przejmuje osobno startup cleanup po jego lądowaniu.
+obserwowalnym warningiem tej próby i wylądowało. T-134 przejęło żywą część T-106 i również
+wylądowało; T-135 przejmuje osobno startup cleanup i jest następne.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -315,7 +315,8 @@ samo i już wylądowało. T-99, T-112 i T-113 zamknięto bez lądowania, a T-114
 przed T-100. T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-131 są w trunku.
 T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128,
 T-129, T-130, T-132, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix Harnessu
-`ba3d8be` jest w trunku; T-133 wylądowało jako `dc8df68`, a następny bieg to T-134. Pozostały łańcuch nadal dzieli `commands/run.rs`,
+`ba3d8be` i `d3b96f5` są w trunku; T-133 wylądowało jako `dc8df68`, T-134 jako `13d49fc`,
+a następny bieg to T-135. Pozostały łańcuch nadal dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
@@ -355,7 +356,7 @@ T-129, T-130, T-132, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix 
 | 8g | **ZAMKNIĘTE:** T-130, nie ląduj i nie wznawiaj | 19/19, lecz dwa słabe oracle zostały bez naprawy |
 | 8h | **ZAMKNIĘTE:** T-132, nie ląduj i nie wznawiaj | 19/19, lecz AC-1 nie dowodziło trzeciej próby IO refleksji |
 | 8i | **WYŁĄDOWANE:** T-133 | pełny receipt T-132 plus obserwowalna próba niezależnego błędu IO; merge `dc8df68` |
-| 9 | `./ship-task.sh T-134 --agent codex --reviewer codex` | live Stop z sufitem i prawdziwym drugim Startem; wąski następca części T-106 |
+| 9 | **WYŁĄDOWANE:** T-134 | live Stop z sufitem i prawdziwym drugim Startem; merge `13d49fc` |
 | 10 | `./ship-task.sh T-135 --agent codex --reviewer codex` | po wylądowaniu T-134; eskalacja i trwały survivor startup cleanup |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
 | 12 | świeży końcowy oracle | sądzi zachowanie z T-100, T-126 i T-127; musi być ostatni |
