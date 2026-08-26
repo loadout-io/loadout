@@ -1046,9 +1046,49 @@ pub fn mark_used(path: &Path, at: &str) -> Result<()> {
 
 /// Stempluje dokładną migawkę, z której bieg złożył prompt, bez ponownego odczytu pliku.
 pub(crate) fn mark_used_from_snapshot(path: &Path, raw: &str, at: &str) -> Result<()> {
-    let (mut front, body_at) = FrontMatter::split(raw)?;
-    front.set("last_used_at", &one_line(at));
-    write_note(path, &front, &raw[body_at..])
+    if !raw.starts_with("---\n") {
+        return Err(super::Error::NoFrontMatter {
+            path: path.to_owned(),
+        }
+        .into());
+    }
+
+    let mut line_start = 4;
+    while line_start < raw.len() {
+        let line_end = raw[line_start..]
+            .find('\n')
+            .map_or(raw.len(), |offset| line_start + offset);
+        let line = &raw[line_start..line_end];
+
+        if line.trim_end() == "---" {
+            break;
+        }
+        if line
+            .split_once(':')
+            .is_some_and(|(key, _)| key.trim() == "last_used_at")
+        {
+            // 2026-08-26 (T-137): bieg musi ostemplować dokładnie bajty, które wysłał do
+            // promptu. Renderowanie sparsowanego nagłówka kanonizowałoby każdy jego wiersz,
+            // w tym nieznane klucze, mimo że zmienia się wyłącznie ten jeden fakt.
+            let mut stamped = raw.to_owned();
+            stamped.replace_range(
+                line_start..line_end,
+                &format!("last_used_at: {}", one_line(at)),
+            );
+            return write_raw_note(path, &stamped);
+        }
+
+        if line_end == raw.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "the note snapshot has no last_used_at line",
+    )
+    .into())
 }
 
 /// Odrzuca kandydatkę: plik odchodzi do `<root>/discarded/`, **nie znika**.
@@ -1235,6 +1275,10 @@ fn write_note(path: &Path, front: &FrontMatter, body: &str) -> Result<()> {
         out.push_str(body);
     }
 
+    write_raw_note(path, &out)
+}
+
+fn write_raw_note(path: &Path, out: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
