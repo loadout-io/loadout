@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-134 w trunku; T-135 następne)
+# Prompt orchestratora — faza 7 (T-134 i T-135 w trunku; świeże kontrakty końcowe następne)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -52,7 +52,8 @@ bezpośrednimi akcjami store. T-132 naprawiło obie granice i przeszło trzy hos
 19/19, lecz recenzent wykazał, że jego fixture potwierdza stan katalogu zamiast faktycznej
 trzeciej próby IO refleksji. Jedyna naprawa nie zmieniła testu. T-133 jest pełnym następcą z
 obserwowalnym warningiem tej próby i wylądowało. T-134 przejęło żywą część T-106 i również
-wylądowało; T-135 przejmuje osobno startup cleanup i jest następne.
+wylądowało; T-135 przejęło osobno startup cleanup i również wylądowało. Recenzja T-135
+ujawniła dwie luki dowodu, które musi przejąć świeży standalone następca przed oracle fazy.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -316,7 +317,7 @@ przed T-100. T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-1
 T-102, T-103, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128,
 T-129, T-130, T-132, T-136, T-137 i T-138 zamknięto bez lądowania. Osobny fix Harnessu
 `ba3d8be` i `d3b96f5` są w trunku; T-133 wylądowało jako `dc8df68`, T-134 jako `13d49fc`,
-a następny bieg to T-135. Pozostały łańcuch nadal dzieli `commands/run.rs`,
+a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały łańcuch nadal dzieli `commands/run.rs`,
 `workflow/check.rs`, `drivers/codex.rs`, `drivers/mod.rs`, `memory/notes.rs` albo `recovery.rs`.
 
 | Runda | Komenda | Dlaczego dopiero teraz |
@@ -357,7 +358,7 @@ a następny bieg to T-135. Pozostały łańcuch nadal dzieli `commands/run.rs`,
 | 8h | **ZAMKNIĘTE:** T-132, nie ląduj i nie wznawiaj | 19/19, lecz AC-1 nie dowodziło trzeciej próby IO refleksji |
 | 8i | **WYŁĄDOWANE:** T-133 | pełny receipt T-132 plus obserwowalna próba niezależnego błędu IO; merge `dc8df68` |
 | 9 | **WYŁĄDOWANE:** T-134 | live Stop z sufitem i prawdziwym drugim Startem; merge `13d49fc` |
-| 10 | `./ship-task.sh T-135 --agent codex --reviewer codex` | po wylądowaniu T-134; eskalacja i trwały survivor startup cleanup |
+| 10 | **WYŁĄDOWANE:** T-135 | eskalacja i trwały survivor startup cleanup; merge `fc09cc8` |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
 | 12 | świeży końcowy oracle | sądzi zachowanie z T-100, T-126 i T-127; musi być ostatni |
 

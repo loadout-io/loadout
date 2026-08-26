@@ -4,6 +4,33 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 01:52 — T-135 w trunku; startup cleanup eskaluje i pamięta survivora
+
+**T-135 · zielone / WYLĄDOWANE · 27 min 10 s Harnessu + 2 min 22 s lądowania ·
+$0,00 raportowanego kosztu.** Enforced `before` uruchomiło oba standalone targety i padło
+na brakującym zachowaniu w 0,85 s. Produkcja prowadzi osieroconą grupę przez TERM, stałą
+łaskę i KILL, a `StillAlive` zapisuje do właściwego kroku trwałe, angielskie zdanie z PID i
+PGID. Jedyna runda naprawcza dopisała ważny przypadek: survivor warning bezwarunkowo zastępuje
+stary błąd kroku zamiast znikać pod nim (`86d3a4b`).
+
+Pierwsza hostowa bramka była 17/18 przez E2E, w którym aplikacja nie osiągnęła
+`main[data-section]`. Bramka po naprawie była 17/18 na innym, niezwiązanym teście
+`recovery_waits_for_the_slug_that_owns_an_active_ledger_temp` (`RecvError`/timeout). Końcowa
+bramka powtórzyła całość i przeszła **18/18 w 69,40 s**. `integrate.sh` wylądował wyłącznie
+`task-T-135` jako merge **`fc09cc8`**; pełne bramki przed i po merge'u przeszły **16/16 w
+46,19 s** oraz **16/16 w 89,73 s**. `TASK.md` nie przeżył, `main` jest czysty.
+
+Recenzent Codeks 5.5 ujawnił dwie nierozstrzygnięte luki dowodu AC-1. Prawdziwe fixture'y
+nie wymuszają nie-ESRCH/EPERM, a zewnętrzny probe po powrocie nie dowodzi, że sama produkcja
+czekała na ESRCH po KILL. Odczyt kodu potwierdził obie właściwości implementacji, lecz obecny
+target da się przejść leniwą wersją zwracającą `Dead` zaraz po KILL. **Nie uznajemy tych dwóch
+własności za dowiedzione**; świeży standalone następca ma je zamknąć przed końcowym oracle.
+
+Paragony kontraktu i pierwszej implementacji pokazują co najmniej 7 515 132 tokeny wejścia
+(7 236 096 z cache) oraz 37 587 wyjścia. Review i repair nie zapisały osobnych liczników,
+więc to dolna granica; Harness nie podał ceny dolarowej. Następne są rozdzielone kontrakty
+H21/H22, a po nich świeży następca T-107 uruchamiany jako ostatni.
+
 ## 2026-08-27, 01:20 — T-134 w trunku, Live Stop ma uczciwy sufit
 
 **T-134 · zielone / WYLĄDOWANE · 34 min 53 s Harnessu + 2 min 15 s lądowania ·
