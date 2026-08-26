@@ -79,10 +79,9 @@ export function lengthLabel(length: number): string {
   return 'Length ' + String(length);
 }
 
-/* Czyja to wiedza i skąd przyjechała — dwa fakty, które do 2026-08-22 (T-80) nie miały na
- * ekranie ani jednego miejsca.
+/* Dokąd wiedza dociera i skąd przyjechała — fakty, które mają po jednym miejscu w wierszu.
  *
- * OBA WIERSZE POWSTAJĄ WYŁĄCZNIE Z POLA NOTATKI. Notatka niczyja nie dostaje myślnika ani słowa
+ * ETYKIETY POWSTAJĄ WYŁĄCZNIE Z PÓL NOTATKI. Notatka niczyja nie dostaje myślnika ani słowa
  * w rodzaju „unassigned": to jest odpowiedź na pytanie, którego nikt nie zadał, a człowiek czyta
  * ją jako fakt o notatce (niezmiennik 13 — jeden żywy region na fakt, i ani jeden na fakt,
  * którego nie ma). Wiersz, który wypisuje ostatnią nazwę, jaką widział, wygląda poprawnie na
@@ -95,11 +94,21 @@ function ownerLabel(agent: string): string {
   return 'Only ' + agent;
 }
 
-/* Skąd ta notatka przyjechała. To samo zdanie może zostać przywiezione z dwóch projektów,
- * a wiersz, który nigdy nie pokazuje pochodzenia, czyta drugą kopię jako drugi fakt — i wtedy
- * nikt nie umie powiedzieć, którą z dwóch właśnie odstawia. */
-function originLabel(from: string): string {
-  return 'From ' + from;
+function reachLabel(note: Note, legacy: boolean): string | null {
+  if (legacy) return null;
+  if (note.scope === 'everywhere') return 'Every project';
+  if (note.scope === 'this-project') return 'This project';
+  return note.agent ? ownerLabel(note.agent) : null;
+}
+
+/* Import i refleksja są dwoma pochodzeniami, nie dwiema pisowniami jednego pola. Projekt jest
+ * nazwą czytelną dla człowieka, a bieg pozostaje identyfikatorem prowadzącym do jego historii. */
+function importedFrom(project: string): string {
+  return 'Imported from ' + project;
+}
+
+function suggestedAfter(from: string): string {
+  return 'Suggested after run ' + from;
 }
 
 export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowProps): ReactElement {
@@ -109,6 +118,7 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowPr
   const waiting = note.status === 'suggested';
   const address: NoteAddress = { place: note.place, id: note.id };
   const legacy = note.place === 'library' && note.scope === 'this-project';
+  const reach = reachLabel(note, legacy);
 
   return (
     <li
@@ -123,19 +133,15 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowPr
           </span>
         )}
         <span className="text-label text-muted">{lengthLabel(note.length)}</span>
-        {/* Pytamy o WARTOŚĆ, nie o obecność klucza: Rust przysyła `agent: null` dla notatki
-            niczyjej (`NoteWire`), a `note.agent === undefined` wypisałoby wtedy słowo `null`
-            w miejscu właściciela — czyli dokładnie tę zmyśloną odpowiedź, której tu nie ma.
-
-            I pytamy NAJPIERW o zakres. Nazwa agenta w pliku notatki, której zakres sięga całego
-            projektu, jest śladem po autorze, a nie odpowiedzią na pytanie „do kogo to dojedzie":
-            taka notatka jedzie do KAŻDEGO kroku. Wiersz, który wypisuje wtedy „Only backend-dev",
-            mówi o zasięgu coś, co jest nieprawdą — a człowiek czyta to jako fakt o notatce
-            i zostawia w użyciu zdanie, o którym myśli, że dotyczy jednego agenta. */}
-        {note.scope === 'this-agent' && note.agent ? (
-          <span className="text-label text-muted">{ownerLabel(note.agent)}</span>
+        {/* Zasięg wynika ze scope, a nazwa agenta doprecyzowuje wyłącznie `this-agent`.
+            Biblioteczne legacy nie udaje „This project" przed jawnym Move. */}
+        {reach ? <span className="text-label text-muted">{reach}</span> : null}
+        {note.project ? (
+          <span className="text-label text-muted">{importedFrom(note.project)}</span>
         ) : null}
-        {note.from ? <span className="text-label text-muted">{originLabel(note.from)}</span> : null}
+        {note.from ? (
+          <span className="text-label text-muted">{suggestedAfter(note.from)}</span>
+        ) : null}
       </div>
 
       {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania. */}
@@ -145,6 +151,12 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowPr
           poznaje, czy TO JEST PRAWDA — a bez „dlaczego" notatki nie da się później bezpiecznie
           usunąć, bo trzeba od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1]. */}
       <p className="text-body text-muted">{note.because}</p>
+
+      {note.leftOut ? (
+        <p className="text-body text-attend">
+          Not in prompts right now because it exceeds the length limit.
+        </p>
+      ) : null}
 
       <div className="flex items-center gap-2">
         {legacy ? (

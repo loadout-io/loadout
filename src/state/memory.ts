@@ -82,11 +82,12 @@ export interface Note {
    * nie obecność klucza — i dlatego oba zapisy „nikt" prowadzą do tego samego pustego miejsca.
    */
   agent?: string | null;
-  /**
-   * Z jakiego projektu ta notatka przyszła. Puste znaczy „stąd" — notatka napisana tutaj
-   * nie ma pochodzenia do pokazania. `null` z tego samego powodu, co wyżej.
-   */
+  /** Projekt, z którego notatka przyszła przy imporcie. `null` znaczy „napisano tutaj". */
+  project?: string | null;
+  /** Bieg, który zaproponował regułę. Nie jest nazwą projektu ani częścią adresu. */
   from?: string | null;
+  /** Bieżący katalog odłożył aktywną notatkę poza limit jej zakresu. */
+  leftOut?: boolean;
 }
 
 /**

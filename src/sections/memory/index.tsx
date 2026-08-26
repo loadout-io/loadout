@@ -235,9 +235,7 @@ export default function MemoryScreen({ store = useMemory }: MemoryScreenProps): 
             {inUse.length === 0 ? null : (
               <section data-zone="in-use" className="flex flex-col gap-2">
                 <h2 className={ZONE_TITLE}>In use</h2>
-                <p className={ZONE_LEAD}>
-                  These go into the prompt of every agent working on this project.
-                </p>
+                <p className={ZONE_LEAD}>These notes are in use. Their reach is shown by row.</p>
                 <ul className="flex flex-col">
                   {inUse.map((note) => (
                     <NoteRow
