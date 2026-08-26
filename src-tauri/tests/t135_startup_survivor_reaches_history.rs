@@ -21,6 +21,7 @@ const SURVIVOR_PID: i32 = 713_503;
 const SURVIVOR_PGID: i32 = 713_504;
 const CUT_OFF: &str =
     "Loadout closed while this step was still running, so the step was cut off with it.";
+const STALE_SURVIVOR_ERROR: &str = "The agent failed before startup reconciliation completed.";
 
 const FINISHED: &str = r#"{
   "id": "01990000-0000-7000-8000-000000000136",
@@ -98,6 +99,10 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
     assert_ne!(
         survivor_error, CUT_OFF,
         "both outcomes still collapse into the same generic cut-off sentence"
+    );
+    assert_ne!(
+        survivor_error, STALE_SURVIVOR_ERROR,
+        "a stale step error hid the warning that its process survived startup cleanup"
     );
 
     let past = read_run_inner(project, LEFT_OVER)?;
@@ -212,7 +217,7 @@ fn left_over_run(boot: &str) -> String {
       "pgid": {SURVIVOR_PGID},
       "started_at": 1787825701000,
       "ended_at": null,
-      "error": null,
+      "error": "{STALE_SURVIVOR_ERROR}",
       "future_step": "keep-survivor"
     }}
   ]

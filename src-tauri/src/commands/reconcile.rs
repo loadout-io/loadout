@@ -340,12 +340,12 @@ fn write_back(
             if step.get("ended_at").is_none_or(Value::is_null) {
                 step.insert("ended_at".to_owned(), Value::from(at));
             }
-            if step.get("error").is_none_or(Value::is_null) {
-                let error = survivor_warnings
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| STEP_CUT_OFF.to_owned());
-                step.insert("error".to_owned(), Value::String(error));
+            if let Some(warning) = survivor_warnings.get(&id) {
+                // 2026-08-27: wcześniejszy błąd kroku nie może ukryć faktu, że jego proces
+                // przeżył sprzątanie; historia renderuje tylko to jedno pole błędu.
+                step.insert("error".to_owned(), Value::String(warning.clone()));
+            } else if step.get("error").is_none_or(Value::is_null) {
+                step.insert("error".to_owned(), Value::String(STEP_CUT_OFF.to_owned()));
             }
         }
     }
