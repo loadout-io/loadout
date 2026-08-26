@@ -176,7 +176,12 @@ function handoffsFor(agent: string, passed: readonly HandedOver[]): readonly Han
  *
  * WŁAŚCICIEL JEST TYLKO PRZY ZAKRESIE `this-agent`. Notatka `everywhere` i `this-project` jedzie
  * w promptach wszystkich kroków, a pole `agent` bywa przy niej wypełnione nazwą autora — użyte
- * jako filtr, schowałoby ją przed każdym agentem poza jednym.
+ * jako filtr, schowałoby ją przed każdym agentem poza jednym. Nazwę zakresu jednego agenta
+ * normalizujemy tak samo jak Rust, bo plik pisze człowiek (`Forge`), a krok może nazywać się
+ * `forge`; różnica pisowni nie zmienia odbiorcy promptu.
+ *
+ * `leftOut` jest bieżącym rachunkiem tego samego `what_you_know`: wiersz zostaje w katalogu,
+ * lecz postawienie go tutaj twierdziłoby, że agent przeczytał zdanie odłożone przez limit.
  *
  * TO NIE JEST `run.json`, I TO JEST ZAPISANY DŁUG. Rachunek z pamięci JEDNEGO biegu
  * (`commands::run::MemoryRecord`) istnieje na dysku i nie ma nośnika na drucie: `read_run`
@@ -184,11 +189,28 @@ function handoffsFor(agent: string, passed: readonly HandedOver[]): readonly Han
  * ma, jedyną prawdą o tym, co jedzie w promptach, jest zbiór notatek w użyciu — dla biegu,
  * który trwa, ten sam zbiór, który zamrożono na jego starcie.
  */
-function notesFor(known: readonly Note[]): readonly UsedNote[] {
+function agentKey(name: string): string {
+  const key = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return key === '' ? 'agent' : key;
+}
+
+function notesFor(agent: string, known: readonly Note[]): readonly UsedNote[] {
+  const recipient = agentKey(agent);
   return known
-    .filter((note) => note.status === 'in-use')
+    .filter(
+      (note) =>
+        note.status === 'in-use' &&
+        note.leftOut !== true &&
+        (note.scope !== 'this-agent' ||
+          (note.agent !== null && note.agent !== undefined && agentKey(note.agent) === recipient)),
+    )
     .map((note) => ({
-      agent: note.scope === 'this-agent' ? (note.agent ?? '') : '',
+      // Lista jest już policzona dla tego ekranu. Podajemy jego identyfikator, żeby czysty
+      // layout zachował swój filtr także wtedy, gdy plik i krok różnią się pisownią nazwy.
+      agent: note.scope === 'this-agent' ? agent : '',
       /* `rule` jest jedyną częścią notatki, która jedzie do modelu — tytuł i uzasadnienie
        * zostają w pliku. Wiersz ma mówić to, co przeczytał agent. */
       text: note.rule,
@@ -257,7 +279,7 @@ export function AgentScreen({ cards, onSaid }: AgentScreenProps): ReactElement |
       steps: stepsOf(run.steps, card.id),
       handoffs: handoffsFor(card.id, given.passed),
       changes: changesOf(run.lines, card.id),
-      notes: notesFor(given.known),
+      notes: notesFor(card.id, given.known),
     },
   );
 
