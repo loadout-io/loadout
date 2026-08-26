@@ -90,7 +90,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-139 wylądowało** (T-104/T-128/T-136/T-137/T-138 zamknięte) |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-131 wylądowało** (T-129 zamknięte) → **T-130 zamknięte** (dwa słabe oracle) → **T-132 zakontraktowane:** zamrożeni odbiorcy z granicą `start -> Err` i prawdziwymi kontrolkami historii |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-131 wylądowało** (T-129 zamknięte) → **T-130/T-132 zamknięte** (słabe oracle) → **T-133 zakontraktowane:** pełny receipt plus obserwowalna próba IO refleksji |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
@@ -148,7 +148,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-129 | **ZAMKNIĘTE:** kryterium pozwalało maskować legalny projekt nazwany jak UUID | T-139 | nie | 3 |
 | T-131 | **WYŁĄDOWANE:** bieżący limit, zasięg i typowane pochodzenie bez heurystyki UUID | T-139 (pełny następca T-129) | nie | 3 |
 | T-130 | **ZAMKNIĘTE:** zielona bramka, lecz brak `start -> Err` i prawdziwych kliknięć w oracle | T-131 | tak | 3 |
-| T-132 | Zamrożony receipt z mocną granicą startu i prawdziwą drogą historii | T-131 (pełny następca T-130) | tak | 3 |
+| T-132 | **ZAMKNIĘTE:** zielone 19/19, lecz AC-1 nie dowodziło trzeciej próby IO refleksji | T-131 (pełny następca T-130) | tak | 3 |
+| T-133 | Pełny receipt T-132 z obserwowalną próbą niezależnego błędu IO refleksji | T-131 (pełny następca T-132) | tak | 1 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -351,18 +352,20 @@ receipt biegu. Nie posiada `AppState::project_for`, konsumentów prawdziwego pro
 regresji T-126, więc akcja Move mogłaby wylądować przed odczytem drugiego korzenia i kłamać
 człowiekowi. T-128 zamknięto na dwóch starych testach poza OWNS, a T-136 po czerwonej
 bramce i lukach oracle; T-137 zamknięto 17/19, T-138 18/19, T-139 wylądowało, T-129
-zamknięto na błędnym zakazie UUID, T-131 wylądowało, T-130 zamknięto na słabych oracle, a
-zamrożony receipt przejmuje T-132. Niczego nie przenosi
+zamknięto na błędnym zakazie UUID, T-131 wylądowało, T-130 i T-132 zamknięto na słabych
+oracle, a zamrożony receipt przejmuje T-133. Niczego nie przenosi
 się ze starej gałęzi T-104.
 
-**T-129 i T-130 — ZAMKNIĘTE; T-131 — WYLĄDOWANE; T-132 — KONTRAKT UTWORZONY.** T-131
+**T-129, T-130 i T-132 — ZAMKNIĘTE; T-131 — WYLĄDOWANE; T-133 — KONTRAKT UTWORZONY.** T-131
 zastąpiło T-129 i wylądowało z bieżącym katalogiem, prawdziwym Memory UI, bieżącym ekranem
 agenta oraz typowanym pochodzeniem przy identycznej wartości UUID projektu i biegu. T-130
 zbudowało właściwy receipt, lecz jego test nie sadził `AgentDriver::start -> Err`, a test UI
-omijał formularz i przycisk bezpośrednimi akcjami store. Mimo 19/19 nie ląduje. T-132 ma trzy
-świeże targety, zachowuje cały zakres odbiorców, historii i `discardedAgain`, dodaje
-kontrolowaną odmowę startu oraz prawdziwy Enter i kliknięcie przez niezmieniony
-`e2e/harness.ts`. Receipt zostaje w `run.json`; SQLite nie dostaje martwej kopii.
+omijał formularz i przycisk bezpośrednimi akcjami store. T-132 naprawiło obie granice i miało
+trzy zielone bramki 19/19, lecz jego fixture IO potwierdzało wyłącznie istnienie katalogu,
+nie faktyczną trzecią próbę zapisu. T-133 zachowuje pełne trzy regresje T-132 i dodaje świeży
+target, który wiąże dokładnie jeden warning IO z UUID prawdziwego biegu oraz równocześnie
+sprawdza `kept == 1` i `discardedAgain == 1`. Receipt zostaje w `run.json`; SQLite nie dostaje
+martwej kopii.
 
 **T-128 — ZAMKNIĘTE, bez lądowania.** Oba nowe AC były zielone, lecz pełna suita ujawniła
 pięć historycznych fixture zakładających bibliotekę dla `this-project`. Po jawnie zatwierdzonej
@@ -469,14 +472,15 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-131 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-136, T-137 i T-138 są zamknięte. T-132 ma świeży kontrakt i jest następne.**
-  Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów,
-  Zamkniętych gałęzi nie wolno lądować ani przenosić w całości; T-139 stoi już w trunku.
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-131 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. T-133 ma świeży kontrakt i jest następne.**
+  Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
+  commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
+  przenosić w całości; T-139 stoi już w trunku.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
   H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, T-127
   domknęło H29 po niewykonalnym T-109, a T-139 domknęło H16/H18.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 → T-129 (zamknięte) → T-131 → T-130 (zamknięte) → T-132 → świeże zadania Stop/startup`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 → T-129 (zamknięte) → T-131 → T-130 (zamknięte) → T-132 (zamknięte) → T-133 → świeże zadania Stop/startup`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
   wylądowało, T-125 zamknięto, a T-126 wylądowało samo przez `run.rs`.
@@ -485,8 +489,9 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
   a T-139 wylądowało po zielonych bramkach integracji. T-129 zamknięto bez lądowania po
   ujawnieniu błędnego zakazu UUID, T-131 wylądowało, a T-130 zamknięto na dwóch słabych
   oracle mimo zielonej bramki. T-131 świadomie nie posiadało `run.rs`, ale pozostaje
-  semantycznym wejściem T-132: zamraża kształt pochodzenia, który receipt ma zachować. T-132
-  przejmuje pełny zakres T-130 dopiero po własnym czerwonym `before`.
+  semantycznym wejściem receipt: zamraża kształt pochodzenia. T-132 naprawiło granicę startu
+  i prawdziwe kontrolki, lecz nie udowodniło trzeciej próby IO refleksji. T-133 przejmuje jego
+  pełny zakres dopiero po własnym czerwonym `before`.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness

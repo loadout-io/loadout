@@ -4,6 +4,20 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 00:05 — T-133 przejmuje receipt z obserwowalną próbą IO
+
+Na właścicielskie polecenie dalszej jazdy powstało **T-133**, pełny następca zamkniętego
+T-132. Ma świeży, globalnie unikalny target uruchamiający prawdziwy workflow i refleksję z
+trzema kandydatkami: udanym zapisem, dokładnym tombstonem oraz niezależnym błędem IO. Lokalny
+subscriber `tracing` ma zobaczyć dokładnie jeden produkcyjny warning z UUID faktycznego biegu;
+równocześnie receipt musi mieć `kept == 1` i `discardedAgain == 1`. Sam preutworzony katalog,
+mtime ani stan fixture nie są dowodem próby.
+
+Dopiero po własnym enforced `before` T-133 może selektywnie zastosować trzy commity
+produkcyjne T-132 oraz jego trzy pełne regresje: `5932154`, `ab71cfc`, `635d6f1` i `48a7fed`.
+Nie przejmuje kontraktu, `TASK.md` ani całej gałęzi. Następne jedyne wejście to
+`./ship-task.sh T-133 --agent codex --reviewer codex`.
+
 ## 2026-08-26, 23:57 — T-132 WSTRZYMANE mimo zielonej bramki: nieudowodniona próba IO
 
 **T-132 · zielona bramka / WSTRZYMANE / NIEWYLĄDOWANE · 27 min 14 s · $0,00
