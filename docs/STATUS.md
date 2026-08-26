@@ -4,6 +4,30 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 09:28 — T-128 ZAMKNIĘTE: dwa stare testy są poza OWNS
+
+**T-128 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 50 min 01 s Harnessu · $0,00
+widoczne.** Enforced `before` certyfikowało oba standalone targety. Implementacja dwóch
+korzeni, pełnego adresu `{ catalogFolder, place, id }`, Move, tombstone'ów i ochrony przed
+spóźnioną odpowiedzią przeszła własne AC-1 i AC-2. Pierwsza pełna bramka miała 17/18:
+789 testów projektu przeszło, pięć starych fixture nadal zakładało, że `this-project` leży
+w bibliotece.
+
+Recenzent znalazł jedną lukę medium i trzy niskie luki dowodu: E2E klikało Use, ale nie
+Stop/Discard, projekt B nie dowodził własnych stempli, React key był sprawdzany po atrybucie,
+a sekwencję trwałego Move dało się rozstrzygnąć dopiero inspekcją. Plan naprawy poprawnie
+odmówił przywrócenia legacy do promptu, lecz wykonawca nie zmienił fixture i druga bramka
+powtórzyła 17/18.
+
+Po jawnej zgodzie właściciela test-only repair wzmocnił oba nowe oracle i przeniósł stare
+fixture do korzenia projektu. `cargo check --all-targets --keep-going` przeszedł w 12,04 s,
+ale pełna bramka mechanicznie odmówiła dwóm koniecznym plikom spoza `OWNS`:
+`a_suggestion_can_be_discarded.rs` oraz `a_suggestion_needs_a_because.rs`; ujawniła też
+kolejny historyczny adres w należącym do zadania `run_evidence_reaches_the_product.rs`.
+To jest dokładny wynik z instrukcji fazy: nie rozszerzać OWNS, nie łatać kontraktu i zapisać
+zadanie jako zamknięte. Gałąź `task-T-128` pozostaje niewylądowana; następca musi od początku
+posiadać implementację dwóch korzeni oraz pełny zestaw starych wyroczni.
+
 ## 2026-08-26, 03:42 — T-104 ZAMKNIĘTE; T-128 przejmuje pełny adres dwóch korzeni
 
 **T-104 · ZAMKNIĘTE / NIEURUCHOMIONE / NIEWYLĄDOWANE · $0,00.** Cztery rustowe `check:`
