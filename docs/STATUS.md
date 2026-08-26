@@ -4,6 +4,20 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 00:40 — świeże kontrakty T-134 i T-135 zastępują T-106
+
+Na jawne polecenie właściciela powstały dwa rozdzielone, standalone zadania. **T-134** sądzi
+wyłącznie żywy Stop: trzy nieudowodnione próby `cancel`, krok `failed` z zachowanym PID/PGID,
+ten sam błąd na drucie historii oraz faktycznie przyjęty i ukończony drugi Start na tym samym
+`AppState`. **T-135** idzie dopiero po jego lądowaniu i sądzi startup cleanup: prawdziwe grupy
+TERM → łaska → KILL → ESRCH oraz osobne, trwałe zdanie dla procesu, który nadal żyje.
+
+Stare T-106 pozostaje zamkniętym kontraktem historycznym: łączyło obie domeny, filtrowało
+funkcje wspólnego `tests/it` i wskazywało nieaktualny szew zapisu. Nowe targety mają globalnie
+unikalne ścieżki, a `before` pada na zachowaniu bez brakujących symboli. Kolejność to T-134,
+po zielonym pojedyncze `integrate.sh`, potem T-135; oba biegi używają właścicielsko
+zatwierdzonej pary Codex + Codex.
+
 ## 2026-08-27, 00:32 — T-133 w trunku, próba IO refleksji jest obserwowalna
 
 **T-133 · zielone / WYLĄDOWANE · 24 min 38 s Harnessu + 2 min 23 s lądowania · $0,00

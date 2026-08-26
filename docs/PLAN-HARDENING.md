@@ -90,11 +90,11 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
 | H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-139 wylądowało** (T-104/T-128/T-136/T-137/T-138 zamknięte) |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-131 wylądowało** (T-129 zamknięte) → **T-130/T-132 zamknięte** (słabe oracle) → **T-133 zakontraktowane:** pełny receipt plus obserwowalna próba IO refleksji |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-131 i T-133 wylądowały** (T-129/T-130/T-132 zamknięte) |
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
-| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
+| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134** żywy Stop → **T-135** startup cleanup (T-106 nie uruchamiać) |
 | H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-108** |
 | H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-114** (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
@@ -118,7 +118,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
 | T-104 | **ZAMKNIĘTE:** cztery filtrowane checki, brak pełnego adresu i konsumentów prawdziwego promptu | T-124, T-126 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
-| T-106 | Zatrzymanie ma sufit i eskalację | T-115 | tak | 3 |
+| T-106 | **ZAMKNIĘTE:** połączone domeny i filtrowane funkcje wspólnego targetu | T-115 | tak | 3 |
 | T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
 | T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
 | T-109 | **ZAMKNIĘTE:** trzy filtrowane checki i wymagane pliki produkcyjne poza OWNS | T-126 | nie | 3 |
@@ -149,7 +149,9 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-131 | **WYŁĄDOWANE:** bieżący limit, zasięg i typowane pochodzenie bez heurystyki UUID | T-139 (pełny następca T-129) | nie | 3 |
 | T-130 | **ZAMKNIĘTE:** zielona bramka, lecz brak `start -> Err` i prawdziwych kliknięć w oracle | T-131 | tak | 3 |
 | T-132 | **ZAMKNIĘTE:** zielone 19/19, lecz AC-1 nie dowodziło trzeciej próby IO refleksji | T-131 (pełny następca T-130) | tak | 3 |
-| T-133 | Pełny receipt T-132 z obserwowalną próbą niezależnego błędu IO refleksji | T-131 (pełny następca T-132) | tak | 1 |
+| T-133 | **WYŁĄDOWAŁO:** pełny receipt z obserwowalną próbą niezależnego błędu IO refleksji | T-131 (pełny następca T-132) | tak | 1 |
+| T-134 | Live Stop ma sufit i zwalnia następny Start | T-133 (następca żywej części T-106) | tak | 1 |
+| T-135 | Startup cleanup eskaluje i zapisuje ocalały proces | T-134 (następca pozostałej części T-106) | nie | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -356,16 +358,15 @@ zamknięto na błędnym zakazie UUID, T-131 wylądowało, T-130 i T-132 zamknię
 oracle, a zamrożony receipt przejmuje T-133. Niczego nie przenosi
 się ze starej gałęzi T-104.
 
-**T-129, T-130 i T-132 — ZAMKNIĘTE; T-131 — WYLĄDOWANE; T-133 — KONTRAKT UTWORZONY.** T-131
+**T-129, T-130 i T-132 — ZAMKNIĘTE; T-131 i T-133 — WYLĄDOWANE.** T-131
 zastąpiło T-129 i wylądowało z bieżącym katalogiem, prawdziwym Memory UI, bieżącym ekranem
 agenta oraz typowanym pochodzeniem przy identycznej wartości UUID projektu i biegu. T-130
 zbudowało właściwy receipt, lecz jego test nie sadził `AgentDriver::start -> Err`, a test UI
 omijał formularz i przycisk bezpośrednimi akcjami store. T-132 naprawiło obie granice i miało
 trzy zielone bramki 19/19, lecz jego fixture IO potwierdzało wyłącznie istnienie katalogu,
-nie faktyczną trzecią próbę zapisu. T-133 zachowuje pełne trzy regresje T-132 i dodaje świeży
-target, który wiąże dokładnie jeden warning IO z UUID prawdziwego biegu oraz równocześnie
-sprawdza `kept == 1` i `discardedAgain == 1`. Receipt zostaje w `run.json`; SQLite nie dostaje
-martwej kopii.
+nie faktyczną trzecią próbę zapisu. T-133 zachowało pełne trzy regresje T-132, dodało świeży
+target wiążący dokładnie jeden warning IO z UUID prawdziwego biegu i wylądowało jako
+`dc8df68`; receipt został w `run.json`, bez martwej kopii w SQLite.
 
 **T-128 — ZAMKNIĘTE, bez lądowania.** Oba nowe AC były zielone, lecz pełna suita ujawniła
 pięć historycznych fixture zakładających bibliotekę dla `this-project`. Po jawnie zatwierdzonej
@@ -428,11 +429,16 @@ dowodem, nie źródłem commitów; zastępuje ją T-111 z nowymi ścieżkami spe
 - Pułapka słownictwa: treść błędu vendora wchodzi do zdania w RUNTIME (interpolacja), nie
   jako literał w kodzie — literały zdania trzymać w dzisiejszej rodzinie.
 
-**T-106 — zatrzymanie.**
-- `prove_agent_dead`: sufit prób (stała); po nim krok `failed` ze zdaniem o żywym procesie
-  i pid/pgid w `run.json`; zapadka `live` puszczana.
-- `reap_group` przy starcie: łaska → SIGKILL → sonda (jak `Supervised::stop`); wynik w wierszu
-  biegu (`interrupted` z powodem), nie tylko w logu.
+**T-106 — ZAMKNIĘTE, nie uruchamiać.** Łączyło żywy Stop z cleanupem przy starcie i filtrowało
+funkcje wspólnego targetu `tests/it`. Zastępują je dwa świeże, standalone kontrakty:
+
+**T-134 — żywy Stop.** Dokładnie trzy pełne próby `prove_agent_dead`; po `Alive` krok jest
+`failed` ze zdaniem i PID/PGID w `run.json`, historia niesie ten sam błąd, a ten sam `AppState`
+przyjmuje i kończy następny Start. Kontrola `Dead` zachowuje dzisiejsze `cancelled` i dowód.
+
+**T-135 — startup cleanup.** Prawdziwe grupy dowodzą TERM → łaska → KILL → ESRCH, bez
+eskalowania po nie-ESRCH. `StillAlive` trafia do właściwego kroku `run.json` z PID/PGID i
+przechodzi przez drut historii; martwy krok nie dostaje fałszywego ostrzeżenia.
 
 **T-107 — wyrocznia fazy.**
 - Zadanie pisze wyrocznię: rozszerzenie wyroczni flow (`--ignored`, konwencja
@@ -472,7 +478,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139 i T-131 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. T-133 ma świeży kontrakt i jest następne.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131 i T-133 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. T-134 jest następne, potem T-135.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
@@ -480,7 +486,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
   H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, T-127
   domknęło H29 po niewykonalnym T-109, a T-139 domknęło H16/H18.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 → T-129 (zamknięte) → T-131 → T-130 (zamknięte) → T-132 (zamknięte) → T-133 → świeże zadania Stop/startup`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 → T-129 (zamknięte) → T-131 → T-130 (zamknięte) → T-132 (zamknięte) → T-133 → T-134 → T-135`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
   wylądowało, T-125 zamknięto, a T-126 wylądowało samo przez `run.rs`.
@@ -490,8 +496,8 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
   ujawnieniu błędnego zakazu UUID, T-131 wylądowało, a T-130 zamknięto na dwóch słabych
   oracle mimo zielonej bramki. T-131 świadomie nie posiadało `run.rs`, ale pozostaje
   semantycznym wejściem receipt: zamraża kształt pochodzenia. T-132 naprawiło granicę startu
-  i prawdziwe kontrolki, lecz nie udowodniło trzeciej próby IO refleksji. T-133 przejmuje jego
-  pełny zakres dopiero po własnym czerwonym `before`.
+  i prawdziwe kontrolki, lecz nie udowodniło trzeciej próby IO refleksji. T-133 przejęło jego
+  pełny zakres po własnym czerwonym `before` i wylądowało; następne są T-134, potem T-135.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness
