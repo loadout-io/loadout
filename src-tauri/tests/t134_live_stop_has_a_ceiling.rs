@@ -196,15 +196,10 @@ fn assert_stubborn_receipt(bench: &Bench, report: &RunReport) -> Result<(), Box<
         step.get("pgid").and_then(Value::as_i64),
         Some(i64::from(STUBBORN_PGID))
     );
-    match step.get("death_proof") {
-        // `run.json` historically omits false booleans; both shapes mean exactly "not proved".
-        None | Some(Value::Bool(false)) => {}
-        other => {
-            return Err(
-                format!("the stubborn agent was falsely recorded as dead: {other:?}").into(),
-            );
-        }
-    }
+    assert_eq!(
+        step.get("death_proof").and_then(Value::as_bool),
+        Some(false)
+    );
     assert_eq!(
         step.get("error").and_then(Value::as_str),
         Some(SURVIVOR_ERROR)

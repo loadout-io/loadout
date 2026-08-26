@@ -9445,7 +9445,6 @@ struct StepEntry<'a> {
     exit_code: Option<i32>,
     /// Tylko rzeczywisty dowód supervisora. Brak pola oznacza „nie dowiedziono”, nigdy
     /// „dowiedziono, bo krok wygląda na zakończony”.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     death_proof: bool,
     started_at: Option<i64>,
     ended_at: Option<i64>,
