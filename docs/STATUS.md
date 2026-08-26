@@ -4,6 +4,27 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-26, 19:04 — T-139 w trunku po usunięciu presji dysku
+
+**T-139 · zielone / WYLĄDOWANE · 34 min 49 s Harnessu + 4 min 12 s lądowania · $0,00
+raportowanego kosztu.** Właściciel jawnie wybrał `integrate.sh task-T-139`. Pierwsza próba
+integracji poprawnie odmówiła przed merge'em: main miał czerwone `full-test`, a paragon nie
+zachował powodu. W tym momencie wolne miejsce spadło z 2,5 GiB do 105 MiB. Zamknięty worktree
+T-136 trzymał 72 GiB regenerowalnego `target/`; `cargo clean` usunął wyłącznie ten cache,
+pozostawiając gałąź, źródła i paragony nietknięte, i odzyskał 25 GiB.
+
+Po usunięciu konkretnego blockera środowiskowego ponowiona operacja lądowania przeszła pełną
+bramkę main **16/16 w 91,31 s**, wylądowała wyłącznie `task-T-139` jako merge
+**`0fb49a4`**, usunęła branchowy `TASK.md`, a pełna bramka po merge'u przeszła **16/16 w
+103,27 s**. Main jest czysty i nie zawiera `TASK.md`; H16/H18 są domknięte, następne jest
+T-129, potem T-130.
+
+Odczytowy audyt potwierdził znany flake starego testu trigger recovery: sekundowy watchdog
+może podczas przeciążenia wywołać wtórny `RecvError`; identyczny podpis wystąpił przy T-101 i
+zniknął bez zmiany kodu. Nie zmieniono testu ani kryterium przy lądowaniu T-139. Jeśli podpis
+wróci przy normalnej przestrzeni dyskowej, wymaga osobnego zadania stabilizującego domeny
+zamków triggerów, nie rozszerzenia OWNS kolejnego zadania pamięci.
+
 ## 2026-08-26, 17:55 — T-139 ZAMKNIĘTE: finalny timeout spoza OWNS po zielonej naprawie
 
 **T-139 · czerwone / ZAMKNIĘTE / NIEWYLĄDOWANE · 34 min 49 s Harnessu · $0,00

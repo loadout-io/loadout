@@ -89,9 +89,9 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H13 | Codex `cost_usd: None` — wydatki połowy D3 niewidzialne | **T-115** (T-102 zamknięte) |
 | H14 | Refleksja: goły sterownik (wyciek auto-pamięci do `~/.claude/projects/…`, bez evidence, bez sufitu kosztu), zdarzenia porzucane, zero śladu w `run.json`, bez przełącznika, biegnie po anulowanym | **T-121 → T-126 wylądowały** (T-103/T-116/T-117/T-118/T-119/T-120/T-123/T-125 zamknięte; dokładny budżet realnego spawnu mierzy końcowy oracle) |
 | H15 | Zbiór z `mem/<kafelek>/` bierze pierwszą linię; `because` = boilerplate | **T-124 wylądowało** (T-103/T-116/T-117/T-118/T-119/T-120/T-122 zamknięte) |
-| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **świeży następca wymagany** (T-104/T-128/T-136/T-137/T-138/T-139 zamknięte) |
-| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po lądowaniu adresu pamięci |
-| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **świeży następca wymagany** (D-2 = TAK; T-139 zamknięte po finalnym timeoutcie spoza OWNS) |
+| H16 | L2: odrzucona notatka wraca — `record()` nie zagląda do `discarded/` | **T-139 wylądowało** (T-104/T-128/T-136/T-137/T-138 zamknięte) |
+| H17 | `Block::dropped` bez konsumenta; etykieta ekranu kłamie o zasięgu; `from` przeciążone | **T-129 → T-130** po wylądowanym adresie T-139 |
+| H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-106** |
@@ -144,7 +144,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-136 | **ZAMKNIĘTE:** 15/18 po naprawie; zły oracle multizbioru, lint i trzy luki dowodu | T-127 (pełny następca T-128) | tak | 2 |
 | T-137 | **ZAMKNIĘTE:** 17/19 po naprawie; refleksja atrapy nie przechodziła wrapperów, dwa martwe oracle | T-127 (pełny następca T-136) | tak | 3 |
 | T-138 | **ZAMKNIĘTE:** 18/19 po naprawie; drugi lint i brak biblioteka→projekt tombstone | T-127 (pełny następca T-137) | tak | 3 |
-| T-139 | **ZAMKNIĘTE:** finalne 18/19 przez timeout istniejącego testu recovery spoza OWNS | T-127 (pełny następca T-138) | tak | 3 |
+| T-139 | **WYŁĄDOWANE:** dwa korzenie, trwały Move, pełny adres UI i folder renderowanych notatek | T-127 (pełny następca T-138) | tak | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -374,11 +374,11 @@ funkcję snapshot/reflection. Recenzent wykazał też, że test exact tombstone 
 jednego korzenia i nie dowodził tłumienia projektu przez tombstone biblioteki. Siedem commitów
 produkcyjnych jest dowodem do jawnego przejęcia, kontrakt i targety nie są.
 
-**T-139 — ZAMKNIĘTE, bez lądowania.** Enforced `before`, pierwsza bramka i bramka wykonawcy
-naprawy były uczciwe i zielone. Recenzent znalazł oraz naprawa domknęła zamrożenie folderu
-widocznych notatek podczas B → C. Autorytatywna bramka końcowa miała jednak 18/19 przez
-niedeterministyczny timeout istniejącego testu recovery spoza `OWNS`; wszystkie trzy AC,
-Clippy i pozostałe kontrole przeszły. Nie ponawiać bramki ani nie rozszerzać zadania.
+**T-139 — WYŁĄDOWANE.** Enforced `before`, pierwsza bramka i bramka wykonawcy naprawy były
+uczciwe i zielone. Recenzent znalazł oraz naprawa domknęła zamrożenie folderu widocznych
+notatek podczas B → C. Po końcowym timeoutcie starego testu recovery właściciel jawnie wybrał
+`integrate.sh`; pierwszą próbę zatrzymało 105 MiB wolnego dysku. Po usunięciu wyłącznie
+regenerowalnego cache T-136 main przeszedł 16/16 przed i po merge'u `0fb49a4`.
 
 **T-105 — ZAMKNIĘTE, bez lądowania.** AC-1 i AC-2 dostały uczciwe czerwone specy, lecz
 AC-3 wymagało flagi odrzucanej przez prawdziwy App Server. Dodanie asercji na nieobsługiwane
@@ -454,22 +454,21 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126 i T-127 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137, T-138 i T-139 są zamknięte. Świeży następca H16/H18 wymaga decyzji właściciela.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127 i T-139 wylądowały; T-102, T-103, T-104, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137 i T-138 są zamknięte. T-129 jest następne.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić ich testów, implementacji lub commitów,
-  Wyjątki reuse dla kolejnego świeżego następcy trzeba zapisać w jego kontrakcie; zamkniętej
-  gałęzi T-139 nie wolno lądować ani przenosić w całości.
+  Zamkniętych gałęzi nie wolno lądować ani przenosić w całości; T-139 stoi już w trunku.
   Trzy niezależne domeny T-120 są osobno lądowalne: T-121 Store wylądowało, T-124 przejęło
   H15 po zamkniętym T-122, T-126 domknęło H14 po zamkniętych T-123 i T-125, T-127
-  domknęło H29 po niewykonalnym T-109, a H16/H18 czekają na decyzję po zamkniętym T-139.
+  domknęło H29 po niewykonalnym T-109, a T-139 domknęło H16/H18.
 - **Łańcuch `run.rs`** (dzielony OWNS, więc szeregowo):
-  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 (zamknięte) → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 (zamknięte) → świeży następca → T-129 → T-130 → świeże zadania Stop/startup`.
+  `T-114 → T-100 → T-101 → T-102 (zamknięte) → T-115 → T-103…T-120 (zamknięte) → T-122 (zamknięte) → T-124 → T-123 (zamknięte) → T-125 → T-126 → T-127 → T-128 (zamknięte) → T-136 (zamknięte) → T-137 (zamknięte) → T-138 (zamknięte) → T-139 → T-129 → T-130 → świeże zadania Stop/startup`.
 - **T-121 wylądowało najpierw**, mimo rozłącznego `OWNS`: T-126 zapisuje rachunek do pliku,
   którego ponowną, atomową indeksację gwarantuje T-121. T-122 i T-123 zamknięto; T-124
   wylądowało, T-125 zamknięto, a T-126 wylądowało samo przez `run.rs`.
 - **T-127 po T-126 wylądowało.** T-128 zamknięto na dwóch starych testach poza OWNS, T-136
   po czerwonej bramce i lukach oracle, T-137 po 17/19, T-138 po 18/19 i luce tombstone'a,
-  a T-139 po finalnym timeoutcie spoza OWNS; świeży następca musi zamrozić adres przed T-129.
-  T-129 musi wylądować przed receiptem T-130. Wszystkie trzy
+  a T-139 wylądowało po zielonych bramkach integracji. T-129 musi wylądować przed receiptem
+  T-130. Wszystkie trzy
   dzielą pamięć i `run.rs`, więc idą szeregowo.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze

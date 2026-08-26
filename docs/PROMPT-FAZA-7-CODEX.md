@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-139 zamknięte po finalnym timeoutcie spoza OWNS)
+# Prompt orchestratora — faza 7 (T-139 wylądowane; T-129 następne)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -8,7 +8,7 @@ Pracujesz w `/Users/jakubgawronski/Projects/Loadout`. Zadanie: przeprowadzić pr
 wszystkie pozostałe lądowania fazy 7 w kolejności z §4 tego pliku. Historyczny rejestr
 T-98…T-139 obejmuje zadania, z których T-105, T-110, T-99,
 T-112, T-113, T-102, T-103, T-109,
-T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137, T-138 i T-139 zostały zamknięte bez lądowania.
+T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-136, T-137 i T-138 zostały zamknięte bez lądowania.
 T-111 przejęło cel pierwszej pary i wylądowało. Osobny commit harnessu `5604c3d` naprawił
 fałszywe `before`, a T-114 przejmuje pełny cel T-99/T-112/T-113 z poprawnym specem
 pochodzenia wznowionego pliku i wylądowało przed T-100/T-101. T-102 formalnie przeszło, lecz
@@ -43,9 +43,8 @@ doszło do 17/19: produkcyjny stempel zachowuje bajty snapshotu, lecz atrapowy d
 nie przechodził wrapperów, rejestrator Move zapisywał próby przed delegowaniem, a E2E nie
 wiązało legacy z widoczną strefą. T-138 naprawiło te granice i wszystkie AC przeszły, lecz
 pozostał lint 131-wierszowej funkcji oraz luka bibliotecznego tombstone'a. T-139 zachowało
-pokrycie, przeszło pierwszą bramkę 19/19 i naprawiło uwagę recenzenta, ale finalne 18/19
-wynikało z timeoutu istniejącego testu recovery spoza OWNS. Wymagana jest decyzja właściciela
-o jawnym lądowaniu przez `integrate.sh` albo o świeżym następcy z nowymi targetami.
+pokrycie, przeszło pierwszą bramkę 19/19, naprawiło uwagę recenzenta i po usunięciu presji
+dysku wylądowało przez `integrate.sh` z zielonym 16/16 przed i po merge'u. T-129 jest następne.
 **Nie uruchamiaj starych T-104, T-106, T-108 ani T-107; każdy wymaga
 świeżego, standalone następcy.** Każdą zieloną gałąź lądujesz osobno na `main`.
 
@@ -320,7 +319,8 @@ jest następnym biegiem.
 | 8b | **ZAMKNIĘTE:** T-136, nie ląduj i nie wznawiaj | 15/18 po naprawie; wadliwy multizbiór, lint i trzy luki oracle |
 | 8c | **ZAMKNIĘTE:** T-137, nie ląduj i nie wznawiaj | 17/19; niedziałająca atrapa refleksji i dwie martwe granice oracle |
 | 8d | **ZAMKNIĘTE:** T-138, nie ląduj i nie wznawiaj | 18/19; drugi lint i brak biblioteka→projekt tombstone |
-| 8e | **ZAMKNIĘTE:** T-139, nie ląduj i nie wznawiaj bez jawnej decyzji właściciela | finalne 18/19 przez timeout istniejącego testu recovery spoza OWNS; AC i Clippy zielone |
+| 8e | **WYŁĄDOWANE:** T-139 | pełny następca H16/H18; merge `0fb49a4`, 16/16 przed i po |
+| 8f | `./ship-task.sh T-129 --agent codex --reviewer codex` | konsument adresu pamięci po T-139 |
 | 9 | świeże zadanie żywego Stopu | `run.rs` po pamięci; wąski następca części T-106 |
 | 10 | świeże zadanie startup cleanup | po żywym Stopie; wąski następca pozostałej części T-106 |
 | 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
