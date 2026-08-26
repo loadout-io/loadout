@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use loadout_lib::commands::run::{continue_run_inner, run_workflow_with_reflection};
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::claude::ClaudeDriver;
-use loadout_lib::engine::drivers::{AgentDriver, DriverConfiguration};
-use loadout_lib::engine::line::Line;
+use loadout_lib::engine::drivers::{AgentDriver, AgentEvent, DriverConfiguration};
+use loadout_lib::engine::line::{Curator, Line, Seen};
 use loadout_lib::ipc::{QUEUE_CAP, line_channel, spawn_pump};
 use loadout_lib::library::agents::read_agent_file;
 use loadout_lib::store::Store;
@@ -162,6 +162,11 @@ async fn setup_failure_is_visible_persisted_and_never_spawns() -> Result<(), Box
         Some(REFUSAL),
         "the Notice was prefixed, suffixed, or replaced before reaching the visible Line::Problem"
     );
+    assert_eq!(
+        problems[0],
+        notice_curated_as_problem("Blocked Claude")?,
+        "the public row must have the exact shape produced by curating the refusal Notice"
+    );
 
     let run: Value = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
     let step = run
@@ -177,6 +182,36 @@ async fn setup_failure_is_visible_persisted_and_never_spawns() -> Result<(), Box
     assert_eq!(step.get("error").and_then(Value::as_str), Some(REFUSAL));
     assert_eq!(run.pointer("/reflection/ran"), Some(&Value::Bool(false)));
     Ok(())
+}
+
+fn notice_curated_as_problem(agent: &str) -> Result<Value, Box<dyn Error>> {
+    let event = AgentEvent::Notice {
+        text: REFUSAL.to_owned(),
+    };
+    let mut curator = Curator::new();
+    let mut lines = curator.observe(Seen {
+        agent,
+        at_ms: 0,
+        event: &event,
+        tool: None,
+    });
+    lines.extend(curator.flush());
+    let [
+        Line::Problem {
+            agent: seen_agent,
+            text,
+            resets_at,
+        },
+    ] = lines.as_slice()
+    else {
+        return Err(
+            format!("the refusal Notice did not curate into one Problem: {lines:?}").into(),
+        );
+    };
+    assert_eq!(seen_agent, agent);
+    assert_eq!(text, REFUSAL);
+    assert_eq!(*resets_at, None);
+    Ok(serde_json::to_value(&lines[0])?)
 }
 
 #[derive(Clone, Debug, Default)]
