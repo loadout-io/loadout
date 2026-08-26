@@ -323,7 +323,7 @@ fn the_window_can_reach_this_by_name() -> Result<(), Box<dyn StdError>> {
         .join("\n");
 
     assert!(
-        code.contains("pub fn discard_note("),
+        code.contains("pub async fn discard_note("),
         "there is no `discard_note` command in ipc.rs. The button in the section has nothing to \
          call, and a control without a handler does not enter the repo (invariant 16)"
     );

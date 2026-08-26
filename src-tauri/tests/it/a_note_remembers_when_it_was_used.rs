@@ -74,7 +74,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use loadout_lib::commands::memory::{NoteRefusal, notes_root, put_note_to_use_inner};
+use loadout_lib::commands::memory::{NoteRefusal, project_notes_root, put_note_to_use_inner};
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -201,7 +201,7 @@ fn note_file(status: &str, title: &str, rule: &str) -> String {
 /// Wartość `last_used_at:` tak, jak leży w pliku. `None` znaczy „null albo brak klucza", czyli
 /// to samo, co czyta `scan_notes`.
 fn stamp_on_disk(bench: &Bench, id: &str) -> Option<String> {
-    scan_notes(&notes_root(bench.home.path()))
+    scan_notes(&project_notes_root(bench.project.path()))
         .expect("the notes root has to be readable")
         .into_iter()
         .find(|note| note.id.to_string() == id)
@@ -352,7 +352,7 @@ async fn a_note_that_reached_the_model_says_when_and_the_forced_choice_reads_it(
     //
     // Odmowa jedzie tą samą drogą, którą jedzie do sekcji Pamięć (`put_note_to_use` →
     // `NoteRefusal::Full`), więc kolejność sądzimy dokładnie tam, gdzie ląduje na ekranie.
-    let root = notes_root(bench.home.path());
+    let root = project_notes_root(bench.project.path());
     let refusal = put_note_to_use_inner(&root, WAITING_ID, CLICKED)
         .expect_err("the scope is over its ceiling, so this promotion has to be refused");
     let NoteRefusal::Full { retire, .. } = refusal else {
@@ -515,10 +515,8 @@ impl Bench {
         let project = TempDir::new()?;
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;
-        // Ten sam korzeń, który rozwiązuje `commands::memory::notes_root`.
-        fs::create_dir_all(home.path().join("memory").join("notes"))?;
         // `Store::open` zakłada plik bazy, ale nie katalog nad nim.
-        fs::create_dir_all(project.path().join(".loadout"))?;
+        fs::create_dir_all(project_notes_root(project.path()).join("notes"))?;
         // Żeby „własna kopia twoich plików" miała co kopiować.
         fs::write(project.path().join("notes.txt"), "written by the human")?;
         Ok(Self { home, project })
@@ -534,8 +532,9 @@ impl Bench {
 
     fn note(&self, slug: &str, text: &str) -> Result<(), Box<dyn Error>> {
         fs::write(
-            self.home
+            self.project
                 .path()
+                .join(".loadout")
                 .join("memory")
                 .join("notes")
                 .join(format!("{slug}.md")),

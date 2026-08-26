@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use loadout_lib::commands::memory::project_notes_root;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -243,7 +244,7 @@ async fn each_step_is_told_what_its_own_agent_knows_and_nothing_of_the_other()
             &rule_worth(SMALL, EVERY),
         ),
     )?;
-    bench.note(
+    bench.project_note(
         "this-project-knows-this",
         &note_file(
             "this-project",
@@ -577,7 +578,7 @@ impl Bench {
         // Ten sam korzeń, który rozwiązuje `commands::memory::notes_root`.
         fs::create_dir_all(home.path().join("memory").join("notes"))?;
         // `Store::open` zakłada plik bazy, ale nie katalog nad nim.
-        fs::create_dir_all(project.path().join(".loadout"))?;
+        fs::create_dir_all(project_notes_root(project.path()).join("notes"))?;
         // Żeby „własna kopia twoich plików" miała co kopiować.
         fs::write(project.path().join("notes.txt"), "written by the human")?;
         Ok(Self { home, project })
@@ -596,6 +597,16 @@ impl Bench {
             self.home
                 .path()
                 .join("memory")
+                .join("notes")
+                .join(format!("{slug}.md")),
+            text,
+        )?;
+        Ok(())
+    }
+
+    fn project_note(&self, slug: &str, text: &str) -> Result<(), Box<dyn Error>> {
+        fs::write(
+            project_notes_root(self.project.path())
                 .join("notes")
                 .join(format!("{slug}.md")),
             text,

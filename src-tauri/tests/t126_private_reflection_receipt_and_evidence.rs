@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use loadout_lib::commands::history::read_run_inner;
+use loadout_lib::commands::memory::project_notes_root;
 use loadout_lib::commands::run::run_workflow_with_reflection;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -110,6 +111,7 @@ async fn each_missing_hard_wrapper_refuses_before_reflection_start() -> Result<(
         let run = read_json(&report.dir.join("run.json"))?;
         assert_eq!(run.pointer("/reflection/ran"), Some(&Value::Bool(false)));
         assert!(scan_notes(&bench.home.path().join("memory"))?.is_empty());
+        assert!(scan_notes(&project_notes_root(bench.project.path()))?.is_empty());
     }
     Ok(())
 }
@@ -167,7 +169,7 @@ fn assert_exact_evidence(report: &RunReport, run: &Value) -> Result<(), Box<dyn 
 }
 
 fn assert_notes(bench: &Bench) -> Result<(), Box<dyn Error>> {
-    let memory = bench.home.path().join("memory");
+    let memory = project_notes_root(bench.project.path());
     let notes = scan_notes(&memory)?;
     assert_eq!(
         notes.len(),
@@ -176,6 +178,7 @@ fn assert_notes(bench: &Bench) -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(notes[0].rule, GOOD_RULE);
     assert!(!memory.join("notes").join("notes").exists());
+    assert!(scan_notes(&bench.home.path().join("memory"))?.is_empty());
     Ok(())
 }
 
@@ -509,7 +512,7 @@ impl Bench {
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;
         fs::create_dir_all(home.path().join("memory").join("notes"))?;
-        fs::create_dir_all(project.path().join(".loadout"))?;
+        fs::create_dir_all(project_notes_root(project.path()).join("notes"))?;
         fs::write(home.path().join("agents").join("builder.md"), AGENT)?;
         fs::write(home.path().join("workflows").join("t126.json"), WORKFLOW)?;
         let sentinel = project.path().join("reflection-sentinel.txt");

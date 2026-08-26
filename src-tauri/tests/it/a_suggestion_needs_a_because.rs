@@ -52,7 +52,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use loadout_lib::commands::memory::notes_root;
+use loadout_lib::commands::memory::project_notes_root;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -153,7 +153,8 @@ fn the_same_thing_again() -> String {
 }
 
 fn notes_left(bench: &Bench) -> Vec<Note> {
-    scan_notes(&notes_root(bench.home.path())).expect("the notes root has to be readable")
+    scan_notes(&project_notes_root(bench.project.path()))
+        .expect("the project notes root has to be readable")
 }
 
 /// Jeden bieg jednego kroku, z podaną odpowiedzią na pytanie o naukę.
@@ -443,11 +444,9 @@ impl Bench {
         let project = TempDir::new()?;
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;
-        // Ten sam korzeń, który rozwiązuje `commands::memory::notes_root`. ISTNIEJE i jest PUSTY:
+        // Ten sam korzeń, który rozwiązuje `commands::memory::project_notes_root`. ISTNIEJE i jest PUSTY:
         // „zero notatek" ma znaczyć „nikt nic nie zapisał", a nie „nie ma gdzie zapisywać".
-        fs::create_dir_all(home.path().join("memory").join("notes"))?;
-        // `Store::open` zakłada plik bazy, ale nie katalog nad nim.
-        fs::create_dir_all(project.path().join(".loadout"))?;
+        fs::create_dir_all(project_notes_root(project.path()).join("notes"))?;
         // Żeby „własna kopia twoich plików" miała co kopiować.
         fs::write(project.path().join("notes.txt"), "written by the human")?;
         Ok(Self { home, project })

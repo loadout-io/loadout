@@ -603,23 +603,21 @@ pub async fn run_workflow_inner(
     request: &RunRequest,
     lines: LineSink,
 ) -> Result<RunReport, RunError> {
-    run_workflow_with_budget(deps, request, lines, None).await
+    run_workflow_with_before_stamp(deps, request, lines, None).await
 }
 
-/// Jednorazowy obserwator tekstu zamrożonego w planie przed produkcyjnym stemplem pamięci.
-pub type FrozenPromptHook = Arc<dyn Fn(&str) + Send + Sync>;
+/// Jednorazowy szew T-137: po trwałym pierwszym `run.json`, bezpośrednio przed stemplem.
+pub type BeforeMemoryStamp = Box<dyn FnOnce(&str) -> Result<(), RunError> + Send>;
 
-/// Acceptance wejście zachowujące produkcyjną drogę biegu po zastąpieniu skeletonu.
-pub async fn run_workflow_with_snapshot_hook(
-    _deps: &RunDeps<'_>,
-    _request: &RunRequest,
-    _lines: LineSink,
-    _budget_usd: Option<f64>,
-    _reflection_enabled: bool,
-    _after_prompt: Option<FrozenPromptHook>,
+/// Prawdziwy workflow z opcjonalnym, jednorazowym podglądem zamrożonego promptu przed stemplem.
+pub async fn run_workflow_with_before_stamp(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    before_stamp: Option<BeforeMemoryStamp>,
 ) -> Result<RunReport, RunError> {
-    std::future::ready(()).await;
-    todo!("T-139 frozen prompt hook")
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow(deps, request, lines, slots, None, true, before_stamp).await
 }
 
 /// Ten sam bieg, z **sufitem wydatku** — albo bez niego, kiedy człowiek żadnego nie postawił.
@@ -636,7 +634,7 @@ pub async fn run_workflow_with_budget(
     budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    the_whole_workflow(deps, request, lines, slots, budget_usd, true).await
+    the_whole_workflow(deps, request, lines, slots, budget_usd, true, None).await
 }
 
 /// Ten sam bieg z jawnym wyborem, czy po jego końcu Loadout bierze prywatną turę refleksji.
@@ -652,7 +650,16 @@ pub async fn run_workflow_with_reflection(
     reflection_enabled: bool,
 ) -> Result<RunReport, RunError> {
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    the_whole_workflow(deps, request, lines, slots, budget_usd, reflection_enabled).await
+    the_whole_workflow(
+        deps,
+        request,
+        lines,
+        slots,
+        budget_usd,
+        reflection_enabled,
+        None,
+    )
+    .await
 }
 
 /// Pula miejsc, z której ma brać TEN bieg — jedna na całą aplikację, nie jedna na bieg.
@@ -731,7 +738,7 @@ pub async fn run_workflow_with_slots(
     lines: LineSink,
     slots: Limiter,
 ) -> Result<RunReport, RunError> {
-    the_whole_workflow(deps, request, lines, slots, None, true).await
+    the_whole_workflow(deps, request, lines, slots, None, true, None).await
 }
 
 /// Jedno ciało obu dróg wyżej: pula podana argumentem, sufit wydatku podany argumentem.
@@ -742,6 +749,7 @@ async fn the_whole_workflow(
     slots: Limiter,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
+    before_stamp: Option<BeforeMemoryStamp>,
 ) -> Result<RunReport, RunError> {
     /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
      * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
@@ -754,7 +762,16 @@ async fn the_whole_workflow(
      * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
      * producentów naraz. */
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_run(deps, request, lines, slots, budget_usd, reflection_enabled).await;
+    let report = the_whole_run(
+        deps,
+        request,
+        lines,
+        slots,
+        budget_usd,
+        reflection_enabled,
+        before_stamp,
+    )
+    .await;
     /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
      * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
      * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
@@ -876,15 +893,19 @@ async fn the_whole_run(
     slots: Limiter,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
+    before_stamp: Option<BeforeMemoryStamp>,
 ) -> Result<RunReport, RunError> {
     the_planned_run(
         deps,
         plan_run(deps, request)?,
         lines,
         slots,
-        None,
-        budget_usd,
-        reflection_enabled,
+        PlannedRunOptions {
+            acceptance: None,
+            budget_usd,
+            reflection_enabled,
+            before_stamp,
+        },
     )
     .await
 }
@@ -938,7 +959,20 @@ async fn the_whole_triggered_run(
         home: deps.home.to_path_buf(),
         claim: claim.clone(),
     };
-    match the_planned_run(deps, plan, lines, slots, Some(acceptance), None, true).await {
+    match the_planned_run(
+        deps,
+        plan,
+        lines,
+        slots,
+        PlannedRunOptions {
+            acceptance: Some(acceptance),
+            budget_usd: None,
+            reflection_enabled: true,
+            before_stamp: None,
+        },
+    )
+    .await
+    {
         Ok(report) => Ok(TriggerRunReport::Ran(report)),
         Err(error) if !run_file.exists() => {
             triggers::release_delivery(deps.home, claim)?;
@@ -966,9 +1000,12 @@ async fn the_whole_ask(
         plan_ask(deps, ask)?,
         lines,
         slots,
-        None,
-        budget_usd,
-        true,
+        PlannedRunOptions {
+            acceptance: None,
+            budget_usd,
+            reflection_enabled: true,
+            before_stamp: None,
+        },
     )
     .await
 }
@@ -976,6 +1013,13 @@ async fn the_whole_ask(
 struct TriggerAcceptance {
     home: PathBuf,
     claim: TriggerClaim,
+}
+
+struct PlannedRunOptions {
+    acceptance: Option<TriggerAcceptance>,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    before_stamp: Option<BeforeMemoryStamp>,
 }
 
 /// Rozpisany plan → katalog, kroki, indeks. **Jedna droga wykonania na oba rodzaje biegu.**
@@ -989,15 +1033,28 @@ async fn the_planned_run(
     plan: Plan,
     lines: LineSink,
     slots: Limiter,
-    acceptance: Option<TriggerAcceptance>,
-    budget_usd: Option<f64>,
-    reflection_enabled: bool,
+    options: PlannedRunOptions,
 ) -> Result<RunReport, RunError> {
-    let (live, isolated, dag) =
-        prepare_planned_run(deps, plan, lines, slots, acceptance, budget_usd)?;
+    let (live, isolated, dag) = prepare_planned_run(
+        deps,
+        plan,
+        lines,
+        slots,
+        options.acceptance,
+        options.budget_usd,
+        options.before_stamp,
+    )?;
     let cancel = deps.control.cancel_token();
     let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
-    finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
+    finish_planned_run(
+        deps,
+        live,
+        isolated,
+        outcome,
+        cancel,
+        options.reflection_enabled,
+    )
+    .await
 }
 
 fn prepare_planned_run(
@@ -1007,6 +1064,7 @@ fn prepare_planned_run(
     slots: Limiter,
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
+    before_stamp: Option<BeforeMemoryStamp>,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
     // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
@@ -1030,9 +1088,27 @@ fn prepare_planned_run(
     // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     live.open_the_book()?;
     accept_trigger_after_durable_run(deps.project, &live, acceptance)?;
+    if let Some(before_stamp) = before_stamp {
+        let (id, job) = live
+            .plan
+            .steps
+            .iter()
+            .enumerate()
+            .find_map(|(id, step)| match &step.job {
+                Job::Agent(job) => Some((id, job.as_ref())),
+                Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
+            })
+            .ok_or_else(|| io::Error::other("the before-stamp workflow has no agent prompt"))?;
+        // 2026-08-26 (T-137): używamy dokładnie tego samego kompozytora co późniejszy
+        // `RunSpec`; osobne składanie w szwie mogłoby dowodzić promptu, którego sterownik nie dostał.
+        let frozen = live
+            .prompt_for(id, &job.prompt, &job.context, job.minutes)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        before_stamp(&frozen.prompt)?;
+    }
     // Stempel jest uczciwy dopiero po powstaniu biegu, lecz przed pierwszym procesem: bierze
     // dokładnie zestaw notatek już zamrożony w `run.json`.
-    stamp_what_this_run_carried(deps.home, &live.plan.memory);
+    stamp_what_this_run_carried(&live.plan.memory);
     Ok((live, isolated, dag))
 }
 
@@ -1130,16 +1206,17 @@ async fn finish_planned_run(
 /// ([`Live::update`]) i przy przekazaniu ([`Live::hand_over`]): bieg za chwilę rusza, a jego
 /// wynik jest prawdziwy niezależnie od tego, czy stempel doszedł. Cena stoi w dzienniku wprost,
 /// bo bez niej jest to notatka, która wygląda na nieużytą i schodzi z listy pierwsza.
-fn stamp_what_this_run_carried(home: &Path, carried: &[MemoryRecord]) {
+fn stamp_what_this_run_carried(carried: &[MemoryRecord]) {
     if carried.is_empty() {
         return;
     }
     let at = super::now_utc();
     for record in carried {
-        // Ścieżka jest WZGLĘDNA WOBEC KORZENIA DANYCH i taka stoi w `run.json` (absolutna byłaby
-        // faktem o tym laptopie, nie o biegu), więc korzeń dokłada się dokładnie tutaj.
-        let path = home.join(&record.reference);
-        if let Err(error) = crate::memory::notes::mark_used(&path, &at) {
+        // 2026-08-26 (T-128): stempel używa tej samej migawki, z której złożono prompt. Odczyt
+        // ścieżki ponownie mógłby ostemplować ręczną redakcję, której model nigdy nie dostał.
+        if let Err(error) =
+            crate::memory::notes::mark_used_from_snapshot(&record.path, &record.snapshot, &at)
+        {
             tracing::debug!(
                 note = %record.reference,
                 %error,
@@ -1373,7 +1450,8 @@ async fn what_this_run_taught_us(
 }
 
 fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) -> usize {
-    let root = super::memory::notes_root(deps.home);
+    let library_root = super::memory::notes_root(deps.home);
+    let project_root = super::memory::project_notes_root(deps.project);
     let at = noticed_now();
     let mut kept = 0;
     for one in worth.into_iter().take(AT_MOST_KEPT) {
@@ -1394,7 +1472,12 @@ fn keep_reflection_notes(deps: &RunDeps<'_>, run: &str, worth: Vec<Remembered>) 
             status: crate::memory::notes::Status::Suggested,
             at: at.clone(),
         };
-        match crate::memory::notes::record_candidate_from_run(&root, draft, run) {
+        match crate::memory::notes::record_project_candidate_from_run(
+            &library_root,
+            &project_root,
+            draft,
+            run,
+        ) {
             Ok(_) => kept += 1,
             Err(error) => {
                 tracing::warn!(run = %run, %error, "this run had something to remember and it could not be written down");
@@ -2414,7 +2497,7 @@ fn plan_run_with_identity(
         library: deps.home.join(AGENTS_DIR),
         connections: deps.home.join("connections"),
         data: deps.home,
-        knows: what_the_agents_know(deps.home),
+        knows: what_the_agents_know(deps.home, deps.project),
         is_ask: false,
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
          * fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
@@ -2490,7 +2573,7 @@ fn plan_run_with_identity(
         steps[child].depends_on.push(keys[parent].clone());
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
-    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
 
     // Związane PRZED planem: `setup` pożycza `dir`, a `dir` jedzie do planu przeniesieniem.
     let asked_for = setup.task.clone();
@@ -2673,7 +2756,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         library,
         connections: deps.home.join("connections"),
         data: deps.home,
-        knows: what_the_agents_know(deps.home),
+        knows: what_the_agents_know(deps.home, deps.project),
         is_ask: true,
         /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
          * zadanie biegu dałoby prompt, w którym to samo polecenie stoi dwukrotnie — raz pod
@@ -2700,7 +2783,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .collect::<Result<Vec<Planned>, RunError>>()?;
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
-    let memory = what_this_run_knew(&setup.knows, &steps, deps.home);
+    let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
     let graph = serde_json::to_value(&file)?;
 
     Ok(Plan {
@@ -2766,30 +2849,64 @@ struct Known {
     /// Notatki odczytane RAZ, zanim ruszył pierwszy proces. Zamrożone: od tej chwili bieg ma
     /// jedną odpowiedź na pytanie, co wiedział.
     notes: Vec<crate::memory::notes::Note>,
+    /// Dokładne bajty tych samych plików, odczytane w tej samej operacji co [`Known::notes`].
+    /// Trzymane do stempla, żeby między promptem a zapisem nie było drugiego odczytu.
+    snapshots: BTreeMap<PathBuf, String>,
 }
 
-fn what_the_agents_know(home: &Path) -> Known {
-    let root = super::memory::notes_root(home);
-    let Ok(notes) = crate::memory::notes::scan_notes(&root) else {
-        tracing::debug!(root = %root.display(), "the notes could not be read; no step will carry them");
-        return Known {
-            text: String::new(),
-            sources: Vec::new(),
-            notes: Vec::new(),
-        };
-    };
+fn what_the_agents_know(home: &Path, project: &Path) -> Known {
+    let library_root = super::memory::notes_root(home);
+    let project_root = super::memory::project_notes_root(project);
+    let mut notes = Vec::new();
+    let mut snapshots = BTreeMap::new();
+
+    // 2026-08-26 (T-128): miejsce i zakres wspólnie ograniczają zasięg. Biblioteczne legacy
+    // `this-project` pozostaje widoczne w katalogu, ale nie jedzie do żadnego promptu przed
+    // jawnym Move; źle położony szerszy zakres w projekcie także nigdy nie rozszerza zasięgu.
+    match crate::memory::notes::scan_note_snapshots(&library_root) {
+        Ok(found) => {
+            for snapshot in found.into_iter().filter(|snapshot| {
+                matches!(
+                    snapshot.note.scope,
+                    crate::memory::notes::Scope::Everywhere
+                        | crate::memory::notes::Scope::ThisAgent
+                )
+            }) {
+                snapshots.insert(snapshot.note.path.clone(), snapshot.raw);
+                notes.push(snapshot.note);
+            }
+        }
+        Err(error) => {
+            tracing::debug!(root = %library_root.display(), %error, "the library notes could not be read");
+        }
+    }
+    match crate::memory::notes::scan_note_snapshots(&project_root) {
+        Ok(found) => {
+            for snapshot in found
+                .into_iter()
+                .filter(|snapshot| snapshot.note.scope == crate::memory::notes::Scope::ThisProject)
+            {
+                snapshots.insert(snapshot.note.path.clone(), snapshot.raw);
+                notes.push(snapshot.note);
+            }
+        }
+        Err(error) => {
+            tracing::debug!(root = %project_root.display(), %error, "the project notes could not be read");
+        }
+    }
     let mut text = String::new();
     let mut sources = Vec::new();
     for scope in [
         crate::memory::notes::Scope::Everywhere,
         crate::memory::notes::Scope::ThisProject,
     ] {
-        add_block(&mut text, &mut sources, &notes, scope, home);
+        add_block(&mut text, &mut sources, &notes, scope, home, project);
     }
     Known {
         text,
         sources,
         notes,
+        snapshots,
     }
 }
 
@@ -2806,6 +2923,7 @@ fn add_block(
     notes: &[crate::memory::notes::Note],
     scope: crate::memory::notes::Scope,
     home: &Path,
+    project: &Path,
 ) {
     let block = crate::memory::notes::what_you_know(notes, crate::memory::notes::Budget::of(scope));
     if block.text.is_empty() {
@@ -2816,18 +2934,31 @@ fn add_block(
     }
     text.push_str(&block.text);
     for id in &block.used {
-        let Some(note) = notes.iter().find(|note| &note.id == id) else {
+        // `id` jest unikalne wyłącznie w jednym korzeniu. Zakres rozróżnia tu legalne bliźniaki:
+        // biblioteczne `everywhere:same-address` i projektowe `this-project:same-address`
+        // tworzą dwa różne źródła i tylko drugie odpowiada blokowi projektu.
+        let Some(note) = notes
+            .iter()
+            .find(|note| note.scope == scope && &note.id == id)
+        else {
             continue;
         };
-        let Ok(relative) = note.path.strip_prefix(home) else {
+        let Some(relative) = note_reference(&note.path, home, project) else {
             continue;
         };
         sources.push(ContextSource {
             kind: ContextKind::MemoryNote,
-            reference: relative.to_string_lossy().into_owned(),
+            reference: relative,
             bytes: note.rule.len(),
         });
     }
+}
+
+fn note_reference(path: &Path, home: &Path, project: &Path) -> Option<String> {
+    path.strip_prefix(home)
+        .or_else(|_| path.strip_prefix(project))
+        .ok()
+        .map(|relative| relative.to_string_lossy().into_owned())
 }
 
 /// Co wie krok TEGO agenta: dwa zakresy wspólne dla biegu plus jego własny, trzeci.
@@ -2843,7 +2974,12 @@ fn add_block(
 ///
 /// Blok agenta stoi NA KOŃCU, tuż nad zadaniem: od najszerszego tła do najbliższego kontekstu,
 /// czyli tak, jak to czyta model.
-fn what_this_step_knows(known: &Known, agent: &str, home: &Path) -> (String, Vec<ContextSource>) {
+fn what_this_step_knows(
+    known: &Known,
+    agent: &str,
+    home: &Path,
+    project: &Path,
+) -> (String, Vec<ContextSource>) {
     let mut text = known.text.clone();
     let mut sources = known.sources.clone();
 
@@ -2864,6 +3000,7 @@ fn what_this_step_knows(known: &Known, agent: &str, home: &Path) -> (String, Vec
         &mine,
         crate::memory::notes::Scope::ThisAgent,
         home,
+        project,
     );
 
     (text, sources)
@@ -2890,6 +3027,12 @@ struct MemoryRecord {
     /// Ile bajtów miało to zdanie w chwili startu. Ta liczba i odcisk odpowiadają na to samo
     /// pytanie dwiema drogami, więc zrzut przepisany po biegu rozjeżdża się z sobą samym.
     bytes: usize,
+    /// Fizyczny plik wyłącznie na czas żywego biegu; absolutna ścieżka nie trafia do receipt.
+    #[serde(skip)]
+    path: PathBuf,
+    /// Surowa migawka tego pliku, również tylko do stempla po starcie.
+    #[serde(skip)]
+    snapshot: String,
 }
 
 /// Co ten bieg wiedział, kiedy ruszał — z rachunku KROKÓW, nie z katalogu notatek.
@@ -2898,7 +3041,12 @@ struct MemoryRecord {
 /// zamrożonego zbioru: notatka, która nie zmieściła się w suficie swojego zakresu, nie dojechała
 /// do modelu i nie ma prawa stać w rachunku tak, jakby dojechała. Notatka, która pojawiła się
 /// w katalogu po starcie, nie jest tu w ogóle — zbiór jest zamrożony przed pierwszym procesem.
-fn what_this_run_knew(known: &Known, steps: &[Planned], home: &Path) -> Vec<MemoryRecord> {
+fn what_this_run_knew(
+    known: &Known,
+    steps: &[Planned],
+    home: &Path,
+    project: &Path,
+) -> Vec<MemoryRecord> {
     let carried: BTreeSet<&str> = steps
         .iter()
         .filter_map(|step| match &step.job {
@@ -2918,11 +3066,14 @@ fn what_this_run_knew(known: &Known, steps: &[Planned], home: &Path) -> Vec<Memo
         .notes
         .iter()
         .filter_map(|note| {
-            let reference = note.path.strip_prefix(home).ok()?.to_string_lossy();
-            carried.contains(reference.as_ref()).then(|| MemoryRecord {
+            let reference = note_reference(&note.path, home, project)?;
+            let snapshot = known.snapshots.get(&note.path)?;
+            carried.contains(reference.as_str()).then(|| MemoryRecord {
                 hash: fingerprint(note.rule.as_bytes()),
                 bytes: note.rule.len(),
-                reference: reference.into_owned(),
+                reference,
+                path: note.path.clone(),
+                snapshot: snapshot.clone(),
             })
         })
         .collect()
@@ -3369,7 +3520,8 @@ fn plan_agent(
     let instructions = numbered(&step.instructions, copy, step.copies);
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
-    let (knows, mut context) = what_this_step_knows(&setup.knows, &effective.name, setup.data);
+    let (knows, mut context) =
+        what_this_step_knows(&setup.knows, &effective.name, setup.data, setup.project);
     if setup.is_ask {
         if !instructions.is_empty() {
             context.push(ContextSource {

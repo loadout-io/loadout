@@ -1667,27 +1667,61 @@ pub async fn forget_run_branches(
 /// pusty i nic w produkcji nie umiało go wypełnić, więc `put_note_to_use` przestawiało status
 /// notatki, której sekcja nigdy nie pokazała.
 #[tauri::command]
-pub fn list_notes() -> Result<Vec<commands::memory::NoteWire>, String> {
-    let root = commands::memory::notes_root(&crate::loadout_dir());
-    commands::memory::list_notes_inner(&root).map_err(|error| error.to_string())
+pub async fn list_notes(
+    state: State<'_, AppState>,
+    catalog_folder: Option<String>,
+) -> Result<Vec<commands::memory::CatalogNoteWire>, String> {
+    let project = state
+        .project_for(catalog_folder.as_deref())
+        .inspect_err(refused)?;
+    let library_root = commands::memory::notes_root(&state.home);
+    let project_root = commands::memory::project_notes_root(&project);
+    commands::memory::list_notes_for_project_inner(&library_root, &project_root)
+        .map_err(|error| error.to_string())
 }
 
 /// „Use this": od tej chwili notatka wchodzi do promptu.
 #[tauri::command]
-pub fn put_note_to_use(
-    id: &str,
-) -> Result<commands::memory::NoteWire, commands::memory::NoteRefusal> {
-    let root = commands::memory::notes_root(&crate::loadout_dir());
-    commands::memory::put_note_to_use_inner(&root, id, &commands::now_utc())
+pub async fn put_note_to_use(
+    state: State<'_, AppState>,
+    catalog_folder: Option<String>,
+    place: commands::memory::NotePlace,
+    id: String,
+) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+    let project = state
+        .project_for(catalog_folder.as_deref())
+        .map_err(commands::memory::NoteRefusal::Said)?;
+    let library_root = commands::memory::notes_root(&state.home);
+    let project_root = commands::memory::project_notes_root(&project);
+    let address = commands::memory::NoteAddress { place, id };
+    commands::memory::put_note_to_use_addressed_inner(
+        &library_root,
+        &project_root,
+        &address,
+        &commands::now_utc(),
+    )
 }
 
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
 #[tauri::command]
-pub fn stop_using_note(
-    id: &str,
-) -> Result<commands::memory::NoteWire, commands::memory::NoteRefusal> {
-    let root = commands::memory::notes_root(&crate::loadout_dir());
-    commands::memory::stop_using_note_inner(&root, id, &commands::now_utc())
+pub async fn stop_using_note(
+    state: State<'_, AppState>,
+    catalog_folder: Option<String>,
+    place: commands::memory::NotePlace,
+    id: String,
+) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+    let project = state
+        .project_for(catalog_folder.as_deref())
+        .map_err(commands::memory::NoteRefusal::Said)?;
+    let library_root = commands::memory::notes_root(&state.home);
+    let project_root = commands::memory::project_notes_root(&project);
+    let address = commands::memory::NoteAddress { place, id };
+    commands::memory::stop_using_note_addressed_inner(
+        &library_root,
+        &project_root,
+        &address,
+        &commands::now_utc(),
+    )
 }
 
 /// „Discard": kandydatka odchodzi do `discarded/` i schodzi z listy.
@@ -1696,9 +1730,41 @@ pub fn stop_using_note(
 /// dziś nie było czym obsłużyć. Bez niej lista rośnie monotonicznie i to jest dokładnie ta
 /// nieobsługiwana akrecja instrukcji, którą [T6 §5.1] nazywa samą chorobą.
 #[tauri::command]
-pub fn discard_note(id: &str) -> Result<(), commands::memory::NoteRefusal> {
-    let root = commands::memory::notes_root(&crate::loadout_dir());
-    commands::memory::discard_note_inner(&root, id, &commands::now_utc())
+pub async fn discard_note(
+    state: State<'_, AppState>,
+    catalog_folder: Option<String>,
+    place: commands::memory::NotePlace,
+    id: String,
+) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+    let project = state
+        .project_for(catalog_folder.as_deref())
+        .map_err(commands::memory::NoteRefusal::Said)?;
+    let library_root = commands::memory::notes_root(&state.home);
+    let project_root = commands::memory::project_notes_root(&project);
+    let address = commands::memory::NoteAddress { place, id };
+    commands::memory::discard_note_addressed_inner(
+        &library_root,
+        &project_root,
+        &address,
+        &commands::now_utc(),
+    )
+}
+
+/// Przenosi wcześniejszą notatkę projektową z biblioteki do wybranego projektu.
+#[tauri::command]
+pub async fn move_note_to_project(
+    state: State<'_, AppState>,
+    catalog_folder: Option<String>,
+    place: commands::memory::NotePlace,
+    id: String,
+) -> Result<Vec<commands::memory::CatalogNoteWire>, commands::memory::NoteRefusal> {
+    let project = state
+        .project_for(catalog_folder.as_deref())
+        .map_err(commands::memory::NoteRefusal::Said)?;
+    let library_root = commands::memory::notes_root(&state.home);
+    let project_root = commands::memory::project_notes_root(&project);
+    let address = commands::memory::NoteAddress { place, id };
+    commands::memory::move_note_to_project_addressed_inner(&library_root, &project_root, &address)
 }
 
 /// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.
@@ -2547,6 +2613,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_workflows,
         list_workspaces,
         load_workflow,
+        move_note_to_project,
         new_id,
         open_chat,
         put_note_to_use,
