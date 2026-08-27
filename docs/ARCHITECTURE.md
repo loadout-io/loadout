@@ -112,7 +112,10 @@ supervisor: spawn w grupie procesów, zapisz pid+pgid do bazy
      │         --effort <z pola „thinking">                       (T-91)
      │         --settings <plik>  — przekierowanie auto-pamięci    (T-92)
      │         --max-budget-usd <reszta budżetu biegu>             (T-94)
-     │         --plugin-dir <skille>  --mcp-config <połączenia>  --add-dir <przekazania>
+     │         --plugin-dir <skille>  --mcp-config <połączenia>
+     │         --tools <powierzchnia>  --model <jawny model>
+     │         --append-system-prompt <konfiguracja agenta>
+     │         --add-dir <handoffs/>  --add-dir <attachments/>
      ▼
 stdout: NDJSON, linia po linii
      │
@@ -172,6 +175,13 @@ Siedem stanów. `paused` jest stanem **biegu**, nigdy kroku — to usuwa całą 
 **Pułapka, którą trzeba pokryć testem:** `tokio::time::timeout` wokół kroku anuluje zadanie Rusta,
 **nie proces systemowy**. Każda ścieżka limitu czasu musi przejść przez eskalację zabijania w supervisorze [T7 §10.8].
 
+**Dwa sufity dowodu śmierci, nie jeden.** Żywy Stop człowieka wykonuje najwyżej trzy pełne
+próby `cancel`/eskalacji i czeka sekundę tylko między próbami. Jeśli grupa nadal odpowiada,
+krok kończy się jako `failed`, z jawnym powodem i `death_proof: false` — nie udaje
+`cancelled`. Ścieżka timeoutu używa osobnego `prove_agent_dead`: zachowuje uchwyt i ponawia
+bezterminowo, bo zwrot bez dowodu zostawiłby proces naliczający koszt. Sufit trzech prób
+dotyczy więc responsywności przycisku Stop, nie pozwolenia na porzucenie procesu.
+
 ### Czego ta tabela nie mówi, a kod robi (uzupełnione 2026-08-24)
 
 - **`attempt += 1` i „nowy `session_id`" w ostatnim wierszu nie istnieją.** Ponowienie kroku
@@ -186,6 +196,12 @@ Siedem stanów. `paused` jest stanem **biegu**, nigdy kroku — to usuwa całą 
   `failed`, a `pending` jako `skipped` albo `cancelled`. To domknięcie, nie przejście.
 - **Sufit budżetu** (T-94) — krok zatrzymany sufitem czyta się jako `skipped`, nigdy `cancelled`:
   na ekranie „cancelled" znaczy „nacisnąłeś Stop".
+- **Sufit jest miękki przy równoległości.** Scheduler liczy ceny wyłącznie zakończonych kroków;
+  kroki już uruchomione kończą swoje tury. Przy `N` startach naraz rachunek może więc dojść
+  do około `N ×` ustawionej kwoty. Claude dostaje w `--max-budget-usd` pozostałą kwotę, ale
+  pojedyncza tura Codeksa jest wyceniana dopiero po zakończeniu. Po T-149 końcowe
+  `run.json.spent_usd` obejmuje także koszt udanej refleksji; decyzje schedulera nadal liczą
+  tylko kroki, ponieważ refleksja biegnie dopiero po grafie.
 
 ---
 
@@ -329,10 +345,20 @@ zachowuje się inaczej niż czytający jedno i użytkownik musi to widzieć bez 
 **Orchestrator dostaje indeks, nie treść.** Wrzucenie czterech pełnych raportów do promptu
 orchestratora to najprostsza droga do przepełnienia kontekstu i do rachunku, którego nikt się nie
 spodziewał. Dostaje **indeks w prompcie** — po jednym wierszu na przekazanie: kto je zostawił,
-ścieżka i **etykieta roli** („co dostałeś na starcie", „twoja poprzednia odpowiedź, próba 1 z 3",
-„co powiedział sprawdzający ostatnim razem") — i czyta pełny plik wtedy, kiedy zdecyduje.
+ścieżka i jedna z siedmiu angielskich **etykiet roli** — i czyta pełny plik wtedy, kiedy
+zdecyduje:
+
+1. `what the step before left`;
+2. `the step before did not pass; this is what it said`;
+3. `what you were given at the start`;
+4. `your own earlier answer, try N of M`;
+5. `an earlier answer from the work you are checking, try N of M`;
+6. `what the tester said last time, try N of M`;
+7. `what an earlier run left here`.
+
 *Poprawione 2026-08-24: osobny plik `INDEX.md` nie powstaje i nie powstawał nigdy; indeks żyje
-w prompcie kroku (`Live::handed_before`, T-87).* To ta sama dyscyplina, co progresywne ujawnianie w umiejętnościach.
+w prompcie kroku (`Live::index_of_what_came_before`, T-87).* To ta sama dyscyplina, co
+progresywne ujawnianie w umiejętnościach.
 
 ### Przelotka na opcje vendora
 
@@ -470,14 +496,16 @@ usunięcia którejś z tych dwóch.
   memory/discarded/<slug>.md         # odrzucona ręką człowieka; nic nie ginie twardo (T-92)
 
 <repo>/.loadout/                     # projektowe, bezpieczne do commitowania
-  memory/…
+  memory/…                            # wyłącznie zakres ThisProject
   runs/<ts>__<id>/
     run.json                         # workflow, kroki, status, sumy; opcjonalne redagowane pochodzenie
     handoffs/01__orchestrator__brief.md
              02__research-auth__findings.md      ← to widzisz w UI jako „co przekazał"
-    attachments/02__…__full.md       # ogon przekazania powyżej 8 KB
+    attachments/02__…__full.md       # CAŁA znormalizowana odpowiedź, gdy przekazanie przekracza 8 KB
     logs/agent-<id>.jsonl            # surowe, nierenderowane domyślnie (pisze `evidence.rs`)
     mem/<krok>/                      # auto-pamięć Claude'a, przekierowana z katalogu domowego (T-92)
+    claude/<work-key>/               # prywatny CLAUDE_CONFIG_DIR; refleksja używa _reflection
+    claude-settings-<work-key>.json  # prywatna pamięć i deny dla jednego fizycznego spawnu
     work/<krok>/                     # kopia plików kroku — ZNIKA po biegu, praca zostaje
                                      # na gałęzi `loadout/<bieg>/<kafelek>` (T-95)
   loadout.db                         # indeks SQLite — DO SKASOWANIA BEZ STRATY
@@ -487,6 +515,17 @@ usunięcia którejś z tych dwóch.
 
 Front-matter pisze **Loadout**, nie agent. Agent dostarcza tylko treść [T6 §10.2].
 Agent, który wymyśla własne metadane, to agent, który je zmyśli.
+
+Silnik zapisuje każdy runtime handoff jako `findings`, niezależnie od roli kroku. Gdy ciało
+przekracza 8 KB, zwykły plik dostaje wersję skróconą, a `attachments/` przechowuje **całą**
+znormalizowaną odpowiedź sprzed `reshape` i cięcia — nie sam ogon.
+
+Pamięć ma dwa korzenie i rozłączne znaczenia. `~/.loadout/memory` jest biblioteką dla zakresów
+`Everywhere` i `ThisAgent`; `<repo>/.loadout/memory` zawiera wyłącznie `ThisProject`. Źle
+położona notatka legacy pozostaje widoczna do ręcznego Move, ale nie wchodzi do promptu jako
+wiedza z innego zakresu. Prywatny stan Claude'a nie dziedziczy `CLAUDE_CONFIG_DIR`: każda
+fizyczna kopia dostaje `<run>/claude/<work-key>`, własny plik settings, a refleksja osobny klucz
+`_reflection`.
 
 ---
 

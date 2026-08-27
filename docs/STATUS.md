@@ -4,6 +4,43 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 11:24 — T-149 w trunku; faza 7 domknięta produktowo
+
+**T-149 · zielone / WYLĄDOWANE · 1 h 02 min 34 s od commita kontraktu do merge'u ·
+$0,00 raportowanego kosztu.** Na jawne polecenie właściciela zadanie ominęło wyłącznie
+`ship-task.sh`; zachowało osobny worktree, uczciwe czerwone `before`, pełne bramki, niezależną
+recenzję, jedną rundę naprawy i pojedyncze `integrate.sh`. `before` wykonało 4/4 sprawdzenia
+i padło na dokładnych sentinelach w 2,68 s, quick przeszło 17/17 w 8,15 s, a pełne bramki
+gałęzi przed i po naprawie przeszły 19/19 w 61,64 s oraz 66,53 s.
+
+Kod produkcyjny rozdziela teraz koszt używany przez scheduler od końcowego rachunku biegu:
+`run.json.spent_usd` dolicza koszt udanej prywatnej refleksji, ale nie zmienia decyzji o
+starcie kroków. Offline oracle dowodzi prawdziwego grafu, routingu obu vendorów, historii
+pętli i refleksji; osobny test Stop uruchamia rzeczywistą grupę `/bin/sh` i wymaga produkcyjnej
+ścieżki Stop, trwałego `death_proof` oraz czystej sondy ESRCH. Normalny target zakończył się
+**4 passed / 2 ignored**.
+
+Recenzent znalazł pięć rzeczywistych luk płatnego oracle: planowany identyfikator udawał start,
+routing był czytany z zamiaru zamiast drivera, blokada nie dowodziła wyłączności, cleanup mógł
+zamaskować żywy proces, a refleksja nie dowodziła odczytania konkretnego handoffu. Jedyna runda
+naprawy zamknęła wszystkie pięć w `c6e82ce`; all-targets clippy miał zero ostrzeżeń. T-149
+wylądowało pojedynczo jako **`e01be73`**. Bramki integracyjne przeszły 16/16 w 64,06 s przed
+merge'em i 16/16 w 104,94 s po nim; `TASK.md` nie przeżył lądowania.
+
+Dokładne płatne polecenie po lądowaniu odmówiło w 0,06 s, zanim dotknęło stanu gospodarza,
+sieci albo vendora: wykryło aktywne zewnętrzne procesy Claude'a/Codeksa. Wynik to 0/2 testów
+live i **$0,00 wydatku**, ale poprawna odmowa bezpieczeństwa, nie porażka produktu. Nie wolno
+zabijać cudzych sesji ani osłabiać preflightu; oba kierunki live czekają na ciche okno bez
+zewnętrznych procesów vendorów.
+
+**Liczniki fazy 7:** 52 numery T-98…T-149; 19 lądowań; 31 zamknięć „stój i zgłoś" bez
+lądowania; 2 historyczne kontrakty zastąpione przed uruchomieniem (T-107 i T-108); 40 rund
+naprawczych (39 zachowanych artefaktów Harnessu + ręczna runda T-149). Widoczny koszt zadań
+to co najmniej **$98,59**; większość tur Codeksa, recenzje i ręczne T-149 nie zapisały ceny,
+więc nie jest to pełny rachunek. `docs/ARCHITECTURE.md` zostało uzgodnione z kodem po ostatnim
+lądowaniu: argv, dwa różne sufity dowodu śmierci, siedem etykiet indeksu, pełne attachments,
+dwa korzenie pamięci, prywatny stan Claude'a i miękki budżet przy równoległości.
+
 ## 2026-08-27, 05:38 — T-148 ZAMKNIĘTE 15/18; płatny oracle nie ruszył
 
 **T-148 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 21 min 12 s Harnessu · $0,00 raportowanego

@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-148 zamknięte; ręczne T-149 ostatnie)
+# Prompt orchestratora — faza 7 (T-149 wylądowało; paid-live czeka na cichy host)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -70,7 +70,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-148.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
+| `tasks/T-98.md` … `tasks/T-149.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -368,7 +368,7 @@ a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały ł
 | 14 | **ZAMKNIĘTE bez uruchomienia:** T-142 | fałszywa zależność T-141 i niewykonalny hard cap Codeksa |
 | 14b | **ZAMKNIĘTE bez uruchomienia:** T-146 | zależy od zamkniętego T-143 |
 | 14c | **ZAMKNIĘTE:** T-148, nie ląduj i nie wznawiaj | 15/18 po repair; sentinele, trzy luki dowodu, płatny oracle nie ruszył |
-| 14d | **RĘCZNIE bez `ship-task.sh`:** T-149 | pełny następca T-148; worktree, before, full, recenzja, integrate |
+| 14d | **WYŁĄDOWANE ręcznie bez `ship-task.sh`:** T-149 | pełny następca T-148; merge `e01be73`; paid-live bezpiecznie odmówił przy zajętym hoście |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i
@@ -530,8 +530,7 @@ Zatrzymujesz się i piszesz dłużej, kiedy:
 Po trzech zadaniach podaj prognozę całości z **realnych liczb** (`runs/build-loop.tsv`, koszty
 z transkryptów w `runs/<ID>/`), nie z przeczucia.
 
-Na koniec fazy, po T-107 w trunku, wykonaj §5 planu (uzgodnienie `docs/ARCHITECTURE.md` z kodem:
-§4 argv, §5 sufit `prove_agent_dead`, §6b etykiety indeksu, §8 attachments + drugi korzeń
-pamięci + prywatny stan Claude'a, zdanie o miękkim suficie budżetu z D-5) i dopisz do
-`docs/STATUS.md` akapit z licznikami:
-ile numerów zadań, ile lądowań, ile rund naprawczych, ile zamknięć „stój i zgłoś", koszt.
+Po T-149 wykonano §5 planu: `docs/ARCHITECTURE.md` uzgodniono z kodem w zakresie argv,
+dwóch różnych sufitów dowodu śmierci, siedmiu etykiet indeksu, pełnych attachments, dwóch
+korzeni pamięci, prywatnego stanu Claude'a oraz miękkiego budżetu z D-5. `docs/STATUS.md`
+zawiera końcowe liczniki numerów zadań, lądowań, rund naprawczych, zamknięć i kosztu.

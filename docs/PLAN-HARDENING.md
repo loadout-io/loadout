@@ -106,28 +106,28 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 
 ---
 
-## 3. Zadania — wszystkie pełną pętlą (`ship-task.sh`, recenzent cross-vendor)
+## 3. Zadania — pełna pętla; T-149 ręcznie bez `ship-task.sh` na polecenie właściciela
 
 | ID | Tytuł | Zależy od | Dotyka `commands/run.rs` | Kryteriów (szac.) |
 |---|---|---|---|---|
-| T-98 | Przelotka nie sięga ponad dial: pełne listy i filtr po kluczach | — | nie | 4 |
+| T-98 | **WYŁĄDOWANE:** przelotka nie sięga ponad dial | — | nie | 4 |
 | T-99 | **ZAMKNIĘTE:** sprzeczny wskaźnik i dwa błędy tekstu kryteriów | — | tak | 4 |
-| T-100 | Werdykt jest polem, sędzia widzi próby | T-114 | tak | 4 |
-| T-101 | Każda porażka przechodzi przez jedno miejsce — naprawdę | T-100 | tak | 4 |
+| T-100 | **WYŁĄDOWANE:** werdykt jest polem, sędzia widzi próby | T-114 | tak | 4 |
+| T-101 | **WYŁĄDOWANE:** każda porażka przechodzi przez jedno miejsce | T-100 | tak | 4 |
 | T-102 | **ZAMKNIĘTE:** zielone wyrocznie nie odróżniały kolumn cen ani sumy dwóch kroków | T-101, T-111 | tak | 4 |
 | T-103 | **ZAMKNIĘTE:** dokładne evidence i argument Startu wymagały dwóch plików poza OWNS | T-115 | tak | 5 |
 | T-104 | **ZAMKNIĘTE:** cztery filtrowane checki, brak pełnego adresu i konsumentów prawdziwego promptu | T-124, T-126 | tak (skan) | 5 |
 | T-105 | **ZAMKNIĘTE:** AC-3 wymaga nieistniejącej flagi App Servera | — | nie | 3 |
 | T-106 | **ZAMKNIĘTE:** połączone domeny i filtrowane funkcje wspólnego targetu | T-115 | tak | 3 |
-| T-107 | Prawdziwy bieg jest wyrocznią fazy | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
-| T-108 | Sprzątanie po D-6: martwa tabela i martwa gałąź odzyskiwania znikają | T-104 | nie | 2 |
+| T-107 | **ZASTĄPIONE przed uruchomieniem:** wyrocznię przejęły T-142/T-146/T-148/T-149 | wszystkie | nie (`e2e/`, `tests/` `--ignored`) | 3 |
+| T-108 | **ZASTĄPIONE przed uruchomieniem:** sprzątanie przejęły T-140/T-141/T-144/T-145 | T-104 | nie | 2 |
 | T-109 | **ZAMKNIĘTE:** trzy filtrowane checki i wymagane pliki produkcyjne poza OWNS | T-126 | nie | 3 |
 | T-110 | **ZAMKNIĘTE:** pełna bramka wymagała fikstury App Servera spoza OWNS | — | nie | 3 |
-| T-111 | Lead Codeksa: poprawny sandbox, jawna odmowa, prywatne MCP wyłączone, Connections zachowane | — (zastępuje T-105/T-110) | nie | 3 |
+| T-111 | **WYŁĄDOWANE:** poprawny sandbox, jawna odmowa, prywatne MCP wyłączone | — (zastępuje T-105/T-110) | nie | 3 |
 | T-112 | **ZAMKNIĘTE:** fałszywe `before` i kolizyjne kodowanie refów | — | tak | 5 |
 | T-113 | **ZAMKNIĘTE:** spec wznowienia fałszował etykietę pochodzenia | — | tak | 6 |
-| T-114 | Kopie: poprawne i niekolizyjne refy; prawdziwe pochodzenie i trwała decyzja | — (zastępuje T-99/T-112/T-113) | tak | 6 |
-| T-115 | Wydatki obu vendorów z rozróżnialnym cennikiem i prawdziwą sumą na ekranie | — (zastępuje T-102) | tak | 4 |
+| T-114 | **WYŁĄDOWANE:** poprawne i niekolizyjne refy, prawdziwe pochodzenie | — (zastępuje T-99/T-112/T-113) | tak | 6 |
+| T-115 | **WYŁĄDOWANE:** wydatki obu vendorów i prawdziwa suma na ekranie | — (zastępuje T-102) | tak | 4 |
 | T-116 | **ZAMKNIĘTE:** idempotentny Store poza OWNS, wada setupu AC-6 i cztery luki wyroczni | T-115 | tak | 6 |
 | T-117 | **ZAMKNIĘTE:** pierwsza bramka 19/22, martwa wyrocznia handlera, naprawa utracona na ENOSPC | T-115 | tak | 6 |
 | T-118 | **ZAMKNIĘTE:** 20/22; AC-4 przepisało historyczne nagłówki zamiast kanonicznego formatu | T-115 | tak | 6 |
@@ -157,11 +157,11 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-142 | **ZAMKNIĘTE bez uruchomienia:** fałszywa zależność T-141 i niewykonalny twardy cap Codeksa | T-140, T-145, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
 | T-143 | **ZAMKNIĘTE:** oba specy straciły po jednej asercji przed bramką | T-145 (następca luk T-135) | nie | 2 |
 | T-144 | **ZAMKNIĘTE:** 17/18 po naprawie; timeout i zmniejszenie asercji starych speców | T-140 (pełny następca T-141) | nie | 2 |
-| T-145 | Recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
+| T-145 | **WYŁĄDOWANE:** recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
 | T-146 | **ZAMKNIĘTE bez uruchomienia:** zależność od zamkniętego T-143 | T-140, T-145, T-143 (pełny następca T-142) | nie (tylko testy flow) | 2 |
 | T-147 | **WYŁĄDOWANE:** startup reaper z zachowanym odciskiem 8/8 | T-145 (pełny następca T-143) | nie | 2 |
 | T-148 | **ZAMKNIĘTE:** 15/18, sentinele i trzy luki dowodu | T-140, T-145, T-147 (pełny następca T-146) | nie (tylko testy flow) | 2 |
-| T-149 | Ręczny następca T-148: pełny koszt, routing vendorów i prawdziwy Stop | T-140, T-145, T-147 | tak (`run.rs`) | 3 |
+| T-149 | **WYŁĄDOWANE:** pełny koszt, routing vendorów i prawdziwy Stop; merge `e01be73` | T-140, T-145, T-147 | tak (`run.rs`) | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -495,8 +495,10 @@ zamknięto bez uruchomienia po zamknięciu jego zależności T-143. T-148 przej�
 po świeżym T-147, lecz zostało zamknięte 15/18 po drugiej czerwieni: implementacja pozostawiła
 sentinele, a recenzja wykazała brak dowodu routingu vendora i prawdziwego Stop oraz niejasną
 semantykę kosztu refleksji w `run.json`. Gałąź nie ląduje i płatny oracle nie ruszył. T-149
-jest świeżym ręcznym następcą z nowymi targetami; rozdziela koszt schedulera od finalnego
-rachunku, dowodzi prawdziwego Stop i po lądowaniu uruchamia oba płatne kierunki.
+wylądowało jako ręczny następca z nowymi targetami: rozdziela koszt schedulera od finalnego
+rachunku, dowodzi prawdziwego Stop i ma dwa jawnie uzbrajane kierunki live. Pierwsza próba
+po lądowaniu odmówiła przed stanem gospodarza i wydatkiem, bo zewnętrzne procesy vendorów
+zajmowały host; oracle czeka na ciche okno, bez osłabiania preflightu.
 
 **T-109 — ZAMKNIĘTE, bez uruchomienia.** Każde AC filtruje funkcję we wspólnym targecie
 `tests/it`, a wymagane `commands/run.rs` i vendor-neutralne `drivers/mod.rs` są poza OWNS.
@@ -519,8 +521,11 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140, T-145 i T-147 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144, T-146 i T-148 są zamknięte. Następne i ostatnie jest ręczne T-149.**
-  Płatny oracle pozostaje niewykonany do lądowania T-149.
+- **T-98, T-100, T-101, T-111, T-114, T-115, T-121, T-124, T-126, T-127, T-131,
+  T-133, T-134, T-135, T-139, T-140, T-145, T-147 i T-149 wylądowały.** 31 kontraktów
+  zamknięto bez lądowania, a T-107/T-108 zastąpiono przed uruchomieniem. Nie ma następnego
+  zadania fazy 7. Pozostała wyłącznie wykonawcza próba dwóch uśpionych testów paid-live T-149
+  w cichym oknie bez zewnętrznych procesów vendorów; pierwsza próba odmówiła przed wydatkiem.
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
@@ -561,17 +566,18 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ---
 
-## 5. Dokumentacja po fazie (bez zadania, wyjątek właściciela)
+## 5. Dokumentacja po fazie — UZGODNIONA 2026-08-27
 
-- ARCHITECTURE §6b: sześć angielskich etykiet indeksu zamiast trzech polskich cytatów.
-- §8: `attachments/` trzyma CAŁĄ znormalizowaną kopię (nie „ogon"); dopisać, że silnik pisze
-  wyłącznie `findings`; dopisać drugi korzeń pamięci (po T-104) i prywatny
-  `claude/<work-key>` (po T-127).
-- §4: argv uzupełnić o `--add-dir` (przekazania + załączniki), `--tools`,
-  `--append-system-prompt`, `--model`.
-- §5: wiersz o suficie `prove_agent_dead` (po T-106).
-- Budżet: zapisać wprost, że przy jawnie ustawionej kwocie sufit jest miękki do ×N przy
-  równoległości (D-5 — świadoma decyzja, nie przeoczenie).
+- ARCHITECTURE §6b opisuje **siedem** faktycznych angielskich etykiet indeksu; wcześniejsze
+  „sześć" było błędem planu wykrytym przy uzgodnieniu z kodem.
+- §8 mówi, że `attachments/` trzyma CAŁĄ znormalizowaną kopię, runtime pisze wyłącznie
+  `findings`, pamięć ma dwa rozłączne korzenie, a każdy spawn Claude'a prywatny
+  `claude/<work-key>` i plik settings.
+- §4 obejmuje `--add-dir` dla przekazań i załączników, `--tools`,
+  `--append-system-prompt` oraz `--model`.
+- §5 rozróżnia trzy próby żywego Stop od bezterminowego `prove_agent_dead` na timeoutcie.
+- Budżet jest jawnie miękki do około ×N przy równoległości; po T-149 końcowy `spent_usd`
+  dolicza udaną refleksję, a scheduler nadal liczy wyłącznie zakończone kroki.
 
 ---
 
