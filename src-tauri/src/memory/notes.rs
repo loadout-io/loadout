@@ -20,9 +20,9 @@
 //! te pliki utrzymywali [T6 §5.3].
 //!
 //! Czego tu nie ma i nie będzie:
-//! - `Connection` — `notes.rs` czyta i pisze **pliki**, wiersz do `SQLite` wkłada
-//!   `store::writer` i nikt inny (niezmiennik 2). `UPDATE memory SET status=…` w promocji,
-//!   „bo to przecież jedna linijka", jest tym, jak ten moduł przestaje działać po `rm loadout.db`;
+//! - `Connection` — `notes.rs` czyta i pisze **pliki**. Pliki biblioteki i projektu są jedynym
+//!   miejscem zapisu oraz źródłem prawdy. Cień w `SQLite` sprawiłby, że ten moduł przestaje
+//!   działać po `rm loadout.db`;
 //! - zegara — moment działania człowieka przychodzi w [`Actor::You`], a moment zgłoszenia
 //!   w [`NoteDraft::at`]. Funkcja, która sama czyta zegar, nie da się sprawdzić na równość
 //!   bajtową, a AC-4 pyta dokładnie o to;
