@@ -135,6 +135,12 @@ jobs:
             npm install
           fi
 
+      - name: Install the Playwright browser
+        # 2026-08-27: npm installs the Playwright API, not its Chromium binary.
+        # The first real remote run therefore failed before every browser test
+        # with "Executable doesn't exist" on a clean Ubuntu runner.
+        run: npx --no-install playwright install --with-deps chromium
+
       - name: Run the web lane
         run: bash scripts/ci.sh web
 
