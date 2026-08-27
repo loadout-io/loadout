@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fs;
 use std::fs::OpenOptions;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -144,6 +145,7 @@ pub struct ReflectionEvidence {
 #[derive(Debug)]
 pub struct HostStateEvidence {
     pub exclusive: bool,
+    pub scanned_processes: usize,
     pub claude_json_before: Option<Vec<u8>>,
     pub claude_json_after: Option<Vec<u8>>,
     pub claude_projects_before: Option<Vec<u8>>,
@@ -175,6 +177,45 @@ pub struct LiveEvidence {
     pub stop: StopEvidence,
     pub git: GitEvidence,
     pub final_success: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveCallKind {
+    Step,
+    Reflection,
+}
+
+#[derive(Debug, Clone)]
+struct LiveStart {
+    role: String,
+    turn: usize,
+    vendor: Vendor,
+    model: Option<String>,
+    prompt: String,
+    cwd: PathBuf,
+    call_kind: LiveCallKind,
+}
+
+#[derive(Debug, Default)]
+struct LiveWatch(Mutex<Vec<LiveStart>>);
+
+impl LiveWatch {
+    fn record(&self, mut start: LiveStart) {
+        let mut starts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        start.turn = starts
+            .iter()
+            .filter(|seen| seen.role == start.role && seen.call_kind == start.call_kind)
+            .count()
+            + 1;
+        starts.push(start);
+    }
+
+    fn snapshot(&self) -> Vec<LiveStart> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 pub fn assert_core_contract(evidence: &CoreEvidence, assignment: Assignment) {
@@ -354,6 +395,10 @@ fn assert_host_state(host: &HostStateEvidence) {
         host.exclusive,
         "the oracle ran without exclusive host-state fingerprinting"
     );
+    assert!(
+        host.scanned_processes > 0,
+        "the exclusivity preflight did not inspect the host process table"
+    );
     assert_eq!(host.claude_json_after, host.claude_json_before);
     assert_eq!(host.claude_projects_after, host.claude_projects_before);
     assert!(host.private_state_under_run);
@@ -433,25 +478,140 @@ async fn run_budget_probe(
     Ok((run, watch.snapshot()))
 }
 
+#[derive(Clone)]
+struct ObservedDriver {
+    inner: Arc<dyn AgentDriver>,
+    vendor: Vendor,
+    call_kind: LiveCallKind,
+    watch: Arc<LiveWatch>,
+}
+
+impl ObservedDriver {
+    fn around(
+        inner: Arc<dyn AgentDriver>,
+        vendor: Vendor,
+        call_kind: LiveCallKind,
+        watch: Arc<LiveWatch>,
+    ) -> Arc<dyn AgentDriver> {
+        Arc::new(Self {
+            inner,
+            vendor,
+            call_kind,
+            watch,
+        })
+    }
+
+    fn around_like(&self, inner: Arc<dyn AgentDriver>) -> Arc<dyn AgentDriver> {
+        Self::around(inner, self.vendor, self.call_kind, Arc::clone(&self.watch))
+    }
+}
+
+#[async_trait]
+impl AgentDriver for ObservedDriver {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    async fn probe(&self) -> anyhow::Result<Probe> {
+        self.inner.probe().await
+    }
+
+    async fn start(
+        &self,
+        spec: RunSpec,
+        events: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let role = if self.call_kind == LiveCallKind::Reflection {
+            "reflection".to_owned()
+        } else {
+            role_in(&spec.prompt).to_owned()
+        };
+        let observed = LiveStart {
+            role,
+            turn: 0,
+            vendor: self.vendor,
+            model: spec.model.clone(),
+            prompt: spec.prompt.clone(),
+            cwd: spec.cwd.clone(),
+            call_kind: self.call_kind,
+        };
+        let handle = self.inner.start(spec, events).await?;
+        // Dopiero uchwyt znaczy, ze prawdziwy adapter wystartowal. Wybor z agenta albo grafu
+        // bylby tylko deklaracja, wiec obserwacja trafia do oracle dopiero po tym `await`.
+        self.watch.record(observed);
+        Ok(handle)
+    }
+
+    fn with_evidence(&self, target: EvidenceTarget) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .with_evidence(target)
+            .map(|inner| self.around_like(inner))
+    }
+
+    fn with_settings(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
+        self.inner
+            .with_settings(settings)
+            .map(|configured| configured.map(|inner| self.around_like(inner)))
+    }
+
+    fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .with_budget(dollars)
+            .map(|inner| self.around_like(inner))
+    }
+
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        self.inner.reflecting().map(|inner| {
+            Self::around(
+                inner,
+                self.vendor,
+                LiveCallKind::Reflection,
+                Arc::clone(&self.watch),
+            )
+        })
+    }
+}
+
+fn observed_live_drivers(watch: Arc<LiveWatch>) -> Drivers {
+    let claude = ObservedDriver::around(
+        Arc::new(ClaudeDriver::new()),
+        Vendor::ClaudeCode,
+        LiveCallKind::Step,
+        Arc::clone(&watch),
+    );
+    let codex = ObservedDriver::around(
+        Arc::new(CodexDriver::new()),
+        Vendor::Codex,
+        LiveCallKind::Step,
+        watch,
+    );
+    Arc::new(move |vendor| match vendor {
+        Vendor::ClaudeCode => Arc::clone(&claude),
+        Vendor::Codex => Arc::clone(&codex),
+    })
+}
+
 pub async fn run_live_oracle(assignment: Assignment) -> TestResult<LiveEvidence> {
+    // Obrona jest takze tutaj, nie tylko w `#[ignore]` targecie: zadne wywolanie helpera nie
+    // moze dojsc do inspekcji HOME ani konstrukcji platnego sterownika bez dokladnego opt-inu.
+    require_paid_oracle();
     let _lease = HostLease::acquire()?;
+    let exclusivity = ensure_host_exclusive()?;
     let user_home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is unavailable")?);
     let claude_json_before = fingerprint(&user_home.join(".claude.json"))?;
     let claude_projects_before = fingerprint(&user_home.join(".claude/projects"))?;
     let bench = Bench::new()?;
     let workflow = save_fixture(&bench, assignment)?;
     let store = Store::open(&bench.db())?;
-    let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
-    let codex: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
-    let drivers: Drivers = Arc::new(move |vendor| match vendor {
-        Vendor::ClaudeCode => Arc::clone(&claude),
-        Vendor::Codex => Arc::clone(&codex),
-    });
+    let watch = Arc::new(LiveWatch::default());
     let deps = RunDeps {
         home: bench.home.path(),
         project: bench.project.path(),
         store: &store,
-        drivers,
+        drivers: observed_live_drivers(Arc::clone(&watch)),
         processes: Arc::new(loadout_lib::commands::processes::Processes::new()),
         control: RunControl::new(),
     };
@@ -469,13 +629,24 @@ pub async fn run_live_oracle(assignment: Assignment) -> TestResult<LiveEvidence>
     let report = match tokio::time::timeout(LIVE_PATIENCE, &mut run).await {
         Ok(Ok(report)) => report,
         Ok(Err(error)) => {
-            let _ = stop_run_inner(&deps).await;
+            let stopped = bounded_live_stop(&deps).await?;
+            assert_eq!(stopped, Outcome::Cancelled);
+            tokio::time::timeout(PATIENCE, pump)
+                .await
+                .map_err(|_| "paid run event pump did not settle after a run error")??;
+            let run_dir = newest_run_dir(bench.project.path())?;
+            assert_all_live_groups_dead(&run_dir)?;
             return Err(format!("paid phase-7 run failed after cleanup: {error}").into());
         }
         Err(_) => {
-            let stopped = stop_run_inner(&deps).await?;
-            let report = run.await?;
+            let stopped = bounded_live_stop(&deps).await?;
+            let report = tokio::time::timeout(PATIENCE, &mut run)
+                .await
+                .map_err(|_| "paid run future did not settle after bounded production Stop")??;
             assert_eq!(stopped, Outcome::Cancelled);
+            tokio::time::timeout(PATIENCE, pump)
+                .await
+                .map_err(|_| "paid run event pump did not settle after timeout cleanup")??;
             assert_all_live_groups_dead(&report.dir)?;
             return Err(
                 format!("paid phase-7 run exceeded {LIVE_PATIENCE:?} after cleanup").into(),
@@ -485,9 +656,10 @@ pub async fn run_live_oracle(assignment: Assignment) -> TestResult<LiveEvidence>
     tokio::time::timeout(PATIENCE, pump).await??;
     let run_json: serde_json::Value =
         serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
-    let core = durable_core_evidence(assignment, &workflow, &report.dir, run_json)?;
-    let costs = cost_evidence(&core.run_json)?;
-    let reflection = reflection_evidence(&core.run_json, &report.dir)?;
+    let starts = watch.snapshot();
+    let core = durable_core_evidence(assignment, &workflow, &report.dir, run_json, &starts)?;
+    let costs = cost_evidence(&core.run_json, &report.dir, &starts)?;
+    let reflection = reflection_evidence(&core.run_json, &report.dir, &starts)?;
     let claude_json_after = fingerprint(&user_home.join(".claude.json"))?;
     let claude_projects_after = fingerprint(&user_home.join(".claude/projects"))?;
     let git = git_evidence(&bench)?;
@@ -502,7 +674,8 @@ pub async fn run_live_oracle(assignment: Assignment) -> TestResult<LiveEvidence>
         costs,
         reflection,
         host: HostStateEvidence {
-            exclusive: true,
+            exclusive: exclusivity.conflicts.is_empty(),
+            scanned_processes: exclusivity.scanned_processes,
             claude_json_before,
             claude_json_after,
             claude_projects_before,
@@ -538,6 +711,7 @@ fn durable_core_evidence(
     workflow: &Path,
     run_dir: &Path,
     run_json: serde_json::Value,
+    starts: &[LiveStart],
 ) -> TestResult<CoreEvidence> {
     let workflow_json: serde_json::Value = serde_json::from_slice(&fs::read(workflow)?)?;
     let max_turns = workflow_json["links"]
@@ -560,8 +734,8 @@ fn durable_core_evidence(
             let judge = nth_named_step(steps, "Judge", number);
             RoundEvidence {
                 number,
-                work_started: durable_step_started(work),
-                judge_started: durable_step_started(judge),
+                work_started: durable_step_started(run_dir, work),
+                judge_started: durable_step_started(run_dir, judge),
                 outcome: judge
                     .and_then(|step| step.get("round_outcome"))
                     .and_then(serde_json::Value::as_str)
@@ -611,25 +785,15 @@ fn durable_core_evidence(
         sentinel_read_from: sentinel_source.clone(),
         sentinel_source,
         downstream_handoff: fs::read_to_string(downstream)?,
-        vendor_starts: steps
+        vendor_starts: starts
             .iter()
-            .filter(|step| durable_step_started(Some(step)))
-            .filter_map(|step| {
-                let role = step.get("name")?.as_str()?.to_ascii_lowercase();
-                let vendor = match step.pointer("/effective/runsWith")?.as_str()? {
-                    "claude-code" => Vendor::ClaudeCode,
-                    "codex" => Vendor::Codex,
-                    _ => return None,
-                };
-                Some((role, vendor))
-            })
+            .filter(|start| start.call_kind == LiveCallKind::Step)
+            .map(|start| (start.role.clone(), start.vendor))
             .collect(),
         reflection_wrapped: reflection_ran
             && run_dir.join("logs/reflection.input.json").is_file()
             && run_dir.join("logs/reflection.jsonl").is_file(),
-        reflection_saw_nonempty_handoff: artifacts
-            .iter()
-            .any(|path| fs::read(path).is_ok_and(|body| !body.is_empty())),
+        reflection_saw_nonempty_handoff: observed_reflection_saw_handoff(starts, run_dir)?,
         run_json,
     })
 }
@@ -655,9 +819,20 @@ fn expanded_step_names(steps: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-fn durable_step_started(step: Option<&serde_json::Value>) -> bool {
-    step.and_then(|one| one.get("agent_session_id"))
-        .is_some_and(|value| !value.is_null())
+fn durable_step_started(run_dir: &Path, step: Option<&serde_json::Value>) -> bool {
+    let Some(step) = step else {
+        return false;
+    };
+    let Some(id) = step.get("id").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    step.get("started_at")
+        .and_then(serde_json::Value::as_i64)
+        .is_some()
+        && run_dir
+            .join("logs")
+            .join(format!("agent-{id}.input.json"))
+            .is_file()
 }
 
 fn physical_id(step: &serde_json::Value) -> TestResult<&str> {
@@ -700,7 +875,11 @@ fn manifest_index(
     Ok((keys, paths))
 }
 
-fn cost_evidence(run: &serde_json::Value) -> TestResult<CostEvidence> {
+fn cost_evidence(
+    run: &serde_json::Value,
+    run_dir: &Path,
+    starts: &[LiveStart],
+) -> TestResult<CostEvidence> {
     let steps = run["steps"].as_array().ok_or("live run has no steps")?;
     let mut claude_usd = 0.0;
     let mut codex_usd = 0.0;
@@ -709,18 +888,37 @@ fn cost_evidence(run: &serde_json::Value) -> TestResult<CostEvidence> {
     let mut codex_model = None;
     let mut codex_is_estimate = false;
     let mut largest_turn_usd = 0.0_f64;
-    for step in steps.iter().filter(|step| durable_step_started(Some(step))) {
+    let mut turns_by_role = HashMap::<String, usize>::new();
+    for step in steps
+        .iter()
+        .filter(|step| durable_step_started(run_dir, Some(step)))
+    {
+        let role = step
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("a started live step has no name")?
+            .to_ascii_lowercase();
+        let turn = turns_by_role.entry(role.clone()).or_default();
+        *turn += 1;
+        let observed = starts
+            .iter()
+            .find(|start| {
+                start.call_kind == LiveCallKind::Step && start.role == role && start.turn == *turn
+            })
+            .ok_or_else(|| {
+                format!(
+                    "durable {role} turn {} has no successful real-driver start observation",
+                    *turn
+                )
+            })?;
         let cost = step
             .get("cost_usd")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         largest_turn_usd = largest_turn_usd.max(cost);
-        match step
-            .pointer("/effective/runsWith")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("claude-code") => claude_usd += cost,
-            Some("codex") => {
+        match observed.vendor {
+            Vendor::ClaudeCode => claude_usd += cost,
+            Vendor::Codex => {
                 codex_usd += cost;
                 codex_input_tokens += step
                     .get("input_tokens")
@@ -734,13 +932,8 @@ fn cost_evidence(run: &serde_json::Value) -> TestResult<CostEvidence> {
                     .get("cost_estimate")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true);
-                codex_model = step
-                    .pointer("/effective/model")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-                    .or(codex_model);
+                codex_model = observed.model.clone().or(codex_model);
             }
-            _ => {}
         }
     }
     let reflection_usd = run
@@ -759,15 +952,17 @@ fn cost_evidence(run: &serde_json::Value) -> TestResult<CostEvidence> {
     })
 }
 
-fn reflection_evidence(run: &serde_json::Value, run_dir: &Path) -> TestResult<ReflectionEvidence> {
+fn reflection_evidence(
+    run: &serde_json::Value,
+    run_dir: &Path,
+    starts: &[LiveStart],
+) -> TestResult<ReflectionEvidence> {
     Ok(ReflectionEvidence {
         ran: run
             .pointer("/reflection/ran")
             .and_then(serde_json::Value::as_bool)
             == Some(true),
-        saw_nonempty_handoff: fs::read_dir(run_dir.join("handoffs"))?
-            .filter_map(Result::ok)
-            .any(|entry| fs::read(entry.path()).is_ok_and(|body| !body.is_empty())),
+        saw_nonempty_handoff: observed_reflection_saw_handoff(starts, run_dir)?,
         kept: run
             .pointer("/reflection/kept")
             .and_then(serde_json::Value::as_u64)
@@ -775,6 +970,38 @@ fn reflection_evidence(run: &serde_json::Value, run_dir: &Path) -> TestResult<Re
             .unwrap_or(0),
         receipt_in_run_json: run.get("reflection").is_some(),
     })
+}
+
+fn observed_reflection_saw_handoff(starts: &[LiveStart], run_dir: &Path) -> TestResult<bool> {
+    let reflections = starts
+        .iter()
+        .filter(|start| start.call_kind == LiveCallKind::Reflection)
+        .collect::<Vec<_>>();
+    if reflections.len() != 1 {
+        return Err(format!(
+            "expected one successful observed reflection start, got {}",
+            reflections.len()
+        )
+        .into());
+    }
+    let reflection = reflections[0];
+    if reflection.cwd != run_dir {
+        return Err(format!(
+            "reflection RunSpec cwd {} is not the durable run directory {}",
+            reflection.cwd.display(),
+            run_dir.display()
+        )
+        .into());
+    }
+    if !reflection.prompt.contains("handoffs/") {
+        return Ok(false);
+    }
+    // To nie jest juz pytanie „czy katalog przypadkiem ma plik". Nazwany przez prawdziwy
+    // `RunSpec.prompt` input rozwiazujemy wzgledem obserwowanego `RunSpec.cwd`, czyli dokladnie
+    // tego wejscia, ktore wrapper przekazal realnemu adapterowi przy udanym `start`.
+    Ok(files_below(&reflection.cwd.join("handoffs"))?
+        .into_iter()
+        .any(|path| fs::read(path).is_ok_and(|body| !body.is_empty())))
 }
 
 fn git_evidence(bench: &Bench) -> TestResult<GitEvidence> {
@@ -865,6 +1092,24 @@ fn files_below(path: &Path) -> TestResult<Vec<PathBuf>> {
     Ok(found)
 }
 
+async fn bounded_live_stop(deps: &RunDeps<'_>) -> TestResult<Outcome> {
+    tokio::time::timeout(PATIENCE, stop_run_inner(deps))
+        .await
+        .map_err(|_| "production Stop did not settle within the paid cleanup deadline")?
+        .map_err(Into::into)
+}
+
+fn newest_run_dir(project: &Path) -> TestResult<PathBuf> {
+    let runs = project.join(".loadout/runs");
+    let mut dirs = fs::read_dir(&runs)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_type().ok()?.is_dir().then_some(entry.path()))
+        .collect::<Vec<_>>();
+    dirs.sort();
+    dirs.pop()
+        .ok_or_else(|| format!("paid failure left no durable run under {}", runs.display()).into())
+}
+
 fn assert_all_live_groups_dead(run_dir: &Path) -> TestResult {
     let run: serde_json::Value = serde_json::from_slice(&fs::read(run_dir.join("run.json"))?)?;
     for step in run["steps"].as_array().into_iter().flatten() {
@@ -880,15 +1125,89 @@ fn assert_all_live_groups_dead(run_dir: &Path) -> TestResult {
             Some(true),
             "paid cleanup left group {pgid} without durable death proof"
         );
-        assert!(
-            matches!(
-                loadout_lib::engine::supervisor::reap_group(pgid),
-                GroupProof::Dead { .. }
-            ),
-            "paid cleanup left process group {pgid} alive"
+        let proof = group_probe(pgid);
+        assert_eq!(
+            proof.err().and_then(|error| error.raw_os_error()),
+            Some(libc::ESRCH),
+            "paid cleanup returned while pure kill(-{pgid}, 0) still sees the process group"
         );
     }
     Ok(())
+}
+
+#[allow(unsafe_code)]
+fn group_probe(pgid: i32) -> io::Result<()> {
+    // SAFETY: sygnal 0 nie dostarcza sygnalu. Pyta jadro o istnienie grupy i niczego nie zbiera,
+    // w przeciwienstwie do `reap_group`, wiec sam oracle nie moze wytworzyc swojego dowodu.
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[derive(Debug)]
+struct HostExclusivity {
+    scanned_processes: usize,
+    conflicts: Vec<String>,
+}
+
+fn ensure_host_exclusive() -> TestResult<HostExclusivity> {
+    let output = Command::new("ps").args(["-axo", "pid=,comm="]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "paid oracle refused: host process exclusivity could not be checked (ps exited {})",
+            output.status
+        )
+        .into());
+    }
+    let table = String::from_utf8(output.stdout)
+        .map_err(|_| "paid oracle refused: host process table was not UTF-8")?;
+    let own_pid = std::process::id();
+    let mut scanned_processes = 0;
+    let mut conflicts = Vec::new();
+    for line in table.lines() {
+        let Some((pid, command)) = line.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        scanned_processes += 1;
+        if pid == own_pid {
+            continue;
+        }
+        let executable = Path::new(command.trim())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(command.trim())
+            .to_ascii_lowercase();
+        if is_host_state_writer(&executable) {
+            // Tylko PID i basename, nigdy argv: prompt oraz sekrety nie trafiaja do odmowy.
+            conflicts.push(format!("pid {pid} ({executable})"));
+        }
+    }
+    let evidence = HostExclusivity {
+        scanned_processes,
+        conflicts,
+    };
+    if !evidence.conflicts.is_empty() {
+        return Err(format!(
+            "paid oracle refused before touching host state: external vendor processes are active: {}",
+            evidence.conflicts.join(", ")
+        )
+        .into());
+    }
+    Ok(evidence)
+}
+
+fn is_host_state_writer(executable: &str) -> bool {
+    ["claude", "codex", "loadout"].iter().any(|name| {
+        executable == *name
+            || executable.starts_with(&format!("{name}-"))
+            || executable.starts_with(&format!("{name}_"))
+    })
 }
 
 struct HostLease {
