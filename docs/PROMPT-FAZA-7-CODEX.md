@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-143 zamknięte; T-147 → T-148)
+# Prompt orchestratora — faza 7 (T-147 wylądowało; T-148 ostatnie)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -364,7 +364,7 @@ a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały ł
 | 12b | **ZAMKNIĘTE:** T-144 | 17/18 po repair; timeout i spadek liczby asercji, nie ląduj |
 | 12c | **WYŁĄDOWANE:** T-145 | pełny następca T-144; merge `d974613`, test-infra `415f730` |
 | 13 | **ZAMKNIĘTE:** T-143 | oba nowe specy straciły po jednej asercji przed bramką |
-| 13b | `./ship-task.sh T-147 --agent codex --reviewer codex` | pełny następca z odciskiem minimum 7/7 |
+| 13b | **WYŁĄDOWANE:** T-147 | pełny następca z odciskiem 8/8; merge `2b65b2e` |
 | 14 | **ZAMKNIĘTE bez uruchomienia:** T-142 | fałszywa zależność T-141 i niewykonalny hard cap Codeksa |
 | 14b | **ZAMKNIĘTE bez uruchomienia:** T-146 | zależy od zamkniętego T-143 |
 | 14c | `./ship-task.sh T-148 --agent codex --reviewer codex` | uczciwy końcowy oracle; musi być ostatni |

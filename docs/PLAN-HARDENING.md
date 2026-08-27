@@ -159,7 +159,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-144 | **ZAMKNIĘTE:** 17/18 po naprawie; timeout i zmniejszenie asercji starych speców | T-140 (pełny następca T-141) | nie | 2 |
 | T-145 | Recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
 | T-146 | **ZAMKNIĘTE bez uruchomienia:** zależność od zamkniętego T-143 | T-140, T-145, T-143 (pełny następca T-142) | nie (tylko testy flow) | 2 |
-| T-147 | Startup reaper z zachowanym odciskiem 7/7 | T-145 (pełny następca T-143) | nie | 2 |
+| T-147 | **WYŁĄDOWANE:** startup reaper z zachowanym odciskiem 8/8 | T-145 (pełny następca T-143) | nie | 2 |
 | T-148 | Uczciwy żywy oracle po wylądowanym T-147 | T-140, T-145, T-147 (pełny następca T-146) | nie (tylko testy flow) | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
@@ -514,7 +514,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140 i T-145 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144 i T-146 są zamknięte. Następna kolejność to T-147 → T-148; T-148 pozostaje ostatnim oracle.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140, T-145 i T-147 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144 i T-146 są zamknięte. Następne i ostatnie jest T-148.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.

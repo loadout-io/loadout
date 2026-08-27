@@ -4,6 +4,25 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 05:16 — T-147 w trunku; startup reaper ma deterministyczny dowód
+
+**T-147 · zielone / WYLĄDOWANE · 12 min 34 s Harnessu + 3 min 22 s lądowania ·
+$0,00 raportowanego kosztu.** Enforced `before` wykonało oba standalone targety i padło na
+runtime szkielecie w 0,31 s. Każdy spec został certyfikowany z ośmioma liniami asercji i
+zachował pełny odcisk do końca. Wspólny neutralny rdzeń zatrzymuje się na `Refused`, wymaga
+sondy także przy zerowym limicie oraz nie uznaje dostarczonego KILL za śmierć bez późniejszego
+`NoSuchGroup`. Produkcyjny `reap_group` jest cienkim adapterem tego samego rdzenia; tylko ESRCH
+mapuje się na brak grupy.
+
+Pierwsza pełna bramka przeszła **18/18 w 68,33 s**, a recenzent Codeks 5.5 odpowiedział
+`nothing to add`. `integrate.sh` wylądował wyłącznie `task-T-147` jako **`2b65b2e`**; pełne
+bramki przed i po merge'u przeszły **16/16 w 59,21 s** oraz **16/16 w 114,86 s**. `TASK.md`
+nie przeżył, `main` jest czysty.
+
+Paragony kontraktu/build pokazują co najmniej 2 932 680 tokenów wejścia (2 785 024 z cache)
+i 24 082 wyjścia; review nie ma osobnego licznika, Harness nie podał ceny dolarowej. Następne
+i ostatnie jest T-148, a po jego lądowaniu osobny, jawnie uzbrojony płatny oracle.
+
 ## 2026-08-27, 04:57 — T-143 ZAMKNIĘTE na odcisku asercji; T-147 przejmuje dowód
 
 **T-143 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 12 min 28 s Harnessu · $0,00 raportowanego
