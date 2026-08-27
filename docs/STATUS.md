@@ -4,6 +4,29 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 03:44 — T-144 ZAMKNIĘTE 17/18; T-145 zachowa stare regresje
+
+**T-144 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 40 min 58 s Harnessu · $0,00 raportowanego
+kosztu.** Enforced `before` uruchomiło oba nowe targety i uczciwie padło na zachowaniu w
+0,56 s. Implementacja domknęła semantykę T-141, a recenzent wskazał dwie luki wyroczni:
+Codeks był sądzony przez helper zamiast pełnego `exec_argv`, a zakaz martwych pól planu
+sprawdzał tylko najwyższy poziom JSON. Jedyna naprawa domknęła obie uwagi i zaktualizowała
+stare moduły recovery; pełny clippy oraz oba AC były zielone.
+
+Końcowa bramka pozostała **17/18 w 15,71 s** na niezależnym teście
+`recovery_waits_for_the_slug_that_owns_an_active_ledger_temp`, który skończył się
+`RecvError`/timeoutem. Nie uznajemy deklaracji wykonawcy o ograniczeniu środowiska za dowód:
+paragon pokazuje pojedynczy timeout. Harness słusznie odmówił również dlatego, że naprawa
+zmniejszyła liczbę linii asercji w trzech istniejących specach: 16→10, 13→10 i 10→9.
+Gałąź `task-T-144` nie ląduje.
+
+Paragony kontraktu/build pokazują co najmniej 8 227 627 tokenów wejścia (7 922 176 z cache)
+i 38 137 wyjścia; review/repair nie mają osobnych liczników. **T-145** przejmuje wyłącznie
+produkcyjne commity `d8e5ca4` i `7fef6fc` po własnym czerwonym `before`, odtwarza oba nowe
+oracle i zachowuje certyfikowane minima wszystkich trzech starych speców. Nie przejmuje
+testowych commitów T-144 ani nie maskuje niezależnego timeoutu. Następna kolejność:
+T-145 → T-143 → T-142.
+
 ## 2026-08-27, 03:01 — T-141 ZAMKNIĘTE 17/18; świeży T-144 przejmuje recovery
 
 **T-141 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 31 min 32 s Harnessu · $0,00 raportowanego

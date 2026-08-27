@@ -154,9 +154,10 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-135 | **WYŁĄDOWAŁO:** startup cleanup eskaluje i zapisuje ocalały proces | T-134 (następca pozostałej części T-106) | nie | 2 |
 | T-140 | **WYŁĄDOWAŁO:** świeży i odbudowany indeks nie tworzy martwej tabeli `memory` | T-135 (następca schematu T-108) | nie | 2 |
 | T-141 | **ZAMKNIĘTE:** 17/18 po naprawie; drugi lint w nowym specu | T-140 (następca recovery T-108) | nie | 2 |
-| T-142 | Prawdziwy bieg jest końcową wyrocznią fazy 7 | T-140, T-144, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
-| T-143 | Deterministyczny dowód odmowy i sondy po KILL | T-144 (następca luk T-135) | nie | 2 |
-| T-144 | Recovery ma jedno wyjście i pełny dowód po T-141 | T-140 (pełny następca T-141) | nie | 2 |
+| T-142 | Prawdziwy bieg jest końcową wyrocznią fazy 7 | T-140, T-145, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
+| T-143 | Deterministyczny dowód odmowy i sondy po KILL | T-145 (następca luk T-135) | nie | 2 |
+| T-144 | **ZAMKNIĘTE:** 17/18 po naprawie; timeout i zmniejszenie asercji starych speców | T-140 (pełny następca T-141) | nie | 2 |
+| T-145 | Recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -468,14 +469,16 @@ z produkcyjnej sondy ESRCH. T-135 pozostaje niezależnym testem prawdziwych grup
 - Zostawić z poprawionym nagłówkiem: `supersede()`/`Kind` (wraca przy `/correct`),
   sterownik `Absent` (trzeci vendor).
 
-**T-140/T-141/T-144 — świeże zastępstwo T-108.** T-140 usuwa `memory` ze świeżego i odbudowanego
+**T-140/T-141/T-144/T-145 — świeże zastępstwo T-108.** T-140 usuwa `memory` ze świeżego i odbudowanego
 indeksu oraz prostuje nagłówek notatek. Stara baza zachowuje martwą tabelę bez zmian, bo
 niezmiennik 25 zakazuje `DROP` i przepisywania wierszy; znika ona dopiero z odtwarzanego
 indeksu po jego skasowaniu. T-141 usuwa `RecoveryPlan.ask` oraz zależność decyzji od sesji i
 próby. `RunSpec.resume` zostaje jawnym, żywym transportem adapterów: 49 literałów i oba
 adaptery wykluczają traktowanie go jako martwej gałęzi recovery. T-141 zostało zamknięte
-17/18 po drugim lincie specu; T-144 przejmuje jego produkcję i stare regresje dopiero po
-własnym czerwonym `before`, z nowymi standalone targetami obejmującymi uwagi recenzenta.
+17/18 po drugim lincie specu. T-144 domknęło nowe AC, lecz zostało zamknięte 17/18 po
+niezależnym timeoutcie i wykryciu spadku liczby asercji w trzech starych specach. T-145
+przejmuje wyłącznie jego produkcję po własnym czerwonym `before`, odtwarza oracle recenzenta
+i wymaga co najmniej certyfikowanych 16/13/10 asercji w migrowanych regresjach.
 
 **T-142 — świeży następca T-107 i ostatnie zadanie.** Standalone offline sądzi dokładnie ten
 sam graf co dwa uśpione testy live. Po lądowaniu osobny, jawnie uzbrojony przebieg `--ignored`
@@ -502,7 +505,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135 i T-140 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138 i T-141 są zamknięte. Następna kolejność to T-144 → T-143 → T-142; T-142 pozostaje ostatnim oracle.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135 i T-140 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141 i T-144 są zamknięte. Następna kolejność to T-145 → T-143 → T-142; T-142 pozostaje ostatnim oracle.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
