@@ -492,6 +492,27 @@ pub enum GroupProof {
     Alive,
 }
 
+/// Neutralna operacja na grupie używana przez rdzeń startup reaper.
+///
+/// Nazwy POSIX-owych sygnałów pozostają w tym module (niezmiennik 3), a deterministyczny
+/// standalone target może sterować odpowiedziami bez tworzenia prawdziwego procesu.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapAction {
+    Term,
+    Probe,
+    Kill,
+}
+
+/// Neutralna odpowiedź signalera, która nie wypuszcza platformowego `errno` poza ten moduł.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapResponse {
+    Delivered,
+    NoSuchGroup,
+    Refused,
+}
+
 /// Co dziecko dostaje na stdin. Jedyna droga, którą wchodzą prompt i sekrety (niezmiennik 9):
 /// nigdy argv, nigdy plik tymczasowy, nigdy dziennik.
 #[derive(Debug, Clone)]
@@ -1074,38 +1095,57 @@ pub fn machine_booted_at() -> Option<String> {
 /// Tak jak [`Supervised::stop`], sprzątanie prowadzi `SIGTERM`, daje grupie pełne okno łaski,
 /// a dopiero potem eskaluje do `SIGKILL`. Brak uchwytu dziecka zmienia sposób czekania, nie
 /// politykę: synchroniczna pętla pyta jądro sygnałem zerowym i ma te same jawne sufity.
+///
+/// 2026-08-27 (T-147): ten szew jest publiczny wyłącznie dla standalone integration targetów.
+/// Produkcyjny adapter i testy mają wykonywać ten sam rdzeń, ale tylko ten plik mapuje sygnały
+/// i błędy platformy na neutralne wartości.
+#[doc(hidden)]
+#[must_use]
+pub fn reap_group_with_signaler(
+    grace: Duration,
+    proof_after_kill: Duration,
+    mut signal: impl FnMut(ReapAction) -> ReapResponse,
+) -> GroupProof {
+    match signal(ReapAction::Term) {
+        ReapResponse::Delivered => {}
+        ReapResponse::NoSuchGroup => return GroupProof::Dead { status: None },
+        ReapResponse::Refused => return GroupProof::Alive,
+    }
+
+    match wait_for_group_to_disappear(grace, &mut signal) {
+        ReapWait::Gone => return GroupProof::Dead { status: None },
+        ReapWait::Refused => return GroupProof::Alive,
+        ReapWait::TimedOut => {}
+    }
+
+    match signal(ReapAction::Kill) {
+        ReapResponse::Delivered => {}
+        ReapResponse::NoSuchGroup => return GroupProof::Dead { status: None },
+        ReapResponse::Refused => return GroupProof::Alive,
+    }
+
+    match wait_for_group_to_disappear(proof_after_kill, &mut signal) {
+        ReapWait::Gone => GroupProof::Dead { status: None },
+        ReapWait::Refused | ReapWait::TimedOut => GroupProof::Alive,
+    }
+}
+
 #[must_use]
 pub fn reap_group(pgid: i32) -> GroupProof {
-    match signal_group(pgid, SIGNAL_TERM) {
-        Ok(()) => {}
-        Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => {
-            return GroupProof::Dead { status: None };
+    reap_group_with_signaler(DEFAULT_GRACE, PROOF_AFTER_KILL, |action| {
+        let platform_signal = match action {
+            ReapAction::Term => SIGNAL_TERM,
+            ReapAction::Probe => 0,
+            ReapAction::Kill => SIGNAL_KILL,
+        };
+        match signal_group(pgid, platform_signal) {
+            Ok(()) => ReapResponse::Delivered,
+            Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => ReapResponse::NoSuchGroup,
+            // 2026-08-27: szczególnie `EPERM` może oznaczać PGID przewinięty do cudzej
+            // grupy. Rdzeń musi dostać odmowę, nie fałszywy dowód śmierci ani zgodę na KILL.
+            Err(_) => ReapResponse::Refused,
         }
-        // 2026-08-27: `EPERM` może oznaczać PGID przewinięty do cudzej grupy. Bez wysłanego
-        // TERM-u nie mamy prawa próbować mocniejszego sygnału na tej samej liczbie.
-        Err(_) => return GroupProof::Alive,
-    }
-
-    match wait_for_group_to_disappear(pgid, DEFAULT_GRACE) {
-        Ok(true) => return GroupProof::Dead { status: None },
-        // Każdy błąd inny niż `ESRCH` przerywa eskalację. Szczególnie `EPERM` między sondami
-        // może znaczyć, że stara grupa zniknęła, a jej numer dostał już cudzy proces.
-        Err(_) => return GroupProof::Alive,
-        Ok(false) => {}
-    }
-
-    match signal_group(pgid, SIGNAL_KILL) {
-        Ok(()) => {}
-        Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => {
-            return GroupProof::Dead { status: None };
-        }
-        Err(_) => return GroupProof::Alive,
-    }
-
-    match wait_for_group_to_disappear(pgid, PROOF_AFTER_KILL) {
-        Ok(true) => GroupProof::Dead { status: None },
-        Ok(false) | Err(_) => GroupProof::Alive,
-    }
+    })
 }
 
 /// Wysyła sygnał do całej grupy i zachowuje dokładny `errno` dla decyzji dowodowej wyżej.
@@ -1119,22 +1159,32 @@ fn signal_group(pgid: i32, signal: i32) -> io::Result<()> {
     }
 }
 
-/// Czeka najwyżej `limit`, aż sygnał zerowy zwróci `ESRCH`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReapWait {
+    Gone,
+    Refused,
+    TimedOut,
+}
+
+/// Czeka najwyżej `limit`, aż neutralna sonda zwróci brak grupy.
 ///
-/// `Ok(false)` znaczy wyłącznie „grupa odpowiadała przez cały limit". Inny błąd sondy jest
-/// zachowany jako `Err`, żeby wołający nie pomylił odmowy uprawnień z prawem do eskalacji.
-fn wait_for_group_to_disappear(pgid: i32, limit: Duration) -> io::Result<bool> {
+/// Pierwsza sonda zawsze poprzedza ocenę czasu. Dzięki temu zerowy limit nadal coś mierzy,
+/// zamiast uznać upływ czasu za dowód albo zgodę na dalszą eskalację.
+fn wait_for_group_to_disappear(
+    limit: Duration,
+    signal: &mut impl FnMut(ReapAction) -> ReapResponse,
+) -> ReapWait {
     let began = Instant::now();
     loop {
-        match signal_group(pgid, 0) {
-            Ok(()) => {}
-            Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => return Ok(true),
-            Err(error) => return Err(error),
+        match signal(ReapAction::Probe) {
+            ReapResponse::Delivered => {}
+            ReapResponse::NoSuchGroup => return ReapWait::Gone,
+            ReapResponse::Refused => return ReapWait::Refused,
         }
 
         let elapsed = began.elapsed();
         if elapsed >= limit {
-            return Ok(false);
+            return ReapWait::TimedOut;
         }
         std::thread::sleep(PROOF_POLL.min(limit.saturating_sub(elapsed)));
     }
