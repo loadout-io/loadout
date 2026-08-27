@@ -116,6 +116,13 @@ jobs:
           # `cache: npm` NIE jest tu użyte celowo: wymaga istniejącego lockfile'a
           # i wywraca cały bieg, kiedy go nie ma. Cache poniżej degraduje się cicho.
 
+      - name: Install the pinned toolchain used by gate self-tests
+        # 2026-08-27: the TypeScript suite contains sandbox tests for checks/full-test.sh.
+        # On a clean runner their first `cargo --version` made rustup download 1.96
+        # inside a synchronous 10-second Vitest hook, so the hook timed out before
+        # any assertion. Prepare the declared toolchain outside the measured test.
+        run: rustup show
+
       - name: Cache the npm download cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
