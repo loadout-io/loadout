@@ -1103,7 +1103,7 @@ pub fn machine_booted_at() -> Option<String> {
 #[must_use]
 pub fn reap_group_with_signaler(
     grace: Duration,
-    _proof_after_kill: Duration,
+    proof_after_kill: Duration,
     mut signal: impl FnMut(ReapAction) -> ReapResponse,
 ) -> GroupProof {
     match signal(ReapAction::Term) {
@@ -1113,6 +1113,18 @@ pub fn reap_group_with_signaler(
     }
 
     match wait_for_group_to_disappear(grace, &mut signal) {
+        ReapWait::Gone => return GroupProof::Dead { status: None },
+        ReapWait::Refused => return GroupProof::Alive,
+        ReapWait::TimedOut => {}
+    }
+
+    match signal(ReapAction::Kill) {
+        ReapResponse::Delivered => {}
+        ReapResponse::NoSuchGroup => return GroupProof::Dead { status: None },
+        ReapResponse::Refused => return GroupProof::Alive,
+    }
+
+    match wait_for_group_to_disappear(proof_after_kill, &mut signal) {
         ReapWait::Gone => GroupProof::Dead { status: None },
         ReapWait::Refused | ReapWait::TimedOut => GroupProof::Alive,
     }
