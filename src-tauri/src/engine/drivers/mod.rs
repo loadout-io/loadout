@@ -11,6 +11,9 @@
 //! ([`Policy`]) i **jedną** tabelę tłumaczenia na flagi, w adapterze. Cicha wersja złamania
 //! nie wygląda jak nowy trait — wygląda jak `if agent == "claude" { … }` w miejscu wywołania.
 //!
+//! [`RunSpec::resume`] jest jawnym transportem adaptera dla istniejącej sesji. Recovery tego
+//! transportu nie konstruuje: wyłącznie sprząta procesy i oznacza faktycznie przerwane kroki.
+//!
 //! # Stan tego pliku: KOMPLETNY (2026-08-15)
 //!
 //! Typy są tu w całości, bo to one są kontraktem, o który opierają się kryteria — a ten plik
@@ -122,7 +125,8 @@ pub struct RunSpec {
     /// Katalogi poza `cwd`, do których krok ma mieć dostęp — w praktyce katalog przekazań
     /// [`docs/ARCHITECTURE.md` §8].
     pub extra_dirs: Vec<PathBuf>,
-    /// Sesja do wznowienia. `None` przy pierwszej turze kroku.
+    /// Jawny adapterowy start istniejącej sesji. `None` wybiera pierwszą turę kroku;
+    /// recovery tego pola nie konstruuje, bo wyłącznie sprząta i oznacza przerwane kroki.
     pub resume: Option<SessionRef>,
 }
 

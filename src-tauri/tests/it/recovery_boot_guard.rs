@@ -12,7 +12,7 @@
 //! w jednej funkcji testowej, obok siebie:
 //!
 //! 1. zgodny czas startu → `reap` jest dokładnie `[4321, 4322, 4323]`, a nie „coś niepustego",
-//! 2. inny czas startu → `reap` puste, ale te same trzy kroki dostają status i to samo pytanie,
+//! 2. inny czas startu → `reap` puste, ale te same trzy kroki nadal dostają status,
 //! 3. brak czasu startu w wierszu → `reap` puste, a wiersze idą do `plan.unreadable`.
 //!
 //! Wiersz trzeci jest osobnym przypadkiem, bo brak strażnika **nie jest** zgodą na strzał, i nie
@@ -25,9 +25,7 @@
 //! zbiera po prostu „wszystkie wiersze z `pgid`", zwróciłaby pięć liczb zamiast trzech. Bez tych
 //! dwóch wierszy kryterium przepuszczałoby filtr, który nie patrzy na status.
 
-use loadout_lib::recovery::{
-    self, Machine, OptionEffect, QuestionOption, RecoveryPlan, RecoveryRow,
-};
+use loadout_lib::recovery::{self, Machine, RecoveryPlan, RecoveryRow};
 
 /// Czas startu maszyny, na której Loadout właśnie wstał.
 const BOOT_NOW: &str = "1786900000";
@@ -51,19 +49,6 @@ const STEP_D: &str = "step-d";
 /// Drugi krok skończony przed awarią.
 const STEP_E: &str = "step-e";
 
-/// Sesja agenta w kształcie, w jakim przyjmuje ją `claude --session-id` [T7 §6.2, V].
-fn session(step: &str) -> String {
-    format!("0199ab00-0000-7000-8000-00000000{:04x}", checksum(step))
-}
-
-/// Stabilna liczba z nazwy kroku — żeby każdy krok miał własną sesję i żeby ta sesja nie
-/// zależała od kolejności wywołań.
-fn checksum(step: &str) -> u16 {
-    step.bytes().fold(0u16, |acc, b| {
-        acc.wrapping_mul(31).wrapping_add(u16::from(b))
-    })
-}
-
 /// Jeden wiersz. `pid` równy `pgid`, bo na uniksie lider grupy to proces, który uruchomiliśmy.
 fn row(step_id: &str, step_status: &str, pgid: i32, boot: Option<&str>) -> RecoveryRow {
     RecoveryRow {
@@ -74,8 +59,6 @@ fn row(step_id: &str, step_status: &str, pgid: i32, boot: Option<&str>) -> Recov
         run_boot_id: boot.map(str::to_owned),
         pid: Some(pgid),
         pgid: Some(pgid),
-        session_id: Some(session(step_id)),
-        attempt: 0,
     }
 }
 
@@ -112,33 +95,6 @@ fn status_lines(plan: &RecoveryPlan) -> Vec<String> {
         .collect()
 }
 
-/// Jedna opcja pytania, **bez świeżej sesji**.
-///
-/// Świeża sesja jest inna przy każdym wywołaniu `decide` i taka ma być — pilnuje tego AC-4.
-/// Tutaj porównujemy pytanie z przypadku 1 z pytaniem z przypadku 2 i gdyby wchodziła w skład
-/// porównania, dwa poprawne pytania nigdy nie byłyby równe.
-fn describe(option: &QuestionOption) -> String {
-    match &option.effect {
-        OptionEffect::PickUp { session_id } => format!("[{}] resume {session_id}", option.label),
-        OptionEffect::StartOver { attempt, .. } => format!("[{}] try {attempt}", option.label),
-    }
-}
-
-/// `plan.ask` jako czytelne wiersze.
-fn question_lines(plan: &RecoveryPlan) -> Vec<String> {
-    plan.ask
-        .iter()
-        .map(|question| {
-            format!(
-                "{} | {} | {}",
-                question.step_id,
-                describe(&question.options[0]),
-                describe(&question.options[1]),
-            )
-        })
-        .collect()
-}
-
 /// Kroki wypisane jako nieczytelne, w kolejności planu.
 fn unreadable_ids(plan: &RecoveryPlan) -> Vec<String> {
     plan.unreadable
@@ -156,16 +112,17 @@ fn wanted_status_lines() -> Vec<String> {
     ]
 }
 
-/// Trzy pytania, których wymagają przypadki 1 i 2.
-fn wanted_question_lines() -> Vec<String> {
-    [STEP_A, STEP_B, STEP_C]
+fn run_lines(plan: &RecoveryPlan) -> Vec<String> {
+    plan.run_status
         .iter()
-        .map(|step| {
-            format!(
-                "{step} | [Pick up where it left off] resume {} | [Start this step again] try 1",
-                session(step)
-            )
-        })
+        .map(|change| format!("{} -> {}", change.run_id, change.status))
+        .collect()
+}
+
+fn changed_step_ids(plan: &RecoveryPlan) -> Vec<String> {
+    plan.step_status
+        .iter()
+        .map(|change| change.step_id.clone())
         .collect()
 }
 
@@ -200,14 +157,19 @@ fn a_changed_boot_time_turns_reaping_off_and_nothing_else_off() {
          status column says interrupted"
     );
     assert_eq!(
-        question_lines(&same),
-        wanted_question_lines(),
-        "each interrupted step gets one question with both options"
+        run_lines(&same),
+        vec![format!("{RUN} -> interrupted")],
+        "one proven cut-off row is enough to mark this run, but five rows must not duplicate it"
+    );
+    assert_eq!(
+        changed_step_ids(&same),
+        vec![STEP_A.to_owned(), STEP_B.to_owned(), STEP_C.to_owned()],
+        "the finished rows keep their status even though they still carry process groups"
     );
 
-    // ── 2. Inny czas startu: nie sprzątamy, ale nadal pytamy ───────────────────────────────
-    // Restart maszyny już zabił sieroty, więc nie ma czego sprzątać. Jest za to o co zapytać:
-    // krok nadal został przerwany w połowie i człowiek nadal musi zdecydować [T7 §6.3].
+    // ── 2. Inny czas startu: nie sprzątamy, ale nadal zapisujemy przerwanie ────────────────
+    // Restart maszyny już zabił sieroty, więc nie ma czego sprzątać. Krok nadal został
+    // przerwany w połowie, więc recovery zapisuje ten fakt i nie konstruuje dalszego działania.
     let rebooted = recovery::decide(&rows(Some(BOOT_BEFORE)), &machine);
     assert!(
         rebooted.reap.is_empty(),
@@ -229,16 +191,14 @@ fn a_changed_boot_time_turns_reaping_off_and_nothing_else_off() {
          go to failed with reason interrupted"
     );
     assert_eq!(
-        question_lines(&rebooted),
-        question_lines(&same),
-        "the questions must not depend on whether the machine rebooted — the human is being \
-         asked the same thing either way"
+        run_lines(&rebooted),
+        run_lines(&same),
+        "the run-status fact cannot depend on whether the machine rebooted"
     );
     assert_eq!(
-        question_lines(&rebooted),
-        wanted_question_lines(),
-        "…and both of them have to be the question this criterion names, not merely equal to \
-         each other: two empty lists compare equal too"
+        changed_step_ids(&rebooted),
+        changed_step_ids(&same),
+        "the same three rows were cut off on either boot; only the signal decision changes"
     );
 
     // ── 3. Brak czasu startu: nie sprzątamy i mówimy to głośno ─────────────────────────────
@@ -256,6 +216,17 @@ fn a_changed_boot_time_turns_reaping_off_and_nothing_else_off() {
         "the three unfinished rows could not be decided about, so each has to be named in \
          unreadable — a row that vanishes silently is the failure mode this list exists for. \
          The two finished rows decide nothing and belong nowhere"
+    );
+    assert!(
+        ancient.run_status.is_empty(),
+        "without a boot marker no live row is proven cut off, so the run cannot be marked: {:?}",
+        ancient.run_status
+    );
+    assert!(
+        ancient.step_status.is_empty(),
+        "without a boot marker no live step is proven cut off, so no step status can change: \
+         {:?}",
+        ancient.step_status
     );
     for entry in &ancient.unreadable {
         assert!(

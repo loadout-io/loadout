@@ -13,7 +13,7 @@
 //! **Słaba wersja tego kryterium to sprawdzenie samego drugiego przebiegu** („plan jest pusty").
 //! Spełnia je funkcja zwracająca pusty plan zawsze — czyli odzyskiwanie, które nie odzyskuje
 //! niczego. Dlatego pierwszy przebieg stoi w tej samej funkcji testowej i musi dać niepuste
-//! `reap`, `ask` i `step_status` z wypisanymi wprost identyfikatorami kroków. Puste i niepuste
+//! `reap`, `run_status` i `step_status` z wypisanymi wprost identyfikatorami. Puste i niepuste
 //! stoją obok siebie, więc implementacja zwracająca zawsze to samo pada na jednym z nich.
 //!
 //! Kolejność `plan.reap` jest kolejnością wierszy i jest tu sprawdzana wprost. Kolejność
@@ -56,8 +56,6 @@ fn row(
         run_boot_id: Some(BOOT.to_owned()),
         pid: pgid,
         pgid,
-        session_id: Some(format!("0199ab00-0000-7000-8000-{:012x}", step_id.len())),
-        attempt: 0,
     }
 }
 
@@ -123,17 +121,6 @@ fn step_lines(plan: &RecoveryPlan) -> Vec<String> {
         .collect();
     lines.sort();
     lines
-}
-
-/// Kroki, o które plan pyta, posortowane.
-fn asked_steps(plan: &RecoveryPlan) -> Vec<String> {
-    let mut ids: Vec<String> = plan
-        .ask
-        .iter()
-        .map(|question| question.step_id.clone())
-        .collect();
-    ids.sort();
-    ids
 }
 
 /// Nakłada plan na wiersze: to robi z nimi `store::writer` między jednym startem a drugim.
@@ -205,14 +192,11 @@ fn recovery_writes_one_status_table_and_the_next_start_finds_nothing_to_do() {
          carry leftover pgids too (4390, 4391, 4392) and none of them may be signalled"
     );
 
-    assert_eq!(
-        asked_steps(&first),
-        vec![
-            "ready-1".to_owned(),
-            "running-1".to_owned(),
-            "running-2".to_owned()
-        ],
-        "one question per interrupted step, and only for the interrupted ones"
+    assert!(
+        first.unreadable.is_empty(),
+        "all eight rows use known run and step states, and every live row has a safe process \
+         group, so none may be refused: {:?}",
+        first.unreadable
     );
 
     // ── Zapis planu, czyli to, co dzieje się między jednym startem a drugim ────────────────
@@ -230,10 +214,10 @@ fn recovery_writes_one_status_table_and_the_next_start_finds_nothing_to_do() {
         second.reap
     );
     assert!(
-        second.ask.is_empty(),
-        "the human was already asked about these steps. Asking again on every restart is how a \
-         crash turns into a queue of identical questions: {:?}",
-        asked_steps(&second)
+        second.run_status.is_empty(),
+        "the first pass already closed both runs, so the next startup must not write either \
+         run status again: {:?}",
+        run_lines(&second)
     );
     assert!(
         second.step_status.is_empty(),

@@ -1,4 +1,4 @@
-//! Uzgodnienie stanu przy starcie: co zabić, co przepisać, o co zapytać.
+//! Uzgodnienie stanu przy starcie: co zabić i co przepisać.
 //!
 //! Agenci **nie giną razem z Loadoutem**. Po jego śmierci przechodzą pod PID 1 i dalej palą
 //! limit [T7 §6.1, V]; zapisany `pgid` przeżywa i nadal daje się zabić z nowego procesu, i to
@@ -17,24 +17,16 @@
 //! ani własnego `pgid` po raz drugi, więc nie ma jak porównać wartości samej ze sobą — patrz
 //! datowana notka przy [`Machine::boot_id`].
 //!
-//! 2026-08-16 — jedyne, po co ten plik sięga poza swoje dwa argumenty, to **świeży identyfikator
-//! sesji** dla opcji „zacznij od nowa" ([`fresh_session`]). Jest to nazwane tutaj, bo inaczej byłoby
-//! ciche: `Uuid::now_v7()` czyta zegar, a nie stan procesów, więc nie dotyka granicy, której
-//! pilnuje niezmiennik 3 — `checks/quick-boundary.sh` szuka `#[cfg(unix)]`, a tutaj nie ma ani
-//! jednej gałęzi platformowej. Zamiany na wartość wyliczoną z wiersza nie ma: identyfikator
-//! wyliczony z `step_id` i próby byłby ten sam po każdej awarii tego samego kroku, czyli
-//! dokładnie tym sklejeniem dwóch tur w jedną sesję, przed którym broni AC-4.
-//!
 //! # Czego tu świadomie nie ma
 //!
-//! Automatycznego wznowienia przerwanego agenta. Loadout wykrywa, sprząta, oznacza i **pyta**
-//! [T7 §6.3]. Błędne auto-wznowienie jest znacznie gorsze niż jedno uczciwe pytanie, a
-//! `--resume` na sesji zabitej w połowie tury nie było testowane [T7 §11.1]. Brak automatyki
-//! jest własnością typu: w [`RecoveryPlan`] nie ma pola, które by ją włączało.
+//! Wznawiania ani pytania o wznowienie przerwanego agenta. Startup ma wyłącznie konsumentów
+//! sprzątania i zmian statusu, więc recovery nie produkuje decyzji, której nikt nie może wykonać.
+//! Istniejącą sesję nadal może jawnie przekazać wołający adaptera przez `RunSpec.resume`; recovery
+//! tego transportu nie konstruuje.
 //!
 //! # Skąd biorą się wartości, które ten plik ustawia (niezmiennik 4)
 //!
-//! Z plików, nie z bazy. `failed`, powód `interrupted` i `attempt + 1` muszą dać się odtworzyć
+//! Z plików, nie z bazy. `failed` i powód `interrupted` muszą dać się odtworzyć
 //! z `.loadout/runs/<ts>__<id>/run.json` i surowych `logs/agent-<id>.jsonl`. Ten plik zwraca
 //! **plan**, a nie zapis: kto go wczyta i kto go zapisze, rozstrzygają T-06 i T-15.
 
@@ -42,7 +34,6 @@ use serde::Deserialize as _;
 use serde::Serialize;
 use serde::de::IntoDeserializer as _;
 use serde::de::value::StrDeserializer;
-use uuid::Uuid;
 
 use crate::engine::step::StepState;
 
@@ -58,14 +49,6 @@ pub const STEP_FAILED: &str = "failed";
 
 /// Powód wpisywany krokowi obok statusu [`STEP_FAILED`], w osobne pole.
 pub const STEP_REASON_INTERRUPTED: &str = "interrupted";
-
-/// Pierwsza z dwóch opcji pytania. Tekst jest **daną** ustaloną w tym pliku; jego wyświetlenie
-/// i obsługa kliknięcia to widok pracy (T-08 / T-09). Po angielsku, bo widzi go człowiek
-/// (`docs/DECISIONS-LOCKED.md` D5).
-pub const PICK_UP_LABEL: &str = "Pick up where it left off";
-
-/// Druga z dwóch opcji pytania.
-pub const START_OVER_LABEL: &str = "Start this step again";
 
 /// Wiersz, który odzyskiwanie dostaje na wejściu — jeden krok razem z tym, co wiadomo o jego
 /// biegu.
@@ -97,11 +80,6 @@ pub struct RecoveryRow {
     /// PGID grupy procesów agenta. Jedyna liczba, po której da się sprzątnąć sierotę, i jedyna,
     /// którą wolno podać domykaczowi z [`apply`].
     pub pgid: Option<i32>,
-    /// Sesja agenta, przydzielona **przed** spawnem [T7 §6.2, V]. Bez niej nie ma czego wznowić
-    /// i nie ma o co zapytać: istnieje proces, którego sesji nie umiemy nazwać.
-    pub session_id: Option<String>,
-    /// Numer próby. Ponowienie kroku znaczy `attempt + 1`.
-    pub attempt: i64,
 }
 
 /// Maszyna, na której Loadout właśnie wstał. Obie liczby przyjeżdżają z zewnątrz, bo obie
@@ -134,8 +112,7 @@ pub struct Machine {
 
 /// Co [`decide`] postanowiło zrobić. Sama treść decyzji: nic tu nie zostało wykonane.
 ///
-/// Pięć list, każda adresowana identyfikatorem, i **żadnego pola, które by cokolwiek wznowiło
-/// samo** — brak automatyki jest własnością tego typu, nie ustawieniem [T7 §6.3, §9.4].
+/// Cztery listy, każda adresowana identyfikatorem, i żadnej sesji ani decyzji o wznowieniu.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RecoveryPlan {
     /// `pgid`-y do sprzątnięcia, w kolejności wierszy, bez duplikatów. Pusta lista jest
@@ -145,8 +122,6 @@ pub struct RecoveryPlan {
     pub run_status: Vec<RunStatusChange>,
     /// Kroki, które mają dostać [`STEP_FAILED`] z powodem [`STEP_REASON_INTERRUPTED`].
     pub step_status: Vec<StepStatusChange>,
-    /// Po jednym pytaniu na przerwany krok. Nigdy więcej niż jedno na krok.
-    pub ask: Vec<Question>,
     /// Wiersze, o których nie dało się rozstrzygnąć — **wypisane, nie pominięte**.
     pub unreadable: Vec<Unreadable>,
 }
@@ -174,50 +149,6 @@ pub struct StepStatusChange {
     pub status: String,
     /// Powód, w osobne pole.
     pub reason: String,
-}
-
-/// Jedno pytanie o jeden przerwany krok. Dwie opcje, **żadnej wybranej z góry**.
-///
-/// Opcje są tablicą o stałym rozmiarze, a nie wektorem: „dokładnie dwie" jest wtedy własnością
-/// typu, a nie rzeczą do sprawdzenia przy każdym użyciu.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Question {
-    /// Krok, o który pytamy.
-    pub step_id: String,
-    /// Dwie opcje w ustalonej kolejności: najpierw [`PICK_UP_LABEL`], potem [`START_OVER_LABEL`].
-    /// Kolejność nie jest preferencją — jest kolejnością, w jakiej widzi je człowiek.
-    pub options: [QuestionOption; 2],
-}
-
-/// Jedna z dwóch opcji pytania: tekst po angielsku i to, co się stanie po kliknięciu.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct QuestionOption {
-    /// Zdanie, które zobaczy człowiek. Dana, nie widok.
-    pub label: String,
-    /// Co ta opcja robi.
-    pub effect: OptionEffect,
-}
-
-/// Skutek wybrania opcji. Dwa warianty, bo opcje są dwie.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OptionEffect {
-    /// Kontynuacja tej samej rozmowy: `--resume <session_id>` z sesją **zapisaną w wierszu**
-    /// [T7 §6.2, V].
-    PickUp {
-        /// Sesja z wiersza, nietknięta.
-        session_id: String,
-    },
-    /// Krok od nowa: świeża sesja i `attempt + 1`.
-    ///
-    /// Sesja **musi** być inna niż zapisana. Przepisanie tego samego identyfikatora skleiłoby
-    /// dwie tury w jedną sesję i zgubiło granicę próby.
-    StartOver {
-        /// Nowa sesja, różna od zapisanej i różna od sesji każdego innego pytania.
-        session_id: String,
-        /// `attempt` z wiersza powiększony o jeden.
-        attempt: i64,
-    },
 }
 
 /// Wiersz, o którym nie dało się rozstrzygnąć, razem z jednozdaniowym powodem po angielsku.
@@ -314,15 +245,6 @@ pub mod reason {
     /// `pgid` równy własnej grupie Loadouta.
     pub const PGID_IS_OURS: &str = "The group number written down for this step is the one Loadout itself runs in, \
          so using it would stop Loadout during startup.";
-    /// Krok przerwany w locie, któremu nikt nie zapisał sesji.
-    pub const NO_SESSION: &str = "This step was cut off in flight, but nothing was written down that its agent could \
-         be picked up from.";
-    /// Licznik prób, którego nie da się powiększyć.
-    pub const TRY_COUNT_MAXED: &str =
-        "The number of tries written down for this step cannot be counted any higher.";
-    /// Licznik prób poniżej zera.
-    pub const TRY_COUNT_BELOW_ZERO: &str = "The number of tries written down for this step is below zero, so the next try \
-         could not be numbered.";
 }
 
 /// Sześć stanów **biegu**, tak jak stoją w `CHECK` przy tabeli `runs` w `store::schema`.
@@ -390,15 +312,6 @@ fn step_state(text: &str) -> Option<StepState> {
     StepState::deserialize(wire).ok()
 }
 
-/// Świeży identyfikator sesji dla opcji „zacznij od nowa".
-///
-/// `now_v7`, jak wszędzie indziej w repo: sortuje się po czasie, więc dwie próby tego samego
-/// kroku dają się ustawić w kolejności bez czytania czegokolwiek innego. Wartość **musi** być
-/// nowa przy każdym wywołaniu — patrz notka o wyjątku w nagłówku pliku.
-fn fresh_session() -> String {
-    Uuid::now_v7().to_string()
-}
-
 /// `pgid`, którego zabicie jest bezpieczne. `Err` niesie zdanie do
 /// [`RecoveryPlan::unreadable`].
 ///
@@ -406,10 +319,9 @@ fn fresh_session() -> String {
 /// w ogóle nie zobaczył, dają identyczne [`RecoveryPlan::reap`] i różnią się dopiero na tej
 /// liście.
 ///
-/// 2026-08-16 — sprawdzenie biegnie **niezależnie** od strażnika czasu startu, choć po restarcie
-/// maszyny i tak nikogo nie zabijemy. Powód stoi wprost w AC-1: pytania nie mają prawa zależeć od tego,
-/// czy maszyna się zrestartowała. Gdyby ten filtr stał za strażnikiem, wiersz z `pgid = 0`
-/// dostawałby pytanie po restarcie i nie dostawał bez restartu — jedna awaria, dwie różne listy.
+/// 2026-08-27 — sprawdzenie dotyczy wyłącznie bieżącego bootu. Po restarcie nie wysyłamy
+/// sygnału, więc wartość `pgid` nie uczestniczy już w decyzji i nie może zablokować uczciwego
+/// oznaczenia przerwanego kroku. Na bieżącym boocie wszystkie cztery odmowy nadal obowiązują.
 fn usable_pgid(pgid: Option<i32>, own_pgid: i32) -> Result<i32, &'static str> {
     // `None` nie znaczy „zero" i nie znaczy „nieważne": spawn nie doszedł do zapisu.
     let Some(pgid) = pgid else {
@@ -441,10 +353,6 @@ enum RowVerdict {
     CutOff {
         /// Grupa do sprzątnięcia. `None`, kiedy strażnik czasu startu nie przepuścił.
         reap: Option<i32>,
-        /// Sesja z wiersza, przydzielona przed spawnem [T7 §6.2, V].
-        session_id: String,
-        /// Numer próby po ponowieniu kroku.
-        next_attempt: i64,
     },
 }
 
@@ -473,63 +381,16 @@ fn read_row(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static
     // Strażnik. Rozróżnienie, które tu stoi, jest całym AC-1: BRAK czasu startu to niewiedza
     // (wiersz idzie do `unreadable` i nic się z nim nie dzieje), a czas INNY niż ten jest
     // odpowiedzią — „restart maszyny już zabił sieroty" — więc wiersz zostaje obsłużony
-    // w całości, tylko bez sprzątania. Nie ma czego zabijać, jest o co zapytać [T7 §6.3].
+    // w całości, tylko bez sprzątania. Nie ma czego zabijać, zostaje fakt przerwania do zapisu.
     let Some(recorded_boot) = row.run_boot_id.as_deref() else {
         return Err(reason::NO_BOOT_TIME);
     };
-    let same_machine_since = recorded_boot == machine.boot_id;
+    if recorded_boot != machine.boot_id {
+        return Ok(RowVerdict::CutOff { reap: None });
+    }
+
     let pgid = usable_pgid(row.pgid, machine.own_pgid)?;
-
-    // Sesja jest przydzielana PRZED spawnem [T7 §6.2, V], więc krok, który biegł, ma ją mieć.
-    // Kiedy jej nie ma, istnieje proces, którego sesji nie umiemy nazwać: opcja „podejmij tam,
-    // gdzie stanęło" nie miałaby czego nieść, a pytanie z jedną opcją nie jest pytaniem.
-    let Some(session_id) = row
-        .session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|session| !session.is_empty())
-    else {
-        return Err(reason::NO_SESSION);
-    };
-
-    // `attempt + 1` na `i64::MAX` się przekręca, a próba mniejsza od poprzedniej to ponowienie,
-    // które ląduje na wierszu innej próby. Ujemna próba przewraca to samo w drugą stronę
-    // i wchodzi tu razem z tamtą, bo obie znaczą to samo: tego licznika nie da się kontynuować.
-    if row.attempt < 0 {
-        return Err(reason::TRY_COUNT_BELOW_ZERO);
-    }
-    let Some(next_attempt) = row.attempt.checked_add(1) else {
-        return Err(reason::TRY_COUNT_MAXED);
-    };
-
-    Ok(RowVerdict::CutOff {
-        reap: same_machine_since.then_some(pgid),
-        session_id: session_id.to_owned(),
-        next_attempt,
-    })
-}
-
-/// Jedno pytanie o jeden przerwany krok: dwie opcje, w ustalonej kolejności, żadna nie jest
-/// wybrana z góry.
-fn question(step_id: &str, session_id: &str, next_attempt: i64) -> Question {
-    Question {
-        step_id: step_id.to_owned(),
-        options: [
-            QuestionOption {
-                label: PICK_UP_LABEL.to_owned(),
-                effect: OptionEffect::PickUp {
-                    session_id: session_id.to_owned(),
-                },
-            },
-            QuestionOption {
-                label: START_OVER_LABEL.to_owned(),
-                effect: OptionEffect::StartOver {
-                    session_id: fresh_session(),
-                    attempt: next_attempt,
-                },
-            },
-        ],
-    }
+    Ok(RowVerdict::CutOff { reap: Some(pgid) })
 }
 
 /// Wiersze, które odzyskiwanie ma osądzić: kroki biegów, które baza wciąż uważa za żywe.
@@ -544,11 +405,11 @@ fn question(step_id: &str, session_id: &str, next_attempt: i64) -> Question {
 /// `UNKNOWN_RUN`.
 pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<RecoveryRow>> {
     let mut q = conn.prepare(
-        "SELECT s.id, s.run_id, r.status, s.status, r.boot_id, s.pid, s.pgid,
-                s.agent_session_id, s.attempt
+        "SELECT s.id, s.run_id, r.status, s.status, r.boot_id, s.pid, s.pgid
            FROM steps s
            JOIN runs r ON r.id = s.run_id
-          WHERE r.status = 'running' OR s.status = 'running'",
+          WHERE r.status IN ('running', 'paused')
+             OR s.status IN ('ready', 'running')",
     )?;
     let rows = q.query_map([], |row| {
         Ok(RecoveryRow {
@@ -559,8 +420,6 @@ pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Recove
             run_boot_id: row.get(4)?,
             pid: row.get(5)?,
             pgid: row.get(6)?,
-            session_id: row.get(7)?,
-            attempt: row.get(8)?,
         })
     })?;
     rows.collect()
@@ -571,17 +430,17 @@ pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Recove
 /// Cały stan systemu wjeżdża w [`Machine`], więc nie ma tu skąd wziąć czasu startu po raz drugi
 /// i porównać go ze sobą (patrz [`Machine::boot_id`]).
 ///
-/// Nie panikuje na żadnym wejściu. Nieznany status, `pgid = NULL`, brak sesji i próba, której
-/// nie da się powiększyć, kończą się wpisem w [`RecoveryPlan::unreadable`] — niezmiennik 5.
+/// Nie panikuje na żadnym wejściu. Nieznany status oraz nieużywalny `pgid` na bieżącym boocie
+/// kończą się wpisem w [`RecoveryPlan::unreadable`] — niezmiennik 5.
 #[must_use]
 pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
     let mut plan = RecoveryPlan::default();
 
     for row in rows {
-        // Status biegu czytamy przed statusem kroku i NIEZALEŻNIE od niego. Bieg zastany
-        // w `running` po awarii jest przerwany także wtedy, kiedy o jego kroku nie umiemy
-        // powiedzieć nic — inaczej bieg, którego nikt już nie prowadzi, zostaje na ekranie
-        // jako żywy, bo jedyny jego wiersz zapisała starsza wersja Loadouta.
+        // Status biegu czytamy przed statusem kroku, ale zapis planujemy dopiero po dowodzie,
+        // że ten konkretny krok został przerwany. Sam napis `running` przy biegu nie wystarcza:
+        // starszy wiersz może zawierać wyłącznie skończone kroki i wtedy recovery nie ma czego
+        // oznaczać jako przerwane.
         let Some(run_state) = RunState::from_wire(&row.run_status) else {
             plan.unreadable.push(Unreadable {
                 step_id: row.step_id.clone(),
@@ -589,24 +448,19 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
             });
             continue;
         };
-        let known_run = plan
-            .run_status
-            .iter()
-            .any(|change| change.run_id == row.run_id);
-        if run_state.was_cut_off() && !known_run {
-            plan.run_status.push(RunStatusChange {
-                run_id: row.run_id.clone(),
-                status: RUN_INTERRUPTED.to_owned(),
-            });
-        }
-
         match read_row(row, machine) {
             Ok(RowVerdict::Settled) => {}
-            Ok(RowVerdict::CutOff {
-                reap,
-                session_id,
-                next_attempt,
-            }) => {
+            Ok(RowVerdict::CutOff { reap }) => {
+                let known_run = plan
+                    .run_status
+                    .iter()
+                    .any(|change| change.run_id == row.run_id);
+                if run_state.was_cut_off() && !known_run {
+                    plan.run_status.push(RunStatusChange {
+                        run_id: row.run_id.clone(),
+                        status: RUN_INTERRUPTED.to_owned(),
+                    });
+                }
                 // Duplikat znika bez słowa i to jest decyzja, nie usterka: dwa `SIGTERM` do tej
                 // samej grupy to drugi sygnał wysłany do grupy, która już nie istnieje. Wektor
                 // zamiast zbioru, bo kolejność wierszy jest częścią kontraktu, a wierszy jest
@@ -619,8 +473,6 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
                     status: STEP_FAILED.to_owned(),
                     reason: STEP_REASON_INTERRUPTED.to_owned(),
                 });
-                plan.ask
-                    .push(question(&row.step_id, &session_id, next_attempt));
             }
             Err(reason) => plan.unreadable.push(Unreadable {
                 step_id: row.step_id.clone(),
