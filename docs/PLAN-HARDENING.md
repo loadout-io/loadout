@@ -95,7 +95,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
 | H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134 i T-135 wylądowały** (żywy Stop + startup cleanup; T-106 nie uruchamiać) → **T-143** (dwie luki dowodu recenzenta) |
-| H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-140** (świeży/rebuildowany indeks; bez zakazanego DROP) → **T-141** (recovery bez pytań; żywy transport resume zostaje) |
+| H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec.resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-140 wylądowało** (świeży/rebuildowany indeks; bez zakazanego DROP) → **T-141 następne** (recovery bez pytań; żywy transport resume zostaje) |
 | H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-114** (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
@@ -152,7 +152,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-133 | **WYŁĄDOWAŁO:** pełny receipt z obserwowalną próbą niezależnego błędu IO refleksji | T-131 (pełny następca T-132) | tak | 1 |
 | T-134 | **WYŁĄDOWAŁO:** Live Stop ma sufit i zwalnia następny Start | T-133 (następca żywej części T-106) | tak | 1 |
 | T-135 | **WYŁĄDOWAŁO:** startup cleanup eskaluje i zapisuje ocalały proces | T-134 (następca pozostałej części T-106) | nie | 2 |
-| T-140 | Świeży i odbudowany indeks nie tworzy martwej tabeli `memory` | T-135 (następca schematu T-108) | nie | 2 |
+| T-140 | **WYŁĄDOWAŁO:** świeży i odbudowany indeks nie tworzy martwej tabeli `memory` | T-135 (następca schematu T-108) | nie | 2 |
 | T-141 | Recovery tylko sprząta i oznacza; jawny transport resume zostaje | T-140 (następca recovery T-108) | nie | 2 |
 | T-142 | Prawdziwy bieg jest końcową wyrocznią fazy 7 | T-140, T-141, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
 | T-143 | Deterministyczny dowód odmowy i sondy po KILL | T-141 (następca luk T-135) | nie | 2 |
@@ -499,7 +499,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134 i T-135 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. Następna kolejność to T-140 → T-141 → T-143 → T-142; T-142 pozostaje ostatnim oracle.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135 i T-140 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. Następna kolejność to T-141 → T-143 → T-142; T-142 pozostaje ostatnim oracle.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.

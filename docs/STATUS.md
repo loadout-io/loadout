@@ -4,6 +4,25 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 02:28 — T-140 w trunku; nowe indeksy mają tylko cztery żywe tabele
+
+**T-140 · zielone / WYLĄDOWANE · 17 min 38 s Harnessu + 2 min 32 s lądowania ·
+$0,00 raportowanego kosztu.** Enforced `before` uruchomiło oba standalone targety i padło
+na zachowaniu w 0,48 s. Świeży oraz odbudowany `loadout.db` zawiera teraz wyłącznie `runs`,
+`steps`, `events` i `artifacts`; plikowy zapis notatki nie tworzy bazy ani cienia treści, a
+nagłówek `memory::notes` mówi prawdę o obu korzeniach plikowych.
+
+Zgodnie z niezmiennikiem 25 implementacja nie zawiera `DROP` ani przepisywania: historyczna
+tabela w istniejącym indeksie pozostaje bajtowo nietknięta do skasowania odtwarzalnego DB.
+Nowy target niezależnie dowodzi, że po odbudowie fakty biegu wracają, a martwa tabela nie.
+Pierwsza bramka przeszła **18/18 w 66,78 s**, recenzent Codeks 5.5 odpowiedział `nothing to
+add`. `integrate.sh` wylądował tylko `task-T-140` jako **`d43182c`**; pełne bramki przed i po
+merge'u przeszły **16/16 w 58,78 s** i **16/16 w 88,35 s**. `TASK.md` nie przeżył, `main`
+jest czysty.
+
+Paragony pokazują co najmniej 6 828 843 tokeny wejścia (6 524 160 z cache) i 30 288 wyjścia;
+review nie zapisał osobnego licznika, więc to dolna granica. Następne jest T-141.
+
 ## 2026-08-27, 02:00 — cztery świeże kontrakty domykają H21, H22 i oracle fazy
 
 Równoległe, wyłącznie odczytowe audyty przygotowały cztery standalone zadania. **T-140**
