@@ -4,6 +4,24 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 04:57 — T-143 ZAMKNIĘTE na odcisku asercji; T-147 przejmuje dowód
+
+**T-143 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 12 min 28 s Harnessu · $0,00 raportowanego
+kosztu.** Enforced `before` wykonało oba standalone targety i uczciwie padło na runtime
+`todo!()` w 0,81 s. Implementacja wydzieliła jeden neutralny rdzeń, mapowała wyłącznie ESRCH
+na brak grupy, zatrzymywała KILL po odmowie oraz wymagała sondy po dostarczonym KILL. Niezmieniony
+prawdziwy target T-135 przeszedł 2/2 w 5,40 s.
+
+Harness zatrzymał bieg jeszcze przed pierwszą pełną bramką i recenzją: implementacja
+zmniejszyła oba nowe specy z 7 do 6 linii asercji. To poprawna odmowa ochrony oracle;
+`task-T-143` nie ląduje. Paragony kontraktu/build pokazują co najmniej 2 403 049 tokenów
+wejścia (2 243 072 z cache) i 27 124 wyjścia; brak ceny dolarowej.
+
+**T-147** odtwarza ten sam dowód w nowych targetach, wymaga minimum 7/7 od certyfikacji i po
+własnym czerwonym `before` może przejąć wyłącznie produkcyjne commity `277d0c9` i `64915e0`.
+T-146 zostaje zamknięte bez uruchomienia, bo zależy od T-143. Świeże T-148 zależy od
+wylądowanego T-147 i pozostaje ostatnim oracle. Kolejność: T-147 → T-148.
+
 ## 2026-08-27, 04:42 — T-145 w trunku; osobny commit usuwa jednosekundowy flake
 
 **T-145 · zielone / WYLĄDOWANE · 38 min 18 s Harnessu + 10 min 26 s integracji i naprawy

@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-145 wylądowało; T-143 → T-146)
+# Prompt orchestratora — faza 7 (T-143 zamknięte; T-147 → T-148)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -70,7 +70,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-146.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
+| `tasks/T-98.md` … `tasks/T-148.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -363,9 +363,11 @@ a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały ł
 | 12 | **ZAMKNIĘTE:** T-141 | 17/18 po repair; drugi `needless_raw_string_hashes`, nie ląduj |
 | 12b | **ZAMKNIĘTE:** T-144 | 17/18 po repair; timeout i spadek liczby asercji, nie ląduj |
 | 12c | **WYŁĄDOWANE:** T-145 | pełny następca T-144; merge `d974613`, test-infra `415f730` |
-| 13 | `./ship-task.sh T-143 --agent codex --reviewer codex` | domknięcie dwóch luk dowodu T-135 |
+| 13 | **ZAMKNIĘTE:** T-143 | oba nowe specy straciły po jednej asercji przed bramką |
+| 13b | `./ship-task.sh T-147 --agent codex --reviewer codex` | pełny następca z odciskiem minimum 7/7 |
 | 14 | **ZAMKNIĘTE bez uruchomienia:** T-142 | fałszywa zależność T-141 i niewykonalny hard cap Codeksa |
-| 14b | `./ship-task.sh T-146 --agent codex --reviewer codex` | uczciwy końcowy oracle; musi być ostatni |
+| 14b | **ZAMKNIĘTE bez uruchomienia:** T-146 | zależy od zamkniętego T-143 |
+| 14c | `./ship-task.sh T-148 --agent codex --reviewer codex` | uczciwy końcowy oracle; musi być ostatni |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

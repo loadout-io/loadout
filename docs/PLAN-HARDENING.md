@@ -94,7 +94,7 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
-| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134 i T-135 wylądowały** (żywy Stop + startup cleanup; T-106 nie uruchamiać) → **T-143** (dwie luki dowodu recenzenta) |
+| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134 i T-135 wylądowały** → T-143 zamknięte na odcisku → **T-147** (pełny dowód) |
 | H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec.resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-140 wylądowało**; **T-141 zamknięte 17/18** → **T-144 następne** (pełny następca recovery) |
 | H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-114** (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
@@ -155,10 +155,12 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-140 | **WYŁĄDOWAŁO:** świeży i odbudowany indeks nie tworzy martwej tabeli `memory` | T-135 (następca schematu T-108) | nie | 2 |
 | T-141 | **ZAMKNIĘTE:** 17/18 po naprawie; drugi lint w nowym specu | T-140 (następca recovery T-108) | nie | 2 |
 | T-142 | **ZAMKNIĘTE bez uruchomienia:** fałszywa zależność T-141 i niewykonalny twardy cap Codeksa | T-140, T-145, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
-| T-143 | Deterministyczny dowód odmowy i sondy po KILL | T-145 (następca luk T-135) | nie | 2 |
+| T-143 | **ZAMKNIĘTE:** oba specy straciły po jednej asercji przed bramką | T-145 (następca luk T-135) | nie | 2 |
 | T-144 | **ZAMKNIĘTE:** 17/18 po naprawie; timeout i zmniejszenie asercji starych speców | T-140 (pełny następca T-141) | nie | 2 |
 | T-145 | Recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
-| T-146 | Uczciwy żywy oracle z miękkim budżetem schedulera | T-140, T-145, T-143 (pełny następca T-142) | nie (tylko testy flow) | 2 |
+| T-146 | **ZAMKNIĘTE bez uruchomienia:** zależność od zamkniętego T-143 | T-140, T-145, T-143 (pełny następca T-142) | nie (tylko testy flow) | 2 |
+| T-147 | Startup reaper z zachowanym odciskiem 7/7 | T-145 (pełny następca T-143) | nie | 2 |
+| T-148 | Uczciwy żywy oracle po wylądowanym T-147 | T-140, T-145, T-147 (pełny następca T-146) | nie (tylko testy flow) | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -481,13 +483,15 @@ niezależnym timeoutcie i wykryciu spadku liczby asercji w trzech starych specac
 przejmuje wyłącznie jego produkcję po własnym czerwonym `before`, odtwarza oracle recenzenta
 i wymaga co najmniej certyfikowanych 16/13/10 asercji w migrowanych regresjach.
 
-**T-142/T-146 — świeży następca T-107 i ostatnie zadanie.** T-142 zamknięto bez uruchomienia:
+**T-142/T-146/T-148 — świeży następca T-107 i ostatnie zadanie.** T-142 zamknięto bez uruchomienia:
 wymagało wylądowanego T-141, choć jego dwa kolejne wcielenia zostały zamknięte, oraz nazywało
 8 USD twardym sufitem Codeksa, choć driver poznaje koszt dopiero po turze. T-146 zależy od
 wylądowanego T-145, a 8 USD nazywa zgodnie z kodem miękkim limitem schedulera: po przekroczeniu
 nie startuje kolejny krok, lecz jedna tura Codeksa może przebić granicę. Standalone offline
 sądzi ten sam graf co dwa uśpione testy live. Po lądowaniu jawnie uzbrojony przebieg `--ignored`
-wykonuje oba kierunki vendorów szeregowo i raportuje rzeczywisty koszt oraz cleanup.
+wykonuje oba kierunki vendorów szeregowo i raportuje rzeczywisty koszt oraz cleanup. T-146
+zamknięto bez uruchomienia po zamknięciu jego zależności T-143; T-148 przejmuje pełny kontrakt
+po świeżym T-147.
 
 **T-109 — ZAMKNIĘTE, bez uruchomienia.** Każde AC filtruje funkcję we wspólnym targecie
 `tests/it`, a wymagane `commands/run.rs` i vendor-neutralne `drivers/mod.rs` są poza OWNS.
@@ -510,7 +514,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140 i T-145 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142 i T-144 są zamknięte. Następna kolejność to T-143 → T-146; T-146 pozostaje ostatnim oracle.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140 i T-145 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144 i T-146 są zamknięte. Następna kolejność to T-147 → T-148; T-148 pozostaje ostatnim oracle.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
@@ -530,8 +534,8 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
   semantycznym wejściem receipt: zamraża kształt pochodzenia. T-132 naprawiło granicę startu
   i prawdziwe kontrolki, lecz nie udowodniło trzeciej próby IO refleksji. T-133 przejęło jego
   pełny zakres po własnym czerwonym `before` i wylądowało. T-134 również wylądowało;
-  T-135 również wylądowało; jego dwie luki wyroczni mają zostać domknięte świeżym
-  standalone T-143 przed końcowym oracle T-142.
+  T-135 również wylądowało; T-143 zamknięto na ochronie asercji, więc jego dwie luki
+  wyroczni przejmuje standalone T-147 przed końcowym oracle T-148.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness
