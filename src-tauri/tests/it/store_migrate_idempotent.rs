@@ -23,9 +23,9 @@ use rusqlite::{Connection, params};
 
 use loadout_lib::store::migrate;
 
-/// Pięć tabel z [T7 §5.4]. Lista jest tu wpisana ręcznie **z rozmysłem**: jest modelem
+/// Cztery żywe tabele indeksu. Lista jest tu wpisana ręcznie **z rozmysłem**: jest modelem
 /// referencyjnym schematu, a nie jego odczytem. Odczyt z implementacji zgodziłby się sam ze sobą.
-const TABLES: [&str; 5] = ["runs", "steps", "events", "artifacts", "memory"];
+const TABLES: [&str; 4] = ["runs", "steps", "events", "artifacts"];
 
 /// Bieg wstawiony **pomiędzy** dwoma wywołaniami migracji.
 const RUN_ID: &str = "01996500-0000-7000-8000-000000000001";
@@ -87,11 +87,19 @@ fn migrating_twice_leaves_the_schema_and_the_rows_exactly_as_they_were() -> anyh
         let wanted = format!("table|{table}|");
         assert!(
             before.iter().any(|object| object.starts_with(&wanted)),
-            "the schema has no {table} table. The five tables of T7 §5.4 are the whole index; \
+            "the schema has no {table} table. The four live tables are the whole index; \
              a missing one is a column of the run that cannot be rebuilt after loadout.db is \
              deleted. sqlite_master holds: {before:?}"
         );
     }
+    assert!(
+        !before
+            .iter()
+            .any(|object| object.starts_with("table|memory|")
+                || object.starts_with("index|idx_memory_scope|")),
+        "a fresh index created the dead memory table or its index. Notes live only in files, \
+         while sqlite_master holds: {before:?}"
+    );
     assert!(
         before.iter().any(|object| object.starts_with("trigger|")),
         "the schema carries no trigger at all, so append-only is enforced nowhere and this \
