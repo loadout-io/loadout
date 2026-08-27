@@ -4,6 +4,31 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 04:42 — T-145 w trunku; osobny commit usuwa jednosekundowy flake
+
+**T-145 · zielone / WYLĄDOWANE · 38 min 18 s Harnessu + 10 min 26 s integracji i naprawy
+infrastruktury · $0,00 raportowanego kosztu.** Enforced `before` wykonało oba standalone
+targety i uczciwie padło na zachowaniu w 0,75 s. Pierwsza bramka przeszła **18/18 w 68,99 s**.
+Recenzent wykazał realny brak `ready` w `paused` zarówno w SQL, jak i lustrzanym kolektorze
+plikowym; jedyna naprawa domknęła oba wejścia i dodała kontrolę do AC-1. Bramki po repair
+oraz końcowa przeszły odpowiednio **18/18 w 65,93 s** i **18/18 w 53,74 s**.
+
+Pierwsze `integrate.sh` miało zielone **16/16 w 58,66 s** przed merge'em i wylądowało T-145
+jako `d974613`, lecz post-merge ponownie ujawnił niezależny jednosekundowy timeout
+`recovery_waits_for_the_slug_that_owns_an_active_ledger_temp`. Była to trzecia reprodukcja
+tego samego flaka poza diffem recovery. Osobny test-only commit **`415f730`** zastąpił trzy
+jednosekundowe deadline'y jednym udokumentowanym sufitem 10 s, bez `sleep`, zmian asercji i
+bez kodu produktu; cały target miał 794 passed / 0 failed / 14 ignored w 20,39 s. Ponowne
+`integrate.sh task-T-145` przeszło **16/16 w 79,56 s** i **16/16 w 54,18 s**. `TASK.md` nie
+przeżył, `main` jest czysty.
+
+Paragony kontraktu/build pokazują co najmniej 18 978 210 tokenów wejścia (18 529 792 z cache)
+i 65 202 wyjścia; review/repair nie mają osobnych liczników. Harness nie podał ceny dolarowej.
+Następne jest T-143. T-142 zostaje zamknięte bez uruchomienia: wymaga nieistniejącego
+lądowania T-141 i twardego sufitu pojedynczej tury Codeksa, którego test-only OWNS nie może
+wdrożyć. Świeże T-146 po T-143 zachowuje pełny oracle i uczciwie nazywa 8 USD miękkim limitem
+schedulera; pozostaje ostatnim zadaniem fazy.
+
 ## 2026-08-27, 03:44 — T-144 ZAMKNIĘTE 17/18; T-145 zachowa stare regresje
 
 **T-144 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 40 min 58 s Harnessu · $0,00 raportowanego
