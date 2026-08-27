@@ -19,6 +19,9 @@ use uuid::{Uuid, Version};
 
 const KEY: &str = "lin_api_1234567890123456789012345678901234567890";
 const REPLACEMENT: &str = "lin_api_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN";
+// 2026-08-27: the full suite can delay these helper threads beyond one second under load;
+// this is only a synchronization ceiling, so extending it does not hide product latency.
+const CHANNEL_SYNC_DEADLINE: Duration = Duration::from_secs(10);
 const WORKFLOW: &str = r#"{
   "format": 1,
   "id": "wf_trigger_editor",
@@ -696,7 +699,7 @@ fn recovery_waits_for_the_slug_that_owns_an_active_ledger_temp() -> Result<(), B
             Ok(br#"{"data":{"issues":{"nodes":[]}}}"#.to_vec())
         })
     });
-    fetch_entered_rx.recv_timeout(Duration::from_secs(1))?;
+    fetch_entered_rx.recv_timeout(CHANNEL_SYNC_DEADLINE)?;
 
     let (candidate_tx, candidate_rx) = mpsc::channel();
     let (removal_tx, removal_rx) = mpsc::channel();
@@ -718,7 +721,7 @@ fn recovery_waits_for_the_slug_that_owns_an_active_ledger_temp() -> Result<(), B
             Ok(())
         })
     });
-    candidate_rx.recv_timeout(Duration::from_secs(1))?;
+    candidate_rx.recv_timeout(CHANNEL_SYNC_DEADLINE)?;
     assert!(leftover.exists());
     assert!(
         matches!(removal_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
@@ -727,7 +730,7 @@ fn recovery_waits_for_the_slug_that_owns_an_active_ledger_temp() -> Result<(), B
 
     release_fetch_tx.send(())?;
     poll.join().expect("poll thread")?;
-    removal_rx.recv_timeout(Duration::from_secs(1))?;
+    removal_rx.recv_timeout(CHANNEL_SYNC_DEADLINE)?;
     listing.join().expect("list thread")?;
     assert!(!leftover.exists());
     Ok(())
