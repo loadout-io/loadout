@@ -50,7 +50,7 @@ const STEP_SAFE: &str = "step-safe-first-try";
 /// Druga próba tego samego kroku — ten sam `pgid`.
 const STEP_SAFE_AGAIN: &str = "step-safe-second-try";
 
-fn row(step_id: &str, step_status: &str, pgid: Option<i32>, attempt: i64) -> RecoveryRow {
+fn row(step_id: &str, step_status: &str, pgid: Option<i32>) -> RecoveryRow {
     RecoveryRow {
         step_id: step_id.to_owned(),
         run_id: RUN.to_owned(),
@@ -59,20 +59,18 @@ fn row(step_id: &str, step_status: &str, pgid: Option<i32>, attempt: i64) -> Rec
         run_boot_id: Some(BOOT.to_owned()),
         pid: pgid,
         pgid,
-        session_id: Some(format!("0199ab00-0000-7000-8000-0000000000{attempt:02x}")),
-        attempt,
     }
 }
 
 /// Sześć wierszy w kolejności z kryterium.
 fn rows() -> Vec<RecoveryRow> {
     vec![
-        row(STEP_ZERO, "running", Some(0), 0),
-        row(STEP_MISSING, "running", None, 0),
-        row(STEP_NEGATIVE, "running", Some(-9), 0),
-        row(STEP_OURS, "running", Some(OWN_PGID), 0),
-        row(STEP_SAFE, "running", Some(SAFE_PGID), 0),
-        row(STEP_SAFE_AGAIN, "ready", Some(SAFE_PGID), 1),
+        row(STEP_ZERO, "running", Some(0)),
+        row(STEP_MISSING, "running", None),
+        row(STEP_NEGATIVE, "running", Some(-9)),
+        row(STEP_OURS, "running", Some(OWN_PGID)),
+        row(STEP_SAFE, "running", Some(SAFE_PGID)),
+        row(STEP_SAFE_AGAIN, "ready", Some(SAFE_PGID)),
     ]
 }
 

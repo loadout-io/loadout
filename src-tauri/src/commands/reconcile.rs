@@ -25,8 +25,8 @@
 //! miejscu; druga kopia decyzji o tym, kiedy wolno strzelić do grupy procesów, byłaby tą, która
 //! kiedyś strzeli po restarcie maszyny w niewinny proces.
 //!
-//! Nie ma tu też **automatycznego wznowienia** — z tego samego powodu, co w [`crate::recovery`]:
-//! Loadout wykrywa, sprząta, oznacza i pyta [T7 §6.3].
+//! Nie ma tu też **automatycznego wznowienia** — recovery wyłącznie sprząta osierocone grupy
+//! i oznacza przerwane biegi oraz kroki. Jawne wznowienie istniejącej sesji należy do adaptera.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -289,11 +289,6 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
                 run_boot_id: boot.clone(),
                 pid: number(step, "pid"),
                 pgid: number(step, "pgid"),
-                session_id: step
-                    .get("agent_session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                attempt: step.get("attempt").and_then(Value::as_i64).unwrap_or(0),
             });
         }
     }

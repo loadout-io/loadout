@@ -31,8 +31,6 @@ fn interrupted(boot: Option<&str>) -> RecoveryRow {
         run_boot_id: boot.map(str::to_owned),
         pid: Some(4242),
         pgid: Some(4242),
-        session_id: Some("sess".to_owned()),
-        attempt: 0,
     }
 }
 
