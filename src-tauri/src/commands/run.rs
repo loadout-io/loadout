@@ -6849,7 +6849,7 @@ impl Live {
              * w historii jest długością zapłaconą za milczenie — ta sama decyzja, co przy
              * `death_proof` i `repaired` obok. */
             budget_usd: self.budget_usd,
-            spent_usd: self.budget_usd.map(|_| spent_in(book)),
+            spent_usd: self.budget_usd.map(|_| final_spend_in(book)),
             reflection: &book.reflection,
             steps,
         }
@@ -7066,7 +7066,7 @@ impl Live {
     /// nie podaje, liczy się jako zero — obie te rzeczy mówi zdanie pomocy przy kontrolce sufitu,
     /// bo obie są widoczne dla człowieka jako różnica między rachunkiem a tą liczbą.
     fn spent_so_far(&self) -> f64 {
-        spent_in(&self.book.lock().unwrap_or_else(PoisonError::into_inner))
+        step_spend_in(&self.book.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Ile jeszcze wolno wydać — `None`, kiedy nikt nie postawił sufitu.
@@ -9332,12 +9332,19 @@ fn ends(
 /// Wolna funkcja, nie metoda, bo pyta o to dwóch: [`Live::spent_so_far`] spod własnego zamka
 /// i [`Live::run_file`], któremu księgę podano już otwartą. Metoda biorąca zamek drugi raz
 /// zakleszczyłaby zrzut na dysk — a `std::sync::Mutex` nie jest wejściowalny ponownie.
-fn spent_in(book: &Book) -> f64 {
+fn step_spend_in(book: &Book) -> f64 {
     book.steps
         .iter()
         .filter(|step| step.ended_at.is_some())
         .filter_map(|step| step.cost_usd)
         .sum()
+}
+
+/// Końcowy rachunek obejmuje również udaną prywatną refleksję. Scheduler celowo nie używa
+/// tej funkcji: refleksja zaczyna się dopiero po zakończeniu grafu, więc nie może wpływać na
+/// decyzję, czy wolno rozpocząć następny krok.
+fn final_spend_in(book: &Book) -> f64 {
+    step_spend_in(book) + book.reflection.cost_usd.unwrap_or(0.0)
 }
 
 /// Ile miejsca bierze krok tego rodzaju.
