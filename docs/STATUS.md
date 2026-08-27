@@ -4,6 +4,29 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 05:38 — T-148 ZAMKNIĘTE 15/18; płatny oracle nie ruszył
+
+**T-148 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 21 min 12 s Harnessu · $0,00 raportowanego
+kosztu.** Enforced `before` uruchomiło oba standalone targety i uczciwie padło na dokładnym
+sentinelu `T-148 oracle not authored` w 0,86 s. Kontrakt testowy powstał jako `7a2f11b`, ale
+implementer nie usunął sentineli. Pierwsza oraz końcowa pełna bramka miały **15/18**; czerwone
+pozostały `full-test`, AC-1 i AC-2, wszystkie na tym samym niewdrożonym oracle.
+
+Recenzent wskazał trzy luki, których nie wolno zaliczyć danymi skonstruowanymi przez sam test:
+atrapa offline ignorowała wybranego vendora, `spent_usd` obejmuje kroki, lecz nie prywatną
+refleksję, a liczniki Stop/death-proof nie były powiązane z prawdziwą ścieżką timeout/błędu.
+Planner naprawy potwierdził te luki. Jedyna runda naprawcza odmówiła usunięcia sentineli i nie
+zmieniła żadnego pliku; końcowa bramka pozostała czerwona, więc zgodnie z AGENTS.md nie ma
+piątej tury.
+
+Gałąź `task-T-148` i jej testowy commit **nie lądują**. Płatnego polecenia `--ignored` nie
+uruchomiono: testy live nie są zaimplementowane ani w trunku. Paragony kontraktu/build pokazują
+co najmniej 10 331 900 tokenów wejścia (10 013 696 z cache) i 35 153 wyjścia; review/repair
+nie mają osobnych liczników. Dalszy uczciwy oracle wymaga świeżego kontraktu z nowymi,
+globalnie unikalnymi targetami, vendor-aware fake driverem, realnym probe Stop oraz jawną
+decyzją, czy `run.json.spent_usd` ma obejmować także koszt refleksji; jeśli tak, jego OWNS musi
+zawierać `src-tauri/src/commands/run.rs`.
+
 ## 2026-08-27, 05:16 — T-147 w trunku; startup reaper ma deterministyczny dowód
 
 **T-147 · zielone / WYLĄDOWANE · 12 min 34 s Harnessu + 3 min 22 s lądowania ·
