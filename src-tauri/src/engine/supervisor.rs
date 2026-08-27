@@ -492,6 +492,27 @@ pub enum GroupProof {
     Alive,
 }
 
+/// Neutralna operacja na grupie używana przez rdzeń startup reaper.
+///
+/// Nazwy POSIX-owych sygnałów pozostają w tym module (niezmiennik 3), a deterministyczny
+/// standalone target może sterować odpowiedziami bez tworzenia prawdziwego procesu.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapAction {
+    Term,
+    Probe,
+    Kill,
+}
+
+/// Neutralna odpowiedź signalera, która nie wypuszcza platformowego `errno` poza ten moduł.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapResponse {
+    Delivered,
+    NoSuchGroup,
+    Refused,
+}
+
 /// Co dziecko dostaje na stdin. Jedyna droga, którą wchodzą prompt i sekrety (niezmiennik 9):
 /// nigdy argv, nigdy plik tymczasowy, nigdy dziennik.
 #[derive(Debug, Clone)]
@@ -1074,6 +1095,20 @@ pub fn machine_booted_at() -> Option<String> {
 /// Tak jak [`Supervised::stop`], sprzątanie prowadzi `SIGTERM`, daje grupie pełne okno łaski,
 /// a dopiero potem eskaluje do `SIGKILL`. Brak uchwytu dziecka zmienia sposób czekania, nie
 /// politykę: synchroniczna pętla pyta jądro sygnałem zerowym i ma te same jawne sufity.
+///
+/// 2026-08-27 (T-147): ten szew jest publiczny wyłącznie dla standalone integration targetów.
+/// Produkcyjny adapter i testy mają wykonywać ten sam rdzeń, ale tylko ten plik mapuje sygnały
+/// i błędy platformy na neutralne wartości.
+#[doc(hidden)]
+#[must_use]
+pub fn reap_group_with_signaler(
+    _grace: Duration,
+    _proof_after_kill: Duration,
+    _signal: impl FnMut(ReapAction) -> ReapResponse,
+) -> GroupProof {
+    todo!("T-147 reaper policy is not implemented")
+}
+
 #[must_use]
 pub fn reap_group(pgid: i32) -> GroupProof {
     match signal_group(pgid, SIGNAL_TERM) {
