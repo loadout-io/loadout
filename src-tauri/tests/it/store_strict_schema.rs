@@ -22,8 +22,8 @@ use rusqlite::{Connection, params};
 
 use loadout_lib::store::{apply_pragmas, migrate};
 
-/// Pięć tabel z [T7 §5.4].
-const TABLES: [&str; 5] = ["runs", "steps", "events", "artifacts", "memory"];
+/// Cztery żywe tabele indeksu.
+const TABLES: [&str; 4] = ["runs", "steps", "events", "artifacts"];
 
 /// Siedem stanów kroku z `docs/ARCHITECTURE.md` §5. `paused` jest stanem **biegu**, nigdy kroku.
 const STATUSES: [&str; 7] = [
@@ -120,7 +120,8 @@ fn rows_for(conn: &Connection, table: &str, run_id: &str) -> anyhow::Result<i64>
     )?)
 }
 
-/// Kontrole przeciw pustej asercji: pięć tabel stoi, a klucze obce są włączone.
+/// Kontrole przeciw pustej asercji: cztery żywe tabele stoją, martwej nie ma, a klucze obce
+/// są włączone.
 ///
 /// Bez pierwszej z nich `Err` z każdej próby niżej znaczyłby „nie ma tabeli", a nie „schemat
 /// odmówił". Bez drugiej kaskada z (c) nie miałaby prawa wystrzelić, cokolwiek mówi schemat.
@@ -135,6 +136,18 @@ fn assert_schema_is_there(conn: &Connection) -> anyhow::Result<()> {
             present, 1,
             "there is no {table} table, and on a database without it EVERY insert below is an \
              error too. Then this criterion reads as green-adjacent while measuring nothing"
+        );
+    }
+
+    for object in ["memory", "idx_memory_scope"] {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = ?1",
+            [object],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            present, 0,
+            "the fresh schema created {object}, but notes have no SQLite shadow"
         );
     }
 

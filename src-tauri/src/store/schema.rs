@@ -1,4 +1,4 @@
-//! Schemat: pięć tabel, `STRICT`, i odmowy, które `SQLite` wypowiada **sam**.
+//! Schemat: cztery żywe tabele, `STRICT`, i odmowy, które `SQLite` wypowiada **sam**.
 //!
 //! Ten plik jest jednym z trzech, którym `checks/quick-boundary.sh` pozwala nieść DDL —
 //! obok `store::migrate` i `store::writer`. Nazwa nie jest dowolna: sprawdzenie zna ją
@@ -6,9 +6,10 @@
 //!
 //! Co tu **musi** stanąć i dlaczego każdy z tych punktów jest osobnym kryterium:
 //!
-//! - **Pięć tabel z [T7 §5.4]** — `runs`, `steps`, `events`, `artifacts`, `memory` — wszystkie
-//!   `STRICT`. Bez `STRICT` `SQLite` przyjmie `attempt = 'dwa'` i policzy to jako tekst, a wtedy
-//!   pierwszy odczyt dostaje wartość, której nie umie dodać (AC-7 b).
+//! - **Cztery żywe tabele** — `runs`, `steps`, `events`, `artifacts` — wszystkie `STRICT`.
+//!   Bez `STRICT` `SQLite` przyjmie `attempt = 'dwa'` i policzy to jako tekst, a wtedy pierwszy
+//!   odczyt dostaje wartość, której nie umie dodać (AC-7 b). Notatki nie mają tabeli: ich pliki
+//!   są jedynym miejscem zapisu i źródłem prawdy (T-140).
 //! - **`CHECK` na `steps.status`** z siedmioma stanami z `docs/ARCHITECTURE.md` §5 i **`CHECK`
 //!   na `events.level`** z trzema poziomami. Odmowa napisana w naszej funkcji `insert_step`
 //!   przechodzi na schemacie bez `CHECK` — a wtedy pierwszy zapis spoza naszego API (migracja,
@@ -205,33 +206,5 @@ pub const STATEMENTS: &[&str] = &[
     ) STRICT;
 
     CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);
-    ",
-    // ── memory ─────────────────────────────────────────────────────────────────────────────
-    // Tabela wchodzi teraz, funkcja przychodzi w T-16 i T-17: dodawanie tabel później też jest
-    // addytywne, ale schemat lubi być kompletny raz.
-    //
-    // `path` + `body` w tej kolejności i nie odwrotnie: agenci wymieniają się PLIKAMI markdown,
-    // więc plik jest kontraktem, a `body` jest lustrem do wyszukiwania [T7 §5.4]. Odwrócenie
-    // tego czyni bazę prawdą i łamie niezmiennik 4.
-    //
-    // `ON DELETE SET NULL`, nie `CASCADE`: notatka przeżywa bieg, który ją napisał. Kaskada
-    // kasowałaby pamięć przy czyszczeniu historii, czyli w chwili, w której użytkownik prosi
-    // o coś dokładnie odwrotnego.
-    "
-    CREATE TABLE IF NOT EXISTS memory (
-      id              TEXT    NOT NULL PRIMARY KEY,
-      scope           TEXT    NOT NULL,
-      key             TEXT    NOT NULL,
-      path            TEXT    NOT NULL,
-      title           TEXT    NOT NULL,
-      body            TEXT    NOT NULL,
-      written_by_run  TEXT             REFERENCES runs(id)  ON DELETE SET NULL,
-      written_by_step TEXT             REFERENCES steps(id) ON DELETE SET NULL,
-      created_at      INTEGER NOT NULL,
-      updated_at      INTEGER NOT NULL,
-      UNIQUE (scope, key)
-    ) STRICT;
-
-    CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory(scope, updated_at DESC);
     ",
 ];
