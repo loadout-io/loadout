@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-134 i T-135 w trunku; świeże kontrakty końcowe następne)
+# Prompt orchestratora — faza 7 (T-135 w trunku; T-140 → T-141 → T-143 → T-142)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -70,7 +70,7 @@ W tej kolejności. To nie lista lektur, tylko kontekst, bez którego podejmiesz 
 | `AGENTS.md` | karta pracy: 29 niezmienników, kontrakt kryterium w §2a |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). **Nie podważaj ich** |
 | `harness/README.md` | graf wywołań harnessu i znaczenie kodów wyjścia — twoje główne narzędzie diagnostyczne |
-| `tasks/T-98.md` … `tasks/T-135.md` oraz historyczne T-136…T-139 | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
+| `tasks/T-98.md` … `tasks/T-143.md` | kontrakty. Prawdą o zadaniu jest jego plik, nie plan; zamkniętych zadań nie wznawiaj |
 
 **Nie czytaj** `docs/research/` — 40–60 KB na raport, materiał dla piszącego zadanie, nie dla
 ciebie. Zadania cytują z nich konkretne sekcje tam, gdzie trzeba.
@@ -359,8 +359,10 @@ a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały ł
 | 8i | **WYŁĄDOWANE:** T-133 | pełny receipt T-132 plus obserwowalna próba niezależnego błędu IO; merge `dc8df68` |
 | 9 | **WYŁĄDOWANE:** T-134 | live Stop z sufitem i prawdziwym drugim Startem; merge `13d49fc` |
 | 10 | **WYŁĄDOWANE:** T-135 | eskalacja i trwały survivor startup cleanup; merge `fc09cc8` |
-| 11 | świeże zadania schematu i recovery | po pamięci i startup cleanup; rozdzielone części T-108 |
-| 12 | świeży końcowy oracle | sądzi zachowanie z T-100, T-126 i T-127; musi być ostatni |
+| 11 | `./ship-task.sh T-140 --agent codex --reviewer codex` | świeży/rebuildowany indeks bez martwej tabeli; legacy bez zakazanego DROP |
+| 12 | `./ship-task.sh T-141 --agent codex --reviewer codex` | recovery bez martwych pytań; jawny transport resume zostaje |
+| 13 | `./ship-task.sh T-143 --agent codex --reviewer codex` | domknięcie dwóch luk dowodu T-135 |
+| 14 | `./ship-task.sh T-142 --agent codex --reviewer codex` | końcowy oracle; musi być ostatni |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

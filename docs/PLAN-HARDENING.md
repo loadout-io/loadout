@@ -94,8 +94,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | H18 | L1: pamięć wyłącznie globalna — `this-project` przecieka między repo | **T-139 wylądowało** (D-2 = TAK) |
 | H19 | Lead na Codeksie: `thread/start` odrzucany (camelCase sandbox) — naprawa zmierzona, patrz §1 | **T-111** (T-105/T-110 zamknięte) |
 | H20 | Lead na Codeksie połyka treść błędu JSON-RPC; prywatne MCP z `~/.codex` wchodzą boczną furtką; `--ignore-user-config` nie istnieje dla App Servera, a `mcp_servers={}` jest no-opem | **T-111** (D-4 = TAK; per-serwer `enabled=false`, Connections `enabled=true`) |
-| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134 i T-135 wylądowały** (żywy Stop + startup cleanup; T-106 nie uruchamiać); dwie luki dowodu T-135 dostaną świeży standalone następca |
-| H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-108** |
+| H21 | `prove_agent_dead` bez sufitu; zapadka `live` trzymana na zawsze; `reap_group` bez eskalacji | **T-134 i T-135 wylądowały** (żywy Stop + startup cleanup; T-106 nie uruchamiać) → **T-143** (dwie luki dowodu recenzenta) |
+| H22 | Martwa maszyneria: tabela SQLite `memory`, `RecoveryPlan.ask`/`RunSpec::resume`, kłamiące nagłówki; (`supersede`/`Kind` i `Absent` ZOSTAJĄ, D-6) | **T-140** (świeży/rebuildowany indeks; bez zakazanego DROP) → **T-141** (recovery bez pytań; żywy transport resume zostaje) |
 | H23 | Sędzia z `copies>1`: first-pass-wins vs padła kopia tnie stożek; `nothing_to_judge` patrzy na kopię 0 | **T-114** (walidator: zakaz źródła strzałki powrotnej) |
 | H24 | Dwa równoległe pytania do człowieka dzielą jeden slot odpowiedzi | backlog §7 |
 | H25 | Serve: sukces = spawn; późniejsza śmierć niewidzialna | backlog §7 |
@@ -152,6 +152,10 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-133 | **WYŁĄDOWAŁO:** pełny receipt z obserwowalną próbą niezależnego błędu IO refleksji | T-131 (pełny następca T-132) | tak | 1 |
 | T-134 | **WYŁĄDOWAŁO:** Live Stop ma sufit i zwalnia następny Start | T-133 (następca żywej części T-106) | tak | 1 |
 | T-135 | **WYŁĄDOWAŁO:** startup cleanup eskaluje i zapisuje ocalały proces | T-134 (następca pozostałej części T-106) | nie | 2 |
+| T-140 | Świeży i odbudowany indeks nie tworzy martwej tabeli `memory` | T-135 (następca schematu T-108) | nie | 2 |
+| T-141 | Recovery tylko sprząta i oznacza; jawny transport resume zostaje | T-140 (następca recovery T-108) | nie | 2 |
+| T-142 | Prawdziwy bieg jest końcową wyrocznią fazy 7 | T-140, T-141, T-143 (następca T-107) | nie (tylko testy flow) | 2 |
+| T-143 | Deterministyczny dowód odmowy i sondy po KILL | T-141 (następca luk T-135) | nie | 2 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -442,6 +446,10 @@ drut historii, a martwy krok nie dostaje fałszywego ostrzeżenia. Recenzja ujaw
 luki samej wyroczni: target nie wymusza nie-ESRCH/EPERM i nie obserwuje produkcyjnego probe
 po KILL. Nie uznawać tych dwóch własności za dowiedzione do świeżego standalone następcy.
 
+**T-143 — domknięcie dowodu startup reaper.** Jeden produkcyjny rdzeń z neutralnym signalerem
+dowodzi, że nie-ESRCH/EPERM kończy się `Alive` bez KILL oraz że `Dead` po KILL powstaje dopiero
+z produkcyjnej sondy ESRCH. T-135 pozostaje niezależnym testem prawdziwych grup.
+
 **T-107 — wyrocznia fazy.**
 - Zadanie pisze wyrocznię: rozszerzenie wyroczni flow (`--ignored`, konwencja
   `flow-oracles`) o graf plan → pętla (implementer + sędzia, `max_turns: 2`) → synteza;
@@ -458,6 +466,17 @@ po KILL. Nie uznawać tych dwóch własności za dowiedzione do świeżego stand
   „pick up here" w `recovery.rs`; poprawić kłamiące nagłówki (`notes.rs:23`).
 - Zostawić z poprawionym nagłówkiem: `supersede()`/`Kind` (wraca przy `/correct`),
   sterownik `Absent` (trzeci vendor).
+
+**T-140/T-141 — świeże zastępstwo T-108.** T-140 usuwa `memory` ze świeżego i odbudowanego
+indeksu oraz prostuje nagłówek notatek. Stara baza zachowuje martwą tabelę bez zmian, bo
+niezmiennik 25 zakazuje `DROP` i przepisywania wierszy; znika ona dopiero z odtwarzanego
+indeksu po jego skasowaniu. T-141 usuwa `RecoveryPlan.ask` oraz zależność decyzji od sesji i
+próby. `RunSpec.resume` zostaje jawnym, żywym transportem adapterów: 49 literałów i oba
+adaptery wykluczają traktowanie go jako martwej gałęzi recovery.
+
+**T-142 — świeży następca T-107 i ostatnie zadanie.** Standalone offline sądzi dokładnie ten
+sam graf co dwa uśpione testy live. Po lądowaniu osobny, jawnie uzbrojony przebieg `--ignored`
+wykonuje oba kierunki vendorów szeregowo, z limitem 8 USD na bieg i pełnym dowodem cleanupu.
 
 **T-109 — ZAMKNIĘTE, bez uruchomienia.** Każde AC filtruje funkcję we wspólnym targecie
 `tests/it`, a wymagane `commands/run.rs` i vendor-neutralne `drivers/mod.rs` są poza OWNS.
@@ -480,7 +499,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134 i T-135 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. Następne są świeże, rozdzielone kontrakty H21/H22, potem świeży końcowy oracle.**
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134 i T-135 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137 i T-138 są zamknięte. Następna kolejność to T-140 → T-141 → T-143 → T-142; T-142 pozostaje ostatnim oracle.**
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
@@ -501,7 +520,7 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
   i prawdziwe kontrolki, lecz nie udowodniło trzeciej próby IO refleksji. T-133 przejęło jego
   pełny zakres po własnym czerwonym `before` i wylądowało. T-134 również wylądowało;
   T-135 również wylądowało; jego dwie luki wyroczni mają zostać domknięte świeżym
-  standalone kontraktem przed końcowym oracle.
+  standalone T-143 przed końcowym oracle T-142.
 - **Równolegle** (zmierzone porównaniem bloków OWNS 2026-08-24, nie założone): pierwotną parą
   bez ani jednego wspólnego pliku było **T-98 ∥ T-105**. T-98 wylądowało, T-105 i pierwsze
   zastępstwo T-110, T-99, T-112 oraz T-113 zostały zamknięte; T-111 wylądowało, harness

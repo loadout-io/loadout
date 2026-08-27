@@ -4,6 +4,28 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 02:00 — cztery świeże kontrakty domykają H21, H22 i oracle fazy
+
+Równoległe, wyłącznie odczytowe audyty przygotowały cztery standalone zadania. **T-140**
+usuwa martwą tabelę `memory` ze świeżego i odbudowanego indeksu oraz prostuje nagłówek
+notatek. Starego indeksu nie migruje destrukcyjnie: niezmiennik 25 w `AGENTS.md` wprost
+zakazuje `DROP` i przepisywania wierszy, więc wcześniejsze żądanie T-108 „migracja ją zdejmuje"
+było niewykonalne pod aktualnym kontraktem repo. Stara tabela jest tolerowana bez pisarza i
+czytelnika do skasowania odtwarzalnego `loadout.db`; pliki pozostają prawdą.
+
+**T-141** usuwa `RecoveryPlan.ask` i martwą zależność decyzji od sesji/próby. Nie usuwa
+`RunSpec.resume`: aktualny trunk ma 49 wystąpień pola w 47 plikach, pięć produkcyjnych konstrukcji,
+a oba adaptery naprawdę czytają pole. Kontrakt zapisuje więc prawdziwą granicę: recovery nie
+wznawia, ale jawny wołający nadal może uruchomić istniejącą sesję.
+
+**T-143** zamyka dwie luki recenzji T-135 przez jeden produkcyjny rdzeń z kontrolowanym
+signalerem: nie-ESRCH/EPERM nie prowadzi do KILL, a `Dead` po KILL wymaga wewnętrznej sondy
+ESRCH. **T-142** jest świeżym następcą zamkniętego T-107: offline kompiluje i sądzi wspólny
+fixture, dwa testy live pozostają `#[ignore]` i wymagają jawnego
+`LOADOUT_PAID_ORACLE=phase7`. Po lądowaniu oba kierunki vendorów biegną szeregowo, z sufitem
+8 USD na bieg. Kolejność jest celowo **T-140 → T-141 → T-143 → T-142**, więc oracle pozostaje
+ostatni; ze względu na zakaz dwóch ciężkich Cargo zadania nie biegną równolegle.
+
 ## 2026-08-27, 01:52 — T-135 w trunku; startup cleanup eskaluje i pamięta survivora
 
 **T-135 · zielone / WYLĄDOWANE · 27 min 10 s Harnessu + 2 min 22 s lądowania ·
