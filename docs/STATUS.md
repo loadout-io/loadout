@@ -23,9 +23,10 @@ Gałąź `task-T-148` i jej testowy commit **nie lądują**. Płatnego polecenia
 uruchomiono: testy live nie są zaimplementowane ani w trunku. Paragony kontraktu/build pokazują
 co najmniej 10 331 900 tokenów wejścia (10 013 696 z cache) i 35 153 wyjścia; review/repair
 nie mają osobnych liczników. Dalszy uczciwy oracle wymaga świeżego kontraktu z nowymi,
-globalnie unikalnymi targetami, vendor-aware fake driverem, realnym probe Stop oraz jawną
-decyzją, czy `run.json.spent_usd` ma obejmować także koszt refleksji; jeśli tak, jego OWNS musi
-zawierać `src-tauri/src/commands/run.rs`.
+globalnie unikalnymi targetami, vendor-aware fake driverem i realnym probe Stop. Właściciel
+polecił kontynuować bez `ship-task.sh`; T-149 przejmuje ten zakres ręczną pętlą i jawnie
+obejmuje `src-tauri/src/commands/run.rs`, aby końcowe `spent_usd` liczyło także udaną refleksję
+bez zmiany rachunku schedulera.
 
 ## 2026-08-27, 05:16 — T-147 w trunku; startup reaper ma deterministyczny dowód
 

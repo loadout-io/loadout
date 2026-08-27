@@ -1,4 +1,4 @@
-# Prompt orchestratora — faza 7 (T-148 zamknięte; potrzebna decyzja właściciela)
+# Prompt orchestratora — faza 7 (T-148 zamknięte; ręczne T-149 ostatnie)
 
 Jesteś **orchestratorem budowy Loadouta**. Nie piszesz kodu produkcyjnego. Prowadzisz zadania
 przez harness, diagnozujesz czerwone i pilnujesz, żeby harness nie kłamał. Kod piszą agenci,
@@ -368,6 +368,7 @@ a T-135 jako `fc09cc8`. Następne są świeże kontrakty końcowe. Pozostały ł
 | 14 | **ZAMKNIĘTE bez uruchomienia:** T-142 | fałszywa zależność T-141 i niewykonalny hard cap Codeksa |
 | 14b | **ZAMKNIĘTE bez uruchomienia:** T-146 | zależy od zamkniętego T-143 |
 | 14c | **ZAMKNIĘTE:** T-148, nie ląduj i nie wznawiaj | 15/18 po repair; sentinele, trzy luki dowodu, płatny oracle nie ruszył |
+| 14d | **RĘCZNIE bez `ship-task.sh`:** T-149 | pełny następca T-148; worktree, before, full, recenzja, integrate |
 
 Właściciel 2026-08-24 jawnie zastąpił operacyjną parę cross-vendor układem **Codex + Codex**,
 bo kończy się budżet Claude'a. Harness uruchamia recenzenta osobno, w roli tylko do odczytu i

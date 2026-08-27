@@ -160,7 +160,8 @@ byłaby oszustwem. Właściciel zatwierdził **T-114**: pełne zastępstwo z sze
 | T-145 | Recovery zachowuje certyfikowane stare regresje i jedno wyjście | T-140 (pełny następca T-144) | nie | 2 |
 | T-146 | **ZAMKNIĘTE bez uruchomienia:** zależność od zamkniętego T-143 | T-140, T-145, T-143 (pełny następca T-142) | nie (tylko testy flow) | 2 |
 | T-147 | **WYŁĄDOWANE:** startup reaper z zachowanym odciskiem 8/8 | T-145 (pełny następca T-143) | nie | 2 |
-| T-148 | Uczciwy żywy oracle po wylądowanym T-147 | T-140, T-145, T-147 (pełny następca T-146) | nie (tylko testy flow) | 2 |
+| T-148 | **ZAMKNIĘTE:** 15/18, sentinele i trzy luki dowodu | T-140, T-145, T-147 (pełny następca T-146) | nie (tylko testy flow) | 2 |
+| T-149 | Ręczny następca T-148: pełny koszt, routing vendorów i prawdziwy Stop | T-140, T-145, T-147 | tak (`run.rs`) | 3 |
 
 ### Zakres per zadanie (kontrakty pisać z tego, nie rozszerzać)
 
@@ -493,7 +494,9 @@ wykonuje oba kierunki vendorów szeregowo i raportuje rzeczywisty koszt oraz cle
 zamknięto bez uruchomienia po zamknięciu jego zależności T-143. T-148 przejęło pełny kontrakt
 po świeżym T-147, lecz zostało zamknięte 15/18 po drugiej czerwieni: implementacja pozostawiła
 sentinele, a recenzja wykazała brak dowodu routingu vendora i prawdziwego Stop oraz niejasną
-semantykę kosztu refleksji w `run.json`. Gałąź nie ląduje i płatny oracle nie ruszył.
+semantykę kosztu refleksji w `run.json`. Gałąź nie ląduje i płatny oracle nie ruszył. T-149
+jest świeżym ręcznym następcą z nowymi targetami; rozdziela koszt schedulera od finalnego
+rachunku, dowodzi prawdziwego Stop i po lądowaniu uruchamia oba płatne kierunki.
 
 **T-109 — ZAMKNIĘTE, bez uruchomienia.** Każde AC filtruje funkcję we wspólnym targecie
 `tests/it`, a wymagane `commands/run.rs` i vendor-neutralne `drivers/mod.rs` są poza OWNS.
@@ -516,9 +519,8 @@ Znana niewykonalność kontraktu nie jest powodem, żeby odpalać harness „dla
 
 ## 4. Kolejność — z zależności, nie z fal
 
-- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140, T-145 i T-147 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144, T-146 i T-148 są zamknięte.**
-  Nie ma następnego zadania bez świeżego kontraktu właściciela; płatny oracle pozostaje
-  niewykonany.
+- **T-114, T-100, T-101, T-115, T-121, T-124, T-126, T-127, T-139, T-131, T-133, T-134, T-135, T-140, T-145 i T-147 wylądowały; T-102, T-103, T-104, T-106, T-109, T-116, T-117, T-118, T-119, T-120, T-122, T-123, T-125, T-128, T-129, T-130, T-132, T-136, T-137, T-138, T-141, T-142, T-143, T-144, T-146 i T-148 są zamknięte. Następne i ostatnie jest ręczne T-149.**
+  Płatny oracle pozostaje niewykonany do lądowania T-149.
   Nie wznawiać zamkniętych gałęzi ani nie przenosić z nich niczego poza dokładnie wyliczonymi
   commitami dopuszczonymi przez kontrakt następcy. Zamkniętych gałęzi nie wolno lądować ani
   przenosić w całości; T-139 stoi już w trunku.
