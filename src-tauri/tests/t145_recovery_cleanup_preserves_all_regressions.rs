@@ -213,6 +213,14 @@ fn the_production_query_includes_live_domains_and_excludes_finished_ones() -> Re
         0,
     )?;
     fixture.step(
+        "ready-inside-paused-run",
+        "paused-run",
+        "ready",
+        Some(8004),
+        None,
+        0,
+    )?;
+    fixture.step(
         "finished-outside-sweep",
         "finished-run",
         "succeeded",
@@ -225,10 +233,11 @@ fn the_production_query_includes_live_domains_and_excludes_finished_ones() -> Re
         row_ids(&fixture.rows()?),
         vec![
             "finished-inside-running-run".to_owned(),
+            "ready-inside-paused-run".to_owned(),
             "running-inside-paused-run".to_owned(),
         ],
-        "rows_to_judge must return every row of a running run and a running step from another \
-         run, while a finished step in a finished run remains outside recovery"
+        "rows_to_judge must return every row of running and paused runs, plus a live step from \
+         another run, while a finished step in a finished run remains outside recovery"
     );
     Ok(())
 }

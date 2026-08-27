@@ -408,7 +408,8 @@ pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Recove
         "SELECT s.id, s.run_id, r.status, s.status, r.boot_id, s.pid, s.pgid
            FROM steps s
            JOIN runs r ON r.id = s.run_id
-          WHERE r.status = 'running' OR s.status = 'running'",
+          WHERE r.status IN ('running', 'paused')
+             OR s.status IN ('ready', 'running')",
     )?;
     let rows = q.query_map([], |row| {
         Ok(RecoveryRow {

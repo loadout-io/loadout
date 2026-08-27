@@ -244,8 +244,9 @@ fn write_back_with_reason(dir: &Path, run_status: &str, why: &str) -> bool {
 /// Wiersze do rozstrzygnięcia, przeczytane z plików biegów tego folderu.
 ///
 /// LUSTRO ZAPYTANIA Z `recovery::rows_to_judge`, co do warunku: bierzemy każdy krok biegu, który
-/// stoi w `running`, **albo** krok stojący w `running` w biegu o innym statusie. Rozjazd tych
-/// dwóch warunków znaczyłby, że po skasowaniu bazy odzyskiwanie sądzi inny zbiór niż przed nim.
+/// stoi w `running` albo `paused`, **albo** żywy krok (`ready`/`running`) z biegu o innym statusie.
+/// Rozjazd tych dwóch warunków znaczyłby, że po skasowaniu bazy odzyskiwanie sądzi inny zbiór niż
+/// przed nim.
 fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBuf>) {
     let mut rows = Vec::new();
     let mut where_they_live = BTreeMap::new();
@@ -272,11 +273,14 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
         let Some(steps) = run.get("steps").and_then(Value::as_array) else {
             continue;
         };
-        let any_running = run_status == "running"
-            || steps
-                .iter()
-                .any(|one| one.get("status").and_then(Value::as_str) == Some("running"));
-        if !any_running {
+        let has_cut_off_work = matches!(run_status.as_str(), "running" | "paused")
+            || steps.iter().any(|one| {
+                matches!(
+                    one.get("status").and_then(Value::as_str),
+                    Some("ready" | "running")
+                )
+            });
+        if !has_cut_off_work {
             continue;
         }
         where_they_live.insert(run_id.clone(), dir);
