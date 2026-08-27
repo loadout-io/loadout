@@ -78,8 +78,13 @@ fn scripted_reap(script: &[(ReapAction, ReapResponse)]) -> (GroupProof, Vec<Reap
     let mut trace = Vec::new();
     let proof = reap_group_with_signaler(Duration::ZERO, Duration::ZERO, |action| {
         trace.push(action);
-        let Some((expected, response)) = remaining.pop_front() else {
-            panic!("the reaper issued an action after the scripted result");
+        let scripted_response = remaining.pop_front();
+        assert!(
+            scripted_response.is_some(),
+            "the reaper issued an action after the scripted result"
+        );
+        let Some((expected, response)) = scripted_response else {
+            return ReapResponse::Refused;
         };
         assert_eq!(action, expected, "the reaper issued actions out of order");
         response
