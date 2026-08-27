@@ -4,6 +4,26 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 `tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
 co stanęło i dlaczego.
 
+## 2026-08-27, 03:01 — T-141 ZAMKNIĘTE 17/18; świeży T-144 przejmuje recovery
+
+**T-141 · czerwone / ZAMKNIĘTE, NIE LĄDOWAĆ · 31 min 32 s Harnessu · $0,00 raportowanego
+kosztu.** Enforced `before` wykonało oba targety i uczciwie padło na zachowaniu w 0,35 s.
+Pierwsza bramka miała zielone AC, ale `full-clippy` oraz kompilacja pełnej suity ujawniły
+zbędny raw-string hash i nieaktualne stare fixture'y recovery.
+
+Recenzent znalazł dwa realne defekty: run był oznaczany przed potwierdzeniem przerwanego kroku,
+a stary boot nadal wymagał używalnego PGID mimo braku prawa do reap. Wykazał też, że AC-2 nie
+sądziło komentarza transportu resume. Jedyna naprawa domknęła wszystkie trzy punkty i stare
+testy; końcowy `full-test` oraz oba AC były zielone. Pozostał jednak drugi deterministyczny
+`needless_raw_string_hashes` w `t141_recovery_only_cleans_and_marks.rs`: końcowa bramka była
+**17/18 w 55,95 s**. Nie ma piątej tury i gałąź nie ląduje.
+
+Paragony kontraktu/build pokazują co najmniej 6 481 867 tokenów wejścia (6 129 152 z cache)
+i 34 805 wyjścia; review/repair nie mają osobnych liczników. **T-144** ma dwa nowe, globalnie
+unikalne targety, obejmuje oba defekty recenzenta i po własnym czerwonym `before` może przejąć
+wyłącznie `bd5e42b`, `9ec7025`, `7ad1b70`, `36507aa`. Nie przejmuje speców, `TASK.md`, całej
+gałęzi ani mieszanego commita `d5f2797`. Następna kolejność: T-144 → T-143 → T-142.
+
 ## 2026-08-27, 02:28 — T-140 w trunku; nowe indeksy mają tylko cztery żywe tabele
 
 **T-140 · zielone / WYLĄDOWANE · 17 min 38 s Harnessu + 2 min 32 s lądowania ·
