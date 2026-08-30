@@ -194,6 +194,7 @@ mod limits_rate_limit_status;
 mod limits_resume_at_reset;
 mod limits_suggested_at_once;
 mod live_chat_goes_through_the_registry;
+mod log_rotation_is_bounded;
 mod memory_handoff_cap;
 mod memory_handoff_frontmatter;
 mod memory_handoff_paths;
