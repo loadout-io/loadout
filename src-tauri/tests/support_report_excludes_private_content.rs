@@ -27,8 +27,9 @@ const PRIVATE: [&str; 12] = [
     "PRIVATE_NAME_T34",
 ];
 
-const ALLOWED_KEYS: [&str; 36] = [
+const ALLOWED_KEYS: [&str; 39] = [
     "agentTurns",
+    "appVersion",
     "artifacts",
     "attempts",
     "cachedTokens",
@@ -63,6 +64,8 @@ const ALLOWED_KEYS: [&str; 36] = [
     "stderr",
     "stdout",
     "steps",
+    "targetArch",
+    "targetOs",
     "total",
     "turnFiles",
     "turns",

@@ -102,6 +102,7 @@ mod context_failures_take_the_chosen_path;
 mod continue_from_a_past_run;
 mod copies_carry_the_try_they_hold;
 mod copies_run_side_by_side;
+mod diagnostics_build_facts;
 mod driver_claude_policy_surface;
 mod driver_claude_settings_file;
 mod driver_claude_tool_surface;

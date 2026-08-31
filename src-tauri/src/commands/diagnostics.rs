@@ -9,6 +9,8 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
+const REPORT_SCHEMA_VERSION: u8 = 2;
+
 /// Stale, allowlistowane odmowy granicy schowka. Zrodlo bledu nigdy nie przechodzi do okna.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DiagnosticsError {
@@ -50,6 +52,9 @@ impl SupportReport {
 #[serde(rename_all = "camelCase")]
 struct ReportDocument {
     schema_version: u8,
+    app_version: &'static str,
+    target_os: &'static str,
+    target_arch: &'static str,
     workspace: WorkspaceFacts,
     runs: Vec<RunFacts>,
     conversations: Vec<ConversationFacts>,
@@ -295,7 +300,10 @@ pub fn support_report(workspace: &Path) -> anyhow::Result<SupportReport> {
                 artifacts: 0,
             };
             let document = ReportDocument {
-                schema_version: 1,
+                schema_version: REPORT_SCHEMA_VERSION,
+                app_version: env!("CARGO_PKG_VERSION"),
+                target_os: std::env::consts::OS,
+                target_arch: std::env::consts::ARCH,
                 workspace: WorkspaceFacts {
                     counts: Counts {
                         runs: 0,
@@ -323,7 +331,10 @@ pub fn support_report(workspace: &Path) -> anyhow::Result<SupportReport> {
         artifacts: run_artifacts.saturating_add(conversation_artifacts),
     };
     let document = ReportDocument {
-        schema_version: 1,
+        schema_version: REPORT_SCHEMA_VERSION,
+        app_version: env!("CARGO_PKG_VERSION"),
+        target_os: std::env::consts::OS,
+        target_arch: std::env::consts::ARCH,
         workspace: WorkspaceFacts {
             counts: Counts {
                 runs: receipt.runs,
