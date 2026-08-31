@@ -21,9 +21,9 @@
 //!
 //! Kafelek, który zostaje po rzeczy, która zeszła. „Running" przy komendzie zeszłej dwie minuty
 //! temu jest tym samym kłamstwem, co widmowy agent z T-66 — a tamta fala pokazała, że ta klasa
-//! wady wraca powierzchnia po powierzchni. Stąd [`StartedProcess::alive`] jest polem, a nie
-//! założeniem: rejestr mówi, co wie, a kafelka nie rysuje wcale temu, kto zszedł
-//! (`src/sections/run/rail/processes.ts`).
+//! wady wraca powierzchnia po powierzchni. Dlatego EOF obu potoków uruchamia autonomiczne
+//! zebranie, a wpis znika dopiero po `GroupProof::Dead`; dopóki dowodu nie ma, rejestr uczciwie
+//! traktuje grupę jako żywą (niezmiennik 6, 2026-08-31).
 //!
 //! # Dlaczego w `commands/`, a nie w `engine/`
 //!
@@ -45,10 +45,13 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
+
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::engine::drivers::AgentHandle;
-use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying};
+use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying, StayingOutput};
 use crate::engine::limits::Slot;
 use crate::engine::supervisor::{GroupId, GroupProof};
 
@@ -66,12 +69,11 @@ pub struct StartedProcess {
     /// `i32`, nie `u32`: POSIX-owy `pid_t` jest znakowany, a `kill(-pgid, …)` używa znaku jako
     /// selektora grupy (powód w całości przy `engine::supervisor::GroupId`).
     pub pgid: i32,
-    /// Czy w tej grupie ktoś jeszcze jest.
+    /// Czy grupę nadal trzeba traktować jako żywą.
     ///
-    /// POLE, nie założenie, i to jest cała obrona przed „Running" nad rzeczą, która zeszła:
-    /// rejestr, który po prostu zapomina wpis w chwili śmierci, nie ma jak POWIEDZIEĆ oknu, że
-    /// coś zeszło — a okno, które o tym nie usłyszy, zostawia kafelek na ekranie. Kafelka nie
-    /// rysuje wtedy widok, nie ten plik.
+    /// Każdy zwrócony wpis ma tu `true`: `GroupProof::Alive` zachowuje go, a `Dead` usuwa cały
+    /// wpis. Pole zostaje częścią drutu i czystej polityki widoku; nie wolno go zgasić na samym
+    /// EOF ani wyniku lidera, zanim jądro odpowie `ESRCH` (2026-08-31).
     pub alive: bool,
 }
 
@@ -170,12 +172,49 @@ impl Unproven {
     }
 }
 
+/// Jeden wpis rejestru: fakty do synchronicznego odczytu i dokładnie jeden właściciel uchwytu.
+#[derive(Debug)]
+struct HeldProcess {
+    command: String,
+    pgid: i32,
+    output: StayingOutput,
+    /// Tokio, nie `std`, bo ten zamek CELOWO obejmuje `Staying::stop().await`: trzy konkurujące
+    /// drogi muszą ustawić się w kolejce do tego samego `Supervised`, zamiast dwa razy wołać
+    /// `wait` albo dwa razy sygnalizować tę samą grupę (niezmiennik 8, 2026-08-31).
+    owner: AsyncMutex<Owner>,
+}
+
+/// Stan pojedynczego właściciela. `Released` powstaje dopiero po `GroupProof::Dead`, więc druga
+/// droga może zwrócić `None` dopiero wtedy, gdy pierwsza naprawdę dostała `ESRCH`.
+#[derive(Debug)]
+enum Owner {
+    Held(Staying),
+    Released,
+}
+
+impl HeldProcess {
+    /// Przechodzi przez istniejącą eskalację supervisora jako jedyny właściciel uchwytu.
+    async fn prove(&self) -> Option<GroupProof> {
+        let mut owner = self.owner.lock().await;
+        let proof = match &mut *owner {
+            Owner::Held(staying) => staying.stop().await,
+            Owner::Released => return None,
+        };
+        if matches!(proof, GroupProof::Dead { .. }) {
+            *owner = Owner::Released;
+        }
+        Some(proof)
+    }
+}
+
+type Held = BTreeMap<i32, Arc<HeldProcess>>;
+
 /// Wszystko, co Loadout uruchomił dla człowieka i jeszcze o tym wie.
 ///
 /// Jeden na aplikację, w `ipc::AppState`, obok uchwytu biegu i rozmowy z liderem. Nie jeden na
 /// zakres: rzecz uruchomiona w jednym folderze biegnie dalej po przełączeniu widoku, a lista,
 /// która by ją wtedy ukryła, jest listą, po której zostaje osierocony proces palący maszynę.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Processes {
     /// `pgid` → uchwyt do tej jednej rzeczy.
     ///
@@ -193,7 +232,12 @@ pub struct Processes {
     /// zamka mieści się w jednym bloku, który wyjmuje albo przepisuje wartości i oddaje zamek —
     /// eskalacja czeka DOPIERO po jego zwolnieniu. Zamek trzymany przez zatrzymywanie zawiesiłby
     /// całe okno na czas okna łaski, czyli dokładnie wtedy, kiedy człowiek na coś patrzy.
-    held: Mutex<BTreeMap<i32, Staying>>,
+    held: Arc<Mutex<Held>>,
+
+    /// Drop anuluje wyłącznie obserwatorów EOF. Zadania trzymają słabe odwołania do mapy i wpisu,
+    /// a ten token zamyka także wąskie okno, w którym obserwator zdążył je podnieść tuż przed
+    /// porzuceniem `Processes` (2026-08-31).
+    natural_reapers: CancellationToken,
 
     /// Grupy kroków, których **nie dało się dowieść** jako martwych — po jednej pozycji na grupę.
     ///
@@ -211,12 +255,27 @@ pub struct Processes {
     unproven: Mutex<Vec<Unproven>>,
 }
 
+impl Default for Processes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Processes {
+    fn drop(&mut self) {
+        // 2026-08-31 — najpierw odbieramy reaperom prawo do podnoszenia słabych wpisów. Potem
+        // zwykły Drop mapy zwalnia jedyne mocne Arc i gwardia `Supervised` sprząta każdą grupę.
+        self.natural_reapers.cancel();
+    }
+}
+
 impl Processes {
     /// Ani jednej rzeczy — stan aplikacji, która właśnie wstała.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            held: Mutex::new(BTreeMap::new()),
+            held: Arc::new(Mutex::new(BTreeMap::new())),
+            natural_reapers: CancellationToken::new(),
             unproven: Mutex::new(Vec::new()),
         }
     }
@@ -241,37 +300,61 @@ impl Processes {
     /// wołającemu wyłącznie nekrolog — nie byłoby czego pokazać na kafelku ani czego ubić przez
     /// cały czas, kiedy to naprawdę biegnie.
     pub fn start(&self, spec: &StartSpec) -> io::Result<StartedProcess> {
-        let staying = CommandDriver::new().start_to_stay(spec)?;
-        let started = one_of(&staying);
+        let mut staying = CommandDriver::new().start_to_stay(spec)?;
+        let natural_end = staying
+            .natural_end()
+            .ok_or_else(|| io::Error::other("a started command has no natural-end notification"))?;
+        let group = staying.group();
+        let entry = Arc::new(HeldProcess {
+            command: staying.command().to_owned(),
+            pgid: group.pgid,
+            output: staying.output(),
+            owner: AsyncMutex::new(Owner::Held(staying)),
+        });
+        let started = one_of(&entry);
         /* WPIS POWSTAJE PO STARCIE, NIGDY PRZED, i to nie jest kolejność dla porządku: komenda,
          * której nie dało się odpalić, nie ma grupy, więc wpis zrobiony wcześniej byłby kafelkiem
          * nad rzeczą, której nie ma (niezmiennik 17), i musiałby go potem ktoś zdjąć na ścieżce
          * błędu — czyli dokładnie na tej, na której wołający wychodzi przez `?`.
          *
-         * `pgid` jest tu kluczem unikalnym z definicji: dopóki grupa żyje, jądro nie wyda tej
-         * liczby drugi raz, a rzecz, która zeszła, zostaje pod swoim kluczem do
-         * [`Processes::stop`] albo [`Processes::close`]. */
-        self.held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(started.pgid, staying);
+         * Wpisu o tym samym `pgid` NIE NADPISUJEMY. Po `ESRCH` jądro może użyć liczby ponownie,
+         * a spóźniony koniec starej rzeczy nie ma prawa ani usunąć, ani upuścić uchwytu nowej
+         * (2026-08-31). Tożsamość `Arc` jest sprawdzana ponownie przy samym usunięciu. */
+        {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            if held.contains_key(&started.pgid) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "process group {} is still owned by an earlier started command",
+                        started.pgid
+                    ),
+                ));
+            }
+            held.insert(started.pgid, Arc::clone(&entry));
+        }
+
+        tokio::spawn(reap_after_natural_end(
+            Arc::downgrade(&self.held),
+            Arc::downgrade(&entry),
+            natural_end,
+            self.natural_reapers.clone(),
+        ));
         Ok(started)
     }
 
-    /// Wszystko, o czym ten rejestr jeszcze wie — także to, co zeszło i nie zostało jeszcze
-    /// sprzątnięte.
+    /// Wszystko, czego grupa nie ma jeszcze dowodu śmierci.
     ///
-    /// Zeszłe rzeczy zostają w tej odpowiedzi z rozmysłu: to jest jedyna droga, którą okno
-    /// dowiaduje się o śmierci czegoś, czego nie zatrzymało samo. Kafelka takiemu wpisowi nie
-    /// rysuje widok (`src/sections/run/rail/processes.ts`), więc lista może być uczciwa, a ekran
-    /// mimo to nie kłamie.
+    /// Wpis znika dopiero po `GroupProof::Dead`; dlatego każdy wpis tej listy uczciwie pozostaje
+    /// żywy także wtedy, gdy EOF uruchomił już autonomicznego reapera, ale jądro nie odpowiedziało
+    /// jeszcze `ESRCH`.
     #[must_use]
     pub fn list(&self) -> Vec<StartedProcess> {
         self.held
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .values()
-            .map(one_of)
+            .map(|entry| one_of(entry))
             .collect()
     }
 
@@ -289,7 +372,7 @@ impl Processes {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&pgid)
-            .map(Staying::said)
+            .map(|entry| entry.output.said())
     }
 
     /// „Stop" na kafelku: prosi TĘ grupę o zejście i oddaje **dowód**.
@@ -300,34 +383,22 @@ impl Processes {
     /// `GroupProof`, nigdy `io::Result<()>`: `Ok(())` znaczyłoby „wysłałem sygnał", a wołający
     /// przeczytałby „nie żyje" i zgasił kafelek nad żywym procesem (niezmiennik 6).
     pub async fn stop(&self, pgid: i32) -> Option<GroupProof> {
-        // Uchwyt WYJMUJEMY pod zamkiem, a eskalacja czeka po jego zwolnieniu — niezmiennik 8
-        // zapisany blokiem, nie komentarzem: `clippy::await_holding_lock` jest w tej skrzyni
-        // odmową, a zamek trzymany przez okno łaski zawiesza całe okno.
-        let taken = {
-            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-            held.remove(&pgid)
+        // Klon wpisu WYJMUJEMY pod zamkiem mapy, a eskalacja czeka po jego zwolnieniu. Właściciel
+        // wewnątrz jest zamkiem Tokio właśnie dlatego, że stop, close i EOF muszą ustawić się
+        // przy jednym uchwycie zamiast trzymać `std::sync::Mutex` przez await (niezmiennik 8).
+        let entry = {
+            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.get(&pgid).cloned()
         };
-        // Wpis zdejmujemy PRZED eskalacją, nie po niej: między jednym a drugim jest okno łaski,
-        // a w nim lista pokazywałaby jako żywe coś, co właśnie schodzi z ekranu na oczach
-        // człowieka, który nacisnął Stop.
-        let mut staying = taken?;
-        let proof = staying.stop().await;
-        /* ESKALACJA, KTÓRA NIE DOWIODŁA ŚMIERCI, ODDAJE UCHWYT REJESTROWI. Zdjęcie wpisu przed
-         * eskalacją jest słuszne dla rzeczy, która zeszła — ale przy `GroupProof::Alive` w tej
-         * grupie ktoś dalej biegnie, a rejestr, który o niej zapomniał, nie ma jak jej już
-         * zgłosić: [`Processes::list`] jej nie wymieni, więc kafelek gaśnie (reguła 2 w
-         * `src/sections/run/rail/processes.ts`), a drugie kliknięcie „stop" trafi na `None`,
-         * czyli na `Ok(())` w `ipc::stop_process` — sukces zameldowany nad rzeczą, która nie
-         * umarła. To jest to samo kłamstwo, przed którym stoi ten plik, tylko w drugą stronę:
-         * cisza nad grupą, która pali maszynę. Uchwyt wraca ten sam, więc następny „stop" umie
-         * powtórzyć eskalację na tej grupie, a nie na jej wspomnieniu. */
-        if matches!(proof, GroupProof::Alive { .. }) {
-            self.held
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(pgid, staying);
+        let entry = entry?;
+        let proof = entry.prove().await;
+        if proof
+            .as_ref()
+            .is_none_or(|proof| matches!(proof, GroupProof::Dead { .. }))
+        {
+            forget_if_current(&self.held, &entry);
         }
-        Some(proof)
+        proof
     }
 
     /// Zamknięcie okna: schodzą **wszystkie** i każda oddaje dowód śmierci swojej grupy.
@@ -337,16 +408,15 @@ impl Processes {
     /// To jest ten sam defekt, który 2026-08-19 naprawiono dla biegów, i to samo, co
     /// [`super::chat::Threads::close`] robi dla rozmów.
     ///
-    /// Po jednym dowodzie na rzecz, bo bilans jest kompletny tylko wtedy, kiedy widać KAŻDY
-    /// z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt się nie
-    /// dowie z liczby „zamknięto pięć".
+    /// Po jednym dowodzie na każdy wpis, którego naturalny reaper nie dowiódł wcześniej. Jeden
+    /// `Alive` wśród pięciu `Dead` zostaje w mapie razem z uchwytem; nie znika pod liczbą
+    /// „zamknięto pięć".
     pub async fn close(&self) -> Vec<GroupProof> {
-        // Cały rejestr wyjęty JEDNYM ruchem, pod zamkiem, i dopiero potem eskalacja — powód ten
-        // sam, co przy [`Processes::stop`]. Pusty rejestr od tej chwili: rzecz, która ma zejść,
-        // nie jest już rzeczą, którą wolno komukolwiek pokazać.
+        // Migawka tożsamości, nie wyjęcie mapy: `Alive` musi zachować ten sam wpis i ten sam
+        // uchwyt, a proces o ponownie użytym `pgid` nie może trafić do tej pętli bokiem.
         let taken = {
-            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-            std::mem::take(&mut *held)
+            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.values().cloned().collect::<Vec<_>>()
         };
 
         // PO KOLEI, nie równolegle, i cena jest zapisana: przy pięciu rzeczach, z których żadna
@@ -356,8 +426,17 @@ impl Processes {
         // czyli skrzyni `futures`, a `src-tauri/Cargo.toml` leży poza blokiem OWNS tego zadania
         // (AGENTS.md §7) — więc to jest dług zapisany, nie przemilczany.
         let mut proofs = Vec::with_capacity(taken.len());
-        for mut staying in taken.into_values() {
-            proofs.push(staying.stop().await);
+        for entry in taken {
+            let proof = entry.prove().await;
+            if proof
+                .as_ref()
+                .is_none_or(|proof| matches!(proof, GroupProof::Dead { .. }))
+            {
+                forget_if_current(&self.held, &entry);
+            }
+            if let Some(proof) = proof {
+                proofs.push(proof);
+            }
         }
         proofs.extend(self.prove_the_unproven().await);
         proofs
@@ -408,10 +487,71 @@ impl Processes {
 /// odpowiadają na to samo pytanie w dwóch chwilach, a dwie kopie tego przepisania rozjechałyby
 /// się przy pierwszym polu dołożonym do [`StartedProcess`] (niezmiennik 13). Wtedy rzecz
 /// zgłoszona przy starcie i ta sama rzecz na liście mówiłyby o sobie co innego.
-fn one_of(staying: &Staying) -> StartedProcess {
+fn one_of(staying: &HeldProcess) -> StartedProcess {
     StartedProcess {
-        command: staying.command().to_owned(),
-        pgid: staying.group().pgid,
-        alive: staying.alive(),
+        command: staying.command.clone(),
+        pgid: staying.pgid,
+        // Obecność wpisu znaczy „bez dowodu śmierci". `Alive` zostawia go tutaj; `Dead` usuwa.
+        alive: true,
+    }
+}
+
+/// Czy mapa nadal trzyma dokładnie TEN wpis, a nie nową rzecz pod ponownie użytym `pgid`.
+fn is_current(held: &Mutex<Held>, entry: &Arc<HeldProcess>) -> bool {
+    held.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&entry.pgid)
+        .is_some_and(|current| Arc::ptr_eq(current, entry))
+}
+
+/// Usuwa wyłącznie własny wpis po dowodzie. Tożsamość `Arc`, nie sam PID, zamyka wyścig reuse.
+fn forget_if_current(held: &Mutex<Held>, entry: &Arc<HeldProcess>) {
+    let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+    if held
+        .get(&entry.pgid)
+        .is_some_and(|current| Arc::ptr_eq(current, entry))
+    {
+        held.remove(&entry.pgid);
+    }
+}
+
+/// EOF obu drenowanych potoków uruchamia tę samą drogę dowodową co Stop i zamknięcie okna.
+async fn reap_after_natural_end(
+    held: Weak<Mutex<Held>>,
+    entry: Weak<HeldProcess>,
+    natural_end: oneshot::Receiver<()>,
+    shutdown: CancellationToken,
+) {
+    let ended = tokio::select! {
+        ended = natural_end => ended.is_ok(),
+        () = shutdown.cancelled() => false,
+    };
+    if !ended {
+        return;
+    }
+
+    // Dwa słabe odwołania są treścią, nie optymalizacją: żywy skrypt nie może utrzymywać ani
+    // całego rejestru, ani jego `Supervised` po Drop `Processes` (2026-08-31).
+    let Some(entry) = entry.upgrade() else {
+        return;
+    };
+    let Some(registry) = held.upgrade() else {
+        return;
+    };
+    if !is_current(&registry, &entry) {
+        return;
+    }
+    drop(registry);
+
+    let proof = tokio::select! {
+        proof = entry.prove() => proof,
+        () = shutdown.cancelled() => return,
+    };
+    if proof
+        .as_ref()
+        .is_none_or(|proof| matches!(proof, GroupProof::Dead { .. }))
+        && let Some(registry) = held.upgrade()
+    {
+        forget_if_current(&registry, &entry);
     }
 }

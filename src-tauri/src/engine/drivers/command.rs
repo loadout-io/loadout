@@ -31,12 +31,12 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{ChildStderr, ChildStdout};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::super::supervisor::{self, GroupId, GroupProof, StdinPlan, Supervised};
@@ -645,7 +645,7 @@ impl CommandDriver {
     /// Ta sama droga do systemu, co [`CommandDriver::start`]: [`supervisor::spawn`], własna grupa,
     /// `env_clear()` plus jawna lista, potoki. Różnica jest jedna i cała mieszka w tym, czego tu
     /// NIE ma: nie ma [`CheckSpec::proof`], bo nie ma werdyktu, i nie ma [`GIVE_UP_AFTER`], bo
-    /// proces zamówiony przez człowieka kończy się na żądanie albo razem z oknem.
+    /// proces zamówiony przez człowieka żyje do własnego końca, żądania albo zamknięcia okna.
     ///
     /// Uchwyt, a nie `async fn` czekająca do końca, i to jest cała różnica wobec kroku „sprawdź".
     /// Wersja czekająca kompiluje się, czyta dobrze i zamienia tę drogę w krok sprawdzający
@@ -663,8 +663,10 @@ impl CommandDriver {
         let mut handle = supervisor::spawn(command, StdinPlan::Null)?;
         let group = handle.group();
 
-        let up = Arc::new(AtomicBool::new(true));
-        let said = Arc::new(Mutex::new(Vec::new()));
+        let output = StayingOutput {
+            said: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (ended, natural_end) = oneshot::channel();
 
         // Potoki wyjmujemy PRZED oddaniem uchwytu do struktury, dokładnie jak w `Checking::settle`
         // i z tego samego powodu: czytanie pożycza je na cały swój czas, a `Supervised::stop`
@@ -678,28 +680,30 @@ impl CommandDriver {
          * kilobajtów w ciągu sekund i zawiesza się na zawsze, a z okna wygląda to jak apka, która
          * wstała i zamilkła. Krok „sprawdź" opróżnia je w `settle()`, bo tam ktoś na nie czeka;
          * tutaj nie czeka nikt. */
-        let keep = Arc::clone(&said);
-        let alive = Arc::clone(&up);
+        let keep = Arc::clone(&output.said);
         let _reading = tokio::spawn(async move {
             read_both(out, complaints, |chunk| remember(&keep, chunk)).await;
-            /* EOF NA OBU POTOKACH JEST TU DOWODEM ŻYCIA, i to jest dokładnie ten pomiar, o którym
-             * mówi nagłówek `supervisor.rs`: sierota dziedziczy stdout, więc potok, którego ktoś
-             * jeszcze trzyma, NIE DOCHODZI do EOF (`lsof` pokazał obie sieroty na fd 1 i fd 2
-             * [T7 §3.1]). Odwrotnie: EOF na obu znaczy, że nikogo, kto je trzymał, już nie ma.
+            /* EOF NA OBU POTOKACH URUCHAMIA DOWÓD, ALE NIM NIE JEST. Sierota dziedzicząca stdout
+             * nie pozwala potokowi dojść do EOF (`lsof` pokazał obie na fd 1 i fd 2 [T7 §3.1]),
+             * lecz proces może też świadomie zamknąć deskryptory. Dlatego ten dzwonek nie usuwa
+             * wpisu ani nie gasi flagi: wspólny właściciel dopiero zbiera lidera i żąda od
+             * supervisora `GroupProof::Dead` (niezmiennik 6, 2026-08-31).
              *
              * Dlaczego nie `wait()` na liderze: lider bywa najszybszy, a płacimy za wnuki —
              * `npm run dev` rozwidla dziecko i sam wychodzi, więc status lidera powiedziałby
              * „zeszło" nad rzeczą, która pracuje dalej. To jest ta sama różnica, dla której
              * niezmiennik 6 mówi o GRUPIE, nie o procesie. */
-            alive.store(false, Ordering::Relaxed);
+            // 2026-08-31 — odbiorca jest tylko dzwonkiem. Nie niesie uchwytu, ogona ani Arc do
+            // rejestru, więc samo zadanie EOF nie może przedłużyć życia właściciela procesu.
+            let _ = ended.send(());
         });
 
         Ok(Staying {
             group,
             command: spec.command.clone(),
             handle,
-            up,
-            said,
+            output,
+            natural_end: Some(natural_end),
         })
     }
 }
@@ -708,7 +712,8 @@ impl CommandDriver {
  *
  * DLACZEGO TO NIE JEST KROK „SPRAWDŹ" Z INNYM SUFITEM. Krok sprawdzający ma koniec, o którym
  * decyduje on sam: komenda wraca, my orzekamy. Rzecz zamówiona przez człowieka (`/start npm run
- * dev`) nie ma takiego końca — kończy się, kiedy człowiek ją zatrzyma albo kiedy zniknie okno.
+ * dev`) może zejść sama, ale start nie czeka na ten koniec: rejestr zbiera ją po EOF albo kończy
+ * ją na żądanie człowieka czy przy zniknięciu okna.
  * Trzy rzeczy z [`CheckSpec`] tracą tu więc sens naraz: wzorzec dowodu (nie ma werdyktu),
  * [`GIVE_UP_AFTER`] (nie ma limitu) i sama forma „jedno wywołanie robi wszystko" (bo przez cały
  * czas życia tej rzeczy ktoś musi mieć czym ją pokazać i czym ją ubić).
@@ -736,6 +741,25 @@ pub struct StartSpec {
     pub cwd: PathBuf,
 }
 
+/// Klonowalny widok ograniczonego ogona, bez uchwytu do procesu.
+///
+/// Rejestr trzyma go obok asynchronicznego właściciela [`Staying`], żeby zwykłe odświeżenie
+/// okna nie musiało brać zamka trzymanego podczas dowodzenia śmierci. Klon zachowuje wyłącznie
+/// bajty; nie potrafi czekać, sygnalizować ani przedłużyć życia [`Supervised`].
+#[derive(Debug, Clone)]
+pub struct StayingOutput {
+    said: Arc<Mutex<Vec<u8>>>,
+}
+
+impl StayingOutput {
+    /// Co ta rzecz do tej pory wypisała — ogon długości [`KEEP_LAST`].
+    #[must_use]
+    pub fn said(&self) -> String {
+        let kept = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&kept).into_owned()
+    }
+}
+
 /// Żywa komenda, która ma zostać: własna grupa, potoki opróżniane do EOF, zejście z dowodem.
 ///
 /// Uchwyt, a nie jedno wywołanie „zrób wszystko", i to jest ten sam wymóg z niezmiennika 6, co
@@ -751,22 +775,19 @@ pub struct Staying {
     /// Nadzorowana grupa procesów. Porzucenie tego pola też ją zabija — gwardia siedzi
     /// w `Drop` uchwytu, a normalną drogą jest [`Staying::stop`].
     handle: Supervised,
-    /// Czy cokolwiek, co trzymało potoki tej rzeczy, jeszcze żyje.
-    ///
-    /// Gaszone przez zadanie czytające, w chwili EOF na obu potokach — powód, dla którego to
-    /// jest właśnie ten pomiar, a nie status lidera, stoi przy [`CommandDriver::start_to_stay`].
-    /// `Arc`, bo pisze do tego zadanie, a czyta okno przez [`Staying::alive`].
-    up: Arc<AtomicBool>,
     /// Ogon tego, co ta rzecz wypisała — oba potoki, w kolejności odczytu.
     ///
     /// **Bajty, nie tekst**, i to jest wymóg, nie gust: porcja bywa rozcięta w środku znaku
     /// wielobajtowego, więc `from_utf8_lossy` na każdej z nich osobno zamieniałby taki znak
-    /// w znak zapytania. Tekst powstaje raz, w [`Staying::said`].
+    /// w znak zapytania. Tekst powstaje raz, w [`StayingOutput::said`].
     ///
     /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): oba wzięcia —
-    /// dopisanie porcji w [`remember`] i klon w [`Staying::said`] — mieszczą się w jednym
+    /// dopisanie porcji w [`remember`] i klon w [`StayingOutput::said`] — mieszczą się w jednym
     /// wyrażeniu, w którym nie ma czego czekać.
-    said: Arc<Mutex<Vec<u8>>>,
+    output: StayingOutput,
+    /// Jednorazowy dzwonek po EOF obu potoków. Odbiera go rejestr dokładnie raz; sam czytelnik
+    /// nie zna rejestru ani właściciela uchwytu (2026-08-31).
+    natural_end: Option<oneshot::Receiver<()>>,
 }
 
 impl Staying {
@@ -782,25 +803,17 @@ impl Staying {
         &self.command
     }
 
-    /// Czy to jeszcze biegnie.
-    ///
-    /// Odpowiedź jest o CAŁEJ GRUPIE, nie o liderze, i to jest cała jej wartość: „Running" nad
-    /// rzeczą, która zeszła dwie minuty temu, jest tym samym kłamstwem, co widmowy agent z T-66.
-    /// Skąd ta odpowiedź się bierze, stoi przy [`CommandDriver::start_to_stay`].
+    /// Widok ogona bez prawa do procesu. Rejestr czyta go synchronicznie podczas odświeżenia.
     #[must_use]
-    pub fn alive(&self) -> bool {
-        self.up.load(Ordering::Relaxed)
+    pub fn output(&self) -> StayingOutput {
+        self.output.clone()
     }
 
-    /// Co ta rzecz do tej pory wypisała — ogon długości [`KEEP_LAST`].
-    ///
-    /// Czyta to okno, żeby mieć co pokazać po kliknięciu w kafelek: kafelek, w który da się
-    /// wejść i nie ma tam nic, jest kontrolką bez skutku (niezmiennik 16). Tekst składany
-    /// dopiero tutaj — powód przy polu [`Staying::said`].
-    #[must_use]
-    pub fn said(&self) -> String {
-        let kept = self.said.lock().unwrap_or_else(PoisonError::into_inner);
-        String::from_utf8_lossy(&kept).into_owned()
+    /// Odbiera jedyny dzwonek EOF. `None` przy drugiej próbie jest błędem programisty wołającego,
+    /// nie stanem procesu; [`Processes`](crate::commands::processes::Processes) bierze go podczas
+    /// wstawiania tego samego uchwytu do rejestru.
+    pub fn natural_end(&mut self) -> Option<oneshot::Receiver<()>> {
+        self.natural_end.take()
     }
 
     /// Prosi grupę o zejście i oddaje **dowód**, nie potwierdzenie wysłania sygnału.
