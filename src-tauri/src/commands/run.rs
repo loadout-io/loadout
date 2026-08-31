@@ -9443,9 +9443,11 @@ impl Live {
                     }
                 });
                 /* WYJŚCIE KOMENDY MA DWÓCH CZYTELNIKÓW (niezmiennik 21): werdykt wyżej
-                 * i przekazanie do następnego kroku tutaj. Bez tego drugiego runda 1 pętli nie
-                 * wie, co padło w rundzie 0, i pętla nie ma po co istnieć. `reads` jest puste,
-                 * bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
+                 * i przekazanie do następnego kroku tutaj. 2026-08-31 — przekazywany tekst jest
+                 * ogonem do 64 KiB i zaczyna się zdaniem o pominięciu, gdy pełny strumień był
+                 * dłuższy; werdykt już zobaczył cały strumień. Bez drugiego czytelnika runda 1
+                 * pętli nie wie, co padło w rundzie 0, i pętla nie ma po co istnieć. `reads` jest
+                 * puste, bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
                  * promptu. */
                 self.hand_over(id, &report.output, &[]);
                 /* PRZED WERDYKTEM I PRZED DROGAMI WARUNKOWYMI, ale ZA zapisem przekazania: plik

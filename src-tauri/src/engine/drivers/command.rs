@@ -180,10 +180,14 @@ impl Checking {
         /* POTOKI WYJMUJEMY Z UCHWYTU, ZANIM ZACZNIE SIĘ CZEKANIE, i to nie jest kwestia stylu:
          * czytanie pożycza je na całe opróżnianie, a `Supervised::stop` pożycza uchwyt mutowalnie.
          * Wyjęte, jadą do zadania czytającego na własność i obie rzeczy mogą dziać się naraz. */
-        let reading = read_to_eof(self.handle.stdout(), self.handle.stderr());
+        let reading = read_to_eof(
+            self.handle.stdout(),
+            self.handle.stderr(),
+            CheckCapture::new(&self.proof),
+        );
         tokio::pin!(reading);
 
-        let output = {
+        let captured = {
             let overdue = tokio::time::sleep(self.left());
             tokio::pin!(overdue);
             tokio::select! {
@@ -222,7 +226,7 @@ impl Checking {
                 // Kod wyjścia albo jego BRAK. `None` przychodzi z dwóch stron: proces zginął od
                 // sygnału (`ExitStatus::code()` nie ma czego oddać) albo statusu nie dało się
                 // zebrać. Obie odpowiedzi znaczą to samo dla werdyktu — `None` to nie zero.
-                how: CheckHow::Ran(self.report(status.ok().and_then(|how| how.code()), output)),
+                how: CheckHow::Ran(self.report(status.ok().and_then(|how| how.code()), captured)),
             },
             Settled::Stopped => self.give_up(group, CheckHow::Stopped).await,
             Settled::Overdue => self.give_up(group, CheckHow::Overdue).await,
@@ -234,12 +238,13 @@ impl Checking {
     /// `matched` obok `passed`, a nie zamiast: człowiek ma widzieć, KTÓRA połowa zawiodła. „Testy
     /// padły" naprawia się inaczej niż „nic się nie uruchomiło", a jedno pole `bool` na dwa różne
     /// stany wysyłałoby go w połowie przypadków w złe miejsce.
-    fn report(&self, exit_code: Option<i32>, output: String) -> CheckReport {
+    fn report(&self, exit_code: Option<i32>, captured: Captured) -> CheckReport {
+        let Captured { text, matched } = captured;
         CheckReport {
-            passed: passed(exit_code, &output, &self.proof),
+            passed: verdict(exit_code, matched),
             exit_code,
-            matched: proof_matches(&self.proof, &output),
-            output,
+            matched,
+            output: text,
             took: self.began.elapsed(),
         }
     }
@@ -302,15 +307,218 @@ enum Said {
 /// i `clippy::large_futures` na czerwono w pełnej bramce.
 const CHUNK: usize = 8 * 1024;
 
-/// Ile ostatnich bajtów wyjścia trzyma dla okna rzecz, która ZOSTAJE.
+/// Ile ostatnich bajtów wyjścia zachowuje jeden proces — sprawdzający albo zostający.
 ///
-/// Sufit, a nie cały tekst, i różnica wobec [`read_to_eof`] ma nazwany powód. Tam wyjścia nie
-/// wolno przyciąć: wzorzec dowodu bywa w pierwszej linii (`error: no test target matched`), więc
-/// obcięty tekst zamieniłby „nic nie ruszyło" w „nie wiadomo". Tutaj werdyktu nie ma i nie
-/// będzie, a rzecz biegnie godzinami — dev server pisze bez końca, więc bufor bez sufitu rośnie
-/// dokładnie tak długo, jak długo człowiek jej nie zatrzyma. Sześćdziesiąt cztery kilobajty to
-/// kilkaset linii, czyli tyle, ile widać w oknie terminala po przewinięciu.
+/// Sześćdziesiąt cztery kilobajty to kilkaset linii, czyli tyle, ile człowiek może przejrzeć.
+/// Rzecz, która ZOSTAJE, trzyma tyle przez całe życie; krok „sprawdź" zostawia tyle po dojściu
+/// obu potoków do EOF, ale jego dopasowanie czyta każdy znak przed odrzuceniem początku.
 const KEEP_LAST: usize = 64 * 1024;
+
+/// Pierwsze zdanie każdego przyciętego wyniku — także liczy się do [`KEEP_LAST`].
+const OMITTED: &str = "[Loadout omitted earlier output from this check.]\n";
+
+/// Jedna część wzorca dowodu: znak literalny albo jedyny metaznak `(\d+)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProofUnit {
+    Literal(char),
+    Digits,
+}
+
+/// Żywy stan dopasowania podciągu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProofState {
+    /// Następna część wzorca jeszcze czeka na znak.
+    At(usize),
+    /// Grupa pod tym indeksem dostała już co najmniej jedną cyfrę i może trwać albo się domknąć.
+    InDigits(usize),
+}
+
+/// Inkrementalny rdzeń dopasowania, wspólny dla strumienia procesu i [`proof_matches`].
+struct ProofScan {
+    units: Vec<ProofUnit>,
+    states: Vec<ProofState>,
+    enabled: bool,
+    matched: bool,
+}
+
+impl ProofScan {
+    fn new(proof: &str) -> Self {
+        let enabled = !proof.trim().is_empty();
+        let mut units = Vec::new();
+        if enabled {
+            let mut parts = proof.split(DIGIT_RUN).peekable();
+            while let Some(literal) = parts.next() {
+                units.extend(literal.chars().map(ProofUnit::Literal));
+                if parts.peek().is_some() {
+                    units.push(ProofUnit::Digits);
+                }
+            }
+        }
+        Self {
+            units,
+            states: Vec::new(),
+            enabled,
+            matched: false,
+        }
+    }
+
+    fn take(&mut self, text: &str) {
+        if self.matched || !self.enabled {
+            return;
+        }
+        for character in text.chars() {
+            self.take_character(character);
+            if self.matched {
+                return;
+            }
+        }
+    }
+
+    fn take_character(&mut self, character: char) {
+        let mut next = Vec::with_capacity(self.states.len().saturating_add(2));
+
+        // Nowa próba przy KAŻDYM znaku sprawia, że wzorzec szuka podciągu, nie tylko początku.
+        Self::advance(&self.units, 0, character, &mut next);
+        for state in &self.states {
+            match *state {
+                ProofState::At(at) => Self::advance(&self.units, at, character, &mut next),
+                ProofState::InDigits(at) => {
+                    if character.is_ascii_digit() {
+                        Self::push(&mut next, ProofState::InDigits(at));
+                    }
+                    // 2026-08-31 — grupa może domknąć się PRZED tym znakiem. Ta druga droga
+                    // jest nawrotem, dzięki któremu `(\d+)5` trafia w `125`, a wiele grup ma
+                    // dokładnie tę samą semantykę w strumieniu i w gotowym tekście.
+                    Self::advance(&self.units, at + 1, character, &mut next);
+                }
+            }
+        }
+
+        self.matched = next.iter().any(|state| match *state {
+            ProofState::At(at) => at == self.units.len(),
+            ProofState::InDigits(at) => at + 1 == self.units.len(),
+        });
+        self.states = next;
+    }
+
+    fn advance(units: &[ProofUnit], at: usize, character: char, next: &mut Vec<ProofState>) {
+        match units.get(at) {
+            Some(ProofUnit::Literal(expected)) if *expected == character => {
+                Self::push(next, ProofState::At(at + 1));
+            }
+            Some(ProofUnit::Digits) if character.is_ascii_digit() => {
+                Self::push(next, ProofState::InDigits(at));
+            }
+            _ => {}
+        }
+    }
+
+    fn push(states: &mut Vec<ProofState>, state: ProofState) {
+        if !states.contains(&state) {
+            states.push(state);
+        }
+    }
+}
+
+/// Wynik drenowania potoków: ograniczony tekst i werdykt policzony z pełnego strumienia.
+struct Captured {
+    text: String,
+    matched: bool,
+}
+
+/// Streamingowy odbiorca jednego kroku „sprawdź".
+///
+/// `pending` trzyma najwyżej trzy bajty niedokończonego znaku UTF-8. `tail` nigdy nie rośnie
+/// ponad sufit plus jedną porcję z potoku, a `proof` nie przechowuje wyjścia — tylko żywe stany.
+struct CheckCapture {
+    tail: String,
+    pending: Vec<u8>,
+    proof: ProofScan,
+    dropped: bool,
+}
+
+impl CheckCapture {
+    fn new(proof: &str) -> Self {
+        Self {
+            tail: String::new(),
+            pending: Vec::with_capacity(3),
+            proof: ProofScan::new(proof),
+            dropped: false,
+        }
+    }
+
+    fn take(&mut self, chunk: &[u8]) {
+        // Jedyna kopia wielkości porcji: łączy do trzech bajtów z poprzedniego odczytu z nowym
+        // kawałkiem. Pełny strumień nigdy nie powstaje ani jako `Vec`, ani jako `String`.
+        let mut bytes = std::mem::take(&mut self.pending);
+        bytes.extend_from_slice(chunk);
+        let mut from = 0;
+
+        while from < bytes.len() {
+            match std::str::from_utf8(&bytes[from..]) {
+                Ok(text) => {
+                    self.take_text(text);
+                    return;
+                }
+                Err(error) => {
+                    let valid_end = from + error.valid_up_to();
+                    let valid = String::from_utf8_lossy(&bytes[from..valid_end]);
+                    self.take_text(&valid);
+                    from = valid_end;
+                    if let Some(invalid) = error.error_len() {
+                        self.take_text("\u{FFFD}");
+                        from += invalid;
+                    } else {
+                        self.pending.extend_from_slice(&bytes[from..]);
+                        debug_assert!(self.pending.len() <= 3);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_text(&mut self, text: &str) {
+        // Kolejność jest wiążąca: dopasowanie dostaje tekst ZANIM ogon ma prawo go odrzucić.
+        self.proof.take(text);
+        self.tail.push_str(text);
+
+        let limit = if self.dropped {
+            KEEP_LAST - OMITTED.len()
+        } else {
+            KEEP_LAST
+        };
+        if self.tail.len() <= limit {
+            return;
+        }
+
+        self.dropped = true;
+        let keep = KEEP_LAST - OMITTED.len();
+        let mut cut = self.tail.len() - keep;
+        // 2026-08-31 — sufit jest bajtowy, ale cięcie w środku znaku zrobiłoby z poprawnego
+        // wyjścia `�`. Przesunięcie o najwyżej trzy bajty zachowuje poprawny UTF-8 i sufit.
+        while !self.tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        self.tail.drain(..cut);
+    }
+
+    fn finish(mut self) -> Captured {
+        if !self.pending.is_empty() {
+            let pending = std::mem::take(&mut self.pending);
+            let decoded = String::from_utf8_lossy(&pending);
+            self.take_text(decoded.as_ref());
+        }
+        if self.dropped {
+            self.tail.insert_str(0, OMITTED);
+        }
+        debug_assert!(self.tail.len() <= KEEP_LAST);
+        Captured {
+            text: self.tail,
+            matched: self.proof.matched,
+        }
+    }
+}
 
 /// Oba potoki **do EOF**, złączone w jeden tekst w kolejności odczytu.
 ///
@@ -327,16 +535,16 @@ const KEEP_LAST: usize = 64 * 1024;
 /// więc „czytamy później, najpierw poczekajmy na wyjście" jest zakleszczeniem, w którym krok wisi
 /// na 100% „running", a wyjścia, czyli jedynej rzeczy, z której powstaje werdykt, i tak nie ma.
 ///
-/// Wyjścia NIE PRZYCINAMY i to jest wybór z ceną: komenda pisząca bez opamiętania zajmie tyle
-/// pamięci, ile napisze, aż do [`GIVE_UP_AFTER`]. Przycięcie do ostatnich N kilobajtów byłoby
-/// tańsze i kłamałoby o dowodzie — wzorzec bywa i na początku wyjścia (`error: no test target
-/// matched`), więc obcięty tekst zamieniałby „nic nie ruszyło" w „nie wiadomo".
-async fn read_to_eof(stdout: Option<ChildStdout>, stderr: Option<ChildStderr>) -> String {
-    let mut said: Vec<u8> = Vec::new();
-    // Tekst składamy raz, na końcu — `from_utf8_lossy` na każdym kawałku osobno zamieniałoby
-    // znak rozcięty na granicy porcji w znak zapytania.
-    read_both(stdout, stderr, |chunk| said.extend_from_slice(chunk)).await;
-    String::from_utf8_lossy(&said).into_owned()
+/// 2026-08-31 — tekst zachowuje tylko ogon, ale dopasowanie widzi cały zdekodowany strumień.
+/// Dzięki temu sufit nie może skłamać o liczniku przejść z pierwszej linii; marker mówi
+/// człowiekowi, że początek został świadomie pominięty.
+async fn read_to_eof(
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    mut capture: CheckCapture,
+) -> Captured {
+    read_both(stdout, stderr, |chunk| capture.take(chunk)).await;
+    capture.finish()
 }
 
 /// Oba potoki do EOF, kawałek po kawałku, do `into`.
@@ -623,14 +831,15 @@ fn remember(said: &Mutex<Vec<u8>>, chunk: &[u8]) {
 
 /// Czy wzorzec dowodu trafia w wyjście komendy.
 ///
-/// Wzorzec to zwykły tekst z **jednym** metaznakiem: sekwencja `(\d+)` znaczy „co najmniej jedna
-/// cyfra", wszystko poza nią jest literałem, a dopasowanie jest szukaniem podciągu. To celowo
-/// **ta sama notacja**, którą człowiek pisze w linii `expect:` naszego własnego harnessu
-/// (`AGENTS.md` §2a punkt 4) — jedna notacja, jedno znaczenie, w bramce i w aplikacji.
+/// Wzorzec to zwykły tekst z **jednym rodzajem** metaznaku: każda sekwencja `(\d+)` znaczy „co
+/// najmniej jedna cyfra", wszystko poza nimi jest literałem, a dopasowanie jest szukaniem
+/// podciągu. To celowo **ta sama notacja**, którą człowiek pisze w linii `expect:` naszego
+/// własnego harnessu (`AGENTS.md` §2a punkt 4) — jedna notacja, jedno znaczenie, w bramce
+/// i w aplikacji.
 ///
-/// Dwadzieścia wierszy własnego dopasowania, a nie skrzynia `regex`: `Cargo.toml` leży poza
-/// blokiem OWNS tego zadania, więc dopisanie zależności jest pytaniem do człowieka
-/// (`AGENTS.md` §7), nie cichym dopiskiem.
+/// Własny, mały automat, a nie skrzynia `regex`: `Cargo.toml` leży poza blokiem OWNS tego
+/// zadania, więc dopisanie zależności jest pytaniem do człowieka (`AGENTS.md` §7), nie cichym
+/// dopiskiem. Ten sam [`ProofScan`] dostaje gotowy tekst tutaj i porcje procesu w [`CheckCapture`].
 ///
 /// Wzorzec pusty oddaje `false`, i to jest decyzja, nie skutek uboczny pętli. Puste szukanie
 /// jest podciągiem każdego tekstu, więc „dopasowało się" znaczyłoby wtedy „nie sprawdzono nic" —
@@ -639,66 +848,14 @@ fn remember(said: &Mutex<Vec<u8>>, chunk: &[u8]) {
 /// zapora, na wypadek wywołania z innej strony.
 #[must_use]
 pub fn proof_matches(proof: &str, output: &str) -> bool {
-    if proof.trim().is_empty() {
-        return false;
-    }
-
-    // Wzorzec rozcięty na literały. Jeden metaznak znaczy, że między dwoma literałami stoi
-    // zawsze dokładnie jedna grupa cyfr — nie ma tu drzewa wyrażenia do zbudowania.
-    let literals: Vec<&str> = proof.split(DIGIT_RUN).collect();
-    let Some((first, rest)) = literals.split_first() else {
-        return false;
-    };
-    // Wzorzec bez metaznaku jest zwykłym podciągiem i tak ma zostać: tak wygląda dziewięć
-    // wzorców z dziesięciu, które napisze człowiek (`0 failed`).
-    if rest.is_empty() {
-        return output.contains(first);
-    }
-
-    // Każde miejsce, w którym stoi pierwszy literał — bo dopasowanie jest szukaniem PODCIĄGU,
-    // a nie sprawdzeniem początku. Pierwszy literał bywa pusty (wzorzec otwiera się cyframi)
-    // i wtedy ta pętla po prostu ogląda każdą pozycję po kolei.
-    let mut from = 0;
-    while let Some(at) = output.get(from..).and_then(|tail| tail.find(first)) {
-        let after = from + at + first.len();
-        if output
-            .get(after..)
-            .is_some_and(|tail| digits_then(rest, tail))
-        {
-            return true;
-        }
-        // O jeden ZNAK, nie o jeden bajt: `output` przychodzi z potoku komendy i bywa w nim
-        // wszystko, a indeks w środku znaku wielobajtowego jest paniką w silniku (AGENTS.md §4).
-        let step = output[from + at..].chars().next().map_or(1, char::len_utf8);
-        from = from + at + step;
-        if from > output.len() {
-            break;
-        }
-    }
-    false
+    let mut scan = ProofScan::new(proof);
+    scan.take(output);
+    scan.matched
 }
 
-/// Ogon wzorca: co najmniej jedna cyfra, potem kolejny literał — i tak do końca.
-///
-/// Nawroty są tu potrzebne i dlatego jest tu `any`, a nie jedna próba na najdłuższym ciągu cyfr:
-/// wzorzec `(\d+)5` na wejściu `125` dopasowuje się wyłącznie wtedy, gdy grupie zostawimy dwie
-/// cyfry z trzech. Wersja zachłanna bez nawrotu odpowiedziałaby „nie" na tekst, który pasuje.
-fn digits_then(literals: &[&str], text: &str) -> bool {
-    let Some((literal, rest)) = literals.split_first() else {
-        return true;
-    };
-    // Cyfry są ASCII, więc liczba bajtów jest tu liczbą znaków i indeks nie może wpaść
-    // w środek znaku.
-    let how_many = text.bytes().take_while(u8::is_ascii_digit).count();
-    // Od jedynki, bo `(\d+)` znaczy CO NAJMNIEJ JEDNA cyfra. Zero cyfr jest za mało i to jest
-    // cała różnica między tym wzorcem a szukaniem samego napisu " passed".
-    (1..=how_many).any(|digits| {
-        text.get(digits..).is_some_and(|after| {
-            after
-                .strip_prefix(literal)
-                .is_some_and(|then| digits_then(rest, then))
-        })
-    })
+/// Jedyna koniunkcja werdyktu — także dla wyniku policzonego podczas drenowania potoków.
+fn verdict(exit_code: Option<i32>, matched: bool) -> bool {
+    exit_code == Some(0) && matched
 }
 
 /// Werdykt kroku „sprawdź": kod wyjścia **oraz** dopasowanie wzorca, nigdy jedno z dwóch.
@@ -722,7 +879,7 @@ pub fn passed(exit_code: Option<i32>, output: &str, proof: &str) -> bool {
     // `Some(0)`, nie `is_none_or`: `None` znaczy „proces zginął od sygnału, więc kodu po prostu
     // nie ma", a brak odpowiedzi nie jest odpowiedzią „udało się". Każde zatrzymane sprawdzenie
     // czytałoby się inaczej jako przeszłe.
-    exit_code == Some(0) && proof_matches(proof, output)
+    verdict(exit_code, proof_matches(proof, output))
 }
 
 #[cfg(test)]
@@ -771,6 +928,14 @@ mod tests {
         assert!(
             proof_matches(DIGIT_RUN, "ran 7 of them"),
             "a pattern that is nothing BUT the group asks one question: is there a digit anywhere"
+        );
+        assert!(
+            proof_matches(r"(\d+) of (\d+) passed", "result: 12 of 34 passed"),
+            "each occurrence is a group, so two counters in one proof keep working"
+        );
+        assert!(
+            !proof_matches(r"(\d+) of (\d+) passed", "result: 12 of none passed"),
+            "and every group still needs at least one digit"
         );
     }
 

@@ -72,6 +72,7 @@ mod bridge_speaks_mcp;
 mod bridge_verbs;
 mod brief_matches_the_policy;
 mod chat_never_starts_a_run;
+mod check_output_is_bounded;
 mod check_step_closes_the_loop;
 mod check_step_has_no_agent;
 mod check_step_process_group;
