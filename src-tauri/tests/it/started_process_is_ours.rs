@@ -50,10 +50,11 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use loadout_lib::commands::processes::Processes;
-use loadout_lib::engine::drivers::command::{GIVE_UP_AFTER, StartSpec};
+use loadout_lib::engine::drivers::command::{CommandDriver, GIVE_UP_AFTER, StartSpec};
 use loadout_lib::engine::supervisor::{self, GroupProof};
 use tokio::process::Command;
 
@@ -376,6 +377,64 @@ async fn what_a_started_command_prints_reaches_the_registry() -> Result<(), Box<
     Ok(())
 }
 
+#[tokio::test]
+async fn staying_observation_api_only_turns_off_after_dead() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let marker = unique_marker("staying-observation");
+    let controlled = write_script(
+        dir.path(),
+        "observed.sh",
+        r#"#!/bin/sh
+# $1 = unikalny tekst meldowany przed pozostaniem przy życiu
+printf '%s\n' "$1"
+while :; do
+  sleep 0.02
+done
+"#,
+    )?;
+    let mut staying = CommandDriver::new().start_to_stay(&StartSpec {
+        command: format!("{} {marker}", controlled.display()),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let said = staying.said();
+        if said.contains(&marker) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the staying handle holds {said:?}, but its controlled live \
+                 script printed the unique marker {marker:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(
+        staying.alive(),
+        "the observation API called a controlled live group dead before stop proved anything"
+    );
+    let proof = tokio::time::timeout(PATIENCE, staying.stop())
+        .await
+        .map_err(|_| format!("stopping the observed group did not return within {PATIENCE:?}"))?;
+    assert!(
+        matches!(proof, GroupProof::Dead { .. }),
+        "stop must carry the kernel's death proof before the observation turns off: {proof:?}"
+    );
+    assert!(
+        !staying.alive(),
+        "the observation stayed alive after stop returned {proof:?}"
+    );
+    assert!(
+        staying.said().contains(&marker),
+        "proving the group dead discarded the output that had already reached the handle"
+    );
+    Ok(())
+}
+
 /// Rzecz, która zeszła SAMA, zostaje zebrana i znika bez odpytywania rejestru.
 ///
 /// Skrypt melduje gotowość przed czekaniem na plik `release`, żeby pierwsze pytanie do jądra
@@ -451,7 +510,24 @@ done
         }
     }
 
-    let known = processes.list();
+    // 2026-08-31 — ESRCH i usunięcie wpisu są dwoma kolejnymi krokami tego samego reapera.
+    // Jądro może odpowiedzieć pomiędzy nimi, więc po pierwszym systemowym dowodzie czekamy już
+    // wyłącznie na publikację stanu rejestru, nie próbując wymusić atomowego wyścigu z kill(0).
+    let deadline = Instant::now() + PATIENCE;
+    let known = loop {
+        let known = processes.list();
+        if known.iter().all(|one| one.pgid != started.pgid) {
+            break known;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after ESRCH and another {PATIENCE:?}, the dead group still has its own registry \
+                 entry: {known:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert!(
         known.iter().all(|one| one.pgid != started.pgid),
         "the group is proven dead but its own registry entry remains: {known:?}"
@@ -478,6 +554,103 @@ done
         proofs.is_empty(),
         "close found work after the natural reaper released the only entry: {proofs:?}"
     );
+    Ok(())
+}
+
+/// Porzucenie okna podczas autonomicznego dowodzenia nie może zostawić ani rejestru, ani grupy.
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_processes_while_the_eof_reaper_is_working_does_not_keep_the_group()
+-> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let ready = dir.path().join("ready");
+    let term = dir.path().join("term-seen");
+    let controlled = write_script(
+        dir.path(),
+        "close-streams-and-stay.sh",
+        r#"#!/bin/sh
+# $1 = ready, $2 = marker odebranego TERM
+trap 'printf term > "$2"' TERM
+printf ready > "$1"
+exec 1>&-
+exec 2>&-
+while :; do
+  sleep 0.02
+done
+"#,
+    )?;
+    let processes = Arc::new(Processes::new());
+    let weak = Arc::downgrade(&processes);
+    let started = processes.start(&StartSpec {
+        command: format!(
+            "{} {} {}",
+            controlled.display(),
+            ready.display(),
+            term.display()
+        ),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    while !ready.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the process that closes its streams did not report ready: \
+                 {started:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group_probe(started.pgid).map_err(|why| {
+        format!(
+            "kill(-{}, 0) says the group is absent before its streams trigger the reaper: \
+             {why}",
+            started.pgid
+        )
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    while !term.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the TERM trap did not run; closing stdout and stderr did not \
+                 put the natural reaper inside its proof for pgid {}",
+                started.pgid
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group_probe(started.pgid).map_err(|why| {
+        format!(
+            "the TERM marker exists, but group {} is already absent before Processes is \
+             dropped: {why}; this case must exercise cancellation while proof is in progress",
+            started.pgid
+        )
+    })?;
+
+    drop(processes);
+    assert!(
+        weak.upgrade().is_none(),
+        "the EOF reaper retained a strong Processes owner during Drop"
+    );
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let asked = group_probe(started.pgid);
+        match &asked {
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => break,
+            _ if Instant::now() >= deadline => {
+                return Err(format!(
+                    "after {PATIENCE:?} kill(-{}, 0) still has no ESRCH after the last Processes \
+                     owner was dropped; its last answer was {asked:?}",
+                    started.pgid
+                )
+                .into());
+            }
+            _ => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
     Ok(())
 }
 

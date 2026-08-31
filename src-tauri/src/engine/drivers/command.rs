@@ -702,6 +702,7 @@ impl CommandDriver {
             group,
             command: spec.command.clone(),
             handle,
+            alive: true,
             output,
             natural_end: Some(natural_end),
         })
@@ -775,6 +776,9 @@ pub struct Staying {
     /// Nadzorowana grupa procesów. Porzucenie tego pola też ją zabija — gwardia siedzi
     /// w `Drop` uchwytu, a normalną drogą jest [`Staying::stop`].
     handle: Supervised,
+    /// Zwykły stan jedynego właściciela. `false` wolno zapisać dopiero po systemowym dowodzie
+    /// śmierci całej grupy; EOF obu potoków nie zmienia go (niezmiennik 6, 2026-08-31).
+    alive: bool,
     /// Ogon tego, co ta rzecz wypisała — oba potoki, w kolejności odczytu.
     ///
     /// **Bajty, nie tekst**, i to jest wymóg, nie gust: porcja bywa rozcięta w środku znaku
@@ -803,6 +807,18 @@ impl Staying {
         &self.command
     }
 
+    /// Czy tę grupę nadal trzeba traktować jako żywą.
+    #[must_use]
+    pub fn alive(&self) -> bool {
+        self.alive
+    }
+
+    /// Co ta rzecz do tej pory wypisała — ogon długości [`KEEP_LAST`].
+    #[must_use]
+    pub fn said(&self) -> String {
+        self.output.said()
+    }
+
     /// Widok ogona bez prawa do procesu. Rejestr czyta go synchronicznie podczas odświeżenia.
     #[must_use]
     pub fn output(&self) -> StayingOutput {
@@ -823,7 +839,13 @@ impl Staying {
     /// rzeczy, którą człowiek uruchomił świadomie, to jest ta sama klasa wady co „Running" nad
     /// komendą, która zeszła dwie minuty temu, tylko w drugą stronę.
     pub async fn stop(&mut self) -> GroupProof {
-        self.handle.stop(supervisor::DEFAULT_GRACE).await
+        let proof = self.handle.stop(supervisor::DEFAULT_GRACE).await;
+        // 2026-08-31 — sygnał, EOF i wynik lidera nie są dowodem śmierci całej grupy; `Alive`
+        // zachowuje więc dotychczasowy stan razem z uchwytem do ponownej eskalacji.
+        if matches!(&proof, GroupProof::Dead { .. }) {
+            self.alive = false;
+        }
+        proof
     }
 }
 
