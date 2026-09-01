@@ -54,6 +54,7 @@
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 import type { Agent, FileAccess, Thinking, Vendor } from '../../state/agents';
+import { PlacesField } from '../paths/places-field';
 import { missingForSave } from '../../state/agents';
 import { Advanced } from './advanced';
 import { webIsOutOfReach } from './capabilities';
@@ -328,14 +329,14 @@ export function AgentForm({
             {tall ? 'Shorter' : 'Taller'}
           </button>
         </div>
-        <textarea
+        <PlacesField
           id="agent-instructions"
           data-field="instructions"
           className={AREA}
           rows={tall ? LINES.more : LINES.some}
           aria-required="true"
           value={value.instructions}
-          onChange={(event) => onChange({ ...value, instructions: event.target.value })}
+          onChange={(instructions) => onChange({ ...value, instructions })}
         />
       </div>
 

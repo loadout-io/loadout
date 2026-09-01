@@ -71,6 +71,7 @@
 import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Agent, FileAccess } from '../../../state/agents';
+import { PlacesField } from '../../paths/places-field';
 import type {
   AgentStep,
   CheckpointStep,
@@ -580,12 +581,12 @@ function WhatToDoRow({
       <label htmlFor="step-instructions" className="label">
         What to do
       </label>
-      <textarea
+      <PlacesField
         id="step-instructions"
         className={FIELD}
         value={value}
-        onChange={(event) => {
-          onEditStep({ instructions: event.target.value });
+        onChange={(instructions) => {
+          onEditStep({ instructions });
         }}
       />
     </div>
