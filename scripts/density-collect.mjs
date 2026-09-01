@@ -170,9 +170,9 @@ function stubTauri() {
               ? ONE_WORKFLOW
               : command.startsWith('list_')
                 ? []
-            : command === 'new_id'
-              ? 'id-0'
-              : null,
+                : command === 'new_id'
+                  ? 'id-0'
+                  : null,
       ),
   };
 }
