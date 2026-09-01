@@ -11,7 +11,7 @@
 //! zatrzymanym zegarze**, i że mają długość **równo 2000**, a nie „nie więcej niż".
 //!
 //! Limit 2000 jest liczbą z pomiaru, nie z gustu: przy 2000 najgorsza przerwa klatki wynosi
-//! 0–1 ms, przy `batch200` i `batch1000` sięga 13–25 ms (`T8-ipcbench-results.txt`).
+//! 0–1 ms, przy `batch200` i `batch1000` sięga 13–25 ms (pomiar IPC na tej maszynie).
 //!
 //! Kolejka jest tu celowo pojemna. Przedmiotem tego kryterium jest sufit **paczki**, a nie
 //! sufit **kolejki** — linia odrzucona z braku miejsca w kolejce zaciemniłaby pomiar
@@ -125,7 +125,7 @@ async fn a_fast_producer_gets_full_batches_from_the_cap_with_the_clock_standing_
          reached, and 1000 lines still waiting. One batch of 5000 here is a timer-only pump: \
          at 121 000 lines/s it hands the webview 121 000 lines in a single `evaluate_script` \
          [T2 §6.1]. Batches of 200 or 1000 would be inside the cap, and both cost 13-25 ms of \
-         worst-case frame gap against 0-1 ms at 2000 (T8-ipcbench-results.txt)"
+         worst-case frame gap against 0-1 ms at 2000 (pomiar IPC na tej maszynie)"
     );
 
     advance(Duration::from_millis(16)).await;

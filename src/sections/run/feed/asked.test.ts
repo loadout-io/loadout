@@ -97,7 +97,7 @@ describe('a question to a human is impossible to miss and impossible to answer o
     expect(
       feed.view.answers,
       'the answer is written down with who gave it — three of those in the whole app, not ' +
-        'eight [00-SYNTHESIS §2.2]',
+        'eight [FOUNDATIONS §2.2]',
     ).toEqual([{ questionId: question.id, option: chosen, who: 'you' }]);
   });
 

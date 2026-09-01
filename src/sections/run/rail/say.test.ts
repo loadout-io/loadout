@@ -3,7 +3,7 @@
  * `expect(card.say.text).toBe(lastNote.text)` przechodzi dla implementacji, która za
  * „ostatnią wypowiedź agenta" bierze cokolwiek, co przyszło ostatnie — także `problem`
  * i podsumowanie sprawdzeń. Wtedy zdanie Loadouta („3 of 40 tests failed") jest podane jako
- * cytat agenta, czyli `agent said` w rubryce `happened` [00-SYNTHESIS §2.2]. To jest ten sam
+ * cytat agenta, czyli `agent said` w rubryce `happened` [FOUNDATIONS §2.2]. To jest ten sam
  * błąd, przed którym stoi kryterium 3, tylko mniejszą czcionką — i dlatego trudniejszy.
  *
  * Rozróżniają to dwie rzeczy:
@@ -54,7 +54,7 @@ describe('the one sentence on a card says who said it', () => {
 
     expect(
       card.say.who,
-      'the checks are Loadout speaking, not the agent [00-SYNTHESIS §2.2]. Handing this ' +
+      'the checks are Loadout speaking, not the agent [FOUNDATIONS §2.2]. Handing this ' +
         'sentence over with the agent name on it is the same defect as putting "I fixed ' +
         'everything" in the block of facts, only smaller',
     ).toBe('loadout');

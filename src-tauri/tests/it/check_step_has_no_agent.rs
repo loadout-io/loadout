@@ -6,7 +6,7 @@
 //! Zrobić z etapu sprawdzenia krok AGENTA o instrukcji „uruchom `./verify.sh full` i powiedz, czy
 //! przeszło". Plik się waliduje, bieg startuje, transkrypt mówi `checks passed`, kafelek jest
 //! zielony — i sprzedaliśmy jedyne rozróżnienie, dla którego ten produkt powstał: **co agent
-//! powiedział** kontra **co się stało** (`docs/research/projects/00-SYNTHESIS.md` §2.1,
+//! powiedział** kontra **co się stało** (`docs/FOUNDATIONS.md` §2.1,
 //! `docs/harness-as-workflow.md` ustalenie U-1). Nikt tego nie zgłosi, bo wszystko wygląda na
 //! skończone, a rachunek u vendora rośnie za opowiadanie o cudzym wyniku.
 //!

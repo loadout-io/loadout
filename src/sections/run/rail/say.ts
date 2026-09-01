@@ -3,7 +3,7 @@
  * Cicha porażka, przed którą stoi ten plik: „latest note from this agent" karmione
  * czymkolwiek, co przyszło ostatnie. Agent pisze prozą, potem padają sprawdzenia, kafelek
  * pokazuje „3 of 40 tests failed" — i podaje to jako CYTAT AGENTA. Sprawdzenia to Loadout,
- * nie agent [00-SYNTHESIS §2.2]: to jest ten sam błąd co blok „co wyprodukował" karmiony
+ * nie agent [FOUNDATIONS §2.2]: to jest ten sam błąd co blok „co wyprodukował" karmiony
  * ostatnią wiadomością agenta, tylko mniejszą czcionką i dlatego trudniejszy do zauważenia.
  *
  * Stąd `who` obok tekstu, zawsze, a nie „gdy się przyda". Zdanie bez podpisu autorytetu
@@ -14,7 +14,7 @@ import type { Kind } from '../feed/kinds';
 import type { Say } from './card';
 
 /**
- * Trzy autorytety w całej aplikacji, nie osiem [00-SYNTHESIS §2.2].
+ * Trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2].
  *
  * `Record<Who, true>`, nie tablica literałów, i to jest cała obrona: czwarty autorytet
  * dopisany kiedyś do `Who` przestaje TU się kompilować, zamiast po cichu wjechać na ekran
@@ -32,7 +32,7 @@ export const AUTHORITIES: readonly Who[] = Object.keys(AUTHORITY) as Who[];
  * Rozstrzyga RODZAJ, nie kolejność i nie treść. Implementacja biorąca „to, co przyszło
  * ostatnie" i podpisująca to agentem myli się dokładnie tam, gdzie to boli: `3 of 40 failed`
  * policzyły sprawdzenia, a nie agent, więc podane jako cytat agenta jest `agent said`
- * w rubryce `happened` [00-SYNTHESIS §2.2].
+ * w rubryce `happened` [FOUNDATIONS §2.2].
  *
  * Dwa rodzaje należą do agenta i oba są jego własnymi słowami: proza (`note`) i pytanie,
  * które zadał (`asked`). Całą resztę — od `Read 6 files` po `Finished in 4m 12s` — pisze
@@ -54,7 +54,7 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   /* Trzeci rodzaj należący do agenta: propozycja biegu jest jego własnymi słowami — to lider
    * patrzy na projekt i mówi, co warto uruchomić. Podpisana `loadout` czytałaby się jak
    * komunikat aplikacji, czyli ten sam błąd, co kafelek cytujący „3 of 40 checks failed" jako
-   * zdanie agenta [00-SYNTHESIS §2.2]; podpisana `you` wkładałaby zdanie lidera w Twoje usta. */
+   * zdanie agenta [FOUNDATIONS §2.2]; podpisana `you` wkładałaby zdanie lidera w Twoje usta. */
   suggested: 'agent',
   asked: 'agent',
   handoff: 'loadout',

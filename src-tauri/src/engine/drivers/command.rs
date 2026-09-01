@@ -4,7 +4,7 @@
 //! **nie implementuje** `AgentDriver`. Nie ma tu sesji, modelu, promptu ani tury: jest komenda,
 //! jej wyjście i zdanie „przeszło / nie przeszło", wystawione przez nas. Rozróżnienie, którego
 //! ten plik broni, jest tym jedynym, dla którego produkt powstał: **co agent powiedział** kontra
-//! **co się stało** (`docs/research/projects/00-SYNTHESIS.md` §2.1). Krok agenta o instrukcji
+//! **co się stało** (`docs/FOUNDATIONS.md` §2.1). Krok agenta o instrukcji
 //! „uruchom testy i powiedz, czy przeszły" waliduje się, biegnie i kłamie — a wygląda na
 //! skończony.
 //!

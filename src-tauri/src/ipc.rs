@@ -80,7 +80,7 @@ pub const FLUSH: Duration = Duration::from_millis(16);
 
 /// Sufit jednej paczki. Liczba z pomiaru, nie z gustu: przy 2000 najgorsza przerwa klatki
 /// wynosi 0–1 ms, przy `batch200` i `batch1000` sięga 13–25 ms
-/// (`T8-ipcbench-results.txt`).
+/// (pomiar IPC na tej maszynie).
 pub const BATCH_CAP: usize = 2_000;
 
 /// Pojemność kolejki producent → pompa [T7 §4.1]. Ograniczona, żeby `Vec` nie rósł w tle:
@@ -326,7 +326,7 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
                     // 121 000 linii na sekundę [T2 §6.1] czekanie na tyknięcie znaczy 1 900
                     // linii w buforze na każdą milisekundę zwłoki okna. Sufit jest liczbą
                     // z pomiaru: przy 2000 najgorsza przerwa klatki wynosi 0-1 ms, przy 200
-                    // i przy 1000 sięga 13-25 ms (`T8-ipcbench-results.txt`).
+                    // i przy 1000 sięga 13-25 ms (pomiar IPC na tej maszynie).
                     if buffer.len() >= BATCH_CAP && !flush(&channel, &mut buffer, &mut stats) {
                         break;
                     }

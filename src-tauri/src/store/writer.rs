@@ -211,7 +211,7 @@ impl Writer {
 
 /// Otwiera bazę do zapisu, ustawia pragmy, migruje i startuje zadanie pisarza.
 ///
-/// Kolejność jest nośna i pochodzi z meetnotes [00-SYNTHESIS §3, `SQLite`]: open → pragmy →
+/// Kolejność jest nośna i pochodzi z meetnotes [FOUNDATIONS §3, `SQLite`]: open → pragmy →
 /// `busy_timeout` → `migrate()`. Odwrócenie dwóch ostatnich daje migrację, która biegnie
 /// z wyłączonymi kluczami obcymi, czyli w innym świecie niż aplikacja.
 pub(crate) fn start(handle: &Handle, path: &Path) -> Result<(Writer, JoinHandle<()>)> {

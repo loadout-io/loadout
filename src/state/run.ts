@@ -114,7 +114,7 @@ export interface Step {
   readonly at?: Point;
 }
 
-/** Kto to powiedział — trzy wartości, nie osiem [00-SYNTHESIS §2.2]. */
+/** Kto to powiedział — trzy wartości, nie osiem [FOUNDATIONS §2.2]. */
 export type Who = 'you' | 'agent' | 'loadout';
 
 /** Odpowiedź człowieka na pytanie agenta. */
@@ -400,7 +400,7 @@ export function createRunStore(): RunStore {
     },
 
     answer(questionId: number, option: string): void {
-      /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [00-SYNTHESIS §2.2]. */
+      /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2]. */
       set((state) => ({ answers: [...state.answers, { questionId, option, who: 'you' }] }));
     },
   }));

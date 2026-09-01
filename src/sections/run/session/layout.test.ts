@@ -14,7 +14,7 @@
  *      w transkrypcie, jako linia `note` podpisana `agent`.
  *
  * Druga jest tą, dla której cały ten podział istnieje. Deklaracja agenta w rubryce faktów
- * czyta się jak fakt i nie ma na ekranie niczego, co by jej zaprzeczyło [00-SYNTHESIS §2.2].
+ * czyta się jak fakt i nie ma na ekranie niczego, co by jej zaprzeczyło [FOUNDATIONS §2.2].
  */
 import { describe, expect, it } from 'vitest';
 import type { FeedLine } from '../../../state/run';

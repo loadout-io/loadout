@@ -198,7 +198,7 @@ Po T-97 w trunku orchestrator nanosi w `docs/ARCHITECTURE.md`, bez zmiany numera
 2. **Słownictwo.** `quick-vocabulary` skanuje tekst widoczny dla użytkownika **i komunikaty
    asercji**. W UI i w `expect(..., 'reason')` nie ma: `handoff`, `verdict`, `judge`, `loop`,
    `session`, `gate`, `node`, `DAG`. Są: „what it passed on", „the tester", „way back",
-   „try N of M", „checks". Tabela: `00-SYNTHESIS.md` §2.2.
+   „try N of M", „checks". Tabela: `FOUNDATIONS.md` §2.2.
 3. **`before` musi być czerwone na asercji.** Rust: sygnatura z `todo!()`, plik w
    `tests/it/` **plus** linia `mod` w `tests/it/main.rs` (OWNS każdego zadania rustowego).
    TS: szkielet, który się importuje i pada na `expect`.

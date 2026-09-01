@@ -156,6 +156,7 @@ gate is linked from the release notes.
 | [`e2e/`](e2e/) | browser-level interaction and visible-behavior checks |
 | [`checks/`](checks/) | deterministic repository checks discovered by the gate |
 | [`harness/`](harness/) | task-contract runner, review, bounded repair, and receipts |
+| [`docs/FOUNDATIONS.md`](docs/FOUNDATIONS.md) | the product's binding vocabulary, the Rust conventions, and the review checklist |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | current system shape and invariants |
 | [`docs/DECISIONS-LOCKED.md`](docs/DECISIONS-LOCKED.md) | owner decisions that constrain the implementation |
 | [`docs/STATUS.md`](docs/STATUS.md) | chronological build and task record |

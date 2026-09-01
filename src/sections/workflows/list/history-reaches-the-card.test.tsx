@@ -6,7 +6,7 @@
  *       ekranie — dokładnie ta klasa wady, dla której powstał niezmiennik 29.
  *   (b) bez historii: karta nie mówi o biegach ANI SŁOWA — żadnego `—`, `never` ani
  *       `not reported`. Bez tej połowy pierwsza przechodzi także dla karty, która zawsze
- *       rysuje komórkę i tłumaczy się w niej z własnej pustki (00-SYNTHESIS §6).
+ *       rysuje komórkę i tłumaczy się w niej z własnej pustki (FOUNDATIONS §6).
  *
  * Plus trzecia rzecz, bez której obie byłyby prawdą o ozdobie: pierwsze miejsce na ekranie
  * bierze workflow uruchamiany NAJPÓŹNIEJ, a nie pierwszy alfabetycznie. To jest cała różnica

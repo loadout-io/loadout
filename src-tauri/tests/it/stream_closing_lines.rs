@@ -8,7 +8,7 @@
 //! bitu**, oraz skan **wszystkich** kluczy przeprowadzony na `serde_json::Value`, a nie na
 //! ręcznie wypisanej liście pól. Lekcja z meetnotes: brakujący `rename_all_fields` wysłał
 //! `started_at` do frontu i położył cały widok, a sześć poprawek poszło najpierw w złą warstwę
-//! [00-SYNTHESIS §3]. Ręczna lista pól nie zauważyłaby ani jednej z nich, bo to zawsze jest
+//! [FOUNDATIONS §3]. Ręczna lista pól nie zauważyłaby ani jednej z nich, bo to zawsze jest
 //! pole, o którym się zapomniało.
 
 use std::path::Path;

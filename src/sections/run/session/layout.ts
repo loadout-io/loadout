@@ -9,7 +9,7 @@
  * Cicha porażka numer jeden całego zadania: blok „co wyprodukował" karmiony ostatnią
  * wiadomością agenta. Agent pisze „I fixed everything", nie zmieniwszy ani jednego pliku,
  * a interfejs podaje jego deklarację w miejscu, w którym człowiek czyta fakty — `agent said`
- * w rubryce `happened` [00-SYNTHESIS §2.2]. Dlatego `produced` powstaje ze zmian na dysku
+ * w rubryce `happened` [FOUNDATIONS §2.2]. Dlatego `produced` powstaje ze zmian na dysku
  * i z przekazań, a deklaracja agenta ma dokładnie jedno miejsce: transkrypt, jako linia
  * `note` podpisana `agent`.
  *
@@ -223,7 +223,7 @@ function givenRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[
  *
  * Oba są faktami z dysku i to jest cała teza tego bloku. Karmienie go ostatnią wiadomością
  * agenta jest cichą porażką numer jeden całego ekranu: deklaracja postawiona w rubryce faktów
- * czyta się jak fakt i nie ma na ekranie niczego, co by jej zaprzeczyło [00-SYNTHESIS §2.2].
+ * czyta się jak fakt i nie ma na ekranie niczego, co by jej zaprzeczyło [FOUNDATIONS §2.2].
  * Zmiana zrobiona przez innego agenta należy do TAMTEGO agenta.
  */
 function producedRows(agent: SessionAgent, run: SessionInput): readonly SectionRow[] {

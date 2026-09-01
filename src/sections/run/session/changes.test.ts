@@ -7,7 +7,7 @@
  *
  * Najważniejszy jest ostatni przypadek pliku: agent, który mówi, że wszystko naprawił,
  * i nie zmienił ani jednego pliku, ma tu PUSTO. To jest cicha porażka numer jeden całego
- * ekranu — deklaracja postawiona w rubryce faktów czyta się jak fakt [00-SYNTHESIS §2.2].
+ * ekranu — deklaracja postawiona w rubryce faktów czyta się jak fakt [FOUNDATIONS §2.2].
  */
 import { describe, expect, it } from 'vitest';
 

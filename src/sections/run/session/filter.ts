@@ -20,7 +20,7 @@ import { authorityOf } from '../rail/say';
  *
  * Autorytet jest polem wiersza, nie kolorem i nie kursywą: „I fixed everything" napisane
  * przez agenta i „3 of 40 tests failed" policzone przez Loadouta czytają się identycznie,
- * dopóki nic ich nie rozdziela [00-SYNTHESIS §2.2].
+ * dopóki nic ich nie rozdziela [FOUNDATIONS §2.2].
  */
 export interface TranscriptLine extends HistoryRow {
   readonly who: Who;

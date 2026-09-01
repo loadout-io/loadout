@@ -20,7 +20,7 @@
 //!   domyślnych przy każdym nowym, więc czytelnik, który ominie ten helper, po cichu przestaje
 //!   widzieć kaskady. `busy_timeout` zapomniany na połączeniu czytającym objawia się jako losowe
 //!   „Save failed" raz na dwa dni i w meetnotes zajęło to dwóch pisarzy w tle, zanim ktoś
-//!   zrozumiał, co się dzieje [00-SYNTHESIS §3, „SQLite"].
+//!   zrozumiał, co się dzieje [FOUNDATIONS §3, „SQLite"].
 //!
 //!   Czym te wartości domyślne **są**, nie wolno się tu podpierać w żadną stronę, i to jest
 //!   blizna, nie ostrożność. Zmierzone 2026-08-16 na rusqlite 0.40.2 z `features = ["bundled"]`
@@ -280,7 +280,7 @@ pub struct Store {
 impl Store {
     /// Otwiera bazę pod `path`, ustawia pragmy, wykonuje `migrate()` i startuje zadanie pisarza.
     ///
-    /// Kolejność jest nośna i pochodzi z meetnotes [00-SYNTHESIS §3]: open → pragmy →
+    /// Kolejność jest nośna i pochodzi z meetnotes [FOUNDATIONS §3]: open → pragmy →
     /// `busy_timeout` **na każdym połączeniu** → `migrate()`. Migracja puszczona przed
     /// `foreign_keys` widzi inny świat niż bieg.
     pub fn open(path: &Path) -> Result<Self> {
@@ -401,7 +401,7 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
     // Połączenie, które to pominie, przestaje widzieć kaskady — po cichu i bez śladu.
     conn.pragma_update(None, "foreign_keys", 1_i64)?;
 
-    // Na końcu i na KAŻDYM połączeniu, także czytającym [00-SYNTHESIS §3]. Zapomniany na
+    // Na końcu i na KAŻDYM połączeniu, także czytającym [FOUNDATIONS §3]. Zapomniany na
     // czytelniku objawia się jako losowe „Save failed" raz na dwa dni, a w meetnotes zajęło to
     // dwóch pisarzy w tle, zanim ktokolwiek zrozumiał, co widzi.
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;

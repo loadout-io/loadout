@@ -151,7 +151,7 @@ crate_root() {   # wypisuje korzeń crate'a Rusta albo zwraca 1
 
 guard_vocabulary() {
   # Żargon w tekście widocznym dla użytkownika (niezmiennik 14, tabela z
-  # 00-SYNTHESIS §2.2). Sadzimy i w treści JSX, i w etykiecie w stringu, bo
+  # FOUNDATIONS §2.2). Sadzimy i w treści JSX, i w etykiecie w stringu, bo
   # check może skanować tylko jedno z dwóch.
   plant_new src/_guard_vocabulary.tsx <<'EOF'
 export const guardLabel = 'Open the ledger';

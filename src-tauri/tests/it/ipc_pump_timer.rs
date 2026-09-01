@@ -2,7 +2,7 @@
 //!
 //! To jest ścieżka, której benchmark nie zmierzył, i jedyna, która działa w produkcji.
 //! 50 000 linii przy limicie 2000 to dokładnie 25 wysyłek
-//! (`coalesce_16ms_cap2000(rep1)/sends=25` w `T8-ipcbench-results.txt`), czyli zmierzono
+//! (`coalesce_16ms_cap2000(rep1)/sends=25` w pomiarze IPC), czyli zmierzono
 //! wyłącznie ścieżkę licznika, a zegar **nigdy nie wystrzelił** [T8 ryzyko 3]. Prawdziwy agent
 //! produkuje ~7 zdarzeń na sekundę [T2 §6.1], więc pompa, która czeka na 2000 linii, milczy
 //! w aplikacji przez minuty — i wygląda to jak zawieszony agent, nie jak zepsuty bufor.

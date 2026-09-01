@@ -9,7 +9,7 @@
  * która stoi między nami a błędem z meetnotes: bez niej `detail_id`, `duration_ms`, `cost_usd`
  * i `resets_at` jadą na front pod nazwami, których on nie zna, widok wywraca się na
  * `undefined`, a pierwsze sześć poprawek idzie w złą warstwę, bo objaw jest w widoku,
- * a przyczyna w `derive` [00-SYNTHESIS §3].
+ * a przyczyna w `derive` [FOUNDATIONS §3].
  *
  */
 
@@ -212,7 +212,7 @@ export const WIRE_KINDS: readonly string[] = Object.freeze([...SHAPES.keys()]);
  * lustro się spodziewa, przepuściłoby wiersz niosący i `detailId`, i `detail_id` — a to jest
  * dokładnie ten kształt, który powstaje, kiedy ktoś doda pole w Ruście i zapomni
  * o `rename_all_fields`. W meetnotes taki `started_at` położył cały widok, a sześć pierwszych
- * poprawek poszło w warstwę, w której był tylko objaw [00-SYNTHESIS §3].
+ * poprawek poszło w warstwę, w której był tylko objaw [FOUNDATIONS §3].
  */
 export function parseLine(value: unknown): Line | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {

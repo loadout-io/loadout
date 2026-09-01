@@ -115,7 +115,7 @@ i jest wiążąca, a część terminów po polsku brzmi gorzej niż po angielsku
 Dokumentacja, ADR-y, prompty biegów, komentarze w kodzie wyjaśniające *dlaczego*: polski.
 
 Sprawdzacz słownictwa (`checks/quick-vocabulary.sh`) skanuje **wyłącznie tekst widoczny dla użytkownika**
-i egzekwuje angielską tabelę z `00-SYNTHESIS.md` §2.2.
+i egzekwuje angielską tabelę z `FOUNDATIONS.md` §2.2.
 
 ---
 
@@ -183,7 +183,7 @@ należącą do Loadouta i **sam wystawia wynik** — z kodu wyjścia plus liczni
 funkcje vendorów** — i ten zakaz zostaje w mocy bez zmian. Żaden vendor nie dostarcza „uruchom
 komendę i sam orzeknij, czy przeszła"; przeciwnie, cała ich powierzchnia zwraca to, co agent
 **powiedział**. Rozróżnienie „co agent powiedział" kontra „co się stało" jest jedyną rzeczą,
-dla której ten produkt powstał (`00-SYNTHESIS.md` §2.1) — a bez tego rodzaju kroku nie ma go
+dla której ten produkt powstał (`FOUNDATIONS.md` §2.1) — a bez tego rodzaju kroku nie ma go
 czym wyrazić.
 
 **Co ten brak kosztował, zmierzone.** `docs/harness-as-workflow.md` (ustalenie U-1) mierzy, czy
@@ -304,5 +304,5 @@ Cała aplikacja mówi **prostym językiem, bez żargonu technicznego**. Nazwy pr
 Zakazane w UI: `ledger`, `work item`, `claim`, `rail`, `DAG`, `policy kernel`, `binding`, `artifact receipt`,
 `plan.approval_requested`, `WI-31`, `A#8`, `authority`, `projection`, `durable record`.
 
-Tabelę tłumaczeń żargon → język ludzki dostarcza `docs/research/projects/00-SYNTHESIS.md`.
+Tabelę tłumaczeń żargon → język ludzki dostarcza `docs/FOUNDATIONS.md`.
 Ta tabela jest **wiążąca** dla nazw w UI i dla nazw w kodzie frontendu.

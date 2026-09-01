@@ -27,7 +27,7 @@ Zastępuje: Superset, Warp, ręcznie klejone harnessy z basha.
 
 ## 2. Rozstrzygnięcia otwartych pytań
 
-Synteza rekonesansu (`docs/research/projects/00-SYNTHESIS.md` §7) zostawiła dziewięć pytań.
+Rekonesans przed budową zostawił dziewięć otwartych pytań.
 Rozstrzygam je tutaj. Każde ma powód i koszt zmiany zdania później.
 
 | # | Pytanie | Decyzja | Powód | Koszt zmiany później |
@@ -139,7 +139,7 @@ sklejacz: 16 ms albo 2000 linii, co pierwsze
 ipc::Channel<Vec<Line>> → React → wirtualizowana lista
 ```
 
-**Dlaczego sklejanie, a nie emit-per-event.** Zmierzone na tej maszynie, `docs/research/topics/artifacts/T8-ipcbench-results.txt`:
+**Dlaczego sklejanie, a nie emit-per-event.** Zmierzone na tej maszynie stanowiskiem pomiarowym IPC:
 
 | Sposób | µs/wiadomość | wiadomości/s | najgorsza przerwa klatki |
 |---|---|---|---|

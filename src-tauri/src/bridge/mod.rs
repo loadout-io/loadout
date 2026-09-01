@@ -44,8 +44,8 @@ use serde_json::Value;
 /// pamięcią wydaną na nic w procesie, który towarzyszy każdemu agentowi.
 ///
 /// Błąd wychodzi na `stderr` i kodem wyjścia, nigdy na `stdout`: tam płynie protokół, a jedna
-/// nasza linia w nim to vendor, który przestaje rozumieć most (zmierzona pułapka Codeksa —
-/// `docs/research/topics/T2-terminal-ux.md`, „never `2>&1`").
+/// nasza linia w nim to vendor, który przestaje rozumieć most. Zmierzona pułapka Codeksa: nigdy
+/// `2>&1` na tym potoku.
 pub fn run_bridge(socket: &Path) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -238,7 +238,7 @@ fn every_key_is_camel_case(seen: &[(Instant, Json)]) {
             "a line went on the wire with {snake:?}; the front end reads camelCase only, so \
              `detail_id` and `duration_ms` arrive there as `undefined` and take the screen down \
              — and the first six fixes go into the view, because that is where the symptom is \
-             [00-SYNTHESIS §3]"
+             [FOUNDATIONS §3]"
         );
         compound += usize::from(has_compound_key(wire));
     }

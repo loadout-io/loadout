@@ -35,7 +35,7 @@ export type AgentStatus = 'working' | 'waiting' | 'needs you' | 'failed' | 'done
  * `who` jest tu obowiązkowe, nie ozdobne. Blok „latest note from this agent" karmiony
  * czymkolwiek, co przyszło ostatnie, podaje zdanie Loadouta („3 of 40 tests failed") jako
  * cytat agenta — czyli `agent said` w rubryce `happened`, tylko mniejszą czcionką
- * [00-SYNTHESIS §2.2].
+ * [FOUNDATIONS §2.2].
  */
 export interface Say {
   readonly text: string;

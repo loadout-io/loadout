@@ -12,7 +12,7 @@
  *
  *   1. ODRZUCENIE mutanta `snake_case` — dowodzi, że funkcja w ogóle patrzy na klucze.
  *      To jest błąd z meetnotes: brakujący `rename_all_fields` posłał `started_at` do frontu
- *      i położył cały widok [00-SYNTHESIS §3].
+ *      i położył cały widok [FOUNDATIONS §3].
  *   2. PORZUCENIE bez wyjątku wiersza o nieznanym rodzaju — odróżnia „waliduję" od „wywalam
  *      się na nowości". Vendorzy dokładają typy zdarzeń co tydzień i po cichu, a wywrócony
  *      `onmessage` zabiera cały widok, nie jedną linię.

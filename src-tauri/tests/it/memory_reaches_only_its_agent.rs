@@ -393,7 +393,7 @@ async fn each_step_is_told_what_its_own_agent_knows_and_nothing_of_the_other()
 
     // (d) TYLKO TO, CO CZŁOWIEK DOPUŚCIŁ. Filtr po statusie stoi w jednym miejscu i ma tam
     //     zostać: kandydatka doklejona „żeby model miał kontekst" zamienia jedną halucynację
-    //     w trwałe prawo projektu [00-SYNTHESIS §2.1].
+    //     w trwałe prawo projektu [FOUNDATIONS §2.1].
     assert_eq!(
         times(backend, BACKEND_SUGGESTED),
         0,

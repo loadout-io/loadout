@@ -98,12 +98,11 @@ akapitem w `docs/research/topics/`, nie kodem produkcyjnym.
 
 *Zapisane 2026-08-15, kiedy zapadła decyzja o budowie w pętli bez Codeksa.*
 
-Konto Codex jest bez kredytów **do 2026-08-20** (`docs/research/topics/T1-agent-drivers.md`
-ryzyko 8). Do tego czasu harness jedzie na parze **claude + claude**: inny model recenzenta,
+Konto Codex jest bez kredytów **do 2026-08-20** (rozpoznanie sterowników agentów, ryzyko 8). Do tego czasu harness jedzie na parze **claude + claude**: inny model recenzenta,
 rola recenzenta, sandbox read-only i schemat bez „zatwierdzam". To działa, ale jest **słabszym
 trybem** i skrypt sam to wypisuje.
 
-Dlaczego to nie jest formalność: według `docs/research/projects/06-spreadsheet-harness.md`
+Dlaczego to nie jest formalność: w rozpoznaniu wcześniejszego harnessu
 **każdy realny defekt w pierwszej wersji repo źródłowego znalazł recenzent innego vendora
 na ZIELONEJ bramce.** Nie bramka. Nie recenzent tego samego vendora. Cross-vendor, na kodzie,
 który przeszedł już wszystkie testy.

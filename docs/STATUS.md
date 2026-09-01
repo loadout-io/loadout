@@ -2256,7 +2256,7 @@ poza `integrate.sh` nie przechodzi warstwy `full` i trunk może być czerwony pr
 z płótna: przycisk, własny panel (komenda, wzorzec przejścia, folder, co po porażce), czerwona
 kropka przy braku wzorca, plus dowód po prawdziwym kliknięciu w `e2e/`. Do dziś ten rodzaj kroku
 istniał wyłącznie w Ruście i przychodził tylko z importu — czyli jedyny węzeł, który mówi
-**co się stało** zamiast **co agent powiedział** (D6, `00-SYNTHESIS` §2.1), nie miał jak trafić
+**co się stało** zamiast **co agent powiedział** (D6, `FOUNDATIONS` §2.1), nie miał jak trafić
 na płótno.
 
 **T-86 w main** (`integrate.sh`, bramka 15/0 w 154 s). Stanął był na dwóch sprawach, obie

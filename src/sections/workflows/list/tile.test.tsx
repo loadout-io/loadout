@@ -10,7 +10,7 @@
  * (`docs/mockup/index.html:642-644`) wymagają historii biegów, której v1 nie ma, więc na
  * kafelku nie ma ich w żadnej postaci — ani jako `—`, ani jako `never`, ani jako
  * `not reported`. To jest ta sama komórka, którą poprzedni prototyp zostawił po sobie jako
- * `SPEND: not reported` (00-SYNTHESIS §6): miejsce na ekranie zajęte przez pole, które nigdy
+ * `SPEND: not reported` (FOUNDATIONS §6): miejsce na ekranie zajęte przez pole, które nigdy
  * nie będzie miało treści, tłumaczące się użytkownikowi z własnej pustki.
  *
  * Asercja negatywna biegnie po TREŚCI, nie po surowym HTML-u: nazwa klasy nie jest tekstem,

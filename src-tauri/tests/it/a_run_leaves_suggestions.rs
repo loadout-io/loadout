@@ -27,7 +27,7 @@
 //! **Trzecia: policzyć pliki i nie zajrzeć do środka.** Kandydatka zapisana jako `in-use` jest
 //! zdaniem, które od tej chwili jedzie do KAŻDEGO promptu w tym projekcie, a nikt na nie nie
 //! przystał. To jest ta jedna halucynacja, która staje się trwałym prawem projektu
-//! [00-SYNTHESIS §2.1] — i wygląda w liczniku plików identycznie jak poprawny zapis.
+//! [FOUNDATIONS §2.1] — i wygląda w liczniku plików identycznie jak poprawny zapis.
 //!
 //! **Czwarta: nie sprawdzić, ILE razy pytamy.** „Jedna tania refleksja" przestaje być prawdą po
 //! cichu: implementacja pytająca raz na krok wygląda tak samo w katalogu notatek i różni się
@@ -348,7 +348,7 @@ async fn a_finished_run_leaves_at_most_three_candidates_each_carrying_its_reason
     for note in &left {
         // Nigdy `in-use`. Kandydatka zapisana jako używana jest zdaniem, które od tej chwili
         // jedzie do KAŻDEGO promptu w tym projekcie, a nikt na nie nie przystał — jedna
-        // halucynacja staje się wtedy trwałym prawem projektu [00-SYNTHESIS section 2.1].
+        // halucynacja staje się wtedy trwałym prawem projektu [FOUNDATIONS section 2.1].
         assert_eq!(
             note.status,
             Status::Suggested,

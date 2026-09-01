@@ -9,7 +9,7 @@
 //! (sprawdź `PRAGMA table_info`, potem dodaj), a `DROP`, `ALTER … DROP COLUMN` i przepisywanie
 //! wierszy są zakazane.
 //!
-//! Brak tabeli wersji jest decyzją, nie zaniedbaniem [00-SYNTHESIS §3, `SQLite`]: numer wersji
+//! Brak tabeli wersji jest decyzją, nie zaniedbaniem [FOUNDATIONS §3, `SQLite`]: numer wersji
 //! jest drugim źródłem prawdy o schemacie obok samego schematu, a przy dwóch źródłach zawsze
 //! czytasz to nieaktualne. Jedyne pytanie, na które ta funkcja odpowiada, brzmi „czy w bazie
 //! stoi to, co ma stać", i odpowiada na nie, wykonując zdania, które same sprawdzają, czy mają
@@ -23,7 +23,7 @@ use super::schema;
 /// Doprowadza schemat na `conn` do stanu z [`schema::STATEMENTS`].
 ///
 /// Wołane przy **każdym** otwarciu bazy, jako ostatni krok kolejności open → pragmy →
-/// `busy_timeout` → `migrate()` [00-SYNTHESIS §3]. Migracja puszczona przed pragmami widzi
+/// `busy_timeout` → `migrate()` [FOUNDATIONS §3]. Migracja puszczona przed pragmami widzi
 /// wyłączone klucze obce, czyli inny świat niż ten, w którym potem biegnie aplikacja.
 /// Dokłada kolumnę, jeśli tabela jej jeszcze nie ma.
 ///

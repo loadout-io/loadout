@@ -40,7 +40,7 @@ ALLOWLIST = os.path.join(ROOT, "checks", "vocabulary-allowlist.json")
 # i nikt tego nie zauważy, bo licznik dalej pokazuje zero.
 RUST_ERROR_ENUMS = r"(?:AppError|LoadoutError|Error)"
 
-# Lewa kolumna z docs/research/projects/00-SYNTHESIS.md §2.2 (wiążąca dla UI) plus tabela
+# Lewa kolumna z docs/FOUNDATIONS.md §2.2 (wiążąca dla UI) plus tabela
 # z docs/design/DESIGN.md §8 plus lista zakazana z docs/DECISIONS-LOCKED.md.
 # Para: (wzorzec, czym to zastępujemy). Prawa kolumna jest częścią komunikatu błędu —
 # sprawdzenie, które mówi tylko "nie wolno", zostawia autorowi zgadywanie.
@@ -244,7 +244,7 @@ if len(live) > ceiling:
             print("      %s" % h["sample"], file=sys.stderr)
         if len(by_file[f]) > 6:
             print("    ... %d more" % (len(by_file[f]) - 6), file=sys.stderr)
-    print("\ndetail: the binding table is 00-SYNTHESIS.md §2.2 plus DESIGN.md §8.",
+    print("\ndetail: the binding table is FOUNDATIONS.md §2.2 plus DESIGN.md §8.",
           file=sys.stderr)
     print("detail: a permanent exception goes in checks/vocabulary-allowlist.json "
           "WITH a reason.", file=sys.stderr)

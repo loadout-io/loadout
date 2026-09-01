@@ -4,7 +4,7 @@
  * i gotowy kafelek z `rail/card.ts` i zamienia je na markup. Gdyby wybierał wiersze albo liczył
  * cokolwiek, „co dostał" i „co wyprodukował" istniałoby w dwóch miejscach (niezmiennik 23) —
  * a to jest dokładnie ten ekran, na którym rozjazd między nimi kosztuje najwięcej: rubryka
- * faktów karmiona czymś innym niż fakty czyta się jak fakt [00-SYNTHESIS §2.2].
+ * faktów karmiona czymś innym niż fakty czyta się jak fakt [FOUNDATIONS §2.2].
  *
  * CZEGO Z MAKIETY TU NIE MA, i każdy brak ma powód, nie przeoczenie:
  *

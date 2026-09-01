@@ -272,7 +272,7 @@ export interface ServeStep {
  * kafelek sprawdzenia jechał przez okno jako klucz, którego okno nie zna (niezmiennik 5):
  * płótno go rysowało, ale `proof` nie dało się wpisać nigdzie, a klik w kafelek wpadał
  * w „wybierz agenta". Skutek jest większy, niż wygląda — bez tego kafelka KAŻDA pętla, jaką
- * człowiek zbuduje, jest pętlą „co agent powiedział", a rozróżnienie z `00-SYNTHESIS.md` §2.1
+ * człowiek zbuduje, jest pętlą „co agent powiedział", a rozróżnienie z `FOUNDATIONS.md` §2.1
  * nie ma na płótnie żadnego nośnika. */
 export interface CheckStep {
   kind: 'check';

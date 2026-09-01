@@ -127,7 +127,7 @@ Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik
 13. **Jeden fakt, jedno miejsce.** Limit żywych regionów na fakt wynosi 1. poprzedni prototyp pokazywał stan
     połączenia w sześciu miejscach.
 14. **Zero żargonu w tekście widocznym dla użytkownika.** Wiążąca jest tabela
-    `docs/research/projects/00-SYNTHESIS.md` §2.2. Egzekwuje `checks/quick-vocabulary.sh`.
+    `docs/FOUNDATIONS.md` §2.2. Egzekwuje `checks/quick-vocabulary.sh`.
     Enum z drutu (`gate.decision_recorded`) nigdy nie trafia na ekran.
 15. **Kuracja dzieje się w Ruście, w mapowaniu zdarzenie→linia, nie w CSS.** Jeśli „czysty widok"
     da się zepsuć zmianą arkusza stylów, to nie jest czysty widok.
@@ -221,7 +221,7 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
     nie woła.
 
     To jest ta sama różnica, na której stoi cały produkt: **co agent powiedział** kontra
-    **co się stało** (`docs/research/projects/00-SYNTHESIS.md` §2.1). Kryterium, które pyta
+    **co się stało** (`docs/FOUNDATIONS.md` §2.1). Kryterium, które pyta
     wyłącznie funkcję, pyta o pierwsze.
 
 ---

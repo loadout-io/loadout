@@ -11,7 +11,7 @@
 #
 # TO JEST GREP PO CZYSTYM DRZEWIE i dlatego jest sprawdzeniem PROJEKTOWYM, nigdy kryterium
 # akceptacji: przechodzi zanim kod powstanie, więc nie umie zaczerwienić się w tierze
-# `before` i niczego by tam nie poświadczyło (00-SYNTHESIS §5).
+# `before` i niczego by tam nie poświadczyło (FOUNDATIONS §5).
 #
 # Wybór wobec pustego drzewa: brak engine/ -> "nie ma czego przekraczać" i zielono, z nazwaną
 # ścieżką w komunikacie. Warunek jest mechaniczny — pierwszy plik w src-tauri/src/engine/

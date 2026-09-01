@@ -6,7 +6,7 @@
  * tras warunkowych i do pętli. Okno nie miało go wcale — płótno taki kafelek rysowało, ale
  * żaden przycisk go nie stawiał. Skutek jest większy, niż wygląda: dopóki tego kafelka nie ma,
  * KAŻDA pętla, jaką człowiek zbuduje, jest pętlą „co agent powiedział", a rozróżnienie
- * z `00-SYNTHESIS.md` §2.1 — jedyny powód istnienia tego produktu — nie ma na płótnie żadnego
+ * z `FOUNDATIONS.md` §2.1 — jedyny powód istnienia tego produktu — nie ma na płótnie żadnego
  * nośnika.
  *
  * SŁABĄ WERSJĄ jest napisanie kroku ręcznie i sprawdzenie, że mapper go przewozi. To przechodzi

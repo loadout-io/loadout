@@ -743,7 +743,7 @@ export function createFeed(scroller: Scroller): Feed {
 
   function answer(questionId: number, option: string): void {
     waiting = waiting.filter((question) => question.id !== questionId);
-    /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [00-SYNTHESIS §2.2]. */
+    /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2]. */
     answers = [...answers, { questionId, option, who: 'you' }];
     /* NADPISUJE, nie dokleja: agent stoi na JEDNYM pytaniu i dostanie JEDNO zdanie. Kolejka
      * zbierająca odpowiedzi wysłałaby przy drugim punkcie kontrolnym wszystkie poprzednie

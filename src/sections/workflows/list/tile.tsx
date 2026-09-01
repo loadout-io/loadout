@@ -54,7 +54,7 @@ export interface WorkflowTileProps {
    *
    * `undefined`, a nie wyzerowany rachunek: „nie biegł nigdy" i „biegł zero razy" to dla
    * ekranu ta sama rzecz, ale wyzerowany obiekt kazałby kafelkowi narysować komórkę, która
-   * tłumaczy się z własnej pustki (00-SYNTHESIS §6, `SPEND: not reported`).
+   * tłumaczy się z własnej pustki (FOUNDATIONS §6, `SPEND: not reported`).
    */
   runs?: RunsBehindIt | undefined;
   /**

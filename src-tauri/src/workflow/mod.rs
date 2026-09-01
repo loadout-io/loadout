@@ -292,7 +292,7 @@ pub struct CheckpointStep {
 /// agenta o instrukcji „uruchom `./verify.sh full` i powiedz, czy przeszło". Tamten waliduje
 /// się, biegnie, mówi `checks passed` — i sprzedaje jedyne rozróżnienie, dla którego ten produkt
 /// powstał: co agent POWIEDZIAŁ kontra co się STAŁO
-/// (`docs/research/projects/00-SYNTHESIS.md` §2.1, `docs/harness-as-workflow.md` ustalenie U-1).
+/// (`docs/FOUNDATIONS.md` §2.1, `docs/harness-as-workflow.md` ustalenie U-1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckStep {

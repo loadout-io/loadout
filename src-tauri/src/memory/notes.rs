@@ -1,12 +1,12 @@
 //! Notatki: model, skan plików, filtr statusu, blok „What you know", budżety, promocja.
 //!
 //! Jedno zdanie trzyma cały ten plik: **notatka `suggested` nigdy nie trafia do żadnego
-//! promptu** [`00-SYNTHESIS` §2.2: „only 'in use' notes go into a prompt"]. Cicha porażka,
+//! promptu** [`FOUNDATIONS` §2.2: „only 'in use' notes go into a prompt"]. Cicha porażka,
 //! przed którą stoi [`what_you_know`], jest banalna: filtr po statusie stoi w jednym miejscu
 //! (lista do wyświetlenia), a przy składaniu bloku ktoś dokleja „a na końcu jeszcze kandydatki,
 //! żeby model miał kontekst". Wszystkie testy dalej są zielone, bo sprawdzają `note.status`,
 //! a nie **zmontowany tekst**. Od tej chwili jedna halucynacja agenta jest trwałym prawem
-//! projektu [`00-SYNTHESIS` §2.1].
+//! projektu [`FOUNDATIONS` §2.1].
 //!
 //! Dlatego [`what_you_know`] jest **jedynym** wyjściem do promptu i filtruje sama: gdyby
 //! wołający musiał podać już przefiltrowaną listę, filtr istniałby w dwóch miejscach, a drugie
@@ -76,7 +76,7 @@ static NOTE_MUTATION: Mutex<()> = Mutex::new(());
 pub const DISCARDED_DIR: &str = "discarded";
 
 /// Nagłówek bloku — te same trzy słowa, które człowiek widzi w sekcji Pamięć
-/// [`00-SYNTHESIS` §2.2]. Prompt i ekran mówią o tym samym zbiorze tym samym zdaniem,
+/// [`FOUNDATIONS` §2.2]. Prompt i ekran mówią o tym samym zbiorze tym samym zdaniem,
 /// więc pytanie „co model o tym wie" ma jedną odpowiedź, nie dwie.
 const HEADING: &str = "What you know";
 

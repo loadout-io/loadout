@@ -23,7 +23,7 @@ rodzaju kafelka**. Gdyby te dwa etapy zrobić krokami agenta o instrukcji „uru
 `./verify.sh full` i powiedz, czy przeszło", plik by się zwalidował, bieg by wystartował,
 transkrypt powiedziałby `checks passed` — i sprzedalibyśmy jedyne rozróżnienie, dla którego
 ten produkt powstał: **co agent powiedział** kontra **co się stało**
-(`00-SYNTHESIS.md` §2.1). Loadout uruchamia sprawdzenia sam; nie pyta agenta, czy zadziałało.
+(`FOUNDATIONS.md` §2.1). Loadout uruchamia sprawdzenia sam; nie pyta agenta, czy zadziałało.
 Pytanie do człowieka jest tu odpowiedzią **uczciwą**: ktoś naprawdę musi to dziś zrobić ręcznie.
 
 ## Sześć etapów, pięć kafelków

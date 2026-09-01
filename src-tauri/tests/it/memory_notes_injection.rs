@@ -1,11 +1,11 @@
 //! AC-1 dla T-17: notatka „suggested" nie występuje w zmontowanym tekście bloku — ani razu.
 //!
-//! To jest cała wartość podsystemu postawiona przed sądem [`00-SYNTHESIS` §2.2: „only 'in use'
+//! To jest cała wartość podsystemu postawiona przed sądem [`FOUNDATIONS` §2.2: „only 'in use'
 //! notes go into a prompt"]. Cicha porażka, przed którą stoi ten plik, jest banalna i dlatego
 //! groźna: filtr po statusie stoi w jednym miejscu — na liście do wyświetlenia — a przy
 //! składaniu bloku ktoś dokleja „a na końcu jeszcze kandydatki, żeby model miał kontekst".
 //! Wszystkie testy dalej są zielone, bo sprawdzają `note.status`, a nie **zmontowany tekst**.
-//! Od tej chwili jedna halucynacja agenta jest trwałym prawem projektu [`00-SYNTHESIS` §2.1:
+//! Od tej chwili jedna halucynacja agenta jest trwałym prawem projektu [`FOUNDATIONS` §2.1:
 //! „bez tego jedna halucynacja staje się permanentnym folklorem"].
 //!
 //! **Słabą wersją tego kryterium jest `assert_eq!(block.used.len(), 2)`.** Przechodzi na
@@ -143,7 +143,7 @@ fn not_one_of_the_three_suggested_notes_reaches_the_text() {
             !block.text.contains(sentinel),
             "{sentinel} was never approved by a person and it stands in the text that goes to \
              the model. From this moment one hallucination is permanent project folklore \
-             (00-SYNTHESIS §2.1). The whole block, header and footer included, reads:\n{}",
+             (FOUNDATIONS §2.1). The whole block, header and footer included, reads:\n{}",
             block.text
         );
     }

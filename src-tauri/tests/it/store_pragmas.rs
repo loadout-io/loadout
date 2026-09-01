@@ -7,7 +7,7 @@
 //! po cichu przestaje widzieć kaskady — i nie dowiaduje się o tym niczym poza brakującym
 //! wierszem. `busy_timeout` zapomniany na połączeniu czytającym objawia się jako losowe
 //! „Save failed" raz na dwa dni; w meetnotes zajęło to dwóch pisarzy w tle, zanim ktoś
-//! zrozumiał, co się dzieje [00-SYNTHESIS §3].
+//! zrozumiał, co się dzieje [FOUNDATIONS §3].
 //!
 //! **Słaba wersja tego kryterium to sprawdzenie pragm wyłącznie na połączeniu zwróconym przez
 //! `open()`.** Przechodzi, gdy `reader()` omija helper i idzie prosto do

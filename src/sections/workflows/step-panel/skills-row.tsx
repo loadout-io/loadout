@@ -6,7 +6,7 @@
  *
  * `'all-or-none'` znaczy, że „Only these" NIE ISTNIEJE — nie jest wyszarzone. Kontrolka
  * wyszarzona dalej obiecuje funkcję, tylko „na później"; kontrolka, która niczego nie zapisuje,
- * to niezmiennik 16 i anty-wzorzec „UI zbudowane na polu, którego nie ma" (00-SYNTHESIS §6).
+ * to niezmiennik 16 i anty-wzorzec „UI zbudowane na polu, którego nie ma" (FOUNDATIONS §6).
  *
  * Przy agencie na Codeksie całego wiersza nie ma: Codex nie ma pojęcia umiejętności
  * [T3 §7.2, T4 fakt-check O4]. Wiersz włączony, który nic nie robi, jest gorszy niż jego brak,

@@ -22,7 +22,7 @@
 //!
 //! (b) I docierają NA DRUT pod kluczami, które zna okno. To nie jest ta sama asercja: pole
 //!     dopisane bez `rename_all_fields` jedzie na front pod nazwą, której on nie zna, widok
-//!     dostaje `undefined` i pierwsze sześć poprawek idzie w złą warstwę [00-SYNTHESIS §3].
+//!     dostaje `undefined` i pierwsze sześć poprawek idzie w złą warstwę [FOUNDATIONS §3].
 //!
 //! (c) A koszt zostaje pusty. Bez tej asercji zieleń przechodzi dla implementacji, która przy
 //!     okazji dopisała cennik — czyli dla tej, która na ekranie pokazuje kwotę, jakiej nikt
@@ -171,7 +171,7 @@ fn the_tokens_reach_the_wire_under_the_names_the_window_reads() -> Result<(), Bo
 
     // Po drucie, nie po polu Rusta: bez `rename_all_fields` te trzy jadą jako `input_tokens`,
     // okno czyta `inputTokens`, dostaje `undefined` i wywraca widok — a przyczyna jest w derive,
-    // nie w komponencie, więc pierwsze poprawki idą w złą warstwę [00-SYNTHESIS section 3].
+    // nie w komponencie, więc pierwsze poprawki idą w złą warstwę [FOUNDATIONS section 3].
     for (name, expected) in [
         ("inputTokens", INPUT),
         ("outputTokens", OUTPUT),

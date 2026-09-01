@@ -114,7 +114,7 @@ describe('the run a lead suggested crosses the wire and has a place in the view'
       'a line carrying one key MORE than the kind declares has to be dropped. The set has to ' +
         'agree one for one, or a field added in Rust without camelCase renaming rides along ' +
         'under a name the window does not know, and the view falls over on undefined ' +
-        '[00-SYNTHESIS §3].',
+        '[FOUNDATIONS §3].',
     ).toBeNull();
     for (const key of Object.keys(row)) {
       const short: Record<string, unknown> = { ...row };
@@ -149,7 +149,7 @@ describe('the run a lead suggested crosses the wire and has a place in the view'
       authorityOf(asKind(SUGGESTED)),
       'these are the lead own words, so the row is signed like prose. Signed as Loadout it ' +
         'would read as a message from the app — the same mistake as a tile quoting `3 of 40 ' +
-        'checks failed` as if the agent had said it [00-SYNTHESIS §2.2] — and signed as the ' +
+        'checks failed` as if the agent had said it [FOUNDATIONS §2.2] — and signed as the ' +
         'person it would put the lead sentence in your mouth.',
     ).toBe('agent');
   });

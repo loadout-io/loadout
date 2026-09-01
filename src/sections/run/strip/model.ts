@@ -110,7 +110,7 @@ const ENDED: ReadonlySet<StepState> = new Set<StepState>(['failed', 'cancelled',
  * „Co musi przetrwać nawet przy zerowej ceremonii": przy workflow bez sprawdzeń UI mówi to
  * wprost i nie pokazuje zieleni. Brak ceremonii ma znaczyć „nikt tego nie sprawdził", nigdy
  * „sprawdzone i dobrze" — i to jest ta sama linia, na której stoi cały produkt: co agent
- * powiedział kontra co się stało [00-SYNTHESIS §2.1].
+ * powiedział kontra co się stało [FOUNDATIONS §2.1].
  *
  * Kropka rozdzielająca należy do stałej, bo zdanie zawsze dokleja się do podpisu, który już
  * stoi — nowy rząd chrome nie wchodzi w grę: `docs/ARCHITECTURE.md` §7 daje 96 px nad pierwszą

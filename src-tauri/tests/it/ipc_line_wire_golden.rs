@@ -27,7 +27,7 @@
 //! Skan kluczy jest osobną asercją, bo jego brak ma zapisaną cenę: w meetnotes brakujący
 //! `rename_all_fields` posłał `started_at` do frontu i położył cały widok, a sześć poprawek
 //! poszło najpierw w złą warstwę — objaw był w widoku, przyczyna w `derive`
-//! [00-SYNTHESIS §3].
+//! [FOUNDATIONS §3].
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -330,7 +330,7 @@ async fn the_pump_puts_on_the_wire_exactly_what_the_golden_file_says() -> Result
         "every key on every level is camelCase; these are not: {snake:?}. A missing \
          `rename_all_fields` sent `started_at` to the front in meetnotes and took the whole \
          view down with it, and the first six fixes went into the wrong layer because the \
-         symptom was in the view and the cause was in a derive [00-SYNTHESIS §3]"
+         symptom was in the view and the cause was in a derive [FOUNDATIONS §3]"
     );
     Ok(())
 }

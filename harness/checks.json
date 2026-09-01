@@ -13,7 +13,7 @@
       "when": [
         "src/**/*.ts",
         "src/**/*.tsx",
-        "docs/research/projects/00-SYNTHESIS.md"
+        "docs/FOUNDATIONS.md"
       ],
       "cmd": "bash checks/vocabulary.sh",
       "budget_s": 60

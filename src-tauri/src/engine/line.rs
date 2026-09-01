@@ -105,7 +105,7 @@ pub enum LineKind {
 /// `rename_all_fields` jest tu **jedyną** rzeczą, która stoi między nami a błędem z meetnotes:
 /// bez niego `detail_id`, `duration_ms`, `cost_usd` i `resets_at` jadą na front pod nazwami,
 /// których on nie zna, widok wywraca się na `undefined`, a pierwsze sześć poprawek idzie
-/// w złą warstwę, bo objaw jest w widoku, a przyczyna w derive [00-SYNTHESIS §3].
+/// w złą warstwę, bo objaw jest w widoku, a przyczyna w derive [FOUNDATIONS §3].
 /// Wariant jest **wewnętrznym** znacznikiem `kind`, żeby front dostał płaski obiekt zamiast
 /// `{"Read":{…}}` — jeden rodzaj, jedno pole, żadnego rozpakowywania po stronie widoku.
 #[derive(Debug, Clone, Serialize)]

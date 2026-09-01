@@ -382,7 +382,7 @@ fn could_not_save(branch: &str, dest: &Path, said: &str) -> String {
 ///
 /// **Pytamy gita, nie agenta**, i to jest cały wybór tej funkcji. Deklaracja „nic nie zmieniłem"
 /// jest tym, co agent powiedział; diff jest tym, co się stało — a na tej różnicy stoi cały ten
-/// produkt (`docs/research/projects/00-SYNTHESIS.md` §2.1). Modelowi nie da się tego ograć.
+/// produkt (`docs/FOUNDATIONS.md` §2.1). Modelowi nie da się tego ograć.
 ///
 /// **Dwa pytania, nie jedno.** Sama `status --porcelain` wystarcza tylko dopóki krok niczego nie
 /// zacommitował — a implementer, który commituje swoją pracę na własną gałąź, zostawia drzewo

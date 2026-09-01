@@ -1026,7 +1026,7 @@ kropki stoją nieruchomo w trzech widocznych punktach, a pasek zostaje statyczny
 ## 8. Język interfejsu
 
 **UI jest po angielsku** (decyzja D5). Czasownik w trybie rozkazującym, zdanie proste, bez żargonu.
-Wiążąca jest tabela żargon→prosty-język z `docs/research/projects/00-SYNTHESIS.md` §2.2 (55 wierszy).
+Wiążąca jest tabela żargon→prosty-język z `docs/FOUNDATIONS.md` §2.2 (55 wierszy).
 
 | Zamiast | Piszemy |
 |---|---|

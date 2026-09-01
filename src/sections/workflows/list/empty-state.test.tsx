@@ -2,7 +2,7 @@
  *
  * Słaba wersja to `expect(html).toContain('No workflows yet')`. Przechodzi dla ekranu
  * z martwym przyciskiem — poprzedni prototyp ma trzy takie, „dead controls with no onClick"
- * (00-SYNTHESIS §6) — i przechodzi dla ekranu, na którym zaproszenie zostaje na widoku także
+ * (FOUNDATIONS §6) — i przechodzi dla ekranu, na którym zaproszenie zostaje na widoku także
  * wtedy, gdy workflow już są.
  *
  * Rozróżniają to dwie rzeczy. Po pierwsze: `actions.create('Ship it')` wołane na TYM SAMYM
