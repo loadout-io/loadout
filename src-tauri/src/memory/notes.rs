@@ -51,12 +51,21 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use super::FrontMatter;
 use tempfile::NamedTempFile;
 
 /// Katalog notatek wewnątrz korzenia. Jedna nazwa, w jednym miejscu.
 const NOTES_DIR: &str = "notes";
+
+/// Jeden krótki, procesowy właściciel mutacji żywych plików notatek.
+///
+/// 2026-08-28 (review T-151): sam atomowy rename chroni kompletność bajtów, ale nie chroni
+/// decyzji o ścieżce. Bez wspólnego właściciela stempel mógł odczytać źródło, produkcyjny Move
+/// albo Discard mógł je usunąć, a późniejszy rename stempla odtwarzał starą ścieżkę. Operacje
+/// poniżej są synchroniczne i nigdy nie trzymają tej blokady przez `await` (niezmiennik 8).
+static NOTE_MUTATION: Mutex<()> = Mutex::new(());
 
 /// Dokąd odchodzi notatka, której człowiek nie chciał (2026-08-23, T-92).
 ///
@@ -416,6 +425,12 @@ pub enum Error {
 /// Skrót używany przez cały moduł notatek.
 pub type Result<T> = std::result::Result<T, Error>;
 
+fn note_mutation_guard() -> Result<MutexGuard<'static, ()>> {
+    NOTE_MUTATION
+        .lock()
+        .map_err(|_| io::Error::other("the note mutation lock was poisoned").into())
+}
+
 /// Port operacji trwałego Move. Kolejność pozostaje w jednym rdzeniu, a adapter wykonuje IO.
 pub trait MoveIo {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
@@ -481,6 +496,7 @@ impl MoveIo for RealMoveIo {
 
 /// Jeden rdzeń protokołu Move, używany przez produkcję i obserwowalny przez testowy adapter.
 pub fn move_note_file_with_io(io: &mut dyn MoveIo, source: &Path, target: &Path) -> Result<()> {
+    let _mutation = note_mutation_guard()?;
     if io.exists(target)? {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -804,6 +820,8 @@ fn record(
         return Err(Error::NoAgentNamed);
     }
 
+    let _mutation = note_mutation_guard()?;
+
     let id = NoteId(super::slugify(&title));
     let dir = root.join(NOTES_DIR);
     let path = dir.join(format!("{id}.md"));
@@ -926,6 +944,8 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
         return Err(Error::OnlyYouCanDoThat);
     };
 
+    let _mutation = note_mutation_guard()?;
+
     let path = root.join(NOTES_DIR).join(format!("{id}.md"));
     let raw = read_or_missing(&path, id)?;
     let (mut front, body_at) = FrontMatter::split(&raw)?;
@@ -1002,6 +1022,7 @@ pub fn promote(root: &Path, id: &NoteId, by: Actor) -> Result<Note> {
 /// kliknięcie, które niczego nie zmieniło, jest kłamstwem o tym, kiedy ta notatka ostatnio się
 /// zmieniła. Ta sama decyzja stoi po drugiej stronie przełącznika, w [`promote`].
 pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
+    let _mutation = note_mutation_guard()?;
     let path = root.join(NOTES_DIR).join(format!("{id}.md"));
     let raw = read_or_missing(&path, id)?;
     let (mut front, body_at) = FrontMatter::split(&raw)?;
@@ -1052,6 +1073,7 @@ pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
 /// dysku", i też z powodu: tej wartości nie ma kto przeczytać. Bieg stempluje i idzie dalej,
 /// więc odczyt po zapisie byłby odczytem dla nikogo (niezmiennik 21).
 pub fn mark_used(path: &Path, at: &str) -> Result<()> {
+    let _mutation = note_mutation_guard()?;
     let raw = fs::read_to_string(path)?;
     stamp_last_used_at(path, &raw, at)
 }
@@ -1064,6 +1086,7 @@ pub fn mark_used(path: &Path, at: &str) -> Result<()> {
 /// stemplowanie bez odtworzenia pliku; istniejąca ścieżka jest czytana ponownie, a w jej
 /// bieżących bajtach zmienia się wyłącznie `last_used_at`.
 pub(crate) fn mark_used_from_snapshot(path: &Path, _snapshot: &str, at: &str) -> Result<()> {
+    let _mutation = note_mutation_guard()?;
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1139,6 +1162,8 @@ pub fn discard(root: &Path, id: &NoteId, by: Actor) -> Result<PathBuf> {
     let Actor::You { at } = by else {
         return Err(Error::OnlyYouCanDoThat);
     };
+
+    let _mutation = note_mutation_guard()?;
 
     let path = root.join(NOTES_DIR).join(format!("{id}.md"));
     let raw = read_or_missing(&path, id)?;

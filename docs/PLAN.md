@@ -175,16 +175,17 @@ worktree nie mają pełnego resource envelope.
 | ID | Zadanie | Tryb | Zależy od |
 |---|---|---|---|
 | **T-151** | Nowsze bajty wygrywają, Run czeka na widoczną rewizję, a agent może wybrać ciągłość plików | direct | T-150 |
-| **T-152** | Przygotowanie próby jest transakcją, start-error respektuje politykę, no-work jest uczciwe | full | T-150, T-202 |
+| **T-152** | Przygotowanie próby jest transakcją, start-error respektuje politykę, no-work jest uczciwe | full | T-150, T-210 |
 | **T-153** | Równoległe gałęzie składają pliki i zachowują fizyczną lineage kopii | full | T-201 |
-| **T-154** | Rerun, prompt i capability używają dokładnie zadeklarowanego stagingu | direct | T-151, T-153, T-155, T-156, T-202 |
-| **T-155** | Backend ma jeden adresowany bieg per workspace i jeden globalny limiter | full | T-151, T-152, T-153, T-156, T-201, T-202, T-203 |
-| **T-156** | Native output, prywatny stan i zamknięte zasoby mają skończony lifecycle | full | T-201, T-202 |
+| **T-154** | Rerun, prompt i capability używają dokładnie zadeklarowanego stagingu | direct | T-151, T-153, T-155, T-156, T-210 |
+| **T-155** | Backend ma jeden adresowany bieg per workspace i jeden globalny limiter | full | T-151, T-152, T-153, T-156, T-201, T-203, T-210 |
+| **T-156** | Native output, prywatny stan i zamknięte zasoby mają skończony lifecycle | full | T-201, T-210 |
 | **T-157** | Connection odmawia literalnych sekretów w args i URL | direct | T-150 |
 | **T-158** | Lokalny log jest prywatny, rotowany i ograniczony | direct | T-155 |
 | **T-201** | Naturalny i wymuszony koniec zachowuje ownership do ESRCH | full | T-152 |
 | **T-202** | Jeden durable publisher obsługuje workflow, agenta, handoff i attachment | full | T-150 |
-| **T-203** | Zepsuta definicja jest osobnym problemem, a zdrowa biblioteka działa | direct | T-202 |
+| **T-210** | Równoległy writer handoffu nie usuwa aktywnego tempa sąsiada | direct, stacked | implementacja T-202 |
+| **T-203** | Zepsuta definicja jest osobnym problemem, a zdrowa biblioteka działa | direct | T-210 |
 | **T-204** | Frontend kluczuje stan terminalem, workspace'em, runem i fizycznym krokiem | direct | T-154, T-155, T-156 |
 | **T-205** | Instrukcje i rozwiązane sekrety mają prywatny, bounded transport | full | T-154, T-156, T-157 |
 | **T-206** | Deterministyczna odmowa triggera przechodzi w durable quarantine | direct | T-155 |
@@ -195,8 +196,8 @@ worktree nie mają pełnego resource envelope.
 ### Fale bez konfliktów `OWNS`
 
 ```text
-Gotowe:   T-150
-Fala A:   T-151  || T-157 || T-202
+Gotowe:   T-150, T-151, T-157
+Fala A0:  T-202 + T-210 (jeden stack, T-202 nie ląduje osobno)
 Fala B:   T-152  || T-203
 Fala C:   T-201
 Fala D1:  T-153

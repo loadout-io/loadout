@@ -3,7 +3,7 @@
 use std::error::Error as StdError;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc as sync_mpsc};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,7 +20,7 @@ use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::evidence::{EvidenceStreams, EvidenceTarget};
 use loadout_lib::ipc::{QUEUE_CAP, line_channel};
 use loadout_lib::library::agents::Vendor;
-use loadout_lib::memory::notes::{RealMoveIo, move_note_file_with_io};
+use loadout_lib::memory::notes::{MoveIo, RealMoveIo, move_note_file_with_io};
 use loadout_lib::store::Store;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -116,6 +116,129 @@ async fn discard_after_prompt_freeze_is_not_resurrected_by_the_stamp()
     Ok(())
 }
 
+#[test]
+fn concurrent_move_owns_the_source_until_the_stamp_rechecks_it() -> Result<(), Box<dyn StdError>> {
+    let scene = Arc::new(Scene::new(NotePlace::Library)?);
+    let target = scene.project_memory().join("notes/frozen.md");
+    let (move_entered, move_reached) = sync_mpsc::channel();
+    let (release_move, move_may_continue) = sync_mpsc::channel();
+    let source_for_move = scene.source.clone();
+    let target_for_move = target.clone();
+    let mover = std::thread::spawn(move || {
+        let mut io = MovePausedBeforeFirstRead {
+            inner: RealMoveIo,
+            entered: move_entered,
+            release: move_may_continue,
+        };
+        move_note_file_with_io(&mut io, &source_for_move, &target_for_move)
+    });
+
+    // `exists` is the first Move IO after it has claimed the mutation boundary. Holding it here
+    // leaves the source in place while the real Run reaches its usage stamp.
+    move_reached
+        .recv_timeout(PATIENCE)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let (run_events, events) = sync_mpsc::channel();
+    let stamp_event = run_events.clone();
+    let hook: FrozenPromptHook = Arc::new(move |prompt| {
+        assert!(prompt.contains(ORIGINAL_RULE));
+        let _ = stamp_event.send(RunMoment::BeforeStamp);
+    });
+    let scene_for_run = Arc::clone(&scene);
+    let runner = std::thread::spawn(move || {
+        let result = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?
+            .block_on(scene_for_run.run(hook))
+            .map_err(|error| error.to_string());
+        let _ = run_events.send(RunMoment::Finished);
+        result
+    });
+    let stamp_waited_for_move = match events.recv_timeout(PATIENCE) {
+        Ok(RunMoment::BeforeStamp) => matches!(
+            events.recv_timeout(Duration::from_millis(750)),
+            Err(sync_mpsc::RecvTimeoutError::Timeout)
+        ),
+        Ok(RunMoment::Finished) | Err(_) => false,
+    };
+
+    let _ = release_move.send(());
+    let moved = mover
+        .join()
+        .map_err(|_| "the production Move thread panicked")?;
+    moved?;
+    let run_result = runner
+        .join()
+        .map_err(|_| "the production Run thread panicked")?
+        .map_err(std::io::Error::other)?;
+
+    assert!(
+        stamp_waited_for_move,
+        "the usage stamp crossed a production Move that still owned the source path"
+    );
+    let (report, prompts) = run_result;
+    assert!(
+        !scene.source.exists(),
+        "the stamp recreated the source after the concurrent Move"
+    );
+    assert_eq!(
+        fs::read_to_string(target)?,
+        original_note(&NotePlace::Library)
+    );
+    assert_frozen_run(&report, &prompts)?;
+    Ok(())
+}
+
+struct MovePausedBeforeFirstRead {
+    inner: RealMoveIo,
+    entered: sync_mpsc::Sender<()>,
+    release: sync_mpsc::Receiver<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMoment {
+    BeforeStamp,
+    Finished,
+}
+
+impl MoveIo for MovePausedBeforeFirstRead {
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+
+    fn exists(&mut self, path: &Path) -> std::io::Result<bool> {
+        self.entered
+            .send(())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.release
+            .recv_timeout(PATIENCE)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.inner.exists(path)
+    }
+
+    fn stage_in(&mut self, target_dir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+        self.inner.stage_in(target_dir, bytes)
+    }
+
+    fn sync_file(&mut self, path: &Path) -> std::io::Result<()> {
+        self.inner.sync_file(path)
+    }
+
+    fn persist_no_clobber(&mut self, staged: &Path, target: &Path) -> std::io::Result<()> {
+        self.inner.persist_no_clobber(staged, target)
+    }
+
+    fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        self.inner.sync_dir(dir)
+    }
+
+    fn remove_file(&mut self, source: &Path) -> std::io::Result<()> {
+        self.inner.remove_file(source)
+    }
+}
+
 struct Scene {
     _root: TempDir,
     home: PathBuf,
@@ -196,12 +319,8 @@ impl Scene {
                 stopped.is_ok(),
                 "the production Stop using must make the note eligible for Discard"
             );
-            let discarded = discard_addressed_note_inner(
-                &library,
-                &project,
-                &address,
-                "2026-08-28T12:01:00Z",
-            );
+            let discarded =
+                discard_addressed_note_inner(&library, &project, &address, "2026-08-28T12:01:00Z");
             assert!(
                 discarded.is_ok(),
                 "the production Discard must finish inside the hook"

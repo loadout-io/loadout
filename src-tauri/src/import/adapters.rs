@@ -969,6 +969,131 @@ fn is_loopback(url: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "[::1]")
 }
 
+/// Wspólna granica dla literalnych poświadczeń w definicji Connection.
+///
+/// 2026-08-28 (T-157): adapter Claude'a i adapter Codeksa mają inne formaty pliku, ale oba
+/// kończą na tym samym `Connection`. Polityka tutaj nie dopuszcza, żeby jeden format odmawiał
+/// sekretu przed zapisem, a drugi zanosił go do biblioteki albo argv. Nie dekodujemy wartości ani
+/// nie wkładamy ich do komunikatu: wystarcza nazwa flagi albo klucza, którą człowiek może zamienić
+/// na nazwaną zmienną środowiska.
+#[must_use]
+pub fn literal_connection_secret_issue(args: &[String], url: Option<&str>) -> Option<String> {
+    for (index, argument) in args.iter().enumerate() {
+        for flag in ["--token", "--api-key"] {
+            if argument.eq_ignore_ascii_case(flag)
+                && args.get(index + 1).is_some_and(|value| !value.is_empty())
+            {
+                return Some(format!(
+                    "This connection uses {flag} with a literal value. Use a named environment variable instead."
+                ));
+            }
+            if argument
+                .get(..flag.len() + 1)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("{flag}=")))
+                && argument
+                    .get(flag.len() + 1..)
+                    .is_some_and(|value| !value.is_empty())
+            {
+                return Some(format!(
+                    "This connection uses {flag} with a literal value. Use a named environment variable instead."
+                ));
+            }
+        }
+    }
+
+    let url = url?;
+    let authority = url
+        .split_once("://")
+        .map_or(url, |(_, remainder)| remainder)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(url);
+    if authority
+        .split_once('@')
+        .is_some_and(|(userinfo, _)| !userinfo.is_empty())
+    {
+        return Some(
+            "This connection has literal credentials in its URL. Use a named environment variable instead."
+                .to_owned(),
+        );
+    }
+    // Fragment nie jedzie do serwera. Najpierw go odcinamy, bo `#note?token=value` nie jest
+    // query i nie może zamienić bezpiecznego URL w fałszywą odmowę.
+    let without_fragment = url.split('#').next().unwrap_or(url);
+    let query = without_fragment.split_once('?').map(|(_, query)| query);
+    for parameter in query.into_iter().flat_map(|query| query.split('&')) {
+        let Some((key, value)) = parameter.split_once('=') else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let key = percent_decode(key).to_ascii_lowercase();
+        if [
+            "api_key",
+            "api-key",
+            "access_token",
+            "token",
+            "secret",
+            "authorization",
+        ]
+        .contains(&key.as_str())
+        {
+            return Some(format!(
+                "This connection has a literal value for {key} in its URL. Use a named environment variable instead."
+            ));
+        }
+    }
+    None
+}
+
+/// Dekoduje wyłącznie nazwę parametru URL, nie jego wartość.
+///
+/// `access%5Ftoken` jest tym samym kluczem co `access_token`; bez tego zapis w URL omijałby
+/// politykę pojedynczą zmianą kodowania. Wartości nie są nam potrzebne do odmowy, więc ich nie
+/// dotykamy (niezmiennik 9).
+fn percent_decode(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character == '%' {
+            let high = characters.next();
+            let low = characters.next();
+            if let (Some(high), Some(low)) = (high, low)
+                && let Some(byte) = hex_pair(high, low)
+            {
+                decoded.push(char::from(byte));
+                continue;
+            }
+            decoded.push('%');
+            if let Some(high) = high {
+                decoded.push(high);
+            }
+            if let Some(low) = low {
+                decoded.push(low);
+            }
+            continue;
+        }
+        decoded.push(character);
+    }
+    decoded
+}
+
+const fn hex_pair(high: char, low: char) -> Option<u8> {
+    const fn digit(character: char) -> Option<u8> {
+        match character {
+            '0'..='9' => Some(character as u8 - b'0'),
+            'a'..='f' => Some(character as u8 - b'a' + 10),
+            'A'..='F' => Some(character as u8 - b'A' + 10),
+            _ => None,
+        }
+    }
+    match (digit(high), digit(low)) {
+        (Some(high), Some(low)) => Some(high * 16 + low),
+        _ => None,
+    }
+}
+
 /// Serwery narzędziowe zadeklarowane WPROST W NAGŁÓWKU AGENTA — jako gotowe połączenia.
 ///
 /// 2026-08-22 — TO ZAMYKA CICHĄ DZIURĘ W IMPORCIE, zgłoszoną zdaniem „jak dziedziczymy agentów
@@ -1209,6 +1334,9 @@ fn claude_connection(
                 "Connection {name} must name an environment variable instead of storing a token."
             ));
         }
+        if let Some(issue) = literal_connection_secret_issue(&[], Some(url)) {
+            return Err(issue);
+        }
         Transport::Http {
             url: url.to_owned(),
             token_environment,
@@ -1219,6 +1347,9 @@ fn claude_connection(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("Connection {name} has no command or HTTPS URL."))?;
         let args = string_array(object.get("args"))?;
+        if let Some(issue) = literal_connection_secret_issue(&args, None) {
+            return Err(issue);
+        }
         let mut environment = Vec::new();
         if let Some(env) = object.get("env").and_then(Value::as_object) {
             for (key, value) in env {
@@ -1278,6 +1409,9 @@ fn codex_connections(file: &InspectedFile) -> std::result::Result<Vec<Connection
                     "Connection {name} must name an environment variable instead of storing a token."
                 ));
             }
+            if let Some(issue) = literal_connection_secret_issue(&[], Some(url)) {
+                return Err(issue);
+            }
             Transport::Http {
                 url: url.clone(),
                 token_environment,
@@ -1293,9 +1427,13 @@ fn codex_connections(file: &InspectedFile) -> std::result::Result<Vec<Connection
                     "Connection {name} has an invalid required environment variable name."
                 ));
             }
+            let args = parse_array(fields.get("args"));
+            if let Some(issue) = literal_connection_secret_issue(&args, None) {
+                return Err(issue);
+            }
             Transport::Stdio {
                 command,
-                args: parse_array(fields.get("args")),
+                args,
                 environment,
             }
         };
