@@ -2574,6 +2574,33 @@ pub async fn open_chat(
     state.watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
 }
 
+/// Człowiek odpowiedział na pytanie, które lider zadał w tym terminalu.
+///
+/// # Po co osobna komenda, a nie `continue_run`
+///
+/// Bo to są dwa różne pytania i dwie różne drogi powrotne. `continue_run` puszcza dalej BIEG
+/// stojący na kafelku kontrolnym; tutaj czeka **tura agenta**, zablokowana na wywołaniu
+/// narzędzia, i jej odpowiedź wraca do kontekstu tej samej tury.
+///
+/// # Dlaczego okno woła to przy KAŻDEJ odpowiedzi
+///
+/// Bo nie ma jak rozstrzygnąć, do kogo należy przypięte pytanie: w jednym strumieniu stoi
+/// pytanie lidera i pytanie kafelka. Rozstrzyga strona, która wie — `false` znaczy „w tym
+/// terminalu nikt na to nie czekał" i jest **odpowiedzią, nie błędem**. Okno idzie wtedy swoją
+/// dotychczasową drogą.
+/* `async` i `Result`, jak każda komenda biorąca `State` w tym pliku: Tauri wymaga wtedy pożyczki
+ * z czasem życia, a jednolity kształt oszczędza czytelnikowi pytania „czemu ta jedna jest inna".
+ * Ta droga nie ma jak zawieść — `Ok` jest tu formą, nie obietnicą. */
+#[tauri::command]
+pub async fn answer_the_lead(
+    state: State<'_, AppState>,
+    terminal: &str,
+    agent: &str,
+    answer: &str,
+) -> Result<bool, String> {
+    Ok(state.leads.answer_in(terminal, agent, answer.to_owned()))
+}
+
 /// Mówi zdanie liderowi tego terminalu. **Nie uruchamia biegu i nie ma jak** — powód przy
 /// `commands::chat`.
 ///
@@ -3036,6 +3063,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         move_note_to_project,
         new_id,
         open_chat,
+        answer_the_lead,
         put_note_to_use,
         read_run,
         read_settings,

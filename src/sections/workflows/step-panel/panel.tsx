@@ -79,11 +79,15 @@ import { CheckpointPanel } from './checkpoint-panel';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
 import { BorrowRowForThisProject, nothingBorrowed } from './borrow-row';
+import { HandoverRow } from './handover-row';
 import { SkillsRow } from './skills-row';
 
 /** Pola, które należą do samego KROKU agenta, a nie do agenta (patrz nagłówek pliku). */
 export type AgentStepFields = Partial<
-  Pick<AgentStep, 'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails' | 'borrow'>
+  Pick<
+    AgentStep,
+    'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails' | 'borrow' | 'handover'
+  >
 >;
 
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
@@ -93,7 +97,7 @@ export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>
  *
  * `folder` DOSZŁO 2026-08-23, po pierwszym prawdziwym użyciu: dla serwera to nie jest szczegół,
  * tylko treść. Powód w całości stoi przy `WHERE` w `./serve-panel.tsx`. */
-export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command' | 'folder'>>;
+export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command' | 'folder' | 'commandFrom'>>;
 
 /* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
  *
@@ -951,6 +955,16 @@ export interface PanelForStepProps {
   onEditCheckpoint: (fields: CheckpointFields) => void;
   onEditServe: (fields: ServeFields) => void;
   /**
+   * Kto po strzałce stoi przed kafelkiem „uruchom i zostaw", czy już oddaje jego pole, i jak go
+   * o nie poprosić.
+   *
+   * Liczy to EDYTOR, nie ten panel: panel nie zna strzałek, więc nie ma jak pomylić się co do
+   * tego, który krok jest tym przed (ten sam ruch i ten sam powód, co przy `wayBack`).
+   */
+  stepBefore?: string | null | undefined;
+  handsItOver?: boolean | undefined;
+  onAskTheStepBefore?: (() => void) | undefined;
+  /**
    * Zmiana pola kafelka „sprawdź". Brak propsu znaczy „ten ekran sprawdzenia nie edytuje".
    *
    * OPCJONALNY, i to jest decyzja o kształcie, nie niedbałość. Trzy kryteria spoza tego zadania
@@ -1003,6 +1017,9 @@ export function PanelForStep({
   onEditStep,
   onEditCheckpoint,
   onEditServe,
+  stepBefore,
+  handsItOver,
+  onAskTheStepBefore,
   onEditCheck,
   onReset,
   onChooseSkills,
@@ -1028,7 +1045,13 @@ export function PanelForStep({
   if (step.kind === 'serve') {
     return (
       <div data-step-panel className="flex flex-col gap-3">
-        <ServePanel step={step} onEditStep={onEditServe} />
+        <ServePanel
+          step={step}
+          onEditStep={onEditServe}
+          stepBefore={stepBefore}
+          handsItOver={handsItOver}
+          onAskTheStepBefore={onAskTheStepBefore}
+        />
       </div>
     );
   }
@@ -1074,6 +1097,11 @@ export function PanelForStep({
           powodu. Stoi przy każdym kroku agenta, bo ślepy punkt jest ten sam niezależnie od tego,
           dlaczego krok nie przeszedł. */}
       <WhenItFailsRow value={step.whenItFails} onEditStep={onEditStep} />
+
+      {/* CO TEN KROK PŁACI NASTĘPNEMU. Stoi zaraz za „co, gdy nie przejdzie", bo obie odpowiedzi
+          dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla
+          którego ten wiersz w ogóle powstał, stoi w całości w `./handover-row.tsx`. */}
+      <HandoverRow value={step.handover} onEditStep={onEditStep} />
 
       {/* Wiersz Skills, zamontowany PO SIEDMIU wierszach i poza `StepPanel` — patrz nagłówek.
           Przy pustej liście nie powstaje wcale: kiedy w katalogach agentów nie leży ani jedna

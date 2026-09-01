@@ -17,6 +17,64 @@ skrzyń w `Cargo.toml`.
 
 ---
 
+## Stan na 2026-08-30 — plan wykonany
+
+Dziewięć commitów w trunku, każdy z zieloną bramką na swoim SHA.
+
+| Commit | Co |
+|---|---|
+| `70867df` | odpowiedź lidera zachowuje swoje wiersze |
+| `49e805e` | most: Loadout daje agentowi własne narzędzia |
+| `bf60cfb` | lider widzi bibliotekę tego człowieka |
+| `5a0ca80` | lider odpala workflow sam |
+| `56b6822` | brief mówi prawdę o narzędziach i o tym, gdzie leży prawda o biegu |
+| `5cc37df` | agent pyta człowieka i **czeka** na odpowiedź |
+| `b310104` | nazwa workflow podświetla się w trakcie pisania |
+| `0d6feca` | kafelek serwera bierze komendę od kroku przed sobą |
+| `403b76a` | dial mówi o powłoce prawdę |
+| `7ed2706` | lista narzędzi lidera przychodzi z jego definicji |
+
+**Dowód końca-końca na żywym `claude 2.1.251`**, po wszystkich zmianach:
+
+```
+mcp_servers: [{'name': 'loadout', 'status': 'connected'}]
+init tools:  mcp__loadout__ask_the_person, __list_agents, __list_workflows, __start_workflow
+
+TOOL_USE     mcp__loadout__ask_the_person {"question": "Which parser would you like me to fix?"}
+TOOL_RESULT  [{"type": "text", "text": "Use the second one."}]
+TEXT:        You answered: "Use the second one."
+RESULT       success   duration_ms = 7510   (z czego 4000 ms to celowe czekanie)
+```
+
+### Co ZOSTAŁO i dlaczego nie weszło
+
+Trzy pozycje z Zadania 7, wszystkie zablokowane tym samym: **wspólny fakt mieszka
+w `commands/run.rs`, a `chat_never_starts_a_run.rs` zabrania napisu `super::run` w źródle
+`commands/chat.rs`.** Każda z nich wymaga najpierw zjechania tego faktu do `memory/`, `skills/`
+albo `library/` — tym samym ruchem, którym zjechało `policy_of`. To jest refaktor z własnym
+ryzykiem, nie dopisek przy okazji.
+
+| Co | Gdzie dziś mieszka | Czego wymaga |
+|---|---|---|
+| skille lidera jako `--plugin-dir` | `run.rs:6959` (`hand_the_skills_to_the_steps`) | zjazd do `skills/` |
+| notatki pamięci w prompcie lidera | `run.rs:4745` (`with_what_we_know`) | zjazd do `memory/` |
+| dziedziczenie z `.claude/` gospodarza | `run.rs:220` (jedyny wołający `inherit::wire`) | zjazd albo drugi wołający |
+
+**Chartę projektu (`CLAUDE.md`/`AGENTS.md`) świadomie pominięto**: właściciel rozstrzygnął
+2026-08-30, że lider ma je **czytać, kiedy uzna za potrzebne** — a to działa bez ani jednej
+linii kodu, bo jego katalog roboczy to folder projektu, a `Read`/`Glob` ma na każdym szczeblu
+dialu.
+
+### Jeden znany flak
+
+`lead_reaches_loadouts_own_verbs::a_conversation_carries_loadouts_own_server` padł **raz na
+około dziewięć** pełnych przebiegów, z pustą listą serwerów. Przyczyny nie udowodniono.
+Kryterium dostało kontrolę, która przy następnym razie odróżni „most nie wstał" od
+„konfiguracja nie niosła `loadout`" — dwie zupełnie różne awarie, które bez niej czytają się
+identycznie.
+
+---
+
 ## Ograniczenia globalne
 
 Obowiązują w **każdym** zadaniu, bez powtarzania w treści zadań.

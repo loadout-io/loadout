@@ -57,7 +57,15 @@ import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
 import { theOneThatIsGoing } from './history-command';
-import { listRuns, openChat, readRun, sayToAgent, sayToOrchestrator, stop } from './io';
+import {
+  answerTheLead,
+  listRuns,
+  openChat,
+  readRun,
+  sayToAgent,
+  sayToOrchestrator,
+  stop,
+} from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
 import { lead } from './lead';
@@ -505,6 +513,27 @@ export default function Run(): ReactElement {
    * ma stanąć pod polem, w które pisał. Zdanie o folderze albo o Starcie mówi o ekranie i stoi
    * pod paskiem.
    */
+  /**
+   * Człowiek odpowiedział na przypięte pytanie.
+   *
+   * DWIE DROGI, JEDNA KONTROLKA. W jednym strumieniu stoją dwa różne pytania: to od lidera, na
+   * którym stoi ZABLOKOWANA TURA agenta, i to z kafelka kontrolnego, na którym stoi BIEG. Okno
+   * nie ma jak ich rozróżnić — podaje więc podpis dalej i pyta Rusta, czy ktoś na to czekał.
+   *
+   * Model widoku dostaje odpowiedź ZAWSZE i pierwszy: to on zdejmuje przypięcie, a człowiek ma
+   * zobaczyć skutek kliknięcia natychmiast, niezależnie od tego, którą drogą odpowiedź pojedzie.
+   * Czekanie na IPC przed zdjęciem pytania byłoby przyciskiem, który przez chwilę nic nie robi.
+   */
+  function answerQuestion(questionId: number, option: string): void {
+    const asked = view.pinned;
+    runFeed.answer(questionId, option);
+    if (asked === null || asked.id !== questionId) return;
+    /* Odmowa jest tu porzucana z rozmysłem: `false` znaczy „nikt na to nie czekał", czyli
+     * pytanie należało do biegu i idzie swoją dotychczasową drogą. Zdanie o tym na ekranie
+     * mówiłoby człowiekowi o mechanice, której nie widzi i na którą nie ma wpływu. */
+    void answerTheLead(onTop, folder, asked.agent, option).catch(() => undefined);
+  }
+
   async function sayIt(
     text: string,
     images: readonly ConversationImage[] = [],
@@ -791,7 +820,7 @@ export default function Run(): ReactElement {
               view={view}
               portRef={attachPort}
               onToggle={runFeed.toggle}
-              onAnswer={runFeed.answer}
+              onAnswer={answerQuestion}
               onJumpToNewest={runFeed.jumpToNewest}
             />
             <Now now={view.now} live={running} />

@@ -45,6 +45,7 @@ function row(kind: Kind): HistoryRow {
     expanded: false,
     metric: '',
     output: kind === 'ran' ? ['parser_handles_crlf ... FAILED'] : [],
+    body: [],
     detailId: null,
   };
 }

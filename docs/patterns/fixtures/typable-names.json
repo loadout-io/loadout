@@ -1,0 +1,19 @@
+{
+  "_why": "Jeden fakt, dwie strony granicy. Nazwa workflow DO WPISANIA powstaje w TypeScripcie (src/sections/run/run-command.ts, wiersz wejscia rozbiera to, co czlowiek napisal) i w Ruscie (commands::workflows::typable, czasownik list_workflows oddaje liderowi nazwy). Dwie implementacje jednej reguly rozjezdzaja sie cicho: lider proponuje nazwe, ktorej Enter nie zna, i wyglada to jak workflow, ktorego nie ma. Ta lista jest ich wspolna wyrocznia — czyta ja kryterium po obu stronach.",
+  "pairs": [
+    { "given": "Ship a feature", "typable": "ship-a-feature" },
+    { "given": "ship-a-feature.json", "typable": "ship-a-feature" },
+    { "given": "Ship-A-Feature.JSON", "typable": "ship-a-feature" },
+    { "given": "Three loose steps", "typable": "three-loose-steps" },
+    { "given": "  Review   and    fix  ", "typable": "review-and-fix" },
+    { "given": "Build v2 (fast)", "typable": "build-v2-fast" },
+    { "given": "__weird__name__", "typable": "weird-name" },
+    { "given": "Przeglad kodu", "typable": "przeglad-kodu" },
+    { "given": "Przegląd kodu", "typable": "przegl-d-kodu" },
+    { "given": "already-typable", "typable": "already-typable" },
+    { "given": "json", "typable": "json" },
+    { "given": "a.json.json", "typable": "a-json" },
+    { "given": "!!!", "typable": "" },
+    { "given": "", "typable": "" }
+  ]
+}

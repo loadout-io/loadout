@@ -104,3 +104,87 @@ describe('an answer keeps the shape the agent gave it', () => {
     ).toBe(true);
   });
 });
+
+/* ── CIAŁO ZA WIERSZEM ─────────────────────────────────────────────────────────────────────
+ *
+ * 2026-08-31. Odpowiedź, która nie mieści się w wierszu, oddaje nagłówek, a całość idzie za
+ * wiersz — reguła 1 [T2 §7.3], domknięta dopiero tego dnia, bo `Line::Note` do wtedy nie miało
+ * pola na tę treść. Pomiar, który to wymusił: zrzut właściciela z biegu `20260830-191440`,
+ * odpowiedź na 78 wierszy zasłaniająca komplet dziewięciu kroków.
+ *
+ * TE PRZYPADKI SĄDZĄ RZECZ, KTÓREJ RUST SĄDZIĆ NIE MOŻE: czym ta treść jest NARYSOWANA. Podział
+ * na nagłówek i ciało ma swoje kryterium po tamtej stronie (`lead_answer_keeps_its_lines`), a tu
+ * pytamy o jedno — czy zdanie agenta wygląda jak zdanie, czy jak wyjście maszyny, która padła.
+ */
+function withBody(): string {
+  const feed = createFeed(sealedScroller());
+  feed.appendLines([line.note(1, 0, FORGE, 'All three came out ahead.', BODY)]);
+  const row = feed.view.history[0];
+  if (row === undefined) return '';
+  return renderToStaticMarkup(
+    <Line
+      row={{ ...row, expanded: true }}
+      onToggle={() => {
+        /* To kryterium pyta o markup, nie o skutek kliknięcia. */
+      }}
+    />,
+  );
+}
+
+const BODY = ['All three came out ahead.', '', '## Evidence', '- src/styles.css:456'];
+
+describe('an answer too long for its row is reachable, and reads as prose', () => {
+  it('offers a way to open it, or the rest of the answer is simply gone', () => {
+    const html = withBody();
+    expect(
+      html.includes('Show less') || html.includes('Show more'),
+      'the row shows a headline and the rest lives behind a control. With no control the other ' +
+        'seventy-seven lines are not collapsed — they are unreachable, which is worse than the ' +
+        'wall this replaced. It rendered: ' +
+        html.slice(0, 300),
+    ).toBe(true);
+  });
+
+  it('draws it as prose, not as the output of something that failed', () => {
+    const html = withBody();
+    const opened = /<p[^>]*data-line-body[^>]*>/.exec(html)?.[0] ?? '';
+
+    expect(opened, 'the opened answer has no element of its own: ' + html.slice(0, 300)).not.toBe(
+      '',
+    );
+    expect(
+      /font-mono|border-l-fail/.test(opened),
+      'monospace and a red left edge mean "a command failed" everywhere else in this view. An ' +
+        "agent's answer drawn that way tells the person something went wrong when nothing did. " +
+        'It carried: ' +
+        opened,
+    ).toBe(false);
+    expect(
+      /whitespace-pre-line/.test(opened),
+      'and it keeps the line breaks the agent wrote, for the same reason the row above does',
+    ).toBe(true);
+  });
+
+  it('gives a short answer no control at all', () => {
+    const feed = createFeed(sealedScroller());
+    feed.appendLines([line.note(2, 0, FORGE, 'All green.')]);
+    const row = feed.view.history[0];
+    const html =
+      row === undefined
+        ? ''
+        : renderToStaticMarkup(
+            <Line
+              row={row}
+              onToggle={() => {
+                /* Jak wyżej. */
+              }}
+            />,
+          );
+
+    expect(
+      html.includes('Show more'),
+      'an expand control on a two-word note is a step to take for nothing, and it makes the ' +
+        'person wonder what is hidden when nothing is',
+    ).toBe(false);
+  });
+});

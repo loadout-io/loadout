@@ -41,12 +41,12 @@ const INDEX_CLOSES: &str =
     "Read the ones you need; their contents were not copied into this prompt.";
 const NO_TIME_LIMIT: &str =
     "There is no time limit on this step, so take the time the work really needs.";
-const HOW_TO_ANSWER: &str = "Your last message is what this step passes on. The step after yours reads it and nothing else, so leave nothing worth keeping outside it.
+const HOW_TO_ANSWER: &str = "Your last message is what this step passes on. What comes next reads it and nothing else, so leave nothing worth keeping outside it.
 
 Write it under these three headings, each one alone on its line and in this order:
 
 ## Answer
-what the step after yours needs to know.
+what comes next needs to know.
 
 ## Evidence
 `file:line`, or a link, for every claim above.

@@ -373,9 +373,36 @@ fn assert_vendor_transport(
         return Ok(());
     }
     let argv = fs::read_to_string(fixture.join("codex.argv.log"))?;
+    let argv: Vec<&str> = argv.lines().collect();
+
+    /* 2026-08-30 — PRZESŁANKA TEJ ASERCJI ZMIENIŁA SIĘ ŚWIADOMIE.
+     *
+     * Do tego dnia argv rozmowy było DOKŁADNIE `app-server --listen stdio://` i było to prawdą:
+     * lider nie miał ani jednego serwera. Od czasowników Loadouta (`crate::bridge`) każda rozmowa
+     * niesie jeden — własny most, przez który lider sięga po bibliotekę tego człowieka.
+     *
+     * Rzecz, której ta asercja naprawdę broniła, jest sądzona niżej i jest nią KOLEJNOŚĆ:
+     * `-c` to opcja GLOBALNA i musi stać PRZED podkomendą. Za nią czyta się ją jako argument
+     * podkomendy, więc serwery po cichu nie docierają — i to jest awaria, której nie widać
+     * w niczym poza brakującym narzędziem u agenta. */
+    /* BRAK PODKOMENDY JEST NIEPOWODZENIEM, NIE PUSTKĄ DO POMINIĘCIA — a `unwrap_or(0)` czyniłby
+     * z niego przejście: obie asercje niżej byłyby wtedy prawdą o pustym wycinku. `expect` tu nie
+     * wchodzi, bo ten plik nie ma zbiorczego `allow(clippy::expect_used)`, a dopisanie go
+     * zdejmowałoby tę ochronę z CAŁEGO pliku dla jednej linii. */
+    let Some(subcommand) = argv.iter().position(|one| *one == "app-server") else {
+        return Err(format!("no App Server subcommand in argv: {argv:?}").into());
+    };
     assert_eq!(
-        argv.lines().collect::<Vec<_>>(),
-        ["app-server", "--listen", "stdio://"]
+        &argv[subcommand..],
+        ["app-server", "--listen", "stdio://"],
+        "the subcommand line itself is unchanged and stands LAST"
+    );
+    assert!(
+        argv[..subcommand]
+            .iter()
+            .all(|one| *one == "-c" || one.starts_with("mcp_servers.loadout.")),
+        "and the only thing before it is Loadout's own bridge. Anything else here is one \
+         person's private server leaking into a conversation nobody asked to have it in: {argv:?}"
     );
     let stdin = fs::read_to_string(fixture.join("codex.stdin.jsonl"))?;
     assert_eq!(stdin.matches("\"method\":\"thread/start\"").count(), 1);

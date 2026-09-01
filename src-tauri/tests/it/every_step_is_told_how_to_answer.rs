@@ -17,8 +17,8 @@
 //! jak odróżnić zdania o wyniku od zdania o czymkolwiek innym:
 //!
 //! ```text
-//! Your last message is what this step passes on. The step after yours reads it and
-//! nothing else, so put in it everything the next step needs.
+//! Your last message is what this step passes on. What comes next reads it and
+//! nothing else, so put in it everything that comes after needs.
 //!
 //! Answer under these three headings, in this order:
 //!
@@ -123,6 +123,23 @@ const MUST_SAY: [(&str, &str); 3] = [
 
 /// Nagłówki, które nasz własny zapis przekazania przyjmuje bez poprawiania (`memory::handoff`).
 const THE_SHAPE_WE_ACCEPT: [&str; 3] = ["Answer", "Evidence", "Open"];
+
+/// Zdania, które obiecują agentowi DOKŁADNIE JEDNEGO czytelnika.
+///
+/// Blok jest jedną stałą dla wszystkich kroków, więc żadne z nich nie ma prawa w nim stać: liczba
+/// kroków po tym kroku jest inna dla każdego, a stała nie ma jak być prawdziwa dla wszystkich
+/// naraz. Sprawdzane w obu wielkościach liter, bo to samo zdanie stoi w bloku dwa razy — raz
+/// otwiera akapit, raz opisuje nagłówek `## Answer`.
+///
+/// TRZECI KSZTAŁT NIE JEST OZDOBĄ. Przy pierwszym uruchomieniu tego przypadku wyszło, że ten sam
+/// błąd stoi w promptcie w TRZECH miejscach, nie w jednym: w zdaniu o limicie czasu („nothing of
+/// it reaches the step after yours") i w bloku o polach („the step after this one is left
+/// without…"). Dwóch pierwszych nie szukał nikt, bo powstały osobno i w innych zadaniach.
+const ONE_READER_ONLY: [&str; 3] = [
+    "The step after yours",
+    "the step after yours",
+    "the step after this one",
+];
 
 /// Wiersz, którym sędzia pętli oddaje wynik. Blok wspólny dla wszystkich kroków nie ma prawa go
 /// nieść — powód w nagłówku pliku.
@@ -393,6 +410,21 @@ async fn every_agent_step_ends_its_prompt_with_the_same_block() -> Result<(), Bo
          answer is read by nobody, so the line means nothing there — and it teaches the model to \
          write it everywhere. The block was: {block_alone:?}"
     );
+
+    // ── (g) I NIE OBIECUJE CZYTELNIKA, KTÓREGO MOŻE NIE BYĆ ────────────────────────────────
+    // Sądzone na SĘDZIM z rozmysłu: jedyna strzałka za nim jest powrotem, więc jest to krok,
+    // po którym w tym pliku nie stoi nic. Drugi kształt, o którym mowa w komunikacie, ten plik
+    // ma tuż obok — trzy kroki wchodzą w `join`, więc przy rozgałęzieniu czytelników jest trzech.
+    for promise in ONE_READER_ONLY {
+        assert!(
+            !block_judge.contains(promise),
+            "the block promises this step that {promise:?} reads its answer. Nothing comes after \
+             this step at all — the only arrow behind it is a way back — and where a step fans \
+             out, three read it. An agent that believes in one reader writes for one and picks \
+             which one; at the last step it writes for a reader that does not exist. The block \
+             was: {block_judge:?}"
+        );
+    }
 
     Ok(())
 }

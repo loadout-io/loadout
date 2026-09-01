@@ -48,7 +48,7 @@ const { runTabs } = await import('../tabs/store');
 const LEDGER: Workspace = { id: '/w/ledger-ui', name: 'ledger-ui', folder: '/w/ledger-ui' };
 
 function note(id: number, text: string): FeedLine {
-  return { kind: 'note', agent: 'Lead', text, id, at: id * 1_000 };
+  return { kind: 'note', agent: 'Lead', text, id, at: id * 1_000, body: [] };
 }
 
 /** Etykiety wierszy historii — to, co człowiek na ekranie naprawdę przeczyta. */

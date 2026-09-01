@@ -28,7 +28,7 @@ function asked(id: number): FeedLine {
 }
 
 function note(id: number, text: string): FeedLine {
-  return { kind: 'note', agent: 'Plan', text, id, at: id * 1_000 };
+  return { kind: 'note', agent: 'Plan', text, id, at: id * 1_000, body: [] };
 }
 
 function parked() {

@@ -349,20 +349,40 @@ async fn reopening_the_screen_keeps_the_conversation() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// 2026-08-30 — PRZESŁANKA TEGO PRZYPADKU ZOSTAŁA COFNIĘTA PRZEZ CZŁOWIEKA, WIĘC ZMIENIŁ SIĘ
+/// JEGO PODMIOT.
+///
+/// Do tego dnia sądził zdanie „you cannot start a workflow run" i miał rację: rozmowa nie miała
+/// żadnej drogi do biegu. Rozstrzygnięcie właściciela z 2026-08-30 („rusza samo") tę drogę
+/// otwiera przez czasownik `start_workflow`, więc tamto zdanie stało się nieprawdą — a prompt,
+/// który kłamie o własnych narzędziach, jest gorszy niż jego brak.
+///
+/// **Rzecz, której ten przypadek naprawdę bronił, zostaje i jest sądzona niżej:** lider nie ma
+/// prawa powiedzieć, że coś zaczął, dopóki nie dowiedział się tego od narzędzia. To jest ta sama
+/// ochrona — człowiek nie zostaje z obietnicą, za którą nic nie stoi — tylko wypowiedziana
+/// o świecie, w którym start jest możliwy.
+///
+/// Kryterium strukturalne niżej (`the_conversation_has_no_way_to_reach_a_run`) zostaje **bez
+/// zmian i dalej przechodzi**: nowa władza mieszka w `crate::bridge`, a nie w tym module.
 #[tokio::test]
-async fn the_brief_tells_the_model_it_cannot_start_work() {
-    /* To jest UPRZEJMOŚĆ wobec modelu, nie zabezpieczenie — zabezpieczeniem jest test niżej.
-     * Model, który obiecuje „już odpalam", zostawia człowieka czekającego na coś, co nie
-     * nadejdzie, więc brief musi mu odebrać tę obietnicę i podać zamiast niej następny ruch. */
+async fn the_brief_never_lets_the_model_claim_a_start_it_did_not_get() {
     let brief = BRIEF.to_lowercase();
     assert!(
-        brief.contains("cannot start"),
-        "the brief has to say plainly that starting a run is not something it can do"
+        brief.contains("never say you have started"),
+        "the brief has to forbid claiming a start outright. A model that says 'running it now' \
+         and did not leaves the person watching a stream where nothing will ever appear — and \
+         that is true whether or not it CAN start things"
     );
     assert!(
-        BRIEF.contains("/run"),
-        "and it has to name what DOES start work, so the answer to \"run it\" is an instruction \
-         rather than a refusal"
+        brief.contains("unless a tool told you"),
+        "and it has to name what the permission depends on. 'Be careful' is advice; 'only when a \
+         tool told you it went' is a rule the model can actually follow, because the tool answers \
+         and prose does not"
+    );
+    assert!(
+        brief.contains("start_workflow"),
+        "and it has to name the verb, or the model has a tool it was never told about — which is \
+         the same as not having it"
     );
     assert_eq!(
         LEAD, "Lead",

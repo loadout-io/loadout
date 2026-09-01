@@ -112,8 +112,17 @@ export const line = {
   },
 
   /** Jedyna proza w widoku. */
-  note(id: number, at: number, agent: string, text: string): FeedLine {
-    return { kind: 'note', agent, text, id, at };
+  note(
+    id: number,
+    at: number,
+    agent: string,
+    text: string,
+    /* CIAŁO JEST OPCJONALNE W FIKSTURZE, obowiązkowe na drucie. Proza, która mieści się
+     * w wierszu, ciała nie ma i większość przypadków pyta właśnie o taką — a fikstura zmuszająca
+     * do pisania `[]` w każdym wywołaniu zamieniłaby to pole w szum. */
+    body: readonly string[] = [],
+  ): FeedLine {
+    return { kind: 'note', agent, text, body: [...body], id, at };
   },
 
   /** Pytanie do człowieka. Przyklejone, dopóki nie ma odpowiedzi. */

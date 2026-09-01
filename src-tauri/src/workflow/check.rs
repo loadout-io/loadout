@@ -25,7 +25,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{Condition, ConditionalLink, Folder, Link, Step, WorkflowFile};
+use super::{Condition, ConditionalLink, Folder, Handover, Link, Step, WorkflowFile};
 use crate::engine::dag::{Dag, DagError};
 
 /// Flagi, które Loadout ustawia sam dla `claude` — przelotka nie ma prawa ich podać.
@@ -422,6 +422,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
     a_command_step_left_empty(&steps, &mut notes);
+    nobody_hands_over_the_command(workflow, &steps, when, &mut notes);
     a_command_carrying_a_secret(&steps, &mut notes);
     conditional_routes(workflow, &mut notes);
     the_passthrough(&steps, &mut notes);
@@ -535,6 +536,14 @@ struct Facts<'a> {
     agent: Option<&'a str>,
     /// Komenda kroku „sprawdź". `None` dla kroków, które żadnej nie uruchamiają.
     command: Option<&'a str>,
+    /// Nazwa pola, z którego kafelek „uruchom i zostaw" bierze komendę, gdy nie wpisał jej
+    /// człowiek. `None` dla wszystkich pozostałych kroków i dla tego, który komendę ma wpisaną.
+    ///
+    /// 2026-08-30 — DOŁOŻONE, BO PUSTA KOMENDA PRZESTAŁA BYĆ BEZWARUNKOWĄ ODMOWĄ. Kafelek, który
+    /// czeka na komendę od kroku przed sobą, jest kompletny **mimo pustego pola** — a bez tego
+    /// faktu reguła niżej odrzucałaby przy zapisie dokładnie ten kształt, dla którego to pole
+    /// powstało.
+    command_from: Option<&'a str>,
     /// Wzorzec dowodu kroku „sprawdź". `None` jak wyżej.
     ///
     /// Osobne pole od [`Facts::command`], choć jedna reguła czyta oba: krok bez komendy i krok
@@ -553,6 +562,7 @@ fn facts(step: &Step) -> Facts<'_> {
             instructions: Some(&agent.instructions),
             agent: Some(&agent.agent),
             command: None,
+            command_from: None,
             proof: None,
         },
         Step::Checkpoint(checkpoint) => Facts {
@@ -564,6 +574,7 @@ fn facts(step: &Step) -> Facts<'_> {
             instructions: None,
             agent: None,
             command: None,
+            command_from: None,
             proof: None,
         },
         // `folder: Some(…)`, i to jest asercja (d) z AC-1 zapisana w kodzie. „To tylko
@@ -585,6 +596,7 @@ fn facts(step: &Step) -> Facts<'_> {
             instructions: None,
             agent: None,
             command: Some(&check.command),
+            command_from: None,
             proof: Some(&check.proof),
         },
         /* `proof: None` I TO JEST TREŚĆ, nie przeoczenie. Krok „sprawdź" bez dowodu jest odmową
@@ -600,6 +612,7 @@ fn facts(step: &Step) -> Facts<'_> {
             instructions: None,
             agent: None,
             command: Some(&serve.command),
+            command_from: serve.command_from.as_ref().map(|from| from.field.as_str()),
             proof: None,
         },
     }
@@ -790,9 +803,20 @@ fn a_command_step_left_empty(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
         // — który komendę ma, a dowodu CELOWO nie ma (`facts`) — wypadał z tej reguły w całości.
         // Pusty kafelek zapisywał się bez słowa i odmawiał dopiero w środku biegu, po tym jak
         // człowiek odczekał swoje na krokach przed nim.
-        if step
-            .command
-            .is_some_and(|command| command.trim().is_empty())
+        /* 2026-08-30 — PUSTA KOMENDA JEST LEGALNA, GDY KAFELEK CZEKA NA NIĄ OD POPRZEDNIKA.
+         *
+         * Kafelek „run preview app" nie ma wpisanej komendy z rozmysłem: wiersz uruchamiający
+         * aplikację jest inny w każdym repo, a wpisany ręcznie zamienia jeden wielokrotnego
+         * użytku plik w plik na jeden projekt (zamówienie właściciela 2026-08-30). Warunek bez
+         * tej gałęzi odrzucałby przy zapisie dokładnie ten kształt, dla którego pole powstało.
+         *
+         * Odmowa NIE ZNIKA, tylko przenosi się tam, gdzie da się ją rozstrzygnąć: brak pola
+         * w odpowiedzi poprzednika jest odmową Startu, nazywającą pole i kafelek
+         * (`commands::run::command_a_step_handed_over`). */
+        if step.command_from.is_none()
+            && step
+                .command
+                .is_some_and(|command| command.trim().is_empty())
         {
             notes.push(problem(
                 Some(step.id),
@@ -803,6 +827,7 @@ fn a_command_step_left_empty(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                 ),
             ));
         }
+
         if step.proof.is_some_and(|proof| proof.trim().is_empty()) {
             notes.push(problem(
                 Some(step.id),
@@ -814,6 +839,91 @@ fn a_command_step_left_empty(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                 ),
             ));
         }
+    }
+}
+
+/// Kafelek czekający na komendę, której nikt mu nie odda.
+///
+/// # Dlaczego to jest osobna reguła, a nie warunek przy pustej komendzie
+///
+/// Bo pyta o coś, czego kafelek o sobie nie wie: kto na niego celuje strzałką i czy TEN krok jest
+/// o to pole poproszony. Pierwsza wersja stała przy pustej komendzie i sprawdzała
+/// `steps.iter().any(|other| other.id != step.id)` — czyli „istnieje w tym pliku jakikolwiek inny
+/// krok". To przechodziło dla kafelka stojącego z boku, na który nie celuje nic, i dla poprzednika,
+/// który oddaje wyłącznie prozę. Obie te sytuacje kończą się tak samo: bieg dochodzi do kafelka po
+/// to, żeby odmówić, po tym jak człowiek odczekał swoje na krokach przed nim.
+///
+/// # Dlaczego bez powrotów
+///
+/// Powrót wchodzi do kroku dopiero w rundzie drugiej (`workflow::unroll`), a odmówić albo nie
+/// odmówić trzeba w pierwszej — tej, która ruszy. To ta sama lista, po której liczy się koło
+/// i [`nothing_before_it`].
+///
+/// # Dlaczego przy zapisie to jest OSTRZEŻENIE
+///
+/// Bo między zaznaczeniem pola a kliknięciem „Ask that step" jest chwila, w której plik jest
+/// niekompletny z rozmysłu — i to jest normalny stan pracy, dokładnie jak przy
+/// [`a_step_without_an_agent`]. Zapis, który go odrzuca, kasuje pracę człowieka w chwili, gdy ten
+/// pracuje. Run odmawia, bo dalej nie ma czym ruszyć.
+fn nobody_hands_over_the_command(
+    workflow: &WorkflowFile,
+    steps: &[Facts<'_>],
+    when: When,
+    notes: &mut Vec<Note>,
+) {
+    for step in steps {
+        let Some(field) = step.command_from else {
+            continue;
+        };
+
+        let before: Vec<&Step> = workflow
+            .links
+            .iter()
+            .filter(|link| link.to == step.id && !link.is_a_way_back())
+            .filter_map(|link| workflow.steps.iter().find(|one| one.id() == link.from))
+            .collect();
+
+        let message = if before.is_empty() {
+            format!(
+                "\"{}\" waits for its command to be handed over, but nothing points at it. Draw an \
+                 arrow into it from the step that should work the command out.",
+                step.name
+            )
+        } else if before.iter().any(|one| is_asked_for(one, field)) {
+            continue;
+        } else if let [only] = before.as_slice() {
+            format!(
+                "\"{}\" waits for a field called \"{field}\", but \"{}\" is not asked for it. \
+                 Open that step and add \"{field}\" under \"What it hands over\".",
+                step.name,
+                only.name()
+            )
+        } else {
+            format!(
+                "\"{}\" waits for a field called \"{field}\", but no step before it is asked for \
+                 it. Open one of them and add \"{field}\" under \"What it hands over\".",
+                step.name
+            )
+        };
+
+        notes.push(match when {
+            When::Saving => warning(Some(step.id), message),
+            When::Running => problem(Some(step.id), message),
+        });
+    }
+}
+
+/// Czy ten krok jest wprost proszony o pole o tej nazwie.
+///
+/// Tylko krok agenta ma czym odpowiedzieć: kafelek kontrolny pyta człowieka, a „sprawdź"
+/// i „uruchom i zostaw" oddają wynik komendy, nie napisane pole.
+fn is_asked_for(step: &Step, field: &str) -> bool {
+    let Step::Agent(agent) = step else {
+        return false;
+    };
+    match &agent.handover {
+        Handover::Plain(_) => false,
+        Handover::Form { fields } => fields.iter().any(|one| one.name.trim() == field),
     }
 }
 
@@ -1208,11 +1318,34 @@ pub(crate) fn literal_secret_in(flag: &str, value: &str) -> Option<&'static str>
 ///
 /// `pub(crate)`, bo pyta o to samo także reguła o komendzie kroku ([`a_command_carrying_a_secret`])
 /// i nie ma tam wpisu przelotki, który dałoby się podać do [`literal_secret_in`].
+///
+/// 2026-08-30 — MA TERAZ DRUGIEGO WOŁAJĄCEGO POZA ZAPISEM. Komenda, którą kafelek „uruchom
+/// i zostaw" bierze od kroku przed sobą (`ServeStep::command_from`), **nie przechodzi przez zapis
+/// ani razu** — plik workflow jest wtedy w tym miejscu pusty. Idzie więc przez tę samą funkcję
+/// w `commands::run`, bo inaczej cała ta droga omijałaby skan sekretów w ciszy.
 #[must_use]
 pub(crate) fn secret_shaped(text: &str) -> Option<&'static str> {
     a_web_address_carrying_one(text)
         .or_else(|| a_known_key(text))
         .or_else(|| a_packed_run(text))
+}
+
+/// Czy ten wiersz powłoki wygląda, jakby niósł sekret — pytanie zadawane przez **obie** drogi
+/// komendy.
+///
+/// # Dwie drogi, jedna odpowiedź (niezmiennik 23)
+///
+/// Pierwsza: komenda wpisana przez człowieka, sądzona przy zapisie ([`a_command_carrying_a_secret`]).
+/// Druga, od 2026-08-30: komenda, którą kafelek „uruchom i zostaw" bierze od kroku przed sobą
+/// (`workflow::ServeStep::command_from`) — ta **nie przechodzi przez zapis ani razu**, bo plik
+/// workflow jest wtedy w tym miejscu pusty, a mimo to leci prosto do powłoki.
+///
+/// Uzasadnienie przy `engine::drivers::command::SHELL` opiera się wprost na tym, że komendę
+/// napisał człowiek i że przeszła skan. Druga droga zabiera pierwszą połowę tego zdania, więc
+/// musi oddać drugą — i robi to tutaj, wołając tę samą funkcję, co zapis.
+#[must_use]
+pub fn a_command_carrying_a_secret_shape(text: &str) -> Option<&'static str> {
+    secret_shaped(text)
 }
 
 /// Ciągi, z których składają się klucze: litery, cyfry, `_` i `-`.

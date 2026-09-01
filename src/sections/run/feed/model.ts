@@ -89,6 +89,17 @@ export interface HistoryRow {
   readonly metric: string;
   /** Ostatnie 20 linii wyjścia; niepuste tylko dla `ran`, które padło [T2 §7.3 reguła 3]. */
   readonly output: readonly string[];
+
+  /**
+   * Cała proza tego wiersza, kiedy nie zmieściła się w nim — pusta, kiedy się zmieściła.
+   *
+   * OSOBNE POLE OD `output`, i to nie jest podwójna odpowiedź na jedno pytanie. `output` jest
+   * wyjściem maszyny i widok rysuje je monospacem z czerwoną krawędzią, bo mówi o czymś, co
+   * padło. To jest zdanie agenta i czyta się je jak tekst. Jedno pole na oba znaczyłoby, że
+   * wiersz nie wie, co rysuje, a nazwa `output` przy odpowiedzi agenta byłaby po prostu
+   * nieprawdziwa.
+   */
+  readonly body: readonly string[];
   /**
    * Tylko na wierszu `done`: jak agent skończył — lustro `engine::line::Ended`.
    *
@@ -125,6 +136,16 @@ export interface Question {
   readonly id: number;
   readonly text: string;
   readonly options: readonly string[];
+  /**
+   * Podpis, pod którym to pytanie stanęło na ekranie.
+   *
+   * 2026-08-30 — DOPISANE, BO ODPOWIEDŹ MA DWIE DROGI. W jednym strumieniu stoją dwa różne
+   * pytania: to od lidera, na którym stoi zablokowana tura agenta, i to z kafelka kontrolnego,
+   * na którym stoi bieg. Okno nie ma jak ich rozróżnić — więc podaje podpis dalej, a rozstrzyga
+   * strona, która wie (`commands::chat::Threads::answer_in`). Bez tego pola odpowiedź na kafelek
+   * odblokowywałaby przy okazji pytanie lidera, zdaniem, które go nie dotyczy.
+   */
+  readonly agent: string;
 }
 
 /** Czyja jest teraz kolej. `you` maluje się kolorem `--attend` [DESIGN §3]. */
@@ -449,6 +470,11 @@ export function rowFor(line: FeedLine): HistoryRow {
      * tę jego połowę, która nigdy nie zawiera powodu, i przechodzi każde sprawdzenie liczące
      * same wiersze. */
     output: broke && line.kind === 'ran' ? line.detail.slice(-OUTPUT_LINES) : [],
+    /* PRZEWÓZ, nie decyzja: „czy ta proza ma ciało" rozstrzygnął Rust (`engine::line`,
+     * `headline_and_body`), bo tam mieszka kuracja (niezmiennik 15). Okno, które liczyłoby to
+     * samo po swojej stronie, byłoby drugim miejscem, w którym ta reguła żyje — i rozjechałoby
+     * się z pierwszym przy pierwszej zmianie sufitu. */
+    body: line.kind === 'note' ? line.body : [],
     detailId: detailOf(line),
     command: commandOf(line),
     /* Klucz jedzie TYLKO z linii, która go niesie: dopisanie `ended: undefined` do każdego
@@ -652,7 +678,10 @@ export function createFeed(scroller: Scroller): Feed {
       if (line.kind === 'asked') {
         /* Kolejka, nie „ostatnie pytanie": bieg stoi na NAJSTARSZYM nieodpowiedzianym,
          * a odpowiedź na młodsze nie ma prawa go zdjąć. */
-        waiting = [...waiting, { id: line.id, text: line.text, options: [...line.options] }];
+        waiting = [
+          ...waiting,
+          { id: line.id, text: line.text, options: [...line.options], agent: line.agent },
+        ];
         /* Pytanie agenta zatrzymuje CAŁY bieg, nie sam krok (`commands::run::wait_for_a_person`),
          * więc ta linia jest zarazem jedyną wiadomością „stoimy", jaką okno dostaje. */
         parked = true;

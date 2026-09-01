@@ -26,6 +26,12 @@ use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
 
+/// Czasowniki Loadouta dla agenta: most, ktorym agent siega po to, co nalezy do aplikacji.
+///
+/// Istnieje, bo vendor w trybie `-p` nie daje ANI JEDNEJ takiej drogi — zmierzone 2026-08-29,
+/// powod w calosci stoi w naglowku modulu.
+pub mod bridge;
+
 /// Warstwa komend: funkcje `*_inner`, ktore nie znaja slowa „Tauri". Wypelnia T-15.
 pub mod commands;
 

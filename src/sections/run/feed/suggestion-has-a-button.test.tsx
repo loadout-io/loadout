@@ -82,7 +82,7 @@ function suggested(id: number, at: number): FeedLine {
 
 /** Ta sama proza, rodzaj `note`. Kontrola: różni je RODZAJ i nic poza nim. */
 function note(id: number, at: number): FeedLine {
-  return { kind: 'note', agent: LEAD, text: PROSE, id, at };
+  return { kind: 'note', agent: LEAD, text: PROSE, id, at, body: [] };
 }
 
 /** Wiersze historii policzone przez MODEL — dokładnie te, które dostaje ekran. */

@@ -57,6 +57,7 @@ const LINES: readonly FeedLine[] = [
     text: 'Rewriting the quote handling as a small state machine.',
     id: 1,
     at: 1_000,
+    body: [],
   },
   {
     kind: 'ran',

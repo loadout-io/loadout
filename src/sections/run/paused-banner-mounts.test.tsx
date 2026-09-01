@@ -63,6 +63,7 @@ const AFTER: FeedLine = {
   text: 'Back to the parser.',
   id: 2,
   at: 2_000,
+  body: [],
 };
 
 function occurrences(haystack: string, needle: string): number {

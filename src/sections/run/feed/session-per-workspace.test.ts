@@ -43,7 +43,7 @@ function workOn(workspace: Workspace | null): void {
 }
 
 function note(id: number, agent: string, text: string): FeedLine {
-  return { kind: 'note', agent, text, id, at: id * 1_000 };
+  return { kind: 'note', agent, text, id, at: id * 1_000, body: [] };
 }
 
 /** Etykiety wierszy historii — to, co człowiek na ekranie naprawdę przeczyta. */

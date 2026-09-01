@@ -41,6 +41,7 @@ const IN_FIRST = {
   text: 'Rewriting the parser.',
   id: 1,
   at: 1_000,
+  body: [],
 };
 
 /** Linia z drugiego zakresu — inna treść, żeby pomieszanie dwóch zakresów było widoczne. */
@@ -50,6 +51,7 @@ const IN_SECOND = {
   text: 'Reading the invoices.',
   id: 1,
   at: 2_000,
+  body: [],
 };
 
 function activate(id: string): void {

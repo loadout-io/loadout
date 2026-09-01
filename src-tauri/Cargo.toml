@@ -38,6 +38,12 @@ tokio = { version = "1.53", features = [
   "sync",
   "time",
   "fs",
+  # `io-std` niesie `tokio::io::stdin`/`stdout` — most rozmawia z vendorem po stdio.
+  "io-std",
+  # `net` niesie gniazdo uniksowe, ktorym most rozmawia z aplikacja (`src/bridge/`).
+  # To CECHA skrzyni, ktora juz tu stoi, nie nowa zaleznosc: drzewo ma 527 skrzyn i mierzy
+  # czas kompilacji w minutach, wiec serwer HTTP (axum/hyper) bylby tu cena za nic.
+  "net",
 ] }
 tokio-util = { version = "0.7.19", features = ["rt"] } # CancellationToken
 

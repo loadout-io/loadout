@@ -152,6 +152,8 @@ fn sample(kind: LineKind) -> Line {
         LineKind::Note => Line::Note {
             agent: "researcher-2".to_owned(),
             text: "The bug is in the cookie name, not in the check.".to_owned(),
+
+            body: Vec::new(),
         },
         LineKind::Told => Line::Told {
             agent: "builder".to_owned(),
@@ -173,6 +175,10 @@ fn sample(kind: LineKind) -> Line {
                    places, so Easy will find it in one pass."
                 .to_owned(),
             command: "/run easy Make the flaky login test pass".to_owned(),
+            /* `false`, bo TEN wiersz powstaje z rozpoznania prozy. Wersja `true` startuje bieg
+             * sama i należy wyłącznie do wywołania czasownika `start_workflow` — złota linia ma
+             * opisywać ten kształt, który przychodzi z rozmowy najczęściej. */
+            auto: false,
         },
         LineKind::Asked => Line::Asked {
             agent: "lead".to_owned(),

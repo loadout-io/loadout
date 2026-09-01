@@ -56,6 +56,8 @@ import {
   revokePastedImages,
 } from './images';
 import type { ConversationImage, PastedImage } from './images';
+import { segments } from './highlight';
+import { Mark } from './mark';
 
 /**
  * Skąd bierze się lista, którą Tab uzupełnia PO nazwie tej komendy.
@@ -563,6 +565,21 @@ export function Entry({
    * kopia tej odpowiedzi mogłaby opisywać tekst sprzed jednego znaku. */
   const matching = suggestions(typed, workflows, agents);
 
+  /* CO PODŚWIETLIĆ, liczone przy renderze z tego samego źródła, co podpowiedzi pod polem.
+   *
+   * GRANICA, KTÓRĄ TRZEBA ZNAĆ: `workflows` przychodzi propsem i ekran czyta katalog RAZ, przy
+   * montowaniu (`../index.tsx`), a Enter czyta go W CHWILI NACIŚNIĘCIA (`../run-command.ts`).
+   * Workflow zapisany w drugim oknie po otwarciu tego nie zapali się więc na kolorowo, choć
+   * Enter go uruchomi. To jest granica podpowiedzi, nie nowa wada — ten sam props karmi obie —
+   * ale kolor mówi „nie znam" pewniej niż milcząca lista, więc stoi tu nazwana. */
+  /* Uchwyt do warstwy — wyłącznie po to, żeby zrównać jej przewinięcie z przewinięciem pola. */
+  const markRef = useRef<HTMLDivElement>(null);
+
+  const lit = segments(
+    typed,
+    workflows.map((one) => one.name),
+  );
+
   /* HISTORIA CHODZENIA — po tym, co JUŻ wysłano z tego pola.
    *
    * `useRef`, bo to nie jest stan renderu: chodzenie po historii zmienia wyłącznie zawartość
@@ -641,6 +658,24 @@ export function Entry({
       .finally(() => {
         readingImages.current = false;
       });
+  }
+
+  /**
+   * Zrównuje przewinięcie warstwy z przewinięciem pola.
+   *
+   * Czyta pole przez `fieldRef`, bo to ono jest prawdą o tym, jak daleko tekst odjechał w bok.
+   * Cisza, gdy któregokolwiek z dwóch elementów nie ma: warstwy nie ma przy pustej linii
+   * (`Mark` oddaje wtedy `null`), a wtedy nie ma też czego przewijać.
+   */
+  function keepTheWashUnderTheWord(): void {
+    const mark = markRef.current;
+    /* `fieldRef` przychodzi propsem i wolno mu być FUNKCJĄ, nie obiektem — tak deklaruje go
+     * React i tak podaje go `../index.tsx`. Odczyt `.current` na funkcji nie istnieje, więc
+     * pytamy o kształt, zamiast go zakładać: przy funkcyjnym uchwycie po prostu nie ma czego
+     * synchronizować i cisza jest tu odpowiedzią. */
+    const field = typeof fieldRef === 'function' ? null : (fieldRef?.current ?? null);
+    if (mark === null || field === null) return;
+    mark.scrollLeft = field.scrollLeft;
   }
 
   function send(event: FormEvent<HTMLFormElement>): void {
@@ -784,12 +819,16 @@ export function Entry({
         <span aria-hidden className="text-center font-mono text-accent">
           ❯
         </span>
-        <input
-          ref={fieldRef}
-          aria-label="Command line"
-          placeholder={PROMPT}
-          spellCheck={false}
-          /* KURSOR STOI TU OD PIERWSZEJ SEKUNDY — zgłoszenie właściciela 2026-08-20: „kursor
+        {/* KOMÓRKA SIATKI STAJE SIĘ UKŁADEM ODNIESIENIA dla warstwy pod polem. `min-w-0`, bo bez
+            niego treść dłuższa od kolumny rozpycha siatkę zamiast się w niej przewijać. */}
+        <div className="relative grid min-w-0">
+          <Mark pieces={lit} hold={markRef} />
+          <input
+            ref={fieldRef}
+            aria-label="Command line"
+            placeholder={PROMPT}
+            spellCheck={false}
+            /* KURSOR STOI TU OD PIERWSZEJ SEKUNDY — zgłoszenie właściciela 2026-08-20: „kursor
              nie stoi w polu, trzeba kliknąć, za każdym razem". Niezmiennik 16 mówi o kontrolce
              bez handlera, a to jest jej odmiana: pole, które nazywa się terminalem i wymaga
              jednego kliknięcia, zanim przyjmie znak, każe płacić to kliknięcie przy KAŻDYM
@@ -799,55 +838,71 @@ export function Entry({
              przeglądarka daje ognisko jednemu z proszących i nie mówi któremu, więc dwa
              `autoFocus` to nie „dwa razy uprzejmiej", tylko wiersz, którego zachowanie zależy
              od kolejności markupu. */
-          autoFocus
-          value={typed}
-          onPaste={paste}
-          onChange={(event) => {
-            setTyped(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            /* STRZAŁKI CHODZĄ PO HISTORII, i to jest druga z czterech wad z 2026-08-20:
-             * „strzalka w gore nie cofa do poprzedniej linii". Cała polityka chodzenia — łącznie
-             * z tym, że krok naprzód oddaje SZKIC, a nie puste pole — mieszka w `./history.ts`,
-             * bo to repo nie ma jsdom i naciśnięcia klawisza nie da się odpalić w kryterium.
-             * Tutaj zostaje przewiezienie napisu do pola.
-             *
-             * `null` znaczy „nie ma czego oddać" i wtedy NIE ROBIMY NIC — ani nie czyścimy pola,
-             * ani nie zabieramy strzałce jej zwykłej roboty. Bez tego warunku strzałka w górę
-             * w polu z pustą historią przestałaby przesuwać kursor na początek linii, czyli
-             * odebrałaby zachowanie, którego nikt jej nie kazał zmieniać.
-             *
-             * `preventDefault` wyłącznie wtedy, gdy naprawdę wstawiamy linię: w jednoliniowym
-             * polu strzałka w górę skacze kursorem na początek, a po wstawieniu cudzej linii
-             * kursor ma stać na jej KOŃCU — tam, gdzie się dopisuje. */
-            if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-              const stepped =
-                event.key === 'ArrowUp' ? walk.current.back(typed) : walk.current.forward();
-              if (stepped === null) return;
+            autoFocus
+            value={typed}
+            onPaste={paste}
+            onChange={(event) => {
+              setTyped(event.target.value);
+              keepTheWashUnderTheWord();
+            }}
+            /* CZTERY ŹRÓDŁA, NIE JEDNO, i to jest cała treść tej synchronizacji. Pole przewija się
+             wewnętrznie także wtedy, gdy nie zmienia się jego treść — strzałką, kliknięciem,
+             zaznaczeniem — a `scroll` nie leci przy każdym takim ruchu. Przegapione jedno źródło
+             znaczy kolor, który zjeżdża ze słowa i wraca dopiero przy następnym znaku.
+
+             Tego nie sądzi żadne kryterium w tym repo i jest to powiedziane wprost: bez jsdom nie
+             da się tu ani wpisać znaku, ani przewinąć pola. Ostatnim ogniwem jest przeglądarka
+             (`e2e/`), a to jest jedyny fragment tej funkcji, który na nie czeka. */
+            onScroll={keepTheWashUnderTheWord}
+            onKeyUp={keepTheWashUnderTheWord}
+            onClick={keepTheWashUnderTheWord}
+            onKeyDown={(event) => {
+              /* STRZAŁKI CHODZĄ PO HISTORII, i to jest druga z czterech wad z 2026-08-20:
+               * „strzalka w gore nie cofa do poprzedniej linii". Cała polityka chodzenia — łącznie
+               * z tym, że krok naprzód oddaje SZKIC, a nie puste pole — mieszka w `./history.ts`,
+               * bo to repo nie ma jsdom i naciśnięcia klawisza nie da się odpalić w kryterium.
+               * Tutaj zostaje przewiezienie napisu do pola.
+               *
+               * `null` znaczy „nie ma czego oddać" i wtedy NIE ROBIMY NIC — ani nie czyścimy pola,
+               * ani nie zabieramy strzałce jej zwykłej roboty. Bez tego warunku strzałka w górę
+               * w polu z pustą historią przestałaby przesuwać kursor na początek linii, czyli
+               * odebrałaby zachowanie, którego nikt jej nie kazał zmieniać.
+               *
+               * `preventDefault` wyłącznie wtedy, gdy naprawdę wstawiamy linię: w jednoliniowym
+               * polu strzałka w górę skacze kursorem na początek, a po wstawieniu cudzej linii
+               * kursor ma stać na jej KOŃCU — tam, gdzie się dopisuje. */
+              if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                const stepped =
+                  event.key === 'ArrowUp' ? walk.current.back(typed) : walk.current.forward();
+                if (stepped === null) return;
+                event.preventDefault();
+                setTyped(stepped);
+                return;
+              }
+              /* TAB UZUPEŁNIA, kiedy pasuje DOKŁADNIE jedna komenda. Przy dwóch nie zgadujemy:
+               * uzupełnienie do pierwszej z listy wpisuje za człowieka decyzję, której nie podjął,
+               * a lista pod polem i tak już mu ją pokazuje. `preventDefault` tylko wtedy, gdy
+               * naprawdę uzupełniamy — inaczej Tab przestałby wychodzić z pola klawiaturą. */
+              if (event.key !== 'Tab' || matching.length !== 1) return;
+              const only = matching[0];
+              if (only === undefined) return;
+              /* UZUPEŁNIAMY OSTATNIE SŁOWO, nie całą linię. Do 2026-08-19 Tab wstawiał `only.name`
+               * w miejsce wszystkiego — co było poprawne, dopóki podpowiedzią była wyłącznie nazwa
+               * komendy. Odkąd po `/run ` podpowiadają się nazwy workflow, tamta wersja zamieniłaby
+               * `/run to` na `todo-list`, czyli zjadłaby komendę i zostawiła prozę. */
+              const line = typed.trimStart();
+              const cut = line.lastIndexOf(' ');
+              const done = (cut === -1 ? '' : line.slice(0, cut + 1)) + only.name + ' ';
+              if (done === typed) return;
               event.preventDefault();
-              setTyped(stepped);
-              return;
-            }
-            /* TAB UZUPEŁNIA, kiedy pasuje DOKŁADNIE jedna komenda. Przy dwóch nie zgadujemy:
-             * uzupełnienie do pierwszej z listy wpisuje za człowieka decyzję, której nie podjął,
-             * a lista pod polem i tak już mu ją pokazuje. `preventDefault` tylko wtedy, gdy
-             * naprawdę uzupełniamy — inaczej Tab przestałby wychodzić z pola klawiaturą. */
-            if (event.key !== 'Tab' || matching.length !== 1) return;
-            const only = matching[0];
-            if (only === undefined) return;
-            /* UZUPEŁNIAMY OSTATNIE SŁOWO, nie całą linię. Do 2026-08-19 Tab wstawiał `only.name`
-             * w miejsce wszystkiego — co było poprawne, dopóki podpowiedzią była wyłącznie nazwa
-             * komendy. Odkąd po `/run ` podpowiadają się nazwy workflow, tamta wersja zamieniłaby
-             * `/run to` na `todo-list`, czyli zjadłaby komendę i zostawiła prozę. */
-            const line = typed.trimStart();
-            const cut = line.lastIndexOf(' ');
-            const done = (cut === -1 ? '' : line.slice(0, cut + 1)) + only.name + ' ';
-            if (done === typed) return;
-            event.preventDefault();
-            setTyped(done);
-          }}
-          className="h-[38px] border-0 bg-transparent font-mono text-mono text-ink outline-0"
-        />
+              setTyped(done);
+            }}
+            /* `px-0` i `w-full` STOJĄ TU JAWNIE, bo warstwa pod polem musi mieć DOKŁADNIE te same
+             metryki. Domyślny padding pola, którego przeglądarka dokłada sama, przesunąłby wash
+             o kilka pikseli w bok — a taka wada wygląda jak niedbałość, nie jak błąd. */
+            className="relative h-[38px] w-full border-0 bg-transparent px-0 font-mono text-mono text-ink outline-0"
+          />
+        </div>
         <kbd className="mr-[9px] border border-line px-[5px] py-[2px] font-mono text-label text-muted">
           ENTER
         </kbd>

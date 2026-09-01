@@ -289,6 +289,47 @@ pub fn list_workflow_definitions_inner(
     Ok(catalog)
 }
 
+/// Nazwa workflow **do wpisania** — ta, którą człowiek pisze po `/run`.
+///
+/// # Jeden fakt, dwie strony granicy
+///
+/// Ta sama reguła żyje po stronie okna (`src/sections/run/run-command.ts`, bo wiersz wejścia musi
+/// znormalizować to, co człowiek NAPISAŁ, zanim cokolwiek pojedzie na drut) i tutaj (bo czasownik
+/// `list_workflows` oddaje liderowi nazwy, którymi ma się posłużyć). Dwóch implementacji nie da
+/// się uniknąć — jedna strona potrzebuje funkcji, nie wartości.
+///
+/// Da się natomiast uniemożliwić ich cichy rozjazd, i to robi wspólna wyrocznia:
+/// `docs/patterns/fixtures/typable-names.json` czytają kryteria po OBU stronach. Bez niej
+/// rozjazd wygląda tak: lider proponuje nazwę, Enter jej nie zna, a człowiek widzi workflow,
+/// „którego nie ma".
+///
+/// Rozszerzenie `.json` odpada niezależnie od wielkości liter, bo `ship-a-feature.json`,
+/// `Ship a feature` i `ship-a-feature` mają prowadzić do JEDNEGO workflow, a nie do trzech
+/// odpowiedzi na jedno pytanie.
+#[must_use]
+pub fn typable(name: &str) -> String {
+    let lowered = name.to_lowercase();
+    let stem = lowered.strip_suffix(".json").unwrap_or(&lowered);
+
+    let mut out = String::with_capacity(stem.len());
+    let mut pending_break = false;
+    for letter in stem.chars() {
+        if letter.is_ascii_alphanumeric() {
+            /* Łącznik dopisujemy dopiero PRZED następną literą, nie po poprzedniej. Dzięki temu
+             * ogon nigdy nie zostaje z łącznikiem i nie trzeba go potem obcinać — a obcinanie
+             * po fakcie jest tym krokiem, który w drugiej implementacji zwykle wypada. */
+            if pending_break && !out.is_empty() {
+                out.push('-');
+            }
+            pending_break = false;
+            out.push(letter);
+        } else {
+            pending_break = true;
+        }
+    }
+    out
+}
+
 /// Nazwa pliku tej pozycji, małymi literami — klucz przesłaniania.
 fn named(definition: &Definition<WorkflowEntry>) -> String {
     match definition {

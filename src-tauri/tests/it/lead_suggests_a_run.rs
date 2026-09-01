@@ -63,7 +63,15 @@ const PLAIN: &str = "The login test fails because the cookie name is wrong in tw
 /// Ta para i w tej kolejności, bo dokładnie tak stoi w `commands::chat::read_along` — test,
 /// który wołałby samo rozpoznanie, mierzyłby funkcję, a nie drogę, którą wiersz przebywa.
 fn conversation(agent: &str, said: &[&str]) -> Vec<Line> {
-    let mut curator = Curator::new();
+    /* KURATOR ROZMOWY, bo tego używa `read_along` (`commands::chat`, przy `Curator::talking`).
+     *
+     * 2026-08-31 — DO TEGO DNIA STAŁO TU `Curator::new()`, czyli kurator BIEGU, i przez to ta
+     * fikstura mierzyła drogę, którą proza lidera nie chodzi. Było to nieszkodliwe, dopóki oba
+     * kuratory robiły z prozy ten sam wiersz; przestało być w chwili, gdy bieg zaczął stawiać
+     * długą prozę za wierszem (`Line::Note::body`). Wtedy ta fikstura zaczęła produkować wiersz
+     * z ciałem — kształt, którego rozmowa nie wytwarza nigdy — i trzy przypadki padły na
+     * zachowaniu, którego produkcja nie ma. */
+    let mut curator = Curator::talking();
     let mut history = Vec::new();
     for text in said {
         let event = AgentEvent::Said {

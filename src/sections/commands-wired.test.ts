@@ -499,6 +499,21 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER],
     call: () => run.closeTerminal(FOLDER),
   },
+  /* 2026-08-30 — ODPOWIEDŹ NA PYTANIE LIDERA. Krawędź bez wiersza jest krawędzią, której nikt nie
+   * zobaczył docierającej do Rusta — a po tamtej stronie czeka na nią ZABLOKOWANA TURA agenta.
+   * Krawędź, która nie dojeżdża, zostawia więc lidera stojącego na pytaniu do końca rozmowy,
+   * i nie ma na ekranie ani jednego zdania, po którym dałoby się to poznać.
+   *
+   * `given` niesie WSZYSTKIE TRZY argumenty, bo każdy z nich rozstrzyga co innego: terminal
+   * mówi, W KTÓREJ rozmowie stoi pytanie, podpis — CZYJE ono jest (w jednym strumieniu stoi
+   * pytanie lidera i pytanie kafelka kontrolnego), a odpowiedź jest tym, co wraca do tury. */
+  {
+    where: 'run',
+    what: 'answerTheLead',
+    command: 'answer_the_lead',
+    given: [FOLDER, 'Lead', 'the left one'],
+    call: () => run.answerTheLead(FOLDER, FOLDER, 'Lead', 'the left one'),
+  },
   /* 2026-08-23 — DWIE KRAWĘDZIE HISTORII BIEGÓW, dopisane, nic nie usunięte i żaden istniejący
    * wiersz nie przepisany. Bez nich pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
    * `listRuns` i `readRun`, a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył

@@ -364,6 +364,33 @@ pub struct ServeStep {
     /// ręcznie ma się WCZYTAĆ i dostać uwagę przy kafelku, a nie odbić się o serde.
     #[serde(default)]
     pub command: String,
+    /// Skąd wziąć wiersz powłoki, kiedy **nie wpisał go człowiek**.
+    ///
+    /// # Zamówienie, dosłownie
+    ///
+    /// Właściciel 2026-08-30: „dajmy taki step o nazwie run preview app, tylko że agent sam ma
+    /// rozkminić jakie komendy użyć do odpalenia, my nie ingerujemy bo nie chcę w każdym
+    /// projekcie osobno wpisywać na front i backend command".
+    ///
+    /// # Dlaczego POLE, a nie czwarty rodzaj kafelka
+    ///
+    /// Bo D6 zabrania czwartego wprost: „czwarty rodzaj dalej wymaga prawdziwej skargi
+    /// z pomiarem, nie wygody" — a to zamówienie jest sformułowane jako wygoda. To samo D6 mówi
+    /// zarazem, co robić zamiast: „nowa flaga to nowe POLE, nigdy nowy kafelek". Zmierzone
+    /// gerpem: `Step::Checkpoint` ma 19 wystąpień w czterech plikach Rusta i pięciu testowych,
+    /// a `'checkpoint'` we froncie żyje w szesnastu plikach; nowe pole tutaj dotyka trzech
+    /// plików Rusta i czterech frontu.
+    ///
+    /// # Dlaczego to NIE JEST nowy mechanizm
+    ///
+    /// Nośnik już istnieje w całości: krok agenta umie oddać nazwane pole ([`Handover::Form`]),
+    /// prośba o nie jedzie w prompcie, parser `nazwa: wartość` stoi w `commands::run`, a brak
+    /// pola wymaganego jest już odmową. To pole mówi wyłącznie, KTÓRE z nich jest komendą.
+    ///
+    /// `None` znaczy „komendę wpisał człowiek" i przy zapisie znika — ten sam powód, co przy
+    /// [`AgentStep::vendor_options`]: puste pole nie ma prawa dołożyć klucza do zapisanego pliku.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_from: Option<CommandFrom>,
     /// Gdzie ta komenda biegnie. Serwer dev podaje kod ze SWOJEGO drzewa, więc dla weryfikacji
     /// w kopii kroku ten wybór jest treścią, nie szczegółem.
     #[serde(default)]
@@ -374,6 +401,19 @@ pub struct ServeStep {
     /// Jak [`AgentStep::extra`].
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Które pole przekazania niesie wiersz powłoki.
+///
+/// Typ, a nie goły napis, i to nie jest ozdoba: pole o tej samej nazwie w pliku (`commandFrom`)
+/// musi dać się rozbudować bez zmiany kształtu — a pierwszą rzeczą, o którą ktoś zapyta, jest
+/// „z którego kroku", kiedy rodziców będzie dwóch. Dziś odpowiedź jest jedna (patrz
+/// `commands::run`, `handed_before`) i dlatego pola jest jedno.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandFrom {
+    /// Nazwa pola, które krok przed tym ma oddać wierszem `nazwa: wartość`.
+    pub field: String,
 }
 
 /// Gdzie krok pracuje.

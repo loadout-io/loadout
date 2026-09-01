@@ -47,6 +47,8 @@ fn line(n: u64) -> Line {
     Line::Note {
         agent: AGENT.to_owned(),
         text: n.to_string(),
+
+        body: Vec::new(),
     }
 }
 

@@ -61,6 +61,8 @@ fn structure_samples() -> Vec<Line> {
         Line::Note {
             agent: AGENT.to_owned(),
             text: "Greeting message stored in file.".to_owned(),
+
+            body: Vec::new(),
         },
         Line::Asked {
             agent: AGENT.to_owned(),

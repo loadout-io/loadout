@@ -36,6 +36,10 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::Drivers;
+use crate::bridge::Role as BridgeRole;
+use crate::bridge::host::Bridge;
+use crate::bridge::library::{Desk as BridgeLibrary, Waiting as AskWaiting};
+use crate::engine::drivers::claude::{no_such_tools, tool_surface};
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
     RunSpec, ToAgent, ValidatedImages, Voice,
@@ -47,7 +51,7 @@ use crate::evidence::{
     SafeInputManifest, TurnCounters,
 };
 use crate::ipc::LineSink;
-use crate::library::agents::{Agent, effort_level, policy_of};
+use crate::library::agents::{Agent, Tools, effort_level, policy_of};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -93,8 +97,36 @@ const WORKFLOWS_DIR: &str = "workflows";
 /// Mówi trzy rzeczy i każda ma powód. Że jest do rozmowy — bo inaczej model zachowuje się jak
 /// wykonawca zadania i zaczyna pisać kod na pierwsze zdanie. Że **nie uruchamia biegów** — bo
 /// model, który obiecuje „już odpalam", zostawia człowieka czekającego na coś, co nie nadejdzie.
-/// I że praca zaczyna się od `/run` — bo odmowa bez nazwania następnego ruchu zostawia człowieka
-/// tam, gdzie był (DESIGN §8).
+///
+/// # 2026-08-30 — LIDER UMIE JUŻ ZACZĄĆ PRACĘ, WIĘC BRIEF PRZESTAŁ TWIERDZIĆ, ŻE NIE UMIE
+///
+/// Do tego dnia stało tu „You cannot start a workflow run… Only the person can start work, by
+/// typing /run". Było to prawdą i było ostrożnością: rozmowa nie miała ŻADNEJ drogi do biegu.
+///
+/// Rozstrzygnięcie właściciela z 2026-08-30 („rusza samo") tę drogę otwiera —
+/// `crate::bridge::verbs` daje liderowi czasownik `start_workflow`. Prompt musiał pójść za tym
+/// **tego samego dnia**: model, który ma narzędzie i zdanie mówiące, że go nie ma, jest najgorszą
+/// z możliwych kombinacji. Albo nie sięgnie po nie ani razu, albo sięgnie i zaprzeczy sam sobie
+/// w tej samej odpowiedzi.
+///
+/// **Co z tamtej ostrożności zostaje, dosłownie:** zakaz obiecywania startu, którego nie było.
+/// Brzmi teraz „never say you have started something unless a tool told you it went" — bo
+/// narzędzie odpowiada, czy poszło, a proza nie.
+///
+/// # Czego w tym prompcie NIE MA i mieć nie może
+///
+/// Ani jednego zdania każącego zadać pytanie. Wymaganie właściciela z 2026-08-30, dosłownie:
+/// „nie chcę też aby na sztywno było żeby agent lub ktokolwiek zadawał 2-3 pytania, wszystko
+/// zależy od analiz i potrzeb". Ceremonia wpisana w prompt jest ceremonią, której nie da się
+/// wyłączyć konfiguracją — czyli dokładnie tym, czego zabrania D7.
+///
+/// # Skąd lider wie, jak idzie bieg
+///
+/// Z plików, nie z drugiego kanału. Jego katalog roboczy to folder projektu, katalog biegu leży
+/// w środku, `run.json` jest przepisywany po każdej zmianie księgi, a `Read`/`Glob` ma na każdym
+/// szczeblu dialu — więc jedyne, czego brakowało, to zdanie mówiące, GDZIE patrzeć. Tym samym
+/// domyka się punkt 5 z D6 („orchestrator widzi, co wyprodukowali pozostali"), jedyny z pięciu,
+/// który nie miał do dziś ani jednej linii kodu.
 pub const BRIEF: &str = "\
 You are the orchestrator in Loadout, a desktop app where a person configures agents and \
 workflows. You are talking to that person in a chat, not executing a job.
@@ -102,9 +134,17 @@ workflows. You are talking to that person in a chat, not executing a job.
 Your part: talk things through, look at the project when it helps, and help shape what the \
 workflow should do. You may read files and write draft files when asked.
 
-You cannot start a workflow run, and you must never claim you have started one or that you are \
-about to. Only the person can start work, by typing /run in the input line. If they ask you to \
-run something, say plainly that they start it with /run, and offer what you can prepare first.
+Loadout gives you its own tools. Use list_workflows and list_agents to see what this person has \
+actually built, and start_workflow to start one of them. Always look before you start, and use \
+the name exactly as the list gave it, so you start something they really have.
+
+Never say you have started something unless a tool told you it went. The run appears in the \
+stream this person is watching, and so does the reason if it could not start.
+
+While a run is going, the truth about it is on disk inside the folder you are working in: \
+.loadout/runs has one directory per run, newest last, and each one holds run.json with the steps \
+and their state, handoffs with what each step passed on, and logs. Read them when this person \
+asks how the work is going. Do not guess at progress you have not read.
 
 Answer in the language the person writes in. Keep answers short unless they ask for depth.";
 
@@ -640,6 +680,22 @@ struct ThreadRegistry {
     /// każdy test rozmawiałby wtedy z prawdziwą biblioteką człowieka (ten sam wybór i ten sam
     /// powód, co przy [`super::agents::list_agents_inner`] i przy `RunDeps::home`).
     library: Option<PathBuf>,
+    /// Most tego terminalu — gniazdo, przez które lider sięga po czasowniki Loadouta.
+    ///
+    /// Jeden na terminal, nie jeden na aplikację: tożsamością wołającego jest samo gniazdo, więc
+    /// dwie rozmowy w jednym projekcie nie mają jak odpowiedzieć sobie nawzajem na wywołanie.
+    /// Powstaje przy PIERWSZYM zdaniu, razem z sesją, i z tego samego powodu — most założony przy
+    /// montażu ekranu byłby gniazdem otwartym dla rozmowy, której nikt nie zaczął.
+    ///
+    /// `Arc`, bo tę samą wartość trzyma zadanie przyjmujące połączenia; porzucenie ostatniej
+    /// kopii zamyka nasłuch i kasuje plik.
+    bridges: HashMap<String, Arc<Bridge>>,
+    /// Pytanie tego terminalu, które czeka na człowieka — najwyżej jedno naraz.
+    ///
+    /// Trzymane TUTAJ, a nie tylko w biurku, bo odpowiedź przychodzi z okna i musi kogoś znaleźć.
+    /// Ten sam `Arc` widzi biurko, więc to jest jedno miejsce na jeden fakt (niezmiennik 13),
+    /// oglądane z dwóch stron.
+    waiting: HashMap<String, Arc<AskWaiting>>,
 }
 
 /// Sufit kolejki jednego terminalu. Kolejka porządkuje tury, nie uruchamia ich równolegle.
@@ -1309,6 +1365,13 @@ impl Threads {
             .is_some_and(|current| current.same_as(thread))
         {
             state.live.remove(terminal);
+            /* MOST SCHODZI RAZEM Z WĄTKIEM. Zostawiony, byłby gniazdem bez rozmowy — a plik,
+             * pod którym nikt nie odpowiada, to most następnej sesji czekający w nieskończoność
+             * na powitanie, które nie przyjdzie. */
+            state.bridges.remove(terminal);
+            /* Kanał odpowiedzi schodzi razem z wątkiem. Porzucony nadawca zamyka pytanie, które
+             * na nim stało, więc lider dostaje zdanie zamiast tury wiszącej bez końca. */
+            state.waiting.remove(terminal);
         }
     }
 }
@@ -1445,9 +1508,20 @@ impl Threads {
             state
                 .live
                 .entry(terminal.id.clone())
-                .or_insert_with(|| Conversation::new(lines))
+                .or_insert_with(|| Conversation::new(Arc::clone(&lines)))
                 .clone()
         };
+
+        /* MOST TEGO TERMINALU — powstaje przy pierwszym zdaniu i żyje tak długo, jak wątek.
+         *
+         * PO CO: bez niego lider nie ma ŻADNEJ drogi do biblioteki człowieka. Vendor w trybie
+         * bez terminala nie daje ani jednego narzędzia, którym dałoby się o nią zapytać
+         * (zmierzone 2026-08-29, powód w całości stoi w nagłówku `crate::bridge`).
+         *
+         * ZAŁOŻENIE MOSTU NIE MOŻE ODMÓWIĆ ROZMOWY. Gniazdo, którego nie da się otworzyć, jest
+         * powodem, by lider nie miał czasowników — nigdy powodem, by przestał rozmawiać.
+         * Człowiek pyta wtedy o coś innego i dostaje odpowiedź, zamiast ściany. */
+        let bridge = self.bridge_for(terminal, library.clone(), &lines).await;
 
         /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
          * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
@@ -1457,15 +1531,111 @@ impl Threads {
             lead,
             library.as_deref(),
             &terminal.folder,
+            bridge.as_deref(),
         )?;
+        /* PYTANIE ZADANE PRZED PRZEKAZANIEM STEROWNIKA, bo `say_with_images` bierze go przez
+         * wartość. „Czy ten vendor umie zawężać listę" jest faktem o sterowniku i musi zostać
+         * odczytane, póki jest co pytać. */
+        let narrows = driver.narrows_its_tools();
+        let told = spec_for(lead, terminal.folder.clone(), said, reaches, narrows);
+        /* ZDANIE IDZIE NA EKRAN, ZANIM RUSZY TURA. Po niej byłoby uwagą o konfiguracji doklejoną
+         * pod odpowiedzią, której ta konfiguracja dotyczyła — czyli w miejscu, w którym człowiek
+         * już przestał jej szukać. */
+        if let Some(problem) = told.said {
+            let _ = lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .send(Line::Problem {
+                    agent: LEAD.to_owned(),
+                    text: problem,
+                    resets_at: None,
+                });
+        }
         thread
-            .say_with_images(
-                driver,
-                spec_for(lead, terminal.folder.clone(), said, reaches),
-                said.to_owned(),
-                images,
-            )
+            .say_with_images(driver, told.spec, said.to_owned(), images)
             .await
+    }
+
+    /// Most tego terminalu — jeden na wątek, zakładany przy pierwszym zdaniu.
+    ///
+    /// `None` znaczy „lider pracuje bez czasowników Loadouta", i jest to **poprawny stan**, nie
+    /// awaria: gniazdo, którego nie dało się otworzyć, nie ma prawa uciszyć rozmowy. Człowiek
+    /// dostaje wtedy lidera, który umie czytać pliki i rozmawiać, tylko nie widzi biblioteki —
+    /// a to jest dokładnie tyle, ile miał przed tym zadaniem.
+    ///
+    /// # Dlaczego katalog tymczasowy, a nie `.loadout/` projektu
+    ///
+    /// Bo adres gniazda uniksowego mieści się na macOS w ~104 bajtach RAZEM ze ścieżką, a projekt
+    /// bywa położony głęboko — `~/Projects/klient/monorepo/packages/…` wyczerpuje ten budżet bez
+    /// ostrzeżenia i z błędem, który nie mówi o długości ani słowa. Gniazdo nie jest przy tym
+    /// pracą człowieka: nie ma czego odtwarzać po restarcie, więc niezmiennik 4 go nie dotyczy.
+    async fn bridge_for(
+        &self,
+        terminal: &Terminal,
+        library: Option<PathBuf>,
+        lines: &Arc<Mutex<LineSink>>,
+    ) -> Option<Arc<Bridge>> {
+        if let Some(standing) = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .bridges
+            .get(&terminal.id)
+        {
+            return Some(Arc::clone(standing));
+        }
+
+        /* BIURKO WIDZI TEN SAM STRUMIEŃ, CO ROZMOWA. Bez tego `start_workflow` odmawia — i to
+         * jest właściwe zachowanie, nie brak: bieg zaczęty bez śladu na ekranie jest dokładnie
+         * tą awarią, przed którą stoi całe „rusza samo". */
+        let waiting = Arc::new(AskWaiting::default());
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .waiting
+            .insert(terminal.id.clone(), Arc::clone(&waiting));
+
+        let desk = Arc::new(
+            BridgeLibrary::at(library, terminal.folder.clone())
+                .showing(Arc::clone(lines))
+                .hearing(waiting),
+        );
+        let opened = Bridge::open(&std::env::temp_dir(), BridgeRole::Lead, desk)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "the lead's bridge could not be opened; it talks without \
+                                        Loadout's own verbs this time");
+            })
+            .ok()?;
+
+        let bridge = Arc::new(opened);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        /* WYŚCIG ROZSTRZYGA WPIS, KTÓRY JUŻ STOI. Dwa pierwsze zdania w jednym terminalu mogą
+         * wejść tu naraz; przegrany most jest po prostu porzucany, a jego gniazdo znika razem
+         * z nim. Nadpisanie cudzego wpisu zostawiłoby żywy nasłuch bez właściciela. */
+        Some(Arc::clone(
+            state.bridges.entry(terminal.id.clone()).or_insert(bridge),
+        ))
+    }
+
+    /// Człowiek odpowiedział na pytanie lidera w tym terminalu.
+    ///
+    /// `false` znaczy „w tym terminalu nikt na nic nie czekał" — i to jest **odpowiedź, nie
+    /// błąd**. Okno woła to przy KAŻDEJ odpowiedzi, także tej na kafelek kontrolny biegu, bo
+    /// nie ma jak rozstrzygnąć, do kogo należy przypięte pytanie. Rozstrzyga to strona, która
+    /// wie: podpis musi się zgadzać, inaczej cudze pytanie zostaje na miejscu.
+    ///
+    /// Bez tego rozróżnienia odpowiedź na punkt kontrolny odblokowywałaby przy okazji pytanie
+    /// lidera — zdaniem, które go nie dotyczy, i w chwili, w której nikt tego nie widzi.
+    pub fn answer_in(&self, terminal: &str, agent: &str, said: String) -> bool {
+        let waiting = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .waiting
+            .get(terminal)
+            .map(Arc::clone);
+        waiting.is_some_and(|waiting| waiting.answer(agent, said))
     }
 
     /// Człowiek zamknął ten terminal: jego wątek schodzi i oddaje dowód śmierci swojej grupy.
@@ -1602,8 +1772,9 @@ fn as_the_step_is_configured(
     lead: &Lead,
     library: Option<&Path>,
     folder: &Path,
+    bridge: Option<&Bridge>,
 ) -> Result<Arc<dyn AgentDriver>, ChatError> {
-    let mut configuration = connections_of(lead, library, folder, driver.id())?;
+    let mut configuration = connections_of(lead, library, folder, driver.id(), bridge)?;
     configuration
         .arguments
         .extend(driver.effort_argv(lead.effort()));
@@ -1647,21 +1818,57 @@ fn connections_of(
     library: Option<&Path>,
     folder: &Path,
     vendor: &str,
+    bridge: Option<&Bridge>,
 ) -> Result<DriverConfiguration, ChatError> {
-    if lead.agent.connections.is_empty() {
+    /* MOST JEDZIE JAKO KOLEJNE POŁĄCZENIE, i to jest cała jego droga do argv.
+     *
+     * `connections::runtime::for_driver` pisze konfigurację obu vendorów i wypełnia
+     * `DriverConfiguration::servers`, a z tego pola `mcp__<serwer>` trafia do `--allowedTools`
+     * (`drivers/claude.rs`). Most podany tędy dostaje więc całą tę drogę bez zmiany ani jednej
+     * linii w sterownikach — a to jest ta sama droga, którą zmierzyłem 2026-08-30 jako działającą
+     * na żywym `claude 2.1.251`.
+     *
+     * Gniazdo, którego nie dało się otworzyć, po prostu nie dokłada połączenia. Rozmowa rusza
+     * dalej, tylko bez czasowników. */
+    let mut chosen: Vec<crate::connections::Connection> = Vec::new();
+    if let Some(bridge) = bridge {
+        match bridge.as_connection() {
+            Ok(connection) => chosen.push(connection),
+            Err(error) => {
+                tracing::warn!(%error, "the bridge could not describe itself; the lead talks \
+                                        without Loadout's own verbs this time");
+            }
+        }
+    }
+
+    if lead.agent.connections.is_empty() && chosen.is_empty() {
         return Ok(DriverConfiguration::default());
     }
-    let Some(library) = library else {
-        return Err(ChatError::CouldNotStart(
-            "this agent needs Connections from your library, and Loadout does not know where \
-             your library is."
-                .to_owned(),
-        ));
-    };
-    let chosen =
-        crate::connections::runtime::selected(&library.join(CONNECTIONS), &lead.agent.connections)
-            .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
+    /* WYMÓG BIBLIOTEKI DOTYCZY WYŁĄCZNIE POŁĄCZEŃ, KTÓRYCH CHCIAŁ AGENT.
+     *
+     * Most jej nie potrzebuje — jest Loadoutem rozmawiającym sam ze sobą i zna swoją ścieżkę
+     * z `current_exe()`. Warunek postawiony nad całą funkcją odmawiałby rozmowy KAŻDEMU liderowi
+     * w oknie, które nie zdążyło jeszcze powiedzieć, gdzie leży biblioteka — czyli zamieniałby
+     * dodanie czasowników w regresję zabierającą rozmowę. Zmierzone: 20 kryteriów sprzed tego
+     * zadania na czerwono, wszystkie z tym jednym zdaniem. */
+    if !lead.agent.connections.is_empty() {
+        let Some(library) = library else {
+            return Err(ChatError::CouldNotStart(
+                "this agent needs Connections from your library, and Loadout does not know where \
+                 your library is."
+                    .to_owned(),
+            ));
+        };
+        chosen.extend(
+            crate::connections::runtime::selected(
+                &library.join(CONNECTIONS),
+                &lead.agent.connections,
+            )
+            .map_err(|error| ChatError::CouldNotStart(error.to_string()))?,
+        );
+    }
 
+    let asked_for_connections = !lead.agent.connections.is_empty();
     crate::connections::runtime::for_driver(
         &folder
             .join(OURS)
@@ -1671,7 +1878,25 @@ fn connections_of(
         &chosen,
         |name| std::env::var_os(name),
     )
-    .map_err(|error| ChatError::CouldNotStart(error.to_string()))
+    .or_else(|error| {
+        /* ODMOWA MA WAGĘ TEGO, CO PRZEZ NIĄ PRZEPADA, i to są dwie różne rzeczy.
+         *
+         * Zatwierdzone połączenie jest zgodą CZŁOWIEKA wyrażoną w imporcie, więc rozmowa, która
+         * by go nie dostała, ma nie ruszyć — dokładnie jak krok biegu.
+         *
+         * Czasowniki Loadouta są czym innym: nikt o nie nie prosił z osobna, a lider bez nich
+         * dalej umie czytać pliki i rozmawiać — czyli dostaje dokładnie tyle, ile miał przed tym
+         * zadaniem. Uciszenie go tutaj zamieniłoby DODANIE możliwości w zabranie rozmowy,
+         * a to jest najgorszy możliwy wynik dla człowieka, który po prostu chciał coś napisać. */
+        if asked_for_connections {
+            return Err(ChatError::CouldNotStart(error.to_string()));
+        }
+        tracing::warn!(
+            %error,
+            "this agent app cannot take Loadout's own verbs; the lead talks without them"
+        );
+        Ok(DriverConfiguration::default())
+    })
 }
 
 /// Wolna funkcja, nie metoda, i powód jest twardy: `&Chat` nie jest `Send`, bo uchwyt sesji jest
@@ -1838,6 +2063,24 @@ async fn next_turn(session: &mut Session, text: &str) -> Result<(), ChatError> {
 
 /// Specyfikacja sesji **zaszytego** lidera — ta, którą startuje [`Chat`].
 ///
+/// Sesja lidera plus zdanie, które przy jej składaniu trzeba było powiedzieć człowiekowi.
+///
+/// # Dlaczego para, a nie sam `RunSpec`
+///
+/// Bo „lider prosi o narzędzia ponad swoim dialem" jest faktem, który powstaje TUTAJ, a widać go
+/// musi CZŁOWIEK (niezmiennik 29). Wersja bez tego pola miała dwa wyjścia i oba złe: odmówić
+/// rozmowy (zmierzone: zabiera ją 18 z 29 agentów w bibliotece właściciela) albo przyciąć listę
+/// po cichu (agent, któremu po cichu zabrano narzędzie, wygląda jak agent, który „nie umiał").
+///
+/// `None` jest normalnym stanem i znaczy „nie ma czego mówić".
+#[derive(Debug)]
+struct Told {
+    /// Zdanie na ekran, albo `None`.
+    said: Option<String>,
+    /// Sesja, którą i tak zaczynamy.
+    spec: RunSpec,
+}
+
 /// Wolna funkcja obok [`spec_for`], a nie trzecia gałąź w środku: te dwa zestawy wartości mają
 /// dwóch różnych właścicieli. Tutaj właścicielem jest to źródło (stała [`BRIEF`], `None` na model,
 /// jedna polityka), a tam — zapisana definicja agenta. Zlanie ich w jedną funkcję z warunkiem
@@ -1878,56 +2121,112 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
 /// sama granica, którą pilnuje [`Threads::library`]: ta funkcja nie wie, gdzie leży biblioteka,
 /// i nie ma prawa wiedzieć. Wersja czytająca `HOME` w środku znaczyłaby, że każdy test rozmawia
 /// z prawdziwą biblioteką człowieka.
-fn spec_for(lead: &Lead, cwd: PathBuf, first: &str, reaches: Vec<PathBuf>) -> RunSpec {
-    RunSpec {
-        run_id: Uuid::now_v7(),
-        cwd,
-        prompt: first.to_owned(),
-        /* Puste pole w definicji znaczy „nie mam zdania", a nie „ustaw pustkę" — ta sama reguła
-         * i ten sam powód, co przy `some_text` w biegu. WPROST, a nie własną funkcją o tej samej
-         * nazwie: druga `some_text` w drzewie czytałaby się jak rozjazd do wyśledzenia, a mamy tu
-         * jedno miejsce wołania. `None` znaczy dla sterownika „to, co vendor ma domyślnie". */
-        model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
-        system_append: Some(lead.brief()),
-        policy: lead.policy(),
-        /* Z DEFINICJI AGENTA, tą samą drogą co dial. Rozmowa z liderem do researchu, która nie
-         * widzi świata, jest tą samą połową kontrolki, co krok biegu bez sieci. */
-        reaches_the_web: lead.agent.reaches_the_web,
-        /* 2026-08-20 (T-63) — LISTA NARZĘDZI LIDERA WCIĄŻ TU NIE DOJEŻDŻA I JEST TO ZGŁOSZENIE,
-         * NIE PRZEOCZENIE. Bieg kroku bierze ją od tego dnia z definicji agenta
-         * (`commands::run::what_this_step_may_use`), więc `Agent.tools` przestało być martwą
-         * kontrolką TAM — a tutaj nie: lider z zawężoną listą dostaje dalej cały sufit swojej
-         * polityki, dokładnie jak przed tym zadaniem.
-         *
-         * Czego brakuje, dosłownie: `claude::tool_surface(lead.policy(), …)` oddaje też `refused`,
-         * a `refused` nie ma tu gdzie pojechać — ta funkcja zwraca `RunSpec`, nie `Result`.
-         * Przycięcie listy po cichu jest wykluczone (to najdroższa wersja tej wady: agent, któremu
-         * po cichu zabrano narzędzie, wygląda jak agent, który „nie umiał"), więc wpięcie znaczy
-         * nowy wariant [`ChatError`] i sygnatura `Result<RunSpec, ChatError>`. Oba pliki są
-         * w bloku OWNS tego zadania, więc to nie jest bariera techniczna — decyzja jest
-         * produktowa i należy do człowieka: czy lider z listą ponad swoim dialem ma ODMÓWIĆ
-         * ROZMOWY. Odmowa startu biegu i odmowa rozmowy nie ważą tyle samo, a żadne kryterium
-         * T-63 tego nie sądzi. */
-        tools: None,
-        /* 2026-08-20 (T-70) — BIBLIOTEKA W ZASIĘGU ROZMOWY I **TYLKO** ROZMOWY.
-         *
-         * Do tego dnia stało tu `Vec::new()`, więc lider widział wyłącznie folder zakresu, a twoje
-         * workflow i twoi agenci leżą poza nim (`~/.loadout`, `docs/ARCHITECTURE.md` §8). „Załóż
-         * mi agenta do recenzji" kończyło się wtedy zdaniem, jak to zrobić RĘCZNIE — czyli doradcą
-         * odciętym od jedynych plików, o których rozmawiacie.
-         *
-         * Czego tu NIE MA i to jest granica decyzji, nie przeoczenie: tej listy nie dostaje krok
-         * biegu. Agent piszący kod w projekcie nie ma powodu przepisywać definicji innych agentów,
-         * a bieg czyta tę definicję RAZ, przy starcie kroku — nadpisana w trakcie nie przewraca
-         * dzisiaj niczego, więc awarii nie widać aż do NASTĘPNEGO biegu, kiedy „ten sam workflow"
-         * robi co innego. Prawa kroku składa `commands::run::prompt_for` i po tej zmianie stoi
-         * tam dokładnie to, co stało: katalog przekazań i nic ponad to.
-         *
-         * Sufit zostaje przy `policy` linię wyżej i tylko tam (niezmiennik 23): ta lista mówi
-         * GDZIE lider patrzy, nie CO mu wolno. Lider `look only` bibliotekę czyta — na tym polega
-         * cała wartość pytania „jakie mam workflow?" — a pisze dopiero ten, któremu człowiek dał
-         * wyżej, i to samą tabelą dialu, bez ani jednej flagi dosypanej „żeby mogło działać". */
-        extra_dirs: reaches,
-        resume: None,
+fn spec_for(
+    lead: &Lead,
+    cwd: PathBuf,
+    first: &str,
+    reaches: Vec<PathBuf>,
+    narrows_its_tools: bool,
+) -> Told {
+    /* LISTA NARZĘDZI PRZECHODZI TĄ SAMĄ TABELĄ, CO KROK BIEGU (niezmiennik 23). Kolejność pytań
+     * jest przepisana z `commands::run::what_this_step_may_use` co do jednego, bo to jest jedna
+     * reguła zadana dwa razy — a nie dwie reguły o tym samym.
+     *
+     * Vendor, który nie umie zawężać, dostaje `None`: `--tools` nie istnieje w jego argv, więc
+     * nie ma czego wyczyścić ani czego przekroczyć. */
+    let mut say_out_loud = None;
+    let tools = if narrows_its_tools {
+        match &lead.agent.tools {
+            /* „Wszystkie narzędzia" jedzie jako `None`, czyli „nie zawężaj" — to jest DOKŁADNIE
+             * sufit polityki i dokładnie to argv, które lider dostawał przed tą zmianą. */
+            Tools::Everything => None,
+            Tools::Only(names) => {
+                let surface = tool_surface(lead.policy(), Some(names));
+                match surface.refused {
+                    None => Some(surface.available),
+                    /* LISTA PONAD DIALEM NIE ZABIERA ROZMOWY — ZMIERZONE, DLACZEGO NIE MOŻE.
+                     *
+                     * Pierwsza wersja tej gałęzi ODMAWIAŁA rozmowy, dla spójności z krokiem
+                     * biegu. Sprawdzone 2026-08-30 na bibliotece właściciela: **18 z 29 agentów**
+                     * ma listę ponad swoim dialem — sami `claude-code`, bo Codex nie zawęża
+                     * w ogóle. Każdy z nich przestałby po tamtej wersji rozmawiać.
+                     *
+                     * Spójność z biegiem była pozorna: krok ma furtkę, której rozmowa nie ma —
+                     * `AgentStep::overrides` podnosi dial na kafelku, więc ten sam agent biega
+                     * poprawnie. Lider jest samą definicją i nie ma czym nadpisać.
+                     *
+                     * Asymetria ma przy tym powód, nie tylko pomiar. Bieg odmawia, bo startuje
+                     * sześciu agentów bez nadzoru i kosztuje pieniądze od pierwszej sekundy;
+                     * rozmowa to jedna tura z człowiekiem patrzącym na ekran. Odebranie mu
+                     * rozmowy zabiera zarazem jedyne miejsce, w którym mógłby zapytać dlaczego.
+                     *
+                     * Cicho też nie jest: zdanie idzie NA EKRAN (niezmiennik 29) i nazywa OBA
+                     * pola do poprawienia. Lider pracuje tymczasem z sufitem swojego dialu —
+                     * czyli dokładnie tym, co miał przed tą zmianą. */
+                    Some(refused) => {
+                        say_out_loud = Some(no_such_tools(&lead.agent.name, &refused));
+                        None
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    Told {
+        said: say_out_loud,
+        spec: RunSpec {
+            run_id: Uuid::now_v7(),
+            cwd,
+            prompt: first.to_owned(),
+            /* Puste pole w definicji znaczy „nie mam zdania", a nie „ustaw pustkę" — ta sama reguła
+             * i ten sam powód, co przy `some_text` w biegu. WPROST, a nie własną funkcją o tej samej
+             * nazwie: druga `some_text` w drzewie czytałaby się jak rozjazd do wyśledzenia, a mamy tu
+             * jedno miejsce wołania. `None` znaczy dla sterownika „to, co vendor ma domyślnie". */
+            model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
+            system_append: Some(lead.brief()),
+            policy: lead.policy(),
+            /* Z DEFINICJI AGENTA, tą samą drogą co dial. Rozmowa z liderem do researchu, która nie
+             * widzi świata, jest tą samą połową kontrolki, co krok biegu bez sieci. */
+            reaches_the_web: lead.agent.reaches_the_web,
+            /* 2026-08-30 — LISTA NARZĘDZI Z DEFINICJI, TĄ SAMĄ TABELĄ, CO KROK BIEGU.
+             *
+             * Do tego dnia stało tu `None`, a `Agent.tools` było dla lidera MARTWĄ KONTROLKĄ:
+             * człowiek zawężał listę w formularzu, a rozmowa dostawała cały sufit swojej polityki.
+             * Bieg brał ją z definicji od T-63; lider nie brał jej wcale.
+             *
+             * Wpięcia nie robiło jedno: `tool_surface` oddaje też `refused`, a `refused` nie miał
+             * tu gdzie pojechać — ta funkcja zwracała `RunSpec`, nie `Result`. Kod nazywał to
+             * zgłoszeniem i zostawiał człowiekowi decyzję: czy lider z listą ponad dialem ma
+             * ODMÓWIĆ ROZMOWY.
+             *
+             * Właściciel rozstrzygnął ją 2026-08-30: „lidera traktujemy jak proces claude/codex…
+             * chcę mieć elastyczność". Lider dostaje więc to, co stoi w jego definicji, a lista ponad
+             * dialem nie odbiera rozmowy, tylko mówi to na ekranie ([`Told::said`]) —
+             * bo przycięcie po cichu jest tą samą wadą, którą bieg nazwał już raz: agent, któremu po
+             * cichu zabrano narzędzie, wygląda dokładnie jak agent, który „nie umiał". */
+            tools,
+            /* 2026-08-20 (T-70) — BIBLIOTEKA W ZASIĘGU ROZMOWY I **TYLKO** ROZMOWY.
+             *
+             * Do tego dnia stało tu `Vec::new()`, więc lider widział wyłącznie folder zakresu, a twoje
+             * workflow i twoi agenci leżą poza nim (`~/.loadout`, `docs/ARCHITECTURE.md` §8). „Załóż
+             * mi agenta do recenzji" kończyło się wtedy zdaniem, jak to zrobić RĘCZNIE — czyli doradcą
+             * odciętym od jedynych plików, o których rozmawiacie.
+             *
+             * Czego tu NIE MA i to jest granica decyzji, nie przeoczenie: tej listy nie dostaje krok
+             * biegu. Agent piszący kod w projekcie nie ma powodu przepisywać definicji innych agentów,
+             * a bieg czyta tę definicję RAZ, przy starcie kroku — nadpisana w trakcie nie przewraca
+             * dzisiaj niczego, więc awarii nie widać aż do NASTĘPNEGO biegu, kiedy „ten sam workflow"
+             * robi co innego. Prawa kroku składa `commands::run::prompt_for` i po tej zmianie stoi
+             * tam dokładnie to, co stało: katalog przekazań i nic ponad to.
+             *
+             * Sufit zostaje przy `policy` linię wyżej i tylko tam (niezmiennik 23): ta lista mówi
+             * GDZIE lider patrzy, nie CO mu wolno. Lider `look only` bibliotekę czyta — na tym polega
+             * cała wartość pytania „jakie mam workflow?" — a pisze dopiero ten, któremu człowiek dał
+             * wyżej, i to samą tabelą dialu, bez ani jednej flagi dosypanej „żeby mogło działać". */
+            extra_dirs: reaches,
+            resume: None,
+        },
     }
 }

@@ -102,6 +102,33 @@ pub enum PrivateFileAccess {
     CreateAppend,
 }
 
+/// Nadaje istniejącej ścieżce prawa „tylko właściciel" (`0600`).
+///
+/// # Dlaczego to mieszka TUTAJ, a nie tam, gdzie jest potrzebne
+///
+/// Niezmiennik 3: kod zależny od platformy ma w tym drzewie **jeden dom**, i jest nim ten plik.
+/// `#[cfg(unix)]` gdziekolwiek indziej przewraca bramkę — i to jest jedyny powód, dla którego
+/// port na Windows będzie gałęzią `cfg`, a nie przepisaniem. Wołający dostaje API neutralne
+/// wobec platformy i nie wie, że `PermissionsExt` istnieje.
+///
+/// Pierwszym wołającym jest gniazdo mostu (`crate::bridge::host`), gdzie **prawo do pliku JEST
+/// zdolnością**: kto go otworzy, ten dostaje czasowniki tej sesji.
+#[cfg(unix)]
+pub fn owner_only(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+/// Jak wyżej. Windows dostanie swoją gałąź razem z resztą portu (`docs/PLAN.md`, linia cięcia).
+#[cfg(windows)]
+pub fn owner_only(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only permissions are not implemented on Windows",
+    ))
+}
+
 /// Otwiera istniejący prywatny plik bez śledzenia symlinków na żadnym poziomie ścieżki.
 ///
 /// API jest neutralne wobec platformy; `openat`/`O_NOFOLLOW` i kontrola właściciela mieszkają

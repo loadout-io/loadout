@@ -235,8 +235,26 @@ export interface ServeStep {
   kind: 'serve';
   id: string;
   name: string;
-  /** Wiersz powłoki, jedna linia. Pusty znaczy „jeszcze niewypełniony" i bieg wtedy odmówi. */
+  /**
+   * Wiersz powłoki, jedna linia.
+   *
+   * Pusty znaczy „jeszcze niewypełniony" i bieg wtedy odmówi — **chyba że** stoi obok
+   * [`ServeStep.commandFrom`], bo wtedy komendę oddaje krok przed tym.
+   */
   command: string;
+  /**
+   * Skąd wziąć komendę, kiedy nie wpisał jej człowiek.
+   *
+   * Zamówienie właściciela 2026-08-30: „agent sam ma rozkminić jakie komendy użyć do odpalenia,
+   * my nie ingerujemy bo nie chcę w każdym projekcie osobno wpisywać na front i backend command".
+   * Wiersz uruchamiający aplikację jest inny w każdym repo, a wpisany ręcznie zamienia jeden
+   * wielokrotnego użytku plik w plik na jeden projekt.
+   *
+   * Lustro `workflow::ServeStep::command_from`. Nieobecne, kiedy komendę wpisał człowiek — po
+   * tamtej stronie znika przy zapisie (`skip_serializing_if`), więc klucz dopisany tu na siłę
+   * rozjeżdżałby plik z tym, co Rust naprawdę zapisuje.
+   */
+  commandFrom?: { field: string } | undefined;
   folder: Folder;
   at: Point;
 }

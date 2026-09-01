@@ -13,11 +13,25 @@
  * Ramki tu nie ma: rysuje ją `PanelForStep`, jedną, dla wszystkich paneli.
  */
 import type { ReactElement } from 'react';
+import { fieldNameFor } from './hands-over-the-command';
 import type { ServeStep } from '../../../state/workflows';
 
 export interface ServePanelProps {
   step: ServeStep;
-  onEditStep: (fields: Partial<Pick<ServeStep, 'name' | 'command' | 'folder'>>) => void;
+  onEditStep: (
+    fields: Partial<Pick<ServeStep, 'name' | 'command' | 'folder' | 'commandFrom'>>,
+  ) => void;
+  /**
+   * Nazwa kroku, który po strzałce stoi przed tym kafelkiem, albo `null`.
+   *
+   * Liczona przez EDYTOR, nie tutaj: panel nie zna strzałek, więc nie ma jak pomylić się co do
+   * tego, który krok jest tym przed (ten sam ruch i ten sam powód, co przy `wayBack`).
+   */
+  stepBefore?: string | null | undefined;
+  /** Czy ten krok jest już proszony o pole, na które ten kafelek czeka. */
+  handsItOver?: boolean | undefined;
+  /** Człowiek prosi krok przed tym o to pole — jawnym kliknięciem, nie efektem ubocznym. */
+  onAskTheStepBefore?: (() => void) | undefined;
 }
 
 /* GDZIE TO WSTAJE — dwa wyjścia, bo dwa mają dla serwera sens.
@@ -48,7 +62,13 @@ const LABEL = 'text-label text-muted';
 /* Klasa domu, nie własny opis — ten sam powód, co w `checkpoint-panel.tsx`. */
 const FIELD = 'field';
 
-export function ServePanel({ step, onEditStep }: ServePanelProps): ReactElement {
+export function ServePanel({
+  step,
+  onEditStep,
+  stepBefore = null,
+  handsItOver = false,
+  onAskTheStepBefore = () => undefined,
+}: ServePanelProps): ReactElement {
   return (
     <>
       <div className={ROW}>
@@ -74,10 +94,63 @@ export function ServePanel({ step, onEditStep }: ServePanelProps): ReactElement 
           className={FIELD}
           placeholder="npm run dev"
           value={step.command}
+          disabled={step.commandFrom !== undefined}
           onChange={(event) => {
             onEditStep({ command: event.target.value });
           }}
         />
+        {/* PRZEŁĄCZNIK, NIE DRUGIE POLE OBOK. Komenda ma jedno źródło naraz — wpisana ręcznie
+            albo oddana przez krok przed tym — a dwa wypełnione pola obok siebie każą człowiekowi
+            zgadywać, które wygra. Pole wyżej gaśnie, kiedy wygrywa krok przed tym, więc widać to
+            bez czytania czegokolwiek.
+
+            Nazwa pola jest ustalona i nie ma kontrolki: to jest ta sama nazwa, o którą krok przed
+            tym jest proszony w swoim „What it hands over", a dwie nazwy do uzgodnienia w dwóch
+            miejscach są pierwszą rzeczą, która się rozjedzie — i rozjazd widać dopiero jako bieg,
+            który dochodzi do tego kafelka po to, żeby odmówić. */}
+        <label className="flex items-baseline gap-2 text-body text-ink">
+          <input
+            type="checkbox"
+            data-field="commandFrom"
+            checked={step.commandFrom !== undefined}
+            onChange={(event) => {
+              onEditStep({
+                /* NAZWA LICZONA RAZ, PRZY ZAZNACZENIU, i od tej chwili zapisana. Przeliczana
+                   przy każdym renderze znaczyłaby, że przemianowanie kafelka po cichu rozłącza
+                   graf — powód w całości stoi przy `fieldNameFor`. */
+                commandFrom: event.target.checked ? { field: fieldNameFor(step) } : undefined,
+              });
+            }}
+          />
+          Let the step before this one work out the command
+        </label>
+        {step.commandFrom === undefined ? null : (
+          /* TRZY STANY, NIE JEDEN NAPIS. „Poproś go" bez powiedzenia, czy już poproszono, każe
+             człowiekowi sprawdzać drugi kafelek za każdym razem; a kafelek bez poprzednika
+             odsyła go do kroku, którego nie ma. */
+          <span className={LABEL} data-field="commandFromState">
+            {stepBefore === null
+              ? 'Nothing points at this tile yet, so there is nobody to work the command out. ' +
+                'Draw an arrow from the step that should.'
+              : handsItOver
+                ? `${stepBefore} hands over “${step.commandFrom.field}”, and this tile runs it.`
+                : `${stepBefore} does not hand over “${step.commandFrom.field}” yet, so this ` +
+                  `tile would have nothing to run.`}
+          </span>
+        )}
+        {step.commandFrom === undefined || handsItOver || stepBefore === null ? null : (
+          /* JAWNY PRZYCISK, NIE EFEKT UBOCZNY ZAZNACZENIA. Kliknięcie w ten kafelek, które po
+             cichu zmienia SĄSIEDNI, jest rodzajem magii, przez którą przestaje się ufać
+             edytorowi — a tutaj widać, co się stanie, zanim się to zrobi. */
+          <button
+            type="button"
+            data-field="askTheStepBefore"
+            className="text-left text-label text-accent"
+            onClick={onAskTheStepBefore}
+          >
+            Ask {stepBefore} for it
+          </button>
+        )}
         {/* To zdanie jest CAŁĄ różnicą między tym kafelkiem a krokiem „sprawdź" i musi stać
             tam, gdzie człowiek podejmuje decyzję (niezmiennik 29). Druga połowa mówi, DOKĄD ta
             rzecz idzie i kiedy umiera: bez niej człowiek nie wie, czy zostanie mu w tle serwer

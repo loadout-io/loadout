@@ -236,8 +236,31 @@ pub enum Line {
     Note {
         /// Kto to zrobił.
         agent: String,
-        /// Tekst wiersza, gotowy na ekran.
+        /// Tekst wiersza, gotowy na ekran. W biegu jest NAGŁÓWKIEM, nie całą prozą.
         text: String,
+        /// Cała proza, wiersz po wierszu — pusta, kiedy wiersz niesie ją w całości.
+        ///
+        /// # Po co to pole istnieje
+        ///
+        /// Reguła 1 mówi „treść siedzi ZA wierszem, nigdy w nim", i to pole jest jedyną drogą,
+        /// którą proza może za ten wiersz trafić. Do 2026-08-30 jej nie było, więc odpowiedź
+        /// agenta nie miała gdzie pójść i szła do `text` — zmierzone na zrzucie właściciela
+        /// z biegu `20260830-191440`: **78 wierszy w jednym wierszu strumienia**, zasłaniające
+        /// cały bieg. Skarga brzmiała „nie podoba mi się ta ściana tekstu".
+        ///
+        /// # Dlaczego CAŁA proza, a nie „reszta bez nagłówka"
+        ///
+        /// Bo to jest ta sama rzecz do przeczytania, a nie dwie. Ciało zaczynające się od
+        /// drugiego zdania czyta się jak tekst, któremu ucięto początek — i zmusza człowieka
+        /// do składania jednej wypowiedzi z dwóch miejsc na ekranie.
+        ///
+        /// # Dlaczego w linii, a nie za `detail_id`
+        ///
+        /// Bo `detail_id` **nie ma dokąd prowadzić**: kurator mintuje te numery, a nic nie
+        /// zapisuje odwzorowania numer→treść, więc żaden czytelnik nie miałby czego przeczytać.
+        /// To pole idzie tą samą drogą, co `detail` przy [`Line::Ran`] — jedyną, która w tym
+        /// produkcie naprawdę dowozi treść za wiersz.
+        body: Vec<String>,
     },
     /// Co powiedział CZŁOWIEK — jedyny wiersz historii, którego nie napisał agent.
     ///
@@ -308,6 +331,29 @@ pub enum Line {
         /// Człowiek ma przeczytać, DLACZEGO lider to proponuje, zanim kliknie. Wiersz niosący
         /// samą komendę jest formularzem z jednym polem, a nie zdaniem w rozmowie.
         text: String,
+        /// Czy okno ma tę komendę **uruchomić samo**, bez czekania na kliknięcie.
+        ///
+        /// # Rozstrzygnięcie właściciela 2026-08-30
+        ///
+        /// Na pytanie „po rozmowie z liderem — klikasz przycisk, czy bieg rusza sam?" odpowiedź
+        /// brzmiała **„rusza samo"**. Cofa to część rozstrzygnięcia z 2026-08-19 („tylko komendy
+        /// determinują akcje workflow") — tę i tylko tę, która mówiła, KTO może zacząć bieg.
+        ///
+        /// # Co z tamtego rozstrzygnięcia zostaje
+        ///
+        /// Proza bez ukośnika dalej nie uruchamia niczego. `true` stoi tu **wyłącznie** wtedy, gdy
+        /// lider wywołał czasownik `start_workflow` — czyli podjął jawną decyzję, a nie napisał
+        /// zdania, które przypadkiem wygląda jak komenda. Wiersz rozpoznany z prozy
+        /// ([`suggested`]) niesie `false` i dostaje przycisk, tak jak dotąd. To jest dokładnie ta
+        /// awaria, którą właściciel odrzucił w sierpniu („jak piszę bez komendy… to się na nowo
+        /// całe workflow odpala"), i ona nie wraca.
+        ///
+        /// # Dlaczego wiersz, a nie osobny kanał do okna
+        ///
+        /// Bo start ma być **widoczny**. Kanał obok strumienia byłby biegiem, który zaczyna się
+        /// bez śladu na ekranie — a przy „rusza samo" jedyną ochroną człowieka jest to, że widzi,
+        /// co ruszyło, w tej samej sekundzie, w której to ruszyło.
+        auto: bool,
         /// Komenda, znak w znak taka, jak lider ją napisał.
         ///
         /// OSOBNE POLE, a nie wycinek z `text`, i to jest cały powód, dla którego ten wariant
@@ -630,8 +676,22 @@ pub fn suggested(line: Line, event: &AgentEvent) -> Line {
          * (`Read 3 files` sprzed zdania) — a wołający pyta tą samą funkcją o KAŻDY wiersz
          * z tego wektora (`commands::chat::read_along`). Rozpoznanie patrzące na samo zdarzenie
          * zamieniłoby więc w propozycję cudzy wiersz, i to ten, który o niczym nie mówi. */
-        Line::Note { agent, text } => Line::Suggested {
+        /* TYLKO PROZA BEZ CIAŁA, i strażnik jest tu treścią, nie ostrożnością.
+         *
+         * Ta funkcja woła się wyłącznie z rozmowy (`commands::chat::read_along`), a kurator
+         * rozmowy prozy nie dzieli — jej `body` jest z definicji puste, więc strażnik dziś nie
+         * odrzuca niczego. Stoi dlatego, że [`Line::Suggested`] **nie ma pola na ciało**: proza
+         * z ciałem zamieniona w propozycję zgubiłaby je bez śladu. Z tym strażnikiem taki wiersz
+         * spada do `other => other` i zostaje prozą — z całą swoją treścią i bez przycisku.
+         *
+         * Bez przycisku, bo to jest właściwy wybór przy tym rozjeździe: propozycja, której nikt
+         * nie zobaczy, kosztuje jedno kliknięcie mniej, a zgubiona odpowiedź agenta kosztuje
+         * całą jego turę. */
+        Line::Note { agent, text, body } if body.is_empty() => Line::Suggested {
             agent,
+            /* PROZA NIGDY NIE URUCHAMIA SAMA. Ten wiersz powstał z rozpoznania zdania, a nie
+             * z decyzji lidera — więc dostaje przycisk, dokładnie jak dotąd. */
+            auto: false,
             // Tekst zostaje TAKI, JAKI ZŁOŻYŁ GO KURATOR — cała proza w jednej linii (reguła 1).
             // Sama komenda jedzie osobnym polem, bo człowiek ma przeczytać, DLACZEGO lider to
             // proponuje, zanim kliknie; wiersz z samą komendą jest formularzem z jednym polem.
@@ -917,16 +977,29 @@ impl Curator {
             // Czytelnika ten wariant ma w T-06, w indeksie zmienionych plików.
             AgentEvent::FileEdit { path } => self.file_edit(seen, path),
             AgentEvent::Said { text } => {
-                let line = Line::Note {
-                    agent: seen.agent.to_owned(),
-                    /* JEDYNE MIEJSCE, W KTÓRYM ROZMOWA RÓŻNI SIĘ OD BIEGU. Rozmowa zachowuje
-                     * akapity i listy, bo się ją czyta; bieg skleja do jednej linii, bo sześciu
-                     * agentów piszących akapitami jest ścianą, przed którą stoi reguła 1. */
-                    text: if self.keeps_line_breaks {
-                        paragraphs(text)
-                    } else {
-                        one_line(text)
-                    },
+                /* JEDYNE MIEJSCE, W KTÓRYM ROZMOWA RÓŻNI SIĘ OD BIEGU.
+                 *
+                 * Rozmowa zachowuje akapity i listy w wierszu, bo się ją CZYTA — to jest ta
+                 * rzecz, po którą człowiek przyszedł, i schowanie jej za kliknięciem byłoby
+                 * schowaniem odpowiedzi na jego własne pytanie.
+                 *
+                 * Bieg oddaje nagłówek, a prozę stawia ZA wierszem (reguła 1). Sześciu agentów
+                 * piszących akapitami jest ścianą — i to nie jest przewidywanie, tylko pomiar:
+                 * zrzut właściciela z biegu `20260830-191440`, jedna odpowiedź na 78 wierszy
+                 * zasłaniająca komplet dziewięciu kroków. */
+                let line = if self.keeps_line_breaks {
+                    Line::Note {
+                        agent: seen.agent.to_owned(),
+                        text: paragraphs(text),
+                        body: Vec::new(),
+                    }
+                } else {
+                    let (text, body) = headline_and_body(text);
+                    Line::Note {
+                        agent: seen.agent.to_owned(),
+                        text,
+                        body,
+                    }
                 };
                 self.close_then(line)
             }
@@ -1280,6 +1353,46 @@ fn kind_of(action: Action) -> LineKind {
 /// Proza agenta bywa akapitem; wiersz o nieprzewidywalnej wysokości psuje wirtualizowaną listę,
 /// która mierzy każdy z nich. Zdania **sklejamy**, nie ucinamy: pierwsza linia akapitu to nie
 /// jest jego treść, a `Line` jest jedyną rzeczą, którą dostaje widok.
+/// Dzieli prozę na nagłówek do wiersza i całe ciało za wierszem.
+///
+/// # Reguła
+///
+/// Proza, która **mieści się w wierszu**, zostaje w wierszu i nie dostaje ciała: kontrolka
+/// rozwijająca przy dwuzdaniowej uwadze jest krokiem do zrobienia po nic (niezmiennik 16 czytany
+/// od strony kosztu). Dopiero proza, która się nie mieści, oddaje nagłówek i chowa się za nim.
+///
+/// „Mieści się" znaczy: jeden wiersz i nie dłuższa niż [`SUBJECT_LIMIT`]. Ten sam sufit, co przy
+/// przepisywaniu komendy do wiersza, i z tego samego powodu — wiersz ma być wierszem.
+///
+/// # Co jest nagłówkiem
+///
+/// PIERWSZY NIEPUSTY WIERSZ prozy, nie jej pierwsze `N` znaków. Model otwiera odpowiedź zdaniem
+/// podsumowującym („Implementation is complete and all gates are green."), więc pierwszy wiersz
+/// jest streszczeniem napisanym przez tego, kto wie najwięcej. Ucięcie po znakach dałoby w tym
+/// samym miejscu „Implementation is complete and all gates are green. ## Answer Tasks and Re…" —
+/// czyli nagłówek z doklejonym początkiem nagłówka markdownowego.
+fn headline_and_body(text: &str) -> (String, Vec<String>) {
+    let head = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let flat = one_line(text);
+
+    if text.lines().filter(|line| !line.trim().is_empty()).count() <= 1
+        && flat.chars().count() <= SUBJECT_LIMIT
+    {
+        return (flat, Vec::new());
+    }
+
+    /* CIAŁO NIESIE CAŁĄ PROZĘ, razem z wierszem, który stoi w nagłówku. Ciało zaczynające się od
+     * drugiego zdania czyta się jak tekst, któremu ucięto początek, i każe składać jedną
+     * wypowiedź z dwóch miejsc na ekranie. */
+    (
+        clamp(&one_line(head), SUBJECT_LIMIT),
+        text.lines().map(str::to_owned).collect(),
+    )
+}
+
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

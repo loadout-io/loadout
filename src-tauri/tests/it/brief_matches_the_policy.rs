@@ -33,13 +33,18 @@ use loadout_lib::library::agents::{Agent, FileAccess};
 /// nie produkuje, jest zachowaniem, którego nikt nie ma).
 const PROMISE: &str = "write draft files";
 
-/// Że lider nie zaczyna pracy. To jest własność STRUKTURY (`commands/chat` nie zna biegu), więc
-/// prompt ma jej nie zaprzeczać — w żadnej z trzech wersji.
-const CANNOT: &str = "cannot start";
+/// Że lider nie ogłasza startu, którego nie było.
+///
+/// 2026-08-30 — TA IGŁA BRZMIAŁA WCZEŚNIEJ „cannot start" I BYŁA WTEDY PRAWDĄ: rozmowa nie miała
+/// żadnej drogi do biegu. Rozstrzygnięcie właściciela („rusza samo") tę drogę otworzyło, więc
+/// tamta fraza znikła z briefu — a ochrona, której naprawdę pilnowała, została i brzmi teraz
+/// wprost o obietnicy. Igła musiała pójść za nią, bo inaczej ten plik sądziłby zdanie, którego
+/// nikt już nie produkuje (niezmiennik 20).
+const CANNOT: &str = "never say you have started";
 
-/// Czym praca się zaczyna. Odmowa bez nazwania następnego ruchu zostawia człowieka tam, gdzie był
-/// (DESIGN §8), a model bez tego zdania odpowiada „nie mogę" i kończy.
-const NEXT_MOVE: &str = "/run";
+/// Czym praca się zaczyna. Model bez tego słowa ma narzędzie, o którym nie wie — a to jest
+/// dokładnie tyle, co go nie mieć (niezmiennik 16 w wersji dla promptu).
+const NEXT_MOVE: &str = "start_workflow";
 
 /// Lider o tym dialu bezpieczeństwa.
 ///

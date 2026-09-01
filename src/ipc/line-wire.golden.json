@@ -2,12 +2,12 @@
   {
     "kind": "run",
     "agent": "lead",
-    "text": "Fix the login bug \u00b7 Research \u2192 Plan \u2192 Build"
+    "text": "Fix the login bug · Research → Plan → Build"
   },
   {
     "kind": "step",
     "agent": "lead",
-    "text": "\u2500\u2500 Planning"
+    "text": "── Planning"
   },
   {
     "kind": "agent",
@@ -35,7 +35,7 @@
   {
     "kind": "search",
     "agent": "builder",
-    "text": "Searched for \"login\" \u2014 12 matches",
+    "text": "Searched for \"login\" — 12 matches",
     "count": 12,
     "paths": [],
     "detailId": 4
@@ -53,7 +53,7 @@
   {
     "kind": "ran",
     "agent": "builder",
-    "text": "Ran npm test \u2014 didn't work",
+    "text": "Ran npm test — didn't work",
     "ok": false,
     "preview": "FAIL src/auth.test.ts",
     "detail": ["FAIL src/auth.test.ts", "1 failed, 41 passed"],
@@ -62,7 +62,8 @@
   {
     "kind": "note",
     "agent": "researcher-2",
-    "text": "The bug is in the cookie name, not in the check."
+    "text": "The bug is in the cookie name, not in the check.",
+    "body": []
   },
   {
     "kind": "told",
@@ -72,8 +73,9 @@
   {
     "kind": "suggested",
     "agent": "lead",
-    "text": "/run easy Make the flaky login test pass \u2014 the cookie name is wrong in two places, so Easy will find it in one pass.",
-    "command": "/run easy Make the flaky login test pass"
+    "text": "/run easy Make the flaky login test pass — the cookie name is wrong in two places, so Easy will find it in one pass.",
+    "command": "/run easy Make the flaky login test pass",
+    "auto": false
   },
   {
     "kind": "asked",
@@ -84,24 +86,24 @@
   {
     "kind": "handoff",
     "agent": "lead",
-    "text": "Planner \u2192 Implementer"
+    "text": "Planner → Implementer"
   },
   {
     "kind": "memory",
     "agent": "lead",
-    "text": "Saved a note \u2014 api-conventions.md",
+    "text": "Saved a note — api-conventions.md",
     "path": "notes/api-conventions.md"
   },
   {
     "kind": "problem",
     "agent": "builder",
-    "text": "Hit the usage limit \u2014 waiting for it to reset",
+    "text": "Hit the usage limit — waiting for it to reset",
     "resetsAt": 1767225600
   },
   {
     "kind": "done",
     "agent": "builder",
-    "text": "Done \u00b7 2 turns \u00b7 6.2s \u00b7 $0.15",
+    "text": "Done · 2 turns · 6.2s · $0.15",
     "turns": 2,
     "durationMs": 6200,
     "costUsd": 0.15,

@@ -219,6 +219,8 @@ fn line(number: u64) -> Line {
     Line::Note {
         agent: STEP.to_owned(),
         text: number.to_string(),
+
+        body: Vec::new(),
     }
 }
 

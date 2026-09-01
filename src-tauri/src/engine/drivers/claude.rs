@@ -249,7 +249,32 @@ const TURNS_IN_FLIGHT: usize = 8;
 const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static [&'static str]>) {
     match policy {
         Policy::ReadOnly => ("dontAsk", Some(&["Read", "Grep", "Glob"])),
-        // `Bash(git *)` to git i **tylko** git; gołe `Bash` byłoby każdą komendą na maszynie.
+        /* `Bash(git *)` NIE OGRANICZA NICZEGO W TRYBACH, KTÓRYCH LOADOUT UŻYWA — zmierzone
+         * 2026-08-30, trzema sondami na `claude 2.1.251`:
+         *
+         *   `acceptEdits` + `--allowedTools "…,Bash(git *)"`     → `echo` WYKONANE
+         *   `dontAsk`     + `--allowedTools "…,Bash(git *)"`     → `echo` WYKONANE
+         *   `dontAsk`     + `--allowedTools` BEZ `Bash` w ogóle  → `echo` WYKONANE
+         *
+         * Trzecia sonda rozstrzyga: `--allowedTools` nie jest bramą dla narzędzi wbudowanych
+         * w trybach, które NIE PYTAJĄ. Jedyną prawdziwą bramą jest `--tools` ([`tools_for`]),
+         * a ta przy tej polityce zawiera gołe `Bash`.
+         *
+         * Do 2026-08-30 stało tu zdanie „to git i **tylko** git; gołe `Bash` byłoby każdą komendą
+         * na maszynie". Było nieprawdą, a testy, które go pilnowały, sprawdzały OBECNOŚĆ NAPISU
+         * w argv — czyli dokładnie ten wzorzec, przed którym stoi niezmiennik 20.
+         *
+         * **Czego nie da się tym naprawić.** „Tylko git" jest przy dzisiejszej powierzchni
+         * vendora niewyrażalne. `permissions.deny` w `--settings` DZIAŁA (zmierzone: `echo`
+         * wraca jako „Permission to use Bash … has been denied"), ale `deny: ["Bash"]` zabiera
+         * narzędzie w CAŁOŚCI, a `allow: ["Bash(git *)"]` obok niego go nie odzyskuje — agent
+         * odpowiada wtedy „I don't have a Bash tool available". Czarna lista („zabroń rm, sudo,
+         * curl") odpada z powodu, który to repo zapisało przy [`tools_for`]: dziurę dostaje przy
+         * najbliższym wydaniu CLI, po cichu.
+         *
+         * Ten wpis ZOSTAJE, bo jest poprawny w trybie, który pyta, i nic nie kosztuje. Zmienia
+         * się wyłącznie to, czego mu się przypisuje — i pilnuje tego
+         * `tests/it/the_dial_tells_the_truth_about_the_shell.rs`. */
         Policy::EditInFolder => (
             "acceptEdits",
             Some(&["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)"]),

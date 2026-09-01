@@ -39,6 +39,12 @@
  *   w obie strony: człowiek nie wie ani że zapisał, ani (przy odmowie) że właśnie stracił pracę.
  */
 import type { ReactElement } from 'react';
+import {
+  askTheStepBefore,
+  fieldWaitedFor,
+  handsOver,
+  theStepBefore,
+} from './step-panel/hands-over-the-command';
 import { useEffect, useState } from 'react';
 
 import type { Agent } from '../../state/agents';
@@ -334,6 +340,26 @@ export function WorkflowEditor({
                 state.commit(
                   withStep(state.document, open.id, (step) =>
                     step.kind === 'serve' ? { ...step, ...fields } : step,
+                  ),
+                );
+              }}
+              /* KTO ODDAJE KOMENDĘ TEMU KAFELKOWI — liczone TUTAJ, bo tylko edytor zna strzałki.
+                 Panel dostaje trzy gotowe odpowiedzi i nie ma jak pomylić się co do tego, który
+                 krok jest tym przed (ten sam ruch, co przy `wayBack` wyżej). */
+              stepBefore={theStepBefore(state.document, open.id)?.name ?? null}
+              handsItOver={handsOver(
+                theStepBefore(state.document, open.id),
+                fieldWaitedFor(state.document, open.id),
+              )}
+              onAskTheStepBefore={() => {
+                /* JAWNA ZMIANA CUDZEGO KAFELKA, na kliknięcie i tylko na nie. Ta sama droga
+                   `commit`, co każda inna edycja — więc wchodzi do cofania i do autozapisu jak
+                   wszystko inne, zamiast być osobnym trybem zapisu. */
+                state.commit(
+                  askTheStepBefore(
+                    state.document,
+                    open.id,
+                    fieldWaitedFor(state.document, open.id),
                   ),
                 );
               }}

@@ -508,17 +508,23 @@ you mean even when the answer is obvious.";
 /// pętli ([`Live::ask_for_an_outcome`]): prośba skierowana do kroku, którego odpowiedzi nikt nie
 /// sądzi, jest poleceniem bez skutku (niezmiennik 16) i uczy model pisać ten wiersz wszędzie.
 ///
+/// W LICZBIE NIEOKREŚLONEJ („what comes next"), nigdy „the step after yours". Ta pierwsza wersja
+/// kłamała w dwóch kształtach, które ten produkt buduje na co dzień: przy rozgałęzieniu krok
+/// oddaje robotę TRZEM krokom naraz, a krok ostatni nie oddaje jej żadnemu — czyta go człowiek.
+/// Agent, który wierzy w jeden krok po sobie, pisze odpowiedź pod jednego czytelnika i wybiera,
+/// pod którego; przy ostatnim kroku pisze pod czytelnika, którego nie ma.
+///
 /// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak [`HANDOFF_INDEX_OPENS`] i
 /// [`OUTCOME_ASKED_FOR`] obok (decyzja D5, niezmiennik 14): agent czyta „what this step passes
 /// on", nigdy „handoff".
 const HOW_TO_ANSWER: &str = "\
-Your last message is what this step passes on. The step after yours reads it and nothing else, \
-so leave nothing worth keeping outside it.
+Your last message is what this step passes on. What comes next reads it and nothing else, so \
+leave nothing worth keeping outside it.
 
 Write it under these three headings, each one alone on its line and in this order:
 
 ## Answer
-what the step after yours needs to know.
+what comes next needs to know.
 
 ## Evidence
 `file:line`, or a link, for every claim above.
@@ -560,9 +566,9 @@ and a colon, in the shape shown here:";
 /// WPROST O SKUTKU, tak samo jak [`OUTCOME_ASKED_FOR`] obok i z tego samego powodu: prośbę „napisz
 /// wiersz X" bez powiedzenia, co się stanie bez niego, model traktuje jak formalność.
 const FIELDS_ARE_REQUIRED: &str = "\
-The ones marked as needed are not optional: an answer without them does not pass, and the step \
-after this one is left without the thing it was promised. The rest you may leave out when you \
-have nothing to put in them.";
+The ones marked as needed are not optional: an answer without them does not pass, and whatever \
+comes after this step is left without the thing it was promised. The rest you may leave out when \
+you have nothing to put in them.";
 
 /// Znacznik, którym blok odróżnia pole wymagane od reszty.
 ///
@@ -3025,6 +3031,11 @@ enum Job {
 struct ServeJob {
     /// Wiersz powloki, doslownie z pliku.
     command: String,
+    /// Nazwa pola przekazania, z ktorego wziac komende, kiedy nie wpisal jej czlowiek.
+    ///
+    /// `None` znaczy „komende wpisal czlowiek" — powod w calosci stoi przy
+    /// [`crate::workflow::ServeStep::command_from`].
+    command_from: Option<String>,
     /// Katalog, w ktorym to wstaje. Dla serwera dev jest trescia, nie szczegolem: podaje kod
     /// z TEGO drzewa, wiec weryfikacja w kopii kroku oglada dokladnie te prace.
     cwd: PathBuf,
@@ -4533,6 +4544,10 @@ fn plan_step(
                 folds_in,
                 job: Job::Serve(Box::new(ServeJob {
                     command: serve.command.clone(),
+                    /* Sama NAZWA POLA, nie cały typ: to jest jedyna wartość, którą krok czyta
+                     * w chwili startu, a `ServeJob` istnieje po to, żeby nie nosić ze sobą
+                     * kształtu z pliku workflow. */
+                    command_from: serve.command_from.as_ref().map(|from| from.field.clone()),
                     cwd: spot.cwd,
                     ours: spot.ours,
                 })),
@@ -7941,7 +7956,16 @@ impl Live {
     ///
     /// Nie `async`: `Processes::start` wraca natychmiast, z `pgid` już w ręku.
     fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
-        let line = job.command.trim();
+        /* KOMENDA OD CZŁOWIEKA MA PIERWSZEŃSTWO, a pole `command_from` jest drogą na wypadek,
+         * gdy jej nie ma. Odwrotna kolejność znaczyłaby, że wpisany wiersz przestaje działać
+         * w chwili, w której ktoś dopisze pole obok niego. */
+        let from_the_agent = match self.command_a_step_handed_over(id, job) {
+            Ok(said) => said,
+            Err(why) => return self.refuse_step(id, &why),
+        };
+        let line = from_the_agent
+            .as_deref()
+            .map_or_else(|| job.command.trim(), str::trim);
         if line.is_empty() {
             // Odmowa, nie ciche przejście: krok bez komendy jest kafelkiem bez skutku, a bieg,
             // który go „wykona", uczy człowieka, że ten kafelek działa.
@@ -7970,6 +7994,71 @@ impl Live {
                 self.refuse_step(id, &format!("Loadout could not start \"{line}\": {error}"))
             }
         }
+    }
+
+    /// Wiersz powłoki, który oddał krok przed tym — albo `None`, gdy ten kafelek go nie oczekuje.
+    ///
+    /// # Po co to istnieje
+    ///
+    /// Zamówienie właściciela 2026-08-30: „agent sam ma rozkminić jakie komendy użyć do
+    /// odpalenia, my nie ingerujemy bo nie chcę w każdym projekcie osobno wpisywać na front
+    /// i backend command". Komenda uruchamiająca aplikację jest inna w każdym repo, a wpisana
+    /// ręcznie w workflow zamienia jeden wielokrotnego użytku plik w plik na jeden projekt.
+    ///
+    /// # Nowego mechanizmu tu nie ma
+    ///
+    /// Prośba o nazwane pole jedzie do agenta od dawna ([`Handover::Form`]), parser
+    /// `nazwa: wartość` stoi w [`fields_said_in`], a brak pola wymaganego jest już odmową.
+    /// Ta funkcja mówi wyłącznie, KTÓRE z tych pól jest komendą.
+    ///
+    /// # SKAN SEKRETÓW, którego ta droga inaczej by ominęła
+    ///
+    /// `workflow::check::a_command_carrying_a_secret` sądzi komendę **przy zapisie**, nad tekstem
+    /// z PLIKU — a komenda wyprodukowana przez agenta nie przechodzi tamtędy ani razu i leci
+    /// prosto do `/bin/sh -c`. Uzasadnienie przy `const SHELL` opiera się wprost na tym, że
+    /// komendę napisał człowiek i że przeszła skan. Przepuszczamy ją więc przez TEN SAM
+    /// `secret_shaped` i odmawiamy startu, zamiast odpalać.
+    fn command_a_step_handed_over(
+        &self,
+        id: StepId,
+        job: &ServeJob,
+    ) -> Result<Option<String>, String> {
+        let Some(field) = job.command_from.as_deref() else {
+            return Ok(None);
+        };
+
+        let handed = self.handed_before(id);
+        /* NAJŚWIEŻSZE ODDANE POLE WYGRYWA. Rodziców bywa kilku (fan-in), a runda pętli dokłada
+         * własne — więc przechodzimy całą listę i bierzemy ostatnie, które to pole niesie. Wersja
+         * biorąca pierwsze uruchamiałaby komendę z rundy sprzed poprawki. */
+        let mut found: Option<String> = None;
+        for one in &handed {
+            let Ok(read) = handoff::read_handoff(&one.path) else {
+                continue;
+            };
+            if let Some(said) = fields_said_in(&read.body).get(field) {
+                found = Some(said.clone());
+            }
+        }
+
+        let Some(said) = found else {
+            /* ODMOWA NAZYWA POLE I KAFELEK. „Nothing to start" zostawia człowieka przed grafem,
+             * w którym wszystko wygląda poprawnie — a brakuje jednego wiersza w odpowiedzi
+             * poprzednika (niezmiennik 29: zdanie ląduje w `book.steps[id].error`, czyli tam,
+             * gdzie człowiek je czyta). */
+            return Err(format!(
+                "This step takes its command from a field called \"{field}\", and the step \
+                 before it did not hand one over."
+            ));
+        };
+
+        if let Some(what) = crate::workflow::check::a_command_carrying_a_secret_shape(&said) {
+            return Err(format!(
+                "The step before this one handed over a command that looks like it carries {what}, \
+                 so Loadout did not run it. Commands reach the shell as plain text."
+            ));
+        }
+        Ok(Some(said))
     }
 
     /// Krok, który nie ruszył, z powodem zapisanym tam, gdzie człowiek go szuka.
@@ -9874,8 +9963,8 @@ impl Live {
         }
         format!(
             "You have {minutes} minutes for this step. When the time is up the step is stopped \
-             where it stands and nothing of it reaches the step after yours, so plan the work to \
-             fit and answer while you still can."
+             where it stands and nothing of it reaches what comes next, so plan the work to fit \
+             and answer while you still can."
         )
     }
 

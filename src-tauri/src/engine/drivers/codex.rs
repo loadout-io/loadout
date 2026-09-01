@@ -1003,7 +1003,47 @@ fn rejected_app_request(method: &str, error: &Value) -> anyhow::Error {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("The vendor gave no reason.");
+
+    /* ZDANIE, KTÓRE NAZYWA NASTĘPNY RUCH — dla awarii, które umiemy rozpoznać.
+     *
+     * 2026-08-30, zgłoszenie właściciela („znowu to"): rozmowa z liderem codexowym padała
+     * komunikatem „rejected its config/read request with code -32603: failed to resolve feature
+     * override precedence: config defines `[permissions]` profiles but does not set
+     * `default_permissions`". Wszystko w tym zdaniu jest prawdą i nic z niego nie wynika: numer
+     * kodu, nazwa metody i wewnętrzna fraza vendora nie mówią człowiekowi, że ma poprawić JEDNĄ
+     * LINIĘ we WŁASNYM pliku — ani gdzie ten plik leży.
+     *
+     * Ugryzło go dwa razy, i to jest tu cały powód: odmowa bez następnego ruchu zostawia
+     * człowieka tam, gdzie był (DESIGN §8), a żargon vendora nie ma prawa trafić na ekran
+     * (niezmiennik 14).
+     *
+     * Rozpoznajemy PO TREŚCI, nie po kodzie: `-32603` to „internal error" i znaczy u tego vendora
+     * dowolną z wielu rzeczy, więc tłumaczenie po numerze przypisywałoby tę radę awariom, których
+     * ona nie dotyczy. Czego NIE rozpoznamy, jedzie dalej dosłownie — zdanie zmyślone jest gorsze
+     * od cudzego. */
+    if let Some(said) = what_to_do_about_it(message) {
+        return anyhow!("{said}");
+    }
     anyhow!("The Codex App Server rejected its {method} request with code {code}: {message}")
+}
+
+/// Co człowiek ma z tym zrobić — dla awarii vendora, które umiemy rozpoznać po treści.
+///
+/// `None` znaczy „nie znamy tej", i wtedy jedzie oryginał. Lista jest krótka z rozmysłu: rośnie
+/// wyłącznie o awarie, które kogoś naprawdę zatrzymały, a nie o te, które dałoby się wyobrazić.
+#[must_use]
+pub fn what_to_do_about_it(message: &str) -> Option<String> {
+    if message.contains("default_permissions") && message.contains("permissions") {
+        return Some(
+            "Codex cannot read its own settings, so Loadout could not start this lead. Your \
+             ~/.codex/config.toml sets up permission profiles but never says which one is the \
+             default, and Codex refuses to start until it does. Add a line saying \
+             default_permissions with the name of the profile you want, or pick a lead that runs \
+             on Claude instead."
+                .to_owned(),
+        );
+    }
+    None
 }
 
 fn curated_mcp_overrides(

@@ -13,6 +13,7 @@
 # komenda niezarejestrowana nie krzyczy: funkcja istnieje, `invoke` na nią nie trafia, i tyle.
 # w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
 # wierszem diffu, a nie przesunięciem całego pliku.
+answer_the_lead
 apply_setup
 author_skill
 check_trigger

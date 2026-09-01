@@ -73,6 +73,32 @@ function marker(row: HistoryRow): { glyph: string; tone: string } {
 const PROPOSE =
   'h-[17px] rounded-pill border border-accent-edge px-[7px] font-mono text-meta text-accent';
 
+/**
+ * Rodzaje wiersza, których treść jest PROZĄ do przeczytania, a nie etykietą czynności.
+ *
+ * Tylko one dostają czytelną miarę wiersza. Reszta jest etykietą — komenda, ścieżka, licznik —
+ * a etykieta zawinięta w połowie kolumny czyta się gorzej, nie lepiej.
+ *
+ * JEDEN RODZAJ, i to nie jest niedopatrzenie. Makieta zawęża regułę do `.ln.note`, a plik
+ * fikstur nazywa `note` „jedyną prozą w widoku" — dwa źródła mówią to samo. Lista, a nie
+ * porównanie do jednej wartości, bo `handoff` dołączy do niej, kiedy dostanie producenta
+ * (projekt `2026-08-30-rozmowa-jest-kregoslupem`, pozycja 4).
+ */
+const PROSE: readonly string[] = ['note'];
+
+/**
+ * Czytelna miara wiersza dla prozy — **wartość z makiety**, nie wymyślona tutaj.
+ *
+ * `docs/mockup/index.html` ma `.ln.note .t{max-width:64ch}` od początku i okno jej nigdy nie
+ * zastosowało. Zmierzone 2026-08-30 na zrzucie właściciela: odpowiedź agenta szła przez całą
+ * szerokość kolumny strumienia, czyli grubo ponad 200 znaków w wierszu — a oko gubi początek
+ * następnego wiersza, kiedy musi po niego wracać przez pół ekranu.
+ *
+ * Kryterium `run-matches-mockup.test.tsx` sądzi wyłącznie dwie siatki, więc ta wartość odjechała
+ * od wyroczni bez ani jednej czerwieni. Dlatego stoi tu z nazwą pliku, z którego pochodzi.
+ */
+const MEASURE = 'max-w-[64ch]';
+
 /** Co wiersz propozycji daje przyciskowi: nazwę do przeczytania i komendę do uruchomienia. */
 interface Proposal {
   readonly workflow: string;
@@ -100,7 +126,10 @@ function proposalOf(row: HistoryRow, command: string | undefined): Proposal | nu
 
 export function Line({ row, onToggle, command }: LineProps): ReactElement {
   const { glyph, tone } = marker(row);
-  const hasMore = row.output.length > 0;
+  /* DWIE RZECZY MOGĄ STAĆ ZA WIERSZEM i jedna kontrolka je otwiera: wyjście komendy, która
+     padła, i proza, która nie zmieściła się w wierszu. Kontrolka jest jedna, bo pytanie
+     człowieka jest jedno — „pokaż mi resztę"; różnią się dopiero tym, jak są narysowane. */
+  const hasMore = row.output.length > 0 || row.body.length > 0;
   const proposal = proposalOf(row, command);
   /**
    * Zdanie, które wróciło z próby uruchomienia; `null`, dopóki nie ma o czym mówić.
@@ -119,7 +148,9 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
     >
       <span className={`text-center font-mono text-mono ${tone}`}>{glyph}</span>
 
-      <span className="min-w-0 text-body text-ink">
+      <span
+        className={`min-w-0 text-body text-ink${PROSE.includes(row.kind) ? ' ' + MEASURE : ''}`}
+      >
         {/* TWOJE ZDANIE JEST PODPISANE TOBĄ, nie agentem, i to jest cała treść tej gałęzi.
 
             2026-08-19 — zgłoszenie właściciela: „a może odpisuje on, ale na pewno nie widać moich
@@ -214,7 +245,20 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
         <span className="font-mono text-mono whitespace-nowrap text-muted">{row.metric}</span>
       )}
 
-      {row.expanded && hasMore ? (
+      {row.expanded && row.body.length > 0 ? (
+        /* PROZA, NIE WYJŚCIE MASZYNY. Ten sam blok co niżej, ale bez monospace'u i bez czerwonej
+           krawędzi: to jest zdanie agenta i czyta się je jak tekst, a czerwona krawędź znaczy
+           w tym widoku „to padło". Miara wiersza ta sama, co w nagłówku — proza nie zmienia
+           szerokości od tego, że ją rozwinięto. */
+        <p
+          data-line-body
+          className={`col-start-2 whitespace-pre-line break-words text-body text-body ${MEASURE}`}
+        >
+          {row.body.join('\n')}
+        </p>
+      ) : null}
+
+      {row.expanded && row.output.length > 0 ? (
         /* Wyjście jest wartością maszynową: mono, do zaznaczenia i skopiowania. Model dał tu
            OSTATNIE dwadzieścia linii — to ta połowa logu, w której stoi powód. Lewa krawędź
            w `--fail` jest z makiety (`.detail`) i jest jedyną rzeczą, która odróżnia ten blok

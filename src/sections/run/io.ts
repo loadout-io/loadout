@@ -36,6 +36,8 @@ import { runFor, type RunStore } from '../../state/run';
 import type { Step } from '../../state/run';
 import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
+import { runSuggestion } from './feed/suggested';
+import { autoStarts } from './auto-start';
 import { feedFor } from './feed/live';
 import { takeTheBudget } from './limits/chosen';
 /* SUFIT DLA BIEGU, KTÓREGO NIKT NIE ZAMÓWIŁ Z PASKA — dostawa triggera bierze domyślną kwotę
@@ -723,8 +725,57 @@ export function openChat(
     });
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
+
+    /* LIDER, KTÓRY POPROSIŁ O START, DOSTAJE START — rozstrzygnięcie właściciela 2026-08-30
+     * („rusza samo"). Wiersz jest już NA EKRANIE, zanim cokolwiek ruszy, i to jest jedyna
+     * ochrona człowieka przy tej decyzji: widzi, co się zaczyna, w tej samej sekundzie.
+     *
+     * Ta sama droga, co Enter i co przycisk propozycji (`runSuggestion` → `startFromLine`), bo
+     * „który workflow, ile naraz, w którym folderze" ma jedną odpowiedź (niezmiennik 23). Odmowa
+     * ląduje w strumieniu tego terminalu — porzucona byłaby biegiem, który nie ruszył, i ciszą
+     * zamiast powodu. */
+    for (const going of autoStarts(stamped)) {
+      void runSuggestion(going.command).then((refusal) => {
+        if (refusal !== null) {
+          stamp += 1;
+          view.appendLines([
+            { kind: 'note', agent: going.agent, text: refusal, id: stamp, at: Date.now() },
+          ]);
+        }
+      });
+    }
   });
   return invoke<void>('open_chat', { terminal: at, folder, lines });
+}
+
+/**
+ * Człowiek odpowiedział na pytanie przypięte w tym terminalu.
+ *
+ * # Dlaczego okno woła to przy KAŻDEJ odpowiedzi
+ *
+ * Bo nie ma jak rozstrzygnąć, do kogo należy przypięte pytanie: w jednym strumieniu stoi pytanie
+ * lidera (tura zablokowana na wywołaniu narzędzia) i pytanie kafelka kontrolnego (bieg stojący na
+ * punkcie). Rozstrzyga strona, która wie — Rust porównuje PODPIS pytającego i oddaje `false`,
+ * kiedy w tym terminalu nikt na to nie czekał.
+ *
+ * `false` jest więc **odpowiedzią, nie błędem**: okno idzie wtedy swoją dotychczasową drogą,
+ * a odpowiedź na punkt kontrolny jedzie tak, jak jechała.
+ *
+ * @param terminal karta, w której stoi pytanie — ta sama tożsamość, co przy `open_chat`.
+ * @param agent podpis, pod którym pytanie stanęło na ekranie. Bez niego odpowiedź na kafelek
+ *   odblokowywałaby przy okazji cudze pytanie, zdaniem, które go nie dotyczy.
+ */
+export function answerTheLead(
+  terminal: string | null,
+  folder: string | null,
+  agent: string,
+  answer: string,
+): Promise<boolean> {
+  return invoke<boolean>('answer_the_lead', {
+    terminal: terminalOf(terminal, folder),
+    agent,
+    answer,
+  });
 }
 
 /**

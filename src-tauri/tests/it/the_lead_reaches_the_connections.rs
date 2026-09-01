@@ -210,18 +210,34 @@ fn a_conversation_without_connections_starts_exactly_as_it_does_today() {
     );
 }
 
+/// 2026-08-30 — PRZESŁANKA TEGO KRYTERIUM ZMIENIŁA SIĘ ŚWIADOMIE, WIĘC ZMIENIŁ SIĘ JEGO PODMIOT.
+///
+/// Do tego dnia brzmiało „lider bez połączeń nie dostaje ŻADNYCH serwerów" i było prawdą. Od
+/// czasowników Loadouta (`crate::bridge`) każda rozmowa dostaje jeden serwer: własny most, przez
+/// który lider sięga po bibliotekę tego człowieka. Wcześniej nie miał ku temu żadnej drogi —
+/// vendor w trybie bez terminala nie daje ani jednego takiego narzędzia (zmierzone 2026-08-29).
+///
+/// Rzecz, której to kryterium naprawdę broniło, zostaje bez zmian i jest sądzona niżej:
+/// **prywatne serwery tego człowieka nie wyciekają do rozmowy, o którą nie prosił.** Skasowanie
+/// go byłoby zdjęciem tamtej ochrony przy okazji zmiany, która jej nie dotyczy.
 #[tokio::test]
-async fn a_lead_without_connections_is_handed_nothing_extra() -> Result<(), Box<dyn Error>> {
+async fn a_lead_without_connections_is_handed_nobody_elses_servers() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     let started = bench.one_sentence("codex", &[]).await?;
+
+    let servers: Vec<&String> = started
+        .arguments
+        .iter()
+        .filter(|argument| argument.contains("mcp_servers"))
+        .collect();
+
     assert!(
-        !started
-            .arguments
+        servers
             .iter()
-            .any(|argument| argument.contains("mcp_servers")),
-        "this lead's agent has no connections at all, and the conversation was handed servers \
-         anyway: {:?}",
-        started.arguments
+            .all(|argument| argument.contains("mcp_servers.loadout.")),
+        "this lead's agent has no connections at all, so the only server it may carry is \
+         Loadout's own bridge. Anything else here is one person's private server leaking into a \
+         conversation nobody asked to have it in: {servers:?}"
     );
     Ok(())
 }

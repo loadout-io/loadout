@@ -109,7 +109,11 @@ async function openPanel(app: RunningApp): Promise<void> {
 }
 
 async function assertExactlyOneChoice(app: RunningApp, expected: Use): Promise<void> {
-  const radios = app.page.locator(`${PANEL} input[type="radio"]`);
+  /* WŁASNA GRUPA, nie „wszystkie radia w panelu". Panel kroku ma dziś więcej niż jedną grupę
+     wyboru (2026-08-30 doszedł wiersz „What it hands over"), a liczenie wszystkich zamienia to
+     kryterium w licznik kontrolek panelu — czerwony przy każdym dołożonym wierszu i milczący
+     wtedy, gdy zniknie wybór folderu, a przybędzie coś innego. */
+  const radios = app.page.locator(`${PANEL} input[name="step-folder"]`);
   expect(
     await radios.count(),
     'the agent panel must expose project, new copy, and previous-step files as three controls',
@@ -164,7 +168,7 @@ describe('an agent has three visible, exclusive file-location choices', () => {
           use,
         );
         expect(
-          await app.page.locator(`${PANEL} input[type="radio"]:checked`).count(),
+          await app.page.locator(`${PANEL} input[name="step-folder"]:checked`).count(),
           'changing one file-location choice left more than one selected',
         ).toBe(1);
 

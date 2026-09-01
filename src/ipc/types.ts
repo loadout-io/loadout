@@ -25,7 +25,13 @@ export type Line =
   | Says<'run'>
   | Says<'step'>
   | Says<'agent'>
-  | Says<'note'>
+  /* NIE `Says`: proza niesie o jedno pole więcej i lustro porównuje zestaw kluczy CO DO JEDNEGO,
+   * więc kształt pożyczony od pozostałych porzucałby każdy wiersz prozy w ciszy.
+   *
+   * `body` jest CAŁĄ prozą, kiedy nie mieści się w wierszu, i pustą listą, kiedy się mieści —
+   * reguła 1 mówi „treść siedzi ZA wierszem, nigdy w nim", a to pole jest jedyną drogą, którą
+   * proza może za ten wiersz trafić. Pełny powód stoi przy `Line::Note` po stronie Rusta. */
+  | { kind: 'note'; agent: string; text: string; body: string[] }
   /* Tura CZLOWIEKA. Osobny rodzaj, nie `note`: `note` znaczy „to powiedzial agent”, a widok
    * rysuje te dwie rzeczy inaczej, bo czytelnik musi widziec, czyje zdanie czyta. Powod, dla
    * ktorego to w ogole jedzie drutem, stoi przy `Line::Told` po stronie Rusta. */
@@ -36,7 +42,7 @@ export type Line =
    * po tej stronie granicy nieodtwarzalna. Okno, które składa komendę z powrotem z prozy, jest
    * tym samym oknem, które samo szuka `/run` — tylko o jeden krok dalej (niezmiennik 15).
    * Rozstrzygnięcie i pełny powód stoją przy `Line::Suggested` po stronie Rusta. */
-  | { kind: 'suggested'; agent: string; text: string; command: string }
+  | { kind: 'suggested'; agent: string; text: string; command: string; auto: boolean }
   | Says<'handoff'>
   | { kind: 'thinking'; agent: string }
   /* Stan kroku zmienił się. NIE jest wierszem historii — przestawia blok paska loadoutu
@@ -150,12 +156,16 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
     },
   ],
   ['ran', { agent: str, text: str, ok: flag, preview: str, detail: strs, detailId: maybeNum }],
-  ['note', SAYS],
+  ['note', { agent: str, text: str, body: strs }],
   ['told', SAYS],
   /* NIE `SAYS`: propozycja niesie o jedno pole więcej i lustro porównuje zestaw kluczy CO DO
    * JEDNEGO, więc kształt pożyczony od prozy porzucałby każdy taki wiersz w ciszy — widok
    * po prostu nigdy nie pokazywałby tego, co lider zaproponował. */
-  ['suggested', { agent: str, text: str, command: str }],
+  /* `auto` jest tu obowiązkowe, nie opcjonalne, i to jest cała różnica między wierszem, który
+   * uruchamia bieg, a wierszem, który go proponuje. Klucz nieobecny czytałby się jak `false`
+   * przez przypadek — a lustro porównuje ZESTAW kluczy co do jednego, więc wiersz bez niego ma
+   * zostać porzucony głośno, a nie zinterpretowany po cichu. */
+  ['suggested', { agent: str, text: str, command: str, auto: flag }],
   ['asked', { agent: str, text: str, options: strs }],
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],

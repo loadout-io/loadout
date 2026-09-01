@@ -83,7 +83,14 @@ function markup(folder: Folder): string {
 
 /** Wszystkie radia z markupu, bez zakładania kolejności atrybutów renderera. */
 function radios(html: string): string[] {
-  return html.match(/<input\b[^>]*type="radio"[^>]*>/g) ?? [];
+  /* WYŁĄCZNIE GRUPA FOLDERU, nie każdy radio w panelu.
+   *
+   * 2026-08-30 — do tego dnia stało tu `type="radio"` bez zawężenia i liczyło WSZYSTKIE
+   * przyciski panelu. Kryterium pytało więc „ile jest wyborów w tym panelu", a chce pytać
+   * „ile jest wyborów FOLDERU" — więc każdy nowy wiersz z wyborem gdziekolwiek w panelu palił
+   * je czerwienią, która nie ma z folderem nic wspólnego. Grupa `step-folder` jest tym samym
+   * kluczem, którym przeglądarka wiąże te trzy przyciski w jeden wybór. */
+  return html.match(/<input\b[^>]*name="step-folder"[^>]*>/g) ?? [];
 }
 
 function checked(html: string, use: string): boolean {
