@@ -1,4 +1,8 @@
-//! T-134 AC-1: live Stop has a finite, honest ceiling and releases the next Start.
+//! T-134 AC-1: żywy Stop ma skończony, uczciwy sufit i zwalnia zapadkę biegu.
+//!
+//! T-201 później zaostrzyło zasobową połowę kontraktu: ocalały bez dowodu zachowuje uchwyt i
+//! miejsce aż do prawdziwego dowodu śmierci. Późniejszy Start może ruszyć po jawnym podniesieniu
+//! wspólnego limitu, ale nie wolno mu ponownie użyć miejsca ocalałego procesu.
 
 use std::error::Error;
 use std::fs;
@@ -14,8 +18,8 @@ use loadout_lib::commands::history::read_run_inner;
 use loadout_lib::commands::run::{run_workflow_with_reflection, stop_run_inner};
 use loadout_lib::commands::{Drivers, Outcome, RunError, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
-    AgentDriver, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
-    SessionRef, Tokens,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
+    Probe, RunSpec, SessionRef, Tokens,
 };
 use loadout_lib::engine::step::StepState;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
@@ -73,7 +77,7 @@ const WORKFLOW: &str = r#"{
 }"#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stubborn_agent_stops_after_three_attempts_and_releases_the_next_start()
+async fn stubborn_agent_keeps_its_seat_while_the_next_start_uses_an_explicit_second_one()
 -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     let fake = Arc::new(Fake::stubborn_then_successful());
@@ -116,14 +120,23 @@ async fn stubborn_agent_stops_after_three_attempts_and_releases_the_next_start()
     );
     assert_stubborn_receipt(&bench, &report)?;
 
-    // Ten sam AppState jest częścią kryterium. Nowy, niezależny stan ominąłby zapadkę, której
-    // zablokowanie po nieudowodnionym Stopie jest wadą T-134.
+    // Ten sam AppState jest częścią kryterium. Nowy, niezależny stan ominąłby zarówno zapadkę
+    // biegu z T-134, jak i wspólną pulę z T-201. Ocalały zachowuje pierwsze miejsce, bo bez
+    // dowodu śmierci zwolnienie go skłamałoby o rzeczywistej równoległości (niezmienniki 6 i 11).
+    assert_eq!(
+        deps.control.slots().running_now(),
+        1,
+        "the unproven survivor no longer occupies its shared seat"
+    );
     let next = app
         .begin_run(bench.project.path())
         .map_err(std::io::Error::other)?;
     let (next_lines, next_source) = line_channel(QUEUE_CAP);
     let next_pump = spawn_pump(next_source, Channel::new(|_| Ok(())));
-    let next_request = bench.request();
+    let mut next_request = bench.request();
+    // Drugie miejsce jest jawną decyzją wołającego. Następny Start ma je wykorzystać, nie
+    // odziedziczyć permit procesu, którego Loadout nadal uczciwie liczy jako żywy.
+    next_request.how_many_at_once = 2;
     let next_report = tokio::time::timeout(
         PATIENCE,
         run_workflow_with_reflection(&next, &next_request, next_lines, None, false),
@@ -135,6 +148,11 @@ async fn stubborn_agent_stops_after_three_attempts_and_releases_the_next_start()
     assert_eq!(next_report.steps, vec![StepState::Succeeded]);
     assert_eq!(fake.starts.load(Ordering::Acquire), 2);
     assert_eq!(fake.successful_waits.load(Ordering::Acquire), 1);
+    assert_eq!(
+        next.control.slots().running_now(),
+        1,
+        "the successful second agent did not return its own seat or released the survivor's seat"
+    );
     Ok(())
 }
 
@@ -346,7 +364,7 @@ impl AgentDriver for Fake {
     async fn start(
         &self,
         spec: RunSpec,
-        _events: mpsc::Sender<DecodedEvent>,
+        events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         let index = self.starts.fetch_add(1, Ordering::AcqRel);
         self.started.notify_one();
@@ -367,6 +385,7 @@ impl AgentDriver for Fake {
             (Scenario::StubbornThenSuccessful, 1) => Ok(Box::new(SuccessfulHandle {
                 session,
                 waits: Arc::clone(&self.successful_waits),
+                events,
             })),
             (Scenario::DeadOnFirstCancel, 0) => Ok(Box::new(WaitingHandle {
                 session,
@@ -431,6 +450,7 @@ impl AgentHandle for WaitingHandle {
 struct SuccessfulHandle {
     session: SessionRef,
     waits: Arc<AtomicUsize>,
+    events: mpsc::Sender<DecodedEvent>,
 }
 
 #[async_trait]
@@ -449,7 +469,7 @@ impl AgentHandle for SuccessfulHandle {
 
     async fn wait(&mut self) -> anyhow::Result<TurnOutcome> {
         self.waits.fetch_add(1, Ordering::AcqRel);
-        Ok(TurnOutcome {
+        let outcome = TurnOutcome {
             ok: true,
             reason: FinishReason::Completed,
             text: "Done.".to_owned(),
@@ -458,7 +478,12 @@ impl AgentHandle for SuccessfulHandle {
             turns: 1,
             took: Duration::ZERO,
             session: self.session.clone(),
-        })
+        };
+        self.events
+            .send(AgentEvent::Finished(outcome.clone()).into())
+            .await
+            .map_err(|_| anyhow::anyhow!("the T-134 event receiver closed before Finished"))?;
+        Ok(outcome)
     }
 
     async fn cancel(&mut self) -> GroupProof {
