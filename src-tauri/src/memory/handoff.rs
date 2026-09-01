@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::durable_file::{
     DurableFilePublisher, ModePolicy, PRIVATE_FILE_MODE, PublicationBatch, PublishError,
-    recover_owned_temps_in,
+    recover_owned_temps_in, revision_of,
 };
 use crate::engine::supervisor::{PublicationEntry, PublicationEntryKind, PublicationRoot};
 
@@ -684,7 +684,7 @@ pub fn supersede(run_dir: &Path, old_id: &str, draft: MetaDraft, body: &str) -> 
     }
 
     let written = write_inner(run_dir, draft, body, Some(old_id))?;
-    flip_status(&old.path)?;
+    flip_status(run_dir, &old.path)?;
     Ok(written)
 }
 
@@ -925,8 +925,19 @@ fn now_utc() -> String {
 /// Przepisujemy tekst, nie renderujemy front-mattera od nowa: renderowanie przestawiłoby
 /// wartości, których korekta nie dotyczy, i stary plik przestałby być plikiem, który
 /// naprawdę powstał [T6 §9].
-fn flip_status(path: &Path) -> Result<()> {
+///
+/// 2026-08-28 — DO TEGO DNIA SZŁO TU GOŁE `fs::write` I BYŁ TO OSTATNI CLOBBERING ZAPIS
+/// W DRZEWIE: cała reszta plików-prawdy publikuje się przez `DurableFilePublisher`, a ten
+/// jeden przepisywał plik w miejscu, bez ani jednej kontroli tego, co pod nim leży. Odczyt,
+/// z którego powstaje nowy tekst, jest jednocześnie rewizją, wobec której publikujemy: plik
+/// zmieniony między jednym a drugim jest odmową, nie cichym nadpisaniem.
+///
+/// **Zgłoszone odstępstwo:** ta odmowa NIE MA dziś drogi na ekran (niezmiennik 29), bo cała
+/// rodzina przekazań jej nie ma — `list_handoffs` jest tylko do odczytu, a jedynym wołającym
+/// [`supersede`] są testy. Dziura jest zamknięta w Ruście i tyle się o niej twierdzi.
+fn flip_status(run_dir: &Path, path: &Path) -> Result<()> {
     let text = fs::read_to_string(path)?;
+    let expected = revision_of(text.as_bytes());
     let (_, body_at) = FrontMatter::split(&text).map_err(|error| match error {
         Error::NoFrontMatter { .. } => Error::NoFrontMatter {
             path: path.to_owned(),
@@ -948,7 +959,21 @@ fn flip_status(path: &Path) -> Result<()> {
     }
     out.push_str(&text[body_at..]);
 
-    fs::write(path, out)?;
+    // `Exact`, nie `PreserveExistingOr`: przekazanie jest prywatne od chwili powstania
+    // (`publish_handoff_batch`) i korekta nie ma prawa go rozszerzyć na grupę.
+    DurableFilePublisher::new(run_dir)
+        .publish_definition(
+            path,
+            out.as_bytes(),
+            ModePolicy::Exact(PRIVATE_FILE_MODE),
+            Some(&expected),
+        )
+        .map_err(|error| match error {
+            PublishError::Changed { .. } | PublishError::Conflict { .. } => Error::ChangedOnDisk {
+                path: path.to_owned(),
+            },
+            other => Error::Io(other.into_io()),
+        })?;
     Ok(())
 }
 

@@ -60,7 +60,9 @@ function scene(): Readonly<Record<string, readonly TauriReply[]>> {
   return {
     list_workspaces: copies([WORKSPACE]),
     list_workflows: copies([WORKFLOW]),
-    load_workflow: copies(WORKFLOW.workflow, 4),
+    /* 2026-08-28: otwarcie oddaje plik RAZEM z rewizją, na której okno go czyta — bez niej
+     * zapis nie ma czego porównać z dyskiem (`commands::workflows::OpenWorkflow`). */
+    load_workflow: copies({ workflow: WORKFLOW.workflow, revision: 'r1' }, 4),
     check_workflow: copies([], 12),
     list_agents: copies([AGENT]),
     list_skills: copies([]),

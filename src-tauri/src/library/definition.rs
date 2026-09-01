@@ -34,6 +34,13 @@ pub enum DefinitionProblemKind {
 pub enum Definition<T> {
     Healthy {
         value: T,
+        /// Rewizja pliku, z którego ta definicja powstała — dokładnie te bajty, nie odczyt
+        /// zrobiony sekundę później.
+        ///
+        /// 2026-08-28 — stoi przy definicji, a nie osobną komendą „daj rewizję", bo okno musi
+        /// wysłać ją z powrotem przy zapisie: rewizja pobrana drugim wywołaniem opisywałaby
+        /// inną chwilę niż to, co człowiek ma przed sobą, i zapis dalej mógłby cofnąć cudzą pracę.
+        revision: String,
     },
     DefinitionProblem {
         shelf: Shelf,
@@ -48,7 +55,7 @@ pub fn healthy_only<T>(definitions: Vec<Definition<T>>) -> Vec<T> {
     definitions
         .into_iter()
         .filter_map(|definition| match definition {
-            Definition::Healthy { value } => Some(value),
+            Definition::Healthy { value, .. } => Some(value),
             Definition::DefinitionProblem { .. } => None,
         })
         .collect()
@@ -58,10 +65,16 @@ pub fn healthy_only<T>(definitions: Vec<Definition<T>>) -> Vec<T> {
 #[must_use]
 pub const fn agent_problem(error: &AgentError) -> DefinitionProblemKind {
     match error {
-        AgentError::Unreadable { .. } => DefinitionProblemKind::Unreadable,
-        AgentError::Malformed { .. } | AgentError::EmptySetting { .. } => {
-            DefinitionProblemKind::Malformed
-        }
+        // `Changed` powstaje wyłącznie przy ZAPISIE i nigdy nie przyjeżdża z listowania —
+        // ramię jest tu po to, żeby wyczerpać typ, a nie żeby opisywać stan półki. Ekran
+        // dostaje wtedy najbliższą prawdę: tego pliku nie udało się użyć.
+        AgentError::Unreadable { .. } | AgentError::Changed => DefinitionProblemKind::Unreadable,
+        // `CarriesASecret` powstaje — jak `Changed` wyżej — WYŁĄCZNIE przy zapisie i nigdy nie
+        // przyjeżdża z listowania półki: plik z sekretem nie ma jak na niej wylądować, bo brama
+        // stoi przed pierwszym bajtem. Ramię jest tu po to, żeby wyczerpać typ.
+        AgentError::Malformed { .. }
+        | AgentError::EmptySetting { .. }
+        | AgentError::CarriesASecret { .. } => DefinitionProblemKind::Malformed,
     }
 }
 

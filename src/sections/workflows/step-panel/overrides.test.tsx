@@ -102,7 +102,7 @@ function workflowIo(): WorkflowRecorder {
     savedAgents,
     save: (target: WorkflowFile) => {
       savedFiles.push(target);
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(target));
     },
     check: () => Promise.resolve([] as Note[]),
     saveAgent: (agent: Agent) => {
@@ -124,7 +124,7 @@ function agentsIo(seed: Agent[]): AgentsRecorder {
     newId: () => Promise.resolve('019897b4-8f3a-7c21-9d44-0b6a1e2c5f78'),
     save: (agent: Agent) => {
       written.push(agent);
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(agent));
     },
     remove: () => Promise.resolve(),
   };

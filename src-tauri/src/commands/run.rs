@@ -144,6 +144,29 @@
 //!   uczyło następnego pisarza szukać szwu, który już istnieje.
 //! - Kopiuje pliki projektu przy `fresh-copy` (T-33) — patrz [`copy_project_into`].
 //!
+//! # Dwie gałęzie schodzą się w JEDNEJ kopii (2026-08-29)
+//!
+//! Do tego dnia krok „to samo drzewo, co krok przede mną", przed którym stały dwa kroki pracujące
+//! w RÓŻNYCH drzewach, był odmową: *„…the steps before it work in 2 different folders"*. Dwie
+//! równoległe gałęzie dało się więc narysować i nie dało się na nich pracować — a to jest cały
+//! kształt „front i backend osobno, potem ktoś to składa". Od teraz taki krok dostaje **własną,
+//! nową kopię**, do której bieg znosi zmiany plikowe WSZYSTKICH rodziców ([`fan_in`]), i dopiero
+//! na niej pracuje sterownik.
+//!
+//! **Składanie porównuje PLIKI, nie różnicę gita**, i to nie jest wygoda implementacji. Plik,
+//! o którym git nie wie — `docs/added.txt` w katalogu, którego wcześniej nie było — nie ma
+//! w różnicy żadnej reprezentacji, a jest najczęstszym kształtem pracy agenta. Bazą porównania
+//! jest **nietknięta kopia składana**: powstaje tym samym przepisem, co kopie rodziców, więc
+//! „różni się od bazy" znaczy dokładnie „ten krok to zmienił".
+//!
+//! **Cicha wygrana jednej strony jest gorsza od zatrzymanego kroku.** Kiedy dwoje rodziców
+//! napisało w jednym pliku różne bajty, „ostatni wygrywa" zależy od tego, który agent skończył
+//! szybciej — czyli krok poniżej dostawałby kod, którego nikt nie napisał, i kończył się
+//! sukcesem. Dlatego niezgoda zatrzymuje krok PRZED sterownikiem ([`Live::fold_what_came_before`]),
+//! nie wpisuje do kopii ani jednego bajtu, i zostawia obie kopie rodziców tam, gdzie są.
+//! Znacznik konfliktu w pliku byłby tą samą wadą o klasę gorzej: agent pracowałby na nim
+//! jak na kodzie.
+//!
 //! # Kopie kroku są węzłami grafu (2026-08-23, T-90)
 //!
 //! Do tego dnia stało tu zdanie odwrotne — „krok z `copies: 3` biegnie tu jako jedna sesja" —
@@ -172,6 +195,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::fan_in;
 use super::isolate;
 use super::processes;
 use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
@@ -200,7 +224,8 @@ use crate::library::agents::{
     Agent, Overrides, Thinking, Tools, effort_level, read_agent_directory, resolve,
 };
 use crate::memory::handoff::{self, Kind, MetaDraft};
-use crate::skills::StepSkills;
+use crate::skills::place::material_of;
+use crate::skills::{Moved, NotAsItWas, StepSkills};
 use crate::workflow::check::{Level, Note, check_to_run};
 use crate::workflow::file::load;
 use crate::workflow::unroll::{self, Unrolled};
@@ -2771,6 +2796,14 @@ struct Plan {
     /// Co ten bieg wiedział, kiedy ruszał. Policzone RAZ, tutaj, z notatek zamrożonych przed
     /// pierwszym procesem — zrzut przepisany na końcu opisywałby pliki, jakimi są PO biegu.
     memory: Vec<MemoryRecord>,
+    /// Po jaki materiał ten bieg sięgnął, kiedy ruszał — po jednej pozycji na umiejętność.
+    ///
+    /// 2026-08-28 (T-154) — TEN SAM KSZTAŁT I TEN SAM MOMENT, CO [`Plan::memory`] obok: odwołanie,
+    /// odcisk i liczba bajtów, policzone przed pierwszym procesem i zapisane w `run.json`.
+    /// Umiejętność, która pojechała do agenta i nie zostawiła tu śladu, jest faktem o biegu,
+    /// którego nikt później nie odtworzy (niezmiennik 4) — a bez odcisku „ten sam krok jeszcze
+    /// raz" nie ma jak zauważyć, że jego materiał w międzyczasie się przesunął.
+    skills: Vec<SkillRecord>,
     /// Milisekundy epoki: kiedy ten bieg powstał.
     created_at: i64,
     /// Zrodlo triggera; brak pola w JSON zachowuje doslownie ksztalt recznego biegu.
@@ -2874,6 +2907,14 @@ struct Planned {
     /// żadnego agenta, a wpisanie mu vendora byłoby wymyśleniem faktu, po którym wznowienie
     /// szukałoby kiedyś sesji, której nigdy nie było.
     vendor: String,
+    /// Kopie, których pracę ten krok ma znieść do swojej — pusto dla każdego kroku, który
+    /// niczego nie składa (2026-08-29).
+    ///
+    /// Liczona przy PLANOWANIU, jak wszystko inne w tej strukturze, i z tego samego powodu:
+    /// odpowiedź zależy od grafu, a graf jest w tej chwili zamrożony. Policzona per krok przy
+    /// starcie byłaby drugim miejscem, w którym wolno ją wyliczyć inaczej niż zrobił to
+    /// [`where_it_works`] (niezmiennik 13).
+    folds_in: Vec<Folded>,
     /// Co ten krok robi.
     job: Job,
 }
@@ -3300,6 +3341,11 @@ fn plan_run_with_identity(
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
+    /* ZAMROŻENIE JEST JEDNORAZOWE, WIĘC BRAMKA STOI PRZED PLANEM, a nie w kroku: odmowa ma paść
+     * ZANIM powstanie katalog biegu i zanim ruszy pierwszy proces (niezmiennik 12). Zwykły Start
+     * jej nie widzi — `handoffs_from` niesie wyłącznie powtórzenie i wznowienie (`commands::rerun`). */
+    the_frozen_skills_are_still_here(request.handoffs_from.as_deref(), &steps)?;
+    let skills = what_this_run_froze(&steps)?;
 
     // Związane PRZED planem: `setup` pożycza `dir`, a `dir` jedzie do planu przeniesieniem.
     let asked_for = setup.task.clone();
@@ -3323,6 +3369,7 @@ fn plan_run_with_identity(
         project: deps.project.to_path_buf(),
         steps,
         memory,
+        skills,
         created_at,
         trigger_origin,
         // Pytamy system RAZ, tutaj: ten bieg ma nosić jedną odpowiedź przez całe życie.
@@ -3510,6 +3557,10 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
+    /* Ten sam rachunek z umiejętności, co przy biegu z pliku — i tu zwykle pusty: krok `/ask`
+     * powstaje z `Skills::default()`, więc nie ma po co sięgać. Bramki zamrożenia nie ma, bo bieg
+     * jednokrokowy niczego nie wznawia (`seeded_from: None` niżej) i nie ma z czym porównywać. */
+    let skills = what_this_run_froze(&steps)?;
     let graph = serde_json::to_value(&file)?;
 
     Ok(Plan {
@@ -3534,6 +3585,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         project: deps.project.to_path_buf(),
         steps,
         memory,
+        skills,
         created_at,
         trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
@@ -3894,6 +3946,175 @@ fn what_this_run_knew(
     records
 }
 
+/// Jedna umiejętność w zrzucie biegu: **czym była**, nie co mówiła.
+///
+/// 2026-08-28 (T-154). Lustro [`MemoryRecord`] obok, z tego samego powodu: `run.json` jest prawdą
+/// o biegu (niezmiennik 4), a umiejętność, która pojechała do agenta i nie zostawiła tu śladu,
+/// jest faktem o biegu, którego nikt później nie odtworzy. Sama nazwa odpowiada „jakiś materiał
+/// o tej nazwie", a materiał zmienia się między biegami tak samo, jak zmienia się notatka.
+///
+/// Kopii treści tu nie ma i nie będzie — to jest rachunek z biblioteki, nie jej kopia. Czytany
+/// z powrotem przez [`the_frozen_skills_are_still_here`], więc i `Deserialize`: druga, wąska
+/// struktura na ten sam klucz byłaby dwoma kształtami jednej odpowiedzi (niezmiennik 13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillRecord {
+    /// Która umiejętność — nazwa z definicji agenta, czyli ta, którą człowiek widzi na ekranie.
+    name: String,
+    /// Odcisk CAŁEGO katalogu, którym ta umiejętność pojechała do kroku.
+    hash: String,
+    /// Ile bajtów miał ten katalog. Ta liczba i odcisk odpowiadają na to samo pytanie dwiema
+    /// drogami, więc zrzut przepisany po biegu rozjeżdża się z sobą samym.
+    ///
+    /// `default`, bo czyta to także biegi zapisane przed 2026-08-28 — a brak pola ma znaczyć
+    /// „nie policzono", nie „nie da się odczytać" (niezmiennik 5).
+    #[serde(default)]
+    bytes: u64,
+    /// Klucze KAFELKÓW, które ją dostały. Kafelka, nie węzła: rundy pętli dzielą jeden zbiór
+    /// umiejętności i to kafelek jest tym, co człowiek naciska, żeby powtórzyć krok.
+    #[serde(default)]
+    steps: Vec<String>,
+}
+
+/// Po jaki materiał ten bieg sięgnął — z rachunku KROKÓW, nie z katalogu biblioteki.
+///
+/// 2026-08-28 (T-154). Liczone z tego, co naprawdę dojechało do kroków ([`StepSkills`]), a nie
+/// z całej biblioteki: umiejętność, po którą nie sięgnął ani jeden krok, nie ma prawa stać
+/// w rachunku tak, jakby sięgnął. Ten sam wybór i to samo zdanie stoi przy [`what_this_run_knew`].
+///
+/// Po jednej pozycji na NAZWĘ, nie na krok: kanoniczny katalog wyznacza sama nazwa
+/// (`<dane>/skills/<nazwa>/`, `StepSkills::for_the_step`), więc trzy kroki z tą samą umiejętnością
+/// dostają ten sam materiał i trzy odciski byłyby trzema kopiami jednej odpowiedzi.
+fn what_this_run_froze(steps: &[Planned]) -> Result<Vec<SkillRecord>, RunError> {
+    let mut records: Vec<SkillRecord> = Vec::new();
+    for step in steps {
+        /* Tylko krok agenta ma po co sięgać: ani kafelek kontrolny, ani „sprawdź", ani „uruchom
+         * i zostaw" nie wołają vendora, więc nie ma czego położyć na ich półce. */
+        let Job::Agent(job) = &step.job else {
+            continue;
+        };
+        for (name, dir) in job.skills.names.iter().zip(&job.skills.dirs) {
+            if let Some(record) = records.iter_mut().find(|one| &one.name == name) {
+                if !record.steps.contains(&step.tile_key) {
+                    record.steps.push(step.tile_key.clone());
+                }
+                continue;
+            }
+            let material = material_of(dir)?;
+            records.push(SkillRecord {
+                name: name.clone(),
+                hash: material.hash,
+                bytes: material.bytes,
+                steps: vec![step.tile_key.clone()],
+            });
+        }
+    }
+    // Po nazwie, nie w kolejności napotkania: ten sam bieg ma dawać ten sam `run.json`, a
+    // kolejność kroków w wycinku zależy od tego, o który wycinek poproszono.
+    records.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(records)
+}
+
+/// Czy materiał, który TAMTEN bieg zamroził, jest jeszcze tym samym — **przed pierwszym procesem**.
+///
+/// # 2026-08-28 (T-154) — po co to istnieje
+///
+/// Powtórzenie kroku jest pytaniem „czy MOJA poprawka zmieniła wynik", a odpowiedź nie znaczy nic,
+/// jeżeli w międzyczasie przesunęło się też wejście. Do tego dnia obie ciche wersje tej wady były
+/// możliwe i żadna nie zostawiała śladu: umiejętność zdjęta z agenta dawała powtórzenie
+/// z MNIEJSZYM materiałem (`StepSkills::for_the_step` odmawia dopiero wtedy, gdy nazwa JEST,
+/// a katalogu nie ma), a poprawiony `SKILL.md` dawał powtórzenie z INNYM — i jedno, i drugie
+/// kończyło się `Succeeded`.
+///
+/// `seeded_from` jest `Some` wyłącznie dla powtórzenia i wznowienia (`commands::rerun`), więc
+/// zwykły Start przechodzi tędy bez ani jednego odczytu z dysku. Bieg, który tamtego rachunku
+/// nie ma — bo powstał przed tą zmianą albo jego `run.json` jest nieczytelny — nie jest odmową:
+/// „nie wiem, czym to było" i „to jest co innego" to dwa różne stany, a odmowa na pierwszym
+/// z nich zabierałaby powtórzenie każdemu staremu biegowi (niezmiennik 5).
+///
+/// SĄDZIMY WYŁĄCZNIE KAFELKI, KTÓRE W TYM BIEGU RUSZAJĄ. Powtórzenie jednego kroku to
+/// `Part::Just`, czyli wycinek o jednym kafelku — odmowa za materiał kafelka, który nie ma
+/// pobiec, byłaby odmową o czymś, czego ten bieg nie dotknie.
+fn the_frozen_skills_are_still_here(
+    seeded_from: Option<&Path>,
+    steps: &[Planned],
+) -> Result<(), RunError> {
+    let Some(before) = seeded_from else {
+        return Ok(());
+    };
+    let froze = what_that_run_froze(before);
+    for step in steps {
+        let Job::Agent(job) = &step.job else {
+            continue;
+        };
+        for record in froze.iter().filter(|record| {
+            record
+                .steps
+                .iter()
+                .any(|tile_key| tile_key == &step.tile_key)
+        }) {
+            let why = match job
+                .skills
+                .names
+                .iter()
+                .zip(&job.skills.dirs)
+                .find(|(name, _)| *name == &record.name)
+            {
+                // Nazwy nie ma już w zbiorze tego kroku: człowiek zdjął ją z agenta albo z kroku.
+                // Cicha alternatywa — powtórzenie z mniejszym materiałem — jest z zewnątrz nie do
+                // odróżnienia od „model nie uznał, że warto po nią sięgnąć".
+                None => Moved::Gone,
+                Some((_, dir)) => {
+                    let now = material_of(dir)?;
+                    if now.hash == record.hash {
+                        continue;
+                    }
+                    Moved::Changed
+                }
+            };
+            return Err(RunError::Refused(Note {
+                level: Level::Problem,
+                // Kropka ląduje na KAFELKU, tak jak przy każdej innej odmowie tej ścieżki
+                // ([`refused_by_the_skills`]).
+                step_id: Some(step.tile_key.clone()),
+                /* Zdanie co do słowa to, które napisał `skills`. Przepisane tutaj byłoby drugą
+                 * kopią jednego zdania, a druga kopia jest zawsze tą nieaktualną (niezmiennik 23). */
+                message: NotAsItWas {
+                    step: step.name.clone(),
+                    skill: record.name.clone(),
+                    why,
+                }
+                .to_string(),
+                fix: None,
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// Rachunek z umiejętności zapisany w `run.json` tamtego biegu — pusty, kiedy go tam nie ma.
+///
+/// Brak pliku, plik nieczytelny i plik bez tego klucza dają jeden wynik: pusty wektor, czyli „nie
+/// ma czego pilnować". Ten sam wybór w bezpieczną stronę, co przy `skills::place::recorded`
+/// i z tego samego powodu — biegów sprzed 2026-08-28 nie da się w ten sposób osądzić, a odmowa
+/// wystawiona z niewiedzy zabiera człowiekowi ruch, którego nic nie zastępuje.
+fn what_that_run_froze(run_dir: &Path) -> Vec<SkillRecord> {
+    /// `run.json` w jednym polu, które to pytanie potrzebuje. Wąski kształt, nie pełne lustro
+    /// [`RunFile`]: tamten plik rośnie z każdym zadaniem, a przewrócenie się na polu, którego
+    /// nie znamy, byłoby odmową o cudzej zmianie (niezmiennik 5). Ten sam wybór, co przy
+    /// `commands::rerun::Finished`.
+    #[derive(Debug, Deserialize)]
+    struct Frozen {
+        #[serde(default)]
+        skills: Vec<SkillRecord>,
+    }
+
+    fs::read(run_dir.join(RUN_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Frozen>(&bytes).ok())
+        .map(|one| one.skills)
+        .unwrap_or_default()
+}
+
 /// Zadanie kroku, poprzedzone tym, co wiadomo.
 ///
 /// Pusty blok znaczy „nic nie wiadomo" i wtedy prompt jest DOKŁADNIE zadaniem kroku, bez ani
@@ -4064,6 +4285,27 @@ fn work_key_of(node_key: &str) -> &str {
     node_key.find('#').map_or(node_key, |at| &node_key[..at])
 }
 
+/// Numer rundy z klucza węzła — druga odwrotność [`node_key_for`], obok [`tile_key_of`].
+///
+/// **Tutaj, a nie u wołającego**, i to jest ta sama racja, co przy [`tile_key_of`] niżej: sufiks
+/// rundy (`#N`) jest kształtem wymyślonym o kilkanaście linii wyżej, więc jego rozbieranie
+/// gdziekolwiek indziej byłoby drugą definicją tego samego faktu (niezmiennik 13).
+///
+/// 2026-08-29 — POWSTAŁO DLA ZNACZNIKA POCHODZENIA KOPII ([`fan_in::Generation`]). Rozłączne
+/// katalogi mówią „to nie jest ta sama kopia" i nic ponadto; pytanie „którą rundę ta kopia
+/// w sobie ma" ma odpowiedź wyłącznie w kluczu węzła, bo rundy dzielą folder ([`work_key_for`]).
+///
+/// Brak sufiksu to runda zerowa, a nie brak odpowiedzi: klucz bez `#` należy do węzła, który
+/// biegnie raz. Sufiks, którego nie da się przeczytać jako liczby, też liczy się jako zerowa —
+/// panika w silniku zabiera cały bieg (`AGENTS.md` §4), a taki klucz jest kształtem, którego
+/// [`node_key_for`] nie produkuje.
+fn tries_in(node_key: &str) -> u8 {
+    node_key
+        .split_once('#')
+        .and_then(|(_, turn)| turn.parse().ok())
+        .unwrap_or(0)
+}
+
 /// Klucz kafelka z klucza węzła — odwrotność [`node_key_for`].
 ///
 /// **Tutaj, a nie u wołającego**, i to jest jedyny powód, dla którego ta funkcja istnieje:
@@ -4129,12 +4371,16 @@ fn plan_step(
             when_it_fails: WhenItFails::Stop,
             depends_on: Vec::new(),
             vendor: String::new(),
+            // Kafelek kontrolny nie dotyka plików, więc nie ma czego składać ani dokąd.
+            folds_in: Vec::new(),
             job: Job::Ask {
                 question: ask.question.clone(),
             },
         }),
         Step::Agent(agent) => {
-            let job = plan_agent(agent, node, copy, setup)?;
+            let (spot, folds_in) =
+                where_it_works(&agent.folder, &agent.id, &agent.name, node, copy, setup)?;
+            let job = plan_agent(agent, node, copy, spot, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
                 node_key: node_key_for(&agent.id, turn, copy),
@@ -4145,11 +4391,13 @@ fn plan_step(
                 when_it_fails: agent.when_it_fails,
                 depends_on: Vec::new(),
                 vendor: job.driver.id().to_owned(),
+                folds_in,
                 job: Job::Agent(Box::new(job)),
             })
         }
         Step::Check(check) => {
-            let spot = where_it_works(&check.folder, &check.id, &check.name, node, copy, setup)?;
+            let (spot, folds_in) =
+                where_it_works(&check.folder, &check.id, &check.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
                 node_key: node_key_for(&check.id, turn, copy),
@@ -4164,6 +4412,7 @@ fn plan_step(
                  * wymyśleniem faktu, po którym wznowienie szukałoby kiedyś sesji, której nigdy
                  * nie było — dokładnie ten sam powód, który stoi przy kafelku kontrolnym. */
                 vendor: String::new(),
+                folds_in,
                 job: Job::Check(Box::new(CheckJob {
                     spec: CheckSpec {
                         command: check.command.clone(),
@@ -4175,7 +4424,8 @@ fn plan_step(
             })
         }
         Step::Serve(serve) => {
-            let spot = where_it_works(&serve.folder, &serve.id, &serve.name, node, copy, setup)?;
+            let (spot, folds_in) =
+                where_it_works(&serve.folder, &serve.id, &serve.name, node, copy, setup)?;
             Ok(Planned {
                 id: Uuid::now_v7().to_string(),
                 node_key: node_key_for(&serve.id, turn, copy),
@@ -4189,6 +4439,7 @@ fn plan_step(
                 depends_on: Vec::new(),
                 // Pusta etykieta vendora - z tego samego powodu, co przy kafelku sprawdzajacym.
                 vendor: String::new(),
+                folds_in,
                 job: Job::Serve(Box::new(ServeJob {
                     command: serve.command.clone(),
                     cwd: spot.cwd,
@@ -4256,10 +4507,17 @@ fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) ->
     }
 }
 
+/// Krok agenta: konfiguracja efektywna, sterownik, katalog roboczy.
+///
+/// `spot` przyjeżdża gotowy z [`plan_step`], bo od 2026-08-29 pytanie „gdzie ten krok pracuje"
+/// ma jedną odpowiedź dla wszystkich czterech rodzajów kafelka i jedno miejsce, w którym pada
+/// ([`where_it_works`]) — a jego druga połowa, lista kopii do złożenia, jest polem [`Planned`],
+/// nie [`AgentJob`].
 fn plan_agent(
     step: &AgentStep,
     node: usize,
     copy: u8,
+    spot: Workspace,
     setup: &Setup<'_>,
 ) -> Result<AgentJob, RunError> {
     let saved = find_agent(&setup.library, &step.agent, &step.name)?;
@@ -4327,7 +4585,6 @@ fn plan_agent(
 
     let write_results_to = where_results_go(&effective, step)?;
 
-    let spot = where_it_works(&step.folder, &step.id, &step.name, node, copy, setup)?;
     /* KAŻDA KOPIA WIE, KTÓRA JEST. Trzy sesje z identycznym zdaniem robią tę samą robotę trzy
      * razy, czyli są najdroższym możliwym sposobem na jedną odpowiedź — a podstawienie bez
      * rozwinięcia (do 2026-08-23 nie było żadnego z dwojga) wpisywałoby w prompt liczbę, której
@@ -4671,8 +4928,10 @@ fn find_agent(library: &Path, id: &str, step: &str) -> Result<Agent, RunError> {
     let mut saved: Vec<String> = Vec::new();
     for (_path, loaded) in files {
         match loaded {
-            Ok(agent) if agent.id.to_string() == id => return Ok(agent),
-            Ok(agent) => saved.push(agent.name),
+            // Rewizja pliku należy do ZAPISU, a bieg tylko czyta: krok, który dostał agenta,
+            // nie ma go jak odłożyć z powrotem, więc nie ma czego pilnować.
+            Ok(read) if read.agent.id.to_string() == id => return Ok(read.agent),
+            Ok(read) => saved.push(read.agent.name),
             Err(error) => broken = broken.or(Some(error)),
         }
     }
@@ -4744,6 +5003,19 @@ fn folder_and_key(step: &Step) -> Option<(&Folder, &str)> {
     }
 }
 
+/// Kopia jednego kroku, którego praca ma wejść do kopii składanej.
+///
+/// Nazwa jest z KAFELKA, bo jedynym powodem, dla którego ta lista niesie coś poza ścieżką, jest
+/// zdanie o niezgodzie: człowiek ma przeczytać, które dwa kafelki napisały w jednym pliku co
+/// innego (niezmiennik 14).
+#[derive(Debug, Clone)]
+struct Folded {
+    /// Nazwa z kafelka, z numerem kopii, jeśli krok biegnie w kilku ([`name_for`]).
+    name: String,
+    /// Katalog, w którym ten krok pracował.
+    cwd: PathBuf,
+}
+
 /// Gdzie pracuje jeden krok — z odpowiedzią także dla tego, który sam jej nie zna.
 ///
 /// [`Folder::SameCopy`] jest jedynym wariantem, którego nie da się rozstrzygnąć z samego kroku:
@@ -4751,12 +5023,15 @@ fn folder_and_key(step: &Step) -> Option<(&Folder, &str)> {
 /// rozwiązywania folderu jest tutaj, a nie w [`workspace`] — i jest dalej jedno, bo obie drogi
 /// schodzą się w tej funkcji.
 ///
-/// Odmowa zamiast domysłu, w obu brakujących odpowiedziach. Ciche zejście do folderu projektu
+/// Odmowa zamiast domysłu, kiedy odpowiedzi nie ma wcale. Ciche zejście do folderu projektu
 /// byłoby dokładnie tą implementacją, przed którą ten wariant powstał: kafelek mówi „to samo
 /// drzewo", a krok pisze po prawdziwych plikach człowieka. Pada **przy planowaniu**, czyli zanim
 /// ruszy pierwszy proces i zanim powstanie katalog biegu (niezmiennik 12).
 /// `copy` jest numerem kopii tego węzła i wchodzi WYŁĄCZNIE do klucza katalogu roboczego:
 /// kropka odmowy dalej ląduje na kafelku, bo to jego wiersz człowiek otworzy.
+///
+/// Druga wartość jest listą kopii, które ten krok ma ZŁOŻYĆ — pusta dla każdego kroku, który
+/// niczego nie składa.
 fn where_it_works(
     folder: &Folder,
     key: &str,
@@ -4764,54 +5039,133 @@ fn where_it_works(
     node: usize,
     copy: u8,
     setup: &Setup<'_>,
-) -> Result<Workspace, RunError> {
-    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work_key_for(key, copy)) {
-        return Ok(spot);
+) -> Result<(Workspace, Vec<Folded>), RunError> {
+    let work = work_key_for(key, copy);
+    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work) {
+        return Ok((spot, Vec::new()));
     }
 
     let mut before = trees_before(node, setup);
-    let refuse = |message: String| {
-        Err(RunError::Refused(Note {
-            level: Level::Problem,
-            // Kropka ląduje na kafelku TEGO kroku: to on nie ma odpowiedzi na pytanie „które
-            // drzewo", więc to jego człowiek otworzy.
-            step_id: Some(key.to_owned()),
-            message,
-            fix: None,
-        }))
-    };
     match before.len() {
         // TO SAMO ZDANIE, CO W WALIDATORZE, i dlatego przychodzi z `workflow::check`. Tą drogą
         // człowiek nie idzie: `check_to_run` mówi to samo kilkadziesiąt linii wcześniej i bieg
         // odmawia tam. Ale ta funkcja musi zwrócić WARTOŚĆ, a jedyną wartością, która tu nie
         // kłamie, jest odmowa — folder projektu wpisany w to miejsce byłby cichym powrotem
         // do wady, którą `same-copy` usuwa.
-        0 => refuse(crate::workflow::check::nothing_before(name)),
-        1 => Ok(Workspace {
-            // Gość w cudzym drzewie: zakłada je krok, który je NAZWAŁ (`fresh-copy`), a bieg
-            // robi to raz na katalog roboczy (`lay_out_the_run_dir` dedupikuje po `cwd`).
-            // `ours: true` tutaj znaczyłoby dwa kroki, z których każdy chce założyć to samo
-            // drzewo, a wtedy o wyniku decyduje kolejność w pliku.
-            cwd: before.remove(0),
-            ours: false,
-        }),
-        // FAN-IN Z RÓŻNYCH DRZEW. Krok, przed którym stoją dwa kroki pracujące gdzie indziej,
-        // nie ma odpowiedzi na pytanie „które drzewo" — a wybranie pierwszego z brzegu znaczyłoby
-        // bieg, w którym poprawka czyta nie ten kod. Żadne kryterium tego nie sądzi (TASK.md,
-        // „Świadomie poza zakresem”); odmowa nazywa krok, bo to jedyna rzecz, którą da się
-        // powiedzieć uczciwie.
-        //
-        // Liczba mówi o KATALOGACH, nie o krokach: trzy kroki pracujące w dwóch drzewach są
-        // dwiema odpowiedziami, nie trzema, i człowiek ma szukać dwóch miejsc.
-        trees => refuse(format!(
-            "\"{name}\" is set to work in the same folder as the step before it, and the steps \
-             before it work in {trees} different folders. Leave one arrow into it, or give it a \
-             fresh copy."
+        0 => Err(RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to on nie ma odpowiedzi na pytanie „które
+            // drzewo", więc to jego człowiek otworzy.
+            step_id: Some(key.to_owned()),
+            message: crate::workflow::check::nothing_before(name),
+            fix: None,
+        })),
+        1 => Ok((
+            Workspace {
+                // Gość w cudzym drzewie: zakłada je krok, który je NAZWAŁ (`fresh-copy`), a bieg
+                // robi to raz na katalog roboczy (`lay_out_the_run_dir` dedupikuje po `cwd`).
+                // `ours: true` tutaj znaczyłoby dwa kroki, z których każdy chce założyć to samo
+                // drzewo, a wtedy o wyniku decyduje kolejność w pliku.
+                cwd: before.remove(0).cwd,
+                ours: false,
+            },
+            Vec::new(),
+        )),
+        /* FIZYCZNY FAN-IN (2026-08-29). Krok, przed którym stoją kroki pracujące w RÓŻNYCH
+         * drzewach, dostaje WŁASNE, nowe — i to jest cała treść tej gałęzi. Do tego dnia stała
+         * tu odmowa („the steps before it work in N different folders"), czyli dwie równoległe
+         * gałęzie dało się narysować i nie dało się na nich pracować.
+         *
+         * `ours: true`, czyli zwykłą drogą [`lay_out_the_run_dir`]: kopia składana powstaje tym
+         * SAMYM przepisem, co kopie rodziców, i to nie jest symetria, tylko warunek poprawności
+         * — [`super::fan_in`] porównuje z nią bajty, żeby wiedzieć, co który rodzic zmienił.
+         * Kopia zrobiona inaczej byłaby inną bazą i cudza praca czytałaby się jako zmiana.
+         *
+         * Wybranie pierwszego z brzegu byłoby biegiem, w którym poprawka czyta nie ten kod;
+         * dlatego lista jest KOMPLETNA i idzie dalej razem z katalogiem. */
+        _ => Ok((
+            Workspace {
+                cwd: own_copy_at(setup.dir, &work),
+                ours: true,
+            },
+            before,
         )),
     }
 }
 
-/// W jakich katalogach pracują kroki PRZED tym — bez powtórzeń.
+/// Katalog, w którym pracuje krok o tej robocie. `None` dla kafelka kontrolnego: on nie dotyka
+/// plików, tylko pyta człowieka.
+///
+/// Ta sama trójka ramion, co w [`lay_out_the_run_dir`], i z tego samego powodu: „gdzie ten krok
+/// pracuje" ma mieć jedną odpowiedź, choć trzy rodzaje roboty trzymają ją w trzech polach.
+fn where_the_job_works(job: &Job) -> Option<&Path> {
+    match job {
+        Job::Agent(one) => Some(one.cwd.as_path()),
+        Job::Check(one) => Some(one.spec.cwd.as_path()),
+        Job::Serve(one) => Some(one.cwd.as_path()),
+        Job::Ask { .. } => None,
+    }
+}
+
+/// Katalog własnej kopii kroku o tym kluczu pracy.
+///
+/// Jedno miejsce, bo pytają o nią trzy (niezmiennik 13): [`workspace`] dla `fresh-copy`,
+/// [`where_it_works`] dla kroku, który składa, i [`works_in`] dla kroku, który za takim stoi.
+/// Trzy sklejenia tej samej ścieżki rozjechałyby się przy pierwszej poprawce jednego z nich.
+fn own_copy_at(dir: &Path, work_key: &str) -> PathBuf {
+    dir.join(WORK_DIR).join(work_key)
+}
+
+/// Gdzie pracuje JEDEN węzeł rozwiniętego grafu — także wtedy, gdy sam składa pracę rodziców.
+///
+/// `None` znaczy „ten węzeł drzewa nie wyznacza": kafelek kontrolny nie dotyka plików, a krok
+/// „to samo drzewo", przed którym stoi dokładnie jedno drzewo, jest tym samym pytaniem zadanym
+/// o krok dalej wstecz.
+///
+/// # Dlaczego krok składający ma tu odpowiedź, a nie jest przezroczysty
+///
+/// 2026-08-29 — bez tej gałęzi krok stojący ZA składaniem schodziłby po strzałkach do dziadków
+/// i widziałby dwa drzewa rodziców zamiast jednego, złożonego. Odmówiłby albo — gorzej —
+/// pracował w kopii jednego z nich, czyli nie zobaczyłby pracy drugiego. Składanie jest krokiem
+/// z własnym katalogiem, więc mówi to samo, co każdy inny krok z własnym katalogiem.
+///
+/// Rekurencja przez [`trees_before`] idzie WYŁĄCZNIE po strzałkach wstecz, więc kończy się na
+/// grafie bez cykli, którego pilnuje `Dag::new`.
+fn works_in(node: usize, setup: &Setup<'_>) -> Option<PathBuf> {
+    let one = setup.unrolled.nodes.get(node)?;
+    // Krok, którego nie ma w pliku, nie wyznacza drzewa — `unroll` numeruje węzły z tego samego
+    // pliku, więc to jest kształt niemożliwy, a nie ścieżka, którą ktoś przejdzie.
+    let step = setup.file.steps.get(one.step)?;
+    let (folder, key) = folder_and_key(step)?;
+    // NUMER KOPII TEGO WĘZŁA, nie kafelka: każda kopia ma własne drzewo, więc krok „to samo
+    // drzewo, w którym pracował krok przede mną", stojący za krokiem w trzech kopiach, widzi
+    // TRZY różne katalogi — i to jest składanie u wołającego, a nie wybór pierwszego z brzegu.
+    let work = work_key_for(key, one.copy);
+    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work) {
+        return Some(spot.cwd);
+    }
+    (trees_before(node, setup).len() > 1).then(|| own_copy_at(setup.dir, &work))
+}
+
+/// Nazwa kafelka tego węzła — z numerem kopii, jeśli krok biegnie w kilku.
+///
+/// Pusty napis dla węzła spoza pliku, czyli dla kształtu, którego `unroll` nie produkuje.
+fn tile_name_of(node: usize, setup: &Setup<'_>) -> String {
+    let Some(one) = setup.unrolled.nodes.get(node) else {
+        return String::new();
+    };
+    let Some(step) = setup.file.steps.get(one.step) else {
+        return String::new();
+    };
+    match step {
+        // TĄ SAMĄ FUNKCJĄ, CO PODPIS KROKU W `run.json` (`plan_step`): „Build (2 of 3)" ma
+        // w zdaniu o niezgodzie brzmieć dokładnie tak, jak brzmi na ekranie.
+        Step::Agent(agent) => name_for(&agent.name, one.copy, agent.copies),
+        other => other.name().to_owned(),
+    }
+}
+
+/// W jakich katalogach pracują kroki PRZED tym — bez powtórzeń, z nazwami ich kafelków.
 ///
 /// Obchód idzie po strzałkach **wstecz**, ze zbiorem odwiedzonych: fan-in bywa diamentem, więc
 /// bez niego ten sam krok liczyłby się dwa razy i zwykłe rozwidlenie wyglądałoby jak dwa różne
@@ -4819,12 +5173,12 @@ fn where_it_works(
 /// (ta sama zasada, co przy obchodach w `workflow::check`).
 ///
 /// Mija po drodze dwa rodzaje kroków, które drzewa nie wyznaczają: kafelek kontrolny (nie dotyka
-/// plików) i kolejny krok „to samo drzewo" (jego odpowiedź jest tym samym pytaniem, zadanym dalej).
-/// Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
+/// plików) i krok „to samo drzewo", który sam niczego nie składa (jego odpowiedź jest tym samym
+/// pytaniem, zadanym dalej). Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
 ///
-/// Zero katalogów znaczy „przed tym krokiem nie ma nikogo", więcej niż jeden — „poprzednicy
-/// pracują w różnych drzewach". Obie odpowiedzi są odmowami u wołającego.
-fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
+/// Zero katalogów znaczy „przed tym krokiem nie ma nikogo" i jest odmową u wołającego; więcej niż
+/// jeden — „poprzednicy pracują w różnych drzewach", czyli jest co składać.
+fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<Folded> {
     let mut seen = vec![false; setup.unrolled.nodes.len()];
     // Ten krok od razu jako odwiedzony: strzałka do siebie samego jest kształtem, którego
     // `Dag::new` odmawia, ale obchód nie ma prawa się o nią zapętlić, gdyby jednak tu doszła.
@@ -4832,7 +5186,7 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
         *mine = true;
     }
     let mut stack = vec![node];
-    let mut found: Vec<PathBuf> = Vec::new();
+    let mut found: Vec<Folded> = Vec::new();
     while let Some(at) = stack.pop() {
         for &(from, to) in &setup.unrolled.arrows {
             if to != at {
@@ -4845,24 +5199,13 @@ fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<PathBuf> {
                 continue;
             };
             *first_time = true;
-            let node = setup.unrolled.nodes.get(from);
-            let step = node.and_then(|one| setup.file.steps.get(one.step));
-            // Krok, którego nie ma w pliku, nie wyznacza drzewa i nie ma poprzedników do
-            // odpytania — `unroll` numeruje węzły z tego samego pliku, więc to jest kształt
-            // niemożliwy, a nie ścieżka, którą ktoś przejdzie.
-            let Some((folder, key)) = step.and_then(folder_and_key) else {
-                stack.push(from);
-                continue;
-            };
-            // NUMER KOPII TEGO WĘZŁA, nie kafelka: każda kopia ma własne drzewo, więc krok „to
-            // samo drzewo, w którym pracował krok przede mną", stojący za krokiem w trzech
-            // kopiach, widzi TRZY różne katalogi — i to jest odmowa u wołającego, a nie wybór
-            // pierwszego z brzegu.
-            let work = work_key_for(key, node.map_or(0, |one| one.copy));
-            match workspace(folder, setup.project, setup.dir, &work) {
-                Some(spot) if !found.contains(&spot.cwd) => found.push(spot.cwd),
+            match works_in(from, setup) {
+                Some(cwd) if !found.iter().any(|one| one.cwd == cwd) => found.push(Folded {
+                    name: tile_name_of(from, setup),
+                    cwd,
+                }),
                 Some(_) => {}
-                // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
+                // `same-copy` bez własnej kopii: to samo pytanie, tylko o krok dalej wstecz.
                 None => stack.push(from),
             }
         }
@@ -4895,7 +5238,7 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Opt
         // Katalog wskazany ręcznie jest cudzy: nie tworzymy go, bo „nie ma takiego folderu" jest
         // odpowiedzią, a utworzenie go po cichu zamienia literówkę w pusty bieg.
         Folder::Pick { path } => (PathBuf::from(path), false),
-        Folder::FreshCopy => (dir.join(WORK_DIR).join(node_key), true),
+        Folder::FreshCopy => (own_copy_at(dir, node_key), true),
         Folder::SameCopy => return None,
     };
     Some(Workspace { cwd, ours })
@@ -6648,6 +6991,32 @@ struct Live {
     /// sprawdził, jedzie dalej jako zrobiona. Czytane przed każdym krokiem ciała pętli i przez to
     /// jedyny nośnik faktu „dalszych rund TEJ pętli już nie potrzebujemy".
     settled_at: Mutex<Vec<Option<u8>>>,
+    /// Katalogi, do których praca rodziców już została zniesiona — zapadka „składamy raz".
+    ///
+    /// 2026-08-29 — RUNDY PĘTLI DZIELĄ FOLDER, i to jest cały powód istnienia tego pola.
+    /// Runda 2 kroku, który składa, weszłaby drugi raz w ten sam katalog i nadpisała bajtami
+    /// rodziców poprawki, które runda 1 właśnie w nim zrobiła — czyli pętla przestałaby robić
+    /// jedyną rzecz, dla której istnieje.
+    ///
+    /// Klucz jest KATALOGIEM, nie numerem kroku: to katalog jest tym, co rundy dzielą, a dwie
+    /// kopie jednego kafelka mają dwa różne (`work_key_for`). `std::sync::Mutex` i nigdy trzymany
+    /// przez `await` (niezmiennik 8): jedyny wołający oddaje go w tym samym wyrażeniu.
+    folded: Mutex<BTreeSet<PathBuf>>,
+    /// Klucz węzła, który OSTATNI stanął do pracy w tym katalogu — po jednym wpisie na katalog.
+    ///
+    /// 2026-08-29 — ZNACZNIK POCHODZENIA KOPII, i bez niego składanie nie ma jak zauważyć, że
+    /// zbiera pracę z dwóch różnych rund. Plan mówi tylko, KTO miał w tej kopii pracować
+    /// ([`Planned::folds_in`] powstaje przy planowaniu), a to jest za mało: gałąź pominięta
+    /// w rundzie drugiej zostaje z pracą rundy pierwszej, bo rundy dzielą folder
+    /// ([`work_key_for`]) — i złożenie jej z gałęzią, która w rundzie drugiej naprawdę
+    /// pracowała, jest nie do odróżnienia od poprawnego. To pole zapisuje, kto tam pracował
+    /// NAPRAWDĘ.
+    ///
+    /// Klucz jest KATALOGIEM, tak samo jak w [`Live::folded`] wyżej i z tego samego powodu: to
+    /// katalog jest tym, co rundy dzielą, a dwie kopie jednego kafelka mają dwa różne.
+    /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): obaj wołający oddają
+    /// go w tym samym wyrażeniu.
+    lineage: Mutex<BTreeMap<PathBuf, String>>,
     /// Wynik kroku używany wyłącznie przez zapisane warunki jego strzałek.
     route_evidence: Mutex<Vec<Option<RouteEvidence>>>,
     /// Trwały dowód wyboru, kopiowany do `run.json` przy każdym zrzucie.
@@ -6949,6 +7318,8 @@ impl Live {
             did_not_pass,
             said_so_far,
             settled_at,
+            folded: Mutex::new(BTreeSet::new()),
+            lineage: Mutex::new(BTreeMap::new()),
             route_evidence,
             route_decisions: Mutex::new(Vec::new()),
             processes,
@@ -7653,6 +8024,10 @@ impl Live {
             // Fakty notatki są zamrożone przed pierwszym procesem; tylko listy fizycznych UUID
             // rosną w księdze, dokładnie na granicy udanego startu sterownika.
             memory: &book.memory,
+            /* Z PLANU, nie z księgi: materiał jest zamrożony przed pierwszym procesem i nic
+             * w trakcie biegu nie ma prawa go ruszyć — inaczej `run.json` opisywałby bibliotekę
+             * taką, jaka jest PO biegu. */
+            skills: &self.plan.skills,
             /* SUFIT I WYDATEK IDĄ PARĄ ALBO NIE IDĄ WCALE. Bieg, którego nikt nie ograniczył,
              * nie ma o sufcie nic do powiedzenia, a klucz mówiący „bez sufitu" przy każdym biegu
              * w historii jest długością zapłaconą za milczenie — ta sama decyzja, co przy
@@ -7724,6 +8099,32 @@ impl Live {
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
         }
+
+        /* PRACA RODZICÓW WCHODZI DO JEDNEJ KOPII TUTAJ — przed miejscem z puli i przed `match`
+         * po rodzaju kroku (2026-08-29).
+         *
+         * PRZED MIEJSCEM Z PULI, bo krok, który nie ruszy, nie ma prawa stać w kolejce po zasób
+         * wart ~583 MB — ten sam powód, dla którego stoi tu pominięta runda pętli.
+         *
+         * PRZED `match`, bo sterownik nie ma prawa zobaczyć niezgody ANI RAZU. Gdyby składanie
+         * siedziało w [`Live::run_agent`], krok z dwoma rodzicami piszącymi w jednym pliku
+         * różnie startowałby proces, płacił za turę i dopiero potem odmawiał — a agent zdążyłby
+         * przeczytać kopię, w której jedna ze stron po cichu wygrała.
+         *
+         * Zdanie idzie na ekran tą samą drogą, co `say_what_was_left_behind`: `Line::Problem`
+         * z nazwą kafelka, bo to jego wiersz człowiek otworzy. */
+        if let Err(why) = self.fold_what_came_before(id) {
+            // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
+            // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+            let _ = self.lines.send(Line::Problem {
+                agent: self.plan.steps[id].name.clone(),
+                text: why.clone(),
+                resets_at: None,
+            });
+            let report = self.when_this_one_fails(id, &why).await;
+            return self.finish_this_step(id, report).await;
+        }
+        self.stamp_this_copy(id);
 
         /* `mut`, bo krok agenta MOŻE oddać to miejsce dalej (2026-08-28): grupa, której nie dało
          * się dowieść jako martwej, zabiera permit ze sobą do rejestru aplikacji — inaczej pula
@@ -7799,6 +8200,108 @@ impl Live {
         };
 
         self.finish_this_step(id, report).await
+    }
+
+    /// Znosi pracę rodziców tego kroku do JEDNEJ kopii — tej, w której zaraz stanie sterownik.
+    ///
+    /// `Ok(())` dla kroku, który niczego nie składa, i dla katalogu, który już został złożony;
+    /// `Err` niesie gotowe zdanie dla człowieka.
+    ///
+    /// # Zapadka zamyka się PRZED składaniem, nie po nim
+    ///
+    /// Bo pytanie brzmi „czy do tego katalogu wolno jeszcze wnosić cudzą pracę", a nie „czy się
+    /// udało". Runda 2 pętli ma zastać w folderze poprawki rundy 1, także wtedy, gdy runda 1
+    /// skończyła się niezgodą — a przy niezgodzie w katalogu nie stanął ani jeden bajt, więc
+    /// nie ma czego naprawiać drugim podejściem.
+    ///
+    /// Zamek zamyka się i otwiera w jednym wyrażeniu, bez `await` w środku (niezmiennik 8).
+    fn fold_what_came_before(&self, id: StepId) -> Result<(), String> {
+        let step = &self.plan.steps[id];
+        if step.folds_in.is_empty() {
+            return Ok(());
+        }
+        // Kafelek kontrolny nie pracuje w żadnym katalogu, więc nie ma dokąd składać. Do tego
+        // ramienia nikt dziś nie dochodzi — kafelek bez folderu nie dostaje listy rodziców —
+        // ale odpowiedź „nie ma dokąd" jest tu jedyną, która nie kłamie.
+        let Some(into) = where_the_job_works(&step.job) else {
+            return Ok(());
+        };
+        if !self
+            .folded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(into.to_path_buf())
+        {
+            return Ok(());
+        }
+        // Migawka pod jednym zamkiem, oddanym w tym samym wyrażeniu (niezmiennik 8): rodzice
+        // tego kroku już zeszli, więc nikt tych wpisów w trakcie nie przestawi, a zamek trzymany
+        // przez całe składanie stałby otworem przez cały obchód dwóch drzew projektu.
+        let born: Vec<Option<fan_in::Generation>> = {
+            let lineage = self.lineage.lock().unwrap_or_else(PoisonError::into_inner);
+            step.folds_in
+                .iter()
+                .map(|one| {
+                    lineage
+                        .get(&one.cwd)
+                        .and_then(|node_key| self.generation_of(node_key))
+                })
+                .collect()
+        };
+        let parents: Vec<fan_in::Parent<'_>> = step
+            .folds_in
+            .iter()
+            .zip(&born)
+            .map(|(one, born)| fan_in::Parent {
+                name: one.name.as_str(),
+                cwd: one.cwd.as_path(),
+                born: *born,
+            })
+            .collect();
+        fan_in::fold_the_copies(into, &parents).map_err(|trouble| trouble.to_string())
+    }
+
+    /// Zapisuje, że to ten węzeł pracował w swoim katalogu — znacznik pochodzenia kopii.
+    ///
+    /// 2026-08-29 — PO SKŁADANIU I PRZED STEROWNIKIEM, i oba końce tej granicy są treścią.
+    /// Po składaniu, bo krok, który się o nie rozbił, w swojej kopii nie pracował i nie ma czego
+    /// stemplować. Przed sterownikiem, bo krok poniżej ma stanąć na tym samym fakcie, na którym
+    /// stoi każdy inny: „ten węzeł tu wszedł", a nie „ten węzeł się udał" — kopia po nieudanej
+    /// turze też trzyma jego pracę i też jest tej rundy.
+    ///
+    /// Kafelek kontrolny nie ma katalogu ([`where_the_job_works`]), więc nie zostawia stempla.
+    fn stamp_this_copy(&self, id: StepId) {
+        let step = &self.plan.steps[id];
+        let Some(mine) = where_the_job_works(&step.job) else {
+            return;
+        };
+        self.lineage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(mine.to_path_buf(), step.node_key.clone());
+    }
+
+    /// Z której próby której pętli jest praca, którą zostawił po sobie ten węzeł.
+    ///
+    /// `None` dla węzła spoza wszystkich pętli, i to jest odpowiedź, a nie brak odpowiedzi: krok,
+    /// który biegnie raz, nie należy do żadnej próby, więc nie ma z czym się nie zgadzać. Bez tego
+    /// ramienia zwykłe „zaplanuj raz, pętla obok, potem ktoś to zbiera" byłoby odmową.
+    ///
+    /// Numer próby liczy się od jedynki, tą samą decyzją, co [`WhatItIs`]: `turn` jest polem
+    /// danych, a to jest zdanie dla człowieka — „try 0 of 2" nie znaczy nic.
+    fn generation_of(&self, node_key: &str) -> Option<fan_in::Generation> {
+        let tile = tile_key_of(node_key);
+        let (loop_at, the_loop) = self
+            .plan
+            .loops
+            .iter()
+            .enumerate()
+            .find(|(_, one)| one.body.iter().any(|step| step == tile))?;
+        Some(fan_in::Generation {
+            loop_at,
+            which: tries_in(node_key).saturating_add(1),
+            of: the_loop.turns,
+        })
     }
 
     /// Domyka krok dopiero po rozstrzygnięciu, czy jego udany wynik ma jedną prawidłową drogę.
@@ -10416,6 +10919,18 @@ struct RunFile<'a> {
     /// jednym kluczem więcej w każdym `run.json` w historii.
     #[serde(skip_serializing_if = "<[MemoryRecord]>::is_empty")]
     memory: &'a [MemoryRecord],
+    /// Po jaki materiał ten bieg sięgnął przy starcie — nazwa, odcisk i liczba bajtów na
+    /// umiejętność.
+    ///
+    /// 2026-08-28 (T-154). Brak pola znaczy „ten bieg nie sięgnął po żadną", i to jest prawda
+    /// o biegu, którego kroki nie mają ani jednej umiejętności — czyli o większości. Pusta lista
+    /// wpisana na siłę mówiłaby to samo jednym kluczem więcej w każdym `run.json` w historii; ta
+    /// sama decyzja, co przy `memory` obok.
+    ///
+    /// CZYTANE, NIE TYLKO PISANE (niezmiennik 21): `the_frozen_skills_are_still_here` bierze
+    /// stąd odciski, kiedy człowiek każe powtórzyć krok tego biegu.
+    #[serde(skip_serializing_if = "<[SkillRecord]>::is_empty")]
+    skills: &'a [SkillRecord],
     /// Ile wolno było wydać na ten bieg. Brak klucza znaczy „nikt nie postawił sufitu".
     ///
     /// Na dysku, a nie tylko w pamięci, bo pliki są prawdą (niezmiennik 4): sufit, który znika

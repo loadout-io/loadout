@@ -267,7 +267,7 @@ fn definition(id: u128, name: &str, vendor: Vendor, access: FileAccess) -> Agent
 /// Przez `save_agent_inner`, nie przez własny zapis pliku: agent zapisany inną drogą niż
 /// produkcyjna sprawdzałby czytnik na bajtach, których produkcja nigdy nie wyprodukuje.
 fn saved(library: &Path, agent: &Agent) -> String {
-    save_agent_inner(library, agent).expect("the library has to take a saved agent");
+    save_agent_inner(library, agent, None).expect("the library has to take a saved agent");
     agent.id.to_string()
 }
 
@@ -517,7 +517,7 @@ async fn nobody_pointed_at_is_a_refusal_that_names_the_next_move() -> Result<(),
 async fn a_bad_neighbor_does_not_hide_the_pointed_at_lead() -> Result<(), Box<dyn Error>> {
     let library = tempfile::tempdir()?;
     let agent = definition(4, "Readable", Vendor::ClaudeCode, FileAccess::AskFirst);
-    let landed = save_agent_inner(library.path(), &agent)?;
+    let landed = save_agent_inner(library.path(), &agent, None)?;
     let who = agent.id.to_string();
 
     // Kontrola dodatnia PRZED zepsuciem czegokolwiek: dopóki w katalogu leży sam zapisany agent,
@@ -533,6 +533,7 @@ async fn a_bad_neighbor_does_not_hide_the_pointed_at_lead() -> Result<(), Box<dy
      * nazwy pliku (ta reguła mieszka w `write_agent_file` i nie ma prawa zostać przepisana tu).
      * Treść: pierwszy wiersz myślników skasowany, czyli najczęstsza ręczna pomyłka. */
     let broken = landed
+        .path
         .parent()
         .expect("a saved agent file lies inside the library folder")
         .join("hand-edited.md");

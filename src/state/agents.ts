@@ -79,7 +79,15 @@ export interface AgentsIo {
   list(): Promise<DefinitionListing<Agent>>;
   /** uuid v7, minted po stronie Rusta. */
   newId(): Promise<string>;
-  save(agent: Agent): Promise<void>;
+  /**
+   * Zapisuje agenta i oddaje rewizję, którą ma teraz jego plik.
+   *
+   * `expectedRevision` to rewizja, którą TEN magazyn przeczytał dla tego agenta; `null` znaczy
+   * „tego pliku ma jeszcze nie być". Rust odmawia publikacji, kiedy na dysku leży co innego —
+   * bez tego zapis z okna otwartego pięć minut temu kasuje pracę zapisaną minutę temu
+   * i wygląda przy tym na udany (2026-08-28).
+   */
+  save(agent: Agent, expectedRevision: string | null): Promise<string>;
   remove(id: string): Promise<void>;
 }
 
@@ -175,6 +183,18 @@ function upsert(agents: readonly Agent[], saved: Agent): Agent[] {
 }
 
 export function createAgentsStore(io: AgentsIo) {
+  /* Rewizja pliku każdego agenta, którego ten magazyn WIDZIAŁ — w domknięciu, nie w stanie.
+   *
+   * Nie jest faktem o ekranie: formularz jej nie pokazuje, a w migawce zustanda kazałaby
+   * przerysować sekcję po każdym zapisie i wjechałaby do każdego porównania „czy to, co widzę,
+   * to to, co zapisano" (niezmiennik 13). Klucz to `id`, bo ono przeżywa zmianę nazwy.
+   *
+   * Po zmianie nazwy rewizja opisuje INNY plik niż ten, do którego teraz piszemy — i to jest
+   * w porządku, bo rozstrzyga Rust: pod nową nazwą albo nie ma nic (publikuje), albo leży cudzy
+   * agent (odmawia). Wyzerowanie jej tutaj „bo nazwa się zmieniła" zabraniałoby poprawienia
+   * samej wielkości liter, która daje tę samą nazwę pliku (2026-08-28). */
+  const seen = new Map<string, string>();
+
   return create<AgentsState>()((set, get) => ({
     agents: [],
     problems: [],
@@ -184,6 +204,14 @@ export function createAgentsStore(io: AgentsIo) {
       set({ refusal: null });
       try {
         const definitions = definitionsOf(await io.list());
+        /* Rewizje z TEGO odczytu. Kasujemy poprzednie, zamiast dopisywać: wpis o pliku,
+         * którego biblioteka już nie wydaje, jest obietnicą o bajtach, których nikt nie widział. */
+        seen.clear();
+        for (const definition of definitions) {
+          if (definition.kind === 'healthy' && definition.revision !== undefined) {
+            seen.set(definition.value.id, definition.revision);
+          }
+        }
         set({
           agents: healthyOnly(definitions),
           problems: definitionProblems(definitions),
@@ -216,7 +244,11 @@ export function createAgentsStore(io: AgentsIo) {
         /* Dysk PIERWSZY, lista druga. W odwrotnej kolejności agent, którego zapis odmówił,
          * siedzi na ekranie do najbliższego uruchomienia i wygląda na zapisanego — a krok
          * workflow, który go nazwie, odmawia dopiero w biegu (niezmiennik 4). */
-        await io.save(complete);
+        /* Rewizja bierze się z tego, co ten magazyn NAPRAWDĘ przeczytał — `null` dla agenta,
+         * którego nigdy nie widział, czyli dla świeżo utworzonego. Wpis podmieniamy dopiero po
+         * udanym zapisie: po odmowie na dysku dalej leżą tamte bajty, więc następna próba ma
+         * pytać o dokładnie tę samą rewizję. */
+        seen.set(id, await io.save(complete, seen.get(id) ?? null));
         set({ agents: upsert(get().agents, complete) });
         return true;
       } catch (error) {
@@ -245,7 +277,9 @@ export function createAgentsStore(io: AgentsIo) {
         /* Duplikat to nowy PLIK. Kopia, która żyje tylko na ekranie, znika przy następnym
          * uruchomieniu — a agent, który zniknął, wygląda jak awaria zapisu (T4 §5.3).
          * Zapis idzie PRZED wstawieniem do listy, z tego samego powodu, co w `save`. */
-        await io.save(copy);
+        /* `null`: kopia to plik, którego jeszcze nie ma. Gdyby jednak był — bo ktoś nazwał tak
+         * agenta w drugim oknie — Rust odmawia zamiast go nadpisać. */
+        seen.set(copy.id, await io.save(copy, null));
         set({ agents: [...get().agents, copy] });
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not make a copy of that agent.') });
@@ -259,6 +293,9 @@ export function createAgentsStore(io: AgentsIo) {
          * nieudanym usunięciu WRACA po restarcie, a człowiek dowiaduje się o tym wtedy, kiedy
          * już zapomniał, że go usuwał. */
         await io.remove(id);
+        /* Rewizja znika razem z plikiem: zostawiona, opisywałaby bajty, których już nie ma,
+         * a agent zapisany ponownie pod tą samą nazwą dostałby odmowę bez powodu. */
+        seen.delete(id);
         set({ agents: get().agents.filter((agent) => agent.id !== id) });
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not delete that agent.') });

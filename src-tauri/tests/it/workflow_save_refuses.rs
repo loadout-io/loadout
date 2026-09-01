@@ -22,6 +22,7 @@ use std::fs;
 
 use serde_json::{Value, json};
 
+use loadout_lib::durable_file::revision_of;
 use loadout_lib::workflow::WorkflowFile;
 use loadout_lib::workflow::check::Level;
 use loadout_lib::workflow::file::{SaveError, save};
@@ -156,7 +157,9 @@ fn a_problem_refuses_the_save_and_the_previous_file_does_not_move() -> Result<()
     fs::write(&path, ON_DISK)?;
     let before = fs::read(&path)?;
 
-    let error = save(&cyclic()?, &path)
+    // Rewizja z bajtów, które NAPRAWDĘ leżą na dysku: gdyby zapis padł na niezgodności
+    // rewizji, asercja niżej („plik nietknięty") przechodziłaby z niewłaściwego powodu.
+    let error = save(&cyclic()?, &path, Some(&revision_of(ON_DISK.as_bytes())))
         .err()
         .ok_or("save() wrote a workflow whose steps wait for one another in a circle")?;
 
@@ -192,7 +195,11 @@ fn a_warning_still_saves_and_the_text_is_the_one_we_promised() -> Result<(), Box
     let path = dir.path().join("ship-a-feature.json");
     fs::write(&path, ON_DISK)?;
 
-    save(&with_a_warning()?, &path)?;
+    save(
+        &with_a_warning()?,
+        &path,
+        Some(&revision_of(ON_DISK.as_bytes())),
+    )?;
 
     assert_eq!(
         fs::read_to_string(&path)?,

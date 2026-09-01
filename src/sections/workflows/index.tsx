@@ -85,7 +85,14 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
 
   /* Który plik jest otwarty w edytorze. `null` znaczy „lista" — jeden fakt, jedno miejsce,
    * bez drugiego boolean-a „czy edytujemy" (niezmiennik 13). */
-  const [open, setOpen] = useState<{ path: string; document: WorkflowFile } | null>(null);
+  /* Rewizja jedzie w tej samej parze co dokument, bo opisuje DOKŁADNIE te bajty, które
+   * przyjechały: pobrana osobnym wywołaniem opisywałaby inną chwilę niż to, co widać na
+   * płótnie — a wtedy zapis odmawiałby albo nadpisywał, w zależności od pogody (2026-08-28). */
+  const [open, setOpen] = useState<{
+    path: string;
+    document: WorkflowFile;
+    revision: string;
+  } | null>(null);
   const [agents, setAgents] = useState<readonly Agent[]>([]);
   const [skills, setSkills] = useState<readonly string[]>([]);
   /* Jedno miejsce na to, czego nie udało się otworzyć. Do 2026-08-18 nie było go wcale:
@@ -147,6 +154,7 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
         key={open.path}
         path={open.path}
         document={open.document}
+        revision={open.revision}
         agents={agents}
         skills={skills}
         onClose={() => {
@@ -200,14 +208,14 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
            * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */
           setSaid(null);
           void Disk.load(path)
-            .then((document) => {
-              /* STRAŻ KSZTAŁTU, nie zaufanie do typu. Sygnatura mówi `Promise<WorkflowFile>`,
+            .then((opened) => {
+              /* STRAŻ KSZTAŁTU, nie zaufanie do typu. Sygnatura mówi `Promise<OpenWorkflow>`,
                * ale po drugiej stronie granicy nie ma żadnych typów — jest JSON. Plik poprawiony
                * ręcznie, zmergowany gitem albo oddany przez starszy build potrafi przyjechać bez
                * `steps`, a edytor czyta `document.steps.find(...)` w pierwszym renderze i wtedy
                * ginie CAŁA sekcja. Zmierzone w przeglądarce 2026-08-18:
                * „TypeError: Cannot read properties of null (reading 'steps')". */
-              if (!Array.isArray(document.steps)) {
+              if (!Array.isArray(opened.workflow?.steps)) {
                 setSaid(
                   'Loadout could not read ' + path + '. Open the file and check it, or delete it.',
                 );
@@ -217,8 +225,12 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
                * plik na dysku bywa poprawiony ręcznie, zmergowany gitem albo zapisany przez
                * build sprzed naprawy z 2026-08-22 — a wtedy niesie strzałkę w krok, którego
                * w nim nie ma. Bez tej linii uwaga o niej wisi na ekranie, dopóki człowiek
-               * czegoś nie skasuje, choć to nie on ją narysował. */
-              setOpen({ path, document: healed(document) });
+               * czegoś nie skasuje, choć to nie on ją narysował.
+               *
+               * Rewizja opisuje bajty SPRZED leczenia i tak ma zostać: to jest odpowiedź na
+               * pytanie „co leżało na dysku", a nie „co pokazałem". Zapis wyleczonego pliku
+               * ma nadpisać dokładnie to, co przeczytał. */
+              setOpen({ path, document: healed(opened.workflow), revision: opened.revision });
             })
             .catch((error: unknown) => {
               setSaid(why(error, 'Loadout could not open ' + path + '.'));

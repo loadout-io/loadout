@@ -70,15 +70,16 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
     let home = TempDir::new()?;
     let alpha_agent = agent("Alpha");
     let zulu_agent = agent("Zulu");
-    save_agent_inner(home.path(), &zulu_agent)?;
-    save_agent_inner(home.path(), &alpha_agent)?;
+    // `None` przy każdym zasianiu: te pliki mają POWSTAĆ, więc nie ma czego nadpisać.
+    save_agent_inner(home.path(), &zulu_agent, None)?;
+    save_agent_inner(home.path(), &alpha_agent, None)?;
     let broken_agent = home.path().join("agents/broken.md");
     fs::write(&broken_agent, b"this is not agent front matter\n")?;
 
     let alpha_workflow = workflow("wf-alpha", "Alpha workflow");
     let zulu_workflow = workflow("wf-zulu", "Zulu workflow");
-    save_workflow_inner(home.path(), "zulu.json", &zulu_workflow)?;
-    save_workflow_inner(home.path(), "alpha.json", &alpha_workflow)?;
+    save_workflow_inner(home.path(), "zulu.json", &zulu_workflow, None)?;
+    save_workflow_inner(home.path(), "alpha.json", &alpha_workflow, None)?;
     let broken_workflow = home.path().join("workflows/broken.json");
     fs::write(&broken_workflow, b"{ definitely not workflow json")?;
 
@@ -96,12 +97,12 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
     );
     assert!(matches!(
         &agents[0],
-        Definition::Healthy { value } if value.name == "Alpha"
+        Definition::Healthy { value, .. } if value.name == "Alpha"
     ));
     assert_problem_shape(&agents[1], Shelf::Agents, "broken.md");
     assert!(matches!(
         &agents[2],
-        Definition::Healthy { value } if value.name == "Zulu"
+        Definition::Healthy { value, .. } if value.name == "Zulu"
     ));
 
     let workflows = list_workflow_definitions_inner(home.path());
@@ -118,18 +119,18 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
     );
     assert!(matches!(
         &workflows[0],
-        Definition::Healthy { value } if value.path == "alpha.json"
+        Definition::Healthy { value, .. } if value.path == "alpha.json"
     ));
     assert_problem_shape(&workflows[1], Shelf::Workflows, "broken.json");
     assert!(matches!(
         &workflows[2],
-        Definition::Healthy { value } if value.path == "zulu.json"
+        Definition::Healthy { value, .. } if value.path == "zulu.json"
     ));
 
     let repaired_agent = agent("Broken");
     let agent_stage = TempDir::new()?;
-    let staged_agent = save_agent_inner(agent_stage.path(), &repaired_agent)?;
-    let repaired_agent_bytes = fs::read(&staged_agent)?;
+    let staged_agent = save_agent_inner(agent_stage.path(), &repaired_agent, None)?;
+    let repaired_agent_bytes = fs::read(&staged_agent.path)?;
     replace_atomically(&broken_agent, &repaired_agent_bytes)?;
     let repaired_workflow = workflow("wf-broken", "Broken repaired");
     let repaired_workflow_bytes = serde_json::to_vec_pretty(&repaired_workflow)?;
@@ -176,7 +177,7 @@ fn agent_save_does_not_overwrite_a_problem_with_the_same_canonical_name()
     let collision_bytes = b"this malformed file already owns the canonical name\n";
     fs::write(&collision, collision_bytes)?;
     assert!(
-        save_agent_inner(home.path(), agent("Collision")).is_err(),
+        save_agent_inner(home.path(), agent("Collision"), None).is_err(),
         "saving an agent overwrote the differently-cased DefinitionProblem that owns its \
          canonical macOS file name"
     );

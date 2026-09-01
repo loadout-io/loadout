@@ -56,6 +56,17 @@ export interface WorkflowEditorProps {
   path: string;
   /** Dokument wczytany przez sekcję — edytor go nie ładuje, tylko pokazuje i zmienia. */
   document: WorkflowFile;
+  /**
+   * Rewizja pliku Z CHWILI ODCZYTU, ta sama, którą oddał `Disk.load` razem z dokumentem.
+   *
+   * Jedzie prosto do magazynu i wraca z każdym zapisem: Rust odmawia publikacji, kiedy pod tą
+   * nazwą leży co innego, więc bez tego pola okno otwarte pięć minut temu kasuje pracę
+   * zapisaną minutę temu i wygląda przy tym na zapisujące poprawnie (2026-08-28).
+   *
+   * `null` znaczy „to okno nie widziało pliku" — tak wygląda tylko edytor postawiony w teście
+   * wprost, bo produkcyjna droga zawsze przechodzi przez odczyt (`./index.tsx`).
+   */
+  revision?: string | null;
   /** Agenci z biblioteki: panel kroku pokazuje wartości efektywne, więc musi znać agenta. */
   agents: readonly Agent[];
   /** Umiejętności leżące w katalogach agentów — wiersz Skills wybiera z nich, a nie z niczego. */
@@ -96,6 +107,7 @@ function visibleSaveRefusal(said: string): string {
 export function WorkflowEditor({
   path,
   document,
+  revision = null,
   agents,
   skills = [],
   onClose,
@@ -116,16 +128,24 @@ export function WorkflowEditor({
   const [store] = useState(() =>
     createWorkflowStore(
       {
-        /* `write` bierze ścieżkę i dokument, `WorkflowIo.save` — sam dokument. Ścieżka jest
-         * domknięta tutaj, bo to edytor wie, który plik ma otwarty; magazyn tego nie wie
-         * i nie powinien (drugie miejsce z odpowiedzią „gdzie to leży"). */
-        save: (file) => disk.write(path, file),
+        /* `write` bierze ścieżkę i dokument, `WorkflowIo.save` — dokument i rewizję. Ścieżka
+         * jest domknięta tutaj, bo to edytor wie, który plik ma otwarty; magazyn tego nie wie
+         * i nie powinien (drugie miejsce z odpowiedzią „gdzie to leży"). Rewizję niesie
+         * magazyn, bo to ona zmienia się przy każdym zapisie. */
+        save: (file, expectedRevision) => disk.write(path, file, expectedRevision),
         check: disk.check,
         /* Zapis AGENTA, nie kroku. Panel ma w liście „Save to the agent", a ta droga jest
-         * jedyną, przez którą wolno jej dojechać do pliku agenta (`state/workflows.ts` §8). */
-        saveAgent: agentsIo.save,
+         * jedyną, przez którą wolno jej dojechać do pliku agenta (`state/workflows.ts` §8).
+         *
+         * Rewizję pliku agenta czytamy TUTAJ, tuż przed zapisem, zamiast przewlekać ją przez
+         * płótno i panele: nie jest ona faktem o otwartym workflow. Okno między odczytem
+         * a publikacją zamyka Rust — to on porównuje bajty (`agents/io.ts`, `revisionOf`). */
+        saveAgent: async (agent) => {
+          await agentsIo.save(agent, await agentsIo.revisionOf(agent.id));
+        },
       },
       document,
+      revision,
     ),
   );
 

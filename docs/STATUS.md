@@ -4,6 +4,98 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
 co już stoi w trunku, co stanęło i dlaczego.
 
+## 2026-08-29, 00:35 — faza 8: pięć zakresów w trunku, pięć napraw harnessu
+
+Licznik: **`b2d50eb`**. Sześć biegów, pięć wylądowanych zielono z pełnym CI na dokładnym SHA
+po merge'u, jeden (`t153`) w toku. Razem **$151,25**.
+
+| Bieg | SHA | Czas | Rundy | Koszt |
+|---|---|---|---|---|
+| `p8-t158-trigger-quarantine` | `137e0ca` | 2106 s | 1 | $25,19 |
+| `p8-t201-process-proof` | `9d7a423` | 6047 s | 2 | $67,78 |
+| `p8-t155-workspace-runs` | `3ff9b31` | 1778 s | 1 | $21,82 |
+| `p8-t151-newer-truth` | `3d9c3f0` | 3 podejścia | 1 | $50,44 |
+| `p8-t157-literal-secret-refused` | `9834ad6` | 1198 s | 1 | $11,18 |
+| `p8-t154-skill-frozen-once` | `b2d50eb` | limit konta | — | $18,76 |
+
+### Najważniejsza rzecz z tej fazy: zielona bramka nie widzi niezabezpieczonej bramy
+
+`p8-t151-newer-truth` dowiózł działający mechanizm i przeszedł **wszystko**: 13 checków,
+`tsc`, 826 testów rustowych, spec e2e. Rustowa odmowa spóźnionego zapisu **nie miała ani
+jednego testu**. Trzy powody naraz:
+
+- nowy spec szedł przez atrapę IPC, więc przy wyłączonej bramie rustowej pozostawał zielony;
+- istniejący `workflow_save_refuses.rs` dostał `Some(&revision_of(ON_DISK.as_bytes()))`, ale
+  to **poprawna** rewizja — czyli sama ścieżka szczęśliwa;
+- `SaveError::Changed` nie był asertowany nigdzie w repo.
+
+Złapała to mutacja, i to **druga** sonda. Pierwsza była zła: podmieniłem `expected` na `None`,
+sądząc że wyłączam sprawdzanie. `None` znaczy tam „tego pliku ma jeszcze nie być", więc brama
+się **zaostrzyła**, padł test *sukcesu* (`a_warning_still_saves…`), a ja odczytałem to jako
+„oracle działa". Właściwą sondą było zepsucie samego porównania w `durable_file.rs`:
+`revision_of(&found) == revision_of(&found)`. Pod nim **826 passed, 0 failed**.
+
+Reguła na przyszłość: **mutuj porównanie, nie argument.** Padający test *sukcesu* pod mutacją
+„wyłączającą odmowę" znaczy, że sonda jest zła, a nie że oracle działa.
+
+Jedna runda z promptem nazywającym tę lukę pomiarowo dała moduł
+`a_late_save_does_not_undo_newer_bytes.rs` z dwiema stronami bramy. Wszystkie biegi tej fazy
+sprawdzone mutacją; łącznie **13 mutacji, 13 prawdziwych czerwieni**, w tym trzy takie, gdzie
+strażnik przeciw „odmawiaj wszystkiemu" słusznie **został zielony**.
+
+### Pięć napraw harnessu, każda osobnym commitem z incydentem
+
+| Commit | Co | Incydent |
+|---|---|---|
+| `8526559` | wysiłek per faza | plan 10–12 min, implementacja 26–49 min; plan w OBU pierwszych biegach poprawił przesłankę zlecenia, więc taniejemy na implementacji |
+| `13a9b88` | deny `Bash(cargo test --tests:*)` | agent odpalił pełną suitę **7 razy** (~35 min budowania); niezmiennik 28: hak odpada (brak stanu), check odpada (identyczne drzewo) → uprawnienie |
+| `44197f8` | sufit tur to kod **3**, nie 1 | bieg zjadł 250 tur na 145 edycjach wachlarza, skończył z `tsc rc=0`; kod 1 kazał mi szukać defektu kodu, którego nie było |
+| `39c4382` | model per rola | właściciel wyczerpał tokeny Codeksa; `--verifier claude` bez tego dawałby ten sam model dwa razy, czego D3 nie uznaje za drugą opinię |
+| `e1da96a` | `.h-plan.md` odśledzony | lądowanie padło na konflikcie w brudnopisie, przy `ipc.rs` z +331 liniami zmergowanym automatycznie; komentarz w `h.py` **kłamał**, że plik jest w `.gitignore` |
+
+Ostatnia jest niezmiennikiem 20 zastosowanym do komentarza: zdanie, które opisuje stan
+zamiast go wymuszać, kłamało tygodniami i nikt tego nie sprawdził.
+
+### Co zrobiłem źle, dla następnej sesji
+
+1. **Druga sesja pisała do tego samego `main`.** Sesja `9334477f` biegła 29-gałęziowym
+   `triage.sh` (merge → bramka → `reset --hard` na czerwieni) i przesunęła HEAD dwa razy pod
+   moim pomiarem bazy. Podpisy widoczne w `ps`, żaden w `git status`: **dwa procesy
+   `tee /var/folders/.../loadout-ci.*`** oraz cel testowy z **0,35 s CPU przy 4 min elapsed**
+   (zagłodzony, nie zawieszony). Ubita na polecenie właściciela, od dołu do góry, osiem PID-ów
+   z dowodem ESRCH. Koszt: dwa spalone `ci.sh full`.
+2. **`task-T-105` wszedł na `main` bez bramki i ją zawieszał.**
+   `tests/it/a_turned_down_lead_says_why.rs` nie ma ani jednego deadline'u i `await`-uje
+   atrapę `codex app-server`, która stoi z `0:00.00` CPU. Cofnięte revertem jako `db79576`;
+   drzewo wróciło bajt w bajt do zielonego `e9c7b89`. Relanding wymaga naprawy tego testu,
+   bo w obecnym kształcie **żadna** bramka repo się nie skończy.
+3. **Źle oceniłem rozłączność plikową** przy równoległości — wypisałem pliki biegu z pamięci,
+   pomijając `ipc.rs`, który widziałem we własnym logu clippy. Lądowanie padło. Reguła:
+   drugą gałąź przed lądowaniem merguj z `main` **w jej worktree**, nie na trunku.
+4. **Commitowałem do `main`, gdy `h land` był w środku CI.** Skutek był ograniczony (tylko
+   `.loadout/h/**`, którego żaden krok bramki nie czyta), ale reguła jest prosta: naprawy
+   harnessu idą przed lądowaniem albo po nim.
+5. **`git diff main..<gałąź>` obwinia gałąź o moje własne commity.** Gałąź wyglądała na taką,
+   która tknęła `.loadout/h/h.py` — czyli łamie najostrzejszą regułę repo. Tknąłem go ja.
+   O winę biegu pytaj od `git merge-base`.
+6. **Backticki w promptcie podanym przez shell zostają wykonane**, a stary `<log>.rc` po
+   nieudanej próbie natychmiast odpala czuwanie i melduje żywy bieg jako padnięty. Prompty
+   idą teraz z plików, paragony mają świeże nazwy na każdą próbę.
+
+### Długi otwarte, nazwane
+
+- **`curl --fail` — T-158 nie jest domknięte.** `linear_curl_config` ma `fail`, więc HTTP ≥ 400
+  ginie jako `CurlFailed` (kubełek chwilowy), a kwarantanna wymaga **200 z niepustym `errors`**.
+  Jeśli Linear odrzuca zły klucz kodem 4xx, produkcja dalej puka bez końca — mechanizm zielony
+  w testach, martwy w produkcie. Wymaga pomiaru żywym kluczem, czyli decyzji właściciela.
+- **FNV-1a jest teraz w trzech kopiach** (`commands/run.rs`, `import/apply.rs`,
+  `skills/place.rs`) — niezmiennik 23 mówi o jednym rdzeniu.
+- **59 standalone targetów** w `src-tauri/tests/`, po ~60 s linku każdy przy każdym lądowaniu.
+- **26 gałęzi z listy triage** nadal nie zlandowanych, `task-T-105` z revertem do odwrócenia.
+- `p8-t154-skill-frozen-once` **nie był oglądany przez niezależnego weryfikatora** — limit
+  konta ubił bieg przed tą fazą. Oparty wyłącznie na 12 zielonych checkach i trzech mutacjach
+  (brama, licznik uruchomień, droga zdania na ekran).
+
 ## 2026-08-28, 19:05 — p8-t158-trigger-quarantine w trunku; kwarantanna po odrzuconym kluczu
 
 **`p8-t158-trigger-quarantine` · zielone / WYLĄDOWANE jako `137e0ca` · 2106 s biegu (1 runda)

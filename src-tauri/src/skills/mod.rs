@@ -224,6 +224,22 @@ pub struct StepSkills {
     pub dirs: Vec<PathBuf>,
 }
 
+/// Czym umiejętność BYŁA, kiedy bieg po nią sięgnął: odcisk jej plików i ich łączna długość.
+///
+/// 2026-08-28 (T-154) — DWA POLA, NIE JEDNO, i to jest ten sam wybór, co przy
+/// [`crate::commands::run`]`::MemoryRecord`: odcisk i liczba bajtów odpowiadają na to samo pytanie
+/// dwiema drogami, więc rachunek przepisany po fakcie rozjeżdża się sam ze sobą. Liczone
+/// z CAŁEGO katalogu, nie z samego `SKILL.md` — to katalog jedzie do kroku
+/// ([`place::copy_the_skill`]), a umiejętność, której `scripts/check.sh` ktoś podmienił,
+/// jest umiejętnością zmienioną.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Material {
+    /// Odcisk ścieżek i bajtów, tą samą drogą, którą liczy się odcisk pliku workflow.
+    pub hash: String,
+    /// Ile bajtów miały te pliki razem.
+    pub bytes: u64,
+}
+
 /// Dlaczego wybrana umiejętność nie dojedzie do kroku — po ludzku, bo to zdanie czyta człowiek.
 ///
 /// Cztery powody, bo naprawia się je czterema różnymi ruchami: dopisz umiejętność do biblioteki,
@@ -283,6 +299,49 @@ pub struct Missing {
     pub skill: String,
     /// Co dokładnie odmówiło.
     pub why: Why,
+}
+
+/// Co się stało z materiałem, który bieg zamroził — po ludzku, bo to zdanie czyta człowiek.
+///
+/// 2026-08-28 (T-154) — DWA ZDANIA, BO DWIE RÓŻNE NAPRAWY, i to jest ten sam powód, dla którego
+/// [`Why`] ma cztery warianty zamiast jednego wspólnego. Materiał, który się zmienił, przywraca
+/// się do postaci z tamtego dnia albo puszcza od nowa jako nowy bieg; umiejętność, po którą ten
+/// bieg już nie sięga, wraca dopisaniem jej agentowi. Jedno wspólne zdanie na oba stany zostawia
+/// połowę ludzi przy instrukcji, która w ich przypadku nie może zadziałać.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Moved {
+    /// Bieg deklarował ją na starcie, a dziś jej w tym kroku nie ma.
+    #[error("this run does not reach it any more, so repeating the step would work with less")]
+    Gone,
+    /// Jest, tylko pod tą nazwą leży dziś co innego.
+    #[error("what is saved under that name is not the material the first run was given")]
+    Changed,
+}
+
+/// Umiejętność, którą bieg zamroził i która nie jest już tym, czym była — **odmowa nazywająca
+/// pozycję i krok**.
+///
+/// 2026-08-28 (T-154). TO JEST ODMOWA, A NIE POWTÓRZENIE Z INNYM MATERIAŁEM, i to jest jedyny
+/// powód, dla którego ten typ istnieje obok [`Missing`]. Człowiek powtarza krok po to, żeby
+/// zobaczyć, czy JEGO poprawka zmieniła wynik — powtórzenie, w którym po cichu przesunęło się
+/// też wejście, odpowiada na inne pytanie i nie mówi o tym ani słowem. Ta sama cicha porażka,
+/// przed którą stoi `commands::run::what_the_run_before_left`.
+///
+/// Zdanie wymienia OBIE nazwy, dokładnie jak [`Missing`]: bez nazwy umiejętności odmowa zamienia
+/// jedno przywrócenie pliku w przeszukiwanie biblioteki, a bez nazwy kroku człowiek nie wie,
+/// który kafelek otworzyć (niezmiennik 29).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "\"{step}\" ran with the skill \"{skill}\", and {why}. Nothing started: running it again with \
+     other material answers a different question than the one you are comparing it against."
+)]
+pub struct NotAsItWas {
+    /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
+    pub step: String,
+    /// Nazwa umiejętności, dosłownie tak, jak stała w tamtym biegu.
+    pub skill: String,
+    /// Co dokładnie się z nią stało.
+    pub why: Moved,
 }
 
 /// Błędy rozmieszczania.

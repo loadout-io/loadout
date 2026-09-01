@@ -122,7 +122,8 @@ async fn six_agents_build_a_todo_list() -> Result<(), Box<dyn Error>> {
         "the workflow would be refused before it ran, so nothing below means what it says. \
          The validator said: {blockers:?}"
     );
-    let path = save_workflow_inner(&bench.home, "todo-list.json", &workflow)?;
+    // `None`: ta biblioteka jest świeża, więc plik ma tu powstać, a nie kogokolwiek nadpisać.
+    let path = save_workflow_inner(&bench.home, "todo-list.json", &workflow, None)?.path;
     println!("== workflow: {}", path.display());
 
     // ── (c) BIEG, na PRAWDZIWYM sterowniku ──────────────────────────────────────────────────
@@ -266,7 +267,7 @@ fn saved(bench: &Bench, name: &str, what: &str, brief: &str) -> Result<Agent, Bo
     // Pisanie plików jest tu przesłanką, nie ryzykiem: bez niego `Builder` nie ma czym zbudować.
     agent.file_access = FileAccess::WorkFreely;
     agent.give_up_after_minutes = MINUTES;
-    save_agent_inner(&bench.home, &agent)?;
+    save_agent_inner(&bench.home, &agent, None)?;
     Ok(agent)
 }
 

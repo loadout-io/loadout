@@ -83,7 +83,7 @@ fn refused(vendor_options: &Value) -> Result<String, Box<dyn Error>> {
     let path = dir.path().join("ship-a-feature.json");
 
     let workflow = workflow_with(vendor_options)?;
-    let error = save(&workflow, &path)
+    let error = save(&workflow, &path, None)
         .err()
         .ok_or("save() accepted a passthrough it had to refuse")?;
 
@@ -169,7 +169,7 @@ fn a_new_vendor_flag_that_collides_with_nothing_saves_normally() -> Result<(), B
     let mut options = passthrough("claude", "--some-new-flag", "value");
     options["codex"] = json!({ "model_reasoning_summary": "detailed" });
 
-    save(&workflow_with(&options)?, &path)?;
+    save(&workflow_with(&options)?, &path, None)?;
 
     let written: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
     assert_eq!(

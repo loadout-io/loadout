@@ -35,6 +35,14 @@ pub enum Error {
     /// oddał już swoje miejsce następnikowi i drugi raz nie ma czego oddać [T6 §9].
     #[error("{id} was already corrected once")]
     AlreadySuperseded { id: String },
+
+    /// Plik zmienił się między odczytem a zapisem, więc nic nie zostało nadpisane.
+    ///
+    /// 2026-08-28 — korekta przepisuje jeden wiersz `status:` i zostawia resztę bajt w bajt,
+    /// więc musi pisać po tych bajtach, które NAPRAWDĘ przeczytała. Zapis wobec nieaktualnego
+    /// odczytu cofnąłby cudzą zmianę i wyglądałby dokładnie jak udana korekta.
+    #[error("{} changed on disk, so nothing was overwritten", path.display())]
+    ChangedOnDisk { path: PathBuf },
 }
 
 /// Skrót używany przez cały moduł pamięci.

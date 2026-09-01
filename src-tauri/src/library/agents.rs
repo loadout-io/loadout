@@ -33,11 +33,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError};
+use crate::durable_file::{
+    DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError, revision_of,
+};
 use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
 
 use crate::engine::drivers::Policy;
-use crate::workflow::check::{escalation_in, is_reserved};
+use crate::workflow::check::{escalation_in, is_reserved, literal_secret_in};
 
 /// Wersja formatu, w którym zapisujemy agenta. Jedna liczba i na razie jedna wartość —
 /// migracja „na przyszłość" jest w `AGENTS.md` na liście zakazanych, a przy `schema < CURRENT`
@@ -391,6 +393,35 @@ pub enum AgentError {
     /// klucz, więc przepuszczony `null` produkuje plik ustawień, który się nie wczyta.
     #[error("{field} has no value. Remove the line to go back to the agent's setting")]
     EmptySetting { field: String },
+    /// Plik pod nazwą tego agenta **nie jest** tymi bajtami, które okno czytało.
+    ///
+    /// 2026-08-28 — bez nazwy pliku w zdaniu, i to jest świadome: ten komunikat idzie prosto
+    /// na ekran sekcji Agents (`state/agents.ts`, pole `refusal`), a absolutna ścieżka
+    /// z maszyny człowieka nie jest częścią odpowiedzi na pytanie „czy moja zmiana weszła".
+    #[error(
+        "This agent was not saved: the file changed on disk after you opened it, so nothing was \
+         overwritten."
+    )]
+    Changed,
+    /// Wpis przelotki niesie sekret podany LITERALNIE.
+    ///
+    /// 2026-08-28 (T-157) — bez ścieżki na dysku, z tego samego powodu, co przy [`AgentError::
+    /// Changed`]: to zdanie idzie prosto na ekran sekcji Agents (`state/agents.ts`, pole
+    /// `refusal`), a absolutna ścieżka z maszyny człowieka nie jest częścią odpowiedzi na pytanie
+    /// „dlaczego mój agent się nie zapisał". Nazwa WIERSZA jest, bo bez niej nie ma czego skasować.
+    ///
+    /// I bez samej wartości: ten napis wraca przez `ipc::save_agent` do okna, więc sekret wpisany
+    /// do niego żyłby drugi raz w miejscu, którego nikt nie sprząta.
+    #[error(
+        "This agent was not saved: \"{agent}\" has what looks like {what} in the line {field}. An \
+         agent file goes into git and into copies, so nothing was written. Hand it to the agent as \
+         an environment variable instead."
+    )]
+    CarriesASecret {
+        agent: String,
+        field: String,
+        what: &'static str,
+    },
 }
 
 /// Agent + nadpisania -> co naprawdę pobiegnie, plus lista nazw dla znacznika „N changed".
@@ -533,9 +564,19 @@ pub fn read_agent_file(path: &Path) -> Result<Agent, AgentError> {
     read_agent_snapshot(path, &bytes)
 }
 
+/// Definicja razem z rewizją bajtów, z których powstała.
+///
+/// Rewizja stoi po stronie `Ok`, a nie obok niej, bo opisuje DOKŁADNIE te bajty: plik, którego
+/// nie dało się przeczytać, nie ma rewizji, o której dałoby się cokolwiek obiecać.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadAgent {
+    pub revision: String,
+    pub agent: Agent,
+}
+
 /// Jedno descriptor-bound źródło biblioteki dla ekranu i Startu. Wynik zachowuje błąd per plik,
 /// bo ekran dziś odmawia całej listy, a Run może nadal znaleźć zdrowego, wskazanego agenta obok.
-pub type AgentLibraryEntry = (PathBuf, Result<Agent, AgentError>);
+pub type AgentLibraryEntry = (PathBuf, Result<ReadAgent, AgentError>);
 
 pub fn read_agent_directory(dir: &Path) -> Result<Vec<AgentLibraryEntry>, AgentError> {
     let publisher = DurableFilePublisher::new(dir);
@@ -581,7 +622,12 @@ fn read_agent_directory_from_root(
         let agent = root
             .read_regular(Path::new(&file_name), false)
             .map_err(|error| refused(&path, &error.to_string()))
-            .and_then(|bytes| read_agent_snapshot(&path, &bytes));
+            .and_then(|bytes| {
+                // Rewizja z TYCH bajtów, nie z ponownego odczytu: para „co wypisałem"
+                // i „co przy tym leżało na dysku" musi pochodzić z jednego spojrzenia.
+                let revision = revision_of(&bytes);
+                read_agent_snapshot(&path, &bytes).map(|agent| ReadAgent { revision, agent })
+            });
         out.push((path, agent));
     }
     Ok(out)
@@ -725,11 +771,51 @@ fn flow_list(text: &str) -> Option<Vec<Value>> {
     Some(inner.split(',').map(|item| scalar(item.trim())).collect())
 }
 
-/// Zapisuje agenta do `dir/<slug>.md` i zwraca ścieżkę, pod którą wylądował.
+/// Gdzie agent wylądował i jaką rewizję ma teraz jego plik.
+///
+/// Rewizja wraca razem ze ścieżką, bo wołający zapisze tego agenta jeszcze raz — i musi wtedy
+/// wiedzieć, co sam przed chwilą położył, żeby nie wyglądać jak spóźniony pisarz.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrittenAgent {
+    pub path: PathBuf,
+    pub revision: String,
+}
+
+/// Zapisuje agenta do `dir/<slug>.md` i zwraca ścieżkę, pod którą wylądował, razem z rewizją.
 ///
 /// Slug wyprowadzamy z nazwy tutaj, w jednym miejscu, żeby wołający nie musiał znać
 /// reguły — a przy okazji żeby była JEDNA reguła.
-pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError> {
+///
+/// `expected` jest rewizją, którą wołający **przeczytał**; `None` znaczy „tego pliku ma jeszcze
+/// nie być". Zmiana nazwy agenta zmienia nazwę pliku, więc rewizja starego pliku opisuje wtedy
+/// INNY leaf — a pod nową nazwą albo nie ma nic (publikujemy), albo leży cudzy agent (odmowa).
+/// Obie odpowiedzi daje `publish_definition` i żadna nie wymaga zgadywania tutaj.
+pub fn write_agent_file(
+    dir: &Path,
+    agent: &Agent,
+    expected: Option<&str>,
+) -> Result<WrittenAgent, AgentError> {
+    // 2026-08-28 (T-157) — BRAMA STOI TU, PRZED PIERWSZĄ LINIĄ, KTÓRA DOTYKA CZEGOKOLWIEK.
+    // Nie „przed publikacją": przed `to_value`, przed `create_dir_all` i przed plikiem tymczasowym
+    // publikatora. Odmowa, która pada niżej, zostawia po sobie katalog `~/.loadout/agents/` albo
+    // leaf w połowie, a zadaniem tej reguły jest to, żeby po sekrecie nie zostało NIC — ani
+    // częściowo, ani „bez tego jednego pola". Przy pierwszym trafieniu wychodzimy, bo człowiek
+    // naprawia jeden wiersz naraz, a lista trzech zdań o jednym pliku czyta się jak trzy usterki.
+    //
+    // Ta sama brama obsługuje drugiego wołającego, `import::apply`: zaimportowany plik agenta jest
+    // dokładnie tym nośnikiem, którego nikt nie przeglądał wiersz po wierszu.
+    for options in agent.vendor_options.values() {
+        for (flag, value) in options {
+            if let Some(what) = literal_secret_in(flag, value) {
+                return Err(AgentError::CarriesASecret {
+                    agent: agent.name.clone(),
+                    field: flag.clone(),
+                    what,
+                });
+            }
+        }
+    }
+
     let path = dir.join(agent_file_name(agent));
 
     let wire = serde_json::to_value(agent).map_err(|error| refused(&path, &error.to_string()))?;
@@ -757,13 +843,23 @@ pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError
 
     std::fs::create_dir_all(dir).map_err(|error| refused(&path, &error.to_string()))?;
     DurableFilePublisher::new(dir)
-        .atomic_replace(
+        .publish_definition(
             &path,
             text.as_bytes(),
             ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+            expected,
         )
-        .map_err(|error| refused(&path, &error.to_string()))?;
-    Ok(path)
+        .map_err(|error| match error {
+            // Spóźniony zapis ma własne zdanie dla człowieka. Opakowany w „nie dało się
+            // zapisać: <ścieżka> is not the file that was read" byłby powodem technicznym
+            // w miejscu, w którym jest coś do zrobienia.
+            PublishError::Changed { .. } | PublishError::Conflict { .. } => AgentError::Changed,
+            other => refused(&path, &other.to_string()),
+        })?;
+    Ok(WrittenAgent {
+        revision: revision_of(text.as_bytes()),
+        path,
+    })
 }
 
 /// Kanoniczna nazwa pliku agenta, używana i przez zapis, i przez ochronę przed nadpisaniem
@@ -1141,6 +1237,17 @@ pub fn passthrough_refused(agent: &Agent) -> Vec<String> {
                     "\"{}\" has {flag} in its {app} options, and {raise} raises what an agent may \
                      do with your files. That is set on one dial and nowhere else, so Loadout \
                      stopped the run instead of starting it. Delete that line.",
+                    agent.name
+                ));
+            } else if let Some(what) = literal_secret_in(flag, value) {
+                // 2026-08-28 (T-157) — plik agenta poprawiony ręcznie POZA aplikacją nie przeszedł
+                // przez bramę zapisu (`write_agent_file`), więc sekret trafia do biegu tą drogą.
+                // Zdanie nazywa wiersz i nie cytuje wartości: jedzie do strumienia biegu.
+                said.push(format!(
+                    "\"{}\" has what looks like {what} in its {app} options, in the line {flag}. \
+                     An agent file goes into git and into copies, so Loadout stopped the run \
+                     instead of starting it. Delete that line and hand it to the agent as an \
+                     environment variable instead.",
                     agent.name
                 ));
             } else if is_reserved(vendor, flag) {

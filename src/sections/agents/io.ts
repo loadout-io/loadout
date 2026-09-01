@@ -41,9 +41,32 @@ export function newId(): Promise<string> {
   return invoke<string>('new_id');
 }
 
-/** Zapisuje definicję agenta. Duplikat to nowy PLIK, nie wiersz żyjący na ekranie. */
-export function save(agent: Agent): Promise<void> {
-  return invoke<void>('save_agent', { agent });
+/**
+ * Zapisuje definicję agenta i oddaje rewizję, którą ma teraz jego plik. Duplikat to nowy PLIK,
+ * nie wiersz żyjący na ekranie.
+ *
+ * `expectedRevision` to rewizja, którą okno CZYTAŁO dla tego agenta; `null` znaczy „tego pliku
+ * ma jeszcze nie być". Klucz jedzie zawsze, nawet z `null` w środku — Tauri dopasowuje
+ * argumenty po nazwie, więc klucz zdjęty przez `JSON.stringify` byłby wywołaniem ODRZUCONYM.
+ */
+export function save(agent: Agent, expectedRevision: string | null): Promise<string> {
+  return invoke<string>('save_agent', { agent, expectedRevision });
+}
+
+/**
+ * Rewizja pliku tego agenta, prosto z biblioteki — albo `null`, kiedy jej tam nie ma.
+ *
+ * PO CO TO ISTNIEJE. Edytor workflow też zapisuje agenta (naprawa „Save to the agent"
+ * w `state/workflows.ts`), a rewizji pliku nie trzyma i trzymać nie powinien: to nie jest fakt
+ * o otwartym workflow. Zamiast przewlekać ją przez płótno i trzy panele, czytamy bibliotekę
+ * tuż przed zapisem — dokładnie tak, jak magazyn listy czyta katalog tuż przed wyborem wolnej
+ * nazwy pliku. Okno między odczytem a zapisem zamyka i tak Rust: to on porównuje bajty.
+ */
+export async function revisionOf(id: string): Promise<string | null> {
+  const found = definitionsOf(await listDefinitions()).find(
+    (definition) => definition.kind === 'healthy' && definition.value.id === id,
+  );
+  return found?.kind === 'healthy' ? (found.revision ?? null) : null;
 }
 
 /** Usuwa agenta po identyfikatorze — stabilnym przez zmianę nazwy, w odróżnieniu od pliku. */

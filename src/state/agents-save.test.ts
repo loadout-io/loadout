@@ -82,7 +82,7 @@ function recorder(): Recorder {
     },
     save: (agent: Agent) => {
       saved.push(agent);
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(agent));
     },
     remove: () => Promise.resolve(),
   };

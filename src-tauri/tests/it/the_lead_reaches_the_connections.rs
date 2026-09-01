@@ -403,7 +403,7 @@ impl Bench {
             connections: connections.to_vec(),
             ..Agent::example()
         };
-        save_agent_inner(self.home.path(), &agent)?;
+        save_agent_inner(self.home.path(), &agent, None)?;
         Ok(agent.id.to_string())
     }
 

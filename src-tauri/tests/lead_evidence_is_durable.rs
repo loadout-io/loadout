@@ -135,7 +135,7 @@ fn saved_lead(library: &Path, name: &str, vendor: Vendor) -> Result<Agent, Box<d
     agent.id = Uuid::now_v7();
     name.clone_into(&mut agent.name);
     agent.runs_with = vendor;
-    let _path = save_agent_inner(library, &agent)?;
+    let _written = save_agent_inner(library, &agent, None)?;
     Ok(agent)
 }
 

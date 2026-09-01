@@ -163,6 +163,96 @@ pub const FORBIDDEN_ESCALATIONS: [&str; 4] = [
     "--max-budget-usd",
 ];
 
+/// Początki, po których poznaje się klucz wydany przez konkretnego dostawcę.
+///
+/// 2026-08-28 (T-157) — definicje workflowów i agentów są **zwykłymi plikami**: idą do gita, do
+/// kopii i do wyników biegu. Sekret ma w tym produkcie jedną drogę — env dziecka (niezmiennik 9)
+/// — a przelotka i pole „co uruchomić" są dwiema szparami, przez które literał może się do pliku
+/// wcisnąć. Ta lista jest pierwszą z trzech reguł [`secret_shaped`] i jedyną, która wie
+/// **cokolwiek** o dostawcach: pozostałe dwie pytają wyłącznie o kształt.
+///
+/// Dopasowanie jest WRAŻLIWE NA WIELKOŚĆ LITER i to jest treść, nie przeoczenie. `AKIA`, `ASIA`
+/// i `AIza` mają po cztery znaki i po zignorowaniu wielkości liter zaczynałyby zwykłe angielskie
+/// wyrazy (`aiza…`, `asia…`) — czyli fałszywą odmowę na wartości, która niczego nie niesie.
+/// Prawdziwe klucze tych rodzin mają wielkie litery zawsze, bo dostawca je tak wydaje.
+///
+/// `sk-ant-` stoi PRZED `sk-`, choć wynik jest ten sam: kolejność czyta człowiek, nie kod, i para
+/// „rodzina, potem rodzic" mówi wprost, że drugie nie jest literówką pierwszego.
+const SECRET_PREFIXES: [&str; 15] = [
+    "sk-ant-",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "lin_api_",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "npm_",
+    "hf_",
+    "dop_v1_",
+];
+
+/// Nazwy parametrów adresu, które niosą sekret **w samej nazwie**.
+///
+/// 2026-08-28 (T-157) — porównanie idzie po nazwie sprowadzonej do małych liter z `-` zamienionym
+/// na `_`, więc `api-key`, `Api_Key` i `APIKEY` pytają o tę samą pozycję. To jedyna reguła w tym
+/// pliku, która patrzy na NAZWĘ, i wolno jej na to dlatego, że nazwa parametru adresu jest częścią
+/// wartości wpisu, a nie polem, które wypełnia człowiek: adres z `?token=…` niesie sekret
+/// niezależnie od tego, jak nazywa się flaga, w której stoi.
+const SECRET_PARAMETERS: [&str; 11] = [
+    "token",
+    "key",
+    "api_key",
+    "apikey",
+    "secret",
+    "access_token",
+    "password",
+    "passwd",
+    "pwd",
+    "auth",
+    "signature",
+];
+
+/// Ile znaków musi mieć ogon za znanym prefiksem, żeby uznać go za klucz.
+///
+/// 2026-08-28 (T-157) — próg jest tu, żeby `sk-` nie zabijało `sk-test`, `sk-1` i każdej innej
+/// krótkiej wartości, która przypadkiem tak się zaczyna. Najkrótszy prawdziwy klucz z tych rodzin
+/// (`hf_` u Hugging Face) ma 37 znaków, `AKIA…` dokładnie 20, więc szesnaście jest z zapasem pod
+/// nimi i z zapasem nad wszystkim, co jest zwykłym ustawieniem.
+const A_KNOWN_KEY: usize = 16;
+
+/// Ile znaków musi mieć wartość parametru adresu, żeby uznać ją za sekret.
+///
+/// 2026-08-28 (T-157) — `?key=1` i `?auth=none` są zwykłymi parametrami i mają przechodzić;
+/// klucz podpisujący nie ma dwunastu znaków nigdy.
+const A_PARAMETER_VALUE: usize = 12;
+
+/// Ile znaków musi mieć zbity ciąg, żeby jego sam kształt był powodem odmowy.
+///
+/// 2026-08-28 (T-157) — TO JEST PRÓG, KTÓRY MOŻE ZABLOKOWAĆ PRACĘ, więc jest zmierzony na
+/// wartościach, które MAJĄ przechodzić, a nie wybrany na wyczucie. Fałszywa odmowa jest tu gorsza
+/// niż brak sprawdzenia: człowiek nie ma jak jej obejść, bo nie może zmienić wartości, którą musi
+/// podać. Dlatego trzy warunki naraz, i każdy z nich odsiewa konkretną wartość z trunku:
+///
+/// - **32 znaki** — `workspace-write` (15), `sandbox_mode` (12), `xhigh` (5) i każde inne
+///   ustawienie vendora są krótsze o rząd wielkości;
+/// - **trzy klasy znaków naraz** (mała litera, wielka litera, cyfra) — SHA gita (40 znaków) i UUID
+///   (36) są długie i mają po DWIE klasy, więc nie wpadają. To one przewracają wersję pytającą
+///   samą długością;
+/// - **ciąg cięty na kropce i ukośniku** — `sandbox_workspace_write.network_access` ma 38 znaków
+///   i rozpada się na 23 i 14, a każda ścieżka bezwzględna rozpada się na segmenty. Bez tego cięcia
+///   `/Users/kto/Projects/loadout-h-p8-t157` (38 znaków, trzy klasy) byłby odmową, a jest zwykłą
+///   ścieżką wpisaną w pole „gdzie".
+///
+/// Cena tego cięcia: sekret zakodowany base64, w którym akurat trafił się ukośnik, może rozpaść się
+/// na dwa krótsze ciągi i tą regułą przejść. Zostaje wtedy reguła prefiksów i reguła adresu. To jest
+/// wybór świadomy — heurystyka, która blokuje pracę, przestaje istnieć po pierwszym tygodniu.
+const A_PACKED_RUN: usize = 32;
+
 /// Zdanie z uruchomienia w T3 §5.2.
 ///
 /// Mówi, co się stanie, a nie jak nazywa się algorytm, który to znalazł: `cycle detected in DAG`
@@ -332,6 +422,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     a_step_without_an_agent(&steps, when, &mut notes);
     a_step_without_a_task(&steps, when, &mut notes);
     a_command_step_left_empty(&steps, &mut notes);
+    a_command_carrying_a_secret(&steps, &mut notes);
     conditional_routes(workflow, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
@@ -726,6 +817,40 @@ fn a_command_step_left_empty(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
     }
 }
 
+/// Komenda kroku, która niesie sekret literalnie.
+///
+/// 2026-08-28 (T-157) — [`Facts::command`] mają dwa kafelki, „sprawdź" i „uruchom i zostaw", i to
+/// jedyne miejsca w definicji workflowu, gdzie mieszka ADRES. Wiersz `curl https://ci:…@…` wjeżdża
+/// do pliku, który idzie do gita, do kopii i do wyników biegu — a sekret ma w tym produkcie jedną
+/// drogę, env dziecka (niezmiennik 9).
+///
+/// PROBLEM NIEZALEŻNIE OD [`When`], tak samo jak przy [`a_command_step_left_empty`]: to nie jest
+/// szkic w połowie zbudowany, który dokończy się za chwilę. Bajty z sekretem albo trafiają na dysk,
+/// albo nie, a ostrzeżenie tutaj nie zablokowałoby `save()` — czyli plik, który miał być odrzucony,
+/// leżałby już w `~/.loadout/workflows/` i w każdej kopii, którą ktoś zdążył zrobić.
+///
+/// Zdanie nazywa kafelek i POLE, nigdy samą wartość: człowiek ma wiedzieć, gdzie patrzeć, a uwaga
+/// jedzie na ekran i do wyników biegu, więc wartość wpisana do niej żyłaby drugi raz.
+fn a_command_carrying_a_secret(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
+    for step in steps {
+        let Some(command) = step.command else {
+            continue;
+        };
+        let Some(what) = secret_shaped(command) else {
+            continue;
+        };
+        notes.push(problem(
+            Some(step.id),
+            format!(
+                "\"{}\" has what looks like {what} in the command it runs. Loadout will not write \
+                 that into a workflow file — a workflow file goes into git and into copies. Hand \
+                 it to the agent as an environment variable instead.",
+                step.name
+            ),
+        ));
+    }
+}
+
 /// Dwie pętle, które dzielą choć jeden krok.
 ///
 /// ODMOWA, NIE DOMYSŁ, i to jest granica przyznana wprost — tylko że od 2026-08-22 biegnie tam,
@@ -920,9 +1045,13 @@ fn colliding_work_branches(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note
 
 /// Przelotka podnosząca flagę, którą Loadout ustawia sam.
 ///
-/// Dwie granice, obie przy zapisie: kolizja z naszą flagą i próba podniesienia dialu „co agent
-/// może zrobić z plikami". Druga jest **niezależna od listy** — `--sandbox` nie jest
-/// zarezerwowane, a `--sandbox danger-full-access` omija dial dokładnie tak samo jak `-s`.
+/// Trzy granice, wszystkie przy zapisie: kolizja z naszą flagą, próba podniesienia dialu „co agent
+/// może zrobić z plikami" i literalny sekret. Druga jest **niezależna od listy** — `--sandbox` nie
+/// jest zarezerwowane, a `--sandbox danger-full-access` omija dial dokładnie tak samo jak `-s`.
+///
+/// 2026-08-28 (T-157) — sekret stoi PRZED kolizją nazw, bo jest cięższy: wiersz kolidujący
+/// z naszą flagą jest do skasowania i tyle, a wiersz z kluczem trafiłby do pliku, który idzie do
+/// gita i do kopii. Kiedy wpis odpada z obu powodów, człowiek ma przeczytać ten drugi.
 fn the_passthrough(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
     for step in steps {
         let Some(options) = step.passthrough else {
@@ -936,6 +1065,21 @@ fn the_passthrough(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                         format!(
                             "\"{}\" tries to set {raise} through its {} options. What an agent \
                              may do with your files is set on the step itself.",
+                            step.name,
+                            vendor_name(vendor)
+                        ),
+                    ));
+                } else if let Some(what) = literal_secret_in(flag, value) {
+                    // Zdanie nazywa WIERSZ i nigdy nie cytuje wartości: uwaga jedzie na ekran,
+                    // do wyników biegu i do wszystkiego, co je kopiuje, więc sekret wpisany do
+                    // niej żyłby drugi raz w miejscu, którego nikt nie sprząta.
+                    notes.push(problem(
+                        Some(step.id),
+                        format!(
+                            "\"{}\" has what looks like {what} in its {} options, in the line \
+                             {flag}. Loadout will not write that into a workflow file — a \
+                             workflow file goes into git and into copies. Hand it to the agent as \
+                             an environment variable instead.",
                             step.name,
                             vendor_name(vendor)
                         ),
@@ -1031,6 +1175,122 @@ pub(crate) fn escalation_in(flag: &str, value: &str) -> Option<&'static str> {
         .iter()
         .copied()
         .find(|raise| key == *raise || value.contains(raise))
+}
+
+/// Sekret podany LITERALNIE w tym wpisie przelotki — albo `None`, kiedy wpis niczego nie niesie.
+///
+/// **Niezależne od vendora i od nazwy wpisu**, dokładnie jak [`escalation_in`]: plik definicji
+/// jedzie do gita niezależnie od tego, która aplikacja miała dostać tę flagę, a nazwa flagi jest
+/// tym, co człowiek wymyśla — `--auth-header` nie ma w sobie ani „key", ani „token", a niesie
+/// klucz tak samo skutecznie jak `--api-key`. Rozróżnienie należy więc do KSZTAŁTU wartości.
+///
+/// Prawa strona `klucz=wartość` jest czytana tak samo jak sama wartość, i z tego samego powodu,
+/// dla którego [`key_of`] czyta lewą: u drugiego vendora cała konfiguracja jedzie tym zapisem
+/// (`library::agents::vendor_argv`), więc sekret schowany za znakiem równości byłby tą samą
+/// dziurą o jeden znak dalej.
+///
+/// Czytają to **trzy** miejsca i to jest cała polityka, jedna (niezmiennik 23): przelotka kroku
+/// ([`the_passthrough`]), przelotka definicji agenta (`library::agents::passthrough_refused`)
+/// oraz brama zapisu pliku agenta (`library::agents::write_agent_file`).
+#[must_use]
+pub(crate) fn literal_secret_in(flag: &str, value: &str) -> Option<&'static str> {
+    secret_shaped(value).or_else(|| {
+        flag.split_once('=')
+            .and_then(|(_, written)| secret_shaped(written))
+    })
+}
+
+/// Czym ten tekst wygląda na sekret — albo `None`, kiedy nie wygląda na nic.
+///
+/// Trzy reguły, wszystkie o KSZTAŁCIE, w kolejności od najwięcej mówiącej człowiekowi: adres
+/// z hasłem nazywa MIEJSCE, w którym sekret siedzi, i to jest zdanie, po którym wiadomo, gdzie
+/// patrzeć; „a key" z prefiksu albo z samego kształtu jest zdaniem słabszym i stoi niżej.
+///
+/// `pub(crate)`, bo pyta o to samo także reguła o komendzie kroku ([`a_command_carrying_a_secret`])
+/// i nie ma tam wpisu przelotki, który dałoby się podać do [`literal_secret_in`].
+#[must_use]
+pub(crate) fn secret_shaped(text: &str) -> Option<&'static str> {
+    a_web_address_carrying_one(text)
+        .or_else(|| a_known_key(text))
+        .or_else(|| a_packed_run(text))
+}
+
+/// Ciągi, z których składają się klucze: litery, cyfry, `_` i `-`.
+fn key_runs(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|letter: char| !(letter.is_ascii_alphanumeric() || matches!(letter, '_' | '-')))
+}
+
+/// Reguła pierwsza: znany prefiks dostawcy z dość długim ogonem za nim.
+fn a_known_key(text: &str) -> Option<&'static str> {
+    key_runs(text)
+        .any(|run| {
+            SECRET_PREFIXES.iter().any(|prefix| {
+                run.strip_prefix(prefix)
+                    .is_some_and(|tail| tail.len() >= A_KNOWN_KEY)
+            })
+        })
+        .then_some("a key")
+}
+
+/// Reguła druga: adres z sekretem w środku.
+///
+/// Pętla po KAŻDYM `://` w tekście, bo pole „co uruchomić" jest wierszem powłoki i bywa w nim
+/// więcej niż jeden adres — a odmowa, która zna tylko pierwszy, jest odmową do obejścia
+/// przestawieniem argumentów.
+fn a_web_address_carrying_one(text: &str) -> Option<&'static str> {
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once("://") {
+        // Adres kończy się na pierwszym białym znaku: po nim w wierszu powłoki stoją argumenty.
+        if let Some(found) = inside_the_address(after.split_whitespace().next().unwrap_or_default())
+        {
+            return Some(found);
+        }
+        // `after` jest krótsze od `rest` o prefiks i o same trzy znaki, więc pętla ma koniec.
+        rest = after;
+    }
+    None
+}
+
+/// Co ten jeden adres niesie w części przed `@` i w swoich parametrach.
+fn inside_the_address(address: &str) -> Option<&'static str> {
+    let authority = address
+        .split_once(['/', '?', '#'])
+        .map_or(address, |(host, _)| host);
+    // Po OSTATNIM `@`, nie po pierwszym: hasło wolno mieć w sobie ten znak, nazwa serwera nie.
+    if let Some((who, _)) = authority.rsplit_once('@')
+        && who
+            .split_once(':')
+            .is_some_and(|(_, password)| !password.is_empty())
+    {
+        return Some("a password in a web address");
+    }
+    let query = address.split_once('?').map_or("", |(_, rest)| rest);
+    query
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(name, value)| {
+            value.len() >= A_PARAMETER_VALUE
+                && SECRET_PARAMETERS.contains(&name.to_ascii_lowercase().replace('-', "_").as_str())
+        })
+        .then_some("a key")
+}
+
+/// Reguła trzecia: długi zbity ciąg o trzech klasach znaków naraz. Próg i jego pomiar stoją
+/// przy [`A_PACKED_RUN`] — to ta reguła może zablokować pracę, więc to ona ma tam uzasadnienie.
+fn a_packed_run(text: &str) -> Option<&'static str> {
+    text.split(|letter: char| {
+        !(letter.is_ascii_alphanumeric() || matches!(letter, '_' | '-' | '+' | '='))
+    })
+    .filter(|run| run.len() >= A_PACKED_RUN)
+    .any(|run| {
+        run.chars().any(char::is_lowercase)
+            && run.chars().any(char::is_uppercase)
+            && run.chars().any(|letter| letter.is_ascii_digit())
+    })
+    .then_some("a key")
 }
 
 /// Nazwa vendora tak, jak nazywa go użytkownik. Klucz z pliku (`claude`) na ekran nie idzie.
@@ -1237,16 +1497,28 @@ fn named_spot(folder: &Folder, index: usize) -> Option<Spot<'_>> {
 /// sekundę ruszy.
 ///
 /// `None`, kiedy odpowiedzi nie ma: kafelek kontrolny nie pracuje w żadnym folderze, a krok
-/// „to samo drzewo", przed którym nie stoi nikt albo stoją poprzednicy z RÓŻNYCH drzew, nie ma
-/// z czego jej wyliczyć. Obie te sytuacje mają już własne odmowy ([`nothing_before_it`]
-/// i `commands::run::where_it_works`), więc tutaj są milczeniem, a nie zgadywaniem.
+/// „to samo drzewo", przed którym nie stoi nikt, nie ma z czego jej wyliczyć. Ta sytuacja ma już
+/// własną odmowę ([`nothing_before_it`]), więc tutaj jest milczeniem, a nie zgadywaniem.
+///
+/// 2026-08-29 — KROK, PRZED KTÓRYM PRACUJĄ RÓŻNE MIEJSCA, MA OD TERAZ ODPOWIEDŹ: własną kopię,
+/// do której bieg znosi pracę wszystkich poprzedników (`commands::run::where_it_works`). Do tego
+/// dnia było to `None` i miało tam odmowę — a bez tego lustra walidator przestałby widzieć
+/// kolizję dwóch kroków stojących za jednym składaniem, bo obydwa czytałyby się jako miejsca
+/// nieznane.
+///
+/// Wzajemna rekurencja z [`spots_before`] idzie WYŁĄCZNIE po strzałkach wstecz, więc kończy się:
+/// graf bez cykli, a każdy krok obchodu cofa się o co najmniej jedną strzałkę.
 fn spot_of<'a>(index: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]) -> Option<Spot<'a>> {
     let folder = steps.get(index)?.folder?;
     if let Some(named) = named_spot(folder, index) {
         return Some(named);
     }
     let mut before = spots_before(index, steps, forward);
-    (before.len() == 1).then(|| before.remove(0))
+    match before.len() {
+        0 => None,
+        1 => Some(before.remove(0)),
+        _ => Some(Spot::OwnCopy(index)),
+    }
 }
 
 /// W jakich miejscach pracują kroki PRZED tym — bez powtórzeń.
@@ -1257,8 +1529,12 @@ fn spot_of<'a>(index: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]) ->
 /// stosu (ta sama zasada, co przy [`reachable`]).
 ///
 /// Mija po drodze dwa rodzaje kroków, które miejsca nie wyznaczają: kafelek kontrolny (nie
-/// dotyka plików) i kolejny krok „to samo drzewo" (jego odpowiedź jest tym samym pytaniem,
-/// zadanym dalej). Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
+/// dotyka plików) i krok „to samo drzewo", który sam niczego nie składa (jego odpowiedź jest tym
+/// samym pytaniem, zadanym dalej). Stąd „najbliższy poprzednik, jakiegokolwiek rodzaju jest".
+///
+/// Krok, który SKŁADA, obchód zatrzymuje i melduje swoją własną kopię: praca jego rodziców jest
+/// od 2026-08-29 właśnie w niej, więc schodzenie do dziadków pokazywałoby dwa miejsca tam, gdzie
+/// naprawdę jest jedno. To jest to samo zdanie, co `commands::run::works_in`.
 ///
 /// STRZAŁKI BEZ POWROTÓW, bo powrót wchodzi do kroku dopiero w rundzie drugiej
 /// (`workflow::unroll`) — ta sama lista, na której [`nothing_before_it`] rozstrzyga, czy przed
@@ -1282,14 +1558,11 @@ fn spots_before<'a>(node: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]
                 continue;
             };
             *first_time = true;
-            let Some(folder) = steps.get(from).and_then(|step| step.folder) else {
-                stack.push(from);
-                continue;
-            };
-            match named_spot(folder, from) {
+            match spot_of(from, steps, forward) {
                 Some(spot) if !found.contains(&spot) => found.push(spot),
                 Some(_) => {}
-                // `same-copy`: to samo pytanie, tylko o krok dalej wstecz.
+                // Kafelek kontrolny albo `same-copy` bez własnej kopii: to samo pytanie, tylko
+                // o krok dalej wstecz.
                 None => stack.push(from),
             }
         }

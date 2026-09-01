@@ -11,6 +11,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, Weak};
 
+use base64::Engine as _;
+
 use crate::engine::supervisor::{
     PublicationIdentity, PublicationRoot, PublicationTarget, publication_identity,
     publication_root_key,
@@ -21,6 +23,19 @@ pub const DEFINITION_FILE_MODE: u32 = 0o644;
 
 /// Prywatne handoffy, attachmenty i evidence nie dostają praw grupy ani innych użytkowników.
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// Rewizja pliku definicji: **dokładne bajty**, zakodowane base64.
+///
+/// 2026-08-28 — nie skrót, i to jest cała decyzja. Zadanie brzmi „nowsze bajty nigdy nie giną
+/// PO CICHU", a każdy skrót ma kolizje: dwa różne pliki o tym samym odcisku są dla porównania
+/// jednym plikiem, więc spóźniony zapis przechodziłby dokładnie w tym przypadku, w którym miał
+/// zostać zatrzymany. To jest ten sam test, którym `remove_owned_run_file` broni pliku biegu.
+/// Base64 tylko po to, żeby rewizja przeszła przez drut jako zwykły napis: pliki definicji są
+/// tekstem po kilka kilobajtów, więc koszt jest jedną trzecią ich rozmiaru raz na zapis.
+#[must_use]
+pub fn revision_of(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
 
 const TEMP_PREFIX: &str = ".loadout-writing-";
 const TEMP_SUFFIX: &str = ".tmp";
@@ -91,6 +106,13 @@ pub trait FaultInjector: Send + Sync {
 pub enum PublishError {
     #[error("{} already exists", target.display())]
     Conflict { target: PathBuf },
+    /// Cel nie jest tą rewizją, którą caller czytał — więc leżą tam CUDZE bajty i nic nie
+    /// zostało nadpisane. Zdanie dla człowieka składa warstwa, która wie, co to za plik.
+    #[error(
+        "{} is not the file that was read, so nothing was overwritten",
+        target.display()
+    )]
+    Changed { target: PathBuf },
     #[error("{} is not a safe target inside the controlled root", target.display())]
     InvalidTarget { target: PathBuf },
     #[error("publication stopped at {point:?}; simulated crash: {crashed}")]
@@ -108,7 +130,9 @@ impl PublishError {
         match self {
             Self::Io(error) => error,
             Self::Conflict { .. } => io::Error::new(io::ErrorKind::AlreadyExists, self),
-            Self::InvalidTarget { .. } => io::Error::new(io::ErrorKind::InvalidInput, self),
+            Self::Changed { .. } | Self::InvalidTarget { .. } => {
+                io::Error::new(io::ErrorKind::InvalidInput, self)
+            }
             Self::Injected { .. } | Self::RecoveryInjected { .. } => io::Error::other(self),
         }
     }
@@ -314,6 +338,50 @@ impl DurableFilePublisher {
         self.with_publication(|batch| batch.atomic_create_if_absent(target, bytes, mode))
     }
 
+    /// Jedyne wejście dla plików definicji: publikuje dopiero po sprawdzeniu, CO leży na dysku.
+    ///
+    /// `expected` jest rewizją, którą caller **przeczytał**; `None` znaczy „tego pliku ma tam
+    /// jeszcze nie być". Trzy odpowiedzi i każda ma powód:
+    ///
+    /// - celu nie ma → publikujemy. Nie ma czyich bajtów stracić, a odmowa zostawiałaby okno
+    ///   z pracą, której nie da się nigdzie zapisać, tylko dlatego że ktoś skasował plik.
+    /// - cel jest i to dokładnie ta rewizja → zwykły `atomic_replace`.
+    /// - cel jest i to CZYJEŚ inne bajty → [`PublishError::Changed`], bez jednego zapisu.
+    ///
+    /// 2026-08-28 — czego to NIE jest: POSIX-owego compare-and-swap wobec obcego procesu.
+    /// Odczyt, porównanie i `rename` biegną pod jednym uchwytem katalogu i jednym guardem tego
+    /// publishera, więc zamykają spóźniony zapis (drugie okno Loadouta, ręczna edycja sprzed
+    /// sekundy), ale nie wyścig co do instrukcji z Finderem. Ta sama granica stoi opisana przy
+    /// `remove_regular_file_if_identity`.
+    pub fn publish_definition(
+        &self,
+        target: &Path,
+        bytes: &[u8],
+        mode: ModePolicy,
+        expected: Option<&str>,
+    ) -> Result<(), PublishError> {
+        let relative = self.relative_target(target)?;
+        self.with_publication(|batch| {
+            // Odczyt idzie przez utrzymany deskryptor tej publikacji, nie przez nazwę otwartą
+            // drugi raz: inaczej porównywalibyśmy bajty z innego inode'u niż ten, który za
+            // chwilę podmienia `rename`.
+            let on_disk = match batch.root().read_regular(&relative, false) {
+                Ok(found) => Some(found),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(PublishError::Io(error)),
+            };
+            match (expected, on_disk) {
+                (_, None) => batch.atomic_create_if_absent(target, bytes, mode),
+                (Some(expected), Some(found)) if revision_of(&found) == expected => {
+                    batch.atomic_replace(target, bytes, mode)
+                }
+                (_, Some(_found)) => Err(PublishError::Changed {
+                    target: target.to_owned(),
+                }),
+            }
+        })
+    }
+
     /// Trzyma jeden shared guard i jeden descriptor root przez cały callback. Handoff używa
     /// tej granicy dla attachmentu i pointera; pojedynczy plik korzysta z tego samego wejścia.
     pub(crate) fn with_publication<T>(
@@ -438,11 +506,9 @@ impl DurableFilePublisher {
         result
     }
 
-    fn prepare(
-        &self,
-        root: &PublicationRoot,
-        target: &Path,
-    ) -> Result<PublicationTarget, PublishError> {
+    /// Ścieżka celu względem kontrolowanego roota — jedna reguła, bo i przygotowanie celu,
+    /// i odczyt sprzed publikacji muszą mówić o DOKŁADNIE tym samym leafie.
+    fn relative_target(&self, target: &Path) -> Result<PathBuf, PublishError> {
         let relative =
             target
                 .strip_prefix(&self.root)
@@ -458,7 +524,16 @@ impl DurableFilePublisher {
                 target: target.to_owned(),
             });
         }
-        root.target(relative).map_err(|error| {
+        Ok(relative.to_owned())
+    }
+
+    fn prepare(
+        &self,
+        root: &PublicationRoot,
+        target: &Path,
+    ) -> Result<PublicationTarget, PublishError> {
+        let relative = self.relative_target(target)?;
+        root.target(&relative).map_err(|error| {
             if matches!(
                 error.kind(),
                 io::ErrorKind::InvalidInput | io::ErrorKind::NotADirectory

@@ -16,7 +16,7 @@ use std::borrow::Borrow;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::durable_file::{DurableFilePublisher, PublishError};
+use crate::durable_file::{DurableFilePublisher, PublishError, revision_of};
 use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
 use crate::library::definition::{Definition, Shelf, healthy_only, workflow_problem};
 use crate::workflow::WorkflowFile;
@@ -37,6 +37,28 @@ pub struct WorkflowEntry {
     /// `ship-a-feature.json` — bez katalogu i bez `~`.
     pub path: String,
     pub workflow: WorkflowFile,
+}
+
+/// Otwarty plik razem z rewizją, na której okno go czyta.
+///
+/// 2026-08-28 — para, nie sam plik, i to jest cała treść tego typu. Zapis, który nie wie, co
+/// czytał, nie ma jak odmówić spóźnionemu nadpisaniu; a rewizja policzona drugi raz, już po
+/// odczycie, opisywałaby bajty, których nikt nie widział.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenWorkflow {
+    pub workflow: WorkflowFile,
+    pub revision: String,
+}
+
+/// Gdzie plik wylądował i jaką rewizję ma teraz.
+///
+/// Rewizja wraca, żeby okno mogło pisać dalej bez ponownego czytania pliku po każdej literze —
+/// a każdy taki odczyt byłby nowym oknem na cudzą pracę.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Saved {
+    pub path: PathBuf,
+    pub revision: String,
 }
 
 /// `home/workflows/<file_name>`, albo odmowa, kiedy `file_name` nie jest nazwą pliku.
@@ -72,11 +94,15 @@ fn in_library(home: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
 /// `agents::save_agent_inner`: skorupa `#[tauri::command]` dostaje plik **wartością** (serde
 /// musi go gdzieś zbudować) i nie ma go komu oddać. Wołający z pożyczką w ręku nie zauważa
 /// różnicy.
+///
+/// `expected` przechodzi na wylot do `file::save`: `None` znaczy „tego pliku ma jeszcze nie
+/// być", `Some(rewizja)` — „nadpisz dokładnie te bajty, które przeczytałem".
 pub fn save_workflow_inner(
     home: &Path,
     file_name: &str,
     workflow: impl Borrow<WorkflowFile>,
-) -> Result<PathBuf, SaveError> {
+    expected: Option<&str>,
+) -> Result<Saved, SaveError> {
     let path = in_library(home, file_name).map_err(SaveError::Unwritable)?;
     // Katalog powstaje tutaj, bo `file::save` (T-12) pisze plik i nie zakłada katalogów —
     // celowo, bo tam jego brak jest awarią, a tutaj jest normalnym stanem biblioteki, w której
@@ -87,12 +113,12 @@ pub fn save_workflow_inner(
 
     // Odmowa walidatora, kolejność „sprawdź, potem dotknij dysku" i deterministyczny tekst
     // mieszkają w `file::save`. Ta funkcja nie powtarza ani jednej z tych decyzji.
-    crate::workflow::file::save(workflow.borrow(), &path)?;
-    Ok(path)
+    let revision = crate::workflow::file::save(workflow.borrow(), &path, expected)?;
+    Ok(Saved { path, revision })
 }
 
-/// Wczytuje workflow spod `file_name` w bibliotece.
-pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<WorkflowFile, LoadError> {
+/// Wczytuje workflow spod `file_name` w bibliotece razem z jego rewizją.
+pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<OpenWorkflow, LoadError> {
     let path = in_library(home, file_name).map_err(LoadError::Unreadable)?;
     let dir = home.join(WORKFLOWS_DIR);
     let publisher = DurableFilePublisher::new(&dir);
@@ -102,7 +128,13 @@ pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<WorkflowFile,
             loaded = Some(
                 root.read_regular(Path::new(file_name), false)
                     .map_err(LoadError::Unreadable)
-                    .and_then(|bytes| crate::workflow::file::load_snapshot(&path, &bytes)),
+                    .and_then(|bytes| {
+                        // Rewizja z TYCH bajtów, nie z ponownego odczytu: para „co pokazałem"
+                        // i „co przy tym leżało na dysku" musi pochodzić z jednego spojrzenia.
+                        let revision = revision_of(&bytes);
+                        crate::workflow::file::load_snapshot(&path, &bytes)
+                            .map(|workflow| OpenWorkflow { workflow, revision })
+                    }),
             );
             Ok(())
         })
@@ -175,6 +207,9 @@ fn list_workflow_definitions_from_root(
         let value = match root.read_regular(Path::new(&file_name), false) {
             Ok(bytes) => match crate::workflow::file::load_snapshot(&path, &bytes) {
                 Ok(workflow) => Definition::Healthy {
+                    // Rewizja z bajtów, które ten spacer i tak przeczytał — drugi odczyt tego
+                    // samego pliku opisywałby inną chwilę niż wypisana definicja.
+                    revision: revision_of(&bytes),
                     value: WorkflowEntry {
                         path: name.to_owned(),
                         workflow,

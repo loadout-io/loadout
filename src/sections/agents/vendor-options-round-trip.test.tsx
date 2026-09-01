@@ -179,6 +179,7 @@ function ioThatRecords(saved: Agent[]): AgentsIo {
     newId: async () => '019897b4-8f3a-7c21-9d44-0b6a1e2c5f78',
     save: async (agent: Agent) => {
       saved.push(agent);
+      return 'after-the-save';
     },
     remove: async () => undefined,
   };
@@ -203,6 +204,7 @@ function diskThatKeeps(files: Agent[]): AgentsIo {
       const copy = structuredClone(agent);
       if (at === -1) files.push(copy);
       else files[at] = copy;
+      return JSON.stringify(copy);
     },
     remove: async (id: string) => {
       const at = files.findIndex((one) => one.id === id);

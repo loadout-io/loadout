@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use loadout_lib::commands::agents::{list_agents_inner, save_agent_inner};
-use loadout_lib::commands::workflows::{list_workflows_inner, save_workflow_inner};
+use loadout_lib::commands::workflows::{Saved, list_workflows_inner, save_workflow_inner};
 use loadout_lib::durable_file::{
     FaultAction, FaultInjector, FaultPoint, PublicationEvent, RecoveryEvent, RecoveryPoint,
     scoped_faults,
@@ -143,13 +143,16 @@ fn linked_agent_instructions_are_not_a_library_entry() -> Result<(), Box<dyn Err
     let agents = home.path().join("agents");
     fs::create_dir(&agents)?;
     let outside = TempDir::new()?;
+    // `None`: ten katalog jest świeży, więc plik ma tu POWSTAĆ, a nie kogokolwiek nadpisać.
     let outside_target = save_agent_inner(
         outside.path(),
         agent(
             "Outside agent must not enter Start",
             "These instructions are outside the controlled agent library.\n",
         ),
-    )?;
+        None,
+    )?
+    .path;
     symlink(&outside_target, agents.join("linked.md"))?;
 
     assert!(
@@ -166,21 +169,34 @@ fn linked_agent_instructions_are_not_a_library_entry() -> Result<(), Box<dyn Err
 fn workflow_recovery_does_not_follow_a_swapped_root() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let local = workflow("local-root", "Local workflow before root swap");
-    let local_target = save_workflow_inner(home.path(), "local.json", &local)?;
+    let local_target = save_workflow_inner(home.path(), "local.json", &local, None)?.path;
     let definitions = parent_of(&local_target)?.to_owned();
     let parked = home.path().join("workflows-held-by-recovery");
 
     let outside = TempDir::new()?;
     let outside_old = workflow("outside-sentinel", "Outside sentinel workflow");
     let outside_new = workflow("outside-sentinel", "Outside replacement workflow");
-    let outside_target = save_workflow_inner(outside.path(), "sentinel.json", &outside_old)?;
+    let Saved {
+        path: outside_target,
+        revision: outside_revision,
+    } = save_workflow_inner(outside.path(), "sentinel.json", &outside_old, None)?;
     let outside_definitions = parent_of(&outside_target)?;
     let outside_bytes = fs::read(&outside_target)?;
     let crash = Arc::new(CrashFault::default());
     let crash_hook: Arc<dyn FaultInjector> = crash.clone();
     let crash_scope = scoped_faults(outside.path(), crash_hook)?;
     crash.arm(&outside_target, FaultPoint::BeforeCommit);
-    assert!(save_workflow_inner(outside.path(), "sentinel.json", &outside_new).is_err());
+    // Rewizja z pierwszego zapisu: ten zapis NAPRAWDĘ nadpisuje istniejący plik, więc musi
+    // powiedzieć, co czytał — inaczej odmawia z powodu innego niż wstrzyknięty crash.
+    assert!(
+        save_workflow_inner(
+            outside.path(),
+            "sentinel.json",
+            &outside_new,
+            Some(&outside_revision)
+        )
+        .is_err()
+    );
     assert_eq!(owned_temps(outside_definitions)?.len(), 1);
     drop(crash_scope);
 
@@ -212,7 +228,10 @@ fn workflow_list_refuses_a_linked_definition_root() -> Result<(), Box<dyn Error>
     let outside = TempDir::new()?;
     let old = workflow("outside-recovery", "Outside complete workflow");
     let new = workflow("outside-recovery", "Outside replacement workflow");
-    let target = save_workflow_inner(outside.path(), "outside.json", &old)?;
+    let Saved {
+        path: target,
+        revision,
+    } = save_workflow_inner(outside.path(), "outside.json", &old, None)?;
     let old_bytes = fs::read(&target)?;
     let definitions = parent_of(&target)?;
 
@@ -220,7 +239,7 @@ fn workflow_list_refuses_a_linked_definition_root() -> Result<(), Box<dyn Error>
     let hook: Arc<dyn FaultInjector> = faults.clone();
     let scope = scoped_faults(outside.path(), hook)?;
     faults.arm(&target, FaultPoint::BeforeCommit);
-    assert!(save_workflow_inner(outside.path(), "outside.json", &new).is_err());
+    assert!(save_workflow_inner(outside.path(), "outside.json", &new, Some(&revision)).is_err());
     assert_eq!(owned_temps(definitions)?.len(), 1);
     drop(scope);
 
@@ -244,7 +263,10 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let old = workflow("workflow-recovery", "Old complete workflow");
     let new = workflow("workflow-recovery", "New complete workflow");
-    let target = save_workflow_inner(home.path(), "recovery.json", &old)?;
+    let Saved {
+        path: target,
+        revision,
+    } = save_workflow_inner(home.path(), "recovery.json", &old, None)?;
     let definitions = parent_of(&target)?;
     let foreign = definitions.join(FOREIGN_NAME);
     fs::write(&foreign, FOREIGN_BYTES)?;
@@ -254,7 +276,7 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let _scope = scoped_faults(home.path(), hook)?;
     faults.arm(&target, FaultPoint::BeforeCommit);
 
-    let crashed = save_workflow_inner(home.path(), "recovery.json", &new);
+    let crashed = save_workflow_inner(home.path(), "recovery.json", &new, Some(&revision));
     assert!(
         crashed.is_err(),
         "the controlled workflow crash unexpectedly reported a successful save"
@@ -294,7 +316,8 @@ fn agent_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let mut new = old.clone();
     "New complete agent".clone_into(&mut new.summary);
     "Use the new complete instructions.\n".clone_into(&mut new.instructions);
-    let target = save_agent_inner(home.path(), &old)?;
+    let written = save_agent_inner(home.path(), &old, None)?;
+    let target = written.path;
     let definitions = parent_of(&target)?;
     let foreign = definitions.join(FOREIGN_NAME);
     fs::write(&foreign, FOREIGN_BYTES)?;
@@ -304,7 +327,7 @@ fn agent_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let _scope = scoped_faults(home.path(), hook)?;
     faults.arm(&target, FaultPoint::BeforeCommit);
 
-    let crashed = save_agent_inner(home.path(), &new);
+    let crashed = save_agent_inner(home.path(), &new, Some(&written.revision));
     assert!(
         crashed.is_err(),
         "the controlled agent crash unexpectedly reported a successful save"
@@ -337,7 +360,10 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let old = workflow("active-save", "Old workflow before the active save");
     let new = workflow("active-save", "Complete workflow after the active save");
-    let target = save_workflow_inner(home.path(), "active.json", &old)?;
+    let Saved {
+        path: target,
+        revision,
+    } = save_workflow_inner(home.path(), "active.json", &old, None)?;
     let definitions = parent_of(&target)?;
 
     let (paused_tx, paused_rx) = mpsc::sync_channel(0);
@@ -357,7 +383,7 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let (writer_result_tx, writer_result_rx) = mpsc::channel();
     let writer_home = home.path().to_owned();
     let writer = thread::spawn(move || {
-        let result = save_workflow_inner(&writer_home, "active.json", &new);
+        let result = save_workflow_inner(&writer_home, "active.json", &new, Some(&revision));
         let _sent = writer_result_tx.send(result);
     });
     paused_rx.recv_timeout(SAFETY_TIMEOUT).map_err(|error| {
@@ -393,31 +419,7 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let release_result = release_tx.send(());
 
     let writer_result = receive_thread_result("writer", &writer_result_rx, writer)?;
-    let mut loader = Some(loader);
-    let loader_result = match early {
-        Ok(result) => result,
-        Err(RecvTimeoutError::Timeout) => {
-            let handle = loader
-                .take()
-                .ok_or_else(|| std::io::Error::other("the loader handle was already joined"))?;
-            receive_thread_result("loader", &loader_result_rx, handle)?
-        }
-        Err(RecvTimeoutError::Disconnected) => {
-            let handle = loader
-                .take()
-                .ok_or_else(|| std::io::Error::other("the loader handle was already joined"))?;
-            handle
-                .join()
-                .map_err(|_| std::io::Error::other("the loader thread panicked"))?;
-            return Err(std::io::Error::other("the loader returned no result").into());
-        }
-    };
-
-    if let Some(handle) = loader {
-        handle
-            .join()
-            .map_err(|_| std::io::Error::other("the loader thread panicked"))?;
-    }
+    let loader_result = settle_loader(early, &loader_result_rx, loader)?;
     assert!(
         release_result.is_ok(),
         "the active writer stopped waiting before the test released it"
@@ -443,6 +445,30 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
         "active save/list interleaving left a publisher temp"
     );
     Ok(())
+}
+
+/// Wynik loadera — ten, który zdążył przed zwolnieniem publikacji, albo ten, na który czekamy po
+/// niej — z wątkiem dołączonym dokładnie raz, którąkolwiek z trzech dróg test tu wszedł.
+fn settle_loader<T, E>(
+    early: Result<Result<T, E>, RecvTimeoutError>,
+    receiver: &Receiver<Result<T, E>>,
+    handle: thread::JoinHandle<()>,
+) -> Result<Result<T, E>, Box<dyn Error>> {
+    match early {
+        Ok(result) => {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("the loader thread panicked"))?;
+            Ok(result)
+        }
+        Err(RecvTimeoutError::Timeout) => receive_thread_result("loader", receiver, handle),
+        Err(RecvTimeoutError::Disconnected) => {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("the loader thread panicked"))?;
+            Err(std::io::Error::other("the loader returned no result").into())
+        }
+    }
 }
 
 fn receive_thread_result<T, E>(

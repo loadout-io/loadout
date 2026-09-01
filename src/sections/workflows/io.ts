@@ -38,14 +38,38 @@ export function newId(): Promise<string> {
   return invoke<string>('new_id');
 }
 
-/** Wczytuje jeden plik workflow po jego nazwie w katalogu. */
-export function load(path: string): Promise<WorkflowFile> {
-  return invoke<WorkflowFile>('load_workflow', { fileName: path });
+/**
+ * Otwarty plik razem z rewizją, na której okno go czyta — lustro `commands::workflows`.
+ *
+ * Para, nie sam plik: zapis, który nie wie, co czytał, nie ma jak odmówić spóźnionemu
+ * nadpisaniu, a rewizja dobrana drugim wywołaniem opisywałaby inną chwilę niż to, co człowiek
+ * ma przed sobą.
+ */
+export interface OpenWorkflow {
+  workflow: WorkflowFile;
+  revision: string;
 }
 
-/** Zapisuje plik. Odmowa przy problemie żyje po stronie Rusta (`workflow::file::save`). */
-export function write(path: string, workflow: WorkflowFile): Promise<void> {
-  return invoke<void>('save_workflow', { fileName: path, workflow });
+/** Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z jego rewizją. */
+export function load(path: string): Promise<OpenWorkflow> {
+  return invoke<OpenWorkflow>('load_workflow', { fileName: path });
+}
+
+/**
+ * Zapisuje plik i oddaje rewizję, którą ma teraz. Odmowa przy problemie żyje po stronie Rusta
+ * (`workflow::file::save`) — także ta o spóźnionym zapisie.
+ *
+ * `expectedRevision` to rewizja, którą okno CZYTAŁO; `null` znaczy „tego pliku ma jeszcze nie
+ * być" i tak woła tworzenie oraz duplikowanie. Klucz jedzie zawsze, nawet z `null` w środku:
+ * Tauri dopasowuje argumenty po nazwie, więc klucz zdjęty przez `JSON.stringify` byłby
+ * wywołaniem ODRZUCONYM, nie mniejszym (`checks/invoke-args.sh`).
+ */
+export function write(
+  path: string,
+  workflow: WorkflowFile,
+  expectedRevision: string | null,
+): Promise<string> {
+  return invoke<string>('save_workflow', { fileName: path, workflow, expectedRevision });
 }
 
 /** Usuwa plik workflow z katalogu. */

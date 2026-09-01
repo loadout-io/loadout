@@ -14,7 +14,8 @@ use std::thread;
 
 use loadout_lib::durable_file::{
     DEFINITION_FILE_MODE, DurableFilePublisher, FaultAction, FaultInjector, FaultPoint, ModePolicy,
-    PRIVATE_FILE_MODE, PublicationEvent, PublicationOperation, PublishError, scoped_faults,
+    PRIVATE_FILE_MODE, PublicationEvent, PublicationOperation, PublishError, revision_of,
+    scoped_faults,
 };
 use loadout_lib::evidence::{EvidenceTarget, SafeInputManifest};
 use loadout_lib::library::agents::{Agent, read_agent_file, write_agent_file};
@@ -117,7 +118,9 @@ fn definition_fault_case(point: FaultPoint, definition: Definition) -> Result<()
             let target = bench.path().join("workflow.json");
             let old = workflow("old", "Old complete workflow");
             let new = workflow("new", "New complete workflow");
-            save(&old, &target)?;
+            // `None` zasiewa, `Some(rewizja)` nadpisuje — inaczej drugi zapis odmawiałby
+            // z powodu innego niż wstrzyknięta awaria i nie mierzyłby punktu awarii.
+            let revision = save(&old, &target, None)?;
             let names_before = names(bench.path())?;
 
             faults.arm(
@@ -126,7 +129,7 @@ fn definition_fault_case(point: FaultPoint, definition: Definition) -> Result<()
                 &target,
                 FaultAction::Fail,
             );
-            let result = save(&new, &target);
+            let result = save(&new, &target, Some(&revision));
             assert!(
                 result.is_err(),
                 "workflow save reported success when publication failed at {point:?}"
@@ -149,7 +152,8 @@ fn definition_fault_case(point: FaultPoint, definition: Definition) -> Result<()
             let mut new = old.clone();
             "New complete agent".clone_into(&mut new.summary);
             "New complete instructions with a final byte.".clone_into(&mut new.instructions);
-            let target = write_agent_file(&dir, &old)?;
+            let written = write_agent_file(&dir, &old, None)?;
+            let target = written.path;
             let names_before = names(&dir)?;
 
             faults.arm(
@@ -158,7 +162,7 @@ fn definition_fault_case(point: FaultPoint, definition: Definition) -> Result<()
                 &target,
                 FaultAction::Fail,
             );
-            let result = write_agent_file(&dir, &new);
+            let result = write_agent_file(&dir, &new, Some(&written.revision));
             assert!(
                 result.is_err(),
                 "agent save reported success when publication failed at {point:?}"
@@ -184,9 +188,16 @@ fn definition_modes_are_explicit_and_replace_preserves_the_existing_mode()
 -> Result<(), Box<dyn Error>> {
     let bench = TempDir::new()?;
     let workflow_path = bench.path().join("existing.json");
-    fs::write(&workflow_path, serde_json::to_vec(&workflow("old", "Old"))?)?;
+    let established = serde_json::to_vec(&workflow("old", "Old"))?;
+    fs::write(&workflow_path, &established)?;
     fs::set_permissions(&workflow_path, fs::Permissions::from_mode(0o640))?;
-    save(&workflow("new", "New"), &workflow_path)?;
+    // Rewizja tych DOKŁADNIE bajtów: replace zachowuje tryb tylko wtedy, gdy naprawdę wchodzi
+    // na istniejący plik, a wejść ma prawo wyłącznie wobec tego, co ktoś przeczytał.
+    save(
+        &workflow("new", "New"),
+        &workflow_path,
+        Some(&revision_of(&established)),
+    )?;
     assert_eq!(
         mode(&workflow_path)?,
         0o640,
@@ -194,7 +205,7 @@ fn definition_modes_are_explicit_and_replace_preserves_the_existing_mode()
     );
 
     let new_workflow = bench.path().join("new.json");
-    save(&workflow("fresh", "Fresh"), &new_workflow)?;
+    save(&workflow("fresh", "Fresh"), &new_workflow, None)?;
     assert_eq!(mode(&new_workflow)?, DEFINITION_FILE_MODE);
     assert_ne!(
         DEFINITION_FILE_MODE & 0o200,
@@ -208,7 +219,7 @@ fn definition_modes_are_explicit_and_replace_preserves_the_existing_mode()
     );
 
     let agents = bench.path().join("agents");
-    let agent_path = write_agent_file(&agents, &agent("Fresh agent", "Complete body."))?;
+    let agent_path = write_agent_file(&agents, &agent("Fresh agent", "Complete body."), None)?.path;
     assert_eq!(mode(&agent_path)?, DEFINITION_FILE_MODE);
     Ok(())
 }
@@ -361,10 +372,15 @@ async fn every_production_caller_enters_the_same_instrumented_core() -> Result<(
     save(
         &workflow("shared", "Shared core workflow"),
         &workflows.join("shared.json"),
+        None,
     )?;
 
     let agents = bench.path().join("agents");
-    write_agent_file(&agents, &agent("Shared Core", "Use the shared publisher."))?;
+    write_agent_file(
+        &agents,
+        &agent("Shared Core", "Use the shared publisher."),
+        None,
+    )?;
 
     let run = bench.path().join("run");
     fs::create_dir(&run)?;

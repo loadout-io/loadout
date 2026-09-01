@@ -55,13 +55,19 @@ function copies<T>(value: T, count = 20): readonly { readonly value: T }[] {
   return Array.from({ length: count }, () => ({ value }));
 }
 
+/* 2026-08-28: otwarcie oddaje plik RAZEM z rewizją, na której okno go czyta. Rewizja wraca
+ * w ładunku każdego zapisu, a Rust odmawia publikacji, kiedy na dysku leży co innego. */
+function opened(workflow: unknown, nth: number): { readonly value: unknown } {
+  return { value: { workflow, revision: 'r' + String(nth) } };
+}
+
 function baseScene(
   loads: readonly unknown[] = [INITIAL, INITIAL, INITIAL, INITIAL],
 ): Record<string, readonly TauriReply[]> {
   return {
     list_workspaces: copies([WORKSPACE]),
     list_workflows: copies([ENTRY]),
-    load_workflow: loads.map((value) => ({ value })),
+    load_workflow: loads.map(opened),
     check_workflow: copies([]),
     list_agents: copies([AGENT]),
     list_skills: copies([]),
@@ -122,10 +128,12 @@ describe('Run never starts from a workflow revision older than the visible edit'
       await app.page.waitForTimeout(550);
 
       const whileOlderWasPending = await app.calls();
-      await app.settle('older-save', { value: null });
+      /* Zapis oddaje NOWĄ rewizję, bo tak odpowiada Rust: bez niej drugi zapis szedłby
+       * z rewizją, której na dysku już nie ma, i produkt odmawiałby sam sobie. */
+      await app.settle('older-save', { value: 'r-after-older' });
       const saves = await waitForCalls(app, 'save_workflow', 2);
       const whileVisibleWasPending = await app.calls();
-      await app.settle('visible-save', { value: null });
+      await app.settle('visible-save', { value: 'r-after-visible' });
       const runs = await waitForCalls(app, 'run_workflow');
       const tape = await app.calls();
       const savePositions = tape
@@ -164,7 +172,10 @@ describe('Run never starts from a workflow revision older than the visible edit'
 
   it('keeps a refused Run in the editor and a later successful save unlocks it', async () => {
     const replies = baseScene();
-    replies['save_workflow'] = [{ error: 'T151 injected save refusal' }, { value: null }];
+    replies['save_workflow'] = [
+      { error: 'T151 injected save refusal' },
+      { value: 'r-after-retry' },
+    ];
     replies['run_workflow'] = [{ value: null }];
     const app = await openEditor(replies);
     try {

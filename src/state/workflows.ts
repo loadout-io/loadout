@@ -295,8 +295,14 @@ export interface WorkflowFile {
 
 /** Wszystko, co magazyn robi poza swoją głową. Jedna atrapa w teście zastępuje całość. */
 export interface WorkflowIo {
-  /** Zapis pliku workflow. Odmowa przy problemie żyje po stronie Rusta (`workflow::file::save`). */
-  save(file: WorkflowFile): Promise<void>;
+  /**
+   * Zapis pliku workflow; oddaje rewizję, którą plik ma po zapisie. Odmowa przy problemie żyje
+   * po stronie Rusta (`workflow::file::save`) — także ta o pliku zmienionym pod oknem.
+   *
+   * `expectedRevision` to rewizja, którą to okno CZYTAŁO. `null` znaczy „tego pliku ma jeszcze
+   * nie być" i jest tu wyłącznie stanem początkowym magazynu, który nigdy nie dostał rewizji.
+   */
+  save(file: WorkflowFile, expectedRevision: string | null): Promise<string>;
   /** Uwagi z walidatora Rusta (T-12). Frontend ich nie liczy i nie tłumaczy. */
   check(file: WorkflowFile): Promise<Note[]>;
   /** Zapis pliku AGENTA — patrz nagłówek pliku. Edycja kroku nie ma prawa tego zawołać. */
@@ -391,7 +397,11 @@ function withAgentStep(
   };
 }
 
-export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
+export function createWorkflowStore(
+  io: WorkflowIo,
+  open: WorkflowFile,
+  openRevision: string | null = null,
+) {
   /* Odliczanie autosave'u, w DOMKNIĘCIU, a nie w stanie magazynu.
    *
    * Uchwyt timera nie jest faktem o dokumencie: w stanie zustanda przerysowywałby płótno na
@@ -416,6 +426,18 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
   let revision = 0;
   let savedRevision = 0;
   let saveTail: Promise<void> = Promise.resolve();
+
+  /* Rewizja PLIKU — co innego niż licznik `revision` wyżej, i dlatego ma inną nazwę.
+   *
+   * Tamten liczy zmiany na ekranie i jest faktem o tym oknie. Ten opisuje bajty leżące na
+   * dysku i jest faktem o pliku: okno wysyła go przy każdym zapisie, a Rust odmawia publikacji,
+   * jeśli pod nazwą leży coś innego. Bez tego serializacja z T-151 pilnuje wyłącznie kolejności
+   * zapisów TEGO okna — i przepuszcza zapis, który wystartował z nieaktualnym odczytem, czyli
+   * cofa cudzą, nowszą pracę bez jednego słowa (2026-08-28).
+   *
+   * Podmieniamy go na to, co ODDAŁ Rust, zamiast liczyć samemu: liczba policzona tutaj
+   * opisywałaby to, co okno WYSŁAŁO, a nie to, co naprawdę wylądowało. */
+  let onDisk: string | null = openRevision;
 
   return create<WorkflowState>()((set, get) => ({
     document: open,
@@ -487,7 +509,11 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
          * człowiek zdąży w tym czasie zrobić kolejną zmianę. */
         const writingRevision = revision;
         const saving = get().document;
-        await io.save(saving);
+        /* Rewizja pliku podmienia się DOPIERO po udanym zapisie i tylko wtedy: po odmowie na
+         * dysku dalej leżą tamte bajty, więc następna próba ma pytać o dokładnie tę samą
+         * rewizję. Przestawienie jej przed `await` zamieniłoby jedną odmowę w milczącą zgodę
+         * na nadpisanie przy drugim podejściu. */
+        onDisk = await io.save(saving, onDisk);
         savedRevision = writingRevision;
         set({ savedDocument: saving, couldNotSave: null });
         await get().recheck();

@@ -1439,11 +1439,8 @@ fn save_fixture(bench: &Bench, assignment: Assignment) -> TestResult<PathBuf> {
     let writer = saved_agent(bench.home.path(), WRITER_ID, "Writer", assignment.writer)?;
     let judge = saved_agent(bench.home.path(), JUDGE_ID, "Judge", assignment.judge)?;
     let workflow = fixture(&writer, &judge);
-    Ok(save_workflow_inner(
-        bench.home.path(),
-        "t149-phase7.json",
-        &workflow,
-    )?)
+    // `None`: fikstura zasiewa świeżą bibliotekę, więc plik ma tu powstać.
+    Ok(save_workflow_inner(bench.home.path(), "t149-phase7.json", &workflow, None)?.path)
 }
 
 fn saved_agent(home: &Path, id: Uuid, name: &str, vendor: Vendor) -> TestResult<Agent> {
@@ -1457,7 +1454,7 @@ fn saved_agent(home: &Path, id: Uuid, name: &str, vendor: Vendor) -> TestResult<
     };
     agent.file_access = FileAccess::WorkFreely;
     agent.write_results_to.clear();
-    save_agent_inner(home, &agent)?;
+    save_agent_inner(home, &agent, None)?;
     Ok(agent)
 }
 

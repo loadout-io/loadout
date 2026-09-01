@@ -37,7 +37,12 @@ use std::process::{Command, Stdio};
 /// repozytorium to gigabajty, `node_modules` i `target` odtwarza się jedną komendą.
 ///
 /// Przy drzewie gita ta lista nie jest potrzebna: git sam nie niesie tego, czego nie śledzi.
-const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "target"];
+///
+/// 2026-08-29 — WIDOCZNA DLA MODUŁU OBOK, bo składanie kopii ([`super::fan_in`]) obchodzi
+/// dokładnie te same drzewa i musi pomijać dokładnie te same nazwy (niezmiennik 13). Druga lista
+/// tam znaczyłaby, że `.git` drzewa roboczego — a jest tam PLIKIEM ze ścieżką do rejestru, więc
+/// w każdej kopii innym — czyta się jako plik, na którym dwa kroki się nie zgadzają.
+pub(super) const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "target"];
 
 /// Nasz własny katalog w projekcie (`docs/ARCHITECTURE.md` §8).
 ///

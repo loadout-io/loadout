@@ -63,7 +63,7 @@ function ioWith(agents: readonly Agent[]): AgentsIo {
   return {
     list: () => Promise.resolve([...agents]),
     newId: () => Promise.resolve('a-new'),
-    save: () => Promise.resolve(),
+    save: () => Promise.resolve('after-the-save'),
     remove: () => Promise.resolve(),
   };
 }

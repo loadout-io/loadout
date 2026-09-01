@@ -50,7 +50,7 @@ function disk(seed: readonly WorkflowEntry[]): Disk {
       /* Prawdziwy zapis nadpisuje po cichu i w tym jest cała pułapka tego kryterium.
        * Atrapa, która odmawia nadpisania, sprawdzałaby samą siebie. */
       files.set(path, structuredClone(workflow));
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(workflow));
     },
     remove: (path) => {
       files.delete(path);

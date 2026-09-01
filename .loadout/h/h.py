@@ -273,7 +273,15 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
         argv = [exe, "-p", "--setting-sources", "project", "--strict-mcp-config",
                 "--disable-slash-commands",
                 "--permission-mode", "acceptEdits" if write else "plan",
-                "--model", os.environ.get("LOADOUT_CLAUDE_MODEL", "claude-opus-5[1m]"),
+                # Model per ROLA. `schema` podaje wylacznie faza weryfikacji, wiec jest tu
+                # czystym dyskryminatorem -- zadnej nowej rurki. Po co to istnieje: decyzja D3
+                # mowi, ze przy parze same-vendor weryfikator musi miec INNY MODEL plus role
+                # recenzenta, bo ten sam model dwa razy nie jest druga opinia. Domyslnie rowna
+                # sie modelowi piszacego, wiec bez tej zmiennej nic sie nie zmienia.
+                "--model", os.environ.get(
+                    "LOADOUT_CLAUDE_MODEL_VERIFIER" if schema else "LOADOUT_CLAUDE_MODEL",
+                    os.environ.get("LOADOUT_CLAUDE_MODEL", "claude-opus-5[1m]"),
+                ),
                 # Wysilek per FAZA, nie na caly bieg. `write` juz rozdziela plan (False)
                 # od implementacji (True), wiec nie ma tu nowej rurki -- tylko drugi domyslny.
                 # ZMIERZONE 2026-08-28 z mtime'ow transkryptow w runs/: plan 10 min i 12 min,
@@ -334,7 +342,8 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
         # Sufit nalezy do kodu 3 ("przerwane albo sufit czasu") i worktree zostaje do wznowienia.
         if '"subtype":"error_max_turns"' in out or '"terminal_reason":"max_turns"' in out:
             die("%s wyczerpal sufit %d tur -- to NIE porazka sprawdzenia. Praca zostaje "
-                "w worktree; podnies LOADOUT_MAX_TURNS albo zawez zakres." % (vendor, turns), 3)
+                "w worktree; zawez zakres albo podnies sufit tej fazy: LOADOUT_PLAN_TURNS "
+                "dla planu, LOADOUT_MAX_TURNS dla implementacji." % (vendor, turns), 3)
         die("%s zakonczyl sie kodem %d:\n%s" % (vendor, proc.returncode, out[-1500:]))
     if out_file and out_file.exists():
         text = out_file.read_text(encoding="utf-8")
@@ -393,7 +402,13 @@ def rundir(task_id):
 def phase_plan(task_id, task, wt, vendor):
     log("plan (%s)..." % vendor)
     p = "%s\n\n## Zadanie\n\n%s\n" % (prompt_file("plan"), task)
-    raw = call_model(vendor, p, wt, write=False, turns=60, budget=2400,
+    # Sufit planu KONFIGUROWALNY, bo 60 tur to za malo na zakres o dwoch mechanizmach
+    # w plikach po 10 tys. linii. ZMIERZONE 2026-08-29 na p8-t156-bounded-lifecycle: planista
+    # zjadl 60 tur na czytaniu `drivers/claude.rs` i `commands/run.rs`, nie napisawszy planu.
+    # Do tego dnia komunikat o sufcie odsylal do LOADOUT_MAX_TURNS, ktory tej fazy NIE dotyczy
+    # (`turns=60` stalo tu na sztywno) -- czyli rada byla nieprawdziwa.
+    raw = call_model(vendor, p, wt, write=False,
+                     turns=int(os.environ.get("LOADOUT_PLAN_TURNS", "60")), budget=2400,
                      transcript=str(rundir(task_id) / "plan.jsonl"))
     plan = last_text(raw) if vendor == "claude" else raw.strip()
     (Path(wt) / ".h-plan.md").write_text(plan, encoding="utf-8")
@@ -459,7 +474,11 @@ def commit_work(wt, task_id):
     pracy miesza dwie odpowiedzialnosci. Ale bez tego commita `h land` merguje PUSTA galaz
     i melduje sukces: zmierzone przy pierwszym prawdziwym biegu, gdzie worktree mial trzy
     zmienione pliki, a `git diff main..h-<id>` byl pusty.
-    `.h-plan.md` nie wchodzi -- jest w .gitignore, bo to plik roboczy harnessu, nie praca.
+    `.h-plan.md` nie wchodzi, bo jest w .gitignore -- to plik roboczy harnessu, nie praca.
+    Do 2026-08-28 ten komentarz KLAMAL: pliku nie bylo w .gitignore i byl sledzony, wiec
+    `git add -A` brał go do commita biegu. Kazde dwa rownolegle biegi mialy go w dwoch
+    wersjach i lądowanie drugiego stawało na konflikcie w brudnopisie, przy `ipc.rs`
+    zmergowanym automatycznie. Zmierzone przy h-p8-t151-newer-truth.
     """
     if not git("status", "--porcelain", cwd=wt):
         log("nic do zacommitowania -- galaz juz niesie prace")

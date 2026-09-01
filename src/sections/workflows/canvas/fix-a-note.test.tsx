@@ -136,7 +136,7 @@ describe('a note that carries a repair offers it, and the repair lands', () => {
     const saved = vi.fn(async () => undefined);
     const store = createWorkflowStore(
       {
-        save: async () => undefined,
+        save: async () => 'after-the-save',
         check: async () => [],
         saveAgent: saved,
       },
@@ -166,7 +166,7 @@ describe('a note that carries a repair offers it, and the repair lands', () => {
     const saved = vi.fn(async () => undefined);
     const store = createWorkflowStore(
       {
-        save: async () => undefined,
+        save: async () => 'after-the-save',
         check: async () => [],
         saveAgent: saved,
       },

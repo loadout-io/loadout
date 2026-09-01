@@ -145,7 +145,7 @@ fn the_refusal_lands_at_save_time_and_nothing_is_written() -> Result<(), Box<dyn
     let elsewhere = tempfile::tempdir()?;
     let path = elsewhere.path().join("ship-task.json");
 
-    let Err(refusal) = file::save(&workflow, &path) else {
+    let Err(refusal) = file::save(&workflow, &path, None) else {
         return Err(format!(
             "invariant 12 puts the refusal at save time, and this save went through: {}",
             path.display()

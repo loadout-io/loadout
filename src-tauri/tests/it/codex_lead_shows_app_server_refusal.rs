@@ -83,7 +83,7 @@ impl Bench {
         lead.id = Uuid::now_v7();
         "Codex Lead".clone_into(&mut lead.name);
         lead.runs_with = Vendor::Codex;
-        save_agent_inner(library.path(), &lead)?;
+        save_agent_inner(library.path(), &lead, None)?;
         let lead = lead.id.to_string();
 
         Ok(Self {

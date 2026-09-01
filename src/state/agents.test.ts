@@ -70,7 +70,7 @@ function recorder(seed: Agent[]): Recorder {
     },
     save: (agent: Agent) => {
       saved.push(agent);
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(agent));
     },
     remove: (id: string) => {
       removed.push(id);

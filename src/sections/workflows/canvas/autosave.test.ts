@@ -58,7 +58,8 @@ function io(recorder: Recorder) {
   return {
     save: (target: WorkflowFile) => {
       recorder.saved.push(structuredClone(target));
-      return Promise.resolve();
+      /* Rewizja po zapisie — atrapa oddaje ją tak, jak oddaje ją Rust. */
+      return Promise.resolve(JSON.stringify(target));
     },
     check: () => Promise.resolve(recorder.notes),
     saveAgent: () => Promise.resolve(),

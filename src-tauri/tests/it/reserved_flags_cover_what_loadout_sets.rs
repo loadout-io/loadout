@@ -275,8 +275,10 @@ fn what_loadout_says(flag: &str, value: &str) -> Result<Doors, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("ship-a-feature.json");
 
-    let on_save = match save(&workflow_offering(flag, value)?, &path) {
-        Ok(()) => None,
+    // `None`: pliku jeszcze nie ma. Rewizja zapisu nie interesuje tego kryterium — pyta ono
+    // wyłącznie o to, czy walidator odmówił i jakim zdaniem.
+    let on_save = match save(&workflow_offering(flag, value)?, &path, None) {
+        Ok(_revision) => None,
         Err(SaveError::Refused(note)) => Some(note.message),
         Err(other) => {
             return Err(format!(

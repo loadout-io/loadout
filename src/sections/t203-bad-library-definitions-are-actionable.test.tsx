@@ -82,7 +82,7 @@ function agentsIo(listed: Definition<Agent>[]): AgentsIo {
   return {
     list: () => Promise.resolve(structuredClone(listed)),
     newId: () => Promise.resolve('agent-new'),
-    save: () => Promise.resolve(),
+    save: () => Promise.resolve('after-the-save'),
     remove: () => Promise.resolve(),
   };
 }
@@ -93,7 +93,7 @@ function workflowsIo(listed: Definition<WorkflowEntry>[], writes: string[] = [])
     newId: () => Promise.resolve('workflow-new'),
     write: (path) => {
       writes.push(path);
-      return Promise.resolve();
+      return Promise.resolve('after-the-save');
     },
     remove: () => Promise.resolve(),
   };

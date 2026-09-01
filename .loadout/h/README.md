@@ -37,6 +37,12 @@ Zmierzone 2026-08-28 na dwóch biegach: plan 10 i 12 min, implementacja 30 i 49 
 25 s, weryfikacja 4,5 min. Implementacja to 3–5× plan, a plan jest tą fazą, która w obu
 biegach poprawiła przesłankę zlecenia — więc tanieje się na implementacji, nie na planie.
 
+Model też jest **per rola**: `LOADOUT_CLAUDE_MODEL` dla planu i implementacji,
+`LOADOUT_CLAUDE_MODEL_VERIFIER` dla weryfikacji (domyślnie to samo). Ta druga istnieje po to,
+żeby para **same-vendor** była uczciwa: D3 wymaga wtedy innego modelu, bo ten sam model dwa
+razy nie jest drugą opinią. Przykład, gdy jeden vendor jest niedostępny:
+`scripts/h run <id> --verifier claude` z `LOADOUT_CLAUDE_MODEL_VERIFIER=claude-sonnet-5`.
+
 Domyślnie **plan: claude, kod: claude, weryfikacja: codex** — weryfikuje inny vendor niż ten,
 który pisał (decyzja D3). Zmiana: `--planner/--dev/--verifier` albo `H_PLANNER`/`H_DEV`/`H_VERIFIER`.
 

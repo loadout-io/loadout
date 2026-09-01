@@ -142,7 +142,7 @@ async fn the_conversation_is_handed_both_folders_of_the_library() -> Result<(), 
         FileAccess::LookOnly,
         "advise, do not run",
     )?;
-    let agents_dir = folder_of(&save_agent_inner(library.path(), &lead_agent)?)?;
+    let agents_dir = folder_of(&save_agent_inner(library.path(), &lead_agent, None)?.path)?;
     let workflows_dir = folder_of(&saved_workflow(library.path(), scope.path())?)?;
 
     // KONTROLA PRZECIW PUSTEMU PRZEJŚCIU. Bez tych trzech linii wszystko niżej przechodzi dla
@@ -301,11 +301,7 @@ fn definition(
 fn saved_workflow(library: &Path, scratch: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let drafted = scratch.join("drafted-by-hand.json");
     fs::write(&drafted, WORKFLOW)?;
-    Ok(save_workflow_inner(
-        library,
-        "plan-then-build.json",
-        &load(&drafted)?,
-    )?)
+    Ok(save_workflow_inner(library, "plan-then-build.json", &load(&drafted)?, None)?.path)
 }
 
 /// Katalog, w którym leży ten plik.
@@ -456,10 +452,13 @@ impl Bench {
         let planner = save_agent_inner(
             home.path(),
             &definition(PLANNER_ID, "Planner", FileAccess::LookOnly, PLANNER_SAYS)?,
-        )?;
+            None,
+        )?
+        .path;
         save_agent_inner(
             home.path(),
             &definition(BUILDER_ID, "Builder", FileAccess::WorkFreely, BUILDER_SAYS)?,
+            None,
         )?;
         let workflow = saved_workflow(home.path(), project.path())?;
         Ok(Self {

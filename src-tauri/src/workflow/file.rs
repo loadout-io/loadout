@@ -17,7 +17,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy};
+use crate::durable_file::{
+    DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError, revision_of,
+};
 
 use super::WorkflowFile;
 use super::check::{Level, Note, check};
@@ -101,6 +103,13 @@ pub enum SaveError {
     /// nietknięty. Implementacja, która zapisuje i dopiero potem waliduje, niszczy dane
     /// dokładnie w tym momencie, w którym miała ich bronić.
     Refused(Note),
+    /// Plik pod tą nazwą **nie jest** tą rewizją, którą okno czytało. Nic nie zostało zapisane.
+    ///
+    /// 2026-08-28 — to jest dziura, dla której ten wariant powstał: zapis szedł bezwarunkowo,
+    /// więc okno otwarte pięć minut temu kasowało pracę, którą ktoś zapisał minutę temu, i nie
+    /// mówiło o tym ani słowa. „Cały plik albo nic" broni przed połową pliku, nie przed
+    /// spóźnionym pisarzem.
+    Changed,
     /// Sprawdzenia przeszły, ale zapis się nie udał.
     Unwritable(io::Error),
     /// Nie dało się zserializować — nie powinno się zdarzyć i dlatego ma własny wariant.
@@ -114,6 +123,13 @@ impl fmt::Display for SaveError {
             // który stoi przy kafelku, a dwa różne zdania o jednej rzeczy to dwa miejsca, w
             // których ta rzecz jest opisana — i jedno z nich zawsze jest nieaktualne.
             Self::Refused(note) => formatter.write_str(&note.message),
+            // Trzy fakty w jednym zdaniu, bo człowiek potrzebuje wszystkich trzech naraz:
+            // że jego zmiana NIE weszła, dlaczego, i że nic cudzego nie zostało zniszczone.
+            // Bez ostatniego zdania „nie zapisano" czyta się jak zapis, który zrobił połowę.
+            Self::Changed => formatter.write_str(
+                "This workflow was not saved: it changed on disk after you opened it, so nothing \
+                 was overwritten. Close it and open it again to see the newer one.",
+            ),
             Self::Unwritable(error) => {
                 write!(formatter, "This workflow could not be saved: {error}.")
             }
@@ -223,7 +239,16 @@ fn migrated(path: &Path, mut document: Value, format: u64) -> Result<Value, Load
 /// [`super::GRID`] — także wtedy, gdy przyciągnął je już frontend, bo plik można edytować
 /// ręcznie i wtedy żadnego frontendu nie było. Przyciąganie robi serializacja
 /// [`super::Point`], więc nie da się go tu pominąć.
-pub fn save(workflow: &WorkflowFile, path: &Path) -> Result<(), SaveError> {
+///
+/// `expected` jest rewizją, którą wołający **przeczytał** — `None` znaczy „tego pliku ma jeszcze
+/// nie być". Zwrócona rewizja opisuje bajty, które właśnie wylądowały, i jest tym, czego wołający
+/// ma użyć przy następnym zapisie. Bez niej okno musiałoby wczytać plik ponownie po każdej
+/// literze, a między odczytem a zapisem znowu byłoby okno na cudzą pracę.
+pub fn save(
+    workflow: &WorkflowFile,
+    path: &Path,
+    expected: Option<&str>,
+) -> Result<String, SaveError> {
     // Kolejność jest całą treścią tej funkcji: najpierw sprawdź, dopiero potem dotknij dysku.
     // Implementacja, która zapisuje i waliduje po zapisie, niszczy poprzednią wersję pliku
     // dokładnie w tym momencie, w którym sprawdzenie miało jej bronić. Ostrzeżenie nie blokuje
@@ -266,10 +291,17 @@ pub fn save(workflow: &WorkflowFile, path: &Path) -> Result<(), SaveError> {
         ))
     })?;
     DurableFilePublisher::new(root)
-        .atomic_replace(
+        .publish_definition(
             path,
             text.as_bytes(),
             ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+            expected,
         )
-        .map_err(|error| SaveError::Unwritable(error.into_io()))
+        .map_err(|error| match error {
+            // Odmowa spóźnionego zapisu ma WŁASNE zdanie, a nie techniczny powód opakowany
+            // w „could not be saved": to jedyny wariant, po którym człowiek ma coś do zrobienia.
+            PublishError::Changed { .. } | PublishError::Conflict { .. } => SaveError::Changed,
+            other => SaveError::Unwritable(other.into_io()),
+        })?;
+    Ok(revision_of(text.as_bytes()))
 }

@@ -431,7 +431,7 @@ async fn window_wire_reaches_app_state_and_the_same_thread_on_first_and_follow_u
     lead.id = Uuid::now_v7();
     lead.name = "Image Lead".to_owned();
     lead.runs_with = Vendor::ClaudeCode;
-    save_agent_inner(library.path(), &lead)?;
+    save_agent_inner(library.path(), &lead, None)?;
     let folder = workspace.path().to_string_lossy().into_owned();
     let (lines, _source) = line_channel(QUEUE_CAP);
     state.watching_the_lead("product-image", Some(&folder), lines)?;

@@ -24,7 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DESTINATION_DIRS, Error, Missing, NON_SPEC_FIELDS, RESERVED_DIR_NAME, Result, Roots,
+    DESTINATION_DIRS, Error, Material, Missing, NON_SPEC_FIELDS, RESERVED_DIR_NAME, Result, Roots,
     SHELF_THE_OTHER_FIVE_READ, SPEC_FIELDS, Scope, Skill, SkillDoc, StepSkills, Why,
 };
 
@@ -307,6 +307,65 @@ pub fn copy_the_skill(from: &Path, into: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Czym ten katalog umiejętności JEST w tej chwili: odcisk jego plików i ich łączna długość.
+///
+/// 2026-08-28 (T-154) — DOKŁADNIE TE SAME REGUŁY OBCHODU, CO W [`copy_the_skill`], i to jest cała
+/// treść tej funkcji: odcisk ma pokrywać to, co bieg naprawdę kopiuje krokowi. Pliki tak,
+/// dowiązania nie (`symlink_metadata`, nie `metadata` — dowiązanie wskazuje poza katalog),
+/// iteracyjnie, nie rekurencyjnie. Odcisk liczony z samego `SKILL.md` milczałby o podmienionym
+/// `scripts/run.sh`, czyli o zmianie, którą agent wykona.
+///
+/// Ścieżki są WZGLĘDNE i POSORTOWANE, a każda wchodzi do odcisku razem ze swoimi bajtami: bez
+/// ścieżek przeniesienie treści między dwoma plikami dałoby ten sam odcisk, a bez sortowania ten
+/// sam katalog dawałby dwie różne odpowiedzi, bo `read_dir` nie obiecuje kolejności.
+///
+/// FNV-1a, ta sama, co przy odcisku pliku workflow (`commands::run::fingerprint`): pytanie brzmi
+/// „czy to jest to samo", a nie „czy ktoś to podrobił", a `sha2` nie jest zależnością tego drzewa.
+pub fn material_of(dir: &Path) -> std::io::Result<Material> {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), PathBuf::new())];
+    while let Some((source, under)) = stack.pop() {
+        for entry in fs::read_dir(&source)? {
+            let entry = entry?;
+            let path = entry.path();
+            let at = under.join(entry.file_name());
+            let kind = fs::symlink_metadata(&path)?;
+            if kind.is_dir() {
+                stack.push((path, at));
+            } else if kind.is_file() {
+                files.push((at, path));
+            }
+        }
+    }
+    files.sort();
+
+    let mut hash = OFFSET;
+    let mut bytes = 0u64;
+    for (at, path) in &files {
+        // `to_string_lossy`, nie `to_str().ok_or(..)`: ścieżka spoza UTF-8 ma nie wywrócić
+        // rachunku. Zapis jest wtedy stratny w ten sam sposób przy każdym odczycie, więc dwa
+        // biegi nad tym samym katalogiem dalej dostają ten sam odcisk (ten sam powód stoi
+        // przy [`write_sidecar`]).
+        let named = at.to_string_lossy();
+        let content = fs::read(path)?;
+        // Bajt zerowy rozdziela ścieżkę od treści: bez niego `ab/` + `c` i `a/` + `bc` są jednym
+        // ciągiem bajtów, czyli dwa różne katalogi mają jeden odcisk.
+        for byte in named.as_bytes().iter().chain(&[0_u8]).chain(content.iter()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        bytes += u64::try_from(content.len()).unwrap_or(u64::MAX);
+    }
+
+    Ok(Material {
+        hash: format!("{hash:016x}"),
+        bytes,
+    })
 }
 
 /// Treść `SKILL.md` → front-matter i ciało, permisywnie (niezmiennik 5).

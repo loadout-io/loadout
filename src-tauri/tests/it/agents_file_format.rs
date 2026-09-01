@@ -116,8 +116,8 @@ fn the_body_of_the_file_is_the_instructions_character_for_character() -> Result<
 #[test]
 fn the_written_front_matter_never_repeats_the_instructions() -> Result<(), Box<dyn Error>> {
     let dir = TempDir::new()?;
-    let written = write_agent_file(dir.path(), &forge()?)?;
-    let text = std::fs::read_to_string(&written)?;
+    let written = write_agent_file(dir.path(), &forge()?, None)?;
+    let text = std::fs::read_to_string(&written.path)?;
 
     let (front, body) = front_matter_and_body(&text)
         .ok_or("a saved agent has to be front matter, then a closing fence, then the body")?;

@@ -58,7 +58,11 @@ const WORKFLOW = {
  * przyrządu przebrana za wadę produktu. */
 const SCENE: Readonly<Record<string, readonly TauriReply[]>> = {
   list_workflows: Array.from({ length: 12 }, () => ({ value: [WORKFLOW] })),
-  load_workflow: Array.from({ length: 4 }, () => ({ value: WORKFLOW.workflow })),
+  /* 2026-08-28: otwarcie oddaje plik RAZEM z rewizją, na której okno go czyta — bez niej
+   * zapis nie ma czego porównać z dyskiem (`commands::workflows::OpenWorkflow`). */
+  load_workflow: Array.from({ length: 4 }, () => ({
+    value: { workflow: WORKFLOW.workflow, revision: 'r1' },
+  })),
   check_workflow: Array.from({ length: 12 }, () => ({ value: [] })),
 };
 

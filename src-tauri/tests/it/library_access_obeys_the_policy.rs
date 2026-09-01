@@ -302,7 +302,7 @@ impl Reached {
 async fn reached(root: &Path, access: FileAccess) -> Result<Reached, Box<dyn Error>> {
     let scope = TempDir::new()?;
     let lead_agent = definition(access)?;
-    let agents_dir = folder_of(&save_agent_inner(root, &lead_agent)?)?;
+    let agents_dir = folder_of(&save_agent_inner(root, &lead_agent, None)?.path)?;
     let workflows_dir = folder_of(&saved_workflow(root, scope.path())?)?;
 
     // KONTROLA PRZECIW PUSTEMU PRZEJŚCIU, przy każdym wywołaniu: ścieżka, której nie ma w drzewie
@@ -358,11 +358,7 @@ fn definition(access: FileAccess) -> Result<Agent, Box<dyn Error>> {
 fn saved_workflow(library: &Path, scratch: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let drafted = scratch.join("drafted-by-hand.json");
     fs::write(&drafted, WORKFLOW)?;
-    Ok(save_workflow_inner(
-        library,
-        "one-step.json",
-        &load(&drafted)?,
-    )?)
+    Ok(save_workflow_inner(library, "one-step.json", &load(&drafted)?, None)?.path)
 }
 
 /// Katalog, w którym leży ten plik.

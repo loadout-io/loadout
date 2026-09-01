@@ -400,10 +400,18 @@ pub enum Folder {
     FreshCopy,
     /// To samo drzewo robocze, w którym pracował krok przede mną.
     ///
-    /// **WSKAZUJE, nie zakłada.** Czym jest własne drzewo — drzewem gita na własnej gałęzi dla
-    /// repozytorium, klonem systemowym dla folderu, który repem nie jest — rozstrzyga T-52 i to
-    /// zadanie tego nie rusza. Ten wariant mówi wyłącznie „ten sam katalog roboczy, co najbliższy
-    /// poprzednik po strzałkach", jakiegokolwiek rodzaju ten poprzednik jest.
+    /// **WSKAZUJE, kiedy przed krokiem jest JEDNO drzewo; SKŁADA, kiedy jest ich więcej.**
+    /// Czym jest własne drzewo — drzewem gita na własnej gałęzi dla repozytorium, klonem
+    /// systemowym dla folderu, który repem nie jest — rozstrzyga T-52. Przy jednym poprzedniku
+    /// ten wariant mówi wyłącznie „ten sam katalog roboczy, co najbliższy poprzednik po
+    /// strzałkach", jakiegokolwiek rodzaju ten poprzednik jest.
+    ///
+    /// 2026-08-29 — „WSKAZUJE, nie zakłada" przestaje być prawdą przy więcej niż jednym drzewie
+    /// przed krokiem. Do tego dnia taki kształt był odmową przy Starcie, więc dwie równoległe
+    /// gałęzie dało się narysować i nie dało się na nich pracować. Teraz krok dostaje **własną,
+    /// nową kopię** i bieg znosi do niej zmiany plikowe wszystkich poprzedników
+    /// (`commands::fan_in`); dwoje poprzedników, którzy napisali w jednym pliku różne rzeczy,
+    /// zatrzymuje ten krok przed sterownikiem, zamiast po cichu wybierać jednego z nich.
     SameCopy,
     /// Wskazany ręcznie.
     Pick { path: String },

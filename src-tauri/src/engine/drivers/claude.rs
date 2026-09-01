@@ -2129,6 +2129,58 @@ async fn talk(
 /// za to trzecim miejscem, w którym gadatliwy agent może zjeść pamięć okna.
 const COMPLAINT_KEPT: usize = 4 * 1024;
 
+/// Początek skargi razem z odpowiedzią na pytanie „czy to wszystko".
+///
+/// 2026-08-29 — DRUGIE POLE JEST CAŁYM POWODEM ISTNIENIA TEJ STRUKTURY. Do tego dnia bajty ponad
+/// [`COMPLAINT_KEPT`] znikały bez śladu: nie było flagi, nie było zdania, nie było liczby, więc
+/// człowiek czytał pierwsze cztery kilobajty jako wszystko, co agent powiedział. Para (treść,
+/// obcięte) jest tym samym kształtem, co [`crate::memory::handoff`] daje przekazaniom — tam też
+/// ucięte ciało niesie ze sobą wskaźnik na całość, zamiast po cichu się kończyć.
+#[derive(Clone, Default)]
+struct Complaint {
+    /// Pierwsze [`COMPLAINT_KEPT`] znaków tego, co agent wypisał.
+    held: String,
+    /// Czy cokolwiek nie zmieściło się w powyższym. Czyta to [`pump`] i **nikt poza nim**
+    /// (niezmiennik 21): zdanie na ekran powstaje w jednym miejscu.
+    truncated: bool,
+}
+
+/// Zdanie o tym, że zachowany jest tylko początek — i o tym, gdzie stoi całość.
+///
+/// Po angielsku, bo czyta je człowiek (decyzja D5). Liczba kilobajtów jest liczona z
+/// [`COMPLAINT_KEPT`], a nie wpisana w treść: druga kopia tego limitu rozjechałaby się przy
+/// pierwszej jego zmianie i zdanie kłamałoby, nie przestając się kompilować.
+///
+/// Bez celu dowodów drugie zdanie odpada — wskaźnik pod adres, którego nikt nie pisze, jest
+/// gorszy niż jego brak. W produkcie ta gałąź nie zachodzi: `commands::run` odmawia startu
+/// Claude'owi bez szwu dowodów, więc adres jest zawsze.
+fn complaint_cut_sentence(where_it_all_is: Option<&Path>) -> String {
+    let kept = COMPLAINT_KEPT / 1024;
+    match where_it_all_is {
+        Some(path) => format!(
+            "The agent wrote more error output than Loadout keeps here — only the first {kept} KB \
+             of it was kept. All of it is in {}.",
+            path.display()
+        ),
+        None => format!(
+            "The agent wrote more error output than Loadout keeps here — only the first {kept} KB \
+             of it was kept."
+        ),
+    }
+}
+
+/// Gdzie leży całość skargi, **względem katalogu biegu**.
+///
+/// Ścieżka bezwzględna z katalogu domowego jest w wierszu strumienia szumem, a
+/// `logs/agent-<krok>.stderr.log` mówi dokładnie tyle, ile trzeba, żeby ten plik znaleźć.
+/// Adres spoza katalogu biegu zostaje w całości: skrót, którego nie da się policzyć, jest
+/// gorszy od pełnej ścieżki.
+fn where_all_of_it_is(target: &EvidenceTarget) -> PathBuf {
+    let path = target.stderr_path();
+    path.strip_prefix(target.root())
+        .map_or_else(|_error| path.clone(), Path::to_path_buf)
+}
+
 /// Opróżnia strumień skarg do EOF i zapamiętuje początek tego, co powiedział.
 ///
 /// **Opróżnia**, a nie „czyta, jeśli ktoś zapyta", i to jest cały powód, dla którego to zadanie
@@ -2139,7 +2191,7 @@ const COMPLAINT_KEPT: usize = 4 * 1024;
 /// Zamek brany i oddany w jednym wyrażeniu, nigdy przez `await` (niezmiennik 8).
 async fn drain_complaints(
     stderr: ChildStderr,
-    into: Arc<Mutex<String>>,
+    into: Arc<Mutex<Complaint>>,
     mut evidence: Option<EvidenceWriter>,
     target: Option<EvidenceTarget>,
     private: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -2168,11 +2220,15 @@ async fn drain_complaints(
             evidence = None;
         }
         let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.len() < COMPLAINT_KEPT {
-            let left = COMPLAINT_KEPT - held.len();
-            let lossy = String::from_utf8_lossy(&bytes[..read]);
-            held.extend(lossy.chars().take(left));
+        let lossy = String::from_utf8_lossy(&bytes[..read]);
+        let left = COMPLAINT_KEPT.saturating_sub(held.held.len());
+        // Linia, która nie weszła w CAŁOŚCI, jest obcięciem — także ta wpisana do połowy. Bez
+        // tego rozróżnienia zdanie o obcięciu spóźniałoby się o jedną linię i przy skardze
+        // dokładnie na granicy nie padłoby wcale.
+        if lossy.chars().count() > left {
+            held.truncated = true;
         }
+        held.held.extend(lossy.chars().take(left));
         // Bez `break` po przekroczeniu limitu: pętla musi dalej OPRÓŻNIAĆ potok, nawet gdy nic
         // już nie zapamiętuje. Wyjście tutaj przywróciłoby dokładnie tę blokadę, przed którą
         // to zadanie stoi.
@@ -2190,7 +2246,7 @@ struct PumpEvidence {
     writer: Option<EvidenceWriter>,
     target: Option<EvidenceTarget>,
     private: Arc<Mutex<Vec<Vec<u8>>>>,
-    complaint: Arc<Mutex<String>>,
+    complaint: Arc<Mutex<Complaint>>,
 }
 
 /// Czyta stdout linia po linii, kładzie **bajty** w transkrypcie kroku i sypie zdarzeniami,
@@ -2312,10 +2368,35 @@ async fn pump(
     // stderr zanim zamknie stdout, więc w tej chwili buforek ma już to, co miał do powiedzenia.
     // Zamek brany i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await` nie ma ani
     // jednej instrukcji (niezmiennik 8).
-    let said = complaint
+    let Complaint {
+        held: said,
+        truncated,
+    } = complaint
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+
+    /* 2026-08-29 — ZDANIE O OBCIĘCIU JEDZIE OSOBNYM WIERSZEM, nie sufiksem powodu.
+     *
+     * Doklejenie go do `FinishReason::Failed` nie dojechałoby do człowieka: `engine::line::
+     * shortened` bierze pierwszą linię powodu i tnie ją do 160 znaków, a powód niesie już
+     * zdanie bazowe plus pierwszą linię skargi — dopisek stałby więc dokładnie za nożycami,
+     * czyli mechanizm istniałby, a wiersz na ekranie nie zmieniłby się ani o słowo
+     * (niezmiennik 29). `Notice` przechodzi przez jedyną kurację do widocznego `Line::Problem`
+     * i jest tą samą drogą, którą jedzie powód porażki Codeksa.
+     *
+     * Adres WZGLĘDEM katalogu biegu, i to jest cała robota [`where_all_of_it_is`]. */
+    if truncated {
+        let where_it_all_is = evidence_target.as_ref().map(where_all_of_it_is);
+        let event = AgentEvent::Notice {
+            text: complaint_cut_sentence(where_it_all_is.as_deref()),
+        };
+        if let Some(recorder) = transcript.as_mut() {
+            recorder.curate(&event, None).await;
+        }
+        emit(event.into(), &events, &outcomes).await;
+    }
+
     // Kodu wyjścia tu nie ma i nie da się go tu mieć: uchwyt procesu został przy wołającym,
     // a ta pętla kończy się na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Zdanie
     // niesie więc skargę, nie numer — i to jest ta połowa, która odpowiada na „dlaczego".
@@ -2942,7 +3023,7 @@ impl ClaudeDriver {
         // Brak potoku NIE jest tu awarią startu: sonda wersji i część kryteriów sterownika
         // uruchamiają proces bez niego, a agent bez strumienia skarg jest agentem, który po
         // prostu nie ma na co narzekać.
-        let complaint = Arc::new(Mutex::new(String::new()));
+        let complaint = Arc::new(Mutex::new(Complaint::default()));
         let complaints = if let Some(stderr) = process.stderr() {
             let into = Arc::clone(&complaint);
             let target = self.evidence.clone();

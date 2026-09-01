@@ -16,7 +16,7 @@ use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 
 use crate::library::agents::{
-    Agent, AgentError, agent_file_name, read_agent_directory, write_agent_file,
+    Agent, AgentError, WrittenAgent, agent_file_name, read_agent_directory, write_agent_file,
 };
 use crate::library::definition::{Definition, Shelf, agent_problem, healthy_only};
 
@@ -56,8 +56,9 @@ fn saved_definitions(home: &Path) -> Result<Vec<Definition<(PathBuf, Agent)>>, A
                 .ok_or_else(|| refused(&dir, "an agent file name could not be shown safely"))?
                 .to_owned();
             Ok(match agent {
-                Ok(value) => Definition::Healthy {
-                    value: (path, value),
+                Ok(read) => Definition::Healthy {
+                    revision: read.revision,
+                    value: (path, read.agent),
                 },
                 Err(error) => Definition::DefinitionProblem {
                     shelf: Shelf::Agents,
@@ -89,7 +90,10 @@ pub fn list_agent_definitions_inner(home: &Path) -> Result<Vec<Definition<Agent>
         definitions
             .into_iter()
             .map(|definition| match definition {
-                Definition::Healthy { value: (_, value) } => Definition::Healthy { value },
+                Definition::Healthy {
+                    value: (_, value),
+                    revision,
+                } => Definition::Healthy { value, revision },
                 Definition::DefinitionProblem {
                     shelf,
                     file_name,
@@ -116,7 +120,15 @@ pub fn list_agent_definitions_inner(home: &Path) -> Result<Vec<Definition<Agent>
 /// Skorupa, która tę wartość tylko pożycza dalej, jest funkcją biorącą przez wartość i nie
 /// konsumującą — czyli ostrzeżeniem clippy, którego w tym repo nie wolno wyciszyć. Wołający
 /// z `&agent` w ręku nie zauważa różnicy.
-pub fn save_agent_inner(home: &Path, agent: impl Borrow<Agent>) -> Result<PathBuf, AgentError> {
+///
+/// `expected` jest rewizją pliku, którą okno przeczytało dla TEGO agenta — `None`, kiedy go
+/// jeszcze nie widziało. Przelotka, bez ani jednej decyzji: co znaczy „ten sam plik" wie
+/// `write_agent_file`, bo to ono zna regułę nazwy pliku.
+pub fn save_agent_inner(
+    home: &Path,
+    agent: impl Borrow<Agent>,
+    expected: Option<&str>,
+) -> Result<WrittenAgent, AgentError> {
     let agent = agent.borrow();
     let file_name = agent_file_name(agent);
     if saved_definitions(home)?.iter().any(|definition| {
@@ -137,7 +149,7 @@ pub fn save_agent_inner(home: &Path, agent: impl Borrow<Agent>) -> Result<PathBu
     }
     // Cała droga bajtów — nazwa pliku, kolejność wierszy front-mattera, `create_dir_all` —
     // jest w `write_agent_file` (T-11). Tutaj składa się wyłącznie katalog.
-    write_agent_file(&home.join(AGENTS_DIR), agent)
+    write_agent_file(&home.join(AGENTS_DIR), agent, expected)
 }
 
 /// Usuwa agenta o tym identyfikatorze razem z jego plikiem.

@@ -76,16 +76,19 @@ function copies<T>(value: T, count = 20): readonly { readonly value: T }[] {
 function scene(): Readonly<Record<string, readonly TauriReply[]>> {
   return {
     list_workflows: copies([ENTRY]),
+    /* 2026-08-28: otwarcie oddaje plik RAZEM z rewizją, a zapis oddaje NOWĄ rewizję — dokładnie
+     * to, czym odpowiada Rust. Atrapa oddająca `null` kazałaby oknu jechać dalej bez rewizji,
+     * czyli mierzyłaby scenę, której produkt nigdy nie zobaczy. */
     load_workflow: [
-      { value: workflowWith('project') },
-      { value: workflowWith('fresh-copy') },
-      { value: workflowWith('same-copy') },
-      { value: workflowWith('project') },
+      { value: { workflow: workflowWith('project'), revision: 'r1' } },
+      { value: { workflow: workflowWith('fresh-copy'), revision: 'r2' } },
+      { value: { workflow: workflowWith('same-copy'), revision: 'r3' } },
+      { value: { workflow: workflowWith('project'), revision: 'r4' } },
     ],
     check_workflow: copies([]),
     list_agents: copies([AGENT]),
     list_skills: copies([]),
-    save_workflow: copies(null),
+    save_workflow: copies('after-the-save'),
   };
 }
 

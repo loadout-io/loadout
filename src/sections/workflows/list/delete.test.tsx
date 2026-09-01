@@ -50,7 +50,7 @@ function disk(seed: readonly WorkflowEntry[]): Disk {
     },
     write: (path, workflow) => {
       files.set(path, structuredClone(workflow));
-      return Promise.resolve();
+      return Promise.resolve(JSON.stringify(workflow));
     },
     remove: (path) => {
       removed.push(path);

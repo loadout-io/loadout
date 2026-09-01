@@ -42,6 +42,8 @@ pub mod agents;
 pub mod chat;
 /// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
 pub mod diagnostics;
+/// Praca kilku kroków zniesiona do jednej kopii — i odmowa, kiedy dwa z nich piszą co innego.
+mod fan_in;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod handoffs;
 /// Historia biegów TEGO projektu: co tu już ruszyło i co z tego zostało na dysku.

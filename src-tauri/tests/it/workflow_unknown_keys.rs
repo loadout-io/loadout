@@ -48,7 +48,7 @@ fn a_key_this_version_does_not_know_survives_a_save() -> Result<(), Box<dyn Erro
     fs::write(&source, A_STEP_FROM_A_NEWER_BUILD)?;
     let target = dir.path().join("saved.json");
 
-    save(&load(&source)?, &target)?;
+    save(&load(&source)?, &target, None)?;
 
     let written: Value = serde_json::from_str(&fs::read_to_string(&target)?)?;
     let step = &written["steps"][0];
@@ -84,7 +84,7 @@ fn a_known_key_that_was_missing_is_written_with_its_default() -> Result<(), Box<
     fs::write(&source, A_STEP_FROM_A_NEWER_BUILD)?;
     let target = dir.path().join("saved.json");
 
-    save(&load(&source)?, &target)?;
+    save(&load(&source)?, &target, None)?;
 
     let written: Value = serde_json::from_str(&fs::read_to_string(&target)?)?;
     let step = &written["steps"][0];

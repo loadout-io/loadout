@@ -8,6 +8,14 @@ export type DefinitionProblemKind =
 export interface Healthy<T> {
   kind: 'healthy';
   value: T;
+  /**
+   * Rewizja pliku, z którego ta definicja powstała — lustro `Definition::Healthy` w Ruście.
+   *
+   * Okno odsyła ją przy zapisie, a Rust odmawia publikacji, kiedy na dysku leży co innego.
+   * Opcjonalna, bo `definitionsOf` opakowuje też gołe wartości ze starszych atrap — a atrapa,
+   * która rewizji nie zna, ma powiedzieć „nie wiem" (`null` w dół), nie zmyślić jej.
+   */
+  revision?: string;
 }
 
 export interface DefinitionProblem {

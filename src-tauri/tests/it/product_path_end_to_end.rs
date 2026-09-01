@@ -90,7 +90,7 @@ async fn a_saved_agent_a_saved_workflow_and_a_run_that_actually_ran() -> Result<
     agent.id = Uuid::now_v7();
     agent.name = "Builder".to_owned();
     agent.runs_with = Vendor::ClaudeCode;
-    let agent_file = save_agent_inner(bench.home.path(), &agent)?;
+    let agent_file = save_agent_inner(bench.home.path(), &agent, None)?.path;
     assert!(
         agent_file.is_file(),
         "saving an agent has to leave a file behind, and it has to make its own directory: on a \
@@ -112,7 +112,8 @@ async fn a_saved_agent_a_saved_workflow_and_a_run_that_actually_ran() -> Result<
         "the workflow this test builds would be refused before it ran, so nothing below would \
          mean what it says. The validator said: {blockers:?}"
     );
-    let saved = save_workflow_inner(bench.home.path(), "ship-a-feature.json", &workflow)?;
+    let saved =
+        save_workflow_inner(bench.home.path(), "ship-a-feature.json", &workflow, None)?.path;
     assert!(
         saved.is_file(),
         "saving a workflow has to leave a file behind at {}",

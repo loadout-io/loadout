@@ -22,7 +22,7 @@ describe('Import setup', () => {
     const store = createAgentsStore({
       list: async () => [],
       newId: async () => '019b0000-0000-7000-8000-000000000075',
-      save: async () => undefined,
+      save: async () => 'after-the-save',
       remove: async () => undefined,
     });
     const html = renderToStaticMarkup(<AgentsScreen store={store} usage={{}} />);

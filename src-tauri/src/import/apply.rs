@@ -170,9 +170,12 @@ fn stage_agents(
     files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
 ) -> Result<()> {
     for agent in &draft.agents {
-        let path = write_agent_file(&stage.join("agents"), agent)
+        // `None`: katalog przygotowania powstaje świeżo na każdy import (`fs::create_dir`
+        // w `apply_setup_inner`), więc każdy plik ma tu powstać, a nie kogokolwiek nadpisać.
+        // Dwaj agenci o tej samej nazwie pliku są wtedy odmową, a nie cichą stratą jednego z nich.
+        let landed = write_agent_file(&stage.join("agents"), agent, None)
             .map_err(|error| ImportError::Save(error.to_string()))?;
-        let target = relative(stage, &path)?;
+        let target = relative(stage, &landed.path)?;
         if let Some(source) = source_for_target(draft, &target)? {
             record_file(stage, draft, &target, &source.path, &source.hash, files)?;
         }
@@ -295,7 +298,9 @@ fn stage_workflows(
         let relative = PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)));
         let target = stage.join(&relative);
         create_parent(&target)?;
-        crate::workflow::file::save(workflow, &target)
+        // `None` z tego samego powodu, co przy agentach: katalog przygotowania jest świeży,
+        // więc dwa workflow o tej samej nazwie pliku są odmową, a nie cichą stratą jednego.
+        crate::workflow::file::save(workflow, &target, None)
             .map_err(|error| ImportError::Save(error.to_string()))?;
         workflow_hashes.insert(
             relative.clone(),

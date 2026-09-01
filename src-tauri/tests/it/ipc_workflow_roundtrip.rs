@@ -80,7 +80,7 @@ fn a_workflow_saved_by_the_command_loads_back_field_for_field() -> Result<(), Bo
     let home = TempDir::new()?;
     let plan = a_plain_chain()?;
 
-    let written = save_workflow_inner(home.path(), FILE, &plan)?;
+    let written = save_workflow_inner(home.path(), FILE, &plan, None)?.path;
     assert!(
         written.exists(),
         "the command said it saved the workflow and {} is not there. A save that reports \
@@ -90,7 +90,7 @@ fn a_workflow_saved_by_the_command_loads_back_field_for_field() -> Result<(), Bo
 
     let back = load_workflow_inner(home.path(), FILE)?;
     assert_eq!(
-        back, plan,
+        back.workflow, plan,
         "the workflow comes back the way it went in — every step, every arrow, every setting. \
          This is the one thing in Loadout a person can lose, so 'roughly the same' is not a \
          state this comparison is allowed to have"

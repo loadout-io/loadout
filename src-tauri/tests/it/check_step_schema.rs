@@ -132,7 +132,8 @@ fn a_check_step_survives_the_round_trip_and_keeps_a_key_it_does_not_know()
     let path = dir.path().join("ship-a-feature.json");
     let before = one_check("./verify.sh full", r"(\d+) passed")?;
 
-    save(&before, &path)?;
+    // `None`: pliku jeszcze nie ma, więc zapis ma go stworzyć.
+    save(&before, &path, None)?;
     let after = file::load(&path)?;
 
     assert_eq!(
@@ -221,7 +222,9 @@ fn a_check_without_a_proof_is_refused_and_the_file_on_disk_does_not_move()
         // ── I DOPIERO TERAZ TO, CO ROZSTRZYGA: bajty pliku po odmowie ─────────────────────
         fs::write(&path, ON_DISK)?;
         let bytes = fs::read(&path)?;
-        let error = save(&file, &path)
+        // Rewizja nie ma tu znaczenia: walidator odmawia PRZED dotknięciem dysku, więc do
+        // porównania bajtów nigdy nie dochodzi — i dokładnie to sądzi asercja niżej.
+        let error = save(&file, &path, None)
             .err()
             .ok_or_else(|| format!("save() wrote a workflow whose check step has {what}"))?;
         let described = format!("{error:?}");
@@ -278,7 +281,11 @@ fn a_file_written_before_this_kind_existed_still_opens() -> Result<(), Box<dyn E
     // Kontrola pozytywna do dwóch asercji wyżej: to, że stary plik się otwiera, nie może być
     // prawdą przez to, że NIC się nie otwiera.
     let fresh = dir.path().join("with-a-check.json");
-    save(&one_check("./verify.sh quick", r"(\d+) passed")?, &fresh)?;
+    save(
+        &one_check("./verify.sh quick", r"(\d+) passed")?,
+        &fresh,
+        None,
+    )?;
     assert!(
         file::load(&fresh).is_ok(),
         "and the new kind still opens too, or this test proves only that loading is broken \

@@ -81,6 +81,8 @@ const WHERE_PATH: Readonly<Record<string, string>> = {
 
 const AGENT_ID = '0198a1f2-3b4c-7d5e-8f60-112233445566';
 const FILE_NAME = 'ship-a-feature.json';
+/** Rewizja pliku, którą okno przeczytało. Zapis niesie ją z powrotem albo cofa cudzą pracę. */
+const REVISION = 'eyJmb3JtYXQiOiAxfQo=';
 const IMAGE = { mime: 'image/png' as const, base64: 'iVBORw0KGgoAAAANSUhEUg==' };
 
 const AGENT: Agent = {
@@ -184,8 +186,18 @@ const WIRES: readonly Wire[] = [
     where: 'agents',
     what: 'save',
     command: 'save_agent',
-    given: [AGENT],
-    call: () => agents.save(AGENT),
+    given: [AGENT, REVISION],
+    call: () => agents.save(AGENT, REVISION),
+  },
+  /* 2026-08-28 — REWIZJA PLIKU AGENTA. Nie własna komenda: pyta bibliotekę, bo rewizja stoi
+   * przy definicji i ma pochodzić z tego samego odczytu, co ona. Wiersz jest tu, bo tabela
+   * pokrywa CAŁY eksport, a funkcja bez wiersza to funkcja, której nikt nie widział u Rusta. */
+  {
+    where: 'agents',
+    what: 'revisionOf',
+    command: 'list_agents',
+    given: [],
+    call: () => agents.revisionOf(AGENT_ID),
   },
   {
     where: 'agents',
@@ -226,8 +238,8 @@ const WIRES: readonly Wire[] = [
     where: 'workflows',
     what: 'write',
     command: 'save_workflow',
-    given: [FILE_NAME, WORKFLOW],
-    call: () => workflows.write(FILE_NAME, WORKFLOW),
+    given: [FILE_NAME, WORKFLOW, REVISION],
+    call: () => workflows.write(FILE_NAME, WORKFLOW, REVISION),
   },
   {
     where: 'workflows',

@@ -116,7 +116,7 @@ vi.mock('../sections/workflows/io', () => ({
      * `error instanceof Error` po tej stronie jest zawsze fałszywe. */
     if (said !== null) return Promise.reject(said);
     spy.written.push({ path, file: workflow });
-    return Promise.resolve();
+    return Promise.resolve(JSON.stringify(workflow));
   },
   check: (workflow: WorkflowFile) => {
     spy.checked.push(workflow);
@@ -155,7 +155,7 @@ function docWith(step: Step): WorkflowFile {
 /** Magazyn wpięty w granicę dokładnie tak, jak wpina go ekran edytora. */
 function openWith(step: Step) {
   const io: WorkflowIo = {
-    save: (file) => disk.write(PATH, file),
+    save: (file, expectedRevision) => disk.write(PATH, file, expectedRevision),
     check: disk.check,
     /* Nietykany: edycja kroku nie ma prawa zapisać pliku agenta. */
     saveAgent: () => Promise.resolve(),

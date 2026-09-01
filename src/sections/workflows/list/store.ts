@@ -57,7 +57,14 @@ export interface WorkflowListIo {
   list(): Promise<DefinitionListing<WorkflowEntry>>;
   /** uuid v7, mennica stoi po stronie Rusta [T4 §5.1] — `crypto.randomUUID()` daje v4. */
   newId(): Promise<string>;
-  write(path: string, workflow: WorkflowFile): Promise<void>;
+  /**
+   * Zapis pliku; oddaje rewizję, którą ten plik ma po zapisie.
+   *
+   * `expectedRevision` mówi Rustowi, co ten magazyn myśli o dysku. Ten ekran robi wyłącznie
+   * pliki NOWE — tworzenie i duplikowanie — więc zawsze podaje `null`, czyli „tego pliku ma
+   * tam jeszcze nie być", i tym samym nie ma jak nadpisać cudzego workflow (2026-08-28).
+   */
+  write(path: string, workflow: WorkflowFile, expectedRevision: string | null): Promise<string>;
   remove(path: string): Promise<void>;
 }
 
@@ -246,7 +253,10 @@ export function createWorkflowListStore(io: WorkflowListIo) {
           links: [],
         };
 
-        await io.write(path, workflow);
+        /* `null`, czyli „tego pliku ma tam jeszcze nie być". Wolna nazwa wybrana wobec
+         * katalogu sprzed dwóch `await` jest tylko wnioskiem; ODMOWĄ jest dopiero Rust, który
+         * publikuje przez create-if-absent i przegranemu oddaje odmowę zamiast cudzego pliku. */
+        await io.write(path, workflow, null);
         set({ workflows: sortedByName([...onDisk, { path, workflow }]), problems });
       }),
 
@@ -286,7 +296,8 @@ export function createWorkflowListStore(io: WorkflowListIo) {
           ...onDisk.map((entry) => entry.path),
           ...problems.map((problem) => problem.fileName),
         ]);
-        await io.write(path, copy);
+        /* `null` z tego samego powodu, co w `create`: duplikat jest nowym plikiem. */
+        await io.write(path, copy, null);
         set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]), problems });
       }),
 

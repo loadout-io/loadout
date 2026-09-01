@@ -56,8 +56,8 @@ fn an_agent_saved_by_the_command_comes_back_from_the_list_and_leaves_with_it()
         Thinking::Deep,
     );
 
-    let forge_file = save_agent_inner(home.path(), &forge)?;
-    let scribe_file = save_agent_inner(home.path(), &scribe)?;
+    let forge_file = save_agent_inner(home.path(), &forge, None)?.path;
+    let scribe_file = save_agent_inner(home.path(), &scribe, None)?.path;
     assert_ne!(
         forge_file, scribe_file,
         "two agents are two files. One path for both means the second save landed on the \

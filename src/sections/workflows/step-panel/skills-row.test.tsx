@@ -53,7 +53,7 @@ function file(): WorkflowFile {
 
 function io(): WorkflowIo {
   return {
-    save: () => Promise.resolve(),
+    save: () => Promise.resolve('after-the-save'),
     check: () => Promise.resolve([] as Note[]),
     saveAgent: () => Promise.resolve(),
   };

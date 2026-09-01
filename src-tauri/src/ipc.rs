@@ -1546,11 +1546,14 @@ pub fn apply_setup(
     result.map_err(|error| error.to_string())
 }
 
-/// Zapisuje definicję agenta.
+/// Zapisuje definicję agenta i oddaje rewizję, którą ma teraz jego plik.
+///
+/// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
+/// być". Zapis, który nie niesie rewizji, kasowałby cudzą, nowszą pracę bez jednego zdania.
 #[tauri::command]
-pub fn save_agent(agent: Agent) -> Result<(), String> {
-    commands::agents::save_agent_inner(&crate::loadout_dir(), agent)
-        .map(|_| ())
+pub fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result<String, String> {
+    commands::agents::save_agent_inner(&crate::loadout_dir(), agent, expected_revision)
+        .map(|written| written.revision)
         .map_err(|error| error.to_string())
 }
 
@@ -1568,19 +1571,31 @@ pub fn list_workflows() -> Result<Vec<Definition<commands::workflows::WorkflowEn
         .map_err(|error| error.to_string())
 }
 
-/// Wczytuje jeden plik workflow po jego nazwie w katalogu.
+/// Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z rewizją tych bajtów.
 #[tauri::command]
-pub fn load_workflow(file_name: &str) -> Result<WorkflowFile, String> {
+pub fn load_workflow(file_name: &str) -> Result<commands::workflows::OpenWorkflow, String> {
     commands::workflows::load_workflow_inner(&crate::loadout_dir(), file_name)
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje plik workflow. Odmowa walidatora przyjeżdża jego własnym zdaniem.
+/// Zapisuje plik workflow i oddaje rewizję, którą ma teraz. Odmowa przyjeżdża własnym zdaniem.
+///
+/// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
+/// być". Zapis bez rewizji cofałby cudzą, nowszą pracę i wyglądałby na udany.
 #[tauri::command]
-pub fn save_workflow(file_name: &str, workflow: WorkflowFile) -> Result<(), String> {
-    commands::workflows::save_workflow_inner(&crate::loadout_dir(), file_name, workflow)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+pub fn save_workflow(
+    file_name: &str,
+    workflow: WorkflowFile,
+    expected_revision: Option<&str>,
+) -> Result<String, String> {
+    commands::workflows::save_workflow_inner(
+        &crate::loadout_dir(),
+        file_name,
+        workflow,
+        expected_revision,
+    )
+    .map(|saved| saved.revision)
+    .map_err(|error| error.to_string())
 }
 
 /// Usuwa plik workflow z katalogu.

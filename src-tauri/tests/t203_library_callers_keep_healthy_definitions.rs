@@ -92,8 +92,9 @@ fn a_bad_neighbor_does_not_hide_agents_from_any_rust_caller() -> Result<(), Box<
     let mut alpha = agent("Alpha");
     alpha.tools = Tools::Only(Vec::new());
     let beta = agent("Beta");
-    save_agent_inner(home.path(), &alpha)?;
-    save_agent_inner(home.path(), &beta)?;
+    // `None` przy każdym zasianiu: te pliki mają POWSTAĆ, więc nie ma czego nadpisać.
+    save_agent_inner(home.path(), &alpha, None)?;
+    save_agent_inner(home.path(), &beta, None)?;
     let bad = home.path().join("agents/broken.md");
     fs::write(&bad, b"not agent front matter\n")?;
 
@@ -101,8 +102,8 @@ fn a_bad_neighbor_does_not_hide_agents_from_any_rust_caller() -> Result<(), Box<
 
     let repaired = agent("Broken");
     let stage = TempDir::new()?;
-    let staged = save_agent_inner(stage.path(), &repaired)?;
-    replace_atomically(&bad, &fs::read(staged)?)?;
+    let staged = save_agent_inner(stage.path(), &repaired, None)?;
+    replace_atomically(&bad, &fs::read(staged.path)?)?;
 
     assert_all_callers(home.path(), &[&alpha, &beta, &repaired], &alpha);
     Ok(())

@@ -86,8 +86,8 @@ fn a_flag_loadout_has_never_heard_of_survives_a_save_and_a_load() -> Result<(), 
     let dir = TempDir::new()?;
     let agent = forge()?;
 
-    let written = write_agent_file(dir.path(), &agent)?;
-    let read_back = read_agent_file(&written)?;
+    let written = write_agent_file(dir.path(), &agent, None)?;
+    let read_back = read_agent_file(&written.path)?;
 
     assert_eq!(
         read_back.vendor_options, agent.vendor_options,
@@ -135,8 +135,8 @@ fn saving_the_same_agent_twice_writes_the_same_bytes() -> Result<(), Box<dyn Err
     let first_dir = TempDir::new()?;
     let second_dir = TempDir::new()?;
 
-    let first = std::fs::read(write_agent_file(first_dir.path(), &agent)?)?;
-    let second = std::fs::read(write_agent_file(second_dir.path(), &agent)?)?;
+    let first = std::fs::read(write_agent_file(first_dir.path(), &agent, None)?.path)?;
+    let second = std::fs::read(write_agent_file(second_dir.path(), &agent, None)?.path)?;
 
     assert_eq!(
         first, second,

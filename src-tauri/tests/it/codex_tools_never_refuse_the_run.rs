@@ -374,7 +374,7 @@ impl Bench {
             tools: Tools::Only(WANTED.iter().copied().map(str::to_owned).collect()),
             ..Agent::example()
         };
-        save_agent_inner(home.path(), &agent)?;
+        save_agent_inner(home.path(), &agent, None)?;
         Ok(Self { home, project })
     }
 
