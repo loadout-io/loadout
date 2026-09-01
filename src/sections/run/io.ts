@@ -34,6 +34,10 @@ import { wireChannel } from '../../ipc/run';
  * samo z drugiej strony. */
 import { runFor, type RunStore } from '../../state/run';
 import type { Step } from '../../state/run';
+/* WYŁĄCZNIE TYP: strzałka „po" jest kształtem z pliku workflow, a ta krawędź tylko ją przewozi.
+ * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc sekcja Bieg nie zyskuje ani
+ * jednej zależności W CZASIE WYKONANIA od magazynu otwartego dokumentu. */
+import type { Link } from '../../state/workflows';
 import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { runSuggestion } from './feed/suggested';
@@ -81,6 +85,23 @@ export interface WhatIsRunning {
   readonly name: string;
   /** Kroki w kolejności z grafu; na starcie wszystkie czekają. */
   readonly steps: readonly Step[];
+  /**
+   * Strzałki „po" z pliku tego workflow — brak pola znaczy „nie wiemy".
+   *
+   * 2026-08-31 — DLACZEGO DOPIERO TERAZ I DLACZEGO OPCJONALNIE. Kroki jechały tędy od
+   * początku, kolejność między nimi nie jechała wcale, więc widok biegu miał listę i nie miał
+   * ani jednej relacji — a rysunek postawiony na takim stanie rysowałby kolejność, której nikt
+   * nie zapisał (niezmiennik 17). Pole jest opcjonalne DOKŁADNIE tą samą drogą, którą
+   * 2026-08-28 weszło `kind`: wartość domyślna argumentu `what` w [`start`] jest mostem dla
+   * dwóch cudzych kryteriów wołających tę krawędź dwoma argumentami, więc nic nowego nie ma
+   * prawa być wymagane. Brak pola dojeżdża do magazynu jako `null`, czyli jako „nie wiemy",
+   * i to jest prawda o starcie, który pliku workflow nie czytał.
+   *
+   * `| undefined` JAWNIE, bo `exactOptionalPropertyTypes` odróżnia „klucza nie ma" od „klucz
+   * niesie undefined", a jedyny produkcyjny wołający (`./launch.ts`) przepisuje tu pole
+   * pozycji listy, które samo bywa nieobecne.
+   */
+  readonly links?: readonly Link[] | undefined;
 }
 
 /**
@@ -265,7 +286,10 @@ export function start(
    * zrobić uczciwie, to nie wołać go dla karty, do której ten bieg nie należy — a do tego
    * musi wiedzieć, gdzie on idzie. Wie, bo sam ten folder tu wysyła (patrz `invoke` niżej). */
   const putBack = whatWasRunning(session);
-  session.getState().nowRunning(what.name, what.steps, folder, workflow);
+  /* `?? null` ZAMIENIA BRAK POLA NA „NIE WIEMY", nie na pustą listę. Start bez planu z pliku —
+   * ten spod wartości domyślnej `what` — nie ma prawa twierdzić, że ten bieg jest bez ani jednej
+   * strzałki: to byłoby zdanie o kształcie pracy, a nikt go tu nie wypowiedział. */
+  session.getState().nowRunning(what.name, what.steps, folder, workflow, what.links ?? null);
 
   const run = invoke<void>('run_workflow', {
     fileName: workflow,
@@ -550,12 +574,48 @@ export function resumeRun(
 }
 
 /**
- * Co zrobić z paskiem żywego biegu, kiedy start, który go nadpisał, **nigdy nie ruszył**.
+ * Puszcza cały zestaw z sekcji Lab — i jest to **zwykły bieg**.
  *
- * # Po co to istnieje
+ * Ta sama zapadka, ten sam strumień linii, ten sam pasek żywego biegu i ten sam Stop, co przy
+ * każdym innym starcie: wchodzi tą samą drogą, co wznowienie i powtórzenie kroku
+ * (`asARun`). Własne okablowanie kanału w sekcji Lab byłoby trzecią kopią odpowiedzi na
+ * pytanie „co robi okno, kiedy bieg rusza" — a ta odpowiedź rozjechała się już raz i skończyła
+ * się biegiem, którego nie dało się zatrzymać.
  *
- * Zgłoszenie właściciela 2026-08-23, zrzut ekranu z dwoma zdaniami pod rząd: Loadout odmawia
- * („A run is already going… Press Stop first"), a zaraz pod spodem `/stop` odpowiada
+ * Nazwy pliku workflow nie podajemy: plan powstaje przy każdym uruchomieniu na nowo, obok
+ * zestawu, i nie jest workflow, który człowiek otwiera z listy. Pusty napis znaczy „uruchom
+ * ten krok jeszcze raz" odmówi przy tym biegu — i tak ma być, bo powtórzenie jednej komórki
+ * należy do tabeli, nie do paska.
+ *
+ * @param set identyfikator zestawu — nazwa jego pliku bez rozszerzenia.
+ * @param name nazwa dla paska: to, co człowiek zobaczy nad blokami kroków.
+ */
+export function runEvalSet(
+  set: string,
+  howManyAtOnce: number,
+  folder: string | null = null,
+  name = '',
+  budgetUsd?: number | null,
+): Promise<string | null> {
+  /* Sufit wydatku jedzie tą samą drogą, co przy Starcie: jest faktem CAŁEJ aplikacji, a nie
+   * ustawieniem tej jednej sekcji. Macierz jest zresztą tym miejscem, które najbardziej go
+   * potrzebuje — dziewięć przypadków razy trzy kolumny to dwadzieścia siedem tur. */
+  const ceiling = theCeilingFor(budgetUsd, null);
+  return asARun(name, '', folder, (lines) =>
+    invoke<void>('run_eval_set', {
+      /* KLUCZ OBECNY ZAWSZE, TAKŻE JAKO `null`: Tauri dopasowuje argumenty `invoke` po nazwie,
+       * a klucz pominięty i klucz pusty to dla tamtej strony dwie różne rzeczy. */
+      folder,
+      set,
+      howManyAtOnce,
+      budgetUsd: ceiling,
+      lines,
+    }).then(() => null),
+  );
+}
+
+/**
+ * Co zrobić z paskiem żywego biegu, kiedy start, który go nadpisał, **nigdy nie ruszył**. already going… Press Stop first"), a zaraz pod spodem `/stop` odpowiada
  * **„Nothing is running."** — o biegu, który w tej chwili pracował już czterdzieści minut.
  * Odmowa nazywa następny ruch, a ten ruch nie istnieje: z tego wiersza nie dało się już
  * zatrzymać niczego.
@@ -582,9 +642,15 @@ function whatWasRunning(session: RunStore): () => void {
     steps: before.steps,
     folder: before.folder,
     fileName: before.fileName,
+    /* 2026-08-31 — STRZAŁKI WRACAJĄ RAZEM Z RESZTĄ. Odtworzenie, które by je pominęło,
+     * zostawiałoby po odmowie `/ask` pasek opisujący ŻYWY bieg jako listę kroków bez ani jednej
+     * relacji — czyli ten sam bieg pokazany jako coś innego, niż jest. */
+    links: before.links,
   };
   return () => {
-    session.getState().nowRunning(kept.workflow, kept.steps, kept.folder, kept.fileName);
+    session
+      .getState()
+      .nowRunning(kept.workflow, kept.steps, kept.folder, kept.fileName, kept.links);
   };
 }
 

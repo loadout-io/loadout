@@ -13,7 +13,7 @@
  * implementacje wyglądają identycznie, dopóki nie zajrzysz, CO poleciało do Rusta.
  */
 import type { Step as RunStep } from '../../state/run';
-import type { Step as FileStep, WorkflowFile } from '../../state/workflows';
+import type { Link, Step as FileStep, WorkflowFile } from '../../state/workflows';
 
 /** Pozycja listy: nazwa pliku, to, jak workflow nazywa sam siebie, i jego plan kroków. */
 export interface Choice {
@@ -22,6 +22,20 @@ export interface Choice {
   /** Jak workflow nazywa SAM SIEBIE — napis, który widzi człowiek. */
   readonly name: string;
   readonly steps: readonly RunStep[];
+  /**
+   * Strzałki „po" z tego pliku — brak pola znaczy „nie wiemy".
+   *
+   * 2026-08-31 — POZYCJA I STRZAŁKA SĄ JEDNYM FAKTEM O KSZTAŁCIE, ale mieszkają w pliku
+   * osobno: pozycja przy kafelku, strzałka w `links`. Kroki jadą tędy od początku, strzałki
+   * nie jechały wcale — więc widok biegu znał listę kroków i nie znał ani jednej relacji
+   * między nimi. Rysunek zbudowany na takim stanie rysowałby kolejność, której nikt nie
+   * zapisał (niezmiennik 17).
+   *
+   * Opcjonalne, bo cudze kryteria stawiają pozycję listy z trzech pól (`run-command.test.ts`)
+   * i mają dalej się kompilować. `toChoices` wypełnia je ZAWSZE — także pustą listą, bo „ten
+   * plik nie ma ani jednej strzałki" jest odpowiedzią, a nie brakiem odpowiedzi.
+   */
+  readonly links?: readonly Link[];
 }
 
 /** Tyle o pliku, ile potrzebuje lista wyboru. Węższe niż `WorkflowEntry`, bo tyle wystarcza. */
@@ -45,6 +59,12 @@ export interface Listed {
  * „czy w tym planie ktokolwiek cokolwiek sprawdza" należy do paska, a nie do tej funkcji,
  * bo to on ma na to jedno zdanie w podpisie (`./strip/model.ts`, niezmiennik 13).
  *
+ * 2026-08-31 — POZYCJA KAFELKA JEDZIE RAZEM Z NIMI, z tego samego powodu, co rodzaj. Widok
+ * biegu ma prawo narysować graf wyłącznie wtedy, gdy współrzędne PRZYJECHAŁY (niezmiennik 17);
+ * bez tej linii jedynym sposobem na rysunek byłoby wymyślenie ich w komponencie, czyli ozdobna
+ * krzywa między punktami, których nikt nie zapisał. Przepisujemy `at` surowo — pytanie „jak to
+ * ułożyć na ekranie" należy do widoku, nie do tej funkcji.
+ *
  * `instructions` dalej NIE jedzie i to jest osobny, zapisany brak (`./session/layout.ts`).
  */
 export function planOf(steps: readonly FileStep[]): readonly RunStep[] {
@@ -53,6 +73,7 @@ export function planOf(steps: readonly FileStep[]): readonly RunStep[] {
     name: step.name,
     state: 'pending' as const,
     kind: step.kind,
+    at: step.at,
   }));
 }
 
@@ -62,6 +83,9 @@ export function toChoices(entries: readonly Listed[]): readonly Choice[] {
     path: entry.path,
     name: entry.workflow.name,
     steps: planOf(entry.workflow.steps),
+    /* Surowo, bez przepisywania kluczy: `Link` po stronie Rusta nie ma `rename_all`, więc
+     * `max_turns` jedzie dosłownie tak, jak stoi w pliku (`state/workflows.ts`). */
+    links: entry.workflow.links,
   }));
 }
 

@@ -166,6 +166,32 @@ export interface MemoryState {
   passedProblem: string | null;
   choice: Choice | null;
   /**
+   * Czy pierwszy odczyt tej sekcji już się skończył — obojętne, czym.
+   *
+   * TRZECI STAN ŚWIATA, DOPISANY 2026-08-31. Sekcja znała dwa — „są notatki" i „nie ma
+   * notatek" — a odczyt startuje w efekcie, czyli PO pierwszym malowaniu ekranu. Człowiek
+   * dostawał więc zaproszenie „No notes yet." nad katalogiem, którego nikt jeszcze nie
+   * otworzył, i było ono nieprawdziwe dokładnie tak długo, jak trwało czytanie dysku. Bez tego
+   * pola pustej listy nie da się odróżnić od listy jeszcze nieprzeczytanej: obie są `[]`.
+   *
+   * `false` na starcie i to jest decyzja, nie brak inicjalizacji. Wartość początkowa `true`
+   * kazałaby oknu mrugnąć zaproszeniem, zanim efekt zdąży cokolwiek ustawić — czyli zamieniła
+   * jedno nieprawdziwe zdanie na to samo zdanie i migotanie.
+   */
+  read: boolean;
+  /**
+   * Kandydatka, o której odrzucenie właśnie pytamy człowieka. `null` znaczy, że o nic.
+   *
+   * DLACZEGO TO PYTANIE MIESZKA W MAGAZYNIE, A NIE W WIERSZU (2026-08-31). Dwa powody, oba
+   * mierzalne. Pierwszy: pytanie ma stać przy JEDNYM wierszu naraz (niezmiennik 13), a stan
+   * trzymany w komponencie daje po jednym niezależnym pytaniu na wiersz i nic ich nie zlicza.
+   * Drugi: `discard` po tamtej stronie granicy zostawia TRWAŁY nagrobek w `discarded/`
+   * (`src-tauri/src/memory/notes.rs`, `was_discarded`), więc odrzucona notatka nie wraca nigdy
+   * — a decyzja tej wagi ma być sądzona na ekranie, nie w prywatnym stanie komponentu, którego
+   * w tym repo nie ma czym wysterować (brak `jsdom`).
+   */
+  pendingDiscard: NoteAddress | null;
+  /**
    * Wejście w sekcję: przeczytaj, co leży na dysku, i pokaż to.
    *
    * Do 2026-08-18 tej ścieżki nie było wcale i to jest cały powód, dla którego pole istnieje.
@@ -183,6 +209,10 @@ export interface MemoryState {
    * `discarded/` po tamtej stronie granicy, bo nic w pamięci nie jest twardo usuwane [T6 §5.3].
    */
   discard: (address: NoteAddress) => Promise<void>;
+  /** Pierwsze kliknięcie w „Discard": postaw pytanie. Nic nie jedzie do Rusta. */
+  askDiscard: (address: NoteAddress) => void;
+  /** „Keep it": pytanie znika, notatka zostaje, nic nie jedzie do Rusta. */
+  keepIt: () => void;
   /** Jedyna akcja wcześniejszej notatki projektowej. */
   moveToProject: (address: NoteAddress) => Promise<void>;
   /** Zamyka wymuszony wybór, niczego nie zmieniając. */
@@ -226,6 +256,8 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   message: null,
   passedProblem: null,
   choice: null,
+  read: false,
+  pendingDiscard: null,
 
   load: async (catalogFolder) => {
     const frozenFolder =
@@ -266,6 +298,12 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     })();
 
     await Promise.all([notesRead, passedRead]);
+
+    /* DOPIERO TERAZ wolno powiedzieć „nie ma nic". Obojętne, czym się skończyło: po odmowie
+     * ekran mówi o odmowie, a nie o pustce — ale jedno i drugie jest odpowiedzią, a „jeszcze
+     * nie wiem" przestało być prawdą. Numer odczytu pilnuje, żeby spóźniona odpowiedź
+     * poprzedniego zakresu nie zdejmowała zdania o czytaniu z odczytu, który wciąż trwa. */
+    if (get().generation === generation) set({ read: true });
   },
 
   use: async (address) => {
@@ -298,12 +336,30 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   },
 
   stopUsing: async (address) => {
-    const { notesFolder, generation } = get();
+    const { notesFolder, generation, choice } = get();
     try {
       const notes = await stopUsingOnDisk(request(notesFolder, address));
-      if (get().generation === generation && get().notesFolder === notesFolder) {
+      if (get().generation !== generation || get().notesFolder !== notesFolder) return;
+
+      /* WYMUSZONY WYBÓR DOMYKA TO, PO CO CZŁOWIEK PRZYSZEDŁ (2026-08-31).
+       *
+       * Zmierzona wada: „Use this" → „Memory is full" → „Stop using" na innej notatce →
+       * okno znikało, a notatka, którą człowiek chciał przyjąć, dalej stała w „Waiting for
+       * you". Zwolnił miejsce i nie dostał nic, bez ani jednego zdania o tym dlaczego —
+       * z jego strony nieodróżnialne od przycisku, który połknął kliknięcie.
+       *
+       * Miejsce zwolnione W OKNIE należy do JEDNEJ notatki: tej, o którą pytał. Ponowienie
+       * jedzie tą samą drogą, co pierwsza próba — komenda, odpowiedź, dopiero potem stan —
+       * więc dalej rozstrzyga dysk, a nie okno. `use` sam zamknie wybór po sukcesie, postawi
+       * świeży przy dalszym braku miejsca i napisze zdanie przy każdej innej odmowie.
+       *
+       * Odstawienie POZA oknem zostaje tym, czym było: jedną decyzją i niczym więcej. */
+      if (choice === null || get().choice !== choice) {
         set({ notes, message: null, choice: null });
+        return;
       }
+      set({ notes, message: null });
+      await get().use(choice.address);
     } catch (refusal) {
       if (get().generation === generation && get().notesFolder === notesFolder) {
         set({ message: why(refusal, COULD_NOT_STOP), choice: null });
@@ -322,16 +378,41 @@ export const useMemory = create<MemoryState>()((set, get) => ({
        * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
       const notes = await discardNote(request(notesFolder, address));
       if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ notes, message: null });
+        /* Pytanie jest odpowiedziane, więc schodzi z ekranu razem z wierszem. Zostawione
+         * stałoby nad notatką, której już nie ma — a wtedy pyta o nic. */
+        set({ notes, message: null, pendingDiscard: null });
       }
     } catch (refusal) {
       /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
        * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
        * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
       if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ message: why(refusal, COULD_NOT_DISCARD) });
+        set({ message: why(refusal, COULD_NOT_DISCARD), pendingDiscard: null });
       }
     }
+  },
+
+  askDiscard: (address) => {
+    /* PYTANIE, A NIE CZYNNOŚĆ, i nic tu nie jedzie do Rusta (2026-08-31).
+     *
+     * Po tamtej stronie granicy `discard_note` zostawia TRWAŁY nagrobek w `discarded/`
+     * (`src-tauri/src/memory/notes.rs`, `was_discarded`), a skan pomija każdy plik, którego
+     * slug tam stoi. Odrzucona kandydatka nie wraca NIGDY — także wtedy, gdy inny agent
+     * nauczy się tego samego zdania jeszcze raz. Na ekranie było to jedno kliknięcie, obok
+     * „Use this" i w tej samej cichej skórce: nieodwracalna decyzja o odległości jednego
+     * omsknięcia. Wzorzec pytania jest ten sam, co przy usuwaniu agenta
+     * (`src/sections/agents/index.tsx`): PRAWDZIWY render, nigdy `window.confirm`, bo dialog
+     * przeglądarki blokuje webview i przy oknie Tauri nie ma go czym odblokować.
+     *
+     * Jedno pytanie naraz (niezmiennik 13): drugie kliknięcie w inny wiersz przestawia to,
+     * o co pytamy, zamiast zostawiać dwa otwarte pytania o dwie różne notatki. */
+    set({ pendingDiscard: address });
+  },
+
+  keepIt: () => {
+    /* Wyjście z pytania nie jest zgodą na nic i nie jest też odmową dla Rusta: nic tam nie
+     * pojechało, więc nie ma czego cofać. Znika samo pytanie. */
+    set({ pendingDiscard: null });
   },
 
   moveToProject: async (address) => {

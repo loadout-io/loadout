@@ -91,9 +91,24 @@ export interface AgentsIo {
   remove(id: string): Promise<void>;
 }
 
+/** Co ten magazyn wie o KATALOGU AGENTÓW — trzy stany, nie dwa.
+ *
+ * 2026-08-31, zgłoszenie właściciela: pusta lista i katalog, do którego jeszcze nikt nie
+ * zajrzał, są w zustandzie tą samą tablicą, więc ekran mówił „No agents yet." zanim cokolwiek
+ * przeczytał. Trzeci stan jest tu z tego samego powodu, dla którego istnieje pole `refusal`:
+ * katalog NIEOSIĄGALNY czyta się na ekranie identycznie jak pusty, a to jest ta pomyłka, która
+ * trzymała sekcję pustą przez kilkanaście godzin (nagłówek `src/sections/agents/index.tsx`).
+ *
+ * `reading` jest wartością POCZĄTKOWĄ, nie tylko chwilą po wywołaniu `load()`: przed pierwszym
+ * odczytem sekcja nie wie o katalogu nic, a właśnie to znaczy ten stan. Ta sama nazwa i te same
+ * trzy wartości, co `Folders` w `src/state/skills.ts` — jedno pojęcie, jedna pisownia. */
+export type Library = 'reading' | 'read' | 'unreadable';
+
 export interface AgentsState {
   agents: Agent[];
   problems: DefinitionProblem[];
+  /** Patrz [`Library`]. Ekran rysuje z tego trzy różne rzeczy, nie dwie. */
+  library: Library;
   /**
    * Zdanie dla człowieka po odmowie z dysku — `null`, kiedy nie ma o czym mówić.
    *
@@ -103,6 +118,25 @@ export interface AgentsState {
    * jako odpowiedź na klik, który się właśnie udał. Każda czynność czyści je na wejściu.
    */
   refusal: string | null;
+  /**
+   * Id agenta, którego OSTATNIA UDANA czynność właśnie postawiła na liście — `null`, kiedy nie
+   * było takiej czynności albo kiedy zaczęła się następna.
+   *
+   * 2026-08-31, zgłoszenie właściciela: po udanym `Save` panel po prostu znikał, czyli dawał
+   * dokładnie ten sam widok, co `Cancel` — dwa przyciski o przeciwnym znaczeniu i jeden skutek
+   * na ekranie. `Duplicate` nie zmieniał NICZEGO widocznego. Kliknięcie, po którym nic nie
+   * drgnie, czyta się jak kliknięcie, które nie doszło.
+   *
+   * DLACZEGO TO POLE MIESZKA W MAGAZYNIE, a nie w stanie ekranu: `save` sam wybija identyfikator
+   * dla nowego agenta (mennica jest po stronie Rusta), a `duplicate` sam wybija go dla kopii —
+   * ekran nie ma jak poznać ani jednego z nich, nie licząc zgadywania po długości listy.
+   * `false`/`true` z `save` mówi „udało się", a to jest inne pytanie niż „czemu się udało".
+   *
+   * Kasują je WSZYSTKIE czynności na wejściu, tą samą linią co `refusal`: znacznik, który
+   * przeżył czynność, o której mówił, wskazuje wiersz jako odpowiedź na klik, który go nie
+   * dotyczył.
+   */
+  justSaved: string | null;
   load: () => Promise<void>;
   /**
    * Zapisuje agenta na dysk i wstawia go do listy. `true`, kiedy naprawdę się zapisał.
@@ -198,10 +232,12 @@ export function createAgentsStore(io: AgentsIo) {
   return create<AgentsState>()((set, get) => ({
     agents: [],
     problems: [],
+    library: 'reading',
     refusal: null,
+    justSaved: null,
 
     load: async () => {
-      set({ refusal: null });
+      set({ refusal: null, justSaved: null, library: 'reading' });
       try {
         const definitions = definitionsOf(await io.list());
         /* Rewizje z TEGO odczytu. Kasujemy poprzednie, zamiast dopisywać: wpis o pliku,
@@ -215,18 +251,22 @@ export function createAgentsStore(io: AgentsIo) {
         set({
           agents: healthyOnly(definitions),
           problems: definitionProblems(definitions),
+          library: 'read',
         });
       } catch (error) {
         /* Pusta biblioteka i biblioteka NIEOSIĄGALNA czytają się na ekranie identycznie —
          * dokładnie ta pomyłka trzymała sekcję pustą przez kilkanaście godzin (patrz nagłówek
          * `src/sections/agents/index.tsx`). Dlatego odmowa ma zdanie, a lista zostaje taka,
          * jaka była: kasowanie jej tutaj mówiłoby „nic tam nie leży", czego nie wiemy. */
-        set({ refusal: why(error, 'Loadout could not read the agents you have saved.') });
+        set({
+          refusal: why(error, 'Loadout could not read the agents you have saved.'),
+          library: 'unreadable',
+        });
       }
     },
 
     save: async (agent: Agent) => {
-      set({ refusal: null });
+      set({ refusal: null, justSaved: null });
 
       /* Odmowa PRZED dotknięciem dysku. Agent bez instrukcji przechodzi walidator biblioteki
        * i pada dopiero na kroku, w biegu — czyli po tym, jak człowiek zbudował wokół niego
@@ -249,7 +289,9 @@ export function createAgentsStore(io: AgentsIo) {
          * udanym zapisie: po odmowie na dysku dalej leżą tamte bajty, więc następna próba ma
          * pytać o dokładnie tę samą rewizję. */
         seen.set(id, await io.save(complete, seen.get(id) ?? null));
-        set({ agents: upsert(get().agents, complete) });
+        /* `justSaved` ustawia się WYŁĄCZNIE tutaj, za `await`: znacznik postawiony przed
+         * zapisem świeciłby nad plikiem, którego dysk nie przyjął (niezmiennik 4). */
+        set({ agents: upsert(get().agents, complete), justSaved: id });
         return true;
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not save that agent.') });
@@ -258,7 +300,7 @@ export function createAgentsStore(io: AgentsIo) {
     },
 
     duplicate: async (id: string) => {
-      set({ refusal: null });
+      set({ refusal: null, justSaved: null });
       const original = get().agents.find((agent) => agent.id === id);
       if (original === undefined) return;
 
@@ -280,14 +322,22 @@ export function createAgentsStore(io: AgentsIo) {
         /* `null`: kopia to plik, którego jeszcze nie ma. Gdyby jednak był — bo ktoś nazwał tak
          * agenta w drugim oknie — Rust odmawia zamiast go nadpisać. */
         seen.set(copy.id, await io.save(copy, null));
-        set({ agents: [...get().agents, copy] });
+        /* KOPIA STAJE OBOK ORYGINAŁU, nie na końcu listy — 2026-08-31, zgłoszenie właściciela.
+         * Dopisana na końcu lądowała przy tuzinie agentów poza kadrem, więc `Duplicate` nie
+         * zmieniał ani jednego widocznego piksela i czytał się jak przycisk bez skutku
+         * (niezmiennik 16). Sąsiedztwo jest tu treścią: skutek widoczny poza ekranem nie jest
+         * widoczny. */
+        const at = get().agents.findIndex((one) => one.id === original.id);
+        const beside = [...get().agents];
+        beside.splice(at < 0 ? beside.length : at + 1, 0, copy);
+        set({ agents: beside, justSaved: copy.id });
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not make a copy of that agent.') });
       }
     },
 
     delete: async (id: string) => {
-      set({ refusal: null });
+      set({ refusal: null, justSaved: null });
       try {
         /* Plik pierwszy, ekran drugi. W odwrotnej kolejności agent zniknięty z listy przy
          * nieudanym usunięciu WRACA po restarcie, a człowiek dowiaduje się o tym wtedy, kiedy
@@ -303,7 +353,7 @@ export function createAgentsStore(io: AgentsIo) {
     },
 
     dismiss: () => {
-      set({ refusal: null });
+      set({ refusal: null, justSaved: null });
     },
   }));
 }

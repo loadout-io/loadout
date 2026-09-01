@@ -43,8 +43,11 @@ const EXPECTED = [
   'run',
   'workflows',
   'agents',
-  'skills',
-  'memory',
+  /* Jeden identyfikator zamiast dwóch od 2026-08-31 — Skills i Memory zeszły się w Knowledge
+     (`src/ui/sections.tsx`). Lista stoi tu na sztywno z tego samego powodu, co zawsze:
+     pętla po rejestrze sądziłaby rejestr samym sobą. */
+  'knowledge',
+  'lab',
   'triggers',
   'settings',
 ] as const;
@@ -113,15 +116,15 @@ function emptyStateText(markup: string): string {
     .trim();
 }
 
-describe('the only controls are the seven section switches, and each one really switches', () => {
+describe('the only controls are the six section switches, and each one really switches', () => {
   for (const id of EXPECTED) {
-    it('shows the seven switches plus only the named shell controls, with ' + id + ' open', () => {
+    it('shows the six switches plus only the named shell controls, with ' + id + ' open', () => {
       const markup = markupFor(id);
       for (const other of EXPECTED) {
         expect(
           occurrences(markup, 'data-section-switch="' + other + '"'),
-          'each of the seven switches has to carry data-section-switch with a different one of ' +
-            'the seven names; ' +
+          'each of the six switches has to carry data-section-switch with a different one of ' +
+            'the six names; ' +
             other +
             ' is missing or doubled',
         ).toBe(1);
@@ -136,7 +139,7 @@ describe('the only controls are the seven section switches, and each one really 
         occurrences(markup, '<button'),
         'with ' +
           id +
-          ' open the shell renders a control that is neither one of the seven section switches ' +
+          ' open the shell renders a control that is neither one of the six section switches ' +
           'nor one of the ' +
           String(SHELL.length) +
           ' shell controls named in SHELL at the top of this file. A button nobody named is a ' +

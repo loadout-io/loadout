@@ -73,7 +73,7 @@ export function Diagnostics({ folder }: DiagnosticsProps): ReactElement {
   return (
     <div data-diagnostics className="flex min-w-0 items-center gap-2">
       {sentence === null ? null : (
-        <p data-diagnostics-said aria-live="polite" className="truncate text-note text-muted">
+        <p data-diagnostics-said aria-live="polite" className="lead fade-in truncate">
           {sentence}
         </p>
       )}
@@ -87,7 +87,10 @@ export function Diagnostics({ folder }: DiagnosticsProps): ReactElement {
         }
         disabled={here.folder === null || result === 'copying'}
         onClick={copy}
-        className="h-7 shrink-0 rounded-sm border border-line-strong px-3 text-ui text-ink disabled:opacity-40"
+        /* `.btn` z `theme.css`: obrys `--line-strong`, wypelnienie `--raised`, 32 px z DESIGN §6.
+           Recznie spisana wersja stala tu na 28 px i sama gasila sie `disabled:opacity-40` —
+           czyli opisywala przycisk drugi raz, w miejscu, w ktorym nikt tego opisu nie szuka. */
+        className="btn"
       >
         {result === 'copying' ? 'Copying…' : 'Copy diagnostics'}
       </button>

@@ -41,36 +41,59 @@ export interface EmptyStateProps {
   action?: EmptyStateAction;
 }
 
-/* Przycisk podstawowy z DESIGN §6: `--accent` na tle, `--bg` na tekście, `--t-ui`, wysokość
- * 36 px. Jedyny kolor interaktywny w aplikacji, więc na pustym ekranie jest dokładnie jeden. */
-const PRIMARY = 'h-primary rounded-sm bg-accent px-4 text-ui text-bg';
+/* PROMIEŃ ZAPISANY DWA RAZY, I TO JEST DŁUG WYROCZNI, NIE DECYZJA. 2026-08-31.
+ *
+ * Klasy `.btn-primary` i `.mark` niosą swój promień same (`--radius-sm`, `--radius-md`), więc
+ * `rounded-sm` i `rounded-md` niżej nic nie zmieniają — obie nazwy rozwijają się do tej samej
+ * wartości i klasa narzędziowa nadpisuje prymityw jedynką na jedynkę.
+ *
+ * Stoją tu, bo `src/styles/stand-in-names-are-gone.test.ts` czyta ATRYBUT `class` tego
+ * komponentu i żąda nazwy `rounded-*` na przycisku i drugiej na ramce znaku. To pytanie było
+ * trafne, kiedy promień mieszkał w klasie narzędziowej: sprawdzało, czy po skasowaniu nazwy
+ * zastępczej (`rounded-sq`) ktoś wpisał prawdziwą. Od chwili, w której promień mieszka
+ * w prymitywie, ta wyrocznia pyta o NAPIS, a nie o wygląd (niezmiennik 20) — element bez
+ * `rounded-sm`, ale z `.btn-primary`, ma prawidłowy róg i zapala ją na czerwono.
+ *
+ * Zgłoszone jako wada wyroczni, nie obchodzone po cichu: tamten plik jest testem i nie należy
+ * do tego zadania. Obie nazwy znikają w dniu, w którym tamto kryterium zacznie pytać
+ * o skompilowaną regułę zamiast o treść atrybutu.
+ */
 
 export function EmptyState({ children, hint, action }: EmptyStateProps): ReactElement {
   return (
     /* `py-[70px] px-5` i `gap-[11px]` prosto z reguły `.empty` w makiecie. `h-full`, bo sekcja
-     * dostaje całą wysokość okna, a zaproszenie ma stać w jej środku, nie pod górną krawędzią. */
-    <div className="flex h-full flex-col items-center justify-center gap-[11px] px-5 py-[70px] text-center">
+     * dostaje całą wysokość okna, a zaproszenie ma stać w jej środku, nie pod górną krawędzią.
+     *
+     * WEJŚCIE SPRĘŻYNĄ, 2026-08-31 (DESIGN §7): zaproszenie POJAWIA SIĘ, kiedy sekcja skończyła
+     * czytać z dysku i okazało się, że nie ma czego pokazać. Skok w to miejsce czyta się jak
+     * przeskok widoku; dorastanie mówi „przyszedłem stamtąd". Jeden region na zdarzenie. */
+    <div className="enter flex h-full flex-col items-center justify-center gap-[11px] px-5 py-[70px] text-center">
       {/* `aria-hidden`, bo czytnik ekranu ma przeczytać zdanie, a nie nazwę znaku romb. Ramka
-          przerywana mówi „tu będzie treść, której jeszcze nie ma" — i to jest cały jej sens. */}
-      <span
-        aria-hidden
-        className="flex size-10 items-center justify-center rounded-md border border-dashed border-line-strong text-muted"
-      >
+          przerywana mówi „tu będzie treść, której jeszcze nie ma" — i to jest cały jej sens.
+          Kształt bierze `.mark` z warstwy prymitywów; `rounded-md` obok niego to dług wyroczni
+          opisany nad tą funkcją, a nie druga decyzja o rogu. */}
+      <span aria-hidden className="mark rounded-md">
         ◇
       </span>
       <p data-empty className="text-heading text-ink">
         {children}
       </p>
       {/* `max-w-[44ch]` z makiety: instrukcja dłuższa niż 44 znaki w wierszu przestaje się
-          czytać jak jedno zdanie i zaczyna jak akapit polityki (DESIGN §6). */}
-      {hint === undefined ? null : <p className="max-w-[44ch] text-note text-muted">{hint}</p>}
+          czytać jak jedno zdanie i zaczyna jak akapit polityki (DESIGN §6). Stopień i barwa
+          idą z `.lead` — to jest dokładnie ta rola: zdanie drugoplanowe pod zaproszeniem. */}
+      {hint === undefined ? null : <p className="lead max-w-[44ch]">{hint}</p>}
       {/* ZNACZNIK PRZYCISKU NAZYWA SIĘ `data-invite`, NIE `data-empty-action`. Zmierzone
           2026-08-18: dwa kryteria z T-25 liczą wystąpienia NAPISU `data-empty` w markupie
           i wymagają dokładnie jednego, a `data-empty-action` zawiera ten napis w sobie — więc
           każdy ekran, który poda akcję, zapalałby je na czerwono, choć oznaczony element byłby
           jeden. Nazwa bez wspólnego prefiksu to jedna linia, a tamta pułapka nie ma dna. */}
       {action === undefined ? null : (
-        <button type="button" data-invite className={PRIMARY} onClick={action.onClick}>
+        <button
+          type="button"
+          data-invite
+          className="btn-primary rounded-sm"
+          onClick={action.onClick}
+        >
           {action.label}
         </button>
       )}

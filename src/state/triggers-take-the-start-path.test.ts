@@ -57,10 +57,18 @@ const TASK = 'LIN-42: Fix the timeout handoff\n\nThe completed analysis must rea
  * „no checks configured" — a to jest wprost wymóg decyzji D7. Oczekiwana wartość musi więc
  * niesć to, co niesie `choices.ts`; wcześniej nie niosła i test padał na integracji,
  * choć gałąź była zielona osobno. */
+/* 2026-08-31, TA SAMA HISTORIA CO WYŻEJ, DRUGI RAZ. `choices.ts` przewozi odtąd także POZYCJĘ
+ * kafelka i strzałki „po" — bez nich widok biegu musiałby kształt pracy wymyślić, czyli
+ * narysować relacje, których w danych nie ma (niezmiennik 17). Oczekiwana wartość znów musi
+ * nieść to, co niesie `choices.ts`, i znów jest to jedyna zmiana w tym pliku: żadna asercja
+ * nie została ruszona. `links: []` jest tu tym, co stoi w `LISTED` niżej. */
 const CHOICE: Choice = {
   path: 'analysis.json',
   name: 'Analysis',
-  steps: [{ kind: 'checkpoint', id: 'analyse', name: 'Analysis', state: 'pending' }],
+  steps: [
+    { kind: 'checkpoint', id: 'analyse', name: 'Analysis', state: 'pending', at: { x: 0, y: 0 } },
+  ],
+  links: [],
 };
 
 const LISTED: Listed = {

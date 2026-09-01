@@ -16,6 +16,14 @@
  * dotyczy, i uczy człowieka przewijać wzrokiem uwagi, bo żadna nic nie znaczy. Rozróżniają to
  * trzy asercje negatywne: dwie pozostałe pozycje diala i drugi vendor.
  *
+ * # Gdzie stoi ta kontrolka — 2026-08-31
+ *
+ * Wiersz `Can it reach the web` przeprowadził się spod `More settings` MIĘDZY WIDOCZNE: to jest
+ * pytanie o uprawnienie, tej samej rangi co dial plikowy nad nim, a uprawnienie schowane pod
+ * przyciskiem „więcej ustawień" jest uprawnieniem, którego się nie widzi. Kryterium jedzie za
+ * nim i od dziś sądzi CAŁY formularz — czyli powierzchnię, na którą człowiek naprawdę patrzy
+ * (niezmiennik 29) — zamiast jednego rozwinięcia z osobna.
+ *
  * # Druga słaba wersja: `if (vendor === 'codex')` w komponencie
  *
  * Przechodzi każdy test o markupie i jest dokładnie tym, jak w repo źródłowym po cichu umarło
@@ -26,8 +34,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Agent, FileAccess, Vendor } from '../../state/agents';
+import { AgentForm } from './agent-form';
 import { webIsOutOfReach } from './capabilities';
-import { MoreSettings } from './more-settings';
 
 /** Zdanie odpowiada na jedyne pytanie, które w tym miejscu pada: „to dostanę czy nie dostanę". */
 const SENTENCE =
@@ -58,7 +66,13 @@ function noop(): void {
 
 function markupFor(runsWith: Vendor, fileAccess: FileAccess, reachesTheWeb: boolean): string {
   return renderToStaticMarkup(
-    <MoreSettings value={{ ...FORGE, runsWith, fileAccess, reachesTheWeb }} onChange={noop} />,
+    <AgentForm
+      value={{ ...FORGE, runsWith, fileAccess, reachesTheWeb }}
+      expanded={false}
+      onChange={noop}
+      onToggleMore={noop}
+      onSave={noop}
+    />,
   );
 }
 

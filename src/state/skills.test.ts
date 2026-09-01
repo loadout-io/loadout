@@ -30,6 +30,21 @@ vi.mock('../sections/skills/io', () => ({
   remove: vi.fn(),
 }));
 
+/** Miejsce, które ekran nazywa na przycisku obok pytania — jedno z dwóch, jakie zna granica. */
+const ON_THIS_MACHINE = 'everywhere' as const;
+
+/**
+ * Droga, którą przechodzi człowiek: naciska „Remove", czyta pytanie, wskazuje miejsce.
+ *
+ * Napisana raz, bo trzy przypadki niżej różnią się odpowiedzią dysku, a nie drogą. Pominięcie
+ * pierwszego kroku jest tu OSOBNYM kryterium i mieszka w
+ * `src/sections/skills/remove-asks-first.test.tsx`, razem ze zdaniem, które człowiek czyta.
+ */
+async function takeItAway(name: string): Promise<void> {
+  useSkills.getState().askToRemove(name);
+  await useSkills.getState().remove(ON_THIS_MACHINE);
+}
+
 const readLink = vi.mocked(io.readLink);
 const install = vi.mocked(io.install);
 const listSkills = vi.mocked(io.listSkills);
@@ -204,6 +219,15 @@ describe('a skill from a link waits until a person has read what blocks it', () 
  * po lokalnym odfiltrowaniu wygląda identycznie jak sukces. Odróżnia je trzecia asercja:
  * po udanym usunięciu lista ma pochodzić z `listSkills`, czyli z dysku, nawet gdy dysk mówi
  * coś innego, niż magazyn się spodziewał.
+ *
+ * 2026-08-31 — WOŁANIE ZMIENIŁO KSZTAŁT, BO ZMIENIŁA SIĘ ZASADA. Do tego dnia `remove(name)`
+ * brało miejsce z `get().landing`, czyli z grupy radiowej renderowanej WYŁĄCZNIE w karcie
+ * czekającego importu: bez importu tej kontrolki na ekranie nie było, a `fs::remove_dir_all`
+ * po drugiej stronie granicy i tak gdzieś uderzał. Dziś nazwę niesie stojące PYTANIE
+ * (`askToRemove`), a miejsce przyjeżdża z przycisku, który człowiek nacisnął. Zdanie
+ * „z wyborem stojącym nad kartą" w komunikacie asercji niżej opisywało dokładnie tę wadę
+ * i musiało zniknąć razem z nią. Ekran, na którym to pytanie stoi i nazywa umiejętność po
+ * imieniu, sądzi `src/sections/skills/remove-asks-first.test.tsx` (niezmiennik 29).
  */
 describe('a skill can be taken back out of the folders the agent apps read', () => {
   it('asks Rust by name and then rereads the folders instead of trusting itself', async () => {
@@ -220,16 +244,16 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
       { name: 'rust-tauri', fromTheInternet: false, summary: '' },
     ]);
 
-    await useSkills.getState().remove('pdf');
+    await takeItAway('pdf');
 
     expect(
       removeFromDisk.mock.calls,
-      'exactly once, with the name and with the choice standing above the card. The folder ' +
-        'names are still counted on the Rust side and only there, so that stays the one answer ' +
-        'to where this lives; what the window hands over is which PROJECT, the same value ' +
-        'starting a run already takes. Empty means no project is open, and Rust decides what ' +
-        'that means — the list shows the home folders and saving into a project refuses',
-    ).toEqual([['pdf', 'everywhere', null]]);
+      'exactly once, with the name the question named and the place the pressed control named. ' +
+        'The folder names are still counted on the Rust side and only there, so that stays the ' +
+        'one answer to where this lives; what the window hands over is which PROJECT, the same ' +
+        'value starting a run already takes. Empty means no project is open, and Rust decides ' +
+        'what that means — the list shows the home folders and saving into a project refuses',
+    ).toEqual([['pdf', ON_THIS_MACHINE, null]]);
     expect(
       listSkills,
       'and then the folders are read again. Removing writes to two places at once, so the only ' +
@@ -248,7 +272,7 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
     });
     listSkills.mockResolvedValue([]);
 
-    await useSkills.getState().remove('pdf');
+    await takeItAway('pdf');
 
     expect(useSkills.getState().installed).toEqual([]);
     expect(
@@ -266,7 +290,7 @@ describe('a skill can be taken back out of the folders the agent apps read', () 
      * siedem miejsc w tym repo miało warunek zawsze fałszywy. */
     removeFromDisk.mockRejectedValue('pdf is not in any of the folders Loadout writes to.');
 
-    await useSkills.getState().remove('pdf');
+    await takeItAway('pdf');
 
     expect(
       useSkills.getState().message,

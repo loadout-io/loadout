@@ -343,12 +343,15 @@ describe('the real Triggers screen explains and controls its library', () => {
     }
     const markup = renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
     const acceptedRow = row(markup, 'assigned-to-me');
-    expect(directTextCarriers(acceptedRow)).toHaveLength(4);
-    expect(occurrences(acceptedRow, 'data-trigger-text')).toBe(4);
+    /* PIĘĆ NAPISÓW, NIE CZTERY, od 2026-08-31: zdanie o stanie zeszło z etykiety przycisku
+       „Run again" do własnego napisu obok niego. FAKTÓW wiersz niesie dalej cztery — źródło,
+       warunek, wiersz o workflow i zdanie o stanie; piąty napis jest NAZWĄ CZYNNOŚCI. Sklejone
+       w jeden przycisk kazały czytać stan z żywej kontrolki, której kliknięcie puszcza pracę. */
+    expect(directTextCarriers(acceptedRow)).toHaveLength(5);
+    expect(occurrences(acceptedRow, 'data-trigger-text')).toBe(5);
     expect(acceptedRow).toContain('data-trigger-run-again');
-    expect(acceptedRow).toContain(
-      'Started Analysis in Project at 2026-08-21 02:12:09 UTC. · Run again',
-    );
+    expect(acceptedRow).toContain('>Started Analysis in Project at 2026-08-21 02:12:09 UTC.<');
+    expect(acceptedRow).toContain('>Run again<');
 
     const runAgain = handlers.get('assigned-to-me');
     expect(runAgain, 'the visible row never received the Run again handler').toBeDefined();
@@ -401,11 +404,10 @@ describe('the real Triggers screen explains and controls its library', () => {
 
     const visible = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'edited-after-run');
     expect(visible).toContain('Analysis · Current project · Every minute');
-    expect(visible).toContain(
-      'Started Analysis in Archive project at 2026-08-21 02:12:09 UTC. · Run again',
-    );
+    expect(visible).toContain('>Started Analysis in Archive project at 2026-08-21 02:12:09 UTC.<');
+    expect(visible).toContain('>Run again<');
     expect(visible).toMatch(/data-trigger-status[^>]*title="\/archive-project"/);
-    expect(directTextCarriers(visible)).toHaveLength(4);
+    expect(directTextCarriers(visible)).toHaveLength(5);
     expect(visible).not.toContain('Started Analysis in Current project');
   });
 
@@ -429,9 +431,9 @@ describe('the real Triggers screen explains and controls its library', () => {
       ],
     });
     const retryable = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
-    expect(retryable).toContain('Loadout could not start that trigger.');
     expect(retryable).toContain('data-trigger-run-again');
-    expect(retryable).toContain('Loadout could not start that trigger. · Retry');
+    expect(retryable).toContain('>Loadout could not start that trigger.<');
+    expect(retryable).toContain('>Retry<');
 
     store.setState({
       triggers: [
@@ -481,18 +483,22 @@ describe('the real Triggers screen explains and controls its library', () => {
       renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
       configured.slug,
     );
-    expect(paused).toContain(`${PAUSED} · Retry`);
+    expect(paused).toContain(`>${PAUSED}<`);
+    expect(paused).toContain('>Retry<');
     expect(paused).toContain('data-trigger-run-again');
-    expect(directTextCarriers(paused)).toHaveLength(4);
+    expect(directTextCarriers(paused)).toHaveLength(5);
 
     await handlers.get(configured.slug)?.(configured.slug);
     expect(resumeTrigger).toHaveBeenCalledTimes(1);
     expect(resumeTrigger).toHaveBeenCalledWith(configured.slug);
     expect(retryTrigger).not.toHaveBeenCalled();
     /* Klucz nadal odrzucony: wiersz wraca do tego samego zdania i tej samej kontrolki. */
-    expect(row(renderToStaticMarkup(<TriggersScreen store={store} />), configured.slug)).toContain(
-      `${PAUSED} · Retry`,
+    const stillOnHold = row(
+      renderToStaticMarkup(<TriggersScreen store={store} />),
+      configured.slug,
     );
+    expect(stillOnHold).toContain(`>${PAUSED}<`);
+    expect(stillOnHold).toContain('>Retry<');
   });
 
   it('says a workflow that never starts gave up, and keeps the one way back', async () => {
@@ -542,9 +548,10 @@ describe('the real Triggers screen explains and controls its library', () => {
       renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
       configured.slug,
     );
-    expect(gaveUp).toContain(`${START_REFUSED} · Retry`);
+    expect(gaveUp).toContain(`>${START_REFUSED}<`);
+    expect(gaveUp).toContain('>Retry<');
     expect(gaveUp).toContain('data-trigger-run-again');
-    expect(directTextCarriers(gaveUp)).toHaveLength(4);
+    expect(directTextCarriers(gaveUp)).toHaveLength(5);
     expect(
       launchRun,
       'a trigger on hold started its run from the window anyway',
@@ -554,9 +561,12 @@ describe('the real Triggers screen explains and controls its library', () => {
     expect(resumeTrigger).toHaveBeenCalledWith(configured.slug);
     expect(retryTrigger).not.toHaveBeenCalled();
     expect(launchRun).not.toHaveBeenCalled();
-    expect(row(renderToStaticMarkup(<TriggersScreen store={store} />), configured.slug)).toContain(
-      `${START_REFUSED} · Retry`,
+    const stillGivenUp = row(
+      renderToStaticMarkup(<TriggersScreen store={store} />),
+      configured.slug,
     );
+    expect(stillGivenUp).toContain(`>${START_REFUSED}<`);
+    expect(stillGivenUp).toContain('>Retry<');
   });
 
   it('keeps Run again visible when Rust says the accepted run is still active', async () => {
@@ -596,9 +606,9 @@ describe('the real Triggers screen explains and controls its library', () => {
     expect(runAgain, 'the accepted row never received the Run again handler').toBeDefined();
     await runAgain?.('assigned-to-me');
     const visible = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
-    expect(visible).toContain(refusal);
     expect(visible).toContain('data-trigger-run-again');
-    expect(visible).toContain(`${refusal} · Run again`);
+    expect(visible).toContain(`>${refusal}<`);
+    expect(visible).toContain('>Run again<');
   });
 
   it('uses the visible toggle handler and changes state only after disk confirmation', async () => {

@@ -55,8 +55,14 @@ export interface TabProps {
  * więc karta wygląda jak wysunięta ku widzowi), wagą 700 i AKCENTEM OD GÓRY (`box-shadow:
  * inset 0 2px var(--accent)`). Do 2026-08-18 była to jedna rzecz — `bg-raised` — czyli różnica
  * mniejsza niż między dwoma sąsiednimi powierzchniami motywu. */
+/* MYJKA POD KURSOREM, dopisana 2026-08-31. Karta w tle nie odpowiadala na najechanie ani
+ * jednym pikselem, wiec az do klikniecia nic nie mowilo, ze da sie ja kliknac. `--hover` jest
+ * tym samym podswietleniem, ktore niosa prymitywy `.btn` i `.row`; karta nie bierze `.row`
+ * w calosci, bo `.row[aria-current]` przemalowalaby karte na wierzchu na `--raised`, a ona
+ * ma tam wlasne trzy roznice (`ON_TOP`). */
 const TAB =
   'flex h-full items-center gap-2 pr-1 pl-[13px] font-mono text-mono text-muted' +
+  ' transition-colors hover:bg-hover hover:text-ink' +
   ' aria-[current=true]:text-ink aria-[current=true]:text-mono-strong';
 
 /* Tło i akcent siedzą na OTOCZCE, nie na przycisku wyboru, bo karta na wierzchu to cały jej
@@ -112,7 +118,10 @@ export function Tab({ workspace, active, onSelect, onClose }: TabProps): ReactEl
         /* Nazwa folderu w etykiecie, bo `×` bez niej czyta się z czytnika ekranu jako „close"
          * przy każdej z trzech kart tak samo. */
         aria-label={'Close ' + workspace.name}
-        className="h-full px-1 font-mono text-mono text-muted"
+        /* `.btn-bare` z `theme.css`: znak bez obrysu i bez wypelnienia, az do najechania —
+           obrys wokol jednego glifu rysuje pudelko, a nie przycisk. Wysokosc bierze pasek
+           (`h-full`), bo karta ma siegac obu jego krawedzi. */
+        className="btn-bare h-full px-1"
       >
         ×
       </button>

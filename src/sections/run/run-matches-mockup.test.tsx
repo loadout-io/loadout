@@ -142,15 +142,17 @@ describe('the run screen is the layout the mockup draws, read from the mockup', 
 
   it('renders the stream column before the agents list, so it takes the first column', () => {
     const streamAt = markup.indexOf('data-stream-column');
-    const railAt = markup.indexOf('data-rail');
+    const planAt = markup.indexOf('data-plan-column');
 
     expect(streamAt, 'the run screen renders no stream column at all').toBeGreaterThanOrEqual(0);
-    expect(railAt, 'the run screen renders no agents list at all').toBeGreaterThanOrEqual(0);
+    expect(planAt, 'the run screen renders no picture of the plan at all').toBeGreaterThanOrEqual(
+      0,
+    );
     expect(
       streamAt,
       'the stream column has to come first in the markup, because in a two-column grid the ' +
         'first child takes the first column. Rendered the other way round the agents list gets ' +
         'the free space and the stream gets 268 px — with the grid declaration still correct.',
-    ).toBeLessThan(railAt);
+    ).toBeLessThan(planAt);
   });
 });

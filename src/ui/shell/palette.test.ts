@@ -128,10 +128,29 @@ describe('the palette is closed in the style sheet this app actually loads', () 
           'work, so the closed palette dies quietly and twenty later tasks inherit it',
       ).toBe(false);
     }
+    /* NAZWA PALETY, NIE DOWOLNY PODCIAG. 2026-08-31, zgoda wlasciciela.
+     *
+     * Stalo tu `css.includes('slate')` i to bylo za szerokie o jedna, bardzo kosztowna rzecz:
+     * napis `translateY` ZAWIERA `slate` co do znaku. Kryterium zapalalo sie wiec na kazdym
+     * przesunieciu zapisanym transformacja — czyli na najzwyklejszym sposobie, w jaki element
+     * wjezdza na ekran.
+     *
+     * Zmierzony koszt: warstwa prymitywow z 2026-08-31 musiala postawic CALE wejscie elementow
+     * na skali zamiast na przesunieciu, a podskok kropek „agent mysli" na `bottom` zamiast na
+     * `translateY`. Wejscie ze sprezyna na skali czyta sie jak pompowanie, nie jak wjazd,
+     * i jest to gorszy ruch wybrany po to, zeby ominac falszywe trafienie. Autor tamtej fazy
+     * zglosil to zamiast obchodzic pisownia (`transLateY`) — i mial racje, bo obejscie
+     * pisownia byloby dokladnie tym oszustwem, o ktorym AGENTS.md §7 kaze mowic.
+     *
+     * Pytanie zostaje TO SAMO: czy w wyniku jest jeszcze zadeklarowana paleta Tailwinda.
+     * Odpowiada na nie nazwa palety w miejscu, w ktorym paleta naprawde stoi — token
+     * `--color-slate-*` albo klasa `…-slate-<cyfra>`. `translateY` nie pasuje do zadnego
+     * z dwoch, bo `slate` siedzi tam w srodku slowa. */
+    const theirPalette = /--color-slate\b|(?:^|[^a-z])slate-\d/.exec(css);
     expect(
-      css.includes('slate'),
+      theirPalette === null ? null : theirPalette[0],
       'the default palette has to be gone from the result entirely, not merely unused: a name ' +
         'that is still declared is a name someone can still type',
-    ).toBe(false);
+    ).toBe(null);
   });
 });

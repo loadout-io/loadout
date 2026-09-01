@@ -53,10 +53,10 @@ const WORKFLOW = {
 
 const RUN = 'main[data-section="run"]';
 const STRIP = '[data-strip]';
-const BLOCKS = '[data-blocks]';
+const BLOCKS = '[data-step-list]';
 const WORKFLOW_CONTROLS = '[data-workflow-controls]';
 const WORK = '[data-work]';
-const RAIL = '[data-rail]';
+const RAIL = '[data-plan-column]';
 const COMMAND = 'input[aria-label="Command line"]';
 const START = 'button[data-workflow-run="manual"]';
 const LEAD = `select[aria-label="${LEAD_LABEL}"]`;
@@ -128,7 +128,7 @@ async function markStepRunning(app: RunningApp, call: TauriCall): Promise<void> 
     { slot: `_${id}`, stepId: STEPS[RUNNING_AT]?.id ?? '', agent: AGENT.name },
   );
 
-  await app.page.locator(`${BLOCKS} [data-block="now"]`).waitFor({
+  await app.page.locator(`${BLOCKS} [data-step="${STEPS[RUNNING_AT]?.id ?? ''}"]`).waitFor({
     state: 'visible',
     timeout: FIRST_CALL_LIMIT,
   });
@@ -164,6 +164,8 @@ interface Geometry {
   readonly blockTitles: readonly string[];
   readonly trackClientWidth: number;
   readonly trackScrollWidth: number;
+  readonly trackClientHeight: number;
+  readonly trackScrollHeight: number;
   readonly trackScrollBehavior: string;
 }
 
@@ -176,6 +178,7 @@ async function geometry(app: RunningApp): Promise<Geometry> {
       workSelector,
       railSelector,
       commandSelector,
+      runningStepId,
     }) => {
       function required(selector: string): HTMLElement {
         const found = document.querySelector<HTMLElement>(selector);
@@ -200,8 +203,8 @@ async function geometry(app: RunningApp): Promise<Geometry> {
       const work = required(workSelector);
       const rail = required(railSelector);
       const command = required(commandSelector);
-      const running = required(`${blocksSelector} [data-block="now"]`);
-      const blocks = Array.from(track.querySelectorAll<HTMLElement>(':scope > span'));
+      const running = required(`${blocksSelector} [data-step="${runningStepId}"]`);
+      const blocks = Array.from(track.querySelectorAll<HTMLElement>(':scope > [data-step]'));
 
       return {
         viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -220,12 +223,16 @@ async function geometry(app: RunningApp): Promise<Geometry> {
         track: rect(track),
         running: rect(running),
         blockCount: blocks.length,
-        blockNames: blocks.map((block) => block.innerText.trim()),
+        blockNames: blocks.map(
+          (block) => block.querySelector<HTMLElement>('[title]')?.innerText.trim() ?? '',
+        ),
         blockTitles: blocks.map(
           (block) => block.querySelector<HTMLElement>('[title]')?.getAttribute('title') ?? '',
         ),
         trackClientWidth: track.clientWidth,
         trackScrollWidth: track.scrollWidth,
+        trackClientHeight: track.clientHeight,
+        trackScrollHeight: track.scrollHeight,
         trackScrollBehavior: getComputedStyle(track).scrollBehavior,
       };
     },
@@ -236,6 +243,7 @@ async function geometry(app: RunningApp): Promise<Geometry> {
       workSelector: WORK,
       railSelector: RAIL,
       commandSelector: COMMAND,
+      runningStepId: STEPS[RUNNING_AT]?.id ?? '',
     },
   );
 }
@@ -261,14 +269,14 @@ function expectContained(measured: Geometry, label: string): void {
     measured.stripClientWidth + slack,
   );
 
-  expect(measured.rail.width, `${label}: the Agents rail collapsed`).toBeGreaterThan(0);
+  expect(measured.rail.width, `${label}: the plan column collapsed`).toBeGreaterThan(0);
   expect(
     measured.rail.left,
-    `${label}: the Agents rail escaped left of Run`,
+    `${label}: the plan column escaped left of Run`,
   ).toBeGreaterThanOrEqual(measured.main.left - slack);
   expect(
     measured.rail.right,
-    `${label}: the Agents rail escaped the visible Run edge`,
+    `${label}: the plan column escaped the visible Run edge`,
   ).toBeLessThanOrEqual(Math.min(measured.main.right, measured.viewport.width) + slack);
 
   expect(measured.command.width, `${label}: the Command line collapsed`).toBeGreaterThan(0);
@@ -293,22 +301,30 @@ function expectContained(measured: Geometry, label: string): void {
   expect(measured.blockTitles, `${label}: full step titles changed or moved`).toEqual(
     expectedStepNames,
   );
+  /* 2026-08-31 — LISTA PRZEWIJA SIĘ TERAZ W PIONIE, nie w poziomie: torek bloków w pasku zszedł
+     razem z resztą drugiego rysunku planu, a kroki stoją w kolumnie pracy jedne pod drugimi.
+     Pytanie zostało to samo — trzydzieści dwa kroki mają się PRZEWIJAĆ, a nie zostać przycięte
+     — zmieniła się oś. */
+  expect(
+    measured.trackScrollHeight,
+    `${label}: the long plan was clipped instead of scrollable`,
+  ).toBeGreaterThan(measured.trackClientHeight);
   expect(
     measured.trackScrollWidth,
-    `${label}: the long graph was clipped instead of scrollable`,
-  ).toBeGreaterThan(measured.trackClientWidth);
+    `${label}: the plan column widened instead of keeping its cards inside`,
+  ).toBeLessThanOrEqual(measured.trackClientWidth + slack);
   expect(
     measured.trackScrollBehavior,
     `${label}: following the running step must not animate`,
   ).toBe('auto');
   expect(
-    measured.running.left,
-    `${label}: the running block stayed left of the track`,
-  ).toBeGreaterThanOrEqual(measured.track.left - slack);
+    measured.running.top,
+    `${label}: the running step stayed above the visible part of the plan column`,
+  ).toBeGreaterThanOrEqual(measured.track.top - slack);
   expect(
-    measured.running.right,
-    `${label}: the running block stayed right of the track`,
-  ).toBeLessThanOrEqual(measured.track.right + slack);
+    measured.running.bottom,
+    `${label}: the running step stayed below the visible part of the plan column`,
+  ).toBeLessThanOrEqual(measured.track.bottom + slack);
 }
 
 /** Playwright's trial click proves actionability without changing the running scene. */
@@ -406,7 +422,7 @@ afterAll(async () => {
 }, 30_000);
 
 describe('a long workflow stays inside the real Run viewport', () => {
-  it('keeps the rail, command row, running step and strip controls reachable at both supported sizes', async () => {
+  it('keeps the plan column, command row, running step and strip controls reachable at both supported sizes', async () => {
     const app = await openApp({ replies: scene() });
     try {
       await app.page.setViewportSize({ width: 1100, height: 700 });

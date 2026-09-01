@@ -359,6 +359,11 @@ fn typed_items(
                     status,
                     status_message,
                     generated_hash,
+                    /* PRZEGLĄD TEGO PLIKU, nie przegląd rzeczy o tej nazwie (2026-08-31).
+                     * `skill` wyżej szuka po NAZWIE, więc dla kopii, której adapter odmówił,
+                     * wskazuje cudzy — czysty — egzemplarz. Klucz `file.item.id` jest tożsamy
+                     * z plikiem i tylko dlatego wiersz może potem wziąć gorszy z dwóch. */
+                    reviewed: adapted.skill_reviews.get(&file.item.id).cloned(),
                 },
             )
         })
@@ -377,6 +382,21 @@ fn status_of(compatibility: Compatibility) -> ImportStatus {
         Compatibility::Exact | Compatibility::Adjusted => ImportStatus::Ready,
         Compatibility::NeedsChoice => ImportStatus::NeedsChoice,
         Compatibility::Unsupported => ImportStatus::Unsupported,
+    }
+}
+
+/// Jak ciężki jest ten przegląd dla człowieka. Brak przeglądu jest najlżejszy i **nigdy** nie
+/// wypiera przeglądu, który był: „nikt nie patrzył" nie jest lepszą wiadomością niż „czysto",
+/// ale też nie jest gorszą — a wypieranie znalezisk pustką jest tą samą wadą, przed którą stoi
+/// [`crate::skills::ingest::DEEP_SCAN_UNAVAILABLE`].
+fn review_weight(reviewed: Option<&crate::commands::skills::ReviewWire>) -> u8 {
+    match reviewed.map(|reviewed| reviewed.verdict.as_str()) {
+        None => 0,
+        Some("clean") => 1,
+        Some("concerns") => 2,
+        // Nieznane słowo czyta się jak najgorsze: ten sam kierunek błędu, co w `scope_from_word`
+        // — nigdy łagodniej, niż napisano.
+        Some(_) => 3,
     }
 }
 
@@ -446,6 +466,15 @@ fn merge_same_thing(named: Vec<(String, ImportItem)>) -> Vec<ImportItem> {
         }
         if kept.generated_hash.is_none() {
             kept.generated_hash = item.generated_hash;
+        }
+        /* GORSZY Z DWÓCH PRZEGLĄDÓW, tą samą zasadą, co status niżej (2026-08-31).
+         *
+         * Wiersz nosi NAJCIĘŻSZY status spośród swoich kopii, więc przegląd musi iść tą samą
+         * drogą: inaczej scalony wiersz stałby na ekranie z zatrzymującym statusem i czystą
+         * listą znalezisk obok. To jest ten sam kierunek błędu, co przy `weight` — scalenie
+         * nie ma prawa połknąć niczego, co człowiek musiałby przeczytać. */
+        if review_weight(kept.reviewed.as_ref()) < review_weight(item.reviewed.as_ref()) {
+            kept.reviewed = item.reviewed;
         }
         if weight(item.status) > weight(kept.status) {
             kept.status = item.status;

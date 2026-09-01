@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Note } from '../../state/memory';
 import { useMemory } from '../../state/memory';
-import MemoryScreen from './index';
+import NotesShelf from './shelf';
 
 const OPAQUE_ORIGIN = '019b0131-aaaa-7bbb-8ccc-0123456789ab';
 
@@ -106,7 +106,7 @@ function zone(markup: string, id: string): string {
 }
 
 function renderMemory(): string {
-  return renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+  return renderToStaticMarkup(<NotesShelf store={useMemory} />);
 }
 
 beforeEach(() => {
@@ -120,7 +120,7 @@ beforeEach(() => {
 });
 
 describe('the current Memory screen tells the truth without guessing from UUID shape', () => {
-  it('control: mounts every fixture through the real MemoryScreen and production NoteRow', () => {
+  it('control: mounts every fixture through the real notes shelf and production NoteRow', () => {
     const markup = renderMemory();
 
     for (const one of NOTES) {

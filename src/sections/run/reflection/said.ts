@@ -10,9 +10,9 @@
  * CZTERY STANY I CZTERY ZDANIA, bo to są cztery różne rzeczy do zrobienia:
  *
  *   1. opis biegu nic o tym nie mówi   — bieg zapisany przed tym polem; nie wiemy i nie zgadujemy,
- *   2. tura nie poszła                 — nikt nie pytał, więc nie ma czego szukać w Memory,
+ *   2. tura nie poszła                 — nikt nie pytał, więc nie ma czego szukać w Knowledge,
  *   3. tura poszła i nic nie zostawiła — pytaliśmy i odpowiedź brzmi „nic", i to jest odpowiedź,
- *   4. tura poszła i zostawiła notatki — jest ich N i czekają w Memory.
+ *   4. tura poszła i zostawiła notatki — jest ich N i czekają w Knowledge.
  *
  * Zlanie 1 z 2 jest tą wadą, dla której to zadanie powstało: „nie wiadomo" przedstawione jako
  * „nie robiliśmy tego" jest zmyśleniem (niezmiennik 17).
@@ -82,6 +82,6 @@ export function reflectionText(reflection: PastReflection | null): string {
   return (
     'Loadout looked back at this run and kept ' +
     notesText(reflection.kept) +
-    ' for you to approve in Memory.'
+    ' for you to approve in Knowledge.'
   );
 }

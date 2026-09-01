@@ -60,6 +60,26 @@ export type Landing = 'this-project' | 'everywhere';
 /** Trzy stany importu. Nie ma czwartego i nie ma „prawie czysto". */
 export type Verdict = 'clean' | 'concerns' | 'blocked';
 
+/**
+ * Co ta sekcja wie o katalogach agentów. TRZY STANY, NIE DWA.
+ *
+ * 2026-08-31 — do tego dnia były dwa i jeden z nich kłamał przy każdym starcie. Magazyn
+ * startował z `installed: []`, a odczyt biegnie dopiero w efekcie po zamontowaniu ekranu —
+ * więc pierwszą rzeczą, jaką człowiek z dziesięcioma umiejętnościami na dysku czytał o swojej
+ * maszynie, było „nie ma tu żadnej". „Nikt jeszcze nie zaglądał" i „zajrzeliśmy, nie ma nic"
+ * to dwa różne zdania i dopiero drugie wolno postawić na ekranie.
+ *
+ * Trzecim jest ODMOWA i ona też nie jest pustką: katalog, którego nie umiemy przeczytać, może
+ * być pełny. Dopóki stany były dwa, ekran pokazywał zdanie o awarii i zaproszenie „nic tu
+ * jeszcze nie ma" JEDNOCZEŚNIE — a jedno z nich musiało być nieprawdą.
+ *
+ * `reading` jest wartością POCZĄTKOWĄ, nie tylko chwilą po wywołaniu `load()`: przed pierwszym
+ * odczytem sekcja nie wie o katalogach nic, a to jest dokładnie ten stan, który `reading`
+ * nazywa. Magazyn bez ani jednego wołającego `load()` zostałby na nim na zawsze i tak ma być —
+ * jedyny ekran, który go czyta, pyta o katalogi przy każdym zamontowaniu.
+ */
+export type Folders = 'reading' | 'read' | 'unreadable';
+
 /** Jedno znalezisko: która reguła, jak ciężko, w której linii i co dokładnie tam stało. */
 export interface Finding {
   /**
@@ -176,6 +196,15 @@ export interface SkillsState {
   message: string | null;
   installed: InstalledSkill[];
   /**
+   * Co wiemy o katalogach agentów — jedno miejsce na ten fakt (niezmiennik 13).
+   *
+   * Nie jest drugą kopią [`SkillsState.message`]: tamto niesie ZDANIE, którym odmówiła
+   * któraś z sześciu czynności tej sekcji, a to odpowiada na pytanie „czy wolno powiedzieć,
+   * że katalogi są puste". Zdanie o odmowie odczytu bez tego pola nie da się odróżnić od
+   * zdania o odmowie zapisu, a ekran pustej sekcji zależy wyłącznie od pierwszego.
+   */
+  folders: Folders;
+  /**
    * Gdzie ma wylądować to, co człowiek doda — jego wybór, jedno miejsce na ten fakt.
    *
    * Stąd bierze się ZARAZEM zaznaczona pozycja wyboru, ZARAZEM zdanie o miejscu na ekranie
@@ -281,8 +310,30 @@ export interface SkillsState {
    * „Add" zostawało w `~/.claude/skills` na stałe i wchodziło do każdego następnego
    * uruchomienia Claude Code. Droga powrotna nie jest wygodą, jest warunkiem, żeby wolno było
    * w ogóle pisać w tamte katalogi.
+   *
+   * BIERZE MIEJSCE, A NIE NAZWĘ, i to jest cała różnica po 2026-08-31. Nazwę niesie stojące
+   * pytanie ([`SkillsState.removing`]) — bez niego nie ma czego kasować i ta funkcja nic nie
+   * robi. Miejsce przyjeżdża z kontrolki, którą człowiek nacisnął, więc kasowanie nie ma jak
+   * uderzyć tam, gdzie ekran nie napisał, że uderzy.
    */
-  remove: (name: string) => Promise<void>;
+  remove: (from: Landing) => Promise<void>;
+  /**
+   * Nazwa umiejętności, o którą ekran właśnie pyta „na pewno?". `null` znaczy, że o żadną.
+   *
+   * 2026-08-31 — DO TEGO DNIA PYTANIA NIE BYŁO WCALE. Jedno naciśnięcie „Remove" jechało
+   * prosto w `fs::remove_dir_all` po drugiej stronie granicy (`src-tauri/src/skills/place.rs`):
+   * bez potwierdzenia, bez cofnięcia i bez ani jednego zdania o tym, co dokładnie zniknie.
+   * Sekcja Agenci pyta dwustopniowo od T-39 i to jest ten sam wzorzec.
+   *
+   * NAZWA, NIE FLAGA. Pytanie stoi w wierszu TEJ umiejętności, więc jego tożsamością jest to,
+   * o którą pyta; flaga „pytamy" obok osobnego pola z nazwą to dwa miejsca na jedną odpowiedź
+   * i pierwsza okazja, żeby zapytać o jedną, a skasować drugą.
+   */
+  removing: string | null;
+  /** Człowiek nacisnął „Remove" przy tej umiejętności — pytanie wchodzi, pliki zostają. */
+  askToRemove: (name: string) => void;
+  /** Człowiek odpowiedział „zostaw" — pytanie schodzi, pliki zostają. */
+  keepIt: () => void;
 }
 
 /** Znaleziska, które zatrzymują instalację i których człowiek jeszcze nie otworzył. */
@@ -361,12 +412,19 @@ export const useSkills = create<SkillsState>()((set, get) => ({
   chosenAgent: '',
   writing: false,
   landing: 'everywhere',
+  folders: 'reading',
+  removing: null,
 
   chooseLanding: (landing: Landing) => {
     set({ landing });
   },
 
   load: async () => {
+    /* „CZYTAM" ZAPALA SIĘ PRZED PYTANIEM, nie po nim. Ustawione po `await` nie zapaliłoby się
+     * ani razu: między jednym a drugim nie ma renderu, a to właśnie ta chwila jest cała.
+     * Drugie wejście w sekcję przechodzi tędy tak samo — lista zostaje na ekranie, dopóki
+     * odczyt nie wróci, bo stan „czytam" rozstrzyga wyłącznie o PUSTYM ekranie. */
+    set({ folders: 'reading' });
     try {
       /* PODMIANA CAŁEJ LISTY, nigdy dopisanie: drugie wejście w sekcję pokazałoby wtedy każdą
        * umiejętność dwa razy, a licznik nad sekcją policzyłby dwa razy te same pliki.
@@ -378,13 +436,13 @@ export const useSkills = create<SkillsState>()((set, get) => ({
        * pojawiłaby się na ekranie — czyli człowiek by jej nie zobaczył i nie miałby jak jej
        * zabrać, choć leży w żywej konfiguracji jego narzędzi agentowych. Katalogi wylicza dalej
        * Rust i tylko Rust (`skills::place::destinations`, niezmiennik 23). */
-      set({ installed: await listSkills(whereWeWork()), message: null });
+      set({ installed: await listSkills(whereWeWork()), message: null, folders: 'read' });
     } catch (error) {
       /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
        * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
        * z poprzedniego odczytu, nie jest tym, co leży w katalogach agentów, a tylko o tym
        * drugim ta lista mówi (niezmiennik 4). */
-      set({ installed: [], message: why(error, COULD_NOT_READ) });
+      set({ installed: [], message: why(error, COULD_NOT_READ), folders: 'unreadable' });
     }
   },
 
@@ -609,28 +667,70 @@ export const useSkills = create<SkillsState>()((set, get) => ({
      * mogła przeżyć, przyjeżdża odmową z `askAnAgent` (niezmiennik 6). */
   },
 
-  remove: async (name: string) => {
+  askToRemove: (name: string) => {
+    /* SAMO PYTANIE, ani jednego bajtu ruszonego. Naciśnięcie „Remove" przy innym wierszu
+     * przestawia pytanie na tamten wiersz: dwa pytania naraz to dwa miejsca, w których stoi
+     * jedna decyzja (niezmiennik 13), i pierwsza okazja, żeby odpowiedzieć na inne pytanie,
+     * niż się czyta. */
+    set({ removing: name });
+  },
+
+  keepIt: () => {
+    set({ removing: null });
+  },
+
+  remove: async (from: Landing) => {
+    /* ZGODA JEST WARUNKIEM WYWOŁANIA, nie stanem widoku (nagłówek tego pliku). Pytanie, które
+     * nie stoi na ekranie, znaczy, że nikt o nic nie został zapytany — a po drugiej stronie
+     * granicy stoi `fs::remove_dir_all` (`src-tauri/src/skills/place.rs`), bez cofnięcia.
+     * Warunek na przycisku byłby sugestią: zostaje klawiatura, zostaje skrót i zostaje druga
+     * ścieżka w interfejsie.
+     *
+     * Bez zdania z rozmysłu: w tym stanie na ekranie nie ma ani tej kontrolki, ani nazwy,
+     * o której zdanie miałoby mówić. */
+    const name = get().removing;
+    if (name === null) return;
+
     try {
-      /* TEN SAM WYBÓR, CO PRZY ZAPISIE, bo ta sama nazwa w dwóch zakresach to DWIE rzeczy:
-       * `place::remove` zdejmuje wyłącznie kopie z podanego korzenia i zostawia drugą tam,
-       * gdzie jest. Zabranie obu naraz jest inną czynnością, o którą nikt nie prosił — a kopia
-       * zabrana „przy okazji" znika z katalogów, do których zagląda Claude Code tego człowieka,
-       * bez ani jednego zdania na ekranie.
+      /* MIEJSCE PRZYJEŻDŻA Z KONTROLKI, KTÓRĄ CZŁOWIEK NACISNĄŁ, i to jest cała ta poprawka
+       * (zmierzone 2026-08-31).
        *
-       * ZGŁOSZONE, NIE PRZEOCZONE: wiersz listy nie wie, w KTÓRYM korzeniu leży jego plik,
-       * bo `InstalledWire` niesie tylko `name` i `fromTheInternet`, a `list_skills_in` zwija
-       * oba korzenie do jednego zbioru nazw. Dopóki tak jest, „Remove" pyta o zakres wybrany
-       * nad kartą — jedyną odpowiedź, jaka w tym oknie istnieje. Wybór per wiersz wraca w tym
-       * samym commicie, w którym `InstalledWire` dostaje pole per korzeń (ten sam dług, który
-       * nagłówek `src/sections/skills/index.tsx` zgłasza dla znacznika rozmieszczenia). */
-      await removeFromDisk(name, get().landing, whereWeWork());
+       * Do tego dnia stało tu `get().landing` — wybór z grupy radiowej, która renderuje się
+       * WYŁĄCZNIE wewnątrz karty czekającego importu („Available in",
+       * `src/sections/skills/shelf.tsx`). Bez czekającego importu tej kontrolki na ekranie nie
+       * ma wcale, a wartość zostaje ta z ostatniego zapisu: człowiek, który raz dodał
+       * umiejętność „w tym projekcie", od tej chwili każdym „Remove" celował w katalog WEWNĄTRZ
+       * swojego repozytorium, patrząc na wiersz umiejętności leżącej w katalogu domowym.
+       * Ustawienie, którego w chwili decyzji nie widać, nie ma prawa rozstrzygać o kasowaniu.
+       *
+       * TA SAMA NAZWA W DWÓCH ZAKRESACH TO DALEJ DWIE RZECZY: `place::remove` zdejmuje wyłącznie
+       * kopie z podanego korzenia i zostawia drugą tam, gdzie jest. Zabranie obu naraz jest inną
+       * czynnością, o którą nikt nie prosił — więc miejsce jest jedno i nazywa je zdanie
+       * na przycisku, który człowiek nacisnął.
+       *
+       * FOLDER JEDZIE OSOBNO I DALEJ Z JEDNEJ DEFINICJI: „gdzie pracujemy" ma w tym repo jedną
+       * odpowiedź (`whereWeWork`), a odwzorowanie miejsca na korzenie liczy Rust
+       * (`Landing -> Scope`, niezmiennik 23).
+       *
+       * DŁUG, ZGŁOSZONY, NIE PRZEOCZONY: wiersz listy wciąż nie wie, w którym korzeniu leży
+       * jego plik — `InstalledWire` (`src-tauri/src/commands/skills.rs`) niesie `name`,
+       * `fromTheInternet` i `summary`, a `list_skills_in` zwija oba korzenie do jednego zbioru
+       * nazw. Dopóki tak jest, odpowiedź na „skąd kasujemy" musi paść na ekranie, przy tym
+       * wierszu, i pada tam. Kiedy `InstalledWire` dostanie pole per korzeń, pytanie o miejsce
+       * zniknie wszędzie tam, gdzie kopia jest jedna. */
+      await removeFromDisk(name, from, whereWeWork());
     } catch (error) {
       /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
        * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,
-       * a jedno zdanie zapasowe zamienia je w jedną. */
-      set({ message: why(error, COULD_NOT_REMOVE) });
+       * a jedno zdanie zapasowe zamienia je w jedną.
+       *
+       * Pytanie schodzi z ekranu także tutaj: zostawione stojące obok zdania o awarii czyta się
+       * jak drugie zaproszenie do naciśnięcia tego samego, a odpowiedź już padła. */
+      set({ removing: null, message: why(error, COULD_NOT_REMOVE) });
       return;
     }
+
+    set({ removing: null });
 
     /* Lista czytana JESZCZE RAZ Z DYSKU, nigdy odfiltrowana lokalnie.
      *

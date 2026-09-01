@@ -25,7 +25,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { useSkills } from '../../state/skills';
-import SkillsScreen from './index';
+import SkillsShelf from './shelf';
 
 /** Zdanie z `SKILL.md`. Brzmi inaczej niż nazwa, bo o to właśnie pytamy. */
 const SAYS = 'Turns a screenshot into a written description of the layout';
@@ -34,7 +34,7 @@ const TOLD = { name: 'read-a-mockup', fromTheInternet: false, summary: SAYS };
 const SILENT = { name: 'old-helper', fromTheInternet: false, summary: '' };
 
 function markup(): string {
-  return renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+  return renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 }
 
 describe('a skill tile says what the skill is for', () => {

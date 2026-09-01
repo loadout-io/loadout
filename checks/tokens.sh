@@ -89,7 +89,17 @@ for base, dirs, names in os.walk(os.path.join(ROOT, "src")):
                                 % (rel, i, m.group(0)))
             for m in SIZE.finditer(line):
                 val = m.group(0)
-                if re.search(r"\d", val) and "var(" not in val:
+                # UKOSNIKI ZDJETE PRZED TESTEM ZWOLNIENIA. 2026-08-31, zgoda wlasciciela.
+                #
+                # Zwolnienie szuka doslownego `var(`, a wyrazenie regularne w kodzie pisze
+                # `var\(` — z ukosnikiem, bo tak sie ucieka nawias. Podciag `var(` w takim
+                # napisie NIE WYSTEPUJE, wiec zwolnienie sie nie odpalalo i test, ktory czyta
+                # regule z arkusza, byl zielony wylacznie dlatego, ze nie mial w wierszu cyfry.
+                # Zmierzone: ten sam wiersz plus `&& n > 19` dawal czerwien o "literale
+                # rozmiaru" w pliku, ktory zadnego literalu nie zawiera. Cztery takie wiersze
+                # stoja dzis w `src/sections/*.test.tsx` i kazdy byl jedna edycja od falszywej
+                # czerwieni. Zdjecie ukosnikow zrownuje oba zapisy jednej intencji.
+                if re.search(r"\d", val) and "var(" not in val.replace("\\", ""):
                     literals.append("  %s:%d  %s — use --text-* or --radius-sq"
                                     % (rel, i, val.strip()[:60]))
             for m in ARBITRARY.finditer(line):

@@ -58,7 +58,7 @@ import type { Workspace } from '../../state/workspaces';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import { FIRST_INVITE } from '../../ui/shell/workspace-switcher';
 import { ipcSource, windowSideArguments } from '../ipc-signature';
-import SkillsScreen, { WHERE_IT_LANDS } from './index';
+import SkillsShelf, { WHERE_IT_LANDS } from './shelf';
 
 /* Atrapa granicy: rozwiązuje się zawsze i zawsze tą samą wartością. Ta droga nie mierzy
  * odpowiedzi Rusta, tylko to, co w jego stronę pojechało. Żadnego żywego Tauri — kryterium,
@@ -134,7 +134,7 @@ function withoutAWorkspace(): void {
 
 function screenWith(landing: Landing): string {
   useSkills.setState({ landing });
-  return renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+  return renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 }
 
 function occurrences(haystack: string, needle: string): number {

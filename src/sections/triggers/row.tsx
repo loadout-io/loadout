@@ -64,10 +64,29 @@ function sourceName(source: string): string {
   return source.toLowerCase() === 'linear' ? 'Linear' : 'Issue tracker';
 }
 
+/**
+ * Nazwa warunku, którą czyta człowiek — i nigdy pustka.
+ *
+ * 2026-08-31, DWIE WADY NAPRAWIONE JEDNYM KSZTAŁTEM.
+ *
+ * PIERWSZA BYŁA WIDOCZNA. Normalizacja zamieniała myślniki na spacje, a pustkę łapał osobny
+ * warunek `words.length === 0` — liczący długość PO tej zamianie. Warunek zapisany jako `-`
+ * albo `_` schodził więc do pojedynczej SPACJI, miał długość 1, przechodził obok tamtego
+ * warunku i lądował na ekranie jako pusta komórka: wiersz nie mówił wtedy nic o tym, kiedy
+ * ten trigger w ogóle strzela. Przycięcie na KOŃCU normalizacji jest całą naprawą.
+ *
+ * DRUGA BYŁA O JEDEN KROK OD EKRANU. Napis powstawał z `words[0]?.toUpperCase() + words.slice(1)`,
+ * czyli z dodawania czegoś, co MOŻE nie istnieć, do napisu — a `undefined + ''` w JavaScripcie
+ * daje dosłowny napis „undefined". Nie dało się w to wejść wyłącznie dzięki warunkowi stojącemu
+ * OBOK; wystarczyło, żeby ktoś kiedyś przeniósł tamten warunek albo zmienił normalizację, i na
+ * ekranie stanęłoby „undefined". `slice(0, 1)` nie zna wartości nieistniejącej: na pustym napisie
+ * oddaje pusty napis, więc pustka i wielka litera są tu JEDNYM pytaniem, a nie dwoma.
+ */
 function conditionName(condition: string): string {
-  const words = condition.trim().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ');
+  const words = condition.replace(/[-_\s]+/g, ' ').trim();
   if (words.toLowerCase() === 'assigned to me') return 'Assigned to you';
-  return words.length === 0 ? 'No condition saved' : words[0]?.toUpperCase() + words.slice(1);
+  const first = words.slice(0, 1).toUpperCase();
+  return first === '' ? 'No condition saved' : first + words.slice(1);
 }
 
 function cadenceName(minutes: number): string {
@@ -88,12 +107,12 @@ export function TriggerRow({
     return (
       <li
         data-trigger-row={trigger.slug}
-        className="flex flex-col gap-1 border-b border-line px-4 py-3 last:border-b-0"
+        className="stack border-b border-line px-4 py-3 last:border-b-0"
       >
-        <span data-trigger-text className="font-mono text-mono text-muted">
+        <span data-trigger-text className="value">
           {trigger.slug}
         </span>
-        <p data-trigger-text data-trigger-status className="text-body text-attend">
+        <p data-trigger-text data-trigger-status className="lead" data-tone="attend">
           {trigger.problem}
         </p>
       </li>
@@ -133,57 +152,84 @@ export function TriggerRow({
       data-trigger-row={trigger.slug}
       className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 py-3 last:border-b-0"
     >
+      {/* MYJKA POD KURSOREM, bo to jest wiersz listy, a nie napis: cały ten blok otwiera
+          edytor, a do 2026-08-31 nie odpowiadał na najechanie ani jednym pikselem — kontrolka,
+          która nie reaguje na kursor, czyta się jak etykieta (DESIGN §6, cztery stany).
+          `.row` niesie myjkę, wciśnięcie i pierścień skupienia; `p-1 -m-1` daje jej oddech
+          bez przesunięcia czegokolwiek, a `grid` znosi jej `display:flex`, bo trzy kolumny
+          są rozmieszczeniem i należą do miejsca, nie do roli. */}
       <button
         data-trigger-open
         type="button"
         aria-label={`Edit ${trigger.slug}`}
-        className="grid min-w-0 grid-cols-3 items-center gap-3 text-left"
+        className="row -m-1 grid min-w-0 grid-cols-3 gap-3 p-1"
         onClick={() => {
           onOpen(trigger.slug);
         }}
       >
-        <span data-trigger-text className="text-label text-ink">
+        <span data-trigger-text className="label text-ink">
           {sourceName(trigger.source)}
         </span>
-        <span data-trigger-text className="truncate text-body text-ink">
+        {/* Stopień bierze się tu z `.row` (`--t-ui`), i to jest cała treść przejścia na
+            prymityw: wiersz listy JEST kontrolką, więc niesie rungę kontrolki. Napis
+            `text-body` stał tu wcześniej obok `text-ink` i był bez skutku — w tym motywie
+            `text-body` jest klasą BARWY (`--color-body`), nie stopnia, bo `--color-body`
+            i `--text-body` noszą tę samą nazwę, a Tailwind rozstrzyga ją na barwę. Dwie
+            barwy na jednym napisie: wygrywała ta druga. */}
+        <span data-trigger-text className="truncate text-ink">
           {conditionName(trigger.condition)}
         </span>
         <span
           data-trigger-text
           title={workspace?.folder ?? trigger.workspace ?? workspaceStatus}
-          className="truncate text-body text-muted"
+          className="lead truncate"
         >
           {`${workflow} · ${workspaceLabel} · ${cadenceName(trigger.pollEveryMinutes)}`}
         </span>
       </button>
       <div className="flex items-center gap-3">
-        {retryLabel === null ? (
-          <span
-            data-trigger-text
-            data-trigger-status
-            title={statusWorkspace ?? undefined}
-            className="max-w-96 text-right text-label text-muted"
-          >
-            {missingWorkspace ? workspaceStatus : status.sentence}
-          </span>
-        ) : (
+        {/* CO SIĘ STAŁO — TEKST, ZAWSZE, NIEZALEŻNIE OD TEGO, CZY JEST CO KLIKNĄĆ.
+            2026-08-31: do tego dnia przy wierszu z czynnością zdanie o stanie było ETYKIETĄ
+            przycisku (`${status.sentence} · ${retryLabel}`). Żeby przeczytać, co się właściwie
+            stało, trzeba było wodzić kursorem po żywym „Run again" — a przypadkowe kliknięcie
+            ODPALA BIEG. Zdanie się czyta, czynność się robi; jedna kontrolka na oba znaczy, że
+            czytanie kosztuje ryzyko (niezmiennik 16 od drugiej strony: kontrolka, która niesie
+            treść niebędącą jej nazwą, kłamie o tym, co zrobi po kliknięciu). */}
+        <span
+          data-trigger-text
+          data-trigger-status
+          title={statusWorkspace ?? undefined}
+          className="label max-w-96 text-right"
+        >
+          {missingWorkspace ? workspaceStatus : status.sentence}
+        </span>
+        {retryLabel === null ? null : (
+          /* `.btn` drugoplanowy: obrys `--line-strong` i wypełnienie szkła to dokładnie ten
+             prymityw, a razem z nim wchodzą cztery stany, których ta kontrolka nie miała.
+             GOŁY PRYMITYW, bez ani jednej klasy obok: nazwa czynności jest teraz krótka i jedna,
+             więc geometria, oddech i `white-space: nowrap` z `.btn` wystarczają. Miejscowa
+             wysokość, sufit szerokości i łamanie wiersza zniknęły razem ze zdaniem, które
+             musiało się w tej kolumnie łamać. */
           <button
             type="button"
             data-trigger-text
-            data-trigger-status
             data-trigger-run-again
-            title={statusWorkspace ?? undefined}
-            className="max-w-96 rounded-sm border border-line-strong bg-raised px-2 py-1 text-right text-label text-ink"
+            className="btn"
             onClick={() => {
               void onRunAgain(trigger.slug);
             }}
           >
-            {`${status.sentence} · ${retryLabel}`}
+            {retryLabel}
           </button>
         )}
         {status.machineTime === undefined ? null : (
           <time aria-hidden dateTime={status.machineTime} />
         )}
+        {/* `.btn-bare` wnosi tu WYŁĄCZNIE cztery stany — wygaszenie i `not-allowed` przy
+            `disabled`, wciśnięcie, pierścień skupienia. Geometria przełącznika zostaje
+            miejscowa, bo to nie jest przycisk z etykietą, tylko tor z gałką. Ręczny bliźniak
+            `opacity-50` znika: stan wyłączony jest regułą przy `:disabled`, a nie drugą
+            klasą (DESIGN §6). */}
         <button
           type="button"
           data-trigger-toggle
@@ -194,7 +240,7 @@ export function TriggerRow({
               ? `Choose a workspace before changing ${trigger.slug}`
               : `${trigger.enabled ? 'Turn off' : 'Turn on'} ${trigger.slug}`
           }
-          className={`flex h-5 w-9 items-center rounded-pill border border-line-strong bg-raised px-0.5 ${toggleBlocked ? 'opacity-50' : ''}`}
+          className="btn-bare h-5 w-9 justify-start rounded-pill border border-line-strong bg-raised px-0.5"
           onClick={() => {
             void onToggle(trigger.slug, !trigger.enabled);
           }}

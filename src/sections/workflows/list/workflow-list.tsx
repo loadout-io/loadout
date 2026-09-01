@@ -33,13 +33,20 @@
 import type { ReactElement } from 'react';
 import type { DefinitionProblem } from '../../../state/library';
 import { problemSays } from '../../../state/library';
-import type { WorkflowEntry, WorkflowListActions } from './store';
+import type { Library, WorkflowEntry, WorkflowListActions } from './store';
 import { newWorkflowName } from './store';
 import { WorkflowTile } from './tile';
 
 export interface WorkflowListProps {
   workflows: readonly WorkflowEntry[];
   problems?: readonly DefinitionProblem[];
+  /**
+   * Co wiadomo o katalogu — patrz [`Library`]. Domyślnie `read`, bo komponent jest STEROWANY
+   * i wołający, który o tym nie mówi, mówi „mam już odpowiedź".
+   */
+  library?: Library;
+  /** Zdanie dysku przy `library === 'unreadable'`. Ekran go nie wymyśla. */
+  refusal?: string | null;
   /** O co pytamy przed usunięciem. `null` — o nic. */
   pendingDeleteId: string | null;
   /** Jeden obiekt na cały ekran; oba przyciski tworzenia dostają TEN SAM. */
@@ -51,18 +58,18 @@ export interface WorkflowListProps {
   onOpen: (path: string) => void;
 }
 
-/* Klasy komponentów z DESIGN §6, spisane raz. Wysokości idą po siatce 4px:
- * 36px = `h-9` (button-primary), 32px = `h-8` (button-secondary), 28px = `h-7` (button-quiet). */
-const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
-const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
-const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
-/* button-danger: jak secondary, ale bez wypełnienia. Akcja niszcząca ma być rozpoznawalna,
- * a nie najbardziej rzucająca się w oczy rzecz na ekranie (DESIGN §6). */
-const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
+/* 2026-08-31 — CZTERY STAŁE Z KLASAMI ZNIKŁY. Stały tu `PRIMARY`, `SECONDARY`, `QUIET`
+ * i `DANGER`, czyli cztery przepisane ręcznie geometrie przycisków z DESIGN §6. Od dziś nosi
+ * je `theme.css` pod nazwami `.btn-primary`, `.btn`, `.btn-quiet` i `.btn-danger` — razem ze
+ * stanami (`:hover`, `:active`, `:focus-visible`, `:disabled`), których żadna z tych stałych
+ * nie miała. Kopia decyzji w komponencie jest tym, przez co ten przycisk miał w repo pięć
+ * zapisów jednej wysokości; nazwa ma jeden. */
 
 export function WorkflowList({
   workflows,
   problems = [],
+  library = 'read',
+  refusal = null,
   pendingDeleteId,
   actions,
   onOpen,
@@ -87,27 +94,43 @@ export function WorkflowList({
       : workflows.find((entry) => entry.workflow.id === pendingDeleteId);
   const hasAnything = workflows.length > 0 || problems.length > 0;
 
+  /* CO POKAZUJE TEN EKRAN — jedna odpowiedź, cztery możliwe, policzona w jednym miejscu.
+   *
+   * 2026-08-31, zgłoszenie właściciela: pytanie brzmiało dotąd „czy lista jest pusta", czyli
+   * jeden bit tam, gdzie stany są trzy. Zaproszenie było odpowiedzią domyślną, więc padało
+   * także wtedy, gdy katalogu nikt jeszcze nie czytał ORAZ wtedy, gdy nie dało się go
+   * przeczytać. Od dziś zaproszenie jest jednym z czterech wyjść, a nie tłem. */
+  const shows: 'list' | 'reading' | 'unreadable' | 'empty' = hasAnything
+    ? 'list'
+    : library === 'reading'
+      ? 'reading'
+      : library === 'unreadable'
+        ? 'unreadable'
+        : 'empty';
+
   return (
     <section className="flex h-full flex-col">
-      <header className="flex h-13 items-center gap-3 border-b border-line bg-panel px-4">
+      {/* `.screen-head` NIE MA TŁA z rozmysłu (theme.css): jest chrome, więc materiał bierze
+          z klasy materiału obok — inaczej `prefers-reduced-transparency` przestałby go dotyczyć. */}
+      <header className="screen-head glass">
         <h1 className="text-title text-ink">Workflows</h1>
 
         {/* Licznik i przycisk w nagłówku żyją tylko wtedy, gdy jest co liczyć. Przy zerze
          * to samo mówi zaproszenie niżej, a `0 saved` obok `No workflows yet.` to ten sam
          * fakt w dwóch miejscach (niezmiennik 13) — i drugi przycisk tworzenia na ekranie,
          * na którym DESIGN §6 przewiduje dokładnie jeden. */}
-        {!hasAnything ? null : (
+        {shows !== 'list' ? null : (
           <>
             {workflows.length === 0 ? null : (
-              <span className="font-mono text-mono text-muted">{`${workflows.length} saved`}</span>
+              <span className="value">{`${workflows.length} saved`}</span>
             )}
             {problems.length === 0 ? null : (
-              <span className="font-mono text-mono text-fail">{`${problems.length} need attention`}</span>
+              <span className="value" data-tone="fail">{`${problems.length} need attention`}</span>
             )}
             <button
               data-create
               type="button"
-              className={`ml-auto ${PRIMARY}`}
+              className="btn-primary ml-auto"
               onClick={createWorkflow}
             >
               ＋ Create
@@ -116,12 +139,38 @@ export function WorkflowList({
         )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        {!hasAnything ? (
+      <div className="screen-body">
+        {shows === 'reading' ? (
+          /* CZY TO TRWA (DESIGN §7). Kropki, nie krążek: krążek nie mówi ani co trwa, ani ile
+             zostało. Zdanie niesie treść, kropki niosą „jeszcze idzie", więc są `aria-hidden`. */
           <div className="flex h-full flex-col items-center justify-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
-              ◇
+            <p className="text-ink">Reading the workflows you have saved…</p>
+            <span data-reading className="thinking text-muted">
+              <span aria-hidden />
+              <span aria-hidden />
+              <span aria-hidden />
             </span>
+          </div>
+        ) : shows === 'unreadable' ? (
+          /* NIE UDAŁO SIĘ PRZECZYTAĆ. Do 2026-08-31 ten stan nie istniał wcale: `load()` nie miał
+             `catch`, więc odmowa ginęła w nieobsłużonej obietnicy, a ekran zapraszał do tworzenia
+             pliku w katalogu, którego nie da się przeczytać. Zaproszenia tu nie ma z rozmysłu. */
+          <div
+            data-refusal
+            role="alert"
+            className="fade-in flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+          >
+            <span className="mark">◇</span>
+            {/* `text-fail` klasą, nie `data-tone`: ton maluje `.lead` i `.value`, a to zdanie
+                żadnej z tych ról nie nosi (2026-08-31). */}
+            <p className="text-fail">{refusal}</p>
+            <p className="lead">
+              Nothing is lost. Open that folder, put it right, and come back to this section.
+            </p>
+          </div>
+        ) : shows === 'empty' ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3">
+            <span className="mark">◇</span>
             {/* `data-empty` siedzi na elemencie, ktory niesie SAMO zdanie — nie na opakowaniu
                 z glifem, zaproszeniem i przyciskiem. Tak mowi o sobie `src/App.tsx` i tak robia
                 Agents, Skills i Memory; do 2026-08-19 ta jedna sekcja trzymala znacznik wyzej,
@@ -130,8 +179,8 @@ export function WorkflowList({
             <p data-empty className="text-ink">
               No workflows yet.
             </p>
-            <p className="text-muted">Create one to lay out the steps a run follows.</p>
-            <button data-create type="button" className={PRIMARY} onClick={createWorkflow}>
+            <p className="lead">Create one to lay out the steps a run follows.</p>
+            <button data-create type="button" className="btn-primary" onClick={createWorkflow}>
               ＋ Create
             </button>
           </div>
@@ -163,12 +212,9 @@ export function WorkflowList({
                     }}
                   />
                 ) : (
-                  <div
-                    data-unreadable={entry.path}
-                    className="rounded-md border border-fail-edge bg-panel p-3"
-                  >
+                  <div data-unreadable={entry.path} data-tone="fail" className="card enter">
                     <p className="text-heading text-ink">{entry.path}</p>
-                    <p className="text-body text-muted">
+                    <p className="lead">
                       This file is not a workflow Loadout can read. Open it and check it, or remove
                       it below.
                     </p>
@@ -182,7 +228,7 @@ export function WorkflowList({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    className={QUIET}
+                    className="btn-quiet"
                     onClick={() => {
                       void actions.duplicate(entry.workflow.id);
                     }}
@@ -191,7 +237,7 @@ export function WorkflowList({
                   </button>
                   <button
                     type="button"
-                    className={QUIET}
+                    className="btn-quiet"
                     onClick={() => {
                       actions.requestDelete(entry.workflow.id);
                     }}
@@ -206,10 +252,11 @@ export function WorkflowList({
               <li
                 key={problem.fileName}
                 data-definition-problem={problem.fileName}
-                className="flex flex-col gap-2 rounded-md border border-fail-edge bg-panel p-3"
+                data-tone="fail"
+                className="card enter flex flex-col gap-2"
               >
                 <p className="text-heading text-ink">{problem.fileName}</p>
-                <p className="text-body text-muted">{problemSays(problem)}</p>
+                <p className="lead">{problemSays(problem)}</p>
               </li>
             ))}
 
@@ -222,7 +269,11 @@ export function WorkflowList({
                 data-create
                 type="button"
                 onClick={createWorkflow}
-                className="flex h-full flex-col gap-2 rounded-md border border-dashed border-line bg-transparent p-3 text-left text-muted hover:border-line-strong hover:text-ink"
+                data-tone="empty"
+                data-interactive
+                /* `bg-transparent` PO prymitywie, bo to jedyna rzecz, którą ten kafelek ma inaczej
+                   niż karta: nie jest plikiem, więc nie ma wyglądać jak wypełniona pozycja listy. */
+                className="card flex h-full flex-col gap-2 bg-transparent text-left text-muted hover:text-ink"
               >
                 <span className="text-heading">＋ Create a workflow</span>
                 <span className="text-body">Start from an empty canvas.</span>
@@ -235,7 +286,9 @@ export function WorkflowList({
       {pending === undefined ? null : (
         <div
           data-confirm-delete
-          className="fixed inset-0 z-10 flex items-center justify-center bg-bg/72 p-6"
+          /* DESIGN §6 `modal`: „bez animacji wjazdu poza `opacity`". Sprężyny tu nie ma
+             z rozmysłu — rzecz, która przykrywa cały ekran, ma się pojawić, a nie wskoczyć. */
+          className="fade-in fixed inset-0 z-10 flex items-center justify-center bg-bg/72 p-6"
         >
           <div className="flex w-full max-w-160 flex-col gap-4 rounded-lg border border-line-strong bg-overlay p-6">
             {/* Jedno zdanie, jeden węzeł tekstowy: nazywa workflow po imieniu, mówi, co
@@ -248,7 +301,7 @@ export function WorkflowList({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                className={SECONDARY}
+                className="btn"
                 onClick={() => {
                   actions.cancelDelete();
                 }}
@@ -257,7 +310,7 @@ export function WorkflowList({
               </button>
               <button
                 type="button"
-                className={DANGER}
+                className="btn-danger"
                 onClick={() => {
                   void actions.confirmDelete();
                 }}

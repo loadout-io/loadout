@@ -41,7 +41,23 @@ const SCREEN = 'main[data-section="workflows"]';
 const LIST_TILE = 'main [data-tile]';
 const STEP = 'main [data-step="s_build"]';
 const PANEL = 'main [data-step-panel]';
-const APPEARS = 6_000;
+/* Ile czekamy na pojawienie się panelu kroku.
+ *
+ * PODNIESIONE Z 6 s DO 20 s, 2026-08-31, po zmierzeniu — i jest to naprawa PRZYRZĄDU, nie
+ * osłabienie kryterium. Ta liczba nie mówi nic o produkcie: nie ma progu wydajności, którego
+ * ten test broni, ani zdania w dokumentacji, które obiecywałoby panel w sześć sekund. Mierzy
+ * WYŁĄCZNIE to, ile trwa pierwszy render pod obciążeniem maszyny.
+ *
+ * Zmierzone dwa razy tego dnia. Sam plik: 4,5 s — z zapasem. Ten sam plik w pełnym biegu
+ * (`vitest run` bez ścieżki, 275 plików, dwadzieścia kilka chromiów naraz): przekracza 6 s
+ * i przewraca CAŁĄ bramkę. Powtórka tego samego pełnego biegu bez kontencji: zielona.
+ * Czyli werdykt zależał od tego, co jeszcze akurat chodzi na tym Macu — a bramka, która
+ * mierzy pogodę, uczy ignorować własną czerwień.
+ *
+ * Prawdziwym lekarstwem jest szeregowanie e2e, nie liczba; do tego czasu limit ma być
+ * hojny. Nie zmienia to ani jednej asercji: test dalej sprawdza, że panel ma trzy wykluczające
+ * się wybory miejsca pracy i że przeżywają one zapis i ponowny odczyt. */
+const APPEARS = 20_000;
 
 function workflowWith(use: Use) {
   return {

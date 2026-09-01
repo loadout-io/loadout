@@ -26,8 +26,10 @@ export interface CheckpointPanelProps {
   onEditStep: (fields: Partial<Pick<CheckpointStep, 'name' | 'question'>>) => void;
 }
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
+/* 2026-08-31 — `ROW` I `LABEL` ZNIKŁY. Oba były napisem-listą-klas dla roli, którą `theme.css`
+ * nosi od tej daty pod nazwą: `.stack` to etykieta nad kontrolką (odstęp 4 px), `.label` to
+ * etykieta pola. Zdanie POD kontrolką bierze `.lead` — to inna rola i inny stopień drabinki
+ * (DESIGN §6), a do dziś obie nosiły ten sam napis, więc nie dało się ich rozróżnić. */
 /* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
  *
  * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
@@ -45,8 +47,8 @@ const FIELD = 'field';
 export function CheckpointPanel({ step, onEditStep }: CheckpointPanelProps): ReactElement {
   return (
     <>
-      <div className={ROW}>
-        <label htmlFor="checkpoint-name" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="checkpoint-name" className="label">
           Name
         </label>
         <input
@@ -59,8 +61,8 @@ export function CheckpointPanel({ step, onEditStep }: CheckpointPanelProps): Rea
         />
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="checkpoint-question" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="checkpoint-question" className="label">
           What to ask
         </label>
         <input
@@ -74,7 +76,7 @@ export function CheckpointPanel({ step, onEditStep }: CheckpointPanelProps): Rea
             onEditStep({ question: event.target.value });
           }}
         />
-        <span className={LABEL}>The run stops here until you answer.</span>
+        <span className="lead">The run stops here until you answer.</span>
       </div>
     </>
   );

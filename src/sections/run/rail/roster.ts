@@ -86,6 +86,20 @@ const OF_STEP: Readonly<Record<StepState, AgentStatus>> = {
 };
 
 /**
+ * Stan kroku → stan agenta, dla kroku, o którym strumień jeszcze NIC nie powiedział.
+ *
+ * 2026-08-31 — WYSTAWIONE, BO PŁÓTNO BIEGU RYSUJE KAŻDY KROK PLANU, nie tylko te, które już
+ * nadały. Kafelka takiego kroku nie ma w `roster()` (i mieć nie może — kafelek agenta istnieje
+ * wtedy i tylko wtedy, gdy agent pojawił się w strumieniu), więc jego stan trzeba wziąć wprost
+ * z planu. Druga tabela `StepState → AgentStatus` po stronie widoku byłaby drugim miejscem,
+ * w którym mieszka ta sama odpowiedź (niezmiennik 13), i pierwszym, które rozjedzie się przy
+ * ósmym stanie kroku.
+ */
+export function agentStatusOf(step: StepState): AgentStatus {
+  return OF_STEP[step];
+}
+
+/**
  * Stan agenta: krok mówi, co się z nim dzieje, a pytanie bez odpowiedzi bije wszystko.
  *
  * Pytanie bije, bo krok wtedy dalej „biegnie" i sam z siebie nie odróżnia agenta, który
@@ -182,7 +196,22 @@ export function roster(state: RosterInput): readonly RailCard[] {
       /* `ended` jedzie dalej TYLKO z linii, która je niesie — kafelek nie ma go skąd zgadnąć. */
       ...(row.ended === undefined ? {} : { ended: row.ended }),
     });
-    if (row.kind === 'asked' && !answered.has(row.id)) waitingOnYou.add(row.agent);
+    /* CZY PYTANIE JESZCZE STOI — pyta o to MODEL, a nie sama historia.
+     *
+     * 2026-08-31 — ZMIERZONA WADA. Wiersz `asked` zostaje w historii na zawsze, bo „że agent
+     * zapytał" naprawdę się wydarzyło, a `answers` napełnia wyłącznie odpowiedź człowieka.
+     * Bieg, który zszedł z nieodpowiedzianym pytaniem — Stop, odmowa, koniec — zostawiał więc
+     * kafelek w stanie „czeka na ciebie" NA ZAWSZE: na obrazie planu świecił `attend` nad
+     * krokiem, który się nie dzieje, a na ekranie agenta stało to samo słowem. Kolejkę pytań
+     * gasi w tej chwili model (`../feed/model.ts`, `runEnded`) i to on jest jedynym miejscem,
+     * w którym mieszka odpowiedź „czy ktoś jeszcze na ciebie czeka" — `attention` jest tą
+     * odpowiedzią wprost. Ta linia jest odczytem, nie drugą tabelą (niezmiennik 13).
+     *
+     * ZAWĘŻA, NIGDY NIE ROZSZERZA: `attention` jest `you` dokładnie wtedy, gdy w kolejce stoi
+     * choć jedno pytanie bez odpowiedzi, więc dla żywego biegu wynik jest co do kafelka ten
+     * sam, co przedtem. */
+    const standing = state.view.attention === 'you';
+    if (row.kind === 'asked' && !answered.has(row.id) && standing) waitingOnYou.add(row.agent);
   }
 
   const cards: RailCard[] = [];

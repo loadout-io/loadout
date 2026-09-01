@@ -22,6 +22,7 @@
  */
 import { create } from 'zustand';
 
+import { why } from '../../../ipc/why';
 import type { WorkflowFile } from '../../../state/workflows';
 import type { DefinitionListing, DefinitionProblem } from '../../../state/library';
 import { definitionProblems, definitionsOf, healthyOnly } from '../../../state/library';
@@ -90,10 +91,33 @@ export interface WorkflowListActions {
   confirmDelete: () => Promise<void>;
 }
 
+/** Co ten magazyn wie o KATALOGU — trzy stany, nie dwa.
+ *
+ * 2026-08-31, zgłoszenie właściciela. Pusta lista i katalog, do którego nikt jeszcze nie
+ * zajrzał, są w zustandzie tą samą tablicą, więc ekran mówił „No workflows yet." zanim
+ * cokolwiek przeczytał — a `load()` biegnie dopiero w efekcie po zamontowaniu sekcji.
+ * Trzeci stan jest tu dlatego, że katalog NIEOSIĄGALNY czytał się identycznie jak pusty,
+ * i zapraszał do utworzenia pliku w folderze, którego nie da się przeczytać.
+ *
+ * Ta sama trójka i ta sama pisownia, co `Library` w `src/state/agents.ts` i `Folders`
+ * w `src/state/skills.ts`: jedno pojęcie, trzy magazyny, żadnej czwartej nazwy. */
+export type Library = 'reading' | 'read' | 'unreadable';
+
 export interface WorkflowListState extends WorkflowListActions {
   /** Posortowane po nazwie, bez uwzględnienia wielkości liter. Licznik w nagłówku to `.length`. */
   workflows: WorkflowEntry[];
   problems: DefinitionProblem[];
+  /** Patrz [`Library`]. Ekran rysuje z tego trzy różne rzeczy, nie dwie. */
+  library: Library;
+  /**
+   * Zdanie dysku, kiedy katalogu nie udało się przeczytać — `null`, kiedy nie ma o czym mówić.
+   *
+   * 2026-08-31 — PO CO TO POLE ISTNIEJE. `load()` nie miał ŻADNEGO `catch`, a sekcja woła go
+   * gołym `void store.getState().load()`. Odrzucenie z granicy IPC kończyło więc jako
+   * nieobsłużona obietnica: zero pikseli na ekranie i lista, która wygląda na pierwsze
+   * uruchomienie. Ta sama wada i ta sama naprawa, co przy `refusal` w `src/state/agents.ts`.
+   */
+  refusal: string | null;
   /** O co pytamy. `null` znaczy, że o nic — pytanie ma jedno miejsce (niezmiennik 13). */
   pendingDeleteId: string | null;
   load: () => Promise<void>;
@@ -227,15 +251,29 @@ export function createWorkflowListStore(io: WorkflowListIo) {
   return create<WorkflowListState>()((set, get) => ({
     workflows: [],
     problems: [],
+    library: 'reading',
+    refusal: null,
     pendingDeleteId: null,
 
     load: () =>
       inTurn(async () => {
-        const definitions = definitionsOf(await io.list());
-        set({
-          workflows: sortedByName(healthyOnly(definitions)),
-          problems: definitionProblems(definitions),
-        });
+        set({ library: 'reading', refusal: null });
+        try {
+          const definitions = definitionsOf(await io.list());
+          set({
+            workflows: sortedByName(healthyOnly(definitions)),
+            problems: definitionProblems(definitions),
+            library: 'read',
+          });
+        } catch (error: unknown) {
+          /* Lista ZOSTAJE taka, jaka była — kasowanie jej tutaj mówiłoby „nic tam nie leży",
+           * czego akurat nie wiemy. Odmowa nie leci w górę: sekcja woła `load()` gołym `void`,
+           * więc jedynym miejscem, w którym to zdanie może wylądować, jest stan. */
+          set({
+            refusal: why(error, 'Loadout could not read the workflows you have saved.'),
+            library: 'unreadable',
+          });
+        }
       }),
 
     create: (name) =>

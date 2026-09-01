@@ -155,8 +155,8 @@ async function openFinishedRun(): Promise<RunningApp> {
 
   // Load contradictory current memory through its real screen, then return to Run. This seeds
   // the production singleton without importing or calling its setter.
-  await app.page.locator('[data-section-switch="memory"]').click();
-  await app.page.locator('main[data-section="memory"]').waitFor({
+  await app.page.locator('[data-section-switch="knowledge"]').click();
+  await app.page.locator('main[data-section="knowledge"]').waitFor({
     state: 'attached',
     timeout: APPEARS,
   });

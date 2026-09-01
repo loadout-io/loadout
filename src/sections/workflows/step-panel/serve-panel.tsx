@@ -14,6 +14,7 @@
  */
 import type { ReactElement } from 'react';
 import { fieldNameFor } from './hands-over-the-command';
+import { WhereItWorks } from './where-it-works';
 import type { ServeStep } from '../../../state/workflows';
 
 export interface ServePanelProps {
@@ -34,31 +35,25 @@ export interface ServePanelProps {
   onAskTheStepBefore?: (() => void) | undefined;
 }
 
-/* GDZIE TO WSTAJE — dwa wyjścia, bo dwa mają dla serwera sens.
+/* GDZIE TO WSTAJE — DWA wyjścia, bo tylko dwa mają dla serwera sens.
  *
- * 2026-08-23 — DOSZŁO PO PIERWSZYM PRAWDZIWYM UŻYCIU. Kafelek wychodził z przycisku z folderem
- * projektu i nie dało się tego zmienić, a to jest dla serwera zły domyślny: sprawdzenie, które
- * ma na niego patrzeć, pracuje w kopii kroku, który właśnie pisał kod — więc serwer z folderu
- * projektu podaje kod BEZ tej pracy. Strona, która się otwiera i pokazuje starą wersję, wygląda
- * na działającą, a to jest gorsze niż serwer, którego nie ma.
+ * 2026-08-23 — WYBÓR DOSZEDŁ PO PIERWSZYM PRAWDZIWYM UŻYCIU. Kafelek wychodził z przycisku
+ * z folderem projektu i nie dało się tego zmienić, a to jest dla serwera zły domyślny:
+ * sprawdzenie, które ma na niego patrzeć, pracuje w kopii kroku, który właśnie pisał kod — więc
+ * serwer z folderu projektu podaje kod BEZ tej pracy. Strona, która się otwiera i pokazuje starą
+ * wersję, wygląda na działającą, a to jest gorsze niż serwer, którego nie ma.
  *
  * Własnej kopii tu nie ma i nie powinno być: świeży checkout serwowałby kod, którego nikt w tym
- * biegu nie tknął — czyli ten sam błąd, tylko drożej. */
-const WHERE = [
-  {
-    use: 'same-copy' as const,
-    name: 'In the same copy as the step before it',
-    why: 'Serves the code that step just wrote. Pick this when a later step has to look at it.',
-  },
-  {
-    use: 'project' as const,
-    name: 'In your project folder',
-    why: 'Serves what is in your project right now.',
-  },
-];
+ * biegu nie tknął — czyli ten sam błąd, tylko drożej. Dlatego ten jeden panel podaje wspólnej
+ * kontrolce listę odpowiedzi; brzmienia i pytanie bierze takie, jak wszyscy
+ * (`./where-it-works.tsx`).
+ *
+ * 2026-08-31 — WŁASNEJ LISTY TU JUŻ NIE MA, z tego samego powodu, co w `check-panel.tsx`. */
+const OFFERS = ['project', 'same-copy'] as const;
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
+/* `ROW` i `LABEL` zniknęły 2026-08-31 — patrz `checkpoint-panel.tsx`: rolę niosą teraz
+ * `.stack` (etykieta nad kontrolką) i `.label` (etykieta pola), a zdanie pod kontrolką ma
+ * własną, inną rolę (`.lead`). */
 /* Klasa domu, nie własny opis — ten sam powód, co w `checkpoint-panel.tsx`. */
 const FIELD = 'field';
 
@@ -71,8 +66,8 @@ export function ServePanel({
 }: ServePanelProps): ReactElement {
   return (
     <>
-      <div className={ROW}>
-        <label htmlFor="serve-name" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="serve-name" className="label">
           Name
         </label>
         <input
@@ -85,8 +80,8 @@ export function ServePanel({
         />
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="serve-command" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="serve-command" className="label">
           Command to run
         </label>
         <input
@@ -128,7 +123,7 @@ export function ServePanel({
           /* TRZY STANY, NIE JEDEN NAPIS. „Poproś go" bez powiedzenia, czy już poproszono, każe
              człowiekowi sprawdzać drugi kafelek za każdym razem; a kafelek bez poprzednika
              odsyła go do kroku, którego nie ma. */
-          <span className={LABEL} data-field="commandFromState">
+          <span className="lead" data-field="commandFromState">
             {stepBefore === null
               ? 'Nothing points at this tile yet, so there is nobody to work the command out. ' +
                 'Draw an arrow from the step that should.'
@@ -145,7 +140,7 @@ export function ServePanel({
           <button
             type="button"
             data-field="askTheStepBefore"
-            className="text-left text-label text-accent"
+            className="text-left text-label text-accent hover:underline"
             onClick={onAskTheStepBefore}
           >
             Ask {stepBefore} for it
@@ -156,35 +151,20 @@ export function ServePanel({
             rzecz idzie i kiedy umiera: bez niej człowiek nie wie, czy zostanie mu w tle serwer
             trzymający port. „Started" jest nazwą TEJ SEKCJI z ekranu biegu (`rail.tsx`), nie
             naszym słowem — człowiek ma szukać tego, co widzi (niezmiennik 13). */}
-        <span className={LABEL}>
+        <span className="lead">
           The steps after this one start right away, without waiting for it to finish. It stays
           alive under Started on the right until you stop it there or close Loadout.
         </span>
       </div>
 
-      <div className={ROW}>
-        <span className={LABEL}>Where it runs</span>
-        {WHERE.map((one) => (
-          <label key={one.use} className="flex items-baseline gap-2 text-body text-ink">
-            <input
-              type="radio"
-              name="serve-where"
-              value={one.use}
-              /* `pick` na tym kafelku nie ma kontrolki, więc plik z taką wartością nie zaznaczy
-               * ani jednego pola — i to jest uczciwsze niż zaznaczenie czegoś, czego w pliku nie
-               * ma (niezmiennik 17). Człowiek widzi wtedy, że musi wybrać. */
-              checked={step.folder.use === one.use}
-              onChange={() => {
-                onEditStep({ folder: { use: one.use } });
-              }}
-            />
-            <span className="min-w-0">
-              {one.name}
-              <span className={'block ' + LABEL}>{one.why}</span>
-            </span>
-          </label>
-        ))}
-      </div>
+      <WhereItWorks
+        group="serve-where"
+        offers={OFFERS}
+        value={step.folder}
+        onChoose={(folder) => {
+          onEditStep({ folder });
+        }}
+      />
     </>
   );
 }

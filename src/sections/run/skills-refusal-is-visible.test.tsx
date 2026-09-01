@@ -171,7 +171,7 @@ function readable(markup: string): string {
 /** Sama kolumna strumienia, wycięta z ekranu — reszta ekranu nie ma prawa tu odpowiadać. */
 function streamOf(markup: string): string {
   const opens = markup.indexOf('data-stream-column');
-  const closes = markup.indexOf('data-rail');
+  const closes = markup.indexOf('data-plan-column');
   if (opens < 0 || closes < opens) return '';
   return readable(markup.slice(opens, closes));
 }

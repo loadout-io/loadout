@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Rail } from '../../sections/run/rail/rail';
+import { useRun } from '../../state/run';
+import Run from '../../sections/run/index';
 
 /* AC-6 dla T-45: stopien nadoczka ma NOSNIKI, a wersaliki nie sa wpisane z palca.
  *
@@ -31,6 +32,12 @@ import { Rail } from '../../sections/run/rail/rail';
  * DLACZEGO PUNKT (c) JEST NAJWAZNIEJSZY. To on lapie prawdziwy defekt: `rail.tsx:87` niosl
  * `<h2 className="... text-label ...">Agents</h2>`. Naglowek NIE JEST etykieta, wiec stopien
  * etykiety nie ma prawa na nim stac — niezaleznie od tego, jak wyglada w danym tygodniu.
+ *
+ * 2026-08-31 — TEN PUNKT RENDERUJE DZIS CALY EKRAN PRACY. Kolumna z lista agentow zniknela,
+ * a razem z nia jej naglowek; naglowek nadoczka na tym ekranie nosi teraz kolumna z obrazem
+ * planu. Pytanie zostalo to samo, zmienil sie renderowany komponent — i przy okazji zrobilo
+ * sie mocniejsze, bo naglowek jest sadzony tam, gdzie czlowiek go widzi (niezmiennik 29).
+ * Kroki trzeba zasiac: naglowek nad pustka nie istnieje z premedytacja (niezmiennik 17).
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -64,7 +71,7 @@ function withoutComments(src: string): string {
 }
 
 /** Stale klas w pliku: `const NAZWA = '...'` -> tresc. Bez tego `className={ZONE_TITLE}`
- *  jest dla skanera pusty, a wlasnie tam siedzialy trzy naglowki strefy w Memory. */
+ *  jest dla skanera pusty, a wlasnie tam siedzialy trzy naglowki strefy w polce notatek. */
 function classConstants(src: string): Map<string, string> {
   const table = new Map<string, string>();
   /* Oba cudzyslowy zapisane heksadecymalnie (\x22 i \x27), a nie doslownie. Powod jest ten sam
@@ -153,8 +160,11 @@ describe('stopien nadoczka ma nosniki', () => {
     ).toEqual([]);
   });
 
-  it('renders the agents-list heading on the eyebrow rung, not the label rung', () => {
-    const markup = renderToStaticMarkup(createElement(Rail, { cards: [] }));
+  it('renders the work-view heading on the eyebrow rung, not the label rung', () => {
+    useRun.setState({
+      steps: [{ id: 's_build', name: 'Build', state: 'running' }],
+    });
+    const markup = renderToStaticMarkup(createElement(Run));
     /* Sprawdzamy CALY znacznik otwierajacy, a nie wartosc atrybutu wyciagnieta wzorcem.
      * Powod jest praktyczny i warto go zapisac: literal wyrazenia regularnego z NIEPARZYSTA
      * liczba cudzyslowow rozsynchronizowuje skaner `checks/quick-vocabulary.sh` — jego wzorzec
@@ -164,7 +174,7 @@ describe('stopien nadoczka ma nosniki', () => {
     const heading = /<h2[^>]*>/.exec(markup)?.[0] ?? '';
     expect(
       heading,
-      'the agents list rendered no <h2> at all, so the two assertions below would run against ' +
+      'the work view rendered no <h2> at all, so the two assertions below would run against ' +
         'an empty string and say nothing about what the screen draws',
     ).not.toBe('');
     expect(
@@ -180,8 +190,8 @@ describe('stopien nadoczka ma nosniki', () => {
     ).not.toContain('text-label');
   });
 
-  it('resolves class constants, or the point above has a hole the size of Memory', () => {
-    /* Kontrola samego skanera. `memory/index.tsx` trzyma klasy naglowkow w stalej
+  it('resolves class constants, or the point above has a hole the size of the notes shelf', () => {
+    /* Kontrola samego skanera. `memory/shelf.tsx` trzyma klasy naglowkow w stalej
      * (`const ZONE_TITLE = '...'`), wiec skaner czytajacy wylacznie literaly `className="..."`
      * przepuscilby trzy naglowki strefy i punkt wyzej bylby zielony na dziurze. */
     const sample = "const ZONE_TITLE = 'text-label text-muted';\n<h2 className={ZONE_TITLE}>x</h2>";

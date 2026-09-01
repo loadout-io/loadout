@@ -1,11 +1,11 @@
 import type { ReactElement } from 'react';
 
-/* Glify nawigacji. Siedem, po jednym na sekcje, 16 px, obrys, `currentColor`.
+/* Glify nawigacji. Szesc, po jednym na sekcje, 16 px, obrys, `currentColor`.
  *
  * GRAMATYKA JEST TRESCIA, NIE STYLEM, i jest sprawdzana (T-46 AC-5):
  *
  *   wezly i krawedzie  ->  rzecz, ktora JEST grafem            (Workflows)
- *   plyty w stosie     ->  rzecz, ktora jest ZBIOREM           (Agents, Skills, Memory)
+ *   plyty w stosie     ->  rzecz, ktora jest ZBIOREM           (Agents, Knowledge)
  *   trojkat            ->  jedyna rzecz, ktora sie DZIEJE      (Run)
  *
  * To niezmiennik 17 przeniesiony na ikonografie: nie rysujemy relacji tam, gdzie relacji
@@ -33,15 +33,18 @@ const PATHS: Readonly<Record<string, readonly ReactElement[]>> = {
     <rect key="a" x="2.4" y="2.4" width="7.4" height="7.4" rx="1.8" />,
     <rect key="b" x="6.2" y="6.2" width="7.4" height="7.4" rx="1.8" />,
   ],
-  /* Zbior zdolnosci: iskra o czterech ramionach. */
-  skills: [
-    <path key="s" d="M8 2.2 L9.5 6.5 L13.8 8 L9.5 9.5 L8 13.8 L6.5 9.5 L2.2 8 L6.5 6.5 Z" />,
-  ],
-  /* Zbior zapisow: dwie plyty w stosie. */
-  memory: [
+  /* Zbior tego, co model wie: dwie plyty w stosie. Dwa glify — iskra Umiejetnosci i stos
+   * Pamieci — zeszly sie w jeden 2026-08-31 razem z sekcjami, bo dwie ikony obok siebie mowily
+   * „to sa dwie rozne rzeczy" dokladnie tam, gdzie odpowiadaja na jedno pytanie czlowieka.
+   * Stos, a nie iskra: to jest ZBIOR, a nie czynnosc, i ta sama gramatyka co Agents. */
+  knowledge: [
     <rect key="a" x="2.4" y="3" width="11.2" height="4" rx="1.4" />,
     <rect key="b" x="2.4" y="9" width="11.2" height="4" rx="1.4" />,
   ],
+  /* Trzy slupki roznej wysokosci: pomiar, ktory da sie porownac z sasiadem. Ani okregu, ani
+   * krawedzi — to nie jest graf i nie obiecuje relacji miedzy kolumnami (niezmiennik 17); ani
+   * plyt w stosie, bo zestaw nie jest kolejna polka biblioteki, tylko odczytem z niej. */
+  lab: [<path key="l" d="M3.4 12.6 V8.2 M8 12.6 V3.4 M12.6 12.6 V6.2" />],
   /* Zegar pyta cyklicznie. Jeden obrys i wskazowka, bez wezlow ani ozdobnej relacji. */
   triggers: [
     <path key="t" d="M8 2.4 A5.6 5.6 0 1 1 2.4 8 A5.6 5.6 0 0 1 8 2.4 M8 5.1 V8 L10.2 9.4" />,

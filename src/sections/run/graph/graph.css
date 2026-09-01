@@ -1,0 +1,56 @@
+/* Trzy rzeczy, których nie da się powiedzieć klasą narzędziową ani tokenem.
+ *
+ * DLACZEGO ARKUSZ, A NIE PROPSY KOMPONENTU. Kolor podany propsem stoi w kodzie jako literał,
+ * a literał barwy w komponencie jest zakazany (DESIGN §9, `checks/tokens.sh`). Zmienne CSS
+ * biblioteki są jedynym miejscem, w którym da się powiedzieć „weź to z naszego motywu" raz
+ * i dla wszystkich krawędzi naraz.
+ *
+ * KOLEJNOŚĆ IMPORTU JEST MECHANIZMEM i stoi w `graph.tsx`: najpierw arkusz biblioteki, potem
+ * `workflows/canvas/react-flow-tokens.css` (tłumaczenie zmiennych React Flow na tokeny tego
+ * repo — jedno dla obu płócien), na końcu ten plik. Odwrotnie byłby martwym kodem, który
+ * wygląda na działający.
+ */
+
+/* POŚWIATA KROKU, KTÓRY PRACUJE.
+ *
+ * `--live` znaczy „dzieje się teraz" i jego reguła formy wymienia podkład i obrys wprost
+ * (DESIGN §3) — poświata jest ich zewnętrzną wersją, tym samym praniem barwy o jeden pierścień
+ * dalej. Stoi w arkuszu, a nie w klasie narzędziowej, bo cień w tej barwie nie ma tokenu,
+ * a czwarty `--shadow-*` byłby zmianą w `theme.css` dla jednego miejsca w aplikacji.
+ *
+ * Nazwa mówi o KSZTAŁCIE, nie o barwie, i to jest celowe: `../live-and-fail-never-share-a-form
+ * .test.ts` zdejmuje z formy każdą nazwę niosącą słowo barwy, więc klasa nazwana `-live`
+ * zniknęłaby z porównania i zostawiła po sobie formę „sam obrys" — czyli tę najbardziej
+ * pospolitą w całej aplikacji. */
+.loadout-run-glow {
+  box-shadow: 0 0 0 4px var(--color-live-soft);
+}
+
+/* STRZAŁKA, KTÓRĄ PRZYSZŁA PRACA — BARWĄ, NIE RUCHEM.
+ *
+ * 2026-08-31 — TĘDY PŁYNĘŁA KRESKA i przestała. Ruch niosła sama biblioteka
+ * (`.react-flow__edge.animated`), a my dokładaliśmy barwę. Rodzajów ruszających się rzeczy
+ * wychodziło wtedy trzy — kropka żywej karty w tle, ta kreska i kropka kroku, który pracuje —
+ * przy suficie dwóch z ARCHITECTURE §7. Kreska zeszła, bo odpowiadała na TO SAMO pytanie, co
+ * kropka na kafelku („tu dzieje się praca"), a limit żywych regionów na jeden fakt wynosi 1
+ * (niezmiennik 13); z dwóch nośników został ten, który stoi NA rzeczy, o której mówi.
+ *
+ * BARWA ZOSTAJE I JEST TERAZ CAŁYM ZNAKIEM. Bez niej strzałka niosąca pracę byłaby tego samego
+ * szarego koloru, co wszystkie pozostałe. Barwę widzi także człowiek z wyłączonymi animacjami,
+ * a ruchu nie widział nigdy — więc ta strzałka mówi dziś więcej ludziom, nie mniej.
+ *
+ * PO regule powrotu z `react-flow-tokens.css`, więc powrót, którego cel właśnie pracuje, jest
+ * coralowy: „dzieje się teraz" bije „to jest ścieżka wyjątkowa". */
+.loadout-edge-live .react-flow__edge-path {
+  stroke: var(--color-live);
+}
+
+/* UCHWYTY SĄ KOTWICAMI STRZAŁEK, NIE KONTROLKAMI.
+ *
+ * Płótno biegu jest tylko do odczytu: nie ma z czego pociągnąć nowej strzałki i nie ma czego
+ * upuścić. Widoczna kropka na krawędzi kafelka obiecuje gest, którego to płótno nie obsługuje
+ * — czyli jest kontrolką bez skutku (niezmiennik 16). `opacity`, a nie `display`, bo React Flow
+ * liczy z tych elementów miejsce, w którym strzałka dotyka kafelka. */
+.loadout-run-canvas .react-flow__handle {
+  opacity: 0;
+}

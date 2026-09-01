@@ -28,6 +28,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as settings from '../state/settings-io';
 import * as workspaces from '../state/workspaces-io';
 import * as agents from './agents/io';
+import * as lab from './lab/io';
 import { ipcSource, windowSideArguments } from './ipc-signature';
 import * as memory from './memory/io';
 import * as run from './run/io';
@@ -72,6 +73,7 @@ const rust = ipcSource();
 /** Gdzie leży dana krawędź. W komunikacie ma stać prawdziwa ścieżka, nie zgadnięta. */
 const WHERE_PATH: Readonly<Record<string, string>> = {
   agents: 'src/sections/agents/io.ts',
+  lab: 'src/sections/lab/io.ts',
   memory: 'src/sections/memory/io.ts',
   run: 'src/sections/run/io.ts',
   skills: 'src/sections/skills/io.ts',
@@ -440,6 +442,124 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'run',
+    what: 'runEvalSet',
+    command: 'run_eval_set',
+    /* Identyfikator zestawu, nie nazwa pliku planu: plan powstaje przy każdym uruchomieniu na
+     * nowo, a nazwa, którą okno by wysłało, byłaby nazwą poprzedniego. */
+    given: ['review-rubric'],
+    call: () => run.runEvalSet('review-rubric', 3, null, 'Review rubric'),
+  },
+  {
+    where: 'lab',
+    what: 'list',
+    command: 'list_eval_sets',
+    given: [],
+    call: () => lab.list(null),
+  },
+  {
+    where: 'lab',
+    what: 'board',
+    command: 'read_eval_board',
+    given: ['review-rubric', 8],
+    call: () => lab.board(null, 'review-rubric', 8),
+  },
+  {
+    where: 'lab',
+    what: 'create',
+    command: 'create_eval_set',
+    given: ['Review rubric', AGENT_ID],
+    call: () => lab.create(null, 'Review rubric', { kind: 'agent', id: AGENT_ID }, AGENT_ID),
+  },
+  {
+    where: 'lab',
+    what: 'remove',
+    command: 'delete_eval_set',
+    given: ['review-rubric'],
+    call: () => lab.remove(null, 'review-rubric'),
+  },
+  {
+    where: 'lab',
+    what: 'propose',
+    command: 'propose_eval_cases',
+    given: ['review-rubric', AGENT_ID],
+    call: () => lab.propose(null, 'review-rubric', AGENT_ID),
+  },
+  {
+    where: 'lab',
+    what: 'proposeFix',
+    command: 'propose_eval_fix',
+    given: ['review-rubric', AGENT_ID],
+    call: () => lab.proposeFix(null, 'review-rubric', AGENT_ID),
+  },
+  {
+    where: 'lab',
+    what: 'applyFix',
+    command: 'apply_eval_fix',
+    /* Rewizja pliku agenta z chwili PROPOZYCJI: definicja zmieniona między przeczytaniem
+     * poprawki a jej zastosowaniem ma zapis odrzucić, a nie cofnąć cudzą pracę. */
+    given: [AGENT_ID, 'be terse', REVISION],
+    call: () => lab.applyFix(AGENT_ID, 'be terse', REVISION),
+  },
+  {
+    where: 'lab',
+    what: 'stopProposing',
+    command: 'stop_proposing_cases',
+    given: [],
+    call: () => lab.stopProposing(),
+  },
+  {
+    where: 'lab',
+    what: 'decide',
+    command: 'decide_eval_case',
+    /* Rewizja jedzie z KAŻDYM zapisem: bez niej dwie karty otwarte na jednym zestawie kasują
+     * sobie pracę nawzajem, a odmowa spóźnionego zapisu nie ma się o co oprzeć. */
+    given: ['review-rubric', 'reads-the-guard', REVISION],
+    call: () => lab.decide(null, 'review-rubric', 'reads-the-guard', true, REVISION),
+  },
+  {
+    where: 'lab',
+    what: 'putCase',
+    command: 'put_eval_case',
+    given: ['review-rubric', 'reads-the-guard', REVISION],
+    call: () =>
+      lab.putCase(
+        null,
+        'review-rubric',
+        {
+          id: 'reads-the-guard',
+          name: 'Reads the guard',
+          task: 'Say which file resolves the tenant.',
+          expect: [],
+          command: '',
+          proof: '',
+          status: 'in-use',
+          because: 'src/guard.ts:14',
+        },
+        REVISION,
+      ),
+  },
+  {
+    where: 'lab',
+    what: 'putVariant',
+    command: 'put_eval_variant',
+    given: ['review-rubric', 'with', AGENT_ID, REVISION],
+    call: () =>
+      lab.putVariant(
+        null,
+        'review-rubric',
+        { id: 'with', name: 'With', agent: AGENT_ID, overrides: {} },
+        REVISION,
+      ),
+  },
+  {
+    where: 'lab',
+    what: 'dropVariant',
+    command: 'drop_eval_variant',
+    given: ['review-rubric', 'with', REVISION],
+    call: () => lab.dropVariant(null, 'review-rubric', 'with', REVISION),
+  },
+  {
+    where: 'run',
     what: 'continueRun',
     command: 'continue_run',
     given: ['ship it'],
@@ -737,6 +857,7 @@ const EDGES: ReadonlyArray<readonly [string, object]> = [
   ['memory', memory],
   ['run', run],
   ['settings', settings],
+  ['lab', lab],
   ['skills', skills],
   ['triggers', triggers],
   ['workflows', workflows],

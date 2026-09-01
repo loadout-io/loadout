@@ -461,9 +461,12 @@ describe('the four setup actions cross the true screen and the disk-backed store
     });
     const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
     expect(visible).toContain('Analysis · Project · Every 5 minutes');
+    /* Zdanie o stanie i nazwa czynności to od 2026-08-31 dwa osobne napisy — powód stoi
+       w `./status-is-text-not-a-button.test.tsx`. */
     expect(visible).toContain(
-      'Started Analysis in an unspecified workspace at 2026-08-21 02:12:09 UTC. · Run again',
+      '>Started Analysis in an unspecified workspace at 2026-08-21 02:12:09 UTC.<',
     );
+    expect(visible).toContain('>Run again<');
     expect(visible).not.toContain('Choose a workspace before saving this trigger.');
   });
 
@@ -496,7 +499,8 @@ describe('the four setup actions cross the true screen and the disk-backed store
 
     expect(retryTrigger).toHaveBeenCalledTimes(1);
     const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
-    expect(visible).toContain('That trigger run is still active. · Run again');
+    expect(visible).toContain('>That trigger run is still active.<');
+    expect(visible).toContain('>Run again<');
     expect(visible).not.toContain('An older refusal.');
   });
 

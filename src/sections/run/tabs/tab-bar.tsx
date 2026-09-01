@@ -126,7 +126,12 @@ export function TabBar({
   return (
     <div
       data-tab-bar
-      className="flex shrink-0 items-center gap-1 border-b border-line bg-panel px-2"
+      /* `--well`, nie `--panel`, i to jest naprawa rozjazdu z makieta (`.tabs`,
+         `docs/mockup/index.html:179`). Karta na wierzchu rysuje sie na `--panel` wlasnie po to,
+         zeby wygladac jak wysunieta ku widzowi — a nad paskiem w TEJ SAMEJ barwie nie wysuwala
+         sie nigdzie. Naglowek `./tab.tsx` mowil „pasek jest `--well`" od poczatku; nie mowil
+         tego kod. */
+      className="flex shrink-0 items-center gap-1 border-b border-line bg-well px-2"
       style={{ height: TAB_BAR_HEIGHT }}
     >
       {tabs.map((workspace) => (
@@ -152,14 +157,16 @@ export function TabBar({
         onClick={onOpenFolder}
         aria-label="New terminal"
         title="Open another terminal in this project"
-        className="h-7 shrink-0 rounded-sm px-2 text-muted"
+        /* `.btn-bare`: 28 px, bez obrysu, `--muted` — ten sam prymityw, co `×` na karcie.
+           Padding zostaje wezszy niz 12 px prymitywu, bo to jeden glif, nie napis. */
+        className="btn-bare px-2"
       >
         ＋
       </button>
 
       {/* Nikt nie czeka — nie ma elementu, nie ma pustego miejsca po nim. */}
       {waitingIn === null ? null : (
-        <p data-slots-waiting className="ml-auto truncate text-muted">
+        <p data-slots-waiting className="lead fade-in ml-auto truncate">
           {waitingSentence(busy, atOnce, waitingIn)}
         </p>
       )}

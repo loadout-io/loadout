@@ -138,7 +138,13 @@ beforeEach(() => {
 });
 
 describe('a tile that starts something and walks on can be filled in', () => {
-  it('comes out of the add button empty, in the project folder', () => {
+  /* 2026-08-31 — TO KRYTERIUM ZMIENIŁO ZDANIE, na polecenie właściciela, i tą samą drogą, co
+   * bliźniacze kryterium kafelka „sprawdź" (`canvas/check-tile-can-be-placed.test.ts`). Żądało
+   * kafelka z pustą komendą i folderem `same-copy`; oba razem znaczyły plik, którego
+   * `workflow::file::save` odmawia przed dotknięciem dysku, więc kliknięcie w przycisk kończyło
+   * się czerwonym paskiem 400 ms później i cichą utratą reszty pracy na płótnie. Powód w całości
+   * stoi przy `freshStep` w `canvas/connect.ts`. */
+  it('comes out of the add button ready to be saved, in a folder it can be in', () => {
     const step: ServeStep =
       SERVE.kind === 'serve'
         ? SERVE
@@ -148,16 +154,17 @@ describe('a tile that starts something and walks on can be filled in', () => {
 
     expect(
       step.command,
-      'a made-up example like "npm run dev" looks on the canvas exactly like a decision the ' +
-        'person made — and this tile RUNS what stands in it',
-    ).toBe('');
+      'the tile arrives with no command, so the file it lands in cannot be saved at all — and ' +
+        'the value it does arrive with has to be the one the panel already suggests in grey, ' +
+        'not a second opinion invented for the file',
+    ).toBe('npm run dev');
     expect(
       step.folder,
-      'the same copy as the step before it, because that is where the code somebody just wrote ' +
-        'lives. A server in the project folder serves the version WITHOUT that work — and a page ' +
-        'that opens and shows the old version looks like it works, so nobody reports it. Placed ' +
-        'with nothing before it, this value is a red dot on the canvas before Run.',
-    ).toEqual({ use: 'same-copy' });
+      'the button puts this tile down LOOSE, so nothing comes before it and "the same copy as ' +
+        'the step before it" names a folder there is no way to work out. Rust refuses the save ' +
+        'for exactly that (check::nothing_before_it). The moment somebody draws an arrow into ' +
+        'this tile, that copy is one click away in the panel.',
+    ).toEqual({ use: 'project' });
   });
 
   it('gets its own panel the moment it is picked, with the field for what to run', () => {
@@ -180,8 +187,8 @@ describe('a tile that starts something and walks on can be filled in', () => {
     expect(markup, 'and no field for its name either').toContain('id="serve-name"');
     expect(
       markup,
-      'this tile has no agent, so it inherits nothing and must not be shown the seven-row panel ' +
-        'for agent steps: half of those rows would answer a question nobody asked.',
+      'this tile has no agent, so it inherits nothing and must not be shown the rows an agent ' +
+        'step gets: half of them would answer a question nobody asked.',
     ).not.toContain('id="step-give-up-after"');
     expect(
       markup,

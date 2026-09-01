@@ -13,8 +13,8 @@
  * przeszedłby każde „dla każdej sekcji…", nie sprawdzając ani jednej (ta sama pułapka, co
  * w sections.test.tsx z T-01).
  *
- * Ostatnia asercja — siedem RÓŻNYCH zdań — jest osobno, bo bez niej cały plik przechodzi na
- * powłoce, która wpisuje jedno zdanie wszędzie i akurat trafiła w rejestr jednym z siedmiu.
+ * Ostatnia asercja — sześć RÓŻNYCH zdań — jest osobno, bo bez niej cały plik przechodzi na
+ * powłoce, która wpisuje jedno zdanie wszędzie i akurat trafiła w rejestr jednym z sześciu.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -25,8 +25,9 @@ const EXPECTED = [
   'run',
   'workflows',
   'agents',
-  'skills',
-  'memory',
+  /* Jeden identyfikator zamiast dwóch od 2026-08-31: Skills i Memory zeszły się w Knowledge. */
+  'knowledge',
+  'lab',
   'triggers',
   'settings',
 ] as const;
@@ -49,18 +50,18 @@ function markupFor(id: (typeof EXPECTED)[number]): string {
 }
 
 describe('a section with no screen shows its own sentence, not a blank space', () => {
-  it('greets memory with exactly the sentence its entry holds', () => {
-    const markup = markupFor('memory');
+  it('greets knowledge with exactly the sentence its entry holds', () => {
+    const markup = markupFor('knowledge');
     expect(
       occurrences(markup, 'data-empty'),
-      'memory has no screen here, so the shell has to render exactly one empty screen for it',
+      'knowledge has no screen here, so the shell has to render exactly one empty screen for it',
     ).toBe(1);
     expect(
       emptyStateText(markup),
       'the words on an empty screen come from sectionEntry(id).empty and from nowhere else. ' +
         'A second copy of the sentence inside the shell drifts away from the entry the first ' +
         'time somebody rewords it, and nothing would say so',
-    ).toBe(sectionEntry('memory').empty);
+    ).toBe(sectionEntry('knowledge').empty);
   });
 
   for (const id of EXPECTED) {
@@ -80,13 +81,13 @@ describe('a section with no screen shows its own sentence, not a blank space', (
     });
   }
 
-  it('gives the seven sections seven sentences of their own', () => {
+  it('gives the six sections six sentences of their own', () => {
     const said = EXPECTED.map((id) => emptyStateText(markupFor(id)));
     expect(
       new Set(said).size,
-      'seven sections, seven sentences. One sentence reused everywhere passes every comparison ' +
+      'six sections, six sentences. One sentence reused everywhere passes every comparison ' +
         'above for whichever section it was copied from, and reads like a bug on the other ' +
-        'six; the shell said: ' +
+        'five; the shell said: ' +
         JSON.stringify(said),
     ).toBe(EXPECTED.length);
   });

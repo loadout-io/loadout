@@ -414,6 +414,21 @@ oszczędza całą klasę pracy — **szkło ma co załamywać bez przezroczysteg
 `transparent: true`, żadnego `windowEffects`, żadnej zależności od tapety użytkownika. Kolumna
 czytania siedzi na czystym `--bg`, więc kod i tekst nigdy nie leżą na barwie.
 
+**Trzy punkty, nie dwa** (2026-08-31). Dwa punkty przy jednej krawędzi dają światło, które pada
+z jednej strony i gaśnie — okno wygląda wtedy jak zdjęcie z winietą, a nie jak powierzchnia.
+Trzeci domyka przekątną w przeciwległym rogu i jest o połowę słabszy (6% zamiast 10%), więc
+kolumna czytania nadal nie leży na barwie. Barwa jest ta sama, którą aurora już niosła — trzeci
+punkt nie jest trzecim kolorem.
+
+**Ziarno.** Nad wszystkim leży `body::after`: szum `feTurbulence` jako data-URI, `opacity 0.025`,
+`pointer-events: none`. Problem, który rozwiązuje, jest mierzalny, nie estetyczny: gradient
+o kontraście 6–15% rozłożony na 900 px wysokości przekracza 8-bitową rozdzielczość kanału,
+sąsiednie pasy różnią się o jeden krok wartości i widać je jako **prążki** — tym wyraźniej, im
+większe okno. Szum rozbija granicę pasa, bo przesuwa piksele po obu jej stronach w losowe strony;
+to ta sama sztuczka, którą druk nazywa rastrem. `pointer-events: none` jest tu warunkiem, nie
+ozdobą: bez niego ta warstwa zjada każde kliknięcie. Ziarno gaśnie razem z aurorą przy
+`prefers-reduced-transparency`, bo na płaskim tle nie ma czego rozbijać i jest wtedy samym szumem.
+
 **Pływa dokładnie jedna rzecz i tylko ona ma cień.** Refleks `inset` na górnej krawędzi szkła
 nie jest głębią — to światło na materiale i wolno go mieć wszędzie.
 
@@ -441,13 +456,36 @@ a nie przemilczane.
 
 | Klasa | Czym jest | Kto ją nosi |
 |---|---|---|
-| `.glass` | wypełnienie, rozmycie, refleks na górnej krawędzi | pasek, szyna, karty |
-| `.pane` | `.glass`, które **pływa**: promień `lg`, obrys mocny, cień | nawigacja |
+| `.glass` | płaskie wypełnienie `--panel`, rozmycie 30px, refleks 10% | pasek, szyna, karty |
+| `.pane` | `.glass`, które **pływa**: gradient, rozmycie 36px, refleks 18%, promień `lg`, cień | nawigacja |
 | `.paper` | nieprzejrzysta kartka, promień `md`, obrys `line` | treść |
 
 Definicje mieszkają w warstwie `components` arkusza, nie w komponentach: rozmycie zapisane
 w komponencie jest literałem dokładnie tam, gdzie `checks/quick-tokens.sh` go zamyka, a przy
 trzech powierzchniach szklanych byłyby to trzy kopie jednej decyzji.
+
+**Powłoka ma wypełnienie gradientowe, szkło zostaje płaskie — i to jest cała różnica między
+nimi.** Zmierzone 2026-08-31: `--panel` i `--raised` to dziś ta sama wartość co do bajta,
+a `.glass` różni się od gołego `bg-panel` wyłącznie rozmyciem i refleksem. Płaska alfa nie niesie
+kierunku światła: powierzchnia wygląda tak samo u góry i u dołu, czyli nie wygląda na materiał.
+Do 2026-08-31 `.pane` i `.glass` dzieliły wypełnienie co do bajta i różnił je **cień** — czyli
+jedyna rzecz, której `prefers-reduced-transparency` nie zdejmuje.
+
+| Token | Wartość | Do czego |
+|---|---|---|
+| `--glass-fill:` | `linear-gradient(160deg, biel 7,5% → 3,5% → 5,5%)` | wypełnienie powłoki |
+| `--glass-blur-strong:` | `36px` | rozmycie powłoki |
+| `--glass-highlight-strong:` | `inset 0 1px 0` bieli 18% | refleks powłoki |
+| `--shadow-accent:` | `0 4px 14px` akcentu 22% | cień pod `.btn-primary` |
+| `--focus-ring:` | `0 0 0 3px --accent-ring` | pierścień skupienia prymitywu |
+| `--disabled-opacity:` | `0.4` | wygaszenie kontrolki wyłączonej |
+
+Żaden z nich nie jest nowym kolorem: wszystkie sześć to zapisy istniejących barw, a gradient
+powłoki jest tą samą bielą-alfą, którą niesie `--panel`, rozłożoną na dwa końce powierzchni.
+`--shadow-accent` jest **czwartym** cieniem i nagłówek nad `--shadow-sm` żąda, żeby odpowiedzieć,
+co pływa, a czego dotąd nie było. Odpowiedź: nic nie pływa. Ten cień nie jest głębią, jest
+**barwą** — przycisk podstawowy stoi na płaskim akcencie i bez podbarwionego rozmycia pod spodem
+czyta się jak prostokąt wklejony w tło. Nie ma prawa trafić na nic innego.
 
 **`prefers-reduced-transparency: reduce` zamienia wszystkie trzy naraz** na `--solid` i zdejmuje
 aurorę. Wymóg HIG. Zamiana jednej z trzech jest gorsza niż żadnej: okno miesza wtedy dwa
@@ -471,6 +509,125 @@ dokładnie tak samo jak ozdobna krzywa między zakodowanymi na sztywno współrz
 
 Definicja komponentu = tokeny, nie hexy. Poniżej pełna lista v1.
 
+### Warstwa prymitywów: nazwa zamiast napisu
+
+**Prymityw to rola zapisana raz, jako klasa w `@layer components` arkusza — nie napis z listą
+klas przepisywany w komponencie.** Do 2026-08-31 warstwy prymitywów nie było i to jest cała
+przyczyna dryfu opisanego niżej.
+
+**Co zmierzono, 2026-08-31.** W 59 nietestowych plikach `.tsx` stoi **641** napisów-list-klas,
+z czego **376 to dosłowne duplikaty** innego napisu. Sam przycisk podstawowy ma **18 wystąpień
+pod 9 nazwami stałych, w 5 zapisach geometrii**, które sprowadzają się do 3 realnych par
+pikseli — mimo że §6 dopuszcza jedną. Etykieta pola: 74 napisy pod 6 nazwami. Zdanie
+drugoplanowe: 118 napisów w dwóch różnych stopniach drabinki dla jednej roli. Wartość maszynowa:
+73 napisy, w każdym `font-mono` napisane obok stopnia, który **jest** z rodziny mono.
+
+**Dlaczego żaden check tego nie złapał i dlaczego to nie jest wada checka.**
+`checks/tokens.sh` pilnuje barw i rozmiarów: `h-9` obok `h-8` to dwie **poprawne** klasy
+tokenowe. Geometrii nie porównywał z tym dokumentem nikt, bo nie było czego porównywać —
+nie istniała ani jedna nazwa, która by ją niosła.
+
+**Gdzie mieszkają.** W `@layer components` w `src/styles/theme.css`, obok `.field`, `.glass`,
+`.pane` i `.paper`. Nie w komponencie: reguła w komponencie jest kopią decyzji, a przy 18
+wystąpieniach kopii jest 18. Nie w `utilities`: Tailwind wstawia tam swoje klasy, więc reguła
+dopisana do tej samej warstwy biłaby każdą klasę narzędziową i nie dałoby się jej znieść nigdzie.
+Poniżej `utilities` klasa narzędziowa nadal wygrywa — czyli `w-full`, `ml-auto` czy `flex-1`
+dopisane do prymitywu robią dokładnie to, co obiecują.
+
+**Czego prymityw NIE wchłania:** kleju układu (`flex items-center gap-2`, siatek
+`grid-cols-[...]`). To nie jest rola, tylko rozmieszczenie, i ono należy do miejsca.
+
+| Klasa | Rola | Ton | Zastępuje |
+|---|---|---|---|
+| `.btn` | przycisk drugoplanowy — obrys mocny, wypełnienie szkła, 32px | — | 8 wystąpień, 3 nazwy |
+| `.btn-primary` | podstawowy — **płaski** akcent, 36px, cień w barwie akcentu | — | 18 wystąpień, 9 nazw |
+| `.btn-quiet` | cichy — bez wypełnienia, obrys `--line`, 28px | — | 14 wystąpień, 4 nazwy |
+| `.btn-bare` | goły — bez obrysu i bez wypełnienia do najechania, 28px | — | znaki i zamknięcia (`×`) |
+| `.btn-danger` | niszczący — obrys `--fail-edge`, bez wypełnienia, 32px | — | 5 wystąpień |
+| `.btn-attend` | czeka na ciebie — obrys `--attend-edge`, 32px | — | 1 wystąpienie, było poza dokumentem |
+| `.chip` | pigułka odczytu, 20px, promień `pill` | `data-tone` | 11 wystąpień w 5 geometriach |
+| `.row` | wiersz listy albo menu, z myjką pod kursorem | `aria-*` | 6 wystąpień, 2 paddingi, 2 podświetlenia |
+| `.stack` | etykieta nad kontrolką, odstęp 4px | `data-gap` | 37 wystąpień |
+| `.label` | etykieta pola, zdaniowa | — | 74 napisy |
+| `.lead` | zdanie drugoplanowe, `--t-note`, `--muted` | `data-tone` | 118 napisów |
+| `.value` | wartość maszynowa — rodzina **wchodzi razem ze stopniem** | `data-tone`, `data-strong` | 73 napisy |
+| `.card` | pojemnik treści, promień `md`, padding 12px | `data-tone`, `data-interactive` | 31 wystąpień |
+| `.screen-head` | pasek nagłówka ekranu, 52px, bez tła | — | 11 wystąpień w 5 geometriach |
+| `.screen-body` | jedyny przewijany obszar sekcji, padding 16px | — | 15 wystąpień w 5 geometriach |
+| `.mark` | znak pustego ekranu, 40px, obrys kreskowany | `data-tone` | 9 ręcznych kopii |
+| `.field` | pole formularza — **istniał od 2026-08-18**, dostał trzy brakujące stany | — | 18 wołających |
+| `.thinking` | „agent myśli" — trzy kropki | — | nie było czego zastępować |
+| `.working` | pasek nieokreślony dla dysku i IPC | — | nie było czego zastępować |
+| `.enter` / `.fade-in` | wejście elementu | — | §7 |
+
+**Ton idzie atrybutem `data-tone`, nie klasą-bliźniakiem.** `.chip-fail` obok `.chip` to dwa
+napisy, które trzeba trzymać zgodnie ręcznie; `[data-tone]` ma wyższą specyficzność od samej
+klasy, więc ton wygrywa z bazą **niezależnie od kolejności reguł w pliku**. Przyciski są
+wyjątkiem i mają własne nazwy klas, bo ton przycisku zmienia także jego **wysokość**, a nie
+tylko barwę. Ton chipa nie wprowadza piątego koloru semantycznego: `live`, `attend`, `fail`,
+`human` i `accent` już istnieją.
+
+### Cztery stany, w każdym prymitywie
+
+Zmierzone przed tą zmianą: w komponentach było **6** wariantów `hover:`, **0** `focus-visible:`,
+**0** `active:` i **4** `disabled:` — przy 119 przyciskach i 38 stałych klasowych, z których
+reakcję na najechanie miała **jedna**. Kontrolka, która nie odpowiada na najechanie, czyta się
+jak napis; kliknięcie, po którym nic nie drgnie, czyta się jak kliknięcie, które nie doszło.
+
+| Stan | Co robi | Skąd wartość |
+|---|---|---|
+| `:hover` | myjka `--hover` albo mocniejszy obrys | token |
+| `:active` | wciśnięcie | `--press` |
+| `:focus-visible` | pierścień | `--focus-ring` |
+| `:disabled` | wygaszenie, kursor `not-allowed`, brak wciśnięcia | `--disabled-opacity` |
+
+Trzy wartości mają nazwy, a nie liczby, i to jest cała różnica: `disabled:opacity-40` wpisane
+w piątym komponencie **nie rozjeżdża się z niczym głośno**. Cztery ręczne bliźniaki stanu
+wyłączonego (`SAVE_OFF`, `ADD_OFF`, `PRIMARY_OFF`, `RUN_OFF`) znikają w całości — bez ani jednej
+nowej klasy, bo stan wyłączony jest regułą, a nie drugim przyciskiem.
+
+**Pierścień, nie obrys, i to jest odstępstwo nazwane.** Prymityw zdejmuje obrys globalny
+(`outline: none`) i rysuje `--focus-ring`, bo prostokąt 2px odsunięty o 2px od kontrolki
+o promieniu 9px rysuje się **obok** jej rogu, a pierścień idzie po rogu. Globalna reguła
+`:focus-visible` zostaje bez zmiany i obsługuje wszystko, co jeszcze nie jest prymitywem;
+warunkiem jej zniknięcia jest domknięcie migracji sekcji. Do tego czasu **są dwie pisownie
+jednego faktu** i to jest dług, nie decyzja.
+
+### Rozbieżności rozstrzygnięte jedną wartością
+
+Prymitywu nie da się napisać bez tych rozstrzygnięć. Każde idzie za tym dokumentem, nie za kodem:
+
+| Co | Było w kodzie | Jest |
+|---|---|---|
+| wysokość przycisku podstawowego | 36px ×9, 32px ×5 | **36px** |
+| padding przycisku podstawowego | 16px ×11, 12px ×3 | **16px** |
+| wysokość przycisku cichego | 28px ×10, 32px ×4 | **28px** |
+| wysokość przycisku niszczącego | 32px ×3, 28px ×2 | **32px** |
+| wysokość chipa | 20px, 19px, 17px, brak | **20px** |
+| padding przewijanego ciała | 16px ×6, 18px ×3, 14px ×2 | **16px** |
+| padding karty | 12px ×8, 16px ×3 | **12px** |
+| znak pustego ekranu | 40px ×1, 32px ×9 | **40px** |
+| stopień zdania drugoplanowego | `--t-body` ×17, `--t-note` ×7 | **`--t-note`** |
+
+Zdanie **pierwszoplanowe** nie potrzebuje po tej zmianie żadnej klasy: `--t-body` jest stopniem
+prozy i `body` już go ma. To jest połowa naprawy tej rodziny — napis `text-body text-body`
+(3 wystąpienia) czytał się jak literówka i nią był.
+
+**Kwadrat tożsamości agenta: `22px`, rozstrzygnięte 2026-08-31 decyzją właściciela.**
+Dokument mówił dwie rzeczy naraz — §3 `22px`, `agent-card` niżej `14px` — a kod miał `22px`
+w dwóch zapisach. Wygrywa §3, bo to sekcja o znaku i tożsamości, i bo tak stoi w kodzie:
+rozstrzygnięcie zgadza dokument z rzeczywistością, zamiast zamawiać zmianę w trzech miejscach.
+Opis `agent-card` niżej jest poprawiony na tę samą liczbę.
+
+Promień bierze **rolę kontrolki** (`--radius-sm`), zgodnie z tabelą promieni w tym rozdziale —
+kwadrat tożsamości jest tam wymieniony wprost.
+
+Uwaga o widoku pracy, sprawdzona przy tej samej okazji: **tam kwadratu tożsamości nie ma**.
+Kto jest autorem, mówi w nim BARWA NAPISU (`color: var(--id-N)`, `rail/colour.ts`), a jedyny
+mały kształt w strumieniu to pulsująca kropka stanu — pigułka, i słusznie. Wcześniejsza notatka
+mówiła o trzech kwadratach bez promienia w tym widoku; po warstwie prymitywów nie ma tam ani
+jednego, więc pytanie o ich promień nie zachodzi.
+
 ### Promień bierze się z ROLI, nie z rozmiaru elementu
 
 To jest cała reguła i nie ma od niej wyjątku. Pasmo ma cztery wartości i każda odpowiada na inne
@@ -486,19 +643,45 @@ pytanie o element:
 Piąta wartość jest piątą decyzją. Wartość arbitralna (`rounded-[11px]`) jest decyzją zapisaną tam,
 gdzie nikt jej nie znajdzie.
 
+**Nazwy klas prymitywów, po jednej na nagłówek poniżej.** Nagłówki zostają dosłownie takie, jakie
+były — wyrocznia `src/sections/agents/library-is-reachable.test.tsx` czyta regułę `button-danger`
+wprost z tego dokumentu po treści nagłówka, a przepisanie go zamieniłoby żywe kryterium
+w porównanie z pustym napisem:
+`button-primary` → `.btn-primary` · `button-secondary` → `.btn` · `button-quiet` → `.btn-quiet` ·
+`button-bare` → `.btn-bare` · `button-danger` → `.btn-danger` · `button-attend` → `.btn-attend` ·
+`chip` → `.chip` · `field` → `.field` · `empty-state` → `.mark`.
+
 ### `button-primary`
-`background: --accent` · `color: --bg` · `--t-ui` · `--radius-sm` · `padding 8px 16px` · `height 36px`
-Active: `transform: scale(0.98)`. Focus: `outline: 2px solid --accent; outline-offset: 2px`.
+`background: --accent` · `color: --bg` · `--t-ui` · `--radius-sm` · `padding 0 16px` · `height 36px`
+Cień: `--shadow-accent`. Hover: `--accent-hover`. Active: `--accent-active`, cień zgaszony.
+
+**Wypełnienie jest PŁASKIE: bez gradientu i bez poświaty.** Wypełniony akcent jest już
+najmocniejszą rzeczą na ekranie i nie potrzebuje pomocy; gradient na 36 px wysokości widać
+wyłącznie jako brud. Cień jest jedynym cieniem w aplikacji, który **nie** mówi „to pływa" —
+mówi „to jest z materiału", i dlatego jest podbarwiony akcentem, a nie czarny.
 
 ### `button-secondary`
 `background: --raised` · `color: --ink` · `border: 1px solid --line-strong` · `--t-ui` · `--radius-sm` · `height 32px`
+To jest przycisk **domyślny**: klasa bez przyrostka, bo najczęstszy przypadek ma najkrótszą nazwę.
 
 ### `button-quiet`
 `background: transparent` · `color: --body` · `border: 1px solid --line` · `--t-ui` · `--radius-sm` · `height 28px`
 
+### `button-bare`
+Bez obrysu i bez wypełnienia, aż do najechania · `color: --muted` · `height 28px`.
+Dla znaków i zamknięć (`×`), gdzie obrys wokół jednego glifu rysuje pudełko, a nie przycisk.
+
 ### `button-danger`
 Jak `button-secondary`, ale `border: 1px solid --fail-edge` · `color: --fail`. Bez wypełnienia — akcja
 niszcząca nie ma być najbardziej rzucającym się w oczy elementem, ma być rozpoznawalna.
+
+### `button-attend`
+Jak `button-danger`, ale na tonie `attend`: `border: 1px solid --attend-edge` · `color: --attend`.
+
+**Ten przycisk istniał w kodzie i nie istniał w tym dokumencie** (`src/sections/run/start.tsx`,
+jedno wystąpienie). To nie jest piąty kolor semantyczny — `attend` jest jednym z czterech — ale
+brak wiersza tutaj znaczył, że warstwa prymitywów albo przewiduje ten ton, albo zostawia jeden
+przycisk sierotą poza warstwą. Dopisany 2026-08-31 jako opis stanu faktycznego.
 
 ### `chip`
 `padding 2px 8px` · `--t-label` · `height 20px` · **`--radius-pill`** · `border 1px solid {stan}-edge` ·
@@ -535,6 +718,11 @@ Skupienie mieszka też w jednym miejscu: `.field:focus` daje obwódkę w akcenci
 `:focus-visible` obrys — obwódka odpowiada na „które pole jest aktywne", obrys na „gdzie jest
 klawiatura". Dopisywanie tego narzędziem na każdym polu byłoby trzecią kopią podjętej decyzji.
 
+**Trzy brakujące stany dopisane 2026-08-31.** `:hover` podnosi obwódkę do `--accent-ring`,
+`:focus-visible` dokłada pierścień, `:disabled` przygasza tekst do `--muted` i stawia kursor
+`not-allowed`. Ten ostatni kasuje stałą `FIELD_OFF = 'field text-muted'` z komponentu — drugi
+opis tego samego pola, w miejscu, w którym nikt go nie szuka.
+
 **Etykieta zostaje nad polem, i to jest decyzja.** Inspektor dwukolumnowy z etykietą wyrównaną do
 prawej (Ustawienia systemowe) potrzebuje szerokości, której ten panel nie ma: przy 330 px kolumna
 etykiet szeroka na 90 px łamie „Give up after" i „File access" na dwa wiersze, a pole
@@ -567,7 +755,7 @@ Klik rozwija pełny zapis kroku pod spodem.
 ### `agent-card` — kafelek w prawej szynie
 `background: --panel` · `border: 1px solid --line` · `padding 12px`.
 Aktywny: `border-color: --line-strong`, lewy pasek `inset 2px 0 {kolor agenta}`.
-Zawiera: kwadrat 14px w kolorze agenta, nazwę (`--t-mono-strong`), rolę (`--t-label`, `--muted`),
+Zawiera: kwadrat 22px w kolorze agenta, nazwę (`--t-mono-strong`), rolę (`--t-label`, `--muted`),
 jedno zdanie o tym, co robi (`--t-body`), chip stanu.
 **Maksymalnie cztery linie tekstu.** Piąta linia to błąd projektowy.
 
@@ -605,22 +793,106 @@ czynności — i to jest decyzja, nie przeoczenie.
 
 ## 7. Ruch
 
-Jedna mikrointerakcja w całym systemie: `transform: scale(0.98)` na wciśnięciu.
-Krzywa jest jedna i pochodzi z domu: `--transition 200ms cubic-bezier(0.32, 0.72, 0, 1)`,
-wariant szybki `--transition-fast 130ms`.
+Ruch odpowiada tu na trzy pytania i na żadne inne: **czy to zadziałało** (mikrointerakcja),
+**czy to trwa** (wskaźnik trwania), **czy to właśnie weszło** (wejście). Wszystko poza tą
+trójką jest ozdobą i nie wchodzi.
 
-Poza tym:
+### Tokeny: czas osobno od krzywej
+
+| Token | Wartość | Do czego |
+|---|---|---|
+| `--transition` | `200ms cubic-bezier(0.32, 0.72, 0, 1)` | **wyłącznie** skrót `transition:` |
+| `--transition-fast` | `130ms cubic-bezier(0.32, 0.72, 0, 1)` | to samo, dla stanów kontrolki |
+| `--ease-out` | `cubic-bezier(0, 0, 0.2, 1)` | krzywa bez czasu |
+| `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | krzywa z przekroczeniem celu, **tylko wejście** |
+| `--duration` | `200ms` | czas bez krzywej |
+| `--duration-fast` | `130ms` | czas bez krzywej |
+| `--press` | `scale(0.98)` | jedyne wciśnięcie w systemie |
+
+**W skrócie `animation` używa się WYŁĄCZNIE `--duration` / `--duration-fast` plus osobnej
+krzywej — nigdy `--transition`.** Powód jest mierzalny, nie stylistyczny: `--transition` niesie
+czas **i** krzywą, a skrót `animation` ma slot na **drugi** czas i czyta go jako opóźnienie.
+Zapis `animation: rise 320ms var(--transition) both` rozwija się do „320 ms ruchu i **200 ms
+zwłoki**". Zmierzone 2026-08-31 w repo obok: **68 animacji jest tak opóźnionych niechcący,
+a dwie nie ruszają wcale.** Awaria jest cicha — nic nie pada, element po prostu rusza później
+albo nigdy.
+
+Do 2026-08-31 pierwsze trzy tokeny nie miały **ani jednego wołającego** (`grep -rn
+'var(--transition' src/` dawał zero). To ta sama klasa awarii co krój zadeklarowany bez pliku:
+token wygląda na rozstrzygnięcie i nie robi nic (niezmiennik 21). Wszystkie siedem ma teraz
+wołających w `theme.css`.
+
+### Sprężyna wchodzi, bo zniknęła przesłanka zakazu
+
+Do 2026-08-31 stało tu zdanie: „`--ease-spring` z domu **nie wchodzi**: nie mamy ani jednej
+powierzchni, która wjeżdża." To był zakaz **warunkowy z podaną przesłanką**, a nie reguła —
+i tak został napisany celowo.
+
+Przesłanka zniknęła. Przebudowa wprowadza powierzchnie, które pojawiają się nad tym, co już
+jest na ekranie: wysuwany strumień kroku, karta pytania, panel inspektora. Element, który
+**pojawia się skokiem**, czyta się jak przeskok widoku — oko nie wie, czy patrzy na to samo
+miejsce. Element, który dorasta do miejsca z lekkim przekroczeniem celu, mówi „przyszedłem
+stamtąd" i nie zabiera na to więcej niż 200 ms.
+
+Reguła sprężyny jest jedna i jest wąska:
+
+- **wyłącznie na WEJŚCIU elementu** (`animation: … both`), nigdy na hoverze i nigdy
+  na przejściu. Przekroczenie celu na hoverze czyta się jak usterka: element wraca do wartości,
+  którą chwilę wcześniej minął. Tak to działa w repo obok — 29 użyć, wszystkie na pojawieniu się;
+- nośnikami są dwie klasy: `.enter` (`--duration` + `--ease-spring`) i `.fade-in`
+  (`--duration-fast` + `--ease-out`, bez sprężyny — to jest obiecane niżej wejście linii historii).
+
+**Sprężyna jest na SKALI, nie na przesunięciu, i to jest ograniczenie narzucone, nie wybór.**
+`src/ui/shell/palette.test.ts` żąda, żeby skompilowany arkusz nie zawierał napisu `slate` —
+celem jest domyślna paleta Tailwinda (`bg-slate-800`). Napis `translateY` zawiera `slate` co do
+znaku, więc **każde** przesunięcie zapisane transformacją zapala tę wyrocznię. To jest fałszywe
+trafienie tamtego punktu i jest zgłoszone jako fałszywe; obejście go pisownią byłoby oszustwem,
+więc wejście jest zapisane skalą, a podskok kropek i bieg paska — właściwościami `bottom`
+i `left`.
+
+### Co zostaje słuszne i nie drgnęło
+
+- Jedna mikrointerakcja w całym systemie: `--press` na wciśnięciu. Ta sama wartość, którą podaje
+  makieta (`docs/mockup/index.html:70`); od 2026-08-31 ma nazwę, żeby prymitywy mogły ją
+  powtórzyć bez powtarzania liczby.
 - Zmiana treści w strefie TERAZ: **bez animacji**. Tekst po prostu jest inny. Animowanie
   przepisania linii sprawia, że oko goni ruch zamiast czytać.
-- Wejście nowej linii historii: `opacity 0 → 1` w `--transition-fast`. Bez przesunięcia.
+- Wejście nowej linii historii: `opacity 0 → 1` w `--duration-fast`. Bez przesunięcia.
+  Klasa `.fade-in`.
 - Pulsowanie: **tylko** kropka pracującego agenta, `opacity 1 → 0.35`, `1.4s steps(2)`.
-  Skokowo, nie płynnie — płynne pulsowanie czyta się jak oddychanie i rozprasza.
+  **Skokowo, nie płynnie** — płynne pulsowanie czyta się jak oddychanie i rozprasza.
 - **Kropka gotowości w stopce nie pulsuje i nie jest akcentem.** Dostępność dostawcy nie jest
   ani interakcją, ani „teraz"; jest przygaszona i stoi w miejscu. Sufit z `ARCHITECTURE §7` daje
   **dwa** regiony animujące się od jednego zdarzenia i ta kropka nie ma prawa być jednym z nich.
-- `--ease-spring` z domu **nie wchodzi**: nie mamy ani jednej powierzchni, która wjeżdża.
 
-`@media (prefers-reduced-motion: reduce)` wyłącza wszystko powyżej.
+### Wskaźnik trwania: dwa, i żaden nie jest wirującym krążkiem
+
+Ta aplikacja uruchamia równoległe biegi agentów po kilkanaście minut, a do 2026-08-31 nie miała
+**ani jednego** wskaźnika trwania: 41 metod przechodzi granicę bez jednego piksela zmiany
+w chwili kliknięcia. Kliknięcie, po którym ekran milczy, czyta się jak kliknięcie, które nie
+doszło — i drugie kliknięcie jest wtedy winą interfejsu, nie człowieka.
+
+| Klasa | Kiedy | Kształt |
+|---|---|---|
+| `.thinking` | agent myśli | trzy kropki, fala z opóźnieniem `.16s` / `.32s`, `currentColor` |
+| `.working` | dysk, granica IPC | pasek nieokreślony, segment w `--live` |
+
+**Nie wirujący krążek.** Repo obok ma ich 28 kopii i to jest tam nazwane wadą: krążek nie mówi
+ani **co** trwa, ani **ile zostało**, a kręci się tak samo przy 200 ms i przy 20 minutach.
+
+Pasek jest **nieokreślony**, bo zapisu na dysk i przejścia przez IPC nie da się zmierzyć
+w procentach; pasek udający postęp tam, gdzie postępu nikt nie liczy, kłamie dokładnie tak samo
+jak ozdobna krzywa między zakodowanymi współrzędnymi (niezmiennik 17). Bierze `--live`, bo
+reguła formy z §3 wymienia „aktywny segment paska" wprost — akcent tu nie wchodzi, bo akcent
+mówi „to jest interaktywne", a paska nie da się kliknąć.
+
+Kropki `.thinking` są **dziećmi** elementu, nie pseudoelementami: trzy `<span aria-hidden>` obok
+zdania, które niesie treść.
+
+`@media (prefers-reduced-motion: reduce)` wyłącza wszystko powyżej — jednym blokiem na końcu
+arkusza, który neutralizuje każdą animację i każde przejście w aplikacji. Po jego zadziałaniu
+kropki stoją nieruchomo w trzech widocznych punktach, a pasek zostaje statycznym segmentem:
+żaden z tych wskaźników nie znika, tylko przestaje się ruszać.
 
 ---
 
@@ -672,3 +944,13 @@ Komponent nie trafia do repo, dopóki:
       odczyt `pill`), a nie z rozmiaru elementu
 - [ ] pole formularza bierze klasę `.field`, a nie opisuje się samo
 - [ ] `data-empty` na pustym ekranie siedzi na elemencie, który niesie **samo zdanie**
+- [ ] rola, którą niesie prymityw z §6, jest zapisana **jego nazwą**, a nie listą klas: przycisk,
+      chip, wiersz listy, etykieta, zdanie drugoplanowe, wartość maszynowa, karta, pasek nagłówka,
+      przewijane ciało, znak pustego ekranu
+- [ ] każda kontrolka odpowiada na `:hover`, `:active`, `:focus-visible` i `:disabled` — prymityw
+      daje wszystkie cztery, więc kontrolka, która ich nie ma, nie jest prymitywem i ma powód
+- [ ] stan wyłączony jest **regułą**, a nie drugą stałą klasową obok pierwszej
+- [ ] operacja, która może trwać dłużej niż jedno mrugnięcie, mówi to na ekranie (`.thinking`
+      albo `.working`) — a po jej końcu ekran nie jest **bardziej pusty** niż przed kliknięciem
+- [ ] `--ease-spring` stoi wyłącznie na wejściu elementu, nigdy na hoverze ani na przejściu
+- [ ] w skrócie `animation` stoi `--duration`, nigdy `--transition`: ten drugi wnosi cichą zwłokę

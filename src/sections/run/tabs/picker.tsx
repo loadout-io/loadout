@@ -46,28 +46,28 @@ export function CloseConfirm({ pending, onConfirm, onDismiss }: CloseConfirmProp
     <div
       role="dialog"
       aria-label={'Close ' + pending.name}
-      className="flex flex-col gap-3 rounded-md border border-line bg-overlay p-4"
+      /* `.card` z `theme.css` niesie obrys, promien i padding; `.stack[data-gap="3"]` — kolumne
+         z odstepem 12 px. Wypelnienie zostaje `--overlay`, bo to jest jedyna powierzchnia
+         w tym ekranie, ktora lezy NAD przyciemnionym tlem i musi byc krylaca.
+
+         `.enter` bo ta karta POJAWIA sie w odpowiedzi na `×`: pytanie, ktore wyskakuje bez
+         ruchu, czyta sie jak pytanie, ktore stalo tam wczesniej i zostalo przeoczone.
+         Jeden region na to zdarzenie — przyciemnione tlo pod spodem stoi (ARCHITECTURE §7). */
+      className="card stack enter bg-overlay"
+      data-gap="3"
     >
       <p data-close-confirm className="text-body text-ink">
         {question(pending)}
       </p>
 
       <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="h-control rounded-sm border border-line px-3 text-ui text-body"
-        >
+        <button type="button" onClick={onDismiss} className="btn">
           Keep it open
         </button>
         {/* Accent jest jedynym kolorem interaktywnym w całej aplikacji (DESIGN §3), także tam,
          * gdzie przycisk kończy czyjąś pracę: to jest przycisk podstawowy tego pytania, a nie
          * piąty sens dołożony do koloru ostrzeżenia. */}
-        <button
-          type="button"
-          onClick={onConfirm}
-          className="h-control rounded-sm bg-accent px-3 text-ui text-bg"
-        >
+        <button type="button" onClick={onConfirm} className="btn-primary">
           Stop and close
         </button>
       </div>

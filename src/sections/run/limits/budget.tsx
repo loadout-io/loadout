@@ -17,10 +17,14 @@
  * była podpowiedź `no limit` — czytana raz, kiedy nikt nie patrzy. Dziś pole otwiera się kwotą
  * z Settings, a puste znaczy „człowiek go zdjął" i mówi to zdanie obok (`NO_CEILING_SAID`).
  *
- * ZDANIE POMOCY SCHODZI DO `title`, dokładnie jak przy suwaku obok i z tego samego zmierzonego
- * powodu: pas nad obszarem pracy ma sufit 96 px (`docs/ARCHITECTURE.md` §7), a to zdanie czyta
- * się raz. Nie znika — mówi o LUCE W POMIARZE, a nie o działaniu kontrolki, więc człowiek, który
- * go nigdy nie zobaczy, czyta sufit jako obietnicę, której produkt nie może dotrzymać.
+ * 2026-08-31 — ZDANIE O GRANICY SUFITU ZESZŁO Z `title` NA EKRAN, do karty w Settings. Stało
+ * tu wcześniej, że schodzi ono do dymka „dokładnie jak przy suwaku obok", a powodem był sufit
+ * 96 px nad obszarem pracy (`docs/ARCHITECTURE.md` §7). Sufit chrome jest prawdziwy, ale dymek
+ * nie jest jego jedyną alternatywą i był najgorszą z możliwych: `title` pojawia się po sekundzie
+ * trzymania myszy w bezruchu i nie istnieje dla klawiatury, dla czytnika ekranu ani na dotyku.
+ * Zdanie mówi o LUCE W POMIARZE, a nie o działaniu kontrolki, więc człowiek, który go nigdy nie
+ * zobaczy, czyta sufit jako obietnicę, której produkt nie może dotrzymać. Cały powód wyboru
+ * miejsca stoi przy [`BUDGET_HELP`].
  *
  * Czysta funkcja stanu na markup: nie trzyma własnego stanu i nie wie, że istnieje `invoke()`.
  * `onChange` jest WYMAGANY (niezmiennik 16) — dokładnie z tego powodu, co przy suwaku obok.
@@ -34,14 +38,32 @@ const FIELD_ID = 'budget-usd';
 const SMALLEST = 0.01;
 
 /**
- * Zdanie pomocy — i mówi ono o LUCE W POMIARZE, nie o działaniu kontrolki.
+ * Zdanie o LUCE W POMIARZE — czego ten sufit nie obejmuje.
  *
  * Krok Codeksa nie mówi, ile kosztowała jego tura, więc liczy się do sumy jako zero: bieg
  * z samych takich kroków nigdy nie dobije do sufitu, choć naprawdę kosztuje. Zdanie zniknie
- * stąd w dniu, w którym tamten vendor zacznie podawać cenę (T-97).
+ * stąd w dniu, w którym tamten dostawca zacznie podawać cenę (T-97).
+ *
+ * 2026-08-31 — ZESZŁO Z `title` NA EKRAN, i to jest cała naprawa. Do tego dnia jedynym
+ * nośnikiem tego zdania był natywny dymek pola „Spend at most $": tekst, który pojawia się
+ * po sekundzie trzymania myszy w bezruchu i nie istnieje ani dla klawiatury, ani dla czytnika
+ * ekranu, ani na dotyku. Pole wyglądało więc na twardy sufit, a kroki jednego z dwóch
+ * dostawców nie dokładały do tej kwoty ani centa (niezmiennik 29).
+ *
+ * DLACZEGO STAŁA ZOSTAJE TUTAJ, SKORO RENDERUJE JĄ `sections/settings/index.tsx`. Ten plik
+ * jest domem SŁÓW sufitu wydatku — stoją tu obok siebie jego nazwa, zdanie o zdjęciu go i to
+ * zdanie o jego granicy. Dwie kopie tego samego zdania w dwóch sekcjach rozjechałyby się przy
+ * pierwszej zmianie brzmienia (niezmiennik 13).
+ *
+ * DLACZEGO NIE W PASKU RUN, obok pola, które to zdanie kwalifikuje. Pasek Run jest widokiem
+ * DOMYŚLNYM, a jego gęstość jest mierzona i zapadkowana: `checks/density-baseline.json` trzyma
+ * `textElements: 26`, a niezmiennik 18 pozwala tej liczbie wyłącznie maleć. Stały akapit
+ * w pasku podniósłby ją o jeden, czyli kupiłby to zdanie za regres sufitu gęstości
+ * z `docs/ARCHITECTURE.md` §7. Karta w Settings jest jedynym miejscem, w którym tę kwotę
+ * USTAWIA się na stałe, ma tam miejsce na pełne zdanie i nie należy do widoku domyślnego.
  */
 export const BUDGET_HELP =
-  'Codex steps do not say what they cost, so they count as zero against this.';
+  'This limit does not include Codex steps: they do not report what they cost.';
 
 /** Etykieta pola — pytanie zadane słowami, którymi zadałby je człowiek (DESIGN §8). */
 export const BUDGET_LABEL = 'Spend at most $';
@@ -96,7 +118,7 @@ export function Budget({
 }: BudgetProps): ReactElement {
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2">
-      <label className="min-w-0 truncate text-label text-muted" htmlFor={FIELD_ID}>
+      <label className="label min-w-0 truncate" htmlFor={FIELD_ID}>
         {BUDGET_LABEL}
       </label>
       {/* Kwota jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4.
@@ -112,7 +134,12 @@ export function Budget({
         placeholder="no limit"
         value={value === null ? '' : String(value)}
         disabled={disabled !== null}
-        title={disabled ?? BUDGET_HELP}
+        /* 2026-08-31 — DYMEK NIESIE JUŻ TYLKO POWÓD WYGASZENIA. Stało tu wcześniej
+           `disabled ?? BUDGET_HELP`, czyli granica sufitu wydatku była mówiona WYŁĄCZNIE pod
+           kursorem — i tylko wtedy, gdy pole akurat było czynne. Powód wygaszenia zostaje
+           w dymku, bo to zdanie stoi w tej samej chwili przy suwaku obok i jeden fakt ma jedno
+           miejsce na ekranie (niezmiennik 13). */
+        title={disabled ?? undefined}
         onChange={(event: ChangeEvent<HTMLInputElement>) => {
           const field = event.target;
           /* 2026-08-29, DRUGA POPRAWKA — POŁOWA LICZBY NIE JEST ZDJĘCIEM SUFITU. Pole `number`
@@ -150,7 +177,7 @@ export function Budget({
           awaria (człowiek tak powiedział), ale jest jedyną rzeczą na tym pasku, która może
           kosztować pieniądze bez granicy. */}
       {noCeiling ? (
-        <p data-no-ceiling="" className="shrink-0 whitespace-nowrap text-label text-attend">
+        <p data-no-ceiling="" className="label fade-in shrink-0 whitespace-nowrap text-attend">
           {NO_CEILING_SAID}
         </p>
       ) : null}

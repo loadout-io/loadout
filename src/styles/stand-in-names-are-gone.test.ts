@@ -74,11 +74,27 @@ describe('nazwy zastepcze', () => {
       files.length,
       'fewer than eighty style and view files were read, so the sweep below is over a fragment',
     ).toBeGreaterThan(79);
-    const names = files.flatMap(([, source]) => [...source.matchAll(/\brounded-[a-z]+\b/g)]);
-    /* Prog jest niski z rozmyslu i to jest kontrola przeciw MARTWEMU CZYTNIKOWI, nie pomiar
+    /* OBA ZAPISY PROMIENIA, nie sam Tailwind. 2026-08-31.
+     *
+     * Promien nazywa sie w tym drzewie na dwa sposoby: klasa narzedziowa `rounded-md` w widoku
+     * i wlasciwosc `--radius-md` w arkuszu. Sa to dwa zapisy JEDNEJ rzeczy i czytnik ma widziec
+     * oba, bo praca legalnie przenosi promien miedzy nimi: pojemnik powtorzony w pieciu sekcjach
+     * zwija sie do jednej reguly `.card` w `theme.css`, a wtedy literalow ubywa, choc nie ubywa
+     * ani jednego promienia.
+     *
+     * ZMIERZONE: po warstwie prymitywow literalow w calym `src/` zostalo 31 z dawnych 124,
+     * przy progu 39 — czyli kontrola padala na drzewie posprzatanym DOKLADNIE tak, jak chcialo
+     * zadanie. Komentarz nizej opisuje, jak ta sama pomylka zdarzyla sie juz raz i jak wtedy
+     * obnizono prog ze stu do czterdziestu. Obnizenie go drugi raz kupuje jedna migracje;
+     * policzenie obu zapisow konczy te serie.
+     *
+     * Prog jest niski z rozmyslu i to jest kontrola przeciw MARTWEMU CZYTNIKOWI, nie pomiar
      * pokrycia: czytnik, ktory sie zepsuje, zwraca zero, a nie „o jedenascie mniej". Pierwsza
      * wersja miala tu sto — liczbe zmierzona PRZED migracja, kiedy same nazwy zastepcze dawaly
      * trzydziesci dwa wystapienia — wiec padala na poprawnie posprzatanym drzewie. */
+    const names = files.flatMap(([, source]) => [
+      ...source.matchAll(/\brounded-[a-z]+\b|--radius-[a-z]+\b/g),
+    ]);
     expect(
       names.length,
       'almost no corner names were read at all, so every assertion below would pass on an empty ' +

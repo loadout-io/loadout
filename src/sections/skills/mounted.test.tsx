@@ -31,12 +31,15 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import type { Import } from '../../state/skills';
+import { useMemory } from '../../state/memory';
 import { useSkills } from '../../state/skills';
 import { sectionEntry } from '../../ui/sections';
-import SkillsScreen from './index';
+import SkillsShelf from './shelf';
 
-/** Zdanie pustego ekranu UMIEJĘTNOŚCI — nie zdanie pustej sekcji z rejestru. */
-const NO_SKILLS_YET = 'No skills yet.';
+/* Zdanie pustego ekranu SEKCJI — nie zdanie pustej sekcji z rejestru. Od 2026-08-31 obie półki
+ * dzielą jedno zaproszenie, bo dwa byłyby dwiema odpowiedziami na jedno pytanie
+ * (niezmiennik 13, `src/sections/empty-screen-invites.test.tsx`). */
+const NO_SKILLS_YET = 'Nothing here yet.';
 
 /** Umiejętność, która już leży w katalogach vendorów. */
 const PLACED = {
@@ -98,45 +101,80 @@ const VENDORS = ['Claude', 'Codex', 'Cursor', 'Gemini', 'opencode', 'Amp'];
 
 beforeEach(() => {
   /* Magazyn umiejętności jest singletonem, więc zasianie go w jednym teście dojechałoby do
-   * następnego. Stan pusty przed każdym: kolejność testów przestaje mieć znaczenie. */
-  useSkills.setState({ pending: null, acknowledged: [], message: null, installed: [] });
+   * następnego. Stan pusty przed każdym: kolejność testów przestaje mieć znaczenie.
+   *
+   * `folders: 'read'` DOSZŁO 2026-08-31 i jest połową sensu zdania „No skills yet.". Od tego
+   * dnia magazyn zna trzy stany katalogów zamiast dwóch, a zaproszenie należy WYŁĄCZNIE do
+   * tego, w którym katalogi już odpowiedziały. Bez tego wiersza ten plik pytałby o zdanie
+   * o pustce na ekranie, który dopiero czyta — czyli o dokładnie to kłamstwo, którego tamta
+   * poprawka się pozbyła (`src/sections/skills/reading-is-not-nothing.test.tsx`). */
+  useSkills.setState({
+    pending: null,
+    acknowledged: [],
+    message: null,
+    installed: [],
+    folders: 'read',
+  });
 });
 
-describe('the skills section mounts for real, tells the truth and has a way back', () => {
+describe('the skills shelf mounts for real, tells the truth and has a way back', () => {
+  /* PYTANIE ZOSTAŁO, SELEKTOR SIĘ ZMIENIŁ. Do 2026-08-31 umiejętności miały własną sekcję i ten
+   * przypadek pytał o `<App section="skills" />`. Sekcja nazywa się dziś Knowledge i trzyma obie
+   * półki; pytanie jest to samo — czy prawdziwe odkrywanie ekranów dowozi TĘ zawartość do okna. */
   it('mounts through real discovery and invites instead of reporting a lack of data', () => {
-    const markup = renderToStaticMarkup(<App section="skills" />);
+    useSkills.setState({ installed: [PLACED] });
+    const markup = renderToStaticMarkup(<App section="knowledge" />);
 
     expect(
       markup,
-      'asking the shell for skills WITHOUT handing it screens has to reach the file on disk. ' +
+      'asking the shell for knowledge WITHOUT handing it screens has to reach the file on disk. ' +
         'The review card has been landed and green since T-19 and was mounted by nobody',
-    ).toContain(NO_SKILLS_YET);
+    ).toContain('data-skill="' + PLACED.name + '"');
     expect(
       occurrences(markup, 'data-create'),
       'an empty screen is an invitation (DESIGN §6), so exactly one way to add a skill is on ' +
-        'screen at zero — the paste-a-link flow the mockup draws',
+        'screen — the paste-a-link flow the mockup draws, and exactly one of it',
     ).toBe(1);
     expect(
       markup,
-      'the section has its own empty sentence now, so the one the registry keeps for skills ' +
-        'has no business being in the document as well (invariant 13)',
-    ).not.toContain(sectionEntry('skills').empty);
+      'the section has a screen of its own now, so the sentence the registry keeps for a ' +
+        'section with NO screen has no business being in the document (invariant 13)',
+    ).not.toContain(sectionEntry('knowledge').empty);
+  });
+
+  it('invites, with one way in, when the folders came back holding nothing', () => {
+    /* DRUGA POŁOWA SEKCJI TEŻ MUSI BYĆ PRZECZYTANA. Zaproszenie należy do ekranu, a ekran liczy
+       „przeczytane" z obu magazynów: notatki, o które ten plik nie pyta, trzymałyby zdanie
+       „jeszcze czytam" niezależnie od tego, co odpowiedziały katalogi umiejętności. */
+    useMemory.setState({ notes: [], passed: [], message: null, passedProblem: null, read: true });
+    const markup = renderToStaticMarkup(<App section="knowledge" />);
+
+    expect(
+      markup,
+      'the folders answered and were empty, so the screen says so and does not report a lack ' +
+        'of data (DESIGN §6)',
+    ).toContain(NO_SKILLS_YET);
+    expect(
+      occurrences(markup, 'data-create'),
+      'one invitation, one way in. Two buttons on an empty screen make a person choose before ' +
+        'they know there is anything to choose between (invariant 13)',
+    ).toBe(1);
   });
 
   it('control: with no screen in hand the shell still says the registry sentence', () => {
-    const markup = renderToStaticMarkup(<App section="skills" screens={{}} />);
+    const markup = renderToStaticMarkup(<App section="knowledge" screens={{}} />);
 
     expect(
       markup,
       'the control against an empty assertion: without it, "the registry sentence is gone" ' +
         'also passes on a shell that stopped rendering that sentence at all',
-    ).toContain(sectionEntry('skills').empty);
+    ).toContain(sectionEntry('knowledge').empty);
   });
 
   it('shows both skills under their own names and neither says which tool can see it', () => {
     useSkills.setState({ installed: [PLACED], pending: WAITING });
 
-    const markup = renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+    const markup = renderToStaticMarkup(<SkillsShelf store={useSkills} />);
     const placed = rowFor(markup, PLACED.name);
     const waiting = rowFor(markup, WAITING.name);
 
@@ -171,7 +209,7 @@ describe('the skills section mounts for real, tells the truth and has a way back
       installed: [PLACED, { name: 'rust-tauri', fromTheInternet: false, summary: '' }],
     });
 
-    const markup = renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+    const markup = renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 
     for (const name of [PLACED.name, 'rust-tauri']) {
       expect(

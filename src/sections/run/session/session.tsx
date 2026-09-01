@@ -55,8 +55,10 @@ export interface SessionProps {
   readonly onRunAgain?: () => void;
 }
 
-/** `button-quiet` z DESIGN §6, ta sama fraza co w strumieniu (`feed/feed.tsx`). */
-const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
+/* `.btn-quiet` z `theme.css` — jedna definicja cichego przycisku na cala aplikacje. Napis
+ * spisany recznie stal tu obok czterech identycznych kopii i rozjechal by sie z DESIGN §6
+ * przy pierwszej zmianie wysokosci (niezmiennik 13). */
+const QUIET = 'btn-quiet';
 
 /** Wiersz bloku faktów: etykieta i wartość. Dwie kolumny, bo trzecia nie ma danych. */
 function FactRow({ label, value }: { label: string; value: string }): ReactElement {
@@ -65,7 +67,7 @@ function FactRow({ label, value }: { label: string; value: string }): ReactEleme
       data-fact
       className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-[9px] border border-line bg-well px-2 py-[5px] font-mono text-mono text-body"
     >
-      <span className="text-label text-muted">{label}</span>
+      <span className="label">{label}</span>
       <span className="min-w-0 break-words">{value}</span>
     </div>
   );
@@ -87,7 +89,7 @@ function Facts({ section }: { section: Section }): ReactElement {
           />
         ))}
         {section.empty === null ? null : (
-          <p data-empty className="text-body text-muted">
+          <p data-empty className="lead">
             {section.empty}
           </p>
         )}
@@ -110,9 +112,15 @@ export function Session({
      * nie posiada, i jest zgłoszony razem z kształtem propsów. */
     <div
       data-agent-screen={card.id}
-      className="fixed inset-0 z-10 grid grid-rows-[auto_minmax(0,1fr)] bg-bg"
+      /* `.enter`: ekran agenta POJAWIA sie po kliknieciu w kafelek, wiec wchodzi sprezyna —
+         jedyne miejsce, w ktorym DESIGN §7 na nia pozwala. Jeden region na to zdarzenie
+         (ARCHITECTURE §7): kolumna pracy pod spodem nie rusza sie ani o piksel. */
+      className="enter fixed inset-0 z-10 grid grid-rows-[auto_minmax(0,1fr)] bg-bg"
     >
-      <div className="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-[18px]">
+      {/* `.screen-head` niesie 52 px z ARCHITECTURE §7 i linie pod paskiem; material bierze
+          z `.glass` obok, bo pasek bez klasy materialu przestaje sluchac
+          `prefers-reduced-transparency`. */}
+      <div className="screen-head glass">
         <button type="button" aria-label="Back to the run" onClick={onBack} className={QUIET}>
           ←
         </button>
@@ -149,9 +157,7 @@ export function Session({
 
         <h1 className="text-title text-ink">{card.name}</h1>
 
-        {card.role === '' ? null : (
-          <span className="font-mono text-mono text-muted">{card.role}</span>
-        )}
+        {card.role === '' ? null : <span className="value">{card.role}</span>}
 
         <span
           data-status
@@ -162,7 +168,7 @@ export function Session({
         </span>
       </div>
 
-      <div className="min-h-0 overflow-auto p-[18px]">
+      <div className="screen-body">
         {sections.map((section) =>
           section.id === 'transcript' ? (
             <section key={section.id} data-said>
@@ -173,7 +179,7 @@ export function Session({
                 {section.heading}
               </h2>
               {section.empty === null ? null : (
-                <p data-empty className="px-[18px] py-2 text-body text-muted">
+                <p data-empty className="lead px-[18px] py-2">
                   {section.empty}
                 </p>
               )}

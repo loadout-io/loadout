@@ -13,7 +13,10 @@ import { SECTIONS, sectionEntry } from '../../ui/sections';
 import TriggersScreen from './index';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const SEVEN = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers', 'settings'] as const;
+/* SZEŚĆ, nie siedem: 2026-08-31 Skills i Memory zeszły się w jedną sekcję Knowledge
+ * (`src/ui/sections.tsx`). Nazwa stałej nie mówi już liczby z tego samego powodu, dla którego
+ * nie mówiła jej wcześniej dobrze — liczba zmienia się częściej niż lista. */
+const IDS = ['run', 'workflows', 'agents', 'knowledge', 'lab', 'triggers', 'settings'] as const;
 
 function textOf(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -44,9 +47,9 @@ function literals(body: string): string[] {
   return [...body.matchAll(/['"]([a-z-]+)['"]/g)].map((hit) => hit[1] ?? '');
 }
 
-describe('Triggers is the sixth real section', () => {
+describe('Triggers is a real section with a screen of its own', () => {
   it('registers the English label and one short empty sentence', () => {
-    expect(SECTIONS.map((entry) => entry.id)).toEqual(SEVEN);
+    expect(SECTIONS.map((entry) => entry.id)).toEqual(IDS);
     const entry = SECTIONS.find((one) => one.id === ('triggers' as Section));
     expect(entry?.label).toBe('Triggers');
     expect(entry?.empty.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(12);
@@ -76,7 +79,7 @@ describe('Triggers is the sixth real section', () => {
     expect(markup).toMatch(/<(?:path|rect|polyline|polygon)\b/);
   });
 
-  it('raises each of the five independent section mirrors to exactly the same seven ids', () => {
+  it('raises each of the four independent section mirrors to exactly the same ids', () => {
     const mirrors = [
       ['src/ui/shell/controls.test.tsx', 'EXPECTED'],
       ['src/ui/shell/screen-mount.test.tsx', 'EXPECTED'],
@@ -85,12 +88,12 @@ describe('Triggers is the sixth real section', () => {
     ] as const;
     for (const [path, constant] of mirrors) {
       const body = arrayBody(textOf(resolve(ROOT, path)), constant);
-      expect(literals(body), path + ' must name all seven sections independently').toEqual(SEVEN);
+      expect(literals(body), path + ' must name every section independently').toEqual(IDS);
     }
 
     const sections = arrayBody(textOf(resolve(ROOT, 'src/ui/shell/sections.test.tsx')), 'EXPECTED');
     const ids = [...sections.matchAll(/\bid\s*:\s*['"]([a-z-]+)['"]/g)].map((hit) => hit[1] ?? '');
-    expect(ids).toEqual(SEVEN);
+    expect(ids).toEqual(IDS);
   });
 
   it('adds the new list screen to the shared radius-band oracle', () => {
@@ -98,6 +101,9 @@ describe('Triggers is the sixth real section', () => {
       textOf(resolve(ROOT, 'src/sections/radii-band-reaches-the-sections.test.tsx')),
       'SECTIONS',
     );
-    expect(literals(body)).toEqual(['agents', 'skills', 'memory', 'workflows', 'triggers']);
+    // Lab jest szóstą sekcją LISTOWĄ: rysuje listę zestawów, tabelę i karty kandydatek, więc
+    // pasmo promieni obowiązuje w nim tak samo. Pominięcie go zostawiłoby najnowszy ekran jako
+    // jedyny, którego ta wyrocznia nie ogląda.
+    expect(literals(body)).toEqual(['agents', 'skills', 'memory', 'workflows', 'triggers', 'lab']);
   });
 });

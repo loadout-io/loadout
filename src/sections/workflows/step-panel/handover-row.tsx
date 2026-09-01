@@ -36,12 +36,17 @@ export interface HandoverRowProps {
   onEditStep: (fields: { handover: Handover }) => void;
 }
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
+/* `ROW`, `LABEL` i `NOTE` zniknęły 2026-08-31: rolę niosą `.stack`, `.label` i `.lead`
+ * z `theme.css`. `CHOICE` zostaje jako klej układu (pole wyboru obok zdania), a `FIELD` jest
+ * już nazwą prymitywu, nie jego przepisaniem.
+ *
+ * `ADD` dostał REAKCJĘ NA NAJECHANIE. „Remove" i „+ Ask for one more" są kontrolkami, a do dziś
+ * nie zmieniały się pod kursorem ani przy skupieniu — czyli czytały się jak podpis. Nie biorą
+ * `.btn-bare`, bo ten ma 28 px wysokości i padding: postawiony w wierszu z polem wyboru
+ * rozepchnąłby formularz, a to byłaby zmiana układu przemycona pod migracją. */
 const CHOICE = 'flex items-baseline gap-2 text-body text-ink';
-const NOTE = 'text-label text-muted';
 const FIELD = 'field';
-const ADD = 'text-left text-label text-muted';
+const ADD = 'label text-left hover:text-ink';
 
 /** Pola, które ten krok oddaje — pusta lista, kiedy oddaje samą prozę. */
 function fieldsOf(value: Handover): readonly HandoverField[] {
@@ -68,8 +73,8 @@ export function HandoverRow({ value, onEditStep }: HandoverRowProps): ReactEleme
   };
 
   return (
-    <div className={ROW}>
-      <span className={LABEL}>What it hands over</span>
+    <div data-row="handover" className="stack">
+      <span className="label">What it hands over</span>
 
       <label className={CHOICE}>
         <input
@@ -103,13 +108,13 @@ export function HandoverRow({ value, onEditStep }: HandoverRowProps): ReactEleme
           {/* ZDANIE O SKUTKU, nie sama nazwa trybu. Po stronie Rusta prośba brzmi „This step ALSO
               has to hand these back", a pole oznaczone jako potrzebne, którego agent nie odda,
               jest ODMOWĄ kroku — nie brakiem w odpowiedzi. */}
-          <span className={NOTE}>
+          <span className="lead">
             It still answers under the three headings. These are extra lines it has to write, one
             per line, starting with the name and a colon. A needed one it leaves out stops the step.
           </span>
 
           {fields.map((field, at) => (
-            <div key={at} className="flex flex-col gap-1 pl-4">
+            <div key={at} className="stack pl-4">
               <input
                 className={FIELD}
                 data-field="handover-name"

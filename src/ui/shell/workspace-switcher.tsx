@@ -178,17 +178,13 @@ export function refusal(disk: string | null, inWindow: string | null): string | 
   return disk ?? inWindow;
 }
 
-/* Klasy w jednym miejscu, bo trzy kontrolki mają być tą samą kontrolką. Wysokość 32 px
- * (`h-control`), promień kontrolki (`rounded-sm`), obrys `--line-strong` i tło `--raised`
- * i §6. `--accent` wyłącznie na kontrolce, która coś ZAPISUJE (reguła jednego akcentu). */
-const TRIGGER =
-  'flex h-control w-full items-center justify-between gap-2 rounded-sm border border-line-strong bg-raised px-[10px] text-ui text-ink';
-const ITEM =
-  'w-full truncate rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[checked=true]:border-line aria-[checked=true]:bg-raised aria-[checked=true]:text-ink';
-const QUIET =
-  'w-full truncate rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-accent';
-const SECONDARY = 'h-control rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
-const PRIMARY = 'h-control rounded-sm bg-accent px-3 text-ui text-bg';
+/* PIĘĆ STAŁYCH-LIST-KLAS ZOSTAŁO JEDNĄ, 2026-08-31. Cztery z nich były dosłownym opisem
+ * kontrolki, którą warstwa prymitywów nazywa jednym słowem: `SECONDARY` to `.btn`, `PRIMARY`
+ * to `.btn-primary`, `ITEM` i `QUIET` to `.row`. Opis przepisany w komponencie jest kopią
+ * decyzji — a decyzji o geometrii przycisku było w tym repo pięć zapisów na trzy realne pary
+ * pikseli (DESIGN §6). Zostaje jedna nazwa, bo niesie coś PONAD prymityw: pełną szerokość
+ * i rozsunięcie nazwy od strzałki. `--accent` dalej wyłącznie na kontrolce, która ZAPISUJE. */
+const TRIGGER = 'btn w-full justify-between';
 
 export interface WorkspaceSwitcherProps {
   /** Zakresy zapisane na dysku. */
@@ -220,9 +216,16 @@ export function WorkspaceSwitcher({
 
   return (
     <div data-workspace-switcher className="flex flex-col gap-1 pb-4">
+      {/* ODMOWA PRZYCHODZI SPRĘŻYNĄ, 2026-08-31 (DESIGN §7). Ten blok POJAWIA SIĘ nad tym, co
+          już stoi na ekranie — dysk albo okienko właśnie odmówiły — a element wskakujący
+          skokiem nad czytaną treść czyta się jak przeskok widoku, nie jak odpowiedź na
+          kliknięcie. JEDEN region: formularz pod spodem zostaje w drzewie i nie animuje się
+          drugi raz, więc sufit dwóch regionów z ARCHITECTURE §7 nie jest przekroczony.
+          `.card` niesie rolę pojemnika i ton awarii; `bg-fail-soft` zostaje, bo to jest to,
+          co prymityw ma PONAD sobą — wypełnienie, którego karta neutralna nie ma. */}
       {sentence === null ? null : (
-        <div className="flex flex-col gap-2 rounded-md border border-fail-edge bg-fail-soft p-2">
-          <p data-workspace-said className="text-note text-fail">
+        <div className="enter card stack bg-fail-soft" data-tone="fail" data-gap="2">
+          <p data-workspace-said className="lead" data-tone="fail">
             {sentence}
           </p>
           <button
@@ -231,7 +234,7 @@ export function WorkspaceSwitcher({
             onClick={() => {
               act.dismiss();
             }}
-            className={SECONDARY}
+            className="btn"
           >
             Dismiss
           </button>
@@ -239,10 +242,15 @@ export function WorkspaceSwitcher({
       )}
 
       {ui.adding ? (
-        <div className="flex flex-col gap-2">
+        /* FORMULARZ WCHODZI SPRĘŻYNĄ (DESIGN §7): pojawia się nad listą, której miejsce zajął.
+           `.stack` z odstępem 8 px — odstęp MIĘDZY wierszami formularza, nie wewnątrz pary
+           etykieta+pole; baza prymitywu (4 px) jest tą drugą rolą. */
+        <div className="enter stack" data-gap="2">
           {/* Prawdziwa etykieta z `htmlFor`, nie `<span>` obok pola: bez powiązania czytnik
-              ekranu czyta pole bez nazwy, a kliknięcie w napis nie ustawia w nim kursora. */}
-          <label className="text-label text-muted" htmlFor="workspace-name">
+              ekranu czyta pole bez nazwy, a kliknięcie w napis nie ustawia w nim kursora.
+              Stopień i barwa idą z prymitywu `.label` — etykieta pola jest zdaniowa, bo
+              wersaliki nosi nadoczko sekcji i ma na to własny stopień drabinki (DESIGN §4). */}
+          <label className="label" htmlFor="workspace-name">
             Name
           </label>
           <input
@@ -267,14 +275,17 @@ export function WorkspaceSwitcher({
               {ui.folder === null ? 'Choose folder' : folderName(ui.folder)}
             </span>
           </button>
-          <div className="flex gap-2">
+          {/* `items-center`, bo prymitywy rozstrzygają dwie różne wysokości na jeden wiersz:
+              przycisk podstawowy ma 36 px, drugoplanowy 32 (DESIGN §6). Bez tego para stoi
+              wyrównana górą i czyta się jak dwa wiersze, a nie jak jedna decyzja. */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
               data-workspace-save
               onClick={() => {
                 void act.save();
               }}
-              className={PRIMARY}
+              className="btn-primary"
             >
               Save
             </button>
@@ -284,7 +295,7 @@ export function WorkspaceSwitcher({
               onClick={() => {
                 act.cancelAdd();
               }}
-              className={SECONDARY}
+              className="btn"
             >
               Cancel
             </button>
@@ -293,7 +304,16 @@ export function WorkspaceSwitcher({
       ) : all.length === 0 ? (
         /* PUSTY STAN JEST ZAPROSZENIEM, nie pustą listą wyboru (DESIGN §6: „pusty ekran to
          * zaproszenie do działania, nie komunikat o braku danych"). Rozwijana lista z zerem
-         * pozycji jest gorsza niż nic: mówi „tu nic nie ma" i nie mówi, co z tym zrobić. */
+         * pozycji jest gorsza niż nic: mówi „tu nic nie ma" i nie mówi, co z tym zrobić.
+         *
+         * WAGA ZESZŁA Z `.btn-primary` NA `.btn`, 2026-08-31. Wypełnienie akcentem robiło
+         * z tego przycisku najgłośniejszą rzecz w całym oknie — głośniejszą od treści — mimo
+         * że jego rola jest dokładnie odwrotna: naciska się go RAZ w życiu instalacji i znika
+         * na zawsze. Akcent znaczy „to jest interaktywne" (DESIGN §3), a nie „patrz tutaj",
+         * i należy się temu, co człowiek ma zrobić TERAZ; na pierwszym uruchomieniu jest to
+         * krok w przewodniku w strefie pracy (`src/sections/run/first-run.tsx`), a nie
+         * pozycja w bocznym menu. Kontrolka zostaje czynna i robi to samo — zmieniła się
+         * głośność, nie czynność (niezmiennik 16). */
         <button
           type="button"
           data-workspace-new
@@ -301,7 +321,7 @@ export function WorkspaceSwitcher({
           onClick={() => {
             act.startAdd();
           }}
-          className={PRIMARY}
+          className="btn"
         >
           {FIRST_INVITE}
         </button>
@@ -322,7 +342,12 @@ export function WorkspaceSwitcher({
             </span>
           </button>
           {ui.open ? (
-            <div role="menu" className="flex flex-col">
+            /* LISTA WCHODZI SPRĘŻYNĄ, POJEDYNCZE WIERSZE NIE (DESIGN §7, ARCHITECTURE §7).
+               Rozwinięcie listy jest JEDNYM zdarzeniem, więc animuje się JEDEN region —
+               pojemnik. Osobne wejście na każdym wierszu dałoby tyle regionów, ile zakresów,
+               a sufit wynosi dwa; kaskada w menu i tak czyta się jak usterka, bo człowiek
+               czeka na pozycję, w którą chce kliknąć. */
+            <div role="menu" className="enter flex flex-col">
               {all.map((one) => (
                 <button
                   key={one.id}
@@ -334,18 +359,23 @@ export function WorkspaceSwitcher({
                   onClick={() => {
                     act.choose(one.id);
                   }}
-                  className={ITEM}
+                  className="row"
                 >
-                  {one.name}
+                  {/* Nazwa w `<span>`, a nie wprost w przycisku: `.row` jest kontenerem
+                      flex, a w nim `text-overflow` nie dotyczy tekstu anonimowego — bez tego
+                      długa nazwa zakresu byłaby ucięta bez wielokropka. */}
+                  <span className="truncate">{one.name}</span>
                 </button>
               ))}
+              {/* Ten sam wiersz listy, w barwie akcentu: to jest pozycja, która COŚ ROBI,
+                  a nie jeden z zakresów. `text-accent` to jedyna rzecz ponad prymitywem. */}
               <button
                 type="button"
                 data-workspace-new
                 onClick={() => {
                   act.startAdd();
                 }}
-                className={QUIET}
+                className="row text-accent"
               >
                 {FIRST_INVITE}
               </button>

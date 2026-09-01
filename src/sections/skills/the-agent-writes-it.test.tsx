@@ -55,7 +55,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddPanel, Authored, SavedAgent } from '../../state/skills';
 import { useSkills } from '../../state/skills';
 import { ipcSource, windowSideArguments } from '../ipc-signature';
-import SkillsScreen from './index';
+import SkillsShelf from './shelf';
 
 /* Atrapa granicy: liczy wywołania i odpowiada tym, o co poprosił dany test. Żadnego żywego
  * Tauri — kryterium, które go wymaga, nie umie być czerwone z właściwego powodu, bo
@@ -305,7 +305,7 @@ function pairs(value: unknown, into: [string, unknown][]): [string, unknown][] {
 }
 
 function screen(): string {
-  return renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+  return renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 }
 
 beforeEach(() => {

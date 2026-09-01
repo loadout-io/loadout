@@ -42,7 +42,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 const { ask, start } = await import('../io');
-const { Budget, BUDGET_HELP, BUDGET_LABEL } = await import('./budget');
+const { Budget, BUDGET_LABEL } = await import('./budget');
 const { budgetOfTheRun, budgetUsd, setBudgetUsd } = await import('./chosen');
 const { launchRun } = await import('../launch');
 const { defaultBudgetUsd } = await import('../../../state/settings');
@@ -170,12 +170,32 @@ describe('the ceiling a person puts on one run', () => {
     ).toContain('value="' + String(defaultBudgetUsd()) + '"');
   });
 
-  it('says out loud that Codex steps count as nothing', () => {
+  /* 2026-08-31 — TEN PRZYPADEK PYTAŁ O DYMEK I BYŁ NA DYMKU ZIELONY. Brzmiał „says out loud
+   * that Codex steps count as nothing" i przechodził na `title="…"`, czyli na tekście, który
+   * pojawia się po sekundzie trzymania myszy w bezruchu i nie istnieje ani dla klawiatury, ani
+   * dla czytnika ekranu, ani na dotyku. Dokładnie ta rodzina, dla której powstał niezmiennik 29:
+   * kryterium zielone, zdanie niewidzialne. Zdanie stoi dziś na ekranie Settings, pod kontrolką,
+   * którą ono kwalifikuje, i sądzi je `sections/settings/the-spend-limit-says-what-it-misses`.
+   *
+   * Tutaj zostaje druga połowa tamtej naprawy, bo dotyczy TEGO pola: dymek niesie wyłącznie
+   * powód wygaszenia i nic poza nim. Zdanie schowane pod kursorem czynnej kontrolki jest
+   * zdaniem, którego połowa ludzi nie zobaczy nigdy. */
+  it('hides nothing under the cursor while the amount can still be changed', () => {
     expect(
       renderToStaticMarkup(<Budget value={CEILING} onChange={noop} />),
-      'Codex does not report what a turn cost, so those steps add zero to the total. A person ' +
-        'who is not told that reads the ceiling as a promise Loadout cannot keep',
-    ).toContain(BUDGET_HELP);
+      'the live amount field carries a tooltip again. Whatever it says is said to nobody using ' +
+        'a keyboard, a screen reader or a touch screen, so it cannot be the only place a fact ' +
+        'about this ceiling lives',
+    ).not.toContain('title=');
+  });
+
+  it('keeps the reason it cannot be changed under the cursor, where the same reason already is', () => {
+    expect(
+      renderToStaticMarkup(<Budget value={CEILING} onChange={noop} disabled={LIMIT_LOCKED} />),
+      'a field greyed out for no stated reason is a riddle. This one reason may live in a ' +
+        'tooltip because the same sentence already stands beside the control next to it, and ' +
+        'one fact gets one place on a screen',
+    ).toContain(`title="${LIMIT_LOCKED}"`);
   });
 
   it('sends what the person typed with a run from a file', async () => {

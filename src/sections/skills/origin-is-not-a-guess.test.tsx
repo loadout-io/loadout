@@ -29,7 +29,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Import } from '../../state/skills';
 import { useSkills } from '../../state/skills';
-import SkillsScreen, { WHERE_IT_LANDS } from './index';
+import SkillsShelf, { WHERE_IT_LANDS } from './shelf';
 
 const NAME = 'review-pull-requests';
 const SUMMARY = 'Use this when somebody asks for a second look at a pull request.';
@@ -65,7 +65,7 @@ function occurrences(haystack: string, needle: string): number {
 /** Ekran z tą jedną umiejętnością czekającą na decyzję człowieka. */
 function screenFor(item: Import): string {
   useSkills.setState({ pending: item, acknowledged: [], message: null, installed: [] });
-  return renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+  return renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 }
 
 beforeEach(() => {

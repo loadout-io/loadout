@@ -1,4 +1,5 @@
-/* Kryterium 4 dla T-26: sekcja Memory montuje się naprawdę i trzyma dwie strefy osobno.
+/* Kryterium 4 dla T-26: półka notatek montuje się naprawdę i trzyma dwie strefy osobno.
+ * (Do 2026-08-31 była własną sekcją; dziś stoi w sekcji Knowledge obok półki umiejętności.)
  *
  * Powód dwóch połów i kontroli przeciw pustej asercji jest wypisany raz, w
  * `src/sections/workflows/mounted.test.tsx`. Tutaj drugą połową jest ROZDZIAŁ STREF i to on
@@ -29,11 +30,26 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import type { Handoff, Note } from '../../state/memory';
 import { useMemory } from '../../state/memory';
+import { useSkills } from '../../state/skills';
 import { sectionEntry } from '../../ui/sections';
-import MemoryScreen from './index';
+import KnowledgeScreen from '../knowledge';
+import NotesShelf from './shelf';
 
 /** Zdanie pustego ekranu PAMIĘCI — nie zdanie pustej sekcji z rejestru. */
-const NO_NOTES_YET = 'No notes yet.';
+/* Zaproszenie ekranu Knowledge — od 2026-08-31 ono, a nie „No notes yet.": obie półki dzielą
+ * jedno zdanie o pustce, bo dwa byłyby dwiema odpowiedziami na jedno pytanie (niezmiennik 13). */
+const NOTHING_HERE_YET = 'Nothing here yet.';
+
+/**
+ * Magazyn umiejętności, który już odpowiedział i nie ma nic do powiedzenia.
+ *
+ * Podmiotem tego pliku są notatki. Bez tego ekran liczyłby „przeczytane" z magazynu, którego
+ * nikt nie zasiał, i mówiłby „jeszcze czytam" niezależnie od tego, co odpowiedziały notatki.
+ */
+function quietSkills(): typeof useSkills {
+  useSkills.setState({ folders: 'read', installed: [], pending: null, message: null });
+  return useSkills;
+}
 
 /** Kandydatka: agent ją zaproponował, człowiek jeszcze nie powiedział „tak". */
 const WAITING: Note = {
@@ -102,40 +118,58 @@ beforeEach(() => {
   /* Magazyn notatek jest singletonem, więc zasianie go w jednym teście dojechałoby do
    * następnego. Stan pusty przed każdym: kolejność testów przestaje mieć znaczenie.
    * WSZYSTKIE pola, także `passed` i `passedProblem`: pole pominięte tutaj przecieka między
-   * testami i pierwszym objawem jest test, który przechodzi tylko w swojej kolejności. */
-  useMemory.setState({ notes: [], passed: [], message: null, passedProblem: null, choice: null });
+   * testami i pierwszym objawem jest test, który przechodzi tylko w swojej kolejności.
+   *
+   * `read: true` DOPISANE 2026-08-31, i nie jest to rozluźnienie. Sekcja ma od tego dnia trzy
+   * odpowiedzi zamiast dwóch: „jeszcze czytam", „nic tu nie ma", „nie dało się przeczytać".
+   * Podmiotem tego pliku jest DRUGA z nich, więc fikstura mówi to, co mówił jej brak w świecie
+   * o dwóch odpowiedziach: dyski są przeczytane i nic w nich nie było. Bez tego pola kryterium
+   * pytałoby o zdanie pustego ekranu na ekranie, który jeszcze nie skończył czytać. */
+  useMemory.setState({
+    notes: [],
+    passed: [],
+    message: null,
+    passedProblem: null,
+    choice: null,
+    read: true,
+  });
 });
 
-describe('the memory section mounts for real and keeps its three zones apart', () => {
-  it('mounts through real discovery and says its own sentence when there is nothing', () => {
-    const markup = renderToStaticMarkup(<App section="memory" />);
+describe('the notes shelf mounts for real and keeps its zones apart', () => {
+  /* PYTANIE ZOSTAŁO, SELEKTOR SIĘ ZMIENIŁ. Do 2026-08-31 notatki miały własną sekcję i ten
+   * przypadek pytał o `<App section="memory" />`. Sekcja nazywa się dziś Knowledge i trzyma
+   * obie półki; pytanie jest to samo — czy prawdziwe odkrywanie ekranów dowozi TĘ zawartość
+   * do okna, czy tylko zdanie z rejestru. */
+  it('mounts through real discovery, with the notes on screen and no registry sentence', () => {
+    useMemory.setState({ notes: [IN_USE] });
+    const markup = renderToStaticMarkup(<App section="knowledge" />);
 
     expect(
       markup,
-      'asking the shell for memory WITHOUT handing it screens has to reach the file on disk. ' +
+      'asking the shell for knowledge WITHOUT handing it screens has to reach the file on disk. ' +
         'The note row has been landed and green since T-17 and was mounted by nobody',
-    ).toContain(NO_NOTES_YET);
+    ).toContain(IN_USE.rule);
     expect(
       markup,
-      'the section has its own empty sentence now, so the one the registry keeps for memory ' +
-        'has no business being in the document as well (invariant 13)',
-    ).not.toContain(sectionEntry('memory').empty);
+      'the section has a screen of its own now, so the sentence the registry keeps for a ' +
+        'section with NO screen has no business being in the document (invariant 13)',
+    ).not.toContain(sectionEntry('knowledge').empty);
   });
 
   it('control: with no screen in hand the shell still says the registry sentence', () => {
-    const markup = renderToStaticMarkup(<App section="memory" screens={{}} />);
+    const markup = renderToStaticMarkup(<App section="knowledge" screens={{}} />);
 
     expect(
       markup,
       'the control against an empty assertion: without it, "the registry sentence is gone" ' +
         'also passes on a shell that stopped rendering that sentence at all',
-    ).toContain(sectionEntry('memory').empty);
+    ).toContain(sectionEntry('knowledge').empty);
   });
 
   it('keeps what waits for a person out of the zone that goes into every prompt', () => {
     useMemory.setState({ notes: [WAITING, IN_USE] });
 
-    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const markup = renderToStaticMarkup(<NotesShelf store={useMemory} />);
     const waiting = zone(markup, 'suggested');
     const inUse = zone(markup, 'in-use');
 
@@ -187,7 +221,7 @@ describe('the third zone shows the files agents leave for each other', () => {
   it('is on screen with nothing in it, and says why instead of showing a heading over air', () => {
     useMemory.setState({ notes: [IN_USE], passed: [] });
 
-    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const markup = renderToStaticMarkup(<NotesShelf store={useMemory} />);
     const passed = zone(markup, 'passed');
 
     expect(
@@ -206,14 +240,19 @@ describe('the third zone shows the files agents leave for each other', () => {
   it('shows the file, who left it for whom, and how big it is', () => {
     useMemory.setState({ notes: [], passed: [PASSED] });
 
-    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    /* EKRAN, NIE SAMA PÓŁKA, i tylko w tym jednym przypadku. Pytanie brzmi „czy sekcja pełna
+       przekazań udaje pustą", a to zdanie stoi na ekranie Knowledge — półka go nie zna i pytanie
+       zadane półce przechodziłoby na niczym. Reszta pliku pyta półkę, bo pyta o strefy. */
+    const markup = renderToStaticMarkup(
+      <KnowledgeScreen notes={useMemory} skills={quietSkills()} />,
+    );
     const passed = zone(markup, 'passed');
 
     expect(
       markup,
       'a section holding files an agent left is NOT empty, whatever the note list says. The ' +
         'empty-screen sentence in its place would hide the only thing on screen',
-    ).not.toContain(NO_NOTES_YET);
+    ).not.toContain(NOTHING_HERE_YET);
     expect(
       passed,
       'the file is named by the name it has in the folder — that is what makes "open them ' +
@@ -244,7 +283,7 @@ describe('the third zone shows the files agents leave for each other', () => {
       passedProblem: 'Loadout could not read what agents passed to each other.',
     });
 
-    const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const markup = renderToStaticMarkup(<NotesShelf store={useMemory} />);
 
     expect(
       zone(markup, 'passed'),

@@ -1,7 +1,7 @@
 /* AC-3 dla T-42: drugie wejście ISTNIEJE, mieszka w tym samym panelu i OPUSZCZA OKNO.
  *
  * DWA ZDANIA NA EKRANIE OBIECUJĄ KONTROLKĘ, KTÓREJ NIE MA. Pusty ekran sekcji mówi „Paste
- * a link, or write one yourself." (`src/sections/skills/index.tsx`), makieta powtarza to samo
+ * a link, or write one yourself." (`src/sections/skills/shelf.tsx`), makieta powtarza to samo
  * (`docs/mockup/index.html:712`), a `src-tauri/commands.golden.txt` nie ma ANI JEDNEJ komendy,
  * która przyjmuje treść umiejętności. Obietnica bez kontrolki jest tym samym defektem, co
  * kontrolka bez skutku, tylko odwróconym (niezmiennik 16) — i jest droższa, bo człowiek szuka
@@ -43,7 +43,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddPanel } from '../../state/skills';
 import { useSkills } from '../../state/skills';
 import { ipcSource, windowSideArguments } from '../ipc-signature';
-import SkillsScreen from './index';
+import SkillsShelf from './shelf';
 
 /* Atrapa granicy: rozwiązuje się albo odmawia, zależnie od tego, o co pyta dany test. Żadnego
  * żywego Tauri — kryterium, które go wymaga, nie umie być czerwone z właściwego powodu, bo
@@ -162,7 +162,7 @@ function pairs(value: unknown, into: [string, unknown][]): [string, unknown][] {
 }
 
 function screen(): string {
-  return renderToStaticMarkup(<SkillsScreen store={useSkills} />);
+  return renderToStaticMarkup(<SkillsShelf store={useSkills} />);
 }
 
 beforeEach(() => {
@@ -174,6 +174,10 @@ beforeEach(() => {
     message: null,
     installed: [],
     adding: null,
+    /* Katalogi JUŻ ODPOWIEDZIAŁY i są puste — bo o taki ekran pyta ten plik. Od 2026-08-31
+     * zaproszenie („No skills yet." plus przycisk) należy wyłącznie do tego stanu; zanim
+     * odczyt wróci, ekran mówi, że czyta (`reading-is-not-nothing.test.tsx`). */
+    folders: 'read',
   });
   refuseWith(null);
   invoked.mockClear();

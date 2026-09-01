@@ -269,8 +269,8 @@ describe('every tile on the canvas opens its own panel', () => {
     );
     expect(
       markup,
-      'a checkpoint has no agent, so it inherits nothing and must not be shown the seven-row ' +
-        'panel for agent steps: half of those rows would be answering a question nobody asked.',
+      'a checkpoint has no agent, so it inherits nothing and must not be shown the rows an ' +
+        'agent step gets: half of them would be answering a question nobody asked.',
     ).not.toContain('id="step-give-up-after"');
   });
 

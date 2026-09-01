@@ -56,11 +56,16 @@ import { continueRun, stop } from './io';
 import { useRun } from '../../state/run';
 import { loadSettings } from '../../state/settings';
 
-const PRIMARY =
-  'h-9 whitespace-nowrap rounded-sm bg-accent px-4 text-ui text-bg disabled:opacity-40';
-const DANGER = 'h-7 rounded-sm border border-fail-edge px-3 text-ui text-fail';
+/* PRYMITYWY Z `theme.css`, nie recznie spisana geometria. 2026-08-31.
+ *
+ * Te trzy napisy opisywaly przycisk po swojemu, wiec DESIGN §6 musial docierac tu osobno —
+ * i nie docieral: niszczacy i „czeka na ciebie" stały na 28 px, mimo ze §6 daje im 32.
+ * Wysokosc, obrys, wcisniecie, pierscien skupienia i stan wylaczony maja teraz jeden dom,
+ * a `disabled:opacity-40` znika, bo `.btn-*:disabled` niesie te sama liczbe tokenem. */
+const PRIMARY = 'btn-primary';
+const DANGER = 'btn-danger';
 /** Kolor `--attend` odpowiada na jedno pytanie: co czeka na MOJĄ decyzję [DESIGN §3]. */
-const ATTEND = 'h-7 rounded-sm border border-attend-edge px-3 text-ui text-attend';
+const ATTEND = 'btn-attend';
 /* Klasa domu, tak jak w pieciu sekcjach po T-48: `theme.css` ma `.field` z ta sama studnia,
  * mocnym obrysem, krojem maszynowym i `user-select: text`, bez ktorego z pola nie da sie skopiowac
  * wlasnego wpisu. Recznie opisane pole rozjezdza sie z pozostalymi przy pierwszej zmianie

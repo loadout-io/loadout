@@ -26,8 +26,10 @@ const EXPECTED = [
   'run',
   'workflows',
   'agents',
-  'skills',
-  'memory',
+  /* Jeden identyfikator zamiast dwóch od 2026-08-31: Skills i Memory zeszły się w Knowledge.
+     Wypisane na sztywno — pętla po rejestrze sądziłaby rejestr samym sobą. */
+  'knowledge',
+  'lab',
   'triggers',
   'settings',
 ] as const;
@@ -66,8 +68,8 @@ const ALL: ScreenMap = {
   run: screenFor('run'),
   workflows: screenFor('workflows'),
   agents: screenFor('agents'),
-  skills: screenFor('skills'),
-  memory: screenFor('memory'),
+  knowledge: screenFor('knowledge'),
+  lab: screenFor('lab'),
   triggers: screenFor('triggers'),
   settings: screenFor('settings'),
 };

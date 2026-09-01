@@ -9,8 +9,10 @@
  *
  * SŁABA WERSJA TEGO KRYTERIUM: wyrenderować `Session` wprost z `onRunAgain`. Przechodzi DZIŚ,
  * bo `session.tsx` od zawsze umie ten przycisk narysować — zepsuty był szew nad nim. Dlatego
- * renderujemy DOKŁADNIE tę drogę, którą składa okno: kolumnę z listą agentów, w której ekran
- * jednego agenta jest montowany.
+ * renderujemy DOKŁADNIE tę drogę, którą składa okno: CAŁY ekran pracy, w którym ekran jednego
+ * agenta jest montowany. Do 2026-08-31 montowała go prawa kolumna z kafelkiem na agenta; ta
+ * kolumna zniknęła (mówiła to samo, co strumień obok), montaż przeniósł się na ekran pracy,
+ * a to kryterium poszło za nim — zmienił się selektor, nie pytanie.
  *
  * DRUGA SŁABA WERSJA: „przycisk jest". Przechodzi ją przycisk nie wiedzący, którego kroku
  * dotyczy — a powtórzenie nie tego kroku kosztuje dokładnie te minuty, dla których cała ta
@@ -61,7 +63,8 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-const { Rail, sayAfterRunningAgain } = await import('../rail/rail');
+const { sayAfterRunningAgain } = await import('../rail/rail');
+const { default: Run } = await import('../index');
 const { runStepAgain } = await import('../rail/again');
 const { closeAgent, openAgent } = await import('./open');
 const { roster } = await import('../rail/roster');
@@ -109,7 +112,7 @@ function tagAround(markup: string, text: string): string {
 /** Wszystko, co okno rysuje, kiedy otwarty jest ten agent. */
 function screenOf(agent: string): string {
   openAgent(agent);
-  return renderToStaticMarkup(<Rail cards={cards} />);
+  return renderToStaticMarkup(<Run />);
 }
 
 const AGAIN = 'Run this step again';
@@ -134,11 +137,11 @@ const asked = lastCallOf('rerun_step');
 const inTheStream = runFeed.view.history.filter((row) => row.label.includes(SAID));
 
 describe('running one step again is something a person can reach', () => {
-  it('runs on a list that really has tiles on it', () => {
+  it('runs on a run that really has workers in it', () => {
     expect(
       cards.map((card) => card.id),
-      'the agents list came out empty, so every question below would be about a screen nobody ' +
-        'could open and would pass on nothing.',
+      'nothing was counted from the seeded stream, so every question below would be about a ' +
+        'screen nobody could open and would pass on nothing.',
     ).toEqual([BUILD, SCOUT]);
   });
 

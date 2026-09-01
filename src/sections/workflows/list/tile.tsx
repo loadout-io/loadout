@@ -98,17 +98,25 @@ export function WorkflowTile({ wf, place, onOpen }: WorkflowTileProps): ReactEle
       data-workflow-place={place}
       type="button"
       onClick={onOpen}
-      className="flex flex-col gap-2 rounded-md border border-line bg-panel p-3 text-left hover:border-line-strong"
+      /* `data-interactive` jest tym, co odróżnia kartę-pojemnik od karty-kontrolki: dokłada
+         kursor, mocniejszy obrys pod kursorem, wciśnięcie i pierścień skupienia. Do 2026-08-31
+         kafelek miał z tych czterech jeden (`hover:border-line-strong`), więc z klawiatury nie
+         było widać, na którym workflow się stoi.
+
+         `.enter` odpowiada na „czy to właśnie weszło": kafelek świeżo utworzonego workflow jest
+         jedynym, który się montuje, więc dorasta do miejsca sam, a reszta listy stoi. */
+      data-interactive
+      className="card enter flex flex-col gap-2 text-left"
     >
       <span className="text-heading text-ink">{wf.name}</span>
 
-      {description === '' ? null : <span className="text-body text-muted">{description}</span>}
+      {description === '' ? null : <span className="lead">{description}</span>}
 
       {/* Liczby są wartościami maszynowymi, więc mono — reguła semantyczna z DESIGN §4.
        * Dwie pierwsze pozycje są w pliku. Trzecia byłaby z historii biegów, której v1 nie ma —
        * a ta, która stoi na jej miejscu przy niedokończonym szkicu, mówi, czego brakuje, żeby
        * ten workflow dał się w ogóle uruchomić. */}
-      <span className="flex gap-3 border-t border-line pt-2 font-mono text-mono text-muted">
+      <span className="value flex gap-3 border-t border-t-line pt-2">
         <span>{counted(wf.steps.length, 'step')}</span>
         <span>{counted(differentAgents(wf.steps), 'agent')}</span>
         {waiting === 0 ? null : (

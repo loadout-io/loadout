@@ -110,11 +110,14 @@ export function AtOnce({
        * mieściło się w pasku i kasowało własność, której pilnuje kryterium `at-once.test.tsx`:
        * etykieta ma być pytaniem, jakie zadałby człowiek (DESIGN §8). Ucięcie wielokropkiem jest
        * odpowiedzią na wąskie okno; przepisanie napisu jest odpowiedzią na inne pytanie. */}
-      <label className="min-w-0 truncate text-label text-muted" htmlFor={FIELD_ID}>
+      <label className="label min-w-0 truncate" htmlFor={FIELD_ID}>
         How many agents at once?
       </label>
-      {/* Liczba jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4. */}
-      <span className="w-4 shrink-0 text-right font-mono text-mono text-ink">{atOnce}</span>
+      {/* Liczba jest wartością maszynową, więc `.value` — kroj wchodzi razem ze stopniem
+          (DESIGN §4), a `tabular-nums` trzyma ja w miejscu przy zmianie cyfry. */}
+      <span className="value w-4 shrink-0 text-right" data-tone="ink">
+        {atOnce}
+      </span>
 
       <input
         id={FIELD_ID}
@@ -140,12 +143,12 @@ export function AtOnce({
        * tu ani jednego elementu — czyli zero pikseli za informację, której nie ma. */}
       {disabled === null ? (
         atOnce > suggested ? (
-          <p data-at-once-warning="" className="min-w-0 truncate text-attend">
+          <p data-at-once-warning="" className="lead fade-in min-w-0 truncate" data-tone="attend">
             {memoryWarning(atOnce)}
           </p>
         ) : null
       ) : (
-        <p data-at-once-locked="" title={disabled} className="min-w-0 truncate text-muted">
+        <p data-at-once-locked="" title={disabled} className="lead fade-in min-w-0 truncate">
           {disabled}
         </p>
       )}

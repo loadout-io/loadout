@@ -55,7 +55,14 @@ export interface StepTileProps {
  * liczba w klasie jest literałem rozmiaru, a mnożnik siatki nią nie jest — i przeżyje zmianę
  * bazy. ROZJAZD, świadomy i zgłoszony: DESIGN §6 mówi w tym miejscu 280 px, makieta 246,
  * a przy rozbieżności wygrywa makieta. */
-const CARD = 'w-61.5 rounded-md border bg-raised p-3 text-body';
+/* `.card` niesie promień, padding i obrys; szerokość, wypełnienie `--raised` i mocny obrys
+ * są tym, co ten kafelek ma INACZEJ niż karta i dlatego stoją obok nazwy (makieta `.node`).
+ *
+ * `.enter` odpowiada na „czy to właśnie weszło" (DESIGN §7): React Flow montuje wyłącznie
+ * kafelek, który naprawdę doszedł, więc `＋ Add step` daje jedno dorastające pudełko, a nie
+ * przeskok całego płótna. Przeciągnięcie i zaznaczenie kafelka NIE montują — animacja nie
+ * powtarza się przy każdym ruchu myszy. */
+const CARD = 'card enter w-61.5 bg-raised text-body';
 const CARD_LINE = 'border-line-strong';
 const CARD_SELECTED = 'border-accent';
 
@@ -155,24 +162,18 @@ export function StepTile({
           ⠿
         </span>
         <b className="min-w-0 flex-1 truncate text-heading text-ink">{step.name}</b>
-        {step.kind === 'checkpoint' ? (
-          <span className="shrink-0 text-label text-muted">asks you</span>
-        ) : null}
+        {step.kind === 'checkpoint' ? <span className="label shrink-0">asks you</span> : null}
         {/* Ten podpis jest jedynym miejscem, w którym z płótna widać RÓŻNICĘ między tym kafelkiem
             a krokiem „sprawdź": tamten czeka na koniec komendy, ten idzie dalej i zostawia ją
             żywą. Bez niego dwa kafelki z wierszem powłoki wyglądają identycznie. */}
-        {step.kind === 'serve' ? (
-          <span className="shrink-0 text-label text-muted">leaves it running</span>
-        ) : null}
+        {step.kind === 'serve' ? <span className="label shrink-0">leaves it running</span> : null}
         {/* Druga połowa tej samej różnicy. Ten kafelek CZEKA na koniec komendy i sam orzeka
             wynik — z tego, czy komenda wróciła bez błędu, i z tego, czy w wyjściu stoi wzorzec.
             Bez tego podpisu dwa kafelki z wierszem powłoki wyglądają na płótnie identycznie,
             a różnią się jedyną rzeczą, przez którą pętla weryfikacyjna w ogóle ma sens. */}
-        {step.kind === 'check' ? (
-          <span className="shrink-0 text-label text-muted">runs a check</span>
-        ) : null}
+        {step.kind === 'check' ? <span className="label shrink-0">runs a check</span> : null}
         {agent === undefined ? null : (
-          <span className="flex shrink-0 items-center gap-1 font-mono text-label text-muted">
+          <span className="value flex shrink-0 items-center gap-1 text-label">
             <i className={`block size-2.75 ${IDENTITY[agent.color]}`} />
             {agent.name}
           </span>
@@ -189,7 +190,10 @@ export function StepTile({
 
       {/* Stopka NAD linią (`.node .bot`: `padding-top:7px; border-top:1px solid var(--line)`)
           i w kroju maszynowym, bo to są wartości wyliczone, nie zdania. */}
-      <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-line pt-2 font-mono text-label text-muted">
+      {/* `.value` niesie rodzinę maszynową i `tabular-nums`; stopień zostaje przy `--t-label`,
+          bo makieta (`.node .bot`, 11 px) jest wyrocznią wyglądu, a kafelek ma 246 px szerokości
+          i dwa napisy obok siebie. */}
+      <div className="value mt-2 flex items-baseline justify-between gap-2 border-t border-line pt-2 text-label">
         <span>{copies === null ? waits : `${copies} · ${waits}`}</span>
         {handsOn ? <span>runs before ▸</span> : null}
       </div>

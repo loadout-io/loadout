@@ -1,7 +1,14 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { App } from '../App';
 import type { Section } from '../ui/sections';
+import { createAgentsStore } from '../state/agents';
+import { useMemory } from '../state/memory';
+import { useSkills } from '../state/skills';
+import AgentsScreen from './agents';
+import KnowledgeScreen from './knowledge';
+import WorkflowsScreen from './workflows';
+import { createWorkflowListStore } from './workflows/list/store';
 
 /* AC-3 dla T-48: znacznik pustego ekranu siedzi na ZDANIU, w kazdej sekcji z osobna.
  *
@@ -20,23 +27,57 @@ import type { Section } from '../ui/sections';
  * CZEGO TU NIE MA I DLACZEGO. Zargonu nie sadzimy: `checks/quick-vocabulary.sh` sadzi kazdy
  * napis w `src/` przy kazdym biegu, a druga kopia tej tabeli w tescie to dwa zrodla prawdy
  * (niezmiennik 23). Nie ma tez zadania „na kazdym pustym ekranie stoi czynna kontrolka": Agents,
- * Skills i Workflows ja maja i pilnuja tego wlasne testy, a w Memory notatki pisze AGENT, nie
- * czlowiek — przycisk dopisany tam po to, zeby kryterium zzieleniało, bylby kontrolka bez
- * czynnosci.
+ * Knowledge i Workflows ja maja i pilnuja tego wlasne testy, a notatek nie pisze czlowiek, tylko
+ * AGENT — przycisk „dodaj notatke" dopisany po to, zeby kryterium zzieleniało, bylby kontrolka
+ * bez czynnosci.
  *
  * SLABA WERSJA: asercja na obecnosc `data-empty`. Przechodzi dzis, kiedy trescia oznaczonego
  * elementu jest cztero-czlonowe „glif zdanie zdanie przycisk".
  */
 
+/* Nazwa stalej jest starsza niz liczba, ktora nazywa, i to nie jest przeoczenie: lista rosla
+ * i malala, a nazwa zostawala. 2026-08-31 Skills i Memory zeszly sie w Knowledge, wiec sekcji
+ * jest szesc. Wypisane na sztywno — petla po rejestrze sadzilaby rejestr samym soba. */
 const FIVE = [
   'run',
   'workflows',
   'agents',
-  'skills',
-  'memory',
+  'knowledge',
+  'lab',
   'triggers',
   'settings',
 ] as const satisfies readonly Section[];
+
+/* ── DLACZEGO TRZY SEKCJE NIE IDĄ TU PRZEZ `<App/>`. 2026-08-31. ────────────────────────────
+ *
+ * Agents, Workflows i Knowledge czytają swoje katalogi w EFEKCIE po zamontowaniu, a
+ * `renderToStaticMarkup` efektów nie uruchamia — więc `<App section="agents"/>` to ekran,
+ * którego magazyn nigdy nie dostał odpowiedzi z dysku. Do 2026-08-31 wypisywał wtedy „No agents
+ * yet.", czyli zdanie o katalogu, w który nikt nie zajrzał; od naprawy zgłoszonej przez
+ * właściciela wypisuje, że CZYTA. Zaproszenie jest tam dalej i dalej jest jednym zdaniem
+ * z jednym znacznikiem — tylko dochodzi się do niego po odpowiedzi katalogu, a nie przed nią.
+ *
+ * Ta wyrocznia pyta, GDZIE SIEDZI ZNACZNIK pustego ekranu, więc ekran musi być naprawdę pusty.
+ * Dla tych trzech sekcji stawiamy je z magazynem, który JUŻ dostał odpowiedź „nic tam nie ma";
+ * że montują się naprawdę przez powłokę, dowodzą ich własne `mounted.test.tsx` i pierwszy `it`
+ * niżej, który dalej idzie przez `<App/>` po wszystkich siedmiu. */
+function noAgents() {
+  return createAgentsStore({
+    list: () => Promise.resolve([]),
+    newId: () => Promise.resolve('a-new'),
+    save: () => Promise.resolve('rev'),
+    remove: () => Promise.resolve(),
+  });
+}
+
+function noWorkflows() {
+  return createWorkflowListStore({
+    list: () => Promise.resolve([]),
+    newId: () => Promise.resolve('wf-new'),
+    write: () => Promise.resolve('rev'),
+    remove: () => Promise.resolve(),
+  });
+}
 
 /** Tekst bez znacznikow, ze scisnietymi odstepami. */
 const plain = (html: string): string =>
@@ -118,18 +159,58 @@ function markedSpans(markup: string): readonly string[] {
 const markedText = (markup: string): readonly string[] => markedSpans(markup).map(plain);
 
 describe('pusty ekran', () => {
-  const screens = FIVE.map(
+  const throughTheShell = FIVE.map(
     (section) => [section, renderToStaticMarkup(<App section={section} />)] as const,
   );
 
+  /** Te same siedem sekcji, każda NAPRAWDĘ pusta — patrz akapit nad `noAgents`. */
+  let screens: readonly (readonly [Section, string])[] = [];
+
+  beforeAll(async () => {
+    const agents = noAgents();
+    await agents.getState().load();
+    const workflows = noWorkflows();
+    await workflows.getState().load();
+    /* Knowledge czyta katalogi przez `invoke`, którego w vitest nie ma, więc odpowiedź „nic tam
+     * nie ma" wstawiamy wprost — dla obu jego magazynów. */
+    useSkills.setState({ folders: 'read', installed: [], pending: null, message: null });
+
+    screens = throughTheShell.map(([section, markup]) => {
+      if (section === 'agents') {
+        return [
+          section,
+          renderToStaticMarkup(<AgentsScreen store={agents} usage={null} />),
+        ] as const;
+      }
+      if (section === 'workflows') {
+        return [section, renderToStaticMarkup(<WorkflowsScreen store={workflows} />)] as const;
+      }
+      if (section === 'knowledge') {
+        /* Obie połowy sekcji muszą mieć ODPOWIEDŹ, bo dopiero wtedy ekran ma prawo powiedzieć
+           „nie ma nic". Notatki czyta się przez `invoke`, którego w vitest nie ma, więc
+           odpowiedź „nic tam nie ma" wstawiamy wprost — to jest ZIARNO, nie obejście: pytanie
+           tej wyroczni brzmi „gdzie siedzi znacznik", a nie „skąd wzięła się pustka". */
+        useMemory.setState({
+          notes: [],
+          passed: [],
+          message: null,
+          passedProblem: null,
+          read: true,
+        });
+        return [section, renderToStaticMarkup(<KnowledgeScreen />)] as const;
+      }
+      return [section, markup] as const;
+    });
+  });
+
   it('reaches the real sections, not the shell on its own', () => {
-    for (const [section, markup] of screens) {
+    for (const [section, markup] of throughTheShell) {
       expect(markup.length, 'nothing at all was rendered for ' + section).toBeGreaterThan(400);
     }
     /* Kontrola: ekrany musza sie od siebie ROZNIC. Szesc identycznych znaczy, ze zadna sekcja
      * sie nie zamontowala i wszystko nizej mierzy sama powloke. */
     expect(
-      new Set(screens.map(([, markup]) => markup)).size,
+      new Set(throughTheShell.map(([, markup]) => markup)).size,
       'two sections rendered the same document, so at least one of them did not mount and ' +
         'every assertion below is about the window frame',
     ).toBe(FIVE.length);

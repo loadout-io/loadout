@@ -7,6 +7,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::commands::skills::ReviewWire;
 use crate::connections::{Connection, Origin, Transport};
 use crate::library::agents::{
     Agent, Color, FileAccess, SCHEMA, Thinking, Tools, Vendor, VendorOptions,
@@ -22,6 +23,15 @@ pub(crate) struct AdapterOutput {
     /// odtwarzanie tej relacji po stemie gubiło gotowy target jeszcze przed domknięciem zależności.
     pub agent_sources: BTreeMap<String, String>,
     pub skills: Vec<SkillDraft>,
+    /// Źródłowy item -> przegląd JEGO pliku. Klucz jest per PLIK, nie per rzecz: dwie kopie
+    /// jednej umiejętności mają dwa różne przeglądy i dopiero scalanie wiersza rozstrzyga,
+    /// który z nich wiersz nosi (`translate::merge_same_thing`).
+    ///
+    /// 2026-08-31 — wpis powstaje TAKŻE dla kopii, której adapter odmówił. To jest cały sens
+    /// tej mapy: pozycja zatrzymana przez przegląd jest dokładnie tą, o której człowiek musi
+    /// przeczytać, co znaleziono, a do tego dnia była jedyną, po której nie zostawało nic
+    /// poza słowem „unsupported".
+    pub skill_reviews: BTreeMap<String, ReviewWire>,
     pub connections: Vec<Connection>,
     pub notes: Vec<MemoryNote>,
     pub mappings: Vec<Mapping>,
@@ -77,6 +87,7 @@ pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
         agents: Vec::new(),
         agent_sources: BTreeMap::new(),
         skills: Vec::new(),
+        skill_reviews: BTreeMap::new(),
         connections: Vec::new(),
         notes: Vec::new(),
         mappings: Vec::new(),
@@ -195,8 +206,21 @@ fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut u
 }
 
 fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut AdapterOutput) {
-    match skill(inspection, file) {
-        Ok((skill, compatibility @ (Compatibility::Exact | Compatibility::Adjusted))) => {
+    let read = skill(inspection, file);
+    /* PRZEGLĄD ZOSTAJE, NAWET KIEDY UMIEJĘTNOŚĆ NIE WCHODZI (2026-08-31). Wpis powstaje przed
+     * rozgałęzieniem, bo każde z ramion niżej jest odpowiedzią NA TEN przegląd — a to ramię,
+     * które odmawia, jest jedynym, po którym człowiek naprawdę potrzebuje znalezisk. */
+    if let Ok(read) = &read {
+        output
+            .skill_reviews
+            .insert(file.item.id.clone(), read.reviewed.clone());
+    }
+    match read {
+        Ok(ReviewedSkill {
+            draft: skill,
+            compatibility: compatibility @ (Compatibility::Exact | Compatibility::Adjusted),
+            ..
+        }) => {
             if let Some(existing) = output
                 .skills
                 .iter()
@@ -226,7 +250,7 @@ fn adapt_skill(inspection: &Inspection, file: &InspectedFile, output: &mut Adapt
             output.mappings.push(mapping(file, compatibility, message));
             output.skills.push(skill);
         }
-        Ok((_skill, compatibility)) => output.mappings.push(mapping(
+        Ok(ReviewedSkill { compatibility, .. }) => output.mappings.push(mapping(
             file,
             compatibility,
             "This skill contains instructions that must be resolved before import.",
@@ -905,10 +929,23 @@ fn reject_unknown_fields(
     Ok(())
 }
 
+/// Jeden plik `SKILL.md` przeczytany do końca: co z niego powstanie, jak bardzo to pasuje
+/// i **co przegląd w nim znalazł**.
+///
+/// 2026-08-31 — trzecie pole jest naprawą, nie ozdobą. Do tego dnia ta funkcja zwracała parę,
+/// a `imported.reviewed` — ciało, znaleziska i wynik przeglądu — ginęło zaraz po policzeniu
+/// `compatibility`. Zgodność jest JEDNĄ LICZBĄ o tym pliku; człowiek, który ma zdecydować,
+/// czy wnieść cudzą umiejętność, potrzebuje linii, na których to stanęło.
+struct ReviewedSkill {
+    draft: SkillDraft,
+    compatibility: Compatibility,
+    reviewed: ReviewWire,
+}
+
 fn skill(
     inspection: &Inspection,
     file: &InspectedFile,
-) -> std::result::Result<(SkillDraft, Compatibility), String> {
+) -> std::result::Result<ReviewedSkill, String> {
     let source = inspection.snapshot.root.join(&file.item.path);
     let Some(dir) = source.parent() else {
         return Err("This skill has no folder.".to_owned());
@@ -919,14 +956,15 @@ fn skill(
         Verdict::Clean | Verdict::Concerns => Compatibility::Adjusted,
         Verdict::Blocked => Compatibility::Unsupported,
     };
-    Ok((
-        SkillDraft {
+    Ok(ReviewedSkill {
+        draft: SkillDraft {
             name: imported.skill.name,
             source_dir: dir.to_path_buf(),
             source_hash: file.item.hash.clone(),
         },
         compatibility,
-    ))
+        reviewed: ReviewWire::from(&imported.reviewed),
+    })
 }
 
 pub(super) struct AdaptedConnections {

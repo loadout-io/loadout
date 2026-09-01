@@ -40,12 +40,7 @@ export interface TriggerCreateControlProps {
 
 export function DefaultCreateControl({ onCreate }: TriggerCreateControlProps): ReactElement {
   return (
-    <button
-      data-create-trigger
-      type="button"
-      className="h-9 rounded-sm bg-accent px-4 text-ui text-bg"
-      onClick={onCreate}
-    >
+    <button data-create-trigger type="button" className="btn-primary" onClick={onCreate}>
       Create trigger
     </button>
   );
@@ -236,7 +231,7 @@ export default function TriggersScreen({
 
   return (
     <section data-triggers-screen className="flex h-full flex-col">
-      <header className="flex h-13 items-center border-b border-line bg-panel px-4">
+      <header className="screen-head glass">
         <h1 className="text-title text-ink">Triggers</h1>
         {state.triggers.length === 0 ? null : (
           <div className="ml-auto">
@@ -246,20 +241,20 @@ export default function TriggersScreen({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="screen-body">
           {state.said === null ? null : (
-            <p className="mb-3 max-w-160 text-body text-attend">{state.said}</p>
+            <p className="lead enter mb-3 max-w-160" data-tone="attend">
+              {state.said}
+            </p>
           )}
 
           {state.triggers.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
-              <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
-                ◇
-              </span>
-              <p data-empty className="text-body text-ink">
+              <span className="mark">◇</span>
+              <p data-empty className="text-ink">
                 {empty}
               </p>
-              <p className="max-w-120 text-center text-body text-muted">
+              <p className="lead max-w-120 text-center">
                 Connect Linear and choose what should run when a new issue arrives.
               </p>
               <CreateControl onCreate={openCreate} />
@@ -281,9 +276,19 @@ export default function TriggersScreen({
         </div>
 
         {opened === null ? null : (
+          /* WEJŚCIE SPRĘŻYNĄ, bo ten panel POJAWIA SIĘ nad tym, co już jest na ekranie —
+             DESIGN §7 wymienia „panel inspektora" jako jeden z trzech nośników tej krzywej.
+             Panel, który wskakuje skokiem, czyta się jak przeskok widoku: oko nie wie, czy
+             patrzy na to samo miejsce. Jeden region na jedno zdarzenie (kliknięcie w wiersz
+             albo w „Create trigger"), przy sufcie dwóch z ARCHITECTURE §7.
+
+             Materiał zostaje płaskim `--panel`: makieta trzyma tak boczny inspektor
+             (`.side`, `docs/mockup/index.html:331`) i celowo NIE wymienia go wśród powierzchni,
+             które gasną przy `prefers-reduced-transparency` — szkło jest chrome, a tu stoi
+             formularz, który człowiek czyta i wypełnia. */
           <aside
             data-trigger-editor
-            className="min-h-0 w-83 overflow-auto border-l border-line bg-panel p-4"
+            className="enter min-h-0 w-83 overflow-auto border-l border-line bg-panel p-4"
           >
             <Form
               mode={opened.mode}

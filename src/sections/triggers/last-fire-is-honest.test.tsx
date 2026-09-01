@@ -145,7 +145,12 @@ describe('the real Triggers screen tells five materially different truths', () =
       workspace: '/project',
       receiptAt: RECEIPT_AT,
     });
-    expect(statusText(markup)).toBe(`${ACCEPTED} · Run again`);
+    /* 2026-08-31: `data-trigger-status` niesie już WYŁĄCZNIE zdanie o stanie. Nazwa czynności
+       stoi obok, we własnym przycisku — do tego dnia jedno i drugie było etykietą tego samego
+       żywego przycisku, więc przeczytanie stanu wymagało celowania w kontrolkę, której
+       kliknięcie puszcza pracę jeszcze raz. */
+    expect(statusText(markup)).toBe(ACCEPTED);
+    expect(markup).toContain('>Run again<');
     /* React's static renderer preserves the JSX property spelling (`dateTime`). The browser
      * normalises it as the standard HTML datetime attribute; lower-case here would test a
      * serialisation detail contrary to the renderer this criterion actually uses. */

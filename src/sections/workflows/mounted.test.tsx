@@ -62,26 +62,47 @@ function ioWith(entries: readonly WorkflowEntry[]): WorkflowListIo {
 }
 
 describe('the workflows section mounts for real and shows the list', () => {
-  it('mounts through real discovery and says what an empty list says', () => {
+  /* 2026-08-31 — DOWÓD ZAMONTOWANIA ZMIENIŁ ZDANIE, i to jest naprawa, nie osłabienie. Do tego
+   * dnia stało tu `toContain('No workflows yet.')` na ekranie, którego magazyn NIGDY nie czytał
+   * katalogu: `renderToStaticMarkup` nie odpala efektów, więc `load()` nie zdążył pobiec.
+   * Kryterium przyklepywało dokładnie tę wadę, którą właściciel zgłosił. Dowodem zamontowania
+   * prawdziwego ekranu jest dziś zdanie o CZYTANIU — tak samo mocnym, bo pisze je wyłącznie ten
+   * jeden komponent. Zaproszenie przy prawdziwym zerze sądzi `it` niżej, na magazynie, który
+   * naprawdę dostał odpowiedź. */
+  it('mounts through real discovery and says it is looking, not that there is nothing', () => {
     const markup = renderToStaticMarkup(<App section="workflows" />);
 
     expect(
       markup,
-      'asking the shell for workflows WITHOUT handing it screens has to reach the file on ' +
-        'disk. What stood here instead was the sentence from the registry — with the list ' +
-        'itself landed, green and mounted by nobody',
-    ).toContain(LIST_IS_EMPTY);
+      'asking the shell for workflows WITHOUT handing it screens has to reach the real list. ' +
+        'What stood here instead was the sentence from the registry — with the list itself ' +
+        'landed, green and mounted by nobody',
+    ).toContain('Reading the workflows you have saved');
     expect(
-      occurrences(markup, 'data-create'),
-      'the empty list is an invitation, so exactly one way to create a workflow is on ' +
-        'screen. Zero means the list is not really mounted; two means a second way to make ' +
-        'a file, which is the first chance for the two to drift apart (invariant 16)',
-    ).toBe(1);
+      markup,
+      'and it must NOT say the folder is empty before anything read it. That is the sentence a ' +
+        'person with work on disk saw first',
+    ).not.toContain(LIST_IS_EMPTY);
     expect(
       markup,
       'with a screen mounted, the sentence the registry keeps for an empty workflows section ' +
         'has no business being in the document: one fact, one place (invariant 13)',
     ).not.toContain(sectionEntry('workflows').empty);
+  });
+
+  it('invites with exactly one way in once the folder has answered with nothing', async () => {
+    const store = createWorkflowListStore(ioWith([]));
+    await store.getState().load();
+
+    const markup = renderToStaticMarkup(<WorkflowsScreen store={store} />);
+
+    expect(markup, 'the folder answered and it holds nothing (DESIGN §6)').toContain(LIST_IS_EMPTY);
+    expect(
+      occurrences(markup, 'data-create'),
+      'the empty list is an invitation, so exactly one way to create a workflow is on screen. ' +
+        'Zero means the list is not really mounted; two means a second way to make a file, ' +
+        'which is the first chance for the two to drift apart (invariant 16)',
+    ).toBe(1);
   });
 
   it('control: with no screen in hand the shell still says the registry sentence', () => {

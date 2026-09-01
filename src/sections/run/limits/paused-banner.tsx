@@ -87,7 +87,12 @@ export function PausedBanner({
   return (
     <p
       data-paused-banner=""
-      className="rounded-md border border-attend-edge bg-attend-soft px-3 py-2 text-attend"
+      /* `.card[data-tone="attend"]` niesie obrys, promien i padding; wypelnienie `--attend-soft`
+         zostaje, bo ten pasek jest jedyna powierzchnia ekranu pracy, ktora ma byc widziana
+         katem oka. `.enter` — pasek POJAWIA sie w chwili, w ktorej dostawca odmowil: rzecz,
+         ktora wskakuje bez ruchu, czyta sie jak rzecz, ktora stala tam od poczatku. */
+      data-tone="attend"
+      className="card enter bg-attend-soft text-attend"
     >
       {waitingSentence(run.waitingUntil, zone)}
     </p>

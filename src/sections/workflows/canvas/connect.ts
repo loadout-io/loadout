@@ -377,39 +377,74 @@ export function addStep(
   };
 }
 
+/** Wiersz, który dostaje kafelek „uruchom i zostaw" prosto z przycisku.
+ *
+ * TA SAMA WARTOŚĆ, którą panel kroku pokazuje dziś w tym polu jako podpowiedź
+ * (`step-panel/serve-panel.tsx`, `placeholder`). Druga, inna wartość wpisana tutaj byłaby drugą
+ * odpowiedzią na pytanie „co ten kafelek zwykle uruchamia" (niezmiennik 13). */
+const SERVE_BY_DEFAULT = 'npm run dev';
+
+/** To samo dla kafelka „sprawdź" — `step-panel/check-panel.tsx`, oba `placeholder`. */
+const CHECK_BY_DEFAULT = 'npm test';
+
+/** Wzorzec dowodu. `String.raw`, bo `\d` w zwykłym literale jest ucieczką bez znaczenia i cichą
+ * zmianą wzorca, który pojedzie do biegu. */
+const PROOF_BY_DEFAULT = String.raw`(\d+) passed`;
+
+/* ── DLACZEGO OBA KAFELKI Z WIERSZEM POWŁOKI WYCHODZĄ WYPEŁNIONE. 2026-08-31. ────────────────
+ *
+ * To jest ODWRÓCENIE rozstrzygnięcia z 2026-08-23 („pusta komenda, nie przykład w rodzaju
+ * `npm run dev`; wypełniacz wygląda na płótnie dokładnie tak samo jak decyzja człowieka"),
+ * i odwracam je z jednego powodu: TAMTO ZDANIE OPISYWAŁO KOSZT, KTÓREGO NIE MA, i przemilczało
+ * ten, który jest.
+ *
+ * Zmierzone na oknie właściciela: kliknięcie w `＋ Run a check` albo `＋ Start something` dawało
+ * kafelek, po którym CAŁY plik przestawał się zapisywać. `workflow::file::save` odmawia na
+ * PIERWSZYM `Level::Problem` i robi to przed `fs::write`, a pusty kafelek dawał ich trzy naraz:
+ * pustą komendę i pusty wzorzec (`check::a_command_step_left_empty`) oraz `same-copy` bez
+ * niczego przed sobą (`check::nothing_before_it`). Skutek jest o rząd większy niż źle wpisana
+ * komenda: 400 ms później stoi czerwony pasek, a razem z tym kafelkiem na dysk przestaje
+ * docierać wszystko inne — przesunięcia kafelków, zmieniona nazwa, strzałki narysowane minutę
+ * wcześniej. Przycisk karze za własne użycie.
+ *
+ * „Wypełniacz wygląda jak decyzja człowieka" pozostaje prawdą i nie udaję, że jej nie ma. Ale
+ * te dwie wartości nie są wymyślone tutaj: to DOKŁADNIE te napisy, które panel kroku pokazuje
+ * dziś w polach jako podpowiedź (`check-panel.tsx` — `npm test` i `(\d+) passed`,
+ * `serve-panel.tsx` — `npm run dev`). Plik dostaje więc wartość, którą produkt i tak poleca,
+ * a panel otwiera się na tym kafelku w tej samej chwili, w której przycisk go stawia
+ * (`canvas.tsx`, `add`) — z kursorem nad polem, w którym ta wartość stoi.
+ *
+ * `project`, NIE `same-copy`, i to nie jest osłabienie tamtego argumentu, tylko jego granica.
+ * `same-copy` znaczy „w tej samej kopii, co krok PRZEDE MNĄ" — a przycisk stawia kafelek LUZEM
+ * (rozstrzygnięcie właściciela z 2026-08-19), więc przed nim nie stoi nic i nie ma jak stać.
+ * Rust nazywa to wprost i odmawia zapisu: „is set to work in the same folder as the step before
+ * it, and nothing comes before it". Wartość, której nie da się wyliczyć, nie jest ostrożniejsza
+ * od `project` — jest po prostu nieprawdziwa. Kiedy człowiek pociągnie strzałkę do tego kafelka,
+ * lista „Where it works" nazywa `same-copy` wprost i jest jedno kliknięcie dalej. (2026-08-31:
+ * pytanie nazywa się dziś „Where it works" i jest scalone z trzech kopii w jednej kontrolce
+ * `step-panel/where-it-works.tsx`, a `same-copy` jest w nim trzecią pozycją — liczebnik
+ * z poprzedniego brzmienia tego akapitu był już nieprawdą, sam argument stoi.)
+ *
+ * ZGŁOSZONE CZŁOWIEKOWI, nie obchodzone: właściwym domem tej naprawy jest `nothing_before_it`
+ * po stronie Rusta — ostrzeżenie przy zapisie, problem przy Run, dokładnie tak jak
+ * `one_folder_two_steps` od 2026-08-19. Wtedy kafelek mógłby wychodzić `same-copy` i czekać na
+ * strzałkę bez blokowania zapisu. Rusta to zadanie nie dotyka. */
 export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
   if (kind === 'checkpoint') return { kind, id, name: 'Ask me first', at };
-  /* Pusta komenda, nie przykład w rodzaju `npm run dev`. Wypełniacz wygląda na płótnie dokładnie
-   * tak samo jak decyzja człowieka — a ten kafelek URUCHAMIA to, co w nim stoi.
-   *
-   * `same-copy`, NIE `project`, i to jest wybór między dwoma rodzajami pomyłki. 2026-08-23,
-   * po pierwszym prawdziwym użyciu: ten kafelek stawia się prawie zawsze po kroku, który właśnie
-   * napisał kod, żeby krok po nim miał na co patrzeć. Serwer w folderze projektu podaje wtedy
-   * kod BEZ tej pracy — a strona, która się otwiera i pokazuje starą wersję, wygląda na
-   * działającą i nikt tego nie zgłosi. Postawiony bez poprzednika `same-copy` jest natomiast
-   * czerwoną kropką na płótnie, jeszcze przed Startem (`check::nothing_before`). Głośna pomyłka
-   * bije cichą. */
   if (kind === 'serve')
     return {
       kind,
       id,
       name: 'Start and leave running',
-      command: '',
-      folder: { use: 'same-copy' },
+      command: SERVE_BY_DEFAULT,
+      folder: { use: 'project' },
       at,
     };
 
-  /* KAFELEK „SPRAWDŹ" WYCHODZI PUSTY, i to jest cała jego treść w tej funkcji.
-   *
-   * Pusta komenda i pusty wzorzec z tego samego powodu, co przy „uruchom i zostaw": wypełniacz
-   * (`npm test`, `(\d+) passed`) wygląda na płótnie dokładnie tak samo jak decyzja człowieka,
-   * a ten kafelek URUCHAMIA to, co w nim stoi, i orzeka z tego, co znajdzie w wyjściu. Pusty
-   * wzorzec jest przy tym ODMOWĄ ZAPISU po stronie Rusta (`check::a_command_step_left_empty`),
-   * czyli głośną pomyłką z nazwą pola — a nie kafelkiem, który po cichu przepuszcza wszystko.
-   *
-   * `same-copy`, NIE `project`: sprawdzenie stawia się prawie zawsze PO kroku, który właśnie
-   * coś napisał, i ma patrzeć na tę pracę. To samo rozstrzygnięcie i ten sam powód, co przy
-   * kafelku „uruchom i zostaw" wyżej.
+  /* Komenda, wzorzec i folder — powód w całości stoi w akapicie nad tą funkcją. Kafelek
+   * „sprawdź" ma o jedno pole więcej niż „uruchom i zostaw" i to pole jest drugą połową tej
+   * samej odmowy zapisu: bez wzorca wynik liczyłby się z samego powrotu komendy, a suita, która
+   * nie uruchomiła ani jednego testu, wraca szczęśliwa (niezmiennik 19).
    *
    * `whenItFails: 'stop'` STOI TU JAWNIE, choć pole jest opcjonalne. Brak klucza znaczy
    * `carry-on` (`state/workflows.ts`), a bieg, który po sprawdzeniu mówiącym „nie" oddaje pracę
@@ -419,9 +454,9 @@ export function freshStep(kind: Step['kind'], id: string, at: Point): Step {
       kind,
       id,
       name: 'Run a check',
-      command: '',
-      proof: '',
-      folder: { use: 'same-copy' },
+      command: CHECK_BY_DEFAULT,
+      proof: PROOF_BY_DEFAULT,
+      folder: { use: 'project' },
       whenItFails: 'stop',
       at,
     };

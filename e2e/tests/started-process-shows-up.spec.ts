@@ -42,18 +42,16 @@ const FIELD = '[aria-label="Command line"]';
 const LINE = '[data-line]';
 
 /**
- * Kafelek rzeczy uruchomionej komendą — własna grupa w tej samej kolumnie.
+ * Kafelek rzeczy uruchomionej komendą — własna grupa nad obrazem planu.
  *
- * Osobny znacznik od `data-agent`, bo to jest dokładnie ta różnica, którą kryterium mierzy:
- * agenci i rzeczy uruchomione przez człowieka nie mieszają się w jednej liście. Przy okazji
- * cudze kryterium (`src/sections/run/rail-shows-agents.test.tsx`) tnie markup listy po napisie
- * `<span data-agent="`, więc kafelek noszący TAMTEN znacznik przewraca tamten test — czyli
- * struktura jest pilnowana z dwóch stron.
+ * Osobny znacznik od kafelka kroku, bo to jest dokładnie ta różnica, którą kryterium mierzy:
+ * kroki biegu i rzeczy uruchomione przez człowieka nie mieszają się w jednej liście. Rzecz
+ * uruchomiona komendą nie stoi na żadnym kroku i nie ma czego na tym obrazie narysować.
  */
-const TILE = '[data-rail] [data-started]';
+const TILE = '[data-plan-column] [data-started]';
 
-/** Kafelek agenta. Stoi tu po to, żeby dało się powiedzieć, że to NIE on się pojawił. */
-const AGENT_TILE = '[data-rail] [data-agent]';
+/** Kafelek kroku biegu. Stoi tu po to, żeby dało się powiedzieć, że to NIE on się pojawił. */
+const AGENT_TILE = '[data-plan-column] [data-step]';
 
 /** To, co otwiera kliknięcie w kafelek: wyjście tej jednej rzeczy. */
 const OUTPUT = '[data-started-output]';
@@ -95,7 +93,7 @@ afterAll(async () => {
   await closeEverything();
 }, 30_000);
 
-describe('typing a command puts a tile in the agents column and opens it on a click', () => {
+describe('typing a command puts a tile in the plan column and opens it on a click', () => {
   /* JEDEN PRZYPADEK NA CAŁĄ SCENĘ, i to jest wybór, nie skrót. Cztery zdania tego kryterium są
    * czterema krokami JEDNEJ czynności człowieka — nie ma kafelka, wpisuję, jest kafelek, wchodzę
    * w niego — a rozbite na cztery `it` każde z nich otwierałoby własną kartę i sprawdzałoby stan
@@ -145,7 +143,7 @@ describe('typing a command puts a tile in the agents column and opens it on a cl
       const agents = await app.page.locator(AGENT_TILE).allInnerTexts();
       expect(
         agents.some((tile) => tile.includes(COMMAND)),
-        'and it must not have joined the agents: ' +
+        'and it must not have joined the steps of the run: ' +
           JSON.stringify(agents) +
           '. Those are two different kinds of thing, and the control under each one means ' +
           'something else. Mixing them also makes the assertion above true for a screen that ' +

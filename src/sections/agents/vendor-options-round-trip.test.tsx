@@ -1,5 +1,12 @@
-/* AC-5 dla T-90: `More settings` dostaje wiersz przelotki, a ten wiersz naprawdę pisze do
- * definicji agenta i naprawdę ją odczytuje z powrotem.
+/* Kryterium T-90: `Advanced` niesie wiersz przelotki, a ten wiersz naprawdę pisze do definicji
+ * agenta i naprawdę ją odczytuje z powrotem.
+ *
+ * GDZIE TEN WIERSZ STOI — zmieniło się 2026-08-31. Stał piąty pod `More settings`, między
+ * `Skills` a `Connections`, czyli w tej samej randze co lista umiejętności. Skutek pomyłki nie
+ * jest jednak tej samej rangi: literówka w `Skills` daje agenta bez jednej umiejętności,
+ * a literówka tutaj zmienia komendę — flaga bez wartości połyka następny argument jako swój.
+ * Wiersz mieszka więc pod osobnym, jawnym `Advanced` (`advanced.tsx`), a pytania niżej są co do
+ * jednego te same: nazwa wiersza, podróż w obie strony, dysk, odmowa i dwie mapy naraz.
  *
  * Słaba wersja tego kryterium to `expect(html).toContain('Extra options')`. Przechodzi dla
  * napisu nad kontrolką, której `onChange` nie ma — czyli dla dokładnie tej wady, którą to
@@ -29,10 +36,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { Agent, AgentsIo } from '../../state/agents';
 import { createAgentsStore, missingForSave } from '../../state/agents';
+import { Advanced } from './advanced';
 import { AgentForm } from './agent-form';
-import { MoreSettings } from './more-settings';
 
-/** Ten sam znacznik, co czterech wierszy obok: `data-field` w `more-settings.tsx`. */
+/** Ten sam znacznik, co wierszy obok: `data-field` w `advanced.tsx` i `more-settings.tsx`. */
 const FIELD = 'vendorOptions';
 
 /* Pary spoza obu list zarezerwowanych (`workflow/check.rs`) i bez podniesienia diala — wiersz
@@ -94,7 +101,7 @@ function findField(node: ReactNode, field: string): ReactElement<ControlProps> |
 }
 
 function markupOf(value: Agent): string {
-  return renderToStaticMarkup(<MoreSettings value={value} onChange={noop} />);
+  return renderToStaticMarkup(<Advanced value={value} onChange={noop} />);
 }
 
 /** Tekst bez znaczników i bez encji. React zapisuje apostrof jako `&#x27;`. */
@@ -128,10 +135,10 @@ function linesOf(text: string): string[] {
 
 /** Co pole pokazuje dla tego agenta — czyli co człowiek zobaczy, otwierając go ponownie. */
 function shown(value: Agent): string {
-  const found = findField(MoreSettings({ value, onChange: noop }), FIELD);
+  const found = findField(Advanced({ value, onChange: noop }), FIELD);
   expect(
     found,
-    'More settings carries no extra-options control at all, so there is nothing to read back. ' +
+    'Advanced carries no extra-options control at all, so there is nothing to read back. ' +
       'A setting a person writes and the form forgets is the same to them as one that was ' +
       'never saved',
   ).not.toBeNull();
@@ -147,7 +154,7 @@ function shown(value: Agent): string {
 /** Wpisuje ten tekst w PRAWDZIWE pole i oddaje agenta, którego formularz z tego zrobił. */
 function typed(value: Agent, text: string): Agent {
   const handed: Agent[] = [];
-  const tree = MoreSettings({
+  const tree = Advanced({
     value,
     onChange: (one) => {
       handed.push(one);
@@ -156,7 +163,7 @@ function typed(value: Agent, text: string): Agent {
   const found = findField(tree, FIELD);
   expect(
     found,
-    'More settings carries no extra-options control, so there is nothing to type into. This is ' +
+    'Advanced carries no extra-options control, so there is nothing to type into. This is ' +
       'the whole of what this criterion asks for',
   ).not.toBeNull();
   expect(
@@ -214,11 +221,11 @@ function diskThatKeeps(files: Agent[]): AgentsIo {
 }
 
 describe('the extra-options row writes into the agent file and comes back from it', () => {
-  it('stands in More settings, named for the app this agent runs with', () => {
+  it('stands in Advanced, named for the app this agent runs with', () => {
     const claude = plain(markupOf(FORGE));
     expect(
       claude,
-      'More settings has to name this row for the app that will receive the lines. Two apps ' +
+      'Advanced has to name this row for the app that will receive the lines. Two apps ' +
         'take extra settings in two different shapes, so a row named for neither of them ' +
         'teaches the wrong shape to whoever fills it in',
     ).toContain('Extra options for Claude Code');
@@ -235,10 +242,10 @@ describe('the extra-options row writes into the agent file and comes back from i
     );
 
     expect(
-      findField(MoreSettings({ value: FORGE, onChange: noop }), FIELD),
+      findField(Advanced({ value: FORGE, onChange: noop }), FIELD),
       'the words are not the setting: there has to be a real control carrying data-field="' +
         FIELD +
-        '", the same marker the four rows beside it carry',
+        '", the same marker every other row of this form carries',
     ).not.toBeNull();
   });
 
@@ -305,7 +312,14 @@ describe('the extra-options row writes into the agent file and comes back from i
     /* I NA EKRANIE, nie tylko we właściwości kontrolki (niezmiennik 29). Wartość zwrócona przez
      * komponent dowodzi, że mechanizm jest; markup dowodzi, że człowiek to widzi. */
     const html = renderToStaticMarkup(
-      <AgentForm value={back} expanded onChange={noop} onToggleMore={noop} onSave={noop} />,
+      <AgentForm
+        value={back}
+        expanded
+        advancedOpen
+        onChange={noop}
+        onToggleMore={noop}
+        onSave={noop}
+      />,
     );
     for (const line of CLAUDE_LINES) {
       expect(
@@ -332,7 +346,14 @@ describe('the extra-options row writes into the agent file and comes back from i
     ).toContain(HALF_LINE);
 
     const html = renderToStaticMarkup(
-      <AgentForm value={half} expanded onChange={noop} onToggleMore={noop} onSave={noop} />,
+      <AgentForm
+        value={half}
+        expanded
+        advancedOpen
+        onChange={noop}
+        onToggleMore={noop}
+        onSave={noop}
+      />,
     );
     expect(
       plain(html),

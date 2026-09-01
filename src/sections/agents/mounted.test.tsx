@@ -86,25 +86,51 @@ function ioWith(agents: readonly Agent[]): AgentsIo {
 }
 
 describe('the agents section mounts for real and keeps inviting when it is empty', () => {
-  it('mounts through real discovery and invites instead of reporting a lack of data', () => {
+  /* 2026-08-31 — DOWÓD ZAMONTOWANIA ZMIENIŁ ZDANIE, i to jest naprawa, nie osłabienie.
+   *
+   * Do tego dnia stało tu `toContain('No agents yet.')` na ekranie, którego magazyn NIGDY nie
+   * czytał dysku: `renderToStaticMarkup` nie odpala efektów, więc `load()` nie zdążył pobiec.
+   * Kryterium przyklepywało więc dokładnie tę wadę, którą właściciel zgłosił: sekcja mówiła
+   * „nie masz żadnego agenta" o katalogu, w który nikt nie zajrzał. Dowodem zamontowania
+   * prawdziwego ekranu (a nie zdania z rejestru) jest dziś zdanie o CZYTANIU — ta sama siła,
+   * bo żadne inne miejsce w aplikacji go nie pisze. Zaproszenie przy prawdziwym zerze sądzi
+   * `it` niżej, na magazynie, który naprawdę dostał odpowiedź. */
+  it('mounts through real discovery and says it is looking, not that there is nothing', () => {
     const markup = renderToStaticMarkup(<App section="agents" />);
 
     expect(
       markup,
-      'asking the shell for agents WITHOUT handing it screens has to reach the file on disk. ' +
+      'asking the shell for agents WITHOUT handing it screens has to reach the real section. ' +
         'The agent form has been landed and green since T-11 and was mounted by nobody',
+    ).toContain('Reading the agents you have saved');
+    expect(
+      markup,
+      'and it must NOT say the library is empty before the disk has answered. That sentence, ' +
+        'written over a folder holding eighteen agents, is the first thing a person read about ' +
+        'their own machine',
+    ).not.toContain(NO_AGENTS_YET);
+    expect(
+      markup,
+      'the section has its own sentences now, so the one the registry keeps for agents has no ' +
+        'business being in the document as well (invariant 13)',
+    ).not.toContain(sectionEntry('agents').empty);
+  });
+
+  it('invites with exactly one way in once the disk has answered with nothing', async () => {
+    const store = createAgentsStore(ioWith([]));
+    await store.getState().load();
+
+    const markup = renderToStaticMarkup(<AgentsScreen store={store} usage={null} />);
+
+    expect(
+      markup,
+      'an empty screen is an invitation, not a notice that there is nothing (DESIGN §6)',
     ).toContain(NO_AGENTS_YET);
     expect(
       occurrences(markup, 'data-create'),
-      'an empty screen is an invitation, not a notice that there is nothing (DESIGN §6), so ' +
-        'exactly one way to add an agent is on screen at zero. This is the only state a person ' +
-        'sees on a first run',
+      'exactly one way to add an agent is on screen at zero. This is the state a person sees ' +
+        'on a first run',
     ).toBe(1);
-    expect(
-      markup,
-      'the section has its own empty sentence now, so the one the registry keeps for agents ' +
-        'has no business being in the document as well (invariant 13)',
-    ).not.toContain(sectionEntry('agents').empty);
   });
 
   it('control: with no screen in hand the shell still says the registry sentence', () => {

@@ -65,8 +65,9 @@ export const GIVEN_TO_THIS_STEP = 'Given to this step';
 export const LEFT_OUT_FOR_LENGTH = "Left out because it exceeded this run's length limit.";
 export const NO_FROZEN_MEMORY = 'No frozen memory was recorded for this step.';
 
-/** `button-quiet` z DESIGN §6, ta sama fraza co na ekranie agenta (`../session/session.tsx`). */
-const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
+/* `.btn-quiet` z `theme.css` — ta sama nazwa, co na ekranie agenta i w szynie. Wysokosc,
+ * obrys i stany cichego przycisku mieszkaja od 2026-08-31 w jednym miejscu. */
+const QUIET = 'btn-quiet';
 
 /** Ile kroków — zdanie, nie liczba obok słowa, żeby jeden krok nie czytał się jak „1 steps". */
 export function stepsText(steps: number): string {
@@ -118,13 +119,17 @@ function Row({ row, folder }: { row: PastRunRow; folder: string | null }): React
       onClick={() => {
         void openOneRun(folder, row.folder);
       }}
-      className="grid w-full grid-cols-[112px_minmax(0,1fr)_auto_auto] items-baseline gap-3 rounded-md border border-line bg-panel px-3 py-[9px] text-left"
+      /* `.card[data-interactive]`: obrys, promien i wypelnienie karty plus — czego ten wiersz
+         dotad nie mial — myjka pod kursorem, wcisniecie i pierscien skupienia. Wiersz, ktory
+         jest przyciskiem na calej szerokosci i milczy przy najechaniu, wyglada jak akapit. */
+      data-interactive=""
+      className="card grid w-full grid-cols-[112px_minmax(0,1fr)_auto_auto] items-baseline gap-3 px-3 py-[9px] text-left"
     >
-      {/* Kiedy — wartość maszynowa, więc mono, do przepisania znak w znak (DESIGN §4). */}
-      <span className="font-mono text-mono text-muted">{row.when}</span>
+      {/* Kiedy — wartość maszynowa, więc `.value`: kroj wchodzi razem ze stopniem (DESIGN §4). */}
+      <span className="value">{row.when}</span>
       <span className="min-w-0 truncate text-body text-ink">{rowText(row)}</span>
       <StateWord state={row.state} />
-      <span className="font-mono text-mono whitespace-nowrap text-muted">{tallyText(row)}</span>
+      <span className="value whitespace-nowrap">{tallyText(row)}</span>
     </button>
   );
 }
@@ -146,12 +151,12 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
     <div data-past-run={run.folder}>
       <div className="mb-4 flex items-baseline gap-3">
         <h3 className="text-title text-ink">{run.title === '' ? run.when : run.title}</h3>
-        <span className="font-mono text-mono text-muted">{run.when}</span>
+        <span className="value">{run.when}</span>
         <StateWord state={run.state} />
       </div>
 
       {run.said === null ? null : (
-        <p data-past-said className="mb-4 text-body text-muted">
+        <p data-past-said className="lead mb-4">
           {run.said}
         </p>
       )}
@@ -161,7 +166,7 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
           pustym miejscem, którym ekran mówi „nie dorysowałem się" — a za tę turę ktoś zapłacił.
           Cisza jest tu wadą, nie stanem, i jest całą przyczyną, dla której to zdanie powstało.
           Który to z czterech stanów, rozstrzyga `../reflection/said.ts`; tutaj zostaje markup. */}
-      <p data-reflection className="mb-4 text-body text-muted">
+      <p data-reflection className="lead mb-4">
         {reflectionText(run.reflection ?? null)}
       </p>
 
@@ -174,7 +179,7 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
           {PASSED_ON}
         </h4>
         {run.handoffs.length === 0 ? (
-          <p data-empty className="px-[18px] py-2 text-body text-muted">
+          <p data-empty className="lead px-[18px] py-2">
             {PASSED_NOTHING}
           </p>
         ) : (
@@ -211,7 +216,7 @@ function Branches({ run }: { run: PastRun }): ReactElement {
         {BRANCHES_LEFT}
       </h4>
       {branches.length === 0 ? (
-        <p data-empty className="px-[18px] py-2 text-body text-muted">
+        <p data-empty className="lead px-[18px] py-2">
           {NO_BRANCHES_LEFT}
         </p>
       ) : (
@@ -245,8 +250,10 @@ function Branch({ branch }: { branch: PastBranch }): ReactElement {
       className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 px-[18px] py-[5px]"
     >
       {/* Nazwa jest wartością maszynową — do przepisania znak w znak, więc mono (DESIGN §4). */}
-      <span className="min-w-0 truncate font-mono text-mono text-ink">{branch.name}</span>
-      <span className="font-mono text-mono whitespace-nowrap text-muted">{branch.step}</span>
+      <span className="value min-w-0 truncate" data-tone="ink">
+        {branch.name}
+      </span>
+      <span className="value whitespace-nowrap">{branch.step}</span>
     </p>
   );
 }
@@ -258,7 +265,7 @@ function Handed({ handoff }: { handoff: PastHandoff }): ReactElement {
       data-handed
       className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] items-baseline gap-3 px-[18px] py-[5px]"
     >
-      <span className="font-mono text-mono whitespace-nowrap text-muted">
+      <span className="value whitespace-nowrap">
         {handoff.from + ' → ' + (handoff.to.length === 0 ? '—' : handoff.to.join(', '))}
       </span>
       <span className="min-w-0 text-body text-ink">{handoff.title}</span>
@@ -289,7 +296,7 @@ function Step({
           {step.name}
         </span>
         <StateWord state={step.state} />
-        <span className="ml-auto font-mono text-mono text-muted">{costText(step.costUsd)}</span>
+        <span className="value ml-auto">{costText(step.costUsd)}</span>
         {/* KONTYNUACJA STOI PRZY KROKU, a nie w nagłówku biegu, bo to jest wybór KROKU:
             „od którego miejsca ciągniemy dalej". Jeden przycisk nad całym biegiem musiałby ten
             krok zgadnąć — a zgadnięcie źle znaczy albo powtórzenie pracy, która się udała, albo
@@ -347,7 +354,7 @@ function Step({
           </p>
         )}
         {rows.length === 0 ? (
-          <p data-empty className="px-[18px] py-[3px] text-body text-muted">
+          <p data-empty className="lead px-[18px] py-[3px]">
             {NOTHING_KEPT_FOR_THIS_STEP}
           </p>
         ) : (
@@ -371,7 +378,7 @@ function StepMemory({ memory }: { memory: readonly PastMemory[] }): ReactElement
     <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
       <h5 className="mb-1 font-mono text-eyebrow text-muted">{WHAT_THIS_STEP_KNEW}</h5>
       {memory.length === 0 ? (
-        <p className="text-body text-muted">{NO_FROZEN_MEMORY}</p>
+        <p className="lead">{NO_FROZEN_MEMORY}</p>
       ) : (
         <div className="grid gap-2">
           {memory.map((record) => (
@@ -395,16 +402,16 @@ function MemoryRecord({ record }: { record: PastMemory }): ReactElement {
   return (
     <div data-past-memory={record.reference}>
       <div className="flex items-baseline gap-3">
-        <span className="min-w-0 truncate font-mono text-mono text-ink">{record.reference}</span>
-        <span className="ml-auto font-mono text-mono whitespace-nowrap text-muted">
+        <span className="value min-w-0 truncate" data-tone="ink">
+          {record.reference}
+        </span>
+        <span className="value ml-auto whitespace-nowrap">
           {String(record.bytes) + ' bytes · ' + record.hash.slice(0, 8)}
         </span>
       </div>
-      <p className="text-label text-muted">
-        {record.leftOut ? LEFT_OUT_FOR_LENGTH : GIVEN_TO_THIS_STEP}
-      </p>
+      <p className="label">{record.leftOut ? LEFT_OUT_FOR_LENGTH : GIVEN_TO_THIS_STEP}</p>
       {origins.map((origin) => (
-        <p key={origin} className="text-label text-muted">
+        <p key={origin} className="label">
           {origin}
         </p>
       ))}
@@ -423,8 +430,15 @@ export function PastRuns(): ReactElement | null {
   if (!now.open) return null;
 
   return (
-    <div data-history className="fixed inset-0 z-20 grid grid-rows-[auto_minmax(0,1fr)] bg-bg">
-      <div className="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-[18px]">
+    /* `.enter`: panel POJAWIA sie po `/history`, wiec wchodzi sprezyna — jedyne miejsce, gdzie
+       DESIGN §7 na nia pozwala. Jeden region na to zdarzenie: wiersze w srodku nie ruszaja sie,
+       bo lista, ktora wjezdza wierszami, kaze czekac na tresc, po ktora sie przyszlo. */
+    <div
+      data-history
+      className="enter fixed inset-0 z-20 grid grid-rows-[auto_minmax(0,1fr)] bg-bg"
+    >
+      {/* `.screen-head` niesie 52 px z ARCHITECTURE §7; material bierze z `.glass` obok. */}
+      <div className="screen-head glass">
         {now.opened === null ? null : (
           <button
             type="button"
@@ -436,15 +450,15 @@ export function PastRuns(): ReactElement | null {
           </button>
         )}
         <h2 className="text-title text-ink">{HEADING}</h2>
-        <span className="font-mono text-mono text-muted">{runsHereText(now.rows.length)}</span>
+        <span className="value">{runsHereText(now.rows.length)}</span>
         <button type="button" onClick={closeHistory} className={QUIET + ' ml-auto'}>
           Close
         </button>
       </div>
 
-      <div className="min-h-0 overflow-auto p-[18px]">
+      <div className="screen-body">
         {now.said === null ? null : (
-          <p data-history-said className="mb-3 text-body text-fail">
+          <p data-history-said className="lead fade-in mb-3" data-tone="fail">
             {now.said}
           </p>
         )}

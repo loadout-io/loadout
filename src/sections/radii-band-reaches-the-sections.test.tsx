@@ -27,7 +27,16 @@ import { describe, expect, it } from 'vitest';
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SECTIONS = ['agents', 'skills', 'memory', 'workflows', 'triggers'] as const;
+/* Katalogi sekcji, nie identyfikatory z rejestru — `skills/` i `memory/` zostały katalogami
+ * PÓŁEK po tym, jak 2026-08-31 obie sekcje zeszły się w Knowledge, a ich zawartość dalej rysuje
+ * pojemniki i dalej podlega temu pasmu.
+ *
+ * `knowledge/` NIE JEST na tej liście i to jest rozstrzygnięcie, nie przeoczenie: ten katalog
+ * trzyma sam układ — pasek nagłówka, jedno zaproszenie i miejsce na dwie półki — i nie ma
+ * w nim ani jednego pojemnika treści. Dopisany tu przewracałby asercję „ta sekcja ma pojemnik
+ * z promieniem" za brak rzeczy, której poprawnie nie ma; pojemniki tej sekcji stoją w dwóch
+ * katalogach półek wymienionych obok. */
+const SECTIONS = ['agents', 'skills', 'memory', 'workflows', 'triggers', 'lab'] as const;
 const BAND = ['sm', 'md', 'lg', 'pill'];
 
 /* Zrodlo bez komentarzy blokowych, i to nie jest ostroznosc na zapas: naglowek
@@ -54,16 +63,89 @@ function sources(): readonly (readonly [string, string])[] {
   return out;
 }
 
+/* Klasy domu, które NIOSĄ promień pojemnika — czytane Z ARKUSZA, nigdy wpisane tutaj z ręki.
+ *
+ * 2026-08-31. Nagłówek tego pliku przewidział ten przypadek na długo przed tym, jak zaszedł:
+ * „promien legalnie WYPROWADZA sie z klasy narzedziowej do klasy domu — `more-settings.tsx`
+ * nie ma dzis ani jednego `rounded-*` i jest to poprawne, bo jego pola biora `.field`."
+ * Przebudowa UI zrobiła dokładnie to z pojemnikami: `rounded-md … bg-panel` powtórzone
+ * w każdej sekcji zwinęło się do jednej klasy `.card`. Promień nie zniknął — przeprowadził
+ * się do arkusza, a sekcja przestała go nazywać u siebie.
+ *
+ * Sprawdzenie zostaje przy TYM SAMYM pytaniu („czy ta lista ma pojemnik z promieniem
+ * pojemnika"), tylko przestaje wierzyć literałowi na słowo. Jest przez to OSTRZEJSZE, nie
+ * słabsze: do dziś `rounded-md` wpisane w plik wystarczało samo z siebie, także wtedy, gdy
+ * siedziało na czymś, co pojemnikiem nie jest. Teraz nazwa klasy musi mieć POKRYCIE
+ * W ARKUSZU — regułę z `border-radius: var(--radius-md)` albo `--radius-lg`.
+ *
+ * Zbiór pusty jest tu awarią, nie zieloną: gdyby ktoś skasował te reguły z arkusza, każda
+ * sekcja opierająca pojemnik o klasę domu straciłaby promień po cichu. Pilnuje tego asercja
+ * `the sheet has to define at least one container class` niżej.
+ *
+ * DWA WARUNKI, NIE JEDEN, i drugi jest wymuszony pomiarem. Sam promień z pasma wpuszczał na tę
+ * listę `.mark` — kwadrat ZNAKU MARKI, który ma obrys i promień, a pojemnikiem listy nie jest.
+ * Sekcja z samym znakiem przechodziła wtedy asercję „ma pojemnik", nie mając ani jednego.
+ * Pojemnik TREŚCI ma powierzchnię: `background`. Znak, ikona i glif jej nie mają — i to jest
+ * różnica, która oddziela te dwie rodziny bez wypisywania nazw z ręki. */
+const CONTAINER_CLASSES: ReadonlySet<string> = (() => {
+  const sheet = readFileSync(resolve(ROOT, 'src', 'styles', 'theme.css'), 'utf8');
+  const found = new Set<string>();
+  for (const rule of sheet.matchAll(/\.([a-z][a-z0-9-]*)\s*\{([^}]*)\}/g)) {
+    const body = rule[2] ?? '';
+    /* NIE DOPISUJ CYFRY DO TEGO WIERSZA — progu, indeksu, ani `2xl` do pasma. 2026-08-31.
+     *
+     * `checks/tokens.sh` szuka `border-radius\s*:` z ogonem do średnika i zgłasza literał
+     * rozmiaru, gdy w tym ogonie jest CYFRA. Ma na to zwolnienie, ale testuje ono dosłowny
+     * podciąg `var(`, a wyrażenie regularne pisze `var\(` z ukośnikiem — więc zwolnienie
+     * TU SIĘ NIE ODPALA. Zielone jest wyłącznie dlatego, że w tym wierszu nie ma ani jednej
+     * cyfry. Zmierzone sondą na regexach checka: ten wiersz plus `&& n > 19` daje czerwień
+     * w pliku, który żadnego literału rozmiaru nie zawiera.
+     *
+     * Ten sam kruchy zapis stoi w `field-is-a-well-under-its-label.test.tsx:343` od dawna,
+     * więc jest to konwencja repo, nie wynalazek tego pliku. Trwała naprawa należy do
+     * `checks/tokens.sh` (zwolnienie ma zdejmować ukośniki przed testem), a ten plik jest dla
+     * biegu niezapisywalny — zgłoszone właścicielowi zamiast obejścia. */
+    const corner = /border-radius:\s*var\(--radius-(?:md|lg)\)/.test(body);
+    const surface = /\bbackground:/.test(body);
+    if (corner && surface) found.add(rule[1] ?? '');
+  }
+  return found;
+})();
+
 describe('pasmo promieni w sekcjach', () => {
   const files = sources();
+
+  it('the sheet has to define at least one container class', () => {
+    expect(
+      [...CONTAINER_CLASSES],
+      'no rule in theme.css sets a container corner, so the per-section check below would pass ' +
+        'on an empty set — every section could drop its corner and nothing would say so.',
+    ).not.toEqual([]);
+  });
   const radii = files.flatMap(([path, text]) =>
     [...text.matchAll(/\brounded-([a-z0-9[\]./%-]+)/g)].map((hit) => [path, hit[1] ?? ''] as const),
   );
 
+  /* Każde miejsce, w którym sekcja bierze pojemnik z arkusza zamiast nazywać promień u siebie.
+   * Kształt `[ścieżka, nazwa klasy]` jest ten sam, co `radii` wyżej, bo obie listy odpowiadają
+   * na to samo pytanie dwiema drogami i obie karmią te same asercje. */
+  const houses = files.flatMap(([path, text]) =>
+    [...text.matchAll(/\bclassName="[^"]*"/g)].flatMap((hit) =>
+      [...CONTAINER_CLASSES]
+        .filter((name) => new RegExp('\\b' + name + '\\b').test(hit[0] ?? ''))
+        .map((name) => [path, name] as const),
+    ),
+  );
+
   it('read enough to judge', () => {
-    expect(files.length, 'fewer files were read than these five sections hold').toBeGreaterThan(11);
+    expect(files.length, 'fewer files were read than these six sections hold').toBeGreaterThan(11);
+    /* SUMA OBU NOŚNIKÓW, nie sam literał. 2026-08-31: po zwinięciu powtórzonych pojemników do
+     * klasy `.card` literałów zostało 10 z dawnych 20+ — nie dlatego, że promienie zniknęły,
+     * tylko dlatego, że przeprowadziły się do arkusza. Kontrola liczy więc oba sposoby, w jakie
+     * sekcja może promień mieć; inaczej broniłaby przed pustą listą tylko w połowie i świeciłaby
+     * na czerwono za poprawną migrację. */
     expect(
-      radii.length,
+      radii.length + houses.length,
       'almost no corner names were read, so every assertion below would pass on an empty list',
     ).toBeGreaterThan(19);
   });
@@ -134,14 +216,22 @@ describe('pasmo promieni w sekcjach', () => {
       const mine = radii
         .filter(([path]) => path.startsWith('src/sections/' + section + '/'))
         .map(([, name]) => name);
-      expect(mine.length, 'no corner at all was read out of ' + section).toBeGreaterThan(0);
+      const mineHouses = houses
+        .filter(([path]) => path.startsWith('src/sections/' + section + '/'))
+        .map(([, name]) => name);
       expect(
-        mine.some((name) => name === 'md' || name === 'lg'),
+        mine.length + mineHouses.length,
+        'no corner at all was read out of ' + section,
+      ).toBeGreaterThan(0);
+      expect(
+        mine.some((name) => name === 'md' || name === 'lg') || mineHouses.length > 0,
         'section ' +
           section +
           ' gives everything a control corner: ' +
           JSON.stringify([...new Set(mine)]) +
-          '. It is a list, so it holds a tile, a card or a panel — and a container that takes the ' +
+          ', and it names no house container either (' +
+          [...CONTAINER_CLASSES].join(', ') +
+          '). It is a list, so it holds a tile, a card or a panel — and a container that takes the ' +
           'corner of a button is the old square language under a new name.',
       ).toBe(true);
     }

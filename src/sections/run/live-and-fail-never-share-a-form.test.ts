@@ -117,15 +117,17 @@ describe('live i fail nie dziela formy', () => {
   });
 
   it('sees colours handed over by maps, not only by literal attributes', () => {
-    /* KONTROLA SAMEGO SKANERA. `strip.tsx` podaje coral przez mape `BLOCK`, a nie w atrybucie,
-     * i to wlasnie tego poprzednia wersja nie widziala. */
-    const strip = sources.find(([name]) => name.endsWith('strip/strip.tsx'))?.[1] ?? '';
-    expect(strip, 'strip.tsx could not be read').not.toBe('');
+    /* KONTROLA SAMEGO SKANERA. Kotwica siedziala do 2026-08-31 na mapie `BLOCK` w `strip.tsx`;
+     * tamten torek zniknal razem z reszta drugiego rysunku planu. Ten sam ksztalt zrodla — mapa
+     * stan -> komplet klas, nie atrybut — stoi teraz na kafelku planu (`TONE` w `graph/tile.tsx`),
+     * wiec kontrola przeniosla sie tam co do pytania. */
+    const tile = sources.find(([name]) => name.endsWith('graph/tile.tsx'))?.[1] ?? '';
+    expect(tile, 'graph/tile.tsx could not be read').not.toBe('');
     expect(
-      classLiterals(strip).some((value) => isLive(value)),
-      'the scanner does not see the happening-now colour in strip.tsx, where it is handed over ' +
-        'by a map rather than written into an attribute. A scanner blind to that judges a few ' +
-        'hand-picked strings and reports green about the rest of the screen.',
+      classLiterals(tile).some((value) => isLive(value)),
+      'the scanner does not see the happening-now colour in graph/tile.tsx, where it is handed ' +
+        'over by a map rather than written into an attribute. A scanner blind to that judges a ' +
+        'few hand-picked strings and reports green about the rest of the screen.',
     ).toBe(true);
   });
 

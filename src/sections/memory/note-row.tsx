@@ -7,9 +7,16 @@
  * miejscach [ARCHITECTURE §7: żywe regiony na jeden fakt = 1].
  *
  * NIEZMIENNIK 14: w tym wierszu istnieją wyłącznie słowa `Suggested`, `In use`, `Use this`,
- * `Stop using` i `length`. Trzeci stan (`candidate`, `confirmed`, `corroborated`, `trusted`,
- * `archived`, `replaced`) i żargon (`promote`, `token`) wchodzą właśnie tędy — z makiety,
- * z enuma z drutu albo z pola, które ktoś wypisał „na wszelki wypadek".
+ * `Stop using`, `Discard`, `Discard for good`, `Keep it` i `length`. Trzeci stan (`candidate`,
+ * `confirmed`, `corroborated`, `trusted`, `archived`, `replaced`) i żargon (`promote`, `token`)
+ * wchodzą właśnie tędy — z makiety, z enuma z drutu albo z pola, które ktoś wypisał
+ * „na wszelki wypadek".
+ *
+ * ODRZUCENIE PYTA, ZANIM SKASUJE (2026-08-31). „Discard" wygląda jak zdjęcie wiersza z listy,
+ * a po tamtej stronie granicy zostawia TRWAŁY nagrobek w `discarded/`: notatka nie wróci nigdy,
+ * także wtedy, gdy inny agent nauczy się tego samego zdania. Wiersz stawia więc pytanie
+ * w miejscu akcji i mówi tę część, której nie widać. Odpowiedź „o co pytamy" przyjeżdża
+ * z magazynu (`askingToDiscard`), nie z `useState` — patrz opis tego propsa.
  *
  * UZASADNIENIE JEST WIDOCZNE, NIE ZA KLIKNIĘCIEM. Człowiek jest jedyną osobą, która może
  * powiedzieć „tak, to jest prawda", a klika w to raz — bez powodu na ekranie klika w ciemno
@@ -27,6 +34,7 @@
  */
 import type { ReactElement } from 'react';
 import type { Note, NoteAddress } from '../../state/memory';
+import { EVERY_PROJECT, onlyAgent, THIS_PROJECT } from '../knowledge/reach';
 
 export interface NoteRowProps {
   note: Note;
@@ -48,25 +56,32 @@ export interface NoteRowProps {
    * nieodróżnialna od zepsutej aplikacji.
    */
   onDiscard?: (address: NoteAddress) => void;
+  /**
+   * Czy pytanie „na pewno na zawsze?" stoi w TYM wierszu (2026-08-31).
+   *
+   * Odpowiedź przychodzi z magazynu, nie z prywatnego stanu wiersza: pytanie ma stać przy
+   * jednym wierszu naraz (niezmiennik 13), a `useState` w komponencie daje po jednym
+   * niezależnym pytaniu na wiersz i nic ich nie zlicza.
+   */
+  askingToDiscard?: boolean;
+  /** Drugie kliknięcie: notatka odchodzi i nie wróci. Bez handlera nie ma tego przycisku. */
+  onDiscardForGood?: (address: NoteAddress) => void;
+  /** „Keep it" — pytanie znika, notatka zostaje. */
+  onKeepIt?: () => void;
   /** Jedyna akcja notatki projektowej, która nadal leży w bibliotece. */
   onMove?: (address: NoteAddress) => void;
 }
 
-/* `chip` z DESIGN §6: wysokość 20px, `--t-label`, obrys `{stan}-edge`, tło `{stan}-wash`.
+/**
+ * Zdanie, które musi paść, zanim kandydatka odejdzie na zawsze.
  *
- * Kolor jest wybrany, nie odziedziczony po makiecie. `--attend` odpowiada na pytanie „co czeka
- * na moją decyzję?" [DESIGN §3] i kandydatka jest dokładnie tym — jedyną rzeczą w tej sekcji,
- * która czegoś od człowieka chce. Notatka w użyciu nie chce niczego, więc dostaje wariant
- * neutralny: gdyby i ona była nasycona, kolor przestałby oznaczać „twoja kolej" i zostałby
- * ozdobą, po której nie da się przebiec wzrokiem. `--accent` odpada osobno — znaczy „teraz",
- * czyli coś, co się dzieje w tej chwili, a notatka niczego nie robi. */
-const CHIP_WAITING =
-  'h-5 rounded-pill border border-attend-edge bg-attend-soft px-2 text-label text-attend';
-const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
-
-/* `button-quiet` z DESIGN §6: przezroczyste tło, obrys `--line`, wysokość 28px. Akcja odwracalna
- * i wykonywana wielokrotnie nie ma być najgłośniejszą rzeczą w wierszu. */
-const ACT = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
+ * MÓWI TĘ POŁOWĘ, KTÓREJ NIE WIDAĆ. `discard_note` zostawia trwały nagrobek w `discarded/`
+ * (`src-tauri/src/memory/notes.rs`, `was_discarded`) i skan pomija odtąd każdy plik o tym
+ * slugu — więc nie chodzi o „znika z listy", tylko o „nie wróci, nawet gdy inny agent nauczy
+ * się tego samego". „Are you sure?" nie mówi nic z tego i uczy klikać dalej.
+ */
+const NOT_COMING_BACK =
+  'Discard this note? It will not come back, even if an agent learns it again.';
 
 /**
  * „Length 137" — słowo, którym o tym mówimy [DESIGN §8]; nazwa z drutu tu nie dojeżdża.
@@ -87,18 +102,15 @@ export function lengthLabel(length: number): string {
  * którego nie ma). Wiersz, który wypisuje ostatnią nazwę, jaką widział, wygląda poprawnie na
  * notatce jednego agenta i kłamie o każdej innej.
  *
- * „Only", bo to jest CAŁA treść zakresu jednego agenta: ta notatka nie dociera do reszty kroków.
- * Samo `backend-dev` obok `Length 137` jest nazwą bez zdania — człowiek nie ma jak zgadnąć,
- * czy to autor, czy adresat. */
-function ownerLabel(agent: string): string {
-  return 'Only ' + agent;
-}
-
+ * SAME NAPISY PRZYCHODZĄ Z `knowledge/reach.ts` i od 2026-08-31 nie stoją tutaj. Umiejętność
+ * w tym samym położeniu mówiła o sobie „Everywhere", a ta notatka „Every project" — jeden fakt,
+ * dwa brzmienia, na jednym ekranie. Wybór słowa mieszka teraz w jednym pliku, który czytają
+ * obie połowy sekcji (niezmiennik 13). */
 function reachLabel(note: Note, legacy: boolean): string | null {
   if (legacy) return null;
-  if (note.scope === 'everywhere') return 'Every project';
-  if (note.scope === 'this-project') return 'This project';
-  return note.agent ? ownerLabel(note.agent) : null;
+  if (note.scope === 'everywhere') return EVERY_PROJECT;
+  if (note.scope === 'this-project') return THIS_PROJECT;
+  return note.agent ? onlyAgent(note.agent) : null;
 }
 
 /* Import i refleksja są dwoma pochodzeniami, nie dwiema pisowniami jednego pola. Projekt jest
@@ -111,7 +123,16 @@ function suggestedAfter(from: string): string {
   return 'Suggested after run ' + from;
 }
 
-export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowProps): ReactElement {
+export function NoteRow({
+  note,
+  onUse,
+  onStopUse,
+  onDiscard,
+  askingToDiscard,
+  onDiscardForGood,
+  onKeepIt,
+  onMove,
+}: NoteRowProps): ReactElement {
   /* Jedno pytanie zadane RAZ. Trzy osobne `note.status === 'suggested'` w trzech gałęziach to
    * trzy miejsca, w których wiersz odpowiada na to samo — i pierwsze, które ktoś zmieni,
    * rozjedzie się z dwoma pozostałymi bez śladu w typach. */
@@ -119,77 +140,128 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowPr
   const address: NoteAddress = { place: note.place, id: note.id };
   const legacy = note.place === 'library' && note.scope === 'this-project';
   const reach = reachLabel(note, legacy);
+  /* Pytanie rysuje się dopiero wtedy, gdy ma OBIE odpowiedzi. Wołający, który poda samą flagę,
+   * dostałby pytanie bez wyjścia — a to jest gorsze niż jego brak (niezmiennik 16). */
+  const asking =
+    askingToDiscard === true && onDiscardForGood !== undefined && onKeepIt !== undefined;
 
   return (
     <li
       data-note={note.id}
       data-note-address={`${note.place}:${note.id}`}
-      className="flex flex-col gap-1 border-b border-line px-2 py-3"
+      className="stack border-b border-line px-2 py-3"
     >
       <div className="flex items-center gap-2">
+        {/* Ton idzie ATRYBUTEM, nie drugą klasą (warstwa prymitywów w `theme.css`): dwa napisy
+            na jedną pigułkę trzeba było trzymać zgodnie ręcznie.
+
+            Kolor jest wybrany, nie odziedziczony po makiecie. `--attend` odpowiada na pytanie
+            „co czeka na moją decyzję?" [DESIGN §3] i kandydatka jest dokładnie tym. Notatka
+            w użyciu nie chce niczego, więc zostaje przy wariancie neutralnym: gdyby i ona była
+            nasycona, kolor przestałby znaczyć „twoja kolej". `--accent` odpada osobno — znaczy
+            „teraz", a notatka niczego nie robi. */}
         {legacy ? null : (
-          <span data-state className={waiting ? CHIP_WAITING : CHIP_QUIET}>
+          <span data-state className="chip" data-tone={waiting ? 'attend' : undefined}>
             {waiting ? 'Suggested' : 'In use'}
           </span>
         )}
-        <span className="text-label text-muted">{lengthLabel(note.length)}</span>
+        <span className="label">{lengthLabel(note.length)}</span>
         {/* Zasięg wynika ze scope, a nazwa agenta doprecyzowuje wyłącznie `this-agent`.
             Biblioteczne legacy nie udaje „This project" przed jawnym Move. */}
-        {reach ? <span className="text-label text-muted">{reach}</span> : null}
-        {note.project ? (
-          <span className="text-label text-muted">{importedFrom(note.project)}</span>
-        ) : null}
-        {note.from ? (
-          <span className="text-label text-muted">{suggestedAfter(note.from)}</span>
-        ) : null}
+        {reach ? <span className="label">{reach}</span> : null}
+        {note.project ? <span className="label">{importedFrom(note.project)}</span> : null}
+        {note.from ? <span className="label">{suggestedAfter(note.from)}</span> : null}
       </div>
 
-      {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania. */}
-      <p className="text-body text-ink">{note.rule}</p>
+      {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania.
+
+          `text-body` stało tu obok `text-ink` i było bez skutku: w tym motywie `--color-body`
+          i `--text-body` noszą tę samą nazwę, a Tailwind rozstrzyga `text-body` na BARWĘ, nie
+          na stopień. Dwie barwy na jednym napisie — wygrywała druga. Stopień prozy niesie i tak
+          `body` z arkusza (DESIGN §6), więc zostaje sama barwa, i to ta, która działała. */}
+      <p className="text-ink">{note.rule}</p>
 
       {/* Powód stoi pod nim, na ekranie, zawsze. To jest jedyna rzecz, po której człowiek
           poznaje, czy TO JEST PRAWDA — a bez „dlaczego" notatki nie da się później bezpiecznie
           usunąć, bo trzeba od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1]. */}
-      <p className="text-body text-muted">{note.because}</p>
+      <p className="lead">{note.because}</p>
 
       {note.leftOut ? (
-        <p className="text-body text-attend">
+        <p className="lead" data-tone="attend">
           Not in prompts right now because it exceeds the length limit.
         </p>
       ) : null}
 
-      <div className="flex items-center gap-2">
-        {legacy ? (
-          onMove ? (
+      {asking ? (
+        /* POTWIERDZENIE JEST PRAWDZIWYM RENDEREM, nie `window.confirm` — ten sam wybór i ten
+           sam powód, co przy usuwaniu agenta (`src/sections/agents/index.tsx`): dialog
+           przeglądarki blokuje webview i zabiera całą sesję pracy, a przy oknie Tauri nie ma
+           go czym odblokować.
+
+           PYTANIE STOI W MIEJSCU AKCJI, nie obok nich. Zdanie o nieodwracalności obok wciąż
+           czynnego „Discard" zostawia człowieka z dwoma przyciskami o tej samej nazwie
+           i z pytaniem, na które można nie odpowiedzieć. Sprężyna mówi „to jest nowe",
+           zamiast pozwolić dwóm różnym rzeczom mrugnąć w jednym miejscu; drugiego regionu to
+           zdarzenie nie rusza (ARCHITECTURE §7). */
+        <div className="stack" data-gap="2">
+          <p data-confirm-drop className="enter text-ink">
+            {NOT_COMING_BACK}
+          </p>
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              data-move={note.id}
-              className={ACT}
+              data-forever={note.id}
+              className="btn-danger"
               onClick={() => {
-                onMove(address);
+                onDiscardForGood?.(address);
               }}
             >
-              Move to this project
+              Discard for good
             </button>
-          ) : null
-        ) : (
-          <button
-            type="button"
-            data-act={note.id}
-            className={ACT}
-            onClick={() => {
-              if (waiting) {
-                onUse(address);
-              } else {
-                onStopUse(address);
-              }
-            }}
-          >
-            {waiting ? 'Use this' : 'Stop using'}
-          </button>
-        )}
+            <button
+              type="button"
+              className="btn-quiet"
+              onClick={() => {
+                onKeepIt?.();
+              }}
+            >
+              Keep it
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          {legacy ? (
+            onMove ? (
+              <button
+                type="button"
+                data-move={note.id}
+                className="btn-quiet"
+                onClick={() => {
+                  onMove(address);
+                }}
+              >
+                Move to this project
+              </button>
+            ) : null
+          ) : (
+            <button
+              type="button"
+              data-act={note.id}
+              className="btn-quiet"
+              onClick={() => {
+                if (waiting) {
+                  onUse(address);
+                } else {
+                  onStopUse(address);
+                }
+              }}
+            >
+              {waiting ? 'Use this' : 'Stop using'}
+            </button>
+          )}
 
-        {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
+          {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
             do promptu, jest drugim pytaniem w ubraniu pierwszego: znika w jednym kliknięciu
             z miejsca, w którym człowiek jej szukał, a on prosił o jedno. Najpierw „Stop using",
             potem decyzja, czy to zdanie ma odejść.
@@ -197,19 +269,20 @@ export function NoteRow({ note, onUse, onStopUse, onDiscard, onMove }: NoteRowPr
             Warunek pyta też o handler, bo wiersz montuje się i bez niego (patrz `onDiscard`):
             przycisk narysowany bez handlera odmawia każdemu kliknięciu, a to jest z zewnątrz
             nieodróżnialne od zepsutej aplikacji (niezmiennik 16). */}
-        {!legacy && waiting && onDiscard ? (
-          <button
-            type="button"
-            data-drop={note.id}
-            className={ACT}
-            onClick={() => {
-              onDiscard(address);
-            }}
-          >
-            Discard
-          </button>
-        ) : null}
-      </div>
+          {!legacy && waiting && onDiscard ? (
+            <button
+              type="button"
+              data-drop={note.id}
+              className="btn-quiet"
+              onClick={() => {
+                onDiscard(address);
+              }}
+            >
+              Discard
+            </button>
+          ) : null}
+        </div>
+      )}
     </li>
   );
 }

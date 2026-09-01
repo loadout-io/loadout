@@ -143,6 +143,25 @@ pub struct ImportItem {
     pub status: ImportStatus,
     pub status_message: String,
     pub generated_hash: Option<String>,
+    /// Co przegląd znalazł w tej pozycji — znaleziska, a nie sam ich licznik.
+    ///
+    /// 2026-08-31 — PO CO TO ISTNIEJE. `adapters::skill` czyta CAŁE `ingest::Reviewed` (ciało,
+    /// znaleziska, wynik przeglądu) i do tego dnia wyrzucało je zaraz po policzeniu zgodności.
+    /// Do okna jechał sam status i jedno zdanie, więc ekran importu nie miał czego pokazać
+    /// człowiekowi i musiał to powiedzieć wprost: „this screen does not show you what it found"
+    /// (`src/sections/import/skill-review.ts`). Umiejętność wchodząca linkiem stawała przed
+    /// kartą przeglądu z cytowanymi liniami, a ta sama treść znaleziona w cudzym projekcie
+    /// wchodziła bez ani jednego zdania o tym, co w niej jest.
+    ///
+    /// TEN SAM KSZTAŁT, CO KARTA PRZEGLĄDU. [`crate::commands::skills::ReviewWire`] jest już
+    /// lustrem `Reviewed` z `src/state/skills.ts`, więc okno importu czyta dokładnie to, co
+    /// czyta `review-card.tsx`. Drugi kształt na tę samą rzecz byłby drugim miejscem, w którym
+    /// znaleziska się numeruje i tłumaczy (niezmiennik 13).
+    ///
+    /// `None` znaczy „ta pozycja nie jest umiejętnością" i nie ma udawać „przejrzano, nic nie
+    /// ma": nieobecność dowodu nie jest dowodem nieobecności.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed: Option<crate::commands::skills::ReviewWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +285,15 @@ pub enum ImportError {
     Inspect { path: PathBuf, detail: String },
     #[error("This setup still has {0} unresolved item(s). Resolve them before saving.")]
     Blocked(usize),
+    /// Umiejętność, której przegląd zatrzymał ([`crate::skills::ingest::Verdict::Blocked`]).
+    ///
+    /// 2026-08-31 — DLACZEGO OSOBNY WARIANT, A NIE [`ImportError::Blocked`]. Tamten niesie
+    /// LICZNIK nierozstrzygniętych pozycji i mówi „resolve them before saving", czyli zdanie
+    /// o planie, który człowiek właśnie ogląda. To jest zdanie o JEDNYM pliku i o tym, co w nim
+    /// stało — a odmowa, która nie nazywa ani umiejętności, ani powodu, jest tym samym
+    /// „import failed", dla którego to repo powstało (niezmiennik 29).
+    #[error("Loadout did not import the skill {skill}: {reason}")]
+    Unsafe { skill: String, reason: String },
     #[error("The project setup changed after Scan. Scan it again before saving.")]
     Changed,
     #[error("Loadout could not save the imported setup: {0}")]

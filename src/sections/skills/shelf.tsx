@@ -1,5 +1,22 @@
-/* Ekran sekcji Skills: nagłówek, jedna ścieżka dodawania i lista umiejętności, każda ze swoim
- * stanem rozmieszczenia.
+/* Półka umiejętności: jedna ścieżka dodawania i lista umiejętności, każda ze swoim stanem
+ * rozmieszczenia.
+ *
+ * SKĄD SIĘ TU WZIĄŁ TEN PLIK. Do 2026-08-31 to był `src/sections/skills/index.tsx`, czyli cały
+ * ekran sekcji Skills, z własnym paskiem nagłówka i własnym pustym zaproszeniem na całą
+ * wysokość. Sekcja zniknęła — scaliła się z Pamięcią w jedną sekcję Knowledge (decyzja
+ * właściciela, `src/ui/sections.tsx`) — a to, co robił ekran, zostało półką. Pasek nagłówka
+ * i zdanie o pustce należą teraz do ekranu, który obie półki trzyma; tu zostaje nagłówek
+ * strefy, który mówi, czym ta półka różni się od tej nad nią.
+ *
+ * „USED WHEN IT FITS" JEST POŁOWĄ RÓŻNICY, nie ozdobnym podtytułem. Notatka w użyciu wchodzi
+ * do KAŻDEGO promptu; po umiejętność model sięga sam, kiedy pasuje do tego, co właśnie robi.
+ * To jest najważniejsza rzecz, jaką człowiek musi w tej sekcji zrozumieć, i do 2026-08-31 była
+ * powiedziana raz, mimochodem, w zdaniu jednej strefy.
+ *
+ * KARTA PRZEGLĄDU BEZPIECZEŃSTWA ZOSTAJE TU I TYLKO TU. Umiejętność bywa cudza i wykonywalna,
+ * więc przechodzi przez skan z blokującymi znaleziskami. Notatka jest własna i deklaratywna —
+ * skanowanie własnych zdań o własnym repo zamieniłoby ten przegląd w rytuał, a rytuał
+ * przeklikuje się bez czytania.
  *
  * CIENKI Z ZAŁOŻENIA. Karta przeglądu (`review-card.tsx`, T-19) jest wylądowana i to ona
  * pokazuje wciągniętą umiejętność: ciało, znaleziska i przycisk dodania. Drugiej karty ani
@@ -28,10 +45,12 @@
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import type { Landing } from '../../state/skills';
 import { useSkills } from '../../state/skills';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
+import { EVERY_PROJECT, THIS_PROJECT } from '../knowledge/reach';
+import { evaluateSkill } from '../lab/evaluate';
 /* NAPIS KONTROLKI PRZYCHODZI Z KONTROLKI, nie jest tu przepisany. Zdanie odsyłające do rzeczy
  * nazwanej na ekranie inaczej jest instrukcją, której nie da się wykonać — a to jest jedyne
  * wyjście, jakie ta sekcja umie zaproponować człowiekowi bez otwartego projektu. Jedna nazwa,
@@ -43,41 +62,29 @@ import { ReviewCard } from './review-card';
 /** Magazyn umiejętności. Jest singletonem — `src/state/skills.ts` nie ma fabryki. */
 export type SkillsStore = typeof useSkills;
 
-export interface SkillsScreenProps {
-  /** Bez propsu ekran bierze swój prawdziwy magazyn, z propsem ten z testu. */
+export interface SkillsShelfProps {
+  /** Bez propsu półka bierze swój prawdziwy magazyn, z propsem ten z testu. */
   store?: SkillsStore;
 }
 
-/* Klasy komponentów z DESIGN §6. */
-const PRIMARY = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
-const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
-/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+/* OSIEM STAŁYCH KLASOWYCH ZNIKŁO 2026-08-31 (DESIGN §6, warstwa prymitywów).
  *
- * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
- * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
- * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
- * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
- * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
- * sie jak dwa rozne stany, a nie jak dwa pola.
+ * `PRIMARY`, `SECONDARY`, `DANGER`, `CHIP_QUIET`, `LABEL`, `ROW` i dwie dodatkowe kopie `FIELD`
+ * to było osiem opisów wyglądu w pliku, w którym nikt tych opisów nie szuka — i rozjechały się
+ * dokładnie tak, jak taki zapis się rozjeżdża: ta sama rola przycisku drugoplanowego miała tu
+ * 32 px pod nazwą `SECONDARY`, a w Agents 28 px pod nazwą `QUIET`. Dziś klasa nazywa ROLĘ
+ * (`btn-primary`, `btn`, `btn-danger`, `chip`, `label`, `stack`, `field`), a geometria, cztery
+ * stany i wciśnięcie mieszkają raz, w `@layer components` w `src/styles/theme.css`.
  *
- * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
- * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
- * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
+ * `ANSWER` i `ANSWER_LONG` były DRUGĄ I TRZECIĄ NAZWĄ tej samej wartości `'field'`, a ich
+ * komentarze obiecywały różnicę, której w kodzie nie było od 2026-08-19: obie rozwijały się do
+ * tego samego pola maszynowego. Wysokość pola wielowierszowego niesie `textarea.field`
+ * w arkuszu, nie ten plik. Trzy nazwy na jedną wartość to trzy miejsca, w których ktoś poprawi
+ * jedno i pojedzie dalej.
+ *
+ * `chip` bez `data-tone` jest wariantem neutralnym i to jest decyzja z DESIGN §6: skąd przyszła
+ * umiejętność, jest zwykłym faktem, a fakt pomalowany barwą stanu wygląda jak problem. */
 const FIELD = 'field';
-/* Pole na ZDANIE, nie na adres. `FIELD` wyżej jest monospace z powodu: trzyma URL-a, a w adresie
-   liczy się każdy znak z osobna. Odpowiedź na „kiedy tego użyć" jest prozą i w monospace czyta
-   się jak dane do sprawdzenia, a nie jak zdanie do napisania. */
-const ANSWER = 'field';
-/* „Co zrobić" jest ciałem `SKILL.md`, więc bywa akapitem — pole jednowierszowe pokazywałoby
-   z niego okno o szerokości ośmiu słów. Wysokość z `.fld textarea` w makiecie. */
-const ANSWER_LONG = 'field';
-const LABEL = 'text-label text-muted';
-const ROW = 'flex flex-col gap-1';
-/* `button-danger` z DESIGN §6: jak `button-secondary`, ale obrys `--fail-edge` i tekst
- * `--fail`, BEZ WYPEŁNIENIA — akcja niszcząca ma być rozpoznawalna, a nie najgłośniejsza. */
-const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
-/* `chip`: neutralny wariant znaczy „nic od ciebie nie chce" (DESIGN §3 i §6). */
-const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
 
 /**
  * Co stoi w kafelku umiejętności, której `SKILL.md` nie ma pola `description`.
@@ -140,15 +147,98 @@ const NO_PROJECT_YET =
  * i enum z drutu nigdy nie trafia na ekran (niezmiennik 14). Tabela stoi tu, przy jedynym
  * miejscu, które ją czyta.
  *
- * „This project" pierwsze, bo to jest wybór, o którym człowiek musi pomyśleć; „Everywhere"
- * jest tym, co ta sekcja robiła od pierwszego dnia i zostaje domyślne w magazynie.
+ * „This project" pierwsze, bo to jest wybór, o którym człowiek musi pomyśleć; drugi jest tym,
+ * co ta półka robiła od pierwszego dnia, i zostaje domyślny w magazynie.
+ *
+ * NAPISY PRZYCHODZĄ Z `knowledge/reach.ts` (2026-08-31). Do tego dnia stało tu „Everywhere",
+ * a notatka w dokładnie tym samym położeniu mówiła o sobie „Every project" — jeden fakt, dwa
+ * brzmienia, na jednym ekranie i bez żadnej drogi, którą człowiek mógłby się dowiedzieć, że
+ * to jedna oś (niezmiennik 13).
  */
 const LANDINGS: readonly { readonly value: Landing; readonly label: string }[] = [
-  { value: 'this-project', label: 'This project' },
-  { value: 'everywhere', label: 'Everywhere' },
+  { value: 'this-project', label: THIS_PROJECT },
+  { value: 'everywhere', label: EVERY_PROJECT },
 ];
 
-export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): ReactElement {
+/**
+ * Miejsca, z których wolno zabrać zainstalowaną umiejętność — po jednym przycisku na miejsce.
+ *
+ * OSOBNA TABELA OD `LANDINGS` I NIE JEST JEJ DRUGĄ KOPIĄ (niezmiennik 13). Tamta odpowiada na
+ * „gdzie ma wylądować to, co dodaję", ta na „skąd to zabrać", i są to dwa różne pytania zadane
+ * w dwóch różnych chwilach. Napisy też muszą się różnić: pozycja wyboru („Everywhere") i
+ * przycisk, który za sekundę skasuje katalog („Remove from this machine"), nie mają prawa
+ * brzmieć tak samo — pierwszy zapowiada, drugi wykonuje.
+ *
+ * KAŻDY PRZYCISK NAZYWA SWÓJ CEL i to jest cała odpowiedź na wadę z 2026-08-31: do tego dnia
+ * cel brał się z `landing`, czyli z grupy radiowej widocznej WYŁĄCZNIE w karcie czekającego
+ * importu. Bez importu na ekranie nie było jej wcale, a `Remove` i tak gdzieś uderzał.
+ */
+const PLACES: readonly {
+  readonly value: Landing;
+  readonly label: string;
+  /** Czy to miejsce w ogóle istnieje bez otwartego projektu. Bez korzenia nie istnieje. */
+  readonly needsProject: boolean;
+}[] = [
+  { value: 'everywhere', label: 'Remove from this machine', needsProject: false },
+  { value: 'this-project', label: 'Remove from this project', needsProject: true },
+];
+
+/**
+ * Pytanie zadane PRZED zdjęciem plików: po imieniu i z tym, co dokładnie zniknie.
+ *
+ * PO IMIENIU, bo „Are you sure?" nie mówi, o co pytamy, a ta siatka trzyma dziesięć kafelków
+ * obok siebie. I ze zdaniem o nieodwracalności, bo po drugiej stronie granicy stoi
+ * `fs::remove_dir_all` (`src-tauri/src/skills/place.rs`) — nie kosz, nie kopia, nie cofnięcie.
+ *
+ * DWA ZDANIA, NIGDY DWA NARAZ. Przy otwartym projekcie ta sama nazwa znaczy dwa różne katalogi
+ * i tego jednego nie umiemy dziś rozstrzygnąć za człowieka: `InstalledWire` niesie samą nazwę,
+ * a `list_skills_in` zwija oba korzenie do jednego zbioru. Zdanie mówi wtedy wprost, że wybór
+ * należy do niego, zamiast zgadywać po cichu.
+ */
+function askAbout(name: string, projectOpen: boolean): string {
+  return projectOpen
+    ? 'Remove ' +
+        name +
+        '? Say which copy goes: the one in the folders on this machine, or the one inside the ' +
+        'project you have open. Nothing brings it back.'
+    : 'Remove ' +
+        name +
+        '? It goes out of the folders your agent apps read on this machine, and nothing brings ' +
+        'it back.';
+}
+
+/**
+ * Zdanie stanu „czytam" — trzecie obok „nie ma nic" i „nie dało się przeczytać".
+ *
+ * 2026-08-31 — do tego dnia stany były dwa i jeden z nich kłamał przy każdym starcie. Odczyt
+ * katalogów biegnie w efekcie po zamontowaniu, więc pierwszą rzeczą, jaką człowiek z dziesięcioma
+ * umiejętnościami na dysku czytał o swojej maszynie, było „No skills yet.".
+ */
+const READING = 'Reading the folders your agent apps use.';
+
+/** Nagłówek półki — to samo słowo czyta kryterium i człowiek. */
+export const WHEN_IT_FITS = 'Used when it fits';
+
+/**
+ * Zdanie, które robi z tej półki połowę różnicy, a nie kolejnej listy.
+ *
+ * Mówi rzecz, której z samej listy nie da się zgadnąć, i mówi ją OBOK półki notatek, która
+ * mówi swoją: notatka jedzie do modelu za każdym razem, a po umiejętność model sięga sam.
+ * Dopiero te dwa zdania obok siebie odpowiadają na pytanie „którą z tych dwóch rzeczy mam
+ * teraz napisać".
+ */
+const WHEN_IT_FITS_LEAD =
+  'The model reaches for these on its own, when they fit the work in front of it.';
+
+/** Kiedy katalogi odpowiedziały i naprawdę nic w nich nie ma (DESIGN §6: to jest zaproszenie). */
+const NO_SKILLS_YET = 'No skills yet. Paste a link, or write one yourself.';
+
+/* Klasy nagłówka i zdania strefy — te same stałe, co w półce notatek nad nią. Dwie półki na
+ * jednym ekranie muszą wyglądać jak jedna rzecz w dwóch stanach, a nie jak dwa ekrany. */
+const ZONE_TITLE = 'text-eyebrow text-muted';
+const ZONE_LEAD = 'lead max-w-160';
+
+export default function SkillsShelf({ store = useSkills }: SkillsShelfProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
   /* SUBSKRYPCJA ZAKRESÓW, ŻEBY PRZERYSOWAĆ — a odpowiedź czytamy funkcją. Bez tego wiersza
@@ -169,31 +259,24 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
   useSyncExternalStore(useWorkspaces.subscribe, useWorkspaces.getState, useWorkspaces.getState);
   const openProject = activeWorkspace();
 
-  /* ODCZYT PRZY WEJŚCIU W SEKCJĘ — bez tego cała ścieżka odczytu jest martwa.
+  /* ODCZYT PRZY WEJŚCIU W SEKCJĘ MIESZKA W `knowledge/index.tsx`, NIE TUTAJ (2026-08-31).
    *
-   * Magazyn dostał `load()` w T-38 AC-6 i do 2026-08-18 NIE MIAŁ ANI JEDNEGO WOŁAJĄCEGO:
-   * komenda po stronie Rusta istniała, krawędź `io.ts` istniała, magazyn umiał się wypełnić —
-   * i ekran nigdy o nic nie pytał. To jest ta sama rodzina, co płótno przed T-26 i `wireChannel`
-   * przed T-38: mechanizm wylądował, ma testy, nikt go nie zawołał. Objaw dla człowieka jest
-   * dokładnie taki, jak przy braku funkcji: otwierasz sekcję i nie ma w niej tego, co leży
-   * na dysku (niezmiennik 4 — pliki są prawdą).
+   * Powód jest mechaniczny, nie estetyczny: kiedy nic jeszcze nie przeczytano, ekran Knowledge
+   * pokazuje jedno zaproszenie zamiast półek, więc ta półka NIE JEST wtedy zamontowana. Efekt
+   * odczytu zawieszony tutaj nie odpalałby się nigdy i lista zostawałaby pusta na zawsze —
+   * pętla, w której pustka jest jednocześnie przyczyną i skutkiem.
    *
-   * `void`, bo odmowa jest już obsłużona w magazynie i ląduje w jego stanie jako zdanie dla
-   * człowieka; drugie `catch` tutaj byłoby drugim miejscem, w którym mieszka ta sama decyzja.
-   * Pusta tablica zależności: sekcja pyta RAZ na zamontowanie, a nie na każdy render. */
-  useEffect(() => {
-    void store.getState().load();
-    /* DRUGI ODCZYT, DRUGIE PYTANIE. „Co leży w katalogach agentów" i „kogo mam zapisanych" to
-     * dwa różne fakty i dwie różne komendy; bez tego wiersza wybór w trzecim wejściu byłby
-     * pusty na każdej maszynie, czyli kontrolką, której nie da się użyć (niezmiennik 16).
-     * Osobna akcja, a nie jedno wywołanie w `load()`: liczbę pytań tamtej ścieżki zamraża
-     * `src/sections/read-paths-populate.test.ts`. */
-    void store.getState().loadAgents();
-  }, [store]);
+   * O tym, że `load()` w ogóle ma wołającego, mówi historia zamknięta 2026-08-18: magazyn
+   * dostał `load()` w T-38 i przez czas nie miał ANI JEDNEGO. Komenda po stronie Rusta
+   * istniała, krawędź `io.ts` istniała, magazyn umiał się wypełnić — i ekran nigdy o nic
+   * nie pytał (niezmiennik 4 — pliki są prawdą). */
+  /* NIE MA CZEGO POKAZAĆ — to jeszcze nie znaczy, że nie ma czego pokazywać. Zdanie o pustce
+   * wolno postawić dopiero wtedy, gdy katalogi ODPOWIEDZIAŁY (`folders === 'read'`); przedtem
+   * sekcja nie wie o nich nic, a po odmowie wie, że nie wie. Trzy stany, nie dwa. */
+  const nothing = state.installed.length === 0 && state.pending === null;
   /* Co człowiek wpisał w panelu dodawania — adres ALBO trzy odpowiedzi. `null` znaczy, że
    * panel jest zamknięty: jedno miejsce na to pytanie (niezmiennik 13), a nie osobna flaga
    * „czy otwarty" obok treści, która potrafi się z nią rozjechać. */
-  const empty = state.installed.length === 0 && state.pending === null;
   const panel = state.adding;
 
   /* Jedna funkcja na oba przyciski `data-create` — ten w nagłówku i ten na pustym ekranie.
@@ -203,24 +286,29 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
   };
 
   return (
-    <section className="flex h-full flex-col">
-      <header className="flex h-13 items-center gap-3 border-b border-line bg-panel px-4">
-        <h1 className="text-title text-ink">Skills</h1>
-
-        {/* Licznik i przycisk w nagłówku żyją tylko wtedy, gdy jest co liczyć — przy zerze
-            mówi to samo zaproszenie niżej (niezmiennik 13). Liczymy WYŁĄCZNIE to, co leży
-            w katalogach: umiejętność czekająca na przeczytanie nie jest jeszcze zapisana. */}
-        {empty ? null : (
-          <>
-            <span className="font-mono text-mono text-muted">{`${String(state.installed.length)} saved`}</span>
-            <button data-create type="button" className={`ml-auto ${PRIMARY}`} onClick={openPanel}>
-              ＋ Add a skill
-            </button>
-          </>
+    <section data-zone="skills" data-gap="2" className="stack">
+      {/* NAGŁÓWEK STREFY, nie pasek nagłówka ekranu: ten stoi wyżej i mówi „Knowledge" raz.
+          Licznik i przycisk stoją w tym samym wierszu, co nazwa półki — licznik liczy WYŁĄCZNIE
+          to, co leży w katalogach, bo umiejętność czekająca na przeczytanie nie jest jeszcze
+          zapisana. Przy zerze licznika nie ma: zero jest już powiedziane zdaniem niżej
+          (niezmiennik 13). */}
+      <div className="flex items-center gap-2">
+        <h2 className={ZONE_TITLE}>{WHEN_IT_FITS}</h2>
+        {state.installed.length === 0 ? null : (
+          <span className="value">{`${String(state.installed.length)} saved`}</span>
         )}
-      </header>
+        <button data-create type="button" className="btn ml-auto" onClick={openPanel}>
+          ＋ Add a skill
+        </button>
+      </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      {/* DRUGA POŁOWA RÓŻNICY. Nad tą półką stoi „Always on" i zdanie o tym, że tamto wchodzi
+          do każdego promptu; tu stoi to, co odróżnia umiejętność: model sięga po nią sam. Bez
+          tego zdania obie półki są dwiema listami, a człowiek nie ma jak zgadnąć, dlaczego
+          jedna rzecz jest w jednej, a druga w drugiej. */}
+      <p className={ZONE_LEAD}>{WHEN_IT_FITS_LEAD}</p>
+
+      <div className="stack">
         {/* DWA WEJŚCIA, JEDEN PANEL, JEDEN PRZYCISK, KTÓRY GO OTWIERA.
             Adres i umiejętność napisana tutaj to jedna decyzja z dwiema odpowiedziami, a nie
             dwie decyzje — drugie zaproszenie obok pierwszego byłoby dwiema odpowiedziami na
@@ -242,17 +330,20 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
         {panel === null ? null : (
           <div
             data-add-panel
-            className="mx-auto mb-6 flex max-w-160 flex-col gap-4 rounded-md border border-line bg-panel p-4"
+            /* WEJŚCIE SPRĘŻYNĄ (DESIGN §7): panelu NIE MA w dokumencie, dopóki człowiek nie
+               naciśnie `Add a skill`, i wchodzi NAD listę, która zostaje na miejscu. Element
+               pojawiający się skokiem czyta się jak przeskok widoku. Jeden region na zdarzenie. */
+            className="card enter mx-auto mb-6 flex max-w-160 flex-col gap-4"
           >
             <form
-              className={ROW}
+              className="stack"
               onSubmit={(event) => {
                 event.preventDefault();
                 void store.getState().review(panel.link);
                 store.getState().closeAdd();
               }}
             >
-              <label htmlFor="skill-link" className={LABEL}>
+              <label htmlFor="skill-link" className="label">
                 Link
               </label>
               <input
@@ -263,7 +354,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                   store.getState().typeInto({ link: event.target.value });
                 }}
               />
-              <button type="submit" className={`mt-1 mr-auto ${SECONDARY}`}>
+              <button type="submit" className="btn mt-1 mr-auto">
                 Read it
               </button>
             </form>
@@ -293,7 +384,8 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 człowiek przeczytał (niezmiennik 13). Człowiek widzi go raz — w nagłówku karty
                 przeglądu, która wraca z Rusta z policzoną nazwą. */}
             <form
-              className="flex flex-col gap-2 border-t border-line pt-4"
+              className="stack border-t border-line pt-4"
+              data-gap="2"
               onSubmit={(event) => {
                 event.preventDefault();
                 /* Bez `closeAdd()`: panel zamyka sam magazyn i TYLKO po udanym zapisie.
@@ -303,14 +395,14 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 void store.getState().writeItHere();
               }}
             >
-              <div className={ROW}>
-                <label htmlFor="skill-name" className={LABEL}>
+              <div className="stack">
+                <label htmlFor="skill-name" className="label">
                   What should it be called?
                 </label>
                 <input
                   id="skill-name"
                   data-question="name"
-                  className={ANSWER}
+                  className={FIELD}
                   value={panel.name}
                   onChange={(event) => {
                     store.getState().typeInto({ name: event.target.value });
@@ -318,14 +410,14 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 />
               </div>
 
-              <div className={ROW}>
-                <label htmlFor="skill-when-to-use" className={LABEL}>
+              <div className="stack">
+                <label htmlFor="skill-when-to-use" className="label">
                   When should the agent use it?
                 </label>
                 <input
                   id="skill-when-to-use"
                   data-question="whenToUse"
-                  className={ANSWER}
+                  className={FIELD}
                   value={panel.whenToUse}
                   onChange={(event) => {
                     store.getState().typeInto({ whenToUse: event.target.value });
@@ -333,14 +425,14 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 />
               </div>
 
-              <div className={ROW}>
-                <label htmlFor="skill-what-to-do" className={LABEL}>
+              <div className="stack">
+                <label htmlFor="skill-what-to-do" className="label">
                   What should it do?
                 </label>
                 <textarea
                   id="skill-what-to-do"
                   data-question="whatToDo"
-                  className={ANSWER_LONG}
+                  className={FIELD}
                   value={panel.whatToDo}
                   onChange={(event) => {
                     store.getState().typeInto({ whatToDo: event.target.value });
@@ -348,7 +440,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 />
               </div>
 
-              <button type="submit" data-write-it-yourself className={`mt-1 mr-auto ${SECONDARY}`}>
+              <button type="submit" data-write-it-yourself className="btn mt-1 mr-auto">
                 Save this skill
               </button>
             </form>
@@ -373,20 +465,21 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 zdanie o vendorze w tej sekcji byłoby zdaniem o czymś, czego nikt tu nie wie
                 (`mounted.test.tsx` zamraża brak tych nazw w tym markupie). */}
             <form
-              className="flex flex-col gap-2 border-t border-line pt-4"
+              className="stack border-t border-line pt-4"
+              data-gap="2"
               onSubmit={(event) => {
                 event.preventDefault();
                 void store.getState().askAnAgent();
               }}
             >
-              <div className={ROW}>
-                <label htmlFor="skill-what-you-want" className={LABEL}>
+              <div className="stack">
+                <label htmlFor="skill-what-you-want" className="label">
                   Or say what you want, and an agent writes it
                 </label>
                 <input
                   id="skill-what-you-want"
                   data-what-you-want
-                  className={ANSWER}
+                  className={FIELD}
                   value={state.want}
                   onChange={(event) => {
                     store.getState().sayWhatYouWant(event.target.value);
@@ -394,8 +487,8 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 />
               </div>
 
-              <div className={ROW}>
-                <label htmlFor="skill-who-writes-it" className={LABEL}>
+              <div className="stack">
+                <label htmlFor="skill-who-writes-it" className="label">
                   Who should write it?
                 </label>
                 {/* Pozycją jest `id`, a widać nazwę: nazwa jest jedyną częścią zapisanego
@@ -404,7 +497,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                 <select
                   id="skill-who-writes-it"
                   data-pick-an-agent
-                  className={ANSWER}
+                  className={FIELD}
                   value={state.chosenAgent}
                   onChange={(event) => {
                     store.getState().chooseAgent(event.target.value);
@@ -421,16 +514,27 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
               {/* PODMIANA KONTROLKI, dokładnie ta sama, którą robią Start i Stop w sekcji Praca
                   (`run/start.tsx`). „Napisz mi to" zostawione obok stanu „pisze" jest drugą turą
                   za drugie naciśnięcie, przy pierwszej, która dalej biegnie i dalej kosztuje.
-                  Animacji nie ma żadnej: jedyna w aplikacji to kropka żywej karty (DESIGN §7). */}
+
+                  WSKAŹNIK TRWANIA, DOPISANY 2026-08-31, bo to TRWA: model pisze umiejętność
+                  kilkadziesiąt sekund, a przez cały ten czas nie zmieniał się ani jeden piksel.
+                  Zdanie mówi, CO trwa; trzy kropki mówią, że wciąż trwa. Kropki są DZIEĆMI
+                  z `aria-hidden`, obok zdania, które niesie treść — czytnik ekranu czyta zdanie,
+                  nie ozdobę (DESIGN §7). Nie wirujący krążek: krążek nie mówi ani co trwa, ani
+                  ile zostało, i kręci się tak samo przy 200 ms i przy 20 minutach. */}
               {state.writing ? (
                 <>
-                  <p data-writing className="text-body text-muted">
+                  <p data-writing className="lead">
                     An agent is writing this skill now.
+                    <span className="thinking ml-1">
+                      <span aria-hidden />
+                      <span aria-hidden />
+                      <span aria-hidden />
+                    </span>
                   </p>
                   <button
                     type="button"
                     data-stop-writing
-                    className={`mt-1 mr-auto ${DANGER}`}
+                    className="btn-danger mt-1 mr-auto"
                     onClick={() => {
                       void store.getState().stopWriting();
                     }}
@@ -439,7 +543,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                   </button>
                 </>
               ) : (
-                <button type="submit" data-ask-an-agent className={`mt-1 mr-auto ${SECONDARY}`}>
+                <button type="submit" data-ask-an-agent className="btn mt-1 mr-auto">
                   Write it for me
                 </button>
               )}
@@ -454,7 +558,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             {state.writing ? null : (
               <button
                 type="button"
-                className={`mr-auto ${SECONDARY}`}
+                className="btn mr-auto"
                 onClick={() => {
                   store.getState().closeAdd();
                 }}
@@ -468,24 +572,42 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
         {/* Zdanie od magazynu: odmowa instalacji albo link, którego nie dało się przeczytać.
             Bez tego jedyną odpowiedzią na kliknięcie jest cisza, a człowiek klika drugi raz. */}
         {state.message === null ? null : (
-          <p className="mx-auto mb-6 max-w-160 text-body text-attend">{state.message}</p>
+          /* `.fade-in`, bo tego zdania nie ma, dopóki coś nie odmówi — a jest zdaniem DO
+             PRZECZYTANIA, więc wchodzi samą przezroczystością, bez sprężyny (DESIGN §7). */
+          <p className="lead fade-in mx-auto mb-6 max-w-160" data-tone="attend">
+            {state.message}
+          </p>
         )}
 
-        {empty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
-              ◇
+        {/* CZYTAM. Wskaźnik trwania, a nie zdanie o pustce: półka jest pusta, bo nikt jeszcze
+            nie zajrzał, a „nikt nie zajrzał" i „nie ma nic" to dwa różne zdania o cudzej
+            maszynie. Trzy kropki są DZIEĆMI z `aria-hidden` obok zdania niosącego treść —
+            czytnik ekranu czyta zdanie, nie ozdobę (DESIGN §7).
+
+            WIERSZ W PÓŁCE, NIE BLOK NA CAŁĄ WYSOKOŚĆ (2026-08-31). Wysokość całego ekranu
+            należała do sekcji, która była sama; półka dzieli ekran z drugą półką i blok
+            `h-full` zepchnąłby tamtą poza widok. */}
+        {nothing && state.folders === 'reading' ? (
+          <p data-reading className={ZONE_LEAD}>
+            {READING}
+            <span className="thinking ml-1">
+              <span aria-hidden />
+              <span aria-hidden />
+              <span aria-hidden />
             </span>
-            {/* `data-empty` na elemencie z samym zdaniem — tak samo jak w `src/App.tsx`. */}
-            <p data-empty className="text-ink">
-              No skills yet.
-            </p>
-            <p className="text-muted">Paste a link, or write one yourself.</p>
-            <button data-create type="button" className={PRIMARY} onClick={openPanel}>
-              ＋ Add a skill
-            </button>
-          </div>
-        ) : (
+          </p>
+        ) : null}
+
+        {/* NIE DAŁO SIĘ PRZECZYTAĆ. Zdanie o awarii stoi wyżej, w jedynym regionie, który je
+            niesie (niezmiennik 13) — a zaproszenia „No skills yet." tu NIE MA i to jest cała
+            ta poprawka: katalog, którego nie umiemy przeczytać, bywa pełny, a dwa zdania naraz
+            znaczą ekran, na którym jedno musi być nieprawdą i nikt nie wie które. Droga dalej
+            stoi w nagłówku półki i stoi tam zawsze, więc odmowa nie zostawia człowieka bez
+            wyjścia. */}
+
+        {nothing && state.folders === 'read' ? <p className={ZONE_LEAD}>{NO_SKILLS_YET}</p> : null}
+
+        {nothing ? null : (
           <>
             {/* Czekająca stoi PIERWSZA i na całej szerokości: jest jedyną rzeczą w tej sekcji,
                 która czegoś od człowieka chce, a rzecz wymagająca decyzji nie ma leżeć pod
@@ -493,7 +615,12 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
             {state.pending === null ? null : (
               <section
                 data-skill={state.pending.name}
-                className="mx-auto mb-6 flex max-w-160 flex-col gap-3 rounded-md border border-attend-edge bg-panel p-3"
+                data-tone="attend"
+                /* WEJŚCIE SPRĘŻYNĄ: ta karta przychodzi po tym, jak Rust przeczytał link albo
+                   model napisał tekst — nad listę, która zostaje. Panel dodawania w tej samej
+                   chwili ZNIKA bez animacji: rzecz, która odchodzi, nie ma prawa ciągnąć oka
+                   z rzeczy, która przyszła (DESIGN §7). */
+                className="card enter mx-auto mb-6 flex max-w-160 flex-col gap-3"
               >
                 {/* WYBÓR STOI TAM, GDZIE ZAPADA DECYZJA, i nad kontrolką, która ją wykonuje.
                     Cały mechanizm zakresu jest napisany i przetestowany po stronie Rusta od
@@ -514,14 +641,14 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
 
                     `<fieldset>` z `<legend>`, a nie `<div>` z `<p>`: dwie pozycje radiowe są
                     jedną grupą i czytnik ekranu ma przeczytać pytanie przed odpowiedziami. */}
-                <fieldset data-pick-where className="flex flex-col gap-1">
-                  <legend className={LABEL}>Available in</legend>
+                <fieldset data-pick-where className="stack">
+                  <legend className="label">Available in</legend>
                   <div className="flex items-center gap-4">
                     {LANDINGS.map((choice) => (
                       <label
                         key={choice.value}
                         htmlFor={`skill-landing-${choice.value}`}
-                        className="flex items-center gap-1 text-body text-ink"
+                        className="flex items-center gap-1 text-ink"
                       >
                         <input
                           id={`skill-landing-${choice.value}`}
@@ -551,7 +678,9 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                     wybrać, a nie na dole ekranu. Znika, kiedy projekt jest otwarty — zdanie
                     stojące zawsze nie mówi nic i odsyła człowieka po coś, co już zrobił. */}
                 {openProject === null ? (
-                  <p className="text-body text-attend">{NO_PROJECT_YET}</p>
+                  <p className="lead" data-tone="attend">
+                    {NO_PROJECT_YET}
+                  </p>
                 ) : null}
 
                 {/* Zdanie o miejscu stoi TU, a nie w polu na link: pole zamyka się w chwili
@@ -562,7 +691,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                     zmienia się z wyborem: pierwsze łamie niezmiennik 13, drugie zamienia wybór
                     w kontrolkę bez widocznego skutku (niezmiennik 16) dokładnie tam, gdzie
                     skutkiem jest zapis do żywej konfiguracji cudzych narzędzi. */}
-                <p data-where-it-goes className="text-body text-muted">
+                <p data-where-it-goes className="lead">
                   {state.landing === 'this-project'
                     ? WHERE_IT_LANDS_IN_THE_PROJECT
                     : WHERE_IT_LANDS}
@@ -594,7 +723,10 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                   <li
                     key={skill.name}
                     data-skill={skill.name}
-                    className="flex flex-col gap-2 rounded-md border border-line bg-panel p-3"
+                    /* `.fade-in`, bo kafelek PRZYBYWA: lista jest pusta, dopóki katalogi nie
+                       odpowiedzą. Samo `opacity` — sprężyna należy do rzeczy wchodzących NAD
+                       treść, nie do wiersza, który dopiero wypełnia listę (DESIGN §7). */
+                    className="card fade-in flex flex-col gap-2"
                   >
                     <div className="flex items-start gap-2">
                       {/* `text-subhead`, nie `text-heading`: ten stopień należy do nagłówka
@@ -605,7 +737,7 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                           gasnący po zapisie mówiłby o umiejętności z sieci to samo, co
                           o napisanej ręcznie. */}
                       {skill.fromTheInternet ? (
-                        <span className={`ml-auto shrink-0 ${CHIP_QUIET}`}>From the internet</span>
+                        <span className="chip ml-auto shrink-0">From the internet</span>
                       ) : null}
                     </div>
 
@@ -613,23 +745,95 @@ export default function SkillsScreen({ store = useSkills }: SkillsScreenProps): 
                         w kafelku agenta i w makiecie. Umiejętność, której plik tego nie mówi,
                         dostaje zdanie o tym, że nie mówi: pusty prostokąt czyta się jak awaria
                         wczytywania, a nie jak brak opisu (niezmiennik 17 od drugiej strony). */}
-                    <p className="line-clamp-2 text-note text-muted">
+                    <p className="lead line-clamp-2">
                       {skill.summary === '' ? NO_SUMMARY : skill.summary}
                     </p>
-                    {/* Jedyna droga powrotna z katalogów narzędzi agentowych. Magazyn po
-                        udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz znika dopiero
-                        wtedy, gdy pliku naprawdę już tam nie ma (`src/state/skills.ts`). */}
-                    <div className="mt-auto flex items-center border-t border-line pt-2">
-                      <button
-                        type="button"
-                        data-remove={skill.name}
-                        className={`mr-auto ${DANGER}`}
-                        onClick={() => {
-                          void store.getState().remove(skill.name);
-                        }}
-                      >
-                        Remove
-                      </button>
+                    {/* Jedyna droga powrotna z katalogów narzędzi agentowych — i od 2026-08-31
+                        DWUSTOPNIOWA, dokładnie tak jak usunięcie agenta (`agents/index.tsx`).
+                        Do tego dnia jedno naciśnięcie jechało prosto w `fs::remove_dir_all`
+                        po drugiej stronie granicy: bez pytania, bez cofnięcia i bez ani jednego
+                        zdania o tym, co zniknie.
+
+                        POTWIERDZENIE JEST PRAWDZIWYM RENDEREM, nie `window.confirm`. Dialog
+                        przeglądarki blokuje webview i zabiera całą pracę, a przy oknie Tauri
+                        nie ma go czym odblokować.
+
+                        MIEJSCE NAZYWA PRZYCISK, KTÓRY CZŁOWIEK NACISKA, i to jest ta sama
+                        naprawa opisana w `src/state/skills.ts`: cel kasowania nie ma prawa
+                        brać się z wyboru, którego w tej chwili na ekranie nie ma.
+
+                        Magazyn po udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz
+                        znika dopiero wtedy, gdy pliku naprawdę już tam nie ma. */}
+                    {/* PRZYSZŁO Z TRUNKU 2026-08-31, razem z sekcją Lab. Czasownik stoi przy
+                          rzeczy, której dotyczy: zestaw ma dwie kolumny — bez tej umiejętności
+                          i z nią — bo to jest całe pytanie, które da się o nią zadać. Polityka
+                          mieszka w `../lab/evaluate`, nie tutaj.
+                          Klasa jest prymitywem tej gałęzi (`.btn-quiet`), nie stałą `QUIET`
+                          z trunku: ta stała zniknęła razem z migracją na warstwę prymitywów. */}
+                    <button
+                      type="button"
+                      data-evaluate={skill.name}
+                      className="btn-quiet"
+                      onClick={() => {
+                        void evaluateSkill(skill.name);
+                      }}
+                    >
+                      Evaluate
+                    </button>
+                    <div className="mt-auto border-t border-line pt-2">
+                      {state.removing === skill.name ? (
+                        <div className="stack" data-gap="2">
+                          {/* Pytanie WCHODZI: przed naciśnięciem „Remove" nie ma go w dokumencie
+                              wcale, a staje tam, gdzie przed chwilą był przycisk. Sprężyna mówi
+                              „to jest nowe", zamiast pozwolić dwóm rzeczom mrugnąć w jednym
+                              miejscu (DESIGN §7). */}
+                          <p data-confirm-remove={skill.name} className="enter text-ink">
+                            {askAbout(skill.name, openProject !== null)}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {PLACES.filter(
+                              (place) => !place.needsProject || openProject !== null,
+                            ).map((place) => (
+                              <button
+                                key={place.value}
+                                type="button"
+                                data-goes-from={place.value}
+                                className="btn-danger"
+                                onClick={() => {
+                                  void store.getState().remove(place.value);
+                                }}
+                              >
+                                {place.label}
+                              </button>
+                            ))}
+                            {/* Wyjście, które nic nie rusza, stoi obok każdego, które rusza
+                                wszystko. Pytanie z jedną odpowiedzią nie jest pytaniem. */}
+                            <button
+                              type="button"
+                              data-keep-it
+                              className="btn-quiet"
+                              onClick={() => {
+                                store.getState().keepIt();
+                              }}
+                            >
+                              Keep it
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center">
+                          <button
+                            type="button"
+                            data-remove={skill.name}
+                            className="btn-danger mr-auto"
+                            onClick={() => {
+                              store.getState().askToRemove(skill.name);
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </li>
                 ))}

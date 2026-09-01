@@ -144,8 +144,6 @@ export interface WorkflowCanvasProps {
   onApplyFix?: (fix: Fix) => void;
 }
 
-const BUTTON = 'h-8 rounded-sm border border-line bg-raised px-3 text-ui text-ink';
-
 /** Punkt zdarzenia wskaźnika w układzie EKRANU. Dotyk daje współrzędne w innym miejscu niż
  * mysz, a `onConnectEnd` dostaje jedno i drugie. */
 function pointerAt(event: MouseEvent | TouchEvent): { x: number; y: number } {
@@ -432,13 +430,16 @@ function Canvas({
                 <Panel position="top-left">
                   <div
                     data-loop-hint
-                    className="flex items-center gap-3 rounded-sm border border-line bg-panel px-3 py-2"
+                    /* `.enter` odpowiada na „czy to właśnie weszło" (DESIGN §7): ta karta wjeżdża
+                       NAD płótno, na które człowiek w tej chwili patrzy, a rzecz pojawiająca się
+                       skokiem czyta się jak przeskok całego widoku. */
+                    className="card enter flex items-center gap-3"
                   >
                     <p className="text-body text-ink">{loopHint}</p>
                     {/* Wyjście z trybu. Tryb bez wyjścia jest pułapką: człowiek, który rozmyślił
                         się po pierwszym kliknięciu, nie ma innego sposobu, żeby wrócić do
                         otwierania paneli kliknięciem w kafelek. */}
-                    <button type="button" className={BUTTON} onClick={leaveLoopMode}>
+                    <button type="button" className="btn" onClick={leaveLoopMode}>
                       Cancel
                     </button>
                   </div>
@@ -463,7 +464,7 @@ function Canvas({
           <div className="flex gap-2">
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 add('agent');
               }}
@@ -472,7 +473,7 @@ function Canvas({
             </button>
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 add('checkpoint');
               }}
@@ -484,7 +485,7 @@ function Canvas({
                 Nie ma go w makiecie: makieta powstała, zanim ten kształt był potrzebny. */}
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 add('serve');
               }}
@@ -498,7 +499,7 @@ function Canvas({
                 którego ten produkt istnieje, nie miało na płótnie żadnego nośnika. */}
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 add('check');
               }}
@@ -510,7 +511,7 @@ function Canvas({
                 kafelka. Nie ma go w makiecie: makieta powstała przed pętlą. */}
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 setPickingLoop(true);
                 setSendingBack(null);
@@ -521,7 +522,7 @@ function Canvas({
             </button>
             <button
               type="button"
-              className={BUTTON}
+              className="btn"
               onClick={() => {
                 onChange(tidyUp(file));
               }}

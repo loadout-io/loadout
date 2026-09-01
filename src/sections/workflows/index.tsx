@@ -193,7 +193,7 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
       {/* Zdanie o pliku, którego nie dało się otworzyć. Cicha porażka wygląda dokładnie jak
           martwy kafelek: człowiek klika i nie dowiaduje się, że plik jest zepsuty. */}
       {said === null ? null : (
-        <p data-said className="px-4 pt-3 text-body text-fail">
+        <p data-said className="fade-in px-4 pt-3 text-body text-fail">
           {said}
         </p>
       )}
@@ -209,6 +209,11 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
       <WorkflowList
         workflows={state.workflows}
         problems={state.problems}
+        /* CZY KATALOG ZOSTAŁ PRZECZYTANY — bez tego lista mówi „No workflows yet." o folderze,
+           w który nikt jeszcze nie zajrzał: `load()` biegnie w efekcie, a pierwszy render jest
+           wcześniej (2026-08-31). */
+        library={state.library}
+        refusal={state.refusal}
         pendingDeleteId={state.pendingDeleteId}
         actions={state}
         onOpen={(path) => {

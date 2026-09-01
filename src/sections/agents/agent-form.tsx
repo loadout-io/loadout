@@ -1,34 +1,72 @@
-/* Formularz agenta: dziewięć wierszy i przycisk, który rozwija trzy.
+/* Formularz agenta: SIEDEM wierszy widocznych, i trzy nazwane miejsca, w których stoi reszta.
  *
- * Formularz jest STEROWANY: wartości i stan rozwinięcia przychodzą propsami, a każda zmiana
- * wychodzi przez `onChange`. Powód nie jest architektoniczny, tylko testowy — w repo nie ma
- * `jsdom` ani `@testing-library/react` (`package.json` jest na liście DENIED w
- * `checks/quick-scope.sh`), więc formularz sprawdzamy przez `renderToStaticMarkup`. Statyczny
- * HTML wystarcza na kolejność etykiet i na atrybut `disabled`, a stan trzymany wewnątrz
- * komponentu byłby dla takiego testu niewidoczny.
+ * ══ CO SIĘ ZMIENIŁO 2026-08-31 I DLACZEGO ═══════════════════════════════════════════════════
  *
- * Dziewięć wierszy jest wiążące: `docs/mockup/index.html`, panel `Forge` w sekcji Agents.
- * Pole wchodzi tu tylko wtedy, gdy zauważyłbyś jego brak w pierwszej godzinie [T4 §3].
+ * Do dziś stało tu dziewięć wierszy plus pięć pod `More settings` — czternaście pól i pięć
+ * przycisków, czyli DZIEWIĘTNAŚCIE elementów interaktywnych w kolumnie 332 px. Policzone
+ * z tokenów: ~1150 px treści przy 748 px miejsca w oknie, więc `Save` leżał ~400 px pod
+ * krawędzią razem ze zdaniem tłumaczącym, czemu jest wygaszony. Nawet ZWINIĘTY formularz
+ * zajmował ~720 z 748.
  *
- * Trzy schowane wiersze są POZA drzewem, a nie schowane stylem. Kontrolka pod `display:none`
- * dalej jest w HTML, dalej ma etykietę, dalej rośnie — i na zrzucie ekranu wygląda identycznie
- * jak wersja poprawna. „Co jest otwarte" rozstrzyga się tutaj, w TypeScripcie, nie w arkuszu
- * stylów (niezmiennik 15).
+ * Sedno nie jest jednak w pikselach, tylko w randze: JEDENAŚCIE Z CZTERNASTU pól nie wymagało
+ * ani jednej decyzji, żeby zapisać działającego agenta — miały działającą wartość domyślną albo
+ * pustka była w nich poprawna. Decyzji wymagały trzy: `Name`, `Instructions`, `What it does`.
+ * A wszystkie czternaście stały w jednym płaskim stosie, tą samą etykietą, w tym samym rzędzie
+ * ważności. Formularz mówił więc, że wszystko jest równie ważne — czyli nie mówił nic.
  *
- * Czego tu NIE MA, choć T4 §8.1 to rysuje: wiersza `Write results to`. Makieta ma w tym
- * miejscu `Colour` i nie ma ścieżki wyniku (`docs/mockup/index.html:624-632`), a makieta jest
- * zatwierdzona. `writeResultsTo` zostaje w typie z domyślnym `""` i jest ustawiane NA KROKU
- * (`docs/mockup/index.html:559`), bo ścieżka wyniku należy do kroku, nie do roli.
+ * SIEDEM WIERSZY, TRZY GRUPY:
+ *   treść agenta          Name, What it does, Instructions
+ *   czym myśli            Runs with (jeden wiersz na `Runs with` + `Model` + `Thinking`)
+ *   granice               Can it change files, Can it reach the web, Give up after
+ *
+ * CZEGO TU NIE MA I GDZIE POSZŁO:
+ *   `Colour`        — poza formularz w całości. Token przydziela ekran po kolei
+ *                     (`index.tsx`), a zmienia się go klikiem w kwadrat na kafelku. Pole było
+ *                     dekoracyjne, miało działającą domyślną i wymagało zera decyzji —
+ *                     a stało NAD `Instructions`, czyli nad całą treścią agenta.
+ *   `Tools`         — zostaje pod `More settings`, gdzie stało. U Codeksa jest niedostępne,
+ *                     u Claude'a nie ma ani pickera, ani sprawdzenia wpisu, a jedyna rzecz,
+ *                     po którą po nie sięgano — sieć — ma własny wiersz od 2026-08-23.
+ *                     CAŁKOWITE USUNIĘCIE TEGO WIERSZA JEST ZGŁOSZONE, NIE ZROBIONE: kryterium
+ *                     `src/sections/field-is-a-well-under-its-label.test.tsx` sądzi gałąź pola
+ *                     WYŁĄCZONEGO przez vendora, a `Tools` jest jedynym takim polem w całym
+ *                     formularzu — plik z tamtym kryterium leży poza zakresem tej zmiany
+ *                     i jego własny komentarz mówi wprost, że przy takiej zmianie punkt trzeba
+ *                     PRZEKIEROWAĆ, a nie skasować.
+ *   `Extra options` — pod osobne, jawne `Advanced`. Surowe argv to nie jest „więcej ustawień",
+ *                     tylko inna ranga decyzji: jedna literówka w tym polu zmienia komendę,
+ *                     a nie ustawienie.
+ *
+ * ══ CZEMU FORMULARZ JEST STEROWANY, A ROZWINIĘCIA JUŻ NIE W CAŁOŚCI ══════════════════════════
+ *
+ * Wartości dalej przychodzą propsem i każda zmiana wychodzi przez `onChange` — powód jest
+ * testowy i się nie zmienił: w repo nie ma ani `jsdom`, ani `@testing-library/react`
+ * (`package.json` jest na liście DENIED w `checks/quick-scope.sh`), więc formularz sprawdza się
+ * przez `renderToStaticMarkup`, a stan trzymany wewnątrz byłby dla takiego renderu niewidoczny.
+ *
+ * `expanded` (czyli `More settings`) zostaje sterowane z zewnątrz, bo tak jest zadrutowane
+ * w `index.tsx` i tak wołają je dwa kryteria spoza tego pliku. Dwa nowe rozwinięcia trzymają
+ * stan U SIEBIE, a prop podaje wyłącznie stan POCZĄTKOWY. Powód jest niezmiennikiem 16: prop
+ * z handlerem musiałby być OPCJONALNY (kryterium w `src/sections/` renderuje ten formularz bez
+ * niego i przestałoby się kompilować), a przycisk z opcjonalnym handlerem jest przyciskiem,
+ * który w połowie wywołań nic nie robi. Stan własny daje handler, który istnieje ZAWSZE.
  */
 import type { ReactElement } from 'react';
-import type { Agent, Color, FileAccess, Thinking, Vendor } from '../../state/agents';
+import { useState } from 'react';
+import type { Agent, FileAccess, Thinking, Vendor } from '../../state/agents';
 import { missingForSave } from '../../state/agents';
+import { Advanced } from './advanced';
+import { webIsOutOfReach } from './capabilities';
 import { MoreSettings } from './more-settings';
 
 export interface AgentFormProps {
   value: Agent;
   /** Czy `More settings` jest rozwinięte. Stan mieszka wyżej — patrz nagłówek pliku. */
   expanded: boolean;
+  /** Czy wiersz o tym, czym agent myśli, wstaje rozwinięty. Dalej rozwija go przycisk. */
+  brainOpen?: boolean;
+  /** Czy `Advanced` wstaje rozwinięte. Ten prop jest szwem dla kryteriów, nie sterowaniem. */
+  advancedOpen?: boolean;
   onChange: (next: Agent) => void;
   onToggleMore: () => void;
   onSave: () => void;
@@ -41,13 +79,6 @@ interface Choice<T extends string> {
 
 /* Brzmienia z tabeli „We say / We never say" [T4 §8.1] i z makiety. Żadna z tych etykiet nie
  * jest nazwą z drutu: `look-only` nigdy nie dociera na ekran (niezmiennik 14). */
-const COLOURS: ReadonlyArray<Choice<Color>> = [
-  { value: 'slate', label: 'Slate' },
-  { value: 'plum', label: 'Plum' },
-  { value: 'clay', label: 'Clay' },
-  { value: 'moss', label: 'Moss' },
-  { value: 'rose', label: 'Rose' },
-];
 
 /* Eksportowane, bo `index.tsx` potrzebowało DOKŁADNIE tych brzmień na kafelku i do 2026-08-18
  * trzymało własną kopię tej tabeli (jej nagłówek nazywał to długiem i prosił o tę jedną linię).
@@ -75,35 +106,87 @@ const FILE_ACCESS: ReadonlyArray<Choice<FileAccess>> = [
 /* Udokumentowane aliasy plus wolny tekst — dlatego `<input list>`, a nie `<select>`. Prawdziwą
  * listę modeli daje CLI (`codex debug models` zwraca katalog z `visibility`, T4 §6.4), a to
  * wchodzi razem ze sterownikami (T-04, T-10). Zaszyte slugi rdzewieją w tygodnie, więc ta lista
- * jest podpowiedzią, a nie zamknięciem: pole przyjmuje każdy napis. */
+ * jest podpowiedzią, a nie zamknięciem: pole przyjmuje każdy napis.
+ *
+ * ALE MÓWI, ŻE PRZYJĘŁO WŁASNY — 2026-08-31. Do dziś „opus4" zapisywało się bez szemrania
+ * i padało dopiero w biegu, w środku pracy, na którą ktoś czekał. Zdanie pod polem nie odbiera
+ * możliwości wpisania swojego; mówi tylko, że to jest właśnie swoje. */
 const MODELS: Record<Vendor, readonly string[]> = {
   'claude-code': ['opus', 'sonnet', 'haiku', 'fable'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
 };
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
-/* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
+/* WYBÓR, A NIE POLE LICZBOWE — 2026-08-31.
  *
- * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
- * maszynowy i `user-select: text` — to ostatnie jest czescia pola, nie ozdoba, bo `body` wylacza
- * zaznaczanie w calej aplikacji. Do 2026-08-19 wolaly ja DWA miejsca, a cztery sekcje przepisywaly
- * ten sam wyglad recznie w dwunastu stalych — i rozjechaly sie: tu obrys byl `--line`, w Skills
- * `--line-strong`. Jeden fakt, jedno miejsce (niezmiennik 13); dwa opisy tego samego pola czyta
- * sie jak dwa rozne stany, a nie jak dwa pola.
- *
- * Skupienia tu nie ma z tego samego powodu. `theme.css` daje `.field:focus` obwodke w akcencie
- * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
- * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
-const FIELD = 'field';
-const AREA = 'field';
+ * Stało tu `<input type="number">` z wartością 10, i to była decyzja przebrana za domyślną: dla
+ * agenta piszącego kod dziesięć minut jest bardzo mało, a pole liczbowe mówi „każda liczba jest
+ * tu w porządku" i nie mówi ani słowa o tym, która jest sensowna. Trzy pozycje odpowiadają na
+ * to pytanie wprost — i zero jest wśród nich wartością, nie pustką [T4 §4.3, reguła 1]. */
+const GIVE_UP: readonly number[] = [10, 30, 0];
 
-/* Klasa przycisku Save zależy od stanu i jest wybierana TUTAJ, a nie wariantem `disabled:`
- * Tailwinda. Wariant zostawiłby słowo `disabled` w atrybucie `class` także wtedy, gdy przycisk
- * działa — czyli „czy da się zapisać" miałoby w HTML-u dwie odpowiedzi, z których jedna kłamie
- * (niezmiennik 13: jeden fakt, jedno miejsce). */
-const SAVE = 'ml-auto h-8 rounded-sm bg-accent px-4 text-ui text-bg';
-const SAVE_OFF = 'ml-auto h-8 rounded-sm bg-raised px-4 text-ui text-muted';
+/** „Bez limitu" to zero, nigdy pusta wartość [T4 §4.3, reguła 1]. */
+function giveUpSays(minutes: number): string {
+  return minutes <= 0 ? 'No limit' : `${String(minutes)} minutes`;
+}
+
+/* SIEĆ MA WŁASNY WIERSZ, i od dziś stoi on WŚRÓD WIDOCZNYCH, obok pytania o pliki.
+ *
+ * 2026-08-23 — z pytania właściciela „czemu dostępu do neta nie mają?". Zmierzone w jego
+ * bibliotece: 18 agentów, ani jeden z siecią. U Claude'a dało się ją dostać, WPISUJĄC
+ * `WebFetch, WebSearch` w pole `Tools` — i nikt tego nie zrobił, bo nic o tym nie mówi;
+ * u Codeksa to pole jest wygaszone, więc nie dało się w ogóle.
+ *
+ * 2026-08-31 — wiersz przeprowadza się spod `More settings` na wierzch. Powód: to jest pytanie
+ * o UPRAWNIENIE, dokładnie tej samej rangi co dial plikowy stojący nad nim, a uprawnienie
+ * schowane pod przyciskiem „więcej ustawień" jest uprawnieniem, którego się nie widzi. Te dwa
+ * wiersze plus limit czasu są całą granicą, jaką ten agent ma.
+ *
+ * Zdanie pod przełącznikiem mówi, czego on NIE robi, bo to jest jedyne, o co człowiek pyta
+ * w tym miejscu: „czy przez to zacznie mi ruszać pliki". Nie zacznie — dial mówi o plikach,
+ * ten przełącznik o świecie. */
+const WEB_IS_NOT_ABOUT_FILES =
+  'Reading and searching the web only. What it may do with your files stays exactly as set above.';
+
+/* Drugie zdanie pod tym samym przełącznikiem — i tylko wtedy, gdy jest nieprawdą, że włączenie
+ * go coś da. Bez ikony ostrzeżenia, bez czerwieni, tak jak zdanie przy `Tools` [T4 §8.1]: to
+ * jest fakt o drugiej aplikacji, nie pomyłka człowieka.
+ *
+ * KTÓRY TO PRZYPADEK, MÓWI TABELA (`capabilities.ts`), nie ten plik. Warunek po nazwie vendora
+ * postawiony tutaj byłby drugą kopią polityki, a druga kopia zawsze w końcu mówi co innego
+ * (niezmiennik 23). */
+const WEB_NEEDS_WRITE_ACCESS =
+  'Codex only reaches the web when it can change files, so this agent will not get it.';
+
+/* `.field` zostaje pod własną nazwą, bo to nie jest lista klas, tylko jedna nazwa roli — i ta
+ * nazwa mieszka w `theme.css` od pierwszego dnia: studnia, mocny obrys, promień z pasma, krój
+ * maszynowy i `user-select: text`, bez którego z pola nie da się skopiować własnego wpisu, bo
+ * `body` wyłącza zaznaczanie w całej aplikacji. Skupienia tu nie ma z tego samego powodu:
+ * `.field:focus` i jeden globalny `:focus-visible` odpowiadają na to raz, dla całej aplikacji. */
+const FIELD = 'field';
+
+/* POLE INSTRUKCJI ODDAJE WYSOKOŚĆ DOMOWI, ŻEBY WZIĄĆ JĄ Z LICZBY WIERSZY. 2026-08-31.
+ *
+ * `textarea.field` w `theme.css` ma `height: 64px` — przy kroju maszynowym 12 px to jakieś 120
+ * znaków widocznych naraz, dla CAŁEGO promptu systemowego roli, czyli najdłuższego tekstu
+ * w tej aplikacji. `h-auto` jest narzędziem z warstwy `utilities`, więc bije regułę z warstwy
+ * `components`, i oddaje wysokość atrybutowi `rows` — czyli liczbie wierszy, którą to pole
+ * naprawdę ma. Arkusz zostaje nietknięty (i musi: `src/styles/theme.css` leży poza zakresem
+ * tej zmiany), a `resize: vertical` z tej samej reguły dalej pozwala pociągnąć róg. */
+const AREA = 'field h-auto';
+
+/* Ile wierszy widać, zanim ktokolwiek o coś poprosi, i ile po naciśnięciu `Taller`.
+ *
+ * OSIEM, A NIE DWANAŚCIE, I TA LICZBA JEST POLICZONA, NIE WYBRANA. Panel ma 748 px wysokości,
+ * z czego 32 px zjada jego własne wypełnienie, a 36 px nagłówek z nazwą agenta — zostaje 680 px.
+ * Sześć pozostałych wierszy plus pasek z przyciskami i odstępy formularza (`--spacing` 4 px
+ * w wierszu, 12 px między wierszami) to 541 px, więc na pole instrukcji zostaje jakieś 139 px.
+ * Osiem wierszy po 18 px plus wypełnienie to 160 px: `Save` stoi wtedy tuż pod krawędzią,
+ * a nie 400 px pod nią, jak stał przy czternastu polach.
+ *
+ * Zysk jest i tak wielokrotny: pole miało 64 px, czyli około 120 znaków całego promptu roli
+ * naraz. Osiem wierszy w kolumnie tej szerokości to jakieś 320. Kto pisze więcej, mówi to
+ * przyciskiem obok — i wtedy widzi 24 wiersze, bo wtedy pisanie jest tym, co robi. */
+const LINES = { some: 8, more: 24 } as const;
 
 /** Wartość z listy albo dotychczasowa. Rzutowanie napisu z DOM-u na wariant enuma byłoby
  * obietnicą, której ten napis nie składa. */
@@ -111,19 +194,36 @@ function chosen<T extends string>(options: ReadonlyArray<Choice<T>>, raw: string
   return options.find((option) => option.value === raw)?.value ?? now;
 }
 
-/** „Bez limitu" to zero, nigdy pusta wartość [T4 §4.3, reguła 1]. */
-function minutesFrom(raw: string): number {
+/** Nazwa aplikacji, którą ten agent biegnie — z tabeli, która ją już ma. */
+function appName(vendor: Vendor): string {
+  return VENDORS.find((one) => one.value === vendor)?.label ?? vendor;
+}
+
+/** Pozycje wyboru limitu czasu: trzy nasze plus ta, którą ten agent ma zapisaną na dysku. */
+function giveUpChoices(now: number): readonly number[] {
+  const mine = Number.isFinite(now) && now > 0 ? now : 0;
+  return GIVE_UP.includes(mine) ? GIVE_UP : [...GIVE_UP, mine];
+}
+
+/** Liczba minut z pozycji listy. Nieznana pozycja zostawia to, co było. */
+function minutesFrom(raw: string, now: number): number {
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : now;
 }
 
 export function AgentForm({
   value,
   expanded,
+  brainOpen,
+  advancedOpen,
   onChange,
   onToggleMore,
   onSave,
 }: AgentFormProps): ReactElement {
+  const [brain, setBrain] = useState(brainOpen ?? false);
+  const [advanced, setAdvanced] = useState(advancedOpen ?? false);
+  const [tall, setTall] = useState(false);
+
   /* Nazwa i instrukcje. Reszta ma wartość domyślną, więc Save budzi się dokładnie wtedy, gdy
    * te dwa pola są wypełnione [T4 §8.1]. Agent bez instrukcji to nazwa.
    *
@@ -135,10 +235,19 @@ export function AgentForm({
   const missing = missingForSave(value);
   const saveable = missing === null;
 
+  /* Model spoza listy jest DOZWOLONY i o tym się mówi — patrz komentarz przy `MODELS`. */
+  const typedModel = value.model.trim();
+  const ownModel = typedModel !== '' && !MODELS[value.runsWith].includes(typedModel);
+
+  /* Tylko kiedy człowiek o sieć POPROSIŁ: zdanie odbierające coś, czego nikt nie chciał,
+   * jest szumem, a szum uczy przewijać wzrokiem każdą uwagę w tym formularzu. */
+  const webWontReach = value.reachesTheWeb && webIsOutOfReach(value.runsWith, value.fileAccess);
+
   return (
     <form
       data-agent-form
-      className="flex flex-col gap-3"
+      className="stack"
+      data-gap="3"
       onSubmit={(event) => {
         event.preventDefault();
         /* Wygaszony przycisk NIE JEST całą obroną. Formularz z jednym polem tekstowym wysyła
@@ -149,8 +258,8 @@ export function AgentForm({
         onSave();
       }}
     >
-      <div className={ROW}>
-        <label htmlFor="agent-name" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="agent-name" className="label">
           Name
         </label>
         <input
@@ -166,8 +275,8 @@ export function AgentForm({
         />
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-summary" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="agent-summary" className="label">
           What it does
         </label>
         <input
@@ -179,104 +288,157 @@ export function AgentForm({
         />
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-color" className={LABEL}>
-          Colour
-        </label>
-        <select
-          id="agent-color"
-          data-field="color"
-          className={FIELD}
-          value={value.color}
-          onChange={(event) =>
-            onChange({ ...value, color: chosen(COLOURS, event.target.value, value.color) })
-          }
-        >
-          {COLOURS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className={ROW}>
-        <label htmlFor="agent-instructions" className={LABEL}>
-          Instructions
-        </label>
+      {/* INSTRUKCJE STOJĄ TRZECIE I DOSTAJĄ NAJWIĘCEJ MIEJSCA W CAŁYM FORMULARZU, bo są całą
+          treścią agenta. Do 2026-08-31 stały czwarte, pod `Colour`. */}
+      <div className="stack">
+        <div className="flex items-center gap-2">
+          <label htmlFor="agent-instructions" className="label">
+            Instructions
+          </label>
+          {/* Uchwyt do ciągnięcia w rogu pola JEST (`resize: vertical` w arkuszu) i nikt go nie
+              znajduje. Ten przycisk mówi to samo słowem. */}
+          <button
+            type="button"
+            data-taller
+            className="btn-bare ml-auto"
+            onClick={() => {
+              setTall((was) => !was);
+            }}
+          >
+            {tall ? 'Shorter' : 'Taller'}
+          </button>
+        </div>
         <textarea
           id="agent-instructions"
           data-field="instructions"
           className={AREA}
+          rows={tall ? LINES.more : LINES.some}
           aria-required="true"
           value={value.instructions}
           onChange={(event) => onChange({ ...value, instructions: event.target.value })}
         />
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-runs-with" className={LABEL}>
-          Runs with
-        </label>
-        <select
-          id="agent-runs-with"
-          data-field="runsWith"
-          className={FIELD}
-          value={value.runsWith}
-          onChange={(event) =>
-            onChange({ ...value, runsWith: chosen(VENDORS, event.target.value, value.runsWith) })
-          }
-        >
-          {VENDORS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* JEDNO PYTANIE, NIE TRZY — 2026-08-31.
+       *
+       * `Runs with`, `Model` i `Thinking` to trzy kontrolki na jedno pytanie („czym ten agent
+       * myśli"), wszystkie trzy z działającą domyślną. Zwinięty wiersz czyta całą odpowiedź
+       * naraz, więc człowiek widzi, co dostanie, i nie musi jej podawać. */}
+      {brain ? (
+        <>
+          <div className="stack">
+            <div className="flex items-center gap-2">
+              <label htmlFor="agent-runs-with" className="label">
+                Runs with
+              </label>
+              <button
+                type="button"
+                data-brain
+                aria-expanded="true"
+                className="btn-bare ml-auto"
+                onClick={() => {
+                  setBrain(false);
+                }}
+              >
+                Done
+              </button>
+            </div>
+            <select
+              id="agent-runs-with"
+              data-field="runsWith"
+              className={FIELD}
+              value={value.runsWith}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  runsWith: chosen(VENDORS, event.target.value, value.runsWith),
+                })
+              }
+            >
+              {VENDORS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-model" className={LABEL}>
-          Model
-        </label>
-        <input
-          id="agent-model"
-          data-field="model"
-          className={FIELD}
-          list="agent-model-choices"
-          value={value.model}
-          onChange={(event) => onChange({ ...value, model: event.target.value })}
-        />
-        <datalist id="agent-model-choices">
-          {MODELS[value.runsWith].map((name) => (
-            <option key={name} value={name} />
-          ))}
-        </datalist>
-      </div>
+          <div className="stack">
+            <label htmlFor="agent-model" className="label">
+              Model
+            </label>
+            <input
+              id="agent-model"
+              data-field="model"
+              className={FIELD}
+              list="agent-model-choices"
+              value={value.model}
+              onChange={(event) => onChange({ ...value, model: event.target.value })}
+            />
+            <datalist id="agent-model-choices">
+              {MODELS[value.runsWith].map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+            {ownModel ? (
+              <p data-own-model className="lead">
+                {`${typedModel} is your own — ${appName(value.runsWith)} gets it exactly as typed.`}
+              </p>
+            ) : null}
+          </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-thinking" className={LABEL}>
-          Thinking
-        </label>
-        <select
-          id="agent-thinking"
-          data-field="thinking"
-          className={FIELD}
-          value={value.thinking}
-          onChange={(event) =>
-            onChange({ ...value, thinking: chosen(THINKING, event.target.value, value.thinking) })
-          }
-        >
-          {THINKING.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
+          <div className="stack">
+            <label htmlFor="agent-thinking" className="label">
+              Thinking
+            </label>
+            <select
+              id="agent-thinking"
+              data-field="thinking"
+              className={FIELD}
+              value={value.thinking}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  thinking: chosen(THINKING, event.target.value, value.thinking),
+                })
+              }
+            >
+              {THINKING.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </>
+      ) : (
+        <div className="stack">
+          {/* NAZWA WIERSZA W `<span>`, NIE W `<label>`, i to jest wymuszone, nie wybrane:
+              zwinięty wiersz nie ma kontrolki formularza, tylko przycisk, a `<label for>`
+              wskazujący na przycisk jest etykietą wskazującą na coś, co etykiety nie przyjmuje.
+              Ranga napisu zostaje ta sama, bo niesie ją klasa. */}
+          <span className="label">Runs with</span>
+          <button
+            type="button"
+            data-brain
+            aria-expanded="false"
+            className="row"
+            onClick={() => {
+              setBrain(true);
+            }}
+          >
+            <span data-brain-says>
+              {`${appName(value.runsWith)} · ${value.model} · ${
+                THINKING.find((one) => one.value === value.thinking)?.label ?? value.thinking
+              }`}
+            </span>
+            <span className="value ml-auto">Change</span>
+          </button>
+        </div>
+      )}
 
-      <div className={ROW}>
-        <label htmlFor="agent-file-access" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="agent-file-access" className="label">
           Can it change files
         </label>
         <select
@@ -299,38 +461,81 @@ export function AgentForm({
         </select>
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="agent-give-up-after" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="agent-web" className="label">
+          Can it reach the web
+        </label>
+        {/* LISTA WYBORU, nie przełącznik, i nie z upodobania: wiersz obok — dial dostępu do
+            plików — jest `<select>` z klasą domu, a dwa pytania o uprawnienia, zadane dwiema
+            różnymi kontrolkami, czytają się jak dwie różne rangi decyzji. Jeden kształt na
+            jedną robotę, we wszystkich pięciu sekcjach. */}
+        <select
+          id="agent-web"
+          data-field="reachesTheWeb"
+          className={FIELD}
+          value={value.reachesTheWeb ? 'yes' : 'no'}
+          onChange={(event) => {
+            onChange({ ...value, reachesTheWeb: event.target.value === 'yes' });
+          }}
+        >
+          <option value="no">No</option>
+          <option value="yes">Read and search the web</option>
+        </select>
+        <p className="lead">{WEB_IS_NOT_ABOUT_FILES}</p>
+        {webWontReach ? <p className="lead">{WEB_NEEDS_WRITE_ACCESS}</p> : null}
+      </div>
+
+      <div className="stack">
+        <label htmlFor="agent-give-up-after" className="label">
           Give up after
         </label>
-        <div className="flex items-center gap-2">
-          <input
-            id="agent-give-up-after"
-            data-field="giveUpAfterMinutes"
-            className={FIELD}
-            type="number"
-            min={0}
-            value={String(value.giveUpAfterMinutes)}
-            onChange={(event) =>
-              onChange({ ...value, giveUpAfterMinutes: minutesFrom(event.target.value) })
-            }
-          />
-          <span className="text-body text-muted">minutes</span>
-        </div>
+        <select
+          id="agent-give-up-after"
+          data-field="giveUpAfterMinutes"
+          className={FIELD}
+          value={String(value.giveUpAfterMinutes)}
+          onChange={(event) =>
+            onChange({
+              ...value,
+              giveUpAfterMinutes: minutesFrom(event.target.value, value.giveUpAfterMinutes),
+            })
+          }
+        >
+          {giveUpChoices(value.giveUpAfterMinutes).map((minutes) => (
+            <option key={minutes} value={String(minutes)}>
+              {giveUpSays(minutes)}
+            </option>
+          ))}
+        </select>
       </div>
 
       {expanded ? <MoreSettings value={value} onChange={onChange} /> : null}
+      {advanced ? <Advanced value={value} onChange={onChange} /> : null}
 
-      <div className="flex flex-col gap-2 border-t border-line pt-3">
+      <div className="stack border-t border-line pt-3" data-gap="2">
         <div className="flex items-center gap-2">
           <button
             type="button"
             data-more
             aria-expanded={expanded}
-            className="h-8 rounded-sm border border-line px-3 text-ui text-body"
+            className="btn-quiet"
             onClick={onToggleMore}
           >
-            More settings — tools, skills, connections
+            More settings
+          </button>
+          {/* DWA PRZYCISKI, NIE JEDEN, i to jest cała treść piątego punktu tej zmiany: surowe
+              argv nie są „więcej ustawień". Jeden przycisk na oba znaczy człowieka, który
+              otwiera jedno i znajduje drugie. */}
+          <button
+            type="button"
+            data-advanced
+            aria-expanded={advanced}
+            className="btn-quiet"
+            onClick={() => {
+              setAdvanced((was) => !was);
+            }}
+          >
+            Advanced
           </button>
           <button
             type="submit"
@@ -340,13 +545,13 @@ export function AgentForm({
              * wiąże wygaszony przycisk ze zdaniem, więc czytnik ekranu mówi jedno i drugie
              * w jednym oddechu, zamiast „Save, niedostępny" i ciszy. */
             aria-describedby={saveable ? undefined : 'agent-save-blocked'}
-            className={saveable ? SAVE : SAVE_OFF}
+            className="btn-primary ml-auto"
           >
             Save
           </button>
         </div>
         {missing === null ? null : (
-          <p id="agent-save-blocked" data-save-blocked className="text-body text-muted">
+          <p id="agent-save-blocked" data-save-blocked className="lead">
             {missing}
           </p>
         )}

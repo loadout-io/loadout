@@ -30,7 +30,9 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import type { RunningApp } from '../harness';
 import { closeEverything, openApp } from '../harness';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+/* Cztery sekcje z ekranem plus ta, ktora 2026-08-31 wchlonela Skills i Memory. Wypisane na
+ * sztywno — petla po rejestrze sadzilaby rejestr samym soba. */
+const EXPECTED = ['run', 'workflows', 'agents', 'knowledge'] as const;
 
 type Id = (typeof EXPECTED)[number];
 

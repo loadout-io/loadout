@@ -18,11 +18,11 @@ import type { ScreenMap } from '../screens';
 import { sectionEntry } from '../sections';
 
 /** Wpis, którego nie da się wyrenderować: liczba tam, gdzie powłoka spodziewa się komponentu. */
-const BROKEN: ScreenMap = { skills: 42 as never };
+const BROKEN: ScreenMap = { knowledge: 42 as never };
 
 /** Ta sama zepsuta sekcja obok zdrowej — jedna nie ma prawa zabrać drugiej. */
 const BROKEN_AND_GOOD: ScreenMap = {
-  skills: 42 as never,
+  knowledge: 42 as never,
   run: () => <p data-screen="run" />,
 };
 
@@ -40,33 +40,33 @@ function emptyStateText(markup: string): string {
 }
 
 describe('a screen that cannot be rendered costs one section, not the window', () => {
-  it('renders the skills section without falling over', () => {
+  it('renders the knowledge section without falling over', () => {
     expect(
-      () => renderToStaticMarkup(<App section="skills" screens={BROKEN} />),
+      () => renderToStaticMarkup(<App section="knowledge" screens={BROKEN} />),
       'a value that is not a component has to be treated as no screen at all. Throwing here ' +
         "takes down every section in the window over one section's file",
     ).not.toThrow();
   });
 
-  it('says what an empty skills section says, instead of showing nothing', () => {
-    const markup = renderToStaticMarkup(<App section="skills" screens={BROKEN} />);
+  it('says what an empty knowledge section says, instead of showing nothing', () => {
+    const markup = renderToStaticMarkup(<App section="knowledge" screens={BROKEN} />);
     expect(
       occurrences(markup, 'data-empty'),
-      'skills has nothing renderable, so it falls back to its empty screen — exactly one of them',
+      'knowledge has nothing renderable, so it falls back to its empty screen — exactly one of them',
     ).toBe(1);
     expect(
       emptyStateText(markup),
       'the fallback is the sentence from the entry, read here from the registry. Swallowing ' +
         'the bad value and rendering nothing at all passes a not-toThrow check and leaves a ' +
         'white rectangle nobody can report',
-    ).toBe(sectionEntry('skills').empty);
+    ).toBe(sectionEntry('knowledge').empty);
   });
 
   it('leaves a healthy section next to it untouched', () => {
     const markup = renderToStaticMarkup(<App section="run" screens={BROKEN_AND_GOOD} />);
     expect(
       occurrences(markup, 'data-screen="run"'),
-      'the run screen is fine and has to render exactly once, whatever the skills entry holds',
+      'the run screen is fine and has to render exactly once, whatever the knowledge entry holds',
     ).toBe(1);
     expect(
       occurrences(markup, 'data-empty'),
@@ -75,11 +75,11 @@ describe('a screen that cannot be rendered costs one section, not the window', (
   });
 
   it('leaves a section with no screen at all untouched', () => {
-    const markup = renderToStaticMarkup(<App section="memory" screens={BROKEN_AND_GOOD} />);
+    const markup = renderToStaticMarkup(<App section="triggers" screens={BROKEN_AND_GOOD} />);
     expect(
       emptyStateText(markup),
-      'memory has no screen here and never had one, so it says what its entry says — a bad ' +
+      'triggers has no screen here in this map, so it says what its entry says — a bad ' +
         'value under another key has to change nothing about it',
-    ).toBe(sectionEntry('memory').empty);
+    ).toBe(sectionEntry('triggers').empty);
   });
 });

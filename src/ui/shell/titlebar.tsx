@@ -112,6 +112,19 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
           propsem `section`, a cały stan zakresu mieszka w `workspace-switcher.tsx`. */}
       <NavWorkspaces />
 
+      {/* WIERSZ MENU BIERZE PRYMITYW `.row`, 2026-08-31 — nie listę klas przepisaną tutaj.
+       *
+       * To JEDNA rola, która w tym repo miała sześć zapisów: dwa paddingi, dwa podświetlenia
+       * i dwa atrybuty stanu (`aria-current` tutaj, `aria-checked` w przełączniku zakresu
+       * wyżej). Prymityw czyta obie pisownie wybranego wiersza i rysuje je tak samo, więc to,
+       * jak wygląda „tu jesteś", przestaje zależeć od tego, kto pisał dany wiersz.
+       *
+       * PRZY OKAZJI WCHODZI MYJKA POD KURSOREM, KTÓREJ TE SIEDEM PRZEŁĄCZNIKÓW NIE MIAŁO.
+       * Kontrolka, która nie odpowiada na najechanie, czyta się jak napis — a to jest jedyna
+       * nawigacja, jaką ta aplikacja ma.
+       *
+       * `group` zostaje, bo barwa glifu jest BRAMKOWANA wariantem `group-aria-[current=true]`
+       * niżej: która sekcja jest otwarta, mówi `aria-current` i tylko on (niezmiennik 13). */}
       {SECTIONS.map((entry) => (
         <button
           key={entry.id}
@@ -119,7 +132,7 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
           data-section-switch={entry.id}
           aria-current={entry.id === section ? 'true' : undefined}
           onClick={() => useSectionStore.getState().go(entry.id)}
-          className="group grid w-full grid-cols-[auto_1fr] items-center gap-[9px] rounded-sm border border-transparent px-[10px] py-[7px] text-left text-ui text-body aria-[current=true]:bg-hover aria-[current=true]:text-ink"
+          className="row group"
         >
           {/* AKCENT BIERZE GLIF, NIGDY TŁO. To reguła domu, wprost z jego `glass.css`:
               „the accent never fills chrome, it colors the active glyph/label only". Barwa jest

@@ -31,16 +31,16 @@ import { createWorkflowStore } from '../../../state/workflows';
 import { applyPanelEdit } from './overrides';
 import { StepPanel } from './panel';
 
-/** Siedem wierszy z makiety, `docs/mockup/index.html:599-618`, w tej kolejności. */
-const SEVEN = [
-  'Name',
-  'Who does this',
-  'What to do',
-  'How many at once',
-  'Can it change files',
-  'Give up after',
-  'Write results to',
-];
+/** Nagłówki wierszy panelu, w kolejności renderu — z makiety `docs/mockup/index.html:599-618`
+ * i z jej trzech dopisków, które przyszły później.
+ *
+ * 2026-08-31 — TA LISTA BYŁA „SIEDMIOMA WIERSZAMI Z MAKIETY" i przestała nią być. Cztery
+ * z nich stoją dziś w widoku, trzy — te dziedziczone z agenta — za ujawnieniem, razem z pięcioma
+ * dalszymi, które doszły po makiecie. Równości „pięć w widoku, reszta w środku" pilnuje
+ * `panel-keeps-five-things-in-view.test.tsx`, bo to jest kryterium o UKŁADZIE. Tutaj zostaje to,
+ * o co ten plik pytał od początku: że wiersze dziedziczone są dokładnie te trzy i że czwartego
+ * przełącznika z makiety wśród nich nie ma. */
+const INHERITED = ['Can it change files', 'Give up after', 'Write results to'];
 
 function forge(): Agent {
   return {
@@ -301,14 +301,15 @@ describe('editing a step edits the step, and the agent it inherits from stays wh
     ).not.toContain('Agent uses');
   });
 
-  it('is exactly the seven rows of the mockup, and the third toggle is not one of them', () => {
+  it('inherits exactly three rows from the agent, and the third toggle is not one of them', () => {
     const html = markup(build({ thinking: 'deep' }));
 
     expect(
-      labelsOf(html),
-      'these seven, in this order, and no eighth. An eighth row here is the first step towards ' +
-        'the settings page nobody fills in, and it is always defensible on its own',
-    ).toEqual(SEVEN);
+      labelsOf(html).filter((one) => INHERITED.includes(one)),
+      'these three, in this order, and no fourth. A fourth row taking its value from the agent ' +
+        'is the first step towards the settings page nobody fills in, and it is always ' +
+        'defensible on its own',
+    ).toEqual(INHERITED);
     expect(
       html,
       'no schema field carries how deep an agent may delegate, and both research reports rule ' +

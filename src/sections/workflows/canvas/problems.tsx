@@ -32,16 +32,18 @@ export interface NoteFocus {
   openPanel: (stepId: string) => void;
 }
 
-/* Przycisk podstawowy (DESIGN §6 `button-primary`) i jego wersja bez mocy sprawczej. Klasa jest
- * wybierana TUTAJ, a nie wariantem `disabled:` Tailwinda: wariant zostawiłby słowo `disabled`
- * w atrybucie `class` także wtedy, gdy przycisk działa, więc „czy da się uruchomić" miałoby
- * w HTML-u dwie odpowiedzi, z których jedna kłamie (niezmiennik 13). */
-const RUN = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
-const RUN_OFF = 'h-9 rounded-sm bg-raised px-4 text-ui text-muted';
-
-/** Kropka wagi: problem świeci kolorem awarii, ostrzeżenie kolorem „wymaga ciebie". */
-/** Przycisk naprawy: drugorzędny, przy zdaniu, którego dotyczy. */
-const FIX = 'h-6 shrink-0 rounded-sm border border-line px-2 text-label text-body';
+/* 2026-08-31 — `RUN`, `RUN_OFF` I `FIX` ZNIKŁY. Pierwsze dwa były jednym przyciskiem opisanym
+ * dwa razy: stała rysowała szary przycisk ręcznie obok wypełnionego, a warunek wybierający
+ * jedną z nich stał tuż obok atrybutu `disabled`, który mówi dokładnie to samo. Stan wyłączony
+ * jest od dziś REGUŁĄ (`.btn-primary:disabled` w `theme.css`), więc odpowiedź „czy da się
+ * uruchomić" ma w markupie jedno miejsce: sam atrybut.
+ *
+ * Wariantu `disabled:` Tailwinda tu dalej NIE MA i ten powód nie wygasł: zostawiłby słowo
+ * `disabled` w atrybucie `class` także pod DZIAŁAJĄCYM przyciskiem, a kryterium tej sekcji
+ * czyta obecność tego słowa w atrybutach jako odmowę startu.
+ *
+ * `FIX` był przyciskiem cichym z DESIGN §6 przepisanym ręcznie i o 4 px niższym niż wszystkie
+ * pozostałe — piąta wysokość przycisku w repo. Teraz to `.btn-quiet`. */
 
 /** Uwagi, które Loadout umie naprawić sam. */
 function fixable(notes: Note[]): Note[] {
@@ -71,6 +73,7 @@ const DIAL: Record<FileAccess, string> = {
   'work-freely': 'Work freely',
 };
 
+/** Kropka wagi: problem świeci kolorem awarii, ostrzeżenie kolorem „wymaga ciebie". */
 const DOT: Record<Note['level'], string> = {
   problem: 'text-fail',
   warning: 'text-attend',
@@ -128,7 +131,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
     <div className="flex flex-col gap-2">
       {notes.length > 0 ? (
         <div className="flex flex-col gap-1">
-          <span className="text-label text-muted">{howMany(notes)}</span>
+          <span className="label">{howMany(notes)}</span>
           {/* KLUCZ Z POZYCJI, NIE Z TREŚCI — naprawa z 2026-08-23, z konsoli okna właściciela:
               „Encountered two children with the same key, `warning:s_3:"New step" and "New step"
               can run at the same time…`". Walidator zgłasza tę regułę PER PARĘ kroków, a zdanie
@@ -144,9 +147,13 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
               key={`${String(at)}:${note.level}:${note.stepId ?? ''}`}
               className="flex items-baseline gap-2"
             >
+              {/* WIERSZ, KTÓRY REAGUJE. To zdanie przesuwa płótno i otwiera panel winnego kroku,
+                  a do 2026-08-31 nie robiło pod kursorem nic — czyli czytało się jak napis.
+                  `w-auto` znosi `width:100%` prymitywu, bo przycisk naprawy stoi OBOK, w tym
+                  samym wierszu, i ma zostać widoczny. */}
               <button
                 type="button"
-                className="flex items-baseline gap-2 text-left text-body text-ink"
+                className="row w-auto items-baseline text-body text-ink"
                 onClick={() => {
                   onFocusNote(note);
                 }}
@@ -161,7 +168,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
                 <button
                   type="button"
                   data-fix
-                  className={FIX}
+                  className="btn-quiet"
                   onClick={() => {
                     onApplyFix(note.fix as Fix);
                   }}
@@ -178,7 +185,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
             <button
               type="button"
               data-show-all-notes
-              className="self-start text-left text-label text-muted underline"
+              className="label self-start text-left underline hover:text-ink"
               onClick={() => {
                 setShowAll(!showAll);
               }}
@@ -194,7 +201,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
             <button
               type="button"
               data-fix-all
-              className={`${FIX} self-start`}
+              className="btn-quiet self-start"
               onClick={() => {
                 for (const note of fixable(notes)) onApplyFix(note.fix as Fix);
               }}
@@ -207,7 +214,7 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
 
       <button
         type="button"
-        className={blocker === undefined ? RUN : RUN_OFF}
+        className="btn-primary"
         disabled={blocker !== undefined}
         title={blocker?.message}
         onClick={onRun}

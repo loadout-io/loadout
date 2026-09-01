@@ -106,7 +106,7 @@ const { roster } = await import('../rail/roster');
 const { runFeed } = await import('../feed/live');
 const { useRun } = await import('../../../state/run');
 const { useMemory } = await import('../../../state/memory');
-const { default: MemoryScreen } = await import('../../memory');
+const { default: NotesShelf } = await import('../../memory/shelf');
 const { line } = await import('../feed/fixtures/lines');
 
 const STEPS: readonly Step[] = [
@@ -158,7 +158,7 @@ function memoryRow(one: AcceptanceNote): string {
     passedProblem: null,
     choice: null,
   });
-  const markup = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+  const markup = renderToStaticMarkup(<NotesShelf store={useMemory} />);
   const marker = `data-note-address="${one.place}:${one.id}"`;
   const start = markup.indexOf(marker);
   if (start < 0) return '';

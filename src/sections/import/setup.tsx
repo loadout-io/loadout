@@ -1,8 +1,36 @@
 import type { FormEvent, ReactElement } from 'react';
 import { useState } from 'react';
 import { why } from '../../ipc/why';
+import type { Reviewed } from '../../state/skills';
 import { activeWorkspace } from '../../state/workspaces';
+/* Lista znalezisk przyjeżdża z sekcji Umiejętności, bo to jest ta sama lista dla tego samego
+ * człowieka — powód stoi w nagłówku tamtego pliku (niezmiennik 23). */
+import { Findings } from '../skills/findings';
+import {
+  COULD_NOT_ASK,
+  COULD_NOT_STOP,
+  type Comparing,
+  IDLE,
+  answered,
+  askFailed,
+  asking,
+  refused,
+  stopFailed,
+  stopped,
+} from './comparing';
 import * as Disk from './io';
+import {
+  BECOMES_INSTRUCTIONS,
+  OPEN_IT,
+  READ_ALREADY,
+  READ_IT,
+  STOPS_IT,
+  compatibilityIn,
+  mustBeRead,
+  readingSays,
+  stillUnread,
+} from './skill-review';
+import { type InventoryView, SHOW_ALL, hiddenSays, hidesEverything, keptBy } from './shown';
 
 export type Compatibility = 'exact' | 'adjusted' | 'needs_choice' | 'unsupported';
 export type SourceKind =
@@ -48,6 +76,17 @@ export interface ImportItem {
   status: ImportStatus;
   statusMessage: string;
   generatedHash: string | null;
+  /**
+   * Co przegląd znalazł w tej umiejętności — lustro `ImportItem::reviewed`
+   * (`src-tauri/src/import/mod.rs`), tym samym kształtem, co karta przeglądu przy wklejonym
+   * linku (`src/sections/skills/review-card.tsx`).
+   *
+   * OPCJONALNE PO OBU STRONACH, i to jest jedno pole, nie dwa: Rust ma tu
+   * `skip_serializing_if = "Option::is_none"`, więc klucz **nie przyjeżdża wcale** dla pozycji,
+   * która nie jest umiejętnością. Brak klucza znaczy „przegląd nie dotyczył tej pozycji"
+   * i nigdy „przejrzano, nic nie ma" — te dwa zdania wolno pomylić dokładnie raz.
+   */
+  reviewed?: Reviewed;
 }
 
 /** Czego agent ma dotknąć, żeby porównać kopie jednej pozycji.
@@ -157,7 +196,10 @@ export interface ImportSetupProps {
  * „nieprzejrzysty" w nawiasie — więc to nie jest nowy kolor ani odstępstwo od makiety, tylko
  * użycie tego, co makieta na to miejsce przewidziała. Ta sama pomyłka stała w czterech modalach
  * naraz i wszystkie cztery są poprawione razem: jedna klasa, jedna przyczyna. */
-const BACKDROP = 'fixed inset-0 z-20 flex items-center justify-center bg-bg/72 p-6';
+/* WEJSCIE JEST SAMA PRZEZROCZYSTOSCIA (`.fade-in`), bo DESIGN §6 mowi o modalu wprost:
+ * bez rozmycia i bez animacji wjazdu poza `opacity`. Sprezyna nalezy do powierzchni, ktore
+ * wchodza NAD widok, a to okno zaslania go w calosci. Jeden region na jedno zdarzenie. */
+const BACKDROP = 'fade-in fixed inset-0 z-20 flex items-center justify-center bg-bg/72 p-6';
 /* BEZ DOLNEGO WYPEŁNIENIA, i to jest część paska przy dole, a nie oszczędność (2026-08-29).
  *
  * Okno jest własnym pasem przewijania, więc treść przewija się TAKŻE przez jego wypełnienie.
@@ -166,8 +208,8 @@ const BACKDROP = 'fixed inset-0 z-20 flex items-center justify-center bg-bg/72 p
  * za swoją. Dolne 24 px oddaje więc sam pasek (`pb-6`), a ekran bez planu — akapit pod spodem. */
 const WINDOW =
   'flex max-h-full w-full max-w-240 flex-col gap-4 overflow-auto rounded-lg border border-line-strong bg-overlay px-6 pt-6';
-const BUTTON = 'h-8 rounded-sm border border-line px-3 text-ui text-body';
-const ORIGIN = 'text-label text-muted';
+/* 2026-08-31: trzy stałe z listami klas zeszły do warstwy prymitywów (`theme.css`):
+ * `BUTTON` -> `.btn-quiet`, `PRIMARY` -> `.btn-primary`, `ORIGIN` -> `.label`. */
 
 /** Zdanie o pochodzeniu połączenia — mówi, KTO JE WIDZI, nie w którym pliku leży.
  *
@@ -178,7 +220,6 @@ function whereFrom(origin: ConnectionOrigin | undefined): string {
   if (origin === 'yours-everywhere') return 'just you, everywhere';
   return 'in the project';
 }
-const PRIMARY = 'h-8 rounded-sm bg-accent px-3 text-ui text-bg';
 
 const STATUS: Readonly<Record<Compatibility, string>> = {
   exact: 'Exact',
@@ -216,8 +257,6 @@ const ITEM_STATUS: Readonly<Record<ImportStatus, string>> = {
   unsupported: "Can't be reproduced",
   missing_dependencies: 'Missing dependencies',
 };
-
-type InventoryView = 'all' | 'ready' | 'attention';
 
 function sourceLabel(item: SourceItem): string {
   if (item.source !== undefined) return SOURCES[item.source];
@@ -260,14 +299,16 @@ function andThen(paths: readonly string[]): string {
 function SecondOpinion({ said }: { said: Comparison }): ReactElement {
   return (
     <span className="mt-2 block border-l border-line pl-2">
-      <span className="block text-note text-muted">{`An agent read ${andThen(said.compared)}.`}</span>
-      <span className="block text-note text-body">{said.said}</span>
+      <span className="lead block">{`An agent read ${andThen(said.compared)}.`}</span>
+      <span className="lead block" data-tone="body">
+        {said.said}
+      </span>
       {said.keep === null ? null : (
-        <span className="block text-note text-body">
+        <span className="lead block" data-tone="body">
           {`It suggests keeping the copy from ${said.keep}.`}
         </span>
       )}
-      <span className="block text-note text-muted">This is advice. You choose what to import.</span>
+      <span className="lead block">This is advice. You choose what to import.</span>
     </span>
   );
 }
@@ -327,11 +368,18 @@ function typedBlockers(
   excludedItems: readonly string[],
   withoutBehavior: readonly string[],
   enabledConnections: readonly string[],
+  read: readonly string[],
 ): number {
+  const compatibility = compatibilityIn(preview);
   return preview.draft.items.filter((item) => {
     if (excludedItems.includes(item.id)) return false;
     if (item.status === 'unsupported') return true;
     if (item.status === 'needs_choice' && !withoutBehavior.includes(item.id)) return true;
+    /* CUDZA UMIEJĘTNOŚĆ NIE WCHODZI, ZANIM KTOŚ JĄ PRZECZYTA (2026-08-31, `skill-review.ts`).
+       Ta sama zgoda, co pod blokującym znaleziskiem w karcie przeglądu: przycisk kończący
+       robotę jest WYŁĄCZONY, dopóki każda taka pozycja nie jest odklikana. Wyłączony przycisk
+       jest tu jedyną drogą, bo `apply` i tak sprawdza `blocked > 0` przed wywołaniem. */
+    if (mustBeRead(item, compatibility.get(item.id)) && !read.includes(item.id)) return true;
     return item.dependencies.some(
       (dependency) => !hasDependency(preview, dependency, excludedItems, enabledConnections),
     );
@@ -398,42 +446,55 @@ export function ImportSetup({
    * lista agentów przyjeżdża propsem i bywa pusta w chwili pierwszego renderu, więc wybór
    * domyślny liczy się przy każdym renderze ([`whoCompares`] niżej), a nie raz w `useState`. */
   const [chosenAgent, setChosenAgent] = useState('');
-  /* Identyfikator pozycji, przy której agent PRACUJE TERAZ. Jeden naraz, tak jak po tamtej
-   * stronie granicy (`commands::import::Comparing`) — drugie pytanie jest tam odmową, więc
-   * dwa wiersze mówiące „porównuje teraz" byłyby zdaniem o czymś, co się nie dzieje. */
-  const [comparing, setComparing] = useState<string | null>(null);
-  const [comparisons, setComparisons] = useState<Record<string, Comparison>>({});
+  /* Kto jest porównywany TERAZ, co po tym zostaje na ekranie i które odpowiedzi są już
+   * nieaktualne — jeden obiekt, bo domknięcie obietnicy musi rozstrzygnąć to wszystko naraz
+   * (`./comparing.ts`). Jeden naraz, tak jak po tamtej stronie granicy
+   * (`commands::import::Comparing`) — drugie pytanie jest tam odmową, więc dwa wiersze mówiące
+   * „porównuje teraz" byłyby zdaniem o czymś, co się nie dzieje. */
+  const [asked, setAsked] = useState<Comparing>(IDLE);
+  /* Umiejętności, o których człowiek powiedział, że je przeczytał. Nie przeżywa skanu: świeży
+   * skan czyta pliki na nowo, więc zgoda sprzed niego dotyczyła innego tekstu. */
+  const [read, setRead] = useState<string[]>([]);
   const whoCompares = chosenAgent === '' ? (agents[0]?.id ?? '') : chosenAgent;
   const hasTypedItems = preview !== null && preview.draft.items.length > 0;
   const selectedTypedItems =
     preview?.draft.items.filter((item) => !excludedItems.includes(item.id)) ?? [];
+  const mappings = new Map(
+    preview?.draft.report.mappings.map((mapping) => [mapping.itemId, mapping]) ?? [],
+  );
   const blocked =
     preview === null
       ? 0
       : hasTypedItems
-        ? typedBlockers(preview, excludedItems, withoutBehavior, enabled)
+        ? typedBlockers(preview, excludedItems, withoutBehavior, enabled, read)
         : blockers(preview, leaveOut);
+  /* Ile umiejętności czeka na przeczytanie. Osobno od `blocked`, bo stopka ma nazwać TĘ
+     przyczynę po imieniu: „N item(s) still need attention" nie mówi, że wystarczy przeczytać. */
+  const unread =
+    preview === null || !hasTypedItems ? [] : stillUnread(preview, excludedItems, read);
   const hasItems = preview !== null && preview.snapshot.items.length > 0;
   const unresolved = preview === null ? [] : unresolvedIn(preview);
   /* Ile pozycji naprawdę zostanie poza importem — liczone z listy pominięć, nie z `unresolved`:
    * człowiek mógł którąś odznaczyć i wtedy ona już nie „zostaje poza", tylko blokuje. */
   const leftOut = unresolved.filter((id) => leaveOut.includes(id)).length;
-  const mappings = new Map(
-    preview?.draft.report.mappings.map((mapping) => [mapping.itemId, mapping]) ?? [],
-  );
   const sourceItems = new Map(preview?.snapshot.items.map((item) => [item.id, item]) ?? []);
-  const visibleTypedItems =
-    preview?.draft.items.filter((item) => {
-      const ready = item.status === 'ready';
-      return inventoryView === 'all' || (inventoryView === 'ready' ? ready : !ready);
-    }) ?? [];
+  const visibleTypedItems = keptBy(
+    preview?.draft.items ?? [],
+    inventoryView,
+    (item) => item.status === 'ready',
+  );
   const visibleItems = hasTypedItems
     ? []
-    : (preview?.snapshot.items.filter((item) => {
+    : keptBy(preview?.snapshot.items ?? [], inventoryView, (item) => {
         const compatibility = mappings.get(item.id)?.compatibility ?? 'unsupported';
-        const ready = compatibility === 'exact' || compatibility === 'adjusted';
-        return inventoryView === 'all' || (inventoryView === 'ready' ? ready : !ready);
-      }) ?? []);
+        return compatibility === 'exact' || compatibility === 'adjusted';
+      });
+  /* Ile wierszy tabela pokazuje, a ile ich w ogóle jest — z tej pary bierze się odpowiedź
+     na pytanie „pusto, bo skan nic nie znalazł, czy pusto, bo filtr to schował". */
+  const rowsShown = hasTypedItems ? visibleTypedItems.length : visibleItems.length;
+  const rowsAtAll = hasTypedItems
+    ? (preview?.draft.items.length ?? 0)
+    : (preview?.snapshot.items.length ?? 0);
   /* Wybór agenta stoi na ekranie tylko wtedy, kiedy jest co porównywać: pole nad tabelą,
    * w której każda pozycja jest gotowa, byłoby pytaniem bez skutku (niezmiennik 16). */
   const anyAwaitsAChoice = preview?.draft.items.some(awaitsAChoice) ?? false;
@@ -455,8 +516,10 @@ export function ImportSetup({
         setExcludedItems(typedExcludedIn(next));
         setWithoutBehavior([]);
         /* Odpowiedzi z poprzedniego skanu odchodzą razem z nim: zdanie o dwóch kopiach
-         * jest zdaniem o KONKRETNYCH plikach, a te po ponownym skanie mogą być inne. */
-        setComparisons({});
+         * jest zdaniem o KONKRETNYCH plikach, a te po ponownym skanie mogą być inne. Tak samo
+         * zgoda na cudzą umiejętność: dotyczyła tekstu sprzed tego skanu. */
+        setAsked(IDLE);
+        setRead([]);
       })
       .catch((error: unknown) => {
         setRefusal(why(error, 'Loadout could not inspect that folder.'));
@@ -497,31 +560,43 @@ export function ImportSetup({
    * zmienia planu ani o wiersz — człowiek ma w jego trakcie nadal móc odznaczyć ptaszek albo
    * wnieść resztę. Jedyne, co ta droga zmienia, to tekst przy pozycji. */
   const compare = (item: ImportItem): void => {
-    if (preview === null || whoCompares === '' || comparing !== null) return;
-    setComparing(item.id);
-    setRefusal(null);
+    if (preview === null || whoCompares === '' || asked.at !== null) return;
+    /* Numer, z którym to pytanie wyrusza. Domknięcie obietnicy przedstawia się nim przy
+       powrocie, więc odpowiedź na pytanie, którego już nie ma, nie ma jak wylądować na
+       ekranie (niezmiennik 7: monotoniczna generacja, nigdy flaga). */
+    const mine = asked.ask + 1;
+    setAsked(asking(asked, item.id));
     void io
       .compareCopies({ workspace: preview.snapshot.root, item: item.id, agent: whoCompares })
       .then((said) => {
         /* `null` znaczy „człowiek nacisnął Stop" i jest WARTOŚCIĄ, nie odmową (niezmiennik 7):
          * wiersz wraca wtedy do swojego pytania, bez odpowiedzi i bez zdania o awarii. */
-        if (said === null) return;
-        setComparisons((now) => ({ ...now, [item.id]: said }));
+        setAsked((now) => answered(now, mine, item.id, said));
       })
       .catch((error: unknown) => {
-        setRefusal(why(error, 'Loadout could not ask an agent about those copies.'));
-      })
-      .finally(() => {
-        setComparing(null);
+        /* Zdanie ląduje PRZY TEJ POZYCJI, nie w pasku nad tabelą: pytanie dotyczyło jednego
+           wiersza, a pasek `role="alert"` odpowiada za Scan i Import. */
+        setAsked((now) => refused(now, mine, item.id, askFailed(why(error, COULD_NOT_ASK))));
       });
   };
 
-  /* „Stop": zatrzymuje agenta, który porównuje teraz. Dowód, że zszedł, wraca odpowiedzią
-   * na `compareCopies` — czyli tym samym wywołaniem, na które ten ekran już czeka; drugą
-   * drogą na ten sam fakt byłoby drugie miejsce, w którym on mieszka (niezmiennik 13). */
+  /* „Stop": zwalnia wiersz OD RAZU i dopiero potem prosi Rusta, żeby agent zszedł.
+   *
+   * 2026-08-31 — DO TEGO DNIA BYŁO ODWROTNIE i to nie był drobiazg. Lokalne „porównuje teraz"
+   * czyściła wyłącznie odpowiedź `compareCopies`; kiedy ta nie wracała — agent zawieszony,
+   * kanał zerwany, `stop_comparing_copies` odrzucone — wiersz mówił „An agent is comparing the
+   * copies now." BEZ KOŃCA, a każdy inny wiersz miał wyłączone pytanie, bo warunek patrzy na
+   * jedno pole. Limitu czasu nie ma nigdzie, więc jedynym wyjściem było zamknięcie okna razem
+   * z całym planem. Dowód, że agent naprawdę zszedł, dalej wraca tamtą drogą i dalej jest
+   * jedynym miejscem, w którym ten fakt mieszka (niezmiennik 13) — ale ekran przestaje być
+   * jego zakładnikiem. */
   const stopComparing = (): void => {
+    const at = asked.at;
+    if (at === null) return;
+    const free = stopped(asked);
+    setAsked(free);
     void io.stopComparing().catch((error: unknown) => {
-      setRefusal(why(error, 'Loadout could not stop that agent.'));
+      setAsked((now) => refused(now, free.ask, at, stopFailed(why(error, COULD_NOT_STOP))));
     });
   };
 
@@ -538,7 +613,7 @@ export function ImportSetup({
             <h2 id="import-setup-title" className="text-heading text-ink">
               Import setup
             </h2>
-            <p className="text-note text-muted">
+            <p className="lead">
               Turn project agents, skills, connections, workflows, and notes into Loadout files.
             </p>
             {/* CO ZOSTAJE W PROJEKCIE, powiedziane wprost (2026-08-29).
@@ -549,18 +624,18 @@ export function ImportSetup({
                 strata: krok startuje z `current_dir` w folderze projektu, więc `CLAUDE.md`
                 i `.claude/rules/` czyta sam agent. Zmierzone sondą tego samego dnia — także
                 pod `--setting-sources ""`, wbrew temu, co mówi dokumentacja vendora. */}
-            <p className="text-note text-muted">
+            <p className="lead">
               Hooks, project rules, and app settings stay in the project — agents read them from the
               project folder.
             </p>
           </div>
-          <button type="button" className={`ml-auto ${BUTTON}`} onClick={onClose}>
+          <button type="button" className="btn-quiet ml-auto" onClick={onClose}>
             Close
           </button>
         </div>
 
         <form className="flex items-end gap-2" onSubmit={scan}>
-          <label className="flex min-w-0 flex-1 flex-col gap-1 text-label text-muted">
+          <label className="stack label min-w-0 flex-1">
             Project folder
             <input
               value={workspace}
@@ -568,28 +643,45 @@ export function ImportSetup({
                 setWorkspace(event.target.value);
               }}
               placeholder="/Users/you/project"
-              className="h-9 rounded-sm border border-line bg-well px-3 text-body text-ink"
+              className="field"
             />
           </label>
-          <button type="submit" disabled={busy || workspace.trim() === ''} className={PRIMARY}>
+          <button type="submit" disabled={busy || workspace.trim() === ''} className="btn-primary">
             Scan
           </button>
         </form>
 
+        {/* WSKAŹNIK TRWANIA NA GRANICĘ IPC (DESIGN §7). Skan cudzego projektu i zapis planu idą
+            przez Rusta i przez dysk, a do 2026-08-31 nie zmieniały tu ani jednego piksela:
+            oba przyciski dostawały wyłącznie `disabled`, więc kliknięcie kończyło się ciszą,
+            a cisza czyta się jak kliknięcie, które nie doszło.
+
+            JEDEN ŻYWY REGION NA TEN FAKT (niezmiennik 13) i dlatego pasek stoi TYLKO tutaj:
+            żaden przycisk tego okna nie przepisuje swojej etykiety na „Scanning…", więc pasek
+            nie powtarza niczego, co już jest na ekranie. Nieokreślony, bo przejścia przez
+            granicę nie da się wyrazić w procentach. */}
+        {busy ? <span aria-hidden className="working shrink-0" /> : null}
+
         {refusal === null ? null : (
-          <p role="alert" className="border border-fail-edge bg-fail-soft p-3 text-body text-fail">
+          /* Pasek błędu: wypełnienie i krawędź bez promienia — trzecia z trzech rzeczy,
+             które niosą barwę stanu (DESIGN §6). WEJŚCIE, bo to zdanie PRZYCHODZI i jest
+             jedyną odpowiedzią na Scan albo Import, który się nie udał. */
+          <p
+            role="alert"
+            className="enter border border-fail-edge bg-fail-soft p-3 text-body text-fail"
+          >
             {refusal}
           </p>
         )}
         {saved === null ? null : (
           <p
             role="status"
-            className="text-body text-ink"
+            className="enter text-ink"
           >{`${String(saved.written.length)} files imported.`}</p>
         )}
 
         {preview === null ? (
-          <p className="pb-6 text-body text-muted">
+          <p className="lead pb-6">
             Scan reads setup files only. It does not run hooks, skills, agents, or connections.
           </p>
         ) : (
@@ -642,7 +734,14 @@ export function ImportSetup({
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-label text-muted">Show</span>
+              <span className="label">Show</span>
+              {/* FILTR TO TRZY PIGUŁKI, NIE PRZYCISK PODSTAWOWY OBOK DWÓCH DRUGOPLANOWYCH.
+                  Do 2026-08-31 wybrany filtr brał wypełniony akcent, a dwa pozostałe obrys —
+                  czyli miejsce najgłośniejszej rzeczy na ekranie zajmował filtr, a nie akcja,
+                  po którą człowiek to okno otworzył (DESIGN §6). Po zejściu do prymitywów
+                  różnica byłaby też różnicą WYSOKOŚCI (36 px kontra 28), więc trzy sąsiadujące
+                  kontrolki skakałyby przy każdym przełączeniu. Chip ma jedną wysokość dla
+                  wszystkich tonów, a `data-tone` mówi, który jest wybrany. */}
               {(
                 [
                   ['all', 'All'],
@@ -653,7 +752,8 @@ export function ImportSetup({
                 <button
                   key={value}
                   type="button"
-                  className={inventoryView === value ? PRIMARY : BUTTON}
+                  className="chip"
+                  data-tone={inventoryView === value ? 'accent' : undefined}
                   onClick={() => {
                     setInventoryView(value);
                   }}
@@ -667,14 +767,14 @@ export function ImportSetup({
                   do rozwinięcia. Znika razem z powodem: bez ani jednej pozycji czekającej
                   na rozstrzygnięcie nie ma czego porównywać. */}
               {!anyAwaitsAChoice || agents.length === 0 ? null : (
-                <label className="ml-auto flex items-center gap-2 text-label text-muted">
+                <label className="label ml-auto flex items-center gap-2">
                   Who should compare them?
                   <select
                     value={whoCompares}
                     onChange={(event) => {
                       setChosenAgent(event.target.value);
                     }}
-                    className="h-8 rounded-sm border border-line bg-well px-2 text-body text-ink"
+                    className="field w-auto"
                   >
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
@@ -701,9 +801,13 @@ export function ImportSetup({
                 `e2e/tests/import-list-stays-visible.spec.ts`, w prawdziwym chromium: układu
                 nie liczy ani czysty moduł, ani `renderToStaticMarkup`, więc obie te drogi
                 dałyby zielone na kodzie, na którym właściciel widział pusty ekran. */}
+            {/* WEJŚCIE SPRĘŻYNĄ, bo ta tabela POJAWIA SIĘ po Scanie nad pustym oknem —
+                a to jest dokładnie ta chwila, w której człowiek dowiaduje się, że skan coś
+                znalazł. Jeden region na jedno zdarzenie: liczniki i pasek akcji przybywają
+                z nią razem, ale nie ruszają się (sufit z ARCHITECTURE §7 wynosi dwa). */}
             <div
               data-import-items
-              className="min-h-40 flex-1 overflow-auto rounded-md border border-line"
+              className="enter min-h-40 flex-1 overflow-auto rounded-md border border-line"
             >
               <table className="w-full table-fixed border-collapse text-left">
                 <thead className="sticky top-0 bg-panel text-label text-muted">
@@ -729,7 +833,34 @@ export function ImportSetup({
                         /* Do lokalnej stałej, nie w JSX: pod `noUncheckedIndexedAccess` odczyt
                            z mapy daje `Comparison | undefined`, a zawężenie po `item.id`
                            (odczyt pola, nie stała) nie przeżywa granicy wyrażenia. */
-                        const compared = comparisons[item.id];
+                        const compared = asked.answers[item.id];
+                        /* Zdanie o przerwanym albo nieudanym pytaniu — przy TEJ pozycji,
+                           której dotyczyło. Do stałej, bo `asked.said?.item === item.id`
+                           nie zawęża `asked.said` poza granicę wyrażenia. */
+                        const aboutThis =
+                          asked.said !== null && asked.said.item === item.id
+                            ? asked.said.sentence
+                            : null;
+                        /* Czy tę cudzą umiejętność trzeba przeczytać, zanim wolno ją wnieść
+                           (`./skill-review.ts`). */
+                        const waitsToBeRead = mustBeRead(
+                          item,
+                          mappings.get(item.id)?.compatibility,
+                        );
+                        /* Co przegląd w tym pliku znalazł. Pusta lista przy pozycji, która
+                           umiejętnością nie jest, ORAZ przy umiejętności, w której nic nie
+                           znaleziono — te dwa zdania rozróżnia `item.reviewed`, a nie długość
+                           listy, i tylko dlatego blok niżej nie mówi „nic nie ma" nad czymś,
+                           czego nikt nie czytał.
+
+                           `kind` w warunku nie jest ozdobą: przegląd dotyczy WYŁĄCZNIE
+                           umiejętności (Rust wpisuje go tylko dla nich), więc klucz przy
+                           notatce albo połączeniu byłby usterką po tamtej stronie — a blok
+                           niżej otwiera się zdaniem „A skill becomes instructions…", czyli
+                           usterka wyszłaby na ekran jako zdanie o czymś, czym ta pozycja nie
+                           jest (niezmiennik 5: nieznane pole porzucamy, nie ufamy mu). */
+                        const findings =
+                          item.kind === 'skill' ? (item.reviewed?.findings ?? []) : [];
                         return (
                           <tr key={item.id} className="border-t border-line align-top">
                             <td className="px-3 py-2">
@@ -746,7 +877,7 @@ export function ImportSetup({
                                   </span>
                                 ),
                               )}
-                              <span className="block text-note text-body">
+                              <span className="lead block" data-tone="body">
                                 {item.statusMessage}
                               </span>
                               {item.target === null ? null : (
@@ -755,9 +886,67 @@ export function ImportSetup({
                                 </span>
                               )}
                               {item.dependencies.length === 0 ? null : (
-                                <span className="block text-note text-muted">
+                                <span className="lead block">
                                   Requires: {item.dependencies.join(', ')}
                                 </span>
+                              )}
+                              {/* CUDZA UMIEJĘTNOŚĆ, TYMI SAMYMI SŁOWAMI, CO PRZY WKLEJONYM
+                                  LINKU (2026-08-31). Powód i granica tej drogi stoją w nagłówku
+                                  `./skill-review.ts`, a lista znalezisk — w
+                                  `../skills/findings.tsx`; tutaj są wyłącznie zdania o tym
+                                  ekranie. Blok wisi pod ścieżkami plików, bo to o nich mówi
+                                  „Open the file above" — kreska z lewej wiąże go z tym wierszem
+                                  tak samo, jak wiąże drugą opinię.
+
+                                  DWA POWODY, DLA KTÓRYCH TEN BLOK STOI, i nie są tym samym
+                                  powodem. `waitsToBeRead` znaczy „ta pozycja czeka na twoją
+                                  zgodę"; znaleziska znaczą „przegląd coś w niej znalazł".
+                                  Umiejętność ZATRZYMANA przeglądem ma to drugie bez pierwszego:
+                                  jest `Unsupported`, zgody od nikogo nie potrzebuje, bo nie
+                                  wejdzie — i to właśnie przy niej człowiek najbardziej
+                                  potrzebuje wiedzieć, co w niej stało.
+
+                                  Kontenerem jest `<div>`, nie `<span>`: lista znalezisk jest
+                                  `<ul>`, a lista w treści śródliniowej to znacznik, którego
+                                  przeglądarka nie ma prawa dostać. */}
+                              {!waitsToBeRead && findings.length === 0 ? null : (
+                                <div className="mt-2 border-l border-line pl-2">
+                                  <span className="lead block" data-tone="body">
+                                    {BECOMES_INSTRUCTIONS}
+                                  </span>
+                                  {/* Zgody per znalezisko ten ekran NIE MA i dlatego jej tu nie
+                                      udaje: `blockingSays` zamiast `onAcknowledge`. Odklikanie
+                                      niczego by nie zmieniło — `stage_skills` odmawia zawsze,
+                                      kiedy przegląd zatrzymał umiejętność. */}
+                                  <Findings findings={findings} blockingSays={STOPS_IT} />
+                                  {/* Pozycja WYJĘTA z importu dostaje same fakty i ani jednego
+                                      żądania: „przeczytaj to" nad czymś, co i tak nie wchodzi,
+                                      jest prośbą bez skutku. Zdania o tym, że zostaje poza,
+                                      tu nie ma — mówi to jej odznaczony ptaszek `Import`
+                                      (niezmiennik 13). */}
+                                  {!waitsToBeRead ||
+                                  excludedItems.includes(item.id) ? null : read.includes(
+                                      item.id,
+                                    ) ? (
+                                    <span className="lead block">{READ_ALREADY}</span>
+                                  ) : (
+                                    <>
+                                      <span className="lead block">{OPEN_IT}</span>
+                                      <button
+                                        type="button"
+                                        data-read-skill={item.id}
+                                        className="btn-quiet mt-1"
+                                        onClick={() => {
+                                          setRead((now) =>
+                                            now.includes(item.id) ? now : [...now, item.id],
+                                          );
+                                        }}
+                                      >
+                                        {READ_IT}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
                               )}
                               {/* DRUGA OPINIA STOI PRZY POZYCJI, KTÓREJ DOTYCZY (2026-08-29).
                                   Adapter sam prosi o agenta („Let an agent compare them before
@@ -772,18 +961,30 @@ export function ImportSetup({
                                   {agents.length === 0 ? (
                                     /* Nie ma kogo poprosić, więc nie ma tu przycisku: kontrolka
                                        bez skutku jest gorsza od zdania (niezmiennik 16). */
-                                    <span className="block text-note text-muted">
+                                    <span className="lead block">
                                       Save an agent first, then it can compare copies for you.
                                     </span>
-                                  ) : comparing === item.id ? (
+                                  ) : asked.at === item.id ? (
                                     <>
-                                      <span className="block text-note text-body">
+                                      {/* WSKAŹNIK TRWANIA, bo to trwa: agent czyta dwa pliki
+                                          i pisze o nich zdanie, a do 2026-08-31 przez cały ten
+                                          czas nie zmieniał się ani jeden piksel. Kropki są
+                                          DZIEĆMI, nie pseudoelementami — `aria-hidden` na nich
+                                          jest czytelne dla czytnika ekranu, a zdanie obok niesie
+                                          treść (DESIGN §7). Jeden na całą tabelę, bo po tamtej
+                                          stronie granicy porównanie jest też jedno. */}
+                                      <span className="lead block" data-tone="body">
                                         An agent is comparing the copies now.
+                                        <span className="thinking ml-1">
+                                          <span aria-hidden />
+                                          <span aria-hidden />
+                                          <span aria-hidden />
+                                        </span>
                                       </span>
                                       <button
                                         type="button"
                                         data-stop-comparing
-                                        className={`mt-1 ${BUTTON}`}
+                                        className="btn-quiet mt-1"
                                         onClick={stopComparing}
                                       >
                                         Stop
@@ -793,8 +994,8 @@ export function ImportSetup({
                                     <button
                                       type="button"
                                       data-compare-copies={item.id}
-                                      disabled={comparing !== null}
-                                      className={BUTTON}
+                                      disabled={asked.at !== null}
+                                      className="btn-quiet"
                                       onClick={() => {
                                         compare(item);
                                       }}
@@ -806,6 +1007,11 @@ export function ImportSetup({
                                         ? 'Compare the copies'
                                         : 'Explain this'}
                                     </button>
+                                  )}
+                                  {aboutThis === null ? null : (
+                                    <span className="lead mt-1 block" data-tone="body">
+                                      {aboutThis}
+                                    </span>
                                   )}
                                   {compared === undefined ? null : (
                                     <SecondOpinion said={compared} />
@@ -871,7 +1077,7 @@ export function ImportSetup({
                               <span className="block truncate font-mono text-meta text-muted">
                                 {item.path}
                               </span>
-                              <span className="block text-note text-body">
+                              <span className="lead block" data-tone="body">
                                 {mapping?.message ?? item.summary}
                               </span>
                             </td>
@@ -910,6 +1116,30 @@ export function ImportSetup({
                           </tr>
                         );
                       })}
+                  {/* TABELA, KTÓREJ NIE WIDAĆ, MÓWI DLACZEGO (2026-08-31).
+                      Skan puszczony przy filtrze „Needs attention" nad projektem z samymi
+                      gotowymi pozycjami renderował `<tbody>` PUSTY, bez ani jednego zdania —
+                      a liczniki nad nim mówiły wtedy „17 Skills". Jedyne, co się z tego czyta,
+                      to że skan się zepsuł. Reguła i zdanie mieszkają w `./shown.ts`, bo ten
+                      stan powstaje po dwóch kliknięciach, a `renderToStaticMarkup` klika nie
+                      umie (niezmiennik 29, droga „czysty moduł"). */}
+                  {!hidesEverything(rowsShown, rowsAtAll, inventoryView) ? null : (
+                    <tr className="border-t border-line">
+                      <td colSpan={5} className="px-3 py-2">
+                        <span className="lead block">{hiddenSays(rowsAtAll, inventoryView)}</span>
+                        <button
+                          type="button"
+                          data-show-all
+                          className="btn-quiet mt-2"
+                          onClick={() => {
+                            setInventoryView('all');
+                          }}
+                        >
+                          {SHOW_ALL}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -924,7 +1154,7 @@ export function ImportSetup({
                   <button
                     type="button"
                     data-enable-all
-                    className={`${BUTTON} ml-auto`}
+                    className="btn-quiet ml-auto"
                     disabled={enabled.length === preview.draft.connections.length}
                     onClick={() => {
                       setEnabled(preview.draft.connections.map((one) => one.id));
@@ -951,7 +1181,7 @@ export function ImportSetup({
                         o jedno: czy to ustawienie zespołu, czy moje własne — a od 2026-08-22 na
                         liście stoją obie rodzaje naraz. Bez tego zdania `linear-server` z twojej
                         prywatnej konfiguracji wygląda identycznie jak `context7` z repo. */}
-                    <span className={ORIGIN}>{whereFrom(connection.origin)}</span>
+                    <span className="label">{whereFrom(connection.origin)}</span>
                   </label>
                 ))}
               </fieldset>
@@ -965,7 +1195,7 @@ export function ImportSetup({
               {hasTypedItems || unresolved.length === 0 ? null : (
                 <button
                   type="button"
-                  className={BUTTON}
+                  className="btn-quiet"
                   disabled={unresolved.every((id) => leaveOut.includes(id))}
                   onClick={() => {
                     setLeaveOut(unresolved);
@@ -974,12 +1204,14 @@ export function ImportSetup({
                   Leave out all unresolved items
                 </button>
               )}
-              <p className="text-note text-muted">
+              <p className="lead">
                 {!hasItems
                   ? 'No setup files were found in this project.'
                   : blocked > 0
                     ? hasTypedItems
-                      ? `${String(blocked)} item(s) still need attention.`
+                      ? unread.length > 0
+                        ? readingSays(unread.length)
+                        : `${String(blocked)} item(s) still need attention.`
                       : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
                     : hasTypedItems
                       ? excludedItems.length === 0
@@ -993,7 +1225,7 @@ export function ImportSetup({
                 type="button"
                 data-import-now
                 disabled={busy || !hasItems || blocked > 0}
-                className={`ml-auto ${PRIMARY}`}
+                className="btn-primary ml-auto"
                 onClick={apply}
               >
                 Import

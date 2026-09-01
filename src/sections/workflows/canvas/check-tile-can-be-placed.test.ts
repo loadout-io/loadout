@@ -99,7 +99,15 @@ function withStep(doc: WorkflowFile, id: string, next: Step): WorkflowFile {
 }
 
 describe('a tile that runs a check can be put on the canvas', () => {
-  it('comes out of the add button empty, in the copy the step before it wrote', () => {
+  /* 2026-08-31 — TO KRYTERIUM ZMIENIŁO ZDANIE, na polecenie właściciela. Do tego dnia żądało
+   * kafelka PUSTEGO („a made-up example like npm test reads on the canvas exactly like a
+   * decision the person made"). Argument był prawdziwy i kosztu, o którym milczał, nie
+   * przeważał: pusty kafelek nie zapisywał się wcale — `workflow::file::save` odmawia na
+   * pierwszym problemie, więc 400 ms po kliknięciu stał czerwony pasek, a razem z tym kafelkiem
+   * na dysk przestawała docierać cała reszta pracy. Powód zmiany w całości stoi przy `freshStep`
+   * w `./connect.ts`; nowa asercja pilnuje jej dokładnie tak samo ostro, jak stara pilnowała
+   * pustki. */
+  it('comes out of the add button ready to be saved, in a folder it can be in', () => {
     const before = file();
 
     const { file: next, step: added } = addStep('check', before);
@@ -119,17 +127,17 @@ describe('a tile that runs a check can be put on the canvas', () => {
     ).toBe('check');
     expect(
       fieldsOf(added),
-      'the tile does not come out of the button ready to be filled in. Empty is the whole ' +
-        'point of both text fields: a made-up example like "npm test" reads on the canvas ' +
-        'exactly like a decision the person made, and this tile RUNS what stands in it. The ' +
-        'folder is the same copy as the step before it, because a check is put down right ' +
-        'after a step that just wrote something and has to look at that work rather than at ' +
-        'the untouched project. And it stops the work when it does not pass: carrying on past ' +
-        'a check that said no is the one answer that makes the tile pointless.',
+      'the tile does not come out of the button as a document that can be saved. Both text ' +
+        'fields carry the very value the panel already shows in grey under the cursor, and the ' +
+        'folder is one a tile with nothing in front of it can actually be in — an empty field ' +
+        'or "the same copy as the step before it" is a refusal from the disk 400 ms after the ' +
+        'click, and everything else on the canvas stops landing with it. And it stops the work ' +
+        'when it does not pass: carrying on past a check that said no is the one answer that ' +
+        'makes the tile pointless.',
     ).toEqual({
-      command: '',
-      proof: '',
-      folder: { use: 'same-copy' },
+      command: 'npm test',
+      proof: PROOF,
+      folder: { use: 'project' },
       whenItFails: 'stop',
     });
   });

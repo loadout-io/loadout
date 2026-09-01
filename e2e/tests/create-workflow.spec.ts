@@ -120,6 +120,16 @@ describe('clicking Create in Workflows leaves a workflow on the screen', () => {
       await page.locator(SCREEN).waitFor({ state: 'attached', timeout: APPEARS });
 
       /* ── przed kliknięciem ────────────────────────────────────────────────────────────── */
+      /* CZEKAMY NA ODPOWIEDŹ KATALOGU, nie na sam montaż sekcji. 2026-08-31: lista mówi teraz
+         „Reading the workflows you have saved…", dopóki `list_workflows` nie wróci, i dopiero
+         potem zaprasza — bo zdanie „nic tu nie ma" wypisane przed odczytem było nieprawdą
+         o katalogu, w który nikt nie zajrzał. Liczenie od razu po `attached` mierzyłoby więc
+         wyścig, a nie produkt. Odmowa połknięta celowo: pusta liczba pada niżej z własnym
+         zdaniem, a nie surowym limitem locatora. */
+      await page
+        .locator(EMPTY)
+        .waitFor({ state: 'attached', timeout: APPEARS })
+        .catch(() => undefined);
       const emptyBefore = await page.locator(EMPTY).count();
       expect(
         emptyBefore,

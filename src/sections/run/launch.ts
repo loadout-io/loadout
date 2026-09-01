@@ -68,7 +68,12 @@ async function startChosen(
   claim: TriggerClaim | null,
   reflectionEnabled: boolean,
 ): Promise<void> {
-  const what = { name: choice.name, steps: choice.steps };
+  /* 2026-08-31 — STRZAŁKI JADĄ RAZEM Z KROKAMI, jedno pole dalej. Bez tej linii pozycje
+   * kafelków docierałyby do magazynu biegu (jadą wewnątrz `steps`), a kolejność między nimi
+   * nie — czyli widok biegu dostawałby połowę kształtu i musiałby drugą połowę wymyślić
+   * (niezmiennik 17). `choice.links` bywa nieobecne i wtedy nieobecne zostaje: pozycja listy
+   * zbudowana bez pliku workflow nie ma o strzałkach nic do powiedzenia. */
+  const what = { name: choice.name, steps: choice.steps, links: choice.links };
   if (claim === null && reflectionEnabled) {
     await start(choice.path, atOnce, what, folder, task);
     return;

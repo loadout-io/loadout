@@ -302,12 +302,20 @@ describe('"used in 3 workflows" is counted from the workflow files, or not shown
   });
 });
 
+/* `brainOpen` OD 2026-08-31, i to jest zmiana miejsca, nie zmiana pytania.
+ *
+ * `Runs with`, `Model` i `Thinking` to jedno pytanie („czym ten agent myśli") rozbite na trzy
+ * kontrolki, wszystkie z działającą domyślną — więc formularz zwija je w jeden wiersz, który
+ * czyta całą odpowiedź naraz, i rozwija na żądanie. Pytanie tego kryterium brzmi „czy obie
+ * aplikacje da się wybrać", a nie „czy lista wyboru jest otwarta od razu", więc render
+ * otwiera ten wiersz i pyta o to samo, co pytał. */
 describe('the form offers every agent app the runtime can drive', () => {
   it('offers Codex as a pickable agent app', () => {
     const markup = renderToStaticMarkup(
       <AgentForm
         value={agent()}
         expanded={false}
+        brainOpen
         onChange={() => undefined}
         onToggleMore={() => undefined}
         onSave={() => undefined}
@@ -339,6 +347,7 @@ describe('the form offers every agent app the runtime can drive', () => {
         <AgentForm
           value={value}
           expanded={false}
+          brainOpen
           onChange={() => undefined}
           onToggleMore={() => undefined}
           onSave={() => undefined}

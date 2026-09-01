@@ -95,12 +95,19 @@ export interface Utterance {
 }
 
 /**
- * Co robi agent, który o coś zapytał — zdanie Loadouta, nie treść pytania.
+ * Co robi agent, który o coś zapytał I DALEJ CZEKA — zdanie Loadouta, nie treść pytania.
  *
- * Pytanie ma JEDNO żywe miejsce: przyklejony blok z przyciskami. Powtórzone na kafelku daje
- * dwa regiony na jeden fakt, przy limicie 1 (niezmiennik 13), a kafelek i tak nie ma miejsca
- * na trzy warianty odpowiedzi. To samo zdanie stoi w strefie TERAZ [feed/model.ts,
+ * Pytanie ma wtedy JEDNO żywe miejsce: kartę z przyciskami przy kroku. Powtórzone na kafelku
+ * daje dwa regiony na jeden fakt, przy limicie 1 (niezmiennik 13), a kafelek i tak nie ma
+ * miejsca na trzy warianty odpowiedzi. To samo zdanie stoi w strefie TERAZ [feed/model.ts,
  * `WAITING_ON_YOU`] i z tego samego powodu.
+ *
+ * 2026-08-31 — WARUNKOWE, I TO JEST NAPRAWA ZMIERZONEJ WADY. Wiersz `asked` zostaje w historii
+ * NA ZAWSZE — „że agent zapytał" naprawdę się wydarzyło — więc bezwarunkowe odwzorowanie
+ * zostawiało to zdanie na kafelku długo po tym, jak bieg zszedł ze Stopem, z odmową albo po
+ * prostu się skończył. Kolejkę pytań gasi wtedy model (`../feed/model.ts`, `runEnded`), więc
+ * karta z przyciskami znika, a zdanie o czekaniu zostaje samo: człowiek czyta, że coś na niego
+ * czeka, i szuka czego nacisnąć.
  */
 const WAITING_ON_YOU = 'Waiting for your answer';
 
@@ -136,8 +143,15 @@ function oneLine(text: string): string {
  * Wygrywa NAJNOWSZE zdanie, nie najnowsza notatka. Agent pisze prozą, potem padają
  * sprawdzenia — i to sprawdzenia są tym, co stało się ostatnie, więc kafelek mówi o nich,
  * podpisany Loadoutem. Notatka dalej należy do agenta; przestała tylko być najświeższa.
+ *
+ * `waitsOnYou` PYTA O TERAŹNIEJSZOŚĆ, a `said` o przeszłość — i dokładnie dlatego są dwoma
+ * argumentami. Historia mówi, że agent zapytał, i mówić tak będzie zawsze; czy KTOKOLWIEK
+ * jeszcze na tę odpowiedź czeka, wie tylko model strumienia (`../feed/model.ts`, `attention`),
+ * a wołający czyta stamtąd tę jedną odpowiedź (`./card.ts`). Druga tabela wyliczająca to
+ * z samych linii byłaby drugim domem jednego faktu (niezmiennik 13) i myliłaby się w obie
+ * strony: pytanie odpowiedziane wygląda w historii identycznie jak porzucone.
  */
-export function sayFor(said: readonly Utterance[]): Say {
+export function sayFor(said: readonly Utterance[], waitsOnYou: boolean): Say {
   /* Przód, nie tył: pętla od końca wymaga indeksowania, a `noUncheckedIndexedAccess` robi
    * z każdego takiego odczytu gałąź „a jeśli nie ma", której nie da się wykonać. Rodzaj
    * i zdanie osobno, żeby nie trzeba było tej samej gałęzi dopisywać po pętli. */
@@ -151,7 +165,13 @@ export function sayFor(said: readonly Utterance[]): Say {
 
   if (kind === null) return { text: THINKING, who: 'loadout' };
   /* Podpis idzie za ZDANIEM, nie za linią: skoro kafelek nie cytuje pytania, tylko mówi,
-   * na co ono czeka, to zdanie jest Loadouta i tak ma być podpisane. */
-  if (kind === 'asked') return { text: WAITING_ON_YOU, who: 'loadout' };
+   * na co ono czeka, to zdanie jest Loadouta i tak ma być podpisane.
+   *
+   * KIEDY NIKT JUŻ NIE CZEKA, WYJĄTKU NIE MA — i to nie jest trzeci wariant tekstu, tylko jego
+   * brak. Karty z przyciskami wtedy na ekranie nie ma, więc nie ma czego powtarzać, a ostatnią
+   * rzeczą, jaką ten agent naprawdę powiedział, jest właśnie to pytanie. Zdanie dopisane na tę
+   * chwilę byłoby trzecim brzmieniem jednego faktu, a kafelek i tak nie umie powiedzieć, czy
+   * pytanie dostało odpowiedź, czy zeszło razem z biegiem. */
+  if (kind === 'asked' && waitsOnYou) return { text: WAITING_ON_YOU, who: 'loadout' };
   return { text: oneLine(text), who: authorityOf(kind) };
 }

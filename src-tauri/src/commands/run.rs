@@ -223,7 +223,7 @@ use crate::ipc::LineSink;
 use crate::library::agents::{
     Agent, Overrides, Thinking, Tools, effort_level, read_agent_directory, resolve,
 };
-use crate::memory::handoff::{self, Kind, MetaDraft};
+use crate::memory::handoff::{self, Kind, MetaDraft, fields_said_in};
 use crate::skills::place::material_of;
 use crate::skills::{Moved, NotAsItWas, StepSkills};
 use crate::workflow::check::{Level, Note, check_to_run};
@@ -5370,25 +5370,6 @@ fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Opt
 /// bo pod adresem `commands::run::policy_of` wołają go dwa kryteria (T-62 `ask_one_agent.rs`
 /// i T-63 `one_table_for_policy.rs`): jedna funkcja, dwie drogi do niej, zero drugich tabel.
 pub use crate::library::agents::policy_of;
-
-/// Wiersze `klucz: wartość` z tego, co oddał krok.
-///
-/// JEDNA SKŁADNIA, DWA MECHANIZMY, i dlatego jedna funkcja (niezmiennik 13). Tę samą mapę czyta
-/// warunkowa droga za krokiem ([`Live::remember_handoff_evidence`], od T-42) i wymaganie pola
-/// przekazania ([`Live::missing_a_required_field`], od T-90). Dwie kopie tego rozbioru znaczyłyby,
-/// że jeden mechanizm widzi wiersz, którego drugi nie widzi — a człowiek zapisał w kafelku jeden
-/// kształt, nie dwa.
-///
-/// CAŁY WIERSZ, zaczynający się nazwą: `- risk — coś tam` i `patrz na risk: coś` w środku zdania
-/// **nie są** tym kształtem, i to jest cała treść tego rozbioru. Nazwa i wartość muszą być
-/// niepuste: `risk:` z pustką za dwukropkiem jest wierszem, który nic nie niesie.
-fn fields_said_in(text: &str) -> BTreeMap<String, String> {
-    text.lines()
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
-        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
-        .collect()
-}
 
 /// Napis albo nic. Puste pole w definicji agenta znaczy „nie mam zdania", a nie „ustaw pustkę".
 fn some_text(text: &str) -> Option<String> {

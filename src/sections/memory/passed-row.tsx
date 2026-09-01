@@ -26,14 +26,17 @@ export interface PassedRowProps {
   passed: Handoff;
 }
 
-/* `.ctx a` z makiety: tło `--well`, obrys `--line`, krój mono, trzy kolumny w jednej linii
- * bazowej. Bez `:hover`, bo nie ma tu nic do naciśnięcia. */
+/* `.ctx a` z makiety: tło `--well`, obrys `--line`, trzy kolumny w jednej linii bazowej.
+ * Bez `:hover`, bo nie ma tu nic do naciśnięcia — myjka pod napisem, którego nie da się
+ * kliknąć, obiecuje czynność, której nie ma (niezmiennik 16 widziany od drugiej strony). */
 const ROW =
   'grid grid-cols-[auto_1fr_auto] items-baseline gap-2 border border-line bg-well px-2 py-1';
-const WHO = 'font-mono text-label text-muted';
-const NAME = 'font-mono text-mono text-body';
-const SIZE = 'font-mono text-mono text-muted';
-const CHIP_QUIET = 'h-5 rounded-pill border border-line bg-raised px-2 text-label text-muted';
+/* Wartość maszynowa ma nazwę, a RODZINA WCHODZI RAZEM ZE STOPNIEM (`.value`): `font-mono`
+ * dopisywane obok `text-mono` deklarowało krój dwa razy. Nadawca zostaje na stopniu etykiety —
+ * to jest podpis wiersza, nie jego treść. */
+const WHO = 'value text-label';
+const NAME = 'value text-body';
+const SIZE = 'value';
 
 /**
  * Nazwa pliku ze ścieżki.
@@ -82,21 +85,22 @@ function replaced(status: string): boolean {
 
 export function PassedRow({ passed }: PassedRowProps): ReactElement {
   return (
-    <li data-passed={passed.id} className="flex flex-col gap-1">
+    <li data-passed={passed.id} className="stack">
       <div className={ROW}>
         <span className={WHO}>{whoToWho(passed.from, passed.to)}</span>
         <span className={NAME}>{fileName(passed.path)}</span>
         <span className={SIZE}>{sizeLabel(passed.bytes)}</span>
       </div>
       {/* Znacznik tylko wtedy, gdy jest o czym mówić. Plik zastąpiony korektą, pokazany bez
-          słowa, wygląda dokładnie jak aktualny — a różni się tym jednym, po co się go czyta. */}
+          słowa, wygląda dokładnie jak aktualny — a różni się tym jednym, po co się go czyta.
+          Chip bez tonu, bo to jest zwykły fakt: barwa stanu tutaj wyglądałaby jak problem. */}
       {replaced(passed.status) ? (
-        <span data-replaced className={`mr-auto ${CHIP_QUIET}`}>
+        <span data-replaced className="chip mr-auto">
           Replaced by a later one
         </span>
       ) : null}
       {/* Adres pliku, do zaznaczenia. To jest cała treść zdania „open them anywhere". */}
-      <span data-copyable className="font-mono text-label text-muted">
+      <span data-copyable className="value text-label">
         {passed.path}
       </span>
     </li>

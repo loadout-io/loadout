@@ -45,7 +45,7 @@ import {
   handsOver,
   theStepBefore,
 } from './step-panel/hands-over-the-command';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { Agent } from '../../state/agents';
 import type { Step, WorkflowFile } from '../../state/workflows';
@@ -54,8 +54,6 @@ import * as agentsIo from '../agents/io';
 import { WorkflowCanvas } from './canvas/canvas';
 import * as disk from './io';
 import { PanelForStep } from './step-panel/panel';
-
-const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 export interface WorkflowEditorProps {
   /** Nazwa pliku, pod którą ten dokument leży na dysku. */
@@ -155,7 +153,19 @@ export function WorkflowEditor({
     ),
   );
 
-  const state = store();
+  /* Magazyn czytamy przez `useSyncExternalStore` ze STANEM BIEŻĄCYM w trzecim argumencie,
+   * a nie hakiem `store()` — 2026-08-31, ta sama poprawka i ten sam powód, co w `./index.tsx`
+   * i w `../agents/index.tsx`.
+   *
+   * Zustand 5 podaje rendererowi serwerowemu `getInitialState()` jako migawkę serwerową
+   * (`node_modules/zustand/esm/react.mjs`), więc pod `renderToStaticMarkup` ten ekran pokazywał
+   * stan Z CHWILI UTWORZENIA magazynu i nigdy tego, co się w nim potem wydarzyło. W oknie nie
+   * zmienia to ANI JEDNEJ klatki — ta aplikacja nigdy nie hydratuje serwerowego HTML-a, więc
+   * powód, dla którego React chce tam stanu początkowego, tutaj nie istnieje. Zmienia natomiast
+   * to, czy da się w ogóle napisać kryterium na zdanie, które pojawia się PO odmowie dysku:
+   * bez tego pasek `data-could-not-save` i stan zapisu w nagłówku były niesprawdzalne w całym
+   * repo (jsdomu tu nie ma), a niesprawdzalne zdanie to zdanie, które umiera po cichu. */
+  const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const [openStepId, setOpenStepId] = useState<string | null>(openStep ?? null);
 
   /* Uwagi walidatora bierzemy przy otwarciu, nie dopiero po pierwszej zmianie: workflow zapisany
@@ -175,15 +185,38 @@ export function WorkflowEditor({
    * kafelków kafelki bez panelu, a wyglądało to jak brak zaznaczenia. */
   const open = state.document.steps.find((step) => step.id === openStepId);
 
-  /* Stan zapisu, policzony z JEDNEGO faktu: czy dokument na ekranie to ten sam obiekt, który
-   * poszedł na dysk. Bez zegara i bez licznika — „saved just now" z makiety jest prawdą przez
-   * kilka sekund, a potem jest zdaniem, które ekran powtarza w nieskończoność. */
-  const saveState = state.document === state.savedDocument ? 'saved' : 'saving…';
+  /* Stan zapisu — TRZY wartości, nie dwie, i to jest naprawa z 2026-08-31 (zgłoszenie
+   * właściciela).
+   *
+   * Pierwsza połowa stoi tu od początku i jest w porządku: „czy dokument na ekranie to ten sam
+   * obiekt, który poszedł na dysk". Bez zegara i bez licznika — „saved just now" z makiety jest
+   * prawdą przez kilka sekund, a potem jest zdaniem, które ekran powtarza w nieskończoność.
+   *
+   * BRAKOWAŁO TRZECIEJ. Po odmowie zapisu `savedDocument` się NIE ZMIENIA — ustawia je wyłącznie
+   * gałąź sukcesu w `state/workflows.ts` — więc to samo porównanie mówiło „saving…" już na
+   * zawsze, choć nic się nie zapisywało i nie miało zapisać. Czerwony pasek niżej mówił prawdę,
+   * a nagłówek nad nim kłamał: dwa zdania o jednym fakcie, sprzeczne (niezmiennik 13).
+   *
+   * Podział pracy między tym napisem a paskiem jest ostry i celowy: nagłówek nazywa STAN
+   * („not saved"), pasek nazywa POWÓD („…changed on disk…"). Sam stan kazałby szukać przyczyny,
+   * sam powód nie mówi, czy coś jeszcze trwa. */
+  const saveState =
+    state.document === state.savedDocument
+      ? 'saved'
+      : state.couldNotSave === null
+        ? 'saving…'
+        : 'not saved';
 
   return (
     <section className="flex h-full min-h-0 flex-col">
-      <header className="flex h-13 shrink-0 items-center gap-3 border-b border-line bg-panel px-4">
-        <button type="button" className={QUIET} onClick={onClose}>
+      {/* `relative`, bo pasek trwania zapisu wisi na dolnej krawędzi tego paska i nie ma prawa
+          przesunąć niczego w układzie: przy autozapisie co 400 ms wiersz, który raz jest, a raz
+          go nie ma, przeskakiwałby treścią pod spodem przy każdym naciśnięciu klawisza.
+
+          `.screen-head` NIE MA TŁA z rozmysłu (theme.css): jest chrome, więc materiał bierze
+          z klasy materiału obok. */}
+      <header className="screen-head glass relative">
+        <button type="button" className="btn-quiet" onClick={onClose}>
           All workflows
         </button>
         {/* Nazwa jako POLE. `aria-label`, a nie widoczna etykieta: wiersz nagłówka z makiety ma
@@ -198,7 +231,9 @@ export function WorkflowEditor({
             state.rename(event.target.value);
           }}
         />
-        <span className="shrink-0 font-mono text-mono text-muted">
+        {/* `data-tone="fail"` TYLKO w trzecim stanie: barwa nasycona znaczy w tej aplikacji
+            „zepsute", a zapis w toku ani plik zgodny z ekranem zepsute nie są (DESIGN §3). */}
+        <span className="value shrink-0" data-tone={saveState === 'not saved' ? 'fail' : undefined}>
           {counted(state.document.steps.length, 'step')} · {saveState}
         </span>
         {/* Uwagi walidatora są faktem o dokumencie i mieszkają w jednym miejscu — tutaj.
@@ -211,11 +246,22 @@ export function WorkflowEditor({
          * i uruchamia bez przeszkód, nazywa problemem coś, co nim nie jest. Brzmienie jest
          * dokładnie to samo, co na pasku nad przyciskiem Run: jeden fakt, jedno słowo. */}
         {state.notes.length === 0 ? null : (
-          <span className="shrink-0 rounded-pill border border-attend-edge bg-attend-soft px-2 font-mono text-label text-attend">
+          <span className="chip shrink-0" data-tone="attend">
             {state.notes.length === 1
               ? '1 thing to fix'
               : `${String(state.notes.length)} things to fix`}
           </span>
+        )}
+        {/* CZY TO TRWA — druga z trzech rzeczy, na które ruch ma prawo odpowiadać (DESIGN §7).
+            Zapis na dysk jest tu jedyną operacją, która trwa dłużej niż jedna klatka, a do
+            2026-08-31 mówiło o niej wyłącznie słowo `saving…`: napis, który zmienia się
+            w miejscu, czyta się jak stan, a nie jak czynność. Pasek jest NIEOKREŚLONY, bo
+            zapisu przez granicę IPC nikt nie liczy w procentach. */}
+        {/* 2026-08-31 — WARUNEK JEST NA `saving…`, nie na „cokolwiek innego niż saved". Ten pasek
+            odpowiada na pytanie „czy to trwa", a po odmowie dysku nie trwa NIC: chodzący w kółko
+            pasek nad zdaniem „not saved" każe czekać na coś, co się nie wydarzy. */}
+        {saveState !== 'saving…' ? null : (
+          <span aria-hidden className="working pointer-events-none absolute inset-x-0 bottom-0" />
         )}
       </header>
 
@@ -227,7 +273,10 @@ export function WorkflowEditor({
       {state.couldNotSave === null ? null : (
         <p
           data-could-not-save
-          className="shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
+          /* Wejście na przezroczystości, nie sprężyną: to jest zdanie do przeczytania, a nie
+             powierzchnia, która wjeżdża. Pasek błędu zostaje paskiem błędu z DESIGN §6 —
+             `border-b`, wypełnienie `-soft`, żadnego promienia. */
+          className="fade-in shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
         >
           {visibleSaveRefusal(state.couldNotSave)}
         </p>
@@ -269,7 +318,7 @@ export function WorkflowEditor({
             znikać: znikająca kolumna przesuwa płótno pod kursorem w chwili kliknięcia. */}
         <aside className="min-h-0 overflow-auto border-l border-line bg-panel p-3.5">
           {open === undefined ? (
-            <p className="text-muted">Pick a step to see what it was given.</p>
+            <p className="lead">Pick a step to see what it was given.</p>
           ) : (
             <PanelForStep
               /* KLUCZ NA IDENTYFIKATORZE KROKU. Panel niesie stan WIDOKU (rozwinięta lista

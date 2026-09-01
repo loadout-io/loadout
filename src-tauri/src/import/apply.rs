@@ -193,6 +193,28 @@ fn stage_skills(
     for skill in &draft.skills {
         let imported = ingest::from_folder(&skill.source_dir)
             .map_err(|error| ImportError::Save(error.to_string()))?;
+        /* ODMOWA MIESZKA TUTAJ, A NIE W OKNIE (2026-08-31, niezmiennik 23).
+         *
+         * Do tego dnia te trzy linie nie istniały, a `imported` — który NIESIE wynik przeglądu —
+         * służył wyłącznie do wyliczenia dołączonych plików. Werdykt czytał adapter przy skanie
+         * (`adapters::skill`) i okno przy stopce (`blocked > 0` w `setup.tsx`), czyli polityka
+         * bezpieczeństwa stała po obu stronach granicy IPC i po żadnej w rdzeniu. Każdy inny
+         * wołający `apply` — a to jest funkcja `pub` — wnosił wtedy na dysk umiejętność
+         * z ukrytym tekstem albo z linią wysyłającą dane, bo kopia `SKILL.md` szła
+         * BEZWARUNKOWO, dwie linie niżej.
+         *
+         * ZAWĘŻENIE ŚWIADOME: odmawiamy ZAWSZE, także wtedy, gdy człowiek znaleziska przeczytał.
+         * Zgoda per znalezisko istnieje po drugiej stronie (`acknowledge` w `src/state/skills.ts`),
+         * ale nie ma nośnika w `ApplySetup` i nie ma ekranu, który by te znaleziska pokazał —
+         * furtka bez ekranu byłaby zgodą na coś, czego człowiek nie widział. Nośnik dokłada
+         * `ImportItem::reviewed`; zgoda jest osobnym ruchem i osobnym polem.
+         */
+        if imported.reviewed.verdict == ingest::Verdict::Blocked {
+            return Err(ImportError::Unsafe {
+                skill: skill.name.clone(),
+                reason: blocked_reason(&imported.reviewed),
+            });
+        }
         let destination = stage.join("skills").join(&skill.name);
         fs::create_dir_all(&destination).map_err(save_error)?;
         // Review rozstrzyga bezpieczeństwo bundle, ale import jest migawką. Ponowna emisja
@@ -217,6 +239,38 @@ fn stage_skills(
         }
     }
     Ok(())
+}
+
+/// Dlaczego ta umiejętność nie weszła — zdaniem, które nazywa MIEJSCE, nie regułę.
+///
+/// Id reguł (`hidden-text`, `exfiltration`, …) są enumem z drutu i nigdy nie trafiają na ekran
+/// (niezmiennik 14); ich angielskie zdania stoją w jednym miejscu, po stronie okna
+/// (`src/sections/skills/review-card.tsx`). Ta odmowa jest łańcuchem, który idzie do człowieka
+/// bez tłumacza, więc mówi to, co da się powiedzieć bez tamtej tabeli: ile linii, które i co
+/// z tym zrobić. Drugie wypisanie tamtej tabeli tutaj byłoby drugim miejscem, w którym
+/// znalezisko dostaje słowa.
+fn blocked_reason(reviewed: &crate::skills::ingest::Reviewed) -> String {
+    let mut places: Vec<String> = reviewed
+        .findings
+        .iter()
+        .filter(|finding| finding.weight == crate::skills::ingest::Weight::Block)
+        .map(|finding| {
+            finding.line.map_or_else(
+                || "the whole file".to_owned(),
+                |line| format!("line {line}"),
+            )
+        })
+        .collect();
+    places.dedup();
+    let count = places.len();
+    let places = if places.is_empty() {
+        "somewhere in it".to_owned()
+    } else {
+        places.join(", ")
+    };
+    format!(
+        "its SKILL.md has {count} line(s) that would change what your agents do, and Loadout does not import those unread ({places}). Take this skill out of the import, or change those lines in the project and scan it again."
+    )
 }
 
 fn stage_connections(

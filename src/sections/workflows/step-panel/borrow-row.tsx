@@ -18,7 +18,12 @@
  * Wiersz jest STEROWANY, tak jak reszta panelu: w repo nie ma `jsdom` (`package.json` jest na
  * liście DENIED w `checks/quick-scope.sh`), więc sprawdza się go przez `renderToStaticMarkup`,
  * a stan trzymany w środku byłby dla takiego testu niewidoczny. Pobranie listy siedzi obok,
- * w [`BorrowRowForThisProject`], i tylko ono ma efekt.
+ * w [`useHostMaterial`], i tylko ono ma efekt.
+ *
+ * DLACZEGO LISTA JEST ZWINIĘTA, A LICZBA NIE (2026-08-31). Półki przychodzą z `.claude/` cudzego
+ * repozytorium, więc ich długość nie jest niczym ograniczona: ten wiersz rozwijał w panelu tyle
+ * pól wyboru, ile ktoś tam położył, i robił to w kolumnie 330 px. „Ile" jest odpowiedzią,
+ * której człowiek potrzebuje najczęściej, więc stoi przed listą, a nie za nią.
  */
 import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
@@ -38,11 +43,11 @@ export interface BorrowRowProps {
   onChoose: (borrow: Borrow) => void;
 }
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
-const SHELF = 'text-label text-muted pl-1';
+/* `ROW`, `LABEL` i `MISSING` zniknęły 2026-08-31: rolę niosą `.stack`, `.label` i `.lead`
+ * z `theme.css`. Zostają dwa napisy, bo oba niosą coś PONAD rolę — wcięcie półki i klej
+ * układu pola wyboru, którego prymityw celowo nie wchłania (DESIGN §6). */
+const SHELF = 'label pl-1';
 const CHOICE = 'flex items-baseline gap-2 text-body text-ink pl-4';
-const MISSING = 'text-label text-muted';
 
 /** Czy krok nie pożycza niczego. Jedna odpowiedź, dwóch czytelników: ten wiersz i panel. */
 export function nothingBorrowed(borrow: Borrow): boolean {
@@ -86,71 +91,117 @@ function pickedOn(borrow: Borrow, kind: BorrowKind): string[] {
   return one === undefined ? [] : [one];
 }
 
-export function BorrowRow({ material, value, onChoose }: BorrowRowProps): ReactElement | null {
-  const shelves: { kind: BorrowKind; label: string; found: string[] }[] = [
+/** Trzy półki tego folderu, czytane OBRONNIE.
+ *
+ * `material?.skills ?? []` na każdej, i to nie jest ostrożność na zapas: odpowiedź przychodzi
+ * z drugiej strony mostu, więc jej kształt jest obietnicą typu, a nie faktem (niezmiennik 5).
+ * Zmierzone 2026-08-31: pod atrapą, która na każde `list_*` oddaje pustą LISTĘ, `material` jest
+ * tablicą — `material.skills` to wtedy `undefined`, a `.length` na nim wywraca cały panel kroku
+ * i kafelek przestaje się otwierać. Ta sama czytelnia dla obu czytelników, żeby jeden z nich
+ * nie był twardszy od drugiego. */
+function shelvesOf(
+  material: HostMaterial | null,
+): { kind: BorrowKind; label: string; found: string[] }[] {
+  return [
     { kind: 'skills', label: 'Skills', found: material?.skills ?? [] },
     { kind: 'learnings', label: 'What this project has learned', found: material?.learnings ?? [] },
     { kind: 'subagents', label: 'Roles', found: material?.subagents ?? [] },
   ];
+}
 
-  const anythingToLend = shelves.some((shelf) => shelf.found.length > 0);
-  /* „Nie ma" znaczy nie ma — patrz nagłówek pliku. Krok, który już coś pożycza, dostaje wiersz
-   * mimo pustego folderu, bo inaczej nie miałby jak tego odznaczyć. */
-  if (!anythingToLend && nothingBorrowed(value)) return null;
+/** Ile ten folder ma do użyczenia, licząc wszystkie trzy półki razem. */
+function lends(material: HostMaterial | null): number {
+  return shelvesOf(material).reduce((count, shelf) => count + shelf.found.length, 0);
+}
+
+/**
+ * Czy ten wiersz ma po co powstać — jedna odpowiedź, dwóch czytelników: sam wiersz i panel,
+ * który liczy, ile rzeczy stoi za ujawnieniem.
+ *
+ * „Nie ma" znaczy nie ma (patrz nagłówek pliku). Krok, który już coś pożycza, dostaje wiersz
+ * mimo pustego folderu, bo inaczej nie miałby jak tego odznaczyć.
+ */
+export function borrowRowStands(material: HostMaterial | null, value: Borrow): boolean {
+  return lends(material) > 0 || !nothingBorrowed(value);
+}
+
+/** Zdanie zwiniętej listy: ile ten folder użycza i ile z tego krok już bierze.
+ *
+ * Ta lista też nie ma sufitu — przychodzi z `.claude/` cudzego repozytorium — więc rozwijała
+ * w panelu tyle pól wyboru, ile ktoś tam położył. */
+function saysWhenShut(offered: number, taken: number): string {
+  const has = `${String(offered)} to borrow`;
+  return taken === 0 ? has : `${has}, ${String(taken)} taken`;
+}
+
+export function BorrowRow({ material, value, onChoose }: BorrowRowProps): ReactElement | null {
+  const shelves = shelvesOf(material);
+
+  if (!borrowRowStands(material, value)) return null;
+
+  const taken = shelves.reduce((count, shelf) => count + pickedOn(value, shelf.kind).length, 0);
 
   return (
-    <div className={ROW}>
-      <span className={LABEL}>Borrow from this project</span>
+    <div data-row="borrow" className="stack">
+      <span className="label">Borrow from this project</span>
 
-      {shelves.map((shelf) => {
-        const picked = pickedOn(value, shelf.kind);
-        /* Zaznaczone i nieobecne idą NA KONIEC swojej półki, po tym, co w folderze naprawdę
-         * jest: lista zaczyna się wtedy od tego, co da się wziąć dzisiaj. */
-        const stale = picked.filter((name) => !shelf.found.includes(name));
-        if (shelf.found.length === 0 && stale.length === 0) return null;
+      <details className="rounded-md border border-line p-2">
+        <summary className="label cursor-pointer">{saysWhenShut(lends(material), taken)}</summary>
+        <div className="stack pt-2">
+          {shelves.map((shelf) => {
+            const picked = pickedOn(value, shelf.kind);
+            /* Zaznaczone i nieobecne idą NA KONIEC swojej półki, po tym, co w folderze naprawdę
+             * jest: lista zaczyna się wtedy od tego, co da się wziąć dzisiaj. */
+            const stale = picked.filter((name) => !shelf.found.includes(name));
+            if (shelf.found.length === 0 && stale.length === 0) return null;
 
-        return (
-          <div key={shelf.kind} className={ROW}>
-            <span className={SHELF}>{shelf.label}</span>
-            {[...shelf.found, ...stale].map((name) => (
-              <label key={name} className={CHOICE}>
-                <input
-                  type="checkbox"
-                  checked={picked.includes(name)}
-                  onChange={() => {
-                    onChoose(ticked(value, shelf.kind, name));
-                  }}
-                />
-                {name}
-                {/* Etykieta dopiero wtedy, gdy WIEMY, czego w folderze nie ma. Przed odpowiedzią
+            return (
+              <div key={shelf.kind} className="stack">
+                <span className={SHELF}>{shelf.label}</span>
+                {[...shelf.found, ...stale].map((name) => (
+                  <label key={name} className={CHOICE}>
+                    <input
+                      type="checkbox"
+                      checked={picked.includes(name)}
+                      onChange={() => {
+                        onChoose(ticked(value, shelf.kind, name));
+                      }}
+                    />
+                    {name}
+                    {/* Etykieta dopiero wtedy, gdy WIEMY, czego w folderze nie ma. Przed odpowiedzią
                     z Rusta zdanie „not in this folder" byłoby zgadywaniem o cudzym katalogu. */}
-                {material !== null && stale.includes(name) ? (
-                  <span className={MISSING}>not in this folder</span>
-                ) : null}
-              </label>
-            ))}
-          </div>
-        );
-      })}
+                    {material !== null && stale.includes(name) ? (
+                      <span className="lead">not in this folder</span>
+                    ) : null}
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </details>
     </div>
   );
 }
 
 /**
- * Ten sam wiersz, spytawszy Rusta o folder aktywnego workspace.
+ * Co folder aktywnego workspace ma do użyczenia — spytawszy o to Rusta.
  *
- * Pobranie stoi TUTAJ, a nie w panelu i nie w edytorze, bo to jest jedyny czytelnik tej listy.
- * Prop przeciągnięty przez dwa ekrany dawałby dwa miejsca, w których można podać folder innego
+ * Pobranie mieszka w tym pliku, a nie w edytorze, bo to jest jedyny czytelnik tej listy. Prop
+ * przeciągnięty przez dwa ekrany dawałby dwa miejsca, w których można podać folder innego
  * workspace niż ten, o którym wiersz mówi.
+ *
+ * 2026-08-31 — Z KOMPONENTU (`BorrowRowForThisProject`) NA HAK. Odkąd panel liczy, ile rzeczy
+ * stoi za ujawnieniem, musi wiedzieć, CZY ten wiersz w ogóle powstanie — a to zależy od tej
+ * odpowiedzi. Komponent, który sam ją pobierał, trzymał ją poza zasięgiem liczącego, więc
+ * licznik mówiłby o wierszu, którego nie ma. Hak oddaje tę samą wartość temu, kto jej
+ * potrzebuje, i nie mnoży miejsc, w których się o nią pyta.
  *
  * Odmowa z Rusta kończy się PUSTĄ listą, nie zdaniem o błędzie: „nie mam czego pożyczyć" jest
  * o tym folderze prawdą także wtedy, gdy nie dało się go przeczytać, a wiersz z komunikatem
  * o systemie plików stałby w panelu kroku, którego to nie dotyczy.
  */
-export function BorrowRowForThisProject({
-  value,
-  onChoose,
-}: Omit<BorrowRowProps, 'material'>): ReactElement | null {
+export function useHostMaterial(): HostMaterial | null {
   const [material, setMaterial] = useState<HostMaterial | null>(null);
 
   useEffect(() => {
@@ -168,5 +219,5 @@ export function BorrowRowForThisProject({
     };
   }, []);
 
-  return <BorrowRow material={material} value={value} onChoose={onChoose} />;
+  return material;
 }

@@ -31,6 +31,32 @@ use crate::engine::supervisor::{PublicationEntry, PublicationEntryKind, Publicat
 
 use super::{Error, FrontMatter, Result, est_tokens, slugify};
 
+/// Wiersze `klucz: wartość` z tego, co oddał krok.
+///
+/// JEDNA SKŁADNIA, TRZY MECHANIZMY, i dlatego jedna funkcja (niezmiennik 13). Tę samą mapę
+/// czyta warunkowa droga za krokiem (`commands::run::Live::remember_handoff_evidence`),
+/// wymaganie pola przekazania (`commands::run::Live::missing_a_required_field`) i sprawdzenie
+/// treści pola po biegu (`lab::results::score`). Trzy kopie tego rozbioru znaczyłyby, że jeden
+/// mechanizm widzi wiersz, którego drugi nie widzi — a człowiek zapisał w kafelku jeden
+/// kształt, nie trzy.
+///
+/// 2026-08-31 — FUNKCJA PRZEPROWADZIŁA SIĘ TU Z `commands::run`, bez zmiany ani jednej linii
+/// ciała. Powód jest granicą, nie wygodą: to jest rozbiór KSZTAŁTU PRZEKAZANIA, czyli rzecz,
+/// którą ten moduł już posiada, a `lab/` nie ma prawa zależeć od `commands/` — zależność
+/// w tę stronę zamknęłaby koło, bo `commands/` czyta `lab/`.
+///
+/// CAŁY WIERSZ, zaczynający się nazwą: `- risk — coś tam` i `patrz na risk: coś` w środku zdania
+/// **nie są** tym kształtem, i to jest cała treść tego rozbioru. Nazwa i wartość muszą być
+/// niepuste: `risk:` z pustką za dwukropkiem jest wierszem, który nic nie niesie.
+#[must_use]
+pub fn fields_said_in(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        .collect()
+}
+
 /// Twardy limit ciała **po normalizacji**, w bajtach [T6 §10.2, §4 „Context bloat"].
 ///
 /// 8 KB ≈ 2 000 jednostek długości, czyli ~1% okna 200k. Liczba jest tu z powodem, a nie

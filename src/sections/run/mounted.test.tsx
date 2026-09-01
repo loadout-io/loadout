@@ -24,11 +24,16 @@ import { App } from '../../App';
 import { sectionEntry } from '../../ui/sections';
 
 /**
- * Trzy oznaczone regiony, z których składa się widok pracy: pasek loadoutu, historia i strefa
- * TERAZ [DESIGN §1 i §2]. Wypisane tutaj, bo to jest kontrakt między tym zadaniem a powłoką —
+ * Trzy oznaczone regiony, z których składa się widok pracy: pasek loadoutu, historia i obraz
+ * planu [DESIGN §1 i §2]. Wypisane tutaj, bo to jest kontrakt między tym zadaniem a powłoką —
  * czytanie ich z komponentu byłoby pytaniem komponentu o zdanie na własny temat.
+ *
+ * 2026-08-31 — TRZECI REGION BYŁ DO DZIŚ BLOKIEM POD STRUMIENIEM (`data-now`) i zniknął razem
+ * z nim: mówił słowo w słowo to samo, co wiersz strumienia nad nim i kafelek w kolumnie obok,
+ * przy limicie jednego żywego regionu na fakt (niezmiennik 13). Pytanie zostało to samo — czy
+ * powłoka naprawdę montuje widok pracy — zmienił się region, po którym je zadajemy.
  */
-const REGIONS = ['data-strip', 'data-feed', 'data-now'];
+const REGIONS = ['data-strip', 'data-feed', 'data-plan-column'];
 
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;

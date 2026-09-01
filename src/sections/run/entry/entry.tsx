@@ -914,7 +914,7 @@ export function Entry({
           Zero elementów, kiedy nie ma o czym podpowiadać: pusty wiersz „brak podpowiedzi" jest
           tym samym rodzajem szumu, co nagłówek nad pustką. */}
       {typed.trim().startsWith('/') ? (
-        <div data-entry-suggestions className="mt-[6px] ml-[26px] grid gap-[2px]">
+        <div data-entry-suggestions className="fade-in mt-[6px] ml-[26px] grid gap-[2px]">
           {matching.length === 0 ? (
             /* „NIE ZNAM TEGO" TYLKO WTEDY, GDY NAPRAWDĘ NIE ZNAM KOMENDY.
              *
@@ -925,7 +925,9 @@ export function Entry({
              * nazwy. Wtedy milczymy tutaj, a pełną odmowę z listą nazw daje Enter
              * (`run-command.ts`, `noSuchWorkflow`), bo to ona ma miejsce na wypisanie nazw. */
             understand(typed) === null ? (
-              <p className="text-body text-attend">{NOT_KNOWN}</p>
+              <p className="lead" data-tone="attend">
+                {NOT_KNOWN}
+              </p>
             ) : (
               <p className="font-mono text-label text-muted">{HINT}</p>
             )
@@ -933,9 +935,11 @@ export function Entry({
             matching.map((one) => (
               <p key={one.name} className="grid grid-cols-[72px_1fr] items-baseline gap-2">
                 {/* Nazwa komendy jest wartością maszynową — mono, do przepisania znak w znak
-                    (DESIGN §4). To, co robi, jest zdaniem po ludzku, więc Inter. */}
-                <span className="font-mono text-mono text-accent">{one.name}</span>
-                <span className="text-body text-muted">{one.does}</span>
+                    (DESIGN §4). To, co robi, jest zdaniem po ludzku, więc Inter.
+                    `.value` niesie rodzinę RAZEM ze stopniem, więc `font-mono` obok `text-mono`
+                    — dwie deklaracje jednego faktu — znika; zostaje sama barwa akcentu. */}
+                <span className="value text-accent">{one.name}</span>
+                <span className="lead">{one.does}</span>
               </p>
             ))
           )}

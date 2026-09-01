@@ -16,7 +16,7 @@
  * przycisków na to samo pytanie to dwa miejsca, w których bieg da się odblokować, i pierwszy
  * rozjazd między nimi jest cichy (niezmiennik 13).
  */
-import type { FormEvent, ReactElement } from 'react';
+import type { FormEvent, ReactElement, ReactNode } from 'react';
 import { useState } from 'react';
 import { Line } from './line';
 import type { FeedView, Question } from './model';
@@ -28,15 +28,46 @@ export interface FeedProps {
   onToggle: (rowId: number) => void;
   onAnswer: (questionId: number, option: string) => void;
   onJumpToNewest: () => void;
+  /**
+   * Czy pytanie stoi już PRZY KROKU, który je zadał — wtedy tutaj go nie ma.
+   *
+   * 2026-08-31 — TO NIE JEST DRUGI WARUNEK NA „CZY BIEG ŻYJE", i to jest cała różnica wobec
+   * akapitu w `./model.ts` przy `runEnded`. Tamten zakazuje pytać drugi raz o LIVENESS: karta
+   * wisi na samym `pinned`, a odpowiedź „czy cokolwiek żyje" ma jedno miejsce. Ten props
+   * odpowiada na inne pytanie — GDZIE ta jedna karta stoi — i rozstrzyga je ten, kto widzi
+   * oba miejsca naraz (`../index.tsx`), z tego samego planu, z którego rysuje się obraz.
+   *
+   * Domyślnie `false`, bo dwa cudze kryteria stawiają ten komponent bez obrazu obok
+   * (`./answer-card-dies-with-the-run.test.tsx`, `./suggestion-has-a-button.test.tsx`), a wtedy
+   * dół strumienia jest jedynym miejscem, w którym pytanie ma gdzie stanąć. Kiedy kroku nie da
+   * się wskazać — pyta lider albo pod-agent rozpuszczony w biegu, których na obrazie nie ma —
+   * karta zostaje TUTAJ, zamiast zniknąć z ekranu razem z biegiem, który stanie na niej na
+   * zawsze (niezmiennik 17: brak kroku znaczy „nie wiemy", nigdy „nie ma pytania").
+   */
+  askedAtItsStep?: boolean;
+  /**
+   * Co postawić ZAMIAST zdania o braku danych, kiedy historia jest pusta.
+   *
+   * 2026-08-31 — PO CO TEN SZEW ISTNIEJE. Ten komponent umie odpowiedzieć na jedno pytanie:
+   * czy w strumieniu są wiersze. Na pustym strumieniu przed pierwszym biegiem prawdziwa
+   * odpowiedź brzmi inaczej — „nie ma jeszcze folderu, agenta ani workflow" — a tego ten plik
+   * nie wie i wiedzieć nie ma prawa: trzy listy z dysku należą do ekranu, nie do strumienia
+   * (niezmiennik 23). Ekran podaje więc gotowy blok, a ten wybiera MIEJSCE, w którym on stanie.
+   *
+   * Domyślnie nieobecny, i to nie jest wygoda: sześć cudzych kryteriów stawia ten komponent
+   * samodzielnie, a strumień bez podanego bloku ma się dalej czytać dokładnie tak, jak dotąd.
+   */
+  guide?: ReactNode;
 }
 
-/** `button-secondary` z DESIGN §6, spisany raz. */
-const SECONDARY = 'h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink';
+/* CZEGO TU JUŻ NIE MA: dwóch stałych `SECONDARY` i `QUIET` z listą klas przycisku spisaną
+ * ręcznie z DESIGN §6. Były kopią decyzji, a kopia nie ma jak zostać zgodna z oryginałem —
+ * zmierzone 2026-08-31: przycisk drugoplanowy miał w repo 8 wystąpień pod 3 nazwami, cichy
+ * 14 pod 4, i różniły się już geometrią. Od tego dnia rola ma nazwę: `.btn` i `.btn-quiet`
+ * w `@layer components`, i to one niosą także cztery stany, których żaden przycisk tego pliku
+ * nie miał ani jednego (najechanie, wciśnięcie, skupienie, wyłączenie). */
 
-/** `button-quiet` z DESIGN §6. */
-const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
-
-interface AskedProps {
+export interface AskedProps {
   question: Question;
   onAnswer: (questionId: number, option: string) => void;
 }
@@ -65,7 +96,7 @@ export const ANSWER_PROMPT = 'Type your answer and press Enter';
  * prawa: bieg puszcza JEDNA kontrolka w całej aplikacji, a druga byłaby drugim miejscem, z
  * którego da się odblokować bieg — pierwszy rozjazd między nimi jest cichy (niezmiennik 13).
  */
-function Asked({ question, onAnswer }: AskedProps): ReactElement {
+export function Asked({ question, onAnswer }: AskedProps): ReactElement {
   const [typed, setTyped] = useState('');
 
   function send(event: FormEvent<HTMLFormElement>): void {
@@ -80,9 +111,32 @@ function Asked({ question, onAnswer }: AskedProps): ReactElement {
   }
 
   return (
-    <div className="shrink-0 rounded-md border border-attend-edge border-l-2 border-l-attend bg-attend-soft p-3">
-      <p className="text-label text-attend">Needs your answer</p>
-      <p className="mt-1 text-body text-ink">{question.text}</p>
+    /* WCHODZI SPRĘŻYNĄ, i to jest jedyne miejsce w tym pliku, które ma do tego prawo.
+       DESIGN §7 wymienia kartę pytania wprost jako powierzchnię, która POJAWIA SIĘ nad tym,
+       co już jest na ekranie: karta wskakująca skokiem czyta się jak przeskok widoku — oko nie
+       wie, czy patrzy na to samo miejsce. `.enter` niesie `--duration` i krzywą osobno, więc nie
+       wpada w pułapkę skrótu `animation`, w której drugi czas staje się opóźnieniem.
+
+       Ton idzie atrybutem, nie klasą-bliźniakiem: `[data-tone]` bije samą klasę niezależnie od
+       kolejności reguł, a `.card-attend` obok `.card` byłoby drugim napisem do ręcznego
+       utrzymania. Lewa krawędź i wypełnienie zostają klasami narzędziowymi — te wygrywają
+       z prymitywem, bo warstwa `utilities` stoi nad `components`. */
+    <div
+      /* ZNACZNIK JEST TU OD 2026-08-31, odkąd karta ma DWA legalne miejsca: pod krokiem, który
+         zapytał, i — kiedy takiego kroku nie da się wskazać — na dole strumienia. Kryterium
+         musi umieć policzyć, ile ich stoi, a nie da się tego zrobić po tekście pytania: to samo
+         zdanie żyje na tym ekranie drugi raz, jako wiersz historii, który zostaje na zawsze. */
+      data-asked={question.id}
+      data-tone="attend"
+      className="card enter shrink-0 border-l-2 border-l-attend bg-attend-soft"
+    >
+      <p className="label text-attend">Needs your answer</p>
+      {/* `text-body` obok `text-ink` było DWIEMA barwami na jeden napis, nie stopniem i barwą:
+          zmierzone 2026-08-31 kompilacją arkusza — przy zdefiniowanym `--color-body` Tailwind
+          rozstrzyga `text-body` jako barwę i stopnia nie wypisuje wcale, a w gotowym arkuszu
+          `.text-ink` stoi za `.text-body`, więc wygrywał już wcześniej. Napis znika bez zmiany
+          na ekranie; stopień prozy jest odziedziczony z `body`. */}
+      <p className="mt-1 text-ink">{question.text}</p>
 
       {question.options.length === 0 ? null : (
         <div className="mt-2 flex flex-wrap gap-2">
@@ -91,7 +145,7 @@ function Asked({ question, onAnswer }: AskedProps): ReactElement {
               key={option}
               type="button"
               onClick={() => onAnswer(question.id, option)}
-              className={SECONDARY}
+              className="btn"
             >
               {option}
             </button>
@@ -110,7 +164,7 @@ function Asked({ question, onAnswer }: AskedProps): ReactElement {
           }}
           className="field flex-1"
         />
-        <button type="submit" className={SECONDARY}>
+        <button type="submit" className="btn">
           Send
         </button>
       </form>
@@ -124,6 +178,8 @@ export function Feed({
   onToggle,
   onAnswer,
   onJumpToNewest,
+  askedAtItsStep = false,
+  guide,
 }: FeedProps): ReactElement {
   /* Nic w historii i nikogo w strefie TERAZ znaczy: biegu jeszcze nie było. Sam pusty strumień
    * przy pracujących agentach to co innego — wtedy zaproszenie kłamałoby o stanie maszyny. */
@@ -132,18 +188,28 @@ export function Feed({
   return (
     <section data-feed className="flex min-h-0 flex-1 flex-col gap-2">
       {nothingYet ? (
-        /* Pusty ekran to zaproszenie, nie komunikat o braku danych (DESIGN §6) — ale bez
-         * przycisku i bez „Type /plan to start", bo wiersz wejścia i paleta poleceń są osobną
-         * powierzchnią i w tej wersji ich nie ma. Zaproszenie wskazujące na kontrolkę, której
-         * nie ma, jest gorsze niż zdanie mniej (niezmiennik 16). */
-        <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
-            ◇
-          </span>
-          <p data-empty className="text-ink">
-            Nothing here yet: the work shows up line by line.
-          </p>
-        </div>
+        /* PUSTY EKRAN TO ZAPROSZENIE, NIE KOMUNIKAT O BRAKU DANYCH (DESIGN §6) — a od
+         * 2026-08-31 zaproszenie ma czym być. Kiedy ekran poda `guide`, stoi ono tutaj: to jest
+         * to samo miejsce, ta sama chwila i ten sam brak, tylko odpowiedź jest o dwa piętra
+         * konkretniejsza („zacznij od folderu" zamiast „nic tu nie ma").
+         *
+         * ZDANIE NIŻEJ ZOSTAJE NA SWOIM MIEJSCU i nie jest długiem: bez `guide` ten komponent
+         * nie wie o świecie nic poza tym, że wierszy nie ma, i wtedy zdanie o braku wierszy jest
+         * dokładnie tym, co umie powiedzieć uczciwie. Przycisku i „Type /plan to start" nie ma
+         * tu dalej z tego samego powodu, co przedtem: zaproszenie wskazujące na kontrolkę,
+         * której ten komponent nie ma, jest gorsze niż zdanie mniej (niezmiennik 16). */
+        (guide ?? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3">
+            {/* Znak pustego ekranu jest ROLĄ, nie napisem: `.mark` niesie 40 px, ramkę kreskowaną
+              i promień pojemnika treści. Ten znak był jedną z dziewięciu ręcznych kopii tej samej
+              rzeczy, rysowaną w 32 px; DESIGN §6 rozstrzyga tę rozbieżność na 40 — tyle ma
+              prymityw, który już istniał (`src/ui/primitives/empty-state.tsx`). */}
+            <span className="mark">◇</span>
+            <p data-empty className="text-ink">
+              Nothing here yet: the work shows up line by line.
+            </p>
+          </div>
+        ))
       ) : (
         <div ref={portRef} className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto">
           {/* Jedno dziecko kontenera odwróconego: wiersze zostają w swojej kolejności, a to,
@@ -162,11 +228,16 @@ export function Feed({
         </div>
       )}
 
-      {view.pinned === null ? null : <Asked question={view.pinned} onAnswer={onAnswer} />}
+      {/* Karta stoi tu wtedy i tylko wtedy, gdy nie stoi PRZY SWOIM KROKU — powód w całości
+          przy `FeedProps.askedAtItsStep`. Warunek jest o MIEJSCU, nigdy o tym, czy bieg żyje:
+          tamto gasi model i tylko model (`./model.ts`, `runEnded`). */}
+      {view.pinned === null || askedAtItsStep ? null : (
+        <Asked question={view.pinned} onAnswer={onAnswer} />
+      )}
 
       {view.history.length === 0 ? null : (
         <div className="flex shrink-0 justify-end">
-          <button type="button" onClick={onJumpToNewest} className={QUIET}>
+          <button type="button" onClick={onJumpToNewest} className="btn-quiet">
             Jump to newest
           </button>
         </div>

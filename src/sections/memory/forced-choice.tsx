@@ -33,14 +33,35 @@ export interface ForcedChoiceProps {
 /* `modal` z DESIGN §6: tło `--panel`, obrys `--line-strong`, szerokość do 640px, padding 24px.
  * Tło za oknem to `--bg` przy 72% — z tokena, nie z zapisanego wprost `rgba(6,9,11,0.72)`,
  * bo ta sama liczba w dwóch miejscach jest tym, jak paleta przestaje być zamknięta. */
-const BACKDROP = 'fixed inset-0 flex items-center justify-center bg-bg/72';
+/* WEJŚCIE JEST SAMĄ PRZEZROCZYSTOŚCIĄ, i to jest reguła, nie oszczędność. DESIGN §6 mówi
+ * o modalu wprost: „bez rozmycia, bez animacji wjazdu poza `opacity`" — sprężyna należy do
+ * powierzchni, które WCHODZĄ w widok, a okno wymuszonego wyboru zasłania go w całości.
+ * `.fade-in` niesie tę jedną obietnicę i stoi na CAŁYM przyciemnieniu, więc jedno zdarzenie
+ * porusza tu jednym regionem (sufit z ARCHITECTURE §7 wynosi dwa). */
+const BACKDROP = 'fade-in fixed inset-0 flex items-center justify-center bg-bg/72';
 const WINDOW =
   'flex w-full max-w-160 flex-col gap-3 rounded-lg border border-line-strong bg-overlay p-6';
-const ACT = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
 /** Zdanie o tym, ile brakuje. Jedna liczba, jedno miejsce — resztę mówi lista pod nim. */
 function overBySentence(overBy: number): string {
   return 'This note is ' + String(overBy) + ' longer than the room that is left.';
+}
+
+/**
+ * Co się stanie po odstawieniu — i o którą notatkę tu chodzi (2026-08-31).
+ *
+ * DWIE RZECZY, KTÓRYCH TO OKNO NIE MÓWIŁO. Nie nazywało notatki, po którą człowiek przyszedł
+ * (jej treść stała wyłącznie w atrybucie `data-choice`), i nie mówiło, że odstawienie DOMYKA
+ * tamtą prośbę — a to jest jedyny powód, dla którego ktokolwiek miałby cokolwiek odstawiać.
+ * Człowiek czytał listę cudzych zdań i nie miał jak zgadnąć, że po kliknięciu dostanie to,
+ * po co przyszedł. Jedno zdanie mówi obie połowy: następny ruch i jego skutek.
+ *
+ * Notatka nieznana sekcji wypada z cudzysłowu zamiast wjechać w niego nazwą pliku: slug
+ * w zdaniu dla człowieka jest gorszy niż jego brak (niezmiennik 14).
+ */
+function nextMoveSentence(rule: string | undefined): string {
+  const what = rule === undefined ? 'the note you picked' : JSON.stringify(rule);
+  return 'Stop using one of these, and Loadout will put ' + what + ' to use right away.';
 }
 
 export function ForcedChoice({
@@ -49,6 +70,12 @@ export function ForcedChoice({
   onStopUsing,
   onCancel,
 }: ForcedChoiceProps): ReactElement {
+  /* Notatka, o którą człowiek poprosił. Szukana po CAŁYM adresie, bo sam `id` może legalnie
+   * wystąpić w obu korzeniach (`NoteAddress` w `src/state/memory.ts`). */
+  const wanted = notes.find(
+    (one) => one.place === choice.address.place && one.id === choice.address.id,
+  );
+
   return (
     <div className={BACKDROP}>
       <section
@@ -61,7 +88,10 @@ export function ForcedChoice({
         <h2 id="memory-is-full" className="text-heading text-ink">
           Memory is full
         </h2>
-        <p className="text-body text-body">{overBySentence(choice.overBy)}</p>
+        <p>{overBySentence(choice.overBy)}</p>
+        {/* Następny ruch i jego skutek — patrz `nextMoveSentence`. Stopień i barwa idą z `.lead`:
+            to jest zdanie drugoplanowe pod zdaniem o brakującej liczbie, nie drugi nagłówek. */}
+        <p className="lead">{nextMoveSentence(wanted?.rule)}</p>
 
         <ul className="flex flex-col gap-2">
           {choice.retire.map((id) => {
@@ -76,14 +106,12 @@ export function ForcedChoice({
                 key={`${address.place}:${address.id}`}
                 className="flex items-center justify-between gap-2"
               >
-                <span className="text-body text-ink">{note?.rule ?? id}</span>
-                <span className="text-label text-muted">
-                  {note === undefined ? '' : lengthLabel(note.length)}
-                </span>
+                <span className="text-ink">{note?.rule ?? id}</span>
+                <span className="label">{note === undefined ? '' : lengthLabel(note.length)}</span>
                 <button
                   type="button"
                   data-stop={id}
-                  className={ACT}
+                  className="btn-quiet"
                   onClick={() => {
                     onStopUsing(address);
                   }}
@@ -96,7 +124,7 @@ export function ForcedChoice({
         </ul>
 
         <div className="flex items-center justify-end gap-2">
-          <button type="button" data-cancel className={ACT} onClick={onCancel}>
+          <button type="button" data-cancel className="btn-quiet" onClick={onCancel}>
             Not now
           </button>
         </div>

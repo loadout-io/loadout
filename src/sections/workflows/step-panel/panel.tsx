@@ -1,28 +1,38 @@
-/* Panel kroku po prawej — siedem wierszy z makiety (`docs/mockup/index.html:599-618`).
+/* Panel kroku po prawej — PIĘĆ rzeczy w widoku, reszta za jedną linią.
  *
- * Siedem etykiet, w tej kolejności, i ani jednej ósmej:
- *   Name · Who does this · What to do · How many at once · Can it change files ·
- *   Give up after · Write results to
+ * Pięć etykiet, w tej kolejności, i ani jednej szóstej:
+ *   Name · Who does this · What to do · Where it works · How many at once
  *
- * Trzy pierwsze należą do KROKU. Trzy ostatnie to wartości efektywne pochodzące z agenta, więc
- * niosą kropkę, szare `Agent uses: …` i `Reset`, kiedy krok się od agenta różni [T4 §4.5].
- * `Who does this` jest wierszem, który nazywa agenta, i to na jego etykiecie siedzi znacznik
- * „N changed" (makieta, linia 602) — razem z szarym wierszem dla każdego zmienionego ustawienia,
- * które nie ma własnej kontrolki.
+ * To jest odpowiedź na pytanie „co ten krok robi": kto, co, gdzie i ile naraz. Wszystko poza
+ * tą piątką ma działającą wartość dziedziczoną z agenta, więc stoi za ujawnieniem
+ * (`./more-settings.tsx`) i jest tam wymienione co do sztuki:
+ *   Can it change files · Give up after · Write results to · Try again up to ·
+ *   If this step does not pass · What it hands over · Skills · Borrow from this project
  *
- * Liczba w znaczniku jest liczona z `step.overrides` TUTAJ i nigdzie indziej (niezmiennik 13:
- * jeden fakt, jedno miejsce). Osobny licznik trzymany w stanie kroku rozjeżdża się z patchem
- * przy pierwszym `Reset` i nikt tego nie zauważy, bo obie liczby wyglądają wiarygodnie.
+ * 2026-08-31 — POWÓD, ZMIERZONY. Ten nagłówek mówił „siedem etykiet, w tej kolejności, i ani
+ * jednej ósmej" i był o SZEŚĆ bloków nieaktualny. Panel montował 21 kontrolek stałych,
+ * a realistycznie 34 (przy sześciu umiejętnościach i pięciu pozycjach do pożyczenia) w kolumnie
+ * 330 px — bez grup, bez zwijania, bez nadoczek. To jest ~60 elementów niosących tekst, czyli
+ * CAŁY sufit widoku z `docs/ARCHITECTURE.md` §7, zjedzony przez jedną kolumnę. Żaden wiersz nie
+ * wszedł tu błędnie: przyrastały po jednym i każdy z osobna był do obrony. Równość „pięć etykiet"
+ * ma teraz kryterium (`panel-keeps-five-things-in-view.test.tsx`), bo zdanie w nagłówku pliku już
+ * raz przegrało z sześcioma kolejnymi zadaniami.
+ *
+ * Wartości efektywne pochodzące z agenta niosą kropkę, szare `Agent uses: …` i `Reset`, kiedy
+ * krok się od agenta różni [T4 §4.5]. Licznik „N changed" jest liczony z `step.overrides` TUTAJ
+ * i nigdzie indziej (niezmiennik 13: jeden fakt, jedno miejsce), a POKAZUJE go zwinięte
+ * ujawnienie — bo to za nim stoi wszystko, co ta liczba liczy. Do 2026-08-31 siedział przy
+ * „Who does this"; dwa żywe regiony na jeden fakt są tym samym niezmiennikiem czytanym
+ * w drugą stronę.
  *
  * Czego tu NIE MA: przełącznika „Let it split into helpers" z makiety (linia 625). Żadne pole
  * schematu go nie niesie, a T3 §7.3 i T4 §3.3 zgodnie wykluczają głębokość delegacji z v1.
  * Przepisanie makiety jeden do jednego jest tu dokładnie tym, jak łamie się niezmiennik 16:
  * trzeci przełącznik wygląda identycznie jak dwa działające.
  *
- * Czego tu nie ma z innego powodu: wiersza Skills. Jest osobnym komponentem (`skills-row.tsx`),
- * bo znika w całości przy agencie na Codeksie i ma własny tryb. Składa je `PanelForStep` na
- * dole tego pliku — dzięki temu „siedem etykiet" jest równością, a nie „siedem plus to, co
- * akurat dołożył wiersz umiejętności".
+ * Wiersze, które są osobnymi komponentami (Skills, Borrow, przekazanie), dokłada `AgentPanel`
+ * na dole tego pliku — do ŚRODKA ujawnienia i razem z ich liczbą, żeby zwinięta linia mówiła
+ * o tym, co naprawdę powstało, a nie o tym, co zwykle powstaje.
  *
  * Panel jest STEROWANY — wartości i każde kliknięcie wychodzą propsami. Powód jest testowy:
  * w repo nie ma `jsdom` ani `@testing-library/react` (`package.json` jest na liście DENIED
@@ -64,7 +74,6 @@ import type { Agent, FileAccess } from '../../../state/agents';
 import type {
   AgentStep,
   CheckpointStep,
-  Folder,
   OverridableField,
   Overrides,
   ServeStep,
@@ -76,11 +85,13 @@ import { SKILL_SUBSETTING } from './capabilities';
 import type { CheckFields } from './check-panel';
 import { CheckPanel } from './check-panel';
 import { CheckpointPanel } from './checkpoint-panel';
+import { MoreSettings } from './more-settings';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
-import { BorrowRowForThisProject, nothingBorrowed } from './borrow-row';
+import { BorrowRow, borrowRowStands, nothingBorrowed, useHostMaterial } from './borrow-row';
 import { HandoverRow } from './handover-row';
-import { SkillsRow } from './skills-row';
+import { SkillsRow, skillsRowStands } from './skills-row';
+import { WhereItWorks } from './where-it-works';
 
 /** Pola, które należą do samego KROKU agenta, a nie do agenta (patrz nagłówek pliku). */
 export type AgentStepFields = Partial<
@@ -96,7 +107,7 @@ export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>
 /** Trzy pola kafelka „uruchom i zostaw" — z tego samego powodu, co wyżej.
  *
  * `folder` DOSZŁO 2026-08-23, po pierwszym prawdziwym użyciu: dla serwera to nie jest szczegół,
- * tylko treść. Powód w całości stoi przy `WHERE` w `./serve-panel.tsx`. */
+ * tylko treść. Powód w całości stoi przy `OFFERS` w `./serve-panel.tsx`. */
 export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command' | 'folder' | 'commandFrom'>>;
 
 /* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
@@ -123,10 +134,29 @@ export interface StepPanelProps {
   onEditStep: (fields: AgentStepFields) => void;
   /** `Reset` przy jednym wierszu. */
   onReset: (field: OverridableField) => void;
+  /**
+   * Wiersze, które wołający dokłada DO ŚRODKA ujawnienia — te, których ten panel sam nie zna,
+   * bo są osobnymi komponentami (przekazanie, Skills, Borrow, liczba rund).
+   *
+   * Lista już ODSIANA: mają w niej stać wyłącznie wiersze, które naprawdę powstaną. Zwinięta
+   * pokrywa nazywa liczbę rzeczy w środku, a liczba policzona z wierszy, z których dwa oddały
+   * `null`, jest zdaniem o panelu, którego człowiek nigdy nie zobaczy. Odsianie robi wołający,
+   * bo to on ma odpowiedzi (`skillsRowStands`, `borrowRowStands`) — te same, którymi wiersze
+   * rozstrzygają to u siebie.
+   */
+  more?: readonly ReactNode[];
 }
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
+/* 2026-08-31 — `ROW`, `LABEL`, `FROM_AGENT`, `CHIP` I `AREA` ZNIKŁY.
+ *
+ * Każda z nich była napisem-listą-klas dla roli, którą `theme.css` nosi od tej daty pod nazwą:
+ * `.stack` (etykieta nad kontrolką), `.label` (etykieta pola), `.lead` (zdanie drugoplanowe),
+ * `.chip` (pigułka odczytu). `AREA` była drugą nazwą na `.field` — jeden fakt, dwa napisy.
+ *
+ * `LABEL` i `FROM_AGENT` miały do dziś TĘ SAMĄ treść, choć opisywały dwie różne role: etykietę
+ * nad polem i zdanie pod nim. Rozdzielenie ich na `.label` i `.lead` jest jedyną zmianą
+ * wyglądu, którą ten plik wnosi świadomie — DESIGN §6 rozstrzyga stopień zdania drugoplanowego
+ * na `--t-note`, a zdania „Agent uses: …" i podpowiedzi pod polami są właśnie nim. */
 /* POLE BIERZE KLASE DOMU, NIE WLASNY OPIS.
  *
  * `theme.css` ma klase `.field` od pierwszego dnia: studnia, mocny obrys, promien z pasma, kroj
@@ -140,12 +170,11 @@ const LABEL = 'text-label text-muted';
  * i globalny `:focus-visible` obrys — jedna regula na cala aplikacje. Dopisanie tego samego
  * narzedziem na kazdym polu byloby trzecia kopia decyzji, ktora juz jest podjeta. */
 const FIELD = 'field';
-const AREA = 'field';
-/* `chip`, wariant neutralny (DESIGN §6): licznik zmian nie jest stanem biegu, więc nie bierze
- * żadnego z czterech kolorów stanu. */
-const CHIP = 'rounded-pill border border-line bg-raised px-2 text-label text-muted';
-const QUIET = 'text-label text-muted underline';
-const FROM_AGENT = 'text-label text-muted';
+/* Podkreślony napis, nie przycisk: `Reset` i `＋ Create a new agent` stoją W WIERSZU z etykietą
+ * (`flex items-baseline`), a `.btn-quiet` ma 28 px wysokości i padding — postawiony tutaj
+ * rozepchnąłby trzy wiersze panelu. Brakowało im wyłącznie reakcji na najechanie i to jest
+ * jedyna rzecz, którą dostały 2026-08-31. */
+const QUIET = 'label underline hover:text-ink';
 
 /* Brzmienia wartości — te same, które ma formularz agenta (`src/sections/agents/agent-form.tsx`).
  * Druga kopia, świadoma: tamten plik ich nie eksportuje i nie należy do tego zadania, a wpisanie
@@ -204,10 +233,12 @@ const HAS_A_ROW: readonly OverridableField[] = [
   'writeResultsTo',
 ];
 
-/** Zmienione ustawienia, których nie widać w żadnym z siedmiu wierszy.
+/** Zmienione ustawienia, które nie mają własnej kontrolki w żadnym wierszu panelu.
  *
  * Bez tego zmiana `thinking` znikałaby z ekranu: licznik mówiłby „1 changed", a użytkownik nie
- * miałby jak zobaczyć CZEGO ani jak to cofnąć. */
+ * miałby jak zobaczyć CZEGO ani jak to cofnąć. Szare wiersze stoją w tym samym ujawnieniu, co
+ * reszta ustawień dziedziczonych, i liczą się do jego liczby — inaczej pokrywa mówiłaby
+ * o mniejszej liczbie rzeczy, niż pod nią stoi. */
 function noRowOfTheirOwn(changed: OverridableField[]): OverridableField[] {
   return changed.filter((field) => !HAS_A_ROW.includes(field));
 }
@@ -233,17 +264,25 @@ const LIST = 'paper flex flex-col';
  * paski przewijania, dopóki nikt nie kręci kółkiem, więc niepełny wiersz jest jedyną rzeczą,
  * która mówi „lista jedzie dalej" — sufit równy całkowitej liczbie wierszy wygląda jak koniec. */
 const SCROLLER = 'max-h-80 overflow-auto';
-const PICK = 'flex w-full flex-col gap-0.5 px-2.5 py-2 text-left hover:bg-hover';
+/* WIERSZ MENU, czyli `.row`: myjka pod kursorem, wciśnięcie, pierścień skupienia i jeden
+ * kształt zaznaczenia na całą aplikację. `flex-col items-start` robi z niego wiersz o dwóch
+ * liniach — to jest rozmieszczenie, a nie rola, więc należy do miejsca. */
+const PICK = 'row flex-col items-start gap-0.5 text-left';
 /* Podświetlenie klawiatury i myszy to JEDNA wartość — `at` niżej — więc i jedna klasa. Dwa
  * osobne wyróżnienia dają ekran, na którym dwie pozycje wyglądają na wybrane naraz. */
 const PICK_ON = 'bg-accent-soft';
-const PICK_NAME = 'min-w-0 truncate font-mono text-mono text-ink';
+/* `.value` niesie rodzinę maszynową RAZEM ze stopniem — `font-mono` dopisane obok `text-mono`
+ * było deklaracją tej samej rodziny dwa razy. Barwa idzie `data-tone`, nie klasą-bliźniakiem. */
+const PICK_NAME = 'value truncate';
 /* Opis jest PRZYCIĘTY DO DWÓCH WIERSZY i to jest decyzja, nie oszczędność miejsca: opisy
  * agentów w bibliotece właściciela mają po dwieście znaków, a lista, w której jedna pozycja
  * zajmuje sześć wierszy, przestaje być listą do przebiegnięcia wzrokiem. */
-const PICK_SAYS = 'line-clamp-2 text-note text-muted';
-const CREATE_ROW = 'border-t border-line px-2.5 py-2 text-left text-label text-muted';
-const NO_MATCH = 'px-2.5 py-2 text-note text-muted';
+const PICK_SAYS = 'lead line-clamp-2';
+/* Też wiersz menu, tyle że za linią. `border-t-line` maluje WYŁĄCZNIE górną krawędź: `.row`
+ * ma obrys 1 px w przezroczystości ze wszystkich stron, więc `border-line` zapaliłby też
+ * pozostałe trzy. */
+const CREATE_ROW = 'row border-t border-t-line text-label text-muted';
+const NO_MATCH = 'lead px-2.5 py-2';
 
 /** Czy agent pasuje do wpisanego szukania.
  *
@@ -301,7 +340,7 @@ function AgentChoice({
   if (agents.length === 0) {
     return (
       <>
-        <span className={FROM_AGENT}>You have not saved anyone yet.</span>
+        <span className="lead">You have not saved anyone yet.</span>
         <button type="button" className={QUIET} onClick={onCreateAgent}>
           ＋ Create a new agent
         </button>
@@ -343,9 +382,11 @@ function AgentChoice({
            * jedyną rzeczą w panelu, która niesie akcent. */
           <span className="text-accent">Pick an agent</span>
         ) : (
-          <span className={PICK_NAME}>{picked.name}</span>
+          <span className={PICK_NAME} data-tone="ink">
+            {picked.name}
+          </span>
         )}
-        <span className={FROM_AGENT}>{picked === undefined ? 'Choose' : 'Change'}</span>
+        <span className="lead">{picked === undefined ? 'Choose' : 'Change'}</span>
       </button>
     );
   }
@@ -440,7 +481,9 @@ function AgentChoice({
                   choose(one.id);
                 }}
               >
-                <span className={PICK_NAME}>{one.name}</span>
+                <span className={PICK_NAME} data-tone="ink">
+                  {one.name}
+                </span>
                 {one.summary === '' ? null : <span className={PICK_SAYS}>{one.summary}</span>}
               </button>
             ))
@@ -467,33 +510,30 @@ function AgentChoice({
 }
 
 interface WhoDoesThisProps extends AgentChoiceProps {
-  /** Znacznik „N changed" — tylko panel z rozwiązanym agentem ma co policzyć. */
-  chip?: ReactNode;
   /** Zdanie pod listą. Różne w obu panelach, bo mówią o różnych rzeczach. */
   note: string;
-  /** Szare wiersze „Agent uses: …" dla ustawień bez własnej kontrolki. */
-  inherited?: ReactNode;
 }
 
-/** Wiersz „Who does this" — jedna etykieta, jedna lista wyboru, w obu panelach ta sama. */
-function WhoDoesThis({ chip, note, inherited, ...choice }: WhoDoesThisProps): ReactElement {
+/** Wiersz „Who does this" — jedna etykieta, jedna lista wyboru, w obu panelach ta sama.
+ *
+ * 2026-08-31 — ZNACZNIK „N changed" I SZARE WIERSZE „Agent uses: …" WYPROWADZIŁY SIĘ STĄD do
+ * zwiniętego ujawnienia. Obie rzeczy mówią o ustawieniach, które od tego dnia stoją w środku,
+ * a licznik pokazany nad zamkniętą pokrywą i drugi raz na niej samej byłby dwoma żywymi
+ * regionami na jeden fakt (niezmiennik 13). */
+function WhoDoesThis({ note, ...choice }: WhoDoesThisProps): ReactElement {
   return (
-    <div className={ROW}>
-      <div className="flex items-baseline gap-2">
-        {/* `htmlFor` celuje w `step-agent` z `AgentChoice` — czyli w przycisk, kiedy lista jest
-            zwinięta, i w pole szukania, kiedy jest rozwinięta. Jeden identyfikator na obie
-            postacie, bo obie są TĄ SAMĄ kontrolką w dwóch stanach, a nigdy nie stoją obok
-            siebie. Przy pustej bibliotece nie ma żadnej z nich i etykieta zostaje bez celu —
-            świadomie: alternatywą jest pusta lista wyboru, czyli kontrolka, która nie ma czego
-            zrobić (niezmiennik 16). */}
-        <label htmlFor="step-agent" className={LABEL}>
-          Who does this
-        </label>
-        {chip}
-      </div>
+    <div data-row="who-does-this" className="stack">
+      {/* `htmlFor` celuje w `step-agent` z `AgentChoice` — czyli w przycisk, kiedy lista jest
+          zwinięta, i w pole szukania, kiedy jest rozwinięta. Jeden identyfikator na obie
+          postacie, bo obie są TĄ SAMĄ kontrolką w dwóch stanach, a nigdy nie stoją obok
+          siebie. Przy pustej bibliotece nie ma żadnej z nich i etykieta zostaje bez celu —
+          świadomie: alternatywą jest pusta lista wyboru, czyli kontrolka, która nie ma czego
+          zrobić (niezmiennik 16). */}
+      <label htmlFor="step-agent" className="label">
+        Who does this
+      </label>
       <AgentChoice {...choice} />
-      <span className={FROM_AGENT}>{note}</span>
-      {inherited}
+      <span className="lead">{note}</span>
     </div>
   );
 }
@@ -507,8 +547,8 @@ function NameRow({
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
   return (
-    <div className={ROW}>
-      <label htmlFor="step-name" className={LABEL}>
+    <div data-row="name" className="stack">
+      <label htmlFor="step-name" className="label">
         Name
       </label>
       <input
@@ -536,13 +576,13 @@ function WhatToDoRow({
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
   return (
-    <div className={ROW}>
-      <label htmlFor="step-instructions" className={LABEL}>
+    <div data-row="what-to-do" className="stack">
+      <label htmlFor="step-instructions" className="label">
         What to do
       </label>
       <textarea
         id="step-instructions"
-        className={AREA}
+        className={FIELD}
         value={value}
         onChange={(event) => {
           onEditStep({ instructions: event.target.value });
@@ -552,7 +592,20 @@ function WhatToDoRow({
   );
 }
 
-/** Wiersz `How many at once` — też pole samego kroku, więc też w obu panelach. */
+/** Ile kopii tego kroku wolno postawić naraz [T3 §4.4]. */
+const MOST_COPIES = 8;
+
+/** Wiersz `How many at once` — też pole samego kroku, więc też w obu panelach.
+ *
+ * 2026-08-31 — ZDANIE O SUFICIE. `copiesFrom` przycina do ośmiu i robiło to PO CICHU: wpisanie
+ * „9" zamieniało się w polu na „8", a ekran nie mówił dlaczego. Człowiek widzi wtedy liczbę,
+ * której nie wpisał, i nie ma jak rozstrzygnąć, czy to sufit, czy pomyłka jego palców.
+ *
+ * Zdanie stoi przy ośmiu i tylko przy ośmiu, czyli DOKŁADNIE w chwili, w której przycięcie
+ * właśnie się wydarzyło (albo w której następne się wydarzy). Napisane pod polem na stałe
+ * byłoby szumem przy każdej innej liczbie, a szum czyta się jak brak zdania. Stanu tu nie ma
+ * i nie jest potrzebny: pole jest sterowane, więc „po przycięciu" i „ósemka wpisana wprost"
+ * to ten sam widok — i ta sama prawda o suficie. */
 function CopiesRow({
   value,
   onEditStep,
@@ -561,8 +614,8 @@ function CopiesRow({
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
   return (
-    <div className={ROW}>
-      <label htmlFor="step-copies" className={LABEL}>
+    <div data-row="how-many-at-once" className="stack">
+      <label htmlFor="step-copies" className="label">
         How many at once
       </label>
       <input
@@ -570,15 +623,20 @@ function CopiesRow({
         className={FIELD}
         type="number"
         min={1}
-        max={8}
+        max={MOST_COPIES}
         value={String(value)}
         onChange={(event) => {
           onEditStep({ copies: copiesFrom(event.target.value) });
         }}
       />
-      <span className={FROM_AGENT}>
+      <span className="lead">
         More than one only helps when the copies work on different questions.
       </span>
+      {value < MOST_COPIES ? null : (
+        <span className="lead">
+          Eight at once is the most, so anything higher lands here as eight.
+        </span>
+      )}
     </div>
   );
 }
@@ -621,8 +679,8 @@ function WhenItFailsRow({
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
   return (
-    <div className={ROW}>
-      <label htmlFor="step-when-it-fails" className={LABEL}>
+    <div data-row="when-it-fails" className="stack">
+      <label htmlFor="step-when-it-fails" className="label">
         If this step does not pass
       </label>
       <select
@@ -637,7 +695,7 @@ function WhenItFailsRow({
         <option value="carry-on">Carry on anyway</option>
         <option value="ask-me">Ask me what to do</option>
       </select>
-      <span className={FROM_AGENT}>
+      <span className="lead">
         Carrying on is what a step does unless you say otherwise: the work goes to the steps after
         it even though it did not pass, and they are told so.
       </span>
@@ -653,8 +711,8 @@ function TriesRow({
   onEditWayBack: (turns: number) => void;
 }): ReactElement {
   return (
-    <div className={ROW}>
-      <label htmlFor="step-tries" className={LABEL}>
+    <div data-row="try-again" className="stack">
+      <label htmlFor="step-tries" className="label">
         Try again up to
       </label>
       <input
@@ -668,7 +726,7 @@ function TriesRow({
           onEditWayBack(turnsFrom(event.target.value));
         }}
       />
-      <span className={FROM_AGENT}>
+      <span className="lead">
         The tester sends the work back until it passes, or until the tries run out.
       </span>
     </div>
@@ -687,63 +745,14 @@ function turnsFrom(typed: string): number {
   return Math.min(10, Math.max(1, value));
 }
 
-/** Trzy jawne miejsca pracy, które schema umie zachować bez dodatkowej ścieżki. */
-const FOLDER_CHOICES: ReadonlyArray<{ folder: Folder; label: string; note: string }> = [
-  {
-    folder: { use: 'project' },
-    label: 'Work in the project folder',
-    note: 'Use the files already open for this project.',
-  },
-  {
-    folder: { use: 'fresh-copy' },
-    label: 'Start in a new copy of the files',
-    note: 'This prevents two independent steps from overwriting one another.',
-  },
-  {
-    folder: { use: 'same-copy' },
-    label: 'Continue in the same files as the previous step',
-    note: 'Use the work left by the step immediately before this one.',
-  },
-];
-
-/** Jedna wzajemnie wykluczająca się decyzja zamiast binarnego przełącznika.
+/* WŁASNEJ LISTY MIEJSC PRACY TU JUŻ NIE MA (2026-08-31).
  *
- * 2026-08-28 (T-151): `same-copy` było prawdziwą wartością pliku i nie miało kontrolki, więc
- * zamontowany panel kłamał o istniejącym workflow. Trzy radia są jednym faktem o `folder`:
- * kliknięcie zapisuje dokładnie jedną wartość, a ponowne otwarcie zaznacza dokładnie tę samą.
- * Ręcznie wpisane `pick` pozostaje nietknięte, dopóki człowiek jawnie nie wybierze jednej z
- * trzech wspieranych opcji — żadne samo otwarcie panelu nie kasuje cudzej ścieżki. */
-function FolderChoiceRow({
-  value,
-  onEditStep,
-}: {
-  value: Folder;
-  onEditStep: (fields: AgentStepFields) => void;
-}): ReactElement {
-  return (
-    <fieldset className="flex flex-col gap-2">
-      <legend className={LABEL}>Where it works</legend>
-      {FOLDER_CHOICES.map((choice) => (
-        <label key={choice.folder.use} className="flex items-baseline gap-2 text-body text-ink">
-          <input
-            type="radio"
-            name="step-folder"
-            value={choice.folder.use}
-            aria-label={choice.label}
-            checked={value.use === choice.folder.use}
-            onChange={() => {
-              onEditStep({ folder: choice.folder });
-            }}
-          />
-          <span className="flex flex-col gap-0.5">
-            <span>{choice.label}</span>
-            <span className={FROM_AGENT}>{choice.note}</span>
-          </span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
+ * Stała tu trzecia kopia tej samej decyzji — obok `check-panel.tsx` i `serve-panel.tsx` —
+ * z własnym pytaniem („Where it works" kontra „Where it runs") i własnymi brzmieniami tych
+ * samych trzech odpowiedzi. Powód scalenia w całości stoi w `./where-it-works.tsx`; tutaj
+ * zostaje tylko to, co było w tej kopii prawdziwe i zostało przeniesione: `pick` nie zaznacza
+ * niczego (niezmiennik 17), a wybór jest jednym faktem o `folder` — kliknięcie zapisuje jedną
+ * wartość, ponowne otwarcie zaznacza tę samą [T-151]. */
 
 export function StepPanel({
   step,
@@ -754,6 +763,7 @@ export function StepPanel({
   onEdit,
   onEditStep,
   onReset,
+  more,
 }: StepPanelProps): ReactElement {
   /* Wartości EFEKTYWNE do pokazania i lista zmienionych pól — jedno wywołanie, jeden fakt.
    * Licznik „N changed" jest długością tej listy i nie istnieje nigdzie indziej: osobna liczba
@@ -765,7 +775,7 @@ export function StepPanel({
   const mark = (field: OverridableField) =>
     changed.includes(field) ? (
       <>
-        <span className={FROM_AGENT}>●</span>
+        <span className="label">●</span>
         <button type="button" className={QUIET} onClick={() => onReset(field)}>
           Reset
         </button>
@@ -774,8 +784,14 @@ export function StepPanel({
 
   const wasUsing = (field: OverridableField) =>
     changed.includes(field) ? (
-      <span className={FROM_AGENT}>Agent uses: {agentUses(field, agent)}</span>
+      <span className="lead">Agent uses: {agentUses(field, agent)}</span>
     ) : null;
+
+  /* Szare wiersze dla ustawień, które zmieniono, a które nie mają własnej kontrolki. Liczą się
+   * do tego, co stoi w środku: bez nich zmiana `thinking` znikałaby z ekranu — licznik mówiłby
+   * „1 changed", a człowiek nie miałby jak zobaczyć CZEGO ani jak to cofnąć. */
+  const grey = noRowOfTheirOwn(changed);
+  const brought = more ?? [];
 
   return (
     <>
@@ -786,91 +802,126 @@ export function StepPanel({
         agents={agents}
         onChooseAgent={onChooseAgent}
         onCreateAgent={onCreateAgent}
-        chip={changed.length > 0 ? <span className={CHIP}>{changed.length} changed</span> : null}
         note="This comes from the agent. Changing it here does not change the agent."
-        inherited={noRowOfTheirOwn(changed).map((field) => (
-          <div key={field} className="flex items-baseline gap-2">
-            {mark(field)}
-            {wasUsing(field)}
-          </div>
-        ))}
       />
 
       <WhatToDoRow value={step.instructions} onEditStep={onEditStep} />
 
+      <WhereItWorks
+        group="step-folder"
+        value={step.folder}
+        onChoose={(folder) => {
+          onEditStep({ folder });
+        }}
+      />
+
       <CopiesRow value={step.copies} onEditStep={onEditStep} />
 
-      <div className={ROW}>
-        <div className="flex items-baseline gap-2">
-          <label htmlFor="step-file-access" className={LABEL}>
-            Can it change files
-          </label>
-          {mark('fileAccess')}
+      {/* WSZYSTKO PONIŻEJ MA DZIAŁAJĄCĄ WARTOŚĆ DZIEDZICZONĄ Z AGENTA, więc krok, którego nikt
+          tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno to schować:
+          za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
+      <MoreSettings inside={3 + grey.length + brought.length} changed={changed.length}>
+        <div data-row="can-it-change-files" className="stack">
+          <div className="flex items-baseline gap-2">
+            <label htmlFor="step-file-access" className="label">
+              Can it change files
+            </label>
+            {mark('fileAccess')}
+          </div>
+          <select
+            id="step-file-access"
+            className={FIELD}
+            value={effective.fileAccess}
+            onChange={(event) => {
+              onEdit({ fileAccess: fileAccessFrom(event.target.value, effective.fileAccess) });
+            }}
+          >
+            {FILE_ACCESS.map((one) => (
+              <option key={one.value} value={one.value}>
+                {one.label}
+              </option>
+            ))}
+          </select>
+          {wasUsing('fileAccess')}
         </div>
-        <select
-          id="step-file-access"
-          className={FIELD}
-          value={effective.fileAccess}
-          onChange={(event) => {
-            onEdit({ fileAccess: fileAccessFrom(event.target.value, effective.fileAccess) });
-          }}
-        >
-          {FILE_ACCESS.map((one) => (
-            <option key={one.value} value={one.value}>
-              {one.label}
-            </option>
-          ))}
-        </select>
-        {wasUsing('fileAccess')}
-      </div>
 
-      <div className={ROW}>
-        <div className="flex items-baseline gap-2">
-          <label htmlFor="step-give-up-after" className={LABEL}>
-            Give up after
-          </label>
-          {mark('giveUpAfterMinutes')}
+        <div data-row="give-up-after" className="stack">
+          <div className="flex items-baseline gap-2">
+            <label htmlFor="step-give-up-after" className="label">
+              Give up after
+            </label>
+            {mark('giveUpAfterMinutes')}
+          </div>
+          {/* JEDNOSTKA PRZY POLU, nie w głowie autora. Do 2026-08-31 stało tu gołe pole
+              liczbowe: „20" bez ani jednego słowa o tym, czego jest dwadzieścia. Jednostkę
+              znała wyłącznie `minutes()`, czyli szary wiersz „Agent uses: …" — widoczny dopiero
+              wtedy, gdy krok już się od agenta różni. */}
+          <div className="flex items-baseline gap-2">
+            <input
+              id="step-give-up-after"
+              className={FIELD}
+              type="number"
+              min={0}
+              value={String(effective.giveUpAfterMinutes)}
+              onChange={(event) => {
+                onEdit({ giveUpAfterMinutes: minutesFrom(event.target.value) });
+              }}
+            />
+            <span className="label">minutes</span>
+          </div>
+          {/* ZERO MÓWI, ŻE JEST ZEREM. `minutesFrom('')` daje 0, a 0 znaczy „bez limitu" — więc
+              wyczyszczenie tego pola zdejmowało krokowi limit czasu i pole pokazywało wtedy
+              „0", a nie „no limit". Zdanie stoi TYLKO przy zerze: napisane pod polem na stałe
+              byłoby prawdą o czymś, co się właśnie nie dzieje, przy każdej innej liczbie. */}
+          {effective.giveUpAfterMinutes === 0 ? (
+            <span className="lead">
+              Zero is no limit: this step runs until it is done. Type a number to give it one.
+            </span>
+          ) : null}
+          {wasUsing('giveUpAfterMinutes')}
         </div>
-        <input
-          id="step-give-up-after"
-          className={FIELD}
-          type="number"
-          min={0}
-          value={String(effective.giveUpAfterMinutes)}
-          onChange={(event) => {
-            onEdit({ giveUpAfterMinutes: minutesFrom(event.target.value) });
-          }}
-        />
-        {wasUsing('giveUpAfterMinutes')}
-      </div>
 
-      <div className={ROW}>
-        <div className="flex items-baseline gap-2">
-          <label htmlFor="step-write-results-to" className={LABEL}>
-            Write results to
-          </label>
-          {mark('writeResultsTo')}
+        <div data-row="write-results-to" className="stack">
+          <div className="flex items-baseline gap-2">
+            <label htmlFor="step-write-results-to" className="label">
+              Write results to
+            </label>
+            {mark('writeResultsTo')}
+          </div>
+          <input
+            id="step-write-results-to"
+            className={FIELD}
+            value={effective.writeResultsTo}
+            onChange={(event) => {
+              onEdit({ writeResultsTo: event.target.value });
+            }}
+          />
+          {wasUsing('writeResultsTo')}
         </div>
-        <input
-          id="step-write-results-to"
-          className={FIELD}
-          value={effective.writeResultsTo}
-          onChange={(event) => {
-            onEdit({ writeResultsTo: event.target.value });
-          }}
-        />
-        {wasUsing('writeResultsTo')}
-      </div>
+
+        {grey.map((field) => (
+          <div key={field} data-row={field} className="flex items-baseline gap-2">
+            {mark(field)}
+            {wasUsing(field)}
+          </div>
+        ))}
+
+        {brought}
+      </MoreSettings>
     </>
   );
 }
 
 /** 1–8 kopii [T3 §4.4]. Poza zakresem wraca do jedynki, bo „zero kopii" to krok, który nie
- * biegnie, a taki krok kasuje się, nie zeruje. */
+ * biegnie, a taki krok kasuje się, nie zeruje.
+ *
+ * Sufit jest tą samą stałą, którą wiersz wypisuje w polu (`max`) i nazywa zdaniem — do
+ * 2026-08-31 była wpisana w trzech miejscach jako trzy różne ósemki, a przycięcie nie miało
+ * na ekranie ani jednego słowa. */
 function copiesFrom(raw: string): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return 1;
-  return Math.min(8, Math.max(1, parsed));
+  return Math.min(MOST_COPIES, Math.max(1, parsed));
 }
 
 /** „Bez limitu" to zero, nigdy pusta wartość [T4 §4.3, reguła 1]. */
@@ -896,8 +947,9 @@ export interface PickAnAgentProps {
 
 /** Panel kroku, który nie ma jeszcze agenta — czyli KAŻDEGO kroku prosto z `＋ Add step`.
  *
- * Dlaczego osobny komponent, a nie siedem wierszy z ukrytą częścią: trzy z siedmiu wierszy
- * `StepPanel` pokazują wartości EFEKTYWNE, a te nie istnieją, dopóki nie ma od kogo dziedziczyć.
+ * Dlaczego osobny komponent, a nie ten sam panel z ukrytą częścią: wiersze `StepPanel` stojące
+ * za ujawnieniem pokazują wartości EFEKTYWNE, a te nie istnieją, dopóki nie ma od kogo
+ * dziedziczyć — więc ujawnienie nazwałoby liczbę rzeczy, których nie ma z czego policzyć.
  * Wypisanie w nich zer i pustych napisów byłoby ekranem, który mówi nieprawdę o tym, co się
  * stanie po uruchomieniu, a wyszarzenie ich obiecuje ustawienie „na później".
  *
@@ -1028,7 +1080,7 @@ export function PanelForStep({
 }: PanelForStepProps): ReactElement {
   if (step.kind === 'checkpoint') {
     return (
-      <div data-step-panel className="flex flex-col gap-3">
+      <div data-step-panel className="enter flex flex-col gap-3">
         <CheckpointPanel step={step} onEditStep={onEditCheckpoint} />
       </div>
     );
@@ -1036,7 +1088,7 @@ export function PanelForStep({
 
   if (step.kind === 'check') {
     return (
-      <div data-step-panel className="flex flex-col gap-3">
+      <div data-step-panel className="enter flex flex-col gap-3">
         <CheckPanel step={step} onEditStep={onEditCheck ?? nowhereToWrite} />
       </div>
     );
@@ -1044,7 +1096,7 @@ export function PanelForStep({
 
   if (step.kind === 'serve') {
     return (
-      <div data-step-panel className="flex flex-col gap-3">
+      <div data-step-panel className="enter flex flex-col gap-3">
         <ServePanel
           step={step}
           onEditStep={onEditServe}
@@ -1059,7 +1111,7 @@ export function PanelForStep({
   const agent = agents.find((one) => one.id === step.agent);
   if (agent === undefined) {
     return (
-      <div data-step-panel className="flex flex-col gap-3">
+      <div data-step-panel className="enter flex flex-col gap-3">
         <PickAnAgent
           step={step}
           agents={agents}
@@ -1072,66 +1124,131 @@ export function PanelForStep({
   }
 
   return (
-    <div data-step-panel className="flex flex-col gap-3">
-      <StepPanel
+    <div data-step-panel className="enter flex flex-col gap-3">
+      <AgentPanel
         step={step}
         agent={agent}
         agents={agents}
+        skills={skills}
         onChooseAgent={onChooseAgent}
         onCreateAgent={onCreateAgent}
-        onEdit={(edit) => {
-          onEdit(agent, edit);
-        }}
+        onEdit={onEdit}
         onEditStep={onEditStep}
         onReset={onReset}
+        onChooseSkills={onChooseSkills}
+        wayBack={wayBack}
+        onEditWayBack={onEditWayBack}
       />
+    </div>
+  );
+}
 
-      {/* Jedna decyzja o miejscu pracy, obejmująca wszystkie trzy wartości, które człowiek może
-          wybrać w oknie. Nie jest nadpisaniem agenta, więc jedzie przez `onEditStep` i autosave. */}
-      <FolderChoiceRow value={step.folder} onEditStep={onEditStep} />
+interface AgentPanelProps extends Omit<StepPanelProps, 'onEdit' | 'more'> {
+  skills: readonly string[];
+  /** Agent jedzie Z POWROTEM do wołającego — ten sam powód, co w `PanelForStepProps`. */
+  onEdit: (agent: Agent, edit: Overrides) => void;
+  onChooseSkills: (choice: SkillChoice) => void;
+  wayBack: number | null;
+  onEditWayBack: (turns: number) => void;
+}
 
-      {/* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */}
-      {wayBack === null ? null : <TriesRow value={wayBack} onEditWayBack={onEditWayBack} />}
+/**
+ * Panel kroku, którego agent DAŁ SIĘ rozwiązać — czyli `StepPanel` razem z wierszami, które są
+ * osobnymi komponentami.
+ *
+ * 2026-08-31 — WYDZIELONY Z `PanelForStep`, i to nie jest porządkowanie. `PanelForStep` ma cztery
+ * wcześniejsze wyjścia (punkt kontrolny, sprawdzenie, „uruchom i zostaw", krok bez agenta),
+ * a pytanie o to, co ten folder ma do użyczenia, jest hakiem — haka nie wolno wołać za
+ * warunkiem. Tutaj żadnego warunku przed nim nie ma.
+ *
+ * Odsianie wierszy dzieje się TU, przed oddaniem ich panelowi, bo zwinięta pokrywa nazywa ich
+ * liczbę: wiersz, który odda `null`, policzony jako stojący, robi z tej liczby zdanie o panelu,
+ * którego nikt nie zobaczy. Odpowiedzi „czy ten wiersz powstanie" są w plikach samych wierszy
+ * i to te same, którymi rozstrzygają to u siebie.
+ */
+function AgentPanel({
+  step,
+  agent,
+  agents,
+  skills,
+  onChooseAgent,
+  onCreateAgent,
+  onEdit,
+  onEditStep,
+  onReset,
+  onChooseSkills,
+  wayBack,
+  onEditWayBack,
+}: AgentPanelProps): ReactElement {
+  const material = useHostMaterial();
+  const borrows = step.borrow ?? {};
 
-      {/* I co się dzieje, kiedy próby się skończą — albo kiedy krok padnie z każdego innego
-          powodu. Stoi przy każdym kroku agenta, bo ślepy punkt jest ten sam niezależnie od tego,
-          dlaczego krok nie przeszedł. */}
-      <WhenItFailsRow value={step.whenItFails} onEditStep={onEditStep} />
+  const more: ReactNode[] = [];
 
-      {/* CO TEN KROK PŁACI NASTĘPNEMU. Stoi zaraz za „co, gdy nie przejdzie", bo obie odpowiedzi
-          dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla
-          którego ten wiersz w ogóle powstał, stoi w całości w `./handover-row.tsx`. */}
-      <HandoverRow value={step.handover} onEditStep={onEditStep} />
+  /* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */
+  if (wayBack !== null) {
+    more.push(<TriesRow key="try-again" value={wayBack} onEditWayBack={onEditWayBack} />);
+  }
 
-      {/* Wiersz Skills, zamontowany PO SIEDMIU wierszach i poza `StepPanel` — patrz nagłówek.
-          Przy pustej liście nie powstaje wcale: kiedy w katalogach agentów nie leży ani jedna
-          umiejętność, „all" i „none" znaczą dokładnie to samo, a przełącznik między dwoma
-          identycznymi skutkami jest kontrolką bez skutku (niezmiennik 16). Wiersza nie ma też
-          przy agencie na Codeksie i tę decyzję podejmuje sam komponent. */}
-      {skills.length === 0 ? null : (
-        <SkillsRow
-          mode={SKILL_SUBSETTING}
-          runsWith={agent.runsWith}
-          available={[...skills]}
-          value={step.skills}
-          onChoose={onChooseSkills}
-        />
-      )}
+  /* Co się dzieje, kiedy próby się skończą — albo kiedy krok padnie z każdego innego powodu.
+     Stoi przy każdym kroku agenta, bo ślepy punkt jest ten sam niezależnie od tego, dlaczego
+     krok nie przeszedł. */
+  more.push(
+    <WhenItFailsRow key="when-it-fails" value={step.whenItFails} onEditStep={onEditStep} />,
+  );
 
-      {/* Co ten kafelek bierze z repozytorium, w którym pracuje bieg. Jedzie tą samą drogą, co
-          nazwa i instrukcje — `onEditStep`, czyli `commit`, czyli autosave — bo `borrow` jest
-          polem samego KROKU, a nie nadpisaniem agenta. Wiersz sam rozstrzyga, czy w ogóle
-          powstać: przy folderze bez `.claude/` i kroku, który nic nie pożycza, nie ma go wcale
-          (niezmiennik 16). */}
-      <BorrowRowForThisProject
-        value={step.borrow ?? {}}
+  /* CO TEN KROK PŁACI NASTĘPNEMU. Stoi zaraz za „co, gdy nie przejdzie", bo obie odpowiedzi
+     dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla którego
+     ten wiersz w ogóle powstał, stoi w całości w `./handover-row.tsx`. */
+  more.push(<HandoverRow key="handover" value={step.handover} onEditStep={onEditStep} />);
+
+  /* Wiersza Skills nie ma przy agencie na Codeksie ani przy pustym katalogu umiejętności —
+     powód w całości stoi przy `skillsRowStands`. */
+  if (skillsRowStands(agent.runsWith, skills)) {
+    more.push(
+      <SkillsRow
+        key="skills"
+        mode={SKILL_SUBSETTING}
+        runsWith={agent.runsWith}
+        available={[...skills]}
+        value={step.skills}
+        onChoose={onChooseSkills}
+      />,
+    );
+  }
+
+  /* Co ten kafelek bierze z repozytorium, w którym pracuje bieg. Jedzie tą samą drogą, co nazwa
+     i instrukcje — `onEditStep`, czyli `commit`, czyli autosave — bo `borrow` jest polem samego
+     KROKU, a nie nadpisaniem agenta. */
+  if (borrowRowStands(material, borrows)) {
+    more.push(
+      <BorrowRow
+        key="borrow"
+        material={material}
+        value={borrows}
         onChoose={(borrow) => {
           /* Pusty wybór jedzie jako BRAK KLUCZA, nie `{}`: `JSON.stringify` zdejmuje pole
              o wartości `undefined`, więc krok, z którego wszystko odznaczono, wraca do kształtu
              pliku sprzed tego zadania — co do bajtu. */
           onEditStep({ borrow: nothingBorrowed(borrow) ? undefined : borrow });
         }}
-      />
-    </div>
+      />,
+    );
+  }
+
+  return (
+    <StepPanel
+      step={step}
+      agent={agent}
+      agents={agents}
+      onChooseAgent={onChooseAgent}
+      onCreateAgent={onCreateAgent}
+      onEdit={(edit) => {
+        onEdit(agent, edit);
+      }}
+      onEditStep={onEditStep}
+      onReset={onReset}
+      more={more}
+    />
   );
 }

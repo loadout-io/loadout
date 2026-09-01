@@ -77,25 +77,32 @@ export class ScreenBoundary extends Component<ScreenBoundaryProps, ScreenBoundar
   private fallback(broke: string): ReactElement {
     const { section, onLeave } = this.props;
     return (
+      /* WEJŚCIE SPRĘŻYNĄ, 2026-08-31 (DESIGN §7). To zdanie POJAWIA SIĘ dokładnie tam, gdzie
+         chwilę wcześniej stała treść, którą człowiek czytał. Podmiana skokiem czyta się wtedy
+         jak przeskok widoku, a nie jak wiadomość o awarii. JEDEN region — kiedy osłona rysuje
+         to zdanie, ekranu sekcji w drzewie nie ma wcale, więc sufit dwóch animujących się
+         regionów na zdarzenie (ARCHITECTURE §7) zostaje niewydany. */
       <div
         data-screen-broke={section}
-        className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center"
+        className="enter flex h-full flex-col items-center justify-center gap-3 p-4 text-center"
       >
-        <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-fail-edge text-fail">
+        {/* `.mark` w tonie awarii: ten sam znak pustego miejsca, inna krawędź. Do 2026-08-31
+            stała tu ręczna kopia o 8 px mniejsza niż prymityw — DESIGN §6 rozstrzyga 40 px. */}
+        <span className="mark" data-tone="fail">
           ◇
         </span>
         <p className="text-ink">This screen stopped working, so Loadout kept the rest running.</p>
         {broke === '' ? null : (
-          <p data-screen-broke-why className="max-w-prose font-mono text-mono text-muted">
+          /* `.value`: rodzina mono wchodzi RAZEM ze stopniem, a z nią `user-select: text`.
+             `body` wyłącza zaznaczanie w całej aplikacji, więc bez tego był to ślad awarii,
+             którego nie da się skopiować do zgłoszenia. `max-w-prose` zostaje — to układ,
+             a układu prymityw nie wchłania. */
+          <p data-screen-broke-why className="value max-w-prose">
             {broke}
           </p>
         )}
         {onLeave === null ? null : (
-          <button
-            type="button"
-            className="h-8 rounded-sm border border-line-strong bg-raised px-3 text-ui text-ink"
-            onClick={onLeave}
-          >
+          <button type="button" className="btn" onClick={onLeave}>
             Go to Run
           </button>
         )}

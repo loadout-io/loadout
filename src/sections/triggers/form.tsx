@@ -54,13 +54,10 @@ const CADENCES: readonly { readonly value: TriggerCadence; readonly label: strin
   { value: 60, label: 'Every hour' },
 ];
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
-const FIELD = 'field';
-const PRIMARY = 'h-8 rounded-sm bg-accent px-4 text-ui text-bg';
-const PRIMARY_OFF = 'h-8 rounded-sm bg-raised px-4 text-ui text-muted';
-const QUIET = 'h-8 rounded-sm border border-line px-3 text-ui text-body';
-const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
+/* 2026-08-31: siedem stałych z listami klas zeszło do warstwy prymitywów (`theme.css`).
+ * `PRIMARY_OFF` znikł bez zamiennika i to jest sedno tej zmiany: stan wyłączony jest REGUŁĄ
+ * przy `:disabled`, a nie drugim przyciskiem — a każdy z tych przycisków nosi `disabled` już
+ * od dawna, więc bliźniak malował na szaro to, co i tak było wyłączone. */
 
 function cadenceFrom(raw: string, current: TriggerCadence): TriggerCadence {
   const parsed = Number.parseInt(raw, 10);
@@ -110,7 +107,8 @@ export function TriggerForm({
   return (
     <form
       data-trigger-form
-      className="flex flex-col gap-3"
+      data-gap="3"
+      className="stack"
       onSubmit={(event) => {
         event.preventDefault();
         if (missing !== null || busy !== 'idle') return;
@@ -121,14 +119,14 @@ export function TriggerForm({
         {mode === 'create' ? 'New Linear trigger' : 'Edit Linear trigger'}
       </h2>
 
-      <div className={ROW}>
-        <label htmlFor="trigger-connector" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="trigger-connector" className="label">
           Connector
         </label>
         <select
           id="trigger-connector"
           data-trigger-field="connector"
-          className={FIELD}
+          className="field"
           disabled={busy !== 'idle'}
           value={value.connector}
           onChange={(event) => {
@@ -145,17 +143,15 @@ export function TriggerForm({
         </select>
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="trigger-api-key" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="trigger-api-key" className="label">
           Linear API key
         </label>
-        {mode === 'edit' && hasSavedKey ? (
-          <p className="text-body text-muted">A Linear key is saved.</p>
-        ) : null}
+        {mode === 'edit' && hasSavedKey ? <p className="lead">A Linear key is saved.</p> : null}
         <input
           id="trigger-api-key"
           data-trigger-field="apiKey"
-          className={FIELD}
+          className="field"
           type="password"
           autoComplete="new-password"
           disabled={busy !== 'idle'}
@@ -167,26 +163,24 @@ export function TriggerForm({
             onChange({ ...value, apiKey: event.target.value });
           }}
         />
-        <p className="text-note text-muted">
-          Create or copy it in Linear Settings → Security &amp; access.
-        </p>
+        <p className="lead">Create or copy it in Linear Settings → Security &amp; access.</p>
       </div>
 
-      <div className={ROW}>
-        <span className={LABEL}>When</span>
-        <p data-trigger-condition className="text-body text-ink">
+      <div className="stack">
+        <span className="label">When</span>
+        <p data-trigger-condition className="text-ink">
           An issue is assigned to you
         </p>
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="trigger-workspace" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="trigger-workspace" className="label">
           Workspace
         </label>
         <select
           id="trigger-workspace"
           data-trigger-field="workspace"
-          className={FIELD}
+          className="field"
           disabled={busy !== 'idle'}
           value={value.workspace}
           onChange={(event) => {
@@ -208,19 +202,19 @@ export function TriggerForm({
             </option>
           ))}
         </select>
-        <p className="text-note text-muted">
+        <p className="lead">
           Runs from this trigger always use this workspace, even while another one is open.
         </p>
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="trigger-cadence" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="trigger-cadence" className="label">
           Check every
         </label>
         <select
           id="trigger-cadence"
           data-trigger-field="cadence"
-          className={FIELD}
+          className="field"
           disabled={busy !== 'idle'}
           value={String(value.pollEveryMinutes)}
           onChange={(event) => {
@@ -236,19 +230,19 @@ export function TriggerForm({
             </option>
           ))}
         </select>
-        <p data-trigger-cadence-limit className="text-note text-muted">
+        <p data-trigger-cadence-limit className="lead">
           Checks run while Loadout is open.
         </p>
       </div>
 
-      <div className={ROW}>
-        <label htmlFor="trigger-workflow" className={LABEL}>
+      <div className="stack">
+        <label htmlFor="trigger-workflow" className="label">
           Workflow
         </label>
         <select
           id="trigger-workflow"
           data-trigger-field="workflow"
-          className={FIELD}
+          className="field"
           disabled={busy !== 'idle'}
           value={value.workflow}
           onChange={(event) => {
@@ -268,12 +262,12 @@ export function TriggerForm({
           data-trigger-action="test"
           type="button"
           disabled={!canTest || testing || busy !== 'idle'}
-          className={!canTest || testing || busy !== 'idle' ? PRIMARY_OFF : QUIET}
+          className="btn-quiet"
           onClick={onTest}
         >
           {testing ? 'Testing…' : 'Test connection'}
         </button>
-        <button data-trigger-action="cancel" type="button" className={QUIET} onClick={onCancel}>
+        <button data-trigger-action="cancel" type="button" className="btn-quiet" onClick={onCancel}>
           Cancel
         </button>
         <button
@@ -281,39 +275,44 @@ export function TriggerForm({
           type="submit"
           disabled={missing !== null || busy !== 'idle'}
           aria-describedby={missing === null ? undefined : 'trigger-save-blocked'}
-          className={`ml-auto ${missing === null && busy === 'idle' ? PRIMARY : PRIMARY_OFF}`}
+          className="btn-primary ml-auto"
         >
           {busy === 'saving' ? 'Saving…' : 'Save'}
         </button>
       </div>
 
       {missing === null ? null : (
-        <p id="trigger-save-blocked" data-trigger-save-blocked className="text-body text-muted">
+        <p id="trigger-save-blocked" data-trigger-save-blocked className="lead">
           {missing}
         </p>
       )}
 
+      {/* WEJŚCIE, bo to zdanie jest CAŁĄ odpowiedzią na „Test connection": bez niego kliknięcie
+          kończy się ciszą, a cisza czyta się jak kliknięcie, które nie doszło (DESIGN §7).
+          Jedno zdarzenie, jeden region — `refusal` niżej stawia inna droga (Save), więc sufit
+          dwóch regionów z ARCHITECTURE §7 zostaje niewyczerpany. */}
       {connection.kind === 'idle' || connection.kind === 'testing' ? null : (
         <p
           data-trigger-connection={connection.kind}
           role={connection.kind === 'refused' ? 'alert' : undefined}
-          className={connection.kind === 'refused' ? 'text-body text-fail' : 'text-body text-ink'}
+          className="lead enter"
+          data-tone={connection.kind === 'refused' ? 'fail' : 'ink'}
         >
           {connection.sentence}
         </p>
       )}
 
       {refusal === null ? null : (
-        <p data-trigger-refusal role="alert" className="text-body text-fail">
+        <p data-trigger-refusal role="alert" className="lead enter" data-tone="fail">
           {refusal}
         </p>
       )}
 
       {mode === 'edit' ? (
-        <div className="flex flex-col gap-2 border-t border-line pt-3">
+        <div data-gap="2" className="stack border-t border-line pt-3">
           {confirmingDelete ? (
             <>
-              <p data-trigger-delete-warning className="text-body text-ink">
+              <p data-trigger-delete-warning className="text-ink">
                 Any saved issue waiting to start will be discarded.
               </p>
               <div className="flex items-center gap-2">
@@ -321,7 +320,7 @@ export function TriggerForm({
                   data-trigger-action="confirm-delete"
                   type="button"
                   disabled={busy !== 'idle'}
-                  className={DANGER}
+                  className="btn-danger"
                   onClick={() => onConfirmDelete?.()}
                 >
                   {busy === 'deleting' ? 'Deleting…' : 'Delete trigger'}
@@ -330,7 +329,7 @@ export function TriggerForm({
                   data-trigger-action="keep"
                   type="button"
                   disabled={busy !== 'idle'}
-                  className={QUIET}
+                  className="btn-quiet"
                   onClick={onKeep}
                 >
                   Keep it
@@ -342,7 +341,7 @@ export function TriggerForm({
               data-trigger-action="delete"
               type="button"
               disabled={busy !== 'idle'}
-              className={`mr-auto ${DANGER}`}
+              className="btn-danger mr-auto"
               onClick={onDelete}
             >
               Delete

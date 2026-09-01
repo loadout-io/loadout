@@ -50,6 +50,9 @@ pub mod handoffs;
 pub mod history;
 pub mod import;
 pub mod isolate;
+
+/// Lab: zestawy przypadkow, kandydatki i macierz wynikow.
+pub mod lab;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.
 pub mod memory;
 /// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.

@@ -48,6 +48,16 @@ export interface Block {
 }
 
 export interface Strip {
+  /**
+   * Kroki biegu, jeden do jednego z planem.
+   *
+   * 2026-08-31 — DŁUG ZGŁOSZONY WPROST: od dziś NIKT ich nie rysuje. Torek bloków zszedł
+   * z paska (był drugim rysunkiem planu obok obrazu w kolumnie pracy, niezmiennik 13), a te
+   * dane zostały, bo z nich liczy się PODPIS — i tylko on. Znaczy to, że `ended` i `wentWrong`
+   * nie mają dziś ani jednego czytelnika poza własnym testem, czyli są dokładnie tą rzeczą,
+   * której zabrania niezmiennik 21. Zdjęcie ich należy do zadania, które przepisze `stripFor`
+   * na sam podpis; robione tutaj byłoby przepisaniem cudzego kryterium przy okazji.
+   */
   readonly blocks: readonly Block[];
   /** `<nazwa> · step N of M` / `<nazwa> · N of M running` / `<nazwa> · M steps`. */
   readonly caption: string;

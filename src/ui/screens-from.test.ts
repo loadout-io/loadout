@@ -6,7 +6,7 @@
  *   `../sections/run/index.tsx`         jedyny poprawny — identyfikator z rejestru plus ekran,
  *   `../sections/quantum/index.tsx`     katalog o nazwie, której nie ma w SECTIONS (literówka),
  *   `../sections/run/rail/panel.tsx`    plik głębiej w poddrzewie sekcji, nie jej ekran,
- *   `../sections/skills/index.tsx`      moduł bez eksportu, który dałoby się wyrenderować.
+ *   `../sections/agents/index.tsx`      moduł bez eksportu, który dałoby się wyrenderować.
  *
  * `expect(Object.keys(map)).toContain('run')` przechodzi w implementacji, która przepuszcza
  * także `quantum` i moduł bez eksportu — a wtedy pierwszy literówkowy katalog wywraca całe okno
@@ -29,7 +29,12 @@ function screen(): null {
 const RIGHT = '../sections/run/index.tsx';
 const UNKNOWN_NAME = '../sections/quantum/index.tsx';
 const DEEPER = '../sections/run/rail/panel.tsx';
-const NOTHING_TO_SHOW = '../sections/skills/index.tsx';
+/* NAZWA MUSI BYĆ SEKCJĄ Z REJESTRU, inaczej ten wpis odpada z DRUGIEGO powodu i przestaje
+ * pytać o cokolwiek. Do 2026-08-31 stało tu `skills/`; tego dnia Skills i Memory zeszły się
+ * w Knowledge, więc ta ścieżka przestała nazywać sekcję i wpadała do tego samego worka, co
+ * `quantum/` wyżej — a wtedy „moduł bez ekranu odpada" jest zdaniem, którego nikt nie sprawdził.
+ * `agents/` jest sekcją i ma ekran, więc jedyne, co go tutaj wyklucza, to brak eksportu. */
+const NOTHING_TO_SHOW = '../sections/agents/index.tsx';
 
 const MODULES: Record<string, unknown> = {
   [RIGHT]: { default: screen },

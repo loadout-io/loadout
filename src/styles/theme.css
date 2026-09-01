@@ -276,15 +276,75 @@
   --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 22px 56px rgba(0, 0, 0, 0.48);
 
+  /* CZWARTY CIEN, 2026-08-31. Naglowek nad `--shadow-sm` zada, zeby przed dopisaniem
+   * czwartego odpowiedziec, CO plywa, a czego dotad nie bylo. Odpowiedz: nic nie plywa.
+   * Ten cien nie jest glebia — jest BARWA. Przycisk podstawowy stoi na plaskim akcencie
+   * i bez podbarwionego rozmycia pod spodem czyta sie jak prostokat wklejony w tlo; ta
+   * jedna deklaracja jest jedynym powodem, dla ktorego wypelnienie akcentem wyglada jak
+   * material, a nie jak plama. Nie ma prawa trafic na nic innego niz `.btn-primary`. */
+  --shadow-accent: 0 4px 14px rgba(110, 118, 255, 0.22);
+
   /* ── szkło ────────────────────────────────────────────────────────── */
   --glass-blur: 30px;
   --glass-saturate: 135%;
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 
-  /* ── ruch: jedna mikrointerakcja, krzywa z domu ───────────────────── */
+  /* POWLOKA MOCNIEJSZA NIZ ZWYKLE SZKLO, 2026-08-31.
+   *
+   * ZMIERZONE: `--color-panel` i `--color-raised` to dzis TA SAMA wartosc co do bajta
+   * (biel 4,5%), wiec kafelek na pasku nie ma czym odroznic sie od paska, a `.glass`
+   * rozni sie od golego `bg-panel` wylacznie rozmyciem i refleksem. Plaska alfa nie
+   * niesie kierunku swiatla: powierzchnia wyglada tak samo u gory i u dolu, czyli nie
+   * wyglada na material. Gradient pod katem 160 stopni daje jej gore i dol jednym
+   * deklaracja, bez ani jednego nowego tokenu koloru.
+   *
+   * Bierze to `.pane` — jedyna rzecz, ktora PLYWA — a nie `.glass`: gdyby wzialy to obie,
+   * roznica miedzy „szklo" a „szklo, ktore plywa" znowu bylaby wylacznie cieniem. */
+  --glass-fill: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.075) 0%,
+    rgba(255, 255, 255, 0.035) 55%,
+    rgba(255, 255, 255, 0.055) 100%
+  );
+  --glass-blur-strong: 36px;
+  --glass-highlight-strong: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+
+  /* ── stany kontrolki: trzy fakty, trzy nazwy ──────────────────────── */
+  /* Kazdy z nich byl dotad wpisany z palca w miejscu uzycia albo nie istnial wcale:
+   * `disabled:opacity-40` stoi w czterech komponentach, recznych blizniakow „wylaczony
+   * przycisk" bylo cztery (SAVE_OFF, ADD_OFF, PRIMARY_OFF, RUN_OFF), a pierscienia
+   * skupienia nie mial nikt. Nazwa zamiast liczby jest tu cala roznica: 0,4 wpisane
+   * w piatym komponencie nie rozjezdza sie z niczym GLOSNO. */
+  --disabled-opacity: 0.4;
+  --focus-ring: 0 0 0 3px var(--color-accent-ring);
+  /* JEDNA mikrointerakcja na cala aplikacje, ta sama, ktora podaje makieta
+   * (`docs/mockup/index.html:70` — `button:active:not(:disabled){transform:scale(.98)}`).
+   * Token istnieje po to, zeby prymitywy mogly ja POWTORZYC bez powtarzania liczby:
+   * warstwa `components` bije warstwe `base`, wiec `.btn` z wlasnym `transform` skasowalby
+   * regule globalna po cichu, a dwa rozne wcisniecia w jednej aplikacji to defekt, ktorego
+   * nikt nie zglosi, bo kazde z osobna wyglada dobrze. */
+  --press: scale(0.98);
+
+  /* ── ruch: krzywe i CZASY, rozdzielone. 2026-08-31. ───────────────── */
+  /* Trzy pierwsze stoja tu od 2026-08-18 i do dzis nie mialy ANI JEDNEGO wolajacego
+   * (`grep -rn 'var(--transition' src/` dawal zero). To ta sama klasa awarii co kroj
+   * zadeklarowany bez pliku: token wyglada na rozstrzygniecie i nie robi nic. Wartosci
+   * zostaja bez zmiany; dochodza trzy nazwy, ktore daja calej trojce droge na ekran.
+   *
+   * DLACZEGO CZAS OSOBNO OD KRZYWEJ — i to jest cale uzasadnienie tych trzech linii.
+   * `--transition` niesie JEDNO I DRUGIE, wiec nadaje sie wylacznie do skrotu `transition`,
+   * gdzie drugi czas nie wystepuje. W skrocie `animation` drugi czas czyta sie jako
+   * OPOZNIENIE: `animation: rise 320ms var(--transition) both` rozwija sie do „320 ms ruchu
+   * i 200 ms zwloki", bo `200ms` z tokenu wpada w slot `animation-delay`. Zmierzone
+   * 2026-08-31 w repo obok: 68 animacji jest tak opoznionych niechcacy, a dwie nie ruszaja
+   * wcale. W skrocie `animation` uzywa sie WYLACZNIE `--duration`/`--duration-fast` plus
+   * osobnej krzywej — nigdy `--transition`. */
   --transition: 200ms cubic-bezier(0.32, 0.72, 0, 1);
   --transition-fast: 130ms cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration: 200ms;
+  --duration-fast: 130ms;
 
   /* ── ruch: jedna animacja, `animate-blip`. 2026-08-18. ────────────── */
   /* Trzy rzeczy w makiecie pulsują tym samym: kropka żywego biegu w stopce nawigacji
@@ -311,10 +371,104 @@
   }
 }
 
+/* ── KLATKI. Cztery, poza `@theme` i poza `@layer`. 2026-08-31. ────────────────────────────
+ *
+ * `loadout-blip` zostaje tam, gdzie stoi — jest nosnikiem tokenu `--animate-blip` i mieszka
+ * przy nim. Te cztery nie sa utility Tailwinda i nie maja tam czego szukac; stoja tutaj, poza
+ * warstwami, bo `@keyframes` nie ma specyficznosci i warstwa niczego dla nich nie rozstrzyga.
+ *
+ * KAZDA Z NICH JEST WOLANA NIZEJ, w tym samym pliku. Klatki bez klasy, ktora je odpala, to
+ * artefakt, ktorego nikt nie czyta (niezmiennik 21) — a rozjazd animacji nie pada: dwie rzeczy
+ * obok siebie po prostu ruszaja sie nie w takt.
+ *
+ * WYLACZENIE PRZY `prefers-reduced-motion: reduce` NIE jest tutaj: robi je jeden blok na koncu
+ * tego pliku, ktory neutralizuje kazda animacje w aplikacji. Drugie miejsce byloby druga
+ * odpowiedzia na to samo pytanie. */
+
+/* Wejscie powierzchni, ktora WCHODZI: karta pytania, wysuwany strumien kroku, panel.
+ * Sprezyna wchodzi wylacznie tutaj — na pojawieniu sie, nigdy na najechaniu ani na przejsciu
+ * (DESIGN §7). Przekroczenie celu (`1.56` w krzywej) na hoverze czyta sie jak usterka,
+ * bo element wraca do wartosci, ktora chwile wczesniej minal.
+ *
+ * DLACZEGO SKALA, A NIE PRZESUNIECIE — i to jest ograniczenie NARZUCONE, nie wybor.
+ * `src/ui/shell/palette.test.ts:132` zada, zeby skompilowany arkusz nie zawieral napisu
+ * `slate` (celem jest domyslna paleta Tailwinda, `bg-slate-800`). Napis `translateY` zawiera
+ * `slate` co do znaku, wiec KAZDE przesuniecie zapisane transformacja zapala te wyrocznie.
+ * Zglaszam to jako falszywe trafienie tamtego punktu, nie obchodze go pisownia. Sprezyna na
+ * skali daje ten sam efekt czasowy: element dorasta do miejsca z lekkim przekroczeniem. */
+/* NAPRAWIONE 2026-08-31, za zgoda wlasciciela: wejscie wrocilo na PRZESUNIECIE.
+ * Komentarz wyzej opisuje ograniczenie, ktorego juz nie ma — `palette.test.ts` pyta teraz
+ * o NAZWE palety (`--color-slate`, `-slate-<cyfra>`), a nie o dowolny podciag, wiec `translateY`
+ * przestal ja zapalac. Sprezyna na samej skali czyta sie jak pompowanie; wjazd to przesuniecie,
+ * a skala zostaje jako slad domykajacy ruch. */
+@keyframes loadout-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+/* Wejscie wiersza historii. DESIGN §7 obiecuje je od 2026-08-18 („opacity 0 -> 1
+ * w --transition-fast, bez przesuniecia") i do dzis nie robil tego ani jeden plik w `src/`:
+ * wiersze strumienia pojawialy sie skokiem. To jest ta obietnica, nie nowa. */
+@keyframes loadout-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* „Agent mysli". Trzy kropki podskakujace PO KOLEI — opoznienie robi fala, nie kazda kropka
+ * z osobna. Podskok jest zapisany `bottom`, a nie transformacja, z tego samego powodu, ktory
+ * stoi przy `loadout-enter`: `translateY` zawiera napis `slate`. Ma byc spokojne: agent pracuje kilkanascie minut, wiec ten ruch jest na ekranie
+ * dluzej niz cokolwiek innego w tej aplikacji i musi dac sie obok niego czytac.
+ *
+ * DLACZEGO NIE WIRUJACY KRAZEK. Repo obok ma ich 28 kopii i to jest tam nazwane wada: krazek
+ * nie mowi ANI co trwa, ANI ile zostalo, a kreci sie tak samo przy 200 ms i przy 20 minutach. */
+/* PODSKOK NA TRANSFORMACJI, nie na `bottom`. 2026-08-31, ta sama naprawa co przy
+ * `loadout-enter`. Roznica nie jest kosmetyczna: `bottom` kaze przegladarce ulozyc element od
+ * nowa w kazdej klatce, a `transform` zostaje na warstwie kompozytora. Te kropki chodza przez
+ * caly czas pracy agenta, wiec to jest animacja, ktorej koszt ukladu bylby placony najdluzej. */
+@keyframes loadout-think {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* Pasek nieokreslony: dysk i granica IPC. Segment przebiega tor i wraca. Nieokreslony,
+ * bo tych operacji NIE DA SIE zmierzyc w procentach — pasek udajacy postep tam, gdzie postepu
+ * nikt nie liczy, klamie dokladnie tak samo jak ozdobna krzywa miedzy wspolrzednymi
+ * (niezmiennik 17). */
+/* Segment biegnie TRANSFORMACJA. 2026-08-31, ta sama naprawa co przy `loadout-enter`:
+ * `left` bylo obejsciem falszywego trafienia w `palette.test.ts`, ktore juz nie zachodzi.
+ *
+ * Wartosci sa w procentach WLASNEJ szerokosci segmentu, a ta wynosi 25% toru: `-100%` chowa go
+ * caly za lewa krawedzia, `400%` wyprowadza caly za prawa. Pasek chodzi bez przerwy przez cala
+ * operacje, wiec jest to animacja o najdluzej placonym koszcie — a na transformacji nie placi
+ * go wcale. */
+@keyframes loadout-work {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+
 /* Cienie ISTNIEJA od 2026-08-19 i maja dokladnie jedno zastosowanie: rzecz, ktora PLYWA.
  * Glebia wewnatrz strony dalej bierze sie wylacznie ze zmiany powierzchni. Trzy tokeny
  * `--shadow-*` sa w bloku `@theme` wyzej; jesli dopisujesz czwarty, najpierw odpowiedz,
- * co plywa, a czego dotad nie bylo. */
+ * co plywa, a czego dotad nie bylo.
+ *
+ * CZWARTY POWSTAL 2026-08-31 i odpowiedz brzmi: NIC nie plywa. `--shadow-accent` nie jest
+ * glebia, jest barwa — podbarwione rozmycie pod plaskim wypelnieniem akcentem. Pytanie z akapitu
+ * wyzej zostaje w mocy dla PIATEGO i dalej znaczy to samo. */
 
 /* ── warstwa `components`: dwa fakty o wyglądzie, które nie mieszczą się w tokenie ──────────
  *
@@ -371,13 +525,21 @@
     box-shadow: var(--glass-highlight);
   }
 
+  /* POWLOKA. 2026-08-31: wypelnienie jest GRADIENTEM, nie plaska alfa.
+   *
+   * `.glass` zostaje bez zmiany i to jest cala roznica miedzy nimi: szklo jest materialem,
+   * powloka jest materialem, ktory PLYWA. Do dzis dzielily wypelnienie co do bajta i roznil
+   * je wylacznie cien — czyli jedyna rzecz, ktorej `prefers-reduced-transparency` nie zdejmuje.
+   * Gradient pod katem 160 stopni daje powloce gore i dol, refleks jest mocniejszy (18% zamiast
+   * 10%), a rozmycie glebsze (36 px zamiast 30) — bo pod nawigacja przewija sie tresc, a pod
+   * paskiem sekcji tylko tlo. */
   .pane {
     border: 1px solid var(--color-line-strong);
     border-radius: var(--radius-lg);
-    background: var(--color-panel);
-    -webkit-backdrop-filter: saturate(var(--glass-saturate)) blur(var(--glass-blur));
-    backdrop-filter: saturate(var(--glass-saturate)) blur(var(--glass-blur));
-    box-shadow: var(--glass-highlight), var(--shadow-md);
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: saturate(var(--glass-saturate)) blur(var(--glass-blur-strong));
+    backdrop-filter: saturate(var(--glass-saturate)) blur(var(--glass-blur-strong));
+    box-shadow: var(--glass-highlight-strong), var(--shadow-md);
   }
 
   .paper {
@@ -393,7 +555,15 @@
   .aurora {
     background-image:
       radial-gradient(40% 46% at 4% 8%, rgba(110, 118, 255, 0.15), transparent 58%),
-      radial-gradient(38% 42% at 3% 94%, rgba(157, 123, 255, 0.1), transparent 60%);
+      radial-gradient(38% 42% at 3% 94%, rgba(157, 123, 255, 0.1), transparent 60%),
+      /* TRZECI PUNKT, 2026-08-31, w PRZECIWLEGLYM rogu i o polowe slabszy.
+       * Dwa punkty przy jednej krawedzi daja swiatlo, ktore pada z jednej strony i gasnie —
+       * okno wyglada wtedy jak zdjecie z winieta, a nie jak powierzchnia. Trzeci domyka
+       * przekatna i daje szklu co zalamywac takze po prawej, gdzie stoi kolumna inspektora.
+       * Kolumna czytania siedzi w srodku i dalej nie lezy na barwie (DESIGN §5): 6%
+       * przy 98% szerokosci nie siega do niej ani na piksel. Barwa jest ta sama, ktora
+       * aurora juz niesie — trzeci punkt nie jest trzecim kolorem. */
+        radial-gradient(34% 40% at 98% 96%, rgba(157, 123, 255, 0.06), transparent 62%);
   }
 
   /* `field` z DESIGN §6 — JEDNA definicja pola na całą aplikację, dopisana 2026-08-18.
@@ -438,6 +608,607 @@
   .field:focus {
     border-color: var(--color-accent);
   }
+
+  /* TRZY STANY, KTORYCH POLE DOTAD NIE MIALO. 2026-08-31.
+   *
+   * Skupienie mialo obwodke od 2026-08-18, ale najechanie nie mowilo nic, a pole wylaczone
+   * bylo opisywane w komponencie stala `FIELD_OFF = 'field text-muted'` — czyli drugim opisem
+   * tego samego pola, w miejscu, w ktorym nikt go nie szuka.
+   *
+   * `:focus-visible` DOKLADA pierscien do obwodki, nie zamienia jej: obwodka odpowiada na
+   * „ktore pole jest aktywne", pierscien na „gdzie jest klawiatura", i to sa dwa pytania.
+   * Obrys globalny jest tu ZDJETY (`outline: none`), bo prostokat 2 px odsuniety o 2 px od pola
+   * o promieniu 9 px rysuje sie obok jego rogu, a pierscien idzie po rogu. */
+  .field:hover:not(:disabled):not(:focus) {
+    border-color: var(--color-accent-ring);
+  }
+
+  .field:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .field:disabled {
+    color: var(--color-muted);
+    cursor: not-allowed;
+  }
+
+  /* ══ PRYMITYWY ═════════════════════════════════════════════════════════════════════════════
+   *
+   * PO CO. Zmierzone 2026-08-31 na tej galezi: w 59 nietestowych plikach `.tsx` stoi 641
+   * napisow-list-klas, z czego 376 to doslowne duplikaty innego napisu. Sam przycisk podstawowy
+   * ma 18 wystapien pod 9 nazwami stalych, w 5 zapisach geometrii, ktore sprowadzaja sie do
+   * 3 realnych par pikseli — mimo ze DESIGN §6 dopuszcza jedna. Zaden check tego nie zlapal
+   * i to nie jest wada checka: `checks/tokens.sh` pilnuje BARW i ROZMIAROW, a `h-9` obok `h-8`
+   * to dwie poprawne klasy tokenowe. Geometrii nie porownywal z DESIGN.md nikt, bo nie bylo
+   * czego porownywac — nie istniala ani jedna nazwa, ktora by ja niosla.
+   *
+   * DLACZEGO TUTAJ, A NIE W KOMPONENCIE. Ten sam powod, ktory postawil tu `.field` i material:
+   * regula w komponencie jest kopia decyzji, a przy 18 wystapieniach kopii jest 18. Warstwa
+   * `components` — nie `utilities`: Tailwind wstawia swoje klasy do `utilities`, wiec regula
+   * dopisana TAM bilaby kazda klase narzedziowa i nie dalo by sie jej zniesc niczym
+   * (zmierzone na `node_modules/tailwindcss/index.css` 2026-08-18). Ponizej `utilities` klasa
+   * narzedziowa dalej wygrywa, wiec `w-full`, `ml-auto` czy `flex-1` dopisane do prymitywu
+   * robia dokladnie to, co obiecuja.
+   *
+   * CZEGO PRYMITYW NIE WCHLANIA: kleju ukladu (`flex items-center gap-2`, siatki
+   * `grid-cols-[...]`). To nie jest rola, tylko rozmieszczenie, i ono nalezy do miejsca.
+   *
+   * ROZSTRZYGNIECIA GEOMETRII sa tu podjete RAZ i zgodnie z DESIGN §6, wiec migracja sekcji
+   * jest zamiana napisu na nazwe, a nie negocjacja: 36 px przycisk podstawowy (5 wystapien
+   * mialo 32), 28 px cichy (4 mialy 32), 32 px niszczacy (2 mialy 28), 20 px chip (byly tez
+   * 17, 19 i brak), 16 px padding przewijanego ciala (byly 18 i 14), 12 px padding karty
+   * (byly 16), 40 px znak pustego ekranu (osiem recznych kopii mialo 32).
+   *
+   * NAZWY TONOW ZAMIAST KLAS-BLIZNIAKOW. Ton idzie atrybutem `data-tone`, bo `.chip-fail`
+   * obok `.chip` to dwa napisy, ktore trzeba trzymac zgodnie recznie, a `[data-tone]` ma
+   * wyzsza specyficznosc od samej klasy — czyli ton wygrywa z baza NIEZALEZNIE od kolejnosci
+   * regul w pliku. Przyciski sa wyjatkiem i maja wlasne nazwy klas, bo ton przycisku zmienia
+   * takze jego wysokosc, a nie tylko barwe. */
+
+  /* ── przycisk: geometria wspolna dla wszystkich szesciu tonow ───────────────────────────── */
+  .btn,
+  .btn-primary,
+  .btn-quiet,
+  .btn-bare,
+  .btn-danger,
+  .btn-attend {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--spacing) * 1.5);
+    height: var(--height-control);
+    padding: 0 calc(var(--spacing) * 3);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-body);
+    font-family: var(--font-ui);
+    font-size: var(--text-ui);
+    font-weight: var(--text-ui--font-weight);
+    line-height: var(--text-ui--line-height);
+    white-space: nowrap;
+    cursor: pointer;
+    /* Skrot `transition` jest JEDYNYM miejscem, w ktorym `--transition-fast` wolno uzyc:
+     * niesie czas i krzywa naraz, a `transition` nie ma slotu na drugi czas. */
+    transition:
+      background-color var(--transition-fast),
+      border-color var(--transition-fast),
+      color var(--transition-fast),
+      box-shadow var(--transition-fast);
+  }
+
+  /* drugoplanowy — obrys mocny, wypelnienie szkla. To jest przycisk domyslny. */
+  .btn {
+    border-color: var(--color-line-strong);
+    background: var(--color-raised);
+    color: var(--color-ink);
+  }
+
+  /* podstawowy — PLASKI akcent. Bez gradientu i bez poswiaty: wypelniony przycisk jest
+   * najmocniejsza rzecza na ekranie i nie potrzebuje pomocy, a gradient na 36 px wysokosci
+   * jest widoczny wylacznie jako brud. Cien jest w barwie akcentu i jest jedynym cieniem
+   * w aplikacji, ktory nie mowi „to plywa" — mowi „to jest z materialu". */
+  .btn-primary {
+    height: var(--height-primary);
+    padding: 0 calc(var(--spacing) * 4);
+    background: var(--color-accent);
+    color: var(--color-bg);
+    box-shadow: var(--shadow-accent);
+  }
+
+  /* cichy — bez wypelnienia, obrys `--line`, 28 px. DESIGN §6 i wszystkie 14 wystapien
+   * w kodzie maja tu obrys; przezroczyste tlo bierze sie z dziedziczenia. */
+  .btn-quiet {
+    height: var(--height-compact);
+    border-color: var(--color-line);
+  }
+
+  /* goly — BEZ obrysu i bez wypelnienia, az do najechania. Dla znakow i zamkniec (`×`),
+   * gdzie obrys wokol jednego glifu rysuje pudelko, a nie przycisk. */
+  .btn-bare {
+    height: var(--height-compact);
+    color: var(--color-muted);
+  }
+
+  /* niszczacy — obrys `--fail-edge`, BEZ wypelnienia (DESIGN §6: akcja niszczaca ma byc
+   * rozpoznawalna, nie najbardziej rzucajaca sie w oczy). */
+  .btn-danger {
+    border-color: var(--color-fail-edge);
+    color: var(--color-fail);
+  }
+
+  /* czeka na ciebie — piaty ton, zbudowany jak niszczacy, na tonie `attend`. Istnial
+   * w kodzie (`src/sections/run/start.tsx`) i nie istnial w DESIGN §6; teraz istnieje
+   * w obu. To nie jest nowy kolor semantyczny — `attend` jest jednym z czterech. */
+  .btn-attend {
+    border-color: var(--color-attend-edge);
+    color: var(--color-attend);
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--color-hover);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-accent-hover);
+  }
+
+  .btn-quiet:hover:not(:disabled),
+  .btn-bare:hover:not(:disabled) {
+    border-color: var(--color-line-strong);
+    background: var(--color-hover);
+    color: var(--color-ink);
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background: var(--color-fail-soft);
+  }
+
+  .btn-attend:hover:not(:disabled) {
+    background: var(--color-attend-soft);
+  }
+
+  /* Wcisniecie: token, nie liczba. Powtorzenie regule globalnej jest tu KONIECZNE, a nie
+   * nadmiarowe — warstwa `components` bije `base`, wiec bez tej linii `.btn` postawiony na
+   * czyms innym niz `<button>` nie wcisnalby sie wcale. */
+  .btn:active:not(:disabled),
+  .btn-primary:active:not(:disabled),
+  .btn-quiet:active:not(:disabled),
+  .btn-bare:active:not(:disabled),
+  .btn-danger:active:not(:disabled),
+  .btn-attend:active:not(:disabled) {
+    transform: var(--press);
+  }
+
+  /* Wcisniety akcent gasnie razem z cieniem — inaczej przycisk zapada sie w tlo, a cien
+   * zostaje nad nim wiszacy. `--color-accent-active` czekal na wolajacego od 2026-08-19. */
+  .btn-primary:active:not(:disabled) {
+    background: var(--color-accent-active);
+    box-shadow: none;
+  }
+
+  .btn:focus-visible,
+  .btn-quiet:focus-visible,
+  .btn-bare:focus-visible,
+  .btn-danger:focus-visible,
+  .btn-attend:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .btn-primary:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring), var(--shadow-accent);
+  }
+
+  /* Stan wylaczony kasuje CZTERY stale-blizniaki z komponentow (SAVE_OFF, ADD_OFF,
+   * PRIMARY_OFF, RUN_OFF), z ktorych kazda przemalowywala przycisk na szary recznie. */
+  .btn:disabled,
+  .btn-primary:disabled,
+  .btn-quiet:disabled,
+  .btn-bare:disabled,
+  .btn-danger:disabled,
+  .btn-attend:disabled {
+    box-shadow: none;
+    opacity: var(--disabled-opacity);
+    transform: none;
+    cursor: not-allowed;
+  }
+
+  /* ── chip: pigulka ODCZYTU ──────────────────────────────────────────────────────────────
+   * Chipa poznaje sie po ksztalcie, nie po nazwie klasy (DESIGN §6): pelny obrys, wypelnienie
+   * `-soft`, promien `pill`. Przycisk niszczacy ma obrys bez wypelnienia, a pasek bledu ma
+   * wypelnienie bez promienia — i to sa trzy rozne rzeczy niosace te sama barwe. */
+  .chip {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing);
+    height: calc(var(--spacing) * 5);
+    padding: 0 calc(var(--spacing) * 2);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-pill);
+    background: var(--color-raised);
+    color: var(--color-muted);
+    font-family: var(--font-ui);
+    font-size: var(--text-label);
+    font-weight: var(--text-label--font-weight);
+    line-height: var(--text-label--line-height);
+    white-space: nowrap;
+  }
+
+  .chip[data-tone="live"] {
+    border-color: var(--color-live-edge);
+    background: var(--color-live-soft);
+    color: var(--color-live);
+  }
+
+  .chip[data-tone="attend"] {
+    border-color: var(--color-attend-edge);
+    background: var(--color-attend-soft);
+    color: var(--color-attend);
+  }
+
+  .chip[data-tone="fail"] {
+    border-color: var(--color-fail-edge);
+    background: var(--color-fail-soft);
+    color: var(--color-fail);
+  }
+
+  .chip[data-tone="human"] {
+    border-color: var(--color-human-edge);
+    background: var(--color-human-soft);
+    color: var(--color-human);
+  }
+
+  .chip[data-tone="accent"] {
+    border-color: var(--color-accent-edge);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  /* Chip jest ODCZYTEM, wiec stany kontrolki dostaje WYLACZNIE wtedy, gdy naprawde jest
+   * kontrolka. Reakcja na najechanie pod napisem, ktorego nie da sie kliknac, obiecuje
+   * czynnosc, ktorej nie ma — to niezmiennik 16 widziany od drugiej strony. */
+  .chip:is(button, a) {
+    cursor: pointer;
+    transition:
+      background-color var(--transition-fast),
+      border-color var(--transition-fast),
+      color var(--transition-fast);
+  }
+
+  .chip:is(button, a):hover:not(:disabled) {
+    border-color: var(--color-line-strong);
+    color: var(--color-ink);
+  }
+
+  .chip:is(button, a):active:not(:disabled) {
+    transform: var(--press);
+  }
+
+  .chip:is(button, a):focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .chip:is(button, a):disabled {
+    opacity: var(--disabled-opacity);
+    transform: none;
+    cursor: not-allowed;
+  }
+
+  /* ── wiersz listy albo menu ─────────────────────────────────────────────────────────────
+   * JEDEN ksztalt na role, ktora miala szesc zapisow: dwa paddingi (10x7 i 10x8), dwa
+   * podswietlenia (`--raised` z obrysem kontra `--hover`) i DWA atrybuty stanu — `aria-checked`
+   * w przelaczniku obszarow, `aria-current` w nawigacji. Wybrany wiersz to jeden fakt
+   * (niezmiennik 13), wiec czyta tu wszystkie trzy pisownie i rysuje je tak samo. */
+  .row {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: calc(var(--spacing) * 2);
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-body);
+    font-family: var(--font-ui);
+    font-size: var(--text-ui);
+    font-weight: var(--text-ui--font-weight);
+    line-height: var(--text-ui--line-height);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color var(--transition-fast),
+      border-color var(--transition-fast),
+      color var(--transition-fast);
+  }
+
+  .row:hover:not(:disabled) {
+    background: var(--color-hover);
+    color: var(--color-ink);
+  }
+
+  .row:active:not(:disabled) {
+    transform: var(--press);
+  }
+
+  .row:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .row:disabled {
+    opacity: var(--disabled-opacity);
+    transform: none;
+    cursor: not-allowed;
+  }
+
+  .row[aria-checked="true"],
+  .row[aria-current="true"],
+  .row[aria-selected="true"] {
+    border-color: var(--color-line);
+    background: var(--color-raised);
+    color: var(--color-ink);
+  }
+
+  /* ── stos: etykieta nad kontrolka ────────────────────────────────────────────────────────
+   * Odstep 4 px jest WEWNATRZ pary etykieta+pole; 8 i 12 px to odstep MIEDZY wierszami.
+   * To sa dwie rozne role sklejone dotad jednym ksztaltem (`flex flex-col gap-1|2|3`),
+   * wiec baza jest jedna, a dwie pozostale sa nazwane odstepstwem. */
+  .stack {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: var(--spacing);
+  }
+
+  .stack[data-gap="2"] {
+    gap: calc(var(--spacing) * 2);
+  }
+
+  .stack[data-gap="3"] {
+    gap: calc(var(--spacing) * 3);
+  }
+
+  /* ── etykieta pola ──────────────────────────────────────────────────────────────────────
+   * ZDANIOWA, nie wersalikami — wersaliki nosi nadoczko sekcji i ma na to wlasny stopien
+   * drabinki (`.text-eyebrow` wyzej). Ta klasa CELOWO nie deklaruje `text-transform`:
+   * druga deklaracja wersalikow w tym pliku bylaby drugim miejscem na jeden fakt. */
+  .label {
+    color: var(--color-muted);
+    font-family: var(--font-ui);
+    font-size: var(--text-label);
+    font-weight: var(--text-label--font-weight);
+    line-height: var(--text-label--line-height);
+  }
+
+  /* ── zdanie drugoplanowe ────────────────────────────────────────────────────────────────
+   * Najwieksza i najbardziej rozjechana rodzina w repo: 118 napisow obslugiwalo te sama role
+   * dwoma stopniami drabinki (`--text-body` 13 px w 17 miejscach, `--text-note` 12 px w 7).
+   * WYGRYWA `--text-note`, bo DESIGN §4 opisuje go doslownie jako „drugie zdanie, podpowiedz
+   * pod polem", a `--text-body` jest stopniem PROZY — tym, ktory `body` juz ma domyslnie.
+   * Zdanie pierwszoplanowe nie potrzebuje wiec zadnej klasy, i to jest pol tej naprawy. */
+  .lead {
+    color: var(--color-muted);
+    font-family: var(--font-ui);
+    font-size: var(--text-note);
+    font-weight: var(--text-note--font-weight);
+    line-height: var(--text-note--line-height);
+  }
+
+  .lead[data-tone="ink"] {
+    color: var(--color-ink);
+  }
+
+  .lead[data-tone="body"] {
+    color: var(--color-body);
+  }
+
+  .lead[data-tone="fail"] {
+    color: var(--color-fail);
+  }
+
+  .lead[data-tone="attend"] {
+    color: var(--color-attend);
+  }
+
+  /* ── wartosc maszynowa ──────────────────────────────────────────────────────────────────
+   * RODZINA WCHODZI RAZEM ZE STOPNIEM. `font-mono` bylo dopisywane recznie w 73 napisach obok
+   * `text-mono`, mimo ze ten stopien JEST z rodziny mono wedlug DESIGN §4 — czyli rodzina byla
+   * deklarowana dwa razy w kazdym z nich. `tabular-nums` jest tu z tego samego powodu, z ktorego
+   * `user-select: text` jest w polu: liczba, ktora skacze przy kazdym odswiezeniu, czyta sie
+   * jak zmiana wartosci, a nie jak ta sama wartosc. */
+  .value {
+    min-width: 0;
+    color: var(--color-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--text-mono--font-weight);
+    line-height: var(--text-mono--line-height);
+    user-select: text;
+  }
+
+  .value[data-strong] {
+    font-size: var(--text-mono-strong);
+    font-weight: var(--text-mono-strong--font-weight);
+    letter-spacing: var(--text-mono-strong--letter-spacing);
+    line-height: var(--text-mono-strong--line-height);
+  }
+
+  .value[data-tone="ink"] {
+    color: var(--color-ink);
+  }
+
+  .value[data-tone="fail"] {
+    color: var(--color-fail);
+  }
+
+  /* ── karta: pojemnik tresci ─────────────────────────────────────────────────────────────
+   * Padding 12 px (DESIGN §5); trzy karty na 16 px byly dryfem. Ton jest MODYFIKATOREM
+   * obrysu, nie osobna karta — karta bledu to ta sama karta z inna krawedzia. */
+  .card {
+    padding: calc(var(--spacing) * 3);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background: var(--color-panel);
+  }
+
+  .card[data-tone="fail"] {
+    border-color: var(--color-fail-edge);
+  }
+
+  .card[data-tone="attend"] {
+    border-color: var(--color-attend-edge);
+  }
+
+  .card[data-tone="live"] {
+    border-color: var(--color-live-edge);
+  }
+
+  .card[data-tone="empty"] {
+    border-style: dashed;
+  }
+
+  .card[data-interactive] {
+    cursor: pointer;
+    transition:
+      background-color var(--transition-fast),
+      border-color var(--transition-fast);
+  }
+
+  .card[data-interactive]:hover {
+    border-color: var(--color-line-strong);
+  }
+
+  .card[data-interactive]:active {
+    transform: var(--press);
+  }
+
+  .card[data-interactive]:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  /* ── ekran: pasek naglowka i przewijane cialo ───────────────────────────────────────────
+   * 52 px to liczba z `docs/ARCHITECTURE.md` §7 (budzet chrome), nie z gustu — i dlatego jest
+   * tu, a nie w jedenastu sekcjach z osobna. Padding 16 px wygrywa nad 18 i 14 (DESIGN §5).
+   *
+   * PASEK CELOWO NIE MA TLA. Jest chrome, wiec material bierze z klasy materialu (`.glass`)
+   * dopisanej obok — inaczej `prefers-reduced-transparency` przestalby go dotyczyc i mielismy
+   * jedenascie powierzchni, ktore ignoruja to ustawienie. */
+  .screen-head {
+    display: flex;
+    flex: 0 0 auto;
+    height: calc(var(--spacing) * 13);
+    align-items: center;
+    gap: calc(var(--spacing) * 3);
+    padding: 0 calc(var(--spacing) * 4);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .screen-body {
+    min-height: 0;
+    flex: 1 1 auto;
+    padding: calc(var(--spacing) * 4);
+    overflow: auto;
+  }
+
+  /* ── znak pustego ekranu ────────────────────────────────────────────────────────────────
+   * 40 px, bo tyle ma prymityw, ktory juz istnieje (`src/ui/primitives/empty-state.tsx`);
+   * osiem recznych kopii rysowalo 32 px, czyli mniejszy znak w kazdym miejscu poza jednym,
+   * w ktorym ktos ten znak naprawde zaprojektowal. */
+  .mark {
+    display: grid;
+    width: calc(var(--spacing) * 10);
+    height: calc(var(--spacing) * 10);
+    flex: 0 0 auto;
+    border: 1px dashed var(--color-line-strong);
+    border-radius: var(--radius-md);
+    color: var(--color-muted);
+    place-items: center;
+  }
+
+  .mark[data-tone="fail"] {
+    border-color: var(--color-fail-edge);
+    color: var(--color-fail);
+  }
+
+  /* ── WSKAZNIKI TRWANIA ──────────────────────────────────────────────────────────────────
+   *
+   * DLACZEGO W OGOLE. Ta aplikacja uruchamia rownolegle biegi agentow po kilkanascie minut,
+   * a w calym `src/` nie bylo ANI JEDNEGO wskaznika trwania: 41 metod async przechodzi granice
+   * bez jednego piksela zmiany w chwili klikniecia. Klikniecie, po ktorym ekran milczy, czyta
+   * sie jak klikniecie, ktore nie doszlo — i drugie klikniecie jest wtedy wina interfejsu,
+   * nie czlowieka. */
+
+  /* „Agent mysli". Trzy kropki, fala z opoznieniem .16s / .32s. Kropki sa DZIECMI, nie
+   * pseudoelementami: `aria-hidden` na trzech spanach jest czytelne dla czytnika ekranu,
+   * a zdanie obok nich („Thinking…") niesie tresc. */
+  .thinking {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing);
+  }
+
+  .thinking > * {
+    position: relative;
+    width: var(--spacing);
+    height: var(--spacing);
+    border-radius: var(--radius-pill);
+    background: currentcolor;
+    /* `--duration` i krzywa OSOBNO. `var(--transition)` w tym skrocie wpadloby w slot
+     * `animation-delay` i kropki ruszylyby z 200 ms zwloki — patrz komentarz przy tokenach. */
+    animation: loadout-think 1.4s var(--ease-out) infinite;
+  }
+
+  .thinking > *:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+
+  .thinking > *:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+
+  /* Pasek nieokreslony: zapis na dysk, przejscie przez granice IPC. `--live` znaczy „dzieje sie
+   * teraz" i jego regula formy wymienia „aktywny segment paska" wprost (DESIGN §3), wiec ten
+   * pasek jest jej wystapieniem, a nie wyjatkiem od niej. Akcent tu NIE wchodzi: akcent mowi
+   * „to jest interaktywne", a paska nie da sie kliknac. */
+  .working {
+    position: relative;
+    overflow: hidden;
+    height: 2px;
+    border-radius: var(--radius-pill);
+    background: var(--color-line);
+  }
+
+  .working::after {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 25%;
+    border-radius: inherit;
+    background: var(--color-live);
+    animation: loadout-work 1.1s var(--ease-out) infinite;
+    content: "";
+  }
+
+  /* ── WEJSCIA ────────────────────────────────────────────────────────────────────────────
+   * Sprezyna wylacznie tutaj i wylacznie z `both` — na pojawieniu sie elementu. Nigdy na
+   * hoverze i nigdy na przejsciu (DESIGN §7). */
+  .enter {
+    animation: loadout-enter var(--duration) var(--ease-spring) both;
+  }
+
+  .fade-in {
+    animation: loadout-fade var(--duration-fast) var(--ease-out) both;
+  }
 }
 
 @layer base {
@@ -457,6 +1228,31 @@
     overflow: hidden;
     /* Zaznaczanie tekstu tylko tam, gdzie ma sens — chrome nie jest do zaznaczania. */
     user-select: none;
+  }
+
+  /* ── ZIARNO. 2026-08-31. Osiem linii, ktore zdejmuja pasy z aurory. ──────────────────────
+   *
+   * PROBLEM JEST MIERZALNY, NIE ESTETYCZNY. Aurora to trzy radialne gradienty o alfie 6-15%
+   * rozciagniete na cale okno. Gradient o tak malym kontrascie rozlozony na 900 px wysokosci
+   * przekracza 8-bitowa rozdzielczosc kanalu: sasiednie pasy roznia sie o jeden krok wartosci
+   * i widac je jako PRAZKI, tym wyrazniej, im wieksze okno. Szum o amplitudzie 2,5% rozbija
+   * granice pasa, bo przesuwa piksele po obu jej stronach w losowe strony — to jest ta sama
+   * sztuczka, ktora druk nazywa rastrem.
+   *
+   * DLACZEGO `::after`, A NIE WARSTWA W `.aurora`. Warstwa tla nie ma wlasnej przezroczystosci,
+   * wiec alfe trzeba by wpiec w sam obrazek — czyli zapisac ja tam, gdzie nikt jej nie
+   * przeczyta. Tutaj stoi jedna liczba, jawnie.
+   *
+   * `pointer-events: none` jest tu WARUNKIEM, nie ozdoba: bez niego ta warstwa lezy nad cala
+   * aplikacja i zjada kazde klikniecie. */
+  body::after {
+    position: fixed;
+    z-index: 9999;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23g)'/%3E%3C/svg%3E");
+    opacity: 0.025;
+    content: "";
+    pointer-events: none;
   }
 
   /* Wszystko, co jest wartością maszynową, wolno zaznaczyć i skopiować. */
@@ -481,13 +1277,20 @@
     border-radius: var(--radius-sm);
   }
 
-  /* Jedyna mikrointerakcja w systemie. */
+  /* Jedyna mikrointerakcja w systemie. Wartosc przeniesiona 2026-08-31 do tokenu `--press`,
+   * zeby prymitywy mogly ja powtorzyc bez powtarzania liczby: warstwa `components` bije `base`,
+   * wiec `.btn` z wlasnym `transform` zniosl by te regule po cichu. Sama wartosc nie drgnela
+   * i dalej zgadza sie z makieta (`docs/mockup/index.html:70`). */
   button:active:not(:disabled) {
-    transform: scale(0.98);
+    transform: var(--press);
   }
 
   button:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
+    /* 2026-08-31: wcisniecie zdjete jawnie. Bez tej linii przycisk wylaczony dalej reaguje
+     * na `:active` wszedzie tam, gdzie regula wyzej nie ma `:not(:disabled)` — a martwa
+     * kontrolka, ktora sie rusza, jest gorsza niz martwa kontrolka. */
+    transform: none;
     cursor: not-allowed;
   }
 
@@ -512,6 +1315,12 @@
   }
 
   .aurora {
+    background-image: none;
+  }
+
+  /* Ziarno gasnie razem z aurora, bo istnieje WYLACZNIE po to, zeby rozbic jej pasy.
+   * Faktura na plaskim tle nie ma czego rozbijac i jest wtedy samym szumem. */
+  body::after {
     background-image: none;
   }
 }

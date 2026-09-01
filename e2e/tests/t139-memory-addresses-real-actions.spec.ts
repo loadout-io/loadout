@@ -14,7 +14,9 @@ const C = '/Users/somebody/Projects/t139-c';
 const WORKSPACE_A = { id: A, name: 'T139 A', folder: A };
 const WORKSPACE_B = { id: B, name: 'T139 B', folder: B };
 const WORKSPACE_C = { id: C, name: 'T139 C', folder: C };
-const MEMORY = 'main[data-section="memory"]';
+/* Notatki mieszkają od 2026-08-31 w sekcji Knowledge razem z umiejętnościami — pytanie tego
+ * pliku się nie zmieniło, zmienił się selektor, pod którym stoi ta sama półka. */
+const MEMORY = 'main[data-section="knowledge"]';
 const CALL_LIMIT = 4_000;
 const TEST_LIMIT = 20_000;
 
@@ -131,7 +133,7 @@ async function openMemory(
   replies: Readonly<Record<string, readonly TauriReply[]>>,
 ): Promise<RunningApp> {
   const app = await openApp({ replies });
-  await app.page.locator('[data-section-switch="memory"]').click();
+  await app.page.locator('[data-section-switch="knowledge"]').click();
   await app.page.locator(MEMORY).waitFor({ state: 'attached', timeout: CALL_LIMIT });
   return app;
 }
@@ -227,7 +229,15 @@ async function clickProjectDuplicateActions(app: RunningApp): Promise<void> {
   await expectAddresses(app, ['library:same', 'project:legacy', 'project:same']);
   await expectLibraryMarker(app);
 
+  // 2026-08-31: „Discard" pyta, zanim skasuje. Na drugim brzegu tego kliknięcia stoi
+  // nagrobek w `discarded/`, który blokuje slug NA ZAWSZE — więc jedno kliknięcie i „na
+  // zawsze" nie mogą być tym samym gestem. Pierwsze kliknięcie stawia pytanie i NIE wysyła
+  // nic przez granicę; dopiero „Discard for good" wysyła `discard_note`. Taśma niżej
+  // (`expectExactTape`) została co do bajta — pytanie nie jest wywołaniem.
   await row(app, 'project:same').getByRole('button', { name: 'Discard', exact: true }).click();
+  await row(app, 'project:same')
+    .getByRole('button', { name: 'Discard for good', exact: true })
+    .click();
   await waitForCalls(app, 'discard_note', 1);
   await expectAddresses(app, ['library:same', 'project:legacy']);
   await expectLibraryMarker(app);
@@ -274,11 +284,11 @@ afterAll(async () => {
 
 describe('Memory keeps two roots and four human actions observable', () => {
   it(
-    'mounts the real Memory screen and reaches its read command',
+    'mounts the real notes shelf and reaches its read command',
     async () => {
       const app = await openMemory(baselineScene());
       try {
-        expect(await app.page.locator(`${MEMORY} h1`).textContent()).toBe('Memory');
+        expect(await app.page.locator(`${MEMORY} h1`).textContent()).toBe('Knowledge');
         expect((await waitForCalls(app, 'list_notes', 1)).length).toBe(1);
       } finally {
         await app.close();

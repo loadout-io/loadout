@@ -1,4 +1,4 @@
-/* AC-2 dla T-29: każda z pięciu sekcji montuje SWÓJ ekran — sprawdzone w przeglądarce,
+/* Kryterium T-29: każda sekcja z własnym ekranem montuje SWÓJ ekran — sprawdzone w przeglądarce,
  * po kliknięciu w przełącznik.
  *
  * To jest to samo pytanie, które zadaje T-26 przez `renderToStaticMarkup`, zadane w działającej
@@ -12,21 +12,21 @@
  * z rejestru przechodzi na ekranie eksportującym pusty `<div/>`. Dyskryminuje para: nagłówek
  * TEJ sekcji ORAZ brak jej zdania z rejestru w tym samym dokumencie.
  *
- * PIĘĆ IDENTYFIKATORÓW JEST WYPISANYCH TUTAJ NA SZTYWNO, a nie czytane z `SECTIONS`: pętla po
+ * IDENTYFIKATORY SĄ WYPISANE TUTAJ NA SZTYWNO, a nie czytane z `SECTIONS`: pętla po
  * rejestrze sprawdzałaby rejestr sam sobą, a pusta tablica przeszłaby wtedy każde „dla każdej
  * sekcji…". Ta sama pułapka jest opisana w `src/ui/shell/screen-mount.test.tsx`. Samo ZDANIE
  * i sama ETYKIETA przychodzą już z rejestru, bo kryterium mówi wprost `sectionEntry(id).empty`,
  * a przepisany tu literał rozjechałby się przy pierwszej zmianie brzmienia (niezmiennik 13).
  *
- * ŚWIEŻA APLIKACJA NA SEKCJĘ, a nie jeden spacer po pięciu przełącznikach. Pięć osobnych
- * werdyktów zamiast jednego: sekcja, która pada jako pierwsza, nie chowa czterech pozostałych.
+ * ŚWIEŻA APLIKACJA NA SEKCJĘ, a nie jeden spacer po wszystkich przełącznikach. Osobne
+ * rozstrzygnięcie na sekcję zamiast jednego: sekcja, która pada jako pierwsza, nie chowa czterech pozostałych.
  * I jest to warunek OSTRZEJSZY — ekran musi zamontować się bez rozgrzewki po poprzedniej sekcji.
  *
  * I JEDEN SPACER NA DOKŁADKĘ, dopisany 2026-08-17 — DO tych pięciu, nigdy zamiast nich.
- * Pięć zimnych montaży pyta wyłącznie o pierwsze wejście na sekcję, a użytkownik chodzi po
+ * Zimne montaże pytają wyłącznie o pierwsze wejście na sekcję, a użytkownik chodzi po
  * aplikacji w JEDNEJ karcie: przełącznik, który po drugim przejściu zostawia w dokumencie
- * poprzedni ekran (albo dokłada drugi), przechodzi każdy z pięciu testów wyżej i psuje się
- * dokładnie tam, gdzie nikt nie patrzy. Zamiana tych pięciu na ten jeden byłaby cofnięciem:
+ * poprzedni ekran (albo dokłada drugi), przechodzi każdy z testów wyżej i psuje się
+ * dokładnie tam, gdzie nikt nie patrzy. Zamiana ich na ten jeden byłaby cofnięciem:
  * spacer nie widzi sekcji, która montuje się WYŁĄCZNIE po rozgrzewce inną sekcją, a to jest
  * ta klasa rozjazdu, którą niesie `import.meta.glob` z cache'em modułów.
  *
@@ -42,10 +42,10 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { sectionEntry } from '../../src/ui/sections';
 import { closeEverything, openApp } from '../harness';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
+const EXPECTED = ['run', 'workflows', 'agents', 'knowledge'] as const;
 
 /**
- * Trasa spaceru: te same pięć sekcji, a na końcu POWRÓT na `run`.
+ * Trasa spaceru: te same sekcje, a na końcu POWRÓT na `run`.
  *
  * Zmierzone 2026-08-17. Powłoka otwiera się na `run` (`FIRST_SECTION`,
  * `src/ui/shell/section-store.ts`), więc pierwsze kliknięcie spaceru ląduje na sekcji, która
@@ -57,7 +57,7 @@ const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory'] as const;
  * lukę na sekcję, która stałaby się pierwsza — potrzebne jest przejście DO `run` z innej
  * aktywnej sekcji, a nie inne miejsce na tę samą dziurę.
  *
- * Powtórzony identyfikator nie jest tu kosztem: pięć zimnych montaży wyżej ma po jednym
+ * Powtórzony identyfikator nie jest tu kosztem: zimne montaże wyżej mają po jednym
  * werdykcie na sekcję, a ten test pyta o przełączanie w jednej karcie, gdzie drugie wejście
  * na tę samą sekcję jest osobnym faktem (i tym, który psuje się najciszej).
  */
@@ -127,7 +127,7 @@ describe('every section mounts its own screen, clicked through in a browser', ()
               ' screen is not mounted: the document still carries the registry sentence ' +
               JSON.stringify(entry.empty) +
               '. That sentence is what the shell shows for a section that has no screen at all — ' +
-              'it is the five blank rectangles a person saw on 2026-08-16 under five green tests.',
+              'it is the blank rectangles a person saw on 2026-08-16 under five green tests.',
           ).toBe(false);
 
           const headings = (await page.locator(HEADINGS).allInnerTexts()).map((line) =>
@@ -148,7 +148,7 @@ describe('every section mounts its own screen, clicked through in a browser', ()
     );
   }
 
-  it('walks all five switches in one session, and each one lands on its own screen', async () => {
+  it('walks every switch in one session, and each one lands on its own screen', async () => {
     const app = await openApp();
     try {
       const page = app.page;

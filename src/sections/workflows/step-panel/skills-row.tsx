@@ -28,10 +28,35 @@ export interface SkillsRowProps {
   onChoose: (choice: SkillChoice) => void;
 }
 
-const ROW = 'flex flex-col gap-1';
-const LABEL = 'text-label text-muted';
+/* `ROW`, `LABEL` i `NOTE` zniknęły 2026-08-31: rolę niosą `.stack`, `.label` i `.lead`
+ * z `theme.css`. `CHOICE` zostaje — to jest KLEJ UKŁADU (pole wyboru obok zdania), a klej
+ * prymityw celowo nie wchłania (DESIGN §6). */
 const CHOICE = 'flex items-baseline gap-2 text-body text-ink';
-const NOTE = 'text-label text-muted';
+
+/**
+ * Czy ten wiersz ma po co powstać. Jedna odpowiedź, dwóch czytelników: sam wiersz i panel,
+ * który liczy, ile rzeczy stoi za ujawnieniem.
+ *
+ * Codex nie ma pojęcia umiejętności [T3 §7.2, T4 fakt-check O4]. Pusty katalog znaczy to samo
+ * z drugiej strony: przy zerze zainstalowanych umiejętności „all" i „none" robią dokładnie to
+ * samo, a przełącznik między dwoma identycznymi skutkami jest kontrolką bez skutku
+ * (niezmiennik 16). Do 2026-08-31 ta druga połowa stała w panelu, a pierwsza tutaj — czyli
+ * jedna decyzja w dwóch plikach.
+ */
+export function skillsRowStands(runsWith: Vendor, available: readonly string[]): boolean {
+  return runsWith !== 'codex' && available.length > 0;
+}
+
+/** Zdanie zwiniętej listy: ile jest do wzięcia i ile już wzięto.
+ *
+ * 2026-08-31 — POWSTAŁO, BO LISTA NIE MA SUFITU. Umiejętności przychodzą z cudzych katalogów,
+ * więc ich liczba nie jest niczym ograniczona: repozytorium z trzydziestoma rozwijało tu
+ * trzydzieści pól wyboru w kolumnie 330 px, zawsze i bez ostrzeżenia. „Ile" jest odpowiedzią,
+ * której człowiek potrzebuje najczęściej, i teraz stoi przed listą, a nie za nią. */
+function saysWhenShut(available: readonly string[], picked: ReadonlySet<string>): string {
+  const offered = `${String(available.length)} to choose from`;
+  return picked.size === 0 ? offered : `${offered}, ${String(picked.size)} picked`;
+}
 
 export function SkillsRow({
   mode,
@@ -40,9 +65,7 @@ export function SkillsRow({
   value,
   onChoose,
 }: SkillsRowProps): ReactElement | null {
-  /* Codex nie ma pojęcia umiejętności [T3 §7.2, T4 fakt-check O4], więc wiersza NIE MA.
-   * Wyszarzony dalej obiecuje, że kiedyś zadziała, a nikt nie przyjdzie go włączyć. */
-  if (runsWith === 'codex') return null;
+  if (!skillsRowStands(runsWith, available)) return null;
 
   const picked = new Set(Array.isArray(value) ? value : []);
 
@@ -56,8 +79,8 @@ export function SkillsRow({
   };
 
   return (
-    <div className={ROW}>
-      <span className={LABEL}>Skills</span>
+    <div data-row="skills" className="stack">
+      <span className="label">Skills</span>
 
       <label className={CHOICE}>
         <input
@@ -85,23 +108,31 @@ export function SkillsRow({
             Only these
           </label>
 
-          {available.map((skill) => (
-            <label key={skill} className={`${CHOICE} pl-4`}>
-              <input
-                type="checkbox"
-                checked={picked.has(skill)}
-                onChange={() => {
-                  toggle(skill);
-                }}
-              />
-              {skill}
-            </label>
-          ))}
+          {/* LISTA ZA UJAWNIENIEM, licznik przed nim — patrz `saysWhenShut`. Rozwijanie jest
+              zachowaniem przeglądarki, więc pola wyboru stoją w drzewie od pierwszego renderu
+              i nie potrzebują ani handlera, ani stanu (niezmiennik 16). */}
+          <details className="ml-4 rounded-md border border-line p-2">
+            <summary className="label cursor-pointer">{saysWhenShut(available, picked)}</summary>
+            <div className="stack pt-2">
+              {available.map((skill) => (
+                <label key={skill} className={CHOICE}>
+                  <input
+                    type="checkbox"
+                    checked={picked.has(skill)}
+                    onChange={() => {
+                      toggle(skill);
+                    }}
+                  />
+                  {skill}
+                </label>
+              ))}
 
-          {/* Zmierzone w S-1: szesnastu umiejętności wbudowanych w Claude Code nie da się zdjąć
-              niczym poza flagą, która kasuje wszystkie do zera. Lista wyżej rządzi dokładnie
-              tymi, które da się zabrać — i tyle wolno obiecać. */}
-          <span className={NOTE}>Claude Code always keeps the ones it brings with it.</span>
+              {/* Zmierzone w S-1: szesnastu umiejętności wbudowanych w Claude Code nie da się
+                  zdjąć niczym poza flagą, która kasuje wszystkie do zera. Lista wyżej rządzi
+                  dokładnie tymi, które da się zabrać — i tyle wolno obiecać. */}
+              <span className="lead">Claude Code always keeps the ones it brings with it.</span>
+            </div>
+          </details>
         </>
       ) : (
         <label className={CHOICE}>

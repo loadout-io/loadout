@@ -65,13 +65,17 @@ function marker(row: HistoryRow): { glyph: string; tone: string } {
   return { glyph: '·', tone: 'text-muted' };
 }
 
-/**
- * Akcent, bo od T-45 znaczy dokładnie jedno: „to jest interaktywne" [DESIGN §3]. Pastylka
- * i ten sam stopień co przy `+` obok, żeby wiersz zachował swój rytm — kontrolka startu jest
- * czynnością w wierszu rozmowy, nie przyciskiem Start z paska pracy.
- */
-const PROPOSE =
-  'h-[17px] rounded-pill border border-accent-edge px-[7px] font-mono text-meta text-accent';
+/* CZEGO TU JUŻ NIE MA: stałej `PROPOSE` z własną geometrią pastylki (17 px, `px-[7px]`).
+ * Akcent dalej znaczy dokładnie jedno — „to jest interaktywne" [DESIGN §3] — ale kształt bierze
+ * się teraz z roli: `.chip` z tonem `accent`. Powód jest mierzony, nie estetyczny: ta jedna rola
+ * miała w repo pięć zapisów geometrii, a żaden check nie umiał ich porównać, bo nie istniała
+ * nazwa, która by je niosła. Drugą połową zamiany są cztery stany kontrolki — chip będący
+ * naprawdę przyciskiem dostaje je z `@layer components`, a ta stała nie dawała ani jednego,
+ * więc kontrolka zaczynająca pracę za pieniądze nie odpowiadała nawet na najechanie.
+ *
+ * Rytm z `+` obok jest zachowany, bo tamten przycisk bierze DOKŁADNIE ten sam prymityw
+ * w wariancie neutralnym — dwie pastylki jednej wysokości zamiast dwóch napisów, które trzeba
+ * było trzymać zgodnie ręcznie. */
 
 /**
  * Rodzaje wiersza, których treść jest PROZĄ do przeczytania, a nie etykietą czynności.
@@ -142,15 +146,26 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
   const [said, setSaid] = useState<string | null>(null);
 
   return (
+    /* WIERSZ WCHODZI PRZEZ ROZJAŚNIENIE, nie skokiem. DESIGN §7 obiecuje to od 2026-08-18
+       („opacity 0 → 1 w --duration-fast, bez przesunięcia") i do 2026-08-31 nie robił tego
+       ani jeden plik w `src/`. Bez sprężyny i bez przesunięcia z rozmysłu: strumień przyrasta
+       wierszami, a element, który jeszcze DOJEŻDŻA na miejsce, przesuwałby zdanie spod oczu
+       dokładnie w chwili, w której człowiek zaczyna je czytać. Klasa jest na wierszu, więc
+       animuje się TYLKO to, co właśnie weszło — wiersze już zamontowane nie ruszają się przy
+       następnej paczce. */
     <div
       data-line={row.id}
-      className="grid grid-cols-[18px_minmax(0,1fr)_auto] gap-2 px-[18px] py-[5px]"
+      className="fade-in grid grid-cols-[18px_minmax(0,1fr)_auto] gap-2 px-[18px] py-[5px]"
     >
-      <span className={`text-center font-mono text-mono ${tone}`}>{glyph}</span>
+      {/* Znacznik jest wartością mono; `.value` niesie rodzinę RAZEM ze stopniem, więc
+          `font-mono` obok `text-mono` — dwie deklaracje jednej rzeczy — znika. Barwę dokłada
+          `tone`, bo ona odpowiada na inne pytanie: czy coś się zepsuło. */}
+      <span className={`value text-center ${tone}`}>{glyph}</span>
 
-      <span
-        className={`min-w-0 text-body text-ink${PROSE.includes(row.kind) ? ' ' + MEASURE : ''}`}
-      >
+      {/* `text-body` stało tu obok `text-ink` i były to DWIE barwy na jeden napis, nie stopień
+          i barwa — patrz powód przy ciele wiersza niżej. `text-ink` wygrywał już wcześniej,
+          więc napis znika bez zmiany na ekranie. */}
+      <span className={`min-w-0 text-ink${PROSE.includes(row.kind) ? ' ' + MEASURE : ''}`}>
         {/* TWOJE ZDANIE JEST PODPISANE TOBĄ, nie agentem, i to jest cała treść tej gałęzi.
 
             2026-08-19 — zgłoszenie właściciela: „a może odpisuje on, ale na pewno nie widać moich
@@ -170,9 +185,12 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
             do kogo to poszło. */}
         {authorityOf(row.kind) === 'you' ? (
           <>
-            <span className="mr-1 font-mono text-mono-strong text-human">You →</span>
+            <span data-strong className="value mr-1 text-human">
+              You →
+            </span>
             <span
-              className="mr-2 font-mono text-mono-strong"
+              data-strong
+              className="value mr-2"
               style={{ color: `var(${identityToken(row.agent)})` }}
             >
               {row.agent}
@@ -180,9 +198,12 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
           </>
         ) : (
           /* Kto to zrobił, w mono i w kolorze TOŻSAMOŚCI tego agenta — ta sama mapa, z której
-             żyje kwadrat na kafelku w liście agentów. */
+             żyje kwadrat na kafelku w liście agentów. Podpis jest wartością maszynową, więc
+             `.value`; `data-strong` to mocniejszy stopień tej samej rodziny, a nie druga
+             deklaracja kroju obok stopnia, który tę rodzinę już niesie. */
           <span
-            className="mr-2 font-mono text-mono-strong"
+            data-strong
+            className="value mr-2"
             style={{ color: `var(${identityToken(row.agent)})` }}
           >
             {row.agent}
@@ -221,6 +242,8 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
       {proposal !== null ? (
         <button
           type="button"
+          data-tone="accent"
+          className="chip"
           onClick={() => {
             /* JEDNA DROGA STARTU, ta sama, co Enter w wierszu wejścia (niezmiennik 23):
                `runSuggestion` oddaje ją `startFromLine`, więc limit „ile naraz", folder zakresu
@@ -228,31 +251,39 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
                i staje w wierszu pod przyciskiem. */
             void runSuggestion(proposal.command).then(setSaid);
           }}
-          className={PROPOSE}
         >
           {'Run ' + proposal.workflow}
         </button>
       ) : hasMore ? (
+        /* TEN SAM PRYMITYW, wariant neutralny: pastylka, obrys `--line`, tekst przygaszony.
+           Dwie kontrolki jednego wiersza mają teraz jedną wysokość dlatego, że mają jedną
+           nazwę — a nie dlatego, że ktoś przepisał tę samą liczbę w dwa napisy. */
         <button
           type="button"
           onClick={() => onToggle(row.id)}
           aria-label={row.expanded ? 'Show less' : 'Show more'}
-          className="h-[17px] rounded-pill border border-line px-[5px] font-mono text-meta text-muted"
+          className="chip"
         >
           {row.expanded ? '−' : '+'}
         </button>
       ) : (
-        <span className="font-mono text-mono whitespace-nowrap text-muted">{row.metric}</span>
+        <span className="value whitespace-nowrap">{row.metric}</span>
       )}
 
       {row.expanded && row.body.length > 0 ? (
         /* PROZA, NIE WYJŚCIE MASZYNY. Ten sam blok co niżej, ale bez monospace'u i bez czerwonej
            krawędzi: to jest zdanie agenta i czyta się je jak tekst, a czerwona krawędź znaczy
            w tym widoku „to padło". Miara wiersza ta sama, co w nagłówku — proza nie zmienia
-           szerokości od tego, że ją rozwinięto. */
+           szerokości od tego, że ją rozwinięto.
+
+           `text-body` STAŁO TU DWA RAZY i to nie było podkreślenie — zmierzone 2026-08-31
+           kompilacją arkusza: przy zdefiniowanym `--color-body` Tailwind rozstrzyga `text-body`
+           jako BARWĘ i stopnia nie wypisuje wcale. Dwa razy ta sama barwa to jedna barwa, więc
+           drugi napis znika bez zmiany na ekranie. Stopień zostaje odziedziczony z `body`,
+           czyli dokładnie ten, który DESIGN §4 nazywa stopniem prozy. */
         <p
           data-line-body
-          className={`col-start-2 whitespace-pre-line break-words text-body text-body ${MEASURE}`}
+          className={`col-start-2 whitespace-pre-line break-words text-body ${MEASURE}`}
         >
           {row.body.join('\n')}
         </p>
@@ -265,7 +296,7 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
            od zwykłego akapitu tekstu maszynowego. */
         <pre
           data-copyable
-          className="col-start-2 overflow-x-auto border-l-2 border-l-fail bg-well px-[11px] py-[9px] font-mono text-mono text-muted"
+          className="value col-start-2 overflow-x-auto border-l-2 border-l-fail bg-well px-[11px] py-[9px]"
         >
           {row.output.join('\n')}
         </pre>
@@ -277,7 +308,7 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
           za pieniądze. Gaśnie razem z wierszem — nie ma tu drugiego żywego regionu na fakt,
           o którym mówi pasek pracy (niezmiennik 13). */}
       {said === null ? null : (
-        <p data-line-said className="col-start-2 text-body text-fail">
+        <p data-line-said data-tone="fail" className="lead col-start-2">
           {said}
         </p>
       )}

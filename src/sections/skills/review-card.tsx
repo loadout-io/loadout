@@ -8,6 +8,12 @@
  * we wszystkim, co wstawiamy jako dziecko węzła, i to jest jedyny mechanizm, na którym tu
  * stoimy — `dangerouslySetInnerHTML` nie ma prawa pojawić się w tym pliku ani obok.
  *
+ * 2026-08-31 — LISTA ZNALEZISK WYSZŁA STĄD DO `./findings.tsx` i nie jest to porządkowanie.
+ * Odkąd `ImportItem` niesie przegląd drutem, ekran importu pokazuje te same znaleziska tym
+ * samym ludziom; zdania o regułach, cytat i tekst odzyskany z komentarza zostały więc w JEDNYM
+ * miejscu (niezmiennik 23). Ta karta dokłada do nich to, czego tamten ekran nie ma: nazwę,
+ * pochodzenie, ciało za `<details>` i zgodę, bez której nie ma instalacji.
+ *
  * Drugi kierunek jest tak samo wiążący: karta, która ciała NIE POKAZUJE, przechodzi każde
  * sprawdzenie mówiące „nie ma tu znaczników" i jednocześnie kasuje jedyny powód, dla którego
  * ten ekran istnieje — człowiek zatwierdza wtedy w ciemno.
@@ -22,7 +28,8 @@
  * kliknięciu — to, czy człowiek je widzi, rozstrzyga tu przeglądarka, nie arkusz stylów.
  */
 import type { ReactElement } from 'react';
-import type { Finding, Import } from '../../state/skills';
+import type { Import } from '../../state/skills';
+import { Findings, QUOTE } from './findings';
 
 export interface ReviewCardProps {
   item: Import;
@@ -32,35 +39,25 @@ export interface ReviewCardProps {
   onAdd: () => void;
 }
 
-/* Zdanie na każdą regułę. Id reguły NIGDY nie trafia na ekran (niezmiennik 14): nazywa
- * sprawdzenie, a nie niebezpieczeństwo — a człowiek, który czyta `role-manipulation`, wie
- * dokładnie tyle, ile wiedział przedtem. Nieznana reguła (skaner przyniósł swoją) dostaje
- * zdanie ogólne zamiast wypaść z listy: znalezisko bez tłumaczenia dalej jest znaleziskiem. */
-const SAYS: Readonly<Record<string, string>> = {
-  'hidden-text': 'This skill carries text you cannot see on screen.',
-  'instruction-override': 'A line here tells the agent to drop the rules it was given.',
-  exfiltration: 'A line here sends something off this machine.',
-  'role-manipulation': 'A line here is written to look like part of the conversation.',
-  escalation: 'This skill asks for tools of its own.',
-  'deep-scan-unavailable': "Deep scan didn't run.",
-};
-
-const OTHERWISE = 'There is something here worth reading before you add this skill.';
-
-const CHIP = 'rounded-pill border border-attend-edge bg-attend-soft px-2 text-label text-attend';
-const QUOTE = 'overflow-x-auto rounded-md bg-well p-2 text-mono text-ink';
-const READ = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
-
-/* Klasa przycisku „Add" zależy od stanu i jest wybierana TUTAJ, a nie wariantem `disabled:`
- * Tailwinda. Wariant zostawiłby słowo `disabled` w atrybucie `class` także wtedy, gdy przycisk
- * działa — czyli „czy da się dodać" miałoby w HTML-u dwie odpowiedzi, z których jedna kłamie
- * (niezmiennik 13). */
-const ADD = 'h-9 rounded-sm bg-accent px-4 text-ui text-bg';
-const ADD_OFF = 'h-9 rounded-sm bg-raised px-4 text-ui text-muted';
-
-function sentenceFor(finding: Finding): string {
-  return SAYS[finding.rule] ?? OTHERWISE;
-}
+/* TRZY STAŁE KLASOWE ZNIKŁY 2026-08-31 (DESIGN §6, warstwa prymitywów).
+ *
+ * `CHIP` opisywał pigułkę pochodzenia własnymi sześcioma nazwami; dziś to `.chip` z tonem
+ * podanym atrybutem (`data-tone="attend"`), bo ton chipa zmienia wyłącznie barwę, a nie
+ * geometrię — a `.chip-attend` obok `.chip` to dwa napisy, które trzeba trzymać zgodnie ręcznie.
+ * `READ` był cichym przyciskiem, czyli `.btn-quiet`.
+ *
+ * `ADD` i `ADD_OFF` znikły OBA i to jest cały sens tej warstwy: stan wyłączony jest REGUŁĄ
+ * (`.btn-primary:disabled` w `theme.css`), a nie drugim przyciskiem. Powód, dla którego nie ma
+ * tu wariantu `disabled:` Tailwinda, nie zmienił się ani o słowo: wariant zostawia napis
+ * `disabled` w atrybucie `class` także wtedy, gdy przycisk działa, więc „czy da się dodać" ma
+ * w HTML-u dwie odpowiedzi, z których jedna kłamie (niezmiennik 13). Dziś odpowiedź jest jedna
+ * i nosi ją atrybut `disabled`, który ten stan naprawdę egzekwuje.
+ *
+ * `QUOTE` ZOSTAJE i nie jest przeoczeniem — przeprowadził się tylko do `./findings.tsx`, bo
+ * ta sama studnia stoi pod cytatem znaleziska. To jest blok nieufnej treści: tekst, który
+ * człowiek CZYTA, żeby zdecydować. Prymitywu na to nie ma — `.card` jest pojemnikiem na tonie
+ * panelu, a `.value` niesie tabelaryczne cyfry i rolę wartości maszynowej, nie cudzego
+ * akapitu. Zgłoszone jako brakująca rola, nie obchodzone klasą o innym znaczeniu. */
 
 /** „Includes N scripts" [T5 §8.3] — liczba jest liczona z tego, co przyszło. */
 function scriptsLine(count: number): string {
@@ -82,7 +79,7 @@ export function ReviewCard({
   );
 
   return (
-    <section data-review-card className="flex flex-col gap-3">
+    <section data-review-card className="stack" data-gap="3">
       <header className="flex items-center gap-2">
         <h2 className="text-heading text-ink">{item.name}</h2>
         {/* Znacznik pochodzenia stoi na karcie i zostaje po instalacji. To jedyna rzecz tutaj,
@@ -99,54 +96,39 @@ export function ReviewCard({
             Zgaszenie jej CAŁKIEM byłoby drugą połową tego samego defektu: umiejętność napisana
             przez obcego przestałaby różnić się od napisanej ręką. Dlatego warunek, a nie
             usunięcie. */}
-        {item.fromTheInternet ? <span className={CHIP}>From the internet</span> : null}
+        {item.fromTheInternet ? (
+          <span className="chip" data-tone="attend">
+            From the internet
+          </span>
+        ) : null}
       </header>
 
-      <p className="text-body text-body">{item.summary}</p>
+      {/* Bez klasy: `--t-body` jest stopniem prozy i `body` już go ma. Stało tu
+          `text-body text-body`, co czytało się jak literówka i nią było (DESIGN §6). */}
+      <p>{item.summary}</p>
 
       <details className="rounded-md border border-line p-2">
         <summary className="text-ui text-body">Show what it tells the agent to do</summary>
         <pre className={QUOTE}>{item.reviewed.body}</pre>
       </details>
 
-      {item.reviewed.findings.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {item.reviewed.findings.map((finding) => (
-            <li key={finding.id} className="flex flex-col gap-1">
-              <span className="text-body text-ink">{sentenceFor(finding)}</span>
-              {finding.line === null ? null : (
-                <span className="text-label text-muted">{`Line ${String(finding.line)}`}</span>
-              )}
-              {/* Cytat i tekst odzyskany z komentarza jadą jako dzieci węzła, więc React
-                  ucieka w nich znaki. Odzyskany tekst MUSI tu być: został zdjęty z ciała, więc
-                  jeśli karta go nie pokaże, atak zniknie z ekranu i pojedzie do modelu. */}
-              {finding.quoted.length > 0 ? <pre className={QUOTE}>{finding.quoted}</pre> : null}
-              {finding.recovered === null ? null : <pre className={QUOTE}>{finding.recovered}</pre>}
-              {finding.weight === 'block' && !acknowledged.includes(finding.id) ? (
-                <button
-                  type="button"
-                  data-acknowledge={finding.id}
-                  className={READ}
-                  onClick={() => {
-                    onAcknowledge(finding.id);
-                  }}
-                >
-                  I have read this
-                </button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {/* Zgoda per znalezisko jedzie propsem, bo na tym ekranie ona coś zmienia: instalacja
+          czeka, aż każde blokujące zostanie odklikane. Ekran importu tej zgody nie ma i podaje
+          w to miejsce zdanie — powód stoi w nagłówku `./findings.tsx`. */}
+      <Findings
+        findings={item.reviewed.findings}
+        acknowledged={acknowledged}
+        onAcknowledge={onAcknowledge}
+      />
 
-      {item.scripts > 0 ? <p className="text-body text-body">{scriptsLine(item.scripts)}</p> : null}
+      {item.scripts > 0 ? <p>{scriptsLine(item.scripts)}</p> : null}
 
       <div className="flex items-center gap-2">
         <button
           type="button"
           data-add
           disabled={waiting.length > 0}
-          className={waiting.length > 0 ? ADD_OFF : ADD}
+          className="btn-primary"
           onClick={onAdd}
         >
           Add this skill

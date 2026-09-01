@@ -157,7 +157,7 @@ function readable(markup: string): string {
  */
 function streamOf(markup: string): string {
   const opens = markup.indexOf('data-stream-column');
-  const closes = markup.indexOf('data-rail');
+  const closes = markup.indexOf('data-plan-column');
   if (opens < 0 || closes < opens) return '';
   return readable(markup.slice(opens, closes));
 }

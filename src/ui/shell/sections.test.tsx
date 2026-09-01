@@ -1,7 +1,7 @@
-/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z siedmiu, a pozostałych sześciu NIE MA
+/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z ośmiu, a pozostałych siedmiu NIE MA
  * w drzewie.
  *
- * Oczekiwana siódemka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
+ * Oczekiwana ósemka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
  * SECTIONS sprawdzałaby rejestr sam sobą: pusta tablica przechodzi wtedy każde „dla każdej
  * sekcji…", bo nie ma żadnej.
  *
@@ -21,8 +21,13 @@ const EXPECTED = [
   { id: 'run', label: 'Run' },
   { id: 'workflows', label: 'Workflows' },
   { id: 'agents', label: 'Agents' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'memory', label: 'Memory' },
+  /* JEDEN WIERSZ ZAMIAST DWÓCH od 2026-08-31: Skills i Memory zeszły się w Knowledge, bo obie
+     odpowiadały na jedno pytanie człowieka („co ten model wie o mojej pracy") i kazały mu
+     wybierać dwa razy. Ta tablica jest wypisana NA SZTYWNO z premedytacją — pętla po `SECTIONS`
+     sprawdzałaby rejestr samym sobą, a scalenie, które gubi sekcję po drodze, przeszłoby wtedy
+     bez śladu. */
+  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'lab', label: 'Lab' },
   { id: 'triggers', label: 'Triggers' },
   { id: 'settings', label: 'Settings' },
 ] as const;
@@ -35,11 +40,11 @@ function markupFor(id: (typeof EXPECTED)[number]['id']): string {
   return renderToStaticMarkup(<App section={id} />);
 }
 
-describe('one section of seven is on screen and the other six are not in the tree', () => {
-  it('registers the seven, in order, under the words a person reads', () => {
+describe('one section of six is on screen and the other five are not in the tree', () => {
+  it('registers the six, in order, under the words a person reads', () => {
     expect(
       SECTIONS.length,
-      'SECTIONS has to hold exactly seven entries — the seven top-level places this app has. It ' +
+      'SECTIONS has to hold exactly six entries — the six top-level places this app has. It ' +
         'holds ' +
         String(SECTIONS.length),
     ).toBe(EXPECTED.length);
@@ -55,7 +60,7 @@ describe('one section of seven is on screen and the other six are not in the tre
   });
 
   for (const entry of EXPECTED) {
-    it('mounts ' + entry.id + ' once and leaves the other six out of the tree', () => {
+    it('mounts ' + entry.id + ' once and leaves the other five out of the tree', () => {
       const markup = markupFor(entry.id);
       expect(
         occurrences(markup, 'data-section="' + entry.id + '"'),

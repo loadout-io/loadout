@@ -127,10 +127,32 @@ function changeOf(part: unknown, id: string): Change | null {
   return changeIn(part, (props) => props['id'] === id);
 }
 
-/** Uchwyt wyboru folderu, w obu kształtach, jakie ten wybór może mieć: grupa przycisków
- * radiowych (tak robi to kafelek „uruchom i zostaw") albo jedna lista wyboru. */
-function chooseFolder(part: unknown, use: string): Change | null {
-  return changeIn(part, (props) => props['value'] === use) ?? changeOf(part, 'check-where');
+/** Propsy pierwszego elementu, który pasuje — ten sam spacer po drzewie, co wyżej. */
+function propsIn(part: unknown, matches: (props: Props) => boolean): Props | null {
+  if (Array.isArray(part)) {
+    for (const one of part) {
+      const hit = propsIn(one, matches);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (typeof part !== 'object' || part === null) return null;
+  if (!isValidElement<Props>(part)) return null;
+  if (matches(part.props)) return part.props;
+  return propsIn(part.props['children'], matches);
+}
+
+/** Uchwyt wyboru miejsca pracy.
+ *
+ * 2026-08-31 — SZUKAMY GO NA KONTROLCE, NIE NA PRZYCISKU. Wybór „gdzie to biegnie" jest od tego
+ * dnia jedną wspólną kontrolką dla wszystkich trzech rodzajów kafelka (`./where-it-works.tsx`),
+ * więc w drzewie TEGO panelu stoi jako jeden element z `onChoose`, a trzy przyciski powstają
+ * dopiero w jej własnym renderze. Kryterium dalej pyta o to samo: czy wybór wychodzi z panelu
+ * pod kluczem, którego używa plik. */
+function chooseFolder(part: unknown): ((folder: { use: string }) => void) | null {
+  const props = propsIn(part, (one) => typeof one['onChoose'] === 'function');
+  const handler = props?.['onChoose'];
+  return typeof handler === 'function' ? (handler as (folder: { use: string }) => void) : null;
 }
 
 beforeEach(() => {
@@ -158,8 +180,8 @@ describe('the panel of a check tile edits every field the tile has', () => {
     ).toBe(1);
     expect(
       markup,
-      'this tile has no agent, so it inherits nothing and must not be shown the seven-row panel ' +
-        'for agent steps: half of those rows would answer a question nobody asked.',
+      'this tile has no agent, so it inherits nothing and must not be shown the rows an agent ' +
+        'step inherits: half of them would answer a question nobody asked.',
     ).not.toContain('id="step-give-up-after"');
   });
 
@@ -204,8 +226,9 @@ describe('the panel of a check tile edits every field the tile has', () => {
       markup,
       'the panel does not say where this runs. For a check that is not a detail: run in the ' +
         'project folder it looks at code WITHOUT the work the step before it just wrote, and ' +
-        'passes on the old version.',
-    ).toContain('Where it runs');
+        'passes on the old version. Since 2026-08-31 the question is worded once for all three ' +
+        'kinds of tile, and its own criterion holds the three panels to that one wording.',
+    ).toContain('Where it works');
     for (const use of ['same-copy', 'project', 'fresh-copy']) {
       expect(
         markup,
@@ -240,7 +263,7 @@ describe('the panel of a check tile edits every field the tile has', () => {
 
     const typeCommand = changeOf(tree, 'check-command');
     const typePattern = changeOf(tree, 'check-passes-when');
-    const pickFolder = chooseFolder(tree, 'fresh-copy');
+    const pickFolder = chooseFolder(tree);
     const pickFailure = changeOf(tree, 'check-when-it-fails');
     const typeName = changeOf(tree, 'check-name');
 
@@ -255,7 +278,7 @@ describe('the panel of a check tile edits every field the tile has', () => {
     typeName?.({ target: { value: 'Run the checks' } });
     typeCommand?.({ target: { value: COMMAND } });
     typePattern?.({ target: { value: PROOF } });
-    pickFolder?.({ target: { value: 'fresh-copy' } });
+    pickFolder?.({ use: 'fresh-copy' });
     pickFailure?.({ target: { value: 'carry-on' } });
 
     expect(

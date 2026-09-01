@@ -14,6 +14,7 @@
 # w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
 # wierszem diffu, a nie przesunięciem całego pliku.
 answer_the_lead
+apply_eval_fix
 apply_setup
 author_skill
 check_trigger
@@ -22,17 +23,22 @@ close_terminal
 compare_import_copies
 continue_run
 copy_diagnostics
+create_eval_set
 create_trigger
+decide_eval_case
 delete_agent
+delete_eval_set
 delete_skill
 delete_trigger
 delete_workflow
 delete_workspace
 discard_note
 draft_skill
+drop_eval_variant
 forget_run_branches
 install_skill
 list_agents
+list_eval_sets
 list_handoffs
 list_host_material
 list_notes
@@ -46,7 +52,12 @@ load_workflow
 move_note_to_project
 new_id
 open_chat
+propose_eval_cases
+propose_eval_fix
+put_eval_case
+put_eval_variant
 put_note_to_use
+read_eval_board
 read_run
 read_settings
 rerun_step
@@ -55,6 +66,7 @@ resume_trigger
 retry_trigger
 review_skill
 run_agent
+run_eval_set
 run_workflow
 save_agent
 save_settings
@@ -68,6 +80,7 @@ start_process
 stop_comparing_copies
 stop_draft
 stop_process
+stop_proposing_cases
 stop_run
 stop_using_note
 test_linear_connection

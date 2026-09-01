@@ -139,9 +139,16 @@ const START: WorkflowFile = {
 /** Kafelek prosto z przycisku płótna — TĄ SAMĄ funkcją, którą woła przycisk. */
 const PLACED = freshStep('check', freshId(START), { x: 24, y: 24 });
 
-/** Ten sam kafelek z wpisaną komendą i bez wzorca: jedyny stan, w którym brakuje DOKŁADNIE
- * jednej rzeczy, więc odmowa ma o czym mówić pojedynczo. */
-const TYPED: Step = PLACED.kind === 'check' ? { ...PLACED, command: COMMAND } : PLACED;
+/** Ten sam kafelek z wpisaną komendą i WYCZYSZCZONYM wzorcem: jedyny stan, w którym brakuje
+ * DOKŁADNIE jednej rzeczy, więc odmowa ma o czym mówić pojedynczo.
+ *
+ * 2026-08-31 — `proof: ''` STOI TU OD DZIŚ JAWNIE. Do tego dnia kafelek prosto z przycisku
+ * przychodził bez wzorca sam z siebie, a od naprawy „przycisk karze za własne użycie"
+ * (`canvas/connect.ts`) wychodzi wypełniony: pusty plik nie zapisywał się wcale, więc kliknięcie
+ * kończyło się czerwonym paskiem. Kryterium niżej sądzi CZŁOWIEKA, który ten wzorzec skasował,
+ * i to jest ta sama odmowa — po prostu dochodzi się do niej wykasowaniem pola, a nie
+ * niewpisaniem go. */
+const TYPED: Step = PLACED.kind === 'check' ? { ...PLACED, command: COMMAND, proof: '' } : PLACED;
 
 /** I ten sam z wpisanym wzorcem — kontrola w drugą stronę. */
 const FILLED: Step = TYPED.kind === 'check' ? { ...TYPED, proof: PROOF } : TYPED;

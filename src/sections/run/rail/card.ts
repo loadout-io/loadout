@@ -94,7 +94,11 @@ export function railCard(agent: AgentInRun): RailCard {
     id: agent.id,
     name: agent.name,
     role: agent.role,
-    say: sayFor(agent.lines),
+    /* Drugi argument jest ODCZYTEM STANU, nie drugą tabelą: `needs you` bije w `roster.ts`
+     * wszystko inne i powstaje dokładnie wtedy, gdy w kolejce modelu stoi pytanie bez
+     * odpowiedzi. Bez niego zdanie „Waiting for your answer" zostawało na kafelku po zejściu
+     * biegu, nad kartą z przyciskami, której już nie ma (2026-08-31). */
+    say: sayFor(agent.lines, agent.status === 'needs you'),
     /* Z `id`, nie z `name`: podpis w strumieniu jest tym, co się nie zmienia. */
     square: identityToken(agent.id),
     status: agent.status,

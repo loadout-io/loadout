@@ -38,7 +38,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MemoryState, Note, NoteAddress } from '../../state/memory';
 import { useMemory } from '../../state/memory';
-import MemoryScreen from './index';
+import NotesShelf from './shelf';
 import { NoteRow } from './note-row';
 
 /* Atrapa podniesiona razem z `vi.mock`, żeby moduły sekcji dostały JĄ, a nie prawdziwy
@@ -192,7 +192,7 @@ describe('a suggested note can be thrown away, and one in use cannot be thrown a
   it('draws that button in the zone that waits for a person, and nowhere else', () => {
     useMemory.setState({ notes: [WAITING, IN_USE] });
 
-    const html = renderToStaticMarkup(<MemoryScreen store={useMemory} />);
+    const html = renderToStaticMarkup(<NotesShelf store={useMemory} />);
 
     expect(
       zone(html, 'suggested'),

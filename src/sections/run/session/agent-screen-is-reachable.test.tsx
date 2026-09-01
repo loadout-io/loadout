@@ -12,10 +12,12 @@
  * teście — dlatego handler musi być funkcją modułową, którą test może zawołać wprost, a nie
  * domknięciem zamkniętym w komponencie.
  *
- * DLACZEGO `Rail`, A NIE CAŁY EKRAN PRACY. Szew, o który pyta to kryterium, mieszka w `rail.tsx`
- * — kafelek i miejsce montowania ekranu agenta stoją w tym samym pliku. Że `Rail` jest naprawdę
- * zamontowany na ekranie Run, sądzi osobne, cudze kryterium (`../rail-shows-agents.test.tsx`),
- * które renderuje cały ekran; powtarzanie tego tutaj dałoby drugie miejsce na jedno pytanie.
+ * 2026-08-31 — TO KRYTERIUM PYTA TERAZ CAŁY EKRAN PRACY, a nie prawą kolumnę. Kolumna z kafelkiem
+ * na agenta zniknęła (mówiła to samo, co strumień i blok pod nim, przy limicie jednego żywego
+ * regionu na fakt), a razem z nią zniknęłaby jedyna droga do tego ekranu. Kafelek stoi dziś na
+ * obrazie planu i to on jest przyciskiem; pytanie zostało dokładnie to samo, zmienił się
+ * selektor. Renderowanie całego ekranu jest przy tym MOCNIEJSZE: odpowiada też na „czy ktokolwiek
+ * to montuje", a to jest ta druga połowa niezmiennika 29.
  *
  * WARTOŚCI OCZEKIWANE POCHODZĄ Z DANYCH ZASIANYCH W MAGAZYNIE, nie z markupu: metrykę zmiany
  * składamy z tych samych liczb, które weszły linią `edit`. Wpisana z palca przechodziłaby także
@@ -29,7 +31,7 @@ import { useRun } from '../../../state/run';
 import { line } from '../feed/fixtures/lines';
 import { runFeed } from '../feed/live';
 import { roster } from '../rail/roster';
-import { Rail } from '../rail/rail';
+import Run from '../index';
 import { closeAgent, openAgent } from './open';
 
 const BUILD = 'Build';
@@ -62,11 +64,28 @@ const cards = roster({
   agents: STEPS.map((step) => ({ id: step.name, name: step.name, role: '', step: step.state })),
 });
 
-const closed = renderToStaticMarkup(<Rail cards={cards} />);
+const closed = renderToStaticMarkup(<Run />);
 openAgent(BUILD);
-const open = renderToStaticMarkup(<Rail cards={cards} />);
+const open = renderToStaticMarkup(<Run />);
 closeAgent();
-const backAgain = renderToStaticMarkup(<Rail cards={cards} />);
+const backAgain = renderToStaticMarkup(<Run />);
+
+/** Kafelek tego kroku, od jego znacznika do znacznika następnego. */
+function cardFor(markup: string, id: string): string {
+  const at = markup.indexOf('data-step="' + id + '"');
+  if (at < 0) return '';
+  const rest = markup.slice(at);
+  const next = rest.indexOf('data-step="', 1);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
+/** Znacznik otwierający kafelka — element, na którym wisi `data-step`. */
+function shellOf(markup: string, id: string): string {
+  const at = markup.indexOf('data-step="' + id + '"');
+  if (at < 0) return '';
+  const opens = markup.lastIndexOf('<', at);
+  return markup.slice(opens, at);
+}
 
 /** Sam ekran agenta, wycięty z markupu. Pusty, kiedy go nie ma. */
 function screenIn(markup: string): string {
@@ -82,25 +101,27 @@ function visible(markup: string): string {
     .trim();
 }
 
-describe('one agent has a screen of its own, reachable from the agents list', () => {
-  it('runs on a list that really has tiles on it', () => {
+describe('one agent has a screen of its own, reachable from the picture of the plan', () => {
+  it('runs on a plan that really has workers on it', () => {
     expect(
       cards.map((card) => card.id),
-      'the agents list came out empty, so every question below would be about a screen nobody ' +
-        'could open and would pass on nothing.',
+      'nothing was counted from the seeded stream, so every question below would be about a ' +
+        'screen nobody could open and would pass on nothing.',
     ).toEqual([BUILD, CHECK]);
   });
 
-  it('draws each tile as a control, not as a label', () => {
+  it('draws each card as a control, not as a label', () => {
     expect(
-      closed,
-      'the tile is not a button, so there is nothing to press. This is where the whole defect ' +
-        'started: the mockup draws it as a control because pressing it opens the agent.',
+      cardFor(closed, 's_1'),
+      'the run screen carries no card for the step ' +
+        BUILD +
+        ' at all, so asking whether it can be pressed would be a question about nothing',
+    ).not.toBe('');
+    expect(
+      shellOf(closed, 's_1'),
+      'the card is not a button, so there is nothing to press. This is where the whole defect ' +
+        'started: the mockup draws it as a control because pressing it opens the worker.',
     ).toContain('<button');
-    expect(
-      closed.indexOf('<button'),
-      'and the control is inside the tile, not somewhere else on the column',
-    ).toBeGreaterThan(closed.indexOf('data-agent="' + BUILD + '"'));
   });
 
   it('shows no agent screen until someone opens one', () => {
@@ -111,12 +132,12 @@ describe('one agent has a screen of its own, reachable from the agents list', ()
     ).toBe('');
   });
 
-  it('opens the screen of the agent whose tile was pressed', () => {
+  it('opens the screen of the agent whose card was pressed', () => {
     const screen = screenIn(open);
 
     expect(
       screen,
-      'pressing a tile changed nothing. A control whose handler has no effect is worse than no ' +
+      'pressing a card changed nothing. A control whose handler has no effect is worse than no ' +
         'control at all (invariant 16) — and it is exactly what this column shipped with.',
     ).not.toBe('');
     expect(screen, 'and it is the screen of THAT agent').toContain('data-agent-screen="' + BUILD);
@@ -169,11 +190,11 @@ describe('one agent has a screen of its own, reachable from the agents list', ()
     expect(
       screenIn(backAgain),
       'going back left the agent screen on top of the run view. The way back has to have the ' +
-        'same effect as the tile, in reverse — one field, one truth.',
+        'same effect as the card, in reverse — one field, one truth.',
     ).toBe('');
     expect(
       backAgain,
-      'and the agents list is still there underneath, unchanged by the trip',
-    ).toContain('data-agent="' + BUILD + '"');
+      'and the picture of the plan is still there underneath, unchanged by the trip',
+    ).toContain('data-step="s_1"');
   });
 });

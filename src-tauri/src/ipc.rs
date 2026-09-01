@@ -539,6 +539,13 @@ pub struct AppState {
     /// tamtego traci swój token w chwili, w której człowiek uruchomi bieg — i Stop przy
     /// wierszu importu przestaje cokolwiek robić, bez ani jednego zdania.
     comparing: commands::import::Comparing,
+    /// Miejsce na jedno pisanie kandydatek w Labie i token tej tury.
+    ///
+    /// **Trzecie osobne pole obok [`AppState::drafting`] i [`AppState::comparing`]**, z tego
+    /// samego powodu, dla którego tamte dwa są osobne: trzy różne pytania, zadawane z trzech
+    /// różnych ekranów. Jedno miejsce na wszystkie znaczyłoby, że Stop przy kandydatkach
+    /// w Labie ubija porównanie kopii otwarte w Imporcie.
+    proposing: commands::lab::Proposing,
     /// Rzeczy, które człowiek uruchomił komendą — i których Loadout jest właścicielem.
     ///
     /// **Jedna lista na aplikację, nie jedna na zakres**, i powód stoi w całości przy
@@ -686,6 +693,7 @@ impl AppState {
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
             comparing: commands::import::Comparing::new(),
+            proposing: commands::lab::Proposing::new(),
             started: std::sync::Arc::new(commands::processes::Processes::new()),
         }
     }
@@ -1628,6 +1636,265 @@ pub async fn compare_import_copies(
 pub async fn stop_comparing_copies(state: State<'_, AppState>) -> Result<(), String> {
     state.comparing.stop();
     Ok(())
+}
+
+// ── Lab ─────────────────────────────────────────────────────────────────────────────────────
+//
+// WSZYSTKIE SĄ `async`, także te bez ani jednego `await` w ciele, i to nie jest ozdoba:
+// `State<'_, AppState>` wzięte przez wartość w funkcji synchronicznej jest w tym drzewie
+// odmową clippy (`needless_pass_by_value`, pedantic pod `-D warnings`), a referencji
+// `generate_handler!` w tym miejscu nie przyjmuje. Ten sam kształt i z tego samego powodu
+// mają wszystkie pozostałe komendy tej aplikacji biorące stan — powód jest opisany przy
+// `list_handoffs`. Async ma zresztą drugi, samodzielny powód: komenda dotykająca zamka nie
+// biegnie wtedy na wątku okna.
+//
+// Jedenaście krawędzi jednej sekcji. Wszystkie biorą `folder`, bo zestaw jest własnością
+// PROJEKTU (`lab::EVALS_DIR`): przypadek zbudowany z materiału tego repozytorium nie znaczy nic
+// w sąsiednim, a warstwa, która wzięłaby folder sobie sama z katalogu procesu, pokazywałaby
+// zestawy z projektu, na który człowiek akurat nie patrzy.
+
+/// Zestawy tego projektu.
+#[tauri::command]
+pub async fn list_eval_sets(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<crate::lab::EvalSet>, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    Ok(commands::lab::list_sets_inner(&project))
+}
+
+/// Wszystko, co ekran rysuje dla jednego zestawu: on sam, jego przebiegi i różnica.
+#[tauri::command]
+pub async fn read_eval_board(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    how_many: usize,
+) -> Result<commands::lab::BoardWire, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::read_board_inner(&project, set, how_many).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Zakłada zestaw dla agenta albo umiejętności — to jest cały czasownik „Evaluate".
+#[tauri::command]
+pub async fn create_eval_set(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    name: &str,
+    subject: crate::lab::Subject,
+    agent: &str,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::create_set_inner(&project, name, &subject, agent).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Usuwa zestaw. Przebiegi zostają w historii biegów.
+#[tauri::command]
+pub async fn delete_eval_set(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+) -> Result<(), String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::delete_set_inner(&project, set).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Agent czyta ten projekt i pisze kandydatki, które czekają na człowieka.
+#[tauri::command]
+pub async fn propose_eval_cases(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    agent: &str,
+) -> Result<commands::lab::ProposedWire, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::propose_cases_inner(
+        &crate::loadout_dir(),
+        &state.drivers,
+        &state.proposing,
+        &project,
+        set,
+        agent,
+    )
+    .await
+    .inspect_err(|said| {
+        refused(said);
+    })
+}
+
+/// Agent czyta to, co nie przeszło, i proponuje nowy tekst instrukcji. **Nie stosuje go.**
+#[tauri::command]
+pub async fn propose_eval_fix(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    agent: &str,
+) -> Result<commands::lab::FixWire, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::propose_fix_inner(
+        &crate::loadout_dir(),
+        &state.drivers,
+        &state.proposing,
+        &project,
+        set,
+        agent,
+    )
+    .await
+    .inspect_err(|said| {
+        refused(said);
+    })
+}
+
+/// Stosuje poprawkę: zapisuje nowy tekst instrukcji agenta i oddaje jego nową rewizję.
+///
+/// `expected_revision` jest tym, co okno przeczytało dla TEGO agenta; bez niego Apply skasowałby
+/// cudzą, nowszą zmianę tej samej definicji bez jednego zdania.
+#[tauri::command]
+pub async fn apply_eval_fix(
+    agent: &str,
+    instructions: String,
+    expected_revision: Option<&str>,
+) -> Result<String, String> {
+    commands::lab::apply_fix_inner(
+        &crate::loadout_dir(),
+        agent,
+        instructions,
+        expected_revision,
+    )
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// „Stop" dla pisania kandydatek.
+///
+/// Osobna komenda od [`stop_comparing_copies`] i od [`stop_draft`], bo zatrzymuje osobny
+/// uchwyt — powód w całości stoi przy [`AppState::proposing`].
+#[tauri::command]
+pub async fn stop_proposing_cases(state: State<'_, AppState>) -> Result<(), String> {
+    state.proposing.stop();
+    Ok(())
+}
+
+/// Przyjmuje albo odrzuca jedną kandydatkę. To jedyna droga z `suggested` do `in-use`.
+#[tauri::command]
+pub async fn decide_eval_case(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    case: &str,
+    keep: bool,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::decide_case_inner(&project, set, case, keep, expected_revision).map_err(
+        |error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        },
+    )
+}
+
+/// Dopisuje albo poprawia jeden przypadek.
+#[tauri::command]
+pub async fn put_eval_case(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    case: crate::lab::Case,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::put_case_inner(&project, set, case, expected_revision).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Dopisuje albo poprawia jedną kolumnę.
+#[tauri::command]
+pub async fn put_eval_variant(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    variant: crate::lab::Variant,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::put_variant_inner(&project, set, variant, expected_revision).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Zdejmuje kolumnę.
+#[tauri::command]
+pub async fn drop_eval_variant(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    variant: &str,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::lab::drop_variant_inner(&project, set, variant, expected_revision).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
+/// Puszcza cały zestaw jako **zwykły bieg**.
+///
+/// Plan schodzi na dysk obok zestawu, a stąd dalej idzie tą samą drogą, co Start z płótna:
+/// ta sama pula miejsc, ten sam sufit wydatku, ten sam strumień linii i ten sam wpis
+/// w historii. Osobnej pętli po przypadkach tu nie ma i nie będzie — powód w całości stoi
+/// w nagłówku `lab::plan`.
+#[tauri::command]
+pub async fn run_eval_set(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    how_many_at_once: usize,
+    budget_usd: Option<f64>,
+    lines: Channel<Vec<Line>>,
+) -> Result<(), String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let planned =
+        commands::lab::plan_a_run_inner(&project, set, how_many_at_once).map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })?;
+    run_workflow_in_project(
+        &state,
+        &project,
+        &planned.request,
+        budget_usd,
+        // Prywatna tura refleksji należy do pracy człowieka, nie do pomiaru: notatka wyciągnięta
+        // z przebiegu zestawu opisywałaby przypadki testowe jako wiedzę o projekcie.
+        false,
+        None,
+        pump_into(lines),
+    )
+    .await
 }
 
 /// Zapisuje definicję agenta i oddaje rewizję, którą ma teraz jego plik.
@@ -3031,6 +3298,8 @@ pub async fn list_processes(
 /// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        answer_the_lead,
+        apply_eval_fix,
         apply_setup,
         author_skill,
         check_trigger,
@@ -3039,17 +3308,22 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         compare_import_copies,
         continue_run,
         copy_diagnostics,
+        create_eval_set,
         create_trigger,
+        decide_eval_case,
         delete_agent,
+        delete_eval_set,
         delete_skill,
         delete_trigger,
         delete_workflow,
         delete_workspace,
         discard_note,
         draft_skill,
+        drop_eval_variant,
         forget_run_branches,
         install_skill,
         list_agents,
+        list_eval_sets,
         list_handoffs,
         list_host_material,
         list_notes,
@@ -3063,33 +3337,39 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         move_note_to_project,
         new_id,
         open_chat,
-        answer_the_lead,
+        propose_eval_cases,
+        propose_eval_fix,
+        put_eval_case,
+        put_eval_variant,
         put_note_to_use,
+        read_eval_board,
         read_run,
         read_settings,
-        retry_trigger,
-        review_skill,
-        run_agent,
         rerun_step,
         resume_run,
         resume_trigger,
+        retry_trigger,
+        review_skill,
+        run_agent,
+        run_eval_set,
         run_workflow,
         save_agent,
         save_settings,
         save_workflow,
         save_workspace,
-        scan_setup,
         say_to_agent,
         say_to_orchestrator,
+        scan_setup,
         set_trigger_enabled,
         start_process,
         stop_comparing_copies,
         stop_draft,
         stop_process,
+        stop_proposing_cases,
         stop_run,
         stop_using_note,
         test_linear_connection,
-        update_trigger
+        update_trigger,
     ]
 }
 

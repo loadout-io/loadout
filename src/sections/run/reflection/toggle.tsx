@@ -10,12 +10,12 @@ export const REFLECTION_LABEL = 'Learn from this run';
  * przeczytanie `commands::run::what_this_run_taught_us`. Zdanie mówi trzy rzeczy, których
  * z samego napisu nie da się zgadnąć: że powstają NOTATKI, że jest ich najwyżej trzy
  * (`AT_MOST_KEPT` po tamtej stronie) i że nie wchodzą do niczego, dopóki człowiek ich nie
- * przyjmie w sekcji Memory.
+ * przyjmie w sekcji Knowledge.
  *
  * JEDNO ZDANIE, nie akapit: pasek loadoutu ma 52 px i tyle mu zostaje (`../strip/strip.tsx`).
  */
 export const REFLECTION_EXPLAINED =
-  'Left on, it keeps up to three notes from this run for you to approve in Memory.';
+  'Left on, it keeps up to three notes from this run for you to approve in Knowledge.';
 
 /**
  * Czym to zdanie jest dla ptaszka: OPISEM, nigdy jego nazwą.
@@ -71,11 +71,7 @@ export function ReflectionToggle({
           `text-label`, a nie `text-ui`: wiersz zachowuje wysokość ptaszka, więc pasek zostaje
           jednorzędowy i sufit chrome z `docs/ARCHITECTURE.md` §7 się nie rusza. Nadmiar
           szerokości przejmuje wycinek kontrolek w pasku (`../strip/strip.tsx`). */}
-      <span
-        id={EXPLAINED_ID}
-        className="min-w-0 truncate text-label text-muted"
-        title={REFLECTION_EXPLAINED}
-      >
+      <span id={EXPLAINED_ID} className="label min-w-0 truncate" title={REFLECTION_EXPLAINED}>
         {REFLECTION_EXPLAINED}
       </span>
     </span>

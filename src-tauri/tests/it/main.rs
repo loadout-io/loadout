@@ -29,7 +29,10 @@
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
 mod a_blocked_way_out_takes_the_chosen_path;
+mod a_candidate_case_needs_a_reason;
+mod a_cell_needs_three_things_to_pass;
 mod a_done_step_proves_its_group_is_dead;
+mod a_fix_may_not_move_what_it_is_measured_by;
 mod a_late_save_does_not_undo_newer_bytes;
 mod a_literal_secret_never_reaches_the_file;
 mod a_long_complaint_says_where_the_rest_is;
@@ -38,6 +41,8 @@ mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
 mod a_run_leaves_suggestions;
 mod a_run_stops_at_its_budget;
+mod a_set_refuses_what_it_could_not_measure;
+mod a_set_runs_as_an_ordinary_workflow;
 mod a_skill_is_frozen_for_the_run;
 mod a_skill_list_says_what_each_one_is_for;
 mod a_step_borrows_from_the_host;
@@ -56,6 +61,7 @@ mod agents_vendor_args_one_policy;
 mod agents_vendor_options;
 mod agents_wire_shape;
 mod an_agent_compares_the_copies;
+mod an_empty_set_says_the_next_move;
 mod an_outcome_field_settles_the_rounds;
 mod ask_one_agent;
 mod ask_respects_the_pool;
@@ -136,6 +142,7 @@ mod import_mcp_is_disabled_and_managed;
 mod import_memory_becomes_notes;
 mod import_one_thing_is_one_row;
 mod import_receipt_maps_every_file;
+mod import_refuses_a_blocked_skill;
 mod import_reports_every_source_semantic;
 mod import_setup_product_path;
 mod import_skill_bundle_is_complete;

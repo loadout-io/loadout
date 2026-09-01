@@ -29,7 +29,7 @@ import type { Line } from '../ipc/types';
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc magazyn biegu nie zyskuje ani
  * jednej zależności W CZASIE WYKONANIA — a to jest ten sam powód, dla którego `FeedLine` stoi
  * w tym pliku, a nie w sekcji. */
-import type { Step as FileStep } from './workflows';
+import type { Link, Point, Step as FileStep } from './workflows';
 /* ZAKRES PRACY MA JEDNO ŹRÓDŁO (niezmiennik 13) i jest nim ten magazyn — `activeId` jest
  * kluczem sesji. Import idzie w tę stronę i nigdy w drugą: magazyn zakresów nie wie, że
  * istnieją biegi, a gdyby wiedział, przełączenie zakresu musiałoby coś o biegu decydować. */
@@ -92,6 +92,26 @@ export interface Step {
    * i mają dalej dostawać podpis paska bez ani jednego dopisanego słowa.
    */
   readonly kind?: FileStep['kind'];
+  /**
+   * Gdzie ten kafelek stoi na płótnie — albo BRAK POLA, kiedy nie wiadomo.
+   *
+   * 2026-08-31 — PO CO TO POWSTAŁO. Rysunek biegu wolno postawić wyłącznie z danych, które
+   * naprawdę przyjechały (niezmiennik 17): pozycja jest zapisana w pliku workflow przy KAŻDYM
+   * kafelku (`Point` w `./workflows`), a `planOf` w `src/sections/run/choices.ts` przepisywało
+   * `id`, `name`, `state` i `kind` — pozycję gubiło. Widok biegu musiałby więc współrzędne
+   * WYMYŚLIĆ, a wymyślona współrzędna jest dokładnie tą ozdobną krzywą między zakodowanymi na
+   * sztywno punktami, której ta reguła zakazuje.
+   *
+   * BRAK POLA ZNACZY „NIE WIEMY", nigdy „w lewym górnym rogu". Plan jednego kroku, który okno
+   * składa samo dla `/ask`, pozycji nie ma i mieć nie może — powstaje z trzech pól, bo klucz
+   * kroku rodzi się w Ruście (`src/sections/run/io.ts`). Widok, który dostanie taki plan, ma
+   * MILCZEĆ i pokazać listę, zamiast rysować kafelek tam, gdzie nikt go nie postawił.
+   *
+   * Opcjonalne, a nie `| undefined` z jawnym kluczem — ten sam powód, co przy `kind` wyżej:
+   * `exactOptionalPropertyTypes` odróżnia „klucza nie ma" od „klucz niesie undefined", a cudze
+   * kryteria stawiają kroki z trzech pól i mają dalej się kompilować bez ani jednego słowa.
+   */
+  readonly at?: Point;
 }
 
 /** Kto to powiedział — trzy wartości, nie osiem [00-SYNTHESIS §2.2]. */
@@ -163,6 +183,25 @@ export interface RunState {
    * a jeszcze nie ma folderu.
    */
   readonly folder: string | null;
+  /**
+   * Strzałki „po" tego biegu — albo `null`, kiedy okno ich nie zna.
+   *
+   * 2026-08-31 — DRUGA POŁOWA TEJ SAMEJ DROGI, CO `Step.at`. Kolejność kroków mieszka
+   * WYŁĄCZNIE w grafie (niezmiennik 27), a do dziś nie przejeżdżała przez granicę wcale:
+   * `WhatIsRunning` w `src/sections/run/io.ts` niosło nazwę i kroki, i nic o tym, co po czym
+   * idzie. Widok biegu układał więc kroki w rzędzie i ten rząd wyglądał jak kształt pracy,
+   * choć nie był niczyim zdaniem o niej (niezmiennik 17).
+   *
+   * `null` ZNACZY „NIE WIEMY", pusta lista znaczy „ten plik nie ma ani jednej strzałki" —
+   * i te dwie odpowiedzi nie mogą być jedną. `/ask`, wznowienie i powtórzenie kroku dostają
+   * `null`, bo żadne z nich nie czytało pliku workflow; bieg z pliku dostaje listę dokładnie
+   * taką, jaka w tym pliku stoi. Widok, który dostanie `null`, ma zamilczeć: rysunek dorysowany
+   * do biegu, o którego kształcie nic nie wiemy, jest twierdzeniem o danych, których nie ma.
+   *
+   * Stoi obok `steps` i `folder`, bo przychodzi tą samą drogą i w tej samej chwili — jednym
+   * wywołaniem `nowRunning`.
+   */
+  readonly links: readonly Link[] | null;
   readonly answers: readonly Answer[];
 
   /**
@@ -193,6 +232,7 @@ export interface RunState {
     steps: readonly Step[],
     folder?: string | null,
     fileName?: string,
+    links?: readonly Link[] | null,
   ) => void;
 
   /** Zapisuje odpowiedź człowieka. */
@@ -304,6 +344,7 @@ export function createRunStore(): RunStore {
     workflow: '',
     fileName: '',
     folder: null,
+    links: null,
     answers: [],
 
     appendLines(batch: readonly FeedLine[]): readonly FeedLine[] {
@@ -345,12 +386,17 @@ export function createRunStore(): RunStore {
       steps: readonly Step[],
       folder: string | null = null,
       fileName = '',
+      /* DOMYŚLNIE „NIE WIEMY", nigdy pusta lista. Wołający, który czytał plik workflow, podaje
+       * jego strzałki — także wtedy, gdy jest ich zero. Wołający, który pliku nie czytał
+       * (`/ask`, wznowienie, powtórzenie kroku), pomija ten argument i mówi tym samym prawdę
+       * o tym, czego nie wie. Domyślne `[]` zamieniałoby ten brak w zdanie o kształcie biegu. */
+      links: readonly Link[] | null = null,
     ): void {
       /* Podstawienie, nie doklejanie: plan biegu przychodzi z grafu w całości i drugi bieg
        * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
        * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
        * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
-      set({ workflow, steps, folder, fileName });
+      set({ workflow, steps, folder, fileName, links });
     },
 
     answer(questionId: number, option: string): void {

@@ -50,6 +50,27 @@ export default defineConfig({
     // Domyslne wykluczenia sa ROZSZERZANE, nie nadpisywane: podanie `exclude` w vitescie
     // zastepuje cala liste, wiec bez `configDefaults.exclude` zniknelyby `node_modules` i `dist`.
     exclude: [...configDefaults.exclude, '**/.claude/**'],
+
+    // SUFIT NA ROWNOLEGLOSC. Dopisane 2026-08-31, po zmierzeniu -- i to jest naprawa
+    // BRAMKI, nie testu.
+    //
+    // Vitest bierze domyslnie tyle workerow, ile jest rdzeni: tu szesnascie. Kazdy plik
+    // w `e2e/` podnosi WLASNY serwer vite i WLASNE chromium (`e2e/harness.ts`, `booted`
+    // jest leniwy na plik), wiec pelny bieg startowal do szesnastu przegladarek naraz.
+    // Zmierzone w trakcie takiego biegu: `load average 14,3` przy trzynastu zywych
+    // procesach chromium, a `t151-agent-folder-choice-round-trips` przekraczal DWADZIESCIA
+    // sekund na pojawienie sie panelu. Ten sam plik osobno: 5,7 s.
+    //
+    // Czyli bramka mierzyla, co jeszcze chodzi na tym Macu. Werdykt zalezny od pogody uczy
+    // ignorowac wlasna czerwien -- a to jest dokladnie ta klasa awarii, przed ktora stoi
+    // niezmiennik 19 (kod wyjscia to nie dowod).
+    //
+    // Osiem, nie szesnascie: kazdy worker e2e to przegladarka plus serwer, wiec polowa
+    // rdzeni zostaje na to, co one same odpalaja. Nie jest to `fileParallelism: false` --
+    // szeregowanie wszystkiego kosztowaloby kilkanascie minut na suicie, ktora dzis
+    // konczy sie w dwudziestu sekundach.
+    maxWorkers: 8,
+    minWorkers: 1,
   },
 
   build: {
