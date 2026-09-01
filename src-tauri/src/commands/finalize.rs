@@ -150,23 +150,18 @@ pub fn fold_into_one(
 }
 
 /// Gałęzie, które ten bieg po sobie zostawił.
+///
+/// Przedrostek składa [`super::isolate::branch_for`] — TA SAMA funkcja, która te gałęzie nazywa.
+/// Napis sklejony tutaj z palca byłby drugą regułą na pytanie „które gałęzie są tego biegu"
+/// i rozjechałby się w dniu, w którym zmieni się nazywanie (niezmiennik 13). Ta sama droga stoi
+/// już w `history::forget_run_branches_inner`, która na tej odpowiedzi KASUJE.
 #[must_use]
 pub fn branches_of_run(project: &Path, run: &str) -> Vec<String> {
-    let head = format!("refs/heads/loadout/{run}/");
-    git(
-        project,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            &format!("{head}*"),
-        ],
-    )
-    .unwrap_or_default()
-    .lines()
-    .map(str::trim)
-    .filter(|one| !one.is_empty())
-    .map(str::to_owned)
-    .collect()
+    if run.trim().is_empty() {
+        // Pusty człon środkowy dałby `loadout//`, czyli wzorzec pasujący do gałęzi KAŻDEGO biegu.
+        return Vec::new();
+    }
+    super::isolate::branches_under(project, &super::isolate::branch_for(run, ""))
 }
 
 /// Commit, od którego ten bieg wystartował.
