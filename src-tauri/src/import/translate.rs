@@ -5,7 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
-use uuid::Uuid;
 
 use crate::library::agents::Agent;
 use crate::workflow::{
@@ -15,7 +14,7 @@ use crate::workflow::{
 
 pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidence as Evidence};
 
-use super::adapters::{self, adapt, check_command, knows_ship_ui, take_connections};
+use super::adapters::{self, WorkflowSource, adapt, take_connections};
 use super::discover::{Inspection, scan};
 use super::{
     ADAPTER_VERSION, Compatibility, CompatibilityReport, ImportItem, ImportPreview, ImportSource,
@@ -50,15 +49,31 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         let mut mine = adapters::personal_connections(home, &inspection.snapshot.root);
         take_connections(&mut adapted.connections, &mut mine.connections);
     }
-    let adapted = adapted;
     let source_hashes = inspection
         .snapshot
         .items
         .iter()
         .map(|item| (item.path.clone(), item.hash.clone()))
         .collect();
-    let workflows = imported_workflows(&inspection, &adapted.agents);
-    let items = typed_items(&inspection, &adapted, &workflows);
+    let imported_workflows = imported_workflows(&inspection, &adapted.agents, &adapted.skills);
+    for imported in &imported_workflows {
+        let Some((compatibility, message)) = &imported.mapping_override else {
+            continue;
+        };
+        if let Some(mapping) = adapted
+            .mappings
+            .iter_mut()
+            .find(|mapping| mapping.item_id == imported.item_id)
+        {
+            mapping.compatibility = *compatibility;
+            message.clone_into(&mut mapping.message);
+        }
+    }
+    let items = typed_items(&inspection, &adapted, &imported_workflows);
+    let workflows = imported_workflows
+        .iter()
+        .filter_map(|imported| imported.workflow.clone())
+        .collect();
     let mut draft = MigrationDraft {
         root: inspection.snapshot.root.clone(),
         source_hashes,
@@ -265,7 +280,7 @@ pub fn keep_selected_outputs(draft: &mut MigrationDraft) {
 fn typed_items(
     inspection: &Inspection,
     adapted: &adapters::AdapterOutput,
-    workflows: &[WorkflowFile],
+    workflows: &[ImportedWorkflow],
 ) -> Vec<ImportItem> {
     let mappings: BTreeMap<_, _> = adapted
         .mappings
@@ -295,7 +310,8 @@ fn typed_items(
             } else {
                 Vec::new()
             };
-            let workflow = workflow_for(file, workflows);
+            let imported_workflow = imported_workflow_for(file, workflows);
+            let workflow = imported_workflow.and_then(|imported| imported.workflow.as_ref());
             let notes: Vec<_> = if file.item.kind == ItemKind::Memory {
                 adapted
                     .notes
@@ -307,7 +323,7 @@ fn typed_items(
             };
             let sources = sources_for(inspection, &file.item, skill, &notes);
             let target = target_for(&file.item, agent, skill, &connections, workflow, &notes);
-            let dependencies = dependencies_for(&file.item, agent, workflow);
+            let dependencies = dependencies_for(&file.item, agent, workflow, imported_workflow);
             let generated_hash = generated_hash_for(agent, skill, &connections, workflow, &notes);
             let (status, status_message) = initial_status(mapping);
             ImportItem {
@@ -422,6 +438,7 @@ fn dependencies_for(
     item: &SourceItem,
     agent: Option<&Agent>,
     workflow: Option<&WorkflowFile>,
+    imported_workflow: Option<&ImportedWorkflow>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(agent) = agent {
@@ -438,14 +455,14 @@ fn dependencies_for(
             Step::Agent(step) => Some(format!("agent:{}", step.agent)),
             Step::Check(_) | Step::Checkpoint(_) | Step::Serve(_) => None,
         }));
-    } else if item.kind == ItemKind::Workflow {
-        // Znany koordynator bez jednej z tych ról nie generuje grafu, ale brak musi stać w planie.
-        // Te trzy nazwy są częścią rozpoznawanego szablonu `ship_ui`, nie ogólną polityką silnika.
-        out.extend(
-            ["frontend-dev", "design-qa", "code-reviewer"]
-                .into_iter()
-                .map(|name| format!("agent:{name}")),
-        );
+    }
+    if item.kind == ItemKind::Workflow
+        && let Some(imported_workflow) = imported_workflow
+    {
+        // Źródłowe zależności obejmują także skille wybrane na kroku. Same natywne AgentStepy
+        // niosą wyłącznie identyfikatory agentów, więc bez tego brak bundle skilla wyglądałby
+        // jak kompletny workflow aż do Startu.
+        out.extend(imported_workflow.dependencies.iter().cloned());
     }
     out.sort();
     out.dedup();
@@ -530,12 +547,16 @@ fn agent_for<'a>(item: &SourceItem, agents: &'a [Agent]) -> Option<&'a Agent> {
         .or_else(|| (agents.len() == 1).then(|| &agents[0]))
 }
 
-fn workflow_for<'a>(
+fn imported_workflow_for<'a>(
     file: &super::discover::InspectedFile,
-    workflows: &'a [WorkflowFile],
-) -> Option<&'a WorkflowFile> {
-    (file.item.kind == ItemKind::Workflow && knows_ship_ui(&file.content))
-        .then(|| workflows.first())
+    workflows: &'a [ImportedWorkflow],
+) -> Option<&'a ImportedWorkflow> {
+    (file.item.kind == ItemKind::Workflow)
+        .then(|| {
+            workflows
+                .iter()
+                .find(|workflow| workflow.item_id == file.item.id)
+        })
         .flatten()
 }
 
@@ -733,31 +754,277 @@ fn agent_flow_list(text: &str) -> Option<Vec<Value>> {
     )
 }
 
-fn imported_workflows(inspection: &Inspection, agents: &[Agent]) -> Vec<WorkflowFile> {
+#[derive(Debug, Clone)]
+struct ImportedWorkflow {
+    item_id: String,
+    workflow: Option<WorkflowFile>,
+    dependencies: Vec<String>,
+    mapping_override: Option<(Compatibility, String)>,
+}
+
+fn imported_workflows(
+    inspection: &Inspection,
+    agents: &[Agent],
+    skills: &[super::SkillDraft],
+) -> Vec<ImportedWorkflow> {
     let mut out = Vec::new();
     for file in &inspection.files {
-        if file.item.kind == ItemKind::Workflow
-            && knows_ship_ui(&file.content)
-            && let Some(workflow) = ship_ui(agents, &file.content)
-        {
-            out.push(workflow);
+        if file.item.kind != ItemKind::Workflow {
+            continue;
         }
+        let (workflow, dependencies, mapping_override) = match adapters::workflow_source(file) {
+            WorkflowSource::LegacyShipUi { command, proof } => (
+                ship_ui(agents, file, &command, &proof),
+                agent_dependencies(["frontend-dev", "design-qa", "code-reviewer"]),
+                None,
+            ),
+            WorkflowSource::Graph(graph) => {
+                let dependencies = graph_dependencies(&graph);
+                match graph_workflow(file, agents, skills, &graph) {
+                    Ok(workflow) => (workflow, dependencies, None),
+                    Err(message) => (
+                        None,
+                        dependencies,
+                        Some((Compatibility::NeedsChoice, message)),
+                    ),
+                }
+            }
+            WorkflowSource::Routine(routine) => {
+                (Some(routine_workflow(file, &routine)), Vec::new(), None)
+            }
+            WorkflowSource::NeedsChoice(choice) => {
+                let dependencies =
+                    agent_dependencies(choice.agent_roles.iter().map(String::as_str));
+                (None, dependencies, None)
+            }
+        };
+        out.push(ImportedWorkflow {
+            item_id: file.item.id.clone(),
+            workflow,
+            dependencies,
+            mapping_override,
+        });
     }
     out
 }
 
-fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
+fn agent_dependencies<'a>(roles: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut dependencies: Vec<_> = roles
+        .into_iter()
+        .map(|role| format!("agent:{role}"))
+        .collect();
+    dependencies.sort();
+    dependencies.dedup();
+    dependencies
+}
+
+fn graph_dependencies(source: &adapters::GraphWorkflow) -> Vec<String> {
+    let mut dependencies = agent_dependencies(source.steps.iter().map(|step| step.role.as_str()));
+    dependencies.extend(source.steps.iter().flat_map(|step| {
+        step.skills
+            .iter()
+            .flatten()
+            .map(|skill| format!("skill:{skill}"))
+    }));
+    dependencies.sort();
+    dependencies.dedup();
+    dependencies
+}
+
+fn graph_workflow(
+    file: &super::discover::InspectedFile,
+    agents: &[Agent],
+    skills: &[super::SkillDraft],
+    source: &adapters::GraphWorkflow,
+) -> std::result::Result<Option<WorkflowFile>, String> {
+    let native_agents: Option<Vec<_>> = source
+        .steps
+        .iter()
+        .map(|step| find_declared_agent(agents, &step.role))
+        .collect();
+    let Some(native_agents) = native_agents else {
+        return Ok(None);
+    };
+    let mut missing_skill = false;
+    for (step, agent) in source.steps.iter().zip(&native_agents) {
+        for selected in step.skills.iter().flatten() {
+            if !agent.skills.iter().any(|assigned| assigned == selected) {
+                return Err(format!(
+                    "The {} workflow assigns skill `{selected}` to {}, but that skill is not assigned to agent {}. Choose the agent's skills or change the step.",
+                    source.name, step.name, agent.name
+                ));
+            }
+            if !skills.iter().any(|skill| skill.name == *selected) {
+                missing_skill = true;
+            }
+        }
+    }
+    if missing_skill {
+        return Ok(None);
+    }
+    let namespace = slug(&source.name);
+    let ids: BTreeMap<_, _> = source
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            (
+                step.binding.clone(),
+                format!("{}.{}-{}", namespace, slug(&step.binding), index + 1),
+            )
+        })
+        .collect();
+    let mut depths = BTreeMap::new();
+    let mut lanes: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut steps = Vec::with_capacity(source.steps.len());
+    for (index, (declared, agent)) in source.steps.iter().zip(native_agents).enumerate() {
+        let depth = declared
+            .after
+            .iter()
+            .filter_map(|binding| depths.get(binding))
+            .copied()
+            .max()
+            .map_or(0_u32, |depth| depth.saturating_add(1));
+        depths.insert(declared.binding.clone(), depth);
+        let lane = lanes.entry(depth).or_default();
+        let at = point(f64::from(depth) * 288.0, f64::from(*lane) * 144.0);
+        *lane = lane.saturating_add(1);
+        steps.push(Step::Agent(AgentStep {
+            id: ids
+                .get(&declared.binding)
+                .cloned()
+                .unwrap_or_else(|| format!("{namespace}.step-{}", index + 1)),
+            name: declared.name.clone(),
+            agent: agent.id.to_string(),
+            overrides: Map::new(),
+            vendor_options: BTreeMap::new(),
+            copies: 1,
+            instructions: declared.task.clone(),
+            skills: declared
+                .skills
+                .clone()
+                .map_or_else(Skills::default, Skills::Only),
+            borrow: crate::workflow::Borrow::default(),
+            folder: declared_folder(&declared.folder),
+            handover: Handover::Plain(PlainNotes::Notes),
+            when_it_fails: WhenItFails::default(),
+            at,
+            extra: Map::new(),
+        }));
+    }
+    let mut links = Vec::new();
+    for step in &source.steps {
+        for predecessor in &step.after {
+            let Some(from) = ids.get(predecessor) else {
+                return Ok(None);
+            };
+            let Some(to) = ids.get(&step.binding) else {
+                return Ok(None);
+            };
+            links.push(Link {
+                from: from.clone(),
+                to: to.clone(),
+                max_turns: None,
+            });
+        }
+    }
+    Ok(Some(WorkflowFile {
+        format: 1,
+        id: imported_workflow_id(file, &source.name),
+        name: source.name.clone(),
+        description: Some("Imported from a declared project workflow.".to_owned()),
+        steps,
+        links,
+        extra: imported_workflow_extra(),
+    }))
+}
+
+fn routine_workflow(
+    file: &super::discover::InspectedFile,
+    source: &adapters::RoutineWorkflow,
+) -> WorkflowFile {
+    let namespace = slug(&source.name);
+    let mut steps = Vec::new();
+    let mut links = Vec::new();
+    if let Some((command, proof)) = &source.check {
+        steps.push(Step::Check(CheckStep {
+            id: format!("{namespace}.check"),
+            name: "Run the checks".to_owned(),
+            command: command.clone(),
+            proof: proof.clone(),
+            folder: Folder::Project,
+            when_it_fails: WhenItFails::default(),
+            at: point(0.0, 0.0),
+            // Pochodzenie jest typowanym `ImportItem.sources` z T-78. Drugi, luźny klucz na
+            // kroku mógłby wskazać inny plik niż ten, który importer naprawdę zapisał.
+            extra: Map::new(),
+        }));
+    }
+    if let Some(question) = &source.question {
+        let checkpoint_id = format!("{namespace}.checkpoint");
+        if source.check.is_some() {
+            links.push(link(&format!("{namespace}.check"), &checkpoint_id));
+        }
+        steps.push(Step::Checkpoint(CheckpointStep {
+            id: checkpoint_id,
+            name: "Ask for approval".to_owned(),
+            question: Some(question.clone()),
+            at: point(if source.check.is_some() { 288.0 } else { 0.0 }, 0.0),
+            extra: Map::new(),
+        }));
+    }
+    WorkflowFile {
+        format: 1,
+        id: imported_workflow_id(file, &source.name),
+        name: source.name.clone(),
+        description: source.description.clone(),
+        steps,
+        links,
+        extra: imported_workflow_extra(),
+    }
+}
+
+fn declared_folder(folder: &str) -> Folder {
+    match folder {
+        "fresh-copy" => Folder::FreshCopy,
+        "same-copy" => Folder::SameCopy,
+        _ => Folder::Project,
+    }
+}
+
+fn find_declared_agent<'a>(agents: &'a [Agent], role: &str) -> Option<&'a Agent> {
+    let wanted = slug(role);
+    let mut matches = agents.iter().filter(|agent| slug(&agent.name) == wanted);
+    let found = matches.next()?;
+    matches.next().is_none().then_some(found)
+}
+
+fn imported_workflow_id(file: &super::discover::InspectedFile, name: &str) -> String {
+    let identity = format!("{}\0{name}", file.item.id);
+    format!(
+        "imported-{}",
+        super::discover::content_hash(identity.as_bytes())
+    )
+}
+
+fn imported_workflow_extra() -> Map<String, Value> {
+    let mut extra = Map::new();
+    extra.insert(
+        "importedBy".to_owned(),
+        Value::String(format!("loadout-import-v{ADAPTER_VERSION}")),
+    );
+    extra
+}
+
+fn ship_ui(
+    agents: &[Agent],
+    file: &super::discover::InspectedFile,
+    command: &str,
+    proof: &str,
+) -> Option<WorkflowFile> {
     let frontend = find_agent(agents, "frontend-dev")?;
     let design = find_agent(agents, "design-qa")?;
     let review = find_agent(agents, "code-reviewer")?;
-    let command = check_command(source)?;
-    let proof = if source.contains("(\\d+) passed") {
-        "(\\d+) passed".to_owned()
-    } else {
-        // Import nazywa tę adaptację w raporcie. Sam kod wyjścia nigdy nie jest dowodem;
-        // najwęższy wspólny licznik akceptowany przez harness jest jawny tutaj.
-        "(\\d+) passed".to_owned()
-    };
     let review_template = review_subworkflow(design, review);
     let expanded_review = flatten(&review_template, "ship-ui");
     let expanded_review_id = expanded_review.id.clone();
@@ -790,8 +1057,8 @@ fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
         Step::Check(CheckStep {
             id: "ship-ui.check".to_owned(),
             name: "Run the project checks".to_owned(),
-            command: command.clone(),
-            proof: proof.clone(),
+            command: command.to_owned(),
+            proof: proof.to_owned(),
             folder: Folder::SameCopy,
             // Import nie zgaduje polityki: przeniesiona konfiguracja zachowuje się tak,
             // jak zachowywał się każdy krok do 2026-08-23.
@@ -804,8 +1071,8 @@ fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
     steps.push(Step::Check(CheckStep {
         id: "ship-ui.final-check".to_owned(),
         name: "Run the final checks".to_owned(),
-        command,
-        proof,
+        command: command.to_owned(),
+        proof: proof.to_owned(),
         folder: Folder::SameCopy,
         when_it_fails: WhenItFails::Stop,
         at: point(1440.0, 0.0),
@@ -839,7 +1106,7 @@ fn ship_ui(agents: &[Agent], source: &str) -> Option<WorkflowFile> {
     );
     Some(WorkflowFile {
         format: 1,
-        id: Uuid::now_v7().to_string(),
+        id: imported_workflow_id(file, "Ship UI"),
         name: "Ship UI".to_owned(),
         description: Some("Imported from the project's coordinating skill.".to_owned()),
         steps,

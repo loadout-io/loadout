@@ -246,7 +246,7 @@ fn write_repository(root: &Path) -> Result<(), Box<dyn Error>> {
         fs::write(
             agents.join(format!("{role}.md")),
             format!(
-                "---\nname: {role}\ndescription: {name} role\nmodel: sonnet\ntools: [Read, Write]\n{skills}---\nDo the {name} work.\n"
+                "---\nname: {role}\ndescription: {name} role\nmodel: sonnet\npermissionMode: acceptEdits\ntools: [Read, Write]\n{skills}---\nDo the {name} work.\n"
             ),
         )?;
     }

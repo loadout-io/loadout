@@ -134,6 +134,89 @@ fn arbitrary_role_names_and_source_edges_make_a_native_workflow() -> Result<(), 
         Skills::Only(vec![SKILL.to_owned()]),
         "the source assigns one skill to the maker; silently widening it to all skills changes the imported behavior"
     );
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert!(
+        item.dependencies.contains(&format!("skill:{SKILL}")),
+        "a step-level skill must remain a workflow dependency instead of failing later at Start"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_missing_step_skill_keeps_the_workflow_not_ready() -> Result<(), Box<dyn Error>> {
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_source(repo.path(), SOURCE_PATH, SOURCE)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    assert!(
+        preview
+            .draft
+            .workflows
+            .iter()
+            .all(|workflow| workflow.name != WORKFLOW_NAME)
+    );
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::MissingDependencies);
+    assert!(item.target.is_none());
+    assert!(item.dependencies.contains(&format!("skill:{SKILL}")));
+    assert!(item.status_message.contains(&format!("skill:{SKILL}")));
+    Ok(())
+}
+
+#[test]
+fn a_step_cannot_select_a_skill_not_assigned_to_its_agent() -> Result<(), Box<dyn Error>> {
+    const FORBIDDEN: &str = "forbidden-guide";
+
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_skill(repo.path())?;
+    write_named_skill(repo.path(), FORBIDDEN)?;
+    let source = SOURCE.replace(SKILL, FORBIDDEN);
+    write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    assert!(
+        preview
+            .draft
+            .workflows
+            .iter()
+            .all(|workflow| workflow.name != WORKFLOW_NAME)
+    );
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::NeedsChoice);
+    assert!(item.target.is_none());
+    assert!(item.dependencies.contains(&format!("skill:{FORBIDDEN}")));
+    let message = item.status_message.to_ascii_lowercase();
+    assert!(
+        message.contains(FORBIDDEN) && message.contains("maker"),
+        "the unresolved choice must name the skill and assigned agent. It said: {}",
+        item.status_message
+    );
+    Ok(())
+}
+
+#[test]
+fn step_skill_identity_matches_the_runtime_exactly() -> Result<(), Box<dyn Error>> {
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_skill(repo.path())?;
+    let mismatched = SKILL.to_ascii_uppercase();
+    let source = SOURCE.replace(SKILL, &mismatched);
+    write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    assert!(
+        preview
+            .draft
+            .workflows
+            .iter()
+            .all(|workflow| workflow.name != WORKFLOW_NAME)
+    );
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::NeedsChoice);
+    assert!(item.target.is_none());
+    assert!(item.status_message.contains(&mismatched));
     Ok(())
 }
 
@@ -194,12 +277,16 @@ fn write_roles(root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn write_skill(root: &Path) -> Result<(), Box<dyn Error>> {
-    let skill = root.join(".agents/skills").join(SKILL);
+    write_named_skill(root, SKILL)
+}
+
+fn write_named_skill(root: &Path, name: &str) -> Result<(), Box<dyn Error>> {
+    let skill = root.join(".agents/skills").join(name);
     fs::create_dir_all(&skill)?;
     fs::write(
         skill.join("SKILL.md"),
         format!(
-            "---\nname: {SKILL}\ndescription: Builds the delivery consistently\n---\nFollow the delivery conventions.\n"
+            "---\nname: {name}\ndescription: Builds the delivery consistently\n---\nFollow the delivery conventions.\n"
         ),
     )?;
     Ok(())

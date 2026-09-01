@@ -1,6 +1,6 @@
 //! Małe adaptery formatów źródłowych. Polityka zgodności mieszka w [`translate`](super::translate).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -22,6 +22,51 @@ pub(crate) struct AdapterOutput {
     pub connections: Vec<Connection>,
     pub notes: Vec<MemoryNote>,
     pub mappings: Vec<Mapping>,
+}
+
+/// Semantyka workflow odczytana z jednego, konkretnego pliku źródłowego.
+///
+/// Adapter nie składa jeszcze natywnych kafelków: nie ma tu polityki biblioteki agentów ani
+/// układu płótna. Zwraca wyłącznie fakty zapisane przez autora pliku, a `translate` wiąże je
+/// potem z natywnymi obiektami. Dzięki temu nie ma drugiego miejsca, które zgaduje graf po
+/// nazwach ról.
+#[derive(Debug, Clone)]
+pub(crate) enum WorkflowSource {
+    LegacyShipUi { command: String, proof: String },
+    Graph(GraphWorkflow),
+    Routine(RoutineWorkflow),
+    NeedsChoice(WorkflowChoice),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GraphWorkflow {
+    pub name: String,
+    pub steps: Vec<GraphAgentStep>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GraphAgentStep {
+    pub binding: String,
+    pub role: String,
+    pub name: String,
+    pub task: String,
+    pub after: Vec<String>,
+    pub skills: Option<Vec<String>>,
+    pub folder: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RoutineWorkflow {
+    pub name: String,
+    pub description: Option<String>,
+    pub check: Option<(String, String)>,
+    pub question: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowChoice {
+    pub agent_roles: Vec<String>,
+    pub message: String,
 }
 
 pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
@@ -69,7 +114,7 @@ fn adapt_one(
         Workflow,
     };
     let key = (file.item.kind, file.item.name.to_ascii_lowercase());
-    if matches!(file.item.kind, Hook | Memory | Rule | Workflow)
+    if matches!(file.item.kind, Hook | Memory | Rule)
         && seen
             .get(&key)
             .is_some_and(|content| normalized(content) == normalized(&file.content))
@@ -587,27 +632,29 @@ pub(super) fn take_connections(into: &mut Vec<Connection>, found: &mut Vec<Conne
 }
 
 fn adapt_workflow(file: &InspectedFile, output: &mut AdapterOutput) {
-    // Jawny plik workflow jest programem vendora, więc samo znalezienie znanych nazw ról nie
-    // dowodzi, że umieliśmy odtworzyć jego graf. Znany szablon musi pochodzić z bundle skilla.
-    let known = file
-        .item
-        .path
-        .file_name()
-        .is_some_and(|name| name == "SKILL.md")
-        && knows_ship_ui(&file.content);
-    output.mappings.push(mapping(
-        file,
-        if known {
-            Compatibility::Adjusted
-        } else {
-            Compatibility::NeedsChoice
-        },
-        if known {
-            "This coordinating skill will become a visible Ship UI workflow."
-        } else {
-            "Choose how this coordinating skill should be represented as a workflow."
-        },
-    ));
+    let source = workflow_source(file);
+    let (compatibility, message) = match &source {
+        WorkflowSource::LegacyShipUi { .. } => (
+            Compatibility::Adjusted,
+            "This coordinating skill will become a visible Ship UI workflow.".to_owned(),
+        ),
+        WorkflowSource::Graph(graph) => (
+            Compatibility::Adjusted,
+            format!(
+                "The {} workflow will be reconstructed from its declared agents and dependencies.",
+                graph.name
+            ),
+        ),
+        WorkflowSource::Routine(routine) => (
+            Compatibility::Adjusted,
+            format!(
+                "The {} routine will become a native workflow.",
+                routine.name
+            ),
+        ),
+        WorkflowSource::NeedsChoice(choice) => (Compatibility::NeedsChoice, choice.message.clone()),
+    };
+    output.mappings.push(mapping(file, compatibility, &message));
 }
 
 fn mapping(file: &InspectedFile, compatibility: Compatibility, message: &str) -> Mapping {
@@ -1787,6 +1834,668 @@ fn environment_name(value: &str) -> bool {
         && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
+/// Czyta jeden plik workflow bez uruchamiania znalezionego `JavaScriptu` ani komendy.
+///
+/// 2026-08-28 (T-82) — importer wcześniej pytał o trzy napisy i w zamian produkował zawsze ten
+/// sam graf. Tutaj akceptowany język jest celowo mały: jawne `workflow` + `agent` albo jawne
+/// pola `command`/`proof` w Markdownie. Wszystko poza nim zostaje nazwanym wyborem zamiast być
+/// po cichu pominięte.
+pub(crate) fn workflow_source(file: &InspectedFile) -> WorkflowSource {
+    let legacy_skill = file
+        .item
+        .path
+        .file_name()
+        .is_some_and(|name| name == "SKILL.md")
+        && knows_ship_ui(&file.content);
+    if legacy_skill {
+        let command =
+            check_command(&file.content).unwrap_or_else(|| "the declared project check".to_owned());
+        return match strict_code_field(&file.content, "proof") {
+            StrictCodeField::Value(proof) if passing_count_proof(&proof) => {
+                WorkflowSource::LegacyShipUi { command, proof }
+            }
+            StrictCodeField::Value(proof) => WorkflowSource::NeedsChoice(workflow_choice(
+                "Ship UI",
+                ["frontend-dev", "design-qa", "code-reviewer"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                &format!(
+                    "declares `{command}` with proof `{proof}`, which is not a passing-count proof"
+                ),
+            )),
+            StrictCodeField::Invalid(issue) => WorkflowSource::NeedsChoice(workflow_choice(
+                "Ship UI",
+                ["frontend-dev", "design-qa", "code-reviewer"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                &format!("declares `{command}` but {issue}"),
+            )),
+            StrictCodeField::Missing => WorkflowSource::NeedsChoice(workflow_choice(
+                "Ship UI",
+                ["frontend-dev", "design-qa", "code-reviewer"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                &format!("declares `{command}` without exactly one literal passing-count `proof:`"),
+            )),
+        };
+    }
+    if file
+        .item
+        .path
+        .extension()
+        .is_some_and(|extension| extension == "js")
+    {
+        return graph_workflow_source(file);
+    }
+    routine_workflow_source(file)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JavaScriptToken {
+    Identifier(String),
+    Text(String),
+    Symbol(char),
+    Arrow,
+}
+
+fn graph_workflow_source(file: &InspectedFile) -> WorkflowSource {
+    let tokens = match javascript_tokens(&file.content) {
+        Ok(tokens) => tokens,
+        Err(detail) => {
+            return WorkflowSource::NeedsChoice(workflow_choice(
+                &file.item.name,
+                Vec::new(),
+                &detail,
+            ));
+        }
+    };
+    let name = declared_workflow_name(&tokens).unwrap_or_else(|| file.item.name.clone());
+    let roles = declared_agent_roles(&tokens);
+    let has_condition = tokens.iter().any(|token| match token {
+        JavaScriptToken::Identifier(identifier) => [
+            "if", "else", "switch", "case", "for", "while", "try", "catch",
+        ]
+        .contains(&identifier.as_str()),
+        JavaScriptToken::Symbol('?') => true,
+        JavaScriptToken::Text(_) | JavaScriptToken::Symbol(_) | JavaScriptToken::Arrow => false,
+    });
+    if has_condition {
+        return WorkflowSource::NeedsChoice(workflow_choice(
+            &name,
+            roles,
+            "contains a condition or branch that the current graph cannot express",
+        ));
+    }
+    match JavaScriptWorkflowParser::new(&tokens).parse() {
+        Ok(graph) => WorkflowSource::Graph(graph),
+        Err(detail) => WorkflowSource::NeedsChoice(workflow_choice(&name, roles, &detail)),
+    }
+}
+
+fn javascript_tokens(source: &str) -> std::result::Result<Vec<JavaScriptToken>, String> {
+    let characters: Vec<char> = source.chars().collect();
+    let mut tokens = Vec::new();
+    let mut at = 0_usize;
+    while at < characters.len() {
+        let character = characters[at];
+        if character.is_whitespace() {
+            at += 1;
+            continue;
+        }
+        if character == '/' && characters.get(at + 1) == Some(&'/') {
+            at += 2;
+            while at < characters.len() && characters[at] != '\n' {
+                at += 1;
+            }
+            continue;
+        }
+        if character == '/' && characters.get(at + 1) == Some(&'*') {
+            at += 2;
+            while at + 1 < characters.len() && !(characters[at] == '*' && characters[at + 1] == '/')
+            {
+                at += 1;
+            }
+            if at + 1 == characters.len() {
+                return Err("contains an unfinished block comment".to_owned());
+            }
+            at += 2;
+            continue;
+        }
+        if character == '"' || character == '\'' {
+            let quote = character;
+            at += 1;
+            let mut text = String::new();
+            let mut closed = false;
+            while at < characters.len() {
+                let next = characters[at];
+                at += 1;
+                if next == quote {
+                    closed = true;
+                    break;
+                }
+                if next == '\\' {
+                    let Some(escaped) = characters.get(at).copied() else {
+                        break;
+                    };
+                    at += 1;
+                    text.push(match escaped {
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        other => other,
+                    });
+                } else {
+                    text.push(next);
+                }
+            }
+            if !closed {
+                return Err("contains an unfinished quoted value".to_owned());
+            }
+            tokens.push(JavaScriptToken::Text(text));
+            continue;
+        }
+        if character.is_ascii_alphabetic() || character == '_' || character == '$' {
+            let start = at;
+            at += 1;
+            while at < characters.len()
+                && (characters[at].is_ascii_alphanumeric()
+                    || characters[at] == '_'
+                    || characters[at] == '$'
+                    || characters[at] == '-')
+            {
+                at += 1;
+            }
+            tokens.push(JavaScriptToken::Identifier(
+                characters[start..at].iter().collect(),
+            ));
+            continue;
+        }
+        if character == '=' && characters.get(at + 1) == Some(&'>') {
+            tokens.push(JavaScriptToken::Arrow);
+            at += 2;
+            continue;
+        }
+        if "(){}[],:;=?".contains(character) {
+            tokens.push(JavaScriptToken::Symbol(character));
+            at += 1;
+            continue;
+        }
+        return Err(format!(
+            "contains unsupported JavaScript syntax near `{character}`"
+        ));
+    }
+    Ok(tokens)
+}
+
+fn declared_workflow_name(tokens: &[JavaScriptToken]) -> Option<String> {
+    tokens.windows(3).find_map(|window| match window {
+        [
+            JavaScriptToken::Identifier(function),
+            JavaScriptToken::Symbol('('),
+            JavaScriptToken::Text(name),
+        ] if function == "workflow" => Some(name.clone()),
+        _ => None,
+    })
+}
+
+fn declared_agent_roles(tokens: &[JavaScriptToken]) -> Vec<String> {
+    let mut roles: Vec<_> = tokens
+        .windows(3)
+        .filter_map(|window| match window {
+            [
+                JavaScriptToken::Identifier(function),
+                JavaScriptToken::Symbol('('),
+                JavaScriptToken::Text(role),
+            ] if function == "agent" => Some(role.clone()),
+            _ => None,
+        })
+        .collect();
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
+#[derive(Debug)]
+struct JavaScriptWorkflowParser<'a> {
+    tokens: &'a [JavaScriptToken],
+    at: usize,
+}
+
+impl<'a> JavaScriptWorkflowParser<'a> {
+    const fn new(tokens: &'a [JavaScriptToken]) -> Self {
+        Self { tokens, at: 0 }
+    }
+
+    fn parse(mut self) -> std::result::Result<GraphWorkflow, String> {
+        self.expect_identifier("workflow")?;
+        self.expect_symbol('(')?;
+        let name = self.take_text("workflow name")?;
+        self.expect_symbol(',')?;
+        self.expect_symbol('(')?;
+        self.expect_symbol(')')?;
+        self.expect_arrow()?;
+        self.expect_symbol('{')?;
+
+        let mut steps = Vec::new();
+        while !self.consume_symbol('}') {
+            steps.push(self.agent_step(steps.len())?);
+        }
+        self.expect_symbol(')')?;
+        self.consume_symbol(';');
+        if self.at != self.tokens.len() {
+            return Err("contains behavior after the workflow declaration".to_owned());
+        }
+        validate_graph_steps(&steps)?;
+        if steps.is_empty() {
+            return Err("declares no agent steps".to_owned());
+        }
+        Ok(GraphWorkflow { name, steps })
+    }
+
+    fn agent_step(&mut self, index: usize) -> std::result::Result<GraphAgentStep, String> {
+        let declared_binding = if self.consume_identifier("const") {
+            let binding = self.take_identifier("step binding")?;
+            self.expect_symbol('=')?;
+            Some(binding)
+        } else {
+            None
+        };
+        self.expect_identifier("agent")?;
+        self.expect_symbol('(')?;
+        let role = self.take_text("agent role")?;
+        self.expect_symbol(',')?;
+        self.expect_symbol('{')?;
+
+        let mut seen = BTreeSet::new();
+        let mut name = None;
+        let mut task = None;
+        let mut after = None;
+        let mut skills = None;
+        let mut folder = None;
+        while !self.consume_symbol('}') {
+            let key = self.take_identifier("agent option")?;
+            if !seen.insert(key.clone()) {
+                return Err(format!("declares `{key}` more than once for role {role}"));
+            }
+            self.expect_symbol(':')?;
+            match key.as_str() {
+                "name" => name = Some(self.take_text("step name")?),
+                "task" => task = Some(self.take_text("agent task")?),
+                "after" => after = Some(self.identifier_array("after")?),
+                "skills" => skills = Some(self.text_array("skills")?),
+                "folder" => folder = Some(self.take_text("step folder")?),
+                _ => {
+                    return Err(format!(
+                        "declares the unsupported `{key}` option for role {role}"
+                    ));
+                }
+            }
+            if !self.consume_symbol(',') && !self.next_is_symbol('}') {
+                return Err(format!("is missing a comma after `{key}` for role {role}"));
+            }
+        }
+        self.expect_symbol(')')?;
+        self.consume_symbol(';');
+
+        let task = task.ok_or_else(|| format!("does not declare a task for role {role}"))?;
+        let folder = folder.unwrap_or_else(|| "project".to_owned());
+        if !["project", "fresh-copy", "same-copy"].contains(&folder.as_str()) {
+            return Err(format!(
+                "declares the unsupported folder `{folder}` for role {role}"
+            ));
+        }
+        Ok(GraphAgentStep {
+            binding: declared_binding.unwrap_or_else(|| format!("step-{}", index + 1)),
+            name: name.unwrap_or_else(|| role.clone()),
+            role,
+            task,
+            after: after.unwrap_or_default(),
+            skills,
+            folder,
+        })
+    }
+
+    fn identifier_array(&mut self, field: &str) -> std::result::Result<Vec<String>, String> {
+        self.array(field, |parser| parser.take_identifier(field))
+    }
+
+    fn text_array(&mut self, field: &str) -> std::result::Result<Vec<String>, String> {
+        self.array(field, |parser| parser.take_text(field))
+    }
+
+    fn array(
+        &mut self,
+        field: &str,
+        mut item: impl FnMut(&mut Self) -> std::result::Result<String, String>,
+    ) -> std::result::Result<Vec<String>, String> {
+        self.expect_symbol('[')?;
+        let mut values = Vec::new();
+        while !self.consume_symbol(']') {
+            values.push(item(self)?);
+            if !self.consume_symbol(',') && !self.next_is_symbol(']') {
+                return Err(format!("is missing a comma in `{field}`"));
+            }
+        }
+        Ok(values)
+    }
+
+    fn expect_identifier(&mut self, wanted: &str) -> std::result::Result<(), String> {
+        if self.consume_identifier(wanted) {
+            Ok(())
+        } else {
+            Err(format!("expected `{wanted}` in the workflow declaration"))
+        }
+    }
+
+    fn consume_identifier(&mut self, wanted: &str) -> bool {
+        if self.tokens.get(self.at).is_some_and(
+            |token| matches!(token, JavaScriptToken::Identifier(value) if value == wanted),
+        ) {
+            self.at += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_identifier(&mut self, description: &str) -> std::result::Result<String, String> {
+        match self.tokens.get(self.at).cloned() {
+            Some(JavaScriptToken::Identifier(value)) => {
+                self.at += 1;
+                Ok(value)
+            }
+            _ => Err(format!("expected a {description}")),
+        }
+    }
+
+    fn take_text(&mut self, description: &str) -> std::result::Result<String, String> {
+        match self.tokens.get(self.at).cloned() {
+            Some(JavaScriptToken::Text(value)) => {
+                self.at += 1;
+                Ok(value)
+            }
+            _ => Err(format!("expected a quoted {description}")),
+        }
+    }
+
+    fn expect_symbol(&mut self, wanted: char) -> std::result::Result<(), String> {
+        if self.consume_symbol(wanted) {
+            Ok(())
+        } else {
+            Err(format!("expected `{wanted}` in the workflow declaration"))
+        }
+    }
+
+    fn consume_symbol(&mut self, wanted: char) -> bool {
+        if self.next_is_symbol(wanted) {
+            self.at += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn next_is_symbol(&self, wanted: char) -> bool {
+        self.tokens
+            .get(self.at)
+            .is_some_and(|token| *token == JavaScriptToken::Symbol(wanted))
+    }
+
+    fn expect_arrow(&mut self) -> std::result::Result<(), String> {
+        if self.tokens.get(self.at) == Some(&JavaScriptToken::Arrow) {
+            self.at += 1;
+            Ok(())
+        } else {
+            Err("expected an arrow function for the workflow body".to_owned())
+        }
+    }
+}
+
+fn validate_graph_steps(steps: &[GraphAgentStep]) -> std::result::Result<(), String> {
+    let mut earlier = BTreeSet::new();
+    for step in steps {
+        if !earlier.insert(step.binding.clone()) {
+            return Err(format!(
+                "declares the step binding `{}` more than once",
+                step.binding
+            ));
+        }
+        for predecessor in &step.after {
+            if !earlier.contains(predecessor) || predecessor == &step.binding {
+                return Err(format!(
+                    "makes {} depend on `{predecessor}`, which is not an earlier declared step",
+                    step.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn workflow_choice(name: &str, mut agent_roles: Vec<String>, detail: &str) -> WorkflowChoice {
+    agent_roles.sort();
+    agent_roles.dedup();
+    WorkflowChoice {
+        message: format!("The {name} workflow {detail}. Choose how to represent it."),
+        agent_roles,
+    }
+}
+
+fn routine_workflow_source(file: &InspectedFile) -> WorkflowSource {
+    let (fields, body) = match markdown_frontmatter(&file.content) {
+        Ok(parts) => parts,
+        Err(detail) => {
+            return WorkflowSource::NeedsChoice(workflow_choice(
+                &file.item.name,
+                Vec::new(),
+                &detail,
+            ));
+        }
+    };
+    let name = fields
+        .get("name")
+        .cloned()
+        .unwrap_or_else(|| file.item.name.clone());
+    let description = fields.get("description").cloned();
+    let command = strict_code_field(body, "command");
+    let proof = strict_code_field(body, "proof");
+    let question = strict_code_field(body, "question");
+    let loose_behavior = loose_code_behavior(body);
+    let malformed = [&command, &proof, &question]
+        .into_iter()
+        .find_map(|field| match field {
+            StrictCodeField::Invalid(issue) => Some(issue.clone()),
+            StrictCodeField::Missing | StrictCodeField::Value(_) => None,
+        });
+
+    if malformed.is_none() && loose_behavior.is_none() {
+        let exact_question = match &question {
+            StrictCodeField::Missing => Some(None),
+            StrictCodeField::Value(question) => Some(Some(question.clone())),
+            StrictCodeField::Invalid(_) => None,
+        };
+        if let (StrictCodeField::Value(command), StrictCodeField::Value(proof), Some(question)) =
+            (&command, &proof, exact_question)
+            && passing_count_proof(proof)
+        {
+            return WorkflowSource::Routine(RoutineWorkflow {
+                name,
+                description,
+                check: Some((command.clone(), proof.clone())),
+                question,
+            });
+        }
+        if matches!(&command, StrictCodeField::Missing)
+            && matches!(&proof, StrictCodeField::Missing)
+            && let StrictCodeField::Value(question) = &question
+        {
+            return WorkflowSource::Routine(RoutineWorkflow {
+                name,
+                description,
+                check: None,
+                question: Some(question.clone()),
+            });
+        }
+    }
+
+    let behavior = malformed
+        .or(loose_behavior)
+        .or_else(|| match &proof {
+            StrictCodeField::Value(proof) if !passing_count_proof(proof) => Some(proof.clone()),
+            StrictCodeField::Missing | StrictCodeField::Invalid(_) | StrictCodeField::Value(_) => {
+                None
+            }
+        })
+        .or_else(|| match &command {
+            StrictCodeField::Value(command) => Some(command.clone()),
+            StrictCodeField::Missing | StrictCodeField::Invalid(_) => None,
+        })
+        .or_else(|| described_check_behavior(body))
+        .unwrap_or_else(|| name.clone());
+    WorkflowSource::NeedsChoice(workflow_choice(
+        &name,
+        Vec::new(),
+        &format!(
+            "leaves `{behavior}` unresolved because a check needs one literal command and one literal passing-count proof"
+        ),
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StrictCodeField {
+    Missing,
+    Value(String),
+    Invalid(String),
+}
+
+/// Jedynym wykonywalnym kontraktem Markdowna jest cały wiersz z dokładną etykietą i jednym
+/// code-spanem.
+///
+/// Fragment przed albo po code-spanie zmieniałby znaczenie, a dwa spany zostawiałyby importerowi
+/// wybór, który z nich wykonać. Oba przypadki zostają jawnie nierozstrzygnięte.
+fn strict_code_field(source: &str, label: &str) -> StrictCodeField {
+    let prefix = format!("{label}:");
+    let declarations: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix))
+        .collect();
+    let [declaration] = declarations.as_slice() else {
+        return if declarations.is_empty() {
+            StrictCodeField::Missing
+        } else {
+            StrictCodeField::Invalid(format!("declares `{label}:` more than once"))
+        };
+    };
+    let declaration = declaration.trim();
+    let Some(inside) = declaration
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    else {
+        return StrictCodeField::Invalid(format!(
+            "`{label}: {}` is not exactly one closed code span",
+            declaration.trim_matches('`')
+        ));
+    };
+    if inside.is_empty() || inside.contains('`') {
+        return StrictCodeField::Invalid(format!(
+            "`{label}: {inside}` is not exactly one non-empty code span"
+        ));
+    }
+    StrictCodeField::Value(inside.to_owned())
+}
+
+fn passing_count_proof(proof: &str) -> bool {
+    matches!(
+        proof,
+        r"(\d+) passed" | r"Ran (\d+) test" | r"Ran (\d+) tests"
+    )
+}
+
+fn loose_code_behavior(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        if ["command:", "proof:", "question:"]
+            .iter()
+            .any(|label| line.starts_with(label))
+        {
+            return None;
+        }
+        let line = line.trim();
+        inline_code_values(line).into_iter().next().or_else(|| {
+            line.split_once('`')
+                .map(|(_, tail)| tail.trim().to_owned())
+                .filter(|tail| !tail.is_empty())
+        })
+    })
+}
+
+#[derive(Debug, Default)]
+struct CommandMentions {
+    accepted: Vec<String>,
+    rejected: Vec<String>,
+}
+
+fn command_mentions(source: &str) -> CommandMentions {
+    let mut mentions = CommandMentions::default();
+    for line in source.lines() {
+        let lower = line.to_ascii_lowercase();
+        let labelled = line
+            .split_once(':')
+            .is_some_and(|(label, _)| label.trim().eq_ignore_ascii_case("command"));
+        let asks_to_run = labelled || lower.contains("run ") || lower.starts_with("run`");
+        if !asks_to_run {
+            continue;
+        }
+        let prohibited = [
+            "do not",
+            "don't",
+            "must not",
+            "never run",
+            "without running",
+        ]
+        .iter()
+        .any(|phrase| lower.contains(phrase));
+        for value in inline_code_values(line) {
+            if value.is_empty() || value.contains(['\n', '\r']) {
+                continue;
+            }
+            if prohibited {
+                mentions.rejected.push(value);
+            } else {
+                mentions.accepted.push(value);
+            }
+        }
+    }
+    mentions.accepted.sort();
+    mentions.accepted.dedup();
+    mentions.rejected.sort();
+    mentions.rejected.dedup();
+    mentions
+}
+
+fn inline_code_values(line: &str) -> Vec<String> {
+    line.split('`')
+        .enumerate()
+        .filter(|(index, _)| index % 2 == 1)
+        .map(|(_, value)| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn described_check_behavior(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        (lower.contains("verification")
+            || lower.contains("verify")
+            || lower.contains("test suite")
+            || lower.contains("checks"))
+        .then(|| line.trim().trim_matches('#').trim().to_owned())
+        .filter(|line| !line.is_empty())
+    })
+}
+
 pub(crate) fn knows_ship_ui(content: &str) -> bool {
     ["frontend-dev", "design-qa", "code-reviewer"]
         .iter()
@@ -1795,17 +2504,14 @@ pub(crate) fn knows_ship_ui(content: &str) -> bool {
 }
 
 pub(crate) fn check_command(source: &str) -> Option<String> {
-    for (index, piece) in source.split('`').enumerate() {
-        if index % 2 == 0 {
-            continue;
-        }
-        let command = piece.trim();
-        if command.starts_with("./")
-            && (command.contains("verify") || command.contains("test") || command.contains("ci"))
-            && !command.contains('\n')
-        {
-            return Some(command.to_owned());
-        }
-    }
-    None
+    command_mentions(source)
+        .accepted
+        .into_iter()
+        .find(|command| {
+            command.starts_with("./")
+                && (command.contains("verify")
+                    || command.contains("test")
+                    || command.contains("ci"))
+                && !command.contains(['\n', '\r'])
+        })
 }
