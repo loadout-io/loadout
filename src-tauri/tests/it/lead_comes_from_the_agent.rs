@@ -30,7 +30,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use loadout_lib::commands::Drivers;
 use loadout_lib::commands::agents::save_agent_inner;
-use loadout_lib::commands::chat::{ChatError, Lead, Threads};
+use loadout_lib::commands::chat::{Lead, Threads};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome,
     Policy, Probe, RunSpec, SessionRef, Tokens, Voice,
@@ -503,19 +503,18 @@ async fn nobody_pointed_at_is_a_refusal_that_names_the_next_move() -> Result<(),
     Ok(())
 }
 
-/// Nieczytelny plik w bibliotece: odmowa, która nazywa TEN plik.
+/// Nieczytelny sąsiad nie ukrywa zdrowego agenta wskazanego na lidera.
 ///
-/// Żadne kryterium tego nie wymaga i to jest cały powód, dla którego ten przypadek istnieje.
-/// [`ChatError::CouldNotReadTheLibrary`] jest osiągalne prawdziwą drogą — `list_agents_inner`
-/// przewraca całą listę na pierwszym pliku, którego czytnik nie rozumie (T-11), a nie pomija go
-/// po cichu — więc wariant bez ani jednego wołającego w teście jest wariantem, którego
-/// przecelowanie zauważy dopiero człowiek z rozmową, która nie startuje.
+/// T-203 rozdzielił dwa fakty: wadliwy plik jest problemem widocznym na ekranie biblioteki,
+/// ale zdrowe definicje pozostają używalne przez produkcyjnych callerów. Ten oracle chroni
+/// dokładnie drogę Lead — powrót do semantyki all-or-nothing znów zatrzymałby rozmowę przez
+/// ręczną pomyłkę w zupełnie innym pliku.
 ///
 /// Plik piszemy BAJTAMI, nie przez `save_agent_inner`: produkcyjny zapis nigdy nie wyprodukuje
 /// pliku, którego produkcyjny czytnik nie umie przeczytać, a mierzymy dokładnie taki — ten, który
 /// powstaje z ręcznej edycji (pliki są prawdą, niezmiennik 4, więc człowiek je otwiera).
 #[tokio::test]
-async fn a_file_the_reader_cannot_parse_is_named_not_swallowed() -> Result<(), Box<dyn Error>> {
+async fn a_bad_neighbor_does_not_hide_the_pointed_at_lead() -> Result<(), Box<dyn Error>> {
     let library = tempfile::tempdir()?;
     let agent = definition(4, "Readable", Vendor::ClaudeCode, FileAccess::AskFirst);
     let landed = save_agent_inner(library.path(), &agent)?;
@@ -537,28 +536,19 @@ async fn a_file_the_reader_cannot_parse_is_named_not_swallowed() -> Result<(), B
         .parent()
         .expect("a saved agent file lies inside the library folder")
         .join("hand-edited.md");
-    std::fs::write(
-        &broken,
-        "runs_with: codex\nno dashes up top, so this is not an agent definition\n",
-    )?;
-
-    let refusal = Lead::pointed_at(library.path(), Some(&who)).expect_err(
-        "a library holding a file the reader cannot parse has to REFUSE. Resolving the lead \
-             anyway would answer out of a library that is half read, and the half that was \
-             dropped is the half the person just edited.",
-    );
+    let broken_bytes = b"runs_with: codex\nno dashes up top, so this is not an agent definition\n";
+    std::fs::write(&broken, broken_bytes)?;
 
     assert!(
-        matches!(&refusal, ChatError::CouldNotReadTheLibrary(_)),
-        "an unparseable file has to come back as the library-read refusal, never as `no such \
-         lead`: the repairs differ — fix THAT file, versus pick somebody else — and one sentence \
-         for two states leaves half the people following an instruction that cannot work. It \
-         said: {refusal}"
+        Lead::pointed_at(library.path(), Some(&who)).is_ok(),
+        "a malformed neighboring file hid the healthy agent that was explicitly selected as \
+         the lead"
     );
-    assert!(
-        refusal.to_string().contains("hand-edited.md"),
-        "the refusal has to name the file, because \"fix that file\" is only doable when the \
-         person can see which one (T4 §10). It said: {refusal}"
+    assert_eq!(
+        std::fs::read(&broken)?,
+        broken_bytes,
+        "resolving the healthy lead must isolate the problem without changing the file the \
+         library screen needs to name"
     );
     Ok(())
 }

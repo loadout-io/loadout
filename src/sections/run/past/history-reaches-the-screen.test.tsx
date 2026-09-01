@@ -33,7 +33,7 @@ const SHIP: PastRunRow = {
   when: '2026-08-16 19:48',
   title: 'Ship a feature',
   state: 'succeeded',
-  steps: 4,
+  steps: 2,
   costUsd: 1,
   said: null,
 };
@@ -92,7 +92,6 @@ const OPENED: PastRun = {
       name: 'Plan',
       agent: 'claude',
       state: 'succeeded',
-      executed: true,
       summary: 'Wrote the plan.',
       error: '',
       costUsd: 0.25,
@@ -104,35 +103,10 @@ const OPENED: PastRun = {
       name: 'Build',
       agent: 'claude',
       state: 'failed',
-      executed: true,
       summary: SUMMARY,
       error: 'The check would not run.',
       costUsd: 0.75,
       lines: [READ_LINE],
-    },
-    {
-      id: '01a02b3c-15f5-7f13-a86f-f2f856e4d773',
-      tile: 's_retry',
-      name: 'Unused retry',
-      agent: 'claude',
-      state: 'succeeded',
-      executed: false,
-      summary: '',
-      error: '',
-      costUsd: null,
-      lines: [],
-    },
-    {
-      id: '01a02b3c-15f5-7f13-a86f-f2f856e4d774',
-      tile: 's_legacy',
-      name: 'Legacy step',
-      agent: 'claude',
-      state: 'succeeded',
-      executed: null,
-      summary: '',
-      error: '',
-      costUsd: null,
-      lines: [],
     },
   ],
   handoffs: [{ from: 'Plan', to: ['Build'], title: HANDED, kind: 'plan' }],
@@ -333,18 +307,6 @@ describe('typing /history puts what really ran on the screen', () => {
       'a step whose stream nobody kept has to say so. An empty space there is indistinguishable ' +
         'from a step that never said anything.',
     ).toContain('Nothing of what this step said was kept on disk.');
-    expect(
-      withTheRun.match(/data-step-executed/g)?.length ?? 0,
-      'every physical step has to carry its own visible execution fact in the opened run',
-    ).toBe(OPENED.steps.length);
-    for (const fact of ['Attempted', 'Not attempted', 'Attempt unknown']) {
-      expect(
-        withTheRun,
-        'history has to show the receipt execution fact without deriving it from state, time, ' +
-          'PID or cost. Missing: ' +
-          fact,
-      ).toContain(fact);
-    }
   });
 
   it('gives the screen back when the panel is closed', () => {

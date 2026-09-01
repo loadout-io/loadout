@@ -172,6 +172,13 @@ interface Wire {
 
 const WIRES: readonly Wire[] = [
   { where: 'agents', what: 'list', command: 'list_agents', given: [], call: () => agents.list() },
+  {
+    where: 'agents',
+    what: 'listDefinitions',
+    command: 'list_agents',
+    given: [],
+    call: () => agents.listDefinitions(),
+  },
   { where: 'agents', what: 'newId', command: 'new_id', given: [], call: () => agents.newId() },
   {
     where: 'agents',
@@ -193,6 +200,13 @@ const WIRES: readonly Wire[] = [
     command: 'list_workflows',
     given: [],
     call: () => workflows.list(),
+  },
+  {
+    where: 'workflows',
+    what: 'listDefinitions',
+    command: 'list_workflows',
+    given: [],
+    call: () => workflows.listDefinitions(),
   },
   {
     where: 'workflows',

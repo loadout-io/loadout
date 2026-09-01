@@ -15,7 +15,10 @@
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 
-use crate::library::agents::{Agent, AgentError, read_agent_directory, write_agent_file};
+use crate::library::agents::{
+    Agent, AgentError, agent_file_name, read_agent_directory, write_agent_file,
+};
+use crate::library::definition::{Definition, Shelf, agent_problem, healthy_only};
 
 /// Katalog agentów wewnątrz biblioteki: `~/.loadout/agents/` (`docs/ARCHITECTURE.md` §8).
 ///
@@ -42,12 +45,32 @@ fn refused(path: &Path, detail: &str) -> AgentError {
 /// pliku mieszka w `write_agent_file` (T-11) i nie ma prawa zostać przepisana tutaj: slug
 /// powstaje ze zmiennej nazwy agenta, więc agent przemianowany między zapisem a usunięciem
 /// leżałby pod nazwą, której ta warstwa by nie zgadła. Odpowiedź daje **odczyt**, nie zgadywanie.
-fn saved(home: &Path) -> Result<Vec<(PathBuf, Agent)>, AgentError> {
+fn saved_definitions(home: &Path) -> Result<Vec<Definition<(PathBuf, Agent)>>, AgentError> {
     let dir = home.join(AGENTS_DIR);
     read_agent_directory(&dir)?
         .into_iter()
-        .map(|(path, agent)| agent.map(|agent| (path, agent)))
+        .map(|(path, agent)| {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| refused(&dir, "an agent file name could not be shown safely"))?
+                .to_owned();
+            Ok(match agent {
+                Ok(value) => Definition::Healthy {
+                    value: (path, value),
+                },
+                Err(error) => Definition::DefinitionProblem {
+                    shelf: Shelf::Agents,
+                    file_name,
+                    problem: agent_problem(&error),
+                },
+            })
+        })
         .collect()
+}
+
+fn saved(home: &Path) -> Result<Vec<(PathBuf, Agent)>, AgentError> {
+    Ok(healthy_only(saved_definitions(home)?))
 }
 
 /// Wszyscy zapisani agenci, po jednym na plik.
@@ -57,6 +80,28 @@ fn saved(home: &Path) -> Result<Vec<(PathBuf, Agent)>, AgentError> {
 /// (ten sam powód, co przy `RunDeps::home`).
 pub fn list_agents_inner(home: &Path) -> Result<Vec<Agent>, AgentError> {
     Ok(saved(home)?.into_iter().map(|(_, agent)| agent).collect())
+}
+
+/// Unionowe wejście dla listy w oknie. Jeden wadliwy plik zostaje jednym problemem bez
+/// odbierania zdrowych definicji callerom, którzy przechodzą przez [`healthy_only`].
+pub fn list_agent_definitions_inner(home: &Path) -> Result<Vec<Definition<Agent>>, AgentError> {
+    saved_definitions(home).map(|definitions| {
+        definitions
+            .into_iter()
+            .map(|definition| match definition {
+                Definition::Healthy { value: (_, value) } => Definition::Healthy { value },
+                Definition::DefinitionProblem {
+                    shelf,
+                    file_name,
+                    problem,
+                } => Definition::DefinitionProblem {
+                    shelf,
+                    file_name,
+                    problem,
+                },
+            })
+            .collect()
+    })
 }
 
 /// Zapisuje agenta i oddaje ścieżkę, pod którą wylądował.
@@ -72,9 +117,27 @@ pub fn list_agents_inner(home: &Path) -> Result<Vec<Agent>, AgentError> {
 /// konsumującą — czyli ostrzeżeniem clippy, którego w tym repo nie wolno wyciszyć. Wołający
 /// z `&agent` w ręku nie zauważa różnicy.
 pub fn save_agent_inner(home: &Path, agent: impl Borrow<Agent>) -> Result<PathBuf, AgentError> {
+    let agent = agent.borrow();
+    let file_name = agent_file_name(agent);
+    if saved_definitions(home)?.iter().any(|definition| {
+        // 2026-08-28: domyślny macOS traktuje te nazwy jako ten sam leaf. Guard musi robić
+        // to samo także na case-sensitive CI, zanim writer otworzy kanoniczne `collision.md`.
+        matches!(
+            definition,
+            Definition::DefinitionProblem {
+                file_name: problem_file,
+                ..
+            } if problem_file.eq_ignore_ascii_case(&file_name)
+        )
+    }) {
+        return Err(refused(
+            &home.join(AGENTS_DIR).join(&file_name),
+            "fix or delete this unreadable agent file before saving another agent here",
+        ));
+    }
     // Cała droga bajtów — nazwa pliku, kolejność wierszy front-mattera, `create_dir_all` —
     // jest w `write_agent_file` (T-11). Tutaj składa się wyłącznie katalog.
-    write_agent_file(&home.join(AGENTS_DIR), agent.borrow())
+    write_agent_file(&home.join(AGENTS_DIR), agent)
 }
 
 /// Usuwa agenta o tym identyfikatorze razem z jego plikiem.

@@ -23,6 +23,8 @@
 import { create } from 'zustand';
 
 import type { WorkflowFile } from '../../../state/workflows';
+import type { DefinitionListing, DefinitionProblem } from '../../../state/library';
+import { definitionProblems, definitionsOf, healthyOnly } from '../../../state/library';
 
 /**
  * Schemat pliku workflow — jeden, ten sam, którym posługuje się otwarty dokument.
@@ -52,7 +54,7 @@ export interface WorkflowEntry {
 /** Cały styk z dyskiem. Jedna atrapa w teście zastępuje całość. */
 export interface WorkflowListIo {
   /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
-  list(): Promise<WorkflowEntry[]>;
+  list(): Promise<DefinitionListing<WorkflowEntry>>;
   /** uuid v7, mennica stoi po stronie Rusta [T4 §5.1] — `crypto.randomUUID()` daje v4. */
   newId(): Promise<string>;
   write(path: string, workflow: WorkflowFile): Promise<void>;
@@ -75,6 +77,7 @@ export interface WorkflowListActions {
 export interface WorkflowListState extends WorkflowListActions {
   /** Posortowane po nazwie, bez uwzględnienia wielkości liter. Licznik w nagłówku to `.length`. */
   workflows: WorkflowEntry[];
+  problems: DefinitionProblem[];
   /** O co pytamy. `null` znaczy, że o nic — pytanie ma jedno miejsce (niezmiennik 13). */
   pendingDeleteId: string | null;
   load: () => Promise<void>;
@@ -125,11 +128,11 @@ function slugOf(name: string): string {
  * Sufiks jest liczbą od 2, więc drugi `Ship a feature` ląduje obok pierwszego jako
  * `ship-a-feature-2.json`, a nie na nim.
  */
-function freeFileName(name: string, taken: readonly WorkflowEntry[]): string {
+function freeFileName(name: string, taken: readonly string[]): string {
   /* Porównanie po małych literach, bo APFS jest domyślnie NIEwrażliwy na wielkość liter:
    * `Ship-A-Feature.json` i `ship-a-feature.json` to na tym dysku jeden plik. Slug jest już
    * mały, więc wystarczy sprowadzić do małych to, co przyszło z katalogu. */
-  const used = new Set(taken.map((entry) => entry.path.toLowerCase()));
+  const used = new Set(taken.map((fileName) => fileName.toLowerCase()));
   const base = slugOf(name);
 
   let candidate = `${base}.json`;
@@ -207,11 +210,16 @@ export function createWorkflowListStore(io: WorkflowListIo) {
 
   return create<WorkflowListState>()((set, get) => ({
     workflows: [],
+    problems: [],
     pendingDeleteId: null,
 
     load: () =>
       inTurn(async () => {
-        set({ workflows: sortedByName(await io.list()) });
+        const definitions = definitionsOf(await io.list());
+        set({
+          workflows: sortedByName(healthyOnly(definitions)),
+          problems: definitionProblems(definitions),
+        });
       }),
 
     create: (name) =>
@@ -221,8 +229,13 @@ export function createWorkflowListStore(io: WorkflowListIo) {
          * w międzyczasie powstać w drugim oknie albo w Finderze, a wolna nazwa wybrana wobec
          * nieaktualnego spisu to dokładnie ten cichy zapis na cudzym pliku, przed którym stoi
          * całe to sprawdzanie unikalności. */
-        const onDisk = await io.list();
-        const path = freeFileName(name, onDisk);
+        const definitions = definitionsOf(await io.list());
+        const onDisk = healthyOnly(definitions);
+        const problems = definitionProblems(definitions);
+        const path = freeFileName(name, [
+          ...onDisk.map((entry) => entry.path),
+          ...problems.map((problem) => problem.fileName),
+        ]);
         const workflow: WorkflowFile = {
           format: 1,
           id: await io.newId(),
@@ -234,20 +247,22 @@ export function createWorkflowListStore(io: WorkflowListIo) {
         };
 
         await io.write(path, workflow);
-        set({ workflows: sortedByName([...onDisk, { path, workflow }]) });
+        set({ workflows: sortedByName([...onDisk, { path, workflow }]), problems });
       }),
 
     duplicate: (id) =>
       inTurn(async () => {
         /* Ten sam odczyt katalogu i z tego samego powodu, co w `create`: duplikat jest nowym
          * plikiem, więc też musi trafić na wolną nazwę. */
-        const onDisk = await io.list();
+        const definitions = definitionsOf(await io.list());
+        const onDisk = healthyOnly(definitions);
+        const problems = definitionProblems(definitions);
         const source = onDisk.find((entry) => entry.workflow.id === id);
         if (source === undefined) {
           /* Plik zniknął spod ekranu — usunięty w drugim oknie albo w Finderze. Duplikowanie
            * wiersza, którego nie ma na dysku, wskrzesiłoby workflow, który ktoś przed chwilą
            * usunął; ekran ma się zamiast tego zgodzić z katalogiem (niezmiennik 4). */
-          set({ workflows: sortedByName(onDisk) });
+          set({ workflows: sortedByName(onDisk), problems });
           return;
         }
 
@@ -267,9 +282,12 @@ export function createWorkflowListStore(io: WorkflowListIo) {
          * wskazują na nie po tych identyfikatorach — świeżo wybite `id` kroków bez przepisania
          * strzałek dałyby kopię podłączoną do niczego. */
 
-        const path = freeFileName(name, onDisk);
+        const path = freeFileName(name, [
+          ...onDisk.map((entry) => entry.path),
+          ...problems.map((problem) => problem.fileName),
+        ]);
         await io.write(path, copy);
-        set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]) });
+        set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]), problems });
       }),
 
     requestDelete: (id) => {

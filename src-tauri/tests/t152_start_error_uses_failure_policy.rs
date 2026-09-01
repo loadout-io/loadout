@@ -259,9 +259,14 @@ async fn start_refusal_obeys_stop_carry_on_and_both_ask_me_answers() -> Result<(
         .find(|start| start.returned_handle)
         .ok_or("carry-on never started the child")?;
     assert!(
-        child.prompt.contains("Parent step") && child.prompt.contains(PUBLIC_REFUSAL),
+        child.prompt.contains("Parent step"),
         "the child did not receive a named failed handoff: {:?}",
         child.prompt
+    );
+    let handed = failed_handoff_in(&child.prompt)?;
+    assert!(
+        handed.contains(PUBLIC_REFUSAL),
+        "the named failed handoff lost the public refusal: {handed:?}"
     );
 
     assert_asked(&continued)?;
@@ -277,9 +282,7 @@ async fn start_refusal_obeys_stop_carry_on_and_both_ask_me_answers() -> Result<(
             .and_then(|run| step(run, "Parent step"))
             .and_then(|row| row.get("error"))
             .and_then(Value::as_str),
-        Some(
-            "Loadout could not start this agent: T152 controlled start refusal You were asked what to do next."
-        ),
+        Some(PUBLIC_REFUSAL),
         "the paused receipt and the visible question disagreed about the refusal"
     );
 
@@ -341,6 +344,25 @@ fn step<'a>(run: &'a Value, name: &str) -> Option<&'a Value> {
         .as_array()?
         .iter()
         .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
+}
+
+/// Odczytuje ciało pliku wskazanego przez wiersz nieudanego rodzica w indeksie handoffów.
+/// Powód pozostaje w pliku; etykieta relacji jest celowo krótka, żeby nie łamać limitu T-87.
+fn failed_handoff_in(prompt: &str) -> Result<String, Box<dyn Error>> {
+    let row = prompt
+        .lines()
+        .find(|line| line.contains("handoffs/"))
+        .ok_or("the next step received no handoff row")?;
+    assert!(
+        row.contains("did not pass"),
+        "the handoff row did not identify the failed parent: {row:?}"
+    );
+    let named = row
+        .split_whitespace()
+        .find(|word| word.contains("handoffs/"))
+        .ok_or("the handoff row names no path")?;
+    let path = PathBuf::from(named.trim_end_matches([',', ';', ':', ')']));
+    Ok(fs::read_to_string(path)?)
 }
 
 fn latest_run(project: &Path) -> Option<Value> {

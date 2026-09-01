@@ -67,7 +67,7 @@ export interface WorkflowsScreenProps {
  * Adnotacja typu zostaje z rozmysłem: moduł eksportuje więcej niż `WorkflowListIo` (`load`
  * i `check` należą do płótna), a to podstawienie ma sprawdzać, że NADAL niesie te cztery
  * funkcje, których chce magazyn listy. */
-const DISK: WorkflowListIo = Disk;
+const DISK: WorkflowListIo = { ...Disk, list: Disk.listDefinitions };
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu, a nie przy renderze: magazyn
  * budowany w ciele komponentu gubiłby całą zawartość ekranu przy każdym przemontowaniu. */
@@ -192,6 +192,7 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
           `renderToStaticMarkup` pyta, czy w markupie coś jest, a nie co tam stoi. */}
       <WorkflowList
         workflows={state.workflows}
+        problems={state.problems}
         pendingDeleteId={state.pendingDeleteId}
         actions={state}
         onOpen={(path) => {

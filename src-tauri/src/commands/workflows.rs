@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::durable_file::{DurableFilePublisher, PublishError};
 use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
+use crate::library::definition::{Definition, Shelf, healthy_only, workflow_problem};
 use crate::workflow::WorkflowFile;
 use crate::workflow::check::Note;
 use crate::workflow::file::{LoadError, SaveError};
@@ -111,18 +112,21 @@ pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<WorkflowFile,
     })?
 }
 
-/// Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą.
-///
-/// Plik, którego nie da się wczytać, **przewraca listę** i robi to z podaniem powodu:
-/// `LoadError::TooNew` znaczy „zaktualizuj Loadouta", a nie „ten plik zniknął" [T3 §8.4].
-/// Lista, która po cichu pomija plik z przyszłej wersji, jest listą, na której użytkownik
-/// widzi, że jego workflow przepadł — i tworzy go od nowa obok tego, który leży na dysku.
+/// Zdrowe workflowy dla Rustowych callerów, którzy nie renderują problemów biblioteki.
 pub fn list_workflows_inner(home: &Path) -> Result<Vec<WorkflowEntry>, LoadError> {
+    Ok(healthy_only(list_workflow_definitions_inner(home)?))
+}
+
+/// Wszystko, co leży w katalogu workflow. Błąd jednego pliku jest jednym wpisem problemu;
+/// błąd całego kontrolowanego katalogu nadal odmawia operacji.
+pub fn list_workflow_definitions_inner(
+    home: &Path,
+) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
     let dir = home.join(WORKFLOWS_DIR);
     let publisher = DurableFilePublisher::new(&dir);
     let mut listed = None;
     match publisher.recover_with(|root| {
-        listed = Some(list_workflows_from_root(root, &dir));
+        listed = Some(list_workflow_definitions_from_root(root, &dir));
         Ok(())
     }) {
         Ok(()) => listed.ok_or_else(|| {
@@ -137,20 +141,23 @@ pub fn list_workflows_inner(home: &Path) -> Result<Vec<WorkflowEntry>, LoadError
     }
 }
 
-fn list_workflows_from_root(
+fn list_workflow_definitions_from_root(
     root: &PublicationRoot,
     dir: &Path,
-) -> Result<Vec<WorkflowEntry>, LoadError> {
+) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
     // Wyłącznie regularne `.json`, więc symlink oraz `.json.bak` nie stają się definicją.
     let mut names = root
         .list_directory(Path::new(""))
         .map_err(LoadError::Unreadable)?
         .into_iter()
         .filter(|entry| {
+            // 2026-08-28: APFS domyślnie zderza `New-Workflow.JSON` z kanonicznym
+            // `new-workflow.json`. Problem musi wejść do zajętych nazw przed Create/Duplicate.
             entry.kind == PublicationEntryKind::Regular
                 && Path::new(&entry.name)
                     .extension()
-                    .is_some_and(|ext| ext == "json")
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         })
         .map(|entry| entry.name)
         .collect::<Vec<_>>();
@@ -165,13 +172,27 @@ fn list_workflows_from_root(
                 format!("{} is not a name Loadout can read", path.display()),
             ))
         })?;
-        let bytes = root
-            .read_regular(Path::new(&file_name), false)
-            .map_err(LoadError::Unreadable)?;
-        out.push(WorkflowEntry {
-            path: name.to_owned(),
-            workflow: crate::workflow::file::load_snapshot(&path, &bytes)?,
-        });
+        let value = match root.read_regular(Path::new(&file_name), false) {
+            Ok(bytes) => match crate::workflow::file::load_snapshot(&path, &bytes) {
+                Ok(workflow) => Definition::Healthy {
+                    value: WorkflowEntry {
+                        path: name.to_owned(),
+                        workflow,
+                    },
+                },
+                Err(error) => Definition::DefinitionProblem {
+                    shelf: Shelf::Workflows,
+                    file_name: name.to_owned(),
+                    problem: workflow_problem(&error),
+                },
+            },
+            Err(_error) => Definition::DefinitionProblem {
+                shelf: Shelf::Workflows,
+                file_name: name.to_owned(),
+                problem: crate::library::definition::DefinitionProblemKind::Unreadable,
+            },
+        };
+        out.push(value);
     }
     Ok(out)
 }
@@ -203,7 +224,20 @@ pub fn check_workflow_inner(home: &Path, workflow: impl Borrow<WorkflowFile>) ->
      *
      * Biblioteka nie do odczytania NIE ZABIERA uwag o pliku: człowiek dostaje wtedy to, co
      * dało się policzyć, zamiast pustej listy sugerującej, że wszystko jest w porządku. */
-    let agents = crate::commands::agents::list_agents_inner(home).unwrap_or_default();
+    let agents = match crate::commands::agents::list_agents_inner(home) {
+        Ok(agents) => agents,
+        Err(_error) => {
+            notes.push(Note {
+                level: crate::workflow::check::Level::Problem,
+                step_id: None,
+                message: "Loadout could not read your saved agents, so it could not check this \
+                          workflow's roles."
+                    .to_owned(),
+                fix: None,
+            });
+            Vec::new()
+        }
+    };
     let connections =
         crate::connections::runtime::all(&home.join("connections")).unwrap_or_default();
     let skills = saved_skill_names(home);

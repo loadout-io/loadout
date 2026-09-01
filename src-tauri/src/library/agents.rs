@@ -381,9 +381,12 @@ pub struct Resolved {
 /// jak zła instrukcja w promptcie i kosztuje godziny.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    /// Pliku nie da się przeczytać albo mówi coś, czego definicja agenta nie zna.
+    /// Pliku nie da się przeczytać.
     #[error("{file} — {detail}")]
     Unreadable { file: String, detail: String },
+    /// Bajty są dostępne, ale nie opisują agenta, którego ten build umie otworzyć.
+    #[error("{file} — {detail}")]
+    Malformed { file: String, detail: String },
     /// Na drucie stanęła pustka tam, gdzie ma stać wartość. W RFC 7396 `null` kasuje
     /// klucz, więc przepuszczony `null` produkuje plik ustawień, który się nie wczyta.
     #[error("{field} has no value. Remove the line to go back to the agent's setting")]
@@ -560,10 +563,13 @@ fn read_agent_directory_from_root(
         .map_err(|error| refused(dir, &error.to_string()))?
         .into_iter()
         .filter(|entry| {
+            // 2026-08-28: domyślny APFS uznaje `Collision.MD` i `collision.md` za ten sam
+            // leaf. Scanner musi więc przyjąć ASCII-case wariant, zanim save wybierze nazwę.
             entry.kind == PublicationEntryKind::Regular
                 && Path::new(&entry.name)
                     .extension()
-                    .is_some_and(|ext| ext == "md")
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
         })
         .map(|entry| entry.name)
         .collect::<Vec<_>>();
@@ -584,22 +590,22 @@ fn read_agent_directory_from_root(
 /// Wariant dla produkcyjnego listowania, które trzyma deskryptor katalogu od recovery aż do
 /// parsera. `path` służy wyłącznie bezpiecznej nazwie w odmowie; bajty nie są otwierane drugi raz.
 pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, AgentError> {
-    let text = std::str::from_utf8(bytes).map_err(|error| refused(path, &error.to_string()))?;
+    let text = std::str::from_utf8(bytes).map_err(|error| malformed(path, &error.to_string()))?;
 
     let (front, body) = front_and_body(text).ok_or_else(|| {
-        refused(
+        malformed(
             path,
             "an agent file is three dashes, then its settings, then three dashes, then what \
              the agent should do",
         )
     })?;
 
-    let mut fields = front_matter(front).map_err(|detail| refused(path, &detail))?;
+    let mut fields = front_matter(front).map_err(|detail| malformed(path, &detail))?;
 
     // Dwa źródła prawdy dla najdłuższego pola definicji rozjeżdżają się przy pierwszej ręcznej
     // edycji i nikt tego nie zauważa, bo oba wyglądają poprawnie [T4 §5.1]. Odmawiamy.
     if fields.contains_key("instructions") {
-        return Err(refused(
+        return Err(malformed(
             path,
             "what the agent should do belongs under the second row of dashes, not in a line \
              of its own up top. Two places to write it is two answers",
@@ -607,7 +613,8 @@ pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, Ag
     }
     fields.insert("instructions".to_string(), Value::String(body.to_string()));
 
-    serde_json::from_value(Value::Object(fields)).map_err(|error| refused(path, &error.to_string()))
+    serde_json::from_value(Value::Object(fields))
+        .map_err(|error| malformed(path, &error.to_string()))
 }
 
 /// Odmowa, która nazywa plik.
@@ -618,6 +625,15 @@ pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, Ag
 /// dokładnie tak samo jak zła instrukcja w promptcie i kosztuje godziny.
 fn refused(path: &Path, detail: &str) -> AgentError {
     AgentError::Unreadable {
+        file: path.display().to_string(),
+        detail: detail.to_string(),
+    }
+}
+
+/// Błąd parsera zachowuje dotychczasowe zdanie, ale daje wspólnemu unionowi bezpieczną
+/// kategorię bez zgadywania po treści komunikatu.
+fn malformed(path: &Path, detail: &str) -> AgentError {
+    AgentError::Malformed {
         file: path.display().to_string(),
         detail: detail.to_string(),
     }
@@ -714,7 +730,7 @@ fn flow_list(text: &str) -> Option<Vec<Value>> {
 /// Slug wyprowadzamy z nazwy tutaj, w jednym miejscu, żeby wołający nie musiał znać
 /// reguły — a przy okazji żeby była JEDNA reguła.
 pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError> {
-    let path = dir.join(format!("{}.md", slug(agent)));
+    let path = dir.join(agent_file_name(agent));
 
     let wire = serde_json::to_value(agent).map_err(|error| refused(&path, &error.to_string()))?;
     let Value::Object(mut fields) = wire else {
@@ -748,6 +764,13 @@ pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError
         )
         .map_err(|error| refused(&path, &error.to_string()))?;
     Ok(path)
+}
+
+/// Kanoniczna nazwa pliku agenta, używana i przez zapis, i przez ochronę przed nadpisaniem
+/// problemu. Druga kopia sluga w warstwie komend rozjechałaby się przy pierwszej zmianie reguły.
+#[must_use]
+pub fn agent_file_name(agent: &Agent) -> String {
+    format!("{}.md", slug(agent))
 }
 
 /// Kolejność wierszy front-mattera — ta z T4 §5.1, wypisana, a nie wzięta z kolejności pól

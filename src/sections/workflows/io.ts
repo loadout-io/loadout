@@ -19,11 +19,18 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { HostMaterial, Note, WorkflowFile } from '../../state/workflows';
+import type { Definition } from '../../state/library';
+import { definitionsOf, healthyOnly } from '../../state/library';
 import type { WorkflowEntry } from './list/store';
 
 /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
-export function list(): Promise<WorkflowEntry[]> {
-  return invoke<WorkflowEntry[]>('list_workflows');
+export function listDefinitions(): Promise<Definition<WorkflowEntry>[]> {
+  return invoke<Definition<WorkflowEntry>[]>('list_workflows');
+}
+
+/** Callery poza ekranem Workflows potrzebują tylko poprawnie wczytanych plików. */
+export async function list(): Promise<WorkflowEntry[]> {
+  return healthyOnly(definitionsOf(await listDefinitions()));
 }
 
 /** uuid v7, wybite po stronie Rusta — ta sama mennica, co w sekcji Agenci. */

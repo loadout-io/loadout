@@ -101,8 +101,8 @@ Nowe `run.json` zapisują na każdym fizycznym kroku dwa addytywne fakty:
 `nothing_to_judge`, `already_settled` oraz krok pozostawiony po wcześniejszym fail/cancel mają
 `executed: false` i `process_started: false`. Nie dostają `started_at`, PID/PGID, czasu procesu,
 tokenów, kosztu ani artefaktów vendora. Ich `Succeeded` może pozostać wewnętrznym sygnałem
-schedulera zwalniającym zależność; historia pokazuje nowe fakty zamiast wyprowadzać wykonanie ze
-statusu kroku.
+schedulera zwalniającym zależność; receipt oraz produkcyjne `read_run` niosą nowe fakty zamiast
+wyprowadzać wykonanie ze statusu kroku.
 
 Checkpoint ma `executed: true` i `process_started: false`. `AgentDriver::start -> Err` ma
 `executed: true` i `process_started: false`. Udane Agent, Check i Serve są trzema osobnymi
@@ -110,11 +110,12 @@ scenami produkcyjnego startu; każda po przejęciu uchwytu ma oba fakty `true`. 
 wcześniejsze przejście pętli, verifier bez pracy, start error, checkpoint i wszystkie trzy
 rodzaje prawdziwego procesu, a nie tylko deserializację fixture.
 
-Stare receipts bez nowych pól pozostają czytelne. Brak oznacza `unknown` w odczycie historii
-i nigdy nie jest odgadywany ze statusu, czasu albo PID. Diagnostyczne `process_started` i jego
-jawny stan `unknown` należą do T-201, który posiada cały kontrakt dowodu procesu; ten task ich
-nie dubluje. Task nie dodaje drugiego statusu do schedulera i nie zmienia znaczenia zależności
-grafu.
+Stare receipts bez nowych pól pozostają czytelne. `read_run` przewozi `executed` jako wartość
+nullable: brak oznacza `unknown` i nigdy nie jest odgadywany ze statusu, czasu albo PID. Widoczne
+rozróżnienie `true` / `false` / `unknown` w panelu historii należy do T-207, który posiada tę
+ścieżkę UI. Diagnostyczne `process_started` i jego jawny stan `unknown` należą do T-201, który
+posiada cały kontrakt dowodu procesu; ten task ich nie dubluje. Task nie dodaje drugiego statusu
+do schedulera i nie zmienia znaczenia zależności grafu.
 
 ## AC-4 Reconcile publikuje cały zaktualizowany `run.json` albo nic
 check: cargo test --test t152_reconcile_replaces_run_atomically

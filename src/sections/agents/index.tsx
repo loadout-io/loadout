@@ -34,6 +34,7 @@ import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Agent, AgentsIo, Color, FileAccess, Thinking } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
+import { problemSays } from '../../state/library';
 import { ImportSetup } from '../import';
 import { AgentForm, VENDORS } from './agent-form';
 import * as Disk from './io';
@@ -88,7 +89,7 @@ export interface AgentsScreenProps {
  * Kształt modułu jest lustrem `AgentsIo`, więc podstawia się w całości. Adnotacja typu nie jest
  * ozdobą: to ona sprawdza, że moduł NADAL spełnia interfejs magazynu — funkcja usunięta po
  * tamtej stronie granicy przestaje się kompilować tutaj, zamiast odmawiać pod palcem. */
-const DISK: AgentsIo = Disk;
+const DISK: AgentsIo = { ...Disk, list: Disk.listDefinitions };
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu — magazyn budowany w ciele
  * komponentu gubiłby zawartość ekranu przy każdym przemontowaniu. */
@@ -277,7 +278,7 @@ export default function AgentsScreen({
       });
   };
 
-  const empty = state.agents.length === 0;
+  const empty = state.agents.length === 0 && state.problems.length === 0;
 
   return (
     <section className="flex h-full flex-col">
@@ -301,7 +302,12 @@ export default function AgentsScreen({
             workflow. */}
         {empty ? null : (
           <>
-            <span className="font-mono text-mono text-muted">{`${String(state.agents.length)} saved`}</span>
+            {state.agents.length === 0 ? null : (
+              <span className="font-mono text-mono text-muted">{`${String(state.agents.length)} saved`}</span>
+            )}
+            {state.problems.length === 0 ? null : (
+              <span className="font-mono text-mono text-fail">{`${String(state.problems.length)} need attention`}</span>
+            )}
             <button data-create type="button" className={PRIMARY} onClick={startDraft}>
               ＋ Create
             </button>
@@ -391,6 +397,16 @@ export default function AgentsScreen({
                       {usage === null ? null : <span>{usageSays(usedIn(usage, agent.id))}</span>}
                     </div>
                   </button>
+                </li>
+              ))}
+              {state.problems.map((problem) => (
+                <li
+                  key={problem.fileName}
+                  data-definition-problem={problem.fileName}
+                  className="flex flex-col gap-2 rounded-md border border-fail-edge bg-panel p-3"
+                >
+                  <h2 className="text-subhead text-ink">{problem.fileName}</h2>
+                  <p className="text-body text-muted">{problemSays(problem)}</p>
                 </li>
               ))}
             </ul>

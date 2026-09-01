@@ -69,6 +69,7 @@ use crate::engine::drivers::{ImageInput, ValidatedImages};
 use crate::engine::limits::Limiter;
 use crate::engine::line::Line;
 use crate::library::agents::Agent;
+use crate::library::definition::Definition;
 use crate::store::Store;
 use crate::workflow::WorkflowFile;
 use crate::workflow::check::Note;
@@ -1272,8 +1273,9 @@ fn pump_into(channel: Channel<Vec<Line>>) -> LineSink {
 
 /// Wszyscy zapisani agenci.
 #[tauri::command]
-pub fn list_agents() -> Result<Vec<Agent>, String> {
-    commands::agents::list_agents_inner(&crate::loadout_dir()).map_err(|error| error.to_string())
+pub fn list_agents() -> Result<Vec<Definition<Agent>>, String> {
+    commands::agents::list_agent_definitions_inner(&crate::loadout_dir())
+        .map_err(|error| error.to_string())
 }
 
 /// Świeży uuid v7 — jedna mennica dla wszystkich sekcji.
@@ -1319,8 +1321,8 @@ pub fn delete_agent(id: &str) -> Result<(), String> {
 
 /// Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą.
 #[tauri::command]
-pub fn list_workflows() -> Result<Vec<commands::workflows::WorkflowEntry>, String> {
-    commands::workflows::list_workflows_inner(&crate::loadout_dir())
+pub fn list_workflows() -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
+    commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir())
         .map_err(|error| error.to_string())
 }
 

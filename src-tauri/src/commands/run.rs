@@ -7973,7 +7973,14 @@ impl Live {
                 drop(ours);
                 // 2026-08-28 (T-152): bez uchwytu nie ma prozy agenta, więc publiczna odmowa
                 // jest jedyną treścią, którą `carry-on` może uczciwie przekazać potomkowi.
-                self.update(|book| book.steps[id].summary = Some(text.clone()));
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.summary = Some(text.clone());
+                    /* Zachowujemy dokładną publiczną przyczynę przed wspólną polityką porażki.
+                     * `when_this_one_fails` używa `get_or_insert`, więc dopisek o `carry-on`
+                     * albo pytaniu nie może zastąpić faktu, dlaczego proces nie wystartował. */
+                    step.error = Some(text.clone());
+                });
                 Turned::Broke(text)
             }
         };

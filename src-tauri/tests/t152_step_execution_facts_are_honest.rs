@@ -241,19 +241,29 @@ async fn receipt_records_every_physical_execution_path() -> Result<(), Box<dyn E
         .run(bench.workflow("execution-paths", &workflow)?, true)
         .await?;
 
+    // A Serve step releases the graph as soon as spawn succeeds. Give the real
+    // child a bounded chance to execute its first instruction before cleanup;
+    // otherwise a fast scheduler can kill a correctly spawned process first.
+    let serve_started = tokio::time::timeout(Duration::from_secs(8), async {
+        while !served.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
     let _ = result.processes.close().await;
 
     assert!(
         result.answered,
         "the start-error carry-on never reached the checkpoint"
     );
-    assert!(served.exists(), "the Serve command did not really start");
-    assert_facts(row(&result.run_file, "Start error")?, true, false)?;
-    assert_facts(row(&result.run_file, "Choose after refusal")?, true, false)?;
-    assert_facts(row(&result.run_file, "Agent process")?, true, true)?;
-    assert_facts(row(&result.run_file, "Check process")?, true, true)?;
-    assert_facts(row(&result.run_file, "Serve process")?, true, true)?;
-    assert_facts(row(&result.run_file, "Skipped child")?, false, false)?;
+    assert!(serve_started, "the Serve command did not really start");
+    assert_facts(row(&result.run_file, "Start error")?, true, false);
+    assert_facts(row(&result.run_file, "Choose after refusal")?, true, false);
+    assert_facts(row(&result.run_file, "Agent process")?, true, true);
+    assert_facts(row(&result.run_file, "Check process")?, true, true);
+    assert_facts(row(&result.run_file, "Serve process")?, true, true);
+    assert_facts(row(&result.run_file, "Skipped child")?, false, false);
 
     assert!(
         !result
@@ -274,9 +284,9 @@ async fn no_work_and_already_settled_rounds_never_claim_execution() -> Result<()
             false,
         )
         .await?;
-    assert_facts(row_key(&no_work_run.run_file, "implement")?, true, true)?;
+    assert_facts(row_key(&no_work_run.run_file, "implement")?, true, true);
     for key in ["judge", "implement#1", "judge#1", "implement#2", "judge#2"] {
-        assert_facts(row_key(&no_work_run.run_file, key)?, false, false)?;
+        assert_facts(row_key(&no_work_run.run_file, key)?, false, false);
     }
     assert!(
         !no_work_run
@@ -293,10 +303,10 @@ async fn no_work_and_already_settled_rounds_never_claim_execution() -> Result<()
             false,
         )
         .await?;
-    assert_facts(row_key(&settled_run.run_file, "implement")?, true, true)?;
-    assert_facts(row_key(&settled_run.run_file, "judge")?, true, true)?;
+    assert_facts(row_key(&settled_run.run_file, "implement")?, true, true);
+    assert_facts(row_key(&settled_run.run_file, "judge")?, true, true);
     for key in ["implement#1", "judge#1", "implement#2", "judge#2"] {
-        assert_facts(row_key(&settled_run.run_file, key)?, false, false)?;
+        assert_facts(row_key(&settled_run.run_file, key)?, false, false);
     }
     Ok(())
 }
@@ -317,9 +327,9 @@ fn legacy_history_reports_execution_as_unknown() -> Result<(), Box<dyn Error>> {
             "title": "Legacy run",
             "status": "succeeded",
             "concurrency": 1,
-            "created_at": 1787918400000_i64,
-            "started_at": 1787918400001_i64,
-            "ended_at": 1787918400002_i64,
+            "created_at": 1_787_918_400_000_i64,
+            "started_at": 1_787_918_400_001_i64,
+            "ended_at": 1_787_918_400_002_i64,
             "steps": [{
                 "id": "019b0152-0000-7000-8000-000000000005",
                 "node_key": "legacy",
@@ -330,8 +340,8 @@ fn legacy_history_reports_execution_as_unknown() -> Result<(), Box<dyn Error>> {
                 "status": "succeeded",
                 "attempt": 0,
                 "pid": 4242,
-                "started_at": 1787918400001_i64,
-                "ended_at": 1787918400002_i64,
+                "started_at": 1_787_918_400_001_i64,
+                "ended_at": 1_787_918_400_002_i64,
                 "summary": "Old receipt",
                 "error": null
             }]
@@ -380,7 +390,7 @@ fn loop_workflow(implement: &str, judge: &str) -> Value {
     })
 }
 
-fn assert_facts(step: &Value, executed: bool, process_started: bool) -> Result<(), Box<dyn Error>> {
+fn assert_facts(step: &Value, executed: bool, process_started: bool) {
     assert_eq!(
         step.get("executed"),
         Some(&Value::Bool(executed)),
@@ -419,7 +429,6 @@ fn assert_facts(step: &Value, executed: bool, process_started: bool) -> Result<(
         assert!(step.get("pid").is_none_or(Value::is_null));
         assert!(step.get("pgid").is_none_or(Value::is_null));
     }
-    Ok(())
 }
 
 fn row<'a>(run: &'a Value, name: &str) -> Result<&'a Value, Box<dyn Error>> {

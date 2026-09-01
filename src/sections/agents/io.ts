@@ -18,10 +18,17 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { Agent } from '../../state/agents';
+import type { Definition } from '../../state/library';
+import { definitionsOf, healthyOnly } from '../../state/library';
 
 /** Wszyscy zapisani agenci, po jednym na plik w bibliotece. */
-export function list(): Promise<Agent[]> {
-  return invoke<Agent[]>('list_agents');
+export function listDefinitions(): Promise<Definition<Agent>[]> {
+  return invoke<Definition<Agent>[]>('list_agents');
+}
+
+/** Callery poza ekranem Agents potrzebują tylko zdrowych zapisanych agentów. */
+export async function list(): Promise<Agent[]> {
+  return healthyOnly(definitionsOf(await listDefinitions()));
 }
 
 /**

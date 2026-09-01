@@ -69,13 +69,13 @@ const WORKFLOW: &str = r#"{
   "links": []
 }"#;
 
-const SKILL: &str = r#"---
+const SKILL: &str = r"---
 name: alpha
 description: Leaves the T-152 ownership proof in the selected work tree.
 ---
 
 Write one small proof file.
-"#;
+";
 
 #[derive(Debug)]
 struct Bench {
@@ -213,7 +213,7 @@ impl Bench {
             self.foreign_wip
         );
         assert!(
-            run_directories(&self.project)?.is_empty(),
+            run_directories(&self.project).is_empty(),
             "a refused preparation left a run directory behind"
         );
         Ok(())
@@ -536,17 +536,17 @@ fn branches(project: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(text.lines().map(str::to_owned).collect())
 }
 
-fn run_directories(project: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+fn run_directories(project: &Path) -> Vec<String> {
     let root = project.join(".loadout/runs");
     let Ok(entries) = fs::read_dir(root) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let mut names = entries
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .collect::<Vec<_>>();
     names.sort();
-    Ok(names)
+    names
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

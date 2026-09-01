@@ -1362,7 +1362,7 @@ fn three_fields(scratch: &Scratch, text: &str) -> Result<Authored, Error> {
 /// przeżywa zmianę nazwy (T4 §5.1). Lista przychodzi z `commands::agents::list_agents_inner`,
 /// czyli tą samą drogą, którą sekcja Agenci wypisuje ją na ekran — drugi spacer po katalogu
 /// byłby drugą odpowiedzią na pytanie „kogo mam zapisanych" (niezmiennik 13).
-fn the_agent_saved_as(library: &Path, id: &str) -> Result<Agent, Error> {
+pub fn the_agent_saved_as(library: &Path, id: &str) -> Result<Agent, Error> {
     let saved =
         super::agents::list_agents_inner(library).map_err(|error| refusal(error.to_string()))?;
     // Biblioteka bez ani jednego agenta i biblioteka bez TEGO agenta to dwie różne rzeczy do

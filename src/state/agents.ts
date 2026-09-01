@@ -33,6 +33,8 @@
 import { create } from 'zustand';
 
 import { why } from '../ipc/why';
+import type { DefinitionListing, DefinitionProblem } from './library';
+import { definitionProblems, definitionsOf, healthyOnly } from './library';
 
 export type Vendor = 'claude-code' | 'codex';
 export type Thinking = 'quick' | 'balanced' | 'deep' | 'deepest';
@@ -74,7 +76,7 @@ export interface Agent {
 
 /** Wszystko, co magazyn robi poza swoją głową. Jedna atrapa w teście zastępuje całość. */
 export interface AgentsIo {
-  list(): Promise<Agent[]>;
+  list(): Promise<DefinitionListing<Agent>>;
   /** uuid v7, minted po stronie Rusta. */
   newId(): Promise<string>;
   save(agent: Agent): Promise<void>;
@@ -83,6 +85,7 @@ export interface AgentsIo {
 
 export interface AgentsState {
   agents: Agent[];
+  problems: DefinitionProblem[];
   /**
    * Zdanie dla człowieka po odmowie z dysku — `null`, kiedy nie ma o czym mówić.
    *
@@ -174,12 +177,17 @@ function upsert(agents: readonly Agent[], saved: Agent): Agent[] {
 export function createAgentsStore(io: AgentsIo) {
   return create<AgentsState>()((set, get) => ({
     agents: [],
+    problems: [],
     refusal: null,
 
     load: async () => {
       set({ refusal: null });
       try {
-        set({ agents: await io.list() });
+        const definitions = definitionsOf(await io.list());
+        set({
+          agents: healthyOnly(definitions),
+          problems: definitionProblems(definitions),
+        });
       } catch (error) {
         /* Pusta biblioteka i biblioteka NIEOSIĄGALNA czytają się na ekranie identycznie —
          * dokładnie ta pomyłka trzymała sekcję pustą przez kilkanaście godzin (patrz nagłówek

@@ -7,3 +7,4 @@
 //! nie sprawdziła (`AGENTS.md` §2a p. 5).
 
 pub mod agents;
+pub mod definition;

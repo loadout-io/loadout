@@ -31,12 +31,15 @@
  * w jedną należy do zadania, które będzie posiadało obie ścieżki.
  */
 import type { ReactElement } from 'react';
+import type { DefinitionProblem } from '../../../state/library';
+import { problemSays } from '../../../state/library';
 import type { WorkflowEntry, WorkflowListActions } from './store';
 import { newWorkflowName } from './store';
 import { WorkflowTile } from './tile';
 
 export interface WorkflowListProps {
   workflows: readonly WorkflowEntry[];
+  problems?: readonly DefinitionProblem[];
   /** O co pytamy przed usunięciem. `null` — o nic. */
   pendingDeleteId: string | null;
   /** Jeden obiekt na cały ekran; oba przyciski tworzenia dostają TEN SAM. */
@@ -59,6 +62,7 @@ const DANGER = 'h-8 rounded-sm border border-fail-edge px-3 text-ui text-fail';
 
 export function WorkflowList({
   workflows,
+  problems = [],
   pendingDeleteId,
   actions,
   onOpen,
@@ -81,6 +85,7 @@ export function WorkflowList({
     pendingDeleteId === null
       ? undefined
       : workflows.find((entry) => entry.workflow.id === pendingDeleteId);
+  const hasAnything = workflows.length > 0 || problems.length > 0;
 
   return (
     <section className="flex h-full flex-col">
@@ -91,9 +96,14 @@ export function WorkflowList({
          * to samo mówi zaproszenie niżej, a `0 saved` obok `No workflows yet.` to ten sam
          * fakt w dwóch miejscach (niezmiennik 13) — i drugi przycisk tworzenia na ekranie,
          * na którym DESIGN §6 przewiduje dokładnie jeden. */}
-        {workflows.length === 0 ? null : (
+        {!hasAnything ? null : (
           <>
-            <span className="font-mono text-mono text-muted">{`${workflows.length} saved`}</span>
+            {workflows.length === 0 ? null : (
+              <span className="font-mono text-mono text-muted">{`${workflows.length} saved`}</span>
+            )}
+            {problems.length === 0 ? null : (
+              <span className="font-mono text-mono text-fail">{`${problems.length} need attention`}</span>
+            )}
             <button
               data-create
               type="button"
@@ -107,7 +117,7 @@ export function WorkflowList({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {workflows.length === 0 ? (
+        {!hasAnything ? (
           <div className="flex h-full flex-col items-center justify-center gap-3">
             <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-line-strong text-muted">
               ◇
@@ -188,6 +198,17 @@ export function WorkflowList({
                     Delete
                   </button>
                 </div>
+              </li>
+            ))}
+
+            {problems.map((problem) => (
+              <li
+                key={problem.fileName}
+                data-definition-problem={problem.fileName}
+                className="flex flex-col gap-2 rounded-md border border-fail-edge bg-panel p-3"
+              >
+                <p className="text-heading text-ink">{problem.fileName}</p>
+                <p className="text-body text-muted">{problemSays(problem)}</p>
               </li>
             ))}
 
