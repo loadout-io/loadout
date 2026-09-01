@@ -24,7 +24,10 @@
 set -euo pipefail
 shopt -s nullglob
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# 2026-09-02: po przeniesieniu z `.loadout/h/` do `harness/` dwa poziomy
+# wskazywaly katalog Projects, wiec pelne CI odmawialo uruchomienia guardow jako
+# rzekome repo bez commitow. Ten plik lezy teraz dokladnie jeden poziom pod rootem.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Sufit na pojedyncze uruchomienie checka. Zimne clippy potrafi iść minuty, a każdy
