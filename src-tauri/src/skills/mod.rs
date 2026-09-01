@@ -220,7 +220,13 @@ pub struct SkillDoc {
 pub struct StepSkills {
     /// Nazwy w kolejności z definicji agenta — tej samej, w której człowiek je widzi.
     pub names: Vec<String>,
-    /// Kanoniczny katalog każdej nazwy (`<dane>/skills/<nazwa>/`), w tej samej kolejności.
+    /// Katalog, z którego pojadą bajty każdej nazwy, w tej samej kolejności.
+    ///
+    /// 2026-09-02 — NIE ZAWSZE JEST TO KANONICZNA KOPIA `<dane>/skills/<nazwa>/`. Rozwiązywanie
+    /// pyta też półek vendorów (`place::shelves_of`), więc pod tą nazwą może stać umiejętność
+    /// napisana przez człowieka wprost w jego katalogu domowym albo w repozytorium, w którym
+    /// pracuje. Która to była, mówi [`place::Whence`] — a `place::Found` niesie jedno i drugie
+    /// obok siebie, żeby nikt nie musiał liczyć tej ścieżki drugi raz (niezmiennik 23).
     pub dirs: Vec<PathBuf>,
 }
 

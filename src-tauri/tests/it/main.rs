@@ -269,6 +269,7 @@ mod skills_place_remove;
 mod skills_place_validate;
 mod skills_reach_claude;
 mod skills_reach_codex;
+mod skills_reach_the_lead;
 mod skills_reach_the_step;
 mod skills_scope_round_trip;
 mod skills_scope_two_roots;
