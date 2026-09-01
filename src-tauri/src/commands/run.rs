@@ -189,7 +189,7 @@ use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
-use crate::engine::supervisor::GroupProof;
+use crate::engine::supervisor::{GroupProof, MissingProgram};
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
@@ -560,7 +560,7 @@ const CONTEXT_NOT_PROVEN: &str =
 const PRIVATE_STATE_NOT_READY: &str =
     "Loadout could not create this agent's private state folder, so it did not start the step.";
 
-fn public_start_refusal(error: &anyhow::Error) -> String {
+fn public_start_refusal(vendor: &str, error: &anyhow::Error) -> String {
     if error
         .downcast_ref::<DriverSetupError>()
         .is_some_and(|typed| typed.failure() == DriverSetupFailure::PrivateState)
@@ -569,6 +569,24 @@ fn public_start_refusal(error: &anyhow::Error) -> String {
         // wypuścić ani prywatnej ścieżki, ani surowego zdania systemu plików [T-127].
         tracing::debug!(error = ?error, "the agent private state setup was refused");
         return PRIVATE_STATE_NOT_READY.to_owned();
+    }
+    let executable_was_not_found = error
+        .downcast_ref::<io::Error>()
+        .and_then(io::Error::get_ref)
+        .is_some_and(|source| source.downcast_ref::<MissingProgram>().is_some());
+    if executable_was_not_found {
+        let cli = match vendor {
+            "codex" => Some("Codex CLI"),
+            "claude" => Some("Claude Code CLI"),
+            _ => None,
+        };
+        if let Some(cli) = cli {
+            tracing::debug!(vendor, error = ?error, "the configured agent CLI was not found");
+            return format!(
+                "Loadout could not find {cli} on this Mac. Please install it or add it to PATH, \
+                 then restart Loadout."
+            );
+        }
     }
     format!("Loadout could not start this agent: {error}")
 }
@@ -7643,7 +7661,7 @@ impl Live {
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
             }
             Err(error) => {
-                let text = public_start_refusal(&error);
+                let text = public_start_refusal(job.driver.id(), &error);
                 // `.into()` — `DecodedEvent::from(AgentEvent)` podstawia `tool: None`. Nieudany
                 // start nie jest czynnością narzędzia, więc brak faktu jest tu prawdą, nie luką.
                 let _ = ours

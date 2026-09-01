@@ -15,9 +15,13 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::commands::Drivers;
-use crate::engine::drivers::AgentDriver;
 use crate::engine::drivers::claude::ClaudeDriver;
 use crate::engine::drivers::codex::CodexDriver;
+use crate::engine::drivers::{
+    AgentDriver, AgentHandle, DecodedEvent, DriverConfiguration, Probe, RunSpec, StepSettings,
+    ValidatedImages,
+};
+use crate::engine::supervisor::AgentCliSearch;
 use crate::library::agents::Vendor;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
@@ -82,6 +86,156 @@ const LOG_FILE: &str = "loadout.log";
 /// którego nie ma, nie dotyczą niczego i odmawiają KAŻDEGO wywołania z webviewa — a webview
 /// dowiedziałby się o tym dopiero w T-07 i przeczytał to jako zepsute wywołanie.
 const MAIN_WINDOW: &str = "main";
+
+/// Dekorator, który zachowuje zamrożony świat wyszukiwania przez klonowanie sterownika per krok.
+///
+/// Run dokłada effort, budżet, ustawienia i dowody przez metody zwracające nowe sterowniki.
+/// Samo ustawienie `PATH` w fabryce ginęłoby przy pierwszym takim klonie i bare-name fallback
+/// ponownie czytałby środowisko procesu aplikacji. Każda metoda niżej wyłącznie deleguje i
+/// ponownie zakłada ten sam dekorator; nie interpretuje żadnej polityki vendora.
+struct SearchEnvironmentDriver {
+    inner: Arc<dyn AgentDriver>,
+    path: std::ffi::OsString,
+}
+
+impl SearchEnvironmentDriver {
+    fn wrapped(&self, inner: Arc<dyn AgentDriver>) -> Arc<dyn AgentDriver> {
+        Arc::new(Self {
+            inner,
+            path: self.path.clone(),
+        })
+    }
+
+    fn with_search_path(&self, configuration: &DriverConfiguration) -> DriverConfiguration {
+        let mut configuration = configuration.clone();
+        if !configuration
+            .environment
+            .iter()
+            .any(|(name, _)| name == "PATH")
+        {
+            configuration
+                .environment
+                .push(("PATH".to_owned(), self.path.clone()));
+        }
+        configuration
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentDriver for SearchEnvironmentDriver {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    async fn probe(&self) -> anyhow::Result<Probe> {
+        self.inner.probe().await
+    }
+
+    async fn start(
+        &self,
+        spec: RunSpec,
+        tx: tokio::sync::mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        self.inner.start(spec, tx).await
+    }
+
+    async fn start_with_images(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: tokio::sync::mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        self.inner.start_with_images(spec, images, tx).await
+    }
+
+    async fn start_conversation(
+        &self,
+        spec: RunSpec,
+        images: ValidatedImages,
+        tx: tokio::sync::mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        self.inner.start_conversation(spec, images, tx).await
+    }
+
+    fn inheriting(&self, flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .inheriting(flags)
+            .map(|inner| self.wrapped(inner))
+    }
+
+    fn with_evidence(
+        &self,
+        target: crate::evidence::EvidenceTarget,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .with_evidence(target)
+            .map(|inner| self.wrapped(inner))
+    }
+
+    fn with_settings(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<Arc<dyn AgentDriver>>> {
+        self.inner
+            .with_settings(settings)
+            .map(|result| result.map(|inner| self.wrapped(inner)))
+    }
+
+    fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .configured(&self.with_search_path(configuration))
+            .map(|inner| self.wrapped(inner))
+    }
+
+    fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .with_budget(dollars)
+            .map(|inner| self.wrapped(inner))
+    }
+
+    fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
+        self.inner.reflecting().map(|inner| self.wrapped(inner))
+    }
+
+    fn effort_argv(&self, level: &str) -> Vec<String> {
+        self.inner.effort_argv(level)
+    }
+
+    fn carries_extra_dirs(&self) -> bool {
+        self.inner.carries_extra_dirs()
+    }
+
+    fn narrows_its_tools(&self) -> bool {
+        self.inner.narrows_its_tools()
+    }
+}
+
+/// Produkcyjna para sterowników z binarkami i środowiskiem zamrożonymi przed pierwszym biegiem.
+#[must_use]
+pub fn agent_drivers_with_search(search: &AgentCliSearch) -> Drivers {
+    let path = search.child_path().unwrap_or_default();
+    let configuration = DriverConfiguration {
+        environment: vec![("PATH".to_owned(), path.clone())],
+        ..DriverConfiguration::default()
+    };
+    let claude: Arc<dyn AgentDriver> = Arc::new(SearchEnvironmentDriver {
+        inner: Arc::new(
+            ClaudeDriver::with_binary(search.resolve("claude"))
+                .with_configuration(configuration.clone()),
+        ),
+        path: path.clone(),
+    });
+    let codex: Arc<dyn AgentDriver> = Arc::new(SearchEnvironmentDriver {
+        inner: Arc::new(
+            CodexDriver::with_binary(search.resolve("codex")).with_configuration(configuration),
+        ),
+        path,
+    });
+    Arc::new(move |vendor| match vendor {
+        Vendor::ClaudeCode => Arc::clone(&claude),
+        Vendor::Codex => Arc::clone(&codex),
+    })
+}
 
 /// Jeden uchwyt pliku na cały bieg, współdzielony przez wszystkie wątki.
 ///
@@ -309,12 +463,7 @@ pub fn run() {
              *
              * Oba istniejące adaptery muszą być żywe także dla analizy importu: atrapą Codeksa
              * aplikacja pokazywała wybór, który zawsze odmawiał. */
-            let claude: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
-            let codex: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
-            let drivers: Drivers = Arc::new(move |vendor| match vendor {
-                Vendor::ClaudeCode => Arc::clone(&claude),
-                Vendor::Codex => Arc::clone(&codex),
-            });
+            let drivers = agent_drivers_with_search(&AgentCliSearch::for_process());
 
             /* ODZYSKIWANIE PO AWARII — wpięte 2026-08-17 (T-35 AC-2), i do tego dnia było
              * STRUKTURALNIE MARTWE. `recovery::decide()` i `apply()` istniały od T-20, miały

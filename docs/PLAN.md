@@ -146,6 +146,8 @@ w [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md); tutaj tylko kolejnoś
 | **T-94** | Jedna pula na aplikację, budżet biegu, ciężki slot | T-93 | S-2 rozstrzygnięte: `--max-budget-usd` istnieje |
 | **T-95** | Po biegu nie zostają kopie ani gałęzie bez pracy | T-94 | |
 | **T-97** | Codex na równi z Claude'em | T-95 | Kuracja, sieć, narzędzia, tokeny, Lead |
+| **T-159** | Prywatny stan Claude'a zachowuje systemowe logowanie | T-109 | Osobny secure storage namespace bez kopiowania tokenów |
+| **T-150** | CLI działa po uruchomieniu z Docka/Finder | T-97 | Absolutne ścieżki obu vendorów i ludzka odmowa zamiast `os error 2` |
 
 ## 7. Linia cięcia
 

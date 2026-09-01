@@ -61,7 +61,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -402,6 +402,147 @@ pub fn open_private_file(
 /// ścieżki cache'u. Sekrety i prompt do tej listy nie należą i nigdy nie będą: idą stdinem
 /// ([`StdinPlan`]), nigdy w argv i nigdy w pliku tymczasowym.
 pub const PASSTHROUGH: &[&str] = &["PATH", "HOME", "LANG", "TERM", "TMPDIR", "USER"];
+
+/// Dowód, że to program podany do [`Command`] nie istniał w chwili startu procesu.
+///
+/// `ENOENT` ze spawnu jest niejednoznaczne: ten sam kod wraca dla brakującego katalogu
+/// roboczego. Payload powstaje wyłącznie przy hopie `spawn`, kiedy oba fakty są jeszcze
+/// rozdzielne, żeby późniejsza warstwa produktu nie zgadywała po całym łańcuchu błędów.
+#[derive(Debug)]
+pub struct MissingProgram(OsString);
+
+impl fmt::Display for MissingProgram {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "the configured program was not found: {}",
+            self.0.to_string_lossy()
+        )
+    }
+}
+
+impl std::error::Error for MissingProgram {}
+
+/// Zamrożone miejsca, w których aplikacja szuka CLI agentów przed zbudowaniem sterowników.
+#[derive(Clone, Debug)]
+pub struct AgentCliSearch {
+    path: Option<OsString>,
+    install_dirs: Vec<PathBuf>,
+}
+
+impl AgentCliSearch {
+    /// Środowisko procesu aplikacji oraz platformowe katalogi instalacji.
+    #[must_use]
+    pub fn for_process() -> Self {
+        Self {
+            path: std::env::var_os("PATH"),
+            install_dirs: platform_agent_cli_dirs(std::env::var_os("HOME").as_deref()),
+        }
+    }
+
+    /// Jawny świat wyszukiwania używany przez kryterium bez mutowania globalnego środowiska.
+    #[must_use]
+    pub fn from_parts(path: Option<OsString>, install_dirs: Vec<PathBuf>) -> Self {
+        Self { path, install_dirs }
+    }
+
+    /// Rozwiązuje nazwę CLI do pliku, który sterownik uruchomi bez pomocy powłoki.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> PathBuf {
+        let from_path = self
+            .path
+            .as_deref()
+            .into_iter()
+            .flat_map(std::env::split_paths);
+        for directory in from_path.chain(self.install_dirs.iter().cloned()) {
+            let candidate = absolute_candidate(directory.join(name));
+            if is_executable_file(&candidate) {
+                return candidate;
+            }
+        }
+        // Goła nazwa zachowuje zwykłą semantykę `Command` dla instalacji, których jeszcze nie
+        // znamy. Nieudany spawn jest potem tłumaczony na zdanie o konkretnym CLI w żywej drodze
+        // Run; wymyślona absolutna ścieżka byłaby fałszywą diagnostyką.
+        PathBuf::from(name)
+    }
+
+    /// Ten sam świat wyszukiwania dla gołej nazwy, która zostaje po braku znanego kandydata.
+    ///
+    /// Fabryka zamraża go razem ze ścieżką binarki. Inaczej wstrzyknięty search rozstrzygałby
+    /// ścieżki absolutne, ale fallback wracałby przy spawnie do środowiska procesu aplikacji.
+    pub(crate) fn child_path(&self) -> Option<OsString> {
+        let mut directories = self
+            .path
+            .as_deref()
+            .into_iter()
+            .flat_map(std::env::split_paths)
+            .collect::<Vec<_>>();
+        directories.extend(self.install_dirs.iter().cloned());
+        std::env::join_paths(directories).ok()
+    }
+}
+
+/// Katalogi, których `LaunchServices` nie dodaje do środowiska aplikacji GUI.
+///
+/// Kod platformowy stoi wyłącznie w supervisorze (niezmiennik 3). Kolejność jest częścią
+/// polityki: `PATH` wygrywa wcześniej, potem stabilne linki Homebrew, na końcu instalacje
+/// użytkownika. Nie wołamy login shella — jego pliki startowe mogą wykonywać arbitralny kod,
+/// pisać na stdout albo wisieć, zanim człowiek uruchomi pierwszy krok.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_agent_cli_dirs(home: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = home {
+        let home = PathBuf::from(home);
+        dirs.extend([
+            home.join(".local/bin"),
+            home.join(".npm-global/bin"),
+            home.join(".bun/bin"),
+            home.join(".volta/bin"),
+        ]);
+    }
+    dirs
+}
+
+/// Typowe katalogi instalacji CLI poza macOS, bez uruchamiania powłoki logowania.
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub fn platform_agent_cli_dirs(home: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    home.into_iter()
+        .map(PathBuf::from)
+        .flat_map(|home| {
+            [
+                home.join(".local/bin"),
+                home.join(".npm-global/bin"),
+                home.join(".bun/bin"),
+                home.join(".volta/bin"),
+            ]
+        })
+        .collect()
+}
+
+fn absolute_candidate(candidate: PathBuf) -> PathBuf {
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    std::env::current_dir().map_or(candidate.clone(), |cwd| cwd.join(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
 
 /// Okno między SIGTERM a SIGKILL w produkcji.
 ///
@@ -837,6 +978,9 @@ pub fn spawn_with_environment(
     stdin: StdinPlan,
     environment: &[(String, OsString)],
 ) -> io::Result<Supervised> {
+    let program = command.as_std().get_program().to_os_string();
+    let current_dir = command.as_std().get_current_dir().map(Path::to_path_buf);
+
     // Prompt i sekrety wchodzą wyłącznie tędy (niezmiennik 9). `Null` to `/dev/null`, czyli EOF
     // natychmiast — bez tego `claude` czeka ~3 s na każdym kroku [T1 §4.6].
     let (plan, prompt) = match stdin {
@@ -856,12 +1000,36 @@ pub fn spawn_with_environment(
             command.env(name, value);
         }
     }
+    // Aplikacja z Docka nie ma katalogów Homebrew ani instalacji użytkownika w `PATH`, ale
+    // samo CLI uruchamia kolejne programy (np. `node`). Zachowujemy kolejność odziedziczoną
+    // od aplikacji i dopinamy te same platformowe miejsca, których używa odkrywanie CLI.
+    let mut child_path = std::env::var_os("PATH")
+        .as_deref()
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .collect::<Vec<_>>();
+    child_path.extend(platform_agent_cli_dirs(std::env::var_os("HOME").as_deref()));
+    let child_path = std::env::join_paths(child_path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    command.env("PATH", child_path);
     for (name, value) in environment {
         command.env(name, value);
     }
 
     let mut wrapped = into_own_group(command);
-    let mut child: Box<dyn ChildWrapper> = wrapped.spawn()?;
+    let mut child: Box<dyn ChildWrapper> = match wrapped.spawn() {
+        Ok(child) => child,
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && current_dir.as_deref().is_none_or(Path::is_dir) =>
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                MissingProgram(program),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
 
     let Some(pid) = child.id() else {
         return Err(io::Error::other(

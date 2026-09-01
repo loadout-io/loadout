@@ -1,90 +1,130 @@
-# Loadout
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="112" height="112" alt="Loadout icon">
+</p>
 
-Aplikacja desktopowa na macOS, w której **układasz graf agentów kodujących i go uruchamiasz**.
-Definiujesz agenta raz (vendor, model, uprawnienia), przeciągasz go na płótno, łączysz w workflow,
-naciskasz `Run` — i widzisz kurowany strumień tego, co się dzieje, zamiast czterech okien terminala.
-Zastępuje Superset, Warpa i ręcznie sklejone harnessy.
+<h1 align="center">Loadout</h1>
 
-Poprzednie podejście (poprzedni prototyp, 75 tys. linii Rusta w dwa dni) umarło na złożoność i **nigdy nie
-uruchomiło agentów naprawdę równolegle**. Ta historia jest rozpisana w
-[`docs/research/projects/`](docs/research/projects/) i jest wiążąca jako lista rzeczy, których tu nie
-powtarzamy.
+<p align="center">
+  <strong>Build and run visual workflows for coding agents.</strong><br>
+  Compose Claude Code, Codex, checks, commands, checkpoints, and loops on one canvas — then watch the work happen in one place.
+</p>
 
-## Stos
+<p align="center">
+  <a href="https://github.com/JakubGawr/Loadout/releases/latest"><strong>Download for macOS</strong></a>
+  ·
+  <a href="https://github.com/JakubGawr/Loadout/actions/workflows/ci.yml">CI</a>
+  ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
+</p>
 
-| Warstwa | Co |
+![A ten-step multi-agent research workflow on the Loadout canvas](https://github.com/JakubGawr/Loadout/releases/download/v0.1.0/loadout-release-canvas.png)
+
+## One graph owns the work
+
+Loadout is a native macOS control room for coding agents. Define an agent once, place it on a
+workflow canvas, connect the steps, and run the graph against a project. Execution order,
+parallel branches, fan-in, retries, checkpoints, and handoffs all come from the saved graph — no
+stage is hard-coded into the engine.
+
+Claude Code and Codex are first-class peers. A workflow can mix vendors and models, give every
+agent a different working style and tool set, and keep implementation and review independent.
+
+## What ships in 0.1
+
+- **Visual workflows** — agent steps, local commands, checks, checkpoints, loops, conditional
+  paths, retries, and reusable saved graphs.
+- **Real parallel execution** — independent branches overlap in time instead of taking turns
+  behind a single worker.
+- **A live Run screen** — agent activity, durable history, questions, spawned commands, output,
+  diagnostics, and spend stay together.
+- **Reusable agents** — choose the vendor, model, reasoning depth, timeout, file access, tools,
+  connections, and skills for each role.
+- **Project-scoped skills and memory** — curate instructions and useful notes on disk, then see
+  which context was actually used by a run.
+- **Triggers and recovery** — schedule workflows and recover interrupted work without inventing a
+  second execution engine.
+- **Evidence you can inspect** — run receipts, full attachments, handoffs, death proofs, and a
+  diagnostic bundle remain available after the terminal output is gone.
+
+![A local command started from the Run screen remains visible and inspectable](https://github.com/JakubGawr/Loadout/releases/download/v0.1.0/loadout-release-running-demo.png)
+
+## Built to fail honestly
+
+Loadout treats orchestration failures as product failures, not terminal noise:
+
+- overlapping write scopes are refused before the first process starts;
+- cancellation terminates the whole process group and verifies that it is dead;
+- timeouts travel through the same supervised shutdown path;
+- prompts and secrets go through stdin, never command-line arguments;
+- child environments are rebuilt from an explicit allowlist;
+- unknown vendor events are recorded and ignored instead of crashing the run;
+- a green exit code without proof that tests ran is not accepted as a green check;
+- files are the source of truth, while SQLite remains a rebuildable index.
+
+## Install
+
+Loadout 0.1 is currently packaged for Apple Silicon Macs.
+
+1. Download [`Loadout_0.1.0_aarch64.dmg`](https://github.com/JakubGawr/Loadout/releases/download/v0.1.0/Loadout_0.1.0_aarch64.dmg).
+2. Open the DMG and drag Loadout to Applications.
+3. Launch it normally — the app and DMG are signed with Apple Developer ID, notarized, and
+   stapled.
+4. Install and authenticate at least one supported agent CLI: Claude Code or Codex.
+
+DMG SHA-256:
+
+```text
+29a29e02e0adb30971e1b29225b2c435f4ee9bd38506a3b1b69037d18f9b8e10
+```
+
+See the [v0.1.0 release](https://github.com/JakubGawr/Loadout/releases/tag/v0.1.0) for the full
+release notes and verification receipt.
+
+## Run from source
+
+Requirements: macOS, Node.js with npm, and the Rust toolchain pinned by
+[`rust-toolchain.toml`](rust-toolchain.toml).
+
+```bash
+npm install
+cargo fetch
+npm run app
+```
+
+Use `npm run dev` when you only need the browser frontend without the Tauri backend.
+
+## Verification
+
+[`scripts/ci.sh`](scripts/ci.sh) is the single source of truth for the repository gate. GitHub
+Actions calls the same script instead of maintaining a second list of checks.
+
+```bash
+bash scripts/ci.sh          # complete Rust + web gate
+bash scripts/ci.sh rust     # formatting, clippy, tests, dependency policy, build
+bash scripts/ci.sh web      # formatting, types, browser integration tests, vocabulary, build
+```
+
+The v0.1.0 artifact is bound to commit
+[`88b004124bb36dbc5d0d37e5d353ba1c2dbf10f6`](https://github.com/JakubGawr/Loadout/commit/88b004124bb36dbc5d0d37e5d353ba1c2dbf10f6),
+whose [full CI gate passed](https://github.com/JakubGawr/Loadout/actions/runs/33073026820).
+
+## Repository guide
+
+| Path | Purpose |
 |---|---|
-| Silnik i procesy | Rust 1.96 (edycja 2024), tokio, `process-wrap` na grupy procesów |
-| Powłoka desktopowa | Tauri 2 (WKWebView), bez pluginów `shell` i `fs` — procesy odpala Rust |
-| Stan na dysku | pliki jako prawda, SQLite (`rusqlite`) wyłącznie jako indeks |
-| Interfejs | React 19 + Vite 8 + Tailwind 4 na własnych tokenach, `@xyflow/react` na graf |
-| Testy | `cargo test` i Vitest w bramce; Playwright jest zainstalowany, ale jeszcze nie wpięty |
-| Vendorzy agentów | Claude Code **i** Codex, oba pierwszej kategorii (decyzja D3) |
+| [`src/`](src/) | React interface: Run, Workflows, Agents, Skills, Memory, and Triggers |
+| [`src-tauri/src/engine/`](src-tauri/src/engine/) | graph execution, scheduling, drivers, supervision, recovery, and evidence |
+| [`src-tauri/src/store/`](src-tauri/src/store/) | file-backed state and the rebuildable SQLite index |
+| [`e2e/`](e2e/) | browser-level interaction and visible-behavior checks |
+| [`checks/`](checks/) | deterministic repository checks discovered by the gate |
+| [`harness/`](harness/) | task-contract runner, review, bounded repair, and receipts |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | current system shape and invariants |
+| [`docs/DECISIONS-LOCKED.md`](docs/DECISIONS-LOCKED.md) | owner decisions that constrain the implementation |
+| [`docs/STATUS.md`](docs/STATUS.md) | chronological build and task record |
 
-## Uruchomienie
+## Current status
 
-```bash
-npm install && cargo fetch     # raz, po sklonowaniu
-
-npm run app                    # aplikacja (Tauri dev)
-npm run dev                    # sam frontend w przeglądarce, bez Rusta
-```
-
-## Co znaczy „zielone"
-
-[`scripts/ci.sh`](scripts/ci.sh) jest **jedynym** źródłem prawdy o tym, co znaczy „zielone".
-Uruchamia się lokalnie i wydaje ten sam werdykt, co CI:
-
-```bash
-bash scripts/ci.sh             # full == rust ∪ web
-bash scripts/ci.sh rust        # fmt, clippy --all-targets, testy, cargo deny, build
-bash scripts/ci.sh web         # prettier, tsc, vitest, vite build, słownictwo
-```
-
-Kody wyjścia są te same w całym harnessie: `0` przeszło · `1` sprawdzenie padło ·
-`2` **my** jesteśmy źle skonfigurowani (brak narzędzia, brak zależności) · `3` przerwane.
-Nigdy nie mieszamy `1` z `2`.
-
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) tylko to opakowuje — nie wymienia ani jednego
-sprawdzenia, bo dwie listy się rozjeżdżają. Ma jedno agregujące sprawdzenie wymagane do merge'a.
-[`deny.toml`](deny.toml) trzyma politykę łańcucha dostaw: licencje permisywne, copyleft świadomie
-poza listą, wildcardy zabronione.
-
-## Pętla pracy
-
-```bash
-./worktree.sh <ID>             # własna kopia repo i własna gałąź; wypisuje ścieżkę
-./verify.sh before             # DOWIEDŹ, że kryteria są czerwone, zanim cokolwiek napiszesz
-./verify.sh quick              # ~20 s, w pętli
-./verify.sh full               # przed oddaniem
-./review.sh codex              # druga opinia, inny vendor, tylko do odczytu
-./repair.sh                    # dokładnie jedna runda poprawek
-./integrate.sh <gałąź>         # jedna gałąź naraz, pełna bramka po każdej
-```
-
-Albo cały graf naraz: `./ship-task.sh <ID> --agent claude --reviewer codex`.
-
-Trzy rzeczy w tej pętli są nienegocjowalne i opisuje je [`AGENTS.md`](AGENTS.md) §2: `before` musi być
-czerwone **z właściwego powodu**, recenzent nie może niczego zatwierdzić ani zablokować, a rund
-poprawek jest dokładnie jedna. Bramka to [`harness/gate.py`](harness/gate.py); pojedyncze sprawdzenia
-leżą w [`checks/`](checks/), a nazwa pliku steruje tym, w którym poziomie się pojawiają.
-
-## Mapa dokumentów
-
-| Plik | Co w nim jest |
-|---|---|
-| [`AGENTS.md`](AGENTS.md) | **karta pracy** — 26 ponumerowanych reguł wiążących; czytasz to pierwsze |
-| [`docs/DECISIONS-LOCKED.md`](docs/DECISIONS-LOCKED.md) | decyzje człowieka; wygrywają z kartą |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | kształt systemu, maszyna stanów, sufit gęstości |
-| [`docs/design/DESIGN.md`](docs/design/DESIGN.md) | tokeny i komponenty; `src/styles/theme.css` jest jego lustrem |
-| [`docs/research/projects/00-SYNTHESIS.md`](docs/research/projects/00-SYNTHESIS.md) | co dziedziczymy po trzech poprzednich repo, i czego nie |
-| [`docs/research/topics/`](docs/research/topics/) | osiem raportów tematycznych (T1 sterowniki agentów … T8 powłoka desktopowa) |
-| `tasks/<ID>.md` | zadania; bramka parsuje z nich wyłącznie `## AC-n` i `check:` (katalog jest jeszcze pusty) |
-
-## Stan repo
-
-Szkielet i harness stoją; **kodu produkcyjnego nie ma jeszcze ani w Ruście, ani w Reakcie** — poza
-tokenami motywu w [`src/styles/theme.css`](src/styles/theme.css). Każde sprawdzenie zachowuje się na
-tym pustym drzewie uczciwie: mówi jednym zdaniem, że nie ma czego sprawdzać, i przechodzi. Warunek
-pominięcia jest zawsze czysto plikowy („nie istnieje ani jeden plik tego typu"), więc pierwszy plik
-źródłowy włącza sprawdzenie z powrotem — bez niczyjej decyzji i bez edycji skryptu.
+Phase 7 is complete and v0.1.0 is released. The repository contains the production Rust engine,
+Tauri desktop shell, React interface, both agent drivers, recovery and supervision paths, browser
+interaction coverage, and the full task harness. This README describes the shipped tree rather
+than the original project skeleton.
