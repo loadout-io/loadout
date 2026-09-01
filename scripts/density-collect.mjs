@@ -96,6 +96,63 @@ function serveDist() {
 function stubTauri() {
   const host = globalThis;
   const ONE_WORKSPACE = [{ id: '/density/scene', name: 'Density scene', folder: '/density/scene' }];
+
+  /* JEDEN AGENT I JEDEN WORKFLOW SA CZESCIA SCENY Z DOKLADNIE TEGO SAMEGO POWODU, CO WORKSPACE
+   * WYZEJ (2026-09-01). Kiedy pisano ten plik, pusta biblioteka dawala ekran biegu z pustymi
+   * listami — czyli widok pracy. Od `b107bc1` pusta biblioteka daje EKRAN PIERWSZEGO STARTU:
+   * powitanie, sciezke „0 of 3 done" i galerie gotowych agentow. Zmierzone tego dnia, obie sceny:
+   *
+   *     pusta biblioteka   textElements = 82   (powitanie na ekranie)
+   *     jeden agent + jeden workflow   patrz `dist/density-snapshot.json`
+   *
+   * Reguła tego pliku jest juz zapisana wyzej i brzmi: sufit z §7 mowi o widoku, w ktorym
+   * czlowiek PRACUJE, a nie o ekranie pierwszego startu. Powitanie jest tym drugim — stoi
+   * dopoki nie ma ani jednego agenta i znika po pierwszym. Mierzenie go pod sufitem widoku
+   * pracy jest ta sama pomylka, ktora ten plik juz raz naprawil przy zaproszeniu do folderu;
+   * roznica jest taka, ze wtedy chodzilo o `chromePixels`, a dzis o `textElements`.
+   *
+   * ZMYSLONE JEST TYLKO TYLE, ILE TRZEBA, ZEBY SCENA BYLA WIDOKIEM PRACY: jeden agent bez
+   * historii i jeden workflow o jednym kroku. Zaden bieg, zadna notatka, zadna umiejetnosc
+   * i zaden skill nie jest udawany — reszta `list_*` dalej oddaje pusta liste. */
+  const ONE_AGENT = [
+    {
+      kind: 'healthy',
+      value: {
+        schema: 1,
+        id: 'density-agent',
+        name: 'Builder',
+        summary: 'Writes the change',
+        color: 'green',
+        instructions: 'Make the smallest change that works.',
+        runsWith: 'claude',
+        model: 'sonnet',
+        thinking: 'balanced',
+        fileAccess: 'edit-in-folder',
+        giveUpAfterMinutes: 45,
+        tools: 'all',
+        reachesTheWeb: false,
+        skills: [],
+        connections: [],
+        writeResultsTo: '',
+      },
+    },
+  ];
+  const ONE_WORKFLOW = [
+    {
+      kind: 'healthy',
+      value: {
+        path: 'density-scene.json',
+        place: 'library',
+        workflow: {
+          schema: 1,
+          id: 'density-scene',
+          name: 'Ship a feature',
+          steps: [{ kind: 'agent', id: 's1', name: 'Build', agent: 'density-agent' }],
+          links: [],
+        },
+      },
+    },
+  ];
   host.__TAURI_INTERNALS__ = {
     transformCallback: (callback) => {
       const id = Math.floor(Math.random() * 1e9);
@@ -107,8 +164,12 @@ function stubTauri() {
       Promise.resolve(
         command === 'list_workspaces'
           ? ONE_WORKSPACE
-          : command.startsWith('list_')
-            ? []
+          : command === 'list_agents'
+            ? ONE_AGENT
+            : command === 'list_workflows'
+              ? ONE_WORKFLOW
+              : command.startsWith('list_')
+                ? []
             : command === 'new_id'
               ? 'id-0'
               : null,

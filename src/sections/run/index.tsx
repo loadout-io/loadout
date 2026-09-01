@@ -518,7 +518,7 @@ function WhichWorkflow({ choices, nextUp }: WorkflowChooserProps): ReactElement 
         onClick={() => {
           setOpen((was) => !was);
         }}
-        className="-ml-2 flex max-w-full cursor-pointer items-center gap-2 truncate rounded-md border-0 bg-transparent py-1 pr-2 pl-2 font-ui text-title text-ink outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent-edge"
+        className="-ml-2 flex max-w-[560px] cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent py-1 pr-2 pl-2 font-ui text-title text-ink outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent-edge"
       >
         <span className="truncate">{nextUp.name}</span>
         <svg

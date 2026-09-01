@@ -344,3 +344,38 @@ describe('the agent form asks seven things, and everything else is behind a name
     ).toBe(false);
   });
 });
+
+/* TRZECIA WADA TEJ SAMEJ RODZINY, i dlatego dostaje wlasne kryterium.
+ *
+ * Ekran Agents padl w tym repo trzy razy z tego samego powodu: pole przyszlo Z PLIKU NA DYSKU
+ * w ksztalcie, ktorego typ nie dopuszcza, a kod czytal je bez oslony. Najpierw `instructions`
+ * (`.replace` na `undefined`), potem `model` (`.trim`), a 2026-09-01 przy robieniu zrzutow do
+ * README — `runsWith`. Za kazdym razem granica bledu robila z sekcji pusty prostokat, czyli
+ * ekran, ktory dla czlowieka wyglada na „nic tu nie ma", a naprawde sie wywrocil.
+ *
+ * `runsWith` jest inny niz tamte dwa i dlatego nie lapie go naprawa granicy w `io.ts`: klucz JEST
+ * obecny, tylko jego WARTOSC nie nalezy do zbioru, ktory ta wersja zna. `MODELS` jest
+ * `Record<Vendor, …>`, wiec TypeScript uwaza odczyt za pewny — a plik zapisany przez starsza
+ * wersje albo poprawiony recznie daje `undefined`.
+ *
+ * Kryterium nie pyta o `?? []`, tylko o to, co widzi czlowiek: czy formularz w ogole sie narysowal
+ * i czy dalej nazywa role, o ktora chodzi. Naprawa przez inne wyrazenie ma je spelniac tak samo. */
+describe('an agent whose vendor this version does not know still reaches the screen', () => {
+  it('draws the form instead of taking the section down with it', () => {
+    const fromAnOlderFile = { ...FORGE, runsWith: 'some-other-cli' } as unknown as Agent;
+
+    const markup = markupOf(fromAnOlderFile);
+
+    expect(
+      markup,
+      'the form rendered nothing for an agent whose vendor this version does not know. On disk ' +
+        'that is one saved file; on screen it took the whole Agents section down behind the ' +
+        'error boundary, and a person reads that as an empty library rather than a crash.',
+    ).not.toBe('');
+    expect(
+      markup,
+      'the form drew something, but not this role: an agent that survives the render and loses ' +
+        'its own name is the same loss, one step later.',
+    ).toContain(FORGE.name);
+  });
+});

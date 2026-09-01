@@ -208,7 +208,16 @@ export function RunHead({
             [`WhichWorkflow`] w `../index.tsx`; ten plik dostaje kontrolkę gotową i tylko ją
             wstawia. Kiedy nie ma czego wybierać — bieg IDZIE i nazwy nie da się już zmienić —
             zostaje sam napis. */}
-        <h1 data-run-title className="mt-2 truncate text-title text-ink" title={headline.title}>
+        {/* BEZ `truncate` NA NAGLOWKU — naprawa z 2026-09-01, zgloszenie: „teraz wcale wybor
+            nie dziala i ucina tekst".
+            `truncate` to `overflow:hidden` plus `text-overflow:ellipsis` plus `white-space:nowrap`,
+            a odkad tytul JEST kontrolka wyboru, to `overflow:hidden` robilo DWIE szkody naraz:
+            ucinalo nazwe („Deep rease…") mimo wolnego miejsca w pasie ORAZ przycinalo rozwinieta
+            liste, ktora stoi `absolute` wewnatrz tego naglowka — czyli wybor otwieral sie
+            i nie bylo go widac. Jeden zapis, dwa objawy.
+            Skracaniem zajmuje sie dzis sama kontrolka (`WhichWorkflow`), bo to ona zna swoja
+            szerokosc; naglowek ma jej tylko nie przycinac. */}
+        <h1 data-run-title className="mt-2 text-title text-ink" title={headline.title}>
           {chooser ?? headline.title}
         </h1>
 

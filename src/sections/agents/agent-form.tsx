@@ -244,7 +244,14 @@ export function AgentForm({
 
   /* Model spoza listy jest DOZWOLONY i o tym się mówi — patrz komentarz przy `MODELS`. */
   const typedModel = value.model.trim();
-  const ownModel = typedModel !== '' && !MODELS[value.runsWith].includes(typedModel);
+  /* `?? []` — TRZECIA WADA TEJ SAMEJ RODZINY, znaleziona 2026-09-01 przy robieniu zrzutow
+       do README. `MODELS` jest `Record<Vendor, …>`, wiec TypeScript uwaza ten odczyt za pewny —
+       ale `runsWith` przychodzi Z PLIKU NA DYSKU i nie ma obowiazku byc jednym z dwoch vendorow,
+       ktore ta wersja zna. Plik zapisany przez starsza wersje albo poprawiony recznie daje
+       `undefined`, a `.includes` na nim przewracalo CALY ekran Agents — tak samo jak wczesniej
+       zrobily to `instructions` i `model`. Pusta lista mowi tu prawde: nie znamy modeli tego
+       vendora, wiec kazdy wpisany model jest „spoza listy". */
+  const ownModel = typedModel !== '' && !(MODELS[value.runsWith] ?? []).includes(typedModel);
 
   /* Tylko kiedy człowiek o sieć POPROSIŁ: zdanie odbierające coś, czego nikt nie chciał,
    * jest szumem, a szum uczy przewijać wzrokiem każdą uwagę w tym formularzu. */
