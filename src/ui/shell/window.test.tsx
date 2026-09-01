@@ -190,7 +190,7 @@ describe('the window opens with clean chrome and the dev address is the one we s
     expect(
       occurrences(markup, 'data-chrome'),
       'exactly one navigation metaphor. A second one settles the density ceiling after the ' +
-        'fact, which is how poprzedni prototyp reached 149 px of chrome on every screen',
+        'fact, which is how the earlier prototype reached 149 px of chrome on every screen',
     ).toBe(1);
     /* 2026-08-17 — ta asercja mierzyła `TITLEBAR_HEIGHT <= 96` i była ZIELONA przy 138 px
      * realnego chrome, bo mierzyła jeden pasek z trzech: karty (34) i pasek loadoutu (56) też

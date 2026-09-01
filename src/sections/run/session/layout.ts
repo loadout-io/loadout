@@ -13,7 +13,7 @@
  * i z przekazań, a deklaracja agenta ma dokładnie jedno miejsce: transkrypt, jako linia
  * `note` podpisana `agent`.
  *
- * Cicha porażka numer dwa, drobniejsza i częstsza: wiersz zastępczy. poprzedni prototyp renderował
+ * Cicha porażka numer dwa, drobniejsza i częstsza: wiersz zastępczy. Poprzedni prototyp renderował
  * `SPEND: not reported` i wiersz z niczym w środku wyglądał dokładnie tak samo jak wiersz
  * z liczbą. Wiersz, który nie ma wartości, po prostu nie istnieje; sekcja bez wierszy mówi
  * to jednym zdaniem po angielsku.

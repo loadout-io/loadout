@@ -105,7 +105,7 @@ describe('a line of the stream says who did it and what it left behind', () => {
     expect(
       tokensIn(forgeRow).filter((name) => STATUS.includes(name)),
       'a state colour reached the line of an agent. Identity is never state [DESIGN §3]: the ' +
-        'reference poprzedni prototyp gave the agent Forge exactly the hex that meant "waiting on you" ' +
+        'reference the earlier prototype gave the agent Forge exactly the hex that meant "waiting on you" ' +
         'on the tile next to it, and after that nobody trusted any colour on the screen.',
     ).toEqual([]);
     expect(forgeRow, 'the name of the agent is on the line as text, too').toContain(FORGE);

@@ -275,7 +275,7 @@ describe('invoke-args.sh compares invoke() keys against the signatures in ipc.rs
    * z ktorego harness wie, ze ten check istnieje i kiedy go odpalic, a `checks_are_declared`
    * w `scripts/ci.sh` pilnuje rozjazdu W OBIE STRONY. */
   it('case f: harness/checks.json declares invoke-args, or nothing would run it at all', () => {
-    const cfg = JSON.parse(slurp(join(REPO, '.loadout', 'h', 'checks.json')));
+    const cfg = JSON.parse(slurp(join(REPO, 'harness', 'checks.json')));
     const commands = [
       ...Object.entries(cfg.checks ?? {}),
       ...Object.entries(cfg.manual_only ?? {}),

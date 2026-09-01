@@ -22,7 +22,7 @@
 # Sufit gęstości z docs/ARCHITECTURE.md §7, egzekwowany zamiast zadeklarowanego.
 #
 # Niezmiennik 18: sufit jest MIERZONY, nie oceniany okiem, a zapadka może tylko maleć.
-# poprzedni prototyp ustawił swój próg po fakcie i zamarzł na 29 regionach przy limicie 12 — 2,4×
+# Poprzedni prototyp ustawił swój próg po fakcie i zamarzł na 29 regionach przy limicie 12 — 2,4×
 # wartości docelowej `[03 §4.1]`. Zapadka ustawiona po fakcie jest zawsze ustawiona tam,
 # gdzie akurat jesteś.
 #
@@ -36,7 +36,7 @@
 #
 # Zlanie `0 (nie ma czego)` z `2 (nie dało się)` jest awarią, która wygląda jak sukces
 # i utrzymuje się latami: bramka melduje zielono na maszynie, na której nic nie policzono.
-# poprzedni prototyp opublikował dokładnie to — "czysty przebieg axe", który nie zmierzył niczego.
+# Poprzedni prototyp opublikował dokładnie to — "czysty przebieg axe", który nie zmierzył niczego.
 #
 # NIEZMIENNIK 19: kod wyjścia to nie dowód. Każde zielone wyjście niżej wypisuje, CO zostało
 # zmierzone i ILE tego było. `bash checks/quick-density.sh; echo $?` z zerem nie znaczy nic.
@@ -211,7 +211,7 @@ if (verdict.verdict === 'over') {
     );
   }
   process.stderr.write('detail: this one does not enter the product. The limit is not the\n');
-  process.stderr.write('detail: thing to negotiate — poprzedni prototyp raised its own to 2.4x and\n');
+  process.stderr.write('detail: thing to negotiate — the earlier prototype raised its own to 2.4x and\n');
   process.stderr.write('detail: ended with 149 px of chrome on every screen [03 §4.1].\n');
   process.exit(1);
 }

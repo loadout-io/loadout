@@ -2,7 +2,7 @@
  *
  * JEDEN pasek na BIEG (niezmiennik 13). „Bieg czeka na odnowienie limitu" to jeden fakt, więc
  * ma jedno żywe miejsce na ekranie: nie jeden pasek na krok i nie dodatkowo kropka przy każdym
- * agencie. poprzedni prototyp pokazywał stan połączenia w sześciu miejscach.
+ * agencie. Poprzedni prototyp pokazywał stan połączenia w sześciu miejscach.
  *
  * Czysta funkcja stanu na markup, bez własnego stanu i bez `invoke()`. Strefa czasowa wchodzi
  * propem z wartością domyślną, żeby dało się ją przypiąć bez ustawiania zmiennej środowiskowej

@@ -12,7 +12,7 @@ tylko odwołania do tokenów zdefiniowanych tutaj. Agent, który dodaje komponen
 **Widok pracy nie przyrasta. Aktualizuje się w miejscu.**
 
 Zwykły terminal dopisuje na dół w nieskończoność. Po dziesięciu minutach pracy czterech agentów
-masz ścianę tekstu, w której nie widać, co się dzieje teraz. Poprzednia wersja (poprzedni prototyp) dokładnie
+masz ścianę tekstu, w której nie widać, co się dzieje teraz. Poprzedni prototyp dokładnie
 tak działała i to jest główna przyczyna, dla której jej UI był przytłaczający.
 
 Loadout dzieli widok na dwie strefy o różnej fizyce:

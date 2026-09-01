@@ -161,7 +161,7 @@ describe('the nav spends none of the chrome budget', () => {
         String(ceiling) +
         '. Tabs (34) and the loadout bar (56) already claim 90 of it, so the ' +
         'six that are left are the whole negotiating room. §7 says another bar means removing ' +
-        'one, never raising the limit — poprzedni prototyp raised its own to 2,4× and ended at 149 px.',
+        'one, never raising the limit — the earlier prototype raised its own to 2,4× and ended at 149 px.',
     ).toBeLessThanOrEqual(ceiling);
   });
 

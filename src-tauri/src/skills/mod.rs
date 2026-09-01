@@ -153,7 +153,7 @@ pub struct BundledFile {
 ///
 /// Kanoniczną postacią jest sama umiejętność spec-strict, nie osobna reprezentacja pośrednia:
 /// warstwa tłumaczeń bez drugiego konsumenta to dokładnie ta złożoność, na którą umarł
-/// poprzedni prototyp.
+/// Poprzedni prototyp.
 ///
 /// Pochodzenie i stan przeglądu (`Origin`, `TrustState`) **nie są** polami tej struktury i nie
 /// trafiają do `metadata` — mieszkają w sidecarze aplikacji [T5 §4.1]. Dzięki temu plik, który

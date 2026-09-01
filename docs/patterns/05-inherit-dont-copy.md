@@ -44,7 +44,7 @@ Znacznik liczy klucze w `overrides`. Kliknięcie pokazuje które i jakie były d
 
 ## Czego nie robimy
 
-**Nie hashujemy konfiguracji agenta do tożsamości planu.** poprzedni prototyp tak robił
+**Nie hashujemy konfiguracji agenta do tożsamości planu.** Poprzedni prototyp tak robił
 (`AgentConfigurationRevision` wciągał digest każdej umiejętności do digestu planu) —
 skutek był taki, że edycja umiejętności unieważniała zatwierdzony plan.
 To jest aktywnie wrogie, kiedy ktoś iteruje nad umiejętnościami.

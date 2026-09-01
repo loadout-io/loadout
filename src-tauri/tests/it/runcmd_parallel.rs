@@ -2,7 +2,7 @@
 //! **nakładanie się w czasie**.
 //!
 //! Niezmiennik 11 łamie się cicho nie w planiście, tylko tutaj: liczba z UI jest wczytywana,
-//! logowana i nigdzie nie podawana, a semafor dostaje `1`. poprzedni prototyp miał `max_parallel`, miał
+//! logowana i nigdzie nie podawana, a semafor dostaje `1`. Poprzedni prototyp miał `max_parallel`, miał
 //! zielone testy i **nigdy nie uruchomił dwóch agentów naraz** — cztery „równoległe" pasy
 //! przebiegły w rozłącznych oknach po ~0,5 s, a każdy test przechodził, bo wszyscy agenci
 //! rzeczywiście skończyli (`docs/handoff.md:144-165`).
@@ -168,7 +168,7 @@ async fn three_at_once_means_exactly_three_share_a_window() -> Result<(), Box<dy
         3,
         "the request asked for three at once and the driver saw {peak} overlapping windows out \
          of {STEPS} steps. More than three means the number never reached the semaphore; fewer \
-         means \"how many at once\" is only dispatch width — the defect that let poprzedni prototyp \
+         means \"how many at once\" is only dispatch width — the defect that let the earlier prototype \
          report parallelism it never had (invariant 11). The windows were {:?}",
         spans(&run.windows)
     );

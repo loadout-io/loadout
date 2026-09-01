@@ -175,7 +175,7 @@ describe('the workspace tabs are mounted, and clicking one really moves the open
       markup.includes('data-section-switch'),
       'the work screen carries a section switch of its own. "What am I doing" is answered by ' +
         'the side nav and nowhere else; a second answer inside the screen is a third axis, and ' +
-        'a third axis is how poprzedni prototyp got four ways to open one thing.',
+        'a third axis is how the earlier prototype got four ways to open one thing.',
     ).toBe(false);
 
     const sections = SECTIONS.map((entry) => entry.label);

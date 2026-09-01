@@ -15,7 +15,7 @@ Faza 1 kończy się jednym zdaniem, które albo jest prawdą, albo cały plan tr
 > a ja widzę czysty widok, który się nie przewija sam.**
 
 To jest szkielet chodzący. Dopóki go nie ma, nie budujemy ani edytora workflow, ani pamięci,
-ani umiejętności. poprzedni prototyp zbudował wszystko naokoło i **nigdy nie uruchomił agentów naprawdę
+ani umiejętności. Poprzedni prototyp zbudował wszystko naokoło i **nigdy nie uruchomił agentów naprawdę
 równolegle** (`docs/handoff.md:144-165`: cztery „równoległe" pasy w rozłącznych oknach po ~0,5 s).
 
 ---

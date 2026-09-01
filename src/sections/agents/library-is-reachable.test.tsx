@@ -242,7 +242,7 @@ describe('the identity square is the mockup size and never a state colour', () =
       expect(
         tag(markup, 'data-identity="clay"'),
         'identity is never a state colour: the four saturated ones mean "now", "your turn", ' +
-          '"broken" and "a person did this" (DESIGN §3). The reference poprzedni prototyp gave the agent ' +
+          '"broken" and "a person did this" (DESIGN §3). The reference the earlier prototype gave the agent ' +
           'Forge the exact hex of "needs attention"',
       ).not.toContain(state);
     }

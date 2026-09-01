@@ -1,7 +1,7 @@
 //! AC-1 dla T-02: dwa niezależne kroki zajmują **nachodzące na siebie** okna czasu, a przy
 //! limicie 1 nie zachodzą wcale.
 //!
-//! To jest kryterium, dla którego całe zadanie istnieje. poprzedni prototyp miał `max_parallel`, miał
+//! To jest kryterium, dla którego całe zadanie istnieje. Poprzedni prototyp miał `max_parallel`, miał
 //! zielone testy i **nigdy nie uruchomił dwóch agentów naraz**: `max_parallel` było tylko
 //! szerokością wysyłki — jeden worker, cztery „równoległe" pasy w rozłącznych oknach po ~0,5 s
 //! [raport 01 §7.3]. Żaden test tego nie złapał, bo każdy pytał „czy oba się skończyły",

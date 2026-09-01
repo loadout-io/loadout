@@ -12,7 +12,7 @@ Dokumentacja po polsku. **Interfejs użytkownika po angielsku.** (decyzja D5)
 Aplikacja desktopowa (Rust + Tauri + React, macOS), w której układasz graf agentów kodujących
 i go uruchamiasz. Zastępuje Superset, Warpa i ręcznie klejone harnessy.
 
-Poprzednie podejście (`~/Projects/poprzedni prototyp`, 75 tys. linii Rusta w dwa dni) umarło na złożoność:
+Poprzednie podejście (75 tys. linii Rusta w dwa dni) umarło na złożoność:
 osiem rodzajów „autorytetu", trzy maszyny stanów, cztery migracje schematu w dwudniowym repo,
 i **nigdy nie uruchomiło agentów naprawdę równolegle**. Cała ta historia jest opisana
 w `docs/research/projects/` i jest wiążąca jako lista rzeczy, których nie powtarzamy.
@@ -114,7 +114,7 @@ Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik
    `env_clear()` plus jawna lista przepuszczanych zmiennych.
 10. **`tokio::time::timeout` wokół kroku anuluje zadanie Rusta, nie proces systemowy.**
     Każda ścieżka limitu czasu przechodzi przez eskalację zabijania w supervisorze.
-11. **„Ile naraz" musi znaczyć naraz.** poprzedni prototyp miał `max_parallel`, które było tylko szerokością
+11. **„Ile naraz" musi znaczyć naraz.** Poprzedni prototyp miał `max_parallel`, które było tylko szerokością
     wysyłki: jeden worker, `run_ready(1)`, cztery „równoległe" pasy w rozłącznych oknach po ~0,5 s.
     Równoległość to cała przesłanka tego produktu. Test musi dowodzić nakładania się w czasie.
 12. **Dwa kroki nie mogą pisać po tych samych ścieżkach.** Odmowa najpóźniej przy Starcie, nigdy
@@ -124,14 +124,14 @@ Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik
 
 ### Interfejs
 
-13. **Jeden fakt, jedno miejsce.** Limit żywych regionów na fakt wynosi 1. poprzedni prototyp pokazywał stan
+13. **Jeden fakt, jedno miejsce.** Limit żywych regionów na fakt wynosi 1. Poprzedni prototyp pokazywał stan
     połączenia w sześciu miejscach.
 14. **Zero żargonu w tekście widocznym dla użytkownika.** Wiążąca jest tabela
     `docs/FOUNDATIONS.md` §2.2. Egzekwuje `checks/quick-vocabulary.sh`.
     Enum z drutu (`gate.decision_recorded`) nigdy nie trafia na ekran.
 15. **Kuracja dzieje się w Ruście, w mapowaniu zdarzenie→linia, nie w CSS.** Jeśli „czysty widok"
     da się zepsuć zmianą arkusza stylów, to nie jest czysty widok.
-16. **Kontrolka bez handlera nie wchodzi do repo.** poprzedni prototyp ma trzy martwe przyciski.
+16. **Kontrolka bez handlera nie wchodzi do repo.** Poprzedni prototyp ma trzy martwe przyciski.
 17. **UI nie rysuje relacji, których nie ma w danych.** Żadnych ozdobnych krzywych między
     zakodowanymi na sztywno współrzędnymi.
 18. **Sufit gęstości z `docs/ARCHITECTURE.md` §7 jest mierzony, nie oceniany okiem.** Baseline może tylko maleć.

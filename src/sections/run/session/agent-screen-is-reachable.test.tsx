@@ -177,7 +177,7 @@ describe('one agent has a screen of its own, reachable from the picture of the p
     ).not.toContain('—  ');
     expect(
       words,
-      'and no stand-in for a value we do not have. poprzedni prototyp rendered exactly this and it read ' +
+      'and no stand-in for a value we do not have. Poprzedni prototyp rendered exactly this and it read ' +
         'as data.',
     ).not.toContain('not reported');
   });

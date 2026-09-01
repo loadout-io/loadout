@@ -2,7 +2,7 @@
  *
  * Niezmiennik 18 mówi "baseline może tylko maleć" i łamie się cicho przez zapadkę, która
  * przy KAŻDYM pomiarze zapisuje aktualną wartość: skrypt biegnie, plik się zmienia, nic
- * nigdy nie jest czerwone. poprzedni prototyp ustawił swój próg po fakcie i zamarzł na 29 regionach
+ * nigdy nie jest czerwone. Poprzedni prototyp ustawił swój próg po fakcie i zamarzł na 29 regionach
  * przy limicie 12 — 2,4× wartości docelowej [03 §4.1]. Zapadka ustawiona po fakcie jest
  * zawsze ustawiona tam, gdzie akurat jesteś.
  *

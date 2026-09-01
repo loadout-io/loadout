@@ -60,7 +60,7 @@
  * Która sekcja jest otwarta, jest powiedziane DOKŁADNIE RAZ: przez `aria-current` na
  * przełączniku (niezmiennik 13) — w obu trybach tym samym atrybutem. Wygląd aktywnego przycisku
  * bierze się z tego samego atrybutu: wariant `aria-[current=true]:` czyta DOM, zamiast trzymać
- * drugą kopię tej samej prawdy w klasie. poprzedni prototyp pokazywał stan połączenia w sześciu miejscach
+ * drugą kopię tej samej prawdy w klasie. Poprzedni prototyp pokazywał stan połączenia w sześciu miejscach
  * naraz [03 §4.4].
  */
 import type { ReactElement } from 'react';

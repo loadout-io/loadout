@@ -457,7 +457,7 @@ plik nad skasowaną kolejką.
 
 Liczby ustalone **przed** pierwszym ekranem. Mierzone skryptem, nie okiem. Baseline może tylko maleć.
 
-| Miara | Limit | poprzedni prototyp dla porównania |
+| Miara | Limit | Poprzedni prototyp dla porównania |
 |---|---|---|
 | Oznaczone regiony na ekranie | **8** | 30 [R03 §4.1] |
 | Piksele chrome nad pierwszą treścią | **96** | 149 |

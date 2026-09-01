@@ -224,7 +224,7 @@ async fn three_copies_of_one_step_share_a_window_and_hand_on_three_answers()
         "the three copies shared {shared:?} of a {TURN:?} turn. \"How many at once\" has to mean \
          at once: copies unrolled into steps that run one after another finish just as well, cost \
          three times as much and give the person nothing they asked for — the defect that let \
-         poprzedni prototyp report a parallelism it never had (invariant 11). The windows were {:?}",
+         the earlier prototype report a parallelism it never had (invariant 11). The windows were {:?}",
         spans(&windows)
     );
 

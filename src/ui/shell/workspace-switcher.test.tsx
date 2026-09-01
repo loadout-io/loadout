@@ -537,7 +537,7 @@ describe('the switcher shows the scope, and an empty one invites', () => {
     ).toBe(1);
     expect(
       occurrences(markup, 'aria-checked="true"'),
-      'exactly one entry says it is the active one (invariant 13). poprzedni prototyp showed the ' +
+      'exactly one entry says it is the active one (invariant 13). the earlier prototype showed the ' +
         'connection state in six places at once.',
     ).toBe(1);
     expect(

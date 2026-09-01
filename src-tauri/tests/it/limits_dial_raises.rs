@@ -2,7 +2,7 @@
 //! agentów w czasie.
 //!
 //! To jest kryterium, którego to zadanie jest bezpośrednią realizacją (niezmiennik 11).
-//! poprzedni prototyp miał `max_parallel`, miał zielone testy i **nigdy nie uruchomił czterech agentów
+//! Poprzedni prototyp miał `max_parallel`, miał zielone testy i **nigdy nie uruchomił czterech agentów
 //! naraz**: liczba była wyłącznie szerokością wysyłki — jeden worker, cztery „równoległe" pasy
 //! w rozłącznych oknach po ~0,5 s (`docs/handoff.md:144-165`). Żaden test tego nie złapał, bo
 //! każdy pytał „czy wszyscy skończyli", a wszyscy skończyli.
@@ -119,7 +119,7 @@ async fn raising_the_dial_mid_run_widens_the_window_agents_share() -> Result<(),
         "after the dial went to {RAISED} exactly that many agents have to occupy one moment in \
          time. This run peaked at {peak}. One means the dial changed a number and nothing else — \
          a limiter that counts correctly but is asked for a slot by a single worker is the \
-         poprzedni prototyp defect verbatim (invariant 11). More than {RAISED} means the raise handed out \
+         the earlier prototype defect verbatim (invariant 11). More than {RAISED} means the raise handed out \
          places nobody bounded. Windows: {spans:?}"
     );
 

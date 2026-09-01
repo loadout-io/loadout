@@ -4,7 +4,7 @@
 //! nie przechodzi przez nasze funkcje — migracja, skrypt naprawczy, przyszły daemon, `sqlite3`
 //! z terminala — i historia daje się przepisać, a **wszystkie nasze testy dalej są zielone**,
 //! bo testowały nasze API. Wzorzec, który to naprawia, ma trzy linie na wyzwalacz i przychodzi
-//! z poprzedniego prototypu (`the earlier prototype's store/src/schema.rs:163-190`) [FOUNDATIONS §3].
+//! z poprzedniego prototypu [FOUNDATIONS §3].
 //!
 //! **Słaba wersja tego kryterium to próba `UPDATE` przez nasze API, która dostaje odmowę
 //! z Rusta.** Przechodzi na bazie bez ani jednego wyzwalacza. Rozróżnia je połączenie otwarte

@@ -91,7 +91,7 @@ describe('the tab bar when an agent is queued for a free slot', () => {
       occurrences(barMarkup(2, 2, LOADOUT.name), WAITING),
       'with both slots taken and a third agent queued the bar has to say so, and say it once. ' +
         'How many slots are in use is one fact, so it gets exactly one live place on screen ' +
-        '(invariant 13); poprzedni prototyp showed its connection state in six',
+        '(invariant 13); the earlier prototype showed its connection state in six',
     ).toBe(1);
   });
 

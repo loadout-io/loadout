@@ -3,7 +3,7 @@
  *
  * `expect(html).toContain('agents-screen')` przechodzi na powłoce, która trzyma wszystkie
  * ekrany naraz i chowa resztę CSS-em — czyli na „always-mounted route stack", przez który
- * poprzedni prototyp renderował 142 elementy niosące tekst przy suficie 60 [raport 03 §4.1]. Odróżniają
+ * Poprzedni prototyp renderował 142 elementy niosące tekst przy suficie 60 [raport 03 §4.1]. Odróżniają
  * je dopiero trzy rzeczy naraz: PEŁNA mapa wszystkich ekranów (dopóki pozostałe nie mają
  * czego pokazać, „pozostałe" nic nie znaczy), policzenie ich DO ZERA, i zakaz `hidden`
  * oraz `display:none` — bo dokładnie tymi dwiema rzeczami chowa się zamontowane ekrany
@@ -112,7 +112,7 @@ describe('the section that has a screen shows it, and the others are not in the 
             other +
             ' screen has to be absent from the tree, not merely invisible. Every screen kept ' +
             'alive and all but one hidden is the shape that put 142 text-carrying elements on ' +
-            'one poprzedni prototyp screen',
+            'one the earlier prototype screen',
         ).toBe(0);
       }
     });

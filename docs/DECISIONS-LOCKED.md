@@ -7,7 +7,7 @@ Research może dodać szczegóły implementacyjne, ale nie zmienia kierunku.
 
 ## D1 — Wygląd: Loadout Quiet Glass
 
-*Zrewidowane 2026-08-19. Pierwotna D1 — paleta mint-na-czerni z `redesign poprzedniego prototypu.dc.html`,
+*Zrewidowane 2026-08-19. Pierwotna D1 — paleta mint-na-czerni z makiety poprzedniego prototypu,
 `border-radius: 2px` wszędzie, krój Inter — jest **cofnięta w całości**. Powody, wszystkie
 zmierzone: mint na czerni jest statystyczną średnią tego, co generują modele, i nie mówi nic
 o tym produkcie; dwupikselowy narożnik jest antytezą macOS, o który prosiła ta sama decyzja;
@@ -45,9 +45,9 @@ Akcent: `#6e76ff`. „Teraz": `#ff7a5c`. Pełna specyfikacja: `docs/design/DESIG
 
 ## D2 — Nowe repo, czysty start
 
-`~/Projects/Loadout` od zera. poprzedni prototyp jest **źródłem pomysłów, nie kodu**.
+`~/Projects/Loadout` od zera. Poprzedni prototyp jest **źródłem pomysłów, nie kodu**.
 
-Konsekwencja, której trzeba pilnować: kiedy w planie pojawia się „przenieśmy X z poprzedni prototyp",
+Konsekwencja, której trzeba pilnować: kiedy w planie pojawia się „przenieśmy X z poprzedniego prototypu",
 to znaczy „przeczytajmy jak X działa i napiszmy X od nowa, mniejsze". Kopiuj-wklej crate'a jest zakazany.
 
 Powód: poprzednia wersja umarła na złożoność. Zaciąganie crate'ów zaciąga ontologię, która tę złożoność stworzyła.

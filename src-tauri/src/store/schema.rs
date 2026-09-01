@@ -21,8 +21,8 @@
 //! - **Wyzwalacze reject-update i reject-delete na `events`**, każdy z `RAISE(ABORT, …)`
 //!   niosącym [`APPEND_ONLY_REFUSAL`]. To one, a nie Rust, czynią „append-only" prawdą dla
 //!   połączenia, które omija nasze API: migracji, skryptu naprawczego, przyszłego daemona,
-//!   `sqlite3` z terminala (AC-2). Wzorzec przychodzi z poprzedniego prototypu,
-//!   `the earlier prototype's store/src/schema.rs:163-190` — trzy linie na wyzwalacz.
+//!   `sqlite3` z terminala (AC-2). Wzorzec przychodzi z poprzedniego prototypu:
+//!   — trzy linie na wyzwalacz.
 //! - **Indeksy z [T7 §5.4]**, w tym **częściowy** `WHERE level = 'headline'`: szyna czyta
 //!   wyłącznie nagłówki, więc indeks ma zawierać wyłącznie nagłówki.
 //!

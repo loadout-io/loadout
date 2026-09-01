@@ -151,7 +151,7 @@ describe('the plan is on the run screen', () => {
 
     expect(
       colourIn(tile),
-      'the square is who does the work and never how it went [DESIGN §3]. poprzedni prototyp painted ' +
+      'the square is who does the work and never how it went [DESIGN §3]. the earlier prototype painted ' +
         'its worker Forge with the exact colour that meant "needs your decision" one card ' +
         'below, and that is the only way this rule ever breaks: not by losing the colour, ' +
         'but by reusing it.',

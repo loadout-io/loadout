@@ -131,7 +131,7 @@ describe('the one sentence on a card says who said it', () => {
     const three: readonly Who[] = ['agent', 'loadout', 'you'];
     expect(
       [...AUTHORITIES].sort(),
-      'three names for who said it, in the whole application, not eight. poprzedni prototyp grew ' +
+      'three names for who said it, in the whole application, not eight. the earlier prototype grew ' +
         'eight and then had to explain them; this set is closed so a ninth cannot be added ' +
         'without this line going red',
     ).toEqual([...three].sort());

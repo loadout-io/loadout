@@ -3,7 +3,7 @@
  *
  * To jest najbardziej podstępna z czterech cichych awarii tego zadania: metryka, której
  * kolektor nie zmierzył, zapisana jako `0` i porównana z sufitem 8. Zielono. Zawsze.
- * poprzedni prototyp opublikował "czysty przebieg axe", który nie zmierzył niczego [03 §4.1] —
+ * Poprzedni prototyp opublikował "czysty przebieg axe", który nie zmierzył niczego [03 §4.1] —
  * i to jest dokładnie ta różnica, którą zgubił.
  *
  * Dwie warstwy, bo są to dwie różne pomyłki. SĘDZIA musi odróżnić brak klucza od klucza

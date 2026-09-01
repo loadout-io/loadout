@@ -94,7 +94,7 @@ describe('the screen for one agent stays under the density ceiling', () => {
     ).toBeLessThanOrEqual(DENSITY_BASELINE);
     expect(
       countRegions(sections),
-      'and eight named regions on a screen, which poprzedni prototyp answered with thirty',
+      'and eight named regions on a screen, which the earlier prototype answered with thirty',
     ).toBeLessThanOrEqual(REGION_CEILING);
   });
 

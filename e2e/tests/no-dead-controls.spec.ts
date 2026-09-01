@@ -1,6 +1,6 @@
 /* AC-3 dla T-29: żaden widoczny przycisk na żadnym z pięciu ekranów nie jest martwy.
  *
- * Niezmiennik 16 mówi, że kontrolka bez handlera nie wchodzi do repo. poprzedni prototyp ma trzy martwe
+ * Niezmiennik 16 mówi, że kontrolka bez handlera nie wchodzi do repo. Poprzedni prototyp ma trzy martwe
  * przyciski i wszystkie trzy stoją w miejscach, do których nikt nie kliknął DRUGI raz — dlatego
  * ten plik nie wybiera przycisku reprezentatywnego. Klika KAŻDY widoczny `<button>` w `<main>`,
  * każdy na świeżo otwartej aplikacji, i pyta o jedno: czy cokolwiek się stało.
@@ -274,7 +274,7 @@ describe('no button on any screen is dead', () => {
                 id +
                 ' screen is dead: after clicking it the document is unchanged, nothing went to ' +
                 'Rust and no dialog opened. A control with no handler does not go into this repo ' +
-                '(invariant 16) — poprzedni prototyp has three of them, and all three are in places nobody ' +
+                '(invariant 16) — the earlier prototype has three of them, and all three are in places nobody ' +
                 'clicked twice. Either wire it up, or write it into EXCUSED with a reason.',
             ).toBe(true);
           } finally {

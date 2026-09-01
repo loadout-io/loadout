@@ -92,7 +92,7 @@ describe('one section of six is on screen and the other five are not in the tree
             other.id +
             ' has to be absent from the tree, not merely invisible. Every section mounted and ' +
             'all but one hidden is the shape that put 142 text-carrying elements on one ' +
-            'poprzedni prototyp screen',
+            'the earlier prototype screen',
         ).toBe(0);
       }
     });
@@ -116,7 +116,7 @@ describe('one section of six is on screen and the other five are not in the tree
       expect(
         occurrences(markup, 'aria-current="true"'),
         'one fact, one place (invariant 13): exactly one element says which section is open. ' +
-          'poprzedni prototyp showed the connection state in six places at once',
+          'the earlier prototype showed the connection state in six places at once',
       ).toBe(1);
       expect(
         occurrences(markup, 'aria-current="page"'),

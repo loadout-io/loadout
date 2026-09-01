@@ -3,7 +3,7 @@
  * `expect(blocks[2].state).toBe('now')` przechodzi dla implementacji z jednym kursorem
  * `currentIndex` — a taka implementacja jest poprawna dokładnie do pierwszego biegu, w którym
  * dwa kroki idą równolegle. Równoległość jest całą przesłanką tego produktu (niezmiennik 11):
- * poprzedni prototyp miał `max_parallel`, które było tylko szerokością wysyłki, i cztery „równoległe"
+ * Poprzedni prototyp miał `max_parallel`, które było tylko szerokością wysyłki, i cztery „równoległe"
  * pasy lądowały w rozłącznych oknach po pół sekundy.
  *
  * Trzy rzeczy rozróżniają dobry pasek od ładnego:

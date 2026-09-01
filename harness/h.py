@@ -30,8 +30,8 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-HDIR = ROOT / ".loadout" / "h"
+ROOT = Path(__file__).resolve().parents[1]
+HDIR = ROOT / "harness"
 CFG = json.loads((HDIR / "checks.json").read_text(encoding="utf-8"))
 STATE_DIR = ROOT / ".git" / "h"
 MAX_FIX_ROUNDS = 2
