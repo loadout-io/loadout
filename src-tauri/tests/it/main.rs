@@ -108,6 +108,7 @@ mod driver_codex_finish;
 mod driver_codex_resume;
 mod driver_codex_stream;
 mod driver_codex_unknown;
+mod effort_is_not_sent_to_a_cli_that_refuses_it;
 mod engine_cancel_outcome;
 mod engine_concurrency_limit;
 mod engine_cone_reason;

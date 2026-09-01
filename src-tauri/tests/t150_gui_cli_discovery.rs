@@ -268,3 +268,83 @@ fn macos_search_includes_homebrew() {
         "the GUI search omitted the standard Apple Silicon Homebrew bin directory"
     );
 }
+
+/// Katalog, w ktory instaluje sie SAM Claude Code, musi byc przeszukiwany.
+///
+/// Zmierzone 2026-09-01 na maszynie wlasciciela: terminal pokazywal `claude 2.1.246`, a bieg
+/// przewracal sie na `error: unknown option --effort` — czyli aplikacja odpalala INNA, starsza
+/// kopie. Lista z `platform_agent_cli_dirs` zna Homebrew, `~/.local/bin`, npm, bun i volte,
+/// ale nie zna `~/.claude/local`, czyli domyslnego celu instalatora vendora. Kiedy nowa wersja
+/// lezy wylacznie tam, a stara gdziekolwiek indziej na liscie, wygrywa stara i KAZDY krok
+/// tego vendora pada.
+///
+/// Kryterium pyta o katalog, a nie o kolejnosc: kolejnosc juz sadzi
+/// `path_candidate_wins_over_the_same_install_dir_name`.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_search_includes_the_vendor_own_installer_directory() {
+    let home = std::ffi::OsString::from("/Users/probe");
+    let dirs = platform_agent_cli_dirs(Some(&home));
+    assert!(
+        dirs.iter()
+            .any(|one| one == Path::new("/Users/probe/.claude/local")),
+        "the GUI search omitted ~/.claude/local, where Claude Code's own installer puts the \
+         binary. A newer install living only there loses to any older copy on the list, and \
+         every step of that vendor dies on a flag the older build does not know. Searched: {dirs:?}"
+    );
+}
+
+/// Menedzery wersji Node'a sa czwarta droga, ktora CLI trafia na dysk.
+///
+/// `nvm`, `fnm` i `asdf` nie kladzia binarki w zadnym z katalogow z listy — kazdy trzyma ja pod
+/// wersja node'a. Aplikacja GUI nie dostaje `PATH` powloki, wiec bez tych sciezek nie widzi
+/// instalacji, ktora dla czlowieka w terminalu jest jedyna, jaka ma.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_search_reaches_installs_made_by_a_node_version_manager() {
+    let home = std::ffi::OsString::from("/Users/probe");
+    let dirs = platform_agent_cli_dirs(Some(&home));
+    for expected in [
+        "/Users/probe/.nvm/versions/node",
+        "/Users/probe/.fnm",
+        "/Users/probe/.asdf/shims",
+    ] {
+        assert!(
+            dirs.iter().any(|one| one.starts_with(expected)),
+            "the GUI search never reaches {expected}, so a CLI installed by that version \
+             manager is invisible to a run started from the Dock. Searched: {dirs:?}"
+        );
+    }
+}
+
+/// Wersje node'a ida od najnowszej, liczone jak LICZBY, nie jak napisy.
+///
+/// `v10.0.0` posortowane tekstem stoi PRZED `v9.0.0`, wiec lista sortowana leksykograficznie
+/// oddalaby najstarszego node'a jako pierwszego — a bieg wzialby CLI sprzed roku, majac nowsze
+/// tuz obok. To jest dokladnie ta klasa wady, ktora 2026-09-01 dala `unknown option --effort`:
+/// aplikacja odpalala inna binarke niz ta, ktora czlowiek widzial w terminalu.
+#[cfg(target_os = "macos")]
+#[test]
+fn newer_node_versions_come_before_older_ones() -> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let versions = home.path().join(".nvm/versions/node");
+    for name in ["v9.11.2", "v10.0.0", "v22.11.0", "v20.9.0"] {
+        std::fs::create_dir_all(versions.join(name).join("bin"))?;
+    }
+
+    let dirs = platform_agent_cli_dirs(Some(home.path().as_os_str()));
+    let order: Vec<String> = dirs
+        .iter()
+        .filter_map(|one| one.strip_prefix(&versions).ok())
+        .filter_map(|one| one.components().next())
+        .map(|one| one.as_os_str().to_string_lossy().into_owned())
+        .collect();
+
+    assert_eq!(
+        order,
+        vec!["v22.11.0", "v20.9.0", "v10.0.0", "v9.11.2"],
+        "node versions were not ordered newest first. Sorted as text, v10 lands before v9 and \
+         the run picks a CLI a year old while a current one sits beside it."
+    );
+    Ok(())
+}

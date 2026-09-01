@@ -1273,13 +1273,67 @@ pub fn platform_agent_cli_dirs(home: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
     if let Some(home) = home {
         let home = PathBuf::from(home);
         dirs.extend([
+            // Cel WŁASNEGO instalatora Claude Code. Stoi przed menedżerami wersji, bo kiedy
+            // vendor instaluje sam siebie, to jest ta kopia, którą człowiek właśnie zaktualizował.
+            home.join(".claude/local"),
             home.join(".local/bin"),
             home.join(".npm-global/bin"),
             home.join(".bun/bin"),
             home.join(".volta/bin"),
+            home.join(".fnm/aliases/default/bin"),
+            home.join(".asdf/shims"),
         ]);
+        dirs.extend(node_version_manager_dirs(&home));
     }
     dirs
+}
+
+/// Jedna instalacja node'a: rozpoznana wersja (albo jej brak) i katalog `bin`, ktory niesie.
+#[cfg(target_os = "macos")]
+type NodeInstall = (Option<(u64, u64, u64)>, PathBuf);
+
+/// Katalogi `bin` instalacji node'a trzymanych przez `nvm`, od NAJNOWSZEJ wersji.
+///
+/// `nvm` nie kładzie niczego w stałym miejscu: każda wersja node'a ma własne drzewo, a wybór
+/// robi powłoka, której aplikacja GUI nie uruchamia. Bez tego kroku instalacja, która dla
+/// człowieka w terminalu jest jedyną, jaką ma, jest dla biegu niewidzialna.
+///
+/// **Porządek jest numeryczny, nie leksykograficzny.** `v10.0.0` sortowane jako napis stoi przed
+/// `v9.0.0`, więc lista posortowana tekstem oddałaby najstarsze node'y jako pierwsze — i bieg
+/// wziąłby CLI sprzed roku, mając nowsze obok. Wersji nieparsowalnych nie zgadujemy: idą na
+/// koniec, bo nie umiemy powiedzieć, gdzie ich miejsce.
+#[cfg(target_os = "macos")]
+fn node_version_manager_dirs(home: &Path) -> Vec<PathBuf> {
+    let root = home.join(".nvm/versions/node");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return vec![root];
+    };
+    let mut found: Vec<NodeInstall> = entries
+        .flatten()
+        .map(|entry| {
+            (
+                parse_node_version(&entry.file_name()),
+                entry.path().join("bin"),
+            )
+        })
+        .collect();
+    found.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    let mut dirs: Vec<PathBuf> = found.into_iter().map(|(_, path)| path).collect();
+    if dirs.is_empty() {
+        dirs.push(root);
+    }
+    dirs
+}
+
+/// `v22.11.0` → `(22, 11, 0)`. Cokolwiek innego → `None`, czyli „nie wiem, gdzie to postawić".
+#[cfg(target_os = "macos")]
+fn parse_node_version(name: &std::ffi::OsStr) -> Option<(u64, u64, u64)> {
+    let text = name.to_str()?.strip_prefix('v')?;
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
 }
 
 /// Typowe katalogi instalacji CLI poza macOS, bez uruchamiania powłoki logowania.
