@@ -123,7 +123,7 @@ async fn six_agents_build_a_todo_list() -> Result<(), Box<dyn Error>> {
          The validator said: {blockers:?}"
     );
     // `None`: ta biblioteka jest świeża, więc plik ma tu powstać, a nie kogokolwiek nadpisać.
-    let path = save_workflow_inner(&bench.home, "todo-list.json", &workflow, None)?.path;
+    let path = save_workflow_inner(&bench.home, None, "todo-list.json", &workflow, None)?.path;
     println!("== workflow: {}", path.display());
 
     // ── (c) BIEG, na PRAWDZIWYM sterowniku ──────────────────────────────────────────────────

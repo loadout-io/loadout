@@ -356,10 +356,6 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 
 // ── STAN, KTÓRY SKORUPY ROZPAKOWUJĄ ────────────────────────────────────────────────────────
 
-/// Katalog biblioteki, w którym leżą pliki workflow. Ta sama nazwa, co
-/// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
-const WORKFLOWS_DIR: &str = "workflows";
-
 /// Co powiedzieć KAŻDEMU drugiemu startowi, kiedy bieg w TYM folderze jeszcze nie zszedł.
 ///
 /// Jedno zdanie na obie drogi (`/ask` i bieg z pliku), bo pytanie jest jedno: „czy coś już
@@ -1350,17 +1346,28 @@ impl AppState {
         }
     }
 
-    /// Nazwa pliku z okna → żądanie biegu.
+    /// Nazwa pliku z okna → żądanie biegu w tym jednym projekcie.
     ///
     /// Zapora i jej cena stoją przy [`run_request`]; tutaj zostaje samo podanie biblioteki,
     /// bo katalog domowy jest jedyną rzeczą, którą stan do tej decyzji wnosi.
+    ///
+    /// 2026-08-29 (T-164) — PROJEKT PRZYJEŻDŻA ARGUMENTEM, nie z pola [`Self::project`].
+    /// Bieg ma szukać pliku dokładnie tam, gdzie pokazała go lista, a listę zakresuje folder
+    /// wybrany w oknie albo folder zamrożony w triggerze — nie ten, pod którym wstała aplikacja.
     fn request(
         &self,
+        project: &Path,
         file_name: &str,
         how_many_at_once: usize,
         task: Option<String>,
     ) -> Result<RunRequest, String> {
-        run_request(self.home.as_path(), file_name, how_many_at_once, task)
+        run_request(
+            self.home.as_path(),
+            project,
+            file_name,
+            how_many_at_once,
+            task,
+        )
     }
 }
 
@@ -1437,18 +1444,19 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Nazwa pliku z okna → żądanie biegu, liczone wyłącznie z katalogu biblioteki.
+/// Nazwa pliku z okna → żądanie biegu, liczone tą samą regułą, którą liczy lista.
 ///
-/// 2026-08-17 — ta zapora jest **drugą kopią** `commands::workflows::in_library`, i jest
-/// tu świadomie, z nazwaną ceną. Nazwa przychodzi z webviewa, więc jest wejściem, któremu
-/// nie ufamy (T3 §5.2): `Path::join("../../.ssh/config")` wychodzi poza bibliotekę bez
-/// jednego ostrzeżenia, a `join("/etc/x")` odrzuca cały prefiks i zwraca `/etc/x` — czyli
-/// Start uruchamiałby plik wskazany przez okno. Tamta funkcja jest prywatna,
-/// a `src-tauri/src/commands/workflows.rs` nie należy do T-30, więc jedno `pub` w cudzym
-/// pliku jest pytaniem do człowieka, nie cichym dopiskiem (AGENTS.md §7). Reguła
-/// przepisana w adapterze jest tym, przed czym stoi niezmiennik 23 — dlatego stoi tu ten
-/// akapit, a nie sama zapora: dopóki obie kopie żyją, zmiana jednej ma być czerwona
-/// u człowieka, który to czyta.
+/// 2026-08-17 — do 2026-08-29 stała tu **druga kopia** `commands::workflows::in_library`,
+/// świadomie i z nazwaną ceną: tamta funkcja była prywatna, a jej plik nie należał do T-30,
+/// więc jedno `pub` w cudzym pliku było pytaniem do człowieka, nie cichym dopiskiem
+/// (AGENTS.md §7). Komentarz obiecywał wtedy, że kopie znikną w zadaniu, które posiada oba
+/// pliki. T-164 jest tym zadaniem: zapora mieszka wyłącznie
+/// w [`commands::workflows::where_it_lives`], a tutaj zostaje samo złożenie żądania.
+///
+/// Powód, dla którego zapora w ogóle istnieje, jest niezmieniony: nazwa przychodzi z webviewa,
+/// więc jest wejściem, któremu nie ufamy (T3 §5.2). `Path::join("../../.ssh/config")` wychodzi
+/// poza bibliotekę bez jednego ostrzeżenia, a `join("/etc/x")` odrzuca cały prefiks i zwraca
+/// `/etc/x` — czyli Start uruchamiałby plik wskazany przez okno.
 ///
 /// 2026-08-17 — wolna funkcja, a nie ciało metody, z jednego powodu: [`AppState`] niesie
 /// [`Store`] i [`Drivers`], więc test tej zapory przez metodę musiałby otworzyć bazę
@@ -1457,20 +1465,15 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
 /// rzeczą między webviewem a `Command::new` w cudzym katalogu.
 fn run_request(
     home: &Path,
+    project: &Path,
     file_name: &str,
     how_many_at_once: usize,
     task: Option<String>,
 ) -> Result<RunRequest, String> {
-    if Path::new(file_name)
-        .file_name()
-        .is_none_or(|name| name != file_name)
-    {
-        return Err(format!(
-            "{file_name} is not the name of a file in the workflow folder"
-        ));
-    }
+    let placed = commands::workflows::where_it_lives(home, Some(project), file_name)
+        .map_err(|error| error.to_string())?;
     Ok(RunRequest {
-        workflow: home.join(WORKFLOWS_DIR).join(file_name),
+        workflow: placed.path,
         how_many_at_once,
         task,
         // Zwykły bieg to całe workflow i puste wejście: przekazania powstają w nim samym.
@@ -1645,17 +1648,39 @@ pub fn delete_agent(id: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą.
+// ── CZTERY KOMENDY BIBLIOTEKI WORKFLOW ─────────────────────────────────────────────────────
+//
+// 2026-08-29 (T-164) — WSZYSTKIE CZTERY BIORĄ `folder` I `State`, i to jest cała treść tego
+// zadania po tej stronie granicy. Do tego dnia workflow leżały wyłącznie w `~/.loadout/
+// workflows/`, czyli GLOBALNIE: otwierałeś projekt B i czytałeś bibliotekę projektu A. Folder
+// przyjeżdża z `activeWorkspace()` w oknie i przechodzi przez [`AppState::project_for`] — tę
+// samą, jedyną odpowiedź na pytanie „który to projekt", którą dostaje Start (niezmiennik 13).
+//
+// `async`, choć żadna z nich na nic nie czeka: skorupa synchroniczna biorąca `State` wartością
+// nie przechodzi bramki (`clippy::needless_pass_by_value`), a sugerowana przez clippy pożyczka
+// przewraca kryterium szwu po stronie okna. Ten sam powód i ten sam kształt, co przy
+// [`stop_comparing_copies`].
+
+/// Wszystko, co leży na obu półkach workflow tego workspace'a, każdy plik ze swoją nazwą.
 #[tauri::command]
-pub fn list_workflows() -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
-    commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir())
+pub async fn list_workflows(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
+    let project = state.project_for(folder.as_deref())?;
+    commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir(), Some(&project))
         .map_err(|error| error.to_string())
 }
 
 /// Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z rewizją tych bajtów.
 #[tauri::command]
-pub fn load_workflow(file_name: &str) -> Result<commands::workflows::OpenWorkflow, String> {
-    commands::workflows::load_workflow_inner(&crate::loadout_dir(), file_name)
+pub async fn load_workflow(
+    state: State<'_, AppState>,
+    file_name: &str,
+    folder: Option<String>,
+) -> Result<commands::workflows::OpenWorkflow, String> {
+    let project = state.project_for(folder.as_deref())?;
+    commands::workflows::load_workflow_inner(&crate::loadout_dir(), Some(&project), file_name)
         .map_err(|error| error.to_string())
 }
 
@@ -1664,13 +1689,17 @@ pub fn load_workflow(file_name: &str) -> Result<commands::workflows::OpenWorkflo
 /// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
 /// być". Zapis bez rewizji cofałby cudzą, nowszą pracę i wyglądałby na udany.
 #[tauri::command]
-pub fn save_workflow(
+pub async fn save_workflow(
+    state: State<'_, AppState>,
     file_name: &str,
     workflow: WorkflowFile,
     expected_revision: Option<&str>,
+    folder: Option<String>,
 ) -> Result<String, String> {
+    let project = state.project_for(folder.as_deref())?;
     commands::workflows::save_workflow_inner(
         &crate::loadout_dir(),
+        Some(&project),
         file_name,
         workflow,
         expected_revision,
@@ -1679,10 +1708,15 @@ pub fn save_workflow(
     .map_err(|error| error.to_string())
 }
 
-/// Usuwa plik workflow z katalogu.
+/// Usuwa plik workflow z tej półki, z której go widać.
 #[tauri::command]
-pub fn delete_workflow(file_name: &str) -> Result<(), String> {
-    commands::workflows::delete_workflow_inner(&crate::loadout_dir(), file_name)
+pub async fn delete_workflow(
+    state: State<'_, AppState>,
+    file_name: &str,
+    folder: Option<String>,
+) -> Result<(), String> {
+    let project = state.project_for(folder.as_deref())?;
+    commands::workflows::delete_workflow_inner(&crate::loadout_dir(), Some(&project), file_name)
         .map_err(|error| error.to_string())
 }
 
@@ -2136,10 +2170,10 @@ pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceW
         .map_err(|error| error.to_string())
 }
 
-/// Co Loadout robi domyślnie: dziś jedno pole, czyli kto prowadzi rozmowę.
+/// Co Loadout robi domyślnie: kto prowadzi rozmowę i ile wolno wydać na jeden bieg.
 ///
 /// Katalog bierzemy z `crate::loadout_dir()`, nie ze stanu, i z tego samego powodu, co przy
-/// workspace'ach: ten wybór jest biblioteką użytkownika, a nie stanem żywego biegu. Powód
+/// workspace'ach: te wybory są biblioteką użytkownika, a nie stanem żywego biegu. Powód
 /// i zakres w całości stoją w `commands::settings`.
 #[tauri::command]
 pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
@@ -2147,10 +2181,17 @@ pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje domyślnego lidera i oddaje to, co ma teraz plik.
+/// Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
+///
+/// 2026-08-29 — DWA ARGUMENTY, JEDNO WYWOŁANIE, bo plik jest jeden. Zapis niosący samo wskazanie
+/// lidera nadpisywałby sufit tym, co akurat miało okno, a zapis niosący samą kwotę robiłby to
+/// samo liderowi (`commands::settings::save_settings_inner`).
 #[tauri::command]
-pub fn save_settings(default_lead: &str) -> Result<commands::settings::SettingsWire, String> {
-    commands::settings::save_settings_inner(&crate::loadout_dir(), default_lead)
+pub fn save_settings(
+    default_lead: &str,
+    default_budget_usd: f64,
+) -> Result<commands::settings::SettingsWire, String> {
+    commands::settings::save_settings_inner(&crate::loadout_dir(), default_lead, default_budget_usd)
         .map_err(|error| error.to_string())
 }
 
@@ -2255,9 +2296,9 @@ async fn from_the_window(
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
-    let request = state
-        .request(file_name, how_many_at_once, task)
-        .inspect_err(refused)?;
+    // PROJEKT PRZED ŻĄDANIEM, od 2026-08-29 (T-164). Nazwa pliku nie mówi już, gdzie ten plik
+    // leży: workflow tego projektu przesłania biblioteczny o tej samej nazwie, więc bez folderu
+    // nie ma jak złożyć ścieżki. Kolejność jest tu więc wymuszona, a nie estetyczna.
     let project = if let Some(claim) = claim {
         state
             .triggered_project(folder, claim)
@@ -2265,6 +2306,9 @@ async fn from_the_window(
     } else {
         state.project_for(folder).inspect_err(refused)?
     };
+    let request = state
+        .request(&project, file_name, how_many_at_once, task)
+        .inspect_err(refused)?;
     run_workflow_in_project(
         state,
         &project,
@@ -2375,13 +2419,19 @@ async fn run_workflow_in_project(
     lines: LineSink,
 ) -> Result<(), String> {
     let result = if let Some(claim) = claim {
-        commands::run::run_triggered_workflow_inner(
+        // 2026-08-29 — SUFIT JEDZIE TAKŻE TĄ GAŁĘZIĄ. Do tego dnia okno wysyłało `budget_usd`
+        // przy każdym Starcie, a bieg z dostawy triggera wbijał tu `None` i leciał bez
+        // ograniczenia — czyli dokładnie ten cichy bieg bez sufitu, którego nikt nie zamawiał
+        // i o którym nic nie mówiło. Bieg z triggera zaczyna się bez człowieka przy klawiaturze,
+        // więc jest tym, który najbardziej potrzebuje granicy, a nie tym, który może jej nie mieć.
+        commands::run::run_triggered_workflow_with_budget(
             &state
                 .begin_triggered_run(project, claim)
                 .inspect_err(refused)?,
             request,
             claim,
             lines,
+            budget_usd,
         )
         .await
         .map(|_| ())
@@ -3032,11 +3082,15 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{WORKFLOWS_DIR, run_request};
+    use super::run_request;
 
     /// Katalog biblioteki. Nie istnieje na dysku i istnieć nie musi: `run_request` decyduje
     /// o napisie, nie o pliku — sprawdzanie obecności pliku należy do biegu, który go wczyta.
     const HOME: &str = "/loadout-home";
+
+    /// Folder projektu. Też nie istnieje, i to jest teraz częścią pomiaru: kiedy pliku nie ma
+    /// ani w projekcie, ani w bibliotece, `where_it_lives` mówi „nowy plik w projekcie".
+    const PROJECT: &str = "/loadout-project";
 
     /// To, co z żądania da się porównać: gdzie bieg pójdzie i ile ma robić naraz.
     ///
@@ -3044,8 +3098,14 @@ mod tests {
     /// zamiast `derive` w cudzym pliku stoi tu rozbiór na dwa pola, które ta zapora ustawia.
     fn requested(file_name: &str, how_many_at_once: usize) -> Result<(PathBuf, usize), String> {
         // Bez zadania: ta zapora sądzi NAZWĘ PLIKU, a zadanie z wiersza nie ma na nią wpływu.
-        run_request(Path::new(HOME), file_name, how_many_at_once, None)
-            .map(|request| (request.workflow, request.how_many_at_once))
+        run_request(
+            Path::new(HOME),
+            Path::new(PROJECT),
+            file_name,
+            how_many_at_once,
+            None,
+        )
+        .map(|request| (request.workflow, request.how_many_at_once))
     }
 
     /// `..` w nazwie wychodzi poza bibliotekę i `Path::join` nie powie o tym ani słowa.
@@ -3067,17 +3127,19 @@ mod tests {
         );
     }
 
-    /// Kontrola dodatnia: zwykła nazwa przechodzi i ląduje **w** bibliotece.
+    /// Kontrola dodatnia: zwykła nazwa przechodzi i ląduje **w katalogu tego projektu**.
     ///
     /// Bez tego przypadku obie odmowy wyżej świecą na zielono także dla zapory, która nie
     /// przepuszcza niczego — czyli dla Startu, który nigdy nic nie uruchamia.
+    ///
+    /// 2026-08-29 (T-164) — porównanie zmieniło korzeń i to jest właśnie ta zmiana: nazwa,
+    /// której nie ma na żadnej półce, jest plikiem TEGO workspace'a.
     #[test]
-    fn a_plain_file_name_passes_and_stays_inside_the_library() {
+    fn a_plain_file_name_passes_and_stays_inside_the_open_workspace() {
         assert_eq!(
             requested("nightly-review.yaml", 3),
             Ok((
-                Path::new(HOME)
-                    .join(WORKFLOWS_DIR)
+                crate::commands::workflows::project_workflows(Path::new(PROJECT))
                     .join("nightly-review.yaml"),
                 3
             ))

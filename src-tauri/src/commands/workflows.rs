@@ -18,24 +18,81 @@ use std::path::{Path, PathBuf};
 
 use crate::durable_file::{DurableFilePublisher, PublishError, revision_of};
 use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
-use crate::library::definition::{Definition, Shelf, healthy_only, workflow_problem};
+use crate::library::definition::{Definition, Shelf, workflow_problem};
 use crate::workflow::WorkflowFile;
 use crate::workflow::check::Note;
 use crate::workflow::file::{LoadError, SaveError};
 
-/// Katalog workflow wewnątrz biblioteki: `~/.loadout/workflows/` (`docs/ARCHITECTURE.md` §8).
-const WORKFLOWS_DIR: &str = "workflows";
+/// Nazwa katalogu workflow — **jedyna w tym drzewie** od 2026-08-29 (T-164).
+///
+/// Do tego dnia ten napis stał w trzech plikach (`ipc.rs`, tutaj, `commands/chat.rs`) i każda
+/// kopia niosła komentarz o obowiązku przeszukania całego `src-tauri/src` w dniu zmiany §8.
+/// Trzy źródła jednej prawdy to trzy okazje do rozjazdu, a rozjazd wygląda tu nie na literówkę,
+/// tylko na lidera, który „nie widzi" workflow leżącego na dysku. Pozostałe dwa importują
+/// tę stałą (niezmiennik 23).
+pub const WORKFLOWS_DIR: &str = "workflows";
 
-/// Jedna pozycja listy: nazwa pliku i to, co w nim leży.
+/// Półka, z której przyszedł plik workflow.
+///
+/// # ROZSTRZYGNIĘCIE: DWA KORZENIE, A NIE POLE ZAKRESU W PLIKU (2026-08-29, T-164)
+///
+/// `~/.loadout/workflows/` zostaje **biblioteką** — bajt w bajt tam, gdzie leżą dziś pliki
+/// człowieka. `<folder>/.loadout/workflows/` powstaje jako półka **projektu** i to tam ląduje
+/// każdy nowy workflow. Powód, dla którego to katalog rozstrzyga, a nie pole w JSON-ie:
+///
+/// - Wzorzec z pamięci mówi mniej, niż się wydaje. Notatka trzyma we front-matterze, JAK DALEKO
+///   sięga (`everywhere` / `this-project` / `this-agent`), a KTÓRY to projekt rozstrzyga korzeń:
+///   `commands::memory::list_note_catalog_inner` bierze dwa korzenie. Katalog odpowiada „czyje",
+///   front-matter „jak szeroko". Workflow ma jedną szerokość, więc zostaje sam katalog.
+/// - Pole zakresu w pliku globalnym musiałoby nieść **bezwzględną ścieżkę folderu** wewnątrz
+///   JSON-a, który człowiek commituje i kopiuje między maszynami. Taki napis psuje się cicho
+///   przy pierwszym przeniesieniu projektu.
+/// - Niezmiennik 25 i zdanie „stary Loadout ma je znaleźć" zakazują ruszania plików, które już
+///   leżą w bibliotece. Dwa korzenie ich nie ruszają: zero migracji, zero przepisywania wierszy.
+///   Schematu `SQLite` ta zmiana nie dotyka w ogóle.
+/// - Niezmiennik 4 jest spełniony przez konstrukcję: półka wynika z tego, w którym katalogu leży
+///   plik, więc `loadout.db` dalej wolno skasować.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowPlace {
+    /// `~/.loadout/workflows/` — widzą go **wszystkie** workspace'y.
+    Library,
+    /// `<folder>/.loadout/workflows/` — widzi go wyłącznie ten jeden projekt.
+    Project,
+}
+
+/// Rozstrzygnięta ścieżka pliku razem z półką, na której leży.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placed {
+    pub place: WorkflowPlace,
+    pub path: PathBuf,
+}
+
+/// Katalog workflow w bibliotece człowieka: `~/.loadout/workflows/` (`docs/ARCHITECTURE.md` §8).
+#[must_use]
+pub fn library_workflows(library: &Path) -> PathBuf {
+    library.join(WORKFLOWS_DIR)
+}
+
+/// Katalog workflow jednego projektu: `<folder>/.loadout/workflows/` (§8 tamże).
+#[must_use]
+pub fn project_workflows(project: &Path) -> PathBuf {
+    project.join(".loadout").join(WORKFLOWS_DIR)
+}
+
+/// Jedna pozycja listy: nazwa pliku, półka i to, co w pliku leży.
 ///
 /// Lustro `WorkflowEntry` z `src/sections/workflows/list/store.ts`, pole w pole. `path` to
 /// **sama nazwa pliku**, nigdy pełna ścieżka: katalog rozwiązuje ta warstwa, a front, który
 /// doklejałby go sam, byłby drugim miejscem, w którym mieszka odpowiedź na pytanie „gdzie to
-/// leży" [T3 §8.3].
+/// leży" [T3 §8.3]. `place` jedzie obok, bo nazwa pliku sama nie mówi, ile projektów zniknie
+/// przy Delete.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     /// `ship-a-feature.json` — bez katalogu i bez `~`.
     pub path: String,
+    /// Z której półki ten plik przyszedł.
+    pub place: WorkflowPlace,
     pub workflow: WorkflowFile,
 }
 
@@ -61,14 +118,31 @@ pub struct Saved {
     pub revision: String,
 }
 
-/// `home/workflows/<file_name>`, albo odmowa, kiedy `file_name` nie jest nazwą pliku.
+/// Gdzie leży — albo gdzie ma powstać — plik o tej nazwie. **Jedyna reguła rozwiązania nazwy.**
+///
+/// Trzy zdania i ani jednego więcej:
+///
+/// 1. plik projektu wygrywa z plikiem biblioteki o tej samej nazwie — otwarty projekt jest
+///    bliżej człowieka niż wspólna półka;
+/// 2. plik, którego w projekcie nie ma, a jest w bibliotece, przyjeżdża z biblioteki — i to
+///    jest zdanie, na którym stoi „workflow zapisany przed tą zmianą nadal się otwiera";
+/// 3. nazwa nieznana nigdzie jest **nowym plikiem projektu** (a biblioteki, kiedy żaden projekt
+///    nie jest otwarty).
+///
+/// Dzięki temu `file_name` zostaje JEDNYM kluczem: ani trigger, ani powtórzenie kroku, ani
+/// historia nie potrzebują adresu — o półce wie wyłącznie lista i ekran.
 ///
 /// Nazwa przychodzi z okna, więc jest wejściem, któremu nie ufamy (T3 §5.2). `Path::join`
 /// z `../../.ssh/config` wychodzi poza bibliotekę bez jednego ostrzeżenia, a `join("/etc/x")`
 /// **odrzuca cały prefiks** i zwraca `/etc/x` — czyli komenda „zapisz workflow" pisałaby
 /// dokładnie tam, gdzie każe jej webview. Zapora jest tutaj, bo to jedyna warstwa, która wie,
-/// że ten napis ma być nazwą, a nie ścieżką.
-fn in_library(home: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
+/// że ten napis ma być nazwą, a nie ścieżką — i od 2026-08-29 jest jej JEDYNA kopia w drzewie
+/// (druga stała w `ipc::run_request` z komentarzem czekającym na zadanie posiadające oba pliki).
+pub fn where_it_lives(
+    library: &Path,
+    project: Option<&Path>,
+    file_name: &str,
+) -> Result<Placed, io::Error> {
     // `Path::file_name` zamiast ręcznego szukania separatorów: reguła „czym jest nazwa pliku"
     // należy do systemu plików, a nie do naszej listy zakazanych znaków. Nazwa, która nie jest
     // swoją własną nazwą pliku, niesie katalog — i o to właśnie pytamy.
@@ -81,7 +155,33 @@ fn in_library(home: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
             format!("{file_name} is not the name of a file in the workflow folder"),
         ));
     }
-    Ok(home.join(WORKFLOWS_DIR).join(file_name))
+
+    let mine = project.map(|project| project_workflows(project).join(file_name));
+    if let Some(path) = mine.clone().filter(|path| path.is_file()) {
+        return Ok(Placed {
+            place: WorkflowPlace::Project,
+            path,
+        });
+    }
+    let shared = library_workflows(library).join(file_name);
+    if shared.is_file() {
+        return Ok(Placed {
+            place: WorkflowPlace::Library,
+            path: shared,
+        });
+    }
+    // Nowy plik ląduje w projekcie, kiedy jakiś jest otwarty. Bez otwartego projektu zostaje
+    // biblioteka — i to jest jedyny stan, w którym Loadout dalej pisze tam, gdzie pisał zawsze.
+    Ok(match mine {
+        Some(path) => Placed {
+            place: WorkflowPlace::Project,
+            path,
+        },
+        None => Placed {
+            place: WorkflowPlace::Library,
+            path: shared,
+        },
+    })
 }
 
 /// Zapisuje workflow pod `file_name` w bibliotece i oddaje ścieżkę, pod którą wylądował.
@@ -99,11 +199,18 @@ fn in_library(home: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
 /// być", `Some(rewizja)` — „nadpisz dokładnie te bajty, które przeczytałem".
 pub fn save_workflow_inner(
     home: &Path,
+    project: Option<&Path>,
     file_name: &str,
     workflow: impl Borrow<WorkflowFile>,
     expected: Option<&str>,
 ) -> Result<Saved, SaveError> {
-    let path = in_library(home, file_name).map_err(SaveError::Unwritable)?;
+    // WRACA TAM, SKĄD PRZYSZEDŁ. Zapis pliku bibliotecznego, który forkowałby go do projektu,
+    // zostawiałby człowieka z dwiema kopiami jednego workflow i bez ani jednego zdania o tym
+    // (2026-08-29, T-164) — a jedna z nich byłaby od tej chwili niewidoczna dla sąsiedniego
+    // projektu, choć człowiek właśnie ją poprawiał.
+    let path = where_it_lives(home, project, file_name)
+        .map_err(SaveError::Unwritable)?
+        .path;
     // Katalog powstaje tutaj, bo `file::save` (T-12) pisze plik i nie zakłada katalogów —
     // celowo, bo tam jego brak jest awarią, a tutaj jest normalnym stanem biblioteki, w której
     // nikt jeszcze niczego nie zapisał.
@@ -117,10 +224,20 @@ pub fn save_workflow_inner(
     Ok(Saved { path, revision })
 }
 
-/// Wczytuje workflow spod `file_name` w bibliotece razem z jego rewizją.
-pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<OpenWorkflow, LoadError> {
-    let path = in_library(home, file_name).map_err(LoadError::Unreadable)?;
-    let dir = home.join(WORKFLOWS_DIR);
+/// Wczytuje workflow spod `file_name` — z projektu, a kiedy go tam nie ma, z biblioteki.
+pub fn load_workflow_inner(
+    home: &Path,
+    project: Option<&Path>,
+    file_name: &str,
+) -> Result<OpenWorkflow, LoadError> {
+    let path = where_it_lives(home, project, file_name)
+        .map_err(LoadError::Unreadable)?
+        .path;
+    // Katalog bierzemy Z ROZSTRZYGNIĘTEJ ŚCIEŻKI, a nie składamy drugi raz: publikator ma
+    // odzyskiwać dokładnie ten katalog, z którego zaraz czytamy bajty.
+    let dir = path
+        .parent()
+        .map_or_else(|| home.to_path_buf(), Path::to_path_buf);
     let publisher = DurableFilePublisher::new(&dir);
     let mut loaded = None;
     publisher
@@ -144,21 +261,48 @@ pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<OpenWorkflow,
     })?
 }
 
-/// Zdrowe workflowy dla Rustowych callerów, którzy nie renderują problemów biblioteki.
-pub fn list_workflows_inner(home: &Path) -> Result<Vec<WorkflowEntry>, LoadError> {
-    Ok(healthy_only(list_workflow_definitions_inner(home)?))
-}
-
-/// Wszystko, co leży w katalogu workflow. Błąd jednego pliku jest jednym wpisem problemu;
-/// błąd całego kontrolowanego katalogu nadal odmawia operacji.
+/// Katalog obu półek: najpierw projekt, potem to, czego projekt nie przesłonił.
+///
+/// Ten sam kształt, co `commands::memory::list_note_catalog_inner`: jeden czytnik, dwa korzenie,
+/// półka dopięta dopiero w adapterze katalogu. Nazwa zajęta przez projekt **nie wchodzi**
+/// z biblioteki drugi raz — inaczej lista pokazywałaby dwa wiersze nad jednym kluczem, a Start
+/// uruchamiałby ten, który wybrało `where_it_lives`, czyli nie zawsze ten, w który kliknięto.
+///
+/// Błąd jednego pliku jest jednym wpisem problemu; błąd całego kontrolowanego katalogu nadal
+/// odmawia operacji.
 pub fn list_workflow_definitions_inner(
     home: &Path,
+    project: Option<&Path>,
 ) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
-    let dir = home.join(WORKFLOWS_DIR);
-    let publisher = DurableFilePublisher::new(&dir);
+    let mut catalog = match project {
+        Some(project) => shelf(&project_workflows(project), WorkflowPlace::Project)?,
+        None => Vec::new(),
+    };
+    let taken: std::collections::BTreeSet<String> = catalog.iter().map(named).collect();
+    catalog.extend(
+        shelf(&library_workflows(home), WorkflowPlace::Library)?
+            .into_iter()
+            // APFS jest domyślnie NIEwrażliwy na wielkość liter, więc `Ship.JSON` i `ship.json`
+            // są tam jednym plikiem i muszą być jednym wierszem także tutaj.
+            .filter(|one| !taken.contains(&named(one).to_lowercase())),
+    );
+    Ok(catalog)
+}
+
+/// Nazwa pliku tej pozycji, małymi literami — klucz przesłaniania.
+fn named(definition: &Definition<WorkflowEntry>) -> String {
+    match definition {
+        Definition::Healthy { value, .. } => value.path.to_lowercase(),
+        Definition::DefinitionProblem { file_name, .. } => file_name.to_lowercase(),
+    }
+}
+
+/// Jeden korzeń, cały jego katalog.
+fn shelf(dir: &Path, place: WorkflowPlace) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
+    let publisher = DurableFilePublisher::new(dir);
     let mut listed = None;
     match publisher.recover_with(|root| {
-        listed = Some(list_workflow_definitions_from_root(root, &dir));
+        listed = Some(list_workflow_definitions_from_root(root, dir, place));
         Ok(())
     }) {
         Ok(()) => listed.ok_or_else(|| {
@@ -166,8 +310,10 @@ pub fn list_workflow_definitions_inner(
                 "the recovered workflow library was not listed",
             ))
         })?,
-        // Biblioteka bez katalogu pozostaje legalnie pusta. Recovery rozróżnia ten przypadek
-        // od symlinka lub pliku podstawionego pod nazwę kontrolowanego katalogu.
+        // Półka bez katalogu pozostaje legalnie pusta — a od 2026-08-29 jest to stan CODZIENNY,
+        // nie brzegowy: projekt, w którym nikt jeszcze nie zapisał workflow, nie ma tego katalogu
+        // wcale. Recovery rozróżnia ten przypadek od symlinka lub pliku podstawionego pod nazwę
+        // kontrolowanego katalogu.
         Err(PublishError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(LoadError::Unreadable(error.into_io())),
     }
@@ -176,6 +322,7 @@ pub fn list_workflow_definitions_inner(
 fn list_workflow_definitions_from_root(
     root: &PublicationRoot,
     dir: &Path,
+    place: WorkflowPlace,
 ) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
     // Wyłącznie regularne `.json`, więc symlink oraz `.json.bak` nie stają się definicją.
     let mut names = root
@@ -212,6 +359,7 @@ fn list_workflow_definitions_from_root(
                     revision: revision_of(&bytes),
                     value: WorkflowEntry {
                         path: name.to_owned(),
+                        place,
                         workflow,
                     },
                 },
@@ -232,9 +380,13 @@ fn list_workflow_definitions_from_root(
     Ok(out)
 }
 
-/// Usuwa plik workflow z biblioteki.
-pub fn delete_workflow_inner(home: &Path, file_name: &str) -> Result<(), io::Error> {
-    std::fs::remove_file(in_library(home, file_name)?)
+/// Usuwa plik workflow z tej półki, z której go widać.
+pub fn delete_workflow_inner(
+    home: &Path,
+    project: Option<&Path>,
+    file_name: &str,
+) -> Result<(), io::Error> {
+    std::fs::remove_file(where_it_lives(home, project, file_name)?.path)
 }
 
 /// Uwagi walidatora o tym workflow — **te same**, które padają przy zapisie i przed Startem.

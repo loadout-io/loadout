@@ -48,6 +48,15 @@ export interface WorkflowEntry {
    * i nic za to nie kupuje.
    */
   path: string;
+  /**
+   * Z której półki ten plik pochodzi — lustro `commands::workflows::WorkflowPlace`.
+   *
+   * 2026-08-29 (T-164) — NIESIONE NA EKRAN, nie tylko przez drut. Biblioteka jest jedna dla
+   * wszystkich projektów, a katalog projektu należy do jednego. Kafelek, który tego nie mówi,
+   * zostawia człowieka z Delete, po którym plik znika także w projekcie obok — i nic go o tym
+   * nie uprzedziło.
+   */
+  place: 'library' | 'project';
   workflow: WorkflowFile;
 }
 
@@ -257,7 +266,13 @@ export function createWorkflowListStore(io: WorkflowListIo) {
          * katalogu sprzed dwóch `await` jest tylko wnioskiem; ODMOWĄ jest dopiero Rust, który
          * publikuje przez create-if-absent i przegranemu oddaje odmowę zamiast cudzego pliku. */
         await io.write(path, workflow, null);
-        set({ workflows: sortedByName([...onDisk, { path, workflow }]), problems });
+        /* `project`, bo `io.write` wyżej zapisało ten plik do folderu projektu — nowy workflow
+         * powstaje TAM od T-164 (2026-08-29). Zgadywanie `library` postawiłoby na kafelku półkę,
+         * której ten plik nie ma, a to jest ta sama nazwa, która ostrzega przed Delete. */
+        set({
+          workflows: sortedByName([...onDisk, { path, place: 'project', workflow }]),
+          problems,
+        });
       }),
 
     duplicate: (id) =>
@@ -298,7 +313,12 @@ export function createWorkflowListStore(io: WorkflowListIo) {
         ]);
         /* `null` z tego samego powodu, co w `create`: duplikat jest nowym plikiem. */
         await io.write(path, copy, null);
-        set({ workflows: sortedByName([...onDisk, { path, workflow: copy }]), problems });
+        /* Ta sama półka, co przy `create`, i z tego samego powodu: duplikat jest nowym plikiem
+         * projektu, nawet gdy oryginał stoi w bibliotece. */
+        set({
+          workflows: sortedByName([...onDisk, { path, place: 'project', workflow: copy }]),
+          problems,
+        });
       }),
 
     requestDelete: (id) => {

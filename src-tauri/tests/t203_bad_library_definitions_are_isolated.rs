@@ -78,8 +78,8 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
 
     let alpha_workflow = workflow("wf-alpha", "Alpha workflow");
     let zulu_workflow = workflow("wf-zulu", "Zulu workflow");
-    save_workflow_inner(home.path(), "zulu.json", &zulu_workflow, None)?;
-    save_workflow_inner(home.path(), "alpha.json", &alpha_workflow, None)?;
+    save_workflow_inner(home.path(), None, "zulu.json", &zulu_workflow, None)?;
+    save_workflow_inner(home.path(), None, "alpha.json", &alpha_workflow, None)?;
     let broken_workflow = home.path().join("workflows/broken.json");
     fs::write(&broken_workflow, b"{ definitely not workflow json")?;
 
@@ -105,7 +105,7 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
         Definition::Healthy { value, .. } if value.name == "Zulu"
     ));
 
-    let workflows = list_workflow_definitions_inner(home.path());
+    let workflows = list_workflow_definitions_inner(home.path(), None);
     assert!(
         workflows.is_ok(),
         "one malformed workflow still overturned the production list instead of becoming one \
@@ -144,7 +144,7 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
         "a fresh scan kept the old agent problem after the file was atomically repaired: \
          {agents_after:?}"
     );
-    let workflows_after = list_workflow_definitions_inner(home.path())?;
+    let workflows_after = list_workflow_definitions_inner(home.path(), None)?;
     assert!(
         workflows_after
             .iter()
@@ -162,7 +162,7 @@ fn both_shelves_keep_good_definitions_and_refresh_a_repaired_file() -> Result<()
     fs::remove_dir_all(home.path().join("workflows"))?;
     fs::write(home.path().join("workflows"), b"not a directory")?;
     assert!(
-        list_workflow_definitions_inner(home.path()).is_err(),
+        list_workflow_definitions_inner(home.path(), None).is_err(),
         "a broken workflow shelf as a whole was presented as an empty or partly healthy library"
     );
     Ok(())
@@ -201,7 +201,7 @@ fn workflow_scanner_admits_a_case_variant_before_create_checks_occupied_names()
     )?;
     fs::write(&collision, b"this malformed workflow owns the APFS name\n")?;
 
-    let listed = list_workflow_definitions_inner(home.path())?;
+    let listed = list_workflow_definitions_inner(home.path(), None)?;
     assert_eq!(
         listed.len(),
         1,

@@ -767,6 +767,13 @@ pub struct Curator {
     unknown_prices: HashMap<String, String>,
     /// Skąd biorą się `detail_id`. Rośnie monotonicznie w obrębie jednego biegu.
     minted: u64,
+    /// Czy proza tego kuratora zachowuje przełamania wierszy.
+    ///
+    /// `false` w biegu (reguła 1: jedna linia na zdanie), `true` w rozmowie. Jedno pole i jedno
+    /// ramię, bo to jest JEDNA różnica między dwoma produktami stojącymi w tym samym widoku:
+    /// rozmowę się CZYTA, strumień pracy się PRZEGLĄDA. Domyślne `false` jest tu treścią,
+    /// nie oszczędnością — `Curator::default()` zostaje kuratorem biegu, co do bajtu.
+    keeps_line_breaks: bool,
 }
 
 /// Grupa sklejania: sąsiednie czynności tego samego rodzaju, tego samego agenta, w oknie 2 s.
@@ -829,6 +836,29 @@ impl Curator {
         Self::default()
     }
 
+    /// Kurator ROZMOWY: ten sam kurator, jedna różnica — proza zachowuje przełamania wierszy.
+    ///
+    /// # Dlaczego osobny konstruktor, a nie argument w [`Curator::new`]
+    ///
+    /// Bo `new()` woła w tym drzewie wielu i każdy z nich sądzi BIEG. Szew addytywny zostawia
+    /// ich zachowanie co do bajtu i nie zamienia jednej różnicy w trzydzieści zmienionych
+    /// plików — ten sam ruch i ten sam powód, co przy `AgentDriver::configured`.
+    ///
+    /// # Co ten tryb naprawia (2026-08-30)
+    ///
+    /// Zgłoszenie właściciela z 2026-08-23: „ten tekst niech też będzie jakoś fajnie i ładnie
+    /// formatowany". Poprawka weszła wtedy w CSS (`feed/line.tsx`, `whitespace-pre-line`)
+    /// i była poprawna — ale [`one_line`] kasowało przełamania TUTAJ, warstwę wcześniej, więc
+    /// do arkusza stylów nie dojeżdżał ani jeden przełam do zachowania. Kryterium frontowe tego
+    /// nie widziało, bo sądziło wiersz rodzaju `step`, a takiego agent nie pisze nigdy.
+    #[must_use]
+    pub fn talking() -> Self {
+        Self {
+            keeps_line_breaks: true,
+            ..Self::default()
+        }
+    }
+
     /// Wpuszcza jedno zdarzenie i oddaje wiersze, które przez nie się domknęły.
     ///
     /// Pusty wektor jest **normalną odpowiedzią**: tak wygląda myślenie, `init`, hak sesji
@@ -889,7 +919,14 @@ impl Curator {
             AgentEvent::Said { text } => {
                 let line = Line::Note {
                     agent: seen.agent.to_owned(),
-                    text: one_line(text),
+                    /* JEDYNE MIEJSCE, W KTÓRYM ROZMOWA RÓŻNI SIĘ OD BIEGU. Rozmowa zachowuje
+                     * akapity i listy, bo się ją czyta; bieg skleja do jednej linii, bo sześciu
+                     * agentów piszących akapitami jest ścianą, przed którą stoi reguła 1. */
+                    text: if self.keeps_line_breaks {
+                        paragraphs(text)
+                    } else {
+                        one_line(text)
+                    },
                 };
                 self.close_then(line)
             }
@@ -1245,6 +1282,32 @@ fn kind_of(action: Action) -> LineKind {
 /// jest jego treść, a `Line` jest jedyną rzeczą, którą dostaje widok.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Jak [`one_line`], ale zostawia przełamania wierszy — proza rozmowy, nie strumienia pracy.
+///
+/// Zwija ciągi białych znaków WEWNĄTRZ wiersza, z tego samego powodu, dla którego okno wybrało
+/// `pre-line` zamiast `pre` (`src/sections/run/feed/line.tsx`): wcięcia z modelu robiłyby schody
+/// w wąskiej kolumnie. Ciąg pustych wierszy zwija do jednego, bo trzy puste wiersze w strumieniu
+/// są dziurą, nie akapitem — a wiodące i końcowe znikają, bo model kończy odpowiedź przełamem
+/// częściej, niż nie.
+fn paragraphs(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut blank_before = false;
+    for line in text.lines() {
+        let tidy = one_line(line);
+        if tidy.is_empty() {
+            // Pusty wiersz przed pierwszą treścią nie jest akapitem, tylko wcięciem od góry.
+            blank_before = !out.is_empty();
+            continue;
+        }
+        if blank_before {
+            out.push(String::new());
+            blank_before = false;
+        }
+        out.push(tidy);
+    }
+    out.join("\n")
 }
 
 /// Przycina do `limit` bajtów, nie rozcinając znaku.

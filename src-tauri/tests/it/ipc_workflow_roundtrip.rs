@@ -80,7 +80,7 @@ fn a_workflow_saved_by_the_command_loads_back_field_for_field() -> Result<(), Bo
     let home = TempDir::new()?;
     let plan = a_plain_chain()?;
 
-    let written = save_workflow_inner(home.path(), FILE, &plan, None)?.path;
+    let written = save_workflow_inner(home.path(), None, FILE, &plan, None)?.path;
     assert!(
         written.exists(),
         "the command said it saved the workflow and {} is not there. A save that reports \
@@ -88,7 +88,7 @@ fn a_workflow_saved_by_the_command_loads_back_field_for_field() -> Result<(), Bo
         written.display()
     );
 
-    let back = load_workflow_inner(home.path(), FILE)?;
+    let back = load_workflow_inner(home.path(), None, FILE)?;
     assert_eq!(
         back.workflow, plan,
         "the workflow comes back the way it went in — every step, every arrow, every setting. \

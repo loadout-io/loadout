@@ -1214,12 +1214,31 @@ pub async fn run_triggered_workflow_inner(
     claim: &TriggerClaim,
     lines: LineSink,
 ) -> Result<TriggerRunReport, RunError> {
-    run_triggered_workflow_with_prestart_faults(
+    run_triggered_workflow_with_budget(deps, request, claim, lines, None).await
+}
+
+/// Ta sama droga triggera, plus **sufit wydatku** tego biegu.
+///
+/// 2026-08-29 — DOPISANA, A NIE WSTAWIONA W [`run_triggered_workflow_inner`], i to nie jest gust:
+/// tamten podpis wołają czterema argumentami dwa cudze pliki kryteriów (`tests/it/trigger_run_is_
+/// accepted_once.rs`, `tests/run_evidence_reaches_the_product.rs`), których to zadanie nie posiada
+/// (`AGENTS.md` §7). Sufit jedzie ARGUMENTEM, nie polem [`RunRequest`], z tego samego zmierzonego
+/// powodu, co przy [`run_workflow_with_budget`]: literał tamtej struktury stoi w tym drzewie
+/// w 55 plikach i nie ma `Default`.
+pub async fn run_triggered_workflow_with_budget(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    claim: &TriggerClaim,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+) -> Result<TriggerRunReport, RunError> {
+    the_triggered_start(
         deps,
         request,
         claim,
         lines,
         Arc::new(NoPrestartFaults),
+        budget_usd,
     )
     .await
 }
@@ -1235,10 +1254,26 @@ pub async fn run_triggered_workflow_with_prestart_faults(
     lines: LineSink,
     faults: Arc<dyn PrestartFaultInjector>,
 ) -> Result<TriggerRunReport, RunError> {
+    the_triggered_start(deps, request, claim, lines, faults, None).await
+}
+
+/// Jedno ciało trzech dróg wyżej: zapadka biegu, pula i sufit podany argumentem.
+///
+/// `deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia — powód w całości stoi przy
+/// [`the_whole_triggered_run`].
+async fn the_triggered_start(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    claim: &TriggerClaim,
+    lines: LineSink,
+    faults: Arc<dyn PrestartFaultInjector>,
+    budget_usd: Option<f64>,
+) -> Result<TriggerRunReport, RunError> {
     deps.control.begin();
     deps.control.lines_go_to(lines.clone());
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    let report = the_whole_triggered_run(deps, request, claim, lines, slots, faults).await;
+    let report =
+        the_whole_triggered_run(deps, request, claim, lines, slots, faults, budget_usd).await;
     deps.control.lines_go_quiet();
     deps.control.settle();
     report
@@ -1472,6 +1507,7 @@ async fn the_whole_triggered_run(
     lines: LineSink,
     slots: Limiter,
     faults: Arc<dyn PrestartFaultInjector>,
+    budget_usd: Option<f64>,
 ) -> Result<TriggerRunReport, RunError> {
     let delivery = triggers::claimed_delivery(deps.home, claim)?;
     let requested = request.workflow.file_name().and_then(|name| name.to_str());
@@ -1530,7 +1566,7 @@ async fn the_whole_triggered_run(
         slots,
         PlannedRunOptions {
             acceptance: Some(acceptance),
-            budget_usd: None,
+            budget_usd,
             reflection_enabled: true,
             before_stamp: None,
         },

@@ -96,6 +96,20 @@ struct StepFacts {
     vendor: Option<&'static str>,
     model: Presence,
     death_proof: Presence,
+    /* CZY TEN KROK NAPRAWDĘ SIĘ WYKONAŁ — dwa boole, zero słów (2026-08-30).
+     *
+     * ZMIERZONE NA BIEGU WŁAŚCICIELA `20260829-204729`: trzynaście kroków, wszystkie
+     * `succeeded`, a cztery z nich bez czasu startu, bez kodu wyjścia i bez jednego pliku
+     * w `logs/`. Były to zbędne próby pętli — `run.json` mówił to wprost przez `executed`
+     * i `process_started`, a ten zrzut oba pola gubił. Czytający widział więc krok meldujący
+     * sukces bez śladu wykonania, czyli dokładnie tę klasę wady, dla której to repo powstało
+     * (niezmiennik 19). Kosztowało to jedną błędną diagnozę.
+     *
+     * ZDANIA `summary` TU NIE MA I NIE BĘDZIE. Pisze je agent, a ten zrzut człowiek wkleja
+     * obcym. Raport stoi na zamkniętej liście dozwolonych pól, nigdy na redagowaniu prywatnych
+     * bajtów (T-34 AC-3) — dwa boole niosą całe rozróżnienie i ani jednego słowa. */
+    executed: bool,
+    process_started: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,6 +229,13 @@ struct StepInput {
     effective: Option<EffectiveInput>,
     #[serde(default)]
     death_proof: bool,
+    /* Brak klucza czyta się jako `false` i to jest uczciwe: `run.json` sprzed T-207 nie niósł
+     * tych faktów, a wyprowadzanie ich ze statusu byłoby zgadywaniem tego, co to pole ma
+     * rozstrzygać. Krok, który naprawdę poszedł, ma je zapisane. */
+    #[serde(default)]
+    executed: bool,
+    #[serde(default)]
+    process_started: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -376,6 +397,8 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
                 death_proof: Presence {
                     present: step.death_proof,
                 },
+                executed: step.executed,
+                process_started: step.process_started,
                 failure_kind,
                 started_at: step.started_at,
                 ended_at: step.ended_at,

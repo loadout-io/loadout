@@ -226,7 +226,8 @@ pub enum TriggerPoll {
         /// Czas receipt zapisany w ledgerze, nie czas ponownego montażu okna.
         receipt_at: i64,
     },
-    /// Źródło odrzuciło klucz deterministycznie, więc trigger jest wstrzymany aż do Retry.
+    /// Trigger jest wstrzymany aż do Retry: źródło odrzuciło klucz albo workflow nie wystartował
+    /// tyle razy pod rząd, ile wolno. Które z dwojga, mówi wyłącznie zdanie.
     Refused {
         /// Zdanie ułożone przez Rust: co się stało i co ma z tym zrobić człowiek.
         sentence: String,
@@ -1027,13 +1028,18 @@ fn trigger_from_draft(
     if !valid_key(api_key.as_str()) {
         return Err(TriggerError::InvalidKey);
     }
-    // Ten sam loader, ktory zasila prawdziwa biblioteke, jest jedyna odpowiedzia na pytanie,
-    // czy wybrana nazwa istnieje i nie wychodzi przez `../` poza katalog workflow.
-    super::workflows::load_workflow_inner(home, &workflow)
-        .map_err(|_| TriggerError::MissingWorkflow)?;
     // 2026-08-21: konfiguracja jest globalna, ale praca nie. Dokładny folder z rejestru
     // zapisujemy przed publikacją configu, zamiast zgadywać aktywną kartę przy późniejszym ticku.
+    //
+    // 2026-08-29 (T-164) — WORKSPACE ROZSTRZYGA SIĘ TERAZ PIERWSZY, i to jest zmiana kolejności
+    // odmów, nie tylko wierszy. Odkąd workflow może leżeć wyłącznie w projekcie, pytanie „czy ta
+    // nazwa istnieje" nie ma odpowiedzi, dopóki nie wiadomo, GDZIE szukać: sprawdzenie w samej
+    // bibliotece odmówiłoby stworzenia triggera dla workflow, który stoi w folderze projektu.
     let workspace = require_registered_workspace(home, Some(&workspace))?;
+    // Ten sam loader, ktory zasila prawdziwa biblioteke, jest jedyna odpowiedzia na pytanie,
+    // czy wybrana nazwa istnieje i nie wychodzi przez `../` poza katalog workflow.
+    super::workflows::load_workflow_inner(home, Some(Path::new(&workspace)), &workflow)
+        .map_err(|_| TriggerError::MissingWorkflow)?;
     Ok(Trigger {
         schema,
         source: Source::Linear,
@@ -1185,9 +1191,10 @@ where
     // 2026-08-28: wstrzymanie jest czytane z pliku PRZED fetcherem, wiec odrzucony klucz nie
     // puka do zrodla ani teraz, ani po ponownym otwarciu okna. Zdejmuje je wylacznie [`resume_with`].
     if let Some(reason) = ledger.paused {
-        return Ok(local_pending.unwrap_or_else(|| TriggerPoll::Refused {
-            sentence: reason.sentence().to_owned(),
-        }));
+        return Ok(held_poll(reason, local_pending));
+    }
+    if let Some(held) = hold_after_refused_starts(home, slug, &mut ledger)? {
+        return Ok(held);
     }
     let answer = match fetch(&trigger) {
         Ok(answer) => answer,
@@ -1237,6 +1244,9 @@ where
                     created_at,
                 },
                 state: DeliveryState::Pending,
+                // Ten sam tick odda ją drodze Startu (`poll_fallback` niżej), więc dostawa
+                // rodzi się z próbą numer jeden, a nie z zerem.
+                starts_tried: 1,
             });
         }
     }
@@ -1272,9 +1282,22 @@ fn refuse_poll(
     };
     ledger.paused = Some(reason);
     write_ledger(home, slug, ledger)?;
-    Ok(local_pending.unwrap_or_else(|| TriggerPoll::Refused {
+    Ok(held_poll(reason, local_pending))
+}
+
+/// Jedyne miejsce, w ktorym wstrzymanie zamienia sie w odpowiedz dla okna.
+///
+/// 2026-08-29: dla odrzuconego klucza praca zapisana wczesniej wygrywa z pauza dokladnie jak
+/// przed T-206 — pauza mowi wtedy o ZRODLE. Wstrzymanie po odmowach startu mowi o TEJ dostawie,
+/// wiec ona jedna przestaje wychodzic; inaczej pauza nie zatrzymalaby niczego.
+fn held_poll(reason: PausedReason, local_pending: Option<TriggerPoll>) -> TriggerPoll {
+    let held = TriggerPoll::Refused {
         sentence: reason.sentence().to_owned(),
-    }))
+    };
+    if reason.holds_the_work() {
+        return held;
+    }
+    local_pending.unwrap_or(held)
 }
 
 /// Odmowa, ktorej nie naprawi zadne ponowienie z tym samym kluczem.
@@ -1291,6 +1314,44 @@ const fn lasting_refusal(error: &TriggerError) -> Option<PausedReason> {
         | TriggerError::MissingKey => Some(PausedReason::KeyRefused),
         _ => None,
     }
+}
+
+/// Liczy próby startu tej jednej dostawy i wstrzymuje trigger, gdy budżet się skończył.
+///
+/// Odmowa PLANU nie jest odmową źródła: [`release_delivery`] cofa dostawę do `Pending`, więc bez
+/// tego licznika ten sam skasowany workflow wracał na drogę Startu co minutę, bez końca i bez
+/// zdania, które człowiek mógłby przeczytać. Liczymy dostawę, którą ten tick zaraz wyda —
+/// czyli tę samą, którą oddaje [`pending_poll`].
+///
+/// `Some` znaczy „ten tick nie wydaje nic i nie pyta źródła"; praca zostaje w ledgerze i wraca
+/// na drogę Startu dopiero po jawnym Retry ([`lift_pause`]).
+fn hold_after_refused_starts(
+    home: &Path,
+    slug: &str,
+    ledger: &mut Ledger,
+) -> Result<Option<TriggerPoll>, TriggerError> {
+    // Zapis idzie po oddaniu pożyczki rekordu, bo `write_ledger` czyta cały ledger.
+    let reason = {
+        let Some(record) = ledger
+            .deliveries
+            .iter_mut()
+            .find(|record| not_yet_accepted(record))
+        else {
+            return Ok(None);
+        };
+        if record.starts_tried >= STARTS_BEFORE_HOLD {
+            Some(PausedReason::StartRefused)
+        } else {
+            record.starts_tried += 1;
+            None
+        }
+    };
+    if reason.is_some() {
+        ledger.paused = reason;
+    }
+    write_ledger(home, slug, ledger)?;
+    // `None` jako zapisana praca: ta pauza jest właśnie o niej, więc nie ma czego wydać.
+    Ok(reason.map(|reason| held_poll(reason, None)))
 }
 
 fn hydrate_legacy_pending(ledger: &mut Ledger, workspace: &str) -> bool {
@@ -1353,7 +1414,16 @@ fn lift_pause(home: &Path, slug: &str) -> Result<(), TriggerError> {
     let ledger_lock = ledger_lock_for(home, slug)?;
     let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ledger = read_ledger(home, slug)?;
-    if ledger.paused.take().is_some() {
+    let mut changed = ledger.paused.take().is_some();
+    // 2026-08-29: licznik prób startu wraca do zera razem z pauzą. Bez tego Retry oddawałby
+    // pracę na jeden tick i natychmiast wstrzymywał ją z powrotem — czyli nie byłby drogą powrotu.
+    for record in &mut ledger.deliveries {
+        if record.starts_tried != 0 {
+            record.starts_tried = 0;
+            changed = true;
+        }
+    }
+    if changed {
         write_ledger(home, slug, &ledger)?;
     }
     Ok(())
@@ -1412,8 +1482,9 @@ pub fn retry(home: &Path, slug: &str, created_at: i64) -> Result<TriggerDelivery
         .find(|record| matches!(&record.state, DeliveryState::Pending))
         .map(|record| record.delivery.clone())
     {
-        require_registered_workspace(home, pending.claim.workspace.as_deref())?;
-        require_retry_workflow(home, &pending.claim.workflow)?;
+        let pending_workspace =
+            require_registered_workspace(home, pending.claim.workspace.as_deref())?;
+        require_retry_workflow(home, &pending_workspace, &pending.claim.workflow)?;
         return Ok(pending);
     }
 
@@ -1445,7 +1516,7 @@ pub fn retry(home: &Path, slug: &str, created_at: i64) -> Result<TriggerDelivery
         require_registered_workspace(home, Some(&workspace))?;
         workspace
     };
-    require_retry_workflow(home, &accepted.claim.workflow)?;
+    require_retry_workflow(home, Path::new(&retry_workspace), &accepted.claim.workflow)?;
 
     let delivery = TriggerDelivery {
         claim: TriggerClaim {
@@ -1461,13 +1532,17 @@ pub fn retry(home: &Path, slug: &str, created_at: i64) -> Result<TriggerDelivery
     ledger.deliveries.push(DeliveryRecord {
         delivery: delivery.clone(),
         state: DeliveryState::Pending,
+        // Okno prowadzi tę dostawę prosto na drogę Startu, więc to też jest próba numer jeden.
+        starts_tried: 1,
     });
     write_ledger(home, slug, &ledger)?;
     Ok(delivery)
 }
 
-fn require_retry_workflow(home: &Path, workflow: &str) -> Result<(), TriggerError> {
-    super::workflows::load_workflow_inner(home, workflow)
+/// Workspace jest argumentem, nie domysłem: po T-164 workflow ponowienia może stać wyłącznie
+/// w folderze projektu, a obaj wołający mają go już zwalidowanego wiersz wyżej.
+fn require_retry_workflow(home: &Path, project: &Path, workflow: &str) -> Result<(), TriggerError> {
+    super::workflows::load_workflow_inner(home, Some(project), workflow)
         .map(|_| ())
         .map_err(|_| TriggerError::RetryMissingWorkflow)
 }
@@ -1623,6 +1698,19 @@ const LEDGER_SCHEMA: u32 = 1;
 pub const KEY_REFUSED_SENTENCE: &str =
     "Linear refused this key, so Loadout stopped checking. Replace the key, then press Retry.";
 
+/// Zdanie widziane w wierszu triggera, kiedy droga Startu odmówiła [`STARTS_BEFORE_HOLD`] razy.
+///
+/// Liczba stoi tu SŁOWEM, więc zmiana progu obok bez zmiany tego zdania jest kłamstwem na
+/// ekranie; oba testy T-206 czytają ją stąd, a nie ze swojej kopii.
+pub const START_REFUSED_SENTENCE: &str = "This workflow did not start three times in a row, so Loadout stopped trying. Open Workflows to fix it, then press Retry.";
+
+/// Ile razy ta sama dostawa wychodzi na drogę Startu, zanim trigger przestanie ją wydawać.
+///
+/// 2026-08-29: trzy, nie jedna. Pierwsza odmowa planu bywa chwilowa — plik workflow właśnie się
+/// zapisuje, dysk był pełny przez sekundę. Trzy pod rząd o ten sam plik to stan, którego kolejna
+/// minuta nie naprawi, a bez tego progu odmowa planu wracała co minutę bez końca.
+const STARTS_BEFORE_HOLD: u32 = 3;
+
 /// Trwały powód wstrzymania zapisany w ledgerze triggera.
 ///
 /// 2026-08-28: chwilowa awaria (timeout, brak sieci, niezerowy status `curl`) NIE zapisuje tu
@@ -1632,12 +1720,27 @@ pub const KEY_REFUSED_SENTENCE: &str =
 #[serde(rename_all = "kebab-case")]
 enum PausedReason {
     KeyRefused,
+    /// Ta sama praca odbiła się od drogi Startu tyle razy, ile wolno ([`STARTS_BEFORE_HOLD`]).
+    StartRefused,
 }
 
 impl PausedReason {
     const fn sentence(self) -> &'static str {
         match self {
             Self::KeyRefused => KEY_REFUSED_SENTENCE,
+            Self::StartRefused => START_REFUSED_SENTENCE,
+        }
+    }
+
+    /// Czy wstrzymanie dotyczy SAMEJ dostawy, czyli czy zapisany Pending ma przestać wychodzić.
+    ///
+    /// 2026-08-29: odrzucony klucz mówi o źródle, więc praca zapisana wcześniej nadal jedzie do
+    /// okna dokładnie jak dotąd. Odrzucony start mówi o tej dostawie: wydanie jej jeszcze raz
+    /// byłoby czwartą próbą, czyli tym jednym, czego to wstrzymanie zabrania.
+    const fn holds_the_work(self) -> bool {
+        match self {
+            Self::KeyRefused => false,
+            Self::StartRefused => true,
         }
     }
 }
@@ -1677,6 +1780,14 @@ impl Default for Ledger {
 struct DeliveryRecord {
     delivery: TriggerDelivery,
     state: DeliveryState,
+    /// Ile razy ta dostawa wyszła na drogę Startu; próg stoi w [`STARTS_BEFORE_HOLD`].
+    ///
+    /// Dopisek addytywny (niezmiennik 25): schemat zostaje przy 1, a stary rekord bez tego pola
+    /// czyta się jako dostawa, której nikt jeszcze nie próbował uruchomić. Licznik mieszka PRZY
+    /// DOSTAWIE w pliku, nie w procesie, więc trzy próby znaczą trzy także wtedy, gdy okno było
+    /// między nimi zamknięte.
+    #[serde(default)]
+    starts_tried: u32,
 }
 
 #[derive(Deserialize)]
@@ -1893,15 +2004,21 @@ fn pending_poll(ledger: &Ledger) -> Option<TriggerPoll> {
         })
 }
 
-/// Jedna definicja "jeszcze nie przyjete": `pending` i crash-window `bound` sa dalej praca,
-/// ktora musi wygrac z historycznym receipt w pollu oraz w busy guardzie.
 fn pending_deliveries(ledger: &Ledger) -> impl Iterator<Item = &DeliveryRecord> {
-    ledger.deliveries.iter().filter(|record| {
-        matches!(
-            &record.state,
-            DeliveryState::Pending | DeliveryState::Bound { .. }
-        )
-    })
+    ledger
+        .deliveries
+        .iter()
+        .filter(|record| not_yet_accepted(record))
+}
+
+/// Jedna definicja "jeszcze nie przyjete": `pending` i crash-window `bound` sa dalej praca,
+/// ktora musi wygrac z historycznym receipt w pollu oraz w busy guardzie. Licznik prob startu
+/// szuka rekordu przez to samo pytanie, bo liczy dokladnie ta dostawe, ktora tick zaraz wyda.
+fn not_yet_accepted(record: &DeliveryRecord) -> bool {
+    matches!(
+        &record.state,
+        DeliveryState::Pending | DeliveryState::Bound { .. }
+    )
 }
 
 fn accepted_poll(ledger: &Ledger) -> Option<TriggerPoll> {

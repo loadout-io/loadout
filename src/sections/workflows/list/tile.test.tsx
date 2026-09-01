@@ -107,7 +107,9 @@ const RUN_HISTORY = /used|min|never|—|not reported/i;
 
 describe('a workflow tile shows what is in the file and leaves no empty cells', () => {
   it('counts the steps, and counts the agents as the different ones among them', () => {
-    const markup = renderToStaticMarkup(<WorkflowTile wf={research()} onOpen={noop} />);
+    const markup = renderToStaticMarkup(
+      <WorkflowTile place="project" wf={research()} onOpen={noop} />,
+    );
     const text = visibleText(markup);
 
     expect(text, 'four steps in the file, four steps on the tile').toContain('4 steps');
@@ -126,7 +128,9 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
   });
 
   it('says 1 step and 1 agent, not 1 steps and 1 agents', () => {
-    const text = visibleText(renderToStaticMarkup(<WorkflowTile wf={quickFix()} onOpen={noop} />));
+    const text = visibleText(
+      renderToStaticMarkup(<WorkflowTile place="project" wf={quickFix()} onOpen={noop} />),
+    );
 
     expect(text, 'one step').toContain('1 step');
     expect(
@@ -139,7 +143,9 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
   });
 
   it('leaves the description out entirely when the file has none', () => {
-    const markup = renderToStaticMarkup(<WorkflowTile wf={undescribed()} onOpen={noop} />);
+    const markup = renderToStaticMarkup(
+      <WorkflowTile place="project" wf={undescribed()} onOpen={noop} />,
+    );
 
     /* Element, nie akapit: kafelek jest od 2026-08-18 `<button>`, a `<p>` w przycisku nie jest
      * poprawnym markupem. Pytanie zostaje to samo — czy pusty opis trzyma otwartą linijkę karty. */
@@ -155,7 +161,9 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
 
   it('shows nothing about how often or how long, because there are no runs to read yet', () => {
     for (const workflow of [research(), quickFix(), undescribed()]) {
-      const markup = renderToStaticMarkup(<WorkflowTile wf={workflow} onOpen={noop} />);
+      const markup = renderToStaticMarkup(
+        <WorkflowTile place="project" wf={workflow} onOpen={noop} />,
+      );
 
       expect(
         visibleText(markup),

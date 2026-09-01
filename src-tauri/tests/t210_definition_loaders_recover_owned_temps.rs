@@ -15,7 +15,23 @@ use std::thread;
 use std::time::Duration;
 
 use loadout_lib::commands::agents::{list_agents_inner, save_agent_inner};
-use loadout_lib::commands::workflows::{Saved, list_workflows_inner, save_workflow_inner};
+use loadout_lib::commands::workflows::{
+    Saved, list_workflow_definitions_inner, save_workflow_inner,
+};
+use loadout_lib::library::definition::healthy_only;
+
+/* 2026-08-29 (T-164): `list_workflows_inner` był cienką owijką bez ani jednego produkcyjnego
+ * wołającego — sprawdzenie `wired` zobaczyło to dopiero, gdy ten plik po latach się zmienił.
+ * Ten zestaw pyta o to samo, co pytał, tylko przez funkcję, której naprawdę używa produkt. */
+fn listed_healthy(
+    home: &std::path::Path,
+) -> Result<Vec<loadout_lib::commands::workflows::WorkflowEntry>, String> {
+    // `String`, nie `Box<dyn Error>`: jeden z wołających czyta katalog W OSOBNYM WĄTKU,
+    // a `dyn Error` nie jest `Send`. Zdanie odmowy przewozi się przez granicę wątku jako tekst.
+    list_workflow_definitions_inner(home, None)
+        .map(healthy_only)
+        .map_err(|error| error.to_string())
+}
 use loadout_lib::durable_file::{
     FaultAction, FaultInjector, FaultPoint, PublicationEvent, RecoveryEvent, RecoveryPoint,
     scoped_faults,
@@ -169,7 +185,7 @@ fn linked_agent_instructions_are_not_a_library_entry() -> Result<(), Box<dyn Err
 fn workflow_recovery_does_not_follow_a_swapped_root() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let local = workflow("local-root", "Local workflow before root swap");
-    let local_target = save_workflow_inner(home.path(), "local.json", &local, None)?.path;
+    let local_target = save_workflow_inner(home.path(), None, "local.json", &local, None)?.path;
     let definitions = parent_of(&local_target)?.to_owned();
     let parked = home.path().join("workflows-held-by-recovery");
 
@@ -179,7 +195,7 @@ fn workflow_recovery_does_not_follow_a_swapped_root() -> Result<(), Box<dyn Erro
     let Saved {
         path: outside_target,
         revision: outside_revision,
-    } = save_workflow_inner(outside.path(), "sentinel.json", &outside_old, None)?;
+    } = save_workflow_inner(outside.path(), None, "sentinel.json", &outside_old, None)?;
     let outside_definitions = parent_of(&outside_target)?;
     let outside_bytes = fs::read(&outside_target)?;
     let crash = Arc::new(CrashFault::default());
@@ -191,6 +207,7 @@ fn workflow_recovery_does_not_follow_a_swapped_root() -> Result<(), Box<dyn Erro
     assert!(
         save_workflow_inner(
             outside.path(),
+            None,
             "sentinel.json",
             &outside_new,
             Some(&outside_revision)
@@ -208,7 +225,7 @@ fn workflow_recovery_does_not_follow_a_swapped_root() -> Result<(), Box<dyn Erro
     });
     let _swap_scope = scoped_faults(home.path(), swap)?;
 
-    let listed = list_workflows_inner(home.path());
+    let listed = listed_healthy(home.path());
 
     assert!(
         listed.is_err(),
@@ -231,7 +248,7 @@ fn workflow_list_refuses_a_linked_definition_root() -> Result<(), Box<dyn Error>
     let Saved {
         path: target,
         revision,
-    } = save_workflow_inner(outside.path(), "outside.json", &old, None)?;
+    } = save_workflow_inner(outside.path(), None, "outside.json", &old, None)?;
     let old_bytes = fs::read(&target)?;
     let definitions = parent_of(&target)?;
 
@@ -239,12 +256,14 @@ fn workflow_list_refuses_a_linked_definition_root() -> Result<(), Box<dyn Error>
     let hook: Arc<dyn FaultInjector> = faults.clone();
     let scope = scoped_faults(outside.path(), hook)?;
     faults.arm(&target, FaultPoint::BeforeCommit);
-    assert!(save_workflow_inner(outside.path(), "outside.json", &new, Some(&revision)).is_err());
+    assert!(
+        save_workflow_inner(outside.path(), None, "outside.json", &new, Some(&revision)).is_err()
+    );
     assert_eq!(owned_temps(definitions)?.len(), 1);
     drop(scope);
 
     symlink(definitions, home.path().join("workflows"))?;
-    let listed = list_workflows_inner(home.path());
+    let listed = listed_healthy(home.path());
 
     assert!(
         listed.is_err(),
@@ -266,7 +285,7 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let Saved {
         path: target,
         revision,
-    } = save_workflow_inner(home.path(), "recovery.json", &old, None)?;
+    } = save_workflow_inner(home.path(), None, "recovery.json", &old, None)?;
     let definitions = parent_of(&target)?;
     let foreign = definitions.join(FOREIGN_NAME);
     fs::write(&foreign, FOREIGN_BYTES)?;
@@ -276,7 +295,7 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     let _scope = scoped_faults(home.path(), hook)?;
     faults.arm(&target, FaultPoint::BeforeCommit);
 
-    let crashed = save_workflow_inner(home.path(), "recovery.json", &new, Some(&revision));
+    let crashed = save_workflow_inner(home.path(), None, "recovery.json", &new, Some(&revision));
     assert!(
         crashed.is_err(),
         "the controlled workflow crash unexpectedly reported a successful save"
@@ -287,7 +306,7 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
         "the workflow crash did not leave exactly one real publisher temp"
     );
 
-    let first = list_workflows_inner(home.path())?;
+    let first = listed_healthy(home.path())?;
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].path, "recovery.json");
     assert_eq!(first[0].workflow, old);
@@ -297,7 +316,7 @@ fn workflow_list_recovers_a_crash_temp() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(fs::read(&foreign)?, FOREIGN_BYTES);
 
-    let second = list_workflows_inner(home.path())?;
+    let second = listed_healthy(home.path())?;
     assert_eq!(
         second, first,
         "reopening the workflow library was not idempotent"
@@ -363,7 +382,7 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let Saved {
         path: target,
         revision,
-    } = save_workflow_inner(home.path(), "active.json", &old, None)?;
+    } = save_workflow_inner(home.path(), None, "active.json", &old, None)?;
     let definitions = parent_of(&target)?;
 
     let (paused_tx, paused_rx) = mpsc::sync_channel(0);
@@ -383,7 +402,7 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let (writer_result_tx, writer_result_rx) = mpsc::channel();
     let writer_home = home.path().to_owned();
     let writer = thread::spawn(move || {
-        let result = save_workflow_inner(&writer_home, "active.json", &new, Some(&revision));
+        let result = save_workflow_inner(&writer_home, None, "active.json", &new, Some(&revision));
         let _sent = writer_result_tx.send(result);
     });
     paused_rx.recv_timeout(SAFETY_TIMEOUT).map_err(|error| {
@@ -400,7 +419,7 @@ fn workflow_list_waits_for_an_active_save() -> Result<(), Box<dyn Error>> {
     let (loader_result_tx, loader_result_rx) = mpsc::channel();
     let loader_home = home.path().to_owned();
     let loader = thread::spawn(move || {
-        let result = list_workflows_inner(&loader_home);
+        let result = listed_healthy(&loader_home);
         let _sent = loader_result_tx.send(result);
     });
     recovery_entered_rx

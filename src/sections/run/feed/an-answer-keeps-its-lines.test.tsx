@@ -15,6 +15,19 @@
  *
  * # Czego to kryterium NIE mówi
  *
+ * # 2026-08-30 — TO KRYTERIUM SĄDZIŁO NIEWŁAŚCIWY RODZAJ WIERSZA, WIĘC BYŁO ZIELONE NAD WADĄ
+ *
+ * Fikstura wołała `line.step(...)`. Wiersz rodzaju `step` pisze PLANISTA (`engine::line`,
+ * nagłówek `Line`) i nie przechodzi przez kuratora — więc to kryterium sprawdzało arkusz stylów
+ * na ścieżce, którą proza agenta nie chodzi nigdy. Prawdziwa proza to rodzaj `note`, a ta była
+ * spłaszczana WARSTWĘ WCZEŚNIEJ, w Ruście: `Curator::observe` wołało `one_line`, które skleja
+ * każdy biały znak w spację (`src-tauri/src/engine/line.rs`). CSS był poprawny, kryterium
+ * zielone, a skarga właściciela z 2026-08-23 niezałatwiona — dokładnie ta klasa, dla której
+ * w AGENTS.md stoi niezmiennik 29, tylko po stronie okna.
+ *
+ * Rust ma od 2026-08-30 dwa tryby (`Curator::talking` dla rozmowy, `Curator::new` dla biegu),
+ * a ta fikstura pyta o rodzaj, który agent naprawdę produkuje.
+ *
  * Nie mówi „renderuj markdown". Renderer to nowa zależność, a `src/ui/shell/permissions.test.ts`
  * zapisuje wprost, czym to grozi w oknie z dostępem do powłoki — i taka decyzja należy do
  * człowieka (AGENTS.md §7). To kryterium pilnuje wyłącznie tego, żeby NIE GUBIĆ tego, co już
@@ -35,7 +48,7 @@ const ANSWER = 'Three districts came out ahead:\n- Wrzeszcz Gorny\n- Oliwa';
 
 function markup(): string {
   const feed = createFeed(sealedScroller());
-  feed.appendLines([line.step(1, 0, FORGE, ANSWER)]);
+  feed.appendLines([line.note(1, 0, FORGE, ANSWER)]);
   const row = feed.view.history[0];
   if (row === undefined) return '';
   return renderToStaticMarkup(

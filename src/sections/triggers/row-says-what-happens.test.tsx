@@ -138,18 +138,29 @@ function directTextCarriers(markup: string): readonly string[] {
 }
 
 /**
- * Zdanie o wstrzymanym triggerze UŁOŻYŁ Rust, więc czytamy je z jego pliku zamiast przepisywać.
+ * Zdania o wstrzymanym triggerze UŁOŻYŁ Rust, więc czytamy je z jego pliku zamiast przepisywać.
  *
  * Ten sam wzorzec, co w `run/skills-refusal-is-visible.test.tsx`: plik bierzemy przez
  * `existsSync(p) ? readFileSync(p) : ''`, żeby test padał na asercji o treści, nigdy na
  * otwarciu pliku (AGENTS.md §2a p. 5).
  */
 const RUST = new URL('../../../src-tauri/src/commands/triggers.rs', import.meta.url);
-const PAUSED = (
-  /pub const KEY_REFUSED_SENTENCE: &str =\s*"((?:[^"\\]|\\.)*)"/.exec(
-    existsSync(RUST) ? readFileSync(RUST, 'utf8') : '',
-  )?.[1] ?? ''
-).replace(/\\"/g, '"');
+const RUST_SOURCE = existsSync(RUST) ? readFileSync(RUST, 'utf8') : '';
+
+/*
+ * Wzorzec bierze CAŁY literał razem z cudzysłowami i zdejmuje je przez `slice`, zamiast
+ * dopasowywać je w regexie. Powód jest zmierzony 2026-08-29: `checks/vocabulary.sh` czyta
+ * pliki naiwnym lekserem, który zna ten sam problem dla apostrofu w komentarzu — znak
+ * cudzysłowu wewnątrz literału regexa rozjeżdżał mu parowanie i kilkaset znaków KODU niżej
+ * czytało się jak zdanie dla użytkownika.
+ */
+function rustSentence(name: string): string {
+  const literal = new RegExp(`pub const ${name}: &str =\\s*(\\S.*);`).exec(RUST_SOURCE)?.[1] ?? '';
+  return literal.slice(1, -1).replace(/\\(.)/g, '$1');
+}
+
+const PAUSED = rustSentence('KEY_REFUSED_SENTENCE');
+const START_REFUSED = rustSentence('START_REFUSED_SENTENCE');
 
 function deferred<T>(): {
   readonly promise: Promise<T>;
@@ -292,6 +303,7 @@ describe('the real Triggers screen explains and controls its library', () => {
       listWorkflows: async () => [
         {
           path: 'analysis.json',
+          place: 'project',
           workflow: {
             format: 1,
             id: 'workflow-id',
@@ -480,6 +492,70 @@ describe('the real Triggers screen explains and controls its library', () => {
     /* Klucz nadal odrzucony: wiersz wraca do tego samego zdania i tej samej kontrolki. */
     expect(row(renderToStaticMarkup(<TriggersScreen store={store} />), configured.slug)).toContain(
       `${PAUSED} · Retry`,
+    );
+  });
+
+  it('says a workflow that never starts gave up, and keeps the one way back', async () => {
+    expect(
+      START_REFUSED,
+      'nothing was read out of the wording for a workflow that never starts in ' +
+        'src-tauri/src/commands/triggers.rs, so this row would be judged against an empty string',
+    ).not.toBe('');
+    expect(
+      START_REFUSED,
+      'a workflow that never starts is shown with the wording about a refused key, so the row ' +
+        'cannot tell a broken workflow from a broken key',
+    ).not.toBe(PAUSED);
+    const configured = LIBRARY[0];
+    if (configured === undefined || configured.problem !== undefined) {
+      throw new Error('the fixture for a workflow that never starts must be a configured trigger');
+    }
+    /* Ten workflow nadal się nie uruchamia, więc jedno kliknięcie oddaje to samo zdanie —
+     * dowodem jest brak drugiej kontrolki, nie brak zdania. */
+    const resumeTrigger = vi.fn(async () => ({
+      status: 'refused' as const,
+      sentence: START_REFUSED,
+    }));
+    const retryTrigger = vi.fn(async () => {
+      throw new Error('a trigger that gave up must ask Rust to lift the hold, not for new work');
+    });
+    const launchRun = vi.fn<TriggerRunPath['launchRun']>(async () => null);
+    const store = createTriggersStore(
+      {
+        ...ioWith(),
+        checkTrigger: async () => ({ status: 'refused', sentence: START_REFUSED }),
+        resumeTrigger,
+        retryTrigger,
+      },
+      CLOCK,
+      { ...RUN, launchRun },
+    );
+    store.setState({ triggers: [configured] });
+    await store.getState().tick();
+
+    const handlers = new Map<string, TriggerRowProps['onRunAgain']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onRunAgain);
+      return <TriggerRow {...props} />;
+    }
+    const gaveUp = row(
+      renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
+      configured.slug,
+    );
+    expect(gaveUp).toContain(`${START_REFUSED} · Retry`);
+    expect(gaveUp).toContain('data-trigger-run-again');
+    expect(directTextCarriers(gaveUp)).toHaveLength(4);
+    expect(
+      launchRun,
+      'a trigger on hold started its run from the window anyway',
+    ).not.toHaveBeenCalled();
+
+    await handlers.get(configured.slug)?.(configured.slug);
+    expect(resumeTrigger).toHaveBeenCalledWith(configured.slug);
+    expect(retryTrigger).not.toHaveBeenCalled();
+    expect(launchRun).not.toHaveBeenCalled();
+    expect(row(renderToStaticMarkup(<TriggersScreen store={store} />), configured.slug)).toContain(
+      `${START_REFUSED} · Retry`,
     );
   });
 

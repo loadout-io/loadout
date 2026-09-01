@@ -82,6 +82,8 @@ const WHERE_PATH: Readonly<Record<string, string>> = {
 };
 
 const AGENT_ID = '0198a1f2-3b4c-7d5e-8f60-112233445566';
+/** Domyślny sufit wydatku biegu. Nie stała żadnej ze stron: taka też ma dojechać. */
+const DEFAULT_BUDGET_USD = 40;
 const FILE_NAME = 'ship-a-feature.json';
 /** Rewizja pliku, którą okno przeczytało. Zapis niesie ją z powrotem albo cofa cudzą pracę. */
 const REVISION = 'eyJmb3JtYXQiOiAxfQo=';
@@ -562,7 +564,13 @@ const WIRES: readonly Wire[] = [
    * `given` NIESIE IDENTYFIKATOR AGENTA, bo on JEST tu całym wywołaniem: `save_settings` bierze
    * jeden argument i to nim plik zapamiętuje, kto prowadzi. Wiersz wołany pustym napisem
    * przechodziłby także dla krawędzi, która wskazanie gubi — `insides()` niżej odrzuca `null`
-   * i pusty napis jest tu równie niewidoczny. */
+   * i pusty napis jest tu równie niewidoczny.
+   *
+   * 2026-08-29 (T-208) — DRUGA WARTOŚĆ W TYM SAMYM ZAPISIE, dopisana, nic nie usunięte.
+   * `save_settings` niesie od dziś także domyślny sufit wydatku biegu, bo plik jest jeden:
+   * wywołanie z samym wskazaniem lidera nadpisywałoby kwotę tym, co akurat miało okno. Klucz
+   * jest sądzony osobno, przeciwko `ipc.rs` — brak `defaultBudgetUsd` po którejkolwiek stronie
+   * nie daje mniejszego wywołania, daje odrzucone. */
   {
     where: 'settings',
     what: 'readSettings',
@@ -574,8 +582,9 @@ const WIRES: readonly Wire[] = [
     where: 'settings',
     what: 'saveSettings',
     command: 'save_settings',
-    given: [{ defaultLead: AGENT_ID }],
-    call: () => settings.saveSettings({ defaultLead: AGENT_ID }),
+    given: [{ defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD }],
+    call: () =>
+      settings.saveSettings({ defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD }),
   },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.
    * Dopisana, nic nie usunięte i żaden istniejący wiersz nie przepisany — mandat tego zadania

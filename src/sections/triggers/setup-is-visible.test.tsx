@@ -248,6 +248,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
       listWorkflows: async () => [
         {
           path: 'loaded-analysis.json',
+          place: 'project',
           workflow: {
             format: 1,
             id: '0198ca82-ded0-7000-8000-000000000174',

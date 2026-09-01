@@ -1509,7 +1509,11 @@ async fn read_along(
     lines: Arc<Mutex<LineSink>>,
     evidence: Option<EvidenceTarget>,
 ) {
-    let mut curator = Curator::new();
+    /* KURATOR ROZMOWY, NIE BIEGU. Odpowiedź lidera zachowuje akapity i listy, którymi ją
+     * napisał; strumień pracy zostaje przy jednej linii na zdanie (reguła 1). Powód w całości
+     * stoi przy `Curator::talking` — skarga właściciela z 2026-08-23 dostała wtedy poprawkę
+     * w CSS, a spłaszczanie działo się warstwę wcześniej, w kuratorze. */
+    let mut curator = Curator::talking();
     let began = std::time::Instant::now();
     let mut attempt = 1_usize;
     while let Some(DecodedEvent { event, tool }) = inbox.recv().await {

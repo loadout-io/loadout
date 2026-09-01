@@ -28,6 +28,18 @@
 //!
 //! Drugi przypadek jest kontrolą: ta sama fikstura **bez sufitu** ma dojść do końca w komplecie,
 //! a plik biegu nie ma wtedy nieść ani słowa o sufcie, którego nikt nie postawił.
+//!
+//! 2026-08-29 (T-208) — CO ZNACZY DZIŚ `None` NA TYM ARGUMENCIE, bo zmieniło się to pod tym
+//! plikiem. Do tego dnia `None` było stanem, w który wpadało się przez zapomnienie: pole kwoty
+//! na pasku Run otwierało się PUSTE, więc bieg, przy którym nikt nie pomyślał o pieniądzach,
+//! docierał tu bez sufitu. Od dziś każdy Start bierze domyślną kwotę zapisaną w Settings
+//! (`commands::settings::SettingsWire::default_budget_usd`), a `None` dociera tu **wyłącznie
+//! po jawnym wyczyszczeniu pola przez człowieka** — i wtedy ekran mówi to na głos
+//! (`src/sections/run/limits/budget.tsx`, `NO_CEILING_SAID`).
+//!
+//! Drugi przypadek pyta więc o to samo zachowanie silnika, ale o inne zdanie produktu, i dlatego
+//! nazywa się inaczej. Asercje zostają CO DO ZNAKU: bieg, z którego człowiek zdjął sufit, ma
+//! dojść do końca w komplecie, a plik biegu nie ma nieść ani słowa o sufcie, którego nie ma.
 
 use std::error::Error;
 use std::fs;
@@ -194,22 +206,25 @@ async fn the_step_that_had_not_started_is_skipped_and_says_why() -> Result<(), B
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_run_without_a_ceiling_is_untouched() -> Result<(), Box<dyn Error>> {
+async fn a_run_whose_ceiling_a_person_took_off_is_untouched() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
+    // `None` znaczy tu od 2026-08-29 dokładnie jedno: człowiek WYCZYŚCIŁ pole kwoty na pasku
+    // Run. Każda inna droga startu niesie liczbę — powód w całości stoi w nagłówku pliku.
     let (report, run_file) = bench.run(None).await?;
 
     assert_eq!(
         report.steps,
         vec![StepState::Succeeded; 3],
-        "the same three steps, the same costs, no ceiling: every one of them has to finish. A \
-         run that stops at a limit nobody set is worse than no limit at all. It came out as {:?}",
+        "the same three steps, the same costs, and a person who said this one run is not to be \
+         capped: every one of them has to finish. Taking the ceiling off has to keep meaning \
+         what it says, or the only honest way to run without one is gone. It came out as {:?}",
         report.steps
     );
     assert_eq!(
         run_file.get("budget_usd"),
         None,
-        "a run nobody capped has nothing to say about a cap, and a key saying \"no ceiling\" in \
-         every run file in history is length paid for silence"
+        "a run whose ceiling was taken off has nothing to say about a ceiling, and a key saying \
+         \"no ceiling\" in every run file in history is length paid for silence"
     );
     Ok(())
 }

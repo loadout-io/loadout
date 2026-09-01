@@ -1,5 +1,5 @@
-//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś jedno pole: kto
-//! prowadzi rozmowę.
+//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś dwa pola: kto
+//! prowadzi rozmowę i ile wolno wydać na jeden bieg.
 //!
 //! **Ani jednego `use tauri::` i ani jednego `#[tauri::command]`** — jak w całym tym katalogu.
 //! Skorupy stoją w `src/ipc.rs` i mają po dwie linie (niezmiennik 1).
@@ -35,11 +35,39 @@ use serde::{Deserialize, Serialize};
 /// Nazwa pliku. Jeden plik, nie katalog: to jest garść wyborów, a nie biblioteka.
 const FILE: &str = "settings.json";
 
+/// Ile wolno wydać na jeden bieg, dopóki człowiek nie powie inaczej.
+///
+/// 2026-08-29 — SKĄD TA LICZBA, bo sufit wzięty z sufitu jest gorszy niż jego brak. Zmierzone
+/// koszty prawdziwych biegów właściciela z fazy 8: od $11 do $67,78, a jeden bieg przerwał LIMIT
+/// KONTA, nie aplikacja. 75 stoi więc NAD każdym biegiem, który u właściciela naprawdę dojechał
+/// do końca — gryzie dopiero poza wszystkim, co zostało zmierzone. Niżej (na przykład $50)
+/// ucinałby pracę, która już raz skończyła się sama; wyżej przestaje być granicą czegokolwiek,
+/// bo jedyny bieg, który jej dotknął, i tak zatrzymał się na limicie konta.
+///
+/// **Zmiana tej liczby NIE wymaga rekompilacji.** To jest wyłącznie wartość, od której zaczyna
+/// świeża biblioteka: człowiek nadpisuje ją w Settings, a od tej chwili prawdą jest plik
+/// (`~/.loadout/settings.json`, niezmiennik 4). Stała jest tu po to, żeby na pierwszym
+/// uruchomieniu nie było stanu „bez sufitu" — a nie po to, żeby ktokolwiek musiał ją edytować.
+const SHIPPED_CEILING_USD: f64 = 75.0;
+
+/// Ta sama podłoga, co po stronie okna (`src/sections/run/limits/budget.tsx`): kwota poniżej
+/// centa nie jest sufitem, tylko pomyłką.
+const SMALLEST_CEILING_USD: f64 = 0.01;
+
+/// Wartość, którą `serde` wstawia, kiedy plik zapisała wcześniejsza wersja Loadouta.
+///
+/// Funkcja, a nie `Default::default()` na polu: `f64::default()` to zero, czyli bieg, który nie
+/// ma prawa ruszyć. Plik bez tego klucza ma się czytać jak świeża biblioteka, a nie jak wybór,
+/// którego nikt nie podjął.
+fn shipped_ceiling_usd() -> f64 {
+    SHIPPED_CEILING_USD
+}
+
 /// Co Loadout robi domyślnie, na drucie.
 ///
-/// Jedno pole, bo jeden wybór — i tak ma zostać, dopóki nie zajdzie potrzeba drugiego. Struktura
+/// Dwa pola, bo dwa wybory — i tak ma zostać, dopóki nie zajdzie potrzeba trzeciego. Struktura
 /// „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość" (AGENTS.md §4).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsWire {
     /// Identyfikator zapisanego agenta, który prowadzi rozmowę, dopóki człowiek nie wskaże
@@ -49,11 +77,33 @@ pub struct SettingsWire {
     /// tego klucza, a brakujące pole nie ma prawa wywalić odczytu całej biblioteki (niezmiennik 5).
     #[serde(default)]
     pub default_lead: String,
+    /// Ile wolno wydać na jeden bieg, dopóki człowiek nie wpisze innej kwoty na pasku Run.
+    ///
+    /// 2026-08-29 — NIE JEST TO `Option<f64>`, i to jest cała treść tego pola. Do tego dnia bieg,
+    /// któremu nikt nie podał kwoty, leciał BEZ SUFITU i nic tego nie mówiło; sufit z definicji
+    /// mieszkał więc tylko tam, gdzie ktoś go pamiętał wpisać. Wartość jest tu zawsze, żeby
+    /// „bez sufitu" przestało być stanem, do którego wpada się przez zapomnienie — zdjąć go
+    /// nadal wolno, ale wyłącznie jednym jawnym ruchem w oknie, o którym ekran mówi na głos.
+    #[serde(default = "shipped_ceiling_usd")]
+    pub default_budget_usd: f64,
+}
+
+/// Świeża biblioteka: nikt nie prowadzi, a bieg ma sufit, którego nikt nie musiał wpisywać.
+///
+/// Ręcznie, a nie `#[derive(Default)]`, z tego samego powodu, co przy [`shipped_ceiling_usd`]:
+/// pochodne zero znaczyłoby bieg, który nie ma prawa ruszyć.
+impl Default for SettingsWire {
+    fn default() -> Self {
+        Self {
+            default_lead: String::new(),
+            default_budget_usd: SHIPPED_CEILING_USD,
+        }
+    }
 }
 
 /// Dlaczego nie dało się przeczytać albo zapisać tego pliku.
 ///
-/// Dwa warianty, dwa różne zdania dla człowieka, bo naprawia się je inaczej (niezmiennik 14:
+/// Trzy warianty, trzy różne zdania dla człowieka, bo naprawia się je inaczej (niezmiennik 14:
 /// „os error 2" nie mówi, co zrobić).
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
@@ -66,6 +116,16 @@ pub enum SettingsError {
          left it alone rather than overwrite it."
     )]
     Malformed(#[source] serde_json::Error),
+    /// Kwota, która nie jest sufitem.
+    ///
+    /// ODMOWA, A NIE CICHE PODSTAWIENIE LICZBY, KTÓRA MA SENS. Kwota poprawiona po cichu wygląda
+    /// na ekranie dokładnie tak, jakby człowiek ją tak wpisał — a to jest ten jeden wybór, przy
+    /// którym pomyłka kosztuje pieniądze.
+    #[error(
+        "A run has to be allowed at least one cent, and {0} is not an amount Loadout can stop \
+         at. Say how many dollars one run may cost."
+    )]
+    NotAnAmount(f64),
 }
 
 /// Ścieżka pliku w bibliotece.
@@ -97,18 +157,31 @@ pub fn read_settings_inner(home: &Path) -> Result<SettingsWire, SettingsError> {
     serde_json::from_str(&text).map_err(SettingsError::Malformed)
 }
 
-/// Zapisuje domyślnego lidera i oddaje to, co ma teraz plik.
+/// Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
 ///
 /// Oddaje CAŁY wpis, nie samo `()`, i to jest ta sama decyzja, co przy workspace'ach: okno ma
-/// jedno źródło prawdy o tym wyborze i nie składa go sobie z argumentu, który wysłało. Stan
+/// jedno źródło prawdy o tych wyborach i nie składa go sobie z argumentów, które wysłało. Stan
 /// zbudowany po stronie okna rozjeżdża się przy pierwszym zapisie, który częściowo się nie udał.
 ///
 /// Identyfikator jest przycinany, a puste wskazanie jest wartością, nie błędem: „nikt nie
 /// prowadzi" jest wyborem, który człowiek ma prawo podjąć, a odmowa zostawiłaby go bez drogi
 /// powrotnej z raz wskazanego agenta.
-pub fn save_settings_inner(home: &Path, default_lead: &str) -> Result<SettingsWire, SettingsError> {
+///
+/// **Kwota jest za to sądzona.** Sufit poniżej centa i sufit, który nie jest liczbą, to nie są
+/// wybory — to są pomyłki, po których każdy następny bieg albo nie ruszy wcale, albo poleci bez
+/// ograniczenia. Oba pola jadą jednym wywołaniem, bo plik jest jeden: zapis niosący połowę wpisu
+/// kasowałby drugą połowę przy każdym ruchu jednej kontrolki.
+pub fn save_settings_inner(
+    home: &Path,
+    default_lead: &str,
+    default_budget_usd: f64,
+) -> Result<SettingsWire, SettingsError> {
+    if !default_budget_usd.is_finite() || default_budget_usd < SMALLEST_CEILING_USD {
+        return Err(SettingsError::NotAnAmount(default_budget_usd));
+    }
     let settings = SettingsWire {
         default_lead: default_lead.trim().to_owned(),
+        default_budget_usd,
     };
     write(home, &settings)?;
     Ok(settings)

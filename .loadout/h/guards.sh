@@ -223,6 +223,38 @@ EOF
 }
 
 
+guard_density() {
+  # Sufit gestosci (niezmiennik 18). Ten check jest inny od reszty: nie oglada DRZEWA,
+  # tylko ZRZUT, ktory kolektor bierze w przegladarce.
+  #
+  # DLACZEGO NADPISUJEMY FIKSTURE, A NIE SADZIMY NOWEGO PLIKU. Pierwsza wersja sadzila zrzut
+  # ponad sufitem i eksportowala jego sciezke -- i MISFIRED: po `restore` plant znikal, zmienna
+  # dalej na niego wskazywala, a check konczyl kodem 2 ("names a path this tree does not hold").
+  # Pas nazwal to wprost: "RED WITH THE VIOLATION GONE -- the guard proves nothing". Zrzut musi
+  # wiec ZOSTAC po przywroceniu, tylko z liczbami pod sufitem, a gitem cofa go `PLANTED_MOD`.
+  #
+  # Liczba w plancie nie jest wymyslona: 137 px to prawdziwy pomiar ekranu pierwszego startu
+  # z 2026-08-30, razem z zaproszeniem `[data-add-workspace]`. Pozostale trzy metryki zostaja
+  # POD sufitem celowo -- gdyby wszystkie przekraczaly, check padlby takze przy zepsutym
+  # porownaniu jednej z nich, a ten straznik ma dowodzic, ze sedzia widzi KONKRETNA metryke.
+  local scene=checks/tests/fixtures/density-guard-scene.json
+  if [ ! -f "$scene" ]; then
+    NA_REASON="$scene nie istnieje, wiec nie ma czego nadpisac"
+    return 1
+  fi
+  python3 - "$scene" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+scene = json.load(open(path))
+for at in scene["widths"]:
+    at["metrics"]["chromePixels"] = 137
+json.dump(scene, open(path, "w"), indent=2, ensure_ascii=False)
+PYEOF
+  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} "$scene" )
+  export LOADOUT_DENSITY_SNAPSHOT="$scene"
+}
+
+
 guard_tests_listed() {
   # Plik w tests/it/ jest MODULEM jednego celu, nie celem. Bez wiersza `mod <nazwa>;`
   # w main.rs nie jest nigdy kompilowany ani uruchamiany -- a test nieobecny czyta sie
@@ -328,6 +360,9 @@ for script in "${CHECKS[@]}"; do
   # compare against" -- czyli guard meldowal DID NOT FIRE o checku, ktory nie mial czego
   # zobaczyc. To ta sama klasa, ktorej pilnuje caly ten plik, tylko wewnatrz niego samego.
   unset LOADOUT_TRUNK
+  # 2026-08-30: `guard_density` eksportuje sciezke zrzutu, a `export` w funkcji zyje do konca
+  # skryptu. Zostawiona dojechalaby do nastepnych checkow -- ta sama klasa, co wyzej.
+  unset LOADOUT_DENSITY_SNAPSHOT
   NA_REASON=""
   if ! "$fn"; then
     restore

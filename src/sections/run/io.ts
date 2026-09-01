@@ -37,8 +37,32 @@ import type { Step } from '../../state/run';
 import type { Line } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { feedFor } from './feed/live';
-import { budgetUsd as chosenBudget } from './limits/chosen';
+import { takeTheBudget } from './limits/chosen';
+/* SUFIT DLA BIEGU, KTÓREGO NIKT NIE ZAMÓWIŁ Z PASKA — dostawa triggera bierze domyślną kwotę
+ * z Settings, a nie to, co akurat trzyma pasek. Powód przy `theCeilingFor` niżej. */
+import { defaultBudgetUsd } from '../../state/settings';
 import type { TriggerClaim } from '../triggers/io';
+
+/**
+ * Ile wolno wydać na bieg, który właśnie rusza — i skąd ta kwota pochodzi.
+ *
+ * 2026-08-29, DRUGA POPRAWKA — DWA RODZAJE STARTU, DWA ŹRÓDŁA. Ręczny bieg bierze to, co
+ * człowiek ma w pasku, i **zjada** to nadpisanie: dotyczyło jednego biegu, więc następny wraca
+ * do kwoty z Settings. Bieg z dostawy triggera bierze WPROST kwotę domyślną — nikt przy nim nie
+ * siedzi, a pasek opisuje wtedy zamiar człowieka wobec JEGO następnego biegu. Pierwsza wersja
+ * dawała triggerowi nadpisanie z paska, więc jedno zdjęcie sufitu przed wyjściem z domu puszczało
+ * bez ograniczenia każdą sprawę, która przyszła w nocy.
+ *
+ * `undefined` na argumencie znaczy „rozstrzygnij to sam"; jawna liczba albo jawne `null` od
+ * wołającego wygrywają i nie ruszają nadpisania.
+ */
+function theCeilingFor(
+  asked: number | null | undefined,
+  claim: TriggerClaim | null,
+): number | null {
+  if (asked !== undefined) return asked;
+  return claim === null ? takeTheBudget() : defaultBudgetUsd();
+}
 
 /**
  * Co dokładnie rusza — dwa pola paska loadoutu, oba znane oknu, zanim Rust cokolwiek powie.
@@ -158,12 +182,13 @@ export function start(
    * nazwie i deserializuje je przed wejściem w ciało komendy, więc brakujący klucz nie jest
    * mniejszym wywołaniem — jest odrzuconym.
    *
-   * DOMYŚLNIE Z WYBORU CZŁOWIEKA, nie ze stałej: sufit jest faktem CAŁEJ aplikacji, tak samo jak
-   * „ile naraz" (`./limits/chosen`), i tak samo ma jechać każdą drogą startu — przyciskiem,
-   * `/run` i zielonym Run z edytora. Podanie go osobno w każdej z nich byłoby czwartą kopią tej
-   * samej decyzji, a rozjechałaby się ta droga, o której ktoś zapomni (niezmiennik 23).
+   * POMINIĘTY ZNACZY „ROZSTRZYGNIJ TO SAM", nie „bez limitu": sufit jest faktem CAŁEJ aplikacji,
+   * tak samo jak „ile naraz" (`./limits/chosen`), i tak samo ma jechać każdą drogą startu —
+   * przyciskiem, `/run` i zielonym Run z edytora. Podanie go osobno w każdej z nich byłoby czwartą
+   * kopią tej samej decyzji, a rozjechałaby się ta droga, o której ktoś zapomni (niezmiennik 23).
+   * Skąd wtedy pochodzi liczba i co to robi z nadpisaniem paska, stoi przy [`theCeilingFor`].
    */
-  budgetUsd: number | null = chosenBudget(),
+  budgetUsd?: number | null,
   /** Whether Loadout should take its private learning turn after this run. */
   reflectionEnabled = true,
 ): Promise<void> {
@@ -173,6 +198,12 @@ export function start(
      * tego pilnuje), a `going` zwalnia dopiero `finally` pierwszego biegu. */
     return Promise.reject(ONE_RUN_AT_A_TIME);
   }
+
+  /* ZA ZAPADKĄ, i to jest wymóg, nie porządek czytania: [`theCeilingFor`] ZJADA nadpisanie
+   * z paska, a drugie kliknięcie w tym samym tyknięciu pętli zdarzeń nigdy nie dojdzie do Rusta.
+   * Policzone w wartości domyślnej argumentu wykonałoby się przed tym `return` i zabrało kwotę
+   * biegowi, który dopiero co ruszył. */
+  const ceiling = theCeilingFor(budgetUsd, claim);
 
   /* Zapadka zapada się PRZED pierwszym `await`, bo dwa kliknięcia w jednym tyknięciu pętli
    * zdarzeń są jedynym przypadkiem, o który tu chodzi. Zwolnienie jedzie przez `finally`, więc
@@ -253,7 +284,7 @@ export function start(
     /* Ten sam powód, co przy `task` i `folder`: sufit wydatku jedzie kluczem także wtedy, gdy
      * nikt go nie postawił. `null` znaczy „bez limitu"; pominięcie klucza znaczy „odrzuć to
      * wywołanie". */
-    budgetUsd,
+    budgetUsd: ceiling,
     /* Explicit even at the default: Tauri matches named arguments before entering Rust. */
     reflectionEnabled,
     /* Present even for a manual Start. Tauri matches arguments by name before entering Rust,
@@ -328,9 +359,13 @@ export function ask(
   howManyAtOnce: number,
   folder: string | null = null,
   /** Sufit wydatku tego biegu, albo `null`. Ten sam sufit i tą samą drogą, co przy biegu
-   * z pliku: `/ask` jest zwykłym biegiem, więc obowiązuje go ta sama kwota. */
-  budgetUsd: number | null = chosenBudget(),
+   * z pliku: `/ask` jest zwykłym biegiem, więc obowiązuje go ta sama kwota — razem z tym, że
+   * nadpisanie z paska starcza na JEDEN bieg ([`theCeilingFor`]). */
+  budgetUsd?: number | null,
 ): Promise<void> {
+  /* Zawsze ręczny: `/ask` wychodzi z wiersza wejścia, przy którym siedzi człowiek, więc bierze
+   * jego nadpisanie i je zjada — tak samo, jak zrobiłby to przycisk Start. */
+  const ceiling = theCeilingFor(budgetUsd, null);
   /* TE DZIESIĘĆ LINII SĄ TRZECIĄ KOPIĄ (`start`, `openChat`, tutaj) I TO JEST ZGŁOSZENIE, NIE
    * WYGODA. Wyciągnięcie ich do jednej funkcji jest oczywiste i należy do właściciela tego
    * pliku: mandat T-62 na `io.ts` pozwala DOPISAĆ jedną krawędź i mówi wprost, że żadna
@@ -367,7 +402,7 @@ export function ask(
     task,
     howManyAtOnce,
     folder,
-    budgetUsd,
+    budgetUsd: ceiling,
     lines,
   }).finally(() => {
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na

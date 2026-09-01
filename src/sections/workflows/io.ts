@@ -22,10 +22,24 @@ import type { HostMaterial, Note, WorkflowFile } from '../../state/workflows';
 import type { Definition } from '../../state/library';
 import { definitionsOf, healthyOnly } from '../../state/library';
 import type { WorkflowEntry } from './list/store';
+import { activeWorkspace } from '../../state/workspaces';
+
+/* KTÓREGO FOLDERU DOTYCZY TO WYWOŁANIE (2026-08-29, T-164).
+ *
+ * Do tego dnia te trzy krawędzie nie mówiły nic o folderze, więc Rust brał katalog domyślny
+ * i JEDNA biblioteka workflow przeciekała między projektami: otwierasz B i czytasz A. Klucz
+ * nazywa się `folder` co do znaku, bo Tauri dopasowuje argumenty `invoke` PO NAZWIE — literówka
+ * nie jest błędem kompilacji, tylko cichym powrotem do stanu sprzed tej zmiany.
+ *
+ * `undefined`, a nie pusty napis, kiedy człowiek nie wybrał jeszcze workspace'u: `Option<String>`
+ * po tamtej stronie ma wtedy znaczyć „nie powiedziano", a nie „folder o pustej nazwie". */
+function here(): string | undefined {
+  return activeWorkspace()?.folder ?? undefined;
+}
 
 /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
 export function listDefinitions(): Promise<Definition<WorkflowEntry>[]> {
-  return invoke<Definition<WorkflowEntry>[]>('list_workflows');
+  return invoke<Definition<WorkflowEntry>[]>('list_workflows', { folder: here() });
 }
 
 /** Callery poza ekranem Workflows potrzebują tylko poprawnie wczytanych plików. */
@@ -52,7 +66,7 @@ export interface OpenWorkflow {
 
 /** Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z jego rewizją. */
 export function load(path: string): Promise<OpenWorkflow> {
-  return invoke<OpenWorkflow>('load_workflow', { fileName: path });
+  return invoke<OpenWorkflow>('load_workflow', { fileName: path, folder: here() });
 }
 
 /**
@@ -69,12 +83,17 @@ export function write(
   workflow: WorkflowFile,
   expectedRevision: string | null,
 ): Promise<string> {
-  return invoke<string>('save_workflow', { fileName: path, workflow, expectedRevision });
+  return invoke<string>('save_workflow', {
+    fileName: path,
+    workflow,
+    expectedRevision,
+    folder: here(),
+  });
 }
 
 /** Usuwa plik workflow z katalogu. */
 export function remove(path: string): Promise<void> {
-  return invoke<void>('delete_workflow', { fileName: path });
+  return invoke<void>('delete_workflow', { fileName: path, folder: here() });
 }
 
 /**

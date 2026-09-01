@@ -358,7 +358,7 @@ fn definition(access: FileAccess) -> Result<Agent, Box<dyn Error>> {
 fn saved_workflow(library: &Path, scratch: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let drafted = scratch.join("drafted-by-hand.json");
     fs::write(&drafted, WORKFLOW)?;
-    Ok(save_workflow_inner(library, "one-step.json", &load(&drafted)?, None)?.path)
+    Ok(save_workflow_inner(library, None, "one-step.json", &load(&drafted)?, None)?.path)
 }
 
 /// Katalog, w którym leży ten plik.

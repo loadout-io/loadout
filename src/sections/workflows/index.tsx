@@ -27,6 +27,8 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
+
+import { useWorkspaces } from '../../state/workspaces';
 import type { WorkflowListIo } from './list/store';
 import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
@@ -76,12 +78,18 @@ const OWN_STORE = createWorkflowListStore(DISK);
 export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
+  /* KTÓRY FOLDER CZYTAMY (2026-08-29, T-164). Katalog workflow należy od tego dnia do
+   * workspace'u, więc przełączenie karty zmienia ZBIÓR PLIKÓW, a nie tylko nagłówek. Bez tego
+   * pola w zależnościach efekt niżej biegłby raz na wejście do sekcji i pokazywałby katalog
+   * projektu, z którego się wyszło — czyli dokładnie tę wadę, którą to zadanie zamyka. */
+  const readingFolderOf = useWorkspaces((state) => state.activeId);
+
   /* Katalog czytamy przy wejściu na sekcję. Pliki są prawdą, a ekran jest ich widokiem
    * (niezmiennik 4) — lista, która nigdy nie pyta dysku, pokazuje to, co pamięta z ostatniego
    * zapisu tego okna. `store` w zależnościach, bo z propsem może przyjechać inny magazyn. */
   useEffect(() => {
     void store.getState().load();
-  }, [store]);
+  }, [store, readingFolderOf]);
 
   /* Który plik jest otwarty w edytorze. `null` znaczy „lista" — jeden fakt, jedno miejsce,
    * bez drugiego boolean-a „czy edytujemy" (niezmiennik 13). */

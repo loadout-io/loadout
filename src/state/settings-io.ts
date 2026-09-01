@@ -15,13 +15,22 @@ import { invoke } from '@tauri-apps/api/core';
 /**
  * Co Loadout robi domyślnie — lustro `commands::settings::SettingsWire`.
  *
- * Jedno pole, bo jeden wybór. Wskazanie, nie opis agenta: vendor, model i dial bezpieczeństwa
- * czyta Rust z pliku definicji, a kopia któregokolwiek z nich trzymana obok identyfikatora
- * byłaby pierwszą rzeczą, która się rozjedzie (niezmiennik 13).
+ * Dwa pola, bo dwa wybory. Przy liderze: wskazanie, nie opis agenta — vendor, model i dial
+ * bezpieczeństwa czyta Rust z pliku definicji, a kopia któregokolwiek z nich trzymana obok
+ * identyfikatora byłaby pierwszą rzeczą, która się rozjedzie (niezmiennik 13).
  */
 export interface Settings {
   /** Identyfikator zapisanego agenta, albo `''`, dopóki nikt nie wybierał. */
   readonly defaultLead: string;
+  /**
+   * Ile wolno wydać na jeden bieg, dopóki człowiek nie wpisze innej kwoty na pasku Run.
+   *
+   * LICZBA, NIE `number | null`, i to jest cała treść tego pola. „Bez sufitu" nie jest tu
+   * wyborem: Rust zawsze oddaje kwotę, a zdjęcie ograniczenia jest decyzją podejmowaną dla
+   * JEDNEGO biegu, w pasku, i wtedy ekran mówi o tym na głos
+   * (`sections/run/limits/budget.tsx`, `NO_CEILING_SAID`).
+   */
+  readonly defaultBudgetUsd: number;
 }
 
 /**
@@ -33,13 +42,20 @@ export function readSettings(): Promise<Settings> {
 }
 
 /**
- * Zapisuje domyślnego lidera i oddaje to, co ma teraz plik.
+ * Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
  *
- * Nazwa pola jest częścią kontraktu, nie ozdobą: Tauri dopasowuje argumenty `invoke` PO NAZWIE,
- * więc `{ defaultLead }` musi odpowiadać parametrowi `default_lead` skorupy w
- * `src-tauri/src/ipc.rs`. Podmiana klucza nie jest błędem kompilacji po żadnej ze stron —
- * jest wywołaniem ODRZUCONYM, o którym nikt się nie dowie.
+ * Nazwy pól są częścią kontraktu, nie ozdobą: Tauri dopasowuje argumenty `invoke` PO NAZWIE,
+ * więc `{ defaultLead, defaultBudgetUsd }` musi odpowiadać parametrom `default_lead`
+ * i `default_budget_usd` skorupy w `src-tauri/src/ipc.rs`. Podmiana klucza nie jest błędem
+ * kompilacji po żadnej ze stron — jest wywołaniem ODRZUCONYM, o którym nikt się nie dowie.
+ *
+ * OBA POLA W KAŻDYM ZAPISIE, bo plik jest jeden. Wywołanie niosące sam sufit nadpisałoby
+ * lidera tym, co akurat trzymało okno, i odwrotnie — a to jest ta klasa rozjazdu, którą
+ * „dysk pierwszy" (`./settings.ts`) miał zamknąć.
  */
-export function saveSettings(args: { defaultLead: string }): Promise<Settings> {
+export function saveSettings(args: {
+  defaultLead: string;
+  defaultBudgetUsd: number;
+}): Promise<Settings> {
   return invoke<Settings>('save_settings', args);
 }

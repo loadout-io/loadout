@@ -53,7 +53,7 @@ function workflow(): WorkflowEntry {
     steps: [],
     links: [],
   };
-  return { path: 'healthy.json', workflow: document };
+  return { path: 'healthy.json', place: 'library', workflow: document };
 }
 
 const AGENT_PROBLEM: DefinitionProblem = {

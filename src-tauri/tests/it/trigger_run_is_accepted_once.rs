@@ -19,7 +19,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use loadout_lib::commands::isolate;
 use loadout_lib::commands::run::{
-    TriggerRunReport, run_triggered_workflow_inner, run_workflow_inner,
+    TriggerRunReport, run_triggered_workflow_inner, run_triggered_workflow_with_budget,
+    run_workflow_inner,
 };
 use loadout_lib::commands::triggers::{self, DeliveryState, TriggerDelivery, TriggerPoll};
 use loadout_lib::commands::workspaces;
@@ -613,6 +614,61 @@ async fn run_json_accepts_the_claim_before_the_first_driver_call() -> Result<(),
         return Err(problem.into());
     }
     assert_accepted_run_file(&report.dir.join("run.json"), &delivery)?;
+    Ok(())
+}
+
+/// Bieg z dostawy triggera niesie sufit wydatku, tak samo jak bieg z kliknięcia.
+///
+/// 2026-08-29 (T-208) — ZMIERZONA WADA, NIE OSTROŻNOŚĆ NA PRZYSZŁOŚĆ. Okno wysyłało
+/// `budget_usd` przy każdym Starcie, a `ipc::run_workflow_in_project` na gałęzi z claimem
+/// wbijało `None` i sufit ginął w drodze — czyli bieg, który zaczyna się BEZ CZŁOWIEKA przy
+/// klawiaturze, był jedynym, który leciał bez ograniczenia. To jest odwrotność tego, co ma sens:
+/// nikt przy nim nie siedzi, więc nikt go nie zatrzyma.
+///
+/// Sądzi PLIK BIEGU, nie wartość zwróconą: sufit trzymany w pamięci znika razem z oknem, a plik
+/// jest prawdą, z której odbudowuje się indeks (niezmiennik 4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_triggered_run_carries_the_ceiling_it_was_given() -> Result<(), Box<dyn Error>> {
+    /// Sufit tego biegu. Nie liczba wysyłkowa i nie okrągła domyślna: taką łatwo dostać
+    /// przypadkiem od drogi, która argumentu nie czyta.
+    const CEILING: f64 = 12.5;
+
+    let bench = Bench::new()?;
+    let delivery = bench.one_delivery()?;
+    let starts = Arc::new(AtomicUsize::new(0));
+    let store = Store::open(&bench.db())?;
+    let deps = bench.deps(&store, counting_drivers(Arc::clone(&starts)));
+    let (sink, _source) = line_channel(QUEUE_CAP);
+
+    let ran = tokio::time::timeout(
+        PATIENCE,
+        run_triggered_workflow_with_budget(
+            &deps,
+            &bench.request(),
+            &delivery.claim,
+            sink,
+            Some(CEILING),
+        ),
+    )
+    .await
+    .map_err(|_| "the triggered run did not finish")??;
+    let TriggerRunReport::Ran(report) = ran else {
+        return Err("a fresh pending delivery was treated as already accepted".into());
+    };
+
+    let run_file: Value = serde_json::from_str(&fs::read_to_string(report.dir.join("run.json"))?)?;
+    assert_eq!(
+        run_file.get("budget_usd").and_then(Value::as_f64),
+        Some(CEILING),
+        "the run started by a delivery reached its end with nothing to say about a ceiling, so \
+         the amount the window sent was dropped somewhere on the way. A run nobody is watching \
+         is the one that most needs a limit"
+    );
+    assert_eq!(
+        starts.load(Ordering::Acquire),
+        1,
+        "the one-step workflow did not start exactly once"
+    );
     Ok(())
 }
 

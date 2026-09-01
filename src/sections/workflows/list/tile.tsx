@@ -28,6 +28,8 @@ import type { WorkflowFile } from './store';
 
 export interface WorkflowTileProps {
   wf: WorkflowFile;
+  /** Z której półki pochodzi ten plik. Patrz `WorkflowEntry.place`. */
+  place: 'library' | 'project';
   /**
    * Otwarcie tego workflow w edytorze.
    *
@@ -83,7 +85,7 @@ function waitingForAnAgent(steps: WorkflowFile['steps']): number {
   return steps.filter((step) => step.kind === 'agent' && !names(step.agent)).length;
 }
 
-export function WorkflowTile({ wf, onOpen }: WorkflowTileProps): ReactElement {
+export function WorkflowTile({ wf, place, onOpen }: WorkflowTileProps): ReactElement {
   /* Pusty opis to brak opisu. Plik z `"description": ""` — a taki powstaje z jednego
    * skasowanego zdania — dałby zawsze renderowany akapit, czyli linijkę kafelka trzymaną
    * otwartą dla tekstu, którego tam nie ma. */
@@ -93,6 +95,7 @@ export function WorkflowTile({ wf, onOpen }: WorkflowTileProps): ReactElement {
   return (
     <button
       data-tile
+      data-workflow-place={place}
       type="button"
       onClick={onOpen}
       className="flex flex-col gap-2 rounded-md border border-line bg-panel p-3 text-left hover:border-line-strong"

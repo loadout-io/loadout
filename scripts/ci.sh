@@ -251,6 +251,27 @@ web_lane() {
     skip "vite build" "no index.html yet"
   fi
 
+  # ── sufit gęstości: pomiar, potem sędzia (niezmiennik 18) ───────────────────────────────
+  #
+  # TUTAJ, A NIE W BRAMCE ZADANIA, i to jest cała decyzja o miejscu. Kolektor potrzebuje
+  # zbudowanego `dist/` i Chromium: w pętli zadania kosztowałby build na każdy bieg, a na
+  # maszynie bez pobranych przeglądarek dawałby czerwień, którą `NOT_A_REAL_RED` i tak odrzuca.
+  # `vite build` stoi wiersz wyżej, więc tutaj kosztuje jedno uruchomienie przeglądarki
+  # na lądowanie — i dopiero to czyni niezmiennik 18 egzekwowanym zamiast zadeklarowanego.
+  #
+  # Brak przeglądarki jest POMINIĘCIEM Z POWODEM, nigdy zielenią: pomiar, którego nikt nie
+  # wziął, nie jest pomiarem zera, a sędzia i tak odmówiłby kodem 2 na braku zrzutu.
+  if [ -f index.html ] && [ -f scripts/density-collect.mjs ]; then
+    if node scripts/density-collect.mjs --out dist/density-snapshot.json >/dev/null 2>&1; then
+      LOADOUT_DENSITY_SNAPSHOT=dist/density-snapshot.json \
+        step "density" bash checks/density.sh
+    else
+      skip "density" "the in-browser collector did not run here (no Chromium?)"
+    fi
+  else
+    skip "density" "no built app to measure"
+  fi
+
   # D5 / niezmiennik 14: słownictwo widoczne dla użytkownika. Ciało sprawdzenia
   # jest w checks/, tutaj tylko wywołanie.
   run_check_if_present checks/quick-vocabulary.sh

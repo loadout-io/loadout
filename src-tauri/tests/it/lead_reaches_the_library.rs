@@ -301,7 +301,14 @@ fn definition(
 fn saved_workflow(library: &Path, scratch: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let drafted = scratch.join("drafted-by-hand.json");
     fs::write(&drafted, WORKFLOW)?;
-    Ok(save_workflow_inner(library, "plan-then-build.json", &load(&drafted)?, None)?.path)
+    Ok(save_workflow_inner(
+        library,
+        None,
+        "plan-then-build.json",
+        &load(&drafted)?,
+        None,
+    )?
+    .path)
 }
 
 /// Katalog, w którym leży ten plik.

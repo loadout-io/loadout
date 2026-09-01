@@ -4,6 +4,85 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
 co już stoi w trunku, co stanęło i dlaczego.
 
+## 2026-08-30 — SPROSTOWANIE: chrome mieści się w suficie; 137 px było pomiarem pierwszego startu
+
+Wpis niżej twierdzi, że aplikacja przekracza sufit gęstości o 41 px. **To było nieprawdą, i wina
+leży w kolektorze, nie w produkcie.** Kolektor odpowiadał aplikacji pustą listą na
+`list_workspaces`, więc mierzył ekran, na którym stoi `[data-add-workspace]` — zaproszenie do
+wskazania pierwszego folderu. Ten przycisk znika po pierwszym wskazaniu i nikt go więcej nie
+widzi. Zmierzone obie sceny, 1512 px:
+
+```
+bez workspace   chrome = 137 px   (zaproszenie na ekranie)
+z workspace     chrome =  93 px   (zaproszenia nie ma)     ← sufit 96
+```
+
+**Aplikacja, której używa właściciel, mieści się w suficie z trzema pikselami zapasu.** Rachunki
+w §7 („karty 34 + pasek 56 = 90 z 96") były przez cały czas poprawne.
+
+Rozbicie zmierzone przy okazji, bo bez niego „napraw chrome" nie było planem: odstęp kontenera
+8 px, karty workspace 33, pasek loadoutu 52 — razem 93. Komentarz przy `StripProps.controls`
+mówi, że przed przeniesieniem kontrolek do paska było **189 px**; ta praca została wykonana
+wcześniej i to ona kupiła dzisiejszy zapas.
+
+**Czego to uczy o samym pomiarze.** Kolektor bez opisanej sceny mierzy stan, którego nikt nie
+widzi, i melduje naruszenie, którego nie ma — czyli robi dokładnie to, przed czym stoi
+niezmiennik 18, tylko w drugą stronę. Scena jest teraz wypowiedziana w nagłówku
+`scripts/density-collect.mjs`, a kontrola sceny odmawia pomiaru, kiedy zaproszenie stoi na
+ekranie, zamiast oddać większą liczbę.
+
+Zapadka ustawiona na 93/26/3/0 — legalnie, bo POD sufitem. Sprawdzenie wpięte w `scripts/ci.sh`
+w pasie `full`, zaraz za `vite build`: kolektor potrzebuje `dist/` i Chromium, więc w pętli
+zadania kosztowałby build na każdy bieg, a brak przeglądarki jest tam pominięciem z powodem,
+nigdy zielenią.
+
+## 2026-08-29 — kolektor gęstości istnieje i przy pierwszym pomiarze znalazł 41 px za dużo
+
+`checks/density.sh` był odstawiony od 2026-08-16 z jednym brakującym ogniwem: kolektorem.
+Sędzia (`scripts/density-audit.mjs`), zapadka i parser sufitu były przetestowane siedmioma
+kryteriami T-22 i działały — nie było czego mierzyć. Kolektor stoi teraz w
+`scripts/density-collect.mjs`.
+
+**Pierwszy prawdziwy pomiar, na zbudowanej aplikacji, w Chromium, przy 1100 i 1512 px:**
+
+```
+labelledRegions 3/8 · chromePixels 137/96 · textElements 26/60 · animatedRegions 0/2
+over the ceiling: chromePixels measured 137, ceiling 96 (over by 41)
+```
+
+**To jest prawdziwe naruszenie niezmiennika 18, nie wada pomiaru.** Sam §7 liczy sobie
+„Karty 34 px + pasek loadoutu 56 px = 90 z 96" i pisze „Zostało sześć pikseli" — a zmierzone
+jest 137. Czterdzieści siedem pikseli weszło nad treść, nie zauważone przez nikogo, bo jedyne
+sprawdzenie, które mogło to zobaczyć, nie miało pomiaru.
+
+Geometria, zmierzona przy 1512 px: `main` zaczyna się na 8 px (odstęp kontenera), pasek kart
+około 33 px, `[data-strip]` na 41 px, a pierwsza treść (`[data-work]`, `[data-stream-column]`)
+dopiero na **137 px**.
+
+### Czego świadomie NIE zrobiono
+
+- **Nie ustawiono zapadki.** `--update-baseline` zapisałby 137 jako punkt odniesienia, czyli
+  dokładnie „zapadka ustawiona po fakcie jest zawsze ustawiona tam, gdzie akurat jesteś" —
+  zdanie z nagłówka tego samego pliku, o poprzednim prototypie, który tak skończył ze 149 px.
+- **Nie podłączono sprawdzenia do bramki.** To jest „JEDEN ruch" opisany w nagłówku
+  `checks/density.sh`, ale wykonany dziś zamieniłby każdy bieg w czerwień do czasu naprawy UI.
+  Decyzja należy do człowieka, a nie do commita, który przy okazji przynosi kolektor.
+- **Nie naciągnięto pomiaru.** Pierwsza wersja liczyła „pierwszy element z tekstem wewnątrz
+  `main`" i dała 11 px, bo trafiła w przycisk `＋` na pasku kart. Wyglądało to jak zieleń.
+  Treść jest teraz wskazana kotwicą `[data-work]`, a jej brak jest powodem ODMOWY pomiaru.
+
+### Cztery z siedmiu metryk, i dlaczego nie siedem
+
+Mierzone: `labelledRegions`, `chromePixels`, `textElements`, `animatedRegions`.
+Niemierzone Z POWODEM: `liveRegionsPerFact` (to, który fakt niesie region, nie jest zapisane
+w DOM), `agentCardLines` (widok domyślny nie ma kafelka agenta, bo kolektor odpowiada
+aplikacji pustymi listami), `navigationAxes` (§7 stawia limit jako „2, i muszą być
+prostopadłe" — prostopadłość jest odczytem człowieka).
+
+Nagłówek `checks/density.sh` nazywa wprost pułapkę, w którą tu nie wpadamy: „zrzut z siedmioma
+metrykami »niezmierzone, powód: kolektor nie biegł« — sędzia by to przepuścił, i byłaby to
+zieleń kupiona za zdanie". Cztery liczby i trzy nazwane granice to nie to samo.
+
 ## 2026-08-29 — audyt fazy 8 i 9 po mechanizmach; faza 8 stoi na 16 z 18
 
 Audyt na życzenie właściciela, robiony **po mechanizmach w kodzie, nie po nazwach zadań**:

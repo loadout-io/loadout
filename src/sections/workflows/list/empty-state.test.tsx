@@ -42,7 +42,11 @@ function disk(seed: readonly WorkflowEntry[]): Disk {
     writes,
     list: () =>
       Promise.resolve(
-        [...files].map(([path, workflow]) => ({ path, workflow: structuredClone(workflow) })),
+        [...files].map(([path, workflow]) => ({
+          path,
+          place: 'project' as const,
+          workflow: structuredClone(workflow),
+        })),
       ),
     newId: () => {
       minted += 1;

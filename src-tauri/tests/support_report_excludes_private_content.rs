@@ -27,7 +27,7 @@ const PRIVATE: [&str; 12] = [
     "PRIVATE_NAME_T34",
 ];
 
-const ALLOWED_KEYS: [&str; 34] = [
+const ALLOWED_KEYS: [&str; 36] = [
     "agentTurns",
     "artifacts",
     "attempts",
@@ -37,6 +37,12 @@ const ALLOWED_KEYS: [&str; 34] = [
     "counts",
     "createdAt",
     "deathProof",
+    /* 2026-08-30: dwa boole `ExecutionFacts` z T-207. Wchodzą na tę listę JAWNIE, bo lista jest
+     * zamknięta z premedytacją — bez tego wiersza krok, który się nie wykonał, czytał się
+     * w zrzucie identycznie jak krok, który padł bez śladu. Zdania `summary` tu nie ma i nie
+     * ma go w zrzucie: pisze je agent, a ten plik człowiek wkleja obcym. */
+    "executed",
+    "processStarted",
     "endedAt",
     "exitCode",
     "failureKind",

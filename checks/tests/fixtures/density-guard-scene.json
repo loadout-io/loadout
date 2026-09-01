@@ -1,0 +1,12 @@
+{
+  "_why": "Scena dla straznika sufitu gestosci (.loadout/h/guards.sh, guard_density). Liczby sa POD sufitem z docs/ARCHITECTURE.md §7, zeby check na niezmienionym drzewie byl ZIELONY. Straznik nadpisuje ten plik wersja ponad sufitem, a `restore` przywraca go gitem. Plant nowym plikiem tu nie dziala: po jego skasowaniu zmienna wskazywalaby na nieistniejaca sciezke i check dawalby kod 2, czyli 'nie dalo sie zmierzyc' zamiast zieleni -- a wtedy straznik nie dowodzi niczego.",
+  "widths": [
+    { "width": 1100, "metrics": { "labelledRegions": 3, "chromePixels": 93, "textElements": 26, "animatedRegions": 0 } },
+    { "width": 1512, "metrics": { "labelledRegions": 3, "chromePixels": 93, "textElements": 26, "animatedRegions": 0 } }
+  ],
+  "notMeasured": {
+    "liveRegionsPerFact": "guard scene, not a measurement of the product",
+    "agentCardLines": "guard scene, not a measurement of the product",
+    "navigationAxes": "guard scene, not a measurement of the product"
+  }
+}

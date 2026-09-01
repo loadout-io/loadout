@@ -160,7 +160,7 @@ async fn two_agents_in_their_own_copies_and_the_step_below_reads_both_files()
          The validator said: {blockers:?}"
     );
     // `None`: ta biblioteka jest świeża, więc plik ma tu powstać, a nie kogokolwiek nadpisać.
-    let path = save_workflow_inner(&bench.home, "fan-in.json", &workflow, None)?.path;
+    let path = save_workflow_inner(&bench.home, None, "fan-in.json", &workflow, None)?.path;
     println!("== workflow: {}", path.display());
 
     // ── (c) BIEG, na PRAWDZIWYM sterowniku ─────────────────────────────────────────────────

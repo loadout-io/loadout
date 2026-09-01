@@ -98,8 +98,16 @@ describe('the workflows section mounts for real and shows the list', () => {
   it('lists what the store holds, and drops the empty sentence once there is something', async () => {
     const store = createWorkflowListStore(
       ioWith([
-        { path: 'ship-a-feature.json', workflow: workflow('w-1', 'Ship a feature') },
-        { path: 'deep-research.json', workflow: workflow('w-2', 'Deep research') },
+        {
+          path: 'ship-a-feature.json',
+          place: 'project',
+          workflow: workflow('w-1', 'Ship a feature'),
+        },
+        {
+          path: 'deep-research.json',
+          place: 'project',
+          workflow: workflow('w-2', 'Deep research'),
+        },
       ]),
     );
     await store.getState().load();

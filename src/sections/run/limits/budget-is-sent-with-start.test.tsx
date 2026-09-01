@@ -43,7 +43,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 const { ask, start } = await import('../io');
 const { Budget, BUDGET_HELP, BUDGET_LABEL } = await import('./budget');
-const { budgetUsd, setBudgetUsd } = await import('./chosen');
+const { budgetOfTheRun, budgetUsd, setBudgetUsd } = await import('./chosen');
+const { launchRun } = await import('../launch');
+const { defaultBudgetUsd } = await import('../../../state/settings');
 const { Start, LIMIT_LOCKED } = await import('../start');
 const { spendFor } = await import('../strip/model');
 const { useRun } = await import('../../../state/run');
@@ -72,6 +74,29 @@ function carried(): Record<string, unknown> {
   return typeof sent === 'object' && sent !== null ? (sent as Record<string, unknown>) : {};
 }
 
+/** Jeden bieg od początku do końca — tak, jak robi go przycisk, razem z odbiorem odpowiedzi. */
+async function oneWholeRun(): Promise<void> {
+  const going = start(OPEN, AT_ONCE);
+  release();
+  await Promise.allSettled([going]);
+}
+
+/** Workflow, który dostaje dostawa triggera. Ten sam kształt, co z `toChoices`. */
+const DELIVERED = {
+  path: 'ship-it.json',
+  name: 'Ship it',
+  steps: [{ id: 's_ship', name: 'Ship', state: 'pending' as const }],
+};
+
+/** Trwała dostawa triggera — z zamrożonym workspace, bo bez niego `launchRun` odmawia. */
+const CLAIM = {
+  slug: 'linear-mine',
+  deliveryId: 'delivery-1',
+  workflow: 'ship-it.json',
+  runId: '0198a1f2-3b4c-7d5e-8f60-0000000000aa',
+  workspace: '/Users/somebody/Projects/loadout-t208',
+};
+
 /** Wiersz „koniec tury" o zadanej cenie — dokładnie taki, jaki przychodzi z drutu. */
 function turnCosting(costUsd: number | null): Parameters<typeof spendFor>[0][number] {
   return {
@@ -98,7 +123,10 @@ describe('the ceiling a person puts on one run', () => {
   beforeEach(() => {
     invoked.mockClear();
     release();
-    setBudgetUsd(null);
+    /* 2026-08-29 (T-208) — STAN WEJŚCIOWY TO „NIKT NIC NIE POWIEDZIAŁ", nie „człowiek zdjął
+     * sufit". Do tego dnia stało tu `setBudgetUsd(null)` i te dwa zdania były jednym stanem,
+     * więc dwa przypadki niżej pinowały zachowanie, którego produkt już nie ma. */
+    setBudgetUsd(undefined);
     useRun.getState().nowRunning('', []);
   });
 
@@ -116,16 +144,30 @@ describe('the ceiling a person puts on one run', () => {
     );
   });
 
-  it('opens empty, and empty means there is no ceiling', () => {
+  /* 2026-08-29 (T-208) — TEN PRZYPADEK PINOWAŁ ODWROTNE ZDANIE i był na to zdanie zielony:
+   * „otwiera się puste, a puste znaczy bez sufitu". Puste pole było wtedy stanem POCZĄTKOWYM,
+   * więc bieg, przy którym nikt nie pomyślał o pieniądzach, leciał bez ograniczenia — a „nikt
+   * nie pomyślał" jest stanem domyślnym, nie wyjątkiem. Zmierzone koszty prawdziwych biegów
+   * właściciela z fazy 8: od $11 do $67,78, a jeden bieg przerwał limit konta, nie aplikacja.
+   * Roszczenie jest więc dziś inne, a nie słabsze: puste pole nadal znaczy „bez sufitu", tylko
+   * nie da się w nie wpaść przez zapomnienie. */
+  it('opens at the ceiling Settings remembers, so nothing starts uncapped by accident', () => {
+    expect(
+      defaultBudgetUsd(),
+      'the window has no ceiling to offer at all, so a strip nobody typed into is a run nobody ' +
+        'capped. Zero would be no better: a run allowed to spend nothing may never start',
+    ).toBeGreaterThan(0);
     expect(
       budgetUsd(),
-      'nobody has typed anything, so this run is not capped. Zero would be a run that may ' +
-        'never start, which is a state the control has no business being able to reach',
-    ).toBeNull();
+      'nobody has typed anything into the strip, and this is the state almost every run starts ' +
+        'in. It has to take the amount a person set once in Settings — a ceiling that only ' +
+        'exists when somebody remembers to type it is a ceiling most runs do not have',
+    ).toBe(defaultBudgetUsd());
     expect(
-      renderToStaticMarkup(<Budget onChange={noop} />),
-      'an empty field shows nothing, not a number somebody has to notice and clear',
-    ).toContain('value=""');
+      renderToStaticMarkup(<Budget value={budgetUsd()} onChange={noop} />),
+      'and the field shows that amount instead of standing empty. An empty field makes a run ' +
+        'nobody capped look exactly like a run whose amount has not been typed yet',
+    ).toContain('value="' + String(defaultBudgetUsd()) + '"');
   });
 
   it('says out loud that Codex steps count as nothing', () => {
@@ -165,18 +207,104 @@ describe('the ceiling a person puts on one run', () => {
     await Promise.allSettled([going]);
   });
 
-  it('sends nothing at all when the field was left empty', async () => {
+  /* 2026-08-29 (T-208) — DRUGI PRZYPADEK Z ODWRÓCONYM ROSZCZENIEM. Stało tu „wysyła nic, kiedy
+   * pole zostawiono puste", i przechodziło WYŁĄCZNIE dlatego, że `beforeEach` ustawiał wtedy
+   * `setBudgetUsd(null)` — czyli mierzyło stan, w który dziś nie da się wejść inaczej niż jawnym
+   * ruchem człowieka. Oba zdania są tu teraz obok siebie, bo dopiero razem mówią, co się
+   * zmieniło: bez wpisu jedzie sufit z Settings, a `null` dociera do Rusta dopiero po
+   * wyczyszczeniu pola. */
+  it('sends the ceiling from Settings with a run nobody typed a number into', async () => {
     const going = start(OPEN, AT_ONCE);
 
     expect(
       carried()['budgetUsd'],
-      'nobody capped this run, and the key still has to travel: Tauri reads arguments by name ' +
-        'before the command body runs, so a missing key is not a smaller call — it is a ' +
-        'rejected one',
+      'a run started without touching the amount field reached Rust uncapped. That is the ' +
+        'silent uncapped run this task removes, and it was the ordinary case: the strip opens ' +
+        'this way for every run nobody thought about',
+    ).toBe(defaultBudgetUsd());
+
+    release();
+    await Promise.allSettled([going]);
+  });
+
+  it('sends nothing at all once a person clears the field', async () => {
+    setBudgetUsd(null);
+    const going = start(OPEN, AT_ONCE);
+
+    expect(
+      carried()['budgetUsd'],
+      'clearing the field is the one way a person says "do not cap this run", and it has to ' +
+        'still work. The key travels even so: Tauri reads arguments by name before the command ' +
+        'body runs, so a missing key is not a smaller call — it is a rejected one',
     ).toBeNull();
 
     release();
     await Promise.allSettled([going]);
+  });
+
+  /* 2026-08-29, DRUGA POPRAWKA — TO JEST TA ASERCJA, KTÓREJ TU BRAKOWAŁO. Pierwsza wersja
+   * zdejmowała sufit RAZ I NA ZAWSZE: nadpisanie z paska nie było nigdy zdejmowane, więc każdy
+   * następny Start też szedł bez ograniczenia i nikt tego nie zamawiał. Przypadki wyżej tego nie
+   * widziały, bo każdy z nich puszcza dokładnie jeden bieg — a wada zaczyna się przy drugim. */
+  it('gives the next run the ceiling from Settings again, because taking it off was for one run', async () => {
+    setBudgetUsd(null);
+    await oneWholeRun();
+
+    expect(
+      budgetUsd(),
+      'the ceiling a person took off one run stayed off. Every later run then goes out uncapped ' +
+        'without anybody asking for it, which is the defect this task exists to remove — only ' +
+        'moved one run further along',
+    ).toBe(defaultBudgetUsd());
+
+    invoked.mockClear();
+    await oneWholeRun();
+
+    expect(
+      carried()['budgetUsd'],
+      'and the run after it reached Rust uncapped. A limit spent once has to come back: the ' +
+        'strip says what THIS run may cost, not what every run from now on may cost',
+    ).toBe(defaultBudgetUsd());
+  });
+
+  it('spends a typed amount on one run and does not charge it to the next', async () => {
+    setBudgetUsd(CEILING);
+    await oneWholeRun();
+
+    expect(
+      budgetOfTheRun(),
+      'the run that just went has to keep the amount it was given, or the chip above its own ' +
+        'lines reads "$3.41 of $75" over a run that was capped at $20',
+    ).toBe(CEILING);
+    expect(
+      budgetUsd(),
+      'and the next run goes back to what Settings remembers. A number typed for one run that ' +
+        'silently rules every later one is the same defect as a ceiling taken off for good',
+    ).toBe(defaultBudgetUsd());
+  });
+
+  /* Droga produkcyjna triggera, wołana dokładnie tak, jak woła ją obserwator w
+   * `src/state/triggers.ts`: `launchRun(choice, atOnce, task, claim)`. */
+  it('gives a run delivered by a trigger the ceiling from Settings, not what the strip holds', async () => {
+    setBudgetUsd(null);
+    const going = launchRun(DELIVERED, AT_ONCE, 'LOAD-1: do the work', CLAIM);
+
+    expect(
+      carried()['budgetUsd'],
+      'a run started by a trigger delivery took the amount sitting in the run strip. Nobody is ' +
+        'at the keyboard when an issue arrives at night, so a ceiling a person took off their ' +
+        'own next run must not travel to work they never saw',
+    ).toBe(defaultBudgetUsd());
+
+    release();
+    await Promise.allSettled([going]);
+
+    expect(
+      budgetUsd(),
+      'and the trigger ate the amount the person had typed for their own next run. The strip is ' +
+        'about the run a person is about to start, and a trigger firing in the background is ' +
+        'not that run',
+    ).toBeNull();
   });
 
   it('shows what is spent out of what was allowed', () => {

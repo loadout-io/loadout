@@ -63,7 +63,7 @@ import { listRuns, openChat, readRun, sayToAgent, sayToOrchestrator, stop } from
 import { lead } from './lead';
 import {
   atOnce as atOnceNow,
-  budgetUsd as budgetUsdNow,
+  budgetOfTheRun,
   subscribeToAtOnce,
   subscribeToBudget,
 } from './limits/chosen';
@@ -216,7 +216,11 @@ export default function Run(): ReactElement {
   /* Ta sama liczba, którą pokazuje kontrolka startu — jeden fakt, jedno miejsce (niezmiennik 13).
    * Gdyby ekran trzymał własną kopię, pasek kart mówiłby „of 3", kiedy suwak stoi na 8. */
   const atOnce = useSyncExternalStore(subscribeToAtOnce, atOnceNow, atOnceNow);
-  const budgetUsd = useSyncExternalStore(subscribeToBudget, budgetUsdNow, budgetUsdNow);
+  /* SUFIT TEGO BIEGU, nie tego, który pojedzie następny — i to jest różnica, która powstała
+   * 2026-08-29 razem z jednorazowym nadpisaniem z paska (`./limits/chosen`, `takeTheBudget`).
+   * Chip nad liniami mówi „$3.41 of $20" o biegu, KTÓREGO TO SĄ LINIE; kwota następnego biegu
+   * postawiona w tym mianowniku jest liczbą, której ten bieg nigdy nie dostał. */
+  const budgetUsd = useSyncExternalStore(subscribeToBudget, budgetOfTheRun, budgetOfTheRun);
 
   const strip = useMemo(
     () => stripFor(run.workflow, run.steps, spendFor(run.lines, budgetUsd)),

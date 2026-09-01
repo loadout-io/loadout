@@ -115,7 +115,7 @@ function step(over: Partial<AgentStep> = {}): AgentStep {
 
 function entry(path: string, steps: AgentStep[]): WorkflowEntry {
   const workflow: WorkflowFile = { format: 1, id: path, name: path, steps, links: [] };
-  return { path, workflow };
+  return { path, place: 'library', workflow };
 }
 
 describe('a saved agent can be opened, and a refused save says so', () => {

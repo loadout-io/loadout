@@ -280,9 +280,20 @@ odtworzyć. Element `Can't be reproduced` pozostaje widoczny do czasu takiej jaw
 |---|---|---|---|
 | **T-161** | Długi workflow zostaje wewnątrz ekranu Run | — | **ZROBIONE** — `e2e/tests/t161-long-workflow-stays-inside-run.spec.ts` |
 | **T-162** | NOW pokazuje wyłącznie pracę, która trwa | T-156 | **ZROBIONE** `9567863` — model śledzi żywe kroki per agent; kopia, która trwa, trzyma agenta w strefie |
-| **T-163** | Settings wybiera domyślnego Lead i przypina rozmowę | T-158, T-208 | Jeden globalny wybór Agenta oraz naprawa polityki Codex App Server po zmianach IPC/private transport |
-| **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-206, T-209, T-76, T-78, T-82 | Jedna zmiana scope dla CRUD, Run, historii, triggerów i importu |
-| **T-165** | Refleksja mówi, co robi i co zrobiła | T-164 | Tylko objaśnienie oraz istniejący receipt w historii, bez nowego etapu |
+| **T-163** | Settings wybiera domyślnego Lead i przypina rozmowę | T-158, T-208 | **ZROBIONE** `d817af5` — siódma sekcja; Run konsumuje domyślny wybór, nie trzyma drugiej kopii |
+| **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-206, T-209, T-76, T-78, T-82 | **ZROBIONE** `8f922d4` — katalog z projektu, a czego tam nie ma, z biblioteki; kafelek mówi, z której półki |
+| **T-165** | Refleksja mówi, co robi i co zrobiła | T-164 | **ZROBIONE** `9a7644d` — cztery rozłączne stany; „nie wiadomo" nie udaje „nie pytaliśmy" |
+
+> **Faza 9 domknięta 2026-08-29.** Wszystkie pięć pozycji plus importer (T-76 `57cca49`,
+> T-78, T-82) stoją w trunku, każda z pełnym CI na dokładnym SHA po merge'u. Z fazy 8 domknięte
+> zostały T-206 (`621d484`) i T-208 (`bb3861b`) — ta druga w dwóch połowach: próg dysku ręką
+> (`25e5de5`), sufit kosztu w Settings, bo „jawny" znaczy ustawiony przez człowieka.
+>
+> **Sufit gęstości jest egzekwowany od 2026-08-30.** Kolektor (`4b7f299`) mierzy zbudowaną
+> aplikację w Chromium przy 1100 i 1512 px, a sprawdzenie stoi w `scripts/ci.sh` w pasie `full`.
+> Widok pracy ma **93 px chrome przy suficie 96**; pierwszy pomiar mówił 137 px i był błędem
+> kolektora, który mierzył ekran pierwszego startu razem z zaproszeniem `[data-add-workspace]`
+> — sprostowane w `docs/STATUS.md`. Zapadka: 93/26/3/0.
 
 ### Fale bez konfliktów `OWNS`
 

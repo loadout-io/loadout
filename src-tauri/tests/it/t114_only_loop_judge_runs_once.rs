@@ -73,7 +73,7 @@ fn the_window_save_and_start_checks_name_the_judge_once() -> Result<(), Box<dyn 
         "two ways back from the same judge must not duplicate the judge sentence"
     );
 
-    let refusal = save_workflow_inner(rig.home.path(), "judge.json", &workflow, None)
+    let refusal = save_workflow_inner(rig.home.path(), None, "judge.json", &workflow, None)
         .expect_err("a loop judge with two copies was saved");
     let loadout_lib::workflow::file::SaveError::Refused(note) = refusal else {
         return Err("the save failed for something other than the named judge rule".into());

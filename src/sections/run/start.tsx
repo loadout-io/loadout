@@ -35,6 +35,7 @@ import { AtOnce } from './limits/at-once';
 import { Budget } from './limits/budget';
 import {
   atOnce as atOnceNow,
+  budgetOfTheRun,
   budgetUsd as budgetNow,
   setAtOnce,
   setBudgetUsd,
@@ -259,6 +260,12 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
    * Run z edytora. Kopia zamknięta w tym komponencie kazałaby dwóm pozostałym drogom zgadywać. */
   const budget = useSyncExternalStore(subscribeToBudget, budgetNow, budgetNow);
 
+  /* SUFIT BIEGU, KTÓRY IDZIE — drugie pytanie do tego samego magazynu, i od 2026-08-29 różne od
+   * pierwszego. Nadpisanie z paska obowiązuje JEDEN bieg i znika w chwili Startu
+   * (`./limits/chosen`, `takeTheBudget`), więc `budget` mówi wtedy już o NASTĘPNYM biegu.
+   * Kontrolka opisująca trwający bieg tą liczbą pokazywałaby kwotę, której on nigdy nie dostał. */
+  const runCeiling = useSyncExternalStore(subscribeToBudget, budgetOfTheRun, budgetOfTheRun);
+
   /* CO TEN BIEG MA ZBUDOWAĆ — pole, którego przycisk Start nie miał przez cały swój żywot.
    *
    * `launchRun` przyjmuje zadanie TRZECIM argumentem od dawna, a `/run <workflow> <zadanie>`
@@ -362,6 +369,12 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
    * zapisane tutaj, a nie przemilczane. */
   const runnable = firstRunnable(choices);
   const chosen = runnable?.path ?? '';
+
+  /* KTÓRY BIEG OPISUJE POLE KWOTY — trwający, dopóki trwa, a poza tym ten, który pojedzie
+   * z następnym Startem. Jedna liczba na ekranie, więc musi być jasne, o czym mówi: w trakcie
+   * biegu kontrolka i tak jest wygaszona zdaniem `LIMIT_LOCKED` („ten bieg już ruszył ze swoim
+   * limitem"), a pokazywanie przy tym zdaniu kwoty NASTĘPNEGO biegu jest sprzecznością. */
+  const showing = busy ? runCeiling : budget;
 
   /* Czy wskazany lider jest wśród wczytanych agentów. Zapisany w Settings identyfikator może
    * wskazywać agenta skasowanego od tamtej pory — plik zostaje nietknięty, a kontrolka mówi
@@ -525,9 +538,19 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
       <AtOnce value={atOnce} onChange={setAtOnce} disabled={busy ? LIMIT_LOCKED : null} />
 
       {/* DRUGA POŁOWA TEJ SAMEJ DECYZJI, w drugiej walucie: ile maszyny wolno zająć i ile
-          pieniędzy wolno wydać. Puste znaczy „bez limitu", a wygaszenie w trakcie biegu jedzie
-          TYM SAMYM zdaniem, co przy suwaku — powód jest jeden, więc i zdanie jest jedno. */}
-      <Budget value={budget} onChange={setBudgetUsd} disabled={busy ? LIMIT_LOCKED : null} />
+          pieniędzy wolno wydać. Wygaszenie w trakcie biegu jedzie TYM SAMYM zdaniem, co przy
+          suwaku — powód jest jeden, więc i zdanie jest jedno.
+
+          2026-08-29 — WYPEŁNIONE Z GÓRY ZNACZY TU „CZŁOWIEK TAK POWIEDZIAŁ", dokładnie jak przy
+          liderze wyżej: kontrolka pokazuje domyślny sufit zapisany w Settings i ten pasek go NIE
+          kopiuje. Wyczyszczenie pola jest dalej wolne i jest jedyną drogą, którą bieg dociera do
+          Rusta bez ograniczenia — a wtedy stoi obok zdanie, które to mówi. */}
+      <Budget
+        value={showing}
+        noCeiling={showing === null}
+        onChange={setBudgetUsd}
+        disabled={busy ? LIMIT_LOCKED : null}
+      />
     </div>
   );
 }

@@ -157,6 +157,7 @@ export function WorkflowList({
                 {Array.isArray(entry.workflow?.steps) ? (
                   <WorkflowTile
                     wf={entry.workflow}
+                    place={entry.place}
                     onOpen={() => {
                       onOpen(entry.path);
                     }}
