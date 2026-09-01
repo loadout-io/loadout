@@ -103,6 +103,14 @@ pub const VENDOR: &str = "claude";
 /// przez `env_clear()` [T-03, `PASSTHROUGH`].
 const DEFAULT_BINARY: &str = "claude";
 
+/// Sentinel z definicji subagenta Claude Code, nie nazwa modelu głównego procesu.
+///
+/// 2026-08-27 — import zachował `model: inherit` zgodnie z formatem vendora, ale przekazanie
+/// go dalej jako `--model inherit` kończyło krok przed pierwszym tokenem błędem
+/// `unrecognized_model`. Pominięcie flagi jest dokładnym odpowiednikiem dziedziczenia dla
+/// procesu uruchamianego przez Loadout.
+const INHERITED_MODEL: &str = "inherit";
+
 /// Podkatalog biegu, w którym leżą surowe strumienie agentów (`docs/ARCHITECTURE.md` §8).
 ///
 /// Ta nazwa i format `agent-<krok>.jsonl` obok niej są **kontraktem z `store::rebuild`**
@@ -124,6 +132,15 @@ const PRIVATE_STATE_DIR: &str = "claude";
 
 /// Oficjalny szew Claude Code, który przenosi stan procesu poza współdzielone `HOME`.
 const PRIVATE_STATE_ENV: &str = "CLAUDE_CONFIG_DIR";
+
+/// Secure credentials stay in Claude Code's default OS-owned namespace.
+///
+/// 2026-08-27 — Claude Code 2.1.247 derives a separate Keychain service from
+/// `CLAUDE_CONFIG_DIR`. T-109's per-step state isolation therefore made every step look logged
+/// out even though the person's normal CLI session was authenticated. The vendor's separate
+/// secure-storage seam accepts an empty value to keep the default Keychain namespace while the
+/// mutable config directory remains private to the step.
+const SECURE_STORAGE_ENV: &str = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 
 /// Wiersz transportu: cztery flagi, które decydują, **czym** jest to wywołanie.
 ///
@@ -926,7 +943,7 @@ impl ClaudeDriver {
             .configuration
             .environment
             .iter()
-            .filter(|(name, _)| name != PRIVATE_STATE_ENV)
+            .filter(|(name, _)| name != PRIVATE_STATE_ENV && name != SECURE_STORAGE_ENV)
             .cloned()
             .collect::<Vec<_>>();
         if let Some(private_state) = self.settings.as_ref().and_then(RunSettings::private_state) {
@@ -934,6 +951,7 @@ impl ClaudeDriver {
                 PRIVATE_STATE_ENV.to_owned(),
                 private_state.as_os_str().to_os_string(),
             ));
+            environment.push((SECURE_STORAGE_ENV.to_owned(), std::ffi::OsString::new()));
         }
         environment
     }
@@ -1247,7 +1265,11 @@ impl ClaudeDriver {
             .collect();
         command.arg("--tools").arg(available.join(","));
 
-        if let Some(model) = &spec.model {
+        if let Some(model) = spec
+            .model
+            .as_deref()
+            .filter(|model| *model != INHERITED_MODEL)
+        {
             command.arg("--model").arg(model);
         }
 

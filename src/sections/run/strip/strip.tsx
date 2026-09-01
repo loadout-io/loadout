@@ -182,8 +182,12 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
   return (
     <div
       data-strip
-      className="glass flex w-full shrink-0 items-center gap-[18px] border-b border-line px-[18px]"
-      style={{ height: STRIP_HEIGHT }}
+      className="glass flex w-full min-w-0 shrink-0 items-center gap-[18px] overflow-hidden border-b border-line px-[18px]"
+      /* Pasek stoi w automatycznej kolumnie siatki ekranu. Bez `inline-size` containment jego
+         min-content (suma 32 etykiet) ustala szerokość TEJ KOLUMNY, zanim `overflow` w ogóle ma
+         co przycinać — dlatego `min-w-0` na samym flexie nie wystarcza. Rozmiar paska pochodzi
+         od widocznej kolumny Run; jego potomkowie nie biorą udziału w tym obliczeniu. */
+      style={{ height: STRIP_HEIGHT, contain: 'inline-size' }}
     >
       {/* `items-end`: bloki stoją na jednej linii z dołu, a etykiety pod nimi. Wyrównanie do
           góry rozjeżdża je, gdy jedna etykieta jest dłuższa i łamie się. */}
@@ -197,25 +201,30 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
           bez `overflow` wypycha RODZICA, więc cała strona dostawała poziomy pasek przewijania,
           a kolumna agentów wyjeżdżała poza prawą krawędź.
 
-          Torek zwęża się więc do połowy paska i przewija się W ŚRODKU (`overflow-x-auto`,
-          `min-w-0` — bez tego drugiego element `flex` nie schodzi poniżej swojej treści).
-          Nagłówek biegu, kontrolki i chip z kosztem zostają na ekranie niezależnie od tego,
-          ile kroków ma graf. */}
+          Torek i kontrolki dzielą wolną szerokość jako dwa `flex-1`, a każdy nadmiar przewija
+          się WE WŁASNYM wycinku. Samo `max-width: 50%` nie wystarczało: szeroka prawa grupa
+          dalej wnosiła swój `max-content` do rodzica i ekran Run mierzył ponad 12 tys. px przy
+          32 krokach. `min-w-0` pozwala obu wycinkom naprawdę się skurczyć, a granica overflow
+          na całym pasku zatrzymuje potomka, który kiedyś dostanie nową szeroką kontrolkę.
+          Nagłówek biegu i prawa kolumna pracy zostają na ekranie niezależnie od grafu. */}
       <div
         ref={track}
         data-blocks
-        className="glass flex min-w-0 max-w-[50%] items-end gap-2 overflow-x-auto rounded-pill px-2 py-[5px]"
+        className="glass flex min-w-0 flex-1 items-end gap-2 overflow-x-auto rounded-pill px-2 py-[5px]"
       >
         {strip.blocks.map((block) => (
           <span
             key={block.id}
-            className="grid min-w-[38px] shrink-0 gap-[5px] justify-items-stretch"
+            className="grid min-w-[38px] max-w-40 shrink-0 gap-[5px] justify-items-stretch"
           >
             <span data-block={block.state} className={blockClasses(block)} />
             {/* Mono 11 bez wersalików — etykieta kroku jest jego nazwą, a nie nazwą pola,
-                więc nie `text-label` (ten stopień jest w tym repo wersalikami). */}
+                więc nie `text-label` (ten stopień jest w tym repo wersalikami). Długa nazwa
+                nie może jednak zrobić z jednego segmentu rzeczy szerszej niż jego widoczny
+                wycinek; pełna wartość zostaje w `title`, a wiersz zachowuje stałą wysokość. */}
             <span
-              className={`text-center font-mono text-meta whitespace-nowrap ${LABEL[block.state]}`}
+              title={block.name}
+              className={`truncate text-center font-mono text-meta ${LABEL[block.state]}`}
             >
               {block.name}
             </span>
@@ -234,20 +243,28 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
         )}
       </div>
 
-      <div className="ml-auto flex min-w-0 items-center gap-3">
-        {controls}
-        {/* Chip z makiety (`.chip`, `data-copy`): czas i koszt są wartościami maszynowymi, więc
-            mono i do skopiowania. Podpowiedź nazywa, CO to za czas — suma tur agentów nie jest
-            zegarem ściennym biegu i nie ma prawa go udawać. */}
-        {strip.spend === '' ? null : (
-          <span
-            data-copyable
-            title="Time the agents have spent on this run, and what it has cost so far"
-            className="inline-flex h-[19px] items-center rounded-pill border border-line bg-raised px-[7px] font-mono text-meta text-muted"
-          >
-            {strip.spend}
-          </span>
-        )}
+      {/* Prawa grupa jest drugim, niezależnym wycinkiem paska. `w-max` zachowuje prawdziwe
+          rozmiary kontrolek — nie ściska suwaka ani pól do zera — a zewnętrzne `overflow-x-auto`
+          daje do każdej z nich drogę klawiaturą i myszą także przy minimalnym oknie. */}
+      <div
+        data-workflow-controls
+        className="ml-auto min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+      >
+        <div className="flex w-max min-w-full items-center gap-3 [&_.field]:w-44">
+          {controls}
+          {/* Chip z makiety (`.chip`, `data-copy`): czas i koszt są wartościami maszynowymi, więc
+              mono i do skopiowania. Podpowiedź nazywa, CO to za czas — suma tur agentów nie jest
+              zegarem ściennym biegu i nie ma prawa go udawać. */}
+          {strip.spend === '' ? null : (
+            <span
+              data-copyable
+              title="Time the agents have spent on this run, and what it has cost so far"
+              className="inline-flex h-[19px] items-center rounded-pill border border-line bg-raised px-[7px] font-mono text-meta text-muted"
+            >
+              {strip.spend}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

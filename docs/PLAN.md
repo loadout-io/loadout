@@ -147,7 +147,80 @@ w [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md); tutaj tylko kolejnoś
 | **T-95** | Po biegu nie zostają kopie ani gałęzie bez pracy | T-94 | |
 | **T-97** | Codex na równi z Claude'em | T-95 | Kuracja, sieć, narzędzia, tokeny, Lead |
 | **T-159** | Prywatny stan Claude'a zachowuje systemowe logowanie | T-109 | Osobny secure storage namespace bez kopiowania tokenów |
+| **T-160** | Claude `inherit` używa domyślnego modelu | T-159 | Sentinel subagenta nie trafia jako literalne `--model inherit` |
 | **T-150** | CLI działa po uruchomieniu z Docka/Finder | T-97 | Absolutne ścieżki obu vendorów i ludzka odmowa zamiast `os error 2` |
+
+## 6c. Faza 8 — domknięcie produkcyjne po audycie 2026-08-27
+
+Audyt aktualnego kodu i pięciu faktycznych workflowów potwierdził prawdziwą współbieżność
+wewnątrz jednego biegu oraz działający tekstowy handoff. Ujawnił jednocześnie dwa braki rdzenia:
+równoległe kopie nie składają zmian w plikach, a aplikacja ma jeden globalny uchwyt biegu.
+Pozostałe zadania zamykają utratę nowszych bajtów, pre-start cleanup, nieograniczone bufory,
+retencję zamkniętych sesji, prywatny transport oraz operacyjne mnożenie odmów.
+
+### Tryb wykonania całej fazy
+
+- Pisarz: **Codex**. Druga opinia: osobny **Codex na innym modelu**, tylko do odczytu. Jest to
+  jawnie zatwierdzony przez właściciela wariant D3 z powodu małego budżetu Claude'a.
+- Zadania idą bez `ship-task.sh`: osobny worktree, uczciwe czerwone `before`, implementacja,
+  quick/full, `./review.sh --agent codex --reviewer codex`, najwyżej jedna naprawa przez
+  `./repair.sh --agent codex --reviewer codex` i pojedyncze `integrate.sh`.
+- Nie powstaje żadne zadanie zmieniające `harness/`, `checks/` ani `verify.sh`. Ręczna korekta
+  lokalnych JSON-ów jest operacją po kodzie, nie fikcyjnym artefaktem w repo.
+- Worktree mogą powstawać równolegle wyłącznie przy rozłącznym `OWNS`; ciężkie Cargo zawsze
+  biegnie szeregowo (niezmiennik 26).
+
+| ID | Zadanie | Zależy od | Dlaczego osobno |
+|---|---|---|---|
+| **T-151** | Nowsze bajty wygrywają, a Run używa widocznej rewizji | T-150, T-152 | Jeden kontrakt świeżości dla pamięci i plikowej prawdy; jawnie zastępuje wadliwą część T-139 |
+| **T-152** | Każda próba biegu rozlicza się raz i sprząta przygotowanie | T-150 | Transakcja izolacji, jedna polityka start-error, bounded cleanup i uczciwy receipt |
+| **T-153** | Równoległe gałęzie składają się w jedno działające drzewo | T-152 | Główna obietnica produktu: fizyczny fan-in + poprawna lineage kopii, bez nowego rodzaju kafelka |
+| **T-154** | Receipt, prompt i capability opisują ten sam kontekst | T-151, T-153, T-156 | Fail-closed rerun, zamrożone skills i exact per-step context |
+| **T-155** | Jeden bieg na workspace, wiele workspace'ów naraz | T-154 | Realizuje etap B świadomie odłożony przez T-69/T-71/T-65, zachowując jeden globalny limiter |
+| **T-156** | Bufory i zamknięte sesje mają skończony lifecycle | — | Niezależna fala: Check/driver bounds, Serve reap, terminal sinks i frontend eviction |
+| **T-157** | Prywatne instrukcje i sekrety nie trafiają do argv ani evidence | T-155 | Jedna wspólna granica prywatnego transportu i redakcji obu vendorów |
+| **T-158** | Błędne tło nie mnoży prób ani logu bez końca | T-155 | Typed quarantine, kompaktowanie trigger ledgeru i rotacja lokalnego logu |
+
+### Fale bez konfliktów `OWNS`
+
+```text
+Gotowe:  T-150 (wylądowało na main jako f665256)
+Fala 0:  T-152               ||  T-156
+Fala 1:  T-151               ||  T-153
+Fala 2:  T-154
+Fala 3:  T-155
+Fala 4:  T-157               ||  T-158
+```
+
+### Operacyjne domknięcie — bez taska i bez Harnessu
+
+1. Pierwszą czynnością operatora jest wyłączenie triggera `Urc` i zapisanie, czy wcześniej był
+   włączony. Pozostaje wyłączony do końca tej checklisty.
+2. Po T-153/T-154 Codex robi timestampowany backup całego `~/.loadout/workflows`, a potem
+   przygotowuje wszystkie pięć zmian jako jedną transakcję z rollbackiem:
+   - `Murmur-1`: Combine i QA kontynuują zintegrowaną pracę w plikach;
+   - `Urc`: Serve stoi po integracji i sprawdzeniu kodu, nie jako niezależny root;
+   - `Reaserch + implement`: C1/C2 używają osobnych kopii, a Implement kontynuuje ich fan-in;
+   - `Deep reaserch`: każda para kopii używa `{{copy}}`/`{{copies}}` i własnej lineage;
+   - `Easy`: pozostaje proste; realny Check dochodzi tylko wtedy, gdy workflow ma dostarczać kod.
+3. Każdy kandydat przechodzi `jq -e`, produkcyjny save/reload i pełny preflight. Błąd dowolnego
+   pliku przywraca cały backup. Drugi Codex porównuje backup i wynik wyłącznie read-only.
+4. Trigger pozostaje wyłączony przez T-155/T-158. Po zielonym T-151…T-158 current-SHA smoke
+   uruchamia tymczasową kopię `Murmur-1` na disposable repo/worktree z Codex writer + Codex
+   reviewer. Nie mutuje globalnych agentów. Receipt musi być przypięty do SHA, a kontrola obejmuje
+   overlap, finalne pliki, kontekst, brak sierot i cleanup.
+5. `Urc` wraca do poprzedniego stanu wyłącznie po zielonym preflight i smoke; jeśli wcześniej był
+   wyłączony, pozostaje wyłączony.
+
+Nie powstaje teraz osobny task soak/release: T-149, pełna bramka i powyższy current-SHA smoke
+dają istniejące oracles bez ich duplikowania. Task dystrybucyjny powstanie dopiero przy realnej
+instalacji u drugiej osoby; wtedy kontrakt obejmie provenance SHA, podpisanie/notaryzację dokładnej
+aplikacji wewnątrz DMG i bezpieczny transport poświadczeń Apple.
+
+Raw evidence, handoffy i zamknięte rozmowy Lead są trwałą historią użytkownika, więc ich liczba
+nie wraca do baseline'u w tej fazie. Przed publiczną dystrybucją właściciel musi wybrać jawne
+Delete, quota/retention albo świadomie zaakceptować nieograniczoną historię; automatyczne kasowanie
+bez tej decyzji łamałoby zasadę „pliki są prawdą".
 
 ## 7. Linia cięcia
 
