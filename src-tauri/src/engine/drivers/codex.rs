@@ -1132,6 +1132,34 @@ fn rejected_app_request(method: &str, error: &Value) -> anyhow::Error {
     anyhow!("The Codex App Server rejected its {method} request with code {code}: {message}")
 }
 
+/// Rozlicza odpowiedź JSON-RPC, jeżeli ta linia nią jest.
+///
+/// Osobna funkcja trzyma w jednym miejscu parowanie `id` z oczekującą prośbą. Aktor pozostaje
+/// właścicielem kolejności odczytu, ale nie musi przy tym powtarzać szczegółów odpowiedzi.
+fn answer_app_server_request(
+    parsed: &Value,
+    pending: &mut HashMap<u64, PendingAppRequest>,
+    state: &mut AppServerState,
+    evidence_target: Option<&EvidenceTarget>,
+) -> bool {
+    let Some(id) = parsed.get("id").and_then(Value::as_u64) else {
+        return false;
+    };
+    if let Some(request) = pending.remove(&id) {
+        let answer = if let Some(error) = parsed.get("error").filter(|error| !error.is_null()) {
+            Err(rejected_app_request(request.method, error))
+        } else {
+            Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
+        };
+        if request.reply.send(answer).is_err() {
+            mark_evidence_incomplete(evidence_target);
+        }
+    } else {
+        state.decoder.dropped += 1;
+    }
+    true
+}
+
 /// Co człowiek ma z tym zrobić — dla awarii vendora, które umiemy rozpoznać po treści.
 ///
 /// `None` znaczy „nie znamy tej", i wtedy jedzie oryginał. Lista jest krótka z rozmysłu: rośnie
@@ -1241,21 +1269,12 @@ where
                     }
                 };
 
-                if let Some(id) = parsed.get("id").and_then(Value::as_u64) {
-                    if let Some(request) = pending.remove(&id) {
-                        let answer = if let Some(error) =
-                            parsed.get("error").filter(|error| !error.is_null())
-                        {
-                            Err(rejected_app_request(request.method, error))
-                        } else {
-                            Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
-                        };
-                        if request.reply.send(answer).is_err() {
-                            mark_evidence_incomplete(evidence_target.as_ref());
-                        }
-                    } else {
-                        state.decoder.dropped += 1;
-                    }
+                if answer_app_server_request(
+                    &parsed,
+                    &mut pending,
+                    &mut state,
+                    evidence_target.as_ref(),
+                ) {
                     continue;
                 }
 
@@ -3931,7 +3950,10 @@ mod stop_proof_tests {
             1,
             "the fixture never handed a real JSON-RPC request to the App Server actor"
         );
-        tokio::time::advance(REQUEST_WINDOW - Duration::from_secs(1)).await;
+        let before_deadline = REQUEST_WINDOW
+            .checked_sub(Duration::from_secs(1))
+            .ok_or_else(|| anyhow!("the App Server request window must exceed one second"))?;
+        tokio::time::advance(before_deadline).await;
         assert!(
             !request.is_finished(),
             "the request deadline fired before its documented transport window"
@@ -3944,10 +3966,10 @@ mod stop_proof_tests {
             "an App Server that kept its pipes open without one JSON-RPC response left the first \
              Lead turn waiting forever"
         );
-        let error = request
-            .await?
-            .expect_err("an unanswered JSON-RPC request was reported as successful")
-            .to_string();
+        let error = match request.await? {
+            Ok(_) => anyhow::bail!("an unanswered JSON-RPC request was reported as successful"),
+            Err(error) => error.to_string(),
+        };
         assert!(
             error.contains("did not answer") && error.contains("30 seconds"),
             "the bounded transport failure did not say what stopped responding: {error}"

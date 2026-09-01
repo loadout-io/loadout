@@ -3074,6 +3074,22 @@ enum Ended {
     RepeatedToolFailure,
 }
 
+/// Wszystkie pożyczone wejścia jednej żywej tury, zebrane pod jednym właścicielem wywołania.
+///
+/// Odbiorniki bariery i bezpiecznika należą do tej samej pompy zdarzeń; `slot` należy do tego
+/// samego procesu co `handle`. Jeden kształt utrudnia rozdzielenie tych par przy dokładaniu
+/// kolejnej drogi końca tury i nie zmienia właściciela żadnego z zasobów.
+struct LiveAgentTurn<'a> {
+    id: StepId,
+    cancel: &'a CancellationToken,
+    runtime_fault: &'a mut mpsc::Receiver<()>,
+    finished_event: &'a mut mpsc::Receiver<()>,
+    finish_forward: &'a CancellationToken,
+    reads: &'a [String],
+    evidence: &'a EvidenceTarget,
+    slot: &'a mut Option<limits::Slot>,
+}
+
 /// Start jednej czynności, zachowany do przyjścia wyniku o tym samym identyfikatorze wywołania.
 #[derive(Debug)]
 struct PendingToolCall {
@@ -9101,6 +9117,69 @@ impl Live {
         self.when_this_one_fails(id, &why).await
     }
 
+    /// Składa wszystkie nakładki sterownika w jedynej bezpiecznej kolejności przed startem.
+    fn configured_driver_for_agent(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+        target: EvidenceTarget,
+    ) -> anyhow::Result<Arc<dyn AgentDriver>> {
+        let configuration = self.vendor_arguments_for(id, job)?;
+        let driver = if configuration.arguments.is_empty() {
+            Arc::clone(&job.driver)
+        } else {
+            match job.driver.configured(&configuration) {
+                Some(driver) => driver,
+                /* Zatwierdzone polaczenie jest zgoda czlowieka wyrazona w imporcie, wiec
+                 * krok, ktory ich nie dostanie, NIE RUSZA. Sam szczebel tej wagi nie ma:
+                 * jest ustawieniem, nie zgoda, a stary dubel silnika bez tego szwu ma dalej
+                 * dac sie uzyc do testowania planisty. */
+                None if !job.connections.is_empty() => {
+                    return Err(anyhow::anyhow!(
+                        "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
+                    ));
+                }
+                None => Arc::clone(&job.driver),
+            }
+        };
+        let driver =
+            Self::carrying_what_we_inherited(&driver, job.borrowed.flags(), &job.plugin_flags)?;
+        /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH OPAKOWAN JEST
+         * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
+         * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.
+         * Connections ida pierwsze, bo `configured` startuje od `job.driver`; dziedziczenie
+         * drugie; dowody ostatnie, bo tylko wtedy nadajnik dowodow siedzi na sterowniku,
+         * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
+         * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
+        let driver = self.with_its_own_settings(id, job, &driver)?;
+        match driver.with_evidence(target) {
+            Some(driver) => Ok(driver),
+            /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
+             * testowania planisty. Produkcyjna fabryka ma tylko te dwa identyfikatory;
+             * dla nich brak szwu jest odmowa, nigdy cichym biegiem bez dowodu. */
+            None if matches!(driver.id(), "claude" | "codex") => Err(anyhow::anyhow!(
+                "this agent app cannot preserve its private run evidence"
+            )),
+            None => Ok(driver),
+        }
+    }
+
+    /// Konfiguruje sterownik i oddaje mu nadajnik dokładnie raz.
+    ///
+    /// Gdy konfiguracja odmawia, `events` spada razem z tą ramką przed powrotem błędu. Dzięki
+    /// temu kurator nie zostaje otwarty na ścieżce, na której żaden sterownik nie przejął kanału.
+    async fn start_agent_turn(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+        spec: RunSpec,
+        target: EvidenceTarget,
+        events: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let driver = self.configured_driver_for_agent(id, job, target)?;
+        driver.start(spec, events).await
+    }
+
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
     async fn run_agent(
         self: &Arc<Self>,
@@ -9206,58 +9285,7 @@ impl Live {
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
         let target = self.evidence_for_agent(id, spec.prompt.len(), context, &job.borrowed);
         let evidence = target.clone();
-        let configured = (|| -> anyhow::Result<Arc<dyn AgentDriver>> {
-            let configuration = self.vendor_arguments_for(id, job)?;
-            let driver = if configuration.arguments.is_empty() {
-                Arc::clone(&job.driver)
-            } else {
-                match job.driver.configured(&configuration) {
-                    Some(driver) => driver,
-                    /* Zatwierdzone polaczenie jest zgoda czlowieka wyrazona w imporcie, wiec
-                     * krok, ktory ich nie dostanie, NIE RUSZA. Sam szczebel tej wagi nie ma:
-                     * jest ustawieniem, nie zgoda, a stary dubel silnika bez tego szwu ma dalej
-                     * dac sie uzyc do testowania planisty. */
-                    None if !job.connections.is_empty() => {
-                        return Err(anyhow::anyhow!(
-                            "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
-                        ));
-                    }
-                    None => Arc::clone(&job.driver),
-                }
-            };
-            let driver =
-                Self::carrying_what_we_inherited(&driver, job.borrowed.flags(), &job.plugin_flags)?;
-            /* 2026-08-22, przy scalaniu T-34 z T-75: KOLEJNOSC TYCH OPAKOWAN JEST
-             * WYMUSZONA, nie dowolna. Kazde z nich oddaje KLON sterownika, wiec opakowanie
-             * zalozone wczesniej ginie, jesli pozniejsze klonuje sterownik sprzed niego.
-             * Connections ida pierwsze, bo `configured` startuje od `job.driver`; dziedziczenie
-             * drugie; dowody ostatnie, bo tylko wtedy nadajnik dowodow siedzi na sterowniku,
-             * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
-             * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
-            let driver = self.with_its_own_settings(id, job, &driver)?;
-            match driver.with_evidence(target) {
-                Some(driver) => Ok(driver),
-                /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
-                 * testowania planisty. Produkcyjna fabryka ma tylko te dwa identyfikatory;
-                 * dla nich brak szwu jest odmowa, nigdy cichym biegiem bez dowodu. */
-                None if matches!(driver.id(), "claude" | "codex") => Err(anyhow::anyhow!(
-                    "this agent app cannot preserve its private run evidence"
-                )),
-                None => Ok(driver),
-            }
-        })();
-        let started = match configured {
-            Ok(driver) => driver.start(spec, events).await,
-            Err(refusal) => {
-                // NADAJNIK GINIE TAKŻE NA TEJ GAŁĘZI, i to nie jest higiena. Na ścieżce startu
-                // zabiera go `start`; tutaj nie zabiera go nikt, a `pump.await` niżej kończy się
-                // dopiero na zamkniętej kolejce. Nadawca, który przeżył krok, trzyma kurator
-                // otwarty — czyli odmowa wyglądałaby jak agent zawieszony na zawsze (ten sam
-                // powód stoi przy `ours` piętnaście linii wyżej).
-                drop(events);
-                Err(refusal)
-            }
-        };
+        let started = self.start_agent_turn(id, job, spec, target, events).await;
 
         let turned = match started {
             Ok(handle) => {
@@ -9267,15 +9295,17 @@ impl Live {
                 self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
                 self.one_turn(
-                    id,
                     handle,
-                    cancel,
-                    &mut runtime_fault,
-                    &mut finished_event,
-                    &finish_forward,
-                    &reads,
-                    &evidence,
-                    slot,
+                    LiveAgentTurn {
+                        id,
+                        cancel,
+                        runtime_fault: &mut runtime_fault,
+                        finished_event: &mut finished_event,
+                        finish_forward: &finish_forward,
+                        reads: &reads,
+                        evidence: &evidence,
+                        slot,
+                    },
                 )
                 .await
             }
@@ -9758,131 +9788,141 @@ impl Live {
         }
     }
 
-    /// Jedna tura agenta: czekaj na koniec albo na Stop, a udany wynik oddaj następnym.
-    ///
-    /// `reads` jest listą tego, co Loadout wstrzyknął w prompt tej tury ([`Live::prompt_for`]),
-    /// i jedzie prosto do front-mattera przekazania, które z niej powstanie.
-    ///
-    /// Tura, która wróciła BŁĘDEM, wraca stąd jako [`Turned::Broke`] i rozstrzyga się piętro
-    /// wyżej — powód stoi przy tamtym typie.
-    async fn one_turn(
-        &self,
-        id: StepId,
-        mut handle: Box<dyn AgentHandle>,
-        cancel: &CancellationToken,
-        runtime_fault: &mut mpsc::Receiver<()>,
-        finished_event: &mut mpsc::Receiver<()>,
-        finish_forward: &CancellationToken,
-        reads: &[String],
-        evidence: &EvidenceTarget,
-        slot: &mut Option<limits::Slot>,
-    ) -> Turned {
-        let cost_is_estimate = handle.session().vendor == "codex";
-        // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
-        // aplikacji nie ma już kogo o nie zapytać, a to po nich sprząta odzyskiwanie (T-20).
-        if let Some(group) = handle.group() {
-            self.update(|book| {
-                let step = &mut book.steps[id];
-                step.pid = Some(group.pid);
-                step.pgid = Some(group.pgid);
-            });
-        }
-
-        /* GŁOS KROKU JEST DOSTĘPNY PRZEZ CAŁĄ TURĘ — i to jest cała naprawa „nie da się napisać
-         * do agenta". Rejestrujemy pod NAZWĄ kroku, bo to ją człowiek widzi w strumieniu i na
-         * kafelku szyny; identyfikator wewnętrzny byłby kluczem, którego okno nigdy nie dostało.
-         *
-         * Zdejmujemy w `finally`-podobnym miejscu na końcu tej funkcji, nie w gałęzi sukcesu:
-         * krok anulowany i krok po limicie czasu też przestają słuchać, a głos zostawiony po nich
-         * proponowałby rozmowę z sesją, której nie ma. */
-        if let Some(voice) = handle.voice() {
-            self.control.step_can_hear(&self.plan.steps[id].name, voice);
-        }
-
-        // Limit czasu kroku. Zegar rusza TUTAJ, przy czekaniu na turę, a nie przy planowaniu:
-        // krok czekający w kolejce na wolne miejsce nie zużywa niczyich pieniędzy, więc liczenie
-        // mu tego czasu ubijałoby kroki tym częściej, im dłuższa kolejka.
-        let limit = match &self.plan.steps[id].job {
-            Job::Agent(job) => job.give_up_after,
-            // Kafelek kontrolny czeka na CZŁOWIEKA i nie pali niczyich pieniędzy, więc limit
-            // agenta go nie dotyczy. Ubijanie pytania po dwudziestu minutach byłoby karą za to,
-            // że ktoś poszedł na obiad.
-            //
-            // Krok „sprawdź" nie przechodzi TĄ funkcją — nie ma tury agenta, na którą można by
-            // czekać — a swój limit nosi jako stałą w `engine::drivers::command`. Ramię stoi tu
-            // wprost, żeby czwarty rodzaj kroku nie skompilował się bez decyzji, ile mu wolno.
-            // Kafelek „uruchom i zostaw" też nie: jego tura kończy się w chwili, w której
-            // proces wstał, a to, co wstało, ma żyć dalej z rozmysłu.
-            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Duration::MAX,
-        };
-
-        let finished = {
-            let waiting = handle.wait();
-            tokio::pin!(waiting);
-            let overdue = tokio::time::sleep(limit);
-            tokio::pin!(overdue);
-            tokio::select! {
-                // `biased`, bo tura, która właśnie się skończyła, ma pierwszeństwo przed Stopem
-                // wpadającym w tej samej chwili: zabijanie czegoś, co już zeszło, zamieniłoby
-                // udany krok w anulowany zależnie od tego, który poll wypadł pierwszy. Z tego
-                // samego powodu limit czasu stoi PO Stopie: człowiek, który nacisnął Stop
-                // w ostatniej sekundzie, ma dostać „anulowane", a nie „przekroczony limit".
-                biased;
-                done = &mut waiting => match done {
-                    Err(error) => Ended::Turn(Err(error)),
-                    Ok(turn) => {
-                        // 2026-09-01 — App Server oddaje wynik, a dopiero potem wkłada
-                        // `Finished` do osobnego kanału zdarzeń. Czekamy więc na przetworzenie
-                        // tej bariery FIFO i jeszcze raz czytamy decyzję pompy: inaczej gotowe
-                        // `wait()` mogło wygrać z trzecim, już zakolejkowanym `ToolEnd`.
-                        // Błąd `wait()` nie ma wyniku ani `Finished` i omija barierę: dopiero
-                        // dowód zejścia oraz upuszczenie uchwytu domykają wtedy jego nadajnik.
-                        let _ = finished_event.recv().await;
-                        if runtime_fault.try_recv().is_ok() {
-                            Ended::RepeatedToolFailure
-                        } else {
-                            Ended::Turn(Ok(turn))
-                        }
+    /// Czeka na dokładnie jeden z czterech końców tury, zachowując pierwszeństwo istniejącej
+    /// polityki oraz barierę FIFO między wynikiem procesu i zdarzeniem `Finished`.
+    async fn wait_for_agent_turn(
+        handle: &mut dyn AgentHandle,
+        turn: &mut LiveAgentTurn<'_>,
+        limit: Duration,
+    ) -> Ended {
+        let cancel = turn.cancel;
+        let runtime_fault = &mut *turn.runtime_fault;
+        let finished_event = &mut *turn.finished_event;
+        let waiting = handle.wait();
+        tokio::pin!(waiting);
+        let overdue = tokio::time::sleep(limit);
+        tokio::pin!(overdue);
+        tokio::select! {
+            // `biased`, bo tura, która właśnie się skończyła, ma pierwszeństwo przed Stopem
+            // wpadającym w tej samej chwili. Limit czasu stoi po Stopie z tego samego powodu.
+            biased;
+            done = &mut waiting => match done {
+                Err(error) => Ended::Turn(Err(error)),
+                Ok(outcome) => {
+                    // App Server oddaje wynik przed zdarzeniem. Bariera dowodzi, że pompa policzyła
+                    // każdy wcześniejszy `ToolEnd`, zanim wynik zostanie przyjęty.
+                    let _ = finished_event.recv().await;
+                    if runtime_fault.try_recv().is_ok() {
+                        Ended::RepeatedToolFailure
+                    } else {
+                        Ended::Turn(Ok(outcome))
                     }
-                },
-                () = cancel.cancelled() => Ended::Stopped,
-                Some(()) = runtime_fault.recv() => Ended::RepeatedToolFailure,
-                () = &mut overdue => Ended::Overdue,
-            }
-            // Pożyczka `handle` kończy się razem z tym blokiem — dopiero po nim wolno zawołać
-            // `cancel()` albo `close()` na tym samym uchwycie.
-        };
+                }
+            },
+            () = cancel.cancelled() => Ended::Stopped,
+            Some(()) = runtime_fault.recv() => Ended::RepeatedToolFailure,
+            () = &mut overdue => Ended::Overdue,
+        }
+    }
 
-        /* Głos zdejmujemy PO tym `match`, nie w gałęziach: krok anulowany i krok po limicie czasu
-         * też przestają słuchać, a `report` jest jedynym miejscem, przez które przechodzą
-         * wszystkie trzy drogi wyjścia. */
-        let report = match finished {
-            // PRZEKROCZONY LIMIT IDZIE TĄ SAMĄ DROGĄ, CO STOP: przez sterownik.
-            //
-            // `tokio::time::timeout` owinięty wokół `handle.wait()` wygląda identycznie i jest
-            // o trzy linijki tańszy — i jest błędem, przed którym stoi niezmiennik 10: anuluje
-            // ZADANIE RUSTA, a proces systemowy zostaje żywy i pali limit u dostawcy do końca
-            // świata. Dlatego tutaj wołamy `cancel()` i pytamy o DOWÓD zejścia grupy.
+    /// Rozlicza normalny wynik tury dopiero po zamknięciu sesji i dowodzie zejścia grupy.
+    async fn finish_completed_agent_turn(
+        &self,
+        mut handle: Box<dyn AgentHandle>,
+        outcome: DriverOutcome,
+        cost_is_estimate: bool,
+        turn: &mut LiveAgentTurn<'_>,
+    ) -> StepReport {
+        let id = turn.id;
+        let Closed {
+            close_succeeded,
+            code,
+            proof,
+        } = self
+            .close_and_prove(id, handle.as_mut(), turn.evidence)
+            .await;
+        let proven_dead = matches!(proof, GroupProof::Dead { .. });
+        self.released_by(handle, &mut *turn.slot, proof);
+        if !proven_dead {
+            turn.finish_forward.cancel();
+        }
+        // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
+        let evidence_complete = turn.evidence.is_healthy();
+        let ok = outcome.ok
+            && close_succeeded
+            && evidence_complete
+            && proven_dead
+            && matches!(code, None | Some(0));
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.exit_code = code;
+            record_turn(step, &outcome, cost_is_estimate);
+            step.summary = summary_of(&outcome.text);
+            if !close_succeeded || !evidence_complete {
+                /* Surowy blad zapisu moze zawierac prywatna sciezke albo tekst vendora.
+                 * Ksiege i ekran dostaja staly rodzaj; szczegol zostaje lokalnie przy
+                 * prywatnym artefakcie, ktory nadal ma stan niekompletny. */
+                step.error = Some(
+                    "Loadout could not preserve this agent's private run evidence. The \
+                     step was not accepted as complete."
+                        .to_owned(),
+                );
+            } else if !proven_dead {
+                /* Agent zrobił swoje, ale Loadout nie umie powiedzieć, czy coś po nim zostało.
+                 * Ten nasz powód wygrywa z powodem agenta. */
+                step.error = Some(STEP_SURVIVOR_ERROR.to_owned());
+            } else if !ok
+                && let FinishReason::Failed(said) = &outcome.reason
+                && let Some(short) = one_line(said, SUMMARY_LIMIT)
+            {
+                step.error = Some(short);
+            }
+        });
+        if ok {
+            // Przekazanie schodzi na dysk przed zwolnieniem potomków przez scheduler.
+            self.hand_over(id, &outcome.text, turn.reads);
+            self.remember_handoff_evidence(id, &outcome.text);
+            let why = self
+                .file_the_answer(id, &outcome.text)
+                .err()
+                .or_else(|| self.missing_a_required_field(id, &outcome.text))
+                .or_else(|| self.verdict_after(id, &outcome.text).map(str::to_owned));
+            match why {
+                Some(why) => self.when_this_one_fails(id, &why).await,
+                None => StepReport::Succeeded,
+            }
+        } else {
+            self.when_this_one_fails(id, "This step did not finish what it was given.")
+                .await
+        }
+    }
+
+    /// Rozdziela rozstrzygnięcie tury bez zmiany właściciela uchwytu ani ciężkiego slotu.
+    async fn finish_agent_turn(
+        &self,
+        mut handle: Box<dyn AgentHandle>,
+        finished: Ended,
+        cost_is_estimate: bool,
+        limit: Duration,
+        turn: &mut LiveAgentTurn<'_>,
+    ) -> Turned {
+        let id = turn.id;
+        match finished {
+            // Timeout przechodzi przez sterownik; anulowanie samego zadania Rusta zostawiłoby
+            // proces systemowy żywy (niezmienniki 6 i 10).
             Ended::Overdue => {
                 Turned::Settled(self.stop_overdue_agent(id, handle.as_mut(), limit).await)
             }
-            // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
-            // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
-            // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
             Ended::Stopped => {
                 let (report, proof) = self.stop_cancelled_agent(id, handle.as_mut()).await;
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
-                // `Alive` zabiera posiadany uchwyt i ciężki slot do rejestru. Domykamy tylko
-                // odbiornik pompy, bo zachowany uchwyt nadal ma nadajnik; kolejka jest drenowana.
-                self.released_by(handle, slot, proof);
+                self.released_by(handle, &mut *turn.slot, proof);
                 if !proven_dead {
-                    finish_forward.cancel();
+                    turn.finish_forward.cancel();
                 }
                 Turned::Settled(report)
             }
             Ended::RepeatedToolFailure => {
-                // Pompa wykrywa pętlę, ale nie posiada procesu. Zatrzymanie musi przejść dokładnie
-                // tą samą pełną eskalacją i dowodem, co Stop/timeout (niezmienniki 6 i 10).
                 let _ = self.lines.send(Line::Problem {
                     agent: self.plan.steps[id].name.clone(),
                     text: REPEATED_TOOL_FAILURE_SENTENCE.to_owned(),
@@ -9897,12 +9937,10 @@ impl Live {
                         step.error = Some(LIVE_STOP_SURVIVOR_ERROR.to_owned());
                     }
                 });
-                // `Alive` zabiera posiadany uchwyt i przepustkę do rejestru; upuszczenie ich z
-                // ramką tej funkcji osierociłoby grupę i natychmiast zwolniło ciężki slot
-                // (niezmienniki 6, 11). `Dead` zwalnia oba zwykłą drogą.
-                self.released_by(handle, slot, proof);
+                // `Alive` zabiera uchwyt i slot do rejestru; `Dead` zwalnia oba zwykłą drogą.
+                self.released_by(handle, &mut *turn.slot, proof);
                 if !proven_dead {
-                    finish_forward.cancel();
+                    turn.finish_forward.cancel();
                 }
                 Turned::Broke(REPEATED_TOOL_FAILURE_SENTENCE.to_owned())
             }
@@ -9913,117 +9951,49 @@ impl Live {
                     step.death_proof = matches!(proof, GroupProof::Dead { .. });
                     step.error = Some(error.to_string());
                 });
-                // Tura, ktora wrocila bledem, jest porazka jak kazda inna i idzie tam, gdzie
-                // rozstrzyga sie kazda (T-87 AC-5). Do 2026-08-23 wracalo stad gole
-                // `StepReport::Failed`, wiec awaria aplikacji agenta kasowala caly stozek za
-                // krokiem — takze wtedy, gdy czlowiek prosil, zeby jechac dalej.
-                //
-                // Rozstrzyga to `run_agent`, po opadnieciu kolejki zdarzen: przekazanie tego
-                // kroku niesie proze, ktora agent zdazyl powiedziec, a ona plynie ta wlasnie
-                // kolejka ([`Turned`]).
                 Turned::Broke("This step's agent stopped in the middle of its turn.".to_owned())
             }
-            Ended::Turn(Ok(turn)) => Turned::Settled({
-                // Normalne zakończenie idzie przez `close`, a zaraz za nim stoi DOWÓD zejścia
-                // grupy — oba czasowniki i powód dla ich kolejności są przy `close_and_prove`.
-                let Closed {
-                    close_succeeded,
-                    code,
-                    proof,
-                } = self.close_and_prove(id, handle.as_mut(), evidence).await;
-                let proven_dead = matches!(proof, GroupProof::Dead { .. });
-                self.released_by(handle, slot, proof);
-                if !proven_dead {
-                    finish_forward.cancel();
-                }
-                // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
-                // Samo zero z drivera nie kończy kroku sukcesem — agent, który wypisał „nie dam
-                // rady" i wyszedł czysto, nie zrobił tego, o co go proszono.
-                let evidence_complete = evidence.is_healthy();
-                let ok = turn.ok
-                    && close_succeeded
-                    && evidence_complete
-                    && proven_dead
-                    && matches!(code, None | Some(0));
-                self.update(|book| {
-                    let step = &mut book.steps[id];
-                    step.exit_code = code;
-                    record_turn(step, &turn, cost_is_estimate);
-                    step.summary = summary_of(&turn.text);
-                    if !close_succeeded || !evidence_complete {
-                        /* Surowy blad zapisu moze zawierac prywatna sciezke albo tekst vendora.
-                         * Ksiege i ekran dostaja staly rodzaj; szczegol zostaje lokalnie przy
-                         * prywatnym artefakcie, ktory nadal ma stan niekompletny. */
-                        step.error = Some(
-                            "Loadout could not preserve this agent's private run evidence. The \
-                             step was not accepted as complete."
-                                .to_owned(),
-                        );
-                    } else if !proven_dead {
-                        /* 2026-08-28 — POWÓD NASZ WYGRYWA Z POWODEM AGENTA, ta sama kolejność,
-                         * co wyżej: agent zrobił swoje, a to Loadout nie umie powiedzieć, czy po
-                         * nim coś zostało. Poprawka promptu tego nie naprawi. */
-                        step.error = Some(STEP_SURVIVOR_ERROR.to_owned());
-                    } else if !ok
-                        && let FinishReason::Failed(said) = &turn.reason
-                        && let Some(short) = one_line(said, SUMMARY_LIMIT)
-                    {
-                        /* 2026-08-23 — POWÓD PORAŻKI DOJEŻDŻA WRESZCIE DO PLIKU.
-                         *
-                         * `FinishReason::Failed(why)` powstawał w sterowniku Claude'a i nie
-                         * czytał go NIKT: `engine::line::done_line` sięgał do `reason` tylko po
-                         * `Cancelled`, a tutaj `error` ustawiało się wyłącznie przy kłopocie
-                         * z zapisem dowodów. `run.json` miał więc `"error": null` przy każdym
-                         * kroku, który padł — także w biegach, za które właściciel zapłacił.
-                         *
-                         * Kolejność warunków jest treścią: kłopot z NASZYM zapisem wygrywa
-                         * z powodem agenta, bo mówi o rzeczy, której człowiek nie naprawi
-                         * poprawką promptu. */
-                        step.error = Some(short);
-                    }
-                });
-                if ok {
-                    // Przekazanie schodzi na dysk PRZED powrotem z tury, i to jest cały warunek
-                    // poprawności tego szwu: stopień wejściowy potomkom zdejmuje planista dopiero
-                    // po tym powrocie (`engine::scheduler`). Zapis dopisany za `run_agent`
-                    // otwierałby okno, w którym następny krok już wystartował, a jego prompt nie
-                    // ma jeszcze czego wymienić — i wyglądałoby to na przekazanie gubione raz na
-                    // sto biegów, czyli na wyścig, którego nikt nie umie powtórzyć.
-                    //
-                    // Tylko po **udanym** kroku: agent, który wyszedł błędem, nie oddał wyniku,
-                    // a plik z jego ostatnim zdaniem czytałby się jak wynik. Powód porażki jedzie
-                    // do księgi i na ekran, tamtą drogą.
-                    self.hand_over(id, &turn.text, reads);
-                    self.remember_handoff_evidence(id, &turn.text);
-                    /* WERDYKT SEDZIEGO PETLI, czytany z tego samego tekstu, ktory wlasnie stal sie
-                     * przekazaniem. Po `pass` pętla sie domyka i dalsze rundy zostana pominiete
-                     * (`already_settled`); po `fail` w OSTATNIEJ rundzie krok wraca `Failed`,
-                     * zeby stozek za petla zostal `Skipped` i praca nie pojechala dalej na czyms,
-                     * co nie przeszlo. Bez tej drugiej polowy wyczerpanie prob wygladaloby jak
-                     * sukces -- czyli limit tur bylby ozdoba.
-                     *
-                     * Werdykt czytamy PO zapisie przekazania, nie przed: plik z raportem testera
-                     * ma istniec niezaleznie od tego, co postanowimy z biegiem. */
-                    /* TRZY POWODY, DLA KTÓRYCH UDANA TURA MOŻE NIE PRZEJŚĆ, i wszystkie idą
-                     * jedną drogą. Kolejność jest treścią: kłopot z NASZYM zapisem wygrywa, bo
-                     * mówi o rzeczy, której człowiek nie naprawi poprawką promptu; potem to,
-                     * czego zabrakło w odpowiedzi; werdykt sędziego na końcu, bo dotyczy pracy,
-                     * a nie kroku. */
-                    let why = self
-                        .file_the_answer(id, &turn.text)
-                        .err()
-                        .or_else(|| self.missing_a_required_field(id, &turn.text))
-                        .or_else(|| self.verdict_after(id, &turn.text).map(str::to_owned));
-                    match why {
-                        Some(why) => self.when_this_one_fails(id, &why).await,
-                        None => StepReport::Succeeded,
-                    }
-                } else {
-                    self.when_this_one_fails(id, "This step did not finish what it was given.")
-                        .await
-                }
-            }),
+            Ended::Turn(Ok(outcome)) => Turned::Settled(
+                self.finish_completed_agent_turn(handle, outcome, cost_is_estimate, turn)
+                    .await,
+            ),
+        }
+    }
+
+    /// Jedna tura agenta: czekaj na koniec albo na Stop, a udany wynik oddaj następnym.
+    ///
+    /// Tura, która wróciła błędem, zostaje [`Turned::Broke`] i rozstrzyga się w `run_agent`
+    /// dopiero po opróżnieniu kuratora.
+    async fn one_turn(
+        &self,
+        mut handle: Box<dyn AgentHandle>,
+        mut turn: LiveAgentTurn<'_>,
+    ) -> Turned {
+        let id = turn.id;
+        let cost_is_estimate = handle.session().vendor == "codex";
+        // `pid` i `pgid` zapisujemy przed pierwszym zdarzeniem; po awarii to adres odzyskiwania.
+        if let Some(group) = handle.group() {
+            self.update(|book| {
+                let step = &mut book.steps[id];
+                step.pid = Some(group.pid);
+                step.pgid = Some(group.pgid);
+            });
+        }
+
+        /* Głos jest dostępny przez całą turę i zdejmowany na wspólnej drodze po każdym wyniku. */
+        if let Some(voice) = handle.voice() {
+            self.control.step_can_hear(&self.plan.steps[id].name, voice);
+        }
+
+        // Zegar rusza przy czekaniu, nie przy planowaniu ani oczekiwaniu na wolny slot.
+        let limit = match &self.plan.steps[id].job {
+            Job::Agent(job) => job.give_up_after,
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Duration::MAX,
         };
+        let finished = Self::wait_for_agent_turn(handle.as_mut(), &mut turn, limit).await;
+        let report = self
+            .finish_agent_turn(handle, finished, cost_is_estimate, limit, &mut turn)
+            .await;
         self.control.step_went_quiet(&self.plan.steps[id].name);
         report
     }

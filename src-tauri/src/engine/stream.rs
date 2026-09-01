@@ -378,6 +378,30 @@ pub fn decode_codex(codex: &mut CodexDecoder, line: &str) -> Decoded {
     Decoded::Events(events)
 }
 
+/// Dokłada osobne fakty dla każdej ścieżki z zakończonej zmiany plików Codeksa.
+fn insert_codex_file_change_facts(item: &Value, facts: &mut HashMap<String, Tool>) {
+    // Po jednym fakcie na PLIK, nie jednym na czynność: `changes[]` bywa listą, a jeden wiersz
+    // na całą listę powiedziałby człowiekowi, że zmienił się jeden plik, podczas gdy zmieniły
+    // się trzy. Klucz jest ścieżką, bo tym samym kluczem szuka wyżej `FileEdit` — u tego
+    // vendora zmiana pliku nie ma `id` czynności.
+    for change in item
+        .get("changes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if let Some(path) = text_at(change, "path") {
+            facts.insert(
+                path.clone(),
+                Tool::Started {
+                    action: Action::Edit,
+                    target: path,
+                },
+            );
+        }
+    }
+}
+
 /// Fakty o czynnościach z jednej linii Codeksa, po identyfikatorze czynności (albo po ścieżce).
 ///
 /// To jest cała różnica między [`AgentEvent`] a tym, czego potrzebuje kuracja — ta sama, którą
@@ -491,28 +515,7 @@ fn codex_facts(value: &Value) -> HashMap<String, Tool> {
                 facts.insert(id, Tool::Ended { output });
             }
         }
-        Some("file_change") if !began => {
-            // Po jednym fakcie na PLIK, nie jednym na czynność: `changes[]` bywa listą, a jeden
-            // wiersz na całą listę powiedziałby człowiekowi, że zmienił się jeden plik, podczas
-            // gdy zmieniły się trzy. Klucz jest ścieżką, bo tym samym kluczem szuka wyżej
-            // `FileEdit` — u tego vendora zmiana pliku nie ma `id` czynności.
-            for change in item
-                .get("changes")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-            {
-                if let Some(path) = text_at(change, "path") {
-                    facts.insert(
-                        path.clone(),
-                        Tool::Started {
-                            action: Action::Edit,
-                            target: path,
-                        },
-                    );
-                }
-            }
-        }
+        Some("file_change") if !began => insert_codex_file_change_facts(item, &mut facts),
         _ => {}
     }
 

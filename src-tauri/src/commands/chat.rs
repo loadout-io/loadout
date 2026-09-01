@@ -823,6 +823,31 @@ enum FirstTurnWait {
     Deadline(ReplyDeadline),
 }
 
+enum ConversationEvent {
+    Stop(Option<StopRequest>),
+    Reader(ReaderProgress),
+    Deadline(ReplyDeadline),
+    Turn(Option<TurnRequest>),
+}
+
+enum ActorAction {
+    Continue,
+    Closing(ConversationEnd),
+    Stop,
+}
+
+enum ReplyInterruption {
+    Deadline(ReplyDeadline),
+    ReaderClosed,
+}
+
+struct StartingActor<'a> {
+    session: &'a mut Option<Session>,
+    turns: &'a mut mpsc::Receiver<TurnRequest>,
+    stops: &'a mut mpsc::Receiver<StopRequest>,
+    status: &'a AtomicU8,
+}
+
 impl Conversation {
     fn new(lines: Arc<Mutex<LineSink>>) -> Self {
         let (turns, turn_inbox) = mpsc::channel(THREAD_COMMANDS);
@@ -923,301 +948,476 @@ async fn conversation_actor(
 ) {
     let mut session: Option<Session> = None;
     let mut deadlines = VecDeque::new();
-    let mut closing = None;
 
     loop {
-        if let Some(ending) = closing {
-            serve_while_closing(&mut session, &mut turns, &mut stops, &status, ending).await;
-            return;
-        }
-
-        tokio::select! {
+        let event = tokio::select! {
             biased;
-            stop = stops.recv() => {
-                let Some(stop) = stop else {
-                    stop_orphan(session, &status, ConversationEnd::Cancelled).await;
-                    return;
-                };
-                let proof = cancel_session(&mut session, ConversationEnd::Cancelled).await;
-                let alive = matches!(proof, Some(GroupProof::Alive { .. }));
-                deadlines.clear();
-                status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
-                let _ = stop.done.send(proof);
-                if alive {
-                    closing = Some(ConversationEnd::Cancelled);
-                } else {
-                    return;
-                }
+            stop = stops.recv() => ConversationEvent::Stop(stop),
+            progress = reader_progress(&mut session) => ConversationEvent::Reader(progress),
+            expired = next_reply_deadline(&deadlines) => ConversationEvent::Deadline(expired),
+            turn = turns.recv() => ConversationEvent::Turn(turn),
+        };
+        let action = match event {
+            ConversationEvent::Stop(stop) => {
+                handle_conversation_stop(stop, &mut session, &mut deadlines, &status).await
             }
-            progress = reader_progress(&mut session) => {
-                retire_finished(&mut deadlines, progress.finished);
-                let unfinished = session
-                    .as_ref()
-                    .is_some_and(|running| running.attempts > progress.finished);
-                if !progress.closed {
-                    continue;
-                }
-
-                /* EOF JEST ZDARZENIEM SESJI, NIE KOŃCEM POBIERZNEGO ZADANIA. Do 2026-09-01
-                 * `read_along` znikało, actor dalej trzymał uchwyt i raportował `active`, a na
-                 * ekran nie trafiało ani jedno zdanie. Dopiero tutaj — u jedynego właściciela
-                 * uchwytu — wolno rozstrzygnąć śmierć i ewentualnie obiecać świeżą rozmowę. */
-                let Some((proof, ending)) = cancel_reader_session(&mut session, unfinished).await
-                else {
-                    status.store(THREAD_IDLE, Ordering::Release);
-                    continue;
-                };
-                let alive = matches!(proof, GroupProof::Alive { .. });
-                deadlines.clear();
-                if unfinished || alive {
-                    say_reader_problem(&lines, alive);
-                }
-                if alive {
-                    status.store(THREAD_CLOSING, Ordering::Release);
-                    closing = Some(ending);
-                } else {
-                    status.store(THREAD_IDLE, Ordering::Release);
-                }
+            ConversationEvent::Reader(progress) => {
+                handle_reader_progress(progress, &mut session, &mut deadlines, &status, &lines)
+                    .await
             }
-            expired = next_reply_deadline(&deadlines) => {
-                if !reply_is_still_overdue(&mut session, &mut deadlines, expired).await {
-                    continue;
-                }
-                /* Po `Dead` człowiek może dostać rozstrzygnięcie natychmiast; drain i zapis
-                 * prywatnego receiptu nie są częścią dowodu procesu i nie powinny zamrażać
-                 * widocznego stanu na czas pracy systemu plików. Callback biegnie po prawdziwym
-                 * `cancel()`, ale przed finalizacją dowodów. */
-                let proof = cancel_session_after_proof(
+            ConversationEvent::Deadline(expired) => {
+                handle_reply_deadline(expired, &mut session, &mut deadlines, &status, &lines).await
+            }
+            ConversationEvent::Turn(Some(turn)) => {
+                handle_conversation_turn(
+                    turn,
                     &mut session,
-                    ConversationEnd::AgentFailed,
-                    |proof| {
-                        let alive = matches!(proof, GroupProof::Alive { .. });
-                        say_reply_deadline_problem(&lines, alive, expired.minutes);
-                        status.store(
-                            if alive { THREAD_CLOSING } else { THREAD_IDLE },
-                            Ordering::Release,
-                        );
-                    },
-                )
-                .await;
-                let alive = matches!(proof, Some(GroupProof::Alive { .. }));
-                deadlines.clear();
-                if alive {
-                    closing = Some(ConversationEnd::AgentFailed);
-                }
-            }
-            turn = turns.recv() => {
-                let Some(turn) = turn else {
-                    stop_orphan(session, &status, ConversationEnd::Cancelled).await;
-                    return;
-                };
-
-                status.store(THREAD_ACTIVE, Ordering::Release);
-                if session.is_none() {
-                    /* Limit pierwszej odpowiedzi zaczyna się razem z widocznym oczekiwaniem,
-                     * także gdy vendor utknął jeszcze w handshake. Future startu pozostaje w
-                     * tym actorze: Stop może odpowiedzieć od razu, ale nie porzuca właściciela
-                     * procesu, którego uchwyt dopiero ma wrócić. */
-                    let first_deadline = turn.limit.deadline().map(|at| ReplyDeadline {
-                        attempt: 1,
-                        at,
-                        minutes: turn.limit.minutes,
-                    });
-                    let starting = begin_thread(turn.driver, turn.spec, turn.images);
-                    tokio::pin!(starting);
-                    let first = tokio::select! {
-                        biased;
-                        stop = stops.recv() => FirstTurnWait::Stop(stop),
-                        ready = &mut starting => FirstTurnWait::Ready(ready),
-                        expired = next_start_deadline(first_deadline) => {
-                            FirstTurnWait::Deadline(expired)
-                        }
-                    };
-                    match first {
-                        FirstTurnWait::Ready(Ok(ready)) => {
-                            let attempt = ready.attempts;
-                            /* Najpierw przyjęta tura człowieka, dopiero potem zadanie, które
-                             * może przepuścić odpowiedź. `start` mógł już zapełnić `inbox`, ale
-                             * bez czytnika żaden z tych wierszy nie wyprzedzi `Told`. */
-                            say_to_stream(&lines, &turn.text);
-                            session = Some(ready.listen(Arc::clone(&lines)));
-                            if let Some(deadline) = first_deadline {
-                                deadlines.push_back(ReplyDeadline {
-                                    attempt,
-                                    ..deadline
-                                });
-                            }
-                            let _ = turn.done.send(Ok(()));
-                        }
-                        FirstTurnWait::Ready(Err(error)) => {
-                            status.store(THREAD_IDLE, Ordering::Release);
-                            let _ = turn.done.send(Err(error));
-                        }
-                        FirstTurnWait::Stop(stop) => {
-                            let keep_actor = false;
-                            status.store(THREAD_CLOSING, Ordering::Release);
-                            let _ = turn.done.send(Err(if stop.is_some() {
-                                ChatError::StillRunning
-                            } else {
-                                ChatError::StoppedListening
-                            }));
-                            if let Some(stop) = stop {
-                                let _ = stop.done.send(Some(GroupProof::Alive { group: None }));
-                            }
-                            finish_starting(
-                                starting.as_mut(),
-                                &mut session,
-                                &mut turns,
-                                &mut stops,
-                                &status,
-                                ConversationEnd::Cancelled,
-                                keep_actor,
-                            )
-                            .await;
-                            return;
-                        }
-                        FirstTurnWait::Deadline(expired) => {
-                            say_reply_deadline_problem(&lines, true, expired.minutes);
-                            status.store(THREAD_CLOSING, Ordering::Release);
-                            let _ = turn.done.send(Err(ChatError::StillRunning));
-                            if finish_starting(
-                                starting.as_mut(),
-                                &mut session,
-                                &mut turns,
-                                &mut stops,
-                                &status,
-                                ConversationEnd::AgentFailed,
-                                true,
-                            )
-                            .await
-                            {
-                                deadlines.clear();
-                                continue;
-                            }
-                            return;
-                        }
-                    }
-                    continue;
-                }
-
-                let Some(running) = session.as_mut() else {
-                    status.store(THREAD_IDLE, Ordering::Release);
-                    let _ = turn.done.send(Err(ChatError::StoppedListening));
-                    continue;
-                };
-                let follow_up = interruptible_next_turn(
-                    running,
-                    &turn.text,
-                    turn.images,
+                    &mut turns,
                     &mut stops,
                     &mut deadlines,
+                    &status,
+                    &lines,
                 )
-                .await;
-                let attempt = running.attempts;
-                match follow_up {
-                    FollowUp::Delivered(Ok(())) => {
-                        say_to_stream(&lines, &turn.text);
-                        arm_reply_deadline(&mut deadlines, attempt, turn.limit);
-                        let _ = turn.done.send(Ok(()));
-                    }
-                    FollowUp::Delivered(Err(error)) => {
-                        let proof = cancel_session(&mut session, ConversationEnd::AgentFailed).await;
-                        deadlines.clear();
-                        if matches!(proof, Some(GroupProof::Alive { .. })) {
-                            status.store(THREAD_CLOSING, Ordering::Release);
-                            closing = Some(ConversationEnd::AgentFailed);
-                            let _ = turn.done.send(Err(ChatError::StillRunning));
-                        } else {
-                            status.store(THREAD_IDLE, Ordering::Release);
-                            let reply = if matches!(&error, ChatError::CouldNotRecord) {
-                                error
-                            } else {
-                                ChatError::StoppedListening
-                            };
-                            let _ = turn.done.send(Err(reply));
-                        }
-                    }
-                    FollowUp::Stop(Some(stop)) => {
-                        let proof = cancel_session(&mut session, ConversationEnd::Cancelled).await;
-                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
-                        deadlines.clear();
-                        status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
-                        let _ = turn.done.send(Err(if alive {
-                            ChatError::StillRunning
-                        } else {
-                            ChatError::StoppedListening
-                        }));
-                        let _ = stop.done.send(proof);
-                        if alive {
-                            closing = Some(ConversationEnd::Cancelled);
-                        } else {
-                            return;
-                        }
-                    }
-                    FollowUp::Stop(None) => {
-                        let _ = turn.done.send(Err(ChatError::StoppedListening));
-                        stop_orphan(session, &status, ConversationEnd::Cancelled).await;
-                        return;
-                    }
-                    FollowUp::Deadline(expired) => {
-                        /* `wait_with_actor_controls` wykonało już ostatnią arbitrażową próbę
-                         * odebrania `Finished`. Powtórzenie jej tutaj porzucało future wysyłki,
-                         * po czym późne `Finished` mogło cofnąć decyzję i zostawić receipt w
-                         * `sending` razem z żywym procesem. */
-                        let done = turn.done;
-                        let proof = cancel_session_after_proof(
-                            &mut session,
-                            ConversationEnd::AgentFailed,
-                            |proof| {
-                                let alive = matches!(proof, GroupProof::Alive { .. });
-                                say_reply_deadline_problem(&lines, alive, expired.minutes);
-                                status.store(
-                                    if alive { THREAD_CLOSING } else { THREAD_IDLE },
-                                    Ordering::Release,
-                                );
-                                let _ = done.send(Err(if alive {
-                                    ChatError::StillRunning
-                                } else {
-                                    ChatError::StoppedListening
-                                }));
-                            },
-                        )
-                        .await;
-                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
-                        deadlines.clear();
-                        if alive {
-                            closing = Some(ConversationEnd::AgentFailed);
-                        }
-                    }
-                    FollowUp::ReaderClosed => {
-                        let done = turn.done;
-                        let proof = cancel_session_after_proof(
-                            &mut session,
-                            ConversationEnd::AgentFailed,
-                            |proof| {
-                                let alive = matches!(proof, GroupProof::Alive { .. });
-                                say_reader_problem(&lines, alive);
-                                status.store(
-                                    if alive { THREAD_CLOSING } else { THREAD_IDLE },
-                                    Ordering::Release,
-                                );
-                                let _ = done.send(Err(if alive {
-                                    ChatError::StillRunning
-                                } else {
-                                    ChatError::StoppedListening
-                                }));
-                            },
-                        )
-                        .await;
-                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
-                        deadlines.clear();
-                        if alive {
-                            closing = Some(ConversationEnd::AgentFailed);
-                        }
-                    }
-                }
+                .await
             }
+            ConversationEvent::Turn(None) => {
+                stop_orphan(session.take(), &status, ConversationEnd::Cancelled).await;
+                ActorAction::Stop
+            }
+        };
+        match action {
+            ActorAction::Continue => {}
+            ActorAction::Closing(ending) => {
+                serve_while_closing(&mut session, &mut turns, &mut stops, &status, ending).await;
+                return;
+            }
+            ActorAction::Stop => return,
         }
+    }
+}
+
+async fn handle_conversation_stop(
+    stop: Option<StopRequest>,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+) -> ActorAction {
+    let Some(stop) = stop else {
+        stop_orphan(session.take(), status, ConversationEnd::Cancelled).await;
+        return ActorAction::Stop;
+    };
+    let proof = cancel_session(session, ConversationEnd::Cancelled).await;
+    let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+    deadlines.clear();
+    status.store(
+        if alive { THREAD_CLOSING } else { THREAD_CLOSED },
+        Ordering::Release,
+    );
+    let _ = stop.done.send(proof);
+    if alive {
+        ActorAction::Closing(ConversationEnd::Cancelled)
+    } else {
+        ActorAction::Stop
+    }
+}
+
+async fn handle_reader_progress(
+    progress: ReaderProgress,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    retire_finished(deadlines, progress.finished);
+    let unfinished = session
+        .as_ref()
+        .is_some_and(|running| running.attempts > progress.finished);
+    if !progress.closed {
+        return ActorAction::Continue;
+    }
+
+    /* EOF JEST ZDARZENIEM SESJI, NIE KOŃCEM POBIERZNEGO ZADANIA. Do 2026-09-01 `read_along`
+     * znikało, actor dalej trzymał uchwyt i raportował `active`. Tylko właściciel uchwytu może
+     * rozstrzygnąć śmierć i obiecać świeżą rozmowę. */
+    let Some((proof, ending)) = cancel_reader_session(session, unfinished).await else {
+        status.store(THREAD_IDLE, Ordering::Release);
+        return ActorAction::Continue;
+    };
+    let alive = matches!(proof, GroupProof::Alive { .. });
+    deadlines.clear();
+    if unfinished || alive {
+        say_reader_problem(lines, alive);
+    }
+    status.store(
+        if alive { THREAD_CLOSING } else { THREAD_IDLE },
+        Ordering::Release,
+    );
+    if alive {
+        ActorAction::Closing(ending)
+    } else {
+        ActorAction::Continue
+    }
+}
+
+async fn handle_reply_deadline(
+    expired: ReplyDeadline,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    if !reply_is_still_overdue(session, deadlines, expired).await {
+        return ActorAction::Continue;
+    }
+    /* Callback biegnie po prawdziwym `cancel()`, ale przed wolniejszym drainem dowodów. */
+    let proof = cancel_session_after_proof(session, ConversationEnd::AgentFailed, |proof| {
+        let alive = matches!(proof, GroupProof::Alive { .. });
+        say_reply_deadline_problem(lines, alive, expired.minutes);
+        status.store(
+            if alive { THREAD_CLOSING } else { THREAD_IDLE },
+            Ordering::Release,
+        );
+    })
+    .await;
+    let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+    deadlines.clear();
+    if alive {
+        ActorAction::Closing(ConversationEnd::AgentFailed)
+    } else {
+        ActorAction::Continue
+    }
+}
+
+async fn handle_conversation_turn(
+    turn: TurnRequest,
+    session: &mut Option<Session>,
+    turns: &mut mpsc::Receiver<TurnRequest>,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    status.store(THREAD_ACTIVE, Ordering::Release);
+    if session.is_none() {
+        handle_first_turn(turn, session, turns, stops, deadlines, status, lines).await
+    } else {
+        handle_follow_up(turn, session, stops, deadlines, status, lines).await
+    }
+}
+
+async fn handle_first_turn(
+    turn: TurnRequest,
+    session: &mut Option<Session>,
+    turns: &mut mpsc::Receiver<TurnRequest>,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    let TurnRequest {
+        driver,
+        spec,
+        text,
+        images,
+        limit,
+        done,
+    } = turn;
+    /* Limit pierwszej odpowiedzi zaczyna się razem z handshake. Future startu zostaje w actorze,
+     * więc Stop nie porzuca procesu, którego uchwyt dopiero ma wrócić. */
+    let first_deadline = limit.deadline().map(|at| ReplyDeadline {
+        attempt: 1,
+        at,
+        minutes: limit.minutes,
+    });
+    let starting = begin_thread(driver, spec, images);
+    tokio::pin!(starting);
+    let first = tokio::select! {
+        biased;
+        stop = stops.recv() => FirstTurnWait::Stop(stop),
+        ready = &mut starting => FirstTurnWait::Ready(ready),
+        expired = next_start_deadline(first_deadline) => FirstTurnWait::Deadline(expired),
+    };
+    match first {
+        FirstTurnWait::Ready(Ok(ready)) => {
+            accept_first_session(
+                ready,
+                &text,
+                done,
+                first_deadline,
+                session,
+                deadlines,
+                lines,
+            );
+            ActorAction::Continue
+        }
+        FirstTurnWait::Ready(Err(error)) => {
+            status.store(THREAD_IDLE, Ordering::Release);
+            let _ = done.send(Err(error));
+            ActorAction::Continue
+        }
+        FirstTurnWait::Stop(stop) => {
+            stop_during_start(
+                starting.as_mut(),
+                stop,
+                done,
+                StartingActor {
+                    session,
+                    turns,
+                    stops,
+                    status,
+                },
+            )
+            .await
+        }
+        FirstTurnWait::Deadline(expired) => {
+            deadline_during_start(
+                starting.as_mut(),
+                expired,
+                done,
+                StartingActor {
+                    session,
+                    turns,
+                    stops,
+                    status,
+                },
+                deadlines,
+                lines,
+            )
+            .await
+        }
+    }
+}
+
+fn accept_first_session(
+    ready: ReadySession,
+    text: &str,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    first_deadline: Option<ReplyDeadline>,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    lines: &Arc<Mutex<LineSink>>,
+) {
+    let attempt = ready.attempts;
+    /* `Told` wyprzedza czytnik, więc szybka odpowiedź nie może wyprzedzić pytania człowieka. */
+    say_to_stream(lines, text);
+    *session = Some(ready.listen(Arc::clone(lines)));
+    if let Some(deadline) = first_deadline {
+        deadlines.push_back(ReplyDeadline {
+            attempt,
+            ..deadline
+        });
+    }
+    let _ = done.send(Ok(()));
+}
+
+async fn stop_during_start<F>(
+    starting: std::pin::Pin<&mut F>,
+    stop: Option<StopRequest>,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    actor: StartingActor<'_>,
+) -> ActorAction
+where
+    F: std::future::Future<Output = Result<ReadySession, ChatError>>,
+{
+    actor.status.store(THREAD_CLOSING, Ordering::Release);
+    let _ = done.send(Err(if stop.is_some() {
+        ChatError::StillRunning
+    } else {
+        ChatError::StoppedListening
+    }));
+    if let Some(stop) = stop {
+        let _ = stop.done.send(Some(GroupProof::Alive { group: None }));
+    }
+    finish_starting(
+        starting,
+        actor.session,
+        actor.turns,
+        actor.stops,
+        actor.status,
+        ConversationEnd::Cancelled,
+        false,
+    )
+    .await;
+    ActorAction::Stop
+}
+
+async fn deadline_during_start<F>(
+    starting: std::pin::Pin<&mut F>,
+    expired: ReplyDeadline,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    actor: StartingActor<'_>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction
+where
+    F: std::future::Future<Output = Result<ReadySession, ChatError>>,
+{
+    say_reply_deadline_problem(lines, true, expired.minutes);
+    actor.status.store(THREAD_CLOSING, Ordering::Release);
+    let _ = done.send(Err(ChatError::StillRunning));
+    if finish_starting(
+        starting,
+        actor.session,
+        actor.turns,
+        actor.stops,
+        actor.status,
+        ConversationEnd::AgentFailed,
+        true,
+    )
+    .await
+    {
+        deadlines.clear();
+        ActorAction::Continue
+    } else {
+        ActorAction::Stop
+    }
+}
+
+async fn handle_follow_up(
+    turn: TurnRequest,
+    session: &mut Option<Session>,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    let Some(running) = session.as_mut() else {
+        status.store(THREAD_IDLE, Ordering::Release);
+        let _ = turn.done.send(Err(ChatError::StoppedListening));
+        return ActorAction::Continue;
+    };
+    let follow_up =
+        interruptible_next_turn(running, &turn.text, turn.images, stops, deadlines).await;
+    let attempt = running.attempts;
+    match follow_up {
+        FollowUp::Delivered(Ok(())) => {
+            say_to_stream(lines, &turn.text);
+            arm_reply_deadline(deadlines, attempt, turn.limit);
+            let _ = turn.done.send(Ok(()));
+            ActorAction::Continue
+        }
+        FollowUp::Delivered(Err(error)) => {
+            finish_failed_follow_up(error, turn.done, session, deadlines, status).await
+        }
+        FollowUp::Stop(Some(stop)) => {
+            finish_stopped_follow_up(stop, turn.done, session, deadlines, status).await
+        }
+        FollowUp::Stop(None) => {
+            let _ = turn.done.send(Err(ChatError::StoppedListening));
+            stop_orphan(session.take(), status, ConversationEnd::Cancelled).await;
+            ActorAction::Stop
+        }
+        FollowUp::Deadline(expired) => {
+            finish_interrupted_follow_up(
+                ReplyInterruption::Deadline(expired),
+                turn.done,
+                session,
+                deadlines,
+                status,
+                lines,
+            )
+            .await
+        }
+        FollowUp::ReaderClosed => {
+            finish_interrupted_follow_up(
+                ReplyInterruption::ReaderClosed,
+                turn.done,
+                session,
+                deadlines,
+                status,
+                lines,
+            )
+            .await
+        }
+    }
+}
+
+async fn finish_failed_follow_up(
+    error: ChatError,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+) -> ActorAction {
+    let proof = cancel_session(session, ConversationEnd::AgentFailed).await;
+    deadlines.clear();
+    if matches!(proof, Some(GroupProof::Alive { .. })) {
+        status.store(THREAD_CLOSING, Ordering::Release);
+        let _ = done.send(Err(ChatError::StillRunning));
+        ActorAction::Closing(ConversationEnd::AgentFailed)
+    } else {
+        status.store(THREAD_IDLE, Ordering::Release);
+        let reply = if matches!(&error, ChatError::CouldNotRecord) {
+            error
+        } else {
+            ChatError::StoppedListening
+        };
+        let _ = done.send(Err(reply));
+        ActorAction::Continue
+    }
+}
+
+async fn finish_stopped_follow_up(
+    stop: StopRequest,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+) -> ActorAction {
+    let proof = cancel_session(session, ConversationEnd::Cancelled).await;
+    let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+    deadlines.clear();
+    status.store(
+        if alive { THREAD_CLOSING } else { THREAD_CLOSED },
+        Ordering::Release,
+    );
+    let _ = done.send(Err(if alive {
+        ChatError::StillRunning
+    } else {
+        ChatError::StoppedListening
+    }));
+    let _ = stop.done.send(proof);
+    if alive {
+        ActorAction::Closing(ConversationEnd::Cancelled)
+    } else {
+        ActorAction::Stop
+    }
+}
+
+async fn finish_interrupted_follow_up(
+    interruption: ReplyInterruption,
+    done: oneshot::Sender<Result<(), ChatError>>,
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    status: &AtomicU8,
+    lines: &Arc<Mutex<LineSink>>,
+) -> ActorAction {
+    /* Arbitraż deadline'u już się zakończył; ponowne sprawdzenie porzuciłoby future wysyłki. */
+    let proof = cancel_session_after_proof(session, ConversationEnd::AgentFailed, |proof| {
+        let alive = matches!(proof, GroupProof::Alive { .. });
+        match interruption {
+            ReplyInterruption::Deadline(expired) => {
+                say_reply_deadline_problem(lines, alive, expired.minutes);
+            }
+            ReplyInterruption::ReaderClosed => say_reader_problem(lines, alive),
+        }
+        status.store(
+            if alive { THREAD_CLOSING } else { THREAD_IDLE },
+            Ordering::Release,
+        );
+        let _ = done.send(Err(if alive {
+            ChatError::StillRunning
+        } else {
+            ChatError::StoppedListening
+        }));
+    })
+    .await;
+    let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+    deadlines.clear();
+    if alive {
+        ActorAction::Closing(ConversationEnd::AgentFailed)
+    } else {
+        ActorAction::Continue
     }
 }
 
@@ -1507,104 +1707,121 @@ async fn interruptible_next_turn(
     // może nadpisać pliku, który mówi prawdę o tej odmowie.
     session.attempts = number;
 
-    let delivered = if let Some(voice) = session.voice.clone() {
-        if images.is_empty() {
-            match wait_with_actor_controls(
-                voice.send(ToAgent::Turn(text.to_owned())),
-                stops,
-                &mut session.progress,
-                deadlines,
-            )
-            .await
-            {
-                ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
-                ActorWait::Stop(stop) => {
-                    cancel_pending_attempt(evidence.as_ref(), number).await;
-                    return FollowUp::Stop(stop);
-                }
-                ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
-                ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
-            }
-        } else {
-            let sent = {
-                let (handle, progress) = (&mut session.handle, &mut session.progress);
-                wait_with_actor_controls(
-                    handle.send_with_images(text.to_owned(), images),
-                    stops,
-                    progress,
-                    deadlines,
-                )
-                .await
-            };
-            match sent {
-                ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
-                ActorWait::Stop(stop) => {
-                    cancel_pending_attempt(evidence.as_ref(), number).await;
-                    return FollowUp::Stop(stop);
-                }
-                ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
-                ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
-            }
+    let delivered = match await_next_delivery(session, text, images, stops, deadlines).await {
+        ActorWait::Ready(delivered) => delivered,
+        ActorWait::Stop(stop) => {
+            cancel_pending_attempt(evidence.as_ref(), number).await;
+            return FollowUp::Stop(stop);
         }
-    } else {
-        let waited = {
-            let (handle, progress) = (&mut session.handle, &mut session.progress);
-            wait_with_actor_controls(handle.wait(), stops, progress, deadlines).await
-        };
-        match waited {
-            ActorWait::Stop(stop) => {
-                cancel_pending_attempt(evidence.as_ref(), number).await;
-                return FollowUp::Stop(stop);
-            }
-            ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
-            ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
-            ActorWait::Ready(waited) if waited.is_err() => {
-                fail_pending_attempt(
-                    evidence.as_ref(),
-                    number,
-                    EvidenceFailureKind::DeliveryFailed,
-                )
-                .await;
-                return FollowUp::Delivered(Err(ChatError::StoppedListening));
-            }
-            ActorWait::Ready(_) => {}
-        }
-        let sent = {
-            let (handle, progress) = (&mut session.handle, &mut session.progress);
-            wait_with_actor_controls(
-                handle.send_with_images(text.to_owned(), images),
-                stops,
-                progress,
-                deadlines,
-            )
-            .await
-        };
-        match sent {
-            ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
-            ActorWait::Stop(stop) => {
-                cancel_pending_attempt(evidence.as_ref(), number).await;
-                return FollowUp::Stop(stop);
-            }
-            ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
-            ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
-        }
+        ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
+        ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
     };
-    if delivered.is_ok() {
-        if let Some(evidence) = &evidence
-            && evidence.accept_turn(number).await.is_err()
-        {
-            evidence.mark_incomplete();
-            return FollowUp::Delivered(Err(ChatError::CouldNotRecord));
-        }
-    } else {
-        fail_pending_attempt(
-            evidence.as_ref(),
-            number,
-            EvidenceFailureKind::DeliveryFailed,
+    if let Err(error) = record_follow_up_delivery(evidence.as_ref(), number, &delivered).await {
+        return FollowUp::Delivered(Err(error));
+    }
+    FollowUp::Delivered(delivered)
+}
+
+async fn await_next_delivery(
+    session: &mut Session,
+    text: &str,
+    images: ValidatedImages,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+) -> ActorWait<Result<(), ChatError>> {
+    if let Some(voice) = session.voice.clone() {
+        return await_voice_delivery(session, voice, text, images, stops, deadlines).await;
+    }
+
+    let waited = {
+        let (handle, progress) = (&mut session.handle, &mut session.progress);
+        wait_with_actor_controls(
+            async {
+                handle
+                    .wait()
+                    .await
+                    .map(|_outcome| ())
+                    .map_err(|_error| ChatError::StoppedListening)
+            },
+            stops,
+            progress,
+            deadlines,
+        )
+        .await
+    };
+    match waited {
+        ActorWait::Ready(Ok(())) => {}
+        ActorWait::Ready(Err(error)) => return ActorWait::Ready(Err(error)),
+        ActorWait::Stop(stop) => return ActorWait::Stop(stop),
+        ActorWait::Deadline(expired) => return ActorWait::Deadline(expired),
+        ActorWait::ReaderClosed => return ActorWait::ReaderClosed,
+    }
+    await_handle_delivery(session, text, images, stops, deadlines).await
+}
+
+async fn await_voice_delivery(
+    session: &mut Session,
+    voice: Voice,
+    text: &str,
+    images: ValidatedImages,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+) -> ActorWait<Result<(), ChatError>> {
+    if images.is_empty() {
+        return wait_with_actor_controls(
+            async move {
+                voice
+                    .send(ToAgent::Turn(text.to_owned()))
+                    .await
+                    .map_err(|_error| ChatError::StoppedListening)
+            },
+            stops,
+            &mut session.progress,
+            deadlines,
         )
         .await;
     }
-    FollowUp::Delivered(delivered)
+    await_handle_delivery(session, text, images, stops, deadlines).await
+}
+
+async fn await_handle_delivery(
+    session: &mut Session,
+    text: &str,
+    images: ValidatedImages,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+) -> ActorWait<Result<(), ChatError>> {
+    let (handle, progress) = (&mut session.handle, &mut session.progress);
+    wait_with_actor_controls(
+        async {
+            handle
+                .send_with_images(text.to_owned(), images)
+                .await
+                .map_err(|_error| ChatError::StoppedListening)
+        },
+        stops,
+        progress,
+        deadlines,
+    )
+    .await
+}
+
+async fn record_follow_up_delivery(
+    evidence: Option<&EvidenceTarget>,
+    number: usize,
+    delivered: &Result<(), ChatError>,
+) -> Result<(), ChatError> {
+    if delivered.is_ok() {
+        if let Some(evidence) = evidence
+            && evidence.accept_turn(number).await.is_err()
+        {
+            evidence.mark_incomplete();
+            return Err(ChatError::CouldNotRecord);
+        }
+    } else {
+        fail_pending_attempt(evidence, number, EvidenceFailureKind::DeliveryFailed).await;
+    }
+    Ok(())
 }
 
 async fn fail_pending_attempt(
@@ -1949,8 +2166,8 @@ impl Threads {
                     Err(_) if thread.is_closed() => None,
                     Err(_) => Some(GroupProof::Alive { group: None }),
                 },
-                PendingClose::Requested(Err(_)) if thread.is_closed() => None,
-                PendingClose::Requested(Err(_)) => Some(GroupProof::Alive { group: None }),
+                PendingClose::Requested(Err(())) if thread.is_closed() => None,
+                PendingClose::Requested(Err(())) => Some(GroupProof::Alive { group: None }),
             };
             let stopped = !matches!(proof, Some(GroupProof::Alive { .. }));
             if stopped {

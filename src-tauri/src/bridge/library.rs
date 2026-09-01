@@ -155,13 +155,20 @@ const fn screen_of(kind: &str) -> &'static str {
 /// rozstrzyga to strona, która wie: odpowiedź trafia do lidera **tylko wtedy**, gdy podpis się
 /// zgadza. Bez tego odpowiedź na punkt kontrolny odblokowywałaby przy okazji cudze pytanie,
 /// zdaniem, które go nie dotyczy.
+#[derive(Debug)]
+struct ParkedQuestion {
+    asker: String,
+    ticket: Arc<()>,
+    answer: tokio::sync::oneshot::Sender<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct Waiting {
     /// Podpis pytającego i kanał na odpowiedź. `None` znaczy „nikt nie czeka".
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): pod nim są wyłącznie
     /// `take` i `replace`.
-    slot: Mutex<Option<(String, Arc<()>, tokio::sync::oneshot::Sender<String>)>>,
+    slot: Mutex<Option<ParkedQuestion>>,
 }
 
 impl Waiting {
@@ -173,8 +180,11 @@ impl Waiting {
     fn park(&self, asker: String) -> (Arc<()>, tokio::sync::oneshot::Receiver<String>) {
         let (say, hear) = tokio::sync::oneshot::channel();
         let ticket = Arc::new(());
-        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((asker, Arc::clone(&ticket), say));
+        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(ParkedQuestion {
+            asker,
+            ticket: Arc::clone(&ticket),
+            answer: say,
+        });
         (ticket, hear)
     }
 
@@ -186,7 +196,7 @@ impl Waiting {
     fn withdraw(&self, ticket: &Arc<()>) -> bool {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
         match slot.take() {
-            Some((_waiting, parked, _say)) if Arc::ptr_eq(&parked, ticket) => true,
+            Some(parked) if Arc::ptr_eq(&parked.ticket, ticket) => true,
             other => {
                 *slot = other;
                 false
@@ -214,7 +224,7 @@ impl Waiting {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .is_some_and(|(waiting, _ticket, _say)| waiting == asker)
+            .is_some_and(|waiting| waiting.asker == asker)
     }
 
     /// Człowiek odpowiedział. `false`, kiedy ten podpis na nic nie czekał.
@@ -224,7 +234,7 @@ impl Waiting {
     pub fn answer(&self, asker: &str, said: String) -> bool {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
         match slot.take() {
-            Some((waiting, _ticket, say)) if waiting == asker => say.send(said).is_ok(),
+            Some(waiting) if waiting.asker == asker => waiting.answer.send(said).is_ok(),
             /* CUDZE PYTANIE WRACA NA MIEJSCE. Zabrane stąd zostawiłoby lidera czekającego bez
              * końca na odpowiedź, którą człowiek dał komu innemu. */
             other => {
