@@ -1884,8 +1884,9 @@ async fn terminal_finalization_waits_for_an_aborted_reader_publication()
         "terminal finalization overtook a publication whose reader future had been aborted"
     );
     assert!(
-        final_result.is_err(),
-        "the deliberately corrupt turn receipt unexpectedly finalized cleanly"
+        final_result.is_ok(),
+        "terminal finalization read the stale corrupt receipt before the aborted reader \
+         publication committed: {final_result:?}"
     );
     Ok(())
 }

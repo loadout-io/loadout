@@ -377,10 +377,14 @@ async fn a_group_that_survives_every_escalation_fails_the_step_and_says_so()
 
     let mut states = Vec::new();
     while let Some(line) = source.try_next() {
-        if let Line::StepState { step_id, state, .. } = line
-            && step_id == HAND
-        {
-            states.push(state);
+        match line {
+            // Samowystarczalny wynik niesie jednocześnie terminalne `failed` i informację,
+            // że domyślna polityka puściła bieg dalej. Nie wolno wymagać drugiej, stratnej linii.
+            Line::StepCarriedOn { step_id, .. } if step_id == HAND => {
+                states.push("failed".to_owned());
+            }
+            Line::StepState { step_id, state, .. } if step_id == HAND => states.push(state),
+            _ => {}
         }
     }
     assert!(
