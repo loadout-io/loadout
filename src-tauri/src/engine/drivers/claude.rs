@@ -959,58 +959,6 @@ impl Default for ClaudeDriver {
     }
 }
 
-/// Czy TA binarka wymienia [`EFFORT`] we własnej pomocy.
-///
-/// # Skąd to się wzięło
-///
-/// 2026-09-01, maszyna właściciela: każdy krok Claude'a padał natychmiast na
-/// `error: unknown option --effort`, a na ekranie stało „agent stopped without ever sending its
-/// result" — czyli produkt obwiniał agenta o flagę, którą sam podał. `--effort` idzie **zawsze**:
-/// „ile myśleć" ma domyślnie `balanced`, więc nie ma ustawienia, przy którym by nie poszła. Jedna
-/// flaga nieznana starszej binarce zabija KAŻDY krok tego vendora.
-///
-/// # Dlaczego pomijamy, a nie padamy
-///
-/// Bieg bez flagi działa na domyślnym wysiłku vendora; bieg z flagą nie działa wcale.
-///
-/// # Dlaczego pomijamy WYŁĄCZNIE na dowód
-///
-/// Sonda, która nie wystartowała, nie dowodzi, że flagi nie ma — dowodzi, że nic nie wiemy.
-/// Wtedy zachowanie zostaje takie, jak było, bo zgadywanie „pewnie nie ma" odebrałoby wysiłek
-/// każdemu, kto trzyma binarkę w miejscu, o które nie umieliśmy zapytać.
-///
-/// # Dlaczego cache jest procesowy, a nie polem
-///
-/// [`ClaudeDriver`] jest `Clone` i klonuje się na każdy start, więc pole dawałoby jedno pytanie
-/// NA KROK zamiast jednego na binarkę. Klucz jest ścieżką, bo dwa biegi mogą wskazywać na dwie
-/// różne instalacje i odpowiedź jednej nie jest odpowiedzią drugiej.
-fn help_lists_effort(binary: &Path) -> bool {
-    static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, bool>>> =
-        std::sync::OnceLock::new();
-    let known = KNOWN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-    if let Ok(seen) = known.lock()
-        && let Some(answer) = seen.get(binary)
-    {
-        return *answer;
-    }
-
-    // Brak odpowiedzi to BRAK WIEDZY, nie dowód nieobecności — więc `Err` zostawia flagę.
-    let answer = std::process::Command::new(binary)
-        .arg("--help")
-        .output()
-        .map_or(true, |help| {
-            let mut text = help.stdout;
-            text.extend_from_slice(&help.stderr);
-            String::from_utf8_lossy(&text).contains(EFFORT)
-        });
-
-    if let Ok(mut seen) = known.lock() {
-        seen.insert(binary.to_path_buf(), answer);
-    }
-    answer
-}
-
 impl ClaudeDriver {
     /// Connections są wejściem, ale prywatny katalog biegu jest ostatnim słowem adaptera.
     /// Usunięcie wszystkich wcześniejszych wystąpień przed dopisaniem jednego zapobiega
@@ -2893,11 +2841,7 @@ impl AgentDriver for ClaudeDriver {
     /// Para „flaga, wartość" i nic poza tym: flaga bez wartości połknęłaby następny argument
     /// jako swój, a to jest ta sama pomyłka, którą przy `--plugin-dir` opisuje `command`.
     fn effort_argv(&self, level: &str) -> Vec<String> {
-        if help_lists_effort(&self.binary) {
-            vec![EFFORT.to_owned(), level.to_owned()]
-        } else {
-            Vec::new()
-        }
+        vec![EFFORT.to_owned(), level.to_owned()]
     }
 
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
