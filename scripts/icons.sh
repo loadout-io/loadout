@@ -6,11 +6,21 @@
 # znaku i nikt by sie o tym nie dowiedzial (niezmiennik 13). Zrodlem prawdy sa pliki
 # `docs/branding/loadout-icon*.svg`, a `src-tauri/icons/` jest z nich wyliczane.
 #
-# DLACZEGO TE TRZY NARZEDZIA. `rsvg-convert`, Inkscape i ImageMagick nie sa w tym systemie
-# (sprawdzone 2026-08-19). Sa natomiast trzy narzedzia Apple i one wystarczaja:
-#   qlmanage -t   rasteryzuje SVG do PNG
-#   sips          doprowadza do DOKLADNEGO rozmiaru (miniatura qlmanage bywa mniejsza)
-#   iconutil      pakuje katalog `.iconset` w `.icns`
+# DLACZEGO CHROMIUM, A NIE `qlmanage`. Do 2026-09-01 rasteryzowal tu `qlmanage -t`, czyli
+# generator MINIATUR Quick Looka -- a on sklada obraz na NIEPRZEZROCZYSTEJ BIELI. Kazda z czterech
+# ikon wychodzila wiec z bialymi rogami `(255,255,255,255)` poza zaokragleniem squircle'a, widocznymi
+# wszedzie, gdzie tlo nie jest biale: w Docku, na karcie repozytorium, w README.
+#
+# Wlasciciel zglaszal "biale elementy" TRZY RAZY (2026-08-19, 08-22, 09-01). Pierwsze dwie naprawy
+# szukaly przyczyny w BARWIE TEMATU -- gaszenie znaku, potem przerysowanie go na jedna forme -- bo
+# nikt nie zmierzyl piksela w rogu. Barwa nigdy nie byla przyczyna; rasteryzator byl.
+#
+# Chromium renderuje SVG z prawdziwym kanalem alfa i w DOKLADNYM rozmiarze, wiec znika przy okazji
+# druga proteza: renderowanie z zapasem i schodzenie `sips`-em, bo miniatura bywala mniejsza od
+# zadanej. Nie jest to nowa zaleznosc -- `@playwright/test` z Chromium stoi w tym repo dla e2e.
+#
+#   node + chromium  rasteryzuje SVG do PNG z alfa, w zadanym rozmiarze
+#   iconutil         pakuje katalog `.iconset` w `.icns`
 #
 # KTORY RYSUNEK DO KTOREGO ROZMIARU. Przy 32 i 16 px rysunek pelny sie mydli: cztery krawedzie
 # po 38 jednostek zlewaja sie w plame, a sheen i krawedz wewnetrzna operuja na 0,1 piksela.
@@ -18,9 +28,10 @@
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-for tool in qlmanage sips iconutil; do
+for tool in node iconutil; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is not on PATH" >&2; exit 2; }
 done
+[ -d node_modules/@playwright/test ] || { echo "run npm install first -- the renderer is chromium" >&2; exit 2; }
 
 SRC_FULL="docs/branding/loadout-icon.svg"
 SRC_32="docs/branding/loadout-icon-32.svg"
@@ -34,17 +45,39 @@ trap 'rm -rf "$WORK"' EXIT
 SET="$WORK/loadout.iconset"
 mkdir -p "$SET" src-tauri/icons
 
+# Rysownik. Mieszka TUTAJ, w przepisie, a nie w osobnym pliku: kryterium swiezosci
+# (`src/ui/brand/bundle-icons-exist.test.ts`) uniewaznia zbudowane ikony, gdy zmieni sie
+# `scripts/icons.sh`. Drugi plik z przepisem byloby drugim zrodlem prawdy, ktorego to kryterium
+# NIE widzi -- czyli dokladnie ta wada, przed ktora ono stoi (niezmiennik 13).
+read -r -d '' RENDERER <<'RENDERER' || true
+import { readFileSync } from 'node:fs';
+import { chromium } from '@playwright/test';
+
+const size = Number(process.env.ICON_PX);
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: size, height: size } });
+// `omitBackground` daje przezroczystosc tylko wtedy, gdy strona jej nie zamaluje, wiec tlo
+// dokumentu musi byc jawnie przezroczyste. Rozmiar bierze CSS, a nie atrybuty rysunku: viewBox
+// skaluje sie sam, wiec jeden plik obsluguje kazdy rozmiar bez przeskalowywania bitmapy.
+await page.setContent(
+  `<style>html,body{margin:0;padding:0;background:transparent}` +
+    `svg{display:block;width:${size}px;height:${size}px}</style>` +
+    readFileSync(process.env.ICON_SVG, 'utf8'),
+);
+await page.screenshot({
+  path: process.env.ICON_OUT,
+  omitBackground: true,
+  clip: { x: 0, y: 0, width: size, height: size },
+});
+await browser.close();
+RENDERER
+
 # render <svg> <px> <out.png>
 render() {
-  local svg="$1" px="$2" out="$3"
-  rm -rf "$WORK/ql"; mkdir -p "$WORK/ql"
-  # Renderujemy z zapasem i dopiero `sips` schodzi do docelowego rozmiaru: miniatura Quick Looka
-  # bywa mniejsza od zadanej, a ikona o 511 px zamiast 512 jest ikona, ktora macOS przeskaluje.
-  qlmanage -t -s "$((px * 2))" -o "$WORK/ql" "$svg" >/dev/null 2>&1 || true
-  local made
-  made="$(find "$WORK/ql" -name '*.png' -print -quit)"
-  [ -n "$made" ] || { echo "qlmanage produced no PNG for $svg" >&2; exit 1; }
-  sips -z "$px" "$px" "$made" --out "$out" >/dev/null
+  # Rysownik idzie przez `-e`, a nie plikiem w katalogu tymczasowym: node szuka `@playwright/test`
+  # idac w gore OD SKRYPTU, wiec plik poza repo nie widzi jego `node_modules`. Argumenty ida
+  # srodowiskiem, bo `-e` przesuwa `process.argv`.
+  ICON_SVG="$1" ICON_PX="$2" ICON_OUT="$3" node --input-type=module -e "$RENDERER"
 }
 
 # Zestaw `.icns`: kazdy rozmiar z rysunku, ktory dla niego powstal.

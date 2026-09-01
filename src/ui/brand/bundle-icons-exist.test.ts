@@ -130,7 +130,23 @@ describe('ikony aplikacji', () => {
         'is exactly what three separate drawings exist to avoid: at 32 px the full drawing turns ' +
         'the four edges into a blob.',
     ).toHaveLength(10);
-    const empty = images.filter(([, size]) => size < 500);
+    /* DLACZEGO PROG ZALEZY OD CZLONU, A NIE JEST JEDNA LICZBA.
+     *
+     * Do 2026-09-01 stalo tu plaskie `size < 500` i to bylo proteza wykalibrowana na WYJSCIU
+     * `qlmanage`, ktore skladalo kazdy rysunek na nieprzezroczystej bieli. Kiedy rasteryzator
+     * zaczal oddawac prawdziwa alfe, rogi squircle'a przestaly niesc piksele — a `ic04` skurczyl
+     * sie do 488 bajtow i to kryterium oglosilo POPRAWNA ikone placeholderem.
+     *
+     * `ic04` i `ic05` nie sa PNG, tylko surowym ARGB pakowanym RLE, wiec ich rozmiar da sie
+     * odniesc do prawdy: 16x16 to 1024 bajty bez kompresji. Rysunek gesty jak nasz schodzi do
+     * ~48% i przechodzi; przezroczysty placeholder schodzi do kilkudziesieciu bajtow i pada
+     * dalej. To jest MOCNIEJSZE niz `< 500`, bo pyta o zawartosc czlonu, a nie o stala. */
+    const ARGB: Readonly<Record<string, number>> = { ic04: 16, ic05: 32 };
+    const floorFor = ([type]: readonly [string, number]): number => {
+      const side = ARGB[type];
+      return side === undefined ? 500 : (side * side * 4) / 4;
+    };
+    const empty = images.filter((one) => one[1] < floorFor(one));
     expect(
       empty.map(([type]) => type),
       'these members of the .icns are too small to be an image: ' +
