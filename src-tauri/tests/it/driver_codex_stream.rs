@@ -126,10 +126,10 @@ fn decode_all_with_tool(text: &str) -> Vec<DecodedEvent> {
     let mut decoder = CodexDecoder::new();
     let mut events = Vec::new();
     for line in text.lines() {
-        let Decoded::Events(decoded) = decode_codex(&mut decoder, line) else {
+        let Decoded::Events(parsed_events) = decode_codex(&mut decoder, line) else {
             continue;
         };
-        events.extend(decoded);
+        events.extend(parsed_events);
     }
     events
 }

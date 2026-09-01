@@ -680,7 +680,7 @@ fn completed(session: SessionRef) -> DecodedEvent {
         cost_usd: None,
         tokens: Tokens::default(),
         turns: 1,
-        took: Duration::from_secs(60),
+        took: Duration::from_mins(1),
         session,
     })
     .into()
@@ -809,6 +809,42 @@ async fn visible_problem(
     })
     .await
     .map_err(|_| "the Lead stopped producing events, but no problem reached the screen".into())
+}
+
+async fn wait_for_visible_done(
+    source: &mut loadout_lib::ipc::LineSource,
+) -> Result<(), Box<dyn Error>> {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            while let Some(line) = source.try_next() {
+                if line.kind() == LineKind::Done {
+                    return;
+                }
+            }
+            /* `finish_turn` publikuje receipt w `spawn_blocking`. Samo `yield_now` na runtime
+             * current-thread nie gwarantuje, że pula blokująca zdąży oddać ten etap czytnikowi. */
+            let _ = tokio::task::spawn_blocking(|| {}).await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| "the first Finished never crossed the real Lead reader".into())
+}
+
+async fn wait_for_blocked_handle(state: &OpenReaderState) -> Result<(), Box<dyn Error>> {
+    tokio::time::timeout(WAIT, async {
+        while state.waits.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| "the follow-up did not reach the blocked handle.wait path in time")?;
+    assert_eq!(
+        state.waits.load(Ordering::SeqCst),
+        1,
+        "the follow-up never reached the blocked production handle.wait path"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -1229,7 +1265,7 @@ async fn the_first_reply_deadline_also_covers_a_driver_stuck_while_starting()
     .map_err(|_| "the fixture never entered AgentDriver::start")?;
 
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let problem = visible_problem_after_scheduling(&mut source).await;
     state.release.notify_one();
     tokio::time::resume();
@@ -1274,7 +1310,7 @@ async fn an_open_reader_without_finished_reaches_the_leads_deadline_and_starts_f
         .await?;
     assert_eq!(state.cancels.load(Ordering::SeqCst), 0);
 
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     settle_actor().await;
     tokio::time::advance(DEADLINE_SETTLE).await;
     let problem = visible_problem_after_scheduling(&mut source).await?;
@@ -1334,7 +1370,7 @@ async fn a_reader_aborted_after_dead_proof_still_leaves_a_terminal_failed_receip
             "The adapter will keep its reader open",
         )
         .await?;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     settle_actor().await;
     tokio::time::advance(DEADLINE_SETTLE).await;
     settle_actor().await;
@@ -1397,7 +1433,7 @@ async fn finished_at_the_reply_deadline_wins_the_race_and_is_not_cancelled()
         )
         .await?;
     let events = state.events();
-    let boundary = tokio::time::Instant::now() + Duration::from_secs(60);
+    let boundary = tokio::time::Instant::now() + Duration::from_mins(1);
     let finished = tokio::spawn(async move {
         tokio::time::sleep_until(boundary).await;
         /* Zdarzenie jest gotowe na granicy, lecz zajęty runtime może zaplanować pętlę czytającą
@@ -1416,7 +1452,7 @@ async fn finished_at_the_reply_deadline_wins_the_race_and_is_not_cancelled()
     /* Nadajnik musi najpierw zarejestrować swój zegar. Inaczej `advance` mierzyłoby wyłącznie
      * deadline actora, a nie wyścig dwóch zdarzeń przypadających na tę samą chwilę. */
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     finished
         .await
         .expect("the boundary event task panicked")
@@ -1475,24 +1511,13 @@ async fn a_late_finished_cannot_leave_the_follow_up_future_abandoned_and_sending
             )
             .await
     });
-    tokio::time::timeout(WAIT, async {
-        while state.waits.load(Ordering::SeqCst) != 1 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| "the follow-up did not reach the blocked handle.wait path in time")?;
-    assert_eq!(
-        state.waits.load(Ordering::SeqCst),
-        1,
-        "the follow-up never reached the blocked production handle.wait path"
-    );
+    wait_for_blocked_handle(&state).await?;
 
     /* Zegar zamrażamy dopiero po wejściu follow-upu w `handle.wait()`. `start_paused` mogłoby
      * auto-przesunąć pierwszą minutę podczas asynchronicznego zapisu receiptu i ominąć szew,
      * który ten test ma sądzić. */
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     settle_actor().await;
     tokio::time::advance(DEADLINE_SETTLE).await;
     tokio::time::resume();
@@ -1582,21 +1607,7 @@ async fn eof_during_a_blocked_follow_up_wait_is_visible_and_stops_the_process()
 
     /* `Done` dowodzi, że stary `Finished` przeszedł przez prawdziwy reader. Następny `wait()` nie
      * ma więc starego deadline'u, który przypadkiem uratowałby obsługę EOF. */
-    tokio::time::timeout(WAIT, async {
-        loop {
-            while let Some(line) = source.try_next() {
-                if line.kind() == LineKind::Done {
-                    return;
-                }
-            }
-            /* `finish_turn` publikuje receipt w `spawn_blocking`. Samo `yield_now` na runtime
-             * current-thread nie gwarantuje, że pula blokująca zdąży oddać ten etap czytnikowi. */
-            let _ = tokio::task::spawn_blocking(|| {}).await;
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| "the first Finished never crossed the real Lead reader")?;
+    wait_for_visible_done(&mut source).await?;
 
     let follow_threads = Arc::clone(&threads);
     let follow_drivers = Arc::clone(&drivers);
@@ -1611,18 +1622,7 @@ async fn eof_during_a_blocked_follow_up_wait_is_visible_and_stops_the_process()
             )
             .await
     });
-    tokio::time::timeout(WAIT, async {
-        while state.waits.load(Ordering::SeqCst) != 1 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| "the follow-up did not reach the blocked handle.wait path in time")?;
-    assert_eq!(
-        state.waits.load(Ordering::SeqCst),
-        1,
-        "the follow-up never reached the blocked production handle.wait path"
-    );
+    wait_for_blocked_handle(&state).await?;
 
     let sender = state
         .events
@@ -1883,7 +1883,10 @@ async fn terminal_finalization_waits_for_an_aborted_reader_publication()
         !overtook_publication,
         "terminal finalization overtook a publication whose reader future had been aborted"
     );
-    let _terminal_result = final_result;
+    assert!(
+        final_result.is_err(),
+        "the deliberately corrupt turn receipt unexpectedly finalized cleanly"
+    );
     Ok(())
 }
 
@@ -1907,7 +1910,7 @@ async fn a_zero_minute_lead_has_no_reply_deadline() -> Result<(), Box<dyn Error>
             "This reply has no time limit",
         )
         .await?;
-    tokio::time::advance(Duration::from_secs(24 * 60 * 60)).await;
+    tokio::time::advance(Duration::from_hours(24)).await;
     settle_actor().await;
 
     assert_eq!(
@@ -1989,7 +1992,7 @@ async fn a_queued_question_the_pump_never_delivers_is_bounded_by_the_leads_deadl
 
     /* `source` celowo nie było dotąd czytane. `Asked` może więc dostać `Sent::Queued`, chociaż
      * odpowiedzialna za ekran pompa nigdy go nie odebrała i człowiek nie ma na co odpowiedzieć. */
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     settle_actor().await;
     tokio::time::advance(DEADLINE_SETTLE).await;
     let seen = visible_through_problem(&mut source).await?;
