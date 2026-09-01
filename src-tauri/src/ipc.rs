@@ -2420,6 +2420,20 @@ pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, Str
         .map_err(|error| error.to_string())
 }
 
+/// Składa pracę biegu w jedną gałąź pod podaną nazwą.
+///
+/// Wołane z ekranu, kiedy człowiek o to poprosi. Odmowa (nazwa zajęta, zderzenie dwóch kroków
+/// na tym samym pliku) wraca zdaniem, bo to są rzeczy, które człowiek ma przeczytać i
+/// rozstrzygnąć, a nie awarie aplikacji.
+#[tauri::command]
+pub fn fold_run_into_branch(
+    folder: &str,
+    run: &str,
+    name: &str,
+) -> Result<commands::finalize::Landing, String> {
+    commands::finalize::fold_run(std::path::Path::new(folder), run, name)
+}
+
 /// Jak nazwie się gałąź wyniku dla podanego identyfikatora zadania.
 ///
 /// Liczone PRZY STARCIE, a nie po biegu: propozycja, której człowiek nie widzi przed
@@ -3370,6 +3384,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_skills,
         list_triggers,
         list_workflows,
+        fold_run_into_branch,
         list_workspaces,
         suggest_branch_name,
         suggest_paths,

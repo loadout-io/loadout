@@ -46,6 +46,7 @@ pub mod diagnostics;
 /// Praca kilku kroków zniesiona do jednej kopii — i odmowa, kiedy dwa z nich piszą co innego.
 mod fan_in;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
+pub mod finalize;
 pub mod handoffs;
 /// Historia biegów TEGO projektu: co tu już ruszyło i co z tego zostało na dysku.
 pub mod history;

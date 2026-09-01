@@ -35,6 +35,7 @@ delete_workspace
 discard_note
 draft_skill
 drop_eval_variant
+fold_run_into_branch
 forget_run_branches
 install_skill
 list_agents

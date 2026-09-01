@@ -39,6 +39,7 @@ mod a_long_complaint_says_where_the_rest_is;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
+mod a_run_leaves_one_branch_to_look_at;
 mod a_run_leaves_suggestions;
 mod a_run_stops_at_its_budget;
 mod a_set_refuses_what_it_could_not_measure;
