@@ -8,6 +8,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { LEAD_LABEL } from '../../src/sections/run/lead';
+import { REFLECTION_LABEL } from '../../src/sections/run/reflection/toggle';
+import { TASK_LABEL } from '../../src/sections/run/start';
 import { STRIP_HEIGHT } from '../../src/sections/run/strip/strip';
 import type { RunningApp, TauriCall, TauriReply } from '../harness';
 import { closeEverything, openApp } from '../harness';
@@ -56,6 +59,22 @@ const WORK = '[data-work]';
 const RAIL = '[data-rail]';
 const COMMAND = 'input[aria-label="Command line"]';
 const START = 'button[data-workflow-run="manual"]';
+const LEAD = `select[aria-label="${LEAD_LABEL}"]`;
+const TASK = `input[aria-label="${TASK_LABEL}"]`;
+const AT_ONCE = 'input#at-once[type="range"]';
+const BUDGET = 'input[data-budget]';
+const COPY_DIAGNOSTICS = 'button[aria-label="Copy diagnostics"]';
+const LEARN_FROM_THIS_RUN = `label:has-text("${REFLECTION_LABEL}") input[type="checkbox"]`;
+const BEFORE_START_CONTROLS = [
+  COPY_DIAGNOSTICS,
+  LEARN_FROM_THIS_RUN,
+  LEAD,
+  TASK,
+  START,
+  AT_ONCE,
+  BUDGET,
+] as const;
+const LOCKED_WHILE_RUNNING = [LEARN_FROM_THIS_RUN, TASK, AT_ONCE, BUDGET] as const;
 const FIRST_CALL_LIMIT = 5_000;
 
 function copies<T>(value: T, count = 24): readonly { readonly value: T }[] {
@@ -139,6 +158,8 @@ interface Geometry {
   readonly track: Rect;
   readonly running: Rect;
   readonly blockCount: number;
+  readonly blockNames: readonly string[];
+  readonly blockTitles: readonly string[];
   readonly trackClientWidth: number;
   readonly trackScrollWidth: number;
   readonly trackScrollBehavior: string;
@@ -178,6 +199,7 @@ async function geometry(app: RunningApp): Promise<Geometry> {
       const rail = required(railSelector);
       const command = required(commandSelector);
       const running = required(`${blocksSelector} [data-block="now"]`);
+      const blocks = Array.from(track.querySelectorAll<HTMLElement>(':scope > span'));
 
       return {
         viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -195,7 +217,11 @@ async function geometry(app: RunningApp): Promise<Geometry> {
         command: rect(command),
         track: rect(track),
         running: rect(running),
-        blockCount: track.querySelectorAll(':scope > span').length,
+        blockCount: blocks.length,
+        blockNames: blocks.map((block) => block.innerText.trim()),
+        blockTitles: blocks.map(
+          (block) => block.querySelector<HTMLElement>('[title]')?.getAttribute('title') ?? '',
+        ),
         trackClientWidth: track.clientWidth,
         trackScrollWidth: track.scrollWidth,
         trackScrollBehavior: getComputedStyle(track).scrollBehavior,
@@ -258,6 +284,13 @@ function expectContained(measured: Geometry, label: string): void {
     STRIP_HEIGHT,
   );
   expect(measured.blockCount, `${label}: steps disappeared from the DOM`).toBe(STEP_COUNT);
+  const expectedStepNames = STEPS.map((step) => step.name);
+  expect(measured.blockNames, `${label}: visible step names changed or moved`).toEqual(
+    expectedStepNames,
+  );
+  expect(measured.blockTitles, `${label}: full step titles changed or moved`).toEqual(
+    expectedStepNames,
+  );
   expect(
     measured.trackScrollWidth,
     `${label}: the long graph was clipped instead of scrollable`,
@@ -277,7 +310,29 @@ function expectContained(measured: Geometry, label: string): void {
 }
 
 /** Playwright's trial click proves actionability without changing the running scene. */
-async function expectControlsReachable(app: RunningApp, label: string): Promise<void> {
+async function expectControlsReachable(
+  app: RunningApp,
+  label: string,
+  phase: 'before-start' | 'running',
+): Promise<void> {
+  if (phase === 'before-start') {
+    const allControls = app.page.locator(
+      `${WORKFLOW_CONTROLS} button, ${WORKFLOW_CONTROLS} input, ${WORKFLOW_CONTROLS} select`,
+    );
+    expect(await allControls.count(), `${label}: the real control set changed`).toBe(
+      BEFORE_START_CONTROLS.length,
+    );
+
+    for (const selector of BEFORE_START_CONTROLS) {
+      const control = app.page.locator(`${WORKFLOW_CONTROLS} ${selector}`);
+      expect(await control.count(), `${label}: missing or duplicated ${selector}`).toBe(1);
+      expect(await control.isVisible(), `${label}: ${selector} is not visible`).toBe(true);
+      expect(await control.isEnabled(), `${label}: ${selector} is unexpectedly disabled`).toBe(
+        true,
+      );
+    }
+  }
+
   const controls = app.page.locator(
     `${WORKFLOW_CONTROLS} button:enabled, ${WORKFLOW_CONTROLS} input:enabled, ${WORKFLOW_CONTROLS} select:enabled`,
   );
@@ -313,6 +368,30 @@ async function expectControlsReachable(app: RunningApp, label: string): Promise<
       ).toBeLessThanOrEqual((await app.page.evaluate(() => window.innerWidth)) + 1);
     }
   }
+
+  if (phase === 'running') {
+    for (const selector of LOCKED_WHILE_RUNNING) {
+      const control = app.page.locator(`${WORKFLOW_CONTROLS} ${selector}`);
+      expect(await control.count(), `${label}: missing or duplicated locked ${selector}`).toBe(1);
+      expect(await control.isDisabled(), `${label}: ${selector} did not lock during the run`).toBe(
+        true,
+      );
+      await control.scrollIntoViewIfNeeded();
+      const box = await control.boundingBox();
+      expect(box, `${label}: locked ${selector} has no rendered box`).not.toBeNull();
+      if (box !== null) {
+        expect(box.width, `${label}: locked ${selector} collapsed`).toBeGreaterThan(0);
+        expect(
+          box.x,
+          `${label}: locked ${selector} is left of the viewport`,
+        ).toBeGreaterThanOrEqual(-1);
+        expect(
+          box.x + box.width,
+          `${label}: locked ${selector} is cut off beyond the viewport`,
+        ).toBeLessThanOrEqual((await app.page.evaluate(() => window.innerWidth)) + 1);
+      }
+    }
+  }
 }
 
 beforeAll(async () => {
@@ -333,7 +412,7 @@ describe('a long workflow stays inside the real Run viewport', () => {
       await app.page.locator(START).waitFor({ state: 'visible', timeout: FIRST_CALL_LIMIT });
       /* Before the run locks its inputs, every available control must have an actionable
        * position. During the run we repeat this for the controls that remain enabled. */
-      await expectControlsReachable(app, '1100x700 before Start');
+      await expectControlsReachable(app, '1100x700 before Start', 'before-start');
       await app.page.locator(START).click();
       const call = await runCall(app);
       await markStepRunning(app, call);
@@ -346,7 +425,7 @@ describe('a long workflow stays inside the real Run viewport', () => {
         await app.page.waitForTimeout(50);
         const label = `${String(size.width)}x${String(size.height)}`;
         expectContained(await geometry(app), label);
-        await expectControlsReachable(app, label);
+        await expectControlsReachable(app, label, 'running');
       }
     } finally {
       await app.close();
