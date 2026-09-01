@@ -48,6 +48,9 @@ const IO: TriggerIo = {
     throw new Error('not used');
   },
   checkTrigger: async () => ({ status: 'armed' }),
+  resumeTrigger: async () => {
+    throw new Error('not used');
+  },
   retryTrigger: async () => {
     throw new Error('not used');
   },

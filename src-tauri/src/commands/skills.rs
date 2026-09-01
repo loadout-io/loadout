@@ -1276,7 +1276,7 @@ async fn what_came_of_it(
         Ended::Overdue => {
             let minutes = limit.as_secs() / 60;
             Err(refusal(match handle.cancel().await {
-                GroupProof::Alive => format!(
+                GroupProof::Alive { .. } => format!(
                     "This draft ran longer than its {minutes} minute limit, and Loadout could \
                      not make sure the agent stopped, so it may still be running."
                 ),
@@ -1293,7 +1293,7 @@ async fn what_came_of_it(
             GroupProof::Dead { .. } => Ok(DraftOutcome::Cancelled),
             // Dopóki dowodu nie ma, traktujemy grupę jak żywą (niezmiennik 6). Cisza jest tu
             // najdroższa z możliwych: osierocony agent pisze dalej, a płaci za to człowiek.
-            GroupProof::Alive => Err(refusal(MAY_STILL_BE_RUNNING.to_owned())),
+            GroupProof::Alive { .. } => Err(refusal(MAY_STILL_BE_RUNNING.to_owned())),
         },
         Ended::Turn(Err(error)) => Err(refusal(error.to_string())),
         Ended::Turn(Ok(turn)) => {

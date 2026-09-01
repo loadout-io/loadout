@@ -380,7 +380,7 @@ pub async fn recover_from_last_time(
         &plan,
         &mut |pgid| match engine::supervisor::reap_group(pgid) {
             engine::supervisor::GroupProof::Dead { .. } => recovery::ReapOutcome::ProvenDead,
-            engine::supervisor::GroupProof::Alive => recovery::ReapOutcome::StillAlive,
+            engine::supervisor::GroupProof::Alive { .. } => recovery::ReapOutcome::StillAlive,
         },
     );
 
@@ -540,7 +540,11 @@ pub fn run() {
             let window = window.clone();
             tauri::async_runtime::spawn(async move {
                 let state = window.state::<ipc::AppState>();
-                if let Err(error) = commands::run::stop_before_closing(&state.deps()).await {
+                /* KAŻDY ŻYWY FOLDER, nie jeden uchwyt: od 2026-08-28 zapadka biegu jest
+                 * kluczowana workspace'em, więc dwa foldery mogą mieć swoje biegi w tej samej
+                 * chwili. Zamknięcie okna sięgające do jednego z nich zostawiłoby drugi żywy
+                 * pod PID 1 — dokładnie tę sierotę, przed którą stoi cała ta obsługa. */
+                if let Err(error) = state.stop_every_live_run_before_closing().await {
                     tracing::error!("closing anyway: the run could not be stopped: {error}");
                 }
                 /* Rozmowa z orchestratorem też jest procesem — po zamknięciu okna przeszłaby pod
@@ -555,7 +559,7 @@ pub fn run() {
                  * w indeksie biegów. Rzecz, której Loadout jest właścicielem, ma umrzeć
                  * z Loadoutem (niezmiennik 6). */
                 for proof in state.close_started().await {
-                    if matches!(proof, engine::supervisor::GroupProof::Alive) {
+                    if matches!(proof, engine::supervisor::GroupProof::Alive { .. }) {
                         tracing::error!(
                             "something Loadout started was still alive after the full stop; look                              for it in Activity Monitor"
                         );

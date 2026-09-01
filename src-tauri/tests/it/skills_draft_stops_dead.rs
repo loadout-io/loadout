@@ -590,7 +590,7 @@ impl AgentHandle for Turn {
         self.watch.cancelled();
         match self.proves {
             Proves::Dead => GroupProof::Dead { status: None },
-            Proves::Alive => GroupProof::Alive,
+            Proves::Alive => GroupProof::Alive { group: None },
         }
     }
 

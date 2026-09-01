@@ -91,9 +91,17 @@ function snapshotOf(one: ConfiguredTriggerEntry): TriggerSnapshot {
 
 function editorDefaults(): Pick<
   TriggerIo,
-  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  | 'resumeTrigger'
+  | 'retryTrigger'
+  | 'createTrigger'
+  | 'updateTrigger'
+  | 'deleteTrigger'
+  | 'testLinearConnection'
 > {
   return {
+    resumeTrigger: async () => {
+      throw new Error('not used');
+    },
     retryTrigger: async () => {
       throw new Error('not used');
     },

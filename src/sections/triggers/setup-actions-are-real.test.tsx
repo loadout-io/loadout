@@ -116,6 +116,9 @@ function ioWith(overrides: Partial<TriggerIo> = {}): TriggerIo {
     listTriggers: async () => [],
     setTriggerEnabled: async () => ENTRY,
     checkTrigger: async () => ({ status: 'armed' }),
+    resumeTrigger: async () => {
+      throw new Error('not used');
+    },
     retryTrigger: async () => {
       throw new Error('not used');
     },

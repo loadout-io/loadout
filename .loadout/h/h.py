@@ -258,10 +258,12 @@ def kill_group(proc):
 
 
 def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=False,
-              turns=250, transcript=None):
+              turns=None, transcript=None):
     exe = shutil.which(vendor)
     if not exe:
         die("nie znaleziono `%s` w PATH" % vendor)
+    if turns is None:
+        turns = int(os.environ.get("LOADOUT_MAX_TURNS", "250"))
     out_file = None
     if vendor == "claude":
         # --setting-sources project, NIE "": flaga "" tnie koszt kontekstu ~6x, ale wycina
@@ -272,7 +274,18 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
                 "--disable-slash-commands",
                 "--permission-mode", "acceptEdits" if write else "plan",
                 "--model", os.environ.get("LOADOUT_CLAUDE_MODEL", "claude-opus-5[1m]"),
-                "--effort", os.environ.get("LOADOUT_CLAUDE_EFFORT", "max"),
+                # Wysilek per FAZA, nie na caly bieg. `write` juz rozdziela plan (False)
+                # od implementacji (True), wiec nie ma tu nowej rurki -- tylko drugi domyslny.
+                # ZMIERZONE 2026-08-28 z mtime'ow transkryptow w runs/: plan 10 min i 12 min,
+                # implementacja 30 min i 49 min, checki 25 s, weryfikacja Codeksem 4,5 min.
+                # Czyli implementacja to 3-5x plan, a plan jest ta faza, ktora w OBU biegach
+                # poprawila przeslanke zlecenia (p8-t158: odmowa na sciezce pollu to `Api`,
+                # nie `ConnectionRefused`; p8-t201: dziura jest w sciezce UDANEJ, nie w Stopie).
+                # Tanszy plan kupilby wiec kilka minut i zaplacil za nie zlym kontraktem.
+                "--effort", os.environ.get(
+                    "LOADOUT_CLAUDE_EFFORT_DEV" if write else "LOADOUT_CLAUDE_EFFORT",
+                    os.environ.get("LOADOUT_CLAUDE_EFFORT", "max"),
+                ),
                 "--max-turns", str(turns)]
         if resume:
             # Poprawka kontynuuje TE SAMA sesje: agent pamieta, co juz probowal, zamiast
@@ -313,6 +326,15 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     if transcript:
         Path(transcript).write_text(out, encoding="utf-8")
     if proc.returncode != 0:
+        # Sufit tur to NIE kod 1. ZMIERZONE 2026-08-28 na biegu p8-t151-newer-truth: agent
+        # zjadl 250 tur na 145 edycjach mechanicznego wachlarza (`tsc` wymusza jedna linie
+        # w kazdej atrapie IPC), skonczyl z `tsc rc=0` i 67 zmienionymi plikami -- czyli praca
+        # BYLA prawie gotowa. Harness zameldowal to jako kod 1, ktory wedlug README znaczy
+        # "sprawdzenie padlo", wiec orchestrator poszedl szukac defektu kodu, ktorego nie bylo.
+        # Sufit nalezy do kodu 3 ("przerwane albo sufit czasu") i worktree zostaje do wznowienia.
+        if '"subtype":"error_max_turns"' in out or '"terminal_reason":"max_turns"' in out:
+            die("%s wyczerpal sufit %d tur -- to NIE porazka sprawdzenia. Praca zostaje "
+                "w worktree; podnies LOADOUT_MAX_TURNS albo zawez zakres." % (vendor, turns), 3)
         die("%s zakonczyl sie kodem %d:\n%s" % (vendor, proc.returncode, out[-1500:]))
     if out_file and out_file.exists():
         text = out_file.read_text(encoding="utf-8")

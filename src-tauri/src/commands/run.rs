@@ -173,6 +173,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::isolate;
+use super::processes;
 use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
 use super::{Outcome, Part, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError};
@@ -2205,7 +2206,7 @@ async fn wait_for_reflection(
                     tracing::debug!("the reflection turn was stopped and proven dead");
                     Ok(None)
                 }
-                GroupProof::Alive => {
+                GroupProof::Alive { .. } => {
                     tracing::error!(
                         "the reflection group is still alive after escalation; this run cannot \
                          report a successful Stop"
@@ -2563,6 +2564,23 @@ const LIVE_STOP_RETRY_PAUSE: Duration = Duration::from_secs(1);
 /// Jedno zdanie współdzielone przez trwały receipt i istniejący panel historii.
 const LIVE_STOP_SURVIVOR_ERROR: &str =
     "This agent survived Loadout's three attempts to stop it and may still be running.";
+
+/// Zdanie dla człowieka o kroku, który **skończył pracę**, a jego grupa procesów nadal odpowiada
+/// na sygnał zerowy.
+///
+/// 2026-08-28 — osobne od [`LIVE_STOP_SURVIVOR_ERROR`], choć obie mówią o ocalałym, bo różnią się
+/// tym, czego człowiek szuka dalej: tamto zdanie pada po Stopie, którego ktoś nacisnął, a to po
+/// kroku, który wygląda na udany i o którym nikt by nie zapytał. Nazywa więc obie połowy — pracę
+/// skończoną i grupę niedowiedzioną — bo bez pierwszej połowy czyta się jak porażka agenta.
+const STEP_SURVIVOR_ERROR: &str = "\
+This step finished its work, but Loadout could not make sure everything it started had stopped, \
+so some of it may still be running.";
+
+/// To samo o komendzie kroku „sprawdź". Osobne zdanie, bo nazywa KOMENDĘ: w tym kroku nie ma
+/// agenta, a „ten krok" bez podmiotu wysyła człowieka szukać wady u kogoś, kogo tam nie było.
+const CHECK_SURVIVOR_ERROR: &str = "\
+This check ran to the end, but Loadout could not make sure everything it started had stopped, \
+so some of it may still be running.";
 
 /// Puszcza bieg dalej z punktu kontrolnego (T3 §6.1 reguła 5).
 ///
@@ -2933,6 +2951,26 @@ enum Turned {
     Settled(StepReport),
     /// Tura wróciła błędem. W środku zdanie, które ma zobaczyć człowiek.
     Broke(String),
+}
+
+/// Czym skończyło się domknięcie sesji kroku — powstaje w [`Live::close_and_prove`].
+///
+/// Trzy pola, bo trzy fakty są prawdziwie różne i każdy z osobna potrafi odebrać krokowi prawo
+/// do słowa „done": zamknięcie się nie udało, lider wyszedł czymś innym niż zero, albo grupa nie
+/// dała się dowieść jako martwa (niezmiennik 6).
+#[derive(Debug)]
+struct Closed {
+    /// Czy `close()` w ogóle wróciło bez błędu.
+    close_succeeded: bool,
+    /// Kod wyjścia lidera. `None`, kiedy proces zginął od sygnału i kodu po prostu nie ma —
+    /// a `None` nigdy nie jest przejściem, bo `None` to nie zero.
+    code: Option<i32>,
+    /// Dowód, który rozstrzygnął koniec tego kroku.
+    ///
+    /// Wartość, nie `bool` (2026-08-28): `Alive` niesie adres grupy i jest jedynym kluczem do
+    /// [`processes::Unproven::released_by`], czyli do jedynej drogi, którą wolno zwolnić uchwyt
+    /// sesji i miejsce z puli. `bool` zgubiłby i adres, i tę drogę.
+    proof: GroupProof,
 }
 
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
@@ -6661,9 +6699,15 @@ struct StepRun {
     exit_code: Option<i32>,
     /// Czy supervisor dostał z jądra dowód, że cała grupa procesu nie żyje.
     ///
-    /// `false` nie znaczy „żyje”: naturalne `close()` zbiera lidera, ale nie produkuje
-    /// [`GroupProof`]. `true` zapisujemy wyłącznie na ścieżce Stop/limitu, która naprawdę
-    /// dostała [`GroupProof::Dead`] (niezmiennik 6).
+    /// 2026-08-28 — DO TEGO DNIA `false` NIE ZNACZYŁO „ŻYJE": naturalne `close()` zbierało
+    /// lidera i nie produkowało [`GroupProof`] ani razu, więc każdy udany krok kończył się tu
+    /// fałszem, którego nie dało się odróżnić od ocalałego. Teraz dowód pada na KAŻDEJ ścieżce
+    /// terminalnej — Stop, limit czasu, udana tura i udana komenda — a `false` znaczy dokładnie
+    /// to, co mówi niezmiennik 6: nikt nie usłyszał `ESRCH`, więc grupę traktujemy jak żywą.
+    ///
+    /// Jedyny wyjątek jest widoczny z pliku workflow, nie z tego pola: kafelek „uruchom
+    /// i zostaw" ma zostawić żywy proces z rozmysłu i nie przechodzi ani przez `one_turn`, ani
+    /// przez `run_check`.
     death_proof: bool,
     /// Ile kosztował.
     cost_usd: Option<f64>,
@@ -7681,7 +7725,12 @@ impl Live {
             return self.finish_this_step(id, StepReport::Succeeded).await;
         }
 
-        let _slot = match &self.plan.steps[id].job {
+        /* `mut`, bo krok agenta MOŻE oddać to miejsce dalej (2026-08-28): grupa, której nie dało
+         * się dowieść jako martwej, zabiera permit ze sobą do rejestru aplikacji — inaczej pula
+         * zwolniłaby miejsce po czymś, co dalej biegnie i dalej płaci (niezmiennik 11). Na każdej
+         * innej drodze ta wartość ginie dokładnie tam, gdzie ginęła: na końcu tej funkcji, czyli
+         * już PO `finish_this_step`. */
+        let mut slot = match &self.plan.steps[id].job {
             // Krok „sprawdź" bierze miejsce z puli **i** jedno miejsce ciężkie ([`weight_of`]),
             // więc dwa takie kroki nigdy nie idą obok siebie, choćby pula miała ich osiem.
             // Pytanie do człowieka nie waży nic i miejsca nie bierze wcale — to jest cała
@@ -7743,7 +7792,7 @@ impl Live {
         self.announce(id, StepState::Running);
 
         let report = match &self.plan.steps[id].job {
-            Job::Agent(job) => self.run_agent(id, job, &cancel).await,
+            Job::Agent(job) => self.run_agent(id, job, &cancel, &mut slot).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
             Job::Check(job) => self.run_check(id, job, &cancel).await,
             Job::Serve(job) => self.start_and_leave(id, job),
@@ -8263,6 +8312,7 @@ impl Live {
         id: StepId,
         job: &AgentJob,
         cancel: &CancellationToken,
+        slot: &mut Option<limits::Slot>,
     ) -> StepReport {
         let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
         // Odbiór staje PRZED startem sterownika: vendor ma prawo powiedzieć pierwsze zdarzenia
@@ -8407,7 +8457,8 @@ impl Live {
                 self.update(|book| book.steps[id].execution.process_started = true);
                 self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
-                self.one_turn(id, handle, cancel, &reads, &evidence).await
+                self.one_turn(id, handle, cancel, &reads, &evidence, slot)
+                    .await
             }
             Err(error) => {
                 let text = public_start_refusal(job.driver.id(), &error);
@@ -8525,10 +8576,22 @@ impl Live {
 
         match end.how {
             CheckHow::Ran(report) => {
+                /* 2026-08-28 — WERDYKT DOPIERO PO DOWODZIE ZEJŚCIA GRUPY.
+                 *
+                 * `Checking::settle` na ścieżce `Settled::Exited` nie wołało `stop()` ani razu:
+                 * kod wyjścia komendy mówi o LIDERZE, a zapłacone są wnuki [T7 §3.1]. Zielone
+                 * „passed" nad grupą, która dalej odpowiada na sygnał zerowy, jest tym samym
+                 * `Ok(())`, przed którym stoi `GroupProof` (niezmiennik 6) — tylko o warstwę
+                 * obok kroku agenta. */
+                let proven_dead = self.prove_check_settled(&mut live).await;
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.exit_code = report.exit_code;
                     step.summary = summary_of(&report.output);
+                    step.death_proof = proven_dead;
+                    if !proven_dead {
+                        step.error = Some(CHECK_SURVIVOR_ERROR.to_owned());
+                    }
                 });
                 /* WYJŚCIE KOMENDY MA DWÓCH CZYTELNIKÓW (niezmiennik 21): werdykt wyżej
                  * i przekazanie do następnego kroku tutaj. Bez tego drugiego runda 1 pętli nie
@@ -8536,6 +8599,15 @@ impl Live {
                  * bo do komendy nie wstrzykujemy niczyjego przekazania — komenda nie czyta
                  * promptu. */
                 self.hand_over(id, &report.output, &[]);
+                /* PRZED WERDYKTEM I PRZED DROGAMI WARUNKOWYMI, ale ZA zapisem przekazania: plik
+                 * z wyjściem komendy ma istnieć niezależnie od tego, co postanowimy z biegiem
+                 * (ta sama kolejność, co niżej). Ocalały nie ma prawa wyjść tędy `Succeeded`,
+                 * bo tylko po tym stanie planista wypuszcza potomków. */
+                if !proven_dead {
+                    return self
+                        .when_this_one_fails(id, "Something this check started is still running.")
+                        .await;
+                }
                 if self.has_routes(id) {
                     self.remember_evidence(
                         id,
@@ -8568,7 +8640,7 @@ impl Live {
             // przyszedł już w `how` — to sterownik go zdobył, nie my.
             CheckHow::Stopped(first_proof) => {
                 let proof = self.prove_check_dead(&mut live, first_proof).await;
-                let unproven = matches!(&proof, GroupProof::Alive);
+                let unproven = matches!(&proof, GroupProof::Alive { .. });
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -8585,7 +8657,7 @@ impl Live {
             }
             CheckHow::Overdue(first_proof) => {
                 let proof = self.prove_check_dead(&mut live, first_proof).await;
-                let unproven = matches!(&proof, GroupProof::Alive);
+                let unproven = matches!(&proof, GroupProof::Alive { .. });
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     // Powód nazywa LIMIT CZASU i mówi, co zrobić. Liczba minut przychodzi ZE
@@ -8616,7 +8688,7 @@ impl Live {
 
     /// Zachowuje uchwyt komendy sprawdzającej po pierwszym niepełnym dowodzie Stopu.
     async fn prove_check_dead(&self, live: &mut Checking, mut proof: GroupProof) -> GroupProof {
-        while matches!(proof, GroupProof::Alive) {
+        while matches!(proof, GroupProof::Alive { .. }) {
             tracing::error!(
                 "a check group is still alive after escalation; Loadout retains its handle and \
                  will retry"
@@ -8680,11 +8752,18 @@ impl Live {
     /// zapalić `settled`, ale zapisane wcześniej `pid` i `pgid` pozostają jedynym adresem dla
     /// cleanupu przy następnym starcie. `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
     async fn prove_agent_dead_after_live_stop(&self, handle: &mut dyn AgentHandle) -> GroupProof {
+        // Adres z uchwytu jest tym, co wiemy PRZED pierwszą próbą; każdy kolejny `Alive` niesie
+        // własny i nadpisuje ten wstępny. Zwrócenie świeżo zmyślonego `Alive` gubiłoby jedno
+        // i drugie, a wołający dostawałby odmowę bez adresu (2026-08-28).
+        let mut last = GroupProof::Alive {
+            group: handle.group(),
+        };
         for attempt in 1..=LIVE_STOP_ATTEMPTS {
             let proof = handle.cancel().await;
             if matches!(proof, GroupProof::Dead { .. }) {
                 return proof;
             }
+            last = proof;
             tracing::error!(
                 attempt,
                 attempts = LIVE_STOP_ATTEMPTS,
@@ -8694,7 +8773,146 @@ impl Live {
                 tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
             }
         }
-        GroupProof::Alive
+        last
+    }
+
+    /// Zamyka sesję kroku i **dowodzi**, że po jej grupie nie zostało nic.
+    ///
+    /// Dwa czasowniki w jednym, bo są jedną rzeczą — końcem kroku — i bo tylko tutaj oba fakty
+    /// są jeszcze razem: `close()` zamyka wejście i zbiera LIDERA, oddając jego kod wyjścia,
+    /// a wnuk nie jest naszym dzieckiem i nie zobaczy go żaden nasz `wait()`
+    /// [T7 §3.1: `total=2 orphaned=2` przy statusie dziecka mówiącym „zabity"].
+    ///
+    /// 2026-08-28 — DO TEGO DNIA DRUGIEJ POŁOWY NIE BYŁO. `GroupProof` powstawał wyłącznie po
+    /// Stopie, po limicie czasu i po `close()`, które PADŁO; tura, która skończyła się dobrze,
+    /// nie pytała jądra o nic. Krok zapalał się więc człowiekowi na „done" nad grupą, która dalej
+    /// mieli i dalej płaci — a niezmiennik 6 nie zna stanu „chyba nie żyje".
+    ///
+    /// **Wołane przed `hand_over` i przed [`Live::finish_this_step`]**, bo to tamte wypuszczają
+    /// potomków i zapalają stan na ekranie: dowód wzięty za nimi byłby dowodem, którego człowiek
+    /// nie zdążył zobaczyć, a punkt kontrolny za krokiem zdążyłby już zapytać.
+    async fn close_and_prove(
+        &self,
+        id: StepId,
+        handle: &mut dyn AgentHandle,
+        evidence: &EvidenceTarget,
+    ) -> Closed {
+        // `claude` z otwartym stdinem czeka w nieskończoność, więc krok bez tego zostawia żywy
+        // proces [T1 §2, §4.6].
+        let closed = handle.close().await;
+        let close_succeeded = closed.is_ok();
+        if !close_succeeded {
+            evidence.mark_incomplete();
+        }
+        let proof = if close_succeeded {
+            self.prove_step_dead(handle).await
+        } else {
+            /* `close()` PADŁO: tu pętla dowodowa zostaje NIEOGRANICZONA, bo ta droga i tak nie
+             * wraca sukcesem, a powrót na `Alive` zrzuciłby `Box<dyn AgentHandle>` i osierocił
+             * grupę. Ograniczamy wyłącznie ścieżkę udaną — tam krok skończył pracę i nie wolno
+             * go wieszać w nieskończoność. */
+            self.prove_agent_dead(handle).await
+        };
+        let proven_dead = matches!(proof, GroupProof::Dead { .. });
+        self.update(|book| book.steps[id].death_proof = proven_dead);
+        Closed {
+            close_succeeded,
+            code: closed.ok().flatten(),
+            proof,
+        }
+    }
+
+    /// Zwalnia zasoby kroku — albo oddaje je rejestrowi aplikacji, kiedy dowodu nie było.
+    ///
+    /// 2026-08-28 — ZWOLNIENIE PROWADZI PRZEZ DOWÓD I TYLKO PRZEZ NIEGO. Uchwyt sesji i miejsce
+    /// z puli wchodzą tu w JEDNĄ wartość ([`processes::Unproven`]), z której wyjście prowadzi
+    /// wyłącznie przez [`processes::Unproven::released_by`] — a ta żąda `GroupProof` i przepuszcza
+    /// tylko `Dead`, i tylko raz, bo bierze `self` przez wartość.
+    ///
+    /// Do tego dnia obie te rzeczy ginęły razem z ramką [`Live::one_turn`] także wtedy, gdy
+    /// dowodu nie było, i każda z osobna jest tą samą wadą:
+    ///
+    /// * porzucony uchwyt był **jedyny**, więc nikt już nie mógł ponowić eskalacji na tej grupie
+    ///   — z `run.json` zostawał `pgid`, czyli adres, a nie właściciel;
+    /// * oddany permit to miejsce, które natychmiast zajmuje następny agent po ~583 MB, obok
+    ///   grupy, która dalej pali limit u dostawcy (niezmiennik 11).
+    ///
+    /// Krok i tak kończy się `failed` ze zdaniem dla człowieka — ale to jest zdanie o tym, czego
+    /// nie wiemy, a nie zgoda na sprzątnięcie.
+    fn released_by(
+        &self,
+        handle: Box<dyn AgentHandle>,
+        slot: &mut Option<limits::Slot>,
+        proof: GroupProof,
+    ) {
+        let address = handle.group();
+        let (_proof, kept) =
+            processes::Unproven::new(handle, slot.take(), address).released_by(proof);
+        match kept {
+            // Miejsce wraca do kroku i ginie dopiero za `announce`: permit ma przeżyć grupę,
+            // nie odwrotnie.
+            processes::Kept::Released(returned) => *slot = returned,
+            processes::Kept::Retained(still) => self.processes.keep_unproven(still),
+        }
+    }
+
+    /// Dowód zejścia grupy po turze, która **skończyła się sama** — w tej samej ograniczonej
+    /// polityce, co żywy Stop.
+    ///
+    /// 2026-08-28 — osobny czasownik uchwytu ([`AgentHandle::proof_of_death`]), a nie `cancel()`:
+    /// tamta prowadzi przerwaniem w paśmie i czeka na odpowiedź, której proces po `close()` już
+    /// nie wyśle, więc każdy udany krok płaciłby całym oknem przerwania.
+    ///
+    /// **Ograniczona, nie wieczna**, i to jest różnica wobec [`Live::prove_agent_dead`]: tamta
+    /// pętla kończy bieg i wolno jej trzymać uchwyt bez końca, a ta stoi nad krokiem, który
+    /// pracę już oddał. Bieg zamrożony na zawsze przy grupie, której nie da się dowieść, jest
+    /// gorszy niż uczciwe „nie wiem" na kafelku.
+    ///
+    /// **Sufit nie jest pozwoleniem na porzucenie.** Ostatni `Alive` wraca stąd w całości, razem
+    /// z adresem grupy, i to on decyduje, że uchwyt oraz miejsce z puli jadą do rejestru
+    /// aplikacji zamiast zginąć z ramką tej funkcji ([`processes::Unproven`]).
+    async fn prove_step_dead(&self, handle: &mut dyn AgentHandle) -> GroupProof {
+        let mut last = GroupProof::Alive {
+            group: handle.group(),
+        };
+        for attempt in 1..=LIVE_STOP_ATTEMPTS {
+            let proof = handle.proof_of_death().await;
+            if matches!(proof, GroupProof::Dead { .. }) {
+                return proof;
+            }
+            last = proof;
+            tracing::error!(
+                attempt,
+                attempts = LIVE_STOP_ATTEMPTS,
+                "the process group of a finished step is still alive after a full escalation"
+            );
+            if attempt < LIVE_STOP_ATTEMPTS {
+                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
+            }
+        }
+        last
+    }
+
+    /// To samo dla komendy kroku „sprawdź", która doszła do końca sama.
+    ///
+    /// [`Checking::cancel`] jest już czystym [`crate::engine::supervisor::Supervised::stop`] —
+    /// nie ma tu przerwania w paśmie do pominięcia, więc uchwyt komendy nie potrzebuje drugiego
+    /// czasownika.
+    async fn prove_check_settled(&self, live: &mut Checking) -> bool {
+        for attempt in 1..=LIVE_STOP_ATTEMPTS {
+            if matches!(live.cancel().await, GroupProof::Dead { .. }) {
+                return true;
+            }
+            tracing::error!(
+                attempt,
+                attempts = LIVE_STOP_ATTEMPTS,
+                "the process group of a finished check is still alive after a full escalation"
+            );
+            if attempt < LIVE_STOP_ATTEMPTS {
+                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
+            }
+        }
+        false
     }
 
     /// Zachowuje jedynego właściciela uchwytu aż supervisor dowiedzie `Dead`.
@@ -8730,6 +8948,7 @@ impl Live {
         cancel: &CancellationToken,
         reads: &[String],
         evidence: &EvidenceTarget,
+        slot: &mut Option<limits::Slot>,
     ) -> Turned {
         let cost_is_estimate = handle.session().vendor == "codex";
         // `pid` i `pgid` zapisujemy, ZANIM cokolwiek popłynie ze stdout [T7 §6.2]: po awarii
@@ -8825,18 +9044,15 @@ impl Live {
                 Turned::Broke("This step's agent stopped in the middle of its turn.".to_owned())
             }
             Ended::Turn(Ok(turn)) => Turned::Settled({
-                // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
-                // w nieskończoność, więc krok bez tego zostawia żywy proces [T1 §2, §4.6].
-                let closed = handle.close().await;
-                if closed.is_err() {
-                    evidence.mark_incomplete();
-                    let proof = self.prove_agent_dead(handle.as_mut()).await;
-                    self.update(|book| {
-                        book.steps[id].death_proof = matches!(proof, GroupProof::Dead { .. });
-                    });
-                }
-                let close_succeeded = closed.is_ok();
-                let code = closed.ok().flatten();
+                // Normalne zakończenie idzie przez `close`, a zaraz za nim stoi DOWÓD zejścia
+                // grupy — oba czasowniki i powód dla ich kolejności są przy `close_and_prove`.
+                let Closed {
+                    close_succeeded,
+                    code,
+                    proof,
+                } = self.close_and_prove(id, handle.as_mut(), evidence).await;
+                let proven_dead = matches!(proof, GroupProof::Dead { .. });
+                self.released_by(handle, slot, proof);
                 // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
                 // Samo zero z drivera nie kończy kroku sukcesem — agent, który wypisał „nie dam
                 // rady" i wyszedł czysto, nie zrobił tego, o co go proszono.
@@ -8844,6 +9060,7 @@ impl Live {
                 let ok = turn.ok
                     && close_succeeded
                     && evidence_complete
+                    && proven_dead
                     && matches!(code, None | Some(0));
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -8859,6 +9076,11 @@ impl Live {
                              step was not accepted as complete."
                                 .to_owned(),
                         );
+                    } else if !proven_dead {
+                        /* 2026-08-28 — POWÓD NASZ WYGRYWA Z POWODEM AGENTA, ta sama kolejność,
+                         * co wyżej: agent zrobił swoje, a to Loadout nie umie powiedzieć, czy po
+                         * nim coś zostało. Poprawka promptu tego nie naprawi. */
+                        step.error = Some(STEP_SURVIVOR_ERROR.to_owned());
                     } else if !ok
                         && let FinishReason::Failed(said) = &turn.reason
                         && let Some(short) = one_line(said, SUMMARY_LIMIT)
@@ -10421,7 +10643,7 @@ mod tests {
         }
 
         async fn cancel(&mut self) -> GroupProof {
-            GroupProof::Alive
+            GroupProof::Alive { group: None }
         }
 
         async fn close(&mut self) -> anyhow::Result<Option<i32>> {

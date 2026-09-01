@@ -237,7 +237,7 @@ fn reap_with_ceiling(
 fn assert_dead(proof: &GroupProof, context: &str) -> Result<(), Box<dyn Error>> {
     match proof {
         GroupProof::Dead { .. } => Ok(()),
-        GroupProof::Alive => Err(context.to_owned().into()),
+        GroupProof::Alive { .. } => Err(context.to_owned().into()),
     }
 }
 

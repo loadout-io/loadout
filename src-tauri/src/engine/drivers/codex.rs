@@ -1587,9 +1587,25 @@ impl AgentHandle for CodexConversationHandle {
                 return Err(error.into());
             }
         };
-        self.finish_tasks().await;
-        self.process = None;
+        /* 2026-08-28 — GRUPA SCHODZI PRZEZ DOWÓD, NIE PRZEZ PORZUCENIE UCHWYTU.
+         *
+         * Stały tu dwie linie: `finish_tasks()` i `self.process = None`. Ta druga oddawała
+         * `Supervised` gwardii `Drop`, a gwardia prowadzi dziewiątką bez łaski i **nie pyta
+         * jądra o nic** — więc udana tura kończyła się bez ani jednego `ESRCH`, a wołający nie
+         * miał czego przeczytać (niezmiennik 6). `force_stop` robi jedno i drugie: pełną
+         * eskalację i dokładnie to samo sprzątanie, tylko warunkowane dowodem. Kiedy dowodu nie
+         * ma, uchwyt ZOSTAJE u nas i [`AgentHandle::proof_of_death`] spróbuje jeszcze raz. */
+        let _proof = self.force_stop().await;
         Ok(status.code())
+    }
+
+    /// Dowód po turze, która skończyła się sama.
+    ///
+    /// Po udanym `close()` nie ma już czego zabijać i `force_stop` mówi o tym prawdę bez ani
+    /// jednego sygnału. Po `close()`, które nie zdołało dowieść zejścia grupy, uchwyt nadal
+    /// tu jest — i wtedy ta droga jest kolejną pełną eskalacją, a nie formalnością.
+    async fn proof_of_death(&mut self) -> GroupProof {
+        self.force_stop().await
     }
 }
 
@@ -3046,6 +3062,25 @@ impl AgentHandle for CodexHandle {
         // różnica, którą mierzy dowód z `cancel()`.
         Ok(status.code())
     }
+
+    /// Dowód po turze, która skończyła się sama.
+    ///
+    /// 2026-08-28 — `cancel()` bez podnoszenia generacji anulowania i bez `turn/interrupt`:
+    /// tura naprawdę się skończyła, a znacznik postawiony tutaj meldowałby ją jako przerwaną
+    /// przez człowieka (niezmiennik 7 złamany o jedną instrukcję). Sama eskalacja z nadzoru
+    /// i sam dowód — `close()` zebrał lidera, ale wnuka nie widzi żaden nasz `wait()`.
+    async fn proof_of_death(&mut self) -> GroupProof {
+        let Some(process) = self.process.as_mut() else {
+            // Ten sam wybór, co w `cancel()`: sesji bez procesu nie ma czego zabijać, a `Alive`
+            // posłałoby wołającego po grupę, której nie ma.
+            return GroupProof::Dead { status: None };
+        };
+        let proof = process.stop(DEFAULT_GRACE).await;
+        if proof_allows_cleanup(&proof) {
+            self.drain_current().await;
+        }
+        proof
+    }
 }
 
 #[async_trait]
@@ -3326,7 +3361,7 @@ mod stop_proof_tests {
 
     #[test]
     fn alive_keeps_process_readers_and_evidence_owned_for_retry() {
-        assert!(!proof_allows_cleanup(&GroupProof::Alive));
+        assert!(!proof_allows_cleanup(&GroupProof::Alive { group: None }));
         assert!(proof_allows_cleanup(&GroupProof::Dead { status: None }));
     }
 
@@ -3363,7 +3398,7 @@ mod stop_proof_tests {
 
         tokio::time::timeout(
             Duration::from_millis(200),
-            handle.cleanup_after_proof(&GroupProof::Alive),
+            handle.cleanup_after_proof(&GroupProof::Alive { group: None }),
         )
         .await?;
 

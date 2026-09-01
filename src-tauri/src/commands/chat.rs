@@ -385,7 +385,7 @@ impl Chat {
                             finish_dead_session(failed, status.and_then(|status| status.code()))
                                 .await;
                         }
-                        GroupProof::Alive => {
+                        GroupProof::Alive { .. } => {
                             self.live = Some(failed);
                             return Err(ChatError::StillRunning);
                         }
@@ -758,10 +758,17 @@ impl Conversation {
         }
         let Ok(proof) = self.ask_to_stop().await else {
             /* Zerwany kanał bez otrzymanego `Dead` jest stanem nieznanym. Konserwatywne `Alive`
-             * zachowuje wpis w rejestrze i nie zamienia utraty actora w fałszywy dowód śmierci. */
-            return Some(GroupProof::Alive);
+             * zachowuje wpis w rejestrze i nie zamienia utraty actora w fałszywy dowód śmierci.
+             *
+             * `group: None` jest tu prawdą, nie zaniedbaniem (2026-08-28): actor był jedynym,
+             * kto trzymał `Supervised`, więc razem z jego kanałem znika adres grupy. To jest
+             * dokładnie ten najgorszy stan, który wariant `Alive` ma umieć wypowiedzieć —
+             * żyje i nie wiadomo, kogo pytać. */
+            return Some(GroupProof::Alive { group: None });
         };
-        proof.await.unwrap_or(Some(GroupProof::Alive))
+        proof
+            .await
+            .unwrap_or(Some(GroupProof::Alive { group: None }))
     }
 }
 
@@ -789,7 +796,7 @@ async fn conversation_actor(
                     return;
                 };
                 let proof = cancel_session(&mut session).await;
-                let alive = matches!(proof, Some(GroupProof::Alive));
+                let alive = matches!(proof, Some(GroupProof::Alive { .. }));
                 status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                 let _ = stop.done.send(proof);
                 if alive {
@@ -837,7 +844,7 @@ async fn conversation_actor(
                     }
                     FollowUp::Delivered(Err(error)) => {
                         let proof = cancel_session(&mut session).await;
-                        if matches!(proof, Some(GroupProof::Alive)) {
+                        if matches!(proof, Some(GroupProof::Alive { .. })) {
                             status.store(THREAD_CLOSING, Ordering::Release);
                             closing = true;
                             let _ = turn.done.send(Err(ChatError::StillRunning));
@@ -853,7 +860,7 @@ async fn conversation_actor(
                     }
                     FollowUp::Stop(Some(stop)) => {
                         let proof = cancel_session(&mut session).await;
-                        let alive = matches!(proof, Some(GroupProof::Alive));
+                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
                         status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                         let _ = turn.done.send(Err(if alive {
                             ChatError::StillRunning
@@ -894,7 +901,7 @@ async fn serve_while_closing(
                     return;
                 };
                 let proof = cancel_session(session).await;
-                let alive = matches!(proof, Some(GroupProof::Alive));
+                let alive = matches!(proof, Some(GroupProof::Alive { .. }));
                 status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                 let _ = stop.done.send(proof);
                 if !alive {
@@ -1086,7 +1093,7 @@ async fn stop_orphan(mut session: Option<Session>, status: &AtomicU8) {
                 status.store(THREAD_CLOSED, Ordering::Release);
                 return;
             }
-            Some(GroupProof::Alive) => {
+            Some(GroupProof::Alive { .. }) => {
                 status.store(THREAD_CLOSING, Ordering::Release);
                 tracing::error!(
                     "a lead agent is still alive after losing its terminal; Loadout will retry \
@@ -1278,10 +1285,12 @@ impl Threads {
         let mut proofs = Vec::with_capacity(pending.len());
         for (terminal, thread, pending_proof) in pending {
             let proof = match pending_proof {
-                Some(pending_proof) => pending_proof.await.unwrap_or(Some(GroupProof::Alive)),
-                None => Some(GroupProof::Alive),
+                Some(pending_proof) => pending_proof
+                    .await
+                    .unwrap_or(Some(GroupProof::Alive { group: None })),
+                None => Some(GroupProof::Alive { group: None }),
             };
-            let stopped = !matches!(proof, Some(GroupProof::Alive));
+            let stopped = !matches!(proof, Some(GroupProof::Alive { .. }));
             if stopped {
                 self.forget(&terminal, &thread);
             }
@@ -1480,7 +1489,7 @@ impl Threads {
         let proof = thread.stop().await;
         /* `Alive` ZOSTAJE W REJESTRZE razem z jedynym uchwytem. Dopiero `Dead` albo brak sesji
          * pozwala usunąć actora; inaczej kolejne Close nie miałoby już czego zatrzymać. */
-        if !matches!(proof, Some(GroupProof::Alive)) {
+        if !matches!(proof, Some(GroupProof::Alive { .. })) {
             self.forget(terminal, &thread);
         }
         proof
@@ -1764,7 +1773,7 @@ async fn stop_unregistered_handle(handle: &mut dyn AgentHandle) {
     loop {
         match handle.cancel().await {
             GroupProof::Dead { .. } => return,
-            GroupProof::Alive => {
+            GroupProof::Alive { .. } => {
                 tracing::error!(
                     "an unregistered Lead process is still alive; Loadout will retry stopping it"
                 );

@@ -31,6 +31,12 @@ clean <id>              usuń worktree + gałąź
 
 ## Vendorzy
 
+Wysiłek jest **per faza**, nie na cały bieg. `LOADOUT_CLAUDE_EFFORT` rządzi planem
+(domyślnie `max`), `LOADOUT_CLAUDE_EFFORT_DEV` implementacją (domyślnie to samo, co plan).
+Zmierzone 2026-08-28 na dwóch biegach: plan 10 i 12 min, implementacja 30 i 49 min, checki
+25 s, weryfikacja 4,5 min. Implementacja to 3–5× plan, a plan jest tą fazą, która w obu
+biegach poprawiła przesłankę zlecenia — więc tanieje się na implementacji, nie na planie.
+
 Domyślnie **plan: claude, kod: claude, weryfikacja: codex** — weryfikuje inny vendor niż ten,
 który pisał (decyzja D3). Zmiana: `--planner/--dev/--verifier` albo `H_PLANNER`/`H_DEV`/`H_VERIFIER`.
 

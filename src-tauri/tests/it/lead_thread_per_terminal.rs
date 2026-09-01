@@ -709,7 +709,7 @@ impl AgentHandle for ActorTurn {
             ActorMode::AliveVoice | ActorMode::FirstReceiptFailure
         ) && attempt == 0
         {
-            GroupProof::Alive
+            GroupProof::Alive { group: None }
         } else {
             GroupProof::Dead { status: None }
         }

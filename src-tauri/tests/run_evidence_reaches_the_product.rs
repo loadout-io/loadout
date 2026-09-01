@@ -309,7 +309,7 @@ impl AgentHandle for EvidenceFakeHandle {
     async fn cancel(&mut self) -> GroupProof {
         let call = self.proofs.cancel_calls.fetch_add(1, Ordering::AcqRel) + 1;
         if matches!(self.mode, EvidenceFakeMode::AliveThenDead) && call == 1 {
-            return GroupProof::Alive;
+            return GroupProof::Alive { group: None };
         }
         GroupProof::Dead { status: None }
     }

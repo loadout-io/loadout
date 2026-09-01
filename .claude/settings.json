@@ -121,6 +121,7 @@
       "Bash(git rebase:*)",
       "Bash(git push:*)",
       "Bash(git worktree remove:*)",
+      "Bash(cargo test --tests:*)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(**/*.pem)",

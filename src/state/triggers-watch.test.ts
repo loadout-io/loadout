@@ -53,8 +53,16 @@ const REDACTED = {
 };
 const EDITOR_IO: Pick<
   TriggerIo,
-  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  | 'resumeTrigger'
+  | 'retryTrigger'
+  | 'createTrigger'
+  | 'updateTrigger'
+  | 'deleteTrigger'
+  | 'testLinearConnection'
 > = {
+  resumeTrigger: async () => {
+    throw new Error('not used');
+  },
   retryTrigger: async () => {
     throw new Error('not used');
   },

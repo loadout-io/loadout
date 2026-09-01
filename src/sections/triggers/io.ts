@@ -92,12 +92,15 @@ export type TriggerPoll =
       readonly workflow: string;
       readonly workspace: string | null;
       readonly receiptAt: number;
-    };
+    }
+  /** Rust stopped asking the source until one explicit Retry, and says why in that sentence. */
+  | { readonly status: 'refused'; readonly sentence: string };
 
 export interface TriggerIo {
   listTriggers(): Promise<TriggerEntry[]>;
   setTriggerEnabled(slug: string, enabled: boolean): Promise<TriggerEntry>;
   checkTrigger(slug: string): Promise<TriggerPoll>;
+  resumeTrigger(slug: string): Promise<TriggerPoll>;
   retryTrigger(slug: string): Promise<TriggerDelivery>;
   createTrigger(draft: TriggerDraft): Promise<ConfiguredTriggerEntry>;
   updateTrigger(
@@ -121,6 +124,11 @@ export function setTriggerEnabled(slug: string, enabled: boolean): Promise<Trigg
 
 export function checkTrigger(slug: string): Promise<TriggerPoll> {
   return invoke<TriggerPoll>('check_trigger', { slug });
+}
+
+/** Lift the hold left by a refused key, exactly once: Rust asks the source one more time. */
+export function resumeTrigger(slug: string): Promise<TriggerPoll> {
+  return invoke<TriggerPoll>('resume_trigger', { slug });
 }
 
 /** Ask Rust to return the pending attempt or mint one from the latest accepted run. */

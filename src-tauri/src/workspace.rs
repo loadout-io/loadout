@@ -102,6 +102,28 @@ struct OpenTab {
 pub struct WorkspaceId(PathBuf);
 
 impl WorkspaceId {
+    /// Tożsamość TEGO folderu — jedna na całe repo, także dla folderu, którego już nie ma.
+    ///
+    /// 2026-08-28 — POWSTAŁA, ŻEBY ZAPADKA BIEGU MIAŁA TEN SAM KLUCZ, CO PASEK KART. Zapadka
+    /// „jeden bieg naraz" w [`crate::ipc::AppState`] jest kluczowana workspace'em, a klucz
+    /// liczony z surowego napisu ścieżki dawałby dwa uchwyty dla `~/p/x` i `~/p/./x` — czyli
+    /// dwa biegi w jednym folderze, po plikach których piszą obaj (§6a reguła 1).
+    ///
+    /// **TOTALNA Z ROZMYSŁU**, i to jest cała różnica wobec [`Registry::open`]: folder skasowany
+    /// albo odmontowany W TRAKCIE biegu przestaje się kanonikalizować, a wtedy zapadka nie
+    /// znalazłaby uchwytu i Stop nie miałby jak dosięgnąć agenta, który dalej pracuje i dalej
+    /// płaci (niezmienniki 6 i 11). Nieczytelny folder oddaje więc ścieżkę PODANĄ: jest to
+    /// klucz gorszy (dwa zapisy tej samej ścieżki mogą się rozjechać), ale jest to klucz.
+    /// Odmowa nad nieczytelnym folderem należy do otwierania karty, nie do tożsamości.
+    #[must_use]
+    pub fn for_folder(folder: &Path) -> Self {
+        Self(
+            folder
+                .canonicalize()
+                .unwrap_or_else(|_error| folder.to_path_buf()),
+        )
+    }
+
     /// Kanoniczny folder tej karty.
     #[must_use]
     pub fn as_path(&self) -> &Path {
@@ -325,18 +347,23 @@ impl Registry {
         // jądra — i jest jedynym sposobem, żeby zrobić to poprawnie: ręczne sklejanie
         // komponentów nie widzi dowiązania, a właśnie ono jest najczęstszym wejściem
         // (`~/work` wskazujące na `~/Projects`).
-        let canonical = folder
+        // Nieczytelny folder odmawia TUTAJ, a nie w tożsamości: [`WorkspaceId::for_folder`] jest
+        // funkcją totalną (powód w całości stoi przy niej), więc sama nie ma czym odmówić.
+        // To jedno wywołanie zostaje wyłącznie po `io::Error`, którym odmawia system plików —
+        // kanoniczną ścieżkę wybija niżej ta jedna funkcja, żeby zapadka biegu i pasek kart
+        // liczyły tożsamość TYM SAMYM rachunkiem (niezmiennik 13).
+        folder
             .canonicalize()
             .map_err(|source| WorkspaceError::Unreadable {
                 path: folder.to_path_buf(),
                 source,
             })?;
-        if !canonical.is_dir() {
+        let id = WorkspaceId::for_folder(folder);
+        if !id.as_path().is_dir() {
             return Err(WorkspaceError::NotAFolder {
                 path: folder.to_path_buf(),
             });
         }
-        let id = WorkspaceId(canonical);
 
         {
             // Sprawdzenie i założenie karty pod JEDNYM zamkiem, w jednym bloku. Rozdzielone

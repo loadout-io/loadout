@@ -48,6 +48,9 @@ function says(
     };
   }
   if (status.kind === 'refused') return { sentence: status.sentence };
+  /* Zdanie o wstrzymaniu ułożył Rust i to ono ma dotrzeć na ekran: mówi, że trigger przestał
+   * pytać, dlaczego przestał i co z tym zrobić. Kontrolka obok jest tą jedną drogą powrotu. */
+  if (status.kind === 'paused') return { sentence: status.sentence };
   if (status.retryRefusal !== undefined) return { sentence: status.retryRefusal };
 
   const started = utcStartTime(status.receiptAt);
@@ -121,7 +124,8 @@ export function TriggerRow({
       ? null
       : trigger.status.kind === 'accepted'
         ? 'Run again'
-        : trigger.status.kind === 'refused' && trigger.status.retryable === true
+        : trigger.status.kind === 'paused' ||
+            (trigger.status.kind === 'refused' && trigger.status.retryable === true)
           ? 'Retry'
           : null;
   return (

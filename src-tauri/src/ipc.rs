@@ -360,20 +360,51 @@ pub fn spawn_pump(source: LineSource, channel: Channel<Vec<Line>>) -> JoinHandle
 /// w `commands::workflows` — i to jest jedyna rzecz, którą ten plik o tamtym katalogu wie.
 const WORKFLOWS_DIR: &str = "workflows";
 
-/// Co powiedzieć KAŻDEMU drugiemu startowi, kiedy pierwszy bieg jeszcze nie zszedł.
+/// Co powiedzieć KAŻDEMU drugiemu startowi, kiedy bieg w TYM folderze jeszcze nie zszedł.
 ///
 /// Jedno zdanie na obie drogi (`/ask` i bieg z pliku), bo pytanie jest jedno: „czy coś już
-/// idzie". Osobne brzmienie per komenda znaczyłoby, że człowiek czyta o tej samej odmowie co
-/// innego zależnie od tego, którym przyciskiem ją wywołał (niezmiennik 13).
+/// idzie tutaj". Osobne brzmienie per komenda znaczyłoby, że człowiek czyta o tej samej odmowie
+/// co innego zależnie od tego, którym przyciskiem ją wywołał (niezmiennik 13).
 ///
 /// ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
 /// tam, gdzie był. Mówi też DLACZEGO: bez powodu czyta się to jak ograniczenie na złość, a
-/// prawdziwy powód jest finansowy — Loadout prowadzi jeden bieg naraz, więc drugi uchwyt
-/// znaczyłby, że Stop sięga do biegu drugiego, a pierwszy pracuje dalej i dalej płaci
+/// prawdziwy powód jest finansowy — Loadout prowadzi jeden bieg naraz W FOLDERZE, więc drugi
+/// uchwyt znaczyłby, że Stop sięga do biegu drugiego, a pierwszy pracuje dalej i dalej płaci
 /// (niezmienniki 6 i 11).
-const ALREADY_GOING: &str = "A run is already going, and Loadout leads one at a time so that \
-                             Stop always reaches the one that is working. Press Stop first, \
-                             then ask again.";
+///
+/// 2026-08-28 — `{name}` I POWÓD, DLA KTÓREGO GO TU DOŁOŻONO. Do tego dnia to zdanie brzmiało
+/// bezwarunkowo globalnie („A run is already going"), a zapadka też była globalna: bieg
+/// w `~/Projects/ledger` odmawiał startu w `~/Projects/atlas`. Zapadka jest od dziś kluczowana
+/// workspace'em ([`AppState::begin_run`]), więc zdanie MUSI nazwać ten jeden folder — inaczej
+/// człowiek czyta, że zajęty jest cały Loadout, i szuka Stopu tam, gdzie nic nie idzie.
+/// Wypełnia je [`already_going_in`]; szablon zostaje stałą, bo kryterium po stronie okna czyta
+/// go z tego pliku, zamiast trzymać drugą kopię zdania (niezmiennik 23).
+const ALREADY_GOING: &str = "A run is already going in \"{name}\", and Loadout leads one run at \
+                             a time in each folder so that Stop always reaches the one that is \
+                             working. Press Stop first, then ask again.";
+
+/// Zdanie odmowy dla konkretnego folderu.
+///
+/// Wolna funkcja, nie metoda: liczy się z szablonu i jednej nazwy, a nazwę wybiera wołający —
+/// który jako jedyny wie, czy folder stoi jeszcze na liście przełącznika.
+fn already_going_in(name: &str) -> String {
+    ALREADY_GOING.replace("{name}", name)
+}
+
+/// Uchwyt do biegu, który idzie **teraz w tym jednym workspace**.
+///
+/// 2026-08-28 — CAŁA TREŚĆ KLUCZOWANIA ZAPADKI MIEŚCI SIĘ W TYCH DWÓCH POLACH. Do tego dnia
+/// [`AppState`] trzymał JEDEN uchwyt na aplikację, więc „ile naraz" na poziomie biegów wynosiło
+/// jeden na całego Loadouta — a produkt obiecuje agentów pracujących w TWOICH folderach, w liczbie
+/// mnogiej. Tożsamość jest kanoniczna ([`crate::workspace::WorkspaceId`]), a nie surowym napisem
+/// ze ścieżką: `~/p/x` i `~/p/./x` to jeden folder i muszą dać jeden wpis, bo dwa uchwyty nad
+/// jednym folderem to dwa biegi piszące po tych samych plikach (§6a reguła 1).
+struct Live {
+    /// Kanoniczna tożsamość folderu — ta sama, którą liczy pasek kart.
+    at: crate::workspace::WorkspaceId,
+    /// Uchwyt biegu, który ten folder prowadzi teraz.
+    control: RunControl,
+}
 
 /// Ci współpracownicy biegu, którzy **przeżywają jedno wywołanie komendy**.
 ///
@@ -424,7 +455,22 @@ pub struct AppState {
     /// do świeżego uchwytu biegu, więc każdy bieg tej aplikacji bierze miejsca stąd,
     /// którymikolwiek drzwiami wszedł.
     slots: Limiter,
-    /// Uchwyt do biegu, który idzie **teraz**.
+    /// Uchwyty biegów, które idą **teraz** — po jednym na workspace, najnowszy na końcu.
+    ///
+    /// 2026-08-28 — BYŁ TU JEDEN UCHWYT NA CAŁĄ APLIKACJĘ i to jest zdjęta blokada. Zapadka
+    /// „jeden bieg naraz" jest od dziś kluczowana kanonicznym folderem ([`Live`]), więc dwa
+    /// workspace'y mają swoje biegi w tej samej chwili, a drugi start w TYM SAMYM folderze dalej
+    /// jest odmową, nie podmianą. **Zapadka nie jest limiterem i nie wolno jej z nim mieszać**:
+    /// sufit sumy równoległych kroków trzyma dalej JEDNA pula ([`AppState::slots`]), globalna
+    /// tak samo jak przed tą zmianą (niezmiennik 11).
+    ///
+    /// `Vec` i skan liniowy, nie mapa: kart jest najwyżej
+    /// [`commands::workspaces::MOST_WORKSPACES`], a kolejność jest tu treścią — „najnowszy na
+    /// końcu" jest odpowiedzią [`AppState::deps`] na pytanie „który bieg jest ten żywy".
+    ///
+    /// Wpisy nie są sprzątane po zejściu biegu (jeden na dotknięty folder) i jest to świadomy
+    /// dług: uchwyt z dowodem zejścia nikogo nie zatrzymuje, a czyszczenie generacji jest osobną
+    /// robotą razem z adresowaniem Stopu po identyfikatorze biegu.
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie tego
     /// zamka mieści się w jednym wyrażeniu, które kopiuje uchwyt i oddaje zamek, a dopiero
@@ -442,7 +488,7 @@ pub struct AppState {
     /// czytał uchwyt DRUGIEGO biegu, pierwszy pracował dalej i dalej płacił, i nie było już
     /// nikogo, kto mógłby zażądać od niego dowodu śmierci grupy (niezmienniki 6 i 11). Kto teraz
     /// odmawia i dlaczego jednym ciałem, stoi przy [`AppState::begin_run`].
-    live: Mutex<RunControl>,
+    live: Mutex<Vec<Live>>,
     /// Wątki lidera — po jednym na TERMINAL, wszystkie w jednym rejestrze.
     ///
     /// # Dlaczego nie ma tu globalnego zamka asynchronicznego
@@ -550,6 +596,23 @@ impl TriggerPollPermit {
             .map_err(|error| error.to_string())
     }
 
+    /// Jedno zdjęcie wstrzymania: trigger znów pyta źródło, ale dokładnie raz.
+    ///
+    /// Żywy bieg dalej daje `Busy`, tak jak przy [`TriggerPollPermit::poll`] — zdjęcie pauzy
+    /// kończy się pytaniem do sieci, więc nie może obejść tej samej decyzji o zajętości.
+    pub fn resume(
+        self,
+        slug: &str,
+        created_at: i64,
+    ) -> Result<commands::triggers::TriggerPoll, String> {
+        if self.busy {
+            return commands::triggers::accepted_while_busy(&self.home, slug)
+                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
+                .map_err(|error| error.to_string());
+        }
+        commands::triggers::resume(&self.home, slug, created_at).map_err(|error| error.to_string())
+    }
+
     /// Jawne ponowienie korzysta z tego samego rustowego autorytetu co Start i `/ask`.
     ///
     /// `Accepted` powstaje przed pierwszym wywolaniem sterownika, wiec sam receipt nie dowodzi,
@@ -586,10 +649,11 @@ impl fmt::Debug for AppState {
 impl AppState {
     /// Składa stan aplikacji z rzeczy, które umie zbudować wyłącznie powłoka okna.
     ///
-    /// Uchwyt biegu zaczyna życie **już zeszły**. Bez tego Stop naciśnięty, zanim cokolwiek
-    /// ruszyło, czekałby na dowód od biegu, którego nigdy nie było — a `stop_run_inner` mówi to
-    /// wprost: uchwyt biegu, którego nikt nie uruchomił, nie ma czego dowieść. Przycisk
-    /// wieszający okno jest gorszy od przycisku, który nic nie robi.
+    /// Zapadka zaczyna życie **pusta**, a folder bez wpisu dostaje uchwyt **już zeszły**
+    /// ([`AppState::nothing_going`]). Bez tego Stop naciśnięty, zanim cokolwiek ruszyło, czekałby
+    /// na dowód od biegu, którego nigdy nie było — a `stop_run_inner` mówi to wprost: uchwyt
+    /// biegu, którego nikt nie uruchomił, nie ma czego dowieść. Przycisk wieszający okno jest
+    /// gorszy od przycisku, który nic nie robi.
     #[must_use]
     pub fn new(home: PathBuf, project: PathBuf, store: Store, drivers: Drivers) -> Self {
         /* JEDYNE MIEJSCE, W KTÓRYM STOI LICZBA KROKÓW CIĘŻKICH, i stoi tu jedynka.
@@ -603,8 +667,6 @@ impl AppState {
          * przy Starcie, więc ustawia ją pierwszy bieg (`commands::run::run_workflow_inner`).
          * Wpisanie tu ósemki dałoby okno, w którym pula jest szersza niż suwak. */
         let slots = Limiter::with_heavy(1, 1);
-        let idle = RunControl::sharing(slots.clone());
-        idle.settle();
         Self {
             home,
             project,
@@ -612,7 +674,7 @@ impl AppState {
             drivers,
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
-            live: Mutex::new(idle),
+            live: Mutex::new(Vec::new()),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
             started: std::sync::Arc::new(commands::processes::Processes::new()),
@@ -667,7 +729,7 @@ impl AppState {
     pub(crate) async fn close_chat(&self) {
         let proofs = self.leads.close().await;
         for proof in proofs {
-            if matches!(proof, crate::engine::supervisor::GroupProof::Alive) {
+            if matches!(proof, crate::engine::supervisor::GroupProof::Alive { .. }) {
                 tracing::error!(
                     "a lead agent was still answering after Loadout asked it to stop; look for \
                      it in Activity Monitor"
@@ -682,7 +744,10 @@ impl AppState {
     /// wszystkich naraz i należy do zamknięcia OKNA, nie karty.
     pub async fn close_the_lead(&self, terminal: &str) {
         let proof = self.leads.close_at(terminal).await;
-        if matches!(proof, Some(crate::engine::supervisor::GroupProof::Alive)) {
+        if matches!(
+            proof,
+            Some(crate::engine::supervisor::GroupProof::Alive { .. })
+        ) {
             tracing::error!(
                 "a lead agent was still answering after its terminal was closed; look for it in \
                  Activity Monitor"
@@ -812,8 +877,29 @@ impl AppState {
     /// nie zmienia niczego w klonie, jaki test dostał przy pierwszym — więc jedynym miejscem,
     /// z którego widać osierocenie, jest ta metoda. Nie jest to druga odpowiedź na „który bieg
     /// jest żywy" (niezmiennik 13): to jest TA odpowiedź, tylko odczytana z zewnątrz.
+    ///
+    /// # 2026-08-28 — „NAJNOWSZY ŻYWY UCHWYT", A NIE „UCHWYT FOLDERU STARTOWEGO"
+    ///
+    /// Znaczenie zostaje CO DO ZNAKU takie, jakie miało: [`AppState::live`] było jednym polem
+    /// podmienianym przy każdym starcie, więc stał w nim uchwyt ostatniego startu — niezależnie
+    /// od tego, w którym folderze ten start poszedł. Zapadka kluczowana workspace'em ma teraz
+    /// tych uchwytów kilka, a `deps_in(self.project)` znaczyłoby „folder, pod którym wstało
+    /// okno" — czyli Dalej, Powiedz i zamknięcie karty gubiłyby bieg idący gdziekolwiek indziej.
+    /// Adresowanie tych trzech dróg folderem plus identyfikatorem biegu jest osobną robotą;
+    /// dopóki jej nie ma, „ten, który ruszył ostatni" jest jedynym wyborem, który niczego nie
+    /// odcina od okna.
     pub fn deps(&self) -> RunDeps<'_> {
-        self.deps_in(self.project.as_path())
+        // Zamek wzięty i oddany w JEDNYM wyrażeniu, przed czymkolwiek, co czeka (niezmiennik 8).
+        let newest = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last()
+            .map(|one| one.control.clone());
+        self.deps_with(
+            self.project.as_path(),
+            newest.unwrap_or_else(|| self.nothing_going()),
+        )
     }
 
     /// Współpracownicy biegu, który ma pracować w **tym** katalogu.
@@ -824,21 +910,50 @@ impl AppState {
     /// dostawał kartę z tą nazwą, a agent (gdyby wystartował) pracowałby w katalogu ustalonym
     /// przy starcie. „Agenci pracują w twoim folderze" jest CAŁĄ obietnicą tego produktu, więc
     /// katalog musi przyjechać z żądaniem, a nie ze stałej sprzed wyboru.
+    ///
+    /// 2026-08-28 — ODDAJE UCHWYT **TEGO** WORKSPACE'U. Folder bez wpisu w zapadce dostaje
+    /// uchwyt z dowodem zejścia ([`AppState::nothing_going`]), a nie świeży: Stop nad folderem,
+    /// w którym nic nigdy nie ruszyło, czekałby na dowód od biegu, którego nie było, czyli
+    /// wieszałby okno w najczęstszym przypadku ze wszystkich.
     fn deps_in<'a>(&'a self, project: &'a Path) -> RunDeps<'a> {
+        let at = crate::workspace::WorkspaceId::for_folder(project);
+        // Zamek wzięty i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await`
+        // wołającego nie ma ani jednej instrukcji (niezmiennik 8).
+        let here = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|one| one.at == at)
+            .map(|one| one.control.clone());
+        self.deps_with(project, here.unwrap_or_else(|| self.nothing_going()))
+    }
+
+    /// Wszystko poza uchwytem — jedno miejsce, w którym składa się [`RunDeps`].
+    ///
+    /// Osobno, bo uchwyt wybiera się dwoma różnymi pytaniami („co idzie w tym folderze" kontra
+    /// „co ruszyło ostatnio"), a reszta zależności jest w obu przypadkach ta sama. Dwie kopie
+    /// tej listy pól rozjechałyby się przy pierwszym nowym polu (niezmiennik 13).
+    fn deps_with<'a>(&'a self, project: &'a Path, control: RunControl) -> RunDeps<'a> {
         RunDeps {
             processes: std::sync::Arc::clone(&self.started),
             home: self.home.as_path(),
             project,
             store: &self.store,
             drivers: Arc::clone(&self.drivers),
-            // Zamek wzięty i oddany w JEDNYM wyrażeniu — między nim a jakimkolwiek `await`
-            // wołającego nie ma ani jednej instrukcji (niezmiennik 8).
-            control: self
-                .live
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone(),
+            control,
         }
+    }
+
+    /// Uchwyt biegu, którego nie ma: niesie pulę aplikacji i **ma już dowód zejścia**.
+    ///
+    /// Dowód zapala się od razu, bo to jest odpowiedź na „nic tu nie idzie", a nie na „bieg
+    /// właśnie ruszył". Uchwyt świeży w tym miejscu zamieniłby Stop nad pustym folderem
+    /// w czekanie bez końca, a zapadkę — w zamek, którego nikt nigdy nie otworzy.
+    fn nothing_going(&self) -> RunControl {
+        let idle = RunControl::sharing(self.slots.clone());
+        idle.settle();
+        idle
     }
 
     /// Świeży uchwyt biegu z pliku i współpracownicy, którzy go używają — albo zdanie o tym,
@@ -893,13 +1008,29 @@ impl AppState {
     /// przed którą stoi całe to zadanie (niezmienniki 6 i 11).
     ///
     /// Odpowiedzią jest pytanie o jedną chwilę wcześniejsze, i **nie wymaga ono ani jednego
-    /// nowego znacznika**: uchwyt trafia do [`AppState::live`] dokładnie w dwóch miejscach —
-    /// [`AppState::new`] wkłada tam uchwyt Z DOWODEM zejścia (tamten `settle()` ma swój własny
-    /// powód: Stop przed pierwszym biegiem nie ma na co czekać), a podmiana niżej wkłada świeży,
-    /// który dowodu jeszcze nie ma i mieć nie może. „W stanie stoi uchwyt bez dowodu zejścia"
-    /// znaczy więc dokładnie „ktoś ten uchwyt już wziął i bieg jeszcze nie zszedł" — a zapala
-    /// się to W TEJ SAMEJ instrukcji, w której uchwyt tam wchodzi, pod tym samym zamkiem. Okno
-    /// nie jest przez to węższe; nie ma go wcale.
+    /// nowego znacznika**: uchwyt trafia do [`AppState::live`] dokładnie w jednym miejscu — niżej,
+    /// w tej metodzie — i jest wtedy świeży, więc dowodu jeszcze nie ma i mieć nie może. Folder
+    /// bez wpisu odpowiada „nic tu nie idzie" samym brakiem wpisu ([`AppState::nothing_going`]
+    /// ma swój własny powód: Stop przed pierwszym biegiem nie ma na co czekać). „We wpisie stoi
+    /// uchwyt bez dowodu zejścia" znaczy więc dokładnie „ktoś ten uchwyt już wziął i bieg jeszcze
+    /// nie zszedł" — a zapala się to W TEJ SAMEJ instrukcji, w której uchwyt tam wchodzi, pod tym
+    /// samym zamkiem. Okno nie jest przez to węższe; nie ma go wcale.
+    ///
+    /// # 2026-08-28 — PYTANIE BRZMI „CZY COŚ IDZIE W TYM FOLDERZE"
+    ///
+    /// Zapadka jest kluczowana kanoniczną tożsamością workspace'u ([`Live`]), więc bieg w jednym
+    /// folderze nie odmawia startu w drugim: obietnicą produktu są agenci pracujący w TWOICH
+    /// folderach, w liczbie mnogiej. Wszystko, co wyżej, zostaje słowo w słowo prawdziwe —
+    /// tylko dla jednego workspace'u zamiast dla całej aplikacji, i dokładnie dlatego ciało dalej
+    /// jest JEDNO na obie drogi startu.
+    ///
+    /// **Zapadka nie jest limiterem.** Sufit sumy równoległych kroków trzyma dalej jedna pula
+    /// ([`AppState::slots`]) i zostaje globalna; ta metoda odpowiada wyłącznie na pytanie, czyj
+    /// uchwyt trzyma Stop (niezmiennik 11).
+    ///
+    /// Klucz liczy [`crate::workspace::WorkspaceId::for_folder`], a nie porównanie napisów:
+    /// `~/p/x`, `~/p/x/` i `~/p/./x` to jeden folder, więc porównanie tekstem wpuściłoby drugi
+    /// bieg do folderu, w którym już jeden pisze po plikach (§6a reguła 1).
     ///
     /// Czego świadomie NIE robimy, bo każde z tego przerzedza trafienia i żadne nie zamyka okna:
     /// ponownego sprawdzenia `is_working` po podmianie, zamka `tokio::sync` z `await` w środku,
@@ -914,25 +1045,131 @@ impl AppState {
     /// pola. Zachowanie jest to samo w każdym osiągalnym stanie, bo każdy uchwyt, który tu wchodzi,
     /// jest wzięty przez ten start.
     pub fn begin_run<'a>(&'a self, project: &'a Path) -> Result<RunDeps<'a>, String> {
-        {
+        let at = crate::workspace::WorkspaceId::for_folder(project);
+        let taken = {
             // Zamek na CAŁE pytanie i na wymianę, nie na dwa osobne wyrażenia: „czy coś idzie"
             // sprawdzone przed wzięciem zamka jest odpowiedzią sprzed chwili, a między nią
             // a podmianą mieści się drugi start. Zamek `std::sync` i ani jednego `await`
             // w środku (niezmiennik 8) — powód stoi przy [`AppState::deps_in`].
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-            if !proved_down(&live) {
-                return Err(ALREADY_GOING.to_owned());
+            match live.iter().position(|one| one.at == at) {
+                // Bieg TEGO folderu jeszcze nie zszedł. Odmawiamy, nie ruszając ani tego wpisu,
+                // ani wpisów pozostałych folderów: Stop ma po tej odmowie dosięgnąć dokładnie
+                // tego biegu, o którym mówi zdanie.
+                Some(going) if !proved_down(&live[going].control) => false,
+                // Wpis po biegu, który zszedł, ZNIKA i wraca na koniec listy jako świeży —
+                // a nie jest podmieniany w miejscu. Kolejność jest tu treścią: „najnowszy na
+                // końcu" jest odpowiedzią [`AppState::deps`] na pytanie, który bieg jest ten
+                // żywy, więc wpis zostawiony w środku listy odciąłby od okna bieg, który
+                // ruszył jako ostatni.
+                settled => {
+                    if let Some(going) = settled {
+                        live.remove(going);
+                    }
+                    // Ta jedna instrukcja jest i wpisem, i zamknięciem zapadki dla każdego
+                    // następnego startu W TYM FOLDERZE: świeży uchwyt nie ma dowodu zejścia,
+                    // a warunek wyżej pyta właśnie o dowód. Powód w całości stoi w nagłówku.
+                    // Świeży uchwyt niosący KLON PULI APLIKACJI, nie własną pulę: to jest ta
+                    // jedna linia, w której „jeden semafor na całą aplikację" przestaje być
+                    // zdaniem w komentarzu (niezmiennik 11). `RunControl::new()` w tym miejscu
+                    // zakładałby pulę na bieg, czyli dokładnie wadę, którą naprawia T-94.
+                    live.push(Live {
+                        at,
+                        control: RunControl::sharing(self.slots.clone()),
+                    });
+                    true
+                }
             }
-            // Ta jedna instrukcja jest i podmianą, i zamknięciem zapadki dla każdego następnego
-            // startu: świeży uchwyt nie ma dowodu zejścia, a warunek wyżej pyta właśnie o dowód.
-            // Powód w całości stoi w nagłówku tej metody.
-            // Świeży uchwyt niosący KLON PULI APLIKACJI, nie własną pulę: to jest ta jedna
-            // linia, w której „jeden semafor na całą aplikację" przestaje być zdaniem
-            // w komentarzu (niezmiennik 11). `RunControl::new()` w tym miejscu zakładałby pulę
-            // na bieg, czyli dokładnie wadę, którą naprawia T-94.
-            *live = RunControl::sharing(self.slots.clone());
+        };
+        if !taken {
+            // Nazwa folderu liczona POZA zamkiem: wybiera ją lista przełącznika, czyli odczyt
+            // pliku z biblioteki. Czytanie dysku pod tym zamkiem trzymałoby go przez czas,
+            // w którym inny folder chce wziąć swój uchwyt — a to jest dokładnie ta zapadka,
+            // która ma przestać być globalna.
+            return Err(self.already_going_where(project));
         }
         Ok(self.deps_in(project))
+    }
+
+    /// Zdanie odmowy nazywające folder, w którym coś już idzie.
+    ///
+    /// NAZWA Z PRZEŁĄCZNIKA, bo to ją człowiek widzi na pasku i to jej będzie szukał, kiedy pójdzie
+    /// nacisnąć Stop (`commands::workspaces::list_workspaces_inner`). Ścieżka w tym zdaniu byłaby
+    /// prawdziwa i bezużyteczna: „`/Users/x/dev/ledger-ui`" nie jest tym, co stoi w menu.
+    ///
+    /// Folder spoza listy — bieg z triggera albo katalog, pod którym wstało okno — nazywa się
+    /// swoim ostatnim składnikiem. Nieczytelna lista NIE zabiera odmowy (niezmiennik 5): odmowa
+    /// bez nazwy jest gorsza niż odmowa z nazwą zgadniętą ze ścieżki, a odmowa, która się nie
+    /// odbyła, jest drugim biegiem w tym samym folderze.
+    fn already_going_where(&self, project: &Path) -> String {
+        let at = crate::workspace::WorkspaceId::for_folder(project);
+        let named = commands::workspaces::list_workspaces_inner(&self.home)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|one| crate::workspace::WorkspaceId::for_folder(Path::new(&one.folder)) == at)
+            .map(|one| one.name);
+        already_going_in(&named.unwrap_or_else(|| {
+            at.as_path().file_name().map_or_else(
+                || at.to_string(),
+                |last| last.to_string_lossy().into_owned(),
+            )
+        }))
+    }
+
+    /// Zatrzymuje bieg w KAŻDYM żywym folderze i mówi, czy było co zatrzymywać.
+    ///
+    /// # Dlaczego KAŻDY, skoro człowiek nacisnął Stop na jednym ekranie
+    ///
+    /// Bo `stop_run` nie bierze identyfikatora i okno o tym wie: adresowanie Stopu folderem plus
+    /// numerem biegu jest osobną robotą. Dopóki go nie ma, Stop sięgający do jednego uchwytu
+    /// zostawiałby przy dwóch żywych biegach jeden BEZ ANI JEDNEJ drogi z okna — a repo ma ten
+    /// spór rozstrzygnięty wprost i w drugą stronę: osierocony agent palący limit jest gorszy niż
+    /// zatrzymanie o jedno za dużo (`src/sections/run/tabs/store.ts`, niezmienniki 6 i 11).
+    ///
+    /// Foldery zbieramy POD zamkiem, a zatrzymujemy PO jego oddaniu (niezmiennik 8): zatrzymanie
+    /// czeka na dowód śmierci grupy, więc zamek trzymany przez ten czas zawieszałby każdy inny
+    /// folder dokładnie wtedy, kiedy schodzi ten pierwszy.
+    ///
+    /// Porażka jednego folderu NIE zabiera drogi pozostałym — pętla idzie do końca, a zdanie
+    /// wraca dopiero potem. Pierwsze `?` w środku zostawiałoby żywego agenta za każdym razem, gdy
+    /// zatrzymanie któregoś z wcześniejszych folderów się nie udało.
+    pub async fn stop_every_live_run(&self) -> Result<bool, commands::RunError> {
+        let mut stopped = false;
+        let mut trouble = None;
+        for folder in self.live_folders() {
+            match commands::run::stop_if_anything_is_going(&self.deps_in(&folder)).await {
+                Ok(was_going) => stopped |= was_going,
+                Err(error) => trouble = trouble.or(Some(error)),
+            }
+        }
+        trouble.map_or(Ok(stopped), Err)
+    }
+
+    /// To samo przy zamykaniu okna: każdy żywy folder, ale z sufitem czasu na folder.
+    ///
+    /// DWIE METODY, NIE JEDNA Z FLAGĄ, bo to są dwie polityki i obie mieszkają w rdzeniu
+    /// (niezmiennik 23): `stop_if_anything_is_going` czeka na dowód tak długo, jak trzeba, a
+    /// `stop_before_closing` odróżnia schodzenie od zacięcia — bo przy zamykaniu podniesione jest
+    /// już `prevent_close` i człowiek zostaje z oknem, którego nie da się zamknąć. Tutaj zostaje
+    /// wyłącznie „po każdym żywym folderze"; sufit i jego uzasadnienie są tam, gdzie były.
+    pub async fn stop_every_live_run_before_closing(&self) -> Result<(), commands::RunError> {
+        let mut trouble = None;
+        for folder in self.live_folders() {
+            if let Err(error) = commands::run::stop_before_closing(&self.deps_in(&folder)).await {
+                trouble = trouble.or(Some(error));
+            }
+        }
+        trouble.map_or(Ok(()), Err)
+    }
+
+    /// Foldery, które mają w zapadce swój uchwyt — kopia zdjęta pod zamkiem i oddana bez niego.
+    fn live_folders(&self) -> Vec<PathBuf> {
+        self.live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|one| one.at.as_path().to_path_buf())
+            .collect()
     }
 
     /// Rezerwuje żywy uchwyt dla Startu z claimem, nie zmieniając ledgeru przy odmowie zajętości.
@@ -975,12 +1212,17 @@ impl AppState {
     }
 
     /// Pyta jedyny rustowy autorytet o zajętość przed siecią i przed jakimkolwiek zapisem.
+    ///
+    /// **Pytanie zostaje O CAŁĄ APLIKACJĘ**, choć zapadka jest od 2026-08-28 kluczowana folderem:
+    /// jakikolwiek żywy wpis znaczy „zajęte". Kluczowanie triggerów jest osobną robotą i nie
+    /// wchodzi tu bokiem — trigger, który zacząłby pytać źródło dlatego, że bieg idzie w innym
+    /// folderze, zmieniłby zachowanie, którego to zadanie nie sądzi ani jednym kryterium.
     #[must_use]
     pub fn trigger_poll_permit(&self) -> TriggerPollPermit {
         let live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         TriggerPollPermit {
             home: self.home.clone(),
-            busy: !proved_down(&live),
+            busy: live.iter().any(|one| !proved_down(&one.control)),
         }
     }
 
@@ -2106,7 +2348,6 @@ fn refused(said: &String) {
 /// gdy ostatni krok zdążył się udać.
 #[tauri::command]
 pub async fn stop_run(state: State<'_, AppState>) -> Result<bool, String> {
-    let deps = state.deps();
     /* CZY JEST CO ZATRZYMYWAĆ — PYTANIE ODPOWIADANE TUTAJ, I TO JEST CAŁA TA ZMIANA.
      *
      * Zgłoszenie właściciela 2026-08-23, cztery wiersze pod rząd: odmowa „A run is already
@@ -2126,14 +2367,18 @@ pub async fn stop_run(state: State<'_, AppState>) -> Result<bool, String> {
      *
      * Samo pytanie mieszka w rdzeniu ([`commands::run::stop_if_anything_is_going`]), razem
      * z drugim powodem, dla którego jest konieczne: bez niego Stop nad pustym ekranem wieszałby
-     * aplikację. Tutaj zostaje wyłącznie transport (niezmienniki 1 i 23). */
-    commands::run::stop_if_anything_is_going(&deps)
-        .await
-        .map_err(|error| {
-            let said = error.to_string();
-            refused(&said);
-            said
-        })
+     * aplikację. Tutaj zostaje wyłącznie transport (niezmienniki 1 i 23).
+     *
+     * 2026-08-28 — KAŻDY ŻYWY FOLDER, NIE JEDEN UCHWYT. Zapadka jest kluczowana workspace'em,
+     * więc dwa foldery mogą mieć swoje biegi naraz — a ta komenda nie bierze identyfikatora
+     * i okno o tym wie. Stop sięgający do jednego uchwytu zostawiłby wtedy drugi bieg bez ani
+     * jednej drogi z okna; powód, dla którego wybieramy „o jedno za dużo", stoi w całości przy
+     * [`AppState::stop_every_live_run`]. */
+    state.stop_every_live_run().await.map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
 }
 
 /// Otwiera strumień rozmowy z liderem TEGO terminalu — sam program jeszcze nie wstaje.
@@ -2412,7 +2657,7 @@ pub async fn start_process(
 pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), String> {
     match state.started.stop(pgid).await {
         None | Some(crate::engine::supervisor::GroupProof::Dead { .. }) => Ok(()),
-        Some(crate::engine::supervisor::GroupProof::Alive) => {
+        Some(crate::engine::supervisor::GroupProof::Alive { .. }) => {
             // Odmowa, nie cisza: bez tej gałęzi okno zdjęłoby kafelek nad czymś, co dalej biegnie,
             // a wtedy jedynym miejscem, w którym da się to zobaczyć, jest Monitor aktywności.
             let said = "Loadout asked it to stop and something in it is still running. Look for \
@@ -2509,6 +2754,19 @@ pub async fn check_trigger(
     // a wariant `busy` nie ma w środku katalogu, z którym dałoby się mimo to wykonać fetch.
     let permit = state.trigger_poll_permit();
     tokio::task::spawn_blocking(move || permit.poll(&slug, unix_millis()))
+        .await
+        .map_err(|error| format!("Loadout could not finish the Linear check: {error}"))?
+        .inspect_err(refused)
+}
+
+/// Jawne "Retry" wiersza wstrzymanego: Rust zdejmuje pauzę i pyta źródło jeszcze raz.
+#[tauri::command]
+pub async fn resume_trigger(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<commands::triggers::TriggerPoll, String> {
+    let permit = state.trigger_poll_permit();
+    tokio::task::spawn_blocking(move || permit.resume(&slug, unix_millis()))
         .await
         .map_err(|error| format!("Loadout could not finish the Linear check: {error}"))?
         .inspect_err(refused)
@@ -2620,6 +2878,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         run_agent,
         rerun_step,
         resume_run,
+        resume_trigger,
         run_workflow,
         save_agent,
         save_workflow,

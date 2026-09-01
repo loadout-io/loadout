@@ -4,6 +4,161 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
 co już stoi w trunku, co stanęło i dlaczego.
 
+## 2026-08-28, 19:05 — p8-t158-trigger-quarantine w trunku; kwarantanna po odrzuconym kluczu
+
+**`p8-t158-trigger-quarantine` · zielone / WYLĄDOWANE jako `137e0ca` · 2106 s biegu (1 runda)
+· pełne CI przy lądowaniu 494 s, 63 targety, 0 failed, strażnicy 8/8 · $25,19.**
+
+Pierwszy bieg nowego harnessu z prawdziwym zakresem produktowym. Wszystkie trzynaście checków
+zielone w pierwszym podejściu, weryfikacja Codeksem oddała `DZIALA` bez rundy naprawczej.
+
+**Co dowozi.** Deterministyczna odmowa Lineara wstrzymuje obserwację triggera trwale, w pliku,
+a nie w stanie okna: `Ledger.paused: Option<PausedReason>` (dopisek addytywny, niezmiennik 25),
+piąty wariant drutu `TriggerPoll::Refused { sentence }`, `resume_with`/`resume` w Ruście oraz
+komenda `resume_trigger`. Klasyfikacja siedzi w jednym `const fn lasting_refusal`:
+`Api | ConnectionRefused | MissingViewer | InvalidKey | MissingKey` → pauza,
+wszystko inne → dzisiejsze zachowanie, czyli błąd do okna i normalny następny tick.
+Wiersz triggera mówi po angielsku „Linear refused this key, so Loadout stopped checking.
+Replace the key, then press Retry." i daje kontrolkę `Retry`, która puka **dokładnie raz**.
+
+**Planista poprawił przesłankę zlecenia, i miał rację.** `poll_with` nie zwracał
+`ConnectionRefused` — ten wariant powstaje wyłącznie w `parse_connection_response`, czyli
+w probie „Test connection". Deterministyczną odmową na ścieżce pollu jest `TriggerError::Api`
+z `parse_response` przy niepustym `errors`. To jest dokładnie ta klasa poprawki, po której
+poznaje się, że etap planu czytał kod, a nie prompt.
+
+**Zieleń sprawdzona mutacją, nie przyjęta na słowo.** Dwie mutacje, obie z prawdziwą czerwienią:
+
+| Mutacja | Wynik |
+|---|---|
+| `Api` wyjęte z kubełka w `lasting_refusal` | `FAILED`: „a refused key ended the tick with an error, not a hold" |
+| `row.tsx:53` oddaje inne zdanie dla `paused` | `FAILED` na markupie z `renderToStaticMarkup`: brak zdania i „Retry" |
+
+Obie przywrócone bajt w bajt. Sprawdzone też, że helper `a_repaired_key_gets_the_rhythm_back`
+jest wołany z linii 133 (nie martwy kod) i że `rust-clippy (0s)` / `rust-test (0s)` w logu biegu
+to **ciepłe drzewo** po własnych przebiegach agenta, a nie pominięty check: worktree miał
+prawdziwy własny `target/`, `LOADOUT_SHARE_TARGET` nie było ustawione.
+
+**DŁUG, który ten bieg zostawia otwarty — T-158 nie domyka się nim.** `linear_curl_config`
+zawiera `fail`, więc curl przy HTTP ≥ 400 wychodzi niezerowo i **odrzuca ciało**, a
+`triggers.rs:1281` mapuje to na `CurlFailed`, który ten plan klasyfikuje jako chwilowy.
+`TriggerError::Api` wymaga odpowiedzi **200 z niepustym `errors`**. Jeśli więc Linear odrzuca
+zły klucz kodem 4xx, produkcja nigdy nie zobaczy `Api` i dalej będzie pukać bez końca —
+mechanizm zielony w testach, martwy w produkcie. Planista biegu nazwał to sam jako
+`POZA ZAKRESEM`, zamiast po cichu przepuścić. Uczciwe rozstrzygnięcie wymaga dwóch rzeczy:
+zmierzenia prawdziwej odpowiedzi Lineara na odrzucony klucz i przeniesienia kodu HTTP przez
+`%{http_code}`. Samo `fail-with-body` nie wystarczy — zamieniłoby 5xx z ciałem GraphQL
+w fałszywą kwarantannę. Pomiar wymaga żywego klucza, więc to decyzja właściciela, tym
+bardziej że klucz z planu fazy 8 jest tym przeznaczonym do rotacji.
+
+**Koszt: zmierzony, nie przeczuwany.** $25,19 przekroczyło próg $25 z karty orchestratora, więc
+sprawdziłem, czy to pętla: **142 wywołania narzędzi** (71 Bash, 44 Edit, 25 Read, 2 Write),
+najczęściej powtórzona komenda to 7× bezczynne `cd`, a polecenia testowe poszły po 3 razy —
+czerwień, implementacja, zieleń. Pętli nie ma; pieniądze poszły w 88,3 mln tokenów **z cache**
+przy 297 turach, czyli w czytanie 2252-linijkowego `triggers.rs` i ~900-linijkowego
+`state/triggers.ts` przy `--effort max` na Opusie z 1M kontekstu. Dźwignia istnieje
+(`LOADOUT_CLAUDE_EFFORT`, `LOADOUT_CLAUDE_MODEL` czytane przez `h.py` ze środowiska), ale
+zjeżdżanie z `max` przy sześciu pozostałych zakresach — wszystkie niemechaniczne — kupuje
+~$15 za ryzyko STOP-u kosztującego cały bieg.
+
+**Decyzja o rozmiarze na dalej:** §6.1 planu idzie jako **dwa** biegi, nie jeden. Podstawa jest
+teraz zmierzona: jeden mechanizm kosztował 142 wywołania i całą rundę, a §6.1 wymienia pięć
+niezależnych zachowań przy sufcie trzech tur (`MAX_FIX_ROUNDS = 2`).
+
+## 2026-08-28, 18:05 — dwie sesje pisały do jednego `main`; `task-T-105` cofnięty
+
+Właściciel podał plan dokończenia produkcyjnego (osiem sekcji, siedem biegów fazy 8).
+Pierwsza rzecz, którą plan zakładał — „nie ingerować w aktywny `run-0828-1343-d7v4`" — była
+już nieaktualna: ten bieg wylądował jako `c04c559`, a po nim weszły `4945972` i `615338b`.
+`.git/h/` było puste, czyli zero otwartych biegów.
+
+**Prawdziwy problem był inny i niewidoczny z gita.** Nad tym samym `main`, w tym samym
+katalogu roboczym, pracowała **druga sesja Claude Code** (`9334477f`, od ~11:03,
+`--dangerously-skip-permissions`) własnym `triage.sh`: lista 29 gałęzi, `merge --no-ff` →
+bramka → `git reset --hard HEAD~1` na czerwieni. Moja baza `ci.sh full` startowała na
+`615338b` i skończyła mierząc `df8f104`.
+
+Podpisy, po których to poznać — wszystkie w `ps`, żaden w `git status` (triage commituje
+każdy krok, więc brud nigdy nie wychodzi na wierzch):
+
+- **dwa procesy `tee /var/folders/.../loadout-ci.*`** — `ci.sh` tee'uje do tempa, więc dwa
+  tee to dwa równoległe `ci.sh` w jednym repo;
+- cel testowy z **0,35 s CPU przy 4 min elapsed** — zagłodzony, nie zawieszony; odróżnisz
+  go po świeżym dziecku (`ps --ppid`) z elapsed 0–2 s;
+- `git rev-parse HEAD` inne niż zapisane na starcie pomiaru.
+
+Kosztowało to dwa spalone `ci.sh full` i zatruło bramkę tamtej sesji: jej werdykt dla
+`task-T-73` zapadł przy `load 11` z moim cargo obok. Na polecenie właściciela („wywal tę
+sesję i leć") ubiłem ją od dołu do góry — `ci.sh` → `triage.sh` → `claude`, osiem PID-ów,
+każdy z dowodem ESRCH. Osierocony `npm run dev` na porcie 5273 też.
+
+**Co triage zdążył zrobić, i co z tego zostaje:**
+
+| Gałąź | Bramka | Decyzja |
+|---|---|---|
+| `wip-T-152-final` | KONFLIKT w `src-tauri/src/commands/run.rs` | nie ląduje — i nie musi, patrz niżej |
+| `T-203` | zielona, 368 s | zostaje (`615338b`) |
+| `task-T-73` | zielona, 894 s | zostaje (`e9c7b89`) — dwa pliki testowe strumienia |
+| `task-T-105` | **nie zdążyła** | **cofnięte** revertem (`db79576`) |
+
+`task-T-105` weszło jako `df8f104` (merge + amend zdejmujący `TASK.md`) i bramka nigdy się
+nie uruchomiła. Kiedy ją uruchomiłem, **zawisła**: `src-tauri/tests/it/a_turned_down_lead_says_why.rs`
+nie ma ani jednego deadline'u (`grep timeout|Duration|deadline` → pusto) i `await`-uje
+atrapę `codex app-server`, która stała jako `/bin/sh` z `0:00.00` CPU. To ta sama klasa,
+co „niedokończone zadanie tokio wiesza bramkę": bez warunku zakończenia w pierwszym
+przyroście cel `it` nie kończy się nigdy, a `cargo test` nie ma jak zameldować czerwieni.
+
+Cofnięcie musiało pójść revertem, bo `git reset --hard` jest zablokowany. Drzewo `db79576`
+jest **bajt w bajt** równe `e9c7b89` (ten sam `tree 668820b`), czyli baza wróciła do stanu,
+który przeszedł bramkę zielono. Konsekwencja do zapamiętania: git uznaje `task-T-105` za
+wmergowaną na zawsze, więc ponowne lądowanie wymaga revertu revertu — a przed nim naprawy
+tamtego testu, bo w obecnym kształcie **żadna** bramka repo się nie skończy.
+
+**Pozostałe 26 gałęzi z listy triage nie są zlandowane** i nie ma planu ich landować hurtem.
+Lista jest w `triage-order.txt` tamtej (już martwej) sesji; jeśli wróci, to po jednej,
+z bramką, i bez drugiego pisarza na `main`.
+
+**Dwie sekcje planu właściciela okazały się już zrobione, sprawdzone przeciwko kodowi:**
+
+- **§4, ręczna korekta T-152 — nie ma czego naprawiać.** Unikalny commit `wip-T-152-final`
+  (`f1514d9`, kanonizacja trwałego roota) jest w treści na `main`: `run.rs:955`
+  `let parent = fs::canonicalize(parent)?` i `durable_run_location()` w 7511.
+  `wip-T-152-review` jest 0 ahead. Plan chciał też „usunąć fałszywą obietnicę atomowego
+  identity-check i unlink" — takiej obietnicy tam nie ma: `remove_owned_run_file` jest
+  fail-closed na brak zapisanej tożsamości, niezgodność inode'a, brak dokładnych bajtów,
+  zmianę bajtów i zmianę tożsamości przy unlinku, a komentarz **wprost** mówi, że POSIX nie
+  daje compare-and-unlink dla nazwy i obcy proces może trafić między kontrolę i `unlinkat`.
+  Scena „podmiana po publikacji, cleanup nie usuwa nowszej prawdy" jest przetestowana:
+  `t152_prestart_transaction_rolls_back.rs`, test
+  `a_replaced_git_identity_and_its_wip_are_never_removed_by_parent_cleanup`.
+  Został jeden dług: ten cel jest **standalone**, nie modułem `tests/it/` (AGENTS.md §2a.1).
+
+- **§5, ręczne dokończenie T-158 — nie kwalifikuje się jako małe ani odziedziczone.**
+  `T-158-repair` jest 5 commitów ahead i **81 behind**. Z sześciu pozycji zakresu dowozi
+  **jedną** (bounded rotacja logu), jej test to standalone target, a
+  `src-tauri/src/logging.rs` **nie istnieje na `main`** — czyli te 1144 linie to nowy
+  subsystem, nie wąska korekta. `grep -rn quarantine src-tauri/src` → zero trafień.
+  Zgodnie z warunkiem §5.7 planu idzie to jako bieg, nie ręcznie.
+
+**Gdzie naprawdę jest luka T-158, zmierzone.** Odmowa triggera żyje **wyłącznie w stanie
+okna**: `refused` i `retryable` są syntetyzowane w `src/state/triggers.ts` z przechwyconego
+błędu (`retryable: true` w pięciu miejscach), a drut `TriggerPoll` w `src/sections/triggers/io.ts`
+ma cztery warianty — `busy | armed | pending | accepted` — i **nie ma `refused`**.
+`poll_with` zwraca `Err(TriggerError::ConnectionRefused)` i nie tyka ledgera, więc następny
+tick puka do Lineara tym samym kluczem, który został już odrzucony; przeładowanie okna gubi
+ten stan w całości. To jest jeden spójny mechanizm z widocznym zdaniem — dobry rozmiar na
+jeden bieg i uczciwie czerwony na starym kodzie.
+
+**Ocena §6 planu: siedem zakresów jest za dużych na jeden bieg każdy.** Nowy harness ma
+`MAX_FIX_ROUNDS = 2`, czyli trzy tury łącznie, a każda pozycja wymienia 4–6 niezależnych
+zachowań (§6.3 siedem scen w jednym „odchudzonym" teście). Tnę przy pierwszym STOP-ie
+zamiast puszczać drugą rundę tego samego promptu.
+
+**Poprawka do `.claude/commands/build.md`, której nie naniosłem:** jego §4 każe puszczać
+wachlarz sześciu biegów i podnosić `LOADOUT_CARGO_LOCK_WAIT=2400`. Ta zmienna **nie istnieje**
+w nowym harnessie — muteks cargo zniknął przy przebudowie, więc dla Rusta obowiązuje
+szeregowo (niezmiennik 26). Plan właściciela ma to poprawnie w §7.
+
 ## 2026-08-28, później — harness ścięty z 9323 linii do 861, na wzór Murmura
 
 Polecenie właściciela: „lekki mały harness bez overheadu, zobacz jak w murmur przerobiłem".

@@ -31,13 +31,26 @@
 //! której `ipc::AppState` w ogóle istnieje. Silnik nie ma prawa o oknie wiedzieć (niezmiennik 1),
 //! a start i eskalacja mieszkają tam, gdzie mieszkały: w sterowniku i w `supervisor.rs`
 //! (niezmiennik 23). Tutaj jest wyłącznie mapa uchwytów i cztery czasowniki nad nią.
+//!
+//! # Druga lista: grupy bez dowodu śmierci (2026-08-28)
+//!
+//! Obok rzeczy, które **mają** żyć, ten rejestr trzyma od tego dnia rzeczy, które miały zejść
+//! i nie zeszły ([`Unproven`]). Powód jest ten sam, dla którego istnieje ten plik, tylko od
+//! drugiej strony: krok, którego grupy nie dało się dowieść jako martwej, zwalniał wcześniej
+//! swój jedyny uchwyt i swoje miejsce w puli — czyli w tej samej chwili, w której Loadout
+//! przyznawał, że nie wie, czy coś jeszcze biegnie, przestawał móc o to zapytać. Ta lista nie ma
+//! kafelka i nie wchodzi do [`Processes::list`]: nikt tych grup nie zamawiał, a jedyne, co się
+//! z nimi robi, to pyta o dowód jeszcze raz.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io;
 use std::sync::{Mutex, PoisonError};
 
+use crate::engine::drivers::AgentHandle;
 use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying};
-use crate::engine::supervisor::GroupProof;
+use crate::engine::limits::Slot;
+use crate::engine::supervisor::{GroupId, GroupProof};
 
 /// Co okno wie o jednej uruchomionej rzeczy.
 ///
@@ -60,6 +73,101 @@ pub struct StartedProcess {
     /// coś zeszło — a okno, które o tym nie usłyszy, zostawia kafelek na ekranie. Kafelka nie
     /// rysuje wtedy widok, nie ten plik.
     pub alive: bool,
+}
+
+/// Krok, po którym została grupa procesów **bez dowodu śmierci** — razem ze wszystkim, czego
+/// przy niej nie wolno zwolnić.
+///
+/// # Po co ten typ istnieje (2026-08-28)
+///
+/// Bo `GroupProof::Alive` znaczy „ktoś w tej grupie dalej biegnie", a krok kończący się na tym
+/// dowodzie zwalniał do tego dnia dwie rzeczy naraz: **jedyny uchwyt** do sesji i **miejsce
+/// z puli**. Każde z osobna jest wadą, a razem są tą samą wadą dwa razy:
+///
+/// * porzucony `Box<dyn AgentHandle>` to grupa, o którą nikt już nie może zapytać — z `run.json`
+///   zostaje `pgid`, czyli adres, a nie właściciel; nikt nie ponowi na nim eskalacji;
+/// * oddany permit to miejsce, które natychmiast zajmuje następny agent po ~583 MB — przy
+///   grupie, która dalej pali limit u dostawcy. Pula przestaje wtedy mówić prawdę o tym, ile
+///   naprawdę biegnie (niezmiennik 11).
+///
+/// Dlatego zwolnienie prowadzi wyłącznie przez [`Unproven::released_by`] — jedyną drogę, która
+/// żąda dowodu i przechodzi się nią dokładnie raz.
+///
+/// `#[must_use]` z tego samego powodu, co na [`GroupProof`]: wartość, którą da się porzucić
+/// instrukcją, jest zobowiązaniem opcjonalnym. Pola są prywatne i nie ma dla nich ani jednego
+/// gettera oddającego własność, więc uchwytu i permitu nie da się z tego typu wyjąć bokiem.
+#[must_use]
+pub struct Unproven {
+    /// Jedyny właściciel sesji tego kroku. Dopóki tu jest, jest komu zlecić kolejną eskalację.
+    handle: Box<dyn AgentHandle>,
+    /// Miejsce z puli, zajęte tak długo, jak długo żyje ta wartość (`limits::Slot` zwalnia się
+    /// w `Drop`). `None` dla kroków, które miejsca nie brały.
+    slot: Option<Slot>,
+    /// Adres z dowodu `Alive`, jeśli był. Tędy człowiek znajdzie tę grupę w `ps`, a odzyskiwanie
+    /// po niej sprząta przy następnym starcie.
+    group: Option<GroupId>,
+}
+
+impl fmt::Debug for Unproven {
+    /// Ręcznie, bo uchwytu sesji nie da się pokazać sensownie, a `missing_debug_implementations`
+    /// jest w tej skrzyni ostrzeżeniem, czyli pod `-D warnings` odmową.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Unproven")
+            .field("group", &self.group)
+            .field("holds_a_slot", &self.slot.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Co zostało po próbie zwolnienia grupy — patrz [`Unproven::released_by`].
+#[derive(Debug)]
+#[must_use]
+pub enum Kept {
+    /// Dowód był: uchwyt zwolniony **dokładnie raz**, a miejsce z puli wraca do wołającego.
+    ///
+    /// Permit wraca, zamiast zginąć tutaj, bo ma przeżyć grupę, a nie odwrotnie: krok trzyma go
+    /// jeszcze przez zapis do księgi i linię stanu, żeby następny agent nie ruszył w tej samej
+    /// chwili, w której ten dopiero melduje koniec.
+    Released(Option<Slot>),
+    /// Dowodu nie było: nie zwolniono **niczego** i wszystko wraca w całości.
+    Retained(Unproven),
+}
+
+impl Unproven {
+    /// Przejmuje uchwyt i miejsce kroku, którego grupy nie dało się dowieść.
+    // `#[must_use]` stoi na samym typie, więc powtórzony tutaj byłby drugą kopią tej samej
+    // reguły (clippy `double_must_use` mówi to samo).
+    pub fn new(handle: Box<dyn AgentHandle>, slot: Option<Slot>, group: Option<GroupId>) -> Self {
+        Self {
+            handle,
+            slot,
+            group,
+        }
+    }
+
+    /// Zwalnia zasoby tej grupy — **wyłącznie przez dowód** i **dokładnie raz**.
+    ///
+    /// Dowód wchodzi tu przez wartość i `self` też, i to jest cała gwarancja zapisana w typie:
+    /// nie ma innej drogi, którą `handle` i `slot` mogą zniknąć, a `self` przez wartość znaczy,
+    /// że tą drogą da się przejść raz. `Alive` oddaje wszystko z powrotem — bez `ESRCH` nie
+    /// wolno porzucić ani uchwytu, ani miejsca (niezmiennik 6).
+    ///
+    /// Dowód wraca do wołającego, bo jest jego meldunkiem: to samo zdanie, które trafia do
+    /// dziennika i do `run.json`, a nie rzecz do połknięcia po drodze.
+    pub fn released_by(self, proof: GroupProof) -> (GroupProof, Kept) {
+        match proof {
+            // `self.slot` wychodzi, `self.handle` ginie razem z resztą — czyli dokładnie tutaj,
+            // i tylko tutaj, kończy się życie tej sesji.
+            GroupProof::Dead { .. } => (proof, Kept::Released(self.slot)),
+            GroupProof::Alive { .. } => (proof, Kept::Retained(self)),
+        }
+    }
+
+    /// Pyta TĘ grupę o dowód jeszcze raz. Pełna eskalacja z nadzoru, nie samo pytanie.
+    async fn asked_again(&mut self) -> GroupProof {
+        self.handle.proof_of_death().await
+    }
 }
 
 /// Wszystko, co Loadout uruchomił dla człowieka i jeszcze o tym wie.
@@ -86,6 +194,21 @@ pub struct Processes {
     /// eskalacja czeka DOPIERO po jego zwolnieniu. Zamek trzymany przez zatrzymywanie zawiesiłby
     /// całe okno na czas okna łaski, czyli dokładnie wtedy, kiedy człowiek na coś patrzy.
     held: Mutex<BTreeMap<i32, Staying>>,
+
+    /// Grupy kroków, których **nie dało się dowieść** jako martwych — po jednej pozycji na grupę.
+    ///
+    /// 2026-08-28 — osobno od [`Processes::held`], i to nie jest porządkowanie. Tamta mapa opisuje
+    /// rzeczy, które człowiek kazał uruchomić i zostawić: mają kafelek, mają „stop" i mają żyć.
+    /// Ta lista opisuje coś odwrotnego — grupy, które miały zejść i nie zeszły. Kafelka nie
+    /// dostają (nikt ich nie zamawiał i nie ma czego pokazać poza `pgid`), a jedyne, co się
+    /// z nimi robi, to pyta o dowód jeszcze raz.
+    ///
+    /// `Vec`, nie mapa po `pgid`: `Alive` bywa bez adresu (`chat.rs`), a klucz, którego czasem
+    /// nie ma, jest kluczem, po którym gubi się wpisy.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8) — ten sam blokowy
+    /// kształt, co przy `held`.
+    unproven: Mutex<Vec<Unproven>>,
 }
 
 impl Processes {
@@ -94,7 +217,21 @@ impl Processes {
     pub fn new() -> Self {
         Self {
             held: Mutex::new(BTreeMap::new()),
+            unproven: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Przejmuje na własność krok, po którym została grupa bez dowodu śmierci.
+    ///
+    /// Wołane z jednego miejsca — z kroku, który wyczerpał swoją eskalację ([`super::run`]) — i to
+    /// jest cała droga, którą te zasoby przeżywają swój bieg. Bez niej uchwyt i permit ginęłyby
+    /// razem z ramką `one_turn`, czyli w chwili, w której Loadout właśnie przyznał, że nie wie,
+    /// czy coś jeszcze biegnie.
+    pub fn keep_unproven(&self, unproven: Unproven) {
+        self.unproven
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(unproven);
     }
 
     /// Odpala komendę, która ma zostać, i zapisuje ją w rejestrze.
@@ -184,7 +321,7 @@ impl Processes {
          * umarła. To jest to samo kłamstwo, przed którym stoi ten plik, tylko w drugą stronę:
          * cisza nad grupą, która pali maszynę. Uchwyt wraca ten sam, więc następny „stop" umie
          * powtórzyć eskalację na tej grupie, a nie na jej wspomnieniu. */
-        if matches!(proof, GroupProof::Alive) {
+        if matches!(proof, GroupProof::Alive { .. }) {
             self.held
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -221,6 +358,45 @@ impl Processes {
         let mut proofs = Vec::with_capacity(taken.len());
         for mut staying in taken.into_values() {
             proofs.push(staying.stop().await);
+        }
+        proofs.extend(self.prove_the_unproven().await);
+        proofs
+    }
+
+    /// Ponawia eskalację na każdej grupie, która została bez dowodu, i zwalnia **wyłącznie** te,
+    /// które odpowiedziały `Dead`.
+    ///
+    /// To jest jedyny czytelnik [`Processes::keep_unproven`] i cały powód, dla którego tamta
+    /// lista istnieje: uchwyt utrzymany i nigdy więcej niezapytany byłby wyciekiem z dodatkowym
+    /// krokiem. Grupa, która i tu nie da dowodu, wraca na listę razem ze swoim miejscem w puli —
+    /// zamknięcie okna nie jest powodem, żeby zacząć zgadywać.
+    ///
+    /// Po kolei, nie równolegle, i z tego samego powodu, co pętla wyżej.
+    async fn prove_the_unproven(&self) -> Vec<GroupProof> {
+        let kept = {
+            let mut unproven = self.unproven.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *unproven)
+        };
+        let mut proofs = Vec::with_capacity(kept.len());
+        for mut one in kept {
+            let proof = one.asked_again().await;
+            let (proof, kept) = one.released_by(proof);
+            match kept {
+                // Zwolnione dokładnie raz: `Unproven` już nie istnieje, więc drugiego zwolnienia
+                // nie da się napisać, a miejsce z puli ginie razem z tym `drop`.
+                Kept::Released(slot) => drop(slot),
+                Kept::Retained(still) => {
+                    // Adres jedzie do dziennika, bo jest jedyną rzeczą, z którą człowiek może
+                    // tu cokolwiek zrobić: po `pgid` znajdzie tę grupę w Monitorze aktywności.
+                    tracing::error!(
+                        group = ?still.group,
+                        "a step's process group is still alive while Loadout is closing; it keeps \
+                         the handle and its seat in the pool"
+                    );
+                    self.keep_unproven(still);
+                }
+            }
+            proofs.push(proof);
         }
         proofs
     }

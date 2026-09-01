@@ -17,6 +17,7 @@ import type {
   TriggerEntry,
   TriggerIo,
   TriggerIssue,
+  TriggerPoll,
   TriggerSnapshot,
 } from '../sections/triggers/io';
 import type { TriggerConnectionState, TriggerWorkflowOption } from '../sections/triggers/form';
@@ -52,6 +53,9 @@ export type TriggerVisibleStatus =
   | { readonly kind: 'armed' }
   | { readonly kind: 'busy'; readonly delivery: TriggerDelivery }
   | { readonly kind: 'refused'; readonly sentence: string; readonly retryable?: true }
+  /* 2026-08-28: wstrzymanie żyje w pliku triggera, nie tutaj. Ten stan jest tylko odbiciem
+   * odpowiedzi Rusta, więc przeładowane okno wraca do niego przy pierwszym tiku. */
+  | { readonly kind: 'paused'; readonly sentence: string }
   | {
       readonly kind: 'accepted';
       readonly workflow: string;
@@ -379,7 +383,39 @@ export function createTriggersStore(
       }
     };
 
+    /** The only route out of a hold: Rust lifts it and asks the source once, under one lock. */
+    const performResume = async (slug: string, intent: RetryIntent): Promise<void> => {
+      checking.add(slug);
+      retrying.add(slug);
+      try {
+        const result = await io.resumeTrigger(slug);
+        if (intent.epoch !== generation) return;
+        const current = configuredNow(slug);
+        if (current === null || !current.enabled) return;
+        await applyPoll(slug, result, intent.epoch, false);
+      } catch (error) {
+        setStatus(
+          slug,
+          {
+            kind: 'refused',
+            sentence: why(error, `Loadout could not check ${slug}.`),
+            retryable: true,
+          },
+          intent.epoch,
+        );
+      } finally {
+        retrying.delete(slug);
+        finishChecking(slug);
+      }
+    };
+
     const performRetry = async (slug: string, intent: RetryIntent): Promise<void> => {
+      /* 2026-08-28: wiersz wstrzymany po odrzuconym kluczu ma jedną drogę powrotu i nie jest
+       * nią `retryTrigger` — ten wybiłby nową dostawę z historii, zamiast znów zapytać Linear. */
+      if (intent.startingStatus.kind === 'paused') {
+        await performResume(slug, intent);
+        return;
+      }
       checking.add(slug);
       retrying.add(slug);
       try {
@@ -441,6 +477,48 @@ export function createTriggersStore(
       }
     };
 
+    /** One reading of a Rust answer. A timed check and an explicit Retry end the same way. */
+    const applyPoll = async (
+      slug: string,
+      result: TriggerPoll,
+      epoch: number,
+      completionReceipt: boolean,
+    ): Promise<void> => {
+      if (result.status === 'armed') {
+        pending.delete(slug);
+        setStatus(slug, { kind: 'armed' }, epoch);
+      } else if (result.status === 'busy') {
+        const held = pending.get(slug);
+        if (held !== undefined) setStatus(slug, { kind: 'busy', delivery: held }, epoch);
+      } else if (result.status === 'refused') {
+        /* 2026-08-28: to nie jest przechwycony błąd, tylko trwały stan przeczytany z pliku
+         * triggera. Zdanie jest tym, które ułożył Rust — okno nie dokłada własnego. */
+        pending.delete(slug);
+        setStatus(slug, { kind: 'paused', sentence: result.sentence }, epoch);
+      } else if (result.status === 'accepted') {
+        pending.delete(slug);
+        setStatus(
+          slug,
+          {
+            kind: 'accepted',
+            /* The accepted workflow was frozen in the claim. The config file may have changed
+             * meanwhile, so the row's current workflowName is not authoritative for receipt. */
+            workflow: choiceFor(choices, result.workflow)?.name ?? result.workflow,
+            workspace: result.workspace ?? null,
+            receiptAt: result.receiptAt,
+          },
+          epoch,
+        );
+      } else {
+        if (completionReceipt) {
+          pending.set(slug, result.delivery);
+          setStatus(slug, { kind: 'busy', delivery: result.delivery }, epoch);
+        } else {
+          await handlePending(slug, result.delivery, epoch);
+        }
+      }
+    };
+
     const pollOne = async (
       slug: string,
       epoch: number,
@@ -454,34 +532,7 @@ export function createTriggersStore(
         const current = configuredNow(slug);
         if (current === null || (!current.enabled && !completionReceipt)) return;
 
-        if (result.status === 'armed') {
-          pending.delete(slug);
-          setStatus(slug, { kind: 'armed' }, epoch);
-        } else if (result.status === 'busy') {
-          const held = pending.get(slug);
-          if (held !== undefined) setStatus(slug, { kind: 'busy', delivery: held }, epoch);
-        } else if (result.status === 'accepted') {
-          pending.delete(slug);
-          setStatus(
-            slug,
-            {
-              kind: 'accepted',
-              /* The accepted workflow was frozen in the claim. The config file may have changed
-               * meanwhile, so the row's current workflowName is not authoritative for receipt. */
-              workflow: choiceFor(choices, result.workflow)?.name ?? result.workflow,
-              workspace: result.workspace ?? null,
-              receiptAt: result.receiptAt,
-            },
-            epoch,
-          );
-        } else {
-          if (completionReceipt) {
-            pending.set(slug, result.delivery);
-            setStatus(slug, { kind: 'busy', delivery: result.delivery }, epoch);
-          } else {
-            await handlePending(slug, result.delivery, epoch);
-          }
-        }
+        await applyPoll(slug, result, epoch, completionReceipt);
       } catch (error) {
         refuse(slug, error, `Loadout could not check ${slug}.`, epoch, {
           includeDisabled: completionReceipt,
@@ -610,6 +661,7 @@ export function createTriggersStore(
           before?.enabled === true &&
           before.workspace !== null &&
           (before.status.kind === 'accepted' ||
+            before.status.kind === 'paused' ||
             (before.status.kind === 'refused' && before.status.retryable === true));
         if (!canRetry) return;
 
@@ -755,6 +807,7 @@ const DISK: TriggerIo = {
   listTriggers: triggerIo.listTriggers,
   setTriggerEnabled: triggerIo.setTriggerEnabled,
   checkTrigger: triggerIo.checkTrigger,
+  resumeTrigger: triggerIo.resumeTrigger,
   retryTrigger: triggerIo.retryTrigger,
   createTrigger: triggerIo.createTrigger,
   updateTrigger: triggerIo.updateTrigger,

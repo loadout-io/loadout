@@ -52,10 +52,15 @@ const CLAIM: TriggerClaim = {
 const DELIVERY: TriggerDelivery = { claim: CLAIM, issue: ISSUE, createdAt: 1_787_278_329_700 };
 const TASK = 'LIN-42: Fix the timeout handoff\n\nThe completed analysis must reach the next step.';
 
+/* `kind` przepisane z definicji workflow (2026-08-28, lądowanie D7). Bez tego pola widok biegu
+ * nie umie odróżnić kroku „sprawdź" od kafelka agenta, więc nie ma jak uczciwie powiedzieć
+ * „no checks configured" — a to jest wprost wymóg decyzji D7. Oczekiwana wartość musi więc
+ * niesć to, co niesie `choices.ts`; wcześniej nie niosła i test padał na integracji,
+ * choć gałąź była zielona osobno. */
 const CHOICE: Choice = {
   path: 'analysis.json',
   name: 'Analysis',
-  steps: [{ id: 'analyse', name: 'Analysis', state: 'pending' }],
+  steps: [{ kind: 'checkpoint', id: 'analyse', name: 'Analysis', state: 'pending' }],
 };
 
 const LISTED: Listed = {
@@ -82,8 +87,16 @@ const REDACTED = {
 };
 const EDITOR_IO: Pick<
   TriggerIo,
-  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  | 'resumeTrigger'
+  | 'retryTrigger'
+  | 'createTrigger'
+  | 'updateTrigger'
+  | 'deleteTrigger'
+  | 'testLinearConnection'
 > = {
+  resumeTrigger: async () => {
+    throw new Error('not used');
+  },
   retryTrigger: async () => {
     throw new Error('not used');
   },

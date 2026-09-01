@@ -1343,11 +1343,24 @@ pub struct GroupId {
 /// żywa.** Cicha wersja złamania tego niezmiennika to `stop() -> io::Result<()>` — `Ok(())`
 /// znaczy wtedy „wysłałem sygnał", a wołający czyta „nie żyje". Dlatego zatrzymanie zwraca
 /// wartość dowodu, nie jednostkę.
+///
+/// `#[must_use]` na całym wyliczeniu, nie na pojedynczej funkcji (2026-08-28): dowód, który da
+/// się porzucić instrukcją, jest dowodem opcjonalnym, a druga cicha wersja złamania niezmiennika
+/// 6 wygląda dokładnie tak — `handle.stop(GRACE).await;` ze średnikiem czyta się jak „zatrzymaj",
+/// kompiluje się i nie pyta nikogo o wynik. Kto naprawdę nie ma co zrobić z dowodem, pisze
+/// `let _ = …` i to widać w diffie.
 #[derive(Debug)]
+#[must_use]
 pub enum GroupProof {
     /// `kill(-pgid, 0)` zwrócił `ESRCH`: w grupie nie ma już **ani jednego** procesu — także
     /// żadnego zombie, bo zombie nadal odpowiada na sygnał zerowy. To jedyny stan, w którym
     /// wolno powiedzieć „nie żyje".
+    ///
+    /// **Powstaje na KAŻDEJ ścieżce terminalnej kroku**, nie tylko po Stopie i po limicie czasu
+    /// (poprawka z 2026-08-28: do tego dnia ten nagłówek wymieniał tamte dwie i miał rację, bo
+    /// tura, która skończyła się sama, nie pytała jądra o nic — `close()` zbiera lidera, a płaci
+    /// się za wnuki [T7 §3.1]). Drogę udaną wołają dziś `AgentHandle::proof_of_death`
+    /// i `Checking::cancel`.
     ///
     /// `status` niesie kod wyjścia lidera, jeśli to my go zebraliśmy — po nim poznaje się
     /// różnicę między czystym wyjściem po SIGTERM a sygnałem 9 po eskalacji. `None` przy
@@ -1357,7 +1370,21 @@ pub enum GroupProof {
 
     /// Grupa nadal odpowiada na sygnał zerowy. To jest wynik do obsłużenia, nie błąd do
     /// zalogowania: osierocony `claude` pali limit w tle [T7 §10.1].
-    Alive,
+    ///
+    /// # Dlaczego ten wariant NIE jest jednostkowy (2026-08-28)
+    ///
+    /// Bo `Alive` jest zdaniem o czymś, co **dalej istnieje**, a wołający musi mieć jak to coś
+    /// zaadresować. Wariant jednostkowy czytał się jak „nie udało się" i nie niósł ani `pid`,
+    /// ani `pgid` — więc nic w typie nie odróżniało go od porażki, po której wolno wszystko
+    /// posprzątać. Adres w środku zmienia to w obowiązek: kto dostał `Alive`, ten wie, KOGO ma
+    /// dalej pytać, i nie ma powodu porzucać uchwytu ani miejsca z puli.
+    ///
+    /// `None` jest stanem **gorszym** niż `Some`, nie brakiem znaczenia: grupa żyje, a my nie
+    /// wiemy nawet, kogo zapytać. Powstaje w dokładnie jednym miejscu produkcji —
+    /// `commands::chat::Conversation::stop`, kiedy kanał actora rozmowy urwał się, zanim
+    /// ktokolwiek zapytał jądra — i jest tam zachowawczy z rozmysłu: utrata actora nie ma prawa
+    /// zamienić się w fałszywy dowód śmierci.
+    Alive { group: Option<GroupId> },
 }
 
 /// Neutralna operacja na grupie używana przez rdzeń startup reaper.
@@ -1589,8 +1616,11 @@ impl Supervised {
         }
 
         // Bez `ESRCH` nie wolno powiedzieć „nie żyje" (niezmiennik 6). To jest wynik do
-        // obsłużenia przez wołającego, nie błąd do zalogowania: ktoś w tej grupie dalej biegnie.
-        GroupProof::Alive
+        // obsłużenia przez wołającego, nie błąd do zalogowania: ktoś w tej grupie dalej biegnie
+        // — i wraca razem z adresem, pod którym da się go dalej pytać.
+        GroupProof::Alive {
+            group: Some(self.group),
+        }
     }
 
     /// Czy w grupie nie ma już **nikogo**.
@@ -1994,8 +2024,12 @@ pub fn machine_booted_at() -> Option<String> {
 /// 2026-08-27 (T-147): ten szew jest publiczny wyłącznie dla standalone integration targetów.
 /// Produkcyjny adapter i testy mają wykonywać ten sam rdzeń, ale tylko ten plik mapuje sygnały
 /// i błędy platformy na neutralne wartości.
+// `#[must_use]` stoi od 2026-08-28 na samym [`GroupProof`], więc powtórzony tutaj byłby drugą
+// kopią tej samej reguły (clippy `double_must_use` mówi to samo).
+///
+/// Ten rdzeń nie zna adresu grupy — dostaje wyłącznie signaler — więc jego `Alive` wraca bez
+/// niego, a dopisuje go [`reap_group`], czyli jedyny wołający, który ten adres ma (2026-08-28).
 #[doc(hidden)]
-#[must_use]
 pub fn reap_group_with_signaler(
     grace: Duration,
     proof_after_kill: Duration,
@@ -2004,30 +2038,29 @@ pub fn reap_group_with_signaler(
     match signal(ReapAction::Term) {
         ReapResponse::Delivered => {}
         ReapResponse::NoSuchGroup => return GroupProof::Dead { status: None },
-        ReapResponse::Refused => return GroupProof::Alive,
+        ReapResponse::Refused => return GroupProof::Alive { group: None },
     }
 
     match wait_for_group_to_disappear(grace, &mut signal) {
         ReapWait::Gone => return GroupProof::Dead { status: None },
-        ReapWait::Refused => return GroupProof::Alive,
+        ReapWait::Refused => return GroupProof::Alive { group: None },
         ReapWait::TimedOut => {}
     }
 
     match signal(ReapAction::Kill) {
         ReapResponse::Delivered => {}
         ReapResponse::NoSuchGroup => return GroupProof::Dead { status: None },
-        ReapResponse::Refused => return GroupProof::Alive,
+        ReapResponse::Refused => return GroupProof::Alive { group: None },
     }
 
     match wait_for_group_to_disappear(proof_after_kill, &mut signal) {
         ReapWait::Gone => GroupProof::Dead { status: None },
-        ReapWait::Refused | ReapWait::TimedOut => GroupProof::Alive,
+        ReapWait::Refused | ReapWait::TimedOut => GroupProof::Alive { group: None },
     }
 }
 
-#[must_use]
 pub fn reap_group(pgid: i32) -> GroupProof {
-    reap_group_with_signaler(DEFAULT_GRACE, PROOF_AFTER_KILL, |action| {
+    let proof = reap_group_with_signaler(DEFAULT_GRACE, PROOF_AFTER_KILL, |action| {
         let platform_signal = match action {
             ReapAction::Term => SIGNAL_TERM,
             ReapAction::Probe => 0,
@@ -2040,7 +2073,16 @@ pub fn reap_group(pgid: i32) -> GroupProof {
             // grupy. Rdzeń musi dostać odmowę, nie fałszywy dowód śmierci ani zgodę na KILL.
             Err(_) => ReapResponse::Refused,
         }
-    })
+    });
+    match proof {
+        /* ADRES DOPISUJEMY TUTAJ, bo tylko tutaj jest znany. `pid` jest równy `pgid` nie przez
+         * uproszczenie, tylko z definicji POSIX: identyfikatorem grupy JEST pid jej lidera, więc
+         * to jest ta sama liczba, nawet kiedy lidera już nikt nie zbierze [T7 §6.2]. */
+        GroupProof::Alive { .. } => GroupProof::Alive {
+            group: Some(GroupId { pid: pgid, pgid }),
+        },
+        dead @ GroupProof::Dead { .. } => dead,
+    }
 }
 
 /// Wysyła sygnał do całej grupy i zachowuje dokładny `errno` dla decyzji dowodowej wyżej.

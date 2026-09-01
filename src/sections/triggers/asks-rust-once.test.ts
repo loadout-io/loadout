@@ -60,6 +60,13 @@ const EDGES: readonly Edge[] = [
     call: () => io.checkTrigger('assigned-to-me'),
   },
   {
+    exported: 'resumeTrigger',
+    command: 'resume_trigger',
+    rustArguments: ['slug'],
+    sent: ['resume_trigger', { slug: 'assigned-to-me' }],
+    call: () => io.resumeTrigger('assigned-to-me'),
+  },
+  {
     exported: 'retryTrigger',
     command: 'retry_trigger',
     rustArguments: ['slug'],

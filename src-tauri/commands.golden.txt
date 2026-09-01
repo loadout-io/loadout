@@ -48,6 +48,7 @@ put_note_to_use
 read_run
 rerun_step
 resume_run
+resume_trigger
 retry_trigger
 review_skill
 run_agent

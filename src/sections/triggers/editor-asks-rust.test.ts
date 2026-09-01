@@ -73,7 +73,13 @@ const EDGES: readonly Edge[] = [
   },
 ];
 
-const NON_EDITOR = new Set(['listTriggers', 'setTriggerEnabled', 'checkTrigger', 'retryTrigger']);
+const NON_EDITOR = new Set([
+  'listTriggers',
+  'setTriggerEnabled',
+  'checkTrigger',
+  'resumeTrigger',
+  'retryTrigger',
+]);
 const known = readFileSync(GOLDEN, 'utf8')
   .split('\n')
   .map((line) => line.trim())

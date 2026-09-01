@@ -84,7 +84,7 @@ pub struct Reconciled {
 pub fn reconcile_runs(project: &Path) -> Reconciled {
     with_reaper(project, &mut |pgid| match supervisor::reap_group(pgid) {
         supervisor::GroupProof::Dead { .. } => recovery::ReapOutcome::ProvenDead,
-        supervisor::GroupProof::Alive => recovery::ReapOutcome::StillAlive,
+        supervisor::GroupProof::Alive { .. } => recovery::ReapOutcome::StillAlive,
     })
 }
 

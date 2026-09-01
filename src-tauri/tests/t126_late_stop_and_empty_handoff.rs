@@ -138,7 +138,7 @@ async fn late_stop_waits_until_the_real_reflection_group_is_dead() -> Result<(),
     tokio::pin!(run);
 
     let group = wait_until_reflection_is_alive(&seen, &bench.ready, &mut run).await?;
-    assert!(matches!(reap_group(group.pgid), GroupProof::Alive));
+    assert!(matches!(reap_group(group.pgid), GroupProof::Alive { .. }));
     let (stopped, completed) = tokio::time::timeout(PATIENCE, async {
         tokio::join!(stop_run_inner(&deps), &mut run)
     })

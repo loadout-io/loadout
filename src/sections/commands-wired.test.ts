@@ -630,6 +630,13 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'triggers',
+    what: 'resumeTrigger',
+    command: 'resume_trigger',
+    given: ['assigned-to-me'],
+    call: () => triggers.resumeTrigger('assigned-to-me'),
+  },
+  {
+    where: 'triggers',
     what: 'retryTrigger',
     command: 'retry_trigger',
     given: ['assigned-to-me'],

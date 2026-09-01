@@ -29,6 +29,7 @@
 //! czyli wygląda dokładnie jak zestaw, który przeszedł. Pilnuje tego `checks/quick-tests-listed.sh`.
 
 mod a_blocked_way_out_takes_the_chosen_path;
+mod a_done_step_proves_its_group_is_dead;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
@@ -214,6 +215,7 @@ mod runcmd_loop;
 mod runcmd_parallel;
 mod runcmd_refuses_invalid;
 mod runcmd_snapshot;
+mod runs_latch_per_workspace;
 mod runs_left_over_are_reconciled;
 mod same_copy_pairs_are_judged;
 mod say_to_agent_refusals;
@@ -294,6 +296,7 @@ mod trigger_editor_writes_safe_file;
 mod trigger_file_format;
 mod trigger_first_poll_arms;
 mod trigger_key_never_in_argv;
+mod trigger_key_refusal_pauses_the_watch;
 mod trigger_library_is_safe_to_edit;
 mod trigger_never_fires_twice;
 mod trigger_reads_the_answer;

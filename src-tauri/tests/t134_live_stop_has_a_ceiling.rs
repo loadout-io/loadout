@@ -418,7 +418,7 @@ impl AgentHandle for WaitingHandle {
     async fn cancel(&mut self) -> GroupProof {
         self.cancel_calls.fetch_add(1, Ordering::AcqRel);
         match self.answer {
-            CancelAnswer::Alive => GroupProof::Alive,
+            CancelAnswer::Alive => GroupProof::Alive { group: None },
             CancelAnswer::Dead => GroupProof::Dead { status: None },
         }
     }

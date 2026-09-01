@@ -12,7 +12,7 @@ fn refused_term_returns_alive_without_escalating() {
     let (proof, trace) = scripted_reap(&[(ReapAction::Term, ReapResponse::Refused)]);
 
     assert!(
-        matches!(proof, GroupProof::Alive),
+        matches!(proof, GroupProof::Alive { .. }),
         "a refused TERM is ambiguous and must keep the group Alive"
     );
     assert_eq!(
@@ -34,7 +34,7 @@ fn refused_probe_returns_alive_without_escalating() {
     ]);
 
     assert!(
-        matches!(proof, GroupProof::Alive),
+        matches!(proof, GroupProof::Alive { .. }),
         "a refused probe is not proof of death and must keep the group Alive"
     );
     assert_eq!(

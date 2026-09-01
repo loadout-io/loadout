@@ -207,3 +207,55 @@ zamieniłby wtedy normalną kolejkę w `exit 2` i fałszywą czerwień u ostatni
 Nie zmieniamy domyślnej wartości — zmieniamy ją **tam, gdzie zmienia się założenie**:
 wachlarz eksportuje `LOADOUT_CARGO_LOCK_WAIT=2400`, bieg szeregowy zostaje przy 300 s.
 Jedno założenie, jedno miejsce, obie wartości uzasadnione.
+
+---
+
+## Q-8 — ZMECHANIZOWANE: `cargo test --tests` w pętli biegu, uprawnieniem
+
+**Zmierzone 2026-08-28 na biegu `p8-t201-process-proof`.** Agent implementacji odpalił
+**siedem razy** `cargo test --tests -- --test-threads=1`, czyli suitę CAŁEGO repo, mimo że
+zabraniają tego dwa niezależne miejsca prozy: AGENTS.md §4 („Zakazane → zamiast tego") oraz
+`.loadout/h/prompts/implement.md` („Testuj ZAWĘŻONYM poleceniem, nie całym suitem").
+
+Cena, policzona z transkryptów: `cargo test --tests` to ~300 s i link 60 celów za sztukę,
+więc siedem przebiegów to **~35 minut samego budowania** — plus całe wyjście wracające do
+kontekstu przy `--effort max`. Bieg zamknął się na **$67,78** wobec $25,19 biegu wcześniej,
+przy 337 wywołaniach narzędzi w dwóch rundach. Prompt był tu miękki dokładnie tak, jak opisuje
+niezmiennik 28: bieg mógł go zignorować i nikt się o tym nie dowiedział, dopóki nie policzyłem
+komend po fakcie.
+
+Kolejność prób z niezmiennika 28 przeszła tak:
+
+- **(a) hak naprawiający stan po cichu** — odpada. Nie ma stanu do naprawienia; szkoda powstaje
+  w chwili uruchomienia komendy, a nie w pliku, który dałoby się potem sformatować.
+- **(b) sprawdzenie w `checks/` świecące na czerwono** — odpada. Check sądzi **drzewo**, a to nie
+  jest fakt o drzewie: bieg, który siedem razy odpalił pełną suitę, zostawia dokładnie takie samo
+  drzewo jak bieg, który odpalił zawężone polecenie raz. Nie ma czego zasadzić i nie ma czego
+  wykryć.
+- **(c) uprawnienie czyniące rzecz niemożliwą** — **wybrane.** `Bash(cargo test --tests:*)`
+  w `deny` w `.claude/settings.json`, obok istniejących `Bash(git reset:*)` i pozostałych.
+
+**Dlaczego to nie wysadza bramki, sprawdzone przed naniesieniem.** Dwa niezależne powody:
+
+1. `scripts/ci.sh` woła `cargo test … -- --test-threads=1` **bez** `--tests` (linia 162), więc
+   reguła prefiksowa go nie dotyka.
+2. `h.py` wykonuje checki przez `subprocess.run(["/bin/bash", "-c", cmd])` z Pythona (linia 198),
+   a nie narzędziem Bash Claude Code — uprawnienia dotyczą wyłącznie wywołań narzędzi agenta.
+   Check `rust-test`, którego niezawężona forma **jest** `cargo test --tests`, zostaje sprawny.
+
+Reguła tylko zacieśnia, więc nie jest „naprawą, która rozluźnia bramkę".
+
+**Czego świadomie NIE usunąłem z promptu, wbrew regule „mechanizujesz — usuń tamten akapit".**
+Akapit w `implement.md` zostaje, w całości, z dwóch powodów. Po pierwsze mechanizacja pokrywa
+**połowę** zakazu: drugą połową jest „pojedynczy plik vitest zamiast całego katalogu", a tego nie
+da się zapisać jako deny prefiksowy — `npx --no-install vitest run <ścieżka>` jest dozwolone,
+`npx --no-install vitest run` nie jest, a oba mają ten sam prefiks. Po drugie akapit niesie
+**powód** („twój przebieg ma tylko potwierdzić, że test pada przed poprawką i przechodzi po niej"),
+a agent, który dostanie twardą odmowę uprawnień bez powodu, spala turę na zgadywanie, dlaczego.
+Zdanie zostaje jako wyjaśnienie, uprawnienie stoi jako zapora.
+
+**Czego ta reguła NIE łapie.** Agent może obejść ją, wołając `cargo test` bez `--tests` (wtedy
+leci domyślny zestaw celów, czyli podobny koszt). Nie zabraniam tego, bo `cargo test <filtr>`
+i `cargo test --lib <filtr>` są legalne i częste, a deny prefiksowy nie odróżnia obecności
+filtra od jej braku. Jeśli to wróci w kolejnym biegu — pierwszym krokiem jest **pomiar**, nie
+kolejna reguła: policz komendy z `runs/<id>/build-*.jsonl` tak jak tutaj.

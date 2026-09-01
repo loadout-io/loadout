@@ -55,6 +55,9 @@ const IO: TriggerIo = {
     hasApiKey: true,
   }),
   checkTrigger: async () => ({ status: 'armed' }),
+  resumeTrigger: async () => {
+    throw new Error('not used');
+  },
   retryTrigger: async () => {
     throw new Error('not used');
   },

@@ -1000,4 +1000,26 @@ pub trait AgentHandle: Send {
     /// Wolne czytanie stdoutu potrafi opóźnić to wyjście do 30 s — to jest udokumentowane
     /// zachowanie, nie zawieszenie [T1 „Worth adding"].
     async fn close(&mut self) -> anyhow::Result<Option<i32>>;
+
+    /// **Dowód**, że po grupie tej sesji nie zostało nic — na ścieżce UDANEJ.
+    ///
+    /// 2026-08-28 — bliźniak [`AgentHandle::cancel`] dla kroku, który skończył pracę sam.
+    /// Do tego dnia takiego czasownika nie było i ścieżka udana nie produkowała [`GroupProof`]
+    /// ani razu: [`AgentHandle::close`] zamyka wejście i zbiera **lidera**, a wnuka nie widzi
+    /// żaden nasz `wait()` — bo wnuk nie jest naszym dzieckiem [T7 §3.1]. Krok meldował się więc
+    /// człowiekowi jako zrobiony nad grupą, o którą nikt nie zapytał jądra, czyli dokładnie tym
+    /// `Ok(())`, przed którym stoi [`GroupProof`] (niezmiennik 6).
+    ///
+    /// **Nie `cancel()`**, i to nie jest kwestia gustu: tamta prowadzi przerwaniem w paśmie
+    /// [T1 §8.5] i czeka na odpowiedź, której proces po `close()` już nie wyśle — udana tura
+    /// płaciłaby całym oknem przerwania za pytanie zadane nieboszczykowi. Tutaj zostaje sama
+    /// eskalacja z `engine::supervisor` i sam dowód.
+    ///
+    /// Domyślne `Dead { status: None }` mówi prawdę o sesji, która **nie ma procesu**: `absent`
+    /// i dublery bez grupy nie mają czego zabijać ani czego dowodzić, a `Alive` posłałoby
+    /// wołającego po grupę, której nie ma. Ten sam wybór stoi w `codex::CodexHandle::cancel`.
+    /// Statusu nie ma, bo nie było czyjego odebrać.
+    async fn proof_of_death(&mut self) -> GroupProof {
+        GroupProof::Dead { status: None }
+    }
 }

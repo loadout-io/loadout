@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,8 +24,16 @@ const REDACTED = {
 };
 const EDITOR_IO: Pick<
   TriggerIo,
-  'retryTrigger' | 'createTrigger' | 'updateTrigger' | 'deleteTrigger' | 'testLinearConnection'
+  | 'resumeTrigger'
+  | 'retryTrigger'
+  | 'createTrigger'
+  | 'updateTrigger'
+  | 'deleteTrigger'
+  | 'testLinearConnection'
 > = {
+  resumeTrigger: async () => {
+    throw new Error('not used');
+  },
   retryTrigger: async () => {
     throw new Error('not used');
   },
@@ -127,6 +136,20 @@ function directTextCarriers(markup: string): readonly string[] {
     .map((match) => match[2]?.trim() ?? '')
     .filter((text) => text !== '');
 }
+
+/**
+ * Zdanie o wstrzymanym triggerze UŁOŻYŁ Rust, więc czytamy je z jego pliku zamiast przepisywać.
+ *
+ * Ten sam wzorzec, co w `run/skills-refusal-is-visible.test.tsx`: plik bierzemy przez
+ * `existsSync(p) ? readFileSync(p) : ''`, żeby test padał na asercji o treści, nigdy na
+ * otwarciu pliku (AGENTS.md §2a p. 5).
+ */
+const RUST = new URL('../../../src-tauri/src/commands/triggers.rs', import.meta.url);
+const PAUSED = (
+  /pub const KEY_REFUSED_SENTENCE: &str =\s*"((?:[^"\\]|\\.)*)"/.exec(
+    existsSync(RUST) ? readFileSync(RUST, 'utf8') : '',
+  )?.[1] ?? ''
+).replace(/\\"/g, '"');
 
 function deferred<T>(): {
   readonly promise: Promise<T>;
@@ -408,6 +431,56 @@ describe('the real Triggers screen explains and controls its library', () => {
     });
     const unrelated = row(renderToStaticMarkup(<TriggersScreen store={store} />), 'assigned-to-me');
     expect(unrelated).not.toContain('data-trigger-run-again');
+  });
+
+  it('paused row says it stopped and offers one more try', async () => {
+    expect(
+      PAUSED,
+      'nothing was read out of the paused wording in src-tauri/src/commands/triggers.rs, so ' +
+        'this row would be judged against an empty string',
+    ).not.toBe('');
+    const configured = LIBRARY[0];
+    if (configured === undefined || configured.problem !== undefined) {
+      throw new Error('the paused fixture must be a configured trigger');
+    }
+    const resumeTrigger = vi.fn(async () => ({ status: 'refused' as const, sentence: PAUSED }));
+    const retryTrigger = vi.fn(async () => {
+      throw new Error('a trigger on hold must ask Rust to lift the hold, not for a new delivery');
+    });
+    const store = createTriggersStore(
+      {
+        ...ioWith(),
+        checkTrigger: async () => ({ status: 'refused', sentence: PAUSED }),
+        resumeTrigger,
+        retryTrigger,
+      },
+      CLOCK,
+      RUN,
+    );
+    store.setState({ triggers: [configured] });
+    await store.getState().tick();
+
+    const handlers = new Map<string, TriggerRowProps['onRunAgain']>();
+    function Probe(props: TriggerRowProps): ReactElement {
+      handlers.set(props.trigger.slug, props.onRunAgain);
+      return <TriggerRow {...props} />;
+    }
+    const paused = row(
+      renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
+      configured.slug,
+    );
+    expect(paused).toContain(`${PAUSED} · Retry`);
+    expect(paused).toContain('data-trigger-run-again');
+    expect(directTextCarriers(paused)).toHaveLength(4);
+
+    await handlers.get(configured.slug)?.(configured.slug);
+    expect(resumeTrigger).toHaveBeenCalledTimes(1);
+    expect(resumeTrigger).toHaveBeenCalledWith(configured.slug);
+    expect(retryTrigger).not.toHaveBeenCalled();
+    /* Klucz nadal odrzucony: wiersz wraca do tego samego zdania i tej samej kontrolki. */
+    expect(row(renderToStaticMarkup(<TriggersScreen store={store} />), configured.slug)).toContain(
+      `${PAUSED} · Retry`,
+    );
   });
 
   it('keeps Run again visible when Rust says the accepted run is still active', async () => {

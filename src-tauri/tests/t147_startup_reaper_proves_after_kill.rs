@@ -50,7 +50,7 @@ fn delivered_kill_without_a_no_such_group_probe_stays_alive() {
     ]);
 
     assert!(
-        matches!(proof, GroupProof::Alive),
+        matches!(proof, GroupProof::Alive { .. }),
         "delivering KILL is not proof that every process in the group is dead"
     );
     assert_eq!(

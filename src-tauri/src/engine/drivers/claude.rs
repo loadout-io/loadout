@@ -2666,6 +2666,20 @@ impl AgentHandle for ClaudeHandle {
         self.finish_evidence().await;
         Ok(status.code())
     }
+
+    /// Dowód po turze, która skończyła się sama: sama eskalacja z nadzoru, bez `control_request`.
+    ///
+    /// 2026-08-28 — `cancel()` tędy NIE chodzi i to jest treść, nie skrót. Ona prowadzi
+    /// przerwaniem w paśmie i czeka na `control_response` do [`INTERRUPT_WINDOW`] — a po
+    /// `close()` CLI już wyszło i nie ma komu odpowiedzieć, więc każdy udany krok płaciłby pięć
+    /// sekund za pytanie zadane nieboszczykowi. Zostają stopnie dwa i trzy: SIGTERM na grupę,
+    /// okno łaski, SIGKILL, i pętla dowodowa aż do `ESRCH`.
+    ///
+    /// Dowodów nie domykamy drugi raz: [`AgentHandle::close`] zawołał już `finish_evidence`,
+    /// a `close()` jest jedyną drogą, którą się tutaj wchodzi.
+    async fn proof_of_death(&mut self) -> GroupProof {
+        self.process.stop(DEFAULT_GRACE).await
+    }
 }
 
 #[async_trait]

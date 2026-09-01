@@ -226,6 +226,11 @@ pub enum TriggerPoll {
         /// Czas receipt zapisany w ledgerze, nie czas ponownego montażu okna.
         receipt_at: i64,
     },
+    /// Źródło odrzuciło klucz deterministycznie, więc trigger jest wstrzymany aż do Retry.
+    Refused {
+        /// Zdanie ułożone przez Rust: co się stało i co ma z tym zrobić człowiek.
+        sentence: String,
+    },
 }
 
 /// Trwaly stan dostawy, odczytywany wprost z pliku ledgeru.
@@ -1177,16 +1182,23 @@ where
     // caly batch i dopisuje wszystkie unseen. Tylko blad zewnetrznego serwisu schodzi do tej
     // trwalej pracy zamiast chowac ja za stanem offline.
     let local_pending = pending_poll(&ledger);
+    // 2026-08-28: wstrzymanie jest czytane z pliku PRZED fetcherem, wiec odrzucony klucz nie
+    // puka do zrodla ani teraz, ani po ponownym otwarciu okna. Zdejmuje je wylacznie [`resume_with`].
+    if let Some(reason) = ledger.paused {
+        return Ok(local_pending.unwrap_or_else(|| TriggerPoll::Refused {
+            sentence: reason.sentence().to_owned(),
+        }));
+    }
     let answer = match fetch(&trigger) {
         Ok(answer) => answer,
-        Err(error) => {
-            if let Some(pending) = local_pending {
-                return Ok(pending);
-            }
-            return Err(error);
-        }
+        Err(error) => return refuse_poll(home, slug, &mut ledger, error, local_pending),
     };
-    let mut issues = deduplicate(parse_response(&answer)?);
+    // Odmowa Lineara przychodzi ze statusem 200 i lista `errors` w ciele, wiec ta sama
+    // klasyfikacja musi stac za `parse_response`, nie tylko za samym fetcherem.
+    let mut issues = match parse_response(&answer) {
+        Ok(issues) => deduplicate(issues),
+        Err(error) => return refuse_poll(home, slug, &mut ledger, error, local_pending),
+    };
     let newest = issues
         .iter()
         .map(|issue| issue.updated_at.as_str())
@@ -1244,6 +1256,43 @@ where
     Ok(poll_fallback(&ledger))
 }
 
+/// Rozstrzyga jedna odmowe zrodla: trwala wstrzymuje trigger, chwilowa zostaje bledem.
+///
+/// Trwala praca wygrywa z obiema, dokladnie jak przed 2026-08-28: Pending zapisany wczesniej
+/// nadal jedzie do okna, a zapis pauzy i tak zostaje w pliku, wiec kolejny tick nie puka.
+fn refuse_poll(
+    home: &Path,
+    slug: &str,
+    ledger: &mut Ledger,
+    error: TriggerError,
+    local_pending: Option<TriggerPoll>,
+) -> Result<TriggerPoll, TriggerError> {
+    let Some(reason) = lasting_refusal(&error) else {
+        return local_pending.ok_or(error);
+    };
+    ledger.paused = Some(reason);
+    write_ledger(home, slug, ledger)?;
+    Ok(local_pending.unwrap_or_else(|| TriggerPoll::Refused {
+        sentence: reason.sentence().to_owned(),
+    }))
+}
+
+/// Odmowa, ktorej nie naprawi zadne ponowienie z tym samym kluczem.
+///
+/// Wszystko poza ta lista — `Start`, `CurlFailed`, `EmptyAnswer`, `HtmlAnswer`, `InvalidAnswer`,
+/// `MissingIssues` i bledy plikowe — mowi o JEDNEJ probie, wiec zostaje przy dzisiejszym
+/// zachowaniu: blad wraca do okna, a nastepny tick pyta Linear normalnie.
+const fn lasting_refusal(error: &TriggerError) -> Option<PausedReason> {
+    match error {
+        TriggerError::Api
+        | TriggerError::ConnectionRefused
+        | TriggerError::MissingViewer
+        | TriggerError::InvalidKey
+        | TriggerError::MissingKey => Some(PausedReason::KeyRefused),
+        _ => None,
+    }
+}
+
 fn hydrate_legacy_pending(ledger: &mut Ledger, workspace: &str) -> bool {
     let mut changed = false;
     for record in &mut ledger.deliveries {
@@ -1271,6 +1320,43 @@ where
         let config = curl_config(trigger);
         run(build_curl_command(trigger), &config)
     })
+}
+
+/// Zdejmuje wstrzymanie DOKŁADNIE RAZ i od razu wykonuje jedno zwykłe pytanie do źródła.
+///
+/// Jeżeli klucz nadal jest odrzucony, ten jeden poll zapisze pauzę z powrotem, więc drugie
+/// kliknięcie bez naprawy klucza znowu daje najwyżej jedno pytanie, nigdy serię.
+pub fn resume_with<F>(
+    home: &Path,
+    slug: &str,
+    created_at: i64,
+    fetch: F,
+) -> Result<TriggerPoll, TriggerError>
+where
+    F: FnOnce(&Trigger) -> Result<Vec<u8>, TriggerError>,
+{
+    lift_pause(home, slug)?;
+    poll_with(home, slug, created_at, fetch)
+}
+
+/// Produkcyjny wariant [`resume_with`]: ta sama pauza, ten sam `curl`, co przy zwykłym ticku.
+pub fn resume(home: &Path, slug: &str, created_at: i64) -> Result<TriggerPoll, TriggerError> {
+    lift_pause(home, slug)?;
+    poll(home, slug, created_at)
+}
+
+/// Kasuje pauzę i ODDAJE zamek ledgera przed pollem.
+///
+/// 2026-08-28: `std::sync::Mutex` nie jest reentrantny, a `poll_with` bierze ten sam zamek
+/// sluga. Trzymanie go przez cały resume zawiesiłoby okno na pierwszym kliknięciu Retry.
+fn lift_pause(home: &Path, slug: &str) -> Result<(), TriggerError> {
+    let ledger_lock = ledger_lock_for(home, slug)?;
+    let _guard = ledger_lock.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut ledger = read_ledger(home, slug)?;
+    if ledger.paused.take().is_some() {
+        write_ledger(home, slug, &ledger)?;
+    }
+    Ok(())
 }
 
 /// Produkcyjny wariant [`poll_with`], którego fetcherem jest bezpieczna komenda `curl`.
@@ -1530,6 +1616,32 @@ fn require_registered_workspace(
 
 const LEDGER_SCHEMA: u32 = 1;
 
+/// Zdanie widziane w wierszu triggera, kiedy Linear odrzucił zapisany klucz.
+///
+/// Jedno miejsce, w którym ono stoi: okno nie układa własnego, a `row-says-what-happens.test.tsx`
+/// czyta je z tego pliku, żeby ekran i Rust nie mogły rozjechać się po cichu.
+pub const KEY_REFUSED_SENTENCE: &str =
+    "Linear refused this key, so Loadout stopped checking. Replace the key, then press Retry.";
+
+/// Trwały powód wstrzymania zapisany w ledgerze triggera.
+///
+/// 2026-08-28: chwilowa awaria (timeout, brak sieci, niezerowy status `curl`) NIE zapisuje tu
+/// niczego. Wstrzymanie znaczy „to samo pytanie z tym samym kluczem dostanie tę samą odmowę",
+/// więc powstaje wyłącznie z wariantu błędu, nigdy z treści komunikatu serwera.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PausedReason {
+    KeyRefused,
+}
+
+impl PausedReason {
+    const fn sentence(self) -> &'static str {
+        match self {
+            Self::KeyRefused => KEY_REFUSED_SENTENCE,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Ledger {
@@ -1537,6 +1649,10 @@ struct Ledger {
     armed: bool,
     #[serde(default)]
     cursor_dirty: bool,
+    /// Dopisek addytywny (niezmiennik 25): schemat zostaje przy 1, a stary plik bez tego pola
+    /// czyta się jako trigger, którego nikt nie wstrzymał.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    paused: Option<PausedReason>,
     #[serde(default)]
     seen_ids: BTreeSet<String>,
     #[serde(default)]
@@ -1549,6 +1665,7 @@ impl Default for Ledger {
             schema: LEDGER_SCHEMA,
             armed: false,
             cursor_dirty: false,
+            paused: None,
             seen_ids: BTreeSet::new(),
             deliveries: Vec::new(),
         }
