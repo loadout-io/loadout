@@ -2420,6 +2420,23 @@ pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, Str
         .map_err(|error| error.to_string())
 }
 
+/// Podpowiedzi ścieżek dla `@` — wyłącznie spod wskazanego folderu.
+///
+/// `folder` przychodzi ARGUMENTEM, nigdy ze stałej: korzeń zna warstwa wyżej, a literał ze
+/// ścieżką repo przewróciłby granicę z niezmiennika 1. `typed` to wszystko, co człowiek napisał
+/// po małpce; jego ostatni człon jest PRZEDROSTKIEM nazwy, nie katalogiem.
+///
+/// Odmowa jest zwykłym `Err`, bo `..` w polu jest omyłką człowieka, a nie awarią aplikacji —
+/// ekran ma powiedzieć „tędy nie", a nie zniknąć.
+#[tauri::command]
+pub fn suggest_paths(
+    folder: &str,
+    typed: &str,
+) -> Result<Vec<commands::paths::Suggestion>, String> {
+    commands::paths::suggest(std::path::Path::new(folder), typed, commands::paths::MOST)
+        .map_err(|error| error.to_string())
+}
+
 /// Dokłada workspace albo zmienia nazwę istniejącego. Oddaje CAŁĄ listę po zapisie.
 #[tauri::command]
 pub fn save_workspace(
@@ -3343,6 +3360,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_triggers,
         list_workflows,
         list_workspaces,
+        suggest_paths,
         load_workflow,
         move_note_to_project,
         new_id,

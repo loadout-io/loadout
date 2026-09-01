@@ -56,6 +56,9 @@ import {
   revokePastedImages,
 } from './images';
 import type { ConversationImage, PastedImage } from './images';
+import { placedAt, withoutMarker } from './image-marker';
+import { AtPicker, optionId } from '../../paths/at-picker';
+import { useAt } from '../../paths/use-at';
 import { segments } from './highlight';
 import { Mark } from './mark';
 
@@ -561,6 +564,23 @@ export function Entry({
   function setTyped(text: string): void {
     setDraft((current) => ({ ...current, text }));
   }
+
+  /* Lista miejsc spod małpki. Trzyma własny stan, bo pole ma już cztery inne rzeczy do pilnowania,
+   * a `@` ma stanąć jeszcze w edytorze workflow i w polach agenta. */
+  const at = useAt();
+
+  /** Wstawia wybraną ścieżkę i stawia kursor tam, gdzie człowiek pisze dalej. */
+  function takeThePlace(): void {
+    const put = at.take(draftRef.current.text);
+    if (put === null) return;
+    setTyped(put.text);
+    queueMicrotask(() => {
+      const field = typeof fieldRef === 'function' ? null : (fieldRef?.current ?? null);
+      if (!mounted.current || !field) return;
+      field.focus();
+      field.setSelectionRange(put.caret, put.caret);
+    });
+  }
   /* Co pasuje do tego, co już stoi w polu. Liczone przy renderze, nie trzymane w stanie: druga
    * kopia tej odpowiedzi mogłaby opisywać tekst sprzed jednego znaku. */
   const matching = suggestions(typed, workflows, agents);
@@ -606,10 +626,16 @@ export function Entry({
 
   function removeImage(id: string): void {
     setDraft((current) => {
-      const removed = current.images.find((image) => image.id === id);
+      const at = current.images.findIndex((image) => image.id === id);
+      const removed = current.images[at];
       if (removed === undefined) return current;
       revokePastedImages([removed]);
-      return { ...current, images: current.images.filter((image) => image.id !== id) };
+      /* Znacznik znika RAZEM z miniaturą. Zostawiony wskazywałby na obraz, którego już nie ma,
+       * a agent dostawałby zdanie „to co w [image 2]" bez drugiego obrazu. */
+      return {
+        text: withoutMarker(current.text, at),
+        images: current.images.filter((image) => image.id !== id),
+      };
     });
   }
 
@@ -623,8 +649,12 @@ export function Entry({
      * przeglądarka nie wstawi tekstu sama, więc robimy ten sam splice po aktualnym zaznaczeniu.
      * Pominięcie `text/plain` byłoby cichym zgubieniem połowy jednego paste. */
     const pastedText = event.clipboardData.getData('text/plain');
+    const field = event.currentTarget;
+    /* Gdzie stanie znacznik. Liczone TU, a nie w `then`: zanim obrazy się wczytają, pole żyje
+     * dalej i `selectionStart` mówiłby wtedy o kursorze po innych naciśnięciach klawiszy. */
+    const caretForImages =
+      (field.selectionStart ?? field.value.length) + (pastedText === '' ? 0 : pastedText.length);
     if (pastedText !== '') {
-      const field = event.currentTarget;
       const start = field.selectionStart ?? field.value.length;
       const end = field.selectionEnd ?? start;
       const caret = start + pastedText.length;
@@ -650,7 +680,26 @@ export function Entry({
           revokePastedImages(added);
           return;
         }
-        setDraft((current) => ({ ...current, images: [...current.images, ...added] }));
+        /* Każdy obraz ląduje TAM, gdzie stał kursor, a lista układa się pod kolejność
+         * znaczników w tekście — nie pod kolejność wklejania. Jedno wklejenie potrafi
+         * przynieść trzy pliki, więc kursor wędruje za każdym wstawionym znacznikiem. */
+        setDraft((current) => {
+          let text = current.text;
+          let images = [...current.images];
+          let at = caretForImages;
+          for (const image of added) {
+            const placed = placedAt(text, at);
+            text = placed.text;
+            images = [...images.slice(0, placed.index), image, ...images.slice(placed.index)];
+            at = placed.caret;
+          }
+          queueMicrotask(() => {
+            if (!mounted.current) return;
+            field.focus();
+            field.setSelectionRange(at, at);
+          });
+          return { text, images };
+        });
       })
       .catch(() => {
         if (mounted.current) showTheAnswer(IMAGE_PASTE_FAILED);
@@ -823,9 +872,19 @@ export function Entry({
             niego treść dłuższa od kolumny rozpycha siatkę zamiast się w niej przewijać. */}
         <div className="relative grid min-w-0">
           <Mark pieces={lit} hold={markRef} />
+          <AtPicker
+            items={at.items}
+            active={at.active}
+            id="entry-places"
+            onChoose={() => {
+              takeThePlace();
+            }}
+          />
           <input
             ref={fieldRef}
             aria-label="Command line"
+            aria-controls={at.open ? 'entry-places' : undefined}
+            aria-activedescendant={at.open ? optionId('entry-places', at.active) : undefined}
             placeholder={PROMPT}
             spellCheck={false}
             /* KURSOR STOI TU OD PIERWSZEJ SEKUNDY — zgłoszenie właściciela 2026-08-20: „kursor
@@ -843,6 +902,7 @@ export function Entry({
             onPaste={paste}
             onChange={(event) => {
               setTyped(event.target.value);
+              at.look(event.target.value, event.target.selectionStart ?? event.target.value.length);
               keepTheWashUnderTheWord();
             }}
             /* CZTERY ŹRÓDŁA, NIE JEDNO, i to jest cała treść tej synchronizacji. Pole przewija się
@@ -857,6 +917,26 @@ export function Entry({
             onKeyUp={keepTheWashUnderTheWord}
             onClick={keepTheWashUnderTheWord}
             onKeyDown={(event) => {
+              /* LISTA MIEJSC BIERZE STRZAŁKI PIERWSZA, ale wyłącznie kiedy jest otwarta. Poza nią
+               * strzałki chodzą po historii poleceń i to zachowanie zostaje nietknięte — odebranie
+               * go na stałe byłoby naprawą jednej rzeczy kosztem drugiej. */
+              if (at.open) {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  at.move(event.key === 'ArrowDown' ? 1 : -1);
+                  return;
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                  event.preventDefault();
+                  takeThePlace();
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  at.shut();
+                  return;
+                }
+              }
               /* STRZAŁKI CHODZĄ PO HISTORII, i to jest druga z czterech wad z 2026-08-20:
                * „strzalka w gore nie cofa do poprzedniej linii". Cała polityka chodzenia — łącznie
                * z tym, że krok naprzód oddaje SZKIC, a nie puste pole — mieszka w `./history.ts`,

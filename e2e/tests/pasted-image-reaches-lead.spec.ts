@@ -39,6 +39,11 @@ const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4pAAAAAASUVORK5CYII=';
 const SECRET_NAME = 'customer-secret-screenshot.png';
 const RETRY_TEXT = 'Please inspect this screenshot.';
+/* Ten sam szkic PO wklejeniu obrazu. Od 2026-09-01 wklejenie zostawia w treści ślad tego, GDZIE
+ * obraz stanął (`src/sections/run/entry/image-marker.ts`), więc odzyskany szkic niesie znacznik —
+ * i to jest treść tego kryterium: po odmowie wraca CAŁA wiadomość, razem z adresem obrazu, a nie
+ * sam tekst bez niego. */
+const RETRY_WITH_IMAGE = `${RETRY_TEXT} [image 1] `;
 const SEND_FAILURE = 'Loadout could not send that message.';
 const PRIVATE_FAILURE = 'PRIVATE vendor failure must not replace the UI sentence';
 const COMMAND_REFUSAL =
@@ -331,7 +336,7 @@ describe('pasted images on the real Lead composer', () => {
       expect(
         await app.page.inputValue(FIELD),
         'the image arrived, but the simultaneous text/plain flavor was silently dropped.',
-      ).toBe('keep caption tail');
+      ).toBe('keep caption [image 1] tail');
       expect(await app.page.locator(PREVIEW).count()).toBe(1);
     } finally {
       await app.close();
@@ -360,7 +365,7 @@ describe('pasted images on the real Lead composer', () => {
           terminal: FOLDER,
           folder: FOLDER,
           lead: AGENT.id,
-          text: '',
+          text: '[image 1]',
           images: [{ mime: 'image/png', base64: PNG_BASE64 }],
         },
       });
@@ -388,7 +393,7 @@ describe('pasted images on the real Lead composer', () => {
       expect(
         await app.page.inputValue(FIELD),
         'the rejected message disappeared from Command line, so retry requires typing it again.',
-      ).toBe(RETRY_TEXT);
+      ).toBe(RETRY_WITH_IMAGE);
       expect(
         await app.page.locator(PREVIEW).count(),
         'the rejected image disappeared, so the retry cannot send the draft that was refused.',
@@ -443,7 +448,7 @@ describe('pasted images on the real Lead composer', () => {
       await app.page.waitForTimeout(SETTLE);
       const calls = await sentToLead(app);
       expect(calls.length).toBe(2);
-      expect(calls[0]?.args['text']).toBe('First draft');
+      expect(calls[0]?.args['text']).toBe('First draft [image 1]');
       expect(calls[1]?.args['text']).toBe('Newer draft written while waiting');
       expect(await app.page.inputValue(FIELD)).toBe('');
       expect(await app.page.locator(PREVIEW).count()).toBe(0);
@@ -536,7 +541,7 @@ describe('pasted images on the real Lead composer', () => {
       expect(
         await app.page.inputValue(FIELD),
         'null-to-folder tab normalization remounted the composer for the same conversation.',
-      ).toBe('The same conversation keeps this draft');
+      ).toBe('The same conversation keeps this draft [image 1] ');
       expect(await app.page.locator(PREVIEW).count()).toBe(1);
       expect(
         await blobIsReadable(app, sameUrl),
@@ -548,7 +553,7 @@ describe('pasted images on the real Lead composer', () => {
       expect((await sentToLead(app))[0]?.args).toMatchObject({
         folder: FOLDER,
         terminal: FOLDER,
-        text: 'The same conversation keeps this draft',
+        text: 'The same conversation keeps this draft [image 1]',
         images: [{ mime: 'image/png', base64: PNG_BASE64 }],
       });
     } finally {
@@ -604,7 +609,7 @@ describe('pasted images on the real Lead composer', () => {
       await app.page.press(FIELD, 'Enter');
       await waitForVisibleSentence(app, COMMAND_REFUSAL);
 
-      expect(await app.page.inputValue(FIELD)).toBe('/run Easy inspect this');
+      expect(await app.page.inputValue(FIELD)).toBe('/run Easy inspect this [image 1] ');
       expect(await app.page.locator(PREVIEW).count()).toBe(1);
       const forbidden = new Set([
         'run_workflow',
@@ -628,7 +633,7 @@ describe('pasted images on the real Lead composer', () => {
       await app.page.press(FIELD, 'Enter');
       await waitForVisibleSentence(app, STEP_REFUSAL);
 
-      expect(await app.page.inputValue(FIELD)).toBe('Worker inspect this screenshot');
+      expect(await app.page.inputValue(FIELD)).toBe('Worker inspect this screenshot [image 1] ');
       expect(await app.page.locator(PREVIEW).count()).toBe(1);
       const conversationCalls = (await app.calls()).filter(
         (call) => call.cmd === 'say_to_agent' || call.cmd === 'say_to_orchestrator',

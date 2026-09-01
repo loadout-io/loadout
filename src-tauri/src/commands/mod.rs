@@ -58,6 +58,7 @@ pub mod memory;
 /// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
 pub mod mint;
 /// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
+pub mod paths;
 pub mod processes;
 /// Uzgodnienie biegów z plikami przy otwarciu folderu — po awarii aplikacji.
 pub mod reconcile;
