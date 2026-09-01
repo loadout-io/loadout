@@ -3952,7 +3952,9 @@ mod stop_proof_tests {
         );
         let before_deadline = REQUEST_WINDOW
             .checked_sub(Duration::from_secs(1))
-            .ok_or_else(|| anyhow!("the App Server request window must exceed one second"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("the App Server request window must exceed one second")
+            })?;
         tokio::time::advance(before_deadline).await;
         assert!(
             !request.is_finished(),

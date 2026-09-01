@@ -827,7 +827,7 @@ enum ConversationEvent {
     Stop(Option<StopRequest>),
     Reader(ReaderProgress),
     Deadline(ReplyDeadline),
-    Turn(Option<TurnRequest>),
+    Turn(Option<Box<TurnRequest>>),
 }
 
 enum ActorAction {
@@ -955,7 +955,7 @@ async fn conversation_actor(
             stop = stops.recv() => ConversationEvent::Stop(stop),
             progress = reader_progress(&mut session) => ConversationEvent::Reader(progress),
             expired = next_reply_deadline(&deadlines) => ConversationEvent::Deadline(expired),
-            turn = turns.recv() => ConversationEvent::Turn(turn),
+            turn = turns.recv() => ConversationEvent::Turn(turn.map(Box::new)),
         };
         let action = match event {
             ConversationEvent::Stop(stop) => {
@@ -970,7 +970,7 @@ async fn conversation_actor(
             }
             ConversationEvent::Turn(Some(turn)) => {
                 handle_conversation_turn(
-                    turn,
+                    *turn,
                     &mut session,
                     &mut turns,
                     &mut stops,
