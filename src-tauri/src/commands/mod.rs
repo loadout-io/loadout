@@ -60,6 +60,8 @@ pub mod processes;
 pub mod reconcile;
 pub mod rerun;
 pub mod run;
+/// Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś: kto prowadzi rozmowę.
+pub mod settings;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
 pub mod skills;
 /// Zrodla zdarzen, ktore pytaja zewnetrzny serwis i pamietaja kursor w pliku.

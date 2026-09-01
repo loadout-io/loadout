@@ -20,7 +20,7 @@
  *    jest poprawne co do wartości i katastrofalne dla Reacta.
  */
 import type { Answer, FeedLine, Incoming } from '../../../state/run';
-import { LINE_LIMIT } from '../../../state/run';
+import { LINE_LIMIT, stepIsOver } from '../../../state/run';
 import type { Kind } from './kinds';
 import { kinds } from './kinds';
 
@@ -492,6 +492,15 @@ export function createFeed(scroller: Scroller): Feed {
    */
   const doing = new Map<string, string>();
 
+  /* Żywe kroki każdego agenta, po to i tylko po to, żeby wiedzieć, KIEDY skończył (T-162).
+   *
+   * Zbiór, nie licznik: ten sam `stepId` potrafi przyjść dwa razy (`running` po `ready`),
+   * a licznik urósłby wtedy o dwa i agent nigdy by ze strefy nie wyszedł. Klucz jest parą
+   * agent→kroki, bo jeden agent biegnie w kilku kopiach naraz i zakończenie PIERWSZEJ nie
+   * znaczy, że przestał pracować — to jest ta różnica, którą sprawdza
+   * `now-holds-only-live-work.test.ts`. */
+  const liveSteps = new Map<string, Set<string>>();
+
   /** Nazwa agenta, którego slot `Thinking…` jest żywy. JEDNO pole, nigdy tablica. */
   let thinking: string | null = null;
 
@@ -588,6 +597,24 @@ export function createFeed(scroller: Scroller): Feed {
          * plan. Wersja, która zapaliłaby tym wierszem slot `Thinking…`, pokazywałaby myślącego
          * agenta za każdym razem, gdy krok się kończy. */
         if (line.kind === 'thinking') thinking = line.agent;
+        if (line.kind === 'stepState') {
+          /* Koniec kroku zdejmuje agenta ze strefy TERAZ dopiero wtedy, gdy nie została mu
+           * ani jedna żywa kopia. Start kroku niczego nie zdejmuje — implementacja, która
+           * reagowałaby na każdy `stepState`, trzymałaby strefę pustą przez cały bieg. */
+          const mine = liveSteps.get(line.agent) ?? new Set<string>();
+          if (stepIsOver(line.state)) {
+            mine.delete(line.stepId);
+            if (mine.size === 0) {
+              doing.delete(line.agent);
+              liveSteps.delete(line.agent);
+            } else {
+              liveSteps.set(line.agent, mine);
+            }
+          } else {
+            mine.add(line.stepId);
+            liveSteps.set(line.agent, mine);
+          }
+        }
         continue;
       }
 

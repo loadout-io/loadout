@@ -13,7 +13,7 @@ import { SECTIONS, sectionEntry } from '../../ui/sections';
 import TriggersScreen from './index';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const SIX = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers'] as const;
+const SEVEN = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers', 'settings'] as const;
 
 function textOf(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -46,7 +46,7 @@ function literals(body: string): string[] {
 
 describe('Triggers is the sixth real section', () => {
   it('registers the English label and one short empty sentence', () => {
-    expect(SECTIONS.map((entry) => entry.id)).toEqual(SIX);
+    expect(SECTIONS.map((entry) => entry.id)).toEqual(SEVEN);
     const entry = SECTIONS.find((one) => one.id === ('triggers' as Section));
     expect(entry?.label).toBe('Triggers');
     expect(entry?.empty.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(12);
@@ -76,7 +76,7 @@ describe('Triggers is the sixth real section', () => {
     expect(markup).toMatch(/<(?:path|rect|polyline|polygon)\b/);
   });
 
-  it('raises each of the five independent section mirrors to exactly the same six ids', () => {
+  it('raises each of the five independent section mirrors to exactly the same seven ids', () => {
     const mirrors = [
       ['src/ui/shell/controls.test.tsx', 'EXPECTED'],
       ['src/ui/shell/screen-mount.test.tsx', 'EXPECTED'],
@@ -85,12 +85,12 @@ describe('Triggers is the sixth real section', () => {
     ] as const;
     for (const [path, constant] of mirrors) {
       const body = arrayBody(textOf(resolve(ROOT, path)), constant);
-      expect(literals(body), path + ' must name all six sections independently').toEqual(SIX);
+      expect(literals(body), path + ' must name all seven sections independently').toEqual(SEVEN);
     }
 
     const sections = arrayBody(textOf(resolve(ROOT, 'src/ui/shell/sections.test.tsx')), 'EXPECTED');
     const ids = [...sections.matchAll(/\bid\s*:\s*['"]([a-z-]+)['"]/g)].map((hit) => hit[1] ?? '');
-    expect(ids).toEqual(SIX);
+    expect(ids).toEqual(SEVEN);
   });
 
   it('adds the new list screen to the shared radius-band oracle', () => {

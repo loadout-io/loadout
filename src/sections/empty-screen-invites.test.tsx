@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../App';
 import type { Section } from '../ui/sections';
 
-/* AC-3 dla T-48: znacznik pustego ekranu siedzi na ZDANIU, w kazdej z szesciu sekcji.
+/* AC-3 dla T-48: znacznik pustego ekranu siedzi na ZDANIU, w kazdej sekcji z osobna.
  *
  * `src/App.tsx` mowi to o sobie wprost: „`data-empty` siedzi na elemencie, ktory niesie SAMO
  * zdanie — nie na ramce z zaproszeniem", bo trescia tak oznaczonego elementu ma byc zdanie,
@@ -13,7 +13,7 @@ import type { Section } from '../ui/sections';
  * rzecz, milczy dokladnie tam, gdzie powinna krzyczec.
  *
  * PRAWDZIWE ODKRYWANIE, nie `screens={{}}`. Z pusta mapa ekranow powloka rysuje zdanie
- * z rejestru sekcji i zadnej sekcji nie montuje: kazdy z szesciu ekranow wyglada wtedy identycznie
+ * z rejestru sekcji i zadnej sekcji nie montuje: kazdy ekran wyglada wtedy identycznie
  * i test przechodzi, nie zobaczywszy ani jednej sekcji. Zmierzone 2026-08-19: piec ekranow,
  * po szesc przyciskow, zero pol, `data-empty` wszedzie — czyli sama powloka.
  *
@@ -35,6 +35,7 @@ const FIVE = [
   'skills',
   'memory',
   'triggers',
+  'settings',
 ] as const satisfies readonly Section[];
 
 /** Tekst bez znacznikow, ze scisnietymi odstepami. */
@@ -129,8 +130,8 @@ describe('pusty ekran', () => {
      * sie nie zamontowala i wszystko nizej mierzy sama powloke. */
     expect(
       new Set(screens.map(([, markup]) => markup)).size,
-      'the six sections rendered the same document, so none of them mounted and every ' +
-        'assertion below is about the window frame',
+      'two sections rendered the same document, so at least one of them did not mount and ' +
+        'every assertion below is about the window frame',
     ).toBe(FIVE.length);
   });
 

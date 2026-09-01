@@ -140,8 +140,49 @@ pub struct PastRunWire {
     /// Pusta lista dla biegu, po którym nie została ani jedna — i to jest zwykły stan: krok,
     /// który nic nie zmienił, gałęzi nie zostawia (`commands::isolate::finish`).
     pub branches: Vec<BranchWire>,
+    /// Co prywatna tura Loadouta zrobiła z tym biegiem — albo `None`, kiedy opis o tym milczy.
+    ///
+    /// `None`, A NIE WYZEROWANY RACHUNEK, i to jest cała treść tego pola. Bieg zapisany zanim
+    /// `run.json` niósł ten klucz nie jest biegiem, którego nie pytano: pierwsze jest naszą
+    /// niewiedzą, drugie jest faktem o biegu. Struktura z samymi zerami przedstawiałaby jedno
+    /// jako drugie, a te dwa stany mają na ekranie osobne zdania — po jednym w
+    /// `src/sections/run/reflection/said.ts`.
+    pub reflection: Option<ReflectionWire>,
     /// Uczciwe zdanie, kiedy opisu nie dało się przeczytać.
     pub said: Option<String>,
+}
+
+/// Rachunek prywatnej tury, tak jak leży w `run.json` i jak jedzie do okna.
+///
+/// # Dlaczego to nie jest `commands::run::ReflectionReceipt`
+///
+/// Bo tamten typ jest **pisarzem** i jest prywatny dla swojego modułu: niesie też cenę tury,
+/// której dziś nie ma na żadnym ekranie, i ma prawo rosnąć razem z biegiem. Ten jest
+/// **czytelnikiem** i czyta pliki, które powstały wcześniej — więc każde pole ma `#[serde(default)]`
+/// (niezmiennik 5) i żadne z nich nie jest wymagane, żeby historia dała się otworzyć.
+///
+/// # KLUCZE W PLIKU SĄ MIESZANE i to nie jest przeoczenie do naprawienia tutaj
+///
+/// `ReflectionReceipt` serializuje `ran`, `kept`, `discardedAgain` (jawny `rename`)
+/// i `dropped_without_reason` (bez renamu). Zmiana tamtej nazwy jest naprawą pisarza, a nie
+/// czytelnika, i uczyniłaby nieczytelnym każdy `run.json` zapisany do dziś. Czytelnik przyjmuje
+/// więc OBIE pisownie: `camelCase` z `rename_all` dla drutu do okna i `alias` na tę jedną
+/// pisownię, którą pisarz naprawdę wypisuje.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReflectionWire {
+    /// Czy tura naprawdę poszła i wróciła użyteczną odpowiedzią.
+    #[serde(default)]
+    pub ran: bool,
+    /// Ile notatek z niej powstało — te czekają w Memory na decyzję człowieka.
+    #[serde(default)]
+    pub kept: usize,
+    /// Ile wróciło takich, które człowiek już raz odrzucił.
+    #[serde(default)]
+    pub discarded_again: usize,
+    /// Ile reguł przyszło bez uzasadnienia; takich nie zapisujemy [T6 §10.3].
+    #[serde(default, alias = "dropped_without_reason")]
+    pub dropped_without_reason: usize,
 }
 
 /// Jedna gałąź zostawiona przez bieg.
@@ -319,6 +360,10 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     let branches = described
         .as_ref()
         .map_or_else(Vec::new, |file| branches_of_run(project, &file.id, &steps));
+    // PRZED `described.map(…)` niżej, bo tamto przenosi opis. Bieg, którego opisu nie dało się
+    // przeczytać, oddaje tu `None` — i to jest ta sama odpowiedź, co dla pliku bez tego klucza:
+    // w obu przypadkach po prostu nie wiemy, i tak ma to zabrzmieć na ekranie.
+    let reflection = described.as_ref().and_then(|file| file.reflection);
 
     Ok(PastRunWire {
         folder: head.folder,
@@ -334,6 +379,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
         handoffs: handoffs_of_run(project, &dir),
         branches,
+        reflection,
         said: head.said,
     })
 }
@@ -462,6 +508,10 @@ struct Description {
     /// Addytywny receipt T-130. Brak pola w starym pliku jest pustą listą, nie błędem historii.
     #[serde(default)]
     memory: Vec<MemoryDescription>,
+    /// Rachunek prywatnej tury (T-165). Brak klucza znaczy „ten plik o tym nie mówi", i to jest
+    /// inne zdanie niż rachunek zerowy — dlatego `Option`, a nie wartość domyślna struktury.
+    #[serde(default)]
+    reflection: Option<ReflectionWire>,
 }
 
 /// Tolerancyjny kształt rekordu z `run.json`.

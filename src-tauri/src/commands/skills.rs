@@ -1003,7 +1003,11 @@ const ALREADY_WRITING: &str =
 ///
 /// Ta sama treść, którą mówi krok biegu w tym samym stanie (`commands::run`, `Ended::Stopped`):
 /// dwa różne zdania o jednym fakcie to dwa różne zgłoszenia błędu od tej samej osoby.
-const MAY_STILL_BE_RUNNING: &str =
+///
+/// 2026-08-29 — `pub(crate)` z dokładnie tego powodu, który stoi w zdaniu wyżej: od T-76 ten
+/// sam stan potrafi zajść przy porównaniu kopii pozycji importu, a przepisane obok drugie
+/// brzmienie byłoby drugim domem dla jednego faktu (niezmiennik 13).
+pub(crate) const MAY_STILL_BE_RUNNING: &str =
     "Loadout could not make sure this agent stopped, so it may still be running.";
 
 /// Odmowa dla biblioteki, w której nikogo jeszcze nie zapisano.
@@ -1225,7 +1229,14 @@ pub async fn draft_skill_inner(
 }
 
 /// Jedna tura draftu: skończyła się sama, zatrzymał ją człowiek, albo przekroczyła swój limit.
-enum Ended {
+///
+/// 2026-08-29 — `pub(crate)`, bo od T-76 ta sama maszyneria obsługuje drugie pytanie zadawane
+/// jedną turą poza grafem: porównanie kopii pozycji importu
+/// (`commands::import::compare_copies_inner`). Druga kopia tego `select!` byłaby drugim
+/// rdzeniem polityki anulowania i limitu czasu (niezmiennik 23) — a rozjazd między nimi
+/// objawia się jako osierocony agent palący limit u dostawcy, czyli po stronie rachunku,
+/// nie testów. Ciała nie ruszyliśmy ani o znak.
+pub(crate) enum Ended {
     /// Tura wróciła sama — z wynikiem albo z błędem sterownika.
     Turn(anyhow::Result<TurnOutcome>),
     /// Człowiek nacisnął Stop.
@@ -1240,7 +1251,7 @@ enum Ended {
 /// i jest błędem, przed którym stoi niezmiennik 10: anuluje ZADANIE RUSTA, a proces vendora
 /// zostaje żywy i pali limit u dostawcy do końca świata. Dlatego limit czasu jest tutaj zwykłą
 /// gałęzią wyboru, a zejście po grupie robi dopiero [`what_came_of_it`], przez sterownik.
-async fn one_turn(
+pub(crate) async fn one_turn(
     handle: &mut dyn AgentHandle,
     stop: &CancellationToken,
     limit: Duration,
@@ -1387,7 +1398,7 @@ pub fn the_agent_saved_as(library: &Path, id: &str) -> Result<Agent, Error> {
 /// która stoi na `send`, nie kończy się nigdy: dla bramki to jest „nic się nie uruchomiło"
 /// (rc 124), nie czerwień. Zmierzone na agencie robiącym `find /usr/share`: 121 000 linii
 /// na sekundę.
-async fn off_the_wire(mut inbox: mpsc::Receiver<DecodedEvent>) {
+pub(crate) async fn off_the_wire(mut inbox: mpsc::Receiver<DecodedEvent>) {
     while inbox.recv().await.is_some() {}
 }
 
@@ -1410,7 +1421,7 @@ fn nothing_came_back(reason: &FinishReason) -> String {
 ///
 /// Zero znaczy „poddaj się natychmiast", więc traktujemy je jak brak zdania i zostawiamy jedną
 /// minutę: limit ubijający każdą turę w chwili startu jest gorszy niż brak limitu.
-fn give_up_after(minutes: u32) -> Duration {
+pub(crate) fn give_up_after(minutes: u32) -> Duration {
     Duration::from_secs(u64::from(minutes.max(1)) * 60)
 }
 
@@ -1420,7 +1431,7 @@ fn give_up_after(minutes: u32) -> Duration {
 /// przepisane tutaj jest tańsze niż otwarcie tamtego pliku: `commands/run.rs` nie należy do tego
 /// zadania (AGENTS.md §7), a różnica między tymi dwiema odpowiedziami byłaby widoczna od razu —
 /// pusty napis podstawiony pod flagę modelu to vendor, który odmawia startu.
-fn some_text(text: &str) -> Option<String> {
+pub(crate) fn some_text(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.to_owned())
 }
 

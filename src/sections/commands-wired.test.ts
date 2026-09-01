@@ -25,6 +25,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as settings from '../state/settings-io';
 import * as workspaces from '../state/workspaces-io';
 import * as agents from './agents/io';
 import { ipcSource, windowSideArguments } from './ipc-signature';
@@ -77,6 +78,7 @@ const WHERE_PATH: Readonly<Record<string, string>> = {
   triggers: 'src/sections/triggers/io.ts',
   workflows: 'src/sections/workflows/io.ts',
   workspaces: 'src/state/workspaces-io.ts',
+  settings: 'src/state/settings-io.ts',
 };
 
 const AGENT_ID = '0198a1f2-3b4c-7d5e-8f60-112233445566';
@@ -553,6 +555,28 @@ const WIRES: readonly Wire[] = [
     given: [{ id: '/Users/somebody/Projects/Loadout' }],
     call: () => workspaces.deleteWorkspace({ id: '/Users/somebody/Projects/Loadout' }),
   },
+  /* 2026-08-29 (T-163) — DWIE KRAWĘDZIE TEGO, CO LOADOUT ROBI DOMYŚLNIE. Dopisane, nic nie
+   * usunięte i żaden istniejący wiersz nie przepisany. Bez nich pierwszy test wyżej jest
+   * czerwony, bo `state/settings-io.ts` eksportuje `readSettings` i `saveSettings`.
+   *
+   * `given` NIESIE IDENTYFIKATOR AGENTA, bo on JEST tu całym wywołaniem: `save_settings` bierze
+   * jeden argument i to nim plik zapamiętuje, kto prowadzi. Wiersz wołany pustym napisem
+   * przechodziłby także dla krawędzi, która wskazanie gubi — `insides()` niżej odrzuca `null`
+   * i pusty napis jest tu równie niewidoczny. */
+  {
+    where: 'settings',
+    what: 'readSettings',
+    command: 'read_settings',
+    given: [],
+    call: () => settings.readSettings(),
+  },
+  {
+    where: 'settings',
+    what: 'saveSettings',
+    command: 'save_settings',
+    given: [{ defaultLead: AGENT_ID }],
+    call: () => settings.saveSettings({ defaultLead: AGENT_ID }),
+  },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.
    * Dopisana, nic nie usunięte i żaden istniejący wiersz nie przepisany — mandat tego zadania
    * na ten plik pozwala dokładnie na tyle (TASK.md, „lustro komend"), a wiersz jest tu dlatego,
@@ -688,6 +712,7 @@ const EDGES: ReadonlyArray<readonly [string, object]> = [
   ['agents', agents],
   ['memory', memory],
   ['run', run],
+  ['settings', settings],
   ['skills', skills],
   ['triggers', triggers],
   ['workflows', workflows],
@@ -726,12 +751,12 @@ function insides(value: unknown, into: unknown[]): unknown[] {
   return into;
 }
 
-describe('the six section edges, the workspace edge and the one list of command names', () => {
+describe('the section edges, the two library edges and the one list of command names', () => {
   beforeEach(() => {
     invoked.mockClear();
   });
 
-  it('has a row below for every function the seven edges export', () => {
+  it('has a row below for every function these edges export', () => {
     for (const [where, edge] of EDGES) {
       const exported = exportedFunctions(edge);
       const covered = WIRES.filter((wire) => wire.where === where)

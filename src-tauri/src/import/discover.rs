@@ -206,19 +206,10 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
         path: relative.to_path_buf(),
         detail: error.to_string(),
     })?;
+    // Dowiązania nie są śledzone i od 2026-08-29 nie są też pozycją: wiersz „this configuration
+    // is a link and was not followed" nie dawał się ani zaimportować, ani rozstrzygnąć.
     if metadata.file_type().is_symlink() {
-        return Ok(Some(InspectedFile {
-            item: SourceItem {
-                id: identity(relative, "symlink"),
-                source: source_of(relative),
-                kind: ItemKind::Unknown,
-                path: relative.to_path_buf(),
-                hash: "symlink".to_owned(),
-                name: display_name(relative, ItemKind::Unknown),
-                summary: "This configuration is a link and was not followed.".to_owned(),
-            },
-            content: String::new(),
-        }));
+        return Ok(None);
     }
     if !metadata.is_file() || is_skill_bundle_child(relative) || is_documentation(relative) {
         return Ok(None);
@@ -242,7 +233,9 @@ fn inspect_file(root: &Path, path: &Path, candidates: &[PathBuf]) -> Result<Opti
     } else {
         content_hash(&bytes)
     };
-    let (kind, summary) = classify(relative, &content);
+    let Some((kind, summary)) = classify(relative, &content) else {
+        return Ok(None);
+    };
     Ok(Some(InspectedFile {
         item: SourceItem {
             id: identity(relative, &hash),
@@ -403,7 +396,16 @@ fn source_of(path: &Path) -> SourceKind {
     }
 }
 
-fn classify(path: &Path, content: &str) -> (ItemKind, String) {
+/// Rozpoznaje plik jako jedną z pięciu rzeczy, które Loadout umie postawić — albo jako żadną.
+///
+/// `None` znaczy „to nie jest pozycja importu", a nie „nie wiem, co to jest". Do 2026-08-29
+/// stał tu ogon `Unknown` łapiący wszystko, co przeszło przez sito, i dwa rozpoznania
+/// workflowa, które nim nie były: katalog `lib/` (skrypty pomocnicze — stąd zdanie
+/// „The trace-span workflow leaves `jq -s .` unresolved", które pytało o linię shella)
+/// oraz każdy nieznany katalog pod `.agents/`, przez co `.agents/h/checks.json` stawał się
+/// „workflowem h". Workflow to dziś plik ceremonii: `.claude/commands/*.md`,
+/// `.agents/commands/*.md`, `.rulesync/commands/*.md` i `.claude/workflows/*.js`.
+fn classify(path: &Path, content: &str) -> Option<(ItemKind, String)> {
     let text = path.to_string_lossy();
     if text.starts_with(".claude/agents/") && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".codex/agents/") && path.extension().is_some_and(|ext| ext == "toml")
@@ -411,58 +413,33 @@ fn classify(path: &Path, content: &str) -> (ItemKind, String) {
             && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".agents/agents/") && path.extension().is_some_and(|ext| ext == "md")
     {
-        return (ItemKind::Agent, "An agent definition was found.".to_owned());
+        return Some((ItemKind::Agent, "An agent definition was found.".to_owned()));
     }
     if text.starts_with(".claude/workflows/") && path.extension().is_some_and(|ext| ext == "js")
         || text.starts_with(".rulesync/commands/")
             && path.extension().is_some_and(|ext| ext == "md")
         || text.starts_with(".agents/commands/") && path.extension().is_some_and(|ext| ext == "md")
     {
-        return (
+        return Some((
             ItemKind::Workflow,
             "A project workflow definition was found.".to_owned(),
-        );
+        ));
     }
-    if text.starts_with(".agents/")
-        && ![
-            ".agents/agents/",
-            ".agents/skills/",
-            ".agents/rules/",
-            ".agents/commands/",
-            ".agents/checks/",
-            ".agents/hooks/",
-        ]
-        .iter()
-        .any(|known| text.starts_with(known))
-    {
-        return (
-            ItemKind::Workflow,
-            "A custom project automation bundle was found for agent analysis.".to_owned(),
-        );
-    }
-    if text.starts_with(".claude/commands/") && path.extension().is_some_and(|ext| ext == "md")
-        || text.starts_with(".claude/lib/")
-        || text.starts_with(".codex/lib/")
-    {
-        return (
+    if text.starts_with(".claude/commands/") && path.extension().is_some_and(|ext| ext == "md") {
+        return Some((
             ItemKind::Workflow,
             "A procedural project routine was found.".to_owned(),
-        );
+        ));
     }
     if path.file_name().is_some_and(|name| name == "SKILL.md")
         && (text.contains("/skills/") || text.starts_with(".agents/skills/"))
     {
-        return (
+        return Some((
             ItemKind::Skill,
             "A complete skill bundle was found.".to_owned(),
-        );
+        ));
     }
-    classify_project_support(path, content, &text).unwrap_or_else(|| {
-        (
-            ItemKind::Unknown,
-            "Loadout does not recognize this project setting yet.".to_owned(),
-        )
-    })
+    classify_project_support(path, content, &text)
 }
 
 fn classify_project_support(path: &Path, content: &str, text: &str) -> Option<(ItemKind, String)> {
@@ -478,22 +455,6 @@ fn classify_project_support(path: &Path, content: &str, text: &str) -> Option<(I
             "Project tool connections were found and will stay off until approved.".to_owned(),
         ));
     }
-    if text.starts_with(".claude/settings") && content.contains("hooks")
-        || path == Path::new(".codex/hooks.json")
-        || path == Path::new(".rulesync/hooks.json")
-        || path == Path::new(".rulesync/hooks.jsonc")
-    {
-        return Some((ItemKind::Hook, "A project hook was found.".to_owned()));
-    }
-    if text.starts_with(".claude/hooks/")
-        || text.starts_with(".codex/hooks/")
-        || text.starts_with(".agents/hooks/")
-    {
-        return Some((
-            ItemKind::Hook,
-            "A project hook script was found.".to_owned(),
-        ));
-    }
     if text.starts_with(".claude/agent-memory/")
         && path.file_name().is_some_and(|name| name == "MEMORY.md")
         || text.starts_with(".claude/learnings/") && path.extension().is_some_and(|ext| ext == "md")
@@ -503,24 +464,6 @@ fn classify_project_support(path: &Path, content: &str, text: &str) -> Option<(I
             ItemKind::Memory,
             "Project guidance for an agent was found.".to_owned(),
         ));
-    }
-    if text.starts_with(".claude/rules/")
-        || text.starts_with(".claude/automation/")
-        || text.starts_with(".codex/rules/")
-        || text.starts_with(".agents/rules/")
-        || text.starts_with(".agents/checks/")
-        || text.starts_with(".rulesync/rules/")
-        || text.starts_with(".rulesync/checks/")
-        || path == Path::new(".rulesync/permissions.json")
-        || path == Path::new(".rulesync/permissions.jsonc")
-        || path == Path::new(".codex/config.toml")
-        || path == Path::new(".claude/settings.json")
-        || path == Path::new(".claude/settings.local.json")
-        || path == Path::new("AGENTS.md")
-        || path == Path::new("CLAUDE.md")
-        || path == Path::new("CLAUDE.local.md")
-    {
-        return Some((ItemKind::Rule, "A project rule was found.".to_owned()));
     }
     None
 }
@@ -533,14 +476,6 @@ fn looks_like_workflow(content: &str) -> bool {
 }
 
 fn display_name(path: &Path, kind: ItemKind) -> String {
-    if path.starts_with(".agents")
-        && let Some(area) = path.components().nth(1)
-        && !["agents", "skills", "rules", "commands", "checks", "hooks"]
-            .iter()
-            .any(|known| area.as_os_str() == *known)
-    {
-        return area.as_os_str().to_string_lossy().into_owned();
-    }
     let name = match kind {
         ItemKind::Skill | ItemKind::Memory
             if path
@@ -556,7 +491,9 @@ fn display_name(path: &Path, kind: ItemKind) -> String {
         .to_owned()
 }
 
-fn identity(path: &Path, hash: &str) -> String {
+/// Tożsamość pozycji na drucie. `translate` szuka po niej wyniku zgodności dla KAŻDEGO
+/// źródła scalonego wiersza, więc format musi mieć jedno miejsce, nie dwa (2026-08-29).
+pub(super) fn identity(path: &Path, hash: &str) -> String {
     format!("{}:{hash}", path.to_string_lossy())
 }
 

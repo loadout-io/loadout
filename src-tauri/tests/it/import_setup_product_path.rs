@@ -44,10 +44,14 @@ fn an_explicit_leave_out_choice_crosses_ipc_and_unblocks_apply()
     /* Pusty katalog domowy: ten zestaw sądzi import PROJEKTU i nie ma prawa czytać
      * `~/.claude.json` człowieka, który akurat uruchomił testy. */
     let nothing = tempfile::tempdir()?;
-    std::fs::create_dir_all(repo.path().join(".claude"))?;
+    std::fs::create_dir_all(repo.path().join(".claude/commands"))?;
+    /* 2026-08-29: wyborem jest teraz CEREMONIA bez wykonalnego kontraktu, a nie
+     * `.claude/settings.json`. Hak z ustawień cudzej aplikacji przestał być pozycją importu —
+     * Loadout go nie uruchamia, więc pytanie o niego nie miało odpowiedzi. Mechanizm, który
+     * ten zestaw sądzi, jest ten sam: wybór człowieka przejeżdża przez IPC i odblokowuje zapis. */
     std::fs::write(
-        repo.path().join(".claude/settings.json"),
-        r#"{"hooks":{"PostToolUse":[{"command":"./format.sh"}]}}"#,
+        repo.path().join(".claude/commands/ship.md"),
+        "Ship whatever looks ready.",
     )?;
     let preview = scan_setup_inner(nothing.path(), repo.path())?;
     let choice = preview
@@ -56,7 +60,7 @@ fn an_explicit_leave_out_choice_crosses_ipc_and_unblocks_apply()
         .mappings
         .iter()
         .find(|mapping| mapping.compatibility == loadout_lib::import::Compatibility::NeedsChoice)
-        .ok_or("the hook was not presented as a choice")?
+        .ok_or("the routine was not presented as a choice")?
         .item_id
         .clone();
     let receipt = apply_setup_inner(
@@ -90,12 +94,18 @@ fn an_explicit_skip_keeps_an_unknown_setting_from_blocking_compatible_items()
      * `~/.claude.json` człowieka, który akurat uruchomił testy. */
     let nothing = tempfile::tempdir()?;
     std::fs::create_dir_all(repo.path().join(".codex/agents"))?;
-    std::fs::create_dir_all(repo.path().join(".claude"))?;
+    std::fs::create_dir_all(repo.path().join(".claude/skills/dreaming"))?;
     std::fs::write(
         repo.path().join(".codex/agents/builder.toml"),
         "name = \"builder\"\ndeveloper_instructions = \"Build the task.\"\n",
     )?;
-    std::fs::write(repo.path().join(".claude/future.json"), "{\"new\":true}")?;
+    /* 2026-08-29: nie do odtworzenia jest teraz SKILL z ukrytym tekstem, a nie
+     * `.claude/future.json`. Nierozpoznany plik nie jest już pozycją, więc nie ma czego
+     * pomijać; skill jest — i to on ma nie blokować agenta obok siebie. */
+    std::fs::write(
+        repo.path().join(".claude/skills/dreaming/SKILL.md"),
+        "---\nname: dreaming\ndescription: Dream about the task.\n---\nDream\u{200b} about it.",
+    )?;
     let preview = scan_setup_inner(nothing.path(), repo.path())?;
     let unknown = preview
         .draft
@@ -103,7 +113,7 @@ fn an_explicit_skip_keeps_an_unknown_setting_from_blocking_compatible_items()
         .mappings
         .iter()
         .find(|mapping| mapping.compatibility == loadout_lib::import::Compatibility::Unsupported)
-        .ok_or("the unknown setting was not reported")?
+        .ok_or("the skill that cannot be reproduced was not reported")?
         .item_id
         .clone();
 

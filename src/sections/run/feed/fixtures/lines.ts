@@ -36,6 +36,11 @@ export const line = {
     return { kind: 'thinking', agent, id, at };
   },
 
+  /** Na czym stoi KROK. Jedyny wiersz, z którego widać, że czyjaś praca się skończyła. */
+  stepState(id: number, at: number, agent: string, stepId: string, state: string): FeedLine {
+    return { kind: 'stepState', agent, stepId, state, id, at };
+  },
+
   read(id: number, at: number, agent: string, path: string): FeedLine {
     return {
       kind: 'read',

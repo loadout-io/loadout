@@ -13,15 +13,23 @@
  * przeszedłby każde „dla każdej sekcji…", nie sprawdzając ani jednej (ta sama pułapka, co
  * w sections.test.tsx z T-01).
  *
- * Ostatnia asercja — sześć RÓŻNYCH zdań — jest osobno, bo bez niej cały plik przechodzi na
- * powłoce, która wpisuje jedno zdanie wszędzie i akurat trafiła w rejestr jednym z sześciu.
+ * Ostatnia asercja — siedem RÓŻNYCH zdań — jest osobno, bo bez niej cały plik przechodzi na
+ * powłoce, która wpisuje jedno zdanie wszędzie i akurat trafiła w rejestr jednym z siedmiu.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import { sectionEntry } from '../sections';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers'] as const;
+const EXPECTED = [
+  'run',
+  'workflows',
+  'agents',
+  'skills',
+  'memory',
+  'triggers',
+  'settings',
+] as const;
 
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
@@ -72,13 +80,13 @@ describe('a section with no screen shows its own sentence, not a blank space', (
     });
   }
 
-  it('gives the six sections six sentences of their own', () => {
+  it('gives the seven sections seven sentences of their own', () => {
     const said = EXPECTED.map((id) => emptyStateText(markupFor(id)));
     expect(
       new Set(said).size,
-      'six sections, six sentences. One sentence reused everywhere passes every comparison ' +
+      'seven sections, seven sentences. One sentence reused everywhere passes every comparison ' +
         'above for whichever section it was copied from, and reads like a bug on the other ' +
-        'five; the shell said: ' +
+        'six; the shell said: ' +
         JSON.stringify(said),
     ).toBe(EXPECTED.length);
   });

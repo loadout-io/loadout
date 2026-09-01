@@ -818,6 +818,24 @@ export interface PastBranch {
   readonly step: string;
 }
 
+/**
+ * Co prywatna tura Loadouta zrobiła z tym biegiem. Lustro `commands::history::ReflectionWire`.
+ *
+ * CZTERY LICZNIKI, BO TYLE ZAPISUJE `run.json` (`commands::run::ReflectionReceipt`). Ceny tej
+ * tury tu nie ma i jest to zapisany dług: chip na pasku sumuje wyłącznie koszty kroków, więc
+ * opłacona tura refleksji jest dziś niewidoczna na każdym ekranie.
+ */
+export interface PastReflection {
+  /** Czy tura naprawdę poszła i wróciła użyteczną odpowiedzią. `false` znaczy „nie pytano". */
+  readonly ran: boolean;
+  /** Ile notatek z niej powstało — te czekają w Memory na decyzję człowieka. */
+  readonly kept: number;
+  /** Ile wróciło takich, które człowiek już raz odrzucił. */
+  readonly discardedAgain: number;
+  /** Ile reguł przyszło bez uzasadnienia — takich nie zapisujemy [T6 §10.3]. */
+  readonly droppedWithoutReason: number;
+}
+
 /** Otwarty bieg z historii. Lustro `commands::history::PastRunWire`. */
 export interface PastRun {
   /** Nazwa dzisiejszego pliku workflow tego biegu — pusta, kiedy nie ma go już w bibliotece. */
@@ -837,6 +855,15 @@ export interface PastRun {
    * „ten bieg nic nie zostawił", co jest prawdą także wtedy, gdy nikt nie umiał zapytać.
    */
   readonly branches?: readonly PastBranch[];
+  /**
+   * Co prywatna tura Loadouta zrobiła z tym biegiem, albo `null` — kiedy jego opis o tym milczy.
+   *
+   * KLUCZ OPCJONALNY z dokładnie tego samego powodu, co `branches` wyżej (niezmiennik 5 na
+   * granicy), ale `null` znaczy tu co innego niż brak klucza w `branches`: bieg zapisany przed
+   * tym polem NIE JEST biegiem, którego nie pytano — i ekran ma te dwa stany rozróżniać
+   * (`./reflection/said.ts`).
+   */
+  readonly reflection?: PastReflection | null;
   readonly said: string | null;
 }
 

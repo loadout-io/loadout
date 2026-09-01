@@ -111,18 +111,41 @@ pub fn refresh_statuses(draft: &mut MigrationDraft) {
             )
         })
         .collect();
+    /* JEDEN WIERSZ PYTA ZA WSZYSTKIE SWOJE KOPIE (2026-08-29).
+     *
+     * Do tego dnia stało tu `mappings.get(&item.id)`, czyli wynik SAMEGO PIERWSZEGO pliku.
+     * Odkąd wiersz scala kopie z kilku aplikacji, to zdanie połykało decyzję: przy dwóch
+     * różniących się kopiach skilla pierwsza jest `Exact` („this complete skill bundle can be
+     * imported"), a dopiero druga mówi „this skill has different copies" — i to ona mówi
+     * prawdę o RZECZY. Wiersz brał od pierwszej i importował losową kopię, nie pytając nikogo.
+     *
+     * Bierzemy więc NAJCIĘŻSZY wynik spośród definicji tego wiersza. Źródła w rolach
+     * `Dependency` i `Behavior` nie głosują: to pliki wewnątrz wiązki, nie osobne egzemplarze. */
     for item in &mut draft.items {
-        let Some((compatibility, message)) = mappings.get(&item.id) else {
+        let absorbed = item
+            .sources
+            .iter()
+            .filter(|source| source.role == ImportSourceRole::Definition)
+            /* Pierwsza definicja to własny plik tego wiersza i jego wynik nosi `item.id`.
+             * Reszta to kopie wchłonięte przy scalaniu. Liczenie pierwszej jeszcze raz przez
+             * ścieżkę mówiłoby nieprawdę o jednym wierszu: skill promowany na workflow ma
+             * TĘ SAMĄ ścieżkę co skill obok, a inny wynik i inne `item.id`. */
+            .skip(1)
+            .filter_map(|source| {
+                mappings.get(&super::discover::identity(&source.path, &source.hash))
+            });
+        let severest = mappings
+            .get(&item.id)
+            .into_iter()
+            .chain(absorbed)
+            .max_by_key(|(compatibility, _)| weight(status_of(*compatibility)));
+        let Some((compatibility, message)) = severest else {
             item.status = ImportStatus::Unsupported;
             "Loadout has no compatibility result for this item."
                 .clone_into(&mut item.status_message);
             continue;
         };
-        item.status = match compatibility {
-            Compatibility::Exact | Compatibility::Adjusted => ImportStatus::Ready,
-            Compatibility::NeedsChoice => ImportStatus::NeedsChoice,
-            Compatibility::Unsupported => ImportStatus::Unsupported,
-        };
+        item.status = status_of(*compatibility);
         message.clone_into(&mut item.status_message);
     }
 
@@ -286,7 +309,7 @@ fn typed_items(
         .iter()
         .map(|mapping| (mapping.item_id.as_str(), mapping))
         .collect();
-    inspection
+    let named: Vec<(String, ImportItem)> = inspection
         .files
         .iter()
         .map(|file| {
@@ -325,18 +348,111 @@ fn typed_items(
             let dependencies = dependencies_for(&file.item, agent, workflow, imported_workflow);
             let generated_hash = generated_hash_for(agent, skill, &connections, workflow, &notes);
             let (status, status_message) = initial_status(mapping);
-            ImportItem {
-                id: file.item.id.clone(),
-                kind: file.item.kind,
-                sources,
-                target,
-                dependencies,
-                status,
-                status_message,
-                generated_hash,
-            }
+            (
+                file.item.name.to_ascii_lowercase(),
+                ImportItem {
+                    id: file.item.id.clone(),
+                    kind: file.item.kind,
+                    sources,
+                    target,
+                    dependencies,
+                    status,
+                    status_message,
+                    generated_hash,
+                },
+            )
         })
-        .collect()
+        .collect();
+    merge_same_thing(named)
+}
+
+/// Jak ciężka jest ta pozycja dla człowieka. Scalony wiersz bierze największą z ciężarów.
+///
+/// „Największa wygrywa", bo scalenie NIE MA PRAWA połknąć decyzji: przy dwóch różniących się
+/// kopiach jedna z nich jest `Ready` („this complete skill bundle can be imported"), a druga
+/// `NeedsChoice` („this skill has different copies") — i to ta druga mówi prawdę o RZECZY.
+/// Odwrotna reguła zaimportowałaby losową kopię, nie pytając nikogo (2026-08-29).
+fn status_of(compatibility: Compatibility) -> ImportStatus {
+    match compatibility {
+        Compatibility::Exact | Compatibility::Adjusted => ImportStatus::Ready,
+        Compatibility::NeedsChoice => ImportStatus::NeedsChoice,
+        Compatibility::Unsupported => ImportStatus::Unsupported,
+    }
+}
+
+fn weight(status: ImportStatus) -> u8 {
+    match status {
+        ImportStatus::Ready => 0,
+        ImportStatus::MissingDependencies => 1,
+        ImportStatus::NeedsChoice => 2,
+        ImportStatus::Unsupported => 3,
+    }
+}
+
+/// Czy te dwie pozycje napiszą ten sam plik — albo czy druga nie napisze żadnego.
+///
+/// Kopia, którą adapter już rozpoznał jako cudzy egzemplarz tej samej rzeczy, nie produkuje
+/// własnego wyniku i przychodzi tu z `target: None`. Ona też należy do tego wiersza: inaczej
+/// zostawałaby na ekranie jako pozycja, która niczego nie wnosi i o nic nie pyta.
+fn same_file(kept: &ImportItem, next: &ImportItem) -> bool {
+    match (&kept.target, &next.target) {
+        (_, None) | (None, _) => true,
+        (Some(here), Some(there)) => here == there,
+    }
+}
+
+/// Scala pozycje tej samej rzeczy w jeden wiersz — po rodzaju i nazwie, czyli po tym samym
+/// kluczu, którym adapter rozpoznaje cudzy egzemplarz (`adapters.rs`, mapa `seen`).
+///
+/// 2026-08-29: skan `meetnotes` dawał 67 wierszy na jakieś 43 rzeczy, bo `.agents/` leżało
+/// obok `.claude/`, a `.codex/` obok `.claude/`. Siedemnaście z dwudziestu trzech blokad było
+/// przez to **tą samą decyzją zadaną dwa razy**, a dwa wiersze `Ready` celowały w ten sam
+/// `skills/github-actions/SKILL.md`, więc drugi po cichu nadpisywał pierwszy.
+///
+/// `reconcile_workflow_targets` robi to dla workflowów od 2026-08-22 — to jest ta sama zasada,
+/// rozciągnięta na resztę: **cel jest tożsamością rzeczy.**
+/// Scala pozycje tej samej rzeczy w jeden wiersz — po rodzaju i nazwie, czyli po tym samym
+/// kluczu, którym adapter rozpoznaje cudzy egzemplarz (`adapters.rs`, mapa `seen`).
+///
+/// 2026-08-29: skan `meetnotes` dawał 67 wierszy na jakieś 43 rzeczy, bo `.agents/` leżało
+/// obok `.claude/`, a `.codex/` obok `.claude/`. Siedemnaście z dwudziestu trzech blokad było
+/// przez to **tą samą decyzją zadaną dwa razy**, a dwa wiersze `Ready` celowały w ten sam
+/// `skills/github-actions/SKILL.md`, więc drugi po cichu nadpisywał pierwszy.
+///
+/// `reconcile_workflow_targets` robi to dla workflowów od 2026-08-22 — to jest ta sama zasada,
+/// rozciągnięta na resztę: **cel jest tożsamością rzeczy.**
+fn merge_same_thing(named: Vec<(String, ImportItem)>) -> Vec<ImportItem> {
+    let mut out: Vec<(String, ImportItem)> = Vec::new();
+    for (name, item) in named {
+        let twin = out
+            .iter_mut()
+            .find(|(had, kept)| *had == name && kept.kind == item.kind && same_file(kept, &item));
+        let Some((_, kept)) = twin else {
+            out.push((name, item));
+            continue;
+        };
+        for source in item.sources {
+            if !kept.sources.iter().any(|had| had.path == source.path) {
+                kept.sources.push(source);
+            }
+        }
+        for dependency in item.dependencies {
+            if !kept.dependencies.contains(&dependency) {
+                kept.dependencies.push(dependency);
+            }
+        }
+        if kept.target.is_none() {
+            kept.target = item.target;
+        }
+        if kept.generated_hash.is_none() {
+            kept.generated_hash = item.generated_hash;
+        }
+        if weight(item.status) > weight(kept.status) {
+            kept.status = item.status;
+            kept.status_message = item.status_message;
+        }
+    }
+    out.into_iter().map(|(_, item)| item).collect()
 }
 
 fn initial_status(mapping: Option<&Mapping>) -> (ImportStatus, String) {
@@ -425,11 +541,7 @@ fn target_for(
         }),
         ItemKind::Memory if notes.len() == 1 => Some(memory_target(&notes[0].title)),
         ItemKind::Memory if !notes.is_empty() => Some(PathBuf::from("memory/notes")),
-        ItemKind::Hook
-        | ItemKind::Rule
-        | ItemKind::Unknown
-        | ItemKind::Memory
-        | ItemKind::Connection => None,
+        ItemKind::Memory | ItemKind::Connection => None,
     }
 }
 
@@ -568,12 +680,29 @@ fn imported_workflow_for<'a>(
         .flatten()
 }
 
+/// Która pozycja odpowiada za którą notatkę.
+///
+/// REGUŁA KATALOGOWA DOTYCZY WYŁĄCZNIE WIĄZKI `MEMORY.md` (2026-08-29). Do tego dnia obejmowała
+/// każdą pozycję pamięci, więc w `.claude/learnings/` **każdy** z ośmiu plików „pokrywał"
+/// wszystkie osiem notatek. `target_for` widział wtedy osiem notatek zamiast jednej, mijał się
+/// z gałęzią `notes.len() == 1` i wypisywał goły katalog `memory/notes` — ścieżkę, której żaden
+/// powstały plik nie ma. Właściciel zobaczył ją na ekranie osiem razy, bez nazwy i bez `.md`.
+///
+/// Wiązka `.claude/agent-memory/<agent>/MEMORY.md` naprawdę zbiera notatki z sąsiednich plików
+/// i to dla niej ta reguła powstała — tam jedna pozycja odpowiada za cały katalog.
 fn memory_item_covers(item: &SourceItem, source: &Path) -> bool {
-    item.kind == ItemKind::Memory
-        && (item.path == source
-            || item.path.parent().is_some_and(|directory| {
-                !directory.as_os_str().is_empty() && source.starts_with(directory)
-            }))
+    if item.kind != ItemKind::Memory {
+        return false;
+    }
+    if item.path == source {
+        return true;
+    }
+    item.path
+        .file_name()
+        .is_some_and(|name| name == "MEMORY.md")
+        && item.path.parent().is_some_and(|directory| {
+            !directory.as_os_str().is_empty() && source.starts_with(directory)
+        })
 }
 
 fn files_below(root: &Path) -> Vec<PathBuf> {

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 
-/* Glify nawigacji. Szesc, po jednym na sekcje, 16 px, obrys, `currentColor`.
+/* Glify nawigacji. Siedem, po jednym na sekcje, 16 px, obrys, `currentColor`.
  *
  * GRAMATYKA JEST TRESCIA, NIE STYLEM, i jest sprawdzana (T-46 AC-5):
  *
@@ -46,6 +46,10 @@ const PATHS: Readonly<Record<string, readonly ReactElement[]>> = {
   triggers: [
     <path key="t" d="M8 2.4 A5.6 5.6 0 1 1 2.4 8 A5.6 5.6 0 0 1 8 2.4 M8 5.1 V8 L10.2 9.4" />,
   ],
+  /* Trzy belki roznej dlugosci: nastawy, ktore czlowiek przesuwa. Ani okregu, ani `<line>` —
+   * to nie jest zbior i nie jest grafem, wiec nie wolno mu obiecywac ani plyt, ani relacji
+   * (niezmiennik 17, ta sama gramatyka co szesc glifow wyzej). */
+  settings: [<path key="s" d="M3 4.5 H13 M3 8 H13 M3 11.5 H9" />],
 };
 
 export function NavIcon({ section }: { readonly section: string }): ReactElement | null {

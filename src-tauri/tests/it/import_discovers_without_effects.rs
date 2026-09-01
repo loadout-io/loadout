@@ -6,11 +6,14 @@ fn arbitrary_repository_is_inspected_without_effects() -> Result<(), Box<dyn std
         repo.path().join(".claude/agents/reviewer.md"),
         "Review code.",
     )?;
+    /* Plik, którego Loadout nie umie u siebie postawić, jest od 2026-08-29 czytany i pomijany,
+     * a nie stawiany na ekranie jako wiersz z pytaniem bez odpowiedzi. Zostaje tu, bo skan ma
+     * przez niego PRZEJŚĆ, nie wywrócić się. */
     std::fs::write(repo.path().join(".claude/future.json"), "{\"new\":true}")?;
     let first = loadout_lib::import::discover::scan(repo.path())?;
     let second = loadout_lib::import::discover::scan(repo.path())?;
     assert_eq!(first.snapshot, second.snapshot);
-    assert_eq!(first.snapshot.items.len(), 2);
+    assert_eq!(first.snapshot.items.len(), 1);
     assert!(
         first
             .snapshot
@@ -122,11 +125,12 @@ fn open_standards_and_rulesync_are_part_of_the_inventory() -> Result<(), Box<dyn
         .map(|item| item.path.as_path())
         .collect();
 
-    assert_eq!(paths.len(), 5);
-    assert!(paths.contains(&std::path::Path::new("AGENTS.md")));
-    assert!(paths.contains(&std::path::Path::new("CLAUDE.md")));
-    assert!(paths.contains(&std::path::Path::new(".rulesync/rules/angular.md")));
-    assert!(paths.contains(&std::path::Path::new(".rulesync/commands/review.md")));
-    assert!(paths.contains(&std::path::Path::new(".rulesync/checks/security.md")));
+    /* 2026-08-29: z projektu Rulesync bierzemy jego CEREMONIE. Reguły, checki i karty pracy
+     * (`AGENTS.md`, `CLAUDE.md`) zostają tam, gdzie leżą — Loadout nie ma ich gdzie postawić
+     * ani czym egzekwować, więc wiersz z pytaniem o nie był pytaniem bez odpowiedzi. */
+    assert_eq!(
+        paths,
+        vec![std::path::Path::new(".rulesync/commands/review.md")]
+    );
     Ok(())
 }

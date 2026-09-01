@@ -20,7 +20,15 @@
  * nie ma: był wyniesiony na poziom modułu dla zachowania, które właściciel skasował 2026-08-19
  * („nie powinno być tak, że jak piszę bez komendy... to się na nowo całe workflow odpala"),
  * a jego jedynym konsumentem była lista wyboru, której miejsce zajęła ta kontrolka.
+ *
+ * 2026-08-29 — WYBÓR Z SETTINGS JEST TU POKAZYWANY, A NIE KOPIOWANY (niezmiennik 13). Do tego
+ * dnia to wskazanie zaczynało się puste przy KAŻDYM uruchomieniu i człowiek wybierał tę samą
+ * osobę przed każdą pracą. Domyślny lider mieszka teraz w jednym miejscu — `src/state/settings.ts`,
+ * a trwale w pliku (`~/.loadout/settings.json`, niezmiennik 4) — a ten moduł trzyma wyłącznie
+ * NADPISANIE na to jedno okno. Druga kopia domyślnego wyboru trzymana tutaj rozjechałaby się
+ * z plikiem przy pierwszym zapisie z Settings i nikt by tego nie zobaczył.
  */
+import { defaultLead, subscribeToDefaultLead } from '../../state/settings';
 
 /**
  * Etykieta dostępnościowa kontrolki lidera w pasku loadoutu.
@@ -34,12 +42,19 @@
  */
 export const LEAD_LABEL = 'Lead agent';
 
+/** Nadpisanie na TO okno: co człowiek wskazał w pasku, zamiast tego, co stoi w Settings. */
 let chosen = '';
 const listeners = new Set<() => void>();
 
-/** Identyfikator wskazanego agenta, albo `''`, dopóki człowiek nie wybierał. */
+/**
+ * Identyfikator wskazanego agenta, albo `''`, dopóki nikt nie wybierał ani tu, ani w Settings.
+ *
+ * DWA ŹRÓDŁA, JEDEN FAKT I USTALONE PIERWSZEŃSTWO: wskazanie z paska bije domyślne, bo jest
+ * młodsze i dotyczy tego jednego okna. Odwrotna kolejność znaczyłaby, że wybór z paska nic nie
+ * robi u kogoś, kto raz coś ustawił w Settings — czyli kontrolka, która kłamie (niezmiennik 16).
+ */
 export function lead(): string {
-  return chosen;
+  return chosen === '' ? defaultLead() : chosen;
 }
 
 /**
@@ -61,10 +76,18 @@ export function setLead(id: string): void {
   for (const listener of listeners) listener();
 }
 
-/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+/**
+ * Prenumerata w kształcie, którego chce `useSyncExternalStore`.
+ *
+ * Słucha OBU magazynów, bo [`lead`] składa odpowiedź z obu. Prenumerata pilnująca wyłącznie
+ * nadpisania z paska pokazywałaby stary wybór po zapisie w Settings aż do następnego renderu
+ * z innego powodu — czyli kontrolkę, która czasem się odświeża, a czasem nie.
+ */
 export function subscribeToLead(listener: () => void): () => void {
   listeners.add(listener);
+  const stopWatchingTheDefault = subscribeToDefaultLead(listener);
   return () => {
     listeners.delete(listener);
+    stopWatchingTheDefault();
   };
 }

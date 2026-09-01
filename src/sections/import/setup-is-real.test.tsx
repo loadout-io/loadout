@@ -34,9 +34,31 @@ describe('Import setup', () => {
       snapshot: {
         root: '/project',
         items: [
-          { id: 'agent', path: '.claude/agents/build.md', name: 'build', summary: 'Agent' },
-          { id: 'hook', path: '.claude/settings.json', name: 'settings', summary: 'Hook' },
-          { id: 'unknown', path: '.claude/future.json', name: 'future', summary: 'Unknown' },
+          /* 2026-08-29: scena stoi na trzech rzeczach, które Loadout u siebie STAWIA. Stały tu
+             wcześniej `.claude/settings.json` i `.claude/future.json` — od tego dnia nie są
+             pozycjami importu, więc zdania niżej mówiłyby o wierszach, których nie ma. Wybór
+             i „nie do odtworzenia" niosą teraz skill i ceremonia, czyli te same stany. */
+          {
+            id: 'agent',
+            kind: 'agent',
+            path: '.claude/agents/build.md',
+            name: 'build',
+            summary: 'Agent',
+          },
+          {
+            id: 'routine',
+            kind: 'workflow',
+            path: '.claude/commands/ship.md',
+            name: 'ship',
+            summary: 'Routine',
+          },
+          {
+            id: 'skill',
+            kind: 'skill',
+            path: '.claude/skills/dreaming/SKILL.md',
+            name: 'dreaming',
+            summary: 'Skill',
+          },
         ],
       },
       draft: {
@@ -50,14 +72,14 @@ describe('Import setup', () => {
           mappings: [
             { itemId: 'agent', compatibility: 'exact', message: 'Ready.' },
             {
-              itemId: 'hook',
+              itemId: 'routine',
               compatibility: 'needs_choice',
-              message: 'Choose how to reproduce this hook.',
+              message: 'Choose how to reproduce this routine.',
             },
             {
-              itemId: 'unknown',
+              itemId: 'skill',
               compatibility: 'unsupported',
-              message: 'This setting is not supported.',
+              message: 'This skill is not supported.',
             },
           ],
         },
@@ -69,6 +91,11 @@ describe('Import setup', () => {
         io={{
           scanSetup: async () => preview,
           applySetup: async () => ({ id: 'receipt', written: [], enabledConnections: [] }),
+          /* Ten test nie pyta o porównanie kopii — ale `ImportIo` jest zbiorem zamkniętym,
+             więc literał bez tych dwóch pól nie przechodzi `web-types`. Odpowiedź „nikt tego
+             nie zawołał" jest tu uczciwsza niż udawana druga opinia. */
+          compareCopies: async () => null,
+          stopComparing: async () => undefined,
         }}
         onClose={() => undefined}
         onImported={() => undefined}
@@ -78,7 +105,7 @@ describe('Import setup', () => {
     expect(html).toContain('Needs a choice');
     expect(html).toContain('Connections stay off unless you enable them');
     expect(html).toContain('disabled=""');
-    expect(html).toContain('Choose how to reproduce this hook.');
+    expect(html).toContain('Choose how to reproduce this routine.');
     expect(html).toContain('Import without this behavior');
     expect(html).toContain('Leave this item out of the import');
     expect(html).toContain('Leave out all unresolved items');
@@ -93,9 +120,31 @@ describe('Import setup', () => {
       snapshot: {
         root: '/project',
         items: [
-          { id: 'agent', path: '.claude/agents/build.md', name: 'build', summary: 'Agent' },
-          { id: 'hook', path: '.claude/settings.json', name: 'settings', summary: 'Hook' },
-          { id: 'unknown', path: '.claude/future.json', name: 'future', summary: 'Unknown' },
+          /* 2026-08-29: scena stoi na trzech rzeczach, które Loadout u siebie STAWIA. Stały tu
+             wcześniej `.claude/settings.json` i `.claude/future.json` — od tego dnia nie są
+             pozycjami importu, więc zdania niżej mówiłyby o wierszach, których nie ma. Wybór
+             i „nie do odtworzenia" niosą teraz skill i ceremonia, czyli te same stany. */
+          {
+            id: 'agent',
+            kind: 'agent',
+            path: '.claude/agents/build.md',
+            name: 'build',
+            summary: 'Agent',
+          },
+          {
+            id: 'routine',
+            kind: 'workflow',
+            path: '.claude/commands/ship.md',
+            name: 'ship',
+            summary: 'Routine',
+          },
+          {
+            id: 'skill',
+            kind: 'skill',
+            path: '.claude/skills/dreaming/SKILL.md',
+            name: 'dreaming',
+            summary: 'Skill',
+          },
         ],
       },
       draft: {
@@ -108,8 +157,8 @@ describe('Import setup', () => {
         report: {
           mappings: [
             { itemId: 'agent', compatibility: 'exact', message: 'Ready.' },
-            { itemId: 'hook', compatibility: 'needs_choice', message: 'Choose how.' },
-            { itemId: 'unknown', compatibility: 'unsupported', message: 'Not supported.' },
+            { itemId: 'routine', compatibility: 'needs_choice', message: 'Choose how.' },
+            { itemId: 'skill', compatibility: 'unsupported', message: 'Not supported.' },
           ],
         },
       },
@@ -143,7 +192,15 @@ describe('Import setup', () => {
     const preview: ImportPreview = {
       snapshot: {
         root: '/project',
-        items: [{ id: 'agent', path: '.claude/agents/build.md', name: 'build', summary: 'Agent' }],
+        items: [
+          {
+            id: 'agent',
+            kind: 'agent',
+            path: '.claude/agents/build.md',
+            name: 'build',
+            summary: 'Agent',
+          },
+        ],
       },
       draft: {
         sourceHashes: { '.claude/agents/build.md': 'abc' },

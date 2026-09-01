@@ -1,15 +1,15 @@
-/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z sześciu, a pozostałych pięciu NIE MA
+/* Kryterium 3 dla T-01: widać dokładnie jedną sekcję z siedmiu, a pozostałych sześciu NIE MA
  * w drzewie.
  *
- * Oczekiwana szóstka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
+ * Oczekiwana siódemka jest wypisana TUTAJ, na sztywno, a nie czytana z SECTIONS. Pętla po
  * SECTIONS sprawdzałaby rejestr sam sobą: pusta tablica przechodzi wtedy każde „dla każdej
  * sekcji…", bo nie ma żadnej.
  *
  * Rozróżnienie, o które chodzi: `expect(html).toContain('data-section="agents"')` przechodzi
- * na powłoce, która montuje wszystkie sześć sekcji i chowa pięć CSS-em. To jest dokładnie ten
- * „always-mounted route stack", przez który poprzedni prototyp renderował 142 elementy niosące tekst
- * przy suficie 60 [raport 03 §4.1]. Widać go dopiero wtedy, gdy policzy się pozostałe pięć
- * identyfikatory DO ZERA i zabroni `hidden` oraz `display:none`.
+ * na powłoce, która montuje wszystkie sekcje i chowa wszystkie poza jedną CSS-em. To jest
+ * dokładnie ten „always-mounted route stack", przez który poprzedni prototyp renderował 142 elementy
+ * niosące tekst przy suficie 60 [raport 03 §4.1]. Widać go dopiero wtedy, gdy policzy się
+ * pozostałe identyfikatory DO ZERA i zabroni `hidden` oraz `display:none`.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -24,6 +24,7 @@ const EXPECTED = [
   { id: 'skills', label: 'Skills' },
   { id: 'memory', label: 'Memory' },
   { id: 'triggers', label: 'Triggers' },
+  { id: 'settings', label: 'Settings' },
 ] as const;
 
 function occurrences(haystack: string, needle: string): number {
@@ -34,11 +35,11 @@ function markupFor(id: (typeof EXPECTED)[number]['id']): string {
   return renderToStaticMarkup(<App section={id} />);
 }
 
-describe('one section of six is on screen and the other five are not in the tree', () => {
-  it('registers the six, in order, under the words a person reads', () => {
+describe('one section of seven is on screen and the other six are not in the tree', () => {
+  it('registers the seven, in order, under the words a person reads', () => {
     expect(
       SECTIONS.length,
-      'SECTIONS has to hold exactly six entries — the six top-level places this app has. It ' +
+      'SECTIONS has to hold exactly seven entries — the seven top-level places this app has. It ' +
         'holds ' +
         String(SECTIONS.length),
     ).toBe(EXPECTED.length);
@@ -54,7 +55,7 @@ describe('one section of six is on screen and the other five are not in the tree
   });
 
   for (const entry of EXPECTED) {
-    it('mounts ' + entry.id + ' once and leaves the other five out of the tree', () => {
+    it('mounts ' + entry.id + ' once and leaves the other six out of the tree', () => {
       const markup = markupFor(entry.id);
       expect(
         occurrences(markup, 'data-section="' + entry.id + '"'),
@@ -72,8 +73,9 @@ describe('one section of six is on screen and the other five are not in the tree
             entry.id +
             ' open, ' +
             other.id +
-            ' has to be absent from the tree, not merely invisible. Six mounted and five hidden ' +
-            'is the shape that put 142 text-carrying elements on one poprzedni prototyp screen',
+            ' has to be absent from the tree, not merely invisible. Every section mounted and ' +
+            'all but one hidden is the shape that put 142 text-carrying elements on one ' +
+            'poprzedni prototyp screen',
         ).toBe(0);
       }
     });
@@ -82,8 +84,8 @@ describe('one section of six is on screen and the other five are not in the tree
       const markup = markupFor(entry.id);
       expect(
         / hidden(?:=""|>|\s)/.test(markup),
-        'nothing in the shell may carry the hidden attribute: hiding is how five sections stay ' +
-          'mounted while the measurement above still passes',
+        'nothing in the shell may carry the hidden attribute: hiding is how the other sections ' +
+          'stay mounted while the measurement above still passes',
       ).toBe(false);
       expect(
         /display\s*:\s*none/i.test(markup),

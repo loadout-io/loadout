@@ -11,6 +11,8 @@ use crate::workflow::WorkflowFile;
 
 pub mod adapters;
 pub mod apply;
+/// Kopie jednej pozycji, pytanie o nie i to, co z odpowiedzi agenta wynika.
+pub mod compare;
 pub mod discover;
 pub mod translate;
 
@@ -28,6 +30,17 @@ pub enum SourceKind {
     Unknown,
 }
 
+/// Pięć rodzajów rzeczy, które Loadout umie u siebie POSTAWIĆ.
+///
+/// Ta lista jest krótsza od tego, co leży w cudzych katalogach konfiguracji, i to jest jej
+/// treść, nie jej brak (2026-08-29). Do 2026-08-29 stały tu jeszcze `Hook`, `Rule` i `Unknown`,
+/// a skan `meetnotes` robił z nich dziewiętnaście wierszy z pytaniem — przy `.claude/rules/*`,
+/// `AGENTS.md`, `.claude/settings.json` i `.codex/config.toml`. Żaden z nich nie miał
+/// odpowiedzi, bo po tej stronie nie ma dla nich ani sekcji, ani wykonawcy: Loadout nie
+/// egzekwuje uprawnień Claude Code i nie odpala haków `PostToolUse`. Ten sam plik dostawał
+/// zresztą raz `Hook` (`settings.json`), a raz `Rule` (`settings.local.json`) — rozpoznanie
+/// zgadywało po nazwie. Decyzja bez skutku jest gorsza niż jej brak, więc plik spoza tej
+/// piątki nie jest pozycją; zostaje tam, gdzie leży.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
@@ -35,10 +48,7 @@ pub enum ItemKind {
     Skill,
     Connection,
     Workflow,
-    Hook,
     Memory,
-    Rule,
-    Unknown,
 }
 
 /// Jeden znaleziony fakt. Nie niesie surowej treści ani wartości środowiska.

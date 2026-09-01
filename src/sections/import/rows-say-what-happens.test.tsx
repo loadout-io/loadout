@@ -121,18 +121,17 @@ describe('Import item rows', () => {
       },
     };
     const html = markup(importable);
-    const importButton = html.lastIndexOf('>Import</button>');
-    const counters = html.slice(html.indexOf('grid grid-cols-4'), html.indexOf('>Show</span>'));
-    const proposed = html.slice(html.indexOf('>Proposed files</h3>'), importButton);
+    const counters = html.slice(html.indexOf('grid grid-cols-5'), html.indexOf('>Show</span>'));
 
     expect(html).toContain('All');
     expect(html).toContain('Ready');
     expect(html).toContain('Needs attention');
     expect(counters).toMatch(/>1<\/b><small[^>]*>Agents/);
     expect(counters).toMatch(/>0<\/b><small[^>]*>Skills/);
-    expect(proposed).toContain('1 agent');
-    expect(proposed).not.toContain('1 skill');
-    expect(proposed).toContain('agents/builder.md');
-    expect(proposed).not.toContain('skills/project-guide/SKILL.md');
+    /* 2026-08-29: co wejdzie, mówią LICZNIKI i wiersz `Target:` przy swojej pozycji. Sekcja
+       „Proposed files" powtarzała jedno i drugie trzeci raz, więc jej nie ma — a zdanie
+       o tym, ile zostaje poza importem, stoi tam, gdzie stało: przy przycisku. */
+    expect(html).toContain('Target: agents/builder.md');
+    expect(html).toContain('Ready to import. 1 item(s) will not be imported.');
   });
 });

@@ -114,11 +114,10 @@ fn adapt_one(
     seen: &mut BTreeMap<(super::ItemKind, String), String>,
 ) {
     use super::ItemKind::{
-        Agent as AgentItem, Connection as ConnectionItem, Hook, Memory, Rule, Skill, Unknown,
-        Workflow,
+        Agent as AgentItem, Connection as ConnectionItem, Memory, Skill, Workflow,
     };
     let key = (file.item.kind, file.item.name.to_ascii_lowercase());
-    if matches!(file.item.kind, Hook | Memory | Rule)
+    if file.item.kind == Memory
         && seen
             .get(&key)
             .is_some_and(|content| normalized(content) == normalized(&file.content))
@@ -137,22 +136,7 @@ fn adapt_one(
         Skill => adapt_skill(inspection, file, output),
         ConnectionItem => adapt_connections(file, output),
         Workflow => adapt_workflow(file, output),
-        Hook => output.mappings.push(mapping(
-            file,
-            Compatibility::NeedsChoice,
-            "This project hook will not run automatically. Choose a check or leave it out.",
-        )),
         Memory => adapt_memory(inspection, file, output),
-        Rule => output.mappings.push(mapping(
-            file,
-            Compatibility::NeedsChoice,
-            "Choose whether to turn this project rule into agent instructions or a check.",
-        )),
-        Unknown => output.mappings.push(mapping(
-            file,
-            Compatibility::Unsupported,
-            "Loadout cannot reproduce this project setting yet.",
-        )),
     }
 }
 

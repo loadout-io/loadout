@@ -71,6 +71,27 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
+/// Ile bajtów zostało na tym systemie plików, dla użytkownika, który o to pyta.
+///
+/// TUTAJ, bo `statvfs` jest pytaniem do systemu plików, a niezmiennik 3 pozwala na kod zależny
+/// od platformy wyłącznie w tym pliku. Port na Windows podmienia jedno ciało, nie szuka
+/// wywołania rozsianego po `commands/`.
+///
+/// `rustix`, nie `libc` — bo `unsafe_code = "deny"` stoi w `Cargo.toml` workspace'u i jest tam
+/// z premedytacją. `rustix` leży już w `Cargo.lock` jako zależność przechodnia, więc bezpieczne
+/// opakowanie kosztuje jeden wiersz w manifeście, a nie nowe drzewo zależności.
+///
+/// `f_bavail`, nie `f_bfree`: różnica to rezerwa roota, której zwykły proces i tak nie dostanie,
+/// więc liczenie jej dałoby próg przepuszczający bieg na dysku bez miejsca (2026-08-29, T-208).
+///
+/// # Errors
+///
+/// Kiedy system plików nie odpowie — na przykład gdy ścieżki nie ma.
+pub fn free_bytes(path: &Path) -> io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_frsize.saturating_mul(stats.f_bavail))
+}
+
 pub use crate::durable_file::PrivateFilePublisher;
 
 /// Sposób otwarcia istniejącego prywatnego artefaktu przez dowiedzioną ścieżkę katalogów.

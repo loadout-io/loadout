@@ -2194,6 +2194,7 @@ dependencies = [
  "proptest",
  "rusqlite",
  "rusqlite_migration",
+ "rustix",
  "serde",
  "serde_json",
  "tauri",

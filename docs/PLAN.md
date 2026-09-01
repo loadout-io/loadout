@@ -195,8 +195,17 @@ worktree nie mają pełnego resource envelope.
 
 ### Fale bez konfliktów `OWNS`
 
+> **Stan zmierzony 2026-08-29** (audyt po mechanizmach w kodzie, nie po nazwach zadań):
+> szesnaście z osiemnastu pozycji tej tabeli **stoi w trunku**. Zostają **T-206** (wspólnego
+> preflightu nie ma; kwarantannę triggera dowiózł T-158) oraz **kosztowa połowa T-208**
+> (próg dysku wszedł `25e5de5`; sufit kosztu czeka na Settings z T-163, bo „jawny" znaczy
+> ustawiony przez człowieka, a nie stałą w kodzie). Lista niżej jest ORYGINALNĄ kolejnością
+> fal i została, bo opisuje zależności — nie jest już stanem prac.
+
 ```text
-Gotowe:   T-150, T-151, T-157
+Gotowe:   T-150, T-151, T-152, T-153, T-154, T-155, T-156, T-157, T-158,
+          T-201, T-202, T-203, T-204, T-205, T-207, T-209, T-210
+Zostaje:  T-206, T-208 (połowa kosztowa)
 Fala A0:  T-202 + T-210 (jeden stack, T-202 nie ląduje osobno)
 Fala B:   T-152  || T-158  || T-203
 Fala C:   T-201
@@ -269,8 +278,8 @@ odtworzyć. Element `Can't be reproduced` pozostaje widoczny do czasu takiej jaw
 
 | ID | Zadanie | Zależy od | Dlaczego osobno |
 |---|---|---|---|
-| **T-161** | Długi workflow zostaje wewnątrz ekranu Run | — | Wąska geometria paska kroków; może lądować bez czekania na Rust |
-| **T-162** | NOW pokazuje wyłącznie pracę, która trwa | T-156 | Lifecycle feedu ma jednego właściciela po domknięciu retencji |
+| **T-161** | Długi workflow zostaje wewnątrz ekranu Run | — | **ZROBIONE** — `e2e/tests/t161-long-workflow-stays-inside-run.spec.ts` |
+| **T-162** | NOW pokazuje wyłącznie pracę, która trwa | T-156 | **ZROBIONE** `9567863` — model śledzi żywe kroki per agent; kopia, która trwa, trzyma agenta w strefie |
 | **T-163** | Settings wybiera domyślnego Lead i przypina rozmowę | T-158, T-208 | Jeden globalny wybór Agenta oraz naprawa polityki Codex App Server po zmianach IPC/private transport |
 | **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-206, T-209, T-76, T-78, T-82 | Jedna zmiana scope dla CRUD, Run, historii, triggerów i importu |
 | **T-165** | Refleksja mówi, co robi i co zrobiła | T-164 | Tylko objaśnienie oraz istniejący receipt w historii, bez nowego etapu |

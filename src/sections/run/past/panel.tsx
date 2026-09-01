@@ -25,6 +25,7 @@ import type { PastBranch, PastHandoff, PastMemory, PastRun, PastRunRow, PastStep
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
+import { reflectionText } from '../reflection/said';
 import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
 import { backToTheList, closeHistory, forgetTheBranches, pastNow, subscribeToPast } from './store';
@@ -154,6 +155,15 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
           {run.said}
         </p>
       )}
+
+      {/* CO REFLEKSJA ZROBIŁA Z TYM BIEGIEM — ZAWSZE, nigdy warunkowo (2026-08-29, T-165).
+          Wiersz, który znika przy pustym wyniku, mówi „nic nie znalazłem" dokładnie tym samym
+          pustym miejscem, którym ekran mówi „nie dorysowałem się" — a za tę turę ktoś zapłacił.
+          Cisza jest tu wadą, nie stanem, i jest całą przyczyną, dla której to zdanie powstało.
+          Który to z czterech stanów, rozstrzyga `../reflection/said.ts`; tutaj zostaje markup. */}
+      <p data-reflection className="mb-4 text-body text-muted">
+        {reflectionText(run.reflection ?? null)}
+      </p>
 
       {run.steps.map((step) => (
         <Step key={step.id} step={step} opened={opened} onToggle={toggle} />

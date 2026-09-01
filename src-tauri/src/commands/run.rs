@@ -1037,6 +1037,45 @@ fn remove_owned_run_file(
 
 /// Ten sam Run co [`run_workflow_inner`], z kontrolowanymi odmowami w fazie przygotowania.
 ///
+/// Ile miejsca musi zostać na dysku, żeby bieg w ogóle ruszył.
+///
+/// Jeden gigabajt, i to jest próg BEZPIECZEŃSTWA, nie oszacowanie potrzeb. Bieg nie wie z góry,
+/// ile napisze: transkrypt rośnie z liczbą tur, a drzewo robocze z rozmiarem projektu. Liczba
+/// ma być na tyle duża, żeby pod nią żaden bieg nie miał sensu, i na tyle mała, żeby nigdy nie
+/// odmówiła komuś, kto ma normalnie miejsce.
+pub const ROOM_FLOOR_BYTES: u64 = 1_073_741_824;
+
+/// Zdanie odmowy, kiedy na dysku nie ma już miejsca na pracę tego biegu — albo `None`.
+///
+/// Zdanie niesie OBIE liczby, bo „za mało miejsca" bez nich zostawia człowieka ze zgadywaniem,
+/// ile ma zwolnić. Gigabajty, nie bajty: to jest jednostka, w której człowiek patrzy na dysk.
+#[must_use]
+pub fn no_room_refusal(free: u64) -> Option<Note> {
+    (free < ROOM_FLOOR_BYTES).then(|| Note {
+        level: Level::Problem,
+        step_id: None,
+        message: format!(
+            "There is not enough room on disk to start: {:.1} GB free, and a run needs at least \
+             {:.1} GB. A run that fills the disk halfway through leaves a half-written copy \
+             behind. Free some space and start again.",
+            as_gigabytes(free),
+            as_gigabytes(ROOM_FLOOR_BYTES)
+        ),
+        fix: None,
+    })
+}
+
+/// Bajty jako gigabajty dziesiętne — tak, jak liczy je Finder i każdy producent dysku.
+fn as_gigabytes(bytes: u64) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "zdanie dla człowieka ma jedno miejsce po przecinku; f64 trzyma bajty \
+                  dokładnie aż do 9 petabajtów"
+    )]
+    let bytes = bytes as f64;
+    bytes / 1_000_000_000.0
+}
+
 /// Szkielet T-152: właściwa implementacja zastąpi `todo!()` po uczciwym czerwonym `before`.
 pub async fn run_workflow_with_prestart_faults(
     deps: &RunDeps<'_>,
@@ -3248,6 +3287,22 @@ fn plan_run_with_identity(
     if let Some(refusal) = check_to_run(&file)
         .into_iter()
         .find(|note| note.level == Level::Problem)
+    {
+        return Err(RunError::Refused(refusal));
+    }
+
+    /* PRÓG DYSKU, sprawdzany zanim ruszy pierwszy proces (T-208, 2026-08-29).
+     *
+     * Bieg pisze do własnych drzew roboczych i do transkryptów przez cały czas trwania.
+     * Dysk, który skończy się w POŁOWIE, nie daje czystej odmowy: zostawia obcięty
+     * `agent-<id>.jsonl`, drzewo w połowie wypisane i `run.json`, który mówi „running" o czymś,
+     * co już nie żyje. Odmowa przed startem jest jedynym momentem, w którym ta awaria jest
+     * jeszcze tania — dokładnie ta sama logika, co przy niezmienniku 12.
+     *
+     * Nieodczytany stan dysku NIE blokuje biegu. Odmowa dlatego, że nie umiemy o coś zapytać,
+     * byłaby gorsza od ryzyka, przed którym stoi ten próg. */
+    if let Ok(free) = crate::engine::supervisor::free_bytes(deps.project)
+        && let Some(refusal) = no_room_refusal(free)
     {
         return Err(RunError::Refused(refusal));
     }

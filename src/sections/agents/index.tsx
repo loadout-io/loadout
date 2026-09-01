@@ -513,6 +513,10 @@ export default function AgentsScreen({
       </div>
       {importing ? (
         <ImportSetup
+          /* Ta sama lista, którą ten ekran właśnie wypisał, a nie własne `list_agents`:
+             druga droga do tej odpowiedzi byłaby drugim miejscem, w którym mieszka „kogo
+             mam zapisanych" (niezmiennik 13) — i tym, które nie widzi świeżego zapisu. */
+          agents={state.agents}
           onClose={() => {
             setImporting(false);
           }}

@@ -4,6 +4,121 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
 co już stoi w trunku, co stanęło i dlaczego.
 
+## 2026-08-29 — audyt fazy 8 i 9 po mechanizmach; faza 8 stoi na 16 z 18
+
+Audyt na życzenie właściciela, robiony **po mechanizmach w kodzie, nie po nazwach zadań**:
+dla każdej pozycji szukałem konkretu, który musiałby istnieć, gdyby wylądowała. Pierwsza wersja
+tego audytu była **za pesymistyczna o cztery zadania** — szukanie po identyfikatorze `T-2xx`
+w gicie i w tym pliku daje zero trafień dla rzeczy, które stoją w trunku od tygodnia.
+
+| ID | Wyrok | Mechanizm, który to rozstrzyga |
+|---|---|---|
+| T-152 | zrobione | `PrestartFaultInjector`, `PrestartFaultPoint`, trzy odmowy „nothing ran" |
+| T-202 | zrobione | `src-tauri/src/durable_file.rs` wołany przez workflow, agentów, handoff, run, reconcile |
+| T-203 | zrobione | `t203-bad-library-definitions-are-actionable.test.tsx` + `state/library.ts` |
+| T-204 | zrobione | `feed/session-per-terminal`, `session-per-workspace`, `folding-does-not-cross-runs` |
+| T-205 | zrobione | kanały ograniczone z uzasadnieniem ×3, plus T-157 i T-159 |
+| T-207 | zrobione | `ExecutionFacts { executed, process_started }` — „nie wynika z PID-u ani statusu kroku" |
+| T-209 | zrobione | `reclaimed_run_directory`, `owns_reclaimed_run_directory`, `block_reclaimed_parent_cleanup` |
+| T-210 | zrobione | nazwa tempa `.loadout-writing-<uuid v7>.tmp` plus `is_owned_temp` |
+| **T-206** | **brak** | jedyny `preflight` w drzewie jest w `import/apply.rs` i nie ma z tym nic wspólnego |
+| **T-208** | **połowa** | próg dysku `25e5de5`; sufitu kosztu nie ma |
+
+**W całym `src-tauri/src` nie ma ani jednego `todo!()` ani `unimplemented!()`.** Trzy trafienia
+to komentarze o dawnych fazach kontraktowych. Jeden z nich wprowadza w błąd i został:
+`run.rs` przy `run_workflow_with_prestart_faults` mówi „właściwa implementacja zastąpi `todo!()`",
+a funkcja od dawna deleguje do prawdziwej drogi.
+
+### Trzy błędy w samym planie, znalezione przy okazji
+
+1. `Gotowe: T-150, T-151, T-157` w §6c było nieaktualne od dziewięciu lądowań. Poprawione.
+2. Kolejność fal mówi „T-162 po T-156 i **przed T-204**". T-204 wylądował dawno, T-162 dopiero
+   dziś. Nic się nie zepsuło, ale ograniczenie było martwe.
+3. **Kolektora `density` nie da się zrobić biegiem zadaniowym.** §6c mówi „Żaden task nie zmienia
+   `harness/`, `checks/`, `verify.sh`", a kolektor musi wejść do `checks/`. Albo ręka właściciela,
+   albo świadomy wyjątek od tej reguły.
+
+### Co ta weryfikacja rozstrzygnęła w T-208
+
+Plan każe T-163 zależeć od T-208 i wygląda to dziwnie, dopóki nie zobaczy się, że to **jedna
+powierzchnia**: domyślny sufit kosztu jest USTAWIENIEM. „Każdy start ma jawny cost limit" nie
+znaczy więc stałej w kodzie, tylko liczbę, którą człowiek widzi i ustawia — a to zdejmuje
+sprzeczność z istniejącym, celowym testem `a_run_without_a_ceiling_is_untouched`. Sufit jest
+jawny, bo pochodzi od człowieka. Kosztowa połowa T-208 idzie więc PO T-163, do Settings.
+
+## 2026-08-29, 04:00 — faza 8 domknięta produktowo; workflowy naprawione, Urc dawał się zapisać i nie dawał uruchomić
+
+Finalny SHA: **`0fbebf8`**. Dziewięć biegów, dziewięć zielonych pełnych CI na dokładnym SHA po
+merge'u, zero commitów po ostatnim lądowaniu — więc to lądowanie (452 s) certyfikuje ten SHA
+bez powtórki.
+
+| Bieg | SHA | Rundy | Koszt |
+|---|---|---|---|
+| `p8-t158-trigger-quarantine` | `137e0ca` | 1 | $25,19 |
+| `p8-t201-process-proof` | `9d7a423` | 2 | $67,78 |
+| `p8-t155-workspace-runs` | `3ff9b31` | 1 | $21,82 |
+| `p8-t151-newer-truth` | `3d9c3f0` | 3 podejścia | $50,44 |
+| `p8-t157-literal-secret-refused` | `9834ad6` | 1 | $11,18 |
+| `p8-t154-skill-frozen-once` | `b2d50eb` | limit konta | $18,76 |
+| `p8-t153-physical-file-fanin` | `4306159` | 1 | $?? |
+| `p8-t156-bounded-lifecycle` | `fe05e2c` | 2 podejścia | $?? |
+| `p8-t159-copy-lineage` | `0fbebf8` | 1 | $?? |
+
+**21 mutacji, 21 prawdziwych czerwieni.** Osiem z nich to strażnicy przeciw „odmawiaj
+wszystkiemu", którzy słusznie **zostali zieloni** — to mocniejszy dowód niż sama czerwień, bo
+pokazuje, że testy wiążą różne rzeczy, nie jedną.
+
+### §8: pięć workflowów, jedna transakcja, dwanaście zmian i ani jednej więcej
+
+Backup: `~/.loadout-workflows-backup-20260829-020902`, zweryfikowany haszami przed i po.
+
+| Workflow | Zmiana | Co naprawia |
+|---|---|---|
+| Murmur-1 | `Combine`, `QA` → `same-copy` | `Combine` dostawał ŚWIEŻĄ kopię i nie widział pracy `Backend` ani `Frontend`; `QA` siedział na głównym projekcie |
+| Reaserch + implement | `C1`, `C2` → `fresh-copy`; `Implement` → `same-copy` | wszystkie cztery kroki były na `project`, czyli nie było czego składać |
+| Deep reaserch | `Synteze` → `same-copy` | trzech rodziców na kopiach, `Synteze` na głównym projekcie |
+| Urc | `Learings` i Serve → `same-copy`; nowy krok `Run the checks`; Serve przestaje poprzedzać całą pracę | patrz niżej |
+| Easy | **bez zmian** | „Check dochodzi wyłącznie przy dostarczaniu kodu" czytane jako „nie na stałe" |
+
+**Dlaczego to nie było kosmetyką, zmierzone w logu aplikacji.** `~/.loadout/loadout.log`,
+2026-08-27 22:40–22:47: trigger Urc odpalał się **co minutę** (`poll_every_minutes: 1`)
+i **co minutę był odrzucany**:
+
+    WARN Loadout turned down a run said="Plan" and "Start and leave running" can run at
+         the same time and both work in the project folder. Give one of them a fresh copy.
+
+Workflow Urc był więc niewykonalny — Serve stał PRZED całą pracą (`Start and leave running →
+Final implementation plan`) i ścigał się z `Planem` w folderze projektu, co niezmiennik 12
+słusznie odrzuca. Potwierdzone eksperymentem przed/po na produkcyjnym `check_workflow_inner`:
+**stara wersja daje 1 uwagę o tej kolizji, nowa daje 0.** Zgadza się to z AGENTS.md co do słowa:
+kolizja widoczna z pliku jest przy zapisie ostrzeżeniem, a przed biegiem problemem — dlatego
+plik dawał się zapisać, a bieg nie dawał się uruchomić.
+
+**Jak walidowałem, nie ruszając repo.** Odczepiony worktree `loadout-wf-preflight` z tymczasową
+sondą, która przepuszcza kandydatów przez PRODUKCYJNĄ drogę: `check_workflow_inner` →
+`save_workflow_inner` → `load_workflow_inner`, do katalogu tymczasowego, nie do `~/.loadout`.
+`jq -e .` mówi tylko, że plik jest JSON-em; o tym, czy Loadout go przyjmie, decyduje ta droga,
+razem ze wszystkimi odmowami, które weszły 2026-08-28/29 — kolizja flag D6, literalny sekret,
+obowiązkowy `proof` przy kroku „sprawdź". Sonda **nigdy nie dotknęła `main`**, sprawdzone.
+
+`Urc` dostał `make check` jako komendę, bo jego własny `CLAUDE.md` nazywa to „the canonical
+full-verification gate", a nie bo tak wybrałem. Wzorzec dowodu `passed, (\d+) total` (licznik
+Jesta) wybrał właściciel, po tym jak pokazałem, że linia sukcesu nx dopasowałaby też
+`0 projects` — czyli dziurę, przed którą stoi niezmiennik 19.
+
+### §9: co jest certyfikowane, a co nie
+
+- **Certyfikowane na `0fbebf8`:** pełne CI (452 s, 63 targety, 0 failed, strażnicy 8/8),
+  aplikacja startuje i wczytuje bibliotekę, wszystkie pięć workflowów przechodzi produkcyjną
+  drogę zapisu z zerem problemów.
+- **Trigger Urc: `enabled: false`** — był wyłączony przed operacją i zostaje wyłączony (§9.6).
+- **Cztery worktree brudne** (1, 2, 10 i 2 zmiany) — zostają nietknięte zgodnie z §9.7,
+  w tym `loadout-wf-preflight` z sondą. `git worktree remove` jest w `deny`, więc usunięcie
+  należy do właściciela.
+- **NIE certyfikowane:** disposable smoke Murmur-1 na prawdziwych agentach (§9.4) i rotacja
+  ujawnionego poświadczenia Linear (§9.5). Pierwsze kosztuje pieniądze i czeka na decyzję;
+  drugie jest czynnością właściciela i nie tykam wartości sekretów.
+
 ## 2026-08-29, 00:35 — faza 8: pięć zakresów w trunku, pięć napraw harnessu
 
 Licznik: **`b2d50eb`**. Sześć biegów, pięć wylądowanych zielono z pełnym CI na dokładnym SHA

@@ -1,15 +1,15 @@
-/* Kryterium 1 dla T-25: sekcja, która ma ekran, pokazuje TEN ekran, a pozostałe pięć nie są
+/* Kryterium 1 dla T-25: sekcja, która ma ekran, pokazuje TEN ekran, a pozostałe nie są
  * w drzewie.
  *
- * `expect(html).toContain('agents-screen')` przechodzi na powłoce, która trzyma wszystkie sześć
- * ekranów naraz i chowa pięć CSS-em — czyli na „always-mounted route stack", przez który
+ * `expect(html).toContain('agents-screen')` przechodzi na powłoce, która trzyma wszystkie
+ * ekrany naraz i chowa resztę CSS-em — czyli na „always-mounted route stack", przez który
  * poprzedni prototyp renderował 142 elementy niosące tekst przy suficie 60 [raport 03 §4.1]. Odróżniają
- * je dopiero trzy rzeczy naraz: PEŁNA mapa sześciu ekranów (dopóki pięć pozostałych nie ma
- * czego pokazać, „pozostałe pięć" nic nie znaczy), policzenie ich DO ZERA, i zakaz `hidden`
- * oraz `display:none` — bo dokładnie tymi dwiema rzeczami chowa się pięć zamontowanych ekranów
+ * je dopiero trzy rzeczy naraz: PEŁNA mapa wszystkich ekranów (dopóki pozostałe nie mają
+ * czego pokazać, „pozostałe" nic nie znaczy), policzenie ich DO ZERA, i zakaz `hidden`
+ * oraz `display:none` — bo dokładnie tymi dwiema rzeczami chowa się zamontowane ekrany
  * tak, żeby licznik dalej się zgadzał.
  *
- * Sześć identyfikatorów jest wypisanych TUTAJ na sztywno, a nie czytane z SECTIONS: pętla po
+ * Identyfikatory są wypisane TUTAJ na sztywno, a nie czytane z SECTIONS: pętla po
  * rejestrze sprawdzałaby rejestr sam sobą, a pusta tablica przeszłaby wtedy każde „dla każdej
  * sekcji…". Ta sama pułapka jest opisana w sections.test.tsx z T-01.
  *
@@ -22,7 +22,15 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import type { ScreenMap } from '../screens';
 
-const EXPECTED = ['run', 'workflows', 'agents', 'skills', 'memory', 'triggers'] as const;
+const EXPECTED = [
+  'run',
+  'workflows',
+  'agents',
+  'skills',
+  'memory',
+  'triggers',
+  'settings',
+] as const;
 
 type Id = (typeof EXPECTED)[number];
 
@@ -53,7 +61,7 @@ function screenFor(id: Id): () => ReactElement {
   return () => <p data-screen={id} />;
 }
 
-/** Wszystkie sześć sekcji ma ekran — inaczej „pozostałe pięć" nie ma czego wykluczać. */
+/** Wszystkie sekcje mają ekran — inaczej „pozostałe" nie mają czego wykluczać. */
 const ALL: ScreenMap = {
   run: screenFor('run'),
   workflows: screenFor('workflows'),
@@ -61,13 +69,14 @@ const ALL: ScreenMap = {
   skills: screenFor('skills'),
   memory: screenFor('memory'),
   triggers: screenFor('triggers'),
+  settings: screenFor('settings'),
 };
 
 function markupFor(id: Id): string {
   return renderToStaticMarkup(<App section={id} screens={ALL} />);
 }
 
-describe('the section that has a screen shows it, and the other five are not in the tree', () => {
+describe('the section that has a screen shows it, and the others are not in the tree', () => {
   it('shows the screen it was handed for the open section', () => {
     const markup = renderToStaticMarkup(
       <App section="agents" screens={{ agents: () => <p data-probe="agents-screen">…</p> }} />,
@@ -75,14 +84,14 @@ describe('the section that has a screen shows it, and the other five are not in 
     expect(
       occurrences(markup, 'data-probe="agents-screen"'),
       'asking for agents with an agents screen in hand has to put that screen in the tree ' +
-        'exactly once. The shell this task replaces shows the empty screen for all six ' +
-        'sections and never reaches for a screen at all — green everywhere, six blank ' +
+        'exactly once. The shell this task replaces shows the empty screen for every ' +
+        'section and never reaches for a screen at all — green everywhere, blank ' +
         'rectangles in the window',
     ).toBe(1);
   });
 
   for (const id of EXPECTED) {
-    it('draws the ' + id + ' screen and only that one, with all six available', () => {
+    it('draws the ' + id + ' screen and only that one, with all of them available', () => {
       const markup = markupFor(id);
       expect(
         occurrences(markup, 'data-screen="' + id + '"'),
@@ -96,13 +105,14 @@ describe('the section that has a screen shows it, and the other five are not in 
             id +
             ' open, the ' +
             other +
-            ' screen has to be absent from the tree, not merely invisible. Six kept alive and ' +
-            'five hidden is the shape that put 142 text-carrying elements on one poprzedni prototyp screen',
+            ' screen has to be absent from the tree, not merely invisible. Every screen kept ' +
+            'alive and all but one hidden is the shape that put 142 text-carrying elements on ' +
+            'one poprzedni prototyp screen',
         ).toBe(0);
       }
     });
 
-    it('leaves the other five sections out of the tree, with ' + id + ' open', () => {
+    it('leaves the other sections out of the tree, with ' + id + ' open', () => {
       const markup = markupFor(id);
       expect(
         occurrences(markup, 'data-section="' + id + '"'),
@@ -122,7 +132,7 @@ describe('the section that has a screen shows it, and the other five are not in 
       expect(
         HIDDEN_TOKEN.test(markup),
         'nothing in the shell may carry the hidden attribute or the hidden class: hiding is how ' +
-          'five screens stay in the tree while the count above still reads one',
+          'the other screens stay in the tree while the count above still reads one',
       ).toBe(false);
       expect(
         /display\s*:\s*none/i.test(markup),

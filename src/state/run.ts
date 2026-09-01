@@ -227,6 +227,25 @@ function withAgents(agents: readonly string[], batch: readonly FeedLine[]): read
  * jest prawdą, więc wiersz o stanie `constructor` przestawiłby krok na coś, czego nikt nigdy
  * nie zadeklarował. Ta sama pułapka, dla której `src/ipc/types.ts` trzyma kształty w `Map`.
  */
+/** Stany, po których krok już się nie rusza. Jedno miejsce, bo pyta o to i pasek, i strefa TERAZ.
+ *
+ * 2026-08-29 (T-162): `feed/model.ts` musi wiedzieć, kiedy czyjaś praca się SKOŃCZYŁA, żeby
+ * przestać ją pokazywać jako trwającą. Druga lista tam byłaby drugim źródłem prawdy o siódemce
+ * stanów z ARCHITECTURE §5 — a rozjazd o jeden stan znaczy agenta, który zostaje w strefie
+ * „co się dzieje teraz" na zawsze.
+ */
+const STEP_IS_OVER: ReadonlySet<StepState> = new Set<StepState>([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'skipped',
+]);
+
+/** Czy ten stan kroku znaczy, że praca się skończyła. Nieznany napis nie kończy niczego. */
+export function stepIsOver(state: string): boolean {
+  return STEP_STATES.has(state) && STEP_IS_OVER.has(state as StepState);
+}
+
 const STEP_STATES: ReadonlySet<string> = new Set<StepState>([
   'pending',
   'ready',

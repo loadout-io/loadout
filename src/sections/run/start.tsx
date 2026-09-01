@@ -53,6 +53,7 @@ import { runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
 import { continueRun, stop } from './io';
 import { useRun } from '../../state/run';
+import { loadSettings } from '../../state/settings';
 
 const PRIMARY =
   'h-9 whitespace-nowrap rounded-sm bg-accent px-4 text-ui text-bg disabled:opacity-40';
@@ -328,6 +329,14 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
         if (!alive) return;
         setSaid(why(error, 'Loadout could not read the agents you have saved.'));
       });
+    /* KTO PROWADZI DOMYŚLNIE — czytane tutaj, bo okno otwiera się PROSTO na Run i nigdy nie
+     * musi przejść przez Settings, żeby ten wybór zobaczyć. Odczyt jest idempotentny
+     * (`state/settings.ts`), więc chodzenie Run ↔ Settings ↔ Run nie pyta dysku drugi raz
+     * i nie ma jak nadpisać świeżego wyboru odpowiedzią wysłaną przed nim. */
+    void loadSettings().then((refusal) => {
+      if (!alive || refusal === null) return;
+      setSaid(refusal);
+    });
     return () => {
       alive = false;
     };
@@ -353,6 +362,11 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
    * zapisane tutaj, a nie przemilczane. */
   const runnable = firstRunnable(choices);
   const chosen = runnable?.path ?? '';
+
+  /* Czy wskazany lider jest wśród wczytanych agentów. Zapisany w Settings identyfikator może
+   * wskazywać agenta skasowanego od tamtej pory — plik zostaje nietknięty, a kontrolka mówi
+   * wtedy „wskaż kogoś" zamiast stać pusta bez powodu. */
+  const leadIsOnTheList = leads.some((one) => one.id === chosenLead);
 
   async function go(): Promise<void> {
     setSaid(null);
@@ -430,13 +444,23 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
        * a „z kim rozmawiam" jest jedyną rzeczą, której z układu paska nie da się odgadnąć.
        * Napis mieszka w `./lead.ts`, żeby kryterium mogło go CZYTAĆ, nie przepisywać.
        *
-       * BEZ WYBORU DOMYŚLNEGO. Pierwszy agent z biblioteki wyglądałby na ekranie dokładnie jak
+       * BEZ WYBORU ZGADYWANEGO. Pierwszy agent z biblioteki wyglądałby na ekranie dokładnie jak
        * wskazany i odpowiadałby nie tym, czym miał; Rust odmawia w tej samej sytuacji tym samym
-       * zdaniem (`ChatError::NobodyIsTheLead`). */}
+       * zdaniem (`ChatError::NobodyIsTheLead`).
+       *
+       * 2026-08-29 — WYPEŁNIONE Z GÓRY ZNACZY TU „CZŁOWIEK TAK POWIEDZIAŁ", a nie „coś się
+       * wybrało samo": kontrolka pokazuje domyślnego lidera zapisanego w Settings
+       * (`state/settings.ts`, plik `~/.loadout/settings.json`). Ten pasek go NIE kopiuje —
+       * pyta o niego `./lead.ts`, więc zmiana zrobiona tutaj jest nadpisaniem na to jedno okno
+       * i nie przepisuje pliku.
+       *
+       * ZAPROSZENIE ZOSTAJE, KIEDY ZAPISANEGO AGENTA NIE MA NA LIŚCIE. Skasowany w Agents nie
+       * znika po cichu z pliku, a kontrolka pokazująca wtedy pustkę byłaby zagadką: nie widać
+       * ani kto prowadzi, ani że trzeba wskazać kogoś na nowo. */}
       <select
         aria-label={LEAD_LABEL}
         className={FIELD}
-        value={chosenLead}
+        value={leadIsOnTheList ? chosenLead : ''}
         disabled={leads.length === 0}
         onChange={(event) => {
           setLead(event.target.value);
@@ -446,7 +470,7 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
           <option value="">No agents saved yet</option>
         ) : (
           <>
-            {chosenLead === '' ? <option value="">Pick a lead agent</option> : null}
+            {leadIsOnTheList ? null : <option value="">Pick a lead agent</option>}
             {leads.map((one) => (
               <option key={one.id} value={one.id}>
                 {one.name}

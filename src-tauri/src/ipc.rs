@@ -531,6 +531,18 @@ pub struct AppState {
     /// zawiesiłby Stop na czas pisania przez model — czyli dokładnie wtedy, kiedy Stop jest
     /// do czegokolwiek potrzebny.
     drafting: commands::skills::Drafting,
+    /// Miejsce na jedno porównanie kopii pozycji importu i token tego, które trwa teraz.
+    ///
+    /// **Osobne pole od [`AppState::drafting`]**, mimo identycznego kształtu w środku: draft
+    /// umiejętności i porównanie kopii to dwa różne pytania, zadawane z dwóch różnych ekranów.
+    /// Jedno miejsce na oba znaczyłoby, że rozpoczęte porównanie odmawia napisania umiejętności
+    /// w sąsiedniej karcie, a Stop w jednej sekcji ubija robotę w drugiej.
+    ///
+    /// Powód, dla którego nie jest to [`AppState::live`], stoi w całości przy `drafting`:
+    /// uchwyt biegu jest PODMIENIANY przy każdym Starcie, więc porównanie trzymające się
+    /// tamtego traci swój token w chwili, w której człowiek uruchomi bieg — i Stop przy
+    /// wierszu importu przestaje cokolwiek robić, bez ani jednego zdania.
+    comparing: commands::import::Comparing,
     /// Rzeczy, które człowiek uruchomił komendą — i których Loadout jest właścicielem.
     ///
     /// **Jedna lista na aplikację, nie jedna na zakres**, i powód stoi w całości przy
@@ -677,6 +689,7 @@ impl AppState {
             live: Mutex::new(Vec::new()),
             leads: commands::chat::Threads::new(),
             drafting: commands::skills::Drafting::new(),
+            comparing: commands::import::Comparing::new(),
             started: std::sync::Arc::new(commands::processes::Processes::new()),
         }
     }
@@ -1546,6 +1559,74 @@ pub fn apply_setup(
     result.map_err(|error| error.to_string())
 }
 
+// ── DWIE KOMENDY PORÓWNANIA KOPII ──────────────────────────────────────────────────────────
+//
+// 2026-08-29 (T-76) — obie łamią regułę sąsiadów wyżej („wszystkie skorupy importu są
+// synchroniczne i nie pamiętają niczego"), i obie z tych samych dwóch powodów, dla których
+// łamią ją `draft_skill` i `stop_draft` cztery ekrany niżej.
+//
+// PIERWSZY: `compare_import_copies` czeka na model, dziesiątki sekund, nie 20 ms. Tauri
+// wykonuje komendę bez `async` na wątku głównym, więc synchroniczna zamroziłaby okno na cały
+// czas czytania — czyli zamieniłaby drugą opinię w zawieszoną aplikację.
+//
+// DRUGI: obie mają `State`, choć skorupy importu wyżej biorą katalogi z `crate::loadout_dir()`
+// i niczego nie pamiętają. Stop musi sięgnąć do środka porównania, które zaczęła INNA komenda,
+// więc uchwyt do niego musi gdzieś mieszkać między wywołaniami.
+//
+// `stop_comparing_copies` jest `async` mimo tego, że nie ma na co czekać — powód stoi przy
+// `stop_draft` i jest zmierzony: wersja synchroniczna nie przechodzi bramki
+// (`clippy::needless_pass_by_value` na `State` przyjmowanym wartością), a sugestia clippy
+// (`&State<'_, AppState>`) przewraca kryterium szwu po stronie okna.
+//
+// Dowód zejścia grupy (niezmiennik 6) nie wraca tędy i nie ma tędy wracać: niesie go odpowiedź
+// `compare_import_copies`, czyli to samo wywołanie, na które okno już czeka.
+
+/// Jedna pozycja planu → zdania agenta o jej kopiach, przy tej pozycji.
+///
+/// `None` znaczy „człowiek to zatrzymał" i jest **wartością**, nie odmową (niezmiennik 7):
+/// okno ma po niej wygasić „porównuje teraz" i nie pokazywać ani odpowiedzi, ani zdania
+/// o awarii.
+///
+/// Zapisu tu nie ma i nie będzie. Agent doradza, a kopię wybiera człowiek tym, co ten ekran
+/// już umie — to ta sama granica, co przy weryfikatorze (AGENTS.md §2).
+#[tauri::command]
+pub async fn compare_import_copies(
+    state: State<'_, AppState>,
+    workspace: &str,
+    item: &str,
+    agent: &str,
+) -> Result<Option<crate::import::compare::Comparison>, String> {
+    commands::import::compare_copies_inner(
+        &crate::loadout_dir(),
+        // Katalog domowy CZŁOWIEKA, nie biblioteka Loadouta — ten sam argument, którym czyta
+        // projekt `scan_setup`: plan musi wyjść dokładnie taki sam, jak ten na ekranie.
+        &crate::your_home(),
+        &state.drivers,
+        &state.comparing,
+        std::path::Path::new(workspace),
+        item,
+        agent,
+    )
+    .await
+    .map(|outcome| match outcome {
+        commands::import::CompareOutcome::Compared(comparison) => Some(comparison),
+        commands::import::CompareOutcome::Cancelled => None,
+    })
+    .inspect_err(|said| {
+        refused(said);
+    })
+}
+
+/// „Stop" dla porównania: zatrzymuje agenta, który czyta kopie.
+///
+/// Osobna komenda od [`stop_draft`] i od [`stop_run`], bo zatrzymuje osobny uchwyt. Jedna
+/// komenda na wszystkie znaczyłaby, że Stop przy wierszu importu ubija bieg w sąsiedniej karcie.
+#[tauri::command]
+pub async fn stop_comparing_copies(state: State<'_, AppState>) -> Result<(), String> {
+    state.comparing.stop();
+    Ok(())
+}
+
 /// Zapisuje definicję agenta i oddaje rewizję, którą ma teraz jego plik.
 ///
 /// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
@@ -2052,6 +2133,24 @@ pub fn save_workspace(
 #[tauri::command]
 pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
     commands::workspaces::delete_workspace_inner(&crate::loadout_dir(), id)
+        .map_err(|error| error.to_string())
+}
+
+/// Co Loadout robi domyślnie: dziś jedno pole, czyli kto prowadzi rozmowę.
+///
+/// Katalog bierzemy z `crate::loadout_dir()`, nie ze stanu, i z tego samego powodu, co przy
+/// workspace'ach: ten wybór jest biblioteką użytkownika, a nie stanem żywego biegu. Powód
+/// i zakres w całości stoją w `commands::settings`.
+#[tauri::command]
+pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
+    commands::settings::read_settings_inner(&crate::loadout_dir())
+        .map_err(|error| error.to_string())
+}
+
+/// Zapisuje domyślnego lidera i oddaje to, co ma teraz plik.
+#[tauri::command]
+pub fn save_settings(default_lead: &str) -> Result<commands::settings::SettingsWire, String> {
+    commands::settings::save_settings_inner(&crate::loadout_dir(), default_lead)
         .map_err(|error| error.to_string())
 }
 
@@ -2860,6 +2959,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         check_trigger,
         check_workflow,
         close_terminal,
+        compare_import_copies,
         continue_run,
         copy_diagnostics,
         create_trigger,
@@ -2888,6 +2988,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         open_chat,
         put_note_to_use,
         read_run,
+        read_settings,
         retry_trigger,
         review_skill,
         run_agent,
@@ -2896,6 +2997,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         resume_trigger,
         run_workflow,
         save_agent,
+        save_settings,
         save_workflow,
         save_workspace,
         scan_setup,
@@ -2903,6 +3005,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         say_to_orchestrator,
         set_trigger_enabled,
         start_process,
+        stop_comparing_copies,
         stop_draft,
         stop_process,
         stop_run,

@@ -192,14 +192,25 @@ fn identical_workflow_mirrors_share_one_native_file() -> Result<(), Box<dyn std:
         .iter()
         .filter(|item| item.kind == ItemKind::Workflow)
         .collect();
-    assert_eq!(items.len(), 2);
-    assert!(items.iter().all(|item| item.status == ImportStatus::Ready));
-    assert!(
-        items.iter().all(|item| {
-            item.target.as_deref() == Some(Path::new("workflows/release-train.json"))
-        })
+    /* 2026-08-29: dwa lustra tej samej ceremonii to JEDEN wiersz. Do tego dnia stały tu dwa
+     * i człowiek rozstrzygał tę samą rzecz dwa razy — na `meetnotes` to była większość
+     * z 23 blokad. Zdanie, którego ten zestaw pilnuje, jest niezmienione: jeden plik natywny. */
+    assert_eq!(items.len(), 1, "two mirrors of one routine are one thing");
+    let mirror = items[0];
+    assert_eq!(mirror.status, ImportStatus::Ready);
+    assert_eq!(
+        mirror.target.as_deref(),
+        Some(Path::new("workflows/release-train.json"))
     );
-    assert_eq!(items[0].generated_hash, items[1].generated_hash);
+    for path in [CLAUDE_MIRROR, RULESYNC_MIRROR] {
+        assert!(
+            mirror
+                .sources
+                .iter()
+                .any(|source| source.path == Path::new(path)),
+            "the one row forgot the copy at {path}"
+        );
+    }
     assert_eq!(
         preview
             .draft
@@ -239,17 +250,21 @@ fn different_workflows_with_one_target_require_a_choice_before_apply()
         .iter()
         .filter(|item| item.kind == ItemKind::Workflow)
         .collect();
-    assert_eq!(items.len(), 2);
+    /* 2026-08-29: jeden wiersz, ale pytanie zostaje. Scalanie ma zdejmować powtórzoną
+     * decyzję, nigdy prawdziwą — te dwie kopie się różnią i człowiek musi wybrać. */
+    assert_eq!(items.len(), 1, "two mirrors of one routine are one thing");
+    let mirror = items[0];
+    assert_eq!(mirror.status, ImportStatus::NeedsChoice);
+    assert!(mirror.target.is_none());
     assert!(
-        items
-            .iter()
-            .all(|item| item.status == ImportStatus::NeedsChoice && item.target.is_none())
+        mirror.status_message.contains(CLAUDE_MIRROR)
+            && mirror.status_message.contains(RULESYNC_MIRROR)
+            && mirror
+                .status_message
+                .contains("workflows/release-train.json"),
+        "the question must still name both copies. It said: {}",
+        mirror.status_message
     );
-    assert!(items.iter().all(|item| {
-        item.status_message.contains(CLAUDE_MIRROR)
-            && item.status_message.contains(RULESYNC_MIRROR)
-            && item.status_message.contains("workflows/release-train.json")
-    }));
     Ok(())
 }
 

@@ -61,6 +61,9 @@ tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # tylko po stałe sygnałów
+# Bezpieczne `statvfs` dla progu dysku (T-208). Bez tego jedyną drogą jest `unsafe`,
+# a `unsafe_code = "deny"` stoi w workspace z premedytacją. Leży już w Cargo.lock.
+rustix = { version = "1.1", features = ["fs"] }
 nix = { version = "0.31.3", features = ["dir", "fs", "user"] }
 
 [dev-dependencies]
