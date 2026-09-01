@@ -355,6 +355,13 @@ const ISOLATION_MARKERS_DIR: &str = ".isolation";
 /// nadąża, ma zaczekać, a nie rosnąć w pamięci do końca biegu.
 const EVENT_QUEUE: usize = 256;
 
+/// Krótkie okno dla świeżo uruchomionej komendy Serve, zanim krok zwolni graf.
+///
+/// 2026-08-28 (T-152): równoległy koniec biegu potrafił wejść w `Processes::close` zaraz po
+/// `spawn`, zanim shell wykonał pierwszą instrukcję. Dziesięć milisekund nie jest readiness
+/// checkiem aplikacji; wyłącznie pozwala przejętemu procesowi naprawdę rozpocząć komendę.
+const SERVE_START_OBSERVATION: Duration = Duration::from_millis(10);
+
 /// Ile znaków przepisujemy z ostatniej wypowiedzi agenta do jednolinijkowego podsumowania kroku.
 const SUMMARY_LIMIT: usize = 240;
 
@@ -623,7 +630,180 @@ pub async fn run_workflow_inner(
     request: &RunRequest,
     lines: LineSink,
 ) -> Result<RunReport, RunError> {
-    run_workflow_with_before_stamp(deps, request, lines, None).await
+    run_workflow_with_prestart_faults(deps, request, lines, Arc::new(NoPrestartFaults)).await
+}
+
+/// Granice przygotowania biegu, w których kryterium T-152 może odmówić dalszej pracy.
+///
+/// To jest szew obserwacyjny wokół jednej produkcyjnej drogi przygotowania, nie alternatywny
+/// algorytm. Implementacja ma pytać go dopiero po wykonaniu nazwanej operacji, a przed przejściem
+/// do następnej. Odmowa zawsze wraca przez provisional guard, zanim ruszy pierwszy sterownik.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrestartFaultPoint {
+    AfterWorktreeAdd,
+    AfterSecondIsolation,
+    AfterHandoffSeed,
+    AfterBorrow,
+    AfterSkills,
+    BeforeFirstRunFile,
+    AfterFirstRunFile,
+    OwnershipTransferred,
+}
+
+/// Zasób należący jeszcze do provisional guarda, zgłaszany przy każdej próbie rollbacku.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RolledBackResource {
+    Worktree(PathBuf),
+    Branch(String),
+    RunDirectory(PathBuf),
+}
+
+/// Produkcyjny szew fault-injection dla transakcji przed pierwszym procesem.
+pub trait PrestartFaultInjector: Send + Sync {
+    /// `Err` odtwarza odmowę w nazwanej granicy przygotowania.
+    fn check(&self, point: PrestartFaultPoint) -> io::Result<()>;
+
+    /// Obserwacja bounded cleanupu; nie wykonuje sprzątania za produkcję.
+    fn rolled_back(&self, resource: &RolledBackResource);
+}
+
+#[derive(Debug)]
+struct NoPrestartFaults;
+
+impl PrestartFaultInjector for NoPrestartFaults {
+    fn check(&self, _point: PrestartFaultPoint) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn rolled_back(&self, _resource: &RolledBackResource) {}
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProvisionalResource {
+    RunDirectory(PathBuf),
+    Worktree { path: PathBuf, git: bool },
+    Branch(String),
+}
+
+/// Jedyny właściciel artefaktów biegu przed przekazaniem ich do [`Live`].
+///
+/// 2026-08-28 (T-152): przed pierwszym `run.json` nie istnieje lifecycle, który mógłby
+/// posprzątać odmowę po drugiej kopii, seedzie albo materializacji umiejętności. Guard zapisuje
+/// wyłącznie zasoby utworzone przez tę próbę i zdejmuje każdy z nich najwyżej raz, w LIFO.
+struct ProvisionalRun<'a> {
+    project: &'a Path,
+    faults: Arc<dyn PrestartFaultInjector>,
+    resources: Vec<ProvisionalResource>,
+    armed: bool,
+}
+
+impl<'a> ProvisionalRun<'a> {
+    fn new(project: &'a Path, faults: Arc<dyn PrestartFaultInjector>) -> Self {
+        Self {
+            project,
+            faults,
+            resources: Vec::new(),
+            armed: true,
+        }
+    }
+
+    fn check(&self, point: PrestartFaultPoint) -> Result<(), RunError> {
+        self.faults.check(point).map_err(RunError::Io)
+    }
+
+    fn owns_run_directory(&mut self, path: PathBuf) {
+        self.push_once(ProvisionalResource::RunDirectory(path));
+    }
+
+    fn owns_git_tree(&mut self, path: PathBuf, branch: String) {
+        // Gałąź powstaje razem z worktree, ale w LIFO musi zejść po nim.
+        self.push_once(ProvisionalResource::Branch(branch));
+        self.push_once(ProvisionalResource::Worktree { path, git: true });
+    }
+
+    fn owns_file_copy(&mut self, path: PathBuf) {
+        self.push_once(ProvisionalResource::Worktree { path, git: false });
+    }
+
+    fn push_once(&mut self, resource: ProvisionalResource) {
+        if !self.resources.contains(&resource) {
+            self.resources.push(resource);
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProvisionalRun<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        while let Some(resource) = self.resources.pop() {
+            let public = match &resource {
+                ProvisionalResource::RunDirectory(path) => {
+                    RolledBackResource::RunDirectory(path.clone())
+                }
+                ProvisionalResource::Worktree { path, .. } => {
+                    RolledBackResource::Worktree(path.clone())
+                }
+                ProvisionalResource::Branch(branch) => RolledBackResource::Branch(branch.clone()),
+            };
+            self.faults.rolled_back(&public);
+            let result = match resource {
+                ProvisionalResource::RunDirectory(path)
+                | ProvisionalResource::Worktree { path, git: false } => {
+                    remove_owned_directory(&path)
+                }
+                ProvisionalResource::Worktree { path, git: true } => {
+                    isolate::roll_back_provisional_tree(self.project, &path)
+                        .map_err(|error| io::Error::other(error.to_string()))
+                }
+                ProvisionalResource::Branch(branch) => {
+                    isolate::roll_back_provisional_branch(self.project, &branch)
+                        .map_err(|error| io::Error::other(error.to_string()))
+                }
+            };
+            if let Err(error) = result {
+                tracing::warn!(?public, %error, "a provisional run resource could not be rolled back");
+            }
+        }
+    }
+}
+
+fn remove_owned_directory(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Ten sam Run co [`run_workflow_inner`], z kontrolowanymi odmowami w fazie przygotowania.
+///
+/// Szkielet T-152: właściwa implementacja zastąpi `todo!()` po uczciwym czerwonym `before`.
+pub async fn run_workflow_with_prestart_faults(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    faults: Arc<dyn PrestartFaultInjector>,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow_with_prestart(
+        deps,
+        request,
+        lines,
+        slots,
+        WorkflowRunOptions {
+            budget_usd: None,
+            reflection_enabled: true,
+            before_stamp: None,
+            faults,
+        },
+    )
+    .await
 }
 
 /// Jednorazowy obserwator tekstu zamrożonego w planie przed produkcyjnym stemplem pamięci.
@@ -792,6 +972,28 @@ async fn the_whole_workflow(
     reflection_enabled: bool,
     before_stamp: Option<FrozenPromptHook>,
 ) -> Result<RunReport, RunError> {
+    the_whole_workflow_with_prestart(
+        deps,
+        request,
+        lines,
+        slots,
+        WorkflowRunOptions {
+            budget_usd,
+            reflection_enabled,
+            before_stamp,
+            faults: Arc::new(NoPrestartFaults),
+        },
+    )
+    .await
+}
+
+async fn the_whole_workflow_with_prestart(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    slots: Limiter,
+    options: WorkflowRunOptions,
+) -> Result<RunReport, RunError> {
     /* „Ruszyliśmy" zapala się PRZED pierwszym `?`, a nie po walidacji, i to jest celowe: bieg
      * odrzucony przez walidator też przechodzi tę funkcję, więc zapali za chwilę `settle()` —
      * a `is_working()` czyta oba znaczniki i odpowie wtedy „nie ma czego zatrzymywać". Zapalenie
@@ -803,16 +1005,7 @@ async fn the_whole_workflow(
      * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
      * producentów naraz. */
     deps.control.lines_go_to(lines.clone());
-    let report = the_whole_run(
-        deps,
-        request,
-        lines,
-        slots,
-        budget_usd,
-        reflection_enabled,
-        before_stamp,
-    )
-    .await;
+    let report = the_whole_run(deps, request, lines, slots, options).await;
     /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
      * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
      * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
@@ -932,11 +1125,15 @@ async fn the_whole_run(
     request: &RunRequest,
     lines: LineSink,
     slots: Limiter,
-    budget_usd: Option<f64>,
-    reflection_enabled: bool,
-    before_stamp: Option<FrozenPromptHook>,
+    options: WorkflowRunOptions,
 ) -> Result<RunReport, RunError> {
-    the_planned_run(
+    let WorkflowRunOptions {
+        budget_usd,
+        reflection_enabled,
+        before_stamp,
+        faults,
+    } = options;
+    the_planned_run_with_prestart(
         deps,
         plan_run(deps, request)?,
         lines,
@@ -947,6 +1144,7 @@ async fn the_whole_run(
             reflection_enabled,
             before_stamp,
         },
+        faults,
     )
     .await
 }
@@ -1063,6 +1261,20 @@ struct PlannedRunOptions {
     before_stamp: Option<FrozenPromptHook>,
 }
 
+struct WorkflowRunOptions {
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    before_stamp: Option<FrozenPromptHook>,
+    faults: Arc<dyn PrestartFaultInjector>,
+}
+
+struct PreparationOptions {
+    acceptance: Option<TriggerAcceptance>,
+    budget_usd: Option<f64>,
+    before_stamp: Option<FrozenPromptHook>,
+    faults: Arc<dyn PrestartFaultInjector>,
+}
+
 /// Rozpisany plan → katalog, kroki, indeks. **Jedna droga wykonania na oba rodzaje biegu.**
 ///
 /// Wydzielone 2026-08-20 (T-62) z [`the_whole_run`], bez zmiany ani jednej linii w środku:
@@ -1076,26 +1288,46 @@ async fn the_planned_run(
     slots: Limiter,
     options: PlannedRunOptions,
 ) -> Result<RunReport, RunError> {
+    the_planned_run_with_prestart(
+        deps,
+        plan,
+        lines,
+        slots,
+        options,
+        Arc::new(NoPrestartFaults),
+    )
+    .await
+}
+
+async fn the_planned_run_with_prestart(
+    deps: &RunDeps<'_>,
+    plan: Plan,
+    lines: LineSink,
+    slots: Limiter,
+    options: PlannedRunOptions,
+    faults: Arc<dyn PrestartFaultInjector>,
+) -> Result<RunReport, RunError> {
+    let PlannedRunOptions {
+        acceptance,
+        budget_usd,
+        reflection_enabled,
+        before_stamp,
+    } = options;
     let (live, isolated, dag) = prepare_planned_run(
         deps,
         plan,
         lines,
         slots,
-        options.acceptance,
-        options.budget_usd,
-        options.before_stamp,
+        PreparationOptions {
+            acceptance,
+            budget_usd,
+            before_stamp,
+            faults,
+        },
     )?;
     let cancel = deps.control.cancel_token();
     let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
-    finish_planned_run(
-        deps,
-        live,
-        isolated,
-        outcome,
-        cancel,
-        options.reflection_enabled,
-    )
-    .await
+    finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
 }
 
 fn prepare_planned_run(
@@ -1103,21 +1335,29 @@ fn prepare_planned_run(
     mut plan: Plan,
     lines: LineSink,
     slots: Limiter,
-    acceptance: Option<TriggerAcceptance>,
-    budget_usd: Option<f64>,
-    before_stamp: Option<FrozenPromptHook>,
+    options: PreparationOptions,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    let PreparationOptions {
+        acceptance,
+        budget_usd,
+        before_stamp,
+        faults,
+    } = options;
     // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
-    let isolated = lay_out_the_run_dir(&plan, deps.project)?;
+    let mut provisional = ProvisionalRun::new(deps.project, Arc::clone(&faults));
+    let isolated = lay_out_the_run_dir(&plan, deps.project, &mut provisional)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
+    provisional.check(PrestartFaultPoint::AfterHandoffSeed)?;
     plan.carried = what_the_run_before_left(&plan);
     say_what_was_left_behind(&lines, &isolated);
     // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
     bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
+    provisional.check(PrestartFaultPoint::AfterBorrow)?;
     hand_the_skills_to_the_steps(&mut plan)?;
+    provisional.check(PrestartFaultPoint::AfterSkills)?;
     let live = Arc::new(Live::new(
         plan,
         lines,
@@ -1127,7 +1367,9 @@ fn prepare_planned_run(
         budget_usd,
     ));
     // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
+    provisional.check(PrestartFaultPoint::BeforeFirstRunFile)?;
     live.open_the_book()?;
+    provisional.check(PrestartFaultPoint::AfterFirstRunFile)?;
     accept_trigger_after_durable_run(deps.project, &live, acceptance)?;
     if let Some(before_stamp) = before_stamp {
         let (id, job) = live
@@ -1153,6 +1395,8 @@ fn prepare_planned_run(
     let book = live.book();
     stamp_what_this_run_carried(&book.memory);
     drop(book);
+    provisional.check(PrestartFaultPoint::OwnershipTransferred)?;
+    provisional.disarm();
     Ok((live, isolated, dag))
 }
 
@@ -2347,7 +2591,7 @@ enum Turned {
     /// Tura skończyła się i jej wynik jest znany.
     Settled(StepReport),
     /// Tura wróciła błędem. W środku zdanie, które ma zobaczyć człowiek.
-    Broke(&'static str),
+    Broke(String),
 }
 
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
@@ -4324,11 +4568,24 @@ fn some_text(text: &str) -> Option<String> {
 }
 
 /// Tworzy katalog biegu i to, co do niego należy — **dopiero po planie**.
-fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, RunError> {
+fn lay_out_the_run_dir(
+    plan: &Plan,
+    project: &Path,
+    provisional: &mut ProvisionalRun<'_>,
+) -> Result<Vec<Isolated>, RunError> {
     // Proof obejmuje kazdy bieg, takze bez `fresh-copy`. Dopiero on tworzy realny katalog biegu
     // i `logs/`; zadne `create_dir_all` nie moze po cichu przejsc przez symlink przodka.
-    prepare_run_directory(project, &plan.dir)
-        .map_err(|problem| RunError::Io(io::Error::other(problem.to_string())))?;
+    let run_directory_was_missing = matches!(
+        fs::symlink_metadata(&plan.dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    );
+    let prepared = prepare_run_directory(project, &plan.dir);
+    if run_directory_was_missing
+        && fs::symlink_metadata(&plan.dir).is_ok_and(|metadata| metadata.file_type().is_dir())
+    {
+        provisional.owns_run_directory(plan.dir.clone());
+    }
+    prepared.map_err(|problem| RunError::Io(io::Error::other(problem.to_string())))?;
     /* JEDEN KATALOG ROBOCZY POWSTAJE RAZ. Rundy petli dziela katalog -- musza, bo inaczej runda 2
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
@@ -4365,6 +4622,7 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
                 cwd,
                 &branch,
                 from.as_deref().unwrap_or("HEAD"),
+                provisional,
             )
             .map_err(|why| RunError::NoFreshCopy {
                 step: step.name.clone(),
@@ -4380,6 +4638,9 @@ fn lay_out_the_run_dir(plan: &Plan, project: &Path) -> Result<Vec<Isolated>, Run
                 },
                 left_behind: done.left_behind,
             });
+            if made.len() == 2 {
+                provisional.check(PrestartFaultPoint::AfterSecondIsolation)?;
+            }
         }
     }
     Ok(made)
@@ -4427,6 +4688,7 @@ fn make_or_recover_tree(
     cwd: &Path,
     branch: &str,
     from: &str,
+    provisional: &mut ProvisionalRun<'_>,
 ) -> Result<isolate::Made, isolate::Trouble> {
     // Walidacja stoi przed `exists`, `make` i `remove_dir_all`: inaczej niebezpieczny klucz
     // albo symlink przodka moze wskazac ofiare poza biegiem, zanim cleanup zobaczy cel.
@@ -4436,9 +4698,19 @@ fn make_or_recover_tree(
         /* Kopia plikowa punktu startu nie zna i znać nie może: bez gita nie ma gałęzi, na której
          * poprzedni bieg mógłby cokolwiek zostawić. Wznowienie w projekcie bez repozytorium
          * dostaje więc to, co dostawało zawsze — kopię tego, co leży w projekcie. */
-        return make_or_recover_file_copy(project, cwd, branch, marker.is_some());
+        let made = make_or_recover_file_copy(project, cwd, branch, marker.is_some())?;
+        provisional.owns_file_copy(cwd.to_path_buf());
+        return Ok(made);
     }
-    make_or_recover_git_tree(project, cwd, branch, from, &marker_path, marker.as_ref())
+    make_or_recover_git_tree(
+        project,
+        cwd,
+        branch,
+        from,
+        &marker_path,
+        marker.as_ref(),
+        provisional,
+    )
 }
 
 fn prove_run_candidate(project: &Path, run_dir: &Path) -> Result<(), isolate::Trouble> {
@@ -4736,6 +5008,7 @@ fn make_or_recover_git_tree(
     from: &str,
     marker_path: &Path,
     marker: Option<&IsolationMarker>,
+    provisional: &mut ProvisionalRun<'_>,
 ) -> Result<isolate::Made, isolate::Trouble> {
     if let Some(marked) = marker
         && marked.branch() != branch
@@ -4834,7 +5107,23 @@ fn make_or_recover_git_tree(
         }
     }
 
-    let made = isolate::make_from(project, cwd, branch, from)?;
+    make_new_git_tree(project, cwd, branch, from, marker_path, provisional)
+}
+
+fn make_new_git_tree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    from: &str,
+    marker_path: &Path,
+    provisional: &mut ProvisionalRun<'_>,
+) -> Result<isolate::Made, isolate::Trouble> {
+    let made = isolate::make_from_after_add(project, cwd, branch, from, || {
+        provisional.owns_git_tree(cwd.to_path_buf(), branch.to_owned());
+        provisional
+            .faults
+            .check(PrestartFaultPoint::AfterWorktreeAdd)
+    })?;
     if matches!(&made.how, isolate::How::Tree { .. }) {
         let head = branch_oid(project, branch)?;
         // Dopiero caly `isolate::make` (worktree, dirty diff i lista brakow) moze wystawic
@@ -5855,7 +6144,7 @@ struct Live {
     /// Zapisuje wyłącznie [`Live::when_this_one_fails`], czyli to samo jedno miejsce, które
     /// rozstrzyga o każdej porażce. Osobny zamek, jak [`Live::handoffs`] obok, i z tego samego
     /// powodu: to nie jest stan, który jedzie do `run.json`.
-    did_not_pass: Mutex<Vec<bool>>,
+    did_not_pass: Mutex<Vec<Option<String>>>,
     /// Proza, którą krok zdążył powiedzieć w swojej turze — po jednej pozycji na krok, sklejona
     /// w kolejności, w jakiej padła. Pusty napis znaczy „ten krok nie powiedział jeszcze nic".
     ///
@@ -5912,6 +6201,7 @@ struct Book {
 struct StepRun {
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
+    execution: ExecutionFacts,
     /// Co sędzia powiedział o tej rundzie. `None` dla kroków poza sędzią i rund, które nie
     /// ruszyły; stan kroku pozostaje osobnym faktem.
     round_outcome: Option<handoff::Verdict>,
@@ -5953,6 +6243,14 @@ struct StepRun {
     repaired: Vec<String>,
     /// Czy odpowiedź nie zmieściła się w `BODY_CAP` i część leży w `attachments/`.
     truncated: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ExecutionFacts {
+    /// Ciało logicznej próby minęło wszystkie skróty „nie ma pracy” i naprawdę się zaczęło.
+    executed: bool,
+    /// Produkcyjny start oddał ownership procesu; nie wynika z PID-u ani statusu kroku.
+    process_started: bool,
 }
 
 fn record_turn(step: &mut StepRun, turn: &DriverOutcome, cost_is_estimate: bool) {
@@ -6005,6 +6303,8 @@ struct Handed {
     /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
     /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
     what: WhatItIs,
+    /// Publiczny powód, kiedy poprzednik nie przeszedł, ale polityka puściła pracę dalej.
+    failed_because: Option<String>,
 }
 
 /// Czym jest plik wymieniony w indeksie — z punktu widzenia kroku, który ten indeks czyta.
@@ -6113,6 +6413,7 @@ impl Live {
             .iter()
             .map(|_| StepRun {
                 status: StepState::Pending,
+                execution: ExecutionFacts::default(),
                 round_outcome: None,
                 started_at: None,
                 ended_at: None,
@@ -6134,7 +6435,7 @@ impl Live {
             .collect();
         let stopped_by_the_budget = Mutex::new(vec![None; plan.steps.len()]);
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
-        let did_not_pass = Mutex::new(vec![false; plan.steps.len()]);
+        let did_not_pass = Mutex::new(vec![None; plan.steps.len()]);
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
         let settled_at = Mutex::new(vec![None; plan.loops.len()]);
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
@@ -6481,13 +6782,19 @@ impl Live {
     /// `Stop` tedy NIE chodzi, i to jest jedyny wyjatek: za nim nie biegnie nic, wiec nie ma komu
     /// tego pliku przeczytac (niezmiennik 21).
     fn and_still_hands_something_on(&self, id: StepId) -> StepReport {
+        let failed_because = self
+            .book()
+            .steps
+            .get(id)
+            .and_then(|step| step.error.clone())
+            .unwrap_or_else(|| "This step did not pass.".to_owned());
         if let Some(slot) = self
             .did_not_pass
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get_mut(id)
         {
-            *slot = true;
+            *slot = Some(failed_because);
         }
         self.hand_on_its_last_words(id);
         StepReport::FailedAndCarriedOn
@@ -6674,7 +6981,7 @@ impl Live {
     /// stoi przy [`crate::workflow::ServeStep`] i jest zmierzony na biegu właściciela.
     ///
     /// Nie `async`: `Processes::start` wraca natychmiast, z `pgid` już w ręku.
-    fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
+    async fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
         let line = job.command.trim();
         if line.is_empty() {
             // Odmowa, nie ciche przejście: krok bez komendy jest kafelkiem bez skutku, a bieg,
@@ -6692,9 +6999,12 @@ impl Live {
             }) {
             Ok(started) => {
                 self.update(|book| {
-                    book.steps[id].summary = Some(format!("Started and left running: {line}"));
-                    book.steps[id].pgid = Some(started.pgid);
+                    let step = &mut book.steps[id];
+                    step.execution.process_started = true;
+                    step.summary = Some(format!("Started and left running: {line}"));
+                    step.pgid = Some(started.pgid);
                 });
+                tokio::time::sleep(SERVE_START_OBSERVATION).await;
                 StepReport::Succeeded
             }
             // Zdanie mówi, CO nie wstało: `os error 2` samo nie mówi nic (DESIGN §8).
@@ -6781,16 +7091,22 @@ impl Live {
                 },
                 depends_on: &planned.depends_on,
                 status: run.status,
+                execution: ExecutionEntry {
+                    executed: run.execution.executed,
+                    process_started: run.execution.process_started,
+                },
                 round_outcome: run.round_outcome,
                 // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
                 // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
                 attempt: 0,
                 agent_session_id: match &planned.job {
-                    Job::Agent(job) => Some(job.session.to_string()),
+                    Job::Agent(job) if run.execution.process_started => {
+                        Some(job.session.to_string())
+                    }
+                    Job::Agent(_) | Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
                     // Kafelek kontrolny i krok „sprawdź" nie mają sesji, bo nie mają vendora.
                     // Wpisany identyfikator byłby numerem, pod którym wznowienie szukałoby
                     // kiedyś rozmowy, której nigdy nie było.
-                    Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
                 },
                 pid: run.pid,
                 pgid: run.pgid,
@@ -6900,23 +7216,19 @@ impl Live {
         if let Some(which) = self.judging(&self.plan.steps[id]).map(|(which, _)| which)
             && self.nothing_to_judge(which)
         {
-            let at = now_ms();
             // Pętla domyka się na TEJ rundzie: dalszych już nie potrzebujemy, a bez tego kolejne
             // startowałyby po kolei i każda pytała o to samo puste drzewo.
             self.settle(which, self.plan.steps[id].turn);
             self.update(|book| {
                 let step = &mut book.steps[id];
-                step.started_at = Some(at);
                 step.summary = Some(NOTHING_CHANGED.to_owned());
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
         }
 
         if self.already_settled(id) {
-            let at = now_ms();
             self.update(|book| {
                 let step = &mut book.steps[id];
-                step.started_at = Some(at);
                 step.summary = Some(NOT_NEEDED.to_owned());
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
@@ -6975,6 +7287,7 @@ impl Live {
         self.update(|book| {
             book.started_at.get_or_insert(at);
             let step = &mut book.steps[id];
+            step.execution.executed = true;
             step.status = StepState::Running;
             step.started_at = Some(at);
         });
@@ -6986,7 +7299,7 @@ impl Live {
             Job::Agent(job) => self.run_agent(id, job, &cancel).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
             Job::Check(job) => self.run_check(id, job, &cancel).await,
-            Job::Serve(job) => self.start_and_leave(id, job),
+            Job::Serve(job) => self.start_and_leave(id, job).await,
         };
 
         self.finish_this_step(id, report).await
@@ -7023,7 +7336,9 @@ impl Live {
         self.update(|book| {
             let step = &mut book.steps[id];
             step.status = ended;
-            step.ended_at = Some(now_ms());
+            if step.execution.executed {
+                step.ended_at = Some(now_ms());
+            }
         });
         self.announce(id, ended);
         report
@@ -7121,11 +7436,13 @@ impl Live {
             .iter()
             .map(Option::is_some)
             .collect();
-        let carried = self
+        let carried: Vec<bool> = self
             .did_not_pass
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+            .iter()
+            .map(Option::is_some)
+            .collect();
         let mut seen = vec![false; self.plan.steps.len()];
         let mut stack: Vec<StepId> = stopped
             .iter()
@@ -7640,6 +7957,7 @@ impl Live {
             Ok(handle) => {
                 // Uchwyt znaczy, że proces wstał i prompt dojechał przez stdin. Zapisujemy
                 // odbiorcę przed `wait`: późniejsza porażka tury nie cofa prawdziwej dostawy.
+                self.update(|book| book.steps[id].execution.process_started = true);
                 self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
                 self.one_turn(id, handle, cancel, &reads, &evidence).await
@@ -7652,8 +7970,10 @@ impl Live {
                     .send(AgentEvent::Notice { text: text.clone() }.into())
                     .await;
                 drop(ours);
-                self.update(|book| book.steps[id].error = Some(text));
-                Turned::Settled(StepReport::Failed)
+                // 2026-08-28 (T-152): bez uchwytu nie ma prozy agenta, więc publiczna odmowa
+                // jest jedyną treścią, którą `carry-on` może uczciwie przekazać potomkowi.
+                self.update(|book| book.steps[id].summary = Some(text.clone()));
+                Turned::Broke(text)
             }
         };
 
@@ -7666,7 +7986,7 @@ impl Live {
             /* DOPIERO TERAZ, bo dopiero teraz wiadomo, co ten krok zdążył powiedzieć: proza
              * agenta jedzie tą samą kolejką, którą właśnie domknęliśmy, a to ona jest ciałem
              * przekazania, jakie zostawia po sobie krok jadący dalej mimo porażki (T-87 AC-5). */
-            Turned::Broke(why) => self.when_this_one_fails(id, why).await,
+            Turned::Broke(why) => self.when_this_one_fails(id, &why).await,
         }
     }
 
@@ -7733,6 +8053,8 @@ impl Live {
                     .await;
             }
         };
+
+        self.update(|book| book.steps[id].execution.process_started = true);
 
         // `pid` i `pgid` do księgi, ZANIM cokolwiek popłynie z wyjścia — dokładnie jak przy
         // agencie (`one_turn`): po awarii aplikacji nie ma już kogo o nie zapytać, a to po nich
@@ -8046,7 +8368,7 @@ impl Live {
                 // Rozstrzyga to `run_agent`, po opadnieciu kolejki zdarzen: przekazanie tego
                 // kroku niesie proze, ktora agent zdazyl powiedziec, a ona plynie ta wlasnie
                 // kolejka ([`Turned`]).
-                Turned::Broke("This step's agent stopped in the middle of its turn.")
+                Turned::Broke("This step's agent stopped in the middle of its turn.".to_owned())
             }
             Ended::Turn(Ok(turn)) => Turned::Settled({
                 // Normalne zakończenie idzie przez `close`: `claude` z otwartym stdinem czeka
@@ -8307,6 +8629,9 @@ impl Live {
             if hand.left_nothing {
                 label.push_str("; left nothing");
             }
+            if let Some(failed_because) = &hand.failed_because {
+                let _ = write!(label, "; {failed_because}");
+            }
             if let Some(full) = &hand.attachment {
                 let metadata = fs::symlink_metadata(full)?;
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -8429,7 +8754,7 @@ impl Live {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let unpassed: Vec<bool> = self
+        let unpassed: Vec<Option<String>> = self
             .did_not_pass
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -8465,17 +8790,20 @@ impl Live {
                 // Bez dowodu sukcesu nie nazywamy przejętej pustki udanym wynikiem.
                 left_nothing: false,
                 what: WhatItIs::FromAnEarlierRun,
+                failed_because: None,
             })
             .collect();
         index.extend(wanted.into_iter().filter_map(|step| {
             let written = filed.get(step)?.as_ref()?;
-            let succeeded = !unpassed.get(step).copied().unwrap_or(false);
+            let failed_because = unpassed.get(step).cloned().flatten();
+            let succeeded = failed_because.is_none();
             Some(Handed {
                 from: self.plan.steps.get(step)?.name.clone(),
                 path: written.path.clone(),
                 attachment: written.attachment.clone(),
                 left_nothing: succeeded && written.left_nothing,
                 what: self.what_it_is(id, step, &unpassed),
+                failed_because,
             })
         }));
         index
@@ -8618,8 +8946,8 @@ impl Live {
     /// nikt nie przyjął, ma być rozpoznawalny niezależnie od tego, skąd przyszedł. Potem pytamy
     /// o pętlę, i tylko dla rund POZA pierwszą — runda zerowa czyta swoich poprzedników dokładnie
     /// tak, jak każdy krok spoza pętli.
-    fn what_it_is(&self, id: StepId, from: StepId, unpassed: &[bool]) -> WhatItIs {
-        if unpassed.get(from).copied().unwrap_or(false) {
+    fn what_it_is(&self, id: StepId, from: StepId, unpassed: &[Option<String>]) -> WhatItIs {
+        if unpassed.get(from).is_some_and(Option::is_some) {
             return WhatItIs::StepThatFailed;
         }
         let (Some(step), Some(before)) = (self.plan.steps.get(id), self.plan.steps.get(from))
@@ -9443,6 +9771,8 @@ struct StepEntry<'a> {
     kind: &'static str,
     depends_on: &'a [String],
     status: StepState,
+    #[serde(flatten)]
+    execution: ExecutionEntry,
     /// Rozstrzygnięcie sędziego tej rundy. Brak klucza znaczy, że ten węzeł nie był sędzią albo
     /// nie ruszył; stare pliki bez pola zachowują właśnie tę wartość domyślną.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9498,6 +9828,14 @@ struct StepEntry<'a> {
     /// ucięta — następny krok nie zobaczy wtedy w pliku, na który go wskazano, całej odpowiedzi.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ExecutionEntry {
+    /// Próba minęła wszystkie skróty i weszła w ciało kroku.
+    executed: bool,
+    /// Start oddał ownership procesu; osobny fakt od wykonania checkpointu albo odmowy startu.
+    process_started: bool,
 }
 
 // ── DROBIAZGI ──────────────────────────────────────────────────────────────────────────────

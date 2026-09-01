@@ -188,6 +188,8 @@ pub struct PastStepWire {
     pub agent: String,
     /// Słowo z drutu; tłumaczy je okno.
     pub state: String,
+    /// `None` dla starych receipts: historia nie zgaduje wykonania ze statusu, czasu ani PID-u.
+    pub executed: Option<bool>,
     /// Jedno zdanie, które ten krok po sobie zostawił. Puste, kiedy nie zostawił żadnego.
     pub summary: String,
     /// Powód, jeśli coś poszło nie tak. Pusty, kiedy poszło dobrze.
@@ -295,6 +297,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 name: step.name.clone(),
                 agent: step.agent.clone(),
                 state: step.status.clone(),
+                executed: step.executed,
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
                 cost_usd: step.cost_usd,
@@ -526,6 +529,8 @@ struct StepDescription {
     agent: String,
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    executed: Option<bool>,
     #[serde(default)]
     summary: Option<String>,
     #[serde(default)]

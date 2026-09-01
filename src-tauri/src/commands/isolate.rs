@@ -159,6 +159,21 @@ pub fn make(project: &Path, dest: &Path, branch: &str) -> Result<Made, Trouble> 
 /// konfliktu, na których agent pracowałby jak na kodzie. Odmowa jest głośna i zatrzymuje bieg
 /// przed pierwszym procesem.
 pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Result<Made, Trouble> {
+    make_from_after_add(project, dest, branch, from, || Ok(()))
+}
+
+/// Jak [`make_from`], ale oddaje ownership nowego drzewa natychmiast po `git worktree add`.
+///
+/// 2026-08-28 (T-152): nakładanie WIP i liczenie pominiętych plików nadal może odmówić po
+/// utworzeniu drzewa. Callback stoi dokładnie na tej granicy, żeby wołający zdążył zapisać
+/// gałąź i katalog w provisional guardzie przed jakimkolwiek następnym fallible krokiem.
+pub fn make_from_after_add(
+    project: &Path,
+    dest: &Path,
+    branch: &str,
+    from: &str,
+    after_add: impl FnOnce() -> io::Result<()>,
+) -> Result<Made, Trouble> {
     if !is_a_repo(project) {
         copy_tree(project, dest).map_err(Trouble::Copying)?;
         return Ok(Made {
@@ -186,6 +201,7 @@ pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Resul
         ],
     )
     .map_err(Trouble::Git)?;
+    after_add().map_err(Trouble::Copying)?;
 
     // NIESCOMMITOWANA PRACA JEDZIE Z CZŁOWIEKIEM. Drzewo z samego `HEAD` pokazuje agentowi stan
     // sprzed jego zmian, więc agent pisze przeciwko wersji, której już nie ma — a konflikt widać
@@ -218,6 +234,33 @@ pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Resul
         },
         left_behind,
     })
+}
+
+/// Zdejmuje drzewo, które nie zostało jeszcze przekazane żywemu lifecycle.
+///
+/// `--force` jest tu bezpieczne wyłącznie dlatego, że wołający rejestruje katalog zaraz po
+/// `worktree add`, zanim wystartuje proces. Naniesiony diff człowieka nadal żyje w jego
+/// oryginalnym drzewie; ta kopia nie może jeszcze zawierać pracy agenta.
+pub fn roll_back_provisional_tree(project: &Path, dest: &Path) -> Result<(), Trouble> {
+    if !dest.exists() {
+        return Ok(());
+    }
+    git(
+        project,
+        &["worktree", "remove", "--force", &dest.display().to_string()],
+    )
+    .map(|_| ())
+    .map_err(Trouble::Git)
+}
+
+/// Usuwa wyłącznie gałąź zapisaną przez provisional guarda tej próby.
+pub fn roll_back_provisional_branch(project: &Path, branch: &str) -> Result<(), Trouble> {
+    if !names_a_commit(project, branch) {
+        return Ok(());
+    }
+    git(project, &["branch", "-D", branch])
+        .map(|_| ())
+        .map_err(Trouble::Git)
 }
 
 /// Co zostało po kroku.

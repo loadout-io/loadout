@@ -1,0 +1,144 @@
+# T-152 — Przygotowanie i rozliczenie próby mają jednego właściciela
+
+Przed pierwszym procesem nie istnieje jeszcze żywy lifecycle, który posprząta częściowo
+przygotowany bieg. Błąd po `git worktree add`, przy kolejnej kopii, seedzie, borrow, skills albo
+pierwszym `run.json` zostawia dziś drzewa, branche lub katalog biegu. Osobno
+`AgentDriver::start -> Err` omija wspólną politykę `whenItFails`, a kroki pominięte przez
+`nothing_to_judge` lub `already_settled` zapisują `Succeeded` i czasy tak, jakby pracował proces.
+Recovery na końcu nadpisuje `run.json` zwykłym `fs::write`.
+
+Ten task domyka transakcję **przed startem**, jeden istniejący failure funnel, prawdę o wykonaniu
+i atomowy pojedynczy zapis recovery. Nie rozstrzyga naturalnego ani wymuszonego końca grupy
+procesów: `GroupProof`, `OwnedSurvivor` i utrzymanie permitu do ESRCH należą do T-201.
+
+**Zależy od:** T-150 i T-210, który ląduje wspólny stos T-202/T-210.
+
+**Read first:** `AGENTS.md` §2a oraz niezmienniki 4, 6, 7, 10, 12, 19, 24 i 25 ·
+`tasks/T-87.md`, `tasks/T-95.md`, `tasks/T-132.md` i `tasks/T-202.md` ·
+`src-tauri/src/commands/run.rs` (`prepare_planned_run`, `lay_out_the_run_dir`, `one_turn`,
+`finish_planned_run`, `nothing_to_judge`, `already_settled`) ·
+`src-tauri/src/commands/isolate.rs` (`make_from`, `finish`) ·
+`src-tauri/src/commands/reconcile.rs` · `src-tauri/src/commands/history.rs`.
+
+## Tryb wykonania — FULL HARNESS / large
+
+- Jedyne wejście to `./ship-task.sh T-152 --agent codex --reviewer codex`. Pisarz i read-only
+  reviewer są osobnymi Codexami na różnych modelach; nie uruchamiaj domyślnego Claude'a.
+- Harness prowadzi uczciwe czerwone `before`, quick/full, jedną recenzję i najwyżej jedną rundę
+  `repair.sh --agent codex --reviewer codex`. Exit 2, invalid oracle albo czerwień po naprawie
+  zatrzymują pracę dla człowieka.
+- Jedyne lądowanie to pojedyncze `integrate.sh` dla gałęzi zwróconej przez Harness. Nie zmieniaj
+  `harness/`, `checks/` ani `verify.sh`.
+- Ciężkie Cargo biegnie pojedynczo na całej maszynie.
+
+## Uczciwe `before`
+
+Wszystkie cztery dokładne targety i każda nowa sygnatura istnieją oraz kompilują się przed
+`./verify.sh before`. Targety uruchamiają produkcyjne wejścia: prawdziwy temp Git, pełne
+przygotowanie planu, fake-driver przechodzący przez `one_turn`, serializację `run.json` i
+produkcyjne reconcile. Padają na asercji pozostawionego worktree, pominiętej polityki, fałszywego
+faktu wykonania albo połowy JSON-u. Brak symbolu, compile error, zero testów, timeout i test
+samego pomocniczego typu nie są czerwienią.
+
+## AC-1 Przygotowanie izolacji jest transakcją RAII
+check: cargo test --test t152_prestart_transaction_rolls_back
+expect: (\d+) passed
+
+Prawdziwe tymczasowe repo zawiera ludzkie tracked i untracked WIP. Kontrolowane fault pointy
+odmawiają osobno po udanym `git worktree add` wewnątrz `make_from`, podczas tworzenia drugiej
+z trzech kopii, przy seedzie, borrow, materializacji skills oraz przed i po publikacji pierwszego
+`run.json`. Po każdej odmowie `git worktree list`, zbiór branchy i katalogi runu są dokładnie
+baseline'em, WIP pozostaje bajtowo nietknięty, a driver ma zero startów.
+
+Fixture zasiewa też obcy branch i obcy worktree, których próba nie utworzyła; oba pozostają
+bajtowo i referencyjnie nietknięte. Target liczy operacje rollbacku i dowodzi stałego sufitu
+zależnego wyłącznie od liczby zasobów tej próby — brak zasobu i powtórzony cleanup nie tworzą
+pętli ani kolejnych prób Git.
+
+Każdy utworzony zasób trafia natychmiast do provisional guarda. Guard sprząta w odwrotnej
+kolejności i rozbraja się dopiero, gdy komplet izolacji, plików i księgi został przekazany
+jednemu żywemu lifecycle. `make_from` nie może zwrócić błędu po `worktree add` bez zwrócenia
+ownershipu guardowi. Cleanup jest idempotentny, bounded i nie usuwa ścieżek ani branchy, których
+nie utworzyła ta próba.
+
+Po udanym przekazaniu ownershipu kontrolna scena upuszcza provisional guarda, a następnie zapisuje
+pracę w przekazanej kopii: guard jest rozbrojony i nie usuwa ani tej pracy, ani drzewa. Awaria po
+pierwszym procesie, nieudowodniona śmierć i niescommitowana praca przechodzą przez normalny
+lifecycle T-95/T-201; pre-start rollback nie może ich skasować na ślepo.
+
+## AC-2 Błąd `AgentDriver::start` używa istniejącego `whenItFails`
+check: cargo test --test t152_start_error_uses_failure_policy
+expect: (\d+) passed
+
+Ten sam zapisany graf i fake-driver zwracający `Err` bez uchwytu dowodzą wszystkich istniejących
+polityk:
+
+- `stop` kończy próbę i nie uruchamia potomka;
+- `carry-on` uruchamia potomka z nazwanym powodem porażki poprzednika;
+- `ask-me` publikuje prawdziwe pytanie; Continue uruchamia potomka, a Stop kończy wartością
+  `Cancelled`.
+
+`start -> Err` wchodzi do tego samego failure funnel co błąd po uruchomieniu, bez rozpoznawania
+konkretnego komunikatu CLI i bez drugiej tabeli polityk. Target odbiera produkcyjny kanał okna
+oraz ponownie czyta `run.json`: angielskie zdanie, nazwa kroku, opcje, zdarzenie `Asked` i podjęta
+decyzja są dokładnie tymi samymi faktami. Istniejący screen oracle
+`src/sections/run/continue-at-checkpoint.test.tsx` pozostaje w pełnej bramce i dowodzi, że ten typ
+zdarzenia jest widocznym pytaniem z działającymi kontrolkami.
+
+Nie powstaje fikcyjny PID/PGID ani dowód śmierci, skoro `start` nie zwrócił procesu. Anulowanie
+pozostaje wartością `Outcome::Cancelled`, nie błędem.
+
+## AC-3 Receipt rozróżnia wejście w krok od startu procesu
+check: cargo test --test t152_step_execution_facts_are_honest
+expect: (\d+) passed
+
+Nowe `run.json` zapisują na każdym fizycznym kroku dwa addytywne fakty:
+
+- `executed` — ciało logicznej próby zostało rzeczywiście rozpoczęte po wszystkich skrótach
+  „nie ma pracy";
+- `process_started` — produkcyjny start zwrócił ownership procesu.
+
+`nothing_to_judge`, `already_settled` oraz krok pozostawiony po wcześniejszym fail/cancel mają
+`executed: false` i `process_started: false`. Nie dostają `started_at`, PID/PGID, czasu procesu,
+tokenów, kosztu ani artefaktów vendora. Ich `Succeeded` może pozostać wewnętrznym sygnałem
+schedulera zwalniającym zależność; historia pokazuje nowe fakty zamiast wyprowadzać wykonanie ze
+statusu kroku.
+
+Checkpoint ma `executed: true` i `process_started: false`. `AgentDriver::start -> Err` ma
+`executed: true` i `process_started: false`. Udane Agent, Check i Serve są trzema osobnymi
+scenami produkcyjnego startu; każda po przejęciu uchwytu ma oba fakty `true`. Target obejmuje
+wcześniejsze przejście pętli, verifier bez pracy, start error, checkpoint i wszystkie trzy
+rodzaje prawdziwego procesu, a nie tylko deserializację fixture.
+
+Stare receipts bez nowych pól pozostają czytelne. Brak oznacza `unknown` w odczycie historii
+i nigdy nie jest odgadywany ze statusu, czasu albo PID. Diagnostyczne `process_started` i jego
+jawny stan `unknown` należą do T-201, który posiada cały kontrakt dowodu procesu; ten task ich
+nie dubluje. Task nie dodaje drugiego statusu do schedulera i nie zmienia znaczenia zależności
+grafu.
+
+## AC-4 Reconcile publikuje cały zaktualizowany `run.json` albo nic
+check: cargo test --test t152_reconcile_replaces_run_atomically
+expect: (\d+) passed
+
+Obie produkcyjne drogi `write_back_with_reason` i `write_back` używają atomowego replace z T-202.
+Target zasiewa `run.json` z nieznanymi polami, uruchamia recovery i wstrzykuje odmowę przed
+publikacją oraz w commit point. Po ponownym otwarciu widoczne są dokładnie pełne stare bajty albo
+pełny nowy, poprawny JSON; nigdy pusty/pół pliku. Nowy wariant zachowuje nieznane pola i zawiera
+spójne statusy, `ended_at`, powód oraz ostrzeżenia survivorów.
+
+Ponowne reconcile po każdym wariancie jest idempotentne i kończy się jednym czytelnym
+`run.json` bez pozostawionego pliku tymczasowego. Atomowość dotyczy jednego pliku biegu, nie
+całej biblioteki ani migracji SQLite. Rdzeń publikacji, fsync, no-follow i recovery tempów nie
+są kopiowane do `reconcile.rs`; ich jedynym właścicielem pozostaje T-202.
+
+<!-- OWNS
+tasks/T-152.md
+src-tauri/src/commands/run.rs
+src-tauri/src/commands/isolate.rs
+src-tauri/src/commands/reconcile.rs
+src-tauri/src/commands/history.rs
+src-tauri/tests/t152_prestart_transaction_rolls_back.rs
+src-tauri/tests/t152_start_error_uses_failure_policy.rs
+src-tauri/tests/t152_step_execution_facts_are_honest.rs
+src-tauri/tests/t152_reconcile_replaces_run_atomically.rs
+-->

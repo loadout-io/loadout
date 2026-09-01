@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy};
 use crate::engine::supervisor;
 use crate::recovery::{self, Machine, RecoveryRow};
 
@@ -235,10 +236,7 @@ fn write_back_with_reason(dir: &Path, run_status: &str, why: &str) -> bool {
     if map.get("error").is_none_or(Value::is_null) {
         map.insert("error".to_owned(), Value::String(why.to_owned()));
     }
-    let Ok(text) = serde_json::to_string_pretty(&run) else {
-        return false;
-    };
-    std::fs::write(dir.join(RUN_FILE), text + "\n").is_ok()
+    publish_run(dir, &run)
 }
 
 /// Wiersze do rozstrzygnięcia, przeczytane z plików biegów tego folderu.
@@ -348,10 +346,27 @@ fn write_back(
             }
         }
     }
-    let Ok(text) = serde_json::to_string_pretty(&run) else {
+    publish_run(dir, &run)
+}
+
+/// Publikuje pojedynczy zaktualizowany receipt wspólnym durable replace z T-202.
+///
+/// 2026-08-28 (T-152): recovery zachowuje nieznane pola przez `Value`, ale pełne bajty muszą
+/// wejść przez ten sam fsync/rename/no-follow rdzeń co pozostałe pliki będące prawdą. Reconcile
+/// nigdy nie tworzy `run.json`; polityka trybu jest wyłącznie bezpiecznym defaultem, gdyby cel
+/// zniknął pomiędzy odczytem a publikacją.
+fn publish_run(dir: &Path, run: &Value) -> bool {
+    let Ok(mut bytes) = serde_json::to_vec_pretty(run) else {
         return false;
     };
-    std::fs::write(dir.join(RUN_FILE), text + "\n").is_ok()
+    bytes.push(b'\n');
+    DurableFilePublisher::new(dir)
+        .atomic_replace(
+            &dir.join(RUN_FILE),
+            &bytes,
+            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+        )
+        .is_ok()
 }
 
 /// Zdanie trafiające do `PastStepWire.error`, czyli jedynego błędu pokazywanego w historii.
