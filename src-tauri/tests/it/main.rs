@@ -312,6 +312,7 @@ mod t208_a_full_disk_refuses_before_the_run;
 mod the_dial_tells_the_truth_about_the_shell;
 mod the_index_says_what_each_file_is;
 mod the_lead_reaches_the_connections;
+mod the_result_branch_takes_the_shape_this_repo_uses;
 mod the_step_knows_its_deadline;
 mod the_tester_gets_an_outcome_field;
 mod the_tester_remembers_what_it_said;

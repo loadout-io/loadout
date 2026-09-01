@@ -39,6 +39,7 @@ use crate::workflow::file::LoadError;
 /// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
 pub mod agents;
 /// Rozmowa z orchestratorem — i jedyne miejsce, które NIE umie uruchomić biegu.
+pub mod branch_name;
 pub mod chat;
 /// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
 pub mod diagnostics;

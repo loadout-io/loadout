@@ -2420,6 +2420,17 @@ pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, Str
         .map_err(|error| error.to_string())
 }
 
+/// Jak nazwie się gałąź wyniku dla podanego identyfikatora zadania.
+///
+/// Liczone PRZY STARCIE, a nie po biegu: propozycja, której człowiek nie widzi przed
+/// naciśnięciem, jest zgadywaniem, którego skutek poznaje po godzinie. Odpowiedź niesie też
+/// zmierzoną konwencję i to, czy nazwa jest już zajęta.
+#[tauri::command]
+#[must_use]
+pub fn suggest_branch_name(folder: &str, id: &str) -> commands::branch_name::Proposed {
+    commands::branch_name::proposed(std::path::Path::new(folder), id)
+}
+
 /// Podpowiedzi ścieżek dla `@` — wyłącznie spod wskazanego folderu.
 ///
 /// `folder` przychodzi ARGUMENTEM, nigdy ze stałej: korzeń zna warstwa wyżej, a literał ze
@@ -3360,6 +3371,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_triggers,
         list_workflows,
         list_workspaces,
+        suggest_branch_name,
         suggest_paths,
         load_workflow,
         move_note_to_project,

@@ -83,6 +83,7 @@ stop_process
 stop_proposing_cases
 stop_run
 stop_using_note
+suggest_branch_name
 suggest_paths
 test_linear_connection
 update_trigger
